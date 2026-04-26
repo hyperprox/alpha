@@ -326,6 +326,7 @@ configure_env() {
 # ── App ───────────────────────────────────────────────────────────────────────
 NODE_ENV=production
 HOST_IP=${HOST_IP}
+API_HOST=localhost
 SETUP_PORT=${SETUP_PORT}
 API_PORT=${API_PORT}
 FRONTEND_PORT=${FRONTEND_PORT}
