@@ -272,7 +272,7 @@ build_app() {
 
   step "Installing dependencies"
   cd "${HYPERPROX_DIR}"
-  pnpm install --frozen-lockfile --silent
+  pnpm install --frozen-lockfile
   ok "Dependencies installed"
 
   step "Building API"
@@ -631,7 +631,7 @@ WorkingDirectory=${HYPERPROX_DIR}/apps/setup
 EnvironmentFile=${HYPERPROX_DIR}/.env
 Environment=PORT=${SETUP_PORT}
 Environment=HOSTNAME=0.0.0.0
-ExecStart=$(which node) dist/index.js
+ExecStart=$(which node) setup.js
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -642,7 +642,99 @@ SyslogIdentifier=hyperprox-setup
 WantedBy=multi-user.target
 EOF
 
-  systemctl daemon-reloades
+  systemctl daemon-reload
+  ok "Systemd units created"
+}
+
+# ── Database Migration ────────────────────────────────────────────────────────
+run_migrations() {
+  step "Running database migrations"
+
+  # Wait for postgres to be healthy
+  info "Waiting for PostgreSQL..."
+  local retries=30
+  while ! docker exec hyperprox-postgres pg_isready -U hyperprox >/dev/null 2>&1; do
+    retries=$((retries - 1))
+    [[ $retries -le 0 ]] && die "PostgreSQL did not become ready in time"
+    sleep 2
+  done
+  ok "PostgreSQL is ready"
+
+  cd "${HYPERPROX_DIR}/apps/api"
+  source "${HYPERPROX_DIR}/.env"
+  export DATABASE_URL
+  npx prisma migrate deploy --schema ./prisma/schema.prisma >/dev/null 2>&1
+  ok "Database migrations applied"
+}
+
+# ── Start Everything ──────────────────────────────────────────────────────────
+start_services() {
+  step "Starting Docker stack"
+  cd "${HYPERPROX_DIR}"
+  docker compose up -d --quiet-pull 2>/dev/null
+  ok "Docker stack started (postgres, redis, prometheus, grafana, nginx)"
+
+  run_migrations
+
+  step "Starting HyperProx services"
+  systemctl enable hyperprox-api hyperprox-frontend hyperprox-setup --quiet
+  systemctl restart hyperprox-api
+  sleep 2
+  systemctl restart hyperprox-frontend
+  sleep 1
+  systemctl restart hyperprox-setup
+  sleep 1
+
+  # Verify services came up
+  local failed=()
+  for svc in hyperprox-api hyperprox-frontend hyperprox-setup; do
+    if ! systemctl is-active --quiet "${svc}"; then
+      failed+=("${svc}")
+    fi
+  done
+
+  if [[ ${#failed[@]} -gt 0 ]]; then
+    warn "Some services failed to start: ${failed[*]}"
+    warn "Check logs: journalctl -u ${failed[0]} -n 50"
+  else
+    ok "All services running"
+  fi
+}
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+print_summary() {
+  HOST_IP="$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+' || hostname -I | awk '{print $1}')"
+
+  echo ""
+  echo -e "${C_CYAN}${C_BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
+  echo -e "${C_GREEN}${C_BOLD}  HyperProx installed successfully!${C_RESET}"
+  echo -e "${C_CYAN}${C_BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
+  echo ""
+  echo -e "  ${C_BOLD}Open the setup wizard in your browser:${C_RESET}"
+  echo ""
+  echo -e "  ${C_CYAN}${C_BOLD}  http://${HOST_IP}:${SETUP_PORT}${C_RESET}"
+  echo ""
+  echo -e "  ${C_DIM}The wizard will guide you through:${C_RESET}"
+  echo -e "  ${C_DIM}  • Connecting your Proxmox cluster${C_RESET}"
+  echo -e "  ${C_DIM}  • Creating your admin account${C_RESET}"
+  echo -e "  ${C_DIM}  • Detecting existing services (NPM, Grafana, Ollama)${C_RESET}"
+  echo -e "  ${C_DIM}  • Configuring DNS and proxy providers${C_RESET}"
+  echo ""
+  echo -e "  ${C_DIM}Service logs:${C_RESET}"
+  echo -e "  ${C_DIM}  journalctl -fu hyperprox-api${C_RESET}"
+  echo -e "  ${C_DIM}  journalctl -fu hyperprox-frontend${C_RESET}"
+  echo -e "  ${C_DIM}  journalctl -fu hyperprox-setup${C_RESET}"
+  echo -e "  ${C_DIM}  docker compose -f ${HYPERPROX_DIR}/docker-compose.yml ps${C_RESET}"
+  echo ""
+  echo -e "${C_CYAN}${C_BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
+  echo ""
+}
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+main() {
+  banner
+  detect_environment
+  install_prerequisites
   install_docker
   install_node
   clone_repo
