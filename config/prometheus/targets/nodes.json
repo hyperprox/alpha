@@ -1,6 +1,7 @@
 [
-  {
-    "targets": ["192.168.2.208:9100"],
-    "labels": { "node": "titan7", "role": "gpu" }
-  }
+  { "targets": ["192.168.2.202:9100"], "labels": { "node": "titan1" } },
+  { "targets": ["192.168.2.203:9100"], "labels": { "node": "titan2" } },
+  { "targets": ["192.168.2.204:9100"], "labels": { "node": "titan3" } },
+  { "targets": ["192.168.2.205:9100"], "labels": { "node": "titan4" } },
+  { "targets": ["192.168.2.208:9100"], "labels": { "node": "titan7" } }
 ]

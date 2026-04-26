@@ -1,0 +1,138 @@
+{
+  "uid": "hyperprox-cluster",
+  "title": "HyperProx — Cluster Overview",
+  "tags": ["hyperprox"],
+  "timezone": "browser",
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "CPU Usage — All Nodes",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [{
+        "datasource": "Prometheus",
+        "expr": "100 - (avg by(node) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
+        "legendFormat": "{{node}}"
+      }],
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 } }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Memory Usage — All Nodes",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [{
+        "datasource": "Prometheus",
+        "expr": "(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100",
+        "legendFormat": "{{node}}"
+      }],
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 } }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Network I/O — All Nodes",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "rate(node_network_receive_bytes_total{device=\"vmbr0\"}[5m])",
+          "legendFormat": "{{node}} ↓"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "rate(node_network_transmit_bytes_total{device=\"vmbr0\"}[5m])",
+          "legendFormat": "{{node}} ↑"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "binBps" } }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "CEPH Pool Usage",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [{
+        "datasource": "Prometheus",
+        "expr": "(ceph_pool_bytes_used / (ceph_pool_bytes_used + ceph_pool_max_avail)) * 100",
+        "legendFormat": "{{name}}"
+      }],
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 } }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "GPU — VRAM Usage (titan7 GTX 1070 Ti)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "nvidia_smi_memory_used_bytes / 1024 / 1024 / 1024",
+          "legendFormat": "Used (GB)"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "nvidia_smi_memory_free_bytes / 1024 / 1024 / 1024",
+          "legendFormat": "Free (GB)"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "nvidia_smi_memory_total_bytes / 1024 / 1024 / 1024",
+          "legendFormat": "Total (GB)"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "decgbytes" } }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "GPU — Utilization & Temperature (titan7)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "nvidia_smi_utilization_gpu_ratio * 100",
+          "legendFormat": "GPU Utilization %"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "nvidia_smi_temperature_gpu",
+          "legendFormat": "Temperature °C"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "nvidia_smi_power_draw_watts",
+          "legendFormat": "Power Draw (W)"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "id": 7,
+      "type": "bargauge",
+      "title": "Disk Usage — Root Filesystem",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
+      "targets": [{
+        "datasource": "Prometheus",
+        "expr": "(1 - node_filesystem_avail_bytes{mountpoint=\"/\"} / node_filesystem_size_bytes{mountpoint=\"/\"}) * 100",
+        "legendFormat": "{{node}}"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 70 },
+              { "color": "red", "value": 90 }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}
