@@ -277,12 +277,12 @@ build_app() {
 
   step "Building API"
   cd "${HYPERPROX_DIR}/apps/api"
-  pnpm build --silent
+  pnpm build
   ok "API built"
 
   step "Building Frontend"
   cd "${HYPERPROX_DIR}/apps/frontend"
-  pnpm build --silent
+  pnpm build
   # Copy static assets to standalone output (Next.js standalone quirk)
   SRC="${HYPERPROX_DIR}/apps/frontend/.next/static"
   DEST="${HYPERPROX_DIR}/apps/frontend/.next/standalone/apps/frontend/.next/static"
