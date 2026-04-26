@@ -634,6 +634,17 @@ export default function ProxyPage() {
     })
     .sort((a, b) => a.domain_names[0].localeCompare(b.domain_names[0]))
 
+  if (error) return (
+    <div className="min-h-full flex items-center justify-center" style={{ background: "#080c14" }}>
+      <div className="text-center">
+        <div className="text-4xl mb-4">���</div>
+        <div className="font-display text-xl font-semibold uppercase mb-2" style={{ color: "#00e5ff" }}>NPM Not Connected</div>
+        <div className="text-sm font-mono text-gray-500 mb-6 max-w-sm">{error}</div>
+        <a href="/settings" className="px-4 py-2 rounded text-xs font-mono" style={{ background: "#00e5ff15", color: "#00e5ff", border: "1px solid #00e5ff30" }}>Configure in Settings ���</a>
+      </div>
+    </div>
+  )
+
   if (loading) return (
     <div className="min-h-full flex items-center justify-center" style={{ background: '#080c14' }}>
       <div className="text-xs font-mono text-gray-500 animate-pulse">loading proxy hosts...</div>
