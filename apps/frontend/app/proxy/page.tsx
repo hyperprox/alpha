@@ -599,11 +599,12 @@ export default function ProxyPage() {
       const [hostsJson, statsJson, certsJson] = await Promise.all([
         hostsRes.json(), statsRes.json(), certsRes.json(),
       ])
-      if (hostsJson.success) setHosts(hostsJson.data)
+      if (hostsJson.success) { setHosts(hostsJson.data); setError(null) }
+      else { setHosts([]); setError(hostsJson.error ?? 'NPM not configured') }
       if (statsJson.success) setStats(statsJson.data)
+      else setStats(null)
       if (certsJson.success) setCerts(certsJson.data)
       setLastSync(new Date())
-      setError(null)
     } catch (e: any) { setError(e.message) }
     finally { setLoading(false) }
   }, [])
