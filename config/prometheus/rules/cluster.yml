@@ -76,12 +76,12 @@ groups:
           summary: "CEPH OSD {{ $labels.ceph_daemon }} is down"
 
       - alert: CephPoolHighUsage
-        expr: (ceph_pool_stored / ceph_pool_max_avail) * 100 > 80
+        expr: ((ceph_pool_bytes_used / 2) / ((ceph_pool_bytes_used / 2) + ceph_pool_max_avail)) * 100 > 80
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "CEPH pool {{ $labels.name }} is {{ $value | printf \"%.1f\" }}% full"
+          summary: "CEPH pool {{ $labels.pool_id }} is {{ $value | printf \"%.1f\" }}% full"
 
   - name: gpu
     rules:
