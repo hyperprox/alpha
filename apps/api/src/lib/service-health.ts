@@ -19,7 +19,7 @@ async function checkUrl(url: string, path: string, timeout = 3000): Promise<bool
 }
 
 export async function checkGrafana(): Promise<ServiceHealth> {
-  const url = 'http://grafana:3003'
+  const url = 'http://192.168.2.251:3003'
   try {
     const controller = new AbortController()
     setTimeout(() => controller.abort(), 3000)
@@ -33,7 +33,7 @@ export async function checkGrafana(): Promise<ServiceHealth> {
 }
 
 export async function checkPrometheus(): Promise<ServiceHealth> {
-  const url = 'http://prometheus:9090'
+  const url = 'http://192.168.2.251:9090'
   try {
     const controller = new AbortController()
     setTimeout(() => controller.abort(), 3000)
