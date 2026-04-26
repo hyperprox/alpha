@@ -235,11 +235,16 @@ services:
       - GF_SECURITY_SECRET_KEY=${GRAFANA_SECRET_KEY}
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_USERS_ALLOW_ORG_CREATE=false
-      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_NAME=Main Org.
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_SECURITY_ALLOW_EMBEDDING=true
+      - GF_SECURITY_COOKIE_SAMESITE=disabled
       - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/dashboards/hyperprox-overview.json
       - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
     volumes:
       - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/grafana/grafana.ini:/etc/grafana/grafana.ini:ro
       - ./config/grafana/dashboards:/etc/grafana/dashboards:ro
       - ./data/grafana:/var/lib/grafana
     depends_on:
