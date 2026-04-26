@@ -335,7 +335,7 @@ async function api(method, path, body){
 function stepProxmox(){
   return \`<div class="card">
     <div class="card-title">Connect your Proxmox cluster</div>
-    <div class="card-desc">Create a Proxmox API token at Datacenter → Permissions → API Tokens, then paste the details below.</div>
+    <div class="card-desc">Create a Proxmox API token at Datacenter → Permissions → API Tokens. In the Token ID field enter only the name (e.g. hyperprox) — Proxmox adds the user prefix automatically. Paste the full Token ID (root@pam!hyperprox) and secret below.</div>
     <div class="field"><label>Proxmox host / IP</label><input id="px-host" placeholder="192.168.1.100" value="\${S.proxmox.host}"></div>
     <div class="row">
       <div class="field"><label>Port</label><input id="px-port" value="\${S.proxmox.port}" style="width:80px"></div>
