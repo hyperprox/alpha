@@ -209,6 +209,7 @@ services:
     volumes:
       - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./config/prometheus/rules:/etc/prometheus/rules:ro
+      - ./config/prometheus/targets:/etc/prometheus/targets:ro
       - ./data/prometheus:/prometheus
     networks:
       - hyperprox-net
