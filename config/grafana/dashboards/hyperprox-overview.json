@@ -1,0 +1,20 @@
+{
+  "title": "HyperProx — Cluster Overview",
+  "uid": "hyperprox-overview",
+  "tags": ["hyperprox"],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "HyperProx",
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "# HyperProx — TitanCluster\nDashboards are provisioned automatically on first run. Connect your Proxmox cluster in the setup wizard to populate metrics."
+      }
+    }
+  ]
+}

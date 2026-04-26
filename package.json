@@ -1,0 +1,12 @@
+{
+  "name": "hyperprox",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Your Proxmox infrastructure, hypercharged.",
+  "scripts": {
+    "dev":       "pnpm --parallel --filter './apps/*' dev",
+    "build":     "pnpm --filter './apps/*' build",
+    "lint":      "pnpm --filter './apps/*' lint",
+    "typecheck": "pnpm --filter './apps/*' typecheck"
+  }
+}

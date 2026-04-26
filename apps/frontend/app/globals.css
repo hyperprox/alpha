@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --cyan:       #00e5ff;
+  --violet:     #7c3aed;
+  --base-900:   #080c14;
+  --base-800:   #0d1220;
+  --base-700:   #111827;
+  --base-600:   #1f2937;
+}
+
+body {
+  background-color: var(--base-900);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar       { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: var(--base-800); }
+::-webkit-scrollbar-thumb { background: var(--base-600); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--cyan); }

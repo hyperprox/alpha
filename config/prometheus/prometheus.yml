@@ -1,0 +1,43 @@
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'titancluster'
+    environment: 'homelab'
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+alerting:
+  alertmanagers: []   # wire up Alertmanager in v1
+
+scrape_configs:
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # HyperProx API metrics
+  - job_name: 'hyperprox-api'
+    static_configs:
+      - targets: ['api:3002']
+    metrics_path: /metrics
+
+  # Proxmox nodes — populated dynamically by HyperProx API
+  # These are placeholders; the API will reload prometheus config via /-/reload
+  - job_name: 'proxmox-nodes'
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/targets/nodes.json
+        refresh_interval: 30s
+
+  # Proxmox VE exporter (pve-exporter)
+  - job_name: 'pve'
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/targets/pve.json
+        refresh_interval: 30s
+    metrics_path: /pve
+    params:
+      module: [default]

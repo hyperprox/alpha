@@ -1,0 +1,13 @@
+apiVersion: 1
+
+providers:
+  - name: HyperProx
+    orgId: 1
+    folder: HyperProx
+    folderUid: hyperprox
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/dashboards
