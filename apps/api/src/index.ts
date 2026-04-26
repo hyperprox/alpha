@@ -15,6 +15,7 @@ import { settingsRoutes }       from './routes/settings'
 import { infrastructureRoutes } from './routes/infrastructure'
 import { serviceRoutes }         from './routes/services'
 import { networkRoutes }         from './routes/network'
+import { prometheusRoutes } from './routes/prometheus'
 import { storageRoutes }         from './routes/storage'
 import { prismaPlugin }         from './plugins/prisma'
 import { redisPlugin }          from './plugins/redis'
@@ -47,6 +48,7 @@ async function main() {
   await server.register(serviceRoutes,         { prefix: '/api/services' })
   await server.register(networkRoutes,         { prefix: '/api/network' })
   await server.register(storageRoutes,         { prefix: '/api/storage' })
+  await server.register(prometheusRoutes)
   await server.register(wsRoutes,             { prefix: '/ws' })
 
   await seedFromEnv()
