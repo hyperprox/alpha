@@ -1,0 +1,128 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// --- Cluster config ----------------------------------------------------------
+
+model ProxmoxCluster {
+  id          String   @id @default(uuid())
+  name        String   @default("TitanCluster")
+  host        String
+  port        Int      @default(8006)
+  tokenId     String
+  tokenSecret String
+  verified    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  nodes       Node[]
+}
+
+model Node {
+  id         String         @id @default(uuid())
+  clusterId  String
+  cluster    ProxmoxCluster @relation(fields: [clusterId], references: [id])
+  name       String         // e.g. "titan7"
+  ip         String
+  roles      String[]       @default([])
+  online     Boolean        @default(false)
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+}
+
+// --- Proxy -------------------------------------------------------------------
+
+model ProxyProvider {
+  id        String      @id @default(uuid())
+  type      String      // npm | traefik | caddy
+  name      String
+  url       String
+  apiKey    String?
+  username  String?
+  password  String?
+  active    Boolean     @default(true)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+  hosts     ProxyHost[]
+}
+
+model ProxyHost {
+  id         String        @id @default(uuid())
+  providerId String
+  provider   ProxyProvider @relation(fields: [providerId], references: [id])
+  domain     String        @unique
+  target     String
+  port       Int
+  ssl        String        @default("none")
+  sslExpiry  DateTime?
+  enabled    Boolean       @default(true)
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+}
+
+// --- DNS ---------------------------------------------------------------------
+
+model DNSProvider {
+  id        String      @id @default(uuid())
+  type      String      // godaddy | cloudflare | namecheap
+  name      String
+  apiKey    String
+  apiSecret String?
+  active    Boolean     @default(true)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+  records   DNSRecord[]
+}
+
+model DNSRecord {
+  id         String      @id @default(uuid())
+  providerId String
+  provider   DNSProvider @relation(fields: [providerId], references: [id])
+  type       String      // A | CNAME | TXT | MX
+  name       String
+  value      String
+  ttl        Int         @default(3600)
+  domain     String
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+}
+
+// --- Setup -------------------------------------------------------------------
+
+model SetupState {
+  id          String   @id @default("singleton")
+  completed   Boolean  @default(false)
+  currentStep Int      @default(0)
+  completedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// --- Audit log ---------------------------------------------------------------
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  action    String
+  resource  String
+  details   Json?
+  createdAt DateTime @default(now())
+}
+
+// --- Credentials (encrypted) ------------------------------------------------
+
+model Credential {
+  id        String   @id @default(uuid())
+  category  String   // proxmox | proxy_npm | dns_godaddy | system
+  provider  String   // npm | godaddy | cloudflare | proxmox | hyperprox
+  key       String   // field name e.g. NPM_URL, PROXMOX_HOST
+  value     String   // AES-256-GCM encrypted
+  masked    Boolean  @default(true)  // should UI mask this field?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([category, provider, key])
+}
