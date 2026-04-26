@@ -132,6 +132,12 @@ Open `http://your-server-ip` — dashboard is live.
 - [x] Settings — encrypted credential store
 
 ### v1.0
+- [ ] **Smart Suggestion Engine** — HyperProx watches both proxy and DNS simultaneously and suggests cross-system actions without acting automatically:
+  - New NPM proxy host detected → suggest creating matching DNS record
+  - New GoDaddy DNS record detected → suggest creating matching proxy host
+  - WAN IP change detected → suggest updating all stale A records
+  - SSL cert expiring → suggest renewal before it lapses
+  - Suggestions surface as a persistent panel on the dashboard with one-click approve or dismiss — nothing happens until the user confirms
 - [ ] Setup wizard — guided first-run with auto-detection of existing services
 - [ ] Bring Your Own vs HyperProx Managed — install NPM, Grafana, Ollama from UI
 - [ ] AI deployment wizard — type "Deploy Nextcloud at cloud.mydomain.com", HyperProx handles container, proxy, DNS, SSL end to end
@@ -143,7 +149,7 @@ Open `http://your-server-ip` — dashboard is live.
 - [ ] HyperProx self-update — one-click updates from GitHub releases
 - [ ] PBS backup monitoring
 - [ ] Unified SSL cert expiry view across all proxy instances
-- [ ] Unified cert expiry + domain expiry alerts
+- [ ] Domain expiry alerts
 
 ### v2.0
 - [ ] Proxmox bare metal installer — custom ISO/PXE with HyperProx baked in
@@ -167,6 +173,7 @@ Open `http://your-server-ip` — dashboard is live.
 | Proxy management | ✅ | ❌ | ❌ |
 | DNS management | ✅ | ❌ | ❌ |
 | SSL lifecycle | ✅ | ❌ | ❌ |
+| Smart suggestion engine | ✅ v1.0 | ❌ | ❌ |
 | AI deployment wizard | ✅ v1.0 | ❌ | ❌ |
 | VPN management | ✅ v2.0 | ❌ | ❌ |
 | Bare metal installer | ✅ v2.0 | ❌ | ❌ |
