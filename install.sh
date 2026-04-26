@@ -603,7 +603,7 @@ After=network.target hyperprox-api.service
 [Service]
 Type=simple
 User=root
-WorkingDirectory=${HYPERPROX_DIR}/apps/frontend/.next/standalone
+WorkingDirectory=${HYPERPROX_DIR}/apps/frontend/.next/standalone/apps/frontend
 EnvironmentFile=${HYPERPROX_DIR}/.env
 Environment=PORT=${FRONTEND_PORT}
 Environment=HOSTNAME=0.0.0.0
