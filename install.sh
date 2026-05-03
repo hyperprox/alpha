@@ -557,7 +557,7 @@ NEXT_PUBLIC_CLUSTER_NAME="My Cluster"
 NEXT_PUBLIC_GPU_NODES=
 
 # The Proxmox node name to use for CEPH status/OSD queries
-# Set to any node that runs the CEPH MON service
+# Auto-detected during setup wizard — override here if needed
 CEPH_MON_NODE=
 
 # ── Setup wizard state ────────────────────────────────────────────────────────
