@@ -56,7 +56,7 @@ pct create <CTID> local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst \
   --memory 8192 \
   --rootfs local-lvm:100 \
   --net0 name=eth0,bridge=vmbr0,ip=dhcp \
-  --unprivileged 0 \
+  --unprivileged false \
   --features keyctl=1,nesting=1 \
   --password \
   --start 1
