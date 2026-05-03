@@ -535,7 +535,7 @@ function bind(){
     if(res.ok){
       Object.assign(S.proxmox, { host, port, tokenId:tid, tokenSecret:sec, publicUrl:pub })
       S.cluster = res.cluster
-      await api('POST','/api/setup/save-proxmox',{ host, port, tokenId:tid, tokenSecret:sec, publicUrl:pub })
+      await api('POST','/api/setup/save-proxmox',{ host, port, tokenId:tid, tokenSecret:sec, publicUrl:pub, cephMonNode: res.cluster.cephMonNode || '' })
       go(1)
     } else {
       setErr('px-err', res.error || 'Connection failed')
@@ -687,12 +687,14 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && route === 'save-proxmox') {
       const { host, port = '8006', tokenId, tokenSecret, publicUrl } = body
       const [proxmoxUser, proxmoxTokenId] = tokenId.includes('!') ? tokenId.split('!') : ['root@pam', tokenId]
+      const cephMon = body.cephMonNode || ''
       writeEnv({
         PROXMOX_HOST:         host,
         PROXMOX_PORT:         port,
         PROXMOX_USER:         proxmoxUser,
         PROXMOX_TOKEN_ID:     proxmoxTokenId,
         PROXMOX_TOKEN_SECRET: tokenSecret,
+        CEPH_MON_NODE:        cephMon,
         ...(publicUrl ? { PROXMOX_PUBLIC_URL: publicUrl } : {}),
       })
       return sendJson(res, 200, { ok: true })
