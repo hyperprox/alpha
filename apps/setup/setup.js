@@ -161,24 +161,33 @@ async function testProxmox(host, port, tokenId, tokenSecret) {
 // =============================================================================
 
 function probeHttp(host, port, path, match, timeoutMs = 2500, useHttps = false) {
-  const deadline = new Promise(resolve => setTimeout(() => resolve(false), timeoutMs + 500))
-  return Promise.race([deadline, new Promise(resolve => {
-    const lib = useHttps ? require('https') : http
-    const req = lib.request({ hostname: host, port, path, method: 'GET', timeout: timeoutMs, rejectUnauthorized: false }, res => {
-      let body = ''
-      res.on('data', d => { body += d })
-      res.on('end', () => resolve(body.toLowerCase().includes(match.toLowerCase())))
+  return new Promise(resolve => {
+    let done = false
+    const finish = (val) => { if (!done) { done = true; resolve(val) } }
+    const hard = setTimeout(() => finish(false), timeoutMs)
+
+    const net = require('net')
+    const socket = net.createConnection({ host, port, timeout: timeoutMs })
+    socket.on('error', () => { clearTimeout(hard); finish(false) })
+    socket.on('timeout', () => { socket.destroy(); clearTimeout(hard); finish(false) })
+    socket.on('connect', () => {
+      socket.destroy()
+      const lib = useHttps ? require('https') : http
+      const req = lib.request({ hostname: host, port, path, method: 'GET', rejectUnauthorized: false }, res => {
+        let body = ''
+        res.on('data', d => { body += d })
+        res.on('end', () => { clearTimeout(hard); finish(body.toLowerCase().includes(match.toLowerCase())) })
+      })
+      req.on('error', () => { clearTimeout(hard); finish(false) })
+      req.setTimeout(timeoutMs, () => { req.destroy(); clearTimeout(hard); finish(false) })
+      req.end()
     })
-    req.on('error', () => resolve(false))
-    req.on('timeout', () => { req.destroy(); resolve(false) })
-    req.end()
-  })])
+  })
 }
 
 async function scanServices(hosts) {
   const probes = [
     { key: 'npm',     name: 'Nginx Proxy Manager', port: 81,    path: '/api',         match: 'nginx proxy manager' },
-    { key: 'grafana', name: 'Grafana',              port: 3003,  path: '/api/health',  match: 'grafana' },
     { key: 'ollama',  name: 'Ollama',               port: 11434, path: '/api/tags',    match: 'models' },
     { key: 'pbs',     name: 'Proxmox Backup Server',port: 8007,  path: '/api2/json/version', match: 'version', https: true },
   ]
@@ -550,14 +559,19 @@ function bind(){
     const res = await api('POST','/api/setup/create-admin',{ username:user, password:pass })
     if(res.ok){
       Object.assign(S.admin,{ username:user })
-      // Kick off service scan in background
-      api('GET','/api/setup/scan-services').then(r => {
-        if(r.ok && r.services){
-          S.services = {}
-          r.services.forEach(s => { S.services[s.key] = { ...s, enabled: s.found } })
-        }
-      })
       go(3)
+      // Scan with hard 8s client timeout — auto-advance if hung
+      const scanDone = new Promise(resolve => {
+        api('GET','/api/setup/scan-services').then(r => {
+          if(r.ok && r.services){
+            S.services = {}
+            r.services.forEach(s => { S.services[s.key] = { ...s, enabled: s.found } })
+          }
+          resolve()
+        }).catch(() => resolve())
+      })
+      const scanTimeout = new Promise(resolve => setTimeout(resolve, 8000))
+      Promise.race([scanDone, scanTimeout]).then(() => render())
     } else {
       setErr('adm-err', res.error || 'Failed to create admin')
       btnAdm.disabled = false
@@ -697,9 +711,64 @@ const server = http.createServer(async (req, res) => {
     // ── scan-services ─────────────────────────────────────────────────────────
     if (req.method === 'GET' && route === 'scan-services') {
       const env = readEnv()
-      const hosts = ['localhost', '127.0.0.1']
-      if (env.PROXMOX_HOST) hosts.unshift(env.PROXMOX_HOST)
-      const services = await scanServices(hosts)
+      const hosts = new Set()
+      if (env.PROXMOX_HOST) hosts.add(env.PROXMOX_HOST)
+
+      try {
+        const fullTokenId = env.PROXMOX_USER + '!' + env.PROXMOX_TOKEN_ID
+        // Get all running CTs and VMs across cluster
+        const resources = await pveRequest(env.PROXMOX_HOST, env.PROXMOX_PORT || '8006',
+          fullTokenId, env.PROXMOX_TOKEN_SECRET, '/cluster/resources?type=vm')
+
+        await Promise.all(resources
+          .filter(r => r.status === 'running')
+          .map(async r => {
+            try {
+              if (r.type === 'lxc') {
+                // LXC: IP is in config net0 field
+                const cfg = await pveRequest(env.PROXMOX_HOST, env.PROXMOX_PORT || '8006',
+                  fullTokenId, env.PROXMOX_TOKEN_SECRET, `/nodes/${r.node}/lxc/${r.vmid}/config`)
+                for (const [k, v] of Object.entries(cfg)) {
+                  if (k.startsWith('net') && typeof v === 'string') {
+                    const m = v.match(/ip=([\d.]+)/)
+                    if (m) hosts.add(m[1])
+                  }
+                }
+              } else if (r.type === 'qemu') {
+                // VM: try guest agent first, fall back to config
+                try {
+                  const ifaces = await pveRequest(env.PROXMOX_HOST, env.PROXMOX_PORT || '8006',
+                    fullTokenId, env.PROXMOX_TOKEN_SECRET,
+                    `/nodes/${r.node}/qemu/${r.vmid}/agent/network-get-interfaces`)
+                  for (const iface of (ifaces.result || [])) {
+                    for (const addr of (iface['ip-addresses'] || [])) {
+                      if (addr['ip-address-type'] === 'ipv4' && !addr['ip-address'].startsWith('127.')) {
+                        hosts.add(addr['ip-address'])
+                      }
+                    }
+                  }
+                } catch {
+                  // No guest agent — try config for static IP
+                  const cfg = await pveRequest(env.PROXMOX_HOST, env.PROXMOX_PORT || '8006',
+                    fullTokenId, env.PROXMOX_TOKEN_SECRET, `/nodes/${r.node}/qemu/${r.vmid}/config`)
+                  for (const [k, v] of Object.entries(cfg)) {
+                    if (k.startsWith('net') && typeof v === 'string') {
+                      const m = v.match(/ip=([\d.]+)/)
+                      if (m) hosts.add(m[1])
+                    }
+                  }
+                }
+              }
+            } catch {}
+          })
+        )
+      } catch (e) {
+        console.error('[scan] failed to harvest IPs:', e.message)
+      }
+
+      console.log('[scan] probing hosts:', [...hosts])
+      const scanTimeout = new Promise(resolve => setTimeout(() => resolve([]), 20000))
+      const services = await Promise.race([scanServices([...hosts]), scanTimeout])
       return sendJson(res, 200, { ok: true, services })
     }
 
