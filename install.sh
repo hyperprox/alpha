@@ -352,6 +352,18 @@ PROXMOX_TOKEN_ID=
 PROXMOX_TOKEN_SECRET=
 PROXMOX_PUBLIC_URL=
 
+# ── Cluster identity ──────────────────────────────────────────────────────────
+# Display name shown in the sidebar
+NEXT_PUBLIC_CLUSTER_NAME=My Cluster
+
+# Comma-separated list of node names that have a GPU (e.g. node1,node2)
+# Used to show GPU badge and violet accent on those nodes in the dashboard
+NEXT_PUBLIC_GPU_NODES=
+
+# The Proxmox node name to use for CEPH status/OSD queries
+# Set to any node that runs the CEPH MON service
+CEPH_MON_NODE=
+
 # ── Setup wizard state ────────────────────────────────────────────────────────
 SETUP_COMPLETE=false
 EOF
