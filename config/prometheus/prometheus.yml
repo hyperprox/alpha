@@ -14,6 +14,8 @@ scrape_configs:
       - targets: ['localhost:9090']
 
   - job_name: node
+    scrape_interval: 60s
+    scrape_timeout: 30s
     file_sd_configs:
       - files:
           - /etc/prometheus/targets/nodes.json
