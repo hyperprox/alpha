@@ -176,25 +176,6 @@ docker compose -f /opt/hyperprox/docker-compose.yml restart hyperprox-api
 
 ---
 
-## The Killer Feature
-
-Type a natural language command. HyperProx handles everything:
-
-```
-Deploy Nextcloud at cloud.mydomain.com
-```
-
-1. Creates the LXC in Proxmox with appropriate resources
-2. Configures the NPM proxy host
-3. Creates the DNS A record
-4. Polls for propagation
-5. Requests the Let's Encrypt SSL cert
-6. Returns the live URL
-
-No tab switching. No SSH. No manual anything.
-
----
-
 ## System Requirements
 
 ### Minimum (no local AI)
@@ -256,7 +237,7 @@ Single `docker compose up` deploys the full stack:
 
 - **Smart Suggestion Engine** — cross-system awareness: new proxy host → suggest DNS record, WAN IP change → flag stale A records, SSL expiring → suggest renewal. Nothing acts without user confirmation.
 - **Network Storage Health** — monitor CIFS/NFS mounts across all nodes, surface offline mounts as named alerts, correlate mount failures with downstream monitoring issues. AI-assisted remediation suggestions.
-- **AI deployment wizard** — full end-to-end: container → proxy → DNS → propagation → SSL → live URL
+- **AI deployment wizard** — the killer feature. Type `Deploy Nextcloud at cloud.mydomain.com` and HyperProx handles everything end-to-end: creates the LXC, configures the NPM proxy host, creates the DNS A record, polls for propagation, requests the SSL cert, and returns the live URL. No tab switching. No SSH. No manual anything. *(AI plan + confirm flow is live today — full autonomous execution coming in v1.0)*
 - **Multi-provider DNS** — GoDaddy + Cloudflare + Namecheap simultaneously
 - **Multi-instance proxy** — NPM + Traefik + Caddy + HAProxy + Pangolin simultaneously
 - **Proxmox rolling updates** — CEPH-aware, per-node sequencing
