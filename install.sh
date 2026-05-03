@@ -292,6 +292,23 @@ install_prerequisites() {
   ok "System packages installed"
 }
 
+# ── Disable AppArmor (LXC incompatible) ──────────────────────────────────────
+disable_apparmor() {
+  [[ "${VIRT_TYPE}" != "lxc" ]] && return
+
+  if systemctl is-active --quiet apparmor 2>/dev/null || systemctl is-enabled --quiet apparmor 2>/dev/null; then
+    step "Disabling AppArmor"
+    info "AppArmor is not supported in LXC containers — disabling to allow Docker to run..."
+    systemctl stop apparmor 2>/dev/null || true
+    systemctl disable apparmor 2>/dev/null || true
+    # Unload all AppArmor profiles
+    if command -v aa-teardown &>/dev/null; then
+      aa-teardown 2>/dev/null || true
+    fi
+    ok "AppArmor disabled"
+  fi
+}
+
 # ── Docker CE ─────────────────────────────────────────────────────────────────
 install_docker() {
   step "Installing Docker CE"
@@ -332,8 +349,7 @@ https://download.docker.com/linux/${OS_ID} ${PKG_CODENAME} stable" \
     "max-size": "10m",
     "max-file": "3"
   },
-  "no-new-privileges": false,
-  "apparmor": "unconfined"
+  "no-new-privileges": false
 }
 EOF
   fi
@@ -1036,6 +1052,7 @@ main() {
   banner
   detect_environment
   configure_network
+  disable_apparmor
   install_prerequisites
   install_docker
   install_node
