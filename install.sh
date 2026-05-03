@@ -171,26 +171,16 @@ detect_environment() {
 
   # LXC-specific preflight
   if [[ "${VIRT_TYPE}" == "lxc" ]]; then
-    if [[ -f /proc/1/status ]]; then
-      CAP_BND="$(grep CapBnd /proc/1/status | awk '{print $2}')"
-      if [[ "${CAP_BND}" == "0000003fffffffff" ]] || [[ "${CAP_BND}" == "000001ffffffffff" ]]; then
-        ok "LXC container: privileged ✓"
-      else
-        warn "LXC container appears to be unprivileged (limited capabilities)."
-        warn "Docker may not work without additional Proxmox LXC config."
-        warn "In Proxmox: set 'features: nesting=1' and ensure container is privileged."
-        confirm "Continue anyway?" || die "Aborted. Re-run after fixing LXC configuration."
-      fi
-    fi
-
-    # Check overlay filesystem support — requires nesting=1 feature in Proxmox
-    if ! grep -q overlay /proc/filesystems 2>/dev/null; then
-      warn "overlay filesystem not available — Docker will fail."
-      warn "In Proxmox, run: pct set <CTID> --features keyctl=1,nesting=1"
-      warn "Then reboot the container and re-run this installer."
-      confirm "Continue anyway?" || die "Aborted. Re-run after enabling nesting."
+    # Check overlay filesystem — this is the definitive test for Docker compatibility.
+    # Overlay requires both privileged container AND nesting=1 in Proxmox.
+    if grep -q overlay /proc/filesystems 2>/dev/null; then
+      ok "LXC container: privileged + nesting ✓"
     else
-      ok "overlay filesystem: available ✓"
+      warn "overlay filesystem not available — Docker will fail."
+      warn "Fix in Proxmox (run on your Proxmox node):"
+      warn "  pct set <CTID> --features keyctl=1,nesting=1 && pct reboot <CTID>"
+      warn "Also ensure the container is set to Unprivileged: No in Options."
+      confirm "Continue anyway?" || die "Aborted. Re-run after fixing LXC configuration."
     fi
   fi
 }
