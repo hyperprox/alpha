@@ -10,6 +10,8 @@
 
 set -euo pipefail
 
+export DEBIAN_FRONTEND=noninteractive
+
 # ── Flags ────────────────────────────────────────────────────────────────────
 SKIP_BUILD=false
 DEV_MODE=false
@@ -28,6 +30,7 @@ PNPM_VERSION="9"
 SETUP_PORT="3001"
 API_PORT="3002"
 FRONTEND_PORT="3000"
+LOG_FILE="/tmp/hyperprox-install.log"
 
 # ── Colors ───────────────────────────────────────────────────────────────────
 C_RESET="\033[0m"
@@ -57,7 +60,7 @@ step()    { echo -e "\n${C_CYAN}${C_BOLD}▶  $1${C_RESET}"; }
 ok()      { echo -e "   ${C_GREEN}✓${C_RESET}  $1"; }
 warn()    { echo -e "   ${C_YELLOW}⚠${C_RESET}  $1"; }
 info()    { echo -e "   ${C_DIM}→  $1${C_RESET}"; }
-die()     { echo -e "\n   ${C_RED}✗  ERROR: $1${C_RESET}\n"; exit 1; }
+die()     { echo -e "\n   ${C_RED}✗  ERROR: $1${C_RESET}"; echo -e "   ${C_DIM}Full log: ${LOG_FILE}${C_RESET}\n"; exit 1; }
 
 confirm() {
   echo -e "   ${C_YELLOW}?${C_RESET}  $1 [Y/n] "
@@ -65,8 +68,39 @@ confirm() {
   [[ "${reply,,}" =~ ^(y|yes|)$ ]]
 }
 
+# ── Spinner ───────────────────────────────────────────────────────────────────
+# Usage: run_with_spinner "Message" command [args...]
+# Runs command in background, shows spinner until it completes.
+# On failure, dumps the last 20 lines of LOG_FILE.
+run_with_spinner() {
+  local msg="$1"; shift
+  local spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+  local i=0
+
+  "$@" >> "${LOG_FILE}" 2>&1 &
+  local pid=$!
+
+  while kill -0 "${pid}" 2>/dev/null; do
+    printf "\r   ${C_CYAN}%s${C_RESET}  %s..." "${spin:$((i % ${#spin})):1}" "${msg}"
+    i=$((i + 1))
+    sleep 0.1
+  done
+  printf "\r   \r"  # clear the spinner line
+
+  if ! wait "${pid}"; then
+    echo -e "   ${C_RED}✗${C_RESET}  ${msg} — FAILED"
+    echo -e "   ${C_DIM}Last output:${C_RESET}"
+    tail -20 "${LOG_FILE}" | sed 's/^/      /'
+    die "${msg} failed. See ${LOG_FILE} for full output."
+  fi
+}
+
 # ── Root check ────────────────────────────────────────────────────────────────
 [[ $EUID -ne 0 ]] && die "Run as root: sudo bash install.sh"
+
+# Initialise log file
+echo "HyperProx install log — $(date -u)" > "${LOG_FILE}"
+info "Logging to ${LOG_FILE}"
 
 # ── Environment Detection ─────────────────────────────────────────────────────
 detect_environment() {
@@ -154,12 +188,18 @@ detect_environment() {
 # ── System Update + Prerequisites ─────────────────────────────────────────────
 install_prerequisites() {
   step "Installing system prerequisites"
-  apt-get update -qq
-  apt-get install -y -qq \
-    curl wget git gnupg lsb-release ca-certificates \
-    apt-transport-https software-properties-common \
-    openssl jq unzip build-essential \
-    >/dev/null 2>&1
+
+  info "Updating package lists..."
+  run_with_spinner "Updating apt" apt-get update -qq
+
+  local pkgs=(curl wget git gnupg lsb-release ca-certificates
+              apt-transport-https software-properties-common
+              openssl jq unzip build-essential)
+
+  info "Installing base packages..."
+  run_with_spinner "Installing packages" \
+    apt-get install -y -qq "${pkgs[@]}"
+
   ok "System packages installed"
 }
 
@@ -173,21 +213,27 @@ install_docker() {
     return
   fi
 
+  info "Adding Docker GPG key..."
   install -m 0755 -d /etc/apt/keyrings
   curl -fsSL "https://download.docker.com/linux/${OS_ID}/gpg" \
-    | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    | gpg --dearmor -o /etc/apt/keyrings/docker.gpg 2>>"${LOG_FILE}"
   chmod a+r /etc/apt/keyrings/docker.gpg
 
+  info "Adding Docker apt repository..."
   echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
 https://download.docker.com/linux/${OS_ID} ${PKG_CODENAME} stable" \
     > /etc/apt/sources.list.d/docker.list
 
-  apt-get update -qq
-  apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
-    >/dev/null 2>&1
+  run_with_spinner "Updating apt (Docker repo)" apt-get update -qq
+
+  info "Downloading and installing Docker CE (this may take a few minutes)..."
+  run_with_spinner "Installing Docker CE" \
+    apt-get install -y -qq \
+      docker-ce docker-ce-cli containerd.io \
+      docker-buildx-plugin docker-compose-plugin
 
   if [[ "${VIRT_TYPE}" == "lxc" ]]; then
-    info "Configuring Docker daemon for LXC environment"
+    info "Configuring Docker daemon for LXC environment..."
     mkdir -p /etc/docker
     cat > /etc/docker/daemon.json <<'EOF'
 {
@@ -201,12 +247,14 @@ https://download.docker.com/linux/${OS_ID} ${PKG_CODENAME} stable" \
 EOF
   fi
 
+  info "Starting Docker daemon..."
   systemctl enable docker --quiet
   systemctl start docker
 
-  docker run --rm hello-world >/dev/null 2>&1 \
+  info "Running smoke test (hello-world)..."
+  docker run --rm hello-world >>"${LOG_FILE}" 2>&1 \
     && ok "Docker CE installed and working" \
-    || die "Docker installation succeeded but test container failed. Check LXC nesting settings."
+    || die "Docker installed but test container failed. Check LXC nesting settings."
 }
 
 # ── Node.js + pnpm ────────────────────────────────────────────────────────────
@@ -228,14 +276,22 @@ install_node() {
   if command -v pnpm &>/dev/null; then
     ok "pnpm already installed: $(pnpm --version)"
   else
-    npm install -g "pnpm@${PNPM_VERSION}" --quiet
+    info "Installing pnpm..."
+    run_with_spinner "Installing pnpm" \
+      npm install -g "pnpm@${PNPM_VERSION}"
     ok "pnpm $(pnpm --version) installed"
   fi
 }
 
 _install_node_nodesource() {
-  curl -fsSL "https://deb.nodesource.com/setup_${NODE_VERSION}.x" | bash - >/dev/null 2>&1
-  apt-get install -y -qq nodejs >/dev/null 2>&1
+  info "Adding NodeSource repository for Node.js ${NODE_VERSION}..."
+  run_with_spinner "Configuring NodeSource repo" \
+    bash -c "curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash -"
+
+  info "Installing Node.js ${NODE_VERSION}..."
+  run_with_spinner "Installing Node.js" \
+    apt-get install -y -qq nodejs
+
   ok "Node.js $(node --version) installed"
 }
 
@@ -254,7 +310,10 @@ clone_repo() {
     rm -rf "${HYPERPROX_DIR}"
   fi
 
-  git clone --quiet "${REPO_URL}" "${HYPERPROX_DIR}"
+  info "Cloning from ${REPO_URL}..."
+  run_with_spinner "Cloning repository" \
+    git clone --quiet "${REPO_URL}" "${HYPERPROX_DIR}"
+
   ok "Cloned to ${HYPERPROX_DIR}"
 }
 
@@ -264,19 +323,23 @@ build_app() {
 
   step "Installing dependencies"
   cd "${HYPERPROX_DIR}"
-  pnpm install --frozen-lockfile
+  info "Running pnpm install (first run downloads all packages — may take a few minutes)..."
+  run_with_spinner "Installing npm packages" \
+    pnpm install --frozen-lockfile
   ok "Dependencies installed"
 
   step "Building API"
   cd "${HYPERPROX_DIR}/apps/api"
-  pnpm build
+  info "Compiling TypeScript..."
+  run_with_spinner "Building API" pnpm build
   ok "API built"
 
   step "Building Frontend"
   cd "${HYPERPROX_DIR}/apps/frontend"
-  pnpm build
+  info "Building Next.js app (this is the slow step — typically 3-5 minutes)..."
+  run_with_spinner "Building Frontend" pnpm build
 
-  # Copy static assets to standalone output (Next.js standalone quirk)
+  info "Copying static assets to standalone output..."
   SRC="${HYPERPROX_DIR}/apps/frontend/.next/static"
   DEST="${HYPERPROX_DIR}/apps/frontend/.next/standalone/apps/frontend/.next/static"
   mkdir -p "$(dirname "${DEST}")"
@@ -768,19 +831,23 @@ EOF
 run_migrations() {
   step "Running database migrations"
 
-  info "Waiting for PostgreSQL..."
+  info "Waiting for PostgreSQL to be ready..."
   local retries=30
   while ! docker exec hyperprox-postgres pg_isready -U hyperprox >/dev/null 2>&1; do
     retries=$((retries - 1))
     [[ $retries -le 0 ]] && die "PostgreSQL did not become ready in time"
+    printf "\r   ${C_DIM}→  Waiting for PostgreSQL... (%d retries left)${C_RESET}" "${retries}"
     sleep 2
   done
+  printf "\r   \r"
   ok "PostgreSQL is ready"
 
   cd "${HYPERPROX_DIR}/apps/api"
   source "${HYPERPROX_DIR}/.env"
   export DATABASE_URL
-  npx prisma migrate deploy --schema ./prisma/schema.prisma >/dev/null 2>&1
+  info "Applying migrations..."
+  run_with_spinner "Running Prisma migrations" \
+    npx prisma migrate deploy --schema ./prisma/schema.prisma
   ok "Database migrations applied"
 }
 
@@ -788,17 +855,25 @@ run_migrations() {
 start_services() {
   step "Starting Docker stack"
   cd "${HYPERPROX_DIR}"
-  docker compose up -d --quiet-pull 2>/dev/null
-  ok "Docker stack started (postgres, redis, prometheus, grafana, pve-exporter, nginx)"
+  info "Pulling images and starting containers (postgres, redis, prometheus, grafana, pve-exporter, nginx)..."
+  run_with_spinner "Starting Docker stack" \
+    docker compose up -d --quiet-pull
+  ok "Docker stack started"
 
   run_migrations
 
   step "Starting HyperProx services"
   systemctl enable hyperprox-api hyperprox-frontend hyperprox-setup --quiet
+
+  info "Starting hyperprox-api..."
   systemctl restart hyperprox-api
   sleep 2
+
+  info "Starting hyperprox-frontend..."
   systemctl restart hyperprox-frontend
   sleep 1
+
+  info "Starting hyperprox-setup..."
   systemctl restart hyperprox-setup
   sleep 1
 
@@ -841,6 +916,8 @@ print_summary() {
   echo -e "  ${C_DIM}  journalctl -fu hyperprox-frontend${C_RESET}"
   echo -e "  ${C_DIM}  journalctl -fu hyperprox-setup${C_RESET}"
   echo -e "  ${C_DIM}  docker compose -f ${HYPERPROX_DIR}/docker-compose.yml ps${C_RESET}"
+  echo ""
+  echo -e "  ${C_DIM}Install log: ${LOG_FILE}${C_RESET}"
   echo ""
   echo -e "${C_CYAN}${C_BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
   echo ""
