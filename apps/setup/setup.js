@@ -160,9 +160,10 @@ async function testProxmox(host, port, tokenId, tokenSecret) {
 // Service scanner
 // =============================================================================
 
-function probeHttp(host, port, path, match, timeoutMs = 2500) {
+function probeHttp(host, port, path, match, timeoutMs = 2500, useHttps = false) {
   return new Promise(resolve => {
-    const req = http.request({ hostname: host, port, path, method: 'GET', timeout: timeoutMs }, res => {
+    const lib = useHttps ? require('https') : http
+    const req = lib.request({ hostname: host, port, path, method: 'GET', timeout: timeoutMs, rejectUnauthorized: false }, res => {
       let body = ''
       res.on('data', d => { body += d })
       res.on('end', () => resolve(body.toLowerCase().includes(match.toLowerCase())))
@@ -178,12 +179,12 @@ async function scanServices(hosts) {
     { key: 'npm',     name: 'Nginx Proxy Manager', port: 81,    path: '/api',         match: 'nginx proxy manager' },
     { key: 'grafana', name: 'Grafana',              port: 3003,  path: '/api/health',  match: 'grafana' },
     { key: 'ollama',  name: 'Ollama',               port: 11434, path: '/api/tags',    match: 'models' },
-    { key: 'pbs',     name: 'Proxmox Backup Server',port: 8007,  path: '/api2/json/version', match: 'version' },
+    { key: 'pbs',     name: 'Proxmox Backup Server',port: 8007,  path: '/api2/json/version', match: 'version', https: true },
   ]
 
   const tasks = hosts.flatMap(host =>
     probes.map(async p => {
-      const found = await probeHttp(host, p.port, p.path, p.match)
+      const found = await probeHttp(host, p.port, p.path, p.match, 2500, p.https || false)
       return { ...p, host, found, detail: found ? `${host}:${p.port}` : null }
     })
   )
