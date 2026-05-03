@@ -331,7 +331,9 @@ https://download.docker.com/linux/${OS_ID} ${PKG_CODENAME} stable" \
   "log-opts": {
     "max-size": "10m",
     "max-file": "3"
-  }
+  },
+  "no-new-privileges": false,
+  "apparmor": "unconfined"
 }
 EOF
   fi
