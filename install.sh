@@ -74,6 +74,8 @@ info()    { echo -e "   ${C_DIM}→  $1${C_RESET}"; }
 die()     { echo -e "\n   ${C_RED}✗  ERROR: $1${C_RESET}"; echo -e "   ${C_DIM}Full log: ${LOG_FILE}${C_RESET}\n"; exit 1; }
 
 confirm() {
+  # Default to yes when running non-interactively (curl | bash)
+  if [[ ! -t 0 ]]; then return 0; fi
   echo -e "   ${C_YELLOW}?${C_RESET}  $1 [Y/n] "
   read -r reply
   [[ "${reply,,}" =~ ^(y|yes|)$ ]]
@@ -121,8 +123,8 @@ detect_environment() {
 
   case "${OS_ID}" in
     debian)
-      [[ "${OS_VERSION}" == "12" ]] || die "Debian 12 (Bookworm) required. Found: Debian ${OS_VERSION}"
-      PKG_CODENAME="bookworm"
+      [[ "${OS_VERSION}" == "12" || "${OS_VERSION}" == "11" ]] || die "Debian 11 or 12 required. Found: Debian ${OS_VERSION}"
+      PKG_CODENAME="${OS_CODENAME}"
       ;;
     ubuntu)
       [[ "${OS_VERSION}" == "22.04" || "${OS_VERSION}" == "24.04" ]] || \
@@ -228,6 +230,12 @@ EOF
 
   if [[ "${is_dhcp}" == "false" ]]; then
     ok "Static IP already configured — skipping"
+    return
+  fi
+
+  # Only prompt if running interactively — skip when piped (curl | bash)
+  if [[ ! -t 0 ]]; then
+    warn "Running non-interactively — skipping static IP prompt. Set a static IP manually after install."
     return
   fi
 
