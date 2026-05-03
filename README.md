@@ -144,6 +144,30 @@ HyperProx replaces all of that with a single pane of glass — deployed in under
 
 ---
 
+## Known Issues
+
+| Issue | Status |
+|---|---|
+| **CEPH_MON_NODE not saved on fresh install** — the setup wizard auto-detects the CEPH MON node during Proxmox connection testing but the value is not written to `.env`. CEPH status and storage overview will return errors until this is set. | 🔧 Fix in progress |
+| **Installer targets Ubuntu — Debian support coming** — `install.sh` currently targets Ubuntu 24.04. Debian 12 is the intended base OS and full support is being added. | 🔧 Fix in progress |
+
+### Workarounds
+
+**CEPH_MON_NODE** — after completing the setup wizard, SSH into the HyperProx CT and set it manually:
+
+```bash
+# Find which node runs the CEPH MON service (run on any Proxmox node)
+pvesh get /nodes/<node>/ceph/mon
+
+# Set it in .env
+echo "CEPH_MON_NODE=<nodename>" >> /opt/hyperprox/.env
+docker compose -f /opt/hyperprox/docker-compose.yml restart hyperprox-api
+```
+
+**Debian** — use an Ubuntu 24.04 LXC template until the installer is updated.
+
+---
+
 ## The Killer Feature
 
 Type a natural language command. HyperProx handles everything:
