@@ -182,11 +182,32 @@ detect_environment() {
         confirm "Continue anyway?" || die "Aborted. Re-run after fixing LXC configuration."
       fi
     fi
+
+    # Check overlay filesystem support — requires nesting=1 feature in Proxmox
+    if ! grep -q overlay /proc/filesystems 2>/dev/null; then
+      warn "overlay filesystem not available — Docker will fail."
+      warn "In Proxmox, run: pct set <CTID> --features keyctl=1,nesting=1"
+      warn "Then reboot the container and re-run this installer."
+      confirm "Continue anyway?" || die "Aborted. Re-run after enabling nesting."
+    else
+      ok "overlay filesystem: available ✓"
+    fi
   fi
 }
 
 # ── Network Configuration ─────────────────────────────────────────────────────
 configure_network() {
+  # Fix broken DNS — PVE sometimes injects Tailscale DNS into LXC resolv.conf
+  # which fails if Tailscale isn't running in the CT
+  if grep -q "100\.100\.100\.100\|taila\|ts\.net" /etc/resolv.conf 2>/dev/null; then
+    warn "Detected Proxmox-injected Tailscale DNS — replacing with public resolvers"
+    cat > /etc/resolv.conf <<'EOF'
+nameserver 1.1.1.1
+nameserver 8.8.8.8
+EOF
+    ok "DNS fixed"
+  fi
+
   # Only relevant inside an LXC — bare metal / VM manage networking externally
   [[ "${VIRT_TYPE}" != "lxc" ]] && return
 
