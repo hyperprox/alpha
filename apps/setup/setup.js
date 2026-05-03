@@ -672,10 +672,12 @@ const server = http.createServer(async (req, res) => {
     // ── save-proxmox ──────────────────────────────────────────────────────────
     if (req.method === 'POST' && route === 'save-proxmox') {
       const { host, port = '8006', tokenId, tokenSecret, publicUrl } = body
+      const [proxmoxUser, proxmoxTokenId] = tokenId.includes('!') ? tokenId.split('!') : ['root@pam', tokenId]
       writeEnv({
         PROXMOX_HOST:         host,
         PROXMOX_PORT:         port,
-        PROXMOX_TOKEN_ID:     tokenId,
+        PROXMOX_USER:         proxmoxUser,
+        PROXMOX_TOKEN_ID:     proxmoxTokenId,
         PROXMOX_TOKEN_SECRET: tokenSecret,
         ...(publicUrl ? { PROXMOX_PUBLIC_URL: publicUrl } : {}),
       })
