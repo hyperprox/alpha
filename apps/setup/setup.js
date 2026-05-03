@@ -893,7 +893,6 @@ const server = http.createServer(async (req, res) => {
           })
         })
       }, 1000)
-      }, 1000)
       return
     }
 
