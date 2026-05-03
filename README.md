@@ -21,13 +21,84 @@
 
 HyperProx is an open-source infrastructure management platform built on top of Proxmox VE. It consolidates the tools that homelab operators and MSPs currently juggle — proxy management, DNS, SSL, monitoring, AI-driven deployments, and network storage health — into a single interface deployed with one command.
 
+---
+
+## Prerequisites
+
+HyperProx runs inside a **dedicated LXC container** on your Proxmox node. Before running the installer, create and configure the container correctly.
+
+### Create the LXC in Proxmox
+
+**Recommended specs:**
+- Ubuntu 24.04 template
+- 4 CPU cores · 8GB RAM · 100GB disk (SSD preferred)
+- Network: bridge on your main LAN (e.g. `vmbr0`), static IP recommended
+
+### Required LXC settings — critical
+
+The container must be **privileged** with nesting and keyctl enabled. Without this, Docker will fail with an overlay filesystem error.
+
+**Via Proxmox web UI:**
+1. Create the LXC — check **Privileged container** during creation
+2. After creation → **Options → Features** → enable **Nesting** and **keyctl**
+
+**Via command line** — create the container with all required settings in one shot (run on your Proxmox node):
+
+```bash
+# 1. Download the Ubuntu 24.04 template if not already available
+pveam update
+pveam download local ubuntu-24.04-standard_24.04-2_amd64.tar.zst
+
+# 2. Create the container (replace <CTID>, storage names, and IP as needed)
+pct create <CTID> local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst \
+  --hostname hyperprox \
+  --cores 4 \
+  --memory 8192 \
+  --rootfs local-lvm:100 \
+  --net0 name=eth0,bridge=vmbr0,ip=192.168.1.X/24,gw=192.168.1.1 \
+  --unprivileged 0 \
+  --features keyctl=1,nesting=1 \
+  --password \
+  --start 1
+```
+
+Or if the container already exists, enable the required features:
+
+```bash
+pct set <CTID> --features keyctl=1,nesting=1
+pct reboot <CTID>
+```
+
+> The installer will detect missing nesting and warn you, but Docker will still fail. Always set these features before running the installer.
+
+### Create the Proxmox API Token
+
+Run on any Proxmox node:
+
+```bash
+pveum user token add root@pam hyperprox --privsep=0
+pveum acl modify / --token 'root@pam!hyperprox' --role Administrator
+```
+
+Copy the token secret — it is only shown once.
+
+---
+
 ## Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/install.sh | bash
 ```
 
-Or with Docker Compose directly:
+The installer will:
+- Detect your environment (LXC, VM, or bare metal)
+- Fix DNS if Proxmox has injected internal resolvers
+- Prompt to set a static IP if running DHCP
+- Install Docker, Node.js, and all dependencies
+- Build and start all services
+- Open the setup wizard at `http://<your-ip>:3001`
+
+Or with Docker Compose directly (after cloning the repo):
 
 ```bash
 docker compose up -d
