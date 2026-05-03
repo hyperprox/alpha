@@ -3,7 +3,7 @@
 #  HyperProx — One-Shot Installer
 #  Supports: Debian 12, Ubuntu 22.04, Ubuntu 24.04
 #  Targets:  Proxmox LXC (privileged), bare metal, VM
-#  Usage:    curl -fsSL https://get.hyperprox.io | bash
+#  Usage:    curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/install.sh | bash
 #            — or —
 #            bash install.sh [--no-build] [--dev]
 # =============================================================================
