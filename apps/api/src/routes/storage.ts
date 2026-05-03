@@ -86,7 +86,7 @@ export const storageRoutes: FastifyPluginAsync = async (fastify) => {
         const p = s.total > 0 ? Math.round((s.used / s.total) * 100) : 0
         if (p > 85) warnings.push(`${s.storage} is ${p}% full`)
       })
-      pools.forEach((p: any) => {
+      ;(pools ?? []).forEach((p: any) => {
         const pct = Math.round(p.percent_used * 100)
         if (pct > 85) warnings.push(`CEPH pool ${p.pool_name} is ${pct}% full`)
       })

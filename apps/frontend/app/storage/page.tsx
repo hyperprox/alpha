@@ -189,8 +189,8 @@ function StorageCard({ s }: { s: StorageItem }) {
 //  CEPH pools table
 // ---------------------------------------------------------------------------
 
-function CephPoolsTable({ pools }: { pools: CephPool[] }) {
-  const visible = pools.filter(p => !p.pool_name.startsWith('.'))
+function CephPoolsTable({ pools }: { pools: CephPool[] | null }) {
+  const visible = (pools ?? []).filter(p => !p.pool_name.startsWith('.'))
 
   return (
     <div className="rounded-lg border overflow-hidden" style={{ borderColor: '#0f1929' }}>
@@ -238,8 +238,8 @@ function CephPoolsTable({ pools }: { pools: CephPool[] }) {
 //  OSD map
 // ---------------------------------------------------------------------------
 
-function OSDMap({ osds }: { osds: CephOSD[] }) {
-  const byHost = osds.reduce((acc, o) => {
+function OSDMap({ osds }: { osds: CephOSD[] | null }) {
+  const byHost = (osds ?? []).reduce((acc, o) => {
     if (!acc[o.host]) acc[o.host] = []
     acc[o.host].push(o)
     return acc
@@ -437,12 +437,12 @@ export default function StoragePage() {
               ))}
             </div>
           )}
-          <CephPoolsTable pools={overview.pools}/>
+          <CephPoolsTable pools={overview.pools ?? []}/>
         </div>
       )}
 
       {/* OSDs */}
-      {tab === 'osds' && <OSDMap osds={overview.osds}/>}
+      {tab === 'osds' && <OSDMap osds={overview.osds ?? []}/>}
 
       {/* VM Disks */}
       {tab === 'vms' && (
