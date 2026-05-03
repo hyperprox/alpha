@@ -139,9 +139,18 @@ async function testProxmox(host, port, tokenId, tokenSecret) {
   } catch {}
 
   let ceph = null
+  let cephMonNode = null
   try {
     const cs = await pveRequest(host, port, tokenId, tokenSecret, '/cluster/ceph/status')
-    if (cs && cs.health) ceph = { healthy: cs.health.status === 'HEALTH_OK', pools: (cs.pools || []).length }
+    if (cs && cs.health) {
+      ceph = { healthy: cs.health.status === 'HEALTH_OK', pools: (cs.pools || []).length }
+      for (const node of (nodes || [])) {
+        try {
+          const mons = await pveRequest(host, port, tokenId, tokenSecret, `/nodes/${node.node}/ceph/mon`)
+          if (mons && mons.length > 0) { cephMonNode = node.node; break }
+        } catch {}
+      }
+    }
   } catch {}
 
   return {
@@ -153,6 +162,7 @@ async function testProxmox(host, port, tokenId, tokenSecret) {
     runningVms,
     runningCts,
     ceph,
+    cephMonNode,
   }
 }
 
