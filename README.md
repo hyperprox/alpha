@@ -109,7 +109,19 @@ docker compose up -d
 
 ---
 
-## The Problem
+## Full functionality in the alpha
+
+The setup wizard will offer to install the following as Docker containers. These are optional but required for the full alpha experience:
+
+| Service | Why you need it |
+|---|---|
+| **Nginx Proxy Manager** | Required for proxy management — create hosts, SSL certs, and the full AI deployment wizard |
+| **Prometheus** | Required for node metrics, alerts, and the monitoring page |
+| **Grafana** | Required for dashboard graphs and the embedded monitoring view |
+
+If you already have any of these running elsewhere on your cluster, skip the install and connect to your existing instances instead.
+
+---
 
 Running Proxmox in production means managing half a dozen separate tools that don't talk to each other:
 
