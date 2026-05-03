@@ -82,6 +82,38 @@ export const proxmoxRoutes: FastifyPluginAsync = async (fastify) => {
   //  SUMMARY — single call, everything the dashboard needs
   // ==========================================================================
 
+  // ── CT/VM Creation ───────────────────────────────────────────────────────────
+  fastify.get('/isos', async (_, r) =>
+    wrap(r, () => getClient().getISOs()))
+
+  fastify.get<{ Params: { node: string } }>('/nodes/:node/aplinfo', async (req, r) =>
+    wrap(r, () => getClient().getDownloadableTemplates(req.params.node)))
+
+  fastify.post<{ Body: { node: string; storage: string; template: string } }>('/templates/download', async (req, r) =>
+    wrap(r, () => getClient().downloadTemplate(req.body.node, req.body.storage, req.body.template)))
+
+  fastify.delete<{ Params: { node: string; vmid: string; type: string } }>('/nodes/:node/:type/:vmid', async (req, r) =>
+    wrap(r, () => {
+      const vmid = Number(req.params.vmid)
+      if (req.params.type === 'lxc') return getClient().deleteLXC(req.params.node, vmid)
+      if (req.params.type === 'qemu') return getClient().deleteVM(req.params.node, vmid)
+      throw new Error(`Unknown type: ${req.params.type}`)
+    }))
+
+
+  fastify.get('/templates', async (_, r) =>
+    wrap(r, () => getClient().getTemplates()))
+
+  fastify.get('/nextid', async (_, r) =>
+    wrap(r, () => getClient().getNextVMID()))
+
+  fastify.post<{ Body: { node: string; params: any } }>('/lxc', async (req, r) =>
+    wrap(r, () => getClient().createLXC(req.body.node, req.body.params)))
+
+  fastify.post<{ Body: { node: string; params: any } }>('/vm', async (req, r) =>
+    wrap(r, () => getClient().createVM(req.body.node, req.body.params)))
+
+
   fastify.get('/summary', async (_, r) => {
     try {
       const npm = getNPM()

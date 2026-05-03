@@ -57,7 +57,7 @@ export class ProxmoxClient {
         rejectUnauthorized: false,
         headers: {
           Authorization: this.authHeader,
-          ...(body ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } : {}),
+          ...(body ? { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) } : {}),
         },
       }
       const req = https.request(opts, (res) => {
@@ -195,6 +195,142 @@ export class ProxmoxClient {
   // ---------------------------------------------------------------------------
   //  VM/CT storage breakdown — parses disk config to extract pool + size
   // ---------------------------------------------------------------------------
+
+  async getNextVMID(): Promise<number> {
+    const r = await this.fetchNode<{ data: number }>('/cluster/nextid')
+    return r.data ?? r
+  }
+
+  async getTemplates(): Promise<Array<{ node: string; storage: string; volid: string; name: string; size: number; ctime: number }>> {
+    const nodes = await this.getNodes()
+    const results: any[] = []
+    await Promise.allSettled(nodes.map(async (n: any) => {
+      const storages = await this.getStorage(n.node)
+      const templateStorages = storages.filter((s: any) => s.content?.includes('vztmpl'))
+      await Promise.allSettled(templateStorages.map(async (s: any) => {
+        try {
+          const content = await this.fetchNode<any[]>(`/nodes/${n.node}/storage/${s.storage}/content?content=vztmpl`)
+          const items = Array.isArray(content) ? content : (content as any).data ?? []
+          items.forEach((t: any) => {
+            const name = t.volid?.split('/').pop()?.replace(/\.tar\.(gz|zst|xz)$/, '') ?? t.volid
+            results.push({ node: n.node, storage: s.storage, volid: t.volid, name, size: t.size, ctime: t.ctime })
+          })
+        } catch {}
+      }))
+    }))
+    // Deduplicate by volid
+    const seen = new Set()
+    return results.filter(t => { if (seen.has(t.volid)) return false; seen.add(t.volid); return true })
+  }
+
+  async createLXC(node: string, params: {
+    vmid: number
+    hostname: string
+    ostemplate: string
+    storage: string
+    rootfs_size: number
+    memory: number
+    swap: number
+    cores: number
+    net0?: string
+    password?: string
+    ssh_public_keys?: string
+    start?: boolean
+    unprivileged?: boolean
+    features?: string
+  }) {
+    const body: Record<string, any> = {
+      vmid:         params.vmid,
+      hostname:     params.hostname,
+      ostemplate:   params.ostemplate,
+      storage:      params.storage,
+      rootfs:       `${params.storage}:${params.rootfs_size}`,
+      memory:       params.memory,
+      swap:         params.swap ?? 512,
+      cores:        params.cores,
+      net0:         params.net0 ?? 'name=eth0,bridge=vmbr0,ip=dhcp',
+      unprivileged: params.unprivileged ? 1 : 0,
+      start:        params.start ? 1 : 0,
+    }
+    if (params.password)        body.password = params.password
+    if (params.ssh_public_keys) body.ssh_public_keys = params.ssh_public_keys
+    if (params.features)        body.features = params.features
+    const lxcParams = new URLSearchParams(); Object.entries(body).forEach(([k,v]) => lxcParams.append(k, String(v))); return this.fetchNode(`/nodes/${node}/lxc`, 'POST', lxcParams.toString())
+  }
+
+  async createVM(node: string, params: {
+    vmid: number
+    name: string
+    memory: number
+    cores: number
+    sockets?: number
+    storage: string
+    disk_size: number
+    iso?: string
+    net0?: string
+    start?: boolean
+    ostype?: string
+  }) {
+    const body: Record<string, any> = {
+      vmid:    params.vmid,
+      name:    params.name,
+      memory:  params.memory,
+      cores:   params.cores,
+      sockets: params.sockets ?? 1,
+      ostype:  params.ostype ?? 'l26',
+      net0:    params.net0 ?? 'virtio,bridge=vmbr0',
+      scsihw:  'virtio-scsi-pci',
+      scsi0:   `${params.storage}:${params.disk_size}`,
+      ide2:    params.iso ? `${params.iso},media=cdrom` : 'none,media=cdrom',
+      boot:    'order=scsi0;ide2',
+      agent:   1,
+      start:   params.start ? 1 : 0,
+    }
+    const vmParams = new URLSearchParams(); Object.entries(body).forEach(([k,v]) => vmParams.append(k, String(v))); return this.fetchNode(`/nodes/${node}/qemu`, 'POST', vmParams.toString())
+  }
+
+  async getISOs(): Promise<Array<{ node: string; storage: string; volid: string; name: string; size: number }>> {
+    const nodes = await this.getNodes()
+    const results: any[] = []
+    await Promise.allSettled(nodes.map(async (n: any) => {
+      const storages = await this.getStorage(n.node)
+      const isoStorages = storages.filter((s: any) => s.content?.includes('iso') && s.active === 1)
+      await Promise.allSettled(isoStorages.map(async (s: any) => {
+        try {
+          const content = await this.fetchNode<any[]>(`/nodes/${n.node}/storage/${s.storage}/content?content=iso`)
+          const items = Array.isArray(content) ? content : (content as any).data ?? []
+          items.forEach((t: any) => {
+            const name = t.volid?.split('/').pop() ?? t.volid
+            results.push({ node: n.node, storage: s.storage, volid: t.volid, name, size: t.size })
+          })
+        } catch {}
+      }))
+    }))
+    const seen = new Set()
+    return results.filter(t => { if (seen.has(t.volid)) return false; seen.add(t.volid); return true })
+  }
+
+  async getDownloadableTemplates(node: string): Promise<any[]> {
+    try {
+      const data = await this.fetchNode<any[]>(`/nodes/${node}/aplinfo`)
+      return Array.isArray(data) ? data : (data as any).data ?? []
+    } catch { return [] }
+  }
+
+  async downloadTemplate(node: string, storage: string, template: string): Promise<any> {
+    const params = new URLSearchParams()
+    params.append('storage', storage)
+    params.append('template', template)
+    return this.fetchNode(`/nodes/${node}/apldownload`, 'POST', params.toString())
+  }
+
+  async deleteLXC(node: string, vmid: number): Promise<any> {
+    return this.fetchNode(`/nodes/${node}/lxc/${vmid}`, 'DELETE')
+  }
+
+  async deleteVM(node: string, vmid: number): Promise<any> {
+    return this.fetchNode(`/nodes/${node}/qemu/${vmid}`, 'DELETE')
+  }
 
   async getVMStorageBreakdown(): Promise<Array<{
     vmid:    number

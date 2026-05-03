@@ -20,6 +20,10 @@
 - One-shot installer + first-run setup wizard
 - Intent-driven DNS record creation wizard
 - AI deployment wizard (basic — Ollama-powered, plan + confirm flow)
+- LXC container creation — template picker, node resource limits, dynamic storage with free space
+- VM creation — ISO auto-detection across all nodes, network config, storage picker
+- CT/VM deletion with confirmation guard
+- CT template + ISO auto-detection across all nodes and storage pools
 
 ---
 
@@ -53,9 +57,9 @@ Born from real operational experience: an offline CIFS/NFS mount silently caused
 - Storage page — dedicated **Network Mounts** section alongside CEPH and local disks
   - Mount point, remote host, protocol, node, status (Online / Unreachable / Degraded)
   - Last seen online timestamp for unreachable mounts
-- Active alerts — named alerts: *"QNAP ISO-Proxmox (CIFS) unreachable on titan1"* not just *"NodeDown"*
+- Active alerts — named alerts: *"NAS-Storage (CIFS) unreachable on node1"* not just *"NodeDown"*
 - Root cause correlation — when a node's Prometheus scrape is slow or failing, check for offline mounts on that node and surface as the likely cause
-- AI assistant awareness — *"titan1's node_exporter is slow because a network mount is unreachable at 192.168.2.157. Would you like me to unmount it temporarily to restore monitoring?"*
+- AI assistant awareness — *"node1's node_exporter is slow because a network mount is unreachable. Would you like me to unmount it temporarily to restore monitoring?"*
 - Alert auto-resolution when mount comes back online
 
 ### Multi-Provider DNS
