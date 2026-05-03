@@ -161,7 +161,8 @@ async function testProxmox(host, port, tokenId, tokenSecret) {
 // =============================================================================
 
 function probeHttp(host, port, path, match, timeoutMs = 2500, useHttps = false) {
-  return new Promise(resolve => {
+  const deadline = new Promise(resolve => setTimeout(() => resolve(false), timeoutMs + 500))
+  return Promise.race([deadline, new Promise(resolve => {
     const lib = useHttps ? require('https') : http
     const req = lib.request({ hostname: host, port, path, method: 'GET', timeout: timeoutMs, rejectUnauthorized: false }, res => {
       let body = ''
@@ -171,7 +172,7 @@ function probeHttp(host, port, path, match, timeoutMs = 2500, useHttps = false) 
     req.on('error', () => resolve(false))
     req.on('timeout', () => { req.destroy(); resolve(false) })
     req.end()
-  })
+  })])
 }
 
 async function scanServices(hosts) {
