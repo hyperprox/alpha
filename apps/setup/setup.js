@@ -352,7 +352,8 @@ function stepProxmox(){
       <div class="steps-method">
         <div class="steps-method-label">Option A — Command line (run on any Proxmox node):</div>
         <div class="code-block">pveum user token add root@pam hyperprox --privsep=0</div>
-        <div class="steps-note">Copy the token secret from the output — it is only shown once.</div>
+        <div class="code-block">pveum acl modify / --token 'root@pam!hyperprox' --role Administrator</div>
+        <div class="steps-note">Copy the token secret from the first command output — it is only shown once.</div>
       </div>
       <div class="steps-method">
         <div class="steps-method-label">Option B — Web UI:</div>
@@ -363,6 +364,8 @@ function stepProxmox(){
           <li>Set Token ID to <code>hyperprox</code></li>
           <li>Uncheck <strong>Privilege Separation</strong></li>
           <li>Click <strong>Add</strong> and copy the secret</li>
+          <li>Go to <strong>Datacenter → Permissions → Add → API Token Permission</strong></li>
+          <li>Set Path to <code>/</code>, Token to <code>root@pam!hyperprox</code>, Role to <code>Administrator</code></li>
         </ol>
       </div>
     </div>
