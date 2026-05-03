@@ -110,7 +110,7 @@ const EMPTY_FORM = {
   advanced_config:         '',
   // SSL options
   requestSSL:              false,
-  letsencrypt_email:       'info@griffinit.ca',
+  letsencrypt_email:       '',
 }
 
 type FormState = typeof EMPTY_FORM
@@ -141,7 +141,7 @@ function HostModal({
       trust_forwarded_proto:   host.trust_forwarded_proto,
       advanced_config:         host.advanced_config ?? '',
       requestSSL:              false,
-      letsencrypt_email:       host.meta?.letsencrypt_email ?? 'info@griffinit.ca',
+      letsencrypt_email:       host.meta?.letsencrypt_email ?? '',
     }
   })
 
@@ -299,7 +299,7 @@ function HostModal({
                 </div>
                 <div className="col-span-2">
                   <label style={LABEL}>Forward Host / IP</label>
-                  <input style={INPUT} value={form.forward_host} placeholder="192.168.2.xxx"
+                  <input style={INPUT} value={form.forward_host} placeholder="10.0.0.x or hostname"
                     onChange={e => set('forward_host', e.target.value)} />
                 </div>
                 <div>

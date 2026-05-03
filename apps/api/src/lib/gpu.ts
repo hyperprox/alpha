@@ -6,7 +6,7 @@ import { exec } from 'child_process'
 import { promisify } from 'util'
 
 const execAsync = promisify(exec)
-const SSH = 'ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 root@192.168.2.208'
+const SSH = `ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 root@${process.env.PROXMOX_HOST ?? 'localhost'}`
 const CACHE_TTL = 5_000
 
 export interface GPUConsumer {

@@ -47,6 +47,10 @@ export const CREDENTIAL_DEFS: CredentialDef[] = [
   { category: 'dns', provider: 'namecheap', key: 'api_key',  label: 'API Key',  masked: true,  envKey: 'NAMECHEAP_API_KEY' },
   { category: 'dns', provider: 'namecheap', key: 'username', label: 'Username', masked: false, envKey: 'NAMECHEAP_USERNAME' },
 
+  // Ollama / AI
+  { category: 'ai', provider: 'ollama', key: 'url',   label: 'Ollama URL',     masked: false, envKey: 'OLLAMA_URL' },
+  { category: 'ai', provider: 'ollama', key: 'model', label: 'Active Model',    masked: false, envKey: 'OLLAMA_MODEL' },
+
   // HyperProx system
   { category: 'system', provider: 'hyperprox', key: 'app_url',   label: 'App URL',   masked: false, envKey: 'NEXT_PUBLIC_API_URL' },
   { category: 'system', provider: 'hyperprox', key: 'jwt_secret', label: 'JWT Secret', masked: true, envKey: 'JWT_SECRET' },

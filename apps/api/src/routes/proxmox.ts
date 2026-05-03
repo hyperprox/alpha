@@ -62,13 +62,13 @@ export const proxmoxRoutes: FastifyPluginAsync = async (fastify) => {
   })
 
   fastify.get('/ceph/status', async (_, r) =>
-    wrap(r, () => getClient().getCephStatus(process.env.CEPH_MON_NODE ?? 'titan7')))
+    wrap(r, () => getClient().getCephStatus(process.env.CEPH_MON_NODE ?? '')))
 
   fastify.get('/ceph/osds', async (_, r) =>
-    wrap(r, () => getClient().getCephOSDs(process.env.CEPH_MON_NODE ?? 'titan7')))
+    wrap(r, () => getClient().getCephOSDs(process.env.CEPH_MON_NODE ?? '')))
 
   fastify.get('/ceph/pools', async (_, r) =>
-    wrap(r, () => getClient().getCephPools(process.env.CEPH_MON_NODE ?? 'titan7')))
+    wrap(r, () => getClient().getCephPools(process.env.CEPH_MON_NODE ?? '')))
 
   // POST /api/proxmox/vms/:node/:vmid/:type/:action
   fastify.post<{
@@ -94,8 +94,8 @@ export const proxmoxRoutes: FastifyPluginAsync = async (fastify) => {
       const vmList = vmsR.status === 'fulfilled' ? vmsR.value : undefined
 
       const [cephR, osdR, haR, storageR, gpuR, npmR] = await Promise.allSettled([
-        getClient().getCephStatus(process.env.CEPH_MON_NODE ?? 'titan7'),
-        getClient().getCephOSDs(process.env.CEPH_MON_NODE ?? 'titan7'),
+        getClient().getCephStatus(process.env.CEPH_MON_NODE ?? ''),
+        getClient().getCephOSDs(process.env.CEPH_MON_NODE ?? ''),
         getClient().getHAStatus(),
         getClient().getAllStorage(),
         getGPUInfo(vmList),

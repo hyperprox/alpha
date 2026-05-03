@@ -149,7 +149,7 @@ export function Sidebar() {
         ) : (
           <div className="flex items-center gap-2 w-full">
             <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: '#22c55e', boxShadow: '0 0 4px #22c55e' }} />
-            <span className="text-xs font-mono" style={{ color: '#1f2937' }}>TitanCluster</span>
+            <span className="text-xs font-mono" style={{ color: '#1f2937' }}>{process.env.NEXT_PUBLIC_CLUSTER_NAME ?? 'My Cluster'}</span>
             <span className="text-xs font-mono ml-auto" style={{ color: '#111827' }}>v0.1.0</span>
           </div>
         )}

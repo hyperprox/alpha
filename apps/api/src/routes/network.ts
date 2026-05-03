@@ -9,7 +9,7 @@ export const networkRoutes: FastifyPluginAsync = async (fastify) => {
       const port    = Number(process.env.PROXMOX_PORT ?? 8006)
       const tokenId = `${process.env.PROXMOX_USER}!${process.env.PROXMOX_TOKEN_ID}`
       const secret  = process.env.PROXMOX_TOKEN_SECRET!
-      const cephMon = process.env.CEPH_MON_NODE ?? 'titan7'
+      const cephMon = process.env.CEPH_MON_NODE ?? ''
 
       const pve      = new ProxmoxClient(host, port, tokenId, secret)
       const nodes    = await pve.getNodes()

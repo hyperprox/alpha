@@ -1,5 +1,8 @@
 'use client'
 
+const gpuNodes = (process.env.NEXT_PUBLIC_GPU_NODES ?? '').split(',').filter(Boolean)
+
+
 import { useEffect, useState, useCallback, useRef } from 'react'
 import Link from 'next/link'
 import { formatBytes, formatUptime, pct } from '@/lib/utils'
@@ -124,7 +127,6 @@ function GPUPanel({ gpu }: { gpu: GPUInfoFull | null }) {
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full" style={{ background:accent, boxShadow:`0 0 6px ${accent}` }}/>
           <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{ color:accent }}>GPU</span>
-          <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:`${accent}15`, color:accent, border:`1px solid ${accent}30`, fontSize:9 }}>titan7</span>
         </div>
         <span className="text-xs font-mono text-gray-500 truncate ml-2" style={{ maxWidth:140 }}>{gpu.name.replace('NVIDIA ','')}</span>
       </div>
@@ -238,7 +240,7 @@ function NetworkPanel({ network }: { network: NetworkData | null }) {
   )
 
   const sortedNodes = [...network.nodes].sort((a, b) =>
-    a.node === 'titan7' ? -1 : b.node === 'titan7' ? 1 : a.node.localeCompare(b.node)
+    gpuNodes.includes(a.node) ? -1 : gpuNodes.includes(b.node) ? 1 : a.node.localeCompare(b.node)
   )
 
   return (
@@ -258,7 +260,7 @@ function NetworkPanel({ network }: { network: NetworkData | null }) {
       {/* Per-node rows */}
       <div className="space-y-2 mb-4">
         {sortedNodes.map(n => {
-          const isGpu = n.node === 'titan7'
+          const isGpu = gpuNodes.includes(n.node)
           const accent = isGpu ? '#a78bfa' : '#00e5ff'
           return (
             <div key={n.node}>
@@ -307,7 +309,7 @@ function NetworkPanel({ network }: { network: NetworkData | null }) {
 function NodeCard({ node, vms }: { node:PVENode; vms:PVEVM[] }) {
   const cpuPct=Math.round(node.cpu*100), memPct=pct(node.mem,node.maxmem), diskPct=pct(node.disk,node.maxdisk)
   const nodeVMs=vms.filter(v=>v.node===node.node), running=nodeVMs.filter(v=>v.status==='running').length
-  const isGpu=node.node==='titan7', accent=isGpu?'#a78bfa':'#00e5ff'
+  const isGpu=gpuNodes.includes(node.node), accent=isGpu?'#a78bfa':'#00e5ff'
   return (
     <div className="rounded-lg border p-4 flex flex-col gap-4" style={{background:'linear-gradient(135deg,#0d1220,#080c14)',borderColor:`${accent}30`}}>
       <div className="flex items-center justify-between">
@@ -530,7 +532,7 @@ export default function DashboardView() {
     </div>
   )
 
-  const sorted = [...fast.nodes].sort((a,b)=>a.node==='titan7'?-1:b.node==='titan7'?1:a.node.localeCompare(b.node))
+  const sorted = [...fast.nodes].sort((a,b)=>gpuNodes.includes(a.node)?-1:gpuNodes.includes(b.node)?1:a.node.localeCompare(b.node))
 
   return (
     <div className="min-h-full" style={{background:'#080c14'}}>

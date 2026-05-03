@@ -1,5 +1,8 @@
 'use client'
 
+const gpuNodes = (process.env.NEXT_PUBLIC_GPU_NODES ?? '').split(',').filter(Boolean)
+
+
 import { useEffect, useState, useCallback } from 'react'
 import { formatBytes, formatUptime } from '@/lib/utils'
 
@@ -34,7 +37,7 @@ function VMPanel({ vm, nodes, onClose, onRefresh }: {
   const [error,      setError]     = useState<string|null>(null)
   const [config,     setConfig]    = useState<any>(null)
 
-  const proxmoxUrl = process.env.NEXT_PUBLIC_PROXMOX_URL ?? 'https://192.168.2.208:8006'
+  const proxmoxUrl = process.env.NEXT_PUBLIC_PROXMOX_URL ?? ''
 
   useEffect(() => {
     if (tab === 'snapshots') {
@@ -388,10 +391,10 @@ export default function InfrastructurePage() {
 
       {/* Node summary row */}
       <div className="grid gap-3 mb-6" style={{gridTemplateColumns:'repeat(auto-fill,minmax(160px,1fr))'}}>
-        {nodes.sort((a,b)=>a.node==='titan7'?-1:b.node==='titan7'?1:a.node.localeCompare(b.node)).map(node=>{
+        {nodes.sort((a,b)=>gpuNodes.includes(a.node)?-1:gpuNodes.includes(b.node)?1:a.node.localeCompare(b.node)).map(node=>{
           const nodeVMs  = vms.filter(v=>v.node===node.node)
           const nodeRunning = nodeVMs.filter(v=>v.status==='running').length
-          const isGpu    = node.node==='titan7'
+          const isGpu    = gpuNodes.includes(node.node)
           const accent   = isGpu?'#a78bfa':'#00e5ff'
           const isActive = nodeFilter===node.node
           return (
@@ -439,7 +442,7 @@ export default function InfrastructurePage() {
             {filtered.map(vm=>{
               const isActing  = acting?.vmid === vm.vmid
               const isRunning = vm.status === 'running'
-              const isGpu     = vm.node === 'titan7'
+              const isGpu     = gpuNodes.includes(vm.node)
               const typeColor = vm.type === 'lxc' ? '#00e5ff' : '#a78bfa'
               const statusColor = STATUS_COLOR[vm.status] ?? '#374151'
               const cpuPct    = isRunning ? Math.round(vm.cpu * 100) : 0
@@ -478,7 +481,7 @@ export default function InfrastructurePage() {
                   <div className="flex items-center gap-3 text-xs font-mono text-gray-500">
                     <span>#{vm.vmid}</span>
                     <span style={{color:'#374151'}}>·</span>
-                    <span style={{color: vm.node==='titan7'?'#a78bfa':'#4b5563'}}>{vm.node}</span>
+                    <span style={{color: gpuNodes.includes(vm.node)?'#a78bfa':'#4b5563'}}>{vm.node}</span>
                     {vm.uptime > 0 && <>
                       <span style={{color:'#374151'}}>·</span>
                       <span className="text-gray-600">{formatUptime(vm.uptime)}</span>

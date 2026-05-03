@@ -1,4 +1,7 @@
 // =============================================================================
+
+const gpuNodes = (process.env.NEXT_PUBLIC_GPU_NODES ?? '').split(',').filter(Boolean)
+
 //  FILE: apps/frontend/app/page.tsx
 //  HyperProx Dashboard — Nodes + CEPH + HA + VM table
 // =============================================================================
@@ -59,7 +62,7 @@ function NodeCard({ node, vms }: { node: PVENode; vms: PVEVM[] }) {
   const diskPct = pct(node.disk, node.maxdisk)
   const nodeVMs = vms.filter(v => v.node === node.node)
   const running = nodeVMs.filter(v => v.status === 'running').length
-  const isGpu = node.node === 'titan7'
+  const isGpu = gpuNodes.includes(node.node)
   const accent = isGpu ? '#7c3aed' : '#00e5ff'
 
   return (
@@ -379,7 +382,7 @@ export default function DashboardView() {
     </div>
   )
 
-  const sorted = [...data.nodes].sort((a, b) => a.node === 'titan7' ? -1 : b.node === 'titan7' ? 1 : a.node.localeCompare(b.node))
+  const sorted = [...data.nodes].sort((a, b) => gpuNodes.includes(a.node) ? -1 : gpuNodes.includes(b.node) ? 1 : a.node.localeCompare(b.node))
 
   return (
     <div className="min-h-screen" style={{ background: '#080c14' }}>

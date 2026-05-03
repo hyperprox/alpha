@@ -6,7 +6,7 @@
 import { FastifyInstance } from 'fastify'
 import axios from 'axios'
 
-const PROMETHEUS = 'http://192.168.2.251:9090'
+const PROMETHEUS = process.env.PROMETHEUS_URL ?? `http://${process.env.HOST_IP ?? 'localhost'}:9090`
 
 export async function prometheusRoutes(fastify: FastifyInstance) {
 

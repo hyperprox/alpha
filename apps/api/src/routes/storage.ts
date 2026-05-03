@@ -20,7 +20,7 @@ export const storageRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.get('/overview', async (_, r) => {
     try {
-      const cephMon = process.env.CEPH_MON_NODE ?? 'titan7'
+      const cephMon = process.env.CEPH_MON_NODE ?? ''
 
       const [nodesR, cephStatusR, osdR, poolsR] = await Promise.allSettled([
         pve.getNodes(),
@@ -34,10 +34,10 @@ export const storageRoutes: FastifyPluginAsync = async (fastify) => {
       const osds  = osdR.status === 'fulfilled' ? osdR.value : []
       const pools = poolsR.status === 'fulfilled' ? poolsR.value : []
 
-      // Fetch storage from titan7 only as the representative node
+      // Fetch storage from CEPH_MON_NODE as the representative node
       // (shared storage is same across all nodes, local storage we show per-node separately)
-      const titan7Storage = await pve.fetchNode<any[]>('/nodes/titan7/storage')
-        .then(s => s.map((x: any) => ({ ...x, node: 'titan7' })))
+      const cephNodeStorage = await pve.fetchNode<any[]>(`/nodes/${process.env.CEPH_MON_NODE}/storage`)
+        .then(s => s.map((x: any) => ({ ...x, node: process.env.CEPH_MON_NODE })))
         .catch(() => [])
 
       // For non-shared storage, fetch from each node separately
@@ -51,8 +51,8 @@ export const storageRoutes: FastifyPluginAsync = async (fastify) => {
         })
       )
 
-      // Shared storage — from titan7, deduplicated by name
-      const sharedStorage = titan7Storage.filter((s: any) => s.shared === 1)
+      // Shared storage — from CEPH_MON_NODE, deduplicated by name
+      const sharedStorage = cephNodeStorage.filter((s: any) => s.shared === 1)
 
       // Non-shared — one entry per storage per node, grouped
       // For display: aggregate local-lvm across nodes as "local-lvm (5 nodes)"
@@ -101,13 +101,13 @@ export const storageRoutes: FastifyPluginAsync = async (fastify) => {
     wrap(r, () => pve.getStorage(req.params.node)))
 
   fastify.get('/ceph/status', async (_, r) =>
-    wrap(r, () => pve.getCephStatus(process.env.CEPH_MON_NODE ?? 'titan7')))
+    wrap(r, () => pve.getCephStatus(process.env.CEPH_MON_NODE ?? '')))
 
   fastify.get('/ceph/osds', async (_, r) =>
-    wrap(r, () => pve.getCephOSDs(process.env.CEPH_MON_NODE ?? 'titan7')))
+    wrap(r, () => pve.getCephOSDs(process.env.CEPH_MON_NODE ?? '')))
 
   fastify.get('/ceph/pools', async (_, r) =>
-    wrap(r, () => pve.fetchNode<any[]>(`/nodes/${process.env.CEPH_MON_NODE ?? 'titan7'}/ceph/pool`)))
+    wrap(r, () => pve.fetchNode<any[]>(`/nodes/${process.env.CEPH_MON_NODE ?? ''}/ceph/pool`)))
 
   // GET /api/storage/vms-breakdown — disk allocation per VM/CT
   fastify.get('/vms-breakdown', async (_, r) =>

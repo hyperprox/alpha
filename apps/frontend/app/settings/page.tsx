@@ -212,7 +212,7 @@ export default function SettingsPage() {
     try {
       const res  = await fetch(`/api/settings/test/${category}/${provider}`, { method: 'POST' })
       const json = await res.json()
-      return { success: json.success, message: json.data?.message, error: json.error }
+      return { success: json.success, message: json.data?.message, error: json.error ?? json.data?.error ?? 'Test failed' }
     } catch (e: any) {
       return { success: false, error: e.message }
     }
