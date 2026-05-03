@@ -367,6 +367,7 @@ configure_env() {
 
   AES_KEY="$(openssl rand -hex 32)"
   JWT_SECRET="$(openssl rand -hex 32)"
+  SETUP_SECRET="$(openssl rand -hex 32)"
   DB_PASSWORD="$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 24)"
   GRAFANA_ADMIN_PASSWORD="$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)"
   GRAFANA_SECRET_KEY="$(openssl rand -hex 32)"
@@ -394,10 +395,12 @@ POSTGRES_DB=hyperprox
 
 # ── Redis ─────────────────────────────────────────────────────────────────────
 REDIS_URL=redis://localhost:6379
+REDIS_PASSWORD=
 
 # ── Security ──────────────────────────────────────────────────────────────────
 ENCRYPTION_KEY=${AES_KEY}
 JWT_SECRET=${JWT_SECRET}
+SETUP_SECRET=${SETUP_SECRET}
 
 # ── Grafana ───────────────────────────────────────────────────────────────────
 GRAFANA_ADMIN_USER=admin
@@ -415,9 +418,13 @@ PROXMOX_TOKEN_ID=
 PROXMOX_TOKEN_SECRET=
 PROXMOX_PUBLIC_URL=
 
+# ── Frontend public URLs ──────────────────────────────────────────────────────
+NEXT_PUBLIC_API_URL=http://${HOST_IP}:${API_PORT}
+NEXT_PUBLIC_WS_URL=ws://${HOST_IP}:${API_PORT}
+
 # ── Cluster identity ──────────────────────────────────────────────────────────
 # Display name shown in the sidebar
-NEXT_PUBLIC_CLUSTER_NAME=My Cluster
+NEXT_PUBLIC_CLUSTER_NAME="My Cluster"
 
 # Comma-separated list of node names that have a GPU (e.g. node1,node2)
 # Used to show GPU badge and violet accent on those nodes in the dashboard
@@ -845,6 +852,9 @@ run_migrations() {
   cd "${HYPERPROX_DIR}/apps/api"
   source "${HYPERPROX_DIR}/.env"
   export DATABASE_URL
+  info "Generating Prisma client..."
+  run_with_spinner "Generating Prisma client" \
+    npx prisma generate --schema ./prisma/schema.prisma
   info "Applying migrations..."
   run_with_spinner "Running Prisma migrations" \
     npx prisma migrate deploy --schema ./prisma/schema.prisma
