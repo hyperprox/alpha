@@ -26,8 +26,6 @@ services:
     depends_on:
       - frontend
       - api
-    networks:
-      - hyperprox-net
     healthcheck:
       test: ["CMD", "nginx", "-t"]
       interval: 30s
@@ -57,8 +55,6 @@ services:
     depends_on:
       api:
         condition: service_healthy
-    networks:
-      - hyperprox-net
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
       interval: 30s
@@ -127,8 +123,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    networks:
-      - hyperprox-net
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3002/health"]
       interval: 15s
@@ -153,8 +147,6 @@ services:
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
       - ./config/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    networks:
-      - hyperprox-net
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hyperprox} -d ${POSTGRES_DB:-hyperprox}"]
       interval: 10s
@@ -180,8 +172,6 @@ services:
       --maxmemory-policy allkeys-lru
     volumes:
       - ./data/redis:/data
-    networks:
-      - hyperprox-net
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 10s
@@ -195,8 +185,7 @@ services:
     image: prom/prometheus:latest
     container_name: hyperprox-prometheus
     restart: unless-stopped
-    ports:
-      - "9090:9090"
+    network_mode: host
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
@@ -211,8 +200,6 @@ services:
       - ./config/prometheus/rules:/etc/prometheus/rules:ro
       - ./config/prometheus/targets:/etc/prometheus/targets:ro
       - ./data/prometheus:/prometheus
-    networks:
-      - hyperprox-net
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
       interval: 30s
@@ -249,8 +236,6 @@ services:
       - ./data/grafana:/var/lib/grafana
     depends_on:
       - prometheus
-    networks:
-      - hyperprox-net
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3003/api/health"]
       interval: 30s
