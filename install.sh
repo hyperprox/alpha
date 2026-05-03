@@ -36,12 +36,12 @@ LOG_FILE="/var/log/hyperprox-install.log"
 [[ $EUID -ne 0 ]] && die "Run as root: sudo bash install.sh"
 
 # Initialise log file — try /var/log, fall back to home dir
+mkdir -p /var/log 2>/dev/null || true
 if ! touch "${LOG_FILE}" 2>/dev/null; then
   LOG_FILE="${HOME}/hyperprox-install.log"
-  touch "${LOG_FILE}" || LOG_FILE="/dev/null"
+  touch "${LOG_FILE}" 2>/dev/null || LOG_FILE="/dev/null"
 fi
 echo "HyperProx install log — $(date -u)" > "${LOG_FILE}"
-info "Logging to ${LOG_FILE}"
 
 # ── Colors ───────────────────────────────────────────────────────────────────
 C_RESET="\033[0m"
