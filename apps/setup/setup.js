@@ -331,6 +331,7 @@ const S = {
   cluster:  null,
   admin:    { username:'', password:'', confirm:'' },
   services: {},
+  installs: { npm: false, grafana: true, prometheus: true },
   providers:{ godaddy:{ enabled:false, key:'', secret:'' }, npm:{ enabled:false, host:'', port:'81' } }
 }
 
@@ -450,26 +451,44 @@ function stepAdmin(){
 // ── Step 3: Services ──────────────────────────────────────────────────────────
 function stepServices(){
   const svcs = S.services
-  const cards = Object.values(svcs).map(s =>
-    \`<div class="svc-card \${s.enabled?'on':''}" onclick="toggleSvc('\${s.key}')">
-      <div>
-        <div class="svc-name">\${s.name}</div>
-        <div class="svc-detail">\${s.found ? s.detail : 'Not detected on this cluster'}</div>
-      </div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <span class="badge \${s.found?'badge-ok':'badge-off'}">\${s.found?'found':'not found'}</span>
-        <div class="toggle \${s.enabled?'on':''}"></div>
-      </div>
-    </div>\`
-  ).join('') || '<div style="color:var(--muted);font-size:14px">Scanning... please wait</div>'
+  const inst = S.installs
+  const cards = Object.values(svcs).length
+    ? Object.values(svcs).map(s =>
+        \`<div class="svc-card \${s.enabled?'on':''}" onclick="toggleSvc('\${s.key}')">
+          <div>
+            <div class="svc-name">\${s.name}</div>
+            <div class="svc-detail">\${s.found ? s.detail : 'Not detected on this cluster'}</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="badge \${s.found?'badge-ok':'badge-off'}">\${s.found?'found':'not found'}</span>
+            <div class="toggle \${s.enabled?'on':''}"></div>
+          </div>
+        </div>\`
+      ).join('')
+    : '<div style="color:var(--muted);font-size:14px">No existing services detected.</div>'
+
+  const installCards = [
+    { key:'npm',        name:'Nginx Proxy Manager', desc:'Reverse proxy + SSL — ports 80, 81, 443' },
+    { key:'prometheus', name:'Prometheus',           desc:'Metrics collection — port 9090' },
+    { key:'grafana',    name:'Grafana',              desc:'Monitoring dashboards — port 3003' },
+  ].map(s => \`<div class="svc-card \${inst[s.key]?'on':''}" onclick="toggleInstall('\${s.key}')">
+    <div>
+      <div class="svc-name">\${s.name}</div>
+      <div class="svc-detail">\${s.desc}</div>
+    </div>
+    <div class="toggle \${inst[s.key]?'on':''}"></div>
+  </div>\`).join('')
 
   return \`<div class="card">
     <div class="card-title">Existing services</div>
     <div class="card-desc">HyperProx scanned your cluster. Enable what you want to manage, skip the rest — you can connect more later.</div>
     \${cards}
+    <div class="card-title" style="margin-top:1.25rem">Install with HyperProx</div>
+    <div class="card-desc">Select services to spin up as Docker containers alongside HyperProx.</div>
+    \${installCards}
     <div class="btn-row">
       <button class="btn btn-ghost" onclick="go(2)">← Back</button>
-      <button class="btn btn-primary" onclick="go(4)">Continue →</button>
+      <button class="btn btn-primary" id="btn-installs">Continue →</button>
     </div>
   </div>\`
 }
@@ -589,6 +608,24 @@ function bind(){
     }
   }
 
+  // Step 3 — save installs
+  const btnInst = document.getElementById('btn-installs')
+  if(btnInst) btnInst.onclick = async () => {
+    btnInst.disabled = true
+    btnInst.innerHTML = '<span class="spinner"></span>Saving...'
+    await api('POST','/api/setup/save-installs', { installs: S.installs })
+    go(4)
+  }
+
+  // Step 3 — save installs
+  const btnInst = document.getElementById('btn-installs')
+  if(btnInst) btnInst.onclick = async () => {
+    btnInst.disabled = true
+    btnInst.innerHTML = '<span class="spinner"></span>Saving...'
+    await api('POST','/api/setup/save-installs', { installs: S.installs })
+    go(4)
+  }
+
   // Step 4 — save providers
   const btnProv = document.getElementById('btn-prov')
   if(btnProv) btnProv.onclick = async () => {
@@ -613,6 +650,14 @@ function bind(){
 
 function toggleSvc(key){
   if(S.services[key]) S.services[key].enabled = !S.services[key].enabled
+  render()
+}
+function toggleInstall(key){
+  S.installs[key] = !S.installs[key]
+  render()
+}
+function toggleInstall(key){
+  S.installs[key] = !S.installs[key]
   render()
 }
 function toggleProv(key){
@@ -782,6 +827,17 @@ const server = http.createServer(async (req, res) => {
       const scanTimeout = new Promise(resolve => setTimeout(() => resolve([]), 20000))
       const services = await Promise.race([scanServices([...hosts]), scanTimeout])
       return sendJson(res, 200, { ok: true, services })
+    }
+
+    // ── save-installs ─────────────────────────────────────────────────────────
+    if (req.method === 'POST' && route === 'save-installs') {
+      const { installs = {} } = body
+      writeEnv({
+        INSTALL_NPM:        installs.npm        ? 'true' : 'false',
+        INSTALL_GRAFANA:    installs.grafana    ? 'true' : 'false',
+        INSTALL_PROMETHEUS: installs.prometheus ? 'true' : 'false',
+      })
+      return sendJson(res, 200, { ok: true })
     }
 
     // ── save-providers ────────────────────────────────────────────────────────
