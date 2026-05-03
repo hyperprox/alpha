@@ -55,7 +55,7 @@ pct create <CTID> local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst \
   --cores 4 \
   --memory 8192 \
   --rootfs local-lvm:100 \
-  --net0 name=eth0,bridge=vmbr0,ip=192.168.1.X/24,gw=192.168.1.1 \
+  --net0 name=eth0,bridge=vmbr0,ip=dhcp \
   --unprivileged 0 \
   --features keyctl=1,nesting=1 \
   --password \
@@ -87,6 +87,9 @@ Copy the token secret — it is only shown once.
 ## Install
 
 ```bash
+# Install curl if not already present (fresh Ubuntu templates may not include it)
+apt update && apt install -y curl
+
 curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/install.sh | bash
 ```
 
