@@ -19,175 +19,193 @@
 
 ---
 
-HyperProx is an open-source infrastructure management platform built on top of Proxmox VE. It consolidates the tools that homelab operators and MSPs currently juggle — proxy management, DNS, SSL, monitoring, VPN, and AI-driven deployments — into a single interface deployed with one command.
+HyperProx is an open-source infrastructure management platform built on top of Proxmox VE. It consolidates the tools that homelab operators and MSPs currently juggle — proxy management, DNS, SSL, monitoring, AI-driven deployments, and network storage health — into a single interface deployed with one command.
 
-The vision is simple: **HyperProx is the Proxmox experience, from first boot to running production services.**
-
----
-
-## Current Features (v0.1 Alpha)
-
-### Infrastructure Management
-- Real-time dashboard for all nodes, VMs, and LXCs
-- GPU monitoring with per-consumer VRAM breakdown (Plex, Ollama, etc.)
-- Network utilization per node with CEPH I/O
-- CEPH pool health, OSD status, rebalance tracking
-- HA cluster status and state management
-- Full VM/CT lifecycle — start, stop, reboot, migrate, snapshot
-- Browser-based noVNC console
-
-### Proxy Management
-- **Nginx Proxy Manager** — bring your own or HyperProx installs it
-- Full host CRUD, SSL cert lifecycle, Let's Encrypt automation
-- Enable/disable hosts, cert expiry alerts
-
-### DNS Management
-- **GoDaddy** — bring your own credentials, manage multiple domains
-- Full record CRUD (A, AAAA, CNAME, TXT, MX, SRV, NS)
-- WAN IP auto-detection, DDNS per interface
-- Propagation polling, stale IP flagging, domain expiry monitoring
-
-### Monitoring
-- Prometheus + Grafana bundled and auto-configured — zero manual setup
-- Proxmox metrics server enabled via API automatically
-- `node_exporter` deployed to all nodes automatically
-- Pre-built dashboards provisioned on first run
-
-### Settings
-- AES-256-GCM encrypted credential store
-- Test connection buttons for all providers
-- Feature enablement model — connect providers progressively
-
----
-
-## Quick Start
+## Install
 
 ```bash
-git clone https://github.com/hyperprox/alpha.git
-cd alpha
-cp .env.example .env
-nano .env
+curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/install.sh | bash
+```
+
+Or with Docker Compose directly:
+
+```bash
 docker compose up -d
 ```
 
-Open `http://your-server-ip` — dashboard is live.
+---
+
+## The Problem
+
+Running Proxmox in production means managing half a dozen separate tools that don't talk to each other:
+
+- Nginx Proxy Manager for reverse proxying
+- GoDaddy / Cloudflare for DNS
+- Grafana + Prometheus for monitoring (manually configured)
+- Separate SSH sessions to check node health, network mounts, storage status
+- No visibility when a NAS goes offline and silently breaks monitoring
+
+HyperProx replaces all of that with a single pane of glass — deployed in under five minutes.
+
+---
+
+## What's Built & Working
+
+| Feature | Status |
+|---|---|
+| VM & LXC management — live metrics, power actions | ✅ Shipped |
+| Nginx Proxy Manager full CRUD | ✅ Shipped |
+| GoDaddy DNS — all record types, DDNS, stale IP detection, domain expiry | ✅ Shipped |
+| Bundled Prometheus + Grafana — zero manual setup | ✅ Shipped |
+| Real-time WebSocket dashboard — nodes, GPU, CEPH, HA, network | ✅ Shipped |
+| Storage page — CEPH health, OSD status, VM/CT disk breakdown | ✅ Shipped |
+| Monitoring page — node health, active alerts, Grafana embed | ✅ Shipped |
+| AES-256-GCM encrypted credential store | ✅ Shipped |
+| One-shot installer + first-run setup wizard | ✅ Shipped |
+| AI deployment wizard (Ollama-powered, plan + confirm) | ✅ Shipped |
+
+---
+
+## The Killer Feature
+
+Type a natural language command. HyperProx handles everything:
+
+```
+Deploy Nextcloud at cloud.mydomain.com
+```
+
+1. Creates the LXC in Proxmox with appropriate resources
+2. Configures the NPM proxy host
+3. Creates the DNS A record
+4. Polls for propagation
+5. Requests the Let's Encrypt SSL cert
+6. Returns the live URL
+
+No tab switching. No SSH. No manual anything.
 
 ---
 
 ## System Requirements
 
-| | Minimum | Recommended |
-|---|---|---|
-| CPU | 2 cores | 4 cores |
-| RAM | 4 GB | 8 GB |
-| Storage | 40 GB | 100 GB SSD |
-| OS | Any Docker host | Debian 12 / Ubuntu 22.04 |
+### Minimum (no local AI)
+- 2 CPU cores · 4GB RAM · 40GB storage
 
-> **With local AI (Ollama):** 16 GB RAM + GPU with 8 GB+ VRAM recommended.
+### Recommended
+- 4 CPU cores · 8GB RAM · 100GB SSD
 
-> **Prometheus storage:** 5 nodes, 50 containers, 90-day retention ≈ 45 GB.
+### With Local AI (Ollama + GPU)
+- 4 CPU cores · 16GB RAM · 16GB VRAM · 100GB storage
+
+### Prometheus Storage Planning
+| Cluster Size | 90-day Retention |
+|---|---|
+| 5 nodes, 50 CTs | ~45GB |
+| 10 nodes, 100 CTs | ~90GB |
+
+The setup wizard calculates recommended storage automatically based on your cluster size.
 
 ---
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                     HyperProx Stack                     │
-│                                                         │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐             │
-│  │ Frontend │  │   API    │  │  Setup   │             │
-│  │ Next.js  │  │ Fastify  │  │ Wizard   │             │
-│  │  :3000   │  │  :3002   │  │  :3001   │             │
-│  └──────────┘  └──────────┘  └──────────┘             │
-│                                                         │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐             │
-│  │ Postgres │  │  Redis   │  │  Nginx   │             │
-│  │  :5432   │  │  :6379   │  │  80/443  │             │
-│  └──────────┘  └──────────┘  └──────────┘             │
-│                                                         │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐             │
-│  │Prometheus│  │ Grafana  │  │  Ollama  │             │
-│  │  :9090   │  │  :3003   │  │ optional │             │
-│  └──────────┘  └──────────┘  └──────────┘             │
-└─────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────┐
-│                   Proxmox Cluster                       │
-│   titan1  │  titan2  │  titan3  │  titan4  │  titan7   │
-└─────────────────────────────────────────────────────────┘
-```
+Single `docker compose up` deploys the full stack:
+
+| Service | Purpose | Port |
+|---|---|---|
+| hyperprox-frontend | Next.js dashboard | 3000 |
+| hyperprox-api | Fastify API + WebSockets | 3002 |
+| hyperprox-setup | First-run setup wizard | 3001 |
+| prometheus | Metrics collection | 9090 |
+| grafana | Visualization | 3003 |
+| ollama | Local AI (optional) | 11434 |
+| postgres | Config + state storage | 5432 |
+| redis | Queue + cache | 6379 |
+| nginx | Internal reverse proxy | 80/443 |
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Frontend | Next.js 14+ · shadcn/ui |
+| Backend | Node.js · Fastify |
+| Real-time | WebSockets |
+| Database | PostgreSQL · Prisma ORM |
+| Queue | BullMQ · Redis |
+| Monitoring | Prometheus · Grafana (bundled, auto-configured) |
+| AI | Ollama (optional local) |
+| Containers | Docker · Compose |
+| CI/CD | GitLab CI → Docker Hub |
 
 ---
 
 ## Roadmap
 
-### v0.1 — Alpha (current)
-- [x] Dashboard — nodes, GPU, network, CEPH, HA
-- [x] Infrastructure — VM/CT management, console, snapshots, migrate
-- [x] Proxy — NPM integration, SSL lifecycle
-- [x] DNS — GoDaddy integration, DDNS, propagation
-- [x] Storage — volumes, CEPH pools, OSDs
-- [x] Settings — encrypted credential store
+### v1.0 — The Glue Layer
 
-### v1.0
-- [ ] **Smart Suggestion Engine** — HyperProx watches both proxy and DNS simultaneously and suggests cross-system actions without acting automatically:
-  - New NPM proxy host detected → suggest creating matching DNS record
-  - New GoDaddy DNS record detected → suggest creating matching proxy host
-  - WAN IP change detected → suggest updating all stale A records
-  - SSL cert expiring → suggest renewal before it lapses
-  - Suggestions surface as a persistent panel on the dashboard with one-click approve or dismiss — nothing happens until the user confirms
-- [ ] Setup wizard — guided first-run with auto-detection of existing services
-- [ ] Bring Your Own vs HyperProx Managed — install NPM, Grafana, Ollama from UI
-- [ ] AI deployment wizard — type "Deploy Nextcloud at cloud.mydomain.com", HyperProx handles container, proxy, DNS, SSL end to end
-- [ ] Multi-instance proxy — manage NPM, Traefik, and Caddy simultaneously
-- [ ] Multi-provider DNS — manage domains across GoDaddy, Cloudflare, Namecheap from one interface
-- [ ] Traefik + Caddy proxy support
-- [ ] Cloudflare + Namecheap DNS support
-- [ ] Proxmox rolling updates — CEPH-aware, per-node sequencing, reboot detection
-- [ ] HyperProx self-update — one-click updates from GitHub releases
-- [ ] PBS backup monitoring
-- [ ] Unified SSL cert expiry view across all proxy instances
-- [ ] Domain expiry alerts
+- **Smart Suggestion Engine** — cross-system awareness: new proxy host → suggest DNS record, WAN IP change → flag stale A records, SSL expiring → suggest renewal. Nothing acts without user confirmation.
+- **Network Storage Health** — monitor CIFS/NFS mounts across all nodes, surface offline mounts as named alerts, correlate mount failures with downstream monitoring issues. AI-assisted remediation suggestions.
+- **AI deployment wizard** — full end-to-end: container → proxy → DNS → propagation → SSL → live URL
+- **Multi-provider DNS** — GoDaddy + Cloudflare + Namecheap simultaneously
+- **Multi-instance proxy** — NPM + Traefik + Caddy + HAProxy + Pangolin simultaneously
+- **Proxmox rolling updates** — CEPH-aware, per-node sequencing
+- **HyperProx self-update** — one-click from UI
+- **PBS backup monitoring** — datastore usage, job history, retention policies
+- **GitOps export** — encrypted YAML backup/restore of entire HyperProx configuration
 
-### v2.0
-- [ ] Proxmox bare metal installer — custom ISO/PXE with HyperProx baked in
-- [ ] Post-install bootstrap wizard — networking, storage, cluster formation
-- [ ] Node expansion — add new nodes to existing cluster from the dashboard
-- [ ] Proxmox major version upgrade wizard
-- [ ] VPN management — WireGuard peer CRUD, config generation, key rotation
-- [ ] Tailscale integration — node mesh visibility, ACL management
-- [ ] Pangolin native integration — zero-port-forward tunnel + proxy + DNS
-- [ ] HAProxy support
-- [ ] MSP multi-cluster management
-- [ ] Role-based access control
-- [ ] Commercial licensing tier
+### v2.0 — The Platform
+
+- **Bare metal Proxmox installer** — custom ISO/PXE with HyperProx baked in
+- **Post-install bootstrap wizard** — networking, storage, cluster formation
+- **Node expansion** — add new nodes to existing clusters from the dashboard
+- **Multi-cluster management** — unlimited clusters from one UI
+- **Cross-cluster live migration** — move VMs between clusters with zero downtime
+- **ESXi live migration** — import VMware workloads directly into Proxmox
+- **XCP-NG support** — manage Xen alongside Proxmox
+- **VPN management** — WireGuard + Tailscale + Pangolin
+- **CVE scanner** — detect known vulnerabilities across nodes and VMs
+- **PVE hardening** — one-click security hardening for Proxmox hosts
+- **Role-based access control (RBAC)**
+- **LDAP / OIDC / SSO support**
+- **Commercial licensing tier** — MSPs and enterprise deployments
+
+See [ROADMAP.md](ROADMAP.md) for full details.
 
 ---
 
 ## vs. The Alternatives
 
-| Feature | HyperProx | Proxmox PDM | PegaProx |
-|---|---|---|---|
-| Proxy management | ✅ | ❌ | ❌ |
-| DNS management | ✅ | ❌ | ❌ |
-| SSL lifecycle | ✅ | ❌ | ❌ |
-| Smart suggestion engine | ✅ v1.0 | ❌ | ❌ |
-| AI deployment wizard | ✅ v1.0 | ❌ | ❌ |
-| VPN management | ✅ v2.0 | ❌ | ❌ |
-| Bare metal installer | ✅ v2.0 | ❌ | ❌ |
-| Bundled monitoring | ✅ | ❌ | ❌ |
-| Docker install | ✅ | ❌ | ❌ |
-| Free & open source | ✅ | ❌ | ✅ |
-| Multi-cluster | v2.0 | ✅ | ✅ |
-| Load balancing / DRS | v2.0 | ✅ | ✅ |
+| Feature | HyperProx | PegaProx | PDM | Coolify/Dokploy |
+|---|---|---|---|---|
+| Proxy management | ✅ | ❌ | ❌ | Partial |
+| DNS management | ✅ | ❌ | ❌ | ❌ |
+| SSL lifecycle | ✅ | ❌ | ❌ | Partial |
+| Network storage health | ✅ v1.0 | ❌ | ❌ | ❌ |
+| Smart suggestion engine | ✅ v1.0 | ❌ | ❌ | ❌ |
+| AI deployment wizard | ✅ v1.0 | ❌ | ❌ | ❌ |
+| Bundled monitoring | ✅ | ❌ | ❌ | ❌ |
+| Docker install | ✅ | ❌ | ❌ | ✅ |
+| curl \| bash install | ✅ | ✅ | ❌ | ✅ |
+| Multi-cluster | ✅ v2.0 | ✅ | ✅ | ❌ |
+| Cross-cluster migration | ✅ v2.0 | ✅ | ❌ | ❌ |
+| ESXi migration | ✅ v2.0 | ✅ | ❌ | ❌ |
+| XCP-NG support | ✅ v2.0 | ✅ | ❌ | ❌ |
+| VPN management | ✅ v2.0 | ❌ | ❌ | ❌ |
+| RBAC | ✅ v2.0 | ✅ | ✅ | Partial |
+| CVE scanner | ✅ v2.0 | ✅ | ❌ | ❌ |
+| PVE hardening | ✅ v2.0 | ✅ | ❌ | ❌ |
+| Bare metal installer | ✅ v2.0 | ❌ | ✅ | ❌ |
+| Load balancing (DRS) | ❌ | ✅ | ❌ | ❌ |
+| Free & open source | ✅ AGPL v3 | ✅ AGPL v3 | ✅ AGPL v3 | ✅ |
+
+**HyperProx owns the application delivery layer. No competitor connects proxy + DNS + SSL + AI + network storage health in a single platform.**
 
 ---
 
 ## Contributing
 
-HyperProx is built in public. Bug reports, feature requests, and pull requests welcome via GitHub Issues.
+Bug reports, feature requests, and pull requests welcome via [GitHub Issues](https://github.com/hyperprox/alpha/issues).
 
 ---
 
