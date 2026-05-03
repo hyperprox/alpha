@@ -30,7 +30,7 @@ HyperProx runs inside a **dedicated LXC container** on your Proxmox node. Before
 ### Create the LXC in Proxmox
 
 **Recommended specs:**
-- Ubuntu 24.04 template
+- Debian 12 template
 - 4 CPU cores · 8GB RAM · 100GB disk (SSD preferred)
 - Network: bridge on your main LAN (e.g. `vmbr0`), static IP recommended
 
@@ -45,12 +45,12 @@ The container must be **privileged** with nesting and keyctl enabled. Without th
 **Via command line** — create the container with all required settings in one shot (run on your Proxmox node):
 
 ```bash
-# 1. Download the Ubuntu 24.04 template if not already available
+# 1. Download the Debian 12 template if not already available
 pveam update
-pveam download local ubuntu-24.04-standard_24.04-2_amd64.tar.zst
+pveam download local debian-12-standard_12.7-1_amd64.tar.zst
 
 # 2. Create the container (replace <CTID>, storage names, and IP as needed)
-pct create <CTID> local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst \
+pct create <CTID> local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst \
   --hostname hyperprox \
   --cores 4 \
   --memory 8192 \
@@ -87,7 +87,7 @@ Copy the token secret — it is only shown once.
 ## Install
 
 ```bash
-# Install curl if not already present (fresh Ubuntu templates may not include it)
+# Install curl if not already present
 apt update && apt install -y curl
 
 curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/install.sh | bash
@@ -148,12 +148,22 @@ HyperProx replaces all of that with a single pane of glass — deployed in under
 
 | Issue | Status |
 |---|---|
-| **CEPH_MON_NODE not saved on fresh install** — the setup wizard auto-detects the CEPH MON node during Proxmox connection testing but the value is not written to `.env`. CEPH status and storage overview will return errors until this is set. | 🔧 Fix in progress |
-| **Installer targets Ubuntu — Debian support coming** — `install.sh` currently targets Ubuntu 24.04. Debian 12 is the intended base OS and full support is being added. | 🔧 Fix in progress |
+| **Ubuntu requires AppArmor disabled** — Docker inside a privileged LXC on Ubuntu fails due to AppArmor restrictions. AppArmor must be completely disabled before running the installer. Debian 12 is recommended and works out of the box. | 🔧 Fix in progress — installer will handle this automatically |
+| **CEPH MON node not auto-detected** — the setup wizard should automatically detect which node runs the CEPH MON service and save it to `.env`. This detection is not working correctly, so CEPH status and storage overview will return errors on fresh installs. | 🔧 Fix in progress |
 
 ### Workarounds
 
-**CEPH_MON_NODE** — after completing the setup wizard, SSH into the HyperProx CT and set it manually:
+**Ubuntu — disable AppArmor before installing** (or use Debian 12 to avoid this entirely):
+
+```bash
+# Disable AppArmor completely
+systemctl stop apparmor
+systemctl disable apparmor
+apt-get remove -y apparmor
+reboot
+```
+
+**CEPH MON node** — after completing the setup wizard, SSH into the HyperProx CT and set it manually:
 
 ```bash
 # Find which node runs the CEPH MON service (run on any Proxmox node)
@@ -163,8 +173,6 @@ pvesh get /nodes/<node>/ceph/mon
 echo "CEPH_MON_NODE=<nodename>" >> /opt/hyperprox/.env
 docker compose -f /opt/hyperprox/docker-compose.yml restart hyperprox-api
 ```
-
-**Debian** — use an Ubuntu 24.04 LXC template until the installer is updated.
 
 ---
 
