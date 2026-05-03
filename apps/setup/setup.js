@@ -254,6 +254,17 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
 .btn-ghost{background:transparent;border:1px solid var(--border);color:var(--muted)}
 .btn-ghost:hover{border-color:var(--text);color:var(--text)}
 .btn-row{display:flex;justify-content:space-between;align-items:center;margin-top:1.5rem}
+.steps-box{background:#0d1220;border:1px solid #00e5ff20;border-radius:8px;padding:1.25rem;margin-bottom:1.25rem}
+.steps-title{color:#00e5ff;font-size:.8rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:1rem}
+.steps-method{margin-bottom:1rem}
+.steps-method:last-child{margin-bottom:0}
+.steps-method-label{color:#9ca3af;font-size:.8rem;margin-bottom:.5rem;font-weight:500}
+.code-block{background:#080c14;border:1px solid #00e5ff30;border-radius:4px;padding:.5rem .75rem;font-family:monospace;font-size:.8rem;color:#00e5ff;user-select:all;cursor:pointer}
+.steps-note{color:#6b7280;font-size:.75rem;margin-top:.4rem}
+.steps-list{color:#d1d5db;font-size:.82rem;padding-left:1.25rem;margin:0}
+.steps-list li{margin-bottom:.35rem}
+.steps-list strong{color:#f9fafb}
+.steps-list code{background:#080c14;padding:.1rem .3rem;border-radius:3px;font-size:.8rem;color:#00e5ff}
 .hint{font-size:12px;color:var(--muted)}
 .detect-row{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);font-size:14px}
 .detect-row:last-child{border:none}
@@ -335,7 +346,26 @@ async function api(method, path, body){
 function stepProxmox(){
   return \`<div class="card">
     <div class="card-title">Connect your Proxmox cluster</div>
-    <div class="card-desc">Create a Proxmox API token at Datacenter → Permissions → API Tokens, then paste the details below.</div>
+    <div class="card-desc">Connect HyperProx to your Proxmox cluster using an API token.</div>
+    <div class="steps-box">
+      <div class="steps-title">Create an API token — choose one method:</div>
+      <div class="steps-method">
+        <div class="steps-method-label">Option A — Command line (run on any Proxmox node):</div>
+        <div class="code-block">pveum user token add root@pam hyperprox --privsep=0</div>
+        <div class="steps-note">Copy the token secret from the output — it is only shown once.</div>
+      </div>
+      <div class="steps-method">
+        <div class="steps-method-label">Option B — Web UI:</div>
+        <ol class="steps-list">
+          <li>Log into your Proxmox web UI</li>
+          <li>Go to <strong>Datacenter → Permissions → API Tokens</strong></li>
+          <li>Click <strong>Add</strong>, select user <code>root@pam</code></li>
+          <li>Set Token ID to <code>hyperprox</code></li>
+          <li>Uncheck <strong>Privilege Separation</strong></li>
+          <li>Click <strong>Add</strong> and copy the secret</li>
+        </ol>
+      </div>
+    </div>
     <div class="field"><label>Proxmox host / IP</label><input id="px-host" placeholder="192.168.1.100" value="\${S.proxmox.host}"></div>
     <div class="row">
       <div class="field"><label>Port</label><input id="px-port" value="\${S.proxmox.port}" style="width:80px"></div>
