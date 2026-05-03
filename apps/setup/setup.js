@@ -617,15 +617,6 @@ function bind(){
     go(4)
   }
 
-  // Step 3 — save installs
-  const btnInst = document.getElementById('btn-installs')
-  if(btnInst) btnInst.onclick = async () => {
-    btnInst.disabled = true
-    btnInst.innerHTML = '<span class="spinner"></span>Saving...'
-    await api('POST','/api/setup/save-installs', { installs: S.installs })
-    go(4)
-  }
-
   // Step 4 — save providers
   const btnProv = document.getElementById('btn-prov')
   if(btnProv) btnProv.onclick = async () => {
