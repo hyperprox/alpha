@@ -30,7 +30,18 @@ PNPM_VERSION="9"
 SETUP_PORT="3001"
 API_PORT="3002"
 FRONTEND_PORT="3000"
-LOG_FILE="/tmp/hyperprox-install.log"
+LOG_FILE="/var/log/hyperprox-install.log"
+
+# ── Root check ────────────────────────────────────────────────────────────────
+[[ $EUID -ne 0 ]] && die "Run as root: sudo bash install.sh"
+
+# Initialise log file — try /var/log, fall back to home dir
+if ! touch "${LOG_FILE}" 2>/dev/null; then
+  LOG_FILE="${HOME}/hyperprox-install.log"
+  touch "${LOG_FILE}" || LOG_FILE="/dev/null"
+fi
+echo "HyperProx install log — $(date -u)" > "${LOG_FILE}"
+info "Logging to ${LOG_FILE}"
 
 # ── Colors ───────────────────────────────────────────────────────────────────
 C_RESET="\033[0m"
@@ -94,13 +105,6 @@ run_with_spinner() {
     die "${msg} failed. See ${LOG_FILE} for full output."
   fi
 }
-
-# ── Root check ────────────────────────────────────────────────────────────────
-[[ $EUID -ne 0 ]] && die "Run as root: sudo bash install.sh"
-
-# Initialise log file
-echo "HyperProx install log — $(date -u)" > "${LOG_FILE}"
-info "Logging to ${LOG_FILE}"
 
 # ── Environment Detection ─────────────────────────────────────────────────────
 detect_environment() {
