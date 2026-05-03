@@ -873,13 +873,26 @@ const server = http.createServer(async (req, res) => {
 
       sendJson(res, 200, { ok: true })
 
-      // Restart services and shut down
+      // Start optional containers then restart services and shut down
       setTimeout(() => {
-        exec('systemctl restart hyperprox-api hyperprox-frontend', err => {
-          if (err) console.warn('[setup] Restart warning:', err.message)
-          console.log('[setup] Complete. Shutting down setup service.')
-          process.exit(0)
+        const finalEnv = readEnv()
+        const profiles = []
+        if (finalEnv.INSTALL_PROMETHEUS === 'true') profiles.push('monitoring')
+        if (finalEnv.INSTALL_NPM === 'true') profiles.push('npm')
+        const profileFlag = profiles.length ? '--profile ' + profiles.join(' --profile ') : ''
+        const composeCmd = 'docker compose ' + profileFlag + ' up -d --remove-orphans'
+        console.log('[setup] Running:', composeCmd)
+        exec(composeCmd, { cwd: '/opt/hyperprox' }, (err, stdout, stderr) => {
+          if (err) console.warn('[setup] docker compose error:', err.message)
+          if (stderr) console.warn('[setup] docker compose stderr:', stderr)
+          if (stdout) console.log('[setup] docker compose stdout:', stdout)
+          exec('systemctl restart hyperprox-api hyperprox-frontend', err2 => {
+            if (err2) console.warn('[setup] Restart warning:', err2.message)
+            console.log('[setup] Complete. Shutting down setup service.')
+            process.exit(0)
+          })
         })
+      }, 1000)
       }, 1000)
       return
     }
