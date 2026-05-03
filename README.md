@@ -47,10 +47,10 @@ The container must be **privileged** with nesting and keyctl enabled. Without th
 ```bash
 # 1. Download the Debian 12 template if not already available
 pveam update
-pveam download local debian-12-standard_12.7-1_amd64.tar.zst
+pveam download local debian-12-standard_12.12-1_amd64.tar.zst
 
 # 2. Create the container (replace <CTID>, storage names, and IP as needed)
-pct create <CTID> local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst \
+pct create <CTID> local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst \
   --hostname hyperprox \
   --cores 4 \
   --memory 8192 \
