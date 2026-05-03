@@ -130,7 +130,7 @@ HyperProx replaces all of that with a single pane of glass — deployed in under
 | VM & LXC management — live metrics, power actions | ✅ Shipped |
 | Nginx Proxy Manager full CRUD | ✅ Shipped |
 | GoDaddy DNS — all record types, DDNS, stale IP detection, domain expiry | ✅ Shipped |
-| Bundled Prometheus + Grafana — zero manual setup | ✅ Shipped |
+| Bundled Prometheus + Grafana — optional, installed via setup wizard | ✅ Shipped |
 | Real-time WebSocket dashboard — nodes, GPU, CEPH, HA, network | ✅ Shipped |
 | Storage page — CEPH health, OSD status, VM/CT disk breakdown | ✅ Shipped |
 | Monitoring page — node health, active alerts, Grafana embed | ✅ Shipped |
@@ -206,9 +206,10 @@ Single `docker compose up` deploys the full stack:
 | hyperprox-frontend | Next.js dashboard | 3000 |
 | hyperprox-api | Fastify API + WebSockets | 3002 |
 | hyperprox-setup | First-run setup wizard | 3001 |
-| prometheus | Metrics collection | 9090 |
-| grafana | Visualization | 3003 |
-| ollama | Local AI (optional) | 11434 |
+| prometheus | Metrics collection *(optional)* | 9090 |
+| grafana | Visualization *(optional)* | 3003 |
+| nginx-proxy-manager | Reverse proxy + SSL *(optional)* | 80, 81, 443 |
+| ollama | Local AI *(optional)* | 11434 |
 | postgres | Config + state storage | 5432 |
 | redis | Queue + cache | 6379 |
 | nginx | Internal reverse proxy | 80/443 |
