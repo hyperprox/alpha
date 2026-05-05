@@ -20,6 +20,7 @@ import { storageRoutes }         from './routes/storage'
 import { ollamaRoutes }          from './routes/ollama'
 import { aiRoutes }              from './routes/ai'
 import { gpuRoutes }             from './routes/gpu'
+import { targetsRoutes }         from './routes/targets'
 import { prismaPlugin }         from './plugins/prisma'
 import { redisPlugin }          from './plugins/redis'
 import { seedFromEnv }          from './lib/credentials'
@@ -55,6 +56,7 @@ async function main() {
   await server.register(ollamaRoutes, { prefix: '/api/ai' })
   await server.register(aiRoutes,    { prefix: '/api/ai' })
   await server.register(gpuRoutes,   { prefix: '/api/gpu' })
+  await server.register(targetsRoutes, { prefix: '/api/targets' })
   await server.register(wsRoutes,             { prefix: '/ws' })
 
   await seedFromEnv()
