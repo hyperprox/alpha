@@ -117,7 +117,7 @@
       "targets": [{
         "datasource": "Prometheus",
         "expr": "(1 - node_filesystem_avail_bytes{mountpoint=\"/\",fstype!=\"tmpfs\"} / node_filesystem_size_bytes{mountpoint=\"/\",fstype!=\"tmpfs\"}) * 100",
-        "legendFormat": "{{instance}}"
+        "legendFormat": "{{node}}"
       }],
       "fieldConfig": {
         "defaults": {
