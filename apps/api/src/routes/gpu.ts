@@ -88,4 +88,94 @@ export const gpuRoutes: FastifyPluginAsync = async (fastify) => {
     return detectNodeGPUs(req.params.node, client)
   }))
 
+  // GET /api/gpu/:node/metrics-status — check if exporter is reachable
+  fastify.get("/:node/metrics-status", async (req: any, r) => wrap(r, async () => {
+    const client  = await getProxmoxClient()
+    const gpus    = await detectNodeGPUs(req.params.node, client)
+    if (!gpus.length) return { reachable: false, gpus: [], install: null }
+    const gpu     = gpus[0]
+    const port    = EXPORTER_PORTS[gpu.type]
+    
+    const nodes   = await client.getNodes()
+    
+    const nodeIp  = req.params.node
+    const reachable = await checkExporterReachable(nodeIp, port)
+    return { reachable, gpus, port, install: reachable ? null : EXPORTER_INSTALL[gpu.type] }
+  }))
+
+  // GET /api/gpu/all/metrics-status — check all nodes
+  fastify.get("/all/metrics-status", async (_, r) => wrap(r, async () => {
+    const client  = await getProxmoxClient()
+    const nodes   = await client.getNodes()
+    const results = await Promise.all(nodes.map(async (n: any) => {
+      const gpus      = await detectNodeGPUs(n.node, client)
+      if (!gpus.length) return { node: n.node, reachable: false, gpus: [], install: null }
+      const gpu       = gpus[0]
+      const port      = EXPORTER_PORTS[gpu.type]
+      const reachable = await checkExporterReachable(n.node, port)
+      return { node: n.node, reachable, gpus, port, install: reachable ? null : EXPORTER_INSTALL[gpu.type] }
+    }))
+    return results
+  }))
+
+}
+
+// ── Exporter port map ─────────────────────────────────────────────────────────
+const EXPORTER_PORTS: Record<GPUType, number> = {
+  'nvidia':     9835,
+  'amd':        9915,
+  'intel-igpu': 8081,
+  'intel-arc':  8081,
+  'unknown':    0,
+}
+
+const EXPORTER_INSTALL: Record<GPUType, { title: string; steps: string[] }> = {
+  'nvidia': {
+    title: 'Install NVIDIA SMI Exporter',
+    steps: [
+      'Run on the Proxmox node:',
+      'docker run -d --name nvidia-smi-exporter --restart unless-stopped --runtime nvidia -p 9835:9835 utkuozdemir/nvidia_gpu_exporter:1.1.0',
+    ]
+  },
+  'amd': {
+    title: 'Install ROCm SMI Exporter',
+    steps: [
+      'Run on the Proxmox node:',
+      'apt install -y rocm-smi',
+      'Then deploy the rocm_smi_exporter service on port 9915',
+    ]
+  },
+  'intel-igpu': {
+    title: 'Install Intel GPU Exporter',
+    steps: [
+      'Run on the Proxmox node:',
+      'apt install -y intel-gpu-tools',
+      'docker run -d --name intel-gpu-exporter --restart unless-stopped --privileged --pid host -v /dev/dri:/dev/dri -p 8081:8080 ghcr.io/onedr0p/intel-gpu-exporter:rolling',
+    ]
+  },
+  'intel-arc': {
+    title: 'Install Intel GPU Exporter',
+    steps: [
+      'Run on the Proxmox node:',
+      'apt install -y intel-gpu-tools',
+      'docker run -d --name intel-gpu-exporter --restart unless-stopped --privileged --pid host -v /dev/dri:/dev/dri -p 8081:8080 ghcr.io/onedr0p/intel-gpu-exporter:rolling',
+    ]
+  },
+  'unknown': {
+    title: 'Unknown GPU Type',
+    steps: [ 'GPU type could not be determined. Manual exporter setup required.' ]
+  }
+}
+
+async function checkExporterReachable(host: string, port: number): Promise<boolean> {
+  if (!port) return false
+  return new Promise((resolve) => {
+    const net = require('net')
+    const socket = new net.Socket()
+    socket.setTimeout(3000)
+    socket.on('connect', () => { socket.destroy(); resolve(true) })
+    socket.on('timeout', () => { socket.destroy(); resolve(false) })
+    socket.on('error',   () => { socket.destroy(); resolve(false) })
+    socket.connect(port, host)
+  })
 }
