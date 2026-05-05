@@ -168,7 +168,12 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
       <div className="flex items-center gap-2 mb-3">
         <div className="w-2 h-2 rounded-full" style={{ background:'#ffaa00', boxShadow:'0 0 6px #ffaa00' }}/>
         <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{ color:'#ffaa00' }}>GPU METRICS</span>
-        <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:'#ffaa0015', color:'#ffaa00', border:'1px solid #ffaa0030' }}>EXPORTER NOT INSTALLED</span>
+        {allGPUs.every(n => !n.reachable) && (
+          <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:'#ffaa0015', color:'#ffaa00', border:'1px solid #ffaa0030' }}>EXPORTER NOT INSTALLED</span>
+        )}
+        {allGPUs.some(n => n.reachable) && !allGPUs.every(n => n.reachable) && (
+          <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:'#ffaa0015', color:'#ffaa00', border:'1px solid #ffaa0030' }}>PARTIAL</span>
+        )}
       </div>
       {/* Node list — compact */}
       <div className="flex gap-2 flex-wrap mb-3">
