@@ -180,10 +180,10 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
               {n.install && (
                 <div className="space-y-1">
                   {n.install.steps.map((step, i) => {
-                    const isCmd = step.startsWith('docker') || step.startsWith('apt') || step.startsWith('curl')
+                    const isCmd = step.startsWith('docker') || step.startsWith('apt') || step.startsWith('curl') || step.startsWith('systemctl')
                     return (
                       <div key={i} className="flex items-center gap-2">
-                        <span className="text-xs font-mono flex-1" style={{ color: isCmd ? '#00e5ff' : '#6b7280' }}>{step}</span>
+                        <span className="text-xs font-mono flex-1 overflow-x-auto whitespace-nowrap block" style={{ color: isCmd ? '#00e5ff' : '#6b7280' }}>{step}</span>
                         {isCmd && (
                           <button onClick={() => {
                             try { navigator.clipboard.writeText(step) } catch {
