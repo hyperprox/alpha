@@ -840,10 +840,9 @@ EOF
     ok "PVE exporter config written"
   fi
 
-  # Nginx config — preserve on reinstall
-  if [[ ! -f "${HYPERPROX_DIR}/config/nginx/nginx.conf" ]]; then
-    mkdir -p "${HYPERPROX_DIR}/config/nginx"
-    cat > "${HYPERPROX_DIR}/config/nginx/nginx.conf" <<'EOF'
+  # Nginx config — always overwrite to ensure correct proxy config is in place
+  mkdir -p "${HYPERPROX_DIR}/config/nginx"
+  cat > "${HYPERPROX_DIR}/config/nginx/nginx.conf" <<'EOF'
 events { worker_connections 1024; }
 
 http {
@@ -878,8 +877,7 @@ http {
   }
 }
 EOF
-    ok "Nginx config written"
-  fi
+  ok "Nginx config written"
 }
 
 # ── Systemd Services ──────────────────────────────────────────────────────────
