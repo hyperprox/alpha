@@ -133,16 +133,16 @@ const EXPORTER_INSTALL: Record<GPUType, { title: string; steps: string[] }> = {
   'nvidia': {
     title: 'Install NVIDIA SMI Exporter',
     steps: [
-      'Run on the Proxmox node:',
-      'docker run -d --name nvidia-smi-exporter --restart unless-stopped --runtime nvidia -p 9835:9835 utkuozdemir/nvidia_gpu_exporter:1.1.0',
+      "curl -fsSL https://get.docker.com | sh",
+      "docker run -d --name nvidia-smi-exporter --restart unless-stopped --runtime nvidia -p 9835:9835 utkuozdemir/nvidia_gpu_exporter:1.1.0",
     ]
   },
   'amd': {
     title: 'Install ROCm SMI Exporter',
     steps: [
-      'Run on the Proxmox node:',
-      'apt install -y rocm-smi',
-      'Then deploy the rocm_smi_exporter service on port 9915',
+      "apt install -y rocm-smi",
+      "curl -fsSL https://get.docker.com | sh",
+      "docker run -d --name rocm-smi-exporter --restart unless-stopped --device /dev/kfd --device /dev/dri -p 9915:9915 amdgpu/rocm_smi_exporter:latest",
     ]
   },
   'intel-igpu': {

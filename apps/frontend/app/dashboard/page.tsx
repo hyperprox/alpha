@@ -179,11 +179,22 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
               </div>
               {n.install && (
                 <div className="space-y-1">
-                  {n.install.steps.map((step, i) => (
-                    <div key={i} className="text-xs font-mono" style={{ color: step.startsWith('docker') || step.startsWith('apt') ? '#00e5ff' : '#6b7280' }}>
-                      {step.startsWith('docker') || step.startsWith('apt') ? '$ ' : ''}{step}
-                    </div>
-                  ))}
+                  {n.install.steps.map((step, i) => {
+                    const isCmd = step.startsWith('docker') || step.startsWith('apt') || step.startsWith('curl')
+                    return (
+                      <div key={i} className="flex items-center gap-2">
+                        <span className="text-xs font-mono flex-1" style={{ color: isCmd ? '#00e5ff' : '#6b7280' }}>{step}</span>
+                        {isCmd && (
+                          <button onClick={() => navigator.clipboard.writeText(step)}
+                            className="text-xs font-mono px-1.5 py-0.5 rounded flex-shrink-0"
+                            style={{ background:'#00e5ff15', color:'#00e5ff', border:'1px solid #00e5ff30' }}
+                            title="Copy to clipboard">
+                            copy
+                          </button>
+                        )}
+                      </div>
+                    )
+                  })}
                 </div>
               )}
             </div>
