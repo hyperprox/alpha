@@ -23,7 +23,7 @@ interface NodeStat {
   load: number
 }
 
-const GRAFANA = 'http://100.127.104.63:3003'
+const GRAFANA = process.env.NEXT_PUBLIC_GRAFANA_URL || 'http://localhost:3003'
 const DASHBOARDS = [
   { uid: 'hyperprox-cluster', title: 'Cluster Overview', orgId: 1, vars: '' },
 ]
