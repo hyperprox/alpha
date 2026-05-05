@@ -33,7 +33,7 @@ export const proxyRoutes: FastifyPluginAsync = async (fastify) => {
     wrap(r, async () => (await getNPM()).updateProxyHost(Number(req.params.id), req.body as any)))
 
   fastify.delete<{ Params: { id: string } }>('/hosts/:id', async (req, r) =>
-    wrap(r, async () => { await getNPM().deleteProxyHost(Number(req.params.id)); return { deleted: true } }))
+    wrap(r, async () => { await (await getNPM()).deleteProxyHost(Number(req.params.id)); return { deleted: true } }))
 
   fastify.post<{ Params: { id: string } }>('/hosts/:id/enable', async (req, r) =>
     wrap(r, async () => (await getNPM()).enableProxyHost(Number(req.params.id))))
