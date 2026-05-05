@@ -487,7 +487,7 @@ export default function DashboardView() {
 
       if (summary.success) {
         const d = summary.data
-        setFast({ nodes: d.nodes, vms: d.vms, gpu: d.gpu, cluster: d.cluster })
+        setFast({ nodes: d.nodes, vms: d.vms, gpu: d.gpu, cluster: d.cluster, gpuStatus: gpuStatus.success ? gpuStatus.data : [] })
         setSlow({
           ceph: d.ceph, osds: d.osds, ha: d.ha,
           services: {
@@ -513,7 +513,7 @@ export default function DashboardView() {
       try {
         const msg = JSON.parse(e.data)
         if (msg.type === 'fast') {
-          setFast(msg.payload)
+          setFast(prev => ({ ...msg.payload, gpuStatus: prev?.gpuStatus ?? [] }))
           setLastSync(new Date())
         }
         if (msg.type === 'slow') {
