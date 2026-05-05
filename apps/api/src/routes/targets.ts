@@ -111,8 +111,6 @@ export const targetsRoutes: FastifyPluginAsync = async (fastify) => {
         for (const gpu of gpus) {
           if (gpu.type === 'intel-igpu' || gpu.type === 'intel-arc') {
             newIntelTargets.push({ targets: [`${addr}:8081`], labels: { node: node.node } })
-          } else if (gpu.type === 'amd') {
-            newNodeTargets.push({ targets: [`${addr}:9100`], labels: { node: node.node } }) // AMD uses node_exporter with --collector.drm
           } else if (gpu.type === 'nvidia') {
             newNvidiaTargets.push({ targets: [`${addr}:9835`], labels: { node: node.node } })
           }
