@@ -572,7 +572,7 @@ export default function DashboardView() {
       const prometheus = await prometheusRes.json().catch(()=>({success:false}))
       const gpuStatus = await gpuStatusRes.json().catch(()=>({success:false}))
       // Fetch cluster power from Prometheus
-      fetch('/api/prometheus/query?q=sum(igpu_power_package)%2Bsum(nvidia_smi_power_draw_watts%20or%20vector(0))%2Bsum(amd_gpu_power_draw_watts%20or%20vector(0))')
+      fetch('/api/prometheus/query?q=sum(igpu_power_package%20or%20nvidia_smi_power_draw_watts)')
         .then(r=>r.json())
         .then(d=>{ if(d.success && d.data?.result?.[0]) setClusterPower(Math.round(parseFloat(d.data.result[0].value[1]))) })
         .catch(()=>{})
