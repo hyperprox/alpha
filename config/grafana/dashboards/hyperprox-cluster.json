@@ -250,6 +250,59 @@
           "unit": "megahertz"
         }
       }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "AMD GPU \u2014 Utilization",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "node_drm_gpu_busy_percent",
+          "legendFormat": "{{node}} GPU%"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        }
+      }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "AMD GPU \u2014 VRAM Usage",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "node_drm_memory_vram_used_bytes / 1024 / 1024 / 1024",
+          "legendFormat": "{{node}} Used (GB)"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "node_drm_memory_vram_size_bytes / 1024 / 1024 / 1024",
+          "legendFormat": "{{node}} Total (GB)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decgbytes"
+        }
+      }
     }
   ]
 }
