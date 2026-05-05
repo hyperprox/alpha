@@ -150,16 +150,18 @@ const EXPORTER_INSTALL: Record<GPUType, { title: string; steps: string[] }> = {
   'intel-igpu': {
     title: 'Install Intel GPU Exporter',
     steps: [
-      'Run on the Proxmox node:',
-      'apt install -y intel-gpu-tools',
+      'apt-get update && apt-get install -y intel-gpu-tools curl gnupg',
+      'curl -fsSL https://get.docker.com | sh',
+      'systemctl enable docker --now',
       'docker run -d --name intel-gpu-exporter --restart unless-stopped --privileged --pid host -v /dev/dri:/dev/dri -p 8081:8080 ghcr.io/onedr0p/intel-gpu-exporter:rolling',
     ]
   },
   'intel-arc': {
     title: 'Install Intel GPU Exporter',
     steps: [
-      'Run on the Proxmox node:',
-      'apt install -y intel-gpu-tools',
+      'apt-get update && apt-get install -y intel-gpu-tools curl gnupg',
+      'curl -fsSL https://get.docker.com | sh',
+      'systemctl enable docker --now',
       'docker run -d --name intel-gpu-exporter --restart unless-stopped --privileged --pid host -v /dev/dri:/dev/dri -p 8081:8080 ghcr.io/onedr0p/intel-gpu-exporter:rolling',
     ]
   },
