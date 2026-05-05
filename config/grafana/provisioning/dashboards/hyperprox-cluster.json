@@ -1,0 +1,308 @@
+{
+  "uid": "hyperprox-cluster",
+  "title": "HyperProx \u2014 Cluster Overview",
+  "tags": [
+    "hyperprox"
+  ],
+  "timezone": "browser",
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "CPU Usage \u2014 All Nodes",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "100 - (avg by(node) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Memory Usage \u2014 All Nodes",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Network I/O \u2014 All Nodes",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "rate(node_network_receive_bytes_total{device=\"vmbr0\"}[5m])",
+          "legendFormat": "{{node}} \u2193"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "rate(node_network_transmit_bytes_total{device=\"vmbr0\"}[5m])",
+          "legendFormat": "{{node}} \u2191"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "binBps"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "bargauge",
+      "title": "Disk Usage \u2014 Root Filesystem",
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "(1 - node_filesystem_avail_bytes{mountpoint=\"/\",fstype!=\"tmpfs\"} / node_filesystem_size_bytes{mountpoint=\"/\",fstype!=\"tmpfs\"}) * 100",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "yellow",
+                "value": 70
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Intel GPU \u2014 Engine Utilization",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "igpu_engines_render_3d_0_busy",
+          "legendFormat": "{{node}} Render/3D"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "igpu_engines_video_0_busy",
+          "legendFormat": "{{node}} Video"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "igpu_engines_blitter_0_busy",
+          "legendFormat": "{{node}} Blitter"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "igpu_engines_video_enhance_0_busy",
+          "legendFormat": "{{node}} VideoEnhance"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        }
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Intel GPU \u2014 Memory Bandwidth",
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "igpu_imc_bandwidth_reads",
+          "legendFormat": "{{node}} Reads"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "igpu_imc_bandwidth_writes",
+          "legendFormat": "{{node}} Writes"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "MBs"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Intel GPU \u2014 Power Draw",
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "igpu_power_gpu",
+          "legendFormat": "{{node}} GPU"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "igpu_power_package",
+          "legendFormat": "{{node}} Package"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Intel GPU \u2014 Frequency",
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "igpu_frequency_actual",
+          "legendFormat": "{{node}} Actual"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "igpu_frequency_requested",
+          "legendFormat": "{{node}} Requested"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "megahertz"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "AMD GPU \u2014 Utilization",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "node_drm_gpu_busy_percent",
+          "legendFormat": "{{node}} GPU%"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        }
+      }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "AMD GPU \u2014 VRAM Usage",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "node_drm_memory_vram_used_bytes / 1024 / 1024 / 1024",
+          "legendFormat": "{{node}} Used (GB)"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "node_drm_memory_vram_size_bytes / 1024 / 1024 / 1024",
+          "legendFormat": "{{node}} Total (GB)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decgbytes"
+        }
+      }
+    }
+  ]
+}
