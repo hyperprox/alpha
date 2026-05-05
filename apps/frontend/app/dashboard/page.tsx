@@ -107,104 +107,93 @@ function ClusterPanel({ cluster, nodes, vms, ceph }: { cluster:ClusterTotals; no
   )
 }
 
-// GPU panel
-function GPUPanel({ gpu }: { gpu: GPUInfoFull | null }) {
-  const accent = '#a78bfa'
+// GPU panel — dynamic, supports NVIDIA/AMD/Intel iGPU/Arc
+function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: NodeGPUStatus[] }) {
+  const allGPUs = (gpuStatus ?? []).filter(n => n.gpus.length > 0)
 
-  if (!gpu) return (
+  // No GPUs detected at all
+  if (allGPUs.length === 0) return (
     <div className="rounded-lg border p-5 flex items-center justify-center" style={{ background:'#0d1220', borderColor:'#1f2937', minHeight:160 }}>
-      <span className="text-xs font-mono text-gray-600">GPU unavailable</span>
+      <span className="text-xs font-mono text-gray-600">No GPU detected</span>
     </div>
   )
 
-  const vramC  = gpu.vram_pct  > 90 ? '#ff4444' : gpu.vram_pct  > 75 ? '#ffaa00' : accent
-  const powerC = gpu.power_pct > 80 ? '#ff4444' : gpu.power_pct > 60 ? '#ffaa00' : '#22c55e'
-  const tempC  = gpu.temp > 80 ? '#ff4444' : gpu.temp > 65 ? '#ffaa00' : '#22c55e'
+  // Check if any exporter is reachable
+  const anyReachable = allGPUs.some(n => n.reachable)
 
-  // Build VRAM segments for stacked bar
-  const totalVRAM = gpu.vram_total
-  const consumers = gpu.consumers ?? []
-  const unaccounted = gpu.vram_used - consumers.reduce((s, c) => s + c.vram_mb, 0)
+  // If NVIDIA GPU data is available and exporter is reachable, show NVIDIA panel
+  if (gpu && anyReachable) {
+    const accent = '#a78bfa'
+    const vramC  = gpu.vram_pct  > 90 ? '#ff4444' : gpu.vram_pct  > 75 ? '#ffaa00' : accent
+    const powerC = gpu.power_pct > 80 ? '#ff4444' : gpu.power_pct > 60 ? '#ffaa00' : '#22c55e'
+    const tempC  = gpu.temp > 80 ? '#ff4444' : gpu.temp > 65 ? '#ffaa00' : '#22c55e'
+    const consumers = gpu.consumers ?? []
+    const unaccounted = gpu.vram_used - consumers.reduce((s, c) => s + c.vram_mb, 0)
+    return (
+      <div className="rounded-lg border p-5" style={{ background:'linear-gradient(135deg,#0d1220,#080c14)', borderColor:`${accent}30` }}>
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full" style={{ background:accent, boxShadow:`0 0 6px ${accent}` }}/>
+            <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{ color:accent }}>GPU</span>
+          </div>
+          <span className="text-xs font-mono text-gray-500 truncate ml-2" style={{ maxWidth:140 }}>{gpu.name.replace('NVIDIA ','')}</span>
+        </div>
+        <div className="grid grid-cols-4 gap-2">
+          {[
+            { label:'GPU',   value:`${gpu.gpu_util}%`,              color:accent  },
+            { label:'VRAM',  value:`${gpu.vram_pct}%`,              color:vramC   },
+            { label:'TEMP',  value:`${gpu.temp}°C`,                 color:tempC   },
+            { label:'POWER', value:`${gpu.power_draw.toFixed(0)}W`, color:powerC  },
+          ].map(({ label, value, color }) => (
+            <div key={label} className="text-center p-2 rounded" style={{ background:'#060a10', border:`1px solid ${color}20` }}>
+              <div className="text-sm font-mono font-bold" style={{ color }}>{value}</div>
+              <div className="text-xs font-mono text-gray-600 mt-0.5">{label}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  // Exporter not reachable — show install prompt per node
+  const gpuTypeColors: Record<string, string> = { 'nvidia': '#22c55e', 'amd': '#ef4444', 'intel-igpu': '#3b82f6', 'intel-arc': '#00e5ff' }
+  const gpuTypeLabels: Record<string, string> = { 'nvidia': 'NVIDIA', 'amd': 'AMD', 'intel-igpu': 'Intel iGPU', 'intel-arc': 'Intel Arc' }
 
   return (
-    <div className="rounded-lg border p-5" style={{ background:'linear-gradient(135deg,#0d1220,#080c14)', borderColor:`${accent}30`, boxShadow:`0 0 16px ${accent}08` }}>
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full" style={{ background:accent, boxShadow:`0 0 6px ${accent}` }}/>
-          <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{ color:accent }}>GPU</span>
-        </div>
-        <span className="text-xs font-mono text-gray-500 truncate ml-2" style={{ maxWidth:140 }}>{gpu.name.replace('NVIDIA ','')}</span>
+    <div className="rounded-lg border p-5" style={{ background:'linear-gradient(135deg,#0d1220,#080c14)', borderColor:'#ffaa0030' }}>
+      <div className="flex items-center gap-2 mb-4">
+        <div className="w-2 h-2 rounded-full" style={{ background:'#ffaa00', boxShadow:'0 0 6px #ffaa00' }}/>
+        <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{ color:'#ffaa00' }}>GPU METRICS</span>
+        <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:'#ffaa0015', color:'#ffaa00', border:'1px solid #ffaa0030' }}>EXPORTER NOT INSTALLED</span>
       </div>
-
-      {/* VRAM stacked bar */}
-      <div className="mb-3">
-        <div className="flex justify-between text-xs font-mono mb-1">
-          <span className="text-gray-500">VRAM</span>
-          <span style={{ color:vramC }}>{gpu.vram_used} / {gpu.vram_total} MB</span>
-        </div>
-        <div className="h-3 rounded-full overflow-hidden flex" style={{ background:'#1f2937' }}>
-          {consumers.map((c, i) => {
-            const pct = (c.vram_mb / totalVRAM) * 100
-            const colors = ['#a78bfa','#00e5ff','#22c55e','#f59e0b','#f87171']
-            const color  = colors[i % colors.length]
-            return (
-              <div key={c.pid} title={`${c.ct_name ?? c.process}: ${c.vram_mb}MB`}
-                className="h-full transition-all duration-500" style={{ width:`${pct}%`, background:color }}/>
-            )
-          })}
-          {unaccounted > 0 && (
-            <div className="h-full" style={{ width:`${(unaccounted/totalVRAM)*100}%`, background:'#374151' }}/>
-          )}
-        </div>
-      </div>
-
-      {/* Consumer list */}
-      {consumers.length > 0 && (
-        <div className="space-y-1 mb-4">
-          {consumers.map((c, i) => {
-            const colors = ['#a78bfa','#00e5ff','#22c55e','#f59e0b','#f87171']
-            const color  = colors[i % colors.length]
-            return (
-              <div key={c.pid} className="flex items-center gap-2 text-xs font-mono">
-                <div className="w-2 h-2 rounded-sm flex-shrink-0" style={{ background:color }}/>
-                <span style={{ color:'#e5e7eb' }}>{c.ct_name ?? c.process}</span>
-                {c.ct_id && <span className="text-gray-600">CT {c.ct_id}</span>}
-                <span className="ml-auto" style={{ color }}>{c.vram_mb} MB ({c.vram_pct}%)</span>
+      <div className="space-y-3">
+        {allGPUs.map(n => {
+          const gpu0 = n.gpus[0]
+          const color = gpuTypeColors[gpu0.type] ?? '#a78bfa'
+          const label = gpuTypeLabels[gpu0.type] ?? gpu0.type
+          return (
+            <div key={n.node} className="rounded p-3" style={{ background:'#060a10', border:`1px solid ${color}20` }}>
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-xs font-mono font-bold uppercase" style={{ color }}>{n.node}</span>
+                <span className="text-xs font-mono text-gray-500">{label} — {gpu0.deviceName}</span>
               </div>
-            )
-          })}
-        </div>
-      )}
-
-      {/* Stats grid */}
-      <div className="grid grid-cols-4 gap-2">
-        {[
-          { label:'GPU',   value:`${gpu.gpu_util}%`,              color:accent  },
-          { label:'VRAM',  value:`${gpu.vram_pct}%`,              color:vramC   },
-          { label:'TEMP',  value:`${gpu.temp}°C`,                 color:tempC   },
-          { label:'POWER', value:`${gpu.power_draw.toFixed(0)}W`, color:powerC  },
-        ].map(({ label, value, color }) => (
-          <div key={label} className="text-center p-2 rounded" style={{ background:'#060a10', border:`1px solid ${color}20` }}>
-            <div className="text-sm font-mono font-bold" style={{ color }}>{value}</div>
-            <div className="text-xs font-mono text-gray-600 mt-0.5">{label}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* Power bar */}
-      <div className="mt-3">
-        <div className="flex justify-between text-xs font-mono mb-1">
-          <span className="text-gray-500">POWER</span>
-          <span style={{ color:powerC }}>{gpu.power_draw.toFixed(1)}W / {gpu.power_limit}W</span>
-        </div>
-        <div className="h-1.5 rounded-full overflow-hidden" style={{ background:'#1f2937' }}>
-          <div className="h-full rounded-full transition-all duration-500" style={{ width:`${gpu.power_pct}%`, background:powerC }}/>
-        </div>
+              {n.install && (
+                <div className="space-y-1">
+                  {n.install.steps.map((step, i) => (
+                    <div key={i} className="text-xs font-mono" style={{ color: step.startsWith('docker') || step.startsWith('apt') ? '#00e5ff' : '#6b7280' }}>
+                      {step.startsWith('docker') || step.startsWith('apt') ? '$ ' : ''}{step}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        })}
       </div>
     </div>
   )
 }
+
 
 // ---------------------------------------------------------------------------
 //  Network Panel
@@ -578,7 +567,7 @@ export default function DashboardView() {
         {/* Row 1 */}
         <div className="grid gap-4" style={{gridTemplateColumns:"1fr 1fr 1fr 1.1fr"}}>
           <ClusterPanel cluster={fast.cluster} nodes={fast.nodes} vms={fast.vms} ceph={slow?.ceph??null}/>
-          <GPUPanel gpu={fast.gpu}/>
+          <GPUPanel gpu={fast.gpu} gpuStatus={fast.gpuStatus}/>
           <NetworkPanel network={fast.network??null}/>
           {slow && <ServicesPanel services={slow.services}/>}
         </div>
