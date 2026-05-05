@@ -123,7 +123,7 @@ export const gpuRoutes: FastifyPluginAsync = async (fastify) => {
 // ── Exporter port map ─────────────────────────────────────────────────────────
 const EXPORTER_PORTS: Record<GPUType, number> = {
   'nvidia':     9835,
-  'amd':        9915,
+  'amd':        9100,
   'intel-igpu': 8081,
   'intel-arc':  8081,
   'unknown':    0,
