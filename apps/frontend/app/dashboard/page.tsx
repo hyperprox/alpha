@@ -102,14 +102,14 @@ function ClusterPanel({ cluster, nodes, vms, ceph, storage, power }: { cluster:C
       <div className="space-y-3">
         <UsageBar label="CPU"    used={cluster.cpu_used}  total={cluster.cpu_total}  p={cluster.cpu_pct}  fmt={v=>`${v.toFixed(1)} cores`}/>
         <UsageBar label="MEMORY" used={cluster.mem_used}  total={cluster.mem_total}  p={cluster.mem_pct}  fmt={formatBytes}/>
-        <UsageBar label="DISK"    used={cluster.disk_used}  total={cluster.disk_total}  p={cluster.disk_pct}  fmt={formatBytes} color="#818cf8"/>
+        <UsageBar label="OS DISK" used={cluster.disk_used}  total={cluster.disk_total}  p={cluster.disk_pct}  fmt={formatBytes} color="#818cf8"/>
         {storTotalBytes > 0 && (
           <UsageBar label="STORAGE" used={storTotalUsed} total={storTotalBytes} p={storPct} fmt={formatBytes} color="#f59e0b"/>
         )}
         {power != null && power > 0 && (
           <div className="flex items-center justify-between text-xs font-mono pt-1">
             <span className="text-gray-500">POWER</span>
-            <span style={{ color: power > 200 ? '#ff4444' : power > 100 ? '#ffaa00' : '#22c55e' }}>⚡ {power}W total</span>
+            <span style={{ color: power > 200 ? '#ff4444' : power > 100 ? '#ffaa00' : '#22c55e' }}>⚡ {power}W <span className="text-gray-600">(partial)</span></span>
           </div>
         )}
         {ceph?.pgmap && (
@@ -572,7 +572,7 @@ export default function DashboardView() {
       const prometheus = await prometheusRes.json().catch(()=>({success:false}))
       const gpuStatus = await gpuStatusRes.json().catch(()=>({success:false}))
       // Fetch cluster power from Prometheus
-      fetch('/api/prometheus/query?q=sum(igpu_power_package%20or%20nvidia_smi_power_draw_watts)')
+      fetch('/api/prometheus/query?q=sum(rate(node_rapl_package_joules_total[1m])%20or%20igpu_power_package%20or%20nvidia_smi_power_draw_watts)')
         .then(r=>r.json())
         .then(d=>{ if(d.success && d.data?.result?.[0]) setClusterPower(Math.round(parseFloat(d.data.result[0].value[1]))) })
         .catch(()=>{})
