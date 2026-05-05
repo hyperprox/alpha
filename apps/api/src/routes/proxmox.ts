@@ -6,9 +6,9 @@ import { FastifyPluginAsync } from 'fastify'
 import { ProxmoxClient }      from '../lib/proxmox-client'
 import { getGPUInfo }         from '../lib/gpu'
 import { NPMClient }          from '../lib/npm-client'
+import { getProviderCredentials } from '../lib/credentials'
 
 let client: ProxmoxClient | null = null
-let npmClient: NPMClient | null  = null
 
 function getClient(): ProxmoxClient {
   if (!client) {
@@ -22,16 +22,11 @@ function getClient(): ProxmoxClient {
   return client
 }
 
-function getNPM(): NPMClient | null {
+async function getNPM(): Promise<NPMClient | null> {
   try {
-    if (!npmClient) {
-      const url      = process.env.NPM_URL
-      const email    = process.env.NPM_EMAIL
-      const password = process.env.NPM_PASSWORD
-      if (!url || !email || !password) return null
-      npmClient = new NPMClient(url, email, password)
-    }
-    return npmClient
+    const creds = await getProviderCredentials('proxy', 'npm')
+    if (!creds?.url || !creds?.email || !creds?.password) return null
+    return new NPMClient(creds.url, creds.email, creds.password)
   } catch { return null }
 }
 
@@ -116,7 +111,7 @@ export const proxmoxRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.get('/summary', async (_, r) => {
     try {
-      const npm = getNPM()
+      const npm = await getNPM()
 
       // Get VMs first so GPU consumer lookup can resolve CT names
       const [nodesR, vmsR] = await Promise.allSettled([
