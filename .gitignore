@@ -24,3 +24,10 @@ npm-debug.log*
 
 # Docker
 data/
+
+# Deployment-specific Prometheus targets — populated by setup wizard
+config/prometheus/targets/nodes.json
+config/prometheus/targets/pve.json
+config/prometheus/targets/intel-gpu.json
+config/prometheus/targets/nvidia.json
+config/prometheus/targets/ceph.json
