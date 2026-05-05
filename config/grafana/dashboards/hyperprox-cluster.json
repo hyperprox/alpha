@@ -13,10 +13,10 @@
       "type": "timeseries",
       "title": "CPU Usage \u2014 All Nodes",
       "gridPos": {
-        "h": 8,
-        "w": 12,
         "x": 0,
-        "y": 0
+        "y": 0,
+        "w": 12,
+        "h": 8
       },
       "targets": [
         {
@@ -38,10 +38,10 @@
       "type": "timeseries",
       "title": "Memory Usage \u2014 All Nodes",
       "gridPos": {
-        "h": 8,
-        "w": 12,
         "x": 12,
-        "y": 0
+        "y": 0,
+        "w": 12,
+        "h": 8
       },
       "targets": [
         {
@@ -63,10 +63,10 @@
       "type": "timeseries",
       "title": "Network I/O \u2014 All Nodes",
       "gridPos": {
-        "h": 8,
-        "w": 12,
         "x": 0,
-        "y": 8
+        "y": 8,
+        "w": 12,
+        "h": 8
       },
       "targets": [
         {
@@ -91,10 +91,10 @@
       "type": "bargauge",
       "title": "Disk Usage \u2014 Root Filesystem",
       "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 24
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
       },
       "targets": [
         {
@@ -132,10 +132,10 @@
       "type": "timeseries",
       "title": "Intel GPU \u2014 Engine Utilization",
       "gridPos": {
-        "h": 8,
-        "w": 12,
         "x": 0,
-        "y": 32
+        "y": 16,
+        "w": 12,
+        "h": 8
       },
       "targets": [
         {
@@ -172,10 +172,10 @@
       "type": "timeseries",
       "title": "Intel GPU \u2014 Memory Bandwidth",
       "gridPos": {
-        "h": 8,
-        "w": 12,
         "x": 12,
-        "y": 32
+        "y": 16,
+        "w": 12,
+        "h": 8
       },
       "targets": [
         {
@@ -200,10 +200,10 @@
       "type": "timeseries",
       "title": "Intel GPU \u2014 Power Draw",
       "gridPos": {
-        "h": 8,
-        "w": 12,
         "x": 0,
-        "y": 40
+        "y": 24,
+        "w": 12,
+        "h": 8
       },
       "targets": [
         {
@@ -228,10 +228,10 @@
       "type": "timeseries",
       "title": "Intel GPU \u2014 Frequency",
       "gridPos": {
-        "h": 8,
-        "w": 12,
         "x": 12,
-        "y": 40
+        "y": 24,
+        "w": 12,
+        "h": 8
       },
       "targets": [
         {
