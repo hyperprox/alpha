@@ -81,7 +81,7 @@ services:
       - GF_SECURITY_ALLOW_EMBEDDING=true
       - GF_SECURITY_COOKIE_SAMESITE=disabled
     volumes:
-      - ./config/grafana:/etc/grafana/provisioning:ro
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana_data:/var/lib/grafana
     ports:
       - "3003:3003"
