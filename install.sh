@@ -460,6 +460,8 @@ build_app() {
   source "${HYPERPROX_DIR}/.env"
   [[ -z "${NEXT_PUBLIC_API_URL:-}" ]] && die "NEXT_PUBLIC_API_URL is not set in .env — cannot build frontend"
   [[ -z "${NEXT_PUBLIC_WS_URL:-}" ]]  && die "NEXT_PUBLIC_WS_URL is not set in .env — cannot build frontend"
+  # FIX: Write .env.production so NEXT_PUBLIC_ vars are baked into the Next.js build
+  grep '^NEXT_PUBLIC_' "${HYPERPROX_DIR}/.env" > .env.production
 
   info "Building Next.js app (this is the slow step — typically 3-5 minutes)..."
   run_with_spinner "Building Frontend" pnpm build
