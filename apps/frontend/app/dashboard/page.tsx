@@ -121,6 +121,41 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
   // Check if any exporter is reachable
   const anyReachable = allGPUs.some(n => n.reachable)
 
+  // If all exporters reachable and non-NVIDIA, show success state
+  if (anyReachable && !gpu) {
+    const color = '#22c55e'
+    return (
+      <div className="rounded-lg border p-4" style={{ background:'linear-gradient(135deg,#0d1220,#080c14)', borderColor:`${color}30` }}>
+        <div className="flex items-center gap-2 mb-3">
+          <div className="w-2 h-2 rounded-full" style={{ background:color, boxShadow:`0 0 6px ${color}` }}/>
+          <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{ color }}>GPU METRICS</span>
+          <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:`${color}15`, color, border:`1px solid ${color}30` }}>ACTIVE</span>
+        </div>
+        <div className="space-y-2">
+          {allGPUs.filter(n=>n.reachable).map(n => {
+            const gpu0 = n.gpus[0]
+            const gpuColor = {'nvidia':'#22c55e','amd':'#ef4444','intel-igpu':'#3b82f6','intel-arc':'#00e5ff'}[gpu0.type]??'#a78bfa'
+            return (
+              <div key={n.node} className="flex items-center gap-2 p-2 rounded" style={{ background:'#060a10', border:`1px solid ${gpuColor}20` }}>
+                <span className="text-xs font-mono font-bold" style={{ color:gpuColor }}>{n.node}</span>
+                <span className="text-xs font-mono text-gray-500 flex-1">{gpu0.deviceName}</span>
+                <span className="text-xs font-mono" style={{ color:gpuColor }}>✓ metrics active</span>
+              </div>
+            )
+          })}
+          {allGPUs.filter(n=>!n.reachable).map(n => (
+            <div key={n.node} className="flex items-center gap-2 p-2 rounded" style={{ background:'#060a10', border:'1px solid #ffaa0020' }}>
+              <span className="text-xs font-mono font-bold" style={{ color:'#ffaa00' }}>{n.node}</span>
+              <span className="text-xs font-mono text-gray-500 flex-1">{n.gpus[0]?.deviceName}</span>
+              <span className="text-xs font-mono" style={{ color:'#ffaa00' }}>⚠ exporter offline</span>
+            </div>
+          ))}
+        </div>
+        <div className="text-xs font-mono text-gray-600 mt-3">View detailed metrics in the Monitoring → Grafana tab</div>
+      </div>
+    )
+  }
+
   // If NVIDIA GPU data is available and exporter is reachable, show NVIDIA panel
   if (gpu && anyReachable) {
     const accent = '#a78bfa'
