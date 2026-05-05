@@ -231,8 +231,23 @@
       "targets": [
         {
           "datasource": "Prometheus",
-          "expr": "intel_gpu_top_engines_busy_percent",
-          "legendFormat": "{{node}} {{engine}}"
+          "expr": "igpu_engines_render_3d_0_busy",
+          "legendFormat": "{{node}} Render/3D"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "igpu_engines_video_0_busy",
+          "legendFormat": "{{node}} Video"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "igpu_engines_blitter_0_busy",
+          "legendFormat": "{{node}} Blitter"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "igpu_engines_video_enhance_0_busy",
+          "legendFormat": "{{node}} VideoEnhance"
         }
       ],
       "fieldConfig": {
@@ -256,13 +271,18 @@
       "targets": [
         {
           "datasource": "Prometheus",
-          "expr": "intel_gpu_top_memory_bandwidth_bytes_per_second",
-          "legendFormat": "{{node}} {{type}}"
+          "expr": "igpu_imc_bandwidth_reads",
+          "legendFormat": "{{node}} Reads"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "igpu_imc_bandwidth_writes",
+          "legendFormat": "{{node}} Writes"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "binBps"
+          "unit": "MBs"
         }
       }
     },
@@ -279,8 +299,13 @@
       "targets": [
         {
           "datasource": "Prometheus",
-          "expr": "intel_gpu_top_power_watts",
-          "legendFormat": "{{node}}"
+          "expr": "igpu_power_gpu",
+          "legendFormat": "{{node}} GPU"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "igpu_power_package",
+          "legendFormat": "{{node}} Package"
         }
       ],
       "fieldConfig": {
@@ -302,8 +327,13 @@
       "targets": [
         {
           "datasource": "Prometheus",
-          "expr": "intel_gpu_top_frequency_mhz",
-          "legendFormat": "{{node}} {{type}}"
+          "expr": "igpu_frequency_actual",
+          "legendFormat": "{{node}} Actual"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "igpu_frequency_requested",
+          "legendFormat": "{{node}} Requested"
         }
       ],
       "fieldConfig": {
