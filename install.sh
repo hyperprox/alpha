@@ -552,6 +552,9 @@ NEXT_PUBLIC_WS_URL=ws://${HOST_IP}:${API_PORT}
 # Display name shown in the sidebar
 NEXT_PUBLIC_CLUSTER_NAME="My Cluster"
 
+# Grafana embed URL — must be reachable from the user's browser
+NEXT_PUBLIC_GRAFANA_URL=http://${HOST_IP}:3003
+
 # Comma-separated list of node names that have a GPU (e.g. node1,node2)
 # Used to show GPU badge and violet accent on those nodes in the dashboard
 NEXT_PUBLIC_GPU_NODES=
@@ -667,6 +670,8 @@ services:
     volumes:
       - ./config/grafana:/etc/grafana/provisioning:ro
       - grafana_data:/var/lib/grafana
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "3003:3003"
     networks:
@@ -807,7 +812,7 @@ datasources:
   - name: Prometheus
     type: prometheus
     access: proxy
-    url: http://localhost:9090
+    url: http://host.docker.internal:9090
     isDefault: true
     editable: false
 EOF
@@ -822,6 +827,8 @@ providers:
       path: /etc/grafana/provisioning/dashboards
 EOF
 
+    # FIX: Remove placeholder stub shipped in repo — conflicts with hyperprox-cluster.json
+    rm -f "${HYPERPROX_DIR}/config/grafana/dashboards/hyperprox-overview.json"
     ok "Grafana config written"
   fi
 
