@@ -64,23 +64,23 @@
     {
       "id": 5,
       "type": "timeseries",
-      "title": "GPU — VRAM Usage (titan7 GTX 1070 Ti)",
+      "title": "GPU — VRAM Usage",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
       "targets": [
         {
           "datasource": "Prometheus",
           "expr": "nvidia_smi_memory_used_bytes / 1024 / 1024 / 1024",
-          "legendFormat": "Used (GB)"
+          "legendFormat": "{{node}} Used (GB)"
         },
         {
           "datasource": "Prometheus",
           "expr": "nvidia_smi_memory_free_bytes / 1024 / 1024 / 1024",
-          "legendFormat": "Free (GB)"
+          "legendFormat": "{{node}} Free (GB)"
         },
         {
           "datasource": "Prometheus",
           "expr": "nvidia_smi_memory_total_bytes / 1024 / 1024 / 1024",
-          "legendFormat": "Total (GB)"
+          "legendFormat": "{{node}} Total (GB)"
         }
       ],
       "fieldConfig": { "defaults": { "unit": "decgbytes" } }
@@ -88,23 +88,23 @@
     {
       "id": 6,
       "type": "timeseries",
-      "title": "GPU — Utilization & Temperature (titan7)",
+      "title": "GPU — Utilization & Temperature",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
       "targets": [
         {
           "datasource": "Prometheus",
           "expr": "nvidia_smi_utilization_gpu_ratio * 100",
-          "legendFormat": "GPU Utilization %"
+          "legendFormat": "{{node}} Utilization %"
         },
         {
           "datasource": "Prometheus",
           "expr": "nvidia_smi_temperature_gpu",
-          "legendFormat": "Temperature °C"
+          "legendFormat": "{{node}} Temperature °C"
         },
         {
           "datasource": "Prometheus",
           "expr": "nvidia_smi_power_draw_watts",
-          "legendFormat": "Power Draw (W)"
+          "legendFormat": "{{node}} Power Draw (W)"
         }
       ],
       "fieldConfig": { "defaults": { "unit": "short" } }
@@ -116,8 +116,8 @@
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
       "targets": [{
         "datasource": "Prometheus",
-        "expr": "(1 - node_filesystem_avail_bytes{mountpoint=\"/\"} / node_filesystem_size_bytes{mountpoint=\"/\"}) * 100",
-        "legendFormat": "{{node}}"
+        "expr": "(1 - node_filesystem_avail_bytes{mountpoint=\"/\",fstype!=\"tmpfs\"} / node_filesystem_size_bytes{mountpoint=\"/\",fstype!=\"tmpfs\"}) * 100",
+        "legendFormat": "{{instance}}"
       }],
       "fieldConfig": {
         "defaults": {
