@@ -71,6 +71,30 @@ pct reboot <CTID>
 
 > The installer will detect missing nesting and warn you, but Docker will still fail. Always set these features before running the installer.
 
+
+### Tailscale (optional)
+
+If you want to access HyperProx remotely via Tailscale, the TUN device must be enabled on the LXC.
+
+**Proxmox 8.x (recent versions):**
+```bash
+pct set <CTID> --features keyctl=1,nesting=1,tun=1
+pct reboot <CTID>
+```
+
+**Older Proxmox versions** (if the above returns a schema error):
+```bash
+echo "lxc.cgroup2.devices.allow: c 10:200 rwm" >> /etc/pve/lxc/<CTID>.conf
+echo "lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file" >> /etc/pve/lxc/<CTID>.conf
+pct reboot <CTID>
+```
+
+Then inside the CT:
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+tailscale up
+```
+
 ### Create the Proxmox API Token
 
 Run on any Proxmox node:
