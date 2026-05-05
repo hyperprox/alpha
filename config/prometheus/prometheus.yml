@@ -54,3 +54,15 @@ scrape_configs:
           - /etc/prometheus/targets/nvidia.json
         refresh_interval: 30s
 
+
+  - job_name: intel-gpu
+    scrape_interval: 15s
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/targets/intel-gpu.json
+        refresh_interval: 30s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+      - source_labels: [node]
+        target_label: node
