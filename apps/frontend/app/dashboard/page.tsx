@@ -109,7 +109,7 @@ function ClusterPanel({ cluster, nodes, vms, ceph, storage, power }: { cluster:C
         {power != null && power > 0 && (
           <div className="flex items-center justify-between text-xs font-mono pt-1">
             <span className="text-gray-500">POWER</span>
-            <span style={{ color: power > 200 ? '#ff4444' : power > 100 ? '#ffaa00' : '#22c55e' }}>⚡ {power}W <span className="text-gray-600">(partial)</span></span>
+            <span style={{ color: power > 200 ? '#ff4444' : power > 100 ? '#ffaa00' : '#22c55e' }}>⚡ {power}W </span>
           </div>
         )}
         {ceph?.pgmap && (
@@ -572,7 +572,7 @@ export default function DashboardView() {
       const prometheus = await prometheusRes.json().catch(()=>({success:false}))
       const gpuStatus = await gpuStatusRes.json().catch(()=>({success:false}))
       // Fetch cluster power from Prometheus
-      fetch('/api/prometheus/query?q=sum(rate(node_rapl_package_joules_total[1m])%20or%20igpu_power_package%20or%20nvidia_smi_power_draw_watts)')
+      fetch('/api/prometheus/query?q=sum(rate(node_rapl_package_joules_total%5B2m%5D))')
         .then(r=>r.json())
         .then(d=>{ if(d.success && d.data?.result?.[0]) setClusterPower(Math.round(parseFloat(d.data.result[0].value[1]))) })
         .catch(()=>{})
