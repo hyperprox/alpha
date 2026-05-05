@@ -476,14 +476,16 @@ export default function DashboardView() {
   // Initial HTTP fetch for instant load
   const fetchInitial = useCallback(async () => {
     try {
-      const [summaryRes, grafanaRes, prometheusRes] = await Promise.all([
+      const [summaryRes, grafanaRes, prometheusRes, gpuStatusRes] = await Promise.all([
         fetch('/api/proxmox/summary'),
         fetch('/api/services/grafana'),
         fetch('/api/services/prometheus'),
+        fetch('/api/gpu/all/metrics-status'),
       ])
       const summary   = await summaryRes.json()
       const grafana   = await grafanaRes.json().catch(()=>({success:false}))
       const prometheus = await prometheusRes.json().catch(()=>({success:false}))
+      const gpuStatus = await gpuStatusRes.json().catch(()=>({success:false}))
 
       if (summary.success) {
         const d = summary.data
