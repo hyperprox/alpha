@@ -159,57 +159,70 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
   const gpuTypeColors: Record<string, string> = { 'nvidia': '#22c55e', 'amd': '#ef4444', 'intel-igpu': '#3b82f6', 'intel-arc': '#00e5ff' }
   const gpuTypeLabels: Record<string, string> = { 'nvidia': 'NVIDIA', 'amd': 'AMD', 'intel-igpu': 'Intel iGPU', 'intel-arc': 'Intel Arc' }
 
+  // Deduplicate install steps if all nodes have identical instructions
+  const uniqueSteps = allGPUs[0]?.install?.steps ?? []
+  const allSameSteps = allGPUs.every(n => JSON.stringify(n.install?.steps) === JSON.stringify(uniqueSteps))
+
   return (
-    <div className="rounded-lg border p-5" style={{ background:'linear-gradient(135deg,#0d1220,#080c14)', borderColor:'#ffaa0030' }}>
-      <div className="flex items-center gap-2 mb-4">
+    <div className="rounded-lg border p-4" style={{ background:'linear-gradient(135deg,#0d1220,#080c14)', borderColor:'#ffaa0030' }}>
+      <div className="flex items-center gap-2 mb-3">
         <div className="w-2 h-2 rounded-full" style={{ background:'#ffaa00', boxShadow:'0 0 6px #ffaa00' }}/>
         <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{ color:'#ffaa00' }}>GPU METRICS</span>
         <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:'#ffaa0015', color:'#ffaa00', border:'1px solid #ffaa0030' }}>EXPORTER NOT INSTALLED</span>
       </div>
-      <div className="space-y-3">
+      {/* Node list — compact */}
+      <div className="flex gap-2 flex-wrap mb-3">
         {allGPUs.map(n => {
           const gpu0 = n.gpus[0]
           const color = gpuTypeColors[gpu0.type] ?? '#a78bfa'
           const label = gpuTypeLabels[gpu0.type] ?? gpu0.type
           return (
-            <div key={n.node} className="rounded p-3" style={{ background:'#060a10', border:`1px solid ${color}20` }}>
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-xs font-mono font-bold uppercase" style={{ color }}>{n.node}</span>
-                <span className="text-xs font-mono text-gray-500">{label} — {gpu0.deviceName}</span>
-              </div>
-              {n.install && (
-                <div className="space-y-1">
-                  {n.install.steps.map((step, i) => {
-                    const isCmd = step.startsWith('docker') || step.startsWith('apt') || step.startsWith('curl') || step.startsWith('systemctl')
-                    return (
-                      <div key={i} className="flex items-center gap-2">
-                        <span className="text-xs font-mono flex-1 overflow-x-auto whitespace-nowrap block" style={{ color: isCmd ? '#00e5ff' : '#6b7280' }}>{step}</span>
-                        {isCmd && (
-                          <button onClick={() => {
-                            try { navigator.clipboard.writeText(step) } catch {
-                              const el = document.createElement('textarea')
-                              el.value = step
-                              document.body.appendChild(el)
-                              el.select()
-                              document.execCommand('copy')
-                              document.body.removeChild(el)
-                            }
-                          }}
-                            className="text-xs font-mono px-1.5 py-0.5 rounded flex-shrink-0"
-                            style={{ background:'#00e5ff15', color:'#00e5ff', border:'1px solid #00e5ff30' }}
-                            title="Copy to clipboard">
-                            copy
-                          </button>
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-            </div>
+            <span key={n.node} className="text-xs font-mono px-2 py-1 rounded" style={{ background:`${color}15`, color, border:`1px solid ${color}30` }}>
+              {n.node} — {label}
+            </span>
           )
         })}
       </div>
+      {/* Install steps — show once if all nodes identical, otherwise per node */}
+      {allSameSteps ? (
+        <div className="space-y-1.5">
+          <div className="text-xs font-mono text-gray-500 mb-1">Run on each Proxmox node:</div>
+          {uniqueSteps.map((step, i) => {
+            const isCmd = ['docker','apt','curl','systemctl'].some(p => step.startsWith(p))
+            return (
+              <div key={i} className="flex items-center gap-2">
+                <span className="text-xs font-mono flex-1 truncate" style={{ color: isCmd ? '#00e5ff' : '#6b7280' }}>{step}</span>
+                {isCmd && (
+                  <button onClick={() => { try { navigator.clipboard.writeText(step) } catch { const el = document.createElement('textarea'); el.value=step; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el) } }}
+                    className="text-xs font-mono px-1.5 py-0.5 rounded flex-shrink-0"
+                    style={{ background:'#00e5ff15', color:'#00e5ff', border:'1px solid #00e5ff30' }}>copy</button>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {allGPUs.map(n => n.install && (
+            <div key={n.node} className="rounded p-2" style={{ background:'#060a10', border:'1px solid #1f2937' }}>
+              <div className="text-xs font-mono text-gray-500 mb-1">{n.node}:</div>
+              {n.install.steps.map((step, i) => {
+                const isCmd = ['docker','apt','curl','systemctl'].some(p => step.startsWith(p))
+                return (
+                  <div key={i} className="flex items-center gap-2">
+                    <span className="text-xs font-mono flex-1 truncate" style={{ color: isCmd ? '#00e5ff' : '#6b7280' }}>{step}</span>
+                    {isCmd && (
+                      <button onClick={() => { try { navigator.clipboard.writeText(step) } catch { const el = document.createElement('textarea'); el.value=step; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el) } }}
+                        className="text-xs font-mono px-1.5 py-0.5 rounded flex-shrink-0"
+                        style={{ background:'#00e5ff15', color:'#00e5ff', border:'1px solid #00e5ff30' }}>copy</button>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
