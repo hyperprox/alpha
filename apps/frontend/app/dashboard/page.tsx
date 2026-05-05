@@ -185,7 +185,16 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
                       <div key={i} className="flex items-center gap-2">
                         <span className="text-xs font-mono flex-1" style={{ color: isCmd ? '#00e5ff' : '#6b7280' }}>{step}</span>
                         {isCmd && (
-                          <button onClick={() => navigator.clipboard.writeText(step)}
+                          <button onClick={() => {
+                            try { navigator.clipboard.writeText(step) } catch {
+                              const el = document.createElement('textarea')
+                              el.value = step
+                              document.body.appendChild(el)
+                              el.select()
+                              document.execCommand('copy')
+                              document.body.removeChild(el)
+                            }
+                          }}
                             className="text-xs font-mono px-1.5 py-0.5 rounded flex-shrink-0"
                             style={{ background:'#00e5ff15', color:'#00e5ff', border:'1px solid #00e5ff30' }}
                             title="Copy to clipboard">
