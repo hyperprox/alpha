@@ -28,7 +28,7 @@ interface NodeGPUStatus {
   port: number
   install: { title: string; steps: string[] } | null
 }
-interface FastData { nodes: PVENode[]; vms: PVEVM[]; gpu: GPUInfoFull|null; cluster: ClusterTotals; network?: NetworkData; gpuStatus?: NodeGPUStatus[] }
+interface FastData { nodes: PVENode[]; vms: PVEVM[]; gpu: GPUInfoFull|null; cluster: ClusterTotals; network?: NetworkData; gpuStatus?: NodeGPUStatus[]; storage?: any[] }
 interface SlowData { ceph: CephStatus|null; osds: CephOSD[]; ha: HAEntry[]; services: { npm: ServiceInfo; grafana?: ServiceInfo; prometheus?: ServiceInfo } }
 
 // Gauge
@@ -67,10 +67,18 @@ function UsageBar({ label, used, total, p, color='#00e5ff', fmt }: { label:strin
 }
 
 // Cluster summary
-function ClusterPanel({ cluster, nodes, vms, ceph }: { cluster:ClusterTotals; nodes:PVENode[]; vms:PVEVM[]; ceph:CephStatus|null }) {
+function ClusterPanel({ cluster, nodes, vms, ceph, storage, power }: { cluster:ClusterTotals; nodes:PVENode[]; vms:PVEVM[]; ceph:CephStatus|null; storage?:any[]; power?:number|null }) {
   const running = vms.filter(v=>v.status==='running').length
   const online  = nodes.filter(n=>n.status==='online').length
   const cephPct = ceph?.pgmap ? pct(ceph.pgmap.bytes_used, ceph.pgmap.bytes_total) : 0
+  // Deduplicate storage — sum unique storages by name (avoid double counting shared)
+  const storageMap = new Map<string, {used:number;total:number}>()
+  for (const s of storage ?? []) {
+    if (!storageMap.has(s.storage)) storageMap.set(s.storage, { used: s.used ?? 0, total: s.total ?? 0 })
+  }
+  const storTotalUsed  = [...storageMap.values()].reduce((a, s) => a + s.used, 0)
+  const storTotalBytes = [...storageMap.values()].reduce((a, s) => a + s.total, 0)
+  const storPct        = storTotalBytes > 0 ? Math.round((storTotalUsed / storTotalBytes) * 100) : 0
 
   return (
     <div className="rounded-lg border p-5" style={{background:'linear-gradient(135deg,#0d1220,#080c14)',borderColor:'#00e5ff20'}}>
@@ -94,7 +102,16 @@ function ClusterPanel({ cluster, nodes, vms, ceph }: { cluster:ClusterTotals; no
       <div className="space-y-3">
         <UsageBar label="CPU"    used={cluster.cpu_used}  total={cluster.cpu_total}  p={cluster.cpu_pct}  fmt={v=>`${v.toFixed(1)} cores`}/>
         <UsageBar label="MEMORY" used={cluster.mem_used}  total={cluster.mem_total}  p={cluster.mem_pct}  fmt={formatBytes}/>
-        <UsageBar label="DISK"   used={cluster.disk_used} total={cluster.disk_total} p={cluster.disk_pct} fmt={formatBytes} color="#818cf8"/>
+        <UsageBar label="DISK"    used={cluster.disk_used}  total={cluster.disk_total}  p={cluster.disk_pct}  fmt={formatBytes} color="#818cf8"/>
+        {storTotalBytes > 0 && (
+          <UsageBar label="STORAGE" used={storTotalUsed} total={storTotalBytes} p={storPct} fmt={formatBytes} color="#f59e0b"/>
+        )}
+        {power != null && power > 0 && (
+          <div className="flex items-center justify-between text-xs font-mono pt-1">
+            <span className="text-gray-500">POWER</span>
+            <span style={{ color: power > 200 ? '#ff4444' : power > 100 ? '#ffaa00' : '#22c55e' }}>⚡ {power}W total</span>
+          </div>
+        )}
         {ceph?.pgmap && (
           <UsageBar label="CEPH" used={ceph.pgmap.bytes_used} total={ceph.pgmap.bytes_total} p={cephPct} fmt={formatBytes} color="#f59e0b"/>
         )}
@@ -536,6 +553,7 @@ function HAPanel({ ha }: { ha:HAEntry[] }) {
 // Main dashboard
 export default function DashboardView() {
   const [fast, setFast]       = useState<FastData | null>(null)
+  const [clusterPower, setClusterPower] = useState<number | null>(null)
   const [slow, setSlow]       = useState<SlowData | null>(null)
   const [lastSync, setLastSync] = useState<Date | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
@@ -553,10 +571,15 @@ export default function DashboardView() {
       const grafana   = await grafanaRes.json().catch(()=>({success:false}))
       const prometheus = await prometheusRes.json().catch(()=>({success:false}))
       const gpuStatus = await gpuStatusRes.json().catch(()=>({success:false}))
+      // Fetch cluster power from Prometheus
+      fetch('/api/prometheus/query?q=sum(igpu_power_package)%2Bsum(nvidia_smi_power_draw_watts%20or%20vector(0))%2Bsum(amd_gpu_power_draw_watts%20or%20vector(0))')
+        .then(r=>r.json())
+        .then(d=>{ if(d.success && d.data?.result?.[0]) setClusterPower(Math.round(parseFloat(d.data.result[0].value[1]))) })
+        .catch(()=>{})
 
       if (summary.success) {
         const d = summary.data
-        setFast({ nodes: d.nodes, vms: d.vms, gpu: d.gpu, cluster: d.cluster, gpuStatus: gpuStatus.success ? gpuStatus.data : [] })
+        setFast({ nodes: d.nodes, vms: d.vms, gpu: d.gpu, cluster: d.cluster, gpuStatus: gpuStatus.success ? gpuStatus.data : [], storage: d.storage ?? [] })
         setSlow({
           ceph: d.ceph, osds: d.osds, ha: d.ha,
           services: {
@@ -582,7 +605,7 @@ export default function DashboardView() {
       try {
         const msg = JSON.parse(e.data)
         if (msg.type === 'fast') {
-          setFast(prev => ({ ...msg.payload, gpuStatus: prev?.gpuStatus ?? [] }))
+          setFast(prev => ({ ...msg.payload, gpuStatus: prev?.gpuStatus ?? [], storage: msg.payload.storage ?? prev?.storage ?? [] }))
           setLastSync(new Date())
         }
         if (msg.type === 'slow') {
@@ -644,7 +667,7 @@ export default function DashboardView() {
       <main className="p-6 max-w-7xl mx-auto space-y-6">
         {/* Row 1 */}
         <div className="grid gap-4" style={{gridTemplateColumns:"1fr 1fr 1fr 1.1fr"}}>
-          <ClusterPanel cluster={fast.cluster} nodes={fast.nodes} vms={fast.vms} ceph={slow?.ceph??null}/>
+          <ClusterPanel cluster={fast.cluster} nodes={fast.nodes} vms={fast.vms} ceph={slow?.ceph??null} storage={fast.storage} power={clusterPower}/>
           <GPUPanel gpu={fast.gpu} gpuStatus={fast.gpuStatus}/>
           <NetworkPanel network={fast.network??null}/>
           {slow && <ServicesPanel services={slow.services}/>}
