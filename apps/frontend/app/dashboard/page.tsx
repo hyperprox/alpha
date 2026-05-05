@@ -1,6 +1,5 @@
 'use client'
 
-const gpuNodes = (process.env.NEXT_PUBLIC_GPU_NODES ?? '').split(',').filter(Boolean)
 
 
 import { useEffect, useState, useCallback, useRef } from 'react'
@@ -22,7 +21,14 @@ interface GPUInfoFull { name: string; vram_total: number; vram_used: number; vra
 interface NodeNetStats { node: string; netin: number; netout: number; netin_mb: number; netout_mb: number }
 interface CephIOStats { read_bps: number; write_bps: number; read_ops: number; write_ops: number }
 interface NetworkData { nodes: NodeNetStats[]; ceph_io: CephIOStats|null; total_in: number; total_out: number }
-interface FastData { nodes: PVENode[]; vms: PVEVM[]; gpu: GPUInfoFull|null; cluster: ClusterTotals; network?: NetworkData }
+interface NodeGPUStatus {
+  node: string
+  reachable: boolean
+  gpus: { type: string; vendorName: string; deviceName: string; dedicated: boolean }[]
+  port: number
+  install: { title: string; steps: string[] } | null
+}
+interface FastData { nodes: PVENode[]; vms: PVEVM[]; gpu: GPUInfoFull|null; cluster: ClusterTotals; network?: NetworkData; gpuStatus?: NodeGPUStatus[] }
 interface SlowData { ceph: CephStatus|null; osds: CephOSD[]; ha: HAEntry[]; services: { npm: ServiceInfo; grafana?: ServiceInfo; prometheus?: ServiceInfo } }
 
 // Gauge
@@ -239,9 +245,7 @@ function NetworkPanel({ network }: { network: NetworkData | null }) {
     ...network.nodes.flatMap(n => [n.netin, n.netout]), 1
   )
 
-  const sortedNodes = [...network.nodes].sort((a, b) =>
-    gpuNodes.includes(a.node) ? -1 : gpuNodes.includes(b.node) ? 1 : a.node.localeCompare(b.node)
-  )
+  const sortedNodes = [...network.nodes].sort((a, b) => a.node.localeCompare(b.node))
 
   return (
     <div className="rounded-lg border p-5" style={{ background:'linear-gradient(135deg,#0d1220,#080c14)', borderColor:'#00e5ff20' }}>
@@ -260,8 +264,7 @@ function NetworkPanel({ network }: { network: NetworkData | null }) {
       {/* Per-node rows */}
       <div className="space-y-2 mb-4">
         {sortedNodes.map(n => {
-          const isGpu = gpuNodes.includes(n.node)
-          const accent = isGpu ? '#a78bfa' : '#00e5ff'
+          const accent = '#00e5ff'
           return (
             <div key={n.node}>
               <div className="flex items-center gap-2 mb-1">
@@ -306,17 +309,26 @@ function NetworkPanel({ network }: { network: NetworkData | null }) {
 
 
 // Node card
-function NodeCard({ node, vms }: { node:PVENode; vms:PVEVM[] }) {
+function NodeCard({ node, vms, gpuInfo }: { node:PVENode; vms:PVEVM[]; gpuInfo?: NodeGPUStatus }) {
   const cpuPct=Math.round(node.cpu*100), memPct=pct(node.mem,node.maxmem), diskPct=pct(node.disk,node.maxdisk)
   const nodeVMs=vms.filter(v=>v.node===node.node), running=nodeVMs.filter(v=>v.status==='running').length
-  const isGpu=gpuNodes.includes(node.node), accent=isGpu?'#a78bfa':'#00e5ff'
+  const hasGpu = gpuInfo && gpuInfo.gpus.length > 0
+  const gpuType = gpuInfo?.gpus[0]?.type ?? null
+  const gpuAccentMap: Record<string, string> = { 'nvidia': '#22c55e', 'amd': '#ef4444', 'intel-igpu': '#3b82f6', 'intel-arc': '#00e5ff' }
+  const accent = gpuType ? (gpuAccentMap[gpuType] ?? '#a78bfa') : '#00e5ff'
   return (
     <div className="rounded-lg border p-4 flex flex-col gap-4" style={{background:'linear-gradient(135deg,#0d1220,#080c14)',borderColor:`${accent}30`}}>
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full" style={{background:accent,boxShadow:`0 0 6px ${accent}`}}/>
           <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{color:accent}}>{node.node}</span>
-          {isGpu && <span className="text-xs px-1.5 py-0.5 rounded font-mono" style={{background:'#7c3aed20',color:'#a78bfa',border:'1px solid #7c3aed40',fontSize:9}}>GPU</span>}
+          {hasGpu && (
+            <span className="text-xs px-1.5 py-0.5 rounded font-mono" style={{background:`${accent}20`,color:accent,border:`1px solid ${accent}40`,fontSize:9}}
+              title={gpuInfo?.reachable ? gpuInfo.gpus[0].deviceName : `${gpuInfo?.install?.title ?? 'GPU detected'} — metrics not available`}>
+              {gpuType === 'nvidia' ? 'NVIDIA' : gpuType === 'amd' ? 'AMD' : gpuType === 'intel-arc' ? 'ARC' : 'iGPU'}
+              {!gpuInfo?.reachable && ' ⚠'}
+            </span>
+          )}
         </div>
         <span className="text-xs font-mono text-gray-500">{formatUptime(node.uptime)}</span>
       </div>
@@ -532,7 +544,7 @@ export default function DashboardView() {
     </div>
   )
 
-  const sorted = [...fast.nodes].sort((a,b)=>gpuNodes.includes(a.node)?-1:gpuNodes.includes(b.node)?1:a.node.localeCompare(b.node))
+  const sorted = [...fast.nodes].sort((a,b)=>{const ag=fast.gpuStatus?.find(g=>g.node===a.node)?.gpus.length??0;const bg=fast.gpuStatus?.find(g=>g.node===b.node)?.gpus.length??0;return bg-ag||a.node.localeCompare(b.node)})
 
   return (
     <div className="min-h-full" style={{background:'#080c14'}}>
@@ -573,7 +585,7 @@ export default function DashboardView() {
         <section>
           <h2 className="text-xs font-mono uppercase tracking-widest text-gray-600 mb-3">Cluster Nodes</h2>
           <div className="grid gap-4" style={{gridTemplateColumns:'repeat(auto-fill,minmax(220px,1fr))'}}>
-            {sorted.map(node=><NodeCard key={node.node} node={node} vms={fast.vms}/>)}
+            {sorted.map(node=><NodeCard key={node.node} node={node} vms={fast.vms} gpuInfo={fast.gpuStatus?.find(g=>g.node===node.node)}/>)}
           </div>
         </section>
 
