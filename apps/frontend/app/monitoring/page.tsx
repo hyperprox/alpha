@@ -21,6 +21,8 @@ interface NodeStat {
   memory: number
   disk: number
   load: number
+  rxKBs?: number
+  txKBs?: number
 }
 
 const GRAFANA = process.env.NEXT_PUBLIC_GRAFANA_URL || 'http://localhost:3003'
@@ -104,7 +106,24 @@ export default function MonitoringPage() {
       const nodesJson  = await nodesRes.json()
 
       if (alertsJson.success) setAlerts(alertsJson.data)
-      if (nodesJson.success)  setNodes(nodesJson.data)
+      if (nodesJson.success) {
+        const nodeStats: NodeStat[] = nodesJson.data
+        // Fetch network for each node
+        try {
+          const [rxRes, txRes] = await Promise.all([
+            fetch('/api/prometheus/query?q=' + encodeURIComponent('sum by (node) (rate(node_network_receive_bytes_total{device="vmbr0"}[1m]))')),
+            fetch('/api/prometheus/query?q=' + encodeURIComponent('sum by (node) (rate(node_network_transmit_bytes_total{device="vmbr0"}[1m]))'))
+          ])
+          const rxJson = await rxRes.json()
+          const txJson = await txRes.json()
+          const rxMap: Record<string, number> = {}
+          const txMap: Record<string, number> = {}
+          if (rxJson.success) for (const r of rxJson.data.result) rxMap[r.metric.node] = parseFloat(r.value[1]) / 1024
+          if (txJson.success) for (const r of txJson.data.result) txMap[r.metric.node] = parseFloat(r.value[1]) / 1024
+          for (const n of nodeStats) { n.rxKBs = rxMap[n.node] || 0; n.txKBs = txMap[n.node] || 0 }
+        } catch {}
+        setNodes(nodeStats)
+      }
       setLastUpdate(new Date())
     } catch (err) {
       console.error('Monitoring fetch error:', err)
@@ -252,6 +271,11 @@ export default function MonitoringPage() {
                 {/* Load */}
                 <div style={{ marginTop: 8, fontSize: 10, color: '#374151' }}>
                   LOAD <span style={{ color: '#e2e8f0' }}>{(n.load || 0).toFixed(2)}</span>
+                </div>
+                {/* Network */}
+                <div style={{ marginTop: 6, display: 'flex', gap: 12, fontSize: 10, color: '#374151' }}>
+                  <span>↓ <span style={{ color: '#22c55e' }}>{((n.rxKBs||0) >= 1024 ? ((n.rxKBs||0)/1024).toFixed(1)+' MB/s' : (n.rxKBs||0).toFixed(1)+' KB/s')}</span></span>
+                  <span>↑ <span style={{ color: '#f59e0b' }}>{((n.txKBs||0) >= 1024 ? ((n.txKBs||0)/1024).toFixed(1)+' MB/s' : (n.txKBs||0).toFixed(1)+' KB/s')}</span></span>
                 </div>
               </div>
             ))}
