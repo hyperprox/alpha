@@ -1,3 +1,7 @@
+<p align="center">
+  <img alt="HyperProx" src="docs/hyperprox-banner-dark.svg" width="700" />
+</p>
+
 <div align="center">
 
 ```
