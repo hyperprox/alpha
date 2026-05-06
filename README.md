@@ -1,18 +1,16 @@
 <p align="center">
-  <img alt="HyperProx" src="docs/hyperprox-banner-dark.svg" width="700" />
+  <img alt="HyperProx" src="docs/hyperprox-banner.png" width="700" />
 </p>
 
-<div align="center">
+<p align="center">
+  <strong>Your Proxmox infrastructure, hypercharged.</strong>
+</p>
 
-```
-
-**Your Proxmox infrastructure, hypercharged.**
-
-[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![Docker](https://img.shields.io/badge/Docker-hyperprox%2Fhyperprox-2496ED?logo=docker)](https://hub.docker.com/r/hyperprox/hyperprox)
-[![GitHub Stars](https://img.shields.io/github/stars/hyperprox/alpha?style=flat)](https://github.com/hyperprox/alpha/stargazers)
-
-</div>
+<p align="center">
+  <a href="https://www.gnu.org/licenses/agpl-3.0"><img src="https://img.shields.io/badge/License-AGPL_v3-blue.svg" alt="License: AGPL v3"></a>
+  <a href="https://hub.docker.com/r/hyperprox/hyperprox"><img src="https://img.shields.io/badge/Docker-hyperprox%2Fhyperprox-2496ED?logo=docker" alt="Docker"></a>
+  <a href="https://github.com/hyperprox/alpha/stargazers"><img src="https://img.shields.io/github/stars/hyperprox/alpha?style=flat" alt="GitHub Stars"></a>
+</p>
 
 ---
 
@@ -30,6 +28,8 @@ HyperProx runs inside a **dedicated LXC container** on your Proxmox node. Before
 - Debian 12 template
 - 4 CPU cores · 8GB RAM · 100GB disk (SSD preferred)
 - Network: bridge on your main LAN (e.g. `vmbr0`), static IP recommended
+
+> **Minimum for testing (no Ollama):** 2 cores · 4GB RAM · 20GB disk
 
 ### Required LXC settings — critical
 
@@ -68,12 +68,11 @@ pct reboot <CTID>
 
 > The installer will detect missing nesting and warn you, but Docker will still fail. Always set these features before running the installer.
 
-
 ### Tailscale (optional)
 
 If you want to access HyperProx remotely via Tailscale, the TUN device must be enabled on the LXC.
 
-**Proxmox 8.x (recent versions):**
+**Proxmox 8.x:**
 ```bash
 pct set <CTID> --features keyctl=1,nesting=1,tun=1
 pct reboot <CTID>
@@ -103,14 +102,26 @@ pveum acl modify / --token 'root@pam!hyperprox' --role Administrator
 
 Copy the token secret — it is only shown once.
 
+### Get your GoDaddy API Key (DNS management)
+
+GoDaddy DNS management requires a production API key. The OTE (test environment) keys will not work.
+
+1. Go to [https://developer.godaddy.com/keys](https://developer.godaddy.com/keys) and sign in with your GoDaddy account
+2. Click **Create New App**
+3. Give it a name (e.g. `HyperProx`) and click **Next**
+4. Under **Environment**, select **Production** — do not use OTE
+5. Copy both the **API Key** and **API Secret** — the secret is only shown once
+
+> Your GoDaddy account must have purchased domains associated with it. Reseller or sub-accounts may require additional permissions.
+
+Enter both values in the HyperProx setup wizard when prompted for DNS credentials.
+
 ---
 
 ## Install
 
 ```bash
-# Install curl if not already present
 apt update && apt install -y curl
-
 curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/install.sh | bash
 ```
 
@@ -118,7 +129,7 @@ The installer will:
 - Detect your environment (LXC, VM, or bare metal)
 - Fix DNS if Proxmox has injected internal resolvers
 - Prompt to set a static IP if running DHCP
-- Install Docker, Node.js, and all dependencies
+- Install Docker, Node.js, and all dependencies with live progress output
 - Build and start all services
 - Open the setup wizard at `http://<your-ip>:3001`
 
@@ -130,27 +141,122 @@ docker compose up -d
 
 ---
 
+## Monitoring — additional setup required
+
+The monitoring page, node metrics, and wattage display require additional components installed on each Proxmox **host** (not inside the HyperProx CT). These are not installed automatically.
+
+### node_exporter (required for all node metrics)
+
+Install on every Proxmox node you want to monitor:
+
+```bash
+# Run on each Proxmox node
+apt update && apt install -y prometheus-node-exporter
+systemctl enable --now prometheus-node-exporter
+```
+
+Verify it's working:
+```bash
+curl -s http://localhost:9100/metrics | head -5
+```
+
+### IPMI / wattage display (optional — requires compatible hardware)
+
+Power draw metrics require hardware with IPMI, iDRAC, or iLO support. Most consumer and prosumer boards do not support this. Enterprise-grade hardware (Dell PowerEdge, HP ProLiant, Supermicro, etc.) generally does.
+
+If your hardware supports IPMI:
+
+```bash
+# Run on each Proxmox node
+apt update && apt install -y ipmitool freeipmi-tools
+
+# Verify IPMI is accessible
+ipmitool sensor list | grep -i power
+
+# Restart node_exporter with IPMI collector enabled
+cat > /etc/default/prometheus-node-exporter << 'EOF'
+ARGS="--collector.ipmi"
+EOF
+
+systemctl restart prometheus-node-exporter
+
+# Confirm wattage metrics are available
+curl -s http://localhost:9100/metrics | grep -i "ipmi_power\|dcmi_power"
+```
+
+> If `ipmitool sensor list` returns nothing or an error, your hardware does not expose IPMI power data and wattage will not be displayed regardless of configuration.
+
+### GPU metrics (optional — NVIDIA only)
+
+If you have NVIDIA GPUs on any Proxmox node, install `nvidia_gpu_exporter`:
+
+```bash
+# Run on each node with an NVIDIA GPU (requires NVIDIA drivers already installed)
+wget https://github.com/utkuozdemir/nvidia_gpu_exporter/releases/download/v1.1.0/nvidia_gpu_exporter_1.1.0_linux_amd64.tar.gz
+tar -xzf nvidia_gpu_exporter_1.1.0_linux_amd64.tar.gz
+mv nvidia_gpu_exporter /usr/local/bin/
+chmod +x /usr/local/bin/nvidia_gpu_exporter
+
+cat > /etc/systemd/system/nvidia_gpu_exporter.service << 'EOF'
+[Unit]
+Description=NVIDIA GPU Exporter
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/nvidia_gpu_exporter
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now nvidia_gpu_exporter
+```
+
+---
+
+## AI Assistant — current state
+
+The AI assistant is in early alpha. Here is exactly what works today and what doesn't.
+
+**What works:**
+- Connect to an **existing Ollama instance** running on your network — HyperProx does not bundle or install Ollama
+- Enter a deployment request in natural language (e.g. `Deploy Nextcloud at cloud.mydomain.com`)
+- HyperProx will generate a **step-by-step deployment plan** showing what it would do
+
+**What does not work yet:**
+- Plan execution — the Confirm button does not execute anything. The plan is display-only.
+- Autonomous end-to-end deployment (CT creation → proxy → DNS → SSL) — this is the v1.0 target
+- Any action beyond plan generation
+
+**Connecting to Ollama:**
+
+Enter your Ollama URL in Settings → AI. This must be an existing Ollama instance you are already running — for example `http://192.168.2.208:11434` if Ollama is running on another node or machine on your network.
+
+> **Model recommendation:** `llama3.2:3b` works but produces inconsistent deployment plans. `qwen3:8b` or `deepseek-r1:8b` handle structured planning significantly better and are recommended if your hardware supports them.
+
+---
+
 ## Full functionality in the alpha
+
+> ⚠️ **The setup wizard monitoring install toggles are not yet functional.** Prometheus and Grafana containers must be started manually — see the workaround in [Known Issues](#known-issues).
 
 The setup wizard will offer to install the following as Docker containers. These are optional but required for the full alpha experience:
 
 | Service | Why you need it |
 |---|---|
-| **Nginx Proxy Manager** | Required for proxy management — create hosts, SSL certs, and the full AI deployment wizard |
+| **Nginx Proxy Manager** | Required for proxy management — create hosts, SSL certs, and the AI deployment wizard |
 | **Prometheus** | Required for node metrics, alerts, and the monitoring page |
 | **Grafana** | Required for dashboard graphs and the embedded monitoring view |
 
 If you already have any of these running elsewhere on your cluster, skip the install and connect to your existing instances instead.
 
+> ⚠️ **Connecting to an existing Grafana or Prometheus instance is not yet supported.** HyperProx currently only supports the bundled instances started via Docker Compose. Custom Grafana/Prometheus URLs are a v1.0 feature.
+
 ---
 
-Running Proxmox in production means managing half a dozen separate tools that don't talk to each other:
-
-- Nginx Proxy Manager for reverse proxying
-- GoDaddy / Cloudflare for DNS
-- Grafana + Prometheus for monitoring (manually configured)
-- Separate SSH sessions to check node health, network mounts, storage status
-- No visibility when a NAS goes offline and silently breaks monitoring
+Running Proxmox in production means managing half a dozen separate tools that don't talk to each other: Nginx Proxy Manager for reverse proxying, GoDaddy or Cloudflare for DNS, Grafana and Prometheus for monitoring (manually configured), separate SSH sessions to check node health, and no visibility when a NAS goes offline and silently breaks monitoring.
 
 HyperProx replaces all of that with a single pane of glass — deployed in under five minutes.
 
@@ -163,17 +269,20 @@ HyperProx replaces all of that with a single pane of glass — deployed in under
 | VM & LXC management — live metrics, power actions | ✅ Shipped |
 | Nginx Proxy Manager full CRUD | ✅ Shipped |
 | GoDaddy DNS — all record types, DDNS, stale IP detection, domain expiry | ✅ Shipped |
-| Bundled Prometheus + Grafana — optional, installed via setup wizard | ✅ Shipped |
+| Bundled Prometheus + Grafana — manual start via Docker Compose | ✅ Shipped |
 | Real-time WebSocket dashboard — nodes, GPU, CEPH, HA, network | ✅ Shipped |
 | Storage page — CEPH health, OSD status, VM/CT disk breakdown | ✅ Shipped |
 | Monitoring page — node health, active alerts, Grafana embed | ✅ Shipped |
 | AES-256-GCM encrypted credential store | ✅ Shipped |
 | One-shot installer + first-run setup wizard | ✅ Shipped |
-| AI deployment wizard (Ollama-powered, plan + confirm) | ✅ Shipped |
 | LXC creation — template picker, node resource limits, storage with free space | ✅ Shipped |
 | VM creation — ISO auto-detection, network config, storage picker | ✅ Shipped |
 | CT/VM deletion with confirmation guard | ✅ Shipped |
 | CT template + ISO auto-detection across all nodes and storage pools | ✅ Shipped |
+| AI deployment — plan generation from natural language (read-only) | ✅ Shipped |
+| Setup wizard — one-click Prometheus + Grafana install | 🚧 v1.0 |
+| AI deployment — plan execution and autonomous end-to-end workflow | 🚧 v1.0 |
+| Connect to existing Grafana / Prometheus instance | 🚧 v1.0 |
 
 ---
 
@@ -181,25 +290,38 @@ HyperProx replaces all of that with a single pane of glass — deployed in under
 
 | Issue | Status |
 |---|---|
-| **Ubuntu requires AppArmor disabled** — Docker inside a privileged LXC on Ubuntu fails due to AppArmor restrictions. AppArmor must be completely disabled before running the installer. Debian 12 is recommended and works out of the box. | 🔧 Fix in progress — installer will handle this automatically |
-| **CEPH MON node not auto-detected** — the setup wizard should automatically detect which node runs the CEPH MON service and save it to `.env`. This detection is not working correctly, so CEPH status and storage overview will return errors on fresh installs. | 🔧 Fix in progress |
+| **Setup wizard monitoring install toggles do nothing** — the Prometheus and Grafana install toggles in the setup wizard are UI-only and do not start the containers. They must be started manually. | 🔧 Fix in progress |
+| **Grafana not connecting to Prometheus** — on some Docker setups `host.docker.internal` doesn't resolve inside the Grafana container, causing the Prometheus datasource to show as disconnected and all graphs to be blank. | 🔧 Fix in progress |
+| **Ubuntu requires AppArmor disabled** — Docker inside a privileged LXC on Ubuntu fails due to AppArmor restrictions. Debian 12 is recommended and works out of the box. | 🔧 Fix in progress |
+| **CEPH MON node not auto-detected** — the setup wizard attempts to detect which node runs the CEPH MON service, but detection is unreliable on fresh installs. CEPH status and storage overview will return errors until set manually. | 🔧 Fix in progress |
+| **Wattage not displayed on all hardware** — power draw requires IPMI/iDRAC/iLO support and additional setup. See [Monitoring — additional setup required](#monitoring--additional-setup-required). | ℹ️ Hardware dependent |
 
 ### Workarounds
 
-**Ubuntu — disable AppArmor before installing** (or use Debian 12 to avoid this entirely):
-
+**Start Prometheus and Grafana manually** (until setup wizard install is fixed):
 ```bash
-# Disable AppArmor completely
+cd /opt/hyperprox
+docker compose --profile monitoring up -d
+```
+
+**Grafana not connecting to Prometheus:**
+```bash
+sed -i '/container_name: hyperprox-grafana/{n;s/restart: unless-stopped/extra_hosts:\n      - "host.docker.internal:host-gateway"\n    restart: unless-stopped/}' /opt/hyperprox/docker-compose.yml
+docker rm -f hyperprox-grafana
+docker compose --profile monitoring up -d grafana
+```
+
+**Ubuntu — disable AppArmor before installing:**
+```bash
 systemctl stop apparmor
 systemctl disable apparmor
 apt-get remove -y apparmor
 reboot
 ```
 
-**CEPH MON node** — after completing the setup wizard, SSH into the HyperProx CT and set it manually:
-
+**CEPH MON node** — after the setup wizard completes, set it manually:
 ```bash
-# Find which node runs the CEPH MON service (run on any Proxmox node)
+# Find which node runs CEPH MON (run on any Proxmox node)
 pvesh get /nodes/<node>/ceph/mon
 
 # Set it in .env
@@ -211,16 +333,18 @@ docker compose -f /opt/hyperprox/docker-compose.yml restart hyperprox-api
 
 ## System Requirements
 
-### Minimum (no local AI)
-- 2 CPU cores · 4GB RAM · 40GB storage
+### Minimum (testing, no local AI)
+- 2 CPU cores · 4GB RAM · 20GB storage
 
 ### Recommended
 - 4 CPU cores · 8GB RAM · 100GB SSD
 
 ### With Local AI (Ollama + GPU)
-- 4 CPU cores · 16GB RAM · 16GB VRAM · 100GB storage
+- Ollama runs on a **separate machine or node** — not inside the HyperProx CT
+- 16GB RAM · 16GB VRAM recommended for the Ollama host
 
 ### Prometheus Storage Planning
+
 | Cluster Size | 90-day Retention |
 |---|---|
 | 5 nodes, 50 CTs | ~45GB |
@@ -242,7 +366,6 @@ Single `docker compose up` deploys the full stack:
 | prometheus | Metrics collection *(optional)* | 9090 |
 | grafana | Visualization *(optional)* | 3003 |
 | nginx-proxy-manager | Reverse proxy + SSL *(optional)* | 80, 81, 443 |
-| ollama | Local AI *(optional)* | 11434 |
 | postgres | Config + state storage | 5432 |
 | redis | Queue + cache | 6379 |
 | nginx | Internal reverse proxy | 80/443 |
@@ -259,7 +382,7 @@ Single `docker compose up` deploys the full stack:
 | Database | PostgreSQL · Prisma ORM |
 | Queue | BullMQ · Redis |
 | Monitoring | Prometheus · Grafana (bundled, auto-configured) |
-| AI | Ollama (optional local) |
+| AI | Ollama (external, optional) |
 | Containers | Docker · Compose |
 | CI/CD | GitLab CI → Docker Hub |
 
@@ -269,9 +392,11 @@ Single `docker compose up` deploys the full stack:
 
 ### v1.0 — The Glue Layer
 
+- **Setup wizard — working install toggles** for Prometheus, Grafana, and NPM
+- **Connect to existing Grafana / Prometheus** — use your own monitoring stack instead of the bundled containers
 - **Smart Suggestion Engine** — cross-system awareness: new proxy host → suggest DNS record, WAN IP change → flag stale A records, SSL expiring → suggest renewal. Nothing acts without user confirmation.
-- **Network Storage Health** — monitor CIFS/NFS mounts across all nodes, surface offline mounts as named alerts, correlate mount failures with downstream monitoring issues. AI-assisted remediation suggestions.
-- **AI deployment wizard** — the killer feature. Type `Deploy Nextcloud at cloud.mydomain.com` and HyperProx handles everything end-to-end: creates the LXC, configures the NPM proxy host, creates the DNS A record, polls for propagation, requests the SSL cert, and returns the live URL. No tab switching. No SSH. No manual anything. *(AI plan + confirm flow is live today — full autonomous execution coming in v1.0)*
+- **Network Storage Health** — monitor CIFS/NFS mounts across all nodes, surface offline mounts as named alerts, correlate mount failures with downstream monitoring issues.
+- **AI deployment wizard — full autonomous execution** — type `Deploy Nextcloud at cloud.mydomain.com` and HyperProx handles everything end-to-end: creates the LXC, configures the NPM proxy host, creates the DNS A record, polls for propagation, requests the SSL cert, and returns the live URL. No tab switching. No SSH. No manual anything.
 - **Multi-provider DNS** — GoDaddy + Cloudflare + Namecheap simultaneously
 - **Multi-instance proxy** — NPM + Traefik + Caddy + HAProxy + Pangolin simultaneously
 - **Proxmox rolling updates** — CEPH-aware, per-node sequencing
@@ -289,8 +414,7 @@ Single `docker compose up` deploys the full stack:
 - **ESXi live migration** — import VMware workloads directly into Proxmox
 - **XCP-NG support** — manage Xen alongside Proxmox
 - **VPN management** — WireGuard + Tailscale + Pangolin
-- **CVE scanner** — detect known vulnerabilities across nodes and VMs
-- **PVE hardening** — one-click security hardening for Proxmox hosts
+- **CVE scanner + PVE hardening**
 - **Role-based access control (RBAC)**
 - **LDAP / OIDC / SSO support**
 - **Commercial licensing tier** — MSPs and enterprise deployments
@@ -338,10 +462,10 @@ Bug reports, feature requests, and pull requests welcome via [GitHub Issues](htt
 
 [AGPL v3](LICENSE) — free for personal and open-source use.
 
-Commercial licensing for MSPs and enterprise deployments — coming in v2.0.
+Commercial licensing for MSPs and enterprise deployments coming in v2.0.
 
 ---
 
-<div align="center">
-Built by <a href="https://griffinit.net">GriffinIT</a> — running on a real 5-node Proxmox cluster so every feature solves a real problem.
-</div>
+<p align="center">
+  Built by <a href="https://griffinit.net">GriffinIT</a> — running on a real 5-node Proxmox cluster so every feature solves a real problem.
+</p>
