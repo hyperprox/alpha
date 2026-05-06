@@ -150,7 +150,6 @@ The monitoring page, node metrics, and wattage display require additional compon
 Install on every Proxmox node you want to monitor:
 
 ```bash
-# Run on each Proxmox node
 apt update && apt install -y prometheus-node-exporter
 systemctl enable --now prometheus-node-exporter
 ```
@@ -160,38 +159,19 @@ Verify it's working:
 curl -s http://localhost:9100/metrics | head -5
 ```
 
-### IPMI / wattage display (optional — requires compatible hardware)
+### Wattage display
 
-Power draw metrics require hardware with IPMI, iDRAC, or iLO support. Most consumer and prosumer boards do not support this. Enterprise-grade hardware (Dell PowerEdge, HP ProLiant, Supermicro, etc.) generally does.
+Wattage is read from your CPU's built-in power counters (Intel RAPL / AMD energy) via node_exporter's `hwmon` collector, which is enabled by default. No additional configuration is required — if node_exporter is installed and your hardware exposes power data, wattage will appear automatically.
 
-If your hardware supports IPMI:
-
-```bash
-# Run on each Proxmox node
-apt update && apt install -y ipmitool freeipmi-tools
-
-# Verify IPMI is accessible
-ipmitool sensor list | grep -i power
-
-# Restart node_exporter with IPMI collector enabled
-cat > /etc/default/prometheus-node-exporter << 'EOF'
-ARGS="--collector.ipmi"
-EOF
-
-systemctl restart prometheus-node-exporter
-
-# Confirm wattage metrics are available
-curl -s http://localhost:9100/metrics | grep -i "ipmi_power\|dcmi_power"
-```
-
-> If `ipmitool sensor list` returns nothing or an error, your hardware does not expose IPMI power data and wattage will not be displayed regardless of configuration.
+If wattage is missing on a specific node, the most likely causes are:
+- node_exporter is not installed on that node
+- The hardware or hypervisor doesn't expose CPU power counters (common in VMs and some older or embedded hardware)
 
 ### GPU metrics (optional — NVIDIA only)
 
 If you have NVIDIA GPUs on any Proxmox node, install `nvidia_gpu_exporter`:
 
 ```bash
-# Run on each node with an NVIDIA GPU (requires NVIDIA drivers already installed)
 wget https://github.com/utkuozdemir/nvidia_gpu_exporter/releases/download/v1.1.0/nvidia_gpu_exporter_1.1.0_linux_amd64.tar.gz
 tar -xzf nvidia_gpu_exporter_1.1.0_linux_amd64.tar.gz
 mv nvidia_gpu_exporter /usr/local/bin/
@@ -294,7 +274,6 @@ HyperProx replaces all of that with a single pane of glass — deployed in under
 | **Grafana not connecting to Prometheus** — on some Docker setups `host.docker.internal` doesn't resolve inside the Grafana container, causing the Prometheus datasource to show as disconnected and all graphs to be blank. | 🔧 Fix in progress |
 | **Ubuntu requires AppArmor disabled** — Docker inside a privileged LXC on Ubuntu fails due to AppArmor restrictions. Debian 12 is recommended and works out of the box. | 🔧 Fix in progress |
 | **CEPH MON node not auto-detected** — the setup wizard attempts to detect which node runs the CEPH MON service, but detection is unreliable on fresh installs. CEPH status and storage overview will return errors until set manually. | 🔧 Fix in progress |
-| **Wattage not displayed on all hardware** — power draw requires IPMI/iDRAC/iLO support and additional setup. See [Monitoring — additional setup required](#monitoring--additional-setup-required). | ℹ️ Hardware dependent |
 
 ### Workarounds
 
