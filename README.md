@@ -129,11 +129,15 @@ The installer will:
 - Detect your environment (LXC, VM, or bare metal)
 - Fix DNS if Proxmox has injected internal resolvers
 - Prompt to set a static IP if running DHCP
+- Disable AppArmor if present (incompatible with Docker in LXC)
 - Install Docker, Node.js, and all dependencies with live progress output
-- Build and start all services
+- Clone the repo, install packages, and build the app
+- Generate a `.env` with secure random secrets
+- Start the full Docker stack (Postgres, Redis, Prometheus, Grafana, nginx)
+- Start the API, frontend, and setup wizard as systemd services
 - Open the setup wizard at `http://<your-ip>:3001`
 
-Or with Docker Compose directly (after cloning the repo):
+Or with Docker Compose directly (after cloning the repo and creating `.env`):
 
 ```bash
 docker compose up -d
@@ -143,7 +147,7 @@ docker compose up -d
 
 ## Monitoring — additional setup required
 
-The monitoring page, node metrics, and wattage display require additional components installed on each Proxmox **host** (not inside the HyperProx CT). These are not installed automatically.
+The monitoring page, node metrics, and wattage display require `node_exporter` installed on each Proxmox **host** (not inside the HyperProx CT). Prometheus and Grafana are bundled and started automatically by the installer — no manual setup needed.
 
 ### node_exporter (required for all node metrics)
 
@@ -218,30 +222,6 @@ Enter your Ollama URL in Settings → AI. This must be an existing Ollama instan
 
 ---
 
-## Full functionality in the alpha
-
-> ⚠️ **The setup wizard monitoring install toggles are not yet functional.** Prometheus and Grafana containers must be started manually — see the workaround in [Known Issues](#known-issues).
-
-The setup wizard will offer to install the following as Docker containers. These are optional but required for the full alpha experience:
-
-| Service | Why you need it |
-|---|---|
-| **Nginx Proxy Manager** | Required for proxy management — create hosts, SSL certs, and the AI deployment wizard |
-| **Prometheus** | Required for node metrics, alerts, and the monitoring page |
-| **Grafana** | Required for dashboard graphs and the embedded monitoring view |
-
-If you already have any of these running elsewhere on your cluster, skip the install and connect to your existing instances instead.
-
-> ⚠️ **Connecting to an existing Grafana or Prometheus instance is not yet supported.** HyperProx currently only supports the bundled instances started via Docker Compose. Custom Grafana/Prometheus URLs are a v1.0 feature.
-
----
-
-Running Proxmox in production means managing half a dozen separate tools that don't talk to each other: Nginx Proxy Manager for reverse proxying, GoDaddy or Cloudflare for DNS, Grafana and Prometheus for monitoring (manually configured), separate SSH sessions to check node health, and no visibility when a NAS goes offline and silently breaks monitoring.
-
-HyperProx replaces all of that with a single pane of glass — deployed in under five minutes.
-
----
-
 ## What's Built & Working
 
 | Feature | Status |
@@ -249,7 +229,7 @@ HyperProx replaces all of that with a single pane of glass — deployed in under
 | VM & LXC management — live metrics, power actions | ✅ Shipped |
 | Nginx Proxy Manager full CRUD | ✅ Shipped |
 | GoDaddy DNS — all record types, DDNS, stale IP detection, domain expiry | ✅ Shipped |
-| Bundled Prometheus + Grafana — manual start via Docker Compose | ✅ Shipped |
+| Bundled Prometheus + Grafana — auto-started by installer | ✅ Shipped |
 | Real-time WebSocket dashboard — nodes, GPU, CEPH, HA, network | ✅ Shipped |
 | Storage page — CEPH health, OSD status, VM/CT disk breakdown | ✅ Shipped |
 | Monitoring page — node health, active alerts, Grafana embed | ✅ Shipped |
@@ -260,7 +240,6 @@ HyperProx replaces all of that with a single pane of glass — deployed in under
 | CT/VM deletion with confirmation guard | ✅ Shipped |
 | CT template + ISO auto-detection across all nodes and storage pools | ✅ Shipped |
 | AI deployment — plan generation from natural language (read-only) | ✅ Shipped |
-| Setup wizard — one-click Prometheus + Grafana install | 🚧 v1.0 |
 | AI deployment — plan execution and autonomous end-to-end workflow | 🚧 v1.0 |
 | Connect to existing Grafana / Prometheus instance | 🚧 v1.0 |
 
@@ -270,33 +249,10 @@ HyperProx replaces all of that with a single pane of glass — deployed in under
 
 | Issue | Status |
 |---|---|
-| **Setup wizard monitoring install toggles do nothing** — the Prometheus and Grafana install toggles in the setup wizard are UI-only and do not start the containers. They must be started manually. | 🔧 Fix in progress |
-| **Grafana not connecting to Prometheus** — on some Docker setups `host.docker.internal` doesn't resolve inside the Grafana container, causing the Prometheus datasource to show as disconnected and all graphs to be blank. | 🔧 Fix in progress |
-| **Ubuntu requires AppArmor disabled** — Docker inside a privileged LXC on Ubuntu fails due to AppArmor restrictions. Debian 12 is recommended and works out of the box. | 🔧 Fix in progress |
 | **CEPH MON node not auto-detected** — the setup wizard attempts to detect which node runs the CEPH MON service, but detection is unreliable on fresh installs. CEPH status and storage overview will return errors until set manually. | 🔧 Fix in progress |
+| **Wattage not displayed on all hardware** — power draw requires CPU power counter support. See [Monitoring](#monitoring--additional-setup-required) for details. | ℹ️ Hardware dependent |
 
 ### Workarounds
-
-**Start Prometheus and Grafana manually** (until setup wizard install is fixed):
-```bash
-cd /opt/hyperprox
-docker compose --profile monitoring up -d
-```
-
-**Grafana not connecting to Prometheus:**
-```bash
-sed -i '/container_name: hyperprox-grafana/{n;s/restart: unless-stopped/extra_hosts:\n      - "host.docker.internal:host-gateway"\n    restart: unless-stopped/}' /opt/hyperprox/docker-compose.yml
-docker rm -f hyperprox-grafana
-docker compose --profile monitoring up -d grafana
-```
-
-**Ubuntu — disable AppArmor before installing:**
-```bash
-systemctl stop apparmor
-systemctl disable apparmor
-apt-get remove -y apparmor
-reboot
-```
 
 **CEPH MON node** — after the setup wizard completes, set it manually:
 ```bash
@@ -342,12 +298,14 @@ Single `docker compose up` deploys the full stack:
 | hyperprox-frontend | Next.js dashboard | 3000 |
 | hyperprox-api | Fastify API + WebSockets | 3002 |
 | hyperprox-setup | First-run setup wizard | 3001 |
-| prometheus | Metrics collection *(optional)* | 9090 |
-| grafana | Visualization *(optional)* | 3003 |
-| nginx-proxy-manager | Reverse proxy + SSL *(optional)* | 80, 81, 443 |
+| prometheus | Metrics collection | 9090 |
+| grafana | Visualization | 3003 |
+| pve-exporter | Proxmox metrics bridge | 9221 |
 | postgres | Config + state storage | 5432 |
 | redis | Queue + cache | 6379 |
-| nginx | Internal reverse proxy | 80/443 |
+| nginx | Internal reverse proxy | 80 |
+
+> Prometheus runs with `network_mode: host` so it can scrape node_exporter directly on the host network. All other services run on an internal bridge network.
 
 ---
 
@@ -371,7 +329,6 @@ Single `docker compose up` deploys the full stack:
 
 ### v1.0 — The Glue Layer
 
-- **Setup wizard — working install toggles** for Prometheus, Grafana, and NPM
 - **Connect to existing Grafana / Prometheus** — use your own monitoring stack instead of the bundled containers
 - **Smart Suggestion Engine** — cross-system awareness: new proxy host → suggest DNS record, WAN IP change → flag stale A records, SSL expiring → suggest renewal. Nothing acts without user confirmation.
 - **Network Storage Health** — monitor CIFS/NFS mounts across all nodes, surface offline mounts as named alerts, correlate mount failures with downstream monitoring issues.
