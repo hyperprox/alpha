@@ -277,6 +277,11 @@ export default function MonitoringPage() {
                   <span>↓ <span style={{ color: '#22c55e' }}>{((n.rxKBs||0) >= 1024 ? ((n.rxKBs||0)/1024).toFixed(1)+' MB/s' : (n.rxKBs||0).toFixed(1)+' KB/s')}</span></span>
                   <span>↑ <span style={{ color: '#f59e0b' }}>{((n.txKBs||0) >= 1024 ? ((n.txKBs||0)/1024).toFixed(1)+' MB/s' : (n.txKBs||0).toFixed(1)+' KB/s')}</span></span>
                 </div>
+                {/* Network */}
+                <div style={{ marginTop: 6, display: 'flex', gap: 12, fontSize: 10, color: '#374151' }}>
+                  <span>↓ <span style={{ color: '#22c55e' }}>{((n.rxKBs||0) >= 1024 ? ((n.rxKBs||0)/1024).toFixed(1)+' MB/s' : (n.rxKBs||0).toFixed(1)+' KB/s')}</span></span>
+                  <span>↑ <span style={{ color: '#f59e0b' }}>{((n.txKBs||0) >= 1024 ? ((n.txKBs||0)/1024).toFixed(1)+' MB/s' : (n.txKBs||0).toFixed(1)+' KB/s')}</span></span>
+                </div>
               </div>
             ))}
           </div>

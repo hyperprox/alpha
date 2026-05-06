@@ -561,16 +561,18 @@ export default function DashboardView() {
   // Initial HTTP fetch for instant load
   const fetchInitial = useCallback(async () => {
     try {
-      const [summaryRes, grafanaRes, prometheusRes, gpuStatusRes] = await Promise.all([
+      const [summaryRes, grafanaRes, prometheusRes, gpuStatusRes, networkRes] = await Promise.all([
         fetch('/api/proxmox/summary'),
         fetch('/api/services/grafana'),
         fetch('/api/services/prometheus'),
         fetch('/api/gpu/all/metrics-status'),
+        fetch('/api/network/stats'),
       ])
       const summary   = await summaryRes.json()
       const grafana   = await grafanaRes.json().catch(()=>({success:false}))
       const prometheus = await prometheusRes.json().catch(()=>({success:false}))
       const gpuStatus = await gpuStatusRes.json().catch(()=>({success:false}))
+      const networkData = await networkRes.json().catch(()=>({success:false}))
       // Fetch cluster power from Prometheus
       fetch('/api/prometheus/query?q=sum(rate(node_rapl_package_joules_total%5B2m%5D))')
         .then(r=>r.json())
@@ -579,7 +581,7 @@ export default function DashboardView() {
 
       if (summary.success) {
         const d = summary.data
-        setFast({ nodes: d.nodes, vms: d.vms, gpu: d.gpu, cluster: d.cluster, gpuStatus: gpuStatus.success ? gpuStatus.data : [], storage: d.storage ?? [] })
+        setFast({ nodes: d.nodes, vms: d.vms, gpu: d.gpu, cluster: d.cluster, network: networkData.success ? networkData.data : undefined, gpuStatus: gpuStatus.success ? gpuStatus.data : [], storage: d.storage ?? [] })
         setSlow({
           ceph: d.ceph, osds: d.osds, ha: d.ha,
           services: {
