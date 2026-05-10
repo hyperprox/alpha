@@ -1,1 +1,42 @@
-[]
+[
+  {
+    "targets": [
+      "192.168.2.205"
+    ],
+    "labels": {
+      "node": "titan4"
+    }
+  },
+  {
+    "targets": [
+      "192.168.2.204"
+    ],
+    "labels": {
+      "node": "titan3"
+    }
+  },
+  {
+    "targets": [
+      "192.168.2.208"
+    ],
+    "labels": {
+      "node": "titan7"
+    }
+  },
+  {
+    "targets": [
+      "192.168.2.202"
+    ],
+    "labels": {
+      "node": "titan1"
+    }
+  },
+  {
+    "targets": [
+      "192.168.2.203"
+    ],
+    "labels": {
+      "node": "titan2"
+    }
+  }
+]
