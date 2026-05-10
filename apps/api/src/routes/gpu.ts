@@ -19,14 +19,19 @@ export interface NodeGPU {
 }
 
 function classifyGPU(pci: any): GPUType {
-  const vendor = pci.vendor?.toLowerCase()
-  const device = parseInt(pci.device, 16)
+  const vendor     = pci.vendor?.toLowerCase()
+  const device     = parseInt(pci.device, 16)
+  const deviceName = (pci.device_name ?? '').toLowerCase()
 
   if (vendor === '0x10de') return 'nvidia'
   if (vendor === '0x1002') return 'amd'
   if (vendor === '0x8086') {
-    // Intel Arc dedicated GPUs: device IDs 0x5690+ (Alchemist)
-    if (device >= 0x5690) return 'intel-arc'
+    // Intel Arc Alchemist (A-series) device IDs: 0x56A0–0x56FF
+    // Legacy iGPUs (HD 630 = 0x5912, UHD 630 = 0x3E92) must NOT match
+    // deviceName fallback covers future Battlemage+ ID ranges
+    if ((device >= 0x56A0 && device <= 0x56FF) || deviceName.includes('arc')) {
+      return 'intel-arc'
+    }
     return 'intel-igpu'
   }
   return 'unknown'
@@ -95,9 +100,9 @@ export const gpuRoutes: FastifyPluginAsync = async (fastify) => {
     if (!gpus.length) return { reachable: false, gpus: [], install: null }
     const gpu     = gpus[0]
     const port    = EXPORTER_PORTS[gpu.type]
-    
+
     const nodes   = await client.getNodes()
-    
+
     const nodeIp  = req.params.node
     const reachable = await checkExporterReachable(nodeIp, port)
     return { reachable, gpus, port, install: reachable ? null : EXPORTER_INSTALL[gpu.type] }
