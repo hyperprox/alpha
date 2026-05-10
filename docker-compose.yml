@@ -66,6 +66,8 @@ services:
   grafana:
     image: grafana/grafana:latest
     container_name: hyperprox-grafana
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     profiles: [monitoring]
     environment:

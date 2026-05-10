@@ -1,1 +1,42 @@
-[]
+[
+  {
+    "targets": [
+      "192.0.2.205"
+    ],
+    "labels": {
+      "node": "node4"
+    }
+  },
+  {
+    "targets": [
+      "192.0.2.204"
+    ],
+    "labels": {
+      "node": "node3"
+    }
+  },
+  {
+    "targets": [
+      "192.0.2.208"
+    ],
+    "labels": {
+      "node": "node7"
+    }
+  },
+  {
+    "targets": [
+      "192.0.2.202"
+    ],
+    "labels": {
+      "node": "node1"
+    }
+  },
+  {
+    "targets": [
+      "192.0.2.203"
+    ],
+    "labels": {
+      "node": "node2"
+    }
+  }
+]
