@@ -6,6 +6,7 @@ import { getClusterNetworkStats } from './network'
 // =============================================================================
 
 import { FastifyInstance } from 'fastify'
+import { setWizardBroadcast }  from './wizard-executor'
 import { ProxmoxClient }   from './proxmox-client'
 import { getGPUInfo }      from './gpu'
 import { NPMClient }       from './npm-client'
@@ -110,6 +111,7 @@ export function startBroadcast(server: FastifyInstance) {
   }, 15000)
 
   server.log.info('[ws] Broadcast service started (fast: 2s, slow: 15s)')
+  setWizardBroadcast((type, payload) => broadcast(server, type, payload))
 }
 
 export function stopBroadcast() {
