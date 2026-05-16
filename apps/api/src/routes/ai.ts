@@ -4,7 +4,8 @@
 // =============================================================================
 
 import { FastifyPluginAsync } from 'fastify'
-import { getCredential } from '../lib/credentials'
+import { getCredential }      from '../lib/credentials'
+import { executeWizardJob, getJob } from '../lib/wizard-executor'
 
 const WIZARD_SYSTEM_PROMPT = `You are HyperProx's deployment wizard. 
 The user will describe a service they want to deploy on their Proxmox cluster.
@@ -100,10 +101,11 @@ export const aiRoutes: FastifyPluginAsync = async (fastify) => {
       // Parse JSON — strip any accidental markdown fences
       let clean = raw.replace(/```json|```/g, '').trim()
 
-      // Fix truncated JSON — count braces and close if needed
+      // Fix truncated JSON
       const opens  = (clean.match(/{/g) || []).length
       const closes = (clean.match(/}/g) || []).length
       if (opens > closes) clean += '}'.repeat(opens - closes)
+
       let plan: any
       try {
         plan = JSON.parse(clean)
@@ -115,7 +117,7 @@ export const aiRoutes: FastifyPluginAsync = async (fastify) => {
         })
       }
 
-      // Detect non-deployment intent — empty service or domain means conversational question
+      // Detect non-deployment intent
       if (!plan.service || !plan.domain) {
         return reply.send({
           ok:             true,
@@ -142,34 +144,41 @@ export const aiRoutes: FastifyPluginAsync = async (fastify) => {
     const { plan } = req.body
     if (!plan?.steps) return reply.status(400).send({ error: 'Invalid plan' })
 
-    // For now return a job ID — full execution engine is the next build
-    const jobId = `job_${Date.now()}`
+    const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(-4)}`
 
-    // TODO: Push to BullMQ queue for step-by-step execution
-    // Each step type maps to a handler:
-    // create_lxc      → ProxmoxClient.createLXC()
-    // configure_proxy → NPMClient.createHost()
-    // create_dns      → GoDaddyClient.createRecord()
-    // wait_propagation → poll DNS until resolved
-    // request_ssl     → NPMClient.requestCertificate()
-    // install_service → run install script in LXC via Proxmox exec
+    // Fire-and-forget — execution runs in background, progress via WebSocket
+    setImmediate(() => {
+      executeWizardJob(jobId, plan).catch(err =>
+        fastify.log.error(`[wizard] Job ${jobId} failed: ${err.message}`)
+      )
+    })
 
     return reply.send({
-      ok:    true,
+      ok:      true,
       jobId,
-      message: 'Execution queued. Track progress via WebSocket.',
+      message: `Executing ${plan.steps.length} steps. Track progress via WebSocket.`,
       steps:   plan.steps.length,
     })
   })
 
-  // GET /api/ai/wizard/jobs/:jobId — get execution status
+  // GET /api/ai/wizard/jobs/:jobId — get execution status (REST fallback for WS)
   fastify.get<{ Params: { jobId: string } }>('/wizard/jobs/:jobId', async (req, reply) => {
-    // TODO: Query BullMQ for job status
+    const job = getJob(req.params.jobId)
+    if (!job) return reply.status(404).send({ ok: false, error: 'Job not found' })
+
     return reply.send({
-      ok:     true,
-      jobId:  req.params.jobId,
-      status: 'queued',
-      steps:  [],
+      ok:          true,
+      jobId:       job.jobId,
+      status:      job.status,
+      currentStep: job.currentStep,
+      totalSteps:  job.steps.length,
+      steps:       job.steps,
+      lxcVmid:    job.lxcVmid,
+      lxcNode:    job.lxcNode,
+      lxcIp:      job.lxcIp,
+      startedAt:   job.startedAt,
+      completedAt: job.completedAt,
+      error:       job.error,
     })
   })
 
