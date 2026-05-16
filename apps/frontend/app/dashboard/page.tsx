@@ -56,7 +56,7 @@ function UsageBar({ label, used, total, p, color='#00e5ff', fmt }: { label:strin
     <div>
       <div className="flex justify-between text-xs font-mono mb-1">
         <span className="text-gray-500">{label}</span>
-        <span style={{color:c}}>{fmt(used)} / {fmt(total)}</span>
+        <span style={{color:c}}>{fmt(used??0)} / {fmt(total??0)}</span>
       </div>
       <div className="h-1.5 rounded-full overflow-hidden" style={{background:'#1f2937'}}>
         <div className="h-full rounded-full transition-all duration-500" style={{width:`${p}%`,background:c}}/>
@@ -100,7 +100,7 @@ function ClusterPanel({ cluster, nodes, vms, ceph, storage, power }: { cluster:C
         ))}
       </div>
       <div className="space-y-3">
-        <UsageBar label="CPU"    used={cluster.cpu_used}  total={cluster.cpu_total}  p={cluster.cpu_pct}  fmt={v=>`${v.toFixed(1)} cores`}/>
+        <UsageBar label="CPU"    used={cluster.cpu_used}  total={cluster.cpu_total}  p={cluster.cpu_pct}  fmt={v=>`${(v??0).toFixed(1)} cores`}/>
         <UsageBar label="MEMORY" used={cluster.mem_used}  total={cluster.mem_total}  p={cluster.mem_pct}  fmt={formatBytes}/>
         <UsageBar label="OS DISK" used={cluster.disk_used}  total={cluster.disk_total}  p={cluster.disk_pct}  fmt={formatBytes} color="#818cf8"/>
         {storTotalBytes > 0 && (
