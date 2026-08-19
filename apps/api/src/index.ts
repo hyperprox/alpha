@@ -21,9 +21,14 @@ import { ollamaRoutes }          from './routes/ollama'
 import { aiRoutes }              from './routes/ai'
 import { gpuRoutes }             from './routes/gpu'
 import { targetsRoutes }         from './routes/targets'
+import { authRoutes }             from './routes/auth'
 import { prismaPlugin }         from './plugins/prisma'
 import { redisPlugin }          from './plugins/redis'
 import { seedFromEnv }          from './lib/credentials'
+import { ensureAdminPassword, extractToken } from './lib/auth'
+
+// Paths reachable without a session. Everything else requires one.
+const PUBLIC_PATHS = new Set(['/health', '/api/auth/login'])
 
 const server = Fastify({
   logger: {
@@ -43,6 +48,27 @@ async function main() {
   await server.register(prismaPlugin)
   await server.register(redisPlugin)
 
+  // -- Auth guard -------------------------------------------------------------
+  // Applies to every route. Set AUTH_REQUIRED=false to disable (development only
+  // -- with it off, anyone who can reach this port controls the cluster).
+  server.addHook('onRequest', async (req, reply) => {
+    if (process.env.AUTH_REQUIRED === 'false') return
+    if (req.method === 'OPTIONS') return
+
+    const path = req.url.split('?')[0]
+    if (PUBLIC_PATHS.has(path) || path.startsWith('/health/')) return
+
+    const token = extractToken(req.headers as Record<string, any>)
+    if (!token) return reply.status(401).send({ ok: false, error: 'Authentication required' })
+
+    try {
+      server.jwt.verify(token)
+    } catch {
+      return reply.status(401).send({ ok: false, error: 'Session expired or invalid' })
+    }
+  })
+
+  await server.register(authRoutes,           { prefix: '/api/auth' })
   await server.register(healthRoute,          { prefix: '/health' })
   await server.register(proxmoxRoutes,        { prefix: '/api/proxmox' })
   await server.register(proxyRoutes,          { prefix: '/api/proxy' })
@@ -60,6 +86,7 @@ async function main() {
   await server.register(wsRoutes,             { prefix: '/ws' })
 
   await seedFromEnv()
+  await ensureAdminPassword(msg => server.log.warn(msg))
 
   const port = Number(process.env.PORT ?? 3002)
   await server.listen({ port, host: '0.0.0.0' })
