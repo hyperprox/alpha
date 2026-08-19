@@ -65,7 +65,16 @@ export async function getCredential(category: string, provider: string, key: str
     where: { category_provider_key: { category, provider, key } },
   })
   if (!row) return null
-  try { return decrypt(row.value) } catch { return null }
+  try {
+    return decrypt(row.value)
+  } catch (e: any) {
+    // Distinguish "not configured" (null) from "configured but unreadable". Returning
+    // null for both made a changed ENCRYPTION_KEY look identical to an empty setting,
+    // which sends you looking at the settings page instead of the key.
+    throw new Error(
+      `Failed to decrypt credential ${category}/${provider}/${key} — ENCRYPTION_KEY does not match the one used to store it (${e?.message ?? e})`
+    )
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -75,9 +84,19 @@ export async function getCredential(category: string, provider: string, key: str
 export async function getProviderCredentials(category: string, provider: string): Promise<Record<string, string>> {
   const rows = await prisma.credential.findMany({ where: { category, provider } })
   const result: Record<string, string> = {}
+  const undecryptable: string[] = []
+
   for (const row of rows) {
-    try { result[row.key] = decrypt(row.value) } catch { /* skip corrupt */ }
+    try { result[row.key] = decrypt(row.value) } catch { undecryptable.push(row.key) }
   }
+
+  if (undecryptable.length) {
+    throw new Error(
+      `Failed to decrypt ${provider} credentials (${undecryptable.join(', ')}) — ` +
+      `ENCRYPTION_KEY does not match the one used to store them`
+    )
+  }
+
   return result
 }
 
@@ -99,6 +118,7 @@ export async function setCredential(category: string, provider: string, key: str
 
 export async function getCategoryForUI(category: string): Promise<Array<{
   provider: string; key: string; label: string; value: string; masked: boolean; isSet: boolean
+  decryptFailed: boolean
 }>> {
   const defs = CREDENTIAL_DEFS.filter(d => d.category === category)
   const result = []
@@ -108,15 +128,22 @@ export async function getCategoryForUI(category: string): Promise<Array<{
       where: { category_provider_key: { category: def.category, provider: def.provider, key: def.key } },
     })
 
-    let displayValue = ''
-    let isSet = false
+    let displayValue  = ''
+    let isSet         = false
+    let decryptFailed = false
 
     if (row) {
       try {
         const plain = decrypt(row.value)
         displayValue = def.masked ? mask(plain) : plain
         isSet = true
-      } catch { /* corrupt */ }
+      } catch {
+        // Don't fail the whole settings page over one bad row — flag it so the UI can
+        // say "stored but unreadable" instead of showing it as never configured.
+        decryptFailed = true
+        displayValue  = 'decryption failed'
+        console.error(`[credentials] Cannot decrypt ${def.category}/${def.provider}/${def.key} — ENCRYPTION_KEY mismatch`)
+      }
     }
 
     result.push({
@@ -126,6 +153,7 @@ export async function getCategoryForUI(category: string): Promise<Array<{
       value:    displayValue,
       masked:   def.masked,
       isSet,
+      decryptFailed,
     })
   }
 
