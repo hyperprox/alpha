@@ -28,6 +28,25 @@ export interface WanInfo {
   source:  string
 }
 
+// ---------------------------------------------------------------------------
+//  WAN IP validation
+// ---------------------------------------------------------------------------
+
+const IPV4_RE = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/
+
+/**
+ * Guard against a lookup service returning an error page, an empty body, or the
+ * literal string 'unknown'. Any of those would otherwise be written straight into
+ * a DNS A record — or, via updateDDNS, into every A record on the domain.
+ */
+function assertIPv4(ip: string, source: string): string {
+  const trimmed = (ip ?? '').trim()
+  if (!IPV4_RE.test(trimmed)) {
+    throw new Error(`WAN IP lookup via ${source} returned a non-IPv4 value: ${JSON.stringify(trimmed).slice(0, 64)}`)
+  }
+  return trimmed
+}
+
 export class GoDaddyClient {
   private baseUrl = 'https://api.godaddy.com/v1'
   private authHeader: string
@@ -97,19 +116,27 @@ export class GoDaddyClient {
   // ---------------------------------------------------------------------------
 
   static async getWanIP(): Promise<WanInfo> {
+    let lastError = ''
+
     try {
       const res = await fetch('https://api.ipify.org?format=json', { signal: AbortSignal.timeout(5000) })
       const { ip } = await res.json() as { ip: string }
-      return { ip, source: 'ipify' }
-    } catch {
-      try {
-        const res = await fetch('https://checkip.amazonaws.com', { signal: AbortSignal.timeout(5000) })
-        const ip  = (await res.text()).trim()
-        return { ip, source: 'amazonaws' }
-      } catch {
-        return { ip: 'unknown', source: 'failed' }
-      }
+      return { ip: assertIPv4(ip, 'ipify'), source: 'ipify' }
+    } catch (e: any) {
+      lastError = e?.message ?? String(e)
     }
+
+    try {
+      const res = await fetch('https://checkip.amazonaws.com', { signal: AbortSignal.timeout(5000) })
+      const ip  = (await res.text()).trim()
+      return { ip: assertIPv4(ip, 'checkip.amazonaws.com'), source: 'amazonaws' }
+    } catch (e: any) {
+      lastError = e?.message ?? String(e)
+    }
+
+    // Throw rather than returning a sentinel. Callers write this value into DNS;
+    // a sentinel that reads as truthy is worse than a hard failure.
+    throw new Error(`Could not determine WAN IP — ipify and checkip.amazonaws.com both failed (${lastError})`)
   }
 
   // ---------------------------------------------------------------------------
