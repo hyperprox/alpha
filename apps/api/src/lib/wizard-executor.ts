@@ -104,8 +104,8 @@ async function getNPM(): Promise<NPMClient | null> {
 }
 
 async function getGoDaddy(): Promise<GoDaddyClient | null> {
-  const key    = await getCredential('dns', 'godaddy', 'apiKey').catch(() => null)
-  const secret = await getCredential('dns', 'godaddy', 'apiSecret').catch(() => null)
+  const key    = await getCredential('dns', 'godaddy', 'api_key').catch(() => null)
+  const secret = await getCredential('dns', 'godaddy', 'api_secret').catch(() => null)
   if (!key || !secret) return null
   return new GoDaddyClient(key, secret)
 }
@@ -246,9 +246,20 @@ async function stepCreateLXC(job: JobState): Promise<string> {
   // 4. Find rootdir storage with enough space
   const diskGB     = job.plan.requirements?.disk_gb ?? 8
   const rootStores = await pve.fetchNode<any[]>(`/nodes/${bestNode.node}/storage?content=rootdir`).catch(() => [])
-  const rootStor   = rootStores.find((s: any) =>
-    s.avail > diskGB * 1024 * 1024 * 1024 && s.enabled
-  )?.storage ?? 'local-lvm'
+
+  // Prefer real block storage (rbd/lvmthin/zfs) over network shares for rootfs
+  const TYPE_RANK: Record<string, number> = { rbd: 0, zfspool: 0, lvmthin: 1, lvm: 1, dir: 2, nfs: 3, cifs: 4 }
+  const candidates = rootStores
+    .filter((s: any) => s.enabled && s.active && s.avail > diskGB * 1024 * 1024 * 1024 * 1.2)
+    .sort((a: any, b: any) => {
+      const rank = (TYPE_RANK[a.type] ?? 5) - (TYPE_RANK[b.type] ?? 5)
+      return rank !== 0 ? rank : b.avail - a.avail
+    })
+
+  if (!candidates.length) {
+    throw new Error(`No storage on ${bestNode.node} has ${diskGB}GB free for the container rootfs`)
+  }
+  const rootStor = candidates[0].storage
 
   // 5. Build hostname from service name
   const hostname = (job.plan.service ?? 'hyperprox-ct')
@@ -361,9 +372,9 @@ async function stepCreateDNS(job: JobState): Promise<string> {
   const apex    = parts.slice(-2).join('.')
   const name    = parts.slice(0, -2).join('.') || '@'
 
-  // Get WAN IP
-  const wan = await GoDaddyClient.getWanIP().catch(() => null)
-  if (!wan?.ip) throw new Error('Could not determine WAN IP address')
+  // Get WAN IP. getWanIP throws with detail if both lookup services fail or return
+  // a non-IPv4 value — let that message surface instead of collapsing it.
+  const wan = await GoDaddyClient.getWanIP()
   job.wanIp = wan.ip
 
   await gd.createRecord(apex, {
@@ -380,16 +391,25 @@ async function stepWaitPropagation(job: JobState): Promise<string> {
   const domain = job.plan.domain
   const wanIp  = job.wanIp
 
-  if (!wanIp) return 'Skipped — WAN IP unknown'
+  if (!wanIp) {
+    throw new Error('Cannot verify DNS propagation — WAN IP is unknown, so the create_dns step did not complete')
+  }
 
-  const { Resolver } = await import('dns').then(m => m.promises ? m : require('dns/promises'))
+  // Query public resolvers directly rather than the system resolver, which caches
+  // the NXDOMAIN from before the record existed and would report a freshly created
+  // record as unpropagated for the length of the negative TTL.
+  const { Resolver } = await import('dns/promises')
+  const resolver = new Resolver({ timeout: 5000, tries: 1 })
+  resolver.setServers(
+    (process.env.DNS_PROPAGATION_RESOLVERS ?? '1.1.1.1,8.8.8.8')
+      .split(',').map(s => s.trim()).filter(Boolean)
+  )
 
   // Poll up to 5 minutes (30 attempts × 10s)
   for (let i = 0; i < 30; i++) {
     await sleep(10000)
     try {
-      const { resolve4 } = await import('dns').then(m => ({ resolve4: (m as any).promises?.resolve4 ?? require('dns/promises').resolve4 }))
-      const addrs = await resolve4(domain)
+      const addrs = await resolver.resolve4(domain)
       if (addrs.includes(wanIp)) {
         return `DNS propagated — ${domain} resolves to ${wanIp} (${i * 10 + 10}s)`
       }
@@ -398,7 +418,13 @@ async function stepWaitPropagation(job: JobState): Promise<string> {
     }
   }
 
-  return `DNS propagation timeout — continuing anyway. It may take a few more minutes.`
+  // Fail the step. Continuing to request_ssl guarantees a failed Let's Encrypt
+  // challenge, and five of those per hostname per hour locks out issuance.
+  throw new Error(
+    `DNS did not propagate within 5 minutes — ${domain} does not resolve to ${wanIp}. ` +
+    `Stopping before the SSL step: requesting a certificate now would fail Let's Encrypt ` +
+    `validation and count against the 5-failures-per-hour limit for this hostname.`
+  )
 }
 
 async function stepRequestSSL(job: JobState): Promise<string> {
