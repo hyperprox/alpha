@@ -40,7 +40,7 @@ scrape_configs:
       - source_labels: [__param_target]
         target_label: instance
       - target_label: __address__
-        replacement: pve-exporter:9221
+        replacement: 127.0.0.1:9221
 
   - job_name: ceph
     file_sd_configs:

@@ -65,6 +65,26 @@ async function getNodeTailscaleIP(nodeName: string, client: ProxmoxClient): Prom
   } catch { return null }
 }
 
+// Nodes running a ceph-mgr, which is what serves the Prometheus module on :9283.
+//
+// The endpoint returns the CLUSTER-WIDE mgr list from any single node, so one
+// call is enough. Every mgr is targeted, not just the active one: only the
+// active mgr serves metrics (standbys answer 200 with an empty body), so
+// listing them all is what survives an mgr failover without a config change.
+// Returns an empty set on any error, which is the correct result for a cluster
+// with no Ceph — ceph.json then stays [] and the job simply has no targets.
+async function getCephMgrHosts(nodes: any[], client: ProxmoxClient): Promise<Set<string>> {
+  for (const node of nodes) {
+    try {
+      const mgrs = await client.fetchNode<any[]>(`/nodes/${node.node}/ceph/mgr`)
+      if (Array.isArray(mgrs)) {
+        return new Set(mgrs.filter(m => m?.host).map(m => m.host as string))
+      }
+    } catch { /* try the next node — this one may be down */ }
+  }
+  return new Set()
+}
+
 export const targetsRoutes: FastifyPluginAsync = async (fastify) => {
 
   // GET /api/targets/status — show current target files
@@ -95,6 +115,9 @@ export const targetsRoutes: FastifyPluginAsync = async (fastify) => {
       const newPveTargets:     any[] = []
       const newIntelTargets:   any[] = []
       const newNvidiaTargets:  any[] = []
+      const newCephTargets:    any[] = []
+
+      const cephMgrHosts = await getCephMgrHosts(nodes, client)
 
       for (const node of nodes) {
         const ip = await getNodeTailscaleIP(node.node, client)
@@ -115,6 +138,11 @@ export const targetsRoutes: FastifyPluginAsync = async (fastify) => {
             newNvidiaTargets.push({ targets: [`${addr}:9835`], labels: { node: node.node } })
           }
         }
+
+        // ceph-mgr prometheus module target
+        if (cephMgrHosts.has(node.node)) {
+          newCephTargets.push({ targets: [`${addr}:9283`], labels: { node: node.node } })
+        }
       }
 
       // Merge into existing targets
@@ -122,11 +150,13 @@ export const targetsRoutes: FastifyPluginAsync = async (fastify) => {
       const pveResult    = mergeTargets(readTargets('pve.json'),       newPveTargets)
       const intelResult  = mergeTargets(readTargets('intel-gpu.json'), newIntelTargets)
       const nvidiaResult = mergeTargets(readTargets('nvidia.json'),    newNvidiaTargets)
+      const cephResult   = mergeTargets(readTargets('ceph.json'),      newCephTargets)
 
       writeTargets('nodes.json',    nodeResult.merged)
       writeTargets('pve.json',      pveResult.merged)
       writeTargets('intel-gpu.json', intelResult.merged)
       writeTargets('nvidia.json',   nvidiaResult.merged)
+      writeTargets('ceph.json',     cephResult.merged)
 
       // Reload Prometheus
       try {
@@ -140,6 +170,7 @@ export const targetsRoutes: FastifyPluginAsync = async (fastify) => {
           pve:      { added: pveResult.added,    skipped: pveResult.skipped    },
           intel:    { added: intelResult.added,  skipped: intelResult.skipped  },
           nvidia:   { added: nvidiaResult.added, skipped: nvidiaResult.skipped },
+          ceph:     { added: cephResult.added,   skipped: cephResult.skipped   },
         }
       }
     } catch (e: any) {
