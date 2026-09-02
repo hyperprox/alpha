@@ -75,8 +75,15 @@ groups:
         annotations:
           summary: "CEPH OSD {{ $labels.ceph_daemon }} is down"
 
+      # ceph_pool_percent_used is Ceph's own figure and is correct for every
+      # replication size. NOTE it is a RATIO (0-1) despite the name, so it
+      # needs *100: the pool `ceph df` calls 56.05% reads 0.56 here. The previous expression divided raw bytes by a
+      # hardcoded 2, which is only right for size=2 pools: on TitanCluster's
+      # size=1 media-hdd it reported 38.9% against a true 56.05%, so the pool
+      # holding 19 TiB with no redundancy would not have alerted until it was
+      # ~89% actually full.
       - alert: CephPoolHighUsage
-        expr: ((ceph_pool_bytes_used / 2) / ((ceph_pool_bytes_used / 2) + ceph_pool_max_avail)) * 100 > 80
+        expr: ceph_pool_percent_used * 100 > 80
         for: 5m
         labels:
           severity: warning

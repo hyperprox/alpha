@@ -31,3 +31,7 @@ config/prometheus/targets/pve.json
 config/prometheus/targets/intel-gpu.json
 config/prometheus/targets/nvidia.json
 config/prometheus/targets/ceph.json
+
+# Contains the Proxmox API token — never commit
+config/pve-exporter/pve.yml
+config/prometheus/targets/*.json

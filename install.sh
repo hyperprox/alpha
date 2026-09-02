@@ -777,7 +777,7 @@ scrape_configs:
       - source_labels: [__param_target]
         target_label: instance
       - target_label: __address__
-        replacement: localhost:9221
+        replacement: 127.0.0.1:9221
 
   - job_name: ceph
     file_sd_configs:
@@ -792,14 +792,23 @@ scrape_configs:
         refresh_interval: 30s
 EOF
 
-    # Empty target files — populated by setup wizard after Proxmox connection
-    echo '[]' > "${HYPERPROX_DIR}/config/prometheus/targets/nodes.json"
-    echo '[]' > "${HYPERPROX_DIR}/config/prometheus/targets/ceph.json"
-    echo '[]' > "${HYPERPROX_DIR}/config/prometheus/targets/nvidia.json"
-    echo '[]' > "${HYPERPROX_DIR}/config/prometheus/targets/pve.json"
-
     ok "Prometheus config written"
   fi
+
+  # Target files are DEPLOYMENT-SPECIFIC and must never be inherited from the
+  # repo. This seeding used to live in the else-branch above, which is
+  # unreachable on a fresh install: prometheus.yml is tracked, so a clone always
+  # has it, the guard takes the "preserve" path, and the target files shipped in
+  # git survived — every new install started with the dev cluster's node IPs as
+  # scrape targets. The four files have since been untracked; this seeds any
+  # that are missing and never overwrites one that is already populated.
+  # intel-gpu.json was also absent from the original list.
+  mkdir -p "${HYPERPROX_DIR}/config/prometheus/targets"
+  for _t in nodes pve ceph nvidia intel-gpu; do
+    if [[ ! -f "${HYPERPROX_DIR}/config/prometheus/targets/${_t}.json" ]]; then
+      echo '[]' > "${HYPERPROX_DIR}/config/prometheus/targets/${_t}.json"
+    fi
+  done
 
   # Grafana config — preserve on reinstall
   if [[ -f "${HYPERPROX_DIR}/config/grafana/datasources/prometheus.yml" ]]; then
@@ -834,9 +843,20 @@ EOF
     ok "Grafana config written"
   fi
 
-  # pve-exporter config — preserve on reinstall
+  # pve-exporter config — preserve on reinstall.
+  #
+  # If compose starts before this file exists, Docker creates a DIRECTORY at the
+  # bind-mount path. `-f` is false for a directory, so the old guard fell through
+  # to a `cat >` that cannot write onto a directory; the redirect failed, the
+  # script reported success, and the exporter crash-looped on IsADirectoryError
+  # forever. It could never self-heal, because every reinstall repeated it.
+  # Observed on TitanCluster 2026-09-02: 3,572 restarts since 2026-05-05.
+  mkdir -p "${HYPERPROX_DIR}/config/pve-exporter"
+  if [[ -d "${HYPERPROX_DIR}/config/pve-exporter/pve.yml" ]]; then
+    warn "pve.yml exists as a directory (Docker bind-mount artefact) — removing"
+    rm -rf "${HYPERPROX_DIR}/config/pve-exporter/pve.yml"
+  fi
   if [[ ! -f "${HYPERPROX_DIR}/config/pve-exporter/pve.yml" ]]; then
-    mkdir -p "${HYPERPROX_DIR}/config/pve-exporter"
     cat > "${HYPERPROX_DIR}/config/pve-exporter/pve.yml" <<'EOF'
 # PVE Exporter configuration
 # Populated by setup wizard after Proxmox connection
@@ -848,6 +868,10 @@ default:
 EOF
     ok "PVE exporter config written"
   fi
+  # The image runs as uid 101 (prometheus). Root-owned 0600 gives PermissionError
+  # and the same crash loop with a different exception.
+  chown 101:101 "${HYPERPROX_DIR}/config/pve-exporter/pve.yml"
+  chmod 640 "${HYPERPROX_DIR}/config/pve-exporter/pve.yml"
 
   # Nginx config — always overwrite to ensure correct proxy config is in place
   mkdir -p "${HYPERPROX_DIR}/config/nginx"
