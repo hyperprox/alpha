@@ -55,6 +55,9 @@ services:
       - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./config/prometheus/rules:/etc/prometheus/rules:ro
       - ./config/prometheus/targets:/etc/prometheus/targets:ro
+      # Bearer token for the plug-in metrics scrape — generated per install,
+      # gitignored, mounted as a directory so a missing file cannot become one.
+      - ./config/prometheus/secrets:/etc/prometheus/secrets:ro
       - ./data/prometheus:/prometheus
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]

@@ -18,7 +18,7 @@ scrape_configs:
     metrics_path: /api/plugins/metrics
     authorization:
       type: Bearer
-      credentials_file: /etc/prometheus/metrics_token
+      credentials_file: /etc/prometheus/secrets/metrics_token
 
     static_configs:
       - targets: ['127.0.0.1:3002']

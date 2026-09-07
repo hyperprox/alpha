@@ -40,4 +40,5 @@ config/prometheus/targets/*.json
 backups/
 
 # Bearer token for the plug-in metrics scrape — generated per install
-config/prometheus/metrics_token
+config/prometheus/secrets/*
+!config/prometheus/secrets/.gitkeep
