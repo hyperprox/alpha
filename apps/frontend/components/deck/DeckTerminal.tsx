@@ -10,6 +10,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react'
 import '@xterm/xterm/css/xterm.css'
+import { wsBase } from '@/lib/ws'
 
 export type PaneState = 'idle' | 'connecting' | 'ready' | 'closed' | 'error'
 
@@ -36,27 +37,6 @@ const THEME = {
   brightBlack:   '#4b5563', brightRed:     '#f87171', brightGreen:   '#4ade80',
   brightYellow:  '#fbbf24', brightBlue:    '#60a5fa', brightMagenta: '#c4b5fd',
   brightCyan:    '#67e8f9', brightWhite:   '#f1f5f9',
-}
-
-// The terminal socket must reach the API, not whichever origin served the page.
-//
-// Two access paths exist and they need different answers:
-//   :3000  — the Next.js server directly. Its only rewrite is /api (see
-//            next.config.js), so /ws is not proxied and the socket must go
-//            straight to the API's own port. Cookies are not port-scoped, so
-//            the session cookie set on this host is still sent.
-//   :80/443 — a reverse proxy in front, which forwards /ws on the same origin
-//            and gives us TLS for free.
-//
-// NEXT_PUBLIC_WS_URL is deliberately not consulted: the value shipped in .env
-// points at the bundled nginx vhost, and that vhost is not the config the nginx
-// container actually loads.
-function wsBase(): string {
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-
-  return window.location.port === '3000'
-    ? `${proto}//${window.location.hostname}:3002/ws`
-    : `${proto}//${window.location.host}/ws`
 }
 
 export function DeckTerminal({ host, hostId, port, attempt, onState, onAttach }: DeckTerminalProps) {

@@ -46,6 +46,8 @@ export interface JobState {
   lxcNode?:    string
   lxcIp?:      string
   proxyHostId?: number
+  /** False once a step has configured around a service it could not install. */
+  serviceInstalled?: boolean
   certId?:      number
   wanIp?:       string
 }
@@ -316,8 +318,19 @@ async function stepCreateLXC(job: JobState): Promise<string> {
 }
 
 async function stepInstallService(job: JobState): Promise<string> {
-  // Generate install commands — cannot execute directly without SSH to Proxmox host
-  // Commands are shown in the UI so the user can run them in the CT console
+  // This step installs NOTHING. It generates the commands and hands them to the
+  // UI, because the executor has no shell on the new container.
+  //
+  // It must therefore report itself as SKIPPED, not completed. Marking it
+  // completed made the wizard create a container, point NPM at it, create the
+  // DNS record and issue a real certificate, then announce a working HTTPS site
+  // for a container with nothing running in it — a 502 the user is told is a
+  // success. The steps after this one are still worth running: the proxy host,
+  // DNS record and certificate are all real and correct, and the service drops
+  // into place once these commands are run.
+  //
+  // The proper fix is to run them over SSH (see lib/ssh-broker.ts) once the
+  // wizard can obtain a credential for the container it just created.
   const commands = getInstallCommands(job.plan.service ?? 'app')
   const svc      = getServiceConfig(job.plan.service ?? 'app')
 
@@ -326,9 +339,16 @@ async function stepInstallService(job: JobState): Promise<string> {
 
   // Attach commands to step so the frontend can display them
   const step = job.steps.find(s => s.type === 'install_service')
-  if (step) step.commands = commands
+  if (step) {
+    step.commands = commands
+    step.status   = 'skipped'
+  }
 
-  return `Install commands generated for CT ${job.lxcVmid ?? '?'} · port ${svc.port}`
+  job.serviceInstalled = false
+
+  return `NOT INSTALLED — run these ${commands.length} commands inside CT ${job.lxcVmid ?? '?'} ` +
+         `to bring the service up on port ${svc.port}. Everything after this step is configured ` +
+         `and waiting for it.`
 }
 
 async function stepConfigureProxy(job: JobState): Promise<string> {
@@ -453,6 +473,11 @@ async function stepRequestSSL(job: JobState): Promise<string> {
     hsts_enabled:   true,
   } as any)
 
+  if (job.serviceInstalled === false) {
+    return `Certificate issued and attached to ${job.plan.domain} over HTTPS. The service ` +
+           `itself is NOT yet installed — ${job.plan.domain} will return 502 until the install ` +
+           `commands from the earlier step are run inside CT ${job.lxcVmid ?? '?'}.`
+  }
   return `SSL certificate issued and attached — ${job.plan.domain} is now HTTPS`
 }
 

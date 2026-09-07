@@ -5,6 +5,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import Link from 'next/link'
 import { formatBytes, formatUptime, pct } from '@/lib/utils'
+import { wsBase } from '@/lib/ws'
 
 // Types
 interface PVENode { node: string; status: string; cpu: number; maxcpu: number; mem: number; maxmem: number; disk: number; maxdisk: number; uptime: number }
@@ -599,8 +600,7 @@ export default function DashboardView() {
   useEffect(() => {
     fetchInitial()
 
-    const wsUrl = `ws://${window.location.hostname}:3002/ws`
-    const ws = new WebSocket(wsUrl)
+    const ws = new WebSocket(wsBase())
     wsRef.current = ws
 
     ws.onmessage = (e) => {
