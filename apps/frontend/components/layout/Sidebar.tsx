@@ -19,7 +19,7 @@ const NAV = [
   {
     section: 'WORKSPACE',
     items: [
-      { href: '/deck',     label: 'Deck',         icon: DeckIcon     },
+      { href: '/terminal', label: 'Terminal',         icon: TerminalIcon     },
     ],
   },
   {
@@ -169,7 +169,7 @@ export function Sidebar() {
 // ---------------------------------------------------------------------------
 
 
-function DeckIcon() {
+function TerminalIcon() {
   return (
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5}>
       <rect x="1" y="2.5" width="14" height="11" rx="1.5" />

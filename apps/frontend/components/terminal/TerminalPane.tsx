@@ -3,7 +3,7 @@
 // =============================================================================
 //  HyperProx — Deck terminal pane
 //
-//  xterm.js over the /ws/deck/term socket. The session itself lives in tmux on
+//  xterm.js over the /ws/terminal/term socket. The session itself lives in tmux on
 //  the target, so this component is only a window onto it: unmounting closes the
 //  socket and leaves the work running.
 // =============================================================================
@@ -14,7 +14,7 @@ import { wsBase } from '@/lib/ws'
 
 export type PaneState = 'idle' | 'connecting' | 'ready' | 'closed' | 'error'
 
-export interface DeckTerminalProps {
+export interface TerminalPaneProps {
   host:     string
   hostId:   string
   port:     number
@@ -58,7 +58,7 @@ async function fontReady(): Promise<void> {
   } catch { /* a font that never loads must not block the terminal */ }
 }
 
-export function DeckTerminal({ host, hostId, port, attempt, onState, onAttach }: DeckTerminalProps) {
+export function TerminalPane({ host, hostId, port, attempt, onState, onAttach }: TerminalPaneProps) {
   const mountRef = useRef<HTMLDivElement>(null)
   const [fatal, setFatal] = useState<string | null>(null)
 
@@ -117,7 +117,7 @@ export function DeckTerminal({ host, hostId, port, attempt, onState, onAttach }:
         host, id: hostId, port: String(port),
         cols: String(term.cols), rows: String(term.rows),
       })
-      socket = new WebSocket(`${wsBase()}/deck/term?${params}`)
+      socket = new WebSocket(`${wsBase()}/terminal/term?${params}`)
 
       socket.onmessage = (ev) => {
         let frame: any

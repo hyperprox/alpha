@@ -9,7 +9,7 @@
 
 import { getCredential, setCredential, deleteCredential, listCredentialKeys } from './credentials'
 
-export const DECK_CATEGORY = 'deck'
+export const CREDENTIAL_CATEGORY = 'deck'
 const PROVIDER = 'manualhost'
 
 export interface ManualHost {
@@ -25,11 +25,11 @@ function idFor(name: string): string {
 }
 
 export async function listManualHosts(): Promise<ManualHost[]> {
-  const keys  = await listCredentialKeys(DECK_CATEGORY, PROVIDER)
+  const keys  = await listCredentialKeys(CREDENTIAL_CATEGORY, PROVIDER)
   const hosts: ManualHost[] = []
 
   for (const { key } of keys) {
-    const raw = await getCredential(DECK_CATEGORY, PROVIDER, key)
+    const raw = await getCredential(CREDENTIAL_CATEGORY, PROVIDER, key)
     if (!raw) continue
     try { hosts.push(JSON.parse(raw) as ManualHost) }
     catch { /* a corrupt row must not blank the whole list */ }
@@ -40,10 +40,10 @@ export async function listManualHosts(): Promise<ManualHost[]> {
 
 export async function saveManualHost(input: Omit<ManualHost, 'id'>): Promise<ManualHost> {
   const host: ManualHost = { id: idFor(input.name), ...input }
-  await setCredential(DECK_CATEGORY, PROVIDER, host.id, JSON.stringify(host), false)
+  await setCredential(CREDENTIAL_CATEGORY, PROVIDER, host.id, JSON.stringify(host), false)
   return host
 }
 
 export async function removeManualHost(id: string): Promise<void> {
-  await deleteCredential(DECK_CATEGORY, PROVIDER, id)
+  await deleteCredential(CREDENTIAL_CATEGORY, PROVIDER, id)
 }

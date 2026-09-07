@@ -4,6 +4,7 @@ const gpuNodes = (process.env.NEXT_PUBLIC_GPU_NODES ?? '').split(',').filter(Boo
 
 
 import { useEffect, useState, useCallback } from 'react'
+import { useRouter } from 'next/navigation'
 import { formatBytes, formatUptime } from '@/lib/utils'
 
 interface PVENode { node: string; status: string; maxcpu: number; maxmem: number }
@@ -37,8 +38,8 @@ function VMPanel({ vm, nodes, onClose, onRefresh }: {
   const [status,     setStatus]    = useState<string|null>(null)
   const [error,      setError]     = useState<string|null>(null)
   const [config,     setConfig]    = useState<any>(null)
+  const router = useRouter()
 
-  const proxmoxUrl = process.env.NEXT_PUBLIC_PROXMOX_URL ?? ''
 
   useEffect(() => {
     if (tab === 'snapshots') {
@@ -63,15 +64,15 @@ function VMPanel({ vm, nodes, onClose, onRefresh }: {
     finally { setActing(false) }
   }
 
-  const openConsole = async () => {
-    try {
-      const res  = await fetch(`/api/infra/vms/${vm.node}/${vm.vmid}/${vm.type}/vnc`, { method: 'POST' })
-      const json = await res.json()
-      if (!json.success) throw new Error(json.error)
-      const { ticket, port } = json.data
-      const url = `${proxmoxUrl}/?console=${vm.type}&novnc=1&vmid=${vm.vmid}&vmname=${vm.name}&node=${vm.node}&ticket=${encodeURIComponent(ticket)}`
-      window.open(url, '_blank', 'width=1024,height=768')
-    } catch(e: any) { setError((e as any).message) }
+  // Opens a pane on the Terminal page rather than a Proxmox noVNC popup.
+  //
+  // The popup never worked: the URL was built from NEXT_PUBLIC_PROXMOX_URL,
+  // which is read in one line of this repo and set nowhere, so it opened a
+  // relative path at our own root and middleware bounced it to /login. Our own
+  // terminal is also the better destination — it reconnects, it keeps
+  // scrollback, and its session survives closing the tab.
+  const openConsole = () => {
+    router.push(`/terminal?open=${vm.type}-${vm.vmid}`)
   }
 
   const setHAState = async (state: 'started'|'stopped'|'disabled') => {
