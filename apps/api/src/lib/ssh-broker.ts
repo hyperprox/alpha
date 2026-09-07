@@ -217,3 +217,57 @@ export function connect(opts: ConnectOptions): Promise<ConnectResult> {
     catch (e: any) { fail(e) }
   })
 }
+
+/**
+ * Run one command and collect its output. Used for setup tasks that are not a
+ * session — installing tmux, probing what a host has — so they do not have to
+ * be typed into a pane by hand.
+ */
+export function runCommand(
+  opts: Omit<ConnectOptions, 'cols' | 'rows' | 'useTmux'> & { command: string },
+): Promise<{ code: number; output: string }> {
+  const { host, port, cred, command } = opts
+
+  return new Promise((resolve, reject) => {
+    const client = new Client()
+    let out = ''
+    let settled = false
+
+    const fail = (e: Error) => { if (!settled) { settled = true; try { client.end() } catch {} ; reject(e) } }
+
+    client.on('error', e => fail(e as Error))
+    client.on('ready', () => {
+      client.exec(command, { pty: true }, (err, stream) => {
+        if (err) return fail(err)
+        stream.on('data', (d: Buffer) => { out += d.toString() })
+        stream.stderr?.on('data', (d: Buffer) => { out += d.toString() })
+        stream.on('close', (code: number) => {
+          settled = true
+          client.end()
+          resolve({ code: code ?? 0, output: out })
+        })
+      })
+    })
+
+    const config: ConnectConfig = {
+      host, port, username: cred.username, readyTimeout: 15_000,
+      // The host key is already pinned by the session path; reuse that pin.
+      hostVerifier: (key: Buffer, verified: (ok: boolean) => void) => {
+        const fp = fingerprintOf(key)
+        getCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, credentialId(`${host}:${port}`))
+          .then(pinned => verified(!pinned || pinned === fp))
+          .catch(() => verified(false))
+      },
+    }
+    if (cred.privateKey) {
+      config.privateKey = cred.privateKey
+      if (cred.passphrase) config.passphrase = cred.passphrase
+    } else if (cred.password) {
+      config.password = cred.password
+    } else {
+      return fail(new Error('Credential has neither a password nor a private key'))
+    }
+
+    try { client.connect(config) } catch (e: any) { fail(e) }
+  })
+}

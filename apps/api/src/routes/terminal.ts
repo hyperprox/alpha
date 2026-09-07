@@ -9,7 +9,8 @@ import { FastifyPluginAsync } from 'fastify'
 import { ProxmoxClient }      from '../lib/proxmox-client'
 import {
   SHARED_CREDENTIAL_ID, credentialId, listCredentials, saveCredential,
-  removeCredential, listHostKeys, forgetHostKey, type TerminalCredential,
+  removeCredential, listHostKeys, forgetHostKey, loadCredential, runCommand,
+  type TerminalCredential,
 } from '../lib/ssh-broker'
 import {
   CREDENTIAL_CATEGORY, listManualHosts, saveManualHost, removeManualHost, type ManualHost,
@@ -203,6 +204,62 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.status(500).send({ success: false, error: e.message })
     }
   })
+
+  // -- Persistence ------------------------------------------------------------
+  // A pane only survives a closed browser if the session lives on the host, and
+  // that means tmux. Most containers ship without it, so rather than telling
+  // people to go and apt-get it on every guest, install it from here — on an
+  // explicit click, and reporting exactly what happened.
+  fastify.post<{ Params: { id: string }; Body: { host: string; port?: number } }>(
+    '/hosts/:id/enable-persistence',
+    async (req, reply) => {
+      const host = (req.body?.host ?? '').trim()
+      const port = Number(req.body?.port) || 22
+      if (!host) return reply.status(400).send({ success: false, error: 'No host address given' })
+
+      let cred
+      try { cred = await loadCredential(req.params.id) }
+      catch (e: any) { return reply.status(500).send({ success: false, error: e.message }) }
+      if (!cred) return reply.status(400).send({ success: false, error: `No saved login for ${host}.` })
+
+      // Covers Debian/Ubuntu, Alpine, RHEL family and Arch. Anything else is
+      // reported rather than guessed at.
+      const command =
+        'if command -v tmux >/dev/null 2>&1; then echo ALREADY; ' +
+        'elif command -v apt-get >/dev/null 2>&1; then DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tmux; ' +
+        'elif command -v apk >/dev/null 2>&1; then apk add --no-cache tmux; ' +
+        'elif command -v dnf >/dev/null 2>&1; then dnf install -y tmux; ' +
+        'elif command -v yum >/dev/null 2>&1; then yum install -y tmux; ' +
+        'elif command -v pacman >/dev/null 2>&1; then pacman -Sy --noconfirm tmux; ' +
+        'else echo NO_PACKAGE_MANAGER; exit 90; fi; ' +
+        'command -v tmux >/dev/null 2>&1 && echo TMUX_OK || { echo TMUX_MISSING; exit 91; }'
+
+      try {
+        const { code, output } = await runCommand({ host, port, cred, command })
+
+        if (output.includes('ALREADY')) {
+          return { success: true, data: { installed: false, message: 'tmux was already installed — reconnect the pane.' } }
+        }
+        if (output.includes('NO_PACKAGE_MANAGER')) {
+          return reply.status(422).send({
+            success: false,
+            error: 'No supported package manager on this host (apt, apk, dnf, yum or pacman). Install tmux by hand to make sessions persistent.',
+          })
+        }
+        if (code !== 0 || !output.includes('TMUX_OK')) {
+          return reply.status(422).send({
+            success: false,
+            error: `Could not install tmux (exit ${code}). Last output: ${output.trim().split('\n').slice(-3).join(' / ').slice(0, 400)}`,
+          })
+        }
+
+        fastify.log.info({ host, port }, '[terminal] tmux installed for session persistence')
+        return { success: true, data: { installed: true, message: 'tmux installed — reconnect the pane and the session will survive a closed browser.' } }
+      } catch (e: any) {
+        return reply.status(500).send({ success: false, error: e.message })
+      }
+    },
+  )
 
   // -- Saved layouts ----------------------------------------------------------
   // A layout is a named set of panes plus how they are arranged. Stored server
