@@ -185,3 +185,29 @@ export async function seedFromEnv(): Promise<void> {
 
   if (seeded > 0) console.log(`[credentials] Seeded ${seeded} credentials from .env`)
 }
+
+// ---------------------------------------------------------------------------
+//  Delete a credential
+// ---------------------------------------------------------------------------
+
+export async function deleteCredential(category: string, provider: string, key: string): Promise<void> {
+  await prisma.credential.deleteMany({ where: { category, provider, key } })
+}
+
+// ---------------------------------------------------------------------------
+//  List the keys under a provider — without decrypting the values.
+//  Used where only presence matters, so a bad ENCRYPTION_KEY cannot turn a
+//  "which hosts have a login saved?" question into a thrown error.
+// ---------------------------------------------------------------------------
+
+export async function listCredentialKeys(
+  category: string,
+  provider: string,
+): Promise<Array<{ key: string; updatedAt: Date }>> {
+  const rows = await prisma.credential.findMany({
+    where:   { category, provider },
+    select:  { key: true, updatedAt: true },
+    orderBy: { key: 'asc' },
+  })
+  return rows
+}

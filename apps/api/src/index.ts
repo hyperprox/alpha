@@ -22,6 +22,8 @@ import { aiRoutes }              from './routes/ai'
 import { gpuRoutes }             from './routes/gpu'
 import { targetsRoutes }         from './routes/targets'
 import { authRoutes }             from './routes/auth'
+import { deckRoutes }             from './routes/deck'
+import { deckWsRoutes }           from './routes/deck-ws'
 import { prismaPlugin }         from './plugins/prisma'
 import { redisPlugin }          from './plugins/redis'
 import { seedFromEnv }          from './lib/credentials'
@@ -83,7 +85,10 @@ async function main() {
   await server.register(aiRoutes,    { prefix: '/api/ai' })
   await server.register(gpuRoutes,   { prefix: '/api/gpu' })
   await server.register(targetsRoutes, { prefix: '/api/targets' })
+  await server.register(deckRoutes,           { prefix: '/api/deck' })
   await server.register(wsRoutes,             { prefix: '/ws' })
+  // Terminal sockets live under /ws because nginx proxies upgrades only there.
+  await server.register(deckWsRoutes,         { prefix: '/ws/deck' })
 
   await seedFromEnv()
   await ensureAdminPassword(msg => server.log.warn(msg))
