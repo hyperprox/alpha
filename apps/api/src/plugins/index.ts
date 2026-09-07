@@ -7,10 +7,19 @@
 // =============================================================================
 
 import type { Plugin } from '../lib/plugin-host'
-import { mikrotikPlugin } from './mikrotik'
-import { plexPlugin }     from './plex'
+import { mikrotikPlugin }    from './mikrotik'
+import { plexPlugin }        from './plex'
+import { unmanicPlugin }     from './unmanic'
+import { qbittorrentPlugin } from './qbittorrent'
+import { arrstackPlugin }    from './arrstack'
 
-export const PLUGINS: Plugin[] = [mikrotikPlugin, plexPlugin]
+export const PLUGINS: Plugin[] = [
+  mikrotikPlugin,
+  plexPlugin,
+  arrstackPlugin,
+  qbittorrentPlugin,
+  unmanicPlugin,
+]
 
 export function findPlugin(id: string): Plugin | undefined {
   return PLUGINS.find(p => p.manifest.id === id)

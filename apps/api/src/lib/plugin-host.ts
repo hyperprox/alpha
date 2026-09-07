@@ -32,6 +32,22 @@ export type PluginAuth =
   | { kind: 'query';  param: string;  fromSetting: string }
   | { kind: 'none' }
 
+/**
+ * One reachable thing, with its own address and its own credential.
+ *
+ * Several plug-ins legitimately talk to more than one box — the arr stack is
+ * Sonarr and Radarr with different API keys, Unmanic is one worker per node.
+ * Declaring them here keeps the credential with the endpoint, so a plug-in can
+ * never send Sonarr's key to Radarr, let alone anywhere else.
+ */
+export interface PluginEndpoint {
+  key:            string
+  label:          string
+  baseUrlSetting: string
+  auth:           PluginAuth
+  insecureTLS?:   boolean
+}
+
 export interface PluginManifest {
   id:          string
   name:        string
@@ -44,6 +60,8 @@ export interface PluginManifest {
   /** Setting holding the base URL every request is resolved against. */
   baseUrlSetting: string
   auth:        PluginAuth
+  /** Additional endpoints beyond the default one above. */
+  endpoints?:  PluginEndpoint[]
   /** Ignore TLS errors — routers and media servers routinely use self-signed certs. */
   insecureTLS?: boolean
 }
@@ -64,6 +82,14 @@ export interface PluginContext {
    * one.
    */
   option(key: string): string | undefined
+  /**
+   * Switch to one of this plug-in's other declared endpoints. The plug-in names
+   * an endpoint from its own manifest — it cannot supply an address, so a
+   * credential can only ever go where its manifest already says it goes.
+   */
+  from(endpointKey: string): PluginContext
+  /** True when that endpoint has an address configured. */
+  has(endpointKey: string): boolean
 }
 
 export interface Plugin {
@@ -166,10 +192,26 @@ export function missingSettings(manifest: PluginManifest, stored: Record<string,
 // ---------------------------------------------------------------------------
 
 class BrokerContext implements PluginContext {
+  private endpoint: PluginEndpoint
+
   constructor(
     private manifest: PluginManifest,
     private settings: Record<string, string>,
-  ) {}
+    endpointKey?: string,
+  ) {
+    this.endpoint = resolveEndpoint(manifest, endpointKey)
+  }
+
+  from(endpointKey: string): PluginContext {
+    return new BrokerContext(this.manifest, this.settings, endpointKey)
+  }
+
+  has(endpointKey: string): boolean {
+    try {
+      const e = resolveEndpoint(this.manifest, endpointKey)
+      return Boolean((this.settings[e.baseUrlSetting] ?? '').trim())
+    } catch { return false }
+  }
 
   option(key: string): string | undefined {
     const declared = this.manifest.settings.find(s => s.key === key)
@@ -181,13 +223,13 @@ class BrokerContext implements PluginContext {
   post(path: string, body: Record<string, unknown>) { return this.request('POST', path, body) }
 
   private async request(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>): Promise<any> {
-    const base = (this.settings[this.manifest.baseUrlSetting] ?? '').replace(/\/+$/, '')
-    if (!base) throw new Error(`${this.manifest.name} has no base URL configured`)
+    const base = (this.settings[this.endpoint.baseUrlSetting] ?? '').replace(/\/+$/, '')
+    if (!base) throw new Error(`${this.manifest.name}: no address configured for ${this.endpoint.label}`)
 
     const url = new URL(base + (path.startsWith('/') ? path : `/${path}`))
     const headers: Record<string, string> = { Accept: 'application/json' }
     if (body) headers['Content-Type'] = 'application/json'
-    const auth = this.manifest.auth
+    const auth = this.endpoint.auth
 
     if (auth.kind === 'header') {
       const v = this.settings[auth.fromSetting]
@@ -206,7 +248,7 @@ class BrokerContext implements PluginContext {
 
     // Routers and media servers ship self-signed certs. A plug-in cannot turn
     // this on for itself — only its manifest can, and only for its own host.
-    const res = await fetchWithTimeout(url.toString(), headers, this.manifest.insecureTLS, method, body)
+    const res = await fetchWithTimeout(url.toString(), headers, this.endpoint.insecureTLS, method, body)
     if (!res.ok) throw new Error(`${this.manifest.name} returned HTTP ${res.status}`)
 
     const text = await res.text()
@@ -257,6 +299,18 @@ function fetchWithTimeout(
       req.end()
     }).catch(reject)
   })
+}
+
+function resolveEndpoint(manifest: PluginManifest, key?: string): PluginEndpoint {
+  const primary: PluginEndpoint = {
+    key: 'default', label: manifest.name,
+    baseUrlSetting: manifest.baseUrlSetting,
+    auth: manifest.auth, insecureTLS: manifest.insecureTLS,
+  }
+  if (!key || key === 'default') return primary
+  const found = (manifest.endpoints ?? []).find(e => e.key === key)
+  if (!found) throw new Error(`${manifest.name} declares no endpoint "${key}"`)
+  return found
 }
 
 async function contextFor(plugin: Plugin): Promise<BrokerContext> {
