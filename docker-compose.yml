@@ -109,6 +109,11 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./config/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Mounting the whole directory is deliberate: it replaces the image's
+      # stock default.conf, which nginx.conf's `include conf.d/*.conf` would
+      # otherwise load instead of ours — serving /usr/share/nginx/html and
+      # 404ing every route.
+      - ./config/nginx/conf.d:/etc/nginx/conf.d:ro
     ports:
       - "80:80"
       - "443:443"
