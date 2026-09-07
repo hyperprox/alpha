@@ -11,6 +11,7 @@ cd /opt/hyperprox
 
 echo "→ Building Frontend..."
 cd apps/frontend && npx next build
+cd /opt/hyperprox   # next build leaves us in apps/frontend; every path below is repo-relative
 
 # next build regenerates .next/standalone from scratch and deliberately does NOT
 # include .next/static or public/ — they have to be copied in after every build.

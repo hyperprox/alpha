@@ -38,6 +38,27 @@ const THEME = {
   brightCyan:    '#67e8f9', brightWhite:   '#f1f5f9',
 }
 
+// The terminal socket must reach the API, not whichever origin served the page.
+//
+// Two access paths exist and they need different answers:
+//   :3000  — the Next.js server directly. Its only rewrite is /api (see
+//            next.config.js), so /ws is not proxied and the socket must go
+//            straight to the API's own port. Cookies are not port-scoped, so
+//            the session cookie set on this host is still sent.
+//   :80/443 — a reverse proxy in front, which forwards /ws on the same origin
+//            and gives us TLS for free.
+//
+// NEXT_PUBLIC_WS_URL is deliberately not consulted: the value shipped in .env
+// points at the bundled nginx vhost, and that vhost is not the config the nginx
+// container actually loads.
+function wsBase(): string {
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+
+  return window.location.port === '3000'
+    ? `${proto}//${window.location.hostname}:3002/ws`
+    : `${proto}//${window.location.host}/ws`
+}
+
 export function DeckTerminal({ host, hostId, port, attempt, onState, onAttach }: DeckTerminalProps) {
   const mountRef = useRef<HTMLDivElement>(null)
   const [fatal, setFatal] = useState<string | null>(null)
@@ -77,12 +98,11 @@ export function DeckTerminal({ host, hostId, port, attempt, onState, onAttach }:
       setFatal(null)
       onStateRef.current('connecting')
 
-      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const params = new URLSearchParams({
         host, id: hostId, port: String(port),
         cols: String(term.cols), rows: String(term.rows),
       })
-      socket = new WebSocket(`${proto}//${window.location.host}/ws/deck/term?${params}`)
+      socket = new WebSocket(`${wsBase()}/deck/term?${params}`)
 
       socket.onmessage = (ev) => {
         let frame: any

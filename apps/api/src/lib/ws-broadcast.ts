@@ -9,6 +9,7 @@ import { FastifyInstance } from 'fastify'
 import { setWizardBroadcast }  from './wizard-executor'
 import { ProxmoxClient }   from './proxmox-client'
 import { getGPUInfo }      from './gpu'
+import { withCephMon } from './ceph'
 import { NPMClient }       from './npm-client'
 
 let fastInterval: ReturnType<typeof setInterval> | null = null
@@ -57,7 +58,6 @@ export function startBroadcast(server: FastifyInstance) {
           `${process.env.PROXMOX_USER}!${process.env.PROXMOX_TOKEN_ID}`,
           process.env.PROXMOX_TOKEN_SECRET!,
           nodes.map(n => n.node),
-          process.env.CEPH_MON_NODE ?? '',
         ),
       ])
 
@@ -87,10 +87,9 @@ export function startBroadcast(server: FastifyInstance) {
   // ---------------------------------------------------------------------------
   slowInterval = setInterval(async () => {
     try {
-      const cephNode = process.env.CEPH_MON_NODE ?? ''
       const [ceph, osds, ha, storage, npmStats] = await Promise.allSettled([
-        pve.getCephStatus(cephNode),
-        pve.getCephOSDs(cephNode),
+        pve.getClusterCephStatus(),
+        withCephMon(pve, n => pve.getCephOSDs(n)),
         pve.getHAStatus(),
         pve.getAllStorage(),
         npm ? npm.getStats() : Promise.resolve(null),

@@ -69,7 +69,6 @@ export async function getClusterNetworkStats(
   tokenId: string,
   tokenSecret: string,
   nodeNames: string[],
-  cephMonNode: string,
 ): Promise<ClusterNetworkStats> {
   if (cache && Date.now() - cache.ts < CACHE_TTL) return cache.data
 
@@ -96,8 +95,10 @@ export async function getClusterNetworkStats(
       }
     })),
 
-    // CEPH I/O from status pgmap
-    proxmoxFetch<any>(host, port, token, `/nodes/${cephMonNode}/ceph/status`),
+    // CEPH I/O from status pgmap. /cluster/ceph/status is cluster-scoped and
+    // carries the same pgmap as the node-level alias, so this needs no monitor
+    // node — and on a cluster without CEPH it simply yields null.
+    proxmoxFetch<any>(host, port, token, '/cluster/ceph/status'),
   ])
 
   const nodes: NodeNetStats[] = nodeResults.status === 'fulfilled' ? nodeResults.value : []
