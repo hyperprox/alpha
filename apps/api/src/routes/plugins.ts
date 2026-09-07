@@ -4,7 +4,7 @@
 
 import { FastifyPluginAsync } from 'fastify'
 import { PLUGINS, findPlugin } from '../plugins'
-import { describeSettings, getSettings, missingSettings, runPlugin, saveSettings } from '../lib/plugin-host'
+import { describeSettings, getSettings, missingSettings, runPlugin, runPluginDetail, saveSettings } from '../lib/plugin-host'
 
 export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
 
@@ -16,6 +16,7 @@ export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
         const missing = missingSettings(p.manifest, stored)
         return {
           ...p.manifest,
+          hasDetail:  typeof p.detail === 'function',
           settings:   await describeSettings(p.manifest),
           configured: missing.length === 0,
           missing,
@@ -45,6 +46,16 @@ export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
   // Live data for a card or a tile. A plug-in that cannot reach its device is a
   // normal state, not a server fault — 200 with ok:false, so the card can show
   // the reason instead of the page showing an error.
+  fastify.get<{ Params: { id: string } }>('/:id/detail', async (req, reply) => {
+    const plugin = findPlugin(req.params.id)
+    if (!plugin) return reply.status(404).send({ success: false, error: 'No such plug-in' })
+    try {
+      return { success: true, data: { ok: true, ...(await runPluginDetail(plugin)) } }
+    } catch (e: any) {
+      return { success: true, data: { ok: false, error: e.message } }
+    }
+  })
+
   fastify.get<{ Params: { id: string } }>('/:id/data', async (req, reply) => {
     const plugin = findPlugin(req.params.id)
     if (!plugin) return reply.status(404).send({ success: false, error: 'No such plug-in' })

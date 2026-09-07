@@ -7,7 +7,7 @@
 //  Plex endpoint makes you infer all three.
 // =============================================================================
 
-import type { Plugin, PluginContext, PluginTileData } from '../lib/plugin-host'
+import type { Plugin, PluginContext, PluginTileData, PluginDetail } from '../lib/plugin-host'
 
 function mbps(kbps: number): string {
   if (!kbps) return '0 Mbps'
@@ -124,6 +124,120 @@ export const plexPlugin: Plugin = {
         : `${count} watching`,
       tone: transcodes > 1 ? 'warn' : 'good',
       rows,
+    }
+  },
+
+  async detail(ctx: PluginContext): Promise<PluginDetail> {
+    const [act, hist, home] = await Promise.all([
+      ctx.get('/api/v2?cmd=get_activity'),
+      ctx.get('/api/v2?cmd=get_history&length=25&order_column=date&order_dir=desc').catch(() => null),
+      ctx.get('/api/v2?cmd=get_home_stats&time_range=30&stats_count=10').catch(() => null),
+    ])
+
+    if (act?.response?.result !== 'success') {
+      throw new Error(act?.response?.message || 'Tautulli rejected the request — check the API key.')
+    }
+
+    const data = act.response.data ?? {}
+    const sessions: any[] = data.sessions ?? []
+
+    const pct = (v: any) => (v === undefined || v === null ? '—' : `${v}%`)
+    const when = (unix: any) => {
+      const n = Number(unix)
+      return n ? new Date(n * 1000).toLocaleString() : '—'
+    }
+    const mins = (sec: any) => {
+      const n = Number(sec ?? 0)
+      return n ? `${Math.round(n / 60)} min` : '—'
+    }
+
+    const historyRows: any[] = hist?.response?.data?.data ?? []
+    const stats: any[] = home?.response?.data ?? []
+    const rowsOf = (id: string) => stats.find(x => x?.stat_id === id)?.rows ?? []
+
+    const topUsers = rowsOf('top_users').map((r: any) => ({
+      user:   r.friendly_name ?? r.user ?? '—',
+      plays:  r.total_plays ?? 0,
+      time:   mins(r.total_duration),
+    }))
+
+    const topMedia = [...rowsOf('top_tv'), ...rowsOf('top_movies')]
+      .sort((a: any, b: any) => Number(b.total_plays ?? 0) - Number(a.total_plays ?? 0))
+      .slice(0, 10)
+      .map((r: any) => ({ title: r.title ?? '—', plays: r.total_plays ?? 0, time: mins(r.total_duration) }))
+
+    return {
+      stats: [
+        { label: 'Watching now',  value: String(data.stream_count ?? 0) },
+        { label: 'Transcoding',   value: String(data.stream_count_transcode ?? 0),
+          tone: Number(data.stream_count_transcode ?? 0) > 1 ? 'warn' : 'good' },
+        { label: 'Direct play',   value: String(data.stream_count_direct_play ?? 0) },
+        { label: 'Bandwidth',     value: mbps(Number(data.total_bandwidth ?? 0)) },
+        { label: 'LAN bandwidth', value: mbps(Number(data.lan_bandwidth ?? 0)) },
+        { label: 'WAN bandwidth', value: mbps(Number(data.wan_bandwidth ?? 0)) },
+      ],
+      tables: [
+        {
+          title: 'Playing now',
+          empty: 'Nobody is watching anything.',
+          columns: [
+            { key: 'user',    label: 'Who' },
+            { key: 'title',   label: 'What' },
+            { key: 'player',  label: 'Player' },
+            { key: 'quality', label: 'Quality' },
+            { key: 'mode',    label: 'Mode' },
+            { key: 'state',   label: 'State' },
+            { key: 'at',      label: 'Progress', align: 'right' },
+          ],
+          rows: sessions.map(x => ({
+            user:    x.friendly_name || x.user || '—',
+            title:   x.full_title || x.title || '—',
+            player:  x.player || '—',
+            quality: x.quality_profile || '—',
+            mode:    x.transcode_decision || '—',
+            state:   x.state || '—',
+            at:      pct(x.progress_percent),
+          })),
+        },
+        {
+          title: 'Recently watched',
+          empty: 'No history recorded yet.',
+          columns: [
+            { key: 'when',   label: 'When' },
+            { key: 'user',   label: 'Who' },
+            { key: 'title',  label: 'What' },
+            { key: 'player', label: 'Player' },
+            { key: 'length', label: 'Watched', align: 'right' },
+          ],
+          rows: historyRows.map((h: any) => ({
+            when:   when(h.date ?? h.started),
+            user:   h.friendly_name || h.user || '—',
+            title:  h.full_title || h.title || '—',
+            player: h.player || '—',
+            length: mins(h.duration),
+          })),
+        },
+        {
+          title: 'Top watchers, 30 days',
+          empty: 'Not enough history yet.',
+          columns: [
+            { key: 'user',  label: 'Who' },
+            { key: 'plays', label: 'Plays', align: 'right' },
+            { key: 'time',  label: 'Time',  align: 'right' },
+          ],
+          rows: topUsers,
+        },
+        {
+          title: 'Most watched, 30 days',
+          empty: 'Not enough history yet.',
+          columns: [
+            { key: 'title', label: 'Title' },
+            { key: 'plays', label: 'Plays', align: 'right' },
+            { key: 'time',  label: 'Time',  align: 'right' },
+          ],
+          rows: topMedia,
+        },
+      ],
     }
   },
 }

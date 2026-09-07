@@ -239,9 +239,61 @@ Enter your Ollama URL in Settings → AI. This must be an existing Ollama instan
 | VM creation — ISO auto-detection, network config, storage picker | ✅ Shipped |
 | CT/VM deletion with confirmation guard | ✅ Shipped |
 | CT template + ISO auto-detection across all nodes and storage pools | ✅ Shipped |
-| AI deployment — plan generation from natural language (read-only) | ✅ Shipped |
-| AI deployment — plan execution and autonomous end-to-end workflow | 🚧 v1.0 |
+| **Terminal — SSH panes for every host, sessions that outlive the browser** | ✅ Shipped |
+| **Terminal — split panes, tabs, and saved layouts** | ✅ Shipped |
+| **Plug-ins — brokered plug-in system with MikroTik and Plex/Tautulli** | ✅ Shipped |
+| AI deployment — plan generation from natural language | ✅ Shipped |
+| AI deployment — plan execution (creates the CT, proxy host, DNS record and certificate; the service install itself is still manual) | ⚠️ Partial |
 | Connect to existing Grafana / Prometheus instance | 🚧 v1.0 |
+
+---
+
+## Terminal
+
+An SSH terminal for every host on the cluster, in the browser.
+
+The host list is not something you fill in: HyperProx already knows every VM and
+container, so all of them are listed the first time you open it, with addresses
+taken from the guest config. Hosts Proxmox has never heard of — a router, a NAS,
+a VPS — can be added by hand and sit in the same list. One shared login covers
+every host that has none of its own, because entering the same root password
+twenty-seven times is how a tool gets abandoned in week one.
+
+Sessions run in **tmux on the target**, so the browser is only a window onto
+them: close the tab, come back tomorrow, and the session is still there with its
+scrollback. Hosts without tmux get a plain shell and say so — and offer to
+install it, over the credential the pane is already using.
+
+Panes can be tabbed, split side by side, stacked, or gridded, and an arrangement
+can be saved by name and reopened later. Host keys are pinned on first connect
+and a change is refused with both fingerprints shown.
+
+---
+
+## Plug-ins
+
+Plug-ins teach HyperProx about things that are not Proxmox — a router, a media
+server — and render them as tiles.
+
+**A plug-in never sees a credential.** It declares in its manifest which settings
+it needs and how those settings authenticate an HTTP call; the host resolves
+them, makes the request, and returns only the response. That boundary is
+deliberate: this process holds your Proxmox token, your proxy and DNS logins and
+your SSH keys, and a plug-in able to read the credential store would be a plug-in
+able to read all of it. Non-secret settings are readable through `ctx.option()`,
+because a plug-in legitimately needs its own configuration; values declared
+`secret` never are.
+
+Bundled today:
+
+| Plug-in | What it shows |
+|---|---|
+| **MikroTik** | Live throughput in and out of the internet connection, how many devices are on the network and which are awake, plus per-device and per-interface tables. Read-only by intent. |
+| **Plex activity** | Who is watching, what they are watching, what is transcoding and what it costs in bandwidth — read through Tautulli, which also supplies the history: recent plays, top watchers, most-watched titles. |
+
+Each plug-in's real output is shown on its gallery card, so you can see what it
+renders before placing it anywhere, and a plug-in quietly returning nothing is
+obvious rather than discovered later.
 
 ---
 
@@ -249,20 +301,15 @@ Enter your Ollama URL in Settings → AI. This must be an existing Ollama instan
 
 | Issue | Status |
 |---|---|
-| **CEPH MON node not auto-detected** — the setup wizard attempts to detect which node runs the CEPH MON service, but detection is unreliable on fresh installs. CEPH status and storage overview will return errors until set manually. | 🔧 Fix in progress |
+| **AI deployment does not install the service** — the wizard creates the container, proxy host, DNS record and SSL certificate, but the install step only *generates* commands; run them in the container or the domain will return 502. The step reports itself as skipped. | ⚠️ By design, for now |
 | **Wattage not displayed on all hardware** — power draw requires CPU power counter support. See [Monitoring](#monitoring--additional-setup-required) for details. | ℹ️ Hardware dependent |
 
 ### Workarounds
 
-**CEPH MON node** — after the setup wizard completes, set it manually:
-```bash
-# Find which node runs CEPH MON (run on any Proxmox node)
-pvesh get /nodes/<node>/ceph/mon
+**CEPH MON node** — detected automatically at runtime and re-detected if that node
+stops answering, so no configuration is needed. `CEPH_MON_NODE` in `.env` remains
+supported as an explicit override; leave it empty unless you need to pin one.
 
-# Set it in .env
-echo "CEPH_MON_NODE=<nodename>" >> /opt/hyperprox/.env
-docker compose -f /opt/hyperprox/docker-compose.yml restart hyperprox-api
-```
 
 ---
 

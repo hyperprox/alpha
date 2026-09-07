@@ -10,6 +10,7 @@
 // =============================================================================
 
 import { useCallback, useEffect, useState } from 'react'
+import Link from 'next/link'
 
 interface PluginSetting {
   key: string; label: string; type: 'text' | 'secret' | 'url'
@@ -20,6 +21,7 @@ interface PluginCard {
   id: string; name: string; description: string
   kind: 'tile' | 'device'; icon: string
   settings: PluginSetting[]; configured: boolean; missing: string[]
+  hasDetail: boolean
 }
 
 interface TileData {
@@ -278,7 +280,13 @@ export default function PluginsPage() {
                 </div>
 
                 <div className="px-4">
-                  <Preview data={d} loading={!!busy[p.id]} />
+                  {p.configured && p.hasDetail ? (
+                    <Link href={`/plugins/${p.id}`} className="block transition-opacity hover:opacity-90">
+                      <Preview data={d} loading={!!busy[p.id]} />
+                    </Link>
+                  ) : (
+                    <Preview data={d} loading={!!busy[p.id]} />
+                  )}
                 </div>
 
                 <div className="mt-3 flex items-center gap-2 border-t px-4 py-2.5" style={{ borderColor: BORDER }}>
@@ -290,6 +298,13 @@ export default function PluginsPage() {
                   </span>
 
                   <div className="ml-auto flex items-center gap-2">
+                    {p.configured && p.hasDetail && (
+                      <Link href={`/plugins/${p.id}`}
+                        className="rounded border px-2.5 py-1 font-display text-xs tracking-wide transition-colors hover:bg-white/5"
+                        style={{ borderColor: '#16233a', color: ACCENT }}>
+                        Open in full
+                      </Link>
+                    )}
                     {p.configured && (
                       <button onClick={() => readOne(p.id)} disabled={busy[p.id]}
                         className="rounded border px-2.5 py-1 font-display text-xs tracking-wide transition-colors hover:bg-white/5 disabled:opacity-40"

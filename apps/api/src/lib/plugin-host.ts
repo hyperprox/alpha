@@ -57,12 +57,41 @@ export interface PluginContext {
    * Still brokered: the plug-in supplies a path and a body, never a credential.
    */
   post(path: string, body: Record<string, unknown>): Promise<any>
+  /**
+   * Read one of the plug-in's own NON-SECRET settings — a WAN interface name,
+   * a threshold. Settings declared `secret` are never returned here: those exist
+   * only to authenticate a brokered call, and a plug-in has no business holding
+   * one.
+   */
+  option(key: string): string | undefined
 }
 
 export interface Plugin {
   manifest: PluginManifest
   /** Shape the device's response into something a tile can render. */
   load(ctx: PluginContext): Promise<PluginTileData>
+  /**
+   * The full view. A tile answers "is anything happening"; this answers
+   * "show me everything" — the whole device list, the whole session list, the
+   * history. Optional, but a plug-in without one is a dead end on screen.
+   */
+  detail?(ctx: PluginContext): Promise<PluginDetail>
+}
+
+/** A table of real rows — the thing a summary tile cannot be. */
+export interface PluginTable {
+  title:    string
+  /** Column labels; `align: 'right'` suits counts and rates. */
+  columns:  Array<{ key: string; label: string; align?: 'left' | 'right' }>
+  rows:     Array<Record<string, string | number>>
+  /** Shown when there are no rows, in the plug-in's own words. */
+  empty?:   string
+}
+
+export interface PluginDetail {
+  /** Big figures across the top. */
+  stats?:  Array<{ label: string; value: string; tone?: 'good' | 'warn' | 'bad' }>
+  tables:  PluginTable[]
 }
 
 export interface PluginTileData {
@@ -125,6 +154,12 @@ class BrokerContext implements PluginContext {
     private manifest: PluginManifest,
     private settings: Record<string, string>,
   ) {}
+
+  option(key: string): string | undefined {
+    const declared = this.manifest.settings.find(s => s.key === key)
+    if (!declared || declared.type === 'secret') return undefined
+    return this.settings[key] || undefined
+  }
 
   get(path: string)  { return this.request('GET', path) }
   post(path: string, body: Record<string, unknown>) { return this.request('POST', path, body) }
@@ -208,12 +243,21 @@ function fetchWithTimeout(
   })
 }
 
-/** Run a plug-in. Returns its tile data, or throws with a readable reason. */
-export async function runPlugin(plugin: Plugin): Promise<PluginTileData> {
+async function contextFor(plugin: Plugin): Promise<BrokerContext> {
   const settings = await getSettings(plugin.manifest.id)
   const missing  = missingSettings(plugin.manifest, settings)
   if (missing.length) {
     throw new Error(`Not configured yet — ${missing.join(' and ')} still needed.`)
   }
-  return plugin.load(new BrokerContext(plugin.manifest, settings))
+  return new BrokerContext(plugin.manifest, settings)
+}
+
+/** Run a plug-in. Returns its tile data, or throws with a readable reason. */
+export async function runPlugin(plugin: Plugin): Promise<PluginTileData> {
+  return plugin.load(await contextFor(plugin))
+}
+
+export async function runPluginDetail(plugin: Plugin): Promise<PluginDetail> {
+  if (!plugin.detail) throw new Error(`${plugin.manifest.name} has no detailed view.`)
+  return plugin.detail(await contextFor(plugin))
 }
