@@ -18,130 +18,122 @@ HyperProx is an open-source infrastructure management platform built on top of P
 
 ---
 
-## Prerequisites
+## Install
 
-HyperProx runs inside a **dedicated LXC container** on your Proxmox node. Before running the installer, create and configure the container correctly.
-
-### Create the LXC in Proxmox
-
-**Recommended specs:**
-- Debian 12 template
-- 4 CPU cores · 8GB RAM · 100GB disk (SSD preferred)
-- Network: bridge on your main LAN (e.g. `vmbr0`), static IP recommended
-
-> **Minimum for testing (no Ollama):** 2 cores · 4GB RAM · 20GB disk
-
-### Required LXC settings — critical
-
-The container must be **privileged** with nesting and keyctl enabled. Without this, Docker will fail with an overlay filesystem error.
-
-**Via Proxmox web UI:**
-1. Create the LXC — check **Privileged container** during creation
-2. After creation → **Options → Features** → enable **Nesting** and **keyctl**
-
-**Via command line** — create the container with all required settings in one shot (run on your Proxmox node):
+On any Proxmox node, as root:
 
 ```bash
-# 1. Download the Debian 12 template if not already available
-pveam update
-pveam download local debian-12-standard_12.12-1_amd64.tar.zst
+curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/bootstrap.sh | bash
+```
 
-# 2. Create the container (replace <CTID>, storage names, and IP as needed)
-pct create <CTID> local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst \
-  --hostname hyperprox \
-  --cores 4 \
-  --memory 8192 \
+That is the whole thing. It picks a free container ID and the storage with the
+most room, fetches the current Debian template, creates the container with the
+features Docker actually needs, mints the Proxmox API token, installs
+`node_exporter` on every node so Monitoring has data immediately, installs
+HyperProx, and prints you a URL.
+
+It is safe to re-run — anything already correct is left alone.
+
+<details>
+<summary>Options, if the defaults do not suit you</summary>
+
+```
+--vmid N            Container ID           (default: next free)
+--hostname NAME     Container hostname     (default: hyperprox)
+--cores N           CPU cores              (default: 4)
+--memory MB         Memory                 (default: 8192)
+--disk GB           Disk                   (default: 100)
+--storage NAME      Storage for the rootfs (default: most free space)
+--bridge NAME       Network bridge         (default: vmbr0)
+--ip CIDR           Static address, e.g. 192.168.1.50/24  (default: dhcp)
+--gateway IP        Gateway, required with --ip
+--skip-exporter     Do not install node_exporter on the nodes
+-y, --yes           Do not ask for confirmation
+```
+
+</details>
+
+### What it does for you, that you used to do by hand
+
+| Was | Now |
+|---|---|
+| Download a template, then `pct create` with the right flags | Chosen and created for you |
+| Remember that the container must be **privileged** with nesting and keyctl, or Docker fails with an overlay error | Set correctly, every time |
+| Add the TUN device rules by hand for Tailscale | Included |
+| `pveum user token add`, then `pveum acl modify`, then paste the secret into a wizard | Created, granted and written into the config |
+| Install `node_exporter` on each node individually | Installed across the cluster |
+| Find the CEPH monitor node and set `CEPH_MON_NODE` | Detected at runtime, and re-detected if that node goes away |
+| Type the address of every service you want a plug-in for | **Scan for services** finds them |
+
+### Finding your services
+
+Open **Plug-ins** and press **Scan for services**. HyperProx already knows every
+guest on the cluster and its address, so it probes them for services it has a
+plug-in for and offers to configure what it finds:
+
+```
+qBittorrent  http://192.168.1.20:8080   on arrstack (700)
+Sonarr       http://192.168.1.20:8989   on arrstack (700)   still needs sonarr_key
+Unmanic      http://192.168.1.21:8888   on unmanic-titan2 (216)
+```
+
+Every probe is an unauthenticated GET against a port a known service answers on.
+Nothing is written until you press **Use this**, and an API key is never guessed
+— where one is needed it says so and opens the settings form.
+
+Only running containers with an address Proxmox can read are scanned. A VM
+without the guest agent has no address to probe, and nothing outside the cluster
+is touched.
+
+### If you would rather do it yourself
+
+<details>
+<summary>Manual container creation and token setup</summary>
+
+The container must be **privileged**, with **nesting** and **keyctl**. Without
+those, Docker fails with an overlay filesystem error.
+
+```bash
+pveam update
+pveam download local debian-13-standard_13.1-2_amd64.tar.zst
+
+pct create <CTID> local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst \
+  --hostname hyperprox --cores 4 --memory 8192 \
   --rootfs local-lvm:100 \
   --net0 name=eth0,bridge=vmbr0,ip=dhcp \
-  --unprivileged false \
-  --features keyctl=1,nesting=1 \
-  --password \
-  --start 1
+  --unprivileged 0 --features keyctl=1,nesting=1 \
+  --password --start 1
 ```
 
-Or if the container already exists, enable the required features:
+For Tailscale, add the TUN device:
 
-```bash
-pct set <CTID> --features keyctl=1,nesting=1
-pct reboot <CTID>
-```
-
-> The installer will detect missing nesting and warn you, but Docker will still fail. Always set these features before running the installer.
-
-### Tailscale (optional)
-
-If you want to access HyperProx remotely via Tailscale, the TUN device must be enabled on the LXC.
-
-**Proxmox 8.x:**
-```bash
-pct set <CTID> --features keyctl=1,nesting=1,tun=1
-pct reboot <CTID>
-```
-
-**Older Proxmox versions** (if the above returns a schema error):
 ```bash
 echo "lxc.cgroup2.devices.allow: c 10:200 rwm" >> /etc/pve/lxc/<CTID>.conf
 echo "lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file" >> /etc/pve/lxc/<CTID>.conf
 pct reboot <CTID>
 ```
 
-Then inside the CT:
-```bash
-curl -fsSL https://tailscale.com/install.sh | sh
-tailscale up
-```
-
-### Create the Proxmox API Token
-
-Run on any Proxmox node:
+Then the API token:
 
 ```bash
 pveum user token add root@pam hyperprox --privsep=0
 pveum acl modify / --token 'root@pam!hyperprox' --role Administrator
 ```
 
-Copy the token secret — it is only shown once.
-
-### Get your GoDaddy API Key (DNS management)
-
-GoDaddy DNS management requires a production API key. The OTE (test environment) keys will not work.
-
-1. Go to [https://developer.godaddy.com/keys](https://developer.godaddy.com/keys) and sign in with your GoDaddy account
-2. Click **Create New App**
-3. Give it a name (e.g. `HyperProx`) and click **Next**
-4. Under **Environment**, select **Production** — do not use OTE
-5. Copy both the **API Key** and **API Secret** — the secret is only shown once
-
-> Your GoDaddy account must have purchased domains associated with it. Reseller or sub-accounts may require additional permissions.
-
-Enter both values in the HyperProx setup wizard when prompted for DNS credentials.
-
----
-
-## Install
+And inside the container:
 
 ```bash
 apt update && apt install -y curl
 curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/install.sh | bash
 ```
 
-The installer will:
-- Detect your environment (LXC, VM, or bare metal)
-- Fix DNS if Proxmox has injected internal resolvers
-- Prompt to set a static IP if running DHCP
-- Disable AppArmor if present (incompatible with Docker in LXC)
-- Install Docker, Node.js, and all dependencies with live progress output
-- Clone the repo, install packages, and build the app
-- Generate a `.env` with secure random secrets
-- Start the full Docker stack (Postgres, Redis, Prometheus, Grafana, nginx)
-- Start the API, frontend, and setup wizard as systemd services
-- Open the setup wizard at `http://<your-ip>:3001`
+</details>
 
-Or with Docker Compose directly (after cloning the repo and creating `.env`):
+### GoDaddy API key — only if you want DNS management
 
-```bash
-docker compose up -d
-```
+1. [developer.godaddy.com/keys](https://developer.godaddy.com/keys) → **Create New App**
+2. Environment: **Production** — the OTE test keys will not work
+3. Copy the key and secret into Settings → DNS
 
 ---
 

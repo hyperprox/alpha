@@ -4,6 +4,8 @@
 
 import { FastifyPluginAsync } from 'fastify'
 import { PLUGINS, findPlugin } from '../plugins'
+import { ProxmoxClient }        from '../lib/proxmox-client'
+import { discoverServices }     from '../lib/discovery'
 import {
   describeSettings, getSettings, missingSettings, runPlugin, runPluginDetail,
   runPluginMetrics, renderExposition, saveSettings, type PluginMetric,
@@ -59,6 +61,25 @@ export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
         }
       }))
       return { success: true, data: rows }
+    } catch (e: any) {
+      return reply.status(500).send({ success: false, error: e.message })
+    }
+  })
+
+  // Find services already running on the cluster. Read-only: every probe is an
+  // unauthenticated GET against a port a known service answers on, and nothing
+  // is written until the user applies a finding.
+  fastify.get('/discover', async (_req, reply) => {
+    try {
+      const pve = new ProxmoxClient(
+        process.env.PROXMOX_HOST!,
+        Number(process.env.PROXMOX_PORT ?? 8006),
+        `${process.env.PROXMOX_USER}!${process.env.PROXMOX_TOKEN_ID}`,
+        process.env.PROXMOX_TOKEN_SECRET!,
+      )
+      const findings = await discoverServices(pve)
+      fastify.log.info({ found: findings.length }, '[plugin] discovery scan')
+      return { success: true, data: findings }
     } catch (e: any) {
       return reply.status(500).send({ success: false, error: e.message })
     }

@@ -24,6 +24,11 @@ interface PluginCard {
   hasDetail: boolean
 }
 
+interface Finding {
+  pluginId: string; setting: string; label: string
+  address: string; source: string; needs: string[]
+}
+
 interface TileData {
   ok: boolean; error?: string; headline?: string
   tone?: 'good' | 'warn' | 'bad'
@@ -188,6 +193,8 @@ export default function PluginsPage() {
   const [editing, setEditing] = useState<PluginCard | null>(null)
   const [notice,  setNotice]  = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [scanning, setScanning] = useState(false)
+  const [findings, setFindings] = useState<Finding[] | null>(null)
 
   const readOne = useCallback(async (id: string) => {
     setBusy(b => ({ ...b, [id]: true }))
@@ -216,6 +223,42 @@ export default function PluginsPage() {
 
   useEffect(() => { load() }, [load])
 
+  const scan = async () => {
+    setScanning(true)
+    setFindings(null)
+    try {
+      const res = await fetch('/api/plugins/discover').then(r => r.json())
+      if (!res.success) return setNotice(res.error)
+      setFindings(res.data)
+      if (!res.data.length) setNotice('Nothing found. Only running containers with a readable address are scanned.')
+    } catch (e: any) {
+      setNotice(e.message)
+    } finally {
+      setScanning(false)
+    }
+  }
+
+  // Applying a finding fills in the address only. A key we cannot discover is
+  // still a key the user has to paste, and pretending otherwise would just move
+  // the failure to the first refresh.
+  const applyFinding = async (f: Finding) => {
+    const res = await fetch(`/api/plugins/${f.pluginId}/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [f.setting]: f.address }),
+    }).then(r => r.json())
+    if (!res.success) return setNotice(res.error)
+    setFindings(prev => (prev ?? []).filter(x => x !== f))
+    await load()
+    if (f.needs.length) {
+      const plugin = plugins.find(p => p.id === f.pluginId)
+      setNotice(`${f.label} address saved — it still needs ${f.needs.join(' and ')}.`)
+      if (plugin) setEditing(plugin)
+    } else {
+      readOne(f.pluginId)
+    }
+  }
+
   const save = async (values: Record<string, string>) => {
     const p = editing!
     setEditing(null)
@@ -237,6 +280,14 @@ export default function PluginsPage() {
         <p className="font-mono text-[11px]" style={{ color: '#374151' }}>
           {loading ? 'loading…' : `${plugins.filter(p => p.configured).length} of ${plugins.length} configured`}
         </p>
+        <button
+          onClick={scan}
+          disabled={scanning}
+          className="ml-auto rounded px-3 py-1.5 font-display text-xs font-semibold tracking-wide transition-opacity hover:opacity-85 disabled:opacity-40"
+          style={{ background: '#00e5ff15', color: ACCENT, border: '1px solid #00e5ff30' }}
+        >
+          {scanning ? 'Scanning…' : 'Scan for services'}
+        </button>
       </header>
 
       {notice && (
@@ -252,6 +303,45 @@ export default function PluginsPage() {
           Plug-ins never see a credential. They declare what they need, and HyperProx makes the
           call on their behalf — so a plug-in can read its own device and nothing else.
         </p>
+
+        {findings && findings.length > 0 && (
+          <section className="mb-6 rounded-lg border" style={{ background: PANEL, borderColor: '#00e5ff30' }}>
+            <header className="flex items-center gap-3 border-b px-4 py-2.5" style={{ borderColor: BORDER }}>
+              <h2 className="font-display text-[13px] font-semibold uppercase tracking-[0.14em] text-white">
+                Found on your cluster
+              </h2>
+              <span className="font-mono text-[11px]" style={{ color: '#374151' }}>{findings.length}</span>
+              <button onClick={() => setFindings(null)} className="ml-auto font-mono text-[11px]" style={{ color: '#4b5563' }}>
+                dismiss
+              </button>
+            </header>
+            <div className="flex flex-col">
+              {findings.map((f, i) => (
+                <div key={i} className="flex items-center gap-3 border-b px-4 py-2.5 last:border-b-0" style={{ borderColor: '#0b1320' }}>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-baseline gap-2">
+                      <span className="font-display text-[13px] font-semibold" style={{ color: '#e2e8f0' }}>{f.label}</span>
+                      <span className="font-mono text-[11px]" style={{ color: '#4b5563' }}>{f.address}</span>
+                    </div>
+                    <div className="font-mono text-[10.5px]" style={{ color: '#374151' }}>
+                      on {f.source}
+                      {f.needs.length > 0 && (
+                        <span style={{ color: '#f59e0b' }}> · still needs {f.needs.join(' and ')}</span>
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => applyFinding(f)}
+                    className="rounded px-3 py-1 font-display text-xs font-semibold tracking-wide transition-opacity hover:opacity-85"
+                    style={{ background: ACCENT, color: '#04202a' }}
+                  >
+                    Use this
+                  </button>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
 
         <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))' }}>
           {plugins.map(p => {
