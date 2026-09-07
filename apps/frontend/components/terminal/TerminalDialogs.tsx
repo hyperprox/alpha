@@ -200,3 +200,37 @@ export function AddHostDialog({ onSave, onClose }: {
     </Shell>
   )
 }
+
+// ---------------------------------------------------------------------------
+//  Saving an arrangement
+// ---------------------------------------------------------------------------
+
+export function SaveLayoutDialog({ paneCount, existing, onSave, onClose }: {
+  paneCount: number
+  existing: string[]
+  onSave: (name: string) => void
+  onClose: () => void
+}) {
+  const [name, setName] = useState('')
+  const clash = existing.includes(name.trim())
+
+  return (
+    <Shell
+      title="Save this arrangement"
+      subtitle={`${paneCount} pane${paneCount === 1 ? '' : 's'}, and how they are laid out.`}
+      onClose={onClose}
+    >
+      <form id="deck-dialog-form" onSubmit={e => { e.preventDefault(); onSave(name.trim()) }} className="flex flex-col gap-3.5">
+        <div>
+          <Label>Name</Label>
+          <Field value={name} onChange={e => setName(e.target.value)} placeholder="TitanCoder" required autoFocus />
+        </div>
+        <p className="font-mono text-[11px] leading-relaxed" style={{ color: clash ? '#f59e0b' : '#4b5563' }}>
+          {clash
+            ? `"${name.trim()}" already exists — saving replaces it.`
+            : 'Reopening a layout restores these hosts. Sessions themselves live in tmux on each host, so they are still running when you come back.'}
+        </p>
+      </form>
+    </Shell>
+  )
+}

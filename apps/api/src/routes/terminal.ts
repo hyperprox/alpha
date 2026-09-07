@@ -204,6 +204,55 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
     }
   })
 
+  // -- Saved layouts ----------------------------------------------------------
+  // A layout is a named set of panes plus how they are arranged. Stored server
+  // side rather than in the browser so the same arrangement is there from any
+  // machine — the whole point is not rebuilding it each morning.
+  fastify.get('/layouts', async (_req, reply) => {
+    try {
+      const rows = await fastify.prisma.terminalLayout.findMany({ orderBy: { name: 'asc' } })
+      return { success: true, data: rows }
+    } catch (e: any) {
+      return reply.status(500).send({ success: false, error: e.message })
+    }
+  })
+
+  fastify.put<{ Body: { name: string; view: string; panes: unknown[] } }>(
+    '/layouts',
+    async (req, reply) => {
+      const name  = (req.body?.name ?? '').trim()
+      const view  = (req.body?.view ?? 'tabs').trim()
+      const panes = req.body?.panes
+
+      if (!name)               return reply.status(400).send({ success: false, error: 'A name is required' })
+      if (!Array.isArray(panes)) return reply.status(400).send({ success: false, error: 'panes must be a list' })
+      if (!panes.length)       return reply.status(400).send({ success: false, error: 'Open at least one pane before saving a layout' })
+
+      try {
+        // Saving under an existing name replaces it — that is what "save" means
+        // once you have the arrangement you want on screen.
+        const row = await fastify.prisma.terminalLayout.upsert({
+          where:  { name },
+          update: { view, panes: panes as any },
+          create: { name, view, panes: panes as any },
+        })
+        fastify.log.info({ name, panes: panes.length, view }, '[terminal] layout saved')
+        return { success: true, data: row }
+      } catch (e: any) {
+        return reply.status(500).send({ success: false, error: e.message })
+      }
+    },
+  )
+
+  fastify.delete<{ Params: { name: string } }>('/layouts/:name', async (req, reply) => {
+    try {
+      await fastify.prisma.terminalLayout.deleteMany({ where: { name: req.params.name } })
+      return { success: true }
+    } catch (e: any) {
+      return reply.status(500).send({ success: false, error: e.message })
+    }
+  })
+
   // -- Pinned host keys -------------------------------------------------------
   // Clearing one is how you accept a genuinely rebuilt guest. Deliberate, and
   // never automatic.

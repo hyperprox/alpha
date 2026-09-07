@@ -126,3 +126,14 @@ model Credential {
 
   @@unique([category, provider, key])
 }
+
+// --- Terminal layouts --------------------------------------------------------
+
+model TerminalLayout {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  view      String   @default("tabs")   // tabs | cols | rows | grid
+  panes     Json     // [{ hostId, name, address, port }]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

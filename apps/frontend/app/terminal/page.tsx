@@ -11,7 +11,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { TerminalPane, type PaneState } from '@/components/terminal/TerminalPane'
-import { AddHostDialog, ConnectDialog, type CredentialDraft } from '@/components/terminal/TerminalDialogs'
+import { AddHostDialog, ConnectDialog, SaveLayoutDialog, type CredentialDraft } from '@/components/terminal/TerminalDialogs'
 
 interface TerminalHost {
   id: string; name: string; vmid: number; node: string
@@ -47,6 +47,37 @@ const STATE_STYLE: Record<PaneState, { label: string; color: string; dot: string
   error:      { label: 'Failed',       color: '#ef4444', dot: '#ef4444' },
 }
 
+type ViewMode = 'tabs' | 'cols' | 'rows' | 'grid'
+
+interface SavedLayout {
+  id: string; name: string; view: ViewMode
+  panes: Array<{ hostId: string; name: string; address: string; port: number }>
+}
+
+// How each mode arranges the open panes. Every pane is live in all of them —
+// only `tabs` hides the inactive ones.
+const GRID: Record<ViewMode, React.CSSProperties> = {
+  tabs: { display: 'block' },
+  cols: { display: 'grid', gridAutoFlow: 'column', gridAutoColumns: 'minmax(0, 1fr)' },
+  rows: { display: 'grid', gridAutoFlow: 'row',    gridAutoRows:    'minmax(0, 1fr)' },
+  grid: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gridAutoRows: 'minmax(0, 1fr)' },
+}
+
+const VIEW_LABEL: Record<ViewMode, string> = {
+  tabs: 'One at a time',
+  cols: 'Side by side',
+  rows: 'Stacked',
+  grid: 'Grid',
+}
+
+function ViewIcon({ mode }: { mode: ViewMode }) {
+  const common = { viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, width: 13, height: 13 }
+  if (mode === 'tabs') return <svg {...common}><rect x="1.5" y="3.5" width="13" height="9" rx="1" /><path d="M1.5 6.5h13" /></svg>
+  if (mode === 'cols') return <svg {...common}><rect x="1.5" y="2.5" width="13" height="11" rx="1" /><path d="M8 2.5v11" /></svg>
+  if (mode === 'rows') return <svg {...common}><rect x="1.5" y="2.5" width="13" height="11" rx="1" /><path d="M1.5 8h13" /></svg>
+  return <svg {...common}><rect x="1.5" y="2.5" width="13" height="11" rx="1" /><path d="M8 2.5v11M1.5 8h13" /></svg>
+}
+
 let tabSeq = 0
 
 export default function TerminalPage() {
@@ -61,6 +92,11 @@ export default function TerminalPage() {
 
   const [credentialFor, setCredentialFor] = useState<TerminalHost | null>(null)
   const [addingHost,    setAddingHost]    = useState(false)
+
+  const [view,          setView]          = useState<ViewMode>('tabs')
+  const [layouts,       setLayouts]       = useState<SavedLayout[]>([])
+  const [savingLayout,  setSavingLayout]  = useState(false)
+  const [layoutMenu,    setLayoutMenu]    = useState(false)
 
   const active = sessions.find(s => s.key === activeKey) ?? null
 
@@ -83,6 +119,14 @@ export default function TerminalPage() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  const loadLayouts = useCallback(async () => {
+    try {
+      const res = await fetch('/api/terminal/layouts').then(r => r.json())
+      if (res.success) setLayouts(res.data)
+    } catch { /* the layout list is a convenience, never a blocker */ }
+  }, [])
+  useEffect(() => { loadLayouts() }, [loadLayouts])
 
   // ?open=<host id> — how Infrastructure's Console button lands here.
   // Read from location rather than useSearchParams: the latter forces this
@@ -184,6 +228,55 @@ export default function TerminalPage() {
     if (!res.success) return setNotice(res.error)
     sessions.filter(s => s.host.id === host.id).forEach(s => closeSession(s.key))
     await load()
+  }
+
+  // -- Layouts ----------------------------------------------------------------
+  const saveLayout = async (name: string) => {
+    setSavingLayout(false)
+    if (!name) return
+    const res = await fetch('/api/terminal/layouts', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name, view,
+        panes: sessions.map(x => ({
+          hostId: x.host.id, name: x.host.name, address: x.address, port: x.port,
+        })),
+      }),
+    }).then(r => r.json())
+    if (!res.success) return setNotice(res.error)
+    setNotice(`Layout "${name}" saved.`)
+    loadLayouts()
+  }
+
+  const applyLayout = (layout: SavedLayout) => {
+    setLayoutMenu(false)
+    const opened: Session[] = layout.panes.map(pane => {
+      // Prefer the live host record — its status and name may have moved on —
+      // but keep the pane if the guest is gone, rather than silently dropping it.
+      const live = hosts.find(h => h.id === pane.hostId)
+      const host: TerminalHost = live ?? {
+        id: pane.hostId, name: pane.name, vmid: 0, node: 'unknown',
+        type: 'manual', status: 'unknown', ip: pane.address,
+        hasCredential: true, source: 'manual',
+      }
+      return {
+        key: `${host.id}#${++tabSeq}`, host,
+        address: pane.address, port: pane.port,
+        attempt: 1, state: 'connecting' as PaneState, attach: null,
+      }
+    })
+    setSessions(opened)
+    setActiveKey(opened.length ? opened[0].key : null)
+    setView(layout.view)
+    setNotice(`Opened "${layout.name}" — ${opened.length} pane${opened.length === 1 ? '' : 's'}.`)
+  }
+
+  const deleteLayout = async (name: string) => {
+    const res = await fetch(`/api/terminal/layouts/${encodeURIComponent(name)}`, { method: 'DELETE' })
+      .then(r => r.json())
+    if (!res.success) return setNotice(res.error)
+    loadLayouts()
   }
 
   // -- Grouping ---------------------------------------------------------------
@@ -395,6 +488,70 @@ export default function TerminalPage() {
           ) : (
             <span className="font-mono text-[12px]" style={{ color: '#374151' }}>Pick a host to open a terminal</span>
           )}
+
+          <div className={`flex items-center gap-2 ${active ? '' : 'ml-auto'}`}>
+            {/* View. Every pane stays connected in all four; only `tabs` hides
+                the inactive ones. */}
+            <div className="flex rounded border" style={{ borderColor: '#16233a' }}>
+              {(['tabs', 'cols', 'rows', 'grid'] as ViewMode[]).map(m => (
+                <button key={m} onClick={() => setView(m)} title={VIEW_LABEL[m]}
+                  className="flex h-7 w-7 items-center justify-center transition-colors first:rounded-l last:rounded-r hover:bg-white/5"
+                  style={view === m ? { background: '#00e5ff15', color: ACCENT } : { color: '#4b5563' }}>
+                  <ViewIcon mode={m} />
+                </button>
+              ))}
+            </div>
+
+            <div className="relative">
+              <button onClick={() => setLayoutMenu(v => !v)}
+                className="flex items-center gap-1.5 rounded border px-2.5 py-1 font-display text-xs tracking-wide transition-colors hover:bg-white/5"
+                style={{ borderColor: '#16233a', color: '#6b7280' }}>
+                Layouts
+                <svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={2}>
+                  <path d="M3 6l5 5 5-5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+
+              {layoutMenu && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setLayoutMenu(false)} />
+                  <div className="absolute right-0 z-50 mt-1.5 w-60 rounded border shadow-2xl"
+                    style={{ background: '#0d1220', borderColor: '#16233a' }}>
+                    {layouts.length === 0 && (
+                      <p className="px-3 py-3 font-mono text-[11px]" style={{ color: '#4b5563' }}>
+                        No saved layouts yet.
+                      </p>
+                    )}
+                    {layouts.map(l => (
+                      <div key={l.id} className="group flex items-center border-b last:border-b-0"
+                        style={{ borderColor: '#0f1929' }}>
+                        <button onClick={() => applyLayout(l)} className="flex min-w-0 flex-1 flex-col px-3 py-2 text-left">
+                          <span className="truncate font-mono text-[12px]" style={{ color: '#cbd5e1' }}>{l.name}</span>
+                          <span className="font-mono text-[10px]" style={{ color: '#374151' }}>
+                            {l.panes.length} pane{l.panes.length === 1 ? '' : 's'} · {VIEW_LABEL[l.view] ?? l.view}
+                          </span>
+                        </button>
+                        <button onClick={() => deleteLayout(l.name)} title={`Delete "${l.name}"`}
+                          className="mr-2 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded opacity-0 transition-opacity hover:bg-white/10 group-hover:opacity-100"
+                          style={{ color: '#4b5563' }}>
+                          <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={2}>
+                            <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
+                          </svg>
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      onClick={() => { setLayoutMenu(false); setSavingLayout(true) }}
+                      disabled={!sessions.length}
+                      className="w-full border-t px-3 py-2 text-left font-display text-xs tracking-wide transition-colors hover:bg-white/5 disabled:opacity-40"
+                      style={{ borderColor: '#0f1929', color: ACCENT }}>
+                      Save current arrangement…
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
         </header>
 
         {active?.attach?.hostKeyLearned && (
@@ -414,16 +571,41 @@ export default function TerminalPage() {
         )}
 
         {/* Every open pane stays mounted; only the active one is shown. */}
-        <div className="relative flex flex-1 flex-col" style={{ minHeight: 0, background: '#080c14' }}>
+        <div
+          className="relative flex-1"
+          style={{ ...GRID[view], minHeight: 0, background: '#080c14', gap: view === 'tabs' ? 0 : 1 }}
+        >
           {/* Inline display beats the utility class here: Tailwind's .flex would
               otherwise override [hidden]{display:none} and stack every pane on
               top of the active one. */}
           {sessions.map(sess => (
             <div
               key={sess.key}
-              className="absolute inset-0 flex-col"
-              style={{ display: sess.key === activeKey ? 'flex' : 'none' }}
+              onClick={() => setActiveKey(sess.key)}
+              className={view === 'tabs' ? 'absolute inset-0 flex-col' : 'flex min-h-0 min-w-0 flex-col overflow-hidden'}
+              style={{
+                display: view !== 'tabs' || sess.key === activeKey ? 'flex' : 'none',
+                outline: view !== 'tabs' && sess.key === activeKey ? `1px solid ${ACCENT}40` : 'none',
+                outlineOffset: -1,
+              }}
             >
+              {view !== 'tabs' && (
+                <div className="flex flex-shrink-0 items-center gap-2 border-b px-2.5 py-1"
+                  style={{ borderColor: BORDER, background: '#0a0f18' }}>
+                  <span className="h-1.5 w-1.5 rounded-full" style={{ background: STATE_STYLE[sess.state].dot }} />
+                  <span className="truncate font-mono text-[11px]"
+                    style={{ color: sess.key === activeKey ? ACCENT : '#6b7280' }}>
+                    {sess.host.name}
+                  </span>
+                  <button onClick={e => { e.stopPropagation(); closeSession(sess.key) }} title="Close this pane"
+                    className="ml-auto flex h-4 w-4 items-center justify-center rounded hover:bg-white/10"
+                    style={{ color: '#374151' }}>
+                    <svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={2}>
+                      <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
+                    </svg>
+                  </button>
+                </div>
+              )}
               <TerminalPane
                 host={sess.address}
                 hostId={sess.host.id}
@@ -436,7 +618,7 @@ export default function TerminalPage() {
           ))}
 
           {!sessions.length && (
-            <div className="flex flex-1 items-center justify-center">
+            <div className="absolute inset-0 flex items-center justify-center">
               <div className="max-w-sm px-6 text-center">
                 <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded border"
                   style={{ borderColor: '#16233a', color: '#1f2937' }}>
@@ -468,6 +650,14 @@ export default function TerminalPage() {
         />
       )}
       {addingHost && <AddHostDialog onSave={addHost} onClose={() => setAddingHost(false)} />}
+      {savingLayout && (
+        <SaveLayoutDialog
+          paneCount={sessions.length}
+          existing={layouts.map(l => l.name)}
+          onSave={saveLayout}
+          onClose={() => setSavingLayout(false)}
+        />
+      )}
     </div>
   )
 }
