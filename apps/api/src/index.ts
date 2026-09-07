@@ -23,6 +23,7 @@ import { gpuRoutes }             from './routes/gpu'
 import { targetsRoutes }         from './routes/targets'
 import { authRoutes }             from './routes/auth'
 import { terminalRoutes }             from './routes/terminal'
+import { pluginRoutes }           from './routes/plugins'
 import { terminalWsRoutes }           from './routes/terminal-ws'
 import { prismaPlugin }         from './plugins/prisma'
 import { redisPlugin }          from './plugins/redis'
@@ -86,6 +87,7 @@ async function main() {
   await server.register(gpuRoutes,   { prefix: '/api/gpu' })
   await server.register(targetsRoutes, { prefix: '/api/targets' })
   await server.register(terminalRoutes,           { prefix: '/api/terminal' })
+  await server.register(pluginRoutes,          { prefix: '/api/plugins' })
   await server.register(wsRoutes,             { prefix: '/ws' })
   // Terminal sockets live under /ws because nginx proxies upgrades only there.
   await server.register(terminalWsRoutes,         { prefix: '/ws/terminal' })
