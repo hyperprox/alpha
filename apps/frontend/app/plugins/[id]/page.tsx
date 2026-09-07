@@ -12,7 +12,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 
 interface Column { key: string; label: string; align?: 'left' | 'right' }
-interface Table  { title: string; columns: Column[]; rows: Array<Record<string, any>>; empty?: string }
+interface Table  { title: string; columns: Column[]; rows: Array<Record<string, any>>; empty?: string; total?: number }
 interface Detail {
   ok: boolean; error?: string
   stats?: Array<{ label: string; value: string; tone?: 'good' | 'warn' | 'bad' }>
@@ -48,8 +48,17 @@ function DataTable({ table }: { table: Table }) {
           {table.title}
         </h2>
         <span className="font-mono text-[11px] tabular-nums" style={{ color: '#374151' }}>
-          {rows.length}{rows.length !== table.rows.length && ` of ${table.rows.length}`}
+          {rows.length}
+          {filter && rows.length !== table.rows.length && ` of ${table.rows.length}`}
         </span>
+        {/* A table that is only part of the story has to say so, or it quietly
+            contradicts the figure in the stat tile above it. */}
+        {!filter && table.total !== undefined && table.total > table.rows.length && (
+          <span className="rounded px-1.5 py-0.5 font-mono text-[10px]"
+            style={{ background: '#f59e0b12', color: '#f59e0b', border: '1px solid #f59e0b28' }}>
+            showing {table.rows.length} of {table.total}
+          </span>
+        )}
         {table.rows.length > 8 && (
           <input
             value={filter}
