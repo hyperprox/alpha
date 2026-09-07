@@ -230,6 +230,31 @@ export default function TerminalPage() {
     await load()
   }
 
+  // -- Persistence ------------------------------------------------------------
+  const [enabling, setEnabling] = useState(false)
+
+  const enablePersistence = async (sess: Session) => {
+    setEnabling(true)
+    setNotice(`Installing tmux on ${sess.host.name}…`)
+    try {
+      const res = await fetch(`/api/terminal/hosts/${encodeURIComponent(sess.host.id)}/enable-persistence`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host: sess.address, port: sess.port }),
+      }).then(r => r.json())
+
+      if (!res.success) return setNotice(res.error)
+      setNotice(res.data.message)
+      // Reconnecting is what actually picks tmux up — the running shell was
+      // started without it.
+      patch(sess.key, { attempt: sess.attempt + 1, attach: null })
+    } catch (e: any) {
+      setNotice(e.message)
+    } finally {
+      setEnabling(false)
+    }
+  }
+
   // -- Layouts ----------------------------------------------------------------
   const saveLayout = async (name: string) => {
     setSavingLayout(false)
@@ -451,16 +476,22 @@ export default function TerminalPage() {
               </div>
 
               <div className="ml-auto flex items-center gap-2">
-                {active.attach && (
+                {active.attach?.persistent && (
                   <span className="rounded px-2 py-1 font-mono text-[10.5px]"
-                    style={active.attach.persistent
-                      ? { background: '#00e5ff12', color: ACCENT,   border: '1px solid #00e5ff28' }
-                      : { background: '#f59e0b12', color: '#f59e0b', border: '1px solid #f59e0b28' }}
-                    title={active.attach.persistent
-                      ? 'The shell runs in tmux on the host. Close this tab and it keeps running.'
-                      : 'tmux is not installed on this host, so closing this pane ends the session.'}>
-                    {active.attach.persistent ? `tmux · ${active.attach.session}` : 'not persistent'}
+                    style={{ background: '#00e5ff12', color: ACCENT, border: '1px solid #00e5ff28' }}
+                    title="The shell runs in tmux on the host. Close this tab and it keeps running.">
+                    tmux · {active.attach.session}
                   </span>
+                )}
+                {active.attach && !active.attach.persistent && (
+                  <button
+                    onClick={() => enablePersistence(active)}
+                    disabled={enabling}
+                    title="This host has no tmux, so closing the pane ends the session. This installs it."
+                    className="rounded px-2 py-1 font-mono text-[10.5px] transition-colors hover:bg-amber-400/10 disabled:opacity-50"
+                    style={{ background: '#f59e0b12', color: '#f59e0b', border: '1px solid #f59e0b28' }}>
+                    {enabling ? 'installing tmux…' : 'not persistent — fix'}
+                  </button>
                 )}
                 <button onClick={() => forgetHostKey(active)}
                   title="Clear the pinned host key — do this only when the guest was genuinely rebuilt"
