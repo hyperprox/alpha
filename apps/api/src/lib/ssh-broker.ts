@@ -24,8 +24,21 @@ const HOSTKEY_PROVIDER       = 'hostkey'
 /** Credential id used when one login is shared across the fleet. */
 export const SHARED_CREDENTIAL_ID = '_shared'
 
-/** Session name on the target. Stable, so every reconnect re-attaches. */
-export const TMUX_SESSION = 'hyperprox'
+/**
+ * Default tmux session name on the target. Stable, so a reconnect re-attaches.
+ *
+ * Panes pass their own name so that two panes on the SAME host get separate
+ * sessions: tmux mirrors every client attached to one session and sizes it to
+ * the smallest, so a shared name turns split view into two views of one shell
+ * that fight over the window size.
+ */
+export const TMUX_SESSION = 'terminal'
+
+/** tmux session names cannot contain '.' or ':'; keep it to something safe. */
+export function sessionName(raw?: string): string {
+  const cleaned = (raw ?? '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40)
+  return cleaned || TMUX_SESSION
+}
 
 export interface TerminalCredential {
   username:    string
@@ -40,6 +53,8 @@ export interface ConnectResult {
   client:         Client
   /** true when tmux was found and the session persists across disconnects. */
   persistent:     boolean
+  /** The tmux session actually attached to, when persistent. */
+  session:        string
   /** true when this connect learned the host key rather than matching a pinned one. */
   hostKeyLearned: boolean
   fingerprint:    string
@@ -112,6 +127,8 @@ export interface ConnectOptions {
   rows:    number
   /** Set false to get a plain login shell instead of attaching to tmux. */
   useTmux?: boolean
+  /** tmux session to attach to or create. Defaults to TMUX_SESSION. */
+  session?: string
 }
 
 /**
@@ -123,6 +140,7 @@ export interface ConnectOptions {
 export function connect(opts: ConnectOptions): Promise<ConnectResult> {
   const { host, port, cred, cols, rows } = opts
   const useTmux = opts.useTmux !== false
+  const tmuxName = sessionName(opts.session)
   const pinKey  = credentialId(`${host}:${port}`)
 
   return new Promise<ConnectResult>((resolve, reject) => {
@@ -150,14 +168,14 @@ export function connect(opts: ConnectOptions): Promise<ConnectResult> {
         const done = (err: Error | undefined, channel: ClientChannel) => {
           if (err) return fail(err)
           settled = true
-          resolve({ channel, client, persistent, hostKeyLearned, fingerprint })
+          resolve({ channel, client, persistent, session: tmuxName, hostKeyLearned, fingerprint })
         }
 
         const pty = { term: 'xterm-256color', cols, rows }
 
         if (persistent) {
           // new-session -A attaches to an existing session or creates it.
-          client.exec(`tmux new-session -A -s ${TMUX_SESSION}`, { pty }, done)
+          client.exec(`tmux new-session -A -s ${tmuxName}`, { pty }, done)
         } else {
           client.shell(pty, done)
         }

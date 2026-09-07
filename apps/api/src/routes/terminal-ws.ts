@@ -8,7 +8,7 @@
 // =============================================================================
 
 import { FastifyPluginAsync } from 'fastify'
-import { connect, loadCredential, TMUX_SESSION } from '../lib/ssh-broker'
+import { connect, loadCredential } from '../lib/ssh-broker'
 
 interface TermQuery {
   host?:  string
@@ -16,6 +16,7 @@ interface TermQuery {
   id?:    string
   cols?:  string
   rows?:  string
+  session?: string
 }
 
 /** Server -> client frames. Kept small and explicit; no binary muxing. */
@@ -59,13 +60,13 @@ export const terminalWsRoutes: FastifyPluginAsync = async (fastify) => {
     const started = Date.now()
     let result
     try {
-      result = await connect({ host, port, cred, cols, rows })
+      result = await connect({ host, port, cred, cols, rows, session: q.session })
     } catch (e: any) {
       fastify.log.warn({ host, port, user: cred.username, err: e.message }, '[terminal] connect failed')
       return bail(e.message)
     }
 
-    const { channel, client, persistent, hostKeyLearned, fingerprint } = result
+    const { channel, client, persistent, session, hostKeyLearned, fingerprint } = result
 
     // Audit: who opened what, and for how long. Deliberately not the credential.
     fastify.log.info({ host, port, user: cred.username, persistent }, '[terminal] session opened')
@@ -74,7 +75,7 @@ export const terminalWsRoutes: FastifyPluginAsync = async (fastify) => {
       t: 'status',
       state:   'ready',
       persistent,
-      session: persistent ? TMUX_SESSION : undefined,
+      session: persistent ? session : undefined,
       hostKeyLearned,
       fingerprint,
     })

@@ -27,6 +27,7 @@ interface AttachInfo {
 
 interface Session {
   key:     string          // unique per tab, so one host can be opened twice
+  tmux:    string          // tmux session on the host — distinct per pane
   host:    TerminalHost
   address: string
   port:    number
@@ -155,10 +156,23 @@ export default function TerminalPage() {
     setSessions(prev => prev.map(s => (s.key === key ? { ...s, ...fields } : s)))
   }, [])
 
+  // Two panes on one host must not share a tmux session — tmux mirrors every
+  // attached client and sizes to the smallest, so they would show the same
+  // shell and fight over the window.
+  const nextTmuxName = (hostId: string, current: Session[]) => {
+    const used = new Set(current.filter(x => x.host.id === hostId).map(x => x.tmux))
+    for (let i = 1; i < 50; i++) {
+      const name = i === 1 ? 'terminal' : `terminal-${i}`
+      if (!used.has(name)) return name
+    }
+    return `terminal-${Date.now() % 10000}`
+  }
+
   const openSession = (host: TerminalHost, address: string, port: number) => {
     const key = `${host.id}#${++tabSeq}`
     setSessions(prev => [...prev, {
-      key, host, address, port, attempt: 1, state: 'connecting', attach: null,
+      key, tmux: nextTmuxName(host.id, prev), host, address, port,
+      attempt: 1, state: 'connecting', attach: null,
     }])
     setActiveKey(key)
   }
@@ -289,8 +303,16 @@ export default function TerminalPage() {
         key: `${host.id}#${++tabSeq}`, host,
         address: pane.address, port: pane.port,
         attempt: 1, state: 'connecting' as PaneState, attach: null,
+        tmux: 'terminal',
       }
     })
+    // Restored panes on the same host still need distinct sessions.
+    const seen = new Map<string, number>()
+    for (const o of opened) {
+      const n = (seen.get(o.host.id) ?? 0) + 1
+      seen.set(o.host.id, n)
+      o.tmux = n === 1 ? 'terminal' : `terminal-${n}`
+    }
     setSessions(opened)
     setActiveKey(opened.length ? opened[0].key : null)
     setView(layout.view)
@@ -641,6 +663,7 @@ export default function TerminalPage() {
                 host={sess.address}
                 hostId={sess.host.id}
                 port={sess.port}
+                session={sess.tmux}
                 attempt={sess.attempt}
                 onState={(state, detail) => patch(sess.key, { state, detail })}
                 onAttach={attach => patch(sess.key, { attach })}

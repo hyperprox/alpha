@@ -18,6 +18,9 @@ export interface TerminalPaneProps {
   host:     string
   hostId:   string
   port:     number
+  /** tmux session on the host. Distinct per pane, so two panes on one host do
+      not attach to the same session and mirror each other. */
+  session:  string
   /** Bumping this remounts the session — used by Reconnect. */
   attempt:  number
   onState:  (s: PaneState, detail?: string) => void
@@ -58,7 +61,7 @@ async function fontReady(): Promise<void> {
   } catch { /* a font that never loads must not block the terminal */ }
 }
 
-export function TerminalPane({ host, hostId, port, attempt, onState, onAttach }: TerminalPaneProps) {
+export function TerminalPane({ host, hostId, port, session, attempt, onState, onAttach }: TerminalPaneProps) {
   const mountRef = useRef<HTMLDivElement>(null)
   const [fatal, setFatal] = useState<string | null>(null)
 
@@ -114,7 +117,7 @@ export function TerminalPane({ host, hostId, port, attempt, onState, onAttach }:
       onStateRef.current('connecting')
 
       const params = new URLSearchParams({
-        host, id: hostId, port: String(port),
+        host, id: hostId, port: String(port), session,
         cols: String(term.cols), rows: String(term.rows),
       })
       socket = new WebSocket(`${wsBase()}/terminal/term?${params}`)
@@ -192,7 +195,7 @@ export function TerminalPane({ host, hostId, port, attempt, onState, onAttach }:
       cleanup?.()
       socket?.close()
     }
-  }, [host, hostId, port, attempt])
+  }, [host, hostId, port, session, attempt])
 
   return (
     <div className="relative flex-1 min-h-0" style={{ background: '#080c14' }}>
