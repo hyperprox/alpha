@@ -35,3 +35,6 @@ config/prometheus/targets/ceph.json
 # Contains the Proxmox API token — never commit
 config/pve-exporter/pve.yml
 config/prometheus/targets/*.json
+
+# Local DB/config dumps — sits next to the encrypted credential store
+backups/

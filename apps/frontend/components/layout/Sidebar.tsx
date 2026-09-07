@@ -17,6 +17,12 @@ const NAV = [
     ],
   },
   {
+    section: 'WORKSPACE',
+    items: [
+      { href: '/deck',     label: 'Deck',         icon: DeckIcon     },
+    ],
+  },
+  {
     section: 'MANAGE',
     items: [
       { href: '/proxy',    label: 'Proxy',        icon: ProxyIcon    },
@@ -162,6 +168,16 @@ export function Sidebar() {
 //  Icons — inline SVGs, 16x16
 // ---------------------------------------------------------------------------
 
+
+function DeckIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5}>
+      <rect x="1" y="2.5" width="14" height="11" rx="1.5" />
+      <path d="M4 6.5l2 1.75-2 1.75" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M8.5 10.75h3.5" strokeLinecap="round" />
+    </svg>
+  )
+}
 
 function InfraIcon() {
   return (
