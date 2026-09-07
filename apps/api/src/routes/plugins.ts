@@ -4,9 +4,45 @@
 
 import { FastifyPluginAsync } from 'fastify'
 import { PLUGINS, findPlugin } from '../plugins'
-import { describeSettings, getSettings, missingSettings, runPlugin, runPluginDetail, saveSettings } from '../lib/plugin-host'
+import {
+  describeSettings, getSettings, missingSettings, runPlugin, runPluginDetail,
+  runPluginMetrics, renderExposition, saveSettings, type PluginMetric,
+} from '../lib/plugin-host'
 
 export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
+
+  // Prometheus scrape target. Sits outside the session cookie because a scraper
+  // has no session — it authenticates with METRICS_TOKEN as a bearer token, set
+  // in .env. With no token configured the endpoint refuses rather than exposing
+  // device names and viewing habits to anything that can reach the port.
+  fastify.get('/metrics', async (req, reply) => {
+    const expected = process.env.METRICS_TOKEN
+    if (!expected) {
+      return reply.status(503).type('text/plain')
+        .send('# METRICS_TOKEN is not set in .env, so this endpoint is disabled.\n')
+    }
+    const offered = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '')
+    if (offered !== expected) return reply.status(401).type('text/plain').send('# unauthorised\n')
+
+    const samples: Array<{ plugin: string; metric: PluginMetric }> = []
+    const up: Record<string, boolean> = {}
+
+    // One failing plug-in must not blank the whole scrape — it reports up=0 and
+    // the others still publish.
+    await Promise.all(PLUGINS.map(async p => {
+      if (!p.metrics) return
+      try {
+        const rows = await runPluginMetrics(p)
+        rows.forEach(metric => samples.push({ plugin: p.manifest.id, metric }))
+        up[p.manifest.id] = true
+      } catch {
+        up[p.manifest.id] = false
+      }
+    }))
+
+    return reply.type('text/plain; version=0.0.4').send(renderExposition(samples, up))
+  })
+
 
   // Gallery listing. Never returns a secret — only whether one is stored.
   fastify.get('/', async (_req, reply) => {

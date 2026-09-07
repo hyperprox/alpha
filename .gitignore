@@ -38,3 +38,6 @@ config/prometheus/targets/*.json
 
 # Local DB/config dumps — sits next to the encrypted credential store
 backups/
+
+# Bearer token for the plug-in metrics scrape — generated per install
+config/prometheus/metrics_token

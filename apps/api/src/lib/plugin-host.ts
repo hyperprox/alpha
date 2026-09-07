@@ -76,6 +76,22 @@ export interface Plugin {
    * history. Optional, but a plug-in without one is a dead end on screen.
    */
   detail?(ctx: PluginContext): Promise<PluginDetail>
+  /**
+   * Numbers worth keeping. A tile shows now; Prometheus shows the shape of the
+   * week — was the link saturated at 3am, does transcoding pile up on Sundays.
+   * Deliberately separate from load(): tile text is for reading, and parsing
+   * numbers back out of prose is how a metric quietly becomes wrong.
+   */
+  metrics?(ctx: PluginContext): Promise<PluginMetric[]>
+}
+
+export interface PluginMetric {
+  /** Suffix only — exported as hyperprox_plugin_<name>. */
+  name:    string
+  help:    string
+  type:    'gauge' | 'counter'
+  value:   number
+  labels?: Record<string, string>
 }
 
 /** A table of real rows — the thing a summary tile cannot be. */
@@ -260,4 +276,47 @@ export async function runPlugin(plugin: Plugin): Promise<PluginTileData> {
 export async function runPluginDetail(plugin: Plugin): Promise<PluginDetail> {
   if (!plugin.detail) throw new Error(`${plugin.manifest.name} has no detailed view.`)
   return plugin.detail(await contextFor(plugin))
+}
+
+export async function runPluginMetrics(plugin: Plugin): Promise<PluginMetric[]> {
+  if (!plugin.metrics) return []
+  return plugin.metrics(await contextFor(plugin))
+}
+
+/** Prometheus text exposition. Escaping matters: device names contain anything. */
+export function renderExposition(
+  samples: Array<{ plugin: string; metric: PluginMetric }>,
+  up: Record<string, boolean>,
+): string {
+  const lines: string[] = []
+  const esc = (v: string) => v.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, ' ')
+
+  lines.push('# HELP hyperprox_plugin_up Whether the plug-in answered its device on the last scrape.')
+  lines.push('# TYPE hyperprox_plugin_up gauge')
+  for (const [id, ok] of Object.entries(up)) {
+    lines.push(`hyperprox_plugin_up{plugin="${esc(id)}"} ${ok ? 1 : 0}`)
+  }
+
+  // One HELP/TYPE per metric name, then every series under it — Prometheus
+  // rejects a repeated TYPE for the same name.
+  const byName = new Map<string, Array<{ plugin: string; metric: PluginMetric }>>()
+  for (const s of samples) {
+    const key = `hyperprox_plugin_${s.metric.name}`
+    if (!byName.has(key)) byName.set(key, [])
+    byName.get(key)!.push(s)
+  }
+
+  for (const [name, group] of byName) {
+    lines.push(`# HELP ${name} ${esc(group[0].metric.help)}`)
+    lines.push(`# TYPE ${name} ${group[0].metric.type}`)
+    for (const { plugin, metric } of group) {
+      const labels = { plugin, ...(metric.labels ?? {}) }
+      const rendered = Object.entries(labels)
+        .map(([k, v]) => `${k}="${esc(String(v))}"`)
+        .join(',')
+      lines.push(`${name}{${rendered}} ${Number.isFinite(metric.value) ? metric.value : 0}`)
+    }
+  }
+
+  return lines.join('\n') + '\n'
 }
