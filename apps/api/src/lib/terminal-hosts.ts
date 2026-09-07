@@ -47,3 +47,29 @@ export async function saveManualHost(input: Omit<ManualHost, 'id'>): Promise<Man
 export async function removeManualHost(id: string): Promise<void> {
   await deleteCredential(CREDENTIAL_CATEGORY, PROVIDER, id)
 }
+
+// ---------------------------------------------------------------------------
+//  Per-host addresses
+//
+//  Proxmox gives us an address for a running LXC and nothing for a VM (that
+//  needs the guest agent). Whatever the user types in the sign-in dialog has to
+//  survive, or every VM asks again on the next page load — which reads, fairly,
+//  as "it did not save my credentials".
+// ---------------------------------------------------------------------------
+
+const ADDRESS_PROVIDER = 'address'
+
+export async function saveHostAddress(hostId: string, address: string): Promise<void> {
+  if (!address) return
+  await setCredential(CREDENTIAL_CATEGORY, ADDRESS_PROVIDER, hostId, address, false)
+}
+
+export async function listHostAddresses(): Promise<Record<string, string>> {
+  const keys = await listCredentialKeys(CREDENTIAL_CATEGORY, ADDRESS_PROVIDER)
+  const out: Record<string, string> = {}
+  for (const { key } of keys) {
+    const v = await getCredential(CREDENTIAL_CATEGORY, ADDRESS_PROVIDER, key)
+    if (v) out[key] = v
+  }
+  return out
+}
