@@ -6,6 +6,7 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import Link from 'next/link'
 import { formatBytes, formatUptime, pct } from '@/lib/utils'
 import { wsBase } from '@/lib/ws'
+import { PluginCards } from '@/components/plugins/PluginCards'
 
 // Types
 interface PVENode { node: string; status: string; cpu: number; maxcpu: number; mem: number; maxmem: number; disk: number; maxdisk: number; uptime: number }
@@ -682,6 +683,9 @@ export default function DashboardView() {
             {sorted.map(node=><NodeCard key={node.node} node={node} vms={fast.vms} gpuInfo={fast.gpuStatus?.find(g=>g.node===node.node)}/>)}
           </div>
         </section>
+
+        {/* Row 3 — plug-ins */}
+        <PluginCards />
 
         {/* Row 3 — CEPH + HA */}
         {slow && (
