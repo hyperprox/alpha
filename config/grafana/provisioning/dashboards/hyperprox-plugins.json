@@ -1,0 +1,307 @@
+{
+  "uid": "hyperprox-plugins",
+  "title": "HyperProx — Plug-ins",
+  "description": "What the plug-ins have been seeing over time: the internet link, who is on the network, and what Plex is doing.",
+  "tags": ["hyperprox", "plugins"],
+  "timezone": "browser",
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Internet",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "WAN throughput",
+      "description": "Download is drawn upward and upload downward, so saturation in either direction reads at a glance instead of two lines competing at the bottom of the same axis.",
+      "gridPos": { "x": 0, "y": 1, "w": 16, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "min": null,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 18,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "axisSoftMin": 0
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": ".*upload.*" },
+            "properties": [
+              { "id": "custom.transform", "value": "negative-Y" },
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byRegexp", "options": ".*download.*" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "hyperprox_plugin_network_bits_per_second{direction=\"rx\"}",
+          "legendFormat": "download — {{interface}}"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "hyperprox_plugin_network_bits_per_second{direction=\"tx\"}",
+          "legendFormat": "upload — {{interface}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Right now",
+      "gridPos": { "x": 16, "y": 1, "w": 8, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "color": { "mode": "fixed", "fixedColor": "text" }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Devices awake" },
+            "properties": [{ "id": "unit", "value": "short" }]
+          }
+        ]
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "vertical",
+        "textMode": "value_and_name",
+        "colorMode": "none",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "hyperprox_plugin_network_bits_per_second{direction=\"rx\"}",
+          "legendFormat": "Download"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "hyperprox_plugin_network_bits_per_second{direction=\"tx\"}",
+          "legendFormat": "Upload"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "hyperprox_plugin_network_devices{state=\"awake\"}",
+          "legendFormat": "Devices awake"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "row",
+      "title": "The network",
+      "gridPos": { "x": 0, "y": 9, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Devices on the network",
+      "description": "Awake is who answered ARP recently. Leased is who has ever been given an address — a device asleep for an hour still holds one, so the gap between the two lines is roughly how much of the network is idle.",
+      "gridPos": { "x": 0, "y": 10, "w": 12, "h": 7 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "axisSoftMin": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "hyperprox_plugin_network_devices",
+          "legendFormat": "{{state}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Router load",
+      "gridPos": { "x": 12, "y": 10, "w": 12, "h": 7 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "max": 100,
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 12, "showPoints": "never" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 50 },
+              { "color": "red", "value": 80 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "single" }
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "hyperprox_plugin_router_cpu_percent",
+          "legendFormat": "CPU"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "row",
+      "title": "Plex",
+      "gridPos": { "x": 0, "y": 17, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Streams by decision",
+      "description": "Transcoding is the line that matters: it is the one that costs the GPU, and several at once is the shape worth recognising before someone reports buffering.",
+      "gridPos": { "x": 0, "y": 18, "w": 12, "h": 7 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 0,
+            "fillOpacity": 70,
+            "stacking": { "mode": "normal", "group": "A" },
+            "showPoints": "never"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "transcode" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "direct_play" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["max"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "hyperprox_plugin_plex_streams{decision!=\"all\"}",
+          "legendFormat": "{{decision}}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Plex bandwidth",
+      "gridPos": { "x": 12, "y": 18, "w": 12, "h": 7 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Kbits",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 15, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "hyperprox_plugin_plex_bandwidth_kbps{scope!=\"total\"}",
+          "legendFormat": "{{scope}}"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "Plug-in health",
+      "gridPos": { "x": 0, "y": 25, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Did each plug-in answer its device?",
+      "description": "A gap here is a plug-in that stopped reporting. Every panel above goes quiet at the same moment, and this is the one that says why.",
+      "gridPos": { "x": 0, "y": 26, "w": 24, "h": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "showPoints": "never"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["min"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "hyperprox_plugin_up",
+          "legendFormat": "{{plugin}}"
+        }
+      ]
+    }
+  ]
+}

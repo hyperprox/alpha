@@ -317,6 +317,12 @@ Metrics are declared separately from tile text on purpose: tile text is written
 to be read, and parsing numbers back out of prose is how a metric quietly
 becomes wrong.
 
+A **HyperProx — Plug-ins** dashboard is provisioned into Grafana automatically,
+so the data arrives on a panel rather than as a query you have to write: WAN
+throughput with upload mirrored below the axis, devices awake against devices
+leased, router load, Plex streams stacked by decision, and a plug-in health row
+that tells you *why* the panels above went quiet.
+
 The endpoint authenticates with `METRICS_TOKEN` from `.env` as a bearer token,
 because a scraper has no session to present. **With no token set it refuses**
 rather than exposing device names and viewing habits to anything that can reach
