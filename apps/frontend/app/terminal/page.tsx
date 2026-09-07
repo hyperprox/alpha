@@ -10,10 +10,10 @@
 // =============================================================================
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { DeckTerminal, type PaneState } from '@/components/deck/DeckTerminal'
-import { AddHostDialog, ConnectDialog, type CredentialDraft } from '@/components/deck/DeckDialogs'
+import { TerminalPane, type PaneState } from '@/components/terminal/TerminalPane'
+import { AddHostDialog, ConnectDialog, type CredentialDraft } from '@/components/terminal/TerminalDialogs'
 
-interface DeckHost {
+interface TerminalHost {
   id: string; name: string; vmid: number; node: string
   type: 'lxc' | 'qemu' | 'manual'; status: string
   ip: string | null; port?: number; hasCredential: boolean
@@ -27,7 +27,7 @@ interface AttachInfo {
 
 interface Session {
   key:     string          // unique per tab, so one host can be opened twice
-  host:    DeckHost
+  host:    TerminalHost
   address: string
   port:    number
   attempt: number
@@ -49,8 +49,8 @@ const STATE_STYLE: Record<PaneState, { label: string; color: string; dot: string
 
 let tabSeq = 0
 
-export default function DeckPage() {
-  const [hosts,     setHosts]     = useState<DeckHost[]>([])
+export default function TerminalPage() {
+  const [hosts,     setHosts]     = useState<TerminalHost[]>([])
   const [loading,   setLoading]   = useState(true)
   const [notice,    setNotice]    = useState<string | null>(null)
   const [query,     setQuery]     = useState('')
@@ -59,7 +59,7 @@ export default function DeckPage() {
   const [sessions,  setSessions]  = useState<Session[]>([])
   const [activeKey, setActiveKey] = useState<string | null>(null)
 
-  const [credentialFor, setCredentialFor] = useState<DeckHost | null>(null)
+  const [credentialFor, setCredentialFor] = useState<TerminalHost | null>(null)
   const [addingHost,    setAddingHost]    = useState(false)
 
   const active = sessions.find(s => s.key === activeKey) ?? null
@@ -68,8 +68,8 @@ export default function DeckPage() {
   const load = useCallback(async () => {
     try {
       const [hostRes, credRes] = await Promise.all([
-        fetch('/api/deck/hosts').then(r => r.json()),
-        fetch('/api/deck/credentials').then(r => r.json()),
+        fetch('/api/terminal/hosts').then(r => r.json()),
+        fetch('/api/terminal/credentials').then(r => r.json()),
       ])
       if (!hostRes.success) throw new Error(hostRes.error ?? 'The host list could not be loaded')
       setHosts(hostRes.data)
@@ -84,12 +84,34 @@ export default function DeckPage() {
 
   useEffect(() => { load() }, [load])
 
+  // ?open=<host id> — how Infrastructure's Console button lands here.
+  // Read from location rather than useSearchParams: the latter forces this
+  // statically-rendered page into a Suspense boundary and fails the build.
+  const [pendingOpen, setPendingOpen] = useState<string | null>(null)
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get('open')
+    if (id) {
+      setPendingOpen(id)
+      window.history.replaceState({}, '', '/terminal')
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!pendingOpen || !hosts.length) return
+    const host = hosts.find(h => h.id === pendingOpen)
+    setPendingOpen(null)
+    if (!host) return setNotice(`No host on this cluster matches "${pendingOpen}".`)
+    open(host)
+  // `open` is recreated each render; depending on it would re-fire this.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingOpen, hosts])
+
   // -- Sessions ---------------------------------------------------------------
   const patch = useCallback((key: string, fields: Partial<Session>) => {
     setSessions(prev => prev.map(s => (s.key === key ? { ...s, ...fields } : s)))
   }, [])
 
-  const openSession = (host: DeckHost, address: string, port: number) => {
+  const openSession = (host: TerminalHost, address: string, port: number) => {
     const key = `${host.id}#${++tabSeq}`
     setSessions(prev => [...prev, {
       key, host, address, port, attempt: 1, state: 'connecting', attach: null,
@@ -97,7 +119,7 @@ export default function DeckPage() {
     setActiveKey(key)
   }
 
-  const open = (host: DeckHost) => {
+  const open = (host: TerminalHost) => {
     if (!host.hasCredential || !host.ip) return setCredentialFor(host)
 
     // Clicking a host you already have open focuses that tab rather than
@@ -119,7 +141,7 @@ export default function DeckPage() {
   // -- Credentials & hosts ----------------------------------------------------
   const saveCredential = async (draft: CredentialDraft, address: string) => {
     const host = credentialFor!
-    const res = await fetch(`/api/deck/credentials/${encodeURIComponent(host.id)}`, {
+    const res = await fetch(`/api/terminal/credentials/${encodeURIComponent(host.id)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(draft),
@@ -131,8 +153,8 @@ export default function DeckPage() {
     openSession({ ...host, ip: address, hasCredential: true }, address, draft.port)
   }
 
-  const forgetCredential = async (host: DeckHost) => {
-    const res = await fetch(`/api/deck/credentials/${encodeURIComponent(host.id)}`, { method: 'DELETE' })
+  const forgetCredential = async (host: TerminalHost) => {
+    const res = await fetch(`/api/terminal/credentials/${encodeURIComponent(host.id)}`, { method: 'DELETE' })
       .then(r => r.json())
     if (!res.success) return setNotice(res.error)
     setNotice(`Saved login for ${host.name} removed.`)
@@ -141,14 +163,14 @@ export default function DeckPage() {
 
   const forgetHostKey = async (session: Session) => {
     const pin = `${session.address}:${session.port}`
-    const res = await fetch(`/api/deck/hostkeys/${encodeURIComponent(pin)}`, { method: 'DELETE' })
+    const res = await fetch(`/api/terminal/hostkeys/${encodeURIComponent(pin)}`, { method: 'DELETE' })
       .then(r => r.json())
     if (!res.success) return setNotice(res.error)
     setNotice(`Pinned host key for ${pin} cleared — it will be learned again on the next connect.`)
   }
 
   const addHost = async (h: { name: string; address: string; port: number }) => {
-    const res = await fetch('/api/deck/manual-hosts', {
+    const res = await fetch('/api/terminal/manual-hosts', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(h),
     }).then(r => r.json())
     setAddingHost(false)
@@ -156,8 +178,8 @@ export default function DeckPage() {
     await load()
   }
 
-  const removeHost = async (host: DeckHost) => {
-    const res = await fetch(`/api/deck/manual-hosts/${encodeURIComponent(host.id)}`, { method: 'DELETE' })
+  const removeHost = async (host: TerminalHost) => {
+    const res = await fetch(`/api/terminal/manual-hosts/${encodeURIComponent(host.id)}`, { method: 'DELETE' })
       .then(r => r.json())
     if (!res.success) return setNotice(res.error)
     sessions.filter(s => s.host.id === host.id).forEach(s => closeSession(s.key))
@@ -170,7 +192,7 @@ export default function DeckPage() {
     const filtered = hosts.filter(h =>
       !q || h.name.toLowerCase().includes(q) || String(h.vmid).includes(q) || (h.ip ?? '').includes(q))
 
-    const byGroup = new Map<string, DeckHost[]>()
+    const byGroup = new Map<string, TerminalHost[]>()
     for (const h of filtered) {
       const k = h.source === 'manual' ? 'Added by hand' : h.node
       if (!byGroup.has(k)) byGroup.set(k, [])
@@ -189,7 +211,7 @@ export default function DeckPage() {
       <aside className="flex w-[264px] flex-shrink-0 flex-col border-r" style={{ background: '#060a10', borderColor: BORDER }}>
         <div className="flex flex-shrink-0 items-center justify-between border-b px-4" style={{ height: 56, borderColor: BORDER }}>
           <div>
-            <h1 className="font-display text-lg font-light tracking-[0.18em] text-white">DECK</h1>
+            <h1 className="font-display text-lg font-light tracking-[0.18em] text-white">TERMINAL</h1>
             <p className="font-mono text-[10px]" style={{ color: '#374151' }}>
               {loading ? 'loading…' : `${hosts.length} hosts · ${sessions.length} open`}
             </p>
@@ -402,7 +424,7 @@ export default function DeckPage() {
               className="absolute inset-0 flex-col"
               style={{ display: sess.key === activeKey ? 'flex' : 'none' }}
             >
-              <DeckTerminal
+              <TerminalPane
                 host={sess.address}
                 hostId={sess.host.id}
                 port={sess.port}

@@ -9,11 +9,11 @@ import { FastifyPluginAsync } from 'fastify'
 import { ProxmoxClient }      from '../lib/proxmox-client'
 import {
   SHARED_CREDENTIAL_ID, credentialId, listCredentials, saveCredential,
-  removeCredential, listHostKeys, forgetHostKey, type DeckCredential,
+  removeCredential, listHostKeys, forgetHostKey, type TerminalCredential,
 } from '../lib/ssh-broker'
 import {
-  DECK_CATEGORY, listManualHosts, saveManualHost, removeManualHost, type ManualHost,
-} from '../lib/deck-hosts'
+  CREDENTIAL_CATEGORY, listManualHosts, saveManualHost, removeManualHost, type ManualHost,
+} from '../lib/terminal-hosts'
 
 function getClient() {
   return new ProxmoxClient(
@@ -24,7 +24,7 @@ function getClient() {
   )
 }
 
-export interface DeckHost {
+export interface TerminalHost {
   id:      string              // stable credential/pin key, e.g. "lxc-711"
   name:    string
   vmid:    number
@@ -48,7 +48,7 @@ function ipFromLxcNet(config: Record<string, any>): string | null {
   return null
 }
 
-export const deckRoutes: FastifyPluginAsync = async (fastify) => {
+export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
   const pve = getClient()
 
   // -- Hosts ------------------------------------------------------------------
@@ -69,7 +69,7 @@ export const deckRoutes: FastifyPluginAsync = async (fastify) => {
 
       // LXC addresses come straight from net0. VM addresses need the guest agent,
       // which is slow and often absent — those are left null and typed in once.
-      const hosts = await Promise.all(guests.map(async (g): Promise<DeckHost> => {
+      const hosts = await Promise.all(guests.map(async (g): Promise<TerminalHost> => {
         const id = `${g.type}-${g.vmid}`
         let ip: string | null = null
 
@@ -97,7 +97,7 @@ export const deckRoutes: FastifyPluginAsync = async (fastify) => {
 
       // Hosts added by hand — a router, a NAS, a VPS. Proxmox has never heard of
       // them, which is precisely why they belong here.
-      const manualHosts: DeckHost[] = manual.map(m => ({
+      const manualHosts: TerminalHost[] = manual.map(m => ({
         id:     m.id,
         name:   m.name,
         vmid:   0,
@@ -135,7 +135,7 @@ export const deckRoutes: FastifyPluginAsync = async (fastify) => {
     }
   })
 
-  fastify.put<{ Params: { id: string }; Body: DeckCredential & { alsoShared?: boolean } }>(
+  fastify.put<{ Params: { id: string }; Body: TerminalCredential & { alsoShared?: boolean } }>(
     '/credentials/:id',
     async (req, reply) => {
       const { username, port, password, privateKey, passphrase, alsoShared } = req.body ?? ({} as any)
@@ -147,7 +147,7 @@ export const deckRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.status(400).send({ success: false, error: 'Enter a password or paste a private key' })
       }
 
-      const cred: DeckCredential = {
+      const cred: TerminalCredential = {
         username: username.trim(),
         port:     Number(port) || 22,
         ...(privateKey ? { privateKey, ...(passphrase ? { passphrase } : {}) } : { password }),
@@ -156,7 +156,7 @@ export const deckRoutes: FastifyPluginAsync = async (fastify) => {
       try {
         await saveCredential(req.params.id, cred)
         if (alsoShared) await saveCredential(SHARED_CREDENTIAL_ID, cred)
-        fastify.log.info({ host: req.params.id, shared: !!alsoShared }, '[deck] credential saved')
+        fastify.log.info({ host: req.params.id, shared: !!alsoShared }, '[terminal] credential saved')
         return { success: true }
       } catch (e: any) {
         return reply.status(500).send({ success: false, error: e.message })
@@ -186,7 +186,7 @@ export const deckRoutes: FastifyPluginAsync = async (fastify) => {
 
       try {
         const host = await saveManualHost({ name, address, port })
-        fastify.log.info({ id: host.id, address }, '[deck] manual host added')
+        fastify.log.info({ id: host.id, address }, '[terminal] manual host added')
         return { success: true, data: host }
       } catch (e: any) {
         return reply.status(500).send({ success: false, error: e.message })
@@ -210,7 +210,7 @@ export const deckRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.delete<{ Params: { host: string } }>('/hostkeys/:host', async (req, reply) => {
     try {
       await forgetHostKey(req.params.host)
-      fastify.log.warn({ host: req.params.host }, '[deck] pinned host key cleared')
+      fastify.log.warn({ host: req.params.host }, '[terminal] pinned host key cleared')
       return { success: true }
     } catch (e: any) {
       return reply.status(500).send({ success: false, error: e.message })

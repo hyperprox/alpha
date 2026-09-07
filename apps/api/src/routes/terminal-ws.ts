@@ -24,7 +24,7 @@ type OutFrame =
   | { t: 'data';   d: string }
   | { t: 'error';  m: string }
 
-export const deckWsRoutes: FastifyPluginAsync = async (fastify) => {
+export const terminalWsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get<{ Querystring: TermQuery }>('/term', { websocket: true }, async (socket, req) => {
     const q     = req.query
     const host  = (q.host ?? '').trim()
@@ -61,14 +61,14 @@ export const deckWsRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       result = await connect({ host, port, cred, cols, rows })
     } catch (e: any) {
-      fastify.log.warn({ host, port, user: cred.username, err: e.message }, '[deck] connect failed')
+      fastify.log.warn({ host, port, user: cred.username, err: e.message }, '[terminal] connect failed')
       return bail(e.message)
     }
 
     const { channel, client, persistent, hostKeyLearned, fingerprint } = result
 
     // Audit: who opened what, and for how long. Deliberately not the credential.
-    fastify.log.info({ host, port, user: cred.username, persistent }, '[deck] session opened')
+    fastify.log.info({ host, port, user: cred.username, persistent }, '[terminal] session opened')
 
     send({
       t: 'status',
@@ -85,7 +85,7 @@ export const deckWsRoutes: FastifyPluginAsync = async (fastify) => {
     const teardown = (why: string) => {
       fastify.log.info(
         { host, port, user: cred!.username, seconds: Math.round((Date.now() - started) / 1000), why },
-        '[deck] session closed',
+        '[terminal] session closed',
       )
       try { channel.end() } catch { /* already gone */ }
       try { client.end()  } catch { /* already gone */ }

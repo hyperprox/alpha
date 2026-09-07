@@ -17,7 +17,7 @@ import type { ClientChannel, ConnectConfig } from 'ssh2'
 import { createHash } from 'crypto'
 import { getCredential, setCredential, deleteCredential, listCredentialKeys } from './credentials'
 
-export const DECK_CATEGORY   = 'deck'
+export const CREDENTIAL_CATEGORY   = 'deck'
 const CRED_PROVIDER          = 'ssh'
 const HOSTKEY_PROVIDER       = 'hostkey'
 
@@ -27,7 +27,7 @@ export const SHARED_CREDENTIAL_ID = '_shared'
 /** Session name on the target. Stable, so every reconnect re-attaches. */
 export const TMUX_SESSION = 'hyperprox'
 
-export interface DeckCredential {
+export interface TerminalCredential {
   username:    string
   port:        number
   password?:   string
@@ -54,16 +54,16 @@ export function credentialId(raw: string): string {
   return raw.replace(/[^a-zA-Z0-9._:-]/g, '_').slice(0, 120)
 }
 
-export async function saveCredential(id: string, cred: DeckCredential): Promise<void> {
-  await setCredential(DECK_CATEGORY, CRED_PROVIDER, credentialId(id), JSON.stringify(cred), true)
+export async function saveCredential(id: string, cred: TerminalCredential): Promise<void> {
+  await setCredential(CREDENTIAL_CATEGORY, CRED_PROVIDER, credentialId(id), JSON.stringify(cred), true)
 }
 
 export async function removeCredential(id: string): Promise<void> {
-  await deleteCredential(DECK_CATEGORY, CRED_PROVIDER, credentialId(id))
+  await deleteCredential(CREDENTIAL_CATEGORY, CRED_PROVIDER, credentialId(id))
 }
 
 export async function listCredentials(): Promise<Array<{ id: string; updatedAt: Date }>> {
-  const rows = await listCredentialKeys(DECK_CATEGORY, CRED_PROVIDER)
+  const rows = await listCredentialKeys(CREDENTIAL_CATEGORY, CRED_PROVIDER)
   return rows.map(r => ({ id: r.key, updatedAt: r.updatedAt }))
 }
 
@@ -71,11 +71,11 @@ export async function listCredentials(): Promise<Array<{ id: string; updatedAt: 
  * Resolve the credential for a host: its own first, then the shared one.
  * Returns null when neither exists, so the caller can prompt.
  */
-export async function loadCredential(id: string): Promise<DeckCredential | null> {
+export async function loadCredential(id: string): Promise<TerminalCredential | null> {
   for (const candidate of [credentialId(id), SHARED_CREDENTIAL_ID]) {
-    const raw = await getCredential(DECK_CATEGORY, CRED_PROVIDER, candidate)
+    const raw = await getCredential(CREDENTIAL_CATEGORY, CRED_PROVIDER, candidate)
     if (raw) {
-      try { return JSON.parse(raw) as DeckCredential }
+      try { return JSON.parse(raw) as TerminalCredential }
       catch { throw new Error(`Stored credential "${candidate}" is not readable JSON`) }
     }
   }
@@ -92,12 +92,12 @@ export function fingerprintOf(key: Buffer): string {
 }
 
 export async function listHostKeys(): Promise<Array<{ host: string; updatedAt: Date }>> {
-  const rows = await listCredentialKeys(DECK_CATEGORY, HOSTKEY_PROVIDER)
+  const rows = await listCredentialKeys(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER)
   return rows.map(r => ({ host: r.key, updatedAt: r.updatedAt }))
 }
 
 export async function forgetHostKey(host: string): Promise<void> {
-  await deleteCredential(DECK_CATEGORY, HOSTKEY_PROVIDER, credentialId(host))
+  await deleteCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, credentialId(host))
 }
 
 // ---------------------------------------------------------------------------
@@ -107,7 +107,7 @@ export async function forgetHostKey(host: string): Promise<void> {
 export interface ConnectOptions {
   host:    string
   port:    number
-  cred:    DeckCredential
+  cred:    TerminalCredential
   cols:    number
   rows:    number
   /** Set false to get a plain login shell instead of attaching to tmux. */
@@ -181,10 +181,10 @@ export function connect(opts: ConnectOptions): Promise<ConnectResult> {
       keepaliveInterval: 20_000,
       hostVerifier: (key: Buffer, verified: (ok: boolean) => void) => {
         fingerprint = fingerprintOf(key)
-        getCredential(DECK_CATEGORY, HOSTKEY_PROVIDER, pinKey)
+        getCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, pinKey)
           .then(async pinned => {
             if (!pinned) {
-              await setCredential(DECK_CATEGORY, HOSTKEY_PROVIDER, pinKey, fingerprint, false)
+              await setCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, pinKey, fingerprint, false)
               hostKeyLearned = true
               return verified(true)
             }
