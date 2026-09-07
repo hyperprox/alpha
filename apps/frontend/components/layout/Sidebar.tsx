@@ -38,6 +38,12 @@ const NAV = [
     ],
   },
   {
+    section: 'EXTEND',
+    items: [
+      { href: '/plugins', label: 'Plug-ins',    icon: PluginIcon   },
+    ],
+  },
+  {
     section: 'SYSTEM',
     items: [
       { href: '/settings', label: 'Settings',     icon: SettingsIcon },
@@ -175,6 +181,16 @@ function TerminalIcon() {
       <rect x="1" y="2.5" width="14" height="11" rx="1.5" />
       <path d="M4 6.5l2 1.75-2 1.75" strokeLinecap="round" strokeLinejoin="round" />
       <path d="M8.5 10.75h3.5" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function PluginIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5}>
+      <path d="M6 1.5v3M10 1.5v3" strokeLinecap="round" />
+      <rect x="3.5" y="4.5" width="9" height="5" rx="1" />
+      <path d="M8 9.5v3a2 2 0 0 0 2 2h1" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   )
 }
