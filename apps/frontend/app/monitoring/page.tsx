@@ -28,6 +28,7 @@ interface NodeStat {
 const GRAFANA = process.env.NEXT_PUBLIC_GRAFANA_URL || 'http://localhost:3003'
 const DASHBOARDS = [
   { uid: 'hyperprox-cluster', title: 'Cluster Overview', orgId: 1, vars: '' },
+  { uid: 'hyperprox-plugins', title: 'Plug-ins',         orgId: 1, vars: '' },
 ]
 
 // ---------------------------------------------------------------------------
