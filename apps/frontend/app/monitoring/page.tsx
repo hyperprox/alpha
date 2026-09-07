@@ -61,6 +61,7 @@ function Sparkline({ values, color }: { values: number[]; color: string }) {
     return `${x},${y}`
   }).join(' ')
 
+
   return (
     <svg width={w} height={h} style={{ display: 'block' }}>
       <polyline points={pts} fill="none" stroke={color} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
@@ -92,6 +93,39 @@ export default function MonitoringPage() {
   const [history, setHistory]   = useState<Record<string, number[]>>({})
   const [loading, setLoading]   = useState(true)
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
+  const [pluginCards, setPluginCards] = useState<Array<{
+    id: string; name: string; icon: string; hasDetail: boolean
+    headline?: string; tone?: string; rows?: Array<{ label: string; value: string; tone?: string }>
+    error?: string
+  }>>([])
+
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      try {
+        const list = await fetch('/api/plugins').then(r => r.json())
+        if (!list.success) return
+        const configured = list.data.filter((p: any) => p.configured)
+        const cards = await Promise.all(configured.map(async (p: any) => {
+          try {
+            const d = await fetch(`/api/plugins/${p.id}/data`).then(r => r.json())
+            const data = d?.data ?? {}
+            return data.ok
+              ? { id: p.id, name: p.name, icon: p.icon, hasDetail: p.hasDetail,
+                  headline: data.headline, tone: data.tone, rows: data.rows }
+              : { id: p.id, name: p.name, icon: p.icon, hasDetail: p.hasDetail, error: data.error }
+          } catch (e: any) {
+            return { id: p.id, name: p.name, icon: p.icon, hasDetail: p.hasDetail, error: e.message }
+          }
+        }))
+        if (!cancelled) setPluginCards(cards)
+      } catch { /* the node cards are the page's job; plug-ins are additive */ }
+    }
+    load()
+    const t = setInterval(load, 30000)
+    return () => { cancelled = true; clearInterval(t) }
+  }, [])
+
 
   // -------------------------------------------------------------------------
   // Fetch alerts + node stats
@@ -277,6 +311,58 @@ export default function MonitoringPage() {
               </div>
             ))}
           </div>
+
+          {/* Plug-ins — the same live readings the Terminal tiles show, beside the
+              nodes they share a network with. */}
+          {pluginCards.length > 0 && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 16, marginBottom: 24 }}>
+              {pluginCards.map(p => {
+                const tone = p.error ? '#ef4444'
+                  : p.tone === 'warn' ? '#f59e0b'
+                  : p.tone === 'bad'  ? '#ef4444' : '#22c55e'
+                return (
+                  <a key={p.id} href={p.hasDetail ? `/plugins/${p.id}` : '/plugins'}
+                    style={{ textDecoration: 'none', display: 'block', background: '#0d1320',
+                             border: '1px solid #1e2d3d', borderRadius: 8, padding: 16 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ fontSize: 14 }}>{p.icon}</span>
+                        <span style={{ fontFamily: "'Rajdhani', sans-serif", fontWeight: 700, fontSize: 14, color: '#e2e8f0', letterSpacing: '0.08em' }}>
+                          {p.name.toUpperCase()}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 10, color: tone, border: `1px solid ${tone}30`, padding: '2px 6px', borderRadius: 3 }}>
+                        {p.error ? 'UNREACHABLE' : 'LIVE'}
+                      </div>
+                    </div>
+
+                    {p.error ? (
+                      <div style={{ fontSize: 11, color: '#9ca3af', fontFamily: "'IBM Plex Mono', monospace", lineHeight: 1.5 }}>
+                        {p.error}
+                      </div>
+                    ) : (
+                      <>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                          <span style={{ width: 6, height: 6, borderRadius: '50%', background: tone, boxShadow: `0 0 6px ${tone}` }} />
+                          <span style={{ fontFamily: "'Rajdhani', sans-serif", fontWeight: 600, fontSize: 16, color: '#e2e8f0' }}>
+                            {p.headline}
+                          </span>
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                          {(p.rows ?? []).slice(0, 4).map((r, i) => (
+                            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 11, fontFamily: "'IBM Plex Mono', monospace" }}>
+                              <span style={{ color: '#4b5563', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.label}</span>
+                              <span style={{ color: r.tone === 'warn' ? '#f59e0b' : r.tone === 'bad' ? '#ef4444' : '#9ca3af', whiteSpace: 'nowrap' }}>{r.value}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </a>
+                )
+              })}
+            </div>
+          )}
 
           {/* Recent alerts preview */}
           {alerts.length > 0 && (
