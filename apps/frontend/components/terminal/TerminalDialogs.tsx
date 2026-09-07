@@ -1,7 +1,12 @@
 'use client'
 
 // =============================================================================
-//  HyperProx — Deck dialogs: saving a login, and adding a host by hand
+//  HyperProx — Terminal dialogs: saving a login, adding a host, naming a layout
+//
+//  Each dialog's <form> wraps the whole panel including the footer, so the
+//  submit button is a plain in-form button. An earlier version put the button
+//  outside the form and associated it with form="…", which silently submitted
+//  nothing — the dialog looked like it saved and no request was ever made.
 // =============================================================================
 
 import { useState } from 'react'
@@ -28,33 +33,42 @@ function Field(props: React.InputHTMLAttributes<HTMLInputElement>) {
   )
 }
 
-function Shell({ title, subtitle, onClose, children }: {
-  title: string; subtitle: string; onClose: () => void; children: React.ReactNode
+function Shell({ title, subtitle, submitLabel = 'Save', onSubmit, onClose, children }: {
+  title: string
+  subtitle: string
+  submitLabel?: string
+  onSubmit: (e: React.FormEvent) => void
+  onClose: () => void
+  children: React.ReactNode
 }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-6" style={{ background: 'rgba(4,7,12,0.78)' }}>
-      <div className="w-full max-w-md rounded-lg border shadow-2xl" style={PANEL}>
+      <form onSubmit={onSubmit} className="w-full max-w-md rounded-lg border shadow-2xl" style={PANEL}>
         <div className="border-b px-5 py-3.5" style={{ borderColor: '#0f1929' }}>
           <h2 className="font-display text-base font-semibold tracking-wide text-white">{title}</h2>
           <p className="mt-0.5 font-mono text-[11px]" style={{ color: '#6b7280' }}>{subtitle}</p>
         </div>
+
         <div className="px-5 py-4">{children}</div>
+
         <div className="flex justify-end gap-2 border-t px-5 py-3" style={{ borderColor: '#0f1929' }}>
           <button
+            type="button"
             onClick={onClose}
             className="rounded px-3 py-1.5 font-display text-sm tracking-wide transition-colors hover:bg-white/5"
             style={{ color: '#9ca3af' }}
           >
             Cancel
           </button>
-          <button form="deck-dialog-form" type="submit"
+          <button
+            type="submit"
             className="rounded px-4 py-1.5 font-display text-sm font-semibold tracking-wide transition-opacity hover:opacity-85"
             style={{ background: ACCENT, color: '#04202a' }}
           >
-            Save
+            {submitLabel}
           </button>
         </div>
-      </div>
+      </form>
     </div>
   )
 }
@@ -64,7 +78,7 @@ function Shell({ title, subtitle, onClose, children }: {
 // ---------------------------------------------------------------------------
 
 export interface CredentialDraft {
-  username: string; port: number; password?: string
+  username: string; port: number; address: string; password?: string
   privateKey?: string; passphrase?: string; alsoShared?: boolean
 }
 
@@ -72,7 +86,7 @@ export function ConnectDialog({ hostName, hostAddress, hasShared, onSave, onClos
   hostName: string
   hostAddress: string
   hasShared: boolean
-  onSave: (draft: CredentialDraft, address: string) => void
+  onSave: (draft: CredentialDraft) => void
   onClose: () => void
 }) {
   const [address,    setAddress]    = useState(hostAddress)
@@ -82,20 +96,27 @@ export function ConnectDialog({ hostName, hostAddress, hasShared, onSave, onClos
   const [password,   setPassword]   = useState('')
   const [privateKey, setPrivateKey] = useState('')
   const [passphrase, setPassphrase] = useState('')
-  const [alsoShared, setAlsoShared] = useState(!hasShared)
+  const [alsoShared, setAlsoShared] = useState(false)
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault()
     onSave({
-      username, port: Number(port) || 22,
+      username: username.trim(),
+      address:  address.trim(),
+      port:     Number(port) || 22,
       ...(mode === 'key' ? { privateKey, passphrase } : { password }),
       alsoShared,
-    }, address.trim())
+    })
   }
 
   return (
-    <Shell title={`Sign in to ${hostName}`} subtitle="Stored encrypted. Never sent to the browser again." onClose={onClose}>
-      <form id="deck-dialog-form" onSubmit={submit} className="flex flex-col gap-3.5">
+    <Shell
+      title={`Sign in to ${hostName}`}
+      subtitle="Stored encrypted. Never sent back to the browser."
+      onSubmit={submit}
+      onClose={onClose}
+    >
+      <div className="flex flex-col gap-3.5">
         <div className="grid grid-cols-[1fr_88px] gap-3">
           <div>
             <Label>Address</Label>
@@ -116,9 +137,7 @@ export function ConnectDialog({ hostName, hostAddress, hasShared, onSave, onClos
           {(['password', 'key'] as const).map(m => (
             <button key={m} type="button" onClick={() => setMode(m)}
               className="flex-1 rounded py-1 font-display text-xs uppercase tracking-[0.12em] transition-colors"
-              style={mode === m
-                ? { background: '#00e5ff15', color: ACCENT }
-                : { color: '#4b5563' }}
+              style={mode === m ? { background: '#00e5ff15', color: ACCENT } : { color: '#4b5563' }}
             >
               {m === 'password' ? 'Password' : 'Private key'}
             </button>
@@ -152,13 +171,15 @@ export function ConnectDialog({ hostName, hostAddress, hasShared, onSave, onClos
           <input type="checkbox" checked={alsoShared} onChange={e => setAlsoShared(e.target.checked)}
             className="mt-0.5 h-3.5 w-3.5 accent-cyan" />
           <span className="text-[12px] leading-snug" style={{ color: '#9ca3af' }}>
-            Use this login for every host that has none of its own
-            <span className="mt-0.5 block font-mono text-[11px]" style={{ color: '#4b5563' }}>
-              {hasShared ? 'Replaces the current shared login.' : 'Most fleets share one root password — this saves entering it on each guest.'}
+            Also use this for every host that has none of its own
+            <span className="mt-0.5 block font-mono text-[11px]" style={{ color: alsoShared && hasShared ? '#f59e0b' : '#4b5563' }}>
+              {alsoShared && hasShared
+                ? 'This REPLACES the current shared login, which every other host relies on.'
+                : 'Leave this off unless you mean to change the fallback for every host.'}
             </span>
           </span>
         </label>
-      </form>
+      </div>
     </Shell>
   )
 }
@@ -176,12 +197,14 @@ export function AddHostDialog({ onSave, onClose }: {
   const [port,    setPort]    = useState('22')
 
   return (
-    <Shell title="Add a host" subtitle="A router, a NAS, a laptop, a VPS — anything reachable over SSH." onClose={onClose}>
-      <form
-        id="deck-dialog-form"
-        onSubmit={e => { e.preventDefault(); onSave({ name: name.trim(), address: address.trim(), port: Number(port) || 22 }) }}
-        className="flex flex-col gap-3.5"
-      >
+    <Shell
+      title="Add a host"
+      subtitle="A router, a NAS, a laptop, a VPS — anything reachable over SSH."
+      submitLabel="Add"
+      onSubmit={e => { e.preventDefault(); onSave({ name: name.trim(), address: address.trim(), port: Number(port) || 22 }) }}
+      onClose={onClose}
+    >
+      <div className="flex flex-col gap-3.5">
         <div>
           <Label>Name</Label>
           <Field value={name} onChange={e => setName(e.target.value)} placeholder="edge-router" required />
@@ -196,7 +219,7 @@ export function AddHostDialog({ onSave, onClose }: {
             <Field value={port} onChange={e => setPort(e.target.value)} inputMode="numeric" />
           </div>
         </div>
-      </form>
+      </div>
     </Shell>
   )
 }
@@ -218,9 +241,10 @@ export function SaveLayoutDialog({ paneCount, existing, onSave, onClose }: {
     <Shell
       title="Save this arrangement"
       subtitle={`${paneCount} pane${paneCount === 1 ? '' : 's'}, and how they are laid out.`}
+      onSubmit={e => { e.preventDefault(); onSave(name.trim()) }}
       onClose={onClose}
     >
-      <form id="deck-dialog-form" onSubmit={e => { e.preventDefault(); onSave(name.trim()) }} className="flex flex-col gap-3.5">
+      <div className="flex flex-col gap-3.5">
         <div>
           <Label>Name</Label>
           <Field value={name} onChange={e => setName(e.target.value)} placeholder="TitanCoder" required autoFocus />
@@ -228,9 +252,9 @@ export function SaveLayoutDialog({ paneCount, existing, onSave, onClose }: {
         <p className="font-mono text-[11px] leading-relaxed" style={{ color: clash ? '#f59e0b' : '#4b5563' }}>
           {clash
             ? `"${name.trim()}" already exists — saving replaces it.`
-            : 'Reopening a layout restores these hosts. Sessions themselves live in tmux on each host, so they are still running when you come back.'}
+            : 'Reopening a layout restores these hosts. The sessions live in tmux on each host, so they are still running when you come back.'}
         </p>
-      </form>
+      </div>
     </Shell>
   )
 }

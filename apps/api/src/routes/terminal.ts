@@ -1,5 +1,5 @@
 // =============================================================================
-//  HyperProx — Deck Routes (hosts + SSH credentials)
+//  HyperProx — Terminal Routes (hosts + SSH credentials)
 //
 //  The host list is populated from the cluster itself, so a fresh install opens
 //  with every guest already listed. Nothing here ever returns a secret.
@@ -13,7 +13,8 @@ import {
   type TerminalCredential,
 } from '../lib/ssh-broker'
 import {
-  CREDENTIAL_CATEGORY, listManualHosts, saveManualHost, removeManualHost, type ManualHost,
+  CREDENTIAL_CATEGORY, listManualHosts, saveManualHost, removeManualHost,
+  saveHostAddress, listHostAddresses, type ManualHost,
 } from '../lib/terminal-hosts'
 
 function getClient() {
@@ -57,13 +58,14 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
   // the next phase and slot into the same shape.
   fastify.get('/hosts', async (_req, reply) => {
     try {
-      const [resources, credentials, manual] = await Promise.all([
+      const [resources, credentials, manual, addresses] = await Promise.all([
         pve.getClusterResources(),
         listCredentials(),
         listManualHosts(),
+        listHostAddresses(),
       ])
 
-      const credIds = new Set(credentials.map(c => c.id))
+      const credIds = new Set(credentials.map((c: { id: string }) => c.id))
       const shared  = credIds.has(SHARED_CREDENTIAL_ID)
 
       const guests = (resources as any[]).filter(r => r.type === 'lxc' || r.type === 'qemu')
@@ -80,6 +82,10 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
             ip = ipFromLxcNet(config as Record<string, any>)
           } catch { /* unreadable config is not fatal — the UI will ask */ }
         }
+
+        // A remembered address wins over nothing, and fills the gap Proxmox
+        // leaves for VMs and stopped guests.
+        if (!ip && addresses[id]) ip = addresses[id]
 
         return {
           id,
@@ -98,7 +104,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
 
       // Hosts added by hand — a router, a NAS, a VPS. Proxmox has never heard of
       // them, which is precisely why they belong here.
-      const manualHosts: TerminalHost[] = manual.map(m => ({
+      const manualHosts: TerminalHost[] = manual.map((m: ManualHost) => ({
         id:     m.id,
         name:   m.name,
         vmid:   0,
@@ -136,10 +142,14 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
     }
   })
 
-  fastify.put<{ Params: { id: string }; Body: TerminalCredential & { alsoShared?: boolean } }>(
+  fastify.put<{ Params: { id: string }; Body: TerminalCredential & { alsoShared?: boolean; address?: string } }>(
     '/credentials/:id',
     async (req, reply) => {
-      const { username, port, password, privateKey, passphrase, alsoShared } = req.body ?? ({} as any)
+      const { username, port, password, privateKey, passphrase, alsoShared, address } = req.body ?? ({} as any)
+      fastify.log.info(
+        { host: req.params.id, hasPassword: !!password, hasKey: !!privateKey, alsoShared: !!alsoShared },
+        '[terminal] credential save requested',
+      )
 
       if (!username?.trim()) {
         return reply.status(400).send({ success: false, error: 'A username is required' })
@@ -156,6 +166,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
 
       try {
         await saveCredential(req.params.id, cred)
+        if (address) await saveHostAddress(req.params.id, address)
         if (alsoShared) await saveCredential(SHARED_CREDENTIAL_ID, cred)
         fastify.log.info({ host: req.params.id, shared: !!alsoShared }, '[terminal] credential saved')
         return { success: true }

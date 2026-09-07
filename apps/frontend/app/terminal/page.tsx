@@ -197,7 +197,8 @@ export default function TerminalPage() {
   }
 
   // -- Credentials & hosts ----------------------------------------------------
-  const saveCredential = async (draft: CredentialDraft, address: string) => {
+  const saveCredential = async (draft: CredentialDraft) => {
+    const address = draft.address
     const host = credentialFor!
     const res = await fetch(`/api/terminal/credentials/${encodeURIComponent(host.id)}`, {
       method: 'PUT',
