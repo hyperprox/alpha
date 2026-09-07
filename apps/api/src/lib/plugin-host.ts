@@ -126,6 +126,12 @@ export interface PluginTable {
   /** Column labels; `align: 'right'` suits counts and rates. */
   columns:  Array<{ key: string; label: string; align?: 'left' | 'right' }>
   rows:     Array<Record<string, string | number>>
+  /**
+   * How many rows exist in total, when `rows` is deliberately a subset. Without
+   * it a truncated table silently contradicts the stat above it — 231 in the
+   * queue, 41 in the table, and nothing saying why.
+   */
+  total?:   number
   /** Shown when there are no rows, in the plug-in's own words. */
   empty?:   string
 }

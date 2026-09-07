@@ -113,6 +113,7 @@ export const qbittorrentPlugin: Plugin = {
         {
           title: 'No progress in over an hour',
           empty: 'Everything active is moving.',
+          total: noProgress.length,
           columns: [
             { key: 'name',     label: 'Torrent' },
             { key: 'state',    label: 'State' },
@@ -130,6 +131,7 @@ export const qbittorrentPlugin: Plugin = {
         {
           title: 'Active transfers',
           empty: 'Nothing is transferring.',
+          total: list.filter(t => ACTIVE.has(t.state)).length,
           columns: [
             { key: 'name',     label: 'Torrent' },
             { key: 'state',    label: 'State' },

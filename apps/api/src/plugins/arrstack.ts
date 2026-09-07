@@ -26,7 +26,7 @@ async function readArr(ctx: PluginContext, key: 'default' | 'radarr', label: str
   const c = key === 'default' ? ctx : ctx.from(key)
   try {
     const [queue, health] = await Promise.all([
-      c.get('/api/v3/queue?pageSize=100&includeUnknownSeriesItems=true&includeUnknownMovieItems=true'),
+      c.get('/api/v3/queue?pageSize=200&includeUnknownSeriesItems=true&includeUnknownMovieItems=true'),
       c.get('/api/v3/health').catch(() => []),
     ])
     return {
@@ -146,6 +146,9 @@ export const arrstackPlugin: Plugin = {
         {
           title: 'Queue',
           empty: 'Both queues are empty.',
+          // The stat tile counts every queued item; this table holds what the
+          // API returned on one page. Say so rather than let the two disagree.
+          total: arrs.reduce((t, a) => t + a.queueTotal, 0),
           columns: [
             { key: 'service',  label: 'Service' },
             { key: 'title',    label: 'Title' },
@@ -153,7 +156,7 @@ export const arrstackPlugin: Plugin = {
             { key: 'status',   label: 'Status' },
             { key: 'client',   label: 'Client' },
           ],
-          rows: arrs.flatMap(a => a.queue.slice(0, 40).map(i => ({
+          rows: arrs.flatMap(a => a.queue.slice(0, 150).map(i => ({
             service: a.label, title: title(i), progress: pct(i),
             status: i.status ?? '—', client: i.downloadClient ?? '—',
           }))),
