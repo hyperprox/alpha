@@ -295,6 +295,35 @@ Each plug-in's real output is shown on its gallery card, so you can see what it
 renders before placing it anywhere, and a plug-in quietly returning nothing is
 obvious rather than discovered later.
 
+### Plug-ins in Prometheus and Grafana
+
+A tile answers *what is happening now*. Prometheus answers *what has been
+happening* — whether the link saturates at 3am, whether transcoding piles up on
+Sundays, how device count moves across a week.
+
+Plug-ins that publish metrics are scraped at `/api/plugins/metrics` and land in
+the bundled Prometheus, ready to graph in the bundled Grafana:
+
+| Metric | From |
+|---|---|
+| `hyperprox_plugin_up` | every plug-in — 1 when it answered its device on the last scrape |
+| `hyperprox_plugin_network_bits_per_second` | MikroTik, labelled `direction` and `interface` |
+| `hyperprox_plugin_network_devices` | MikroTik, labelled `state` (awake / leased) |
+| `hyperprox_plugin_router_cpu_percent`, `..._memory_bytes` | MikroTik |
+| `hyperprox_plugin_plex_streams` | Plex, labelled `decision` (all / transcode / direct_play) |
+| `hyperprox_plugin_plex_bandwidth_kbps` | Plex, labelled `scope` (total / lan / wan) |
+
+Metrics are declared separately from tile text on purpose: tile text is written
+to be read, and parsing numbers back out of prose is how a metric quietly
+becomes wrong.
+
+The endpoint authenticates with `METRICS_TOKEN` from `.env` as a bearer token,
+because a scraper has no session to present. **With no token set it refuses**
+rather than exposing device names and viewing habits to anything that can reach
+the port. The installer generates one; the bundled Prometheus job is configured
+to match. A plug-in that fails to answer reports `hyperprox_plugin_up 0` and the
+others still publish — one broken device does not blank the scrape.
+
 ---
 
 ## Known Issues

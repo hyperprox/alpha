@@ -10,7 +10,7 @@
 //  `monitor-traffic`, which RouterOS models as a command but which only reads.
 // =============================================================================
 
-import type { Plugin, PluginContext, PluginTileData, PluginDetail } from '../lib/plugin-host'
+import type { Plugin, PluginContext, PluginTileData, PluginDetail, PluginMetric } from '../lib/plugin-host'
 
 type Row = { label: string; value: string; tone?: 'good' | 'warn' | 'bad' }
 
@@ -235,5 +235,47 @@ export const mikrotikPlugin: Plugin = {
         },
       ],
     }
+  },
+
+  async metrics(ctx: PluginContext): Promise<PluginMetric[]> {
+    const [resource, arp, leases, wan] = await Promise.all([
+      ctx.get('/rest/system/resource'),
+      ctx.get('/rest/ip/arp').catch(() => [] as any[]),
+      ctx.get('/rest/ip/dhcp-server/lease').catch(() => [] as any[]),
+      findWan(ctx, ctx.option('wan')),
+    ])
+
+    let rx = 0, tx = 0
+    if (wan) {
+      try {
+        const t = await ctx.post('/rest/interface/monitor-traffic', { interface: wan, once: '' })
+        const one = Array.isArray(t) ? t[0] : t
+        rx = Number(one?.['rx-bits-per-second'] ?? 0)
+        tx = Number(one?.['tx-bits-per-second'] ?? 0)
+      } catch { /* a missing rate is better than a fabricated zero-with-confidence */ }
+    }
+
+    const arpList: any[] = Array.isArray(arp) ? arp : []
+    const awake = arpList.filter(a => a.complete === 'true' && a.invalid !== 'true').length
+    const leaseCount = (Array.isArray(leases) ? leases : []).filter(l => l.status === 'bound').length
+    const totalMem = Number(resource['total-memory'] ?? 0)
+    const freeMem  = Number(resource['free-memory'] ?? 0)
+
+    return [
+      { name: 'network_bits_per_second', help: 'Throughput on the internet-facing interface.',
+        type: 'gauge', value: rx, labels: { direction: 'rx', interface: wan ?? 'unknown' } },
+      { name: 'network_bits_per_second', help: 'Throughput on the internet-facing interface.',
+        type: 'gauge', value: tx, labels: { direction: 'tx', interface: wan ?? 'unknown' } },
+      { name: 'network_devices', help: 'Devices on the network.',
+        type: 'gauge', value: awake,      labels: { state: 'awake' } },
+      { name: 'network_devices', help: 'Devices on the network.',
+        type: 'gauge', value: leaseCount, labels: { state: 'leased' } },
+      { name: 'router_cpu_percent', help: 'Router CPU load.',
+        type: 'gauge', value: Number(resource['cpu-load'] ?? 0) },
+      { name: 'router_memory_bytes', help: 'Router memory.',
+        type: 'gauge', value: totalMem - freeMem, labels: { state: 'used' } },
+      { name: 'router_memory_bytes', help: 'Router memory.',
+        type: 'gauge', value: freeMem, labels: { state: 'free' } },
+    ]
   },
 }

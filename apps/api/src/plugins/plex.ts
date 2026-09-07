@@ -7,7 +7,7 @@
 //  Plex endpoint makes you infer all three.
 // =============================================================================
 
-import type { Plugin, PluginContext, PluginTileData, PluginDetail } from '../lib/plugin-host'
+import type { Plugin, PluginContext, PluginTileData, PluginDetail, PluginMetric } from '../lib/plugin-host'
 
 function mbps(kbps: number): string {
   if (!kbps) return '0 Mbps'
@@ -239,5 +239,28 @@ export const plexPlugin: Plugin = {
         },
       ],
     }
+  },
+
+  async metrics(ctx: PluginContext): Promise<PluginMetric[]> {
+    const body = await ctx.get('/api/v2?cmd=get_activity')
+    if (body?.response?.result !== 'success') {
+      throw new Error(body?.response?.message || 'Tautulli rejected the request.')
+    }
+    const d = body.response.data ?? {}
+
+    return [
+      { name: 'plex_streams', help: 'Plex streams in progress.', type: 'gauge',
+        value: Number(d.stream_count ?? 0), labels: { decision: 'all' } },
+      { name: 'plex_streams', help: 'Plex streams in progress.', type: 'gauge',
+        value: Number(d.stream_count_transcode ?? 0), labels: { decision: 'transcode' } },
+      { name: 'plex_streams', help: 'Plex streams in progress.', type: 'gauge',
+        value: Number(d.stream_count_direct_play ?? 0), labels: { decision: 'direct_play' } },
+      { name: 'plex_bandwidth_kbps', help: 'Bandwidth used by Plex streams.', type: 'gauge',
+        value: Number(d.total_bandwidth ?? 0), labels: { scope: 'total' } },
+      { name: 'plex_bandwidth_kbps', help: 'Bandwidth used by Plex streams.', type: 'gauge',
+        value: Number(d.lan_bandwidth ?? 0), labels: { scope: 'lan' } },
+      { name: 'plex_bandwidth_kbps', help: 'Bandwidth used by Plex streams.', type: 'gauge',
+        value: Number(d.wan_bandwidth ?? 0), labels: { scope: 'wan' } },
+    ]
   },
 }

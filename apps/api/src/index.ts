@@ -31,7 +31,10 @@ import { seedFromEnv }          from './lib/credentials'
 import { ensureAdminPassword, extractToken } from './lib/auth'
 
 // Paths reachable without a session. Everything else requires one.
-const PUBLIC_PATHS = new Set(['/health', '/api/auth/login'])
+// /api/plugins/metrics is public to the session guard only — it authenticates
+// with METRICS_TOKEN as a bearer token instead, because a Prometheus scraper has
+// no session to present. It refuses outright when that token is unset.
+const PUBLIC_PATHS = new Set(['/health', '/api/auth/login', '/api/plugins/metrics'])
 
 const server = Fastify({
   logger: {

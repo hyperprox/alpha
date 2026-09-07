@@ -9,6 +9,20 @@ rule_files:
 
 scrape_configs:
 
+  # HyperProx plug-ins — MikroTik throughput, Plex activity. Prometheus runs
+  # network_mode: host, so the API is reachable on the loopback of the container
+  # host rather than through the compose network.
+  - job_name: hyperprox-plugins
+    scrape_interval: 30s
+    scrape_timeout: 20s
+    metrics_path: /api/plugins/metrics
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/metrics_token
+
+    static_configs:
+      - targets: ['127.0.0.1:3002']
+
   - job_name: prometheus
     static_configs:
       - targets: ['localhost:9090']
