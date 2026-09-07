@@ -1,5 +1,6 @@
 import { FastifyPluginAsync } from 'fastify'
 import { ProxmoxClient }      from '../lib/proxmox-client'
+import { withCephMon, CephUnavailableError } from '../lib/ceph'
 
 function getClient() {
   return new ProxmoxClient(
@@ -15,37 +16,55 @@ const wrap = async (reply: any, fn: () => Promise<any>) => {
   catch (e: any) { return reply.status(500).send({ success: false, error: e.message }) }
 }
 
+// See routes/proxmox.ts — a CEPH-less cluster is a configuration, not a fault.
+const wrapCeph = async (reply: any, fn: () => Promise<any>) => {
+  try { return { success: true, data: await fn() } }
+  catch (e: any) {
+    if (e instanceof CephUnavailableError) {
+      return reply.status(503).send({ success: false, error: e.message, cephAvailable: false })
+    }
+    return reply.status(500).send({ success: false, error: e.message })
+  }
+}
+
 export const storageRoutes: FastifyPluginAsync = async (fastify) => {
   const pve = getClient()
 
   fastify.get('/overview', async (_, r) => {
     try {
-      const cephMon = process.env.CEPH_MON_NODE ?? ''
-
-      const [nodesR, cephStatusR, osdR, poolsR] = await Promise.allSettled([
+      const [nodesR, cephStatusR] = await Promise.allSettled([
         pve.getNodes(),
-        pve.getCephStatus(cephMon),
-        pve.getCephOSDs(cephMon),
-        pve.fetchNode<any[]>(`/nodes/${cephMon}/ceph/pool`),
+        pve.getClusterCephStatus(),
       ])
 
       const nodes = nodesR.status === 'fulfilled' ? nodesR.value : []
       const ceph  = cephStatusR.status === 'fulfilled' ? cephStatusR.value : null
-      const osds  = osdR.status === 'fulfilled' ? osdR.value : []
+
+      // OSDs and pools are genuinely node-scoped, so they need a monitor node.
+      // A cluster with no CEPH is normal — leave them empty and carry on.
+      const [osdR, poolsR] = await Promise.allSettled([
+        withCephMon(pve, n => pve.getCephOSDs(n)),
+        withCephMon(pve, n => pve.getCephPools(n)),
+      ])
+      const osds  = osdR.status   === 'fulfilled' ? osdR.value   : []
       const pools = poolsR.status === 'fulfilled' ? poolsR.value : []
 
-      // Fetch storage from CEPH_MON_NODE as the representative node
-      // (shared storage is same across all nodes, local storage we show per-node separately)
-      const cephNodeStorage = await pve.fetchNode<any[]>(`/nodes/${process.env.CEPH_MON_NODE}/storage`)
-        .then(s => s.map((x: any) => ({ ...x, node: process.env.CEPH_MON_NODE })))
-        .catch(() => [])
+      // Shared storage is identical on every node, so any online node is a
+      // representative — it need not be the CEPH monitor. Tying this to
+      // CEPH_MON_NODE hid NFS/CIFS/iSCSI entirely on clusters without CEPH.
+      const repNode = nodes.find(n => n.status === 'online')?.node ?? nodes[0]?.node
+      const cephNodeStorage = repNode
+        ? await pve.fetchNode<any[]>(`/nodes/${repNode}/storage`)
+            .then(s => (Array.isArray(s) ? s.map((x: any) => ({ ...x, node: repNode })) : []))
+            .catch(() => [])
+        : []
 
       // For non-shared storage, fetch from each node separately
       const nonSharedByNode: Record<string, any[]> = {}
       await Promise.allSettled(
         nodes.map(async n => {
           const s = await pve.fetchNode<any[]>(`/nodes/${n.node}/storage`)
-          nonSharedByNode[n.node] = s
+          nonSharedByNode[n.node] = (Array.isArray(s) ? s : [])
             .filter((x: any) => x.shared === 0)
             .map((x: any) => ({ ...x, node: n.node }))
         })
@@ -101,13 +120,13 @@ export const storageRoutes: FastifyPluginAsync = async (fastify) => {
     wrap(r, () => pve.getStorage(req.params.node)))
 
   fastify.get('/ceph/status', async (_, r) =>
-    wrap(r, () => pve.getCephStatus(process.env.CEPH_MON_NODE ?? '')))
+    wrapCeph(r, () => pve.getClusterCephStatus()))
 
   fastify.get('/ceph/osds', async (_, r) =>
-    wrap(r, () => pve.getCephOSDs(process.env.CEPH_MON_NODE ?? '')))
+    wrapCeph(r, () => withCephMon(pve, n => pve.getCephOSDs(n))))
 
   fastify.get('/ceph/pools', async (_, r) =>
-    wrap(r, () => pve.fetchNode<any[]>(`/nodes/${process.env.CEPH_MON_NODE ?? ''}/ceph/pool`)))
+    wrapCeph(r, () => withCephMon(pve, n => pve.getCephPools(n))))
 
   // GET /api/storage/vms-breakdown — disk allocation per VM/CT
   fastify.get('/vms-breakdown', async (_, r) =>

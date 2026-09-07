@@ -27,6 +27,12 @@ export interface CephOSD {
   commit_latency_ms: number; apply_latency_ms: number; reweight: number; osdtype: string
 }
 
+export interface CephMon {
+  name: string; host?: string; addr?: string; rank?: number
+  quorum?: number | boolean; state?: string; service?: boolean
+  ceph_version?: string; ceph_version_short?: string
+}
+
 export interface CephStatus {
   health: { status: string; checks: Record<string, { detail: { message: string }[] }> }
   osdmap: { num_osds: number; num_up_osds: number; num_in_osds: number }
@@ -159,10 +165,24 @@ export class ProxmoxClient {
   }
 
   async getCephStatus(node: string)  { return this.fetchNode<CephStatus>(`/nodes/${node}/ceph/status`) }
-  async getCephPools(node: string)   { return this.fetchNode<any[]>(`/nodes/${node}/ceph/pools`) }
+
+  // Cluster-scoped, and per PVE's own schema identical to the node-level alias —
+  // so status needs no monitor node at all.
+  async getClusterCephStatus()       { return this.fetchNode<CephStatus>('/cluster/ceph/status') }
+
+  // The endpoint is 'pool', singular. '/ceph/pools' returns HTTP 501 and has
+  // never worked; it only looked fine because fetchNode resolves errors as null.
+  async getCephPools(node: string)   { return this.fetchNode<any[]>(`/nodes/${node}/ceph/pool`) }
+
+  // Cluster-wide despite the path: any online node returns every monitor.
+  async getCephMons(node: string)    { return this.fetchNode<CephMon[]>(`/nodes/${node}/ceph/mon`) }
 
   async getCephOSDs(node: string): Promise<CephOSD[]> {
     const data = await this.fetchNode<any>(`/nodes/${node}/ceph/osd`)
+    // fetchNode does not check the HTTP status and PVE returns errors as
+    // {"data":null}. Without this guard a failed call renders as "0 OSDs" —
+    // a lie rather than an error.
+    if (!data || !data.root) throw new Error(`No CEPH OSD tree returned by node '${node}'`)
     const osds: CephOSD[] = []
     const flatten = (n: any) => {
       if (!n) return
@@ -174,7 +194,7 @@ export class ProxmoxClient {
       })
       if (n.children) n.children.forEach(flatten)
     }
-    if (data && data.root) flatten(data.root)
+    flatten(data.root)
     return osds.sort((a, b) => Number(a.id) - Number(b.id))
   }
 

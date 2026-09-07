@@ -143,12 +143,36 @@ async function testProxmox(host, port, tokenId, tokenSecret) {
   try {
     const cs = await pveRequest(host, port, tokenId, tokenSecret, '/cluster/ceph/status')
     if (cs && cs.health) {
-      ceph = { healthy: cs.health.status === 'HEALTH_OK', pools: (cs.pools || []).length }
-      for (const node of (nodes || [])) {
-        try {
-          const mons = await pveRequest(host, port, tokenId, tokenSecret, `/nodes/${node.node}/ceph/mon`)
-          if (mons && mons.length > 0) { cephMonNode = node.node; break }
-        } catch {}
+      ceph = {
+        healthy: cs.health.status === 'HEALTH_OK',
+        // The pool count lives in pgmap; /cluster/ceph/status has no top-level
+        // `pools` key, so the old `(cs.pools || []).length` was always 0.
+        pools:   (cs.pgmap && cs.pgmap.num_pools) || 0,
+      }
+
+      // /nodes/{node}/ceph/mon is CLUSTER-WIDE despite the path: every node
+      // returns every monitor. The previous loop therefore matched on its first
+      // iteration and took the first entry of /nodes — which is unordered —
+      // without ever checking it against the monitor list it had just fetched.
+      const onlineNodes = (nodes || []).filter(n => !n.status || n.status === 'online')
+      const nodeNames   = new Set(onlineNodes.map(n => n.node))
+
+      for (const node of onlineNodes) {
+        let mons = null
+        try { mons = await pveRequest(host, port, tokenId, tokenSecret, `/nodes/${node.node}/ceph/mon`) }
+        catch { continue }
+        if (!Array.isArray(mons) || mons.length === 0) continue
+
+        // Build the URL from a real Proxmox node name — a monitor id is only
+        // "typically" the hostname. Sort by rank; both lists are unordered.
+        const usable = mons
+          .filter(m => nodeNames.has(m.host || m.name))
+          .sort((a, b) => (a.rank == null ? 99 : a.rank) - (b.rank == null ? 99 : b.rank))
+
+        const pick = usable.find(m => m.quorum && m.state === 'running')
+                  || usable.find(m => m.state === 'running')
+                  || usable[0]
+        if (pick) { cephMonNode = pick.host || pick.name; break }
       }
     }
   } catch {}
@@ -733,7 +757,11 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && route === 'save-proxmox') {
       const { host, port = '8006', tokenId, tokenSecret, publicUrl } = body
       const [proxmoxUser, proxmoxTokenId] = tokenId.includes('!') ? tokenId.split('!') : ['root@pam', tokenId]
-      const cephMon = body.cephMonNode || ''
+      // Deliberately empty. The API detects a monitor at runtime and re-detects
+      // when a node goes down; pinning it here freezes a moving fact into config
+      // — even a correct detection expires at the next reboot. CEPH_MON_NODE
+      // stays supported as a manual override for operators who want one.
+      const cephMon = ''
       writeEnv({
         PROXMOX_HOST:         host,
         PROXMOX_PORT:         port,

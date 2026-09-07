@@ -6,6 +6,7 @@ import { FastifyPluginAsync } from 'fastify'
 import { ProxmoxClient }      from '../lib/proxmox-client'
 import { getGPUInfo }         from '../lib/gpu'
 import { NPMClient }          from '../lib/npm-client'
+import { withCephMon, CephUnavailableError } from '../lib/ceph'
 import { getProviderCredentials } from '../lib/credentials'
 
 let client: ProxmoxClient | null = null
@@ -35,6 +36,19 @@ const wrap = async (reply: any, fn: () => Promise<any>) => {
   catch (e: any) { return reply.status(500).send({ success: false, error: e.message }) }
 }
 
+// A cluster with no CEPH is a normal configuration, not a server fault — 503
+// with a readable reason, so the UI can hide the panel instead of showing a
+// stack trace about an empty node name.
+const wrapCeph = async (reply: any, fn: () => Promise<any>) => {
+  try { return { success: true, data: await fn() } }
+  catch (e: any) {
+    if (e instanceof CephUnavailableError) {
+      return reply.status(503).send({ success: false, error: e.message, cephAvailable: false })
+    }
+    return reply.status(500).send({ success: false, error: e.message })
+  }
+}
+
 export const proxmoxRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.get('/ping',      async (_, r) => wrap(r, () => getClient().ping()))
@@ -57,13 +71,13 @@ export const proxmoxRoutes: FastifyPluginAsync = async (fastify) => {
   })
 
   fastify.get('/ceph/status', async (_, r) =>
-    wrap(r, () => getClient().getCephStatus(process.env.CEPH_MON_NODE ?? '')))
+    wrapCeph(r, () => getClient().getClusterCephStatus()))
 
   fastify.get('/ceph/osds', async (_, r) =>
-    wrap(r, () => getClient().getCephOSDs(process.env.CEPH_MON_NODE ?? '')))
+    wrapCeph(r, () => withCephMon(getClient(), n => getClient().getCephOSDs(n))))
 
   fastify.get('/ceph/pools', async (_, r) =>
-    wrap(r, () => getClient().getCephPools(process.env.CEPH_MON_NODE ?? '')))
+    wrapCeph(r, () => withCephMon(getClient(), n => getClient().getCephPools(n))))
 
   // POST /api/proxmox/vms/:node/:vmid/:type/:action
   fastify.post<{
@@ -121,8 +135,8 @@ export const proxmoxRoutes: FastifyPluginAsync = async (fastify) => {
       const vmList = vmsR.status === 'fulfilled' ? vmsR.value : undefined
 
       const [cephR, osdR, haR, storageR, gpuR, npmR] = await Promise.allSettled([
-        getClient().getCephStatus(process.env.CEPH_MON_NODE ?? ''),
-        getClient().getCephOSDs(process.env.CEPH_MON_NODE ?? ''),
+        getClient().getClusterCephStatus(),
+        withCephMon(getClient(), n => getClient().getCephOSDs(n)),
         getClient().getHAStatus(),
         getClient().getAllStorage(),
         getGPUInfo(vmList),
