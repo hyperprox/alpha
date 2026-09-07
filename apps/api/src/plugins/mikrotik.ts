@@ -10,7 +10,7 @@
 //  `monitor-traffic`, which RouterOS models as a command but which only reads.
 // =============================================================================
 
-import type { Plugin, PluginContext, PluginTileData } from '../lib/plugin-host'
+import type { Plugin, PluginContext, PluginTileData, PluginDetail } from '../lib/plugin-host'
 
 type Row = { label: string; value: string; tone?: 'good' | 'warn' | 'bad' }
 
@@ -103,7 +103,10 @@ export const mikrotikPlugin: Plugin = {
       rows.push({ label: 'Internet', value: `${wan} — no live reading`, tone: 'warn' })
     }
 
-    rows.push({ label: 'Devices awake', value: `${liveAll.length} of ${bound.length} known` })
+    // These are two different sets, not a subset — ARP is who answered recently,
+    // a lease is who was ever given an address. Comparing them as "N of M" read
+    // as nonsense the moment ARP exceeded the lease count.
+    rows.push({ label: 'Devices seen', value: `${liveAll.length} active · ${bound.length} leases` })
 
     // A few of them by name, so the tile answers "who" and not only "how many".
     const named = liveAll
@@ -122,6 +125,115 @@ export const mikrotikPlugin: Plugin = {
         : `${liveAll.length} devices on the network`,
       tone: cpu > 80 ? 'bad' : 'good',
       rows,
+    }
+  },
+
+  async detail(ctx: PluginContext): Promise<PluginDetail> {
+    const [resource, arp, leases, ifaces, wan] = await Promise.all([
+      ctx.get('/rest/system/resource'),
+      ctx.get('/rest/ip/arp').catch(() => [] as any[]),
+      ctx.get('/rest/ip/dhcp-server/lease').catch(() => [] as any[]),
+      ctx.get('/rest/interface').catch(() => [] as any[]),
+      findWan(ctx, ctx.option('wan')),
+    ])
+
+    const arpList: any[]   = Array.isArray(arp) ? arp : []
+    const leaseList: any[] = Array.isArray(leases) ? leases : []
+    const ifaceList: any[] = Array.isArray(ifaces) ? ifaces : []
+
+    let down = 0, up = 0
+    if (wan) {
+      try {
+        const t = await ctx.post('/rest/interface/monitor-traffic', { interface: wan, once: '' })
+        const one = Array.isArray(t) ? t[0] : t
+        down = Number(one?.['rx-bits-per-second'] ?? 0)
+        up   = Number(one?.['tx-bits-per-second'] ?? 0)
+      } catch { /* the tables still stand without a live rate */ }
+    }
+
+    // A device is worth listing once, with everything known about it: the lease
+    // knows its name, ARP knows whether it answered just now.
+    const byMac = new Map<string, any>()
+    for (const l of leaseList) {
+      if (!l['mac-address']) continue
+      byMac.set(l['mac-address'].toUpperCase(), {
+        name:      l['host-name'] || l.comment || '—',
+        address:   l.address ?? '—',
+        mac:       l['mac-address'],
+        kind:      l.dynamic === 'true' ? 'dynamic' : 'static',
+        lastSeen:  l['last-seen'] ?? '—',
+        awake:     'no',
+      })
+    }
+    for (const a of arpList) {
+      if (a.complete !== 'true' || a.invalid === 'true' || !a['mac-address']) continue
+      const key = a['mac-address'].toUpperCase()
+      const existing = byMac.get(key)
+      if (existing) {
+        existing.awake = 'yes'
+        existing.iface = a.interface ?? '—'
+      } else {
+        byMac.set(key, {
+          name: '—', address: a.address ?? '—', mac: a['mac-address'],
+          kind: 'no lease', lastSeen: '—', awake: 'yes', iface: a.interface ?? '—',
+        })
+      }
+    }
+
+    const devices = [...byMac.values()].sort((x, y) =>
+      (y.awake === 'yes' ? 1 : 0) - (x.awake === 'yes' ? 1 : 0) || String(x.name).localeCompare(String(y.name)))
+
+    const bytes = (n: any) => {
+      const v = Number(n ?? 0)
+      if (!v) return '0'
+      const u = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+      const i = Math.min(Math.floor(Math.log(v) / Math.log(1024)), u.length - 1)
+      return `${(v / Math.pow(1024, i)).toFixed(1)} ${u[i]}`
+    }
+
+    return {
+      stats: [
+        { label: 'Download',      value: `${mbps(down)} Mbps` },
+        { label: 'Upload',        value: `${mbps(up)} Mbps` },
+        { label: 'Devices awake', value: String(devices.filter(d => d.awake === 'yes').length) },
+        { label: 'Known devices', value: String(devices.length) },
+        { label: 'CPU',           value: `${resource['cpu-load'] ?? 0}%`,
+          tone: Number(resource['cpu-load'] ?? 0) > 80 ? 'bad' : 'good' },
+        { label: 'Uptime',        value: humaniseUptime(String(resource.uptime ?? '')) },
+      ],
+      tables: [
+        {
+          title: 'Devices',
+          empty: 'No devices found — the router returned neither ARP entries nor DHCP leases.',
+          columns: [
+            { key: 'awake',    label: 'Awake' },
+            { key: 'name',     label: 'Name' },
+            { key: 'address',  label: 'Address' },
+            { key: 'mac',      label: 'MAC' },
+            { key: 'iface',    label: 'Interface' },
+            { key: 'kind',     label: 'Lease' },
+          ],
+          rows: devices.map(d => ({ ...d, iface: d.iface ?? '—' })),
+        },
+        {
+          title: 'Interfaces',
+          empty: 'No interfaces returned.',
+          columns: [
+            { key: 'name',    label: 'Name' },
+            { key: 'type',    label: 'Type' },
+            { key: 'running', label: 'Running' },
+            { key: 'rx',      label: 'Received',    align: 'right' },
+            { key: 'tx',      label: 'Transmitted', align: 'right' },
+          ],
+          rows: ifaceList.map(i => ({
+            name:    i.name ?? '—',
+            type:    i.type ?? '—',
+            running: i.running === 'true' ? 'yes' : 'no',
+            rx:      bytes(i['rx-byte']),
+            tx:      bytes(i['tx-byte']),
+          })),
+        },
+      ],
     }
   },
 }
