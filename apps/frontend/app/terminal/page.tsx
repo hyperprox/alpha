@@ -89,6 +89,9 @@ export default function TerminalPage() {
   const [loading,   setLoading]   = useState(true)
   const [notice,    setNotice]    = useState<string | null>(null)
   const [palette,   setPalette]   = useState(false)
+  // Two 80-column shells side by side on a phone is two unreadable shells. The
+  // panes stay connected either way; this only decides what is shown.
+  const [narrow,    setNarrow]    = useState(false)
   const [hasShared, setHasShared] = useState(false)
 
   const [sessions,  setSessions]  = useState<Session[]>([])
@@ -330,6 +333,14 @@ export default function TerminalPage() {
     loadLayouts()
   }
 
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 767px)')
+    const sync = () => setNarrow(mq.matches)
+    sync()
+    mq.addEventListener('change', sync)
+    return () => mq.removeEventListener('change', sync)
+  }, [])
+
   // Ctrl/Cmd-K is the shortcut people already try in a terminal app. Bound on
   // the window rather than a pane, because a focused xterm swallows keys.
   useEffect(() => {
@@ -403,8 +414,8 @@ export default function TerminalPage() {
         </div>
 
         {/* Header for the active pane */}
-        <header className="flex flex-shrink-0 items-center gap-3 border-b px-4"
-          style={{ height: 52, borderColor: BORDER, background: '#0a0f18' }}>
+        <header className="flex flex-shrink-0 flex-wrap items-center gap-2 border-b px-3 py-1.5 sm:gap-3 sm:px-4"
+          style={{ minHeight: 52, borderColor: BORDER, background: '#0a0f18' }}>
           {active && s ? (
             <>
               <div className="min-w-0">
@@ -421,7 +432,7 @@ export default function TerminalPage() {
                 </div>
               </div>
 
-              <div className="ml-auto flex items-center gap-2">
+              <div className="ml-auto flex flex-wrap items-center gap-2">
                 {active.attach?.persistent && (
                   <span className="rounded px-2 py-1 font-mono text-[10.5px]"
                     style={{ background: '#00e5ff12', color: ACCENT, border: '1px solid #00e5ff28' }}
@@ -477,7 +488,7 @@ export default function TerminalPage() {
           <div className={`flex items-center gap-2 ${active ? '' : 'ml-auto'}`}>
             {/* View. Every pane stays connected in all four; only `tabs` hides
                 the inactive ones. */}
-            <div className="flex rounded border" style={{ borderColor: '#16233a' }}>
+            <div className="hidden rounded border md:flex" style={{ borderColor: '#16233a' }}>
               {(['tabs', 'cols', 'rows', 'grid'] as ViewMode[]).map(m => (
                 <button key={m} onClick={() => setView(m)} title={VIEW_LABEL[m]}
                   className="flex h-7 w-7 items-center justify-center transition-colors first:rounded-l last:rounded-r hover:bg-white/5"
@@ -558,7 +569,8 @@ export default function TerminalPage() {
         {/* Every open pane stays mounted; only the active one is shown. */}
         <div
           className="relative flex-1"
-          style={{ ...GRID[view], minHeight: 0, background: '#080c14', gap: view === 'tabs' ? 0 : 1 }}
+          style={{ ...GRID[narrow ? 'tabs' : view], minHeight: 0, background: '#080c14',
+                   gap: (narrow || view === 'tabs') ? 0 : 1 }}
         >
           {/* Inline display beats the utility class here: Tailwind's .flex would
               otherwise override [hidden]{display:none} and stack every pane on
@@ -567,14 +579,14 @@ export default function TerminalPage() {
             <div
               key={sess.key}
               onClick={() => setActiveKey(sess.key)}
-              className={view === 'tabs' ? 'absolute inset-0 flex-col' : 'flex min-h-0 min-w-0 flex-col overflow-hidden'}
+              className={(narrow || view === 'tabs') ? 'absolute inset-0 flex-col' : 'flex min-h-0 min-w-0 flex-col overflow-hidden'}
               style={{
-                display: view !== 'tabs' || sess.key === activeKey ? 'flex' : 'none',
-                outline: view !== 'tabs' && sess.key === activeKey ? `1px solid ${ACCENT}40` : 'none',
+                display: (!narrow && view !== 'tabs') || sess.key === activeKey ? 'flex' : 'none',
+                outline: !narrow && view !== 'tabs' && sess.key === activeKey ? `1px solid ${ACCENT}40` : 'none',
                 outlineOffset: -1,
               }}
             >
-              {view !== 'tabs' && (
+              {!narrow && view !== 'tabs' && (
                 <div className="flex flex-shrink-0 items-center gap-2 border-b px-2.5 py-1"
                   style={{ borderColor: BORDER, background: '#0a0f18' }}>
                   <span className="h-1.5 w-1.5 rounded-full" style={{ background: STATE_STYLE[sess.state].dot }} />

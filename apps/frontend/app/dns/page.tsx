@@ -673,7 +673,7 @@ export default function DNSPage() {
   )
 
   return (
-    <div className="min-h-full p-6" style={{ background: '#080c14' }}>
+    <div className="min-h-full p-3 sm:p-6" style={{ background: '#080c14' }}>
 
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
@@ -693,10 +693,10 @@ export default function DNSPage() {
         </div>
       </div>
 
-      <div className="flex gap-5">
+      <div className="flex flex-col gap-5 lg:flex-row">
 
         {/* Domain list */}
-        <div className="w-64 flex-shrink-0 space-y-2">
+        <div className="w-full flex-shrink-0 space-y-2 lg:w-64">
           <div className="text-xs font-mono text-gray-600 uppercase tracking-wider mb-3">
             Domains ({domains.length})
           </div>
@@ -762,7 +762,7 @@ export default function DNSPage() {
 
               {/* Records table */}
               <div className="rounded-lg border overflow-hidden" style={{ borderColor: '#0f1929' }}>
-                <table className="w-full text-xs font-mono">
+                <div className="hp-table-scroll overflow-x-auto"><table className="w-full text-xs font-mono">
                   <thead>
                     <tr style={{ background: '#060a10', borderBottom: '1px solid #0f1929' }}>
                       {['TYPE', 'NAME', 'VALUE', 'TTL', ''].map(h => (
@@ -825,7 +825,7 @@ export default function DNSPage() {
                       <tr><td colSpan={5} className="px-4 py-6 text-center text-gray-600">No records match filter</td></tr>
                     )}
                   </tbody>
-                </table>
+                </table></div>
               </div>
             </>
           )}

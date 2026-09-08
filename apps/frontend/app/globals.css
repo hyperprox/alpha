@@ -20,3 +20,27 @@ body {
 ::-webkit-scrollbar-track { background: var(--base-800); }
 ::-webkit-scrollbar-thumb { background: var(--base-600); border-radius: 2px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--cyan); }
+
+/* ---------------------------------------------------------------------------
+   Mobile shell
+
+   The bar has to grow by the safe-area inset rather than pad inside a fixed
+   height — padding a fixed box squashes its contents into the remaining space,
+   which on a notched phone means the menu button climbs under the camera.
+   The main region's offset is derived from the same expression so the two
+   cannot drift apart.
+--------------------------------------------------------------------------- */
+@media (max-width: 767px) {
+  .hp-mobile-bar {
+    height: calc(56px + env(safe-area-inset-top, 0px));
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+  .hp-mobile-offset { padding-top: calc(56px + env(safe-area-inset-top, 0px)); }
+
+  /* A drawer sitting over the page should not let the page behind it scroll. */
+  .hp-drawer { padding-bottom: env(safe-area-inset-bottom, 0px); }
+}
+
+/* Horizontal scrollers get momentum on touch, and keep their scrollbar out of
+   the way on desktop. */
+.hp-table-scroll { -webkit-overflow-scrolling: touch; }

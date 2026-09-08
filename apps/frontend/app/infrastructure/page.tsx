@@ -529,11 +529,11 @@ export default function InfrastructurePage() {
   const SELECT = {...FIELD}
 
   return (
-    <div className="min-h-full p-6" style={{background:'#080c14'}}>
+    <div className="min-h-full p-3 sm:p-6" style={{background:'#080c14'}}>
       {/* Create Modal */}
       {showCreate && (
         <div className="fixed inset-0 z-50 flex items-center justify-center" style={{background:'rgba(0,0,0,0.8)',paddingLeft:'220px'}}>
-          <div className="rounded-xl border p-6" style={{background:'#0d1220',borderColor:'#1f2937',maxHeight:'90vh',overflowY:'auto',width:'480px'}}>
+          <div className="rounded-xl border p-6" style={{background:'#0d1220',borderColor:'#1f2937',maxHeight:'90vh',overflowY:'auto',width:'100%',maxWidth:'480px'}}>
             <div className="flex items-center justify-between mb-5">
               <div className="flex items-center gap-3">
                 <div className="w-1 h-5 rounded-full" style={{background: createType==='lxc'?'#00e5ff':'#a78bfa'}}/>

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 
@@ -59,11 +59,49 @@ const NAV = [
 
 export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false)
+  const [drawerOpen, setDrawerOpen] = useState(false)
   const pathname = usePathname()
 
+  // Navigating is the end of the drawer's job. Leaving it open over the page
+  // someone just chose is the classic mobile-nav annoyance.
+  useEffect(() => { setDrawerOpen(false) }, [pathname])
+
+  // A 220px rail is more than half a phone screen, so below md the same markup
+  // becomes an off-canvas drawer rather than a second, narrower layout to keep
+  // in step with this one.
   return (
+    <>
+      <header
+        className="hp-mobile-bar fixed inset-x-0 top-0 z-40 flex items-center gap-3 border-b px-4 md:hidden"
+        style={{ background: '#060a10', borderColor: '#0f1929' }}
+      >
+        <button
+          onClick={() => setDrawerOpen(true)}
+          aria-label="Open navigation"
+          className="flex h-9 w-9 items-center justify-center rounded transition-colors hover:bg-white/5"
+          style={{ color: '#6b7280' }}
+        >
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.6}>
+            <path d="M2 4h12M2 8h12M2 12h12" strokeLinecap="round" />
+          </svg>
+        </button>
+        <span className="font-display text-base font-light tracking-widest">
+          HYPER<span className="font-bold" style={{ color: '#00e5ff' }}>PROX</span>
+        </span>
+      </header>
+
+      {drawerOpen && (
+        <div
+          onClick={() => setDrawerOpen(false)}
+          className="fixed inset-0 z-40 md:hidden"
+          style={{ background: 'rgba(3,6,12,0.7)' }}
+        />
+      )}
+
     <aside
-      className="flex flex-col border-r transition-all duration-300 ease-in-out flex-shrink-0"
+      className={`hp-drawer fixed inset-y-0 left-0 z-50 flex flex-col border-r transition-transform duration-300 ease-in-out md:static md:z-auto md:translate-x-0 md:transition-all flex-shrink-0 ${
+        drawerOpen ? 'translate-x-0' : '-translate-x-full'
+      }`}
       style={{
         width:       collapsed ? 56 : 220,
         background:  '#060a10',
@@ -90,10 +128,20 @@ export function Sidebar() {
             </span>
             <button
               onClick={() => setCollapsed(true)}
-              className="p-1 rounded transition-colors hover:bg-white/5"
+              className="hidden p-1 rounded transition-colors hover:bg-white/5 md:block"
               style={{ color: '#374151' }}
             >
               <CollapseIcon />
+            </button>
+            <button
+              onClick={() => setDrawerOpen(false)}
+              aria-label="Close navigation"
+              className="p-1 rounded transition-colors hover:bg-white/5 md:hidden"
+              style={{ color: '#374151' }}
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.8}>
+                <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
+              </svg>
             </button>
           </div>
         )}
@@ -169,6 +217,7 @@ export function Sidebar() {
         )}
       </div>
     </aside>
+    </>
   )
 }
 

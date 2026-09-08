@@ -90,7 +90,7 @@ function ClusterPanel({ cluster, nodes, vms, ceph, storage, power, stamp }: { cl
     <Panel title="Cluster Overview"
       right={<span className="text-xs font-mono text-gray-600">{online}/{nodes.length} nodes online</span>}>
 
-      <div className="flex justify-around items-start mb-4">
+      <div className="flex flex-wrap justify-around items-start gap-y-3 mb-4">
         <Speedometer value={cluster.cpu_pct} label="CPU" size={118}
           caption={`${(cluster.cpu_used ?? 0).toFixed(1)} of ${cluster.cpu_total} cores`}/>
         <Speedometer value={cluster.mem_pct} label="Memory" size={118}
@@ -216,7 +216,7 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
             })}
           </div>
         )}
-        <div className="flex justify-around items-start">
+        <div className="flex flex-wrap justify-around items-start gap-y-3">
           <Speedometer value={gpu.gpu_util}   label="Load"  size={92} color={accent}/>
           <Speedometer value={gpu.vram_pct}   label="VRAM"  size={92} color={vramC}
             caption={`${gpu.vram_used} MB`}/>
@@ -386,7 +386,7 @@ function NetworkPanel({ network, stamp }: { network: NetworkData | null; stamp: 
       </div>
 
       {/* Per-node rows */}
-      <div className="grid gap-x-6 gap-y-2 mb-4" style={{ gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))' }}>
+      <div className="grid gap-x-6 gap-y-2 mb-4" style={{ gridTemplateColumns:'repeat(auto-fit,minmax(min(100%,240px),1fr))' }}>
         {sortedNodes.map(n => {
           const accent = '#00e5ff'
           return (
@@ -413,7 +413,7 @@ function NetworkPanel({ network, stamp }: { network: NetworkData | null; stamp: 
       {network.ceph_io && (
         <div className="border-t pt-3" style={{ borderColor:'#111827' }}>
           <div className="text-xs font-mono text-gray-500 uppercase tracking-wider mb-2">CEPH I/O</div>
-          <div className="grid gap-2" style={{ gridTemplateColumns:'repeat(auto-fit,minmax(160px,1fr))' }}>
+          <div className="grid gap-2" style={{ gridTemplateColumns:'repeat(auto-fit,minmax(min(100%,160px),1fr))' }}>
             <div className="p-2 rounded" style={{ background:'#060a10', border:'1px solid #111827' }}>
               <div className="text-xs font-mono text-gray-600 mb-0.5">READ</div>
               <div className="text-sm font-mono font-bold" style={{ color:'#22c55e' }}>{fmtSpeed(network.ceph_io.read_bps)}</div>
@@ -525,7 +525,7 @@ function BandwidthPanel({ data, stamp }: { data: BandwidthData | null; stamp: nu
           ))}
         </div>
       }>
-      <div className="grid gap-4" style={{ gridTemplateColumns:`repeat(${Math.min(ordered.length, 2)},1fr)` }}>
+      <div className={`grid gap-4 grid-cols-1 ${ordered.length > 1 ? 'lg:grid-cols-2' : ''}`}>
         {ordered.map(l => <LinkMeters key={`${l.source}-${l.id}`} link={l} stamp={stamp}/>)}
       </div>
     </Panel>
@@ -556,7 +556,7 @@ function NodeCard({ node, vms, gpuInfo, power, powerTotal }: { node:PVENode; vms
         </div>
         <span className="text-xs font-mono text-gray-500">{formatUptime(node.uptime)}</span>
       </div>
-      <div className="flex justify-around items-start">
+      <div className="flex flex-wrap justify-around items-start gap-y-2">
         <Speedometer value={cpuPct}  label="CPU"  size={76} color={accent} caption={`${node.maxcpu} cores`}/>
         <Speedometer value={memPct}  label="MEM"  size={76} caption={formatBytes(node.maxmem)}/>
         <Speedometer value={diskPct} label="DISK" size={76} caption={formatBytes(node.maxdisk)}/>
@@ -633,7 +633,7 @@ function CephPanel({ ceph, osds }: { ceph:CephStatus|null; osds:CephOSD[] }) {
         <span className="text-xs font-mono" style={{color:'#22c55e'}}>{ceph.osdmap.num_up_osds}/{ceph.osdmap.num_osds} OSDs</span>
       </div>
       {ceph.pgmap&&(
-        <div className="flex items-center gap-4 mb-4">
+        <div className="flex flex-wrap items-center gap-4 mb-4">
           <Speedometer value={up} label="Capacity" size={110} color="#f59e0b"/>
           <div className="flex-1 space-y-2">
             {[['USED', formatBytes(ceph.pgmap.bytes_used), '#f59e0b'],
@@ -838,7 +838,7 @@ export default function DashboardView() {
   return (
     <div className="min-h-full" style={{background:'#080c14'}}>
       {/* Header */}
-      <header className="flex items-center justify-between px-6 py-4 border-b" style={{borderColor:'#111827',background:'#080c14'}}>
+      <header className="flex flex-wrap items-center justify-between gap-y-2 px-3 sm:px-6 py-3 sm:py-4 border-b" style={{borderColor:'#111827',background:'#080c14'}}>
         <div className="flex items-center gap-3">
           <h1 className="font-display text-2xl font-light tracking-widest">
             HYPER<span className="font-bold" style={{color:'#00e5ff'}}>PROX</span>
@@ -861,9 +861,9 @@ export default function DashboardView() {
         </div>
       </header>
 
-      <main className="p-6 max-w-7xl mx-auto space-y-6">
+      <main className="p-3 sm:p-6 max-w-7xl mx-auto space-y-4 sm:space-y-6">
         {/* Row 1 — the three panels that are mostly dials */}
-        <div className="grid gap-4" style={{gridTemplateColumns:"1.25fr 1.25fr 1fr"}}>
+        <div className="grid gap-4 grid-cols-1 xl:grid-cols-[1.25fr_1.25fr_1fr]">
           <ClusterPanel cluster={fast.cluster} nodes={fast.nodes} vms={fast.vms} ceph={slow?.ceph??null} storage={fast.storage} power={clusterPower} stamp={lastSync?.getTime() ?? null}/>
           <GPUPanel gpu={fast.gpu} gpuStatus={fast.gpuStatus}/>
           {slow && <ServicesPanel services={slow.services}/>}
@@ -878,7 +878,7 @@ export default function DashboardView() {
         {/* Row 4 — nodes */}
         <section>
           <h2 className="text-xs font-mono uppercase tracking-widest text-gray-600 mb-3">Cluster Nodes</h2>
-          <div className="grid gap-4" style={{gridTemplateColumns:'repeat(auto-fill,minmax(250px,1fr))'}}>
+          <div className="grid gap-4" style={{gridTemplateColumns:'repeat(auto-fill,minmax(min(100%,250px),1fr))'}}>
             {sorted.map(node=><NodeCard key={node.node} node={node} vms={fast.vms} gpuInfo={fast.gpuStatus?.find(g=>g.node===node.node)} power={clusterPower?.nodes.find(p=>p.node===node.node)} powerTotal={clusterPower?.total}/>)}
           </div>
         </section>

@@ -316,7 +316,7 @@ export default function PluginsPage() {
 
   return (
     <div className="flex h-full flex-col" style={{ background: '#080c14' }}>
-      <header className="flex flex-shrink-0 items-baseline gap-3 border-b px-6"
+      <header className="flex flex-shrink-0 flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-2 sm:px-6 sm:py-0"
         style={{ height: 56, borderColor: BORDER, background: '#0a0f18' }}>
         <h1 className="font-display text-lg font-light tracking-[0.18em] text-white">PLUG-INS</h1>
         <p className="font-mono text-[11px]" style={{ color: '#374151' }}>
@@ -385,7 +385,7 @@ export default function PluginsPage() {
           </section>
         )}
 
-        <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))' }}>
+        <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 340px), 1fr))' }}>
           {plugins.map(p => {
             const d    = data[p.id]
             const tone = !p.configured ? 'idle' : d && !d.ok ? 'bad' : d ? (d.tone ?? 'good') : 'idle'
