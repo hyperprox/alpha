@@ -30,7 +30,7 @@ interface BwLink {
 }
 interface NodePower {
   node: string; cpu: number | null; gpu: number | null
-  total: number | null; source: 'rapl' | 'intel-gpu-exporter' | 'gpu-only' | 'none'
+  total: number | null; source: string
 }
 interface ClusterPower {
   total: number; nodes: NodePower[]; silent: string[]

@@ -34,7 +34,7 @@ export interface NodePower {
   /** Discrete GPU watts. Integrated GPUs are inside the CPU package already. */
   gpu:    number | null
   total:  number | null
-  source: 'rapl' | 'intel-gpu-exporter' | 'gpu-only' | 'none'
+  source: 'rapl-psys' | 'rapl' | 'intel-gpu-exporter' | 'gpu-only' | 'none'
 }
 
 export interface ClusterPower {
@@ -71,32 +71,55 @@ function byNode(rows: Array<{ node: string; value: number }>): Map<string, numbe
 }
 
 export async function clusterPower(nodeNames: string[]): Promise<ClusterPower> {
-  const [rapl, igpuPackage, nvidia] = await Promise.all([
+  // RAPL exposes several domains and they are not peers. `core` and `uncore`
+  // are slices of `package` and are never read here — adding them would count
+  // the same watts two or three times. `dram` is genuinely separate, so it adds.
+  // `psys` is the platform rail: on the one board here that exposes it, it
+  // measures 7.9 W where package plus dram measures 3.1 W, because it includes
+  // VRM and board losses the CPU domains cannot see. It supersedes them rather
+  // than adding to them.
+  const [raplPackage, raplDram, raplPsys, igpuPackage, nvidia] = await Promise.all([
     // Joules are a counter; rate() turns them into watts and survives the wrap.
     query(`rate(node_rapl_package_joules_total[${WINDOW}])`),
+    query(`rate(node_rapl_dram_joules_total[${WINDOW}])`),
+    query(`rate(node_rapl_psys_joules_total[${WINDOW}])`),
     // intel_gpu_top's "package" is the same RAPL package domain read a different
-    // way, so it stands in where node_exporter has no RAPL — never in addition.
-    // Its companion `igpu_power_gpu` is a slice of that package and is
-    // deliberately not read here; adding it would count the same watts twice.
+    // way — measured within 1% of it on every node here — so it stands in where
+    // node_exporter cannot read RAPL, never in addition. Its companion
+    // `igpu_power_gpu` is a slice of that package and is deliberately not read.
     query(`avg_over_time(igpu_power_package[${WINDOW}])`),
     query(`avg_over_time(nvidia_smi_power_draw_watts[${WINDOW}])`),
   ])
 
-  const cpuRapl = byNode(rapl)
+  const pkg     = byNode(raplPackage)
+  const dram    = byNode(raplDram)
+  const psys    = byNode(raplPsys)
   const cpuIgpu = byNode(igpuPackage)
   const gpu     = byNode(nvidia)
 
   // Any node Prometheus knows about counts, even if Proxmox did not name it.
-  const names = new Set([...nodeNames, ...cpuRapl.keys(), ...cpuIgpu.keys(), ...gpu.keys()])
+  const names = new Set([...nodeNames, ...pkg.keys(), ...psys.keys(), ...cpuIgpu.keys(), ...gpu.keys()])
 
   const nodes: NodePower[] = [...names].sort().map(node => {
-    const cpu = cpuRapl.get(node) ?? cpuIgpu.get(node) ?? null
-    const g   = gpu.get(node) ?? null
-    const source: NodePower['source'] =
-      cpuRapl.has(node) ? 'rapl'
-      : cpuIgpu.has(node) ? 'intel-gpu-exporter'
-      : g !== null ? 'gpu-only'
-      : 'none'
+    let cpu: number | null = null
+    let source: NodePower['source'] = 'none'
+
+    if (psys.has(node)) {
+      cpu = psys.get(node)!
+      source = 'rapl-psys'
+    } else if (pkg.has(node)) {
+      cpu = pkg.get(node)! + (dram.get(node) ?? 0)
+      source = 'rapl'
+    } else if (cpuIgpu.has(node)) {
+      cpu = cpuIgpu.get(node)!
+      source = 'intel-gpu-exporter'
+    }
+
+    // A discrete card sits on PCIe, outside every domain above — psys included,
+    // which covers the SoC's own platform rails and not an add-in board.
+    const g = gpu.get(node) ?? null
+    if (cpu === null && g !== null) source = 'gpu-only'
+
     const total = cpu === null && g === null ? null : (cpu ?? 0) + (g ?? 0)
     return { node, cpu, gpu: g, total, source }
   })
@@ -109,6 +132,6 @@ export async function clusterPower(nodeNames: string[]): Promise<ClusterPower> {
     silent:    nodes.filter(n => n.total === null).map(n => n.node),
     reporting: reporting.length,
     of:        nodes.length,
-    covers:    'CPU package and discrete GPU only — drives, fans, memory and PSU losses are not instrumented.',
+    covers:    'CPU package (plus DRAM, or the platform rail where the board exposes one) and discrete GPUs. Drives, fans and PSU losses are not instrumented.',
   }
 }
