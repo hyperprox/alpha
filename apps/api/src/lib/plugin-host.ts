@@ -68,13 +68,13 @@ export interface PluginManifest {
 
 export interface PluginContext {
   /** Perform an authenticated request. The plug-in never learns the credential. */
-  get(path: string): Promise<any>
+  get(path: string, opts?: { timeoutMs?: number }): Promise<any>
   /**
    * Some read-only facts are only available through a POST — RouterOS exposes
    * live interface throughput as `monitor-traffic`, a command, not a resource.
    * Still brokered: the plug-in supplies a path and a body, never a credential.
    */
-  post(path: string, body: Record<string, unknown>): Promise<any>
+  post(path: string, body: Record<string, unknown>, opts?: { timeoutMs?: number }): Promise<any>
   /**
    * Read one of the plug-in's own NON-SECRET settings — a WAN interface name,
    * a threshold. Settings declared `secret` are never returned here: those exist
@@ -109,6 +109,30 @@ export interface Plugin {
    * numbers back out of prose is how a metric quietly becomes wrong.
    */
   metrics?(ctx: PluginContext): Promise<PluginMetric[]>
+  /**
+   * Free-text search across everything the plug-in can reach.
+   *
+   * This is the half the *arr apps cannot do. They search by scene naming for a
+   * specific episode or season and then silently reject whatever fails a quality
+   * profile, a seeder minimum or a cutoff rule — so a complete-series pack that
+   * plainly exists never reaches you. A plain query, showing raw results and
+   * letting a person judge, is a different job and needs a different door.
+   */
+  search?(ctx: PluginContext, query: string): Promise<PluginSearchResult[]>
+  /** Send one search result to a download client. */
+  grab?(ctx: PluginContext, guid: string, indexerId: number): Promise<string>
+}
+
+export interface PluginSearchResult {
+  title:      string
+  indexer:    string
+  size:       number
+  seeders:    number
+  leechers:   number
+  published:  string
+  categories: string[]
+  guid:       string
+  indexerId:  number
 }
 
 export interface PluginMetric {
@@ -225,10 +249,19 @@ class BrokerContext implements PluginContext {
     return this.settings[key] || undefined
   }
 
-  get(path: string)  { return this.request('GET', path) }
-  post(path: string, body: Record<string, unknown>) { return this.request('POST', path, body) }
+  get(path: string, opts?: { timeoutMs?: number }) {
+    return this.request('GET', path, undefined, opts?.timeoutMs)
+  }
+  post(path: string, body: Record<string, unknown>, opts?: { timeoutMs?: number }) {
+    return this.request('POST', path, body, opts?.timeoutMs)
+  }
 
-  private async request(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>): Promise<any> {
+  private async request(
+    method: 'GET' | 'POST',
+    path: string,
+    body?: Record<string, unknown>,
+    timeoutMs?: number,
+  ): Promise<any> {
     const base = (this.settings[this.endpoint.baseUrlSetting] ?? '').replace(/\/+$/, '')
     if (!base) throw new Error(`${this.manifest.name}: no address configured for ${this.endpoint.label}`)
 
@@ -254,7 +287,7 @@ class BrokerContext implements PluginContext {
 
     // Routers and media servers ship self-signed certs. A plug-in cannot turn
     // this on for itself — only its manifest can, and only for its own host.
-    const res = await fetchWithTimeout(url.toString(), headers, this.endpoint.insecureTLS, method, body)
+    const res = await fetchWithTimeout(url.toString(), headers, this.endpoint.insecureTLS, method, body, timeoutMs)
     if (!res.ok) throw new Error(`${this.manifest.name} returned HTTP ${res.status}`)
 
     const text = await res.text()
@@ -277,19 +310,22 @@ function fetchWithTimeout(
   insecure?: boolean,
   method: 'GET' | 'POST' = 'GET',
   body?: Record<string, unknown>,
+  // Eight seconds is right for a tile and far too short for a search that fans
+  // out to a dozen indexers, several of them behind FlareSolverr.
+  timeoutMs = 8000,
 ): Promise<{ ok: boolean; status: number; text: () => Promise<string> }> {
   const payload = body ? JSON.stringify(body) : undefined
 
   if (!insecure || !url.startsWith('https:')) {
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 8000)
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
     return fetch(url, { method, headers, body: payload, signal: controller.signal })
       .finally(() => clearTimeout(timer)) as any
   }
 
   return new Promise((resolve, reject) => {
     import('node:https').then(https => {
-      const req = https.request(url, { method, headers, rejectUnauthorized: false, timeout: 8000 }, res => {
+      const req = https.request(url, { method, headers, rejectUnauthorized: false, timeout: timeoutMs }, res => {
         let body = ''
         res.setEncoding('utf8')
         res.on('data', c => { body += c })
@@ -299,7 +335,7 @@ function fetchWithTimeout(
           text:   async () => body,
         }))
       })
-      req.on('timeout', () => { req.destroy(new Error('timed out after 8s')) })
+      req.on('timeout', () => { req.destroy(new Error(`timed out after ${Math.round(timeoutMs / 1000)}s`)) })
       req.on('error', reject)
       if (payload) req.write(payload)
       req.end()
@@ -336,6 +372,16 @@ export async function runPlugin(plugin: Plugin): Promise<PluginTileData> {
 export async function runPluginDetail(plugin: Plugin): Promise<PluginDetail> {
   if (!plugin.detail) throw new Error(`${plugin.manifest.name} has no detailed view.`)
   return plugin.detail(await contextFor(plugin))
+}
+
+export async function runPluginSearch(plugin: Plugin, query: string): Promise<PluginSearchResult[]> {
+  if (!plugin.search) throw new Error(`${plugin.manifest.name} does not offer search.`)
+  return plugin.search(await contextFor(plugin), query)
+}
+
+export async function runPluginGrab(plugin: Plugin, guid: string, indexerId: number): Promise<string> {
+  if (!plugin.grab) throw new Error(`${plugin.manifest.name} cannot send downloads.`)
+  return plugin.grab(await contextFor(plugin), guid, indexerId)
 }
 
 export async function runPluginMetrics(plugin: Plugin): Promise<PluginMetric[]> {

@@ -8,7 +8,8 @@ import { ProxmoxClient }        from '../lib/proxmox-client'
 import { discoverServices }     from '../lib/discovery'
 import {
   describeSettings, getSettings, missingSettings, runPlugin, runPluginDetail,
-  runPluginMetrics, renderExposition, saveSettings, type PluginMetric,
+  runPluginMetrics, renderExposition, saveSettings, runPluginSearch, runPluginGrab,
+  type PluginMetric,
 } from '../lib/plugin-host'
 
 export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
@@ -55,6 +56,7 @@ export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
         return {
           ...p.manifest,
           hasDetail:  typeof p.detail === 'function',
+          hasSearch:  typeof p.search === 'function',
           settings:   await describeSettings(p.manifest),
           configured: missing.length === 0,
           missing,
@@ -103,6 +105,44 @@ export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
   // Live data for a card or a tile. A plug-in that cannot reach its device is a
   // normal state, not a server fault — 200 with ok:false, so the card can show
   // the reason instead of the page showing an error.
+  // Free-text search across every indexer a plug-in can reach. Read-only.
+  fastify.get<{ Params: { id: string }; Querystring: { q?: string } }>(
+    '/:id/search',
+    async (req, reply) => {
+      const plugin = findPlugin(req.params.id)
+      if (!plugin) return reply.status(404).send({ success: false, error: 'No such plug-in' })
+      const q = (req.query.q ?? '').trim()
+      if (!q) return { success: true, data: [] }
+      try {
+        const results = await runPluginSearch(plugin, q)
+        fastify.log.info({ plugin: plugin.manifest.id, q, results: results.length }, '[plugin] search')
+        return { success: true, data: results }
+      } catch (e: any) {
+        return reply.status(500).send({ success: false, error: e.message })
+      }
+    },
+  )
+
+  // Sending a release to a download client is the one write in this file, so it
+  // is a POST, it names what it grabbed in the log, and it never happens as a
+  // side effect of searching.
+  fastify.post<{ Params: { id: string }; Body: { guid: string; indexerId: number; title?: string } }>(
+    '/:id/grab',
+    async (req, reply) => {
+      const plugin = findPlugin(req.params.id)
+      if (!plugin) return reply.status(404).send({ success: false, error: 'No such plug-in' })
+      const { guid, indexerId, title } = req.body ?? ({} as any)
+      if (!guid) return reply.status(400).send({ success: false, error: 'No release given' })
+      try {
+        const message = await runPluginGrab(plugin, guid, Number(indexerId))
+        fastify.log.info({ plugin: plugin.manifest.id, title }, '[plugin] grab')
+        return { success: true, data: { message } }
+      } catch (e: any) {
+        return reply.status(500).send({ success: false, error: e.message })
+      }
+    },
+  )
+
   fastify.get<{ Params: { id: string } }>('/:id/detail', async (req, reply) => {
     const plugin = findPlugin(req.params.id)
     if (!plugin) return reply.status(404).send({ success: false, error: 'No such plug-in' })

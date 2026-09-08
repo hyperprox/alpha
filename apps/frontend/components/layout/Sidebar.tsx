@@ -20,6 +20,7 @@ const NAV = [
     section: 'WORKSPACE',
     items: [
       { href: '/terminal', label: 'Terminal',         icon: TerminalIcon     },
+      { href: '/search',   label: 'Search',       icon: SearchIcon   },
     ],
   },
   {
@@ -191,6 +192,15 @@ function PluginIcon() {
       <path d="M6 1.5v3M10 1.5v3" strokeLinecap="round" />
       <rect x="3.5" y="4.5" width="9" height="5" rx="1" />
       <path d="M8 9.5v3a2 2 0 0 0 2 2h1" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function SearchIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5}>
+      <circle cx="7" cy="7" r="4.5" />
+      <path d="M10.5 10.5L14 14" strokeLinecap="round" />
     </svg>
   )
 }

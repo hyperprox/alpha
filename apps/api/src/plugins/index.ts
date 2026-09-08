@@ -12,8 +12,10 @@ import { plexPlugin }        from './plex'
 import { unmanicPlugin }     from './unmanic'
 import { qbittorrentPlugin } from './qbittorrent'
 import { arrstackPlugin }    from './arrstack'
+import { prowlarrPlugin }    from './prowlarr'
 
 export const PLUGINS: Plugin[] = [
+  prowlarrPlugin,
   mikrotikPlugin,
   plexPlugin,
   arrstackPlugin,
