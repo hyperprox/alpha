@@ -8,6 +8,9 @@
 //  cannot run.
 // =============================================================================
 
+// zod/v4, not 'zod'. The repo is on zod 3.25, which ships v4 under this
+// subpath, and @anthropic-ai/sdk/helpers/zod is typed against v4 — importing
+// the classic entry point compiles everywhere except zodOutputFormat().
 import * as z from 'zod/v4'
 
 export const STEP_TYPES = [
