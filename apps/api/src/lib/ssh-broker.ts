@@ -183,11 +183,17 @@ export function connect(opts: ConnectOptions): Promise<ConnectResult> {
 
       if (!useTmux) return openShell(false)
 
+      // Any output at all used to count as "tmux is here", which is wrong twice
+      // over: a shell prints "not found" to stdout on some systems, and an
+      // appliance CLI answers an unknown command with a syntax error. Require a
+      // zero exit AND something that looks like a path to a binary named tmux.
       client.exec('command -v tmux', (err, probe) => {
         if (err) return openShell(false)
-        let found = false
-        probe.on('data', (d: Buffer) => { if (d.toString().trim()) found = true })
-        probe.on('close', () => openShell(found))
+        let out = ''
+        let exitCode: number | null = null
+        probe.on('data', (d: Buffer) => { out += d.toString() })
+        probe.on('exit', (code: number) => { exitCode = code })
+        probe.on('close', () => openShell(exitCode === 0 && /^\/\S*\/tmux\s*$/m.test(out)))
       })
     })
 

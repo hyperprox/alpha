@@ -48,6 +48,24 @@ export interface PluginEndpoint {
   insecureTLS?:   boolean
 }
 
+/**
+ * A device this plug-in can reach that also takes an interactive login.
+ *
+ * The address is not repeated here: it is the host in the plug-in's own base
+ * URL, so a router configured once is reachable in the terminal without being
+ * typed in twice and without the two drifting apart. Credentials deliberately
+ * are not shared — a plug-in is told to use a read-only account, and reusing
+ * that for a shell would either fail or quietly hand a browser more than the
+ * plug-in was given.
+ */
+export interface PluginConsole {
+  defaultPort: number
+  label?:      string
+  hint?:       string
+  /** Most appliances have no tmux, and probing for one wastes a round trip. */
+  tmux?:       boolean
+}
+
 export interface PluginManifest {
   id:          string
   name:        string
@@ -64,6 +82,8 @@ export interface PluginManifest {
   endpoints?:  PluginEndpoint[]
   /** Ignore TLS errors — routers and media servers routinely use self-signed certs. */
   insecureTLS?: boolean
+  /** Declared when the device also takes an interactive login. */
+  consoleAccess?: PluginConsole
 }
 
 export interface PluginContext {

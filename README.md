@@ -233,6 +233,23 @@ alongside the model's own.
 
 ---
 
+### Plug-in consoles
+
+A plug-in whose device also takes an interactive login declares
+`consoleAccess` in its manifest, and the device then appears in the Terminal
+host list under **From plug-ins** — no second address to type, and no way for
+the two to drift apart, because the address comes from the plug-in's own base
+URL.
+
+Credentials are deliberately *not* shared with the plug-in. A plug-in is told a
+read-only account is enough; reusing that for a shell would either fail or
+quietly hand a browser more access than the plug-in was granted. The console
+asks for its own login like any other host.
+
+Appliances declare `tmux: false`, because RouterOS and its kind answer SSH with
+their own CLI rather than a POSIX shell — there is nothing for tmux to run in,
+and probing for it only wastes a round trip on every connect.
+
 ### Bandwidth meters
 
 The dashboard's WAN and LAN dials come from whichever plug-in implements
@@ -323,7 +340,7 @@ Bundled today:
 
 | Plug-in | What it shows |
 |---|---|
-| **MikroTik** | Live throughput in and out of the internet connection, how many devices are on the network and which are awake, plus per-device and per-interface tables. Also feeds the dashboard's WAN and LAN meters. Read-only by intent. |
+| **MikroTik** | The whole router: identity, model, RouterOS and RouterBOARD firmware, CPU, memory, temperature and input voltage; per-device and per-interface throughput; port forwards, firewall counters, WireGuard peers, LLDP/CDP neighbours, listening services, accounts, DNS and the recent log. Feeds the dashboard's WAN and LAN meters, and offers an SSH console. Read-only by intent. |
 | **Plex activity** | Who is watching, what they are watching, what is transcoding and what it costs in bandwidth — read through Tautulli, which also supplies the history: recent plays, top watchers, most-watched titles. |
 
 Each plug-in's real output is shown on its gallery card, so you can see what it

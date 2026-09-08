@@ -17,7 +17,9 @@ interface TerminalHost {
   id: string; name: string; vmid: number; node: string
   type: 'lxc' | 'qemu' | 'manual'; status: string
   ip: string | null; port?: number; hasCredential: boolean
-  source: 'cluster' | 'manual'
+  source: 'cluster' | 'manual' | 'plugin'
+  tmux?: boolean
+  hint?: string
 }
 
 interface AttachInfo {
@@ -335,12 +337,17 @@ export default function TerminalPage() {
 
     const byGroup = new Map<string, TerminalHost[]>()
     for (const h of filtered) {
-      const k = h.source === 'manual' ? 'Added by hand' : h.node
+      // A plug-in host's node is the literal string 'plugin', which is not a
+      // heading anyone wants to read.
+      const k = h.source === 'manual' ? 'Added by hand'
+              : h.source === 'plugin' ? 'From plug-ins'
+              : h.node
       if (!byGroup.has(k)) byGroup.set(k, [])
       byGroup.get(k)!.push(h)
     }
+    const last = (k: string) => k === 'Added by hand' ? 2 : k === 'From plug-ins' ? 1 : 0
     return [...byGroup.entries()].sort((a, b) =>
-      a[0] === 'Added by hand' ? 1 : b[0] === 'Added by hand' ? -1 : a[0].localeCompare(b[0]))
+      last(a[0]) - last(b[0]) || a[0].localeCompare(b[0]))
   }, [hosts, query])
 
   const openIds = new Set(sessions.map(s => s.host.id))
@@ -413,7 +420,7 @@ export default function TerminalPage() {
                           </svg>
                         )}
                         <span className="flex-shrink-0 font-mono text-[10px] tabular-nums" style={{ color: '#1f2937' }}>
-                          {host.source === 'manual' ? 'ssh' : host.vmid}
+                          {host.source === 'cluster' ? host.vmid : 'ssh'}
                         </span>
                       </button>
                       {host.source === 'manual' && (
@@ -665,6 +672,7 @@ export default function TerminalPage() {
                 hostId={sess.host.id}
                 port={sess.port}
                 session={sess.tmux}
+                tmux={sess.host.tmux !== false}
                 attempt={sess.attempt}
                 onState={(state, detail) => patch(sess.key, { state, detail })}
                 onAttach={attach => patch(sess.key, { attach })}
