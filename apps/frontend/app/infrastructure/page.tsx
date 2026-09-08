@@ -803,17 +803,38 @@ export default function InfrastructurePage() {
                           <div className="h-full rounded-full transition-all duration-500" style={{width:`${cpuPct}%`,background:barColor(cpuPct)}}/>
                         </div>
                       </div>
-                      {vm.maxmem > 0 && (
-                        <div>
-                          <div className="flex justify-between text-xs font-mono mb-0.5">
-                            <span style={{color:'#374151'}}>MEM</span>
-                            <span style={{color:barColor(memPct)}}>{formatBytes(vm.mem)} / {formatBytes(vm.maxmem)}</span>
+                      {vm.maxmem > 0 && (() => {
+                        // For a VM, Proxmox reports what the guest has taken from
+                        // the host — which for any Linux guest includes its page
+                        // cache. That climbs to the ceiling and stays there on a
+                        // perfectly healthy machine, so colouring it red says
+                        // "out of memory" about something that is fine. A
+                        // container reports real cgroup usage and is coloured
+                        // normally.
+                        const isVM = vm.type === 'qemu'
+                        const memColor = isVM ? '#6b7280' : barColor(memPct)
+                        return (
+                          <div>
+                            <div className="flex justify-between text-xs font-mono mb-0.5">
+                              <span style={{color:'#374151'}}>
+                                MEM{isVM && <span style={{color:'#1f2937'}}> allocated</span>}
+                              </span>
+                              <span
+                                style={{color:memColor}}
+                                title={isVM
+                                  ? 'Memory the guest has taken from the host, which counts the guest\u2019s page cache. Linux fills spare RAM with cache and releases it on demand, so this sits near the ceiling on a healthy VM. Install the guest agent to see what is actually in use.'
+                                  : undefined}
+                              >
+                                {formatBytes(vm.mem)} / {formatBytes(vm.maxmem)}
+                              </span>
+                            </div>
+                            <div className="h-1 rounded-full overflow-hidden" style={{background:'#1f2937'}}>
+                              <div className="h-full rounded-full transition-all duration-500"
+                                style={{width:`${memPct}%`,background:memColor}}/>
+                            </div>
                           </div>
-                          <div className="h-1 rounded-full overflow-hidden" style={{background:'#1f2937'}}>
-                            <div className="h-full rounded-full transition-all duration-500" style={{width:`${memPct}%`,background:barColor(memPct)}}/>
-                          </div>
-                        </div>
-                      )}
+                        )
+                      })()}
                     </div>
                   )}
 
