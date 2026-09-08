@@ -101,9 +101,8 @@ export const gpuRoutes: FastifyPluginAsync = async (fastify) => {
     const gpu     = gpus[0]
     const port    = EXPORTER_PORTS[gpu.type]
 
-    const nodes   = await client.getNodes()
-
-    const nodeIp  = req.params.node
+    const addrs   = await nodeAddresses(client)
+    const nodeIp  = addrs[req.params.node] ?? req.params.node
     const reachable = await checkExporterReachable(nodeIp, port)
     return { reachable, gpus, port, install: reachable ? null : EXPORTER_INSTALL[gpu.type] }
   }))
@@ -111,13 +110,13 @@ export const gpuRoutes: FastifyPluginAsync = async (fastify) => {
   // GET /api/gpu/all/metrics-status — check all nodes
   fastify.get("/all/metrics-status", async (_, r) => wrap(r, async () => {
     const client  = await getProxmoxClient()
-    const nodes   = await client.getNodes()
+    const [nodes, addrs] = await Promise.all([client.getNodes(), nodeAddresses(client)])
     const results = await Promise.all(nodes.map(async (n: any) => {
       const gpus      = await detectNodeGPUs(n.node, client)
       if (!gpus.length) return { node: n.node, reachable: false, gpus: [], install: null }
       const gpu       = gpus[0]
       const port      = EXPORTER_PORTS[gpu.type]
-      const reachable = await checkExporterReachable(n.node, port)
+      const reachable = await checkExporterReachable(addrs[n.node] ?? n.node, port)
       return { node: n.node, reachable, gpus, port, install: reachable ? null : EXPORTER_INSTALL[gpu.type] }
     }))
     return results
@@ -173,6 +172,29 @@ const EXPORTER_INSTALL: Record<GPUType, { title: string; steps: string[] }> = {
   'unknown': {
     title: 'Unknown GPU Type',
     steps: [ 'GPU type could not be determined. Manual exporter setup required.' ]
+  }
+}
+
+/**
+ * Proxmox node name to the address it actually answers on.
+ *
+ * The exporter probe used to connect to the node *name*, which only works if
+ * the container happens to resolve it — and /etc/hosts is not consistent across
+ * this estate, so it worked for one node and silently failed for the rest. A
+ * failed TCP connect is indistinguishable from a missing exporter, so the
+ * dashboard told people to install exporters that were already running and
+ * scraping happily.
+ */
+async function nodeAddresses(client: any): Promise<Record<string, string>> {
+  try {
+    const status: any[] = await client.fetchNode('/cluster/status')
+    const map: Record<string, string> = {}
+    for (const row of status) {
+      if (row?.type === 'node' && row.name && row.ip) map[row.name] = row.ip
+    }
+    return map
+  } catch {
+    return {}
   }
 }
 

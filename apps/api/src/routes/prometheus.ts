@@ -6,6 +6,9 @@
 import { FastifyInstance } from 'fastify'
 import axios from 'axios'
 
+import { clusterPower }  from '../lib/power'
+import { ProxmoxClient } from '../lib/proxmox-client'
+
 const PROMETHEUS = process.env.PROMETHEUS_URL ?? `http://${process.env.HOST_IP ?? 'localhost'}:9090`
 
 export async function prometheusRoutes(fastify: FastifyInstance) {
@@ -36,6 +39,31 @@ export async function prometheusRoutes(fastify: FastifyInstance) {
   })
 
   // -------------------------------------------------------------------------
+  /**
+   * GET /api/prometheus/power — what the cluster is drawing, per node.
+   *
+   * Deliberately not a single sum: RAPL is absent on most CPUs here, and a
+   * bare total cannot distinguish a node drawing nothing from a node measuring
+   * nothing. The breakdown and the `silent` list are the point.
+   */
+  fastify.get('/api/prometheus/power', async (_req, reply) => {
+    try {
+      const pve = new ProxmoxClient(
+        process.env.PROXMOX_HOST!,
+        Number(process.env.PROXMOX_PORT ?? 8006),
+        `${process.env.PROXMOX_USER}!${process.env.PROXMOX_TOKEN_ID}`,
+        process.env.PROXMOX_TOKEN_SECRET!,
+      )
+      const names = await pve.getNodes()
+        .then(ns => ns.filter((n: any) => n.status === 'online').map((n: any) => n.node))
+        .catch(() => [] as string[])
+
+      return reply.send({ success: true, data: await clusterPower(names) })
+    } catch (e: any) {
+      return reply.status(500).send({ success: false, error: e.message })
+    }
+  })
+
   // GET /api/prometheus/query?q=<expr> — instant query
   // -------------------------------------------------------------------------
   fastify.get<{ Querystring: { q: string } }>('/api/prometheus/query', async (req, reply) => {

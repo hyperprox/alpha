@@ -28,6 +28,14 @@ interface BwLink {
   downCapacityBps?: number; upCapacityBps?: number
   source: string
 }
+interface NodePower {
+  node: string; cpu: number | null; gpu: number | null
+  total: number | null; source: 'rapl' | 'intel-gpu-exporter' | 'gpu-only' | 'none'
+}
+interface ClusterPower {
+  total: number; nodes: NodePower[]; silent: string[]
+  reporting: number; of: number; covers: string
+}
 interface BandwidthData { links: BwLink[]; unavailable: Array<{ plugin: string; reason: string }>; at: number }
 interface CephIOStats { read_bps: number; write_bps: number; read_ops: number; write_ops: number }
 interface NetworkData { nodes: NodeNetStats[]; ceph_io: CephIOStats|null; total_in: number; total_out: number }
@@ -62,7 +70,7 @@ function Panel({ title, accent = ACCENT, right, children, className = '' }: {
 }
 
 // Cluster summary
-function ClusterPanel({ cluster, nodes, vms, ceph, storage, power, stamp }: { cluster:ClusterTotals; nodes:PVENode[]; vms:PVEVM[]; ceph:CephStatus|null; storage?:any[]; power?:number|null; stamp:number|null }) {
+function ClusterPanel({ cluster, nodes, vms, ceph, storage, power, stamp }: { cluster:ClusterTotals; nodes:PVENode[]; vms:PVEVM[]; ceph:CephStatus|null; storage?:any[]; power?:ClusterPower|null; stamp:number|null }) {
   const running = vms.filter(v=>v.status==='running').length
   const online  = nodes.filter(n=>n.status==='online').length
   const cephPct = ceph?.pgmap ? pct(ceph.pgmap.bytes_used, ceph.pgmap.bytes_total) : 0
@@ -114,10 +122,22 @@ function ClusterPanel({ cluster, nodes, vms, ceph, storage, power, stamp }: { cl
           {label:'RUNNING', value:String(running),                             color:GOOD},
           {label:'STOPPED', value:String(vms.length-running),                  color:'#4b5563'},
           {label:'HA',      value:String(vms.filter(v=>v.hastate).length),     color:'#a78bfa'},
-          {label:'POWER',   value: power != null && power > 0 ? `${power}W` : '—',
-                            color: power == null || power <= 0 ? '#374151' : power > 200 ? CRIT : power > 100 ? WARN : GOOD},
-        ].map(({label,value,color})=>(
-          <div key={label} className="text-center py-2 rounded-lg" style={{background:'#070b12',border:`1px solid ${color}25`}}>
+          {label: power && power.silent.length ? `POWER ${power.reporting}/${power.of}` : 'POWER',
+           value: power && power.total > 0 ? `${power.total}W` : '—',
+           color: !power || power.total <= 0 ? '#374151' : power.silent.length ? WARN : GOOD,
+           title: power
+             ? [
+                 ...power.nodes.map(n => n.total === null
+                   ? `${n.node}: not instrumented`
+                   : `${n.node}: ${n.total.toFixed(1)} W` +
+                     (n.gpu ? ` (cpu ${n.cpu?.toFixed(1)} + gpu ${n.gpu.toFixed(1)})` : '') +
+                     ` · ${n.source}`),
+                 '',
+                 power.covers,
+               ].join('\n')
+             : 'Waiting for Prometheus.'},
+        ].map(({label,value,color,title}: any)=>(
+          <div key={label} title={title} className="text-center py-2 rounded-lg" style={{background:'#070b12',border:`1px solid ${color}25`}}>
             <div className="font-display text-lg font-bold" style={{color, fontVariantNumeric:'tabular-nums'}}>{value}</div>
             <div className="font-mono text-gray-600 mt-0.5" style={{fontSize:9}}>{label}</div>
           </div>
@@ -513,7 +533,7 @@ function BandwidthPanel({ data, stamp }: { data: BandwidthData | null; stamp: nu
 }
 
 // Node card
-function NodeCard({ node, vms, gpuInfo }: { node:PVENode; vms:PVEVM[]; gpuInfo?: NodeGPUStatus }) {
+function NodeCard({ node, vms, gpuInfo, power }: { node:PVENode; vms:PVEVM[]; gpuInfo?: NodeGPUStatus; power?: NodePower }) {
   const cpuPct=Math.round(node.cpu*100), memPct=pct(node.mem,node.maxmem), diskPct=pct(node.disk,node.maxdisk)
   const nodeVMs=vms.filter(v=>v.node===node.node), running=nodeVMs.filter(v=>v.status==='running').length
   const hasGpu = gpuInfo && gpuInfo.gpus.length > 0
@@ -541,10 +561,18 @@ function NodeCard({ node, vms, gpuInfo }: { node:PVENode; vms:PVEVM[]; gpuInfo?:
         <Speedometer value={memPct}  label="MEM"  size={76} caption={formatBytes(node.maxmem)}/>
         <Speedometer value={diskPct} label="DISK" size={76} caption={formatBytes(node.maxdisk)}/>
       </div>
-      <div className="flex gap-2 pt-1 border-t" style={{borderColor:'#111827'}}>
+      <div className="flex gap-2 pt-1 border-t items-center" style={{borderColor:'#111827'}}>
         <span className="text-xs font-mono" style={{color:accent}}>▶ {running} running</span>
         <span className="text-xs font-mono text-gray-600">■ {nodeVMs.length-running} stopped</span>
-        <span className="text-xs font-mono text-gray-600 ml-auto">{nodeVMs.length} total</span>
+        {power && (
+          <span className="text-xs font-mono ml-auto"
+            title={power.total === null
+              ? 'No power source on this node — no RAPL, and no exporter reporting a package figure.'
+              : `${power.source}${power.gpu ? ` · cpu ${power.cpu?.toFixed(1)} W + gpu ${power.gpu.toFixed(1)} W` : ''}`}
+            style={{color: power.total === null ? '#374151' : '#f59e0b'}}>
+            {power.total === null ? 'no meter' : `⚡ ${power.total.toFixed(0)}W`}
+          </span>
+        )}
       </div>
     </div>
   )
@@ -666,7 +694,7 @@ function HAPanel({ ha }: { ha:HAEntry[] }) {
 // Main dashboard
 export default function DashboardView() {
   const [fast, setFast]       = useState<FastData | null>(null)
-  const [clusterPower, setClusterPower] = useState<number | null>(null)
+  const [clusterPower, setClusterPower] = useState<ClusterPower | null>(null)
   const [bandwidth, setBandwidth] = useState<BandwidthData | null>(null)
   const [slow, setSlow]       = useState<SlowData | null>(null)
   const [lastSync, setLastSync] = useState<Date | null>(null)
@@ -687,10 +715,12 @@ export default function DashboardView() {
       const prometheus = await prometheusRes.json().catch(()=>({success:false}))
       const gpuStatus = await gpuStatusRes.json().catch(()=>({success:false}))
       const networkData = await networkRes.json().catch(()=>({success:false}))
-      // Fetch cluster power from Prometheus
-      fetch('/api/prometheus/query?q=sum(rate(node_rapl_package_joules_total%5B2m%5D))')
+      // Power is its own endpoint now. Summing RAPL in a query string only ever
+      // covered the nodes whose CPUs expose it — two of five here — and a bare
+      // sum cannot tell a node drawing nothing from one measuring nothing.
+      fetch('/api/prometheus/power')
         .then(r=>r.json())
-        .then(d=>{ if(d.success && d.data?.result?.[0]) setClusterPower(Math.round(parseFloat(d.data.result[0].value[1]))) })
+        .then(d=>{ if(d.success) setClusterPower(d.data) })
         .catch(()=>{})
 
       if (summary.success) {
@@ -813,7 +843,7 @@ export default function DashboardView() {
         <section>
           <h2 className="text-xs font-mono uppercase tracking-widest text-gray-600 mb-3">Cluster Nodes</h2>
           <div className="grid gap-4" style={{gridTemplateColumns:'repeat(auto-fill,minmax(250px,1fr))'}}>
-            {sorted.map(node=><NodeCard key={node.node} node={node} vms={fast.vms} gpuInfo={fast.gpuStatus?.find(g=>g.node===node.node)}/>)}
+            {sorted.map(node=><NodeCard key={node.node} node={node} vms={fast.vms} gpuInfo={fast.gpuStatus?.find(g=>g.node===node.node)} power={clusterPower?.nodes.find(p=>p.node===node.node)}/>)}
           </div>
         </section>
 
