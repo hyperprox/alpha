@@ -221,7 +221,7 @@ export default function SettingsPage() {
   const meta = CATEGORY_META[tab]
 
   return (
-    <div className="min-h-full p-6" style={{ background: '#080c14' }}>
+    <div className="min-h-full p-3 sm:p-6" style={{ background: '#080c14' }}>
 
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">

@@ -194,7 +194,7 @@ function CephPoolsTable({ pools }: { pools: CephPool[] | null }) {
 
   return (
     <div className="rounded-lg border overflow-hidden" style={{ borderColor: '#0f1929' }}>
-      <table className="w-full text-xs font-mono">
+      <div className="hp-table-scroll overflow-x-auto"><table className="w-full text-xs font-mono">
         <thead>
           <tr style={{ background: '#060a10', borderBottom: '1px solid #0f1929' }}>
             {['Pool', 'Type', 'Size', 'PGs', 'Used', 'Usage', 'Crush Rule'].map(h => (
@@ -229,7 +229,7 @@ function CephPoolsTable({ pools }: { pools: CephPool[] | null }) {
             )
           })}
         </tbody>
-      </table>
+      </table></div>
     </div>
   )
 }
@@ -368,7 +368,7 @@ export default function StoragePage() {
   )
 
   return (
-    <div className="min-h-full p-6" style={{ background: '#080c14' }}>
+    <div className="min-h-full p-3 sm:p-6" style={{ background: '#080c14' }}>
 
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
@@ -454,7 +454,7 @@ export default function StoragePage() {
               <span>{vmBreakdown.length} VMs &amp; Containers</span>
               <span style={{color:'#818cf8'}}>Total allocated: {formatBytes(vmBreakdown.reduce((s:number,v:any)=>s+(v.totalAllocated??0),0))}</span>
             </div>
-            <table className="w-full text-xs font-mono">
+            <div className="hp-table-scroll overflow-x-auto"><table className="w-full text-xs font-mono">
               <thead>
                 <tr style={{background:'#060a10',borderBottom:'1px solid #0f1929'}}>
                   {['ID','Name','Type','Node','Status','Storage','Allocated','Used'].map(h=>(
@@ -487,7 +487,7 @@ export default function StoragePage() {
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </table></div>
           </div>
         )
       )}
@@ -551,7 +551,7 @@ function VMStorageBreakdown({ items, storageColors }: {
       </div>
 
       <div className="rounded-lg border overflow-hidden" style={{borderColor:'#0f1929'}}>
-        <table className="w-full text-xs font-mono">
+        <div className="hp-table-scroll overflow-x-auto"><table className="w-full text-xs font-mono">
           <thead>
             <tr style={{background:'#060a10',borderBottom:'1px solid #0f1929'}}>
               {['ID','Name','Type','Node','Status','Storage Pools','Allocated'].map(h=>(
@@ -598,7 +598,7 @@ function VMStorageBreakdown({ items, storageColors }: {
               </tr>
             ))}
           </tbody>
-        </table>
+        </table></div>
       </div>
     </div>
   )

@@ -652,7 +652,7 @@ export default function ProxyPage() {
   )
 
   return (
-    <div className="min-h-full p-6" style={{ background: '#080c14' }}>
+    <div className="min-h-full p-3 sm:p-6" style={{ background: '#080c14' }}>
 
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
@@ -714,7 +714,7 @@ export default function ProxyPage() {
 
       {/* Table */}
       <div className="rounded-lg border overflow-hidden" style={{ borderColor: '#0f1929' }}>
-        <table className="w-full">
+        <div className="hp-table-scroll overflow-x-auto"><table className="w-full">
           <thead>
             <tr style={{ background: '#060a10', borderBottom: '1px solid #0f1929' }}>
               <th className="px-4 py-2 w-6" />
@@ -737,7 +737,7 @@ export default function ProxyPage() {
               </td></tr>
             )}
           </tbody>
-        </table>
+        </table></div>
       </div>
 
       {/* Modals */}

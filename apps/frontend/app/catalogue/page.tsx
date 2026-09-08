@@ -112,7 +112,7 @@ export default function CataloguePage() {
   )
 
   return (
-    <div className="min-h-full p-6" style={{ background: '#080c14' }}>
+    <div className="min-h-full p-3 sm:p-6" style={{ background: '#080c14' }}>
       <div className="flex items-center gap-3 mb-1">
         <div className="w-1 h-7 rounded" style={{ background: ACCENT, boxShadow: `0 0 10px ${ACCENT}` }} />
         <h1 className="font-display text-xl font-light tracking-[0.2em] uppercase" style={{ color: ACCENT }}>
