@@ -42,3 +42,7 @@ backups/
 # Bearer token for the plug-in metrics scrape — generated per install
 config/prometheus/secrets/*
 !config/prometheus/secrets/.gitkeep
+
+# TypeScript incremental build cache. Machine-specific, rewritten by every
+# build, and it embeds absolute paths from whoever built last.
+*.tsbuildinfo
