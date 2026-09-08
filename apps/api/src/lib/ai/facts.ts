@@ -10,6 +10,8 @@ import { ProxmoxClient } from '../proxmox-client'
 import { NPMClient } from '../npm-client'
 import { GoDaddyClient } from '../godaddy-client'
 import { getProviderCredentials } from '../credentials'
+import { nodeCredential } from '../node-exec'
+import { CATALOGUE } from '../catalogue'
 import type { ClusterFacts } from './plan-schema'
 
 // Higher is a better home for a container rootfs. Shared block storage first
@@ -94,5 +96,16 @@ export async function gatherFacts(): Promise<ClusterFacts> {
     proxyHosts: proxyR.status === 'fulfilled' ? proxyR.value : [],
     nextVmid:   nextidR.status === 'fulfilled' ? Number(nextidR.value) : 0,
     gateway:    process.env.PROXMOX_HOST ?? '',
+    capabilities: {
+      nodesWithLogin: (await Promise.all(
+        nodes.filter((n: any) => n.status === 'online').map(async (n: any) =>
+          (await nodeCredential(n.node).catch(() => null)) ? n.node : null),
+      )).filter(Boolean) as string[],
+      // A proxy host list can be empty on a perfectly working proxy, so this
+      // asks whether one is configured at all, not whether it is being used.
+      hasReverseProxy: Boolean(
+        (await getProviderCredentials('proxy', 'npm').catch(() => null))?.url),
+      installable: CATALOGUE.map(r => r.name),
+    },
   }
 }
