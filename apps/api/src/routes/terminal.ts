@@ -16,6 +16,8 @@ import {
   CREDENTIAL_CATEGORY, listManualHosts, saveManualHost, removeManualHost,
   saveHostAddress, listHostAddresses, type ManualHost,
 } from '../lib/terminal-hosts'
+import { PLUGINS }    from '../plugins'
+import { getSettings } from '../lib/plugin-host'
 
 function getClient() {
   return new ProxmoxClient(
@@ -37,7 +39,10 @@ export interface TerminalHost {
   ip:      string | null
   port?:   number
   hasCredential: boolean
-  source:  'cluster' | 'manual'
+  source:  'cluster' | 'manual' | 'plugin'
+  /** False for an appliance CLI, where probing for tmux wastes a round trip. */
+  tmux?:   boolean
+  hint?:   string
 }
 
 /** Pull an IPv4 out of an LXC netN line: name=eth0,...,ip=192.168.2.211/24,... */
@@ -117,7 +122,36 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
         source: 'manual',
       }))
 
-      return { success: true, data: [...hosts, ...manualHosts] }
+      // Devices a configured plug-in already knows how to reach. The address
+      // comes from the plug-in's own base URL, so a router set up once does not
+      // have to be typed in again here — and cannot drift out of step with it.
+      const pluginHosts: TerminalHost[] = []
+      for (const plugin of PLUGINS) {
+        const console_ = plugin.manifest.consoleAccess
+        if (!console_) continue
+        try {
+          const stored = await getSettings(plugin.manifest.id)
+          const base   = stored[plugin.manifest.baseUrlSetting]
+          if (!base) continue
+          const id = `plugin-${plugin.manifest.id}`
+          pluginHosts.push({
+            id,
+            name:   `${plugin.manifest.name}${console_.label ? ` — ${console_.label}` : ''}`,
+            vmid:   0,
+            node:   'plugin',
+            type:   'manual',
+            status: 'running',
+            ip:     addresses[id] ?? new URL(base).hostname,
+            port:   console_.defaultPort,
+            hasCredential: credIds.has(credentialId(id)) || shared,
+            source: 'plugin',
+            tmux:   console_.tmux !== false,
+            hint:   console_.hint,
+          })
+        } catch { /* an unparseable base URL just means no console offered */ }
+      }
+
+      return { success: true, data: [...hosts, ...manualHosts, ...pluginHosts] }
     } catch (e: any) {
       return reply.status(500).send({ success: false, error: e.message })
     }

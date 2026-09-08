@@ -142,6 +142,14 @@ export const mikrotikPlugin: Plugin = {
       { key: 'lan_mbps',      label: 'LAN link speed (Mbps)', type: 'text', required: false,
         hint: 'e.g. 1000 for gigabit, 10000 for a 10G trunk.' },
     ],
+    // RouterOS answers SSH with its own CLI, not a POSIX shell — no tmux, and
+    // nothing that would understand a probe for one.
+    consoleAccess: {
+      defaultPort: 22,
+      label: 'Router console',
+      tmux:  false,
+      hint:  'RouterOS CLI over SSH. Needs a user with the ssh policy — the read-only account this plug-in uses may not have it.',
+    },
   },
 
   async load(ctx: PluginContext): Promise<PluginTileData> {
@@ -253,7 +261,7 @@ export const mikrotikPlugin: Plugin = {
       return []
     }
 
-    const mbps = (raw?: string) => {
+    const capBps = (raw?: string) => {
       const n = Number(raw)
       return Number.isFinite(n) && n > 0 ? n * 1_000_000 : undefined
     }
@@ -267,8 +275,8 @@ export const mikrotikPlugin: Plugin = {
         id: 'wan', label: wan, kind: 'wan',
         downBps: Number(r?.['rx-bits-per-second'] ?? 0),
         upBps:   Number(r?.['tx-bits-per-second'] ?? 0),
-        downCapacityBps: mbps(ctx.option('wan_down_mbps')),
-        upCapacityBps:   mbps(ctx.option('wan_up_mbps')),
+        downCapacityBps: capBps(ctx.option('wan_down_mbps')),
+        upCapacityBps:   capBps(ctx.option('wan_up_mbps')),
       })
     }
 
@@ -277,7 +285,7 @@ export const mikrotikPlugin: Plugin = {
       // Direction is stated from the router's side, so a download arriving from
       // the internet leaves the router towards the LAN — the router's tx. Naming
       // that "down" is what makes the two meters agree with each other.
-      const cap = mbps(ctx.option('lan_mbps'))
+      const cap = capBps(ctx.option('lan_mbps'))
       links.push({
         id: 'lan', label: lan, kind: 'lan',
         downBps: Number(r?.['tx-bits-per-second'] ?? 0),
@@ -289,56 +297,83 @@ export const mikrotikPlugin: Plugin = {
     return links
   },
 
+  /**
+   * Everything the router knows, in one page.
+   *
+   * The tile answers "is anything happening". This answers "show me the
+   * router" — which on a border device means more than throughput: what it is,
+   * what it is forwarding, who it can see, what it has been logging, and
+   * whether anything is quietly out of date.
+   *
+   * Every call is individually caught. A router with no WireGuard, no DHCP
+   * server or a permission-limited user should lose that one table, not the
+   * whole page.
+   */
   async detail(ctx: PluginContext): Promise<PluginDetail> {
-    const [resource, arp, leases, ifaces, wan] = await Promise.all([
-      ctx.get('/rest/system/resource'),
-      ctx.get('/rest/ip/arp').catch(() => [] as any[]),
-      ctx.get('/rest/ip/dhcp-server/lease').catch(() => [] as any[]),
-      ctx.get('/rest/interface').catch(() => [] as any[]),
+    const opt = <T>(p: Promise<T>, fallback: T) => p.catch(() => fallback)
+    const list = (p: string) => opt(ctx.get(p), [] as any[]).then(v => Array.isArray(v) ? v : [])
+    const one  = (p: string) => opt(ctx.get(p), {} as any).then(v => Array.isArray(v) ? (v[0] ?? {}) : (v ?? {}))
+
+    const [
+      resource, identity, board, health, arp, leases, ifaces,
+      addresses, nat, filter, wgPeers, neighbors, services, users, dns, log, wan,
+    ] = await Promise.all([
+      one('/rest/system/resource'),
+      one('/rest/system/identity'),
+      one('/rest/system/routerboard'),
+      list('/rest/system/health'),
+      list('/rest/ip/arp'),
+      list('/rest/ip/dhcp-server/lease'),
+      list('/rest/interface'),
+      list('/rest/ip/address'),
+      list('/rest/ip/firewall/nat'),
+      list('/rest/ip/firewall/filter'),
+      list('/rest/interface/wireguard/peers'),
+      list('/rest/ip/neighbor'),
+      list('/rest/ip/service'),
+      list('/rest/user'),
+      one('/rest/ip/dns'),
+      list('/rest/log'),
       findWan(ctx, ctx.option('wan')),
     ])
 
-    const arpList: any[]   = Array.isArray(arp) ? arp : []
-    const leaseList: any[] = Array.isArray(leases) ? leases : []
-    const ifaceList: any[] = Array.isArray(ifaces) ? ifaces : []
-
     const namesByIp = new Map<string, string>()
-    for (const l of leaseList) {
+    for (const l of leases) {
       const n = l['host-name'] || l.comment
       if (l.address && n) namesByIp.set(l.address, n)
     }
     // A statically addressed host has no DHCP lease and would otherwise be
     // nameless — an ARP comment is the only other label the router holds.
-    for (const a of arpList) {
+    for (const a of arp) {
       if (a.address && a.comment && !namesByIp.has(a.address)) namesByIp.set(a.address, a.comment)
     }
-    const traffic = await perDevice(ctx, namesByIp)
+    const traffic = await opt(perDevice(ctx, namesByIp), [] as DeviceTraffic[])
 
     let down = 0, up = 0
     if (wan) {
       try {
         const t = await ctx.post('/rest/interface/monitor-traffic', { interface: wan, once: '' })
-        const one = Array.isArray(t) ? t[0] : t
-        down = Number(one?.['rx-bits-per-second'] ?? 0)
-        up   = Number(one?.['tx-bits-per-second'] ?? 0)
+        const r = Array.isArray(t) ? t[0] : t
+        down = Number(r?.['rx-bits-per-second'] ?? 0)
+        up   = Number(r?.['tx-bits-per-second'] ?? 0)
       } catch { /* the tables still stand without a live rate */ }
     }
 
     // A device is worth listing once, with everything known about it: the lease
     // knows its name, ARP knows whether it answered just now.
     const byMac = new Map<string, any>()
-    for (const l of leaseList) {
+    for (const l of leases) {
       if (!l['mac-address']) continue
       byMac.set(l['mac-address'].toUpperCase(), {
-        name:      l['host-name'] || l.comment || '—',
-        address:   l.address ?? '—',
-        mac:       l['mac-address'],
-        kind:      l.dynamic === 'true' ? 'dynamic' : 'static',
-        lastSeen:  l['last-seen'] ?? '—',
-        awake:     'no',
+        name:     l['host-name'] || l.comment || '—',
+        address:  l.address ?? '—',
+        mac:      l['mac-address'],
+        kind:     l.dynamic === 'true' ? 'dynamic' : 'static',
+        lastSeen: l['last-seen'] ?? '—',
+        awake:    'no',
       })
     }
-    for (const a of arpList) {
+    for (const a of arp) {
       if (a.complete !== 'true' || a.invalid === 'true' || !a['mac-address']) continue
       const key = a['mac-address'].toUpperCase()
       const existing = byMac.get(key)
@@ -352,21 +387,94 @@ export const mikrotikPlugin: Plugin = {
         })
       }
     }
-
     const devices = [...byMac.values()].sort((x, y) =>
       (y.awake === 'yes' ? 1 : 0) - (x.awake === 'yes' ? 1 : 0) || String(x.name).localeCompare(String(y.name)))
 
+    // Addresses belong beside the interface they are on, not in a table of
+    // their own that the reader has to cross-reference.
+    const addrByIface = new Map<string, string[]>()
+    for (const a of addresses) {
+      const key = a['actual-interface'] || a.interface
+      if (!key) continue
+      if (!addrByIface.has(key)) addrByIface.set(key, [])
+      addrByIface.get(key)!.push(a.address + (a.disabled === 'true' ? ' (disabled)' : ''))
+    }
+
+    const sensor = (name: string) => health.find(h => h.name === name)
+    const temp   = Number(sensor('cpu-temperature')?.value ?? 0)
+    const volts  = sensor('jack-voltage')?.value ?? sensor('poe-in-voltage')?.value
+    const poeW   = Number(sensor('poe-out-consumption')?.value ?? 0)
+
+    const memFree  = Number(resource['free-memory'] ?? 0)
+    const memTotal = Number(resource['total-memory'] ?? 0)
+    const memUsed  = memTotal - memFree
+    const memPct   = memTotal ? Math.round((memUsed / memTotal) * 100) : 0
+    const cpuLoad  = Number(resource['cpu-load'] ?? 0)
+
+    // The RouterBOARD firmware and RouterOS are versioned separately and drift
+    // apart silently — a router can run a current RouterOS on two-year-old
+    // bootloader firmware and nothing on the dashboard would ever say so.
+    const fwNow  = String(board['current-firmware'] ?? '')
+    const fwNext = String(board['upgrade-firmware'] ?? '')
+    const fwStale = Boolean(fwNow && fwNext && fwNow !== fwNext)
+
+    const stats: PluginDetail['stats'] = [
+      { label: 'Router',   value: String(identity.name ?? board.model ?? 'RouterOS') },
+      { label: 'Model',    value: String(board.model ?? resource['board-name'] ?? '—') },
+      { label: 'RouterOS', value: String(resource.version ?? '—').replace(/\s*\(stable\)/, '') },
+      { label: 'Firmware', value: fwStale ? `${fwNow} → ${fwNext}` : (fwNow || '—'),
+        tone: fwStale ? 'warn' : 'good' },
+      { label: 'Uptime',   value: humaniseUptime(String(resource.uptime ?? '')) },
+      { label: 'Download', value: `${mbps(down)} Mbps` },
+      { label: 'Upload',   value: `${mbps(up)} Mbps` },
+      { label: 'CPU',      value: `${cpuLoad}% of ${resource['cpu-count'] ?? '?'} cores`,
+        tone: cpuLoad > 80 ? 'bad' : cpuLoad > 50 ? 'warn' : 'good' },
+      { label: 'Memory',   value: `${memPct}% · ${bytes(memFree)} free`,
+        tone: memPct > 85 ? 'bad' : memPct > 70 ? 'warn' : 'good' },
+      ...(temp ? [{ label: 'Temperature', value: `${temp} °C`,
+        tone: (temp > 70 ? 'bad' : temp > 60 ? 'warn' : 'good') as 'bad' | 'warn' | 'good' }] : []),
+      ...(volts ? [{ label: 'Input', value: `${volts} V` }] : []),
+      ...(poeW ? [{ label: 'PoE draw', value: `${poeW} W` }] : []),
+      { label: 'Devices awake', value: String(devices.filter(d => d.awake === 'yes').length) },
+      { label: 'Known devices', value: String(devices.length) },
+    ]
+
+    const forwards = nat
+      .filter(n => n.action === 'dst-nat')
+      .map(n => ({
+        comment: n.comment || '—',
+        proto:   n.protocol ?? 'any',
+        port:    n['dst-port'] ?? n['dst-address'] ?? 'any',
+        to:      `${n['to-addresses'] ?? '—'}${n['to-ports'] ? ':' + n['to-ports'] : ''}`,
+        iface:   n['in-interface'] ?? n['in-interface-list'] ?? 'any',
+        state:   n.disabled === 'true' ? 'disabled' : 'active',
+        hits:    bytes(n.bytes),
+      }))
+      .sort((a, b) => (a.state === 'active' ? 0 : 1) - (b.state === 'active' ? 0 : 1))
+
+    // The management services someone configured, and only those. RouterOS also
+    // reports its own internal listeners as dynamic entries — resolver, upnp,
+    // detnet, one per interface — and eleven rows of those bury the one line
+    // that matters, which is whether SSH or Winbox is reachable from anywhere.
+    const openServices = services
+      .filter(s => s.disabled !== 'true' && s.dynamic !== 'true')
+      .map(s => ({
+        name:  s.name ?? '—',
+        port:  s.port ?? '—',
+        proto: s.proto ?? '—',
+        from:  s.address || 'anywhere',
+        note:  s.address ? 'restricted' : 'reachable from any source',
+      }))
+      .sort((a, b) => (a.note === 'restricted' ? 1 : 0) - (b.note === 'restricted' ? 1 : 0))
+
+    // Newest first, and errors/warnings ahead of chatter — a log table sorted
+    // by time alone buries the one line that mattered under DHCP renewals.
+    const interesting = (l: any) => /error|warn|critical|denied|failed|login/i.test(String(l.topics ?? '') + String(l.message ?? ''))
+    const logRows = [...log].reverse()
+    const recent  = [...logRows.filter(interesting).slice(0, 15), ...logRows.filter(l => !interesting(l)).slice(0, 25)]
 
     return {
-      stats: [
-        { label: 'Download',      value: `${mbps(down)} Mbps` },
-        { label: 'Upload',        value: `${mbps(up)} Mbps` },
-        { label: 'Devices awake', value: String(devices.filter(d => d.awake === 'yes').length) },
-        { label: 'Known devices', value: String(devices.length) },
-        { label: 'CPU',           value: `${resource['cpu-load'] ?? 0}%`,
-          tone: Number(resource['cpu-load'] ?? 0) > 80 ? 'bad' : 'good' },
-        { label: 'Uptime',        value: humaniseUptime(String(resource.uptime ?? '')) },
-      ],
+      stats,
       tables: [
         {
           title: 'Bandwidth by device',
@@ -380,24 +488,21 @@ export const mikrotikPlugin: Plugin = {
             { key: 'conns', label: 'Conns', align: 'right' },
           ],
           rows: traffic.slice(0, 40).map(t => ({
-            name:  t.name,
-            ip:    t.ip,
-            down:  `${mbps(t.down)} Mbps`,
-            up:    `${mbps(t.up)} Mbps`,
-            data:  bytes(t.bytes),
-            conns: t.conns,
+            name: t.name, ip: t.ip,
+            down: `${mbps(t.down)} Mbps`, up: `${mbps(t.up)} Mbps`,
+            data: bytes(t.bytes), conns: t.conns,
           })),
         },
         {
           title: 'Devices',
           empty: 'No devices found — the router returned neither ARP entries nor DHCP leases.',
           columns: [
-            { key: 'awake',    label: 'Awake' },
-            { key: 'name',     label: 'Name' },
-            { key: 'address',  label: 'Address' },
-            { key: 'mac',      label: 'MAC' },
-            { key: 'iface',    label: 'Interface' },
-            { key: 'kind',     label: 'Lease' },
+            { key: 'awake',   label: 'Awake' },
+            { key: 'name',    label: 'Name' },
+            { key: 'address', label: 'Address' },
+            { key: 'mac',     label: 'MAC' },
+            { key: 'iface',   label: 'Interface' },
+            { key: 'kind',    label: 'Lease' },
           ],
           rows: devices.map(d => ({ ...d, iface: d.iface ?? '—' })),
         },
@@ -408,16 +513,156 @@ export const mikrotikPlugin: Plugin = {
             { key: 'name',    label: 'Name' },
             { key: 'type',    label: 'Type' },
             { key: 'running', label: 'Running' },
+            { key: 'addr',    label: 'Addresses' },
             { key: 'rx',      label: 'Received',    align: 'right' },
             { key: 'tx',      label: 'Transmitted', align: 'right' },
           ],
-          rows: ifaceList.map(i => ({
-            name:    i.name ?? '—',
-            type:    i.type ?? '—',
-            running: i.running === 'true' ? 'yes' : 'no',
-            rx:      bytes(i['rx-byte']),
-            tx:      bytes(i['tx-byte']),
+          rows: ifaces
+            .slice()
+            .sort((a, b) => (b.running === 'true' ? 1 : 0) - (a.running === 'true' ? 1 : 0))
+            .map(i => ({
+              name:    i.name === wan ? `${i.name} (WAN)` : i.name ?? '—',
+              type:    i.type ?? '—',
+              running: i.running === 'true' ? 'yes' : 'no',
+              addr:    (addrByIface.get(i.name) ?? []).join(', ') || '—',
+              rx:      bytes(i['rx-byte']),
+              tx:      bytes(i['tx-byte']),
+            })),
+        },
+        {
+          title: `Port forwards (${forwards.filter(f => f.state === 'active').length} active)`,
+          empty: 'No destination NAT rules — nothing is published from the internet.',
+          columns: [
+            { key: 'comment', label: 'Rule' },
+            { key: 'proto',   label: 'Proto' },
+            { key: 'port',    label: 'Public port' },
+            { key: 'to',      label: 'Forwards to' },
+            { key: 'iface',   label: 'On' },
+            { key: 'state',   label: 'State' },
+            { key: 'hits',    label: 'Traffic', align: 'right' },
+          ],
+          rows: forwards,
+        },
+        {
+          title: 'WireGuard peers',
+          empty: 'No WireGuard peers configured.',
+          columns: [
+            { key: 'name',      label: 'Peer' },
+            { key: 'iface',     label: 'Interface' },
+            { key: 'allowed',   label: 'Allowed' },
+            { key: 'endpoint',  label: 'Endpoint' },
+            { key: 'handshake', label: 'Last handshake' },
+            { key: 'rx',        label: 'Received',    align: 'right' },
+            { key: 'tx',        label: 'Transmitted', align: 'right' },
+          ],
+          rows: wgPeers.map(p => ({
+            name:      p.comment || p.name || '—',
+            iface:     p.interface ?? '—',
+            allowed:   p['allowed-address'] ?? '—',
+            endpoint:  p['current-endpoint-address']
+              ? `${p['current-endpoint-address']}:${p['current-endpoint-port'] ?? ''}`
+              : (p['endpoint-address'] || '—'),
+            handshake: p['last-handshake'] ?? 'never',
+            rx:        bytes(p.rx),
+            tx:        bytes(p.tx),
           })),
+        },
+        {
+          title: 'Neighbours',
+          empty: 'Nothing discovered by LLDP, CDP or MNDP.',
+          columns: [
+            { key: 'identity', label: 'Identity' },
+            { key: 'address',  label: 'Address' },
+            { key: 'iface',    label: 'Seen on' },
+            { key: 'platform', label: 'Platform' },
+            { key: 'via',      label: 'Via' },
+            { key: 'age',      label: 'Age', align: 'right' },
+          ],
+          rows: neighbors.map(n => ({
+            identity: n.identity || n['mac-address'] || '—',
+            address:  n.address || n.address4 || n['mac-address'] || '—',
+            iface:    n.interface ?? '—',
+            platform: [n.platform, n.board].filter(Boolean).join(' ') || '—',
+            via:      n['discovered-by'] ?? '—',
+            age:      n.age ?? '—',
+          })),
+        },
+        {
+          title: 'Services listening',
+          empty: 'Every management service is disabled.',
+          columns: [
+            { key: 'name',  label: 'Service' },
+            { key: 'proto', label: 'Proto' },
+            { key: 'port',  label: 'Port' },
+            { key: 'from',  label: 'Allowed from' },
+            { key: 'note',  label: 'Exposure' },
+          ],
+          rows: openServices,
+        },
+        {
+          title: 'Firewall',
+          empty: 'No filter rules.',
+          columns: [
+            { key: 'chain',   label: 'Chain' },
+            { key: 'action',  label: 'Action' },
+            { key: 'comment', label: 'Comment' },
+            { key: 'packets', label: 'Packets', align: 'right' },
+            { key: 'bytes',   label: 'Bytes',   align: 'right' },
+          ],
+          rows: filter.map(f => ({
+            chain:   f.chain ?? '—',
+            action:  f.disabled === 'true' ? `${f.action} (disabled)` : f.action ?? '—',
+            comment: f.comment || '—',
+            packets: Number(f.packets ?? 0).toLocaleString(),
+            bytes:   bytes(f.bytes),
+          })),
+        },
+        {
+          title: 'Recent log',
+          empty: 'The log is empty.',
+          columns: [
+            { key: 'time',    label: 'Time' },
+            { key: 'topics',  label: 'Topics' },
+            { key: 'message', label: 'Message' },
+          ],
+          rows: recent.map(l => ({
+            time:    l.time ?? '—',
+            topics:  l.topics ?? '—',
+            message: String(l.message ?? '').trim() || '—',
+          })),
+        },
+        {
+          title: 'Accounts',
+          empty: 'No local users.',
+          columns: [
+            { key: 'name',   label: 'User' },
+            { key: 'group',  label: 'Group' },
+            { key: 'from',   label: 'Allowed from' },
+            { key: 'last',   label: 'Last login' },
+            { key: 'state',  label: 'State' },
+          ],
+          rows: users.map(u => ({
+            name:  u.name ?? '—',
+            group: u.group ?? '—',
+            from:  u.address || 'anywhere',
+            last:  u['last-logged-in'] ?? 'never',
+            state: u.disabled === 'true' ? 'disabled' : 'enabled',
+          })),
+        },
+        {
+          title: 'DNS',
+          empty: 'No DNS configuration returned.',
+          columns: [
+            { key: 'setting', label: 'Setting' },
+            { key: 'value',   label: 'Value' },
+          ],
+          rows: [
+            { setting: 'Upstream servers', value: String(dns.servers || '—') },
+            { setting: 'Dynamic servers',  value: String(dns['dynamic-servers'] || '—') },
+            { setting: 'Allow remote requests', value: String(dns['allow-remote-requests'] ?? '—') },
+            { setting: 'Cache', value: `${dns['cache-used'] ?? '?'} of ${dns['cache-size'] ?? '?'} KiB used` },
+            { setting: 'DoH server', value: String(dns['use-doh-server'] || 'not configured') },
+          ],
         },
       ],
     }

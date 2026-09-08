@@ -13,6 +13,8 @@ import { connect, loadCredential } from '../lib/ssh-broker'
 interface TermQuery {
   host?:  string
   port?:  string
+  /** '0' for a device with no shell to run tmux in — an appliance CLI. */
+  tmux?:  string
   id?:    string
   cols?:  string
   rows?:  string
@@ -60,7 +62,7 @@ export const terminalWsRoutes: FastifyPluginAsync = async (fastify) => {
     const started = Date.now()
     let result
     try {
-      result = await connect({ host, port, cred, cols, rows, session: q.session })
+      result = await connect({ host, port, cred, cols, rows, session: q.session, useTmux: q.tmux !== '0' })
     } catch (e: any) {
       fastify.log.warn({ host, port, user: cred.username, err: e.message }, '[terminal] connect failed')
       return bail(e.message)

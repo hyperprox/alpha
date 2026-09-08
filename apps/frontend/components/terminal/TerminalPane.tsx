@@ -21,6 +21,9 @@ export interface TerminalPaneProps {
   /** tmux session on the host. Distinct per pane, so two panes on one host do
       not attach to the same session and mirror each other. */
   session:  string
+  /** False for an appliance CLI — RouterOS and friends have no shell to host
+      tmux, and probing for one only wastes a round trip on every connect. */
+  tmux?:    boolean
   /** Bumping this remounts the session — used by Reconnect. */
   attempt:  number
   onState:  (s: PaneState, detail?: string) => void
@@ -61,7 +64,7 @@ async function fontReady(): Promise<void> {
   } catch { /* a font that never loads must not block the terminal */ }
 }
 
-export function TerminalPane({ host, hostId, port, session, attempt, onState, onAttach }: TerminalPaneProps) {
+export function TerminalPane({ host, hostId, port, session, tmux = true, attempt, onState, onAttach }: TerminalPaneProps) {
   const mountRef = useRef<HTMLDivElement>(null)
   const [fatal, setFatal] = useState<string | null>(null)
 
@@ -117,7 +120,7 @@ export function TerminalPane({ host, hostId, port, session, attempt, onState, on
       onStateRef.current('connecting')
 
       const params = new URLSearchParams({
-        host, id: hostId, port: String(port), session,
+        host, id: hostId, port: String(port), session, tmux: tmux ? '1' : '0',
         cols: String(term.cols), rows: String(term.rows),
       })
       socket = new WebSocket(`${wsBase()}/terminal/term?${params}`)
