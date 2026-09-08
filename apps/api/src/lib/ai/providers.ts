@@ -157,8 +157,10 @@ async function ollamaPlan(userText: string): Promise<Plan> {
 export async function activeProvider(): Promise<ProviderId> {
   const stored = await cred('system', 'provider')
   if (stored === 'anthropic' || stored === 'openai' || stored === 'ollama') return stored
-  // Whatever is configured, preferring the local one — it costs nothing.
-  if (await cred('ollama', 'url')) return 'ollama'
+  // Whatever is configured, preferring the local one — it costs nothing. But an
+  // address is only a preference if something answers at it.
+  const ollamaAddr = (await cred('ollama', 'url')) || process.env.OLLAMA_URL || ''
+  if (ollamaAddr && await ollamaReachable(ollamaAddr)) return 'ollama'
   if (await cred('anthropic', 'api_key')) return 'anthropic'
   if (await cred('openai', 'api_key')) return 'openai'
   return 'ollama'
@@ -175,12 +177,35 @@ export async function generatePlan(userText: string, provider?: ProviderId): Pro
   return ollamaPlan(userText)
 }
 
+/**
+ * A stored address is not a working one.
+ *
+ * For the cloud providers "configured" can only mean "a key is present" — the
+ * alternative is spending money to render a dropdown. Ollama is different: it
+ * is free to ask, and an address left behind by a server that no longer exists
+ * would otherwise report itself as configured forever, disagreeing with the
+ * connection status the rest of the app shows.
+ */
+async function ollamaReachable(url: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${url.replace(/\/+$/, '')}/api/tags`, {
+      signal: AbortSignal.timeout(2500),
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
 export async function listProviders(): Promise<ProviderInfo[]> {
   const [ollamaUrl, ollamaModel, anthKey, anthModel, oaKey, oaModel, oaBase] = await Promise.all([
     cred('ollama', 'url'), cred('ollama', 'model'),
     cred('anthropic', 'api_key'), cred('anthropic', 'model'),
     cred('openai', 'api_key'), cred('openai', 'model'), cred('openai', 'base_url'),
   ])
+
+  const ollamaAddr = ollamaUrl || process.env.OLLAMA_URL || ''
+  const ollamaUp   = ollamaAddr ? await ollamaReachable(ollamaAddr) : false
 
   return [
     {
@@ -199,9 +224,11 @@ export async function listProviders(): Promise<ProviderInfo[]> {
     },
     {
       id: 'ollama', name: 'Ollama', kind: 'local',
-      configured: Boolean(ollamaUrl || process.env.OLLAMA_URL),
+      configured: ollamaUp,
       model: ollamaModel || process.env.OLLAMA_MODEL || 'llama3.2:3b',
-      missing: (ollamaUrl || process.env.OLLAMA_URL) ? [] : ['server address'],
+      missing: ollamaAddr
+        ? (ollamaUp ? [] : ['a reachable server — ' + ollamaAddr + ' does not answer'])
+        : ['server address'],
       note: 'Free and private. Small models produce weaker plans — the output is validated before you see it.',
     },
   ]
