@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { wsBase } from '@/lib/ws'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -39,6 +40,18 @@ interface OllamaStatus {
   url:       string | null
   models:    Array<{ name: string; size: number }>
   error?:    string
+}
+
+type ProviderId = 'anthropic' | 'openai' | 'ollama'
+
+interface ProviderInfo {
+  id:         ProviderId
+  name:       string
+  kind:       'local' | 'cloud'
+  configured: boolean
+  model:      string
+  missing:    string[]
+  note:       string
 }
 
 interface WizardStep {
@@ -389,28 +402,83 @@ export default function AIPage() {
   const [planErr,     setPlanErr]     = useState<string | null>(null)
   const [executing,   setExecuting]   = useState(false)
   const [activeModel, setActiveModel] = useState<string>('llama3.2:3b')
+  const [providers,   setProviders]   = useState<ProviderInfo[]>([])
+  const [activeProv,  setActiveProv]  = useState<ProviderId>('ollama')
+  const [provDraft,   setProvDraft]   = useState<Record<string, Record<string, string>>>({})
+  const [provBusy,    setProvBusy]    = useState<string | null>(null)
+  const [provResult,  setProvResult]  = useState<Record<string, string>>({})
   const [messages,    setMessages]    = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([])
   const [liveJob,     setLiveJob]     = useState<JobProgress | null>(null)
   const chatRef = useRef<HTMLDivElement>(null)
   const wsRef   = useRef<WebSocket | null>(null)
 
   const fetchAll = useCallback(async () => {
-    const [statusRes, catalogRes] = await Promise.all([
+    const [statusRes, catalogRes, provRes] = await Promise.all([
       fetch('/api/ai/status'),
       fetch('/api/ai/catalog'),
+      fetch('/api/ai/providers'),
     ])
-    const [s, c] = await Promise.all([statusRes.json(), catalogRes.json()])
+    const [s, c, pr] = await Promise.all([statusRes.json(), catalogRes.json(), provRes.json()])
     setStatus(s)
     if (c.ok) setCatalog(c)
+    if (pr.ok) { setProviders(pr.providers); setActiveProv(pr.active) }
     setLoading(false)
   }, [])
+
+  // Which provider is selected, and whether it can actually be used. Ollama is
+  // "configured" as soon as an address is stored, but it is only usable once
+  // that address answers — hence the two different checks.
+  const activeInfo     = providers.find(p => p.id === activeProv) ?? null
+  const providerReady  = activeProv === 'ollama'
+    ? Boolean(status?.connected)
+    : Boolean(activeInfo?.configured)
+
+  const selectProvider = async (id: ProviderId) => {
+    setActiveProv(id)
+    await fetch('/api/ai/provider/select', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: id }),
+    })
+  }
+
+  const saveProvider = async (id: ProviderId) => {
+    const draft = provDraft[id] ?? {}
+    if (!Object.keys(draft).length) return
+    setProvBusy(id)
+    setProvResult(r => ({ ...r, [id]: '' }))
+    const res  = await fetch(`/api/ai/provider/${id}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(draft),
+    })
+    const data = await res.json()
+    setProvBusy(null)
+    setProvDraft(d => ({ ...d, [id]: {} }))
+    setProvResult(r => ({ ...r, [id]: data.ok ? 'saved' : `✗ ${data.error}` }))
+    await fetchAll()
+  }
+
+  const testProvider = async (id: ProviderId) => {
+    setProvBusy(id)
+    setProvResult(r => ({ ...r, [id]: 'planning a test deployment…' }))
+    const res  = await fetch('/api/ai/provider/test', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: id }),
+    })
+    const data = await res.json()
+    setProvBusy(null)
+    setProvResult(r => ({
+      ...r,
+      [id]: data.ok
+        ? `✓ ${data.sample.steps}-step plan in ${(data.ms / 1000).toFixed(1)}s`
+        : `✗ ${data.error}`,
+    }))
+  }
 
   useEffect(() => { fetchAll() }, [fetchAll])
 
   // WebSocket — listen for wizard_progress events
   useEffect(() => {
-    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    const ws    = new WebSocket(`${proto}://${window.location.hostname}:3002/ws`)
+    const ws = new WebSocket(wsBase())
     wsRef.current = ws
 
     ws.onmessage = (evt) => {
@@ -477,7 +545,11 @@ export default function AIPage() {
     const res  = await fetch('/api/ai/wizard/plan', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ prompt: userMsg, model: activeModel }),
+      // The model override only means anything for Ollama, where the dropdown
+      // lists what is installed. Cloud models are set once, in Settings.
+      body:    JSON.stringify(activeProv === 'ollama'
+        ? { prompt: userMsg, provider: activeProv, model: activeModel }
+        : { prompt: userMsg, provider: activeProv }),
     })
     const data = await res.json()
     setPlanning(false)
@@ -486,8 +558,14 @@ export default function AIPage() {
       setPlan(data.plan)
       setMessages(m => [...m, {
         role:    'assistant',
-        content: `Got it — here's my plan to deploy ${data.plan.service} at ${data.plan.domain}. Review the steps below and confirm to execute.`,
+        content: data.plan.domain
+          ? `Got it — here's my plan to deploy ${data.plan.service} at ${data.plan.domain}. Review the steps below and confirm to execute.`
+          : `Here's my plan to deploy ${data.plan.service}. Read the warnings first — it is not ready to run as written.`,
       }])
+    } else if (data.ok && data.conversational) {
+      // Not every prompt is a deployment. Say what came back rather than
+      // reporting a failure that did not happen.
+      setMessages(m => [...m, { role: 'assistant', content: data.message }])
     } else {
       const err = data.error ?? 'Failed to generate plan'
       setPlanErr(err)
@@ -511,13 +589,21 @@ export default function AIPage() {
       setMessages([])
       // liveJob will populate via WebSocket
       // Seed it immediately so the UI switches right away
-      setLiveJob({
+      const seedJob = {
         jobId:       data.jobId,
-        status:      'queued',
+        status:      'queued' as const,
         currentStep: 0,
         totalSteps:  plan.steps.length,
         steps:       plan.steps.map(s => ({ ...s, status: 'pending' as const })),
-      })
+      }
+      setLiveJob(seedJob)
+      // REST polling fallback in case WS misses events
+      const pollId = setInterval(async () => {
+        const r = await fetch(`/api/ai/wizard/jobs/${data.jobId}`)
+        const j = await r.json()
+        if (j.ok) setLiveJob(j)
+        if (j.status === 'completed' || j.status === 'failed') clearInterval(pollId)
+      }, 2000)
     }
   }
 
@@ -538,16 +624,16 @@ export default function AIPage() {
               AI Assistant
             </h1>
             <div style={{ fontSize: 11, color: '#4b5563', ...mono }}>
-              {status?.connected
-                ? `connected · ${status.models.length} model${status.models.length !== 1 ? 's' : ''} installed`
-                : 'not connected — configure Ollama below'}
+              {providerReady
+                ? `${activeInfo?.name ?? 'provider'} · ${activeInfo?.model ?? ''}`
+                : `${activeInfo?.name ?? 'no provider'} not ready — configure it in Settings`}
             </div>
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <div style={{ width: 8, height: 8, borderRadius: '50%', background: status?.connected ? '#22c55e' : '#ef4444', boxShadow: status?.connected ? '0 0 6px #22c55e' : 'none' }} />
-          <span style={{ fontSize: 11, color: status?.connected ? '#22c55e' : '#ef4444', ...mono }}>
-            {status?.connected ? 'ONLINE' : 'OFFLINE'}
+          <div style={{ width: 8, height: 8, borderRadius: '50%', background: providerReady ? '#22c55e' : '#ef4444', boxShadow: providerReady ? '0 0 6px #22c55e' : 'none' }} />
+          <span style={{ fontSize: 11, color: providerReady ? '#22c55e' : '#ef4444', ...mono }}>
+            {providerReady ? 'READY' : 'NOT READY'}
           </span>
         </div>
       </div>
@@ -577,13 +663,17 @@ export default function AIPage() {
             />
           ) : (
             <div style={{ maxWidth: 760, margin: '0 auto' }}>
-              {!status?.connected && (
+              {!providerReady && (
                 <div style={{ background: `${ACCENT}10`, border: `1px solid ${ACCENT}25`, borderRadius: 10, padding: '1rem', marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: 12 }}>
                   <span style={{ fontSize: 20 }}>⚡</span>
                   <div>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: ACCENT, marginBottom: 2 }}>Ollama not connected</div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: ACCENT, marginBottom: 2 }}>
+                      {activeInfo?.name ?? 'No AI provider'} is not ready
+                    </div>
                     <div style={{ fontSize: 12, color: '#6b7280' }}>
-                      Connect an Ollama instance in the{' '}
+                      {activeInfo?.missing?.length
+                        ? `Add its ${activeInfo.missing.join(' and ')} in the `
+                        : 'Finish configuring it in the '}
                       <button onClick={() => setTab('settings')} style={{ color: ACCENT, background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, textDecoration: 'underline' }}>
                         Settings tab
                       </button>
@@ -660,19 +750,33 @@ export default function AIPage() {
                 </div>
               )}
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                <span style={{ fontSize: 11, color: '#4b5563', ...mono, whiteSpace: 'nowrap' }}>Model:</span>
-                <select value={activeModel} onChange={e => { setActiveModel(e.target.value); fetch('/api/ai/model/select', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: e.target.value }) }) }}
-                  style={{ flex: 1, padding: '5px 10px', borderRadius: 6, background: '#0d1220', border: '1px solid #1a2035', color: '#e2e8f0', fontSize: 12, ...mono, outline: 'none', cursor: 'pointer' }}>
-                  {(status?.models ?? []).map((m: any) => (<option key={m.name} value={m.name}>{m.name}</option>))}
+                <span style={{ fontSize: 11, color: '#4b5563', ...mono, whiteSpace: 'nowrap' }}>Provider:</span>
+                <select value={activeProv} onChange={e => selectProvider(e.target.value as ProviderId)}
+                  style={{ padding: '5px 10px', borderRadius: 6, background: '#0d1220', border: '1px solid #1a2035', color: '#e2e8f0', fontSize: 12, ...mono, outline: 'none', cursor: 'pointer' }}>
+                  {providers.map(p => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}{p.configured ? '' : ' — not configured'}
+                    </option>
+                  ))}
                 </select>
+                {activeProv === 'ollama' ? (
+                  <select value={activeModel} onChange={e => { setActiveModel(e.target.value); fetch('/api/ai/model/select', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: e.target.value }) }) }}
+                    style={{ flex: 1, padding: '5px 10px', borderRadius: 6, background: '#0d1220', border: '1px solid #1a2035', color: '#e2e8f0', fontSize: 12, ...mono, outline: 'none', cursor: 'pointer' }}>
+                    {(status?.models ?? []).map((m: any) => (<option key={m.name} value={m.name}>{m.name}</option>))}
+                  </select>
+                ) : (
+                  <span style={{ flex: 1, fontSize: 11, color: '#4b5563', ...mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {activeInfo?.model}
+                  </span>
+                )}
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
                 <input value={prompt} onChange={e => setPrompt(e.target.value)} onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleWizardSubmit()}
                   placeholder='Deploy Nextcloud at cloud.mydomain.com...'
-                  disabled={!status?.connected || planning}
-                  style={{ flex: 1, padding: '10px 14px', borderRadius: 8, background: CARD, border: `1px solid ${BORDER}`, color: '#e2e8f0', fontSize: 13, outline: 'none', ...mono, opacity: (!status?.connected || planning) ? 0.5 : 1 }} />
-                <button onClick={handleWizardSubmit} disabled={!prompt.trim() || !status?.connected || planning}
-                  style={{ padding: '10px 18px', borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: (!prompt.trim() || !status?.connected || planning) ? 'default' : 'pointer', ...mono, background: `${ACCENT}15`, color: ACCENT, border: `1px solid ${ACCENT}30`, opacity: (!prompt.trim() || !status?.connected || planning) ? 0.4 : 1 }}>
+                  disabled={!providerReady || planning}
+                  style={{ flex: 1, padding: '10px 14px', borderRadius: 8, background: CARD, border: `1px solid ${BORDER}`, color: '#e2e8f0', fontSize: 13, outline: 'none', ...mono, opacity: (!providerReady || planning) ? 0.5 : 1 }} />
+                <button onClick={handleWizardSubmit} disabled={!prompt.trim() || !providerReady || planning}
+                  style={{ padding: '10px 18px', borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: (!prompt.trim() || !providerReady || planning) ? 'default' : 'pointer', ...mono, background: `${ACCENT}15`, color: ACCENT, border: `1px solid ${ACCENT}30`, opacity: (!prompt.trim() || !providerReady || planning) ? 0.4 : 1 }}>
                   {planning ? '...' : '→'}
                 </button>
               </div>
@@ -698,6 +802,54 @@ export default function AIPage() {
       )}
       {tab === 'settings' && (
         <div style={{ maxWidth: 560 }}>
+          <SectionHeader title="Cloud Providers" subtitle="Bring your own API key. Cloud models plan against the same cluster facts as a local one, and are usable immediately — no download." />
+          {providers.filter(p => p.kind === 'cloud').map(p => {
+            const draft = provDraft[p.id] ?? {}
+            const field = (key: string, label: string, placeholder: string, type = 'text') => (
+              <label key={key} style={{ display: 'block', marginBottom: 8 }}>
+                <span style={{ display: 'block', fontSize: 10, color: '#4b5563', ...mono, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>{label}</span>
+                <input
+                  type={type}
+                  value={draft[key] ?? ''}
+                  placeholder={placeholder}
+                  onChange={e => setProvDraft(d => ({ ...d, [p.id]: { ...(d[p.id] ?? {}), [key]: e.target.value } }))}
+                  style={{ width: '100%', padding: '8px 12px', borderRadius: 8, background: '#080c14', border: `1px solid ${BORDER}`, color: '#e2e8f0', fontSize: 13, outline: 'none', ...mono }} />
+              </label>
+            )
+            const result = provResult[p.id]
+            return (
+              <div key={p.id} style={{ background: CARD, border: `1px solid ${p.id === activeProv ? ACCENT + '40' : BORDER}`, borderRadius: 12, padding: '1.25rem', marginBottom: '1rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0' }}>{p.name}</div>
+                  <span style={badge(p.configured ? '#22c55e' : '#374151')}>{p.configured ? 'configured' : 'no key'}</span>
+                  {p.id === activeProv && <span style={badge(ACCENT)}>active</span>}
+                  <button onClick={() => selectProvider(p.id)} disabled={!p.configured || p.id === activeProv}
+                    style={{ marginLeft: 'auto', fontSize: 11, padding: '4px 10px', borderRadius: 6, cursor: (!p.configured || p.id === activeProv) ? 'default' : 'pointer', ...mono, background: 'transparent', color: (!p.configured || p.id === activeProv) ? '#374151' : ACCENT, border: `1px solid ${(!p.configured || p.id === activeProv) ? BORDER : ACCENT + '30'}` }}>
+                    use this
+                  </button>
+                </div>
+                <div style={{ fontSize: 12, color: '#6b7280', marginBottom: '1rem', lineHeight: 1.5 }}>{p.note}</div>
+                {field('api_key', 'API key', p.configured ? '•••••••• stored — type to replace' : 'sk-…', 'password')}
+                {field('model', 'Model', p.model)}
+                {p.id === 'openai' && field('base_url', 'Base URL', 'https://api.openai.com/v1')}
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 4 }}>
+                  <button onClick={() => saveProvider(p.id)} disabled={provBusy === p.id || !Object.keys(draft).length}
+                    style={{ padding: '8px 16px', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: (provBusy === p.id || !Object.keys(draft).length) ? 'default' : 'pointer', ...mono, background: `${ACCENT}15`, color: ACCENT, border: `1px solid ${ACCENT}30`, opacity: (provBusy === p.id || !Object.keys(draft).length) ? 0.4 : 1 }}>
+                    {provBusy === p.id ? '…' : 'Save'}
+                  </button>
+                  <button onClick={() => testProvider(p.id)} disabled={!p.configured || provBusy === p.id}
+                    style={{ padding: '8px 16px', borderRadius: 8, fontSize: 12, cursor: (!p.configured || provBusy === p.id) ? 'default' : 'pointer', ...mono, background: 'transparent', color: '#6b7280', border: `1px solid ${BORDER}`, opacity: (!p.configured || provBusy === p.id) ? 0.4 : 1 }}>
+                    Test
+                  </button>
+                  {result && (
+                    <span style={{ fontSize: 11, ...mono, color: result.startsWith('✗') ? '#ef4444' : result.startsWith('✓') ? '#22c55e' : '#6b7280' }}>
+                      {result}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )
+          })}
           <SectionHeader title="Ollama Connection" subtitle="Connect to an existing Ollama instance or deploy a managed one." />
           <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: '1.25rem', marginBottom: '1rem' }}>
             <div style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0', marginBottom: 4 }}>Connect existing Ollama</div>

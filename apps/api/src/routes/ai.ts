@@ -1,143 +1,168 @@
 // =============================================================================
 //  HyperProx — AI Deployment Wizard Routes
 //  Natural language → structured action plan → execute
+//
+//  The plan itself is produced in lib/ai: the schema, the prompt and the three
+//  providers live there so that adding a fourth does not mean touching routing.
+//  What stays here is everything that is about *this* cluster — gathering the
+//  facts the model plans against, and auditing what it returns before a user is
+//  shown a plan the cluster cannot run.
 // =============================================================================
 
 import { FastifyPluginAsync } from 'fastify'
-import { getCredential }      from '../lib/credentials'
+import { setCredential }      from '../lib/credentials'
 import { executeWizardJob, getJob } from '../lib/wizard-executor'
+import { gatherFacts }        from '../lib/ai/facts'
+import { userPrompt }         from '../lib/ai/prompt'
+import { auditPlan }          from '../lib/ai/plan-schema'
+import {
+  generatePlan, listProviders, activeProvider, setActiveProvider, type ProviderId,
+} from '../lib/ai/providers'
 
-const WIZARD_SYSTEM_PROMPT = `You are HyperProx's deployment wizard. 
-The user will describe a service they want to deploy on their Proxmox cluster.
-You must respond ONLY with a valid JSON object — no markdown, no explanation, no preamble.
+const PROVIDER_IDS: ProviderId[] = ['anthropic', 'openai', 'ollama']
 
-IMPORTANT RULES:
-- If no domain is provided, set domain to empty string "" and add a warning asking the user to specify a domain
-- NEVER invent or hallucinate a domain name
-- NEVER use example.com or placeholder domains
-- If the request is missing critical information (domain, service name), set the relevant field to "" and explain in warnings
-
-The JSON must follow this exact schema:
-{
-  "service": "string — the service name (e.g. Nextcloud, Jellyfin)",
-  "domain": "string — the full domain (e.g. cloud.example.com)",
-  "understood": "string — one sentence confirming what you understood",
-  "steps": [
-    {
-      "id": "string",
-      "type": "create_lxc | configure_proxy | create_dns | request_ssl | wait_propagation | install_service",
-      "label": "string — human readable label",
-      "description": "string — what this step does",
-      "params": {}
-    }
-  ],
-  "requirements": {
-    "ram_mb": number,
-    "disk_gb": number,
-    "cpu_cores": number
-  },
-  "warnings": ["string"] 
-}
-
-Common service resource requirements:
-- Nextcloud: 1024MB RAM, 20GB disk, 2 cores
-- Jellyfin: 2048MB RAM, 20GB disk, 4 cores  
-- Vaultwarden: 256MB RAM, 1GB disk, 1 core
-- Gitea: 512MB RAM, 10GB disk, 2 cores
-- Homepage: 256MB RAM, 1GB disk, 1 core
-- Uptime Kuma: 256MB RAM, 2GB disk, 1 core
-- Grafana: 512MB RAM, 5GB disk, 2 cores
-
-Always include all steps in order: create_lxc → install_service → configure_proxy → create_dns → wait_propagation → request_ssl`
-
-async function getOllamaUrl(): Promise<string | null> {
-  const stored = await getCredential('ai', 'ollama', 'url')
-  return stored || process.env.OLLAMA_URL || null
-}
-
-async function getActiveModel(): Promise<string> {
-  const stored = await getCredential('ai', 'ollama', 'model')
-  return stored || process.env.OLLAMA_MODEL || 'llama3.2:3b'
+function isProvider(v: unknown): v is ProviderId {
+  return typeof v === 'string' && (PROVIDER_IDS as string[]).includes(v)
 }
 
 export const aiRoutes: FastifyPluginAsync = async (fastify) => {
 
-  // POST /api/ai/wizard/plan — natural language → action plan
-  fastify.post<{ Body: { prompt: string } }>('/wizard/plan', async (req, reply) => {
-    const { prompt } = req.body
-    if (!prompt) return reply.status(400).send({ error: 'prompt is required' })
+  // ── Providers ──────────────────────────────────────────────────────────────
 
-    const ollamaUrl = await getOllamaUrl()
-    if (!ollamaUrl) {
-      return reply.status(400).send({
-        ok: false,
-        error: 'Ollama is not configured. Connect an Ollama instance in the AI settings first.'
-      })
+  // GET /api/ai/providers — what can plan, and what each still needs
+  fastify.get('/providers', async (_req, reply) => {
+    const [providers, active] = await Promise.all([listProviders(), activeProvider()])
+    return reply.send({ ok: true, active, providers })
+  })
+
+  // POST /api/ai/provider/select — choose which one the wizard uses
+  fastify.post<{ Body: { provider: string } }>('/provider/select', async (req, reply) => {
+    const { provider } = req.body ?? {}
+    if (!isProvider(provider)) {
+      return reply.status(400).send({ ok: false, error: `provider must be one of ${PROVIDER_IDS.join(', ')}` })
+    }
+    await setActiveProvider(provider)
+    return reply.send({ ok: true, active: provider })
+  })
+
+  // PUT /api/ai/provider/:id — store this provider's key, model or base URL
+  fastify.put<{
+    Params: { id: string }
+    Body:   { api_key?: string; model?: string; base_url?: string; url?: string }
+  }>('/provider/:id', async (req, reply) => {
+    const id = req.params.id
+    if (!isProvider(id)) return reply.status(400).send({ ok: false, error: 'unknown provider' })
+
+    const body = req.body ?? {}
+    const saved: string[] = []
+
+    // An empty string clears a setting; undefined leaves it alone. That
+    // distinction is what lets the UI send only the field the user edited.
+    for (const [key, masked] of [
+      ['api_key', true], ['model', false], ['base_url', false], ['url', false],
+    ] as Array<[keyof typeof body, boolean]>) {
+      const value = body[key]
+      if (value === undefined) continue
+      await setCredential('ai', id, String(key), value, masked)
+      saved.push(String(key))
     }
 
-    const model = await getActiveModel()
+    if (!saved.length) return reply.status(400).send({ ok: false, error: 'nothing to save' })
+    return reply.send({ ok: true, provider: id, saved })
+  })
 
+  // POST /api/ai/provider/test — a real round trip, not a reachability check
+  fastify.post<{ Body: { provider?: string } }>('/provider/test', async (req, reply) => {
+    const id = req.body?.provider
+    if (id !== undefined && !isProvider(id)) {
+      return reply.status(400).send({ ok: false, error: 'unknown provider' })
+    }
+    const started = Date.now()
     try {
-      const res = await fetch(`${ollamaUrl}/api/chat`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model,
-          stream:   false,
-          messages: [
-            { role: 'system', content: WIZARD_SYSTEM_PROMPT },
-            { role: 'user',   content: prompt },
-          ],
-          options: { temperature: 0.1 },
-        }),
-        signal: AbortSignal.timeout(60000),
+      // The smallest request that still exercises structured output end to end.
+      const facts = await gatherFacts()
+      const plan  = await generatePlan(
+        userPrompt('Deploy Uptime Kuma. No domain yet.', facts), id)
+      return reply.send({
+        ok: true,
+        ms: Date.now() - started,
+        provider: id ?? await activeProvider(),
+        sample: { service: plan.service, steps: plan.steps.length, warnings: plan.warnings },
       })
-
-      const data = await res.json() as { message?: { content: string }; error?: string }
-      if (data.error) throw new Error(data.error)
-
-      const raw = data.message?.content ?? ''
-
-      // Parse JSON — strip any accidental markdown fences
-      let clean = raw.replace(/```json|```/g, '').trim()
-
-      // Fix truncated JSON
-      const opens  = (clean.match(/{/g) || []).length
-      const closes = (clean.match(/}/g) || []).length
-      if (opens > closes) clean += '}'.repeat(opens - closes)
-
-      let plan: any
-      try {
-        plan = JSON.parse(clean)
-      } catch {
-        return reply.status(500).send({
-          ok:    false,
-          error: 'AI returned malformed JSON. Try a different model or rephrase your request.',
-          raw,
-        })
-      }
-
-      // Detect non-deployment intent
-      if (!plan.service || !plan.domain) {
-        return reply.send({
-          ok:             true,
-          conversational: true,
-          message:        plan.understood || 'Please describe a service to deploy, e.g. "Deploy Nextcloud at cloud.mydomain.com"',
-        })
-      }
-
-      // Strip markdown from string fields
-      const stripMd = (s: any) => typeof s === 'string' ? s.replace(/\*\*/g, '') : s
-      plan.service    = stripMd(plan.service)
-      plan.domain     = stripMd(plan.domain)
-      plan.understood = stripMd(plan.understood)
-
-      return reply.send({ ok: true, plan, model })
-
     } catch (err: any) {
-      return reply.status(500).send({ ok: false, error: err.message })
+      return reply.status(502).send({ ok: false, ms: Date.now() - started, error: err.message })
     }
   })
+
+  // ── The wizard ─────────────────────────────────────────────────────────────
+
+  // POST /api/ai/wizard/plan — natural language → action plan
+  fastify.post<{ Body: { prompt: string; provider?: string; model?: string } }>(
+    '/wizard/plan', async (req, reply) => {
+      const { prompt, provider } = req.body ?? {}
+      if (!prompt) return reply.status(400).send({ ok: false, error: 'prompt is required' })
+      if (provider !== undefined && !isProvider(provider)) {
+        return reply.status(400).send({ ok: false, error: 'unknown provider' })
+      }
+
+      const chosen = provider ?? await activeProvider()
+
+      // A per-request model override is only meaningful for Ollama, where the
+      // UI lists the models that are actually installed. Persist it so the
+      // dropdown and the next request agree.
+      if (req.body.model && chosen === 'ollama') {
+        await setCredential('ai', 'ollama', 'model', req.body.model, false)
+      }
+
+      let facts
+      try {
+        facts = await gatherFacts()
+      } catch (err: any) {
+        return reply.status(502).send({
+          ok: false,
+          error: `Cannot read the cluster, so there is nothing to plan against: ${err.message}`,
+        })
+      }
+
+      let plan
+      try {
+        plan = await generatePlan(userPrompt(prompt, facts), chosen)
+      } catch (err: any) {
+        return reply.status(502).send({ ok: false, provider: chosen, error: err.message })
+      }
+
+      // No service named means this was a question, not a deployment request.
+      if (!plan.service) {
+        return reply.send({
+          ok: true,
+          conversational: true,
+          provider: chosen,
+          message: plan.understood ||
+            'Describe a service to deploy, e.g. "Deploy Nextcloud at cloud.mydomain.com".',
+        })
+      }
+
+      // The model's own warnings are what it noticed; the audit's are what the
+      // cluster says. Both go in front of the user before anything is created.
+      const problems = auditPlan(plan, facts)
+      const warnings = [...new Set([...plan.warnings, ...problems])]
+
+      return reply.send({
+        ok: true,
+        provider: chosen,
+        model: (await listProviders()).find(p => p.id === chosen)?.model,
+        plan: { ...plan, warnings },
+        // `blocked` is the plan being unrunnable as written, not merely
+        // imperfect — the UI uses it to decide whether Execute is offered.
+        blocked: problems.length > 0,
+        facts: {
+          nodes:    facts.nodes.map(n => n.node),
+          storages: facts.storages.map(s => s.storage),
+          domains:  facts.domains,
+          nextVmid: facts.nextVmid,
+        },
+      })
+    })
 
   // POST /api/ai/wizard/execute — execute a confirmed action plan
   fastify.post<{ Body: { plan: any } }>('/wizard/execute', async (req, reply) => {
@@ -182,11 +207,10 @@ export const aiRoutes: FastifyPluginAsync = async (fastify) => {
     })
   })
 
-  // POST /api/ai/model/select — set the active model
+  // POST /api/ai/model/select — set the active Ollama model
   fastify.post<{ Body: { model: string } }>('/model/select', async (req, reply) => {
     const { model } = req.body
     if (!model) return reply.status(400).send({ error: 'model is required' })
-    const { setCredential } = await import('../lib/credentials')
     await setCredential('ai', 'ollama', 'model', model, false)
     return reply.send({ ok: true, model })
   })
