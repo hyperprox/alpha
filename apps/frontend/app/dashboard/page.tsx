@@ -7,6 +7,7 @@ import Link from 'next/link'
 import { formatBytes, formatUptime, pct } from '@/lib/utils'
 import { wsBase } from '@/lib/ws'
 import { PluginCards } from '@/components/plugins/PluginCards'
+import { Speedometer, Sparkline, StreamChart, Meter, useHistory, zoneColor, ACCENT, GOOD, WARN, CRIT } from '@/components/dashboard/Viz'
 
 // Types
 interface PVENode { node: string; status: string; cpu: number; maxcpu: number; mem: number; maxmem: number; disk: number; maxdisk: number; uptime: number }
@@ -33,43 +34,28 @@ interface NodeGPUStatus {
 interface FastData { nodes: PVENode[]; vms: PVEVM[]; gpu: GPUInfoFull|null; cluster: ClusterTotals; network?: NetworkData; gpuStatus?: NodeGPUStatus[]; storage?: any[] }
 interface SlowData { ceph: CephStatus|null; osds: CephOSD[]; ha: HAEntry[]; services: { npm: ServiceInfo; grafana?: ServiceInfo; prometheus?: ServiceInfo } }
 
-// Gauge
-function GaugeRing({ value, size=64, label, color }: { value:number; size?:number; label:string; color?:string }) {
-  const r=( size-8)/2, circ=2*Math.PI*r, offset=circ-(value/100)*circ
-  const c = color ?? (value>90?'#ff4444':value>75?'#ffaa00':'#00e5ff')
+// Panel chrome — every card wears the same frame, so the eye can stop parsing
+// borders and start reading numbers.
+function Panel({ title, accent = ACCENT, right, children, className = '' }: {
+  title: string; accent?: string; right?: React.ReactNode; children: React.ReactNode; className?: string
+}) {
   return (
-    <div className="flex flex-col items-center gap-1">
-      <svg width={size} height={size}>
-        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="#1f2937" strokeWidth={6}/>
-        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={c} strokeWidth={6}
-          strokeDasharray={circ} strokeDashoffset={offset} strokeLinecap="round"
-          transform={`rotate(-90 ${size/2} ${size/2})`} style={{transition:'stroke-dashoffset 0.5s ease'}}/>
-        <text x={size/2} y={size/2+5} textAnchor="middle" fill={c} fontSize={13} fontFamily="IBM Plex Mono" fontWeight={500}>{value}%</text>
-      </svg>
-      <span className="text-xs text-gray-500 font-mono uppercase tracking-wider">{label}</span>
-    </div>
-  )
-}
-
-// Usage bar
-function UsageBar({ label, used, total, p, color='#00e5ff', fmt }: { label:string; used:number; total:number; p:number; color?:string; fmt:(v:number)=>string }) {
-  const c = p>90?'#ff4444':p>75?'#ffaa00':color
-  return (
-    <div>
-      <div className="flex justify-between text-xs font-mono mb-1">
-        <span className="text-gray-500">{label}</span>
-        <span style={{color:c}}>{fmt(used??0)} / {fmt(total??0)}</span>
+    <div className={`rounded-xl border p-5 ${className}`}
+      style={{ background:'linear-gradient(150deg,#0e1524,#080c14 60%)', borderColor:`${accent}25` }}>
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background:accent, boxShadow:`0 0 8px ${accent}` }}/>
+          <span className="font-display font-semibold tracking-widest uppercase text-sm truncate" style={{ color:accent }}>{title}</span>
+        </div>
+        {right}
       </div>
-      <div className="h-1.5 rounded-full overflow-hidden" style={{background:'#1f2937'}}>
-        <div className="h-full rounded-full transition-all duration-500" style={{width:`${p}%`,background:c}}/>
-      </div>
-      <div className="text-right text-xs font-mono mt-0.5" style={{color:c}}>{p}%</div>
+      {children}
     </div>
   )
 }
 
 // Cluster summary
-function ClusterPanel({ cluster, nodes, vms, ceph, storage, power }: { cluster:ClusterTotals; nodes:PVENode[]; vms:PVEVM[]; ceph:CephStatus|null; storage?:any[]; power?:number|null }) {
+function ClusterPanel({ cluster, nodes, vms, ceph, storage, power, stamp }: { cluster:ClusterTotals; nodes:PVENode[]; vms:PVEVM[]; ceph:CephStatus|null; storage?:any[]; power?:number|null; stamp:number|null }) {
   const running = vms.filter(v=>v.status==='running').length
   const online  = nodes.filter(n=>n.status==='online').length
   const cephPct = ceph?.pgmap ? pct(ceph.pgmap.bytes_used, ceph.pgmap.bytes_total) : 0
@@ -82,47 +68,64 @@ function ClusterPanel({ cluster, nodes, vms, ceph, storage, power }: { cluster:C
   const storTotalBytes = [...storageMap.values()].reduce((a, s) => a + s.total, 0)
   const storPct        = storTotalBytes > 0 ? Math.round((storTotalUsed / storTotalBytes) * 100) : 0
 
+  const cpuHist = useHistory(cluster.cpu_pct, stamp)
+  const memHist = useHistory(cluster.mem_pct, stamp)
+
   return (
-    <div className="rounded-lg border p-5" style={{background:'linear-gradient(135deg,#0d1220,#080c14)',borderColor:'#00e5ff20'}}>
-      <div className="flex items-center gap-2 mb-4">
-        <div className="w-2 h-2 rounded-full" style={{background:'#00e5ff',boxShadow:'0 0 6px #00e5ff'}}/>
-        <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{color:'#00e5ff'}}>Cluster Overview</span>
+    <Panel title="Cluster Overview"
+      right={<span className="text-xs font-mono text-gray-600">{online}/{nodes.length} nodes online</span>}>
+
+      <div className="flex justify-around items-start mb-4">
+        <Speedometer value={cluster.cpu_pct} label="CPU" size={118}
+          caption={`${(cluster.cpu_used ?? 0).toFixed(1)} of ${cluster.cpu_total} cores`}/>
+        <Speedometer value={cluster.mem_pct} label="Memory" size={118}
+          caption={`${formatBytes(cluster.mem_used)} of ${formatBytes(cluster.mem_total)}`}/>
+        <Speedometer value={storTotalBytes > 0 ? storPct : cluster.disk_pct}
+          label={storTotalBytes > 0 ? 'Storage' : 'Disk'} size={118}
+          color="#f59e0b"
+          caption={storTotalBytes > 0
+            ? `${formatBytes(storTotalUsed)} of ${formatBytes(storTotalBytes)}`
+            : `${formatBytes(cluster.disk_used)} of ${formatBytes(cluster.disk_total)}`}/>
       </div>
-      <div className="grid grid-cols-4 gap-2 mb-5">
-        {[
-          {label:'NODES',   value:`${online}/${nodes.length}`, color:'#00e5ff'},
-          {label:'RUNNING', value:String(running),              color:'#22c55e'},
-          {label:'STOPPED', value:String(vms.length-running),   color:'#374151'},
-          {label:'HA VMs',  value:String(vms.filter(v=>v.hastate).length), color:'#a78bfa'},
-        ].map(({label,value,color})=>(
-          <div key={label} className="text-center p-2 rounded" style={{background:'#060a10',border:'1px solid #111827'}}>
-            <div className="font-display text-xl font-bold" style={{color}}>{value}</div>
-            <div className="text-xs font-mono text-gray-600 mt-0.5">{label}</div>
+
+      {/* Where those two dials have just been */}
+      <div className="grid grid-cols-2 gap-3 mb-4">
+        {[{ h: cpuHist, l: 'CPU', c: zoneColor(cluster.cpu_pct) },
+          { h: memHist, l: 'MEM', c: zoneColor(cluster.mem_pct) }].map(({ h, l, c }) => (
+          <div key={l} className="rounded-lg p-2" style={{ background:'#070b12', border:'1px solid #111827' }}>
+            <div className="flex items-center justify-between mb-0.5">
+              <span className="font-mono text-gray-600 uppercase tracking-wider" style={{ fontSize:9 }}>{l} trend</span>
+              <span className="font-mono" style={{ fontSize:9, color:'#4b5563' }}>{h.length}m</span>
+            </div>
+            <Sparkline data={h} color={c} width={150} height={28} baseline="zero"/>
           </div>
         ))}
       </div>
-      <div className="space-y-3">
-        <UsageBar label="CPU"    used={cluster.cpu_used}  total={cluster.cpu_total}  p={cluster.cpu_pct}  fmt={v=>`${(v??0).toFixed(1)} cores`}/>
-        <UsageBar label="MEMORY" used={cluster.mem_used}  total={cluster.mem_total}  p={cluster.mem_pct}  fmt={formatBytes}/>
-        <UsageBar label="OS DISK" used={cluster.disk_used}  total={cluster.disk_total}  p={cluster.disk_pct}  fmt={formatBytes} color="#818cf8"/>
-        {storTotalBytes > 0 && (
-          <UsageBar label="STORAGE" used={storTotalUsed} total={storTotalBytes} p={storPct} fmt={formatBytes} color="#f59e0b"/>
-        )}
-        {power != null && power > 0 && (
-          <div className="flex items-center justify-between text-xs font-mono pt-1">
-            <span className="text-gray-500">POWER</span>
-            <span style={{ color: power > 200 ? '#ff4444' : power > 100 ? '#ffaa00' : '#22c55e' }}>⚡ {power}W </span>
+
+      <div className="grid grid-cols-4 gap-2 mb-4">
+        {[
+          {label:'RUNNING', value:String(running),                             color:GOOD},
+          {label:'STOPPED', value:String(vms.length-running),                  color:'#4b5563'},
+          {label:'HA',      value:String(vms.filter(v=>v.hastate).length),     color:'#a78bfa'},
+          {label:'POWER',   value: power != null && power > 0 ? `${power}W` : '—',
+                            color: power == null || power <= 0 ? '#374151' : power > 200 ? CRIT : power > 100 ? WARN : GOOD},
+        ].map(({label,value,color})=>(
+          <div key={label} className="text-center py-2 rounded-lg" style={{background:'#070b12',border:`1px solid ${color}25`}}>
+            <div className="font-display text-lg font-bold" style={{color, fontVariantNumeric:'tabular-nums'}}>{value}</div>
+            <div className="font-mono text-gray-600 mt-0.5" style={{fontSize:9}}>{label}</div>
           </div>
-        )}
-        {ceph?.pgmap && (
-          <UsageBar label="CEPH" used={ceph.pgmap.bytes_used} total={ceph.pgmap.bytes_total} p={cephPct} fmt={formatBytes} color="#f59e0b"/>
-        )}
+        ))}
       </div>
-      <Link href="/infrastructure" className="flex items-center justify-center gap-2 mt-4 py-2 rounded text-xs font-mono transition-all"
-        style={{background:'#00e5ff08',color:'#00e5ff60',border:'1px solid #00e5ff15'}}>
+
+      {ceph?.pgmap && (
+        <Meter label="Ceph" used={ceph.pgmap.bytes_used} total={ceph.pgmap.bytes_total} p={cephPct} fmt={formatBytes} color="#f59e0b"/>
+      )}
+
+      <Link href="/infrastructure" className="flex items-center justify-center gap-2 mt-4 py-2 rounded-lg text-xs font-mono transition-all hover:brightness-150"
+        style={{background:'#00e5ff08',color:'#00e5ff70',border:'1px solid #00e5ff18'}}>
         View Infrastructure →
       </Link>
-    </div>
+    </Panel>
   )
 }
 
@@ -186,18 +189,13 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
             })}
           </div>
         )}
-        <div className="grid grid-cols-4 gap-2">
-          {[
-            { label:'GPU',   value:`${gpu.gpu_util}%`,              color:accent  },
-            { label:'VRAM',  value:`${gpu.vram_pct}%`,              color:vramC   },
-            { label:'TEMP',  value:`${gpu.temp}°C`,                 color:tempC   },
-            { label:'POWER', value:`${gpu.power_draw.toFixed(0)}W`, color:powerC  },
-          ].map(({ label, value, color }) => (
-            <div key={label} className="text-center p-2 rounded" style={{ background:'#060a10', border:`1px solid ${color}20` }}>
-              <div className="text-sm font-mono font-bold" style={{ color }}>{value}</div>
-              <div className="text-xs font-mono text-gray-600 mt-0.5">{label}</div>
-            </div>
-          ))}
+        <div className="flex justify-around items-start">
+          <Speedometer value={gpu.gpu_util}   label="Load"  size={92} color={accent}/>
+          <Speedometer value={gpu.vram_pct}   label="VRAM"  size={92} color={vramC}
+            caption={`${gpu.vram_used} MB`}/>
+          <Speedometer value={gpu.temp}       label="Temp"  size={92} unit="°" color={tempC} max={100}/>
+          <Speedometer value={gpu.power_draw} label="Power" size={92} unit="W" color={powerC}
+            max={gpu.power_limit || 250} caption={`limit ${gpu.power_limit}W`}/>
         </div>
       </div>
     )
@@ -324,7 +322,12 @@ function SpeedBar({ value, max, color }: { value: number; max: number; color: st
 }
 
 
-function NetworkPanel({ network }: { network: NetworkData | null }) {
+function NetworkPanel({ network, stamp }: { network: NetworkData | null; stamp: number | null }) {
+  // Hooks before the early return — a panel that sometimes has no data must
+  // still call the same hooks in the same order every render.
+  const inHist  = useHistory(network?.total_in  ?? 0, stamp, 60)
+  const outHist = useHistory(network?.total_out ?? 0, stamp, 60)
+
   if (!network) return null
 
   const maxNodeSpeed = Math.max(
@@ -334,21 +337,29 @@ function NetworkPanel({ network }: { network: NetworkData | null }) {
   const sortedNodes = [...network.nodes].sort((a, b) => a.node.localeCompare(b.node))
 
   return (
-    <div className="rounded-lg border p-5" style={{ background:'linear-gradient(135deg,#0d1220,#080c14)', borderColor:'#00e5ff20' }}>
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full" style={{ background:'#00e5ff', boxShadow:'0 0 6px #00e5ff' }}/>
-          <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{ color:'#00e5ff' }}>Network</span>
+    <Panel title="Network"
+      right={
+        <div className="flex gap-3 text-xs font-mono" style={{ fontVariantNumeric:'tabular-nums' }}>
+          <span style={{ color:GOOD }}>↓ {fmtSpeed(network.total_in)}</span>
+          <span style={{ color:WARN }}>↑ {fmtSpeed(network.total_out)}</span>
         </div>
-        <div className="flex gap-3 text-xs font-mono">
-          <span style={{ color:'#22c55e' }}>↓ {fmtSpeed(network.total_in)}</span>
-          <span style={{ color:'#f59e0b' }}>↑ {fmtSpeed(network.total_out)}</span>
+      }>
+
+      {/* Cluster throughput over the last minute — in above the line, out below */}
+      <div className="rounded-lg p-3 mb-4" style={{ background:'#070b12', border:'1px solid #111827' }}>
+        <div className="flex items-center justify-between mb-1">
+          <span className="font-mono text-gray-600 uppercase tracking-widest" style={{ fontSize:9 }}>Throughput</span>
+          <div className="flex gap-3 font-mono" style={{ fontSize:9 }}>
+            <span style={{ color:GOOD }}>■ in</span>
+            <span style={{ color:WARN }}>■ out</span>
+            <span className="text-gray-700">peak {fmtSpeed(Math.max(...inHist, ...outHist, 0))}</span>
+          </div>
         </div>
+        <StreamChart inData={inHist} outData={outHist} height={92} width={560}/>
       </div>
 
       {/* Per-node rows */}
-      <div className="space-y-2 mb-4">
+      <div className="grid gap-x-6 gap-y-2 mb-4" style={{ gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))' }}>
         {sortedNodes.map(n => {
           const accent = '#00e5ff'
           return (
@@ -375,7 +386,7 @@ function NetworkPanel({ network }: { network: NetworkData | null }) {
       {network.ceph_io && (
         <div className="border-t pt-3" style={{ borderColor:'#111827' }}>
           <div className="text-xs font-mono text-gray-500 uppercase tracking-wider mb-2">CEPH I/O</div>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid gap-2" style={{ gridTemplateColumns:'repeat(auto-fit,minmax(160px,1fr))' }}>
             <div className="p-2 rounded" style={{ background:'#060a10', border:'1px solid #111827' }}>
               <div className="text-xs font-mono text-gray-600 mb-0.5">READ</div>
               <div className="text-sm font-mono font-bold" style={{ color:'#22c55e' }}>{fmtSpeed(network.ceph_io.read_bps)}</div>
@@ -389,7 +400,7 @@ function NetworkPanel({ network }: { network: NetworkData | null }) {
           </div>
         </div>
       )}
-    </div>
+    </Panel>
   )
 }
 
@@ -418,18 +429,10 @@ function NodeCard({ node, vms, gpuInfo }: { node:PVENode; vms:PVEVM[]; gpuInfo?:
         </div>
         <span className="text-xs font-mono text-gray-500">{formatUptime(node.uptime)}</span>
       </div>
-      <div className="flex justify-around">
-        <GaugeRing value={cpuPct}  label="CPU"  color={accent}/>
-        <GaugeRing value={memPct}  label="MEM"/>
-        <GaugeRing value={diskPct} label="DISK"/>
-      </div>
-      <div className="grid grid-cols-3 gap-2 text-center">
-        {[['CORES',node.maxcpu],['RAM',formatBytes(node.maxmem)],['DISK',formatBytes(node.maxdisk)]].map(([l,v])=>(
-          <div key={String(l)}>
-            <div className="text-xs text-gray-600 font-mono">{l}</div>
-            <div className="text-sm font-mono text-white">{v}</div>
-          </div>
-        ))}
+      <div className="flex justify-around items-start">
+        <Speedometer value={cpuPct}  label="CPU"  size={76} color={accent} caption={`${node.maxcpu} cores`}/>
+        <Speedometer value={memPct}  label="MEM"  size={76} caption={formatBytes(node.maxmem)}/>
+        <Speedometer value={diskPct} label="DISK" size={76} caption={formatBytes(node.maxdisk)}/>
       </div>
       <div className="flex gap-2 pt-1 border-t" style={{borderColor:'#111827'}}>
         <span className="text-xs font-mono" style={{color:accent}}>▶ {running} running</span>
@@ -459,17 +462,18 @@ function CephPanel({ ceph, osds }: { ceph:CephStatus|null; osds:CephOSD[] }) {
         <span className="text-xs font-mono" style={{color:'#22c55e'}}>{ceph.osdmap.num_up_osds}/{ceph.osdmap.num_osds} OSDs</span>
       </div>
       {ceph.pgmap&&(
-        <div className="mb-3">
-          <div className="flex justify-between text-xs font-mono mb-1">
-            <span className="text-gray-500">USAGE</span>
-            <span style={{color:up>80?'#ff4444':'#00e5ff'}}>{formatBytes(ceph.pgmap.bytes_used)} / {formatBytes(ceph.pgmap.bytes_total)}</span>
-          </div>
-          <div className="h-2 rounded-full overflow-hidden" style={{background:'#1f2937'}}>
-            <div className="h-full rounded-full transition-all duration-500" style={{width:`${up}%`,background:up>80?'#ff4444':up>60?'#ffaa00':'#00e5ff'}}/>
-          </div>
-          <div className="flex justify-between text-xs font-mono mt-1 text-gray-600">
-            <span>DATA {formatBytes(ceph.pgmap.data_bytes)}</span>
-            <span>FREE {formatBytes(ceph.pgmap.bytes_avail)}</span>
+        <div className="flex items-center gap-4 mb-4">
+          <Speedometer value={up} label="Capacity" size={110} color="#f59e0b"/>
+          <div className="flex-1 space-y-2">
+            {[['USED', formatBytes(ceph.pgmap.bytes_used), '#f59e0b'],
+              ['DATA', formatBytes(ceph.pgmap.data_bytes), '#00e5ff'],
+              ['FREE', formatBytes(ceph.pgmap.bytes_avail), '#22c55e'],
+              ['RAW',  formatBytes(ceph.pgmap.bytes_total), '#6b7280']].map(([l,v,c])=>(
+              <div key={l} className="flex items-baseline justify-between font-mono" style={{fontSize:11}}>
+                <span className="text-gray-600 uppercase tracking-wider">{l}</span>
+                <span style={{color:c, fontVariantNumeric:'tabular-nums'}}>{v}</span>
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -662,24 +666,26 @@ export default function DashboardView() {
               <span className="text-gray-600">{label}</span>
             </div>
           ))}
-          {lastSync&&<span className="text-xs font-mono text-gray-700 hidden md:block">{lastSync.toLocaleTimeString()}</span>}
+          {lastSync&&<span className="text-xs font-mono text-gray-700 hidden md:block" style={{fontVariantNumeric:'tabular-nums'}}>{lastSync.toLocaleTimeString()}</span>}
           <div className="w-2 h-2 rounded-full animate-pulse" style={{background:'#00e5ff',boxShadow:'0 0 6px #00e5ff'}}/>
         </div>
       </header>
 
       <main className="p-6 max-w-7xl mx-auto space-y-6">
-        {/* Row 1 */}
-        <div className="grid gap-4" style={{gridTemplateColumns:"1fr 1fr 1fr 1.1fr"}}>
-          <ClusterPanel cluster={fast.cluster} nodes={fast.nodes} vms={fast.vms} ceph={slow?.ceph??null} storage={fast.storage} power={clusterPower}/>
+        {/* Row 1 — the three panels that are mostly dials */}
+        <div className="grid gap-4" style={{gridTemplateColumns:"1.25fr 1.25fr 1fr"}}>
+          <ClusterPanel cluster={fast.cluster} nodes={fast.nodes} vms={fast.vms} ceph={slow?.ceph??null} storage={fast.storage} power={clusterPower} stamp={lastSync?.getTime() ?? null}/>
           <GPUPanel gpu={fast.gpu} gpuStatus={fast.gpuStatus}/>
-          <NetworkPanel network={fast.network??null}/>
           {slow && <ServicesPanel services={slow.services}/>}
         </div>
 
-        {/* Row 2 — nodes */}
+        {/* Row 2 — throughput, full width, because a time series needs time on it */}
+        <NetworkPanel network={fast.network??null} stamp={lastSync?.getTime() ?? null}/>
+
+        {/* Row 3 — nodes */}
         <section>
           <h2 className="text-xs font-mono uppercase tracking-widest text-gray-600 mb-3">Cluster Nodes</h2>
-          <div className="grid gap-4" style={{gridTemplateColumns:'repeat(auto-fill,minmax(220px,1fr))'}}>
+          <div className="grid gap-4" style={{gridTemplateColumns:'repeat(auto-fill,minmax(250px,1fr))'}}>
             {sorted.map(node=><NodeCard key={node.node} node={node} vms={fast.vms} gpuInfo={fast.gpuStatus?.find(g=>g.node===node.node)}/>)}
           </div>
         </section>
