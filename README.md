@@ -62,6 +62,8 @@ It is safe to re-run — anything already correct is left alone.
 | Add the TUN device rules by hand for Tailscale | Included |
 | `pveum user token add`, then `pveum acl modify`, then paste the secret into a wizard | Created, granted and written into the config |
 | Install `node_exporter` on each node individually | Installed across the cluster |
+| Discover that power metrics silently need a udev rule, on every node | The rule is written and applied (`--skip-rapl` to decline) |
+| Work out which nodes have an Intel iGPU and hand-run a container on each | Detected by PCI vendor and installed only there (`--skip-gpu-exporter` to decline) |
 | Find the CEPH monitor node and set `CEPH_MON_NODE` | Detected at runtime, and re-detected if that node goes away |
 | Type the address of every service you want a plug-in for | **Scan for services** finds them |
 
@@ -155,13 +157,62 @@ Verify it's working:
 curl -s http://localhost:9100/metrics | head -5
 ```
 
-### Wattage display
+### Power measurement
 
-Wattage is read from your CPU's built-in power counters (Intel RAPL / AMD energy) via node_exporter's `hwmon` collector, which is enabled by default. No additional configuration is required — if node_exporter is installed and your hardware exposes power data, wattage will appear automatically.
+Power comes from your CPU's RAPL energy counters, read by node_exporter's
+`rapl` collector, plus `nvidia-smi` for discrete GPUs. `bootstrap.sh` sets this
+up on every node; the rest of this section is what it does and why, for anyone
+installing by hand or wondering why a node reads nothing.
 
-If wattage is missing on a specific node, the most likely causes are:
-- node_exporter is not installed on that node
-- The hardware or hypervisor doesn't expose CPU power counters (common in VMs and some older or embedded hardware)
+**The permission that decides whether any of this works.** Since kernel 5.10,
+`/sys/class/powercap/*/energy_uj` is `0400` root-only — a PLATYPUS mitigation,
+because energy readings are fine-grained enough to leak AES keys. node_exporter
+runs unprivileged, so without a change it gets `EACCES` and the rapl collector
+yields **nothing**: no error, no warning, just a metric that never appears. A
+cluster total then silently covers only the nodes that happened to be readable,
+and looks perfectly healthy while doing it.
+
+`bootstrap.sh` installs this rule on each node, and `--skip-rapl` declines it:
+
+```
+SUBSYSTEM=="powercap", ACTION=="add|change", RUN+="/bin/chmod o+r /sys%p/energy_uj"
+```
+
+It chmods the device udev is reporting rather than walking the tree. A rule of
+the form `find /sys/class/powercap -name energy_uj -exec chmod …` looks correct
+and never fires: `RUN+=` runs once per domain *as each appears*, so the find
+searches a directory that is not yet populated. Delete
+`/etc/udev/rules.d/99-hyperprox-rapl.rules` to undo it.
+
+**Which domains are added, and which are not.** RAPL exposes several and they
+are not peers:
+
+| Domain | Treatment | Why |
+|---|---|---|
+| `package-0` | base figure | the CPU package |
+| `core`, `uncore` | **never read** | slices of `package` — adding them counts the same watts two or three times |
+| `dram` | **added** | a genuinely separate rail |
+| `psys` | **replaces** package + dram | the platform rail, including VRM and board losses the CPU domains cannot see. On a board that exposes it, psys typically reads two to three times package+dram |
+| discrete GPU | **added** | on PCIe, outside every domain above, `psys` included |
+| `igpu_power_package` | stand-in only | the same package domain read by `intel_gpu_top`; used only where RAPL cannot be read, never in addition |
+
+**What it does not cover.** Drives, fans, memory outside the DRAM rail, and PSU
+conversion losses are not instrumented by any of this. The figure is silicon
+draw, not wall draw — a node with a stack of spinning disks can easily draw
+another 40–60 W that nothing here sees. `psys` is the closest available proxy
+for board power, and most boards do not expose it. For true wall power you need
+a metered PDU or a UPS that reports load.
+
+**Reading the display.** The dashboard tile shows `POWER 4/5` when a node
+reports nothing, rather than quietly summing what it has. Each node card and
+each Infrastructure chip shows its own figure, or `no meter` — those two states
+are drawn differently on purpose, because a node measuring nothing and a node
+drawing nothing are not the same fact.
+
+If a node reads `no meter`, check in this order: node_exporter is installed;
+`/etc/udev/rules.d/99-hyperprox-rapl.rules` exists; `stat -c %a
+/sys/class/powercap/intel-rapl:0/energy_uj` returns `404` and not `400`; and the
+CPU exposes RAPL at all (`ls /sys/class/powercap/`).
 
 ### GPU metrics (optional — NVIDIA only)
 
@@ -189,6 +240,26 @@ EOF
 systemctl daemon-reload
 systemctl enable --now nvidia_gpu_exporter
 ```
+
+### Intel GPU metrics (optional — Intel iGPUs)
+
+`bootstrap.sh` installs this automatically on nodes with an Intel GPU, and skips
+AMD and NVIDIA nodes — `intel_gpu_top` has nothing to talk to there and the
+container would crash-loop. `--skip-gpu-exporter` declines it. By hand:
+
+```bash
+docker run -d --name intel-gpu-exporter --restart unless-stopped \
+  --privileged --pid host -v /dev/dri:/dev/dri -p 8081:8080 \
+  ghcr.io/onedr0p/intel-gpu-exporter:rolling
+```
+
+It reports iGPU utilisation, and a package power figure that stands in where
+RAPL cannot be read. Measured against RAPL on the same hosts, its
+`igpu_power_package` tracks `node_rapl_package_joules_total` within 1%.
+
+**You do not need to edit `prometheus.yml`.** HyperProx detects nodes and writes
+the scrape target files itself — Settings → Targets, or `POST
+/api/targets/sync`.
 
 ---
 
@@ -292,6 +363,8 @@ MikroTik plug-in's settings:
 | **Plug-ins — brokered plug-in system with MikroTik and Plex/Tautulli** | ✅ Shipped |
 | **Dashboard — speedometer dials, trend sparklines and live throughput charts** | ✅ Shipped |
 | **WAN and LAN bandwidth meters, read from a plug-in** | ✅ Shipped |
+| **Per-node and cluster power, from every RAPL domain the board exposes** | ✅ Shipped |
+| **Terminal — host palette on Ctrl/⌘ K, no second sidebar** | ✅ Shipped |
 | AI deployment — plan generation from natural language | ✅ Shipped |
 | **AI providers — Anthropic, OpenAI or any OpenAI-compatible endpoint, alongside Ollama** | ✅ Shipped |
 | **AI plans are grounded in live cluster facts and audited before they are shown** | ✅ Shipped |
@@ -315,6 +388,12 @@ Sessions run in **tmux on the target**, so the browser is only a window onto
 them: close the tab, come back tomorrow, and the session is still there with its
 scrollback. Hosts without tmux get a plain shell and say so — and offer to
 install it, over the credential the pane is already using.
+
+Hosts are opened from a palette rather than a permanent column: the **+** in the
+tab bar, or **Ctrl/⌘ K** from anywhere on the page. Type to filter, arrows to
+move, Enter to open, Escape to leave. A terminal wants width, and a list of
+hosts is only needed at the moment you open one — a second menu stacked against
+the app's own nav earned its place on neither count.
 
 Panes can be tabbed, split side by side, stacked, or gridded, and an arrangement
 can be saved by name and reopened later. Host keys are pinned on first connect

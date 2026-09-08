@@ -565,6 +565,23 @@ NEXT_PUBLIC_GPU_NODES=
 # Auto-detected during setup wizard — override here if needed
 CEPH_MON_NODE=
 
+# ── AI providers (all optional) ───────────────────────────────────────────────
+# The deployment wizard can plan against Anthropic, OpenAI, or a local Ollama.
+# These are seeded into the encrypted credential store on first run; after that
+# the store is the source of truth and these lines are ignored. Setting any of
+# them here is a convenience for unattended installs — the AI page is the
+# ordinary way to enter them, and nothing here is required to start HyperProx.
+#
+# ANTHROPIC_API_KEY=
+# ANTHROPIC_MODEL=claude-opus-5
+#
+# OPENAI_API_KEY=
+# OPENAI_MODEL=gpt-4o
+# OPENAI_BASE_URL=https://api.openai.com/v1   # or OpenRouter, Groq, a local server
+#
+# OLLAMA_URL=http://your-ollama-host:11434
+# OLLAMA_MODEL=qwen3:8b
+
 # ── Setup wizard state ────────────────────────────────────────────────────────
 SETUP_COMPLETE=false
 EOF
