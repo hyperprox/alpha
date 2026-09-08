@@ -355,6 +355,9 @@ function ActionBtn({ label, color, onClick, disabled }: { label:string; color:st
 // Main infrastructure page
 export default function InfrastructurePage() {
   const [nodes,     setNodes]     = useState<PVENode[]>([])
+  // Watts per node, keyed by name. Null means the node reports no source at
+  // all, which is a different thing from drawing nothing and is shown as such.
+  const [nodePower, setNodePower] = useState<Record<string, number | null>>({})
   const [vms,       setVMs]       = useState<PVEVM[]>([])
   const [loading,   setLoading]   = useState(true)
   const [selected,  setSelected]  = useState<PVEVM|null>(null)
@@ -373,6 +376,15 @@ export default function InfrastructurePage() {
       const nodesJson = await nodesRes.json()
       const vmsJson   = await vmsRes.json()
       if (nodesJson.success) setNodes(nodesJson.data)
+
+      fetch('/api/prometheus/power')
+        .then(r => r.json())
+        .then(d => {
+          if (!d.success) return
+          setNodePower(Object.fromEntries(
+            d.data.nodes.map((n: any) => [n.node, n.total as number | null])))
+        })
+        .catch(() => { /* the chips simply carry no wattage */ })
       if (vmsJson.success)   setVMs(vmsJson.data)
       setLastSync(new Date())
     } catch(e) { console.error(e) }
@@ -709,9 +721,17 @@ export default function InfrastructurePage() {
                 <span className="font-display font-semibold uppercase text-xs" style={{color:accent}}>{node.node}</span>
                 {isGpu&&<span className="font-mono" style={{fontSize:8,background:'#7c3aed20',color:'#a78bfa',border:'1px solid #7c3aed40',padding:'0 4px',borderRadius:3}}>GPU</span>}
               </div>
-              <div className="flex gap-2 text-xs font-mono">
+              <div className="flex gap-2 text-xs font-mono items-baseline">
                 <span style={{color:'#22c55e'}}>{nodeRunning} on</span>
                 <span style={{color:'#374151'}}>{nodeVMs.length-nodeRunning} off</span>
+                {node.node in nodePower && (
+                  <span className="ml-auto" style={{color: nodePower[node.node] === null ? '#374151' : '#f59e0b', fontVariantNumeric:'tabular-nums'}}
+                    title={nodePower[node.node] === null
+                      ? 'Nothing on this node reports watts — no RAPL, and no exporter publishing a package figure.'
+                      : 'CPU package plus any discrete GPU. Drives, fans and PSU losses are not measured.'}>
+                    {nodePower[node.node] === null ? '— W' : `${Math.round(nodePower[node.node]!)} W`}
+                  </span>
+                )}
               </div>
             </button>
           )
