@@ -365,6 +365,8 @@ MikroTik plug-in's settings:
 | **WAN and LAN bandwidth meters, read from a plug-in** | ✅ Shipped |
 | **Per-node and cluster power, from every RAPL domain the board exposes** | ✅ Shipped |
 | **Terminal — host palette on Ctrl/⌘ K, no second sidebar** | ✅ Shipped |
+| **Service catalogue — install a reverse proxy, Ollama or Tautulli you do not have** | ✅ Shipped |
+| **AI wizard installs the service itself, where a node login is stored** | ✅ Shipped |
 | AI deployment — plan generation from natural language | ✅ Shipped |
 | **AI providers — Anthropic, OpenAI or any OpenAI-compatible endpoint, alongside Ollama** | ✅ Shipped |
 | **AI plans are grounded in live cluster facts and audited before they are shown** | ✅ Shipped |
@@ -398,6 +400,43 @@ the app's own nav earned its place on neither count.
 Panes can be tabbed, split side by side, stacked, or gridded, and an arrangement
 can be saved by name and reopened later. Host keys are pinned on first connect
 and a change is refused with both fingerprints shown.
+
+---
+
+## Service catalogue
+
+Everything else in HyperProx assumes you already run the thing it talks to. This
+is the page for when you do not: a reverse proxy, Ollama, Tautulli. It creates a
+container, installs the service, checks it answers, and writes the address into
+the integration that was waiting for it — the last step being the point, since an
+install that leaves you copying a URL into a settings form has done the easy half.
+
+**It needs one SSH login per node, and that is a real decision.** Installs run
+with `pct exec` from the node rather than by SSH into the container. The
+alternative needs a credential for a guest that is a minute old, an sshd that may
+not be installed, and a DHCP lease that may not have arrived — `pct exec` needs
+none of those, because the node already owns the container.
+
+The consequence is that HyperProx asks for a login on the hypervisor. It is
+tested before it is stored, it is kept in the same encrypted store as everything
+else, and it is deliberately **not** shared with the Terminal's guest login: that
+password was given so one root account could cover a shelf of containers, and
+borrowing it to reach the hosts would be both a guess and a quiet widening of
+what you granted. A key is the better answer — it can be revoked on the node
+without changing anything else.
+
+Nothing is created before that check passes. An earlier build checked at the
+install step, which is to say after building a container, and a missing login
+then cost you a stray guest to clean up for a job that could never have finished.
+
+| Recipe | Provides | Notes |
+|---|---|---|
+| **Nginx Proxy Manager** | the reverse proxy HyperProx drives for proxy hosts and certificates | takes 80 and 443 on its container |
+| **Ollama** | a local provider for the deployment wizard | binds `0.0.0.0` on purpose — the default loopback bind is the usual reason a model server "cannot be reached". No model is pulled; do that from the AI page |
+| **Tautulli** | Plex history for the Plex plug-in | history starts the day it is installed; it cannot backfill |
+
+Installs are tracked in memory, so restarting the API loses the progress view of
+one already running. The container and the service it installed are unaffected.
 
 ---
 

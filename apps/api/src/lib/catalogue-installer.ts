@@ -169,6 +169,54 @@ async function wireUp(recipe: CatalogueRecipe, url: string): Promise<string> {
 
 // ---------------------------------------------------------------------------
 
+/**
+ * Decide where this goes, and prove we can finish it, before anything exists.
+ *
+ * The first version of this checked for a node login at the install step —
+ * which is to say, after creating a container. A missing login then cost the
+ * user a stray guest to clean up, for a job that could never have succeeded.
+ * The check that matters is the one that happens before the side effect.
+ */
+async function preflight(opts: { intoVmid?: number; node?: string }): Promise<{ node: string; vmid?: number }> {
+  const client = pve()
+
+  if (typeof opts.intoVmid === 'number') {
+    const all = await client.getClusterResources('vm')
+    const g = (all as any[]).find(r => Number(r.vmid) === opts.intoVmid && r.type === 'lxc')
+    if (!g) throw new Error(`CT ${opts.intoVmid} was not found. Only containers can be used, not VMs.`)
+    if (g.status !== 'running') throw new Error(`CT ${opts.intoVmid} is not running.`)
+    if (!await nodeCredential(g.node).catch(() => null)) {
+      throw new Error(`CT ${opts.intoVmid} is on ${g.node}, which has no SSH login stored. ` +
+                      `Add one on the Catalogue page and try again.`)
+    }
+    return { node: g.node, vmid: Number(g.vmid) }
+  }
+
+  const online = (await client.getNodes()).filter((n: any) => n.status === 'online')
+  if (!online.length) throw new Error('No online Proxmox node to place this on.')
+
+  if (opts.node) {
+    const n = online.find((x: any) => x.node === opts.node)
+    if (!n) throw new Error(`Node ${opts.node} is not online.`)
+    if (!await nodeCredential(opts.node).catch(() => null)) {
+      throw new Error(`Node ${opts.node} has no SSH login stored, so the install could not be run there. ` +
+                      `Add one on the Catalogue page and try again.`)
+    }
+    return { node: opts.node }
+  }
+
+  // Auto-placement only considers nodes the install can actually run on. The
+  // roomiest node is no use if nothing can execute there.
+  const usable = (await Promise.all(online.map(async (n: any) =>
+    (await nodeCredential(n.node).catch(() => null)) ? n : null))).filter(Boolean) as any[]
+
+  if (!usable.length) {
+    throw new Error('No node has an SSH login stored, so nothing can be installed yet. ' +
+                    'Add one on the Catalogue page — installs run with pct exec from the node.')
+  }
+  return { node: usable.sort((a, b) => (b.maxmem - b.mem) - (a.maxmem - a.mem))[0].node }
+}
+
 export async function startInstall(opts: {
   recipeId: string
   /** Omit to create a container; give a vmid to install into one you already have. */
@@ -178,6 +226,10 @@ export async function startInstall(opts: {
 }): Promise<InstallJob> {
   const recipe = findRecipe(opts.recipeId)
   if (!recipe) throw new Error(`No recipe called ${opts.recipeId}`)
+
+  // Throws before a job exists, so a refusal is an error the caller sees rather
+  // than a job that fails asynchronously three minutes later.
+  const target = await preflight(opts)
 
   const reuse = typeof opts.intoVmid === 'number'
   const job: InstallJob = {
@@ -201,16 +253,11 @@ export async function startInstall(opts: {
       // 1. A container to put it in.
       const s1 = step(job, 'container')
       if (reuse) {
-        const client = pve()
-        const all = await client.getClusterResources('vm')
-        const g = (all as any[]).find(r => Number(r.vmid) === opts.intoVmid && r.type === 'lxc')
-        if (!g) throw new Error(`CT ${opts.intoVmid} was not found. Only containers can be used, not VMs.`)
-        if (g.status !== 'running') throw new Error(`CT ${opts.intoVmid} is not running.`)
-        job.vmid = Number(g.vmid); job.node = g.node
+        job.vmid = target.vmid; job.node = target.node
       } else {
         const made = await createContainer(recipe, opts.resources ?? {
           cores: recipe.defaults.cores, memoryMb: recipe.defaults.memoryMb, diskGb: recipe.defaults.diskGb,
-        }, opts.node)
+        }, target.node)
         job.vmid = made.vmid; job.node = made.node
         await waitRunning(made.node, made.vmid)
       }
