@@ -194,23 +194,42 @@ systemctl enable --now nvidia_gpu_exporter
 
 ## AI Assistant — current state
 
-The AI assistant is in early alpha. Here is exactly what works today and what doesn't.
+The assistant turns a sentence into a deployment plan, then runs it. It is still
+early, and the section below says exactly where the edges are.
 
-**What works:**
-- Connect to an **existing Ollama instance** running on your network — HyperProx does not bundle or install Ollama
-- Enter a deployment request in natural language (e.g. `Deploy Nextcloud at cloud.mydomain.com`)
-- HyperProx will generate a **step-by-step deployment plan** showing what it would do
+**Three providers, one interface.** Pick one in Settings → AI:
 
-**What does not work yet:**
-- Plan execution — the Confirm button does not execute anything. The plan is display-only.
-- Autonomous end-to-end deployment (CT creation → proxy → DNS → SSL) — this is the v1.0 target
-- Any action beyond plan generation
+| Provider | Needs | Notes |
+|---|---|---|
+| **Anthropic** | An API key | The plan schema constrains generation natively, so a malformed plan is not a failure mode. Defaults to `claude-opus-5`. |
+| **OpenAI** | An API key | Uses JSON-schema structured output. The base URL is settable, so the same path also reaches OpenRouter, Groq, Together or any OpenAI-compatible server. |
+| **Ollama** | A reachable Ollama server | Free and private. HyperProx does not bundle or install Ollama — point it at one you already run. |
 
-**Connecting to Ollama:**
+Cloud keys are stored in the same AES-256-GCM credential store as everything
+else and are never sent to the browser.
 
-Enter your Ollama URL in Settings → AI. This must be an existing Ollama instance you are already running — for example `http://192.168.2.208:11434` if Ollama is running on another node or machine on your network.
+**The model is given your actual cluster.** Before a plan is generated, HyperProx
+gathers the live facts — every online node with its free memory, every storage
+that can hold a container ranked best-first, the DNS zones you manage, the proxy
+hosts already in use, and the next free VMID — and puts them in the prompt. It
+plans against what is there rather than what it can imagine.
 
-> **Model recommendation:** `llama3.2:3b` works but produces inconsistent deployment plans. `qwen3:8b` or `deepseek-r1:8b` handle structured planning significantly better and are recommended if your hardware supports them.
+**Every plan is audited before you see it.** A schema-valid plan can still be
+undeployable, so the plan is checked against the same facts: a node that does not
+exist, a storage that was never configured, a domain outside your zones, a size
+no node can fit, a missing DNS step. Anything it finds is shown as a warning
+alongside the model's own.
+
+**What still does not work:**
+- The `install_service` step reports itself as skipped and shows you the commands
+  to run — HyperProx does not yet execute inside a newly created container.
+- Small local models still produce weaker plans. The output is validated either
+  way, so a bad one is rejected rather than executed.
+
+> **Local model recommendation:** `llama3.2:3b` works but is inconsistent.
+> `qwen3:8b` or `deepseek-r1:8b` handle structured planning noticeably better.
+> If you have no GPU to spare, a cloud provider costs a few cents per plan and
+> works on day one.
 
 ---
 
@@ -235,6 +254,8 @@ Enter your Ollama URL in Settings → AI. This must be an existing Ollama instan
 | **Terminal — split panes, tabs, and saved layouts** | ✅ Shipped |
 | **Plug-ins — brokered plug-in system with MikroTik and Plex/Tautulli** | ✅ Shipped |
 | AI deployment — plan generation from natural language | ✅ Shipped |
+| **AI providers — Anthropic, OpenAI or any OpenAI-compatible endpoint, alongside Ollama** | ✅ Shipped |
+| **AI plans are grounded in live cluster facts and audited before they are shown** | ✅ Shipped |
 | AI deployment — plan execution (creates the CT, proxy host, DNS record and certificate; the service install itself is still manual) | ⚠️ Partial |
 | Connect to existing Grafana / Prometheus instance | 🚧 v1.0 |
 

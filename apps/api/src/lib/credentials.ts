@@ -51,6 +51,14 @@ export const CREDENTIAL_DEFS: CredentialDef[] = [
   { category: 'ai', provider: 'ollama', key: 'url',   label: 'Ollama URL',     masked: false, envKey: 'OLLAMA_URL' },
   { category: 'ai', provider: 'ollama', key: 'model', label: 'Active Model',    masked: false, envKey: 'OLLAMA_MODEL' },
 
+  // Cloud AI providers — optional. Present so a fresh install is useful before
+  // anyone has downloaded a local model.
+  { category: 'ai', provider: 'anthropic', key: 'api_key',  label: 'Anthropic API Key', masked: true,  envKey: 'ANTHROPIC_API_KEY' },
+  { category: 'ai', provider: 'anthropic', key: 'model',    label: 'Anthropic Model',   masked: false, envKey: 'ANTHROPIC_MODEL' },
+  { category: 'ai', provider: 'openai',    key: 'api_key',  label: 'OpenAI API Key',    masked: true,  envKey: 'OPENAI_API_KEY' },
+  { category: 'ai', provider: 'openai',    key: 'model',    label: 'OpenAI Model',      masked: false, envKey: 'OPENAI_MODEL' },
+  { category: 'ai', provider: 'openai',    key: 'base_url', label: 'OpenAI Base URL',   masked: false, envKey: 'OPENAI_BASE_URL' },
+
   // HyperProx system
   { category: 'system', provider: 'hyperprox', key: 'app_url',   label: 'App URL',   masked: false, envKey: 'NEXT_PUBLIC_API_URL' },
   { category: 'system', provider: 'hyperprox', key: 'jwt_secret', label: 'JWT Secret', masked: true, envKey: 'JWT_SECRET' },
