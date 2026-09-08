@@ -455,10 +455,13 @@ able to read all of it. Non-secret settings are readable through `ctx.option()`,
 because a plug-in legitimately needs its own configuration; values declared
 `secret` never are.
 
-Bundled today:
+Bundled today — the live list is on the **Plug-ins** page, which is the one that
+cannot go stale:
 
 | Plug-in | What it shows |
 |---|---|
+| **Arr Stack** | Sonarr, Radarr, Prowlarr and qBittorrent as one thing, because they are one thing. What needs a person versus what automation will retry on its own, the queue with season packs marked as packs, active downloads, torrents by state, anything with no progress in over an hour, indexer health. Also the free-text multi-indexer search the *arr apps cannot do, since they search by scene naming and silently reject whatever fails a quality profile. |
+| **Unmanic** | Transcode workers across every node: what each is working on, how far in, what is queued and what failed. |
 | **MikroTik** | The whole router: identity, model, RouterOS and RouterBOARD firmware, CPU, memory, temperature and input voltage; per-device and per-interface throughput; port forwards, firewall counters, WireGuard peers, LLDP/CDP neighbours, listening services, accounts, DNS and the recent log. Feeds the dashboard's WAN and LAN meters, and offers an SSH console. Read-only by intent. |
 | **Plex activity** | Who is watching, what they are watching, what is transcoding and what it costs in bandwidth — read through Tautulli, which also supplies the history: recent plays, top watchers, most-watched titles. |
 | **Home Assistant** | What has quietly stopped working. Unavailable entities sorted longest-dead first, batteries under a level you set, updates waiting, automations and when each last ran, what is on right now, entities by domain, and the error lines from the log. **Read-only by intent** — every write against this API actuates something physical, so it never calls `/api/services`. |
@@ -466,6 +469,17 @@ Bundled today:
 Each plug-in's real output is shown on its gallery card, so you can see what it
 renders before placing it anywhere, and a plug-in quietly returning nothing is
 obvious rather than discovered later.
+
+### Asking for one that does not exist
+
+The Plug-ins page also lists what has **not** been built — Proxmox Backup Server,
+Pi-hole, UniFi, TrueNAS, Frigate, a UPS, and others — each with a button that
+opens a pre-filled issue on GitHub in your browser. Ideas, not promises: nothing
+there is scheduled, and asking is what moves one up.
+
+HyperProx holds no GitHub token and posts nothing on your behalf. The request
+arrives under your own name, and no installation has to store a credential so a
+button can work.
 
 ### Plug-ins in Prometheus and Grafana
 

@@ -186,7 +186,49 @@ function SettingsDialog({ plugin, onSave, onClose }: {
 
 // ---------------------------------------------------------------------------
 
+interface PluginIdea {
+  slug: string; name: string; would: string; category: string; api?: string
+}
+
+/**
+ * A pre-filled issue on GitHub, opened in the user's own browser.
+ *
+ * Deliberately not posted by the server: HyperProx holds no GitHub token, so a
+ * request arrives under the name of the person who wants it, and no installation
+ * has to store a credential for a button to work.
+ */
+function requestUrl(repo: string, idea?: PluginIdea): string {
+  const title = idea ? `Plug-in request: ${idea.name}` : 'Plug-in request: '
+  const body = [
+    `**What it should talk to:** ${idea?.name ?? ''}`,
+    idea?.api ? `**API:** ${idea.api}` : '**API:** ',
+    '',
+    '**What I would want it to show**',
+    idea?.would ?? '',
+    '',
+    '**How I run it** — version, how it is deployed, anything unusual:',
+    '',
+    '',
+    '---',
+    'Sent from the HyperProx plug-in catalogue.',
+  ].join('\n')
+  return `https://github.com/${repo}/issues/new` +
+         `?labels=${encodeURIComponent('plug-in request')}` +
+         `&title=${encodeURIComponent(title)}` +
+         `&body=${encodeURIComponent(body)}`
+}
+
 export default function PluginsPage() {
+  const [ideas, setIdeas] = useState<PluginIdea[]>([])
+  const [repo,  setRepo]  = useState('hyperprox/alpha')
+
+  useEffect(() => {
+    fetch('/api/plugins/wishlist')
+      .then(r => r.json())
+      .then(d => { if (d.success) { setIdeas(d.data.ideas); setRepo(d.data.repo) } })
+      .catch(() => { /* the catalogue simply shows nothing extra */ })
+  }, [])
+
   const [plugins, setPlugins] = useState<PluginCard[]>([])
   const [data,    setData]    = useState<Record<string, TileData>>({})
   const [busy,    setBusy]    = useState<Record<string, boolean>>({})
@@ -415,6 +457,51 @@ export default function PluginsPage() {
             )
           })}
         </div>
+
+        {/* ── Not built yet ──────────────────────────────────────────────── */}
+        {ideas.length > 0 && (
+          <section className="mt-10">
+            <div className="mb-1 flex items-baseline gap-3">
+              <h2 className="font-display text-sm font-semibold uppercase tracking-[0.18em]" style={{ color: '#6b7280' }}>
+                Not built yet
+              </h2>
+              <a href={requestUrl(repo)} target="_blank" rel="noreferrer"
+                className="ml-auto rounded px-3 py-1.5 font-display text-xs font-semibold tracking-wide transition-opacity hover:opacity-85"
+                style={{ background: '#00e5ff15', color: ACCENT, border: '1px solid #00e5ff30' }}>
+                Suggest something else →
+              </a>
+            </div>
+            <p className="mb-4 font-mono text-[11px] leading-relaxed" style={{ color: '#374151', maxWidth: 620 }}>
+              Ideas, not promises — nothing here is scheduled. Asking is what moves one up. The button
+              opens a pre-filled issue on GitHub in your browser; HyperProx holds no token and posts
+              nothing on your behalf.
+            </p>
+
+            <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill,minmax(300px,1fr))' }}>
+              {ideas.map(i => (
+                <article key={i.slug} className="flex flex-col rounded-xl border p-4"
+                  style={{ background: '#0b111c', borderColor: BORDER }}>
+                  <div className="mb-1 flex items-baseline gap-2">
+                    <span className="font-display text-[13px] font-semibold" style={{ color: '#cbd5e1' }}>{i.name}</span>
+                    <span className="rounded px-1.5 font-mono text-[9px]"
+                      style={{ background: '#1f293780', color: '#4b5563' }}>{i.category}</span>
+                  </div>
+                  <p className="mb-3 font-mono text-[11px] leading-relaxed" style={{ color: '#6b7280' }}>{i.would}</p>
+                  <div className="mt-auto flex items-center gap-2">
+                    <a href={requestUrl(repo, i)} target="_blank" rel="noreferrer"
+                      className="rounded border px-2.5 py-1 font-display text-[11px] tracking-wide transition-colors hover:bg-white/5"
+                      style={{ borderColor: '#16233a', color: '#9ca3af' }}>
+                      Request this
+                    </a>
+                    {i.api && (
+                      <span className="truncate font-mono text-[10px]" style={{ color: '#243044' }}>{i.api}</span>
+                    )}
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+        )}
       </div>
 
       {editing && <SettingsDialog plugin={editing} onSave={save} onClose={() => setEditing(null)} />}

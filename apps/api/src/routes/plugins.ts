@@ -4,6 +4,7 @@
 
 import { FastifyPluginAsync } from 'fastify'
 import { PLUGINS, findPlugin } from '../plugins'
+import { PLUGIN_IDEAS, repoSlug } from '../lib/plugin-wishlist'
 import { ProxmoxClient }        from '../lib/proxmox-client'
 import { discoverServices }     from '../lib/discovery'
 import {
@@ -85,6 +86,28 @@ export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
     } catch (e: any) {
       return reply.status(500).send({ success: false, error: e.message })
     }
+  })
+
+  /**
+   * GET /wishlist — plug-ins that do not exist yet, and how to ask for one.
+   *
+   * Served rather than hard-coded in the page so the list has one home. A
+   * catalogue kept in the README is a catalogue that drifts, which is exactly
+   * how two shipped plug-ins ended up missing from it.
+   */
+  fastify.get('/wishlist', async (_req, reply) => {
+    const built = new Set(PLUGINS.map(p => p.manifest.name.toLowerCase()))
+    return reply.send({
+      success: true,
+      data: {
+        repo:  repoSlug(),
+        ideas: PLUGIN_IDEAS.filter(i => !built.has(i.name.toLowerCase())),
+        built: PLUGINS.map(p => ({
+          id: p.manifest.id, name: p.manifest.name,
+          description: p.manifest.description, icon: p.manifest.icon,
+        })),
+      },
+    })
   })
 
   fastify.put<{ Params: { id: string }; Body: Record<string, string> }>(
