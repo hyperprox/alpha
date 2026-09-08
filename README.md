@@ -367,6 +367,7 @@ MikroTik plug-in's settings:
 | **Terminal — host palette on Ctrl/⌘ K, no second sidebar** | ✅ Shipped |
 | **Service catalogue — install a reverse proxy, Ollama or Tautulli you do not have** | ✅ Shipped |
 | **AI wizard installs the service itself, where a node login is stored** | ✅ Shipped |
+| **Home Assistant plug-in — dead entities, flat batteries, pending updates** | ✅ Shipped |
 | AI deployment — plan generation from natural language | ✅ Shipped |
 | **AI providers — Anthropic, OpenAI or any OpenAI-compatible endpoint, alongside Ollama** | ✅ Shipped |
 | **AI plans are grounded in live cluster facts and audited before they are shown** | ✅ Shipped |
@@ -460,6 +461,7 @@ Bundled today:
 |---|---|
 | **MikroTik** | The whole router: identity, model, RouterOS and RouterBOARD firmware, CPU, memory, temperature and input voltage; per-device and per-interface throughput; port forwards, firewall counters, WireGuard peers, LLDP/CDP neighbours, listening services, accounts, DNS and the recent log. Feeds the dashboard's WAN and LAN meters, and offers an SSH console. Read-only by intent. |
 | **Plex activity** | Who is watching, what they are watching, what is transcoding and what it costs in bandwidth — read through Tautulli, which also supplies the history: recent plays, top watchers, most-watched titles. |
+| **Home Assistant** | What has quietly stopped working. Unavailable entities sorted longest-dead first, batteries under a level you set, updates waiting, automations and when each last ran, what is on right now, entities by domain, and the error lines from the log. **Read-only by intent** — every write against this API actuates something physical, so it never calls `/api/services`. |
 
 Each plug-in's real output is shown on its gallery card, so you can see what it
 renders before placing it anywhere, and a plug-in quietly returning nothing is
@@ -479,6 +481,9 @@ the bundled Prometheus, ready to graph in the bundled Grafana:
 | `hyperprox_plugin_up` | every plug-in — 1 when it answered its device on the last scrape |
 | `hyperprox_plugin_network_bits_per_second` | MikroTik, labelled `direction` and `interface` |
 | `hyperprox_plugin_network_devices` | MikroTik, labelled `state` (awake / leased) |
+| `hyperprox_plugin_home_entities`, `..._entities_unavailable` | Home Assistant |
+| `hyperprox_plugin_home_batteries_low`, `..._updates_pending` | Home Assistant |
+| `hyperprox_plugin_home_automations` | Home Assistant, labelled `state` (on / off) |
 | `hyperprox_plugin_router_cpu_percent`, `..._memory_bytes` | MikroTik |
 | `hyperprox_plugin_plex_streams` | Plex, labelled `decision` (all / transcode / direct_play) |
 | `hyperprox_plugin_plex_bandwidth_kbps` | Plex, labelled `scope` (total / lan / wan) |
