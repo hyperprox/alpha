@@ -45,7 +45,7 @@ export interface TerminalHost {
   hint?:   string
 }
 
-/** Pull an IPv4 out of an LXC netN line: name=eth0,...,ip=192.168.2.211/24,... */
+/** Pull an IPv4 out of an LXC netN line: name=eth0,...,ip=10.0.0.11/24,... */
 function ipFromLxcNet(config: Record<string, any>): string | null {
   for (const [k, v] of Object.entries(config)) {
     if (!/^net\d+$/.test(k) || typeof v !== 'string') continue

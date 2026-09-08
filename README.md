@@ -74,9 +74,9 @@ guest on the cluster and its address, so it probes them for services it has a
 plug-in for and offers to configure what it finds:
 
 ```
-qBittorrent  http://192.168.1.20:8080   on arrstack (700)
-Sonarr       http://192.168.1.20:8989   on arrstack (700)   still needs sonarr_key
-Unmanic      http://192.168.1.21:8888   on unmanic-titan2 (216)
+qBittorrent  http://10.0.0.20:8080   on media-stack (201)
+Sonarr       http://10.0.0.20:8989   on media-stack (201)   still needs an API key
+Unmanic      http://10.0.0.21:8888   on transcoder (202)
 ```
 
 Every probe is an unauthenticated GET against a port a known service answers on.

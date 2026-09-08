@@ -333,7 +333,7 @@ model Node {
   id         String         @id @default(uuid())
   clusterId  String
   cluster    ProxmoxCluster @relation(fields: [clusterId], references: [id])
-  name       String         // e.g. "titan7"
+  name       String         // e.g. "node1"
   ip         String
   roles      String[]       @default([])
   online     Boolean        @default(false)

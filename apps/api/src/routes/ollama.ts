@@ -257,7 +257,7 @@ export const ollamaRoutes: FastifyPluginAsync = async (fastify) => {
             const path    = r.type === 'lxc' ? `/nodes/${r.node}/lxc/${r.vmid}/config` : `/nodes/${r.node}/qemu/${r.vmid}/config`
             const config  = await (client as any).fetchNode(path)
             const cfgStr  = JSON.stringify(config ?? '')
-            // Extract IP from net config (e.g. "ip=192.168.2.244/24")
+            // Extract IP from net config (e.g. "ip=10.0.0.44/24")
             const ipMatch = cfgStr.match(/ip=(\d+\.\d+\.\d+\.\d+)/)
             if (!ipMatch) return
 

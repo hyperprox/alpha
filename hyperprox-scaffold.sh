@@ -244,8 +244,8 @@ mkdir -p $BASE/config/prometheus/targets
 cat > $BASE/config/prometheus/targets/nodes.json << 'EOF'
 [
   {
-    "targets": ["192.168.2.208:9100"],
-    "labels": { "node": "titan7", "role": "gpu" }
+    "targets": ["10.0.0.10:9100"],
+    "labels": { "node": "node1", "role": "gpu" }
   }
 ]
 EOF
@@ -253,8 +253,8 @@ EOF
 cat > $BASE/config/prometheus/targets/pve.json << 'EOF'
 [
   {
-    "targets": ["192.168.2.208:9221"],
-    "labels": { "node": "titan7" }
+    "targets": ["10.0.0.10:9221"],
+    "labels": { "node": "node1" }
   }
 ]
 EOF
@@ -398,5 +398,5 @@ echo ""
 echo -e "  ${BOLD}Next steps:${RESET}"
 echo -e "  1. Copy ${CYAN}docker-compose.yml${RESET} and ${CYAN}.env${RESET} to ${CYAN}$BASE/${RESET}"
 echo -e "  2. ${CYAN}cd $BASE && docker compose up -d${RESET}"
-echo -e "  3. Open ${CYAN}http://192.168.2.251/setup${RESET} to run the setup wizard"
+echo -e "  3. Open ${CYAN}http://<container-ip>/setup${RESET} to run the setup wizard"
 echo ""
