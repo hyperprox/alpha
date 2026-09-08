@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { TerminalPane, type PaneState } from '@/components/terminal/TerminalPane'
 import { AddHostDialog, ConnectDialog, SaveLayoutDialog, type CredentialDraft } from '@/components/terminal/TerminalDialogs'
+import { HostPalette } from '@/components/terminal/HostPalette'
 
 interface TerminalHost {
   id: string; name: string; vmid: number; node: string
@@ -87,7 +88,7 @@ export default function TerminalPage() {
   const [hosts,     setHosts]     = useState<TerminalHost[]>([])
   const [loading,   setLoading]   = useState(true)
   const [notice,    setNotice]    = useState<string | null>(null)
-  const [query,     setQuery]     = useState('')
+  const [palette,   setPalette]   = useState(false)
   const [hasShared, setHasShared] = useState(false)
 
   const [sessions,  setSessions]  = useState<Session[]>([])
@@ -329,134 +330,35 @@ export default function TerminalPage() {
     loadLayouts()
   }
 
-  // -- Grouping ---------------------------------------------------------------
-  const groups = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    const filtered = hosts.filter(h =>
-      !q || h.name.toLowerCase().includes(q) || String(h.vmid).includes(q) || (h.ip ?? '').includes(q))
-
-    const byGroup = new Map<string, TerminalHost[]>()
-    for (const h of filtered) {
-      // A plug-in host's node is the literal string 'plugin', which is not a
-      // heading anyone wants to read.
-      const k = h.source === 'manual' ? 'Added by hand'
-              : h.source === 'plugin' ? 'From plug-ins'
-              : h.node
-      if (!byGroup.has(k)) byGroup.set(k, [])
-      byGroup.get(k)!.push(h)
+  // Ctrl/Cmd-K is the shortcut people already try in a terminal app. Bound on
+  // the window rather than a pane, because a focused xterm swallows keys.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        setPalette(v => !v)
+      }
     }
-    const last = (k: string) => k === 'Added by hand' ? 2 : k === 'From plug-ins' ? 1 : 0
-    return [...byGroup.entries()].sort((a, b) =>
-      last(a[0]) - last(b[0]) || a[0].localeCompare(b[0]))
-  }, [hosts, query])
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   const openIds = new Set(sessions.map(s => s.host.id))
   const s = active ? STATE_STYLE[active.state] : null
 
   return (
     <div className="flex h-full">
-      {/* ---- Host rail ------------------------------------------------------ */}
-      <aside className="flex w-[264px] flex-shrink-0 flex-col border-r" style={{ background: '#060a10', borderColor: BORDER }}>
-        <div className="flex flex-shrink-0 items-center justify-between border-b px-4" style={{ height: 56, borderColor: BORDER }}>
-          <div>
-            <h1 className="font-display text-lg font-light tracking-[0.18em] text-white">TERMINAL</h1>
-            <p className="font-mono text-[10px]" style={{ color: '#374151' }}>
-              {loading ? 'loading…' : `${hosts.length} hosts · ${sessions.length} open`}
-            </p>
-          </div>
-          <button
-            onClick={() => setAddingHost(true)}
-            title="Add a host by hand"
-            className="flex h-7 w-7 items-center justify-center rounded border transition-colors hover:bg-white/5"
-            style={{ borderColor: '#16233a', color: '#4b5563' }}
-          >
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.6}>
-              <path d="M8 3v10M3 8h10" strokeLinecap="round" />
-            </svg>
-          </button>
-        </div>
-
-        <div className="flex-shrink-0 px-3 py-2.5">
-          <input
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-            placeholder="Filter by name, id or address"
-            className="w-full rounded border px-2.5 py-1.5 font-mono text-[12px] outline-none transition-colors focus:border-cyan"
-            style={{ background: '#080c14', borderColor: '#16233a', color: '#cbd5e1' }}
-          />
-        </div>
-
-        <nav className="flex-1 overflow-y-auto px-2 pb-3">
-          {groups.map(([group, list]) => (
-            <div key={group} className="mb-3">
-              <div className="px-2 pb-1.5 pt-1 font-display text-[10px] uppercase tracking-[0.18em]" style={{ color: '#1f2937' }}>
-                {group}
-              </div>
-              <div className="flex flex-col gap-px">
-                {list.map(host => {
-                  const isOpen  = openIds.has(host.id)
-                  const running = host.status === 'running'
-                  return (
-                    <div key={host.id} className="group flex items-center rounded transition-colors hover:bg-white/[0.04]"
-                      style={active?.host.id === host.id ? { background: '#00e5ff10' } : undefined}>
-                      <button onClick={() => open(host)} className="flex min-w-0 flex-1 items-center gap-2.5 px-2 py-1.5 text-left">
-                        <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full"
-                          style={{
-                            background: running ? '#22c55e' : '#374151',
-                            boxShadow:  running ? '0 0 5px #22c55e' : 'none',
-                          }} />
-                        <span className="flex-1 truncate font-mono text-[12.5px]"
-                          style={{ color: active?.host.id === host.id ? ACCENT : running ? '#cbd5e1' : '#4b5563' }}>
-                          {host.name}
-                        </span>
-                        {isOpen && (
-                          <span className="flex-shrink-0 rounded px-1 font-mono text-[9px]"
-                            style={{ background: '#00e5ff15', color: ACCENT }}>open</span>
-                        )}
-                        {host.hasCredential && !isOpen && (
-                          <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="#374151" strokeWidth={1.6}
-                            className="flex-shrink-0" aria-label="login saved">
-                            <circle cx="6" cy="8" r="3" /><path d="M9 8h5M12 8v2.5" strokeLinecap="round" />
-                          </svg>
-                        )}
-                        <span className="flex-shrink-0 font-mono text-[10px] tabular-nums" style={{ color: '#1f2937' }}>
-                          {host.source === 'cluster' ? host.vmid : 'ssh'}
-                        </span>
-                      </button>
-                      {host.source === 'manual' && (
-                        <button
-                          onClick={() => removeHost(host)}
-                          title={`Remove ${host.name}`}
-                          className="mr-1 hidden h-5 w-5 flex-shrink-0 items-center justify-center rounded group-hover:flex hover:bg-white/10"
-                          style={{ color: '#4b5563' }}
-                        >
-                          <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.8}>
-                            <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
-                          </svg>
-                        </button>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-          ))}
-
-          {!loading && !groups.length && (
-            <p className="px-2 py-6 text-center font-mono text-[11px]" style={{ color: '#374151' }}>
-              {query ? 'Nothing matches that filter.' : 'No hosts found.'}
-            </p>
-          )}
-        </nav>
-      </aside>
-
       {/* ---- Panes ---------------------------------------------------------- */}
       <section className="flex min-w-0 flex-1 flex-col">
-        {/* Tab bar */}
-        {sessions.length > 0 && (
-          <div className="flex flex-shrink-0 items-stretch overflow-x-auto border-b"
-            style={{ borderColor: BORDER, background: '#060a10' }}>
-            {sessions.map(sess => {
+        {/* Tab bar. Always rendered, because it is also where hosts are opened
+            from — the left-hand host column it replaces was a second menu
+            stacked against the app's own. */}
+        <div className="flex flex-shrink-0 items-stretch overflow-x-auto border-b"
+          style={{ borderColor: BORDER, background: '#060a10', height: 37 }}>
+          <div className="flex flex-shrink-0 items-center gap-2 border-r px-3" style={{ borderColor: BORDER }}>
+            <h1 className="font-display text-[12px] font-light tracking-[0.18em]" style={{ color: '#4b5563' }}>TERMINAL</h1>
+          </div>
+          {sessions.map(sess => {
               const isActive = sess.key === activeKey
               const st = STATE_STYLE[sess.state]
               return (
@@ -480,11 +382,25 @@ export default function TerminalPage() {
                       <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
                     </svg>
                   </button>
-                </div>
-              )
-            })}
+              </div>
+            )
+          })}
+
+          <button
+            onClick={() => setPalette(true)}
+            title="Open a terminal   (Ctrl/⌘ K)"
+            className="flex flex-shrink-0 items-center gap-1.5 px-3 transition-colors hover:bg-white/5"
+            style={{ color: '#4b5563' }}>
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.8}>
+              <path d="M8 3v10M3 8h10" strokeLinecap="round" />
+            </svg>
+            {!sessions.length && <span className="font-mono text-[11px]">Open a terminal</span>}
+          </button>
+
+          <div className="ml-auto flex flex-shrink-0 items-center px-3 font-mono text-[10px]" style={{ color: '#1f2937' }}>
+            {loading ? 'loading…' : `${hosts.length} hosts · ${sessions.length} open`}
           </div>
-        )}
+        </div>
 
         {/* Header for the active pane */}
         <header className="flex flex-shrink-0 items-center gap-3 border-b px-4"
@@ -547,7 +463,15 @@ export default function TerminalPage() {
               </div>
             </>
           ) : (
-            <span className="font-mono text-[12px]" style={{ color: '#374151' }}>Pick a host to open a terminal</span>
+            <button onClick={() => setPalette(true)}
+              className="flex items-center gap-2 font-mono text-[12px] transition-colors hover:text-slate-300"
+              style={{ color: '#374151' }}>
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.8}>
+                <path d="M8 3v10M3 8h10" strokeLinecap="round" />
+              </svg>
+              Open a terminal
+              <span style={{ color: '#1f2937' }}>Ctrl / ⌘ K</span>
+            </button>
           )}
 
           <div className={`flex items-center gap-2 ${active ? '' : 'ml-auto'}`}>
@@ -691,12 +615,19 @@ export default function TerminalPage() {
                   </svg>
                 </div>
                 <p className="font-display text-sm tracking-wide" style={{ color: '#6b7280' }}>
-                  Every guest on the cluster is already listed.
+                  Every guest on the cluster is one keystroke away.
                 </p>
                 <p className="mt-1.5 font-mono text-[11px] leading-relaxed" style={{ color: '#374151' }}>
-                  Pick one to open a terminal. Open as many as you like — panes stay
-                  connected in the background, and the work runs in tmux on the host.
+                  Open as many as you like — panes stay connected in the background,
+                  and the work runs in tmux on the host.
                 </p>
+                <button
+                  onClick={() => setPalette(true)}
+                  className="mt-4 rounded px-3 py-1.5 font-display text-xs font-semibold tracking-wide transition-opacity hover:opacity-85"
+                  style={{ background: '#00e5ff15', color: ACCENT, border: '1px solid #00e5ff30' }}>
+                  Open a terminal
+                </button>
+                <p className="mt-2 font-mono text-[10px]" style={{ color: '#243044' }}>or press Ctrl / ⌘ K</p>
               </div>
             </div>
           )}
@@ -710,6 +641,18 @@ export default function TerminalPage() {
           hasShared={hasShared}
           onSave={saveCredential}
           onClose={() => setCredentialFor(null)}
+        />
+      )}
+      {palette && (
+        <HostPalette
+          hosts={hosts}
+          openIds={openIds}
+          activeHostId={active?.host.id ?? null}
+          loading={loading}
+          onOpen={open}
+          onRemove={removeHost}
+          onAddManual={() => setAddingHost(true)}
+          onClose={() => setPalette(false)}
         />
       )}
       {addingHost && <AddHostDialog onSave={addHost} onClose={() => setAddingHost(false)} />}
