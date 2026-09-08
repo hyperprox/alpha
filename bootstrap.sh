@@ -18,6 +18,7 @@ CORES=4            ; MEMORY=8192        ; DISK=100
 BRIDGE="vmbr0"     ; NET="dhcp"         ; GATEWAY=""
 STORAGE=""         ; TEMPLATE_STORAGE=""
 PASSWORD=""        ; ASSUME_YES=0       ; SKIP_EXPORTER=0
+SKIP_RAPL=0        ; SKIP_GPU_EXPORTER=0
 
 C_OK=$'\e[32m'; C_WARN=$'\e[33m'; C_ERR=$'\e[31m'; C_DIM=$'\e[90m'; C_ACC=$'\e[36m'; C_OFF=$'\e[0m'
 say()  { printf '%s→%s %s\n' "$C_ACC" "$C_OFF" "$*"; }
@@ -41,6 +42,8 @@ Usage: bootstrap.sh [options]
   --gateway IP        Gateway, required with --ip
   --password PASS     Container root password (default: generated)
   --skip-exporter     Do not install node_exporter on the nodes
+  --skip-rapl         Do not make CPU energy counters readable (see below)
+  --skip-gpu-exporter Do not install the Intel GPU exporter on Intel nodes
   -y, --yes           Do not ask for confirmation
 USAGE
 }
@@ -58,6 +61,8 @@ while [ $# -gt 0 ]; do
     --gateway) GATEWAY="$2"; shift 2;;
     --password) PASSWORD="$2"; shift 2;;
     --skip-exporter) SKIP_EXPORTER=1; shift;;
+    --skip-rapl) SKIP_RAPL=1; shift;;
+    --skip-gpu-exporter) SKIP_GPU_EXPORTER=1; shift;;
     -y|--yes) ASSUME_YES=1; shift;;
     -h|--help) usage; exit 0;;
     *) die "Unknown option: $1 (try --help)";;
@@ -210,6 +215,86 @@ if [ "$SKIP_EXPORTER" -eq 0 ]; then
         warn "$node — could not reach it; install prometheus-node-exporter there yourself"
       fi
     fi
+  done
+fi
+
+# ---------------------------------------------------------------------------
+#  7b. Power metrics
+#
+#  node_exporter's rapl collector reads /sys/class/powercap/*/energy_uj. Since
+#  kernel 5.10 those files are 0400 root-only — a PLATYPUS mitigation, because
+#  energy readings are fine-grained enough to leak AES keys. node_exporter runs
+#  unprivileged, so without this it gets EACCES and the collector yields
+#  *nothing*: no error, no warning, just a metric that never appears. A cluster
+#  power figure then silently covers only the nodes that happened to be readable.
+#
+#  Relaxing it to 0404 is a deliberate trade: an unprivileged local reader on
+#  your own hypervisor can observe energy draw. Pass --skip-rapl to decline, and
+#  accept that Monitoring will have no wattage.
+# ---------------------------------------------------------------------------
+if [ "$SKIP_RAPL" -eq 0 ]; then
+  say "Making CPU energy counters readable (pass --skip-rapl to decline)"
+  _rapl_rule='# Installed by HyperProx. Lets the unprivileged node_exporter read RAPL.
+# Kernel 5.10+ keeps energy_uj at 0400 as a PLATYPUS mitigation; this reverses
+# that on this host so power metrics exist. Delete this file to undo it.
+#
+# The chmod targets the device udev is reporting rather than walking the tree:
+# RUN+= fires once per domain as each appears, so a find over /sys/class/powercap
+# runs against a directory that is not yet populated and silently does nothing.
+SUBSYSTEM=="powercap", ACTION=="add|change", RUN+="/bin/chmod o+r /sys%p/energy_uj"'
+
+  _rapl_cmd='mkdir -p /etc/udev/rules.d && cat > /etc/udev/rules.d/99-hyperprox-rapl.rules <<"RULE"
+'"$_rapl_rule"'
+RULE
+udevadm control --reload-rules 2>/dev/null
+udevadm trigger --action=add --subsystem-match=powercap 2>/dev/null
+sleep 1
+ls /sys/class/powercap/*/energy_uj >/dev/null 2>&1 || exit 3
+systemctl restart prometheus-node-exporter 2>/dev/null || systemctl restart node_exporter 2>/dev/null || true'
+
+  for node in $(pvesh get /nodes --output-format json 2>/dev/null \
+      | sed -n 's/.*"node"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | sort -u); do
+    if [ "$node" = "$(hostname)" ]; then
+      if bash -c "$_rapl_cmd" >/dev/null 2>&1; then ok "$node — energy counters readable"
+      else warn "$node — no RAPL on this CPU, or the rule did not apply"; fi
+    else
+      if ssh -o BatchMode=yes -o ConnectTimeout=8 "$node" "$_rapl_cmd" >/dev/null 2>&1; then
+        ok "$node — energy counters readable"
+      else
+        warn "$node — could not apply the RAPL rule; power will be missing for it"
+      fi
+    fi
+  done
+fi
+
+# ---------------------------------------------------------------------------
+#  7c. Intel GPU exporter
+#
+#  On Intel nodes this reports iGPU utilisation, and a package power figure that
+#  stands in where RAPL cannot be read at all. Skipped on AMD and NVIDIA nodes:
+#  intel_gpu_top has nothing to talk to there and the container would crash-loop.
+#  HyperProx adds the scrape target itself — Settings → Targets, or
+#  POST /api/targets/sync — so nothing needs editing in prometheus.yml.
+# ---------------------------------------------------------------------------
+if [ "$SKIP_GPU_EXPORTER" -eq 0 ]; then
+  say "Installing the Intel GPU exporter where there is an Intel GPU"
+  _igpu_cmd='grep -qi 0x8086 /sys/class/drm/card*/device/vendor 2>/dev/null || exit 4
+command -v docker >/dev/null 2>&1 || exit 5
+docker ps -a --format "{{.Names}}" | grep -qx intel-gpu-exporter && exit 0
+docker run -d --name intel-gpu-exporter --restart unless-stopped \
+  --privileged --pid host -v /dev/dri:/dev/dri -p 8081:8080 \
+  ghcr.io/onedr0p/intel-gpu-exporter:rolling >/dev/null'
+
+  for node in $(pvesh get /nodes --output-format json 2>/dev/null \
+      | sed -n 's/.*"node"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | sort -u); do
+    if [ "$node" = "$(hostname)" ]; then bash -c "$_igpu_cmd" >/dev/null 2>&1; _rc=$?
+    else ssh -o BatchMode=yes -o ConnectTimeout=8 "$node" "$_igpu_cmd" >/dev/null 2>&1; _rc=$?; fi
+    case "$_rc" in
+      0) ok   "$node — Intel GPU exporter running";;
+      4) ok   "$node — no Intel GPU, skipped";;
+      5) warn "$node — has an Intel GPU but no Docker; install the exporter yourself";;
+      *) warn "$node — could not start the Intel GPU exporter";;
+    esac
   done
 fi
 
