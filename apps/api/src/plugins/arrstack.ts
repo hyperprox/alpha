@@ -47,6 +47,18 @@ function downloadStalled(items: any[]): any[] {
   return items.filter(i => !importBlocked([i]).length &&
     (i.trackedDownloadStatus === 'warning' || i.status === 'warning'))
 }
+function etaOf(secs: any): string {
+  const n = Number(secs)
+  if (!n || n >= 8_640_000) return '—'
+  if (n < 3600) return `${Math.round(n / 60)}m`
+  if (n < 86_400) return `${(n / 3600).toFixed(1)}h`
+  return `${(n / 86_400).toFixed(1)}d`
+}
+
+const ACTIVE_STATES = new Set([
+  'downloading', 'forcedDL', 'metaDL', 'stalledDL', 'uploading', 'forcedUP', 'checkingDL',
+])
+
 function titleOf(i: any): string {
   return i.title || i.series?.title || i.movie?.title || 'unknown'
 }
@@ -129,8 +141,21 @@ export const arrstackPlugin: Plugin = {
       rows.push({ label: 'Transfer', value: `↓ ${rate(transfer.dl_info_speed)} · ↑ ${rate(transfer.up_info_speed)}` })
     }
     if (torrents) {
-      const active = torrents.filter((t: any) => (t.dlspeed ?? 0) > 0 || (t.upspeed ?? 0) > 0).length
-      rows.push({ label: 'Torrents', value: `${active} active of ${torrents.length}` })
+      const moving = torrents.filter((t: any) => (t.dlspeed ?? 0) > 0 || (t.upspeed ?? 0) > 0).length
+      const downloading = torrents.filter((t: any) => Number(t.progress ?? 1) < 1).length
+      rows.push({
+        label: 'Torrents',
+        value: `${downloading} downloading · ${moving} moving of ${torrents.length}`,
+      })
+      // The one currently pulling hardest, named — "12 active" says nothing
+      // about whether the thing you are waiting for is one of them.
+      const top = [...torrents].sort((a: any, b: any) => Number(b.dlspeed ?? 0) - Number(a.dlspeed ?? 0))[0]
+      if (top && Number(top.dlspeed ?? 0) > 0) {
+        rows.push({
+          label: 'Fastest',
+          value: `${String(top.name).slice(0, 34)} · ${rate(top.dlspeed)} · ${(Number(top.progress) * 100).toFixed(0)}%`,
+        })
+      }
     }
     if (indexers) {
       const on = indexers.filter((i: any) => i.enable).length
@@ -204,6 +229,57 @@ export const arrstackPlugin: Plugin = {
             kind: EPISODE.test(titleOf(i)) ? 'episode' : 'pack',
             progress: pct(i), status: i.status ?? '—',
           }))),
+        },
+        {
+          title: 'Active downloads',
+          empty: 'Nothing is transferring.',
+          total: tor.length,
+          columns: [
+            { key: 'name',     label: 'Torrent' },
+            { key: 'state',    label: 'State' },
+            { key: 'progress', label: 'Done',     align: 'right' },
+            { key: 'size',     label: 'Size',     align: 'right' },
+            { key: 'dl',       label: 'Down',     align: 'right' },
+            { key: 'up',       label: 'Up',       align: 'right' },
+            { key: 'eta',      label: 'ETA',      align: 'right' },
+            { key: 'category', label: 'Category' },
+          ],
+          rows: tor
+            .filter((t: any) => ACTIVE_STATES.has(t.state))
+            .sort((a: any, b: any) => Number(b.dlspeed ?? 0) - Number(a.dlspeed ?? 0))
+            .slice(0, 60)
+            .map((t: any) => ({
+              name: t.name,
+              state: t.state,
+              progress: `${(Number(t.progress ?? 0) * 100).toFixed(1)}%`,
+              size: gb(t.size),
+              dl: rate(t.dlspeed),
+              up: rate(t.upspeed),
+              eta: etaOf(t.eta),
+              // A manual grab from Search lands under `prowlarr`, so the category
+              // is how you tell it apart from anything the *arr apps asked for.
+              category: t.category || '—',
+            })),
+        },
+        {
+          title: 'Torrents by state',
+          empty: 'No torrents.',
+          columns: [
+            { key: 'state', label: 'State' },
+            { key: 'count', label: 'Torrents', align: 'right' },
+            { key: 'size',  label: 'Size',     align: 'right' },
+          ],
+          rows: (() => {
+            const by = new Map<string, { count: number; size: number }>()
+            for (const t of tor) {
+              const e = by.get(t.state) ?? { count: 0, size: 0 }
+              e.count += 1; e.size += Number(t.size ?? 0)
+              by.set(t.state, e)
+            }
+            return [...by.entries()]
+              .sort((a, b) => b[1].count - a[1].count)
+              .map(([state, v]) => ({ state, count: v.count, size: gb(v.size) }))
+          })(),
         },
         {
           title: 'No progress in over an hour',
