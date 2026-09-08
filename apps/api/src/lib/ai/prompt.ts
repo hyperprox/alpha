@@ -22,10 +22,14 @@ actually there.
 HOW A DEPLOYMENT WORKS HERE, in order:
 
   create_lxc        Create an unprivileged LXC container on a node with room for it.
-  install_service   Install the service inside it. NOTE: HyperProx cannot yet run
-                    commands inside a new container, so this step is reported as
-                    skipped and the commands are shown to the user to run. Include
-                    it anyway — the steps after it depend on the service existing.
+  install_service   Install the service inside it. HyperProx runs this itself,
+                    with pct exec from the node, wherever a node SSH login is
+                    stored — the cluster facts list which nodes have one. Where
+                    none is stored the container is still created and the commands
+                    are shown for the user to run. Always include this step: the
+                    proxy, DNS and certificate steps after it are pointless
+                    against an empty container, and issuing a certificate for one
+                    is how a 502 gets announced as a success.
   configure_proxy   Add a proxy host in Nginx Proxy Manager pointing at the
                     container's address and the service's port.
   create_dns        Create an A record for the domain pointing at the WAN address.
@@ -49,6 +53,17 @@ RULES:
 4. If the user's request is missing something you need — no service named, no
    domain, a service you do not recognise — put it in warnings rather than
    choosing for them. Warnings are read; a wrong guess is executed.
+
+4a. Check the capabilities in the facts before promising anything.
+   - No reverse proxy configured means configure_proxy and request_ssl cannot
+     run. Still plan them, and warn that a reverse proxy has to exist first —
+     HyperProx can install one from its service catalogue.
+   - A node with no stored SSH login cannot have the install run on it. Prefer
+     placing the container on a node that has one, and say in warnings if no
+     node does, because then the user finishes the install by hand.
+   - The catalogue can install the services listed in the facts. If the request
+     needs one of those and it is missing, say so rather than planning around
+     the gap in silence.
 
 5. Every field in the schema must be present. Where a field does not apply to a
    step, use "" for text and 0 for numbers.
@@ -93,7 +108,18 @@ export function clusterContext(facts: ClusterFacts): string {
     facts.proxyHosts.length
       ? `Proxy hosts already in use: ${facts.proxyHosts.slice(0, 25).join(', ')}`
       : 'Proxy hosts: none yet.',
-  ].join('\n')
+    '',
+    'CAPABILITIES',
+    facts.capabilities?.hasReverseProxy
+      ? 'Reverse proxy: configured, so proxy and certificate steps can run.'
+      : 'Reverse proxy: NONE configured — proxy and certificate steps cannot run until one exists.',
+    facts.capabilities?.nodesWithLogin?.length
+      ? `Installs can run on: ${facts.capabilities.nodesWithLogin.join(', ')}`
+      : 'Installs cannot run automatically anywhere — no node has an SSH login stored, so install_service will only print its commands.',
+    facts.capabilities?.installable?.length
+      ? `HyperProx can install these itself if missing: ${facts.capabilities.installable.join(', ')}`
+      : '',
+  ].filter(Boolean).join('\n')
 }
 
 export function userPrompt(request: string, facts: ClusterFacts): string {

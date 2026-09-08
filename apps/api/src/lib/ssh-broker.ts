@@ -18,7 +18,7 @@ import { createHash } from 'crypto'
 import { getCredential, setCredential, deleteCredential, listCredentialKeys } from './credentials'
 
 export const CREDENTIAL_CATEGORY   = 'deck'
-const CRED_PROVIDER          = 'ssh'
+export const CRED_PROVIDER   = 'ssh'
 const HOSTKEY_PROVIDER       = 'hostkey'
 
 /** Credential id used when one login is shared across the fleet. */

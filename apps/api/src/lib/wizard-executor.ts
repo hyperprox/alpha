@@ -15,6 +15,7 @@ import { ProxmoxClient } from './proxmox-client'
 import { NPMClient }      from './npm-client'
 import { GoDaddyClient }  from './godaddy-client'
 import { getCredential }  from './credentials'
+import { execInGuest, nodeCredential } from './node-exec'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -318,37 +319,74 @@ async function stepCreateLXC(job: JobState): Promise<string> {
 }
 
 async function stepInstallService(job: JobState): Promise<string> {
-  // This step installs NOTHING. It generates the commands and hands them to the
-  // UI, because the executor has no shell on the new container.
+  // This used to install nothing at all: it printed commands and reported
+  // SKIPPED, because the executor had no shell on the container it had just
+  // created. Reporting anything else would have been worse — the wizard went on
+  // to point NPM at the box, create the DNS record and issue a real certificate,
+  // and announcing success there means handing someone a 502 and calling it a
+  // deployment.
   //
-  // It must therefore report itself as SKIPPED, not completed. Marking it
-  // completed made the wizard create a container, point NPM at it, create the
-  // DNS record and issue a real certificate, then announce a working HTTPS site
-  // for a container with nothing running in it — a 502 the user is told is a
-  // success. The steps after this one are still worth running: the proxy host,
-  // DNS record and certificate are all real and correct, and the service drops
-  // into place once these commands are run.
-  //
-  // The proper fix is to run them over SSH (see lib/ssh-broker.ts) once the
-  // wizard can obtain a credential for the container it just created.
-  const commands = getInstallCommands(job.plan.service ?? 'app')
+  // It can now run the install, via `pct exec` from the node. That needs an SSH
+  // login for the *node*, not the guest — a guest thirty seconds old has no
+  // credential, may have no sshd, and may not have finished DHCP. Where no node
+  // login is stored the old behaviour stands, honestly labelled, because a
+  // wizard that silently does half its job is how this bug existed in the first
+  // place.
   const svc      = getServiceConfig(job.plan.service ?? 'app')
-
-  // Store port for proxy step
+  const commands = getInstallCommands(job.plan.service ?? 'app')
   job.plan._servicePort = svc.port
 
-  // Attach commands to step so the frontend can display them
   const step = job.steps.find(s => s.type === 'install_service')
-  if (step) {
-    step.commands = commands
-    step.status   = 'skipped'
+
+  const cred = job.lxcNode ? await nodeCredential(job.lxcNode).catch(() => null) : null
+  if (!cred || !job.lxcNode || !job.lxcVmid) {
+    if (step) { step.commands = commands; step.status = 'skipped' }
+    job.serviceInstalled = false
+    return `NOT INSTALLED — no SSH login is stored for node ${job.lxcNode ?? '?'}, so the ` +
+           `commands below have to be run by hand inside CT ${job.lxcVmid ?? '?'}. Add one under ` +
+           `Settings → Nodes and the wizard will do this itself next time. Everything after this ` +
+           `step is configured and waiting.`
   }
 
-  job.serviceInstalled = false
+  const script = [
+    'export DEBIAN_FRONTEND=noninteractive',
+    'apt-get update -qq',
+    'apt-get install -y -qq ca-certificates curl docker.io docker-compose-v2',
+    'systemctl enable --now docker',
+    `mkdir -p /opt/app && cd /opt/app`,
+    `cat > docker-compose.yml <<'HP_COMPOSE'`,
+    svc.compose,
+    'HP_COMPOSE',
+    'docker compose up -d',
+  ].join('\n')
 
-  return `NOT INSTALLED — run these ${commands.length} commands inside CT ${job.lxcVmid ?? '?'} ` +
-         `to bring the service up on port ${svc.port}. Everything after this step is configured ` +
-         `and waiting for it.`
+  try {
+    const nodeIp = await nodeAddressFor(job.lxcNode)
+    const run = await execInGuest({
+      host: nodeIp, cred, vmid: job.lxcVmid, script, timeoutMs: 20 * 60_000,
+    })
+    if (run.timedOut) throw new Error('the install ran for twenty minutes without finishing')
+    if (run.code !== 0) throw new Error(`the install exited ${run.code}`)
+
+    job.serviceInstalled = true
+    if (step) step.status = 'completed'
+    return `Installed and started on port ${svc.port} inside CT ${job.lxcVmid}.`
+  } catch (e: any) {
+    // A failed install must not be dressed up as a skip. The steps that follow
+    // still do useful work, but the reader has to know the box is empty.
+    if (step) { step.commands = commands; step.status = 'failed'; step.error = e.message }
+    job.serviceInstalled = false
+    return `INSTALL FAILED — ${e.message}. The commands below will do it by hand inside ` +
+           `CT ${job.lxcVmid}. Everything after this step is still configured and waiting.`
+  }
+}
+
+/** Node name to address; names are not reliably resolvable from a container. */
+async function nodeAddressFor(node: string): Promise<string> {
+  const status = await getPVE().fetchNode<any[]>('/cluster/status').catch(() => [])
+  const row = (status ?? []).find((r: any) => r.type === 'node' && r.name === node)
+  if (!row?.ip) throw new Error(`no address found for node ${node}`)
+  return row.ip
 }
 
 async function stepConfigureProxy(job: JobState): Promise<string> {

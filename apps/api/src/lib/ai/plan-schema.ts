@@ -136,6 +136,28 @@ export function auditPlan(plan: Plan, facts: ClusterFacts): string[] {
     problems.push('The plan never creates a container.')
   }
 
+  // Capability checks. These are the ones that used to surface as a working
+  // certificate in front of an empty container — a failure the plan itself
+  // looked perfectly correct about.
+  const caps = facts.capabilities
+  if (!caps?.hasReverseProxy && (types.includes('configure_proxy') || types.includes('request_ssl'))) {
+    problems.push(
+      'No reverse proxy is configured, so the proxy and certificate steps cannot run. ' +
+      'Install one from the service catalogue first.')
+  }
+  if (types.includes('install_service') && !caps?.nodesWithLogin?.length) {
+    problems.push(
+      'No node has an SSH login stored, so the service cannot be installed automatically — ' +
+      'the container will be created and the commands shown for you to run. ' +
+      'Add a node login under Settings to have HyperProx do it.')
+  }
+  const placed = plan.steps.map(s => s.params.node).filter(Boolean)
+  for (const n of new Set(placed)) {
+    if (caps?.nodesWithLogin?.length && !caps.nodesWithLogin.includes(n) && types.includes('install_service')) {
+      problems.push(`Node ${n} has no SSH login stored, so the install step cannot run there.`)
+    }
+  }
+
   return problems
 }
 
@@ -146,4 +168,20 @@ export interface ClusterFacts {
   proxyHosts: string[]
   nextVmid:  number
   gateway:   string
+  /**
+   * What this install can actually carry out, as opposed to plan.
+   *
+   * The model was previously told a flat, permanent rule about what the
+   * executor could not do. That rule is now conditional — installs run where a
+   * node login is stored — and a prompt that states a stale limitation teaches
+   * the model to write warnings that are simply untrue.
+   */
+  capabilities: {
+    /** Nodes with an SSH login stored, so `pct exec` installs can run there. */
+    nodesWithLogin:  string[]
+    /** A reverse proxy is configured, so proxy, DNS and certificate steps can run. */
+    hasReverseProxy: boolean
+    /** Services HyperProx can install unattended if one is missing. */
+    installable:     string[]
+  }
 }
