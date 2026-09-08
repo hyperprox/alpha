@@ -59,7 +59,7 @@ export default function SearchPage() {
 
   useEffect(() => {
     fetch('/api/plugins').then(r => r.json()).then(res => {
-      const p = res?.data?.find((x: any) => x.id === 'prowlarr')
+      const p = res?.data?.find((x: any) => x.id === 'arrstack')
       setReady(Boolean(p?.configured))
     }).catch(() => setReady(false))
   }, [])
@@ -70,7 +70,7 @@ export default function SearchPage() {
     if (!q) return
     setBusy(true); setNotice(null); setResults(null)
     try {
-      const res = await fetch(`/api/plugins/prowlarr/search?q=${encodeURIComponent(q)}`).then(r => r.json())
+      const res = await fetch(`/api/plugins/arrstack/search?q=${encodeURIComponent(q)}`).then(r => r.json())
       if (!res.success) { setNotice(res.error); return }
       setResults(res.data)
       if (!res.data.length) setNotice(`Nothing found for “${q}”.`)
@@ -83,7 +83,7 @@ export default function SearchPage() {
 
   const grab = async (r: Result) => {
     setNotice(null)
-    const res = await fetch('/api/plugins/prowlarr/grab', {
+    const res = await fetch('/api/plugins/arrstack/grab', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ guid: r.guid, indexerId: r.indexerId, title: r.title }),
@@ -114,10 +114,10 @@ export default function SearchPage() {
         {ready === false && (
           <div className="mb-5 rounded-lg border px-4 py-3" style={{ borderColor: '#f59e0b40', background: '#161006' }}>
             <p className="font-display text-[12px] uppercase tracking-[0.14em]" style={{ color: '#f59e0b' }}>
-              Prowlarr is not configured
+              Search is not configured
             </p>
             <p className="mt-1 font-mono text-[11.5px]" style={{ color: '#9ca3af' }}>
-              Set it up under Plug-ins, or press Scan for services and let HyperProx find it.
+              Add a Prowlarr address and API key to the Arr Stack plug-in, or press Scan for services.
             </p>
           </div>
         )}

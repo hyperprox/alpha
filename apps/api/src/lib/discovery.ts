@@ -29,7 +29,7 @@ export interface Probe {
 
 export const PROBES: Probe[] = [
   {
-    pluginId: 'qbittorrent', setting: 'url', label: 'qBittorrent',
+    pluginId: 'arrstack', setting: 'qbit_url', label: 'qBittorrent',
     port: 8080, path: '/api/v2/app/version',
     // Answers with a bare version string like "v4.6.5" and nothing else.
     match: (s, b) => s === 200 && /^v?\d+\.\d+/.test(b.trim()),
@@ -50,6 +50,13 @@ export const PROBES: Probe[] = [
     port: 7878, path: '/ping',
     match: (s, b) => s === 200 && b.includes('"status"'),
     needs: ['radarr_key'],
+  },
+  {
+    pluginId: 'arrstack', setting: 'prowlarr_url', label: 'Prowlarr',
+    port: 9696, path: '/api/v1/system/status',
+    // Answers 401 without a key, which is itself proof it is Prowlarr.
+    match: (s, b) => s === 401 || (s === 200 && b.includes('appName')),
+    needs: ['prowlarr_key'],
   },
   {
     pluginId: 'plex', setting: 'url', label: 'Tautulli',
