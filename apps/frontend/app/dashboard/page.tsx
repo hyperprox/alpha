@@ -22,6 +22,13 @@ interface ServiceInfo { connected: boolean; url?: string; version?: string; mess
 interface GPUConsumer { pid: number; vram_mb: number; process: string; ct_id: string|null; ct_name: string|null; vram_pct: number }
 interface GPUInfoFull { name: string; vram_total: number; vram_used: number; vram_free: number; gpu_util: number; temp: number; power_draw: number; power_limit: number; vram_pct: number; power_pct: number; consumers: GPUConsumer[] }
 interface NodeNetStats { node: string; netin: number; netout: number; netin_mb: number; netout_mb: number }
+interface BwLink {
+  id: string; label: string; kind: 'wan' | 'lan'
+  downBps: number; upBps: number
+  downCapacityBps?: number; upCapacityBps?: number
+  source: string
+}
+interface BandwidthData { links: BwLink[]; unavailable: Array<{ plugin: string; reason: string }>; at: number }
 interface CephIOStats { read_bps: number; write_bps: number; read_ops: number; write_ops: number }
 interface NetworkData { nodes: NodeNetStats[]; ceph_io: CephIOStats|null; total_in: number; total_out: number }
 interface NodeGPUStatus {
@@ -405,6 +412,106 @@ function NetworkPanel({ network, stamp }: { network: NetworkData | null; stamp: 
 }
 
 
+// ---------------------------------------------------------------------------
+//  Bandwidth — what the internet link and the LAN are actually doing
+// ---------------------------------------------------------------------------
+
+/** Bits, not bytes. Every device and every ISP quotes bits; converting at the
+ *  edge is how a 500 Mbps plan starts reading as 62.5. */
+function fmtBits(bps: number): string {
+  if (bps >= 1e9) return `${(bps / 1e9).toFixed(2)} Gbps`
+  if (bps >= 1e6) return `${(bps / 1e6).toFixed(1)} Mbps`
+  if (bps >= 1e3) return `${(bps / 1e3).toFixed(0)} kbps`
+  return `${Math.round(bps)} bps`
+}
+
+/** A denominator a person recognises, so an auto-scaled dial still reads as a dial. */
+function niceCeil(mbps: number): number {
+  const steps = [10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000]
+  return steps.find(v => v >= mbps) ?? Math.ceil(mbps / 10000) * 10000
+}
+
+function LinkMeters({ link, stamp }: { link: BwLink; stamp: number | null }) {
+  const down = useHistory(link.downBps, stamp, 60)
+  const up   = useHistory(link.upBps,   stamp, 60)
+
+  const meter = (bps: number, capacity: number | undefined, hist: number[], label: string, color: string) => {
+    const mbps  = bps / 1e6
+    const capM  = capacity ? capacity / 1e6 : null
+    // With no stated capacity the dial scales to the largest thing it has seen,
+    // and says so — an invented denominator would make a quiet link look busy.
+    const max   = capM ?? niceCeil(Math.max(...hist, bps) / 1e6 || 10)
+    return (
+      <div className="flex flex-col items-center">
+        <Speedometer value={mbps} max={max} label={label} unit="" size={104} color={color}
+          caption={capM ? `of ${capM} Mbps` : `auto · peak ${niceCeil(Math.max(...hist, bps) / 1e6 || 10)}`}/>
+        <div className="font-mono text-gray-500" style={{ fontSize: 10, marginTop: 2, fontVariantNumeric: 'tabular-nums' }}>
+          {fmtBits(bps)}
+        </div>
+      </div>
+    )
+  }
+
+  const isWan = link.kind === 'wan'
+  const accent = isWan ? '#00e5ff' : '#a78bfa'
+
+  return (
+    <div className="rounded-lg p-3" style={{ background:'#070b12', border:`1px solid ${accent}20` }}>
+      <div className="flex items-baseline justify-between mb-2">
+        <span className="font-display font-semibold uppercase tracking-widest" style={{ color:accent, fontSize:12 }}>
+          {isWan ? 'Internet' : 'LAN'}
+        </span>
+        <span className="font-mono text-gray-600" style={{ fontSize:10 }}>{link.label}</span>
+      </div>
+      <div className="flex justify-around items-start mb-2">
+        {meter(link.downBps, link.downCapacityBps, down, 'Down', GOOD)}
+        {meter(link.upBps,   link.upCapacityBps,   up,   'Up',   WARN)}
+      </div>
+      <StreamChart inData={down} outData={up} height={64} width={420}/>
+    </div>
+  )
+}
+
+function BandwidthPanel({ data, stamp }: { data: BandwidthData | null; stamp: number | null }) {
+  if (!data) return null
+
+  const wan = data.links.filter(l => l.kind === 'wan')
+  const lan = data.links.filter(l => l.kind === 'lan')
+  const ordered = [...wan, ...lan]
+
+  if (!ordered.length) {
+    return (
+      <Panel title="Bandwidth" accent="#4b5563"
+        right={<span className="font-mono text-gray-600" style={{ fontSize:10 }}>no link source</span>}>
+        <div className="font-mono text-gray-600 text-center py-4" style={{ fontSize:12 }}>
+          {data.unavailable.length
+            ? <>Configure the <span style={{ color:ACCENT }}>{data.unavailable.map(u => u.plugin).join(', ')}</span> plug-in to read WAN and LAN throughput.</>
+            : 'No plug-in on this install can report link throughput.'}
+        </div>
+      </Panel>
+    )
+  }
+
+  return (
+    <Panel title="Bandwidth"
+      right={
+        <div className="flex gap-3 font-mono" style={{ fontSize:11, fontVariantNumeric:'tabular-nums' }}>
+          {ordered.map(l => (
+            <span key={l.id} className="text-gray-600">
+              {l.kind === 'wan' ? 'WAN' : 'LAN'}{' '}
+              <span style={{ color:GOOD }}>↓{fmtBits(l.downBps)}</span>{' '}
+              <span style={{ color:WARN }}>↑{fmtBits(l.upBps)}</span>
+            </span>
+          ))}
+        </div>
+      }>
+      <div className="grid gap-4" style={{ gridTemplateColumns:`repeat(${Math.min(ordered.length, 2)},1fr)` }}>
+        {ordered.map(l => <LinkMeters key={`${l.source}-${l.id}`} link={l} stamp={stamp}/>)}
+      </div>
+    </Panel>
+  )
+}
+
 // Node card
 function NodeCard({ node, vms, gpuInfo }: { node:PVENode; vms:PVEVM[]; gpuInfo?: NodeGPUStatus }) {
   const cpuPct=Math.round(node.cpu*100), memPct=pct(node.mem,node.maxmem), diskPct=pct(node.disk,node.maxdisk)
@@ -560,6 +667,7 @@ function HAPanel({ ha }: { ha:HAEntry[] }) {
 export default function DashboardView() {
   const [fast, setFast]       = useState<FastData | null>(null)
   const [clusterPower, setClusterPower] = useState<number | null>(null)
+  const [bandwidth, setBandwidth] = useState<BandwidthData | null>(null)
   const [slow, setSlow]       = useState<SlowData | null>(null)
   const [lastSync, setLastSync] = useState<Date | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
@@ -599,6 +707,22 @@ export default function DashboardView() {
         setLastSync(new Date())
       }
     } catch(e) { console.error(e) }
+  }, [])
+
+  // Bandwidth comes from the router, not from Proxmox, so it is on its own
+  // clock — the WebSocket carries cluster state and knows nothing about it.
+  useEffect(() => {
+    let alive = true
+    const poll = async () => {
+      try {
+        const res = await fetch('/api/network/bandwidth')
+        const j   = await res.json()
+        if (alive && j.success) setBandwidth(j.data)
+      } catch { /* the panel keeps its last reading */ }
+    }
+    poll()
+    const id = setInterval(poll, 5000)
+    return () => { alive = false; clearInterval(id) }
   }, [])
 
   // WebSocket for live updates
@@ -679,10 +803,13 @@ export default function DashboardView() {
           {slow && <ServicesPanel services={slow.services}/>}
         </div>
 
-        {/* Row 2 — throughput, full width, because a time series needs time on it */}
+        {/* Row 2 — the link meters, then the cluster's own traffic */}
+        <BandwidthPanel data={bandwidth} stamp={bandwidth?.at ?? null}/>
+
+        {/* Row 3 — throughput, full width, because a time series needs time on it */}
         <NetworkPanel network={fast.network??null} stamp={lastSync?.getTime() ?? null}/>
 
-        {/* Row 3 — nodes */}
+        {/* Row 4 — nodes */}
         <section>
           <h2 className="text-xs font-mono uppercase tracking-widest text-gray-600 mb-3">Cluster Nodes</h2>
           <div className="grid gap-4" style={{gridTemplateColumns:'repeat(auto-fill,minmax(250px,1fr))'}}>

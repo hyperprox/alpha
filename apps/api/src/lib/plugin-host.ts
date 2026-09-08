@@ -121,6 +121,38 @@ export interface Plugin {
   search?(ctx: PluginContext, query: string): Promise<PluginSearchResult[]>
   /** Send one search result to a download client. */
   grab?(ctx: PluginContext, guid: string, indexerId: number): Promise<string>
+  /**
+   * Live throughput on the links this plug-in can see.
+   *
+   * Separate from metrics() because the two answer different questions on
+   * different clocks: metrics() is scraped on Prometheus's schedule and kept,
+   * this is read now and thrown away. A dashboard asking "what is the network
+   * doing" cannot wait for the next scrape interval, and does not want a
+   * fifteen-second-old number.
+   */
+  bandwidth?(ctx: PluginContext): Promise<PluginLink[]>
+}
+
+/**
+ * One link, as a meter can render it.
+ *
+ * Rates are bits per second, because that is what every network device and
+ * every ISP quotes, and converting to bytes at the edge is how a 500 Mbps plan
+ * starts reading as 62.5.
+ *
+ * `capacityBps` is what the link is *for*, not what the port negotiated: a
+ * gigabit port on a 500/50 plan is a 500/50 link, and only the person paying
+ * the bill knows that. Left undefined, the meter scales to what it has seen
+ * and says so rather than inventing a denominator.
+ */
+export interface PluginLink {
+  id:            string
+  label:         string
+  kind:          'wan' | 'lan'
+  downBps:       number
+  upBps:         number
+  downCapacityBps?: number
+  upCapacityBps?:   number
 }
 
 export interface PluginSearchResult {
@@ -387,6 +419,11 @@ export async function runPluginGrab(plugin: Plugin, guid: string, indexerId: num
 export async function runPluginMetrics(plugin: Plugin): Promise<PluginMetric[]> {
   if (!plugin.metrics) return []
   return plugin.metrics(await contextFor(plugin))
+}
+
+export async function runPluginBandwidth(plugin: Plugin): Promise<PluginLink[]> {
+  if (!plugin.bandwidth) return []
+  return plugin.bandwidth(await contextFor(plugin))
 }
 
 /** Prometheus text exposition. Escaping matters: device names contain anything. */

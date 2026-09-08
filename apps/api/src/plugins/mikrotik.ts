@@ -10,7 +10,7 @@
 //  `monitor-traffic`, which RouterOS models as a command but which only reads.
 // =============================================================================
 
-import type { Plugin, PluginContext, PluginTileData, PluginDetail, PluginMetric } from '../lib/plugin-host'
+import type { Plugin, PluginContext, PluginTileData, PluginDetail, PluginMetric, PluginLink } from '../lib/plugin-host'
 
 type Row = { label: string; value: string; tone?: 'good' | 'warn' | 'bad' }
 
@@ -41,6 +41,28 @@ async function findWan(ctx: PluginContext, override?: string): Promise<string | 
     const def = routes.find(r => r['dst-address'] === '0.0.0.0/0' && r.active === 'true')
              ?? routes.find(r => r['dst-address'] === '0.0.0.0/0')
     return def?.['immediate-gw']?.split('%')[1] ?? def?.['gateway-status']?.split(' ')[2] ?? null
+  } catch { return null }
+}
+
+/**
+ * The link local traffic actually crosses.
+ *
+ * Prefers a bridge, because on a typical router that is every LAN port at once.
+ * Falls back to the busiest running interface that is not the WAN and not
+ * loopback — on a router whose LAN is a single trunk to a switch, that trunk is
+ * the honest answer and no bridge would have found it.
+ */
+async function findLan(ctx: PluginContext, wan: string | null): Promise<string | null> {
+  try {
+    const ifaces: any[] = await ctx.get('/rest/interface')
+    const usable = ifaces.filter(i =>
+      i.running === 'true' && i.name !== wan && i.type !== 'loopback' && i.disabled !== 'true')
+    const bridge = usable.find(i => i.type === 'bridge')
+    if (bridge) return bridge.name
+    const busiest = usable
+      .map(i => ({ name: i.name, bytes: Number(i['rx-byte'] ?? 0) + Number(i['tx-byte'] ?? 0) }))
+      .sort((a, b) => b.bytes - a.bytes)[0]
+    return busiest?.name ?? null
   } catch { return null }
 }
 
@@ -112,6 +134,13 @@ export const mikrotikPlugin: Plugin = {
       { key: 'password', label: 'Password',       type: 'secret', required: true },
       { key: 'wan',      label: 'WAN interface',  type: 'text',   required: false,
         hint: 'Leave blank to detect it from the default route — set it only if that guesses wrong.' },
+      { key: 'lan',      label: 'LAN interface',  type: 'text',   required: false,
+        hint: 'The link carrying local traffic — a bridge, or the trunk to your switch. Blank picks the busiest.' },
+      { key: 'wan_down_mbps', label: 'Plan download (Mbps)', type: 'text', required: false,
+        hint: 'What you pay for, not what the port negotiated. Blank makes the meter scale to what it has seen.' },
+      { key: 'wan_up_mbps',   label: 'Plan upload (Mbps)',   type: 'text', required: false },
+      { key: 'lan_mbps',      label: 'LAN link speed (Mbps)', type: 'text', required: false,
+        hint: 'e.g. 1000 for gigabit, 10000 for a 10G trunk.' },
     ],
   },
 
@@ -195,6 +224,69 @@ export const mikrotikPlugin: Plugin = {
       tone: cpu > 80 ? 'bad' : 'good',
       rows,
     }
+  },
+
+  /**
+   * WAN and LAN throughput in one round trip.
+   *
+   * monitor-traffic takes a comma-separated interface list and answers for all
+   * of them at once, which matters when this is polled every few seconds: one
+   * request for both links rather than one per link per poll.
+   *
+   * `fp-` prefixed counters are the fast-path totals and are a subset of the
+   * plain ones, so only rx/tx-bits-per-second are read here — adding them would
+   * double-count.
+   */
+  async bandwidth(ctx: PluginContext): Promise<PluginLink[]> {
+    const wan = await findWan(ctx, ctx.option('wan'))
+    const lan = ctx.option('lan') || await findLan(ctx, wan)
+
+    const wanted = [wan, lan].filter(Boolean) as string[]
+    if (!wanted.length) return []
+
+    let readings: any[] = []
+    try {
+      const res = await ctx.post('/rest/interface/monitor-traffic',
+        { interface: wanted.join(','), once: '' }, { timeoutMs: 15_000 })
+      readings = Array.isArray(res) ? res : [res]
+    } catch {
+      return []
+    }
+
+    const mbps = (raw?: string) => {
+      const n = Number(raw)
+      return Number.isFinite(n) && n > 0 ? n * 1_000_000 : undefined
+    }
+    const read = (name: string) => readings.find(r => r?.name === name)
+
+    const links: PluginLink[] = []
+
+    if (wan) {
+      const r = read(wan)
+      links.push({
+        id: 'wan', label: wan, kind: 'wan',
+        downBps: Number(r?.['rx-bits-per-second'] ?? 0),
+        upBps:   Number(r?.['tx-bits-per-second'] ?? 0),
+        downCapacityBps: mbps(ctx.option('wan_down_mbps')),
+        upCapacityBps:   mbps(ctx.option('wan_up_mbps')),
+      })
+    }
+
+    if (lan) {
+      const r = read(lan)
+      // Direction is stated from the router's side, so a download arriving from
+      // the internet leaves the router towards the LAN — the router's tx. Naming
+      // that "down" is what makes the two meters agree with each other.
+      const cap = mbps(ctx.option('lan_mbps'))
+      links.push({
+        id: 'lan', label: lan, kind: 'lan',
+        downBps: Number(r?.['tx-bits-per-second'] ?? 0),
+        upBps:   Number(r?.['rx-bits-per-second'] ?? 0),
+        downCapacityBps: cap, upCapacityBps: cap,
+      })
+    }
+
+    return links
   },
 
   async detail(ctx: PluginContext): Promise<PluginDetail> {
