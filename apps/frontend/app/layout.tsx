@@ -1,10 +1,27 @@
 import type { Metadata, Viewport } from 'next'
 import './globals.css'
 import { Sidebar } from '@/components/layout/Sidebar'
+import { ServiceWorker } from '@/components/layout/ServiceWorker'
 
 export const metadata: Metadata = {
   title: 'HyperProx',
   description: 'Your Proxmox infrastructure, hypercharged.',
+  manifest: '/manifest.webmanifest',
+  applicationName: 'HyperProx',
+  icons: {
+    icon: [
+      { url: '/icon.svg', type: 'image/svg+xml' },
+      { url: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+    ],
+    apple: '/apple-touch-icon.png',
+  },
+  appleWebApp: {
+    capable: true,
+    title: 'HyperProx',
+    // The bar is drawn dark by the app itself; a translucent status bar lets
+    // that run to the top edge instead of leaving a white strip above it.
+    statusBarStyle: 'black-translucent',
+  },
 }
 
 /**
@@ -33,6 +50,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         />
       </head>
       <body className="bg-base text-white font-sans antialiased flex h-screen overflow-hidden">
+        <ServiceWorker />
         <Sidebar />
         <div className="flex-1 flex flex-col overflow-hidden">
           <main className="hp-mobile-offset flex-1 overflow-y-auto">
