@@ -57,7 +57,7 @@ export const PLUGIN_IDEAS: PluginIdea[] = [
     would: 'Link quality per device, routers versus end devices, and what has stopped reporting.',
     api: 'MQTT topics, or the frontend API' },
   { slug: 'ups-nut', name: 'UPS (NUT / apcupsd)', category: 'monitoring',
-    would: 'Load, battery charge, runtime left, and the transfer log — the one power figure the dashboard cannot measure from RAPL.',
+    would: 'Load, battery charge, runtime left, and the transfer log — the wall-power figure RAPL structurally cannot give you. Needs a data connection to the UPS: USB, serial, or an SNMP card. Plenty of UPSes have one and are never plugged in by it, in which case there is nothing here to read.',
     api: 'NUT upsd, or apcupsd NIS' },
   { slug: 'opnsense-pfsense', name: 'OPNsense / pfSense', category: 'network',
     would: 'The MikroTik plug-in, for the other kind of router: WAN throughput, firewall states, VPN peers.',
