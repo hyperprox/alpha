@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>HyperProx — offline</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; min-height: 100dvh; display: grid; place-items: center;
+    background: #080c14; color: #6b7280; padding: 24px;
+    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .card { max-width: 420px; text-align: center; }
+  h1 { color: #00e5ff; font-size: 15px; letter-spacing: .2em; text-transform: uppercase; margin: 20px 0 8px; font-weight: 600; }
+  p { font-size: 12.5px; line-height: 1.7; margin: 0 0 10px; }
+  .strong { color: #9ca3af; }
+  button {
+    margin-top: 18px; padding: 9px 18px; border-radius: 8px; cursor: pointer;
+    background: rgba(0,229,255,.09); color: #00e5ff; border: 1px solid rgba(0,229,255,.3);
+    font: inherit; font-size: 12px;
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <img src="/icon-192.png" width="72" height="72" alt="">
+    <h1>No connection</h1>
+    <p class="strong">This page is not showing your cluster.</p>
+    <p>
+      HyperProx never caches live infrastructure data, because a stored answer
+      shown as a current one is worse than no answer — a node reported up that
+      went down an hour ago is exactly the reading you would act on.
+    </p>
+    <p>Reconnect and it will load real state.</p>
+    <button onclick="location.reload()">Try again</button>
+  </div>
+</body>
+</html>

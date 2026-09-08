@@ -19,5 +19,11 @@ export function middleware(req: NextRequest) {
 export const config = {
   // Everything except /api/* (the API returns its own 401), Next internals and
   // static assets.
-  matcher: ['/((?!api|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)'],
+  // sw.js, the manifest and the offline page must be reachable without a
+  // session or the app is not installable at all: a browser fetches the
+  // manifest before anyone has signed in, registers the worker from a
+  // same-origin script it has to be able to read, and shows the offline page
+  // precisely when it cannot reach the server to authenticate. None of the
+  // three contains anything but the app's own name, colours and caching rules.
+  matcher: ['/((?!api|_next/static|_next/image|favicon.ico|sw\\.js|manifest\\.webmanifest|offline\\.html|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)'],
 }

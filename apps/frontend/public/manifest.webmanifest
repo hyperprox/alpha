@@ -1,0 +1,24 @@
+{
+  "name": "HyperProx",
+  "short_name": "HyperProx",
+  "description": "Your Proxmox infrastructure, hypercharged.",
+  "id": "/dashboard",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#080c14",
+  "theme_color": "#080c14",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ],
+  "shortcuts": [
+    { "name": "Terminal",  "url": "/terminal",  "description": "Open a shell on any host" },
+    { "name": "Dashboard", "url": "/dashboard", "description": "Cluster at a glance" },
+    { "name": "Plug-ins",  "url": "/plugins",   "description": "Devices and services" }
+  ]
+}

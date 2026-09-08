@@ -368,6 +368,8 @@ MikroTik plug-in's settings:
 | **Service catalogue — install a reverse proxy, Ollama or Tautulli you do not have** | ✅ Shipped |
 | **AI wizard installs the service itself, where a node login is stored** | ✅ Shipped |
 | **Home Assistant plug-in — dead entities, flat batteries, pending updates** | ✅ Shipped |
+| **Responsive down to a phone, with a navigation drawer** | ✅ Shipped |
+| **Installable as a PWA — offline page, shortcuts, never caches live data** | ✅ Shipped |
 | AI deployment — plan generation from natural language | ✅ Shipped |
 | **AI providers — Anthropic, OpenAI or any OpenAI-compatible endpoint, alongside Ollama** | ✅ Shipped |
 | **AI plans are grounded in live cluster facts and audited before they are shown** | ✅ Shipped |
@@ -401,6 +403,35 @@ the app's own nav earned its place on neither count.
 Panes can be tabbed, split side by side, stacked, or gridded, and an arrangement
 can be saved by name and reopened later. Host keys are pinned on first connect
 and a change is refused with both fingerprints shown.
+
+---
+
+## On a phone
+
+The interface is responsive, and it installs. Open it on a phone and use the
+browser's *Add to Home Screen* — it then runs full-screen with its own icon,
+and the shortcuts drop you straight into the Terminal, Dashboard or Plug-ins.
+
+Below the `md` breakpoint the navigation becomes a drawer, the dashboard's
+columns stack, dial rows wrap, tables scroll inside their own container rather
+than dragging the page sideways, and the Terminal shows one pane at a time
+whatever the view mode says — two 80-column shells side by side on a phone is
+two unreadable shells. Panes stay connected either way; the layout only decides
+what is drawn.
+
+**The service worker never caches an API response, by design.** This is a
+console for live infrastructure: a stored `/api/proxmox/summary` replayed as
+current shows a node up that went down an hour ago, and that is the reading
+someone acts on. Hashed static assets are cached, because a filename containing
+a content hash cannot go stale. When there is no network you get an offline page
+that says plainly it is not showing your cluster, rather than a convincing
+screenshot of the past.
+
+`sw.js`, the manifest and the offline page are served without a session — a
+browser fetches the manifest before anyone signs in, and shows the offline page
+exactly when it cannot reach the server to authenticate. They contain the app's
+name, colours and caching rules and nothing else; every API route and page stays
+behind auth.
 
 ---
 
