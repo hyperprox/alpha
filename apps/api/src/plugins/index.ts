@@ -8,12 +8,14 @@
 
 import type { Plugin } from '../lib/plugin-host'
 import { arrstackPlugin } from './arrstack'
+import { homeAssistantPlugin } from './home-assistant'
 import { mikrotikPlugin } from './mikrotik'
 import { plexPlugin }     from './plex'
 import { unmanicPlugin }  from './unmanic'
 
 export const PLUGINS: Plugin[] = [
   arrstackPlugin,
+  homeAssistantPlugin,
   plexPlugin,
   unmanicPlugin,
   mikrotikPlugin,
