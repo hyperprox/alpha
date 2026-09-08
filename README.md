@@ -233,6 +233,26 @@ alongside the model's own.
 
 ---
 
+### Bandwidth meters
+
+The dashboard's WAN and LAN dials come from whichever plug-in implements
+`bandwidth()` — the MikroTik plug-in does. The cluster's own netin/netout cannot
+answer this: that is only the traffic Proxmox itself moves, so a house
+saturating the uplink is invisible to it.
+
+Two optional settings turn the dials from a bare number into utilisation. In the
+MikroTik plug-in's settings:
+
+- **Plan download / upload (Mbps)** — what you pay for, not what the port
+  negotiated. A gigabit port on a 500/50 plan is a 500/50 link, and only the
+  person paying the bill knows that. Left blank, each dial scales to the largest
+  rate it has seen and labels itself `auto`.
+- **LAN interface** — blank prefers a bridge, which on a typical router is every
+  LAN port at once. Set it to a trunk if your local traffic crosses one: a
+  bridge counter does not see switch-to-switch traffic.
+
+---
+
 ## What's Built & Working
 
 | Feature | Status |
@@ -253,6 +273,8 @@ alongside the model's own.
 | **Terminal — SSH panes for every host, sessions that outlive the browser** | ✅ Shipped |
 | **Terminal — split panes, tabs, and saved layouts** | ✅ Shipped |
 | **Plug-ins — brokered plug-in system with MikroTik and Plex/Tautulli** | ✅ Shipped |
+| **Dashboard — speedometer dials, trend sparklines and live throughput charts** | ✅ Shipped |
+| **WAN and LAN bandwidth meters, read from a plug-in** | ✅ Shipped |
 | AI deployment — plan generation from natural language | ✅ Shipped |
 | **AI providers — Anthropic, OpenAI or any OpenAI-compatible endpoint, alongside Ollama** | ✅ Shipped |
 | **AI plans are grounded in live cluster facts and audited before they are shown** | ✅ Shipped |
@@ -301,7 +323,7 @@ Bundled today:
 
 | Plug-in | What it shows |
 |---|---|
-| **MikroTik** | Live throughput in and out of the internet connection, how many devices are on the network and which are awake, plus per-device and per-interface tables. Read-only by intent. |
+| **MikroTik** | Live throughput in and out of the internet connection, how many devices are on the network and which are awake, plus per-device and per-interface tables. Also feeds the dashboard's WAN and LAN meters. Read-only by intent. |
 | **Plex activity** | Who is watching, what they are watching, what is transcoding and what it costs in bandwidth — read through Tautulli, which also supplies the history: recent plays, top watchers, most-watched titles. |
 
 Each plug-in's real output is shown on its gallery card, so you can see what it
