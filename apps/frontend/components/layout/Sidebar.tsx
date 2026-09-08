@@ -42,6 +42,7 @@ const NAV = [
     section: 'EXTEND',
     items: [
       { href: '/plugins', label: 'Plug-ins',    icon: PluginIcon   },
+      { href: '/catalogue', label: 'Catalogue', icon: CatalogueIcon },
     ],
   },
   {
@@ -182,6 +183,15 @@ function TerminalIcon() {
       <rect x="1" y="2.5" width="14" height="11" rx="1.5" />
       <path d="M4 6.5l2 1.75-2 1.75" strokeLinecap="round" strokeLinejoin="round" />
       <path d="M8.5 10.75h3.5" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function CatalogueIcon(p: any) {
+  return (
+    <svg {...p} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5}>
+      <path d="M2 5.5L8 2.5l6 3v5L8 13.5l-6-3v-5z" strokeLinejoin="round" />
+      <path d="M2 5.5L8 8.5l6-3M8 8.5v5" strokeLinejoin="round" />
     </svg>
   )
 }
