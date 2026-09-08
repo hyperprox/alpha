@@ -533,7 +533,7 @@ function BandwidthPanel({ data, stamp }: { data: BandwidthData | null; stamp: nu
 }
 
 // Node card
-function NodeCard({ node, vms, gpuInfo, power }: { node:PVENode; vms:PVEVM[]; gpuInfo?: NodeGPUStatus; power?: NodePower }) {
+function NodeCard({ node, vms, gpuInfo, power, powerTotal }: { node:PVENode; vms:PVEVM[]; gpuInfo?: NodeGPUStatus; power?: NodePower; powerTotal?: number }) {
   const cpuPct=Math.round(node.cpu*100), memPct=pct(node.mem,node.maxmem), diskPct=pct(node.disk,node.maxdisk)
   const nodeVMs=vms.filter(v=>v.node===node.node), running=nodeVMs.filter(v=>v.status==='running').length
   const hasGpu = gpuInfo && gpuInfo.gpus.length > 0
@@ -561,18 +561,54 @@ function NodeCard({ node, vms, gpuInfo, power }: { node:PVENode; vms:PVEVM[]; gp
         <Speedometer value={memPct}  label="MEM"  size={76} caption={formatBytes(node.maxmem)}/>
         <Speedometer value={diskPct} label="DISK" size={76} caption={formatBytes(node.maxdisk)}/>
       </div>
+{/* Power. A node has no rated maximum worth gauging against, so the bar
+          is its share of what the cluster is drawing — a denominator that is
+          measured rather than invented. */}
+      {power && (
+        <div className="rounded-lg px-2.5 py-2" style={{ background:'#070b12', border:'1px solid #111827' }}>
+          {power.total === null ? (
+            <div title="No RAPL on this CPU, and no exporter reporting a package figure. Nothing here is measuring watts.">
+              <div className="flex items-baseline justify-between">
+                <span className="font-mono uppercase tracking-widest text-gray-600" style={{ fontSize:9 }}>Power</span>
+                <span className="font-mono text-gray-700" style={{ fontSize:12 }}>no meter</span>
+              </div>
+              <div className="font-mono text-gray-700 mt-1" style={{ fontSize:9 }}>nothing on this node reports watts</div>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-baseline justify-between mb-1.5">
+                <span className="font-mono uppercase tracking-widest text-gray-600" style={{ fontSize:9 }}>Power</span>
+                <span className="font-mono font-bold" style={{ fontSize:15, color:'#f59e0b', fontVariantNumeric:'tabular-nums' }}>
+                  {power.total.toFixed(1)}<span style={{ fontSize:10, color:'#f59e0b90' }}> W</span>
+                </span>
+              </div>
+              {powerTotal ? (
+                <div className="flex items-center gap-2 mb-1.5">
+                  <div className="h-1 flex-1 rounded-full overflow-hidden" style={{ background:'#161e2c' }}>
+                    <div className="h-full rounded-full"
+                      style={{ width:`${Math.min((power.total / powerTotal) * 100, 100)}%`,
+                               background:'#f59e0b', boxShadow:'0 0 8px #f59e0b60',
+                               transition:'width .6s cubic-bezier(.22,1,.36,1)' }}/>
+                  </div>
+                  <span className="font-mono" style={{ fontSize:9, color:'#4b5563', fontVariantNumeric:'tabular-nums' }}>
+                    {Math.round((power.total / powerTotal) * 100)}% of cluster
+                  </span>
+                </div>
+              ) : null}
+              <div className="font-mono" style={{ fontSize:9, color:'#4b5563' }}>
+                {power.gpu
+                  ? `cpu ${power.cpu?.toFixed(1)} · gpu ${power.gpu.toFixed(1)} W`
+                  : `cpu package · ${power.source}`}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
       <div className="flex gap-2 pt-1 border-t items-center" style={{borderColor:'#111827'}}>
         <span className="text-xs font-mono" style={{color:accent}}>▶ {running} running</span>
         <span className="text-xs font-mono text-gray-600">■ {nodeVMs.length-running} stopped</span>
-        {power && (
-          <span className="text-xs font-mono ml-auto"
-            title={power.total === null
-              ? 'No power source on this node — no RAPL, and no exporter reporting a package figure.'
-              : `${power.source}${power.gpu ? ` · cpu ${power.cpu?.toFixed(1)} W + gpu ${power.gpu.toFixed(1)} W` : ''}`}
-            style={{color: power.total === null ? '#374151' : '#f59e0b'}}>
-            {power.total === null ? 'no meter' : `⚡ ${power.total.toFixed(0)}W`}
-          </span>
-        )}
+        <span className="text-xs font-mono text-gray-600 ml-auto">{nodeVMs.length} total</span>
       </div>
     </div>
   )
@@ -843,7 +879,7 @@ export default function DashboardView() {
         <section>
           <h2 className="text-xs font-mono uppercase tracking-widest text-gray-600 mb-3">Cluster Nodes</h2>
           <div className="grid gap-4" style={{gridTemplateColumns:'repeat(auto-fill,minmax(250px,1fr))'}}>
-            {sorted.map(node=><NodeCard key={node.node} node={node} vms={fast.vms} gpuInfo={fast.gpuStatus?.find(g=>g.node===node.node)} power={clusterPower?.nodes.find(p=>p.node===node.node)}/>)}
+            {sorted.map(node=><NodeCard key={node.node} node={node} vms={fast.vms} gpuInfo={fast.gpuStatus?.find(g=>g.node===node.node)} power={clusterPower?.nodes.find(p=>p.node===node.node)} powerTotal={clusterPower?.total}/>)}
           </div>
         </section>
 
