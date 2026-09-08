@@ -20,6 +20,14 @@ function mbps(bitsPerSecond: number): string {
   return m >= 100 ? m.toFixed(0) : m.toFixed(1)
 }
 
+function bytes(n: any): string {
+  const v = Number(n ?? 0)
+  if (!v) return '0'
+  const u = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+  const i = Math.min(Math.floor(Math.log(v) / Math.log(1024)), u.length - 1)
+  return `${(v / Math.pow(1024, i)).toFixed(1)} ${u[i]}`
+}
+
 function humaniseUptime(raw: string): string {
   const parts = raw.match(/\d+[a-z]+/g) ?? []
   return parts.slice(0, 2).join(' ') || raw
@@ -34,6 +42,56 @@ async function findWan(ctx: PluginContext, override?: string): Promise<string | 
              ?? routes.find(r => r['dst-address'] === '0.0.0.0/0')
     return def?.['immediate-gw']?.split('%')[1] ?? def?.['gateway-status']?.split(' ')[2] ?? null
   } catch { return null }
+}
+
+interface DeviceTraffic {
+  ip: string; name: string; down: number; up: number; bytes: number; conns: number
+}
+
+/**
+ * Per-device bandwidth, without changing anything on the router.
+ *
+ * RouterOS only tracks bandwidth per device if you configure it to — simple
+ * queues or Kid Control — and neither is set up on a typical router. Connection
+ * tracking is always on, and every entry carries a live rate and a byte count,
+ * so summing per source address gives real per-device throughput with no
+ * queues, no shaping and nothing to undo.
+ *
+ * The caveat worth knowing: fast-tracked connections bypass most accounting, so
+ * a heavily fast-tracked router under-reports. The figures are honest for
+ * ranking who is using the link, not for billing.
+ */
+/** RFC1918 only: connection tracking also carries inbound connections, whose
+ *  source is somewhere on the internet and is not a device on your network. */
+function isLocal(ip: string): boolean {
+  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) return false
+  const [a, b] = ip.split('.').map(Number)
+  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)
+}
+
+async function perDevice(ctx: PluginContext, names: Map<string, string>): Promise<DeviceTraffic[]> {
+  let conns: any[]
+  try {
+    conns = await ctx.get('/rest/ip/firewall/connection', { timeoutMs: 25_000 })
+  } catch {
+    return []
+  }
+  if (!Array.isArray(conns)) return []
+
+  const by = new Map<string, DeviceTraffic>()
+  for (const c of conns) {
+    const src = String(c['src-address'] ?? '').split(':')[0]
+    if (!isLocal(src)) continue
+
+    const row = by.get(src) ?? { ip: src, name: names.get(src) ?? '—', down: 0, up: 0, bytes: 0, conns: 0 }
+    // orig- is what the device sent, repl- is what came back to it.
+    row.up    += Number(c['orig-rate'] ?? 0)
+    row.down  += Number(c['repl-rate'] ?? 0)
+    row.bytes += Number(c['orig-bytes'] ?? 0) + Number(c['repl-bytes'] ?? 0)
+    row.conns += 1
+    by.set(src, row)
+  }
+  return [...by.values()].sort((a, b) => (b.down + b.up) - (a.down + a.up))
 }
 
 export const mikrotikPlugin: Plugin = {
@@ -108,6 +166,17 @@ export const mikrotikPlugin: Plugin = {
     // as nonsense the moment ARP exceeded the lease count.
     rows.push({ label: 'Devices seen', value: `${liveAll.length} active · ${bound.length} leases` })
 
+    // Who is actually using the link right now is more useful than how many
+    // devices exist, so it goes above the device names.
+    const traffic = await perDevice(ctx, nameByIp)
+    const busiest = traffic.find(t => t.down + t.up > 0)
+    if (busiest) {
+      rows.push({
+        label: 'Busiest',
+        value: `${busiest.name !== '—' ? busiest.name : busiest.ip} · ${mbps(busiest.down)}↓ ${mbps(busiest.up)}↑ Mbps`,
+      })
+    }
+
     // A few of them by name, so the tile answers "who" and not only "how many".
     const named = liveAll
       .map(a => ({ ip: a.address as string, name: nameByIp.get(a.address) }))
@@ -140,6 +209,18 @@ export const mikrotikPlugin: Plugin = {
     const arpList: any[]   = Array.isArray(arp) ? arp : []
     const leaseList: any[] = Array.isArray(leases) ? leases : []
     const ifaceList: any[] = Array.isArray(ifaces) ? ifaces : []
+
+    const namesByIp = new Map<string, string>()
+    for (const l of leaseList) {
+      const n = l['host-name'] || l.comment
+      if (l.address && n) namesByIp.set(l.address, n)
+    }
+    // A statically addressed host has no DHCP lease and would otherwise be
+    // nameless — an ARP comment is the only other label the router holds.
+    for (const a of arpList) {
+      if (a.address && a.comment && !namesByIp.has(a.address)) namesByIp.set(a.address, a.comment)
+    }
+    const traffic = await perDevice(ctx, namesByIp)
 
     let down = 0, up = 0
     if (wan) {
@@ -183,13 +264,6 @@ export const mikrotikPlugin: Plugin = {
     const devices = [...byMac.values()].sort((x, y) =>
       (y.awake === 'yes' ? 1 : 0) - (x.awake === 'yes' ? 1 : 0) || String(x.name).localeCompare(String(y.name)))
 
-    const bytes = (n: any) => {
-      const v = Number(n ?? 0)
-      if (!v) return '0'
-      const u = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
-      const i = Math.min(Math.floor(Math.log(v) / Math.log(1024)), u.length - 1)
-      return `${(v / Math.pow(1024, i)).toFixed(1)} ${u[i]}`
-    }
 
     return {
       stats: [
@@ -202,6 +276,26 @@ export const mikrotikPlugin: Plugin = {
         { label: 'Uptime',        value: humaniseUptime(String(resource.uptime ?? '')) },
       ],
       tables: [
+        {
+          title: 'Bandwidth by device',
+          empty: 'Connection tracking returned nothing — the router may have it disabled.',
+          columns: [
+            { key: 'name',  label: 'Device' },
+            { key: 'ip',    label: 'Address' },
+            { key: 'down',  label: 'Down',  align: 'right' },
+            { key: 'up',    label: 'Up',    align: 'right' },
+            { key: 'data',  label: 'Data',  align: 'right' },
+            { key: 'conns', label: 'Conns', align: 'right' },
+          ],
+          rows: traffic.slice(0, 40).map(t => ({
+            name:  t.name,
+            ip:    t.ip,
+            down:  `${mbps(t.down)} Mbps`,
+            up:    `${mbps(t.up)} Mbps`,
+            data:  bytes(t.bytes),
+            conns: t.conns,
+          })),
+        },
         {
           title: 'Devices',
           empty: 'No devices found — the router returned neither ARP entries nor DHCP leases.',
@@ -261,7 +355,24 @@ export const mikrotikPlugin: Plugin = {
     const totalMem = Number(resource['total-memory'] ?? 0)
     const freeMem  = Number(resource['free-memory'] ?? 0)
 
+    // Per-device series, capped: a label per device is fine for a home network
+    // and would be a cardinality problem on anything larger, so only the ten
+    // busiest are published.
+    const names = new Map<string, string>()
+    for (const l of (Array.isArray(leases) ? leases : [])) {
+      const n = l['host-name'] || l.comment
+      if (l.address && n) names.set(l.address, n)
+    }
+    const traffic = (await perDevice(ctx, names)).slice(0, 10)
+    const perDeviceMetrics: PluginMetric[] = traffic.flatMap(t => ([
+      { name: 'device_bits_per_second', help: 'Per-device throughput from connection tracking.',
+        type: 'gauge' as const, value: t.down, labels: { device: t.name !== '—' ? t.name : t.ip, direction: 'down' } },
+      { name: 'device_bits_per_second', help: 'Per-device throughput from connection tracking.',
+        type: 'gauge' as const, value: t.up, labels: { device: t.name !== '—' ? t.name : t.ip, direction: 'up' } },
+    ]))
+
     return [
+      ...perDeviceMetrics,
       { name: 'network_bits_per_second', help: 'Throughput on the internet-facing interface.',
         type: 'gauge', value: rx, labels: { direction: 'rx', interface: wan ?? 'unknown' } },
       { name: 'network_bits_per_second', help: 'Throughput on the internet-facing interface.',
