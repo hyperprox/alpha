@@ -48,13 +48,28 @@ async function readAll(ctx: PluginContext): Promise<ArrState[]> {
   return out.filter((x): x is ArrState => x !== null)
 }
 
-/** Queue items that need a person: a failed import will sit there forever. */
-function stuck(items: any[]): any[] {
+/**
+ * Two different problems, deliberately not one number.
+ *
+ * A blocked import needs a person — a title mismatch or a failed import sits in
+ * the queue indefinitely and nothing escalates it. A stalled download does not:
+ * the *arr flags it the moment a torrent loses its peers, and any half-decent
+ * setup already has something removing dead downloads on a threshold. Counting
+ * them together produced "8 stuck on import" when seven were stalled torrents
+ * being handled automatically and one was a real import block.
+ */
+function importBlocked(items: any[]): any[] {
   return items.filter(i =>
-    i.trackedDownloadStatus === 'warning' ||
+    i.trackedDownloadState === 'importBlocked' ||
+    i.trackedDownloadState === 'importFailed' ||
     i.trackedDownloadStatus === 'error' ||
-    i.status === 'warning' ||
-    (i.trackedDownloadState && i.trackedDownloadState.startsWith('importPending')))
+    (i.trackedDownloadState && String(i.trackedDownloadState).startsWith('importPending')))
+}
+
+function downloadStalled(items: any[]): any[] {
+  return items.filter(i =>
+    !importBlocked([i]).length &&
+    (i.trackedDownloadStatus === 'warning' || i.status === 'warning'))
 }
 
 function title(i: any): string {
@@ -88,23 +103,30 @@ export const arrstackPlugin: Plugin = {
   async load(ctx: PluginContext): Promise<PluginTileData> {
     const arrs = await readAll(ctx)
     const queued  = arrs.reduce((t, a) => t + a.queueTotal, 0)
-    const needing = arrs.reduce((t, a) => t + stuck(a.queue).length, 0)
+    const blocked = arrs.reduce((t, a) => t + importBlocked(a.queue).length, 0)
+    const stalled = arrs.reduce((t, a) => t + downloadStalled(a.queue).length, 0)
     const issues  = arrs.reduce((t, a) => t + a.health.filter(h => h.type === 'error' || h.type === 'warning').length, 0)
     const down    = arrs.filter(a => a.error)
 
     const rows = arrs.map(a => ({
       label: a.label,
       value: a.error ? 'unreachable' : `${a.queueTotal} queued · ${a.health.length} health`,
-      tone: (a.error ? 'bad' : stuck(a.queue).length ? 'warn' : 'good') as 'good' | 'warn' | 'bad',
+      tone: (a.error ? 'bad' : importBlocked(a.queue).length ? 'warn' : 'good') as 'good' | 'warn' | 'bad',
     }))
 
-    if (needing) {
-      rows.unshift({ label: 'Needs attention', value: `${needing} stuck in import`, tone: 'warn' })
+    // Stalled downloads are reported, never as "needs attention" — something is
+    // usually already clearing them, and a warning nobody should act on is how
+    // people learn to ignore the panel.
+    if (stalled) {
+      rows.unshift({ label: 'Stalled', value: `${stalled} download${stalled === 1 ? '' : 's'}`, tone: 'warn' })
+    }
+    if (blocked) {
+      rows.unshift({ label: 'Needs you', value: `${blocked} blocked import${blocked === 1 ? '' : 's'}`, tone: 'bad' })
     }
 
     return {
       headline: down.length === arrs.length ? 'Not reachable' : `${queued} in queue`,
-      tone: down.length ? 'bad' : needing || issues ? 'warn' : 'good',
+      tone: down.length || blocked ? 'bad' : stalled || issues ? 'warn' : 'good',
       rows,
     }
   },
@@ -120,26 +142,42 @@ export const arrstackPlugin: Plugin = {
     return {
       stats: [
         { label: 'In queue', value: String(arrs.reduce((t, a) => t + a.queueTotal, 0)) },
-        { label: 'Stuck',    value: String(arrs.reduce((t, a) => t + stuck(a.queue).length, 0)),
-          tone: arrs.some(a => stuck(a.queue).length) ? 'warn' : 'good' },
+        { label: 'Blocked imports', value: String(arrs.reduce((t, a) => t + importBlocked(a.queue).length, 0)),
+          tone: arrs.some(a => importBlocked(a.queue).length) ? 'bad' : 'good' },
+        { label: 'Stalled', value: String(arrs.reduce((t, a) => t + downloadStalled(a.queue).length, 0)),
+          tone: arrs.some(a => downloadStalled(a.queue).length) ? 'warn' : 'good' },
         { label: 'Health',   value: String(arrs.reduce((t, a) => t + a.health.length, 0)),
           tone: arrs.some(a => a.health.some(h => h.type === 'error')) ? 'bad' : 'good' },
         { label: 'Services', value: `${arrs.filter(a => !a.error).length} of ${arrs.length}` },
       ],
       tables: [
         {
-          title: 'Needs attention',
-          empty: 'Nothing is stuck.',
+          title: 'Needs you — imports that will not resolve themselves',
+          empty: 'No blocked imports.',
           columns: [
             { key: 'service', label: 'Service' },
             { key: 'title',   label: 'Title' },
             { key: 'state',   label: 'State' },
             { key: 'message', label: 'Why' },
           ],
-          rows: arrs.flatMap(a => stuck(a.queue).map(i => ({
+          rows: arrs.flatMap(a => importBlocked(a.queue).map(i => ({
             service: a.label,
             title:   title(i),
             state:   i.trackedDownloadState || i.status || '—',
+            message: (i.statusMessages?.[0]?.messages?.[0]) || i.errorMessage || '—',
+          }))),
+        },
+        {
+          title: 'Stalled downloads — usually cleared automatically',
+          empty: 'Nothing stalled.',
+          columns: [
+            { key: 'service', label: 'Service' },
+            { key: 'title',   label: 'Title' },
+            { key: 'message', label: 'Why' },
+          ],
+          rows: arrs.flatMap(a => downloadStalled(a.queue).map(i => ({
+            service: a.label,
+            title:   title(i),
             message: (i.statusMessages?.[0]?.messages?.[0]) || i.errorMessage || '—',
           }))),
         },
@@ -184,8 +222,10 @@ export const arrstackPlugin: Plugin = {
       return [
         { name: 'arr_queue', help: 'Items in the download queue.', type: 'gauge' as const,
           value: a.queueTotal, labels },
-        { name: 'arr_queue_stuck', help: 'Queue items needing manual attention.', type: 'gauge' as const,
-          value: stuck(a.queue).length, labels },
+        { name: 'arr_import_blocked', help: 'Queue items needing a person.', type: 'gauge' as const,
+          value: importBlocked(a.queue).length, labels },
+        { name: 'arr_download_stalled', help: 'Downloads the *arr has flagged as stalled.', type: 'gauge' as const,
+          value: downloadStalled(a.queue).length, labels },
         { name: 'arr_health_issues', help: 'Health check warnings and errors.', type: 'gauge' as const,
           value: a.health.length, labels },
         { name: 'arr_up', help: 'Whether the service answered.', type: 'gauge' as const,
