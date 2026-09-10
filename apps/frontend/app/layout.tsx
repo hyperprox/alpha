@@ -36,20 +36,31 @@ export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
   viewportFit: 'cover',
-  themeColor: '#080c14',
+  themeColor: 'var(--ground)',
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en" suppressHydrationWarning>
       <head>
+        {/* Before anything paints. Without this the page renders in the
+            default theme and then corrects itself, which is a white flash for
+            anyone who chose dark — the one group most likely to notice. It has
+            to be inline and synchronous for the same reason. */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              "(function(){try{var t=localStorage.getItem('hyperprox-theme');" +
+              "if(t==='dark'||t==='light')document.documentElement.setAttribute('data-theme',t);}catch(e){}})()",
+          }}
+        />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link
           href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
           rel="stylesheet"
         />
       </head>
-      <body className="bg-base text-white font-sans antialiased flex h-screen overflow-hidden">
+      <body style={{ background: 'var(--ground)', color: 'var(--text)' }} className="font-sans antialiased flex h-screen overflow-hidden">
         <ServiceWorker />
         <Sidebar />
         <div className="flex-1 flex flex-col overflow-hidden">

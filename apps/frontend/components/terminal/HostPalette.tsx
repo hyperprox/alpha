@@ -13,7 +13,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-const ACCENT = '#00e5ff'
+const ACCENT = 'var(--accent)'
 
 export interface PaletteHost {
   id: string
@@ -99,11 +99,11 @@ export function HostPalette({
     >
       <div
         className="flex w-full max-w-lg flex-col overflow-hidden rounded-xl border shadow-2xl"
-        style={{ background: '#0a0f18', borderColor: '#1b2a44', maxHeight: '70vh' }}
+        style={{ background: 'var(--surface-raised)', borderColor: 'var(--border-strong)', maxHeight: '70vh' }}
         onKeyDown={onKeyDown}
       >
-        <div className="flex items-center gap-3 border-b px-4" style={{ height: 52, borderColor: '#111c2e' }}>
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#334155" strokeWidth={1.6} className="flex-shrink-0">
+        <div className="flex items-center gap-3 border-b px-4" style={{ height: 52, borderColor: 'var(--border-dim)' }}>
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="var(--text-dimmer)" strokeWidth={1.6} className="flex-shrink-0">
             <circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5L14 14" strokeLinecap="round" />
           </svg>
           <input
@@ -112,9 +112,9 @@ export function HostPalette({
             onChange={e => setQuery(e.target.value)}
             placeholder="Open a terminal — filter by name, id or address"
             className="w-full bg-transparent font-mono text-[13px] outline-none"
-            style={{ color: '#cbd5e1' }}
+            style={{ color: 'var(--text)' }}
           />
-          <span className="flex-shrink-0 font-mono text-[10px]" style={{ color: '#1f2937' }}>
+          <span className="flex-shrink-0 font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>
             {loading ? 'loading…' : `${flat.length} of ${hosts.length}`}
           </span>
         </div>
@@ -122,7 +122,7 @@ export function HostPalette({
         <div ref={listRef} className="flex-1 overflow-y-auto px-2 py-2">
           {groups.map(([group, list]) => (
             <div key={group} className="mb-2">
-              <div className="px-2 pb-1 pt-1 font-display text-[10px] uppercase tracking-[0.18em]" style={{ color: '#1f2937' }}>
+              <div className="px-2 pb-1 pt-1 font-display text-[10px] uppercase tracking-[0.18em]" style={{ color: 'var(--text-faint)' }}>
                 {group}
               </div>
               <div className="flex flex-col gap-px">
@@ -138,7 +138,7 @@ export function HostPalette({
                       data-idx={here}
                       onMouseEnter={() => setCursor(here)}
                       className="group flex items-center rounded"
-                      style={{ background: onCursor ? '#00e5ff12' : 'transparent' }}
+                      style={{ background: onCursor ? 'color-mix(in srgb, var(--accent) 7%, transparent)' : 'transparent' }}
                     >
                       <button
                         onClick={() => { onOpen(host); onClose() }}
@@ -146,27 +146,27 @@ export function HostPalette({
                         className="flex min-w-0 flex-1 items-center gap-2.5 px-2 py-1.5 text-left"
                       >
                         <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full"
-                          style={{ background: running ? '#22c55e' : '#374151', boxShadow: running ? '0 0 5px #22c55e' : 'none' }} />
+                          style={{ background: running ? 'var(--good)' : 'var(--text-dimmer)', boxShadow: running ? '0 0 5px var(--good)' : 'none' }} />
                         <span className="flex-1 truncate font-mono text-[12.5px]"
-                          style={{ color: onCursor || activeHostId === host.id ? ACCENT : running ? '#cbd5e1' : '#4b5563' }}>
+                          style={{ color: onCursor || activeHostId === host.id ? ACCENT : running ? 'var(--text)' : 'var(--text-dim)' }}>
                           {host.name}
                         </span>
                         {host.ip && (
-                          <span className="flex-shrink-0 truncate font-mono text-[10px] tabular-nums" style={{ color: '#243044', maxWidth: 120 }}>
+                          <span className="flex-shrink-0 truncate font-mono text-[10px] tabular-nums" style={{ color: 'var(--text-dimmest)', maxWidth: 120 }}>
                             {host.ip}
                           </span>
                         )}
                         {isOpen && (
                           <span className="flex-shrink-0 rounded px-1 font-mono text-[9px]"
-                            style={{ background: '#00e5ff15', color: ACCENT }}>open</span>
+                            style={{ background: 'color-mix(in srgb, var(--accent) 8%, transparent)', color: ACCENT }}>open</span>
                         )}
                         {host.hasCredential && !isOpen && (
-                          <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="#374151" strokeWidth={1.6}
+                          <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="var(--text-dimmer)" strokeWidth={1.6}
                             className="flex-shrink-0" aria-label="login saved">
                             <circle cx="6" cy="8" r="3" /><path d="M9 8h5M12 8v2.5" strokeLinecap="round" />
                           </svg>
                         )}
-                        <span className="flex-shrink-0 font-mono text-[10px] tabular-nums" style={{ color: '#1f2937' }}>
+                        <span className="flex-shrink-0 font-mono text-[10px] tabular-nums" style={{ color: 'var(--text-faint)' }}>
                           {host.source === 'cluster' ? host.vmid : 'ssh'}
                         </span>
                       </button>
@@ -175,7 +175,7 @@ export function HostPalette({
                           onClick={() => onRemove(host)}
                           title={`Remove ${host.name}`}
                           className="mr-1 hidden h-5 w-5 flex-shrink-0 items-center justify-center rounded group-hover:flex hover:bg-white/10"
-                          style={{ color: '#4b5563' }}
+                          style={{ color: 'var(--text-dim)' }}
                         >
                           <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.8}>
                             <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
@@ -190,18 +190,18 @@ export function HostPalette({
           ))}
 
           {!loading && !flat.length && (
-            <p className="px-2 py-8 text-center font-mono text-[11px]" style={{ color: '#374151' }}>
+            <p className="px-2 py-8 text-center font-mono text-[11px]" style={{ color: 'var(--text-dimmer)' }}>
               {query ? 'Nothing matches that filter.' : 'No hosts found.'}
             </p>
           )}
         </div>
 
-        <div className="flex items-center gap-3 border-t px-4 py-2" style={{ borderColor: '#111c2e', background: '#080c14' }}>
-          <span className="font-mono text-[10px]" style={{ color: '#243044' }}>↑↓ move · ↵ open · esc close</span>
+        <div className="flex items-center gap-3 border-t px-4 py-2" style={{ borderColor: 'var(--border-dim)', background: 'var(--ground)' }}>
+          <span className="font-mono text-[10px]" style={{ color: 'var(--text-dimmest)' }}>↑↓ move · ↵ open · esc close</span>
           <button
             onClick={() => { onClose(); onAddManual() }}
             className="ml-auto rounded border px-2.5 py-1 font-display text-[11px] tracking-wide transition-colors hover:bg-white/5"
-            style={{ borderColor: '#16233a', color: '#6b7280' }}
+            style={{ borderColor: 'var(--border-strong)', color: 'var(--text-muted)' }}
           >
             + Add a host by hand
           </button>

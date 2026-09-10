@@ -19,16 +19,16 @@ interface Detail {
   tables?: Table[]
 }
 
-const ACCENT = '#00e5ff'
-const BORDER = '#0f1929'
-const TONE: Record<string, string> = { good: '#22c55e', warn: '#f59e0b', bad: '#ef4444' }
+const ACCENT = 'var(--accent)'
+const BORDER = 'var(--border)'
+const TONE: Record<string, string> = { good: 'var(--good)', warn: 'var(--warn)', bad: 'var(--crit)' }
 
 /** Values that read as state get a colour; everything else stays neutral. */
 function cellTone(v: string): string | undefined {
   const s = v.toLowerCase()
   if (['yes', 'running', 'playing', 'direct play'].includes(s)) return TONE.good
   if (['paused', 'transcode', 'dynamic'].includes(s))            return TONE.warn
-  if (['no', 'stopped', 'no lease'].includes(s))                 return '#4b5563'
+  if (['no', 'stopped', 'no lease'].includes(s))                 return 'var(--text-dim)'
   return undefined
 }
 
@@ -42,12 +42,12 @@ function DataTable({ table }: { table: Table }) {
   }, [table.rows, filter])
 
   return (
-    <section className="rounded-lg border" style={{ background: '#0d1220', borderColor: BORDER }}>
+    <section className="rounded-lg border" style={{ background: 'var(--surface)', borderColor: BORDER }}>
       <header className="flex items-center gap-3 border-b px-4 py-2.5" style={{ borderColor: BORDER }}>
         <h2 className="font-display text-[13px] font-semibold uppercase tracking-[0.14em] text-white">
           {table.title}
         </h2>
-        <span className="font-mono text-[11px] tabular-nums" style={{ color: '#374151' }}>
+        <span className="font-mono text-[11px] tabular-nums" style={{ color: 'var(--text-dimmer)' }}>
           {rows.length}
           {filter && rows.length !== table.rows.length && ` of ${table.rows.length}`}
         </span>
@@ -55,7 +55,7 @@ function DataTable({ table }: { table: Table }) {
             contradicts the figure in the stat tile above it. */}
         {!filter && table.total !== undefined && table.total > table.rows.length && (
           <span className="rounded px-1.5 py-0.5 font-mono text-[10px]"
-            style={{ background: '#f59e0b12', color: '#f59e0b', border: '1px solid #f59e0b28' }}>
+            style={{ background: 'color-mix(in srgb, var(--warn) 7%, transparent)', color: 'var(--warn)', border: '1px solid color-mix(in srgb, var(--warn) 16%, transparent)' }}>
             showing {table.rows.length} of {table.total}
           </span>
         )}
@@ -65,13 +65,13 @@ function DataTable({ table }: { table: Table }) {
             onChange={e => setFilter(e.target.value)}
             placeholder="filter"
             className="ml-auto w-44 rounded border px-2 py-1 font-mono text-[11px] outline-none transition-colors focus:border-cyan"
-            style={{ background: '#080c14', borderColor: '#16233a', color: '#cbd5e1' }}
+            style={{ background: 'var(--ground)', borderColor: 'var(--border-strong)', color: 'var(--text)' }}
           />
         )}
       </header>
 
       {rows.length === 0 ? (
-        <p className="px-4 py-6 text-center font-mono text-[11px]" style={{ color: '#374151' }}>
+        <p className="px-4 py-6 text-center font-mono text-[11px]" style={{ color: 'var(--text-dimmer)' }}>
           {filter ? 'Nothing matches that filter.' : (table.empty ?? 'Nothing to show.')}
         </p>
       ) : (
@@ -82,7 +82,7 @@ function DataTable({ table }: { table: Table }) {
                 {table.columns.map(c => (
                   <th key={c.key}
                     className="whitespace-nowrap border-b px-4 py-2 font-display text-[10px] uppercase tracking-[0.14em]"
-                    style={{ borderColor: BORDER, color: '#4b5563', textAlign: c.align ?? 'left' }}>
+                    style={{ borderColor: BORDER, color: 'var(--text-dim)', textAlign: c.align ?? 'left' }}>
                     {c.label}
                   </th>
                 ))}
@@ -97,8 +97,8 @@ function DataTable({ table }: { table: Table }) {
                       <td key={c.key}
                         className="whitespace-nowrap border-b px-4 py-1.5 font-mono text-[12px] tabular-nums"
                         style={{
-                          borderColor: '#0b1320',
-                          color: cellTone(v) ?? '#9ca3af',
+                          borderColor: 'var(--surface-notice)',
+                          color: cellTone(v) ?? 'var(--text-soft)',
                           textAlign: c.align ?? 'left',
                         }}>
                         {v}
@@ -141,31 +141,31 @@ export default function PluginDetailPage({ params }: { params: { id: string } })
   useEffect(() => { load() }, [load])
 
   return (
-    <div className="flex h-full flex-col" style={{ background: '#080c14' }}>
+    <div className="flex h-full flex-col" style={{ background: 'var(--ground)' }}>
       <header className="flex flex-shrink-0 items-center gap-3 border-b px-6"
-        style={{ height: 56, borderColor: BORDER, background: '#0a0f18' }}>
+        style={{ height: 56, borderColor: BORDER, background: 'var(--surface-raised)' }}>
         <Link href="/plugins" className="font-mono text-[11px] transition-colors hover:text-white"
-          style={{ color: '#4b5563' }}>← plug-ins</Link>
+          style={{ color: 'var(--text-dim)' }}>← plug-ins</Link>
         <span className="text-base">{icon}</span>
         <h1 className="font-display text-lg font-light tracking-[0.14em] text-white">{name}</h1>
         <button onClick={load} disabled={loading}
           className="ml-auto rounded border px-3 py-1 font-display text-xs tracking-wide transition-colors hover:bg-white/5 disabled:opacity-40"
-          style={{ borderColor: '#16233a', color: '#6b7280' }}>
+          style={{ borderColor: 'var(--border-strong)', color: 'var(--text-muted)' }}>
           {loading ? 'reading…' : 'Refresh'}
         </button>
       </header>
 
       <div className="flex-1 overflow-y-auto px-6 py-5">
         {loading && !detail && (
-          <p className="font-mono text-[11px]" style={{ color: '#374151' }}>reading…</p>
+          <p className="font-mono text-[11px]" style={{ color: 'var(--text-dimmer)' }}>reading…</p>
         )}
 
         {detail && !detail.ok && (
-          <div className="rounded-lg border px-4 py-3" style={{ borderColor: '#7f1d1d55', background: '#12080b' }}>
+          <div className="rounded-lg border px-4 py-3" style={{ borderColor: 'color-mix(in srgb, var(--crit) 33%, transparent)', background: 'var(--ground)' }}>
             <p className="font-display text-[11px] uppercase tracking-[0.14em]" style={{ color: TONE.bad }}>
               not reporting
             </p>
-            <p className="mt-1 font-mono text-[12px]" style={{ color: '#9ca3af' }}>{detail.error}</p>
+            <p className="mt-1 font-mono text-[12px]" style={{ color: 'var(--text-soft)' }}>{detail.error}</p>
           </div>
         )}
 
@@ -175,12 +175,12 @@ export default function PluginDetailPage({ params }: { params: { id: string } })
               <div className="mb-5 grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))' }}>
                 {detail.stats.map(s => (
                   <div key={s.label} className="rounded-lg border px-4 py-3"
-                    style={{ background: '#0d1220', borderColor: BORDER }}>
-                    <p className="font-display text-[10px] uppercase tracking-[0.16em]" style={{ color: '#4b5563' }}>
+                    style={{ background: 'var(--surface)', borderColor: BORDER }}>
+                    <p className="font-display text-[10px] uppercase tracking-[0.16em]" style={{ color: 'var(--text-dim)' }}>
                       {s.label}
                     </p>
                     <p className="mt-1 font-display text-[22px] font-semibold tabular-nums leading-none"
-                      style={{ color: s.tone ? TONE[s.tone] : '#e2e8f0' }}>
+                      style={{ color: s.tone ? TONE[s.tone] : 'var(--text-bright)' }}>
                       {s.value}
                     </p>
                   </div>

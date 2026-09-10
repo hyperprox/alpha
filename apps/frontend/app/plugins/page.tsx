@@ -35,19 +35,19 @@ interface TileData {
   rows?: Array<{ label: string; value: string; tone?: 'good' | 'warn' | 'bad' }>
 }
 
-const ACCENT = '#00e5ff'
-const BORDER = '#0f1929'
-const PANEL  = '#0d1220'
+const ACCENT = 'var(--accent)'
+const BORDER = 'var(--border)'
+const PANEL  = 'var(--surface)'
 
 // Semantic colour, kept separate from the accent so "healthy" never reads as
 // "selected" and vice versa.
 const TONE: Record<string, string> = {
-  good: '#22c55e', warn: '#f59e0b', bad: '#ef4444', idle: '#4b5563',
+  good: 'var(--good)', warn: 'var(--warn)', bad: 'var(--crit)', idle: 'var(--text-dim)',
 }
 
 function Label({ children }: { children: React.ReactNode }) {
   return (
-    <span className="mb-1.5 block font-display text-[11px] uppercase tracking-[0.14em]" style={{ color: '#6b7280' }}>
+    <span className="mb-1.5 block font-display text-[11px] uppercase tracking-[0.14em]" style={{ color: 'var(--text-muted)' }}>
       {children}
     </span>
   )
@@ -61,7 +61,7 @@ function Preview({ data, loading }: { data?: TileData; loading: boolean }) {
   if (loading) {
     return (
       <div className="flex h-[132px] items-center justify-center rounded border font-mono text-[11px]"
-        style={{ borderColor: BORDER, background: '#080c14', color: '#374151' }}>
+        style={{ borderColor: BORDER, background: 'var(--ground)', color: 'var(--text-dimmer)' }}>
         reading…
       </div>
     )
@@ -70,7 +70,7 @@ function Preview({ data, loading }: { data?: TileData; loading: boolean }) {
   if (!data) {
     return (
       <div className="flex h-[132px] items-center justify-center rounded border border-dashed font-mono text-[11px]"
-        style={{ borderColor: '#16233a', background: '#080c14', color: '#374151' }}>
+        style={{ borderColor: 'var(--border-strong)', background: 'var(--ground)', color: 'var(--text-dimmer)' }}>
         no reading yet
       </div>
     )
@@ -79,11 +79,11 @@ function Preview({ data, loading }: { data?: TileData; loading: boolean }) {
   if (!data.ok) {
     return (
       <div className="flex h-[132px] flex-col justify-center gap-1.5 rounded border px-3.5"
-        style={{ borderColor: '#7f1d1d55', background: '#12080b' }}>
+        style={{ borderColor: 'color-mix(in srgb, var(--crit) 33%, transparent)', background: 'var(--ground)' }}>
         <span className="font-display text-[11px] uppercase tracking-[0.14em]" style={{ color: TONE.bad }}>
           not reporting
         </span>
-        <span className="font-mono text-[11px] leading-relaxed" style={{ color: '#9ca3af' }}>
+        <span className="font-mono text-[11px] leading-relaxed" style={{ color: 'var(--text-soft)' }}>
           {data.error}
         </span>
       </div>
@@ -93,7 +93,7 @@ function Preview({ data, loading }: { data?: TileData; loading: boolean }) {
   const tone = TONE[data.tone ?? 'good']
   return (
     <div className="flex h-[132px] flex-col rounded border px-3.5 py-3"
-      style={{ borderColor: BORDER, background: '#080c14' }}>
+      style={{ borderColor: BORDER, background: 'var(--ground)' }}>
       <div className="flex items-baseline gap-2">
         <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full"
           style={{ background: tone, boxShadow: `0 0 6px ${tone}` }} />
@@ -105,14 +105,14 @@ function Preview({ data, loading }: { data?: TileData; loading: boolean }) {
       <div className="mt-2 flex flex-col gap-1 overflow-hidden">
         {(data.rows ?? []).slice(0, 4).map((r, i) => (
           <div key={i} className="flex items-baseline gap-2 font-mono text-[11px]">
-            <span className="w-[92px] flex-shrink-0 truncate" style={{ color: '#4b5563' }}>{r.label}</span>
-            <span className="truncate tabular-nums" style={{ color: r.tone ? TONE[r.tone] : '#9ca3af' }}>
+            <span className="w-[92px] flex-shrink-0 truncate" style={{ color: 'var(--text-dim)' }}>{r.label}</span>
+            <span className="truncate tabular-nums" style={{ color: r.tone ? TONE[r.tone] : 'var(--text-soft)' }}>
               {r.value}
             </span>
           </div>
         ))}
         {!data.rows?.length && (
-          <span className="font-mono text-[11px]" style={{ color: '#374151' }}>nothing to report</span>
+          <span className="font-mono text-[11px]" style={{ color: 'var(--text-dimmer)' }}>nothing to report</span>
         )}
       </div>
     </div>
@@ -141,10 +141,10 @@ function SettingsDialog({ plugin, onSave, onClose }: {
       >
         <div className="flex items-center gap-3 border-b px-5 py-3.5" style={{ borderColor: BORDER }}>
           <span className="flex h-8 w-8 items-center justify-center rounded border text-base"
-            style={{ borderColor: '#16233a', background: '#080c14' }}>{plugin.icon}</span>
+            style={{ borderColor: 'var(--border-strong)', background: 'var(--ground)' }}>{plugin.icon}</span>
           <div>
             <h2 className="font-display text-base font-semibold tracking-wide text-white">{plugin.name}</h2>
-            <p className="font-mono text-[11px]" style={{ color: '#6b7280' }}>
+            <p className="font-mono text-[11px]" style={{ color: 'var(--text-muted)' }}>
               Stored encrypted. Secrets are never sent back here.
             </p>
           </div>
@@ -153,7 +153,7 @@ function SettingsDialog({ plugin, onSave, onClose }: {
         <div className="flex flex-col gap-3.5 px-5 py-4">
           {plugin.settings.map(s => (
             <div key={s.key}>
-              <Label>{s.label}{!s.required && <span style={{ color: '#374151' }}> · optional</span>}</Label>
+              <Label>{s.label}{!s.required && <span style={{ color: 'var(--text-dimmer)' }}> · optional</span>}</Label>
               <input
                 type={s.type === 'secret' ? 'password' : 'text'}
                 value={values[s.key] ?? ''}
@@ -162,10 +162,10 @@ function SettingsDialog({ plugin, onSave, onClose }: {
                 placeholder={s.type === 'secret' && s.isSet ? '•••••••• — leave blank to keep' : ''}
                 autoComplete="off"
                 className="w-full rounded border px-2.5 py-1.5 font-mono text-[13px] outline-none transition-colors focus:border-cyan"
-                style={{ background: '#080c14', borderColor: '#16233a', color: '#e2e8f0' }}
+                style={{ background: 'var(--ground)', borderColor: 'var(--border-strong)', color: 'var(--text-bright)' }}
               />
               {s.hint && (
-                <p className="mt-1 font-mono text-[10.5px] leading-relaxed" style={{ color: '#374151' }}>{s.hint}</p>
+                <p className="mt-1 font-mono text-[10.5px] leading-relaxed" style={{ color: 'var(--text-dimmer)' }}>{s.hint}</p>
               )}
             </div>
           ))}
@@ -174,10 +174,10 @@ function SettingsDialog({ plugin, onSave, onClose }: {
         <div className="flex justify-end gap-2 border-t px-5 py-3" style={{ borderColor: BORDER }}>
           <button type="button" onClick={onClose}
             className="rounded px-3 py-1.5 font-display text-sm tracking-wide transition-colors hover:bg-white/5"
-            style={{ color: '#9ca3af' }}>Cancel</button>
+            style={{ color: 'var(--text-soft)' }}>Cancel</button>
           <button type="submit"
             className="rounded px-4 py-1.5 font-display text-sm font-semibold tracking-wide transition-opacity hover:opacity-85"
-            style={{ background: ACCENT, color: '#04202a' }}>Save and test</button>
+            style={{ background: ACCENT, color: 'var(--accent-ink)' }}>Save and test</button>
         </div>
       </form>
     </div>
@@ -315,18 +315,18 @@ export default function PluginsPage() {
   }
 
   return (
-    <div className="flex h-full flex-col" style={{ background: '#080c14' }}>
+    <div className="flex h-full flex-col" style={{ background: 'var(--ground)' }}>
       <header className="flex flex-shrink-0 flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-2 sm:px-6 sm:py-0"
-        style={{ height: 56, borderColor: BORDER, background: '#0a0f18' }}>
+        style={{ height: 56, borderColor: BORDER, background: 'var(--surface-raised)' }}>
         <h1 className="font-display text-lg font-light tracking-[0.18em] text-white">PLUG-INS</h1>
-        <p className="font-mono text-[11px]" style={{ color: '#374151' }}>
+        <p className="font-mono text-[11px]" style={{ color: 'var(--text-dimmer)' }}>
           {loading ? 'loading…' : `${plugins.filter(p => p.configured).length} of ${plugins.length} configured`}
         </p>
         <button
           onClick={scan}
           disabled={scanning}
           className="ml-auto rounded px-3 py-1.5 font-display text-xs font-semibold tracking-wide transition-opacity hover:opacity-85 disabled:opacity-40"
-          style={{ background: '#00e5ff15', color: ACCENT, border: '1px solid #00e5ff30' }}
+          style={{ background: 'color-mix(in srgb, var(--accent) 8%, transparent)', color: ACCENT, border: '1px solid color-mix(in srgb, var(--accent) 19%, transparent)' }}
         >
           {scanning ? 'Scanning…' : 'Scan for services'}
         </button>
@@ -334,48 +334,48 @@ export default function PluginsPage() {
 
       {notice && (
         <div className="flex flex-shrink-0 items-center gap-3 border-b px-6 py-2 font-mono text-[11px]"
-          style={{ borderColor: BORDER, background: '#0b1420', color: '#9ca3af' }}>
+          style={{ borderColor: BORDER, background: 'var(--surface-notice)', color: 'var(--text-soft)' }}>
           <span className="flex-1">{notice}</span>
-          <button onClick={() => setNotice(null)} style={{ color: '#4b5563' }}>dismiss</button>
+          <button onClick={() => setNotice(null)} style={{ color: 'var(--text-dim)' }}>dismiss</button>
         </div>
       )}
 
       <div className="flex-1 overflow-y-auto px-6 py-5">
-        <p className="mb-5 max-w-2xl font-mono text-[11.5px] leading-relaxed" style={{ color: '#4b5563' }}>
+        <p className="mb-5 max-w-2xl font-mono text-[11.5px] leading-relaxed" style={{ color: 'var(--text-dim)' }}>
           Plug-ins never see a credential. They declare what they need, and HyperProx makes the
           call on their behalf — so a plug-in can read its own device and nothing else.
         </p>
 
         {findings && findings.length > 0 && (
-          <section className="mb-6 rounded-lg border" style={{ background: PANEL, borderColor: '#00e5ff30' }}>
+          <section className="mb-6 rounded-lg border" style={{ background: PANEL, borderColor: 'color-mix(in srgb, var(--accent) 19%, transparent)' }}>
             <header className="flex items-center gap-3 border-b px-4 py-2.5" style={{ borderColor: BORDER }}>
               <h2 className="font-display text-[13px] font-semibold uppercase tracking-[0.14em] text-white">
                 Found on your cluster
               </h2>
-              <span className="font-mono text-[11px]" style={{ color: '#374151' }}>{findings.length}</span>
-              <button onClick={() => setFindings(null)} className="ml-auto font-mono text-[11px]" style={{ color: '#4b5563' }}>
+              <span className="font-mono text-[11px]" style={{ color: 'var(--text-dimmer)' }}>{findings.length}</span>
+              <button onClick={() => setFindings(null)} className="ml-auto font-mono text-[11px]" style={{ color: 'var(--text-dim)' }}>
                 dismiss
               </button>
             </header>
             <div className="flex flex-col">
               {findings.map((f, i) => (
-                <div key={i} className="flex items-center gap-3 border-b px-4 py-2.5 last:border-b-0" style={{ borderColor: '#0b1320' }}>
+                <div key={i} className="flex items-center gap-3 border-b px-4 py-2.5 last:border-b-0" style={{ borderColor: 'var(--surface-notice)' }}>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-baseline gap-2">
-                      <span className="font-display text-[13px] font-semibold" style={{ color: '#e2e8f0' }}>{f.label}</span>
-                      <span className="font-mono text-[11px]" style={{ color: '#4b5563' }}>{f.address}</span>
+                      <span className="font-display text-[13px] font-semibold" style={{ color: 'var(--text-bright)' }}>{f.label}</span>
+                      <span className="font-mono text-[11px]" style={{ color: 'var(--text-dim)' }}>{f.address}</span>
                     </div>
-                    <div className="font-mono text-[10.5px]" style={{ color: '#374151' }}>
+                    <div className="font-mono text-[10.5px]" style={{ color: 'var(--text-dimmer)' }}>
                       on {f.source}
                       {f.needs.length > 0 && (
-                        <span style={{ color: '#f59e0b' }}> · still needs {f.needs.join(' and ')}</span>
+                        <span style={{ color: 'var(--warn)' }}> · still needs {f.needs.join(' and ')}</span>
                       )}
                     </div>
                   </div>
                   <button
                     onClick={() => applyFinding(f)}
                     className="rounded px-3 py-1 font-display text-xs font-semibold tracking-wide transition-opacity hover:opacity-85"
-                    style={{ background: ACCENT, color: '#04202a' }}
+                    style={{ background: ACCENT, color: 'var(--accent-ink)' }}
                   >
                     Use this
                   </button>
@@ -397,17 +397,17 @@ export default function PluginsPage() {
 
                 <div className="flex items-start gap-3 px-4 pb-3 pt-4">
                   <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded border text-lg"
-                    style={{ borderColor: '#16233a', background: '#080c14' }}>{p.icon}</span>
+                    style={{ borderColor: 'var(--border-strong)', background: 'var(--ground)' }}>{p.icon}</span>
 
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <h2 className="truncate font-display text-[15px] font-semibold tracking-wide text-white">{p.name}</h2>
                       <span className="flex-shrink-0 rounded px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-wider"
-                        style={{ background: '#00e5ff10', color: '#4b5563', border: '1px solid #16233a' }}>
+                        style={{ background: 'color-mix(in srgb, var(--accent) 6%, transparent)', color: 'var(--text-dim)', border: '1px solid var(--border-strong)' }}>
                         {p.kind}
                       </span>
                     </div>
-                    <p className="mt-0.5 text-[11.5px] leading-snug" style={{ color: '#6b7280' }}>{p.description}</p>
+                    <p className="mt-0.5 text-[11.5px] leading-snug" style={{ color: 'var(--text-muted)' }}>{p.description}</p>
                   </div>
                 </div>
 
@@ -433,22 +433,22 @@ export default function PluginsPage() {
                     {p.configured && p.hasDetail && (
                       <Link href={`/plugins/${p.id}`}
                         className="rounded border px-2.5 py-1 font-display text-xs tracking-wide transition-colors hover:bg-white/5"
-                        style={{ borderColor: '#16233a', color: ACCENT }}>
+                        style={{ borderColor: 'var(--border-strong)', color: ACCENT }}>
                         Open in full
                       </Link>
                     )}
                     {p.configured && (
                       <button onClick={() => readOne(p.id)} disabled={busy[p.id]}
                         className="rounded border px-2.5 py-1 font-display text-xs tracking-wide transition-colors hover:bg-white/5 disabled:opacity-40"
-                        style={{ borderColor: '#16233a', color: '#6b7280' }}>
+                        style={{ borderColor: 'var(--border-strong)', color: 'var(--text-muted)' }}>
                         Refresh
                       </button>
                     )}
                     <button onClick={() => setEditing(p)}
                       className="rounded px-3 py-1 font-display text-xs font-semibold tracking-wide transition-opacity hover:opacity-85"
                       style={p.configured
-                        ? { background: '#00e5ff12', color: ACCENT, border: '1px solid #00e5ff30' }
-                        : { background: ACCENT, color: '#04202a', border: '1px solid transparent' }}>
+                        ? { background: 'color-mix(in srgb, var(--accent) 7%, transparent)', color: ACCENT, border: '1px solid color-mix(in srgb, var(--accent) 19%, transparent)' }
+                        : { background: ACCENT, color: 'var(--accent-ink)', border: '1px solid transparent' }}>
                       {p.configured ? 'Settings' : 'Set up'}
                     </button>
                   </div>
@@ -462,16 +462,16 @@ export default function PluginsPage() {
         {ideas.length > 0 && (
           <section className="mt-10">
             <div className="mb-1 flex items-baseline gap-3">
-              <h2 className="font-display text-sm font-semibold uppercase tracking-[0.18em]" style={{ color: '#6b7280' }}>
+              <h2 className="font-display text-sm font-semibold uppercase tracking-[0.18em]" style={{ color: 'var(--text-muted)' }}>
                 Not built yet
               </h2>
               <a href={requestUrl(repo)} target="_blank" rel="noreferrer"
                 className="ml-auto rounded px-3 py-1.5 font-display text-xs font-semibold tracking-wide transition-opacity hover:opacity-85"
-                style={{ background: '#00e5ff15', color: ACCENT, border: '1px solid #00e5ff30' }}>
+                style={{ background: 'color-mix(in srgb, var(--accent) 8%, transparent)', color: ACCENT, border: '1px solid color-mix(in srgb, var(--accent) 19%, transparent)' }}>
                 Suggest something else →
               </a>
             </div>
-            <p className="mb-4 font-mono text-[11px] leading-relaxed" style={{ color: '#374151', maxWidth: 620 }}>
+            <p className="mb-4 font-mono text-[11px] leading-relaxed" style={{ color: 'var(--text-dimmer)', maxWidth: 620 }}>
               Ideas, not promises — nothing here is scheduled. Asking is what moves one up. The button
               opens a pre-filled issue on GitHub in your browser; HyperProx holds no token and posts
               nothing on your behalf.
@@ -480,21 +480,21 @@ export default function PluginsPage() {
             <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill,minmax(300px,1fr))' }}>
               {ideas.map(i => (
                 <article key={i.slug} className="flex flex-col rounded-xl border p-4"
-                  style={{ background: '#0b111c', borderColor: BORDER }}>
+                  style={{ background: 'var(--surface-notice)', borderColor: BORDER }}>
                   <div className="mb-1 flex items-baseline gap-2">
-                    <span className="font-display text-[13px] font-semibold" style={{ color: '#cbd5e1' }}>{i.name}</span>
+                    <span className="font-display text-[13px] font-semibold" style={{ color: 'var(--text)' }}>{i.name}</span>
                     <span className="rounded px-1.5 font-mono text-[9px]"
-                      style={{ background: '#1f293780', color: '#4b5563' }}>{i.category}</span>
+                      style={{ background: 'color-mix(in srgb, var(--text-faint) 50%, transparent)', color: 'var(--text-dim)' }}>{i.category}</span>
                   </div>
-                  <p className="mb-3 font-mono text-[11px] leading-relaxed" style={{ color: '#6b7280' }}>{i.would}</p>
+                  <p className="mb-3 font-mono text-[11px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>{i.would}</p>
                   <div className="mt-auto flex items-center gap-2">
                     <a href={requestUrl(repo, i)} target="_blank" rel="noreferrer"
                       className="rounded border px-2.5 py-1 font-display text-[11px] tracking-wide transition-colors hover:bg-white/5"
-                      style={{ borderColor: '#16233a', color: '#9ca3af' }}>
+                      style={{ borderColor: 'var(--border-strong)', color: 'var(--text-soft)' }}>
                       Request this
                     </a>
                     {i.api && (
-                      <span className="truncate font-mono text-[10px]" style={{ color: '#243044' }}>{i.api}</span>
+                      <span className="truncate font-mono text-[10px]" style={{ color: 'var(--text-dimmest)' }}>{i.api}</span>
                     )}
                   </div>
                 </article>
