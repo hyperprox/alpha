@@ -373,8 +373,10 @@ MikroTik plug-in's settings:
 | AI deployment — plan generation from natural language | ✅ Shipped |
 | **AI providers — Anthropic, OpenAI or any OpenAI-compatible endpoint, alongside Ollama** | ✅ Shipped |
 | **AI plans are grounded in live cluster facts and audited before they are shown** | ✅ Shipped |
-| AI deployment — plan execution (creates the CT, proxy host, DNS record and certificate; the service install itself is still manual) | ⚠️ Partial |
-| Connect to existing Grafana / Prometheus instance | 🚧 v1.0 |
+| AI deployment — plan execution, end to end: container, service install, proxy host, DNS record, certificate | ✅ Shipped |
+| AI plans audited against live cluster facts before you are shown them | ✅ Shipped |
+| Run commands inside any guest from the node, without a guest credential | ✅ Shipped |
+| Connect to existing Grafana / Prometheus instance — works through `PROMETHEUS_URL` and `NEXT_PUBLIC_GRAFANA_URL` in `.env`; no settings UI yet | ⚠️ Partial |
 
 ---
 
@@ -556,8 +558,8 @@ others still publish — one broken device does not blank the scrape.
 
 | Issue | Status |
 |---|---|
-| **AI deployment does not install the service** — the wizard creates the container, proxy host, DNS record and SSL certificate, but the install step only *generates* commands; run them in the container or the domain will return 502. The step reports itself as skipped. | ⚠️ By design, for now |
-| **Wattage not displayed on all hardware** — power draw requires CPU power counter support. See [Monitoring](#monitoring--additional-setup-required) for details. | ℹ️ Hardware dependent |
+| **The AI wizard needs one SSH login per node to install anything** — with one stored it creates the container and installs the service itself. Without one it still creates everything else and prints the commands, and says so rather than reporting success. | ℹ️ Add node logins on the Catalogue page |
+| **A node shows `no meter` for power** — usually the udev rule rather than the hardware: `energy_uj` is root-only from kernel 5.10 and node_exporter runs unprivileged, so the rapl collector silently yields nothing. `bootstrap.sh` installs the rule; see [Power measurement](#power-measurement) for the order to check things in. Genuinely absent on some CPUs and inside VMs. | ℹ️ Usually fixable |
 
 ### Workarounds
 
@@ -631,15 +633,31 @@ Single `docker compose up` deploys the full stack:
 
 ### v1.0 — The Glue Layer
 
-- **Connect to existing Grafana / Prometheus** — use your own monitoring stack instead of the bundled containers
+Struck items are done. Two things changed since this list was written: the
+plug-in system arrived, which absorbs several of these more cheaply than a
+bespoke feature would, and the wizard learned to run commands inside a guest,
+which was the blocker under the autonomous-deployment item.
+
+- ~~**AI deployment wizard — full autonomous execution**~~ — **done.** The
+  wizard creates the container, installs the service with `pct exec` from the
+  node, configures the proxy host, creates the DNS record, waits for
+  propagation and requests the certificate. Needs one SSH login per node; with
+  none stored it does everything except the install and says so.
+- **Connect to existing Grafana / Prometheus** — *half done.* Both are already
+  configurable in `.env`; what is missing is a settings surface and a
+  credential-store entry so it is not a file edit.
 - **Smart Suggestion Engine** — cross-system awareness: new proxy host → suggest DNS record, WAN IP change → flag stale A records, SSL expiring → suggest renewal. Nothing acts without user confirmation.
 - **Network Storage Health** — monitor CIFS/NFS mounts across all nodes, surface offline mounts as named alerts, correlate mount failures with downstream monitoring issues.
-- **AI deployment wizard — full autonomous execution** — type `Deploy Nextcloud at cloud.mydomain.com` and HyperProx handles everything end-to-end: creates the LXC, configures the NPM proxy host, creates the DNS A record, polls for propagation, requests the SSL cert, and returns the live URL. No tab switching. No SSH. No manual anything.
-- **Multi-provider DNS** — GoDaddy + Cloudflare + Namecheap simultaneously
-- **Multi-instance proxy** — NPM + Traefik + Caddy + HAProxy + Pangolin simultaneously
+- **Multi-provider DNS** — GoDaddy + Cloudflare + Namecheap simultaneously.
+  GoDaddy is the only client written; the other two already have credential
+  definitions, so this is a client each against an interface that exists.
+- **Multi-instance proxy** — NPM + Traefik + Caddy + HAProxy + Pangolin
+  simultaneously. Same shape as above: NPM is the only client so far.
 - **Proxmox rolling updates** — CEPH-aware, per-node sequencing
 - **HyperProx self-update** — one-click from UI
-- **PBS backup monitoring** — datastore usage, job history, retention policies
+- **PBS backup monitoring** — datastore usage, job history, retention policies.
+  Better served as a plug-in now that plug-ins exist; it is already in the
+  catalogue's "not built yet" list, where anyone can ask for it.
 - **GitOps export** — encrypted YAML backup/restore of entire HyperProx configuration
 
 ### v2.0 — The Platform
