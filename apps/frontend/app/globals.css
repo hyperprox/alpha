@@ -44,3 +44,152 @@ body {
 /* Horizontal scrollers get momentum on touch, and keep their scrollbar out of
    the way on desktop. */
 .hp-table-scroll { -webkit-overflow-scrolling: touch; }
+
+/* ---------------------------------------------------------------------------
+   Theme tokens
+
+   Every colour in the app resolves through these. The dark values are exactly
+   what was hardcoded before, so dark mode is unchanged by construction rather
+   than by inspection.
+
+   Three states, not two. An explicit choice stamps data-theme on <html>; the
+   default setting stamps nothing, and then only prefers-color-scheme separates
+   them. The dark block is therefore written twice — once as the base, once
+   under an explicit stamp — so a toggle wins in both directions.
+
+   Alpha is composed with color-mix() rather than by appending hex digits. The
+   old code wrote `#00e5ff15` and `${accent}25`, which cannot survive becoming
+   a variable: `var(--accent)15` is not a colour.
+--------------------------------------------------------------------------- */
+
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --ground:         #080c14;  /* page */
+  --ground-deep:    #060a10;  /* sidebar, deepest insets */
+  --ground-inset:   #070b12;  /* a panel within a card */
+  --surface:        #0d1220;  /* card */
+  --surface-raised: #0a0f18;  /* header bars */
+  --surface-notice: #0b1420;  /* notice strips */
+
+  --border:         #0f1929;
+  --border-dim:     #111827;
+  --border-strong:  #16233a;
+  --border-soft:    #1e2d3d;
+
+  /* Dimmest to brightest. The names say how loud, not what colour. */
+  --text-faint:     #1f2937;
+  --text-dimmest:   #243044;
+  --text-dimmer:    #374151;
+  --text-dim:       #4b5563;
+  --text-muted:     #6b7280;
+  --text-soft:      #9ca3af;
+  --text:           #cbd5e1;
+  --text-bright:    #e2e8f0;
+
+  --accent:         #00e5ff;
+  --accent-2:       #22d3ee;
+  --accent-ink:     #04202a;  /* text on a solid accent fill */
+  --good:           #22c55e;
+  --good-soft:      #86efac;
+  --warn:           #f59e0b;
+  --warn-2:         #ffaa00;
+  --crit:           #ef4444;
+  --crit-2:         #ff4444;
+  --crit-soft:      #fca5a5;
+  --violet:         #a78bfa;
+  --violet-2:       #818cf8;
+
+  --scrim:          rgba(3, 6, 12, 0.72);
+}
+
+/* The un-stamped default follows the operating system. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+
+    --ground:         #f4f7fb;
+    --ground-deep:    #eaeff7;
+    --ground-inset:   #f0f4fa;
+    --surface:        #ffffff;
+    --surface-raised: #ffffff;
+    --surface-notice: #eef4fd;
+
+    --border:         #dbe3ee;
+    --border-dim:     #e7edf5;
+    --border-strong:  #c3d0e0;
+    --border-soft:    #cdd9e6;
+
+    --text-faint:     #b6c2d1;
+    --text-dimmest:   #a6b3c4;
+    --text-dimmer:    #8996a8;
+    --text-dim:       #6b7a8d;
+    --text-muted:     #566375;
+    --text-soft:      #41506380;
+    --text:           #26313f;
+    --text-bright:    #0f1722;
+
+    /* The brand cyan is unreadable on white — 1.4:1 against #fff. Same hue,
+       taken down to something that passes on a light ground. */
+    --accent:         #0e7490;
+    --accent-2:       #0891b2;
+    --accent-ink:     #ffffff;
+    --good:           #15803d;
+    --good-soft:      #166534;
+    --warn:           #b45309;
+    --warn-2:         #a16207;
+    --crit:           #dc2626;
+    --crit-2:         #b91c1c;
+    --crit-soft:      #991b1b;
+    --violet:         #6d28d9;
+    --violet-2:       #4f46e5;
+
+    --scrim:          rgba(15, 23, 42, 0.38);
+  }
+}
+
+/* An explicit light choice beats a dark operating system. */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --ground:         #f4f7fb;
+  --ground-deep:    #eaeff7;
+  --ground-inset:   #f0f4fa;
+  --surface:        #ffffff;
+  --surface-raised: #ffffff;
+  --surface-notice: #eef4fd;
+
+  --border:         #dbe3ee;
+  --border-dim:     #e7edf5;
+  --border-strong:  #c3d0e0;
+  --border-soft:    #cdd9e6;
+
+  --text-faint:     #b6c2d1;
+  --text-dimmest:   #a6b3c4;
+  --text-dimmer:    #8996a8;
+  --text-dim:       #6b7a8d;
+  --text-muted:     #566375;
+  --text-soft:      #415063;
+  --text:           #26313f;
+  --text-bright:    #0f1722;
+
+  --accent:         #0e7490;
+  --accent-2:       #0891b2;
+  --accent-ink:     #ffffff;
+  --good:           #15803d;
+  --good-soft:      #166534;
+  --warn:           #b45309;
+  --warn-2:         #a16207;
+  --crit:           #dc2626;
+  --crit-2:         #b91c1c;
+  --crit-soft:      #991b1b;
+  --violet:         #6d28d9;
+  --violet-2:       #4f46e5;
+
+  --scrim:          rgba(15, 23, 42, 0.38);
+}
+
+/* The body ground has to be painted, not inherited: a transparent body shows
+   whatever the browser chrome is using and the theme half-applies. */
+html, body { background: var(--ground); }

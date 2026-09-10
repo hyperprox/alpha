@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
+import { alpha } from '@/lib/theme'
 
 // ---------------------------------------------------------------------------
 //  Types
@@ -58,17 +59,17 @@ function sslStatus(host: ProxyHost): 'valid' | 'expiring' | 'expired' | 'none' {
   return 'valid'
 }
 
-const SSL_COLOR: Record<string, string> = { valid: '#22c55e', expiring: '#ffaa00', expired: '#ff4444', none: '#374151' }
+const SSL_COLOR: Record<string, string> = { valid: 'var(--good)', expiring: 'var(--warn-2)', expired: 'var(--crit-2)', none: 'var(--text-dimmer)' }
 const SSL_LABEL: Record<string, string> = { valid: '✓ SSL', expiring: '⚠ SSL', expired: '✗ SSL', none: 'No SSL' }
 
 const INPUT = {
-  background: '#060a10', border: '1px solid #1f2937',
-  color: '#e5e7eb', borderRadius: 6, padding: '8px 12px',
+  background: 'var(--ground-deep)', border: '1px solid var(--text-faint)',
+  color: 'var(--text-bright)', borderRadius: 6, padding: '8px 12px',
   fontFamily: 'IBM Plex Mono, monospace', fontSize: 12, outline: 'none', width: '100%',
 } as React.CSSProperties
 
 const LABEL = { display: 'block', fontSize: 10, fontFamily: 'IBM Plex Mono, monospace',
-  color: '#4b5563', textTransform: 'uppercase' as const, letterSpacing: '0.05em', marginBottom: 4 }
+  color: 'var(--text-dim)', textTransform: 'uppercase' as const, letterSpacing: '0.05em', marginBottom: 4 }
 
 // ---------------------------------------------------------------------------
 //  Toggle switch
@@ -80,12 +81,12 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: 
       <div
         onClick={() => onChange(!checked)}
         className="relative rounded-full transition-colors duration-200"
-        style={{ width: 32, height: 18, background: checked ? '#00e5ff' : '#1f2937', border: `1px solid ${checked ? '#00e5ff' : '#374151'}` }}
+        style={{ width: 32, height: 18, background: checked ? 'var(--accent)' : 'var(--text-faint)', border: `1px solid ${checked ? 'var(--accent)' : 'var(--text-dimmer)'}` }}
       >
         <div className="absolute top-0.5 rounded-full transition-all duration-200"
-          style={{ width: 14, height: 14, background: '#fff', left: checked ? 14 : 2 }} />
+          style={{ width: 14, height: 14, background: 'var(--surface)', left: checked ? 14 : 2 }} />
       </div>
-      <span style={{ fontFamily: 'IBM Plex Mono, monospace', fontSize: 11, color: checked ? '#e5e7eb' : '#4b5563' }}>{label}</span>
+      <span style={{ fontFamily: 'IBM Plex Mono, monospace', fontSize: 11, color: checked ? 'var(--text-bright)' : 'var(--text-dim)' }}>{label}</span>
     </label>
   )
 }
@@ -225,29 +226,29 @@ function HostModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
       style={{ background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(4px)' }}>
       <div className="w-full max-w-2xl rounded-xl border overflow-hidden" style={{
-        background: '#0a0f1a', borderColor: '#00e5ff25',
-        boxShadow: '0 0 40px #00e5ff08',
+        background: 'var(--surface-raised)', borderColor: 'color-mix(in srgb, var(--accent) 15%, transparent)',
+        boxShadow: '0 0 40px color-mix(in srgb, var(--accent) 3%, transparent)',
       }}>
 
         {/* Modal header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b" style={{ borderColor: '#111827' }}>
+        <div className="flex items-center justify-between px-6 py-4 border-b" style={{ borderColor: 'var(--border-dim)' }}>
           <div className="flex items-center gap-3">
-            <div className="w-1 h-5 rounded-full" style={{ background: '#00e5ff', boxShadow: '0 0 8px #00e5ff' }} />
-            <h2 className="font-display font-semibold tracking-wide uppercase" style={{ color: '#00e5ff', fontSize: 16 }}>
+            <div className="w-1 h-5 rounded-full" style={{ background: 'var(--accent)', boxShadow: '0 0 8px var(--accent)' }} />
+            <h2 className="font-display font-semibold tracking-wide uppercase" style={{ color: 'var(--accent)', fontSize: 16 }}>
               {isEdit ? 'Edit Proxy Host' : 'New Proxy Host'}
             </h2>
           </div>
-          <button onClick={onClose} style={{ color: '#374151', fontSize: 20, lineHeight: 1 }}>✕</button>
+          <button onClick={onClose} style={{ color: 'var(--text-dimmer)', fontSize: 20, lineHeight: 1 }}>✕</button>
         </div>
 
         {/* Tabs */}
-        <div className="flex border-b" style={{ borderColor: '#111827' }}>
+        <div className="flex border-b" style={{ borderColor: 'var(--border-dim)' }}>
           {(['details', 'ssl', 'advanced'] as const).map(t => (
             <button key={t} onClick={() => setTab(t)}
               className="px-5 py-3 text-xs font-mono uppercase tracking-wider transition-colors capitalize"
               style={{
-                borderBottom: tab === t ? '2px solid #00e5ff' : '2px solid transparent',
-                color: tab === t ? '#00e5ff' : '#4b5563',
+                borderBottom: tab === t ? '2px solid var(--accent)' : '2px solid transparent',
+                color: tab === t ? 'var(--accent)' : 'var(--text-dim)',
                 background: 'transparent',
               }}>{t}</button>
           ))}
@@ -274,13 +275,13 @@ function HostModal({
                     {i === form.domain_names.length - 1 ? (
                       <button onClick={() => set('domain_names', [...form.domain_names, ''])}
                         className="px-3 rounded text-xs font-mono"
-                        style={{ background: '#00e5ff15', color: '#00e5ff', border: '1px solid #00e5ff30', whiteSpace: 'nowrap' }}>
+                        style={{ background: 'color-mix(in srgb, var(--accent) 8%, transparent)', color: 'var(--accent)', border: '1px solid color-mix(in srgb, var(--accent) 19%, transparent)', whiteSpace: 'nowrap' }}>
                         + Add
                       </button>
                     ) : (
                       <button onClick={() => set('domain_names', form.domain_names.filter((_, j) => j !== i))}
                         className="px-3 rounded text-xs font-mono"
-                        style={{ background: '#ff444415', color: '#ff6666', border: '1px solid #ff444430' }}>
+                        style={{ background: 'color-mix(in srgb, var(--crit-2) 8%, transparent)', color: 'var(--crit-2)', border: '1px solid color-mix(in srgb, var(--crit-2) 19%, transparent)' }}>
                         ✕
                       </button>
                     )}
@@ -343,7 +344,7 @@ function HostModal({
               </div>
 
               {!isEdit && (
-                <div className="p-4 rounded-lg border" style={{ background: '#060a10', borderColor: '#00e5ff20' }}>
+                <div className="p-4 rounded-lg border" style={{ background: 'var(--ground-deep)', borderColor: 'color-mix(in srgb, var(--accent) 13%, transparent)' }}>
                   <Toggle checked={form.requestSSL} onChange={v => { set('requestSSL', v); if (v) setCertId(false) }}
                     label="Request new Let's Encrypt certificate" />
                   {form.requestSSL && (
@@ -351,7 +352,7 @@ function HostModal({
                       <label style={LABEL}>Let's Encrypt Email</label>
                       <input style={INPUT} value={form.letsencrypt_email}
                         onChange={e => set('letsencrypt_email', e.target.value)} />
-                      <div className="mt-2 text-xs font-mono" style={{ color: '#4b5563' }}>
+                      <div className="mt-2 text-xs font-mono" style={{ color: 'var(--text-dim)' }}>
                         DNS for {form.domain_names.filter(Boolean).join(', ') || 'your domain'} must point to NPM before saving.
                       </div>
                     </div>
@@ -382,7 +383,7 @@ function HostModal({
                 placeholder="# Custom nginx directives..."
                 onChange={e => set('advanced_config', e.target.value)}
               />
-              <div className="mt-2 text-xs font-mono" style={{ color: '#374151' }}>
+              <div className="mt-2 text-xs font-mono" style={{ color: 'var(--text-dimmer)' }}>
                 Injected into the nginx location block for this host.
               </div>
             </div>
@@ -390,21 +391,21 @@ function HostModal({
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between px-6 py-4 border-t" style={{ borderColor: '#111827' }}>
-          <div className="text-xs font-mono" style={{ color: error ? '#ff6666' : '#22c55e' }}>
+        <div className="flex items-center justify-between px-6 py-4 border-t" style={{ borderColor: 'var(--border-dim)' }}>
+          <div className="text-xs font-mono" style={{ color: error ? 'var(--crit-2)' : 'var(--good)' }}>
             {error ?? status ?? ''}
           </div>
           <div className="flex gap-2">
             <button onClick={onClose} className="px-4 py-2 rounded text-xs font-mono transition-colors"
-              style={{ background: 'transparent', color: '#4b5563', border: '1px solid #1f2937' }}>
+              style={{ background: 'transparent', color: 'var(--text-dim)', border: '1px solid var(--text-faint)' }}>
               Cancel
             </button>
             <button onClick={handleSave} disabled={saving}
               className="px-5 py-2 rounded text-xs font-mono transition-all"
               style={{
-                background: saving ? '#00e5ff20' : '#00e5ff15',
-                color:      saving ? '#00e5ff80' : '#00e5ff',
-                border:     '1px solid #00e5ff30',
+                background: saving ? 'color-mix(in srgb, var(--accent) 13%, transparent)' : 'color-mix(in srgb, var(--accent) 8%, transparent)',
+                color:      saving ? 'color-mix(in srgb, var(--accent) 50%, transparent)' : 'var(--accent)',
+                border:     '1px solid color-mix(in srgb, var(--accent) 19%, transparent)',
                 cursor:     saving ? 'not-allowed' : 'pointer',
               }}>
               {saving ? 'Saving...' : isEdit ? 'Save Changes' : 'Create Host'}
@@ -442,24 +443,24 @@ function DeleteModal({ host, onClose, onDelete }: {
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
       style={{ background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(4px)' }}>
       <div className="w-full max-w-md rounded-xl border p-6" style={{
-        background: '#0a0f1a', borderColor: '#ff444425',
+        background: 'var(--surface-raised)', borderColor: 'color-mix(in srgb, var(--crit-2) 15%, transparent)',
       }}>
-        <h2 className="font-display font-semibold uppercase mb-2" style={{ color: '#ff6666' }}>Delete Proxy Host</h2>
+        <h2 className="font-display font-semibold uppercase mb-2" style={{ color: 'var(--crit-2)' }}>Delete Proxy Host</h2>
         <p className="text-sm font-mono text-gray-400 mb-1">This will permanently delete:</p>
-        <p className="text-sm font-mono mb-4" style={{ color: '#e5e7eb' }}>
+        <p className="text-sm font-mono mb-4" style={{ color: 'var(--text-bright)' }}>
           {host.domain_names.join(', ')}
         </p>
-        <p className="text-xs font-mono mb-6" style={{ color: '#374151' }}>
+        <p className="text-xs font-mono mb-6" style={{ color: 'var(--text-dimmer)' }}>
           The SSL certificate will not be deleted. The nginx configuration will be removed immediately.
         </p>
         <div className="flex gap-2 justify-end">
           <button onClick={onClose} className="px-4 py-2 rounded text-xs font-mono"
-            style={{ background: 'transparent', color: '#4b5563', border: '1px solid #1f2937' }}>
+            style={{ background: 'transparent', color: 'var(--text-dim)', border: '1px solid var(--text-faint)' }}>
             Cancel
           </button>
           <button onClick={handleDelete} disabled={deleting}
             className="px-4 py-2 rounded text-xs font-mono"
-            style={{ background: '#ff444415', color: '#ff6666', border: '1px solid #ff444430' }}>
+            style={{ background: 'color-mix(in srgb, var(--crit-2) 8%, transparent)', color: 'var(--crit-2)', border: '1px solid color-mix(in srgb, var(--crit-2) 19%, transparent)' }}>
             {deleting ? 'Deleting...' : 'Delete Host'}
           </button>
         </div>
@@ -474,7 +475,7 @@ function DeleteModal({ host, onClose, onDelete }: {
 
 function StatCard({ label, value, color }: { label: string; value: number; color: string }) {
   return (
-    <div className="rounded-lg border p-4 flex flex-col gap-1" style={{ background: '#0d1220', borderColor: `${color}25` }}>
+    <div className="rounded-lg border p-4 flex flex-col gap-1" style={{ background: 'var(--surface)', borderColor: `${alpha(color, 15)}` }}>
       <div className="text-2xl font-display font-bold" style={{ color }}>{value}</div>
       <div className="text-xs font-mono text-gray-500 uppercase tracking-wider">{label}</div>
     </div>
@@ -497,14 +498,14 @@ function HostRow({ host, onEdit, onDelete, onToggle }: {
   const target = `${host.forward_scheme}://${host.forward_host}:${host.forward_port}`
 
   return (
-    <tr style={{ borderBottom: '1px solid #0f1929' }}
-      onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = '#0d1220'}
+    <tr style={{ borderBottom: '1px solid var(--border)' }}
+      onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface)'}
       onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
     >
       <td className="px-4 py-3 w-6">
         <div className="w-2 h-2 rounded-full" style={{
-          background:  host.enabled && host.meta?.nginx_online ? '#22c55e' : host.enabled ? '#ffaa00' : '#374151',
-          boxShadow:   host.enabled && host.meta?.nginx_online ? '0 0 5px #22c55e' : 'none',
+          background:  host.enabled && host.meta?.nginx_online ? 'var(--good)' : host.enabled ? 'var(--warn-2)' : 'var(--text-dimmer)',
+          boxShadow:   host.enabled && host.meta?.nginx_online ? '0 0 5px var(--good)' : 'none',
         }} />
       </td>
       <td className="px-4 py-3">
@@ -519,19 +520,19 @@ function HostRow({ host, onEdit, onDelete, onToggle }: {
       <td className="px-4 py-3">
         <div className="flex items-center gap-2">
           <span className="text-xs font-mono px-2 py-0.5 rounded" style={{
-            background: `${sslCol}15`, color: sslCol, border: `1px solid ${sslCol}30`,
+            background: `${alpha(sslCol, 8)}`, color: sslCol, border: `1px solid ${alpha(sslCol, 19)}`,
           }}>{SSL_LABEL[ssl]}</span>
           {days !== null && (
-            <span className="text-xs font-mono" style={{ color: days < 14 ? '#ff4444' : '#374151' }}>{days}d</span>
+            <span className="text-xs font-mono" style={{ color: days < 14 ? 'var(--crit-2)' : 'var(--text-dimmer)' }}>{days}d</span>
           )}
         </div>
       </td>
       <td className="px-4 py-3">
         <div className="flex gap-1 flex-wrap">
-          {host.block_exploits          && <Badge label="SEC"   color="#6366f1" />}
-          {host.allow_websocket_upgrade && <Badge label="WS"    color="#0891b2" />}
-          {host.http2_support           && <Badge label="H2"    color="#0284c7" />}
-          {host.ssl_forced              && <Badge label="HTTPS" color="#22c55e" />}
+          {host.block_exploits          && <Badge label="SEC"   color="var(--violet-2)" />}
+          {host.allow_websocket_upgrade && <Badge label="WS"    color="var(--accent-2)" />}
+          {host.http2_support           && <Badge label="H2"    color="var(--accent-2)" />}
+          {host.ssl_forced              && <Badge label="HTTPS" color="var(--good)" />}
         </div>
       </td>
       <td className="px-4 py-3">
@@ -539,25 +540,25 @@ function HostRow({ host, onEdit, onDelete, onToggle }: {
           {/* Edit */}
           <button onClick={() => onEdit(host)}
             className="px-2.5 py-1 rounded text-xs font-mono transition-all"
-            style={{ background: '#00e5ff10', color: '#00e5ff80', border: '1px solid #00e5ff20' }}>
+            style={{ background: 'color-mix(in srgb, var(--accent) 6%, transparent)', color: 'color-mix(in srgb, var(--accent) 50%, transparent)', border: '1px solid color-mix(in srgb, var(--accent) 13%, transparent)' }}>
             Edit
           </button>
           {/* Enable/Disable */}
           <button onClick={() => onToggle(host.id, host.enabled)}
             className="px-2.5 py-1 rounded text-xs font-mono transition-all"
             style={{
-              background: host.enabled ? '#ff444410' : '#22c55e10',
-              color:      host.enabled ? '#ff6666'   : '#4ade80',
-              border:     `1px solid ${host.enabled ? '#ff444430' : '#22c55e30'}`,
+              background: host.enabled ? 'color-mix(in srgb, var(--crit-2) 6%, transparent)' : 'color-mix(in srgb, var(--good) 6%, transparent)',
+              color:      host.enabled ? 'var(--crit-2)'   : 'var(--good)',
+              border:     `1px solid ${host.enabled ? 'color-mix(in srgb, var(--crit-2) 19%, transparent)' : 'color-mix(in srgb, var(--good) 19%, transparent)'}`,
             }}>
             {host.enabled ? 'Off' : 'On'}
           </button>
           {/* Delete */}
           <button onClick={() => onDelete(host)}
             className="px-2 py-1 rounded text-xs font-mono transition-all"
-            style={{ background: 'transparent', color: '#374151', border: '1px solid transparent' }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = '#ff6666'; (e.currentTarget as HTMLElement).style.borderColor = '#ff444430' }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = '#374151'; (e.currentTarget as HTMLElement).style.borderColor = 'transparent' }}
+            style={{ background: 'transparent', color: 'var(--text-dimmer)', border: '1px solid transparent' }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--crit-2)'; (e.currentTarget as HTMLElement).style.borderColor = 'color-mix(in srgb, var(--crit-2) 19%, transparent)' }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = 'var(--text-dimmer)'; (e.currentTarget as HTMLElement).style.borderColor = 'transparent' }}
           >✕</button>
         </div>
       </td>
@@ -568,7 +569,7 @@ function HostRow({ host, onEdit, onDelete, onToggle }: {
 function Badge({ label, color }: { label: string; color: string }) {
   return (
     <span className="font-mono px-1 py-0.5 rounded" style={{
-      fontSize: 9, background: `${color}15`, color, border: `1px solid ${color}25`,
+      fontSize: 9, background: `${alpha(color, 8)}`, color, border: `1px solid ${alpha(color, 15)}`,
     }}>{label}</span>
   )
 }
@@ -635,34 +636,34 @@ export default function ProxyPage() {
     .sort((a, b) => a.domain_names[0].localeCompare(b.domain_names[0]))
 
   if (error) return (
-    <div className="min-h-full flex items-center justify-center" style={{ background: "#080c14" }}>
+    <div className="min-h-full flex items-center justify-center" style={{ background: "var(--ground)" }}>
       <div className="text-center">
         <div className="text-4xl mb-4">���</div>
-        <div className="font-display text-xl font-semibold uppercase mb-2" style={{ color: "#00e5ff" }}>NPM Not Connected</div>
+        <div className="font-display text-xl font-semibold uppercase mb-2" style={{ color: "var(--accent)" }}>NPM Not Connected</div>
         <div className="text-sm font-mono text-gray-500 mb-6 max-w-sm">{error}</div>
-        <a href="/settings" className="px-4 py-2 rounded text-xs font-mono" style={{ background: "#00e5ff15", color: "#00e5ff", border: "1px solid #00e5ff30" }}>Configure in Settings ���</a>
+        <a href="/settings" className="px-4 py-2 rounded text-xs font-mono" style={{ background: "color-mix(in srgb, var(--accent) 8%, transparent)", color: "var(--accent)", border: "1px solid color-mix(in srgb, var(--accent) 19%, transparent)" }}>Configure in Settings ���</a>
       </div>
     </div>
   )
 
   if (loading) return (
-    <div className="min-h-full flex items-center justify-center" style={{ background: '#080c14' }}>
+    <div className="min-h-full flex items-center justify-center" style={{ background: 'var(--ground)' }}>
       <div className="text-xs font-mono text-gray-500 animate-pulse">loading proxy hosts...</div>
     </div>
   )
 
   return (
-    <div className="min-h-full p-3 sm:p-6" style={{ background: '#080c14' }}>
+    <div className="min-h-full p-3 sm:p-6" style={{ background: 'var(--ground)' }}>
 
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">
-          <div className="w-1 h-6 rounded-full" style={{ background: '#00e5ff', boxShadow: '0 0 8px #00e5ff' }} />
-          <h1 className="font-display text-2xl font-semibold tracking-wide uppercase" style={{ color: '#00e5ff' }}>
+          <div className="w-1 h-6 rounded-full" style={{ background: 'var(--accent)', boxShadow: '0 0 8px var(--accent)' }} />
+          <h1 className="font-display text-2xl font-semibold tracking-wide uppercase" style={{ color: 'var(--accent)' }}>
             Proxy Manager
           </h1>
           <span className="text-xs font-mono px-2 py-0.5 rounded" style={{
-            background: '#00e5ff10', color: '#00e5ff60', border: '1px solid #00e5ff20',
+            background: 'color-mix(in srgb, var(--accent) 6%, transparent)', color: 'color-mix(in srgb, var(--accent) 38%, transparent)', border: '1px solid color-mix(in srgb, var(--accent) 13%, transparent)',
           }}>NPM</span>
         </div>
         <div className="flex items-center gap-3">
@@ -670,7 +671,7 @@ export default function ProxyPage() {
           <button
             onClick={() => setEditHost(null)}
             className="flex items-center gap-2 px-4 py-2 rounded text-xs font-mono transition-all"
-            style={{ background: '#00e5ff15', color: '#00e5ff', border: '1px solid #00e5ff30' }}
+            style={{ background: 'color-mix(in srgb, var(--accent) 8%, transparent)', color: 'var(--accent)', border: '1px solid color-mix(in srgb, var(--accent) 19%, transparent)' }}
           >
             <span style={{ fontSize: 14 }}>+</span> New Host
           </button>
@@ -680,13 +681,13 @@ export default function ProxyPage() {
       {/* Stats */}
       {stats && (
         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3 mb-6">
-          <StatCard label="Total"    value={stats.total}    color="#6b7280" />
-          <StatCard label="Enabled"  value={stats.enabled}  color="#22c55e" />
-          <StatCard label="Disabled" value={stats.disabled} color="#374151" />
-          <StatCard label="Online"   value={stats.online}   color="#00e5ff" />
-          <StatCard label="SSL"      value={stats.ssl}      color="#22c55e" />
-          <StatCard label="Expiring" value={stats.expiring} color="#ffaa00" />
-          <StatCard label="Expired"  value={stats.expired}  color="#ff4444" />
+          <StatCard label="Total"    value={stats.total}    color="var(--text-muted)" />
+          <StatCard label="Enabled"  value={stats.enabled}  color="var(--good)" />
+          <StatCard label="Disabled" value={stats.disabled} color="var(--text-dimmer)" />
+          <StatCard label="Online"   value={stats.online}   color="var(--accent)" />
+          <StatCard label="SSL"      value={stats.ssl}      color="var(--good)" />
+          <StatCard label="Expiring" value={stats.expiring} color="var(--warn-2)" />
+          <StatCard label="Expired"  value={stats.expired}  color="var(--crit-2)" />
         </div>
       )}
 
@@ -697,9 +698,9 @@ export default function ProxyPage() {
             <button key={f} onClick={() => setFilter(f)}
               className="text-xs font-mono px-3 py-1.5 rounded transition-colors capitalize"
               style={{
-                background: filter === f ? '#00e5ff15' : 'transparent',
-                color:      filter === f ? '#00e5ff'   : '#4b5563',
-                border:     `1px solid ${filter === f ? '#00e5ff30' : '#1f2937'}`,
+                background: filter === f ? 'color-mix(in srgb, var(--accent) 8%, transparent)' : 'transparent',
+                color:      filter === f ? 'var(--accent)'   : 'var(--text-dim)',
+                border:     `1px solid ${filter === f ? 'color-mix(in srgb, var(--accent) 19%, transparent)' : 'var(--text-faint)'}`,
               }}>{f}</button>
           ))}
         </div>
@@ -707,16 +708,16 @@ export default function ProxyPage() {
           type="text" placeholder="Search domain or host..." value={search}
           onChange={e => setSearch(e.target.value)}
           className="ml-auto text-xs font-mono px-3 py-1.5 rounded outline-none w-56"
-          style={{ background: '#0d1220', border: '1px solid #1f2937', color: '#9ca3af', caretColor: '#00e5ff' }}
+          style={{ background: 'var(--surface)', border: '1px solid var(--text-faint)', color: 'var(--text-soft)', caretColor: 'var(--accent)' }}
         />
         <span className="text-xs font-mono text-gray-600">{filtered.length} hosts</span>
       </div>
 
       {/* Table */}
-      <div className="rounded-lg border overflow-hidden" style={{ borderColor: '#0f1929' }}>
+      <div className="rounded-lg border overflow-hidden" style={{ borderColor: 'var(--border)' }}>
         <div className="hp-table-scroll overflow-x-auto"><table className="w-full">
           <thead>
-            <tr style={{ background: '#060a10', borderBottom: '1px solid #0f1929' }}>
+            <tr style={{ background: 'var(--ground-deep)', borderBottom: '1px solid var(--border)' }}>
               <th className="px-4 py-2 w-6" />
               {['Domain', 'Target', 'SSL', 'Features', 'Actions'].map(h => (
                 <th key={h} className="px-4 py-2 text-left text-xs font-mono text-gray-600 uppercase tracking-wider">{h}</th>

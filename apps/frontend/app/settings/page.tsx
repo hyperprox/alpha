@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
+import { alpha } from '@/lib/theme'
 
 // ---------------------------------------------------------------------------
 //  Types
@@ -26,23 +27,23 @@ interface TestResult {
 // ---------------------------------------------------------------------------
 
 const INPUT = {
-  background: '#060a10', border: '1px solid #1f2937',
-  color: '#e5e7eb', borderRadius: 6, padding: '8px 12px',
+  background: 'var(--ground-deep)', border: '1px solid var(--text-faint)',
+  color: 'var(--text-bright)', borderRadius: 6, padding: '8px 12px',
   fontFamily: 'IBM Plex Mono, monospace', fontSize: 12,
   outline: 'none', width: '100%',
 } as React.CSSProperties
 
 const LABEL = {
   display: 'block', fontSize: 10, fontFamily: 'IBM Plex Mono, monospace',
-  color: '#4b5563', textTransform: 'uppercase' as const,
+  color: 'var(--text-dim)', textTransform: 'uppercase' as const,
   letterSpacing: '0.05em', marginBottom: 4,
 }
 
 const CATEGORY_META: Record<string, { label: string; accent: string; providers: Record<string, string> }> = {
-  proxmox: { label: 'Proxmox',        accent: '#ff6b35', providers: { proxmox: 'Proxmox VE' } },
-  proxy:   { label: 'Proxy',          accent: '#00e5ff', providers: { npm: 'Nginx Proxy Manager', traefik: 'Traefik', caddy: 'Caddy' } },
-  dns:     { label: 'DNS',            accent: '#22d3ee', providers: { godaddy: 'GoDaddy', cloudflare: 'Cloudflare', namecheap: 'Namecheap' } },
-  system:  { label: 'System',         accent: '#6b7280', providers: { hyperprox: 'HyperProx' } },
+  proxmox: { label: 'Proxmox',        accent: 'var(--warn)', providers: { proxmox: 'Proxmox VE' } },
+  proxy:   { label: 'Proxy',          accent: 'var(--accent)', providers: { npm: 'Nginx Proxy Manager', traefik: 'Traefik', caddy: 'Caddy' } },
+  dns:     { label: 'DNS',            accent: 'var(--accent-2)', providers: { godaddy: 'GoDaddy', cloudflare: 'Cloudflare', namecheap: 'Namecheap' } },
+  system:  { label: 'System',         accent: 'var(--text-muted)', providers: { hyperprox: 'HyperProx' } },
 }
 
 // ---------------------------------------------------------------------------
@@ -95,21 +96,21 @@ function ProviderSection({
 
   return (
     <div className="rounded-lg border p-5" style={{
-      background: '#0a0f1a', borderColor: allSet ? `${accent}25` : '#1f2937',
+      background: 'var(--surface-raised)', borderColor: allSet ? `${alpha(accent, 15)}` : 'var(--text-faint)',
     }}>
       {/* Provider header */}
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <div className="w-1.5 h-1.5 rounded-full" style={{
-            background: allSet ? accent : '#374151',
+            background: allSet ? accent : 'var(--text-dimmer)',
             boxShadow:  allSet ? `0 0 5px ${accent}` : 'none',
           }} />
-          <span className="font-mono text-sm font-medium" style={{ color: allSet ? '#e5e7eb' : '#6b7280' }}>
+          <span className="font-mono text-sm font-medium" style={{ color: allSet ? 'var(--text-bright)' : 'var(--text-muted)' }}>
             {providerLabel}
           </span>
           {allSet && (
             <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{
-              background: `${accent}15`, color: accent, border: `1px solid ${accent}30`, fontSize: 9,
+              background: `${alpha(accent, 8)}`, color: accent, border: `1px solid ${alpha(accent, 19)}`, fontSize: 9,
             }}>CONFIGURED</span>
           )}
         </div>
@@ -117,18 +118,18 @@ function ProviderSection({
           <button onClick={handleTest} disabled={testing}
             className="text-xs font-mono px-3 py-1.5 rounded transition-all"
             style={{
-              background: testing ? '#374151' : '#ffffff08',
-              color:      testing ? '#6b7280' : '#9ca3af',
-              border:     '1px solid #1f2937',
+              background: testing ? 'var(--text-dimmer)' : 'color-mix(in srgb, var(--text-bright) 3%, transparent)',
+              color:      testing ? 'var(--text-muted)' : 'var(--text-soft)',
+              border:     '1px solid var(--text-faint)',
             }}>
             {testing ? 'Testing...' : 'Test'}
           </button>
           <button onClick={handleSave} disabled={saving}
             className="text-xs font-mono px-3 py-1.5 rounded transition-all"
             style={{
-              background: saved ? `${accent}20` : saving ? '#374151' : `${accent}15`,
-              color:      saved ? accent : saving ? '#6b7280' : accent,
-              border:     `1px solid ${accent}30`,
+              background: saved ? `${alpha(accent, 13)}` : saving ? 'var(--text-dimmer)' : `${alpha(accent, 8)}`,
+              color:      saved ? accent : saving ? 'var(--text-muted)' : accent,
+              border:     `1px solid ${alpha(accent, 19)}`,
             }}>
             {saved ? '✓ Saved' : saving ? 'Saving...' : 'Save'}
           </button>
@@ -138,9 +139,9 @@ function ProviderSection({
       {/* Test result */}
       {result && (
         <div className="mb-4 px-3 py-2 rounded text-xs font-mono" style={{
-          background: result.success ? '#22c55e10' : '#ff444410',
-          color:      result.success ? '#4ade80' : '#f87171',
-          border:     `1px solid ${result.success ? '#22c55e30' : '#ff444430'}`,
+          background: result.success ? 'color-mix(in srgb, var(--good) 6%, transparent)' : 'color-mix(in srgb, var(--crit-2) 6%, transparent)',
+          color:      result.success ? 'var(--good)' : 'var(--crit-soft)',
+          border:     `1px solid ${result.success ? 'color-mix(in srgb, var(--good) 19%, transparent)' : 'color-mix(in srgb, var(--crit-2) 19%, transparent)'}`,
         }}>
           {result.success ? `✓ ${result.message ?? 'Connection successful'}` : `✗ ${result.error}`}
         </div>
@@ -152,7 +153,7 @@ function ProviderSection({
           <div key={field.key}>
             <label style={LABEL}>
               {field.label}
-              {field.isSet && <span style={{ color: '#22c55e', marginLeft: 6 }}>✓</span>}
+              {field.isSet && <span style={{ color: 'var(--good)', marginLeft: 6 }}>✓</span>}
             </label>
             <div className="relative">
               <input
@@ -166,7 +167,7 @@ function ProviderSection({
                 <button
                   onClick={() => setRevealed(r => ({ ...r, [field.key]: !r[field.key] }))}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-mono"
-                  style={{ color: '#374151' }}
+                  style={{ color: 'var(--text-dimmer)' }}
                 >
                   {revealed[field.key] ? 'hide' : 'show'}
                 </button>
@@ -221,18 +222,18 @@ export default function SettingsPage() {
   const meta = CATEGORY_META[tab]
 
   return (
-    <div className="min-h-full p-3 sm:p-6" style={{ background: '#080c14' }}>
+    <div className="min-h-full p-3 sm:p-6" style={{ background: 'var(--ground)' }}>
 
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">
-        <div className="w-1 h-6 rounded-full" style={{ background: '#6b7280', boxShadow: '0 0 8px #6b728060' }} />
-        <h1 className="font-display text-2xl font-semibold tracking-wide uppercase" style={{ color: '#9ca3af' }}>
+        <div className="w-1 h-6 rounded-full" style={{ background: 'var(--text-muted)', boxShadow: '0 0 8px color-mix(in srgb, var(--text-muted) 38%, transparent)' }} />
+        <h1 className="font-display text-2xl font-semibold tracking-wide uppercase" style={{ color: 'var(--text-soft)' }}>
           Settings
         </h1>
       </div>
 
       {/* Category tabs */}
-      <div className="flex gap-1 mb-6 border-b" style={{ borderColor: '#111827' }}>
+      <div className="flex gap-1 mb-6 border-b" style={{ borderColor: 'var(--border-dim)' }}>
         {(Object.keys(CATEGORY_META) as Array<keyof typeof CATEGORY_META>).map(cat => {
           const m = CATEGORY_META[cat]
           const catFields = fields[cat] ?? []
@@ -242,7 +243,7 @@ export default function SettingsPage() {
               className="px-5 py-3 text-xs font-mono uppercase tracking-wider transition-colors flex items-center gap-2"
               style={{
                 borderBottom: tab === cat ? `2px solid ${m.accent}` : '2px solid transparent',
-                color:        tab === cat ? m.accent : '#4b5563',
+                color:        tab === cat ? m.accent : 'var(--text-dim)',
                 background:   'transparent',
               }}>
               {m.label}

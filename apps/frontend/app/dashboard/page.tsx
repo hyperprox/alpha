@@ -8,6 +8,7 @@ import { formatBytes, formatUptime, pct } from '@/lib/utils'
 import { wsBase } from '@/lib/ws'
 import { PluginCards } from '@/components/plugins/PluginCards'
 import { Speedometer, Sparkline, StreamChart, Meter, useHistory, zoneColor, ACCENT, GOOD, WARN, CRIT } from '@/components/dashboard/Viz'
+import { alpha } from '@/lib/theme'
 
 // Types
 interface PVENode { node: string; status: string; cpu: number; maxcpu: number; mem: number; maxmem: number; disk: number; maxdisk: number; uptime: number }
@@ -56,7 +57,7 @@ function Panel({ title, accent = ACCENT, right, children, className = '' }: {
 }) {
   return (
     <div className={`rounded-xl border p-5 ${className}`}
-      style={{ background:'linear-gradient(150deg,#0e1524,#080c14 60%)', borderColor:`${accent}25` }}>
+      style={{ background:'linear-gradient(150deg,var(--surface),var(--ground) 60%)', borderColor:`${alpha(accent, 15)}` }}>
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2 min-w-0">
           <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background:accent, boxShadow:`0 0 8px ${accent}` }}/>
@@ -97,7 +98,7 @@ function ClusterPanel({ cluster, nodes, vms, ceph, storage, power, stamp }: { cl
           caption={`${formatBytes(cluster.mem_used)} of ${formatBytes(cluster.mem_total)}`}/>
         <Speedometer value={storTotalBytes > 0 ? storPct : cluster.disk_pct}
           label={storTotalBytes > 0 ? 'Storage' : 'Disk'} size={118}
-          color="#f59e0b"
+          color="var(--warn)"
           caption={storTotalBytes > 0
             ? `${formatBytes(storTotalUsed)} of ${formatBytes(storTotalBytes)}`
             : `${formatBytes(cluster.disk_used)} of ${formatBytes(cluster.disk_total)}`}/>
@@ -107,10 +108,10 @@ function ClusterPanel({ cluster, nodes, vms, ceph, storage, power, stamp }: { cl
       <div className="grid grid-cols-2 gap-3 mb-4">
         {[{ h: cpuHist, l: 'CPU', c: zoneColor(cluster.cpu_pct) },
           { h: memHist, l: 'MEM', c: zoneColor(cluster.mem_pct) }].map(({ h, l, c }) => (
-          <div key={l} className="rounded-lg p-2" style={{ background:'#070b12', border:'1px solid #111827' }}>
+          <div key={l} className="rounded-lg p-2" style={{ background:'var(--ground-inset)', border:'1px solid var(--border-dim)' }}>
             <div className="flex items-center justify-between mb-0.5">
               <span className="font-mono text-gray-600 uppercase tracking-wider" style={{ fontSize:9 }}>{l} trend</span>
-              <span className="font-mono" style={{ fontSize:9, color:'#4b5563' }}>{h.length}m</span>
+              <span className="font-mono" style={{ fontSize:9, color:'var(--text-dim)' }}>{h.length}m</span>
             </div>
             <Sparkline data={h} color={c} width={150} height={28} baseline="zero"/>
           </div>
@@ -120,11 +121,11 @@ function ClusterPanel({ cluster, nodes, vms, ceph, storage, power, stamp }: { cl
       <div className="grid grid-cols-4 gap-2 mb-4">
         {[
           {label:'RUNNING', value:String(running),                             color:GOOD},
-          {label:'STOPPED', value:String(vms.length-running),                  color:'#4b5563'},
-          {label:'HA',      value:String(vms.filter(v=>v.hastate).length),     color:'#a78bfa'},
+          {label:'STOPPED', value:String(vms.length-running),                  color:'var(--text-dim)'},
+          {label:'HA',      value:String(vms.filter(v=>v.hastate).length),     color:'var(--violet)'},
           {label: power && power.silent.length ? `POWER ${power.reporting}/${power.of}` : 'POWER',
            value: power && power.total > 0 ? `${power.total}W` : '—',
-           color: !power || power.total <= 0 ? '#374151' : power.silent.length ? WARN : GOOD,
+           color: !power || power.total <= 0 ? 'var(--text-dimmer)' : power.silent.length ? WARN : GOOD,
            title: power
              ? [
                  ...power.nodes.map(n => n.total === null
@@ -137,7 +138,7 @@ function ClusterPanel({ cluster, nodes, vms, ceph, storage, power, stamp }: { cl
                ].join('\n')
              : 'Waiting for Prometheus.'},
         ].map(({label,value,color,title}: any)=>(
-          <div key={label} title={title} className="text-center py-2 rounded-lg" style={{background:'#070b12',border:`1px solid ${color}25`}}>
+          <div key={label} title={title} className="text-center py-2 rounded-lg" style={{background:'var(--ground-inset)',border:`1px solid ${alpha(color, 15)}`}}>
             <div className="font-display text-lg font-bold" style={{color, fontVariantNumeric:'tabular-nums'}}>{value}</div>
             <div className="font-mono text-gray-600 mt-0.5" style={{fontSize:9}}>{label}</div>
           </div>
@@ -145,11 +146,11 @@ function ClusterPanel({ cluster, nodes, vms, ceph, storage, power, stamp }: { cl
       </div>
 
       {ceph?.pgmap && (
-        <Meter label="Ceph" used={ceph.pgmap.bytes_used} total={ceph.pgmap.bytes_total} p={cephPct} fmt={formatBytes} color="#f59e0b"/>
+        <Meter label="Ceph" used={ceph.pgmap.bytes_used} total={ceph.pgmap.bytes_total} p={cephPct} fmt={formatBytes} color="var(--warn)"/>
       )}
 
       <Link href="/infrastructure" className="flex items-center justify-center gap-2 mt-4 py-2 rounded-lg text-xs font-mono transition-all hover:brightness-150"
-        style={{background:'#00e5ff08',color:'#00e5ff70',border:'1px solid #00e5ff18'}}>
+        style={{background:'color-mix(in srgb, var(--accent) 3%, transparent)',color:'color-mix(in srgb, var(--accent) 44%, transparent)',border:'1px solid color-mix(in srgb, var(--accent) 9%, transparent)'}}>
         View Infrastructure →
       </Link>
     </Panel>
@@ -160,26 +161,26 @@ function ClusterPanel({ cluster, nodes, vms, ceph, storage, power, stamp }: { cl
 function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: NodeGPUStatus[] }) {
   const allGPUs = (gpuStatus ?? []).filter(n => n.gpus.length > 0)
   const anyReachable = allGPUs.some(n => n.reachable)
-  const gpuTypeColors: Record<string, string> = { 'nvidia': '#22c55e', 'amd': '#ef4444', 'intel-igpu': '#3b82f6', 'intel-arc': '#00e5ff' }
+  const gpuTypeColors: Record<string, string> = { 'nvidia': 'var(--good)', 'amd': 'var(--crit)', 'intel-igpu': 'var(--accent-2)', 'intel-arc': 'var(--accent)' }
   const gpuTypeLabels: Record<string, string> = { 'nvidia': 'NVIDIA', 'amd': 'AMD', 'intel-igpu': 'Intel iGPU', 'intel-arc': 'Intel Arc' }
 
   // No GPUs detected at all
   if (allGPUs.length === 0) return (
-    <div className="rounded-lg border p-5 flex items-center justify-center" style={{ background:'#0d1220', borderColor:'#1f2937', minHeight:160 }}>
+    <div className="rounded-lg border p-5 flex items-center justify-center" style={{ background:'var(--surface)', borderColor:'var(--text-faint)', minHeight:160 }}>
       <span className="text-xs font-mono text-gray-600">No GPU detected</span>
     </div>
   )
 
   // NVIDIA with full telemetry — show detailed panel
   if (gpu) {
-    const accent = '#a78bfa'
-    const vramC  = gpu.vram_pct  > 90 ? '#ff4444' : gpu.vram_pct  > 75 ? '#ffaa00' : accent
-    const powerC = gpu.power_pct > 80 ? '#ff4444' : gpu.power_pct > 60 ? '#ffaa00' : '#22c55e'
-    const tempC  = gpu.temp > 80 ? '#ff4444' : gpu.temp > 65 ? '#ffaa00' : '#22c55e'
+    const accent = 'var(--violet)'
+    const vramC  = gpu.vram_pct  > 90 ? 'var(--crit-2)' : gpu.vram_pct  > 75 ? 'var(--warn-2)' : accent
+    const powerC = gpu.power_pct > 80 ? 'var(--crit-2)' : gpu.power_pct > 60 ? 'var(--warn-2)' : 'var(--good)'
+    const tempC  = gpu.temp > 80 ? 'var(--crit-2)' : gpu.temp > 65 ? 'var(--warn-2)' : 'var(--good)'
     const consumers = gpu.consumers ?? []
     const unaccounted = gpu.vram_used - consumers.reduce((s, c) => s + c.vram_mb, 0)
     return (
-      <div className="rounded-lg border p-5" style={{ background:'linear-gradient(135deg,#0d1220,#080c14)', borderColor:`${accent}30` }}>
+      <div className="rounded-lg border p-5" style={{ background:'linear-gradient(135deg,var(--surface),var(--ground))', borderColor:`${alpha(accent, 19)}` }}>
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full" style={{ background:accent, boxShadow:`0 0 6px ${accent}` }}/>
@@ -192,23 +193,23 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
             <span className="text-gray-500">VRAM</span>
             <span style={{ color:vramC }}>{gpu.vram_used} / {gpu.vram_total} MB</span>
           </div>
-          <div className="h-3 rounded-full overflow-hidden flex" style={{ background:'#1f2937' }}>
+          <div className="h-3 rounded-full overflow-hidden flex" style={{ background:'var(--text-faint)' }}>
             {consumers.map((c, i) => {
               const pct = (c.vram_mb / gpu.vram_total) * 100
-              const colors = ['#a78bfa','#00e5ff','#22c55e','#f59e0b','#f87171']
+              const colors = ['var(--violet)','var(--accent)','var(--good)','var(--warn)','var(--crit-soft)']
               return <div key={c.pid} title={`${c.ct_name ?? c.process}: ${c.vram_mb}MB`} className="h-full" style={{ width:`${pct}%`, background:colors[i % colors.length] }}/>
             })}
-            {unaccounted > 0 && <div className="h-full" style={{ width:`${(unaccounted/gpu.vram_total)*100}%`, background:'#374151' }}/>}
+            {unaccounted > 0 && <div className="h-full" style={{ width:`${(unaccounted/gpu.vram_total)*100}%`, background:'var(--text-dimmer)' }}/>}
           </div>
         </div>
         {consumers.length > 0 && (
           <div className="space-y-1 mb-4">
             {consumers.map((c, i) => {
-              const colors = ['#a78bfa','#00e5ff','#22c55e','#f59e0b','#f87171']
+              const colors = ['var(--violet)','var(--accent)','var(--good)','var(--warn)','var(--crit-soft)']
               return (
                 <div key={c.pid} className="flex items-center gap-2 text-xs font-mono">
                   <div className="w-2 h-2 rounded-sm" style={{ background:colors[i % colors.length] }}/>
-                  <span style={{ color:'#e5e7eb' }}>{c.ct_name ?? c.process}</span>
+                  <span style={{ color:'var(--text-bright)' }}>{c.ct_name ?? c.process}</span>
                   {c.ct_id && <span className="text-gray-600">CT {c.ct_id}</span>}
                   <span className="ml-auto" style={{ color:colors[i % colors.length] }}>{c.vram_mb} MB ({c.vram_pct}%)</span>
                 </div>
@@ -230,20 +231,20 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
 
   // Non-NVIDIA with reachable exporter — show active state
   if (anyReachable) {
-    const color = '#22c55e'
+    const color = 'var(--good)'
     return (
-      <div className="rounded-lg border p-4" style={{ background:'linear-gradient(135deg,#0d1220,#080c14)', borderColor:`${color}30` }}>
+      <div className="rounded-lg border p-4" style={{ background:'linear-gradient(135deg,var(--surface),var(--ground))', borderColor:`${alpha(color, 19)}` }}>
         <div className="flex items-center gap-2 mb-3">
           <div className="w-2 h-2 rounded-full" style={{ background:color, boxShadow:`0 0 6px ${color}` }}/>
           <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{ color }}>GPU METRICS</span>
-          <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:`${color}15`, color, border:`1px solid ${color}30` }}>ACTIVE</span>
+          <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:`${alpha(color, 8)}`, color, border:`1px solid ${alpha(color, 19)}` }}>ACTIVE</span>
         </div>
         <div className="space-y-2">
           {allGPUs.filter(n=>n.reachable).map(n => {
             const gpu0 = n.gpus[0]
-            const gpuColor = gpuTypeColors[gpu0.type] ?? '#a78bfa'
+            const gpuColor = gpuTypeColors[gpu0.type] ?? 'var(--violet)'
             return (
-              <div key={n.node} className="flex items-center gap-2 p-2 rounded" style={{ background:'#060a10', border:`1px solid ${gpuColor}20` }}>
+              <div key={n.node} className="flex items-center gap-2 p-2 rounded" style={{ background:'var(--ground-deep)', border:`1px solid ${alpha(gpuColor, 13)}` }}>
                 <span className="text-xs font-mono font-bold" style={{ color:gpuColor }}>{n.node}</span>
                 <span className="text-xs font-mono text-gray-500 flex-1">{gpu0.deviceName}</span>
                 <span className="text-xs font-mono" style={{ color:gpuColor }}>✓ active</span>
@@ -251,10 +252,10 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
             )
           })}
           {allGPUs.filter(n=>!n.reachable).map(n => (
-            <div key={n.node} className="flex items-center gap-2 p-2 rounded" style={{ background:'#060a10', border:'1px solid #ffaa0020' }}>
-              <span className="text-xs font-mono font-bold" style={{ color:'#ffaa00' }}>{n.node}</span>
+            <div key={n.node} className="flex items-center gap-2 p-2 rounded" style={{ background:'var(--ground-deep)', border:'1px solid color-mix(in srgb, var(--warn-2) 13%, transparent)' }}>
+              <span className="text-xs font-mono font-bold" style={{ color:'var(--warn-2)' }}>{n.node}</span>
               <span className="text-xs font-mono text-gray-500 flex-1">{n.gpus[0]?.deviceName}</span>
-              <span className="text-xs font-mono" style={{ color:'#ffaa00' }}>⚠ offline</span>
+              <span className="text-xs font-mono" style={{ color:'var(--warn-2)' }}>⚠ offline</span>
             </div>
           ))}
         </div>
@@ -267,18 +268,18 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
   const uniqueSteps = allGPUs[0]?.install?.steps ?? []
   const allSameSteps = allGPUs.every(n => JSON.stringify(n.install?.steps) === JSON.stringify(uniqueSteps))
   return (
-    <div className="rounded-lg border p-4" style={{ background:'linear-gradient(135deg,#0d1220,#080c14)', borderColor:'#ffaa0030' }}>
+    <div className="rounded-lg border p-4" style={{ background:'linear-gradient(135deg,var(--surface),var(--ground))', borderColor:'color-mix(in srgb, var(--warn-2) 19%, transparent)' }}>
       <div className="flex items-center gap-2 mb-3">
-        <div className="w-2 h-2 rounded-full" style={{ background:'#ffaa00', boxShadow:'0 0 6px #ffaa00' }}/>
-        <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{ color:'#ffaa00' }}>GPU METRICS</span>
-        {allGPUs.every(n => !n.reachable) && <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:'#ffaa0015', color:'#ffaa00', border:'1px solid #ffaa0030' }}>EXPORTER NOT INSTALLED</span>}
-        {allGPUs.some(n => n.reachable) && !allGPUs.every(n => n.reachable) && <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:'#ffaa0015', color:'#ffaa00', border:'1px solid #ffaa0030' }}>PARTIAL</span>}
+        <div className="w-2 h-2 rounded-full" style={{ background:'var(--warn-2)', boxShadow:'0 0 6px var(--warn-2)' }}/>
+        <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{ color:'var(--warn-2)' }}>GPU METRICS</span>
+        {allGPUs.every(n => !n.reachable) && <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:'color-mix(in srgb, var(--warn-2) 8%, transparent)', color:'var(--warn-2)', border:'1px solid color-mix(in srgb, var(--warn-2) 19%, transparent)' }}>EXPORTER NOT INSTALLED</span>}
+        {allGPUs.some(n => n.reachable) && !allGPUs.every(n => n.reachable) && <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:'color-mix(in srgb, var(--warn-2) 8%, transparent)', color:'var(--warn-2)', border:'1px solid color-mix(in srgb, var(--warn-2) 19%, transparent)' }}>PARTIAL</span>}
       </div>
       <div className="flex gap-2 flex-wrap mb-3">
         {allGPUs.map(n => {
           const gpu0 = n.gpus[0]
-          const color = gpuTypeColors[gpu0.type] ?? '#a78bfa'
-          return <span key={n.node} className="text-xs font-mono px-2 py-1 rounded" style={{ background:`${color}15`, color, border:`1px solid ${color}30` }}>{n.node} — {gpuTypeLabels[gpu0.type] ?? gpu0.type}</span>
+          const color = gpuTypeColors[gpu0.type] ?? 'var(--violet)'
+          return <span key={n.node} className="text-xs font-mono px-2 py-1 rounded" style={{ background:`${alpha(color, 8)}`, color, border:`1px solid ${alpha(color, 19)}` }}>{n.node} — {gpuTypeLabels[gpu0.type] ?? gpu0.type}</span>
         })}
       </div>
       {allSameSteps ? (
@@ -288,8 +289,8 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
             const isCmd = ['docker','apt','curl','systemctl'].some(p => step.startsWith(p))
             return (
               <div key={i} className="flex items-center gap-2">
-                <span className="text-xs font-mono flex-1 truncate" style={{ color: isCmd ? '#00e5ff' : '#6b7280' }}>{step}</span>
-                {isCmd && <button onClick={() => { try { navigator.clipboard.writeText(step) } catch { const el = document.createElement('textarea'); el.value=step; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el) } }} className="text-xs font-mono px-1.5 py-0.5 rounded flex-shrink-0" style={{ background:'#00e5ff15', color:'#00e5ff', border:'1px solid #00e5ff30' }}>copy</button>}
+                <span className="text-xs font-mono flex-1 truncate" style={{ color: isCmd ? 'var(--accent)' : 'var(--text-muted)' }}>{step}</span>
+                {isCmd && <button onClick={() => { try { navigator.clipboard.writeText(step) } catch { const el = document.createElement('textarea'); el.value=step; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el) } }} className="text-xs font-mono px-1.5 py-0.5 rounded flex-shrink-0" style={{ background:'color-mix(in srgb, var(--accent) 8%, transparent)', color:'var(--accent)', border:'1px solid color-mix(in srgb, var(--accent) 19%, transparent)' }}>copy</button>}
               </div>
             )
           })}
@@ -297,14 +298,14 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
       ) : (
         <div className="space-y-2">
           {allGPUs.map(n => n.install && (
-            <div key={n.node} className="rounded p-2" style={{ background:'#060a10', border:'1px solid #1f2937' }}>
+            <div key={n.node} className="rounded p-2" style={{ background:'var(--ground-deep)', border:'1px solid var(--text-faint)' }}>
               <div className="text-xs font-mono text-gray-500 mb-1">{n.node}:</div>
               {n.install.steps.map((step, i) => {
                 const isCmd = ['docker','apt','curl','systemctl'].some(p => step.startsWith(p))
                 return (
                   <div key={i} className="flex items-center gap-2">
-                    <span className="text-xs font-mono flex-1 truncate" style={{ color: isCmd ? '#00e5ff' : '#6b7280' }}>{step}</span>
-                    {isCmd && <button onClick={() => { try { navigator.clipboard.writeText(step) } catch { const el = document.createElement('textarea'); el.value=step; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el) } }} className="text-xs font-mono px-1.5 py-0.5 rounded flex-shrink-0" style={{ background:'#00e5ff15', color:'#00e5ff', border:'1px solid #00e5ff30' }}>copy</button>}
+                    <span className="text-xs font-mono flex-1 truncate" style={{ color: isCmd ? 'var(--accent)' : 'var(--text-muted)' }}>{step}</span>
+                    {isCmd && <button onClick={() => { try { navigator.clipboard.writeText(step) } catch { const el = document.createElement('textarea'); el.value=step; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el) } }} className="text-xs font-mono px-1.5 py-0.5 rounded flex-shrink-0" style={{ background:'color-mix(in srgb, var(--accent) 8%, transparent)', color:'var(--accent)', border:'1px solid color-mix(in srgb, var(--accent) 19%, transparent)' }}>copy</button>}
                   </div>
                 )
               })}
@@ -342,7 +343,7 @@ function fmtSpeed(bps: number): string {
 function SpeedBar({ value, max, color }: { value: number; max: number; color: string }) {
   const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0
   return (
-    <div className="h-1 rounded-full overflow-hidden flex-1" style={{ background:'#1f2937' }}>
+    <div className="h-1 rounded-full overflow-hidden flex-1" style={{ background:'var(--text-faint)' }}>
       <div className="h-full rounded-full transition-all duration-500" style={{ width:`${pct}%`, background:color }}/>
     </div>
   )
@@ -373,7 +374,7 @@ function NetworkPanel({ network, stamp }: { network: NetworkData | null; stamp: 
       }>
 
       {/* Cluster throughput over the last minute — in above the line, out below */}
-      <div className="rounded-lg p-3 mb-4" style={{ background:'#070b12', border:'1px solid #111827' }}>
+      <div className="rounded-lg p-3 mb-4" style={{ background:'var(--ground-inset)', border:'1px solid var(--border-dim)' }}>
         <div className="flex items-center justify-between mb-1">
           <span className="font-mono text-gray-600 uppercase tracking-widest" style={{ fontSize:9 }}>Throughput</span>
           <div className="flex gap-3 font-mono" style={{ fontSize:9 }}>
@@ -388,19 +389,19 @@ function NetworkPanel({ network, stamp }: { network: NetworkData | null; stamp: 
       {/* Per-node rows */}
       <div className="grid gap-x-6 gap-y-2 mb-4" style={{ gridTemplateColumns:'repeat(auto-fit,minmax(min(100%,240px),1fr))' }}>
         {sortedNodes.map(n => {
-          const accent = '#00e5ff'
+          const accent = 'var(--accent)'
           return (
             <div key={n.node}>
               <div className="flex items-center gap-2 mb-1">
                 <span className="font-mono text-xs w-12 flex-shrink-0" style={{ color:accent }}>{n.node}</span>
                 <div className="flex-1 space-y-0.5">
                   <div className="flex items-center gap-2">
-                    <span className="text-xs font-mono w-16 text-right" style={{ color:'#22c55e', fontSize:10 }}>↓ {fmtSpeed(n.netin)}</span>
-                    <SpeedBar value={n.netin} max={maxNodeSpeed} color="#22c55e"/>
+                    <span className="text-xs font-mono w-16 text-right" style={{ color:'var(--good)', fontSize:10 }}>↓ {fmtSpeed(n.netin)}</span>
+                    <SpeedBar value={n.netin} max={maxNodeSpeed} color="var(--good)"/>
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className="text-xs font-mono w-16 text-right" style={{ color:'#f59e0b', fontSize:10 }}>↑ {fmtSpeed(n.netout)}</span>
-                    <SpeedBar value={n.netout} max={maxNodeSpeed} color="#f59e0b"/>
+                    <span className="text-xs font-mono w-16 text-right" style={{ color:'var(--warn)', fontSize:10 }}>↑ {fmtSpeed(n.netout)}</span>
+                    <SpeedBar value={n.netout} max={maxNodeSpeed} color="var(--warn)"/>
                   </div>
                 </div>
               </div>
@@ -411,17 +412,17 @@ function NetworkPanel({ network, stamp }: { network: NetworkData | null; stamp: 
 
       {/* CEPH I/O */}
       {network.ceph_io && (
-        <div className="border-t pt-3" style={{ borderColor:'#111827' }}>
+        <div className="border-t pt-3" style={{ borderColor:'var(--border-dim)' }}>
           <div className="text-xs font-mono text-gray-500 uppercase tracking-wider mb-2">CEPH I/O</div>
           <div className="grid gap-2" style={{ gridTemplateColumns:'repeat(auto-fit,minmax(min(100%,160px),1fr))' }}>
-            <div className="p-2 rounded" style={{ background:'#060a10', border:'1px solid #111827' }}>
+            <div className="p-2 rounded" style={{ background:'var(--ground-deep)', border:'1px solid var(--border-dim)' }}>
               <div className="text-xs font-mono text-gray-600 mb-0.5">READ</div>
-              <div className="text-sm font-mono font-bold" style={{ color:'#22c55e' }}>{fmtSpeed(network.ceph_io.read_bps)}</div>
+              <div className="text-sm font-mono font-bold" style={{ color:'var(--good)' }}>{fmtSpeed(network.ceph_io.read_bps)}</div>
               <div className="text-xs font-mono text-gray-700">{network.ceph_io.read_ops} ops/s</div>
             </div>
-            <div className="p-2 rounded" style={{ background:'#060a10', border:'1px solid #111827' }}>
+            <div className="p-2 rounded" style={{ background:'var(--ground-deep)', border:'1px solid var(--border-dim)' }}>
               <div className="text-xs font-mono text-gray-600 mb-0.5">WRITE</div>
-              <div className="text-sm font-mono font-bold" style={{ color:'#f59e0b' }}>{fmtSpeed(network.ceph_io.write_bps)}</div>
+              <div className="text-sm font-mono font-bold" style={{ color:'var(--warn)' }}>{fmtSpeed(network.ceph_io.write_bps)}</div>
               <div className="text-xs font-mono text-gray-700">{network.ceph_io.write_ops} ops/s</div>
             </div>
           </div>
@@ -473,10 +474,10 @@ function LinkMeters({ link, stamp }: { link: BwLink; stamp: number | null }) {
   }
 
   const isWan = link.kind === 'wan'
-  const accent = isWan ? '#00e5ff' : '#a78bfa'
+  const accent = isWan ? 'var(--accent)' : 'var(--violet)'
 
   return (
-    <div className="rounded-lg p-3" style={{ background:'#070b12', border:`1px solid ${accent}20` }}>
+    <div className="rounded-lg p-3" style={{ background:'var(--ground-inset)', border:`1px solid ${alpha(accent, 13)}` }}>
       <div className="flex items-baseline justify-between mb-2">
         <span className="font-display font-semibold uppercase tracking-widest" style={{ color:accent, fontSize:12 }}>
           {isWan ? 'Internet' : 'LAN'}
@@ -501,7 +502,7 @@ function BandwidthPanel({ data, stamp }: { data: BandwidthData | null; stamp: nu
 
   if (!ordered.length) {
     return (
-      <Panel title="Bandwidth" accent="#4b5563"
+      <Panel title="Bandwidth" accent="var(--text-dim)"
         right={<span className="font-mono text-gray-600" style={{ fontSize:10 }}>no link source</span>}>
         <div className="font-mono text-gray-600 text-center py-4" style={{ fontSize:12 }}>
           {data.unavailable.length
@@ -538,16 +539,16 @@ function NodeCard({ node, vms, gpuInfo, power, powerTotal }: { node:PVENode; vms
   const nodeVMs=vms.filter(v=>v.node===node.node), running=nodeVMs.filter(v=>v.status==='running').length
   const hasGpu = gpuInfo && gpuInfo.gpus.length > 0
   const gpuType = gpuInfo?.gpus[0]?.type ?? null
-  const gpuAccentMap: Record<string, string> = { 'nvidia': '#22c55e', 'amd': '#ef4444', 'intel-igpu': '#3b82f6', 'intel-arc': '#00e5ff' }
-  const accent = gpuType ? (gpuAccentMap[gpuType] ?? '#a78bfa') : '#00e5ff'
+  const gpuAccentMap: Record<string, string> = { 'nvidia': 'var(--good)', 'amd': 'var(--crit)', 'intel-igpu': 'var(--accent-2)', 'intel-arc': 'var(--accent)' }
+  const accent = gpuType ? (gpuAccentMap[gpuType] ?? 'var(--violet)') : 'var(--accent)'
   return (
-    <div className="rounded-lg border p-4 flex flex-col gap-4" style={{background:'linear-gradient(135deg,#0d1220,#080c14)',borderColor:`${accent}30`}}>
+    <div className="rounded-lg border p-4 flex flex-col gap-4" style={{background:'linear-gradient(135deg,var(--surface),var(--ground))',borderColor:`${alpha(accent, 19)}`}}>
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full" style={{background:accent,boxShadow:`0 0 6px ${accent}`}}/>
           <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{color:accent}}>{node.node}</span>
           {hasGpu && (
-            <span className="text-xs px-1.5 py-0.5 rounded font-mono" style={{background:`${accent}20`,color:accent,border:`1px solid ${accent}40`,fontSize:9}}
+            <span className="text-xs px-1.5 py-0.5 rounded font-mono" style={{background:`${alpha(accent, 13)}`,color:accent,border:`1px solid ${alpha(accent, 25)}`,fontSize:9}}
               title={gpuInfo?.reachable ? gpuInfo.gpus[0].deviceName : `${gpuInfo?.install?.title ?? 'GPU detected'} — metrics not available`}>
               {gpuType === 'nvidia' ? 'NVIDIA' : gpuType === 'amd' ? 'AMD' : gpuType === 'intel-arc' ? 'ARC' : 'iGPU'}
               {!gpuInfo?.reachable && ' ⚠'}
@@ -565,7 +566,7 @@ function NodeCard({ node, vms, gpuInfo, power, powerTotal }: { node:PVENode; vms
           is its share of what the cluster is drawing — a denominator that is
           measured rather than invented. */}
       {power && (
-        <div className="rounded-lg px-2.5 py-2" style={{ background:'#070b12', border:'1px solid #111827' }}>
+        <div className="rounded-lg px-2.5 py-2" style={{ background:'var(--ground-inset)', border:'1px solid var(--border-dim)' }}>
           {power.total === null ? (
             <div title="No RAPL on this CPU, and no exporter reporting a package figure. Nothing here is measuring watts.">
               <div className="flex items-baseline justify-between">
@@ -578,24 +579,24 @@ function NodeCard({ node, vms, gpuInfo, power, powerTotal }: { node:PVENode; vms
             <>
               <div className="flex items-baseline justify-between mb-1.5">
                 <span className="font-mono uppercase tracking-widest text-gray-600" style={{ fontSize:9 }}>Power</span>
-                <span className="font-mono font-bold" style={{ fontSize:15, color:'#f59e0b', fontVariantNumeric:'tabular-nums' }}>
-                  {power.total.toFixed(1)}<span style={{ fontSize:10, color:'#f59e0b90' }}> W</span>
+                <span className="font-mono font-bold" style={{ fontSize:15, color:'var(--warn)', fontVariantNumeric:'tabular-nums' }}>
+                  {power.total.toFixed(1)}<span style={{ fontSize:10, color:'color-mix(in srgb, var(--warn) 56%, transparent)' }}> W</span>
                 </span>
               </div>
               {powerTotal ? (
                 <div className="flex items-center gap-2 mb-1.5">
-                  <div className="h-1 flex-1 rounded-full overflow-hidden" style={{ background:'#161e2c' }}>
+                  <div className="h-1 flex-1 rounded-full overflow-hidden" style={{ background:'var(--border-strong)' }}>
                     <div className="h-full rounded-full"
                       style={{ width:`${Math.min((power.total / powerTotal) * 100, 100)}%`,
-                               background:'#f59e0b', boxShadow:'0 0 8px #f59e0b60',
+                               background:'var(--warn)', boxShadow:'0 0 8px color-mix(in srgb, var(--warn) 38%, transparent)',
                                transition:'width .6s cubic-bezier(.22,1,.36,1)' }}/>
                   </div>
-                  <span className="font-mono" style={{ fontSize:9, color:'#4b5563', fontVariantNumeric:'tabular-nums' }}>
+                  <span className="font-mono" style={{ fontSize:9, color:'var(--text-dim)', fontVariantNumeric:'tabular-nums' }}>
                     {Math.round((power.total / powerTotal) * 100)}% of cluster
                   </span>
                 </div>
               ) : null}
-              <div className="font-mono" style={{ fontSize:9, color:'#4b5563' }}>
+              <div className="font-mono" style={{ fontSize:9, color:'var(--text-dim)' }}>
                 {power.gpu
                   ? `cpu ${power.cpu?.toFixed(1)} · gpu ${power.gpu.toFixed(1)} W`
                   : `cpu package · ${power.source}`}
@@ -605,7 +606,7 @@ function NodeCard({ node, vms, gpuInfo, power, powerTotal }: { node:PVENode; vms
         </div>
       )}
 
-      <div className="flex gap-2 pt-1 border-t items-center" style={{borderColor:'#111827'}}>
+      <div className="flex gap-2 pt-1 border-t items-center" style={{borderColor:'var(--border-dim)'}}>
         <span className="text-xs font-mono" style={{color:accent}}>▶ {running} running</span>
         <span className="text-xs font-mono text-gray-600">■ {nodeVMs.length-running} stopped</span>
         <span className="text-xs font-mono text-gray-600 ml-auto">{nodeVMs.length} total</span>
@@ -618,28 +619,28 @@ function NodeCard({ node, vms, gpuInfo, power, powerTotal }: { node:PVENode; vms
 function CephPanel({ ceph, osds }: { ceph:CephStatus|null; osds:CephOSD[] }) {
   if (!ceph) return null
   const hOk=ceph.health.status==='HEALTH_OK', hWarn=ceph.health.status==='HEALTH_WARN'
-  const hc=hOk?'#22c55e':hWarn?'#ffaa00':'#ff4444'
+  const hc=hOk?'var(--good)':hWarn?'var(--warn-2)':'var(--crit-2)'
   const up=ceph.pgmap?pct(ceph.pgmap.bytes_used,ceph.pgmap.bytes_total):0
   const checks=Object.entries(ceph.health.checks)
   const byHost=osds.reduce((a,o)=>{if(!a[o.host])a[o.host]=[];a[o.host].push(o);return a},{} as Record<string,CephOSD[]>)
   return (
-    <div className="rounded-lg border p-5" style={{background:'linear-gradient(135deg,#0d1220,#080c14)',borderColor:`${hc}30`}}>
+    <div className="rounded-lg border p-5" style={{background:'linear-gradient(135deg,var(--surface),var(--ground))',borderColor:`${alpha(hc, 19)}`}}>
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full" style={{background:hc,boxShadow:`0 0 6px ${hc}`}}/>
-          <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{color:'#00e5ff'}}>CEPH</span>
-          <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{background:`${hc}15`,color:hc,border:`1px solid ${hc}30`}}>{ceph.health.status}</span>
+          <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{color:'var(--accent)'}}>CEPH</span>
+          <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{background:`${alpha(hc, 8)}`,color:hc,border:`1px solid ${alpha(hc, 19)}`}}>{ceph.health.status}</span>
         </div>
-        <span className="text-xs font-mono" style={{color:'#22c55e'}}>{ceph.osdmap.num_up_osds}/{ceph.osdmap.num_osds} OSDs</span>
+        <span className="text-xs font-mono" style={{color:'var(--good)'}}>{ceph.osdmap.num_up_osds}/{ceph.osdmap.num_osds} OSDs</span>
       </div>
       {ceph.pgmap&&(
         <div className="flex flex-wrap items-center gap-4 mb-4">
-          <Speedometer value={up} label="Capacity" size={110} color="#f59e0b"/>
+          <Speedometer value={up} label="Capacity" size={110} color="var(--warn)"/>
           <div className="flex-1 space-y-2">
-            {[['USED', formatBytes(ceph.pgmap.bytes_used), '#f59e0b'],
-              ['DATA', formatBytes(ceph.pgmap.data_bytes), '#00e5ff'],
-              ['FREE', formatBytes(ceph.pgmap.bytes_avail), '#22c55e'],
-              ['RAW',  formatBytes(ceph.pgmap.bytes_total), '#6b7280']].map(([l,v,c])=>(
+            {[['USED', formatBytes(ceph.pgmap.bytes_used), 'var(--warn)'],
+              ['DATA', formatBytes(ceph.pgmap.data_bytes), 'var(--accent)'],
+              ['FREE', formatBytes(ceph.pgmap.bytes_avail), 'var(--good)'],
+              ['RAW',  formatBytes(ceph.pgmap.bytes_total), 'var(--text-muted)']].map(([l,v,c])=>(
               <div key={l} className="flex items-baseline justify-between font-mono" style={{fontSize:11}}>
                 <span className="text-gray-600 uppercase tracking-wider">{l}</span>
                 <span style={{color:c, fontVariantNumeric:'tabular-nums'}}>{v}</span>
@@ -649,9 +650,9 @@ function CephPanel({ ceph, osds }: { ceph:CephStatus|null; osds:CephOSD[] }) {
         </div>
       )}
       {checks.map(([key])=>(
-        <div key={key} className="flex items-center gap-2 text-xs font-mono p-2 rounded mb-1" style={{background:'#ffaa0010',border:'1px solid #ffaa0025'}}>
-          <span style={{color:'#ffaa00'}}>⚠</span>
-          <span style={{color:'#ffaa00'}}>{key}</span>
+        <div key={key} className="flex items-center gap-2 text-xs font-mono p-2 rounded mb-1" style={{background:'color-mix(in srgb, var(--warn-2) 6%, transparent)',border:'1px solid color-mix(in srgb, var(--warn-2) 15%, transparent)'}}>
+          <span style={{color:'var(--warn-2)'}}>⚠</span>
+          <span style={{color:'var(--warn-2)'}}>{key}</span>
           {key==='POOL_NO_REDUNDANCY'&&<span className="text-gray-600">(intentional)</span>}
         </div>
       ))}
@@ -661,11 +662,11 @@ function CephPanel({ ceph, osds }: { ceph:CephStatus|null; osds:CephOSD[] }) {
             <div className="text-xs font-mono text-gray-600 mb-1">{host}</div>
             <div className="flex flex-wrap gap-1">
               {hostOsds.map(osd=>{
-                const p2=Math.round(osd.percent_used), c2=osd.status!=='up'?'#ff4444':p2>85?'#ff4444':p2>70?'#ffaa00':'#22c55e'
+                const p2=Math.round(osd.percent_used), c2=osd.status!=='up'?'var(--crit-2)':p2>85?'var(--crit-2)':p2>70?'var(--warn-2)':'var(--good)'
                 return (
                   <div key={osd.id} title={`${osd.name}|${osd.device_class}|${p2}%|${osd.apply_latency_ms}ms`}
                     className="flex flex-col items-center gap-0.5 p-1.5 rounded cursor-default"
-                    style={{background:`${c2}10`,border:`1px solid ${c2}30`,minWidth:48}}>
+                    style={{background:`${alpha(c2, 6)}`,border:`1px solid ${alpha(c2, 19)}`,minWidth:48}}>
                     <span className="text-xs font-mono" style={{color:c2}}>{osd.name}</span>
                     <span className="text-xs font-mono text-gray-600">{p2}%</span>
                     <span className="font-mono text-gray-700" style={{fontSize:9}}>{osd.device_class}</span>
@@ -688,21 +689,21 @@ function HAPanel({ ha }: { ha:HAEntry[] }) {
   const masterNode=master?.status.split(' ')[0]??'—', fencingArmed=fencing?.status.includes('armed')??false
   const allStarted=services.every(s=>s.crm_state==='started')
   return (
-    <div className="rounded-lg border p-5" style={{background:'linear-gradient(135deg,#0d1220,#080c14)',borderColor:'#00e5ff20'}}>
+    <div className="rounded-lg border p-5" style={{background:'linear-gradient(135deg,var(--surface),var(--ground))',borderColor:'color-mix(in srgb, var(--accent) 13%, transparent)'}}>
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full" style={{background:'#22c55e',boxShadow:'0 0 6px #22c55e'}}/>
-          <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{color:'#00e5ff'}}>HA</span>
+          <div className="w-2 h-2 rounded-full" style={{background:'var(--good)',boxShadow:'0 0 6px var(--good)'}}/>
+          <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{color:'var(--accent)'}}>HA</span>
         </div>
-        <span className="text-xs font-mono" style={{color:allStarted?'#22c55e':'#ffaa00'}}>
+        <span className="text-xs font-mono" style={{color:allStarted?'var(--good)':'var(--warn-2)'}}>
           {services.filter(s=>s.crm_state==='started').length}/{services.length} services
         </span>
       </div>
       <div className="grid grid-cols-3 gap-2 mb-3">
         {[{label:'QUORUM',value:quorum?.quorate?'OK':'FAIL',ok:!!quorum?.quorate},{label:'MASTER',value:masterNode,ok:true},{label:'FENCING',value:fencingArmed?'ARMED':'OFF',ok:fencingArmed}].map(({label,value,ok:isOk})=>(
-          <div key={label} className="flex flex-col items-center gap-1 p-2 rounded" style={{background:'#060a10',border:'1px solid #111827'}}>
+          <div key={label} className="flex flex-col items-center gap-1 p-2 rounded" style={{background:'var(--ground-deep)',border:'1px solid var(--border-dim)'}}>
             <span className="font-mono text-gray-500" style={{fontSize:9}}>{label}</span>
-            <span className="text-xs font-mono font-semibold" style={{color:isOk?'#22c55e':'#ff4444'}}>{value}</span>
+            <span className="text-xs font-mono font-semibold" style={{color:isOk?'var(--good)':'var(--crit-2)'}}>{value}</span>
           </div>
         ))}
       </div>
@@ -710,9 +711,9 @@ function HAPanel({ ha }: { ha:HAEntry[] }) {
         {lrms.map(lrm=>{
           const active=lrm.status.includes('active')
           return (
-            <div key={lrm.id} className="flex items-center gap-1 p-1.5 rounded" style={{background:active?'#22c55e10':'#1f2937',border:`1px solid ${active?'#22c55e30':'#1f2937'}`}}>
-              <div className="w-1.5 h-1.5 rounded-full" style={{background:active?'#22c55e':'#374151'}}/>
-              <span className="font-mono" style={{color:active?'#86efac':'#4b5563',fontSize:10}}>{lrm.node}</span>
+            <div key={lrm.id} className="flex items-center gap-1 p-1.5 rounded" style={{background:active?'color-mix(in srgb, var(--good) 6%, transparent)':'var(--text-faint)',border:`1px solid ${active?'color-mix(in srgb, var(--good) 19%, transparent)':'var(--text-faint)'}`}}>
+              <div className="w-1.5 h-1.5 rounded-full" style={{background:active?'var(--good)':'var(--text-dimmer)'}}/>
+              <span className="font-mono" style={{color:active?'var(--good-soft)':'var(--text-dim)',fontSize:10}}>{lrm.node}</span>
             </div>
           )
         })}
@@ -720,7 +721,7 @@ function HAPanel({ ha }: { ha:HAEntry[] }) {
       <div className="flex flex-wrap gap-1">
         {services.map(svc=>{
           const ok=svc.crm_state==='started'
-          return <span key={svc.id} className="font-mono px-1.5 py-0.5 rounded" style={{fontSize:9,background:ok?'#22c55e10':'#ff444410',color:ok?'#86efac':'#fca5a5',border:`1px solid ${ok?'#22c55e30':'#ff444430'}`}}>{svc.sid}</span>
+          return <span key={svc.id} className="font-mono px-1.5 py-0.5 rounded" style={{fontSize:9,background:ok?'color-mix(in srgb, var(--good) 6%, transparent)':'color-mix(in srgb, var(--crit-2) 6%, transparent)',color:ok?'var(--good-soft)':'var(--crit-soft)',border:`1px solid ${ok?'color-mix(in srgb, var(--good) 19%, transparent)':'color-mix(in srgb, var(--crit-2) 19%, transparent)'}`}}>{svc.sid}</span>
         })}
       </div>
     </div>
@@ -828,7 +829,7 @@ export default function DashboardView() {
   }, [fetchInitial])
 
   if (!fast) return (
-    <div className="min-h-full flex items-center justify-center" style={{background:'#080c14'}}>
+    <div className="min-h-full flex items-center justify-center" style={{background:'var(--ground)'}}>
       <div className="text-xs font-mono text-gray-500 animate-pulse">connecting to titancluster...</div>
     </div>
   )
@@ -836,28 +837,28 @@ export default function DashboardView() {
   const sorted = [...fast.nodes].sort((a,b)=>{const ag=fast.gpuStatus?.find(g=>g.node===a.node)?.gpus.length??0;const bg=fast.gpuStatus?.find(g=>g.node===b.node)?.gpus.length??0;return bg-ag||a.node.localeCompare(b.node)})
 
   return (
-    <div className="min-h-full" style={{background:'#080c14'}}>
+    <div className="min-h-full" style={{background:'var(--ground)'}}>
       {/* Header */}
-      <header className="flex flex-wrap items-center justify-between gap-y-2 px-3 sm:px-6 py-3 sm:py-4 border-b" style={{borderColor:'#111827',background:'#080c14'}}>
+      <header className="flex flex-wrap items-center justify-between gap-y-2 px-3 sm:px-6 py-3 sm:py-4 border-b" style={{borderColor:'var(--border-dim)',background:'var(--ground)'}}>
         <div className="flex items-center gap-3">
           <h1 className="font-display text-2xl font-light tracking-widest">
-            HYPER<span className="font-bold" style={{color:'#00e5ff'}}>PROX</span>
+            HYPER<span className="font-bold" style={{color:'var(--accent)'}}>PROX</span>
           </h1>
           <span className="text-xs font-mono text-gray-700">v0.1.0</span>
         </div>
         <div className="flex items-center gap-3">
           {[
-            {label:'NODES',  value:`${fast.nodes.filter(n=>n.status==='online').length}/${fast.nodes.length}`, color:'#00e5ff'},
-            {label:'RUNNING',value:String(fast.vms.filter(v=>v.status==='running').length),                    color:'#22c55e'},
-            {label:'VMs+CTs',value:String(fast.vms.length),                                                    color:'#374151'},
+            {label:'NODES',  value:`${fast.nodes.filter(n=>n.status==='online').length}/${fast.nodes.length}`, color:'var(--accent)'},
+            {label:'RUNNING',value:String(fast.vms.filter(v=>v.status==='running').length),                    color:'var(--good)'},
+            {label:'VMs+CTs',value:String(fast.vms.length),                                                    color:'var(--text-dimmer)'},
           ].map(({label,value,color})=>(
-            <div key={label} className="flex items-center gap-1.5 px-2 py-1 rounded text-xs font-mono" style={{background:`${color}10`,border:`1px solid ${color}30`}}>
+            <div key={label} className="flex items-center gap-1.5 px-2 py-1 rounded text-xs font-mono" style={{background:`${alpha(color, 6)}`,border:`1px solid ${alpha(color, 19)}`}}>
               <span style={{color}}>{value}</span>
               <span className="text-gray-600">{label}</span>
             </div>
           ))}
           {lastSync&&<span className="text-xs font-mono text-gray-700 hidden md:block" style={{fontVariantNumeric:'tabular-nums'}}>{lastSync.toLocaleTimeString()}</span>}
-          <div className="w-2 h-2 rounded-full animate-pulse" style={{background:'#00e5ff',boxShadow:'0 0 6px #00e5ff'}}/>
+          <div className="w-2 h-2 rounded-full animate-pulse" style={{background:'var(--accent)',boxShadow:'0 0 6px var(--accent)'}}/>
         </div>
       </header>
 
@@ -900,30 +901,30 @@ export default function DashboardView() {
 
 function ServicesPanel({ services }: { services: SlowData['services'] }) {
   const rows = [
-    { key:'npm', name:'Nginx Proxy Manager', accent:'#00e5ff', info: services.npm,
+    { key:'npm', name:'Nginx Proxy Manager', accent:'var(--accent)', info: services.npm,
       details: services.npm?.connected ? [
-        {label:'Hosts',    value:String(services.npm.total??0),   color:'#e5e7eb'},
-        {label:'Active',   value:String(services.npm.enabled??0), color:'#22c55e'},
-        {label:'Inactive', value:String(services.npm.disabled??0),color:(services.npm.disabled??0)>0?'#ffaa00':'#374151'},
-        {label:'SSL',      value:String(services.npm.ssl??0),     color:'#22c55e'},
-        {label:'Expiring', value:String(services.npm.expiring??0),color:(services.npm.expiring??0)>0?'#ffaa00':'#374151'},
+        {label:'Hosts',    value:String(services.npm.total??0),   color:'var(--text-bright)'},
+        {label:'Active',   value:String(services.npm.enabled??0), color:'var(--good)'},
+        {label:'Inactive', value:String(services.npm.disabled??0),color:(services.npm.disabled??0)>0?'var(--warn-2)':'var(--text-dimmer)'},
+        {label:'SSL',      value:String(services.npm.ssl??0),     color:'var(--good)'},
+        {label:'Expiring', value:String(services.npm.expiring??0),color:(services.npm.expiring??0)>0?'var(--warn-2)':'var(--text-dimmer)'},
       ] : []
     },
-    { key:'grafana',    name:'Grafana',    accent:'#f59e0b', info: services.grafana,    details:[] },
-    { key:'prometheus', name:'Prometheus', accent:'#e11d48', info: services.prometheus, details:[] },
+    { key:'grafana',    name:'Grafana',    accent:'var(--warn)', info: services.grafana,    details:[] },
+    { key:'prometheus', name:'Prometheus', accent:'var(--crit)', info: services.prometheus, details:[] },
   ]
   return (
-    <div className="rounded-lg border p-5" style={{background:'linear-gradient(135deg,#0d1220,#080c14)',borderColor:'#00e5ff20'}}>
+    <div className="rounded-lg border p-5" style={{background:'linear-gradient(135deg,var(--surface),var(--ground))',borderColor:'color-mix(in srgb, var(--accent) 13%, transparent)'}}>
       <div className="flex items-center gap-2 mb-4">
-        <div className="w-2 h-2 rounded-full" style={{background:'#00e5ff',boxShadow:'0 0 6px #00e5ff'}}/>
-        <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{color:'#00e5ff'}}>Connected Services</span>
+        <div className="w-2 h-2 rounded-full" style={{background:'var(--accent)',boxShadow:'0 0 6px var(--accent)'}}/>
+        <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{color:'var(--accent)'}}>Connected Services</span>
       </div>
       <div className="space-y-2">
         {rows.map(({key,name,accent,info,details})=>(
-          <div key={key} className="flex items-center gap-3 p-3 rounded" style={{background:'#060a10',border:`1px solid ${info?.connected?accent+'20':'#111827'}`}}>
-            <div className="w-2 h-2 rounded-full flex-shrink-0" style={{background:info?.connected?accent:'#374151',boxShadow:info?.connected?`0 0 5px ${accent}`:'none'}}/>
+          <div key={key} className="flex items-center gap-3 p-3 rounded" style={{background:'var(--ground-deep)',border:`1px solid ${info?.connected?accent+'20':'var(--border-dim)'}`}}>
+            <div className="w-2 h-2 rounded-full flex-shrink-0" style={{background:info?.connected?accent:'var(--text-dimmer)',boxShadow:info?.connected?`0 0 5px ${accent}`:'none'}}/>
             <div className="flex-1 min-w-0">
-              <div className="text-xs font-mono" style={{color:info?.connected?'#e5e7eb':'#4b5563'}}>{name}</div>
+              <div className="text-xs font-mono" style={{color:info?.connected?'var(--text-bright)':'var(--text-dim)'}}>{name}</div>
               {info?.connected&&(info as any).url&&<div className="text-xs font-mono text-gray-600 truncate">{(info as any).url}</div>}
               {!info?.connected&&<div className="text-xs font-mono text-gray-700">checking...</div>}
             </div>
@@ -937,7 +938,7 @@ function ServicesPanel({ services }: { services: SlowData['services'] }) {
                 ))}
               </div>
             )}
-            {!info?.connected&&<span className="text-xs font-mono px-2 py-0.5 rounded" style={{background:'#1f2937',color:'#374151',border:'1px solid #1f2937'}}>disconnected</span>}
+            {!info?.connected&&<span className="text-xs font-mono px-2 py-0.5 rounded" style={{background:'var(--text-faint)',color:'var(--text-dimmer)',border:'1px solid var(--text-faint)'}}>disconnected</span>}
           </div>
         ))}
       </div>

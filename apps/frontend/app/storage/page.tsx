@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { formatBytes } from '@/lib/utils'
+import { alpha } from '@/lib/theme'
 
 // ---------------------------------------------------------------------------
 //  Types
@@ -71,13 +72,13 @@ interface VMStorageItem {
 // ---------------------------------------------------------------------------
 
 const TYPE_COLORS: Record<string, string> = {
-  rbd:     '#a78bfa',
-  cephfs:  '#00e5ff',
-  pbs:     '#f59e0b',
-  lvmthin: '#22c55e',
-  dir:     '#6b7280',
-  btrfs:   '#22d3ee',
-  zfspool: '#818cf8',
+  rbd:     'var(--violet)',
+  cephfs:  'var(--accent)',
+  pbs:     'var(--warn)',
+  lvmthin: 'var(--good)',
+  dir:     'var(--text-muted)',
+  btrfs:   'var(--accent-2)',
+  zfspool: 'var(--violet-2)',
 }
 
 const TYPE_LABELS: Record<string, string> = {
@@ -96,10 +97,10 @@ function pct(used: number, total: number) {
 
 function UsageBar({ used, total, color }: { used: number; total: number; color: string }) {
   const p = pct(used, total)
-  const c = p > 90 ? '#ff4444' : p > 80 ? '#ffaa00' : color
+  const c = p > 90 ? 'var(--crit-2)' : p > 80 ? 'var(--warn-2)' : color
   return (
     <div>
-      <div className="h-1.5 rounded-full overflow-hidden" style={{ background: '#1f2937' }}>
+      <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--text-faint)' }}>
         <div className="h-full rounded-full transition-all duration-700" style={{ width: `${p}%`, background: c }}/>
       </div>
       <div className="flex justify-between text-xs font-mono mt-0.5">
@@ -115,7 +116,7 @@ function UsageBar({ used, total, color }: { used: number; total: number; color: 
 // ---------------------------------------------------------------------------
 
 function StorageCard({ s }: { s: StorageItem }) {
-  const color   = TYPE_COLORS[s.plugintype] ?? '#6b7280'
+  const color   = TYPE_COLORS[s.plugintype] ?? 'var(--text-muted)'
   const label   = TYPE_LABELS[s.plugintype] ?? s.plugintype
   const usedPct = pct(s.used, s.total)
   const isWarn  = usedPct > 85
@@ -125,24 +126,24 @@ function StorageCard({ s }: { s: StorageItem }) {
 
   return (
     <div className="rounded-lg border p-4" style={{
-      background:  'linear-gradient(135deg, #0d1220 0%, #080c14 100%)',
-      borderColor: isCrit ? '#ff444430' : isWarn ? '#ffaa0030' : `${color}25`,
-      boxShadow:   isCrit ? '0 0 12px #ff444408' : isWarn ? '0 0 12px #ffaa0008' : 'none',
+      background:  'linear-gradient(135deg, var(--surface) 0%, var(--ground) 100%)',
+      borderColor: isCrit ? 'color-mix(in srgb, var(--crit-2) 19%, transparent)' : isWarn ? 'color-mix(in srgb, var(--warn-2) 19%, transparent)' : `${alpha(color, 15)}`,
+      boxShadow:   isCrit ? '0 0 12px color-mix(in srgb, var(--crit-2) 3%, transparent)' : isWarn ? '0 0 12px color-mix(in srgb, var(--warn-2) 3%, transparent)' : 'none',
     }}>
       {/* Header */}
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full" style={{
-            background: (s.active === 1 || s.status === 'available') ? '#22c55e' : '#ff4444',
-            boxShadow:  (s.active === 1 || s.status === 'available') ? '0 0 5px #22c55e' : '0 0 5px #ff4444',
+            background: (s.active === 1 || s.status === 'available') ? 'var(--good)' : 'var(--crit-2)',
+            boxShadow:  (s.active === 1 || s.status === 'available') ? '0 0 5px var(--good)' : '0 0 5px var(--crit-2)',
           }}/>
           <span className="font-mono text-sm font-semibold text-white">{s.storage}</span>
-          {isWarn && <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background: '#ff444415', color: '#ff6666', border: '1px solid #ff444430', fontSize: 9 }}>
+          {isWarn && <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background: 'color-mix(in srgb, var(--crit-2) 8%, transparent)', color: 'var(--crit-2)', border: '1px solid color-mix(in srgb, var(--crit-2) 19%, transparent)', fontSize: 9 }}>
             {isCrit ? 'CRITICAL' : 'WARNING'}
           </span>}
         </div>
         <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{
-          background: `${color}15`, color, border: `1px solid ${color}30`, fontSize: 9,
+          background: `${alpha(color, 8)}`, color, border: `1px solid ${alpha(color, 19)}`, fontSize: 9,
         }}>{label}</span>
       </div>
 
@@ -164,20 +165,20 @@ function StorageCard({ s }: { s: StorageItem }) {
       </div>
 
       {/* Content types */}
-      <div className="flex flex-wrap gap-1 mt-3 pt-2 border-t" style={{ borderColor: '#111827' }}>
+      <div className="flex flex-wrap gap-1 mt-3 pt-2 border-t" style={{ borderColor: 'var(--border-dim)' }}>
         {contents.map(c => (
           <span key={c} className="text-xs font-mono px-1.5 py-0.5 rounded" style={{
-            background: '#ffffff08', color: '#4b5563', border: '1px solid #1f2937', fontSize: 9,
+            background: 'color-mix(in srgb, var(--text-bright) 3%, transparent)', color: 'var(--text-dim)', border: '1px solid var(--text-faint)', fontSize: 9,
           }}>{c.trim()}</span>
         ))}
         {(s.nodeCount ?? 0) > 1 && !s.shared && (
           <span key="nodes" className="text-xs font-mono px-1.5 py-0.5 rounded" style={{
-            background: '#ffffff08', color: '#374151', border: '1px solid #1f2937', fontSize: 9,
+            background: 'color-mix(in srgb, var(--text-bright) 3%, transparent)', color: 'var(--text-dimmer)', border: '1px solid var(--text-faint)', fontSize: 9,
           }}>{s.nodeCount} nodes</span>
         )}
         {s.shared === 1 && (
           <span className="text-xs font-mono px-1.5 py-0.5 rounded ml-auto" style={{
-            background: '#00e5ff08', color: '#00e5ff60', border: '1px solid #00e5ff20', fontSize: 9,
+            background: 'color-mix(in srgb, var(--accent) 3%, transparent)', color: 'color-mix(in srgb, var(--accent) 38%, transparent)', border: '1px solid color-mix(in srgb, var(--accent) 13%, transparent)', fontSize: 9,
           }}>SHARED</span>
         )}
       </div>
@@ -193,10 +194,10 @@ function CephPoolsTable({ pools }: { pools: CephPool[] | null }) {
   const visible = (pools ?? []).filter(p => !p.pool_name.startsWith('.'))
 
   return (
-    <div className="rounded-lg border overflow-hidden" style={{ borderColor: '#0f1929' }}>
+    <div className="rounded-lg border overflow-hidden" style={{ borderColor: 'var(--border)' }}>
       <div className="hp-table-scroll overflow-x-auto"><table className="w-full text-xs font-mono">
         <thead>
-          <tr style={{ background: '#060a10', borderBottom: '1px solid #0f1929' }}>
+          <tr style={{ background: 'var(--ground-deep)', borderBottom: '1px solid var(--border)' }}>
             {['Pool', 'Type', 'Size', 'PGs', 'Used', 'Usage', 'Crush Rule'].map(h => (
               <th key={h} className="px-4 py-2 text-left text-gray-600 uppercase tracking-wider">{h}</th>
             ))}
@@ -205,20 +206,20 @@ function CephPoolsTable({ pools }: { pools: CephPool[] | null }) {
         <tbody>
           {visible.map((pool, i) => {
             const p   = Math.round(pool.percent_used * 100)
-            const col = p > 85 ? '#ff4444' : p > 70 ? '#ffaa00' : '#00e5ff'
+            const col = p > 85 ? 'var(--crit-2)' : p > 70 ? 'var(--warn-2)' : 'var(--accent)'
             return (
-              <tr key={pool.pool} style={{ borderBottom: '1px solid #0a0f1a', background: i % 2 === 0 ? '#080c14' : '#0a0f1a' }}>
+              <tr key={pool.pool} style={{ borderBottom: '1px solid var(--surface-raised)', background: i % 2 === 0 ? 'var(--ground)' : 'var(--surface-raised)' }}>
                 <td className="px-4 py-2.5 text-white font-semibold">{pool.pool_name}</td>
                 <td className="px-4 py-2.5 text-gray-400">{pool.type}</td>
                 <td className="px-4 py-2.5">
-                  <span style={{ color: '#e5e7eb' }}>{pool.size}</span>
+                  <span style={{ color: 'var(--text-bright)' }}>{pool.size}</span>
                   <span className="text-gray-600">/{pool.min_size} min</span>
                 </td>
                 <td className="px-4 py-2.5 text-gray-400">{pool.pg_num}</td>
                 <td className="px-4 py-2.5" style={{ color: col }}>{formatBytes(pool.bytes_used)}</td>
                 <td className="px-4 py-2.5" style={{ minWidth: 120 }}>
                   <div className="flex items-center gap-2">
-                    <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: '#1f2937' }}>
+                    <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--text-faint)' }}>
                       <div className="h-full rounded-full" style={{ width: `${p}%`, background: col }}/>
                     </div>
                     <span style={{ color: col, minWidth: 32 }}>{p}%</span>
@@ -253,11 +254,11 @@ function OSDMap({ osds }: { osds: CephOSD[] | null }) {
           <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))' }}>
             {hostOsds.map(osd => {
               const p   = Math.round(osd.percent_used)
-              const col = osd.status !== 'up' ? '#ff4444' : p > 85 ? '#ff4444' : p > 70 ? '#ffaa00' : '#22c55e'
+              const col = osd.status !== 'up' ? 'var(--crit-2)' : p > 85 ? 'var(--crit-2)' : p > 70 ? 'var(--warn-2)' : 'var(--good)'
               return (
                 <div key={osd.id} className="p-3 rounded-lg border" style={{
-                  background:  `${col}08`,
-                  borderColor: `${col}30`,
+                  background:  `${alpha(col, 3)}`,
+                  borderColor: `${alpha(col, 19)}`,
                 }}>
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
@@ -266,7 +267,7 @@ function OSDMap({ osds }: { osds: CephOSD[] | null }) {
                     </div>
                     <span className="font-mono text-gray-600" style={{ fontSize: 9 }}>{osd.device_class}</span>
                   </div>
-                  <div className="h-1.5 rounded-full overflow-hidden mb-1" style={{ background: '#1f2937' }}>
+                  <div className="h-1.5 rounded-full overflow-hidden mb-1" style={{ background: 'var(--text-faint)' }}>
                     <div className="h-full rounded-full" style={{ width: `${p}%`, background: col }}/>
                   </div>
                   <div className="flex justify-between text-xs font-mono">
@@ -276,7 +277,7 @@ function OSDMap({ osds }: { osds: CephOSD[] | null }) {
                   <div className="grid grid-cols-2 gap-1 mt-2 text-xs font-mono">
                     <div>
                       <span className="text-gray-700">LAT </span>
-                      <span style={{ color: osd.apply_latency_ms > 20 ? '#ffaa00' : '#4b5563' }}>
+                      <span style={{ color: osd.apply_latency_ms > 20 ? 'var(--warn-2)' : 'var(--text-dim)' }}>
                         {osd.apply_latency_ms}ms
                       </span>
                     </div>
@@ -307,12 +308,12 @@ function SummaryBar({ storage }: { storage: StorageItem[] }) {
   return (
     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
       {[
-        { label: 'Total Capacity', value: formatBytes(totalRaw),        color: '#6b7280' },
-        { label: 'Used',           value: formatBytes(usedRaw),          color: '#00e5ff' },
-        { label: 'Available',      value: formatBytes(totalRaw - usedRaw), color: '#22c55e' },
-        { label: 'Overall',        value: `${overallPct}%`,              color: overallPct > 80 ? '#ff4444' : '#f59e0b' },
+        { label: 'Total Capacity', value: formatBytes(totalRaw),        color: 'var(--text-muted)' },
+        { label: 'Used',           value: formatBytes(usedRaw),          color: 'var(--accent)' },
+        { label: 'Available',      value: formatBytes(totalRaw - usedRaw), color: 'var(--good)' },
+        { label: 'Overall',        value: `${overallPct}%`,              color: overallPct > 80 ? 'var(--crit-2)' : 'var(--warn)' },
       ].map(({ label, value, color }) => (
-        <div key={label} className="rounded-lg border p-4" style={{ background: '#0d1220', borderColor: `${color}25` }}>
+        <div key={label} className="rounded-lg border p-4" style={{ background: 'var(--surface)', borderColor: `${alpha(color, 15)}` }}>
           <div className="font-display text-xl font-bold" style={{ color }}>{value}</div>
           <div className="text-xs font-mono text-gray-600 mt-0.5">{label}</div>
         </div>
@@ -356,25 +357,25 @@ export default function StoragePage() {
   }, [tab])
 
   if (loading) return (
-    <div className="min-h-full flex items-center justify-center" style={{ background: '#080c14' }}>
+    <div className="min-h-full flex items-center justify-center" style={{ background: 'var(--ground)' }}>
       <div className="text-xs font-mono text-gray-500 animate-pulse">loading storage...</div>
     </div>
   )
 
   if (error || !overview) return (
-    <div className="min-h-full flex items-center justify-center" style={{ background: '#080c14' }}>
+    <div className="min-h-full flex items-center justify-center" style={{ background: 'var(--ground)' }}>
       <div className="text-red-400 font-mono text-sm">{error ?? 'No data'}</div>
     </div>
   )
 
   return (
-    <div className="min-h-full p-3 sm:p-6" style={{ background: '#080c14' }}>
+    <div className="min-h-full p-3 sm:p-6" style={{ background: 'var(--ground)' }}>
 
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">
-          <div className="w-1 h-6 rounded-full" style={{ background: '#818cf8', boxShadow: '0 0 8px #818cf8' }}/>
-          <h1 className="font-display text-2xl font-semibold tracking-wide uppercase" style={{ color: '#818cf8' }}>Storage</h1>
+          <div className="w-1 h-6 rounded-full" style={{ background: 'var(--violet-2)', boxShadow: '0 0 8px var(--violet-2)' }}/>
+          <h1 className="font-display text-2xl font-semibold tracking-wide uppercase" style={{ color: 'var(--violet-2)' }}>Storage</h1>
         </div>
         {lastSync && <span className="text-xs font-mono text-gray-600">synced {lastSync.toLocaleTimeString()}</span>}
       </div>
@@ -384,7 +385,7 @@ export default function StoragePage() {
         <div className="mb-5 space-y-1">
           {(overview.warnings??[]).map((w, i) => (
             <div key={i} className="flex items-center gap-2 px-3 py-2 rounded text-xs font-mono" style={{
-              background: '#ff444410', color: '#f87171', border: '1px solid #ff444430',
+              background: 'color-mix(in srgb, var(--crit-2) 6%, transparent)', color: 'var(--crit-soft)', border: '1px solid color-mix(in srgb, var(--crit-2) 19%, transparent)',
             }}>
               <span>⚠</span><span>{w}</span>
             </div>
@@ -396,7 +397,7 @@ export default function StoragePage() {
       <SummaryBar storage={overview.storage}/>
 
       {/* Tabs */}
-      <div className="flex gap-1 mb-5 border-b" style={{ borderColor: '#111827' }}>
+      <div className="flex gap-1 mb-5 border-b" style={{ borderColor: 'var(--border-dim)' }}>
         {([
           { key: 'volumes',    label: `Volumes (${overview.storage.length})` },
           { key: 'ceph-pools', label: `CEPH Pools (${(overview.pools??[]).filter(p => !p.pool_name.startsWith('.')).length})` },
@@ -406,8 +407,8 @@ export default function StoragePage() {
           <button key={key} onClick={() => setTab(key)}
             className="px-5 py-3 text-xs font-mono uppercase tracking-wider transition-colors"
             style={{
-              borderBottom: tab === key ? '2px solid #818cf8' : '2px solid transparent',
-              color:        tab === key ? '#818cf8' : '#4b5563',
+              borderBottom: tab === key ? '2px solid var(--violet-2)' : '2px solid transparent',
+              color:        tab === key ? 'var(--violet-2)' : 'var(--text-dim)',
               background:   'transparent',
             }}>{label}</button>
         ))}
@@ -426,11 +427,11 @@ export default function StoragePage() {
           {overview.ceph && (
             <div className="grid grid-cols-3 gap-3 mb-4">
               {[
-                { label: 'Health',  value: overview.ceph.health.status, color: overview.ceph.health.status === 'HEALTH_OK' ? '#22c55e' : '#ffaa00' },
-                { label: 'OSDs',    value: `${overview.ceph.osdmap.num_up_osds}/${overview.ceph.osdmap.num_osds} up`, color: '#22c55e' },
-                { label: 'PGs',     value: String(overview.ceph.pgmap?.num_pgs ?? '—'), color: '#6b7280' },
+                { label: 'Health',  value: overview.ceph.health.status, color: overview.ceph.health.status === 'HEALTH_OK' ? 'var(--good)' : 'var(--warn-2)' },
+                { label: 'OSDs',    value: `${overview.ceph.osdmap.num_up_osds}/${overview.ceph.osdmap.num_osds} up`, color: 'var(--good)' },
+                { label: 'PGs',     value: String(overview.ceph.pgmap?.num_pgs ?? '—'), color: 'var(--text-muted)' },
               ].map(({ label, value, color }) => (
-                <div key={label} className="p-3 rounded-lg border text-center" style={{ background: '#0d1220', borderColor: `${color}25` }}>
+                <div key={label} className="p-3 rounded-lg border text-center" style={{ background: 'var(--surface)', borderColor: `${alpha(color, 15)}` }}>
                   <div className="font-mono text-sm font-bold" style={{ color }}>{value}</div>
                   <div className="text-xs font-mono text-gray-600 mt-0.5">{label}</div>
                 </div>
@@ -449,14 +450,14 @@ export default function StoragePage() {
         vmLoading ? (
           <div className="text-xs font-mono text-gray-600 animate-pulse py-8 text-center">Loading...</div>
         ) : (
-          <div className="rounded-lg border overflow-hidden" style={{borderColor:'#0f1929'}}>
-            <div className="flex items-center justify-between px-4 py-2 border-b text-xs font-mono text-gray-600" style={{background:'#060a10',borderColor:'#0f1929'}}>
+          <div className="rounded-lg border overflow-hidden" style={{borderColor:'var(--border)'}}>
+            <div className="flex items-center justify-between px-4 py-2 border-b text-xs font-mono text-gray-600" style={{background:'var(--ground-deep)',borderColor:'var(--border)'}}>
               <span>{vmBreakdown.length} VMs &amp; Containers</span>
-              <span style={{color:'#818cf8'}}>Total allocated: {formatBytes(vmBreakdown.reduce((s:number,v:any)=>s+(v.totalAllocated??0),0))}</span>
+              <span style={{color:'var(--violet-2)'}}>Total allocated: {formatBytes(vmBreakdown.reduce((s:number,v:any)=>s+(v.totalAllocated??0),0))}</span>
             </div>
             <div className="hp-table-scroll overflow-x-auto"><table className="w-full text-xs font-mono">
               <thead>
-                <tr style={{background:'#060a10',borderBottom:'1px solid #0f1929'}}>
+                <tr style={{background:'var(--ground-deep)',borderBottom:'1px solid var(--border)'}}>
                   {['ID','Name','Type','Node','Status','Storage','Allocated','Used'].map(h=>(
                     <th key={h} className="px-4 py-2 text-left text-gray-600 uppercase tracking-wider">{h}</th>
                   ))}
@@ -464,25 +465,25 @@ export default function StoragePage() {
               </thead>
               <tbody>
                 {vmBreakdown.map((vm:any,i:number)=>(
-                  <tr key={`${vm.node}-${vm.vmid}`} style={{borderBottom:'1px solid #0a0f1a',background:i%2===0?'#080c14':'#0a0f1a'}}
-                    onMouseEnter={e=>(e.currentTarget as HTMLElement).style.background='#0d1220'}
-                    onMouseLeave={e=>(e.currentTarget as HTMLElement).style.background=i%2===0?'#080c14':'#0a0f1a'}>
+                  <tr key={`${vm.node}-${vm.vmid}`} style={{borderBottom:'1px solid var(--surface-raised)',background:i%2===0?'var(--ground)':'var(--surface-raised)'}}
+                    onMouseEnter={e=>(e.currentTarget as HTMLElement).style.background='var(--surface)'}
+                    onMouseLeave={e=>(e.currentTarget as HTMLElement).style.background=i%2===0?'var(--ground)':'var(--surface-raised)'}>
                     <td className="px-4 py-2.5 text-gray-500">{vm.vmid}</td>
                     <td className="px-4 py-2.5 text-white font-semibold">{vm.name}</td>
-                    <td className="px-4 py-2.5"><span style={{color:vm.type==='lxc'?'#00e5ff':'#a78bfa'}}>{vm.type.toUpperCase()}</span></td>
+                    <td className="px-4 py-2.5"><span style={{color:vm.type==='lxc'?'var(--accent)':'var(--violet)'}}>{vm.type.toUpperCase()}</span></td>
                     <td className="px-4 py-2.5 text-gray-400">{vm.node}</td>
-                    <td className="px-4 py-2.5"><span style={{color:vm.status==='running'?'#22c55e':'#374151'}}>{vm.status==='running'?'●':'■'} {vm.status}</span></td>
+                    <td className="px-4 py-2.5"><span style={{color:vm.status==='running'?'var(--good)':'var(--text-dimmer)'}}>{vm.status==='running'?'●':'■'} {vm.status}</span></td>
                     <td className="px-4 py-2.5">
                       <div className="flex flex-wrap gap-1">
                         {((vm.disks)??[]).map((d:any,di:number)=>(
-                          <span key={di} className="px-1.5 py-0.5 rounded" style={{fontSize:9,background:'#a78bfa15',color:'#a78bfa',border:'1px solid #a78bfa30'}}>
-                            {d.storage} <span style={{color:'#4b5563'}}>{d.sizeStr}</span>
+                          <span key={di} className="px-1.5 py-0.5 rounded" style={{fontSize:9,background:'color-mix(in srgb, var(--violet) 8%, transparent)',color:'var(--violet)',border:'1px solid color-mix(in srgb, var(--violet) 19%, transparent)'}}>
+                            {d.storage} <span style={{color:'var(--text-dim)'}}>{d.sizeStr}</span>
                           </span>
                         ))}
                         {(!vm.disks||vm.disks.length===0)&&<span className="text-gray-700">—</span>}
                       </div>
                     </td>
-                    <td className="px-4 py-2.5"><span style={{color:(vm.totalAllocated??0)>100*1024*1024*1024?'#ffaa00':'#e5e7eb'}}>{formatBytes(vm.totalAllocated??0)}</span></td>
+                    <td className="px-4 py-2.5"><span style={{color:(vm.totalAllocated??0)>100*1024*1024*1024?'var(--warn-2)':'var(--text-bright)'}}>{formatBytes(vm.totalAllocated??0)}</span></td>
                     <td className="px-4 py-2.5 text-gray-400">{vm.diskUsed>0?formatBytes(vm.diskUsed):'—'}</td>
                   </tr>
                 ))}
@@ -524,7 +525,7 @@ function VMStorageBreakdown({ items, storageColors }: {
 
   const totalAllocated = filtered.reduce((s, v) => s + v.totalAllocated, 0)
 
-  const SEL = { background:'#060a10', border:'1px solid #1f2937', color:'#9ca3af', borderRadius:6, padding:'6px 10px', fontFamily:'IBM Plex Mono,monospace', fontSize:11, outline:'none' } as React.CSSProperties
+  const SEL = { background:'var(--ground-deep)', border:'1px solid var(--text-faint)', color:'var(--text-soft)', borderRadius:6, padding:'6px 10px', fontFamily:'IBM Plex Mono,monospace', fontSize:11, outline:'none' } as React.CSSProperties
 
   return (
     <div>
@@ -543,17 +544,17 @@ function VMStorageBreakdown({ items, storageColors }: {
           <option value="node">Sort: Node</option>
         </select>
         <input type="text" placeholder="Search..." value={search} onChange={e=>setSearch(e.target.value)}
-          style={{...SEL, width:160, caretColor:'#818cf8'}}/>
+          style={{...SEL, width:160, caretColor:'var(--violet-2)'}}/>
         <div className="ml-auto flex items-center gap-3 text-xs font-mono">
           <span className="text-gray-600">{filtered.length} VMs/CTs</span>
-          <span style={{color:'#818cf8'}}>Total allocated: {formatBytes(totalAllocated)}</span>
+          <span style={{color:'var(--violet-2)'}}>Total allocated: {formatBytes(totalAllocated)}</span>
         </div>
       </div>
 
-      <div className="rounded-lg border overflow-hidden" style={{borderColor:'#0f1929'}}>
+      <div className="rounded-lg border overflow-hidden" style={{borderColor:'var(--border)'}}>
         <div className="hp-table-scroll overflow-x-auto"><table className="w-full text-xs font-mono">
           <thead>
-            <tr style={{background:'#060a10',borderBottom:'1px solid #0f1929'}}>
+            <tr style={{background:'var(--ground-deep)',borderBottom:'1px solid var(--border)'}}>
               {['ID','Name','Type','Node','Status','Storage Pools','Allocated'].map(h=>(
                 <th key={h} className="px-4 py-2 text-left text-gray-600 uppercase tracking-wider">{h}</th>
               ))}
@@ -562,28 +563,28 @@ function VMStorageBreakdown({ items, storageColors }: {
           <tbody>
             {filtered.map((vm,i)=>(
               <tr key={`${vm.node}-${vm.vmid}`}
-                style={{borderBottom:'1px solid #0a0f1a',background:i%2===0?'#080c14':'#0a0f1a'}}
-                onMouseEnter={e=>(e.currentTarget as HTMLElement).style.background='#0d1220'}
-                onMouseLeave={e=>(e.currentTarget as HTMLElement).style.background=i%2===0?'#080c14':'#0a0f1a'}
+                style={{borderBottom:'1px solid var(--surface-raised)',background:i%2===0?'var(--ground)':'var(--surface-raised)'}}
+                onMouseEnter={e=>(e.currentTarget as HTMLElement).style.background='var(--surface)'}
+                onMouseLeave={e=>(e.currentTarget as HTMLElement).style.background=i%2===0?'var(--ground)':'var(--surface-raised)'}
               >
                 <td className="px-4 py-2.5 text-gray-500">{vm.vmid}</td>
                 <td className="px-4 py-2.5 text-white font-semibold">{vm.name}</td>
-                <td className="px-4 py-2.5"><span style={{color:vm.type==='lxc'?'#00e5ff':'#a78bfa'}}>{vm.type.toUpperCase()}</span></td>
+                <td className="px-4 py-2.5"><span style={{color:vm.type==='lxc'?'var(--accent)':'var(--violet)'}}>{vm.type.toUpperCase()}</span></td>
                 <td className="px-4 py-2.5 text-gray-400">{vm.node}</td>
                 <td className="px-4 py-2.5">
-                  <span style={{color:vm.status==='running'?'#22c55e':'#374151'}}>
+                  <span style={{color:vm.status==='running'?'var(--good)':'var(--text-dimmer)'}}>
                     {vm.status==='running'?'●':'■'} {vm.status}
                   </span>
                 </td>
                 <td className="px-4 py-2.5">
                   <div className="flex flex-wrap gap-1">
                     {vm.disks.map(d=>{
-                      const color = storageColors[d.storage]??'#6b7280'
+                      const color = storageColors[d.storage]??'var(--text-muted)'
                       return (
                         <span key={d.key} title={`${d.key}: ${d.storage} ${d.sizeStr}`}
                           className="px-1.5 py-0.5 rounded"
-                          style={{fontSize:9,background:`${color}15`,color,border:`1px solid ${color}30`}}>
-                          {d.storage} <span style={{color:'#4b5563'}}>{d.sizeStr}</span>
+                          style={{fontSize:9,background:`${alpha(color, 8)}`,color,border:`1px solid ${alpha(color, 19)}`}}>
+                          {d.storage} <span style={{color:'var(--text-dim)'}}>{d.sizeStr}</span>
                         </span>
                       )
                     })}
@@ -591,7 +592,7 @@ function VMStorageBreakdown({ items, storageColors }: {
                   </div>
                 </td>
                 <td className="px-4 py-2.5">
-                  <span style={{color:vm.totalAllocated>100*1024*1024*1024?'#ffaa00':'#e5e7eb'}}>
+                  <span style={{color:vm.totalAllocated>100*1024*1024*1024?'var(--warn-2)':'var(--text-bright)'}}>
                     {formatBytes(vm.totalAllocated)}
                   </span>
                 </td>

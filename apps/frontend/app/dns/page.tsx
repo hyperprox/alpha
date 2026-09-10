@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
+import { alpha } from '@/lib/theme'
 
 // ---------------------------------------------------------------------------
 //  Types
@@ -30,25 +31,25 @@ interface Domain {
 // ---------------------------------------------------------------------------
 
 const TYPE_COLORS: Record<string, string> = {
-  A:     '#00e5ff',
-  AAAA:  '#22d3ee',
-  CNAME: '#a78bfa',
-  TXT:   '#f59e0b',
-  MX:    '#22c55e',
-  SRV:   '#f97316',
-  NS:    '#6b7280',
-  CAA:   '#ec4899',
+  A:     'var(--accent)',
+  AAAA:  'var(--accent-2)',
+  CNAME: 'var(--violet)',
+  TXT:   'var(--warn)',
+  MX:    'var(--good)',
+  SRV:   'var(--warn)',
+  NS:    'var(--text-muted)',
+  CAA:   'var(--violet)',
 }
 
 const INPUT = {
-  background: '#060a10', border: '1px solid #1f2937',
-  color: '#e5e7eb', borderRadius: 6, padding: '7px 10px',
+  background: 'var(--ground-deep)', border: '1px solid var(--text-faint)',
+  color: 'var(--text-bright)', borderRadius: 6, padding: '7px 10px',
   fontFamily: 'IBM Plex Mono, monospace', fontSize: 11,
   outline: 'none', width: '100%',
 } as React.CSSProperties
 
 const LABEL = {
-  display: 'block', fontSize: 10, color: '#4b5563',
+  display: 'block', fontSize: 10, color: 'var(--text-dim)',
   fontFamily: 'IBM Plex Mono, monospace',
   textTransform: 'uppercase' as const, letterSpacing: '0.05em', marginBottom: 4,
 }
@@ -237,13 +238,13 @@ function RecordModal({ record, domain, onClose, onSave, wanIp }: {
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
       style={{ background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(4px)' }}>
       <div className="w-full max-w-lg rounded-xl border overflow-hidden"
-        style={{ background: '#0a0f1a', borderColor: '#00e5ff25', boxShadow: '0 0 40px #00e5ff08' }}>
+        style={{ background: 'var(--surface-raised)', borderColor: 'color-mix(in srgb, var(--accent) 15%, transparent)', boxShadow: '0 0 40px color-mix(in srgb, var(--accent) 3%, transparent)' }}>
 
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: '#111827' }}>
+        <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: 'var(--border-dim)' }}>
           <div className="flex items-center gap-3">
-            <div className="w-1 h-5 rounded-full" style={{ background: '#00e5ff', boxShadow: '0 0 8px #00e5ff' }}/>
-            <h2 className="font-display font-semibold uppercase" style={{ color: '#00e5ff', fontSize: 15 }}>
+            <div className="w-1 h-5 rounded-full" style={{ background: 'var(--accent)', boxShadow: '0 0 8px var(--accent)' }}/>
+            <h2 className="font-display font-semibold uppercase" style={{ color: 'var(--accent)', fontSize: 15 }}>
               {isEdit ? 'Edit Record' : intent ? 'New Record' : 'Add DNS Record'}
             </h2>
             <span className="text-xs font-mono text-gray-600">{domain}</span>
@@ -252,20 +253,20 @@ function RecordModal({ record, domain, onClose, onSave, wanIp }: {
             {!isEdit && intent && (
               <button onClick={() => setIntent(null)}
                 className="text-xs font-mono px-3 py-1 rounded"
-                style={{ color: '#374151', border: '1px solid #1f2937', background: 'transparent' }}>
+                style={{ color: 'var(--text-dimmer)', border: '1px solid var(--text-faint)', background: 'transparent' }}>
                 ← Back
               </button>
             )}
-            <button onClick={onClose} style={{ color: '#374151', fontSize: 18 }}>✕</button>
+            <button onClick={onClose} style={{ color: 'var(--text-dimmer)', fontSize: 18 }}>✕</button>
           </div>
         </div>
 
         {/* Error / status */}
         {(error || status) && (
           <div className="mx-5 mt-4 px-3 py-2 rounded text-xs font-mono" style={{
-            background: error ? '#ff444410' : '#22c55e10',
-            color:      error ? '#f87171'   : '#4ade80',
-            border:     `1px solid ${error ? '#ff444430' : '#22c55e30'}`,
+            background: error ? 'color-mix(in srgb, var(--crit-2) 6%, transparent)' : 'color-mix(in srgb, var(--good) 6%, transparent)',
+            color:      error ? 'var(--crit-soft)'   : 'var(--good)',
+            border:     `1px solid ${error ? 'color-mix(in srgb, var(--crit-2) 19%, transparent)' : 'color-mix(in srgb, var(--good) 19%, transparent)'}`,
           }}>{error ?? status}</div>
         )}
 
@@ -274,22 +275,22 @@ function RecordModal({ record, domain, onClose, onSave, wanIp }: {
         {/* ---------------------------------------------------------------- */}
         {!isEdit && !intent && (
           <div className="p-5 space-y-2">
-            <div className="text-xs font-mono mb-4" style={{ color: '#374151' }}>
+            <div className="text-xs font-mono mb-4" style={{ color: 'var(--text-dimmer)' }}>
               What do you want to do?
             </div>
             {INTENTS.map(i => (
               <button key={i.id} onClick={() => selectIntent(i.id)}
                 className="w-full flex items-center gap-4 px-4 py-3 rounded-lg transition-all"
-                style={{ background: '#060a10', border: '1px solid #1f2937', cursor: 'pointer', textAlign: 'left' }}
-                onMouseEnter={e => (e.currentTarget.style.borderColor = '#00e5ff40')}
-                onMouseLeave={e => (e.currentTarget.style.borderColor = '#1f2937')}
+                style={{ background: 'var(--ground-deep)', border: '1px solid var(--text-faint)', cursor: 'pointer', textAlign: 'left' }}
+                onMouseEnter={e => (e.currentTarget.style.borderColor = 'color-mix(in srgb, var(--accent) 25%, transparent)')}
+                onMouseLeave={e => (e.currentTarget.style.borderColor = 'var(--text-faint)')}
               >
                 <span style={{ fontSize: 20 }}>{i.icon}</span>
                 <div>
-                  <div className="text-sm font-mono" style={{ color: '#e2e8f0' }}>{i.title}</div>
-                  <div className="text-xs font-mono mt-0.5" style={{ color: '#374151' }}>{i.desc}</div>
+                  <div className="text-sm font-mono" style={{ color: 'var(--text-bright)' }}>{i.title}</div>
+                  <div className="text-xs font-mono mt-0.5" style={{ color: 'var(--text-dimmer)' }}>{i.desc}</div>
                 </div>
-                <span className="ml-auto" style={{ color: '#374151' }}>→</span>
+                <span className="ml-auto" style={{ color: 'var(--text-dimmer)' }}>→</span>
               </button>
             ))}
           </div>
@@ -300,21 +301,21 @@ function RecordModal({ record, domain, onClose, onSave, wanIp }: {
         {/* ---------------------------------------------------------------- */}
         {!isEdit && intent === 'email' && (
           <div className="p-5 space-y-4">
-            <div className="text-xs font-mono" style={{ color: '#374151' }}>Select your email provider</div>
+            <div className="text-xs font-mono" style={{ color: 'var(--text-dimmer)' }}>Select your email provider</div>
             <div className="space-y-2">
               {Object.entries(EMAIL_PROVIDERS).map(([key, prov]) => (
                 <button key={key} onClick={() => setEmailProvider(key)}
                   className="w-full flex items-center justify-between px-4 py-3 rounded-lg"
                   style={{
-                    background: emailProvider === key ? '#00e5ff10' : '#060a10',
-                    border: `1px solid ${emailProvider === key ? '#00e5ff40' : '#1f2937'}`,
+                    background: emailProvider === key ? 'color-mix(in srgb, var(--accent) 6%, transparent)' : 'var(--ground-deep)',
+                    border: `1px solid ${emailProvider === key ? 'color-mix(in srgb, var(--accent) 25%, transparent)' : 'var(--text-faint)'}`,
                     cursor: 'pointer',
                   }}
                 >
-                  <span className="text-sm font-mono" style={{ color: emailProvider === key ? '#00e5ff' : '#e2e8f0' }}>
+                  <span className="text-sm font-mono" style={{ color: emailProvider === key ? 'var(--accent)' : 'var(--text-bright)' }}>
                     {prov.name}
                   </span>
-                  <span className="text-xs font-mono" style={{ color: '#374151' }}>
+                  <span className="text-xs font-mono" style={{ color: 'var(--text-dimmer)' }}>
                     {prov.records.length} record{prov.records.length !== 1 ? 's' : ''}
                   </span>
                 </button>
@@ -322,21 +323,21 @@ function RecordModal({ record, domain, onClose, onSave, wanIp }: {
             </div>
             {EMAIL_PROVIDERS[emailProvider].custom ? (
               <div className="space-y-2">
-                <div className="text-xs font-mono" style={{ color: '#374151' }}>Enter your mail server:</div>
+                <div className="text-xs font-mono" style={{ color: 'var(--text-dimmer)' }}>Enter your mail server:</div>
                 <input style={INPUT} placeholder="mail.yourdomain.com."
                   value={form.data} onChange={e => set('data', e.target.value)} />
                 <input style={INPUT} type="number" placeholder="Priority (e.g. 10)"
                   value={form.priority ?? 10} onChange={e => set('priority', Number(e.target.value))} />
               </div>
             ) : (
-              <div className="rounded-lg p-3" style={{ background: '#060a10', border: '1px solid #1f2937' }}>
-                <div className="text-xs font-mono mb-2" style={{ color: '#374151' }}>Records to be created:</div>
+              <div className="rounded-lg p-3" style={{ background: 'var(--ground-deep)', border: '1px solid var(--text-faint)' }}>
+                <div className="text-xs font-mono mb-2" style={{ color: 'var(--text-dimmer)' }}>Records to be created:</div>
                 {EMAIL_PROVIDERS[emailProvider].records.map((r, i) => (
-                  <div key={i} className="text-xs font-mono flex gap-3 py-1" style={{ color: '#64748b' }}>
-                    <span style={{ color: '#22c55e' }}>MX</span>
+                  <div key={i} className="text-xs font-mono flex gap-3 py-1" style={{ color: 'var(--text-muted)' }}>
+                    <span style={{ color: 'var(--good)' }}>MX</span>
                     <span>@</span>
-                    <span style={{ color: '#e2e8f0' }}>{r.data}</span>
-                    <span style={{ color: '#374151' }}>priority: {r.priority}</span>
+                    <span style={{ color: 'var(--text-bright)' }}>{r.data}</span>
+                    <span style={{ color: 'var(--text-dimmer)' }}>priority: {r.priority}</span>
                   </div>
                 ))}
               </div>
@@ -353,7 +354,7 @@ function RecordModal({ record, domain, onClose, onSave, wanIp }: {
             {/* Point to server — show WAN IP hint */}
             {intent === 'point-server' && (
               <div className="px-3 py-2 rounded text-xs font-mono flex items-center gap-2"
-                style={{ background: '#00e5ff08', border: '1px solid #00e5ff20', color: '#00e5ff80' }}>
+                style={{ background: 'color-mix(in srgb, var(--accent) 3%, transparent)', border: '1px solid color-mix(in srgb, var(--accent) 13%, transparent)', color: 'color-mix(in srgb, var(--accent) 50%, transparent)' }}>
                 <span>🌐</span>
                 <span>WAN IP pre-filled — edit if pointing to a different IP</span>
               </div>
@@ -439,7 +440,7 @@ function RecordModal({ record, domain, onClose, onSave, wanIp }: {
                 onChange={e => set('data', e.target.value)}
               />
               {intent === 'point-server' && form.data === wanIp && (
-                <div className="mt-1 text-xs font-mono" style={{ color: '#374151' }}>
+                <div className="mt-1 text-xs font-mono" style={{ color: 'var(--text-dimmer)' }}>
                   ✓ Your current WAN IP
                 </div>
               )}
@@ -457,14 +458,14 @@ function RecordModal({ record, domain, onClose, onSave, wanIp }: {
 
         {/* Footer — only show when there's something to save */}
         {(isEdit || intent) && (
-          <div className="flex justify-end gap-2 px-5 py-4 border-t" style={{ borderColor: '#111827' }}>
+          <div className="flex justify-end gap-2 px-5 py-4 border-t" style={{ borderColor: 'var(--border-dim)' }}>
             <button onClick={onClose} className="px-4 py-2 rounded text-xs font-mono"
-              style={{ background: 'transparent', color: '#4b5563', border: '1px solid #1f2937' }}>
+              style={{ background: 'transparent', color: 'var(--text-dim)', border: '1px solid var(--text-faint)' }}>
               Cancel
             </button>
             <button onClick={handleSave} disabled={saving}
               className="px-5 py-2 rounded text-xs font-mono"
-              style={{ background: '#00e5ff15', color: saving ? '#00e5ff60' : '#00e5ff', border: '1px solid #00e5ff30' }}>
+              style={{ background: 'color-mix(in srgb, var(--accent) 8%, transparent)', color: saving ? 'color-mix(in srgb, var(--accent) 38%, transparent)' : 'var(--accent)', border: '1px solid color-mix(in srgb, var(--accent) 19%, transparent)' }}>
               {saving ? 'Saving...' :
                isEdit ? 'Save Changes' :
                intent === 'email' ? `Create ${EMAIL_PROVIDERS[emailProvider]?.records.length} MX Records` :
@@ -501,19 +502,19 @@ function DeleteModal({ record, domain, onClose, onDelete }: {
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
       style={{ background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(4px)' }}>
       <div className="w-full max-w-sm rounded-xl border p-6"
-        style={{ background: '#0a0f1a', borderColor: '#ff444425' }}>
-        <h2 className="font-display font-semibold uppercase mb-2" style={{ color: '#ff6666' }}>Delete Record</h2>
+        style={{ background: 'var(--surface-raised)', borderColor: 'color-mix(in srgb, var(--crit-2) 15%, transparent)' }}>
+        <h2 className="font-display font-semibold uppercase mb-2" style={{ color: 'var(--crit-2)' }}>Delete Record</h2>
         <p className="text-xs font-mono text-gray-400 mb-1">This will permanently delete:</p>
-        <p className="text-sm font-mono mb-1" style={{ color: '#e5e7eb' }}>
+        <p className="text-sm font-mono mb-1" style={{ color: 'var(--text-bright)' }}>
           <span style={{ color: TYPE_COLORS[record.type] }}>{record.type}</span> {record.name}.{domain}
         </p>
         <p className="text-xs font-mono mb-5 text-gray-600">→ {record.data}</p>
         <div className="flex gap-2 justify-end">
           <button onClick={onClose} className="px-4 py-2 rounded text-xs font-mono"
-            style={{ background: 'transparent', color: '#4b5563', border: '1px solid #1f2937' }}>Cancel</button>
+            style={{ background: 'transparent', color: 'var(--text-dim)', border: '1px solid var(--text-faint)' }}>Cancel</button>
           <button onClick={handleDelete} disabled={deleting}
             className="px-4 py-2 rounded text-xs font-mono"
-            style={{ background: '#ff444415', color: '#ff6666', border: '1px solid #ff444430' }}>
+            style={{ background: 'color-mix(in srgb, var(--crit-2) 8%, transparent)', color: 'var(--crit-2)', border: '1px solid color-mix(in srgb, var(--crit-2) 19%, transparent)' }}>
             {deleting ? 'Deleting...' : 'Delete'}
           </button>
         </div>
@@ -533,23 +534,23 @@ function DomainCard({ domain, selected, recordCount, onSelect }: {
   onSelect:    () => void
 }) {
   const days = daysUntilExpiry(domain.expires)
-  const expiryColor = days === null ? '#374151' : days < 30 ? '#ff4444' : days < 90 ? '#ffaa00' : '#22c55e'
+  const expiryColor = days === null ? 'var(--text-dimmer)' : days < 30 ? 'var(--crit-2)' : days < 90 ? 'var(--warn-2)' : 'var(--good)'
 
   return (
     <button onClick={onSelect}
       className="p-4 rounded-lg border text-left transition-all w-full"
       style={{
-        background:   selected ? '#00e5ff12' : '#0a0f1a',
-        borderColor:  selected ? '#00e5ff40' : '#111827',
-        boxShadow:    selected ? '0 0 12px #00e5ff08' : 'none',
+        background:   selected ? 'color-mix(in srgb, var(--accent) 7%, transparent)' : 'var(--surface-raised)',
+        borderColor:  selected ? 'color-mix(in srgb, var(--accent) 25%, transparent)' : 'var(--border-dim)',
+        boxShadow:    selected ? '0 0 12px color-mix(in srgb, var(--accent) 3%, transparent)' : 'none',
       }}>
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full" style={{
-            background:  domain.status === 'ACTIVE' ? '#22c55e' : '#ff4444',
-            boxShadow:   domain.status === 'ACTIVE' ? '0 0 5px #22c55e' : 'none',
+            background:  domain.status === 'ACTIVE' ? 'var(--good)' : 'var(--crit-2)',
+            boxShadow:   domain.status === 'ACTIVE' ? '0 0 5px var(--good)' : 'none',
           }}/>
-          <span className="font-mono text-sm font-semibold" style={{ color: selected ? '#00e5ff' : '#e5e7eb' }}>
+          <span className="font-mono text-sm font-semibold" style={{ color: selected ? 'var(--accent)' : 'var(--text-bright)' }}>
             {domain.domain}
           </span>
         </div>
@@ -562,7 +563,7 @@ function DomainCard({ domain, selected, recordCount, onSelect }: {
             {days > 0 ? `expires ${days}d` : 'EXPIRED'}
           </span>
         )}
-        {domain.renewAuto && <span style={{ color: '#22c55e', fontSize: 9 }}>AUTO-RENEW</span>}
+        {domain.renewAuto && <span style={{ color: 'var(--good)', fontSize: 9 }}>AUTO-RENEW</span>}
       </div>
     </button>
   )
@@ -657,13 +658,13 @@ export default function DNSPage() {
   const types = [...new Set(records.map(r => r.type))].sort()
 
   if (loading) return (
-    <div className="min-h-full flex items-center justify-center" style={{ background: '#080c14' }}>
+    <div className="min-h-full flex items-center justify-center" style={{ background: 'var(--ground)' }}>
       <div className="text-xs font-mono text-gray-500 animate-pulse">loading DNS...</div>
     </div>
   )
 
   if (error) return (
-    <div className="min-h-full flex items-center justify-center" style={{ background: '#080c14' }}>
+    <div className="min-h-full flex items-center justify-center" style={{ background: 'var(--ground)' }}>
       <div className="text-center">
         <div className="text-red-400 font-mono text-sm mb-1">Failed to connect to GoDaddy</div>
         <div className="text-gray-600 font-mono text-xs">{error}</div>
@@ -673,20 +674,20 @@ export default function DNSPage() {
   )
 
   return (
-    <div className="min-h-full p-3 sm:p-6" style={{ background: '#080c14' }}>
+    <div className="min-h-full p-3 sm:p-6" style={{ background: 'var(--ground)' }}>
 
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">
-          <div className="w-1 h-6 rounded-full" style={{ background: '#22d3ee', boxShadow: '0 0 8px #22d3ee' }}/>
-          <h1 className="font-display text-2xl font-semibold tracking-wide uppercase" style={{ color: '#22d3ee' }}>DNS Manager</h1>
-          <span className="text-xs font-mono px-2 py-0.5 rounded" style={{ background: '#22d3ee10', color: '#22d3ee60', border: '1px solid #22d3ee20' }}>GoDaddy</span>
+          <div className="w-1 h-6 rounded-full" style={{ background: 'var(--accent-2)', boxShadow: '0 0 8px var(--accent-2)' }}/>
+          <h1 className="font-display text-2xl font-semibold tracking-wide uppercase" style={{ color: 'var(--accent-2)' }}>DNS Manager</h1>
+          <span className="text-xs font-mono px-2 py-0.5 rounded" style={{ background: 'color-mix(in srgb, var(--accent-2) 6%, transparent)', color: 'color-mix(in srgb, var(--accent-2) 38%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-2) 13%, transparent)' }}>GoDaddy</span>
         </div>
         <div className="flex items-center gap-3">
           {wanIP && (
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded text-xs font-mono" style={{ background: '#060a10', border: '1px solid #1f2937' }}>
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded text-xs font-mono" style={{ background: 'var(--ground-deep)', border: '1px solid var(--text-faint)' }}>
               <span className="text-gray-500">WAN</span>
-              <span style={{ color: '#00e5ff' }}>{wanIP}</span>
+              <span style={{ color: 'var(--accent)' }}>{wanIP}</span>
             </div>
           )}
           {lastSync && <span className="text-xs font-mono text-gray-600">synced {lastSync.toLocaleTimeString()}</span>}
@@ -716,16 +717,16 @@ export default function DNSPage() {
                 <div className="flex gap-1">
                   <button key="all" onClick={() => setTypeFilter('all')}
                     className="text-xs font-mono px-2.5 py-1.5 rounded" style={{
-                      background: typeFilter === 'all' ? '#22d3ee15' : 'transparent',
-                      color:      typeFilter === 'all' ? '#22d3ee'   : '#4b5563',
-                      border:     `1px solid ${typeFilter === 'all' ? '#22d3ee30' : '#1f2937'}`,
+                      background: typeFilter === 'all' ? 'color-mix(in srgb, var(--accent-2) 8%, transparent)' : 'transparent',
+                      color:      typeFilter === 'all' ? 'var(--accent-2)'   : 'var(--text-dim)',
+                      border:     `1px solid ${typeFilter === 'all' ? 'color-mix(in srgb, var(--accent-2) 19%, transparent)' : 'var(--text-faint)'}`,
                     }}>All</button>
                   {types.map(t => (
                     <button key={t} onClick={() => setTypeFilter(t)}
                       className="text-xs font-mono px-2.5 py-1.5 rounded" style={{
-                        background: typeFilter === t ? `${TYPE_COLORS[t]}15` : 'transparent',
-                        color:      typeFilter === t ? TYPE_COLORS[t]        : '#4b5563',
-                        border:     `1px solid ${typeFilter === t ? TYPE_COLORS[t]+'30' : '#1f2937'}`,
+                        background: typeFilter === t ? `${alpha(TYPE_COLORS[t], 8)}` : 'transparent',
+                        color:      typeFilter === t ? TYPE_COLORS[t]        : 'var(--text-dim)',
+                        border:     `1px solid ${typeFilter === t ? TYPE_COLORS[t]+'30' : 'var(--text-faint)'}`,
                       }}>{t}</button>
                   ))}
                 </div>
@@ -733,7 +734,7 @@ export default function DNSPage() {
                 <input type="text" placeholder="Search name or value..." value={search}
                   onChange={e => setSearch(e.target.value)}
                   className="text-xs font-mono px-3 py-1.5 rounded outline-none w-48"
-                  style={{ background: '#0d1220', border: '1px solid #1f2937', color: '#9ca3af', caretColor: '#22d3ee' }}/>
+                  style={{ background: 'var(--surface)', border: '1px solid var(--text-faint)', color: 'var(--text-soft)', caretColor: 'var(--accent-2)' }}/>
 
                 <span className="text-xs font-mono text-gray-600">{filtered.length} records</span>
 
@@ -741,13 +742,13 @@ export default function DNSPage() {
                   {/* DDNS button */}
                   <button onClick={runDDNS} disabled={ddnsRunning}
                     className="text-xs font-mono px-3 py-1.5 rounded transition-all flex items-center gap-1.5"
-                    style={{ background: '#f59e0b15', color: ddnsRunning ? '#f59e0b60' : '#f59e0b', border: '1px solid #f59e0b30' }}>
+                    style={{ background: 'color-mix(in srgb, var(--warn) 8%, transparent)', color: ddnsRunning ? 'color-mix(in srgb, var(--warn) 38%, transparent)' : 'var(--warn)', border: '1px solid color-mix(in srgb, var(--warn) 19%, transparent)' }}>
                     {ddnsRunning ? '↻ Updating...' : '↻ DDNS Update'}
                   </button>
                   {/* New record */}
                   <button onClick={() => setEditRecord(null)}
                     className="text-xs font-mono px-3 py-1.5 rounded transition-all flex items-center gap-1.5"
-                    style={{ background: '#22d3ee15', color: '#22d3ee', border: '1px solid #22d3ee30' }}>
+                    style={{ background: 'color-mix(in srgb, var(--accent-2) 8%, transparent)', color: 'var(--accent-2)', border: '1px solid color-mix(in srgb, var(--accent-2) 19%, transparent)' }}>
                     + New Record
                   </button>
                 </div>
@@ -755,16 +756,16 @@ export default function DNSPage() {
 
               {/* DDNS result */}
               {ddnsResult && (
-                <div className="mb-3 px-3 py-2 rounded text-xs font-mono" style={{ background: '#22c55e10', color: '#4ade80', border: '1px solid #22c55e30' }}>
+                <div className="mb-3 px-3 py-2 rounded text-xs font-mono" style={{ background: 'color-mix(in srgb, var(--good) 6%, transparent)', color: 'var(--good)', border: '1px solid color-mix(in srgb, var(--good) 19%, transparent)' }}>
                   ✓ {ddnsResult}
                 </div>
               )}
 
               {/* Records table */}
-              <div className="rounded-lg border overflow-hidden" style={{ borderColor: '#0f1929' }}>
+              <div className="rounded-lg border overflow-hidden" style={{ borderColor: 'var(--border)' }}>
                 <div className="hp-table-scroll overflow-x-auto"><table className="w-full text-xs font-mono">
                   <thead>
-                    <tr style={{ background: '#060a10', borderBottom: '1px solid #0f1929' }}>
+                    <tr style={{ background: 'var(--ground-deep)', borderBottom: '1px solid var(--border)' }}>
                       {['TYPE', 'NAME', 'VALUE', 'TTL', ''].map(h => (
                         <th key={h} className="px-4 py-2 text-left text-gray-600 uppercase tracking-wider">{h}</th>
                       ))}
@@ -775,15 +776,15 @@ export default function DNSPage() {
                       <tr><td colSpan={5} className="px-4 py-6 text-center text-gray-600 animate-pulse">Loading records...</td></tr>
                     ) : filtered.map((rec, i) => (
                       <tr key={`${rec.type}-${rec.name}-${i}`}
-                        style={{ borderBottom: '1px solid #0a0f1a', background: i % 2 === 0 ? '#080c14' : '#0a0f1a' }}
-                        onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = '#0d1220'}
-                        onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = i % 2 === 0 ? '#080c14' : '#0a0f1a'}
+                        style={{ borderBottom: '1px solid var(--surface-raised)', background: i % 2 === 0 ? 'var(--ground)' : 'var(--surface-raised)' }}
+                        onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface)'}
+                        onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = i % 2 === 0 ? 'var(--ground)' : 'var(--surface-raised)'}
                       >
                         <td className="px-4 py-2.5">
                           <span className="px-1.5 py-0.5 rounded font-mono" style={{
-                            fontSize: 9, background: `${TYPE_COLORS[rec.type] ?? '#374151'}15`,
-                            color: TYPE_COLORS[rec.type] ?? '#374151',
-                            border: `1px solid ${TYPE_COLORS[rec.type] ?? '#374151'}30`,
+                            fontSize: 9, background: `${TYPE_COLORS[rec.type] ?? 'var(--text-dimmer)'}15`,
+                            color: TYPE_COLORS[rec.type] ?? 'var(--text-dimmer)',
+                            border: `1px solid ${TYPE_COLORS[rec.type] ?? 'var(--text-dimmer)'}30`,
                           }}>{rec.type}</span>
                         </td>
                         <td className="px-4 py-2.5">
@@ -796,10 +797,10 @@ export default function DNSPage() {
                           </span>
                           {/* Highlight if matches WAN IP */}
                           {rec.type === 'A' && rec.data === wanIP && (
-                            <span className="text-xs" style={{ color: '#22c55e', fontSize: 9 }}>✓ WAN</span>
+                            <span className="text-xs" style={{ color: 'var(--good)', fontSize: 9 }}>✓ WAN</span>
                           )}
                           {rec.type === 'A' && wanIP && rec.data !== wanIP && (
-                            <span className="text-xs" style={{ color: '#ffaa00', fontSize: 9 }}>≠ WAN ({wanIP})</span>
+                            <span className="text-xs" style={{ color: 'var(--warn-2)', fontSize: 9 }}>≠ WAN ({wanIP})</span>
                           )}
                         </td>
                         <td className="px-4 py-2.5 text-gray-600">
@@ -811,12 +812,12 @@ export default function DNSPage() {
                           <div className="flex gap-1">
                             <button onClick={() => setEditRecord(rec)}
                               className="px-2 py-1 rounded text-xs font-mono"
-                              style={{ background: '#22d3ee10', color: '#22d3ee80', border: '1px solid #22d3ee20' }}>Edit</button>
+                              style={{ background: 'color-mix(in srgb, var(--accent-2) 6%, transparent)', color: 'color-mix(in srgb, var(--accent-2) 50%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-2) 13%, transparent)' }}>Edit</button>
                             <button onClick={() => setDeleteRecord(rec)}
                               className="px-2 py-1 rounded text-xs font-mono transition-all"
-                              style={{ background: 'transparent', color: '#374151', border: '1px solid transparent' }}
-                              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = '#ff6666'; (e.currentTarget as HTMLElement).style.borderColor = '#ff444430' }}
-                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = '#374151'; (e.currentTarget as HTMLElement).style.borderColor = 'transparent' }}>✕</button>
+                              style={{ background: 'transparent', color: 'var(--text-dimmer)', border: '1px solid transparent' }}
+                              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--crit-2)'; (e.currentTarget as HTMLElement).style.borderColor = 'color-mix(in srgb, var(--crit-2) 19%, transparent)' }}
+                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = 'var(--text-dimmer)'; (e.currentTarget as HTMLElement).style.borderColor = 'transparent' }}>✕</button>
                           </div>
                         </td>
                       </tr>

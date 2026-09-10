@@ -11,13 +11,13 @@
 
 import { useState } from 'react'
 
-const PANEL  = { background: '#0d1220', borderColor: '#0f1929' }
-const FIELD  = { background: '#080c14', borderColor: '#16233a', color: '#e2e8f0' }
-const ACCENT = '#00e5ff'
+const PANEL  = { background: 'var(--surface)', borderColor: 'var(--border)' }
+const FIELD  = { background: 'var(--ground)', borderColor: 'var(--border-strong)', color: 'var(--text-bright)' }
+const ACCENT = 'var(--accent)'
 
 function Label({ children }: { children: React.ReactNode }) {
   return (
-    <span className="block font-display text-[11px] uppercase tracking-[0.14em] mb-1.5" style={{ color: '#6b7280' }}>
+    <span className="block font-display text-[11px] uppercase tracking-[0.14em] mb-1.5" style={{ color: 'var(--text-muted)' }}>
       {children}
     </span>
   )
@@ -44,26 +44,26 @@ function Shell({ title, subtitle, submitLabel = 'Save', onSubmit, onClose, child
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-6" style={{ background: 'rgba(4,7,12,0.78)' }}>
       <form onSubmit={onSubmit} className="w-full max-w-md rounded-lg border shadow-2xl" style={PANEL}>
-        <div className="border-b px-5 py-3.5" style={{ borderColor: '#0f1929' }}>
+        <div className="border-b px-5 py-3.5" style={{ borderColor: 'var(--border)' }}>
           <h2 className="font-display text-base font-semibold tracking-wide text-white">{title}</h2>
-          <p className="mt-0.5 font-mono text-[11px]" style={{ color: '#6b7280' }}>{subtitle}</p>
+          <p className="mt-0.5 font-mono text-[11px]" style={{ color: 'var(--text-muted)' }}>{subtitle}</p>
         </div>
 
         <div className="px-5 py-4">{children}</div>
 
-        <div className="flex justify-end gap-2 border-t px-5 py-3" style={{ borderColor: '#0f1929' }}>
+        <div className="flex justify-end gap-2 border-t px-5 py-3" style={{ borderColor: 'var(--border)' }}>
           <button
             type="button"
             onClick={onClose}
             className="rounded px-3 py-1.5 font-display text-sm tracking-wide transition-colors hover:bg-white/5"
-            style={{ color: '#9ca3af' }}
+            style={{ color: 'var(--text-soft)' }}
           >
             Cancel
           </button>
           <button
             type="submit"
             className="rounded px-4 py-1.5 font-display text-sm font-semibold tracking-wide transition-opacity hover:opacity-85"
-            style={{ background: ACCENT, color: '#04202a' }}
+            style={{ background: ACCENT, color: 'var(--accent-ink)' }}
           >
             {submitLabel}
           </button>
@@ -133,11 +133,11 @@ export function ConnectDialog({ hostName, hostAddress, hasShared, onSave, onClos
           <Field value={username} onChange={e => setUsername(e.target.value)} autoComplete="off" required />
         </div>
 
-        <div className="flex gap-1 rounded border p-0.5" style={{ borderColor: '#16233a' }}>
+        <div className="flex gap-1 rounded border p-0.5" style={{ borderColor: 'var(--border-strong)' }}>
           {(['password', 'key'] as const).map(m => (
             <button key={m} type="button" onClick={() => setMode(m)}
               className="flex-1 rounded py-1 font-display text-xs uppercase tracking-[0.12em] transition-colors"
-              style={mode === m ? { background: '#00e5ff15', color: ACCENT } : { color: '#4b5563' }}
+              style={mode === m ? { background: 'color-mix(in srgb, var(--accent) 8%, transparent)', color: ACCENT } : { color: 'var(--text-dim)' }}
             >
               {m === 'password' ? 'Password' : 'Private key'}
             </button>
@@ -167,12 +167,12 @@ export function ConnectDialog({ hostName, hostAddress, hasShared, onSave, onClos
           </>
         )}
 
-        <label className="flex cursor-pointer items-start gap-2.5 rounded border px-3 py-2.5" style={{ borderColor: '#16233a' }}>
+        <label className="flex cursor-pointer items-start gap-2.5 rounded border px-3 py-2.5" style={{ borderColor: 'var(--border-strong)' }}>
           <input type="checkbox" checked={alsoShared} onChange={e => setAlsoShared(e.target.checked)}
             className="mt-0.5 h-3.5 w-3.5 accent-cyan" />
-          <span className="text-[12px] leading-snug" style={{ color: '#9ca3af' }}>
+          <span className="text-[12px] leading-snug" style={{ color: 'var(--text-soft)' }}>
             Also use this for every host that has none of its own
-            <span className="mt-0.5 block font-mono text-[11px]" style={{ color: alsoShared && hasShared ? '#f59e0b' : '#4b5563' }}>
+            <span className="mt-0.5 block font-mono text-[11px]" style={{ color: alsoShared && hasShared ? 'var(--warn)' : 'var(--text-dim)' }}>
               {alsoShared && hasShared
                 ? 'This REPLACES the current shared login, which every other host relies on.'
                 : 'Leave this off unless you mean to change the fallback for every host.'}
@@ -249,7 +249,7 @@ export function SaveLayoutDialog({ paneCount, existing, onSave, onClose }: {
           <Label>Name</Label>
           <Field value={name} onChange={e => setName(e.target.value)} placeholder="TitanCoder" required autoFocus />
         </div>
-        <p className="font-mono text-[11px] leading-relaxed" style={{ color: clash ? '#f59e0b' : '#4b5563' }}>
+        <p className="font-mono text-[11px] leading-relaxed" style={{ color: clash ? 'var(--warn)' : 'var(--text-dim)' }}>
           {clash
             ? `"${name.trim()}" already exists — saving replaces it.`
             : 'Reopening a layout restores these hosts. The sessions live in tmux on each host, so they are still running when you come back.'}

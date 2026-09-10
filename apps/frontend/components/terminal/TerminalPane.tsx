@@ -35,16 +35,16 @@ const FONT_STACK = '"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monosp
 // Terminal colours are the HyperProx palette, not xterm's defaults — a stock
 // terminal theme inside this shell looks like a foreign object.
 const THEME = {
-  background:          '#080c14',
-  foreground:          '#c7d2dd',
-  cursor:              '#00e5ff',
-  cursorAccent:        '#080c14',
+  background:          'var(--ground)',
+  foreground:          'var(--text)',
+  cursor:              'var(--accent)',
+  cursorAccent:        'var(--ground)',
   selectionBackground: 'rgba(0,229,255,0.24)',
-  black:   '#0d1220', red:     '#ef4444', green:   '#22c55e', yellow:  '#f59e0b',
-  blue:    '#3b82f6', magenta: '#a78bfa', cyan:    '#00e5ff', white:   '#c7d2dd',
-  brightBlack:   '#4b5563', brightRed:     '#f87171', brightGreen:   '#4ade80',
-  brightYellow:  '#fbbf24', brightBlue:    '#60a5fa', brightMagenta: '#c4b5fd',
-  brightCyan:    '#67e8f9', brightWhite:   '#f1f5f9',
+  black:   'var(--surface)', red:     'var(--crit)', green:   'var(--good)', yellow:  'var(--warn)',
+  blue:    'var(--accent-2)', magenta: 'var(--violet)', cyan:    'var(--accent)', white:   'var(--text)',
+  brightBlack:   'var(--text-dim)', brightRed:     'var(--crit-soft)', brightGreen:   'var(--good)',
+  brightYellow:  'var(--warn)', brightBlue:    'var(--accent-2)', brightMagenta: 'var(--violet)',
+  brightCyan:    'var(--accent-2)', brightWhite:   'var(--text-bright)',
 }
 
 /**
@@ -201,7 +201,7 @@ export function TerminalPane({ host, hostId, port, session, tmux = true, attempt
   }, [host, hostId, port, session, attempt])
 
   return (
-    <div className="relative flex-1 min-h-0" style={{ background: '#080c14' }}>
+    <div className="relative flex-1 min-h-0" style={{ background: 'var(--ground)' }}>
       {/* The padding lives on this wrapper, never on the element xterm mounts
           into: FitAddon subtracts the padding of the terminal element itself,
           not of its parent, so padding on the mount node is counted as usable
@@ -213,7 +213,7 @@ export function TerminalPane({ host, hostId, port, session, tmux = true, attempt
       {fatal && (
         <div
           className="absolute left-4 right-4 bottom-4 rounded border px-3 py-2 font-mono text-xs whitespace-pre-wrap"
-          style={{ background: '#1a0d10', borderColor: '#7f1d1d', color: '#fca5a5' }}
+          style={{ background: 'var(--ground)', borderColor: 'var(--crit)', color: 'var(--crit-soft)' }}
           role="alert"
         >
           {fatal}

@@ -14,11 +14,12 @@
 // =============================================================================
 
 import { useEffect, useRef, useState } from 'react'
+import { alpha } from '@/lib/theme'
 
-export const ACCENT = '#00e5ff'
-export const WARN   = '#ffaa00'
-export const CRIT   = '#ff4d4d'
-export const GOOD   = '#22c55e'
+export const ACCENT = 'var(--accent)'
+export const WARN   = 'var(--warn-2)'
+export const CRIT   = 'var(--crit-2)'
+export const GOOD   = 'var(--good)'
 
 export function zoneColor(pct: number, base: string = ACCENT): string {
   if (pct >= 90) return CRIT
@@ -103,19 +104,19 @@ export function Speedometer({
       <svg width={size} height={size * 0.86} viewBox={`0 0 ${size} ${size * 0.86}`} role="img"
         aria-label={`${label} ${Math.round(pct)}${unit}`}>
         {/* Zone track — dim, so the live arc reads as the foreground */}
-        <path d={arcPath(cx, cy, r, START, START + SWEEP * 0.75)} fill="none" stroke="#1b2434" strokeWidth={stroke} strokeLinecap="round" />
-        <path d={arcPath(cx, cy, r, START + SWEEP * 0.75, START + SWEEP * 0.9)} fill="none" stroke={`${WARN}25`} strokeWidth={stroke} />
-        <path d={arcPath(cx, cy, r, START + SWEEP * 0.9, START + SWEEP)} fill="none" stroke={`${CRIT}30`} strokeWidth={stroke} strokeLinecap="round" />
+        <path d={arcPath(cx, cy, r, START, START + SWEEP * 0.75)} fill="none" stroke="var(--border-strong)" strokeWidth={stroke} strokeLinecap="round" />
+        <path d={arcPath(cx, cy, r, START + SWEEP * 0.75, START + SWEEP * 0.9)} fill="none" stroke={`${alpha(WARN, 15)}`} strokeWidth={stroke} />
+        <path d={arcPath(cx, cy, r, START + SWEEP * 0.9, START + SWEEP)} fill="none" stroke={`${alpha(CRIT, 19)}`} strokeWidth={stroke} strokeLinecap="round" />
 
         {/* Live arc. pathLength normalises the dash maths to 0–100 regardless of radius. */}
         <path d={arcPath(cx, cy, r, START, START + SWEEP)} fill="none" stroke={c} strokeWidth={stroke}
           strokeLinecap="round" pathLength={100} strokeDasharray={100}
           strokeDashoffset={100 - pct}
-          style={{ transition: 'stroke-dashoffset .6s cubic-bezier(.22,1,.36,1), stroke .3s', filter: `drop-shadow(0 0 ${size * 0.04}px ${c}70)` }} />
+          style={{ transition: 'stroke-dashoffset .6s cubic-bezier(.22,1,.36,1), stroke .3s', filter: `drop-shadow(0 0 ${size * 0.04}px ${alpha(c, 44)})` }} />
 
         {ticks.map((tk, i) => (
           <line key={i} x1={tk.outer.x} y1={tk.outer.y} x2={tk.inner.x} y2={tk.inner.y}
-            stroke={tk.major ? '#33415580' : '#1f293780'} strokeWidth={tk.major ? 1.5 : 1} strokeLinecap="round" />
+            stroke={tk.major ? 'color-mix(in srgb, var(--text-dimmer) 50%, transparent)' : 'color-mix(in srgb, var(--text-faint) 50%, transparent)'} strokeWidth={tk.major ? 1.5 : 1} strokeLinecap="round" />
         ))}
 
         {/* Needle */}
@@ -124,14 +125,14 @@ export function Speedometer({
             points={`${cx - size * 0.02},${cy} ${cx},${cy - needleLen} ${cx + size * 0.02},${cy}`}
             fill={c} opacity={0.9} />
         </g>
-        <circle cx={cx} cy={cy} r={size * 0.035} fill="#0b1120" stroke={c} strokeWidth={1.5} />
+        <circle cx={cx} cy={cy} r={size * 0.035} fill="var(--surface-notice)" stroke={c} strokeWidth={1.5} />
 
         {/* Readout sits in the dial's open bottom, where the sweep leaves room */}
         <text x={cx} y={cy + r * 0.58} textAnchor="middle" fill={c}
           fontSize={size * 0.19} fontWeight={700} fontFamily="IBM Plex Mono, monospace"
-          stroke="#080c14" strokeWidth={size * 0.035} paintOrder="stroke"
+          stroke="var(--ground)" strokeWidth={size * 0.035} paintOrder="stroke"
           style={{ fontVariantNumeric: 'tabular-nums' }}>
-          {Math.round(safe)}<tspan fontSize={size * 0.1} fill={`${c}90`}>{unit}</tspan>
+          {Math.round(safe)}<tspan fontSize={size * 0.1} fill={`${alpha(c, 56)}`}>{unit}</tspan>
         </text>
       </svg>
       <div className="font-mono uppercase tracking-widest text-gray-500" style={{ fontSize: Math.max(9, size * 0.075), marginTop: -2 }}>
@@ -161,7 +162,7 @@ export function Sparkline({
 }) {
   if (data.length < 2) {
     return <div style={{ width, height }} className="flex items-end">
-      <div className="w-full border-b border-dashed" style={{ borderColor: '#1f2937' }} />
+      <div className="w-full border-b border-dashed" style={{ borderColor: 'var(--text-faint)' }} />
     </div>
   }
 
@@ -225,7 +226,7 @@ export function StreamChart({
 
   return (
     <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
-      <line x1={0} y1={mid} x2={width} y2={mid} stroke="#1f2937" strokeWidth={1} />
+      <line x1={0} y1={mid} x2={width} y2={mid} stroke="var(--text-faint)" strokeWidth={1} />
       {trace(inData, true)}
       {trace(outData, false)}
     </svg>
@@ -255,8 +256,8 @@ export function Meter({
         </span>
       </div>
       <div className="flex items-center gap-2">
-        <div className="h-1.5 rounded-full overflow-hidden flex-1" style={{ background: '#161e2c' }}>
-          <div className="h-full rounded-full" style={{ width: `${Math.min(p, 100)}%`, background: c, boxShadow: `0 0 8px ${c}60`, transition: 'width .6s cubic-bezier(.22,1,.36,1)' }} />
+        <div className="h-1.5 rounded-full overflow-hidden flex-1" style={{ background: 'var(--border-strong)' }}>
+          <div className="h-full rounded-full" style={{ width: `${Math.min(p, 100)}%`, background: c, boxShadow: `0 0 8px ${alpha(c, 38)}`, transition: 'width .6s cubic-bezier(.22,1,.36,1)' }} />
         </div>
         <span className="font-mono font-semibold" style={{ color: c, fontSize: 11, width: 32, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{p}%</span>
       </div>

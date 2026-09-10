@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
+import { ThemeToggle } from './ThemeToggle'
 
 // ---------------------------------------------------------------------------
 //  Nav items
@@ -73,20 +74,20 @@ export function Sidebar() {
     <>
       <header
         className="hp-mobile-bar fixed inset-x-0 top-0 z-40 flex items-center gap-3 border-b px-4 md:hidden"
-        style={{ background: '#060a10', borderColor: '#0f1929' }}
+        style={{ background: 'var(--ground-deep)', borderColor: 'var(--border)' }}
       >
         <button
           onClick={() => setDrawerOpen(true)}
           aria-label="Open navigation"
           className="flex h-9 w-9 items-center justify-center rounded transition-colors hover:bg-white/5"
-          style={{ color: '#6b7280' }}
+          style={{ color: 'var(--text-muted)' }}
         >
           <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.6}>
             <path d="M2 4h12M2 8h12M2 12h12" strokeLinecap="round" />
           </svg>
         </button>
         <span className="font-display text-base font-light tracking-widest">
-          HYPER<span className="font-bold" style={{ color: '#00e5ff' }}>PROX</span>
+          HYPER<span className="font-bold" style={{ color: 'var(--accent)' }}>PROX</span>
         </span>
       </header>
 
@@ -104,19 +105,19 @@ export function Sidebar() {
       }`}
       style={{
         width:       collapsed ? 56 : 220,
-        background:  '#060a10',
-        borderColor: '#0f1929',
+        background:  'var(--ground-deep)',
+        borderColor: 'var(--border)',
       }}
     >
       {/* Logo */}
       <div
         className="flex items-center border-b px-3 flex-shrink-0"
-        style={{ height: 56, borderColor: '#0f1929' }}
+        style={{ height: 56, borderColor: 'var(--border)' }}
       >
         {collapsed ? (
           <div
             className="w-8 h-8 rounded flex items-center justify-center font-display font-bold text-sm cursor-pointer"
-            style={{ background: '#00e5ff15', color: '#00e5ff', border: '1px solid #00e5ff30' }}
+            style={{ background: 'color-mix(in srgb, var(--accent) 8%, transparent)', color: 'var(--accent)', border: '1px solid color-mix(in srgb, var(--accent) 19%, transparent)' }}
             onClick={() => setCollapsed(false)}
           >
             HP
@@ -124,12 +125,12 @@ export function Sidebar() {
         ) : (
           <div className="flex items-center justify-between w-full">
             <span className="font-display text-lg font-light tracking-widest">
-              HYPER<span className="font-bold" style={{ color: '#00e5ff' }}>PROX</span>
+              HYPER<span className="font-bold" style={{ color: 'var(--accent)' }}>PROX</span>
             </span>
             <button
               onClick={() => setCollapsed(true)}
               className="hidden p-1 rounded transition-colors hover:bg-white/5 md:block"
-              style={{ color: '#374151' }}
+              style={{ color: 'var(--text-dimmer)' }}
             >
               <CollapseIcon />
             </button>
@@ -137,7 +138,7 @@ export function Sidebar() {
               onClick={() => setDrawerOpen(false)}
               aria-label="Close navigation"
               className="p-1 rounded transition-colors hover:bg-white/5 md:hidden"
-              style={{ color: '#374151' }}
+              style={{ color: 'var(--text-dimmer)' }}
             >
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.8}>
                 <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
@@ -154,12 +155,12 @@ export function Sidebar() {
             {group.section && !collapsed && (
               <div
                 className="px-3 pb-1 text-xs font-mono tracking-widest"
-                style={{ color: '#1f2937', fontSize: 10 }}
+                style={{ color: 'var(--text-faint)', fontSize: 10 }}
               >
                 {group.section}
               </div>
             )}
-            {group.section && collapsed && <div className="my-2 mx-3 border-t" style={{ borderColor: '#0f1929' }} />}
+            {group.section && collapsed && <div className="my-2 mx-3 border-t" style={{ borderColor: 'var(--border)' }} />}
 
             {group.items.map(item => {
               const active = pathname === item.href || (item.href !== '/dashboard' && pathname.startsWith(item.href))
@@ -169,23 +170,23 @@ export function Sidebar() {
                     className="flex items-center gap-3 mx-2 rounded-md transition-all duration-150 cursor-pointer group"
                     style={{
                       padding:    collapsed ? '8px 10px' : '8px 10px',
-                      background: active ? '#00e5ff12' : 'transparent',
-                      border:     `1px solid ${active ? '#00e5ff25' : 'transparent'}`,
-                      color:      active ? '#00e5ff' : '#4b5563',
+                      background: active ? 'color-mix(in srgb, var(--accent) 7%, transparent)' : 'transparent',
+                      border:     `1px solid ${active ? 'color-mix(in srgb, var(--accent) 15%, transparent)' : 'transparent'}`,
+                      color:      active ? 'var(--accent)' : 'var(--text-dim)',
                     }}
-                    onMouseEnter={e => { if (!active) (e.currentTarget as HTMLElement).style.color = '#9ca3af' }}
-                    onMouseLeave={e => { if (!active) (e.currentTarget as HTMLElement).style.color = '#4b5563' }}
+                    onMouseEnter={e => { if (!active) (e.currentTarget as HTMLElement).style.color = 'var(--text-soft)' }}
+                    onMouseLeave={e => { if (!active) (e.currentTarget as HTMLElement).style.color = 'var(--text-dim)' }}
                   >
-                    <div className="flex-shrink-0 w-4 h-4" style={{ color: active ? '#00e5ff' : 'inherit' }}>
+                    <div className="flex-shrink-0 w-4 h-4" style={{ color: active ? 'var(--accent)' : 'inherit' }}>
                       <item.icon />
                     </div>
                     {!collapsed && (
-                      <span className="text-sm font-mono truncate" style={{ color: active ? '#00e5ff' : 'inherit' }}>
+                      <span className="text-sm font-mono truncate" style={{ color: active ? 'var(--accent)' : 'inherit' }}>
                         {item.label}
                       </span>
                     )}
                     {active && !collapsed && (
-                      <div className="ml-auto w-1 h-4 rounded-full" style={{ background: '#00e5ff', boxShadow: '0 0 6px #00e5ff' }} />
+                      <div className="ml-auto w-1 h-4 rounded-full" style={{ background: 'var(--accent)', boxShadow: '0 0 6px var(--accent)' }} />
                     )}
                   </div>
                 </Link>
@@ -198,21 +199,24 @@ export function Sidebar() {
       {/* Footer */}
       <div
         className="flex items-center border-t px-3 flex-shrink-0"
-        style={{ height: 44, borderColor: '#0f1929' }}
+        style={{ height: 44, borderColor: 'var(--border)' }}
       >
         {collapsed ? (
-          <button
-            onClick={() => setCollapsed(false)}
-            className="w-8 h-8 flex items-center justify-center rounded transition-colors hover:bg-white/5"
-            style={{ color: '#1f2937' }}
-          >
-            <ExpandIcon />
-          </button>
+          <div className="flex flex-col items-center gap-1">
+            <button
+              onClick={() => setCollapsed(false)}
+              className="w-8 h-8 flex items-center justify-center rounded transition-colors hover:bg-white/5"
+              style={{ color: 'var(--text-faint)' }}
+            >
+              <ExpandIcon />
+            </button>
+            <ThemeToggle collapsed />
+          </div>
         ) : (
           <div className="flex items-center gap-2 w-full">
-            <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: '#22c55e', boxShadow: '0 0 4px #22c55e' }} />
-            <span className="text-xs font-mono" style={{ color: '#1f2937' }}>{process.env.NEXT_PUBLIC_CLUSTER_NAME ?? 'My Cluster'}</span>
-            <span className="text-xs font-mono ml-auto" style={{ color: '#111827' }}>v0.1.0</span>
+            <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: 'var(--good)', boxShadow: '0 0 4px var(--good)' }} />
+            <span className="text-xs font-mono" style={{ color: 'var(--text-faint)' }}>{process.env.NEXT_PUBLIC_CLUSTER_NAME ?? 'My Cluster'}</span>
+            <div className="ml-auto"><ThemeToggle collapsed={false} /></div>
           </div>
         )}
       </div>
