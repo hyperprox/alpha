@@ -493,7 +493,7 @@ cannot go stale:
 
 | Plug-in | What it shows |
 |---|---|
-| **Arr Stack** | Sonarr, Radarr, Prowlarr and qBittorrent as one thing, because they are one thing. What needs a person versus what automation will retry on its own, the queue with season packs marked as packs, active downloads, torrents by state, anything with no progress in over an hour, indexer health. Also the free-text multi-indexer search the *arr apps cannot do, since they search by scene naming and silently reject whatever fails a quality profile. |
+| **Arr Stack** | Sonarr, Radarr, Prowlarr and qBittorrent as one thing, because they are one thing. Rescues downloads that arrived complete and cannot be filed — see below. What needs a person versus what automation will retry on its own, the queue with season packs marked as packs, active downloads, torrents by state, anything with no progress in over an hour, indexer health. Also the free-text multi-indexer search the *arr apps cannot do, since they search by scene naming and silently reject whatever fails a quality profile. |
 | **Unmanic** | Transcode workers across every node: what each is working on, how far in, what is queued and what failed. |
 | **MikroTik** | The whole router: identity, model, RouterOS and RouterBOARD firmware, CPU, memory, temperature and input voltage; per-device and per-interface throughput; port forwards, firewall counters, WireGuard peers, LLDP/CDP neighbours, listening services, accounts, DNS and the recent log. Feeds the dashboard's WAN and LAN meters, and offers an SSH console. Read-only by intent. |
 | **Plex activity** | Who is watching, what they are watching, what is transcoding and what it costs in bandwidth — read through Tautulli, which also supplies the history: recent plays, top watchers, most-watched titles. |
@@ -502,6 +502,30 @@ cannot go stale:
 Each plug-in's real output is shown on its gallery card, so you can see what it
 renders before placing it anywhere, and a plug-in quietly returning nothing is
 obvious rather than discovered later.
+
+### Stuck imports
+
+A season pack can arrive complete, correct and unfilable. If the release names
+episodes in a way the library's parser does not read — `Crossing Jordan - 601 -
+Retribution`, or `MacGyver (2016) - S01 E01 - The Rising`, where the space alone
+is enough — every episode is rejected as "Invalid season or episode" and no
+amount of waiting fixes it. It is not a download failure, so nothing retries.
+
+The Arr Stack plug-in's detail page lists these and offers **Map by filename**:
+it reads the season and episode out of each name, matches them against episodes
+the series actually has, and imports explicitly. Four naming forms are
+understood — `S01E01` with any separator, `6x01`, `Season 3 Episode 12`, and the
+bare `- 601 -` three-digit form.
+
+Nothing is guessed. A file is mapped only when the pattern is unambiguous, the
+episode it names exists, and no other file in the release has claimed it.
+Anything else is reported unreadable and left alone, because an episode filed
+under the wrong number is harder to notice than one that was never filed. The
+count of what will be skipped is shown before you press the button, and again
+afterwards.
+
+Imports use the library's normal hardlink behaviour, so a torrent keeps seeding
+from the folder it downloaded to.
 
 ### Asking for one that does not exist
 

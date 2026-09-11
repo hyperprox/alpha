@@ -142,6 +142,16 @@ export interface Plugin {
   /** Send one search result to a download client. */
   grab?(ctx: PluginContext, guid: string, indexerId: number): Promise<string>
   /**
+   * Downloads that arrived intact and cannot be filed.
+   *
+   * Distinct from anything automation will retry: these are finished, correct
+   * files sitting on disk that the library refuses because it cannot read the
+   * season and episode out of the filename. No amount of waiting fixes one.
+   */
+  rescueScan?(ctx: PluginContext): Promise<PluginStuckImport[]>
+  /** Act on one of them, by the id rescueScan reported. */
+  rescueRun?(ctx: PluginContext, id: string): Promise<string>
+  /**
    * Live throughput on the links this plug-in can see.
    *
    * Separate from metrics() because the two answer different questions on
@@ -173,6 +183,26 @@ export interface PluginLink {
   upBps:         number
   downCapacityBps?: number
   upCapacityBps?:   number
+}
+
+/**
+ * A download that is complete and unfilable, with an honest count of how much
+ * of it can be recovered automatically.
+ *
+ * `mappable` and `unmappable` are reported separately and deliberately: a
+ * rescue that silently files 90 of 94 episodes is worse than one that says so,
+ * because the four it skipped look identical to episodes that were never in the
+ * release.
+ */
+export interface PluginStuckImport {
+  id:         string
+  title:      string
+  series:     string
+  path:       string
+  reason:     string
+  files:      number
+  mappable:   number
+  unmappable: string[]
 }
 
 export interface PluginSearchResult {
@@ -439,6 +469,16 @@ export async function runPluginGrab(plugin: Plugin, guid: string, indexerId: num
 export async function runPluginMetrics(plugin: Plugin): Promise<PluginMetric[]> {
   if (!plugin.metrics) return []
   return plugin.metrics(await contextFor(plugin))
+}
+
+export async function runPluginRescueScan(plugin: Plugin): Promise<PluginStuckImport[]> {
+  if (!plugin.rescueScan) return []
+  return plugin.rescueScan(await contextFor(plugin))
+}
+
+export async function runPluginRescueRun(plugin: Plugin, id: string): Promise<string> {
+  if (!plugin.rescueRun) throw new Error(`${plugin.manifest.name} cannot rescue imports.`)
+  return plugin.rescueRun(await contextFor(plugin), id)
 }
 
 export async function runPluginBandwidth(plugin: Plugin): Promise<PluginLink[]> {

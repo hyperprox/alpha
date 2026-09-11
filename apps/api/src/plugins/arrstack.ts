@@ -16,8 +16,7 @@
 
 import type {
   Plugin, PluginContext, PluginTileData, PluginDetail,
-  PluginMetric, PluginSearchResult,
-} from '../lib/plugin-host'
+  PluginMetric, PluginSearchResult, PluginStuckImport } from '../lib/plugin-host'
 
 type Tone = 'good' | 'warn' | 'bad'
 const EPISODE = /[Ss]\d{1,2}[Ee]\d{1,2}|\b\d{1,2}x\d{2}\b/
@@ -95,6 +94,113 @@ async function readAll(ctx: PluginContext) {
     transfer,
     torrents: Array.isArray(torrents) ? torrents : null,
   }
+}
+
+
+// ---------------------------------------------------------------------------
+//  Rescuing imports that cannot resolve themselves
+//
+//  Twice in one week a season pack arrived complete and correct and could not
+//  be filed, because the release group numbered episodes in a way the parser
+//  does not read: "Crossing Jordan - 601 - Retribution" and "MacGyver (2016) -
+//  S01 E01 - The Rising". Both were fixed by hand the same way — read the
+//  numbers out of the filename, look up the matching episode, import against it
+//  explicitly. Doing that twice is a lesson; doing it a third time by hand is a
+//  choice.
+//
+//  Nothing here guesses. A file is mapped only when the pattern is unambiguous
+//  AND the episode it names exists in the library AND no other file in the same
+//  release claims it. Anything else is reported unmapped rather than filed
+//  somewhere plausible, because a wrongly filed episode is harder to notice
+//  than a missing one.
+// ---------------------------------------------------------------------------
+
+/** Ordered most-explicit first. The first that matches wins. */
+const EPISODE_PATTERNS: Array<{ name: string; rx: RegExp }> = [
+  // S01E01, S01 E01, S01.E01, s1e1
+  { name: 'SxxExx',      rx: /\bS(\d{1,2})[ ._-]?E(\d{1,3})\b/i },
+  // 6x01
+  { name: 'NxNN',        rx: /\b(\d{1,2})x(\d{2})\b/ },
+  // "Season 6 Episode 1"
+  { name: 'Season/Ep',   rx: /\bSeason[ ._-]?(\d{1,2})\b.*?\bEpisode[ ._-]?(\d{1,3})\b/i },
+  // " - 601 - ", the bare three-digit form. Anchored on separators either side
+  // so a title like "33 Bullets" or a year cannot be read as an episode number.
+  { name: 'dash-NNN',    rx: / - (\d)(\d{2}) - / },
+]
+
+export function readEpisode(name: string): { season: number; episode: number; via: string } | null {
+  for (const p of EPISODE_PATTERNS) {
+    const m = name.match(p.rx)
+    if (!m) continue
+    const season = parseInt(m[1], 10)
+    const episode = parseInt(m[2], 10)
+    if (!Number.isFinite(season) || !Number.isFinite(episode)) continue
+    // Season 0 is specials; those are genuinely ambiguous in packs and are left
+    // for a person. A season beyond 50 is a misread, not a television show.
+    if (season < 1 || season > 50 || episode < 1 || episode > 999) continue
+    return { season, episode, via: p.name }
+  }
+  return null
+}
+
+const VIDEO = /\.(mkv|mp4|avi|m4v|ts)$/i
+
+/** Group a Sonarr queue into one entry per download rather than per episode. */
+function byDownload(queue: any[]): Map<string, any[]> {
+  const out = new Map<string, any[]>()
+  for (const i of queue) {
+    const k = i.downloadId || String(i.id)
+    if (!out.has(k)) out.set(k, [])
+    out.get(k)!.push(i)
+  }
+  return out
+}
+
+/**
+ * Work out what could be filed, without filing it.
+ *
+ * Shared by the scan and the run so the count a person is shown is produced by
+ * the same code that later acts — a preview that is computed differently from
+ * the action it previews is a preview of nothing.
+ */
+async function planRescue(ctx: PluginContext, seriesId: number, folder: string) {
+  const [files, eps] = await Promise.all([
+    ctx.get(`/api/v3/manualimport?folder=${encodeURIComponent(folder)}&filterExistingFiles=false`,
+            { timeoutMs: 60_000 }).catch(() => [] as any[]),
+    ctx.get(`/api/v3/episode?seriesId=${seriesId}`, { timeoutMs: 30_000 }).catch(() => [] as any[]),
+  ])
+
+  const known = new Map<string, any>()
+  for (const e of (Array.isArray(eps) ? eps : [])) known.set(`${e.seasonNumber}x${e.episodeNumber}`, e)
+
+  const claimed = new Map<string, string>()   // episode key -> first filename
+  const mapped: any[] = []
+  const unmapped: string[] = []
+
+  for (const f of (Array.isArray(files) ? files : [])) {
+    const name = String(f.name || '')
+    if (!VIDEO.test(String(f.path || name))) continue
+
+    const read = readEpisode(name)
+    if (!read) { unmapped.push(`${name} — no season/episode in the name`); continue }
+
+    const key = `${read.season}x${read.episode}`
+    const ep = known.get(key)
+    if (!ep) { unmapped.push(`${name} — S${read.season}E${read.episode} is not in this series`); continue }
+    if (claimed.has(key)) {
+      unmapped.push(`${name} — S${read.season}E${read.episode} already claimed by ${claimed.get(key)}`)
+      continue
+    }
+    claimed.set(key, name)
+
+    mapped.push({
+      path: f.path, seriesId, episodeIds: [ep.id],
+      quality: f.quality, languages: f.languages,
+      releaseGroup: f.releaseGroup || '', indexerFlags: 0, releaseType: 'singleEpisode',
+    })
+  }
+
+  return { mapped, unmapped, total: mapped.length + unmapped.length }
 }
 
 export const arrstackPlugin: Plugin = {
@@ -321,6 +427,72 @@ export const arrstackPlugin: Plugin = {
         },
       ],
     }
+  },
+
+  /**
+   * Find complete downloads the library will not file.
+   *
+   * Scoped to Sonarr: Radarr's equivalent failure is a different shape (a movie
+   * folder, not an episode map) and pretending one function covers both would
+   * produce a button that silently does nothing half the time.
+   */
+  async rescueScan(ctx: PluginContext): Promise<PluginStuckImport[]> {
+    const queue = await ctx.get('/api/v3/queue?pageSize=200&includeUnknownSeriesItems=true&includeSeries=true',
+                                { timeoutMs: 30_000 }).catch(() => null) as any
+    const items = importBlocked(queue?.records ?? [])
+    const out: PluginStuckImport[] = []
+
+    for (const [downloadId, group] of byDownload(items)) {
+      const first = group[0]
+      const folder = first.outputPath
+      const seriesId = first.seriesId
+      if (!folder || !seriesId) continue
+
+      const plan = await planRescue(ctx, seriesId, folder).catch(() => null)
+      if (!plan || !plan.total) continue
+
+      const reasons = [...new Set(group.flatMap((g: any) =>
+        (g.statusMessages ?? []).flatMap((m: any) => m.messages ?? [])))] as string[]
+
+      out.push({
+        id: downloadId,
+        title: String(first.title ?? '').slice(0, 160),
+        series: String(first.series?.title ?? 'unknown'),
+        path: folder,
+        reason: reasons[0] ? String(reasons[0]).slice(0, 140) : 'import blocked',
+        files: plan.total,
+        mappable: plan.mapped.length,
+        unmappable: plan.unmapped.slice(0, 10),
+      })
+    }
+    return out
+  },
+
+  async rescueRun(ctx: PluginContext, id: string): Promise<string> {
+    const queue = await ctx.get('/api/v3/queue?pageSize=200&includeUnknownSeriesItems=true&includeSeries=true',
+                                { timeoutMs: 30_000 }) as any
+    const group = importBlocked(queue?.records ?? []).filter((i: any) => (i.downloadId || String(i.id)) === id)
+    if (!group.length) throw new Error('That download is no longer blocked — it may have resolved on its own.')
+
+    const { outputPath: folder, seriesId } = group[0]
+    if (!folder || !seriesId) throw new Error('This download has no folder or series recorded, so nothing can be mapped.')
+
+    const plan = await planRescue(ctx, seriesId, folder)
+    if (!plan.mapped.length) {
+      throw new Error(`Nothing could be mapped from ${plan.total} file(s). The names carry no season and episode this understands.`)
+    }
+
+    await ctx.post('/api/v3/command',
+      { name: 'ManualImport', importMode: 'copy', files: plan.mapped },
+      { timeoutMs: 60_000 })
+
+    // Deliberately reports the shortfall rather than only the success. A rescue
+    // that files most of a season looks identical to a complete one unless it
+    // says otherwise.
+    const short = plan.unmapped.length
+      ? ` ${plan.unmapped.length} file(s) were left alone because their names could not be read.`
+      : ''
+    return `Importing ${plan.mapped.length} of ${plan.total} file(s) by filename.${short}`
   },
 
   async search(ctx: PluginContext, query: string): Promise<PluginSearchResult[]> {
