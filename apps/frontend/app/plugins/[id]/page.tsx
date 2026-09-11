@@ -115,7 +115,15 @@ function DataTable({ table }: { table: Table }) {
   )
 }
 
+interface Stuck {
+  id: string; title: string; series: string; path: string
+  reason: string; files: number; mappable: number; unmappable: string[]
+}
+
 export default function PluginDetailPage({ params }: { params: { id: string } }) {
+  const [stuck, setStuck] = useState<Stuck[]>([])
+  const [rescuing, setRescuing] = useState<string | null>(null)
+  const [rescueNote, setRescueNote] = useState<string | null>(null)
   const [detail, setDetail] = useState<Detail | null>(null)
   const [name,   setName]   = useState(params.id)
   const [icon,   setIcon]   = useState('')
@@ -138,7 +146,24 @@ export default function PluginDetailPage({ params }: { params: { id: string } })
     }
   }, [params.id])
 
-  useEffect(() => { load() }, [load])
+  const loadStuck = useCallback(async () => {
+    const r = await fetch(`/api/plugins/${params.id}/stuck`).then(x => x.json()).catch(() => null)
+    if (r?.success) setStuck(r.data)
+  }, [params.id])
+
+  useEffect(() => { load(); loadStuck() }, [load, loadStuck])
+
+  const rescue = async (s: Stuck) => {
+    if (!window.confirm(
+      `Import ${s.mappable} of ${s.files} file(s) for ${s.series} by reading the season and episode ` +
+      `out of each filename?` + (s.unmappable.length ? `\n\n${s.unmappable.length} file(s) will be left alone.` : ''))) return
+    setRescuing(s.id); setRescueNote(null)
+    const r = await fetch(`/api/plugins/${params.id}/stuck/${encodeURIComponent(s.id)}`, { method: 'POST' })
+      .then(x => x.json()).catch(() => null)
+    setRescuing(null)
+    setRescueNote(r?.success ? r.data.message : (r?.error ?? 'The rescue could not be started.'))
+    setTimeout(() => { load(); loadStuck() }, 4000)
+  }
 
   return (
     <div className="flex h-full flex-col" style={{ background: 'var(--ground)' }}>
@@ -171,6 +196,63 @@ export default function PluginDetailPage({ params }: { params: { id: string } })
 
         {detail?.ok && (
           <>
+            {/* Downloads that are complete and cannot be filed. Above the
+                tables, because nothing else on this page is waiting on a person. */}
+            {stuck.length > 0 && (
+              <section className="mb-6 rounded-xl border p-4"
+                style={{ background: 'var(--surface)', borderColor: 'color-mix(in srgb, var(--warn) 35%, transparent)' }}>
+                <div className="mb-1 flex items-baseline gap-2">
+                  <span className="font-display text-sm font-semibold uppercase tracking-widest" style={{ color: 'var(--warn)' }}>
+                    Stuck imports ({stuck.length})
+                  </span>
+                </div>
+                <p className="mb-3 font-mono text-[11px] leading-relaxed" style={{ color: 'var(--text-muted)', maxWidth: 640 }}>
+                  These downloaded correctly. The library cannot read a season and episode out of the
+                  filenames, so no amount of waiting will file them. Mapping reads the numbers from each
+                  name and imports against the matching episode — files it cannot read are left alone
+                  rather than filed somewhere plausible.
+                </p>
+                {rescueNote && (
+                  <div className="mb-3 rounded px-3 py-2 font-mono text-[11px]"
+                    style={{ background: 'color-mix(in srgb, var(--accent) 10%, transparent)', color: 'var(--accent)' }}>
+                    {rescueNote}
+                  </div>
+                )}
+                <div className="flex flex-col gap-2">
+                  {stuck.map(s => (
+                    <div key={s.id} className="rounded-lg p-3" style={{ background: 'var(--ground-inset)', border: '1px solid var(--border)' }}>
+                      <div className="flex flex-wrap items-baseline gap-x-2">
+                        <span className="font-mono text-[12.5px]" style={{ color: 'var(--text-bright)' }}>{s.series}</span>
+                        <span className="font-mono text-[10px]" style={{ color: 'var(--text-dim)' }}>{s.reason}</span>
+                      </div>
+                      <div className="mt-0.5 truncate font-mono text-[10px]" style={{ color: 'var(--text-dimmer)' }}>{s.title}</div>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <span className="font-mono text-[11px]" style={{ color: s.mappable ? 'var(--good)' : 'var(--crit)' }}>
+                          {s.mappable} of {s.files} mappable
+                        </span>
+                        {s.unmappable.length > 0 && (
+                          <span className="font-mono text-[10px]" title={s.unmappable.join('\n')} style={{ color: 'var(--warn)' }}>
+                            {s.unmappable.length} unreadable — hover to see
+                          </span>
+                        )}
+                        <button
+                          onClick={() => rescue(s)}
+                          disabled={!s.mappable || rescuing === s.id}
+                          className="ml-auto rounded px-3 py-1 font-display text-xs font-semibold tracking-wide"
+                          style={{
+                            background: 'color-mix(in srgb, var(--accent) 15%, transparent)',
+                            color: 'var(--accent)', border: '1px solid color-mix(in srgb, var(--accent) 30%, transparent)',
+                            opacity: (!s.mappable || rescuing === s.id) ? 0.4 : 1,
+                          }}>
+                          {rescuing === s.id ? 'importing…' : 'Map by filename'}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
             {!!detail.stats?.length && (
               <div className="mb-5 grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))' }}>
                 {detail.stats.map(s => (

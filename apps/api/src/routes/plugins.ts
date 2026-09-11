@@ -11,6 +11,7 @@ import {
   describeSettings, getSettings, missingSettings, runPlugin, runPluginDetail,
   runPluginMetrics, renderExposition, saveSettings, runPluginSearch, runPluginGrab,
   type PluginMetric,
+  runPluginRescueScan, runPluginRescueRun,
 } from '../lib/plugin-host'
 
 export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
@@ -95,6 +96,39 @@ export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
    * catalogue kept in the README is a catalogue that drifts, which is exactly
    * how two shipped plug-ins ended up missing from it.
    */
+  /**
+   * GET /:id/stuck — downloads that are complete and cannot be filed.
+   *
+   * A preview, not an action: it reports how many files could be mapped and
+   * names the ones that could not, so the decision is informed before anything
+   * touches the library.
+   */
+  fastify.get<{ Params: { id: string } }>('/:id/stuck', async (req, reply) => {
+    const plugin = findPlugin(req.params.id)
+    if (!plugin) return reply.status(404).send({ success: false, error: 'No such plug-in' })
+    if (!plugin.rescueScan) return reply.send({ success: true, data: [] })
+    try {
+      return reply.send({ success: true, data: await runPluginRescueScan(plugin) })
+    } catch (e: any) {
+      return reply.status(502).send({ success: false, error: e.message })
+    }
+  })
+
+  /** POST /:id/stuck/:downloadId — map by filename and import. */
+  fastify.post<{ Params: { id: string; downloadId: string } }>(
+    '/:id/stuck/:downloadId', async (req, reply) => {
+      const plugin = findPlugin(req.params.id)
+      if (!plugin) return reply.status(404).send({ success: false, error: 'No such plug-in' })
+      try {
+        const message = await runPluginRescueRun(plugin, req.params.downloadId)
+        fastify.log.info({ plugin: plugin.manifest.id, downloadId: req.params.downloadId },
+                         '[plugin] rescued a blocked import')
+        return reply.send({ success: true, data: { message } })
+      } catch (e: any) {
+        return reply.status(400).send({ success: false, error: e.message })
+      }
+    })
+
   fastify.get('/wishlist', async (_req, reply) => {
     const built = new Set(PLUGINS.map(p => p.manifest.name.toLowerCase()))
     return reply.send({
