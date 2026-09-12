@@ -1,10 +1,23 @@
 'use client'
 
 import { Suspense, useState } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useSearchParams } from 'next/navigation'
+
+/**
+ * Where to go after signing in — a path on this origin, or `/`.
+ *
+ * `next` arrives in the query string, so it is whatever the caller put there. With a hard
+ * navigation an absolute URL would be an open redirect: `/login?next=https://elsewhere.example`
+ * would take a freshly-authenticated operator off-site on a page they trust. Anything that is not
+ * a single-slash-rooted path is discarded rather than sanitised — `//host` is protocol-relative
+ * and reads as a path only until a browser resolves it.
+ */
+function safeNext(raw: string | null): string {
+  if (!raw || !raw.startsWith('/') || raw.startsWith('//')) return '/'
+  return raw
+}
 
 function LoginForm() {
-  const router = useRouter()
   const params = useSearchParams()
   const [password, setPassword] = useState('')
   const [error,    setError]    = useState('')
@@ -29,8 +42,27 @@ function LoginForm() {
         return
       }
 
-      router.replace(params.get('next') || '/')
-      router.refresh()
+      /**
+       * A FULL document navigation, deliberately — not `router.replace()`.
+       *
+       * The old pair was `router.replace(dest)` followed by `router.refresh()`, and it failed on
+       * the first submit every time: enter the password, nothing happens, reload, enter it again,
+       * in you go.
+       *
+       * `router.replace` is a SOFT navigation. It consults Next's client-side Router Cache rather
+       * than re-running middleware — and the entry cached for `/` is the middleware bounce to
+       * `/login?next=/` from the visit that sent the user here in the first place. So the cookie
+       * was set correctly, the navigation replayed the cached redirect back to the page already on
+       * screen, and nothing appeared to happen. `router.refresh()` did clear the cache, one line
+       * too late to affect the navigation that had just read it. The reload then emptied the cache
+       * by hand, which is the only reason the second attempt worked.
+       *
+       * Swapping the two lines would also work, but a hard navigation is the honest thing at a
+       * session boundary: it re-runs middleware server-side with the new cookie, and drops every
+       * RSC payload and cached fetch belonging to the logged-out session instead of trusting an
+       * invalidation to reach all of them.
+       */
+      window.location.assign(safeNext(params.get('next')))
     } catch {
       setError('Could not reach the API')
       setBusy(false)
