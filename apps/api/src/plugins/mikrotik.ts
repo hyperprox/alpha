@@ -286,6 +286,11 @@ export const mikrotikPlugin: Plugin = {
   manifest: {
     id:   'mikrotik',
     name: 'MikroTik',
+    // Throughput is the point of this page and it changes by the second, so it
+    // polls. Ten seconds rather than one: a detail call reads a dozen endpoints
+    // including the whole connection table, and a router is the one box where
+    // the monitoring must not become the load.
+    refreshSeconds: 10,
     description: 'Internet throughput, how many devices are on the network, and which are awake.',
     kind: 'device',
     icon: '🛜',

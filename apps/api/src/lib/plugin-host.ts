@@ -82,6 +82,17 @@ export interface PluginManifest {
   endpoints?:  PluginEndpoint[]
   /** Ignore TLS errors — routers and media servers routinely use self-signed certs. */
   insecureTLS?: boolean
+  /**
+   * How often the detail page may re-read this plug-in, in seconds.
+   *
+   * Opt-in, and declared HERE rather than chosen by the page, because only the
+   * plug-in knows what a refresh costs the device it talks to. A router answers
+   * a dozen endpoints per detail call, one of them a full connection table; a
+   * backup server might walk a datastore. Left unset, the page does not poll at
+   * all and the reader refreshes by hand — which is the right default for
+   * anything whose answer changes hourly.
+   */
+  refreshSeconds?: number
   /** Declared when the device also takes an interactive login. */
   consoleAccess?: PluginConsole
 }
