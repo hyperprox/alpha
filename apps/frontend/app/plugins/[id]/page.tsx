@@ -8,7 +8,7 @@
 //  can filter, not a four-row summary.
 // =============================================================================
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 
 interface Column { key: string; label: string; align?: 'left' | 'right' }
@@ -17,6 +17,12 @@ interface Detail {
   ok: boolean; error?: string
   stats?: Array<{ label: string; value: string; tone?: 'good' | 'warn' | 'bad' }>
   tables?: Table[]
+}
+
+function agoLabel(at: number | null): string {
+  if (!at) return ''
+  const s = Math.max(0, Math.round((Date.now() - at) / 1000))
+  return s < 60 ? `${s}s ago` : `${Math.floor(s / 60)}m ago`
 }
 
 const ACCENT = 'var(--accent)'
@@ -32,8 +38,41 @@ function cellTone(v: string): string | undefined {
   return undefined
 }
 
-function DataTable({ table }: { table: Table }) {
+/**
+ * Remember a disclosure across reloads, without breaking when storage is gone.
+ *
+ * Private windows and locked-down browsers throw on access rather than
+ * returning null, so every read and write is guarded. A forgotten preference is
+ * a cosmetic loss; an exception here would blank the page.
+ */
+function useRemembered(key: string, fallback: boolean): [boolean, (v: boolean) => void] {
+  const [on, setOn] = useState(fallback)
+  useEffect(() => {
+    try {
+      const v = window.localStorage.getItem(key)
+      if (v !== null) setOn(v === '1')
+    } catch { /* no storage: the fallback stands */ }
+  }, [key])
+  const set = useCallback((v: boolean) => {
+    setOn(v)
+    try { window.localStorage.setItem(key, v ? '1' : '0') } catch { /* nothing to do */ }
+  }, [key])
+  return [on, set]
+}
+
+/** Long tables start closed. A page with six tables and four hundred rows
+ *  answers nothing until you have scrolled past it, so the default is the
+ *  headline — title and count — with the rows one click away. */
+const LONG_TABLE = 12
+
+function DataTable({ table, storageKey, force }: {
+  table: Table; storageKey: string; force?: 'open' | 'closed' | null
+}) {
   const [filter, setFilter] = useState('')
+  const [open, setOpen] = useRemembered(storageKey, table.rows.length <= LONG_TABLE)
+
+  // "Expand all" / "Collapse all" overrides every remembered choice at once.
+  useEffect(() => { if (force) setOpen(force === 'open') }, [force, setOpen])
 
   const rows = useMemo(() => {
     const q = filter.trim().toLowerCase()
@@ -43,10 +82,19 @@ function DataTable({ table }: { table: Table }) {
 
   return (
     <section className="rounded-lg border" style={{ background: 'var(--surface)', borderColor: BORDER }}>
-      <header className="flex items-center gap-3 border-b px-4 py-2.5" style={{ borderColor: BORDER }}>
-        <h2 className="font-display text-[13px] font-semibold uppercase tracking-[0.14em] text-white">
-          {table.title}
-        </h2>
+      <header className="flex items-center gap-3 border-b px-4 py-2.5"
+        style={{ borderColor: open ? BORDER : 'transparent' }}>
+        <button
+          onClick={() => setOpen(!open)}
+          aria-expanded={open}
+          className="flex items-center gap-2 text-left transition-colors hover:text-white">
+          <span aria-hidden className="font-mono text-[10px] transition-transform"
+            style={{ color: 'var(--text-dim)', display: 'inline-block',
+                     transform: open ? 'rotate(90deg)' : 'none' }}>▶</span>
+          <h2 className="font-display text-[13px] font-semibold uppercase tracking-[0.14em] text-white">
+            {table.title}
+          </h2>
+        </button>
         <span className="font-mono text-[11px] tabular-nums" style={{ color: 'var(--text-dimmer)' }}>
           {rows.length}
           {filter && rows.length !== table.rows.length && ` of ${table.rows.length}`}
@@ -59,7 +107,7 @@ function DataTable({ table }: { table: Table }) {
             showing {table.rows.length} of {table.total}
           </span>
         )}
-        {table.rows.length > 8 && (
+        {open && table.rows.length > 8 && (
           <input
             value={filter}
             onChange={e => setFilter(e.target.value)}
@@ -70,7 +118,7 @@ function DataTable({ table }: { table: Table }) {
         )}
       </header>
 
-      {rows.length === 0 ? (
+      {!open ? null : rows.length === 0 ? (
         <p className="px-4 py-6 text-center font-mono text-[11px]" style={{ color: 'var(--text-dimmer)' }}>
           {filter ? 'Nothing matches that filter.' : (table.empty ?? 'Nothing to show.')}
         </p>
@@ -128,21 +176,41 @@ export default function PluginDetailPage({ params }: { params: { id: string } })
   const [name,   setName]   = useState(params.id)
   const [icon,   setIcon]   = useState('')
   const [loading, setLoading] = useState(true)
+  const [everySeconds, setEverySeconds] = useState(0)
+  const [live, setLive] = useRemembered(`hp.live.${params.id}`, true)
+  const [fetchedAt, setFetchedAt] = useState<number | null>(null)
+  const [force, setForce] = useState<'open' | 'closed' | null>(null)
+  // A poll must never stack on a slow one. The router is the thing being
+  // protected here: a 25-second connection-table read against a 10-second timer
+  // would otherwise leave three requests in flight against one device.
+  const inFlight = useRef(false)
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  /**
+   * @param quiet a background poll — do not raise the spinner or disable the
+   *              button, or the page flickers every interval and the reader
+   *              cannot tell a refresh from a reload.
+   */
+  const load = useCallback(async (quiet = false) => {
+    if (inFlight.current) return
+    inFlight.current = true
+    if (!quiet) setLoading(true)
     try {
       const [meta, d] = await Promise.all([
         fetch('/api/plugins').then(r => r.json()),
         fetch(`/api/plugins/${params.id}/detail`).then(r => r.json()),
       ])
       const m = meta?.data?.find((p: any) => p.id === params.id)
-      if (m) { setName(m.name); setIcon(m.icon) }
+      if (m) { setName(m.name); setIcon(m.icon); setEverySeconds(Number(m.refreshSeconds ?? 0)) }
       setDetail(d.success ? d.data : { ok: false, error: d.error })
+      setFetchedAt(Date.now())
     } catch (e: any) {
-      setDetail({ ok: false, error: e.message })
+      // A failed BACKGROUND poll keeps the last good page. Replacing a working
+      // table with an error because one refresh timed out loses data the reader
+      // was in the middle of using, and the next tick usually succeeds.
+      if (!quiet) setDetail({ ok: false, error: e.message })
     } finally {
-      setLoading(false)
+      inFlight.current = false
+      if (!quiet) setLoading(false)
     }
   }, [params.id])
 
@@ -152,6 +220,36 @@ export default function PluginDetailPage({ params }: { params: { id: string } })
   }, [params.id])
 
   useEffect(() => { load(); loadStuck() }, [load, loadStuck])
+
+  // Poll only when the plug-in asked to be polled, the reader has it switched
+  // on, and the tab is actually being looked at. A hidden tab polling a router
+  // forever is the failure mode worth designing out: nobody sees the cost, so
+  // nobody turns it off.
+  useEffect(() => {
+    if (!everySeconds || !live) return
+    let timer: ReturnType<typeof setInterval> | null = null
+    const start = () => {
+      if (timer) return
+      timer = setInterval(() => { if (!document.hidden) load(true) }, everySeconds * 1000)
+    }
+    const stop = () => { if (timer) { clearInterval(timer); timer = null } }
+    const onVisibility = () => {
+      if (document.hidden) { stop() } else { load(true); start() }
+    }
+    start()
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => { stop(); document.removeEventListener('visibilitychange', onVisibility) }
+  }, [everySeconds, live, load])
+
+  // Re-render once a second purely so the "12s ago" label stays honest.
+  const [, tick] = useState(0)
+  useEffect(() => {
+    if (!fetchedAt) return
+    const t = setInterval(() => tick(n => n + 1), 1000)
+    return () => clearInterval(t)
+  }, [fetchedAt])
+
+  const tableCount = detail?.tables?.length ?? 0
 
   const rescue = async (s: Stuck) => {
     if (!window.confirm(
@@ -173,11 +271,42 @@ export default function PluginDetailPage({ params }: { params: { id: string } })
           style={{ color: 'var(--text-dim)' }}>← plug-ins</Link>
         <span className="text-base">{icon}</span>
         <h1 className="font-display text-lg font-light tracking-[0.14em] text-white">{name}</h1>
-        <button onClick={load} disabled={loading}
-          className="ml-auto rounded border px-3 py-1 font-display text-xs tracking-wide transition-colors hover:bg-white/5 disabled:opacity-40"
-          style={{ borderColor: 'var(--border-strong)', color: 'var(--text-muted)' }}>
-          {loading ? 'reading…' : 'Refresh'}
-        </button>
+        <div className="ml-auto flex items-center gap-2">
+          {tableCount > 1 && (
+            <button
+              onClick={() => { setForce(f => (f === 'open' ? 'closed' : 'open')); setTimeout(() => setForce(null), 0) }}
+              className="rounded border px-3 py-1 font-display text-xs tracking-wide transition-colors hover:bg-white/5"
+              style={{ borderColor: 'var(--border-strong)', color: 'var(--text-muted)' }}>
+              Expand / collapse all
+            </button>
+          )}
+          {fetchedAt && (
+            <span className="font-mono text-[10px] tabular-nums" style={{ color: 'var(--text-dimmer)' }}>
+              {agoLabel(fetchedAt)}
+            </span>
+          )}
+          {/* Only offered where the plug-in declared a rate. A device that never
+              asked to be polled does not get a switch that implies it could be. */}
+          {everySeconds > 0 && (
+            <button onClick={() => setLive(!live)}
+              title={live ? `Refreshing every ${everySeconds}s — click to pause` : 'Auto-refresh is off'}
+              className="flex items-center gap-1.5 rounded border px-3 py-1 font-display text-xs tracking-wide transition-colors hover:bg-white/5"
+              style={{ borderColor: live ? 'color-mix(in srgb, var(--good) 35%, transparent)' : 'var(--border-strong)',
+                       color: live ? 'var(--good)' : 'var(--text-muted)' }}>
+              <span aria-hidden style={{
+                width: 6, height: 6, borderRadius: 999,
+                background: live ? 'var(--good)' : 'var(--text-dimmer)',
+                display: 'inline-block',
+              }} />
+              {live ? `live · ${everySeconds}s` : 'paused'}
+            </button>
+          )}
+          <button onClick={() => load()} disabled={loading}
+            className="rounded border px-3 py-1 font-display text-xs tracking-wide transition-colors hover:bg-white/5 disabled:opacity-40"
+            style={{ borderColor: 'var(--border-strong)', color: 'var(--text-muted)' }}>
+            {loading ? 'reading…' : 'Refresh'}
+          </button>
+        </div>
       </header>
 
       <div className="flex-1 overflow-y-auto px-6 py-5">
@@ -271,7 +400,10 @@ export default function PluginDetailPage({ params }: { params: { id: string } })
             )}
 
             <div className="flex flex-col gap-5">
-              {(detail.tables ?? []).map(t => <DataTable key={t.title} table={t} />)}
+              {(detail.tables ?? []).map(t => (
+                <DataTable key={t.title} table={t} force={force}
+                  storageKey={`hp.open.${params.id}.${t.title}`} />
+              ))}
             </div>
           </>
         )}
