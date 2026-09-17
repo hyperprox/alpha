@@ -79,19 +79,32 @@ async function findWans(ctx: PluginContext, override?: string): Promise<string[]
   } catch { return [] }
 }
 
-/** Sum rx/tx across a set of interfaces in ONE monitor-traffic call. */
-async function rates(ctx: PluginContext, names: string[]): Promise<{ down: number; up: number; ok: boolean }> {
-  if (!names.length) return { down: 0, up: 0, ok: false }
+interface Rates {
+  down: number; up: number; ok: boolean
+  perInterface: Array<{ iface: string; rx: number; tx: number }>
+}
+
+/** Sum rx/tx across a set of interfaces in ONE monitor-traffic call, keeping
+ *  the per-interface split as well as the total — both are wanted, and asking
+ *  twice would double the load on the device for data already in hand. */
+async function rates(ctx: PluginContext, names: string[]): Promise<Rates> {
+  if (!names.length) return { down: 0, up: 0, ok: false, perInterface: [] }
   try {
     const res = await ctx.post('/rest/interface/monitor-traffic',
       { interface: names.join(','), once: '' }, { timeoutMs: 15_000 })
     const rows = Array.isArray(res) ? res : [res]
+    const perInterface = names.map(iface => {
+      const r = rows.find((x: any) => x?.name === iface)
+      return { iface,
+               rx: Number(r?.['rx-bits-per-second'] ?? 0),
+               tx: Number(r?.['tx-bits-per-second'] ?? 0) }
+    })
     return {
-      down: rows.reduce((n, r) => n + Number(r?.['rx-bits-per-second'] ?? 0), 0),
-      up:   rows.reduce((n, r) => n + Number(r?.['tx-bits-per-second'] ?? 0), 0),
-      ok: true,
+      down: perInterface.reduce((n, r) => n + r.rx, 0),
+      up:   perInterface.reduce((n, r) => n + r.tx, 0),
+      ok: true, perInterface,
     }
-  } catch { return { down: 0, up: 0, ok: false } }
+  } catch { return { down: 0, up: 0, ok: false, perInterface: [] } }
 }
 
 /**
@@ -532,7 +545,7 @@ export const mikrotikPlugin: Plugin = {
     }
     const traffic = await opt(perDevice(ctx, namesByIp), [] as DeviceTraffic[])
 
-    const { down, up } = await rates(ctx, wan)
+    const { down, up, perInterface: perWanRates } = await rates(ctx, wan)
 
     // A device is worth listing once, with everything known about it: the lease
     // knows its name, ARP knows whether it answered just now.
@@ -574,6 +587,40 @@ export const mikrotikPlugin: Plugin = {
     const uplinks = await opt(subnetUplinks(ctx), new Map<string, string>())
     const subnets = bySubnet(traffic, uplinks, deviceCounts)
 
+    const deviceColumns = [
+      { key: 'awake',   label: 'Awake' },
+      { key: 'name',    label: 'Name' },
+      { key: 'address', label: 'Address' },
+      { key: 'mac',     label: 'MAC' },
+      { key: 'iface',   label: 'Interface' },
+      { key: 'kind',    label: 'Lease' },
+    ]
+    const deviceRow = (d: any) => ({ ...d, iface: d.iface ?? '—' })
+    const deviceGroups = new Map<string, any[]>()
+    for (const d of devices) {
+      const net = subnetOf(String(d.address ?? '')) ?? 'other'
+      if (!deviceGroups.has(net)) deviceGroups.set(net, [])
+      deviceGroups.get(net)!.push(d)
+    }
+    const deviceTables = deviceGroups.size <= 1
+      ? [{
+          title: 'Devices',
+          empty: 'No devices found — the router returned neither ARP entries nor DHCP leases.',
+          columns: deviceColumns,
+          rows: devices.map(deviceRow),
+        }]
+      : [...deviceGroups.entries()]
+          .sort((a, b) => b[1].length - a[1].length)
+          .map(([net, list]) => {
+            const up = uplinks.get(net)
+            return {
+              title: `Devices · ${net}${up ? ` → ${up}` : ''}`,
+              empty: 'No devices on this subnet.',
+              columns: deviceColumns,
+              rows: list.map(deviceRow),
+            }
+          })
+
     // Addresses belong beside the interface they are on, not in a table of
     // their own that the reader has to cross-reference.
     const addrByIface = new Map<string, string[]>()
@@ -609,8 +656,15 @@ export const mikrotikPlugin: Plugin = {
       { label: 'Firmware', value: fwStale ? `${fwNow} → ${fwNext}` : (fwNow || '—'),
         tone: fwStale ? 'warn' : 'good' },
       { label: 'Uptime',   value: humaniseUptime(String(resource.uptime ?? '')) },
-      { label: 'Download', value: `${mbps(down)} Mbps` },
-      { label: 'Upload',   value: `${mbps(up)} Mbps` },
+      // Summed across uplinks, with the split underneath — on a policy-routed
+      // router the total alone hides the thing worth seeing, which is that one
+      // link is carrying all of it.
+      { label: 'Download', value: `${mbps(down)} Mbps`,
+        hint: perWanRates.length > 1
+          ? perWanRates.map(w => `${w.iface} ${mbps(w.rx)}`).join(' · ') : undefined },
+      { label: 'Upload',   value: `${mbps(up)} Mbps`,
+        hint: perWanRates.length > 1
+          ? perWanRates.map(w => `${w.iface} ${mbps(w.tx)}`).join(' · ') : undefined },
       { label: 'CPU',      value: `${cpuLoad}% of ${resource['cpu-count'] ?? '?'} cores`,
         tone: cpuLoad > 80 ? 'bad' : cpuLoad > 50 ? 'warn' : 'good' },
       { label: 'Memory',   value: `${memPct}% · ${bytes(memFree)} free`,
@@ -619,15 +673,14 @@ export const mikrotikPlugin: Plugin = {
         tone: (temp > 70 ? 'bad' : temp > 60 ? 'warn' : 'good') as 'bad' | 'warn' | 'good' }] : []),
       ...(volts ? [{ label: 'Input', value: `${volts} V` }] : []),
       ...(poeW ? [{ label: 'PoE draw', value: `${poeW} W` }] : []),
-      { label: 'Devices awake', value: String(devices.filter(d => d.awake === 'yes').length) },
-      { label: 'Known devices', value: String(devices.length) },
-      // A bare total invites "that cannot be right". Naming the subnets it is
-      // made of lets the reader check it against what they know they own —
-      // a network with servers or virtual guests on their own segment will see
+      // One card, not two: "awake" is only meaningful against the total, and a
+      // bare total invites "that cannot be right" — so the subnet split rides
+      // underneath, where the reader can check it against what they know they
+      // own. A network with servers or virtual guests on their own segment sees
       // most of the count sitting there, which is correct and worth showing.
-      ...(subnetCounts.length > 1
-        ? [{ label: 'By subnet', value: subnetCounts.map(([n, c]) => `${c} on ${n}`).join(' · ') }]
-        : []),
+      { label: 'Devices', value: `${devices.filter(d => d.awake === 'yes').length} awake`,
+        hint: [`${devices.length} known`,
+               ...subnetCounts.map(([n, c]) => `${c} on ${n}`)].join(' · ') },
     ]
 
     const forwards = nat
@@ -702,19 +755,12 @@ export const mikrotikPlugin: Plugin = {
             data: bytes(sn.bytes), conns: sn.conns,
           })),
         },
-        {
-          title: 'Devices',
-          empty: 'No devices found — the router returned neither ARP entries nor DHCP leases.',
-          columns: [
-            { key: 'awake',   label: 'Awake' },
-            { key: 'name',    label: 'Name' },
-            { key: 'address', label: 'Address' },
-            { key: 'mac',     label: 'MAC' },
-            { key: 'iface',   label: 'Interface' },
-            { key: 'kind',    label: 'Lease' },
-          ],
-          rows: devices.map(d => ({ ...d, iface: d.iface ?? '—' })),
-        },
+        // One table per subnet rather than one long list. A segmented network is
+        // segmented for a reason — servers here, people's devices there — and a
+        // single 69-row table makes the reader do that sorting by eye every
+        // time. Each is independently collapsible and filterable; the busiest
+        // subnet leads. A flat network gets exactly one table, as before.
+        ...deviceTables,
         {
           title: 'Interfaces',
           empty: 'No interfaces returned.',
