@@ -254,8 +254,15 @@ export interface PluginTable {
 }
 
 export interface PluginDetail {
-  /** Big figures across the top. */
-  stats?:  Array<{ label: string; value: string; tone?: 'good' | 'warn' | 'bad' }>
+  /**
+   * Big figures across the top.
+   *
+   * `value` is the figure — short, so every card in the row stays one line and
+   * the grid does not go ragged. `hint` is the breakdown underneath it, set in
+   * smaller type: the place for "which uplink" or "how many of those", which
+   * would otherwise either wrap a card to three lines or need a card of its own.
+   */
+  stats?:  Array<{ label: string; value: string; hint?: string; tone?: 'good' | 'warn' | 'bad' }>
   tables:  PluginTable[]
 }
 

@@ -15,7 +15,7 @@ interface Column { key: string; label: string; align?: 'left' | 'right' }
 interface Table  { title: string; columns: Column[]; rows: Array<Record<string, any>>; empty?: string; total?: number }
 interface Detail {
   ok: boolean; error?: string
-  stats?: Array<{ label: string; value: string; tone?: 'good' | 'warn' | 'bad' }>
+  stats?: Array<{ label: string; value: string; hint?: string; tone?: 'good' | 'warn' | 'bad' }>
   tables?: Table[]
 }
 
@@ -382,18 +382,31 @@ export default function PluginDetailPage({ params }: { params: { id: string } })
               </section>
             )}
 
+            {/* gridAutoRows 1fr is what stops the row going ragged: without it a
+                single card whose value wraps sets its own height and every card
+                beside it stretches to match, which is how twelve tidy figures
+                turn into a block of uneven boxes. Cards get a floor of 168px so
+                a label like "Known devices" stays on one line, and the value
+                steps down a size when the string is long rather than wrapping. */}
             {!!detail.stats?.length && (
-              <div className="mb-5 grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))' }}>
+              <div className="mb-5 grid gap-3"
+                style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(168px, 1fr))', gridAutoRows: '1fr' }}>
                 {detail.stats.map(s => (
-                  <div key={s.label} className="rounded-lg border px-4 py-3"
+                  <div key={s.label} className="flex flex-col rounded-lg border px-4 py-3"
                     style={{ background: 'var(--surface)', borderColor: BORDER }}>
                     <p className="font-display text-[10px] uppercase tracking-[0.16em]" style={{ color: 'var(--text-dim)' }}>
                       {s.label}
                     </p>
-                    <p className="mt-1 font-display text-[22px] font-semibold tabular-nums leading-none"
-                      style={{ color: s.tone ? TONE[s.tone] : 'var(--text-bright)' }}>
+                    <p className="mt-1 font-display font-semibold tabular-nums leading-none"
+                      style={{ color: s.tone ? TONE[s.tone] : 'var(--text-bright)',
+                               fontSize: s.value.length > 14 ? 16 : s.value.length > 10 ? 19 : 22 }}>
                       {s.value}
                     </p>
+                    {s.hint && (
+                      <p className="mt-auto pt-2 font-mono text-[10px] leading-snug" style={{ color: 'var(--text-dimmer)' }}>
+                        {s.hint}
+                      </p>
+                    )}
                   </div>
                 ))}
               </div>
