@@ -27,6 +27,62 @@
 
 ---
 
+## v1.0 — Parity: Stop Going Back to the Proxmox UI
+
+**The test for this section: an operator can run a normal week without opening the Proxmox web UI or an SSH session.** Today they cannot — editing a mount point, adding an HA rule, or answering "why is this OSD flagged" all require leaving HyperProx.
+
+Parity is not the goal on its own. Every item below exists because the Proxmox UI either hides the thing that bites you, or shows it without the context that makes it actionable. Where HyperProx only matches the stock UI, it has added nothing.
+
+### Guest Config Editing
+Edit what today needs `pct set`, `qm set`, or a text editor on a corosync-backed filesystem. A guest's config is the single most dangerous file an operator touches: it is replicated cluster-wide on write, with no undo.
+
+- Structured editor for cores, memory, swap, boot order, nameserver, onboot, description
+- **Mount point editor** — add, remove, resize, and edit bind mounts and volume mounts
+- **`shared=1` awareness, with verification.** Marking a bind mount shared is what allows a guest to migrate at all; without it the guest can fail *over* but can never come *home*, because recovery onto a surviving node needs no migration while the return trip does. HyperProx must offer the flag **and prove the claim** — check the path is really present on every node before writing it. A path that exists on one node and is marked shared will start the guest somewhere with an empty directory where its data should be.
+- **Pending-change visibility.** Some edits land in a `[pve:pending]` block and do nothing until the guest restarts. The stock UI is quiet about this. HyperProx should show a clear "applies on next restart" state, list exactly which keys are pending, and offer the restart.
+- **Raw `lxc.*` / `args:` protection.** Passthrough lines — GPU cgroups, device bind entries — are not represented in any form UI, and a careless rewrite silently drops them. The guest then starts fine and the hardware is simply gone. HyperProx must round-trip unknown keys untouched, show them read-only, count them before and after every write, and refuse a save that would lose one.
+- Config diff before save, and a one-click revert to the previous version
+- Per-guest config history, so "what changed and when" is answerable
+
+### HA Management
+The stock HA UI lets you write a rule and discover its consequences later. This should surface the consequence first.
+
+- CRUD for HA resources: state, group, max_restart, max_relocate
+- **Rule editor for both rule types** — node affinity (which nodes) and resource affinity (keep together / keep apart)
+- **Explain the rule types' interaction, because Proxmox enforces it silently.** A resource that sits in a node-affinity rule with *weighted priorities* cannot join a resource-affinity rule at all; the API rejects it with a validation error most operators meet only after designing the rule. HyperProx should detect that up front and offer the fix (flatten the priorities) rather than surfacing a 400.
+- **Strict vs non-strict, in words.** Strict means "nowhere else, ever" — including *not starting at all* when the preferred node is down. Non-strict means "prefer here, run anywhere". Picking wrong turns a preference into an outage. Label them by consequence, not by flag name.
+- **Anti-affinity headroom warning.** N guests kept apart across N eligible nodes leaves zero slack: lose one node and one guest has nowhere legal to start. Compute eligible nodes per rule and warn before saving.
+- **The "no rule at all" gap.** A guest with no node affinity that fails over never returns — it runs wherever it landed, indefinitely. This is invisible until it matters, and it is how a GPU workload ends up on a node with no GPU, reporting perfectly healthy. Flag HA guests with no home, and offer to give them one.
+- **Migration preflight, per target node.** Proxmox already computes this (`/nodes/{node}/{type}/{id}/migrate` returns allowed and not-allowed nodes with causes). Show it as a grid: for each node, can this guest move there, and if not, exactly why — local bind mount, blocking HA rule, missing storage, insufficient memory.
+- Guests that are HA-managed vs not, side by side. Anything not managed simply stays down after a node failure, and that set is worth seeing on one screen.
+
+### Templates & Cloning
+- Convert a guest to a template; clone full or linked
+- Template catalogue with description, source guest, and creation date
+- **Provisioning profiles** — a named bundle of cores/memory/storage/network/features applied at create time, so "a standard Docker LXC here" stops being a checklist someone remembers
+- Cloud-init editor for VMs: user, SSH keys, IP config
+- Bulk clone with a naming pattern and sequential addressing
+
+### Ceph: Measurement, Not Just Status
+The stock Ceph panel answers "is it green". The questions that actually cost time are "what changed", "what is slow", and "what is unsafe to touch".
+
+- **Outdated daemon detection, done properly.** A daemon is outdated when the *installed package version on its node* is newer than the *running daemon version* — the gap a package upgrade opens and a restart closes. Show it per daemon (mon / mgr / osd / mds), grouped by node, with the two versions side by side.
+- **Version skew across nodes**, called out loudly. Upgrading one node's packages and not the others leaves a split-version cluster that reports healthy and is not a state to sit in. This is easy to reach by accident with a routine `apt upgrade` on a single node.
+- **Restart-safety gating — the one that matters most.** Restarting an OSD in a pool with `size=1` makes that OSD's data *unavailable*, with no replica to serve it. The UI must know a pool's replica count and refuse to present a casual "restart" button for OSDs backing it, or at minimum state plainly what goes offline and for how long. Same for any OSD whose loss would drop a PG below `min_size`.
+- Guided rolling restart: correct order (mon → mgr → osd → mds), one daemon at a time, `noout` set and cleared automatically, health gate between each step, abort on degradation
+- **Slow-op surfacing with history.** "2 OSDs experiencing slow operations" is where the stock UI stops. Which OSDs, since when, on which device, and is it getting worse — that is what identifies a dying disk.
+- **Per-OSD benchmarking** — `ceph tell osd.N bench`, stored over time, so a slow OSD is visible as a trend against its peers rather than a number with nothing to compare to
+- Pool-level detail: replica count, PG count and whether autoscale agrees, per-pool IOPS and throughput, capacity trend with a projected full date
+- Device health: SMART, power-on hours, unsafe shutdown count, reallocated sectors — surfaced next to the OSD it backs, because "which physical disk is osd.N" is a question the stock UI makes you answer yourself
+- Single-failure-domain warnings: all OSDs of a pool on one node, or a `size=1` pool at all, stated as an accepted risk with its blast radius rather than a recurring health warning to be ignored
+
+### Why This Matters
+Each of the above was written after hitting it on a live cluster, not from reading the Proxmox feature list. The recurring shape: **the platform reports success while the thing it exists to do is broken.** A guest runs without its GPU. An HA rule is satisfied by leaving a service on the wrong node. A pipeline is red for a reason unrelated to the code. A daemon is "outdated" with no indication that restarting it takes data offline.
+
+HyperProx earns its place by showing the consequence before the action, and by checking the outcome rather than the component's own status line.
+
+---
+
 ## v1.0 — The Glue Layer
 
 The complete single-cluster operational platform. Everything a homelab or small business operator needs to run Proxmox in production without SSH spelunking.
