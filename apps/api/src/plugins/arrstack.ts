@@ -16,7 +16,7 @@
 
 import type {
   Plugin, PluginContext, PluginTileData, PluginDetail,
-  PluginMetric, PluginSearchResult, PluginStuckImport } from '../lib/plugin-host'
+  PluginMetric, PluginStuckImport } from '../lib/plugin-host'
 
 type Tone = 'good' | 'warn' | 'bad'
 const EPISODE = /[Ss]\d{1,2}[Ee]\d{1,2}|\b\d{1,2}x\d{2}\b/
@@ -362,8 +362,8 @@ export const arrstackPlugin: Plugin = {
               dl: rate(t.dlspeed),
               up: rate(t.upspeed),
               eta: etaOf(t.eta),
-              // A manual grab from Search lands under `prowlarr`, so the category
-              // is how you tell it apart from anything the *arr apps asked for.
+              // A release grabbed by hand in Prowlarr lands under `prowlarr`, so the
+              // category is how you tell it apart from anything the *arr apps asked for.
               category: t.category || '—',
             })),
         },
@@ -493,29 +493,6 @@ export const arrstackPlugin: Plugin = {
       ? ` ${plan.unmapped.length} file(s) were left alone because their names could not be read.`
       : ''
     return `Importing ${plan.mapped.length} of ${plan.total} file(s) by filename.${short}`
-  },
-
-  async search(ctx: PluginContext, query: string): Promise<PluginSearchResult[]> {
-    if (!ctx.has('prowlarr')) throw new Error('Search needs a Prowlarr address and API key.')
-    const q = encodeURIComponent(query.trim())
-    if (!q) return []
-    // Fans out to every indexer, some behind FlareSolverr, so this is slow by
-    // nature — a tile-length timeout kills it.
-    const res = await ctx.from('prowlarr')
-      .get(`/api/v1/search?query=${q}&type=search&limit=200`, { timeoutMs: 180_000 })
-    return (Array.isArray(res) ? res : []).map((r: any) => ({
-      title: r.title ?? '—', indexer: r.indexer ?? '—',
-      size: Number(r.size ?? 0), seeders: Number(r.seeders ?? 0),
-      leechers: Number(r.leechers ?? 0), published: r.publishDate ?? '',
-      categories: (r.categories ?? []).map((c: any) => c?.name).filter(Boolean),
-      guid: r.guid ?? '', indexerId: Number(r.indexerId ?? 0),
-    }))
-  },
-
-  async grab(ctx: PluginContext, guid: string, indexerId: number): Promise<string> {
-    if (!ctx.has('prowlarr')) throw new Error('Sending a download needs Prowlarr configured.')
-    await ctx.from('prowlarr').post('/api/v1/search', { guid, indexerId }, { timeoutMs: 60_000 })
-    return 'Sent to the download client'
   },
 
   async metrics(ctx: PluginContext): Promise<PluginMetric[]> {

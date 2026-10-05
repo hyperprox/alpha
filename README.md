@@ -493,7 +493,7 @@ cannot go stale:
 
 | Plug-in | What it shows |
 |---|---|
-| **Arr Stack** | Sonarr, Radarr, Prowlarr and qBittorrent as one thing, because they are one thing. Rescues downloads that arrived complete and cannot be filed — see below. What needs a person versus what automation will retry on its own, the queue with season packs marked as packs, active downloads, torrents by state, anything with no progress in over an hour, indexer health. Also the free-text multi-indexer search the *arr apps cannot do, since they search by scene naming and silently reject whatever fails a quality profile. |
+| **Arr Stack** | Sonarr, Radarr, Prowlarr and qBittorrent as one thing, because they are one thing. Rescues downloads that arrived complete and cannot be filed — see below. What needs a person versus what automation will retry on its own, the queue with season packs marked as packs, active downloads, torrents by state, anything with no progress in over an hour, indexer health. |
 | **Unmanic** | Transcode workers across every node: what each is working on, how far in, what is queued and what failed. |
 | **MikroTik** | The whole router: identity, model, RouterOS and RouterBOARD firmware, CPU, memory, temperature and input voltage; per-device and per-interface throughput; port forwards, firewall counters, WireGuard peers, LLDP/CDP neighbours, listening services, accounts, DNS and the recent log. Feeds the dashboard's WAN and LAN meters, and offers an SSH console. Read-only by intent. |
 | **Plex activity** | Who is watching, what they are watching, what is transcoding and what it costs in bandwidth — read through Tautulli, which also supplies the history: recent plays, top watchers, most-watched titles. |
