@@ -306,6 +306,48 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
     },
   )
 
+  // -- Existing tmux sessions ---------------------------------------------------
+  // A pane already lives in tmux, so typing `tmux attach` inside it nests one
+  // tmux in another ("sessions should be nested with care"). Instead the pane can
+  // ask what is running on the host and open any session in a pane of its own,
+  // attached directly - a build left running in one pane, a server console, a
+  // session someone started over plain ssh.
+  fastify.post<{ Params: { id: string }; Body: { host: string; port?: number } }>(
+    '/hosts/:id/tmux-sessions',
+    async (req, reply) => {
+      const host = (req.body?.host ?? '').trim()
+      const port = Number(req.body?.port) || 22
+      if (!host) return reply.status(400).send({ success: false, error: 'No host address given' })
+
+      let cred
+      try { cred = await loadCredential(req.params.id) }
+      catch (e: any) { return reply.status(500).send({ success: false, error: e.message }) }
+      if (!cred) return reply.status(400).send({ success: false, error: `No saved login for ${host}.` })
+
+      // `tmux ls` exits non-zero when no server is running; that is an empty
+      // list, not an error.
+      const command = "tmux ls -F '#{session_name}|#{session_windows}|#{session_attached}|#{session_created}|#{session_activity}' 2>/dev/null || true"
+      try {
+        const { output } = await runCommand({ host, port, cred, command })
+        const sessions = output.split(/\r?\n/).map(l => l.trim()).filter(Boolean).flatMap(line => {
+          const [name, windows, attached, created, activity] = line.split('|')
+          if (!name || windows === undefined) return []
+          return [{
+            name,
+            windows:  Number(windows) || 0,
+            attached: Number(attached) || 0,
+            created:  Number(created) || 0,
+            activity: Number(activity) || 0,
+          }]
+        })
+        sessions.sort((a, b) => b.activity - a.activity)
+        return { success: true, data: sessions }
+      } catch (e: any) {
+        return reply.status(500).send({ success: false, error: e.message })
+      }
+    },
+  )
+
   // -- Saved layouts ----------------------------------------------------------
   // A layout is a named set of panes plus how they are arranged. Stored server
   // side rather than in the browser so the same arrangement is there from any

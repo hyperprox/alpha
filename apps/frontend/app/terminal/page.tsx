@@ -29,6 +29,19 @@ interface AttachInfo {
   hostKeyLearned?: boolean; fingerprint?: string
 }
 
+interface TmuxSession {
+  name: string; windows: number; attached: number; created: number; activity: number
+}
+
+function ago(epoch: number): string {
+  if (!epoch) return ''
+  const s = Math.max(0, Math.floor(Date.now() / 1000) - epoch)
+  if (s < 60) return 'just now'
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`
+  return `${Math.floor(s / 86400)} d ago`
+}
+
 interface Session {
   key:     string          // unique per tab, so one host can be opened twice
   tmux:    string          // tmux session on the host — distinct per pane
@@ -175,10 +188,10 @@ export default function TerminalPage() {
     return `terminal-${Date.now() % 10000}`
   }
 
-  const openSession = (host: TerminalHost, address: string, port: number) => {
+  const openSession = (host: TerminalHost, address: string, port: number, tmuxName?: string) => {
     const key = `${host.id}#${++tabSeq}`
     setSessions(prev => [...prev, {
-      key, tmux: nextTmuxName(host.id, prev), host, address, port,
+      key, tmux: tmuxName ?? nextTmuxName(host.id, prev), host, address, port,
       attempt: 1, state: 'connecting', attach: null,
     }])
     setActiveKey(key)
@@ -275,6 +288,50 @@ export default function TerminalPage() {
     } finally {
       setEnabling(false)
     }
+  }
+
+  // -- Existing tmux sessions on the host --------------------------------------
+  // Opening one of these in its own pane is how you reach a build or a console
+  // left running elsewhere, without nesting tmux inside this pane's tmux.
+  const [tmuxMenu, setTmuxMenu] = useState<{ key: string; loading: boolean; items: TmuxSession[]; error?: string } | null>(null)
+
+  const listTmux = async (sess: Session) => {
+    if (tmuxMenu?.key === sess.key) return setTmuxMenu(null)
+    setTmuxMenu({ key: sess.key, loading: true, items: [] })
+    try {
+      const res = await fetch(`/api/terminal/hosts/${encodeURIComponent(sess.host.id)}/tmux-sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host: sess.address, port: sess.port }),
+      }).then(r => r.json())
+      if (!res.success) return setTmuxMenu({ key: sess.key, loading: false, items: [], error: res.error })
+      setTmuxMenu({ key: sess.key, loading: false, items: res.data })
+    } catch (e: any) {
+      setTmuxMenu({ key: sess.key, loading: false, items: [], error: e.message })
+    }
+  }
+
+  // A session opened from here is an ordinary pane, so it takes part in the same
+  // split views as panes on different servers. From one-at-a-time view it opens
+  // side by side with the pane you came from, which is what reaching for a
+  // second session nearly always means.
+  const attachTmux = (sess: Session, name: string) => {
+    setTmuxMenu(null)
+    const shown = sessions.find(x => x.host.id === sess.host.id && x.tmux === name)
+    if (shown) return setActiveKey(shown.key)
+    openSession(sess.host, sess.address, sess.port, name)
+    if (view === 'tabs') setView('cols')
+  }
+
+  // Every session on the host at once: a build, a world server and an auth
+  // server watched together. Two panes sit side by side; three or more go to a grid.
+  const attachAllTmux = (sess: Session, items: TmuxSession[]) => {
+    setTmuxMenu(null)
+    const shown = new Set(sessions.filter(x => x.host.id === sess.host.id).map(x => x.tmux))
+    const missing = items.filter(t => !shown.has(t.name))
+    missing.forEach(t => openSession(sess.host, sess.address, sess.port, t.name))
+    const total = shown.size + missing.length
+    setView(total > 2 ? 'grid' : 'cols')
   }
 
   // -- Layouts ----------------------------------------------------------------
@@ -440,6 +497,48 @@ export default function TerminalPage() {
                     title="The shell runs in tmux on the host. Close this tab and it keeps running.">
                     tmux · {active.attach.session}
                   </span>
+                )}
+                {active.attach?.persistent && (
+                  <div className="relative">
+                    <button onClick={() => listTmux(active)}
+                      title="Sessions already running on this host. Opening one attaches it in its own pane, so tmux is never nested."
+                      className="rounded border px-2.5 py-1 font-display text-xs tracking-wide transition-colors hover:bg-white/5"
+                      style={{ borderColor: 'var(--border-strong)', color: 'var(--text-muted)' }}>
+                      Sessions
+                    </button>
+                    {tmuxMenu?.key === active.key && (
+                      <div className="absolute right-0 z-30 mt-1 w-72 rounded border p-1 shadow-lg"
+                        style={{ background: 'var(--surface)', borderColor: 'var(--border-strong)' }}>
+                        {tmuxMenu.loading && <div className="px-2 py-1.5 font-mono text-[11px]" style={{ color: 'var(--text-dim)' }}>reading sessions…</div>}
+                        {tmuxMenu.error && <div className="px-2 py-1.5 font-mono text-[11px]" style={{ color: 'var(--warn)' }}>{tmuxMenu.error}</div>}
+                        {!tmuxMenu.loading && !tmuxMenu.error && !tmuxMenu.items.length && (
+                          <div className="px-2 py-1.5 font-mono text-[11px]" style={{ color: 'var(--text-dim)' }}>No tmux sessions on this host.</div>
+                        )}
+                        {tmuxMenu.items.length > 1 && (
+                          <button onClick={() => attachAllTmux(active, tmuxMenu.items)}
+                            className="mb-1 w-full rounded border px-2 py-1.5 text-left font-display text-xs tracking-wide transition-colors hover:bg-white/5"
+                            style={{ borderColor: 'var(--border-strong)', color: ACCENT }}>
+                            Open all {tmuxMenu.items.length} {tmuxMenu.items.length > 2 ? 'in a grid' : 'side by side'}
+                          </button>
+                        )}
+                        {tmuxMenu.items.map(t => {
+                          const here = t.name === active.tmux
+                          const open = sessions.some(x => x.host.id === active.host.id && x.tmux === t.name)
+                          return (
+                            <button key={t.name} onClick={() => attachTmux(active, t.name)} disabled={here}
+                              className="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left transition-colors hover:bg-white/5 disabled:cursor-default disabled:hover:bg-transparent">
+                              <span className="font-mono text-[12px]" style={{ color: here ? 'var(--text-dim)' : 'var(--text)' }}>
+                                {t.name}{here ? ' · this pane' : open ? ' · open' : ''}
+                              </span>
+                              <span className="font-mono text-[10.5px]" style={{ color: 'var(--text-dimmer)' }}>
+                                {t.windows} win · {t.attached ? `${t.attached} attached` : 'detached'} · {ago(t.activity)}
+                              </span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
                 )}
                 {active.attach && !active.attach.persistent && (
                   <button
