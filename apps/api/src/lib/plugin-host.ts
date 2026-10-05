@@ -141,18 +141,6 @@ export interface Plugin {
    */
   metrics?(ctx: PluginContext): Promise<PluginMetric[]>
   /**
-   * Free-text search across everything the plug-in can reach.
-   *
-   * This is the half the *arr apps cannot do. They search by scene naming for a
-   * specific episode or season and then silently reject whatever fails a quality
-   * profile, a seeder minimum or a cutoff rule — so a complete-series pack that
-   * plainly exists never reaches you. A plain query, showing raw results and
-   * letting a person judge, is a different job and needs a different door.
-   */
-  search?(ctx: PluginContext, query: string): Promise<PluginSearchResult[]>
-  /** Send one search result to a download client. */
-  grab?(ctx: PluginContext, guid: string, indexerId: number): Promise<string>
-  /**
    * Downloads that arrived intact and cannot be filed.
    *
    * Distinct from anything automation will retry: these are finished, correct
@@ -214,18 +202,6 @@ export interface PluginStuckImport {
   files:      number
   mappable:   number
   unmappable: string[]
-}
-
-export interface PluginSearchResult {
-  title:      string
-  indexer:    string
-  size:       number
-  seeders:    number
-  leechers:   number
-  published:  string
-  categories: string[]
-  guid:       string
-  indexerId:  number
 }
 
 export interface PluginMetric {
@@ -472,16 +448,6 @@ export async function runPlugin(plugin: Plugin): Promise<PluginTileData> {
 export async function runPluginDetail(plugin: Plugin): Promise<PluginDetail> {
   if (!plugin.detail) throw new Error(`${plugin.manifest.name} has no detailed view.`)
   return plugin.detail(await contextFor(plugin))
-}
-
-export async function runPluginSearch(plugin: Plugin, query: string): Promise<PluginSearchResult[]> {
-  if (!plugin.search) throw new Error(`${plugin.manifest.name} does not offer search.`)
-  return plugin.search(await contextFor(plugin), query)
-}
-
-export async function runPluginGrab(plugin: Plugin, guid: string, indexerId: number): Promise<string> {
-  if (!plugin.grab) throw new Error(`${plugin.manifest.name} cannot send downloads.`)
-  return plugin.grab(await contextFor(plugin), guid, indexerId)
 }
 
 export async function runPluginMetrics(plugin: Plugin): Promise<PluginMetric[]> {
