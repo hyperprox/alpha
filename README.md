@@ -396,6 +396,13 @@ them: close the tab, come back tomorrow, and the session is still there with its
 scrollback. Hosts without tmux get a plain shell and say so — and offer to
 install it, over the credential the pane is already using.
 
+A pane already lives inside tmux, so typing `tmux attach` in it would nest one tmux
+in another, and tmux refuses. Instead, the pane header has a **Sessions** menu
+listing what is already running on that host (its windows, attached clients and
+last activity). Pick one to open it in a pane of its own, attached directly, beside
+the pane you came from; **Open all** opens every session at once, side by side for
+two and in a grid for more.
+
 Hosts are opened from a palette rather than a permanent column: the **+** in the
 tab bar, or **Ctrl/⌘ K** from anywhere on the page. Type to filter, arrows to
 move, Enter to open, Escape to leave. A terminal wants width, and a list of
