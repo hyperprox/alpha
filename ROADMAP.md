@@ -56,6 +56,15 @@ The stock HA UI lets you write a rule and discover its consequences later. This 
 - **Migration preflight, per target node.** Proxmox already computes this (`/nodes/{node}/{type}/{id}/migrate` returns allowed and not-allowed nodes with causes). Show it as a grid: for each node, can this guest move there, and if not, exactly why — local bind mount, blocking HA rule, missing storage, insufficient memory.
 - Guests that are HA-managed vs not, side by side. Anything not managed simply stays down after a node failure, and that set is worth seeing on one screen.
 
+### Console — when SSH cannot reach
+The Deck reaches every guest over SSH, which is exactly the path that is missing when you need a console most: a Windows VM, an appliance with no shell, a guest whose network is broken, a VM stuck at boot or in its BIOS. Today that means opening the Proxmox UI. A console pane removes the last reason to.
+
+- **noVNC as a Deck pane type**, beside SSH panes — same tabs, splits, grids and saved layouts. Proxmox already provides the console (`/nodes/{node}/{type}/{vmid}/vncproxy` + `vncwebsocket`); HyperProx already requests the ticket.
+- **The stream is relayed through the HyperProx API**, never browser-to-Proxmox: the browser never sees a Proxmox ticket or token, and the console works wherever HyperProx is reachable, not only where the Proxmox UI is.
+- **termproxy for containers** — the text console via xterm.js, the same terminal the Deck already uses — so a container with no SSH daemon or no network still gets a shell.
+- **Offered automatically when SSH fails**: a pane that cannot connect says why and offers "Open console" instead of a dead tab.
+- Console essentials: send Ctrl-Alt-Del, paste as typed keystrokes (BIOS and login prompts have no clipboard), scale to pane, and fullscreen.
+
 ### Templates & Cloning
 - Convert a guest to a template; clone full or linked
 - Template catalogue with description, source guest, and creation date
