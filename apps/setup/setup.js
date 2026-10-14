@@ -122,6 +122,56 @@ function pveRequest(host, port, tokenId, tokenSecret, path) {
   })
 }
 
+/**
+ * Any Proxmox API call with a ticket (cookie + CSRF) or none, form-encoded body. Used only by
+ * connectWithLogin below, which needs the user's own session to create HyperProx's token.
+ */
+function pveCall(host, port, method, path, form, auth) {
+  return new Promise((resolve, reject) => {
+    const body = form ? new URLSearchParams(form).toString() : ''
+    const headers = {}
+    if (body) { headers['Content-Type'] = 'application/x-www-form-urlencoded'; headers['Content-Length'] = Buffer.byteLength(body) }
+    if (auth) { headers.Cookie = `PVEAuthCookie=${encodeURIComponent(auth.ticket)}`; headers.CSRFPreventionToken = auth.csrf }
+    const req = https.request({ hostname: host, port: parseInt(port, 10), path: `/api2/json${path}`, method, headers,
+      rejectUnauthorized: false, timeout: 15000 }, res => {
+      let out = ''
+      res.on('data', d => { out += d })
+      res.on('end', () => {
+        if (res.statusCode >= 400) return reject(Object.assign(new Error(`PVE ${res.statusCode}: ${out.slice(0, 200)}`), { status: res.statusCode }))
+        try { resolve(JSON.parse(out).data) } catch { reject(new Error('Invalid JSON from Proxmox')) }
+      })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => { req.destroy(); reject(new Error('Connection timed out')) })
+    req.end(body)
+  })
+}
+
+/**
+ * Connect with the same login as the Proxmox web interface. Signs in once, (re)creates HyperProx's own
+ * API token `<user>!hyperprox-<host>-<rand>` with the user's privileges, tests it, and returns it. The password and
+ * the session ticket are used for these calls only and never stored.
+ */
+async function connectWithLogin(host, port, username, password, otp) {
+  const userid = username.includes('@') ? username : `${username}@pam`
+  let t = await pveCall(host, port, 'POST', '/access/ticket', { username: userid, password })
+  if (t && t.NeedTFA) {
+    if (!otp) throw Object.assign(new Error('This account uses two-factor sign-in — enter your 6-digit code.'), { needTfa: true })
+    t = await pveCall(host, port, 'POST', '/access/ticket', { username: userid, 'tfa-challenge': t.ticket, password: `totp:${otp}` })
+  }
+  const auth = { ticket: t.ticket, csrf: t.CSRFPreventionToken }
+  // A name of its own per install, and nothing deleted: a second HyperProx on the same cluster (a test
+  // install, a rebuild) must never revoke the key the first one is running on.
+  const host_ = require('os').hostname().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 20) || 'install'
+  const name = `hyperprox-${host_}-${crypto.randomBytes(2).toString('hex')}`
+  const tokenPath = `/access/users/${encodeURIComponent(userid)}/token/${name}`
+  const tok = await pveCall(host, port, 'POST', tokenPath, { privsep: '0', comment: `HyperProx on ${require('os').hostname()} (created by the setup wizard)` }, auth)
+  const tokenId = tok['full-tokenid'] || `${userid}!${name}`
+  const tokenSecret = tok.value
+  const cluster = await testProxmox(host, port, tokenId, tokenSecret)
+  return { tokenId, tokenSecret, cluster }
+}
+
 async function testProxmox(host, port, tokenId, tokenSecret) {
   const version  = await pveRequest(host, port, tokenId, tokenSecret, '/version')
   const nodes    = await pveRequest(host, port, tokenId, tokenSecret, '/nodes')
@@ -267,18 +317,25 @@ const WIZARD_HTML = `<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>HyperProx Setup</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-:root{--cyan:#00c8e0;--bg:#0a0f1a;--surface:#111827;--border:#1e2d45;--text:#e2e8f0;--muted:#64748b;--green:#22c55e;--red:#ef4444;--amber:#f59e0b}
-body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:2rem}
+:root{--cyan:#2fd6e8;--bg:#0a111c;--surface:#0f1b2b;--border:#22344a;--text:#c9d4e2;--muted:#9fb0c4;--green:#4ade80;--red:#f05252;--amber:#f5a524}
+body{background:var(--bg);color:var(--text);font-family:'Barlow',system-ui,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:2rem}
 .wrap{width:100%;max-width:560px}
-.logo{font-size:2rem;font-weight:700;letter-spacing:2px;margin-bottom:4px}
+.logo{font-family:'Barlow Condensed',sans-serif;font-size:2.4rem;font-weight:700;letter-spacing:.12em;margin-bottom:4px;color:#fff}
+.eyebrow{font-family:'IBM Plex Mono',monospace;font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--cyan);margin-bottom:6px}
+.card-title{font-family:'Barlow Condensed',sans-serif!important;font-weight:700!important;font-size:1.9rem!important;color:#fff!important}
+.field-hint{font-size:12.5px;color:var(--muted);margin-top:6px}
+.adv{margin:.5rem 0 1rem;border:1px solid var(--border);border-radius:6px;padding:.6rem .9rem}
+.adv summary{cursor:pointer;color:var(--muted);font-size:13px}
+.adv[open] summary{margin-bottom:.8rem}
 .logo span{color:var(--cyan)}
 .tagline{color:var(--muted);font-size:14px;margin-bottom:2.5rem}
 .steps{display:flex;gap:0;margin-bottom:2rem;align-items:center}
 .step{display:flex;align-items:center;flex:1}
 .step:last-child{flex:0}
-.dot{width:30px;height:30px;border-radius:50%;border:1.5px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;color:var(--muted);flex-shrink:0;font-family:monospace;transition:.2s}
+.dot{width:30px;height:30px;border-radius:50%;border:1.5px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;color:var(--muted);flex-shrink:0;font-family:'IBM Plex Mono',monospace;transition:.2s}
 .dot.active{border-color:var(--cyan);color:var(--cyan);background:rgba(0,200,224,.1)}
 .dot.done{border-color:var(--green);color:var(--green);background:rgba(34,197,94,.1)}
 .line{flex:1;height:1px;background:var(--border);margin:0 4px}
@@ -287,8 +344,8 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
 .card-title{font-size:1.25rem;font-weight:600;margin-bottom:.35rem}
 .card-desc{font-size:14px;color:var(--muted);margin-bottom:1.5rem;line-height:1.6}
 .field{margin-bottom:1rem}
-.field label{display:block;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px;font-family:monospace}
-.field input{width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:8px;background:#0d1424;color:var(--text);font-size:14px;font-family:monospace;outline:none;transition:.15s}
+.field label{display:block;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px;font-family:'IBM Plex Mono',monospace}
+.field input{width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:8px;background:#0d1624;color:var(--text);font-size:14px;font-family:'IBM Plex Mono',monospace;outline:none;transition:.15s}
 .field input:focus{border-color:var(--cyan);box-shadow:0 0 0 3px rgba(0,200,224,.12)}
 .row{display:flex;gap:8px}
 .row .field{flex:1}
@@ -299,43 +356,43 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
 .btn-ghost{background:transparent;border:1px solid var(--border);color:var(--muted)}
 .btn-ghost:hover{border-color:var(--text);color:var(--text)}
 .btn-row{display:flex;justify-content:space-between;align-items:center;margin-top:1.5rem}
-.steps-box{background:#0d1220;border:1px solid #00e5ff20;border-radius:8px;padding:1.25rem;margin-bottom:1.25rem}
-.steps-title{color:#00e5ff;font-size:.8rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:1rem}
+.steps-box{background:#0f1b2b;border:1px solid rgba(47,214,232,.13);border-radius:8px;padding:1.25rem;margin-bottom:1.25rem}
+.steps-title{color:#2fd6e8;font-size:.8rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:1rem}
 .steps-method{margin-bottom:1rem}
 .steps-method:last-child{margin-bottom:0}
 .steps-method-label{color:#9ca3af;font-size:.8rem;margin-bottom:.5rem;font-weight:500}
-.code-block{background:#080c14;border:1px solid #00e5ff30;border-radius:4px;padding:.5rem .75rem;font-family:monospace;font-size:.8rem;color:#00e5ff;user-select:all;cursor:pointer}
+.code-block{background:#0a111c;border:1px solid rgba(47,214,232,.19);border-radius:4px;padding:.5rem .75rem;font-family:'IBM Plex Mono',monospace;font-size:.8rem;color:#2fd6e8;user-select:all;cursor:pointer}
 .steps-note{color:#6b7280;font-size:.75rem;margin-top:.4rem}
 .steps-list{color:#d1d5db;font-size:.82rem;padding-left:1.25rem;margin:0}
 .steps-list li{margin-bottom:.35rem}
 .steps-list strong{color:#f9fafb}
-.steps-list code{background:#080c14;padding:.1rem .3rem;border-radius:3px;font-size:.8rem;color:#00e5ff}
+.steps-list code{background:#0a111c;padding:.1rem .3rem;border-radius:3px;font-size:.8rem;color:#2fd6e8}
 .hint{font-size:12px;color:var(--muted)}
 .detect-row{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);font-size:14px}
 .detect-row:last-child{border:none}
-.badge{display:inline-flex;padding:2px 9px;border-radius:99px;font-size:11px;font-weight:600;font-family:monospace}
+.badge{display:inline-flex;padding:2px 9px;border-radius:99px;font-size:11px;font-weight:600;font-family:'IBM Plex Mono',monospace}
 .badge-ok{background:rgba(34,197,94,.12);color:var(--green);border:1px solid rgba(34,197,94,.25)}
 .badge-warn{background:rgba(245,158,11,.12);color:var(--amber);border:1px solid rgba(245,158,11,.25)}
 .badge-off{background:rgba(100,116,139,.1);color:var(--muted);border:1px solid var(--border)}
 .badge-scan{background:rgba(0,200,224,.1);color:var(--cyan);border:1px solid rgba(0,200,224,.25)}
 .node-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-top:1rem}
-.node-card{background:#0d1424;border:1px solid var(--border);border-radius:8px;padding:10px 12px}
-.node-name{font-size:13px;font-weight:600;font-family:monospace;color:var(--cyan)}
+.node-card{background:#0d1624;border:1px solid var(--border);border-radius:8px;padding:10px 12px}
+.node-name{font-size:13px;font-weight:600;font-family:'IBM Plex Mono',monospace;color:var(--cyan)}
 .node-sub{font-size:11px;color:var(--muted);margin-top:2px}
 .svc-card{border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;transition:.15s}
 .svc-card:hover{border-color:#2e3f5c}
 .svc-card.on{border-color:var(--cyan);background:rgba(0,200,224,.05)}
 .svc-name{font-size:14px;font-weight:600}
-.svc-detail{font-size:12px;color:var(--muted);font-family:monospace;margin-top:2px}
-.toggle{width:36px;height:20px;border-radius:10px;border:1px solid var(--border);background:#0d1424;position:relative;transition:.2s;flex-shrink:0}
+.svc-detail{font-size:12px;color:var(--muted);font-family:'IBM Plex Mono',monospace;margin-top:2px}
+.toggle{width:36px;height:20px;border-radius:10px;border:1px solid var(--border);background:#0d1624;position:relative;transition:.2s;flex-shrink:0}
 .toggle.on{background:var(--cyan);border-color:var(--cyan)}
 .toggle::after{content:'';position:absolute;width:14px;height:14px;border-radius:50%;background:#fff;top:2px;left:2px;transition:.2s}
 .toggle.on::after{transform:translateX(16px)}
 .err{color:var(--red);font-size:13px;margin-top:.75rem;padding:10px 12px;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.2);border-radius:8px;display:none}
 .spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(0,200,224,.3);border-top-color:var(--cyan);border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:6px}
 @keyframes spin{to{transform:rotate(360deg)}}
-.link-row{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:#0d1424;border-radius:8px;margin-bottom:8px;font-size:13px}
-.link-url{font-family:monospace;color:var(--cyan);font-size:12px}
+.link-row{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:#0d1624;border-radius:8px;margin-bottom:8px;font-size:13px}
+.link-url{font-family:'IBM Plex Mono',monospace;color:var(--cyan);font-size:12px}
 .success-icon{width:52px;height:52px;border-radius:50%;background:rgba(34,197,94,.12);border:1.5px solid rgba(34,197,94,.3);display:flex;align-items:center;justify-content:center;font-size:22px;margin:0 auto 1.5rem}
 </style>
 </head>
@@ -391,41 +448,24 @@ async function api(method, path, body){
 // ── Step 0: Proxmox ───────────────────────────────────────────────────────────
 function stepProxmox(){
   return \`<div class="card">
-    <div class="card-title">Connect your Proxmox cluster</div>
-    <div class="card-desc">Connect HyperProx to your Proxmox cluster using an API token.</div>
-    <div class="steps-box">
-      <div class="steps-title">Create an API token — choose one method:</div>
-      <div class="steps-method">
-        <div class="steps-method-label">Option A — Command line (run on any Proxmox node):</div>
-        <div class="code-block">pveum user token add root@pam hyperprox --privsep=0</div>
-        <div class="code-block">pveum acl modify / --token 'root@pam!hyperprox' --role Administrator</div>
-        <div class="steps-note">Copy the token secret from the first command output — it is only shown once.</div>
-      </div>
-      <div class="steps-method">
-        <div class="steps-method-label">Option B — Web UI:</div>
-        <ol class="steps-list">
-          <li>Log into your Proxmox web UI</li>
-          <li>Go to <strong>Datacenter → Permissions → API Tokens</strong></li>
-          <li>Click <strong>Add</strong>, select user <code>root@pam</code></li>
-          <li>Set Token ID to <code>hyperprox</code></li>
-          <li>Uncheck <strong>Privilege Separation</strong></li>
-          <li>Click <strong>Add</strong> and copy the secret</li>
-          <li>Go to <strong>Datacenter → Permissions → Add → API Token Permission</strong></li>
-          <li>Set Path to <code>/</code>, Token to <code>root@pam!hyperprox</code>, Role to <code>Administrator</code></li>
-        </ol>
-      </div>
-    </div>
-    <div class="field"><label>Proxmox host / IP</label><input id="px-host" placeholder="192.168.1.100" value="\${S.proxmox.host}"></div>
-    <div class="row">
-      <div class="field"><label>Port</label><input id="px-port" value="\${S.proxmox.port}" style="width:80px"></div>
-    </div>
-    <div class="field"><label>API Token ID</label><input id="px-tid" placeholder="root@pam!hyperprox" value="\${S.proxmox.tokenId}"></div>
-    <div class="field"><label>API Token Secret</label><input id="px-sec" type="password" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" value="\${S.proxmox.tokenSecret}"></div>
-    <div class="field"><label>Public URL (optional — for noVNC outside LAN)</label><input id="px-pub" placeholder="https://pve.yourdomain.com" value="\${S.proxmox.publicUrl}"></div>
+    <div class="eyebrow">Step 1 of 6</div>
+    <div class="card-title">Connect your Proxmox</div>
+    <div class="card-desc">Sign in with the same login you use for the Proxmox web interface. HyperProx creates its own access key from it — your password is used once and never stored.</div>
+    <div class="field"><label>Proxmox address</label><input id="px-host" placeholder="192.168.1.100" value="\${S.proxmox.host}"><div class="field-hint">The address you open the Proxmox web interface with, without https:// or :8006.</div></div>
+    <div class="field"><label>Username</label><input id="px-user" value="\${S.proxmox.username || 'root@pam'}"></div>
+    <div class="field"><label>Password</label><input id="px-pass" type="password" autocomplete="current-password"></div>
+    <div class="field" id="px-otp-wrap" style="display:\${S.proxmox.needTfa ? 'block' : 'none'}"><label>Two-factor code</label><input id="px-otp" inputmode="numeric" placeholder="6 digits"></div>
+    <details class="adv">
+      <summary>Advanced</summary>
+      <div class="row"><div class="field"><label>Port</label><input id="px-port" value="\${S.proxmox.port}" style="width:90px"></div></div>
+      <div class="field"><label>Public URL (optional — for consoles outside your network)</label><input id="px-pub" placeholder="https://pve.yourdomain.com" value="\${S.proxmox.publicUrl}"></div>
+      <div class="field"><label>Already have an API token? Token ID</label><input id="px-tid" placeholder="root@pam!hyperprox" value="\${S.proxmox.tokenId}"></div>
+      <div class="field"><label>Token secret</label><input id="px-sec" type="password" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" value="\${S.proxmox.tokenSecret}"></div>
+    </details>
     <div class="err" id="px-err"></div>
     <div class="btn-row">
-      <span class="hint">Step 1 of 6</span>
-      <button class="btn btn-primary" id="btn-px">Test connection →</button>
+      <span class="hint">Nothing is changed on your cluster except one new access key for HyperProx.</span>
+      <button class="btn btn-primary" id="btn-px">Connect →</button>
     </div>
   </div>\`
 }
@@ -443,11 +483,11 @@ function stepCluster(){
   return \`<div class="card">
     <div class="card-title">Cluster detected ✓</div>
     <div class="card-desc">HyperProx found your Proxmox cluster. Confirm the details look right before continuing.</div>
-    <div class="detect-row"><span>Cluster name</span><span style="font-family:monospace">\${c.name}</span><span class="badge badge-ok">online</span></div>
-    <div class="detect-row"><span>Proxmox version</span><span style="font-family:monospace">\${c.version}</span><span class="badge badge-ok">supported</span></div>
-    <div class="detect-row"><span>Nodes</span><span style="font-family:monospace">\${c.nodeCount} nodes</span><span class="badge \${c.quorate?'badge-ok':'badge-warn'}">\${c.quorate?'quorate':'no quorum'}</span></div>
-    <div class="detect-row"><span>Running workloads</span><span style="font-family:monospace">\${c.runningVms} VMs · \${c.runningCts} CTs</span><span class="badge badge-ok">✓</span></div>
-    \${c.ceph ? \`<div class="detect-row"><span>CEPH storage</span><span style="font-family:monospace">\${c.ceph.pools} pools</span><span class="badge \${c.ceph.healthy?'badge-ok':'badge-warn'}">\${c.ceph.healthy?'healthy':'degraded'}</span></div>\` : ''}
+    <div class="detect-row"><span>Cluster name</span><span style="font-family:'IBM Plex Mono',monospace">\${c.name}</span><span class="badge badge-ok">online</span></div>
+    <div class="detect-row"><span>Proxmox version</span><span style="font-family:'IBM Plex Mono',monospace">\${c.version}</span><span class="badge badge-ok">supported</span></div>
+    <div class="detect-row"><span>Nodes</span><span style="font-family:'IBM Plex Mono',monospace">\${c.nodeCount} nodes</span><span class="badge \${c.quorate?'badge-ok':'badge-warn'}">\${c.quorate?'quorate':'no quorum'}</span></div>
+    <div class="detect-row"><span>Running workloads</span><span style="font-family:'IBM Plex Mono',monospace">\${c.runningVms} VMs · \${c.runningCts} CTs</span><span class="badge badge-ok">✓</span></div>
+    \${c.ceph ? \`<div class="detect-row"><span>CEPH storage</span><span style="font-family:'IBM Plex Mono',monospace">\${c.ceph.pools} pools</span><span class="badge \${c.ceph.healthy?'badge-ok':'badge-warn'}">\${c.ceph.healthy?'healthy':'degraded'}</span></div>\` : ''}
     <div class="node-grid">\${nodeCards}</div>
     <div class="btn-row">
       <button class="btn btn-ghost" onclick="go(0)">← Back</button>
@@ -575,25 +615,31 @@ function bind(){
   // Step 0 — test proxmox
   const btnPx = document.getElementById('btn-px')
   if(btnPx) btnPx.onclick = async () => {
-    const host = document.getElementById('px-host').value.trim()
-    const port = document.getElementById('px-port').value.trim() || '8006'
-    const tid  = document.getElementById('px-tid').value.trim()
-    const sec  = document.getElementById('px-sec').value.trim()
-    const pub  = document.getElementById('px-pub').value.trim()
-    if(!host || !tid || !sec){ setErr('px-err','Host, Token ID and Token Secret are required.'); return }
+    const v = id => (document.getElementById(id)?.value || '').trim()
+    const host = v('px-host'), port = v('px-port') || '8006', pub = v('px-pub')
+    const user = v('px-user') || 'root@pam', pass = document.getElementById('px-pass').value, otp = v('px-otp')
+    const tid = v('px-tid'), sec = v('px-sec')
+    if(!host){ setErr('px-err','Enter your Proxmox address.'); return }
+    if(!pass && !(tid && sec)){ setErr('px-err','Enter your Proxmox password.'); return }
     btnPx.disabled = true
-    btnPx.innerHTML = '<span class="spinner"></span>Testing...'
+    btnPx.innerHTML = '<span class="spinner"></span>Connecting...'
     setErr('px-err','')
-    const res = await api('POST','/api/setup/test-proxmox',{ host, port, tokenId:tid, tokenSecret:sec })
+    let res
+    if(pass){
+      res = await api('POST','/api/setup/connect-proxmox',{ host, port, username:user, password:pass, otp, publicUrl:pub })
+    } else {
+      res = await api('POST','/api/setup/test-proxmox',{ host, port, tokenId:tid, tokenSecret:sec })
+      if(res.ok) await api('POST','/api/setup/save-proxmox',{ host, port, tokenId:tid, tokenSecret:sec, publicUrl:pub, cephMonNode: res.cluster.cephMonNode || '' })
+    }
     if(res.ok){
-      Object.assign(S.proxmox, { host, port, tokenId:tid, tokenSecret:sec, publicUrl:pub })
+      Object.assign(S.proxmox, { host, port, username:user, publicUrl:pub, tokenId: res.tokenId || tid, tokenSecret:'' })
       S.cluster = res.cluster
-      await api('POST','/api/setup/save-proxmox',{ host, port, tokenId:tid, tokenSecret:sec, publicUrl:pub, cephMonNode: res.cluster.cephMonNode || '' })
       go(1)
     } else {
-      setErr('px-err', res.error || 'Connection failed')
+      if(res.needTfa){ S.proxmox.needTfa = true; document.getElementById('px-otp-wrap').style.display = 'block'; document.getElementById('px-otp').focus() }
+      setErr('px-err', res.error || 'Could not connect')
       btnPx.disabled = false
-      btnPx.textContent = 'Test connection →'
+      btnPx.textContent = 'Connect →'
     }
   }
 
@@ -749,6 +795,29 @@ const server = http.createServer(async (req, res) => {
         if (error.includes('ECONNREFUSED'))  error = `Cannot reach ${host}:${port} — check the host and port.`
         if (error.includes('401') || error.includes('403')) error = 'Authentication failed — check your API token.'
         if (error.includes('timed out'))     error = `Connection timed out — is ${host} reachable?`
+        return sendJson(res, 400, { ok: false, error })
+      }
+    }
+
+    // ── connect-proxmox: sign in with the Proxmox login; the wizard makes the token itself ──
+    if (req.method === 'POST' && route === 'connect-proxmox') {
+      const { host, port = '8006', username = 'root@pam', password, otp, publicUrl } = body
+      if (!host || !password) return sendJson(res, 400, { error: 'The Proxmox address and password are required.' })
+      try {
+        const { tokenId, tokenSecret, cluster } = await connectWithLogin(host, port, username, password, otp)
+        const [proxmoxUser, proxmoxTokenId] = tokenId.split('!')
+        writeEnv({
+          PROXMOX_HOST: host, PROXMOX_PORT: port, PROXMOX_USER: proxmoxUser, PROXMOX_TOKEN_ID: proxmoxTokenId,
+          PROXMOX_TOKEN_SECRET: tokenSecret, CEPH_MON_NODE: '', ...(publicUrl ? { PROXMOX_PUBLIC_URL: publicUrl } : {}),
+        })
+        return sendJson(res, 200, { ok: true, cluster, tokenId })
+      } catch (err) {
+        let error = err.message
+        if (err.needTfa) return sendJson(res, 400, { ok: false, needTfa: true, error })
+        if (error.includes('ECONNREFUSED') || error.includes('ENOTFOUND') || error.includes('EHOSTUNREACH')) error = `Cannot reach ${host}:${port}. Use the same address you open the Proxmox web interface with.`
+        else if (error.includes('timed out')) error = `No answer from ${host}:${port}. Is that the Proxmox address?`
+        else if (err.status === 401) error = 'Proxmox did not accept that username and password.'
+        else if (err.status === 403) error = 'That account is not allowed to create API tokens. Use root@pam or an administrator account.'
         return sendJson(res, 400, { ok: false, error })
       }
     }
