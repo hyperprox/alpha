@@ -87,18 +87,22 @@ confirm() {
 # On failure, dumps the last 20 lines of LOG_FILE.
 run_with_spinner() {
   local msg="$1"; shift
-  local spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
-  local i=0
+  # An array, not a string sliced by position: a fresh container has no UTF-8 locale, so bash slices
+  # bytes and every frame came out as a broken fragment of a braille character - an invisible spinner.
+  local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+  local i=0 start=${SECONDS}
 
   "$@" >> "${LOG_FILE}" 2>&1 &
   local pid=$!
 
   while kill -0 "${pid}" 2>/dev/null; do
-    printf "\r   ${C_CYAN}%s${C_RESET}  %s..." "${spin:$((i % ${#spin})):1}" "${msg}"
+    local t=$((SECONDS - start))
+    printf "\r   ${C_CYAN}%s${C_RESET}  %s... ${C_DIM}%dm %02ds${C_RESET}   " \
+      "${frames[$((i % ${#frames[@]}))]}" "${msg}" $((t / 60)) $((t % 60))
     i=$((i + 1))
-    sleep 0.1
+    sleep 0.2
   done
-  printf "\r   \r"  # clear the spinner line
+  printf "\r\033[K"  # clear the whole spinner line
 
   if ! wait "${pid}"; then
     echo -e "   ${C_RED}✗${C_RESET}  ${msg} — FAILED"
