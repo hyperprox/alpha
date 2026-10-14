@@ -244,7 +244,7 @@ async function testProxmox(host, port, tokenId, tokenSecret) {
 // Service scanner
 // =============================================================================
 
-function probeHttp(host, port, path, match, timeoutMs = 2500, useHttps = false) {
+function probeHttp(host, port, path, match, timeoutMs = 2500, useHttps = false, hops = 2) {
   return new Promise(resolve => {
     let done = false
     const finish = (val) => { if (!done) { done = true; resolve(val) } }
@@ -258,6 +258,18 @@ function probeHttp(host, port, path, match, timeoutMs = 2500, useHttps = false) 
       socket.destroy()
       const lib = useHttps ? require('https') : http
       const req = lib.request({ hostname: host, port, path, method: 'GET', rejectUnauthorized: false }, res => {
+        // Follow a same-host redirect (a service answering /api with 302 -> /api/ is a service, not a miss).
+        const loc = res.headers.location
+        if (res.statusCode >= 300 && res.statusCode < 400 && loc && hops > 0) {
+          res.resume(); clearTimeout(hard)
+          try {
+            const u = new URL(loc, `${useHttps ? 'https' : 'http'}://${host}:${port}`)
+            if (u.hostname === host) {
+              return probeHttp(host, u.port || (u.protocol === 'https:' ? 443 : 80), u.pathname + u.search, match, timeoutMs, u.protocol === 'https:', hops - 1).then(finish)
+            }
+          } catch {}
+          return finish(false)
+        }
         let body = ''
         res.on('data', d => { body += d })
         res.on('end', () => { clearTimeout(hard); finish(body.toLowerCase().includes(match.toLowerCase())) })
@@ -271,9 +283,12 @@ function probeHttp(host, port, path, match, timeoutMs = 2500, useHttps = false) 
 
 async function scanServices(hosts) {
   const probes = [
-    { key: 'npm',     name: 'Nginx Proxy Manager', port: 81,    path: '/api',         match: 'nginx proxy manager' },
+    // '/' not '/api': NPM 2.16 redirects /api to /api/, whose JSON never names the product; the admin page's
+    // <title> does, on every version.
+    { key: 'npm',     name: 'Nginx Proxy Manager', port: 81,    path: '/',            match: 'nginx proxy manager' },
     { key: 'ollama',  name: 'Ollama',               port: 11434, path: '/api/tags',    match: 'models' },
-    { key: 'pbs',     name: 'Proxmox Backup Server',port: 8007,  path: '/api2/json/version', match: 'version', https: true },
+    // the version endpoint needs a login (401), so it never matched; the web UI title does not.
+    { key: 'pbs',     name: 'Proxmox Backup Server',port: 8007,  path: '/',            match: 'proxmox backup server', https: true },
   ]
 
   const tasks = hosts.flatMap(host =>
@@ -665,6 +680,8 @@ function bind(){
           if(r.ok && r.services){
             S.services = {}
             r.services.forEach(s => { S.services[s.key] = { ...s, enabled: s.found } })
+            // Never offer to install a second proxy manager on top of one the cluster already runs.
+            if (S.services.npm && S.services.npm.found) S.installs.npm = false
           }
           resolve()
         }).catch(() => resolve())
@@ -711,10 +728,6 @@ function bind(){
 
 function toggleSvc(key){
   if(S.services[key]) S.services[key].enabled = !S.services[key].enabled
-  render()
-}
-function toggleInstall(key){
-  S.installs[key] = !S.installs[key]
   render()
 }
 function toggleInstall(key){
