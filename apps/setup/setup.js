@@ -861,7 +861,9 @@ const server = http.createServer(async (req, res) => {
       const { username, password } = body
       if (!username || username.length < 3) return sendJson(res, 400, { error: 'Username must be at least 3 characters' })
       if (!password || password.length < 12) return sendJson(res, 400, { error: 'Password must be at least 12 characters' })
-      if (readEnv().SETUP_ADMIN_CREATED === 'true') return sendJson(res, 409, { error: 'Admin already exists' })
+      // Setup is not finished (this server exits once it is), so a reloaded or restarted wizard may
+      // create the admin again: the newest answer wins. Refusing here stranded anyone who reloaded the
+      // page mid-setup, with no way back to an account whose password they had just been asked for.
       createAdmin(username, password)
       return sendJson(res, 200, { ok: true })
     }
