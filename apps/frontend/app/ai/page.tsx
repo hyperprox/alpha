@@ -106,6 +106,11 @@ const BORDER = 'var(--border-strong)'
 
 const mono: React.CSSProperties = { fontFamily: 'IBM Plex Mono, monospace' }
 
+const primaryBtn: React.CSSProperties = { background: 'var(--accent)', color: 'var(--accent-ink)', border: 'none', borderRadius: 6, fontWeight: 600 }
+const secondaryBtn: React.CSSProperties = { background: 'transparent', color: 'var(--text)', border: '1px solid var(--border-strong)', borderRadius: 6 }
+const inputStyle: React.CSSProperties = { background: 'var(--ground-deep)', border: '1px solid var(--border-strong)', borderRadius: 6, color: 'var(--text-bright)', outline: 'none' }
+const errBox: React.CSSProperties = { background: 'color-mix(in srgb, var(--crit) 10%, transparent)', border: '1px solid color-mix(in srgb, var(--crit) 35%, transparent)', color: 'var(--crit)' }
+
 const badge = (color: string): React.CSSProperties => ({
   display:       'inline-flex',
   alignItems:    'center',
@@ -157,12 +162,11 @@ function SectionHeader({ title, subtitle }: { title: string; subtitle?: string }
   return (
     <div style={{ marginBottom: '1.25rem' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
-        <div style={{ width: 3, height: 20, borderRadius: 2, background: ACCENT, boxShadow: `0 0 8px ${ACCENT}` }} />
-        <h2 style={{ fontSize: 16, fontWeight: 700, color: ACCENT, textTransform: 'uppercase', letterSpacing: 1.5, ...mono }}>
+        <h2 className="font-display" style={{ fontSize: 22, fontWeight: 600, color: 'var(--text-bright)' }}>
           {title}
         </h2>
       </div>
-      {subtitle && <p style={{ fontSize: 13, color: 'var(--text-dim)', marginLeft: 13 }}>{subtitle}</p>}
+      {subtitle && <p style={{ fontSize: 15, color: 'var(--text-soft)' }}>{subtitle}</p>}
     </div>
   )
 }
@@ -182,8 +186,8 @@ function ModelCard({
     <div style={{
       background:   CARD,
       border:       `1px solid ${model.recommended ? ACCENT + '50' : BORDER}`,
-      borderRadius: 12,
-      padding:      '1rem',
+      borderRadius: 10,
+      padding:      '1.25rem',
       position:     'relative',
       transition:   'border-color .15s',
     }}>
@@ -193,7 +197,7 @@ function ModelCard({
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
         <div>
-          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-bright)', marginBottom: 2 }}>{model.name}</div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-bright)', marginBottom: 4 }}>{model.name}</div>
           <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
             <span style={badge(tierColor)}>{model.params}</span>
             <span style={badge('var(--text-dimmer)')}>{model.sizeGB}GB</span>
@@ -205,17 +209,16 @@ function ModelCard({
           {!model.installed ? (
             <button onClick={() => onPull(model.id)} disabled={!!pulling}
               style={{
-                padding: '5px 12px', borderRadius: 6, fontSize: 11, fontWeight: 600,
-                cursor: pulling ? 'default' : 'pointer', ...mono,
-                background: isPulling ? `${alpha(ACCENT, 13)}` : `${alpha(ACCENT, 8)}`,
-                color: isPulling ? `${alpha(ACCENT, 50)}` : ACCENT,
-                border: `1px solid ${alpha(ACCENT, 19)}`,
+                padding: '6px 14px', fontSize: 13,
+                cursor: pulling ? 'default' : 'pointer',
+                ...primaryBtn,
+                opacity: isPulling ? 0.6 : 1,
               }}>
               {isPulling ? '↓ pulling...' : '↓ install'}
             </button>
           ) : (
             <button onClick={() => onDelete(model.id)}
-              style={{ padding: '5px 10px', borderRadius: 6, fontSize: 11, cursor: 'pointer', ...mono, background: 'transparent', color: 'var(--text-dimmer)', border: '1px solid transparent' }}
+              style={{ padding: '6px 12px', borderRadius: 6, fontSize: 13, cursor: 'pointer', background: 'transparent', color: 'var(--text-dimmer)', border: '1px solid transparent' }}
               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--crit)'; (e.currentTarget as HTMLElement).style.borderColor = 'color-mix(in srgb, var(--crit) 19%, transparent)' }}
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = 'var(--text-dimmer)'; (e.currentTarget as HTMLElement).style.borderColor = 'transparent' }}
             >✕ remove</button>
@@ -223,7 +226,7 @@ function ModelCard({
         </div>
       </div>
 
-      <p style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: 10 }}>{model.description}</p>
+      <p style={{ fontSize: 14, color: 'var(--text-soft)', lineHeight: 1.5, marginBottom: 12 }}>{model.description}</p>
 
       <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
         {model.strengths.map(s => (
@@ -257,13 +260,13 @@ function ExecutionView({ job, onDone }: { job: JobProgress; onDone: () => void }
       <div style={{
         background: CARD,
         border: `1px solid ${job.status === 'failed' ? 'color-mix(in srgb, var(--crit) 19%, transparent)' : job.status === 'completed' ? 'color-mix(in srgb, var(--good) 19%, transparent)' : `${alpha(ACCENT, 19)}`}`,
-        borderRadius: 12,
-        padding: '1.25rem',
+        borderRadius: 10,
+        padding: '1.5rem',
         marginBottom: '1rem',
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: job.status === 'failed' ? 'var(--crit)' : job.status === 'completed' ? 'var(--good)' : ACCENT, ...mono, marginBottom: 4 }}>
+            <div style={{ fontSize: 20, fontWeight: 600, fontFamily: 'var(--font-display)', color: job.status === 'failed' ? 'var(--crit)' : job.status === 'completed' ? 'var(--good)' : 'var(--text-bright)', marginBottom: 4 }}>
               {job.status === 'completed' ? '✓ Deployment complete' :
                job.status === 'failed'    ? '✗ Deployment failed'   :
                `Deploying — step ${job.currentStep + 1} of ${job.totalSteps}`}
@@ -276,7 +279,7 @@ function ExecutionView({ job, onDone }: { job: JobProgress; onDone: () => void }
           </div>
           {isComplete && (
             <button onClick={onDone}
-              style={{ padding: '6px 14px', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', ...mono, background: `${alpha(ACCENT, 8)}`, color: ACCENT, border: `1px solid ${alpha(ACCENT, 19)}` }}>
+              style={{ padding: '8px 18px', fontSize: 14, cursor: 'pointer', ...primaryBtn }}>
               New deployment →
             </button>
           )}
@@ -310,7 +313,7 @@ function ExecutionView({ job, onDone }: { job: JobProgress; onDone: () => void }
               background:   CARD,
               border:       `1px solid ${step.status === 'running' ? sc + '50' : BORDER}`,
               borderRadius: 10,
-              padding:      '0.875rem 1rem',
+              padding:      '1rem 1.25rem',
               transition:   'border-color 0.2s',
             }}>
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
@@ -327,7 +330,7 @@ function ExecutionView({ job, onDone }: { job: JobProgress; onDone: () => void }
 
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: step.output || step.error || step.commands ? 6 : 0 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: step.status === 'pending' ? 'var(--text-dim)' : 'var(--text-bright)', ...mono }}>
+                    <div style={{ fontSize: 15, fontWeight: 600, color: step.status === 'pending' ? 'var(--text-dim)' : 'var(--text-bright)' }}>
                       {i + 1}. {step.label}
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -345,7 +348,7 @@ function ExecutionView({ job, onDone }: { job: JobProgress; onDone: () => void }
 
                   {/* Error */}
                   {step.error && (
-                    <div style={{ fontSize: 11, color: 'var(--crit)', ...mono, background: 'rgba(239,68,68,0.08)', padding: '6px 10px', borderRadius: 6, border: '1px solid rgba(239,68,68,0.2)' }}>
+                    <div style={{ fontSize: 11, ...mono, ...errBox, padding: '6px 10px', borderRadius: 6 }}>
                       ✗ {step.error}
                     </div>
                   )}
@@ -353,7 +356,7 @@ function ExecutionView({ job, onDone }: { job: JobProgress; onDone: () => void }
                   {/* Manual install commands */}
                   {step.commands && step.commands.length > 0 && (
                     <div style={{ marginTop: 6 }}>
-                      <div style={{ fontSize: 10, color: 'var(--warn)', ...mono, marginBottom: 4 }}>
+                      <div style={{ fontSize: 13, color: 'var(--warn-2)', marginBottom: 4 }}>
                         ⚙ Run these commands in CT {job.lxcVmid ?? '?'} console:
                       </div>
                       <div style={{ background: 'var(--ground-deep)', border: '1px solid var(--border-strong)', borderRadius: 6, padding: '8px 10px', overflow: 'auto', maxHeight: 160 }}>
@@ -374,7 +377,7 @@ function ExecutionView({ job, onDone }: { job: JobProgress; onDone: () => void }
 
       {/* Job error */}
       {job.status === 'failed' && job.steps.every(s => s.status !== 'failed') && (
-        <div style={{ marginTop: 12, padding: '10px 14px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, fontSize: 12, color: 'var(--crit)', ...mono }}>
+        <div style={{ marginTop: 12, padding: '10px 14px', ...errBox, borderRadius: 8, fontSize: 14 }}>
           ✗ Job failed: check step errors above
         </div>
       )}
@@ -610,30 +613,29 @@ export default function AIPage() {
 
   if (loading) return (
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: BG }}>
-      <div style={{ fontSize: 12, color: 'var(--text-dimmer)', ...mono }}>initializing ai...</div>
+      <div style={{ fontSize: 14, color: 'var(--text-dimmer)' }}>initializing ai...</div>
     </div>
   )
 
   return (
-    <div style={{ minHeight: '100vh', padding: '1.5rem', background: BG }}>
+    <div style={{ minHeight: '100vh', padding: '2rem 2.5rem', background: BG }}>
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '2rem' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ width: 4, height: 28, borderRadius: 2, background: ACCENT, boxShadow: `0 0 10px ${ACCENT}` }} />
           <div>
-            <h1 style={{ fontSize: 22, fontWeight: 700, color: ACCENT, textTransform: 'uppercase', letterSpacing: 2, ...mono }}>
-              AI Assistant
-            </h1>
-            <div style={{ fontSize: 11, color: 'var(--text-dim)', ...mono }}>
+            <div style={{ fontSize: 12, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--accent)', marginBottom: 8, ...mono }}>
               {providerReady
                 ? `${activeInfo?.name ?? 'provider'} · ${activeInfo?.model ?? ''}`
                 : `${activeInfo?.name ?? 'no provider'} not ready — configure it in Settings`}
             </div>
+            <h1 className="font-display" style={{ fontSize: 36, fontWeight: 700, color: 'var(--text-bright)', lineHeight: 1.1 }}>
+              AI Assistant
+            </h1>
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <div style={{ width: 8, height: 8, borderRadius: '50%', background: providerReady ? 'var(--good)' : 'var(--crit)', boxShadow: providerReady ? '0 0 6px var(--good)' : 'none' }} />
-          <span style={{ fontSize: 11, color: providerReady ? 'var(--good)' : 'var(--crit)', ...mono }}>
+          <span style={{ fontSize: 12, letterSpacing: '0.1em', color: providerReady ? 'var(--good)' : 'var(--crit)', ...mono }}>
             {providerReady ? 'READY' : 'NOT READY'}
           </span>
         </div>
@@ -644,10 +646,10 @@ export default function AIPage() {
         {(['wizard', 'models', 'settings'] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             style={{
-              padding: '8px 16px', fontSize: 12, fontWeight: 600, cursor: 'pointer', ...mono,
-              background: 'transparent', color: tab === t ? ACCENT : 'var(--text-dim)',
-              border: 'none', borderBottom: tab === t ? `2px solid ${ACCENT}` : '2px solid transparent',
-              textTransform: 'uppercase', letterSpacing: 0.8, transition: 'color .15s',
+              padding: '10px 18px', fontSize: 15, fontWeight: 600, cursor: 'pointer',
+              background: 'transparent', color: tab === t ? 'var(--accent)' : 'var(--text-dim)',
+              border: 'none', borderBottom: tab === t ? '2px solid var(--accent)' : '2px solid transparent',
+              textTransform: 'capitalize', transition: 'color .15s',
             }}
           >{t}</button>
         ))}
@@ -668,14 +670,14 @@ export default function AIPage() {
                 <div style={{ background: `${alpha(ACCENT, 6)}`, border: `1px solid ${alpha(ACCENT, 15)}`, borderRadius: 10, padding: '1rem', marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: 12 }}>
                   <span style={{ fontSize: 20 }}>⚡</span>
                   <div>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: ACCENT, marginBottom: 2 }}>
+                    <div style={{ fontSize: 15, fontWeight: 600, color: ACCENT, marginBottom: 2 }}>
                       {activeInfo?.name ?? 'No AI provider'} is not ready
                     </div>
-                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                    <div style={{ fontSize: 14, color: 'var(--text-soft)' }}>
                       {activeInfo?.missing?.length
                         ? `Add its ${activeInfo.missing.join(' and ')} in the `
                         : 'Finish configuring it in the '}
-                      <button onClick={() => setTab('settings')} style={{ color: ACCENT, background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, textDecoration: 'underline' }}>
+                      <button onClick={() => setTab('settings')} style={{ color: ACCENT, background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, textDecoration: 'underline' }}>
                         Settings tab
                       </button>
                       {' '}to use the deployment wizard.
@@ -685,9 +687,9 @@ export default function AIPage() {
               )}
               <div ref={chatRef} style={{ minHeight: 200, maxHeight: 360, overflowY: 'auto', marginBottom: '1rem', display: 'flex', flexDirection: 'column', gap: 12 }}>
                 {messages.length === 0 && (
-                  <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-dimmer)', fontSize: 12, ...mono }}>
+                  <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-dimmer)', fontSize: 14 }}>
                     <div style={{ fontSize: 32, marginBottom: 12 }}>✦</div>
-                    <div style={{ marginBottom: 8, color: 'var(--text-muted)' }}>Describe what you want to deploy</div>
+                    <div className="font-display" style={{ marginBottom: 12, color: 'var(--text-bright)', fontSize: 22, fontWeight: 600 }}>Describe what you want to deploy</div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxWidth: 320, margin: '0 auto' }}>
                       {[
                         '"Deploy Nextcloud at cloud.mydomain.com"',
@@ -695,7 +697,7 @@ export default function AIPage() {
                         '"Install Vaultwarden at vault.yourdomain.com"',
                       ].map(ex => (
                         <button key={ex} onClick={() => setPrompt(ex.replace(/"/g, ''))}
-                          style={{ padding: '6px 12px', borderRadius: 6, fontSize: 11, cursor: 'pointer', ...mono, background: 'var(--surface)', color: 'var(--text-muted)', border: `1px solid ${BORDER}`, textAlign: 'left', transition: 'border-color .15s' }}
+                          style={{ padding: '8px 12px', borderRadius: 6, fontSize: 13, cursor: 'pointer', ...mono, background: 'var(--surface)', color: 'var(--text-soft)', border: `1px solid ${BORDER}`, textAlign: 'left', transition: 'border-color .15s' }}
                           onMouseEnter={e => (e.currentTarget as HTMLElement).style.borderColor = ACCENT + '40'}
                           onMouseLeave={e => (e.currentTarget as HTMLElement).style.borderColor = BORDER}
                         >{ex}</button>
@@ -704,18 +706,18 @@ export default function AIPage() {
                   </div>
                 )}
                 {messages.map((msg, i) => (
-                  <div key={i} style={{ alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '80%', padding: '10px 14px', borderRadius: 10, fontSize: 13, lineHeight: 1.5, background: msg.role === 'user' ? `${alpha(ACCENT, 8)}` : CARD, color: msg.role === 'user' ? ACCENT : 'var(--text-bright)', border: `1px solid ${msg.role === 'user' ? ACCENT + '30' : BORDER}`, ...mono }}>{msg.content}</div>
+                  <div key={i} style={{ alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '80%', padding: '10px 14px', borderRadius: 10, fontSize: 15, lineHeight: 1.55, background: msg.role === 'user' ? `${alpha(ACCENT, 8)}` : CARD, color: msg.role === 'user' ? ACCENT : 'var(--text-bright)', border: `1px solid ${msg.role === 'user' ? ACCENT + '30' : BORDER}` }}>{msg.content}</div>
                 ))}
                 {planning && (
-                  <div style={{ alignSelf: 'flex-start', padding: '10px 14px', borderRadius: 10, background: CARD, border: `1px solid ${BORDER}`, fontSize: 12, color: 'var(--text-muted)', ...mono }}>thinking...</div>
+                  <div style={{ alignSelf: 'flex-start', padding: '10px 14px', borderRadius: 10, background: CARD, border: `1px solid ${BORDER}`, fontSize: 14, color: 'var(--text-muted)' }}>thinking...</div>
                 )}
               </div>
               {plan && (
-                <div style={{ background: CARD, border: `1px solid ${alpha(ACCENT, 19)}`, borderRadius: 12, padding: '1.25rem', marginBottom: '1rem' }}>
+                <div style={{ background: CARD, border: `1px solid ${alpha(ACCENT, 19)}`, borderRadius: 10, padding: '1.5rem', marginBottom: '1rem' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
                     <div>
-                      <div style={{ fontSize: 14, fontWeight: 700, color: ACCENT, ...mono, marginBottom: 2 }}>{plan.service} → {plan.domain}</div>
-                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{plan.understood}</div>
+                      <div className="font-display" style={{ fontSize: 22, fontWeight: 600, color: 'var(--text-bright)', marginBottom: 2 }}>{plan.service} → {plan.domain}</div>
+                      <div style={{ fontSize: 14, color: 'var(--text-soft)' }}>{plan.understood}</div>
                     </div>
                     <div style={{ display: 'flex', gap: 6, fontSize: 11, ...mono }}>
                       <span style={badge('var(--text-muted)')}>{plan.requirements.ram_mb}MB RAM</span>
@@ -728,32 +730,32 @@ export default function AIPage() {
                       <div key={step.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 8, background: 'var(--ground)', border: `1px solid ${BORDER}` }}>
                         <div style={{ fontSize: 16, width: 24, textAlign: 'center' }}>{STEP_ICON[step.type] ?? '▸'}</div>
                         <div style={{ flex: 1 }}>
-                          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-bright)', ...mono }}>{i + 1}. {step.label}</div>
-                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{step.description}</div>
+                          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-bright)' }}>{i + 1}. {step.label}</div>
+                          <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{step.description}</div>
                         </div>
                       </div>
                     ))}
                   </div>
                   {plan.warnings.length > 0 && (
-                    <div style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: 8, padding: '10px 12px', marginBottom: '1rem' }}>
+                    <div style={{ background: 'color-mix(in srgb, var(--warn) 10%, transparent)', border: '1px solid color-mix(in srgb, var(--warn) 35%, transparent)', borderRadius: 8, padding: '10px 12px', marginBottom: '1rem' }}>
                       {plan.warnings.map((w, i) => (
-                        <div key={i} style={{ fontSize: 12, color: 'var(--warn)', ...mono }}>⚠ {w}</div>
+                        <div key={i} style={{ fontSize: 14, color: 'var(--warn-2)' }}>⚠ {w}</div>
                       ))}
                     </div>
                   )}
                   <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                    <button onClick={() => setPlan(null)} style={{ padding: '8px 16px', borderRadius: 8, fontSize: 12, cursor: 'pointer', ...mono, background: 'transparent', color: 'var(--text-muted)', border: `1px solid ${BORDER}` }}>Cancel</button>
+                    <button onClick={() => setPlan(null)} style={{ padding: '10px 18px', fontSize: 14, cursor: 'pointer', ...secondaryBtn }}>Cancel</button>
                     <button onClick={() => { if (window.confirm(`Execute ${plan?.steps?.length} steps to deploy ${plan?.service}?`)) handleExecute() }} disabled={executing}
-                      style={{ padding: '8px 20px', borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: executing ? 'default' : 'pointer', ...mono, background: executing ? `${alpha(ACCENT, 13)}` : `${alpha(ACCENT, 8)}`, color: executing ? `${alpha(ACCENT, 38)}` : ACCENT, border: `1px solid ${alpha(ACCENT, 19)}` }}>
+                      style={{ padding: '10px 22px', fontSize: 14, cursor: executing ? 'default' : 'pointer', ...primaryBtn, opacity: executing ? 0.6 : 1 }}>
                       {executing ? 'Starting...' : `Execute ${plan.steps.length} steps →`}
                     </button>
                   </div>
                 </div>
               )}
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                <span style={{ fontSize: 11, color: 'var(--text-dim)', ...mono, whiteSpace: 'nowrap' }}>Provider:</span>
+                <span style={{ fontSize: 13, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>Provider:</span>
                 <select value={activeProv} onChange={e => selectProvider(e.target.value as ProviderId)}
-                  style={{ padding: '5px 10px', borderRadius: 6, background: 'var(--surface)', border: '1px solid var(--border-strong)', color: 'var(--text-bright)', fontSize: 12, ...mono, outline: 'none', cursor: 'pointer' }}>
+                  style={{ padding: '8px 12px', ...inputStyle, fontSize: 13, cursor: 'pointer' }}>
                   {providers.map(p => (
                     <option key={p.id} value={p.id}>
                       {p.name}{p.configured ? '' : ' — not configured'}
@@ -762,7 +764,7 @@ export default function AIPage() {
                 </select>
                 {activeProv === 'ollama' ? (
                   <select value={activeModel} onChange={e => { setActiveModel(e.target.value); fetch('/api/ai/model/select', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: e.target.value }) }) }}
-                    style={{ flex: 1, padding: '5px 10px', borderRadius: 6, background: 'var(--surface)', border: '1px solid var(--border-strong)', color: 'var(--text-bright)', fontSize: 12, ...mono, outline: 'none', cursor: 'pointer' }}>
+                    style={{ flex: 1, padding: '8px 12px', ...inputStyle, fontSize: 13, ...mono, cursor: 'pointer' }}>
                     {(status?.models ?? []).map((m: any) => (<option key={m.name} value={m.name}>{m.name}</option>))}
                   </select>
                 ) : (
@@ -775,9 +777,9 @@ export default function AIPage() {
                 <input value={prompt} onChange={e => setPrompt(e.target.value)} onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleWizardSubmit()}
                   placeholder='Deploy Nextcloud at cloud.mydomain.com...'
                   disabled={!providerReady || planning}
-                  style={{ flex: 1, padding: '10px 14px', borderRadius: 8, background: CARD, border: `1px solid ${BORDER}`, color: 'var(--text-bright)', fontSize: 13, outline: 'none', ...mono, opacity: (!providerReady || planning) ? 0.5 : 1 }} />
+                  style={{ flex: 1, padding: '11px 14px', ...inputStyle, fontSize: 15, opacity: (!providerReady || planning) ? 0.5 : 1 }} />
                 <button onClick={handleWizardSubmit} disabled={!prompt.trim() || !providerReady || planning}
-                  style={{ padding: '10px 18px', borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: (!prompt.trim() || !providerReady || planning) ? 'default' : 'pointer', ...mono, background: `${alpha(ACCENT, 8)}`, color: ACCENT, border: `1px solid ${alpha(ACCENT, 19)}`, opacity: (!prompt.trim() || !providerReady || planning) ? 0.4 : 1 }}>
+                  style={{ padding: '10px 22px', fontSize: 15, cursor: (!prompt.trim() || !providerReady || planning) ? 'default' : 'pointer', ...primaryBtn, opacity: (!prompt.trim() || !providerReady || planning) ? 0.4 : 1 }}>
                   {planning ? '...' : '→'}
                 </button>
               </div>
@@ -788,11 +790,11 @@ export default function AIPage() {
       {tab === 'models' && (
         <div>
           {catalog?.hardware && (
-            <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: '1rem', marginBottom: '1.5rem', display: 'flex', gap: '2rem' }}>
+            <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 10, padding: '1.25rem 1.5rem', marginBottom: '2rem', display: 'flex', gap: '2rem' }}>
               <div><div style={{ fontSize: 10, color: 'var(--text-dim)', ...mono, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>Cluster RAM</div><div style={{ fontSize: 20, fontWeight: 700, color: 'var(--text-bright)', ...mono }}>{catalog.hardware.totalRamGB.toFixed(0)}GB</div></div>
               <div><div style={{ fontSize: 10, color: 'var(--text-dim)', ...mono, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>GPU VRAM</div><div style={{ fontSize: 20, fontWeight: 700, color: catalog.hardware.maxVramGB > 0 ? ACCENT : 'var(--text-dimmer)', ...mono }}>{catalog.hardware.maxVramGB > 0 ? `${catalog.hardware.maxVramGB.toFixed(0)}GB` : 'none'}</div></div>
               <div><div style={{ fontSize: 10, color: 'var(--text-dim)', ...mono, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>CPU Cores</div><div style={{ fontSize: 20, fontWeight: 700, color: 'var(--text-bright)', ...mono }}>{catalog.hardware.totalCores}</div></div>
-              <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center' }}><div style={{ fontSize: 12, color: 'var(--text-muted)', maxWidth: 240 }}>Models marked <span style={{ color: ACCENT }}>⚡ recommended</span> are best for your hardware.</div></div>
+              <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center' }}><div style={{ fontSize: 14, color: 'var(--text-soft)', maxWidth: 260 }}>Models marked <span style={{ color: ACCENT }}>⚡ recommended</span> are best for your hardware.</div></div>
             </div>
           )}
           <SectionHeader title="Model Library" subtitle="Download and manage AI models. Recommended models are highlighted for your hardware." />
@@ -802,7 +804,7 @@ export default function AIPage() {
         </div>
       )}
       {tab === 'settings' && (
-        <div style={{ maxWidth: 560 }}>
+        <div style={{ maxWidth: 640 }}>
           <SectionHeader title="Cloud Providers" subtitle="Bring your own API key. Cloud models plan against the same cluster facts as a local one, and are usable immediately — no download." />
           {providers.filter(p => p.kind === 'cloud').map(p => {
             const draft = provDraft[p.id] ?? {}
@@ -814,36 +816,36 @@ export default function AIPage() {
                   value={draft[key] ?? ''}
                   placeholder={placeholder}
                   onChange={e => setProvDraft(d => ({ ...d, [p.id]: { ...(d[p.id] ?? {}), [key]: e.target.value } }))}
-                  style={{ width: '100%', padding: '8px 12px', borderRadius: 8, background: 'var(--ground)', border: `1px solid ${BORDER}`, color: 'var(--text-bright)', fontSize: 13, outline: 'none', ...mono }} />
+                  style={{ width: '100%', height: 42, padding: '0 12px', ...inputStyle, fontSize: 13, ...mono }} />
               </label>
             )
             const result = provResult[p.id]
             return (
-              <div key={p.id} style={{ background: CARD, border: `1px solid ${p.id === activeProv ? ACCENT + '40' : BORDER}`, borderRadius: 12, padding: '1.25rem', marginBottom: '1rem' }}>
+              <div key={p.id} style={{ background: CARD, border: `1px solid ${p.id === activeProv ? ACCENT + '40' : BORDER}`, borderRadius: 10, padding: '1.5rem', marginBottom: '1rem' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-bright)' }}>{p.name}</div>
+                  <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-bright)' }}>{p.name}</div>
                   <span style={badge(p.configured ? 'var(--good)' : 'var(--text-dimmer)')}>{p.configured ? 'configured' : 'no key'}</span>
                   {p.id === activeProv && <span style={badge(ACCENT)}>active</span>}
                   <button onClick={() => selectProvider(p.id)} disabled={!p.configured || p.id === activeProv}
-                    style={{ marginLeft: 'auto', fontSize: 11, padding: '4px 10px', borderRadius: 6, cursor: (!p.configured || p.id === activeProv) ? 'default' : 'pointer', ...mono, background: 'transparent', color: (!p.configured || p.id === activeProv) ? 'var(--text-dimmer)' : ACCENT, border: `1px solid ${(!p.configured || p.id === activeProv) ? BORDER : ACCENT + '30'}` }}>
+                    style={{ marginLeft: 'auto', fontSize: 13, padding: '6px 14px', borderRadius: 6, cursor: (!p.configured || p.id === activeProv) ? 'default' : 'pointer', background: 'transparent', color: (!p.configured || p.id === activeProv) ? 'var(--text-dimmer)' : 'var(--accent)', border: `1px solid ${(!p.configured || p.id === activeProv) ? BORDER : 'var(--accent)'}` }}>
                     use this
                   </button>
                 </div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: '1rem', lineHeight: 1.5 }}>{p.note}</div>
+                <div style={{ fontSize: 14, color: 'var(--text-soft)', marginBottom: '1rem', lineHeight: 1.5 }}>{p.note}</div>
                 {field('api_key', 'API key', p.configured ? '•••••••• stored — type to replace' : 'sk-…', 'password')}
                 {field('model', 'Model', p.model)}
                 {p.id === 'openai' && field('base_url', 'Base URL', 'https://api.openai.com/v1')}
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 4 }}>
                   <button onClick={() => saveProvider(p.id)} disabled={provBusy === p.id || !Object.keys(draft).length}
-                    style={{ padding: '8px 16px', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: (provBusy === p.id || !Object.keys(draft).length) ? 'default' : 'pointer', ...mono, background: `${alpha(ACCENT, 8)}`, color: ACCENT, border: `1px solid ${alpha(ACCENT, 19)}`, opacity: (provBusy === p.id || !Object.keys(draft).length) ? 0.4 : 1 }}>
+                    style={{ height: 40, padding: '0 20px', fontSize: 14, cursor: (provBusy === p.id || !Object.keys(draft).length) ? 'default' : 'pointer', ...primaryBtn, opacity: (provBusy === p.id || !Object.keys(draft).length) ? 0.4 : 1 }}>
                     {provBusy === p.id ? '…' : 'Save'}
                   </button>
                   <button onClick={() => testProvider(p.id)} disabled={!p.configured || provBusy === p.id}
-                    style={{ padding: '8px 16px', borderRadius: 8, fontSize: 12, cursor: (!p.configured || provBusy === p.id) ? 'default' : 'pointer', ...mono, background: 'transparent', color: 'var(--text-muted)', border: `1px solid ${BORDER}`, opacity: (!p.configured || provBusy === p.id) ? 0.4 : 1 }}>
+                    style={{ height: 40, padding: '0 20px', fontSize: 14, cursor: (!p.configured || provBusy === p.id) ? 'default' : 'pointer', ...secondaryBtn, opacity: (!p.configured || provBusy === p.id) ? 0.4 : 1 }}>
                     Test
                   </button>
                   {result && (
-                    <span style={{ fontSize: 11, ...mono, color: result.startsWith('✗') ? 'var(--crit)' : result.startsWith('✓') ? 'var(--good)' : 'var(--text-muted)' }}>
+                    <span style={{ fontSize: 13, color: result.startsWith('✗') ? 'var(--crit)' : result.startsWith('✓') ? 'var(--good)' : 'var(--text-muted)' }}>
                       {result}
                     </span>
                   )}
@@ -852,38 +854,38 @@ export default function AIPage() {
             )
           })}
           <SectionHeader title="Ollama Connection" subtitle="Connect to an existing Ollama instance or deploy a managed one." />
-          <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: '1.25rem', marginBottom: '1rem' }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-bright)', marginBottom: 4 }}>Connect existing Ollama</div>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: '1rem' }}>Already running Ollama on another machine? Point HyperProx at it.</div>
+          <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 10, padding: '1.5rem', marginBottom: '1rem' }}>
+            <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-bright)', marginBottom: 4 }}>Connect existing Ollama</div>
+            <div style={{ fontSize: 14, color: 'var(--text-soft)', marginBottom: '1rem' }}>Already running Ollama on another machine? Point HyperProx at it.</div>
             <div style={{ marginBottom: 8 }}>
               <button onClick={async () => { setDetecting(true); setDetected([]); const res = await fetch('/api/ai/detect'); const data = await res.json(); setDetected(data.found ?? []); setDetecting(false); if (data.found?.length === 1) setOllamaUrl(data.found[0].url) }} disabled={detecting}
-                style={{ padding: '7px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: detecting ? 'default' : 'pointer', ...mono, background: `${alpha(ACCENT, 6)}`, color: ACCENT, border: `1px solid ${alpha(ACCENT, 15)}`, opacity: detecting ? 0.6 : 1 }}>
+                style={{ height: 40, padding: '0 16px', fontSize: 14, fontWeight: 600, cursor: detecting ? 'default' : 'pointer', background: 'transparent', color: 'var(--accent)', border: '1px solid var(--accent)', borderRadius: 6, opacity: detecting ? 0.6 : 1 }}>
                 {detecting ? '⟳ scanning cluster...' : '⟳ auto-detect'}
               </button>
               {detected.length > 0 && (<div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>{detected.map(d => (<button key={d.url} onClick={() => setOllamaUrl(d.url)} style={{ padding: '6px 10px', borderRadius: 6, fontSize: 11, cursor: 'pointer', textAlign: 'left', ...mono, background: ollamaUrl === d.url ? `${alpha(ACCENT, 8)}` : 'var(--surface-raised)', color: ollamaUrl === d.url ? ACCENT : 'var(--text-muted)', border: `1px solid ${ollamaUrl === d.url ? ACCENT + '30' : BORDER}` }}>✓ {d.name} — {d.url}</button>))}</div>)}
-              {!detecting && detected.length === 0 && (<span style={{ marginLeft: 10, fontSize: 11, color: 'var(--text-dimmer)', ...mono }}>or enter manually below</span>)}
+              {!detecting && detected.length === 0 && (<span style={{ marginLeft: 10, fontSize: 13, color: 'var(--text-dimmer)' }}>or enter manually below</span>)}
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
               <input value={ollamaUrl} onChange={e => setOllamaUrl(e.target.value)} placeholder="http://your-server:11434"
-                style={{ flex: 1, padding: '8px 12px', borderRadius: 8, background: 'var(--ground)', border: `1px solid ${BORDER}`, color: 'var(--text-bright)', fontSize: 13, outline: 'none', ...mono }} />
+                style={{ flex: 1, height: 42, padding: '0 12px', ...inputStyle, fontSize: 13, ...mono }} />
               <button onClick={handleConnect} disabled={!ollamaUrl || connecting}
-                style={{ padding: '8px 16px', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: (!ollamaUrl || connecting) ? 'default' : 'pointer', ...mono, background: `${alpha(ACCENT, 8)}`, color: ACCENT, border: `1px solid ${alpha(ACCENT, 19)}`, opacity: (!ollamaUrl || connecting) ? 0.5 : 1 }}>
+                style={{ height: 42, padding: '0 22px', fontSize: 14, cursor: (!ollamaUrl || connecting) ? 'default' : 'pointer', ...primaryBtn, opacity: (!ollamaUrl || connecting) ? 0.5 : 1 }}>
                 {connecting ? 'connecting...' : 'Connect'}
               </button>
             </div>
-            {connectErr && (<div style={{ marginTop: 8, fontSize: 12, color: 'var(--crit)', padding: '8px 10px', background: 'rgba(239,68,68,0.08)', borderRadius: 6, border: '1px solid rgba(239,68,68,0.2)', ...mono }}>✗ {connectErr}</div>)}
+            {connectErr && (<div style={{ marginTop: 8, fontSize: 14, padding: '8px 10px', borderRadius: 6, ...errBox }}>✗ {connectErr}</div>)}
             {status?.connected && (
               <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <div style={{ fontSize: 12, color: 'var(--good)', ...mono }}>✓ Connected to {status.url} — {status.models.length} model{status.models.length !== 1 ? 's' : ''} installed</div>
-                <button onClick={async () => { await fetch('/api/ai/disconnect', { method: 'DELETE' }); await fetchAll() }} style={{ fontSize: 11, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', ...mono, background: 'transparent', color: 'var(--crit)', border: '1px solid rgba(239,68,68,0.3)' }}>disconnect</button>
+                <div style={{ fontSize: 14, color: 'var(--good)' }}>✓ Connected to {status.url} — {status.models.length} model{status.models.length !== 1 ? 's' : ''} installed</div>
+                <button onClick={async () => { await fetch('/api/ai/disconnect', { method: 'DELETE' }); await fetchAll() }} style={{ fontSize: 13, padding: '6px 14px', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: 'var(--crit)', border: '1px solid var(--crit)' }}>disconnect</button>
               </div>
             )}
           </div>
-          <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: '1.25rem', opacity: 0.6 }}>
+          <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 10, padding: '1.5rem', opacity: 0.6 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
-                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-bright)', marginBottom: 4 }}>Deploy managed Ollama</div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>HyperProx creates a dedicated Ollama LXC on your cluster automatically.</div>
+                <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-bright)', marginBottom: 4 }}>Deploy managed Ollama</div>
+                <div style={{ fontSize: 14, color: 'var(--text-soft)' }}>HyperProx creates a dedicated Ollama LXC on your cluster automatically.</div>
               </div>
               <span style={badge('var(--text-dimmer)')}>v1.0</span>
             </div>

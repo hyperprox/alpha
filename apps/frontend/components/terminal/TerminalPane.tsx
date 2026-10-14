@@ -212,7 +212,7 @@ export function TerminalPane({ host, hostId, port, session, tmux = true, attempt
       </div>
       {fatal && (
         <div
-          className="absolute left-4 right-4 bottom-4 rounded border px-3 py-2 font-mono text-xs whitespace-pre-wrap"
+          className="absolute left-4 right-4 bottom-4 rounded-md border px-3 py-2 text-[13px] whitespace-pre-wrap"
           style={{ background: 'var(--ground)', borderColor: 'var(--crit)', color: 'var(--crit-soft)' }}
           role="alert"
         >

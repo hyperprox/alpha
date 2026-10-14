@@ -162,7 +162,7 @@ function VMPanel({ vm, nodes, onClose, onRefresh }: {
     finally { setActing(false) }
   }
 
-  const INPUT = { background:'var(--ground-deep)', border:'1px solid var(--text-faint)', color:'var(--text-bright)', borderRadius:6, padding:'6px 10px', fontFamily:'IBM Plex Mono,monospace', fontSize:11, outline:'none' } as React.CSSProperties
+  const INPUT = { background:'var(--ground-deep)', border:'1px solid var(--border-strong)', color:'var(--text-bright)', borderRadius:6, padding:'0 12px', height:40, fontFamily:'inherit', fontSize:14, outline:'none' } as React.CSSProperties
   const isRunning = vm.status === 'running'
 
   return (
@@ -173,7 +173,7 @@ function VMPanel({ vm, nodes, onClose, onRefresh }: {
         <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor:'var(--border-dim)' }}>
           <div className="flex items-center gap-3">
             <div className="w-2 h-2 rounded-full" style={{ background: STATUS_COLOR[vm.status]??'var(--text-dimmer)', boxShadow:`0 0 5px ${STATUS_COLOR[vm.status]??'var(--text-dimmer)'}` }}/>
-            <span className="font-display font-semibold uppercase" style={{ color:'var(--accent)', fontSize:15 }}>{vm.name}</span>
+            <span className="font-display font-semibold" style={{ color:'var(--text-bright)', fontSize:20 }}>{vm.name}</span>
             <Badge label={vm.type.toUpperCase()} color={vm.type==='lxc'?'var(--accent)':'var(--violet)'}/>
             <Badge label={`CT/VM ${vm.vmid}`} color="var(--text-dimmer)"/>
             <Badge label={vm.node} color="var(--text-muted)"/>
@@ -184,7 +184,7 @@ function VMPanel({ vm, nodes, onClose, onRefresh }: {
         {/* Tabs */}
         <div className="flex border-b" style={{ borderColor:'var(--border-dim)' }}>
           {(['overview','snapshots','migrate','config'] as const).map(t=>(
-            <button key={t} onClick={()=>setTab(t)} className="px-4 py-2.5 text-xs font-mono uppercase tracking-wider capitalize transition-colors"
+            <button key={t} onClick={()=>setTab(t)} className="px-4 py-2.5 text-sm font-medium capitalize transition-colors"
               style={{ borderBottom: tab===t?'2px solid var(--accent)':'2px solid transparent', color: tab===t?'var(--accent)':'var(--text-dim)', background:'transparent' }}>
               {t}
             </button>
@@ -196,7 +196,7 @@ function VMPanel({ vm, nodes, onClose, onRefresh }: {
 
           {/* Status/error bar */}
           {(status||error) && (
-            <div className="mb-4 px-3 py-2 rounded text-xs font-mono" style={{
+            <div className="mb-4 px-3 py-2 rounded text-sm" style={{
               background: error?'color-mix(in srgb, var(--crit-2) 6%, transparent)':'color-mix(in srgb, var(--good) 6%, transparent)',
               color:      error?'var(--crit-soft)':'var(--good)',
               border:     `1px solid ${error?'color-mix(in srgb, var(--crit-2) 19%, transparent)':'color-mix(in srgb, var(--good) 19%, transparent)'}`,
@@ -216,7 +216,7 @@ function VMPanel({ vm, nodes, onClose, onRefresh }: {
                   {label:'HA',      value:vm.hastate??'none',                color:vm.hastate==='started'?'var(--good)':vm.hastate?'var(--warn-2)':'var(--text-dimmer)'},
                 ].map(({label,value,color})=>(
                   <div key={label} className="p-3 rounded" style={{background:'var(--ground-deep)',border:'1px solid var(--border-dim)'}}>
-                    <div className="text-xs font-mono text-gray-500 mb-1">{label}</div>
+                    <div className="text-xs mb-1" style={{color:'var(--text-dimmer)'}}>{label}</div>
                     <div className="text-xs font-mono font-semibold" style={{color}}>{value}</div>
                   </div>
                 ))}
@@ -224,7 +224,7 @@ function VMPanel({ vm, nodes, onClose, onRefresh }: {
 
               {/* Power actions */}
               <div>
-                <div className="text-xs font-mono text-gray-500 uppercase tracking-wider mb-2">Power</div>
+                <div className="text-xs font-mono uppercase mb-2" style={{color:'var(--text-dimmer)',letterSpacing:'0.14em'}}>Power</div>
                 <div className="flex gap-2 flex-wrap">
                   {!isRunning && (
                     <ActionBtn label="Start"    color="var(--good)" onClick={()=>doAction('start')}    disabled={acting}/>
@@ -243,7 +243,7 @@ function VMPanel({ vm, nodes, onClose, onRefresh }: {
               {/* HA actions */}
               {vm.hastate !== undefined && (
                 <div>
-                  <div className="text-xs font-mono text-gray-500 uppercase tracking-wider mb-2">HA State</div>
+                  <div className="text-xs font-mono uppercase mb-2" style={{color:'var(--text-dimmer)',letterSpacing:'0.14em'}}>HA State</div>
                   <div className="flex gap-2">
                     <ActionBtn label="Start HA"   color="var(--good)" onClick={()=>setHAState('started')}  disabled={acting||vm.hastate==='started'}/>
                     <ActionBtn label="Stop HA"    color="var(--warn-2)" onClick={()=>setHAState('stopped')}  disabled={acting||vm.hastate==='stopped'}/>
@@ -254,7 +254,7 @@ function VMPanel({ vm, nodes, onClose, onRefresh }: {
 
               {/* Quick snapshot */}
               <div>
-                <div className="text-xs font-mono text-gray-500 uppercase tracking-wider mb-2">Quick Snapshot</div>
+                <div className="text-xs font-mono uppercase mb-2" style={{color:'var(--text-dimmer)',letterSpacing:'0.14em'}}>Quick Snapshot</div>
                 <div className="flex gap-2">
                   <input style={{...INPUT, flex:1}} value={snapName} placeholder="snapshot-name"
                     onChange={e=>setSnapName(e.target.value)}
@@ -264,17 +264,17 @@ function VMPanel({ vm, nodes, onClose, onRefresh }: {
               </div>
               {/* Danger zone */}
               <div className="mt-2 pt-3" style={{borderTop:'1px solid var(--text-faint)'}}>
-                <div className="text-xs font-mono text-gray-500 uppercase tracking-wider mb-2">Danger Zone</div>
+                <div className="text-xs font-mono uppercase mb-2" style={{color:'var(--text-dimmer)',letterSpacing:'0.14em'}}>Danger Zone</div>
                 {!confirmDelete ? (
                   <ActionBtn label={`Delete ${vm.type.toUpperCase()}`} color="var(--crit-2)" onClick={()=>setConfirmDelete(true)} disabled={acting||isRunning}/>
                 ) : (
                   <div className="flex items-center gap-2 p-2 rounded" style={{background:'color-mix(in srgb, var(--crit-2) 8%, transparent)',border:'1px solid color-mix(in srgb, var(--crit-2) 19%, transparent)'}}>
-                    <span className="text-xs font-mono text-red-400 flex-1">Delete {vm.name} ({vm.vmid})? This cannot be undone.</span>
+                    <span className="text-sm flex-1" style={{color:'var(--crit-soft)'}}>Delete {vm.name} ({vm.vmid})? This cannot be undone.</span>
                     <ActionBtn label="Confirm" color="var(--crit-2)" onClick={deleteVM} disabled={acting}/>
                     <ActionBtn label="Cancel" color="var(--text-dimmer)" onClick={()=>setConfirmDelete(false)} disabled={acting}/>
                   </div>
                 )}
-                {isRunning && <div className="text-xs font-mono text-gray-600 mt-1">Stop the {vm.type.toUpperCase()} before deleting</div>}
+                {isRunning && <div className="text-xs mt-1" style={{color:'var(--text-dimmer)'}}>Stop the {vm.type.toUpperCase()} before deleting</div>}
               </div>
             </div>
           )}
@@ -288,13 +288,13 @@ function VMPanel({ vm, nodes, onClose, onRefresh }: {
                 <ActionBtn label="Create" color="var(--accent)" onClick={createSnapshot} disabled={acting||!snapName.trim()}/>
               </div>
               {snapshots.length === 0 ? (
-                <div className="text-xs font-mono text-gray-600 text-center py-4">No snapshots</div>
+                <div className="text-sm text-center py-4" style={{color:'var(--text-dimmer)'}}>No snapshots</div>
               ) : snapshots.filter(s=>s.name!=='current').map(snap=>(
                 <div key={snap.name} className="flex items-center gap-3 p-3 rounded" style={{background:'var(--ground-deep)',border:'1px solid var(--border-dim)'}}>
                   <div className="flex-1 min-w-0">
-                    <div className="text-xs font-mono text-white">{snap.name}</div>
-                    {snap.description&&<div className="text-xs font-mono text-gray-600 truncate">{snap.description}</div>}
-                    <div className="text-xs font-mono text-gray-700">{snap.snaptime?new Date(snap.snaptime*1000).toLocaleString():''}</div>
+                    <div className="text-sm font-mono" style={{color:'var(--text-bright)'}}>{snap.name}</div>
+                    {snap.description&&<div className="text-xs truncate" style={{color:'var(--text-dimmer)'}}>{snap.description}</div>}
+                    <div className="text-xs" style={{color:'var(--text-faint)'}}>{snap.snaptime?new Date(snap.snaptime*1000).toLocaleString():''}</div>
                   </div>
                   <div className="flex gap-1">
                     <ActionBtn label="Rollback" color="var(--warn-2)" onClick={()=>rollbackSnapshot(snap.name)} disabled={acting}/>
@@ -309,7 +309,7 @@ function VMPanel({ vm, nodes, onClose, onRefresh }: {
           {tab === 'migrate' && (
             <div className="space-y-4">
               <div>
-                <div className="text-xs font-mono text-gray-500 mb-2">Target Node</div>
+                <div className="text-sm mb-2" style={{color:'var(--text-muted)'}}>Target Node</div>
                 <select style={{...INPUT,width:'100%',cursor:'pointer'}} value={migrTarget} onChange={e=>setMigrTarget(e.target.value)}>
                   <option value="">Select target node...</option>
                   {nodes.filter(n=>n.node!==vm.node&&n.status==='online').map(n=>(
@@ -317,7 +317,7 @@ function VMPanel({ vm, nodes, onClose, onRefresh }: {
                   ))}
                 </select>
               </div>
-              <div className="p-3 rounded text-xs font-mono" style={{background:'color-mix(in srgb, var(--warn-2) 6%, transparent)',border:'1px solid color-mix(in srgb, var(--warn-2) 15%, transparent)',color:'var(--warn)'}}>
+              <div className="p-3 rounded text-sm" style={{background:'color-mix(in srgb, var(--warn) 10%, transparent)',border:'1px solid color-mix(in srgb, var(--warn) 35%, transparent)',color:'var(--warn-2)'}}>
                 {vm.type==='qemu'?'Live migration — VM will continue running during migration.':'CT migration requires the container to be stopped first.'}
               </div>
               <ActionBtn label={`Migrate to ${migrTarget||'...'}`} color="var(--accent)" onClick={migrate} disabled={acting||!migrTarget}/>
@@ -328,11 +328,11 @@ function VMPanel({ vm, nodes, onClose, onRefresh }: {
           {tab === 'config' && (
             <div>
               {config ? (
-                <pre className="text-xs font-mono text-gray-400 overflow-auto" style={{maxHeight:300}}>
+                <pre className="text-xs font-mono overflow-auto" style={{color:'var(--text-muted)', maxHeight:300}}>
                   {JSON.stringify(config,null,2)}
                 </pre>
               ) : (
-                <div className="text-xs font-mono text-gray-600 animate-pulse">Loading config...</div>
+                <div className="text-sm animate-pulse" style={{color:'var(--text-dimmer)'}}>Loading config...</div>
               )}
             </div>
           )}
@@ -344,7 +344,7 @@ function VMPanel({ vm, nodes, onClose, onRefresh }: {
 
 function ActionBtn({ label, color, onClick, disabled }: { label:string; color:string; onClick:()=>void; disabled?:boolean }) {
   return (
-    <button onClick={onClick} disabled={disabled} className="px-3 py-1.5 rounded text-xs font-mono transition-all" style={{
+    <button onClick={onClick} disabled={disabled} className="px-3 py-1.5 rounded-md text-sm font-medium transition-all" style={{
       background: disabled?'var(--text-faint)':`${alpha(color, 8)}`,
       color:      disabled?'var(--text-dimmer)':color,
       border:     `1px solid ${disabled?'var(--text-faint)':`${alpha(color, 19)}`}`,
@@ -526,25 +526,25 @@ export default function InfrastructurePage() {
 
   const running = vms.filter(v=>v.status==='running').length
 
-  const FIELD = {background:'var(--surface)',border:'1px solid var(--text-faint)',color:'var(--text-bright)',borderRadius:6,padding:'6px 10px',fontSize:12,fontFamily:'monospace',width:'100%',outline:'none'}
+  const FIELD = {background:'var(--ground-deep)',border:'1px solid var(--border-strong)',color:'var(--text-bright)',borderRadius:6,padding:'0 12px',height:40,fontSize:14,fontFamily:'inherit',width:'100%',outline:'none'}
   const SELECT = {...FIELD}
 
   return (
-    <div className="min-h-full p-3 sm:p-6" style={{background:'var(--ground)'}}>
+    <div className="min-h-full p-4 sm:p-8" style={{background:'var(--ground)'}}>
       {/* Create Modal */}
       {showCreate && (
         <div className="fixed inset-0 z-50 flex items-center justify-center" style={{background:'rgba(0,0,0,0.8)',paddingLeft:'220px'}}>
-          <div className="rounded-xl border p-6" style={{background:'var(--surface)',borderColor:'var(--text-faint)',maxHeight:'90vh',overflowY:'auto',width:'100%',maxWidth:'480px'}}>
+          <div className="rounded-xl border p-6" style={{background:'var(--surface)',borderColor:'var(--border-soft)',maxHeight:'90vh',overflowY:'auto',width:'100%',maxWidth:'480px'}}>
             <div className="flex items-center justify-between mb-5">
               <div className="flex items-center gap-3">
                 <div className="w-1 h-5 rounded-full" style={{background: createType==='lxc'?'var(--accent)':'var(--violet)'}}/>
-                <h2 className="font-display font-semibold uppercase tracking-wide whitespace-nowrap" style={{color: createType==='lxc'?'var(--accent)':'var(--violet)'}}>{createType === 'lxc' ? 'Create LXC Container' : 'Create Virtual Machine'}</h2>
+                <h2 className="font-display font-semibold text-xl whitespace-nowrap" style={{color: createType==='lxc'?'var(--accent)':'var(--violet)'}}>{createType === 'lxc' ? 'Create LXC Container' : 'Create Virtual Machine'}</h2>
               </div>
               <button onClick={()=>setShowCreate(false)} style={{color:'var(--text-dim)',fontSize:18}}>✕</button>
             </div>
 
             {nodeLoading && (
-              <div className="flex items-center gap-2 px-3 py-2 rounded mb-2 text-xs font-mono" style={{background:'color-mix(in srgb, var(--accent) 3%, transparent)',border:'1px solid color-mix(in srgb, var(--accent) 13%, transparent)',color:'var(--accent)'}}>
+              <div className="flex items-center gap-2 px-3 py-2 rounded mb-2 text-sm" style={{background:'color-mix(in srgb, var(--accent) 3%, transparent)',border:'1px solid color-mix(in srgb, var(--accent) 13%, transparent)',color:'var(--accent)'}}>
                 <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" strokeOpacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" /></svg>
                 Scanning node for available resources...
               </div>
@@ -552,7 +552,7 @@ export default function InfrastructurePage() {
             <div className="grid gap-3" style={{opacity: nodeLoading ? 0.4 : 1, pointerEvents: nodeLoading ? 'none' : 'auto', transition:'opacity 0.2s'}}>
               {/* Node */}
               <div>
-                <label className="text-xs font-mono text-gray-500 mb-1 block">Node</label>
+                <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>Node</label>
                 <select style={SELECT} value={createForm.node} onChange={e=>{ setCreateForm(f=>({...f,node:e.target.value})); loadNodeData(e.target.value) }}>
                   {nodes.map(n=><option key={n.node} value={n.node}>{n.node}</option>)}
                 </select>
@@ -560,13 +560,13 @@ export default function InfrastructurePage() {
 
               {/* VM ID */}
               <div>
-                <label className="text-xs font-mono text-gray-500 mb-1 block">VM ID</label>
+                <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>VM ID</label>
                 <input style={FIELD} value={createForm.vmid} onChange={e=>setCreateForm(f=>({...f,vmid:e.target.value}))} placeholder="100"/>
               </div>
 
               {/* Hostname / Name */}
               <div>
-                <label className="text-xs font-mono text-gray-500 mb-1 block">{createType==='lxc'?'Hostname':'Name'}</label>
+                <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>{createType==='lxc'?'Hostname':'Name'}</label>
                 <input style={FIELD}
                   value={createType==='lxc'?createForm.hostname:createForm.name}
                   onChange={e=>setCreateForm(f=>createType==='lxc'?{...f,hostname:e.target.value}:{...f,name:e.target.value})}
@@ -576,7 +576,7 @@ export default function InfrastructurePage() {
               {/* Template (LXC) or ISO (VM) */}
               {createType === 'lxc' ? (
                 <div>
-                  <label className="text-xs font-mono text-gray-500 mb-1 block">Template</label>
+                  <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>Template</label>
                   <select style={SELECT} value={createForm.ostemplate} onChange={e=>setCreateForm(f=>({...f,ostemplate:e.target.value}))}>
                     <option value="">— select template —</option>
                     {templates.map(t=><option key={t.volid} value={t.volid}>{t.name}</option>)}
@@ -585,14 +585,14 @@ export default function InfrastructurePage() {
               ) : (
                 <>
                   <div>
-                    <label className="text-xs font-mono text-gray-500 mb-1 block">ISO (optional)</label>
+                    <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>ISO (optional)</label>
                     <select style={SELECT} value={createForm.iso} onChange={e=>setCreateForm(f=>({...f,iso:e.target.value}))}>
                       <option value="">— no ISO / boot from disk —</option>
                       {isos.map(i=><option key={i.volid} value={i.volid}>{i.name} ({i.storage})</option>)}
                     </select>
                   </div>
                   <div>
-                    <label className="text-xs font-mono text-gray-500 mb-1 block">Network (net0)</label>
+                    <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>Network (net0)</label>
                     <input style={FIELD} value={createForm.net0} onChange={e=>setCreateForm(f=>({...f,net0:e.target.value}))}/>
                   </div>
                 </>
@@ -601,15 +601,15 @@ export default function InfrastructurePage() {
               {/* Resources row */}
               <div className="grid grid-cols-3 gap-2">
                 <div>
-                  <label className="text-xs font-mono text-gray-500 mb-1 block">Cores {nodeSpec ? <span style={{color:'var(--text-dim)'}}>/ {nodeSpec.cpus} max</span> : ''}</label>
+                  <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>Cores {nodeSpec ? <span style={{color:'var(--text-dim)'}}>/ {nodeSpec.cpus} max</span> : ''}</label>
                   <input style={FIELD} type="number" min="1" max={nodeSpec?.cpus ?? 999} value={createForm.cores} onChange={e=>setCreateForm(f=>({...f,cores:e.target.value}))}/>
                 </div>
                 <div>
-                  <label className="text-xs font-mono text-gray-500 mb-1 block">RAM (MB) {nodeSpec ? <span style={{color:'var(--text-dim)'}}>/ {Math.round(nodeSpec.maxmem/1048576/1024)}GB ({Math.round(nodeSpec.maxmem/1048576)}MB) max</span> : ''}</label>
+                  <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>RAM (MB) {nodeSpec ? <span style={{color:'var(--text-dim)'}}>/ {Math.round(nodeSpec.maxmem/1048576/1024)}GB ({Math.round(nodeSpec.maxmem/1048576)}MB) max</span> : ''}</label>
                   <input style={FIELD} type="number" min="64" max={nodeSpec ? Math.round(nodeSpec.maxmem/1048576) : 999999} value={createForm.memory} onChange={e=>setCreateForm(f=>({...f,memory:e.target.value}))}/>
                 </div>
                 <div>
-                  <label className="text-xs font-mono text-gray-500 mb-1 block">{createType==='lxc'?'Swap (MB)':'Disk (GB)'}</label>
+                  <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>{createType==='lxc'?'Swap (MB)':'Disk (GB)'}</label>
                   <input style={FIELD} type="number" min="0"
                     value={createType==='lxc'?createForm.swap:createForm.disk_size}
                     onChange={e=>setCreateForm(f=>createType==='lxc'?{...f,swap:e.target.value}:{...f,disk_size:e.target.value})}/>
@@ -618,7 +618,7 @@ export default function InfrastructurePage() {
 
               {/* Storage */}
               <div>
-                <label className="text-xs font-mono text-gray-500 mb-1 block">{createType==='lxc'?'Root Disk Storage':'Storage'}</label>
+                <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>{createType==='lxc'?'Root Disk Storage':'Storage'}</label>
                 <select style={SELECT} value={createForm.storage} onChange={e=>setCreateForm(f=>({...f,storage:e.target.value}))}>
                   {nodeStorages.length === 0 && <option value="">Loading storage...</option>}
                   {nodeStorages.map(s => {
@@ -633,26 +633,26 @@ export default function InfrastructurePage() {
                 <>
                   {/* Disk size */}
                   <div>
-                    <label className="text-xs font-mono text-gray-500 mb-1 block">Root Disk Size (GB)</label>
+                    <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>Root Disk Size (GB)</label>
                     <input style={FIELD} type="number" min="1" value={createForm.rootfs_size} onChange={e=>setCreateForm(f=>({...f,rootfs_size:e.target.value}))}/>
                   </div>
                   {/* Network */}
                   <div>
-                    <label className="text-xs font-mono text-gray-500 mb-1 block">Network (net0)</label>
+                    <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>Network (net0)</label>
                     <input style={FIELD} value={createForm.net0} onChange={e=>setCreateForm(f=>({...f,net0:e.target.value}))}/>
                   </div>
                   {/* Password */}
                   <div>
-                    <label className="text-xs font-mono text-gray-500 mb-1 block">Root Password</label>
+                    <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>Root Password</label>
                     <input style={FIELD} type="password" value={createForm.password} onChange={e=>setCreateForm(f=>({...f,password:e.target.value}))} placeholder="optional"/>
                   </div>
                   {/* Options */}
                   <div className="flex gap-4">
-                    <label className="flex items-center gap-2 text-xs font-mono text-gray-400 cursor-pointer">
+                    <label className="flex items-center gap-2 text-sm cursor-pointer" style={{color:'var(--text-muted)'}}>
                       <input type="checkbox" checked={createForm.unprivileged} onChange={e=>setCreateForm(f=>({...f,unprivileged:e.target.checked}))}/>
                       Unprivileged
                     </label>
-                    <label className="flex items-center gap-2 text-xs font-mono text-gray-400 cursor-pointer">
+                    <label className="flex items-center gap-2 text-sm cursor-pointer" style={{color:'var(--text-muted)'}}>
                       <input type="checkbox" checked={createForm.start} onChange={e=>setCreateForm(f=>({...f,start:e.target.checked}))}/>
                       Start after create
                     </label>
@@ -662,7 +662,7 @@ export default function InfrastructurePage() {
 
               {createType === 'qemu' && (
                 <div className="flex gap-4">
-                  <label className="flex items-center gap-2 text-xs font-mono text-gray-400 cursor-pointer">
+                  <label className="flex items-center gap-2 text-sm cursor-pointer" style={{color:'var(--text-muted)'}}>
                     <input type="checkbox" checked={createForm.start} onChange={e=>setCreateForm(f=>({...f,start:e.target.checked}))}/>
                     Start after create
                   </label>
@@ -670,13 +670,13 @@ export default function InfrastructurePage() {
               )}
 
               {/* Error / Success */}
-              {createError && <div className="text-xs font-mono px-3 py-2 rounded" style={{background:'color-mix(in srgb, var(--crit) 8%, transparent)',border:'1px solid color-mix(in srgb, var(--crit) 19%, transparent)',color:'var(--crit)'}}>{createError}</div>}
-              {createSuccess && <div className="text-xs font-mono px-3 py-2 rounded" style={{background:'color-mix(in srgb, var(--good) 8%, transparent)',border:'1px solid color-mix(in srgb, var(--good) 19%, transparent)',color:'var(--good)'}}>{createSuccess}</div>}
+              {createError && <div className="text-sm px-3 py-2 rounded" style={{background:'color-mix(in srgb, var(--crit) 8%, transparent)',border:'1px solid color-mix(in srgb, var(--crit) 19%, transparent)',color:'var(--crit)'}}>{createError}</div>}
+              {createSuccess && <div className="text-sm px-3 py-2 rounded" style={{background:'color-mix(in srgb, var(--good) 8%, transparent)',border:'1px solid color-mix(in srgb, var(--good) 19%, transparent)',color:'var(--good)'}}>{createSuccess}</div>}
             </div>
             <div className="flex justify-end gap-2 mt-5">
-              <button onClick={()=>setShowCreate(false)} className="px-4 py-2 rounded text-xs font-mono" style={{background:'var(--text-faint)',color:'var(--text-soft)'}}>Cancel</button>
-              <button onClick={submitCreate} disabled={creating} className="px-4 py-2 rounded text-xs font-mono transition-all"
-                style={{background: createType==='lxc'?'color-mix(in srgb, var(--accent) 13%, transparent)':'color-mix(in srgb, var(--violet) 13%, transparent)', border:`1px solid ${createType==='lxc'?'color-mix(in srgb, var(--accent) 25%, transparent)':'color-mix(in srgb, var(--violet) 25%, transparent)'}`, color: createType==='lxc'?'var(--accent)':'var(--violet)', opacity: creating?0.5:1}}>
+              <button onClick={()=>setShowCreate(false)} className="px-4 rounded-md text-sm font-medium" style={{height:40,background:'transparent',border:'1px solid var(--border-strong)',color:'var(--text)'}}>Cancel</button>
+              <button onClick={submitCreate} disabled={creating} className="px-5 rounded-md text-sm font-semibold transition-all"
+                style={{height:40,background: createType==='lxc'?'var(--accent)':'var(--violet)', border:'none', color:'var(--accent-ink)', opacity: creating?0.5:1}}>
                 {creating ? 'Creating...' : `Create ${createType.toUpperCase()}`}
               </button>
             </div>
@@ -685,23 +685,23 @@ export default function InfrastructurePage() {
       )}
 
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-3">
-          <div className="w-1 h-6 rounded-full" style={{background:'var(--accent)',boxShadow:'0 0 8px var(--accent)'}}/>
-          <h1 className="font-display text-2xl font-semibold tracking-wide uppercase" style={{color:'var(--accent)'}}>Infrastructure</h1>
+      <div className="flex items-end justify-between flex-wrap gap-4 mb-8">
+        <div>
+          <div className="font-mono uppercase" style={{fontSize:12,letterSpacing:'0.14em',color:'var(--accent)'}}>Compute</div>
+          <h1 className="font-display font-bold mt-2" style={{fontSize:36,lineHeight:1.1,color:'var(--text-bright)'}}>Infrastructure</h1>
         </div>
-        <div className="flex items-center gap-3">
-          {lastSync && <span className="text-xs font-mono text-gray-600">synced {lastSync.toLocaleTimeString()}</span>}
+        <div className="flex items-center gap-3 flex-wrap">
+          {lastSync && <span className="text-sm" style={{color:'var(--text-dimmer)'}}>synced {lastSync.toLocaleTimeString()}</span>}
           <div className="flex items-center gap-1.5 px-2 py-1 rounded text-xs font-mono" style={{background:'color-mix(in srgb, var(--good) 6%, transparent)',border:'1px solid color-mix(in srgb, var(--good) 19%, transparent)'}}>
             <span style={{color:'var(--good)'}}>{running}</span>
-            <span className="text-gray-600">running</span>
+            <span style={{color:'var(--text-dimmer)'}}>running</span>
           </div>
           <div className="flex items-center gap-1.5 px-2 py-1 rounded text-xs font-mono" style={{background:'var(--text-dimmer)',border:'1px solid var(--text-faint)'}}>
-            <span className="text-gray-400">{vms.length}</span>
-            <span className="text-gray-600">total</span>
+            <span style={{color:'var(--text-muted)'}}>{vms.length}</span>
+            <span style={{color:'var(--text-dimmer)'}}>total</span>
           </div>
-          <button onClick={()=>openCreate('lxc')} className="px-3 py-1.5 rounded text-xs font-mono transition-all" style={{background:'color-mix(in srgb, var(--accent) 8%, transparent)',border:'1px solid color-mix(in srgb, var(--accent) 25%, transparent)',color:'var(--accent)'}}>+ LXC</button>
-          <button onClick={()=>openCreate('qemu')} className="px-3 py-1.5 rounded text-xs font-mono transition-all" style={{background:'color-mix(in srgb, var(--violet) 8%, transparent)',border:'1px solid color-mix(in srgb, var(--violet) 25%, transparent)',color:'var(--violet)'}}>+ VM</button>
+          <button onClick={()=>openCreate('lxc')} className="px-4 rounded-md text-sm font-semibold transition-all" style={{height:40,background:'var(--accent)',border:'none',color:'var(--accent-ink)'}}>+ LXC</button>
+          <button onClick={()=>openCreate('qemu')} className="px-4 rounded-md text-sm font-semibold transition-all" style={{height:40,background:'transparent',border:'1px solid var(--violet)',color:'var(--violet)'}}>+ VM</button>
         </div>
       </div>
 
@@ -719,7 +719,7 @@ export default function InfrastructurePage() {
               style={{background:isActive?`${alpha(accent, 8)}`:'var(--surface)',borderColor:isActive?`${alpha(accent, 25)}`:`${alpha(accent, 13)}`}}>
               <div className="flex items-center gap-2 mb-2">
                 <div className="w-1.5 h-1.5 rounded-full" style={{background:accent,boxShadow:`0 0 4px ${accent}`}}/>
-                <span className="font-display font-semibold uppercase text-xs" style={{color:accent}}>{node.node}</span>
+                <span className="font-display font-semibold text-base" style={{color:accent}}>{node.node}</span>
                 {isGpu&&<span className="font-mono" style={{fontSize:8,background:'color-mix(in srgb, var(--violet) 13%, transparent)',color:'var(--violet)',border:'1px solid color-mix(in srgb, var(--violet) 25%, transparent)',padding:'0 4px',borderRadius:3}}>GPU</span>}
               </div>
               <div className="flex gap-2 text-xs font-mono items-baseline">
@@ -743,7 +743,7 @@ export default function InfrastructurePage() {
       <div className="flex items-center gap-3 mb-4 flex-wrap">
         <div className="flex gap-1">
           {(['all','running','stopped','lxc','qemu'] as const).map(f=>(
-            <button key={f} onClick={()=>setFilter(f)} className="text-xs font-mono px-3 py-1.5 rounded capitalize" style={{
+            <button key={f} onClick={()=>setFilter(f)} className="text-sm px-3 py-1.5 rounded-md capitalize" style={{
               background: filter===f?'color-mix(in srgb, var(--accent) 8%, transparent)':'transparent',
               color:      filter===f?'var(--accent)':'var(--text-dim)',
               border:     `1px solid ${filter===f?'color-mix(in srgb, var(--accent) 19%, transparent)':'var(--text-faint)'}`,
@@ -751,14 +751,14 @@ export default function InfrastructurePage() {
           ))}
         </div>
         <input type="text" placeholder="Search name or ID..." value={search} onChange={e=>setSearch(e.target.value)}
-          className="ml-auto text-xs font-mono px-3 py-1.5 rounded outline-none w-48"
-          style={{background:'var(--surface)',border:'1px solid var(--text-faint)',color:'var(--text-soft)',caretColor:'var(--accent)'}}/>
-        <span className="text-xs font-mono text-gray-600">{filtered.length} shown</span>
+          className="ml-auto text-sm px-3 rounded-md outline-none w-56"
+          style={{height:40,background:'var(--ground-deep)',border:'1px solid var(--border-strong)',color:'var(--text-bright)',caretColor:'var(--accent)'}}/>
+        <span className="text-sm" style={{color:'var(--text-dimmer)'}}>{filtered.length} shown</span>
       </div>
 
       {/* VM Grid */}
       {loading ? (
-        <div className="text-xs font-mono text-gray-600 animate-pulse">Loading infrastructure...</div>
+        <div className="text-sm animate-pulse" style={{color:'var(--text-dimmer)'}}>Loading infrastructure...</div>
       ) : (
         <div className="grid gap-2">
           {/* VM Cards grid */}
@@ -775,9 +775,9 @@ export default function InfrastructurePage() {
 
               return (
                 <div key={`${vm.node}-${vm.vmid}`}
-                  className="rounded-xl border p-4 cursor-pointer flex flex-col gap-3 transition-all duration-150"
+                  className="rounded-lg border p-5 cursor-pointer flex flex-col gap-3 transition-all duration-150"
                   style={{
-                    background:   'linear-gradient(135deg, var(--surface) 0%, var(--ground) 100%)',
+                    background:   'var(--surface)',
                     borderColor:  isRunning ? `${alpha(typeColor, 19)}` : 'var(--border-dim)',
                     boxShadow:    isRunning ? `0 0 12px ${alpha(typeColor, 2)}` : 'none',
                   }}
@@ -792,7 +792,7 @@ export default function InfrastructurePage() {
                         background: statusColor,
                         boxShadow:  isRunning ? `0 0 6px ${statusColor}` : 'none',
                       }}/>
-                      <span className="font-mono text-sm font-bold text-white truncate">{vm.name}</span>
+                      <span className="font-display text-lg font-semibold truncate" style={{color:'var(--text-bright)'}}>{vm.name}</span>
                     </div>
                     <div className="flex items-center gap-1.5 flex-shrink-0 ml-2">
                       {isGpu && <span className="font-mono px-1.5 py-0.5 rounded" style={{fontSize:8,background:'color-mix(in srgb, var(--violet) 13%, transparent)',color:'var(--violet)',border:'1px solid color-mix(in srgb, var(--violet) 25%, transparent)'}}>GPU</span>}
@@ -802,13 +802,13 @@ export default function InfrastructurePage() {
                   </div>
 
                   {/* Meta row */}
-                  <div className="flex items-center gap-3 text-xs font-mono text-gray-500">
+                  <div className="flex items-center gap-3 text-xs font-mono" style={{color:'var(--text-dimmer)'}}>
                     <span>#{vm.vmid}</span>
                     <span style={{color:'var(--text-dimmer)'}}>·</span>
                     <span style={{color: gpuNodes.includes(vm.node)?'var(--violet)':'var(--text-dim)'}}>{vm.node}</span>
                     {vm.uptime > 0 && <>
                       <span style={{color:'var(--text-dimmer)'}}>·</span>
-                      <span className="text-gray-600">{formatUptime(vm.uptime)}</span>
+                      <span style={{color:'var(--text-dimmer)'}}>{formatUptime(vm.uptime)}</span>
                     </>}
                   </div>
 
@@ -861,7 +861,7 @@ export default function InfrastructurePage() {
 
                   {/* Stopped state */}
                   {!isRunning && (
-                    <div className="text-xs font-mono text-gray-700">
+                    <div className="text-sm" style={{color:'var(--text-dimmer)'}}>
                       {formatBytes(vm.maxdisk)} disk · {vm.cpus} cores · {formatBytes(vm.maxmem)} RAM
                     </div>
                   )}
@@ -884,7 +884,7 @@ export default function InfrastructurePage() {
                       }} disabled={isActing}/>
                     )}
                     <button
-                      className="ml-auto px-2.5 py-1 rounded text-xs font-mono transition-all"
+                      className="ml-auto px-2.5 py-1 rounded-md text-sm transition-all"
                       style={{background:`${alpha(typeColor, 6)}`,color:`${alpha(typeColor, 50)}`,border:`1px solid ${alpha(typeColor, 13)}`}}
                       onClick={e=>{e.stopPropagation();setSelected(vm)}}
                     >Details →</button>

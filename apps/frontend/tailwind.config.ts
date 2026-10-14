@@ -15,6 +15,8 @@ const config: Config = {
         // Dark backgrounds
         base:  { DEFAULT: '#0a111c', 900: '#0a111c', 800: '#0d1624', 700: '#0f1b2b' },
       },
+      // The install-wizard look: 6 px on controls, 10 px on cards.
+      borderRadius: { DEFAULT: '6px', sm: '4px', md: '6px', lg: '10px', xl: '12px' },
       fontFamily: {
         display: ['Barlow Condensed', 'sans-serif'],
         sans:    ['Barlow', 'system-ui', 'sans-serif'],

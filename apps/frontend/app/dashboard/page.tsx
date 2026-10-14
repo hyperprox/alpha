@@ -56,12 +56,12 @@ function Panel({ title, accent = ACCENT, right, children, className = '' }: {
   title: string; accent?: string; right?: React.ReactNode; children: React.ReactNode; className?: string
 }) {
   return (
-    <div className={`rounded-xl border p-5 ${className}`}
-      style={{ background:'linear-gradient(150deg,var(--surface),var(--ground) 60%)', borderColor:`${alpha(accent, 15)}` }}>
+    <div className={`rounded-lg border p-5 sm:p-6 ${className}`}
+      style={{ background:'var(--surface)', borderColor:'var(--border-soft)' }}>
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2 min-w-0">
           <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background:accent, boxShadow:`0 0 8px ${accent}` }}/>
-          <span className="font-display font-semibold tracking-widest uppercase text-sm truncate" style={{ color:accent }}>{title}</span>
+          <span className="font-display font-semibold text-xl truncate" style={{ color:'var(--text-bright)' }}>{title}</span>
         </div>
         {right}
       </div>
@@ -167,7 +167,7 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
   // No GPUs detected at all
   if (allGPUs.length === 0) return (
     <div className="rounded-lg border p-5 flex items-center justify-center" style={{ background:'var(--surface)', borderColor:'var(--text-faint)', minHeight:160 }}>
-      <span className="text-xs font-mono text-gray-600">No GPU detected</span>
+      <span className="text-sm text-gray-600">No GPU detected</span>
     </div>
   )
 
@@ -180,11 +180,11 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
     const consumers = gpu.consumers ?? []
     const unaccounted = gpu.vram_used - consumers.reduce((s, c) => s + c.vram_mb, 0)
     return (
-      <div className="rounded-lg border p-5" style={{ background:'linear-gradient(135deg,var(--surface),var(--ground))', borderColor:`${alpha(accent, 19)}` }}>
+      <div className="rounded-lg border p-5" style={{ background:'var(--surface)', borderColor:`${alpha(accent, 19)}` }}>
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full" style={{ background:accent, boxShadow:`0 0 6px ${accent}` }}/>
-            <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{ color:accent }}>GPU</span>
+            <span className="font-display font-semibold text-xl" style={{ color:accent }}>GPU</span>
           </div>
           <span className="text-xs font-mono text-gray-500 truncate ml-2" style={{ maxWidth:140 }}>{gpu.name.replace('NVIDIA ','')}</span>
         </div>
@@ -233,10 +233,10 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
   if (anyReachable) {
     const color = 'var(--good)'
     return (
-      <div className="rounded-lg border p-4" style={{ background:'linear-gradient(135deg,var(--surface),var(--ground))', borderColor:`${alpha(color, 19)}` }}>
+      <div className="rounded-lg border p-4" style={{ background:'var(--surface)', borderColor:`${alpha(color, 19)}` }}>
         <div className="flex items-center gap-2 mb-3">
           <div className="w-2 h-2 rounded-full" style={{ background:color, boxShadow:`0 0 6px ${color}` }}/>
-          <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{ color }}>GPU METRICS</span>
+          <span className="font-display font-semibold text-xl" style={{ color }}>GPU METRICS</span>
           <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:`${alpha(color, 8)}`, color, border:`1px solid ${alpha(color, 19)}` }}>ACTIVE</span>
         </div>
         <div className="space-y-2">
@@ -259,7 +259,7 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
             </div>
           ))}
         </div>
-        <div className="text-xs font-mono text-gray-600 mt-3">View detailed metrics in Monitoring → Grafana</div>
+        <div className="text-sm text-gray-600 mt-3">View detailed metrics in Monitoring → Grafana</div>
       </div>
     )
   }
@@ -268,10 +268,10 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
   const uniqueSteps = allGPUs[0]?.install?.steps ?? []
   const allSameSteps = allGPUs.every(n => JSON.stringify(n.install?.steps) === JSON.stringify(uniqueSteps))
   return (
-    <div className="rounded-lg border p-4" style={{ background:'linear-gradient(135deg,var(--surface),var(--ground))', borderColor:'color-mix(in srgb, var(--warn-2) 19%, transparent)' }}>
+    <div className="rounded-lg border p-4" style={{ background:'var(--surface)', borderColor:'color-mix(in srgb, var(--warn-2) 19%, transparent)' }}>
       <div className="flex items-center gap-2 mb-3">
         <div className="w-2 h-2 rounded-full" style={{ background:'var(--warn-2)', boxShadow:'0 0 6px var(--warn-2)' }}/>
-        <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{ color:'var(--warn-2)' }}>GPU METRICS</span>
+        <span className="font-display font-semibold text-xl" style={{ color:'var(--warn-2)' }}>GPU METRICS</span>
         {allGPUs.every(n => !n.reachable) && <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:'color-mix(in srgb, var(--warn-2) 8%, transparent)', color:'var(--warn-2)', border:'1px solid color-mix(in srgb, var(--warn-2) 19%, transparent)' }}>EXPORTER NOT INSTALLED</span>}
         {allGPUs.some(n => n.reachable) && !allGPUs.every(n => n.reachable) && <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:'color-mix(in srgb, var(--warn-2) 8%, transparent)', color:'var(--warn-2)', border:'1px solid color-mix(in srgb, var(--warn-2) 19%, transparent)' }}>PARTIAL</span>}
       </div>
@@ -284,7 +284,7 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
       </div>
       {allSameSteps ? (
         <div className="space-y-1.5">
-          <div className="text-xs font-mono text-gray-500 mb-1">Run on each Proxmox node:</div>
+          <div className="text-sm text-gray-500 mb-1">Run on each Proxmox node:</div>
           {uniqueSteps.map((step, i) => {
             const isCmd = ['docker','apt','curl','systemctl'].some(p => step.startsWith(p))
             return (
@@ -504,7 +504,7 @@ function BandwidthPanel({ data, stamp }: { data: BandwidthData | null; stamp: nu
     return (
       <Panel title="Bandwidth" accent="var(--text-dim)"
         right={<span className="font-mono text-gray-600" style={{ fontSize:10 }}>no link source</span>}>
-        <div className="font-mono text-gray-600 text-center py-4" style={{ fontSize:12 }}>
+        <div className="text-gray-600 text-center py-4" style={{ fontSize:14 }}>
           {data.unavailable.length
             ? <>Configure the <span style={{ color:ACCENT }}>{data.unavailable.map(u => u.plugin).join(', ')}</span> plug-in to read WAN and LAN throughput.</>
             : 'No plug-in on this install can report link throughput.'}
@@ -542,11 +542,11 @@ function NodeCard({ node, vms, gpuInfo, power, powerTotal }: { node:PVENode; vms
   const gpuAccentMap: Record<string, string> = { 'nvidia': 'var(--good)', 'amd': 'var(--crit)', 'intel-igpu': 'var(--accent-2)', 'intel-arc': 'var(--accent)' }
   const accent = gpuType ? (gpuAccentMap[gpuType] ?? 'var(--violet)') : 'var(--accent)'
   return (
-    <div className="rounded-lg border p-4 flex flex-col gap-4" style={{background:'linear-gradient(135deg,var(--surface),var(--ground))',borderColor:`${alpha(accent, 19)}`}}>
+    <div className="rounded-lg border p-4 flex flex-col gap-4" style={{background:'var(--surface)',borderColor:`${alpha(accent, 19)}`}}>
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full" style={{background:accent,boxShadow:`0 0 6px ${accent}`}}/>
-          <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{color:accent}}>{node.node}</span>
+          <span className="font-display font-semibold text-xl" style={{color:accent}}>{node.node}</span>
           {hasGpu && (
             <span className="text-xs px-1.5 py-0.5 rounded font-mono" style={{background:`${alpha(accent, 13)}`,color:accent,border:`1px solid ${alpha(accent, 25)}`,fontSize:9}}
               title={gpuInfo?.reachable ? gpuInfo.gpus[0].deviceName : `${gpuInfo?.install?.title ?? 'GPU detected'} — metrics not available`}>
@@ -624,11 +624,11 @@ function CephPanel({ ceph, osds }: { ceph:CephStatus|null; osds:CephOSD[] }) {
   const checks=Object.entries(ceph.health.checks)
   const byHost=osds.reduce((a,o)=>{if(!a[o.host])a[o.host]=[];a[o.host].push(o);return a},{} as Record<string,CephOSD[]>)
   return (
-    <div className="rounded-lg border p-5" style={{background:'linear-gradient(135deg,var(--surface),var(--ground))',borderColor:`${alpha(hc, 19)}`}}>
+    <div className="rounded-lg border p-5" style={{background:'var(--surface)',borderColor:`${alpha(hc, 19)}`}}>
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full" style={{background:hc,boxShadow:`0 0 6px ${hc}`}}/>
-          <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{color:'var(--accent)'}}>CEPH</span>
+          <span className="font-display font-semibold text-xl" style={{color:'var(--accent)'}}>CEPH</span>
           <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{background:`${alpha(hc, 8)}`,color:hc,border:`1px solid ${alpha(hc, 19)}`}}>{ceph.health.status}</span>
         </div>
         <span className="text-xs font-mono" style={{color:'var(--good)'}}>{ceph.osdmap.num_up_osds}/{ceph.osdmap.num_osds} OSDs</span>
@@ -689,11 +689,11 @@ function HAPanel({ ha }: { ha:HAEntry[] }) {
   const masterNode=master?.status.split(' ')[0]??'—', fencingArmed=fencing?.status.includes('armed')??false
   const allStarted=services.every(s=>s.crm_state==='started')
   return (
-    <div className="rounded-lg border p-5" style={{background:'linear-gradient(135deg,var(--surface),var(--ground))',borderColor:'color-mix(in srgb, var(--accent) 13%, transparent)'}}>
+    <div className="rounded-lg border p-5" style={{background:'var(--surface)',borderColor:'color-mix(in srgb, var(--accent) 13%, transparent)'}}>
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full" style={{background:'var(--good)',boxShadow:'0 0 6px var(--good)'}}/>
-          <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{color:'var(--accent)'}}>HA</span>
+          <span className="font-display font-semibold text-xl" style={{color:'var(--accent)'}}>HA</span>
         </div>
         <span className="text-xs font-mono" style={{color:allStarted?'var(--good)':'var(--warn-2)'}}>
           {services.filter(s=>s.crm_state==='started').length}/{services.length} services
@@ -830,7 +830,7 @@ export default function DashboardView() {
 
   if (!fast) return (
     <div className="min-h-full flex items-center justify-center" style={{background:'var(--ground)'}}>
-      <div className="text-xs font-mono text-gray-500 animate-pulse">connecting to titancluster...</div>
+      <div className="text-sm text-gray-500 animate-pulse">connecting to titancluster...</div>
     </div>
   )
 
@@ -839,12 +839,12 @@ export default function DashboardView() {
   return (
     <div className="min-h-full" style={{background:'var(--ground)'}}>
       {/* Header */}
-      <header className="flex flex-wrap items-center justify-between gap-y-2 px-3 sm:px-6 py-3 sm:py-4 border-b" style={{borderColor:'var(--border-dim)',background:'var(--ground)'}}>
-        <div className="flex items-center gap-3">
-          <h1 className="font-display text-2xl font-light tracking-widest">
-            HYPER<span className="font-bold" style={{color:'var(--accent)'}}>PROX</span>
+      <header className="flex flex-wrap items-center justify-between gap-y-2 px-3 sm:px-8 py-4 sm:py-6 border-b" style={{borderColor:'var(--border-dim)',background:'var(--ground)'}}>
+        <div className="flex flex-col" style={{gap:8}}>
+          <span className="font-mono uppercase" style={{fontSize:12, letterSpacing:'0.14em', color:'var(--accent)'}}>v0.1.0</span>
+          <h1 className="font-display font-bold" style={{fontSize:36, lineHeight:1.1, color:'var(--text-bright)'}}>
+            HYPER<span style={{color:'var(--accent)'}}>PROX</span>
           </h1>
-          <span className="text-xs font-mono text-gray-700">v0.1.0</span>
         </div>
         <div className="flex items-center gap-3">
           {[
@@ -862,7 +862,7 @@ export default function DashboardView() {
         </div>
       </header>
 
-      <main className="p-3 sm:p-6 max-w-7xl mx-auto space-y-4 sm:space-y-6">
+      <main className="p-3 sm:p-8 max-w-7xl mx-auto space-y-6 sm:space-y-8">
         {/* Row 1 — the three panels that are mostly dials */}
         <div className="grid gap-4 grid-cols-1 xl:grid-cols-[1.25fr_1.25fr_1fr]">
           <ClusterPanel cluster={fast.cluster} nodes={fast.nodes} vms={fast.vms} ceph={slow?.ceph??null} storage={fast.storage} power={clusterPower} stamp={lastSync?.getTime() ?? null}/>
@@ -878,7 +878,7 @@ export default function DashboardView() {
 
         {/* Row 4 — nodes */}
         <section>
-          <h2 className="text-xs font-mono uppercase tracking-widest text-gray-600 mb-3">Cluster Nodes</h2>
+          <h2 className="font-display font-semibold mb-4" style={{ fontSize:22, color:'var(--text-bright)' }}>Cluster Nodes</h2>
           <div className="grid gap-4" style={{gridTemplateColumns:'repeat(auto-fill,minmax(min(100%,250px),1fr))'}}>
             {sorted.map(node=><NodeCard key={node.node} node={node} vms={fast.vms} gpuInfo={fast.gpuStatus?.find(g=>g.node===node.node)} power={clusterPower?.nodes.find(p=>p.node===node.node)} powerTotal={clusterPower?.total}/>)}
           </div>
@@ -914,17 +914,17 @@ function ServicesPanel({ services }: { services: SlowData['services'] }) {
     { key:'prometheus', name:'Prometheus', accent:'var(--crit)', info: services.prometheus, details:[] },
   ]
   return (
-    <div className="rounded-lg border p-5" style={{background:'linear-gradient(135deg,var(--surface),var(--ground))',borderColor:'color-mix(in srgb, var(--accent) 13%, transparent)'}}>
+    <div className="rounded-lg border p-5" style={{background:'var(--surface)',borderColor:'color-mix(in srgb, var(--accent) 13%, transparent)'}}>
       <div className="flex items-center gap-2 mb-4">
         <div className="w-2 h-2 rounded-full" style={{background:'var(--accent)',boxShadow:'0 0 6px var(--accent)'}}/>
-        <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{color:'var(--accent)'}}>Connected Services</span>
+        <span className="font-display font-semibold text-xl" style={{color:'var(--accent)'}}>Connected Services</span>
       </div>
       <div className="space-y-2">
         {rows.map(({key,name,accent,info,details})=>(
           <div key={key} className="flex items-center gap-3 p-3 rounded" style={{background:'var(--ground-deep)',border:`1px solid ${info?.connected?accent+'20':'var(--border-dim)'}`}}>
             <div className="w-2 h-2 rounded-full flex-shrink-0" style={{background:info?.connected?accent:'var(--text-dimmer)',boxShadow:info?.connected?`0 0 5px ${accent}`:'none'}}/>
             <div className="flex-1 min-w-0">
-              <div className="text-xs font-mono" style={{color:info?.connected?'var(--text-bright)':'var(--text-dim)'}}>{name}</div>
+              <div className="text-sm font-semibold" style={{color:info?.connected?'var(--text-bright)':'var(--text-dim)'}}>{name}</div>
               {info?.connected&&(info as any).url&&<div className="text-xs font-mono text-gray-600 truncate">{(info as any).url}</div>}
               {!info?.connected&&<div className="text-xs font-mono text-gray-700">checking...</div>}
             </div>

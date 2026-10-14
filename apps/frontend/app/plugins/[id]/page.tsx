@@ -82,7 +82,7 @@ function DataTable({ table, storageKey, force }: {
 
   return (
     <section className="rounded-lg border" style={{ background: 'var(--surface)', borderColor: BORDER }}>
-      <header className="flex items-center gap-3 border-b px-4 py-2.5"
+      <header className="flex items-center gap-3 border-b px-5 py-3.5"
         style={{ borderColor: open ? BORDER : 'transparent' }}>
         <button
           onClick={() => setOpen(!open)}
@@ -91,7 +91,7 @@ function DataTable({ table, storageKey, force }: {
           <span aria-hidden className="font-mono text-[10px] transition-transform"
             style={{ color: 'var(--text-dim)', display: 'inline-block',
                      transform: open ? 'rotate(90deg)' : 'none' }}>▶</span>
-          <h2 className="font-display text-[13px] font-semibold uppercase tracking-[0.14em] text-white">
+          <h2 className="font-display text-[20px] font-semibold" style={{ color: 'var(--text-bright)' }}>
             {table.title}
           </h2>
         </button>
@@ -112,14 +112,14 @@ function DataTable({ table, storageKey, force }: {
             value={filter}
             onChange={e => setFilter(e.target.value)}
             placeholder="filter"
-            className="ml-auto w-44 rounded border px-2 py-1 font-mono text-[11px] outline-none transition-colors focus:border-cyan"
-            style={{ background: 'var(--ground)', borderColor: 'var(--border-strong)', color: 'var(--text)' }}
+            className="ml-auto h-10 w-48 rounded-md border px-3 text-sm outline-none transition-colors focus:border-cyan"
+            style={{ background: 'var(--ground-deep)', borderColor: 'var(--border-strong)', color: 'var(--text-bright)' }}
           />
         )}
       </header>
 
       {!open ? null : rows.length === 0 ? (
-        <p className="px-4 py-6 text-center font-mono text-[11px]" style={{ color: 'var(--text-dimmer)' }}>
+        <p className="px-5 py-8 text-center text-sm" style={{ color: 'var(--text-dimmer)' }}>
           {filter ? 'Nothing matches that filter.' : (table.empty ?? 'Nothing to show.')}
         </p>
       ) : (
@@ -129,7 +129,7 @@ function DataTable({ table, storageKey, force }: {
               <tr>
                 {table.columns.map(c => (
                   <th key={c.key}
-                    className="whitespace-nowrap border-b px-4 py-2 font-display text-[10px] uppercase tracking-[0.14em]"
+                    className="whitespace-nowrap border-b px-5 py-2.5 font-mono text-[11px] uppercase tracking-[0.14em]"
                     style={{ borderColor: BORDER, color: 'var(--text-dim)', textAlign: c.align ?? 'left' }}>
                     {c.label}
                   </th>
@@ -143,7 +143,7 @@ function DataTable({ table, storageKey, force }: {
                     const v = String(r[c.key] ?? '—')
                     return (
                       <td key={c.key}
-                        className="whitespace-nowrap border-b px-4 py-1.5 font-mono text-[12px] tabular-nums"
+                        className="whitespace-nowrap border-b px-5 py-2 font-mono text-[12px] tabular-nums"
                         style={{
                           borderColor: 'var(--surface-notice)',
                           color: cellTone(v) ?? 'var(--text-soft)',
@@ -265,18 +265,22 @@ export default function PluginDetailPage({ params }: { params: { id: string } })
 
   return (
     <div className="flex h-full flex-col" style={{ background: 'var(--ground)' }}>
-      <header className="flex flex-shrink-0 items-center gap-3 border-b px-6"
-        style={{ height: 56, borderColor: BORDER, background: 'var(--surface-raised)' }}>
-        <Link href="/plugins" className="font-mono text-[11px] transition-colors hover:text-white"
-          style={{ color: 'var(--text-dim)' }}>← plug-ins</Link>
-        <span className="text-base">{icon}</span>
-        <h1 className="font-display text-lg font-light tracking-[0.14em] text-white">{name}</h1>
-        <div className="ml-auto flex items-center gap-2">
+      <header className="flex flex-shrink-0 flex-wrap items-center gap-x-4 gap-y-3 border-b px-4 py-5 sm:px-8 sm:py-6"
+        style={{ borderColor: BORDER, background: 'var(--surface-raised)' }}>
+        <div className="flex flex-col gap-2">
+          <Link href="/plugins" className="font-mono text-[11px] uppercase tracking-[0.14em] transition-opacity hover:opacity-80"
+            style={{ color: 'var(--accent)' }}>← plug-ins</Link>
+          <div className="flex items-center gap-3">
+            <span className="text-2xl">{icon}</span>
+            <h1 className="font-display text-[34px] font-bold leading-none" style={{ color: 'var(--text-bright)' }}>{name}</h1>
+          </div>
+        </div>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
           {tableCount > 1 && (
             <button
               onClick={() => { setForce(f => (f === 'open' ? 'closed' : 'open')); setTimeout(() => setForce(null), 0) }}
-              className="rounded border px-3 py-1 font-display text-xs tracking-wide transition-colors hover:bg-white/5"
-              style={{ borderColor: 'var(--border-strong)', color: 'var(--text-muted)' }}>
+              className="h-10 rounded-md border px-4 text-sm transition-colors hover:bg-white/5"
+              style={{ borderColor: 'var(--border-strong)', color: 'var(--text)', background: 'transparent' }}>
               Expand / collapse all
             </button>
           )}
@@ -290,9 +294,9 @@ export default function PluginDetailPage({ params }: { params: { id: string } })
           {everySeconds > 0 && (
             <button onClick={() => setLive(!live)}
               title={live ? `Refreshing every ${everySeconds}s — click to pause` : 'Auto-refresh is off'}
-              className="flex items-center gap-1.5 rounded border px-3 py-1 font-display text-xs tracking-wide transition-colors hover:bg-white/5"
+              className="flex h-10 items-center gap-2 rounded-md border px-4 text-sm transition-colors hover:bg-white/5"
               style={{ borderColor: live ? 'color-mix(in srgb, var(--good) 35%, transparent)' : 'var(--border-strong)',
-                       color: live ? 'var(--good)' : 'var(--text-muted)' }}>
+                       color: live ? 'var(--good)' : 'var(--text)', background: 'transparent' }}>
               <span aria-hidden style={{
                 width: 6, height: 6, borderRadius: 999,
                 background: live ? 'var(--good)' : 'var(--text-dimmer)',
@@ -302,24 +306,24 @@ export default function PluginDetailPage({ params }: { params: { id: string } })
             </button>
           )}
           <button onClick={() => load()} disabled={loading}
-            className="rounded border px-3 py-1 font-display text-xs tracking-wide transition-colors hover:bg-white/5 disabled:opacity-40"
-            style={{ borderColor: 'var(--border-strong)', color: 'var(--text-muted)' }}>
+            className="h-10 rounded-md px-5 text-sm font-semibold transition-opacity hover:opacity-85 disabled:opacity-40"
+            style={{ background: 'var(--accent)', color: 'var(--accent-ink)', border: 'none' }}>
             {loading ? 'reading…' : 'Refresh'}
           </button>
         </div>
       </header>
 
-      <div className="flex-1 overflow-y-auto px-6 py-5">
+      <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-8 sm:py-8">
         {loading && !detail && (
-          <p className="font-mono text-[11px]" style={{ color: 'var(--text-dimmer)' }}>reading…</p>
+          <p className="text-sm" style={{ color: 'var(--text-dimmer)' }}>reading…</p>
         )}
 
         {detail && !detail.ok && (
-          <div className="rounded-lg border px-4 py-3" style={{ borderColor: 'color-mix(in srgb, var(--crit) 33%, transparent)', background: 'var(--ground)' }}>
-            <p className="font-display text-[11px] uppercase tracking-[0.14em]" style={{ color: TONE.bad }}>
+          <div className="rounded-lg border px-5 py-4" style={{ borderColor: 'color-mix(in srgb, var(--crit) 33%, transparent)', background: 'var(--surface)' }}>
+            <p className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: TONE.bad }}>
               not reporting
             </p>
-            <p className="mt-1 font-mono text-[12px]" style={{ color: 'var(--text-soft)' }}>{detail.error}</p>
+            <p className="mt-1.5 text-sm" style={{ color: 'var(--text-soft)' }}>{detail.error}</p>
           </div>
         )}
 
@@ -328,21 +332,21 @@ export default function PluginDetailPage({ params }: { params: { id: string } })
             {/* Downloads that are complete and cannot be filed. Above the
                 tables, because nothing else on this page is waiting on a person. */}
             {stuck.length > 0 && (
-              <section className="mb-6 rounded-xl border p-4"
+              <section className="mb-8 rounded-lg border p-5"
                 style={{ background: 'var(--surface)', borderColor: 'color-mix(in srgb, var(--warn) 35%, transparent)' }}>
-                <div className="mb-1 flex items-baseline gap-2">
-                  <span className="font-display text-sm font-semibold uppercase tracking-widest" style={{ color: 'var(--warn)' }}>
+                <div className="mb-2 flex items-baseline gap-2">
+                  <span className="font-display text-[20px] font-semibold" style={{ color: 'var(--warn-2)' }}>
                     Stuck imports ({stuck.length})
                   </span>
                 </div>
-                <p className="mb-3 font-mono text-[11px] leading-relaxed" style={{ color: 'var(--text-muted)', maxWidth: 640 }}>
+                <p className="mb-4 text-sm leading-relaxed" style={{ color: 'var(--text-muted)', maxWidth: 680 }}>
                   These downloaded correctly. The library cannot read a season and episode out of the
                   filenames, so no amount of waiting will file them. Mapping reads the numbers from each
                   name and imports against the matching episode — files it cannot read are left alone
                   rather than filed somewhere plausible.
                 </p>
                 {rescueNote && (
-                  <div className="mb-3 rounded px-3 py-2 font-mono text-[11px]"
+                  <div className="mb-3 rounded-md px-3 py-2 text-sm"
                     style={{ background: 'color-mix(in srgb, var(--accent) 10%, transparent)', color: 'var(--accent)' }}>
                     {rescueNote}
                   </div>
@@ -351,26 +355,26 @@ export default function PluginDetailPage({ params }: { params: { id: string } })
                   {stuck.map(s => (
                     <div key={s.id} className="rounded-lg p-3" style={{ background: 'var(--ground-inset)', border: '1px solid var(--border)' }}>
                       <div className="flex flex-wrap items-baseline gap-x-2">
-                        <span className="font-mono text-[12.5px]" style={{ color: 'var(--text-bright)' }}>{s.series}</span>
-                        <span className="font-mono text-[10px]" style={{ color: 'var(--text-dim)' }}>{s.reason}</span>
+                        <span className="text-[15px] font-semibold" style={{ color: 'var(--text-bright)' }}>{s.series}</span>
+                        <span className="text-[13px]" style={{ color: 'var(--text-dim)' }}>{s.reason}</span>
                       </div>
-                      <div className="mt-0.5 truncate font-mono text-[10px]" style={{ color: 'var(--text-dimmer)' }}>{s.title}</div>
+                      <div className="mt-0.5 truncate font-mono text-[11px]" style={{ color: 'var(--text-dimmer)' }}>{s.title}</div>
                       <div className="mt-2 flex flex-wrap items-center gap-2">
-                        <span className="font-mono text-[11px]" style={{ color: s.mappable ? 'var(--good)' : 'var(--crit)' }}>
+                        <span className="font-mono text-xs" style={{ color: s.mappable ? 'var(--good)' : 'var(--crit)' }}>
                           {s.mappable} of {s.files} mappable
                         </span>
                         {s.unmappable.length > 0 && (
-                          <span className="font-mono text-[10px]" title={s.unmappable.join('\n')} style={{ color: 'var(--warn)' }}>
+                          <span className="text-[13px]" title={s.unmappable.join('\n')} style={{ color: 'var(--warn)' }}>
                             {s.unmappable.length} unreadable — hover to see
                           </span>
                         )}
                         <button
                           onClick={() => rescue(s)}
                           disabled={!s.mappable || rescuing === s.id}
-                          className="ml-auto rounded px-3 py-1 font-display text-xs font-semibold tracking-wide"
+                          className="ml-auto h-9 rounded-md px-4 text-sm font-semibold"
                           style={{
-                            background: 'color-mix(in srgb, var(--accent) 15%, transparent)',
-                            color: 'var(--accent)', border: '1px solid color-mix(in srgb, var(--accent) 30%, transparent)',
+                            background: 'var(--accent)',
+                            color: 'var(--accent-ink)', border: 'none',
                             opacity: (!s.mappable || rescuing === s.id) ? 0.4 : 1,
                           }}>
                           {rescuing === s.id ? 'importing…' : 'Map by filename'}
@@ -389,12 +393,12 @@ export default function PluginDetailPage({ params }: { params: { id: string } })
                 a label like "Known devices" stays on one line, and the value
                 steps down a size when the string is long rather than wrapping. */}
             {!!detail.stats?.length && (
-              <div className="mb-5 grid gap-3"
+              <div className="mb-8 grid gap-4"
                 style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(168px, 1fr))', gridAutoRows: '1fr' }}>
                 {detail.stats.map(s => (
-                  <div key={s.label} className="flex flex-col rounded-lg border px-4 py-3"
-                    style={{ background: 'var(--surface)', borderColor: BORDER }}>
-                    <p className="font-display text-[10px] uppercase tracking-[0.16em]" style={{ color: 'var(--text-dim)' }}>
+                  <div key={s.label} className="flex flex-col rounded-lg border px-5 py-4"
+                    style={{ background: 'var(--surface)', borderColor: 'var(--border-soft)' }}>
+                    <p className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: 'var(--text-dim)' }}>
                       {s.label}
                     </p>
                     <p className="mt-1 font-display font-semibold tabular-nums leading-none"
@@ -403,7 +407,7 @@ export default function PluginDetailPage({ params }: { params: { id: string } })
                       {s.value}
                     </p>
                     {s.hint && (
-                      <p className="mt-auto pt-2 font-mono text-[10px] leading-snug" style={{ color: 'var(--text-dimmer)' }}>
+                      <p className="mt-auto pt-2 text-[13px] leading-snug" style={{ color: 'var(--text-dimmer)' }}>
                         {s.hint}
                       </p>
                     )}
@@ -412,7 +416,7 @@ export default function PluginDetailPage({ params }: { params: { id: string } })
               </div>
             )}
 
-            <div className="flex flex-col gap-5">
+            <div className="flex flex-col gap-6">
               {(detail.tables ?? []).map(t => (
                 <DataTable key={t.title} table={t} force={force}
                   storageKey={`hp.open.${params.id}.${t.title}`} />
