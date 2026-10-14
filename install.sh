@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  HyperProx — One-Shot Installer
-#  Supports: Debian 12, Ubuntu 22.04, Ubuntu 24.04
+#  Supports: Debian 12, Debian 13, Ubuntu 22.04, Ubuntu 24.04
 #  Targets:  Proxmox LXC (privileged), bare metal, VM
 #  Usage:    curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/install.sh | bash
 #            — or —
@@ -118,12 +118,12 @@ detect_environment() {
     OS_VERSION="${VERSION_ID}"
     OS_CODENAME="${VERSION_CODENAME:-}"
   else
-    die "Cannot determine OS. Requires Debian 12 or Ubuntu 22.04/24.04."
+    die "Cannot determine OS. Requires Debian 12/13 or Ubuntu 22.04/24.04."
   fi
 
   case "${OS_ID}" in
     debian)
-      [[ "${OS_VERSION}" == "12" || "${OS_VERSION}" == "11" ]] || die "Debian 11 or 12 required. Found: Debian ${OS_VERSION}"
+      [[ "${OS_VERSION}" == "13" || "${OS_VERSION}" == "12" || "${OS_VERSION}" == "11" ]] || die "Debian 11, 12 or 13 required. Found: Debian ${OS_VERSION}"
       PKG_CODENAME="${OS_CODENAME}"
       ;;
     ubuntu)
@@ -132,7 +132,7 @@ detect_environment() {
       PKG_CODENAME="${OS_CODENAME}"
       ;;
     *)
-      die "Unsupported OS: ${OS_ID}. Requires Debian 12 or Ubuntu 22.04/24.04."
+      die "Unsupported OS: ${OS_ID}. Requires Debian 12/13 or Ubuntu 22.04/24.04."
       ;;
   esac
   ok "OS: ${OS_ID^} ${OS_VERSION}"
@@ -294,8 +294,11 @@ install_prerequisites() {
   run_with_spinner "Updating apt" apt-get update -qq
 
   local pkgs=(curl wget git gnupg lsb-release ca-certificates
-              apt-transport-https software-properties-common
-              openssl jq unzip build-essential)
+              apt-transport-https openssl jq unzip build-essential)
+  # Not packaged on Debian 13 (trixie) and nothing below needs it; install it only where it exists.
+  if apt-cache show software-properties-common >/dev/null 2>&1; then
+    pkgs+=(software-properties-common)
+  fi
 
   info "Installing base packages..."
   run_with_spinner "Installing packages" \
