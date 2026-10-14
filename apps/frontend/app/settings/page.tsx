@@ -27,16 +27,15 @@ interface TestResult {
 // ---------------------------------------------------------------------------
 
 const INPUT = {
-  background: 'var(--ground-deep)', border: '1px solid var(--text-faint)',
-  color: 'var(--text-bright)', borderRadius: 6, padding: '8px 12px',
-  fontFamily: 'IBM Plex Mono, monospace', fontSize: 12,
+  background: 'var(--ground-deep)', border: '1px solid var(--border-strong)',
+  color: 'var(--text-bright)', borderRadius: 6, padding: '0 12px', height: 42,
+  fontFamily: 'inherit', fontSize: 14,
   outline: 'none', width: '100%',
 } as React.CSSProperties
 
 const LABEL = {
-  display: 'block', fontSize: 10, fontFamily: 'IBM Plex Mono, monospace',
-  color: 'var(--text-dim)', textTransform: 'uppercase' as const,
-  letterSpacing: '0.05em', marginBottom: 4,
+  display: 'block', fontSize: 13, fontFamily: 'inherit',
+  color: 'var(--text-muted)', marginBottom: 6,
 }
 
 const CATEGORY_META: Record<string, { label: string; accent: string; providers: Record<string, string> }> = {
@@ -95,8 +94,8 @@ function ProviderSection({
   const allSet = providerFields.every(f => f.isSet)
 
   return (
-    <div className="rounded-lg border p-5" style={{
-      background: 'var(--surface-raised)', borderColor: allSet ? `${alpha(accent, 15)}` : 'var(--text-faint)',
+    <div className="rounded-lg border p-6" style={{
+      background: 'var(--surface)', borderColor: allSet ? `${alpha(accent, 15)}` : 'var(--border-soft)',
     }}>
       {/* Provider header */}
       <div className="flex items-center justify-between mb-4">
@@ -105,7 +104,7 @@ function ProviderSection({
             background: allSet ? accent : 'var(--text-dimmer)',
             boxShadow:  allSet ? `0 0 5px ${accent}` : 'none',
           }} />
-          <span className="font-mono text-sm font-medium" style={{ color: allSet ? 'var(--text-bright)' : 'var(--text-muted)' }}>
+          <span className="font-display text-xl font-semibold" style={{ color: allSet ? 'var(--text-bright)' : 'var(--text-muted)' }}>
             {providerLabel}
           </span>
           {allSet && (
@@ -116,20 +115,22 @@ function ProviderSection({
         </div>
         <div className="flex gap-2">
           <button onClick={handleTest} disabled={testing}
-            className="text-xs font-mono px-3 py-1.5 rounded transition-all"
+            className="text-sm font-medium px-4 rounded-md transition-all"
             style={{
-              background: testing ? 'var(--text-dimmer)' : 'color-mix(in srgb, var(--text-bright) 3%, transparent)',
-              color:      testing ? 'var(--text-muted)' : 'var(--text-soft)',
-              border:     '1px solid var(--text-faint)',
+              height:     38,
+              background: 'transparent',
+              color:      testing ? 'var(--text-muted)' : 'var(--text)',
+              border:     '1px solid var(--border-strong)',
             }}>
             {testing ? 'Testing...' : 'Test'}
           </button>
           <button onClick={handleSave} disabled={saving}
-            className="text-xs font-mono px-3 py-1.5 rounded transition-all"
+            className="text-sm font-semibold px-5 rounded-md transition-all"
             style={{
-              background: saved ? `${alpha(accent, 13)}` : saving ? 'var(--text-dimmer)' : `${alpha(accent, 8)}`,
-              color:      saved ? accent : saving ? 'var(--text-muted)' : accent,
-              border:     `1px solid ${alpha(accent, 19)}`,
+              height:     38,
+              background: saving ? 'var(--text-dimmer)' : 'var(--accent)',
+              color:      saving ? 'var(--text-muted)' : 'var(--accent-ink)',
+              border:     'none',
             }}>
             {saved ? '✓ Saved' : saving ? 'Saving...' : 'Save'}
           </button>
@@ -138,7 +139,7 @@ function ProviderSection({
 
       {/* Test result */}
       {result && (
-        <div className="mb-4 px-3 py-2 rounded text-xs font-mono" style={{
+        <div className="mb-4 px-3 py-2 rounded text-sm" style={{
           background: result.success ? 'color-mix(in srgb, var(--good) 6%, transparent)' : 'color-mix(in srgb, var(--crit-2) 6%, transparent)',
           color:      result.success ? 'var(--good)' : 'var(--crit-soft)',
           border:     `1px solid ${result.success ? 'color-mix(in srgb, var(--good) 19%, transparent)' : 'color-mix(in srgb, var(--crit-2) 19%, transparent)'}`,
@@ -222,12 +223,12 @@ export default function SettingsPage() {
   const meta = CATEGORY_META[tab]
 
   return (
-    <div className="min-h-full p-3 sm:p-6" style={{ background: 'var(--ground)' }}>
+    <div className="min-h-full p-4 sm:p-8" style={{ background: 'var(--ground)' }}>
 
       {/* Header */}
-      <div className="flex items-center gap-3 mb-6">
-        <div className="w-1 h-6 rounded-full" style={{ background: 'var(--text-muted)', boxShadow: '0 0 8px color-mix(in srgb, var(--text-muted) 38%, transparent)' }} />
-        <h1 className="font-display text-2xl font-semibold tracking-wide uppercase" style={{ color: 'var(--text-soft)' }}>
+      <div className="mb-8">
+        <div className="font-mono uppercase" style={{ fontSize: 12, letterSpacing: '0.14em', color: 'var(--accent)' }}>Credentials</div>
+        <h1 className="font-display font-bold mt-2" style={{ fontSize: 36, lineHeight: 1.1, color: 'var(--text-bright)' }}>
           Settings
         </h1>
       </div>
@@ -240,7 +241,7 @@ export default function SettingsPage() {
           const allSet = catFields.length > 0 && catFields.every(f => f.isSet)
           return (
             <button key={cat} onClick={() => setTab(cat as any)}
-              className="px-5 py-3 text-xs font-mono uppercase tracking-wider transition-colors flex items-center gap-2"
+              className="px-5 py-3 text-sm font-medium transition-colors flex items-center gap-2"
               style={{
                 borderBottom: tab === cat ? `2px solid ${m.accent}` : '2px solid transparent',
                 color:        tab === cat ? m.accent : 'var(--text-dim)',
@@ -254,9 +255,9 @@ export default function SettingsPage() {
       </div>
 
       {loading ? (
-        <div className="text-xs font-mono text-gray-600 animate-pulse">Loading credentials...</div>
+        <div className="text-sm animate-pulse" style={{ color: 'var(--text-dimmer)' }}>Loading credentials...</div>
       ) : (
-        <div className="space-y-4 max-w-3xl">
+        <div className="space-y-6 max-w-3xl">
           {Object.entries(meta.providers).map(([provider, label]) => {
             const providerFields = (fields[tab] ?? []).filter(f => f.provider === provider)
             if (providerFields.length === 0) return null

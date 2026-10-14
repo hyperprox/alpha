@@ -85,8 +85,8 @@ export function Sidebar() {
             <path d="M2 4h12M2 8h12M2 12h12" strokeLinecap="round" />
           </svg>
         </button>
-        <span className="font-display text-base font-light tracking-widest">
-          HYPER<span className="font-bold" style={{ color: 'var(--accent)' }}>PROX</span>
+        <span className="font-display font-bold" style={{ fontSize: 20, letterSpacing: '0.12em', color: 'var(--text-bright)' }}>
+          HYPER<span style={{ color: 'var(--accent)' }}>PROX</span>
         </span>
       </header>
 
@@ -103,7 +103,7 @@ export function Sidebar() {
         drawerOpen ? 'translate-x-0' : '-translate-x-full'
       }`}
       style={{
-        width:       collapsed ? 56 : 220,
+        width:       collapsed ? 56 : 236,
         background:  'var(--ground-deep)',
         borderColor: 'var(--border)',
       }}
@@ -123,8 +123,8 @@ export function Sidebar() {
           </div>
         ) : (
           <div className="flex items-center justify-between w-full">
-            <span className="font-display text-lg font-light tracking-widest">
-              HYPER<span className="font-bold" style={{ color: 'var(--accent)' }}>PROX</span>
+            <span className="font-display font-bold" style={{ fontSize: 24, letterSpacing: '0.12em', color: 'var(--text-bright)' }}>
+              HYPER<span style={{ color: 'var(--accent)' }}>PROX</span>
             </span>
             <button
               onClick={() => setCollapsed(true)}
@@ -153,8 +153,8 @@ export function Sidebar() {
           <div key={gi} className={gi > 0 ? 'mt-4' : ''}>
             {group.section && !collapsed && (
               <div
-                className="px-3 pb-1 text-xs font-mono tracking-widest"
-                style={{ color: 'var(--text-faint)', fontSize: 10 }}
+                className="px-4 pb-1 font-mono"
+                style={{ color: 'var(--text-dimmer)', fontSize: 10.5, letterSpacing: '0.14em' }}
               >
                 {group.section}
               </div>
@@ -171,16 +171,16 @@ export function Sidebar() {
                       padding:    collapsed ? '8px 10px' : '8px 10px',
                       background: active ? 'color-mix(in srgb, var(--accent) 7%, transparent)' : 'transparent',
                       border:     `1px solid ${active ? 'color-mix(in srgb, var(--accent) 15%, transparent)' : 'transparent'}`,
-                      color:      active ? 'var(--accent)' : 'var(--text-dim)',
+                      color:      active ? 'var(--accent)' : 'var(--text-soft)',
                     }}
-                    onMouseEnter={e => { if (!active) (e.currentTarget as HTMLElement).style.color = 'var(--text-soft)' }}
-                    onMouseLeave={e => { if (!active) (e.currentTarget as HTMLElement).style.color = 'var(--text-dim)' }}
+                    onMouseEnter={e => { if (!active) (e.currentTarget as HTMLElement).style.color = 'var(--text-bright)' }}
+                    onMouseLeave={e => { if (!active) (e.currentTarget as HTMLElement).style.color = 'var(--text-soft)' }}
                   >
                     <div className="flex-shrink-0 w-4 h-4" style={{ color: active ? 'var(--accent)' : 'inherit' }}>
                       <item.icon />
                     </div>
                     {!collapsed && (
-                      <span className="text-sm font-mono truncate" style={{ color: active ? 'var(--accent)' : 'inherit' }}>
+                      <span className="truncate" style={{ fontSize: 15, fontWeight: active ? 600 : 500, color: active ? 'var(--accent)' : 'inherit' }}>
                         {item.label}
                       </span>
                     )}

@@ -68,13 +68,13 @@ function NodeCard({ node, vms }: { node: PVENode; vms: PVEVM[] }) {
 
   return (
     <div className="rounded-lg border p-4 flex flex-col gap-4" style={{
-      background: 'linear-gradient(135deg, var(--surface) 0%, var(--ground) 100%)',
+      background: 'var(--surface)',
       borderColor: `${alpha(accent, 19)}`, boxShadow: `0 0 12px ${alpha(accent, 3)}`,
     }}>
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full" style={{ background: accent, boxShadow: `0 0 6px ${accent}` }} />
-          <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{ color: accent }}>{node.node}</span>
+          <span className="font-display font-semibold text-xl" style={{ color: accent }}>{node.node}</span>
           {isGpu && <span className="text-xs px-1.5 py-0.5 rounded font-mono" style={{ background: 'color-mix(in srgb, var(--violet) 13%, transparent)', color: 'var(--violet)', border: '1px solid color-mix(in srgb, var(--violet) 25%, transparent)' }}>GPU</span>}
         </div>
         <span className="text-xs font-mono text-gray-500">{formatUptime(node.uptime)}</span>
@@ -117,12 +117,12 @@ function CephPanel({ ceph, osds }: { ceph: CephStatus | null; osds: CephOSD[] })
 
   return (
     <div className="rounded-lg border p-4" style={{
-      background: 'linear-gradient(135deg, var(--surface) 0%, var(--ground) 100%)', borderColor: `${alpha(healthColor, 19)}`,
+      background: 'var(--surface)', borderColor: `${alpha(healthColor, 19)}`,
     }}>
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full" style={{ background: healthColor, boxShadow: `0 0 6px ${healthColor}` }} />
-          <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{ color: 'var(--accent)' }}>CEPH</span>
+          <span className="font-display font-semibold text-xl" style={{ color: 'var(--accent)' }}>CEPH</span>
           <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{
             background: `${alpha(healthColor, 8)}`, color: healthColor, border: `1px solid ${alpha(healthColor, 19)}`,
           }}>{ceph.health.status}</span>
@@ -208,12 +208,12 @@ function HAPanel({ ha }: { ha: HAEntry[] }) {
 
   return (
     <div className="rounded-lg border p-4" style={{
-      background: 'linear-gradient(135deg, var(--surface) 0%, var(--ground) 100%)', borderColor: 'color-mix(in srgb, var(--accent) 13%, transparent)',
+      background: 'var(--surface)', borderColor: 'color-mix(in srgb, var(--accent) 13%, transparent)',
     }}>
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full" style={{ background: 'var(--good)', boxShadow: '0 0 6px var(--good)' }} />
-          <span className="font-display font-semibold tracking-wide uppercase text-sm" style={{ color: 'var(--accent)' }}>HIGH AVAILABILITY</span>
+          <span className="font-display font-semibold text-xl" style={{ color: 'var(--accent)' }}>HIGH AVAILABILITY</span>
         </div>
         <span className="text-xs font-mono" style={{ color: allStarted ? 'var(--good)' : 'var(--warn-2)' }}>
           {services.filter(s => s.crm_state === 'started').length}/{services.length} services
@@ -275,12 +275,12 @@ function Header({ nodes, vms, lastSync }: { nodes: PVENode[]; vms: PVEVM[]; last
   const online  = nodes.filter(n => n.status === 'online').length
   const running = vms.filter(v => v.status === 'running').length
   return (
-    <header className="flex items-center justify-between px-6 py-4 border-b" style={{ borderColor: 'var(--border-dim)', background: 'var(--ground)' }}>
-      <div className="flex items-center gap-3">
-        <h1 className="font-display text-2xl font-light tracking-widest">
-          HYPER<span className="font-bold" style={{ color: 'var(--accent)' }}>PROX</span>
+    <header className="flex items-center justify-between px-8 py-6 border-b" style={{ borderColor: 'var(--border-dim)', background: 'var(--ground)' }}>
+      <div className="flex flex-col" style={{ gap: 8 }}>
+        <span className="font-mono uppercase" style={{ fontSize: 12, letterSpacing: '0.14em', color: 'var(--accent)' }}>v0.1.0</span>
+        <h1 className="font-display font-bold" style={{ fontSize: 36, lineHeight: 1.1, color: 'var(--text-bright)' }}>
+          HYPER<span style={{ color: 'var(--accent)' }}>PROX</span>
         </h1>
-        <span className="text-xs font-mono text-gray-600">v0.1.0</span>
       </div>
       <div className="flex items-center gap-3">
         {[
@@ -307,10 +307,10 @@ function VMTable({ vms }: { vms: PVEVM[] }) {
   return (
     <div>
       <div className="flex items-center justify-between mb-3">
-        <h2 className="text-xs font-mono uppercase tracking-widest text-gray-500">VMs & Containers ({filtered.length})</h2>
+        <h2 className="font-display font-semibold" style={{ fontSize: 22, color: 'var(--text-bright)' }}>VMs & Containers ({filtered.length})</h2>
         <div className="flex gap-1">
           {(['running', 'all', 'stopped'] as const).map(f => (
-            <button key={f} onClick={() => setFilter(f)} className="text-xs font-mono px-2 py-1 rounded transition-colors" style={{
+            <button key={f} onClick={() => setFilter(f)} className="text-sm px-3 py-1.5 rounded-md transition-colors" style={{
               background: filter === f ? 'color-mix(in srgb, var(--accent) 8%, transparent)' : 'transparent',
               color:      filter === f ? 'var(--accent)' : 'var(--text-muted)',
               border:     `1px solid ${filter === f ? 'color-mix(in srgb, var(--accent) 19%, transparent)' : 'var(--text-faint)'}`,
@@ -369,7 +369,7 @@ export default function DashboardView() {
     <div className="min-h-screen flex items-center justify-center" style={{ background: 'var(--ground)' }}>
       <div className="flex flex-col items-center gap-4">
         <div className="font-display text-2xl font-light tracking-widest">HYPER<span className="font-bold" style={{ color: 'var(--accent)' }}>PROX</span></div>
-        <div className="text-xs font-mono text-gray-500 animate-pulse">connecting to titancluster...</div>
+        <div className="text-sm text-gray-500 animate-pulse">connecting to titancluster...</div>
       </div>
     </div>
   )
@@ -377,7 +377,7 @@ export default function DashboardView() {
   if (error || !data) return (
     <div className="min-h-screen flex items-center justify-center" style={{ background: 'var(--ground)' }}>
       <div className="text-center">
-        <div className="text-red-400 font-mono text-sm mb-2">connection failed</div>
+        <div className="text-red-400 text-base mb-2">connection failed</div>
         <div className="text-gray-600 font-mono text-xs">{error}</div>
       </div>
     </div>
@@ -388,9 +388,9 @@ export default function DashboardView() {
   return (
     <div className="min-h-screen" style={{ background: 'var(--ground)' }}>
       <Header nodes={data.nodes} vms={data.vms} lastSync={lastSync} />
-      <main className="p-6 max-w-7xl mx-auto space-y-8">
+      <main className="p-8 max-w-7xl mx-auto space-y-8">
         <section>
-          <h2 className="text-xs font-mono uppercase tracking-widest text-gray-500 mb-4">Cluster Nodes</h2>
+          <h2 className="font-display font-semibold mb-4" style={{ fontSize: 22, color: 'var(--text-bright)' }}>Cluster Nodes</h2>
           <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))' }}>
             {sorted.map(node => <NodeCard key={node.node} node={node} vms={data.vms} />)}
           </div>

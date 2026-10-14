@@ -175,33 +175,36 @@ export default function MonitoringPage() {
   // Render
   // -------------------------------------------------------------------------
   return (
-    <div style={{ padding: 24, minHeight: '100vh', background: 'var(--ground)', fontFamily: "'IBM Plex Mono', monospace" }}>
+    <div style={{ padding: 32, minHeight: '100vh', background: 'var(--ground)' }}>
 
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
-        <div>
-          <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 22, fontWeight: 700, color: 'var(--text-bright)', letterSpacing: '0.05em' }}>
-            MONITORING
+      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 32 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--accent)' }}>
+            Prometheus + Grafana
           </div>
-          <div style={{ fontSize: 11, color: 'var(--text-dimmer)', marginTop: 2 }}>
-            Prometheus + Grafana — {lastUpdate ? `updated ${lastUpdate.toLocaleTimeString()}` : 'loading...'}
+          <div style={{ fontFamily: 'var(--font-display)', fontSize: 36, lineHeight: 1.1, fontWeight: 700, color: 'var(--text-bright)' }}>
+            Monitoring
+          </div>
+          <div style={{ fontSize: 15, color: 'var(--text-soft)', maxWidth: 680 }}>
+            {lastUpdate ? `Updated ${lastUpdate.toLocaleTimeString()}` : 'Loading...'}
           </div>
         </div>
 
         {/* Alert badges */}
         <div style={{ display: 'flex', gap: 8 }}>
           {criticalAlerts.length > 0 && (
-            <div style={{ padding: '4px 12px', borderRadius: 4, background: 'color-mix(in srgb, var(--crit) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--crit) 25%, transparent)', color: 'var(--crit)', fontSize: 12 }}>
-              🔴 {criticalAlerts.length} Critical
+            <div style={{ padding: '6px 14px', borderRadius: 6, background: 'color-mix(in srgb, var(--crit) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--crit) 25%, transparent)', color: 'var(--crit)', fontSize: 14, fontWeight: 600 }}>
+              {criticalAlerts.length} Critical
             </div>
           )}
           {warningAlerts.length > 0 && (
-            <div style={{ padding: '4px 12px', borderRadius: 4, background: 'color-mix(in srgb, var(--warn) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--warn) 25%, transparent)', color: 'var(--warn)', fontSize: 12 }}>
-              🟡 {warningAlerts.length} Warning
+            <div style={{ padding: '6px 14px', borderRadius: 6, background: 'color-mix(in srgb, var(--warn) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--warn) 25%, transparent)', color: 'var(--warn)', fontSize: 14, fontWeight: 600 }}>
+              {warningAlerts.length} Warning
             </div>
           )}
           {firingCount === 0 && !loading && (
-            <div style={{ padding: '4px 12px', borderRadius: 4, background: 'color-mix(in srgb, var(--good) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--good) 25%, transparent)', color: 'var(--good)', fontSize: 12 }}>
+            <div style={{ padding: '6px 14px', borderRadius: 6, background: 'color-mix(in srgb, var(--good) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--good) 25%, transparent)', color: 'var(--good)', fontSize: 14, fontWeight: 600 }}>
               ✓ All Clear
             </div>
           )}
@@ -209,7 +212,7 @@ export default function MonitoringPage() {
       </div>
 
       {/* Tabs */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 24, borderBottom: '1px solid var(--border)', paddingBottom: 0 }}>
+      <div style={{ display: 'flex', gap: 4, marginBottom: 32, borderBottom: '1px solid var(--border)', paddingBottom: 0 }}>
         {(['overview', 'grafana', 'alerts'] as const).map(t => (
           <button
             key={t}
@@ -219,8 +222,8 @@ export default function MonitoringPage() {
               borderBottom: tab === t ? '2px solid var(--accent)' : '2px solid transparent',
               color: tab === t ? 'var(--accent)' : 'var(--text-dim)',
               padding: '8px 16px', cursor: 'pointer',
-              fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 600,
-              fontSize: 13, letterSpacing: '0.05em', textTransform: 'uppercase',
+              fontFamily: 'var(--font-display)', fontWeight: 600,
+              fontSize: 17, letterSpacing: '0.05em', textTransform: 'uppercase',
               marginBottom: -1,
             }}
           >
@@ -237,12 +240,12 @@ export default function MonitoringPage() {
           {/* Node stat cards */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 16, marginBottom: 24 }}>
             {nodes.sort((a, b) => a.node.localeCompare(b.node)).map(n => (
-              <div key={n.node} style={{ background: 'var(--surface-notice)', border: '1px solid var(--border-soft)', borderRadius: 8, padding: 16 }}>
+              <div key={n.node} style={{ background: 'var(--surface)', border: '1px solid var(--border-soft)', borderRadius: 10, padding: 20 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                  <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 14, color: 'var(--text-bright)', letterSpacing: '0.08em' }}>
+                  <div style={{ fontFamily: 'var(--font-display)', fontWeight: 600, fontSize: 20, color: 'var(--text-bright)', letterSpacing: '0.04em' }}>
                     {n.node.toUpperCase()}
                   </div>
-                  <div style={{ fontSize: 10, color: 'var(--good)', border: '1px solid color-mix(in srgb, var(--good) 19%, transparent)', padding: '2px 6px', borderRadius: 3 }}>
+                  <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: 'var(--good)', border: '1px solid color-mix(in srgb, var(--good) 19%, transparent)', padding: '2px 6px', borderRadius: 3 }}>
                     ONLINE
                   </div>
                 </div>
@@ -285,17 +288,17 @@ export default function MonitoringPage() {
 
           {/* Recent alerts preview */}
           {alerts.length > 0 && (
-            <div style={{ background: 'var(--surface-notice)', border: '1px solid var(--border-soft)', borderRadius: 8, padding: 16 }}>
-              <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--accent) 53%, transparent)', letterSpacing: '0.1em', marginBottom: 12 }}>
-                ACTIVE ALERTS
+            <div style={{ background: 'var(--surface)', border: '1px solid var(--border-soft)', borderRadius: 10, padding: 20 }}>
+              <div style={{ fontFamily: 'var(--font-display)', fontWeight: 600, fontSize: 20, color: 'var(--text-bright)', marginBottom: 12 }}>
+                Active alerts
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {alerts.filter(a => a.state === 'firing').slice(0, 5).map((a, i) => (
                   <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: 10, borderRadius: 6, background: severityBg(a.severity), border: `1px solid ${severityColor(a.severity)}30` }}>
                     <div style={{ width: 8, height: 8, borderRadius: '50%', background: severityColor(a.severity), flexShrink: 0, marginTop: 3, boxShadow: `0 0 6px ${severityColor(a.severity)}` }} />
                     <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 12, color: 'var(--text-bright)', fontWeight: 500 }}>{a.name}</div>
-                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{a.summary || a.description}</div>
+                      <div style={{ fontSize: 14, color: 'var(--text-bright)', fontWeight: 600 }}>{a.name}</div>
+                      <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2 }}>{a.summary || a.description}</div>
                       {a.node && <div style={{ fontSize: 10, color: 'var(--text-dimmer)', marginTop: 2 }}>Node: {a.node}</div>}
                     </div>
                     <div style={{ fontSize: 10, color: severityColor(a.severity), flexShrink: 0, padding: '2px 6px', border: `1px solid ${severityColor(a.severity)}40`, borderRadius: 3 }}>
@@ -305,7 +308,7 @@ export default function MonitoringPage() {
                 ))}
               </div>
               {alerts.filter(a => a.state === 'firing').length > 5 && (
-                <button onClick={() => setTab('alerts')} style={{ marginTop: 8, background: 'none', border: 'none', color: 'var(--accent)', fontSize: 11, cursor: 'pointer', fontFamily: "'IBM Plex Mono', monospace" }}>
+                <button onClick={() => setTab('alerts')} style={{ marginTop: 8, background: 'none', border: 'none', color: 'var(--accent)', fontSize: 13, cursor: 'pointer' }}>
                   View all {alerts.filter(a => a.state === 'firing').length} alerts →
                 </button>
               )}
@@ -333,11 +336,11 @@ export default function MonitoringPage() {
                 key={d.uid}
                 onClick={() => setGrafanaDash(d.uid)}
                 style={{
-                  padding: '6px 14px', borderRadius: 4, cursor: 'pointer',
+                  padding: '8px 16px', borderRadius: 6, cursor: 'pointer',
                   background: grafanaDash === d.uid ? 'color-mix(in srgb, var(--accent) 8%, transparent)' : 'transparent',
                   border: `1px solid ${grafanaDash === d.uid ? 'color-mix(in srgb, var(--accent) 25%, transparent)' : 'var(--border-soft)'}`,
                   color: grafanaDash === d.uid ? 'var(--accent)' : 'var(--text-dim)',
-                  fontSize: 12, fontFamily: "'IBM Plex Mono', monospace",
+                  fontSize: 14,
                 }}
               >
                 {d.title}
@@ -347,7 +350,7 @@ export default function MonitoringPage() {
               href={`${GRAFANA}/dashboards`}
               target="_blank"
               rel="noreferrer"
-              style={{ marginLeft: 'auto', padding: '6px 14px', borderRadius: 4, border: '1px solid var(--border-soft)', color: 'var(--text-dimmer)', fontSize: 12, textDecoration: 'none', fontFamily: "'IBM Plex Mono', monospace" }}
+              style={{ marginLeft: 'auto', padding: '8px 16px', borderRadius: 6, border: '1px solid var(--border-strong)', color: 'var(--text)', fontSize: 14, textDecoration: 'none' }}
             >
               Open Grafana ↗
             </a>
@@ -384,21 +387,21 @@ export default function MonitoringPage() {
             if (!sevAlerts.length) return null
             return (
               <div key={sev} style={{ marginBottom: 24 }}>
-                <div style={{ fontSize: 11, color: severityColor(sev), letterSpacing: '0.1em', marginBottom: 12 }}>
+                <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: severityColor(sev), letterSpacing: '0.14em', marginBottom: 12 }}>
                   {sev.toUpperCase()} — {sevAlerts.length} alert{sevAlerts.length !== 1 ? 's' : ''}
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   {sevAlerts.map((a, i) => (
-                    <div key={i} style={{ background: 'var(--surface-notice)', border: `1px solid ${severityColor(a.severity)}30`, borderLeft: `3px solid ${severityColor(a.severity)}`, borderRadius: 6, padding: 16 }}>
+                    <div key={i} style={{ background: 'var(--surface)', border: `1px solid ${severityColor(a.severity)}30`, borderLeft: `3px solid ${severityColor(a.severity)}`, borderRadius: 10, padding: 20 }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
-                        <div style={{ fontSize: 14, color: 'var(--text-bright)', fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 600 }}>{a.name}</div>
-                        <div style={{ fontSize: 10, padding: '2px 8px', borderRadius: 3, background: severityBg(a.severity), color: severityColor(a.severity), border: `1px solid ${severityColor(a.severity)}40`, flexShrink: 0 }}>
+                        <div style={{ fontSize: 20, color: 'var(--text-bright)', fontFamily: 'var(--font-display)', fontWeight: 600 }}>{a.name}</div>
+                        <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, padding: '2px 8px', borderRadius: 3, background: severityBg(a.severity), color: severityColor(a.severity), border: `1px solid ${severityColor(a.severity)}40`, flexShrink: 0 }}>
                           {a.state.toUpperCase()}
                         </div>
                       </div>
-                      {a.summary && <div style={{ fontSize: 12, color: 'var(--text-soft)', marginBottom: 6 }}>{a.summary}</div>}
-                      {a.description && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>{a.description}</div>}
-                      <div style={{ display: 'flex', gap: 16, fontSize: 10, color: 'var(--text-dimmer)' }}>
+                      {a.summary && <div style={{ fontSize: 14, color: 'var(--text-soft)', marginBottom: 6 }}>{a.summary}</div>}
+                      {a.description && <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 6 }}>{a.description}</div>}
+                      <div style={{ display: 'flex', gap: 16, fontSize: 12, color: 'var(--text-dimmer)' }}>
                         {a.node && <span>Node: <span style={{ color: 'var(--text-muted)' }}>{a.node}</span></span>}
                         {a.firedAt && <span>Since: <span style={{ color: 'var(--text-muted)' }}>{new Date(a.firedAt).toLocaleString()}</span></span>}
                       </div>

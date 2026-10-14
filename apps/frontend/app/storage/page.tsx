@@ -105,7 +105,7 @@ function UsageBar({ used, total, color }: { used: number; total: number; color: 
       </div>
       <div className="flex justify-between text-xs font-mono mt-0.5">
         <span style={{ color: c }}>{p}%</span>
-        <span className="text-gray-600">{formatBytes(used)} / {formatBytes(total)}</span>
+        <span style={{ color: 'var(--text-dimmer)' }}>{formatBytes(used)} / {formatBytes(total)}</span>
       </div>
     </div>
   )
@@ -125,8 +125,8 @@ function StorageCard({ s }: { s: StorageItem }) {
   const contents = s.content?.split(',') ?? []
 
   return (
-    <div className="rounded-lg border p-4" style={{
-      background:  'linear-gradient(135deg, var(--surface) 0%, var(--ground) 100%)',
+    <div className="rounded-lg border p-5" style={{
+      background:  'var(--surface)',
       borderColor: isCrit ? 'color-mix(in srgb, var(--crit-2) 19%, transparent)' : isWarn ? 'color-mix(in srgb, var(--warn-2) 19%, transparent)' : `${alpha(color, 15)}`,
       boxShadow:   isCrit ? '0 0 12px color-mix(in srgb, var(--crit-2) 3%, transparent)' : isWarn ? '0 0 12px color-mix(in srgb, var(--warn-2) 3%, transparent)' : 'none',
     }}>
@@ -137,7 +137,7 @@ function StorageCard({ s }: { s: StorageItem }) {
             background: (s.active === 1 || s.status === 'available') ? 'var(--good)' : 'var(--crit-2)',
             boxShadow:  (s.active === 1 || s.status === 'available') ? '0 0 5px var(--good)' : '0 0 5px var(--crit-2)',
           }}/>
-          <span className="font-mono text-sm font-semibold text-white">{s.storage}</span>
+          <span className="font-display text-lg font-semibold" style={{ color: 'var(--text-bright)' }}>{s.storage}</span>
           {isWarn && <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background: 'color-mix(in srgb, var(--crit-2) 8%, transparent)', color: 'var(--crit-2)', border: '1px solid color-mix(in srgb, var(--crit-2) 19%, transparent)', fontSize: 9 }}>
             {isCrit ? 'CRITICAL' : 'WARNING'}
           </span>}
@@ -158,8 +158,8 @@ function StorageCard({ s }: { s: StorageItem }) {
           { label: 'TOTAL', value: formatBytes(s.total)},
         ].map(({ label, value }) => (
           <div key={label} className="text-center">
-            <div className="text-xs font-mono text-gray-600">{label}</div>
-            <div className="text-xs font-mono text-white">{value}</div>
+            <div className="text-xs" style={{ color: 'var(--text-dimmer)' }}>{label}</div>
+            <div className="text-sm font-mono" style={{ color: 'var(--text-bright)' }}>{value}</div>
           </div>
         ))}
       </div>
@@ -199,7 +199,7 @@ function CephPoolsTable({ pools }: { pools: CephPool[] | null }) {
         <thead>
           <tr style={{ background: 'var(--ground-deep)', borderBottom: '1px solid var(--border)' }}>
             {['Pool', 'Type', 'Size', 'PGs', 'Used', 'Usage', 'Crush Rule'].map(h => (
-              <th key={h} className="px-4 py-2 text-left text-gray-600 uppercase tracking-wider">{h}</th>
+              <th key={h} className="px-4 py-2.5 text-left uppercase font-medium" style={{ color: 'var(--text-dimmer)', letterSpacing: '0.1em' }}>{h}</th>
             ))}
           </tr>
         </thead>
@@ -209,11 +209,11 @@ function CephPoolsTable({ pools }: { pools: CephPool[] | null }) {
             const col = p > 85 ? 'var(--crit-2)' : p > 70 ? 'var(--warn-2)' : 'var(--accent)'
             return (
               <tr key={pool.pool} style={{ borderBottom: '1px solid var(--surface-raised)', background: i % 2 === 0 ? 'var(--ground)' : 'var(--surface-raised)' }}>
-                <td className="px-4 py-2.5 text-white font-semibold">{pool.pool_name}</td>
+                <td className="px-4 py-2.5 font-semibold" style={{ color: 'var(--text-bright)' }}>{pool.pool_name}</td>
                 <td className="px-4 py-2.5 text-gray-400">{pool.type}</td>
                 <td className="px-4 py-2.5">
                   <span style={{ color: 'var(--text-bright)' }}>{pool.size}</span>
-                  <span className="text-gray-600">/{pool.min_size} min</span>
+                  <span style={{ color: 'var(--text-dimmer)' }}>/{pool.min_size} min</span>
                 </td>
                 <td className="px-4 py-2.5 text-gray-400">{pool.pg_num}</td>
                 <td className="px-4 py-2.5" style={{ color: col }}>{formatBytes(pool.bytes_used)}</td>
@@ -250,7 +250,7 @@ function OSDMap({ osds }: { osds: CephOSD[] | null }) {
     <div className="space-y-4">
       {Object.entries(byHost).sort(([a], [b]) => a.localeCompare(b)).map(([host, hostOsds]) => (
         <div key={host}>
-          <div className="text-xs font-mono text-gray-500 mb-2 uppercase tracking-wider">{host}</div>
+          <div className="text-xs font-mono mb-2 uppercase" style={{ color: 'var(--text-dimmer)', letterSpacing: '0.14em' }}>{host}</div>
           <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))' }}>
             {hostOsds.map(osd => {
               const p   = Math.round(osd.percent_used)
@@ -313,9 +313,9 @@ function SummaryBar({ storage }: { storage: StorageItem[] }) {
         { label: 'Available',      value: formatBytes(totalRaw - usedRaw), color: 'var(--good)' },
         { label: 'Overall',        value: `${overallPct}%`,              color: overallPct > 80 ? 'var(--crit-2)' : 'var(--warn)' },
       ].map(({ label, value, color }) => (
-        <div key={label} className="rounded-lg border p-4" style={{ background: 'var(--surface)', borderColor: `${alpha(color, 15)}` }}>
-          <div className="font-display text-xl font-bold" style={{ color }}>{value}</div>
-          <div className="text-xs font-mono text-gray-600 mt-0.5">{label}</div>
+        <div key={label} className="rounded-lg border p-5" style={{ background: 'var(--surface)', borderColor: `${alpha(color, 15)}` }}>
+          <div className="font-display text-2xl font-bold" style={{ color }}>{value}</div>
+          <div className="text-sm mt-0.5" style={{ color: 'var(--text-dimmer)' }}>{label}</div>
         </div>
       ))}
     </div>
@@ -358,33 +358,33 @@ export default function StoragePage() {
 
   if (loading) return (
     <div className="min-h-full flex items-center justify-center" style={{ background: 'var(--ground)' }}>
-      <div className="text-xs font-mono text-gray-500 animate-pulse">loading storage...</div>
+      <div className="text-sm animate-pulse" style={{ color: 'var(--text-dimmer)' }}>loading storage...</div>
     </div>
   )
 
   if (error || !overview) return (
     <div className="min-h-full flex items-center justify-center" style={{ background: 'var(--ground)' }}>
-      <div className="text-red-400 font-mono text-sm">{error ?? 'No data'}</div>
+      <div className="text-sm" style={{ color: 'var(--crit)' }}>{error ?? 'No data'}</div>
     </div>
   )
 
   return (
-    <div className="min-h-full p-3 sm:p-6" style={{ background: 'var(--ground)' }}>
+    <div className="min-h-full p-4 sm:p-8" style={{ background: 'var(--ground)' }}>
 
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-3">
-          <div className="w-1 h-6 rounded-full" style={{ background: 'var(--violet-2)', boxShadow: '0 0 8px var(--violet-2)' }}/>
-          <h1 className="font-display text-2xl font-semibold tracking-wide uppercase" style={{ color: 'var(--violet-2)' }}>Storage</h1>
+      <div className="flex items-end justify-between flex-wrap gap-4 mb-8">
+        <div>
+          <div className="font-mono uppercase" style={{ fontSize: 12, letterSpacing: '0.14em', color: 'var(--accent)' }}>Ceph and volumes</div>
+          <h1 className="font-display font-bold mt-2" style={{ fontSize: 36, lineHeight: 1.1, color: 'var(--text-bright)' }}>Storage</h1>
         </div>
-        {lastSync && <span className="text-xs font-mono text-gray-600">synced {lastSync.toLocaleTimeString()}</span>}
+        {lastSync && <span className="text-sm" style={{ color: 'var(--text-dimmer)' }}>synced {lastSync.toLocaleTimeString()}</span>}
       </div>
 
       {/* Warnings */}
       {(overview.warnings?.length??0) > 0 && (
         <div className="mb-5 space-y-1">
           {(overview.warnings??[]).map((w, i) => (
-            <div key={i} className="flex items-center gap-2 px-3 py-2 rounded text-xs font-mono" style={{
+            <div key={i} className="flex items-center gap-2 px-3 py-2 rounded text-sm" style={{
               background: 'color-mix(in srgb, var(--crit-2) 6%, transparent)', color: 'var(--crit-soft)', border: '1px solid color-mix(in srgb, var(--crit-2) 19%, transparent)',
             }}>
               <span>⚠</span><span>{w}</span>
@@ -405,7 +405,7 @@ export default function StoragePage() {
           { key: 'vms',        label: 'VM Disks' },
         ] as const).map(({ key, label }) => (
           <button key={key} onClick={() => setTab(key)}
-            className="px-5 py-3 text-xs font-mono uppercase tracking-wider transition-colors"
+            className="px-5 py-3 text-sm font-medium transition-colors"
             style={{
               borderBottom: tab === key ? '2px solid var(--violet-2)' : '2px solid transparent',
               color:        tab === key ? 'var(--violet-2)' : 'var(--text-dim)',
@@ -433,7 +433,7 @@ export default function StoragePage() {
               ].map(({ label, value, color }) => (
                 <div key={label} className="p-3 rounded-lg border text-center" style={{ background: 'var(--surface)', borderColor: `${alpha(color, 15)}` }}>
                   <div className="font-mono text-sm font-bold" style={{ color }}>{value}</div>
-                  <div className="text-xs font-mono text-gray-600 mt-0.5">{label}</div>
+                  <div className="text-xs mt-0.5" style={{ color: 'var(--text-dimmer)' }}>{label}</div>
                 </div>
               ))}
             </div>
@@ -448,10 +448,10 @@ export default function StoragePage() {
       {/* VM Disks */}
       {tab === 'vms' && (
         vmLoading ? (
-          <div className="text-xs font-mono text-gray-600 animate-pulse py-8 text-center">Loading...</div>
+          <div className="text-sm animate-pulse py-8 text-center" style={{ color: 'var(--text-dimmer)' }}>Loading...</div>
         ) : (
           <div className="rounded-lg border overflow-hidden" style={{borderColor:'var(--border)'}}>
-            <div className="flex items-center justify-between px-4 py-2 border-b text-xs font-mono text-gray-600" style={{background:'var(--ground-deep)',borderColor:'var(--border)'}}>
+            <div className="flex items-center justify-between px-4 py-2 border-b text-sm" style={{background:'var(--ground-deep)',borderColor:'var(--border)',color:'var(--text-dimmer)'}}>
               <span>{vmBreakdown.length} VMs &amp; Containers</span>
               <span style={{color:'var(--violet-2)'}}>Total allocated: {formatBytes(vmBreakdown.reduce((s:number,v:any)=>s+(v.totalAllocated??0),0))}</span>
             </div>
@@ -459,7 +459,7 @@ export default function StoragePage() {
               <thead>
                 <tr style={{background:'var(--ground-deep)',borderBottom:'1px solid var(--border)'}}>
                   {['ID','Name','Type','Node','Status','Storage','Allocated','Used'].map(h=>(
-                    <th key={h} className="px-4 py-2 text-left text-gray-600 uppercase tracking-wider">{h}</th>
+                    <th key={h} className="px-4 py-2.5 text-left uppercase font-medium" style={{ color: 'var(--text-dimmer)', letterSpacing: '0.1em' }}>{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -469,7 +469,7 @@ export default function StoragePage() {
                     onMouseEnter={e=>(e.currentTarget as HTMLElement).style.background='var(--surface)'}
                     onMouseLeave={e=>(e.currentTarget as HTMLElement).style.background=i%2===0?'var(--ground)':'var(--surface-raised)'}>
                     <td className="px-4 py-2.5 text-gray-500">{vm.vmid}</td>
-                    <td className="px-4 py-2.5 text-white font-semibold">{vm.name}</td>
+                    <td className="px-4 py-2.5 font-semibold" style={{ color: 'var(--text-bright)' }}>{vm.name}</td>
                     <td className="px-4 py-2.5"><span style={{color:vm.type==='lxc'?'var(--accent)':'var(--violet)'}}>{vm.type.toUpperCase()}</span></td>
                     <td className="px-4 py-2.5 text-gray-400">{vm.node}</td>
                     <td className="px-4 py-2.5"><span style={{color:vm.status==='running'?'var(--good)':'var(--text-dimmer)'}}>{vm.status==='running'?'●':'■'} {vm.status}</span></td>
@@ -525,7 +525,7 @@ function VMStorageBreakdown({ items, storageColors }: {
 
   const totalAllocated = filtered.reduce((s, v) => s + v.totalAllocated, 0)
 
-  const SEL = { background:'var(--ground-deep)', border:'1px solid var(--text-faint)', color:'var(--text-soft)', borderRadius:6, padding:'6px 10px', fontFamily:'IBM Plex Mono,monospace', fontSize:11, outline:'none' } as React.CSSProperties
+  const SEL = { background:'var(--ground-deep)', border:'1px solid var(--border-strong)', color:'var(--text-bright)', borderRadius:6, padding:'0 12px', height:40, fontFamily:'inherit', fontSize:14, outline:'none' } as React.CSSProperties
 
   return (
     <div>
@@ -546,7 +546,7 @@ function VMStorageBreakdown({ items, storageColors }: {
         <input type="text" placeholder="Search..." value={search} onChange={e=>setSearch(e.target.value)}
           style={{...SEL, width:160, caretColor:'var(--violet-2)'}}/>
         <div className="ml-auto flex items-center gap-3 text-xs font-mono">
-          <span className="text-gray-600">{filtered.length} VMs/CTs</span>
+          <span style={{ color: 'var(--text-dimmer)' }}>{filtered.length} VMs/CTs</span>
           <span style={{color:'var(--violet-2)'}}>Total allocated: {formatBytes(totalAllocated)}</span>
         </div>
       </div>
@@ -556,7 +556,7 @@ function VMStorageBreakdown({ items, storageColors }: {
           <thead>
             <tr style={{background:'var(--ground-deep)',borderBottom:'1px solid var(--border)'}}>
               {['ID','Name','Type','Node','Status','Storage Pools','Allocated'].map(h=>(
-                <th key={h} className="px-4 py-2 text-left text-gray-600 uppercase tracking-wider">{h}</th>
+                <th key={h} className="px-4 py-2.5 text-left uppercase font-medium" style={{ color: 'var(--text-dimmer)', letterSpacing: '0.1em' }}>{h}</th>
               ))}
             </tr>
           </thead>
@@ -568,7 +568,7 @@ function VMStorageBreakdown({ items, storageColors }: {
                 onMouseLeave={e=>(e.currentTarget as HTMLElement).style.background=i%2===0?'var(--ground)':'var(--surface-raised)'}
               >
                 <td className="px-4 py-2.5 text-gray-500">{vm.vmid}</td>
-                <td className="px-4 py-2.5 text-white font-semibold">{vm.name}</td>
+                <td className="px-4 py-2.5 font-semibold" style={{ color: 'var(--text-bright)' }}>{vm.name}</td>
                 <td className="px-4 py-2.5"><span style={{color:vm.type==='lxc'?'var(--accent)':'var(--violet)'}}>{vm.type.toUpperCase()}</span></td>
                 <td className="px-4 py-2.5 text-gray-400">{vm.node}</td>
                 <td className="px-4 py-2.5">

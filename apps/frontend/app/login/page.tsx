@@ -72,15 +72,31 @@ function LoginForm() {
   return (
     <form
       onSubmit={submit}
-      className="w-full max-w-sm space-y-6 rounded-lg border border-white/10 bg-white/5 p-8"
+      className="w-full max-w-sm space-y-6 rounded-lg border p-8"
+      style={{
+        background: 'var(--surface)',
+        borderColor: 'var(--border-soft)',
+        boxShadow: '0 24px 60px color-mix(in srgb, var(--ground-deep) 80%, transparent)',
+      }}
     >
-      <div className="space-y-1">
-        <h1 className="text-2xl font-semibold tracking-wide text-[var(--accent)]">HyperProx</h1>
-        <p className="text-sm text-white/50">Sign in to continue</p>
+      <div className="space-y-2 text-center">
+        <div
+          className="font-mono uppercase"
+          style={{ fontSize: 11, letterSpacing: '0.14em', color: 'var(--warn-2)' }}
+        >
+          Secure sign-in
+        </div>
+        <h1
+          className="font-display"
+          style={{ fontSize: 36, fontWeight: 700, letterSpacing: '0.12em', color: 'var(--text-bright)', lineHeight: 1.1 }}
+        >
+          HYPER<span style={{ color: 'var(--accent)' }}>PROX</span>
+        </h1>
+        <p className="text-sm" style={{ color: 'var(--text-soft)' }}>Sign in to continue</p>
       </div>
 
       <div className="space-y-2">
-        <label htmlFor="password" className="text-sm text-white/70">Admin password</label>
+        <label htmlFor="password" className="block text-sm" style={{ color: 'var(--text-soft)' }}>Admin password</label>
         <input
           id="password"
           type="password"
@@ -88,12 +104,20 @@ function LoginForm() {
           autoComplete="current-password"
           value={password}
           onChange={e => setPassword(e.target.value)}
-          className="w-full rounded border border-white/10 bg-black/40 px-3 py-2 font-mono text-sm text-white outline-none focus:border-[var(--accent)]"
+          className="w-full rounded-md border px-3 font-mono text-sm outline-none focus:border-[var(--accent)]"
+          style={{ height: 42, background: 'var(--ground-deep)', borderColor: 'var(--border-strong)', color: 'var(--text-bright)' }}
         />
       </div>
 
       {error && (
-        <p className="rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+        <p
+          className="rounded-md border px-3 py-2 text-sm"
+          style={{
+            background: 'color-mix(in srgb, var(--crit) 10%, transparent)',
+            borderColor: 'color-mix(in srgb, var(--crit) 35%, transparent)',
+            color: 'var(--crit-soft)',
+          }}
+        >
           {error}
         </p>
       )}
@@ -101,7 +125,8 @@ function LoginForm() {
       <button
         type="submit"
         disabled={busy || !password}
-        className="w-full rounded bg-[var(--accent)] px-4 py-2 font-medium text-[var(--ground)] disabled:opacity-40"
+        className="w-full rounded-md disabled:opacity-40"
+        style={{ height: 42, background: 'var(--accent)', color: 'var(--accent-ink)', fontWeight: 600, border: 'none' }}
       >
         {busy ? 'Signing in...' : 'Sign in'}
       </button>
