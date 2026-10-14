@@ -10,13 +10,14 @@ const config: Config = {
     extend: {
       colors: {
         // HyperProx brand
-        cyan:  { DEFAULT: '#00e5ff', 500: '#00e5ff' },
-        prox:  { DEFAULT: '#00e5ff' },
+        cyan:  { DEFAULT: '#2fd6e8', 500: '#2fd6e8' },
+        prox:  { DEFAULT: '#2fd6e8' },
         // Dark backgrounds
-        base:  { DEFAULT: '#080c14', 900: '#080c14', 800: '#0d1220', 700: '#111827' },
+        base:  { DEFAULT: '#0a111c', 900: '#0a111c', 800: '#0d1624', 700: '#0f1b2b' },
       },
       fontFamily: {
-        display: ['Rajdhani', 'sans-serif'],
+        display: ['Barlow Condensed', 'sans-serif'],
+        sans:    ['Barlow', 'system-ui', 'sans-serif'],
         mono:    ['IBM Plex Mono', 'monospace'],
       },
       animation: {
@@ -27,7 +28,7 @@ const config: Config = {
       keyframes: {
         fadeIn:    { '0%': { opacity: '0' }, '100%': { opacity: '1' } },
         slideUp:   { '0%': { transform: 'translateY(8px)', opacity: '0' }, '100%': { transform: 'translateY(0)', opacity: '1' } },
-        pulseCyan: { '0%, 100%': { boxShadow: '0 0 0 0 rgba(0,229,255,0.4)' }, '50%': { boxShadow: '0 0 0 8px rgba(0,229,255,0)' } },
+        pulseCyan: { '0%, 100%': { boxShadow: '0 0 0 0 rgba(47,214,232,0.4)' }, '50%': { boxShadow: '0 0 0 8px rgba(47,214,232,0)' } },
       },
     },
   },

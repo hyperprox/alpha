@@ -180,7 +180,7 @@ export default function MonitoringPage() {
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
         <div>
-          <div style={{ fontFamily: "'Rajdhani', sans-serif", fontSize: 22, fontWeight: 700, color: 'var(--text-bright)', letterSpacing: '0.05em' }}>
+          <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 22, fontWeight: 700, color: 'var(--text-bright)', letterSpacing: '0.05em' }}>
             MONITORING
           </div>
           <div style={{ fontSize: 11, color: 'var(--text-dimmer)', marginTop: 2 }}>
@@ -219,7 +219,7 @@ export default function MonitoringPage() {
               borderBottom: tab === t ? '2px solid var(--accent)' : '2px solid transparent',
               color: tab === t ? 'var(--accent)' : 'var(--text-dim)',
               padding: '8px 16px', cursor: 'pointer',
-              fontFamily: "'Rajdhani', sans-serif", fontWeight: 600,
+              fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 600,
               fontSize: 13, letterSpacing: '0.05em', textTransform: 'uppercase',
               marginBottom: -1,
             }}
@@ -239,7 +239,7 @@ export default function MonitoringPage() {
             {nodes.sort((a, b) => a.node.localeCompare(b.node)).map(n => (
               <div key={n.node} style={{ background: 'var(--surface-notice)', border: '1px solid var(--border-soft)', borderRadius: 8, padding: 16 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                  <div style={{ fontFamily: "'Rajdhani', sans-serif", fontWeight: 700, fontSize: 14, color: 'var(--text-bright)', letterSpacing: '0.08em' }}>
+                  <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 14, color: 'var(--text-bright)', letterSpacing: '0.08em' }}>
                     {n.node.toUpperCase()}
                   </div>
                   <div style={{ fontSize: 10, color: 'var(--good)', border: '1px solid color-mix(in srgb, var(--good) 19%, transparent)', padding: '2px 6px', borderRadius: 3 }}>
@@ -391,7 +391,7 @@ export default function MonitoringPage() {
                   {sevAlerts.map((a, i) => (
                     <div key={i} style={{ background: 'var(--surface-notice)', border: `1px solid ${severityColor(a.severity)}30`, borderLeft: `3px solid ${severityColor(a.severity)}`, borderRadius: 6, padding: 16 }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
-                        <div style={{ fontSize: 14, color: 'var(--text-bright)', fontFamily: "'Rajdhani', sans-serif", fontWeight: 600 }}>{a.name}</div>
+                        <div style={{ fontSize: 14, color: 'var(--text-bright)', fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 600 }}>{a.name}</div>
                         <div style={{ fontSize: 10, padding: '2px 8px', borderRadius: 3, background: severityBg(a.severity), color: severityColor(a.severity), border: `1px solid ${severityColor(a.severity)}40`, flexShrink: 0 }}>
                           {a.state.toUpperCase()}
                         </div>
