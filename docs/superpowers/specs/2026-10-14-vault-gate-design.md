@@ -142,6 +142,11 @@ Every plug-in declares its audience in its manifest: `homelab`, `business` or `b
 scanner and the plug-in loader all filter on it, so a new plug-in lands in the right edition by itself, and a
 business install cannot be talked into loading a media plug-in.
 
+**Changing edition.** Homelab → Business is allowed: Owner only, from Settings, with re-confirmation. The
+switch removes every homelab-only plug-in and its stored data, applies the Business defaults, and records the
+change in the audit timeline. **Business → Homelab is not offered**, in the UI, the API or the CLI. A company
+install cannot be turned back into a media server; the only way back is a fresh install.
+
 ## Access modes (chosen at install, changeable in Settings)
 
 | Mode | Extra setup | Exposure |
