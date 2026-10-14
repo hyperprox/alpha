@@ -115,14 +115,17 @@ echo "lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file" >> /etc/p
 pct reboot <CTID>
 ```
 
-Then the API token:
+You do not need to make an API token: the setup wizard signs in with your Proxmox
+login and creates one for itself (see **First-run setup** below). If you would
+rather hand it one, create it and paste it under **Advanced** on the wizard's
+first step:
 
 ```bash
 pveum user token add root@pam hyperprox --privsep=0
 pveum acl modify / --token 'root@pam!hyperprox' --role Administrator
 ```
 
-And inside the container:
+Inside the container (Debian 11, 12 or 13, or Ubuntu 22.04 / 24.04):
 
 ```bash
 apt update && apt install -y curl
@@ -130,6 +133,27 @@ curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/install.sh | b
 ```
 
 </details>
+
+### First-run setup
+
+When the install finishes it prints the wizard's address, `http://<container-ip>:3001`.
+
+1. **Connect your Proxmox** — sign in with the same username and password you use
+   for the Proxmox web interface (two-factor codes are supported). HyperProx uses
+   that login once to create its own API token, named
+   `hyperprox-<container-hostname>-<random>`, and never stores your password. It
+   always makes a new token and never replaces or deletes an existing one, so a
+   token another HyperProx — or anything else — relies on is left alone.
+2. **Cluster detected** — nodes, storage and Ceph, read back through the new token.
+3. **Create admin account** — this is the password you sign in to HyperProx with.
+   Reloading the page part-way through is fine: the newest answer wins until setup
+   is complete.
+4. **Existing services** — Nginx Proxy Manager and Proxmox Backup Server already on
+   the cluster are found by their web interface, and HyperProx will not offer to
+   install a second NPM over one it found.
+5. **DNS provider**, then **HyperProx is ready**, with the dashboard's address.
+
+To change the admin password later, use `POST /api/auth/password`.
 
 ### GoDaddy API key — only if you want DNS management
 
