@@ -686,6 +686,41 @@ Single `docker compose up` deploys the full stack:
 
 ## Roadmap
 
+### Next — designed, not built yet
+
+Each of these has a written design in [`docs/superpowers/specs/`](docs/superpowers/specs/). Comments
+on them are welcome before the code exists.
+
+- **Security: the vault gate** ([design](docs/superpowers/specs/2026-10-14-vault-gate-design.md), *in review*).
+  HyperProx can change everything it manages, so it should hold nothing of value outside a vault.
+  Every install gets its own built-in, unmodified **Vaultwarden**, and HyperProx won't start without it.
+  - **One login:** you sign in with your vault account (email, master password, two-factor). HyperProx
+    has no password of its own.
+  - **Sealed at rest:** its disk, database, config and backups hold no usable secret. It starts locked
+    and locks itself again when idle.
+  - **Roles:** Owner, Admin, Operator, Viewer and time-limited Temporary access.
+  - **Credentials:** generate and store passwords, and send them to people through the vault.
+  - **Access:** local network only by default; built-in WireGuard VPN, hardened internet access or an
+    existing tunnel are opt-in.
+  - **Recovery:** `hyperprox --force-reset <email>` works from a sealed recovery password, so losing
+    the Owner's login doesn't lose the install.
+  - **AI:** the assistant never sees a secret.
+  - **Two editions:** Homelab (everything) and Business (media plug-ins removed). A Homelab install
+    can move to Business; it can't go back.
+- **Updates** ([design](docs/superpowers/specs/2026-10-06-updates-design.md)). One page shows what's
+  pending on every node, container and VM, and runs the round on demand or on a schedule.
+  - **One node at a time:** checks Ceph and quorum health before each node and stops at the first
+    failure. Reboots use HA maintenance mode and Ceph `noout`.
+  - **Your rules, in your config file:** for example "this node gets `apt upgrade` only, never
+    `dist-upgrade`, and stop if its kernel pin is missing", or "don't reboot while a Plex stream is
+    playing". The rules live in a local file, not in the code.
+- **Releases, update and uninstall** ([design](docs/superpowers/specs/2026-10-06-installer-design.md),
+  [plan](docs/superpowers/plans/2026-10-06-installer.md)).
+  - **Releases:** versioned, prebuilt and checksum-verified, each one proven by an automated install
+    on a clean Proxmox before it's published.
+  - **Installer:** Default and Advanced menus.
+  - **CLI:** `hyperprox update | rollback | uninstall`; a failed update puts the old version back.
+
 ### v1.0 — The Glue Layer
 
 Struck items are done. Two things changed since this list was written: the
@@ -708,8 +743,8 @@ which was the blocker under the autonomous-deployment item.
   definitions, so this is a client each against an interface that exists.
 - **Multi-instance proxy** — NPM + Traefik + Caddy + HAProxy + Pangolin
   simultaneously. Same shape as above: NPM is the only client so far.
-- **Proxmox rolling updates** — CEPH-aware, per-node sequencing
-- **HyperProx self-update** — one-click from UI
+- **Proxmox rolling updates** — CEPH-aware, per-node sequencing. *Designed:* see **Updates** above.
+- **HyperProx self-update** — one-click from UI. *Designed:* see **Releases, update and uninstall** above.
 - **PBS backup monitoring** — datastore usage, job history, retention policies.
   Better served as a plug-in now that plug-ins exist; it is already in the
   catalogue's "not built yet" list, where anyone can ask for it.
@@ -726,7 +761,7 @@ which was the blocker under the autonomous-deployment item.
 - **XCP-NG support** — manage Xen alongside Proxmox
 - **VPN management** — WireGuard + Tailscale + Pangolin
 - **CVE scanner + PVE hardening**
-- **Role-based access control (RBAC)**
+- **Role-based access control (RBAC)** — the first five roles come with the vault gate above
 - **LDAP / OIDC / SSO support**
 - **Commercial licensing tier** — MSPs and enterprise deployments
 
