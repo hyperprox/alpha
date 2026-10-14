@@ -37,6 +37,7 @@ and nobody (person or process) reaches HyperProx except through it.
   Only dangerous actions ask for re-confirmation.
 - **Recoverable by the owner from the command line**, without weakening the zero-knowledge guarantee
   for anyone else.
+- **Two editions, Homelab and Business**, chosen at install, with plug-ins filtered by audience.
 - **Reachable how the user chooses**, picked from an install menu, with the safest option as the default.
 
 ## Non-goals (this version)
@@ -121,6 +122,25 @@ settings. Restart, start, stop, console and viewing never re-confirm.
   the link through the vault's SMTP settings, or shows it for copying.
 - **Rotate:** generates a new value, applies it where the target supports it, updates the vault, and
   records the event.
+
+## Editions: Homelab and Business
+
+HyperProx serves two very different audiences, and the edition is chosen in the installer's first menu.
+
+| | **Homelab** | **Business** |
+|---|---|---|
+| Media plug-ins (Arr Stack, Plex activity, Unmanic and similar) | Available | **Not available**: absent from the catalogue, never suggested by "Scan for services", and refused by the API if installed by hand |
+| Home-automation plug-ins (Home Assistant and similar) | Available | Not available |
+| General plug-ins (router, network activity, guest status, power) | Available | Available |
+| Roles and Temporary users | Optional (a single Owner is fine) | On by default, front and centre |
+| 2FA | Required for the Owner, recommended for others | Required for every account |
+| Auto-lock | 30 minutes idle | 10 minutes idle |
+| Re-confirmation | The list in **Roles** | Also console access to production guests, and any Send |
+| Audit timeline | Available | On the home screen |
+
+Every plug-in declares its audience in its manifest: `homelab`, `business` or `both`. The catalogue, the
+scanner and the plug-in loader all filter on it, so a new plug-in lands in the right edition by itself, and a
+business install cannot be talked into loading a media plug-in.
 
 ## Access modes (chosen at install, changeable in Settings)
 
