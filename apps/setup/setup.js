@@ -451,12 +451,27 @@ function setErr(id, msg){
   el.style.display = msg ? 'block' : 'none'
 }
 
+// The installer prints the wizard link with the setup key (?k=...). It is kept for this tab only and
+// taken out of the address bar, so it does not linger in history or get copied into a screenshot.
+const SETUP_KEY = (function(){
+  const q = new URLSearchParams(location.search).get('k')
+  if (q) { try { sessionStorage.setItem('hpx-setup-key', q) } catch {} ; history.replaceState(null, '', location.pathname) }
+  try { return q || sessionStorage.getItem('hpx-setup-key') || '' } catch { return q || '' }
+})()
+
 async function api(method, path, body){
   const r = await fetch(path, {
     method,
-    headers:{ 'Content-Type':'application/json' },
+    headers:{ 'Content-Type':'application/json', 'X-Setup-Key': SETUP_KEY },
     body: body ? JSON.stringify(body) : undefined
   })
+  if (r.status === 401) {
+    document.body.innerHTML = '<div style="max-width:560px;margin:12vh auto;font:15px/1.6 system-ui;color:#e6edf3;background:#0a111c;padding:28px;border:1px solid #2fd6e8;border-radius:10px">' +
+      '<h2 style="margin-top:0;color:#2fd6e8">Open the setup link from the installer</h2>' +
+      '<p>For safety, the setup wizard only accepts requests that carry the setup key. Use the link the installer printed &mdash; it ends in <code>?k=&hellip;</code>.</p>' +
+      '<p>Lost it? On the HyperProx host run:<br><code>grep SETUP_SECRET /opt/hyperprox/.env</code><br>and open <code>http://&lt;host&gt;:3001/?k=&lt;that value&gt;</code>.</p></div>'
+    throw new Error('setup key required')
+  }
   return r.json()
 }
 
@@ -748,6 +763,26 @@ render()
 // HTTP Server
 // =============================================================================
 
+/** The setup key, from .env; generated (and logged) if an older install never had one. */
+function setupSecret() {
+  let secret = readEnv().SETUP_SECRET || process.env.SETUP_SECRET || ''
+  if (!secret) {
+    secret = crypto.randomBytes(32).toString('hex')
+    writeEnv({ SETUP_SECRET: secret })
+    console.log('[setup] generated a setup key - open the wizard at http://<host>:' + PORT + '/?k=' + secret)
+  }
+  return secret
+}
+
+/** Constant-time comparison of the X-Setup-Key header with the setup key. */
+function setupKeyOk(req) {
+  const given = String(req.headers['x-setup-key'] || '')
+  if (!given) return false
+  const a = crypto.createHash('sha256').update(given).digest()
+  const b = crypto.createHash('sha256').update(setupSecret()).digest()
+  return crypto.timingSafeEqual(a, b)
+}
+
 function sendJson(res, status, data) {
   const body = JSON.stringify(data)
   res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) })
@@ -766,10 +801,9 @@ function readBody(req) {
 }
 
 const server = http.createServer(async (req, res) => {
-  // CORS
-  res.setHeader('Access-Control-Allow-Origin', '*')
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+  // No CORS headers, deliberately. The wizard is served by this server and calls it same-origin, so it
+  // needs none; `Access-Control-Allow-Origin: *` let any web page the owner visited during setup drive
+  // these routes from the owner's own browser (security review, 2026-10-18).
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end() }
 
   const url = req.url.split('?')[0]
@@ -792,6 +826,14 @@ const server = http.createServer(async (req, res) => {
 
   let body = {}
   try { body = await readBody(req) } catch { return sendJson(res, 400, { error: 'Invalid JSON' }) }
+
+  // Every setup route needs the setup key. They configure the Proxmox connection and create the only
+  // admin login, and this server listens on all interfaces until setup finishes: without the key,
+  // anyone who could reach it — or any page the owner opened meanwhile — could replace the admin or
+  // repoint Proxmox. The installer generates the key and prints it in the wizard link.
+  if (!setupKeyOk(req)) {
+    return sendJson(res, 401, { error: 'setup_key_required', message: 'Open the setup link printed by the installer (it ends in ?k=...).' })
+  }
 
   const route = url.replace('/api/setup/', '')
 
@@ -1016,6 +1058,7 @@ const server = http.createServer(async (req, res) => {
   }
 })
 
+setupSecret()
 server.listen(PORT, '0.0.0.0', () => {
   const ip = Object.values(require('os').networkInterfaces())
     .flat()

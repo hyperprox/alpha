@@ -1094,7 +1094,11 @@ print_summary() {
   echo ""
   echo -e "  ${C_BOLD}Open the setup wizard in your browser:${C_RESET}"
   echo ""
-  echo -e "  ${C_CYAN}${C_BOLD}  http://${HOST_IP}:${SETUP_PORT}${C_RESET}"
+  # The wizard only answers requests carrying the setup key; the link carries it. Read from .env so a
+  # re-run that kept an existing .env prints the key that is actually in force.
+  SETUP_SECRET="$(grep -oP '^SETUP_SECRET=\K.*' "${ENV_FILE}" 2>/dev/null || true)"
+  echo -e "  ${C_CYAN}${C_BOLD}  http://${HOST_IP}:${SETUP_PORT}/?k=${SETUP_SECRET}${C_RESET}"
+  echo -e "  ${C_DIM}Keep this link private - it is the key to the setup wizard.${C_RESET}"
   echo ""
   echo -e "  ${C_DIM}The wizard will guide you through:${C_RESET}"
   echo -e "  ${C_DIM}  • Connecting your Proxmox cluster${C_RESET}"
