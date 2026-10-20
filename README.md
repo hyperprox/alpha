@@ -136,7 +136,7 @@ curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/install.sh | b
 
 ### First-run setup
 
-When the install finishes it prints the wizard's address, `http://<container-ip>:3001`.
+When the install finishes it prints the wizard link, `http://<container-ip>:3001/?k=<setup key>`. The key is what lets the wizard accept requests, so keep the link private; if you lose it, `grep SETUP_SECRET /opt/hyperprox/.env` on the host gives it back.
 
 1. **Connect your Proxmox** — sign in with the same username and password you use
    for the Proxmox web interface (two-factor codes are supported). HyperProx uses
