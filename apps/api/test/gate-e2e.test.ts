@@ -31,7 +31,7 @@ import { getBroker } from '../src/lib/vault/broker'
 import * as state from '../src/lib/vault/state'
 import { vaultRequest } from '../src/lib/vault/http'
 import { encrypt } from '../src/lib/crypto'
-import { setCredentialTable } from '../src/lib/credentials'
+import { setCredentialTable, migrationSettled } from '../src/lib/credentials'
 import { allSessions } from '../src/lib/auth'
 import { buildTestApp } from './fakes/app'
 
@@ -172,6 +172,7 @@ describe('vault gate end to end (real Vaultwarden over TLS)', { timeout: 900_000
     const si = await timed('sign-in (+migration)', () => app.inject({ method: 'POST', url: '/api/auth/sign-in', payload: { email: OWNER, password: PW, code } }))
     assert.equal(si.statusCode, 200, si.body)
     assert.equal(si.json().migration?.ok, true, si.body)
+    await migrationSettled()
     const fresh = cookieOf(si)
 
     assert.equal((await app.inject({ method: 'GET', url: '/api/proxmox/resources', headers: { cookie: ownerCookie } })).statusCode, 401, 'old cookie refused')

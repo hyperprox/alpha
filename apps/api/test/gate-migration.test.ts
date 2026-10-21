@@ -6,7 +6,7 @@ import { join } from 'path'
 import { FakeBroker } from './fakes/fake-broker'
 import { buildTestApp, resetLock, signIn } from './fakes/app'
 import { encrypt } from '../src/lib/crypto'
-import { setCredentialTable, seedFromEnv, getCredential } from '../src/lib/credentials'
+import { setCredentialTable, seedFromEnv, getCredential, migrationSettled, migrationStatus } from '../src/lib/credentials'
 
 const KEY = 'a'.repeat(64)
 
@@ -78,6 +78,11 @@ test('first Owner unlock moves Postgres rows + env values into the vault and bla
   const { res } = await signIn(app, 'owner@example.com', 'owner master password')
   assert.equal(res.statusCode, 200, res.body)
   assert.equal(res.json().migration.ok, true, res.body)
+  assert.equal(res.json().migration.running, true, 'the sign-in does not wait for the vault writes')
+  // Served from memory before the vault writes finish.
+  assert.equal(await getCredential('dns', 'godaddy', 'api_key'), 'gd-key')
+  await migrationSettled()
+  assert.equal(migrationStatus().state, 'done')
 
   const it = (n: string) => broker.items.get(n)?.fields
   assert.deepEqual(it('hyperprox:dns/godaddy'), { api_key: 'gd-key', api_secret: 'gd-secret' })
@@ -139,6 +144,7 @@ test('a row that cannot be decrypted stops the migration and changes nothing', a
   assert.equal(res.statusCode, 200, 'sign-in still succeeds')
   assert.equal(res.json().migration.ok, false)
   assert.match(res.json().migration.error, /cannot be decrypted/)
+  await migrationSettled()
   assert.equal(table.deleted.length, 0)
   assert.equal(readFileSync(envPath, 'utf8'), original)
   assert.equal(existsSync(envPath + '.pre-vault'), false)
@@ -164,8 +170,11 @@ test('a read-back mismatch stops before rows or .env are touched', async () => {
   }
   try {
     const { res } = await signIn(app, 'owner@example.com', 'owner master password')
-    assert.equal(res.json().migration.ok, false)
-    assert.match(res.json().migration.error, /read-back/)
+    assert.equal(res.json().migration.running, true)
+    await migrationSettled()
+    const st = migrationStatus()
+    assert.equal(st.state, 'failed')
+    assert.match((st as any).error, /read-back/)
   } finally { broker.listSecrets = realList }
   assert.equal(table.deleted.length, 0)
   assert.equal(readFileSync(envPath, 'utf8'), original)

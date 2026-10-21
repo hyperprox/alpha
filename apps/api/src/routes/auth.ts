@@ -13,7 +13,7 @@ import {
   SESSION_SECONDS,
 } from '../lib/auth'
 import { hasRole } from '../lib/roles'
-import { seedFromEnv, hydrateEnvFromVault } from '../lib/credentials'
+import { startMigration, migrationStatus, hydrateEnvFromVault } from '../lib/credentials'
 
 const LIMIT = { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }
 const MIN_MASTER_PASSWORD = 12
@@ -52,15 +52,14 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     addSession(vs)
     touch()
 
-    let migration: { ok: boolean; error?: string; backup?: string } | undefined
+    // The first Owner unlock moves the old credential store into the vault. That is one vault write per
+    // item and can take a minute, so it runs in the background: the sign-in waits only until the old
+    // values are served from memory. Progress: GET /api/auth/status → migration.
+    let migration: { ok: boolean; running?: boolean; error?: string } | undefined
     if (vs.role === 'owner') {
-      try {
-        const r = await seedFromEnv(vs.sid)
-        if (r.migrated || r.rowsDeleted || r.envBlanked.length) migration = { ok: true, backup: r.backup }
-      } catch (e: any) {
-        req.log.error({ err: e?.message ?? String(e) }, '[auth] vault migration failed; old credential store left in place')
-        migration = { ok: false, error: e?.message ?? String(e) }
-      }
+      const m = await startMigration(vs.sid, (msg, err) => req.log.error({ err }, msg))
+      if (m.error) migration = { ok: false, error: m.error }
+      else if (m.started) migration = { ok: true, running: true }
     }
     if (wasLocked) hydrateEnvFromVault()
 
@@ -81,6 +80,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       bootstrapped: s.bootstrapped,
       reachable:    s.reachable,
       ...(req.session ? { user: { email: req.session.email, role: req.session.role } } : {}),
+      ...(req.session && hasRole(req.session.role, 'admin') && migrationStatus().state !== 'idle' ? { migration: migrationStatus() } : {}),
     }
   })
 

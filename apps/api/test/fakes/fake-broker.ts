@@ -79,6 +79,12 @@ export class FakeBroker implements VaultBroker {
     return [...this.items.values()].map(i => ({ ...i, fields: { ...i.fields } }))
   }
 
+  async upsertSecrets(sid: string, items: Array<{ name: string; fields: Record<string, string>; notes?: string }>) {
+    const out = []
+    for (const i of items) out.push(await this.upsertSecret(sid, i.name, i.fields, i.notes))
+    return out
+  }
+
   async upsertSecret(sid: string, name: string, fields: Record<string, string>, notes?: string) {
     this.rec('upsertSecret', sid, name, { ...fields }, notes)
     this.session(sid)
