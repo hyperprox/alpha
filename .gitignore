@@ -46,3 +46,6 @@ config/prometheus/secrets/*
 # TypeScript incremental build cache. Machine-specific, rewritten by every
 # build, and it embeds absolute paths from whoever built last.
 *.tsbuildinfo
+
+# Vault TLS material generated at install (the private key must never be committed)
+config/vault-tls/

@@ -132,7 +132,7 @@ Known Issues / roadmap lines that the gate makes stale.
   `README.md`, systemd unit text inside `install.sh`
 
 ## Rules
-- Work only in your worktree on CT 751 (`ssh titan7 'pct exec 751 -- ...'`). Never edit `/opt/hyperprox`
+- Work only in your own git worktree on the build host. Never edit `/opt/hyperprox`
   (the live checkout), never restart `hyperprox-api`/`hyperprox-frontend`/any `hyperprox-*` container, never
   touch ports 3000/3001/3002/80/443/8222 on the host's live services.
 - Test containers: name them `vgtest-<you>-*`, bind to `127.0.0.1` on ports 18000–18999, remove them when done.
