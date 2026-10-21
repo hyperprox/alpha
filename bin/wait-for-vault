@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Readiness gate for hyperprox-api (ExecStartPre). There is no HyperProx without the vault: if it is not
+# answering, the API must not start, and the journal must say why.
+set -u
+URL="${VAULT_URL:-http://127.0.0.1:8222}"
+WAIT="${VAULT_WAIT_SECONDS:-60}"
+
+for ((i = 0; i < WAIT; i++)); do
+  if curl -fsS -o /dev/null --max-time 3 "${URL}/alive" 2>/dev/null; then
+    exit 0
+  fi
+  sleep 1
+done
+
+echo "hyperprox: the vault at ${URL} is not answering after ${WAIT}s." >&2
+echo "hyperprox: HyperProx will not start without it (the vault is the sign-in gate)." >&2
+echo "hyperprox: check it with:  docker ps -a --filter name=hyperprox-vault   and   docker logs hyperprox-vault" >&2
+echo "hyperprox: start it with:  cd /opt/hyperprox && docker compose up -d vault" >&2
+exit 1
