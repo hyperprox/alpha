@@ -86,13 +86,6 @@ function encrypt(plaintext) {
   return Buffer.concat([iv, tag, enc]).toString('base64')
 }
 
-// Password hashing with PBKDF2 (no bcrypt needed)
-function hashPassword(password) {
-  const salt   = crypto.randomBytes(32).toString('hex')
-  const hash   = crypto.pbkdf2Sync(password, salt, 310000, 64, 'sha512').toString('hex')
-  return `pbkdf2:${salt}:${hash}`
-}
-
 // =============================================================================
 // Proxmox API helper
 // =============================================================================
@@ -310,19 +303,6 @@ async function scanServices(hosts) {
 }
 
 // =============================================================================
-// Admin creation — writes hash to .env, API handles DB on first launch
-// =============================================================================
-
-function createAdmin(username, password) {
-  const hash = hashPassword(password)
-  writeEnv({
-    SETUP_ADMIN_USERNAME: username.toLowerCase(),
-    SETUP_ADMIN_HASH:     hash,
-    SETUP_ADMIN_CREATED:  'true',
-  })
-}
-
-// =============================================================================
 // Wizard HTML (single-page, no framework, no CDN)
 // =============================================================================
 
@@ -420,12 +400,11 @@ body{background:var(--bg);color:var(--text);font-family:'Barlow',system-ui,sans-
 </div>
 
 <script>
-const STEPS = ['Proxmox','Cluster','Admin','Services','Providers','Done']
+const STEPS = ['Proxmox','Cluster','Services','Providers','Done']
 let cur = 0
 const S = {
   proxmox:  { host:'', port:'8006', tokenId:'root@pam!hyperprox', tokenSecret:'', publicUrl:'' },
   cluster:  null,
-  admin:    { username:'', password:'', confirm:'' },
   services: {},
   installs: { npm: false, grafana: true, prometheus: true },
   providers:{ godaddy:{ enabled:false, key:'', secret:'' }, npm:{ enabled:false, host:'', port:'81' } }
@@ -521,28 +500,12 @@ function stepCluster(){
     <div class="node-grid">\${nodeCards}</div>
     <div class="btn-row">
       <button class="btn btn-ghost" onclick="go(0)">← Back</button>
-      <button class="btn btn-primary" onclick="go(2)">Looks right →</button>
+      <button class="btn btn-primary" id="btn-cluster-ok">Looks right →</button>
     </div>
   </div>\`
 }
 
-// ── Step 2: Admin ─────────────────────────────────────────────────────────────
-function stepAdmin(){
-  return \`<div class="card">
-    <div class="card-title">Create admin account</div>
-    <div class="card-desc">Your HyperProx login — separate from your Proxmox credentials.</div>
-    <div class="field"><label>Username</label><input id="adm-user" placeholder="admin" value="\${S.admin.username}"></div>
-    <div class="field"><label>Password</label><input id="adm-pass" type="password" placeholder="Minimum 12 characters"></div>
-    <div class="field"><label>Confirm password</label><input id="adm-confirm" type="password" placeholder="Repeat password"></div>
-    <div class="err" id="adm-err"></div>
-    <div class="btn-row">
-      <button class="btn btn-ghost" onclick="go(1)">← Back</button>
-      <button class="btn btn-primary" id="btn-admin">Continue →</button>
-    </div>
-  </div>\`
-}
-
-// ── Step 3: Services ──────────────────────────────────────────────────────────
+// ── Step 2: Services ──────────────────────────────────────────────────────────
 function stepServices(){
   const svcs = S.services
   const inst = S.installs
@@ -581,13 +544,13 @@ function stepServices(){
     <div class="card-desc">Select services to spin up as Docker containers alongside HyperProx.</div>
     \${installCards}
     <div class="btn-row">
-      <button class="btn btn-ghost" onclick="go(2)">← Back</button>
+      <button class="btn btn-ghost" onclick="go(1)">← Back</button>
       <button class="btn btn-primary" id="btn-installs">Continue →</button>
     </div>
   </div>\`
 }
 
-// ── Step 4: Providers ─────────────────────────────────────────────────────────
+// ── Step 3: Providers ─────────────────────────────────────────────────────────
 function stepProviders(){
   const gd = S.providers.godaddy
   return \`<div class="card">
@@ -604,26 +567,26 @@ function stepProviders(){
     <div class="field"><label>API Secret</label><input id="gd-sec" type="password" placeholder="QzX7s..." value="\${gd.secret}"></div>\` : ''}
     <div class="err" id="prov-err"></div>
     <div class="btn-row">
-      <button class="btn btn-ghost" onclick="go(3)">← Back</button>
+      <button class="btn btn-ghost" onclick="go(2)">← Back</button>
       <button class="btn btn-primary" id="btn-prov">Finish setup →</button>
     </div>
   </div>\`
 }
 
-// ── Step 5: Done ──────────────────────────────────────────────────────────────
+// ── Step 4: Done ──────────────────────────────────────────────────────────────
 function stepDone(){
-  const env = window._env || {}
   const ip  = location.hostname
   return \`<div class="card" style="text-align:center">
     <div class="success-icon">✓</div>
-    <div class="card-title" style="margin-bottom:.5rem">HyperProx is ready</div>
-    <div class="card-desc" style="margin-bottom:1.5rem">Your cluster is connected. Opening the dashboard now.</div>
-    <div class="link-row"><span style="color:var(--muted)">Dashboard</span><span class="link-url">http://\${ip}:3000</span></div>
+    <div class="card-title" style="margin-bottom:.5rem">Cluster connected</div>
+    <div class="card-desc" style="margin-bottom:1rem">One step left: <strong>create the owner vault account</strong>. Open HyperProx and you will land on the sign-in page, which offers to create it. Choose an email and a master password, then scan the QR code with an authenticator app.</div>
+    <div class="card-desc" style="margin-bottom:1.5rem">Two-factor authentication is required for the owner. The master password unlocks HyperProx and is never stored, so keep it safe: this release has no password recovery.</div>
+    <div class="link-row"><span style="color:var(--muted)">Create owner</span><span class="link-url">http://\${ip}:3000/login</span></div>
     <div class="link-row"><span style="color:var(--muted)">Grafana</span><span class="link-url">http://\${ip}:3003</span></div>
     <div class="link-row"><span style="color:var(--muted)">Prometheus</span><span class="link-url">http://\${ip}:9090</span></div>
     <div style="margin-top:1.5rem">
-      <a href="http://\${ip}:3000" style="display:block">
-        <button class="btn btn-primary" style="width:100%;font-size:16px">Open dashboard →</button>
+      <a href="http://\${ip}:3000/login" style="display:block">
+        <button class="btn btn-primary" style="width:100%;font-size:16px">Create the owner account →</button>
       </a>
     </div>
   </div>\`
@@ -633,7 +596,7 @@ function stepDone(){
 // Render + bind
 // =============================================================================
 
-const renderers = [stepProxmox, stepCluster, stepAdmin, stepServices, stepProviders, stepDone]
+const renderers = [stepProxmox, stepCluster, stepServices, stepProviders, stepDone]
 
 function render(){
   renderSteps()
@@ -673,53 +636,38 @@ function bind(){
     }
   }
 
-  // Step 2 — create admin
-  const btnAdm = document.getElementById('btn-admin')
-  if(btnAdm) btnAdm.onclick = async () => {
-    const user = document.getElementById('adm-user').value.trim()
-    const pass = document.getElementById('adm-pass').value
-    const conf = document.getElementById('adm-confirm').value
-    if(!user){ setErr('adm-err','Username is required.'); return }
-    if(pass.length < 12){ setErr('adm-err','Password must be at least 12 characters.'); return }
-    if(pass !== conf){ setErr('adm-err','Passwords do not match.'); return }
-    btnAdm.disabled = true
-    btnAdm.innerHTML = '<span class="spinner"></span>Creating...'
-    setErr('adm-err','')
-    const res = await api('POST','/api/setup/create-admin',{ username:user, password:pass })
-    if(res.ok){
-      Object.assign(S.admin,{ username:user })
-      go(3)
-      // Scan with hard 8s client timeout — auto-advance if hung
-      const scanDone = new Promise(resolve => {
-        api('GET','/api/setup/scan-services').then(r => {
-          if(r.ok && r.services){
-            S.services = {}
-            r.services.forEach(s => { S.services[s.key] = { ...s, enabled: s.found } })
-            // Never offer to install a second proxy manager on top of one the cluster already runs.
-            if (S.services.npm && S.services.npm.found) S.installs.npm = false
-          }
-          resolve()
-        }).catch(() => resolve())
-      })
-      const scanTimeout = new Promise(resolve => setTimeout(resolve, 8000))
-      Promise.race([scanDone, scanTimeout]).then(() => render())
-    } else {
-      setErr('adm-err', res.error || 'Failed to create admin')
-      btnAdm.disabled = false
-      btnAdm.textContent = 'Continue →'
-    }
+  // Step 1 - cluster confirmed: scan for existing services, then move on
+  const btnCl = document.getElementById('btn-cluster-ok')
+  if(btnCl) btnCl.onclick = () => {
+    btnCl.disabled = true
+    btnCl.innerHTML = '<span class="spinner"></span>Scanning...'
+    go(2)
+    // Scan with hard 8s client timeout - auto-advance if hung
+    const scanDone = new Promise(resolve => {
+      api('GET','/api/setup/scan-services').then(r => {
+        if(r.ok && r.services){
+          S.services = {}
+          r.services.forEach(s => { S.services[s.key] = { ...s, enabled: s.found } })
+          // Never offer to install a second proxy manager on top of one the cluster already runs.
+          if (S.services.npm && S.services.npm.found) S.installs.npm = false
+        }
+        resolve()
+      }).catch(() => resolve())
+    })
+    const scanTimeout = new Promise(resolve => setTimeout(resolve, 8000))
+    Promise.race([scanDone, scanTimeout]).then(() => render())
   }
 
-  // Step 3 — save installs
+  // Step 2 — save installs
   const btnInst = document.getElementById('btn-installs')
   if(btnInst) btnInst.onclick = async () => {
     btnInst.disabled = true
     btnInst.innerHTML = '<span class="spinner"></span>Saving...'
     await api('POST','/api/setup/save-installs', { installs: S.installs })
-    go(4)
+    go(3)
   }
 
-  // Step 4 — save providers
+  // Step 3 — save providers
   const btnProv = document.getElementById('btn-prov')
   if(btnProv) btnProv.onclick = async () => {
     const gd = S.providers.godaddy
@@ -733,7 +681,7 @@ function bind(){
     setErr('prov-err','')
     await api('POST','/api/setup/save-providers',{ providers: S.providers })
     const res = await api('POST','/api/setup/complete',{})
-    if(res.ok){ go(5) } else {
+    if(res.ok){ go(4) } else {
       setErr('prov-err', (res.errors || [res.error]).join(' '))
       btnProv.disabled = false
       btnProv.textContent = 'Finish setup →'
@@ -898,17 +846,8 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true })
     }
 
-    // ── create-admin ──────────────────────────────────────────────────────────
-    if (req.method === 'POST' && route === 'create-admin') {
-      const { username, password } = body
-      if (!username || username.length < 3) return sendJson(res, 400, { error: 'Username must be at least 3 characters' })
-      if (!password || password.length < 12) return sendJson(res, 400, { error: 'Password must be at least 12 characters' })
-      // Setup is not finished (this server exits once it is), so a reloaded or restarted wizard may
-      // create the admin again: the newest answer wins. Refusing here stranded anyone who reloaded the
-      // page mid-setup, with no way back to an account whose password they had just been asked for.
-      createAdmin(username, password)
-      return sendJson(res, 200, { ok: true })
-    }
+    // The wizard no longer creates an admin account: HyperProx has no password of its own. The owner
+    // account is created in the vault from HyperProx's /login page after setup (404 for the old route).
 
     // ── scan-services ─────────────────────────────────────────────────────────
     if (req.method === 'GET' && route === 'scan-services') {
@@ -1010,7 +949,6 @@ const server = http.createServer(async (req, res) => {
       const env = readEnv()
       const errors = []
       if (!env.PROXMOX_HOST || !env.PROXMOX_TOKEN_SECRET) errors.push('Proxmox not configured')
-      if (env.SETUP_ADMIN_CREATED !== 'true') errors.push('Admin account not created')
       if (errors.length) return sendJson(res, 400, { ok: false, errors })
 
       writeEnv({ SETUP_COMPLETE: 'true' })

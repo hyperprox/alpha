@@ -36,7 +36,7 @@ const call = (headers = {}) =>
     body: JSON.stringify({ username: 'owner', password: 'correct horse battery staple' }),
   })
 
-test('create-admin without the setup key is refused and writes nothing', async () => {
+test('the retired create-admin route without the setup key is still refused and writes nothing', async () => {
   const r = await call()
   assert.equal(r.status, 401)
   assert.doesNotMatch(readFileSync(envFile, 'utf8'), /SETUP_ADMIN_HASH/)
@@ -51,11 +51,25 @@ test('no wildcard CORS on any answer', async () => {
   assert.equal(r.headers.get('access-control-allow-origin'), null)
 })
 
-test('with the key, the admin is created (and a reloaded wizard may redo it)', async () => {
-  const first = await call({ 'x-setup-key': KEY })
-  assert.notEqual(first.status, 401)
-  assert.match(readFileSync(envFile, 'utf8'), /SETUP_ADMIN_HASH=/)
-  assert.notEqual((await call({ 'x-setup-key': KEY })).status, 401)
+test('with the key, create-admin no longer exists (404) and writes no admin hash', async () => {
+  const r = await call({ 'x-setup-key': KEY })
+  assert.equal(r.status, 404)
+  assert.doesNotMatch(readFileSync(envFile, 'utf8'), /SETUP_ADMIN/)
+})
+
+test('the wizard page no longer offers an admin step and points to /login', async () => {
+  const html = await (await fetch(`http://127.0.0.1:${PORT}/`)).text()
+  assert.doesNotMatch(html, /create-admin|adm-pass/)
+  assert.match(html, /owner vault account/)
+})
+
+test('complete does not demand an admin account', async () => {
+  const r = await fetch(`http://127.0.0.1:${PORT}/api/setup/complete`, {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-setup-key': KEY }, body: '{}',
+  })
+  const body = await r.json()
+  assert.equal(r.status, 400)
+  assert.deepEqual(body.errors, ['Proxmox not configured'])
 })
 
 test('the wizard page itself still loads without the key', async () => {

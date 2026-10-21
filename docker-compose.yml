@@ -37,6 +37,40 @@ services:
       timeout: 3s
       retries: 10
 
+  # The vault gate. Stock, unmodified Vaultwarden, pinned by digest (never :latest). HyperProx refuses to
+  # run without it: sign-in to HyperProx IS a sign-in to this vault. Bound to loopback only; HyperProx's
+  # API is the only thing that talks to it. Signups are off - accounts exist only by invitation.
+  # Version: Vaultwarden 1.37.4 (multi-arch index digest). To update, change the tag AND the digest together.
+  vault:
+    image: vaultwarden/server:1.37.4@sha256:efb3cde962015fcc036b2ea625242248611943b27212ebf4392841fb30fad055
+    container_name: hyperprox-vault
+    restart: unless-stopped
+    environment:
+      SIGNUPS_ALLOWED: "false"
+      INVITATIONS_ALLOWED: "true"
+      ORG_GROUPS_ENABLED: "true"
+      SHOW_PASSWORD_HINT: "false"
+      # Argon2id PHC hash of the admin-panel token (the plain token is VAULT_ADMIN_TOKEN in .env). Empty
+      # disables the admin panel, so an install missing the hash fails closed.
+      ADMIN_TOKEN: ${VAULT_ADMIN_TOKEN_HASH:-}
+      # Origin used in Send links and invitation emails. Leave VAULT_PUBLIC_URL empty and links use the
+      # loopback origin; set it to the https address users can reach if links must work from elsewhere.
+      DOMAIN: ${VAULT_PUBLIC_URL:-https://127.0.0.1:8222}
+      # TLS on loopback: the Bitwarden CLI refuses any non-https server. Self-signed cert made by the
+      # installer in config/vault-tls; HyperProx trusts it through VAULT_CA_CERT.
+      ROCKET_TLS: '{certs="/ssl/cert.pem",key="/ssl/key.pem"}'
+    volumes:
+      - vault_data:/data
+      - ./config/vault-tls:/ssl:ro
+    ports:
+      - "127.0.0.1:8222:80"
+    healthcheck:
+      test: ["CMD", "/healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
   prometheus:
     image: prom/prometheus:latest
     container_name: hyperprox-prometheus
@@ -145,6 +179,7 @@ networks:
 volumes:
   postgres_data:
   redis_data:
+  vault_data:
   grafana_data:
   npm_data:
   npm_letsencrypt:
