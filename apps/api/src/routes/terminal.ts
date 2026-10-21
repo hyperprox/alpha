@@ -6,7 +6,7 @@
 // =============================================================================
 
 import { FastifyPluginAsync } from 'fastify'
-import { ProxmoxClient }      from '../lib/proxmox-client'
+import { livePve }            from '../lib/pve-env'
 import {
   SHARED_CREDENTIAL_ID, credentialId, listCredentials, saveCredential,
   removeCredential, listHostKeys, forgetHostKey, loadCredential, runCommand,
@@ -19,14 +19,6 @@ import {
 import { PLUGINS }    from '../plugins'
 import { getSettings } from '../lib/plugin-host'
 
-function getClient() {
-  return new ProxmoxClient(
-    process.env.PROXMOX_HOST!,
-    Number(process.env.PROXMOX_PORT ?? 8006),
-    `${process.env.PROXMOX_USER}!${process.env.PROXMOX_TOKEN_ID}`,
-    process.env.PROXMOX_TOKEN_SECRET!,
-  )
-}
 
 export interface TerminalHost {
   id:      string              // stable credential/pin key, e.g. "lxc-711"
@@ -56,7 +48,7 @@ function ipFromLxcNet(config: Record<string, any>): string | null {
 }
 
 export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
-  const pve = getClient()
+  const pve = livePve()   // resolves the current token on every call (see lib/pve-env.ts)
 
   // -- Hosts ------------------------------------------------------------------
   // Cluster-discovered guests. Manual hosts (a router, a NAS, a VPS) arrive in

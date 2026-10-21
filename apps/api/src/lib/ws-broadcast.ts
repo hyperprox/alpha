@@ -7,7 +7,8 @@ import { getClusterNetworkStats } from './network'
 
 import { FastifyInstance } from 'fastify'
 import { setWizardBroadcast }  from './wizard-executor'
-import { ProxmoxClient }   from './proxmox-client'
+import { livePve }         from './pve-env'
+import { isUnlocked }      from './vault/state'
 import { getGPUInfo }      from './gpu'
 import { withCephMon } from './ceph'
 import { NPMClient }       from './npm-client'
@@ -15,14 +16,6 @@ import { NPMClient }       from './npm-client'
 let fastInterval: ReturnType<typeof setInterval> | null = null
 let slowInterval: ReturnType<typeof setInterval> | null = null
 
-function getClient() {
-  return new ProxmoxClient(
-    process.env.PROXMOX_HOST!,
-    Number(process.env.PROXMOX_PORT ?? 8006),
-    `${process.env.PROXMOX_USER}!${process.env.PROXMOX_TOKEN_ID}`,
-    process.env.PROXMOX_TOKEN_SECRET!,
-  )
-}
 
 function getNPM(): NPMClient | null {
   if (!process.env.NPM_URL) return null
@@ -40,13 +33,14 @@ function broadcast(server: FastifyInstance, type: string, payload: any) {
 }
 
 export function startBroadcast(server: FastifyInstance) {
-  const pve = getClient()
-  const npm = getNPM()
+  // Both resolve at each tick: the Proxmox token and NPM login arrive from the vault after start-up.
+  const pve = livePve()
 
   // ---------------------------------------------------------------------------
   //  FAST — every 2s: nodes + VMs + GPU + cluster totals
   // ---------------------------------------------------------------------------
   fastInterval = setInterval(async () => {
+    if (!isUnlocked()) return   // nothing to read (and nothing to show) while locked
     try {
       const nodes = await pve.getNodes()
       const [vms, gpu, network] = await Promise.all([
@@ -86,13 +80,14 @@ export function startBroadcast(server: FastifyInstance) {
   //  SLOW — every 15s: ceph + ha + storage + services
   // ---------------------------------------------------------------------------
   slowInterval = setInterval(async () => {
+    if (!isUnlocked()) return
     try {
       const [ceph, osds, ha, storage, npmStats] = await Promise.allSettled([
         pve.getClusterCephStatus(),
         withCephMon(pve, n => pve.getCephOSDs(n)),
         pve.getHAStatus(),
         pve.getAllStorage(),
-        npm ? npm.getStats() : Promise.resolve(null),
+        (() => { const npm = getNPM(); return npm ? npm.getStats() : Promise.resolve(null) })(),
       ])
 
       broadcast(server, 'slow', {
