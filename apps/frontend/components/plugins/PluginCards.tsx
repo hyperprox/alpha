@@ -104,9 +104,11 @@ export function PluginCards({ heading = 'Plug-ins', rowLimit = 4 }: { heading?: 
                   </div>
                   <div className="flex flex-col gap-1.5">
                     {(p.rows ?? []).slice(0, rowLimit).map((r, i) => (
-                      <div key={i} className="flex justify-between gap-3 font-mono text-xs">
-                        <span className="truncate" style={{ color: 'var(--text-dim)' }}>{r.label}</span>
-                        <span className="whitespace-nowrap tabular-nums"
+                      // A value can be long (a Plex session is title · mode · progress): it truncates with
+                      // an ellipsis and shows in full on hover, instead of running out of the card.
+                      <div key={i} className="flex min-w-0 justify-between gap-3 font-mono text-xs" title={r.label ? `${r.label}: ${r.value}` : r.value}>
+                        {r.label && <span className="shrink-0 truncate" style={{ color: 'var(--text-dim)', maxWidth: '45%' }}>{r.label}</span>}
+                        <span className={`min-w-0 truncate tabular-nums ${r.label ? 'text-right' : ''}`}
                           style={{ color: r.tone ? TONE[r.tone] : 'var(--text-soft)' }}>{r.value}</span>
                       </div>
                     ))}
@@ -116,7 +118,7 @@ export function PluginCards({ heading = 'Plug-ins', rowLimit = 4 }: { heading?: 
             </>
           )
 
-          const style = { background: 'var(--surface)', border: '1px solid var(--border-soft)', borderRadius: 10, padding: 20 }
+          const style = { background: 'var(--surface)', border: '1px solid var(--border-soft)', borderRadius: 10, padding: 20, minWidth: 0, overflow: 'hidden' } as const
 
           return p.hasDetail
             ? <Link key={p.id} href={`/plugins/${p.id}`} className="block transition-colors hover:bg-white/[0.02]" style={style}>{body}</Link>
