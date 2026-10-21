@@ -1,90 +1,99 @@
 // =============================================================================
-//  HyperProx — Admin Authentication
-//  Single-admin model: one password, stored as a scrypt hash in the credential
-//  store (which encrypts it at rest on top of the hash).
-//  Uses node:crypto rather than bcrypt/argon2 — no native dependency needed.
+//  HyperProx — Sessions
+//  HyperProx has no password of its own: a session is a vault sign-in. This
+//  module keeps the signed-in sessions (in memory only — a restart or a lock
+//  ends them all), the per-request context that tells the credential store whose
+//  vault session to write with, and the cookie helpers.
 // =============================================================================
 
-import { pbkdf2Sync, randomBytes, scryptSync, timingSafeEqual } from 'crypto'
-import { getCredential, setCredential } from './credentials'
+import { AsyncLocalStorage } from 'async_hooks'
+import type { Role } from './vault/broker'
 
-const KEYLEN = 64
-const PREFIX = 'scrypt'
-const CRED   = { category: 'system', provider: 'hyperprox', key: 'admin_password_hash' }
-// The setup wizard's hash most recently adopted, so a later password change is not undone on restart.
-const SETUP  = { category: 'system', provider: 'hyperprox', key: 'admin_setup_hash' }
+export const SESSION_SECONDS   = 12 * 60 * 60
+export const RECONFIRM_SECONDS = 5 * 60
 
-/** Produce `scrypt$<salt>$<derived>` — salt is unique per call. */
-export function hashPassword(password: string): string {
-  const salt    = randomBytes(16).toString('hex')
-  const derived = scryptSync(password, salt, KEYLEN).toString('hex')
-  return `${PREFIX}$${salt}$${derived}`
+export interface ActiveSession {
+  sid:    string
+  email:  string
+  role:   Role
+  userId: string
+  /** epoch ms until which a re-confirmation is valid */
+  reconfirmedUntil: number
+  lastSeen: number
 }
 
-/** Constant-time comparison. Returns false for any malformed stored value. */
-export function verifyPassword(password: string, stored: string): boolean {
-  // The setup wizard hashes with PBKDF2 (`pbkdf2:<salt>:<hash>`, sha512, 310000 rounds).
-  if ((stored ?? '').startsWith('pbkdf2:')) {
-    const [, salt, expected] = stored.split(':')
-    if (!salt || !expected) return false
-    const expectedBuf = Buffer.from(expected, 'hex')
-    const derived     = pbkdf2Sync(password, salt, 310000, expectedBuf.length || 64, 'sha512')
-    if (expectedBuf.length !== derived.length) return false
-    return timingSafeEqual(derived, expectedBuf)
-  }
+const sessions = new Map<string, ActiveSession>()
 
-  const [scheme, salt, expected] = (stored ?? '').split('$')
-  if (scheme !== PREFIX || !salt || !expected) return false
-
-  const derived     = scryptSync(password, salt, KEYLEN)
-  const expectedBuf = Buffer.from(expected, 'hex')
-  if (expectedBuf.length !== derived.length) return false
-
-  return timingSafeEqual(derived, expectedBuf)
+export function addSession(s: { sid: string; email: string; role: Role; userId: string }): ActiveSession {
+  const session: ActiveSession = { ...s, reconfirmedUntil: 0, lastSeen: Date.now() }
+  sessions.set(s.sid, session)
+  return session
 }
 
-export async function getAdminHash(): Promise<string | null> {
-  return getCredential(CRED.category, CRED.provider, CRED.key)
+export function getSession(sid: string): ActiveSession | undefined {
+  return sessions.get(sid)
 }
 
-export async function setAdminPassword(password: string): Promise<void> {
-  await setCredential(CRED.category, CRED.provider, CRED.key, hashPassword(password), true)
+export function removeSession(sid: string): void {
+  sessions.delete(sid)
+}
+
+export function clearSessions(): void {
+  sessions.clear()
+}
+
+export function allSessions(): ActiveSession[] {
+  return [...sessions.values()]
+}
+
+export function markReconfirmed(sid: string, now = Date.now()): number {
+  const s = sessions.get(sid)
+  if (!s) return 0
+  s.reconfirmedUntil = now + RECONFIRM_SECONDS * 1000
+  return s.reconfirmedUntil
+}
+
+export function isReconfirmed(sid: string, now = Date.now()): boolean {
+  const s = sessions.get(sid)
+  return !!s && s.reconfirmedUntil > now
+}
+
+// ── Request context ──────────────────────────────────────────────────────────
+// The credential store writes through to the vault as the user who made the
+// request, without every caller having to pass a session id down.
+
+export interface RequestContext { sid: string; email: string; role: Role }
+
+export const requestContext = new AsyncLocalStorage<RequestContext>()
+
+export function currentContext(): RequestContext | undefined {
+  return requestContext.getStore()
 }
 
 /**
- * Ensure an admin password exists before the server accepts traffic.
- * Seeds from ADMIN_PASSWORD if set, otherwise generates one and logs it once.
+ * The vault session to act as: the request's own, else the most recently active
+ * signed-in session (for work that outlives its request, e.g. a background job).
  */
-export async function ensureAdminPassword(log: (msg: string) => void): Promise<void> {
-  // The password chosen in the setup wizard wins over anything generated before it. Adopt each wizard
-  // hash once: afterwards a password change through the API stands until the wizard sets a new one.
-  const fromSetup = process.env.SETUP_ADMIN_HASH
-  if (fromSetup && fromSetup !== await getCredential(SETUP.category, SETUP.provider, SETUP.key)) {
-    await setCredential(CRED.category, CRED.provider, CRED.key, fromSetup, true)
-    await setCredential(SETUP.category, SETUP.provider, SETUP.key, fromSetup, true)
-    log('[auth] Admin password set from the setup wizard')
-    return
-  }
+export function actingSid(): string | null {
+  const ctx = requestContext.getStore()
+  if (ctx && sessions.has(ctx.sid)) return ctx.sid
+  let best: ActiveSession | null = null
+  for (const s of sessions.values()) if (!best || s.lastSeen > best.lastSeen) best = s
+  return best?.sid ?? null
+}
 
-  const existing = await getAdminHash()
-  if (existing) return
+// ── Local CLI lock ───────────────────────────────────────────────────────────
+// `hyperprox lock` runs on the host and has no vault session. It may lock (and
+// only lock) when it is truly local: the socket peer is loopback, it carries no
+// session token, and there are no X-Forwarded-* headers. The reverse proxy
+// reaches the API over the container bridge, so proxied requests never count.
 
-  const fromEnv  = process.env.ADMIN_PASSWORD
-  const password = fromEnv || randomBytes(12).toString('base64url')
+const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
 
-  await setAdminPassword(password)
-
-  if (fromEnv) {
-    log('[auth] Admin password initialised from ADMIN_PASSWORD')
-  } else {
-    log(
-      '[auth] ==================================================================\n' +
-      '[auth]  No admin password was configured, so one has been generated:\n' +
-      `[auth]      ${password}\n` +
-      '[auth]  This is shown once. Change it via POST /api/auth/password.\n' +
-      '[auth] =================================================================='
-    )
-  }
+export function isLocalCliRequest(remoteAddress: string | undefined, headers: Record<string, any>): boolean {
+  if (!remoteAddress || !LOOPBACK.has(remoteAddress)) return false
+  if (Object.keys(headers).some(h => h.toLowerCase().startsWith('x-forwarded-') || h.toLowerCase() === 'forwarded')) return false
+  return extractToken(headers) === null
 }
 
 // ── Token extraction ─────────────────────────────────────────────────────────
