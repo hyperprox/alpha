@@ -625,6 +625,19 @@ configure_vault_env() {
   ENV_FILE="${HYPERPROX_DIR}/.env"
   [[ -f "${ENV_FILE}" ]] || die ".env not found at ${ENV_FILE}"
 
+  # The vault is served over TLS on loopback (the Bitwarden CLI refuses plain http). Self-signed, made once,
+  # never replaced. Cert is world-readable; the key is root-only (the container runs as root).
+  local tls="${HYPERPROX_DIR}/config/vault-tls"
+  mkdir -p "${tls}"; chmod 755 "${tls}"
+  if [[ ! -s "${tls}/cert.pem" || ! -s "${tls}/key.pem" ]]; then
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 3650 \
+      -subj /CN=hyperprox-vault -addext subjectAltName=IP:127.0.0.1,DNS:localhost \
+      -keyout "${tls}/key.pem" -out "${tls}/cert.pem" >>"${LOG_FILE}" 2>&1 \
+      || die "Could not generate the vault TLS certificate (see ${LOG_FILE})"
+    ok "Generated the vault's loopback TLS certificate"
+  fi
+  chmod 644 "${tls}/cert.pem"; chmod 600 "${tls}/key.pem"
+
   local added=false
   if ! env_has VAULT_ADMIN_TOKEN_HASH; then
     local token hash
@@ -644,7 +657,12 @@ configure_vault_env() {
     } >> "${ENV_FILE}"
     added=true
   fi
-  env_has VAULT_URL || { echo "VAULT_URL=http://127.0.0.1:8222" >> "${ENV_FILE}"; added=true; }
+  # An earlier build of this installer wrote a plain-http URL; the vault now speaks only https.
+  sed -i 's|^VAULT_URL=http://127.0.0.1:8222$|VAULT_URL=https://127.0.0.1:8222|' "${ENV_FILE}"
+  env_has VAULT_URL || { echo "VAULT_URL=https://127.0.0.1:8222" >> "${ENV_FILE}"; added=true; }
+  env_has VAULT_CA_CERT || { echo "VAULT_CA_CERT=${tls}/cert.pem" >> "${ENV_FILE}"; added=true; }
+  # Empty = Send links and invitations use the loopback origin. Set to the https address people can reach.
+  env_has VAULT_PUBLIC_URL || { echo "VAULT_PUBLIC_URL=" >> "${ENV_FILE}"; added=true; }
   env_has VAULT_IDLE_LOCK_MINUTES || { echo "VAULT_IDLE_LOCK_MINUTES=30" >> "${ENV_FILE}"; added=true; }
   chmod 600 "${ENV_FILE}"
   [[ "${added}" == "true" ]] && ok "Vault settings written to .env" || ok "Vault settings already present"
@@ -718,10 +736,15 @@ services:
       # Argon2id PHC hash of the admin-panel token (the plain token is VAULT_ADMIN_TOKEN in .env). Empty
       # disables the admin panel, so an install missing the hash fails closed.
       ADMIN_TOKEN: ${VAULT_ADMIN_TOKEN_HASH:-}
-      # Used in Send links and invitation emails. Set VAULT_DOMAIN in .env to the address users reach.
-      DOMAIN: ${VAULT_DOMAIN:-http://127.0.0.1:8222}
+      # Origin used in Send links and invitation emails. Leave VAULT_PUBLIC_URL empty and links use the
+      # loopback origin; set it to the https address users can reach if links must work from elsewhere.
+      DOMAIN: ${VAULT_PUBLIC_URL:-https://127.0.0.1:8222}
+      # TLS on loopback: the Bitwarden CLI refuses any non-https server. Self-signed cert made by the
+      # installer in config/vault-tls; HyperProx trusts it through VAULT_CA_CERT.
+      ROCKET_TLS: '{certs="/ssl/cert.pem",key="/ssl/key.pem"}'
     volumes:
       - vault_data:/data
+      - ./config/vault-tls:/ssl:ro
     ports:
       - "127.0.0.1:8222:80"
     healthcheck:
@@ -1143,9 +1166,9 @@ start_services() {
   run_with_spinner "Starting the vault" \
     docker compose up -d --quiet-pull vault
   info "Waiting for the vault to answer..."
-  VAULT_WAIT_SECONDS=90 "${HYPERPROX_DIR}/bin/wait-for-vault" \
+  VAULT_URL=https://127.0.0.1:8222 VAULT_CA_CERT="${HYPERPROX_DIR}/config/vault-tls/cert.pem" VAULT_WAIT_SECONDS=90 "${HYPERPROX_DIR}/bin/wait-for-vault" \
     || die "The vault did not start. HyperProx cannot run without it. See: docker logs hyperprox-vault"
-  ok "Vault is up on 127.0.0.1:8222"
+  ok "Vault is up on https://127.0.0.1:8222"
 
   step "Starting Docker stack"
   info "Pulling images and starting containers (vault, postgres, redis, prometheus, grafana, pve-exporter, nginx)..."
