@@ -2,7 +2,6 @@ import 'dotenv/config'
 import Fastify from 'fastify'
 import cors       from '@fastify/cors'
 import helmet     from '@fastify/helmet'
-import jwt        from '@fastify/jwt'
 import rateLimit  from '@fastify/rate-limit'
 import websocket  from '@fastify/websocket'
 
@@ -22,20 +21,15 @@ import { aiRoutes }              from './routes/ai'
 import { gpuRoutes }             from './routes/gpu'
 import { targetsRoutes }         from './routes/targets'
 import { authRoutes }             from './routes/auth'
+import { secretsRoutes }          from './routes/secrets'
 import { terminalRoutes }             from './routes/terminal'
 import { pluginRoutes }           from './routes/plugins'
 import { catalogueRoutes } from './routes/catalogue'
 import { terminalWsRoutes }           from './routes/terminal-ws'
 import { prismaPlugin }         from './plugins/prisma'
 import { redisPlugin }          from './plugins/redis'
-import { seedFromEnv }          from './lib/credentials'
-import { ensureAdminPassword, extractToken } from './lib/auth'
-
-// Paths reachable without a session. Everything else requires one.
-// /api/plugins/metrics is public to the session guard only — it authenticates
-// with METRICS_TOKEN as a bearer token instead, because a Prometheus scraper has
-// no session to present. It refuses outright when that token is unset.
-const PUBLIC_PATHS = new Set(['/health', '/api/auth/login', '/api/plugins/metrics'])
+import { registerGate }         from './lib/gate'
+import { lock }                 from './lib/vault/state'
 
 const server = Fastify({
   logger: {
@@ -50,32 +44,19 @@ async function main() {
   await server.register(helmet, { contentSecurityPolicy: false })
   await server.register(cors,   { origin: true })
   await server.register(rateLimit, { max: 200, timeWindow: '1 minute' })
-  await server.register(jwt,    { secret: process.env.JWT_SECRET! })
   await server.register(websocket)
   await server.register(prismaPlugin)
   await server.register(redisPlugin)
 
-  // -- Auth guard -------------------------------------------------------------
-  // Applies to every route. Set AUTH_REQUIRED=false to disable (development only
-  // -- with it off, anyone who can reach this port controls the cluster).
-  server.addHook('onRequest', async (req, reply) => {
-    if (process.env.AUTH_REQUIRED === 'false') return
-    if (req.method === 'OPTIONS') return
-
-    const path = req.url.split('?')[0]
-    if (PUBLIC_PATHS.has(path) || path.startsWith('/health/')) return
-
-    const token = extractToken(req.headers as Record<string, any>)
-    if (!token) return reply.status(401).send({ ok: false, error: 'Authentication required' })
-
-    try {
-      server.jwt.verify(token)
-    } catch {
-      return reply.status(401).send({ ok: false, error: 'Session expired or invalid' })
-    }
-  })
+  // -- Vault gate ---------------------------------------------------------------
+  // Replaces the old password guard. Starts locked: every route except /health*
+  // and /api/auth/* answers 423 until a vault user signs in. Then 401 without a
+  // valid session, 403 below the route's role (lib/roles.ts). There is no
+  // switch to turn it off.
+  await registerGate(server)
 
   await server.register(authRoutes,           { prefix: '/api/auth' })
+  await server.register(secretsRoutes,        { prefix: '/api/secrets' })
   await server.register(healthRoute,          { prefix: '/health' })
   await server.register(proxmoxRoutes,        { prefix: '/api/proxmox' })
   await server.register(proxyRoutes,          { prefix: '/api/proxy' })
@@ -97,8 +78,11 @@ async function main() {
   // Terminal sockets live under /ws because nginx proxies upgrades only there.
   await server.register(terminalWsRoutes,         { prefix: '/ws/terminal' })
 
-  await seedFromEnv()
-  await ensureAdminPassword(msg => server.log.warn(msg))
+  // Always start locked, and clear CLI session dirs a previous process left in /dev/shm.
+  await lock('restart')
+
+  // Credentials move into the vault on the first Owner sign-in (lib/credentials.ts seedFromEnv),
+  // not here: while locked there is no vault session to write with.
 
   const port = Number(process.env.PORT ?? 3002)
   await server.listen({ port, host: '0.0.0.0' })
