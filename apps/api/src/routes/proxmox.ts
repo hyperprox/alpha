@@ -3,25 +3,14 @@
 // =============================================================================
 
 import { FastifyPluginAsync } from 'fastify'
-import { ProxmoxClient }      from '../lib/proxmox-client'
 import { getGPUInfo }         from '../lib/gpu'
 import { NPMClient }          from '../lib/npm-client'
 import { withCephMon, CephUnavailableError } from '../lib/ceph'
 import { getProviderCredentials } from '../lib/credentials'
+import { pveFromEnv } from '../lib/pve-env'
 
-let client: ProxmoxClient | null = null
-
-function getClient(): ProxmoxClient {
-  if (!client) {
-    const host   = process.env.PROXMOX_HOST!
-    const port   = Number(process.env.PROXMOX_PORT ?? 8006)
-    const token  = `${process.env.PROXMOX_USER}!${process.env.PROXMOX_TOKEN_ID}`
-    const secret = process.env.PROXMOX_TOKEN_SECRET!
-    if (!host || !secret) throw new Error('PROXMOX_HOST and PROXMOX_TOKEN_SECRET must be set')
-    client = new ProxmoxClient(host, port, token, secret)
-  }
-  return client
-}
+// Not cached here: the token arrives from the vault after start-up and can change (lib/pve-env.ts).
+const getClient = pveFromEnv
 
 async function getNPM(): Promise<NPMClient | null> {
   try {

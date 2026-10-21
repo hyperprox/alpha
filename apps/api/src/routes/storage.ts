@@ -1,15 +1,7 @@
 import { FastifyPluginAsync } from 'fastify'
-import { ProxmoxClient }      from '../lib/proxmox-client'
+import { livePve }            from '../lib/pve-env'
 import { withCephMon, CephUnavailableError } from '../lib/ceph'
 
-function getClient() {
-  return new ProxmoxClient(
-    process.env.PROXMOX_HOST!,
-    Number(process.env.PROXMOX_PORT ?? 8006),
-    `${process.env.PROXMOX_USER}!${process.env.PROXMOX_TOKEN_ID}`,
-    process.env.PROXMOX_TOKEN_SECRET!,
-  )
-}
 
 const wrap = async (reply: any, fn: () => Promise<any>) => {
   try   { return { success: true, data: await fn() } }
@@ -28,7 +20,7 @@ const wrapCeph = async (reply: any, fn: () => Promise<any>) => {
 }
 
 export const storageRoutes: FastifyPluginAsync = async (fastify) => {
-  const pve = getClient()
+  const pve = livePve()   // resolves the current token on every call (see lib/pve-env.ts)
 
   fastify.get('/overview', async (_, r) => {
     try {
