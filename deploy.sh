@@ -5,6 +5,21 @@
 set -euo pipefail
 cd /opt/hyperprox
 
+# Since the vault gate, the API cannot run without the bundled vault: an install that predates it would
+# restart into a HyperProx that stays locked forever. Re-running the installer adds the vault and keeps
+# all existing data and settings.
+if ! grep -q '^VAULT_ADMIN_TOKEN_HASH=' .env 2>/dev/null || [ ! -s config/vault-tls/cert.pem ] \
+   || ! grep -q 'wait-for-vault' /etc/systemd/system/hyperprox-api.service 2>/dev/null; then
+  echo "✗ This install has no vault yet. Run: bash /opt/hyperprox/install.sh  (safe to re-run; keeps your data)" >&2
+  exit 1
+fi
+docker compose up -d --no-deps vault >/dev/null
+chmod 600 .env
+
+echo "→ Installing dependencies..."
+pnpm install --frozen-lockfile >/dev/null
+(cd apps/api && npx prisma generate --schema ./prisma/schema.prisma >/dev/null)
+
 echo "→ Building API..."
 cd apps/api && npx tsc -p tsconfig.json
 cd /opt/hyperprox
