@@ -6,7 +6,7 @@
 // =============================================================================
 
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
-import { getBroker, VaultAuthError, VaultSessionError, type VaultSession } from '../lib/vault/broker'
+import { getBroker, VaultAuthError, VaultSessionError, BootstrapNotPendingError, type VaultSession } from '../lib/vault/broker'
 import { isUnlocked, unlock, lock, touch } from '../lib/vault/state'
 import {
   addSession, removeSession, markReconfirmed, buildAuthCookie, isLocalCliRequest,
@@ -119,6 +119,14 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       vs = await getBroker().confirmOwnerTotp(email, password, code)
     } catch (e) {
+      // The pending step lives in memory: after a restart (or a second click once it finished) the owner
+      // account exists, 2FA may already be on, and the right next step is an ordinary sign-in.
+      if (e instanceof BootstrapNotPendingError) {
+        const s = await vaultStatus()
+        return reply.status(409).send(s.bootstrapped
+          ? { ok: false, code: 'sign_in', error: 'The owner account already exists. Sign in with your email, master password and 2FA code.' }
+          : { ok: false, code: 'restart_setup', error: 'Setup was interrupted. Start again.' })
+      }
       return authErrorReply(reply, e)
     }
     return startSession(req, reply, vs)

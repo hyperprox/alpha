@@ -54,6 +54,11 @@ export class VaultSessionError extends Error {
 
 const FRESH_SYNC_MS = 30_000
 
+/** confirmOwnerTotp with no bootstrap in memory: HyperProx restarted between the two steps, or it already finished. */
+export class BootstrapNotPendingError extends Error {
+  constructor() { super('no owner bootstrap in progress for this email; start again') }
+}
+
 export interface VaultBroker {
   status(): Promise<{ reachable: boolean; bootstrapped: boolean }>
   bootstrapOwner(email: string, masterPassword: string): Promise<{ totpSecret: string; otpauthUri: string }>
@@ -228,7 +233,7 @@ class CliVaultBroker implements VaultBroker {
   async confirmOwnerTotp(email: string, masterPassword: string, code: string): Promise<VaultSession> {
     const e = normalizeEmail(email)
     const secret = this.pendingTotp.get(e)
-    if (!secret) throw new Error('no owner bootstrap in progress for this email; start again')
+    if (!secret) throw new BootstrapNotPendingError()
     if (!/^\d{6}$/.test(code.trim()) || !totpMatches(secret, code)) throw new VaultAuthError('totp_invalid')
 
     const api = this.api()
