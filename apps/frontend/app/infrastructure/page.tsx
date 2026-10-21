@@ -7,6 +7,9 @@ import { useEffect, useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { formatBytes, formatUptime } from '@/lib/utils'
 import { alpha } from '@/lib/theme'
+import { atLeast } from '@/lib/api'
+import { useSession } from '@/lib/session'
+import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 
 interface PVENode { node: string; status: string; maxcpu: number; maxmem: number }
 interface PVEVM {
@@ -40,6 +43,11 @@ function VMPanel({ vm, nodes, onClose, onRefresh }: {
   const [error,      setError]     = useState<string|null>(null)
   const [config,     setConfig]    = useState<any>(null)
   const router = useRouter()
+  // Hiding is a courtesy; the server enforces the same matrix.
+  const { role } = useSession()
+  const canOperate = atLeast(role, 'operator')
+  const canAdmin   = atLeast(role, 'admin')
+  const [reconfirm, setReconfirm] = useState(false)
 
 
   useEffect(() => {
@@ -97,7 +105,13 @@ function VMPanel({ vm, nodes, onClose, onRefresh }: {
       const endpoint = vm.type === 'lxc'
         ? `/api/proxmox/nodes/${vm.node}/lxc/${vm.vmid}`
         : `/api/proxmox/nodes/${vm.node}/qemu/${vm.vmid}`
-      const res = await fetch(endpoint, { method: 'DELETE' }).then(r=>r.json())
+      const raw = await fetch(endpoint, { method: 'DELETE' })
+      // Destroying a guest needs the master password again (valid 5 minutes).
+      if (raw.status === 403) {
+        const b = await raw.clone().json().catch(()=>null)
+        if (b?.code === 'reconfirm_required' || /confirm/i.test(String(b?.error ?? ''))) { setReconfirm(true); return }
+      }
+      const res = await raw.json()
       if (res.success) {
         setStatus('Deleted successfully')
         setConfirmDelete(false)
@@ -167,6 +181,7 @@ function VMPanel({ vm, nodes, onClose, onRefresh }: {
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4" style={{ background:'rgba(0,0,0,0.85)', backdropFilter:'blur(4px)' }}>
+      {reconfirm && <ReconfirmModal onClose={()=>setReconfirm(false)} onDone={()=>{ setReconfirm(false); deleteVM() }} />}
       <div className="w-full max-w-2xl rounded-xl border overflow-hidden" style={{ background:'var(--surface-raised)', borderColor:'color-mix(in srgb, var(--accent) 15%, transparent)', boxShadow:'0 0 40px color-mix(in srgb, var(--accent) 3%, transparent)' }}>
 
         {/* Header */}
@@ -183,7 +198,7 @@ function VMPanel({ vm, nodes, onClose, onRefresh }: {
 
         {/* Tabs */}
         <div className="flex border-b" style={{ borderColor:'var(--border-dim)' }}>
-          {(['overview','snapshots','migrate','config'] as const).map(t=>(
+          {(['overview','snapshots','migrate','config'] as const).filter(t=>canAdmin||t!=='migrate').map(t=>(
             <button key={t} onClick={()=>setTab(t)} className="px-4 py-2.5 text-sm font-medium capitalize transition-colors"
               style={{ borderBottom: tab===t?'2px solid var(--accent)':'2px solid transparent', color: tab===t?'var(--accent)':'var(--text-dim)', background:'transparent' }}>
               {t}
@@ -226,22 +241,22 @@ function VMPanel({ vm, nodes, onClose, onRefresh }: {
               <div>
                 <div className="text-xs font-mono uppercase mb-2" style={{color:'var(--text-dimmer)',letterSpacing:'0.14em'}}>Power</div>
                 <div className="flex gap-2 flex-wrap">
-                  {!isRunning && (
+                  {canOperate && !isRunning && (
                     <ActionBtn label="Start"    color="var(--good)" onClick={()=>doAction('start')}    disabled={acting}/>
                   )}
-                  {isRunning && (
+                  {canOperate && isRunning && (
                     <>
                       <ActionBtn label="Shutdown"  color="var(--warn-2)" onClick={()=>doAction('shutdown')} disabled={acting}/>
                       <ActionBtn label="Reboot"    color="var(--violet-2)" onClick={()=>doAction('reboot')}   disabled={acting}/>
                       <ActionBtn label="Stop"      color="var(--crit-2)" onClick={()=>doAction('stop')}     disabled={acting}/>
                     </>
                   )}
-                  <ActionBtn label="Console" color="var(--accent)" onClick={openConsole} disabled={acting}/>
+                  {canOperate && <ActionBtn label="Console" color="var(--accent)" onClick={openConsole} disabled={acting}/>}
                 </div>
               </div>
 
               {/* HA actions */}
-              {vm.hastate !== undefined && (
+              {canAdmin && vm.hastate !== undefined && (
                 <div>
                   <div className="text-xs font-mono uppercase mb-2" style={{color:'var(--text-dimmer)',letterSpacing:'0.14em'}}>HA State</div>
                   <div className="flex gap-2">
@@ -253,7 +268,7 @@ function VMPanel({ vm, nodes, onClose, onRefresh }: {
               )}
 
               {/* Quick snapshot */}
-              <div>
+              {canAdmin && <div>
                 <div className="text-xs font-mono uppercase mb-2" style={{color:'var(--text-dimmer)',letterSpacing:'0.14em'}}>Quick Snapshot</div>
                 <div className="flex gap-2">
                   <input style={{...INPUT, flex:1}} value={snapName} placeholder="snapshot-name"
@@ -262,8 +277,9 @@ function VMPanel({ vm, nodes, onClose, onRefresh }: {
                   <ActionBtn label="Create" color="var(--accent)" onClick={createSnapshot} disabled={acting||!snapName.trim()}/>
                 </div>
               </div>
+              }
               {/* Danger zone */}
-              <div className="mt-2 pt-3" style={{borderTop:'1px solid var(--text-faint)'}}>
+              {canAdmin && <div className="mt-2 pt-3" style={{borderTop:'1px solid var(--text-faint)'}}>
                 <div className="text-xs font-mono uppercase mb-2" style={{color:'var(--text-dimmer)',letterSpacing:'0.14em'}}>Danger Zone</div>
                 {!confirmDelete ? (
                   <ActionBtn label={`Delete ${vm.type.toUpperCase()}`} color="var(--crit-2)" onClick={()=>setConfirmDelete(true)} disabled={acting||isRunning}/>
@@ -275,18 +291,18 @@ function VMPanel({ vm, nodes, onClose, onRefresh }: {
                   </div>
                 )}
                 {isRunning && <div className="text-xs mt-1" style={{color:'var(--text-dimmer)'}}>Stop the {vm.type.toUpperCase()} before deleting</div>}
-              </div>
+              </div>}
             </div>
           )}
 
           {/* SNAPSHOTS */}
           {tab === 'snapshots' && (
             <div className="space-y-3">
-              <div className="flex gap-2 mb-4">
+              {canAdmin && <div className="flex gap-2 mb-4">
                 <input style={{...INPUT,flex:1}} value={snapName} placeholder="New snapshot name"
                   onChange={e=>setSnapName(e.target.value)}/>
                 <ActionBtn label="Create" color="var(--accent)" onClick={createSnapshot} disabled={acting||!snapName.trim()}/>
-              </div>
+              </div>}
               {snapshots.length === 0 ? (
                 <div className="text-sm text-center py-4" style={{color:'var(--text-dimmer)'}}>No snapshots</div>
               ) : snapshots.filter(s=>s.name!=='current').map(snap=>(
@@ -297,8 +313,8 @@ function VMPanel({ vm, nodes, onClose, onRefresh }: {
                     <div className="text-xs" style={{color:'var(--text-faint)'}}>{snap.snaptime?new Date(snap.snaptime*1000).toLocaleString():''}</div>
                   </div>
                   <div className="flex gap-1">
-                    <ActionBtn label="Rollback" color="var(--warn-2)" onClick={()=>rollbackSnapshot(snap.name)} disabled={acting}/>
-                    <ActionBtn label="Delete"   color="var(--crit-2)" onClick={()=>deleteSnapshot(snap.name)}   disabled={acting}/>
+                    {canAdmin && <ActionBtn label="Rollback" color="var(--warn-2)" onClick={()=>rollbackSnapshot(snap.name)} disabled={acting}/>}
+                    {canAdmin && <ActionBtn label="Delete"   color="var(--crit-2)" onClick={()=>deleteSnapshot(snap.name)}   disabled={acting}/>}
                   </div>
                 </div>
               ))}
@@ -403,6 +419,9 @@ export default function InfrastructurePage() {
   }
 
   const [showCreate, setShowCreate] = useState(false)
+  const { role: myRole } = useSession()
+  const mayOperate = atLeast(myRole, 'operator')
+  const mayAdmin   = atLeast(myRole, 'admin')
   const [createType, setCreateType] = useState<'lxc'|'qemu'>('lxc')
   const [templates, setTemplates] = useState<any[]>([])
   const [nextId, setNextId] = useState<number>(100)
@@ -700,8 +719,8 @@ export default function InfrastructurePage() {
             <span style={{color:'var(--text-muted)'}}>{vms.length}</span>
             <span style={{color:'var(--text-dimmer)'}}>total</span>
           </div>
-          <button onClick={()=>openCreate('lxc')} className="px-4 rounded-md text-sm font-semibold transition-all" style={{height:40,background:'var(--accent)',border:'none',color:'var(--accent-ink)'}}>+ LXC</button>
-          <button onClick={()=>openCreate('qemu')} className="px-4 rounded-md text-sm font-semibold transition-all" style={{height:40,background:'transparent',border:'1px solid var(--violet)',color:'var(--violet)'}}>+ VM</button>
+          {mayAdmin && <button onClick={()=>openCreate('lxc')} className="px-4 rounded-md text-sm font-semibold transition-all" style={{height:40,background:'var(--accent)',border:'none',color:'var(--accent-ink)'}}>+ LXC</button>}
+          {mayAdmin && <button onClick={()=>openCreate('qemu')} className="px-4 rounded-md text-sm font-semibold transition-all" style={{height:40,background:'transparent',border:'1px solid var(--violet)',color:'var(--violet)'}}>+ VM</button>}
         </div>
       </div>
 
@@ -868,7 +887,7 @@ export default function InfrastructurePage() {
 
                   {/* Actions */}
                   <div className="flex gap-1.5 pt-1 border-t" style={{borderColor:'var(--border-dim)'}} onClick={e=>e.stopPropagation()}>
-                    {isRunning ? (
+                    {!mayOperate ? null : isRunning ? (
                       <>
                         <ActionBtn label="⏹ Stop"    color="var(--crit-2)" onClick={()=>quickAction(vm,'stop')}     disabled={isActing}/>
                         <ActionBtn label="↺ Reboot"  color="var(--violet-2)" onClick={()=>quickAction(vm,'reboot')}   disabled={isActing}/>
@@ -876,7 +895,7 @@ export default function InfrastructurePage() {
                     ) : (
                       <ActionBtn label="▶ Start" color="var(--good)" onClick={()=>quickAction(vm,'start')} disabled={isActing}/>
                     )}
-                    {vm.hastate === 'stopped' && (
+                    {mayAdmin && vm.hastate === 'stopped' && (
                       <ActionBtn label="HA ▶" color="var(--violet)" onClick={async()=>{
                         const sid=`${vm.type==='qemu'?'vm':'ct'}:${vm.vmid}`
                         await fetch(`/api/infra/ha/${encodeURIComponent(sid)}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({state:'started'})})
