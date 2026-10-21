@@ -42,7 +42,7 @@ async function cred(provider: string, key: string): Promise<string> {
 //  Anthropic
 // ---------------------------------------------------------------------------
 
-const ANTHROPIC_DEFAULT_MODEL = 'claude-opus-5'
+const ANTHROPIC_DEFAULT_MODEL = 'claude-opus-5-5'
 
 async function anthropicPlan(userText: string): Promise<Plan> {
   const apiKey = await cred('anthropic', 'api_key')
