@@ -11,7 +11,10 @@ Bitwarden-compatible, zero-knowledge vault. Every install runs its own, stock an
 ## How it works
 
 - **A built-in vault.** The `hyperprox-vault` container is Vaultwarden, pinned by digest, listening on
-  `127.0.0.1:8222` only. Public signups are off; accounts exist only by invitation. The vault starts first,
+  `127.0.0.1:8222` only, over TLS with a self-signed certificate the installer makes in
+  `config/vault-tls` (the Bitwarden command-line client refuses plain http; HyperProx trusts that
+  certificate through `VAULT_CA_CERT`). Send links use the loopback origin unless you set `VAULT_PUBLIC_URL` in
+  `.env` to an https address people can reach. Public signups are off; accounts exist only by invitation. The vault starts first,
   and the HyperProx API refuses to start until it answers. There is no "HyperProx without the gate".
 - **One login.** You sign in to HyperProx with your vault account: email, master password, and a
   two-factor code. HyperProx has no password of its own. The very first visit to `/login` offers to create
@@ -35,6 +38,10 @@ Bitwarden-compatible, zero-knowledge vault. Every install runs its own, stock an
 
   Removing someone from the vault removes their access. Their personal vault is theirs alone and is not
   readable by HyperProx or any admin.
+- **Adding people.** Invite them to the "HyperProx" organization in the vault. Invite as **Manager** to make
+  them an operator (put them in the group "HyperProx operators"), or as **User** for a viewer (group
+  "HyperProx viewers"). Owner and Admin memberships are full. The owner's two-factor code is enforced at
+  every sign-in.
 - **Re-confirmation.** Revealing a secret, destroying a guest and changing roles ask for the master
   password again (valid for five minutes).
 - **Secrets page** (Settings, Secrets): names only. Owners and admins can reveal a value (with
@@ -44,6 +51,10 @@ Bitwarden-compatible, zero-knowledge vault. Every install runs its own, stock an
   `.env` are written to the vault and verified; then the old rows are deleted and `ENCRYPTION_KEY` and
   `JWT_SECRET` are blanked, with a copy kept in `.env.pre-vault` (mode 0600). Delete that file once you
   have checked your credentials.
+
+Deleting a secret from the Secrets page moves it to the vault's trash, so it can be recovered from the vault
+until the trash is emptied. Signing in takes about 15 to 20 seconds on modest hardware, because the master
+password is deliberately slow to derive a key from.
 
 ## From the command line
 
