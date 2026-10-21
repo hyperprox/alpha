@@ -380,6 +380,10 @@ hyperprox status   # is the vault up, is HyperProx locked?
 hyperprox lock     # lock it now: wipe secrets from memory, end every session
 ```
 
+**Shipped (phase 1):** the built-in Vaultwarden, vault sign-in with 2FA required for the owner, secrets
+held in memory only, auto-lock and `hyperprox lock`, four roles (Owner, Admin, Operator, Viewer),
+re-confirmation for dangerous actions, and Bitwarden Sends for handing a secret to someone.
+
 Read [docs/security.md](docs/security.md) for the model in plain language, what is protected now, what
 is **not** yet, and the caveats that matter.
 
@@ -700,10 +704,8 @@ The HyperProx app (frontend, API, setup wizard) runs as systemd services; `docke
 Each of these has a written design in [`docs/superpowers/specs/`](docs/superpowers/specs/). Comments
 on them are welcome before the code exists.
 
-- **Security: the vault gate** ([design](docs/superpowers/specs/2026-10-14-vault-gate-design.md)).
-  **The MVP has shipped** (see [Security](#security) and [docs/security.md](docs/security.md)): the built-in
-  Vaultwarden, vault sign-in with required 2FA for the owner, secrets held in memory only, auto-lock and
-  `hyperprox lock`, the four roles, re-confirmation for dangerous actions, and Sends. **Still to come:**
+- **Vault gate, phase 2** ([design](docs/superpowers/specs/2026-10-14-vault-gate-design.md)). Phase 1
+  is built and shipping — see [Security](#security). Designed, not built yet:
   - **Temporary users:** access to named guests that expires on its own.
   - **Recovery:** `hyperprox --force-reset <email>` from a sealed Master Reset Password.
   - **Editions:** Homelab (everything) and Business (media plug-ins removed); a Homelab install can move
