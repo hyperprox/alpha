@@ -8,7 +8,6 @@
 
 <p align="center">
   <a href="https://www.gnu.org/licenses/agpl-3.0"><img src="https://img.shields.io/badge/License-AGPL_v3-blue.svg" alt="License: AGPL v3"></a>
-  <a href="https://hub.docker.com/r/hyperprox/hyperprox"><img src="https://img.shields.io/badge/Docker-hyperprox%2Fhyperprox-2496ED?logo=docker" alt="Docker"></a>
   <a href="https://github.com/hyperprox/alpha/stargazers"><img src="https://img.shields.io/github/stars/hyperprox/alpha?style=flat" alt="GitHub Stars"></a>
 </p>
 
@@ -48,6 +47,8 @@ It is safe to re-run — anything already correct is left alone.
 --ip CIDR           Static address, e.g. 192.168.1.50/24  (default: dhcp)
 --gateway IP        Gateway, required with --ip
 --skip-exporter     Do not install node_exporter on the nodes
+--skip-rapl         Do not install the power-metrics udev rule
+--skip-gpu-exporter Do not install the Intel GPU exporter
 -y, --yes           Do not ask for confirmation
 ```
 
@@ -125,7 +126,7 @@ pveum user token add root@pam hyperprox --privsep=0
 pveum acl modify / --token 'root@pam!hyperprox' --role Administrator
 ```
 
-Inside the container (Debian 11, 12 or 13, or Ubuntu 22.04 / 24.04):
+Inside the container (Debian 12 or 13, or Ubuntu 22.04 / 24.04):
 
 ```bash
 apt update && apt install -y curl
@@ -302,8 +303,7 @@ early, and the section below says exactly where the edges are.
 | **OpenAI** | An API key | Uses JSON-schema structured output. The base URL is settable, so the same path also reaches OpenRouter, Groq, Together or any OpenAI-compatible server. |
 | **Ollama** | A reachable Ollama server | Free and private. HyperProx does not bundle or install Ollama — point it at one you already run. |
 
-Cloud keys are stored in the same AES-256-GCM credential store as everything
-else and are never sent to the browser.
+Cloud keys are kept in the vault like every other credential, and are never sent to the browser.
 
 **The model is given your actual cluster.** Before a plan is generated, HyperProx
 gathers the live facts — every online node with its free memory, every storage
@@ -318,8 +318,8 @@ no node can fit, a missing DNS step. Anything it finds is shown as a warning
 alongside the model's own.
 
 **What still does not work:**
-- The `install_service` step reports itself as skipped and shows you the commands
-  to run — HyperProx does not yet execute inside a newly created container.
+- Installing the service needs an SSH login for the node; without one the
+  `install_service` step is skipped and shows you the commands to run instead.
 - Small local models still produce weaker plans. The output is validated either
   way, so a bad one is rejected rather than executed.
 
@@ -396,8 +396,8 @@ is **not** yet, and the caveats that matter.
 | Real-time WebSocket dashboard — nodes, GPU, CEPH, HA, network | ✅ Shipped |
 | Storage page — CEPH health, OSD status, VM/CT disk breakdown | ✅ Shipped |
 | Monitoring page — node health, active alerts, Grafana embed | ✅ Shipped |
-| AES-256-GCM encrypted credential store | ✅ Shipped |
-| One-shot installer + first-run setup wizard (Debian 12 and 13) | ✅ Shipped |
+| **Vault gate — built-in Vaultwarden, vault sign-in with 2FA, secrets in memory only, auto-lock, four roles** | ✅ Shipped |
+| One-shot installer + first-run setup wizard (Debian 12/13, Ubuntu 22.04/24.04) | ✅ Shipped |
 | **Setup wizard signs in with your Proxmox login and creates its own uniquely named token** | ✅ Shipped |
 | **Setup wizard locked to a per-install setup key, same-origin only** | ✅ Shipped |
 | **Service scan finds the NPM, PBS, Grafana and Prometheus you already run** | ✅ Shipped |
@@ -407,8 +407,7 @@ is **not** yet, and the caveats that matter.
 | CT template + ISO auto-detection across all nodes and storage pools | ✅ Shipped |
 | **Terminal — SSH panes for every host, sessions that outlive the browser** | ✅ Shipped |
 | **Terminal — split panes, tabs, and saved layouts** | ✅ Shipped |
-| **Plug-ins — brokered plug-in system: MikroTik, Plex/Tautulli, Home Assistant, Arr Stack (Sonarr, Radarr, qBittorrent, Unmanic) and UPS** | ✅ Shipped |
-| **Arr Stack plug-in — rescues imports the parser cannot read, tells a stalled download from a blocked import** | ✅ Shipped |
+| **Plug-ins — brokered plug-in system: Arr Stack, Unmanic, MikroTik, Plex/Tautulli and Home Assistant** | ✅ Shipped |
 | **MikroTik plug-in — the whole router, per-device bandwidth and an SSH console** | ✅ Shipped |
 | **Dashboard — speedometer dials, trend sparklines and live throughput charts** | ✅ Shipped |
 | **WAN and LAN bandwidth meters, read from a plug-in** | ✅ Shipped |
@@ -510,7 +509,7 @@ not be installed, and a DHCP lease that may not have arrived — `pct exec` need
 none of those, because the node already owns the container.
 
 The consequence is that HyperProx asks for a login on the hypervisor. It is
-tested before it is stored, it is kept in the same encrypted store as everything
+tested before it is stored, it is kept in the vault with everything
 else, and it is deliberately **not** shared with the Terminal's guest login: that
 password was given so one root account could cover a shelf of containers, and
 borrowing it to reach the hosts would be both a guess and a quiet widening of
@@ -551,7 +550,7 @@ cannot go stale:
 
 | Plug-in | What it shows |
 |---|---|
-| **Arr Stack** | Sonarr, Radarr, Prowlarr and qBittorrent as one thing, because they are one thing. Rescues downloads that arrived complete and cannot be filed — see below. What needs a person versus what automation will retry on its own, the queue with season packs marked as packs, active downloads, torrents by state, anything with no progress in over an hour, indexer health. |
+| **Arr Stack** | Sonarr, Radarr, Prowlarr and qBittorrent as one thing, because they are one thing. What needs a person versus what automation will retry on its own, the queue with season packs marked as packs, active downloads, torrents by state, anything with no progress in over an hour, indexer health. |
 | **Unmanic** | Transcode workers across every node: what each is working on, how far in, what is queued and what failed. |
 | **MikroTik** | The whole router: identity, model, RouterOS and RouterBOARD firmware, CPU, memory, temperature and input voltage; per-device and per-interface throughput; port forwards, firewall counters, WireGuard peers, LLDP/CDP neighbours, listening services, accounts, DNS and the recent log. Feeds the dashboard's WAN and LAN meters, and offers an SSH console. Read-only by intent. |
 | **Plex activity** | Who is watching, what they are watching, what is transcoding and what it costs in bandwidth — read through Tautulli, which also supplies the history: recent plays, top watchers, most-watched titles. |
@@ -659,7 +658,7 @@ The setup wizard calculates recommended storage automatically based on your clus
 
 ## Architecture
 
-Single `docker compose up` deploys the full stack:
+The HyperProx app (frontend, API, setup wizard) runs as systemd services; `docker compose` runs everything around it:
 
 | Service | Purpose | Port |
 |---|---|---|
@@ -672,9 +671,8 @@ Single `docker compose up` deploys the full stack:
 | pve-exporter | Proxmox metrics bridge | 9221 |
 | postgres | Config + state storage | 5432 |
 | redis | Queue + cache | 6379 |
-| nginx | Internatar: docs/security.md: Cannot stat: No such file or directory
-tar: Exiting with failure status due to previous errors
-l reverse proxy | 80 |
+| nginx | Internal reverse proxy | 80 |
+| nginx-proxy-manager | Optional bundled NPM (compose profile `npm`), when you do not already run one | 80/443/81 |
 
 > Prometheus runs with `network_mode: host` so it can scrape node_exporter directly on the host network. All other services run on an internal bridge network.
 
@@ -684,15 +682,14 @@ l reverse proxy | 80 |
 
 | Layer | Technology |
 |---|---|
-| Frontend | Next.js 14+ · shadcn/ui |
+| Frontend | Next.js 14 · Radix UI (shadcn/ui) |
 | Backend | Node.js · Fastify |
 | Real-time | WebSockets |
 | Database | PostgreSQL · Prisma ORM |
 | Queue | BullMQ · Redis |
 | Monitoring | Prometheus · Grafana (bundled, auto-configured) |
-| AI | Ollama (external, optional) |
+| AI | Anthropic, any OpenAI-compatible endpoint, or Ollama (external, optional) |
 | Containers | Docker · Compose |
-| CI/CD | GitLab CI → Docker Hub |
 
 ---
 
@@ -771,7 +768,7 @@ which was the blocker under the autonomous-deployment item.
 - **XCP-NG support** — manage Xen alongside Proxmox
 - **VPN management** — WireGuard + Tailscale + Pangolin
 - **CVE scanner + PVE hardening**
-- **Role-based access control (RBAC)** — the first five roles come with the vault gate above
+- **Role-based access control (RBAC)** — four roles shipped with the vault gate (Owner, Admin, Operator, Viewer); Temporary users are next
 - **LDAP / OIDC / SSO support**
 - **Commercial licensing tier** — MSPs and enterprise deployments
 
@@ -786,23 +783,25 @@ See [ROADMAP.md](ROADMAP.md) for full details.
 | Proxy management | ✅ | ❌ | ❌ | Partial |
 | DNS management | ✅ | ❌ | ❌ | ❌ |
 | SSL lifecycle | ✅ | ❌ | ❌ | Partial |
-| Network storage health | ✅ v1.0 | ❌ | ❌ | ❌ |
-| Smart suggestion engine | ✅ v1.0 | ❌ | ❌ | ❌ |
-| AI deployment wizard | ✅ v1.0 | ❌ | ❌ | ❌ |
+| Network storage health | 🔜 v1.0 | ❌ | ❌ | ❌ |
+| Smart suggestion engine | 🔜 v1.0 | ❌ | ❌ | ❌ |
+| AI deployment wizard | ✅ | ❌ | ❌ | ❌ |
 | Bundled monitoring | ✅ | ❌ | ❌ | ❌ |
-| Docker install | ✅ | ❌ | ❌ | ✅ |
+| Runs in Docker | ✅ | ❌ | ❌ | ✅ |
 | curl \| bash install | ✅ | ✅ | ❌ | ✅ |
-| Multi-cluster | ✅ v2.0 | ✅ | ✅ | ❌ |
-| Cross-cluster migration | ✅ v2.0 | ✅ | ❌ | ❌ |
-| ESXi migration | ✅ v2.0 | ✅ | ❌ | ❌ |
-| XCP-NG support | ✅ v2.0 | ✅ | ❌ | ❌ |
-| VPN management | ✅ v2.0 | ❌ | ❌ | ❌ |
-| RBAC | ✅ v2.0 | ✅ | ✅ | Partial |
-| CVE scanner | ✅ v2.0 | ✅ | ❌ | ❌ |
-| PVE hardening | ✅ v2.0 | ✅ | ❌ | ❌ |
-| Bare metal installer | ✅ v2.0 | ❌ | ✅ | ❌ |
+| Multi-cluster | 🔜 v2.0 | ✅ | ✅ | ❌ |
+| Cross-cluster migration | 🔜 v2.0 | ✅ | ❌ | ❌ |
+| ESXi migration | 🔜 v2.0 | ✅ | ❌ | ❌ |
+| XCP-NG support | 🔜 v2.0 | ✅ | ❌ | ❌ |
+| VPN management | 🔜 v2.0 | ❌ | ❌ | ❌ |
+| RBAC | ✅ four roles | ✅ | ✅ | Partial |
+| CVE scanner | 🔜 v2.0 | ✅ | ❌ | ❌ |
+| PVE hardening | 🔜 v2.0 | ✅ | ❌ | ❌ |
+| Bare metal installer | 🔜 v2.0 | ❌ | ✅ | ❌ |
 | Load balancing (DRS) | ❌ | ✅ | ❌ | ❌ |
 | Free & open source | ✅ AGPL v3 | ✅ AGPL v3 | ✅ AGPL v3 | ✅ |
+
+✅ shipped · 🔜 planned for the version shown.
 
 **HyperProx owns the application delivery layer. No competitor connects proxy + DNS + SSL + AI + network storage health in a single platform.**
 
@@ -823,4 +822,5 @@ Commercial licensing for MSPs and enterprise deployments coming in v2.0.
 ---
 
 <p align="center">
-  Built by <a href="https://g
+  Built by <a href="https://griffinit.net">GriffinIT</a> — running on a real 5-node Proxmox cluster so every feature solves a real problem.
+</p>
