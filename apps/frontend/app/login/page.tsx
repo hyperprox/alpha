@@ -5,7 +5,7 @@ import { useSearchParams } from 'next/navigation'
 import QRCode from 'qrcode'
 import { apiJson, type AuthStatus } from '@/lib/api'
 import { alpha } from '@/lib/theme'
-import { GhostButton, INPUT, LABEL, Notice, PrimaryButton, passwordStrength } from '@/components/vault/ui'
+import { BusyNote, GhostButton, INPUT, LABEL, Notice, PrimaryButton, passwordStrength } from '@/components/vault/ui'
 
 /**
  * Where to go after signing in — a path on this origin, or `/`.
@@ -30,6 +30,7 @@ function authError(r: { status: number; code?: string; error?: string }, fallbac
     case 'totp_invalid':
     case 'totp_required':   return 'That 2FA code is wrong or expired. Enter the current 6-digit code.'
     case 'not_member':      return 'This vault account is not a member of the HyperProx organization.'
+    case 'unauthenticated': return 'Your session has ended. Sign in again.'
     case 'locked_out':      return 'Too many failed attempts. Wait a few minutes and try again.'
   }
   if (r.status === 0) return 'Could not reach the API.'
@@ -104,8 +105,8 @@ function goNext(raw: string | null) {
   window.location.assign(safeNext(raw))
 }
 
-function SignIn({ next }: { next: string | null }) {
-  const [email, setEmail] = useState('')
+function SignIn({ next, initialEmail = '', notice }: { next: string | null; initialEmail?: string; notice?: string }) {
+  const [email, setEmail] = useState(initialEmail)
   const [password, setPassword] = useState('')
   const [code, setCode] = useState('')
   const [error, setError] = useState('')
@@ -121,19 +122,21 @@ function SignIn({ next }: { next: string | null }) {
 
   return (
     <Card eyebrow="Secure sign-in" subtitle="Sign in" onSubmit={submit}>
-      <Field id="email" label="Email" type="email" autoFocus autoComplete="username" value={email} onChange={e => setEmail(e.target.value)} />
-      <Field id="password" label="Master password" type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} />
+      {notice && <Notice kind="info">{notice}</Notice>}
+      <Field id="email" label="Email" type="email" autoFocus={!initialEmail} autoComplete="username" value={email} onChange={e => setEmail(e.target.value)} />
+      <Field id="password" label="Master password" type="password" autoFocus={!!initialEmail} autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} />
       <Field id="code" label="2FA code" inputMode="numeric" autoComplete="one-time-code" maxLength={6} placeholder="123456"
              value={code} onChange={e => setCode(e.target.value.replace(/\D/g, ''))} />
       {error && <Notice kind="error">{error}</Notice>}
       <PrimaryButton type="submit" className="w-full" disabled={busy || !email || !password || code.length !== 6}>
         {busy ? 'Signing in...' : 'Sign in'}
       </PrimaryButton>
+      {busy && <BusyNote>Signing in to the vault — this takes about 20 seconds.</BusyNote>}
     </Card>
   )
 }
 
-function Bootstrap({ next }: { next: string | null }) {
+function Bootstrap({ next, onSignInRequired }: { next: string | null; onSignInRequired: (email: string) => void }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [again, setAgain] = useState('')
@@ -168,6 +171,8 @@ function Bootstrap({ next }: { next: string | null }) {
     setBusy(true); setError('')
     const r = await apiJson('/api/auth/bootstrap/confirm', 'POST', { email: email.trim(), password, code: code.trim() })
     if (!r.ok) { setError(authError(r, 'Could not confirm the code')); setBusy(false); return }
+    // Rarely the account is created but no session cookie comes back: sign in with the next code.
+    if (r.body?.signInRequired) { onSignInRequired(email.trim()); return }
     goNext(next)
   }
 
@@ -186,6 +191,7 @@ function Bootstrap({ next }: { next: string | null }) {
         <PrimaryButton type="submit" className="w-full" disabled={busy || !valid}>
           {busy ? 'Creating...' : 'Create owner account'}
         </PrimaryButton>
+        {busy && <BusyNote>Creating the account in the vault — this can take several seconds.</BusyNote>}
       </Card>
     )
   }
@@ -210,15 +216,17 @@ function Bootstrap({ next }: { next: string | null }) {
           </code>
         </div>
       )}
+      <Notice kind="warn">Save this key. HyperProx has no recovery yet: if you lose your master password and 2FA, the only way back is reinstalling.</Notice>
       <Field id="code" label="6-digit code" inputMode="numeric" autoComplete="one-time-code" maxLength={6} placeholder="123456" autoFocus
              value={code} onChange={e => setCode(e.target.value.replace(/\D/g, ''))} />
       {error && <Notice kind="error">{error}</Notice>}
       <div className="flex gap-2">
-        <GhostButton type="button" onClick={() => { setUri(null); setQr(''); setCode(''); setError('') }}>Back</GhostButton>
+        <GhostButton type="button" disabled={busy} onClick={() => { setUri(null); setQr(''); setCode(''); setError('') }}>Back</GhostButton>
         <PrimaryButton type="submit" className="flex-1" disabled={busy || code.length !== 6}>
           {busy ? 'Verifying...' : 'Confirm and continue'}
         </PrimaryButton>
       </div>
+      {busy && <BusyNote>Verifying with the vault — this can take several seconds.</BusyNote>}
     </Card>
   )
 }
@@ -228,6 +236,7 @@ function LoginForm() {
   const next = params.get('next')
   const [status, setStatus] = useState<AuthStatus | null>(null)
   const [failed, setFailed] = useState(false)
+  const [prefill, setPrefill] = useState<string | null>(null)
 
   useEffect(() => {
     apiJson<AuthStatus>('/api/auth/status').then(r => {
@@ -248,7 +257,9 @@ function LoginForm() {
         <Notice kind="error">The vault is unreachable. Sign-in will fail until it is running again.</Notice>
       )}
       {failed && <Notice kind="error">Could not reach the API.</Notice>}
-      {status && (status.bootstrapped ? <SignIn next={next} /> : <Bootstrap next={next} />)}
+      {status && (status.bootstrapped || prefill !== null
+        ? <SignIn next={next} initialEmail={prefill ?? ''} notice={prefill !== null ? 'Your owner account is created. Sign in with your next 2FA code to finish.' : undefined} />
+        : <Bootstrap next={next} onSignInRequired={setPrefill} />)}
       {!status && !failed && <div className="text-center text-sm animate-pulse" style={{ color: 'var(--text-dimmer)' }}>Checking the vault...</div>}
     </div>
   )

@@ -3,6 +3,8 @@
 import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
 import { alpha } from '@/lib/theme'
+import { atLeast } from '@/lib/api'
+import { useSession } from '@/lib/session'
 
 // ---------------------------------------------------------------------------
 //  Types
@@ -190,6 +192,7 @@ export default function SettingsPage() {
   const [tab,    setTab]    = useState<'proxmox' | 'proxy' | 'dns' | 'system'>('proxmox')
   const [fields, setFields] = useState<Record<string, CredentialField[]>>({})
   const [loading, setLoading] = useState(true)
+  const { role } = useSession()
 
   const fetchCategory = useCallback(async (category: string) => {
     const res  = await fetch(`/api/settings/${category}`)
@@ -222,6 +225,18 @@ export default function SettingsPage() {
   }
 
   const meta = CATEGORY_META[tab]
+
+  if (role && !atLeast(role, 'admin')) {
+    return (
+      <div className="min-h-full p-4 sm:p-8" style={{ background: 'var(--ground)' }}>
+        <h1 className="font-display font-bold" style={{ fontSize: 36, lineHeight: 1.1, color: 'var(--text-bright)' }}>Settings</h1>
+        <p className="mt-4 max-w-xl rounded-md border px-3 py-2 text-sm"
+           style={{ background: 'var(--surface-notice)', borderColor: 'var(--border-soft)', color: 'var(--text)' }}>
+          Your role can&apos;t view settings. Ask an owner or admin if you need a change.
+        </p>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-full p-4 sm:p-8" style={{ background: 'var(--ground)' }}>

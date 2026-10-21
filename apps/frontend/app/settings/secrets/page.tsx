@@ -5,9 +5,9 @@ import Link from 'next/link'
 import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
-import { CopyButton, GhostButton, INPUT, LABEL, Modal, Notice, PrimaryButton } from '@/components/vault/ui'
+import { BusyNote, CopyButton, GhostButton, INPUT, LABEL, Modal, Notice, PrimaryButton } from '@/components/vault/ui'
 
-interface SecretRow { name: string; updatedAt?: string }
+interface SecretRow { name: string; updatedAt?: string; managed?: boolean; fields?: string[] }
 
 const REVEAL_SECONDS = 30
 
@@ -15,7 +15,11 @@ const REVEAL_SECONDS = 30
 function parseRows(body: any): SecretRow[] {
   const list = Array.isArray(body) ? body : body?.secrets ?? body?.data ?? []
   if (!Array.isArray(list)) return []
-  return list.map((x: any) => typeof x === 'string' ? { name: x } : { name: String(x.name), updatedAt: x.updatedAt })
+  return list.map((x: any) => typeof x === 'string' ? { name: x } : {
+    name: String(x.name), updatedAt: x.updatedAt,
+    managed: !!x.managed || String(x.name).startsWith('hyperprox:'),
+    fields: Array.isArray(x.fields) ? x.fields.map(String) : undefined,
+  })
 }
 
 /** The reveal response is either one `value` or a map of fields; flatten to label/value pairs. */
@@ -70,12 +74,14 @@ function RevealModal({ name, values, onClose }: { name: string; values: Array<[s
   )
 }
 
-function SendModal({ name, onClose }: { name: string; onClose: () => void }) {
+function SendModal({ name, fieldNames, onClose }: { name: string; fieldNames?: string[]; onClose: () => void }) {
   const [hours, setHours] = useState('24')
   const [maxViews, setMaxViews] = useState('1')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [choices, setChoices] = useState<string[]>(fieldNames && fieldNames.length > 1 ? fieldNames : [])
+  const [field, setField] = useState('')
   const [link, setLink] = useState<{ url: string; expiresAt?: string } | null>(null)
 
   async function submit(e: React.FormEvent) {
@@ -83,8 +89,11 @@ function SendModal({ name, onClose }: { name: string; onClose: () => void }) {
     setBusy(true); setError('')
     const payload: Record<string, unknown> = { name, hours: Number(hours) || 24, maxViews: Number(maxViews) || 1 }
     if (password) payload.password = password
-    const r = await apiJson<{ url: string; expiresAt?: string }>('/api/secrets/send', 'POST', payload)
+    if (field) payload.field = field
+    const r = await apiJson<{ url: string; expiresAt?: string; fields?: string[] }>('/api/secrets/send', 'POST', payload)
     setBusy(false)
+    // Several fields and none chosen: the API lists them; ask which one to send.
+    if (r.status === 400 && Array.isArray(r.body?.fields)) { setChoices(r.body!.fields!.map(String)); setError('Choose which field to send.'); return }
     if (!r.ok || !r.body?.url) { setError(r.error ?? 'Could not create the Send'); return }
     setLink(r.body)
   }
@@ -110,13 +119,21 @@ function SendModal({ name, onClose }: { name: string; onClose: () => void }) {
             <div><label htmlFor="s-views" style={LABEL}>Max views</label>
               <input id="s-views" type="number" min={1} max={100} value={maxViews} onChange={e => setMaxViews(e.target.value)} style={INPUT} /></div>
           </div>
+          {choices.length > 0 && (
+            <div><label htmlFor="s-field" style={LABEL}>Field to send</label>
+              <select id="s-field" value={field} onChange={e => setField(e.target.value)} style={{ ...INPUT, cursor: 'pointer' }}>
+                <option value="">Select a field...</option>
+                {choices.map(f => <option key={f} value={f}>{f}</option>)}
+              </select></div>
+          )}
           <div><label htmlFor="s-pw" style={LABEL}>Access password (optional)</label>
             <input id="s-pw" type="password" autoComplete="new-password" value={password} onChange={e => setPassword(e.target.value)} style={INPUT} /></div>
           {error && <Notice kind="error">{error}</Notice>}
           <div className="flex gap-2 justify-end">
             <GhostButton type="button" onClick={onClose}>Cancel</GhostButton>
-            <PrimaryButton type="submit" disabled={busy}>{busy ? 'Creating...' : 'Create link'}</PrimaryButton>
+            <PrimaryButton type="submit" disabled={busy || (choices.length > 0 && !field)}>{busy ? 'Creating...' : 'Create link'}</PrimaryButton>
           </div>
+          {busy && <BusyNote>Creating the Send in the vault — this takes about 10 seconds.</BusyNote>}
         </form>
       )}
     </Modal>
@@ -148,6 +165,7 @@ function GenerateModal({ onDone, onClose }: { onDone: () => void; onClose: () =>
           <GhostButton type="button" onClick={onClose}>Cancel</GhostButton>
           <PrimaryButton type="submit" disabled={busy || !name.trim() || !purpose.trim()}>{busy ? 'Generating...' : 'Generate'}</PrimaryButton>
         </div>
+        {busy && <BusyNote>Saving to the vault — this takes about 10 seconds.</BusyNote>}
       </form>
     </Modal>
   )
@@ -227,14 +245,18 @@ export default function SecretsPage() {
               <tbody>
                 {rows.map(r => (
                   <tr key={r.name} style={{ borderBottom: '1px solid var(--border-dim)' }}>
-                    <td className="px-4 py-3 break-all" style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-bright)' }}>{r.name}</td>
+                    <td className="px-4 py-3 break-all" style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-bright)' }}>
+                      {r.name}
+                      {r.managed && <span className="ml-2 rounded border px-1.5 text-[10px] uppercase" style={{ borderColor: 'var(--border-strong)', color: 'var(--text-muted)', letterSpacing: '0.1em' }}>system</span>}
+                    </td>
                     <td className="px-4 py-3 whitespace-nowrap" style={{ color: 'var(--text-soft)' }}>{fmtDate(r.updatedAt)}</td>
                     {canUse && (
                       <td className="px-4 py-3">
+                        {r.managed ? <div className="text-right text-xs" style={{ color: 'var(--text-muted)' }}>read-only</div> : (
                         <div className="flex justify-end gap-2">
                           <button onClick={() => reveal(r.name)} className="rounded border px-3 text-xs font-medium" style={{ height: 30, borderColor: 'var(--border-strong)', color: 'var(--text-soft)' }}>Reveal</button>
                           <button onClick={() => setSendFor(r.name)} className="rounded border px-3 text-xs font-medium" style={{ height: 30, borderColor: 'var(--border-strong)', color: 'var(--accent)' }}>Send</button>
-                        </div>
+                        </div>)}
                       </td>
                     )}
                   </tr>
@@ -253,7 +275,7 @@ export default function SecretsPage() {
         />
       )}
       {revealed && <RevealModal name={revealed.name} values={revealed.values} onClose={() => setRevealed(null)} />}
-      {sendFor && <SendModal name={sendFor} onClose={() => setSendFor(null)} />}
+      {sendFor && <SendModal name={sendFor} fieldNames={rows?.find(x => x.name === sendFor)?.fields} onClose={() => setSendFor(null)} />}
       {generating && <GenerateModal onClose={() => setGenerating(false)} onDone={() => { setGenerating(false); flash('Password generated and saved to the vault.'); load() }} />}
     </div>
   )
