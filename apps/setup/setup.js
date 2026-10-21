@@ -62,7 +62,9 @@ function writeEnv(updates) {
     if (!updated.has(k)) newLines.push(`${k}=${v}`)
   }
 
-  fs.writeFileSync(ENV_PATH, newLines.join('\n'), 'utf8')
+  // .env holds the Proxmox token and every secret not yet in the vault: owner-only, whatever mode it had.
+  fs.writeFileSync(ENV_PATH, newLines.join('\n'), { encoding: 'utf8', mode: 0o600 })
+  fs.chmodSync(ENV_PATH, 0o600)
   Object.assign(process.env, updates)
 }
 

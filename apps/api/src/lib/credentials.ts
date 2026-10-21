@@ -531,7 +531,8 @@ export async function seedFromEnv(sidArg?: string): Promise<MigrationResult> {
       const target = existsSync(backup) ? `${backup}.${Date.now()}` : backup
       writeFileSync(target, envText, { mode: 0o600 })
       chmodSync(target, 0o600)
-      writeFileSync(envPath, text)
+      writeFileSync(envPath, text, { mode: 0o600 })
+      chmodSync(envPath, 0o600)
       result.backup = target
       result.envBlanked = blanked
     }
