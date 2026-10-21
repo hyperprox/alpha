@@ -6,16 +6,16 @@ import { registerGate } from '../../src/lib/gate'
 import { authRoutes } from '../../src/routes/auth'
 import { secretsRoutes } from '../../src/routes/secrets'
 import { healthRoute } from '../../src/routes/health'
-import { setBroker } from '../../src/lib/vault/broker'
+import { setBroker, type VaultBroker } from '../../src/lib/vault/broker'
 import { lock, isUnlocked } from '../../src/lib/vault/state'
 import { getCredential, setCredential } from '../../src/lib/credentials'
 import { setCredentialTable } from '../../src/lib/credentials'
-import { FakeBroker, GOOD_CODE } from './fake-broker'
+import { GOOD_CODE } from './fake-broker'
 
 export { GOOD_CODE }
 
-export async function buildTestApp(broker: FakeBroker): Promise<FastifyInstance> {
-  setBroker(broker)
+export async function buildTestApp(broker?: VaultBroker): Promise<FastifyInstance> {
+  if (broker) setBroker(broker)   // omitted: the real broker
   // No Postgres in these tests: the migration sees an empty old store.
   setCredentialTable({ credential: { findMany: async () => [], deleteMany: async () => ({ count: 0 }) } })
   process.env.ENV_FILE_PATH = '/nonexistent/hyperprox-test.env'

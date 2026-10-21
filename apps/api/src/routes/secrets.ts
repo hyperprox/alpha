@@ -9,7 +9,7 @@
 import type { FastifyPluginAsync } from 'fastify'
 import { randomInt } from 'crypto'
 import { getBroker, type SecretItem } from '../lib/vault/broker'
-import { cachedSecret, putCachedSecret } from '../lib/vault/state'
+import { cachedSecret, cachedSecrets, putCachedSecret } from '../lib/vault/state'
 import { ITEM_PREFIX } from '../lib/credentials'
 
 const CHARSET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789-_.!@#%^*+='
@@ -21,9 +21,7 @@ export function generatePassword(length = 24): string {
 }
 
 function updatedAtOf(item: SecretItem): string | null {
-  const anyItem = item as SecretItem & { revisionDate?: string; updatedAt?: string }
-  if (anyItem.revisionDate) return anyItem.revisionDate
-  if (anyItem.updatedAt) return anyItem.updatedAt
+  if (item.revisionDate) return item.revisionDate
   const line = item.notes?.split('\n').find(l => l.startsWith('hyperprox-meta:'))
   if (line) {
     try {
@@ -41,10 +39,12 @@ export const secretsRoutes: FastifyPluginAsync = async (fastify) => {
   }
 
   // GET /api/secrets — names, field names, last change. Never values.
-  fastify.get('/', async (req, reply) => {
+  // From the unlock cache (a vault round-trip takes seconds); ?refresh=1 asks the vault.
+  fastify.get<{ Querystring: { refresh?: string } }>('/', async (req, reply) => {
     const s = req.session!
     try {
-      const items = await getBroker().listSecrets(s.sid)
+      const items = req.query?.refresh ? await getBroker().listSecrets(s.sid) : cachedSecrets()
+      if (req.query?.refresh) for (const i of items) putCachedSecret(i)
       return {
         ok: true,
         data: items

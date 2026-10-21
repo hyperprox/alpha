@@ -29,6 +29,7 @@ import { terminalWsRoutes }           from './routes/terminal-ws'
 import { prismaPlugin }         from './plugins/prisma'
 import { redisPlugin }          from './plugins/redis'
 import { registerGate }         from './lib/gate'
+import { lock }                 from './lib/vault/state'
 
 const server = Fastify({
   logger: {
@@ -76,6 +77,9 @@ async function main() {
   await server.register(wsRoutes,             { prefix: '/ws' })
   // Terminal sockets live under /ws because nginx proxies upgrades only there.
   await server.register(terminalWsRoutes,         { prefix: '/ws/terminal' })
+
+  // Always start locked, and clear CLI session dirs a previous process left in /dev/shm.
+  await lock('restart')
 
   // Credentials move into the vault on the first Owner sign-in (lib/credentials.ts seedFromEnv),
   // not here: while locked there is no vault session to write with.

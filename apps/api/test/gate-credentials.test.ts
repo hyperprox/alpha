@@ -63,6 +63,7 @@ test('concurrent writes to one provider keep every key', async () => {
   const { res } = await signIn(app, 'owner@example.com', 'owner master password')
   assert.equal(res.statusCode, 200)
   const sid = [...broker.sessions.values()].at(-1)!.sid
+  const before = broker.callsTo('upsertSecret').length
   await requestContext.run({ sid, email: 'owner@example.com', role: 'owner' }, () => Promise.all([
     setCredential('proxy', 'npm', 'url', 'http://192.168.1.10:81', false),
     setCredential('proxy', 'npm', 'email', 'admin@example.com', false),
@@ -71,6 +72,8 @@ test('concurrent writes to one provider keep every key', async () => {
   assert.deepEqual(broker.items.get('hyperprox:proxy/npm')!.fields,
     { url: 'http://192.168.1.10:81', email: 'admin@example.com', password: 'npm-pass' })
   assert.equal(process.env.NPM_PASSWORD, 'npm-pass')
+  // A vault write takes seconds: writes arriving during one are coalesced into one follow-up.
+  assert.equal(broker.callsTo('upsertSecret').length - before, 2)
 
   await requestContext.run({ sid, email: 'owner@example.com', role: 'owner' }, async () => {
     await deleteCredential('proxy', 'npm', 'password')

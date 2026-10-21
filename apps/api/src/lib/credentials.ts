@@ -17,7 +17,7 @@ import { PrismaClient } from '@prisma/client'
 import { chmodSync, existsSync, readFileSync, writeFileSync } from 'fs'
 import { decrypt, mask } from './crypto'
 import { getBroker, type SecretItem } from './vault/broker'
-import { isUnlocked, cachedSecret, putCachedSecret, onLock } from './vault/state'
+import { isUnlocked, cachedSecret, putCachedSecret, removeCachedSecret, onLock } from './vault/state'
 import { actingSid } from './auth'
 
 export interface CredentialDef {
@@ -137,28 +137,46 @@ function requireSid(): string {
   return sid
 }
 
-// One vault write per item at a time, always sending the latest cached fields,
-// so concurrent setCredential calls on one provider cannot drop each other's keys.
-const writeQueues = new Map<string, Promise<unknown>>()
+// One vault write per item at a time, always sending the latest cached fields.
+// A vault write takes seconds, so writes that arrive while one is running are
+// coalesced into a single follow-up write (a settings form saving three keys of
+// one provider costs at most two writes, and none of the keys is lost).
+interface WriteQueue { running: Promise<void> | null; queued: Promise<void> | null }
+const writeQueues = new Map<string, WriteQueue>()
+
+async function doWrite(name: string, sid: string): Promise<void> {
+  const item = cachedSecret(name)
+  if (!item) return
+  const broker = getBroker()
+  if (Object.keys(item.fields).length === 0) {
+    if (item.id) await broker.deleteSecret(sid, name)
+    removeCachedSecret(name)
+    return
+  }
+  const saved = await broker.upsertSecret(sid, name, { ...item.fields }, item.notes)
+  const latest = cachedSecret(name)
+  if (latest) putCachedSecret({ ...latest, id: saved.id, revisionDate: saved.revisionDate })
+}
 
 function writeThrough(name: string, sid: string): Promise<void> {
-  const prev = writeQueues.get(name) ?? Promise.resolve()
-  const next = prev.catch(() => undefined).then(async () => {
-    const item = cachedSecret(name)
-    if (!item) return
-    const broker = getBroker()
-    if (Object.keys(item.fields).length === 0) {
-      if (item.id) await broker.deleteSecret(sid, name)
-      putCachedSecret({ ...item, id: '' })
-      return
+  let q = writeQueues.get(name)
+  if (!q) { q = { running: null, queued: null }; writeQueues.set(name, q) }
+  const queue = q
+  if (queue.queued) return queue.queued
+
+  const start = async (): Promise<void> => {
+    queue.queued = null
+    queue.running = doWrite(name, sid)
+    try { await queue.running }
+    finally {
+      queue.running = null
+      if (!queue.queued && writeQueues.get(name) === queue) writeQueues.delete(name)
     }
-    const saved = await broker.upsertSecret(sid, name, { ...item.fields }, item.notes)
-    const latest = cachedSecret(name)
-    if (latest) putCachedSecret({ ...latest, id: saved.id })
-  })
-  writeQueues.set(name, next)
-  next.finally(() => { if (writeQueues.get(name) === next) writeQueues.delete(name) }).catch(() => undefined)
-  return next
+  }
+
+  if (!queue.running) return start()
+  queue.queued = queue.running.catch(() => undefined).then(start)
+  return queue.queued
 }
 
 // ---------------------------------------------------------------------------

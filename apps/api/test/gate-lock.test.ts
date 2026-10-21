@@ -130,6 +130,18 @@ test('POST /api/auth/lock from the local CLI (loopback, no cookie, not proxied);
   assert.equal(again.statusCode, 423)
 })
 
+test('a session the vault no longer knows: 401 session_expired, and the cookie is cleared', async () => {
+  const app = await appP
+  const { cookie } = await signIn(app, 'viewer@example.com', 'viewer master password')
+  const sid = [...broker.sessions.values()].at(-1)!.sid
+  broker.sessions.delete(sid)   // e.g. signed out in the vault
+  const res = await app.inject({ method: 'POST', url: '/api/auth/reconfirm', headers: { cookie }, payload: { password: 'viewer master password' } })
+  assert.equal(res.statusCode, 401)
+  assert.equal(res.json().code, 'session_expired')
+  assert.match(String(res.headers['set-cookie']), /Max-Age=0/)
+  assert.equal((await app.inject({ method: 'GET', url: '/api/proxmox/resources', headers: { cookie } })).statusCode, 401)
+})
+
 test('bootstrap is refused once the owner exists', async () => {
   const app = await appP
   const res = await app.inject({ method: 'POST', url: '/api/auth/bootstrap', payload: { email: 'x@example.com', password: 'a long enough password' } })
