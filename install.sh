@@ -532,6 +532,10 @@ REDIS_URL=redis://localhost:6379
 REDIS_PASSWORD=
 
 # ── Security ──────────────────────────────────────────────────────────────────
+# ENCRYPTION_KEY and JWT_SECRET are legacy. Credentials and sessions now live behind the vault gate; the
+# first owner unlock migrates stored credentials into the vault and blanks these two lines (a copy is
+# kept in .env.pre-vault, mode 0600 - delete it once you have checked your credentials).
+# The vault settings (VAULT_*) are added further down by the installer.
 ENCRYPTION_KEY=${AES_KEY}
 JWT_SECRET=${JWT_SECRET}
 SETUP_SECRET=${SETUP_SECRET}
@@ -599,6 +603,53 @@ EOF
   info "Proxmox credentials will be configured through the setup wizard"
 }
 
+# ── Vault gate settings ───────────────────────────────────────────────────────
+# Idempotent: runs for fresh installs and for existing .env files that predate the vault. Existing values
+# are never overwritten, so re-running the installer keeps the admin token that is already in force.
+VAULT_IMAGE="vaultwarden/server:1.37.4@sha256:efb3cde962015fcc036b2ea625242248611943b27212ebf4392841fb30fad055"
+
+env_has() { grep -qE "^$1=" "${ENV_FILE}" 2>/dev/null; }
+
+# Argon2id PHC hash of $1, produced by Vaultwarden's own `hash` tool from the pinned image. The tool
+# insists on a terminal for its password prompt, so it runs under script(1) with the token piped in.
+vault_token_hash() {
+  local token="$1" out
+  out="$(printf '%s\n%s\n' "${token}" "${token}" \
+    | script -qec "docker run --rm -it ${VAULT_IMAGE} /vaultwarden hash --preset bitwarden" /dev/null 2>>"${LOG_FILE}" \
+    | tr -d '\r')" || true
+  printf '%s' "${out}" | grep -oP "ADMIN_TOKEN='\K[^']+" | head -1
+}
+
+configure_vault_env() {
+  step "Configuring the vault gate"
+  ENV_FILE="${HYPERPROX_DIR}/.env"
+  [[ -f "${ENV_FILE}" ]] || die ".env not found at ${ENV_FILE}"
+
+  local added=false
+  if ! env_has VAULT_ADMIN_TOKEN_HASH; then
+    local token hash
+    token="$(openssl rand -hex 24)"
+    info "Pulling the pinned Vaultwarden image and hashing the admin token..."
+    docker pull --quiet "${VAULT_IMAGE}" >>"${LOG_FILE}" 2>&1 || die "Could not pull ${VAULT_IMAGE}"
+    hash="$(vault_token_hash "${token}")"
+    [[ "${hash}" == \$argon2id\$* ]] || die "Could not generate the vault admin token hash (see ${LOG_FILE})"
+    {
+      echo ""
+      echo "# ── Vault (Vaultwarden) ───────────────────────────────────────────────────────"
+      echo "# VAULT_ADMIN_TOKEN opens the vault's /admin page on 127.0.0.1:8222. That page manages users and"
+      echo "# settings, NOT vault contents (those are end-to-end encrypted). Keep it private."
+      echo "VAULT_ADMIN_TOKEN=${token}"
+      # Single quotes: the hash is full of '\$', which docker compose would otherwise try to expand.
+      echo "VAULT_ADMIN_TOKEN_HASH='${hash}'"
+    } >> "${ENV_FILE}"
+    added=true
+  fi
+  env_has VAULT_URL || { echo "VAULT_URL=http://127.0.0.1:8222" >> "${ENV_FILE}"; added=true; }
+  env_has VAULT_IDLE_LOCK_MINUTES || { echo "VAULT_IDLE_LOCK_MINUTES=30" >> "${ENV_FILE}"; added=true; }
+  chmod 600 "${ENV_FILE}"
+  [[ "${added}" == "true" ]] && ok "Vault settings written to .env" || ok "Vault settings already present"
+}
+
 # ── Docker Compose Stack ───────────────────────────────────────────────────────
 write_docker_compose() {
   step "Writing Docker Compose stack"
@@ -651,6 +702,35 @@ services:
   # FIX: network_mode: host — Prometheus must scrape node_exporter on the host
   # network directly. Bridge networking causes NAT through 172.x.x.x which
   # results in 'context deadline exceeded' on scrape targets.
+  # The vault gate. Stock, unmodified Vaultwarden, pinned by digest (never :latest). HyperProx refuses to
+  # run without it: sign-in to HyperProx IS a sign-in to this vault. Bound to loopback only; HyperProx's
+  # API is the only thing that talks to it. Signups are off - accounts exist only by invitation.
+  # Version: Vaultwarden 1.37.4 (multi-arch index digest). To update, change the tag AND the digest together.
+  vault:
+    image: vaultwarden/server:1.37.4@sha256:efb3cde962015fcc036b2ea625242248611943b27212ebf4392841fb30fad055
+    container_name: hyperprox-vault
+    restart: unless-stopped
+    environment:
+      SIGNUPS_ALLOWED: "false"
+      INVITATIONS_ALLOWED: "true"
+      ORG_GROUPS_ENABLED: "true"
+      SHOW_PASSWORD_HINT: "false"
+      # Argon2id PHC hash of the admin-panel token (the plain token is VAULT_ADMIN_TOKEN in .env). Empty
+      # disables the admin panel, so an install missing the hash fails closed.
+      ADMIN_TOKEN: ${VAULT_ADMIN_TOKEN_HASH:-}
+      # Used in Send links and invitation emails. Set VAULT_DOMAIN in .env to the address users reach.
+      DOMAIN: ${VAULT_DOMAIN:-http://127.0.0.1:8222}
+    volumes:
+      - vault_data:/data
+    ports:
+      - "127.0.0.1:8222:80"
+    healthcheck:
+      test: ["CMD", "/healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
   prometheus:
     image: prom/prometheus:latest
     container_name: hyperprox-prometheus
@@ -741,6 +821,7 @@ networks:
 volumes:
   postgres_data:
   redis_data:
+  vault_data:
   grafana_data:
 EOF
   ok "docker-compose.yml written"
@@ -944,7 +1025,10 @@ write_systemd_services() {
   cat > /etc/systemd/system/hyperprox-api.service <<EOF
 [Unit]
 Description=HyperProx API (Fastify)
+# The vault is the sign-in gate: there is no HyperProx without it. ExecStartPre refuses to start the
+# API (with a clear journal message) until the vault answers.
 After=network.target docker.service
+Wants=docker.service
 Requires=docker.service
 
 [Service]
@@ -952,6 +1036,8 @@ Type=simple
 User=root
 WorkingDirectory=${HYPERPROX_DIR}/apps/api
 EnvironmentFile=${HYPERPROX_DIR}/.env
+TimeoutStartSec=120
+ExecStartPre=${HYPERPROX_DIR}/bin/wait-for-vault
 ExecStart=$(which node) dist/index.js
 Restart=always
 RestartSec=5
@@ -1015,6 +1101,14 @@ EOF
   ok "Systemd units created"
 }
 
+# ── CLI ───────────────────────────────────────────────────────────────────────
+install_cli() {
+  step "Installing the hyperprox command"
+  chmod +x "${HYPERPROX_DIR}/bin/hyperprox" "${HYPERPROX_DIR}/bin/wait-for-vault"
+  ln -sf "${HYPERPROX_DIR}/bin/hyperprox" /usr/local/bin/hyperprox
+  ok "hyperprox status | hyperprox lock"
+}
+
 # ── Database Migration ────────────────────────────────────────────────────────
 run_migrations() {
   step "Running database migrations"
@@ -1044,9 +1138,17 @@ run_migrations() {
 
 # ── Start Everything ──────────────────────────────────────────────────────────
 start_services() {
-  step "Starting Docker stack"
+  step "Starting the vault"
   cd "${HYPERPROX_DIR}"
-  info "Pulling images and starting containers (postgres, redis, prometheus, grafana, pve-exporter, nginx)..."
+  run_with_spinner "Starting the vault" \
+    docker compose up -d --quiet-pull vault
+  info "Waiting for the vault to answer..."
+  VAULT_WAIT_SECONDS=90 "${HYPERPROX_DIR}/bin/wait-for-vault" \
+    || die "The vault did not start. HyperProx cannot run without it. See: docker logs hyperprox-vault"
+  ok "Vault is up on 127.0.0.1:8222"
+
+  step "Starting Docker stack"
+  info "Pulling images and starting containers (vault, postgres, redis, prometheus, grafana, pve-exporter, nginx)..."
   run_with_spinner "Starting Docker stack" \
     docker compose up -d --quiet-pull
   ok "Docker stack started"
@@ -1102,9 +1204,14 @@ print_summary() {
   echo ""
   echo -e "  ${C_DIM}The wizard will guide you through:${C_RESET}"
   echo -e "  ${C_DIM}  • Connecting your Proxmox cluster${C_RESET}"
-  echo -e "  ${C_DIM}  • Creating your admin account${C_RESET}"
   echo -e "  ${C_DIM}  • Detecting existing services (NPM, Grafana, Ollama)${C_RESET}"
   echo -e "  ${C_DIM}  • Configuring DNS and proxy providers${C_RESET}"
+  echo ""
+  echo -e "  ${C_BOLD}Then create the owner account${C_RESET}"
+  echo -e "  ${C_DIM}  HyperProx has no password of its own. After setup, open http://${HOST_IP}:3000/login to${C_RESET}"
+  echo -e "  ${C_DIM}  create the owner vault account (email, master password, and a required 2FA code).${C_RESET}"
+  echo -e "  ${C_DIM}  Check on it any time with: hyperprox status    Lock it now with: hyperprox lock${C_RESET}"
+  echo -e "  ${C_DIM}  Details: docs/security.md. The vault admin token is VAULT_ADMIN_TOKEN in ${ENV_FILE}.${C_RESET}"
   echo ""
   echo -e "  ${C_DIM}Service logs:${C_RESET}"
   echo -e "  ${C_DIM}  journalctl -fu hyperprox-api${C_RESET}"
@@ -1129,10 +1236,12 @@ main() {
   install_node
   clone_repo
   configure_env
+  configure_vault_env
   build_app
   write_docker_compose
   write_monitoring_config
   write_systemd_services
+  install_cli
   start_services
   print_summary
 }
