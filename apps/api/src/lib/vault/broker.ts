@@ -52,6 +52,8 @@ export class VaultSessionError extends Error {
   constructor(message = 'vault session not found') { super(message); this.name = 'VaultSessionError' }
 }
 
+const FRESH_SYNC_MS = 30_000
+
 export interface VaultBroker {
   status(): Promise<{ reachable: boolean; bootstrapped: boolean }>
   bootstrapOwner(email: string, masterPassword: string): Promise<{ totpSecret: string; otpauthUri: string }>
@@ -69,6 +71,8 @@ export interface VaultBroker {
   /** Signs out every session and removes every CLI data dir (used by lock). Additive. */
   signOutAll(): Promise<void>
   listSecrets(sid: string): Promise<SecretItem[]>
+  /** Several upserts in one session turn: one sync and one listing for the batch, not one per item. Additive. */
+  upsertSecrets(sid: string, items: Array<{ name: string; fields: Record<string, string>; notes?: string }>): Promise<SecretItem[]>
   upsertSecret(sid: string, name: string, fields: Record<string, string>, notes?: string): Promise<SecretItem>
   deleteSecret(sid: string, name: string): Promise<void>
   createSend(sid: string, text: string, opts?: { hours?: number; maxViews?: number; password?: string }): Promise<{ url: string; expiresAt: string }>
@@ -106,6 +110,8 @@ interface Session extends VaultSession {
   orgId: string
   collectionId?: string
   queue: Promise<unknown>
+  /** When this session last synced with the vault (ms); login counts. */
+  syncedAt?: number
 }
 
 function itemToSecret(it: any): SecretItem {
@@ -300,9 +306,14 @@ class CliVaultBroker implements VaultBroker {
       return fail(new VaultAuthError(authCodeFromMessage(msg) ?? (totp ? 'totp_invalid' : 'totp_required'), msg))
     }
 
-    const st = await runBw(['status'], { dir, session: sessionKey })
+    // Every `bw` call is a new CLI process (~3 s to start), so the user id comes from the CLI's own state file
+    // when it is there (pinned CLI version), and from `bw status` only as a fallback.
     let userId = ''
-    try { userId = String(JSON.parse(st.stdout).userId ?? '') } catch { /* below */ }
+    try { userId = String(JSON.parse(fs.readFileSync(path.join(dir, 'data.json'), 'utf8')).global_account_activeAccountId ?? '') } catch { /* fallback */ }
+    if (!userId) {
+      const st = await runBw(['status'], { dir, session: sessionKey })
+      try { userId = String(JSON.parse(st.stdout).userId ?? '') } catch { /* below */ }
+    }
     if (!userId) return fail(new Error('vault CLI status unreadable after login'))
 
     const orgs = await runBw(['list', 'organizations'], { dir, session: sessionKey })
@@ -331,7 +342,7 @@ class CliVaultBroker implements VaultBroker {
     let collectionId: string | undefined
     try { collectionId = (JSON.parse(cols.stdout) as any[]).find(c => c?.name === COLLECTION_NAME)?.id } catch { /* none visible */ }
 
-    const s: Session = { sid, email, role, userId, dir, sessionKey, orgId: String(org.id), collectionId, queue: Promise.resolve() }
+    const s: Session = { sid, email, role, userId, dir, sessionKey, orgId: String(org.id), collectionId, queue: Promise.resolve(), syncedAt: Date.now() /* login syncs */ }
     this.sessions.set(sid, s)
     return s
   }
@@ -381,9 +392,13 @@ class CliVaultBroker implements VaultBroker {
 
   // ---- items --------------------------------------------------------------
 
+  // A sync costs one CLI start (~3 s). Login has just synced, so the unlock and the first-unlock migration
+  // right after it skip theirs; anything later syncs as before.
   private async sync(s: Session): Promise<void> {
+    if (s.syncedAt && Date.now() - s.syncedAt < FRESH_SYNC_MS) return
     const r = await runBw(['sync'], { dir: s.dir, session: s.sessionKey })
     if (r.code !== 0) throw new Error(`vault sync failed: ${bwErrorMessage(r)}`)
+    s.syncedAt = Date.now()
   }
 
   private async rawItems(s: Session): Promise<any[]> {
@@ -401,11 +416,26 @@ class CliVaultBroker implements VaultBroker {
   }
 
   async upsertSecret(sid: string, name: string, fields: Record<string, string>, notes?: string): Promise<SecretItem> {
-    if (!name) throw new Error('secret name is required')
+    return (await this.upsertSecrets(sid, [{ name, fields, notes }]))[0]
+  }
+
+  // Each `bw` call is a fresh CLI process that refreshes its token (~3 s), so a sync and a listing per item
+  // made the 18-item first-unlock migration take minutes. A batch syncs and lists once.
+  async upsertSecrets(sid: string, items: Array<{ name: string; fields: Record<string, string>; notes?: string }>): Promise<SecretItem[]> {
+    if (items.some(i => !i.name)) throw new Error('secret name is required')
     return this.withSession(sid, async s => {
       if (!s.collectionId) throw new Error(`collection "${COLLECTION_NAME}" is not visible to this account`)
       await this.sync(s)
-      const existing = (await this.rawItems(s)).find(it => it.name === name)
+      const current = await this.rawItems(s)
+      const out: SecretItem[] = []
+      // After a write the next listing syncs, so a read-back checks the server, not the CLI cache.
+      s.syncedAt = 0
+      for (const { name, fields, notes } of items) out.push(await this.writeItem(s, current.find(it => it.name === name), name, fields, notes))
+      return out
+    })
+  }
+
+  private async writeItem(s: Session, existing: any, name: string, fields: Record<string, string>, notes?: string): Promise<SecretItem> {
       const customFields = Object.entries(fields).map(([k, v]) => ({ name: k, value: String(v ?? ''), type: 1, linkedId: null }))
       let r
       if (existing) {
@@ -428,7 +458,6 @@ class CliVaultBroker implements VaultBroker {
       }
       if (r.code !== 0) throw new Error(`vault write failed: ${bwErrorMessage(r)}`)
       return itemToSecret(JSON.parse(r.stdout))
-    })
   }
 
   async deleteSecret(sid: string, name: string): Promise<void> {

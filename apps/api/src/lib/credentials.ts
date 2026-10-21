@@ -423,7 +423,49 @@ function blankEnv(text: string, keys: Set<string>): { text: string; blanked: str
  *     ENCRYPTION_KEY, JWT_SECRET and the seeded secrets in `.env`.
  * Any failure before step 3 leaves the old store untouched.
  */
-export async function seedFromEnv(sidArg?: string): Promise<MigrationResult> {
+export type MigrationStatus =
+  | { state: 'idle' }
+  | { state: 'running'; startedAt: string }
+  | { state: 'done'; finishedAt: string; migrated: number; rowsDeleted: number; backup?: string }
+  | { state: 'failed'; finishedAt: string; error: string }
+
+let migration: MigrationStatus = { state: 'idle' }
+let migrationJob: Promise<MigrationResult | undefined> | null = null
+
+/** What the background migration is doing (shown to the Owner/Admin by GET /api/auth/status). */
+export function migrationStatus(): MigrationStatus { return migration }
+
+/** Resolves when the current background migration (if any) has finished. For tests and shutdown. */
+export async function migrationSettled(): Promise<MigrationResult | undefined> { return migrationJob ?? undefined }
+
+/**
+ * Starts the one-time migration without holding up the sign-in. Resolves as soon as the old values are
+ * being served from memory (or the migration has failed early, e.g. undecryptable rows), with whether
+ * there was anything to migrate and the early error, if any. One run at a time.
+ */
+export function startMigration(sid: string, log: (msg: string, err?: string) => void = () => {}): Promise<{ started: boolean; error?: string }> {
+  if (migrationJob) return Promise.resolve({ started: migration.state === 'running' })
+  return new Promise(resolve => {
+    let answered = false
+    const answer = (v: { started: boolean; error?: string }) => { if (!answered) { answered = true; resolve(v) } }
+    migration = { state: 'running', startedAt: new Date().toISOString() }
+    migrationJob = seedFromEnv(sid, { onCacheReady: hasWork => answer({ started: hasWork }) })
+      .then(r => {
+        migration = { state: 'done', finishedAt: new Date().toISOString(), migrated: r.migrated, rowsDeleted: r.rowsDeleted, ...(r.backup ? { backup: r.backup } : {}) }
+        answer({ started: false })
+        return r
+      }, (e: any) => {
+        const error = e?.message ?? String(e)
+        migration = { state: 'failed', finishedAt: new Date().toISOString(), error }
+        log('[auth] vault migration failed; old credential store left in place', error)
+        answer({ started: false, error })
+        return undefined
+      })
+      .finally(() => { migrationJob = null })
+  })
+}
+
+export async function seedFromEnv(sidArg?: string, opts: { onCacheReady?: (hasWork: boolean) => void } = {}): Promise<MigrationResult> {
   const result: MigrationResult = { migrated: 0, rowsDeleted: 0, envBlanked: [] }
   requireUnlocked('the credential store (migration)')
   const sid = sidArg ?? actingSid()
@@ -488,16 +530,26 @@ export async function seedFromEnv(sidArg?: string): Promise<MigrationResult> {
     if (v) add(def.category, def.provider, def.key, v)
   }
 
-  // 2. Write, then verify by reading the vault back.
+  // 2. Serve the old values from memory straight away, so HyperProx works while the (slow) vault writes
+  //    run. The old store is untouched until step 3, so a failure below loses nothing: the next Owner
+  //    unlock tries again.
   const now = new Date().toISOString()
-  for (const [name, adds] of pending) {
+  const batch = [...pending].map(([name, adds]) => {
     const prev = cachedSecret(name)
     const meta = readMeta(prev)
     for (const k of Object.keys(adds)) meta.updatedAt[k] = now
-    const fields = { ...(prev?.fields ?? {}), ...adds }
-    const saved = await broker.upsertSecret(sid, name, fields, writeMeta(meta))
-    putCachedSecret({ name, id: saved.id, fields, notes: writeMeta(meta) })
-    result.migrated += Object.keys(adds).length
+    const item = { name, fields: { ...(prev?.fields ?? {}), ...adds }, notes: writeMeta(meta) }
+    putCachedSecret({ ...item, id: prev?.id ?? '' })
+    return item
+  })
+  hydrateEnvFromVault()
+  opts.onCacheReady?.(pending.size > 0 || migratedRowIds.length > 0)
+
+  //    Then write, and verify by reading the vault back.
+  if (batch.length) {
+    const saved = await broker.upsertSecrets(sid, batch)
+    batch.forEach((item, i) => putCachedSecret({ ...item, id: saved[i].id }))
+    for (const adds of pending.values()) result.migrated += Object.keys(adds).length
   }
 
   if (pending.size) {
