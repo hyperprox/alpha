@@ -145,15 +145,17 @@ When the install finishes it prints the wizard link, `http://<container-ip>:3001
    always makes a new token and never replaces or deletes an existing one, so a
    token another HyperProx — or anything else — relies on is left alone.
 2. **Cluster detected** — nodes, storage and Ceph, read back through the new token.
-3. **Create admin account** — this is the password you sign in to HyperProx with.
-   Reloading the page part-way through is fine: the newest answer wins until setup
-   is complete.
-4. **Existing services** — Nginx Proxy Manager and Proxmox Backup Server already on
+3. **Existing services** — Nginx Proxy Manager and Proxmox Backup Server already on
    the cluster are found by their web interface, and HyperProx will not offer to
    install a second NPM over one it found.
-5. **DNS provider**, then **HyperProx is ready**, with the dashboard's address.
+4. **DNS provider**, then **Cluster connected**, which sends you to HyperProx's sign-in page.
 
-To change the admin password later, use `POST /api/auth/password`.
+The wizard no longer asks you to invent an admin password: **HyperProx has no password of its own.**
+Open `http://<container-ip>:3000/login` and **create the owner vault account**: an email, a master
+password and a two-factor code (an authenticator app; 2FA is required for the owner). From then on you
+sign in with those. See [Security](#security) for what that protects and what it does not.
+
+Check on it from the machine with `hyperprox status`; `hyperprox lock` locks it at once.
 
 ### GoDaddy API key — only if you want DNS management
 
@@ -362,6 +364,24 @@ MikroTik plug-in's settings:
 - **LAN interface** — blank prefers a bridge, which on a typical router is every
   LAN port at once. Set it to a trunk if your local traffic crosses one: a
   bridge counter does not see switch-to-switch traffic.
+
+---
+
+## Security
+
+HyperProx can change everything it manages, so it holds nothing of value outside a vault. Every install
+runs its own stock, unmodified [Vaultwarden](https://github.com/dani-garcia/vaultwarden) (pinned by
+digest, listening on the loopback interface only), and HyperProx will not start without it. You sign in
+with your vault account (email, master password, two-factor code); roles come from the vault
+organization; HyperProx starts **locked** and locks itself again when idle.
+
+```bash
+hyperprox status   # is the vault up, is HyperProx locked?
+hyperprox lock     # lock it now: wipe secrets from memory, end every session
+```
+
+Read [docs/security.md](docs/security.md) for the model in plain language, what is protected now, what
+is **not** yet, and the caveats that matter.
 
 ---
 
@@ -670,12 +690,15 @@ Single `docker compose up` deploys the full stack:
 | hyperprox-frontend | Next.js dashboard | 3000 |
 | hyperprox-api | Fastify API + WebSockets | 3002 |
 | hyperprox-setup | First-run setup wizard | 3001 |
+| hyperprox-vault | Vaultwarden: the sign-in gate and secret store (loopback only) | 127.0.0.1:8222 |
 | prometheus | Metrics collection | 9090 |
 | grafana | Visualization | 3003 |
 | pve-exporter | Proxmox metrics bridge | 9221 |
 | postgres | Config + state storage | 5432 |
 | redis | Queue + cache | 6379 |
-| nginx | Internal reverse proxy | 80 |
+| nginx | Internatar: docs/security.md: Cannot stat: No such file or directory
+tar: Exiting with failure status due to previous errors
+l reverse proxy | 80 |
 
 > Prometheus runs with `network_mode: host` so it can scrape node_exporter directly on the host network. All other services run on an internal bridge network.
 
@@ -704,22 +727,20 @@ Single `docker compose up` deploys the full stack:
 Each of these has a written design in [`docs/superpowers/specs/`](docs/superpowers/specs/). Comments
 on them are welcome before the code exists.
 
-- **Security: the vault gate** ([design](docs/superpowers/specs/2026-10-14-vault-gate-design.md), *in review*).
-  HyperProx can change everything it manages, so it should hold nothing of value outside a vault.
-  Every install gets its own built-in, unmodified **Vaultwarden**, and HyperProx won't start without it.
-  - **One login:** you sign in with your vault account (email, master password, two-factor). HyperProx
-    has no password of its own.
-  - **Sealed at rest:** its disk, database, config and backups hold no usable secret. It starts locked
-    and locks itself again when idle.
-  - **Roles:** Owner, Admin, Operator, Viewer and time-limited Temporary access.
-  - **Credentials:** generate and store passwords, and send them to people through the vault.
-  - **Access:** local network only by default; built-in WireGuard VPN, hardened internet access or an
-    existing tunnel are opt-in.
-  - **Recovery:** `hyperprox --force-reset <email>` works from a sealed recovery password, so losing
-    the Owner's login doesn't lose the install.
-  - **AI:** the assistant never sees a secret.
-  - **Two editions:** Homelab (everything) and Business (media plug-ins removed). A Homelab install
-    can move to Business; it can't go back.
+- **Security: the vault gate** ([design](docs/superpowers/specs/2026-10-14-vault-gate-design.md)).
+  **The MVP has shipped** (see [Security](#security) and [docs/security.md](docs/security.md)): the built-in
+  Vaultwarden, vault sign-in with required 2FA for the owner, secrets held in memory only, auto-lock and
+  `hyperprox lock`, the four roles, re-confirmation for dangerous actions, and Sends. **Still to come:**
+  - **Temporary users:** access to named guests that expires on its own.
+  - **Recovery:** `hyperprox --force-reset <email>` from a sealed Master Reset Password.
+  - **Editions:** Homelab (everything) and Business (media plug-ins removed); a Homelab install can move
+    to Business, not back.
+  - **Access modes:** local network only is the default today; the built-in WireGuard VPN, hardened
+    internet access and existing-tunnel modes are not built.
+  - **Tamper check** of the installed files before every unlock, and an **audit timeline** joining the
+    vault's events with HyperProx's own.
+  - **Least-privilege tokens** per role, and credential rotation in the target system.
+  - **AI:** the assistant never sees a secret (applies when the operator arrives).
 - **Updates** ([design](docs/superpowers/specs/2026-10-06-updates-design.md)). One page shows what's
   pending on every node, container and VM, and runs the round on demand or on a schedule.
   - **One node at a time:** checks Ceph and quorum health before each node and stops at the first
@@ -826,5 +847,4 @@ Commercial licensing for MSPs and enterprise deployments coming in v2.0.
 ---
 
 <p align="center">
-  Built by <a href="https://griffinit.net">GriffinIT</a> — running on a real 5-node Proxmox cluster so every feature solves a real problem.
-</p>
+  Built by <a href="https://g

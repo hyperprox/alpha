@@ -335,6 +335,8 @@ echo "    Open       http://${CT_IP}"
 echo "    Container  $CTID  (pct enter $CTID)"
 [ -n "$PASSWORD" ] && echo "    Root pw    $PASSWORD"
 echo
-note "Next: open Plug-ins and press Scan, and HyperProx will find the services"
+note "First: open the address above and create the owner account. HyperProx has no password of its own;"
+note "it signs in with its built-in vault (email, master password, required 2FA). See docs/security.md."
+note "Then: open Plug-ins and press Scan, and HyperProx will find the services"
 note "already running on your network and offer to configure them."
 echo

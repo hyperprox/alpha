@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# hyperprox - local control of a HyperProx install.
+#   hyperprox status   is the vault up, is HyperProx locked or unlocked
+#   hyperprox lock     lock HyperProx now: wipes decrypted secrets from memory and ends every session
+# Talks only to localhost; run it as root on the HyperProx machine.
+set -u
+
+HYPERPROX_DIR="${HYPERPROX_DIR:-/opt/hyperprox}"
+ENV_FILE="${HYPERPROX_DIR}/.env"
+
+envval() {
+  [[ -r "$ENV_FILE" ]] || return 0
+  grep -m1 -oP "^$1=\K.*" "$ENV_FILE" | sed -e "s/^['\"]//" -e "s/['\"]\$//" || true
+}
+
+VAULT_URL="${VAULT_URL:-$(envval VAULT_URL)}";  VAULT_URL="${VAULT_URL:-https://127.0.0.1:8222}"
+VAULT_CA_CERT="${VAULT_CA_CERT:-$(envval VAULT_CA_CERT)}"; VAULT_CA_CERT="${VAULT_CA_CERT:-${HYPERPROX_DIR}/config/vault-tls/cert.pem}"
+API_PORT="${API_PORT:-$(envval API_PORT)}";     API_PORT="${API_PORT:-3002}"
+API_URL="${HYPERPROX_API_URL:-http://127.0.0.1:${API_PORT}}"
+
+# Read one top-level field from JSON on stdin ("" if absent). node is always present on an install.
+jget() {
+  node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{let v=JSON.parse(d);for(const k of process.argv[1].split("."))v=v==null?v:v[k];process.stdout.write(v==null?"":String(v))}catch{}})' "$1"
+}
+
+cmd_status() {
+  local rc=0 vault api locked
+  if curl -fsS -o /dev/null --max-time 3 --cacert "${VAULT_CA_CERT}" "${VAULT_URL}/alive" 2>/dev/null; then
+    vault="up"
+  else
+    vault="DOWN"; rc=1
+  fi
+  echo "vault:  ${vault}  (${VAULT_URL})"
+
+  if api="$(curl -fsS --max-time 5 "${API_URL}/api/auth/status" 2>/dev/null)"; then
+    locked="$(printf '%s' "$api" | jget locked)"
+    case "$locked" in
+      true)  echo "api:    up, LOCKED  (no secrets in memory; sign in at /login to unlock)" ;;
+      false) echo "api:    up, UNLOCKED" ;;
+      *)     echo "api:    up, but the state was not understood"; rc=1 ;;
+    esac
+    if [[ "$(printf '%s' "$api" | jget bootstrapped)" == "false" ]]; then
+      echo "owner:  not created yet - open /login to create the owner vault account"
+    fi
+  else
+    echo "api:    DOWN  (journalctl -u hyperprox-api -n 50)"; rc=1
+  fi
+  if [[ "$vault" == "DOWN" ]]; then
+    echo "note:   HyperProx will not run without the vault: docker logs hyperprox-vault"
+  fi
+  return "$rc"
+}
+
+cmd_lock() {
+  local code
+  code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 -X POST \
+    -H 'Content-Type: application/json' -d '{}' "${API_URL}/api/auth/lock" 2>/dev/null)" || code=000
+  case "$code" in
+    200|204) echo "locked: decrypted secrets wiped from memory, all sessions ended." ;;
+    423)     echo "already locked." ;;
+    000)     echo "could not reach the API at ${API_URL}." >&2; return 1 ;;
+    *)       echo "lock refused (HTTP ${code})." >&2; return 1 ;;
+  esac
+}
+
+case "${1:-}" in
+  status) cmd_status ;;
+  lock)   cmd_lock ;;
+  -h|--help|help) echo "usage: hyperprox {status|lock}" ;;
+  "")     echo "usage: hyperprox {status|lock}" >&2; exit 2 ;;
+  *)      echo "hyperprox: unknown command '$1' (try: status, lock)" >&2; exit 2 ;;
+esac
