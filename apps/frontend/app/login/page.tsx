@@ -170,6 +170,9 @@ function Bootstrap({ next, onSignInRequired }: { next: string | null; onSignInRe
     e.preventDefault()
     setBusy(true); setError('')
     const r = await apiJson('/api/auth/bootstrap/confirm', 'POST', { email: email.trim(), password, code: code.trim() })
+    // HyperProx restarted between the two steps and the account already exists: go to the sign-in form.
+    if (!r.ok && r.code === 'sign_in') { onSignInRequired(email.trim()); return }
+    if (!r.ok && r.code === 'restart_setup') { setUri(null); setCode(''); setError('Setup was interrupted. Start again.'); setBusy(false); return }
     if (!r.ok) { setError(authError(r, 'Could not confirm the code')); setBusy(false); return }
     // Rarely the account is created but no session cookie comes back: sign in with the next code.
     if (r.body?.signInRequired) { onSignInRequired(email.trim()); return }

@@ -3,7 +3,7 @@
 // items in one collection. Records calls so tests can assert write-through.
 
 import { randomUUID } from 'crypto'
-import { VaultAuthError, VaultSessionError, type Role, type SecretItem, type VaultBroker, type VaultSession } from '../../src/lib/vault/broker'
+import { VaultAuthError, VaultSessionError, type Role, type SecretItem, type VaultBroker, type VaultSession, BootstrapNotPendingError } from '../../src/lib/vault/broker'
 
 export const GOOD_CODE = '123456'
 
@@ -44,6 +44,7 @@ export class FakeBroker implements VaultBroker {
     this.rec('confirmOwnerTotp', email)
     const u = this.users.get(email)
     if (!u || u.password !== masterPassword) throw new VaultAuthError('bad_credentials')
+    if (u.totp) throw new BootstrapNotPendingError()   // the real broker forgets the pending step once used
     if (code !== GOOD_CODE) throw new VaultAuthError('totp_invalid')
     u.totp = true
     this.bootstrapped = true

@@ -34,3 +34,11 @@ test('owner bootstrap: status → bootstrap → confirm TOTP → signed in as ow
   const again = await app.inject({ method: 'POST', url: '/api/auth/bootstrap', payload: { email: 'evil@example.com', password: 'correct horse battery staple' } })
   assert.equal(again.statusCode, 409)
 })
+
+test('a confirm after the owner exists (e.g. HyperProx restarted between the steps) sends the user to sign in, not a 500', async () => {
+  const app = await appP
+  const r = await app.inject({ method: 'POST', url: '/api/auth/bootstrap/confirm',
+    payload: { email: 'owner@example.com', password: 'correct horse battery staple', code: GOOD_CODE } })
+  assert.equal(r.statusCode, 409, r.body)
+  assert.equal(r.json().code, 'sign_in')
+})
