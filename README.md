@@ -377,28 +377,35 @@ MikroTik plug-in's settings:
 | Storage page — CEPH health, OSD status, VM/CT disk breakdown | ✅ Shipped |
 | Monitoring page — node health, active alerts, Grafana embed | ✅ Shipped |
 | AES-256-GCM encrypted credential store | ✅ Shipped |
-| One-shot installer + first-run setup wizard | ✅ Shipped |
+| One-shot installer + first-run setup wizard (Debian 12 and 13) | ✅ Shipped |
+| **Setup wizard signs in with your Proxmox login and creates its own uniquely named token** | ✅ Shipped |
+| **Setup wizard locked to a per-install setup key, same-origin only** | ✅ Shipped |
+| **Service scan finds the NPM, PBS, Grafana and Prometheus you already run** | ✅ Shipped |
 | LXC creation — template picker, node resource limits, storage with free space | ✅ Shipped |
 | VM creation — ISO auto-detection, network config, storage picker | ✅ Shipped |
 | CT/VM deletion with confirmation guard | ✅ Shipped |
 | CT template + ISO auto-detection across all nodes and storage pools | ✅ Shipped |
 | **Terminal — SSH panes for every host, sessions that outlive the browser** | ✅ Shipped |
 | **Terminal — split panes, tabs, and saved layouts** | ✅ Shipped |
-| **Plug-ins — brokered plug-in system with MikroTik and Plex/Tautulli** | ✅ Shipped |
+| **Plug-ins — brokered plug-in system: MikroTik, Plex/Tautulli, Home Assistant, Arr Stack (Sonarr, Radarr, qBittorrent, Unmanic) and UPS** | ✅ Shipped |
+| **Arr Stack plug-in — rescues imports the parser cannot read, tells a stalled download from a blocked import** | ✅ Shipped |
+| **MikroTik plug-in — the whole router, per-device bandwidth and an SSH console** | ✅ Shipped |
 | **Dashboard — speedometer dials, trend sparklines and live throughput charts** | ✅ Shipped |
 | **WAN and LAN bandwidth meters, read from a plug-in** | ✅ Shipped |
 | **Per-node and cluster power, from every RAPL domain the board exposes** | ✅ Shipped |
 | **Terminal — host palette on Ctrl/⌘ K, no second sidebar** | ✅ Shipped |
+| **Terminal — open a host's existing tmux sessions in their own panes, singly or all at once** | ✅ Shipped |
 | **Service catalogue — install a reverse proxy, Ollama or Tautulli you do not have** | ✅ Shipped |
 | **AI wizard installs the service itself, where a node login is stored** | ✅ Shipped |
 | **Home Assistant plug-in — dead entities, flat batteries, pending updates** | ✅ Shipped |
 | **Responsive down to a phone, with a navigation drawer** | ✅ Shipped |
 | **Installable as a PWA — offline page, shortcuts, never caches live data** | ✅ Shipped |
+| **Light and dark mode, one design language throughout** | ✅ Shipped |
+| **90-day metrics history in the bundled Prometheus, sized by the wizard for your cluster** | ✅ Shipped |
 | AI deployment — plan generation from natural language | ✅ Shipped |
 | **AI providers — Anthropic, OpenAI or any OpenAI-compatible endpoint, alongside Ollama** | ✅ Shipped |
 | **AI plans are grounded in live cluster facts and audited before they are shown** | ✅ Shipped |
 | AI deployment — plan execution, end to end: container, service install, proxy host, DNS record, certificate | ✅ Shipped |
-| AI plans audited against live cluster facts before you are shown them | ✅ Shipped |
 | Run commands inside any guest from the node, without a guest credential | ✅ Shipped |
 | Connect to existing Grafana / Prometheus instance — works through `PROMETHEUS_URL` and `NEXT_PUBLIC_GRAFANA_URL` in `.env`; no settings UI yet | ⚠️ Partial |
 
@@ -615,6 +622,12 @@ others still publish — one broken device does not blank the scrape.
 |---|---|
 | **The AI wizard needs one SSH login per node to install anything** — with one stored it creates the container and installs the service itself. Without one it still creates everything else and prints the commands, and says so rather than reporting success. | ℹ️ Add node logins on the Catalogue page |
 | **A node shows `no meter` for power** — usually the udev rule rather than the hardware: `energy_uj` is root-only from kernel 5.10 and node_exporter runs unprivileged, so the rapl collector silently yields nothing. `bootstrap.sh` installs the rule; see [Power measurement](#power-measurement) for the order to check things in. Genuinely absent on some CPUs and inside VMs. | ℹ️ Usually fixable |
+| **HA card can read 0** on a cluster that has HA resources — the count is being checked against token privileges | Investigating |
+| **Storage gauge and the Ceph bar can disagree** (raw vs usable capacity) | Investigating |
+| **NPM and Prometheus can stay on "checking…"** on a fresh install although both are running; Grafana shows no status pill | Investigating |
+| **Power reads "–" with no reason** when no node exposes RAPL | Planned: say why, or hide the card |
+| **Served on plain http :3000 by default** — the bundled nginx/TLS front is not the default path yet | Planned |
+| **Reloading the setup wizard starts again at step 1**, and each reconnect makes another Proxmox token | Planned: resume from saved state, reuse the token |
 
 ### Workarounds
 
