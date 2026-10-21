@@ -1,6 +1,6 @@
 import type { Metadata, Viewport } from 'next'
 import './globals.css'
-import { Sidebar } from '@/components/layout/Sidebar'
+import { AppShell } from '@/components/layout/AppShell'
 import { ServiceWorker } from '@/components/layout/ServiceWorker'
 
 export const metadata: Metadata = {
@@ -62,12 +62,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body style={{ background: 'var(--ground)', color: 'var(--text)' }} className="font-sans antialiased flex h-screen overflow-hidden">
         <ServiceWorker />
-        <Sidebar />
-        <div className="flex-1 flex flex-col overflow-hidden">
-          <main className="hp-mobile-offset flex-1 overflow-y-auto">
-            {children}
-          </main>
-        </div>
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   )

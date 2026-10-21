@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { ThemeToggle } from './ThemeToggle'
+import { SessionBadge } from './SessionBadge'
 
 // ---------------------------------------------------------------------------
 //  Nav items
@@ -88,6 +89,7 @@ export function Sidebar() {
         <span className="font-display font-bold" style={{ fontSize: 20, letterSpacing: '0.12em', color: 'var(--text-bright)' }}>
           HYPER<span style={{ color: 'var(--accent)' }}>PROX</span>
         </span>
+        <div className="ml-auto min-w-0"><SessionBadge compact /></div>
       </header>
 
       {drawerOpen && (
@@ -194,6 +196,13 @@ export function Sidebar() {
           </div>
         ))}
       </nav>
+
+      {/* Signed-in user: email, role, Lock now */}
+      {!collapsed && (
+        <div className="border-t px-4 py-3 flex-shrink-0" style={{ borderColor: 'var(--border)' }}>
+          <SessionBadge />
+        </div>
+      )}
 
       {/* Footer */}
       <div
