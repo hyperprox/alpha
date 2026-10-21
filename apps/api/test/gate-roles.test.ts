@@ -126,8 +126,8 @@ test('re-confirmation is per session', async () => {
 
 test('secrets: viewer lists names, cannot reveal; admin reveals after re-confirm; send and generate', async () => {
   const app = await appP
-  const o = await signIn(app, 'owner@example.com', 'owner master password')
   broker.items.set('router-admin', { id: 'r1', name: 'router-admin', fields: { password: 's3cret-value' } })
+  const o = await signIn(app, 'owner@example.com', 'owner master password')
 
   const v = await signIn(app, 'viewer@example.com', 'viewer master password')
   const list = await app.inject({ method: 'GET', url: '/api/secrets', headers: { cookie: v.cookie } })

@@ -3,7 +3,7 @@
 // items in one collection. Records calls so tests can assert write-through.
 
 import { randomUUID } from 'crypto'
-import { VaultAuthError, type Role, type SecretItem, type VaultBroker, type VaultSession } from '../../src/lib/vault/broker'
+import { VaultAuthError, VaultSessionError, type Role, type SecretItem, type VaultBroker, type VaultSession } from '../../src/lib/vault/broker'
 
 export const GOOD_CODE = '123456'
 
@@ -28,7 +28,7 @@ export class FakeBroker implements VaultBroker {
 
   private session(sid: string): VaultSession {
     const s = this.sessions.get(sid)
-    if (!s) throw new Error(`fake broker: no session ${sid}`)
+    if (!s) throw new VaultSessionError()
     return s
   }
 
@@ -47,6 +47,9 @@ export class FakeBroker implements VaultBroker {
     if (code !== GOOD_CODE) throw new VaultAuthError('totp_invalid')
     u.totp = true
     this.bootstrapped = true
+    const s: VaultSession = { sid: randomUUID(), email, role: u.role, userId: u.userId }
+    this.sessions.set(s.sid, s)
+    return s
   }
 
   async signIn(email: string, masterPassword: string, totp: string) {
@@ -68,6 +71,8 @@ export class FakeBroker implements VaultBroker {
 
   async signOut(sid: string) { this.rec('signOut', sid); this.sessions.delete(sid) }
 
+  async signOutAll() { this.rec('signOutAll'); this.sessions.clear() }
+
   async listSecrets(sid: string) {
     this.rec('listSecrets', sid)
     this.session(sid)
@@ -79,7 +84,7 @@ export class FakeBroker implements VaultBroker {
     this.session(sid)
     if (this.failUpsert) throw new Error('fake broker: upsert refused')
     const id = this.items.get(name)?.id ?? randomUUID()
-    const item: SecretItem = { id, name, fields: { ...fields }, notes }
+    const item: SecretItem = { id, name, fields: { ...fields }, notes, revisionDate: new Date().toISOString() }
     this.items.set(name, item)
     return { ...item, fields: { ...item.fields } }
   }

@@ -6,7 +6,7 @@
 // =============================================================================
 
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
-import { getBroker, VaultAuthError, type VaultSession } from '../lib/vault/broker'
+import { getBroker, VaultAuthError, VaultSessionError, type VaultSession } from '../lib/vault/broker'
 import { isUnlocked, unlock, lock, touch } from '../lib/vault/state'
 import {
   addSession, removeSession, markReconfirmed, buildAuthCookie, isLocalCliRequest,
@@ -42,21 +42,13 @@ async function vaultStatus(): Promise<{ reachable: boolean; bootstrapped: boolea
   catch { return { reachable: false, bootstrapped: false } }
 }
 
-// Two sign-ins arriving together while locked must share one unlock: a second
-// unlock would replace the signing key and void the first user's cookie.
-let unlocking: Promise<void> | null = null
-async function unlockOnce(sid: string): Promise<boolean> {
-  if (isUnlocked()) return false
-  if (!unlocking) unlocking = unlock(sid).finally(() => { unlocking = null })
-  await unlocking
-  return true
-}
-
 export const authRoutes: FastifyPluginAsync = async (fastify) => {
 
   /** Register the vault session, unlock if locked, migrate on an Owner's unlock, issue the cookie. */
   async function startSession(req: FastifyRequest, reply: FastifyReply, vs: VaultSession) {
-    const wasLocked = await unlockOnce(vs.sid)
+    // unlock() is idempotent and shares one in-flight unlock, so concurrent sign-ins keep one key.
+    const wasLocked = !isUnlocked()
+    await unlock(vs.sid)
     addSession(vs)
     touch()
 
@@ -122,21 +114,11 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.status(400).send({ ok: false, error: 'email, password and a 6-digit code are required' })
     }
 
-    const broker = getBroker()
-    try {
-      await broker.confirmOwnerTotp(email, password, code)
-    } catch (e) {
-      return authErrorReply(reply, e)
-    }
-
+    // The broker signs the Owner in itself (the vault will not accept the same TOTP step twice).
     let vs: VaultSession
     try {
-      vs = await broker.signIn(email, password, code)
+      vs = await getBroker().confirmOwnerTotp(email, password, code)
     } catch (e) {
-      // The vault may refuse to accept the same code twice. 2FA is set up; the user signs in with the next code.
-      if (e instanceof VaultAuthError && e.code === 'totp_invalid') {
-        return { ok: true, bootstrapped: true, signInRequired: true }
-      }
       return authErrorReply(reply, e)
     }
     return startSession(req, reply, vs)
@@ -194,7 +176,12 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     if (!password) return reply.status(400).send({ ok: false, error: 'password is required' })
 
     let ok = false
-    try { ok = await getBroker().verifyPassword(s.sid, password) } catch { ok = false }
+    try {
+      ok = await getBroker().verifyPassword(s.sid, password)
+    } catch (e) {
+      if (e instanceof VaultSessionError) throw e   // → 401 session_expired (gate error handler)
+      ok = false
+    }
     if (!ok) return reply.status(401).send({ ok: false, error: 'Master password is incorrect' })
 
     const until = markReconfirmed(s.sid)

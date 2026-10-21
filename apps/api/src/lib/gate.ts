@@ -12,11 +12,11 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import jwt from '@fastify/jwt'
 import { isUnlocked, signingKey, touch, onLock } from './vault/state'
-import type { Role } from './vault/broker'
+import { VaultSessionError, type Role } from './vault/broker'
 import { requiredRole, needsReconfirm, hasRole, bypassesLock, normalisePath } from './roles'
 import {
-  extractToken, getSession, clearSessions, requestContext, isReconfirmed, isLocalCliRequest,
-  type ActiveSession,
+  extractToken, getSession, clearSessions, removeSession, requestContext, isReconfirmed, isLocalCliRequest,
+  buildAuthCookie, type ActiveSession,
 } from './auth'
 
 export interface SessionClaims { sid: string; email: string; role: Role }
@@ -106,6 +106,18 @@ export async function registerGate(server: FastifyInstance): Promise<void> {
     if (needsReconfirm(req.method, path) && !isReconfirmed(session.sid)) {
       return reply.status(403).send({ ok: false, code: 'reconfirm_required', error: 'Re-enter your master password to continue' })
     }
+  })
+
+  // A vault session that the vault no longer knows (signed out elsewhere, expired) is a 401; a
+  // credential read that raced a lock is a 423. Everything else keeps Fastify's default handling.
+  server.setErrorHandler((err, req, reply) => {
+    if (err instanceof VaultSessionError) {
+      if (req.session) removeSession(req.session.sid)
+      reply.header('Set-Cookie', buildAuthCookie('', 0))
+      return reply.status(401).send({ ok: false, code: 'session_expired', error: 'Your vault session has ended — sign in again' })
+    }
+    if ((err as Error)?.name === 'VaultLockedError') return reply.status(423).send({ ok: false, locked: true })
+    reply.send(err)
   })
 
   // Run the rest of the request inside the caller's context, so the credential
