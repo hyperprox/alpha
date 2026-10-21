@@ -48,6 +48,13 @@ export function Notice({ kind, children }: { kind: 'error' | 'warn' | 'info'; ch
   )
 }
 
+/** Shown beside a busy button: the vault is slow, and silence reads as a hang. */
+export function BusyNote({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="text-xs animate-pulse" role="status" style={{ color: 'var(--text-muted)' }}>{children}</p>
+  )
+}
+
 export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   useEffect(() => {
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }

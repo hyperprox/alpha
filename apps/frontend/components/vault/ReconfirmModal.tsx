@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { apiJson } from '@/lib/api'
-import { GhostButton, INPUT, Modal, Notice, PrimaryButton } from './ui'
+import { BusyNote, GhostButton, INPUT, Modal, Notice, PrimaryButton } from './ui'
 
 /** Master-password re-confirmation (valid ~5 min server-side). Calls onDone with the expiry time (ms). */
 export function ReconfirmModal({ onDone, onClose }: { onDone: (until: number) => void; onClose: () => void }) {
@@ -28,6 +28,7 @@ export function ReconfirmModal({ onDone, onClose }: { onDone: (until: number) =>
           <GhostButton type="button" onClick={onClose}>Cancel</GhostButton>
           <PrimaryButton type="submit" disabled={busy || !password}>{busy ? 'Checking...' : 'Confirm'}</PrimaryButton>
         </div>
+        {busy && <BusyNote>Checking with the vault — this can take several seconds.</BusyNote>}
       </form>
     </Modal>
   )
