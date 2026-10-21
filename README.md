@@ -296,7 +296,7 @@ early, and the section below says exactly where the edges are.
 
 | Provider | Needs | Notes |
 |---|---|---|
-| **Anthropic** | An API key | The plan schema constrains generation natively, so a malformed plan is not a failure mode. Defaults to `claude-opus-5`. |
+| **Anthropic** | An API key | The plan schema constrains generation natively, so a malformed plan is not a failure mode. Defaults to `claude-opus-5-5` (Claude Opus 5.5); set a different model in Settings → AI. |
 | **OpenAI** | An API key | Uses JSON-schema structured output. The base URL is settable, so the same path also reaches OpenRouter, Groq, Together or any OpenAI-compatible server. |
 | **Ollama** | A reachable Ollama server | Free and private. HyperProx does not bundle or install Ollama — point it at one you already run. |
 
