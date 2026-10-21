@@ -561,30 +561,6 @@ Each plug-in's real output is shown on its gallery card, so you can see what it
 renders before placing it anywhere, and a plug-in quietly returning nothing is
 obvious rather than discovered later.
 
-### Stuck imports
-
-A season pack can arrive complete, correct and unfilable. If the release names
-episodes in a way the library's parser does not read — `Crossing Jordan - 601 -
-Retribution`, or `MacGyver (2016) - S01 E01 - The Rising`, where the space alone
-is enough — every episode is rejected as "Invalid season or episode" and no
-amount of waiting fixes it. It is not a download failure, so nothing retries.
-
-The Arr Stack plug-in's detail page lists these and offers **Map by filename**:
-it reads the season and episode out of each name, matches them against episodes
-the series actually has, and imports explicitly. Four naming forms are
-understood — `S01E01` with any separator, `6x01`, `Season 3 Episode 12`, and the
-bare `- 601 -` three-digit form.
-
-Nothing is guessed. A file is mapped only when the pattern is unambiguous, the
-episode it names exists, and no other file in the release has claimed it.
-Anything else is reported unreadable and left alone, because an episode filed
-under the wrong number is harder to notice than one that was never filed. The
-count of what will be skipped is shown before you press the button, and again
-afterwards.
-
-Imports use the library's normal hardlink behaviour, so a torrent keeps seeding
-from the folder it downloaded to.
-
 ### Asking for one that does not exist
 
 The Plug-ins page also lists what has **not** been built — Proxmox Backup Server,
