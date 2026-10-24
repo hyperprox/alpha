@@ -2,8 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
-  UpdatesInventory, UpdatesJob, UpdatesNode, UpdatesPlan, UpdatesPolicyStatus, UpdatesWsPayload,
-} from '@hyperprox/types'
+  UpdatesInventory, UpdatesJob, UpdatesNode, UpdatesPlan, UpdatesPolicyStatus, UpdatesWsPayload, UpdatesScope } from '@hyperprox/types'
 import { apiJson, atLeast, type ApiResult } from '@/lib/api'
 import { wsBase } from '@/lib/ws'
 import { useSession } from '@/lib/session'
@@ -42,6 +41,7 @@ export default function UpdatesPage() {
   const [refreshing, setRefreshing] = useState(false)
   const [notice, setNotice] = useState<{ tone: 'warn' | 'crit' | 'info'; text: string } | null>(null)
   const [reboot, setReboot] = useState<UpdatesNode | null>(null)
+  const [scope, setScope] = useState<UpdatesScope>('all')
 
   // The socket handlers outlive any one render, so they read the active job through a ref.
   const activeRef = useRef<UpdatesJob | null>(null)
@@ -55,9 +55,9 @@ export default function UpdatesPage() {
   }, [])
 
   const loadPlan = useCallback(async () => {
-    const r = await apiJson<UpdatesPlan>('/api/updates/plan')
+    const r = await apiJson<UpdatesPlan>('/api/updates/plan' + (scope === 'guests' ? '?scope=guests' : ''))
     if (r.ok && r.body) { setPlan(r.body); setErr('plan', undefined) } else { setPlan(null); setErr('plan', apiError(r, 'plan')) }
-  }, [])
+  }, [scope])
 
   const loadInventory = useCallback(async (fresh: boolean) => {
     const r = await apiJson<UpdatesInventory>('/api/updates/inventory' + (fresh ? '?refresh=1' : ''))
@@ -176,7 +176,7 @@ export default function UpdatesPage() {
 
   const start = async (mode: 'run' | 'dry-run') => {
     setBusy(true); setNotice(null)
-    const r = await apiJson<{ job: UpdatesJob }>('/api/updates/jobs', 'POST', { mode })
+    const r = await apiJson<{ job: UpdatesJob }>('/api/updates/jobs', 'POST', { mode, scope })
     setBusy(false)
     if (!r.ok || !r.body?.job) {
       if (!adoptConflict(r)) setNotice({ tone: 'crit', text: apiError(r, 'job start') })
@@ -249,7 +249,7 @@ export default function UpdatesPage() {
       </div>
 
       <PolicyStrip policy={policy} error={errs.policy ?? null} busy={busy} activeJob={jobActive} refreshing={refreshing}
-                   onRefresh={refresh} onRun={start} />
+                   onRefresh={refresh} onRun={start} scope={scope} onScope={setScope} />
 
       {notice && <Notice tone={notice.tone}>{notice.text}</Notice>}
 

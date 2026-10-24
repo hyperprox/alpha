@@ -438,3 +438,17 @@ test('one-node reboot job: same gates, forced reboot, flags cleared', async () =
   assert.equal(fake.maintenance.size, 0)
   assert.ok(store.audits.some(a => a.action === 'updates.node.reboot' && (a.details as any).node === 'node-c'))
 })
+
+test('a guests-only run updates the guests and never touches a node or Ceph', async () => {
+  const fake = cluster()
+  const { runner, store } = setup(fake)
+  const job = await runner.start('run', 'schedule', undefined, 'guests')
+  await settle(runner)
+  const j = (await store.getJob(job.id))!
+  const steps = await store.getSteps(job.id)
+  assert.equal(j.status, 'done', j.pauseReason ?? '')
+  assert.equal(j.plan.scope, 'guests')
+  assert.ok(steps.some(s => s.action === 'apt' && s.status === 'ok'), 'guests were updated')
+  assert.deepEqual(steps.filter(s => ['node-upgrade', 'node-reboot', 'kernel-cleanup', 'ceph'].includes(s.action)), [])
+  assert.equal(fake.ran(/^POST apt\/update$|apt-get .*(dist-)?upgrade$|systemctl reboot|noout|node-maintenance/), false)
+})

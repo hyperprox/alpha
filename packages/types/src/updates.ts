@@ -66,7 +66,10 @@ export type UpdatesStep = {
   endedAt?:   string | null
 }
 
-export type UpdatesPlan = { steps: Omit<UpdatesStep, 'id' | 'status'>[]; warnings: string[] }
+/** What a run may touch: everything, or the guests alone (no node, Ceph or node-reboot steps). */
+export type UpdatesScope = 'all' | 'guests'
+
+export type UpdatesPlan = { steps: Omit<UpdatesStep, 'id' | 'status'>[]; warnings: string[]; scope?: UpdatesScope }
 
 export type UpdatesReport = {
   summary:       string
