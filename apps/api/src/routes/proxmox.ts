@@ -8,6 +8,7 @@ import { NPMClient }          from '../lib/npm-client'
 import { withCephMon, CephUnavailableError } from '../lib/ceph'
 import { getProviderCredentials } from '../lib/credentials'
 import { pveFromEnv } from '../lib/pve-env'
+import { npmHealth, withTimeout } from '../lib/service-health'
 
 // Not cached here: the token arrives from the vault after start-up and can change (lib/pve-env.ts).
 const getClient = pveFromEnv
@@ -123,13 +124,15 @@ export const proxmoxRoutes: FastifyPluginAsync = async (fastify) => {
       ])
       const vmList = vmsR.status === 'fulfilled' ? vmsR.value : undefined
 
-      const [cephR, osdR, haR, storageR, gpuR, npmR] = await Promise.allSettled([
+      const [cephR, osdR, haR, storageR, gpuR, npmR, pingR] = await Promise.allSettled([
         getClient().getClusterCephStatus(),
         withCephMon(getClient(), n => getClient().getCephOSDs(n)),
         getClient().getHAStatus(),
         getClient().getAllStorage(),
         getGPUInfo(vmList),
-        npm ? npm.getStats() : Promise.resolve(null),
+        // A login that never answers must not hold the whole dashboard hostage.
+        npm ? withTimeout(npm.getStats(), 6000, 'Nginx Proxy Manager') : Promise.resolve(null),
+        getClient().ping(),
       ])
 
       const nodes   = nodesR.status   === 'fulfilled' ? nodesR.value   : []
@@ -140,6 +143,8 @@ export const proxmoxRoutes: FastifyPluginAsync = async (fastify) => {
       const storage = storageR.status === 'fulfilled' ? storageR.value : []
       const gpu     = gpuR.status     === 'fulfilled' ? gpuR.value     : null
       const npmStats = npmR.status    === 'fulfilled' ? npmR.value     : null
+      // The cluster's own name (PVE's /cluster/status), for the page subtitle. Absent on a standalone node.
+      const clusterName = pingR.status === 'fulfilled' ? (pingR.value as any).cluster ?? null : null
 
       // Cluster totals — aggregate across all nodes
       const clusterTotals = nodes.reduce((acc, n) => ({
@@ -154,7 +159,7 @@ export const proxmoxRoutes: FastifyPluginAsync = async (fastify) => {
       return {
         success: true,
         data: {
-          nodes, vms, ceph, osds, ha, storage, gpu,
+          nodes, vms, ceph, osds, ha, storage, gpu, clusterName,
           cluster: {
             ...clusterTotals,
             cpu_pct:  clusterTotals.cpu_total  ? Math.round((clusterTotals.cpu_used  / clusterTotals.cpu_total)  * 100) : 0,
@@ -162,11 +167,12 @@ export const proxmoxRoutes: FastifyPluginAsync = async (fastify) => {
             disk_pct: clusterTotals.disk_total ? Math.round((clusterTotals.disk_used / clusterTotals.disk_total) * 100) : 0,
           },
           services: {
-            npm: npmStats ? {
-              connected: true,
-              url:       process.env.NPM_URL,
-              ...npmStats,
-            } : { connected: false },
+            npm: npmHealth({
+              configured: !!npm,
+              stats:      npmStats as any,
+              error:      npmR.status === 'rejected' ? String(npmR.reason?.message ?? npmR.reason) : null,
+              url:        process.env.NPM_URL,
+            }),
           },
         },
       }

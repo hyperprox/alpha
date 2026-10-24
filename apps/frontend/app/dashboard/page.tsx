@@ -4,11 +4,16 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react'
 import Link from 'next/link'
-import { formatBytes, formatUptime, pct } from '@/lib/utils'
+import { formatUptime, pct } from '@/lib/utils'
 import { wsBase } from '@/lib/ws'
 import { PluginCards } from '@/components/plugins/PluginCards'
 import { Speedometer, Sparkline, StreamChart, Meter, useHistory, zoneColor, ACCENT, GOOD, WARN, CRIT } from '@/components/dashboard/Viz'
 import { alpha } from '@/lib/theme'
+import { CheckIcon, WarnIcon, ArrowRightIcon } from '@/components/dashboard/Icons'
+import {
+  formatBinary as formatBytes, formatBinaryPair, summarizeStorage, summarizeHA, powerStatus, serviceState,
+  type ServiceState,
+} from '@/components/dashboard/summaries'
 
 // Types
 interface PVENode { node: string; status: string; cpu: number; maxcpu: number; mem: number; maxmem: number; disk: number; maxdisk: number; uptime: number }
@@ -18,7 +23,7 @@ interface CephOSD { id: string; name: string; host: string; status: string; perc
 interface HAEntry  { id: string; type: string; status: string; node: string; quorate?: number; crm_state?: string; sid?: string }
 interface GPUInfo  { name: string; vram_total: number; vram_used: number; gpu_util: number; temp: number; power_draw: number; power_limit: number; vram_pct: number; power_pct: number }
 interface ClusterTotals { cpu_used: number; cpu_total: number; cpu_pct: number; mem_used: number; mem_total: number; mem_pct: number; disk_used: number; disk_total: number; disk_pct: number }
-interface ServiceInfo { connected: boolean; url?: string; version?: string; message?: string; total?: number; enabled?: number; disabled?: number; ssl?: number; expiring?: number }
+interface ServiceInfo { connected: boolean; state?: ServiceState; url?: string; version?: string; message?: string; total?: number; enabled?: number; disabled?: number; ssl?: number; expiring?: number }
 
 interface GPUConsumer { pid: number; vram_mb: number; process: string; ct_id: string|null; ct_name: string|null; vram_pct: number }
 interface GPUInfoFull { name: string; vram_total: number; vram_used: number; vram_free: number; gpu_util: number; temp: number; power_draw: number; power_limit: number; vram_pct: number; power_pct: number; consumers: GPUConsumer[] }
@@ -36,6 +41,7 @@ interface NodePower {
 interface ClusterPower {
   total: number; nodes: NodePower[]; silent: string[]
   reporting: number; of: number; covers: string
+  prometheusUnreachable?: boolean
 }
 interface BandwidthData { links: BwLink[]; unavailable: Array<{ plugin: string; reason: string }>; at: number }
 interface CephIOStats { read_bps: number; write_bps: number; read_ops: number; write_ops: number }
@@ -47,8 +53,21 @@ interface NodeGPUStatus {
   port: number
   install: { title: string; steps: string[] } | null
 }
-interface FastData { nodes: PVENode[]; vms: PVEVM[]; gpu: GPUInfoFull|null; cluster: ClusterTotals; network?: NetworkData; gpuStatus?: NodeGPUStatus[]; storage?: any[] }
+interface FastData { nodes: PVENode[]; vms: PVEVM[]; gpu: GPUInfoFull|null; cluster: ClusterTotals; network?: NetworkData; gpuStatus?: NodeGPUStatus[]; storage?: any[]; clusterName?: string|null }
 interface SlowData { ceph: CephStatus|null; osds: CephOSD[]; ha: HAEntry[]; services: { npm: ServiceInfo; grafana?: ServiceInfo; prometheus?: ServiceInfo } }
+
+// One title treatment for every card: a status dot in the card's colour, the name in
+// the bright text colour. The name itself never takes the accent, so a card titled in
+// green or red is never mistaken for a card reporting green or red.
+function CardTitle({ title, accent = ACCENT, badge }: { title: string; accent?: string; badge?: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-2 min-w-0">
+      <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background:accent, boxShadow:`0 0 8px ${accent}` }}/>
+      <span className="font-display font-semibold text-xl truncate" style={{ color:'var(--text-bright)' }}>{title}</span>
+      {badge}
+    </div>
+  )
+}
 
 // Panel chrome — every card wears the same frame, so the eye can stop parsing
 // borders and start reading numbers.
@@ -59,10 +78,7 @@ function Panel({ title, accent = ACCENT, right, children, className = '' }: {
     <div className={`rounded-lg border p-5 sm:p-6 ${className}`}
       style={{ background:'var(--surface)', borderColor:'var(--border-soft)' }}>
       <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2 min-w-0">
-          <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background:accent, boxShadow:`0 0 8px ${accent}` }}/>
-          <span className="font-display font-semibold text-xl truncate" style={{ color:'var(--text-bright)' }}>{title}</span>
-        </div>
+        <CardTitle title={title} accent={accent}/>
         {right}
       </div>
       {children}
@@ -71,37 +87,61 @@ function Panel({ title, accent = ACCENT, right, children, className = '' }: {
 }
 
 // Cluster summary
-function ClusterPanel({ cluster, nodes, vms, ceph, storage, power, stamp }: { cluster:ClusterTotals; nodes:PVENode[]; vms:PVEVM[]; ceph:CephStatus|null; storage?:any[]; power?:ClusterPower|null; stamp:number|null }) {
+function ClusterPanel({ cluster, nodes, vms, ceph, storage, ha, power, stamp }: { cluster:ClusterTotals; nodes:PVENode[]; vms:PVEVM[]; ceph:CephStatus|null; storage?:any[]; ha:HAEntry[]|null; power?:ClusterPower|null; stamp:number|null }) {
   const running = vms.filter(v=>v.status==='running').length
   const online  = nodes.filter(n=>n.status==='online').length
   const cephPct = ceph?.pgmap ? pct(ceph.pgmap.bytes_used, ceph.pgmap.bytes_total) : 0
-  // Deduplicate storage — sum unique storages by name (avoid double counting shared)
-  const storageMap = new Map<string, {used:number;total:number}>()
-  for (const s of storage ?? []) {
-    if (!storageMap.has(s.storage)) storageMap.set(s.storage, { used: s.used ?? 0, total: s.total ?? 0 })
-  }
-  const storTotalUsed  = [...storageMap.values()].reduce((a, s) => a + s.used, 0)
-  const storTotalBytes = [...storageMap.values()].reduce((a, s) => a + s.total, 0)
-  const storPct        = storTotalBytes > 0 ? Math.round((storTotalUsed / storTotalBytes) * 100) : 0
+  // What Proxmox itself lists under Storage, each shared storage once. This is not the
+  // Ceph figure below it: Ceph is raw device capacity, this is the usable space of the
+  // storages built on top (and on other things besides Ceph).
+  const stor     = summarizeStorage(storage)
+  const haSum    = summarizeHA(ha)
+  const powerUi  = powerStatus(power)
 
   const cpuHist = useHistory(cluster.cpu_pct, stamp)
   const memHist = useHistory(cluster.mem_pct, stamp)
 
+  const tiles: Array<{ label: string; value: string; color: string; title?: string }> = [
+    {label:'RUNNING', value:String(running),            color:GOOD},
+    {label:'STOPPED', value:String(vms.length-running), color:'var(--text-dim)'},
+    // Counted from the HA status feed. Guests from the per-node lists carry no HA field,
+    // so counting those always gave 0.
+    haSum.state === 'ok'
+      ? {label:'HA', value:String(haSum.services), color:'var(--violet)', title:`${haSum.started} of ${haSum.services} HA resources started`}
+      : {label:'HA', value:'n/a', color:'var(--text-dimmer)', title:'No HA data came back. The API token needs Sys.Audit on / to read HA status.'},
+  ]
+  if (powerUi.show && power) {
+    tiles.push({
+      label: power.silent.length ? `POWER ${power.reporting}/${power.of}` : 'POWER',
+      value: `${power.total}W`,
+      color: power.silent.length ? WARN : GOOD,
+      title: [
+        ...power.nodes.map(n => n.total === null
+          ? `${n.node}: not instrumented`
+          : `${n.node}: ${n.total.toFixed(1)} W` +
+            (n.gpu ? ` (cpu ${n.cpu?.toFixed(1)} + gpu ${n.gpu.toFixed(1)})` : '') +
+            ` · ${n.source}`),
+        '',
+        power.covers,
+      ].join('\n'),
+    })
+  }
+
   return (
     <Panel title="Cluster Overview"
-      right={<span className="text-xs font-mono text-gray-600">{online}/{nodes.length} nodes online</span>}>
+      right={<span className="text-xs font-mono text-gray-500">{online}/{nodes.length} nodes online</span>}>
 
       <div className="flex flex-wrap justify-around items-start gap-y-3 mb-4">
         <Speedometer value={cluster.cpu_pct} label="CPU" size={118}
           caption={`${(cluster.cpu_used ?? 0).toFixed(1)} of ${cluster.cpu_total} cores`}/>
         <Speedometer value={cluster.mem_pct} label="Memory" size={118}
-          caption={`${formatBytes(cluster.mem_used)} of ${formatBytes(cluster.mem_total)}`}/>
-        <Speedometer value={storTotalBytes > 0 ? storPct : cluster.disk_pct}
-          label={storTotalBytes > 0 ? 'Storage' : 'Disk'} size={118}
+          caption={formatBinaryPair(cluster.mem_used, cluster.mem_total)}/>
+        <Speedometer value={stor.total > 0 ? stor.pct : cluster.disk_pct}
+          label={stor.total > 0 ? 'Storage' : 'Disk'} size={118}
           color="var(--warn)"
-          caption={storTotalBytes > 0
-            ? `${formatBytes(storTotalUsed)} of ${formatBytes(storTotalBytes)}`
-            : `${formatBytes(cluster.disk_used)} of ${formatBytes(cluster.disk_total)}`}/>
+          caption={stor.total > 0
+            ? formatBinaryPair(stor.used, stor.total)
+            : formatBinaryPair(cluster.disk_used, cluster.disk_total)}/>
       </div>
 
       {/* Where those two dials have just been */}
@@ -110,48 +150,38 @@ function ClusterPanel({ cluster, nodes, vms, ceph, storage, power, stamp }: { cl
           { h: memHist, l: 'MEM', c: zoneColor(cluster.mem_pct) }].map(({ h, l, c }) => (
           <div key={l} className="rounded-lg p-2" style={{ background:'var(--ground-inset)', border:'1px solid var(--border-dim)' }}>
             <div className="flex items-center justify-between mb-0.5">
-              <span className="font-mono text-gray-600 uppercase tracking-wider" style={{ fontSize:9 }}>{l} trend</span>
-              <span className="font-mono" style={{ fontSize:9, color:'var(--text-dim)' }}>{h.length}m</span>
+              <span className="font-mono text-gray-500 uppercase tracking-wider" style={{ fontSize:11 }}>{l} trend</span>
+              <span className="font-mono" style={{ fontSize:11, color:'var(--text-dim)' }}>{h.length}m</span>
             </div>
             <Sparkline data={h} color={c} width={150} height={28} baseline="zero"/>
           </div>
         ))}
       </div>
 
-      <div className="grid grid-cols-4 gap-2 mb-4">
-        {[
-          {label:'RUNNING', value:String(running),                             color:GOOD},
-          {label:'STOPPED', value:String(vms.length-running),                  color:'var(--text-dim)'},
-          {label:'HA',      value:String(vms.filter(v=>v.hastate).length),     color:'var(--violet)'},
-          {label: power && power.silent.length ? `POWER ${power.reporting}/${power.of}` : 'POWER',
-           value: power && power.total > 0 ? `${power.total}W` : '—',
-           color: !power || power.total <= 0 ? 'var(--text-dimmer)' : power.silent.length ? WARN : GOOD,
-           title: power
-             ? [
-                 ...power.nodes.map(n => n.total === null
-                   ? `${n.node}: not instrumented`
-                   : `${n.node}: ${n.total.toFixed(1)} W` +
-                     (n.gpu ? ` (cpu ${n.cpu?.toFixed(1)} + gpu ${n.gpu.toFixed(1)})` : '') +
-                     ` · ${n.source}`),
-                 '',
-                 power.covers,
-               ].join('\n')
-             : 'Waiting for Prometheus.'},
-        ].map(({label,value,color,title}: any)=>(
+      <div className={`grid gap-2 mb-4 ${tiles.length > 3 ? 'grid-cols-4' : 'grid-cols-3'}`}>
+        {tiles.map(({label,value,color,title})=>(
           <div key={label} title={title} className="text-center py-2 rounded-lg" style={{background:'var(--ground-inset)',border:`1px solid ${alpha(color, 15)}`}}>
             <div className="font-display text-lg font-bold" style={{color, fontVariantNumeric:'tabular-nums'}}>{value}</div>
-            <div className="font-mono text-gray-600 mt-0.5" style={{fontSize:9}}>{label}</div>
+            <div className="font-mono text-gray-500 mt-0.5" style={{fontSize:11}}>{label}</div>
           </div>
         ))}
       </div>
-
-      {ceph?.pgmap && (
-        <Meter label="Ceph" used={ceph.pgmap.bytes_used} total={ceph.pgmap.bytes_total} p={cephPct} fmt={formatBytes} color="var(--warn)"/>
+      {powerUi.note && (
+        <div className="font-mono mb-4" style={{ fontSize:12, color:'var(--text-dim)', lineHeight:1.4 }}>{powerUi.note}</div>
       )}
 
-      <Link href="/infrastructure" className="flex items-center justify-center gap-2 mt-4 py-2 rounded-lg text-xs font-mono transition-all hover:brightness-150"
-        style={{background:'color-mix(in srgb, var(--accent) 3%, transparent)',color:'color-mix(in srgb, var(--accent) 44%, transparent)',border:'1px solid color-mix(in srgb, var(--accent) 9%, transparent)'}}>
-        View Infrastructure →
+      {ceph?.pgmap && (
+        <div>
+          <Meter label="Ceph raw" used={ceph.pgmap.bytes_used} total={ceph.pgmap.bytes_total} p={cephPct} fmt={formatBytes} color="var(--warn)"/>
+          <div className="font-mono mt-1.5" style={{ fontSize:12, color:'var(--text-dim)', lineHeight:1.4 }}>
+            Raw device capacity, before replication. Storage above is the usable space of Proxmox storages, so the two differ.
+          </div>
+        </div>
+      )}
+
+      <Link href="/infrastructure" className="flex items-center justify-center gap-2 mt-4 py-2 rounded-md text-sm font-medium transition-colors hover:bg-[color-mix(in_srgb,var(--accent)_10%,transparent)]"
+        style={{color:'var(--accent)',border:'1px solid var(--accent)',background:'transparent'}}>
+        View Infrastructure <ArrowRightIcon size={14}/>
       </Link>
     </Panel>
   )
@@ -161,7 +191,8 @@ function ClusterPanel({ cluster, nodes, vms, ceph, storage, power, stamp }: { cl
 function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: NodeGPUStatus[] }) {
   const allGPUs = (gpuStatus ?? []).filter(n => n.gpus.length > 0)
   const anyReachable = allGPUs.some(n => n.reachable)
-  const gpuTypeColors: Record<string, string> = { 'nvidia': 'var(--good)', 'amd': 'var(--crit)', 'intel-igpu': 'var(--accent-2)', 'intel-arc': 'var(--accent)' }
+  // Vendor colours identify the maker and must not borrow the status palette: red for AMD read as a fault.
+  const gpuTypeColors: Record<string, string> = { 'nvidia': 'var(--good)', 'amd': 'var(--violet-2)', 'intel-igpu': 'var(--accent-2)', 'intel-arc': 'var(--accent)' }
   const gpuTypeLabels: Record<string, string> = { 'nvidia': 'NVIDIA', 'amd': 'AMD', 'intel-igpu': 'Intel iGPU', 'intel-arc': 'Intel Arc' }
 
   // No GPUs detected at all
@@ -182,10 +213,7 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
     return (
       <div className="rounded-lg border p-5" style={{ background:'var(--surface)', borderColor:`${alpha(accent, 19)}` }}>
         <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full" style={{ background:accent, boxShadow:`0 0 6px ${accent}` }}/>
-            <span className="font-display font-semibold text-xl" style={{ color:accent }}>GPU</span>
-          </div>
+          <CardTitle title="GPU" accent={accent}/>
           <span className="text-xs font-mono text-gray-500 truncate ml-2" style={{ maxWidth:140 }}>{gpu.name.replace('NVIDIA ','')}</span>
         </div>
         <div className="mb-3">
@@ -234,10 +262,9 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
     const color = 'var(--good)'
     return (
       <div className="rounded-lg border p-4" style={{ background:'var(--surface)', borderColor:`${alpha(color, 19)}` }}>
-        <div className="flex items-center gap-2 mb-3">
-          <div className="w-2 h-2 rounded-full" style={{ background:color, boxShadow:`0 0 6px ${color}` }}/>
-          <span className="font-display font-semibold text-xl" style={{ color }}>GPU METRICS</span>
-          <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:`${alpha(color, 8)}`, color, border:`1px solid ${alpha(color, 19)}` }}>ACTIVE</span>
+        <div className="mb-3">
+          <CardTitle title="GPU" accent={color}
+            badge={<span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:`${alpha(color, 8)}`, color, border:`1px solid ${alpha(color, 19)}` }}>ACTIVE</span>}/>
         </div>
         <div className="space-y-2">
           {allGPUs.filter(n=>n.reachable).map(n => {
@@ -247,7 +274,8 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
               <div key={n.node} className="flex items-center gap-2 p-2 rounded" style={{ background:'var(--ground-deep)', border:`1px solid ${alpha(gpuColor, 13)}` }}>
                 <span className="text-xs font-mono font-bold" style={{ color:gpuColor }}>{n.node}</span>
                 <span className="text-xs font-mono text-gray-500 flex-1">{gpu0.deviceName}</span>
-                <span className="text-xs font-mono" style={{ color:gpuColor }}>✓ active</span>
+                {/* Status is green whatever the vendor: the vendor colour only tints the node name and border. */}
+                <span className="inline-flex items-center gap-1 text-xs font-mono" style={{ color:'var(--good)' }}><CheckIcon size={12}/> active</span>
               </div>
             )
           })}
@@ -255,7 +283,7 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
             <div key={n.node} className="flex items-center gap-2 p-2 rounded" style={{ background:'var(--ground-deep)', border:'1px solid color-mix(in srgb, var(--warn-2) 13%, transparent)' }}>
               <span className="text-xs font-mono font-bold" style={{ color:'var(--warn-2)' }}>{n.node}</span>
               <span className="text-xs font-mono text-gray-500 flex-1">{n.gpus[0]?.deviceName}</span>
-              <span className="text-xs font-mono" style={{ color:'var(--warn-2)' }}>⚠ offline</span>
+              <span className="inline-flex items-center gap-1 text-xs font-mono" style={{ color:'var(--warn-2)' }}><WarnIcon size={12}/> offline</span>
             </div>
           ))}
         </div>
@@ -269,11 +297,11 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
   const allSameSteps = allGPUs.every(n => JSON.stringify(n.install?.steps) === JSON.stringify(uniqueSteps))
   return (
     <div className="rounded-lg border p-4" style={{ background:'var(--surface)', borderColor:'color-mix(in srgb, var(--warn-2) 19%, transparent)' }}>
-      <div className="flex items-center gap-2 mb-3">
-        <div className="w-2 h-2 rounded-full" style={{ background:'var(--warn-2)', boxShadow:'0 0 6px var(--warn-2)' }}/>
-        <span className="font-display font-semibold text-xl" style={{ color:'var(--warn-2)' }}>GPU METRICS</span>
-        {allGPUs.every(n => !n.reachable) && <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:'color-mix(in srgb, var(--warn-2) 8%, transparent)', color:'var(--warn-2)', border:'1px solid color-mix(in srgb, var(--warn-2) 19%, transparent)' }}>EXPORTER NOT INSTALLED</span>}
-        {allGPUs.some(n => n.reachable) && !allGPUs.every(n => n.reachable) && <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:'color-mix(in srgb, var(--warn-2) 8%, transparent)', color:'var(--warn-2)', border:'1px solid color-mix(in srgb, var(--warn-2) 19%, transparent)' }}>PARTIAL</span>}
+      <div className="mb-3">
+        <CardTitle title="GPU" accent="var(--warn-2)" badge={<>
+          {allGPUs.every(n => !n.reachable) && <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:'color-mix(in srgb, var(--warn-2) 8%, transparent)', color:'var(--warn-2)', border:'1px solid color-mix(in srgb, var(--warn-2) 19%, transparent)' }}>EXPORTER NOT INSTALLED</span>}
+          {allGPUs.some(n => n.reachable) && !allGPUs.every(n => n.reachable) && <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:'color-mix(in srgb, var(--warn-2) 8%, transparent)', color:'var(--warn-2)', border:'1px solid color-mix(in srgb, var(--warn-2) 19%, transparent)' }}>PARTIAL</span>}
+        </>}/>
       </div>
       <div className="flex gap-2 flex-wrap mb-3">
         {allGPUs.map(n => {
@@ -539,19 +567,18 @@ function NodeCard({ node, vms, gpuInfo, power, powerTotal }: { node:PVENode; vms
   const nodeVMs=vms.filter(v=>v.node===node.node), running=nodeVMs.filter(v=>v.status==='running').length
   const hasGpu = gpuInfo && gpuInfo.gpus.length > 0
   const gpuType = gpuInfo?.gpus[0]?.type ?? null
-  const gpuAccentMap: Record<string, string> = { 'nvidia': 'var(--good)', 'amd': 'var(--crit)', 'intel-igpu': 'var(--accent-2)', 'intel-arc': 'var(--accent)' }
+  const gpuAccentMap: Record<string, string> = { 'nvidia': 'var(--good)', 'amd': 'var(--violet-2)', 'intel-igpu': 'var(--accent-2)', 'intel-arc': 'var(--accent)' }
   const accent = gpuType ? (gpuAccentMap[gpuType] ?? 'var(--violet)') : 'var(--accent)'
   return (
     <div className="rounded-lg border p-4 flex flex-col gap-4" style={{background:'var(--surface)',borderColor:`${alpha(accent, 19)}`}}>
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full" style={{background:accent,boxShadow:`0 0 6px ${accent}`}}/>
-          <span className="font-display font-semibold text-xl" style={{color:accent}}>{node.node}</span>
+          <CardTitle title={node.node} accent={accent}/>
           {hasGpu && (
-            <span className="text-xs px-1.5 py-0.5 rounded font-mono" style={{background:`${alpha(accent, 13)}`,color:accent,border:`1px solid ${alpha(accent, 25)}`,fontSize:9}}
+            <span className="text-xs px-1.5 py-0.5 rounded font-mono" style={{background:`${alpha(accent, 13)}`,color:accent,border:`1px solid ${alpha(accent, 25)}`,fontSize:11}}
               title={gpuInfo?.reachable ? gpuInfo.gpus[0].deviceName : `${gpuInfo?.install?.title ?? 'GPU detected'} — metrics not available`}>
               {gpuType === 'nvidia' ? 'NVIDIA' : gpuType === 'amd' ? 'AMD' : gpuType === 'intel-arc' ? 'ARC' : 'iGPU'}
-              {!gpuInfo?.reachable && ' ⚠'}
+              {!gpuInfo?.reachable && <WarnIcon size={10} className="inline-block ml-1 align-[-1px]"/>}
             </span>
           )}
         </div>
@@ -621,27 +648,24 @@ function CephPanel({ ceph, osds }: { ceph:CephStatus|null; osds:CephOSD[] }) {
   const hOk=ceph.health.status==='HEALTH_OK', hWarn=ceph.health.status==='HEALTH_WARN'
   const hc=hOk?'var(--good)':hWarn?'var(--warn-2)':'var(--crit-2)'
   const up=ceph.pgmap?pct(ceph.pgmap.bytes_used,ceph.pgmap.bytes_total):0
-  const checks=Object.entries(ceph.health.checks)
+  const checks=Object.entries(ceph.health.checks ?? {})
   const byHost=osds.reduce((a,o)=>{if(!a[o.host])a[o.host]=[];a[o.host].push(o);return a},{} as Record<string,CephOSD[]>)
   return (
     <div className="rounded-lg border p-5" style={{background:'var(--surface)',borderColor:`${alpha(hc, 19)}`}}>
       <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full" style={{background:hc,boxShadow:`0 0 6px ${hc}`}}/>
-          <span className="font-display font-semibold text-xl" style={{color:'var(--accent)'}}>CEPH</span>
-          <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{background:`${alpha(hc, 8)}`,color:hc,border:`1px solid ${alpha(hc, 19)}`}}>{ceph.health.status}</span>
-        </div>
+        <CardTitle title="Ceph" accent={hc}
+          badge={<span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{background:`${alpha(hc, 8)}`,color:hc,border:`1px solid ${alpha(hc, 19)}`}}>{ceph.health.status}</span>}/>
         <span className="text-xs font-mono" style={{color:'var(--good)'}}>{ceph.osdmap.num_up_osds}/{ceph.osdmap.num_osds} OSDs</span>
       </div>
       {ceph.pgmap&&(
         <div className="flex flex-wrap items-center gap-4 mb-4">
-          <Speedometer value={up} label="Capacity" size={110} color="var(--warn)"/>
+          <Speedometer value={up} label="Raw used" size={110} color="var(--warn)"/>
           <div className="flex-1 space-y-2">
             {[['USED', formatBytes(ceph.pgmap.bytes_used), 'var(--warn)'],
               ['DATA', formatBytes(ceph.pgmap.data_bytes), 'var(--accent)'],
               ['FREE', formatBytes(ceph.pgmap.bytes_avail), 'var(--good)'],
               ['RAW',  formatBytes(ceph.pgmap.bytes_total), 'var(--text-muted)']].map(([l,v,c])=>(
-              <div key={l} className="flex items-baseline justify-between font-mono" style={{fontSize:11}}>
+              <div key={l} className="flex items-baseline justify-between font-mono" style={{fontSize:12}}>
                 <span className="text-gray-600 uppercase tracking-wider">{l}</span>
                 <span style={{color:c, fontVariantNumeric:'tabular-nums'}}>{v}</span>
               </div>
@@ -651,7 +675,7 @@ function CephPanel({ ceph, osds }: { ceph:CephStatus|null; osds:CephOSD[] }) {
       )}
       {checks.map(([key])=>(
         <div key={key} className="flex items-center gap-2 text-xs font-mono p-2 rounded mb-1" style={{background:'color-mix(in srgb, var(--warn-2) 6%, transparent)',border:'1px solid color-mix(in srgb, var(--warn-2) 15%, transparent)'}}>
-          <span style={{color:'var(--warn-2)'}}>⚠</span>
+          <span style={{color:'var(--warn-2)'}}><WarnIcon size={12}/></span>
           <span style={{color:'var(--warn-2)'}}>{key}</span>
           {key==='POOL_NO_REDUNDANCY'&&<span className="text-gray-600">(intentional)</span>}
         </div>
@@ -682,19 +706,29 @@ function CephPanel({ ceph, osds }: { ceph:CephStatus|null; osds:CephOSD[] }) {
 }
 
 // HA compact
-function HAPanel({ ha }: { ha:HAEntry[] }) {
+function HAPanel({ ha: haIn }: { ha:HAEntry[]|null }) {
+  // The slow feed sends null when Proxmox refuses the read (a token without Sys.Audit on /).
+  const ha = Array.isArray(haIn) ? haIn : []
   const quorum=ha.find(h=>h.type==='quorum'), master=ha.find(h=>h.type==='master')
   const fencing=ha.find(h=>h.type==='fencing'), lrms=ha.filter(h=>h.type==='lrm')
   const services=ha.filter(h=>h.type==='service')
   const masterNode=master?.status.split(' ')[0]??'—', fencingArmed=fencing?.status.includes('armed')??false
   const allStarted=services.every(s=>s.crm_state==='started')
+  // No data is not a failed cluster. Showing QUORUM FAIL / FENCING OFF here would be
+  // inventing a fault from an empty answer.
+  if (ha.length===0) return (
+    <div className="rounded-lg border p-5" style={{background:'var(--surface)',borderColor:'var(--border-soft)'}}>
+      <div className="mb-3"><CardTitle title="High Availability" accent="var(--text-dimmer)"/></div>
+      <div className="text-sm" style={{color:'var(--text-soft)'}}>No HA data came back from Proxmox.</div>
+      <div className="font-mono mt-1" style={{fontSize:12,color:'var(--text-dim)',lineHeight:1.4}}>
+        Reading HA status needs the Sys.Audit privilege on / for the API token. Grant it (for example the PVEAuditor role on /) and this panel fills in.
+      </div>
+    </div>
+  )
   return (
     <div className="rounded-lg border p-5" style={{background:'var(--surface)',borderColor:'color-mix(in srgb, var(--accent) 13%, transparent)'}}>
       <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full" style={{background:'var(--good)',boxShadow:'0 0 6px var(--good)'}}/>
-          <span className="font-display font-semibold text-xl" style={{color:'var(--accent)'}}>HA</span>
-        </div>
+        <CardTitle title="High Availability" accent={allStarted?'var(--good)':'var(--warn-2)'}/>
         <span className="text-xs font-mono" style={{color:allStarted?'var(--good)':'var(--warn-2)'}}>
           {services.filter(s=>s.crm_state==='started').length}/{services.length} services
         </span>
@@ -702,7 +736,7 @@ function HAPanel({ ha }: { ha:HAEntry[] }) {
       <div className="grid grid-cols-3 gap-2 mb-3">
         {[{label:'QUORUM',value:quorum?.quorate?'OK':'FAIL',ok:!!quorum?.quorate},{label:'MASTER',value:masterNode,ok:true},{label:'FENCING',value:fencingArmed?'ARMED':'OFF',ok:fencingArmed}].map(({label,value,ok:isOk})=>(
           <div key={label} className="flex flex-col items-center gap-1 p-2 rounded" style={{background:'var(--ground-deep)',border:'1px solid var(--border-dim)'}}>
-            <span className="font-mono text-gray-500" style={{fontSize:9}}>{label}</span>
+            <span className="font-mono text-gray-500" style={{fontSize:11}}>{label}</span>
             <span className="text-xs font-mono font-semibold" style={{color:isOk?'var(--good)':'var(--crit-2)'}}>{value}</span>
           </div>
         ))}
@@ -713,7 +747,7 @@ function HAPanel({ ha }: { ha:HAEntry[] }) {
           return (
             <div key={lrm.id} className="flex items-center gap-1 p-1.5 rounded" style={{background:active?'color-mix(in srgb, var(--good) 6%, transparent)':'var(--text-faint)',border:`1px solid ${active?'color-mix(in srgb, var(--good) 19%, transparent)':'var(--text-faint)'}`}}>
               <div className="w-1.5 h-1.5 rounded-full" style={{background:active?'var(--good)':'var(--text-dimmer)'}}/>
-              <span className="font-mono" style={{color:active?'var(--good-soft)':'var(--text-dim)',fontSize:10}}>{lrm.node}</span>
+              <span className="font-mono" style={{color:active?'var(--good-soft)':'var(--text-dim)',fontSize:11}}>{lrm.node}</span>
             </div>
           )
         })}
@@ -721,7 +755,7 @@ function HAPanel({ ha }: { ha:HAEntry[] }) {
       <div className="flex flex-wrap gap-1">
         {services.map(svc=>{
           const ok=svc.crm_state==='started'
-          return <span key={svc.id} className="font-mono px-1.5 py-0.5 rounded" style={{fontSize:9,background:ok?'color-mix(in srgb, var(--good) 6%, transparent)':'color-mix(in srgb, var(--crit-2) 6%, transparent)',color:ok?'var(--good-soft)':'var(--crit-soft)',border:`1px solid ${ok?'color-mix(in srgb, var(--good) 19%, transparent)':'color-mix(in srgb, var(--crit-2) 19%, transparent)'}`}}>{svc.sid}</span>
+          return <span key={svc.id} className="font-mono px-1.5 py-0.5 rounded" style={{fontSize:11,background:ok?'color-mix(in srgb, var(--good) 6%, transparent)':'color-mix(in srgb, var(--crit-2) 6%, transparent)',color:ok?'var(--good-soft)':'var(--crit-soft)',border:`1px solid ${ok?'color-mix(in srgb, var(--good) 19%, transparent)':'color-mix(in srgb, var(--crit-2) 19%, transparent)'}`}}>{svc.sid}</span>
         })}
       </div>
     </div>
@@ -748,8 +782,9 @@ export default function DashboardView() {
         fetch('/api/network/stats'),
       ])
       const summary   = await summaryRes.json()
-      const grafana   = await grafanaRes.json().catch(()=>({success:false}))
-      const prometheus = await prometheusRes.json().catch(()=>({success:false}))
+      const down = (what: string): ServiceInfo => ({ connected:false, state:'unreachable', message:`${what} health check failed` })
+      const grafana    = await grafanaRes.json().catch(()=>({data: down('Grafana')}))
+      const prometheus = await prometheusRes.json().catch(()=>({data: down('Prometheus')}))
       const gpuStatus = await gpuStatusRes.json().catch(()=>({success:false}))
       const networkData = await networkRes.json().catch(()=>({success:false}))
       // Power is its own endpoint now. Summing RAPL in a query string only ever
@@ -762,18 +797,36 @@ export default function DashboardView() {
 
       if (summary.success) {
         const d = summary.data
-        setFast({ nodes: d.nodes, vms: d.vms, gpu: d.gpu, cluster: d.cluster, network: networkData.success ? networkData.data : undefined, gpuStatus: gpuStatus.success ? gpuStatus.data : [], storage: d.storage ?? [] })
+        setFast({ nodes: d.nodes, vms: d.vms, gpu: d.gpu, cluster: d.cluster, network: networkData.success ? networkData.data : undefined, gpuStatus: gpuStatus.success ? gpuStatus.data : [], storage: d.storage ?? [], clusterName: d.clusterName ?? null })
         setSlow({
           ceph: d.ceph, osds: d.osds, ha: d.ha,
           services: {
             npm:        d.services.npm,
-            grafana:    grafana.data,
-            prometheus: prometheus.data,
+            grafana:    grafana.data ?? down('Grafana'),
+            prometheus: prometheus.data ?? down('Prometheus'),
           }
         })
         setLastSync(new Date())
       }
     } catch(e) { console.error(e) }
+  }, [])
+
+  // Grafana and Prometheus are not on the WebSocket feed. Without a re-check, a service that
+  // came up (or went down) after the page loaded would show its first answer forever.
+  useEffect(() => {
+    let alive = true
+    const recheck = async () => {
+      const read = async (path: string, what: string): Promise<ServiceInfo> => {
+        try { const j = await (await fetch(path)).json(); if (j?.data) return j.data } catch { /* fall through */ }
+        return { connected:false, state:'unreachable', message:`${what} health check failed` }
+      }
+      const [grafana, prometheus] = await Promise.all([
+        read('/api/services/grafana', 'Grafana'), read('/api/services/prometheus', 'Prometheus'),
+      ])
+      if (alive) setSlow(prev => prev ? { ...prev, services: { ...prev.services, grafana, prometheus } } : prev)
+    }
+    const id = setInterval(recheck, 30000)
+    return () => { alive = false; clearInterval(id) }
   }, [])
 
   // Bandwidth comes from the router, not from Proxmox, so it is on its own
@@ -803,14 +856,15 @@ export default function DashboardView() {
       try {
         const msg = JSON.parse(e.data)
         if (msg.type === 'fast') {
-          setFast(prev => ({ ...msg.payload, gpuStatus: prev?.gpuStatus ?? [], storage: msg.payload.storage ?? prev?.storage ?? [] }))
+          setFast(prev => ({ ...msg.payload, gpuStatus: prev?.gpuStatus ?? [], storage: msg.payload.storage ?? prev?.storage ?? [], clusterName: prev?.clusterName ?? null }))
           setLastSync(new Date())
         }
         if (msg.type === 'slow') {
           setSlow(prev => ({
             ...msg.payload,
             services: {
-              ...msg.payload.services,
+              // The feed's NPM entry predates `state`; keep "not configured" across ticks.
+              npm: { ...msg.payload.services.npm, state: serviceState(msg.payload.services.npm, prev?.services?.npm?.state) },
               grafana:    prev?.services?.grafana,
               prometheus: prev?.services?.prometheus,
             }
@@ -830,21 +884,21 @@ export default function DashboardView() {
 
   if (!fast) return (
     <div className="min-h-full flex items-center justify-center" style={{background:'var(--ground)'}}>
-      <div className="text-sm text-gray-500 animate-pulse">connecting to titancluster...</div>
+      <div className="text-sm text-gray-500 animate-pulse">connecting to your cluster...</div>
     </div>
   )
 
+  const clusterLabel = fast.clusterName || process.env.NEXT_PUBLIC_CLUSTER_NAME || ''
   const sorted = [...fast.nodes].sort((a,b)=>{const ag=fast.gpuStatus?.find(g=>g.node===a.node)?.gpus.length??0;const bg=fast.gpuStatus?.find(g=>g.node===b.node)?.gpus.length??0;return bg-ag||a.node.localeCompare(b.node)})
 
   return (
     <div className="min-h-full" style={{background:'var(--ground)'}}>
       {/* Header */}
       <header className="flex flex-wrap items-center justify-between gap-y-2 px-3 sm:px-8 py-4 sm:py-6 border-b" style={{borderColor:'var(--border-dim)',background:'var(--ground)'}}>
-        <div className="flex flex-col" style={{gap:8}}>
-          <span className="font-mono uppercase" style={{fontSize:12, letterSpacing:'0.14em', color:'var(--accent)'}}>v0.1.0</span>
-          <h1 className="font-display font-bold" style={{fontSize:36, lineHeight:1.1, color:'var(--text-bright)'}}>
-            HYPER<span style={{color:'var(--accent)'}}>PROX</span>
-          </h1>
+        {/* The wordmark lives in the sidebar; this is the page's own title. */}
+        <div className="flex flex-col" style={{gap:4}}>
+          <h1 className="font-display font-bold" style={{fontSize:36, lineHeight:1.1, color:'var(--text-bright)'}}>Dashboard</h1>
+          {clusterLabel && <span className="font-mono" style={{fontSize:13, color:'var(--text-dim)'}}>{clusterLabel}</span>}
         </div>
         <div className="flex items-center gap-3">
           {[
@@ -865,7 +919,7 @@ export default function DashboardView() {
       <main className="p-3 sm:p-8 max-w-7xl mx-auto space-y-6 sm:space-y-8">
         {/* Row 1 — the three panels that are mostly dials */}
         <div className="grid gap-4 grid-cols-1 xl:grid-cols-[1.25fr_1.25fr_1fr]">
-          <ClusterPanel cluster={fast.cluster} nodes={fast.nodes} vms={fast.vms} ceph={slow?.ceph??null} storage={fast.storage} power={clusterPower} stamp={lastSync?.getTime() ?? null}/>
+          <ClusterPanel cluster={fast.cluster} nodes={fast.nodes} vms={fast.vms} ceph={slow?.ceph??null} storage={fast.storage} ha={slow?.ha??null} power={clusterPower} stamp={lastSync?.getTime() ?? null}/>
           <GPUPanel gpu={fast.gpu} gpuStatus={fast.gpuStatus}/>
           {slow && <ServicesPanel services={slow.services}/>}
         </div>
@@ -899,6 +953,14 @@ export default function DashboardView() {
   )
 }
 
+// Every service ends in a visible state. "checking" exists only for the moment before the first answer.
+const SERVICE_PILL: Record<ServiceState | 'checking', { text: string; color: string }> = {
+  'connected':      { text: 'connected',      color: 'var(--good)' },
+  'unreachable':    { text: 'unreachable',    color: 'var(--crit-2)' },
+  'not-configured': { text: 'not configured', color: 'var(--text-muted)' },
+  'checking':       { text: 'checking',       color: 'var(--text-muted)' },
+}
+
 function ServicesPanel({ services }: { services: SlowData['services'] }) {
   const rows = [
     { key:'npm', name:'Nginx Proxy Manager', accent:'var(--accent)', info: services.npm,
@@ -914,33 +976,34 @@ function ServicesPanel({ services }: { services: SlowData['services'] }) {
     { key:'prometheus', name:'Prometheus', accent:'var(--crit)', info: services.prometheus, details:[] },
   ]
   return (
-    <div className="rounded-lg border p-5" style={{background:'var(--surface)',borderColor:'color-mix(in srgb, var(--accent) 13%, transparent)'}}>
-      <div className="flex items-center gap-2 mb-4">
-        <div className="w-2 h-2 rounded-full" style={{background:'var(--accent)',boxShadow:'0 0 6px var(--accent)'}}/>
-        <span className="font-display font-semibold text-xl" style={{color:'var(--accent)'}}>Connected Services</span>
-      </div>
+    <div className="rounded-lg border p-5" style={{background:'var(--surface)',borderColor:'var(--border-soft)'}}>
+      <div className="mb-4"><CardTitle title="Connected Services"/></div>
       <div className="space-y-2">
-        {rows.map(({key,name,accent,info,details})=>(
-          <div key={key} className="flex items-center gap-3 p-3 rounded" style={{background:'var(--ground-deep)',border:`1px solid ${info?.connected?accent+'20':'var(--border-dim)'}`}}>
-            <div className="w-2 h-2 rounded-full flex-shrink-0" style={{background:info?.connected?accent:'var(--text-dimmer)',boxShadow:info?.connected?`0 0 5px ${accent}`:'none'}}/>
+        {rows.map(({key,name,accent,info,details})=>{
+          const st    = info ? serviceState(info) : 'checking'
+          const up    = st === 'connected'
+          const pill  = SERVICE_PILL[st]
+          const sub   = up ? info?.url : st === 'checking' ? undefined : info?.message
+          return (
+          <div key={key} className="flex items-center gap-3 p-3 rounded" style={{background:'var(--ground-deep)',border:`1px solid ${up?alpha(accent, 13):'var(--border-dim)'}`}}>
+            <div className="w-2 h-2 rounded-full flex-shrink-0" style={{background:up?accent:'var(--text-dimmer)',boxShadow:up?`0 0 5px ${accent}`:'none'}}/>
             <div className="flex-1 min-w-0">
-              <div className="text-sm font-semibold" style={{color:info?.connected?'var(--text-bright)':'var(--text-dim)'}}>{name}</div>
-              {info?.connected&&(info as any).url&&<div className="text-xs font-mono text-gray-600 truncate">{(info as any).url}</div>}
-              {!info?.connected&&<div className="text-xs font-mono text-gray-700">checking...</div>}
+              <div className="text-sm font-semibold" style={{color:up?'var(--text-bright)':'var(--text-soft)'}}>{name}</div>
+              {sub&&<div className="text-xs font-mono text-gray-500 truncate" title={sub}>{sub}</div>}
             </div>
-            {info?.connected&&details.length>0&&(
+            {up&&details.length>0&&(
               <div className="grid grid-cols-3 gap-1 flex-shrink-0">
                 {details.map(d=>(
                   <div key={d.label} className="text-center">
                     <div className="text-xs font-mono font-bold" style={{color:d.color}}>{d.value}</div>
-                    <div className="font-mono text-gray-600" style={{fontSize:9}}>{d.label}</div>
+                    <div className="font-mono text-gray-500" style={{fontSize:11}}>{d.label}</div>
                   </div>
                 ))}
               </div>
             )}
-            {!info?.connected&&<span className="text-xs font-mono px-2 py-0.5 rounded" style={{background:'var(--text-faint)',color:'var(--text-dimmer)',border:'1px solid var(--text-faint)'}}>disconnected</span>}
+            <span className="text-xs font-mono px-2 py-0.5 rounded flex-shrink-0" style={{background:alpha(pill.color, 8),color:pill.color,border:`1px solid ${alpha(pill.color, 25)}`}}>{pill.text}</span>
           </div>
-        ))}
+        )})}
       </div>
     </div>
   )

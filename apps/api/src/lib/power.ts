@@ -21,8 +21,7 @@
 // =============================================================================
 
 import axios from 'axios'
-
-const PROMETHEUS = process.env.PROMETHEUS_URL ?? `http://${process.env.HOST_IP ?? 'localhost'}:9090`
+import { resolvePrometheusUrl } from './service-health'
 
 /** Smoothing window. Long enough that a fan ramp does not swing the reading. */
 const WINDOW = '3m'
@@ -47,20 +46,19 @@ export interface ClusterPower {
   of:        number
   /** What this figure is, in the caller's own words to the reader. */
   covers:    string
+  /** Every Prometheus query failed: the zero is "could not ask", not "nothing is measured". */
+  prometheusUnreachable: boolean
 }
 
-async function query(expr: string): Promise<Array<{ node: string; value: number }>> {
-  try {
-    const { data } = await axios.get(`${PROMETHEUS}/api/v1/query`, {
-      params: { query: expr }, timeout: 8000,
-    })
-    if (data?.status !== 'success') return []
-    return (data.data?.result ?? [])
-      .map((r: any) => ({ node: r.metric?.node ?? r.metric?.instance ?? '', value: Number(r.value?.[1]) }))
-      .filter((r: any) => r.node && Number.isFinite(r.value))
-  } catch {
-    return []
-  }
+/** Rows for one expression. Throws when Prometheus cannot be asked, so the caller can tell that from an empty answer. */
+async function query(base: string, expr: string): Promise<Array<{ node: string; value: number }>> {
+  const { data } = await axios.get(`${base}/api/v1/query`, {
+    params: { query: expr }, timeout: 8000,
+  })
+  if (data?.status !== 'success') throw new Error('Prometheus returned an error')
+  return (data.data?.result ?? [])
+    .map((r: any) => ({ node: r.metric?.node ?? r.metric?.instance ?? '', value: Number(r.value?.[1]) }))
+    .filter((r: any) => r.node && Number.isFinite(r.value))
 }
 
 /** Sum series that share a node — a host can have two GPUs. */
@@ -78,17 +76,21 @@ export async function clusterPower(nodeNames: string[]): Promise<ClusterPower> {
   // measures 7.9 W where package plus dram measures 3.1 W, because it includes
   // VRM and board losses the CPU domains cannot see. It supersedes them rather
   // than adding to them.
+  const base = await resolvePrometheusUrl()
+  let failed = 0
+  const q = (expr: string) => query(base, expr).catch(() => { failed++; return [] as Array<{ node: string; value: number }> })
+
   const [raplPackage, raplDram, raplPsys, igpuPackage, nvidia] = await Promise.all([
     // Joules are a counter; rate() turns them into watts and survives the wrap.
-    query(`rate(node_rapl_package_joules_total[${WINDOW}])`),
-    query(`rate(node_rapl_dram_joules_total[${WINDOW}])`),
-    query(`rate(node_rapl_psys_joules_total[${WINDOW}])`),
+    q(`rate(node_rapl_package_joules_total[${WINDOW}])`),
+    q(`rate(node_rapl_dram_joules_total[${WINDOW}])`),
+    q(`rate(node_rapl_psys_joules_total[${WINDOW}])`),
     // intel_gpu_top's "package" is the same RAPL package domain read a different
     // way — measured within 1% of it on every node here — so it stands in where
     // node_exporter cannot read RAPL, never in addition. Its companion
     // `igpu_power_gpu` is a slice of that package and is deliberately not read.
-    query(`avg_over_time(igpu_power_package[${WINDOW}])`),
-    query(`avg_over_time(nvidia_smi_power_draw_watts[${WINDOW}])`),
+    q(`avg_over_time(igpu_power_package[${WINDOW}])`),
+    q(`avg_over_time(nvidia_smi_power_draw_watts[${WINDOW}])`),
   ])
 
   const pkg     = byNode(raplPackage)
@@ -132,6 +134,7 @@ export async function clusterPower(nodeNames: string[]): Promise<ClusterPower> {
     silent:    nodes.filter(n => n.total === null).map(n => n.node),
     reporting: reporting.length,
     of:        nodes.length,
+    prometheusUnreachable: failed === 5,
     covers:    'CPU package (plus DRAM, or the platform rail where the board exposes one) and discrete GPUs. Drives, fans and PSU losses are not instrumented.',
   }
 }

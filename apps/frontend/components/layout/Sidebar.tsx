@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { ThemeToggle } from './ThemeToggle'
 import { SessionBadge } from './SessionBadge'
+import { versionLabel } from './version'
 
 // ---------------------------------------------------------------------------
 //  Nav items
@@ -224,7 +225,10 @@ export function Sidebar() {
         ) : (
           <div className="flex items-center gap-2 w-full">
             <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: 'var(--good)', boxShadow: '0 0 4px var(--good)' }} />
-            <span className="text-xs font-mono" style={{ color: 'var(--text-faint)' }}>{process.env.NEXT_PUBLIC_CLUSTER_NAME ?? 'My Cluster'}</span>
+            <div className="min-w-0 leading-tight">
+              <div className="text-xs font-mono truncate" style={{ color: 'var(--text-dimmer)' }}>{process.env.NEXT_PUBLIC_CLUSTER_NAME ?? 'My Cluster'}</div>
+              <div className="font-mono truncate" style={{ fontSize: 11, color: 'var(--text-dim)' }} title="HyperProx version and build commit">{versionLabel()}</div>
+            </div>
             <div className="ml-auto"><ThemeToggle collapsed={false} /></div>
           </div>
         )}
