@@ -558,6 +558,11 @@ GRAFANA_SECRET_KEY=${GRAFANA_SECRET_KEY}
 PROMETHEUS_RETENTION=90d
 PROMETHEUS_RETENTION_SIZE=40GB
 
+# ── Docker Compose ────────────────────────────────────────────────────────────
+# Optional parts of docker-compose.yml to run: monitoring (Prometheus, Grafana, PVE exporter) and npm
+# (Nginx Proxy Manager). docker compose reads this itself; the setup wizard rewrites it from your choices.
+COMPOSE_PROFILES=monitoring
+
 # ── Proxmox (filled in by setup wizard) ──────────────────────────────────────
 PROXMOX_HOST=
 PROXMOX_PORT=8006
@@ -678,185 +683,28 @@ configure_vault_env() {
 }
 
 # ── Docker Compose Stack ───────────────────────────────────────────────────────
-write_docker_compose() {
-  step "Writing Docker Compose stack"
+# The repo's docker-compose.yml is the only compose file. This installer used to carry its own copy in a
+# heredoc, written only when the clone had none - which a clone always has - so the copy was never used and
+# drifted unnoticed. Per-install choices live in .env; the profiles are the one this step makes sure of.
+configure_compose() {
+  step "Checking the Docker Compose stack"
+  cd "${HYPERPROX_DIR}"
+  [[ -f docker-compose.yml ]] || die "docker-compose.yml is missing from ${HYPERPROX_DIR} — is this a HyperProx clone?"
 
-  # FIX: Preserve existing docker-compose.yml on reinstall
-  if [[ -f "${HYPERPROX_DIR}/docker-compose.yml" ]]; then
-    warn "docker-compose.yml already exists — preserving existing configuration"
-    return
+  # An .env from before COMPOSE_PROFILES: keep what the setup wizard was told, else monitoring as before.
+  if ! env_has COMPOSE_PROFILES; then
+    local profiles="monitoring"
+    if env_has INSTALL_PROMETHEUS; then
+      profiles=""
+      grep -qE '^INSTALL_(PROMETHEUS|GRAFANA)=true' "${ENV_FILE}" && profiles="monitoring"
+      grep -q '^INSTALL_NPM=true' "${ENV_FILE}" && profiles="${profiles:+${profiles},}npm"
+    fi
+    printf '\n# Optional compose profiles (monitoring, npm); docker compose reads this itself.\nCOMPOSE_PROFILES=%s\n' "${profiles}" >> "${ENV_FILE}"
+    ok "Compose profiles: ${profiles:-none}"
   fi
 
-  cat > "${HYPERPROX_DIR}/docker-compose.yml" <<'EOF'
-# HyperProx Docker Compose Stack
-# Do not add 'version:' — deprecated in Compose v2
-
-services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: hyperprox-postgres
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "127.0.0.1:5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  redis:
-    image: redis:7-alpine
-    container_name: hyperprox-redis
-    restart: unless-stopped
-    command: redis-server --save 60 1 --loglevel warning
-    volumes:
-      - redis_data:/data
-    ports:
-      - "127.0.0.1:6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
-  # FIX: network_mode: host — Prometheus must scrape node_exporter on the host
-  # network directly. Bridge networking causes NAT through 172.x.x.x which
-  # results in 'context deadline exceeded' on scrape targets.
-  # The vault gate. Stock, unmodified Vaultwarden, pinned by digest (never :latest). HyperProx refuses to
-  # run without it: sign-in to HyperProx IS a sign-in to this vault. Bound to loopback only; HyperProx's
-  # API is the only thing that talks to it. Signups are off - accounts exist only by invitation.
-  # Version: Vaultwarden 1.37.4 (multi-arch index digest). To update, change the tag AND the digest together.
-  vault:
-    image: vaultwarden/server:1.37.4@sha256:efb3cde962015fcc036b2ea625242248611943b27212ebf4392841fb30fad055
-    container_name: hyperprox-vault
-    restart: unless-stopped
-    environment:
-      SIGNUPS_ALLOWED: "false"
-      INVITATIONS_ALLOWED: "true"
-      ORG_GROUPS_ENABLED: "true"
-      SHOW_PASSWORD_HINT: "false"
-      # Argon2id PHC hash of the admin-panel token (the plain token is VAULT_ADMIN_TOKEN in .env). Empty
-      # disables the admin panel, so an install missing the hash fails closed.
-      ADMIN_TOKEN: ${VAULT_ADMIN_TOKEN_HASH:-}
-      # Origin used in Send links and invitation emails. Leave VAULT_PUBLIC_URL empty and links use the
-      # loopback origin; set it to the https address users can reach if links must work from elsewhere.
-      DOMAIN: ${VAULT_PUBLIC_URL:-https://127.0.0.1:8222}
-      # TLS on loopback: the Bitwarden CLI refuses any non-https server. Self-signed cert made by the
-      # installer in config/vault-tls; HyperProx trusts it through VAULT_CA_CERT.
-      ROCKET_TLS: '{certs="/ssl/cert.pem",key="/ssl/key.pem"}'
-    volumes:
-      - vault_data:/data
-      - ./config/vault-tls:/ssl:ro
-    ports:
-      - "127.0.0.1:8222:80"
-    healthcheck:
-      test: ["CMD", "/healthcheck.sh"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
-      start_period: 15s
-
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: hyperprox-prometheus
-    restart: unless-stopped
-    network_mode: host
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
-      - "--storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-90d}"
-      - "--storage.tsdb.retention.size=${PROMETHEUS_RETENTION_SIZE:-40GB}"
-      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
-      - "--web.console.templates=/usr/share/prometheus/consoles"
-      - "--web.enable-lifecycle"
-      - "--web.enable-admin-api"
-    volumes:
-      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./config/prometheus/rules:/etc/prometheus/rules:ro
-      - ./config/prometheus/targets:/etc/prometheus/targets:ro
-      - ./data/prometheus:/prometheus
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-
-  grafana:
-    image: grafana/grafana:latest
-    container_name: hyperprox-grafana
-    restart: unless-stopped
-    environment:
-      # FIX: Explicitly set HTTP port — Grafana defaults to 3000 internally
-      - GF_SERVER_HTTP_PORT=3003
-      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
-      - GF_SECURITY_SECRET_KEY=${GRAFANA_SECRET_KEY}
-      - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_USERS_ALLOW_ORG_CREATE=false
-      - GF_AUTH_ANONYMOUS_ENABLED=true
-      - GF_AUTH_ANONYMOUS_ORG_NAME=Main Org.
-      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
-      - GF_SECURITY_ALLOW_EMBEDDING=true
-      - GF_SECURITY_COOKIE_SAMESITE=disabled
-    volumes:
-      - ./config/grafana:/etc/grafana/provisioning:ro
-      - grafana_data:/var/lib/grafana
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    ports:
-      - "3003:3003"
-    networks:
-      - hyperprox-net
-    depends_on:
-      - prometheus
-
-  pve-exporter:
-    image: prompve/prometheus-pve-exporter:latest
-    container_name: hyperprox-pve-exporter
-    restart: unless-stopped
-    volumes:
-      - ./config/pve-exporter/pve.yml:/etc/prometheus/pve.yml:ro
-    ports:
-      - "127.0.0.1:9221:9221"
-    networks:
-      - hyperprox-net
-
-  # FIX: extra_hosts required for host.docker.internal to resolve on Linux
-  nginx:
-    image: nginx:alpine
-    container_name: hyperprox-nginx
-    restart: unless-stopped
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes:
-      - ./config/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-    ports:
-      - "80:80"
-      - "443:443"
-    networks:
-      - hyperprox-net
-    depends_on:
-      - postgres
-      - redis
-
-networks:
-  hyperprox-net:
-    driver: bridge
-
-volumes:
-  postgres_data:
-  redis_data:
-  vault_data:
-  grafana_data:
-EOF
-  ok "docker-compose.yml written"
+  docker compose config -q >>"${LOG_FILE}" 2>&1 || die "docker-compose.yml does not validate with this .env (see ${LOG_FILE})"
+  ok "docker-compose.yml validates"
 }
 
 # ── Prometheus + Grafana base config ──────────────────────────────────────────
@@ -947,38 +795,8 @@ EOF
     fi
   done
 
-  # Grafana config — preserve on reinstall
-  if [[ -f "${HYPERPROX_DIR}/config/grafana/datasources/prometheus.yml" ]]; then
-    warn "Grafana config already exists — preserving existing configuration"
-  else
-    mkdir -p "${HYPERPROX_DIR}/config/grafana/dashboards"
-    mkdir -p "${HYPERPROX_DIR}/config/grafana/datasources"
-
-    cat > "${HYPERPROX_DIR}/config/grafana/datasources/prometheus.yml" <<'EOF'
-apiVersion: 1
-datasources:
-  - name: Prometheus
-    type: prometheus
-    access: proxy
-    url: http://host.docker.internal:9090
-    isDefault: true
-    editable: false
-EOF
-
-    cat > "${HYPERPROX_DIR}/config/grafana/dashboards/dashboards.yml" <<'EOF'
-apiVersion: 1
-providers:
-  - name: HyperProx
-    folder: HyperProx
-    type: file
-    options:
-      path: /etc/grafana/provisioning/dashboards
-EOF
-
-    # FIX: Remove placeholder stub shipped in repo — conflicts with hyperprox-cluster.json
-    rm -f "${HYPERPROX_DIR}/config/grafana/dashboards/hyperprox-overview.json"
-    ok "Grafana config written"
-  fi
+  # Grafana's provisioning (datasource, dashboards) ships in the repo under config/grafana/provisioning,
+  # which is what docker-compose.yml mounts. Nothing to write.
 
   # pve-exporter config — preserve on reinstall.
   #
@@ -1181,7 +999,7 @@ start_services() {
   ok "Vault is up on https://127.0.0.1:8222"
 
   step "Starting Docker stack"
-  info "Pulling images and starting containers (vault, postgres, redis, prometheus, grafana, pve-exporter, nginx)..."
+  info "Pulling images and starting containers (postgres, redis, nginx, and the COMPOSE_PROFILES in .env)..."
   run_with_spinner "Starting Docker stack" \
     docker compose up -d --quiet-pull
   ok "Docker stack started"
@@ -1271,7 +1089,7 @@ main() {
   configure_env
   configure_vault_env
   build_app
-  write_docker_compose
+  configure_compose
   write_monitoring_config
   write_systemd_services
   install_cli
