@@ -164,9 +164,24 @@ so the browser warns once. To use your own, put the full chain in
 (before installing, or any time after), then `docker restart hyperprox-nginx`.
 
 If another reverse proxy (Nginx Proxy Manager, say) terminates TLS in front of
-HyperProx, point it at `http://<container-ip>:80`. It sends
-`X-Forwarded-Proto: https`, and nginx serves those requests instead of
-redirecting them.
+HyperProx, point it at `http://<container-ip>:80` and tell nginx to trust it.
+nginx believes a proxy's `X-Forwarded-Proto: https`, and serves its requests
+instead of redirecting them, only from loopback and the addresses you list:
+
+```bash
+mkdir -p /opt/hyperprox/data/nginx/trusted-proxies
+echo '10.0.0.7 1;' > /opt/hyperprox/data/nginx/trusted-proxies/proxies.conf   # your proxy's address or CIDR
+docker restart hyperprox-nginx
+```
+
+From any other address the header is ignored, so nobody can use it to talk
+plain http to port 80.
+
+HSTS is not sent. With a self-signed certificate on a LAN address it would lock
+browsers out the day the certificate changes. If you serve HyperProx under a
+real domain with a real certificate, you can add
+`add_header Strict-Transport-Security "max-age=31536000" always;` to the
+:443 server in `config/nginx/conf.d/hyperprox.conf`.
 
 ### First-run setup
 
@@ -178,11 +193,13 @@ tomorrow, and it picks up at the step it had reached.
 1. **Connect your Proxmox** — sign in with the same username and password you use
    for the Proxmox web interface (two-factor codes are supported). HyperProx uses
    that login once to create its own API token, named
-   `hyperprox-<container-hostname>`, and never stores your password. Connecting
-   again reuses that token while HyperProx still holds its secret; if the secret
-   has been lost, it deletes and recreates that one token. Any other token —
-   including one another HyperProx on a differently named container relies on —
-   is never touched.
+   `hyperprox-<container-hostname>-<install id>`, and never stores your password.
+   The install id is random, made once and kept in `.env` (`HYPERPROX_INSTALL_ID`),
+   so two installs never share a token name, even when both containers are called
+   `hyperprox`. Connecting again reuses the token while HyperProx still holds its
+   secret. If the secret has been lost, it deletes and recreates that one token,
+   but only when the token's comment carries this install's id. Any other token is
+   never touched.
 2. **Cluster detected** — nodes, storage and Ceph, read back through the new token.
 3. **Existing services** — Nginx Proxy Manager and Proxmox Backup Server already on
    the cluster are found by their web interface, and HyperProx will not offer to

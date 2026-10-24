@@ -121,13 +121,27 @@ export function extractToken(headers: Record<string, any>): string | null {
   return null
 }
 
-/** Serialise the auth cookie. Max-Age 0 clears it. */
-export function buildAuthCookie(token: string, maxAgeSeconds: number): string {
+/**
+ * True when the browser reached HyperProx over https. nginx always sets X-Forwarded-Proto itself (it
+ * replaces whatever the client sent, and believes an upstream proxy's value only from a trusted address),
+ * so this is the scheme the browser used. Plain http on :3000 or :3002 directly carries no such header.
+ */
+export function requestIsHttps(headers: Record<string, any> | undefined): boolean {
+  const proto = headers?.['x-forwarded-proto']
+  return typeof proto === 'string' && proto.split(',')[0].trim().toLowerCase() === 'https'
+}
+
+/**
+ * Serialise the auth cookie. Max-Age 0 clears it. Pass the request headers so a session made over https
+ * gets `Secure` and is never sent back over plain http; without them the cookie is built as before.
+ */
+export function buildAuthCookie(token: string, maxAgeSeconds: number, headers?: Record<string, any>): string {
   return [
     `${COOKIE_NAME}=${token}`,
     'Path=/',
     'HttpOnly',
     'SameSite=Lax',
     `Max-Age=${maxAgeSeconds}`,
+    ...(requestIsHttps(headers) ? ['Secure'] : []),
   ].join('; ')
 }

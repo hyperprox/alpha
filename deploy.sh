@@ -22,7 +22,7 @@ chmod 600 .env
 # mounts before swapping containers, so a bad config leaves the running nginx alone instead of taking
 # the site down. The swap is the only interruption: a second or two on :80/:443.
 echo "→ Checking the nginx front door..."
-mkdir -p certs
+mkdir -p certs data/nginx/trusted-proxies   # the second: proxies whose X-Forwarded-Proto is believed
 if [ ! -s certs/cert.pem ] || [ ! -s certs/key.pem ]; then
   HOST_IP="$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+' || hostname -I | awk '{print $1}')"
   SAN="DNS:$(hostname),DNS:localhost,IP:127.0.0.1"
