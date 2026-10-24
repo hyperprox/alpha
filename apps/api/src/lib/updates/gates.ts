@@ -29,14 +29,22 @@ export async function quorumGate(exec: UpdatesExecutor): Promise<GateResult> {
 }
 
 export function judgeCeph(h: CephHealth | null, accepted: string[]): GateResult {
-  if (!h) return pass('no Ceph on this cluster')
+  if (!h) return pass('no Ceph on this cluster')   // callers pass null only after cephPresent() said so
   const blocking = h.checks.filter(c => !accepted.includes(c))
   if (blocking.length) return fail(`Ceph ${h.status}: ${blocking.join(', ')} (not in ceph.accepted_warnings)`)
   return pass(h.checks.length ? `Ceph ${h.status}, only accepted warnings (${h.checks.join(', ')})` : 'Ceph HEALTH_OK')
 }
 
-export async function cephGate(exec: UpdatesExecutor, policy: Policy): Promise<GateResult> {
+/** `present` comes from exec.cephPresent(), decided once per job; a failed read is then always a FAIL. */
+export async function cephGate(exec: UpdatesExecutor, policy: Policy, present: boolean): Promise<GateResult> {
+  if (!present) return pass('no Ceph on this cluster')
   try { return judgeCeph(await exec.cephHealth(), policy.acceptedWarnings) }
+  catch (e: any) { return fail(`could not read Ceph health: ${e.message}`) }
+}
+
+export async function cephSettledGate(exec: UpdatesExecutor, present: boolean): Promise<GateResult> {
+  if (!present) return pass('no Ceph on this cluster')
+  try { return judgeCephSettled(await exec.cephHealth()) }
   catch (e: any) { return fail(`could not read Ceph health: ${e.message}`) }
 }
 
@@ -77,6 +85,14 @@ export function freeSpaceGate(node: string, facts: NodeFacts | null | undefined,
 }
 
 /** Required holds and pin present. Missing is a stop, never something to repair. */
+/** Policy keys that name nodes the cluster does not have: a typo would silently fall back to the defaults. */
+export function unknownPolicyNodes(policy: Policy, clusterNodes: string[]): GateResult {
+  const unknown = Object.keys(policy.nodes).filter(n => !clusterNodes.includes(n)).sort()
+  return unknown.length
+    ? fail(`the policy names node${unknown.length > 1 ? 's' : ''} not in this cluster: ${unknown.join(', ')} (a typo would apply nodes.default instead)`)
+    : pass('every node named in the policy exists')
+}
+
 export function holdsPinGate(node: string, facts: NodeFacts | null | undefined, pol: NodePolicy): GateResult {
   if (!pol.requireHolds.length && !pol.requirePin) return pass(`${node}: no holds or pin required`)
   if (!facts) return fail(`${node}: could not read holds and pin`)
@@ -104,8 +120,11 @@ export async function streamGate(exec: UpdatesExecutor, policy: Policy): Promise
 }
 
 /** Everything before a run changes anything. All gates run, so the report lists every problem at once. */
-export async function preflight(exec: UpdatesExecutor, policy: Policy, facts: Record<string, NodeFacts | null>): Promise<GateResult> {
-  const results: GateResult[] = [await quorumGate(exec), await cephGate(exec, policy), await haGate(exec)]
+export async function preflight(exec: UpdatesExecutor, policy: Policy, facts: Record<string, NodeFacts | null>, cephPresent: boolean): Promise<GateResult> {
+  const results: GateResult[] = [
+    await quorumGate(exec), await cephGate(exec, policy, cephPresent), await haGate(exec),
+    unknownPolicyNodes(policy, Object.keys(facts)),
+  ]
   for (const node of Object.keys(facts).sort()) {
     results.push(freeSpaceGate(node, facts[node], policy))
     results.push(holdsPinGate(node, facts[node], nodePolicy(policy, node)))
