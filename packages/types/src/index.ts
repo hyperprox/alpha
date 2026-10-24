@@ -113,3 +113,6 @@ export interface WSMessage {
   payload:   unknown
   timestamp: string
 }
+
+// Updates feature
+export * from './updates'
