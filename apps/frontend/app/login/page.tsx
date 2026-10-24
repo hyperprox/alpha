@@ -131,7 +131,7 @@ function SignIn({ next, initialEmail = '', notice }: { next: string | null; init
       <PrimaryButton type="submit" className="w-full" disabled={busy || !email || !password || code.length !== 6}>
         {busy ? 'Signing in...' : 'Sign in'}
       </PrimaryButton>
-      {busy && <BusyNote>Signing in to the vault — this takes about 20 seconds.</BusyNote>}
+      {busy && <BusyNote>Signing in to the vault — usually a second or two.</BusyNote>}
     </Card>
   )
 }
