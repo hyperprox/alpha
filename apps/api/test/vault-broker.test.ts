@@ -1,8 +1,10 @@
 // Integration tests: broker + unlock state against a real, throwaway Vaultwarden.
 //
-// Starts `vgtest-broker-vw` (stock image, pinned by digest, TLS with a throwaway
+// Starts `abtest-vault-broker` (stock image, pinned by digest, TLS with a throwaway
 // self-signed certificate, volatile storage, bound to 127.0.0.1) and removes it
 // afterwards. Set VG_TEST_KEEP=1 to leave it running for debugging.
+// Sign-in takes the fast path unless a test sets VAULT_FAST_SIGNIN=0; the CLI
+// interop tests check that each path reads and edits what the other wrote.
 import { describe, it, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
@@ -12,8 +14,8 @@ import os from 'node:os'
 import path from 'node:path'
 
 const IMAGE = 'vaultwarden/server:1.37.4@sha256:efb3cde962015fcc036b2ea625242248611943b27212ebf4392841fb30fad055'
-const NAME = 'vgtest-broker-vw'
-const PORT = 18443
+const NAME = 'abtest-vault-broker'
+const PORT = 18343
 const URL_ = `https://127.0.0.1:${PORT}`
 const ADMIN_TOKEN = crypto.randomBytes(24).toString('hex')
 const tlsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vgtest-broker-tls-'))
@@ -27,9 +29,17 @@ delete process.env.VAULT_PUBLIC_URL
 
 // Imported after the env is set (config is read lazily anyway).
 import * as c from '../src/lib/vault/bw-crypto'
-import { VaultAuthError, VaultSessionError, getBroker, type VaultSession } from '../src/lib/vault/broker'
+import { VaultAuthError, VaultSessionError, getBroker, setVaultLogger, type VaultSession } from '../src/lib/vault/broker'
 import * as state from '../src/lib/vault/state'
 import { vaultRequest } from '../src/lib/vault/http'
+import { runBw } from '../src/lib/vault/bw-cli'
+import { NativeVaultSession } from '../src/lib/vault/native'
+
+const logged: string[] = []
+setVaultLogger({ info: m => logged.push(m), warn: m => logged.push(m) })
+/** The sign-in path the broker reported for the most recent sign-in. */
+const lastPath = () => [...logged].reverse().find(m => /signed in via/.test(m)) ?? ''
+const timings: Record<string, number[]> = { fast: [], cli: [] }
 
 const OWNER = 'owner@example.com'
 const PW = 'correct horse battery staple 42'
@@ -161,12 +171,15 @@ describe('vault broker (real Vaultwarden)', { timeout: 600_000 }, () => {
     await expectAuth(broker.signIn(OWNER, PW, wrong), 'totp_invalid')
   })
 
-  it('signIn with a computed TOTP code → role owner, no session dirs leaked by failures', async () => {
-    owner = await broker.signIn(OWNER, PW, await nextCode())
+  it('signIn with a computed TOTP code → role owner via the fast path, no CLI dir', async () => {
+    const code = await nextCode()
+    const t0 = Date.now()
+    owner = await broker.signIn(OWNER, PW, code)
+    timings.fast.push(Date.now() - t0)
     assert.equal(owner.role, 'owner')
     assert.ok(owner.userId)
-    assert.equal(dirCount(), 1)
-    assert.equal((fs.statSync(path.join(shmRoot, owner.sid)).mode & 0o777), 0o700)
+    assert.match(lastPath(), /fast path/)
+    assert.equal(dirCount(), 0)
   })
 
   it('signIn: a vault user outside the HyperProx organization → not_member', async () => {
@@ -175,7 +188,7 @@ describe('vault broker (real Vaultwarden)', { timeout: 600_000 }, () => {
     await admin.invite('outsider@example.com')
     await c.registerAccount(api, 'outsider@example.com', 'outsider password 123')
     await expectAuth(broker.signIn('outsider@example.com', 'outsider password 123', ''), 'not_member')
-    assert.equal(dirCount(), 1)
+    assert.equal(dirCount(), 0)
   })
 
   it('verifyPassword: true for the master password, false otherwise', async () => {
@@ -207,9 +220,17 @@ describe('vault broker (real Vaultwarden)', { timeout: 600_000 }, () => {
     assert.ok(list.find(i => i.name === 'hyperprox:proxy/npm'))
   })
 
-  it('createSend returns a Send URL (optionally on the public origin)', async () => {
+  it('createSend returns a Send URL (optionally on the public origin) that the Bitwarden CLI can open', async () => {
     const r = await broker.createSend(owner.sid, 'one-time secret', { hours: 2, maxViews: 1, password: 'send pw' })
     assert.match(r.url, new RegExp(`^${URL_.replace(/\./g, '\\.')}/#/send/[^/]+/[^/]+$`))
+    // The recipient's side, decrypted by Bitwarden's own code: proves the Send key, text and password hash.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'abtest-vault-recv-'))
+    try {
+      assert.equal((await runBw(['config', 'server', URL_], { dir })).code, 0)
+      const got = await runBw(['send', 'receive', r.url, '--password', 'send pw'], { dir })
+      assert.equal(got.code, 0, got.stderr)
+      assert.equal(got.stdout.trim(), 'one-time secret')
+    } finally { fs.rmSync(dir, { recursive: true, force: true }) }
     const exp = Date.parse(r.expiresAt)
     assert.ok(exp > Date.now() + 3600_000 && exp < Date.now() + 3 * 3600_000)
     process.env.VAULT_PUBLIC_URL = 'https://vault.example.com'
@@ -217,6 +238,60 @@ describe('vault broker (real Vaultwarden)', { timeout: 600_000 }, () => {
       const r2 = await broker.createSend(owner.sid, 'another')
       assert.match(r2.url, /^https:\/\/vault\.example\.com\/#\/send\/[^/]+\/[^/]+$/)
     } finally { delete process.env.VAULT_PUBLIC_URL }
+  })
+
+  it('CLI session (VAULT_FAST_SIGNIN=0) and fast session read and edit each other\'s items', async () => {
+    process.env.VAULT_FAST_SIGNIN = '0'
+    let cli: VaultSession
+    try {
+      const code = await nextCode()
+      const t0 = Date.now()
+      cli = await broker.signIn(OWNER, PW, code)
+      timings.cli.push(Date.now() - t0)
+    } finally { delete process.env.VAULT_FAST_SIGNIN }
+    assert.match(lastPath(), /via CLI/)
+    assert.equal(dirCount(), 1)
+    assert.equal((fs.statSync(path.join(shmRoot, cli.sid)).mode & 0o777), 0o700)
+    assert.equal(await broker.verifyPassword(cli.sid, PW), true)
+
+    // Written by Bitwarden's own client code, read and edited by the fast path.
+    await broker.upsertSecret(cli.sid, 'interop/from-cli', { token: 'cli-1', 'with space': 'v' }, 'cli note')
+    let fromFast = (await broker.listSecrets(owner.sid)).find(i => i.name === 'interop/from-cli')
+    assert.deepEqual(fromFast?.fields, { token: 'cli-1', 'with space': 'v' })
+    assert.equal(fromFast?.notes, 'cli note')
+    // Whether the CLI gave its item a per-item cipher key (the fast path reads and edits either way).
+    const probe = await NativeVaultSession.open(new c.VaultwardenApi(URL_, fs.readFileSync(process.env.VAULT_CA_CERT!)), OWNER, PW, await nextCode())
+    const raw = (await (probe as any).collectionCiphers(true)).find((x: any) => fromFast && x.id === fromFast.id)
+    console.log(`# CLI-written item has its own cipher key: ${!!raw?.key}`)
+    probe.close()
+    await broker.upsertSecret(owner.sid, 'interop/from-cli', { token: 'fast-2' })
+
+    // Written by the fast path, read and edited by the CLI.
+    await broker.upsertSecret(owner.sid, 'interop/from-fast', { secret: 'fast-1' }, 'fast note')
+    let fromCli = await broker.listSecrets(cli.sid)
+    assert.deepEqual(fromCli.find(i => i.name === 'interop/from-cli')?.fields, { token: 'fast-2' })
+    assert.equal(fromCli.find(i => i.name === 'interop/from-cli')?.notes, 'cli note')
+    assert.deepEqual(fromCli.find(i => i.name === 'interop/from-fast')?.fields, { secret: 'fast-1' })
+    assert.equal(fromCli.find(i => i.name === 'interop/from-fast')?.notes, 'fast note')
+    await broker.upsertSecret(cli.sid, 'interop/from-fast', { secret: 'cli-2' })
+    fromFast = (await broker.listSecrets(owner.sid)).find(i => i.name === 'interop/from-fast')
+    assert.deepEqual(fromFast?.fields, { secret: 'cli-2' })
+
+    // A fast-path delete is a trash move the CLI agrees with.
+    await broker.deleteSecret(owner.sid, 'interop/from-cli')
+    fromCli = await broker.listSecrets(cli.sid)
+    assert.equal(fromCli.find(i => i.name === 'interop/from-cli'), undefined)
+    await broker.signOut(cli.sid)
+    assert.equal(dirCount(), 0)
+  })
+
+  it('timing: fast vs CLI sign-in (reported, not asserted beyond a sanity bound)', async () => {
+    const t0 = Date.now()
+    const s = await broker.signIn(OWNER, PW, await nextCode())
+    timings.fast.push(Date.now() - t0)
+    await broker.signOut(s.sid)
+    console.log(`# sign-in ms  fast: ${timings.fast.join(', ')}  cli: ${timings.cli.join(', ')}`)
+    assert.ok(Math.max(...timings.fast) < 10_000)
   })
 
   it('unlock loads the cache and a signing key; lock wipes cache, key and session dirs', async () => {

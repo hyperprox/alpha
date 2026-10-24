@@ -47,6 +47,14 @@ export function idleLockMs(): number {
   return (Number.isFinite(n) && n > 0 ? n : 30) * 60_000
 }
 
+/**
+ * Sign in through Vaultwarden's API directly (./native.ts) instead of the CLI.
+ * On unless VAULT_FAST_SIGNIN=0; the CLI still takes over when the fast path cannot run.
+ */
+export function fastSignInEnabled(): boolean {
+  return process.env.VAULT_FAST_SIGNIN !== '0'
+}
+
 /** tmpfs root for the per-session CLI data dirs. */
 export function sessionRoot(): string {
   return process.env.VAULT_SESSION_ROOT || '/dev/shm/hyperprox-vault'

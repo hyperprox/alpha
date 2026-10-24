@@ -1,14 +1,19 @@
 // =============================================================================
 //  HyperProx — Vault broker
 //
-//  The only code that talks to the bundled Vaultwarden. Everyday work (sign-in,
-//  items, Sends) goes through the official Bitwarden CLI, so all vault
-//  cryptography is Bitwarden's own; one isolated CLI data dir per signed-in
-//  session lives on tmpfs under VAULT_SESSION_ROOT (default /dev/shm/hyperprox-vault/<sid>,
-//  mode 0700) and is deleted on sign-out or lock. Owner bootstrap (register,
-//  organization, TOTP) is the one thing the CLI cannot do; see ./bw-crypto.ts.
+//  The only code that talks to the bundled Vaultwarden. A session is one of two kinds:
 //
-//  Never logged or persisted: master passwords, CLI session keys, decrypted items.
+//    fast  the default. Vaultwarden's API directly (./native.ts): sign-in in
+//          about a second instead of ~20 s; items, edits and Sends the same way.
+//    cli   the official Bitwarden CLI, one isolated data dir per session on tmpfs
+//          under VAULT_SESSION_ROOT (default /dev/shm/hyperprox-vault/<sid>, mode
+//          0700), deleted on sign-out or lock. Used when the fast path cannot be
+//          (an Argon2id account, an answer it does not understand) or is turned
+//          off with VAULT_FAST_SIGNIN=0.
+//
+//  Owner bootstrap (register, organization, TOTP) is direct API in both cases; see ./bw-crypto.ts.
+//
+//  Never logged or persisted: master passwords, keys, CLI session keys, decrypted items.
 // =============================================================================
 
 import crypto from 'node:crypto'
@@ -21,7 +26,8 @@ import {
   newTotpSecret, normalizeEmail, otpauthUri, registerAccount, totpCode, totpMatches, totpStep,
 } from './bw-crypto'
 import { bwErrorMessage, encodeJson, runBw } from './bw-cli'
-import { sessionRoot, vaultAdminToken, vaultCaCert, vaultPublicUrl, vaultUrl } from './config'
+import { fastSignInEnabled, sessionRoot, vaultAdminToken, vaultCaCert, vaultPublicUrl, vaultUrl } from './config'
+import { FastPathFailed, NativeSessionExpired, NativeVaultSession, NotMemberError, type DecryptedItem } from './native'
 
 // ---------------------------------------------------------------------------
 //  Contract types
@@ -53,6 +59,11 @@ export class VaultSessionError extends Error {
 }
 
 const FRESH_SYNC_MS = 30_000
+
+/** Where the broker reports which sign-in path ran and why it fell back. Messages never carry secrets. */
+export interface VaultLogger { info(msg: string): void; warn(msg: string): void }
+let log: VaultLogger = { info: () => undefined, warn: () => undefined }
+export function setVaultLogger(l: VaultLogger): void { log = l }
 
 /** confirmOwnerTotp with no bootstrap in memory: HyperProx restarted between the two steps, or it already finished. */
 export class BootstrapNotPendingError extends Error {
@@ -109,7 +120,8 @@ export function authCodeFromMessage(msg: string): VaultAuthCode | null {
 
 const SID_RE = /^[a-f0-9]{32}$/
 
-interface Session extends VaultSession {
+interface CliSession extends VaultSession {
+  kind: 'cli'
   dir: string
   sessionKey: string
   orgId: string
@@ -119,7 +131,15 @@ interface Session extends VaultSession {
   syncedAt?: number
 }
 
-function itemToSecret(it: any): SecretItem {
+interface FastSession extends VaultSession {
+  kind: 'fast'
+  vault: NativeVaultSession
+  queue: Promise<unknown>
+}
+
+type Session = CliSession | FastSession
+
+function itemToSecret(it: any | DecryptedItem): SecretItem {
   const fields: Record<string, string> = {}
   if (it?.login) {
     if (it.login.username) fields.username = String(it.login.username)
@@ -144,6 +164,8 @@ function itemToSecret(it: any): SecretItem {
 class CliVaultBroker implements VaultBroker {
   private sessions = new Map<string, Session>()
   private pendingTotp = new Map<string, string>() // email -> secret, between bootstrap and confirm
+  /** Emails whose fast sign-in failed after the vault accepted them: the CLI for the rest of this process. */
+  private cliOnly = new Set<string>()
   private bootstrappedKnown = false
   private adminClient: VaultwardenAdmin | null = null
   private adminKey = ''
@@ -253,15 +275,15 @@ class CliVaultBroker implements VaultBroker {
     this.bootstrappedKnown = true
 
     // The user's code is now spent (Vaultwarden refuses any step <= the last one
-    // used), so the CLI login uses the next step, computed from the secret the
-    // broker still holds for this one call. The CLI derives its key before it
-    // talks to the server, so aim at the current step or later.
+    // used), so the sign-in uses the next step, computed from the secret the
+    // broker still holds for this one call. The key is derived before the server
+    // sees the code, so aim at the current step or later.
     const now = totpStep()
     const used = [now - 1, now, now + 1].find(st => totpCode(secret, st) === code.trim()) ?? now
     let step = Math.max(used + 1, now)
     while (step > totpStep() + 1) await new Promise(r => setTimeout(r, 1000))
     step = Math.max(step, totpStep())
-    const session = await this.cliSignIn(e, masterPassword, totpCode(secret, step))
+    const session = await this.openSession(e, masterPassword, totpCode(secret, step))
     if (session.role !== 'owner') { await this.signOut(session.sid); throw new VaultAuthError('not_member') }
     return { sid: session.sid, email: session.email, role: session.role, userId: session.userId }
   }
@@ -280,12 +302,67 @@ class CliVaultBroker implements VaultBroker {
   // ---- sign-in ------------------------------------------------------------
 
   async signIn(email: string, masterPassword: string, totp: string): Promise<VaultSession> {
-    const s = await this.cliSignIn(normalizeEmail(email), masterPassword, (totp ?? '').trim())
+    const s = await this.openSession(normalizeEmail(email), masterPassword, (totp ?? '').trim())
     return { sid: s.sid, email: s.email, role: s.role, userId: s.userId }
   }
 
-  private async cliSignIn(email: string, masterPassword: string, totp: string): Promise<Session> {
+  /** Fast path first; the CLI when the fast path cannot run, or failed in a way that leaves the code unspent. */
+  private async openSession(email: string, masterPassword: string, totp: string): Promise<Session> {
     if (totp && !/^\d{6}$/.test(totp)) throw new VaultAuthError('totp_invalid')
+    if (fastSignInEnabled() && !this.cliOnly.has(email)) {
+      const t0 = Date.now()
+      try {
+        const s = await this.fastSignIn(email, masterPassword, totp)
+        log.info(`[vault] signed in via fast path in ${Date.now() - t0} ms`)
+        return s
+      } catch (err) {
+        if (err instanceof VaultAuthError) throw err
+        if (err instanceof FastPathFailed && totp) {
+          // The vault has accepted this TOTP step and will refuse it again, so the CLI cannot retry it now.
+          this.cliOnly.add(email)
+          log.warn(`[vault] fast sign-in failed after the vault accepted the login (${err.message}); next attempt uses the CLI`)
+          throw new VaultAuthError('totp_invalid', 'fast sign-in failed after login; sign in again with the next code')
+        }
+        log.warn(`[vault] fast sign-in not possible (${(err as Error).message}); using the CLI`)
+      }
+    }
+    const t0 = Date.now()
+    const s = await this.cliSignIn(email, masterPassword, totp)
+    log.info(`[vault] signed in via CLI in ${Date.now() - t0} ms`)
+    return s
+  }
+
+  private async fastSignIn(email: string, masterPassword: string, totp: string): Promise<FastSession> {
+    let vault: NativeVaultSession
+    try {
+      vault = await NativeVaultSession.open(this.api(), email, masterPassword, totp)
+    } catch (err) {
+      if (err instanceof NotMemberError) throw new VaultAuthError('not_member')
+      throw this.httpAuthError(err)
+    }
+    const role = roleFromMemberType(vault.memberType)
+    if (role === 'owner' && !(await this.ownerHasTwoFactor(email))) {
+      vault.close()
+      throw new VaultAuthError('totp_required', 'two-step login must be enabled for the owner')
+    }
+    const s: FastSession = { kind: 'fast', sid: crypto.randomBytes(16).toString('hex'), email, role, userId: vault.userId, vault, queue: Promise.resolve() }
+    this.sessions.set(s.sid, s)
+    return s
+  }
+
+  /**
+   * The owner holds every key: 2FA is mandatory for them, even if it was later
+   * removed from the vault side (e.g. through the admin panel). Unknown (no admin
+   * token, admin API down) counts as yes, as it always has.
+   */
+  private async ownerHasTwoFactor(email: string): Promise<boolean> {
+    const admin = this.admin()
+    if (!admin) return true
+    const u = await admin.userByEmail(email).catch(() => null)
+    return !(u && !u.twoFactorEnabled)
+  }
+
+  private async cliSignIn(email: string, masterPassword: string, totp: string): Promise<CliSession> {
     const sid = crypto.randomBytes(16).toString('hex')
     const root = sessionRoot()
     fs.mkdirSync(root, { recursive: true, mode: 0o700 })
@@ -330,35 +407,40 @@ class CliVaultBroker implements VaultBroker {
     }
     const role = roleFromMemberType(Number(org.type))
 
-    // The owner holds every key: 2FA is mandatory for them, even if it was later
-    // removed from the vault side (e.g. through the admin panel).
-    if (role === 'owner') {
-      const admin = this.admin()
-      if (admin) {
-        const u = await admin.userByEmail(email).catch(() => null)
-        if (u && !u.twoFactorEnabled) {
-          await runBw(['logout'], { dir })
-          return fail(new VaultAuthError('totp_required', 'two-step login must be enabled for the owner'))
-        }
-      }
+    if (role === 'owner' && !(await this.ownerHasTwoFactor(email))) {
+      await runBw(['logout'], { dir })
+      return fail(new VaultAuthError('totp_required', 'two-step login must be enabled for the owner'))
     }
 
     const cols = await runBw(['list', 'collections', '--organizationid', String(org.id)], { dir, session: sessionKey })
     let collectionId: string | undefined
     try { collectionId = (JSON.parse(cols.stdout) as any[]).find(c => c?.name === COLLECTION_NAME)?.id } catch { /* none visible */ }
 
-    const s: Session = { sid, email, role, userId, dir, sessionKey, orgId: String(org.id), collectionId, queue: Promise.resolve(), syncedAt: Date.now() /* login syncs */ }
+    const s: CliSession = { kind: 'cli', sid, email, role, userId, dir, sessionKey, orgId: String(org.id), collectionId, queue: Promise.resolve(), syncedAt: Date.now() /* login syncs */ }
     this.sessions.set(sid, s)
     return s
   }
 
-  /** Serialises CLI calls per session (the CLI's data file is not safe for concurrent writers). */
+  /**
+   * Serialises calls per session (the CLI's data file is not safe for concurrent
+   * writers; a fast session's token refresh and sync cache are simpler serial).
+   * A fast session the vault no longer accepts ends here, as a VaultSessionError.
+   */
   private withSession<T>(sid: string, fn: (s: Session) => Promise<T>): Promise<T> {
     const s = SID_RE.test(sid) ? this.sessions.get(sid) : undefined
     if (!s) return Promise.reject(new VaultSessionError())
-    const run = s.queue.then(() => {
+    const run = s.queue.then(async () => {
       if (!this.sessions.has(sid)) throw new VaultSessionError()
-      return fn(s)
+      try {
+        return await fn(s)
+      } catch (err) {
+        if (err instanceof NativeSessionExpired) {
+          this.sessions.delete(sid)
+          if (s.kind === 'fast') s.vault.close()
+          throw new VaultSessionError()
+        }
+        throw err
+      }
     })
     s.queue = run.catch(() => undefined)
     return run
@@ -366,6 +448,7 @@ class CliVaultBroker implements VaultBroker {
 
   async verifyPassword(sid: string, masterPassword: string): Promise<boolean> {
     return this.withSession(sid, async s => {
+      if (s.kind === 'fast') return s.vault.verifyPassword(masterPassword)
       // Local check by the CLI against its stored key material; no server call, no TOTP.
       const r = await runBw(['unlock', '--passwordenv', 'BW_PASSWORD', '--raw'], { dir: s.dir, password: masterPassword })
       const key = r.stdout.trim()
@@ -380,6 +463,7 @@ class CliVaultBroker implements VaultBroker {
     if (!s) return
     this.sessions.delete(sid)
     await s.queue.catch(() => undefined)
+    if (s.kind === 'fast') { s.vault.close(); return }
     await runBw(['logout'], { dir: s.dir, timeoutMs: 15_000 }).catch(() => undefined)
     fs.rmSync(s.dir, { recursive: true, force: true })
     s.sessionKey = ''
@@ -399,14 +483,14 @@ class CliVaultBroker implements VaultBroker {
 
   // A sync costs one CLI start (~3 s). Login has just synced, so the unlock and the first-unlock migration
   // right after it skip theirs; anything later syncs as before.
-  private async sync(s: Session): Promise<void> {
+  private async sync(s: CliSession): Promise<void> {
     if (s.syncedAt && Date.now() - s.syncedAt < FRESH_SYNC_MS) return
     const r = await runBw(['sync'], { dir: s.dir, session: s.sessionKey })
     if (r.code !== 0) throw new Error(`vault sync failed: ${bwErrorMessage(r)}`)
     s.syncedAt = Date.now()
   }
 
-  private async rawItems(s: Session): Promise<any[]> {
+  private async rawItems(s: CliSession): Promise<any[]> {
     if (!s.collectionId) return []
     const r = await runBw(['list', 'items', '--collectionid', s.collectionId], { dir: s.dir, session: s.sessionKey })
     if (r.code !== 0) throw new Error(`vault list failed: ${bwErrorMessage(r)}`)
@@ -415,6 +499,7 @@ class CliVaultBroker implements VaultBroker {
 
   async listSecrets(sid: string): Promise<SecretItem[]> {
     return this.withSession(sid, async s => {
+      if (s.kind === 'fast') return (await s.vault.listItems()).map(itemToSecret)
       await this.sync(s)
       return (await this.rawItems(s)).map(itemToSecret)
     })
@@ -429,6 +514,7 @@ class CliVaultBroker implements VaultBroker {
   async upsertSecrets(sid: string, items: Array<{ name: string; fields: Record<string, string>; notes?: string }>): Promise<SecretItem[]> {
     if (items.some(i => !i.name)) throw new Error('secret name is required')
     return this.withSession(sid, async s => {
+      if (s.kind === 'fast') return (await s.vault.upsertItems(items)).map(itemToSecret)
       if (!s.collectionId) throw new Error(`collection "${COLLECTION_NAME}" is not visible to this account`)
       await this.sync(s)
       const current = await this.rawItems(s)
@@ -440,7 +526,7 @@ class CliVaultBroker implements VaultBroker {
     })
   }
 
-  private async writeItem(s: Session, existing: any, name: string, fields: Record<string, string>, notes?: string): Promise<SecretItem> {
+  private async writeItem(s: CliSession, existing: any, name: string, fields: Record<string, string>, notes?: string): Promise<SecretItem> {
       const customFields = Object.entries(fields).map(([k, v]) => ({ name: k, value: String(v ?? ''), type: 1, linkedId: null }))
       let r
       if (existing) {
@@ -467,6 +553,7 @@ class CliVaultBroker implements VaultBroker {
 
   async deleteSecret(sid: string, name: string): Promise<void> {
     return this.withSession(sid, async s => {
+      if (s.kind === 'fast') return s.vault.deleteItems(name)
       await this.sync(s)
       const matches = (await this.rawItems(s)).filter(it => it.name === name)
       for (const it of matches) {
@@ -482,6 +569,11 @@ class CliVaultBroker implements VaultBroker {
     const maxViews = opts.maxViews && opts.maxViews > 0 ? Math.floor(opts.maxViews) : 1
     return this.withSession(sid, async s => {
       const expires = new Date(Date.now() + hours * 3600_000).toISOString()
+      if (s.kind === 'fast') {
+        const r = await s.vault.createTextSend(text, { expires, maxViews, password: opts.password || undefined })
+        // The link the CLI prints: <web vault>/#/send/<access id>/<seed>; the seed never reaches the server.
+        return { url: `${vaultPublicUrl() ?? vaultUrl()}/#/send/${r.accessId}/${r.keyFragment}`, expiresAt: r.expirationDate }
+      }
       const send = {
         name: 'HyperProx',
         notes: null,

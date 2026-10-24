@@ -2,15 +2,18 @@
 //  HyperProx — Bitwarden client crypto + Vaultwarden owner bootstrap
 //
 //  The Bitwarden CLI cannot register an account, create an organization or
-//  enrol TOTP, so those few calls are made here, directly against the
-//  Vaultwarden API, with Bitwarden's client-side cryptography re-implemented on
-//  Node's `crypto` module only (no third-party crypto):
+//  enrol TOTP, and it is slow at everything else (see ./native.ts), so those
+//  calls are made here, directly against the Vaultwarden API, with Bitwarden's
+//  client-side cryptography re-implemented on Node's `crypto` module only (no
+//  third-party crypto):
 //
-//    master key       PBKDF2-SHA256(password, salt = lowercased email, 600000)
+//    master key       PBKDF2-SHA256(password, salt = lowercased email, iterations from prelogin)
 //    password hash    base64(PBKDF2-SHA256(masterKey, password, 1))   (sent to server)
+//    local hash       base64(PBKDF2-SHA256(masterKey, password, 2))   (never leaves memory)
 //    stretched key    HKDF-Expand-SHA256(masterKey, "enc"|"mac", 32)
 //    EncString 2      "2.<iv>|<ct>|<mac>"  AES-256-CBC + HMAC-SHA256(iv || ct)
-//    EncString 4      "4.<ct>"             RSA-2048 OAEP-SHA1
+//    EncString 3 / 4  "3.<ct>" / "4.<ct>"  RSA-2048 OAEP-SHA256 / OAEP-SHA1
+//    Send key         HKDF-SHA256(16 random bytes, salt "bitwarden-send", info "send", 64)
 //
 //  API shapes verified against Vaultwarden 1.37.4 source
 //  (src/api/admin.rs, src/api/identity.rs, src/api/core/accounts.rs,
@@ -27,7 +30,10 @@ import { vaultRequest } from './http'
 const pbkdf2 = promisify(crypto.pbkdf2)
 
 export const KDF_PBKDF2 = 0
+export const KDF_ARGON2ID = 1
 export const KDF_ITERATIONS = 600_000
+/** Bitwarden's PBKDF2 iterations for a Send password (SEND_KDF_ITERATIONS). */
+export const SEND_KDF_ITERATIONS = 100_000
 export const ORG_NAME = 'HyperProx'
 export const COLLECTION_NAME = 'HyperProx'
 
@@ -48,10 +54,29 @@ export async function makeMasterKey(password: string, email: string): Promise<Bu
   return pbkdf2(Buffer.from(password, 'utf8'), Buffer.from(normalizeEmail(email), 'utf8'), KDF_ITERATIONS, 32, 'sha256')
 }
 
+/** KDF settings as /identity/accounts/prelogin reports them for an account. */
+export interface KdfConfig { kdf: number; iterations: number; memory?: number | null; parallelism?: number | null }
+
+/**
+ * Master key for an account's own KDF settings. PBKDF2-SHA256 only: Argon2id
+ * needs a library Node 20 does not have, so callers check `kdf` first.
+ */
+export async function makeMasterKeyFor(password: string, email: string, cfg: KdfConfig): Promise<Buffer> {
+  if (cfg.kdf !== KDF_PBKDF2) throw new Error(`KDF type ${cfg.kdf} is not supported here`)
+  // Bitwarden refuses fewer than 5000 iterations; a lower number is a broken prelogin answer, not an account.
+  if (!Number.isInteger(cfg.iterations) || cfg.iterations < 5000) throw new Error('implausible PBKDF2 iteration count')
+  return pbkdf2(Buffer.from(password, 'utf8'), Buffer.from(normalizeEmail(email), 'utf8'), cfg.iterations, 32, 'sha256')
+}
+
 /** The value the server sees instead of the password: base64(PBKDF2(masterKey, password, 1)). */
 export async function masterPasswordHash(masterKey: Buffer, password: string): Promise<string> {
   const h = await pbkdf2(masterKey, Buffer.from(password, 'utf8'), 1, 32, 'sha256')
   return h.toString('base64')
+}
+
+/** Bitwarden's local check value (2 iterations): proves the password offline, useless to the server. */
+export async function localPasswordHash(masterKey: Buffer, password: string): Promise<Buffer> {
+  return pbkdf2(masterKey, Buffer.from(password, 'utf8'), 2, 32, 'sha256')
 }
 
 /** HKDF-Expand only (RFC 5869 step 2) — Bitwarden uses the master key directly as the PRK. */
@@ -97,6 +122,25 @@ export function decString2(enc: string, key: SymKey): Buffer {
   return Buffer.concat([d.update(ct), d.final()])
 }
 
+/** Full HKDF (extract + expand), as Bitwarden derives a Send's key from its 16-byte seed. */
+export function hkdf(ikm: Buffer, salt: string, info: string, length: number): Buffer {
+  return Buffer.from(crypto.hkdfSync('sha256', ikm, Buffer.from(salt, 'utf8'), Buffer.from(info, 'utf8'), length))
+}
+
+/** The 64-byte key a Send's name and text are encrypted with. */
+export function sendKeyFromSeed(seed: Buffer): SymKey {
+  return symKeyFromBytes(hkdf(seed, 'bitwarden-send', 'send', 64))
+}
+
+/** A Send password as the server stores it: base64(PBKDF2-SHA256(password, seed, 100000)). */
+export async function sendPasswordHash(password: string, seed: Buffer): Promise<string> {
+  return (await pbkdf2(Buffer.from(password, 'utf8'), seed, SEND_KDF_ITERATIONS, 32, 'sha256')).toString('base64')
+}
+
+export function base64Url(buf: Buffer): string {
+  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
 export interface RsaKeyPair { publicDer: Buffer; privateDer: Buffer }
 
 export function generateRsaKeyPair(): RsaKeyPair {
@@ -120,6 +164,15 @@ export function decString4(enc: string, privateDer: Buffer): Buffer {
   if (!m) throw new Error('not an EncString type 4')
   const key = crypto.createPrivateKey({ key: privateDer, format: 'der', type: 'pkcs8' })
   return crypto.privateDecrypt({ key, padding: crypto.constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha1' }, Buffer.from(m[1], 'base64'))
+}
+
+/** An organization key wrapped with the member's public key: type 4 (what clients write) or type 3. */
+export function decRsaEncString(enc: string, privateDer: Buffer): Buffer {
+  if (enc.startsWith('4.')) return decString4(enc, privateDer)
+  const m = /^3\.(.+)$/.exec(enc)
+  if (!m) throw new Error(`unsupported asymmetric EncString type ${enc.split('.')[0]}`)
+  const key = crypto.createPrivateKey({ key: privateDer, format: 'der', type: 'pkcs8' })
+  return crypto.privateDecrypt({ key, padding: crypto.constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256' }, Buffer.from(m[1], 'base64'))
 }
 
 // ---------------------------------------------------------------------------
@@ -204,9 +257,18 @@ function parseBody(text: string): any {
 }
 
 const DEVICE_TYPE_LINUX_CLI = '25'
+/**
+ * Sent as the pinned CLI (package.json @bitwarden/cli) would send them, so the
+ * vault treats these calls as that client: without them it logs an error on
+ * every sync and hides item types newer than the version it assumes.
+ */
+const CLIENT_HEADERS = { 'bitwarden-client-name': 'cli', 'bitwarden-client-version': '2026.10.0' }
 
 export interface IdentityToken {
   accessToken: string
+  refreshToken?: string
+  /** Access-token lifetime in seconds. */
+  expiresIn?: number
   /** The user's symmetric key, wrapped with the stretched master key (EncString 2). */
   key: string
   /** The user's RSA private key, wrapped with the user key (EncString 2), if any. */
@@ -286,11 +348,26 @@ export class VaultwardenApi {
     } catch { return false }
   }
 
+  /** KDF settings for an account. Vaultwarden answers for unknown emails too (with defaults), so this leaks nothing. */
+  async prelogin(email: string): Promise<KdfConfig> {
+    const body = { email: normalizeEmail(email) }
+    // Current clients use the identity route; older Vaultwarden releases only had the /api one.
+    const r = await this.api('POST', '/identity/accounts/prelogin', null, body).catch(err => {
+      if (err instanceof VaultHttpError && err.status === 404) return this.api('POST', '/api/accounts/prelogin', null, body)
+      throw err
+    })
+    const kdf = Number(r?.kdf ?? r?.Kdf)
+    const iterations = Number(r?.kdfIterations ?? r?.KdfIterations)
+    if (!Number.isInteger(kdf) || !Number.isInteger(iterations)) throw new Error('prelogin answer not understood')
+    return { kdf, iterations, memory: r?.kdfMemory ?? r?.KdfMemory ?? null, parallelism: r?.kdfParallelism ?? r?.KdfParallelism ?? null }
+  }
+
   /**
-   * Password grant against /identity/connect/token. Used only during owner
-   * bootstrap (before TOTP exists); everyday sign-in goes through the CLI.
+   * Password grant against /identity/connect/token, with the authenticator code
+   * when the account has two-step login. Used by owner bootstrap and by the fast
+   * sign-in path; `deviceName` is what the vault's device list shows.
    */
-  async passwordLogin(email: string, hash: string, totp?: string): Promise<IdentityToken> {
+  async passwordLogin(email: string, hash: string, totp?: string, deviceName = 'hyperprox-bootstrap'): Promise<IdentityToken> {
     const form = new URLSearchParams({
       grant_type: 'password',
       username: normalizeEmail(email),
@@ -299,18 +376,33 @@ export class VaultwardenApi {
       client_id: 'cli',
       device_type: DEVICE_TYPE_LINUX_CLI,
       device_identifier: crypto.randomUUID(),
-      device_name: 'hyperprox-bootstrap',
+      device_name: deviceName,
     })
     if (totp) { form.set('two_factor_provider', '0'); form.set('two_factor_token', totp) }
+    return this.token(form)
+  }
+
+  /** Refresh-token grant: a new access token for a session that is still signed in. */
+  async refreshLogin(refreshToken: string): Promise<IdentityToken> {
+    return this.token(new URLSearchParams({ grant_type: 'refresh_token', client_id: 'cli', refresh_token: refreshToken }))
+  }
+
+  private async token(form: URLSearchParams): Promise<IdentityToken> {
     const res = await vaultRequest(`${this.baseUrl}/identity/connect/token`, {
       method: 'POST',
-      headers: { 'content-type': 'application/x-www-form-urlencoded', 'device-type': DEVICE_TYPE_LINUX_CLI },
+      headers: { 'content-type': 'application/x-www-form-urlencoded', 'device-type': DEVICE_TYPE_LINUX_CLI, ...CLIENT_HEADERS },
       body: form.toString(),
       ca: this.ca,
     })
     const data = parseBody(res.text)
     if (res.status !== 200) throw new VaultHttpError(res.status, vaultMessage(data, `identity token → ${res.status}`), data)
-    return { accessToken: data.access_token, key: data.Key ?? data.key, privateKey: data.PrivateKey ?? data.privateKey ?? undefined }
+    return {
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token ?? undefined,
+      expiresIn: Number(data.expires_in) || undefined,
+      key: data.Key ?? data.key,
+      privateKey: data.PrivateKey ?? data.privateKey ?? undefined,
+    }
   }
 
   async api(method: string, path: string, accessToken: string | null, body?: unknown): Promise<any> {
@@ -321,6 +413,7 @@ export class VaultwardenApi {
         ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
         accept: 'application/json',
         'device-type': DEVICE_TYPE_LINUX_CLI,
+        ...CLIENT_HEADERS,
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
       ca: this.ca,
