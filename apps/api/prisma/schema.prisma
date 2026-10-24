@@ -137,3 +137,45 @@ model TerminalLayout {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
+
+// --- Updates -----------------------------------------------------------------
+// One row per run of the Updates feature (lib/updates). Status and action are
+// strings, matching the shared Updates* types in @hyperprox/types.
+
+model UpdateJob {
+  id          String       @id @default(cuid())
+  trigger     String       // manual | schedule | dry-run
+  status      String       // planned | awaiting-confirm | running | paused | failed | done | cancelled
+  pauseReason String?
+  plan        Json
+  report      Json?
+  startedAt   DateTime     @default(now())
+  finishedAt  DateTime?
+  steps       UpdateStep[]
+
+  @@index([startedAt])
+}
+
+model UpdateStep {
+  id        String    @id @default(cuid())
+  jobId     String
+  job       UpdateJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  seq       Int
+  target    String    // node name or vmid
+  action    String    // preflight | refresh | snapshot | apt | docker | check | ceph | node-upgrade | node-reboot | kernel-cleanup | self
+  status    String    // pending | running | ok | failed | skipped
+  detail    String?
+  reason    String?
+  output    String?   // tail of captured output
+  startedAt DateTime?
+  endedAt   DateTime?
+
+  @@index([jobId, seq])
+}
+
+// At most one row, id "updates": the job that currently holds the one-job-at-a-time lock.
+model UpdateLock {
+  id        String   @id
+  jobId     String
+  createdAt DateTime @default(now())
+}
