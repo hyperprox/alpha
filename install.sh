@@ -572,8 +572,9 @@ PROXMOX_TOKEN_SECRET=
 PROXMOX_PUBLIC_URL=
 
 # ── Frontend public URLs ──────────────────────────────────────────────────────
-NEXT_PUBLIC_API_URL=http://${HOST_IP}:${API_PORT}
-NEXT_PUBLIC_WS_URL=ws://${HOST_IP}:${API_PORT}
+# Everything is served through nginx on https://${HOST_IP}/ (see config/nginx).
+NEXT_PUBLIC_API_URL=https://${HOST_IP}/api
+NEXT_PUBLIC_WS_URL=wss://${HOST_IP}/ws
 
 # ── Cluster identity ──────────────────────────────────────────────────────────
 # Display name shown in the sidebar
@@ -827,46 +828,29 @@ EOF
   # and the same crash loop with a different exception.
   chown 101:101 "${HYPERPROX_DIR}/config/pve-exporter/pve.yml"
   chmod 640 "${HYPERPROX_DIR}/config/pve-exporter/pve.yml"
-
-  # Nginx config — always overwrite to ensure correct proxy config is in place
-  mkdir -p "${HYPERPROX_DIR}/config/nginx"
-  cat > "${HYPERPROX_DIR}/config/nginx/nginx.conf" <<'EOF'
-events { worker_connections 1024; }
-
-http {
-  server {
-    listen 80;
-    server_name _;
-
-    location / {
-      proxy_pass http://host.docker.internal:3000;
-      proxy_http_version 1.1;
-      proxy_set_header Upgrade $http_upgrade;
-      proxy_set_header Connection 'upgrade';
-      proxy_set_header Host $host;
-      proxy_set_header X-Real-IP $remote_addr;
-      proxy_cache_bypass $http_upgrade;
-    }
-
-    location /api/ {
-      proxy_pass http://host.docker.internal:3002;
-      proxy_http_version 1.1;
-      proxy_read_timeout 180s;  # vault sign-in plus first migration can take ~30 s
-      proxy_set_header Upgrade $http_upgrade;
-      proxy_set_header Connection 'upgrade';
-      proxy_set_header Host $host;
-      proxy_set_header X-Real-IP $remote_addr;
-    }
-
-    location /setup/ {
-      proxy_pass http://host.docker.internal:3001;
-      proxy_http_version 1.1;
-      proxy_set_header Host $host;
-    }
-  }
 }
-EOF
-  ok "Nginx config written"
+
+# ── TLS for the front door ────────────────────────────────────────────────────
+# nginx serves HyperProx on https://<host>/ with certs/cert.pem + certs/key.pem. Supply your own (full chain
+# in cert.pem) and they are used as they are; otherwise a self-signed one is made here, once, and kept.
+configure_tls() {
+  step "Configuring HTTPS"
+  local dir="${HYPERPROX_DIR}/certs" host_ip
+  mkdir -p "${dir}"; chmod 755 "${dir}"
+  if [[ -s "${dir}/cert.pem" && -s "${dir}/key.pem" ]]; then
+    ok "Using the certificate in ${dir}"
+  else
+    host_ip="$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+' || hostname -I | awk '{print $1}')"
+    local san="DNS:$(hostname),DNS:localhost,IP:127.0.0.1"
+    [[ -n "${host_ip}" ]] && san="IP:${host_ip},${san}"
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 3650 \
+      -subj "/CN=$(hostname)" -addext "subjectAltName=${san}" \
+      -keyout "${dir}/key.pem" -out "${dir}/cert.pem" >>"${LOG_FILE}" 2>&1 \
+      || die "Could not generate the HTTPS certificate (see ${LOG_FILE})"
+    ok "Generated a self-signed certificate (${san})"
+    info "Browsers will warn once. To use your own, replace ${dir}/cert.pem and key.pem, then: docker restart hyperprox-nginx"
+  fi
+  chmod 644 "${dir}/cert.pem"; chmod 600 "${dir}/key.pem"
 }
 
 # ── Systemd Services ──────────────────────────────────────────────────────────
@@ -887,6 +871,8 @@ Type=simple
 User=root
 WorkingDirectory=${HYPERPROX_DIR}/apps/api
 EnvironmentFile=${HYPERPROX_DIR}/.env
+# Reached through nginx on loopback; takes effect once the API reads API_BIND (it binds every interface now).
+Environment=API_BIND=127.0.0.1
 TimeoutStartSec=120
 ExecStartPre=${HYPERPROX_DIR}/bin/wait-for-vault
 ExecStart=$(which node) dist/index.js
@@ -911,7 +897,8 @@ User=root
 WorkingDirectory=${HYPERPROX_DIR}/apps/frontend/.next/standalone/apps/frontend
 EnvironmentFile=${HYPERPROX_DIR}/.env
 Environment=PORT=${FRONTEND_PORT}
-Environment=HOSTNAME=0.0.0.0
+# Loopback only: browsers reach the frontend through nginx on https://<host>/.
+Environment=HOSTNAME=127.0.0.1
 ExecStart=$(which node) server.js
 Restart=always
 RestartSec=5
@@ -936,7 +923,8 @@ User=root
 WorkingDirectory=${HYPERPROX_DIR}/apps/setup
 EnvironmentFile=${HYPERPROX_DIR}/.env
 Environment=PORT=${SETUP_PORT}
-Environment=HOSTNAME=0.0.0.0
+# Loopback only: the wizard is served through nginx at https://<host>/setup.
+Environment=SETUP_BIND=127.0.0.1
 ExecStart=$(which node) setup.js
 Restart=on-failure
 RestartSec=5
@@ -1050,8 +1038,9 @@ print_summary() {
   # The wizard only answers requests carrying the setup key; the link carries it. Read from .env so a
   # re-run that kept an existing .env prints the key that is actually in force.
   SETUP_SECRET="$(grep -oP '^SETUP_SECRET=\K.*' "${ENV_FILE}" 2>/dev/null || true)"
-  echo -e "  ${C_CYAN}${C_BOLD}  http://${HOST_IP}:${SETUP_PORT}/?k=${SETUP_SECRET}${C_RESET}"
+  echo -e "  ${C_CYAN}${C_BOLD}  https://${HOST_IP}/setup?k=${SETUP_SECRET}${C_RESET}"
   echo -e "  ${C_DIM}Keep this link private - it is the key to the setup wizard.${C_RESET}"
+  echo -e "  ${C_DIM}The certificate is self-signed unless you supplied one, so the browser warns once.${C_RESET}"
   echo ""
   echo -e "  ${C_DIM}The wizard will guide you through:${C_RESET}"
   echo -e "  ${C_DIM}  • Connecting your Proxmox cluster${C_RESET}"
@@ -1059,7 +1048,7 @@ print_summary() {
   echo -e "  ${C_DIM}  • Configuring DNS and proxy providers${C_RESET}"
   echo ""
   echo -e "  ${C_BOLD}Then create the owner account${C_RESET}"
-  echo -e "  ${C_DIM}  HyperProx has no password of its own. After setup, open http://${HOST_IP}:3000/login to${C_RESET}"
+  echo -e "  ${C_DIM}  HyperProx has no password of its own. After setup, open https://${HOST_IP}/login to${C_RESET}"
   echo -e "  ${C_DIM}  create the owner vault account (email, master password, and a required 2FA code).${C_RESET}"
   echo -e "  ${C_DIM}  Check on it any time with: hyperprox status    Lock it now with: hyperprox lock${C_RESET}"
   echo -e "  ${C_DIM}  Details: docs/security.md. The vault admin token is VAULT_ADMIN_TOKEN in ${ENV_FILE}.${C_RESET}"
@@ -1091,6 +1080,7 @@ main() {
   build_app
   configure_compose
   write_monitoring_config
+  configure_tls
   write_systemd_services
   install_cli
   start_services
