@@ -79,7 +79,7 @@ expect "https: the TLS handshake completes"                             "SSL con
 expect "https: /api goes to the API"                       "api /api/health proto=https"             "${S}/api/health"
 expect "https: the wizard page goes to the setup server"   "setup /setup?k=abc proto=https"          "${S}/setup?k=abc"
 expect "https: the wizard API goes to the setup server, not the API" "setup /api/setup/state"        "${S}/api/setup/state"
-expect "https: grafana, prefix stripped"                   "grafana /d/x"                            "${S}/grafana/d/x"
+expect "https: grafana, sub-path passed through whole"     "grafana /grafana/d/x"                            "${S}/grafana/d/x"
 expect "https: prometheus from loopback is allowed"        "prometheus /-/healthy"                   "${S}/prometheus/-/healthy"
 expect "wss: live updates upgrade on /ws"                  "X-Stub: api"                             --http1.1 -D - -o /dev/null \
   -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' "${S}/ws"

@@ -668,7 +668,7 @@ function stepDone(){
     <div class="card-desc" style="margin-bottom:1rem">One step left: <strong>create the owner vault account</strong>. Open HyperProx and you will land on the sign-in page, which offers to create it. Choose an email and a master password, then scan the QR code with an authenticator app.</div>
     <div class="card-desc" style="margin-bottom:1.5rem">Two-factor authentication is required for the owner. The master password unlocks HyperProx and is never stored, so keep it safe: this release has no password recovery.</div>
     <div class="link-row"><span style="color:var(--muted)">Create owner</span><span class="link-url">\${APP}/login</span></div>
-    <div class="link-row"><span style="color:var(--muted)">Grafana</span><span class="link-url">http://\${ip}:3003</span></div>
+    <div class="link-row"><span style="color:var(--muted)">Grafana</span><span class="link-url">\${location.port === '3001' ? 'http://' + ip + ':3003' : APP + '/grafana/'}</span></div>
     <div class="link-row"><span style="color:var(--muted)">Prometheus</span><span class="link-url">http://\${ip}:9090</span></div>
     <div style="margin-top:1.5rem">
       <a href="\${APP}/login" style="display:block">

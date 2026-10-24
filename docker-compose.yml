@@ -121,6 +121,11 @@ services:
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
       - GF_SECURITY_ALLOW_EMBEDDING=true
       - GF_SECURITY_COOKIE_SAMESITE=disabled
+      # The Monitoring page embeds Grafana, and an http iframe on the https app is blocked as mixed content.
+      # So the installer serves it through nginx at https://<host>/grafana/ by setting these in .env. Unset,
+      # Grafana answers at the root of :3003 exactly as before (these defaults are Grafana's own).
+      - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-%(protocol)s://%(domain)s:%(http_port)s/}
+      - GF_SERVER_SERVE_FROM_SUB_PATH=${GRAFANA_SERVE_FROM_SUB_PATH:-false}
     volumes:
       - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana_data:/var/lib/grafana

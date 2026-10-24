@@ -55,8 +55,10 @@ location /ws {
     proxy_send_timeout  3600s;
 }
 
+# Grafana serves from the /grafana/ sub-path itself (GF_SERVER_SERVE_FROM_SUB_PATH), so the path is passed
+# through whole rather than stripped.
 location /grafana/ {
-    proxy_pass         http://grafana/;
+    proxy_pass         http://grafana;
     proxy_http_version 1.1;
     proxy_set_header   Connection        $connection_upgrade;
     proxy_set_header   Upgrade           $http_upgrade;
