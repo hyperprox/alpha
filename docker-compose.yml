@@ -1,6 +1,6 @@
 # HyperProx Docker Compose Stack
-# Infrastructure services only ��� api/frontend/setup run as systemd units
-# Do not add 'version:' ��� deprecated in Compose v2
+# Infrastructure services only — api/frontend/setup run as systemd units
+# Do not add 'version:' — deprecated in Compose v2
 
 services:
   postgres:
