@@ -1,0 +1,61 @@
+# =============================================================================
+#  HyperProx — Updates policy (example)
+#
+#  Copy to config/updates.yaml and edit. That file is git-ignored: everything
+#  cluster-specific lives there, never in code. See docs/updates.md.
+#
+#  Unknown keys fail the load, with the path of the bad key, so a typo cannot
+#  silently switch off a safeguard. Every key is optional; what is left out
+#  takes the SAFE default shown in the comment beside it.
+#
+#  Without a config/updates.yaml at all, the Updates page still shows what is
+#  pending and dry runs work, but a real run is refused.
+# =============================================================================
+
+schedule:
+  enabled: false               # default false. Turn on once a manual run has gone well.
+  cron: "0 8 * * 3"            # minute hour day month weekday, local time. Wednesday 08:00.
+  window_hours: 4              # default 4. Reboots still waiting (viewers) after this are skipped, not forced.
+
+quiet:
+  plex_streams_block_reboots: true   # default true. Needs the Plex plug-in; without it the check passes.
+
+ceph:
+  accepted_warnings:           # default none. Health codes that do not stop a run; anything else does.
+    - POOL_NO_REDUNDANCY
+
+nodes:
+  # Defaults for every node. Built-in default: { upgrade: upgrade, reboot: manual }.
+  default:   { upgrade: dist-upgrade, reboot: auto }
+
+  # A node that hosts something you are using: updated last, rebooted by a person.
+  node-a:    { reboot: manual, order: last }
+
+  # A node with a pinned kernel (for a GPU driver, say). `upgrade` here means
+  # apt-get upgrade ONLY: HyperProx cannot give this node a dist-upgrade. The
+  # holds and pin are checked before installing and again after; if any is
+  # missing the run stops. It never repairs them.
+  gpu-node:
+    upgrade: upgrade
+    reboot: manual
+    require_holds: [proxmox-default-kernel, proxmox-kernel-7.0]
+    require_pin: 7.0.1-1-pve
+
+guests:
+  # Built-in default: { apt: true, docker: none, reboot: never }.
+  default:   { apt: true, docker: none, reboot: if-required }   # reboot applies to VMs only
+  exclude:   [110, 147]        # by VMID: guests HyperProx must never touch
+  "205":     { docker: auto, compose_dirs: [/opt/stack] }        # compose pull + up -d, then all healthy
+  "225":     { docker: manual }                                  # report new images, never pull
+  "301":     { check: "http://127.0.0.1:8080/health" }           # fetched from inside the guest after updating
+
+batch_size: 3                  # default 3. Guests updated at the same time.
+min_root_free_mb: 1024         # default 1024. Preflight stops when a node's / has less free.
+
+self:
+  node_order: last             # HyperProx's own node and guest go after everything else
+  # vmid: 101                  # HyperProx's own container. Left out: the container whose name
+                               # matches this host's hostname, when exactly one does.
+
+notify:
+  # webhook_url: https://chat.example.com/hooks/updates   # gets a one-line summary ({"content": ...})
