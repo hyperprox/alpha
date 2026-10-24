@@ -164,7 +164,11 @@ export function execInGuest(opts: {
 }): Promise<ExecResult> {
   // A delimiter the payload cannot contain, so the heredoc always terminates.
   const tag  = `HPEOF_${Math.random().toString(36).slice(2, 10).toUpperCase()}`
-  const tmp  = `/tmp/hyperprox-${opts.vmid}-${Date.now()}.sh`
+  // Unique per call, on the node and in the guest: two scripts for the same guest at once
+  // (an inventory read during an install, say) must not overwrite each other.
+  const id   = `${opts.vmid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const tmp  = `/tmp/hyperprox-${id}.sh`
+  const inGuest = `/tmp/hyperprox-run-${id}.sh`
 
   const command = [
     `set -e`,
@@ -173,11 +177,12 @@ export function execInGuest(opts: {
     tag,
     // Nothing here assumes the guest has networking, ssh, or even a shell on
     // PATH beyond bash — pct works on a container that can do none of that.
-    `pct push ${opts.vmid} ${tmp} /tmp/hyperprox-install.sh --perms 755`,
+    `pct push ${opts.vmid} ${tmp} ${inGuest} --perms 755`,
     `rm -f ${tmp}`,
-    `pct exec ${opts.vmid} -- bash /tmp/hyperprox-install.sh`,
+    `set +e`,
+    `pct exec ${opts.vmid} -- bash ${inGuest}`,
     `_rc=$?`,
-    `pct exec ${opts.vmid} -- rm -f /tmp/hyperprox-install.sh || true`,
+    `pct exec ${opts.vmid} -- rm -f ${inGuest} || true`,
     `exit $_rc`,
   ].join('\n')
 
