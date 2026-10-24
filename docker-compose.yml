@@ -1,6 +1,9 @@
 # HyperProx Docker Compose Stack
-# Infrastructure services only ��� api/frontend/setup run as systemd units
-# Do not add 'version:' ��� deprecated in Compose v2
+# Infrastructure services only — api/frontend/setup run as systemd units
+# Do not add 'version:' — deprecated in Compose v2
+#
+# The one compose file: install.sh, deploy.sh and the setup wizard all use this file as it is. Anything
+# per-install comes from .env, including COMPOSE_PROFILES (monitoring, npm), which compose reads itself.
 
 services:
   postgres:
@@ -118,6 +121,11 @@ services:
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
       - GF_SECURITY_ALLOW_EMBEDDING=true
       - GF_SECURITY_COOKIE_SAMESITE=disabled
+      # The Monitoring page embeds Grafana, and an http iframe on the https app is blocked as mixed content.
+      # So the installer serves it through nginx at https://<host>/grafana/ by setting these in .env. Unset,
+      # Grafana answers at the root of :3003 exactly as before (these defaults are Grafana's own).
+      - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-%(protocol)s://%(domain)s:%(http_port)s/}
+      - GF_SERVER_SERVE_FROM_SUB_PATH=${GRAFANA_SERVE_FROM_SUB_PATH:-false}
     volumes:
       - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana_data:/var/lib/grafana
@@ -138,12 +146,14 @@ services:
     networks:
       - hyperprox-net
 
+  # The front door: https on 443 (http on 80 redirects). Host networking, so the API, frontend and setup
+  # wizard - systemd services on the host - are reached on loopback and can stay bound to 127.0.0.1
+  # instead of every interface. It listens on 80 and 443 directly; there is no port mapping.
   nginx:
     image: nginx:alpine
     container_name: hyperprox-nginx
     restart: unless-stopped
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    network_mode: host
     volumes:
       - ./config/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       # Mounting the whole directory is deliberate: it replaces the image's
@@ -151,11 +161,8 @@ services:
       # otherwise load instead of ours — serving /usr/share/nginx/html and
       # 404ing every route.
       - ./config/nginx/conf.d:/etc/nginx/conf.d:ro
-    ports:
-      - "80:80"
-      - "443:443"
-    networks:
-      - hyperprox-net
+      # cert.pem + key.pem: self-signed by the installer unless you supply your own (gitignored, *.pem).
+      - ./certs:/etc/nginx/certs:ro
 
   nginx-proxy-manager:
     image: jc21/nginx-proxy-manager:latest

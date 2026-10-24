@@ -18,7 +18,8 @@ const PORT     = parseInt(process.env.SETUP_PORT || '3001', 10)
 const ENV_PATH = path.resolve(process.env.ENV_FILE_PATH || '/opt/hyperprox/.env')
 
 // ── Bail if already set up ────────────────────────────────────────────────────
-if (process.env.SETUP_COMPLETE === 'true') {
+// Only when run as the service: tests load this file for its decision functions.
+if (require.main === module && process.env.SETUP_COMPLETE === 'true') {
   console.log('[hyperprox-setup] Already complete — exiting.')
   process.exit(0)
 }
@@ -143,11 +144,59 @@ function pveCall(host, port, method, path, form, auth) {
 }
 
 /**
- * Connect with the same login as the Proxmox web interface. Signs in once, (re)creates HyperProx's own
- * API token `<user>!hyperprox-<host>-<rand>` with the user's privileges, tests it, and returns it. The password and
- * the session ticket are used for these calls only and never stored.
+ * The one token name this install uses. Deterministic, so re-running the connect step finds the token it
+ * made last time instead of minting another `hyperprox-<host>-<random>` on every attempt. Per container
+ * hostname, so a second HyperProx on the same cluster (a test install, a rebuild under another name) never
+ * touches the key the first one is running on.
  */
-async function connectWithLogin(host, port, username, password, otp) {
+function tokenName(hostname = require('os').hostname()) {
+  const h = String(hostname).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 20) || 'install'
+  return `hyperprox-${h}`
+}
+
+/**
+ * Leave HyperProx holding a working token while changing as little on the cluster as possible:
+ *   reuse    - the token HyperProx already holds for this user still authenticates; nothing is changed
+ *   create   - no token called `name` exists yet
+ *   recreate - `name` exists but HyperProx no longer holds a working secret for it (the secret is only ever
+ *              shown once): delete that one token and make it again. It is HyperProx's own, by name.
+ * No other token is ever deleted. `pve` is the cluster as seen through the user's session:
+ * { listTokens(), createToken(name), deleteToken(name), tokenWorks(fullTokenId, secret) }.
+ * `held` is what .env records for this same host: { tokenId: 'user@realm!name', secret }, or null.
+ */
+async function ensureToken(pve, { userid, name, held }) {
+  if (held && held.tokenId && held.secret && held.tokenId.startsWith(`${userid}!`)
+      && await pve.tokenWorks(held.tokenId, held.secret)) {
+    return { action: 'reuse', tokenId: held.tokenId, tokenSecret: held.secret }
+  }
+  const existing = (await pve.listTokens()) || []
+  let action = 'create'
+  if (existing.some(t => t && t.tokenid === name)) {
+    await pve.deleteToken(name)
+    action = 'recreate'
+  }
+  const tok = await pve.createToken(name)
+  if (!tok || !tok.value) throw new Error('Proxmox created the token but returned no secret')
+  return { action, tokenId: tok['full-tokenid'] || `${userid}!${name}`, tokenSecret: tok.value }
+}
+
+/** True if the token authenticates; false if Proxmox refuses it. Any other failure is thrown. */
+async function tokenWorks(host, port, tokenId, tokenSecret) {
+  try {
+    await pveRequest(host, port, tokenId, tokenSecret, '/version')
+    return true
+  } catch (err) {
+    if (/^PVE (401|403)\b/.test(err.message)) return false
+    throw err
+  }
+}
+
+/**
+ * Connect with the same login as the Proxmox web interface. Signs in once, makes sure HyperProx holds its
+ * own API token `<user>!hyperprox-<host>` with the user's privileges (see ensureToken), tests it, and
+ * returns it. The password and the session ticket are used for these calls only and never stored.
+ */
+async function connectWithLogin(host, port, username, password, otp, held = null) {
   const userid = username.includes('@') ? username : `${username}@pam`
   let t = await pveCall(host, port, 'POST', '/access/ticket', { username: userid, password })
   if (t && t.NeedTFA) {
@@ -155,16 +204,25 @@ async function connectWithLogin(host, port, username, password, otp) {
     t = await pveCall(host, port, 'POST', '/access/ticket', { username: userid, 'tfa-challenge': t.ticket, password: `totp:${otp}` })
   }
   const auth = { ticket: t.ticket, csrf: t.CSRFPreventionToken }
-  // A name of its own per install, and nothing deleted: a second HyperProx on the same cluster (a test
-  // install, a rebuild) must never revoke the key the first one is running on.
-  const host_ = require('os').hostname().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 20) || 'install'
-  const name = `hyperprox-${host_}-${crypto.randomBytes(2).toString('hex')}`
-  const tokenPath = `/access/users/${encodeURIComponent(userid)}/token/${name}`
-  const tok = await pveCall(host, port, 'POST', tokenPath, { privsep: '0', comment: `HyperProx on ${require('os').hostname()} (created by the setup wizard)` }, auth)
-  const tokenId = tok['full-tokenid'] || `${userid}!${name}`
-  const tokenSecret = tok.value
+  const tokens = `/access/users/${encodeURIComponent(userid)}/token`
+  const pve = {
+    listTokens:  () => pveCall(host, port, 'GET', tokens, null, auth),
+    deleteToken: (name) => pveCall(host, port, 'DELETE', `${tokens}/${encodeURIComponent(name)}`, null, auth),
+    createToken: (name) => pveCall(host, port, 'POST', `${tokens}/${encodeURIComponent(name)}`,
+      { privsep: '0', comment: `HyperProx on ${require('os').hostname()} (created by the setup wizard)` }, auth),
+    tokenWorks:  (id, secret) => tokenWorks(host, port, id, secret),
+  }
+  const { tokenId, tokenSecret, action } = await ensureToken(pve, { userid, name: tokenName(), held })
+  console.log(`[setup] Proxmox token ${tokenId}: ${action}`)
   const cluster = await testProxmox(host, port, tokenId, tokenSecret)
   return { tokenId, tokenSecret, cluster }
+}
+
+/** The token .env already records for this Proxmox address, if any - the one ensureToken may reuse. */
+function heldToken(env, host, port) {
+  if (!env.PROXMOX_HOST || env.PROXMOX_HOST !== host || String(env.PROXMOX_PORT || '8006') !== String(port)) return null
+  if (!env.PROXMOX_USER || !env.PROXMOX_TOKEN_ID || !env.PROXMOX_TOKEN_SECRET) return null
+  return { tokenId: `${env.PROXMOX_USER}!${env.PROXMOX_TOKEN_ID}`, secret: env.PROXMOX_TOKEN_SECRET }
 }
 
 async function testProxmox(host, port, tokenId, tokenSecret) {
@@ -233,6 +291,27 @@ async function testProxmox(host, port, tokenId, tokenSecret) {
     ceph,
     cephMonNode,
   }
+}
+
+/**
+ * The step a (re)loaded wizard opens on, decided by what .env already records rather than by the tab:
+ *   0 Proxmox    - no saved connection, or the saved token no longer authenticates
+ *   1 Cluster    - connected; the service scan (step 2) is not persisted, so it reruns from here
+ *   3 Providers  - the install choices from step 2 are saved
+ * There is no resuming into step 4: once setup completes, this server exits for good.
+ */
+function resumeStep(env, proxmoxOk) {
+  if (!env.PROXMOX_HOST || !env.PROXMOX_TOKEN_ID || !env.PROXMOX_TOKEN_SECRET || !proxmoxOk) return 0
+  if (!('INSTALL_PROMETHEUS' in env)) return 1
+  return 3
+}
+
+/** The compose profiles the step-2 choices stand for (written to .env as COMPOSE_PROFILES). */
+function composeProfiles(env) {
+  const profiles = []
+  if (env.INSTALL_PROMETHEUS === 'true' || env.INSTALL_GRAFANA === 'true') profiles.push('monitoring')
+  if (env.INSTALL_NPM === 'true') profiles.push('npm')
+  return profiles.join(',')
 }
 
 // =============================================================================
@@ -450,7 +529,7 @@ async function api(method, path, body){
     document.body.innerHTML = '<div style="max-width:560px;margin:12vh auto;font:15px/1.6 system-ui;color:#e6edf3;background:#0a111c;padding:28px;border:1px solid #2fd6e8;border-radius:10px">' +
       '<h2 style="margin-top:0;color:#2fd6e8">Open the setup link from the installer</h2>' +
       '<p>For safety, the setup wizard only accepts requests that carry the setup key. Use the link the installer printed &mdash; it ends in <code>?k=&hellip;</code>.</p>' +
-      '<p>Lost it? On the HyperProx host run:<br><code>grep SETUP_SECRET /opt/hyperprox/.env</code><br>and open <code>http://&lt;host&gt;:3001/?k=&lt;that value&gt;</code>.</p></div>'
+      '<p>Lost it? On the HyperProx host run:<br><code>grep SETUP_SECRET /opt/hyperprox/.env</code><br>and open <code>https://&lt;host&gt;/setup?k=&lt;that value&gt;</code>.</p></div>'
     throw new Error('setup key required')
   }
   return r.json()
@@ -459,7 +538,7 @@ async function api(method, path, body){
 // ── Step 0: Proxmox ───────────────────────────────────────────────────────────
 function stepProxmox(){
   return \`<div class="card">
-    <div class="eyebrow">Step 1 of 6</div>
+    <div class="eyebrow">Step 1 of 5</div>
     <div class="card-title">Connect your Proxmox</div>
     <div class="card-desc">Sign in with the same login you use for the Proxmox web interface. HyperProx creates its own access key from it — your password is used once and never stored.</div>
     <div class="field"><label>Proxmox address</label><input id="px-host" placeholder="192.168.1.100" value="\${S.proxmox.host}"><div class="field-hint">The address you open the Proxmox web interface with, without https:// or :8006.</div></div>
@@ -565,6 +644,7 @@ function stepProviders(){
       </div>
     </div>
     \${gd.enabled ? \`
+    \${gd.saved ? '<div class="field-hint" style="margin-bottom:.75rem">A key is already saved. Leave these empty to keep it.</div>' : ''}
     <div class="field"><label>API Key</label><input id="gd-key" placeholder="dh3jdK..." value="\${gd.key}"></div>
     <div class="field"><label>API Secret</label><input id="gd-sec" type="password" placeholder="QzX7s..." value="\${gd.secret}"></div>\` : ''}
     <div class="err" id="prov-err"></div>
@@ -576,6 +656,10 @@ function stepProviders(){
 }
 
 // ── Step 4: Done ──────────────────────────────────────────────────────────────
+// Served through nginx (https://<host>/setup) the app is on this same origin. An older install that
+// still opens the wizard on :3001 has the app on :3000.
+const APP = location.port === '3001' ? 'http://' + location.hostname + ':3000' : location.origin
+
 function stepDone(){
   const ip  = location.hostname
   return \`<div class="card" style="text-align:center">
@@ -583,11 +667,11 @@ function stepDone(){
     <div class="card-title" style="margin-bottom:.5rem">Cluster connected</div>
     <div class="card-desc" style="margin-bottom:1rem">One step left: <strong>create the owner vault account</strong>. Open HyperProx and you will land on the sign-in page, which offers to create it. Choose an email and a master password, then scan the QR code with an authenticator app.</div>
     <div class="card-desc" style="margin-bottom:1.5rem">Two-factor authentication is required for the owner. The master password unlocks HyperProx and is never stored, so keep it safe: this release has no password recovery.</div>
-    <div class="link-row"><span style="color:var(--muted)">Create owner</span><span class="link-url">http://\${ip}:3000/login</span></div>
-    <div class="link-row"><span style="color:var(--muted)">Grafana</span><span class="link-url">http://\${ip}:3003</span></div>
+    <div class="link-row"><span style="color:var(--muted)">Create owner</span><span class="link-url">\${APP}/login</span></div>
+    <div class="link-row"><span style="color:var(--muted)">Grafana</span><span class="link-url">\${location.port === '3001' ? 'http://' + ip + ':3003' : APP + '/grafana/'}</span></div>
     <div class="link-row"><span style="color:var(--muted)">Prometheus</span><span class="link-url">http://\${ip}:9090</span></div>
     <div style="margin-top:1.5rem">
-      <a href="http://\${ip}:3000/login" style="display:block">
+      <a href="\${APP}/login" style="display:block">
         <button class="btn btn-primary" style="width:100%;font-size:16px">Create the owner account →</button>
       </a>
     </div>
@@ -676,7 +760,8 @@ function bind(){
     if(gd.enabled){
       gd.key    = (document.getElementById('gd-key')  || {}).value || gd.key
       gd.secret = (document.getElementById('gd-sec')  || {}).value || gd.secret
-      if(!gd.key || !gd.secret){ setErr('prov-err','GoDaddy API Key and Secret are required.'); return }
+      // A key saved before a reload is kept unless a new one is typed; it is never sent back to the page.
+      if((!gd.key || !gd.secret) && !gd.saved){ setErr('prov-err','GoDaddy API Key and Secret are required.'); return }
     }
     btnProv.disabled = true
     btnProv.innerHTML = '<span class="spinner"></span>Finishing...'
@@ -704,7 +789,26 @@ function toggleProv(key){
   render()
 }
 
-render()
+// Resume from what the server already knows: a reload, or the link opened again tomorrow, lands on the
+// step the setup actually reached instead of step 1.
+async function init(){
+  document.getElementById('wizard').innerHTML = '<div class="card"><div class="card-title">Loading...</div></div>'
+  let st = null
+  try { st = await api('GET','/api/setup/state') } catch (e) {
+    if (String(e && e.message).includes('setup key')) return   // the key page is already showing
+  }
+  if (st && st.ok) {
+    Object.assign(S.proxmox, st.proxmox)
+    S.cluster = st.cluster
+    if (st.installs) S.installs = st.installs
+    if (st.providers && st.providers.godaddy && st.providers.godaddy.enabled) Object.assign(S.providers.godaddy, { enabled: true, saved: true })
+    cur = st.step
+  }
+  render()
+  if (st && st.error) setErr('px-err', st.error)
+}
+
+init()
 </script>
 </body>
 </html>`
@@ -788,6 +892,28 @@ const server = http.createServer(async (req, res) => {
   const route = url.replace('/api/setup/', '')
 
   try {
+    // ── state: what the wizard already knows, so a reload resumes instead of starting over ──
+    // Secrets never leave: the token secret and provider keys are reported as present or not.
+    if (req.method === 'GET' && route === 'state') {
+      const env = readEnv()
+      const fullTokenId = env.PROXMOX_USER && env.PROXMOX_TOKEN_ID ? `${env.PROXMOX_USER}!${env.PROXMOX_TOKEN_ID}` : ''
+      let cluster = null, error = null
+      if (env.PROXMOX_HOST && fullTokenId && env.PROXMOX_TOKEN_SECRET) {
+        try { cluster = await testProxmox(env.PROXMOX_HOST, env.PROXMOX_PORT || '8006', fullTokenId, env.PROXMOX_TOKEN_SECRET) }
+        catch { error = `The saved connection to ${env.PROXMOX_HOST} no longer works. Sign in again to renew HyperProx's access key.` }
+      }
+      const step = resumeStep(env, Boolean(cluster))
+      const installs = 'INSTALL_PROMETHEUS' in env
+        ? { npm: env.INSTALL_NPM === 'true', grafana: env.INSTALL_GRAFANA === 'true', prometheus: env.INSTALL_PROMETHEUS === 'true' }
+        : null
+      return sendJson(res, 200, {
+        ok: true, step, cluster, error, installs,
+        proxmox: { host: env.PROXMOX_HOST || '', port: env.PROXMOX_PORT || '8006', username: env.PROXMOX_USER || 'root@pam',
+                   tokenId: fullTokenId, publicUrl: env.PROXMOX_PUBLIC_URL || '' },
+        providers: { godaddy: { enabled: env.GODADDY_ENABLED === 'true' } },
+      })
+    }
+
     // ── test-proxmox ──────────────────────────────────────────────────────────
     if (req.method === 'POST' && route === 'test-proxmox') {
       const { host, port = '8006', tokenId, tokenSecret } = body
@@ -809,7 +935,7 @@ const server = http.createServer(async (req, res) => {
       const { host, port = '8006', username = 'root@pam', password, otp, publicUrl } = body
       if (!host || !password) return sendJson(res, 400, { error: 'The Proxmox address and password are required.' })
       try {
-        const { tokenId, tokenSecret, cluster } = await connectWithLogin(host, port, username, password, otp)
+        const { tokenId, tokenSecret, cluster } = await connectWithLogin(host, port, username, password, otp, heldToken(readEnv(), host, port))
         const [proxmoxUser, proxmoxTokenId] = tokenId.split('!')
         writeEnv({
           PROXMOX_HOST: host, PROXMOX_PORT: port, PROXMOX_USER: proxmoxUser, PROXMOX_TOKEN_ID: proxmoxTokenId,
@@ -957,7 +1083,8 @@ const server = http.createServer(async (req, res) => {
 
       // Write Prometheus node targets
       try {
-        const cluster = await testProxmox(env.PROXMOX_HOST, env.PROXMOX_PORT || '8006', env.PROXMOX_TOKEN_ID, env.PROXMOX_TOKEN_SECRET)
+        // The full `user@realm!name` id: the bare name never authenticated, so this file was never written.
+        const cluster = await testProxmox(env.PROXMOX_HOST, env.PROXMOX_PORT || '8006', `${env.PROXMOX_USER}!${env.PROXMOX_TOKEN_ID}`, env.PROXMOX_TOKEN_SECRET)
         const targets  = cluster.nodes.map(n => ({ targets: [`${n.node}:9100`], labels: { node: n.node } }))
         const dest     = '/opt/hyperprox/config/prometheus/targets/nodes.json'
         fs.writeFileSync(dest, JSON.stringify(targets, null, 2))
@@ -969,12 +1096,10 @@ const server = http.createServer(async (req, res) => {
 
       // Start optional containers then restart services and shut down
       setTimeout(() => {
-        const finalEnv = readEnv()
-        const profiles = []
-        if (finalEnv.INSTALL_PROMETHEUS === 'true') profiles.push('monitoring')
-        if (finalEnv.INSTALL_NPM === 'true') profiles.push('npm')
-        const profileFlag = profiles.length ? '--profile ' + profiles.join(' --profile ') : ''
-        const composeCmd = 'docker compose ' + profileFlag + ' up -d --remove-orphans'
+        // Recorded as COMPOSE_PROFILES in .env, which docker compose reads itself, so every later
+        // `docker compose up` (deploy, a reboot by hand) keeps the services chosen here.
+        writeEnv({ COMPOSE_PROFILES: composeProfiles(readEnv()) })
+        const composeCmd = 'docker compose up -d --remove-orphans'
         console.log('[setup] Running:', composeCmd)
         exec(composeCmd, { cwd: '/opt/hyperprox' }, (err, stdout, stderr) => {
           if (err) console.warn('[setup] docker compose error:', err.message)
@@ -998,14 +1123,22 @@ const server = http.createServer(async (req, res) => {
   }
 })
 
-setupSecret()
-server.listen(PORT, '0.0.0.0', () => {
-  const ip = Object.values(require('os').networkInterfaces())
-    .flat()
-    .find(i => i && i.family === 'IPv4' && !i.internal)
-  console.log('\n  ┌──────────────────────────────────────────────┐')
-  console.log('  │        HyperProx Setup Wizard                │')
-  console.log('  │                                              │')
-  console.log(`  │  Open → http://${(ip ? ip.address : 'localhost').padEnd(15)} :${PORT}         │`)
-  console.log('  └──────────────────────────────────────────────┘\n')
-})
+module.exports = { tokenName, ensureToken, heldToken, resumeStep, composeProfiles }
+
+if (require.main === module) {
+  setupSecret()
+  // The installer binds this to loopback and serves it through nginx at https://<host>/setup. Older installs
+  // left it on every interface, which is still the default for a unit that does not say.
+  const BIND = process.env.SETUP_BIND || '0.0.0.0'
+  server.listen(PORT, BIND, () => {
+    if (BIND === '127.0.0.1') { console.log(`[hyperprox-setup] listening on 127.0.0.1:${PORT} - open https://<host>/setup?k=<SETUP_SECRET>`); return }
+    const ip = Object.values(require('os').networkInterfaces())
+      .flat()
+      .find(i => i && i.family === 'IPv4' && !i.internal)
+    console.log('\n  ┌──────────────────────────────────────────────┐')
+    console.log('  │        HyperProx Setup Wizard                │')
+    console.log('  │                                              │')
+    console.log(`  │  Open → http://${(ip ? ip.address : 'localhost').padEnd(15)} :${PORT}         │`)
+    console.log('  └──────────────────────────────────────────────┘\n')
+  })
+}
