@@ -580,8 +580,11 @@ NEXT_PUBLIC_WS_URL=wss://${HOST_IP}/ws
 # Display name shown in the sidebar
 NEXT_PUBLIC_CLUSTER_NAME="My Cluster"
 
-# Grafana embed URL — must be reachable from the user's browser
-NEXT_PUBLIC_GRAFANA_URL=http://${HOST_IP}:3003
+# Grafana embed URL — must be reachable from the user's browser. The Monitoring page embeds it, and an
+# http iframe on the https app is blocked, so it is served on the same origin at /grafana/.
+NEXT_PUBLIC_GRAFANA_URL=/grafana
+GRAFANA_ROOT_URL=https://${HOST_IP}/grafana/
+GRAFANA_SERVE_FROM_SUB_PATH=true
 
 # Comma-separated list of node names that have a GPU (e.g. node1,node2)
 # Used to show GPU badge and violet accent on those nodes in the dashboard
