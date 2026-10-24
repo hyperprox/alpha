@@ -243,6 +243,19 @@ test('B5: a node whose boot id never changes did not reboot: step failed, flags 
   assert.equal(fake.noout, false); assert.equal(fake.maintenance.size, 0)
 })
 
+test('N1: seen up on its old boot while shutting down, then down for good: flags LEFT ON, job failed', async () => {
+  const fake = cluster()
+  fake.slowShutdownThenDeadMs = 90_000   // past the 60 s settle, so the first poll sees the old boot
+  const { runner, store } = setup(fake)
+  const job = await runner.start('run', 'schedule'); await settle(runner)
+  const j = (await store.getJob(job.id))!
+  const reboot = byAction(await store.getSteps(job.id), 'node-b', 'node-reboot')!
+  assert.equal(reboot.status, 'failed')
+  assert.match(reboot.reason!, /did not come back within 15 min.*LEFT ON/)
+  assert.equal(j.status, 'failed')
+  assert.equal(fake.noout, true); assert.ok(fake.maintenance.has('node-b'))
+})
+
 test('B5: a refused reboot command fails the step and clears the flags', async () => {
   const fake = cluster()
   fake.inject = (_w, c) => (c === 'systemctl reboot' ? { code: 1, output: 'Failed to reboot: Access denied', timedOut: false } : undefined)

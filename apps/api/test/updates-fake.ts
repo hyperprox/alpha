@@ -19,6 +19,7 @@ export interface FakeNode {
   holds: string[]
   pinned: string | null
   offlineUntil?: number      // Infinity: never comes back
+  goDownAt?: number          // still up (old boot) until then, then down for good
 }
 
 export interface FakeGuest extends GuestListing {
@@ -69,6 +70,8 @@ export class FakeCluster implements UpdatesExecutor {
   readFail = new Set<string>()
   /** A reboot command that is accepted but does nothing (the node stays up, same boot id). */
   rebootIgnored = false
+  /** A reboot that keeps the node up on its old boot for this long, then takes it down for good. */
+  slowShutdownThenDeadMs: number | null = null
   bootIds = new Map<string, number>()
   snapshots = new Map<number, { name: string; snaptime: number }[]>()
   concurrentGuests = 0
@@ -91,6 +94,11 @@ export class FakeCluster implements UpdatesExecutor {
     if (this.readFail.has(method)) throw new Error(`Proxmox GET for ${method}: HTTP 500 — simulated error answer`)
   }
   private isOnline(n: FakeNode): boolean {
+    if (n.goDownAt !== undefined && this.t >= n.goDownAt) {
+      n.goDownAt = undefined
+      n.online = false
+      n.offlineUntil = Infinity
+    }
     if (n.offlineUntil !== undefined && this.t >= n.offlineUntil) {
       n.offlineUntil = undefined
       n.online = true
@@ -170,6 +178,10 @@ export class FakeCluster implements UpdatesExecutor {
     }
     if (cmd === 'systemctl reboot') {
       if (this.rebootIgnored) return ok()
+      if (this.slowShutdownThenDeadMs !== null) {
+        n.goDownAt = this.t + this.slowShutdownThenDeadMs
+        return ok()
+      }
       n.online = false
       n.offlineUntil = this.t + this.rebootTakesMs
       return ok()

@@ -622,6 +622,9 @@ export class UpdatesRunner {
     let upButSameBoot = false
     let back = false
     while (this.exec.now() < deadline) {
+      // Only the latest poll counts: a node seen up on its old boot (still shutting down) that then goes
+      // down and stays down is "did not come back", never "up the whole time".
+      upButSameBoot = false
       try {
         const s = await this.exec.clusterStatus()
         const n = s.nodes.find(x => x.name === node)
@@ -629,7 +632,6 @@ export class UpdatesRunner {
         else if (!n?.online) last = `${node} not online`
         else if ((await this.bootId(node)) === bootBefore) { last = `${node} has the same boot id: it has not rebooted`; upButSameBoot = true }
         else {
-          upButSameBoot = false
           const c = ceph ? judgeCephSettled(await this.exec.cephHealth()) : { ok: true, reason: 'no Ceph' }
           last = c.reason
           if (c.ok) { back = true; break }
@@ -696,8 +698,9 @@ export class UpdatesRunner {
     if (detailKey(step) === DETAIL.selfGuest) {
       const guest = (await this.guestMap()).get(Number(step.target))
       if (!guest) return { status: 'failed', reason: `guest ${step.target} not found` }
-      await startHandoff(this.exec, guest.node, jobId, step.id, selfGuestScript(jobId, step.id, guest))
+      // Tag first: a restart between the two finds the handoff instead of starting a second one.
       await this.setStep(step, { detail: `${step.detail} · ${handoffTag(guest.node)}` })
+      await startHandoff(this.exec, guest.node, jobId, step.id, selfGuestScript(jobId, step.id, guest))
       log(`handoff started on ${guest.node}`)
       const out = await this.pollHandoff(jobId, step, guest.node)
       if (out.status === 'ok') await this.pruneSnapshots(guest)
@@ -713,8 +716,8 @@ export class UpdatesRunner {
       if (!again.ok) return { status: 'failed', reason: `after waiting for viewers: ${again.reason}` }
       const peer = await this.peerOf(node)
       const ceph = await this.ceph(jobId)
-      await startHandoff(this.exec, peer, jobId, step.id, selfNodeRebootScript(jobId, step.id, node, { ceph, waitMinutes: Math.round(this.timing.nodeReturnMs / 60_000) }))
       await this.setStep(step, { detail: `${step.detail} · ${handoffTag(peer)}` })
+      await startHandoff(this.exec, peer, jobId, step.id, selfNodeRebootScript(jobId, step.id, node, { ceph, waitMinutes: Math.round(this.timing.nodeReturnMs / 60_000) }))
       log(`handoff started on ${peer}; HyperProx may go away while ${node} reboots`)
       const out = await this.pollHandoff(jobId, step, peer)
       if (out.status === 'ok') this.rebootPending.delete(node)
