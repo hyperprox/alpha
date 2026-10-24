@@ -48,35 +48,69 @@ if out=$(${run} 2>&1); then result true "guest ${guest.vmid} upgraded"; else res
 /**
  * Reboot HyperProx's own node, run on a DIFFERENT node. PVE cluster nodes reach
  * each other as root over SSH, which is what lets the script reboot the target.
+ * Same rules as the API's own reboot path: HA must have moved the guests off
+ * before the reboot (else both flags come off and nothing reboots), and the node
+ * only counts as back when its boot id has changed.
  */
-export function selfNodeRebootScript(jobId: string, stepId: string, target: string, opts: { ceph: boolean; waitMinutes?: number }): string {
+export function selfNodeRebootScript(jobId: string, stepId: string, target: string, opts: { ceph: boolean; waitMinutes?: number; drainMinutes?: number }): string {
   const file = resultFile(jobId, stepId)
   const wait = opts.waitMinutes ?? 15
+  const drain = opts.drainMinutes ?? 10
   const t = shq(target)
+  const flags = opts.ceph ? 'noout and HA maintenance' : 'HA maintenance'
+  const unsetNoout = opts.ceph ? 'ceph osd unset noout || left="$left noout"' : ''
   return `#!/bin/bash
 ${writeResult(file)}
-${opts.ceph ? 'ceph osd set noout || { result false "could not set noout"; exit 1; }' : ''}
-ha-manager crm-command node-maintenance enable ${t} || { ${opts.ceph ? 'ceph osd unset noout; ' : ''}result false "could not enable HA maintenance"; exit 1; }
-sleep 60   # let HA move guests off
-ssh -o BatchMode=yes -o ConnectTimeout=10 root@${t} systemctl reboot || true
+target=${t}
+ssh_t() { ssh -o BatchMode=yes -o ConnectTimeout=10 root@"$target" "$@"; }
+clear_flags() {  # sets $left to whatever could not be cleared
+  left=""
+  ha-manager crm-command node-maintenance disable "$target" || left="$left maintenance"
+  ${unsetNoout}
+}
+boot_before=$(ssh_t cat /proc/sys/kernel/random/boot_id 2>/dev/null)
+[ -n "$boot_before" ] || { result false "could not read the boot id of $target; nothing changed"; exit 1; }
+${opts.ceph ? 'ceph osd set noout || { result false "could not set noout; nothing changed"; exit 1; }' : ''}
+if ! ha-manager crm-command node-maintenance enable "$target"; then
+  ${opts.ceph ? 'ceph osd unset noout || { result false "could not enable HA maintenance, and noout is LEFT ON"; exit 1; }' : ''}
+  result false "could not enable HA maintenance; nothing rebooted"; exit 1
+fi
+# Wait for HA to move every active guest off the target, as the API does, capped at ${drain} minutes.
+drain_end=$(( $(date +%s) + ${drain} * 60 ))
+drained=0
+while [ "$(date +%s)" -lt "$drain_end" ]; do
+  if pvesh get /cluster/ha/status/current --output-format json | python3 -c 'import json,sys; t=sys.argv[1]; rows=json.load(sys.stdin); sys.exit(1 if any(r.get("type")=="service" and r.get("node")==t and r.get("state") not in ("stopped","disabled","ignored") for r in rows) else 0)' "$target"; then drained=1; break; fi
+  sleep 15
+done
+if [ "$drained" != "1" ]; then
+  clear_flags
+  if [ -n "$left" ]; then result false "HA did not move every guest off $target; not rebooted; could not clear:$left (LEFT ON)"
+  else result false "HA did not move every guest off $target; not rebooted; ${flags} cleared"; fi
+  exit 1
+fi
+ssh_t systemctl reboot || true   # the connection drops as it goes down
 sleep 90
 deadline=$(( $(date +%s) + ${wait} * 60 ))
 back=0
 while [ "$(date +%s)" -lt "$deadline" ]; do
-  online=$(pvesh get /cluster/status --output-format json | python3 -c 'import json,sys; print(next((n.get("online",0) for n in json.load(sys.stdin) if n.get("type")=="node" and n.get("name")==sys.argv[1]),0))' ${t} 2>/dev/null)
-  if [ "$online" = "1" ]; then
+  online=$(pvesh get /cluster/status --output-format json | python3 -c 'import json,sys; print(next((n.get("online",0) for n in json.load(sys.stdin) if n.get("type")=="node" and n.get("name")==sys.argv[1]),0))' "$target" 2>/dev/null)
+  boot_now=$(ssh_t cat /proc/sys/kernel/random/boot_id 2>/dev/null)
+  if [ "$online" = "1" ] && [ -n "$boot_now" ] && [ "$boot_now" != "$boot_before" ]; then
     ${opts.ceph
-      ? `if ceph osd stat -f json | python3 -c 'import json,sys; s=json.load(sys.stdin); sys.exit(0 if s["num_up_osds"]==s["num_osds"] else 1)' && ceph pg stat | grep -qv -E 'degraded|peering|undersized|recovering|backfill|down|inactive|stale'; then back=1; break; fi`
+      ? `if ceph osd stat -f json | python3 -c 'import json,sys; s=json.load(sys.stdin); sys.exit(0 if s["num_up_osds"]==s["num_osds"] else 1)' && ! ceph pg stat | grep -qE 'degraded|peering|undersized|recovering|backfill|down|inactive|stale'; then back=1; break; fi`
       : 'back=1; break'}
   fi
   sleep 15
 done
 if [ "$back" = "1" ]; then
-  ha-manager crm-command node-maintenance disable ${t}
-  ${opts.ceph ? 'ceph osd unset noout' : ''}
-  result true "${target} rebooted and returned; maintenance cleared"
+  clear_flags
+  if [ -n "$left" ]; then result false "$target rebooted and returned, but could not clear:$left (LEFT ON)"
+  else result true "$target rebooted (new boot id) and returned; ${flags} cleared"; fi
+elif [ -n "$boot_now" ] && [ "$boot_now" = "$boot_before" ]; then
+  clear_flags
+  result false "$target never rebooted (boot id unchanged); ${flags} cleared\${left:+, except:$left (LEFT ON)}"
 else
-  result false "${target} did not return within ${wait} minutes; noout and HA maintenance LEFT ON for a person to clear"
+  result false "$target did not return within ${wait} minutes; ${flags} LEFT ON for a person to clear"
 fi
 `
 }

@@ -138,6 +138,7 @@ test("HyperProx itself goes last: its guest and its node's reboot through the ha
     [g(150), g(160)],
   ), POLICY, { selfVmid: 150 })
   assert.deepEqual(steps(p), [
+    '150:snapshot',                 // HyperProx's own guest: a rollback point before the handoff upgrades it
     '160:snapshot', '160:apt',
     'node-c:node-upgrade',
     'node-b:node-upgrade', 'node-b:kernel-cleanup',

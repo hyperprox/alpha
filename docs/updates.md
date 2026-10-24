@@ -7,8 +7,10 @@ what happens when something fails. The design behind it is in
 `docs/superpowers/specs/2026-10-06-updates-design.md`.
 
 Everything about Updates is admin-only, reads included: the inventory lists every
-pending package and kernel pin on every host. Every job start, confirmation, resume,
-cancel and node reboot is written to the audit log.
+pending package and kernel pin on every host. Live progress goes over its own socket,
+`/ws/updates`, which only admins can open (the general `/ws` channel is viewer-level, and
+these frames carry command output from hosts); a lock closes it. Every job start,
+confirmation, resume, cancel and node reboot is written to the audit log.
 
 ## Getting started
 
@@ -27,8 +29,11 @@ Docker image is pulled. (The design's example file uses `dist-upgrade` and
 
 ## What a run does
 
-1. **Preflight** (read-only). The cluster is quorate and every node is online; Ceph
-   health raises nothing outside `ceph.accepted_warnings`; HA is settled and no node is in
+1. **Preflight** (read-only). The cluster is quorate and every node is online and readable;
+   every node the policy names exists (a typo would otherwise fall back to
+   `nodes.default`); whether the cluster runs Ceph is decided once, from
+   `/etc/pve/ceph.conf`, and if it does, Ceph health raises nothing outside
+   `ceph.accepted_warnings` — a health read that fails is a failure, never "no Ceph"; HA is settled and no node is in
    maintenance; every node's `/` has at least `min_root_free_mb` free; every node that
    requires package holds or a kernel pin has them. Any failure ends the job before
    anything changes.
@@ -41,7 +46,9 @@ Docker image is pulled. (The design's example file uses `dist-upgrade` and
    `apt-get upgrade` keeping your config files, then `autoremove` → for `docker: auto`,
    `docker compose pull` and `up -d`, then every container running and not unhealthy →
    the configured `check` URL, fetched from inside the guest → for VMs with
-   `reboot: if-required`, a reboot when the guest asks for one. HA-managed guests are
+   `reboot: if-required`, a reboot when the guest asks for one. When a guest finishes
+   cleanly, its older `hp-upd-*` snapshots are deleted and the newest is kept; snapshots
+   with any other name are never touched, and a guest that failed keeps all of them. HA-managed guests are
    stopped and started only through `ha-manager`, never `qm`/`pct`.
 4. **Ceph**, only when Ceph packages are pending. The same version is installed on every
    node that has it pending (exact `package=version`, and apt is not allowed to remove
@@ -52,8 +59,9 @@ Docker image is pulled. (The design's example file uses `dist-upgrade` and
 5. **Nodes, one at a time**, gates checked before each. `apt-get upgrade` or
    `apt-get dist-upgrade` as the node's policy says → Proxmox services active → holds and
    pin checked again. If a reboot is needed and the policy says `reboot: auto`: wait for
-   viewers (below), set `noout`, turn on HA maintenance for the node, wait for HA to move
-   its guests, reboot, wait up to 15 minutes for the node to be online, every OSD up and
+   viewers (below), check quorum, Ceph and HA again (the wait can be hours), set `noout`,
+   turn on HA maintenance for the node, wait for HA to move its guests, reboot, and wait
+   up to 15 minutes for the node to be online **with a new boot id**, every OSD up and
    every PG active+clean, then maintenance off and `noout` cleared. With `reboot: manual`
    the node is marked *reboot pending*. Then old kernels are removed — the running one, a
    pinned one and one fallback are always kept — and the apt cache is cleaned.
@@ -79,7 +87,7 @@ running, awaiting confirmation or paused answers `409` with the id of the active
 | `quiet.plex_streams_block_reboots` | `true` | A reboot waits while the Plex plug-in reports active streams. Without the plug-in configured the check passes. |
 | `ceph.accepted_warnings` | none | Ceph health codes that do not stop a run. |
 | `nodes.default` | `{ upgrade: upgrade, reboot: manual }` | Applies to every node. |
-| `nodes.<name>.upgrade` | | `upgrade` (never adds or removes packages) or `dist-upgrade`. A node set to `upgrade` cannot be given anything else. |
+| `nodes.<name>.upgrade` | | `upgrade` (never adds or removes packages) or `dist-upgrade`. A node set to `upgrade` cannot be given anything else. A node that sets `require_holds` or `require_pin` but not `upgrade` gets `upgrade`, never the default's `dist-upgrade`. |
 | `nodes.<name>.reboot` | | `auto` or `manual`. |
 | `nodes.<name>.order` | | `first` or `last`. Otherwise alphabetical. |
 | `nodes.<name>.require_holds` | | Packages that must be on hold (`apt-mark showhold`). |
@@ -114,9 +122,12 @@ Windows VMs, VMs without the QEMU guest agent, and guests without `apt`.
 | A node upgrade fails, or holds/pin are missing before or after it | The job pauses. Holds and pins are never repaired automatically. |
 | Viewers are watching when a reboot is due | Re-checked every 5 minutes until `window_hours`; then that reboot is skipped, the node is marked *reboot pending*, and the run continues. If the Plex source does not answer, that counts as viewers. |
 | HA cannot move every guest off a node | Maintenance and `noout` are cleared (the node never went down), the node is not rebooted, and the job pauses. |
+| A node stays up but its boot id never changes, or refuses the reboot | It did not reboot: both flags are cleared and the job pauses. |
+| A flag cannot be cleared | The job pauses and names the flag that is LEFT ON. |
 | A node does not come back within 15 minutes | The job **fails** and leaves `noout` and HA maintenance **on**, so data does not move and guests do not bounce. Clear them by hand once the node is healthy: `ha-manager crm-command node-maintenance disable <node>` and `ceph osd unset noout`. |
 | Old kernel removal would take more than the old kernels with it | Nothing is removed; the step fails and the run continues. |
-| HyperProx restarts mid-job | On start, the job is paused ("HyperProx restarted mid-job") — never resumed on its own. A self-handoff result is collected when it can be; Resume collects it otherwise, and re-runs an interrupted step (every step is safe to run twice). |
+| HyperProx restarts mid-job | On start, the job is paused ("HyperProx restarted mid-job") — never resumed on its own. A step that was running is marked failed ("interrupted by a HyperProx restart"), so an interrupted guest still holds back the node phase; Resume retries it (every step is safe to run twice). A self-handoff keeps running on its node; its result is collected rather than the step being restarted. |
+| Resume or Confirm pressed twice, or Confirm racing Cancel | Status changes are conditional in the database: exactly one wins, the other gets a 409. |
 | Cancel | Stops after the step in progress. A job that is paused or awaiting confirmation is cancelled at once. |
 
 A scheduled run that falls while HyperProx is locked is skipped and logged: the Proxmox

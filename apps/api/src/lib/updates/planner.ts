@@ -81,7 +81,11 @@ export function buildPlan(inv: UpdatesInventory, policy: Policy, ctx: PlanContex
     const t = String(g.vmid)
     if (g.vmid === ctx.selfVmid) {
       // HyperProx's own guest: an apt run here can restart the API mid-step, so it goes through the handoff, last.
-      if (aptWork) selfGuestWork = g.pending.length
+      if (aptWork) {
+        selfGuestWork = g.pending.length
+        // Taken in the guest phase, so the rollback point exists before the handoff upgrades it.
+        if (g.snapshotCapable) add(t, 'snapshot', 'before updating HyperProx itself')
+      }
       if (dockerWork) warnings.push(`${g.vmid} is HyperProx itself: its own images are updated by deploying HyperProx, not by this run`)
       continue
     }

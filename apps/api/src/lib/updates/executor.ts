@@ -10,6 +10,7 @@
 
 import type { UpdatesPkgChange } from './types'
 import { livePve } from '../pve-env'
+import type { ProxmoxClient } from '../proxmox-client'
 import { execOnNode, execInGuest, nodeCredential, type ExecResult } from '../node-exec'
 import { runPluginMetrics } from '../plugin-host'
 import { plexPlugin } from '../../plugins/plex'
@@ -44,8 +45,14 @@ export interface UpdatesExecutor {
   haStatus(): Promise<HaStatus>
   /** HA resource ids, e.g. "ct:101", "vm:102". */
   haResources(): Promise<string[]>
-  /** null when the cluster has no Ceph. */
-  cephHealth(): Promise<CephHealth | null>
+  /**
+   * Whether this cluster runs Ceph at all, from /etc/pve/ceph.conf. Asked once
+   * per job, explicitly, so that a failed health read can never be mistaken for
+   * "no Ceph here".
+   */
+  cephPresent(): Promise<boolean>
+  /** Throws when health cannot be read. Only meaningful when cephPresent() is true. */
+  cephHealth(): Promise<CephHealth>
   listGuests(): Promise<GuestListing[]>
   guestConfig(guest: GuestRef): Promise<Record<string, any>>
   nodeAptPending(node: string): Promise<UpdatesPkgChange[]>
@@ -58,6 +65,8 @@ export interface UpdatesExecutor {
   nodeExec(node: string, command: string, onLine?: LineSink, timeoutMs?: number): Promise<ExecResult>
   guestExec(guest: GuestRef, script: string, onLine?: LineSink, timeoutMs?: number): Promise<ExecResult>
   snapshot(guest: GuestRef, name: string): Promise<void>
+  listSnapshots(guest: GuestRef): Promise<{ name: string; snaptime?: number }[]>
+  deleteSnapshot(guest: GuestRef, name: string): Promise<void>
 
   // -- time, so tests do not wait ----------------------------------------------------
   now(): number
@@ -81,12 +90,22 @@ function lineSplitter(sink?: LineSink): ((chunk: string) => void) | undefined {
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
-async function waitForTask(node: string, upid: string, timeoutMs: number): Promise<void> {
-  const pve = livePve()
+/** Every read below fails on an error answer: a gate that cannot read must not pass. */
+function mustArray<T = any>(v: unknown, what: string): T[] {
+  if (!Array.isArray(v)) throw new Error(`Proxmox returned no ${what}`)
+  return v as T[]
+}
+
+function mustObject(v: unknown, what: string): Record<string, any> {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error(`Proxmox returned no ${what}`)
+  return v as Record<string, any>
+}
+
+async function waitForTask(pve: ProxmoxClient, node: string, upid: string, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    const st = await pve.fetchNode<any>(`/nodes/${encodeURIComponent(node)}/tasks/${encodeURIComponent(upid)}/status`)
-    if (st?.status === 'stopped') {
+    const st = mustObject(await pve.fetchStrict<any>(`/nodes/${encodeURIComponent(node)}/tasks/${encodeURIComponent(upid)}/status`), 'task status')
+    if (st.status === 'stopped') {
       if (st.exitstatus !== 'OK') throw new Error(`task ${upid} ended: ${st.exitstatus}`)
       return
     }
@@ -95,8 +114,7 @@ async function waitForTask(node: string, upid: string, timeoutMs: number): Promi
   throw new Error(`task ${upid} did not finish within ${Math.round(timeoutMs / 1000)}s`)
 }
 
-export function productionExecutor(): UpdatesExecutor {
-  const pve = livePve()
+export function productionExecutor(pve: ProxmoxClient = livePve()): UpdatesExecutor {
   let ips: Record<string, string> = {}
 
   async function hostFor(node: string): Promise<string> {
@@ -112,18 +130,17 @@ export function productionExecutor(): UpdatesExecutor {
 
   const exec: UpdatesExecutor = {
     async clusterStatus() {
-      const rows = await pve.fetchNode<any[]>('/cluster/status')
-      if (!Array.isArray(rows)) throw new Error('Proxmox returned no cluster status')
+      const rows = mustArray(await pve.fetchStrict<any[]>('/cluster/status'), 'cluster status')
       const cluster = rows.find(r => r.type === 'cluster')
       const nodes = rows.filter(r => r.type === 'node').map(r => ({ name: String(r.name), online: r.online === 1, ip: r.ip }))
+      if (!nodes.length) throw new Error('Proxmox cluster status lists no nodes')
       ips = Object.fromEntries(nodes.filter(n => n.ip).map(n => [n.name, n.ip as string]))
       // A single-node install has no cluster row and is quorate by definition.
       return { quorate: cluster ? cluster.quorate === 1 : nodes.length === 1, nodes }
     },
 
     async haStatus() {
-      const rows = await pve.fetchNode<any[]>('/cluster/ha/status/current')
-      if (!Array.isArray(rows)) return { services: [], maintenanceNodes: [] }
+      const rows = mustArray(await pve.fetchStrict<any[]>('/cluster/ha/status/current'), 'HA status')
       return {
         services: rows.filter(r => r.type === 'service').map(r => ({ sid: String(r.sid), node: String(r.node), state: String(r.state ?? r.crm_state ?? '') })),
         maintenanceNodes: rows.filter(r => r.type === 'lrm' && /maintenance/i.test(String(r.status))).map(r => String(r.node)),
@@ -131,15 +148,23 @@ export function productionExecutor(): UpdatesExecutor {
     },
 
     async haResources() {
-      const rows = await pve.fetchNode<any[]>('/cluster/ha/resources')
-      return Array.isArray(rows) ? rows.map(r => String(r.sid)) : []
+      return mustArray(await pve.fetchStrict<any[]>('/cluster/ha/resources'), 'HA resource list').map(r => String(r.sid))
+    },
+
+    async cephPresent() {
+      const s = await exec.clusterStatus()
+      const node = s.nodes.filter(n => n.online).map(n => n.name).sort()[0]
+      if (!node) throw new Error('no online node to ask whether Ceph is configured')
+      // /etc/pve is the cluster filesystem, so any node answers for all of them.
+      const r = await exec.nodeExec(node, '[ -e /etc/pve/ceph.conf ] && echo HP_CEPH_YES || echo HP_CEPH_NO', undefined, 30_000)
+      if (/HP_CEPH_YES/.test(r.output)) return true
+      if (/HP_CEPH_NO/.test(r.output)) return false
+      throw new Error(`could not tell whether Ceph is configured: ${r.output.slice(0, 200)}`)
     },
 
     async cephHealth() {
-      let s: any
-      try { s = await pve.fetchNode<any>('/cluster/ceph/status') } catch { return null }
-      // PVE answers an error, including "Ceph not installed", as {"data":null}.
-      if (!s || !s.health) return null
+      const s = mustObject(await pve.fetchStrict<any>('/cluster/ceph/status'), 'Ceph status')
+      if (!s.health?.status) throw new Error('Proxmox returned Ceph status without health')
       const pgStates: Record<string, number> = {}
       for (const r of s.pgmap?.pgs_by_state ?? []) pgStates[String(r.state_name)] = Number(r.count)
       return {
@@ -153,8 +178,7 @@ export function productionExecutor(): UpdatesExecutor {
     },
 
     async listGuests() {
-      const rows = await pve.getClusterResources('vm')
-      return (rows ?? [])
+      return mustArray(await pve.fetchStrict<any[]>('/cluster/resources?type=vm'), 'guest list')
         .filter((r: any) => r.type === 'lxc' || r.type === 'qemu')
         .map((r: any) => ({
           vmid: Number(r.vmid), type: r.type, node: String(r.node), name: String(r.name ?? ''),
@@ -163,19 +187,20 @@ export function productionExecutor(): UpdatesExecutor {
     },
 
     async guestConfig(g) {
-      return (await pve.getVMConfig(g.node, g.vmid, g.type)) ?? {}
+      return mustObject(await pve.fetchStrict<any>(`/nodes/${encodeURIComponent(g.node)}/${g.type}/${g.vmid}/config`), `config for ${g.vmid}`)
     },
 
     async nodeAptPending(node) {
       // GET lists what the node's last `apt update` already knows; it changes nothing.
-      return parsePveAptList(await pve.fetchNode<any[]>(`/nodes/${encodeURIComponent(node)}/apt/update`))
+      return parsePveAptList(mustArray(await pve.fetchStrict<any[]>(`/nodes/${encodeURIComponent(node)}/apt/update`), `pending list for ${node}`))
     },
 
     async plexStreams() {
       try {
         const rows = await runPluginMetrics(plexPlugin)
         const all = rows.find(r => r.name === 'plex_streams' && r.labels?.decision === 'all')
-        return all ? all.value : 0
+        if (!all) throw new Error('the Plex plug-in reported no stream count')
+        return all.value
       } catch (e: any) {
         if (/Not configured yet/.test(String(e?.message))) return null
         throw e
@@ -183,9 +208,9 @@ export function productionExecutor(): UpdatesExecutor {
     },
 
     async nodeAptRefresh(node) {
-      const upid = await pve.fetchNode<string>(`/nodes/${encodeURIComponent(node)}/apt/update`, 'POST')
+      const upid = await pve.fetchStrict<string>(`/nodes/${encodeURIComponent(node)}/apt/update`, 'POST')
       if (typeof upid !== 'string' || !upid.startsWith('UPID:')) throw new Error(`apt update on ${node} was not started`)
-      await waitForTask(node, upid, 10 * 60_000)
+      await waitForTask(pve, node, upid, 10 * 60_000)
     },
 
     async nodeExec(node, command, onLine, timeoutMs) {
@@ -217,10 +242,21 @@ export function productionExecutor(): UpdatesExecutor {
     },
 
     async snapshot(g, name) {
-      const upid = await pve.fetchNode<string>(`/nodes/${encodeURIComponent(g.node)}/${g.type}/${g.vmid}/snapshot`, 'POST',
-        new URLSearchParams({ snapname: name, description: 'Taken by HyperProx before updating' }).toString())
+      const upid = await pve.fetchStrict<string>(`/nodes/${encodeURIComponent(g.node)}/${g.type}/${g.vmid}/snapshot`, 'POST',
+        new URLSearchParams({ snapname: name, description: 'Taken by HyperProx before updating' }).toString(), 60_000)
       if (typeof upid !== 'string' || !upid.startsWith('UPID:')) throw new Error('Proxmox refused the snapshot')
-      await waitForTask(g.node, upid, 10 * 60_000)
+      await waitForTask(pve, g.node, upid, 10 * 60_000)
+    },
+
+    async listSnapshots(g) {
+      return mustArray(await pve.fetchStrict<any[]>(`/nodes/${encodeURIComponent(g.node)}/${g.type}/${g.vmid}/snapshot`), `snapshots of ${g.vmid}`)
+        .filter((x: any) => x.name && x.name !== 'current')
+        .map((x: any) => ({ name: String(x.name), snaptime: x.snaptime ? Number(x.snaptime) : undefined }))
+    },
+
+    async deleteSnapshot(g, name) {
+      const upid = await pve.fetchStrict<string>(`/nodes/${encodeURIComponent(g.node)}/${g.type}/${g.vmid}/snapshot/${encodeURIComponent(name)}`, 'DELETE', undefined, 60_000)
+      if (typeof upid === 'string' && upid.startsWith('UPID:')) await waitForTask(pve, g.node, upid, 10 * 60_000)
     },
 
     now: () => Date.now(),

@@ -88,7 +88,8 @@ async function readGuest(exec: UpdatesExecutor, policy: Policy, g: GuestListing,
   if (!g.running)   { out.unmanagedReason = 'not-running'; return out }
 
   let config: Record<string, any> = {}
-  try { config = await exec.guestConfig(g) } catch (e: any) { out.error = `config: ${e.message}` }
+  // Without its config there is no telling whether it can be snapshotted or has an agent: leave it alone.
+  try { config = await exec.guestConfig(g) } catch (e: any) { out.error = `config could not be read: ${e.message}`; return out }
 
   if (g.type === 'qemu') {
     if (/^(win|w2k|wxp|wvista)/.test(String(config.ostype ?? ''))) { out.unmanagedReason = 'windows'; return out }
@@ -130,7 +131,7 @@ export async function readInventory(exec: UpdatesExecutor, policy: Policy, opts:
   const [status, listing, haSids] = await Promise.all([
     exec.clusterStatus(),
     exec.listGuests(),
-    exec.haResources().catch(() => [] as string[]),
+    exec.haResources(),
   ])
   const guests = listing.filter(g => !g.template)
   const self = findSelfGuest(guests, policy, opts.hostname)
