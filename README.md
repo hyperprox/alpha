@@ -25,13 +25,16 @@ On any Proxmox node, as root:
 curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/bootstrap.sh | bash
 ```
 
-That is the whole thing. It picks a free container ID and the storage with the
-most room, fetches the current Debian template, creates the container with the
-features Docker actually needs, mints the Proxmox API token, installs
-`node_exporter` on every node so Monitoring has data immediately, installs
-HyperProx, and prints you a URL.
+That is the whole thing, and the recommended way. It picks a free container ID and
+the storage with the most room, fetches the current Debian template, creates the
+container with the features Docker actually needs, mints the Proxmox API token,
+installs `node_exporter` on every node so Monitoring has data immediately,
+installs HyperProx, and prints you a URL: `https://<container-ip>/`.
 
 It is safe to re-run — anything already correct is left alone.
+
+Already have a container, a VM or a machine for it? Use
+[install.sh from a clone](#alternative-installsh-from-a-clone) instead.
 
 <details>
 <summary>Options, if the defaults do not suit you</summary>
@@ -88,7 +91,24 @@ Only running containers with an address Proxmox can read are scanned. A VM
 without the guest agent has no address to probe, and nothing outside the cluster
 is touched.
 
-### If you would rather do it yourself
+### Alternative: install.sh from a clone
+
+`bootstrap.sh` runs this same installer inside the container it creates. Run it
+yourself when the machine already exists — your own container, a VM, or bare
+metal (Debian 12 or 13, or Ubuntu 22.04 / 24.04), as root:
+
+```bash
+apt update && apt install -y git curl
+git clone https://github.com/hyperprox/alpha.git /opt/hyperprox
+bash /opt/hyperprox/install.sh
+```
+
+The installer works from that clone: `/opt/hyperprox/docker-compose.yml` and
+`config/` are used as they are, and everything specific to your install goes in
+`/opt/hyperprox/.env`. Re-running it is safe and keeps your data and settings.
+
+It does not create the container or the Proxmox token for you; the steps below
+cover both.
 
 <details>
 <summary>Manual container creation and token setup</summary>
@@ -126,25 +146,41 @@ pveum user token add root@pam hyperprox --privsep=0
 pveum acl modify / --token 'root@pam!hyperprox' --role Administrator
 ```
 
-Inside the container (Debian 12 or 13, or Ubuntu 22.04 / 24.04):
-
-```bash
-apt update && apt install -y curl
-curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/install.sh | bash
-```
+Then, inside the container, clone and run the installer as shown above.
 
 </details>
 
+### HTTPS
+
+HyperProx is served by its bundled nginx on `https://<container-ip>/`; plain http
+on port 80 redirects there. The app's own services listen on loopback only and
+are reached through nginx, WebSockets (live updates, the terminal) included.
+
+The installer generates a self-signed certificate when you have not supplied one,
+so the browser warns once. To use your own, put the full chain in
+`/opt/hyperprox/certs/cert.pem` and the key in `/opt/hyperprox/certs/key.pem`
+(before installing, or any time after), then `docker restart hyperprox-nginx`.
+
+If another reverse proxy (Nginx Proxy Manager, say) terminates TLS in front of
+HyperProx, point it at `http://<container-ip>:80`. It sends
+`X-Forwarded-Proto: https`, and nginx serves those requests instead of
+redirecting them.
+
 ### First-run setup
 
-When the install finishes it prints the wizard link, `http://<container-ip>:3001/?k=<setup key>`. The key is what lets the wizard accept requests, so keep the link private; if you lose it, `grep SETUP_SECRET /opt/hyperprox/.env` on the host gives it back.
+When the install finishes it prints the wizard link, `https://<container-ip>/setup?k=<setup key>`. The key is what lets the wizard accept requests, so keep the link private; if you lose it, `grep SETUP_SECRET /opt/hyperprox/.env` on the host gives it back.
+
+The wizard keeps its progress on the server. Reload it, or open the link again
+tomorrow, and it picks up at the step it had reached.
 
 1. **Connect your Proxmox** — sign in with the same username and password you use
    for the Proxmox web interface (two-factor codes are supported). HyperProx uses
    that login once to create its own API token, named
-   `hyperprox-<container-hostname>-<random>`, and never stores your password. It
-   always makes a new token and never replaces or deletes an existing one, so a
-   token another HyperProx — or anything else — relies on is left alone.
+   `hyperprox-<container-hostname>`, and never stores your password. Connecting
+   again reuses that token while HyperProx still holds its secret; if the secret
+   has been lost, it deletes and recreates that one token. Any other token —
+   including one another HyperProx on a differently named container relies on —
+   is never touched.
 2. **Cluster detected** — nodes, storage and Ceph, read back through the new token.
 3. **Existing services** — Nginx Proxy Manager and Proxmox Backup Server already on
    the cluster are found by their web interface, and HyperProx will not offer to
@@ -152,7 +188,7 @@ When the install finishes it prints the wizard link, `http://<container-ip>:3001
 4. **DNS provider**, then **Cluster connected**, which sends you to HyperProx's sign-in page.
 
 The wizard no longer asks you to invent an admin password: **HyperProx has no password of its own.**
-Open `http://<container-ip>:3000/login` and **create the owner vault account**: an email, a master
+Open `https://<container-ip>/login` and **create the owner vault account**: an email, a master
 password and a two-factor code (an authenticator app; 2FA is required for the owner). From then on you
 sign in with those. See [Security](#security) for what that protects and what it does not.
 
@@ -625,8 +661,7 @@ others still publish — one broken device does not blank the scrape.
 | **Storage gauge and the Ceph bar can disagree** (raw vs usable capacity) | Investigating |
 | **NPM and Prometheus can stay on "checking…"** on a fresh install although both are running; Grafana shows no status pill | Investigating |
 | **Power reads "–" with no reason** when no node exposes RAPL | Planned: say why, or hide the card |
-| **Served on plain http :3000 by default** — the bundled nginx/TLS front is not the default path yet | Planned |
-| **Reloading the setup wizard starts again at step 1**, and each reconnect makes another Proxmox token | Planned: resume from saved state, reuse the token |
+| **Tokens from earlier wizard runs stay on the cluster** — before the wizard reused its token, each connect made a new `hyperprox-<host>-<random>` one. HyperProx never deletes tokens it does not own by its current name, so remove old ones under Datacenter → Permissions → API Tokens | ℹ️ One-time cleanup |
 
 ### Workarounds
 
@@ -666,19 +701,21 @@ The HyperProx app (frontend, API, setup wizard) runs as systemd services; `docke
 
 | Service | Purpose | Port |
 |---|---|---|
-| hyperprox-frontend | Next.js dashboard | 3000 |
+| hyperprox-frontend | Next.js dashboard | 127.0.0.1:3000 |
 | hyperprox-api | Fastify API + WebSockets | 3002 |
-| hyperprox-setup | First-run setup wizard | 3001 |
+| hyperprox-setup | First-run setup wizard | 127.0.0.1:3001 |
 | hyperprox-vault | Vaultwarden: the sign-in gate and secret store (loopback only) | 127.0.0.1:8222 |
 | prometheus | Metrics collection | 9090 |
 | grafana | Visualization | 3003 |
 | pve-exporter | Proxmox metrics bridge | 9221 |
 | postgres | Config + state storage | 5432 |
 | redis | Queue + cache | 6379 |
-| nginx | Internal reverse proxy | 80 |
+| nginx | The front door: TLS, and the route to every service above | 443 (80 redirects) |
 | nginx-proxy-manager | Optional bundled NPM (compose profile `npm`), when you do not already run one | 80/443/81 |
 
-> Prometheus runs with `network_mode: host` so it can scrape node_exporter directly on the host network. All other services run on an internal bridge network.
+> Prometheus runs with `network_mode: host` so it can scrape node_exporter directly on the host network, and nginx does too so it reaches the app's loopback-only services. The other containers run on an internal bridge network.
+>
+> `docker-compose.yml` in the repo is the only compose file; the installer, `deploy.sh` and the setup wizard all use it as it is. Per-install settings live in `.env`, including `COMPOSE_PROFILES` (`monitoring`, `npm`), which compose reads itself.
 
 ---
 
