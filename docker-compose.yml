@@ -1,6 +1,9 @@
 # HyperProx Docker Compose Stack
 # Infrastructure services only — api/frontend/setup run as systemd units
 # Do not add 'version:' — deprecated in Compose v2
+#
+# The one compose file: install.sh, deploy.sh and the setup wizard all use this file as it is. Anything
+# per-install comes from .env, including COMPOSE_PROFILES (monitoring, npm), which compose reads itself.
 
 services:
   postgres:
