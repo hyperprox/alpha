@@ -32,9 +32,6 @@ API_PORT="3002"
 FRONTEND_PORT="3000"
 LOG_FILE="/var/log/hyperprox-install.log"
 
-# ── Root check ────────────────────────────────────────────────────────────────
-[[ $EUID -ne 0 ]] && die "Run as root: sudo bash install.sh"
-
 # Initialise log file — try /var/log, fall back to home dir
 mkdir -p /var/log 2>/dev/null || true
 if ! touch "${LOG_FILE}" 2>/dev/null; then
@@ -72,6 +69,10 @@ ok()      { echo -e "   ${C_GREEN}✓${C_RESET}  $1"; }
 warn()    { echo -e "   ${C_YELLOW}⚠${C_RESET}  $1"; }
 info()    { echo -e "   ${C_DIM}→  $1${C_RESET}"; }
 die()     { echo -e "\n   ${C_RED}✗  ERROR: $1${C_RESET}"; echo -e "   ${C_DIM}Full log: ${LOG_FILE}${C_RESET}\n"; exit 1; }
+
+# ── Root check ────────────────────────────────────────────────────────────────
+# After die() exists: before, a non-root run failed with "die: command not found" instead of the message.
+[[ $EUID -ne 0 ]] && die "Run as root: sudo bash install.sh"
 
 confirm() {
   # Default to yes when running non-interactively (curl | bash)
@@ -196,11 +197,19 @@ detect_environment() {
 }
 
 # ── Network Configuration ─────────────────────────────────────────────────────
+# True when $1 (a resolv.conf) sends lookups to Tailscale's MagicDNS resolver, 100.100.100.100 or its IPv6
+# twin. Only nameserver lines count. The old test grepped the whole file for "ts.net", so a container
+# resolving through 1.1.1.1 that merely inherited a tailnet search domain from its Proxmox host (or a
+# comment naming Tailscale) was "fixed" too. A search domain on its own breaks nothing.
+resolv_uses_magicdns() {
+  grep -qE '^[[:space:]]*nameserver[[:space:]]+(100\.100\.100\.100|fd7a:115c:a1e0::53)([[:space:]]|$)' "$1" 2>/dev/null
+}
+
 configure_network() {
-  # Fix broken DNS — PVE sometimes injects Tailscale DNS into LXC resolv.conf
-  # which fails if Tailscale isn't running in the CT
-  if grep -q "100\.100\.100\.100\|taila\|ts\.net" /etc/resolv.conf 2>/dev/null; then
-    warn "Detected Proxmox-injected Tailscale DNS — replacing with public resolvers"
+  # Fix broken DNS: Proxmox can hand a container its host's Tailscale resolver, which answers nothing
+  # unless Tailscale also runs in the container. Where it does run, MagicDNS works and is left alone.
+  if resolv_uses_magicdns /etc/resolv.conf && ! systemctl is-active --quiet tailscaled 2>/dev/null; then
+    warn "Detected the Tailscale DNS resolver without Tailscale running here — replacing with public resolvers"
     cat > /etc/resolv.conf <<'EOF'
 nameserver 1.1.1.1
 nameserver 8.8.8.8
@@ -549,6 +558,11 @@ GRAFANA_SECRET_KEY=${GRAFANA_SECRET_KEY}
 PROMETHEUS_RETENTION=90d
 PROMETHEUS_RETENTION_SIZE=40GB
 
+# ── Docker Compose ────────────────────────────────────────────────────────────
+# Optional parts of docker-compose.yml to run: monitoring (Prometheus, Grafana, PVE exporter) and npm
+# (Nginx Proxy Manager). docker compose reads this itself; the setup wizard rewrites it from your choices.
+COMPOSE_PROFILES=monitoring
+
 # ── Proxmox (filled in by setup wizard) ──────────────────────────────────────
 PROXMOX_HOST=
 PROXMOX_PORT=8006
@@ -558,15 +572,19 @@ PROXMOX_TOKEN_SECRET=
 PROXMOX_PUBLIC_URL=
 
 # ── Frontend public URLs ──────────────────────────────────────────────────────
-NEXT_PUBLIC_API_URL=http://${HOST_IP}:${API_PORT}
-NEXT_PUBLIC_WS_URL=ws://${HOST_IP}:${API_PORT}
+# Everything is served through nginx on https://${HOST_IP}/ (see config/nginx).
+NEXT_PUBLIC_API_URL=https://${HOST_IP}/api
+NEXT_PUBLIC_WS_URL=wss://${HOST_IP}/ws
 
 # ── Cluster identity ──────────────────────────────────────────────────────────
 # Display name shown in the sidebar
 NEXT_PUBLIC_CLUSTER_NAME="My Cluster"
 
-# Grafana embed URL — must be reachable from the user's browser
-NEXT_PUBLIC_GRAFANA_URL=http://${HOST_IP}:3003
+# Grafana embed URL — must be reachable from the user's browser. The Monitoring page embeds it, and an
+# http iframe on the https app is blocked, so it is served on the same origin at /grafana/.
+NEXT_PUBLIC_GRAFANA_URL=/grafana
+GRAFANA_ROOT_URL=https://${HOST_IP}/grafana/
+GRAFANA_SERVE_FROM_SUB_PATH=true
 
 # Comma-separated list of node names that have a GPU (e.g. node1,node2)
 # Used to show GPU badge and violet accent on those nodes in the dashboard
@@ -669,185 +687,28 @@ configure_vault_env() {
 }
 
 # ── Docker Compose Stack ───────────────────────────────────────────────────────
-write_docker_compose() {
-  step "Writing Docker Compose stack"
+# The repo's docker-compose.yml is the only compose file. This installer used to carry its own copy in a
+# heredoc, written only when the clone had none - which a clone always has - so the copy was never used and
+# drifted unnoticed. Per-install choices live in .env; the profiles are the one this step makes sure of.
+configure_compose() {
+  step "Checking the Docker Compose stack"
+  cd "${HYPERPROX_DIR}"
+  [[ -f docker-compose.yml ]] || die "docker-compose.yml is missing from ${HYPERPROX_DIR} — is this a HyperProx clone?"
 
-  # FIX: Preserve existing docker-compose.yml on reinstall
-  if [[ -f "${HYPERPROX_DIR}/docker-compose.yml" ]]; then
-    warn "docker-compose.yml already exists — preserving existing configuration"
-    return
+  # An .env from before COMPOSE_PROFILES: keep what the setup wizard was told, else monitoring as before.
+  if ! env_has COMPOSE_PROFILES; then
+    local profiles="monitoring"
+    if env_has INSTALL_PROMETHEUS; then
+      profiles=""
+      grep -qE '^INSTALL_(PROMETHEUS|GRAFANA)=true' "${ENV_FILE}" && profiles="monitoring"
+      grep -q '^INSTALL_NPM=true' "${ENV_FILE}" && profiles="${profiles:+${profiles},}npm"
+    fi
+    printf '\n# Optional compose profiles (monitoring, npm); docker compose reads this itself.\nCOMPOSE_PROFILES=%s\n' "${profiles}" >> "${ENV_FILE}"
+    ok "Compose profiles: ${profiles:-none}"
   fi
 
-  cat > "${HYPERPROX_DIR}/docker-compose.yml" <<'EOF'
-# HyperProx Docker Compose Stack
-# Do not add 'version:' — deprecated in Compose v2
-
-services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: hyperprox-postgres
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "127.0.0.1:5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  redis:
-    image: redis:7-alpine
-    container_name: hyperprox-redis
-    restart: unless-stopped
-    command: redis-server --save 60 1 --loglevel warning
-    volumes:
-      - redis_data:/data
-    ports:
-      - "127.0.0.1:6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
-  # FIX: network_mode: host — Prometheus must scrape node_exporter on the host
-  # network directly. Bridge networking causes NAT through 172.x.x.x which
-  # results in 'context deadline exceeded' on scrape targets.
-  # The vault gate. Stock, unmodified Vaultwarden, pinned by digest (never :latest). HyperProx refuses to
-  # run without it: sign-in to HyperProx IS a sign-in to this vault. Bound to loopback only; HyperProx's
-  # API is the only thing that talks to it. Signups are off - accounts exist only by invitation.
-  # Version: Vaultwarden 1.37.4 (multi-arch index digest). To update, change the tag AND the digest together.
-  vault:
-    image: vaultwarden/server:1.37.4@sha256:efb3cde962015fcc036b2ea625242248611943b27212ebf4392841fb30fad055
-    container_name: hyperprox-vault
-    restart: unless-stopped
-    environment:
-      SIGNUPS_ALLOWED: "false"
-      INVITATIONS_ALLOWED: "true"
-      ORG_GROUPS_ENABLED: "true"
-      SHOW_PASSWORD_HINT: "false"
-      # Argon2id PHC hash of the admin-panel token (the plain token is VAULT_ADMIN_TOKEN in .env). Empty
-      # disables the admin panel, so an install missing the hash fails closed.
-      ADMIN_TOKEN: ${VAULT_ADMIN_TOKEN_HASH:-}
-      # Origin used in Send links and invitation emails. Leave VAULT_PUBLIC_URL empty and links use the
-      # loopback origin; set it to the https address users can reach if links must work from elsewhere.
-      DOMAIN: ${VAULT_PUBLIC_URL:-https://127.0.0.1:8222}
-      # TLS on loopback: the Bitwarden CLI refuses any non-https server. Self-signed cert made by the
-      # installer in config/vault-tls; HyperProx trusts it through VAULT_CA_CERT.
-      ROCKET_TLS: '{certs="/ssl/cert.pem",key="/ssl/key.pem"}'
-    volumes:
-      - vault_data:/data
-      - ./config/vault-tls:/ssl:ro
-    ports:
-      - "127.0.0.1:8222:80"
-    healthcheck:
-      test: ["CMD", "/healthcheck.sh"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
-      start_period: 15s
-
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: hyperprox-prometheus
-    restart: unless-stopped
-    network_mode: host
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
-      - "--storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-90d}"
-      - "--storage.tsdb.retention.size=${PROMETHEUS_RETENTION_SIZE:-40GB}"
-      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
-      - "--web.console.templates=/usr/share/prometheus/consoles"
-      - "--web.enable-lifecycle"
-      - "--web.enable-admin-api"
-    volumes:
-      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./config/prometheus/rules:/etc/prometheus/rules:ro
-      - ./config/prometheus/targets:/etc/prometheus/targets:ro
-      - ./data/prometheus:/prometheus
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-
-  grafana:
-    image: grafana/grafana:latest
-    container_name: hyperprox-grafana
-    restart: unless-stopped
-    environment:
-      # FIX: Explicitly set HTTP port — Grafana defaults to 3000 internally
-      - GF_SERVER_HTTP_PORT=3003
-      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
-      - GF_SECURITY_SECRET_KEY=${GRAFANA_SECRET_KEY}
-      - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_USERS_ALLOW_ORG_CREATE=false
-      - GF_AUTH_ANONYMOUS_ENABLED=true
-      - GF_AUTH_ANONYMOUS_ORG_NAME=Main Org.
-      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
-      - GF_SECURITY_ALLOW_EMBEDDING=true
-      - GF_SECURITY_COOKIE_SAMESITE=disabled
-    volumes:
-      - ./config/grafana:/etc/grafana/provisioning:ro
-      - grafana_data:/var/lib/grafana
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    ports:
-      - "3003:3003"
-    networks:
-      - hyperprox-net
-    depends_on:
-      - prometheus
-
-  pve-exporter:
-    image: prompve/prometheus-pve-exporter:latest
-    container_name: hyperprox-pve-exporter
-    restart: unless-stopped
-    volumes:
-      - ./config/pve-exporter/pve.yml:/etc/prometheus/pve.yml:ro
-    ports:
-      - "127.0.0.1:9221:9221"
-    networks:
-      - hyperprox-net
-
-  # FIX: extra_hosts required for host.docker.internal to resolve on Linux
-  nginx:
-    image: nginx:alpine
-    container_name: hyperprox-nginx
-    restart: unless-stopped
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes:
-      - ./config/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-    ports:
-      - "80:80"
-      - "443:443"
-    networks:
-      - hyperprox-net
-    depends_on:
-      - postgres
-      - redis
-
-networks:
-  hyperprox-net:
-    driver: bridge
-
-volumes:
-  postgres_data:
-  redis_data:
-  vault_data:
-  grafana_data:
-EOF
-  ok "docker-compose.yml written"
+  docker compose config -q >>"${LOG_FILE}" 2>&1 || die "docker-compose.yml does not validate with this .env (see ${LOG_FILE})"
+  ok "docker-compose.yml validates"
 }
 
 # ── Prometheus + Grafana base config ──────────────────────────────────────────
@@ -938,38 +799,8 @@ EOF
     fi
   done
 
-  # Grafana config — preserve on reinstall
-  if [[ -f "${HYPERPROX_DIR}/config/grafana/datasources/prometheus.yml" ]]; then
-    warn "Grafana config already exists — preserving existing configuration"
-  else
-    mkdir -p "${HYPERPROX_DIR}/config/grafana/dashboards"
-    mkdir -p "${HYPERPROX_DIR}/config/grafana/datasources"
-
-    cat > "${HYPERPROX_DIR}/config/grafana/datasources/prometheus.yml" <<'EOF'
-apiVersion: 1
-datasources:
-  - name: Prometheus
-    type: prometheus
-    access: proxy
-    url: http://host.docker.internal:9090
-    isDefault: true
-    editable: false
-EOF
-
-    cat > "${HYPERPROX_DIR}/config/grafana/dashboards/dashboards.yml" <<'EOF'
-apiVersion: 1
-providers:
-  - name: HyperProx
-    folder: HyperProx
-    type: file
-    options:
-      path: /etc/grafana/provisioning/dashboards
-EOF
-
-    # FIX: Remove placeholder stub shipped in repo — conflicts with hyperprox-cluster.json
-    rm -f "${HYPERPROX_DIR}/config/grafana/dashboards/hyperprox-overview.json"
-    ok "Grafana config written"
-  fi
+  # Grafana's provisioning (datasource, dashboards) ships in the repo under config/grafana/provisioning,
+  # which is what docker-compose.yml mounts. Nothing to write.
 
   # pve-exporter config — preserve on reinstall.
   #
@@ -1000,46 +831,29 @@ EOF
   # and the same crash loop with a different exception.
   chown 101:101 "${HYPERPROX_DIR}/config/pve-exporter/pve.yml"
   chmod 640 "${HYPERPROX_DIR}/config/pve-exporter/pve.yml"
-
-  # Nginx config — always overwrite to ensure correct proxy config is in place
-  mkdir -p "${HYPERPROX_DIR}/config/nginx"
-  cat > "${HYPERPROX_DIR}/config/nginx/nginx.conf" <<'EOF'
-events { worker_connections 1024; }
-
-http {
-  server {
-    listen 80;
-    server_name _;
-
-    location / {
-      proxy_pass http://host.docker.internal:3000;
-      proxy_http_version 1.1;
-      proxy_set_header Upgrade $http_upgrade;
-      proxy_set_header Connection 'upgrade';
-      proxy_set_header Host $host;
-      proxy_set_header X-Real-IP $remote_addr;
-      proxy_cache_bypass $http_upgrade;
-    }
-
-    location /api/ {
-      proxy_pass http://host.docker.internal:3002;
-      proxy_http_version 1.1;
-      proxy_read_timeout 180s;  # vault sign-in plus first migration can take ~30 s
-      proxy_set_header Upgrade $http_upgrade;
-      proxy_set_header Connection 'upgrade';
-      proxy_set_header Host $host;
-      proxy_set_header X-Real-IP $remote_addr;
-    }
-
-    location /setup/ {
-      proxy_pass http://host.docker.internal:3001;
-      proxy_http_version 1.1;
-      proxy_set_header Host $host;
-    }
-  }
 }
-EOF
-  ok "Nginx config written"
+
+# ── TLS for the front door ────────────────────────────────────────────────────
+# nginx serves HyperProx on https://<host>/ with certs/cert.pem + certs/key.pem. Supply your own (full chain
+# in cert.pem) and they are used as they are; otherwise a self-signed one is made here, once, and kept.
+configure_tls() {
+  step "Configuring HTTPS"
+  local dir="${HYPERPROX_DIR}/certs" host_ip
+  mkdir -p "${dir}"; chmod 755 "${dir}"
+  if [[ -s "${dir}/cert.pem" && -s "${dir}/key.pem" ]]; then
+    ok "Using the certificate in ${dir}"
+  else
+    host_ip="$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+' || hostname -I | awk '{print $1}')"
+    local san="DNS:$(hostname),DNS:localhost,IP:127.0.0.1"
+    [[ -n "${host_ip}" ]] && san="IP:${host_ip},${san}"
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 3650 \
+      -subj "/CN=$(hostname)" -addext "subjectAltName=${san}" \
+      -keyout "${dir}/key.pem" -out "${dir}/cert.pem" >>"${LOG_FILE}" 2>&1 \
+      || die "Could not generate the HTTPS certificate (see ${LOG_FILE})"
+    ok "Generated a self-signed certificate (${san})"
+    info "Browsers will warn once. To use your own, replace ${dir}/cert.pem and key.pem, then: docker restart hyperprox-nginx"
+  fi
+  chmod 644 "${dir}/cert.pem"; chmod 600 "${dir}/key.pem"
 }
 
 # ── Systemd Services ──────────────────────────────────────────────────────────
@@ -1060,6 +874,8 @@ Type=simple
 User=root
 WorkingDirectory=${HYPERPROX_DIR}/apps/api
 EnvironmentFile=${HYPERPROX_DIR}/.env
+# Reached through nginx on loopback; takes effect once the API reads API_BIND (it binds every interface now).
+Environment=API_BIND=127.0.0.1
 TimeoutStartSec=120
 ExecStartPre=${HYPERPROX_DIR}/bin/wait-for-vault
 ExecStart=$(which node) dist/index.js
@@ -1084,7 +900,8 @@ User=root
 WorkingDirectory=${HYPERPROX_DIR}/apps/frontend/.next/standalone/apps/frontend
 EnvironmentFile=${HYPERPROX_DIR}/.env
 Environment=PORT=${FRONTEND_PORT}
-Environment=HOSTNAME=0.0.0.0
+# Loopback only: browsers reach the frontend through nginx on https://<host>/.
+Environment=HOSTNAME=127.0.0.1
 ExecStart=$(which node) server.js
 Restart=always
 RestartSec=5
@@ -1109,7 +926,8 @@ User=root
 WorkingDirectory=${HYPERPROX_DIR}/apps/setup
 EnvironmentFile=${HYPERPROX_DIR}/.env
 Environment=PORT=${SETUP_PORT}
-Environment=HOSTNAME=0.0.0.0
+# Loopback only: the wizard is served through nginx at https://<host>/setup.
+Environment=SETUP_BIND=127.0.0.1
 ExecStart=$(which node) setup.js
 Restart=on-failure
 RestartSec=5
@@ -1172,7 +990,7 @@ start_services() {
   ok "Vault is up on https://127.0.0.1:8222"
 
   step "Starting Docker stack"
-  info "Pulling images and starting containers (vault, postgres, redis, prometheus, grafana, pve-exporter, nginx)..."
+  info "Pulling images and starting containers (postgres, redis, nginx, and the COMPOSE_PROFILES in .env)..."
   run_with_spinner "Starting Docker stack" \
     docker compose up -d --quiet-pull
   ok "Docker stack started"
@@ -1223,8 +1041,9 @@ print_summary() {
   # The wizard only answers requests carrying the setup key; the link carries it. Read from .env so a
   # re-run that kept an existing .env prints the key that is actually in force.
   SETUP_SECRET="$(grep -oP '^SETUP_SECRET=\K.*' "${ENV_FILE}" 2>/dev/null || true)"
-  echo -e "  ${C_CYAN}${C_BOLD}  http://${HOST_IP}:${SETUP_PORT}/?k=${SETUP_SECRET}${C_RESET}"
+  echo -e "  ${C_CYAN}${C_BOLD}  https://${HOST_IP}/setup?k=${SETUP_SECRET}${C_RESET}"
   echo -e "  ${C_DIM}Keep this link private - it is the key to the setup wizard.${C_RESET}"
+  echo -e "  ${C_DIM}The certificate is self-signed unless you supplied one, so the browser warns once.${C_RESET}"
   echo ""
   echo -e "  ${C_DIM}The wizard will guide you through:${C_RESET}"
   echo -e "  ${C_DIM}  • Connecting your Proxmox cluster${C_RESET}"
@@ -1232,7 +1051,7 @@ print_summary() {
   echo -e "  ${C_DIM}  • Configuring DNS and proxy providers${C_RESET}"
   echo ""
   echo -e "  ${C_BOLD}Then create the owner account${C_RESET}"
-  echo -e "  ${C_DIM}  HyperProx has no password of its own. After setup, open http://${HOST_IP}:3000/login to${C_RESET}"
+  echo -e "  ${C_DIM}  HyperProx has no password of its own. After setup, open https://${HOST_IP}/login to${C_RESET}"
   echo -e "  ${C_DIM}  create the owner vault account (email, master password, and a required 2FA code).${C_RESET}"
   echo -e "  ${C_DIM}  Check on it any time with: hyperprox status    Lock it now with: hyperprox lock${C_RESET}"
   echo -e "  ${C_DIM}  Details: docs/security.md. The vault admin token is VAULT_ADMIN_TOKEN in ${ENV_FILE}.${C_RESET}"
@@ -1262,8 +1081,9 @@ main() {
   configure_env
   configure_vault_env
   build_app
-  write_docker_compose
+  configure_compose
   write_monitoring_config
+  configure_tls
   write_systemd_services
   install_cli
   start_services

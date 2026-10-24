@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { alpha } from '@/lib/theme'
+import { GlobeIcon, SplitIcon, MailIcon, CheckCircleIcon, WrenchIcon, LockIcon } from '@/components/dns/icons'
 
 // ---------------------------------------------------------------------------
 //  Types
@@ -81,35 +82,35 @@ const EMPTY: DNSRecord = { type: 'A', name: '', data: '', ttl: 3600 }
 const INTENTS = [
   {
     id:    'point-server',
-    icon:  '🌐',
+    Icon:  GlobeIcon,
     title: 'Point to this server',
     desc:  'Create an A record pointing to your WAN IP',
     type:  'A' as const,
   },
   {
     id:    'subdomain',
-    icon:  '🔀',
+    Icon:  SplitIcon,
     title: 'Point subdomain elsewhere',
     desc:  'CNAME to another hostname or service',
     type:  'CNAME' as const,
   },
   {
     id:    'email',
-    icon:  '📧',
+    Icon:  MailIcon,
     title: 'Set up email',
     desc:  'Add MX records for your email provider',
     type:  'MX' as const,
   },
   {
     id:    'verify',
-    icon:  '✅',
+    Icon:  CheckCircleIcon,
     title: 'Verify domain ownership',
     desc:  'Add a TXT record for verification',
     type:  'TXT' as const,
   },
   {
     id:    'custom',
-    icon:  '🔧',
+    Icon:  WrenchIcon,
     title: 'Custom record',
     desc:  'Full control — all record types',
     type:  null,
@@ -295,7 +296,7 @@ function RecordModal({ record, domain, onClose, onSave, wanIp }: {
                 onMouseEnter={e => (e.currentTarget.style.borderColor = 'color-mix(in srgb, var(--accent) 25%, transparent)')}
                 onMouseLeave={e => (e.currentTarget.style.borderColor = 'var(--border-soft)')}
               >
-                <span style={{ fontSize: 20 }}>{i.icon}</span>
+                <span className="flex" style={{ color: 'var(--accent)' }}><i.Icon size={20} /></span>
                 <div>
                   <div className="text-base font-semibold" style={{ color: 'var(--text-bright)' }}>{i.title}</div>
                   <div className="text-sm mt-0.5" style={{ color: 'var(--text-dim)' }}>{i.desc}</div>
@@ -365,7 +366,7 @@ function RecordModal({ record, domain, onClose, onSave, wanIp }: {
             {intent === 'point-server' && (
               <div className="px-3 py-2 rounded text-sm flex items-center gap-2"
                 style={{ background: 'color-mix(in srgb, var(--accent) 6%, transparent)', border: '1px solid color-mix(in srgb, var(--accent) 25%, transparent)', color: 'var(--text-soft)' }}>
-                <span>🌐</span>
+                <span className="flex" style={{ color: 'var(--accent)' }}><GlobeIcon /></span>
                 <span>WAN IP pre-filled — edit if pointing to a different IP</span>
               </div>
             )}
@@ -561,7 +562,7 @@ function DomainCard({ domain, selected, recordCount, onSelect }: {
             {domain.domain}
           </span>
         </div>
-        {domain.locked && <span className="text-xs font-mono text-gray-600">🔒</span>}
+        {domain.locked && <span className="flex text-gray-600" title="Locked"><LockIcon size={13} /></span>}
       </div>
       <div className="flex items-center gap-3 text-xs">
         <span style={{ color: 'var(--text-dim)' }}>{recordCount} records</span>

@@ -646,10 +646,17 @@ export default function ProxyPage() {
   if (error) return (
     <div className="min-h-full flex items-center justify-center" style={{ background: "var(--ground)" }}>
       <div className="text-center">
-        <div className="text-4xl mb-4">���</div>
+        <div className="mb-4 flex justify-center" style={{ color: "var(--text-dimmer)" }}>
+          {/* A plug with nothing to plug into: the proxy manager this page fronts is not reachable. */}
+          <svg width="40" height="40" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M6 1.5v3M10 1.5v3" />
+            <rect x="3.5" y="4.5" width="9" height="5" rx="1" />
+            <path d="M8 9.5v3a2 2 0 0 0 2 2h1" />
+          </svg>
+        </div>
         <div className="font-display mb-2" style={{ color: "var(--text-bright)", fontSize: 28, fontWeight: 700 }}>NPM Not Connected</div>
         <div className="text-sm mb-6 max-w-sm" style={{ color: "var(--text-soft)" }}>{error}</div>
-        <a href="/settings" className="px-4 py-2 rounded text-xs font-mono" style={{ background: "color-mix(in srgb, var(--accent) 8%, transparent)", color: "var(--accent)", border: "1px solid color-mix(in srgb, var(--accent) 19%, transparent)" }}>Configure in Settings ���</a>
+        <a href="/settings" className="px-4 py-2 rounded text-xs font-mono" style={{ background: "color-mix(in srgb, var(--accent) 8%, transparent)", color: "var(--accent)", border: "1px solid color-mix(in srgb, var(--accent) 19%, transparent)" }}>Configure in Settings →</a>
       </div>
     </div>
   )

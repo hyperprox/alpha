@@ -331,7 +331,7 @@ CT_IP="$(pct exec "$CTID" -- hostname -I 2>/dev/null | awk '{print $1}')"
 echo
 printf '%s  HyperProx is ready%s\n' "$C_OK" "$C_OFF"
 echo
-echo "    Open       http://${CT_IP}"
+echo "    Open       https://${CT_IP}/   (self-signed certificate: the browser warns once)"
 echo "    Container  $CTID  (pct enter $CTID)"
 [ -n "$PASSWORD" ] && echo "    Root pw    $PASSWORD"
 echo
