@@ -889,7 +889,7 @@ export default function InfrastructurePage() {
                   <div className="flex gap-1.5 pt-1 border-t" style={{borderColor:'var(--border-dim)'}} onClick={e=>e.stopPropagation()}>
                     {!mayOperate ? null : isRunning ? (
                       <>
-                        <ActionBtn label="⏹ Stop"    color="var(--crit-2)" onClick={()=>quickAction(vm,'stop')}     disabled={isActing}/>
+                        <ActionBtn label="■ Stop"    color="var(--crit-2)" onClick={()=>quickAction(vm,'stop')}     disabled={isActing}/>
                         <ActionBtn label="↺ Reboot"  color="var(--violet-2)" onClick={()=>quickAction(vm,'reboot')}   disabled={isActing}/>
                       </>
                     ) : (
