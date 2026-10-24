@@ -6,7 +6,7 @@
 // =============================================================================
 
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
-import { getBroker, VaultAuthError, VaultSessionError, BootstrapNotPendingError, type VaultSession } from '../lib/vault/broker'
+import { getBroker, setVaultLogger, VaultAuthError, VaultSessionError, BootstrapNotPendingError, type VaultSession } from '../lib/vault/broker'
 import { isUnlocked, unlock, lock, touch } from '../lib/vault/state'
 import {
   addSession, removeSession, markReconfirmed, buildAuthCookie, isLocalCliRequest,
@@ -43,6 +43,8 @@ async function vaultStatus(): Promise<{ reachable: boolean; bootstrapped: boolea
 }
 
 export const authRoutes: FastifyPluginAsync = async (fastify) => {
+  // Which sign-in path ran (fast or CLI), how long it took, and why it fell back.
+  setVaultLogger({ info: m => fastify.log.info(m), warn: m => fastify.log.warn(m) })
 
   /** Register the vault session, unlock if locked, migrate on an Owner's unlock, issue the cookie. */
   async function startSession(req: FastifyRequest, reply: FastifyReply, vs: VaultSession) {

@@ -1,6 +1,6 @@
 // End to end: the real gate, auth routes and credential store on top of the real
 // broker, against a throwaway Vaultwarden over TLS (started the same way as
-// test/vault-broker.test.ts). Container `vgtest-gate-vw` on 127.0.0.1:18453, removed
+// test/vault-broker.test.ts). Container `abtest-vault-gate` on 127.0.0.1:18353, removed
 // afterwards (VG_TEST_KEEP=1 keeps it).
 import { describe, it, before, after } from 'node:test'
 import assert from 'node:assert/strict'
@@ -11,8 +11,8 @@ import os from 'node:os'
 import path from 'node:path'
 
 const IMAGE = 'vaultwarden/server:1.37.4@sha256:efb3cde962015fcc036b2ea625242248611943b27212ebf4392841fb30fad055'
-const NAME = 'vgtest-gate-vw'
-const PORT = 18453
+const NAME = 'abtest-vault-gate'
+const PORT = 18353
 const URL_ = `https://127.0.0.1:${PORT}`
 const ADMIN_TOKEN = crypto.randomBytes(24).toString('hex')
 const tlsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vgtest-gate-tls-'))
