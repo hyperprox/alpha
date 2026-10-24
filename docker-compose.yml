@@ -163,6 +163,9 @@ services:
       - ./config/nginx/conf.d:/etc/nginx/conf.d:ro
       # cert.pem + key.pem: self-signed by the installer unless you supply your own (gitignored, *.pem).
       - ./certs:/etc/nginx/certs:ro
+      # Per-install list of reverse proxies whose X-Forwarded-Proto is believed (see conf.d/hyperprox.conf).
+      # Under data/, so it is gitignored; an empty or missing directory means loopback only.
+      - ./data/nginx/trusted-proxies:/etc/nginx/trusted-proxies:ro
 
   nginx-proxy-manager:
     image: jc21/nginx-proxy-manager:latest

@@ -840,6 +840,8 @@ configure_tls() {
   step "Configuring HTTPS"
   local dir="${HYPERPROX_DIR}/certs" host_ip
   mkdir -p "${dir}"; chmod 755 "${dir}"
+  # Reverse proxies whose X-Forwarded-Proto nginx believes; empty means loopback only (see README, HTTPS).
+  mkdir -p "${HYPERPROX_DIR}/data/nginx/trusted-proxies"
   if [[ -s "${dir}/cert.pem" && -s "${dir}/key.pem" ]]; then
     ok "Using the certificate in ${dir}"
   else

@@ -68,20 +68,6 @@ location /grafana/ {
     proxy_set_header   X-Forwarded-Proto $hpx_proto;
 }
 
-# Prometheus has no authentication of its own: loopback and private networks only.
-location /prometheus/ {
-    proxy_pass         http://prometheus/;
-    proxy_http_version 1.1;
-    proxy_set_header   Connection        "";
-    proxy_set_header   Host              $host;
-    proxy_set_header   X-Real-IP         $remote_addr;
-    allow              127.0.0.0/8;
-    allow              10.0.0.0/8;
-    allow              172.16.0.0/12;
-    allow              192.168.0.0/16;
-    deny               all;
-}
-
 location / {
     proxy_pass         http://frontend;
     proxy_http_version 1.1;
