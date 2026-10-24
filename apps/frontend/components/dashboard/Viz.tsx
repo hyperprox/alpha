@@ -13,7 +13,7 @@
 //  teaches the reader that colour means nothing.
 // =============================================================================
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { alpha } from '@/lib/theme'
 
 export const ACCENT = 'var(--accent)'
@@ -100,7 +100,7 @@ export function Speedometer({
   })
 
   return (
-    <div className="flex flex-col items-center" style={{ width: size }}>
+    <div className="flex flex-col items-center" style={{ minWidth: size, maxWidth: size * 1.3 }}>
       <svg width={size} height={size * 0.86} viewBox={`0 0 ${size} ${size * 0.86}`} role="img"
         aria-label={`${label} ${Math.round(pct)}${unit}`}>
         {/* Zone track — dim, so the live arc reads as the foreground */}
@@ -129,17 +129,19 @@ export function Speedometer({
 
         {/* Readout sits in the dial's open bottom, where the sweep leaves room */}
         <text x={cx} y={cy + r * 0.58} textAnchor="middle" fill={c}
-          fontSize={size * 0.19} fontWeight={700} fontFamily="IBM Plex Mono, monospace"
+          fontSize={size * 0.2} fontWeight={700} fontFamily="IBM Plex Mono, monospace"
           stroke="var(--ground)" strokeWidth={size * 0.035} paintOrder="stroke"
           style={{ fontVariantNumeric: 'tabular-nums' }}>
-          {Math.round(safe)}<tspan fontSize={size * 0.1} fill={`${alpha(c, 56)}`}>{unit}</tspan>
+          {/* The unit is a clear step down from the digits, not a speck beside them, and
+              sits a little apart so "42%" does not read as one crowded glyph run. */}
+          {Math.round(safe)}{unit && <tspan dx={size * 0.025} fontSize={size * 0.14} fontWeight={600} fill={`${alpha(c, 75)}`}>{unit}</tspan>}
         </text>
       </svg>
-      <div className="font-mono uppercase tracking-widest text-gray-500" style={{ fontSize: Math.max(9, size * 0.075), marginTop: -2 }}>
+      <div className="font-mono uppercase tracking-widest text-gray-500" style={{ fontSize: Math.max(12, size * 0.1), marginTop: -2 }}>
         {label}
       </div>
       {caption && (
-        <div className="font-mono text-gray-600 text-center" style={{ fontSize: Math.max(8, size * 0.068), marginTop: 2 }}>
+        <div className="font-mono text-gray-500 text-center" style={{ fontSize: Math.max(12, size * 0.1), marginTop: 2, lineHeight: 1.3 }}>
           {caption}
         </div>
       )}
@@ -160,6 +162,11 @@ export function Sparkline({
   /** 'zero' keeps the scale honest for rates; 'min' shows shape for slow-moving levels. */
   baseline?: 'zero' | 'min'
 }) {
+  // The id has to be a plain token. It used to be built from the colour, which is
+  // `var(--accent)` here: `url(#sg-var(--accent)-…)` is not a valid reference, the
+  // whole fill declaration was dropped, and the polygon fell back to solid black.
+  const gid = `sg-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`
+
   if (data.length < 2) {
     return <div style={{ width, height }} className="flex items-end">
       <div className="w-full border-b border-dashed" style={{ borderColor: 'var(--text-faint)' }} />
@@ -173,17 +180,18 @@ export function Sparkline({
   const y    = (v: number) => height - 2 - ((v - lo) / span) * (height - 4)
 
   const pts  = data.map((v, i) => `${(i * step).toFixed(1)},${y(v).toFixed(1)}`).join(' ')
-  const id   = `sg-${color.replace('#', '')}-${width}-${height}`
 
   return (
     <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
       <defs>
-        <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%"   stopColor={color} stopOpacity={0.35} />
-          <stop offset="100%" stopColor={color} stopOpacity={0} />
+        {/* stop-color through style: a var() reference resolves there in every browser,
+            and the gradient follows the line colour in either theme. */}
+        <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%"   style={{ stopColor: color }} stopOpacity={0.35} />
+          <stop offset="100%" style={{ stopColor: color }} stopOpacity={0} />
         </linearGradient>
       </defs>
-      {fill && <polygon points={`0,${height} ${pts} ${width},${height}`} fill={`url(#${id})`} />}
+      {fill && <polygon points={`0,${height} ${pts} ${width},${height}`} fill={`url(#${gid})`} />}
       <polyline points={pts} fill="none" stroke={color} strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" />
       <circle cx={width} cy={y(data[data.length - 1])} r={2} fill={color} />
     </svg>
@@ -249,7 +257,7 @@ export function Meter({
   const c = zoneColor(p, color)
   return (
     <div>
-      <div className="flex items-baseline justify-between font-mono mb-1" style={{ fontSize: 11 }}>
+      <div className="flex items-baseline justify-between font-mono mb-1" style={{ fontSize: 12 }}>
         <span className="text-gray-500 uppercase tracking-wider">{label}</span>
         <span className="text-gray-600" style={{ fontVariantNumeric: 'tabular-nums' }}>
           {fmt(used ?? 0)} <span className="text-gray-700">/ {fmt(total ?? 0)}</span>
@@ -259,7 +267,7 @@ export function Meter({
         <div className="h-1.5 rounded-full overflow-hidden flex-1" style={{ background: 'var(--border-strong)' }}>
           <div className="h-full rounded-full" style={{ width: `${Math.min(p, 100)}%`, background: c, boxShadow: `0 0 8px ${alpha(c, 38)}`, transition: 'width .6s cubic-bezier(.22,1,.36,1)' }} />
         </div>
-        <span className="font-mono font-semibold" style={{ color: c, fontSize: 11, width: 32, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{p}%</span>
+        <span className="font-mono font-semibold" style={{ color: c, fontSize: 12, width: 38, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{p}%</span>
       </div>
       {spark && spark.length > 1 && (
         <div className="mt-1"><Sparkline data={spark} color={c} width={240} height={18} /></div>
