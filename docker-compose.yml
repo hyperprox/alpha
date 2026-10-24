@@ -141,12 +141,14 @@ services:
     networks:
       - hyperprox-net
 
+  # The front door: https on 443 (http on 80 redirects). Host networking, so the API, frontend and setup
+  # wizard - systemd services on the host - are reached on loopback and can stay bound to 127.0.0.1
+  # instead of every interface. It listens on 80 and 443 directly; there is no port mapping.
   nginx:
     image: nginx:alpine
     container_name: hyperprox-nginx
     restart: unless-stopped
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    network_mode: host
     volumes:
       - ./config/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       # Mounting the whole directory is deliberate: it replaces the image's
@@ -154,11 +156,8 @@ services:
       # otherwise load instead of ours — serving /usr/share/nginx/html and
       # 404ing every route.
       - ./config/nginx/conf.d:/etc/nginx/conf.d:ro
-    ports:
-      - "80:80"
-      - "443:443"
-    networks:
-      - hyperprox-net
+      # cert.pem + key.pem: self-signed by the installer unless you supply your own (gitignored, *.pem).
+      - ./certs:/etc/nginx/certs:ro
 
   nginx-proxy-manager:
     image: jc21/nginx-proxy-manager:latest
