@@ -4,8 +4,9 @@
 //  Locked by default: a restart is always locked. The first successful sign-in
 //  calls unlock(), which loads the HyperProx collection into memory and makes a
 //  fresh random session-signing key. lock() — on idle timeout, on request, or at
-//  startup — drops the cache, zeroes the key, signs out every vault session and
-//  deletes every CLI data dir, so every issued session becomes unverifiable.
+//  startup — drops the cache, zeroes the key, signs out every vault session
+//  (zeroing a fast session's keys, deleting a CLI session's data dir), so every
+//  issued session becomes unverifiable.
 // =============================================================================
 
 import crypto from 'node:crypto'
