@@ -113,7 +113,7 @@ export async function registerGate(server: FastifyInstance): Promise<void> {
   server.setErrorHandler((err, req, reply) => {
     if (err instanceof VaultSessionError) {
       if (req.session) removeSession(req.session.sid)
-      reply.header('Set-Cookie', buildAuthCookie('', 0))
+      reply.header('Set-Cookie', buildAuthCookie('', 0, req.headers))
       return reply.status(401).send({ ok: false, code: 'session_expired', error: 'Your vault session has ended — sign in again' })
     }
     if ((err as Error)?.name === 'VaultLockedError') return reply.status(423).send({ ok: false, locked: true })

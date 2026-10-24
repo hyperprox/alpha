@@ -69,7 +69,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       { sid: vs.sid, email: vs.email, role: vs.role },
       { expiresIn: `${SESSION_SECONDS}s` } as any,
     )
-    reply.header('Set-Cookie', buildAuthCookie(token, SESSION_SECONDS))
+    reply.header('Set-Cookie', buildAuthCookie(token, SESSION_SECONDS, req.headers))
     return { ok: true, user: { email: vs.email, role: vs.role }, expiresIn: SESSION_SECONDS, ...(migration ? { migration } : {}) }
   }
 
@@ -153,7 +153,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
   // POST /api/auth/sign-out — end this session (HyperProx stays unlocked for others until idle)
   fastify.post('/sign-out', async (req, reply) => {
     const s = req.session
-    reply.header('Set-Cookie', buildAuthCookie('', 0))
+    reply.header('Set-Cookie', buildAuthCookie('', 0, req.headers))
     if (s) {
       removeSession(s.sid)
       try { await getBroker().signOut(s.sid) } catch (e: any) { req.log.warn({ err: e?.message }, '[auth] vault sign-out failed') }
@@ -165,7 +165,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
   // Owner/admin session, or `hyperprox lock` from the host itself (loopback, no cookie, not proxied).
   // 200 when it locked; 423 when HyperProx was already locked.
   fastify.post('/lock', async (req, reply) => {
-    reply.header('Set-Cookie', buildAuthCookie('', 0))
+    reply.header('Set-Cookie', buildAuthCookie('', 0, req.headers))
     if (!isUnlocked()) return reply.status(423).send({ ok: false, locked: true, error: 'HyperProx is already locked' })
     const viaCli = isLocalCliRequest(req.socket?.remoteAddress, req.headers as Record<string, any>)
     if (!viaCli) {
