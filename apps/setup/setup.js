@@ -144,38 +144,61 @@ function pveCall(host, port, method, path, form, auth) {
 }
 
 /**
- * The one token name this install uses. Deterministic, so re-running the connect step finds the token it
- * made last time instead of minting another `hyperprox-<host>-<random>` on every attempt. Per container
- * hostname, so a second HyperProx on the same cluster (a test install, a rebuild under another name) never
- * touches the key the first one is running on.
+ * This install's own id: short, random, generated once and kept in .env as HYPERPROX_INSTALL_ID. The
+ * hostname alone does not tell installs apart - bootstrap.sh names every container `hyperprox` - so two
+ * default installs on one cluster would otherwise share a token name and the second would revoke the
+ * first's key.
  */
-function tokenName(hostname = require('os').hostname()) {
-  const h = String(hostname).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 20) || 'install'
-  return `hyperprox-${h}`
+function installId() {
+  const saved = readEnv().HYPERPROX_INSTALL_ID || ''
+  if (/^[a-f0-9]{8}$/.test(saved)) return saved
+  const id = crypto.randomBytes(4).toString('hex')
+  writeEnv({ HYPERPROX_INSTALL_ID: id })
+  return id
+}
+
+/**
+ * The one token name this install uses: `hyperprox-<host>-<install id>`. Fixed for the life of the install,
+ * so re-running the connect step finds the token it made last time instead of minting another one on every
+ * attempt, and unique to it, so it never names a token another HyperProx on the same cluster runs on.
+ */
+function tokenName(hostname, id) {
+  const h = String(hostname).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 16) || 'install'
+  return `hyperprox-${h}-${id}`
+}
+
+/** The token comment carries the install id; it is what proves a token is this install's own to replace. */
+function tokenComment(hostname, id) {
+  return `HyperProx on ${hostname} [install ${id}] (created by the setup wizard)`
 }
 
 /**
  * Leave HyperProx holding a working token while changing as little on the cluster as possible:
  *   reuse    - the token HyperProx already holds for this user still authenticates; nothing is changed
  *   create   - no token called `name` exists yet
- *   recreate - `name` exists but HyperProx no longer holds a working secret for it (the secret is only ever
- *              shown once): delete that one token and make it again. It is HyperProx's own, by name.
- * No other token is ever deleted. `pve` is the cluster as seen through the user's session:
- * { listTokens(), createToken(name), deleteToken(name), tokenWorks(fullTokenId, secret) }.
+ *   recreate - `name` exists, its comment carries this install's id, and HyperProx no longer holds a
+ *              working secret for it (the secret is only ever shown once): delete that one token and make
+ *              it again.
+ * A token of that name without this install's id in its comment is refused, never replaced, and no other
+ * token is ever deleted. `pve` is the cluster as seen through the user's session:
+ * { listTokens(), createToken(name, comment), deleteToken(name), tokenWorks(fullTokenId, secret) }.
  * `held` is what .env records for this same host: { tokenId: 'user@realm!name', secret }, or null.
  */
-async function ensureToken(pve, { userid, name, held }) {
+async function ensureToken(pve, { userid, name, held, installId: id, comment }) {
   if (held && held.tokenId && held.secret && held.tokenId.startsWith(`${userid}!`)
       && await pve.tokenWorks(held.tokenId, held.secret)) {
     return { action: 'reuse', tokenId: held.tokenId, tokenSecret: held.secret }
   }
-  const existing = (await pve.listTokens()) || []
+  const existing = ((await pve.listTokens()) || []).find(t => t && t.tokenid === name)
   let action = 'create'
-  if (existing.some(t => t && t.tokenid === name)) {
+  if (existing) {
+    if (!id || !String(existing.comment || '').includes(`[install ${id}]`)) {
+      throw new Error(`A Proxmox token named ${userid}!${name} already exists and was not made by this HyperProx, so it was left alone. Remove it in Proxmox, or paste a token under Advanced.`)
+    }
     await pve.deleteToken(name)
     action = 'recreate'
   }
-  const tok = await pve.createToken(name)
+  const tok = await pve.createToken(name, comment)
   if (!tok || !tok.value) throw new Error('Proxmox created the token but returned no secret')
   return { action, tokenId: tok['full-tokenid'] || `${userid}!${name}`, tokenSecret: tok.value }
 }
@@ -193,7 +216,7 @@ async function tokenWorks(host, port, tokenId, tokenSecret) {
 
 /**
  * Connect with the same login as the Proxmox web interface. Signs in once, makes sure HyperProx holds its
- * own API token `<user>!hyperprox-<host>` with the user's privileges (see ensureToken), tests it, and
+ * own API token `<user>!hyperprox-<host>-<install id>` with the user's privileges (see ensureToken), tests it, and
  * returns it. The password and the session ticket are used for these calls only and never stored.
  */
 async function connectWithLogin(host, port, username, password, otp, held = null) {
@@ -208,11 +231,14 @@ async function connectWithLogin(host, port, username, password, otp, held = null
   const pve = {
     listTokens:  () => pveCall(host, port, 'GET', tokens, null, auth),
     deleteToken: (name) => pveCall(host, port, 'DELETE', `${tokens}/${encodeURIComponent(name)}`, null, auth),
-    createToken: (name) => pveCall(host, port, 'POST', `${tokens}/${encodeURIComponent(name)}`,
-      { privsep: '0', comment: `HyperProx on ${require('os').hostname()} (created by the setup wizard)` }, auth),
+    createToken: (name, comment) => pveCall(host, port, 'POST', `${tokens}/${encodeURIComponent(name)}`,
+      { privsep: '0', comment }, auth),
     tokenWorks:  (id, secret) => tokenWorks(host, port, id, secret),
   }
-  const { tokenId, tokenSecret, action } = await ensureToken(pve, { userid, name: tokenName(), held })
+  const hostname = require('os').hostname()
+  const id = installId()
+  const { tokenId, tokenSecret, action } = await ensureToken(pve,
+    { userid, name: tokenName(hostname, id), held, installId: id, comment: tokenComment(hostname, id) })
   console.log(`[setup] Proxmox token ${tokenId}: ${action}`)
   const cluster = await testProxmox(host, port, tokenId, tokenSecret)
   return { tokenId, tokenSecret, cluster }
@@ -1123,7 +1149,7 @@ const server = http.createServer(async (req, res) => {
   }
 })
 
-module.exports = { tokenName, ensureToken, heldToken, resumeStep, composeProfiles }
+module.exports = { tokenName, tokenComment, ensureToken, heldToken, resumeStep, composeProfiles }
 
 if (require.main === module) {
   setupSecret()
