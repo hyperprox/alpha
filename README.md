@@ -155,6 +155,8 @@ Then, inside the container, clone and run the installer as shown above.
 HyperProx is served by its bundled nginx on `https://<container-ip>/`; plain http
 on port 80 redirects there. The app's own services listen on loopback only and
 are reached through nginx, WebSockets (live updates, the terminal) included.
+Grafana is served on the same origin at `/grafana/`, so the Monitoring page can
+embed it.
 
 The installer generates a self-signed certificate when you have not supplied one,
 so the browser warns once. To use your own, put the full chain in
