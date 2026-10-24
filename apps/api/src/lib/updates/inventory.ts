@@ -22,6 +22,17 @@ export interface InventoryOptions {
   rebootPending?: Set<string>
   /** How HyperProx recognises its own guest when the policy does not say. */
   hostname?: string
+  /** Longest one node or one guest may take before its row reports it and the read moves on. */
+  itemDeadlineMs?: number
+}
+
+const ITEM_DEADLINE_MS = 4 * 60_000
+
+/** The read's own answer, or `late` once the deadline passes, so one stuck machine cannot hold the page. */
+function withDeadline<R>(work: Promise<R>, ms: number, late: () => R): Promise<R> {
+  let timer: NodeJS.Timeout
+  const deadline = new Promise<R>(resolve => { timer = setTimeout(() => resolve(late()), ms) })
+  return Promise.race([work, deadline]).finally(() => clearTimeout(timer))
 }
 
 /** Facts from the node shell, kept beside the inventory for the gates. */
@@ -121,6 +132,29 @@ async function readGuest(exec: UpdatesExecutor, policy: Policy, g: GuestListing,
   return out
 }
 
+// Rows for a machine that did not answer in time: unmanaged and flagged, never "nothing pending".
+function unansweredNode(policy: Policy, node: { name: string; online: boolean }, selfNode: string | null,
+                        rebootPending: Set<string>, error: string): UpdatesNode {
+  const pol = nodePolicy(policy, node.name)
+  return {
+    node: node.name, online: node.online, pending: [], cephPending: false, kernelPending: false,
+    rebootRequired: false, rebootPending: rebootPending.has(node.name),
+    policy: nodePolicyView(policy, node.name),
+    holdsOk: pol.requireHolds.length ? false : null,
+    pinOk: pol.requirePin ? false : null,
+    isSelf: node.name === selfNode, error,
+  }
+}
+
+function unansweredGuest(policy: Policy, g: GuestListing, haSids: Set<string>, error: string): UpdatesGuest {
+  return {
+    vmid: g.vmid, type: g.type, name: g.name, node: g.node, running: g.running,
+    managed: false, pending: [], rebootRequired: false,
+    haManaged: haSids.has(`${g.type === 'lxc' ? 'ct' : 'vm'}:${g.vmid}`),
+    snapshotCapable: false, docker: guestPolicy(policy, g.vmid).docker, error,
+  }
+}
+
 async function inBatches<T, R>(items: T[], size: number, fn: (t: T) => Promise<R>): Promise<R[]> {
   const out: R[] = []
   for (let i = 0; i < items.length; i += size) out.push(...await Promise.all(items.slice(i, i + size).map(fn)))
@@ -137,14 +171,20 @@ export async function readInventory(exec: UpdatesExecutor, policy: Policy, opts:
   const self = findSelfGuest(guests, policy, opts.hostname)
   const haSet = new Set(haSids)
 
-  const nodeRows = await Promise.all(status.nodes.map(n => readNode(exec, policy, n, self?.node ?? null, opts.rebootPending ?? new Set())))
+  const limit = opts.itemDeadlineMs ?? ITEM_DEADLINE_MS
+  const lateNote = `no answer within ${Math.round(limit / 1000)} s`
+  const pendingSet = opts.rebootPending ?? new Set<string>()
+  const nodeRows = await Promise.all(status.nodes.map(n => withDeadline(
+    readNode(exec, policy, n, self?.node ?? null, pendingSet), limit,
+    () => ({ node: unansweredNode(policy, n, self?.node ?? null, pendingSet, lateNote), facts: null }),
+  )))
   const onlineNodes = new Set(status.nodes.filter(n => n.online).map(n => n.name))
   const guestRows = await inBatches(guests.sort((a, b) => a.vmid - b.vmid), 6, async g => {
     if (!onlineNodes.has(g.node)) {
       const row = await readGuest(exec, policy, { ...g, running: false }, haSet)
       return { ...row, error: 'its node is offline' }
     }
-    return readGuest(exec, policy, g, haSet)
+    return withDeadline(readGuest(exec, policy, g, haSet), limit, () => unansweredGuest(policy, g, haSet, lateNote))
   })
 
   return {
