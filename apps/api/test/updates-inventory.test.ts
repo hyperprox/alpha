@@ -74,3 +74,16 @@ test('inventory changes nothing', async () => {
   const writes = /^POST apt\/update$|^guest:(apt|refresh|docker|check)$|^snapshot|apt-get|systemctl (reboot|restart)|noout|ha-manager|systemd-run/
   assert.deepEqual(f.calls.filter(c => writes.test(c.cmd)), [])
 })
+
+test('a guest that never answers is reported after the deadline instead of holding the whole read', async () => {
+  const f = fake()
+  const real = f.guestExec.bind(f)
+  f.guestExec = ((g: any, ...rest: any[]) => g.vmid === 101 ? new Promise(() => {}) : real(g, ...rest)) as any
+  const started = Date.now()
+  const { inventory } = await readInventory(f, policy, { itemDeadlineMs: 200 })
+  assert.ok(Date.now() - started < 5_000, 'the read finished')
+  const stuck = inventory.guests.find(g => g.vmid === 101)!
+  assert.equal(stuck.managed, false)
+  assert.match(stuck.error!, /no answer within/)
+  assert.ok(inventory.guests.some(g => g.vmid !== 101 && g.managed), 'the other guests were still read')
+})

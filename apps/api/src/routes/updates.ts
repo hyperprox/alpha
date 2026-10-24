@@ -89,6 +89,8 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
     const exec   = deps.exec ?? productionExecutor()
     const loadPolicy = deps.loadPolicy ?? (() => loadPolicyFile())
     let cached: UpdatesInventory | null = null
+    // The page asks for the inventory and the plan at once; both share one read of the cluster.
+    let reading: Promise<UpdatesInventory> | null = null
 
     const runner = new UpdatesRunner({
       store, exec, loadPolicy,
@@ -119,9 +121,12 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       // While a job is active the runner keeps the cache current; a page refresh must not
       // send a second round of reads into guests mid-upgrade.
       if (cached && await store.activeJob()) return cached
-      const r = await readInventory(exec, loadPolicy().policy, { rebootPending: runner.rebootPending, hostname: deps.hostname })
-      cached = r.inventory
-      return cached
+      if (!reading) {
+        reading = readInventory(exec, loadPolicy().policy, { rebootPending: runner.rebootPending, hostname: deps.hostname })
+          .then(r => { cached = r.inventory; return r.inventory })
+          .finally(() => { reading = null })
+      }
+      return reading
     }
 
     fastify.get('/policy', async () => policyStatus(loadPolicy()))

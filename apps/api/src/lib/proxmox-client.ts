@@ -76,7 +76,12 @@ export class ProxmoxClient {
   }
 
   private request<T>(path: string, method: string, body: string | undefined, timeoutMs: number): Promise<{ status: number; data: T; message?: string }> {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolveP, rejectP) => {
+      // Exactly one outcome, whichever way the request ends. Listening only for the body's 'end' left a
+      // promise pending forever when a connection was cut mid-answer: no event, no timer, no handle.
+      let settled = false
+      const resolve = (v: { status: number; data: T; message?: string }) => { if (!settled) { settled = true; resolveP(v) } }
+      const reject  = (e: Error) => { if (!settled) { settled = true; rejectP(e) } }
       const url  = new URL(`${this.baseUrl}${path}`)
       const opts: https.RequestOptions = {
         hostname: url.hostname, port: url.port,
@@ -89,6 +94,9 @@ export class ProxmoxClient {
       }
       const req = https.request(opts, (res) => {
         let data = ''
+        res.on('error', reject)
+        res.on('aborted', () => reject(new Error(`Proxmox ${method} ${path}: the connection closed mid-answer`)))
+        res.on('close', () => reject(new Error(`Proxmox ${method} ${path}: the connection closed before the answer finished`)))
         res.on('data', (c) => { data += c })
         res.on('end', () => {
           const status = res.statusCode ?? 0
@@ -106,6 +114,7 @@ export class ProxmoxClient {
       // A hung request must fail, not stall whatever is waiting on it.
       req.setTimeout(timeoutMs, () => req.destroy(new Error(`Proxmox ${method} ${path}: no answer within ${Math.round(timeoutMs / 1000)}s`)))
       req.on('error', reject)
+      req.on('close', () => reject(new Error(`Proxmox ${method} ${path}: the connection closed without an answer`)))
       if (body) req.write(body)
       req.end()
     })
