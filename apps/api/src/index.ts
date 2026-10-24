@@ -26,6 +26,7 @@ import { terminalRoutes }             from './routes/terminal'
 import { pluginRoutes }           from './routes/plugins'
 import { catalogueRoutes } from './routes/catalogue'
 import { terminalWsRoutes }           from './routes/terminal-ws'
+import { updatesRoutes }        from './routes/updates'
 import { prismaPlugin }         from './plugins/prisma'
 import { redisPlugin }          from './plugins/redis'
 import { registerGate }         from './lib/gate'
@@ -74,6 +75,7 @@ async function main() {
   await server.register(terminalRoutes,           { prefix: '/api/terminal' })
   await server.register(pluginRoutes,          { prefix: '/api/plugins' })
   await server.register(catalogueRoutes,      { prefix: '/api/catalogue' })
+  await server.register(updatesRoutes,        { prefix: '/api/updates' })
   await server.register(wsRoutes,             { prefix: '/ws' })
   // Terminal sockets live under /ws because nginx proxies upgrades only there.
   await server.register(terminalWsRoutes,         { prefix: '/ws/terminal' })
