@@ -32,9 +32,6 @@ API_PORT="3002"
 FRONTEND_PORT="3000"
 LOG_FILE="/var/log/hyperprox-install.log"
 
-# ── Root check ────────────────────────────────────────────────────────────────
-[[ $EUID -ne 0 ]] && die "Run as root: sudo bash install.sh"
-
 # Initialise log file — try /var/log, fall back to home dir
 mkdir -p /var/log 2>/dev/null || true
 if ! touch "${LOG_FILE}" 2>/dev/null; then
@@ -72,6 +69,10 @@ ok()      { echo -e "   ${C_GREEN}✓${C_RESET}  $1"; }
 warn()    { echo -e "   ${C_YELLOW}⚠${C_RESET}  $1"; }
 info()    { echo -e "   ${C_DIM}→  $1${C_RESET}"; }
 die()     { echo -e "\n   ${C_RED}✗  ERROR: $1${C_RESET}"; echo -e "   ${C_DIM}Full log: ${LOG_FILE}${C_RESET}\n"; exit 1; }
+
+# ── Root check ────────────────────────────────────────────────────────────────
+# After die() exists: before, a non-root run failed with "die: command not found" instead of the message.
+[[ $EUID -ne 0 ]] && die "Run as root: sudo bash install.sh"
 
 confirm() {
   # Default to yes when running non-interactively (curl | bash)
@@ -196,11 +197,19 @@ detect_environment() {
 }
 
 # ── Network Configuration ─────────────────────────────────────────────────────
+# True when $1 (a resolv.conf) sends lookups to Tailscale's MagicDNS resolver, 100.100.100.100 or its IPv6
+# twin. Only nameserver lines count. The old test grepped the whole file for "ts.net", so a container
+# resolving through 1.1.1.1 that merely inherited a tailnet search domain from its Proxmox host (or a
+# comment naming Tailscale) was "fixed" too. A search domain on its own breaks nothing.
+resolv_uses_magicdns() {
+  grep -qE '^[[:space:]]*nameserver[[:space:]]+(100\.100\.100\.100|fd7a:115c:a1e0::53)([[:space:]]|$)' "$1" 2>/dev/null
+}
+
 configure_network() {
-  # Fix broken DNS — PVE sometimes injects Tailscale DNS into LXC resolv.conf
-  # which fails if Tailscale isn't running in the CT
-  if grep -q "100\.100\.100\.100\|taila\|ts\.net" /etc/resolv.conf 2>/dev/null; then
-    warn "Detected Proxmox-injected Tailscale DNS — replacing with public resolvers"
+  # Fix broken DNS: Proxmox can hand a container its host's Tailscale resolver, which answers nothing
+  # unless Tailscale also runs in the container. Where it does run, MagicDNS works and is left alone.
+  if resolv_uses_magicdns /etc/resolv.conf && ! systemctl is-active --quiet tailscaled 2>/dev/null; then
+    warn "Detected the Tailscale DNS resolver without Tailscale running here — replacing with public resolvers"
     cat > /etc/resolv.conf <<'EOF'
 nameserver 1.1.1.1
 nameserver 8.8.8.8
