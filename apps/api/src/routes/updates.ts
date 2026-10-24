@@ -137,22 +137,25 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       catch (e) { return sendError(reply, e) }
     })
 
-    fastify.get('/plan', async (_req, reply) => {
+    fastify.get<{ Querystring: { scope?: string } }>('/plan', async (req, reply) => {
       try {
         const load = loadPolicy()
         const inv = await inventory(false)
         return buildPlan(inv, load.policy, {
+          scope: req.query.scope === 'guests' ? 'guests' : 'all',
           selfVmid: selfVmidOf(inv, load.policy, deps.hostname),
           policyNote: load.loaded ? undefined : `${load.error ?? 'No policy file'} — this plan uses the built-in safe defaults.`,
         })
       } catch (e) { return sendError(reply, e) }
     })
 
-    fastify.post<{ Body: { mode?: string } }>('/jobs', async (req, reply) => {
+    fastify.post<{ Body: { mode?: string; scope?: string } }>('/jobs', async (req, reply) => {
       const mode = req.body?.mode
       if (mode !== 'run' && mode !== 'dry-run') return reply.status(400).send({ error: "mode must be 'run' or 'dry-run'" })
+      const scope = req.body?.scope ?? 'all'
+      if (scope !== 'all' && scope !== 'guests') return reply.status(400).send({ error: "scope must be 'all' or 'guests'" })
       try {
-        const job = await runner.start(mode, 'manual', req.session?.email)
+        const job = await runner.start(mode, 'manual', req.session?.email, scope)
         return reply.status(201).send({ job: jobView(job, await store.getSteps(job.id)) })
       } catch (e) { return sendError(reply, e) }
     })

@@ -35,6 +35,8 @@ export interface PlanContext {
   selfVmid?: number | null
   /** Shown first when the plan was built without a usable policy file. */
   policyNote?: string
+  /** `guests`: plan the guests and nothing else. Default `all`. */
+  scope?: 'all' | 'guests'
 }
 
 /** Node order: `first` nodes, then the rest, then `last` nodes, each alphabetical; HyperProx's node at the very end. */
@@ -100,7 +102,8 @@ export function buildPlan(inv: UpdatesInventory, policy: Policy, ctx: PlanContex
 
   // --- Nodes: what can be planned at all -----------------------------------------------
   const ordered = orderNodes(inv.nodes, policy)
-  let nodePhase = true
+  const guestsOnly = ctx.scope === 'guests'
+  let nodePhase = !guestsOnly
   for (const n of ordered) {
     if (!n.online) { warnings.push(`${n.node} is offline — the run's preflight will stop`); nodePhase = false }
     else if (n.error) warnings.push(`${n.node}: ${n.error}`)
@@ -145,6 +148,7 @@ export function buildPlan(inv: UpdatesInventory, policy: Policy, ctx: PlanContex
   }
   if (selfNodeReboot) add(selfNodeReboot, 'self', `${DETAIL.selfReboot} — HyperProx's own node, through a handoff from another node`)
 
+  if (guestsOnly) warnings.push('Guests only: nodes and Ceph are left exactly as they are.')
   if (!steps.length) warnings.push('Nothing to do: every managed machine is current.')
-  return { steps, warnings }
+  return { steps, warnings, scope: guestsOnly ? 'guests' : 'all' }
 }

@@ -134,7 +134,7 @@ export class UpdatesRunner {
   //  Public operations
   // ===========================================================================
 
-  async start(mode: 'run' | 'dry-run', trigger: 'manual' | 'schedule' = 'manual', actor?: string): Promise<JobRecord> {
+  async start(mode: 'run' | 'dry-run', trigger: 'manual' | 'schedule' = 'manual', actor?: string, scope: 'all' | 'guests' = 'all'): Promise<JobRecord> {
     const load = this.deps.loadPolicy()
     if (mode === 'run' && !load.loaded) throw new PolicyRequiredError(load.error)
     if (mode === 'run') {
@@ -147,9 +147,9 @@ export class UpdatesRunner {
       status: 'running',
       plan: { steps: [], warnings: [] },
     })
-    await this.store.audit(`updates.job.${mode === 'dry-run' ? 'dry-run' : 'start'}`, job.id, { trigger, by: actor ?? 'scheduler' })
+    await this.store.audit(`updates.job.${mode === 'dry-run' ? 'dry-run' : 'start'}`, job.id, { trigger, scope, by: actor ?? 'scheduler' })
     await this.emitJob(job)
-    this.drive(job.id, () => this.prepare(job.id, mode, trigger))
+    this.drive(job.id, () => this.prepare(job.id, mode, trigger, scope))
     return job
   }
 
@@ -263,7 +263,9 @@ export class UpdatesRunner {
   //  Preparation: preflight, refresh, plan
   // ===========================================================================
 
-  private async prepare(jobId: string, mode: 'run' | 'dry-run', trigger: 'manual' | 'schedule'): Promise<void> {
+  // The scope only shapes the plan: a run executes the steps stored with it, so a guests-only run stays
+  // guests-only through a pause, a resume or a restart.
+  private async prepare(jobId: string, mode: 'run' | 'dry-run', trigger: 'manual' | 'schedule', scope: 'all' | 'guests' = 'all'): Promise<void> {
     const load = this.deps.loadPolicy()
     const policy = load.policy
     const policyNote = load.loaded ? undefined : `${load.error ?? 'No policy file'} — this plan uses the built-in safe defaults.`
@@ -282,7 +284,7 @@ export class UpdatesRunner {
     if (mode === 'dry-run') {
       // A dry run reads what is already known and executes nothing — not even `apt update`.
       const inv = box.inv ?? await this.inventory(policy).catch(() => null)
-      const plan = inv ? buildPlan(inv.inventory, policy, { selfVmid: this.selfVmid(inv, policy), policyNote }) : { steps: [], warnings: ['Inventory could not be read'] }
+      const plan = inv ? buildPlan(inv.inventory, policy, { selfVmid: this.selfVmid(inv, policy), policyNote, scope }) : { steps: [], warnings: ['Inventory could not be read'] }
       await this.setJob(jobId, { plan })
       const verdict = pre.status === 'ok' ? 'preflight passed' : `preflight would stop the run: ${pre.reason}`
       await this.finish(jobId, 'done', undefined, {
@@ -298,9 +300,11 @@ export class UpdatesRunner {
     const [refresh] = await this.store.addSteps(jobId, [{ seq: 2, target: 'cluster', action: 'refresh', detail: 'apt update on every node and managed guest, then re-read' }])
     const ref = await this.runStep(jobId, refresh, async (log) => {
       const lines: string[] = []
-      for (const n of box.inv!.inventory.nodes.filter(x => x.online)) {
-        await this.exec.nodeAptRefresh(n.node)
-        log(`${n.node}: apt update done`)
+      if (scope === 'all') {
+        for (const n of box.inv!.inventory.nodes.filter(x => x.online)) {
+          await this.exec.nodeAptRefresh(n.node)
+          log(`${n.node}: apt update done`)
+        }
       }
       const listing = await this.guestMap()
       const managed = box.inv!.inventory.guests.filter(g => g.managed && guestPolicy(policy, g.vmid).apt)
@@ -319,7 +323,7 @@ export class UpdatesRunner {
     if (ref.status !== 'ok') return void await this.finish(jobId, 'failed', `Refreshing package lists failed: ${ref.reason}`)
     if (this.cancelRequested.has(jobId)) return this.cancelNow(jobId)
 
-    const plan = buildPlan(box.inv!.inventory, policy, { selfVmid: this.selfVmid(box.inv!, policy) })
+    const plan = buildPlan(box.inv!.inventory, policy, { selfVmid: this.selfVmid(box.inv!, policy), scope })
     await this.store.addSteps(jobId, plan.steps.map(s => ({ ...s, seq: s.seq + PRE_STEPS })))
     if (trigger === 'manual') {
       await this.transition(jobId, ['running'], { plan, status: 'awaiting-confirm' })

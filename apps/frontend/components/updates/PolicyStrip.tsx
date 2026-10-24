@@ -1,9 +1,9 @@
 'use client'
 
-import type { UpdatesPolicyStatus } from '@hyperprox/types'
+import type { UpdatesPolicyStatus, UpdatesScope } from '@hyperprox/types'
 import { Badge, Btn, Icon, Notice, fmtTime } from './ui'
 
-export function PolicyStrip({ policy, error, busy, activeJob, onRefresh, onRun, refreshing }: {
+export function PolicyStrip({ policy, error, busy, activeJob, onRefresh, onRun, refreshing, scope, onScope }: {
   policy: UpdatesPolicyStatus | null
   error: string | null
   busy: boolean             // a request from this page is in flight
@@ -11,6 +11,8 @@ export function PolicyStrip({ policy, error, busy, activeJob, onRefresh, onRun, 
   refreshing: boolean
   onRefresh: () => void
   onRun: (mode: 'run' | 'dry-run') => void
+  scope: UpdatesScope
+  onScope: (s: UpdatesScope) => void
 }) {
   const loaded = !!policy?.loaded
   const why = !loaded ? 'Runs are disabled until the policy file loads.' : activeJob ? 'A job is already active.' : undefined
@@ -36,6 +38,19 @@ export function PolicyStrip({ policy, error, busy, activeJob, onRefresh, onRun, 
           )}
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
+          {/* What Dry run, Run and the plan below cover. Guests only leaves every node and Ceph alone. */}
+          <div role="radiogroup" aria-label="What a run covers" className="flex overflow-hidden rounded-md border" style={{ borderColor: 'var(--border)' }}>
+            {([['all', 'Everything'], ['guests', 'Guests only']] as const).map(([v, label]) => (
+              <button key={v} type="button" role="radio" aria-checked={scope === v} disabled={activeJob}
+                      onClick={() => onScope(v)}
+                      className="px-3 py-1.5 text-sm transition-colors disabled:opacity-50"
+                      style={scope === v
+                        ? { background: 'var(--accent)', color: 'var(--accent-ink)', fontWeight: 600 }
+                        : { background: 'transparent', color: 'var(--text-muted)' }}>
+                {label}
+              </button>
+            ))}
+          </div>
           <span title={activeJob ? 'The running job keeps the inventory current.' : undefined}>
             <Btn onClick={onRefresh} disabled={refreshing || activeJob}><Icon name="refresh" />{refreshing ? 'Refreshing...' : 'Refresh'}</Btn>
           </span>
@@ -43,7 +58,7 @@ export function PolicyStrip({ policy, error, busy, activeJob, onRefresh, onRun, 
             <Btn onClick={() => onRun('dry-run')} disabled={activeJob || busy}><Icon name="dry" />Dry run</Btn>
           </span>
           <span title={why}>
-            <Btn kind="primary" onClick={() => onRun('run')} disabled={!loaded || activeJob || busy}><Icon name="play" />Run updates</Btn>
+            <Btn kind="primary" onClick={() => onRun('run')} disabled={!loaded || activeJob || busy}><Icon name="play" />{scope === 'guests' ? 'Update guests' : 'Run updates'}</Btn>
           </span>
         </div>
       </div>
