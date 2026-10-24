@@ -16,6 +16,7 @@ const NAV = [
     items: [
       { href: '/dashboard',      label: 'Dashboard',      icon: DashboardIcon },
       { href: '/infrastructure', label: 'Infrastructure', icon: InfraIcon },
+      { href: '/updates',        label: 'Updates',        icon: () => <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5}><path d="M8 11.5V2.5M4.5 6L8 2.5 11.5 6M2.5 10v2.5a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V10" strokeLinecap="round" strokeLinejoin="round" /></svg> },
     ],
   },
   {
