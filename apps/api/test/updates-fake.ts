@@ -65,6 +65,12 @@ export class FakeCluster implements UpdatesExecutor {
   /** Return a result to fail (or alter) a command; undefined lets it run normally. */
   inject: (where: string, cmd: string) => ExecResult | Error | undefined = () => undefined
   handoffResults = new Map<string, string>()   // unit -> JSON written by the script
+  /** Reads that answer with an error, by executor method name (e.g. 'cephHealth', 'haStatus'). */
+  readFail = new Set<string>()
+  /** A reboot command that is accepted but does nothing (the node stays up, same boot id). */
+  rebootIgnored = false
+  bootIds = new Map<string, number>()
+  snapshots = new Map<number, { name: string; snaptime: number }[]>()
   concurrentGuests = 0
   maxConcurrentGuests = 0
 
@@ -81,10 +87,14 @@ export class FakeCluster implements UpdatesExecutor {
     if (!x) throw new Error(`no node ${name}`)
     return x
   }
+  private failIf(method: string) {
+    if (this.readFail.has(method)) throw new Error(`Proxmox GET for ${method}: HTTP 500 — simulated error answer`)
+  }
   private isOnline(n: FakeNode): boolean {
     if (n.offlineUntil !== undefined && this.t >= n.offlineUntil) {
       n.offlineUntil = undefined
       n.online = true
+      this.bootIds.set(n.name, (this.bootIds.get(n.name) ?? 0) + 1)
       const newest = [...n.kernelPkgs].sort().at(-1)?.replace(/^proxmox-kernel-/, '').replace(/-signed$/, '')
       if (newest) n.kernel = n.pinned ?? newest
       n.rebootRequired = false
@@ -94,21 +104,25 @@ export class FakeCluster implements UpdatesExecutor {
 
   // --- reads --------------------------------------------------------------------------
   async clusterStatus(): Promise<ClusterStatus> {
+    this.failIf('clusterStatus')
     const nodes = this.nodes.map(n => ({ name: n.name, online: this.isOnline(n), ip: `10.0.0.${this.nodes.indexOf(n) + 1}` }))
     return { quorate: nodes.filter(n => n.online).length * 2 > nodes.length, nodes }
   }
   async haStatus(): Promise<HaStatus> {
+    this.failIf('haStatus')
     return { services: this.haServices.map(s => ({ ...s })), maintenanceNodes: [...this.maintenance] }
   }
-  async haResources() { return [...this.haSids] }
-  async cephHealth() {
-    if (!this.ceph) return null
+  async haResources() { this.failIf('haResources'); return [...this.haSids] }
+  async cephPresent() { this.failIf('cephPresent'); return this.ceph !== null }
+  async cephHealth(): Promise<CephHealth> {
+    this.failIf('cephHealth')
+    if (!this.ceph) throw new Error('Proxmox GET /cluster/ceph/status: HTTP 500 — binary not installed')
     const down = this.nodes.filter(n => !this.isOnline(n)).length
     return { ...this.ceph, numUpOsds: this.ceph.numUpOsds - down * 2, checks: this.noout ? [...this.ceph.checks, 'OSDMAP_FLAGS'] : this.ceph.checks }
   }
-  async listGuests() { return this.guests.map(({ vmid, type, node, name, running, template }) => ({ vmid, type, node, name, running, template })) }
-  async guestConfig(g: GuestRef) { return { ...(this.guests.find(x => x.vmid === g.vmid)?.config ?? {}) } }
-  async nodeAptPending(name: string) { return this.n(name).pending.map(p => ({ ...p })) }
+  async listGuests() { this.failIf('listGuests'); return this.guests.map(({ vmid, type, node, name, running, template }) => ({ vmid, type, node, name, running, template })) }
+  async guestConfig(g: GuestRef) { this.failIf('guestConfig'); return { ...(this.guests.find(x => x.vmid === g.vmid)?.config ?? {}) } }
+  async nodeAptPending(name: string) { this.failIf('nodeAptPending'); return this.n(name).pending.map(p => ({ ...p })) }
   async plexStreams(): Promise<number | null> {
     const v = this.plex.length > 1 ? this.plex.shift()! : this.plex[0]
     if (v === 'error') throw new Error('Tautulli returned HTTP 502')
@@ -150,7 +164,12 @@ export class FakeCluster implements UpdatesExecutor {
       n.pending = ceph ? n.pending.filter(p => !cmd.includes(`${p.name}=`)) : []
       return ok('upgraded')
     }
+    if (cmd === 'cat /proc/sys/kernel/random/boot_id') {
+      const b = this.bootIds.get(name) ?? 0
+      return ok(`00000000-0000-4000-8000-${String(b).padStart(12, '0')}`)
+    }
     if (cmd === 'systemctl reboot') {
+      if (this.rebootIgnored) return ok()
       n.online = false
       n.offlineUntil = this.t + this.rebootTakesMs
       return ok()
@@ -207,6 +226,14 @@ export class FakeCluster implements UpdatesExecutor {
     this.calls.push({ where: String(g.vmid), cmd: `snapshot ${name}`, t: this.t })
     const r = this.inject(String(g.vmid), 'snapshot')
     if (r instanceof Error) throw r
+    const list = this.snapshots.get(g.vmid) ?? []
+    list.push({ name, snaptime: Math.floor(this.t / 1000) })
+    this.snapshots.set(g.vmid, list)
+  }
+  async listSnapshots(g: GuestRef) { this.failIf('listSnapshots'); return [...(this.snapshots.get(g.vmid) ?? [])] }
+  async deleteSnapshot(g: GuestRef, name: string) {
+    this.calls.push({ where: String(g.vmid), cmd: `delete-snapshot ${name}`, t: this.t })
+    this.snapshots.set(g.vmid, (this.snapshots.get(g.vmid) ?? []).filter(s => s.name !== name))
   }
 
   now() { return this.t }

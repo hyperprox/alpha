@@ -11,7 +11,6 @@ import type { UpdatesWsPayload } from '../src/lib/updates/types'
 const POLICY = `
 nodes:
   default: { upgrade: dist-upgrade, reboot: auto }
-  gpu-node: { upgrade: upgrade, reboot: auto, require_holds: [proxmox-default-kernel], require_pin: 7.0.1-1-pve }
 guests:
   default: { reboot: if-required }
   exclude: [110]
@@ -20,6 +19,8 @@ guests:
 batch_size: 2
 self: { vmid: 150 }
 `
+// For the clusters that have a pinned GPU node. Kept out of POLICY: naming a node the cluster lacks fails a run (B7).
+const GPU_POLICY = POLICY.replace('nodes:\n', 'nodes:\n  gpu-node: { upgrade: upgrade, reboot: auto, require_holds: [proxmox-default-kernel], require_pin: 7.0.1-1-pve }\n')
 const KERNEL = pkg('proxmox-kernel-7.0.2-1-pve-signed', '7.0.2-1', null)
 
 function cluster(): FakeCluster {
@@ -78,7 +79,7 @@ test('batch_size bounds how many guests update at once', async () => {
 
 test('a node whose policy says upgrade can never get dist-upgrade, even from a tampered plan', async () => {
   const fake = new FakeCluster({ nodes: [node('gpu-node', { holds: ['proxmox-default-kernel'], pinned: '7.0.1-1-pve', kernel: '7.0.1-1-pve' }), node('node-b')] })
-  const { runner, store } = setup(fake)
+  const { runner, store } = setup(fake, GPU_POLICY)
   const job = await runner.start('run', 'manual'); await settle(runner)
   assert.equal((await store.getJob(job.id))!.status, 'awaiting-confirm')
   // Rewrite the stored step as if the plan had said dist-upgrade.
@@ -134,7 +135,7 @@ test('preflight failure ends the job before anything changes', async () => {
 
 test('missing holds stop the run in preflight; never repaired', async () => {
   const fake = new FakeCluster({ nodes: [node('gpu-node', { holds: [], pinned: '7.0.1-1-pve' }), node('node-b')] })
-  const { runner, store } = setup(fake)
+  const { runner, store } = setup(fake, GPU_POLICY)
   const job = await runner.start('run', 'schedule'); await settle(runner)
   const j = (await store.getJob(job.id))!
   assert.equal(j.status, 'failed')
@@ -146,7 +147,7 @@ test('holds that disappear during the upgrade stop the run after installing', as
   const fake = new FakeCluster({ nodes: [node('gpu-node', { holds: ['proxmox-default-kernel'], pinned: '7.0.1-1-pve' })] })
   const gpu = fake.nodes[0]
   fake.inject = (_w, cmd) => { if (/apt-get .* (dist-)?upgrade$/.test(cmd)) gpu.holds = []; return undefined }
-  const { runner, store } = setup(fake)
+  const { runner, store } = setup(fake, GPU_POLICY)
   const job = await runner.start('run', 'schedule'); await settle(runner)
   const j = (await store.getJob(job.id))!
   assert.equal(j.status, 'paused')
