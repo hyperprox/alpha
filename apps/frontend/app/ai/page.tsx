@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { wsBase } from '@/lib/ws'
 import { alpha } from '@/lib/theme'
+import { BoxIcon, SplitIcon, GlobeIcon, HourglassIcon, LockIcon, GearIcon, BoltIcon } from './icons'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -131,13 +132,18 @@ const TIER_COLOR: Record<string, string> = {
   large:  'var(--violet)',
 }
 
-const STEP_ICON: Record<string, string> = {
-  create_lxc:       '📦',
-  configure_proxy:  '🔀',
-  create_dns:       '🌐',
-  wait_propagation: '⏳',
-  request_ssl:      '🔒',
-  install_service:  '⚙️',
+const STEP_ICON: Record<string, (p: { size?: number }) => JSX.Element> = {
+  create_lxc:       BoxIcon,
+  configure_proxy:  SplitIcon,
+  create_dns:       GlobeIcon,
+  wait_propagation: HourglassIcon,
+  request_ssl:      LockIcon,
+  install_service:  GearIcon,
+}
+
+function stepIcon(type: string, size: number) {
+  const Icon = STEP_ICON[type]
+  return Icon ? <Icon size={size} /> : null
 }
 
 const STATUS_COLOR: Record<StepStatus, string> = {
@@ -192,7 +198,7 @@ function ModelCard({
       transition:   'border-color .15s',
     }}>
       {model.recommended && (
-        <div style={{ position: 'absolute', top: -10, left: 12, ...badge(ACCENT), fontSize: 9 }}>⚡ RECOMMENDED</div>
+        <div style={{ position: 'absolute', top: -10, left: 12, ...badge(ACCENT), fontSize: 9 }}><BoltIcon size={10} /> RECOMMENDED</div>
       )}
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
@@ -325,7 +331,7 @@ function ExecutionView({ job, onDone }: { job: JobProgress; onDone: () => void }
                   fontSize: 13, color: sc,
                   ...(step.status === 'running' ? { animation: 'pulse 1s infinite' } : {}),
                 }}>
-                  {step.status === 'running' ? STEP_ICON[step.type] ?? '◎' : STATUS_ICON[step.status]}
+                  {step.status === 'running' ? stepIcon(step.type, 14) ?? '◎' : STATUS_ICON[step.status]}
                 </div>
 
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -357,7 +363,7 @@ function ExecutionView({ job, onDone }: { job: JobProgress; onDone: () => void }
                   {step.commands && step.commands.length > 0 && (
                     <div style={{ marginTop: 6 }}>
                       <div style={{ fontSize: 13, color: 'var(--warn-2)', marginBottom: 4 }}>
-                        ⚙ Run these commands in CT {job.lxcVmid ?? '?'} console:
+                        <GearIcon size={13} /> Run these commands in CT {job.lxcVmid ?? '?'} console:
                       </div>
                       <div style={{ background: 'var(--ground-deep)', border: '1px solid var(--border-strong)', borderRadius: 6, padding: '8px 10px', overflow: 'auto', maxHeight: 160 }}>
                         {step.commands.map((cmd, ci) => (
@@ -668,7 +674,7 @@ export default function AIPage() {
             <div style={{ maxWidth: 760, margin: '0 auto' }}>
               {!providerReady && (
                 <div style={{ background: `${alpha(ACCENT, 6)}`, border: `1px solid ${alpha(ACCENT, 15)}`, borderRadius: 10, padding: '1rem', marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <span style={{ fontSize: 20 }}>⚡</span>
+                  <span style={{ display: 'flex', color: ACCENT }}><BoltIcon size={20} /></span>
                   <div>
                     <div style={{ fontSize: 15, fontWeight: 600, color: ACCENT, marginBottom: 2 }}>
                       {activeInfo?.name ?? 'No AI provider'} is not ready
@@ -728,7 +734,7 @@ export default function AIPage() {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: '1rem' }}>
                     {plan.steps.map((step, i) => (
                       <div key={step.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 8, background: 'var(--ground)', border: `1px solid ${BORDER}` }}>
-                        <div style={{ fontSize: 16, width: 24, textAlign: 'center' }}>{STEP_ICON[step.type] ?? '▸'}</div>
+                        <div style={{ fontSize: 16, width: 24, textAlign: 'center' }}>{stepIcon(step.type, 16) ?? '▸'}</div>
                         <div style={{ flex: 1 }}>
                           <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-bright)' }}>{i + 1}. {step.label}</div>
                           <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{step.description}</div>
@@ -794,7 +800,7 @@ export default function AIPage() {
               <div><div style={{ fontSize: 10, color: 'var(--text-dim)', ...mono, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>Cluster RAM</div><div style={{ fontSize: 20, fontWeight: 700, color: 'var(--text-bright)', ...mono }}>{catalog.hardware.totalRamGB.toFixed(0)}GB</div></div>
               <div><div style={{ fontSize: 10, color: 'var(--text-dim)', ...mono, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>GPU VRAM</div><div style={{ fontSize: 20, fontWeight: 700, color: catalog.hardware.maxVramGB > 0 ? ACCENT : 'var(--text-dimmer)', ...mono }}>{catalog.hardware.maxVramGB > 0 ? `${catalog.hardware.maxVramGB.toFixed(0)}GB` : 'none'}</div></div>
               <div><div style={{ fontSize: 10, color: 'var(--text-dim)', ...mono, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>CPU Cores</div><div style={{ fontSize: 20, fontWeight: 700, color: 'var(--text-bright)', ...mono }}>{catalog.hardware.totalCores}</div></div>
-              <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center' }}><div style={{ fontSize: 14, color: 'var(--text-soft)', maxWidth: 260 }}>Models marked <span style={{ color: ACCENT }}>⚡ recommended</span> are best for your hardware.</div></div>
+              <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center' }}><div style={{ fontSize: 14, color: 'var(--text-soft)', maxWidth: 260 }}>Models marked <span style={{ color: ACCENT }}><BoltIcon size={12} /> recommended</span> are best for your hardware.</div></div>
             </div>
           )}
           <SectionHeader title="Model Library" subtitle="Download and manage AI models. Recommended models are highlighted for your hardware." />
