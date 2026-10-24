@@ -452,3 +452,20 @@ test('a guests-only run updates the guests and never touches a node or Ceph', as
   assert.deepEqual(steps.filter(s => ['node-upgrade', 'node-reboot', 'kernel-cleanup', 'ceph'].includes(s.action)), [])
   assert.equal(fake.ran(/^POST apt\/update$|apt-get .*(dist-)?upgrade$|systemctl reboot|noout|node-maintenance/), false)
 })
+
+test('a bind-mounted container is updated without a snapshot instead of being skipped', async () => {
+  const fake = new FakeCluster({
+    nodes: [node('node-a')],
+    guests: [guest(101, 'node-a', { config: { rootfs: 'fast:vm-101-disk-0', mp0: '/mnt/media,mp=/media,shared=1' } }), guest(102, 'node-a')],
+  })
+  const { runner, store } = setup(fake)
+  const job = await runner.start('run', 'schedule', undefined, 'guests')
+  await settle(runner)
+  const steps = await store.getSteps(job.id)
+  const snap = byAction(steps, '101', 'snapshot')!
+  assert.equal(snap.status, 'skipped')
+  assert.match(snap.reason!, /bind-mounted/)
+  assert.equal(byAction(steps, '101', 'apt')!.status, 'ok')
+  assert.equal(fake.ran(/^snapshot/, '101'), false, 'Proxmox was never asked for a snapshot it refuses')
+  assert.equal((await store.getJob(job.id))!.status, 'done')
+})

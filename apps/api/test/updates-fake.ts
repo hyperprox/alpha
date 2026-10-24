@@ -238,6 +238,10 @@ export class FakeCluster implements UpdatesExecutor {
     this.calls.push({ where: String(g.vmid), cmd: `snapshot ${name}`, t: this.t })
     const r = this.inject(String(g.vmid), 'snapshot')
     if (r instanceof Error) throw r
+    const cfg = this.guests.find(x => x.vmid === g.vmid)?.config ?? {}
+    if (Object.entries(cfg).some(([k, v]) => /^mp\d+$/.test(k) && String(v).startsWith('/'))) {
+      throw new Error(`task UPID:fake:vzsnapshot:${g.vmid}: ended: snapshot feature is not available`)
+    }
     const list = this.snapshots.get(g.vmid) ?? []
     list.push({ name, snaptime: Math.floor(this.t / 1000) })
     this.snapshots.set(g.vmid, list)

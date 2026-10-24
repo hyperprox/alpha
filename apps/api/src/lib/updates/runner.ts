@@ -412,7 +412,9 @@ export class UpdatesRunner {
       const out = await this.runStep(jobId, step, async log => {
         switch (step.action) {
           case 'snapshot': {
-            if (detailKey(step) === DETAIL.snapshotNone) return { status: 'skipped', reason: 'no snapshot possible: bind-mounted storage' }
+            // A prefix test, not detailKey(): that takes the first word, and this marker is two words, so the
+            // guard never matched and every bind-mounted guest asked Proxmox for a snapshot it refuses.
+            if ((step.detail ?? '').startsWith(DETAIL.snapshotNone)) return { status: 'skipped', reason: 'no snapshot possible: bind-mounted storage' }
             const name = `${SNAPSHOT_PREFIX}${new Date(this.exec.now()).toISOString().replace(/[-:T]/g, '').slice(0, 12)}`
             await this.exec.snapshot(guest, name)
             snapshot = name
