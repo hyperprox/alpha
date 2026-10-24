@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # hyperprox - local control of a HyperProx install.
 #   hyperprox status   is the vault up, is HyperProx locked or unlocked
-#   hyperprox lock     lock HyperProx now: wipes decrypted secrets from memory and ends every session
+#   hyperprox lock     lock HyperProx now: wipes decrypted secrets from memory and ends every session;
+#                      prints the outcome, exit 0 when HyperProx is locked afterwards (or already was)
 # Talks only to localhost; run it as root on the HyperProx machine.
 set -u
 
@@ -51,15 +52,35 @@ cmd_status() {
   return "$rc"
 }
 
+# Locks, then reads the state back: the answer to "is it locked?" is the API's state, not the lock call's status.
 cmd_lock() {
-  local code
-  code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 -X POST \
-    -H 'Content-Type: application/json' -d '{}' "${API_URL}/api/auth/lock" 2>/dev/null)" || code=000
+  local out rc code body msg state
+  out="$(curl -sS --max-time 30 -w '\n%{http_code}' -X POST \
+    -H 'Content-Type: application/json' -d '{}' "${API_URL}/api/auth/lock" 2>/dev/null)"; rc=$?
+  code="${out##*$'\n'}"; body="${out%$'\n'*}"
+  case "$rc" in
+    0)  ;;
+    7)  echo "lock:   FAILED - could not reach the API at ${API_URL} (journalctl -u hyperprox-api -n 50)" >&2; return 1 ;;
+    28) echo "lock:   FAILED - the API did not answer within 30 s; check with: hyperprox status" >&2; return 1 ;;
+    *)  echo "lock:   FAILED - request to ${API_URL} failed (curl exit ${rc})" >&2; return 1 ;;
+  esac
+  msg="$(printf '%s' "$body" | jget error)"
   case "$code" in
-    200|204) echo "locked: decrypted secrets wiped from memory, all sessions ended." ;;
-    423)     echo "already locked." ;;
-    000)     echo "could not reach the API at ${API_URL}." >&2; return 1 ;;
-    *)       echo "lock refused (HTTP ${code})." >&2; return 1 ;;
+    200|204) ;;
+    423) echo "lock:   already locked - no secrets in memory, nothing to do"; return 0 ;;
+    401|403)
+      echo "lock:   REFUSED (HTTP ${code}${msg:+: ${msg}})" >&2
+      echo "        run it as root on the HyperProx machine itself: the API accepts a lock without a session only" >&2
+      echo "        from loopback, with no cookie and no proxy headers (${API_URL})" >&2
+      return 1 ;;
+    *) echo "lock:   FAILED (HTTP ${code}${msg:+: ${msg}})" >&2; return 1 ;;
+  esac
+  state="$(curl -fsS --max-time 5 "${API_URL}/api/auth/status" 2>/dev/null | jget locked)"
+  case "$state" in
+    true) echo "lock:   LOCKED - decrypted secrets wiped from memory, every session ended"
+          echo "        sign in at /login to unlock" ;;
+    "")   echo "lock:   lock accepted (HTTP ${code}), but the state could not be read back; check with: hyperprox status" ;;
+    *)    echo "lock:   FAILED - the API accepted the lock but still reports unlocked; check with: hyperprox status" >&2; return 1 ;;
   esac
 }
 
