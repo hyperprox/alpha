@@ -49,3 +49,6 @@ config/prometheus/secrets/*
 
 # Vault TLS material generated at install (the private key must never be committed)
 config/vault-tls/
+
+# Updates policy — cluster-specific, see config/updates.example.yaml
+config/updates.yaml
