@@ -10,10 +10,10 @@
 //  write is audited by the runner.
 // =============================================================================
 
-import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
+import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import type { UpdatesInventory, UpdatesWsPayload } from '../lib/updates/types'
 import { hasRole } from '../lib/roles'
-import { isUnlocked } from '../lib/vault/state'
+import { isUnlocked, onLock } from '../lib/vault/state'
 import { loadPolicy as loadPolicyFile, policyStatus, type PolicyLoad } from '../lib/updates/policy'
 import { productionExecutor, type UpdatesExecutor } from '../lib/updates/executor'
 import { readInventory, selfVmidOf } from '../lib/updates/inventory'
@@ -35,15 +35,38 @@ export interface UpdatesRouteDeps {
   onRunner?:   (runner: UpdatesRunner) => void
 }
 
-/** Same framing as lib/ws-broadcast.ts, so clients see { type: 'updates', payload, ts }. */
-function broadcastTo(server: FastifyInstance) {
-  return (payload: UpdatesWsPayload) => {
-    const msg = JSON.stringify({ type: 'updates', payload, ts: Date.now() })
-    const wss = (server as any).websocketServer
-    if (!wss) return
-    wss.clients.forEach((c: any) => { if (c.readyState === 1) c.send(msg) })
-  }
+// Sockets on /ws/updates, each opened by an admin. The general /ws channel is viewer-level, and
+// these frames carry step output and log lines from hosts, so they go only here.
+const subscribers = new Set<{ readyState: number; send(m: string): void; close(): void }>()
+let lockHook = false
+
+/** Same framing as lib/ws-broadcast.ts: { type: 'updates', payload, ts }. */
+function broadcast(payload: UpdatesWsPayload) {
+  const msg = JSON.stringify({ type: 'updates', payload, ts: Date.now() })
+  for (const c of subscribers) if (c.readyState === 1) c.send(msg)
 }
+
+/** Registered under /ws/updates (nginx proxies upgrades only below /ws). */
+export const updatesWsRoutes: FastifyPluginAsync = async (fastify) => {
+  if (!lockHook) {
+    lockHook = true
+    // A lock ends every session; the sockets those sessions opened go with them.
+    onLock(() => { for (const c of subscribers) { try { c.close() } catch { /* gone */ } } subscribers.clear() })
+  }
+  fastify.get('/', { websocket: true }, (socket: any, req: FastifyRequest) => {
+    const s = req.session
+    if (!s || !hasRole(s.role, 'admin')) {
+      socket.send(JSON.stringify({ type: 'error', payload: { error: 'Updates need the admin role' }, ts: Date.now() }))
+      socket.close()
+      return
+    }
+    subscribers.add(socket)
+    socket.on('close', () => subscribers.delete(socket))
+  })
+}
+
+/** For tests: how many admin sockets are listening. */
+export function updatesSubscriberCount(): number { return subscribers.size }
 
 async function adminOnly(req: FastifyRequest, reply: FastifyReply) {
   const s = req.session
@@ -69,7 +92,7 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
 
     const runner = new UpdatesRunner({
       store, exec, loadPolicy,
-      emit: broadcastTo(fastify),
+      emit: broadcast,
       onInventory: r => { cached = r.inventory },
       log: msg => fastify.log.info(msg),
       hostname: deps.hostname,
@@ -93,6 +116,9 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
 
     async function inventory(refresh: boolean): Promise<UpdatesInventory> {
       if (cached && !refresh) return cached
+      // While a job is active the runner keeps the cache current; a page refresh must not
+      // send a second round of reads into guests mid-upgrade.
+      if (cached && await store.activeJob()) return cached
       const r = await readInventory(exec, loadPolicy().policy, { rebootPending: runner.rebootPending, hostname: deps.hostname })
       cached = r.inventory
       return cached

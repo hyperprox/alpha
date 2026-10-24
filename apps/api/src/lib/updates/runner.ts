@@ -25,7 +25,7 @@ import { readInventory, findSelfGuest, selfVmidOf, type InventoryResult } from '
 import { buildPlan, detailKey, DETAIL } from './planner'
 import {
   preflight, quorumGate, cephGate, haGate, holdsPinGate, freeSpaceGate, streamGate, judgeCeph, judgeCephSettled,
-  type GateResult,
+  unknownPolicyNodes, type GateResult,
 } from './gates'
 import {
   GUEST_REFRESH_SCRIPT, GUEST_UPGRADE_SCRIPT, NODE_FACTS_COMMAND, NODE_SERVICES_COMMAND, NODE_REBOOT_COMMAND,
@@ -35,6 +35,7 @@ import {
 } from './commands'
 import { handoffNodeOf, handoffTag, readHandoff, selfGuestScript, selfNodeRebootScript, startHandoff } from './handoff'
 import { ActiveJobError, TERMINAL, jobView, stepView, type JobRecord, type StepRecord, type UpdatesStore } from './store'
+import type { UpdatesJobStatus } from './types'
 
 export class PolicyRequiredError extends Error {
   constructor(detail?: string) {
@@ -94,6 +95,10 @@ const isGuestStep = (s: StepRecord) => GUEST_ACTIONS.includes(s.action)
 const PRE_STEPS = 2   // preflight, refresh
 
 const AFTER_GUEST_FAILURE = 'an earlier step for this guest failed'
+const INTERRUPTED = 'interrupted by a HyperProx restart'
+const NOT_FINISHED: UpdatesJobStatus[] = ['planned', 'awaiting-confirm', 'running', 'paused']
+const SNAPSHOT_PREFIX = 'hp-upd-'
+const BOOT_ID = 'cat /proc/sys/kernel/random/boot_id'
 
 async function defaultNotify(url: string, text: string): Promise<void> {
   const ctrl = new AbortController()
@@ -111,6 +116,8 @@ export class UpdatesRunner {
   private driving: Promise<void> = Promise.resolve()
   private cancelRequested = new Set<string>()
   private runStartedAt = new Map<string, number>()
+  /** Whether the cluster has Ceph, asked once per job (see executor.cephPresent). */
+  private cephKnown = new Map<string, boolean>()
   /** Nodes whose reboot a run deferred. Seeded from the last finished job at start-up. */
   readonly rebootPending = new Set<string>()
 
@@ -130,6 +137,11 @@ export class UpdatesRunner {
   async start(mode: 'run' | 'dry-run', trigger: 'manual' | 'schedule' = 'manual', actor?: string): Promise<JobRecord> {
     const load = this.deps.loadPolicy()
     if (mode === 'run' && !load.loaded) throw new PolicyRequiredError(load.error)
+    if (mode === 'run') {
+      const names = (await this.exec.clusterStatus()).nodes.map(n => n.name)
+      const known = unknownPolicyNodes(load.policy, names)
+      if (!known.ok) throw new PolicyRequiredError(`The policy file is loaded, but ${known.reason}.`)
+    }
     const job = await this.store.createJob({
       trigger: mode === 'dry-run' ? 'dry-run' : trigger,
       status: 'running',
@@ -142,27 +154,30 @@ export class UpdatesRunner {
   }
 
   async confirm(id: string, actor?: string): Promise<JobRecord> {
-    const job = await this.mustGet(id)
-    if (job.status !== 'awaiting-confirm') throw new JobStateError(`Job ${id} is ${job.status}, not awaiting confirmation`)
+    await this.mustGet(id)
     const load = this.deps.loadPolicy()
     if (!load.loaded) throw new PolicyRequiredError(load.error)
-    const next = await this.setJob(id, { status: 'running', pauseReason: null })
+    const next = await this.transition(id, ['awaiting-confirm'], { status: 'running', pauseReason: null })
+    if (!next) throw new JobStateError(`Job ${id} is ${(await this.mustGet(id)).status}, not awaiting confirmation`)
+    this.cancelRequested.delete(id)
     await this.store.audit('updates.job.confirm', id, { by: actor })
     this.drive(id, () => this.execute(id))
     return next
   }
 
   async resume(id: string, actor?: string): Promise<JobRecord> {
-    const job = await this.mustGet(id)
-    if (job.status !== 'paused') throw new JobStateError(`Job ${id} is ${job.status}, not paused`)
+    await this.mustGet(id)
     const load = this.deps.loadPolicy()
     if (!load.loaded) throw new PolicyRequiredError(load.error)
+    // Claim the job first: of two Resumes racing, exactly one gets past this line.
+    const next = await this.transition(id, ['paused'], { status: 'running', pauseReason: null })
+    if (!next) throw new JobStateError(`Job ${id} is ${(await this.mustGet(id)).status}, not paused`)
+    this.cancelRequested.delete(id)
     // Resume retries what failed. Every step is written to be safe to run twice.
     for (const s of await this.store.getSteps(id)) {
       const retry = s.status === 'failed' || (s.status === 'skipped' && s.reason === AFTER_GUEST_FAILURE)
       if (retry) await this.setStep(s, { status: 'pending', reason: null })
     }
-    const next = await this.setJob(id, { status: 'running', pauseReason: null })
     await this.store.audit('updates.job.resume', id, { by: actor })
     this.drive(id, () => this.execute(id))
     return next
@@ -172,12 +187,16 @@ export class UpdatesRunner {
     const job = await this.mustGet(id)
     if (TERMINAL.includes(job.status)) throw new JobStateError(`Job ${id} has already finished (${job.status})`)
     await this.store.audit('updates.job.cancel', id, { by: actor })
-    if (job.status === 'running') {
-      // Stops after the step in progress; a half-run apt is worse than a finished one.
-      this.cancelRequested.add(id)
-      return job
+    if (job.status !== 'running') {
+      const done = await this.finish(id, 'cancelled', 'Cancelled before it ran further', undefined, ['planned', 'awaiting-confirm', 'paused'])
+      if (done) return done
+      // Lost a race: it was confirmed or resumed meanwhile, so it is running now.
     }
-    return this.finish(id, 'cancelled', 'Cancelled before it ran further')
+    const now = await this.mustGet(id)
+    if (TERMINAL.includes(now.status)) return now
+    // Stops after the step in progress; a half-run apt is worse than a finished one.
+    this.cancelRequested.add(id)
+    return now
   }
 
   /** A one-node reboot job with the same gates as a run. */
@@ -199,10 +218,11 @@ export class UpdatesRunner {
     await this.emitJob(job)
     this.drive(job.id, async () => {
       const pre = await this.runStep(job.id, (await this.store.getSteps(job.id))[0], async () => {
-        const g = await this.combine([quorumGate(this.exec), cephGate(this.exec, load.policy), haGate(this.exec)])
+        const g = await this.clusterGates(job.id, load.policy)
         return g.ok ? { status: 'ok', output: g.reason } : { status: 'failed', reason: g.reason }
       })
       if (pre.status !== 'ok') return void await this.finish(job.id, 'failed', `Preflight stopped the reboot: ${pre.reason}`)
+      if (this.cancelRequested.has(job.id)) return this.cancelNow(job.id)
       await this.execute(job.id)
     })
     return job
@@ -225,13 +245,17 @@ export class UpdatesRunner {
     for (const s of steps.filter(x => x.status === 'running')) {
       const at = handoffNodeOf(s.detail)
       if (s.action === 'self' && at) {
+        // The handoff outlives the API: collect its result, never restart it.
         try {
           const r = await readHandoff(this.exec, at, job.id, s.id)
           if (r) await this.setStep(s, { status: r.ok ? 'ok' : 'failed', reason: r.ok ? null : r.message, output: r.message, endedAt: new Date(this.exec.now()) })
         } catch { /* collected on Resume */ }
+        continue
       }
+      // Anything else died with the API. Marked failed, so Resume retries it and a guest's failure still holds the node phase.
+      await this.setStep(s, { status: 'failed', reason: INTERRUPTED, endedAt: new Date(this.exec.now()) })
     }
-    await this.setJob(job.id, { status: 'paused', pauseReason: 'HyperProx restarted mid-job — check the last step, then press Resume' })
+    await this.transition(job.id, ['running'], { status: 'paused', pauseReason: 'HyperProx restarted mid-job — check the last step, then press Resume' })
     this.log(`job ${job.id} paused after restart`)
   }
 
@@ -248,7 +272,10 @@ export class UpdatesRunner {
     const box: { inv: InventoryResult | null } = { inv: null }
     const pre = await this.runStep(jobId, preStep, async () => {
       box.inv = await this.inventory(policy)
-      const g = await preflight(this.exec, policy, box.inv.facts)
+      const pf = await preflight(this.exec, policy, box.inv.facts, await this.ceph(jobId))
+      // A node whose pending list or shell could not be read is not "reachable", whatever the gates say.
+      const unread = box.inv.inventory.nodes.filter(n => n.error).map(n => `${n.node}: ${n.error}`)
+      const g = unread.length ? { ok: false, reason: [pf.ok ? '' : pf.reason, ...unread].filter(Boolean).join('; ') } : pf
       return g.ok ? { status: 'ok', output: g.reason } : { status: 'failed', reason: g.reason }
     })
 
@@ -266,6 +293,7 @@ export class UpdatesRunner {
     }
 
     if (pre.status !== 'ok') return void await this.finish(jobId, 'failed', `Preflight stopped the run before anything changed: ${pre.reason}`)
+    if (this.cancelRequested.has(jobId)) return this.cancelNow(jobId)
 
     const [refresh] = await this.store.addSteps(jobId, [{ seq: 2, target: 'cluster', action: 'refresh', detail: 'apt update on every node and managed guest, then re-read' }])
     const ref = await this.runStep(jobId, refresh, async (log) => {
@@ -289,12 +317,12 @@ export class UpdatesRunner {
       return { status: 'ok', output: lines.join('\n') || 'all lists refreshed' }
     })
     if (ref.status !== 'ok') return void await this.finish(jobId, 'failed', `Refreshing package lists failed: ${ref.reason}`)
+    if (this.cancelRequested.has(jobId)) return this.cancelNow(jobId)
 
     const plan = buildPlan(box.inv!.inventory, policy, { selfVmid: this.selfVmid(box.inv!, policy) })
     await this.store.addSteps(jobId, plan.steps.map(s => ({ ...s, seq: s.seq + PRE_STEPS })))
     if (trigger === 'manual') {
-      const job = await this.setJob(jobId, { plan, status: 'awaiting-confirm' })
-      await this.emitJob(job)
+      await this.transition(jobId, ['running'], { plan, status: 'awaiting-confirm' })
       return
     }
     await this.setJob(jobId, { plan })
@@ -317,8 +345,9 @@ export class UpdatesRunner {
     const guestSteps = all.filter(s => isGuestStep(s) && s.status === 'pending')
     const targets = [...new Set(guestSteps.map(s => s.target))]
     for (let i = 0; i < targets.length; i += policy.batchSize) {
+      if (!await this.stillRunning(jobId)) return
       if (this.cancelRequested.has(jobId)) return this.cancelNow(jobId)
-      const gate = await this.combine([quorumGate(this.exec), cephGate(this.exec, policy)])
+      const gate = await this.combine([quorumGate(this.exec), this.cephGateFor(jobId, policy)])
       if (!gate.ok) return this.pause(jobId, `Gate failed before the next guests: ${gate.reason}`)
       await Promise.all(targets.slice(i, i + policy.batchSize).map(t =>
         this.runGuest(jobId, t, guestSteps.filter(s => s.target === t), guests.get(Number(t)), policy)))
@@ -331,8 +360,13 @@ export class UpdatesRunner {
 
     // --- Ceph, nodes, self: strictly one step at a time -------------------------------
     for (const step of (await this.store.getSteps(jobId)).filter(s => !isGuestStep(s))) {
-      if (step.status !== 'pending' && step.status !== 'running') continue
       if (step.action === 'preflight' || step.action === 'refresh') continue
+      if (!await this.stillRunning(jobId)) return
+      // A failed step is never stepped over: only Resume (which resets it) gets past one.
+      if (step.status === 'failed' && step.action !== 'kernel-cleanup') {
+        return this.pause(jobId, `${step.action} on ${step.target} has failed (${step.reason ?? 'no reason recorded'}); press Resume to retry it`)
+      }
+      if (step.status !== 'pending' && step.status !== 'running') continue
       if (this.cancelRequested.has(jobId)) return this.cancelNow(jobId)
 
       // A self step that was mid-handoff when the API went away: collect, do not restart it.
@@ -343,7 +377,7 @@ export class UpdatesRunner {
       }
 
       if (step.action !== 'kernel-cleanup' && !(step.action === 'node-reboot' && detailKey(step) === DETAIL.rebootManual)) {
-        const gate = await this.combine([quorumGate(this.exec), cephGate(this.exec, policy), haGate(this.exec)])
+        const gate = await this.clusterGates(jobId, policy)
         if (!gate.ok) return this.pause(jobId, `Gate failed before ${step.action} on ${step.target}: ${gate.reason}`)
       }
 
@@ -354,7 +388,8 @@ export class UpdatesRunner {
       }
     }
 
-    await this.finish(jobId, 'done')
+    if (!await this.stillRunning(jobId)) return
+    await this.finish(jobId, 'done', undefined, undefined, ['running'])
   }
 
   private async stopOnFailure(jobId: string, step: StepRecord, out: Outcome & { status: 'failed' }): Promise<void> {
@@ -374,7 +409,7 @@ export class UpdatesRunner {
         switch (step.action) {
           case 'snapshot': {
             if (detailKey(step) === DETAIL.snapshotNone) return { status: 'skipped', reason: 'no snapshot possible: bind-mounted storage' }
-            const name = `hp-upd-${new Date(this.exec.now()).toISOString().replace(/[-:T]/g, '').slice(0, 12)}`
+            const name = `${SNAPSHOT_PREFIX}${new Date(this.exec.now()).toISOString().replace(/[-:T]/g, '').slice(0, 12)}`
             await this.exec.snapshot(guest, name)
             snapshot = name
             return { status: 'ok', output: `snapshot ${name}` }
@@ -393,6 +428,19 @@ export class UpdatesRunner {
         }
       })
       if (out.status === 'failed') return this.skipRest(steps, step)
+    }
+    if (guest && snapshot) await this.pruneSnapshots(guest)
+  }
+
+  /** After a guest updated cleanly, keep only its newest hp-upd-* snapshot. Other snapshots are never touched. */
+  private async pruneSnapshots(guest: GuestListing): Promise<void> {
+    try {
+      const ours = (await this.exec.listSnapshots(guest))
+        .filter(s => s.name.startsWith(SNAPSHOT_PREFIX))
+        .sort((a, b) => (b.snaptime ?? 0) - (a.snaptime ?? 0) || b.name.localeCompare(a.name))
+      for (const old of ours.slice(1)) await this.exec.deleteSnapshot(guest, old.name)
+    } catch (e: any) {
+      this.log(`could not prune old snapshots of ${guest.vmid}: ${e.message}`)
     }
   }
 
@@ -419,7 +467,9 @@ export class UpdatesRunner {
       const sid = `vm:${guest.vmid}`
       await this.mustExec(guest.node, haSetState(sid, 'stopped'), log)
       if (!await this.waitFor(async () => (await this.exec.haStatus()).services.some(s => s.sid === sid && s.state === 'stopped'), this.timing.guestBootMs)) {
-        return { ok: false, reason: `${sid} did not stop` }
+        // Never leave the HA desired state at "stopped" behind us.
+        const back = await this.exec.nodeExec(guest.node, haSetState(sid, 'started'), log, 120_000).catch((e: any) => ({ code: -1, output: e.message, timedOut: false }))
+        return { ok: false, reason: `${sid} did not stop in time; ${back.code === 0 ? 'its HA state was set back to started' : 'setting its HA state back to started ALSO failed — set it by hand'}` }
       }
       await this.mustExec(guest.node, haSetState(sid, 'started'), log)
     } else {
@@ -529,7 +579,7 @@ export class UpdatesRunner {
       return { status: 'skipped', reason: 'reboot: manual — reboot pending' }
     }
     const resumed = Boolean(step.startedAt)   // a previous attempt began; flags may be set
-    const ceph = (await this.exec.cephHealth()) !== null
+    const ceph = await this.ceph(jobId)
     const peer = await this.peerOf(node)
 
     if (!forced && !this.rebootNeeded(await this.nodeFacts(node))) {
@@ -542,51 +592,93 @@ export class UpdatesRunner {
       this.rebootPending.add(node)
       return { status: 'skipped', reason: `${quiet.reason} — reboot pending` }
     }
+    // The wait can be hours; the cluster that passed the gates before it is not the cluster now.
+    const again = await this.clusterGates(jobId, policy)
+    if (!again.ok) return { status: 'failed', reason: `after waiting for viewers: ${again.reason}` }
 
-    if (ceph) await this.mustExec(peer, CEPH_NOOUT_SET, log)
-    await this.mustExec(peer, haMaintenance(node, true), log)
+    const bootBefore = await this.bootId(node)
+    await this.setFlags(peer, node, ceph, log)
     const drained = await this.waitFor(async () =>
       !(await this.exec.haStatus()).services.some(s => s.node === node && !['stopped', 'disabled', 'ignored'].includes(s.state)),
       this.timing.haDrainMs)
     if (!drained) {
       // The node never went down, so nothing is at risk from undoing the flags.
       await this.clearFlags(peer, node, ceph, log)
-      return { status: 'failed', reason: `HA could not move every guest off ${node}; maintenance and noout cleared, node not rebooted` }
+      return { status: 'failed', reason: `HA could not move every guest off ${node}; maintenance${ceph ? ' and noout' : ''} cleared, node not rebooted` }
     }
 
     log(`rebooting ${node}`)
-    await this.exec.nodeExec(node, NODE_REBOOT_COMMAND, log, 30_000).catch(() => null)   // the connection drops; that is the point
+    let sent: { code: number; output: string; timedOut: boolean } | null = null
+    try { sent = await this.exec.nodeExec(node, NODE_REBOOT_COMMAND, log, 30_000) }
+    catch { /* the connection drops as the node goes down; that is the point */ }
+    if (sent && sent.code > 0 && !sent.timedOut) {
+      await this.clearFlags(peer, node, ceph, log)
+      return { status: 'failed', reason: `${node} refused the reboot (${tail(sent.output, 200).trim()}); maintenance${ceph ? ' and noout' : ''} cleared`, output: sent.output }
+    }
+
     const deadline = this.exec.now() + this.timing.nodeReturnMs
     await this.exec.sleep(this.timing.rebootSettleMs)
     let last = 'not back yet'
+    let upButSameBoot = false
+    let back = false
     while (this.exec.now() < deadline) {
       try {
         const s = await this.exec.clusterStatus()
         const n = s.nodes.find(x => x.name === node)
         if (!s.quorate) last = 'cluster not quorate'
         else if (!n?.online) last = `${node} not online`
+        else if ((await this.bootId(node)) === bootBefore) { last = `${node} has the same boot id: it has not rebooted`; upButSameBoot = true }
         else {
-          const c = judgeCephSettled(await this.exec.cephHealth())
+          upButSameBoot = false
+          const c = ceph ? judgeCephSettled(await this.exec.cephHealth()) : { ok: true, reason: 'no Ceph' }
           last = c.reason
-          if (c.ok && (await this.exec.nodeExec(node, 'true', undefined, 20_000)).code === 0) {
-            await this.clearFlags(peer, node, ceph, log)
-            this.rebootPending.delete(node)
-            return { status: 'ok', output: `${node} back; ${c.reason}; maintenance off${ceph ? ', noout cleared' : ''}` }
-          }
+          if (c.ok) { back = true; break }
         }
       } catch (e: any) { last = e.message }
       await this.exec.sleep(this.timing.pollMs)
     }
+    if (back) {
+      // Outside the poll loop: a flag that will not clear is its own failure, not "still waiting".
+      this.rebootPending.delete(node)
+      await this.clearFlags(peer, node, ceph, log)
+      return { status: 'ok', output: `${node} rebooted (new boot id) and back; ${last}; maintenance off${ceph ? ', noout cleared' : ''}` }
+    }
     this.rebootPending.add(node)
+    if (upButSameBoot) {
+      // Up the whole time: nothing is at risk, so the flags come off, but the step did not do its job.
+      await this.clearFlags(peer, node, ceph, log)
+      return { status: 'failed', reason: `${node} never rebooted (its boot id did not change); maintenance${ceph ? ' and noout' : ''} cleared` }
+    }
     return {
       status: 'failed', fatal: true,
-      reason: `${node} did not come back within ${Math.round(this.timing.nodeReturnMs / 60_000)} min (${last}). noout and HA maintenance are LEFT ON so data does not move; clear them by hand once the node is healthy.`,
+      reason: `${node} did not come back within ${Math.round(this.timing.nodeReturnMs / 60_000)} min (${last}). ${ceph ? 'noout and ' : ''}HA maintenance ${ceph ? 'are' : 'is'} LEFT ON so data does not move; clear them by hand once the node is healthy.`,
     }
   }
 
+  private async bootId(node: string): Promise<string> {
+    const r = await this.exec.nodeExec(node, BOOT_ID, undefined, 20_000)
+    const id = r.output.trim()
+    if (r.code !== 0 || !/^[0-9a-f-]{36}$/.test(id)) throw new Error(`could not read ${node}'s boot id`)
+    return id
+  }
+
+  /** noout, then HA maintenance. If maintenance cannot be turned on, noout comes back off before failing. */
+  private async setFlags(peer: string, node: string, ceph: boolean, log: LineSink): Promise<void> {
+    if (ceph) await this.mustExec(peer, CEPH_NOOUT_SET, log)
+    try { await this.mustExec(peer, haMaintenance(node, true), log) }
+    catch (e: any) {
+      if (!ceph) throw e
+      const undo = await this.exec.nodeExec(peer, CEPH_NOOUT_UNSET, log, 120_000).catch(() => ({ code: -1 }))
+      throw new Error(`${e.message}; ${undo.code === 0 ? 'noout cleared again' : 'noout is LEFT ON — clear it by hand'}`)
+    }
+  }
+
+  /** Both flags off, each tried even if the other fails; any left on is named in the error. */
   private async clearFlags(peer: string, node: string, ceph: boolean, log: LineSink): Promise<void> {
-    await this.mustExec(peer, haMaintenance(node, false), log)
-    if (ceph) await this.mustExec(peer, CEPH_NOOUT_UNSET, log)
+    const left: string[] = []
+    try { await this.mustExec(peer, haMaintenance(node, false), log) } catch { left.push(`HA maintenance on ${node}`) }
+    if (ceph) { try { await this.mustExec(peer, CEPH_NOOUT_UNSET, log) } catch { left.push('Ceph noout') } }
+    if (left.length) throw new Error(`could not clear ${left.join(' and ')} — LEFT ON, clear by hand`)
   }
 
   private async kernelCleanup(node: string, log: LineSink): Promise<Outcome> {
@@ -607,7 +699,9 @@ export class UpdatesRunner {
       await startHandoff(this.exec, guest.node, jobId, step.id, selfGuestScript(jobId, step.id, guest))
       await this.setStep(step, { detail: `${step.detail} · ${handoffTag(guest.node)}` })
       log(`handoff started on ${guest.node}`)
-      return this.pollHandoff(jobId, step, guest.node)
+      const out = await this.pollHandoff(jobId, step, guest.node)
+      if (out.status === 'ok') await this.pruneSnapshots(guest)
+      return out
     }
     if (detailKey(step) === DETAIL.selfReboot) {
       const node = step.target
@@ -615,8 +709,10 @@ export class UpdatesRunner {
       if (!forced && !this.rebootNeeded(await this.nodeFacts(node))) return { status: 'skipped', reason: 'no reboot needed' }
       const quiet = await this.waitForQuiet(jobId, policy, log)
       if (!quiet.ok) { this.rebootPending.add(node); return { status: 'skipped', reason: `${quiet.reason} — reboot pending` } }
+      const again = await this.clusterGates(jobId, policy)
+      if (!again.ok) return { status: 'failed', reason: `after waiting for viewers: ${again.reason}` }
       const peer = await this.peerOf(node)
-      const ceph = (await this.exec.cephHealth()) !== null
+      const ceph = await this.ceph(jobId)
       await startHandoff(this.exec, peer, jobId, step.id, selfNodeRebootScript(jobId, step.id, node, { ceph, waitMinutes: Math.round(this.timing.nodeReturnMs / 60_000) }))
       await this.setStep(step, { detail: `${step.detail} · ${handoffTag(peer)}` })
       log(`handoff started on ${peer}; HyperProx may go away while ${node} reboots`)
@@ -650,6 +746,10 @@ export class UpdatesRunner {
       endedAt: new Date(this.exec.now()),
     })
     if (out.status === 'ok' && detailKey(step) === DETAIL.selfReboot) this.rebootPending.delete(step.target)
+    if (out.status === 'ok' && detailKey(step) === DETAIL.selfGuest) {
+      const guest = (await this.guestMap()).get(Number(step.target))
+      if (guest) await this.pruneSnapshots(guest)
+    }
     return out.status === 'failed' ? { ...out, fatal } : out
   }
 
@@ -706,8 +806,20 @@ export class UpdatesRunner {
     this.deps.emit?.({ kind: 'job', job })
   }
 
+  /** Conditional status change, broadcast when it happened. */
+  private async transition(id: string, from: UpdatesJobStatus[], patch: Partial<Omit<JobRecord, 'id'>>): Promise<JobRecord | null> {
+    const j = await this.store.transitionJob(id, from, patch)
+    if (j) await this.emitJob(j)
+    return j
+  }
+
+  /** Re-read before every step: a job someone cancelled, or that another path paused, stops here. */
+  private async stillRunning(jobId: string): Promise<boolean> {
+    return (await this.store.getJob(jobId))?.status === 'running'
+  }
+
   private async pause(jobId: string, reason: string): Promise<void> {
-    await this.setJob(jobId, { status: 'paused', pauseReason: reason })
+    if (!await this.transition(jobId, ['running'], { status: 'paused', pauseReason: reason })) return
     await this.store.audit('updates.job.paused', jobId, { reason })
     await this.sendReport(jobId, `HyperProx updates paused: ${reason}`)
   }
@@ -716,15 +828,20 @@ export class UpdatesRunner {
     await this.finish(jobId, 'cancelled', 'Cancelled')
   }
 
-  private async finish(jobId: string, status: 'done' | 'failed' | 'cancelled', reason?: string, report?: UpdatesReport): Promise<JobRecord> {
+  /** Null when the job was no longer in one of `from` (someone else finished or moved it first). */
+  private async finish(jobId: string, status: 'done' | 'failed' | 'cancelled', reason?: string, report?: UpdatesReport,
+                       from: UpdatesJobStatus[] = NOT_FINISHED): Promise<JobRecord | null> {
+    const claimed = await this.store.transitionJob(jobId, from, { status, finishedAt: new Date(this.exec.now()), pauseReason: status === 'done' ? null : (reason ?? null) })
+    if (!claimed) return null
     this.cancelRequested.delete(jobId)
     for (const s of await this.store.getSteps(jobId)) {
       if (s.status === 'pending') await this.setStep(s, { status: 'skipped', reason: status === 'cancelled' ? 'cancelled' : 'the run stopped before this step' })
     }
     const rep = report ?? await this.buildReport(jobId, status, reason)
-    const job = await this.setJob(jobId, { status, report: rep, finishedAt: new Date(this.exec.now()), pauseReason: status === 'done' ? null : (reason ?? null) })
+    const job = await this.setJob(jobId, { report: rep })
     await this.store.releaseLock(jobId)
     this.runStartedAt.delete(jobId)
+    this.cephKnown.delete(jobId)
     await this.sendReport(jobId, rep.summary)
     return job
   }
@@ -756,6 +873,24 @@ export class UpdatesRunner {
     if (!url) return
     try { await (this.deps.notify ?? defaultNotify)(url, `${text}\nJob ${jobId} — details on the Updates page.`) }
     catch (e: any) { this.log(`report webhook failed: ${e.message}`) }
+  }
+
+  private async ceph(jobId: string): Promise<boolean> {
+    const known = this.cephKnown.get(jobId)
+    if (known !== undefined) return known
+    const present = await this.exec.cephPresent()
+    this.cephKnown.set(jobId, present)
+    return present
+  }
+
+  private async cephGateFor(jobId: string, policy: Policy): Promise<GateResult> {
+    try { return await cephGate(this.exec, policy, await this.ceph(jobId)) }
+    catch (e: any) { return { ok: false, reason: `could not tell whether Ceph is configured: ${e.message}` } }
+  }
+
+  /** Quorum, Ceph and HA: what must hold before anything that can take a machine down. */
+  private clusterGates(jobId: string, policy: Policy): Promise<GateResult> {
+    return this.combine([quorumGate(this.exec), this.cephGateFor(jobId, policy), haGate(this.exec)])
   }
 
   private async combine(gates: Promise<GateResult>[]): Promise<GateResult> {

@@ -45,6 +45,8 @@ export interface HAStatus {
   id: string; type: string; status: string; node: string; quorate?: number; timestamp?: number
 }
 
+const DEFAULT_TIMEOUT_MS = 20_000
+
 export class ProxmoxClient {
   private baseUrl:    string
   private authHeader: string
@@ -54,7 +56,26 @@ export class ProxmoxClient {
     this.authHeader = `PVEAPIToken=${tokenId}=${tokenSecret}`
   }
 
-  fetchNode<T>(path: string, method = 'GET', body?: string): Promise<T> {
+  /**
+   * The `data` of a Proxmox answer, whatever the HTTP status. PVE answers most
+   * errors as {"data":null}, so a caller that cannot tell "nothing" from
+   * "failed" should use fetchStrict instead. Kept as it is for the many callers
+   * that already guard against null.
+   */
+  fetchNode<T>(path: string, method = 'GET', body?: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<T> {
+    return this.request<T>(path, method, body, timeoutMs).then(r => r.data)
+  }
+
+  /** Like fetchNode, but a non-2xx answer (or a timeout) rejects with Proxmox's own reason. */
+  async fetchStrict<T>(path: string, method = 'GET', body?: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<T> {
+    const r = await this.request<T>(path, method, body, timeoutMs)
+    if (r.status < 200 || r.status >= 300) {
+      throw new Error(`Proxmox ${method} ${path}: HTTP ${r.status}${r.message ? ` — ${r.message}` : ''}`)
+    }
+    return r.data
+  }
+
+  private request<T>(path: string, method: string, body: string | undefined, timeoutMs: number): Promise<{ status: number; data: T; message?: string }> {
     return new Promise((resolve, reject) => {
       const url  = new URL(`${this.baseUrl}${path}`)
       const opts: https.RequestOptions = {
@@ -70,10 +91,20 @@ export class ProxmoxClient {
         let data = ''
         res.on('data', (c) => { data += c })
         res.on('end', () => {
-          try { resolve((JSON.parse(data) as { data: T }).data) }
-          catch (e) { reject(new Error(`Parse error on ${path}: ${data.slice(0, 200)}`)) }
+          const status = res.statusCode ?? 0
+          try {
+            const j = JSON.parse(data) as { data: T; message?: string; errors?: unknown }
+            const message = j.message ?? (j.errors ? JSON.stringify(j.errors) : res.statusMessage)
+            resolve({ status, data: j.data, message: typeof message === 'string' ? message.trim() : undefined })
+          } catch {
+            // Non-JSON error bodies (a proxy's HTML page, say) still carry a status worth reporting.
+            if (status >= 300) resolve({ status, data: null as T, message: res.statusMessage })
+            else reject(new Error(`Parse error on ${path}: ${data.slice(0, 200)}`))
+          }
         })
       })
+      // A hung request must fail, not stall whatever is waiting on it.
+      req.setTimeout(timeoutMs, () => req.destroy(new Error(`Proxmox ${method} ${path}: no answer within ${Math.round(timeoutMs / 1000)}s`)))
       req.on('error', reject)
       if (body) req.write(body)
       req.end()

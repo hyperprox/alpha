@@ -10,6 +10,17 @@ const TONE: Record<string, 'accent' | 'good' | 'warn' | 'crit' | 'muted'> = {
   'planned': 'muted', 'awaiting-confirm': 'warn', 'running': 'accent', 'paused': 'warn', 'failed': 'crit', 'done': 'good', 'cancelled': 'muted',
 }
 
+/**
+ * A finished dry run whose preflight failed is "done" to the API, but what it found is that a real run
+ * would stop. Read it from the preflight step when the steps are loaded, else from the report summary.
+ */
+function dryRunWouldStop(j: UpdatesJob): boolean {
+  if (j.trigger !== 'dry-run' || j.status !== 'done') return false
+  const pre = j.steps?.find(s => s.action === 'preflight')
+  if (pre) return pre.status === 'failed'
+  return /preflight would stop/.test(j.report?.summary ?? '')
+}
+
 /** `detail` is the full job when it has been fetched: the list endpoint may omit steps. */
 export function History({ jobs, detail, expanded, onToggle }: {
   jobs: UpdatesJob[]
@@ -46,7 +57,11 @@ export function History({ jobs, detail, expanded, onToggle }: {
                   </td>
                   <td className="px-4 py-2.5 font-mono text-xs" style={{ color: 'var(--text-soft)' }}>{fmtTime(j.startedAt)}</td>
                   <td className="px-4 py-2.5 text-xs" style={{ color: 'var(--text-soft)' }}>{j.trigger}</td>
-                  <td className="px-4 py-2.5"><Badge tone={TONE[j.status] ?? 'muted'}>{j.status}</Badge></td>
+                  <td className="px-4 py-2.5">
+                    {dryRunWouldStop(full)
+                      ? <Badge tone="warn">would stop</Badge>
+                      : <Badge tone={TONE[j.status] ?? 'muted'}>{j.status}</Badge>}
+                  </td>
                   <td className="px-4 py-2.5 text-xs" style={{ color: 'var(--text-muted)' }}>{j.report?.summary ?? '—'}</td>
                 </tr>
                 {open && (

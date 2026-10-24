@@ -132,7 +132,8 @@ export default function UpdatesPage() {
     }
 
     const connect = () => {
-      ws = new WebSocket(wsBase())
+      // Admin-only channel: these frames carry step output and log lines from hosts.
+      ws = new WebSocket(`${wsBase()}/updates`)
       ws.onopen = () => { if (opened) loadJobs(); opened = true }
       ws.onmessage = e => {
         try {

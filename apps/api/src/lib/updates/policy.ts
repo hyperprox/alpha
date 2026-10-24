@@ -239,9 +239,12 @@ export function loadPolicy(path = policyPath()): PolicyLoad {
 
 export function nodePolicy(p: Policy, node: string): NodePolicy {
   const own = p.nodes[node] ?? {}
+  // A node that names holds or a pin is protecting a kernel: it never inherits dist-upgrade from the default.
+  const guarded = Boolean(own.requirePin || own.requireHolds?.length)
   return {
     ...p.nodeDefault,
     ...own,
+    upgrade: own.upgrade ?? (guarded ? 'upgrade' : p.nodeDefault.upgrade),
     requireHolds: own.requireHolds ?? p.nodeDefault.requireHolds ?? [],
   }
 }
