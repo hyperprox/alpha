@@ -44,6 +44,15 @@ echo "→ Installing dependencies..."
 pnpm install --frozen-lockfile >/dev/null
 (cd apps/api && npx prisma generate --schema ./prisma/schema.prisma >/dev/null)
 
+echo "→ Applying database migrations..."
+# DATABASE_URL stays in .env (the database is needed before the vault is unlocked).
+DATABASE_URL="$(grep -m1 '^DATABASE_URL=' .env | cut -d= -f2-)"
+if [ -z "$DATABASE_URL" ]; then
+  echo "✗ DATABASE_URL is not in .env; migrations not applied." >&2
+  exit 1
+fi
+(cd apps/api && DATABASE_URL="$DATABASE_URL" npx prisma migrate deploy --schema ./prisma/schema.prisma)
+
 echo "→ Building API..."
 cd apps/api && npx tsc -p tsconfig.json
 cd /opt/hyperprox

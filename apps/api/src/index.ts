@@ -87,7 +87,8 @@ async function main() {
   // not here: while locked there is no vault session to write with.
 
   const port = Number(process.env.PORT ?? 3002)
-  await server.listen({ port, host: '0.0.0.0' })
+  // The installer sets API_BIND=127.0.0.1 so only nginx reaches the API; older installs keep listening everywhere.
+  await server.listen({ port, host: process.env.API_BIND || '0.0.0.0' })
   server.log.info(`HyperProx API running on port ${port}`)
 }
 

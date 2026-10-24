@@ -53,8 +53,9 @@ Bitwarden-compatible, zero-knowledge vault. Every install runs its own, stock an
   have checked your credentials.
 
 Deleting a secret from the Secrets page moves it to the vault's trash, so it can be recovered from the vault
-until the trash is emptied. Signing in takes about 15 to 20 seconds on modest hardware, because the master
-password is deliberately slow to derive a key from.
+until the trash is emptied. Signing in takes about a second: HyperProx talks to Vaultwarden's API directly. An account set to Argon2id
+in the vault signs in through the Bitwarden CLI instead, which takes 15 to 20 seconds. Setting
+`VAULT_FAST_SIGNIN=0` in `.env` sends every sign-in through the CLI.
 
 ## From the command line
 
