@@ -72,6 +72,7 @@ export function buildPlan(inv: UpdatesInventory, policy: Policy, ctx: PlanContex
       continue
     }
     const pol = guestPolicy(policy, g.vmid)
+    if (g.keptBack?.length) warnings.push(`${g.vmid} (${g.name}): held or kept back, a run will not install: ${g.keptBack.join(', ')}`)
     const aptWork = pol.apt && g.pending.length > 0
     const dockerWork = pol.docker === 'auto' && pol.composeDirs.length > 0
     if (pol.docker === 'manual') {

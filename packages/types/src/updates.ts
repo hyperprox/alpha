@@ -38,6 +38,7 @@ export type UpdatesGuest = {
   unmanagedReason?: UpdatesUnmanagedReason
   pending:          UpdatesPkgChange[]
   rebootRequired:   boolean
+  keptBack?:        string[]          // held, or kept back by `apt-get upgrade`: never installed by a run
   haManaged:        boolean
   snapshotCapable:  boolean
   docker:           'none' | 'auto' | 'manual'

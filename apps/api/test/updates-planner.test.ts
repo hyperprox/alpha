@@ -221,3 +221,12 @@ test('bind mounts make a container unsnapshottable', () => {
   assert.equal(lxcSnapshotCapable({ rootfs: 'fast:vm-101-disk-0,size=8G', mp0: 'fast:vm-101-disk-1,mp=/data' }), true)
   assert.equal(lxcSnapshotCapable({ rootfs: 'fast:vm-101-disk-0,size=8G', mp0: '/mnt/media,mp=/media' }), false)
 })
+
+test('held and kept-back packages are not pending: they are listed apart and never make a guest look out of date', () => {
+  const r = parseGuestPending('HP_KEPT libnvidia-compute-580\nHP_KEPT nvidia-kernel-common-580\ncurl/stable-security 8.14.1-2+deb13u2 amd64 [upgradable from: 8.14.1-2+deb13u1]\n')
+  assert.deepEqual(r.pending.map(p => p.name), ['curl'])
+  assert.deepEqual(r.keptBack, ['libnvidia-compute-580', 'nvidia-kernel-common-580'])
+  const only = parseGuestPending('HP_KEPT linux-image-amd64\n')
+  assert.equal(only.pending.length, 0)
+  assert.deepEqual(only.keptBack, ['linux-image-amd64'])
+})
