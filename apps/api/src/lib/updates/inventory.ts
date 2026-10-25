@@ -116,6 +116,7 @@ async function readGuest(exec: UpdatesExecutor, policy: Policy, g: GuestListing,
     const parsed = parseGuestPending(r.output)
     if (parsed.noApt) { out.unmanagedReason = 'no-apt'; return out }
     out.pending = parsed.pending
+    if (parsed.keptBack.length) out.keptBack = parsed.keptBack
     out.rebootRequired = parsed.rebootRequired
     out.managed = true
   } catch (e: any) {

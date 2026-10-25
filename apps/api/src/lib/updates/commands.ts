@@ -31,27 +31,42 @@ export function parsePveAptList(rows: unknown): UpdatesPkgChange[] {
 
 // --- Guests -----------------------------------------------------------------------
 
-/** Read-only: what apt would upgrade, and whether the guest wants a reboot. */
+/**
+ * Read-only: what `apt-get upgrade` would actually install, and whether the guest wants a reboot.
+ *
+ * `apt list --upgradable` also lists held packages and ones `upgrade` keeps back (a new kernel that pulls in
+ * a new package), which a run can never install, so the guest was planned again on every run. A simulated
+ * upgrade decides; the rest come back as HP_KEPT. If the simulation itself fails, every line counts as
+ * pending, so an update is never hidden.
+ */
 export const GUEST_PENDING_SCRIPT = [
   'command -v apt-get >/dev/null 2>&1 || { echo HP_NO_APT; exit 0; }',
-  'LC_ALL=C apt list --upgradable 2>/dev/null | grep -v "^Listing" || true',
+  'if sim=$(LC_ALL=C apt-get -s -o Debug::NoLocking=1 upgrade 2>/dev/null); then',
+  '  inst=" $(printf \'%s\\n\' "$sim" | awk \'/^Inst /{n=$2; sub(/:.*/, "", n); printf "%s ", n}\') "',
+  'else inst=ALL; fi',
+  'LC_ALL=C apt list --upgradable 2>/dev/null | grep -v "^Listing" | while IFS= read -r l; do',
+  '  p=${l%%/*}',
+  '  if [ "$inst" = ALL ]; then echo "$l"; else case "$inst" in *" $p "*) echo "$l" ;; *) echo "HP_KEPT $p" ;; esac; fi',
+  'done',
   '[ -f /var/run/reboot-required ] && echo HP_REBOOT_REQUIRED || true',
 ].join('\n')
 
-export interface GuestPendingResult { noApt: boolean; pending: UpdatesPkgChange[]; rebootRequired: boolean }
+export interface GuestPendingResult { noApt: boolean; pending: UpdatesPkgChange[]; keptBack: string[]; rebootRequired: boolean }
 
 // `curl/stable-security 8.14.1-2+deb13u2 amd64 [upgradable from: 8.14.1-2+deb13u1]`
 const APT_LINE = /^([^\s/]+)\/\S+\s+(\S+)\s+\S+(?:\s+\[upgradable from:\s*([^\]]+)\])?/
 
 export function parseGuestPending(output: string): GuestPendingResult {
   const lines = output.split('\n').map(l => l.trim()).filter(Boolean)
-  if (lines.includes('HP_NO_APT')) return { noApt: true, pending: [], rebootRequired: false }
+  if (lines.includes('HP_NO_APT')) return { noApt: true, pending: [], keptBack: [], rebootRequired: false }
   const pending: UpdatesPkgChange[] = []
+  const keptBack: string[] = []
   for (const l of lines) {
+    if (l.startsWith('HP_KEPT ')) { keptBack.push(l.slice(8).trim()); continue }
     const m = APT_LINE.exec(l)
     if (m) pending.push({ name: m[1], from: m[3]?.trim() ?? null, to: m[2] })
   }
-  return { noApt: false, pending, rebootRequired: lines.includes('HP_REBOOT_REQUIRED') }
+  return { noApt: false, pending, keptBack, rebootRequired: lines.includes('HP_REBOOT_REQUIRED') }
 }
 
 export const GUEST_REFRESH_SCRIPT = `${APT_ENV}\napt-get update -q`
