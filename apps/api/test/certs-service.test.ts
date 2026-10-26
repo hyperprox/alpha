@@ -371,3 +371,44 @@ test('issue is refused while the same label is being deployed', async () => {
   release()
   await w.svc.idle()
 })
+
+test('alerts: with no saved state, the verdicts already on the page are the baseline (a restart or first check re-announces nothing)', async () => {
+  const w = world()
+  await issueOk(w)
+  w.served.set('mail.example.com:993', 'DE:AD')
+  await w.svc.probe()                        // the page already shows 993 as critical
+  assert.equal(await w.store.getState('alerts'), null)
+  await w.svc.dailyCheck()
+  assert.equal(w.webhooks.length, 0, 'a known problem is not announced again')
+  w.served.delete('mail.example.com:587')     // a new problem is
+  await w.svc.dailyCheck()
+  assert.equal(w.webhooks.length, 1)
+  assert.match(w.webhooks[0].join('\n'), /587/)
+  assert.doesNotMatch(w.webhooks[0].join('\n'), /993/)
+})
+
+test('probes carry the expected fingerprint, internal flag and probe options; housekeeping gets its own runner and a warn sink', async () => {
+  const w = world()
+  const seen: any[] = []
+  const logs: string[] = []
+  const deps = (w.svc as any).deps
+  const base = deps.modules
+  deps.probeOptions = { ca: 'TEST CA PEM' }
+  deps.log = (m: string) => logs.push(m)
+  deps.modules = { ...base,
+    probeEndpoint: async (t: any, _ms: any, opts: any) => { seen.push({ t, opts }); return base.probeEndpoint(t) },
+    verdictFor: (r: any, ctx: any) => { seen.push({ ctx }); return base.verdictFor(r, ctx) },
+  }
+  const b = await issueOk(w)
+  assert.ok(seen.some(s => s.opts?.ca === 'TEST CA PEM'))
+  assert.ok(seen.some(s => s.ctx?.expectFingerprint === b.fingerprint256), 'the deployed fingerprint, in X509 form')
+  assert.ok(seen.every(s => !s.ctx || s.ctx.internal === false || s.ctx.internal === undefined))
+
+  const ran: number[] = []
+  deps.housekeepingExec = async (vmid: number) => { ran.push(vmid); return { code: 0, output: '' } }
+  w.policy.current = policy({ proxy: { guestVmid: 105 } })
+  deps.modules = { ...base, listHousekeeping: async (d: any) => { await d.guestExec('ls'); d.warn('scan failed'); return [] } }
+  await w.svc.housekeeping()
+  assert.deepEqual(ran, [105])
+  assert.ok(logs.some(l => /housekeeping: scan failed/.test(l)))
+})

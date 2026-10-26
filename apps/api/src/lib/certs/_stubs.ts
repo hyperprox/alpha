@@ -15,7 +15,7 @@
 //    export type { KeyType, TargetSpec, CertsPolicy } from './policy'
 //    export type { DnsProvider } from './dns01'
 //    export type { IssueDeps, IssuedBundle } from './acme'
-//    export type { ProbeTarget, ProbeResult } from './probe'
+//    export type { ProbeTarget, ProbeResult, ProbeOptions } from './probe'
 //    export type { InventoryDeps } from './inventory'
 //    export type { HousekeepingDeps } from './housekeeping'
 //    export type { AlertState } from './alerts'
@@ -37,6 +37,7 @@
 import type { GoDaddyClient } from '../godaddy-client'
 import { NPMClient, type NPMCertificate } from '../npm-client'
 import { getProviderCredentials } from '../credentials'
+import { livePve } from '../pve-env'
 import type {
   CertsHousekeepingItem, CertsInventoryEntry, CertsManaged, CertsProbe, CertsStartTls, CertsVerdict,
 } from './types'
@@ -100,7 +101,9 @@ export interface HousekeepingDeps {
   npmHosts(): Promise<{ certificate_id: number | null }[]>
   deleteNpmCertificate(id: number): Promise<void>
   guestExec: ((script: string) => Promise<{ code: number; output: string }>) | null
+  warn?: (message: string) => void
 }
+export interface ProbeOptions { ca?: string | string[] }
 export interface AlertState { key: string; verdict: CertsVerdict; reason: string | null }
 
 // --- The seam ---------------------------------------------------------------------------
@@ -114,7 +117,7 @@ export interface CertsModules {
   issueCertificate(deps: IssueDeps, names: string[], keyType: KeyType): Promise<IssuedBundle>
   fetchAri(directoryUrl: string, certPem: string): Promise<{ start: Date; end: Date } | null>
   zonesFor(names: string[], dns: DnsProvider[]): Promise<{ name: string; zone: string | null; provider: string | null }[]>
-  probeEndpoint(t: ProbeTarget, timeoutMs?: number): Promise<ProbeResult>
+  probeEndpoint(t: ProbeTarget, timeoutMs?: number, opts?: ProbeOptions): Promise<ProbeResult>
   verdictFor(r: ProbeResult, ctx: { now: Date; warnFraction: number; criticalDays: number;
     expectFingerprint?: string; internal?: boolean; stagingIssuers?: RegExp }): { verdict: CertsVerdict; reason: string | null }
   discoverProbeTargets(d: Pick<InventoryDeps, 'npmHosts' | 'nodeCertificates' | 'policy' | 'managed'>): Promise<(ProbeTarget & { source: CertsProbe['source'] })[]>
@@ -165,9 +168,10 @@ export const defaultModules: CertsModules = {
 }
 
 // --- Read-only sources for inventory, discovery and housekeeping ------------------------------
-// npmCertificates/npmHosts use NPM API calls that already exist. The other two depend on methods the
-// watch branch adds; MERGE: point nodeCertificates at its proxmox-client method and
-// deleteNpmCertificate at its npm-client method.
+// nodeCertificates and deleteNpmCertificate call client methods the watch branch adds
+// (ProxmoxClient.getNodeCertificates, NPMClient.deleteCertificate). They are reached through the
+// structural types below so this file compiles before that merge and needs no edit after it; until
+// then they throw, which the service reports as "unavailable" rather than as "nothing there".
 
 export interface CertsSources {
   npmCertificates(): Promise<NPMCertificate[]>
@@ -190,7 +194,38 @@ export function productionSources(): CertsSources {
       certificate_id: typeof h.certificate_id === 'number' && h.certificate_id > 0 ? h.certificate_id : null,
       enabled: !!h.enabled,
     })),
-    nodeCertificates: async () => [],
-    deleteNpmCertificate: async () => { throw NOT_MERGED('Deleting proxy certificates') },
+    nodeCertificates: () => nodeCertificatesFromPve(),
+    async deleteNpmCertificate(id) {
+      const c = await npmClient() as unknown as Partial<{ deleteCertificate(id: number): Promise<void> }>
+      if (typeof c.deleteCertificate !== 'function') throw NOT_MERGED('Deleting proxy certificates')
+      await c.deleteCertificate(id)
+    },
   }
+}
+
+type NodeCertInfo = { filename: string; issuer: string; notbefore: number; notafter: number; san?: string[]; fingerprint?: string }
+
+/**
+ * Each online node's pveproxy certificates, with the address its console is probed on (the node's IP from
+ * cluster status, not its name: node names need not resolve from here). A node that fails is left out; if
+ * every node fails, the first error is thrown so the page says the source is down.
+ */
+async function nodeCertificatesFromPve(): Promise<{ node: string; host: string; certs: NodeCertInfo[] }[]> {
+  const pve = livePve()
+  const rows = await pve.fetchStrict<any[]>('/cluster/status')
+  if (!Array.isArray(rows)) throw new Error('Proxmox returned no cluster status')
+  const nodes = rows.filter(r => r.type === 'node' && r.online === 1)
+    .map(r => ({ name: String(r.name), ip: r.ip ? String(r.ip) : String(r.name) }))
+  const api = pve as unknown as Partial<{ getNodeCertificates(node: string): Promise<NodeCertInfo[]> }>
+  if (typeof api.getNodeCertificates !== 'function') throw NOT_MERGED('Reading node certificates')
+  const got = await Promise.allSettled(nodes.map(async n => ({
+    node: n.name, host: n.ip,
+    certs: (await api.getNodeCertificates!(n.name)).map(c => ({
+      filename: c.filename, issuer: c.issuer, notbefore: c.notbefore, notafter: c.notafter, san: c.san, fingerprint: c.fingerprint,
+    })),
+  })))
+  const ok = got.flatMap(g => (g.status === 'fulfilled' ? [g.value] : []))
+  const failed = got.find(g => g.status === 'rejected') as PromiseRejectedResult | undefined
+  if (!ok.length && failed) throw failed.reason
+  return ok
 }
