@@ -548,7 +548,7 @@ export class CertsService {
     const s = this.deps.sources
     return {
       npmCertificates: () => s.npmCertificates(),
-      npmHosts: () => s.npmHosts(),
+      npmCertificateUsers: () => s.npmCertificateUsers(),
       deleteNpmCertificate: id => s.deleteNpmCertificate(id),
       guestExec: vmid === null ? null : script => (this.deps.housekeepingExec ?? this.deps.deploy.guestExec)(vmid, script),
       warn: m => this.deps.log(`[certs] housekeeping: ${m}`),

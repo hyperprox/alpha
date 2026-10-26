@@ -74,8 +74,12 @@ export interface CertsSources {
   npmCertificates(): Promise<NPMCertificate[]>
   npmHosts(): Promise<{ domain_names: string[]; certificate_id: number | null; enabled: boolean }[]>
   nodeCertificates: InventoryDeps['nodeCertificates']
+  /** Every proxy, redirection and 404 host and stream; rejects if any list cannot be read. */
+  npmCertificateUsers(): Promise<{ certificate_id: number | null }[]>
   deleteNpmCertificate(id: number): Promise<void>
 }
+
+const certId = (v: unknown): number | null => (typeof v === 'number' && v > 0 ? v : null)
 
 async function npmClient(): Promise<NPMClient> {
   const c = await getProviderCredentials('proxy', 'npm')
@@ -88,10 +92,16 @@ export function productionSources(): CertsSources {
     npmCertificates: async () => (await npmClient()).getCertificates(),
     npmHosts: async () => (await (await npmClient()).getProxyHosts()).map(h => ({
       domain_names: h.domain_names,
-      certificate_id: typeof h.certificate_id === 'number' && h.certificate_id > 0 ? h.certificate_id : null,
+      certificate_id: certId(h.certificate_id),
       enabled: !!h.enabled,
     })),
     nodeCertificates: () => nodeCertificatesFromPve(),
+    async npmCertificateUsers() {
+      const npm = await npmClient()
+      // All four or nothing: Promise.all rejects on the first list that fails.
+      const lists = await Promise.all([npm.getProxyHosts(), npm.getRedirectionHosts(), npm.getDeadHosts(), npm.getStreams()])
+      return lists.flat().map(h => ({ certificate_id: certId(h.certificate_id) }))
+    },
     deleteNpmCertificate: async id => (await npmClient()).deleteCertificate(id),
   }
 }

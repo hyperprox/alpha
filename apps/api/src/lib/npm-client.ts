@@ -31,6 +31,12 @@ export interface NPMProxyHost {
   certificate?: NPMCertificate
 }
 
+/** A redirection host, 404 host or stream, as far as certificates are concerned. */
+export interface NPMCertificateUser {
+  id:             number
+  certificate_id?: number | 'new' | false | null
+}
+
 export interface NPMCertificate {
   id:           number
   nice_name:    string
@@ -96,6 +102,11 @@ export class NPMClient {
 
   async getCertificates():          Promise<NPMCertificate[]>  { return this.get('/nginx/certificates') }
   async deleteCertificate(id: number): Promise<void>           { return this.req('DELETE', `/nginx/certificates/${id}`) }
+  // The other host kinds that can carry a certificate. Read-only, and only the fields certificate
+  // housekeeping needs: a certificate any of them uses is not "unused".
+  async getRedirectionHosts(): Promise<NPMCertificateUser[]> { return this.get('/nginx/redirection-hosts') }
+  async getDeadHosts():        Promise<NPMCertificateUser[]> { return this.get('/nginx/dead-hosts') }
+  async getStreams():          Promise<NPMCertificateUser[]> { return this.get('/nginx/streams') }
   async getProxyHost(id: number):   Promise<NPMProxyHost>      { return this.get(`/nginx/proxy-hosts/${id}`) }
   async enableProxyHost(id: number): Promise<NPMProxyHost>     { return this.req('POST', `/nginx/proxy-hosts/${id}/enable`) }
   async disableProxyHost(id: number): Promise<NPMProxyHost>    { return this.req('POST', `/nginx/proxy-hosts/${id}/disable`) }

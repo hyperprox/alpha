@@ -18,7 +18,7 @@ function deps(o: Partial<HousekeepingDeps> & { certs?: NPMCertificate[]; hosts?:
   const deleted: number[] = []
   const d: HousekeepingDeps = {
     npmCertificates: async () => o.certs ?? [cert(1, '2026-01-01T00:00:00Z'), cert(2, '2026-02-01T00:00:00Z'), cert(3, '2027-01-01T00:00:00Z'), cert(4, '2026-03-01T00:00:00Z')],
-    npmHosts: async () => o.hosts ?? [{ certificate_id: 2 }, { certificate_id: 3 }, { certificate_id: null }],
+    npmCertificateUsers: o.npmCertificateUsers ?? (async () => o.hosts ?? [{ certificate_id: 2 }, { certificate_id: 3 }, { certificate_id: null }]),
     deleteNpmCertificate: async id => { deleted.push(id) },
     guestExec: o.guestExec ?? null,
     warn: o.warn,
@@ -33,7 +33,21 @@ test('API only: expired and attached to nothing; expired but used, and valid but
     ['npm-cert:1', 'proxy-expired-unused', '2026-01-01T00:00:00.000Z'],
     ['npm-cert:4', 'proxy-expired-unused', '2026-03-01T00:00:00.000Z'],
   ])
-  assert.match(items[0].detail, /#1 \(h1\.example\.com\) has expired and no proxy host uses it/)
+  assert.match(items[0].detail, /#1 \(h1\.example\.com\) has expired and no proxy host, redirection, 404 host or stream uses it/)
+})
+
+test('a certificate used only by a redirection, 404 host or stream is not unused', async () => {
+  // The production source flattens proxy, redirection and 404 hosts and streams into this one list.
+  const { d } = deps({ hosts: [{ certificate_id: 2 }, { certificate_id: 3 }, { certificate_id: 4 }] })
+  assert.deepEqual((await listHousekeeping(d, NOW)).map(i => i.id), ['npm-cert:1'])
+})
+
+test('if any host list cannot be read, nothing is listed and nothing is deleted', async () => {
+  const { d, deleted } = deps({ npmCertificateUsers: async () => { throw new Error('GET /nginx/streams failed 500') } })
+  await assert.rejects(listHousekeeping(d, NOW), /streams failed/)
+  const item = { id: 'npm-cert:1', kind: 'proxy-expired-unused' as const, names: [], expiredAt: null, detail: '' }
+  await assert.rejects(applyHousekeeping(item, d), /streams failed/)
+  assert.deepEqual(deleted, [])
 })
 
 test('apply deletes through the API, but re-checks first', async () => {
@@ -65,12 +79,15 @@ const PEM_B64 = (() => {
   return b
 })()
 
-/** A proxy guest whose docker shows the proxy's container plus an unrelated one. */
-function fakeGuest(listing: string, mounts = `jc21/nginx-proxy-manager:latest\t${LE}\nredis:7\t\n`) {
+const DATA = '/srv/proxy/data'
+
+/** A proxy guest whose docker shows the proxy's container plus an unrelated one. `refs`: ids nginx still uses. */
+function fakeGuest(listing: string, mounts = `jc21/nginx-proxy-manager:latest\t${LE}\t${DATA}\nredis:7\t\t\n`, refs: number[] = []) {
   const scripts: string[] = []
   const exec = async (script: string) => {
     scripts.push(script)
     if (script.includes('docker inspect')) return { code: 0, output: mounts }
+    if (script.includes('grep -rqF')) return { code: 0, output: refs.map(i => `REF\t${i}\n`).join('') }
     if (script.includes('PATH')) return { code: 0, output: listing }
     return { code: 0, output: 'moved' }
   }
@@ -91,16 +108,41 @@ test('orphan files: certbot dirs for ids the proxy does not have, found under th
   assert.match(items[0].detail, new RegExp(`${LE}/live/npm-7, ${LE}/archive/npm-7, ${LE}/renewal/npm-7.conf`))
   assert.match(items[0].detail, /nothing is deleted/)
   assert.deepEqual(items[1].names, [])
-  // The directory came from docker, quoted, never typed in.
-  assert.ok(g.scripts[1].includes(`d='${LE}'`))
+  // The directories came from docker, quoted, never typed in.
+  assert.ok(g.scripts.some(s => s.includes(`d='${LE}'`)))
+  const refs = g.scripts.find(s => s.includes('grep -rqF'))!
+  assert.ok(refs.includes(`d='${DATA}'/nginx`))
+  assert.match(refs, /for id in 7 9; do/)
   // Listing is read-only.
   assert.ok(g.scripts.every(s => !/\bmv\b|\brm\b|mkdir/.test(s)))
 })
 
+test('orphan files the proxy\'s nginx config still references are not listed', async () => {
+  const g = fakeGuest(LISTING, undefined, [7])
+  const warnings: string[] = []
+  const items = (await listHousekeeping(deps({ guestExec: g.exec, warn: m => warnings.push(m) }).d, NOW)).filter(i => i.kind === 'proxy-orphan-files')
+  assert.deepEqual(items.map(i => i.id), ['npm-files:9'])
+  assert.match(warnings.join('\n'), /npm-7 .*still uses it; left alone/)
+})
+
+test('orphan files are refused when hosts use certificates the list does not show, or /data cannot be found', async () => {
+  // Host uses #5, which the certificate list lacks: the API login cannot see everything.
+  const hidden = fakeGuest(LISTING)
+  await assert.rejects(listHousekeeping(deps({ guestExec: hidden.exec, hosts: [{ certificate_id: 5 }] }).d, NOW), /#5, which the certificate list does not show/)
+  assert.ok(!hidden.scripts.some(s => s.includes('PATH')), 'the disk is not even scanned')
+  const warnings: string[] = []
+  const items = await listHousekeeping(deps({ guestExec: hidden.exec, hosts: [{ certificate_id: 5 }], warn: m => warnings.push(m) }).d, NOW)
+  assert.ok(!items.some(i => i.kind === 'proxy-orphan-files'))
+  assert.match(warnings[0], /cannot see every certificate/)
+
+  const noData = fakeGuest(LISTING, `jc21/nginx-proxy-manager:latest\t${LE}\t\n`)
+  await assert.rejects(listHousekeeping(deps({ guestExec: noData.exec }).d, NOW), /mounts \/data/)
+})
+
 test('the letsencrypt dir is not guessed: none, or several unrelated, is an error', async () => {
-  const none = fakeGuest(LISTING, 'redis:7\t\n')
+  const none = fakeGuest(LISTING, 'redis:7\t\t\n')
   await assert.rejects(listHousekeeping(deps({ guestExec: none.exec }).d, NOW), /no running container in the proxy guest mounts \/etc\/letsencrypt/)
-  const two = fakeGuest(LISTING, 'a:1\t/x\nb:1\t/y\n')
+  const two = fakeGuest(LISTING, 'a:1\t/x\t/dx\nb:1\t/y\t/dy\n')
   await assert.rejects(listHousekeeping(deps({ guestExec: two.exec }).d, NOW), /not guessing/)
   // With a warn hook the API items still come back, and the failure is said out loud.
   const warnings: string[] = []
@@ -112,19 +154,27 @@ test('the letsencrypt dir is not guessed: none, or several unrelated, is an erro
 test('apply on orphan files moves them, keeping certbot\'s layout, and refuses if the proxy now knows the id', async () => {
   // Run the generated scripts for real against a temporary tree standing in for the guest's disk.
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "certs-hk le'dir "))
-  for (const p of ['live/npm-7', 'archive/npm-7', 'renewal', 'live/npm-1']) fs.mkdirSync(path.join(root, p), { recursive: true })
+  for (const p of ['live/npm-7', 'archive/npm-7', 'renewal', 'live/npm-1', 'live/npm-8']) fs.mkdirSync(path.join(root, p), { recursive: true })
+  // The proxy's /data: its nginx config still points at npm-8 although the API no longer lists it.
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), "certs-hk data'dir "))
+  fs.mkdirSync(path.join(data, 'nginx/proxy_host'), { recursive: true })
+  fs.writeFileSync(path.join(data, 'nginx/proxy_host/3.conf'), 'ssl_certificate /etc/letsencrypt/live/npm-8/fullchain.pem;\n')
   fs.writeFileSync(path.join(root, 'archive/npm-7/cert1.pem'), 'x')
   fs.symlinkSync('../../archive/npm-7/cert1.pem', path.join(root, 'live/npm-7/cert.pem'))
   fs.writeFileSync(path.join(root, 'renewal/npm-7.conf'), 'x')
   const exec = async (script: string) => {
-    if (script.includes('docker inspect')) return { code: 0, output: `jc21/nginx-proxy-manager:2\t${root}\n` }
+    if (script.includes('docker inspect')) return { code: 0, output: `jc21/nginx-proxy-manager:2\t${root}\t${data}\n` }
     const r = spawnSync('bash', ['-c', script], { encoding: 'utf8' })
     return { code: r.status ?? 1, output: r.stdout + r.stderr }
   }
   try {
     const { d } = deps({ guestExec: exec })
-    const item = (await listHousekeeping(d, NOW)).find(i => i.id === 'npm-files:7')!
+    const listed = await listHousekeeping(d, NOW)
+    assert.ok(!listed.some(i => i.id === 'npm-files:8'), 'still referenced by nginx')
+    const item = listed.find(i => i.id === 'npm-files:7')!
     assert.ok(item)
+    await assert.rejects(applyHousekeeping({ ...item, id: 'npm-files:8' }, d), /nginx configuration uses npm-8/)
+    assert.ok(fs.existsSync(path.join(root, 'live/npm-8')))
     const detail = await applyHousekeeping(item, d)
     assert.match(detail, /^Archived 3 path\(s\) for npm-7 into /)
     assert.ok(!fs.existsSync(path.join(root, 'live/npm-7')))
@@ -141,6 +191,7 @@ test('apply on orphan files moves them, keeping certbot\'s layout, and refuses i
     await assert.rejects(applyHousekeeping(item, deps().d), /no proxy guest is configured/)
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
+    fs.rmSync(data, { recursive: true, force: true })
   }
 })
 
