@@ -271,8 +271,8 @@ export function verdictFor(r: ProbeResult, ctx: VerdictContext): { verdict: Cert
     return { verdict: 'warn', reason: `expires ${daysPhrase(left)}, with less than ${fractionPhrase(ctx.warnFraction)} of its ${Math.round(lifetime / DAY_MS)}-day lifetime left` }
   }
   if (staging) return { verdict: 'warn', reason: 'serves a staging certificate, which clients do not trust' }
-  if (r.trusted === false && ctx.internal) {
-    return { verdict: 'warn', reason: leaf.selfSigned ? 'serves a self-signed certificate' : 'serves a certificate from a private CA' }
-  }
+  // An internal endpoint (a node console, say) is expected to serve a self-signed or private-CA certificate;
+  // that alone is not worth a warning, but the reason still says why an untrusted chain passed.
+  if (r.trusted === false && ctx.internal) return { verdict: 'ok', reason: 'private certificate, expected here' }
   return { verdict: 'ok', reason: null }
 }

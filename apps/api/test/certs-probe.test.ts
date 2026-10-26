@@ -119,7 +119,7 @@ test('without the CA, the same certificate is untrusted: critical on a public en
   const v = verdictFor(r, ctx)
   assert.equal(v.verdict, 'critical')
   assert.match(v.reason!, /untrusted/)
-  assert.equal(verdictFor(r, { ...ctx, internal: true }).reason, 'serves a certificate from a private CA')
+  assert.deepEqual(verdictFor(r, { ...ctx, internal: true }), { verdict: 'ok', reason: 'private certificate, expected here' })
 })
 
 test('wildcards cover one label, not two; a wrong name is critical', async () => {
@@ -141,13 +141,13 @@ test('an IP address is checked against IP SANs and sends no SNI', async () => {
   assert.equal(r.namesMatch, true)
 })
 
-test('self-signed: critical where public is expected, warn on an internal endpoint', async () => {
+test('self-signed: critical where public is expected, ok on an internal endpoint', async () => {
   const port = await tlsServer('self')
   const r = await probeEndpoint({ host: '127.0.0.1', port, starttls: 'none', servername: 'self.test' }, 5000)
   assert.equal(r.leaf!.selfSigned, true)
   assert.equal(r.trusted, false)
   assert.deepEqual(verdictFor(r, ctx), { verdict: 'critical', reason: 'serves a self-signed certificate where a public one is expected' })
-  assert.deepEqual(verdictFor(r, { ...ctx, internal: true }), { verdict: 'warn', reason: 'serves a self-signed certificate' })
+  assert.deepEqual(verdictFor(r, { ...ctx, internal: true }), { verdict: 'ok', reason: 'private certificate, expected here' })
 })
 
 test('an expired certificate is critical whatever else is true', async () => {
@@ -249,7 +249,11 @@ test('verdict table', () => {
     ['45-day cert, 16 days left',  result({ lifetime: 45, days: 16 }),               {}, 'ok', null],
     ['LE staging',                 result({ trusted: false, issuer: 'C=US, O=(STAGING) Let\'s Encrypt, CN=(STAGING) Ersatz Edamame E1' }), {}, 'warn', /staging/],
     ['Pebble',                     result({ trusted: false, issuer: 'CN=Pebble Intermediate CA 1a2b3c' }), {}, 'warn', /staging/],
-    ['self-signed internal',       result({ trusted: false, selfSigned: true, lifetime: 3650, days: 3000 }), { internal: true }, 'warn', /^serves a self-signed certificate$/],
+    ['self-signed internal',       result({ trusted: false, selfSigned: true, lifetime: 3650, days: 3000 }), { internal: true }, 'ok', /^private certificate, expected here$/],
+    ['private CA internal',        result({ trusted: false, lifetime: 398, days: 300 }), { internal: true }, 'ok', /^private certificate, expected here$/],
+    ['internal, under a third',    result({ trusted: false, selfSigned: true, days: 20 }), { internal: true }, 'warn', /less than a third/],
+    ['internal, name mismatch',    result({ trusted: false, selfSigned: true, namesMatch: false }), { internal: true }, 'critical', /does not cover/],
+    ['internal, wrong fingerprint', result({ trusted: false, fp: '11:22' }), { internal: true, expectFingerprint: 'ab:cd' }, 'critical', /different certificate/],
     ['expiry beats internal',      result({ trusted: false, selfSigned: true, days: 2 }), { internal: true }, 'critical', /expires in 2 days/],
     ['not valid yet',              result({ days: 91 }),                             {}, 'critical', /not valid yet/],
     ['issued a minute ahead',      result({ days: 90.001 }),                         {}, 'ok', null],

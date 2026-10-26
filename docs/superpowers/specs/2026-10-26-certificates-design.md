@@ -183,9 +183,9 @@ A probe's verdict:
 
 - **critical**: expired, untrusted chain where a public certificate is expected, name mismatch, served
   fingerprint differs from the managed certificate just deployed, or fewer than `critical_days` left.
-- **warn**: less than `warn_fraction` of the lifetime left, a staging certificate, or a self-signed
-  certificate on an endpoint marked internal-only.
-- **ok** otherwise.
+- **warn**: less than `warn_fraction` of the lifetime left, or a staging certificate.
+- **ok** otherwise. A self-signed or private-CA certificate on an endpoint marked internal-only is ok, with
+  the reason "private certificate, expected here"; expiry, name and fingerprint still apply to it.
 
 Each verdict carries a one-line reason ("serves a self-signed certificate", "expires in 5 days and its last
 renewal failed: <error>"). Notifications go out on a change of verdict, plus a daily reminder while anything
