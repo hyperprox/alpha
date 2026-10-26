@@ -82,6 +82,7 @@ test('pushScript refuses relative paths, odd owners and modes before anything ru
   assert.throws(() => pushScript([{ ...ok, path: '/etc/ssl/a.pem; rm -rf /' }]), /absolute/)
   assert.throws(() => pushScript([{ ...ok, owner: 'root;id' }]), /owner/)
   assert.throws(() => pushScript([{ ...ok, mode: '777; id' }]), /mode/)
+  assert.throws(() => pushScript([ok, { ...ok, mode: '0600' }]), /twice in one delivery/)
 })
 
 test('guestFiles: the key gets keyMode, everything else 0644; optional cert and chain', () => {
@@ -90,6 +91,18 @@ test('guestFiles: the key gets keyMode, everything else 0644; optional cert and 
   assert.deepEqual(files.map(f => [f.path, f.mode, f.content]), [
     ['/a/full.pem', '0644', 'LEAF\nCHAIN\n'], ['/a/key.pem', '0640', bundle().keyPem], ['/a/cert.pem', '0644', 'LEAF\n'], ['/a/chain.pem', '0644', 'CHAIN\n'],
   ])
+})
+
+test('guestFiles and deploy refuse a key mode that lets other users read the key', async () => {
+  for (const keyMode of ['0644', '0604', '0601', '644']) {
+    assert.throws(() => guestFiles(guestTarget({ keyMode }) as any, bundle()), /other users no access/, keyMode)
+  }
+  assert.equal(guestFiles(guestTarget({ keyMode: '0640' }) as any, bundle())[1].mode, '0640')
+  const d = deps()
+  const r = await deployBundle(guestTarget({ keyMode: '0644' }), bundle(), d)
+  assert.equal(r.ok, false)
+  assert.match(r.detail, /refusing key mode "0644"/)
+  assert.deepEqual(d.log, [], 'nothing was pushed')
 })
 
 test('guest-files: push, reload, then the probe must see the new fingerprint', async () => {
