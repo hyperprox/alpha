@@ -66,6 +66,11 @@ export interface ExecOptions {
   timeoutMs?: number
   /** Called with each chunk, so a long install can show progress as it happens. */
   onData?:   (chunk: string) => void
+  /**
+   * Written to the command's stdin, then EOF. A payload sent this way never appears on a command line, where
+   * any user on the node could read it from the process list; a script carrying a private key goes this way.
+   */
+  input?:    string
 }
 
 /**
@@ -118,6 +123,7 @@ export function execOnNode(opts: ExecOptions): Promise<ExecResult> {
         stream.on('data', take)
         stream.stderr?.on('data', take)
         stream.on('close', (code: number) => finish({ code: code ?? 0, output: out, timedOut }))
+        if (opts.input !== undefined) stream.end(opts.input)
       })
     })
 
@@ -146,13 +152,66 @@ export function execOnNode(opts: ExecOptions): Promise<ExecResult> {
   })
 }
 
+/** Unique per call, on the node and in the guest: two scripts for the same guest at once must not collide. */
+function stagingId(vmid: number): string {
+  return `${vmid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+/**
+ * The node-side command that runs a script, read from stdin, inside container `vmid`.
+ *
+ * The script is never part of the command: it arrives on stdin and is staged in a file only root can read
+ * (umask 077 before anything is written, mode 0700 in the guest), because a certificate deploy carries a
+ * private key in it and /tmp is shared on both sides. The node copy is removed even when the push fails.
+ */
+export function containerScriptCommand(vmid: number, id = stagingId(vmid)): string {
+  const tmp  = `/tmp/hyperprox-${id}.sh`
+  const inGuest = `/tmp/hyperprox-run-${id}.sh`
+  return [
+    `umask 077`,
+    `set -e`,
+    `trap 'rm -f ${tmp}' EXIT`,
+    `cat > ${tmp}`,
+    // Nothing here assumes the guest has networking, ssh, or even a shell on
+    // PATH beyond bash — pct works on a container that can do none of that.
+    `pct push ${vmid} ${tmp} ${inGuest} --perms 700`,
+    `rm -f ${tmp}`,
+    `set +e`,
+    `pct exec ${vmid} -- bash ${inGuest}`,
+    `_rc=$?`,
+    `pct exec ${vmid} -- rm -f ${inGuest} || true`,
+    `exit $_rc`,
+  ].join('\n')
+}
+
+/**
+ * The node-side command that runs a script, read from stdin, inside VM `vmid` through the QEMU guest agent.
+ * Same rule as for containers: the script is staged in a root-only file on the node and handed to the agent
+ * as the process's stdin (--pass-stdin), so it is on no command line on the node or in the guest.
+ */
+export function vmScriptCommand(vmid: number, timeoutSecs: number, id = stagingId(vmid)): string {
+  const tmp = `/tmp/hyperprox-${id}.sh`
+  return [
+    `umask 077`,
+    `set -e`,
+    `trap 'rm -f ${tmp}' EXIT`,
+    `cat > ${tmp}`,
+    `set +e`,
+    `qm guest exec ${vmid} --timeout ${timeoutSecs} --pass-stdin 1 -- bash < ${tmp}`,
+    `_rc=$?`,
+    `rm -f ${tmp}`,
+    `exit $_rc`,
+  ].join('\n')
+}
+
 /**
  * Run a script *inside* a container, from its node.
  *
- * The script is written to a file and pushed rather than interpolated into a
- * command line. An install script is full of quotes, heredocs and dollar signs,
- * and every layer of shell it passes through is another chance to mangle one —
- * a compose file with `${VAR}` in it does not survive being nested three deep.
+ * The script is sent on stdin and pushed as a file rather than interpolated
+ * into a command line. An install script is full of quotes, heredocs and
+ * dollar signs, and every layer of shell it passes through is another chance
+ * to mangle one — a compose file with `${VAR}` in it does not survive being
+ * nested three deep. And a command line is readable by every user on the node.
  */
 export function execInGuest(opts: {
   host: string
@@ -162,29 +221,5 @@ export function execInGuest(opts: {
   timeoutMs?: number
   onData?: (chunk: string) => void
 }): Promise<ExecResult> {
-  // A delimiter the payload cannot contain, so the heredoc always terminates.
-  const tag  = `HPEOF_${Math.random().toString(36).slice(2, 10).toUpperCase()}`
-  // Unique per call, on the node and in the guest: two scripts for the same guest at once
-  // (an inventory read during an install, say) must not overwrite each other.
-  const id   = `${opts.vmid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  const tmp  = `/tmp/hyperprox-${id}.sh`
-  const inGuest = `/tmp/hyperprox-run-${id}.sh`
-
-  const command = [
-    `set -e`,
-    `cat > ${tmp} <<'${tag}'`,
-    opts.script,
-    tag,
-    // Nothing here assumes the guest has networking, ssh, or even a shell on
-    // PATH beyond bash — pct works on a container that can do none of that.
-    `pct push ${opts.vmid} ${tmp} ${inGuest} --perms 755`,
-    `rm -f ${tmp}`,
-    `set +e`,
-    `pct exec ${opts.vmid} -- bash ${inGuest}`,
-    `_rc=$?`,
-    `pct exec ${opts.vmid} -- rm -f ${inGuest} || true`,
-    `exit $_rc`,
-  ].join('\n')
-
-  return execOnNode({ ...opts, command })
+  return execOnNode({ ...opts, command: containerScriptCommand(opts.vmid), input: opts.script })
 }

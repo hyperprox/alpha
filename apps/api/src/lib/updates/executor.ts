@@ -11,7 +11,7 @@
 import type { UpdatesPkgChange } from './types'
 import { livePve } from '../pve-env'
 import type { ProxmoxClient } from '../proxmox-client'
-import { execOnNode, execInGuest, nodeCredential, type ExecResult } from '../node-exec'
+import { execOnNode, execInGuest, nodeCredential, vmScriptCommand, type ExecResult } from '../node-exec'
 import { runPluginMetrics } from '../plugin-host'
 import { plexPlugin } from '../../plugins/plex'
 import { parsePveAptList } from './commands'
@@ -223,12 +223,12 @@ export function productionExecutor(pve: ProxmoxClient = livePve()): UpdatesExecu
       if (g.type === 'lxc') {
         return execInGuest({ host, cred, vmid: g.vmid, script, timeoutMs, onData: lineSplitter(onLine) })
       }
-      // VMs through the QEMU guest agent. The script travels base64-encoded so no quoting layer can mangle it.
-      const b64 = Buffer.from(script).toString('base64')
+      // VMs through the QEMU guest agent. The script goes on stdin, never on a command line: no quoting layer
+      // can mangle it, and a certificate deploy's private key is not left in any process list.
       const secs = Math.ceil((timeoutMs ?? 30 * 60_000) / 1000)
       const r = await execOnNode({
         host, cred, timeoutMs: (secs + 30) * 1000,
-        command: `qm guest exec ${g.vmid} --timeout ${secs} -- bash -c 'echo ${b64} | base64 -d | bash'`,
+        command: vmScriptCommand(g.vmid, secs), input: script,
       })
       if (r.code !== 0) return r
       try {
