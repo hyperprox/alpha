@@ -130,6 +130,14 @@ export class ProxmoxClient {
   async getNodes()                  { return this.fetchNode<PVENode[]>('/nodes') }
   async getNodeStatus(node: string) { return this.fetchNode<any>(`/nodes/${node}/status`) }
 
+  /** Read-only: the certificates pveproxy has on this node (the root CA, pve-ssl.pem, and pveproxy-ssl.pem if one is installed). */
+  async getNodeCertificates(node: string): Promise<Array<{
+    filename: string; issuer: string; subject: string; notbefore: number; notafter: number
+    san?: string[]; fingerprint?: string; 'public-key-type'?: string; 'public-key-bits'?: number; pem?: string
+  }>> {
+    return this.fetchStrict(`/nodes/${encodeURIComponent(node)}/certificates/info`)
+  }
+
   async getClusterResources(type?: string) {
     return this.fetchNode<any[]>(type ? `/cluster/resources?type=${type}` : '/cluster/resources')
   }
