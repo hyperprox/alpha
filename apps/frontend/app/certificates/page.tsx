@@ -14,6 +14,9 @@ import { EventsList } from '@/components/certificates/Events'
 
 const POLL_BUSY_MS = 5_000
 const POLL_IDLE_MS = 60_000
+// After Issue/Renew/Deploy, poll fast for this long whatever the status says: a deploy never shows
+// `renewing`, and a quick issue can finish between two slow polls, so its outcome would sit unseen.
+const POLL_AFTER_ACTION_MS = 60_000
 
 // The backend may land after this page; a 404 is "not there yet", not a failure to alarm about.
 function apiError(r: ApiResult, what: string): string {
@@ -40,6 +43,7 @@ export default function CertificatesPage() {
   const [notice, setNotice] = useState<{ tone: 'warn' | 'crit' | 'info'; text: string } | null>(null)
   const [firstIssue, setFirstIssue] = useState<CertsManaged | null>(null)
   const [applying, setApplying] = useState<CertsHousekeepingItem | null>(null)
+  const [burstUntil, setBurstUntil] = useState(0)
 
   const loadOverview = useCallback(async (fresh: boolean) => {
     const r = await apiJson<CertsOverview>('/api/certs/overview' + (fresh ? '?refresh=1' : ''))
@@ -67,14 +71,20 @@ export default function CertificatesPage() {
 
   useEffect(() => { if (allowed) loadEvents() }, [allowed, evLabel, loadEvents])
 
-  // Poll quickly while anything is being issued, slowly otherwise. A finished renewal also changes
-  // the history, so events ride along on each poll.
+  // Poll quickly while anything is being issued or just after an action, slowly otherwise. A finished
+  // renewal or deploy also changes the history, so events ride along on each fast poll.
   const renewing = !!ov?.managed.some(m => m.status === 'renewing')
   useEffect(() => {
+    if (!burstUntil) return
+    const t = setTimeout(() => setBurstUntil(0), Math.max(0, burstUntil - Date.now()))
+    return () => clearTimeout(t)
+  }, [burstUntil])
+  const fast = renewing || burstUntil > 0
+  useEffect(() => {
     if (!allowed) return
-    const t = setInterval(() => { loadOverview(false); if (renewing) loadEvents() }, renewing ? POLL_BUSY_MS : POLL_IDLE_MS)
+    const t = setInterval(() => { loadOverview(false); if (fast) loadEvents() }, fast ? POLL_BUSY_MS : POLL_IDLE_MS)
     return () => clearInterval(t)
-  }, [allowed, renewing, loadOverview, loadEvents])
+  }, [allowed, fast, loadOverview, loadEvents])
 
   // --- actions --------------------------------------------------------------------------------
 
@@ -109,6 +119,7 @@ export default function CertificatesPage() {
       const next = r.body.managed
       setOv(o => o && { ...o, managed: o.managed.map(x => x.label === next.label ? next : x) })
     }
+    setBurstUntil(Date.now() + POLL_AFTER_ACTION_MS)
     loadOverview(false); loadEvents()
   }
 
