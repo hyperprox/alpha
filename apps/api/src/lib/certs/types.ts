@@ -2,9 +2,9 @@
 //  The shared Certificates types, as the API compiles them.
 //
 //  The source of truth is packages/types/src/certs.ts (@hyperprox/types). The
-//  API cannot import it: apps/api compiles with rootDir ./src, and a .ts file
-//  outside it fails the build (TS6059). Everything below the marker is a
-//  verbatim copy, and test/certs-types.test.ts fails if the two drift.
+//  API compiles with rootDir ./src and cannot import it (see lib/updates/types.ts
+//  for why). Everything below the marker is a verbatim copy, and
+//  test/certs-types.test.ts fails if the two drift.
 // =============================================================================
 // --- verbatim copy below ---
 // --- Certificates --------------------------------------------------------------
