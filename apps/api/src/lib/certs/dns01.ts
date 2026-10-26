@@ -76,11 +76,9 @@ export function godaddyProvider(client: GoDaddyClient): DnsProvider {
       const keep = records.filter(r => r.data !== value)
       if (keep.length === records.length) return
       if (!keep.length) { await client.deleteRecord(zone, 'TXT', rel); return }
-      // GoDaddy has no per-value delete. PUT replaces every value of the name; the client's PUT carries one
-      // record, so the first survivor goes back with the PUT and any others are appended after it.
-      const [first, ...rest] = keep
-      await client.updateRecord(zone, 'TXT', rel, { data: first.data, ttl: first.ttl })
-      for (const r of rest) await client.createRecord(zone, { type: 'TXT', name: rel, data: r.data, ttl: r.ttl })
+      // GoDaddy has no per-value delete. One PUT puts back every survivor at once, so no other value of the
+      // name is ever missing, even for a moment or after a failure part-way.
+      await client.replaceRecords(zone, 'TXT', rel, keep.map(r => ({ data: r.data, ttl: r.ttl })))
     },
   }
 }

@@ -107,6 +107,17 @@ export class GoDaddyClient {
     await this.req('PUT', `/domains/${domain}/records/${type}/${encodeURIComponent(name)}`, [record])
   }
 
+  /**
+   * Every value of one name and type, replaced in a single PUT. updateRecord carries one value; this is for a
+   * name that holds several (TXT), so removing one of them never leaves the others missing in between.
+   */
+  async replaceRecords(domain: string, type: DNSRecordType, name: string,
+    records: { data: string; ttl: number; priority?: number }[]): Promise<void> {
+    // An empty PUT is not a delete on every API version; say so rather than guess.
+    if (!records.length) throw new Error('replaceRecords needs at least one record; use deleteRecord to remove a name')
+    await this.req('PUT', `/domains/${domain}/records/${type}/${encodeURIComponent(name)}`, records)
+  }
+
   async deleteRecord(domain: string, type: DNSRecordType, name: string): Promise<void> {
     await this.req('DELETE', `/domains/${domain}/records/${type}/${encodeURIComponent(name)}`)
   }
