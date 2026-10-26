@@ -19,7 +19,7 @@ import { daysPhrase, fractionPhrase, normalizeFingerprint, STAGING_ISSUERS, type
 export interface InventoryPolicy {
   alerts:       { warnFraction: number; criticalDays: number }
   certificates: Record<string, { names: string[]; deploy: { target: string }[] }>
-  probes:       { host: string; port: number; starttls: CertsStartTls; internal: boolean }[]
+  probes:       { host: string; port: number; starttls: CertsStartTls; internal: boolean; connect?: string | null }[]
   targets:      Record<string, { kind: string }>
 }
 
@@ -89,7 +89,7 @@ export async function discoverProbeTargets(
   }
 
   for (const p of d.policy.probes) {
-    add({ host: p.host, port: p.port, starttls: p.starttls, internal: p.internal,
+    add({ host: p.host, port: p.port, starttls: p.starttls, internal: p.internal, connect: p.connect,
           source: managedNames.has(p.host.toLowerCase()) ? 'managed' : 'policy' })
   }
   const labels = new Set([...d.managed.map(m => m.label), ...Object.keys(d.policy.certificates)])

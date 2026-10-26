@@ -18,6 +18,11 @@ export interface ProbeTarget {
   starttls:    CertsStartTls
   servername?: string
   internal?:   boolean
+  /**
+   * Where to connect, when it is not `host`: split DNS, or a router that does not loop public names back
+   * inside. `host` stays the name sent as SNI and verified against the certificate.
+   */
+  connect?:    string | null
 }
 
 export interface ProbeResult {
@@ -134,7 +139,7 @@ export function probeEndpoint(t: ProbeTarget, timeoutMs = DEFAULT_PROBE_TIMEOUT_
     const handshake = (socket?: net.Socket) => {
       const extra = opts.ca === undefined ? [] : Array.isArray(opts.ca) ? opts.ca : [opts.ca]
       secure = tls.connect({
-        ...(socket ? { socket } : { host: t.host, port: t.port }),
+        ...(socket ? { socket } : { host: t.connect ?? t.host, port: t.port }),
         servername,
         // Accept anything so that an untrusted certificate can still be inspected; trust is reported, not enforced.
         rejectUnauthorized: false,
@@ -177,7 +182,7 @@ export function probeEndpoint(t: ProbeTarget, timeoutMs = DEFAULT_PROBE_TIMEOUT_
 
     const steps = DIALOGUES[t.starttls]
     if (!steps) return fail(`unknown STARTTLS protocol "${t.starttls}"`)
-    const sock = net.connect({ host: t.host, port: t.port })
+    const sock = net.connect({ host: t.connect ?? t.host, port: t.port })
     plain = sock
     let step = 0
     let buf  = ''

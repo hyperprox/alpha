@@ -266,3 +266,13 @@ test('verdict table', () => {
     else assert.equal(v.reason, null, name)
   }
 })
+
+test("connect: reaches the given address but sends and verifies the name in host", async () => {
+  const port = await tlsServer("leaf")
+  // a.wild.test does not resolve; without connect this could not be reached at all.
+  const r = await probeEndpoint({ host: "a.wild.test", connect: "127.0.0.1", port, starttls: "none" }, 5000, { ca })
+  assert.equal(r.ok, true, r.error)
+  assert.equal(r.namesMatch, true)
+  const wrong = await probeEndpoint({ host: "other.test", connect: "127.0.0.1", port, starttls: "none" }, 5000, { ca })
+  assert.equal(wrong.namesMatch, false)
+})

@@ -390,7 +390,7 @@ export class CertsService {
     if (spec.kind === 'hyperprox') return [{ host: '127.0.0.1', port: 443, starttls: 'none', servername: concreteName(names) }]
     return policy.probes
       .filter(p => names.some(n => covers(n, p.host)))
-      .map(p => ({ host: p.host, port: p.port, starttls: p.starttls, servername: p.host, internal: p.internal }))
+      .map(p => ({ host: p.host, port: p.port, starttls: p.starttls, servername: p.host, internal: p.internal, connect: p.connect }))
   }
 
   private async expectedFingerprints(policy: CertsPolicy): Promise<Map<string, string>> {
