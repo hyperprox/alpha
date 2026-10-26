@@ -6,6 +6,11 @@
 //      removes only the value it added. An apex and its wildcard need two
 //      values on one name at the same time, and unrelated TXT records (SPF on
 //      a shared name, another tool's challenge) must survive.
+//    - Every read-then-write of one name's values holds a lock on that name, so
+//      two orders (or two cleanups) sharing a name cannot undo each other.
+//    - A zone counts as managed only when it is delegated to the provider: a
+//      domain registered there with its DNS elsewhere would take writes that
+//      no resolver ever sees.
 //    - Propagation is checked on the zone's authoritative nameservers, never a
 //      recursive resolver: a resolver that cached the NXDOMAIN keeps saying
 //      "not there" for the negative TTL, and one that answers early proves
@@ -49,36 +54,88 @@ export function relativeName(zone: string, fqdn: string): string {
   return n.slice(0, -(z.length + 1))
 }
 
-export function godaddyProvider(client: GoDaddyClient): DnsProvider {
+// --- Per-name serialisation ----------------------------------------------------------
+
+const nameLocks = new Map<string, Promise<void>>()
+
+/**
+ * Runs `fn` once every earlier holder of `key` has finished. Module-wide, so it covers every order and
+ * cleanup in this process: present's read-then-PATCH and cleanup's read-then-PUT must not interleave, or
+ * one writes back a list that misses the other's value (or brings a removed one back).
+ */
+export async function withNameLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = nameLocks.get(key) ?? Promise.resolve()
+  let release!: () => void
+  const mine = new Promise<void>(r => { release = r })
+  const tail = prev.then(() => mine)
+  nameLocks.set(key, tail)
+  await prev
+  try { return await fn() }
+  finally {
+    release()
+    if (nameLocks.get(key) === tail) nameLocks.delete(key)
+  }
+}
+
+// --- GoDaddy ----------------------------------------------------------------------------
+
+const GODADDY_NS = /(^|\.)domaincontrol\.com\.?$/i
+
+export interface GoDaddyProviderOpts {
+  /** NS lookup for a zone; injectable for tests. */
+  resolveNs?: (zone: string) => Promise<string[]>
+}
+
+function defaultResolveNs(zone: string): Promise<string[]> {
+  return new Resolver({ timeout: 5000, tries: 2 }).resolveNs(zone)
+}
+
+export function godaddyProvider(client: GoDaddyClient, opts: GoDaddyProviderOpts = {}): DnsProvider {
+  const resolveNs = opts.resolveNs ?? defaultResolveNs
+
   async function txtValues(zone: string, rel: string) {
-    const all = await client.getRecords(zone, 'TXT')
-    return all.filter(r => norm(r.name) === rel)
+    // Name-scoped: a zone can hold hundreds of TXT records, and only this name's matter.
+    const got = await client.getRecordsByName(zone, 'TXT', rel)
+    return got.filter(r => !r.name || norm(r.name) === rel)
   }
 
   return {
     name: 'godaddy',
 
     async zones() {
-      return (await client.getDomains()).map(d => norm(d.domain))
+      const domains = (await client.getDomains()).map(d => norm(d.domain))
+      const delegated = await Promise.all(domains.map(async z => {
+        try {
+          const ns = await resolveNs(z)
+          return ns.length && ns.every(n => GODADDY_NS.test(n)) ? z : null
+        } catch {
+          return null   // no NS answer: not provably served by GoDaddy, so not managed
+        }
+      }))
+      return delegated.filter((z): z is string => z !== null)
     },
 
     async present(rawZone, fqdn, value) {
       const zone = norm(rawZone), rel = relativeName(zone, fqdn)
-      // A retry after a timeout may find its own value already there; adding it twice is an API error.
-      if ((await txtValues(zone, rel)).some(r => r.data === value)) return
-      // PATCH appends: existing values of the name are untouched.
-      await client.createRecord(zone, { type: 'TXT', name: rel, data: value, ttl: CHALLENGE_TTL })
+      await withNameLock(`godaddy\n${zone}\n${rel}`, async () => {
+        // A retry after a timeout may find its own value already there; adding it twice is an API error.
+        if ((await txtValues(zone, rel)).some(r => r.data === value)) return
+        // PATCH appends: existing values of the name are untouched.
+        await client.createRecord(zone, { type: 'TXT', name: rel, data: value, ttl: CHALLENGE_TTL })
+      })
     },
 
     async cleanup(rawZone, fqdn, value) {
       const zone = norm(rawZone), rel = relativeName(zone, fqdn)
-      const records = await txtValues(zone, rel)
-      const keep = records.filter(r => r.data !== value)
-      if (keep.length === records.length) return
-      if (!keep.length) { await client.deleteRecord(zone, 'TXT', rel); return }
-      // GoDaddy has no per-value delete. One PUT puts back every survivor at once, so no other value of the
-      // name is ever missing, even for a moment or after a failure part-way.
-      await client.replaceRecords(zone, 'TXT', rel, keep.map(r => ({ data: r.data, ttl: r.ttl })))
+      await withNameLock(`godaddy\n${zone}\n${rel}`, async () => {
+        const records = await txtValues(zone, rel)
+        const keep = records.filter(r => r.data !== value)
+        if (keep.length === records.length) return
+        if (!keep.length) { await client.deleteRecord(zone, 'TXT', rel); return }
+        // GoDaddy has no per-value delete. One PUT puts back every survivor at once, so no other value of the
+        // name is ever missing, even for a moment or after a failure part-way.
+        await client.replaceRecords(zone, 'TXT', rel, keep.map(r => ({ data: r.data, ttl: r.ttl })))
+      })
     },
   }
 }

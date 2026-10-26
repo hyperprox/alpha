@@ -32,7 +32,7 @@ function Card({ m, busy, onIssue, onDeploy }: { m: CertsManaged; busy: boolean; 
         {m.staging && <StagingBadge />}
         <div className="ml-auto flex flex-wrap gap-2">
           <Btn kind="primary" small onClick={() => onIssue(m)} disabled={lock || unmanaged.length > 0}
-               title={unmanaged.length > 0 ? 'A name has no managed DNS zone.' : undefined}>
+               title={unmanaged.length > 0 ? 'DNS provider not managed for a name.' : undefined}>
             <Icon name="play" />{first ? 'Issue' : 'Renew now'}
           </Btn>
           <Btn small onClick={() => onDeploy(m)} disabled={lock || first} title={first ? 'Nothing to deploy until a certificate has been issued.' : undefined}>
@@ -52,15 +52,15 @@ function Card({ m, busy, onIssue, onDeploy }: { m: CertsManaged; busy: boolean; 
               <span className="font-mono text-xs" style={{ color: 'var(--text-bright)' }}>{d.name}</span>
               {d.zone
                 ? <span className="text-xs" style={{ color: 'var(--text-muted)' }}>zone <span className="font-mono">{d.zone}</span>{d.provider && <> via {d.provider}</>}</span>
-                : <span className="text-xs font-semibold" style={{ color: 'var(--warn)' }}>no managed DNS zone</span>}
+                : <span className="text-xs font-semibold" style={{ color: 'var(--warn)' }}>DNS provider not managed</span>}
             </li>
           ))}
         </ul>
         {unmanaged.length > 0 && (
           <div className="mt-2">
             <Notice tone="warn">
-              {unmanaged.length === 1 ? 'This name has' : 'These names have'} no managed DNS zone, so an order would fail before any record is written.
-              Issuing is blocked until the zone is added to the DNS integration.
+              {unmanaged.length === 1 ? 'This name is' : 'These names are'} not in a zone the DNS integration serves (its DNS may be hosted elsewhere), so an order would fail before any record is written.
+              Issuing is blocked until the zone is served by the DNS integration.
             </Notice>
           </div>
         )}

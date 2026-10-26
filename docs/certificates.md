@@ -35,8 +35,10 @@ a first attempt failed.
 the page polls until it settles. One issuance per certificate at a time: a second press
 while one runs gets *already being issued* (409).
 
-1. The ACME order runs through the DNS provider HyperProx already holds (GoDaddy). A name
-   in no managed zone fails the order before any record is written.
+1. The ACME order runs through the DNS provider HyperProx already holds (GoDaddy). A zone
+   counts as managed only when its NS records point at GoDaddy (`*.domaincontrol.com`); a
+   domain registered there with its DNS hosted elsewhere shows "DNS provider not managed".
+   A name in no managed zone fails the order before any record is written.
 2. On success the private key and full chain go into the vault, as one Secure Note per
    certificate (`hyperprox:certs/cert-<label>`) in the HyperProx collection; the ACME
    account key is `hyperprox:certs/acme-account`. The database holds only metadata: names,
@@ -62,7 +64,8 @@ fingerprint, retried briefly so a daemon has a moment to reload.
   Updates already use; no SSH into the guest). Every file is staged next to its destination
   first and only moved into place when all of them staged, so a key and a certificate from
   different issuances never sit side by side. The files they replace are kept as
-  `<path>.hyperprox-prev`. The key gets `key_mode`, the others `0644`, all of them `owner`.
+  `<path>.hyperprox-prev`. The key gets `key_mode`, the others `0644`, all of them `owner`. A `key_mode` that gives
+  "other" any access, or two files on one path, is refused.
   Then `reload` runs, then the probes. The probes used are the policy's `probes:` whose
   host is one of the certificate's names; a guest target with none is reported as
   *unverified*, not as a success.
@@ -105,7 +108,7 @@ All under `/api/certs`, admin only.
 | `POST /managed/:label/issue` | 202, issue or renew now. |
 | `POST /managed/:label/deploy` | 202, deliver the current certificate again. |
 | `GET /events` | History, newest first. `?label=&limit=50`. |
-| `GET /housekeeping` | Dead proxy certificates and orphaned renewal files. |
+| `GET /housekeeping` | Dead proxy certificates (expired, and used by no proxy, redirection or 404 host or stream) and orphaned renewal files (not in the proxy's certificate list and not referenced by its nginx configuration). Refused when any of the proxy's lists cannot be read. |
 | `POST /housekeeping/:id/apply` | Act on one item, after listing again. Files are archived, never deleted. |
 
 Errors are `{ error }` with 400 (no policy, never issued, bad input), 404 (unknown
