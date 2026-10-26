@@ -26,7 +26,7 @@ import { productionExecutor } from '../updates/executor'
 import {
   defaultModules, productionSources,
   type CertsModules, type CertsPolicy, type CertsSources, type DnsProvider, type HousekeepingDeps,
-  type IssuedBundle, type ProbeResult, type ProbeTarget, type TargetSpec, type AlertState,
+  type IssuedBundle, type ProbeOptions, type ProbeResult, type ProbeTarget, type TargetSpec, type AlertState,
 } from './_stubs'
 import { deployBundle, guestRunner, installHyperproxCert, sameFingerprint, type DeployDeps } from './deploy'
 import {
@@ -124,11 +124,15 @@ export interface CertsServiceDeps {
   now?(): Date
   probeConcurrency?: number
   probeTimeoutMs?: number
+  /** Extra trust anchors for probes (a network with its own CA; tests). */
+  probeOptions?: ProbeOptions
+  /** Script runner in the proxy's guest for housekeeping; shorter-lived than a deploy. Defaults to deploy.guestExec. */
+  housekeepingExec?(vmid: number, script: string): Promise<{ code: number; output: string }>
 }
 
 const INVENTORY_TTL_MS = 5 * 60_000
 const DNS_TTL_MS = 10 * 60_000
-const STAGING_ISSUERS = /\(STAGING\)|Pebble/i
+const STAGING_ISSUERS = /\(STAGING\)|\bPebble\b/i
 const DAY = 86_400_000
 
 type PolicyLoad = ReturnType<CertsModules['loadCertsPolicy']>
@@ -316,7 +320,10 @@ export class CertsService {
       if (!spec || !row.fingerprint) continue
       for (const d of spec.deploy) {
         const t = policy.targets[d.target]
-        if (t) for (const ep of this.endpointsFor(t, spec.names, policy)) out.set(key(ep.host, ep.port), row.fingerprint)
+        if (!t) continue
+        for (const ep of this.endpointsFor(t, spec.names, policy)) out.set(key(ep.host, ep.port), row.fingerprint)
+        // Discovery probes HyperProx's own names on 443 as well (inventory.ts); those must serve it too.
+        if (t.kind === 'hyperprox') for (const n of spec.names) if (!n.startsWith('*.')) out.set(key(n, 443), row.fingerprint)
       }
     }
     return out
@@ -326,7 +333,7 @@ export class CertsService {
     const expect = await this.expectedFingerprints(policy)
     return mapLimit(list, this.deps.probeConcurrency ?? 4, async t => {
       const now = this.now()
-      const r = await this.m.probeEndpoint(t, this.deps.probeTimeoutMs)
+      const r = await this.m.probeEndpoint(t, this.deps.probeTimeoutMs, this.deps.probeOptions)
         .catch((e): ProbeResult => ({ ok: false, error: msg(e), trusted: null, namesMatch: null }))
       const v = this.m.verdictFor(r, {
         now, warnFraction: policy.alerts.warnFraction, criticalDays: policy.alerts.criticalDays,
@@ -505,7 +512,7 @@ export class CertsService {
           endpoints.push(...eps)
           const r = await deployBundle(t, bundle, {
             ...this.deps.deploy, endpoints: eps,
-            probe: ep => this.m.probeEndpoint(ep, this.deps.probeTimeoutMs),
+            probe: ep => this.m.probeEndpoint(ep, this.deps.probeTimeoutMs, this.deps.probeOptions),
           })
           ok = r.ok; detail = r.detail
         }
@@ -543,7 +550,8 @@ export class CertsService {
       npmCertificates: () => s.npmCertificates(),
       npmHosts: () => s.npmHosts(),
       deleteNpmCertificate: id => s.deleteNpmCertificate(id),
-      guestExec: vmid === null ? null : script => this.deps.deploy.guestExec(vmid, script),
+      guestExec: vmid === null ? null : script => (this.deps.housekeepingExec ?? this.deps.deploy.guestExec)(vmid, script),
+      warn: m => this.deps.log(`[certs] housekeeping: ${m}`),
     }
   }
 
@@ -589,8 +597,10 @@ export class CertsService {
       try { await this.checkOne(row, policy) }
       catch (e) { this.deps.log(`[certs] daily check of ${row.label} failed: ${msg(e)}`) }
     }
+    // Verdicts as they stood before this check: the baseline for alerts when none has been saved yet.
+    const before = await this.deps.store.listProbes()
     try { await this.probeAll() } catch (e) { this.deps.log(`[certs] daily probe failed: ${msg(e)}`) }
-    try { await this.alerts(policy) } catch (e) { this.deps.log(`[certs] alerts failed: ${msg(e)}`) }
+    try { await this.alerts(policy, before) } catch (e) { this.deps.log(`[certs] alerts failed: ${msg(e)}`) }
   }
 
   private async checkOne(row: ManagedRecord, policy: CertsPolicy): Promise<void> {
@@ -647,14 +657,25 @@ export class CertsService {
     return out
   }
 
-  private async alerts(policy: CertsPolicy): Promise<void> {
+  private probeAlert(p: ProbeRecord): AlertState {
+    return { key: `${p.host}:${p.port}`, verdict: p.verdict ?? 'unknown', reason: p.reason }
+  }
+
+  /**
+   * Alert on what changed since the last check. The previous state is persisted with lastReminder, so a
+   * restart does not re-announce standing problems; with no saved state yet (first check), the probe
+   * verdicts already on the page are the baseline, for the same reason.
+   */
+  private async alerts(policy: CertsPolicy, probesBefore: ProbeRecord[] = []): Promise<void> {
     const now = this.now()
     const store = this.deps.store
     const next: AlertState[] = [
       ...this.managedAlerts(await store.listManaged(), policy, now),
-      ...(await store.listProbes()).map(p => ({ key: `${p.host}:${p.port}`, verdict: p.verdict ?? 'unknown', reason: p.reason })),
+      ...(await store.listProbes()).map(p => this.probeAlert(p)),
     ]
-    const prev = new Map(((await store.getState<AlertState[]>('alerts')) ?? []).map(s => [s.key, s] as const))
+    const saved = await store.getState<AlertState[]>('alerts')
+    const baseline = saved ?? probesBefore.filter(p => p.checkedAt).map(p => this.probeAlert(p))
+    const prev = new Map(baseline.map(s => [s.key, s] as const))
     const lastReminder = await store.getState<string>('lastReminder')
     const res = this.m.alertChanges(prev, next, now, lastReminder ? new Date(lastReminder) : null)
     if (res.messages.length) {
@@ -676,6 +697,7 @@ export class CertsService {
 
 export function productionCertsService(db: PrismaClient, log: (m: string) => void): CertsService {
   const modules = defaultModules
+  const exec = productionExecutor()
   return new CertsService({
     store: new PrismaCertsStore(db),
     secrets: vaultSecrets(),
@@ -685,7 +707,8 @@ export function productionCertsService(db: PrismaClient, log: (m: string) => voi
       const c = await getProviderCredentials('dns', 'godaddy').catch(() => ({} as Record<string, string>))
       return c.api_key && c.api_secret ? [modules.godaddyProvider(new GoDaddyClient(c.api_key, c.api_secret))] : []
     },
-    deploy: { ...guestRunner(productionExecutor()), hyperproxInstall: b => installHyperproxCert(b) },
+    deploy: { ...guestRunner(exec), hyperproxInstall: b => installHyperproxCert(b) },
+    housekeepingExec: guestRunner(exec, 60_000).guestExec,
     sources: productionSources(),
     log,
   })
