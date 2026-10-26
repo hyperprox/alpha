@@ -116,3 +116,6 @@ export interface WSMessage {
 
 // Updates feature
 export * from './updates'
+
+// Certificates feature
+export * from './certs'
