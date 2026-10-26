@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { FakeBroker } from './fakes/fake-broker'
 import { buildTestApp, resetLock, signIn } from './fakes/app'
 import {
-  getCredential, getProviderCredentials, setCredential, deleteCredential, listCredentialKeys,
+  getCredential, getProviderCredentials, setCredential, setCredentials, deleteCredential, listCredentialKeys,
   getCategoryForUI, VaultLockedError, itemName,
 } from '../src/lib/credentials'
 import { requestContext } from '../src/lib/auth'
@@ -89,6 +89,27 @@ test('a failed vault write leaves the cache as it was', async () => {
     await assert.rejects(setCredential('dns', 'godaddy', 'api_secret', 'never-saved'))
   } finally { broker.failUpsert = false }
   assert.notEqual(await getCredential('dns', 'godaddy', 'api_secret'), 'never-saved')
+})
+
+test('setCredentials writes several keys of one item in one vault write, or none of them', async () => {
+  const app = await appP
+  const { res } = await signIn(app, 'owner@example.com', 'owner master password')
+  assert.equal(res.statusCode, 200)
+  const sid = [...broker.sessions.values()].at(-1)!.sid
+  const before = broker.callsTo('upsertSecret').length
+  await requestContext.run({ sid, email: 'owner@example.com', role: 'owner' }, () =>
+    setCredentials('certs', 'cert-a', { fullchain_pem: 'chain-1', key_pem: 'key-1' }))
+  assert.equal(broker.callsTo('upsertSecret').length - before, 1)
+  assert.deepEqual(broker.items.get('hyperprox:certs/cert-a')!.fields, { fullchain_pem: 'chain-1', key_pem: 'key-1' })
+
+  broker.failUpsert = true
+  try {
+    await requestContext.run({ sid, email: 'owner@example.com', role: 'owner' }, async () => {
+      await assert.rejects(setCredentials('certs', 'cert-a', { fullchain_pem: 'chain-2', key_pem: 'key-2' }))
+    })
+  } finally { broker.failUpsert = false }
+  assert.deepEqual(await getProviderCredentials('certs', 'cert-a'), { fullchain_pem: 'chain-1', key_pem: 'key-1' })
+  assert.deepEqual(broker.items.get('hyperprox:certs/cert-a')!.fields, { fullchain_pem: 'chain-1', key_pem: 'key-1' })
 })
 
 test('lock takes vault values back out of process.env', async () => {

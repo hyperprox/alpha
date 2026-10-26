@@ -278,6 +278,45 @@ export async function setCredential(category: string, provider: string, key: str
   if (def) setEnvFromVault(def, value)
 }
 
+/**
+ * Several keys of one provider in a single vault write. They live in one vault item, so the item is
+ * written once with all of them, and a failure leaves none of them changed: for values that only make
+ * sense together (a private key and its certificate), never a half-updated pair.
+ */
+export async function setCredentials(category: string, provider: string, values: Record<string, string>): Promise<void> {
+  const keys = Object.keys(values)
+  if (!keys.length) return
+  const sid  = requireSid()
+  const name = itemName(category, provider)
+  const prev = cachedSecret(name)
+  const meta = readMeta(prev)
+  const at = new Date().toISOString()
+  for (const k of keys) meta.updatedAt[k] = at
+
+  putCachedSecret({ name, id: prev?.id ?? '', fields: { ...(prev?.fields ?? {}), ...values }, notes: writeMeta(meta) })
+
+  try {
+    await writeThrough(name, sid)
+  } catch (e) {
+    // Put every old value back, unless something newer has replaced ours meanwhile.
+    const now = cachedSecret(name)
+    if (now && keys.every(k => now.fields[k] === values[k])) {
+      const restored = { ...now.fields }
+      for (const k of keys) {
+        if (prev && k in prev.fields) restored[k] = prev.fields[k]
+        else delete restored[k]
+      }
+      putCachedSecret({ ...now, fields: restored })
+    }
+    throw e
+  }
+
+  for (const k of keys) {
+    const def = CREDENTIAL_DEFS.find(d => d.category === category && d.provider === provider && d.key === k)
+    if (def) setEnvFromVault(def, values[k])
+  }
+}
+
 // ---------------------------------------------------------------------------
 //  Get all for a category — returns masked values for UI
 // ---------------------------------------------------------------------------
