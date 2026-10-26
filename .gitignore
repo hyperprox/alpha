@@ -52,3 +52,4 @@ config/vault-tls/
 
 # Updates policy — cluster-specific, see config/updates.example.yaml
 config/updates.yaml
+config/certs.yaml
