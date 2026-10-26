@@ -21,6 +21,7 @@ function deps(o: Partial<HousekeepingDeps> & { certs?: NPMCertificate[]; hosts?:
     npmCertificateUsers: o.npmCertificateUsers ?? (async () => o.hosts ?? [{ certificate_id: 2 }, { certificate_id: 3 }, { certificate_id: null }]),
     deleteNpmCertificate: async id => { deleted.push(id) },
     guestExec: o.guestExec ?? null,
+    npmLoginIsAdmin: o.npmLoginIsAdmin ?? (async () => true),
     warn: o.warn,
   }
   return { d, deleted }
@@ -198,4 +199,10 @@ test('apply on orphan files moves them, keeping certbot\'s layout, and refuses i
 test('shell quoting survives quotes and spaces', () => {
   const out = execFileSync('bash', ['-c', `printf %s ${shq("a b'c$d")}`], { encoding: 'utf8' })
   assert.equal(out, "a b'c$d")
+})
+
+test('orphan files are refused unless the proxy login is an administrator', async () => {
+  const g = fakeGuest(LISTING).exec
+  await assert.rejects(listHousekeeping(deps({ guestExec: g, npmLoginIsAdmin: async () => false }).d, NOW), /not an administrator/)
+  await assert.rejects(listHousekeeping(deps({ guestExec: g, npmLoginIsAdmin: async () => { throw new Error('403') } }).d, NOW), /not an administrator/)
 })

@@ -114,6 +114,12 @@ export class NPMClient {
   async createProxyHost(data: Partial<NPMProxyHost>): Promise<NPMProxyHost> { return this.req('POST', '/nginx/proxy-hosts', data) }
   async updateProxyHost(id: number, data: Partial<NPMProxyHost>): Promise<NPMProxyHost> { return this.req('PUT', `/nginx/proxy-hosts/${id}`, data) }
 
+  /** Whether this login has the admin role; lesser logins only see their own items. */
+  async isAdmin(): Promise<boolean> {
+    const me = await this.get<{ roles?: string[] }>('/users/me')
+    return Array.isArray(me.roles) && me.roles.includes('admin')
+  }
+
   async requestCertificate(data: { domain_names: string[]; provider: string; nice_name: string; letsencrypt_email?: string }): Promise<NPMCertificate> {
     return this.req('POST', '/nginx/certificates', {
       domain_names: data.domain_names,

@@ -251,6 +251,8 @@ export class CertsService {
     let removed = 0
     const failed: string[] = []
     for (const e of stale) {
+      // A new order may have taken this exact value (a reused pending authorization) since the list was read.
+      if (this.liveChallenges.has(entryKey(e))) continue
       const p = providers.find(x => x.name === e.provider)
       try {
         if (!p) throw new Error(`DNS provider ${e.provider} is not configured`)
@@ -628,6 +630,7 @@ export class CertsService {
       npmCertificates: () => s.npmCertificates(),
       npmCertificateUsers: () => s.npmCertificateUsers(),
       deleteNpmCertificate: id => s.deleteNpmCertificate(id),
+      npmLoginIsAdmin: () => s.npmLoginIsAdmin(),
       guestExec: vmid === null ? null : script => (this.deps.housekeepingExec ?? this.deps.deploy.guestExec)(vmid, script),
       warn: m => this.deps.log(`[certs] housekeeping: ${m}`),
     }

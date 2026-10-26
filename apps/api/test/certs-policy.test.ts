@@ -103,6 +103,7 @@ test('bad values are rejected with their path', () => {
     ['targets:\n  t: { kind: guest-files, vmid: 101, files: { fullchain: /a, key: /b }, key_mode: "0601" }', /targets\.t\.key_mode/],
     ['targets:\n  t: { kind: guest-files, vmid: 101, files: { fullchain: /a, key: /a } }', /targets\.t\.files\.key: the same path as fullchain/],
     ['targets:\n  t: { kind: guest-files, vmid: 101, files: { fullchain: /a, key: /b, cert: /c, chain: /c } }', /targets\.t\.files\.chain: the same path as cert/],
+    ['targets:\n  t: { kind: guest-files, vmid: 101, files: { fullchain: /etc/ssl/a.pem, key: /etc/ssl//./a.pem } }', /targets\.t\.files\.key: the same path as fullchain/],
     ['proxy: { guest_vmid: 0 }', /proxy\.guest_vmid/],
     ['- a\n- list', /mapping/],
     ['acme: [unclosed', /YAML/],

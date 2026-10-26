@@ -77,6 +77,7 @@ export interface CertsSources {
   /** Every proxy, redirection and 404 host and stream; rejects if any list cannot be read. */
   npmCertificateUsers(): Promise<{ certificate_id: number | null }[]>
   deleteNpmCertificate(id: number): Promise<void>
+  npmLoginIsAdmin(): Promise<boolean>
 }
 
 const certId = (v: unknown): number | null => (typeof v === 'number' && v > 0 ? v : null)
@@ -103,6 +104,7 @@ export function productionSources(): CertsSources {
       return lists.flat().map(h => ({ certificate_id: certId(h.certificate_id) }))
     },
     deleteNpmCertificate: async id => (await npmClient()).deleteCertificate(id),
+    npmLoginIsAdmin: async () => (await npmClient()).isAdmin(),
   }
 }
 
