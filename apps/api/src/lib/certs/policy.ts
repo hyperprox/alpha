@@ -43,7 +43,7 @@ export interface CertsPolicy {
   schedule: { check: string }
   alerts: { warnFraction: number; criticalDays: number; webhookUrl: string | null }
   certificates: Record<string, { names: string[]; deploy: { target: string }[] }>
-  probes: { host: string; port: number; starttls: CertsStartTls; internal: boolean }[]
+  probes: { host: string; port: number; starttls: CertsStartTls; internal: boolean; connect: string | null }[]
   targets: Record<string, TargetSpec>
   proxy:  { guestVmid: number | null }
 }
@@ -137,6 +137,8 @@ const fileSchema = z.object({
     port:     z.number().int().min(1).max(65535),
     starttls: z.enum(['none', 'smtp', 'imap', 'pop3']).optional(),
     internal: z.boolean().optional(),
+    // Connect here instead of resolving `host` (split DNS, no hairpin NAT); `host` is still what is verified.
+    connect:  z.string().transform(s => s.trim().toLowerCase()).refine(isHost, 'a host name or IPv4 address').optional(),
   }).strict()).optional(),
   targets: z.record(z.discriminatedUnion('kind', [guestFilesSchema, hyperproxSchema])).optional(),
   proxy: z.object({
@@ -221,7 +223,7 @@ export function parseCertsPolicy(text: string): CertsPolicy {
     const key = `${pr.host}:${pr.port}`
     if (seen.has(key)) problems.push(`probes.${i}: ${key} is listed twice`)
     seen.add(key)
-    p.probes.push({ host: pr.host, port: pr.port, starttls: pr.starttls ?? 'none', internal: pr.internal ?? false })
+    p.probes.push({ host: pr.host, port: pr.port, starttls: pr.starttls ?? 'none', internal: pr.internal ?? false, connect: pr.connect ?? null })
   }
 
   if (problems.length) throw new Error(problems.join('; '))

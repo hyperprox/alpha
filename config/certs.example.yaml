@@ -48,7 +48,8 @@ certificates:
 probes:
   - { host: mail.example.com, port: 993, starttls: none }    # starttls: none (default) | smtp | imap | pop3
   - { host: mail.example.com, port: 587, starttls: smtp }
-  - { host: 10.0.0.20, port: 8006, internal: true }          # internal: a self-signed certificate is a warning, not critical
+  - { host: 10.0.0.20, port: 8006, internal: true }          # internal: a self-signed or private-CA certificate is expected here (ok)
+  - { host: mail.example.com, port: 465, connect: 10.0.0.25 } # connect: dial this address (split DNS, no hairpin NAT); host is still verified
 
 # Where certificates are delivered. Every deploy ends with a probe that must see the new certificate.
 targets:

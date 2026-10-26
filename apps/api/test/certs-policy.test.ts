@@ -36,8 +36,8 @@ test('the shipped example loads and every section is read', () => {
   assert.equal(p.alerts.webhookUrl, 'https://hooks.example.com/certificates')
   assert.deepEqual(p.certificates.mail, { names: ['mail.example.com'], deploy: [{ target: 'mail-guest' }] })
   assert.deepEqual(p.certificates.wildcard.names, ['example.com', '*.example.com'])
-  assert.deepEqual(p.probes[1], { host: 'mail.example.com', port: 587, starttls: 'smtp', internal: false })
-  assert.deepEqual(p.probes[2], { host: '10.0.0.20', port: 8006, starttls: 'none', internal: true })
+  assert.deepEqual(p.probes[1], { host: 'mail.example.com', port: 587, starttls: 'smtp', internal: false, connect: null })
+  assert.deepEqual(p.probes[2], { host: '10.0.0.20', port: 8006, starttls: 'none', internal: true, connect: null })
   assert.deepEqual(p.targets['mail-guest'], {
     kind: 'guest-files', vmid: 101,
     files: { fullchain: '/etc/ssl/mail/fullchain.pem', key: '/etc/ssl/mail/privkey.pem' },
@@ -150,4 +150,10 @@ test('CERTS_POLICY_PATH picks the file', () => {
   process.env.CERTS_POLICY_PATH = '/nonexistent/elsewhere.yaml'
   try { assert.equal(loadCertsPolicy().path, '/nonexistent/elsewhere.yaml') }
   finally { if (before === undefined) delete process.env.CERTS_POLICY_PATH; else process.env.CERTS_POLICY_PATH = before }
+})
+
+test("a probe may connect to another address than the name it verifies", () => {
+  const p = parseCertsPolicy("probes:\n  - { host: Mail.Example.com, port: 993, connect: 10.0.0.20 }\n")
+  assert.deepEqual(p.probes[0], { host: "mail.example.com", port: 993, starttls: "none", internal: false, connect: "10.0.0.20" })
+  assert.equal(parseCertsPolicy("probes:\n  - { host: a.example.com, port: 443 }\n").probes[0].connect, null)
 })
