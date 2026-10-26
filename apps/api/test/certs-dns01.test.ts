@@ -57,6 +57,12 @@ class FakeGoDaddy {
     this.records[domain] = this.records[domain].filter(r => !(r.type === type && r.name === name))
     this.records[domain].push({ type, name, data: record.data!, ttl: record.ttl ?? 3600 })
   }
+  async replaceRecords(domain: string, type: DNSRecordType, name: string, records: { data: string; ttl: number }[]) {
+    this.hit(`PUT ${domain} ${type} ${name} ${records.map(r => r.data).join(',')}`)
+    if (!records.length) throw new Error('empty PUT')
+    this.records[domain] = this.records[domain].filter(r => !(r.type === type && r.name === name))
+    for (const r of records) this.records[domain].push({ type, name, data: r.data, ttl: r.ttl })
+  }
   async deleteRecord(domain: string, type: DNSRecordType, name: string) {
     this.hit(`DELETE ${domain} ${type} ${name}`)
     this.records[domain] = this.records[domain].filter(r => !(r.type === type && r.name === name))
@@ -128,6 +134,24 @@ test('godaddy: cleanup with several survivors restores all of them', async () =>
   assert.deepEqual(gd.txt('example.com', '_acme-challenge'), ['fourth', 'someone-elses-token', 'third'])
   const ttl = Object.fromEntries(gd.records['example.com'].filter(r => r.name === '_acme-challenge').map(r => [r.data, r.ttl]))
   assert.deepEqual(ttl, { 'someone-elses-token': 300, third: 300, fourth: 900 })
+})
+
+test('godaddy: cleanup writes the survivors back in one PUT, never one value at a time', async () => {
+  const { gd, p } = setup()
+  gd.records['example.com'].push({ type: 'TXT', name: '_acme-challenge', data: 'third', ttl: 300 })
+  await p.present('example.com', '_acme-challenge.example.com', 'ours')
+  gd.calls = []
+  await p.cleanup('example.com', '_acme-challenge.example.com', 'ours')
+  const writes = gd.calls.filter(c => !c.startsWith('GET'))
+  assert.deepEqual(writes, ['PUT example.com TXT _acme-challenge someone-elses-token,third'])
+})
+
+test('godaddy: a failed cleanup PUT leaves every value in place', async () => {
+  const { gd, p } = setup()
+  await p.present('example.com', '_acme-challenge.example.com', 'ours')
+  gd.failOn = 'PUT'
+  await assert.rejects(p.cleanup('example.com', '_acme-challenge.example.com', 'ours'), /failed 500/)
+  assert.deepEqual(gd.txt('example.com', '_acme-challenge'), ['ours', 'someone-elses-token'])
 })
 
 test('godaddy: present is idempotent and cleanup of an absent value writes nothing', async () => {
