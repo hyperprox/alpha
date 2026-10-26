@@ -31,6 +31,7 @@ const NAV = [
     items: [
       { href: '/proxy',    label: 'Proxy',        icon: ProxyIcon    },
       { href: '/dns',      label: 'DNS',          icon: DNSIcon      },
+      { href: '/certificates', label: 'Certificates', icon: CertIcon   },
       { href: '/storage',     label: 'Storage',      icon: StorageIcon     },
       { href: '/monitoring',   label: 'Monitoring',   icon: MonitoringIcon  },
     ],
@@ -313,6 +314,17 @@ function DNSIcon() {
       <path d="M8 1.5c2 2 3 4 3 6.5s-1 4.5-3 6.5" />
       <path d="M1.5 8h13" />
       <path d="M2 5h12M2 11h12" />
+    </svg>
+  )
+}
+
+function CertIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5}>
+      <rect x="1.5" y="2" width="13" height="9" rx="1.2" />
+      <path d="M4.5 5h7M4.5 7.5h4" strokeLinecap="round" />
+      <circle cx="11" cy="11.5" r="2" />
+      <path d="M9.9 13.2L9.5 15l1.5-.8 1.5.8-.4-1.8" strokeLinejoin="round" strokeLinecap="round" />
     </svg>
   )
 }
