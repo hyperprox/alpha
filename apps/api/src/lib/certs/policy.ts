@@ -89,11 +89,22 @@ const guestFilesSchema = z.object({
     key:       absPath,
     cert:      absPath.optional(),
     chain:     absPath.optional(),
-  }).strict(),
+  }).strict().superRefine((f, ctx) => {
+    // Two roles on one path: whichever is written last wins, and the key may end up under a certificate's name.
+    const seen = new Map<string, string>()
+    for (const [role, p] of Object.entries(f)) {
+      if (p === undefined) continue
+      const prior = seen.get(p)
+      if (prior) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [role], message: `the same path as ${prior}; every file needs its own path` })
+      else seen.set(p, role)
+    }
+  }),
   owner:    z.string().regex(/^[a-z_][a-z0-9_-]*(:[a-z_][a-z0-9_-]*)?$/i, 'user or user:group').optional(),
   // Unquoted, YAML reads 0600 as the integer 600; its digits are still the octal mode that was meant.
   key_mode: z.union([z.string(), z.number().int().nonnegative()]).transform(String)
-    .refine(s => /^0?[0-7]{3}$/.test(s), 'an octal mode such as "0600"').optional(),
+    .refine(s => /^0?[0-7]{3}$/.test(s), 'an octal mode such as "0600"')
+    .refine(s => !/^0?[0-7]{3}$/.test(s) || (parseInt(s, 8) & 0o007) === 0,
+      'a mode that gives other users no access to the private key, such as "0600" or "0640"').optional(),
   reload:   z.string().min(1).nullable().optional(),
 }).strict()
 

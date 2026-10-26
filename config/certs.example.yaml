@@ -61,7 +61,7 @@ targets:
       # cert:    /etc/ssl/mail/cert.pem       # optional: the leaf alone
       # chain:   /etc/ssl/mail/chain.pem      # optional: the intermediates alone
     owner: "root:root"         # default "root:root"
-    key_mode: "0600"           # default "0600". Octal, as chmod takes it.
+    key_mode: "0600"           # default "0600". Octal, as chmod takes it; "other" must get no access (0600, 0640).
     reload: "systemctl reload postfix dovecot"   # default none
   self:
     kind: hyperprox            # HyperProx's own front door

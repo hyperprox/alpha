@@ -58,6 +58,10 @@ export function pushScript(files: GuestFile[]): string {
     if (!OWNER_RE.test(f.owner)) throw new Error(`refusing owner ${JSON.stringify(f.owner)}: use user or user:group`)
     if (!MODE_RE.test(f.mode)) throw new Error(`refusing mode ${JSON.stringify(f.mode)}: use octal such as 0600`)
   }
+  const paths = files.map(f => f.path)
+  const dup = paths.find((p, i) => paths.indexOf(p) !== i)
+  // Staged then moved in order: a second file on the same path would silently replace the first.
+  if (dup) throw new Error(`refusing to write ${JSON.stringify(dup)} twice in one delivery: every file needs its own path`)
   const lines = [
     'set -eu',
     'umask 077',
@@ -84,6 +88,10 @@ export function pushScript(files: GuestFile[]): string {
 
 /** The files a guest-files target asks for, from the bundle. Only the key gets keyMode. */
 export function guestFiles(t: Extract<TargetSpec, { kind: 'guest-files' }>, b: IssuedBundle): GuestFile[] {
+  // Checked here as well as in the policy: a target can reach deploy without going through the parser.
+  if (!MODE_RE.test(t.keyMode) || (parseInt(t.keyMode, 8) & 0o007) !== 0) {
+    throw new Error(`refusing key mode ${JSON.stringify(t.keyMode)}: a private key must give other users no access (use 0600 or 0640)`)
+  }
   const out: GuestFile[] = [
     { path: t.files.fullchain, content: b.fullchainPem, mode: '0644', owner: t.owner },
     { path: t.files.key, content: b.keyPem, mode: t.keyMode, owner: t.owner },
