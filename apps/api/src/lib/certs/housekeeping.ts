@@ -2,10 +2,11 @@
 //  HyperProx — certificate housekeeping
 //
 //  Proxy certificates that can only ever fail: expired and attached to no host
-//  (the proxy keeps trying to renew them), and certbot files on the proxy's
-//  disk for certificates the proxy no longer knows about. Listing is read-only;
-//  applying acts on one item, re-checks it first, and archives files rather
-//  than deleting them.
+//  of any kind (the proxy keeps trying to renew them), and certbot files on the
+//  proxy's disk for certificates the proxy no longer knows about. Listing is
+//  read-only; applying acts on one item, re-checks it first, and archives files
+//  rather than deleting them. Anything that cannot be checked completely is
+//  refused rather than guessed: a wrong "unused" deletes a live certificate.
 // =============================================================================
 
 import { X509Certificate } from 'node:crypto'
@@ -14,7 +15,11 @@ import type { CertsHousekeepingItem } from './types'
 
 export interface HousekeepingDeps {
   npmCertificates(): Promise<NPMCertificate[]>
-  npmHosts(): Promise<{ certificate_id: number | null }[]>
+  /**
+   * Everything in the proxy that can hold a certificate: proxy hosts, redirection hosts, 404 hosts and
+   * streams. Must reject if any of those lists cannot be read; a partial list would make used look unused.
+   */
+  npmCertificateUsers(): Promise<{ certificate_id: number | null }[]>
   deleteNpmCertificate(id: number): Promise<void>
   /** Runs a shell script in the proxy's guest; null when no proxy guest is configured (API only). */
   guestExec: ((script: string) => Promise<{ code: number; output: string }>) | null
@@ -28,6 +33,7 @@ export interface HousekeepingDeps {
 const EXPIRED_PREFIX = 'npm-cert:'
 const FILES_PREFIX   = 'npm-files:'
 const LE_MOUNT       = '/etc/letsencrypt'
+const DATA_MOUNT     = '/data'
 export const ARCHIVE_DIR = 'hyperprox-archived'
 
 /** POSIX single-quoting: the only safe way to put a path from another machine into a script. */
@@ -39,22 +45,47 @@ const FIND_MOUNT = `
 set -u
 command -v docker >/dev/null 2>&1 || { echo "ERR docker is not installed in the proxy guest"; exit 3; }
 for c in $(docker ps -q); do
-  docker inspect -f '{{.Config.Image}}{{"\\t"}}{{range .Mounts}}{{if eq .Destination "${LE_MOUNT}"}}{{.Source}}{{end}}{{end}}' "$c"
+  docker inspect -f '{{.Config.Image}}{{"\\t"}}{{range .Mounts}}{{if eq .Destination "${LE_MOUNT}"}}{{.Source}}{{end}}{{end}}{{"\\t"}}{{range .Mounts}}{{if eq .Destination "${DATA_MOUNT}"}}{{.Source}}{{end}}{{end}}' "$c"
 done
 `
 
-/** The host directory the proxy's container mounts at /etc/letsencrypt, read from `docker inspect`. */
-async function findLetsencryptDir(exec: NonNullable<HousekeepingDeps['guestExec']>): Promise<string> {
+/**
+ * The host directories the proxy's container mounts at /etc/letsencrypt and at /data, read from
+ * `docker inspect`. `data` is null when that container has no /data mount.
+ */
+async function findProxyDirs(exec: NonNullable<HousekeepingDeps['guestExec']>): Promise<{ le: string; data: string | null }> {
   const r = await exec(FIND_MOUNT)
   if (r.code !== 0) throw new Error(`could not inspect the proxy's containers: ${r.output.trim() || `exit ${r.code}`}`)
-  const mounts = r.output.split('\n').map(l => l.split('\t')).filter(p => p.length === 2 && p[1].trim())
-    .map(([image, source]) => ({ image: image.trim(), source: source.trim() }))
-  const dirs = [...new Set(mounts.map(m => m.source))]
+  const mounts = r.output.split('\n').map(l => l.split('\t')).filter(p => p.length >= 2 && p[1].trim())
+    .map(([image, le, data]) => ({ image: image.trim(), le: le.trim(), data: (data ?? '').trim() }))
+  const dirs = [...new Set(mounts.map(m => m.le))]
   if (!dirs.length) throw new Error(`no running container in the proxy guest mounts ${LE_MOUNT}`)
-  if (dirs.length === 1) return dirs[0]
-  const proxy = [...new Set(mounts.filter(m => /proxy-manager/i.test(m.image)).map(m => m.source))]
-  if (proxy.length === 1) return proxy[0]
-  throw new Error(`several containers mount ${LE_MOUNT} at different places (${dirs.join(', ')}); not guessing which is the proxy's`)
+  let le: string
+  if (dirs.length === 1) le = dirs[0]
+  else {
+    const proxy = [...new Set(mounts.filter(m => /proxy-manager/i.test(m.image)).map(m => m.le))]
+    if (proxy.length !== 1) throw new Error(`several containers mount ${LE_MOUNT} at different places (${dirs.join(', ')}); not guessing which is the proxy's`)
+    le = proxy[0]
+  }
+  const datas = [...new Set(mounts.filter(m => m.le === le && m.data).map(m => m.data))]
+  return { le, data: datas.length === 1 ? datas[0] : null }
+}
+
+/**
+ * Which of `ids` the proxy's own nginx configuration still points at (live/npm-N/), searched in the guest
+ * under <data>/nginx. A read error is a failure, not a "no".
+ */
+function refScript(data: string, ids: number[]): string {
+  return `
+set -u
+d=${shq(data)}/nginx
+[ -d "$d" ] || { echo "ERR $d is not a directory"; exit 3; }
+for id in ${ids.map(String).join(' ')}; do
+  grep -rqF -- "${LE_MOUNT}/live/npm-$id/" "$d"; rc=$?
+  if [ $rc -eq 0 ]; then printf 'REF\t%s\n' "$id"; elif [ $rc -ne 1 ]; then echo "ERR could not search $d for npm-$id"; exit 3; fi
+done
+exit 0
+`
 }
 
 function listScript(dir: string): string {
@@ -75,8 +106,8 @@ exit 0
 type OnDisk = { id: number; paths: string[]; names: string[]; expiredAt: string | null }
 
 /** certbot's files per proxy certificate id: live/npm-N, archive/npm-N, renewal/npm-N.conf. */
-async function scanDisk(exec: NonNullable<HousekeepingDeps['guestExec']>): Promise<{ dir: string; byId: Map<number, OnDisk> }> {
-  const dir = await findLetsencryptDir(exec)
+async function scanDisk(exec: NonNullable<HousekeepingDeps['guestExec']>): Promise<{ dir: string; data: string | null; byId: Map<number, OnDisk> }> {
+  const { le: dir, data } = await findProxyDirs(exec)
   const r = await exec(listScript(dir))
   if (r.code !== 0) throw new Error(`could not list ${dir} in the proxy guest: ${r.output.trim() || `exit ${r.code}`}`)
   const byId = new Map<number, OnDisk>()
@@ -97,33 +128,58 @@ async function scanDisk(exec: NonNullable<HousekeepingDeps['guestExec']>): Promi
       } catch { /* an unreadable certificate still leaves its paths listed */ }
     }
   }
-  return { dir, byId }
+  return { dir, data, byId }
 }
 
-function expiredUnused(certs: NPMCertificate[], hosts: { certificate_id: number | null }[], now: Date): NPMCertificate[] {
-  const used = new Set(hosts.map(h => h.certificate_id).filter((id): id is number => typeof id === 'number' && id > 0))
+function usedIds(users: { certificate_id: number | null }[]): Set<number> {
+  return new Set(users.map(h => h.certificate_id).filter((id): id is number => typeof id === 'number' && id > 0))
+}
+
+function expiredUnused(certs: NPMCertificate[], used: Set<number>, now: Date): NPMCertificate[] {
   return certs.filter(c => {
     const exp = new Date(c.expires_on)
     return !Number.isNaN(exp.getTime()) && exp <= now && !used.has(c.id)
   })
 }
 
+/**
+ * Certbot directories for ids the proxy's API does not list, minus any its nginx configuration still uses.
+ * Refused outright when a host uses a certificate the list does not show: then the API user cannot see every
+ * certificate, and "not in the list" means nothing.
+ */
+async function orphanFiles(exec: NonNullable<HousekeepingDeps['guestExec']>, certs: NPMCertificate[], used: Set<number>,
+  warn?: (m: string) => void): Promise<{ dir: string; orphans: OnDisk[] }> {
+  const known = new Set(certs.map(c => c.id))
+  const hidden = [...used].filter(id => !known.has(id))
+  if (hidden.length) {
+    throw new Error(`hosts use certificate${hidden.length === 1 ? '' : 's'} ${hidden.map(i => `#${i}`).join(', ')}, which the certificate list does not show; the proxy login cannot see every certificate, so no file is called orphaned`)
+  }
+  const { dir, data, byId } = await scanDisk(exec)
+  const candidates = [...byId.values()].filter(f => !known.has(f.id) && f.paths.length).sort((a, b) => a.id - b.id)
+  if (!candidates.length) return { dir, orphans: [] }
+  if (!data) throw new Error(`could not find where the proxy's container mounts ${DATA_MOUNT}, so its configuration cannot be checked for references`)
+  const r = await exec(refScript(data, candidates.map(f => f.id)))
+  if (r.code !== 0) throw new Error(`could not search the proxy's configuration: ${r.output.trim() || `exit ${r.code}`}`)
+  const referenced = new Set(r.output.split('\n').map(l => /^REF\t(\d+)$/.exec(l)?.[1]).filter(Boolean).map(Number))
+  for (const id of referenced) warn?.(`npm-${id} is not in the proxy's certificate list, but its nginx configuration still uses it; left alone`)
+  return { dir, orphans: candidates.filter(f => !referenced.has(f.id)) }
+}
+
 export async function listHousekeeping(d: HousekeepingDeps, now: Date): Promise<CertsHousekeepingItem[]> {
-  const [certs, hosts] = await Promise.all([d.npmCertificates(), d.npmHosts()])
-  const items: CertsHousekeepingItem[] = expiredUnused(certs, hosts, now).map(c => ({
+  const [certs, users] = await Promise.all([d.npmCertificates(), d.npmCertificateUsers()])
+  const used = usedIds(users)
+  const items: CertsHousekeepingItem[] = expiredUnused(certs, used, now).map(c => ({
     id:        `${EXPIRED_PREFIX}${c.id}`,
     kind:      'proxy-expired-unused',
     names:     c.domain_names,
     expiredAt: new Date(c.expires_on).toISOString(),
-    detail:    `Proxy certificate #${c.id}${c.nice_name ? ` (${c.nice_name})` : ''} has expired and no proxy host uses it, so its renewal can only fail. Applying deletes it through the proxy's API.`,
+    detail:    `Proxy certificate #${c.id}${c.nice_name ? ` (${c.nice_name})` : ''} has expired and no proxy host, redirection, 404 host or stream uses it, so its renewal can only fail. Applying deletes it through the proxy's API.`,
   }))
 
   if (d.guestExec) {
     try {
-      const known = new Set(certs.map(c => c.id))
-      const { dir, byId } = await scanDisk(d.guestExec)
-      for (const f of [...byId.values()].sort((a, b) => a.id - b.id)) {
-        if (known.has(f.id) || !f.paths.length) continue
+      const { dir, orphans } = await orphanFiles(d.guestExec, certs, used, d.warn)
+      for (const f of orphans) {
         items.push({
           id:        `${FILES_PREFIX}${f.id}`,
           kind:      'proxy-orphan-files',
@@ -155,11 +211,11 @@ export async function applyHousekeeping(item: CertsHousekeepingItem, d: Housekee
   if (item.id.startsWith(EXPIRED_PREFIX)) {
     const id = Number(item.id.slice(EXPIRED_PREFIX.length))
     if (!Number.isInteger(id) || id <= 0) throw new Error(`not a proxy certificate item: ${item.id}`)
-    // Re-check against the proxy now: a host may have been given this certificate since the list was made.
-    const [certs, hosts] = await Promise.all([d.npmCertificates(), d.npmHosts()])
+    // Re-check against the proxy now, every kind of host: one may have been given this certificate since.
+    const [certs, users] = await Promise.all([d.npmCertificates(), d.npmCertificateUsers()])
     const c = certs.find(x => x.id === id)
     if (!c) return `Proxy certificate #${id} is already gone.`
-    if (!expiredUnused([c], hosts, new Date()).length) {
+    if (!expiredUnused([c], usedIds(users), new Date()).length) {
       throw new Error(`proxy certificate #${id} is no longer both expired and unused; nothing was deleted`)
     }
     await d.deleteNpmCertificate(id)
@@ -170,14 +226,20 @@ export async function applyHousekeeping(item: CertsHousekeepingItem, d: Housekee
     const id = Number(item.id.slice(FILES_PREFIX.length))
     if (!Number.isInteger(id) || id <= 0) throw new Error(`not a proxy files item: ${item.id}`)
     if (!d.guestExec) throw new Error('no proxy guest is configured, so its files cannot be reached')
-    const [certs, scan] = await Promise.all([d.npmCertificates(), scanDisk(d.guestExec)])
+    const [certs, users] = await Promise.all([d.npmCertificates(), d.npmCertificateUsers()])
     if (certs.some(c => c.id === id)) throw new Error(`the proxy now has a certificate #${id}; its files were left alone`)
-    const files = scan.byId.get(id)
-    if (!files?.paths.length) return `Nothing left for npm-${id} in ${scan.dir}.`
+    // The same checks as the list, in full: visibility, what is on disk, what nginx still references.
+    const referenced: string[] = []
+    const { dir, orphans } = await orphanFiles(d.guestExec, certs, usedIds(users), m => referenced.push(m))
+    const files = orphans.find(f => f.id === id)
+    if (!files) {
+      if (referenced.some(m => m.startsWith(`npm-${id} `))) throw new Error(`the proxy's nginx configuration uses npm-${id}; its files were left alone`)
+      return `Nothing left for npm-${id} in ${dir}.`
+    }
     const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-    const r = await d.guestExec(archiveScript(scan.dir, stamp, files.paths))
+    const r = await d.guestExec(archiveScript(dir, stamp, files.paths))
     if (r.code !== 0) throw new Error(`archiving npm-${id} failed part-way: ${r.output.trim() || `exit ${r.code}`}`)
-    return `Archived ${files.paths.length} path(s) for npm-${id} into ${scan.dir}/${ARCHIVE_DIR}/${stamp}.`
+    return `Archived ${files.paths.length} path(s) for npm-${id} into ${dir}/${ARCHIVE_DIR}/${stamp}.`
   }
 
   throw new Error(`unknown housekeeping item: ${item.id}`)
