@@ -13,7 +13,7 @@ import {
   type CertsSecrets, type StoredBundle,
 } from '../src/lib/certs/service'
 import { MemoryCertsStore } from '../src/lib/certs/store'
-import { defaultModules, type CertsModules, type CertsPolicy, type IssuedBundle, type ProbeTarget } from '../src/lib/certs/_stubs'
+import { defaultModules, type CertsModules, type CertsPolicy, type IssuedBundle, type ProbeTarget } from '../src/lib/certs/modules'
 
 // --- fixtures ------------------------------------------------------------------------------
 
@@ -329,9 +329,11 @@ test('probe: one known endpoint, or 404 for one HyperProx does not know; all, wi
   assert.equal(one.length, 1)
   assert.equal(one[0].fingerprint, 'AB:CD')
   await assert.rejects(w.svc.probe({ host: 'elsewhere.example.com', port: 443 }), CertsNotFoundError)
+  // The two policy probes, plus mail.example.com:443: the certificate also deploys to HyperProx's own front door.
   const all = await w.svc.probe(undefined, 'admin@example.com')
-  assert.equal(all.length, 2)
-  assert.ok((await w.svc.events(undefined, 5)).some(e => e.kind === 'probe' && /Probed 2 endpoint/.test(e.detail)))
+  assert.deepEqual(all.map(p => `${p.source} ${p.host}:${p.port}`).sort(),
+    ['managed mail.example.com:443', 'managed mail.example.com:587', 'managed mail.example.com:993'])
+  assert.ok((await w.svc.events(undefined, 5)).some(e => e.kind === 'probe' && /Probed 3 endpoint/.test(e.detail)))
   assert.equal(w.store.audits.filter(a => a.action === 'certs.probe').length, 3)
 })
 
