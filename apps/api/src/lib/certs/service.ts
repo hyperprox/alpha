@@ -20,7 +20,7 @@
 import { X509Certificate, createPrivateKey } from 'node:crypto'
 import type { PrismaClient } from '@prisma/client'
 import { GoDaddyClient } from '../godaddy-client'
-import { getCredential, getProviderCredentials, setCredential } from '../credentials'
+import { getCredential, getProviderCredentials, setCredential, setCredentials } from '../credentials'
 import { nextRun } from '../updates/cron'
 import { productionExecutor } from '../updates/executor'
 import {
@@ -75,10 +75,8 @@ export function vaultSecrets(): CertsSecrets {
       return f.key_pem && f.fullchain_pem ? { keyPem: f.key_pem, fullchainPem: f.fullchain_pem } : null
     },
     async saveBundle(label, b) {
-      // The certificate first: should the second write fail, the pair check in bundleFromPems
-      // refuses the mismatch rather than deploying it.
-      await setCredential(VAULT_CATEGORY, bundleItem(label), 'fullchain_pem', b.fullchainPem)
-      await setCredential(VAULT_CATEGORY, bundleItem(label), 'key_pem', b.keyPem)
+      // One write for both: a key and a certificate from different issuances must never sit side by side.
+      await setCredentials(VAULT_CATEGORY, bundleItem(label), { fullchain_pem: b.fullchainPem, key_pem: b.keyPem })
     },
   }
 }
@@ -90,8 +88,7 @@ const PEM_RE = /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----\s*/
  * certificate itself. Throws when the key does not belong to the certificate.
  */
 export function bundleFromPems(keyPem: string, fullchainPem: string): IssuedBundle {
-  const blocks: string[] = fullchainPem.match(PEM_RE) ?? []
-  if (!blocks.length) throw new Error('the stored chain holds no certificate')
+  const blocks = chainBlocks(fullchainPem)
   const leaf = new X509Certificate(blocks[0])
   if (!leaf.checkPrivateKey(createPrivateKey(keyPem))) throw new Error('the stored key does not belong to the stored certificate')
   return {
@@ -101,6 +98,19 @@ export function bundleFromPems(keyPem: string, fullchainPem: string): IssuedBund
     notBefore: new Date(leaf.validFrom), notAfter: new Date(leaf.validTo),
     serial: leaf.serialNumber, issuer: issuerName(leaf.issuer), fingerprint256: leaf.fingerprint256,
   }
+}
+
+function chainBlocks(fullchainPem: string): string[] {
+  const blocks: string[] = fullchainPem.match(PEM_RE) ?? []
+  if (!blocks.length) throw new Error('the stored chain holds no certificate')
+  return blocks
+}
+
+/** The leaf certificate of a stored chain, without the key: enough to ask the CA for its renewal window. */
+export function leafPemOf(fullchainPem: string): string {
+  const leaf = chainBlocks(fullchainPem)[0]
+  new X509Certificate(leaf)   // throws on a damaged certificate
+  return leaf.trim() + '\n'
 }
 
 function issuerName(dn: string): string {
@@ -138,6 +148,10 @@ const DAY = 86_400_000
 type PolicyLoad = ReturnType<CertsModules['loadCertsPolicy']>
 
 const msg = (e: any) => String(e?.message ?? e)
+
+interface ChallengeEntry { provider: string; zone: string; fqdn: string; value: string }
+const JOURNAL_KEY = 'challenges'
+const entryKey = (e: ChallengeEntry) => [e.provider, e.zone, e.fqdn, e.value].join('\n')
 const key = (host: string, port: number) => `${host.toLowerCase()}:${port}`
 
 /** Does `name` (a certificate name, possibly a wildcard) cover `host`? */
@@ -168,6 +182,9 @@ export class CertsService {
   private checking: Promise<void> | null = null
   private inventoryCache: { at: number; entries: CertsInventoryEntry[] } | null = null
   private dnsCache = new Map<string, { at: number; dns: CertsManaged['dns'] }>()
+  private journalChain: Promise<unknown> = Promise.resolve()
+  /** Challenge values this process has presented and not yet cleaned up; a sweep never touches these. */
+  private liveChallenges = new Set<string>()
 
   constructor(private deps: CertsServiceDeps) {}
 
@@ -186,6 +203,67 @@ export class CertsService {
     this.jobs.add(t)
     t.catch(e => this.deps.log(`[certs] background job failed: ${msg(e)}`))
     return t
+  }
+
+  // --- Challenge journal ---------------------------------------------------------------------------
+  // acme.ts always cleans up its own challenge values, but a restart in the middle of an order skips its
+  // finally. Every value is written to the journal before it is presented and taken off after its cleanup,
+  // so the first unlocked run after a restart can remove whatever was left behind.
+
+  private updateJournal(fn: (list: ChallengeEntry[]) => ChallengeEntry[]): Promise<void> {
+    const run = this.journalChain.then(async () => {
+      const list = (await this.deps.store.getState<ChallengeEntry[]>(JOURNAL_KEY)) ?? []
+      await this.deps.store.setState(JOURNAL_KEY, fn(list))
+    })
+    this.journalChain = run.catch(() => undefined)
+    return run
+  }
+
+  private journaled(providers: DnsProvider[]): DnsProvider[] {
+    return providers.map(p => ({
+      name: p.name,
+      zones: () => p.zones(),
+      present: async (zone, fqdn, value) => {
+        const e: ChallengeEntry = { provider: p.name, zone, fqdn, value }
+        this.liveChallenges.add(entryKey(e))
+        await this.updateJournal(l => [...l.filter(x => entryKey(x) !== entryKey(e)), e])
+        await p.present(zone, fqdn, value)
+      },
+      cleanup: async (zone, fqdn, value) => {
+        const e: ChallengeEntry = { provider: p.name, zone, fqdn, value }
+        try {
+          await p.cleanup(zone, fqdn, value)
+          await this.updateJournal(l => l.filter(x => entryKey(x) !== entryKey(e)))
+        } finally {
+          // A failed cleanup stays journaled, and the next sweep (daily, or after a restart) retries it.
+          this.liveChallenges.delete(entryKey(e))
+        }
+      },
+    }))
+  }
+
+  /** Removes challenge values an interrupted order left behind, then forgets them. Returns how many went. */
+  async sweepChallenges(): Promise<number> {
+    const list = (await this.deps.store.getState<ChallengeEntry[]>(JOURNAL_KEY)) ?? []
+    const stale = list.filter(e => !this.liveChallenges.has(entryKey(e)))
+    if (!stale.length) return 0
+    const providers = await this.deps.dnsProviders()
+    let removed = 0
+    const failed: string[] = []
+    for (const e of stale) {
+      const p = providers.find(x => x.name === e.provider)
+      try {
+        if (!p) throw new Error(`DNS provider ${e.provider} is not configured`)
+        await p.cleanup(e.zone, e.fqdn, e.value)
+        await this.updateJournal(l => l.filter(x => entryKey(x) !== entryKey(e)))
+        removed++
+      } catch (err) {
+        failed.push(`${e.fqdn}: ${msg(err)}`)
+      }
+    }
+    if (removed) await this.event(null, 'issue', true, `Removed ${removed} challenge record value(s) left behind by an order a restart interrupted`)
+    if (failed.length) await this.event(null, 'issue', false, `Could not remove challenge record values left behind by an interrupted order; retried at the next check: ${failed.join('; ')}`)
+    return removed
   }
 
   /** A restart ends any issuance that was running; release those rows so they can be retried. */
@@ -444,7 +522,7 @@ export class CertsService {
         email: policy.acme.email,
         getAccountKey: () => this.deps.secrets.getAccountKey(),
         saveAccountKey: pem => this.deps.secrets.saveAccountKey(pem),
-        dns: await this.deps.dnsProviders(),
+        dns: this.journaled(await this.deps.dnsProviders()),
         log: line => this.deps.log(`[certs] ${label}: ${line}`),
       }, spec.names, policy.acme.keyType)
       // Re-derived from the PEMs: the fingerprint must be in the same form the probe reports.
@@ -593,6 +671,7 @@ export class CertsService {
     const load = this.policy()
     const policy = load.policy
     if (!load.loaded) this.deps.log(`[certs] daily check without a policy (${load.error ?? 'no file'}): probes only`)
+    try { await this.sweepChallenges() } catch (e) { this.deps.log(`[certs] challenge sweep failed: ${msg(e)}`) }
     for (const row of await this.deps.store.listManaged()) {
       try { await this.checkOne(row, policy) }
       catch (e) { this.deps.log(`[certs] daily check of ${row.label} failed: ${msg(e)}`) }
@@ -608,15 +687,31 @@ export class CertsService {
     // Never issued (or dropped from the policy): only a person starts the first issuance.
     if (!spec || !row.notAfter || !row.notBefore || row.status === 'renewing') return
     const now = this.now()
-    const stored = await this.deps.secrets.getBundle(row.label)
+    // Nothing between here and the due check may stop it: a damaged vault entry is exactly when renewal matters.
+    const stored = await this.deps.secrets.getBundle(row.label).catch(e => {
+      this.deps.log(`[certs] ${row.label}: could not read the stored certificate: ${msg(e)}`); return null
+    })
     let renewAt = row.renewAfter
     if (stored) {
-      const ari = await this.m.fetchAri(policy.acme.directoryUrl, bundleFromPems(stored.keyPem, stored.fullchainPem).certPem).catch(() => null)
-      // Re-roll only when the CA moved the window; otherwise the decided moment stands.
-      if (ari && (ari.start.getTime() !== row.ariStart?.getTime() || ari.end.getTime() !== row.ariEnd?.getTime())) {
-        renewAt = this.m.renewAfter({ notBefore: row.notBefore, notAfter: row.notAfter }, ari)
-        await this.deps.store.updateManaged(row.label, { ariStart: ari.start, ariEnd: ari.end, renewAfter: renewAt })
-        await this.event(row.label, 'renew', true, `The CA's renewal window is now ${ari.start.toISOString()} to ${ari.end.toISOString()}`)
+      try {
+        // The chain alone: ARI needs the certificate, not the key, so a bad key cannot block it.
+        const ari = await this.m.fetchAri(policy.acme.directoryUrl, leafPemOf(stored.fullchainPem))
+        // Re-roll only when the CA moved the window; otherwise the decided moment stands.
+        if (ari && (ari.start.getTime() !== row.ariStart?.getTime() || ari.end.getTime() !== row.ariEnd?.getTime())) {
+          renewAt = this.m.renewAfter({ notBefore: row.notBefore, notAfter: row.notAfter }, ari)
+          await this.deps.store.updateManaged(row.label, { ariStart: ari.start, ariEnd: ari.end, renewAfter: renewAt })
+          await this.event(row.label, 'renew', true, `The CA's renewal window is now ${ari.start.toISOString()} to ${ari.end.toISOString()}`)
+        }
+      } catch (e) {
+        this.deps.log(`[certs] ${row.label}: renewal window not refreshed: ${msg(e)}`)
+      }
+    }
+    let bundle: IssuedBundle | null = null
+    if (stored) {
+      try { bundle = bundleFromPems(stored.keyPem, stored.fullchainPem) }
+      catch (e) {
+        await this.event(row.label, 'deploy', false,
+          `The vault holds a key and certificate that do not belong together (${msg(e)}); nothing is redeployed from them until a renewal replaces both`)
       }
     }
     if (this.m.dueForRenewal(now, renewAt, row.notAfter)) {
@@ -628,14 +723,14 @@ export class CertsService {
       return
     }
     // A delivery that failed is retried once a day with the certificate already issued.
-    if (!stored || row.status !== 'valid') return
+    if (!bundle || row.status !== 'valid') return
     const recs = await this.deps.store.listTargets(row.label)
     const retry = spec.deploy.map(d => d.target).filter(name => {
       const r = recs.find(x => x.name === name)
       return !r || r.ok === false || !r.fingerprint || !sameFingerprint(r.fingerprint, row.fingerprint ?? '')
     })
     if (retry.length && !this.deploying.has(row.label)) {
-      await this.track(this.deployAll(row.label, policy, bundleFromPems(stored.keyPem, stored.fullchainPem), retry))
+      await this.track(this.deployAll(row.label, policy, bundle, retry))
     }
   }
 
