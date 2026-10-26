@@ -179,3 +179,83 @@ model UpdateLock {
   jobId     String
   createdAt DateTime @default(now())
 }
+
+// --- Certificates ------------------------------------------------------------
+// Metadata for the Certificates feature (lib/certs). Private keys, certificate
+// PEMs and the ACME account key live in the vault, never here.
+
+model ManagedCertificate {
+  id          String       @id @default(cuid())
+  label       String       @unique   // policy key under `certificates:`
+  names       String[]
+  status      String                 // pending | valid | renewing | failed
+  issuer      String?
+  serial      String?
+  fingerprint String?                // SHA-256 of the current leaf: what every deploy must see served
+  notBefore   DateTime?
+  notAfter    DateTime?
+  ariStart    DateTime?
+  ariEnd      DateTime?
+  renewAfter  DateTime?              // decided time, ARI or two-thirds
+  staging     Boolean      @default(false)
+  lastError   String?
+  issuedAt    DateTime?
+  updatedAt   DateTime     @updatedAt
+  events      CertEvent[]
+  targets     CertTarget[]
+}
+
+// The last delivery of a certificate to one policy target.
+model CertTarget {
+  id           String             @id @default(cuid())
+  certId       String
+  cert         ManagedCertificate @relation(fields: [certId], references: [id], onDelete: Cascade)
+  name         String             // policy key under `targets:`
+  kind         String             // guest-files | hyperprox
+  lastDeployAt DateTime?
+  ok           Boolean?
+  detail       String?
+  fingerprint  String?            // the leaf that delivery was for
+
+  @@unique([certId, name])
+}
+
+model CertProbe {
+  id          String    @id @default(cuid())
+  host        String
+  port        Int
+  starttls    String              // none | smtp | imap | pop3
+  source      String              // policy | proxy | node | managed
+  internal    Boolean   @default(false)
+  checkedAt   DateTime?
+  verdict     String?             // ok | warn | critical | error
+  reason      String?
+  fingerprint String?
+  issuer      String?
+  notAfter    DateTime?
+  trusted     Boolean?
+  namesMatch  Boolean?
+
+  @@unique([host, port])
+}
+
+model CertEvent {
+  id     String              @id @default(cuid())
+  certId String?
+  cert   ManagedCertificate? @relation(fields: [certId], references: [id], onDelete: SetNull)
+  label  String?
+  kind   String              // issue | renew | deploy | probe | housekeeping | alert
+  ok     Boolean
+  detail String
+  at     DateTime            @default(now())
+
+  @@index([at])
+  @@index([label, at])
+}
+
+// Small named values the daily check carries between runs (alert state, last check time).
+model CertState {
+  id        String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
