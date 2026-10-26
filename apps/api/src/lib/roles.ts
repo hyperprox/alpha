@@ -86,6 +86,8 @@ export function requiredRole(method: string, path: string): Role | null {
     if (p === '/ws/terminal' || p.startsWith('/ws/terminal/')) return 'operator'
     // Provider settings echo stored values (some unmasked, e.g. API key ids).
     if (p === '/api/settings' || p.startsWith('/api/settings/')) return 'admin'
+    // Certificates: the inventory maps every endpoint, and the history names keys and targets.
+    if (p === '/api/certs' || p.startsWith('/api/certs/')) return 'admin'
     return 'viewer'
   }
 
