@@ -95,6 +95,7 @@ export class NPMClient {
   }
 
   async getCertificates():          Promise<NPMCertificate[]>  { return this.get('/nginx/certificates') }
+  async deleteCertificate(id: number): Promise<void>           { return this.req('DELETE', `/nginx/certificates/${id}`) }
   async getProxyHost(id: number):   Promise<NPMProxyHost>      { return this.get(`/nginx/proxy-hosts/${id}`) }
   async enableProxyHost(id: number): Promise<NPMProxyHost>     { return this.req('POST', `/nginx/proxy-hosts/${id}/enable`) }
   async disableProxyHost(id: number): Promise<NPMProxyHost>    { return this.req('POST', `/nginx/proxy-hosts/${id}/disable`) }
