@@ -17,7 +17,7 @@
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import type { IssuedBundle, ProbeResult, ProbeTarget, TargetSpec } from './_stubs'
+import type { IssuedBundle, ProbeResult, ProbeTarget, TargetSpec } from './modules'
 import type { GuestRef, UpdatesExecutor } from '../updates/executor'
 
 export interface GuestFile { path: string; content: string; mode: string; owner: string }

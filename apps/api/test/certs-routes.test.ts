@@ -16,7 +16,7 @@ import { requiredRole } from '../src/lib/roles'
 import { buildCertsRoutes } from '../src/routes/certs'
 import { CertsService, bundleFromPems, type CertsSecrets, type StoredBundle } from '../src/lib/certs/service'
 import { MemoryCertsStore } from '../src/lib/certs/store'
-import { defaultModules, type CertsPolicy, type IssuedBundle } from '../src/lib/certs/_stubs'
+import { defaultModules, type CertsPolicy, type IssuedBundle } from '../src/lib/certs/modules'
 import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
 
@@ -65,6 +65,8 @@ before(async () => {
       ...defaultModules,
       loadCertsPolicy: () => ({ loaded: policy.loaded, path: '/test/certs.yaml', policy: POLICY }),
       issueCertificate: async (_d, names) => { await hold; return makeBundle(names[0]) },
+      // The real module would ask the directory URL for ARI; tests stay off the network.
+      fetchAri: async () => null,
       probeEndpoint: async () => ({ ok: false, error: 'refused', trusted: null, namesMatch: null }),
     },
     dnsProviders: async () => [],

@@ -8,7 +8,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { deployBundle, installHyperproxCert, pushScript, guestFiles, sameFingerprint, type DeployDeps } from '../src/lib/certs/deploy'
-import type { IssuedBundle, ProbeResult, TargetSpec } from '../src/lib/certs/_stubs'
+import type { IssuedBundle, ProbeResult, TargetSpec } from '../src/lib/certs/modules'
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'certs-deploy-test-'))
 process.on('exit', () => fs.rmSync(tmp, { recursive: true, force: true }))

@@ -27,7 +27,7 @@ import {
   defaultModules, productionSources,
   type CertsModules, type CertsPolicy, type CertsSources, type DnsProvider, type HousekeepingDeps,
   type IssuedBundle, type ProbeOptions, type ProbeResult, type ProbeTarget, type TargetSpec, type AlertState,
-} from './_stubs'
+} from './modules'
 import { deployBundle, guestRunner, installHyperproxCert, sameFingerprint, type DeployDeps } from './deploy'
 import {
   PrismaCertsStore, RenewingError, eventView, iso, probeView,
