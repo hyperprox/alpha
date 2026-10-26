@@ -16,7 +16,7 @@ import { dueMinutes } from '../updates/scheduler'
 import type { CertsService } from './service'
 
 export interface CertsSchedulerDeps {
-  service:    Pick<CertsService, 'dailyCheck' | 'recordSkip'>
+  service:    Pick<CertsService, 'dailyCheck' | 'recordSkip'> & Partial<Pick<CertsService, 'sweepChallenges'>>
   /** The `schedule.check` expression now in force. */
   cron:       () => string
   isUnlocked: () => boolean
@@ -30,6 +30,7 @@ export class CertsScheduler {
   private timer: ReturnType<typeof setInterval> | null = null
   private last: Date
   private running: Promise<void> | null = null
+  private swept = false
 
   constructor(private deps: CertsSchedulerDeps) {
     this.last = this.now()
@@ -53,6 +54,12 @@ export class CertsScheduler {
 
   /** One look at the clock. The check itself runs in the background; renewals can take minutes. */
   async tick(): Promise<TickResult> {
+    // The first tick that finds HyperProx unlocked clears challenge values an order cut off by the last
+    // restart left in DNS; it needs the DNS credential, so it cannot run while locked.
+    if (!this.swept && this.deps.service.sweepChallenges && this.deps.isUnlocked()) {
+      this.swept = true
+      await this.deps.service.sweepChallenges().catch(e => this.deps.log?.(`[certs] challenge sweep failed: ${e?.message ?? e}`))
+    }
     const now = this.now()
     const since = this.last
     this.last = now

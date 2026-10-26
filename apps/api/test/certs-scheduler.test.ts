@@ -65,3 +65,25 @@ test('a schedule it cannot read is an error, not a guess', async () => {
   assert.equal(await w.s.tick(), 'error')
   assert.equal(w.calls.checks, 0)
 })
+
+test('the first unlocked tick sweeps challenge values a restart left behind, once', async () => {
+  let sweeps = 0
+  const state = { unlocked: false }
+  const clock = { t: new Date(2026, 9, 26, 3, 0, 0) }
+  const s = new CertsScheduler({
+    service: {
+      dailyCheck: async () => undefined,
+      recordSkip: async () => undefined,
+      sweepChallenges: async () => { sweeps++; return 0 },
+    },
+    cron: () => '15 6 * * *',
+    isUnlocked: () => state.unlocked,
+    now: () => clock.t,
+  })
+  await s.tick()
+  assert.equal(sweeps, 0, 'locked: no DNS credential to sweep with')
+  state.unlocked = true
+  await s.tick()
+  await s.tick()
+  assert.equal(sweeps, 1)
+})

@@ -13,7 +13,7 @@ import {
   type CertsSecrets, type StoredBundle,
 } from '../src/lib/certs/service'
 import { MemoryCertsStore } from '../src/lib/certs/store'
-import { defaultModules, type CertsModules, type CertsPolicy, type IssuedBundle, type ProbeTarget } from '../src/lib/certs/modules'
+import { defaultModules, type CertsModules, type CertsPolicy, type DnsProvider, type IssuedBundle, type ProbeTarget } from '../src/lib/certs/modules'
 
 // --- fixtures ------------------------------------------------------------------------------
 
@@ -320,6 +320,98 @@ test('restart recovery releases an issuance cut off mid-way', async () => {
   const row = (await w.store.getManaged('mail'))!
   assert.equal(row.status, 'failed')
   assert.match(row.lastError!, /restart/)
+})
+
+test('a key and certificate that do not match in the vault: recorded, not redeployed, and renewal still happens', async () => {
+  const w = world()
+  const b = await issueOk(w)
+  const stranger = makeCert('other.example.com')
+  w.vault.bundles.set('mail', { keyPem: stranger.keyPem, fullchainPem: b.fullchainPem })
+  const ari: string[] = []
+  const deps = (w.svc as any).deps
+  deps.modules = { ...deps.modules, fetchAri: async (_d: string, pem: string) => { ari.push(pem); return null } }
+  const pushesBefore = w.pushes.length
+  w.issued.length = 0
+  await w.svc.dailyCheck()
+  assert.equal(ari.length, 1, 'the renewal window is still asked for, from the chain alone')
+  assert.equal(ari[0], b.certPem)
+  assert.ok((await w.svc.events('mail', 20)).some(e => !e.ok && /do not belong together/.test(e.detail)))
+  assert.equal(w.pushes.length, pushesBefore, 'nothing redeployed from a mismatched pair')
+  assert.deepEqual(w.issued, [])
+
+  // Once due, the renewal runs regardless, and its single write replaces both halves.
+  deps.modules = { ...deps.modules, fetchAri: async () => { throw new Error('CA unreachable') } }
+  w.now.t = new Date(Date.now() + 70 * 86400_000)
+  const orig = w.issue
+  w.issue = async names => { const nb = await orig(names); serveEverywhere(w, nb.fingerprint256); return nb }
+  await w.svc.dailyCheck()
+  assert.deepEqual(w.issued, ['mail.example.com'])
+  const stored = w.vault.bundles.get('mail')!
+  assert.doesNotThrow(() => bundleFromPems(stored.keyPem, stored.fullchainPem))
+})
+
+/** A DNS provider that records what it holds, so a test can see what an interrupted order left behind. */
+function fakeDns(): DnsProvider & { held: Set<string>; cleaned: string[] } {
+  const held = new Set<string>(), cleaned: string[] = []
+  return {
+    name: 'fake', held, cleaned,
+    zones: async () => ['example.com'],
+    present: async (_z, fqdn, value) => { held.add(`${fqdn}=${value}`) },
+    cleanup: async (_z, fqdn, value) => { held.delete(`${fqdn}=${value}`); cleaned.push(`${fqdn}=${value}`) },
+  }
+}
+
+test('challenge journal: a value an interrupted order left in DNS is removed by the next sweep, then forgotten', async () => {
+  const w = world()
+  const dns = fakeDns()
+  const deps = (w.svc as any).deps
+  deps.dnsProviders = async () => [dns]
+  // An order that presents and then dies without its finally, as a restart would leave it.
+  deps.modules = { ...deps.modules, issueCertificate: async (d: any) => {
+    await d.dns[0].present('example.com', '_acme-challenge.mail.example.com', 'left-behind')
+    throw new Error('process killed')
+  } }
+  await w.svc.issue('mail')
+  await w.svc.idle()
+  assert.deepEqual([...dns.held], ['_acme-challenge.mail.example.com=left-behind'])
+  assert.equal(((await w.store.getState<unknown[]>('challenges')) ?? []).length, 1)
+
+  // "After the restart": a fresh service over the same database.
+  const after = new CertsService({ ...deps })
+  assert.equal(await after.sweepChallenges(), 1)
+  assert.deepEqual([...dns.held], [])
+  assert.deepEqual(await w.store.getState('challenges'), [])
+  assert.ok((await after.events(undefined, 20)).some(e => /Removed 1 challenge record value/.test(e.detail)))
+  assert.equal(await after.sweepChallenges(), 0)
+})
+
+test('challenge journal: a clean order leaves nothing; a sweep never touches an order still running', async () => {
+  const w = world()
+  const dns = fakeDns()
+  const deps = (w.svc as any).deps
+  deps.dnsProviders = async () => [dns]
+  let release!: () => void
+  const gate = new Promise<void>(r => { release = r })
+  let presented!: () => void
+  const isPresented = new Promise<void>(r => { presented = r })
+  deps.modules = { ...deps.modules, issueCertificate: async (d: any, names: string[]) => {
+    try {
+      await d.dns[0].present('example.com', '_acme-challenge.mail.example.com', 'running')
+      presented()
+      await gate
+      return w.issue(names)
+    } finally {
+      await d.dns[0].cleanup('example.com', '_acme-challenge.mail.example.com', 'running')
+    }
+  } }
+  await w.svc.issue('mail')
+  await isPresented
+  assert.equal(await w.svc.sweepChallenges(), 0)
+  assert.deepEqual([...dns.held], ['_acme-challenge.mail.example.com=running'], 'the live order keeps its value')
+  release()
+  await w.svc.idle()
+  assert.deepEqual([...dns.held], [])
+  assert.deepEqual(await w.store.getState('challenges'), [])
 })
 
 test('probe: one known endpoint, or 404 for one HyperProx does not know; all, with a summary event', async () => {
