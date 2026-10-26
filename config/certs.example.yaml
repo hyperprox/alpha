@@ -1,0 +1,71 @@
+# =============================================================================
+#  HyperProx — Certificates policy (example)
+#
+#  Copy to config/certs.yaml and edit. That file is git-ignored: everything
+#  network-specific lives there, never in code. See docs/certificates.md.
+#
+#  Unknown keys fail the load, with the path of the bad key, so a typo cannot
+#  silently change where a private key goes or who can read it. Every section
+#  is optional; what is left out takes the default shown beside it.
+#
+#  Without a config/certs.yaml at all, the Certificates page still lists and
+#  probes what it discovers (proxy hosts, node consoles); nothing is issued or
+#  deployed.
+# =============================================================================
+
+acme:
+  directory: staging           # production (default) | staging | an https:// ACME directory URL.
+                               # Start on staging: its certificates are untrusted and flagged everywhere,
+                               # but its rate limits are generous. Switch to production once a staging
+                               # certificate has gone all the way to its target.
+  email: admin@example.com     # default none. The CA's expiry and policy mail goes here.
+  key_type: ec256              # ec256 (default) | ec384 | rsa2048 | rsa4096. The certificate key, not the account key.
+
+schedule:
+  check: "15 6 * * *"          # default "15 6 * * *". Daily probes and renewal decisions; minute hour day month
+                               # weekday, local time. Renewal waits for the CA's ARI window when it offers one,
+                               # otherwise two thirds of the lifetime; there are no fixed day counts to tune.
+
+alerts:
+  warn_fraction: 0.33          # default 0.33. Warn when less than this share of the lifetime remains.
+  critical_days: 7             # default 7. Critical below this many days, whatever the lifetime.
+  webhook_url: https://hooks.example.com/certificates   # default none. Discord-compatible {"content": ...} POST.
+
+# Certificates HyperProx issues itself, over DNS-01. Every name must lie in a DNS zone HyperProx manages;
+# a name that does not is shown as "DNS provider not managed" and never attempted. Issued names are public
+# in Certificate Transparency logs.
+certificates:
+  mail:                        # the label: letters, digits, - and _
+    names: [mail.example.com]
+    deploy:
+      - target: mail-guest
+  wildcard:
+    names: [example.com, "*.example.com"]   # quote a wildcard: a bare * starts a YAML alias
+    deploy:
+      - target: self
+
+# Endpoints to check besides the discovered ones (every proxy host on 443, node consoles, deploy targets).
+probes:
+  - { host: mail.example.com, port: 993, starttls: none }    # starttls: none (default) | smtp | imap | pop3
+  - { host: mail.example.com, port: 587, starttls: smtp }
+  - { host: 10.0.0.20, port: 8006, internal: true }          # internal: a self-signed certificate is a warning, not critical
+
+# Where certificates are delivered. Every deploy ends with a probe that must see the new certificate.
+targets:
+  mail-guest:
+    kind: guest-files          # files pushed into a container or VM, then the reload command
+    vmid: 101
+    files:
+      fullchain: /etc/ssl/mail/fullchain.pem
+      key:       /etc/ssl/mail/privkey.pem
+      # cert:    /etc/ssl/mail/cert.pem       # optional: the leaf alone
+      # chain:   /etc/ssl/mail/chain.pem      # optional: the intermediates alone
+    owner: "root:root"         # default "root:root"
+    key_mode: "0600"           # default "0600". Octal, as chmod takes it.
+    reload: "systemctl reload postfix dovecot"   # default none
+  self:
+    kind: hyperprox            # HyperProx's own front door
+
+proxy:
+  guest_vmid: 102              # default none. The proxy's guest, so housekeeping can also list renewal files on
+                               # disk that the proxy no longer knows about. Without it, housekeeping uses the API only.
