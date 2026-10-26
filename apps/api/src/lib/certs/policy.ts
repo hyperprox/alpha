@@ -11,6 +11,7 @@
 // =============================================================================
 
 import fs from 'node:fs'
+import path from 'node:path'
 import { z } from 'zod'
 import type { CertsStartTls } from './types'
 import { parseCron } from '../updates/cron'
@@ -94,9 +95,11 @@ const guestFilesSchema = z.object({
     const seen = new Map<string, string>()
     for (const [role, p] of Object.entries(f)) {
       if (p === undefined) continue
-      const prior = seen.get(p)
+      // Normalised: "/a//b.pem" and "/a/./b.pem" are the same file as "/a/b.pem".
+      const key = path.posix.normalize(p)
+      const prior = seen.get(key)
       if (prior) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [role], message: `the same path as ${prior}; every file needs its own path` })
-      else seen.set(p, role)
+      else seen.set(key, role)
     }
   }),
   owner:    z.string().regex(/^[a-z_][a-z0-9_-]*(:[a-z_][a-z0-9_-]*)?$/i, 'user or user:group').optional(),

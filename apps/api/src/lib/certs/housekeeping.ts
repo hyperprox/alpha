@@ -21,6 +21,11 @@ export interface HousekeepingDeps {
    */
   npmCertificateUsers(): Promise<{ certificate_id: number | null }[]>
   deleteNpmCertificate(id: number): Promise<void>
+  /**
+   * Whether the proxy login is an administrator. A lesser login does not see other users' disabled hosts, and a
+   * disabled host has no nginx config on disk, so its certificate would look orphaned to every other check.
+   */
+  npmLoginIsAdmin(): Promise<boolean>
   /** Runs a shell script in the proxy's guest; null when no proxy guest is configured (API only). */
   guestExec: ((script: string) => Promise<{ code: number; output: string }>) | null
   /**
@@ -147,6 +152,12 @@ function expiredUnused(certs: NPMCertificate[], used: Set<number>, now: Date): N
  * Refused outright when a host uses a certificate the list does not show: then the API user cannot see every
  * certificate, and "not in the list" means nothing.
  */
+async function requireAdminLogin(d: HousekeepingDeps): Promise<void> {
+  let admin = false
+  try { admin = await d.npmLoginIsAdmin() } catch { /* unknown counts as no */ }
+  if (!admin) throw new Error('the proxy login is not an administrator (or its role could not be read), so it may not see every host; no file is called orphaned')
+}
+
 async function orphanFiles(exec: NonNullable<HousekeepingDeps['guestExec']>, certs: NPMCertificate[], used: Set<number>,
   warn?: (m: string) => void): Promise<{ dir: string; orphans: OnDisk[] }> {
   const known = new Set(certs.map(c => c.id))
@@ -178,6 +189,7 @@ export async function listHousekeeping(d: HousekeepingDeps, now: Date): Promise<
 
   if (d.guestExec) {
     try {
+      await requireAdminLogin(d)
       const { dir, orphans } = await orphanFiles(d.guestExec, certs, used, d.warn)
       for (const f of orphans) {
         items.push({
@@ -230,6 +242,7 @@ export async function applyHousekeeping(item: CertsHousekeepingItem, d: Housekee
     if (certs.some(c => c.id === id)) throw new Error(`the proxy now has a certificate #${id}; its files were left alone`)
     // The same checks as the list, in full: visibility, what is on disk, what nginx still references.
     const referenced: string[] = []
+    await requireAdminLogin(d)
     const { dir, orphans } = await orphanFiles(d.guestExec, certs, usedIds(users), m => referenced.push(m))
     const files = orphans.find(f => f.id === id)
     if (!files) {

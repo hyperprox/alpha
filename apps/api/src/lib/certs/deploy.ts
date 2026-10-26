@@ -58,7 +58,7 @@ export function pushScript(files: GuestFile[]): string {
     if (!OWNER_RE.test(f.owner)) throw new Error(`refusing owner ${JSON.stringify(f.owner)}: use user or user:group`)
     if (!MODE_RE.test(f.mode)) throw new Error(`refusing mode ${JSON.stringify(f.mode)}: use octal such as 0600`)
   }
-  const paths = files.map(f => f.path)
+  const paths = files.map(f => path.posix.normalize(f.path))
   const dup = paths.find((p, i) => paths.indexOf(p) !== i)
   // Staged then moved in order: a second file on the same path would silently replace the first.
   if (dup) throw new Error(`refusing to write ${JSON.stringify(dup)} twice in one delivery: every file needs its own path`)

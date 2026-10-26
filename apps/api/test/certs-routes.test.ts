@@ -74,7 +74,7 @@ before(async () => {
       guestPush: async () => ({ code: 0, output: '' }), guestExec: async () => ({ code: 0, output: '' }),
       hyperproxInstall: async () => ({ ok: true, detail: 'installed' }), probeAttempts: 1, sleep: async () => undefined,
     },
-    sources: { npmCertificates: async () => [], npmHosts: async () => [], nodeCertificates: async () => [], npmCertificateUsers: async () => [], deleteNpmCertificate: async () => undefined },
+    sources: { npmCertificates: async () => [], npmHosts: async () => [], nodeCertificates: async () => [], npmCertificateUsers: async () => [], deleteNpmCertificate: async () => undefined, npmLoginIsAdmin: async () => true },
     log: () => undefined,
   })
   app = Fastify({ logger: false })

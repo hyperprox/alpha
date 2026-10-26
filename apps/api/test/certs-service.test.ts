@@ -109,7 +109,7 @@ function world(): World {
     },
     sources: {
       npmCertificates: async () => [], npmHosts: async () => [], nodeCertificates: async () => [],
-      npmCertificateUsers: async () => [], deleteNpmCertificate: async () => undefined,
+      npmCertificateUsers: async () => [], deleteNpmCertificate: async () => undefined, npmLoginIsAdmin: async () => true,
     },
     log: () => undefined,
     now: () => w.now.t,
