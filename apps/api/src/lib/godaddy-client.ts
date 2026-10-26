@@ -99,6 +99,11 @@ export class GoDaddyClient {
     return this.req<DNSRecord[]>('GET', path)
   }
 
+  /** The records of one name and type only, rather than the whole zone's. */
+  async getRecordsByName(domain: string, type: DNSRecordType, name: string): Promise<DNSRecord[]> {
+    return this.req<DNSRecord[]>('GET', `/domains/${domain}/records/${type}/${encodeURIComponent(name)}`)
+  }
+
   async createRecord(domain: string, record: DNSRecord): Promise<void> {
     await this.req('PATCH', `/domains/${domain}/records`, [record])
   }

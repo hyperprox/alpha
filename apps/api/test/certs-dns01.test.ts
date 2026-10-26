@@ -2,7 +2,7 @@
 // cleanup removes only ours, other names are never touched), and the authoritative propagation wait.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { findZone, relativeName, godaddyProvider, waitForPropagation, CHALLENGE_TTL } from '../src/lib/certs/dns01'
+import { findZone, relativeName, godaddyProvider, waitForPropagation, withNameLock, CHALLENGE_TTL } from '../src/lib/certs/dns01'
 import type { GoDaddyClient, DNSRecord, DNSRecordType } from '../src/lib/godaddy-client'
 import { startTxtServer } from './fakes/pebble-dns'
 
@@ -35,42 +35,54 @@ class FakeGoDaddy {
   records: Record<string, DNSRecord[]> = { 'example.com': [], 'example.org': [] }
   calls: string[] = []
   failOn: string | null = null
+  /** Calls starting with this take several round trips, so a test can force a particular interleaving. */
+  slow: string | null = null
 
-  private hit(call: string) {
+  /** Yield to other work at every API call, as a network round trip would, so unlocked interleavings show. */
+  async hit(call: string) {
     this.calls.push(call)
+    const trips = this.slow && call.startsWith(this.slow) ? 6 : 1
+    for (let i = 0; i < trips; i++) await new Promise(r => setImmediate(r))
     if (this.failOn && call.startsWith(this.failOn)) throw new Error(`GoDaddy ${call} failed 500`)
   }
   async getDomains() {
-    this.hit('GET domains')
+    await this.hit('GET domains')
     return Object.keys(this.records).map(domain => ({ domain, status: 'ACTIVE' }))
   }
   async getRecords(domain: string, type?: DNSRecordType) {
-    this.hit(`GET ${domain} ${type}`)
+    await this.hit(`GET ${domain} ${type}`)
     return this.records[domain].filter(r => !type || r.type === type).map(r => ({ ...r }))
   }
+  async getRecordsByName(domain: string, type: DNSRecordType, name: string) {
+    await this.hit(`GET ${domain} ${type} ${name}`)
+    return this.records[domain].filter(r => r.type === type && r.name === name).map(r => ({ ...r }))
+  }
   async createRecord(domain: string, record: DNSRecord) {
-    this.hit(`PATCH ${domain} ${record.type} ${record.name} ${record.data}`)
+    await this.hit(`PATCH ${domain} ${record.type} ${record.name} ${record.data}`)
     this.records[domain].push({ ...record })
   }
   async updateRecord(domain: string, type: DNSRecordType, name: string, record: Partial<DNSRecord>) {
-    this.hit(`PUT ${domain} ${type} ${name} ${record.data}`)
+    await this.hit(`PUT ${domain} ${type} ${name} ${record.data}`)
     this.records[domain] = this.records[domain].filter(r => !(r.type === type && r.name === name))
     this.records[domain].push({ type, name, data: record.data!, ttl: record.ttl ?? 3600 })
   }
   async replaceRecords(domain: string, type: DNSRecordType, name: string, records: { data: string; ttl: number }[]) {
-    this.hit(`PUT ${domain} ${type} ${name} ${records.map(r => r.data).join(',')}`)
+    await this.hit(`PUT ${domain} ${type} ${name} ${records.map(r => r.data).join(',')}`)
     if (!records.length) throw new Error('empty PUT')
     this.records[domain] = this.records[domain].filter(r => !(r.type === type && r.name === name))
     for (const r of records) this.records[domain].push({ type, name, data: r.data, ttl: r.ttl })
   }
   async deleteRecord(domain: string, type: DNSRecordType, name: string) {
-    this.hit(`DELETE ${domain} ${type} ${name}`)
+    await this.hit(`DELETE ${domain} ${type} ${name}`)
     this.records[domain] = this.records[domain].filter(r => !(r.type === type && r.name === name))
   }
   txt(domain: string, name: string) {
     return this.records[domain].filter(r => r.type === 'TXT' && r.name === name).map(r => r.data).sort()
   }
 }
+
+// Both test zones are delegated to GoDaddy unless a test says otherwise.
+const godaddyNs = async (_zone: string) => ['ns01.domaincontrol.com', 'ns02.domaincontrol.com']
 
 function setup() {
   const gd = new FakeGoDaddy()
@@ -80,13 +92,89 @@ function setup() {
     { type: 'TXT', name: '_acme-challenge.www', data: 'other-name', ttl: 600 },
     { type: 'A', name: 'mail', data: '10.0.0.5', ttl: 600 },
   )
-  return { gd, p: godaddyProvider(gd as unknown as GoDaddyClient) }
+  return { gd, p: godaddyProvider(gd as unknown as GoDaddyClient, { resolveNs: godaddyNs }) }
 }
 
 test('godaddy: zones are the active domains', async () => {
   const { p } = setup()
   assert.equal(p.name, 'godaddy')
   assert.deepEqual(await p.zones(), ['example.com', 'example.org'])
+})
+
+test('godaddy: a domain whose DNS is hosted elsewhere is not a managed zone', async () => {
+  const gd = new FakeGoDaddy()
+  gd.records['example.net'] = []
+  gd.records['example.info'] = []
+  const ns: Record<string, string[]> = {
+    'example.com': ['NS21.DomainControl.com.', 'ns22.domaincontrol.com'],
+    'example.org': ['ns1.other-dns.example', 'ns2.other-dns.example'],
+    'example.net': ['ns01.domaincontrol.com', 'ns1.other-dns.example'],   // split delegation
+  }
+  const p = godaddyProvider(gd as unknown as GoDaddyClient, {
+    resolveNs: async z => { if (!ns[z]) throw new Error('ENOTFOUND'); return ns[z] },
+  })
+  assert.deepEqual(await p.zones(), ['example.com'])
+  assert.equal(findZone('mail.example.org', await p.zones()), null, 'a name there has no managed zone')
+})
+
+test('godaddy: reads are scoped to the one name, never the whole zone', async () => {
+  const { gd, p } = setup()
+  await p.present('example.com', '_acme-challenge.mail.example.com', 'v1')
+  await p.cleanup('example.com', '_acme-challenge.mail.example.com', 'v1')
+  const reads = gd.calls.filter(c => c.startsWith('GET'))
+  assert.ok(reads.length > 0)
+  assert.ok(reads.every(c => c === 'GET example.com TXT _acme-challenge.mail'), reads.join(', '))
+})
+
+test('godaddy: two orders presenting on one name at once both end up there', async () => {
+  const { gd, p } = setup()
+  await Promise.all([
+    p.present('example.com', '_acme-challenge.example.com', 'order-a'),
+    p.present('example.com', '_acme-challenge.example.com', 'order-b'),
+  ])
+  assert.deepEqual(gd.txt('example.com', '_acme-challenge'), ['order-a', 'order-b', 'someone-elses-token'])
+})
+
+test('godaddy: two cleanups on one name at once remove both values and nothing else', async () => {
+  const { gd, p } = setup()
+  await p.present('example.com', '_acme-challenge.example.com', 'order-a')
+  await p.present('example.com', '_acme-challenge.example.com', 'order-b')
+  await Promise.all([
+    p.cleanup('example.com', '_acme-challenge.example.com', 'order-a'),
+    p.cleanup('example.com', '_acme-challenge.example.com', 'order-b'),
+  ])
+  assert.deepEqual(gd.txt('example.com', '_acme-challenge'), ['someone-elses-token'])
+})
+
+test('godaddy: a cleanup racing another order\'s present keeps the new value', async () => {
+  const { gd, p } = setup()
+  await p.present('example.com', '_acme-challenge.example.com', 'old')
+  // A slow PUT: unlocked, the other order's PATCH would land first and the PUT would wipe it.
+  gd.slow = 'PUT'
+  await Promise.all([
+    p.cleanup('example.com', '_acme-challenge.example.com', 'old'),
+    p.present('example.com', '_acme-challenge.example.com', 'new'),
+  ])
+  assert.deepEqual(gd.txt('example.com', '_acme-challenge'), ['new', 'someone-elses-token'])
+  // And the last value's cleanup racing a present: the DELETE must not take the newcomer with it.
+  const { gd: gd2, p: p2 } = setup()
+  await p2.present('example.com', '_acme-challenge.mail.example.com', 'only')
+  gd2.slow = 'DELETE'
+  await Promise.all([
+    p2.cleanup('example.com', '_acme-challenge.mail.example.com', 'only'),
+    p2.present('example.com', '_acme-challenge.mail.example.com', 'next'),
+  ])
+  assert.deepEqual(gd2.txt('example.com', '_acme-challenge.mail'), ['next'])
+})
+
+test('withNameLock: one holder at a time per key, other keys run freely, a failure releases it', async () => {
+  const order: string[] = []
+  const step = (tag: string) => async () => { order.push(`${tag}+`); await new Promise(r => setImmediate(r)); order.push(`${tag}-`) }
+  await Promise.all([withNameLock('k', step('a')), withNameLock('k', step('b')), withNameLock('other', step('c'))])
+  assert.deepEqual(order.filter(x => x[0] !== 'c'), ['a+', 'a-', 'b+', 'b-'])
+  assert.ok(order.indexOf('c+') < order.indexOf('a-'), 'another key is not held up')
+  await assert.rejects(withNameLock('k', async () => { throw new Error('boom') }), /boom/)
+  assert.equal(await withNameLock('k', async () => 'free again'), 'free again')
 })
 
 test('godaddy: present appends a TXT value with TTL 600 under the zone-relative name', async () => {
