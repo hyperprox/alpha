@@ -112,6 +112,23 @@ model AuditLog {
   createdAt DateTime @default(now())
 }
 
+// --- API tokens --------------------------------------------------------------
+// Bearer tokens for automation (lib/api-tokens.ts). Only the SHA-256 of a token
+// is stored; the token itself is shown once, at creation. A revoked token keeps
+// its row (and its name) so the audit log still resolves.
+
+model ApiToken {
+  id         String    @id @default(cuid())
+  name       String    @unique
+  role       String    // viewer | operator | admin
+  tokenHash  String    @unique   // sha256 hex of the full token
+  createdBy  String              // creator's email, or "host-cli"
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+}
+
 // --- Credentials (encrypted) ------------------------------------------------
 
 model Credential {

@@ -21,6 +21,7 @@ import { aiRoutes }              from './routes/ai'
 import { gpuRoutes }             from './routes/gpu'
 import { targetsRoutes }         from './routes/targets'
 import { authRoutes }             from './routes/auth'
+import { apiTokenRoutes }         from './routes/api-tokens'
 import { secretsRoutes }          from './routes/secrets'
 import { terminalRoutes }             from './routes/terminal'
 import { pluginRoutes }           from './routes/plugins'
@@ -32,6 +33,7 @@ import { prismaPlugin }         from './plugins/prisma'
 import { redisPlugin }          from './plugins/redis'
 import { registerGate }         from './lib/gate'
 import { lock }                 from './lib/vault/state'
+import { setApiTokenStore, PrismaApiTokenStore } from './lib/api-tokens'
 
 const server = Fastify({
   logger: {
@@ -55,9 +57,12 @@ async function main() {
   // and /api/auth/* answers 423 until a vault user signs in. Then 401 without a
   // valid session, 403 below the route's role (lib/roles.ts). There is no
   // switch to turn it off.
+  // API tokens (lib/api-tokens.ts) are looked up in the database the rest of the API uses.
+  setApiTokenStore(new PrismaApiTokenStore(server.prisma))
   await registerGate(server)
 
   await server.register(authRoutes,           { prefix: '/api/auth' })
+  await server.register(apiTokenRoutes,       { prefix: '/api/auth/tokens' })
   await server.register(secretsRoutes,        { prefix: '/api/secrets' })
   await server.register(healthRoute,          { prefix: '/health' })
   await server.register(proxmoxRoutes,        { prefix: '/api/proxmox' })
