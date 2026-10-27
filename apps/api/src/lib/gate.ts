@@ -5,6 +5,9 @@
 //    2. Session?          401 when missing, forged, expired or from before a lock
 //    3. Role?             403 when the user's vault role is below the route's
 //    4. Re-confirmed?     403 { reconfirm:true } for destroy / reveal / role changes
+//  An API token (`Authorization: Bearer hpx_...`, lib/api-tokens.ts) takes the
+//  place of step 2 and never of step 1: locked is 423 for a token too. A bad one
+//  is 401; a good one on a route tokens may never use is 403 token_forbidden.
 //  The JWT is signed with a key that exists only while unlocked and is replaced
 //  at every unlock, so a token from a previous unlock can never verify again.
 // =============================================================================
@@ -13,6 +16,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import jwt from '@fastify/jwt'
 import { isUnlocked, signingKey, touch, onLock } from './vault/state'
 import { VaultSessionError, type Role } from './vault/broker'
+import { bearerApiToken, tokenForbidden, verifyApiToken, apiTokenStore, type ApiTokenRecord } from './api-tokens'
 import { requiredRole, needsReconfirm, hasRole, bypassesLock, normalisePath } from './roles'
 import {
   extractToken, getSession, clearSessions, removeSession, requestContext, isReconfirmed, isLocalCliRequest,
@@ -25,6 +29,8 @@ declare module 'fastify' {
   interface FastifyRequest {
     /** The signed-in vault session, when the request carried a valid one. */
     session?: ActiveSession
+    /** Set when the request authenticated with an API token rather than a sign-in. */
+    apiToken?: { id: string; name: string }
   }
 }
 
@@ -55,6 +61,26 @@ async function authenticate(req: FastifyRequest): Promise<ActiveSession | null> 
 }
 
 /**
+ * The session an API token acts as. Same shape as a sign-in's, but its sid is never in the
+ * session map: isReconfirmed() is always false for it, and actingSid() falls back to the most
+ * recently active signed-in session for vault writes.
+ */
+export function tokenSession(row: ApiTokenRecord): ActiveSession {
+  return {
+    sid: `token:${row.id}`, email: `token:${row.name}`, role: row.role as Role, userId: '',
+    reconfirmedUntil: 0, lastSeen: Date.now(),
+  }
+}
+
+/** The route Fastify matched, as registered (it routes on the decoded path; req.url is raw). */
+function routePath(req: FastifyRequest): string | null {
+  const url = (req as any).routeOptions?.url
+  return typeof url === 'string' && url ? url : null
+}
+
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+
+/**
  * Register @fastify/jwt (keyed to the unlock state) and the gate hooks.
  * Call before registering any route.
  */
@@ -81,16 +107,36 @@ export async function registerGate(server: FastifyInstance): Promise<void> {
     const path   = normalisePath(req.url)
     const needed = requiredRole(req.method, path)
 
+    // Checked on the raw path and on the matched route, so an encoded path cannot slip past.
+    const apiToken = bearerApiToken(req.headers as Record<string, any>)
+    const route = routePath(req)
+    const tokenRefused = apiToken !== null && (tokenForbidden(req.method, path) || (route !== null && tokenForbidden(req.method, route)))
+
     if (!isUnlocked()) {
-      if (bypassesLock(path)) return
+      if (bypassesLock(path)) {
+        if (tokenRefused) return reply.status(403).send({ ok: false, code: 'token_forbidden', error: 'API tokens cannot use this route' })
+        return
+      }
       return reply.status(423).send({ ok: false, locked: true })
     }
 
-    const session = await authenticate(req)
-    if (session) {
+    let session: ActiveSession | null
+    if (apiToken !== null) {
+      // A token is checked even on routes that need no session: a bad one is never ignored.
+      const row = await verifyApiToken(apiToken)
+      if (!row) return reply.status(401).send({ ok: false, code: 'invalid_token', error: 'API token is invalid, revoked or expired' })
+      if (tokenRefused) return reply.status(403).send({ ok: false, code: 'token_forbidden', error: 'API tokens cannot use this route' })
+      session = tokenSession(row)
       req.session = session
-      session.lastSeen = Date.now()
-      touch()
+      req.apiToken = { id: row.id, name: row.name }
+      // No touch(): automation must not keep HyperProx unlocked. Only people reset the idle timer.
+    } else {
+      session = await authenticate(req)
+      if (session) {
+        req.session = session
+        session.lastSeen = Date.now()
+        touch()
+      }
     }
 
     if (needed === null) return
@@ -112,12 +158,28 @@ export async function registerGate(server: FastifyInstance): Promise<void> {
   // credential read that raced a lock is a 423. Everything else keeps Fastify's default handling.
   server.setErrorHandler((err, req, reply) => {
     if (err instanceof VaultSessionError) {
-      if (req.session) removeSession(req.session.sid)
-      reply.header('Set-Cookie', buildAuthCookie('', 0, req.headers))
+      // For a token request the ended session is the signed-in one it borrowed, not the caller's cookie.
+      if (req.session && !req.apiToken) {
+        removeSession(req.session.sid)
+        reply.header('Set-Cookie', buildAuthCookie('', 0, req.headers))
+      }
       return reply.status(401).send({ ok: false, code: 'session_expired', error: 'Your vault session has ended — sign in again' })
     }
     if ((err as Error)?.name === 'VaultLockedError') return reply.status(423).send({ ok: false, locked: true })
     reply.send(err)
+  })
+
+  // Every state-changing request made with an API token goes to the audit log: token name, method,
+  // path (no query string, no body) and the status it got. Never the token.
+  server.addHook('onResponse', async (req, reply) => {
+    if (!req.apiToken || SAFE_METHODS.has(req.method)) return
+    try {
+      await apiTokenStore().audit('api_token.request', req.apiToken.name, {
+        id: req.apiToken.id, method: req.method, path: normalisePath(req.url), status: reply.statusCode,
+      })
+    } catch (e: any) {
+      req.log.warn({ err: e?.message, token: req.apiToken.name }, '[api-token] audit write failed')
+    }
   })
 
   // Run the rest of the request inside the caller's context, so the credential

@@ -5,7 +5,7 @@
 //
 //  viewer   any GET + the live-status WebSocket
 //  operator viewer + guest start/stop/shutdown/reboot + terminal and console
-//  admin    everything except role management
+//  admin    everything except role management (API tokens included)
 //  owner    everything
 //
 //  Anything not listed falls to the safe side: a GET is viewer, everything
@@ -46,8 +46,12 @@ const PUBLIC_AUTH = new Set([
   '/api/auth/sign-in',
 ])
 
-/** /health* and /api/auth/* answer while locked; everything else gets 423. */
+// API token management lives under /api/auth but is an ordinary admin route: locked is 423.
+const TOKENS = /^\/api\/auth\/tokens(\/|$)/
+
+/** /health* and /api/auth/* (except token management) answer while locked; everything else gets 423. */
 export function bypassesLock(path: string): boolean {
+  if (TOKENS.test(path)) return false
   return path === '/health' || path.startsWith('/health/') || path === '/api/auth' || path.startsWith('/api/auth/')
 }
 
@@ -86,6 +90,8 @@ export function requiredRole(method: string, path: string): Role | null {
   if (p === '/api/auth/sign-out') return null
   if (p === '/api/auth/reconfirm') return 'viewer'
   if (p === '/api/auth/lock') return 'admin'
+  // API tokens: listing them is admin too (names, roles, who made them).
+  if (TOKENS.test(p)) return 'admin'
 
   if (m === 'GET' || m === 'HEAD') {
     // Interactive shells on guests and nodes.
@@ -110,5 +116,7 @@ export function needsReconfirm(method: string, path: string): boolean {
   if (m === 'DELETE' && DESTROY.test(p)) return true
   if (m === 'POST' && p === '/api/secrets/reveal') return true
   if (m !== 'GET' && m !== 'HEAD' && ROLE_MGMT.test(p)) return true
+  // Creating or revoking an API token.
+  if ((m === 'POST' || m === 'DELETE') && TOKENS.test(p)) return true
   return false
 }

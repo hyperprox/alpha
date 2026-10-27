@@ -3,6 +3,10 @@
 #   hyperprox status   is the vault up, is HyperProx locked or unlocked
 #   hyperprox lock     lock HyperProx now: wipes decrypted secrets from memory and ends every session;
 #                      prints the outcome, exit 0 when HyperProx is locked afterwards (or already was)
+#   hyperprox token create <name> [--role viewer|operator|admin] [--expires-days N]
+#   hyperprox token list | revoke <name|id>
+#                      API tokens for automation; writes the database directly, works while locked.
+#                      create prints the token once on stdout (messages go to stderr)
 # Talks only to localhost; run it as root on the HyperProx machine.
 set -u
 
@@ -84,10 +88,29 @@ cmd_lock() {
   esac
 }
 
+# API tokens. Root on this machine already owns HyperProx, so this goes to the database directly (no
+# session, works while locked). The work is in apps/api/dist/cli/api-token.js, built by deploy.sh.
+cmd_token() {
+  local js="${HYPERPROX_DIR}/apps/api/dist/cli/api-token.js" db
+  if [[ ! -r "$ENV_FILE" ]]; then
+    echo "token:  cannot read ${ENV_FILE} - run it as root on the HyperProx machine" >&2; return 1
+  fi
+  if [[ ! -f "$js" ]]; then
+    echo "token:  ${js} is missing - this install predates API tokens; update HyperProx first" >&2; return 1
+  fi
+  db="${DATABASE_URL:-$(envval DATABASE_URL)}"
+  if [[ -z "$db" ]]; then
+    echo "token:  DATABASE_URL is not in ${ENV_FILE}" >&2; return 1
+  fi
+  DATABASE_URL="$db" node "$js" "$@"
+}
+
+USAGE="usage: hyperprox {status|lock|token}"
 case "${1:-}" in
   status) cmd_status ;;
   lock)   cmd_lock ;;
-  -h|--help|help) echo "usage: hyperprox {status|lock}" ;;
-  "")     echo "usage: hyperprox {status|lock}" >&2; exit 2 ;;
-  *)      echo "hyperprox: unknown command '$1' (try: status, lock)" >&2; exit 2 ;;
+  token)  shift; cmd_token "$@" ;;
+  -h|--help|help) echo "$USAGE" ;;
+  "")     echo "$USAGE" >&2; exit 2 ;;
+  *)      echo "hyperprox: unknown command '$1' (try: status, lock, token)" >&2; exit 2 ;;
 esac

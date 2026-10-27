@@ -5,6 +5,7 @@ import Fastify, { type FastifyInstance } from 'fastify'
 import { registerGate } from '../../src/lib/gate'
 import { authRoutes } from '../../src/routes/auth'
 import { secretsRoutes } from '../../src/routes/secrets'
+import { apiTokenRoutes } from '../../src/routes/api-tokens'
 import { healthRoute } from '../../src/routes/health'
 import { setBroker, type VaultBroker } from '../../src/lib/vault/broker'
 import { lock, isUnlocked } from '../../src/lib/vault/state'
@@ -24,6 +25,7 @@ export async function buildTestApp(broker?: VaultBroker): Promise<FastifyInstanc
   await registerGate(app)
   await app.register(authRoutes,    { prefix: '/api/auth' })
   await app.register(secretsRoutes, { prefix: '/api/secrets' })
+  await app.register(apiTokenRoutes, { prefix: '/api/auth/tokens' })
   await app.register(healthRoute,   { prefix: '/health' })
 
   await app.register(async (f) => {
@@ -37,6 +39,21 @@ export async function buildTestApp(broker?: VaultBroker): Promise<FastifyInstanc
     f.get('/probe', async () => ({ value: await getCredential('dns', 'godaddy', 'api_key') }))
     f.put('/probe', async (req: any) => { await setCredential('dns', 'godaddy', 'api_key', req.body.value, false); return { ok: true } })
   }, { prefix: '/api/test' })
+
+  // Stand-ins for routes the API-token tests aim at (paths as registered in index.ts).
+  await app.register(async (f) => {
+    f.post('/domains/:domain/records', async (req: any) => ({ success: true, data: req.params }))
+  }, { prefix: '/api/dns' })
+  await app.register(async (f) => {
+    f.post('/vms/:node/:vmid/:type/vnc', async () => ({ success: true, data: { ticket: 'x' } }))
+  }, { prefix: '/api/infra' })
+  await app.register(async (f) => {
+    f.get('/hosts', async () => ({ success: true, data: [] }))
+  }, { prefix: '/api/terminal' })
+  await app.register(async (f) => {
+    f.get('/', async () => ({ ok: true }))
+    f.get('/terminal/term', async () => ({ ok: true }))
+  }, { prefix: '/ws' })
 
   await app.ready()
   return app
