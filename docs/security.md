@@ -66,6 +66,35 @@ hyperprox lock     # lock now: wipe memory, end all sessions
 
 Both talk to localhost only and are meant to run as root on the HyperProx machine.
 
+## API tokens
+
+For scripts and coding agents that drive HyperProx without a browser (issuing certificates, DNS records,
+proxy hosts). Make one in **Settings, API tokens** (owner or admin; asks for your master password), or as root
+on the HyperProx machine:
+
+```bash
+hyperprox token create ci-deploy --role admin --expires-days 90   # prints the token once, on stdout
+hyperprox token list
+hyperprox token revoke ci-deploy                                  # by name or id
+```
+
+Send it as `Authorization: Bearer hpx_...`. It is shown once; HyperProx stores only its SHA-256.
+
+- **It stops working while HyperProx is locked** (HTTP 423, like everything else), and its requests do not
+  reset the auto-lock timer: only people keep HyperProx unlocked. Someone has to sign in first.
+- **It has a role** (viewer, operator or admin; never owner) and the role table above applies to it unchanged.
+- **It can never** read or send secrets (`/api/secrets`), use the Deck terminal or its saved logins
+  (`/api/terminal`), open a WebSocket (`/ws`, including terminals and live status) or a guest console, sign
+  in, out or lock, or make, list or revoke tokens (HTTP 403 `token_forbidden`). Anything that asks for the
+  master password again (destroying a guest, revealing a secret, changing roles) answers 403
+  `reconfirm_required`: a token has no master password.
+- **Saving to the vault** (for example, changing a provider credential in Settings) is done through the most
+  recently active signed-in session. With nobody signed in, such a write fails as locked.
+- **Audit.** Creating and revoking a token, and every request with a token that changes something, are
+  written to the audit log with the token's name. The token itself is never logged.
+- **Revoking** takes effect at once from Settings; from `hyperprox token revoke`, within 10 seconds. A revoked
+  token keeps its name, so pick a new name for its replacement. A bad, revoked or expired token gets 401.
+
 ## Not built yet
 
 These are designed ([design](superpowers/specs/2026-10-14-vault-gate-design.md)) but are **not** in this
