@@ -247,10 +247,16 @@ export default function SettingsPage() {
         <h1 className="font-display font-bold mt-2" style={{ fontSize: 36, lineHeight: 1.1, color: 'var(--text-bright)' }}>
           Settings
         </h1>
-        <Link href="/settings/secrets" className="mt-3 inline-block rounded-md border px-3 py-1.5 text-sm font-medium"
-              style={{ borderColor: 'var(--border-strong)', color: 'var(--accent)' }}>
-          Secrets &rarr;
-        </Link>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Link href="/settings/secrets" className="inline-block rounded-md border px-3 py-1.5 text-sm font-medium"
+                style={{ borderColor: 'var(--border-strong)', color: 'var(--accent)' }}>
+            Secrets &rarr;
+          </Link>
+          <Link href="/settings/api-tokens" className="inline-block rounded-md border px-3 py-1.5 text-sm font-medium"
+                style={{ borderColor: 'var(--border-strong)', color: 'var(--accent)' }}>
+            API tokens &rarr;
+          </Link>
+        </div>
       </div>
 
       {/* Category tabs */}
