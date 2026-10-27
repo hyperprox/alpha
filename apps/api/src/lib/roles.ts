@@ -24,9 +24,15 @@ export function hasRole(actual: Role, required: Role): boolean {
   return (RANK[actual] ?? -1) >= RANK[required]
 }
 
-/** Strip the query string and any trailing slash (except on "/"). */
+/**
+ * Strip the query string and any trailing slash (except on "/"), and decode the
+ * path the way the router does before it matches a route (decodeURI: %2F and the
+ * other reserved characters stay encoded). Without the decode, /api/secrets/%72eveal
+ * reached the reveal handler while every check here saw a path it did not know.
+ */
 export function normalisePath(url: string): string {
   let p = url.split('?')[0].split('#')[0]
+  try { p = decodeURI(p) } catch { /* malformed: the router refuses it too */ }
   if (p.length > 1 && p.endsWith('/')) p = p.slice(0, -1)
   return p
 }
