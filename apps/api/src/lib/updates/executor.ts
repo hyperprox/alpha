@@ -67,6 +67,8 @@ export interface UpdatesExecutor {
   snapshot(guest: GuestRef, name: string): Promise<void>
   listSnapshots(guest: GuestRef): Promise<{ name: string; snaptime?: number }[]>
   deleteSnapshot(guest: GuestRef, name: string): Promise<void>
+  /** Roll back to a snapshot and start the guest again. Only on a person's request (see runner.rollbackGuest). */
+  rollbackSnapshot(guest: GuestRef, name: string): Promise<void>
 
   // -- time, so tests do not wait ----------------------------------------------------
   now(): number
@@ -257,6 +259,13 @@ export function productionExecutor(pve: ProxmoxClient = livePve()): UpdatesExecu
     async deleteSnapshot(g, name) {
       const upid = await pve.fetchStrict<string>(`/nodes/${encodeURIComponent(g.node)}/${g.type}/${g.vmid}/snapshot/${encodeURIComponent(name)}`, 'DELETE', undefined, 60_000)
       if (typeof upid === 'string' && upid.startsWith('UPID:')) await waitForTask(pve, g.node, upid, 10 * 60_000)
+    },
+
+    async rollbackSnapshot(g, name) {
+      const upid = await pve.fetchStrict<string>(`/nodes/${encodeURIComponent(g.node)}/${g.type}/${g.vmid}/snapshot/${encodeURIComponent(name)}/rollback`, 'POST',
+        new URLSearchParams({ start: '1' }).toString(), 60_000)
+      if (typeof upid !== 'string' || !upid.startsWith('UPID:')) throw new Error('Proxmox refused the rollback')
+      await waitForTask(pve, g.node, upid, 15 * 60_000)
     },
 
     now: () => Date.now(),

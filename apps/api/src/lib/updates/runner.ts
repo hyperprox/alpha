@@ -34,6 +34,7 @@ import {
   parseNodeFacts, tail, type NodeFacts,
 } from './commands'
 import { handoffNodeOf, handoffTag, readHandoff, selfGuestScript, selfNodeRebootScript, startHandoff } from './handoff'
+import { type AppEnv, APPROVAL_ID, runAppStep } from './apps'
 import { ActiveJobError, TERMINAL, jobView, stepView, type JobRecord, type StepRecord, type UpdatesStore } from './store'
 import type { UpdatesJobStatus } from './types'
 
@@ -83,6 +84,8 @@ export interface RunnerDeps {
   log?:       (msg: string) => void
   hostname?:  string
   timing?:    Partial<RunnerTiming>
+  /** App-update providers. Without it, no app is looked for or planned. */
+  apps?:      AppEnv
 }
 
 type Outcome =
@@ -90,7 +93,7 @@ type Outcome =
   | { status: 'failed'; reason: string; output?: string; fatal?: boolean }
 
 /** Steps that belong to the guest phase. */
-const GUEST_ACTIONS: UpdatesStepAction[] = ['snapshot', 'apt', 'docker', 'check']
+const GUEST_ACTIONS: UpdatesStepAction[] = ['snapshot', 'apt', 'docker', 'app-config', 'app', 'check']
 const isGuestStep = (s: StepRecord) => GUEST_ACTIONS.includes(s.action)
 const PRE_STEPS = 2   // preflight, refresh
 
@@ -134,7 +137,12 @@ export class UpdatesRunner {
   //  Public operations
   // ===========================================================================
 
-  async start(mode: 'run' | 'dry-run', trigger: 'manual' | 'schedule' = 'manual', actor?: string, scope: 'all' | 'guests' = 'all'): Promise<JobRecord> {
+  async start(mode: 'run' | 'dry-run', trigger: 'manual' | 'schedule' = 'manual', actor?: string, scope: 'all' | 'guests' = 'all',
+              approvals: string[] = []): Promise<JobRecord> {
+    // A scheduled run has nobody to approve anything: only `auto` apps go in.
+    if (trigger === 'schedule') approvals = []
+    const bad = approvals.filter(a => !APPROVAL_ID.test(a))
+    if (bad.length || approvals.length > 200) throw new JobStateError(`Not an app approval id: ${bad.slice(0, 3).join(', ') || 'too many'}`)
     const load = this.deps.loadPolicy()
     if (mode === 'run' && !load.loaded) throw new PolicyRequiredError(load.error)
     if (mode === 'run') {
@@ -147,9 +155,9 @@ export class UpdatesRunner {
       status: 'running',
       plan: { steps: [], warnings: [] },
     })
-    await this.store.audit(`updates.job.${mode === 'dry-run' ? 'dry-run' : 'start'}`, job.id, { trigger, scope, by: actor ?? 'scheduler' })
+    await this.store.audit(`updates.job.${mode === 'dry-run' ? 'dry-run' : 'start'}`, job.id, { trigger, scope, by: actor ?? 'scheduler', ...(approvals.length ? { approvals } : {}) })
     await this.emitJob(job)
-    this.drive(job.id, () => this.prepare(job.id, mode, trigger, scope))
+    this.drive(job.id, () => this.prepare(job.id, mode, trigger, scope, approvals))
     return job
   }
 
@@ -265,7 +273,8 @@ export class UpdatesRunner {
 
   // The scope only shapes the plan: a run executes the steps stored with it, so a guests-only run stays
   // guests-only through a pause, a resume or a restart.
-  private async prepare(jobId: string, mode: 'run' | 'dry-run', trigger: 'manual' | 'schedule', scope: 'all' | 'guests' = 'all'): Promise<void> {
+  private async prepare(jobId: string, mode: 'run' | 'dry-run', trigger: 'manual' | 'schedule', scope: 'all' | 'guests' = 'all', approvals: string[] = []): Promise<void> {
+    const appPlan = { approvals, appProviders: this.deps.apps?.providers.map(r => r.provider.id) }
     const load = this.deps.loadPolicy()
     const policy = load.policy
     const policyNote = load.loaded ? undefined : `${load.error ?? 'No policy file'} — this plan uses the built-in safe defaults.`
@@ -284,7 +293,7 @@ export class UpdatesRunner {
     if (mode === 'dry-run') {
       // A dry run reads what is already known and executes nothing — not even `apt update`.
       const inv = box.inv ?? await this.inventory(policy).catch(() => null)
-      const plan = inv ? buildPlan(inv.inventory, policy, { selfVmid: this.selfVmid(inv, policy), policyNote, scope }) : { steps: [], warnings: ['Inventory could not be read'] }
+      const plan = inv ? buildPlan(inv.inventory, policy, { selfVmid: this.selfVmid(inv, policy), policyNote, scope, ...appPlan }) : { steps: [], warnings: ['Inventory could not be read'] }
       await this.setJob(jobId, { plan })
       const verdict = pre.status === 'ok' ? 'preflight passed' : `preflight would stop the run: ${pre.reason}`
       await this.finish(jobId, 'done', undefined, {
@@ -323,7 +332,7 @@ export class UpdatesRunner {
     if (ref.status !== 'ok') return void await this.finish(jobId, 'failed', `Refreshing package lists failed: ${ref.reason}`)
     if (this.cancelRequested.has(jobId)) return this.cancelNow(jobId)
 
-    const plan = buildPlan(box.inv!.inventory, policy, { selfVmid: this.selfVmid(box.inv!, policy), scope })
+    const plan = buildPlan(box.inv!.inventory, policy, { selfVmid: this.selfVmid(box.inv!, policy), scope, ...appPlan })
     await this.store.addSteps(jobId, plan.steps.map(s => ({ ...s, seq: s.seq + PRE_STEPS })))
     if (trigger === 'manual') {
       await this.transition(jobId, ['running'], { plan, status: 'awaiting-confirm' })
@@ -405,7 +414,8 @@ export class UpdatesRunner {
   }
 
   private async runGuest(jobId: string, target: string, steps: StepRecord[], guest: GuestListing | undefined, policy: Policy): Promise<void> {
-    let snapshot: string | null = null
+    // On a Resume the snapshot step already ran; its name is what a failed app step offers to roll back to.
+    let snapshot: string | null = await this.snapshotOf(jobId, target)
     for (const step of steps.sort((a, b) => a.seq - b.seq)) {
       if (this.cancelRequested.has(jobId)) return
       if (!guest) { await this.setStep(step, { status: 'failed', reason: `guest ${target} is no longer in the cluster` }); return this.skipRest(steps, step) }
@@ -425,6 +435,11 @@ export class UpdatesRunner {
             const r = await this.exec.guestExec(guest, guestDockerScript(guestPolicy(policy, guest.vmid).composeDirs), log, 30 * 60_000)
             return r.code === 0 ? { status: 'ok', output: tail(r.output) } : { status: 'failed', reason: `containers not healthy${snapshot ? ` (snapshot ${snapshot})` : ''}`, output: tail(r.output) }
           }
+          case 'app':
+          case 'app-config': {
+            if (!this.deps.apps) return { status: 'failed', reason: 'app updates are not available in this HyperProx' }
+            return runAppStep(this.deps.apps, this.exec, guest, step.action, step.detail, snapshot, log)
+          }
           case 'check': {
             const url = guestPolicy(policy, guest.vmid).check ?? step.detail ?? ''
             const r = await this.exec.guestExec(guest, guestCheckScript(url), log, 60_000)
@@ -436,6 +451,51 @@ export class UpdatesRunner {
       if (out.status === 'failed') return this.skipRest(steps, step)
     }
     if (guest && snapshot) await this.pruneSnapshots(guest)
+  }
+
+  /** The hp-upd-* snapshot this job took of `target`, if it took one. */
+  private async snapshotOf(jobId: string, target: string): Promise<string | null> {
+    const s = (await this.store.getSteps(jobId)).find(x => x.target === target && x.action === 'snapshot' && x.status === 'ok')
+    const m = /snapshot (hp-upd-[0-9]{12})/.exec(s?.output ?? '')
+    return m ? m[1] : null
+  }
+
+  /**
+   * Roll a guest back to the snapshot this job took, after one of its app steps failed. Only on a
+   * person's request, only while the job is paused, and never for an HA-managed guest (HA owns its
+   * state; the step's reason says how to do it by hand). The failed step is then marked skipped,
+   * so Resume carries on with the rest of the run instead of updating the guest again.
+   */
+  async rollbackGuest(id: string, target: string, actor?: string): Promise<JobRecord> {
+    const job = await this.mustGet(id)
+    if (job.status !== 'paused') throw new JobStateError(`Job ${id} is ${job.status}; a rollback is offered only while it is paused`)
+    const steps = await this.store.getSteps(id)
+    const failed = steps.find(s => s.target === target && (s.action === 'app' || s.action === 'app-config') && s.status === 'failed')
+    if (!failed) throw new JobStateError(`No failed app step for ${target} in job ${id}`)
+    const snap = await this.snapshotOf(id, target)
+    if (!snap) throw new JobStateError(`Job ${id} took no snapshot of ${target}; roll it back by hand as the step describes`)
+    const guest = (await this.guestMap()).get(Number(target))
+    if (!guest) throw new JobStateError(`No guest ${target}`)
+    const sid = `${guest.type === 'lxc' ? 'ct' : 'vm'}:${guest.vmid}`
+    if ((await this.exec.haResources()).includes(sid)) {
+      throw new JobStateError(`${target} is HA-managed, so HyperProx will not roll it back: run \`ha-manager set ${sid} --state stopped\`, roll back to ${snap} in Proxmox, then \`ha-manager set ${sid} --state started\``)
+    }
+    const claimed = await this.transition(id, ['paused'], { status: 'running', pauseReason: `rolling ${target} back to ${snap}` })
+    if (!claimed) throw new JobStateError(`Job ${id} is no longer paused`)
+    await this.store.audit('updates.app.rollback', id, { target, snapshot: snap, by: actor })
+    this.drive(id, async () => {
+      try {
+        await this.exec.rollbackSnapshot(guest, snap)
+        await this.setStep(failed, { status: 'skipped', reason: `rolled back to ${snap} by ${actor ?? 'an admin'}: everything this run did to ${target} is undone` })
+        for (const s of steps.filter(x => x.target === target && x.status === 'skipped' && x.reason === AFTER_GUEST_FAILURE)) {
+          await this.setStep(s, { reason: `not run: ${target} was rolled back to ${snap}` })
+        }
+        await this.transition(id, ['running'], { status: 'paused', pauseReason: `${target} was rolled back to ${snap}. Press Resume to continue the run, or Cancel.` })
+      } catch (e: any) {
+        await this.transition(id, ['running'], { status: 'paused', pauseReason: `Rolling ${target} back to ${snap} failed: ${e.message}. Check the guest in Proxmox.` })
+      }
+    })
+    return claimed
   }
 
   /** After a guest updated cleanly, keep only its newest hp-upd-* snapshot. Other snapshots are never touched. */
@@ -858,8 +918,8 @@ export class UpdatesRunner {
   private async buildReport(jobId: string, status: string, reason?: string): Promise<UpdatesReport> {
     const steps = await this.store.getSteps(jobId)
     const changed = new Map<string, number>()
-    for (const s of steps.filter(x => x.status === 'ok' && ['apt', 'node-upgrade', 'self', 'ceph'].includes(x.action))) {
-      const n = Number(/\((\d+) package/.exec(s.detail ?? '')?.[1] ?? 0)
+    for (const s of steps.filter(x => x.status === 'ok' && ['apt', 'node-upgrade', 'self', 'ceph', 'app'].includes(x.action))) {
+      const n = s.action === 'app' ? 1 : Number(/\((\d+) package/.exec(s.detail ?? '')?.[1] ?? 0)
       if (s.action === 'self' && detailKey(s) !== DETAIL.selfGuest) continue
       changed.set(s.target, (changed.get(s.target) ?? 0) + n)
     }
@@ -936,7 +996,7 @@ export class UpdatesRunner {
   }
 
   private async inventory(policy: Policy): Promise<InventoryResult> {
-    const r = await readInventory(this.exec, policy, { rebootPending: this.rebootPending, hostname: this.deps.hostname })
+    const r = await readInventory(this.exec, policy, { rebootPending: this.rebootPending, hostname: this.deps.hostname, apps: this.deps.apps })
     this.deps.onInventory?.(r)
     return r
   }
