@@ -1,7 +1,8 @@
 # Updates
 
 HyperProx can bring a whole Proxmox cluster up to date — nodes, containers, VMs and,
-where you allow it, Docker images — one step at a time, and stop the moment something
+where you allow it, Docker images and apps installed some other way (npm, for one) —
+one step at a time, and stop the moment something
 is not right. This page is for the operator: what a run does, the policy file, and
 what happens when something fails. The design behind it is in
 `docs/superpowers/specs/2026-10-06-updates-design.md`.
@@ -45,6 +46,7 @@ Docker image is pulled. (The design's example file uses `dist-upgrade` and
    with bind-mounted storage cannot be snapshotted; the step says so) →
    `apt-get upgrade` keeping your config files, then `autoremove` → for `docker: auto`,
    `docker compose pull` and `up -d`, then every container running and not unhealthy →
+   approved app config changes, then app updates (see [Apps](#apps-installed-outside-apt-and-docker)) →
    the configured `check` URL, fetched from inside the guest → for VMs with
    `reboot: if-required`, a reboot when the guest asks for one. When a guest finishes
    cleanly, its older `hp-upd-*` snapshots are deleted and the newest is kept; snapshots
@@ -104,6 +106,10 @@ running, awaiting confirmation or paused answers `409` with the id of the active
 | `self.node_order` | `last` | HyperProx's node goes last. |
 | `self.vmid` | detected | HyperProx's own container. |
 | `notify.webhook_url` | none | Receives `{"content": "<summary>"}`, at most 1900 characters. |
+| `apps.enabled` | `true` | Look for apps that plug-in providers know (read-only). `false`: no app is looked for, listed or updated. |
+| `apps.default` | `manual` | Mode for every app not named below: `manual` (only when approved for a run), `auto` (every run, scheduled ones included) or `off` (listed, never updated). |
+| `apps.<app id>` | | Mode for one app, by its provider id, e.g. `apps.meshcentral: auto`. An id no installed plug-in provides is named in the plan's warnings. |
+| `guests.<vmid>.apps` | `true` | `false`: do not look for apps in this guest. |
 
 Unknown keys fail the load with the path of the bad key (`nodes.gpu-node.requre_pin:
 unknown key`), so a typo cannot quietly switch off a safeguard. A policy that fails to
@@ -111,6 +117,99 @@ load is reported on the page and treated like no policy at all.
 
 Not managed, and listed so their absence is visible: excluded guests, stopped guests,
 Windows VMs, VMs without the QEMU guest agent, and guests without `apt`.
+
+## Apps installed outside apt and docker
+
+apt and docker only see what they installed. An app installed with `npm install` into a
+directory and run by a systemd unit — MeshCentral is the usual example — looks current to
+both while it sits a year behind, security releases included. Plug-ins can contribute an
+**app-update provider** that finds such an app in a guest and updates it; the Updates
+feature treats it as a third kind of update, with the same run order, snapshot, gates,
+policy excludes, dry run and one-job-at-a-time lock as apt and docker. Bundled today:
+**MeshCentral**.
+
+**What the Updates page shows.** An **Apps** panel lists every install a provider found:
+guest, app, installed → latest version, a red **security update** badge when the update is
+one, the mode (`auto`, `manual`, `off`), and a **pre-flight** badge when something would
+go wrong. *Details* shows how it is installed and run (directory, owner, systemd unit), the
+release notes for every version since the installed one, any pre-flight issue with the
+exact config change offered for it, and how to undo the update. An update waiting for
+approval also appears in the plan's warnings, marked **SECURITY UPDATE** when it is one.
+
+**Approving.** In the default `manual` mode an app update is planned only when you tick
+*approve* for it. The approval names one install, in one guest, to one version
+(`app:<vmid>:<app>:<install>@<version>`); it travels with the run you start, is written to
+the audit log, and is shown in the plan (`approved`). If the version or install has changed
+by the time the plan is built, it matches nothing and the plan says so. Scheduled runs carry
+no approvals: they apply `auto` apps only. Dry runs take approvals too and execute nothing.
+
+**Security flag.** An update is a security update when an advisory affects the installed
+version and not the latest (npm's advisory database, and the project's GitHub security
+advisories where the provider names the repository), or when the release notes in between
+say so (security, vulnerability, CVE, exploit and the like). The line that decided it is
+shown with the badge.
+
+**Pre-flight and config changes.** A provider checks, read-only, what would go wrong before
+anything changes. A *blocking* issue keeps the update out of the plan — even in `auto`
+mode — until it is resolved. When the provider can resolve it, it offers the exact config
+change, word for word, with its own approval (`fix:...`): approve that too and it runs as a
+separate **App config change** step before the update, after checking the file is still the
+one you approved (otherwise it refuses and asks again). It is written as the file's owner,
+never as root into a directory the app's user can write, and the previous file is kept
+beside it as `<name>.hp-bak-XXXXXX`. Config is never changed as a side effect of an update, and never
+without that approval.
+
+**How an npm app is updated** (the shared npm-app helper, `lib/app-updates/npm-app.ts`):
+
+1. the guest's snapshot is taken (the guest phase's usual first step);
+2. its systemd unit is **stopped**, and the step waits until it is — an app that restarts
+   itself while npm is still installing crashes on the first request that needs a
+   half-installed module;
+3. `npm install <package>@<exact version>` runs **as the user that owns the install** and is
+   waited for; the pin style in `package.json` is kept;
+4. `npm ls` must resolve cleanly at that version (missing or invalid modules fail it);
+5. the unit is started;
+6. the provider's **verify** runs — a real functional check, not a health endpoint.
+
+Only installs that a **system unit file** declares are updated, by their real (symlink-free)
+path, with the node binary that unit's `ExecStart` names. A process alone never makes an
+install updatable — any user can start one, and a cron job runs inside `cron.service` —
+so one started by hand, from cron or by a user service is listed with the reason. npm
+runs as the install's owner, and HyperProx refuses when that is not the user the unit runs
+as. node and npm are resolved once and run by their real paths; as root, only when they and
+every directory above them are root-owned and writable by nobody else. The approval id
+covers the install's real path, unit, owner and node binary, so if any of them changes
+before the run, the approval matches nothing.
+
+**When it fails.** The step fails with the provider's reason and its rollback, naming the
+snapshot; **nothing is rolled back on its own**, and a service that failed mid-install is
+left stopped rather than started half-installed. The job pauses like any guest failure.
+On the failed step, **Roll back** restores the guest to the snapshot this run took and starts
+it again — only on your request, only while the job is paused, and never for an HA-managed
+guest (the step says how to do it through `ha-manager`). The step is then marked rolled
+back, and Resume carries on with the rest of the run without updating that guest again.
+Rolling back undoes everything the run did to the guest, apt packages included.
+
+**MeshCentral specifics.** Found by its systemd unit and process command line
+(`node …/node_modules/meshcentral`), `meshcentral-data/config.json` and `package.json`.
+Config keys are read case-insensitively, as MeshCentral does; `config.json` is read from
+`--datapath` when the unit passes one. Its files are read as the unit's user, never through
+a link. From 1.2.1 MeshCentral refuses
+browser sessions whose Origin hostname is not the certificate name, the domain's `dns` or in
+`allowedOrigin`; behind a reverse proxy on another hostname every sign-in then fails with
+"Invalid origin in HTTP request" while `/health.ashx` still says "ok". So the pre-flight
+replays that check for the public hostnames and, if one would be refused, offers
+`domains[""].allowedOrigin` with the public hostnames and the certificate name (once the
+list exists, MeshCentral checks only the list), keeping every entry already there. A
+hostname served by a named domain (its `dns`) is judged by that domain and gets no
+automatic fix. Verify then: the installed version is the
+planned one; the unit is active on one pid with no npm still running behind it; the login
+page loads through the **public URL**; `control.ashx` opens as a websocket with that
+URL's Origin and does not answer `invalidorigin`; the service is still up on the same pid
+afterwards; and `mesherrors.txt` gained nothing since the update started. The public URL is
+the plug-in's `public_url` setting, or else the proxy hosts HyperProx manages that forward to
+the guest's MeshCentral port (matched against the addresses the guest reports for itself, so
+set `public_url` where that matters). The page check follows redirects on the same host only.
 
 ## When something fails
 
@@ -129,6 +228,9 @@ Windows VMs, VMs without the QEMU guest agent, and guests without `apt`.
 | HyperProx restarts mid-job | On start, the job is paused ("HyperProx restarted mid-job") — never resumed on its own. A step that was running is marked failed ("interrupted by a HyperProx restart"), so an interrupted guest still holds back the node phase; Resume retries it (every step is safe to run twice). A self-handoff keeps running on its node; its result is collected rather than the step being restarted. |
 | Resume or Confirm pressed twice, or Confirm racing Cancel | Status changes are conditional in the database: exactly one wins, the other gets a 409. |
 | Cancel | Stops after the step in progress. A job that is paused or awaiting confirmation is cancelled at once. |
+| An app update or its check fails | The step fails with the reason, the snapshot and how to undo it; nothing is rolled back on its own, and a service stopped for a failed install stays stopped. The job pauses. **Roll back** on the step restores the snapshot (not for HA guests). |
+| An app's pre-flight finds a blocking issue | The update is not planned; the plan says why. If it was planned and the issue appears by execution time, the step fails before anything changes. |
+| An approved config change no longer matches the file | Nothing is written; the step fails and asks for a fresh approval. |
 
 A scheduled run that falls while HyperProx is locked is skipped and logged: the Proxmox
 token and node logins live in the vault, so a locked HyperProx has nothing to run with.
@@ -141,3 +243,7 @@ Node and guest commands go through the node logins already stored for the Termin
 used for, from deploying guests to upgrading hosts, which is why the feature is
 admin-only and audited. The self-handoff reboot relies on Proxmox cluster nodes reaching
 each other as root over SSH, which a standard cluster already does.
+
+App-update providers run their scripts in guests through the same path (as root, the script
+on stdin), and read release metadata from the npm registry and the GitHub API anonymously.
+They never see a credential: settings reach them through `option()`, which returns no secret.

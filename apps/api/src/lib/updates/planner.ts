@@ -10,9 +10,11 @@
 //  keyword the runner keys on (see DETAIL below); the rest is for people.
 // =============================================================================
 
-import type { UpdatesInventory, UpdatesNode, UpdatesPlan, UpdatesStep } from './types'
-import { type Policy, guestPolicy, nodePolicy } from './policy'
+import type { UpdatesGuest, UpdatesInventory, UpdatesNode, UpdatesPlan, UpdatesStep } from './types'
+import { type Policy, guestPolicy, nodePolicy, unknownAppProviders } from './policy'
 import { isCephPackage } from './commands'
+import { appStepDetail } from './apps'
+import { compareVersions, isVersion } from '../app-updates/versions'
 
 export type PlanStep = Omit<UpdatesStep, 'id' | 'status'>
 
@@ -37,6 +39,44 @@ export interface PlanContext {
   policyNote?: string
   /** `guests`: plan the guests and nothing else. Default `all`. */
   scope?: 'all' | 'guests'
+  /** App updates and config fixes a person approved for this run, by approval id. */
+  approvals?: Iterable<string>
+  /** Ids of the app providers installed, so a policy naming another one is reported. */
+  appProviders?: string[]
+}
+
+type AppPlanStep = { action: 'app' | 'app-config'; detail: string }
+
+/**
+ * App steps for one guest: approved config fixes first, then updates that are `auto` or
+ * approved and have no unresolved blocking issue. Everything else becomes a warning, so an
+ * update waiting on a person — a security one above all — is never silent.
+ */
+function planApps(g: UpdatesGuest, approvals: Set<string>, used: Set<string>, warnings: string[]): AppPlanStep[] {
+  const out: AppPlanStep[] = []
+  for (const a of g.apps ?? []) {
+    const label = `${g.vmid} (${g.name}): ${a.name}`
+    const sec = a.isSecurity ? ' — SECURITY UPDATE' : ''
+    for (const i of a.issues) {
+      if (!i.fix || !approvals.has(i.fix.id)) continue
+      used.add(i.fix.id)
+      out.push({ action: 'app-config', detail: appStepDetail(a.provider, i.fix.id.split(':').pop()!, a.key, i.fix.description) })
+    }
+    const newer = isVersion(a.latest) && isVersion(a.installed) && compareVersions(a.latest, a.installed) > 0
+    if (!newer) continue
+    if (a.mode === 'off') { warnings.push(`${label} ${a.installed} → ${a.latest}${sec} is available; not planned (apps.${a.provider}: off)`); continue }
+    if (!a.approvalId) continue
+    const approved = approvals.has(a.approvalId)
+    if (approved) used.add(a.approvalId)
+    if (a.mode !== 'auto' && !approved) { warnings.push(`${label} ${a.installed} → ${a.latest}${sec} waits for approval (manual)`); continue }
+    const open = a.issues.filter(i => i.blocking && !(i.fix && approvals.has(i.fix.id)))
+    if (open.length) {
+      warnings.push(`${label} ${a.installed} → ${a.latest}${sec} not planned: ${open.map(i => i.message + (i.fix ? ' (approve the offered config change, or fix it by hand)' : '')).join('; ')}`)
+      continue
+    }
+    out.push({ action: 'app', detail: appStepDetail(a.provider, a.latest!, a.key, `${a.name} ${a.installed} → ${a.latest}${a.isSecurity ? ' (security)' : ''}`) })
+  }
+  return out
 }
 
 /** Node order: `first` nodes, then the rest, then `last` nodes, each alphabetical; HyperProx's node at the very end. */
@@ -65,21 +105,31 @@ export function buildPlan(inv: UpdatesInventory, policy: Policy, ctx: PlanContex
     steps.push({ seq: steps.length + 1, target, action, detail })
 
   // --- Guests ---------------------------------------------------------------------
+  const approvals = new Set(ctx.approvals ?? [])
+  const usedApprovals = new Set<string>()
+  if (ctx.appProviders) {
+    const unknown = unknownAppProviders(policy, ctx.appProviders)
+    if (unknown.length) warnings.push(`The policy names app${unknown.length > 1 ? 's' : ''} no plug-in provides: ${unknown.map(u => `apps.${u}`).join(', ')}`)
+  }
   let selfGuestWork = 0
   for (const g of [...inv.guests].sort((a, b) => a.vmid - b.vmid)) {
-    if (!g.managed) {
+    // A guest without apt can still hold an app a provider updates.
+    const appOnly = !g.managed && g.unmanagedReason === 'no-apt' && Boolean(g.apps?.length)
+    if (!g.managed && !appOnly) {
       if (g.error && g.unmanagedReason !== 'excluded') warnings.push(`${g.vmid} (${g.name}): not read — ${g.error}`)
       continue
     }
     const pol = guestPolicy(policy, g.vmid)
     if (g.keptBack?.length) warnings.push(`${g.vmid} (${g.name}): held or kept back, a run will not install: ${g.keptBack.join(', ')}`)
-    const aptWork = pol.apt && g.pending.length > 0
+    const appSteps = g.vmid === ctx.selfVmid ? [] : planApps(g, approvals, usedApprovals, warnings)
+    if (g.vmid === ctx.selfVmid && g.apps?.some(a => a.approvalId)) warnings.push(`${g.vmid} is HyperProx itself: apps inside it are not updated by a run`)
+    const aptWork = g.managed && pol.apt && g.pending.length > 0
     const dockerWork = pol.docker === 'auto' && pol.composeDirs.length > 0
     if (pol.docker === 'manual') {
       const stale = (g.dockerImages ?? []).filter(i => i.latest && i.latest !== i.current)
       if (stale.length) warnings.push(`${g.vmid} (${g.name}): new images available, not pulled (docker: manual): ${stale.map(i => i.image).join(', ')}`)
     }
-    if (!aptWork && !dockerWork) continue
+    if (!aptWork && !dockerWork && !appSteps.length) continue
 
     const t = String(g.vmid)
     if (g.vmid === ctx.selfVmid) {
@@ -98,7 +148,11 @@ export function buildPlan(inv: UpdatesInventory, policy: Policy, ctx: PlanContex
       add(t, 'apt', `apt-get upgrade (${g.pending.length} package${g.pending.length === 1 ? '' : 's'})${reboot}`)
     }
     if (dockerWork) add(t, 'docker', `compose pull + up in ${pol.composeDirs.join(', ')}`)
+    for (const a of appSteps) add(t, a.action, a.detail)
     if (pol.check) add(t, 'check', pol.check)
+  }
+  for (const id of approvals) {
+    if (!usedApprovals.has(id)) warnings.push(`Approval ${id} matches nothing planned now: the version, the install or the config it named has changed. Approve again from the current inventory.`)
   }
 
   // --- Nodes: what can be planned at all -----------------------------------------------
@@ -151,5 +205,7 @@ export function buildPlan(inv: UpdatesInventory, policy: Policy, ctx: PlanContex
 
   if (guestsOnly) warnings.push('Guests only: nodes and Ceph are left exactly as they are.')
   if (!steps.length) warnings.push('Nothing to do: every managed machine is current.')
-  return { steps, warnings, scope: guestsOnly ? 'guests' : 'all' }
+  const plan: UpdatesPlan = { steps, warnings, scope: guestsOnly ? 'guests' : 'all' }
+  if (usedApprovals.size) plan.approved = [...usedApprovals].sort()
+  return plan
 }

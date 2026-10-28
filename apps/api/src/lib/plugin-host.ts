@@ -160,6 +160,151 @@ export interface Plugin {
    * fifteen-second-old number.
    */
   bandwidth?(ctx: PluginContext): Promise<PluginLink[]>
+  /**
+   * Apps this plug-in knows how to find and update inside guests: things
+   * installed with npm under a home directory, a tarball in /opt, anything apt
+   * and docker cannot see. See AppUpdateProvider. The Updates feature asks
+   * every provider of every bundled plug-in.
+   */
+  appUpdates?: AppUpdateProvider[]
+}
+
+// ---------------------------------------------------------------------------
+//  App-update providers
+//
+//  The one place a plug-in is given more than a brokered HTTP call. A provider
+//  runs shell scripts as ROOT inside the guest the host hands it — it has to,
+//  to stop a service and install a package — so a provider is trusted the way
+//  HyperProx itself is trusted, and only bundled plug-ins are asked for one.
+//
+//  What the boundary still holds:
+//    - the host chooses the guest; a provider cannot name another one, and
+//      cannot reach a node shell, the Proxmox API or the credential store;
+//    - settings arrive through option(), which never returns a secret;
+//    - the provider never decides WHEN it runs: the Updates planner does, from
+//      the policy and a person's approval, with a snapshot taken first;
+//    - a config change is a separate fix with its own approval id, so an
+//      update can never edit configuration as a side effect.
+//
+//  Everything a guest returns is untrusted text: a provider must validate
+//  versions, names and paths before they go back into a script, and quote them.
+// ---------------------------------------------------------------------------
+
+export interface AppGuestRef { vmid: number; name: string; node: string; type: 'lxc' | 'qemu' }
+
+/** One installation a provider found. */
+export interface AppInstall {
+  /** Stable id of this install within the guest (the same directory gives the same key). */
+  key:       string
+  name:      string
+  installed: string
+  location:  string
+  /** The user that owns the install; package commands run as this user, never as root unless it is root. */
+  runAs:     string
+  /** The systemd unit that runs it. Without one a provider must refuse to update: it cannot be stopped first. */
+  service:   string | null
+  running:   boolean
+  how:       string
+  /** The provider's own facts, carried from detect() to its other calls. */
+  facts:     Record<string, unknown>
+}
+
+export interface AppReleaseNote { version: string; url?: string; text: string }
+
+export interface AppRelease {
+  /** Newest stable version, or null when it could not be read. */
+  latest:        string | null
+  /** Notes for the versions after the installed one, newest first. */
+  notes:         AppReleaseNote[]
+  isSecurity:    boolean
+  securityNote?: string
+}
+
+/** A configuration change, shown to a person word for word and applied only when approved by `id`. */
+export interface AppFix { id: string; description: string; file: string; change: string }
+
+export interface AppIssue {
+  message:  string
+  /** Blocking: the update is not planned until this is resolved, by hand or by approving `fix`. */
+  blocking: boolean
+  fix?:     AppFix
+}
+
+export interface AppStepResult { ok: boolean; message: string; output?: string }
+
+export interface AppHttpResult { status: number; headers: Record<string, string>; body: string }
+
+export interface AppWsProbe {
+  /** The server answered 101 Switching Protocols. */
+  upgraded:     boolean
+  status:       number
+  /** The first text frame, or a close frame's reason. */
+  firstMessage: string | null
+  error?:       string
+}
+
+/** What the host hands a provider for one guest. */
+export interface AppContext {
+  guest: AppGuestRef
+  /** Run a script as root inside THIS guest. The script travels on stdin, never on a command line. */
+  run(script: string, opts?: { timeoutMs?: number }): Promise<{ code: number; output: string; timedOut: boolean }>
+  /** One of the plug-in's own non-secret settings. */
+  option(key: string): string | undefined
+  /** Public release metadata (the npm registry, the GitHub API): https only, cached, JSON. A body makes it a POST. */
+  fetchJson(url: string, body?: unknown): Promise<any>
+  /** A request from HyperProx itself — used to load a public URL the way a browser would. */
+  http(url: string, opts?: { headers?: Record<string, string>; timeoutMs?: number; insecureTLS?: boolean }): Promise<AppHttpResult>
+  /** Open a websocket from HyperProx, read the first message, and close it. */
+  wsProbe(url: string, opts?: { origin?: string; timeoutMs?: number; insecureTLS?: boolean }): Promise<AppWsProbe>
+  /** Public URLs of the proxy hosts HyperProx manages that forward to this guest (on one of `ports`, when given). */
+  proxiedUrls(ports?: number[]): Promise<string[]>
+  log(line: string): void
+  now(): number
+  sleep(ms: number): Promise<void>
+}
+
+export interface AppUpdateProvider {
+  /** Unique across plug-ins; the policy names apps by it (`apps.<id>`). */
+  id:   string
+  name: string
+  /** Read-only: every install of this app in the guest. */
+  detect(ctx: AppContext): Promise<AppInstall[]>
+  /** The newest version, release notes since `install.installed`, and whether it is a security update. */
+  latest(install: AppInstall, ctx: AppContext): Promise<AppRelease>
+  /** Read-only: what would go wrong updating to `target` (null: nothing to update, check the install as it is). */
+  preflight(install: AppInstall, target: string | null, ctx: AppContext): Promise<AppIssue[]>
+  /** Read-only: state verify() compares against (a log's size, say). Taken just before apply(). */
+  baseline?(install: AppInstall, ctx: AppContext): Promise<unknown>
+  /** Install exactly `version`. Must stop the service before changing anything and start it after. */
+  apply(install: AppInstall, version: string, ctx: AppContext): Promise<AppStepResult>
+  /** A real functional check, not a health endpoint that answers "ok" regardless. */
+  verify(install: AppInstall, version: string, ctx: AppContext, baseline: unknown): Promise<AppStepResult>
+  /** Apply the fix whose id is `fixId`, recomputed now; refuse when it no longer matches. */
+  applyFix?(install: AppInstall, fixId: string, ctx: AppContext): Promise<AppStepResult>
+  /** How to undo an update, in words a person can follow. */
+  rollback(install: AppInstall, snapshot: string | null): string
+}
+
+export interface RegisteredAppProvider { pluginId: string; provider: AppUpdateProvider }
+
+/** Every provider of these plug-ins. Two providers with one id would make the policy ambiguous: refused. */
+export function appUpdateProviders(plugins: Plugin[]): RegisteredAppProvider[] {
+  const out: RegisteredAppProvider[] = []
+  for (const p of plugins) {
+    for (const provider of p.appUpdates ?? []) {
+      if (!/^[a-z0-9][a-z0-9-]{0,40}$/.test(provider.id)) throw new Error(`${p.manifest.name}: app provider id "${provider.id}" is not a plain lowercase id`)
+      if (out.some(o => o.provider.id === provider.id)) throw new Error(`two plug-ins declare an app provider "${provider.id}"`)
+      out.push({ pluginId: p.manifest.id, provider })
+    }
+  }
+  return out
+}
+
+/** A plug-in's settings as option() may return them: declared, and not secret. */
+export function pluginOptions(manifest: PluginManifest, stored: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const s of manifest.settings) if (s.type !== 'secret' && stored[s.key]) out[s.key] = stored[s.key]
+  return out
 }
 
 /**

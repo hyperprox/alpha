@@ -21,6 +21,7 @@ import { buildPlan } from '../lib/updates/planner'
 import { UpdatesRunner, PolicyRequiredError, JobStateError, type RunnerTiming } from '../lib/updates/runner'
 import { UpdatesScheduler } from '../lib/updates/scheduler'
 import { ActiveJobError, PrismaStore, jobView, type UpdatesStore } from '../lib/updates/store'
+import { APPROVAL_ID, productionAppEnv, type AppEnv } from '../lib/updates/apps'
 
 export interface UpdatesRouteDeps {
   store?:      UpdatesStore
@@ -31,6 +32,8 @@ export interface UpdatesRouteDeps {
   /** Tests turn these off; production wants both. */
   scheduler?:  boolean
   recover?:    boolean
+  /** App-update providers. Default: the bundled plug-ins' — but only with the production executor. */
+  apps?:       AppEnv
   /** Exposes the runner so tests can wait for a job to settle. */
   onRunner?:   (runner: UpdatesRunner) => void
 }
@@ -83,11 +86,19 @@ function sendError(reply: FastifyReply, e: any) {
   return reply.status(503).send({ error: e?.message ?? String(e) })
 }
 
+/** Approval ids from a query string; null when any is malformed. */
+function approvalsFrom(raw: string | undefined): string[] | null {
+  const list = (raw ?? '').split(',').map(s => s.trim()).filter(Boolean)
+  return list.length <= 200 && list.every(a => APPROVAL_ID.test(a)) ? list : null
+}
+
 export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAsync {
   return async (fastify) => {
     const store  = deps.store ?? new PrismaStore((fastify as any).prisma)
     const exec   = deps.exec ?? productionExecutor()
     const loadPolicy = deps.loadPolicy ?? (() => loadPolicyFile())
+    const apps   = deps.apps ?? (deps.exec ? undefined : productionAppEnv())
+    const appProviders = apps?.providers.map(r => r.provider.id)
     let cached: UpdatesInventory | null = null
     // The page asks for the inventory and the plan at once; both share one read of the cluster.
     let reading: Promise<UpdatesInventory> | null = null
@@ -99,6 +110,7 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       log: msg => fastify.log.info(msg),
       hostname: deps.hostname,
       timing: deps.timing,
+      apps,
     })
     deps.onRunner?.(runner)
 
@@ -122,7 +134,7 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       // send a second round of reads into guests mid-upgrade.
       if (cached && await store.activeJob()) return cached
       if (!reading) {
-        reading = readInventory(exec, loadPolicy().policy, { rebootPending: runner.rebootPending, hostname: deps.hostname })
+        reading = readInventory(exec, loadPolicy().policy, { rebootPending: runner.rebootPending, hostname: deps.hostname, apps })
           .then(r => { cached = r.inventory; return r.inventory })
           .finally(() => { reading = null })
       }
@@ -137,11 +149,15 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       catch (e) { return sendError(reply, e) }
     })
 
-    fastify.get<{ Querystring: { scope?: string } }>('/plan', async (req, reply) => {
+    // `approve` (comma separated approval ids) previews the plan a run with those approvals would get.
+    fastify.get<{ Querystring: { scope?: string; approve?: string } }>('/plan', async (req, reply) => {
+      const approvals = approvalsFrom(req.query.approve)
+      if (!approvals) return reply.status(400).send({ error: 'approve must be a comma-separated list of approval ids from the inventory' })
       try {
         const load = loadPolicy()
         const inv = await inventory(false)
         return buildPlan(inv, load.policy, {
+          approvals, appProviders,
           scope: req.query.scope === 'guests' ? 'guests' : 'all',
           selfVmid: selfVmidOf(inv, load.policy, deps.hostname),
           policyNote: load.loaded ? undefined : `${load.error ?? 'No policy file'} — this plan uses the built-in safe defaults.`,
@@ -149,13 +165,17 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       } catch (e) { return sendError(reply, e) }
     })
 
-    fastify.post<{ Body: { mode?: string; scope?: string } }>('/jobs', async (req, reply) => {
+    fastify.post<{ Body: { mode?: string; scope?: string; approve?: unknown } }>('/jobs', async (req, reply) => {
       const mode = req.body?.mode
       if (mode !== 'run' && mode !== 'dry-run') return reply.status(400).send({ error: "mode must be 'run' or 'dry-run'" })
       const scope = req.body?.scope ?? 'all'
       if (scope !== 'all' && scope !== 'guests') return reply.status(400).send({ error: "scope must be 'all' or 'guests'" })
+      const approve = req.body?.approve ?? []
+      if (!Array.isArray(approve) || approve.length > 200 || !approve.every(a => typeof a === 'string' && APPROVAL_ID.test(a))) {
+        return reply.status(400).send({ error: 'approve must be a list of approval ids from the inventory' })
+      }
       try {
-        const job = await runner.start(mode, 'manual', req.session?.email, scope)
+        const job = await runner.start(mode, 'manual', req.session?.email, scope, approve as string[])
         return reply.status(201).send({ job: jobView(job, await store.getSteps(job.id)) })
       } catch (e) { return sendError(reply, e) }
     })
@@ -179,6 +199,16 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
         } catch (e) { return sendError(reply, e) }
       })
     }
+
+    // Roll a guest back to the snapshot this job took, after one of its app steps failed. Paused jobs only.
+    fastify.post<{ Params: { id: string }; Body: { target?: unknown } }>('/jobs/:id/rollback', async (req, reply) => {
+      const target = req.body?.target
+      if (typeof target !== 'string' || !/^\d{1,9}$/.test(target)) return reply.status(400).send({ error: 'target must be a guest id' })
+      try {
+        const job = await runner.rollbackGuest(req.params.id, target, req.session?.email)
+        return reply.status(202).send({ job: jobView(job, await store.getSteps(job.id)) })
+      } catch (e) { return sendError(reply, e) }
+    })
 
     fastify.post<{ Params: { node: string } }>('/nodes/:node/reboot', async (req, reply) => {
       try {

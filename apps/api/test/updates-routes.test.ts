@@ -50,7 +50,7 @@ after(async () => { if (isUnlocked()) await lock('manual'); await app.close() })
 const READS = ['/api/updates/policy', '/api/updates/inventory', '/api/updates/plan', '/api/updates/jobs', '/api/updates/jobs/x']
 const WRITES: Array<[string, any]> = [
   ['/api/updates/jobs', { mode: 'dry-run' }], ['/api/updates/jobs/x/confirm', {}], ['/api/updates/jobs/x/resume', {}],
-  ['/api/updates/jobs/x/cancel', {}], ['/api/updates/nodes/node-a/reboot', {}],
+  ['/api/updates/jobs/x/cancel', {}], ['/api/updates/nodes/node-a/reboot', {}], ['/api/updates/jobs/x/rollback', { target: '101' }],
 ]
 
 test('locked: 423; no session: 401', async () => {
@@ -136,6 +136,22 @@ test('per-node reboot: 202, unknown node 404', async () => {
   await runner.idle()
   const j = await app.inject({ method: 'GET', url: `/api/updates/jobs/${r.json().job.id}`, headers: { cookie } })
   assert.equal(j.json().job.status, 'done')
+})
+
+test('app approvals and rollback: malformed input is 400 before anything runs; rollback of an unknown job is 404', async () => {
+  const { cookie } = await signIn(app, 'admin@example.com', 'admin master password')
+  const post = (url: string, payload: unknown) => app.inject({ method: 'POST', url, headers: { cookie }, payload: payload as any })
+  for (const approve of ['app:101:x:abcdef@1.0.0', ['app:101:demo:abcdef@1.0.0;reboot'], [42], Array(201).fill('app:101:demo:abcdef@1.0.0')]) {
+    const r = await post('/api/updates/jobs', { mode: 'dry-run', approve })
+    assert.equal(r.statusCode, 400, JSON.stringify(approve).slice(0, 80))
+  }
+  const plan = await app.inject({ method: 'GET', url: '/api/updates/plan?approve=' + encodeURIComponent('fix:101:demo:abcdef:zz'), headers: { cookie } })
+  assert.equal(plan.statusCode, 400)
+  const okPlan = await app.inject({ method: 'GET', url: '/api/updates/plan?approve=' + encodeURIComponent('app:101:demo:abcdef@1.0.0+b1'), headers: { cookie } })
+  assert.equal(okPlan.statusCode, 200)
+  assert.ok(okPlan.json().warnings.some((w: string) => /matches nothing planned now/.test(w)))
+  assert.equal((await post('/api/updates/jobs/x/rollback', { target: '../101' })).statusCode, 400)
+  assert.equal((await post('/api/updates/jobs/nope/rollback', { target: '101' })).statusCode, 404)
 })
 
 const closed = (ws: any, ms = 2000) => new Promise<boolean>(res => {

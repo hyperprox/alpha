@@ -74,6 +74,8 @@ export class FakeCluster implements UpdatesExecutor {
   slowShutdownThenDeadMs: number | null = null
   bootIds = new Map<string, number>()
   snapshots = new Map<number, { name: string; snaptime: number }[]>()
+  /** Answers for tagged scripts (`# fake:<tag>` on the first line), by tag. */
+  scripted = new Map<string, (script: string) => ExecResult>()
   concurrentGuests = 0
   maxConcurrentGuests = 0
 
@@ -213,7 +215,8 @@ export class FakeCluster implements UpdatesExecutor {
   async guestExec(g: GuestRef, script: string, onLine?: LineSink): Promise<ExecResult> {
     const fg = this.guests.find(x => x.vmid === g.vmid)!
     const tag = script === GUEST_PENDING_SCRIPT ? 'pending' : script === GUEST_UPGRADE_SCRIPT ? 'apt' : script === GUEST_REFRESH_SCRIPT ? 'refresh'
-      : /docker compose pull/.test(script) ? 'docker' : /check answered/.test(script) ? 'check' : script === 'true' ? 'ping' : 'other'
+      : /docker compose pull/.test(script) ? 'docker' : /check answered/.test(script) ? 'check' : script === 'true' ? 'ping'
+      : /^# fake:(\S+)/.exec(script)?.[1] ?? 'other'
     this.calls.push({ where: String(g.vmid), cmd: `guest:${tag}`, t: this.t })
     const r = this.inject(String(g.vmid), `guest:${tag}`)
     if (r instanceof Error) throw r
@@ -222,6 +225,7 @@ export class FakeCluster implements UpdatesExecutor {
       if (fg.noApt) return ok('HP_NO_APT')
       return ok(fg.pending.map(p => `${p.name}/stable ${p.to} amd64 [upgradable from: ${p.from}]`).join('\n'))
     }
+    if (this.scripted.has(tag)) return this.scripted.get(tag)!(script)
     if (tag === 'apt') {
       this.concurrentGuests++
       this.maxConcurrentGuests = Math.max(this.maxConcurrentGuests, this.concurrentGuests)
@@ -250,6 +254,12 @@ export class FakeCluster implements UpdatesExecutor {
   async deleteSnapshot(g: GuestRef, name: string) {
     this.calls.push({ where: String(g.vmid), cmd: `delete-snapshot ${name}`, t: this.t })
     this.snapshots.set(g.vmid, (this.snapshots.get(g.vmid) ?? []).filter(s => s.name !== name))
+  }
+
+  async rollbackSnapshot(g: GuestRef, name: string) {
+    this.calls.push({ where: String(g.vmid), cmd: `rollback ${name}`, t: this.t })
+    const r = this.inject(String(g.vmid), 'rollback')
+    if (r instanceof Error) throw r
   }
 
   now() { return this.t }

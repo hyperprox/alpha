@@ -16,6 +16,7 @@ import {
   GUEST_PENDING_SCRIPT, NODE_FACTS_COMMAND, guestDockerImagesScript, isCephPackage, isKernelPackage,
   parseDockerImages, parseGuestPending, parseNodeFacts, type NodeFacts,
 } from './commands'
+import { type AppEnv, readGuestApps } from './apps'
 
 export interface InventoryOptions {
   /** Nodes whose reboot an earlier run deferred. */
@@ -24,6 +25,8 @@ export interface InventoryOptions {
   hostname?: string
   /** Longest one node or one guest may take before its row reports it and the read moves on. */
   itemDeadlineMs?: number
+  /** App-update providers. Without it, no app is looked for. */
+  apps?: AppEnv
 }
 
 const ITEM_DEADLINE_MS = 4 * 60_000
@@ -87,7 +90,16 @@ async function readNode(exec: UpdatesExecutor, policy: Policy, node: { name: str
   return { node: out, facts }
 }
 
-async function readGuest(exec: UpdatesExecutor, policy: Policy, g: GuestListing, haSids: Set<string>): Promise<UpdatesGuest> {
+async function readApps(apps: AppEnv | undefined, exec: UpdatesExecutor, policy: Policy, g: GuestListing, out: UpdatesGuest): Promise<void> {
+  if (!apps || !apps.providers.length || !policy.apps.enabled || !guestPolicy(policy, g.vmid).apps) return
+  try {
+    const r = await readGuestApps(apps, exec, policy, g, out.snapshotCapable)
+    if (r.apps.length) out.apps = r.apps
+    if (r.errors.length) out.error = [out.error, `apps: ${r.errors.join('; ')}`].filter(Boolean).join('; ')
+  } catch (e: any) { out.error = [out.error, `apps: ${e.message}`].filter(Boolean).join('; ') }
+}
+
+async function readGuest(exec: UpdatesExecutor, policy: Policy, g: GuestListing, haSids: Set<string>, apps?: AppEnv): Promise<UpdatesGuest> {
   const pol = guestPolicy(policy, g.vmid)
   const out: UpdatesGuest = {
     vmid: g.vmid, type: g.type, name: g.name, node: g.node, running: g.running,
@@ -114,7 +126,8 @@ async function readGuest(exec: UpdatesExecutor, policy: Policy, g: GuestListing,
     const r = await exec.guestExec(g, GUEST_PENDING_SCRIPT, undefined, 120_000)
     if (r.code !== 0 && g.type === 'qemu') { out.unmanagedReason = 'no-agent'; out.error = r.output.slice(0, 300); return out }
     const parsed = parseGuestPending(r.output)
-    if (parsed.noApt) { out.unmanagedReason = 'no-apt'; return out }
+    // No apt, but an app a provider manages may still be there.
+    if (parsed.noApt) { out.unmanagedReason = 'no-apt'; await readApps(apps, exec, policy, g, out); return out }
     out.pending = parsed.pending
     if (parsed.keptBack.length) out.keptBack = parsed.keptBack
     out.rebootRequired = parsed.rebootRequired
@@ -130,6 +143,7 @@ async function readGuest(exec: UpdatesExecutor, policy: Policy, g: GuestListing,
       out.dockerImages = parseDockerImages(r.output)
     } catch (e: any) { out.error = `docker images: ${e.message}` }
   }
+  await readApps(apps, exec, policy, g, out)
   return out
 }
 
@@ -182,10 +196,10 @@ export async function readInventory(exec: UpdatesExecutor, policy: Policy, opts:
   const onlineNodes = new Set(status.nodes.filter(n => n.online).map(n => n.name))
   const guestRows = await inBatches(guests.sort((a, b) => a.vmid - b.vmid), 6, async g => {
     if (!onlineNodes.has(g.node)) {
-      const row = await readGuest(exec, policy, { ...g, running: false }, haSet)
+      const row = await readGuest(exec, policy, { ...g, running: false }, haSet, opts.apps)
       return { ...row, error: 'its node is offline' }
     }
-    return withDeadline(readGuest(exec, policy, g, haSet), limit, () => unansweredGuest(policy, g, haSet, lateNote))
+    return withDeadline(readGuest(exec, policy, g, haSet, opts.apps), limit, () => unansweredGuest(policy, g, haSet, lateNote))
   })
 
   return {
