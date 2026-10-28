@@ -48,7 +48,11 @@ const guestSchema = z.object({
   reboot:       z.enum(['never', 'if-required']).optional(),
   compose_dirs: z.array(z.string().startsWith('/')).optional(),
   check:        z.string().url().optional(),
+  apps:         z.boolean().optional(),
 }).strict()
+
+const appModeSchema = z.enum(['auto', 'manual', 'off'])
+const APP_ID = /^[a-z0-9][a-z0-9-]{0,40}$/
 
 const fileSchema = z.object({
   schedule: z.object({
@@ -74,6 +78,8 @@ const fileSchema = z.object({
   notify: z.object({
     webhook_url: z.string().url().optional(),
   }).strict().optional(),
+  // Keys are `enabled`, `default` or an app provider id, so the shape is checked by hand below.
+  apps: z.record(z.unknown()).optional(),
 }).strict()
 
 // --- Resolved policy -------------------------------------------------------------
@@ -92,6 +98,18 @@ export interface GuestPolicy {
   reboot:      'never' | 'if-required'
   composeDirs: string[]
   check?:      string
+  /** Look for apps (plug-in app-update providers) in this guest. */
+  apps:        boolean
+}
+
+export type AppMode = 'auto' | 'manual' | 'off'
+
+export interface AppsPolicy {
+  /** Detect and report apps at all. */
+  enabled:   boolean
+  /** Mode for any provider not named: `manual` unless the file says otherwise. */
+  default:   AppMode
+  providers: Record<string, AppMode>
 }
 
 export interface Policy {
@@ -107,10 +125,11 @@ export interface Policy {
   minRootFreeMb:   number
   selfVmid?:       number
   webhookUrl?:     string
+  apps:            AppsPolicy
 }
 
 export const SAFE_NODE_DEFAULT: NodePolicy = { upgrade: 'upgrade', reboot: 'manual', requireHolds: [] }
-export const SAFE_GUEST_DEFAULT: GuestPolicy = { apt: true, docker: 'none', reboot: 'never', composeDirs: [] }
+export const SAFE_GUEST_DEFAULT: GuestPolicy = { apt: true, docker: 'none', reboot: 'never', composeDirs: [], apps: true }
 
 export function defaultPolicy(): Policy {
   return {
@@ -124,6 +143,8 @@ export function defaultPolicy(): Policy {
     exclude: [],
     batchSize: 3,
     minRootFreeMb: 1024,
+    // Finding apps and reporting them is read-only; applying one needs `auto` or a person's approval.
+    apps: { enabled: true, default: 'manual', providers: {} },
   }
 }
 
@@ -152,6 +173,7 @@ function guestFrom(raw: z.infer<typeof guestSchema>): Partial<GuestPolicy> {
   if (raw.reboot)       out.reboot = raw.reboot
   if (raw.compose_dirs) out.composeDirs = raw.compose_dirs
   if (raw.check)        out.check = raw.check
+  if (raw.apps !== undefined) out.apps = raw.apps
   return out
 }
 
@@ -212,6 +234,18 @@ export function parsePolicy(text: string): Policy {
     if (key === 'default') p.guestDefault = { ...p.guestDefault, ...guestFrom(g.data) }
     else p.guests[key] = guestFrom(g.data)
   }
+  for (const [key, raw] of Object.entries(f.apps ?? {})) {
+    if (key === 'enabled') {
+      if (typeof raw === 'boolean') p.apps.enabled = raw
+      else problems.push('apps.enabled: expected true or false')
+      continue
+    }
+    if (key !== 'default' && !APP_ID.test(key)) { problems.push(`apps.${key}: unknown key (expected enabled, default or an app id such as meshcentral)`); continue }
+    const m = appModeSchema.safeParse(raw)
+    if (!m.success) { problems.push(`apps.${key}: expected auto, manual or off`); continue }
+    if (key === 'default') p.apps.default = m.data
+    else p.apps.providers[key] = m.data
+  }
   for (const [key, g] of Object.entries(p.guests)) {
     if (g.docker === 'auto' && !(g.composeDirs ?? p.guestDefault.composeDirs).length) {
       problems.push(`guests.${key}.compose_dirs: docker: auto needs at least one compose directory`)
@@ -266,6 +300,16 @@ export function guestPolicy(p: Policy, vmid: number): GuestPolicy & { excluded: 
     composeDirs: own.composeDirs ?? p.guestDefault.composeDirs,
     excluded: p.exclude.includes(vmid),
   }
+}
+
+/** How a run treats updates from this app provider. */
+export function appMode(p: Policy, providerId: string): AppMode {
+  return p.apps.providers[providerId] ?? p.apps.default
+}
+
+/** Provider ids the policy names that no installed plug-in provides: a typo there must not pass quietly. */
+export function unknownAppProviders(p: Policy, known: string[]): string[] {
+  return Object.keys(p.apps.providers).filter(id => !known.includes(id)).sort()
 }
 
 export function policyStatus(load: PolicyLoad, now = new Date()): UpdatesPolicyStatus {
