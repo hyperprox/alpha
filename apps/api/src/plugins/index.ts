@@ -9,6 +9,7 @@
 import type { Plugin } from '../lib/plugin-host'
 import { arrstackPlugin } from './arrstack'
 import { homeAssistantPlugin } from './home-assistant'
+import { meshcentralPlugin } from './meshcentral'
 import { mikrotikPlugin } from './mikrotik'
 import { plexPlugin }     from './plex'
 import { unmanicPlugin }  from './unmanic'
@@ -19,6 +20,7 @@ export const PLUGINS: Plugin[] = [
   plexPlugin,
   unmanicPlugin,
   mikrotikPlugin,
+  meshcentralPlugin,
 ]
 
 export function findPlugin(id: string): Plugin | undefined {
