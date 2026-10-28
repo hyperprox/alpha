@@ -40,6 +40,8 @@ export interface NpmInstall {
   spec:      string | null
   /** The spec pins one exact version (no ^ or ~). */
   exact:     boolean
+  /** Where package.json lists it; null when it does not. */
+  section:   'dependencies' | 'optionalDependencies' | 'devDependencies' | null
   /** Owner of `dir`: who npm runs as. */
   owner:     string
   /** System unit running it, or null (then HyperProx will not update it). */
@@ -47,7 +49,7 @@ export interface NpmInstall {
   unitUser:  string | null
   active:    boolean
   mainPid:   number | null
-  /** The node binary the unit or process uses; may be a bare `node`. */
+  /** The node binary the unit's ExecStart names (never a process's argv); may be a bare `node`. */
   nodeBin:   string | null
   /** The process's command line, for people. */
   command:   string
@@ -57,9 +59,12 @@ export interface NpmInstall {
 
 const b64 = (s: string) => Buffer.from(s, 'base64').toString('utf8')
 
-/** Stable id of an install: the same directory always gives the same key. */
-export function installKey(dir: string): string {
-  return createHash('sha256').update(dir).digest('hex').slice(0, 12)
+/**
+ * Id of an install: its real directory, unit, owner and node binary. An approval names this key,
+ * so if any of what a person reviewed changes before the run, the approval matches nothing.
+ */
+export function installKey(i: Pick<NpmInstall, 'dir' | 'unit' | 'owner' | 'nodeBin' | 'unitUser'>): string {
+  return createHash('sha256').update(JSON.stringify([i.dir, i.unit, i.owner, i.unitUser, i.nodeBin])).digest('hex').slice(0, 12)
 }
 
 // --- Detection --------------------------------------------------------------------
@@ -129,7 +134,9 @@ function execArgv(execStart: string): string {
 
 export function parseNpmDiscover(output: string, pkg: string): Candidate[] {
   const byDir = new Map<string, Candidate>()
-  for (const line of output.split('\n')) {
+  // Unit files first, so a process merges into the install its unit declares.
+  const lines = output.split('\n').sort((a, b) => Number(b.trim().startsWith('HP_UNIT ')) - Number(a.trim().startsWith('HP_UNIT ')))
+  for (const line of lines) {
     const t = line.trim()
     let m = /^HP_UNIT (\S+) (\S*)$/.exec(t)
     if (m) {
@@ -152,18 +159,21 @@ export function parseNpmDiscover(output: string, pkg: string): Candidate[] {
       const user = b64(m[2]), cwd = b64(m[3]), cgroup = b64(m[4]), args = b64(m[5]).trim()
       const dir = dirFromArgs(args, pkg, cwd || null)
       if (!dir) continue
-      // Only a process in a SYSTEM service counts as run by a unit; a user unit or a shell does not.
+      // A process only confirms a unit file's install; it never makes one updatable on its own. Being in
+      // some system.slice service proves nothing (cron jobs run inside cron.service), and its argv —
+      // directory and node binary alike — is whatever the user who started it chose.
       const unit = /(?:^|\n)\d+:(?:name=systemd)?:\/system\.slice\/([^/\s]+\.service)[ \t]*(?=\n|$)/.exec(cgroup)?.[1] ?? null
       const known = byDir.get(dir)
       if (known) {
-        known.active = known.active || Boolean(unit && unit === known.unit)
-        if (!known.mainPid && unit === known.unit) known.mainPid = Number(m[1])
-        known.procUser = known.procUser ?? user
+        if (known.unit && unit === known.unit) {
+          known.active = true
+          if (!known.mainPid) known.mainPid = Number(m[1])
+        }
         continue
       }
       byDir.set(dir, {
-        dir, unit: unit && isUnitName(unit) ? unit : null, unitUser: null, active: Boolean(unit),
-        mainPid: Number(m[1]), nodeBin: firstToken(args), command: args, procUser: user || null,
+        dir, unit: null, unitUser: null, active: false,
+        mainPid: Number(m[1]), nodeBin: null, command: args, procUser: user || null,
       })
     }
   }
@@ -191,6 +201,7 @@ export function npmFactsScript(dir: string, pkg: string, extra: Record<string, s
     `d=${shq(dir)}`,
     'f() { p="$d/$2"; if [ -f "$p" ] && [ ! -L "$p" ] && [ "$(stat -c %s "$p")" -le ' + MAX_FILE + ' ]; then echo "HP_FILE $1 $(base64 -w0 < "$p")"; else echo "HP_FILE $1 -"; fi; }',
     '[ -d "$d" ] || { echo HP_NO_DIR; exit 0; }',
+    'echo "HP_REAL $(readlink -f -- "$d" | base64 -w0)"',
     'echo "HP_OWNER $(stat -c %U "$d" | base64 -w0)"',
   ]
   for (const [name, rel] of Object.entries(files)) {
@@ -200,23 +211,32 @@ export function npmFactsScript(dir: string, pkg: string, extra: Record<string, s
   return lines.join('\n')
 }
 
-export function parseNpmFacts(output: string): { exists: boolean; owner: string | null; files: Record<string, string | null> } {
+export function parseNpmFacts(output: string): { exists: boolean; owner: string | null; real: string | null; files: Record<string, string | null> } {
   const files: Record<string, string | null> = {}
-  let owner: string | null = null
+  let owner: string | null = null, real: string | null = null
   for (const line of output.split('\n')) {
     const t = line.trim()
-    if (t === 'HP_NO_DIR') return { exists: false, owner: null, files }
-    let m = /^HP_OWNER (\S+)$/.exec(t)
+    if (t === 'HP_NO_DIR') return { exists: false, owner: null, real: null, files }
+    let m = /^HP_REAL (\S+)$/.exec(t)
+    if (m) { real = b64(m[1]).trim() || null; continue }
+    m = /^HP_OWNER (\S+)$/.exec(t)
     if (m) { owner = b64(m[1]).trim() || null; continue }
     m = /^HP_FILE ([a-z][a-z0-9_-]*) (\S+)$/.exec(t)
     if (m) files[m[1]] = m[2] === '-' ? null : b64(m[2])
   }
-  return { exists: true, owner, files }
+  return { exists: true, owner, real, files }
 }
 
 function readJson(text: string | null | undefined): any {
   if (!text) return null
   try { return JSON.parse(text) } catch { return null }
+}
+
+function sectionOf(pkgJson: any, pkg: string): NpmInstall['section'] {
+  for (const k of ['dependencies', 'optionalDependencies', 'devDependencies'] as const) {
+    if (typeof pkgJson?.[k]?.[pkg] === 'string') return k
+  }
+  return null
 }
 
 /** The package's dependency spec in package.json, looked up in every dependency section. */
@@ -243,13 +263,18 @@ export async function detectNpmInstalls(ctx: AppContext, pkg: string, extraFiles
     if (r.code !== 0) continue
     const facts = parseNpmFacts(r.output)
     if (!facts.exists) continue
+    // Keyed and updated by its real path, never by a path that runs through a symlink.
+    if (!facts.real || !isSafeAbsPath(facts.real)) continue
+    const dir = facts.real
     const installed = readJson(facts.files.installed)?.version
     if (!isVersion(installed)) continue
     const owner = facts.owner && isUserName(facts.owner) ? facts.owner : null
     if (!owner) continue
-    const spec = specOf(readJson(facts.files.package), pkg)
+    const pj = readJson(facts.files.package)
+    const spec = specOf(pj, pkg)
     out.push({
-      dir: c.dir, pkg, installed, spec, exact: spec !== null && isVersion(spec.replace(/^=/, '')),
+      dir, pkg, installed, spec, exact: spec !== null && isVersion(spec.replace(/^=/, '')),
+      section: sectionOf(pj, pkg),
       owner, unit: c.unit, unitUser: c.unitUser ?? c.procUser, active: c.active, mainPid: c.mainPid,
       nodeBin: c.nodeBin, command: c.command,
       files: Object.fromEntries(Object.keys(extraFiles).map(k => [k, facts.files[k] ?? null])),
@@ -268,8 +293,10 @@ export function describeNpmInstall(i: NpmInstall): string {
 /** Why HyperProx will not update this install, or null when it can. */
 export function npmUpdateBlocker(i: NpmInstall): string | null {
   if (!i.unit) return 'it is not run by a system service, so it cannot be stopped before updating — run it from a systemd unit'
-  if (i.unitUser && i.unitUser !== i.owner && i.owner !== 'root') {
-    return `the unit runs as ${i.unitUser} but ${i.dir} is owned by ${i.owner}; npm would install as a different user than runs the app`
+  // Also when root owns the directory: an app user that can write node_modules at run time could plant
+  // install scripts that a root npm would then run.
+  if ((i.unitUser ?? 'root') !== i.owner) {
+    return `the unit runs as ${i.unitUser ?? 'root'} but ${i.dir} is owned by ${i.owner}; npm would install as a different user than runs the app`
   }
   return null
 }
@@ -394,7 +421,10 @@ export function npmApplyScript(i: NpmInstall, version: string): string {
   if (!isUserName(i.owner)) throw new Error(`unsafe user name: ${i.owner}`)
   if (!i.unit || !isUnitName(i.unit)) throw new Error('no system unit to stop first')
   if (i.nodeBin !== null && !(isSafeAbsPath(i.nodeBin) || /^node(js)?$/.test(i.nodeBin))) throw new Error(`unsafe node path: ${i.nodeBin}`)
-  const save = i.exact || i.spec === null ? '--save-exact' : '--save'
+  // package.json keeps its shape: the same section and pin style; an unlisted package stays unlisted.
+  const save = i.section === null ? '--no-save'
+    : `${i.section === 'devDependencies' ? '--save-dev' : i.section === 'optionalDependencies' ? '--save-optional' : '--save'}${i.exact ? ' --save-exact' : ''}`
+  const omitDev = i.section === 'devDependencies' ? '' : ' --omit=dev'
   return [
     'set -u',
     `dir=${shq(i.dir)}; pkg=${shq(i.pkg)}; ver=${shq(version)}; unit=${shq(i.unit)}; owner=${shq(i.owner)}; nodebin=${shq(i.nodeBin ?? 'node')}`,
@@ -402,14 +432,19 @@ export function npmApplyScript(i: NpmInstall, version: string): string {
     '[ -d "$dir" ] || fail "$dir is gone"',
     '[ "$(stat -c %U "$dir")" = "$owner" ] || fail "$dir is no longer owned by $owner"',
     'home=$(getent passwd "$owner" | cut -d: -f6); [ -n "$home" ] || home=/nonexistent',
-    'case "$nodebin" in /*) ;; *) nodebin=$(PATH=/usr/local/bin:/usr/bin:/bin command -v node || true) ;; esac',
-    '[ -n "$nodebin" ] && [ -x "$nodebin" ] || fail "no node binary found"',
-    'nodedir=$(dirname "$nodebin"); P="$nodedir:/usr/local/bin:/usr/bin:/bin"',
-    'npmbin="$nodedir/npm"; [ -x "$npmbin" ] || npmbin=$(PATH="$P" command -v npm || true)',
+    'SYS=/usr/local/bin:/usr/bin:/bin',
+    'case "$nodebin" in /*) ;; *) nodebin=$(PATH=$SYS command -v node || true) ;; esac',
+    '[ -n "$nodebin" ] || fail "no node binary found"',
+    // Resolve every link once, then run the resolved files: nothing can be swapped in between.
+    'nodebin=$(readlink -f -- "$nodebin"); [ -n "$nodebin" ] && [ -f "$nodebin" ] && [ -x "$nodebin" ] || fail "no node binary found"',
+    'nodedir=$(dirname -- "$nodebin")',
+    'npmbin="$nodedir/npm"; [ -e "$npmbin" ] || npmbin=$(PATH=$SYS command -v npm || true)',
     '[ -n "$npmbin" ] || fail "no npm next to $nodebin or on PATH"',
-    // Root runs a binary only when root owns it and nobody else can write it.
-    'trusted() { m=$(stat -L -c %a "$1") && [ "$(stat -L -c %u "$1")" = 0 ] && [ $(( 8#$m & 8#022 )) -eq 0 ]; }',
-    'if [ "$owner" = root ]; then for b in "$nodebin" "$npmbin"; do trusted "$b" || fail "$b is not root-owned and protected; not running it as root"; done; fi',
+    'npmcli=$(readlink -f -- "$npmbin"); [ -n "$npmcli" ] && [ -f "$npmcli" ] || fail "npm could not be resolved"',
+    // Root runs a file only when it and every directory above it are root-owned and not writable by others.
+    'trusted() { p=$1; while :; do m=$(stat -c %a -- "$p") && [ "$(stat -c %u -- "$p")" = 0 ] && [ $(( 8#$m & 8#022 )) -eq 0 ] || return 1; [ "$p" = / ] && return 0; p=$(dirname -- "$p"); done; }',
+    'if [ "$owner" = root ]; then for b in "$nodebin" "$npmcli"; do trusted "$b" || fail "$b is not root-owned and protected (with every directory above it); not running it as root"; done; fi',
+    'P="$nodedir:$SYS"',
     'as_owner() { if [ "$owner" = root ]; then env -i HOME="$home" PATH="$P" LANG=C.UTF-8 "$@"; else runuser -u "$owner" -- env -i HOME="$home" PATH="$P" LANG=C.UTF-8 "$@"; fi; }',
     'echo "HP_STEP stopping $unit"',
     'systemctl stop "$unit" || fail "could not stop $unit"',
@@ -417,11 +452,11 @@ export function npmApplyScript(i: NpmInstall, version: string): string {
     'case "$(systemctl is-active "$unit" 2>/dev/null)" in inactive|failed) ;; *) fail "$unit did not stop" ;; esac',
     'cd "$dir" || fail "cannot enter $dir"',
     'echo "HP_STEP npm install $pkg@$ver as $owner"',
-    `as_owner "$npmbin" install --no-audit --no-fund --no-update-notifier ${save} "$pkg@$ver" 2>&1 | tail -n 40`,
+    `as_owner "$nodebin" "$npmcli" install --no-audit --no-fund --no-update-notifier ${save} "$pkg@$ver" 2>&1 | tail -n 40`,
     'rc=${PIPESTATUS[0]}',
     '[ "$rc" -eq 0 ] || fail "npm install exited $rc; $unit is left STOPPED"',
     'echo "HP_STEP npm ls"',
-    `as_owner "$npmbin" ls --all --omit=dev --json 2>/dev/null | as_owner "$nodebin" -e ${shq(NPM_LS_JUDGE)} "$pkg" "$ver"`,
+    `as_owner "$nodebin" "$npmcli" ls --all${omitDev} --json 2>/dev/null | as_owner "$nodebin" -e ${shq(NPM_LS_JUDGE)} "$pkg" "$ver"`,
     '[ "${PIPESTATUS[1]}" -eq 0 ] || fail "npm ls does not resolve cleanly at $pkg@$ver; $unit is left STOPPED"',
     'echo "HP_STEP starting $unit"',
     'systemctl start "$unit" || fail "npm install succeeded but $unit did not start"',

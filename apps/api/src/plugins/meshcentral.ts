@@ -32,7 +32,7 @@ import {
   type NpmInstall, describeNpmInstall, detectNpmInstalls, installKey, npmApply, npmFactsScript, npmRelease, npmUpdateBlocker,
   parseNpmFacts, waitForSteadyService,
 } from '../lib/app-updates/npm-app'
-import { compareVersions, isSafeAbsPath, isUnitName, isVersion, shq } from '../lib/app-updates/versions'
+import { compareVersions, isSafeAbsPath, isUnitName, isUserName, isVersion, shq } from '../lib/app-updates/versions'
 
 const PKG = 'meshcentral'
 const GITHUB = 'Ylianst/MeshCentral'
@@ -41,7 +41,10 @@ export const ORIGIN_CHECK_SINCE = '1.2.1'
 
 export interface MeshFacts {
   npm:        NpmInstall
+  /** Where MeshCentral reads config.json from: --datapath, or <install>/meshcentral-data. */
   datapath:   string
+  /** Where its certificate and mesherrors.txt live: also settings.datapath. */
+  dataDir:    string
   configFile: string
   configText: string | null
   config:     any
@@ -77,6 +80,16 @@ export interface OriginVerdict { ok: boolean; reason: string }
  * CheckWebServerOriginName, replayed for a browser on https://<hostname>. The request reaches
  * the domain whose `dns` is that hostname, or the default domain.
  */
+/** The id of the domain a request for `hostname` reaches: one whose `dns` is that hostname, or the default "". */
+export function domainFor(config: any, hostname: string): string {
+  const host = hostname.toLowerCase()
+  const domains = ciGet(config, 'domains')
+  if (domains && typeof domains === 'object') {
+    for (const [id, d] of Object.entries(domains)) if (id !== '' && ciGet(d, 'dns') === host) return id
+  }
+  return ''
+}
+
 export function originVerdict(config: any, certName: string, hostname: string): OriginVerdict {
   const host = hostname.toLowerCase()   // URL parsing lower-cases the Origin hostname
   const domains = ciGet(config, 'domains')
@@ -85,7 +98,7 @@ export function originVerdict(config: any, certName: string, hostname: string): 
   if (domains && typeof domains === 'object') {
     for (const [id, d] of Object.entries(domains)) {
       const dns = ciGet(d, 'dns')
-      if (id !== '' && typeof dns === 'string' && dns.toLowerCase() === host) { domain = d; where = `domain "${id}"` }
+      if (id !== '' && dns === host) { domain = d; where = `domain "${id}"` }
     }
   }
   const allowed = ciGet(domain, 'allowedorigin')
@@ -128,14 +141,18 @@ export function proposedAllowedOrigin(config: any, certName: string, hostnames: 
   const current = ciGet(def, 'allowedorigin')
   const out: string[] = []
   const add = (h: unknown) => { if (typeof h === 'string') { const l = h.toLowerCase(); if (HOSTNAME.test(l) && !out.includes(l)) out.push(l) } }
-  if (Array.isArray(current)) current.forEach(add)
-  else if (certName !== 'un-configured') add(certName)
+  // Whatever is listed today stays exactly as it is, even entries this code would not write itself.
+  if (Array.isArray(current)) {
+    for (const h of current) if (typeof h === 'string' && !out.includes(h)) out.push(h)
+  } else if (certName !== 'un-configured') add(certName)
   hostnames.forEach(add)
   return out
 }
 
+/** Only hostnames served by the default domain can be fixed there; a named domain's are left to a person. */
 export function fixFor(f: MeshFacts, hostnames: string[]): AppFix | null {
   if (f.configText === null || !f.config) return null
+  if (!hostnames.length || hostnames.some(h => domainFor(f.config, h) !== '')) return null
   const list = proposedAllowedOrigin(f.config, f.certName, hostnames)
   if (!hostnames.every(h => list.includes(h.toLowerCase()))) return null
   const id = createHash('sha256').update(`${f.configFile}\n${f.configText}\n${JSON.stringify(list)}`).digest('hex').slice(0, 12)
@@ -144,7 +161,7 @@ export function fixFor(f: MeshFacts, hostnames: string[]): AppFix | null {
     description: `Add ${hostnames.join(', ')} to MeshCentral's allowedOrigin so browsers on the public URL are accepted`,
     file: f.configFile,
     change: `domains[""].allowedOrigin = ${JSON.stringify(list)}\n` +
-      `(the rest of ${f.configFile} is unchanged; the file is rewritten as formatted JSON and the old one is kept beside it as config.json.hp-<time>.bak; MeshCentral is restarted to read it)`,
+      `(the rest of ${f.configFile} is unchanged; the file is rewritten as formatted JSON, as its owner, and the old one is kept beside it as config.json.hp-bak-XXXXXX; MeshCentral is restarted to read it)`,
   }
 }
 
@@ -168,50 +185,79 @@ export async function publicUrls(f: MeshFacts, ctx: AppContext): Promise<URL[]> 
 
 // --- Guest reads --------------------------------------------------------------------
 
-/** Read-only: the web certificate's common name, and mesherrors.txt's size and mtime. */
-export function meshFactsScript(datapath: string): string {
-  if (!isSafeAbsPath(datapath)) throw new Error(`unsafe data path: ${datapath}`)
-  return [
-    `dp=${shq(datapath)}`,
+/** The user the unit runs as, for reading its files: what that user cannot read, neither can this. */
+function readerOf(npm: NpmInstall): string {
+  return npm.unitUser && isUserName(npm.unitUser) ? npm.unitUser : 'root'
+}
+
+const asReader = (user: string, script: string) =>
+  user === 'root' ? script : `runuser -u ${shq(user)} -- bash -c ${shq(script)}`
+
+/**
+ * Read-only, as the unit's user: config.json when asked (only when it is outside the install
+ * directory), the web certificate's common name, and mesherrors.txt's size and mtime. Links are
+ * not followed.
+ */
+export function meshFactsScript(dataDir: string, user: string, configDir?: string): string {
+  if (!isSafeAbsPath(dataDir) || (configDir !== undefined && !isSafeAbsPath(configDir))) throw new Error(`unsafe data path: ${dataDir}`)
+  if (!isUserName(user)) throw new Error(`unsafe user: ${user}`)
+  const inner = [
+    `dp=${shq(dataDir)}`,
+    ...(configDir ? [`cf=${shq(`${configDir}/config.json`)}`, 'if [ -f "$cf" ] && [ ! -L "$cf" ] && [ "$(stat -c %s "$cf")" -le 1048576 ]; then echo "HP_CONFIG $(base64 -w0 < "$cf")"; fi'] : []),
     'c="$dp/webserver-cert-public.crt"',
     'if [ -f "$c" ] && [ ! -L "$c" ] && command -v openssl >/dev/null 2>&1; then',
     '  cn=$(openssl x509 -noout -subject -nameopt multiline -in "$c" 2>/dev/null | sed -n "s/^ *commonName *= *//p" | head -n 1)',
     '  echo "HP_CN $(printf %s "$cn" | base64 -w0)"',
     'fi',
     'e="$dp/mesherrors.txt"',
-    'if [ -f "$e" ]; then echo "HP_ERRLOG $(stat -c "%s %Y" "$e")"; else echo "HP_ERRLOG 0 0"; fi',
+    'if [ -f "$e" ] && [ ! -L "$e" ]; then echo "HP_ERRLOG $(stat -c "%s %Y" "$e")"; else echo "HP_ERRLOG 0 0"; fi',
   ].join('\n')
+  return asReader(user, inner)
 }
 
-export function parseMeshFacts(output: string): { cn: string | null; errLog: { size: number; mtime: number } | null } {
+export function parseMeshFacts(output: string): { cn: string | null; errLog: { size: number; mtime: number } | null; config: string | null } {
   const cn = /^HP_CN (\S*)$/m.exec(output)?.[1]
   const e = /^HP_ERRLOG (\d+) (\d+)$/m.exec(output)
+  const cfg = /^HP_CONFIG (\S+)$/m.exec(output)?.[1]
   return {
     cn: cn ? Buffer.from(cn, 'base64').toString('utf8').trim() || null : null,
     errLog: e ? { size: Number(e[1]), mtime: Number(e[2]) } : null,
+    config: cfg ? Buffer.from(cfg, 'base64').toString('utf8') : null,
   }
 }
 
-/** The new part of mesherrors.txt since `from` bytes, last lines only. */
-export function errLogTailScript(datapath: string, from: number): string {
-  if (!isSafeAbsPath(datapath)) throw new Error(`unsafe data path: ${datapath}`)
-  return `tail -c +${Math.max(1, Math.floor(from) + 1)} ${shq(`${datapath}/mesherrors.txt`)} 2>/dev/null | tail -n 15`
+/** The new part of mesherrors.txt since `from` bytes, last lines only; read as the unit's user, never through a link. */
+export function errLogTailScript(dataDir: string, from: number, user: string): string {
+  if (!isSafeAbsPath(dataDir)) throw new Error(`unsafe data path: ${dataDir}`)
+  if (!isUserName(user)) throw new Error(`unsafe user: ${user}`)
+  return asReader(user, `e=${shq(`${dataDir}/mesherrors.txt`)}; [ -f "$e" ] && [ ! -L "$e" ] && tail -c +${Math.max(1, Math.floor(from) + 1)} "$e" 2>/dev/null | tail -n 15`)
 }
 
 async function readMesh(ctx: AppContext, npm: NpmInstall): Promise<MeshFacts> {
-  let config: any = null
-  const configText = npm.files.config ?? null
-  if (configText !== null) { try { config = JSON.parse(configText) } catch { config = null } }
-  const settings = ciGet(config, 'settings')
-  const dpSetting = ciGet(settings, 'datapath')
   const dpArg = /--datapath\s+(\/\S+)/.exec(npm.command)?.[1]
-  const datapath = [dpArg, dpSetting].find(p => typeof p === 'string' && isSafeAbsPath(p)) ?? `${npm.dir}/meshcentral-data`
-  const extra = await ctx.run(meshFactsScript(datapath), { timeoutMs: 30_000 }).catch(() => ({ code: -1, output: '', timedOut: false }))
+  const datapath = dpArg && isSafeAbsPath(dpArg) ? dpArg : `${npm.dir}/meshcentral-data`
+  const reader = readerOf(npm)
+  // config.json from inside the install came with the npm facts; from elsewhere it is read here.
+  let configText = datapath === `${npm.dir}/meshcentral-data` ? (npm.files.config ?? null) : null
+  let config: any = null
+  const parse = (t: string | null) => { if (t !== null) { try { config = JSON.parse(t) } catch { config = null } } }
+  parse(configText)
+  const dpSetting = ciGet(ciGet(config, 'settings'), 'datapath')
+  let dataDir = typeof dpSetting === 'string' && isSafeAbsPath(dpSetting) ? dpSetting : datapath
+  const extra = await ctx.run(meshFactsScript(dataDir, reader, datapath === `${npm.dir}/meshcentral-data` ? undefined : datapath), { timeoutMs: 30_000 })
+    .catch(() => ({ code: -1, output: '', timedOut: false }))
   const parsed = parseMeshFacts(extra.output)
+  if (configText === null && parsed.config !== null) {
+    configText = parsed.config
+    parse(configText)
+    const again = ciGet(ciGet(config, 'settings'), 'datapath')
+    if (typeof again === 'string' && isSafeAbsPath(again)) dataDir = again
+  }
+  const settings = ciGet(config, 'settings')
   const certSetting = ciGet(settings, 'cert')
   const port = Number(ciGet(settings, 'port'))
   return {
-    npm, datapath, configFile: `${npm.dir}/meshcentral-data/config.json`, configText, config,
+    npm, datapath, dataDir, configFile: `${datapath}/config.json`, configText, config,
     certName: parsed.cn ?? (typeof certSetting === 'string' && certSetting ? certSetting : 'un-configured'),
     port: Number.isInteger(port) && port > 0 && port < 65536 ? port : 443,
     errLog: parsed.errLog,
@@ -220,7 +266,7 @@ async function readMesh(ctx: AppContext, npm: NpmInstall): Promise<MeshFacts> {
 
 function toInstall(f: MeshFacts): AppInstall {
   return {
-    key: installKey(f.npm.dir), name: 'MeshCentral', installed: f.npm.installed, location: f.npm.dir,
+    key: installKey(f.npm), name: 'MeshCentral', installed: f.npm.installed, location: f.npm.dir,
     runAs: f.npm.owner, service: f.npm.unit, running: f.npm.active, how: describeNpmInstall(f.npm),
     facts: f as unknown as Record<string, unknown>,
   }
@@ -256,9 +302,9 @@ export async function probePublicUrl(u: URL, ctx: AppContext): Promise<{ ok: boo
 
 async function errLogGrowth(ctx: AppContext, f: MeshFacts, baseline: unknown): Promise<string | null> {
   const before = (baseline as { errLog?: { size: number } } | null)?.errLog
-  const now = parseMeshFacts((await ctx.run(meshFactsScript(f.datapath), { timeoutMs: 30_000 })).output).errLog
+  const now = parseMeshFacts((await ctx.run(meshFactsScript(f.dataDir, readerOf(f.npm)), { timeoutMs: 30_000 })).output).errLog
   if (!now || !before || now.size <= before.size) return null
-  const t = await ctx.run(errLogTailScript(f.datapath, before.size), { timeoutMs: 30_000 })
+  const t = await ctx.run(errLogTailScript(f.dataDir, before.size, readerOf(f.npm)), { timeoutMs: 30_000 })
   return t.output.trim().slice(-1500) || `${now.size - before.size} new bytes`
 }
 
@@ -304,7 +350,8 @@ export const meshcentralProvider: AppUpdateProvider = {
     const hosts = [...new Set(urls.map(u => u.hostname.toLowerCase()))]
     const failing = hosts.map(h => ({ h, v: originVerdict(f.config ?? {}, f.certName, h) })).filter(x => !x.v.ok)
     if (failing.length) {
-      const fix = fixFor(f, failing.map(x => x.h)) ?? undefined
+      // A hostname served by a named domain is judged by that domain; the fix only covers the default one.
+      const fix = fixFor(f, failing.filter(x => domainFor(f.config, x.h) === '').map(x => x.h)) ?? undefined
       const when = checks
         ? (target ? `MeshCentral ${version} will refuse` : `MeshCentral ${version} refuses`)
         : `from ${ORIGIN_CHECK_SINCE} MeshCentral will refuse`
@@ -319,7 +366,7 @@ export const meshcentralProvider: AppUpdateProvider = {
 
   async baseline(install, ctx) {
     const f = facts(install)
-    return { errLog: parseMeshFacts((await ctx.run(meshFactsScript(f.datapath), { timeoutMs: 30_000 })).output).errLog }
+    return { errLog: parseMeshFacts((await ctx.run(meshFactsScript(f.dataDir, readerOf(f.npm)), { timeoutMs: 30_000 })).output).errLog }
   },
 
   async apply(install, version, ctx): Promise<AppStepResult> {
@@ -367,7 +414,8 @@ export const meshcentralProvider: AppUpdateProvider = {
   async applyFix(install, fixId, ctx): Promise<AppStepResult> {
     const f = facts(install)
     const urls = await publicUrls(f, ctx)
-    const failing = [...new Set(urls.map(u => u.hostname.toLowerCase()))].filter(h => !originVerdict(f.config ?? {}, f.certName, h).ok)
+    const failing = [...new Set(urls.map(u => u.hostname.toLowerCase()))]
+      .filter(h => !originVerdict(f.config ?? {}, f.certName, h).ok && domainFor(f.config, h) === '')
     if (!failing.length) return { ok: true, message: 'nothing to change: every public hostname already passes the origin check' }
     const fix = fixFor(f, failing)
     if (!fix) return { ok: false, message: `${f.configFile} cannot be changed automatically (not readable as JSON)` }
@@ -376,19 +424,33 @@ export const meshcentralProvider: AppUpdateProvider = {
     const list = proposedAllowedOrigin(f.config, f.certName, failing)
     const text = JSON.stringify(withAllowedOrigin(f.config, list), null, 2) + '\n'
     const sum = createHash('sha256').update(f.configText!).digest('hex')
-    const stamp = new Date(ctx.now()).toISOString().replace(/[-:T]/g, '').slice(0, 14)
-    const script = [
-      'set -u',
-      `f=${shq(f.configFile)}; want=${shq(sum)}; unit=${shq(f.npm.unit)}; bak=${shq(`${f.configFile}.hp-${stamp}.bak`)}`,
+    // The backup and the write happen as the file's owner, in files mktemp creates: as root, in a
+    // directory the app's user can write, a guessable name could be a link to anywhere.
+    const inner = [
+      'set -u; f=$1; want=$2',
       'fail() { echo "HP_FAIL $*"; exit 1; }',
       '[ -f "$f" ] && [ ! -L "$f" ] || fail "$f is missing or a link"',
       '[ "$(sha256sum < "$f" | cut -d" " -f1)" = "$want" ] || fail "$f changed since it was read; nothing written"',
-      'cp -P -p "$f" "$bak" || fail "could not back up $f"',
-      'tmp=$(mktemp "$f.hp-XXXXXX") || fail "could not create a temporary file"',
-      `printf %s ${shq(Buffer.from(text).toString('base64'))} | base64 -d > "$tmp" || { rm -f "$tmp"; fail "could not write"; }`,
-      'chown --reference="$f" "$tmp" && chmod --reference="$f" "$tmp" || { rm -f "$tmp"; fail "could not copy owner and mode"; }',
+      'bak=$(mktemp "$f.hp-bak-XXXXXX") || fail "could not create a backup file"',
+      'cat < "$f" > "$bak" || fail "could not back up $f"',
+      'tmp=$(mktemp "$f.hp-new-XXXXXX") || fail "could not create a temporary file"',
+      'base64 -d > "$tmp" || { rm -f "$tmp"; fail "could not write"; }',
+      'chmod --reference="$f" "$tmp" || { rm -f "$tmp"; fail "could not copy the mode"; }',
       'mv -f "$tmp" "$f" || { rm -f "$tmp"; fail "could not replace $f"; }',
       'echo "HP_CONFIG_WRITTEN backup $bak"',
+    ].join('\n')
+    const script = [
+      'set -u',
+      `f=${shq(f.configFile)}; want=${shq(sum)}; unit=${shq(f.npm.unit)}; inner=${shq(inner)}`,
+      'fail() { echo "HP_FAIL $*"; exit 1; }',
+      '[ -f "$f" ] && [ ! -L "$f" ] || fail "$f is missing or a link"',
+      'o=$(stat -c %U "$f"); case "$o" in ""|*[!A-Za-z0-9_.-]*) fail "unexpected owner of $f" ;; esac',
+      'd=$(dirname -- "$f")',
+      // Root writes only where nobody else can plant a link.
+      'if [ "$o" = root ]; then m=$(stat -c %a -- "$d"); [ "$(stat -c %u -- "$d")" = 0 ] && [ $(( 8#$m & 8#022 )) -eq 0 ] || fail "$f is root-owned in a directory others can write; change it by hand"; fi',
+      `if [ "$o" = root ]; then out=$(printf %s ${shq(Buffer.from(text).toString('base64'))} | bash -c "$inner" _ "$f" "$want"); else out=$(printf %s ${shq(Buffer.from(text).toString('base64'))} | runuser -u "$o" -- bash -c "$inner" _ "$f" "$want"); fi`,
+      'rc=$?; printf "%s\\n" "$out"; [ $rc -eq 0 ] || exit 1',
+      'bak=$(printf "%s\\n" "$out" | sed -n "s/^HP_CONFIG_WRITTEN backup //p")',
       'systemctl restart "$unit" || fail "config written (backup $bak) but $unit did not restart"',
       'echo HP_RESTARTED',
     ].join('\n')

@@ -107,6 +107,18 @@ test('discover: a newline in a process argument cannot forge a line; a user unit
   assert.ok(npmUpdateBlocker({ unit: null } as NpmInstall))
 })
 
+test('discover: a process inside some system service (a cron job) never makes an install updatable', () => {
+  const out = [
+    `HP_PROC 901 ${e('someone')} ${e('/home/someone')} ${e('0::/system.slice/cron.service\n')} ${e('/home/someone/bin/node /home/someone/l/app/node_modules/demo-pkg')}`,
+    'HP_DISCOVER_DONE',
+  ].join('\n')
+  const [c] = parseNpmDiscover(out, 'demo-pkg')
+  assert.deepEqual([c.unit, c.nodeBin, c.active], [null, null, false])
+  // And a root-owned directory whose unit runs as someone else is refused too: that user can write node_modules.
+  assert.match(npmUpdateBlocker({ ...INSTALL, owner: 'root', unitUser: 'appuser' })!, /different user/)
+  assert.equal(npmUpdateBlocker({ ...INSTALL, owner: 'root', unitUser: 'root' }), null)
+})
+
 test('dirFromArgs: the package and nothing that merely starts with its name', () => {
   assert.equal(dirFromArgs('/usr/bin/node /srv/x/node_modules/demo-pkg/bin/run', 'demo-pkg', null), '/srv/x')
   assert.equal(dirFromArgs('/usr/bin/node /srv/x/node_modules/demo-pkg-extra', 'demo-pkg', null), null)
@@ -120,6 +132,7 @@ test('detectNpmInstalls: version, pin, owner and extra files from the facts read
   const ctx = ctxWith(script => {
     if (script.includes('HP_DISCOVER_DONE')) return { code: 0, output: `HP_UNIT ${e('demo.service')} ${e(unitShow)}\nHP_DISCOVER_DONE\n` }
     return { code: 0, output: [
+      `HP_REAL ${e('/opt/app')}`,
       `HP_OWNER ${e('appuser')}`,
       `HP_FILE package ${e(JSON.stringify({ dependencies: { 'demo-pkg': '1.1.53' } }))}`,
       `HP_FILE installed ${e(JSON.stringify({ name: 'demo-pkg', version: '1.1.53' }))}`,
@@ -190,7 +203,7 @@ test('npmRelease: current, unknown and malformed answers', async () => {
 // --- applying ---------------------------------------------------------------------------------
 
 const INSTALL: NpmInstall = {
-  dir: '/opt/app', pkg: 'demo-pkg', installed: '1.1.53', spec: '1.1.53', exact: true, owner: 'appuser',
+  dir: '/opt/app', pkg: 'demo-pkg', installed: '1.1.53', spec: '1.1.53', exact: true, section: 'dependencies', owner: 'appuser',
   unit: 'demo.service', unitUser: 'appuser', active: true, mainPid: 10, nodeBin: '/usr/bin/node', command: '', files: {},
 }
 
@@ -208,8 +221,14 @@ test('apply script: refuses hostile values outright, quotes the rest, stops befo
   assert.ok(s.indexOf('install --no-audit') < s.indexOf(' ls --all'))
   assert.ok(s.indexOf(' ls --all') < s.indexOf('systemctl start'))
   assert.match(s, /runuser -u "\$owner" --/)
-  assert.match(s, /--save-exact "\$pkg@\$ver"/)
+  assert.match(s, /--save --save-exact "\$pkg@\$ver"/)
+  assert.match(s, / ls --all --omit=dev --json/)
   assert.match(npmApplyScript({ ...INSTALL, exact: false, spec: '^1.1.0' }, '1.3.1'), /--save "\$pkg@\$ver"/)
+  assert.match(npmApplyScript({ ...INSTALL, section: null, spec: null }, '1.3.1'), /--no-save "\$pkg@\$ver"/)
+  const dev = npmApplyScript({ ...INSTALL, section: 'devDependencies' }, '1.3.1')
+  assert.match(dev, /--save-dev --save-exact/)
+  assert.match(dev, / ls --all --json/)
+  assert.match(s, /as_owner "\$nodebin" "\$npmcli" install/, 'npm runs through the resolved node, never through PATH')
 })
 
 test('npmApply: success only on the HP_APPLIED marker; the failure line is the reason', async () => {
@@ -227,14 +246,17 @@ test('npmApply: success only on the HP_APPLIED marker; the failure line is the r
 // here, which is also the path that checks binaries before running them as root).
 const canRun = process.getuid?.() === 0 && spawnSync('bash', ['-c', 'command -v base64 && command -v getent']).status === 0
 test('apply script, executed: stop → install as owner → npm ls → start; a failed install leaves it stopped', { skip: !canRun && 'needs root and bash' }, () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hp-npm-'))
+  // Under root's home: /tmp is world-writable, and the trust check rightly refuses anything below it.
+  const root = fs.mkdtempSync(path.join(os.homedir(), '.hp-npm-test-'))
   try {
     const app = path.join(root, 'app'), bin = path.join(root, 'bin'), sys = path.join(root, 'sys'), log = path.join(root, 'log')
     for (const d of [app, bin, sys]) fs.mkdirSync(d)
     fs.writeFileSync(path.join(app, 'package.json'), '{"dependencies":{"demo-pkg":"1.1.53"}}')
-    fs.symlinkSync(process.execPath, path.join(bin, 'node'))
+    // A wrapper, not a link: the script resolves links, and npm is looked for next to the resolved node.
+    fs.writeFileSync(path.join(bin, 'node'), `#!/bin/sh\nexec ${process.execPath} "$@"\n`, { mode: 0o755 })
     const lsJson = JSON.stringify({ dependencies: { 'demo-pkg': { version: '1.3.1' } }, problems: ['extraneous: optional-mod@1.0.0 /x'] })
-    fs.writeFileSync(path.join(bin, 'npm'), `#!/bin/sh\necho "npm $*" >> ${log}\nif [ "$1" = ls ]; then echo '${lsJson}'; fi\n[ "$1" = install ] && [ -f ${root}/fail ] && exit 3\nexit 0\n`, { mode: 0o755 })
+    // npm-cli.js stand-in: run by the resolved node, as npm itself would be.
+    fs.writeFileSync(path.join(bin, 'npm'), `const fs=require('fs');const a=process.argv.slice(2);fs.appendFileSync(${JSON.stringify(log)},'npm '+a.join(' ')+'\\n');if(a[0]==='ls')console.log(${JSON.stringify(lsJson)});if(a[0]==='install'&&fs.existsSync(${JSON.stringify(root + '/fail')}))process.exit(3)\n`, { mode: 0o755 })
     fs.writeFileSync(path.join(sys, 'systemctl'), `#!/bin/sh\necho "systemctl $*" >> ${log}\n[ "$1" = is-active ] && echo inactive\nexit 0\n`, { mode: 0o755 })
     const install: NpmInstall = { ...INSTALL, dir: app, owner: 'root', unitUser: 'root', nodeBin: path.join(bin, 'node') }
     const run = () => spawnSync('bash', ['-s'], { input: npmApplyScript(install, '1.3.1'), env: { PATH: `${sys}:/usr/local/bin:/usr/bin:/bin` }, encoding: 'utf8' })
@@ -244,7 +266,7 @@ test('apply script, executed: stop → install as owner → npm ls → start; a 
     assert.match(ok.stdout, /^HP_APPLIED 1\.3\.1$/m)
     const calls = fs.readFileSync(log, 'utf8').trim().split('\n').filter(l => !/is-active/.test(l))
     assert.deepEqual(calls.map(l => l.split(' ').slice(0, 2).join(' ')), ['systemctl stop', 'npm install', 'npm ls', 'systemctl start'])
-    assert.match(calls[1], /install --no-audit --no-fund --no-update-notifier --save-exact demo-pkg@1\.3\.1/)
+    assert.match(calls[1], /install --no-audit --no-fund --no-update-notifier --save --save-exact demo-pkg@1\.3\.1/)
 
     fs.writeFileSync(log, '')
     fs.writeFileSync(path.join(root, 'fail'), '')
