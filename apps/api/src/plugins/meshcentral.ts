@@ -234,7 +234,8 @@ export function errLogTailScript(dataDir: string, from: number, user: string): s
 }
 
 async function readMesh(ctx: AppContext, npm: NpmInstall): Promise<MeshFacts> {
-  const dpArg = /--datapath\s+(\/\S+)/.exec(npm.command)?.[1]
+  // Without a unit the command line is whatever a user typed, and nothing will be updated: read nothing more.
+  const dpArg = npm.unit ? /--datapath\s+(\/\S+)/.exec(npm.command)?.[1] : undefined
   const datapath = dpArg && isSafeAbsPath(dpArg) ? dpArg : `${npm.dir}/meshcentral-data`
   const reader = readerOf(npm)
   // config.json from inside the install came with the npm facts; from elsewhere it is read here.
@@ -244,8 +245,9 @@ async function readMesh(ctx: AppContext, npm: NpmInstall): Promise<MeshFacts> {
   parse(configText)
   const dpSetting = ciGet(ciGet(config, 'settings'), 'datapath')
   let dataDir = typeof dpSetting === 'string' && isSafeAbsPath(dpSetting) ? dpSetting : datapath
-  const extra = await ctx.run(meshFactsScript(dataDir, reader, datapath === `${npm.dir}/meshcentral-data` ? undefined : datapath), { timeoutMs: 30_000 })
-    .catch(() => ({ code: -1, output: '', timedOut: false }))
+  const extra = !npm.unit ? { code: 0, output: '', timedOut: false }
+    : await ctx.run(meshFactsScript(dataDir, reader, datapath === `${npm.dir}/meshcentral-data` ? undefined : datapath), { timeoutMs: 30_000 })
+      .catch(() => ({ code: -1, output: '', timedOut: false }))
   const parsed = parseMeshFacts(extra.output)
   if (configText === null && parsed.config !== null) {
     configText = parsed.config
