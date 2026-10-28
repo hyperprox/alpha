@@ -615,9 +615,42 @@ cannot go stale:
 | **Plex activity** | Who is watching, what they are watching, what is transcoding and what it costs in bandwidth — read through Tautulli, which also supplies the history: recent plays, top watchers, most-watched titles. |
 | **Home Assistant** | What has quietly stopped working. Unavailable entities sorted longest-dead first, batteries under a level you set, updates waiting, automations and when each last ran, what is on right now, entities by domain, and the error lines from the log. **Read-only by intent** — every write against this API actuates something physical, so it never calls `/api/services`. |
 
+| **MeshCentral** | Not a tile so much as an updater: finds MeshCentral installed with npm in any guest and puts it on the Updates page with release notes, a security flag, an origin pre-flight for reverse proxies, and a real sign-in check through the public URL after updating. |
+
 Each plug-in's real output is shown on its gallery card, so you can see what it
 renders before placing it anywhere, and a plug-in quietly returning nothing is
 obvious rather than discovered later.
+
+### App updates from plug-ins
+
+apt and docker cannot see an app installed some other way — `npm install` into a
+directory and a systemd unit, a tarball in `/opt`. A plug-in can contribute an
+**app-update provider** (`appUpdates` on the plug-in, interface `AppUpdateProvider` in
+`apps/api/src/lib/plugin-host.ts`) that, for one guest:
+
+- **detects** installs: where, which version, which user owns it, how it runs;
+- reports the **latest** version with release notes and an `isSecurity` flag;
+- runs a read-only **pre-flight**, and may offer a config change as a separately
+  approved **fix**;
+- **applies** an exact version, stopping the service first;
+- **verifies** with a real functional check;
+- describes the **rollback**.
+
+The Updates feature decides when any of it runs: from the policy (`apps.*`, default
+manual) and a person's approval, after a snapshot, in the guest phase of a run. See
+`docs/updates.md`.
+
+This is the one place a plug-in is given more than a brokered HTTP call: a provider's
+scripts run **as root inside the guest** the host hands it. It still cannot pick another
+guest, reach a node shell, the Proxmox API or the credential store, and it reads settings
+through `option()`, which never returns a secret. Treat a provider as part of HyperProx:
+only bundled plug-ins are asked for one.
+
+Apps that are npm packages can use the shared helper in
+`apps/api/src/lib/app-updates/npm-app.ts` — install discovery, the npm registry, GitHub
+release notes and advisories, and the stop → `npm install` as the owner → `npm ls` →
+start sequence. The MeshCentral plug-in (`apps/api/src/plugins/meshcentral.ts`) is the
+worked example.
 
 ### Asking for one that does not exist
 
