@@ -197,18 +197,24 @@ export function npmFactsScript(dir: string, pkg: string, extra: Record<string, s
   if (!isSafeAbsPath(dir)) throw new Error(`unsafe directory: ${dir}`)
   if (!isNpmName(pkg)) throw new Error(`not an npm package name: ${pkg}`)
   const files: Record<string, string> = { package: 'package.json', installed: `node_modules/${pkg}/package.json`, ...extra }
-  const lines = [
-    `d=${shq(dir)}`,
+  // The files are read as the directory's owner: a link anywhere along the way then reaches only
+  // what that user could read anyway.
+  const reads = [
+    'd=$1',
     'f() { p="$d/$2"; if [ -f "$p" ] && [ ! -L "$p" ] && [ "$(stat -c %s "$p")" -le ' + MAX_FILE + ' ]; then echo "HP_FILE $1 $(base64 -w0 < "$p")"; else echo "HP_FILE $1 -"; fi; }',
-    '[ -d "$d" ] || { echo HP_NO_DIR; exit 0; }',
-    'echo "HP_REAL $(readlink -f -- "$d" | base64 -w0)"',
-    'echo "HP_OWNER $(stat -c %U "$d" | base64 -w0)"',
   ]
   for (const [name, rel] of Object.entries(files)) {
     if (!FILE_NAME.test(name) || !isSafeRelPath(rel)) throw new Error(`unsafe file request ${name}: ${rel}`)
-    lines.push(`f ${name} ${shq(rel)}`)
+    reads.push(`f ${name} ${shq(rel)}`)
   }
-  return lines.join('\n')
+  return [
+    `d=${shq(dir)}; reads=${shq(reads.join('\n'))}`,
+    '[ -d "$d" ] || { echo HP_NO_DIR; exit 0; }',
+    'echo "HP_REAL $(readlink -f -- "$d" | base64 -w0)"',
+    'o=$(stat -c %U "$d"); echo "HP_OWNER $(printf %s "$o" | base64 -w0)"',
+    'case "$o" in ""|*[!A-Za-z0-9_.-]*) exit 0 ;; esac',
+    'if [ "$o" = root ]; then bash -c "$reads" _ "$d"; else runuser -u "$o" -- bash -c "$reads" _ "$d"; fi',
+  ].join('\n')
 }
 
 export function parseNpmFacts(output: string): { exists: boolean; owner: string | null; real: string | null; files: Record<string, string | null> } {

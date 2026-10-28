@@ -144,7 +144,7 @@ test('detectNpmInstalls: version, pin, owner and extra files from the facts read
   assert.equal(i.exact, true)
   assert.equal(i.owner, 'appuser')
   assert.equal(i.files.config, '{"settings":{}}')
-  assert.match(ctx.scripts[1], /f config 'data\/config\.json'/)
+  assert.match(ctx.scripts[1], /f config .*data\/config\.json/)
   assert.throws(() => npmFactsScript('/opt/app', 'demo-pkg', { config: '../../etc/shadow' }), /unsafe/)
   assert.match(npmDiscoverScript('demo-pkg'), /needle='node_modules\/demo-pkg'/)
   assert.throws(() => npmDiscoverScript("x'; id; '"), /not an npm package name/)
@@ -295,4 +295,21 @@ test('waitForSteadyService: waits out npm and a pid change; gives up on failed',
   const failed = await waitForSteadyService(ctxWith(() => ({ code: 0, output: 'HP_STATE failed 0 0' })), 'demo.service', 'appuser')
   assert.equal(failed.ok, false)
   assert.deepEqual(parseServiceState('HP_STATE active 7 0'), { state: 'active', pid: 7, npm: 0 })
+})
+
+test('facts script, executed: real path, owner and files; links are not followed', { skip: !canRun && 'needs root and bash' }, () => {
+  const root = fs.mkdtempSync(path.join(os.homedir(), '.hp-facts-test-'))
+  try {
+    fs.mkdirSync(path.join(root, 'node_modules/demo-pkg'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'package.json'), '{"dependencies":{"demo-pkg":"1.0.0"}}')
+    fs.writeFileSync(path.join(root, 'node_modules/demo-pkg/package.json'), '{"version":"1.0.0"}')
+    fs.symlinkSync('/etc/hostname', path.join(root, 'secret.json'))
+    const r = spawnSync('bash', ['-s'], { input: npmFactsScript(root, 'demo-pkg', { secret: 'secret.json' }), encoding: 'utf8' })
+    const lines = r.stdout.split('\n')
+    const field = (k: string) => lines.find(l => l.startsWith(k))!.split(' ')
+    assert.equal(Buffer.from(field('HP_REAL')[1], 'base64').toString().trim(), root)
+    assert.equal(Buffer.from(field('HP_OWNER')[1], 'base64').toString(), 'root')
+    assert.equal(Buffer.from(field('HP_FILE installed')[2], 'base64').toString(), '{"version":"1.0.0"}')
+    assert.equal(field('HP_FILE secret')[2], '-')
+  } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })

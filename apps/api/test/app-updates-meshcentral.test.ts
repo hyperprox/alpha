@@ -177,7 +177,7 @@ test('detect: the unit, the install and its config, read through the npm helper'
   assert.equal(f.certName, 'mesh.lan')
   assert.equal(f.port, 4430, 'settings.Port read case-insensitively')
   assert.deepEqual(f.errLog, { size: 120, mtime: 1700000000 })
-  assert.match(scripts[1], /f config 'meshcentral-data\/config\.json'/)
+  assert.match(scripts[1], /f config .*meshcentral-data\/config\.json/)
   assert.match(P.rollback(i, 'hp-upd-202610280800'), /snapshot hp-upd-202610280800.*npm install meshcentral@1\.1\.53 --save-exact/)
 })
 
