@@ -20,7 +20,7 @@ import https from 'node:https'
 import { randomBytes } from 'node:crypto'
 import type { AppHttpResult, AppWsProbe } from '../plugin-host'
 
-const MAX_BODY = 4 * 1024 * 1024
+const MAX_BODY = 16 * 1024 * 1024
 const CACHE_MS = 15 * 60_000
 const cache = new Map<string, { at: number; value: unknown }>()
 
@@ -62,7 +62,9 @@ export async function fetchJson(url: string, body?: unknown): Promise<any> {
   const key = body === undefined ? url : `${url}\n${JSON.stringify(body)}`
   const hit = cache.get(key)
   if (hit && Date.now() - hit.at < CACHE_MS) return hit.value
-  const headers: Record<string, string> = { Accept: 'application/json', 'User-Agent': 'HyperProx-updates' }
+  // The registry's abbreviated document has every version and the dist-tags at a fraction of the size.
+  const accept = body === undefined && new URL(url).host === 'registry.npmjs.org' ? 'application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8' : 'application/json'
+  const headers: Record<string, string> = { Accept: accept, 'User-Agent': 'HyperProx-updates' }
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   const r = await request(url, { method: body === undefined ? 'GET' : 'POST', headers, body: body === undefined ? undefined : JSON.stringify(body), timeoutMs: 20_000 })
   if (r.status < 200 || r.status >= 300) throw new Error(`${new URL(url).host} answered HTTP ${r.status}`)
@@ -73,14 +75,15 @@ export async function fetchJson(url: string, body?: unknown): Promise<any> {
   return value
 }
 
-/** GET, following up to three redirects on the same scheme family. */
+/** GET, following up to three redirects — to the same host only, and never from https down to http. */
 export async function httpGet(url: string, opts: { headers?: Record<string, string>; timeoutMs?: number; insecureTLS?: boolean } = {}): Promise<AppHttpResult> {
   let current = url
   for (let hop = 0; hop < 4; hop++) {
     const r = await request(current, { headers: { 'User-Agent': 'Mozilla/5.0 (HyperProx update check)', Accept: 'text/html,*/*', ...opts.headers }, timeoutMs: opts.timeoutMs, insecureTLS: opts.insecureTLS, maxBody: 1024 * 1024 })
     if (r.status >= 300 && r.status < 400 && r.headers.location && hop < 3) {
       const next = new URL(r.headers.location, current)
-      if (next.protocol !== 'https:' && next.protocol !== 'http:') return r
+      const prev = new URL(current)
+      if (next.host !== prev.host || (prev.protocol === 'https:' && next.protocol !== 'https:') || (next.protocol !== 'https:' && next.protocol !== 'http:')) return r
       current = next.toString()
       continue
     }
@@ -145,7 +148,11 @@ export function wsProbe(url: string, opts: { origin?: string; timeoutMs?: number
           if (f.opcode === 0x8) return end({ upgraded: true, status: res.statusCode ?? 101, firstMessage: f.payload.length > 2 ? f.payload.subarray(2).toString('utf8') : null })
         }
       }
-      socket.on('data', (c: Buffer) => { buf = Buffer.concat([buf, c]); take() })
+      socket.on('data', (c: Buffer) => {
+        buf = Buffer.concat([buf, c])
+        if (buf.length > 64 * 1024) return end({ upgraded: true, status: res.statusCode ?? 101, firstMessage: null, error: 'first message larger than 64 KB' })
+        take()
+      })
       socket.on('close', () => finish({ upgraded: true, status: res.statusCode ?? 101, firstMessage: null }))
       socket.on('error', () => finish({ upgraded: true, status: res.statusCode ?? 101, firstMessage: null }))
       take()

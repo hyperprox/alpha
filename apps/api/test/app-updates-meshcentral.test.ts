@@ -4,6 +4,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { spawnSync } from 'node:child_process'
 import type { AppContext, AppInstall } from '../src/lib/plugin-host'
 import {
   ORIGIN_CHECK_SINCE, type MeshFacts, ciGet, fixFor, meshcentralProvider as P, originVerdict, proposedAllowedOrigin, withAllowedOrigin,
@@ -14,7 +18,7 @@ const e = (s: string) => Buffer.from(s).toString('base64')
 const PUBLIC = 'mesh.example.com'
 
 const NPM: NpmInstall = {
-  dir: '/opt/meshcentral', pkg: 'meshcentral', installed: '1.1.53', spec: '1.1.53', exact: true, owner: 'mesh',
+  dir: '/opt/meshcentral', pkg: 'meshcentral', installed: '1.1.53', spec: '1.1.53', exact: true, section: 'dependencies', owner: 'mesh',
   unit: 'meshcentral.service', unitUser: 'mesh', active: true, mainPid: 100, nodeBin: '/usr/bin/node',
   command: '/usr/bin/node /opt/meshcentral/node_modules/meshcentral', files: {},
 }
@@ -22,7 +26,7 @@ const NPM: NpmInstall = {
 function facts(config: any, over: Partial<MeshFacts> = {}): MeshFacts {
   const configText = config === null ? null : JSON.stringify(config, null, 2)
   return {
-    npm: NPM, datapath: '/opt/meshcentral/meshcentral-data', configFile: '/opt/meshcentral/meshcentral-data/config.json',
+    npm: NPM, datapath: '/opt/meshcentral/meshcentral-data', dataDir: '/opt/meshcentral/meshcentral-data', configFile: '/opt/meshcentral/meshcentral-data/config.json',
     configText, config, certName: 'mesh.lan', port: 4430, errLog: { size: 0, mtime: 0 }, ...over,
   }
 }
@@ -51,7 +55,7 @@ function ctxFor(g: Guest): AppContext & { scripts: string[]; probes: any[] } {
       c.scripts.push(script)
       if (script.includes('HP_STATE')) return { code: 0, output: `HP_STATE ${next(g.states)}\n`, timedOut: false }
       if (script.includes('HP_ERRLOG')) return { code: 0, output: `HP_CN ${e('mesh.lan')}\nHP_ERRLOG ${next(g.errSize)} 1\n`, timedOut: false }
-      if (script.startsWith('tail -c')) return { code: 0, output: g.errTail, timedOut: false }
+      if (script.includes('tail -c +')) return { code: 0, output: g.errTail, timedOut: false }
       if (script.includes('HP_FILE')) return { code: 0, output: `HP_OWNER ${e('mesh')}\nHP_FILE package -\nHP_FILE installed ${e(JSON.stringify({ version: g.version }))}\n`, timedOut: false }
       return { code: 0, output: 'HP_RESTARTED\n', timedOut: false }
     },
@@ -123,6 +127,14 @@ test('pre-flight: blocking before an update into the origin check, with the exac
   assert.notEqual(fix.id, fixFor(facts({ settings: { cert: 'mesh.lan', port: 4431 } }), [PUBLIC])!.id, 'a changed file is a different fix')
 })
 
+test('pre-flight: a hostname served by a named domain is judged there and gets no default-domain fix', async () => {
+  const f = facts({ domains: { '': {}, customer: { dns: PUBLIC, allowedOrigin: ['x.example.com'] } } })
+  const [issue] = await P.preflight(install(f), '1.3.1', ctxFor(guest()))
+  assert.equal(issue.blocking, true)
+  assert.match(issue.message, /domain "customer"/)
+  assert.equal(issue.fix, undefined)
+})
+
 test('pre-flight: a target before the check only warns; a passing config has no issue; no URL is said', async () => {
   const before = await P.preflight(install(facts({})), '1.2.0', ctxFor(guest()))
   assert.equal(before[0].blocking, false)
@@ -151,7 +163,7 @@ test('detect: the unit, the install and its config, read through the npm helper'
       scripts.push(s)
       if (s.includes('HP_DISCOVER_DONE')) return { code: 0, output: `HP_UNIT ${e('meshcentral.service')} ${e(unitShow)}\nHP_DISCOVER_DONE\n`, timedOut: false }
       if (s.includes('HP_FILE')) return { code: 0, timedOut: false, output: [
-        `HP_OWNER ${e('mesh')}`, `HP_FILE package ${e('{"dependencies":{"meshcentral":"1.1.53"}}')}`,
+        `HP_REAL ${e('/opt/meshcentral')}`, `HP_OWNER ${e('mesh')}`, `HP_FILE package ${e('{"dependencies":{"meshcentral":"1.1.53"}}')}`,
         `HP_FILE installed ${e('{"version":"1.1.53"}')}`, `HP_FILE config ${e(JSON.stringify(config))}`,
       ].join('\n') }
       return { code: 0, output: `HP_CN ${e('mesh.lan')}\nHP_ERRLOG 120 1700000000\n`, timedOut: false }
@@ -226,12 +238,53 @@ test('applyFix: refuses a stale approval; writes exactly the shown list, checked
   assert.equal(r.ok, true, r.message)
   const script = ctx.scripts.find(s => s.includes('HP_CONFIG_WRITTEN'))!
   assert.match(script, new RegExp(`want='${createHash('sha256').update(f.configText!).digest('hex')}'`))
-  assert.ok(script.indexOf('cp -P -p') < script.indexOf('mv -f'), 'backed up before it is replaced')
-  const b64 = /printf %s '([A-Za-z0-9+/=]+)' \| base64 -d/.exec(script)![1]
+  assert.ok(script.indexOf('hp-bak-XXXXXX') < script.indexOf('mv -f'), 'backed up before it is replaced')
+  assert.match(script, /runuser -u "\$o" -- bash -c "\$inner"/, 'written as the file owner, not as root')
+  assert.doesNotMatch(script, /cp -p/)
+  const b64 = /printf %s '([A-Za-z0-9+/=]+)' \| /.exec(script)![1]
   const written = JSON.parse(Buffer.from(b64, 'base64').toString('utf8'))
   assert.deepEqual(written, { settings: { cert: 'mesh.lan' }, domains: { '': { title: 'Mesh', allowedOrigin: ['mesh.lan', PUBLIC] } } })
   assert.match(script, /systemctl restart "\$unit"/)
 
   const nothing = await P.applyFix!(install(f13), 'whatever0000', ctxFor(guest()))
   assert.deepEqual([nothing.ok, /nothing to change/.test(nothing.message)], [true, true])
+})
+
+// The fix script itself, run by bash on a real file (root-owned here) with a stub systemctl.
+const asRoot = process.getuid?.() === 0
+test('applyFix script, executed: backs up, replaces the file in place of its mode, restarts; refuses a changed file', { skip: !asRoot && 'needs root' }, async () => {
+  const root = fs.mkdtempSync(path.join(os.homedir(), '.hp-mesh-test-'))
+  try {
+    const data = path.join(root, 'meshcentral-data'), sys = path.join(root, 'sys')
+    fs.mkdirSync(data, { mode: 0o755 }); fs.mkdirSync(sys)
+    fs.chmodSync(data, 0o755)
+    const cfgFile = path.join(data, 'config.json')
+    const original = JSON.stringify({ settings: { cert: 'mesh.lan' }, domains: { '': { title: 'Mesh' } } })
+    fs.writeFileSync(cfgFile, original, { mode: 0o640 })
+    fs.writeFileSync(path.join(sys, 'systemctl'), `#!/bin/sh\necho "systemctl $*" >> ${root}/log\n`, { mode: 0o755 })
+    const f = { ...facts(JSON.parse(original)), configText: original, configFile: cfgFile, datapath: data }
+    let script = ''
+    const ctx = ctxFor(guest())
+    ctx.run = async (s: string) => {
+      script = s
+      const r = spawnSync('bash', ['-s'], { input: s, env: { PATH: `${sys}:/usr/sbin:/usr/bin:/sbin:/bin` }, encoding: 'utf8' })
+      return { code: r.status ?? -1, output: r.stdout + r.stderr, timedOut: false }
+    }
+    const r = await P.applyFix!(install(f), fixFor(f, [PUBLIC])!.id, ctx)
+    assert.equal(r.ok, true, r.message + '\n' + r.output)
+    assert.deepEqual(JSON.parse(fs.readFileSync(cfgFile, 'utf8')).domains[''].allowedOrigin, ['mesh.lan', PUBLIC])
+    assert.equal(fs.statSync(cfgFile).mode & 0o777, 0o640)
+    const baks = fs.readdirSync(data).filter(n => n.startsWith('config.json.hp-bak-'))
+    assert.equal(baks.length, 1)
+    assert.equal(fs.readFileSync(path.join(data, baks[0]), 'utf8'), original)
+    assert.match(fs.readFileSync(path.join(root, 'log'), 'utf8'), /systemctl restart meshcentral\.service/)
+    assert.ok(script)
+
+    // The file changed since it was read: nothing written.
+    const now = fs.readFileSync(cfgFile, 'utf8')
+    const again = await P.applyFix!(install(f), fixFor(f, [PUBLIC])!.id, ctx)
+    assert.equal(again.ok, false)
+    assert.match(again.message, /changed since it was read/)
+    assert.equal(fs.readFileSync(cfgFile, 'utf8'), now)
+  } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })

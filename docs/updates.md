@@ -154,8 +154,9 @@ anything changes. A *blocking* issue keeps the update out of the plan — even i
 mode — until it is resolved. When the provider can resolve it, it offers the exact config
 change, word for word, with its own approval (`fix:...`): approve that too and it runs as a
 separate **App config change** step before the update, after checking the file is still the
-one you approved (otherwise it refuses and asks again). The previous file is kept beside it
-as `<name>.hp-<time>.bak`. Config is never changed as a side effect of an update, and never
+one you approved (otherwise it refuses and asks again). It is written as the file's owner,
+never as root into a directory the app's user can write, and the previous file is kept
+beside it as `<name>.hp-bak-XXXXXX`. Config is never changed as a side effect of an update, and never
 without that approval.
 
 **How an npm app is updated** (the shared npm-app helper, `lib/app-updates/npm-app.ts`):
@@ -170,9 +171,15 @@ without that approval.
 5. the unit is started;
 6. the provider's **verify** runs — a real functional check, not a health endpoint.
 
-Only installs run by a **system** unit are updated (one started by hand or by a user service
-cannot be stopped first, and is listed with the reason). npm and node found in the guest
-are never run as root unless the install itself runs as root and root owns those binaries.
+Only installs that a **system unit file** declares are updated, by their real (symlink-free)
+path, with the node binary that unit's `ExecStart` names. A process alone never makes an
+install updatable — any user can start one, and a cron job runs inside `cron.service` —
+so one started by hand, from cron or by a user service is listed with the reason. npm
+runs as the install's owner, and HyperProx refuses when that is not the user the unit runs
+as. node and npm are resolved once and run by their real paths; as root, only when they and
+every directory above them are root-owned and writable by nobody else. The approval id
+covers the install's real path, unit, owner and node binary, so if any of them changes
+before the run, the approval matches nothing.
 
 **When it fails.** The step fails with the provider's reason and its rollback, naming the
 snapshot; **nothing is rolled back on its own**, and a service that failed mid-install is
@@ -185,19 +192,24 @@ Rolling back undoes everything the run did to the guest, apt packages included.
 
 **MeshCentral specifics.** Found by its systemd unit and process command line
 (`node …/node_modules/meshcentral`), `meshcentral-data/config.json` and `package.json`.
-Config keys are read case-insensitively, as MeshCentral does. From 1.2.1 MeshCentral refuses
+Config keys are read case-insensitively, as MeshCentral does; `config.json` is read from
+`--datapath` when the unit passes one. Its files are read as the unit's user, never through
+a link. From 1.2.1 MeshCentral refuses
 browser sessions whose Origin hostname is not the certificate name, the domain's `dns` or in
 `allowedOrigin`; behind a reverse proxy on another hostname every sign-in then fails with
 "Invalid origin in HTTP request" while `/health.ashx` still says "ok". So the pre-flight
 replays that check for the public hostnames and, if one would be refused, offers
 `domains[""].allowedOrigin` with the public hostnames and the certificate name (once the
-list exists, MeshCentral checks only the list). Verify then: the installed version is the
+list exists, MeshCentral checks only the list), keeping every entry already there. A
+hostname served by a named domain (its `dns`) is judged by that domain and gets no
+automatic fix. Verify then: the installed version is the
 planned one; the unit is active on one pid with no npm still running behind it; the login
 page loads through the **public URL**; `control.ashx` opens as a websocket with that
 URL's Origin and does not answer `invalidorigin`; the service is still up on the same pid
 afterwards; and `mesherrors.txt` gained nothing since the update started. The public URL is
 the plug-in's `public_url` setting, or else the proxy hosts HyperProx manages that forward to
-the guest's MeshCentral port.
+the guest's MeshCentral port (matched against the addresses the guest reports for itself, so
+set `public_url` where that matters). The page check follows redirects on the same host only.
 
 ## When something fails
 
