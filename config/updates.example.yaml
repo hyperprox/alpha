@@ -48,6 +48,7 @@ guests:
   "205":     { docker: auto, compose_dirs: [/opt/stack] }        # compose pull + up -d, then all healthy
   "225":     { docker: manual }                                  # report new images, never pull
   "301":     { check: "http://127.0.0.1:8080/health" }           # fetched from inside the guest after updating
+  "302":     { apps: false }                                     # do not look for plug-in apps in this guest
 
 batch_size: 3                  # default 3. Guests updated at the same time.
 min_root_free_mb: 1024         # default 1024. Preflight stops when a node's / has less free.
@@ -56,6 +57,13 @@ self:
   node_order: last             # HyperProx's own node and guest go after everything else
   # vmid: 101                  # HyperProx's own container. Left out: the container whose name
                                # matches this host's hostname, when exactly one does.
+
+apps:
+  enabled: true                # default true. Look for apps plug-ins know (npm installs and the like); read-only.
+  default: manual              # default manual: an app update runs only when approved for a run.
+                               # auto: every run applies it, scheduled ones included. off: listed, never updated.
+  # meshcentral: auto          # per app, by provider id
+  # A config change a provider offers (MeshCentral's allowedOrigin, say) always needs its own approval.
 
 notify:
   # webhook_url: https://chat.example.com/hooks/updates   # gets a one-line summary ({"content": ...})
