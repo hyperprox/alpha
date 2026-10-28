@@ -10,6 +10,7 @@ import { Btn, ConfirmDialog, Empty, Notice, Panel, fmtTime } from '@/components/
 import { PolicyStrip } from '@/components/updates/PolicyStrip'
 import { NodesTable } from '@/components/updates/NodesTable'
 import { GuestsTable } from '@/components/updates/GuestsTable'
+import { AppsTable, appRows, offeredApprovals } from '@/components/updates/AppsTable'
 import { PlanList } from '@/components/updates/PlanList'
 import { JobPanel, type LogLine } from '@/components/updates/JobPanel'
 import { History } from '@/components/updates/History'
@@ -42,6 +43,13 @@ export default function UpdatesPage() {
   const [notice, setNotice] = useState<{ tone: 'warn' | 'crit' | 'info'; text: string } | null>(null)
   const [reboot, setReboot] = useState<UpdatesNode | null>(null)
   const [scope, setScope] = useState<UpdatesScope>('all')
+  // App updates and config changes approved for the next run. Kept on the page only: an approval is
+  // for one run, and travels with that run's start request.
+  const [approvals, setApprovals] = useState<string[]>([])
+  const [rollback, setRollback] = useState<string | null>(null)
+  // Read through a ref so a tick of a box re-reads the plan without rebuilding every loader (and the socket).
+  const approvalsRef = useRef<string[]>([])
+  approvalsRef.current = approvals
 
   // The socket handlers outlive any one render, so they read the active job through a ref.
   const activeRef = useRef<UpdatesJob | null>(null)
@@ -55,7 +63,11 @@ export default function UpdatesPage() {
   }, [])
 
   const loadPlan = useCallback(async () => {
-    const r = await apiJson<UpdatesPlan>('/api/updates/plan' + (scope === 'guests' ? '?scope=guests' : ''))
+    const q = new URLSearchParams()
+    if (scope === 'guests') q.set('scope', 'guests')
+    if (approvalsRef.current.length) q.set('approve', approvalsRef.current.join(','))
+    const qs = q.toString()
+    const r = await apiJson<UpdatesPlan>('/api/updates/plan' + (qs ? `?${qs}` : ''))
     if (r.ok && r.body) { setPlan(r.body); setErr('plan', undefined) } else { setPlan(null); setErr('plan', apiError(r, 'plan')) }
   }, [scope])
 
@@ -99,6 +111,15 @@ export default function UpdatesPage() {
     if (!allowed) return
     loadPolicy(); loadInventory(false); loadPlan(); loadJobs()
   }, [allowed, loadPolicy, loadInventory, loadPlan, loadJobs])
+
+  useEffect(() => { if (allowed) loadPlan() }, [allowed, approvals, loadPlan])
+
+  // An approval names one version of one install; once the inventory no longer offers it, it is dropped.
+  useEffect(() => {
+    if (!inv) return
+    const offered = offeredApprovals(inv.guests)
+    setApprovals(a => (a.every(id => offered.has(id)) ? a : a.filter(id => offered.has(id))))
+  }, [inv])
 
   // Live events. After any reconnect the job is re-read, since events sent while the socket was down are gone.
   useEffect(() => {
@@ -176,7 +197,7 @@ export default function UpdatesPage() {
 
   const start = async (mode: 'run' | 'dry-run') => {
     setBusy(true); setNotice(null)
-    const r = await apiJson<{ job: UpdatesJob }>('/api/updates/jobs', 'POST', { mode, scope })
+    const r = await apiJson<{ job: UpdatesJob }>('/api/updates/jobs', 'POST', { mode, scope, approve: approvals })
     setBusy(false)
     if (!r.ok || !r.body?.job) {
       if (!adoptConflict(r)) setNotice({ tone: 'crit', text: apiError(r, 'job start') })
@@ -184,6 +205,8 @@ export default function UpdatesPage() {
     }
     const job = r.body.job
     setDetail(d => ({ ...d, [job.id]: job }))
+    // A real run has taken the approvals with it; a dry run leaves them for the run after.
+    if (mode === 'run') setApprovals([])
     if (ACTIVE.includes(job.status)) { setLogs([]); setActive(job) }
     else { setExpanded(job.id); loadJobs() }
   }
@@ -211,6 +234,18 @@ export default function UpdatesPage() {
     }
     setLogs([]); setActive(r.body.job)
   }
+
+  const doRollback = async () => {
+    const target = rollback
+    if (!target || !active) return
+    setRollback(null); setBusy(true); setNotice(null)
+    const r = await apiJson<{ job: UpdatesJob }>(`/api/updates/jobs/${encodeURIComponent(active.id)}/rollback`, 'POST', { target })
+    setBusy(false)
+    if (!r.ok || !r.body?.job) { setNotice({ tone: 'crit', text: apiError(r, 'rollback') }); return }
+    setActive(a => (a ? { ...r.body!.job, steps: r.body!.job.steps?.length ? r.body!.job.steps : a.steps } : r.body!.job))
+  }
+
+  const approve = (id: string, on: boolean) => setApprovals(a => (on ? (a.includes(id) ? a : [...a, id]) : a.filter(x => x !== id)))
 
   const toggleHistory = (id: string) => {
     const next = expanded === id ? null : id
@@ -255,7 +290,8 @@ export default function UpdatesPage() {
 
       {active && (
         <JobPanel job={active} logs={logs} busy={busy}
-                  onConfirm={() => jobAction('confirm')} onCancel={() => jobAction('cancel')} onResume={() => jobAction('resume')} />
+                  onConfirm={() => jobAction('confirm')} onCancel={() => jobAction('cancel')} onResume={() => jobAction('resume')}
+                  onRollback={setRollback} />
       )}
 
       <Panel title="Nodes">
@@ -272,6 +308,16 @@ export default function UpdatesPage() {
           : <GuestsTable guests={inv.guests} />}
       </Panel>
 
+      {inv && appRows(inv.guests).length > 0 && (
+        <Panel title="Apps" right={
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            Installed outside apt and docker, found by plug-ins. {approvals.length ? `${approvals.length} approved for the next run.` : 'Manual updates run only when approved.'}
+          </span>
+        }>
+          <AppsTable guests={inv.guests} approvals={approvals} onApprove={approve} disabled={jobActive || busy} />
+        </Panel>
+      )}
+
       {!active && (
         <Panel title="Plan preview">
           <div className="p-5">
@@ -286,6 +332,21 @@ export default function UpdatesPage() {
         {errs.jobs ? <div className="p-5"><Notice tone="warn">{errs.jobs}</Notice></div>
           : <History jobs={inactiveJobs} detail={detail} expanded={expanded} onToggle={toggleHistory} />}
       </Panel>
+
+      {rollback && active && (
+        <ConfirmDialog title={`Roll ${rollback} back?`} onClose={() => setRollback(null)}>
+          <ul className="list-disc space-y-1.5 pl-5 text-sm" style={{ color: 'var(--text-soft)' }}>
+            <li>The guest is rolled back to the snapshot this run took before touching it, and started again.</li>
+            <li>Everything this run did to it is undone: apt packages and images as well as the app.</li>
+            <li>Anything written inside the guest since the snapshot is lost.</li>
+            <li>The job stays paused; Resume then carries on with the rest of the run.</li>
+          </ul>
+          <div className="flex justify-end gap-2">
+            <Btn kind="danger" onClick={doRollback}>Roll back {rollback}</Btn>
+            <Btn onClick={() => setRollback(null)}>Cancel</Btn>
+          </div>
+        </ConfirmDialog>
+      )}
 
       {reboot && (
         <ConfirmDialog title={`Reboot ${reboot.node}?`} onClose={() => setReboot(null)}>

@@ -11,7 +11,8 @@ const STATUS_TONE: Record<string, 'accent' | 'good' | 'warn' | 'crit' | 'muted'>
   'planned': 'muted', 'awaiting-confirm': 'warn', 'running': 'accent', 'paused': 'warn', 'failed': 'crit', 'done': 'good', 'cancelled': 'muted',
 }
 
-export function StepList({ steps }: { steps: UpdatesStep[] }) {
+/** `onRollback`: offered on a failed app step while the job is paused (the guest's snapshot is restored). */
+export function StepList({ steps, onRollback }: { steps: UpdatesStep[]; onRollback?: (target: string) => void }) {
   const [open, setOpen] = useState<string | null>(null)
   return (
     <ol className="divide-y rounded-md border" style={{ borderColor: 'var(--border)' }}>
@@ -27,6 +28,9 @@ export function StepList({ steps }: { steps: UpdatesStep[] }) {
               <span className="min-w-0 flex-1 truncate text-xs" style={{ color: s.status === 'failed' ? 'var(--crit-soft)' : 'var(--text-muted)' }} title={s.reason ?? s.detail}>
                 {s.reason ?? s.detail}
               </span>
+              {onRollback && s.status === 'failed' && (s.action === 'app' || s.action === 'app-config') && (
+                <Btn small kind="danger" onClick={() => onRollback(s.target)}>Roll back {s.target}</Btn>
+              )}
               {s.output && (
                 <button type="button" onClick={() => setOpen(open === s.id ? null : s.id)} aria-expanded={open === s.id}
                         className="shrink-0 text-xs underline-offset-2 hover:underline" style={{ color: 'var(--text-soft)' }}>
@@ -62,13 +66,14 @@ function LogTail({ lines, steps }: { lines: LogLine[]; steps: UpdatesStep[] }) {
   )
 }
 
-export function JobPanel({ job, logs, busy, onConfirm, onCancel, onResume }: {
+export function JobPanel({ job, logs, busy, onConfirm, onCancel, onResume, onRollback }: {
   job: UpdatesJob
   logs: LogLine[]
   busy: boolean
   onConfirm: () => void
   onCancel: () => void
   onResume: () => void
+  onRollback?: (target: string) => void
 }) {
   const awaiting = job.status === 'awaiting-confirm'
   const done = job.steps.filter(s => s.status === 'ok' || s.status === 'skipped').length
@@ -103,7 +108,9 @@ export function JobPanel({ job, logs, busy, onConfirm, onCancel, onResume }: {
           </>
         ) : (
           <>
-            {job.steps.length > 0 ? <StepList steps={job.steps} /> : <PlanList plan={job.plan} />}
+            {job.steps.length > 0
+              ? <StepList steps={job.steps} onRollback={job.status === 'paused' && !busy ? onRollback : undefined} />
+              : <PlanList plan={job.plan} />}
             <LogTail lines={logs} steps={job.steps} />
             {(job.status === 'running' || job.status === 'paused') && (
               <div className="flex items-center gap-3">
