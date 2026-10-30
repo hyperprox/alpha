@@ -21,12 +21,22 @@ export class PreparedStore<T> {
   constructor(
     private readonly ttlMs: number = 30 * 60_000,
     private readonly now: () => number = Date.now,
+    /** Most entries one owner may hold; a new one beyond it evicts their oldest. */
+    private readonly perOwner: number = 20,
   ) {}
+
+  /** How many entries are held (expired ones included until the next sweep). */
+  size(): number {
+    return this.entries.size
+  }
 
   /** Keeps `payload` for `owner` and returns the id that names it. */
   put(owner: string, payload: T): string {
     if (!owner) throw new Error('A prepared entry needs an owner')
     this.sweep()
+    // Map iteration is insertion order, so the first of this owner's is the oldest.
+    const mine = [...this.entries.values()].filter(e => e.owner === owner)
+    for (const e of mine.slice(0, Math.max(0, mine.length - this.perOwner + 1))) this.entries.delete(e.id)
     const id = randomUUID()
     this.entries.set(id, { id, owner, createdAt: this.now(), payload })
     return id
@@ -38,14 +48,10 @@ export class PreparedStore<T> {
    * guessing at another user's id cannot use it up.
    */
   take(id: string, owner: string): Prepared<T> | null {
+    this.sweep()
     if (typeof id !== 'string' || !owner) return null
     const entry = this.entries.get(id)
-    if (!entry) return null
-    if (this.expired(entry)) {
-      this.entries.delete(id)
-      return null
-    }
-    if (entry.owner !== owner) return null
+    if (!entry || entry.owner !== owner) return null
     this.entries.delete(id)
     return entry
   }

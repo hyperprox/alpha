@@ -30,6 +30,16 @@ function pve(): ProxmoxClient {
   )
 }
 
+/**
+ * The names of the sources that could not be read. A source that failed reads
+ * as empty in the facts (no used IDs, no zones), and an empty list is exactly
+ * what lets an audit pass that should not — so the failure has to be carried
+ * alongside, not swallowed.
+ */
+export function failedSources(results: Record<string, PromiseSettledResult<unknown>>): string[] {
+  return Object.entries(results).filter(([, r]) => r.status === 'rejected').map(([name]) => name)
+}
+
 export async function gatherFacts(): Promise<ClusterFacts> {
   const client = pve()
 
@@ -52,6 +62,10 @@ export async function gatherFacts(): Promise<ClusterFacts> {
     })(),
     client.fetchNode<any[]>('/cluster/resources?type=vm'),
   ])
+
+  const partial = failedSources({
+    nodes: nodesR, storage: storageR, nextid: nextidR, proxy: proxyR, dns: dnsR, resources: resourcesR,
+  })
 
   const nodes = nodesR.status === 'fulfilled' ? nodesR.value : []
   const storage = storageR.status === 'fulfilled' ? storageR.value : []
@@ -120,5 +134,6 @@ export async function gatherFacts(): Promise<ClusterFacts> {
         (await getProviderCredentials('proxy', 'npm').catch(() => null))?.url),
       installable: CATALOGUE.map(r => r.name),
     },
+    partial,
   }
 }

@@ -99,6 +99,18 @@ export function planJsonSchema(): Record<string, unknown> {
 }
 
 /**
+ * The fact sources auditPlan relies on. If one of these could not be read, its
+ * check passes against an empty list — a taken ID looks free, a zone check is
+ * skipped — so a plan must not be executed on such facts.
+ */
+export const AUDIT_SOURCES = ['nodes', 'storage', 'dns', 'resources'] as const
+
+/** The audit-relevant sources that failed in these facts, if any. */
+export function unreadAuditSources(facts: ClusterFacts): string[] {
+  return (facts.partial ?? []).filter(s => (AUDIT_SOURCES as readonly string[]).includes(s))
+}
+
+/**
  * Checks a plan against what the cluster can actually do.
  *
  * A schema-valid plan can still be undeployable — a node that cannot fit it, a
@@ -208,6 +220,11 @@ export interface ClusterFacts {
   nextVmid:  number
   /** Container IDs already taken by a VM or container anywhere in the cluster. */
   usedVmids?: number[]
+  /**
+   * Sources that could not be read this time (see AUDIT_SOURCES). Their part of
+   * the facts is empty, which is not the same as the cluster having none.
+   */
+  partial?: string[]
   /** The vmbr0 gateway, read from a node's network config. '' when none is set. */
   gateway:   string
   /**
