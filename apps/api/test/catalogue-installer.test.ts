@@ -54,10 +54,26 @@ test("no Debian or Ubuntu template is refused before anything is created", async
 })
 
 // ── startInstall: the reuse path and generated admin logins ──────────────────
-import { startInstall, getInstallJob, type InstallDeps } from "../src/lib/catalogue-installer"
+import { startInstall, getInstallJob, readAdminCredential, ADMIN_CREDENTIAL_WINDOW_MS, type InstallDeps } from "../src/lib/catalogue-installer"
 import { wizardRecipes } from "../src/lib/catalogue"
 
-function installDeps(ostype: string | undefined, scripts: string[], logged: string[] = []): InstallDeps {
+class FakeVault {
+  open = true
+  items = new Map<string, Record<string, string>>()
+  deps = {
+    vaultOpen:   async () => this.open,
+    saveSecrets: async (c: string, p: string, v: Record<string, string>) => {
+      if (!this.open) throw new Error("locked")
+      this.items.set(`${c}/${p}`, { ...(this.items.get(`${c}/${p}`) ?? {}), ...v })
+    },
+    readSecrets: async (c: string, p: string) => {
+      if (!this.open) throw new Error("locked")
+      return { ...(this.items.get(`${c}/${p}`) ?? {}) }
+    },
+  }
+}
+
+function installDeps(ostype: string | undefined, scripts: string[], logged: string[] = [], vault = new FakeVault()): InstallDeps {
   const pve: any = {
     getClusterResources: async () => [{ vmid: 130, type: "lxc", node: "pve1", status: "running" }],
     getNodes: async () => [],
@@ -71,7 +87,7 @@ function installDeps(ostype: string | undefined, scripts: string[], logged: stri
     },
   }
   return {
-    client: pve, wait: async () => {}, credential: async () => ({ id: "c" }), probe: async () => 200,
+    ...vault.deps, client: pve, wait: async () => {}, credential: async () => ({ id: "c" }), probe: async () => 200,
     exec: async o => { scripts.push(o.script); o.onData("installing\n"); logged.push("installing\n"); return { code: 0, output: "", timedOut: false } as any },
   }
 }
@@ -103,19 +119,47 @@ test("an unknown ostype is refused and nothing runs", async () => {
   assert.equal(scripts.length, 0)
 })
 
-test("a Grafana install passes a generated admin password, returns it once, and logs nothing of it", async () => {
-  const scripts: string[] = [], logged: string[] = []
-  const first = await done((await startInstall({ recipeId: "grafana", intoVmid: 130 }, installDeps("debian", scripts, logged))).jobId)
-  const pw = first.adminCredential!.password
+test("a Grafana install passes a generated password, keeps it in the vault, and the job holds only a reference", async () => {
+  const scripts: string[] = [], logged: string[] = [], vault = new FakeVault()
+  const deps = installDeps("debian", scripts, logged, vault)
+  const job = await done((await startInstall({ recipeId: "grafana", intoVmid: 130 }, deps)).jobId)
+  const stored = vault.items.get("apps/grafana-130")!
+  const pw = stored.admin_password
   assert.ok(pw.length >= 16); assert.notEqual(pw.toLowerCase(), "admin")
-  assert.equal(first.adminCredential!.user, "admin")
+  assert.equal(stored.admin_user, "admin")
   assert.match(scripts[0], new RegExp(`GF_SECURITY_ADMIN_PASSWORD=${pw}\\n`))
   assert.doesNotMatch(scripts[0], /:-admin/)
-  assert.ok(!JSON.stringify({ ...first, adminCredential: undefined }).includes(pw), "not in the job's log or steps")
+  assert.ok(!JSON.stringify(job).includes(pw), "not in the job at all: log, steps or reference")
   assert.ok(!logged.join("").includes(pw))
+  assert.deepEqual(job.adminCredential!.vault, { category: "apps", provider: "grafana-130", key: "admin_password" })
+  assert.deepEqual(await readAdminCredential(job, deps), { user: "admin", password: pw })
   // Each install gets its own.
-  const second = await done((await startInstall({ recipeId: "grafana", intoVmid: 130 }, installDeps("debian", scripts))).jobId)
-  assert.notEqual(second.adminCredential!.password, pw)
+  await done((await startInstall({ recipeId: "grafana", intoVmid: 130 }, installDeps("debian", scripts, [], vault))).jobId)
+  assert.ok(vault.items.get("apps/grafana-130")!.admin_password !== pw)
+})
+
+test("the admin login is served only while fresh and the vault is unlocked", async () => {
+  const vault = new FakeVault(), deps = installDeps("debian", [], [], vault)
+  const job = await done((await startInstall({ recipeId: "grafana", intoVmid: 130 }, deps)).jobId)
+  const at = job.adminCredential!.issuedAt
+  assert.ok(await readAdminCredential(job, deps, () => at + 1000))
+  assert.equal(await readAdminCredential(job, deps, () => at + ADMIN_CREDENTIAL_WINDOW_MS + 1), undefined)
+  vault.open = false
+  assert.equal(await readAdminCredential(job, deps, () => at + 1000), undefined)
+})
+
+test("a locked vault refuses a Grafana install before anything runs", async () => {
+  const scripts: string[] = [], vault = new FakeVault()
+  vault.open = false
+  await assert.rejects(startInstall({ recipeId: "grafana", intoVmid: 130 }, installDeps("debian", scripts, [], vault)), /vault is locked/)
+  assert.equal(scripts.length, 0)
+})
+
+test("a vault write that fails stops the install before the script runs", async () => {
+  const scripts: string[] = [], vault = new FakeVault(), deps = installDeps("debian", scripts, [], vault)
+  deps.saveSecrets = async () => { throw new Error("vault write failed") }
+  const job = await done((await startInstall({ recipeId: "grafana", intoVmid: 130 }, deps)).jobId)
+  assert.equal(job.status, "failed"); assert.equal(scripts.length, 0); assert.equal(job.adminCredential, undefined)
 })
 
 test("a recipe with no environment admin returns no credential", async () => {

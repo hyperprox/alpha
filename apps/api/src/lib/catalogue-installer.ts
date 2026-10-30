@@ -15,7 +15,7 @@ import { installScript, distroOf, type Distro } from './install-script'
 import { pickTemplate } from './wizard-placement'
 import type { CreatePVE } from './wizard-executor'
 import type { ExecResult } from './node-exec'
-import { setCredential } from './credentials'
+import { setCredential, setCredentials, getProviderCredentials } from './credentials'
 import { saveSettings, getSettings } from './plugin-host'
 import { PLUGINS } from '../plugins'
 
@@ -38,11 +38,11 @@ export interface InstallJob {
   url?:     string
   error?:   string
   /**
-   * Admin login the installer generated, for recipes that take one from the environment. Set when
-   * the install completes and removed the first time the job is read, so it is shown once. It is
-   * never logged and never stored.
+   * Where the admin login the installer generated is kept, for recipes that take one from the
+   * environment. A reference only: the password lives in the vault (masked) and is read from there
+   * when the job is fetched. It is never logged and never held in job memory.
    */
-  adminCredential?: { user: string; password: string }
+  adminCredential?: { user: string; vault: { category: string; provider: string; key: string }; issuedAt: number }
   startedAt: number
   finishedAt?: number
 }
@@ -59,6 +59,12 @@ export interface InstallDeps {
   exec:        (o: { host: string; cred: any; vmid: number; script: string; timeoutMs: number; onData: (c: string) => void }) => Promise<ExecResult>
   probe:       (url: string) => Promise<number | null>
   wait:        (ms: number) => Promise<unknown>
+  /** Is the vault open for writing? Asked before anything is created. */
+  vaultOpen:   () => Promise<boolean>
+  /** Write several keys of one vault item in a single write. */
+  saveSecrets: (category: string, provider: string, values: Record<string, string>) => Promise<void>
+  /** Read a vault item's keys, or throw if the vault is locked. */
+  readSecrets: (category: string, provider: string) => Promise<Record<string, string>>
 }
 
 const realDeps = (): InstallDeps => ({
@@ -67,7 +73,30 @@ const realDeps = (): InstallDeps => ({
   exec:       o => execInGuest(o),
   probe:      url => fetch(url, { signal: AbortSignal.timeout(4000) }).then(r => r.status).catch(() => null),
   wait:       sleep,
+  vaultOpen:   () => getProviderCredentials('apps', 'vault-probe').then(() => true, () => false),
+  saveSecrets: (c, p, v) => setCredentials(c, p, v),
+  readSecrets: (c, p) => getProviderCredentials(c, p),
 })
+
+/** How long after an install the generated admin login is still served to the page. */
+export const ADMIN_CREDENTIAL_WINDOW_MS = 15 * 60_000
+
+/**
+ * The admin login for a finished install, read from the vault, or undefined when the job has none,
+ * is no longer fresh, or the vault is locked. The page shows it once; the vault keeps it.
+ */
+export async function readAdminCredential(
+  job: InstallJob,
+  deps: Pick<InstallDeps, 'readSecrets'> = realDeps(),
+  now: () => number = Date.now,
+): Promise<{ user: string; password: string } | undefined> {
+  const ref = job.adminCredential
+  if (!ref || job.status !== 'completed' || now() - ref.issuedAt > ADMIN_CREDENTIAL_WINDOW_MS) return undefined
+  try {
+    const password = (await deps.readSecrets(ref.vault.category, ref.vault.provider))[ref.vault.key]
+    return password ? { user: ref.user, password } : undefined
+  } catch { return undefined }
+}
 
 function pve(): ProxmoxClient {
   return new ProxmoxClient(
@@ -257,6 +286,9 @@ export async function startInstall(opts: {
 
   // Throws before a job exists, so a refusal is an error the caller sees rather
   // than a job that fails asynchronously three minutes later.
+  if (recipe.firstRun.kind === 'env-admin' && !await deps.vaultOpen()) {
+    throw new Error(`${recipe.name} gets a generated admin password, which is saved in the vault, and the vault is locked. Sign in to unlock it and try again.`)
+  }
   const target = await preflight(deps, opts)
 
   const reuse = typeof opts.intoVmid === 'number'
@@ -322,6 +354,9 @@ export async function startInstall(opts: {
       if (recipe.firstRun.kind === 'env-admin' && admin) {
         env[recipe.firstRun.passwordEnv] = admin.password
         if (recipe.firstRun.userEnv) env[recipe.firstRun.userEnv] = admin.user
+        // Saved before the install runs: a password that exists only in a script that already ran
+        // is a lockout. If the vault write fails, nothing is installed.
+        await deps.saveSecrets('apps', `${recipe.id}-${job.vmid}`, { admin_user: admin.user, admin_password: admin.password })
       }
       const run = await deps.exec({
         host: nodeIp, cred, vmid: job.vmid!, script: installScript(recipe, distro!, env),
@@ -355,7 +390,7 @@ export async function startInstall(opts: {
       s5.detail = url ? await wireUp(recipe, url) : 'no address, so nothing was configured'
       s5.status = url ? 'done' : 'skipped'
 
-      if (admin) job.adminCredential = admin
+      if (admin) job.adminCredential = { user: admin.user, vault: { category: 'apps', provider: `${recipe.id}-${job.vmid}`, key: 'admin_password' }, issuedAt: Date.now() }
       job.status = 'completed'
     } catch (e: any) {
       job.status = 'failed'
