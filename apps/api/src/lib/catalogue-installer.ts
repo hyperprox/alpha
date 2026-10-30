@@ -111,14 +111,14 @@ async function createContainer(
     memory:       res.memoryMb,
     cores:        res.cores,
     storage:      roots[0].storage,
-    rootfs:       `${roots[0].storage}:${res.diskGb}`,
+    rootfs_size:  res.diskGb,
     net0:         'name=eth0,bridge=vmbr0,ip=dhcp,firewall=1',
-    unprivileged: docker ? 0 : 1,
+    unprivileged: !docker,
     features:     docker ? 'nesting=1,keyctl=1' : 'nesting=1',
-    start:        1,
+    start:        true,
     password:     Math.random().toString(36).slice(-14) + 'Aa1',
     description:  `${recipe.name}, installed by HyperProx on ${new Date().toISOString().slice(0, 10)}`,
-  } as any)
+  })
 
   return { vmid, node }
 }

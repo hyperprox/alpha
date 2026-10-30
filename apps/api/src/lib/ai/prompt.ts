@@ -12,6 +12,7 @@
 // =============================================================================
 
 import type { ClusterFacts } from './plan-schema'
+import { SERVICE_CATALOG } from '../service-recipes'
 
 /** Static half — identical on every request, so it caches cleanly. */
 export const SYSTEM_PROMPT = `You plan service deployments on a Proxmox VE cluster for HyperProx.
@@ -65,6 +66,15 @@ RULES:
      needs one of those and it is missing, say so rather than planning around
      the gap in silence.
 
+4b. Container ID and address. If the user gives a container number, put it in
+   the create_lxc step's "vmid"; otherwise 0. If they give an IP address, put it
+   in "ip" in CIDR form using the network size of the gateway in the cluster
+   facts (a /24 unless the facts show otherwise); otherwise "". Never invent
+   either. For "gateway" use only the gateway in the cluster facts, copied
+   exactly, and only when you set an "ip"; otherwise "". Never guess one: any
+   other gateway is discarded. If the request names a service that is not in
+   the list of services with install recipes, say so in warnings.
+
 5. Every field in the schema must be present. Where a field does not apply to a
    step, use "" for text and 0 for numbers.
 
@@ -101,7 +111,7 @@ export function clusterContext(facts: ClusterFacts): string {
     stores || '  (none reported)',
     '',
     `Next free container ID: ${facts.nextVmid}`,
-    `Gateway: ${facts.gateway || 'unknown'}`,
+    `Gateway for the container network (use only this, never another): ${facts.gateway || 'unknown'}`,
     facts.domains.length
       ? `DNS zones this cluster manages: ${facts.domains.join(', ')}`
       : 'DNS zones: none configured — any domain step will fail until DNS is set up.',
@@ -116,6 +126,7 @@ export function clusterContext(facts: ClusterFacts): string {
     facts.capabilities?.nodesWithLogin?.length
       ? `Installs can run on: ${facts.capabilities.nodesWithLogin.join(', ')}`
       : 'Installs cannot run automatically anywhere — no node has an SSH login stored, so install_service will only print its commands.',
+    `Services with install recipes (anything else cannot be installed): ${Object.keys(SERVICE_CATALOG).join(', ')}`,
     facts.capabilities?.installable?.length
       ? `HyperProx can install these itself if missing: ${facts.capabilities.installable.join(', ')}`
       : '',
