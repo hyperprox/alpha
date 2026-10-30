@@ -356,7 +356,7 @@ early, and the section below says exactly where the edges are.
 |---|---|---|
 | **Anthropic** | An API key | The plan schema constrains generation natively, so a malformed plan is not a failure mode. Defaults to `claude-opus-5-5` (Claude Opus 5.5); set a different model in Settings → AI. |
 | **OpenAI** | An API key | Uses JSON-schema structured output. The base URL is settable, so the same path also reaches OpenRouter, Groq, Together or any OpenAI-compatible server. |
-| **Ollama** | A reachable Ollama server | Free and private. HyperProx does not bundle or install Ollama — point it at one you already run. |
+| **Ollama** | A reachable Ollama server | Free and private. Point it at a server you already run, or enable the bundled CPU-only one (see Local AI below). |
 
 Cloud keys are kept in the vault like every other credential, and are never sent to the browser.
 
@@ -733,8 +733,22 @@ supported as an explicit override; leave it empty unless you need to pin one.
 - 4 CPU cores · 8GB RAM · 100GB SSD
 
 ### With Local AI (Ollama + GPU)
-- Ollama runs on a **separate machine or node** — not inside the HyperProx CT
+- A GPU-backed Ollama should run on a **separate machine or node**. For a small CPU-only test, the bundled `ollama` service (below) runs beside HyperProx
 - 16GB RAM · 16GB VRAM recommended for the Ollama host
+
+### Local AI (bundled Ollama, CPU only)
+
+An optional `ollama` service ships in `docker-compose.yml` under the `ai` profile. It is capped at 3 CPUs and 4 GB,
+and is published on `127.0.0.1:11434` only, because Ollama has no authentication. Start just that service:
+
+```bash
+docker compose --profile ai up -d --no-deps ollama
+docker exec hyperprox-ollama ollama pull <model>
+```
+
+Then point the wizard at it with `PUT /api/ai/provider/ollama` and `{"url":"http://127.0.0.1:11434","model":"<model>"}`
+(or Settings → AI). Models are stored in the `ollama_data` volume. Expect small 4-bit models of about 4B parameters;
+on CPU a plan takes tens of seconds to minutes.
 
 ### Prometheus Storage Planning
 
