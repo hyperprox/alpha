@@ -49,7 +49,8 @@ function deps(over: Record<string, unknown> = {}) {
     },
   }
   return { pve, zones: async () => ["example.com"], proxyHosts: async () => ["a.example.com"],
-           hasReverseProxy: async () => true, hasLogin: async (n: string) => n === "pve1", ...over } as any
+           hasReverseProxy: async () => true, hasLogin: async (n: string) => n === "pve1",
+           records: async (z: string) => (z === "example.com" ? ["@", "www"] : []), ...over } as any
 }
 
 test("node arch comes from the running kernel", async () => {
@@ -164,4 +165,20 @@ test("legacy gatherFacts: a source that reads null or throws lands in partial", 
   assert.ok((await run(["/nodes/pve1/storage"])).partial.includes("storage"))
   assert.ok((await run(["/cluster/nextid"])).partial.includes("nextid"))
   assert.ok((await run([], { zones: async () => { throw new Error("dns") } })).partial.includes("dns"))
+})
+
+test("DNS record names are read per managed zone; a zone that cannot be listed is named in partial", async () => {
+  const f = await gatherTemplateFacts(deps({ zones: async () => ["example.com", "example.net"] }))
+  assert.deepEqual(f.records["example.com"], ["@", "www"])
+  assert.deepEqual(f.records["example.net"], [])
+  const g = await gatherTemplateFacts(deps({ zones: async () => ["example.com", "example.net"],
+    records: async (z: string) => { if (z === "example.net") throw new Error("dns"); return ["@"] } }))
+  assert.deepEqual(g.partial, ["records:example.net"])
+  assert.equal(g.records["example.net"], undefined)
+})
+
+test("a reverse-proxy check that fails is a failed source, not \"none configured\"", async () => {
+  const f = await gatherTemplateFacts(deps({ hasReverseProxy: async () => { throw new Error("vault") } }))
+  assert.equal(f.hasReverseProxy, false)
+  assert.deepEqual(f.partial, ["proxy"])
 })

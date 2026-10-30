@@ -42,7 +42,10 @@ test("exposure: asked when unstated; public needs a reverse proxy and a managed 
   assert.equal(v(full, fx)[0].field, "exposure")
   const fz = facts(); fz.zones = []
   assert.equal(v(full, fz)[0].field, "exposure")
-  assert.deepEqual(v({ ...full, exposure: u("lan"), domain: u("nope.other.org") }, fx), [], "a LAN deploy needs neither")
+  assert.deepEqual(v({ ...without("domain"), exposure: u("lan") }, fx), [], "a LAN deploy needs neither")
+  const fp = facts(); fp.partial = ["proxy"]
+  const [p] = v(full, fp)
+  assert.equal(p.field, "exposure"); assert.doesNotMatch(p.message, /none configured/)
 })
 
 test("ip: bare address gets the bridge prefix; wrong prefix, gateway, network and broadcast are refused", () => {
@@ -81,7 +84,7 @@ test("a vmid outside 100..999999999 is refused", () => {
 })
 
 test("a domain outside the managed zones is asked again, listing zones; one already proxied is refused", () => {
-  for (const d of ["kuma.other.org", "evil-example.com"]) {
+  for (const d of ["kuma.example.net", "evil-example.com"]) {
     const [i] = v({ ...full, domain: u(d) })
     assert.equal(i.field, "domain")
     assert.equal(i.message, "Which hostname should it answer on? Zones I manage: example.com")
@@ -90,7 +93,7 @@ test("a domain outside the managed zones is asked again, listing zones; one alre
   assert.equal(p.field, "domain"); assert.match(p.message, /old\.example\.com is already a proxy host/)
   const [m] = v(without("domain"))
   assert.equal(m.field, "domain"); assert.equal(m.kind, "missing")
-  assert.deepEqual(v({ ...full, domain: u("example.com") }), [], "the apex of a managed zone is allowed")
+  assert.deepEqual(v({ ...full, domain: u(" Kuma.Example.com. ") }), [], "trimmed, lowercased and the trailing dot dropped")
 })
 
 test("a user disk below the Docker floor asks to use 8", () => {
@@ -106,7 +109,7 @@ test("sizes must fit: memory on the node, cores on the node, disk on its storage
   const [c] = v({ ...full, cores: u(6) })
   assert.equal(c.field, "cores"); assert.deepEqual(c.choices, ["4"])
   assert.equal(v({ ...full, cores: u(0) })[0].field, "cores")
-  assert.equal(v({ ...full, disk_gb: u(900) })[0].field, "storage")
+  assert.deepEqual(v({ ...full, disk_gb: u(900) })[0].choices, ["750"], "the largest disk that fits is offered")
 })
 
 test("node: must exist, be online, have a stored login and a known CPU", () => {
@@ -126,8 +129,8 @@ test("admin_setup is required only for public setup-url recipes", () => {
   const [i] = v(without("admin_setup"))
   assert.equal(i.field, "admin_setup")
   assert.equal(i.message, "This app's first visitor becomes its admin. Create the admin account now, or keep it LAN-only until you do?")
-  assert.deepEqual(i.choices, ["now"])
-  assert.deepEqual(v({ ...without("admin_setup"), exposure: u("lan") }), [])
+  assert.deepEqual(i.choices, ["now", "lock"], "both answers the question offers are buttons")
+  assert.deepEqual(v({ ...without("admin_setup"), domain: undefined as any, exposure: u("lan") }), [])
   assert.deepEqual(v({ ...without("admin_setup"), service: u("vaultwarden") }), [], "no first-run setup")
   const [l] = v({ ...full, admin_setup: u("lock") })
   assert.equal(l.message, "Keeping it LAN-only until setup needs proxy access lists, which HyperProx does not support yet. Choose now, or make it LAN-only.")
@@ -149,7 +152,7 @@ test("an unreadable fact source is an issue on the field it feeds, never a silen
   assert.deepEqual(v({ ...full, ip: u("dhcp") }, with_("config:105")), [], "DHCP needs no address check")
   assert.ok(fields(full, with_("zones")).includes("domain"))
   assert.ok(fields(full, with_("proxy")).includes("domain"))
-  assert.deepEqual(v({ ...full, exposure: u("lan") }, with_("zones")), [], "a LAN deploy does not read zones")
+  assert.deepEqual(v({ ...without("domain"), exposure: u("lan") }, with_("zones")), [], "a LAN deploy does not read zones")
   assert.ok(fields(full, with_("nodes")).includes("node"))
   assert.ok(fields(full, with_("status:pve1")).includes("node"))
   assert.ok(fields(full, with_("login:pve1")).includes("node"))
@@ -168,7 +171,7 @@ test("a template for another CPU is never accepted for a node", () => {
 
 test("issues come in field order", () => {
   const order = deployService.fields.map(s => s.name)
-  const got = fields({ ...full, vmid: u(101), ip: u("10.0.0.45/24"), disk_gb: u(2), domain: u("x.other.org") })
+  const got = fields({ ...full, vmid: u(101), ip: u("10.0.0.45/24"), disk_gb: u(2), domain: u("x.example.net") })
   assert.deepEqual(got, ["domain", "vmid", "ip", "disk_gb"])
   assert.deepEqual([...got].sort((a, b) => order.indexOf(a) - order.indexOf(b)), got)
 })
@@ -179,4 +182,52 @@ test("zoneFor picks the longest zone, not the last two labels", () => {
   assert.deepEqual(zoneFor("example.com", ["example.com"]), { zone: "example.com", name: "@" })
   assert.deepEqual(zoneFor("Kuma.Example.COM.", ["example.com"]), { zone: "example.com", name: "kuma" })
   assert.equal(zoneFor("", ["example.com"]), null)
+})
+
+test("the apex of a zone is refused: it would replace the zone's main address", () => {
+  const [i] = v({ ...full, domain: u("example.com") })
+  assert.equal(i.field, "domain")
+  assert.equal(i.message, "That would replace the main address of example.com. Pick a name under it, like uptime-kuma.example.com?")
+  assert.deepEqual(i.choices, ["uptime-kuma.example.com"])
+})
+
+test("a name that already has a DNS record is refused, never overwritten; an unreadable zone is an issue", () => {
+  const [i] = v({ ...full, domain: u("www.example.com") })
+  assert.equal(i.field, "domain")
+  assert.equal(i.message, "www.example.com already has a DNS record. Pick another name under example.com, like uptime-kuma.example.com?")
+  assert.deepEqual(i.choices, ["uptime-kuma.example.com"])
+  const fx = facts(); fx.records["example.com"].push("uptime-kuma")
+  const [j] = v({ ...full, domain: u("www.example.com") }, fx)
+  assert.equal(j.choices, undefined, "a suggestion that is itself taken is not offered")
+  const fp = facts(); delete (fp.records as any)["example.com"]; fp.partial = ["records:example.com"]
+  assert.equal(v(full, fp)[0]?.field, "domain")
+  const fm = facts(); delete (fm.records as any)["example.com"]
+  assert.equal(v(full, fm)[0]?.field, "domain", "no record list at all is not 'no records'")
+})
+
+test("LAN only with a domain asks which was meant, instead of dropping the name", () => {
+  const [i] = v({ ...full, exposure: u("lan"), domain: u("kuma.example.com") })
+  assert.equal(i.field, "exposure")
+  assert.equal(i.message, "You gave kuma.example.com but asked for LAN only. Should it be reachable from the internet at that name, or LAN only without a name?")
+  assert.deepEqual(i.choices, ["public", "lan"])
+})
+
+test("a template's architecture is read the way facts read it: aarch64 is arm64", () => {
+  const fx = facts(); fx.nodes[0].arch = "arm64"
+  const f = deployService.derive(full, fx, { bridge: "vmbr0" })
+  f.template = { value: "share:vztmpl/debian-13-standard_13.1-2_aarch64.tar.zst", source: "fact" }
+  assert.equal(deployService.validate(f, fx).find(i => i.field === "template"), undefined)
+})
+
+test("plain wording: no '0 MB' without a recipe, an unreachable node said so, storage asked as a question", () => {
+  const fx = facts(); for (const n of fx.nodes) n.online = false
+  const n = v({ service: u("nope"), exposure: u("lan") }, fx).find(i => i.field === "node")!
+  assert.doesNotMatch(n.message, /\b0 MB/)
+  const fl = facts(); fl.partial = ["login:pve1"]
+  const all = v(full, fl)
+  assert.equal(all[0].message, "HyperProx couldn't reach node pve1 to check it. Try again in a moment.")
+  for (const x of [...all, ...v(full, (() => { const f = facts(); f.nodes[0].hasLogin = false; return f })())])
+    assert.doesNotMatch(x.message, /stored login/)
+  const [s] = v({ ...full, disk_gb: u(900) })
+  assert.match(s.message, /\?$/); assert.ok(s.choices?.length, "with buttons")
 })

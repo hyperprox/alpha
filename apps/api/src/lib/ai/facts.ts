@@ -201,6 +201,8 @@ export interface GuestFact { vmid: number; node: string; type: 'lxc' | 'qemu'; n
 export interface TemplateFacts {
   nodes: NodeFact[]; storages: StorageFact[]; templates: TemplateFact[]; downloadable: DownloadFact[]
   guests: GuestFact[]; nextVmid: number; zones: string[]; proxyHosts: string[]; hasReverseProxy: boolean
+  /** Per managed zone, the names ('@' at the apex) that already have an A, AAAA or CNAME record. */
+  records: Record<string, string[]>
   /** Sources that could not be read; their facts are empty, which must not pass as "nothing there". */
   partial: string[]
 }
@@ -210,6 +212,8 @@ export interface FactsDeps {
   proxyHosts(): Promise<string[]>
   hasReverseProxy(): Promise<boolean>
   hasLogin(node: string): Promise<boolean>
+  /** Names in `zone` holding an A, AAAA or CNAME record, relative to the zone ('@' at the apex). */
+  records(zone: string): Promise<string[]>
 }
 
 /** `x86_64` is amd64, `aarch64` is arm64; anything else is unknown (''). */
@@ -218,7 +222,7 @@ function archOfKernel(machine: unknown): NodeFact['arch'] {
 }
 
 /** The architecture a template names (`…_arm64.tar.zst`); one that names none is amd64. */
-function archOfTemplate(name: string): string {
+export function archOfTemplate(name: string): string {
   const t = /_(amd64|arm64|armhf|i386|aarch64|x86_64)\.tar\./.exec(name)?.[1]
   return t === 'aarch64' ? 'arm64' : !t || t === 'x86_64' ? 'amd64' : t
 }
@@ -238,9 +242,17 @@ function defaultDeps(): FactsDeps {
       const hosts = await new NPMClient(npm.url, npm.email, npm.password).getProxyHosts()
       return (hosts ?? []).flatMap((h: any) => h.domain_names ?? [])
     },
-    hasReverseProxy: async () => Boolean((await getProviderCredentials('proxy', 'npm').catch(() => null))?.url),
+    // A credential store that cannot be read is a failed source, not "no reverse proxy".
+    hasReverseProxy: async () => Boolean((await getProviderCredentials('proxy', 'npm'))?.url),
     // A lookup that throws is a failed source (login:<node>), not "no login".
     hasLogin: async node => Boolean(await nodeCredential(node)),
+    records: async zone => {
+      const gd = await getProviderCredentials('dns', 'godaddy')
+      if (!gd?.api_key || !gd?.api_secret) throw new Error('DNS provider is not configured')
+      const all = await new GoDaddyClient(gd.api_key, gd.api_secret).getRecords(zone)
+      return [...new Set((all ?? []).filter((r: any) => ['A', 'AAAA', 'CNAME'].includes(r?.type))
+        .map((r: any) => String(r.name ?? '').toLowerCase()).filter(Boolean))]
+    },
   }
 }
 
@@ -257,6 +269,7 @@ export async function gatherTemplateFacts(over: Partial<FactsDeps> = {}): Promis
     deps.zones(), deps.proxyHosts(), deps.hasReverseProxy(),
   ])
   const partial = failedSources({ nodes: nodesR, nextid: nextR, resources: resR, zones: zonesR, proxy: proxyR })
+  if (rpR.status === 'rejected' && !partial.includes('proxy')) partial.push('proxy')
   const rawNodes: any[] = ok(nodesR, [])
 
   const nodes: NodeFact[] = []
@@ -323,8 +336,17 @@ export async function gatherTemplateFacts(over: Partial<FactsDeps> = {}): Promis
                name: String(r.name ?? ''), addresses: configAddresses(cfg) }
     })
 
+  // Publishing must never overwrite a record that is already there, so each zone's names are read;
+  // a zone that cannot be listed is named, not read as empty.
+  const records: Record<string, string[]> = Object.create(null)
+  for (const zone of ok(zonesR, [] as string[])) {
+    const r = await deps.records(zone).then(v => v, () => null)
+    if (r == null) partial.push(`records:${zone}`)
+    else records[zone] = r.map(n => String(n).toLowerCase())
+  }
+
   return {
-    nodes, storages, templates, downloadable, guests,
+    nodes, storages, templates, downloadable, guests, records,
     nextVmid: nextR.status === 'fulfilled' ? Number(nextR.value) : 0,
     zones: ok(zonesR, []), proxyHosts: ok(proxyR, []), hasReverseProxy: ok(rpR, false),
     partial,
