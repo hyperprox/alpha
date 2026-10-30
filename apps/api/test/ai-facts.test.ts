@@ -1,7 +1,7 @@
 // Template facts against a fake Proxmox: per-node arch, bridges, storage, templates and guest addresses.
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { gatherTemplateFacts, gatherFacts } from "../src/lib/ai/facts"
+import { gatherTemplateFacts } from "../src/lib/ai/facts"
 import { isHostAddress, bridgeInfo } from "../src/lib/wizard-placement"
 
 const GB = 1024 ** 3
@@ -151,20 +151,6 @@ test("template arch: only known tokens count; an unknown token is amd64; aarch64
     : full(p)
   const f = await gatherTemplateFacts(d)
   assert.deepEqual(f.templates.map(t => t.arch), ["amd64", "arm64"])
-})
-
-test("legacy gatherFacts: a source that reads null or throws lands in partial", async () => {
-  const run = async (nul: string[], over: Record<string, unknown> = {}) => {
-    const d = deps(); const full = d.pve.fetchStrict
-    d.pve.fetchStrict = async (p: string) => nul.includes(p) ? null : full(p)
-    return gatherFacts({ pve: d.pve, zones: d.zones, proxyHosts: d.proxyHosts, ...over } as any)
-  }
-  assert.deepEqual((await run([])).partial, [])
-  assert.ok((await run(["/cluster/resources?type=vm"])).partial.includes("resources"))
-  assert.ok((await run(["/nodes"])).partial.includes("nodes"))
-  assert.ok((await run(["/nodes/pve1/storage"])).partial.includes("storage"))
-  assert.ok((await run(["/cluster/nextid"])).partial.includes("nextid"))
-  assert.ok((await run([], { zones: async () => { throw new Error("dns") } })).partial.includes("dns"))
 })
 
 test("DNS record names are read per managed zone; a zone that cannot be listed is named in partial", async () => {

@@ -1,24 +1,29 @@
 // =============================================================================
 //  HyperProx — AI Deployment Wizard Routes
-//  Natural language → structured action plan → execute
+//  Natural language → template fields → questions → a server-held run → execute
 //
-//  The plan itself is produced in lib/ai: the schema, the prompt and the three
-//  providers live there so that adding a fourth does not mean touching routing.
-//  What stays here is everything that is about *this* cluster — gathering the
-//  facts the model plans against, and auditing what it returns before a user is
-//  shown a plan the cluster cannot run.
+//  The model only reads the template's extractable fields out of the request;
+//  derive and validate in the template fill and check everything else against
+//  the cluster. What the browser holds is a plan id: the run that executes is
+//  the server's copy, derived and validated again against fresh facts first.
 // =============================================================================
 
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify'
 import { setCredential }      from '../lib/credentials'
-import { getJob } from '../lib/wizard-executor'
-import { gatherFacts }        from '../lib/ai/facts'
-import { userPrompt }         from '../lib/ai/prompt'
-import { auditPlan, unreadAuditSources, type Plan, type ClusterFacts } from '../lib/ai/plan-schema'
+import { executeDeployJob, getJob, type DeployRun } from '../lib/wizard-executor'
+import { gatherTemplateFacts } from '../lib/ai/facts'
 import { PreparedStore }      from '../lib/ai/prepared'
 import { currentContext }     from '../lib/auth'
+import { startLoop, type Extraction, type IntentResult, type LoopDeps } from '../lib/ai/loop'
+import { matchIntent, NO_TASK_ANSWER } from '../lib/ai/intent'
+import { extractFields }      from '../lib/ai/extract'
+import { getTemplate }        from '../lib/ai/templates'
+import { deployService, toDeployFields, type DeployFields } from '../lib/ai/templates/deploy-service'
+import type { Fields, TaskTemplate, TemplateFacts, TemplateSettings } from '../lib/ai/templates/types'
+import { wizardRecipes }      from '../lib/catalogue'
+import { zoneFor }            from '../lib/dns-zones'
 import {
-  generatePlan, listProviders, activeProvider, setActiveProvider,
+  callStructured, listProviders, activeProvider, setActiveProvider,
   type ProviderId, type ProviderInfo,
 } from '../lib/ai/providers'
 
@@ -33,12 +38,17 @@ function isProvider(v: unknown): v is ProviderId {
  * takes the defaults below.
  */
 export interface AiRouteDeps {
-  gatherFacts(): Promise<ClusterFacts>
-  generatePlan(text: string, provider?: ProviderId): Promise<Plan>
-  execute(jobId: string, plan: Plan): Promise<void>
-  /** Plans the server produced and audited, waiting to be executed by id. */
-  prepared: PreparedStore<Plan>
-  /** Who is asking; a plan can only be executed by the user it was made for. */
+  facts(): Promise<TemplateFacts>
+  settings(): Promise<TemplateSettings>
+  /** Which template a request is for; the provider is the one this request chose. */
+  intent(prompt: string, provider?: ProviderId): Promise<IntentResult>
+  /** The template's extractable fields, read from the user's words. */
+  extract(t: TaskTemplate, text: string, facts: TemplateFacts,
+          opts?: { asking?: { field: string; question: string }; provider?: ProviderId }): Promise<Extraction>
+  execute(jobId: string, run: DeployRun): Promise<void>
+  /** Runs the server derived and validated, waiting to be executed by id. */
+  prepared: PreparedStore<DeployRun>
+  /** Who is asking; a run can only be executed by the user it was made for. */
   whoami(req: FastifyRequest): string
   activeProvider(): Promise<ProviderId>
   listProviders(): Promise<ProviderInfo[]>
@@ -46,22 +56,106 @@ export interface AiRouteDeps {
 
 function defaultDeps(): AiRouteDeps {
   return {
-    gatherFacts,
-    generatePlan,
-    // The executor now runs typed template fields, not a model-written plan; the routes move onto the
-    // template next, and until then nothing a free-form plan describes is run.
-    execute: async () => { throw new Error('The wizard is moving to templates; free-form plans no longer run.') },
-    prepared: new PreparedStore<Plan>(),
+    facts: () => gatherTemplateFacts(),
+    settings: async () => ({ bridge: 'vmbr0' }),
+    intent: (prompt, provider) => matchIntent(prompt, { call: r => callStructured(r, provider) }),
+    extract: (t, text, facts, opts = {}) =>
+      extractFields(t, text, facts, { asking: opts.asking, call: r => callStructured(r, opts.provider) }),
+    execute: executeDeployJob,
+    prepared: new PreparedStore<DeployRun>(),
     whoami: () => currentContext()?.email ?? '',
     activeProvider,
     listProviders,
   }
 }
 
+// ── Checking a run again before it runs ─────────────────────────────────────
+
+/**
+ * The partial sources these fields' validation reads. A source that failed reads as empty (no guests, no
+ * zones, no templates), and an empty list passes checks it should fail, so any of these refuses execute.
+ */
+export function unreadFor(f: DeployFields, facts: TemplateFacts): string[] {
+  const n = f.node
+  const exact = new Set(['nodes', 'resources', `status:${n}`, `login:${n}`, `network:${n}`, `storage:${n}`])
+  // A template already on the node does not need the download list; one still to download does.
+  if (!facts.templates.some(t => t.node === n && t.volid === f.template)) exact.add(`aplinfo:${n}`)
+  const prefixes = [`templates:${n}/`]
+  if (f.ip !== 'dhcp') prefixes.push('config:')
+  if (f.exposure === 'public') {
+    exact.add('zones'); exact.add('proxy')
+    const z = f.domain ? zoneFor(f.domain, facts.zones) : null
+    if (z) exact.add(`records:${z.zone}`)
+    else prefixes.push('records:')
+  }
+  return facts.partial.filter(p => exact.has(p) || prefixes.some(x => p.startsWith(x)))
+}
+
+/** The stored fields as a person's values again, so derive keeps them and recomputes every fact. */
+function asUserFields(t: TaskTemplate, f: DeployFields): Fields {
+  const out: Fields = {}
+  for (const spec of t.fields) {
+    const v = (f as unknown as Record<string, unknown>)[spec.name]
+    if (v !== undefined && (spec.source === 'user' || spec.source === 'derived')) out[spec.name] = { value: v, source: 'user' }
+  }
+  return out
+}
+
+const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
+
+/** Re-derive and re-validate against fresh facts: every issue, and every fact that moved, by field. */
+function revalidate(t: TaskTemplate, run: DeployRun, facts: TemplateFacts, settings: TemplateSettings): string[] {
+  const derived = t.derive(asUserFields(t, run.fields), facts, settings)
+  const problems = t.validate(derived, facts).map(i => i.message)
+  const stored = run.fields as unknown as Record<string, unknown>
+  for (const spec of t.fields) {
+    const was = stored[spec.name], now = derived[spec.name]?.value
+    if (same(was, now)) continue
+    const show = (v: unknown) => (v === undefined || v === null || v === '' ? 'unset' : Array.isArray(v) ? v.join(' ') : String(v))
+    problems.push(spec.name === 'gateway'
+      ? `The gateway of ${run.fields.bridge} on ${run.fields.node} is now ${show(now)}, not the ${show(was)} this was planned with.`
+      : `${spec.name} is now ${show(now)}, not the ${show(was)} this was planned with.`)
+  }
+  if (!same(t.steps(derived).map(s => s.id), run.steps.map(s => s.id))) problems.push('The steps for this request have changed since it was planned.')
+  return [...new Set(problems)]
+}
+
+/** What a run in flight holds, so a second run planned against the same facts cannot take it too. */
+function claimsOf(f: DeployFields): Array<{ key: string; message: string }> {
+  const out = [{ key: `vmid:${f.vmid}`, message: `Container ID ${f.vmid} is being used by a deployment that is running now.` },
+               { key: `hostname:${f.hostname}`, message: `${f.hostname} is the hostname of a deployment that is running now.` }]
+  if (f.ip !== 'dhcp') {
+    const ip = f.ip.split('/')[0]
+    out.push({ key: `ip:${ip}`, message: `${ip} is being given to a deployment that is running now.` })
+  }
+  return out
+}
+
+/** A plain account of the fields, written here from the fields, never by the model. */
+function understood(f: Fields): string {
+  const v = (k: string) => f[k]?.value
+  const name = wizardRecipes().find(r => r.id === v('service'))?.name ?? String(v('service') ?? 'a service')
+  const where = v('node') ? ` on ${v('node')}` : ''
+  const id = v('vmid') ? `CT ${v('vmid')}` : 'a new container'
+  const addr = v('ip') === 'dhcp' ? 'DHCP' : v('ip') ? String(v('ip')) : 'no address yet'
+  const reach = v('exposure') === 'public' && v('domain') ? `published at ${v('domain')}` : v('exposure') === 'lan' ? 'LAN only' : ''
+  return `${name} in ${id}${where} (${addr})${reach ? `, ${reach}` : ''}.`
+}
+
+function firstRunNotice(f: Fields): string | null {
+  if (f.exposure?.value !== 'public') return null
+  const r = wizardRecipes().find(x => x.id === f.service?.value)
+  if (!r || r.firstRun.kind === 'none') return null
+  return `${r.name} shows a first-run setup page to whoever visits first, so HyperProx will not publish it yet. ` +
+         `It installs it on your network and stops before the proxy, DNS and certificate steps; finish setup at its LAN address, then publish it.`
+}
+
 export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPluginAsync {
   const deps: AiRouteDeps = { ...defaultDeps(), ...overrides }
+  // Claims of runs in flight, by key; released when the run settles. Checked and taken with no await in
+  // between, so two executes racing for one ID or address cannot both pass.
+  const claims = new Map<string, string>()
   return async (fastify) => {
-
     // ── Providers ──────────────────────────────────────────────────────────────
 
     // GET /api/ai/providers — what can plan, and what each still needs
@@ -115,14 +209,13 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
       const started = Date.now()
       try {
         // The smallest request that still exercises structured output end to end.
-        const facts = await deps.gatherFacts()
-        const plan  = await deps.generatePlan(
-          userPrompt('Deploy Uptime Kuma. No domain yet.', facts), id)
+        const facts = await deps.facts()
+        const x = await deps.extract(deployService, 'Deploy Uptime Kuma. No domain yet.', facts, { provider: id })
         return reply.send({
           ok: true,
           ms: Date.now() - started,
           provider: id ?? await deps.activeProvider(),
-          sample: { service: plan.service, steps: plan.steps.length, warnings: plan.warnings },
+          sample: { service: x.values.service ?? null, fields: Object.keys(x.values).length },
         })
       } catch (err: any) {
         return reply.status(502).send({ ok: false, ms: Date.now() - started, error: err.message })
@@ -131,11 +224,11 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
 
     // ── The wizard ─────────────────────────────────────────────────────────────
 
-    // POST /api/ai/wizard/plan — natural language → action plan
+    // POST /api/ai/wizard/plan — natural language → the template's fields, its questions and its steps
     fastify.post<{ Body: { prompt: string; provider?: string; model?: string } }>(
       '/wizard/plan', async (req, reply) => {
         const { prompt, provider } = req.body ?? {}
-        if (!prompt) return reply.status(400).send({ ok: false, error: 'prompt is required' })
+        if (!prompt || typeof prompt !== 'string') return reply.status(400).send({ ok: false, error: 'prompt is required' })
         if (provider !== undefined && !isProvider(provider)) {
           return reply.status(400).send({ ok: false, error: 'unknown provider' })
         }
@@ -149,80 +242,83 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
           await setCredential('ai', 'ollama', 'model', req.body.model, false)
         }
 
-        let facts
+        let facts: TemplateFacts, settings: TemplateSettings
         try {
-          facts = await deps.gatherFacts()
+          [facts, settings] = await Promise.all([deps.facts(), deps.settings()])
         } catch (err: any) {
-          return reply.status(502).send({
-            ok: false,
-            error: `Cannot read the cluster, so there is nothing to plan against: ${err.message}`,
-          })
+          return reply.status(502).send({ ok: false, error: `Cannot read the cluster, so there is nothing to plan against: ${err.message}` })
         }
 
-        let plan
+        const loopDeps: LoopDeps = {
+          facts, settings, now: () => new Date(),
+          intent: p => deps.intent(p, chosen),
+          extract: (t, text, f, opts) => deps.extract(t, text, f, { ...opts, provider: chosen }),
+        }
+        let s
         try {
-          plan = await deps.generatePlan(userPrompt(prompt, facts), chosen)
+          s = await startLoop(prompt, loopDeps)
         } catch (err: any) {
           return reply.status(502).send({ ok: false, provider: chosen, error: err.message })
         }
 
-        // No service named means this was a question, not a deployment request.
-        if (!plan.service) {
-          return reply.send({
-            ok: true,
-            conversational: true,
-            provider: chosen,
-            message: plan.understood ||
-              'Describe a service to deploy, e.g. "Deploy Nextcloud at cloud.mydomain.com".',
-          })
+        // Not a task: the answer is shown, and nothing is planned.
+        const t = s.template ? getTemplate(s.template) : undefined
+        if (s.state === 'answer' || !t) {
+          return reply.send({ ok: true, conversational: true, provider: chosen, message: s.answer || NO_TASK_ANSWER })
         }
 
-        // The model's own warnings are what it noticed; the audit's are what the
-        // cluster says. Both go in front of the user before anything is created.
-        const problems = auditPlan(plan, facts)
-        // Planning goes ahead on partial facts, but says what it could not
-        // check; execute audits again and refuses if it still cannot read them.
-        const unread = unreadAuditSources(facts).map(src =>
-          `HyperProx could not read ${src} from the cluster, so this plan was not fully checked. ` +
-          `Execute checks again and will refuse if it still cannot.`)
-        const warnings = [...new Set([...plan.warnings, ...problems, ...unread])]
-        const audited: Plan = { ...plan, warnings }
-        const blocked = problems.length > 0
+        const fields = s.fields
+        const steps = s.steps ?? t.steps(fields)
+        const notice = firstRunNotice(fields)
+        let run: DeployRun | undefined
+        let unread: string[] = []
+        if (s.state === 'ready') {
+          const typed = toDeployFields(fields, t)
+          unread = unreadFor(typed, facts)
+          run = { template: 'deploy-service', version: t.version, owner: '', fields: typed, steps }
+        }
+        const warnings = [...new Set([
+          ...s.issues.map(i => i.message),
+          ...(s.pending ? [s.pending.question] : []),
+          ...unread.map(src => `HyperProx could not read ${src} from the cluster, so this could not be fully checked. Try again in a moment.`),
+          ...(notice ? [notice] : []),
+        ])]
+        const blocked = !run || unread.length > 0
 
-        // Only a plan the audit passed is kept, and only for the user who asked.
-        // Execute takes this id; the plan the browser displays is never run.
+        // Only a ready, fully checked run is kept, and only for the user who asked. Execute takes this id;
+        // nothing the browser shows or sends is run.
         const owner  = deps.whoami(req)
-        const planId = !blocked && owner ? deps.prepared.put(owner, structuredClone(audited)) : undefined
+        const planId = !blocked && owner && run ? deps.prepared.put(owner, structuredClone({ ...run, owner })) : undefined
 
+        const name = wizardRecipes().find(r => r.id === fields.service?.value)?.name ?? String(fields.service?.value ?? '')
         return reply.send({
           ok: true,
           provider: chosen,
           model: (await deps.listProviders()).find(p => p.id === chosen)?.model,
-          plan: audited,
-          // `blocked` is the plan being unrunnable as written, not merely
-          // imperfect — the UI uses it to decide whether Execute is offered.
+          plan: {
+            service: name,
+            domain: typeof fields.domain?.value === 'string' ? fields.domain.value : '',
+            understood: understood(fields),
+            steps: steps.map(x => ({ id: x.id, type: x.id, label: x.label })),
+            warnings,
+          },
+          fields,
+          // `blocked` is the run not being ready, or not fully checked: the UI offers Execute only without it.
           blocked,
           ...(planId ? { planId } : {}),
-          facts: {
-            nodes:    facts.nodes.map(n => n.node),
-            storages: facts.storages.map(s => s.storage),
-            domains:  facts.domains,
-            nextVmid: facts.nextVmid,
-          },
         })
       })
 
-    // POST /api/ai/wizard/execute — run a plan /wizard/plan produced, by its id
-    fastify.post<{ Body: { planId?: unknown; plan?: unknown } }>('/wizard/execute', async (req, reply) => {
-      const body = (req.body ?? {}) as { planId?: unknown; plan?: unknown }
+    // POST /api/ai/wizard/execute — run what /wizard/plan prepared, by its id
+    fastify.post<{ Body: Record<string, unknown> }>('/wizard/execute', async (req, reply) => {
+      const body = (req.body ?? {}) as Record<string, unknown>
 
-      // A plan in the body is refused outright, even next to a valid id: what
-      // runs is decided by the server, and accepting one invites the mistake of
-      // running it.
-      if (body.plan !== undefined) {
+      // A plan, fields or steps in the body are refused outright, even next to a valid id: what runs is the
+      // server's, and accepting them invites the mistake of running them.
+      if (body.plan !== undefined || body.fields !== undefined || body.steps !== undefined) {
         return reply.status(400).send({
           ok: false,
-          error: 'Execution takes a planId from /wizard/plan; a plan sent by the browser is never run.',
+          error: 'Execution takes a planId from /wizard/plan; a plan or fields sent by the browser are never run.',
         })
       }
       if (typeof body.planId !== 'string' || !body.planId) {
@@ -233,45 +329,52 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
       if (!stored) {
         return reply.status(404).send({ ok: false, error: 'That plan has expired or was already run. Plan it again.' })
       }
-      const plan = stored.payload
+      const run = stored.payload
+      const t = getTemplate(run.template)
+      if (!t || t.version !== run.version) {
+        return reply.status(409).send({ ok: false, blocked: true, error: 'HyperProx has changed how it does this since it was planned. Start again.' })
+      }
 
-      // The cluster may have moved since the plan was audited: another guest took
-      // the ID or the address, a node went away. Audit again against fresh facts.
-      let facts
+      // The cluster may have moved since planning: another guest took the ID or the address, a node went
+      // away, a gateway changed. Everything is derived and validated again against fresh facts.
+      let facts: TemplateFacts, settings: TemplateSettings
       try {
-        facts = await deps.gatherFacts()
+        [facts, settings] = await Promise.all([deps.facts(), deps.settings()])
       } catch (err: any) {
         return reply.status(502).send({
-          ok: false,
+          ok: false, blocked: true,
           error: `Cannot read the cluster, so the plan cannot be checked again before it runs: ${err.message}`,
         })
       }
-      // A source that failed reads as empty, and an empty list passes checks it
-      // should fail (a taken ID looks free, the zone check is skipped). Refuse.
-      const unavailable = unreadAuditSources(facts)
+      const unavailable = unreadFor(run.fields, facts)
       if (unavailable.length) {
         return reply.status(502).send({
           ok: false, blocked: true, unavailable,
           error: `Cannot read ${unavailable.join(', ')} from the cluster, so the plan cannot be checked again before it runs. Plan it again.`,
         })
       }
-      const problems = auditPlan(plan, facts)
-      if (problems.length) {
-        return reply.status(409).send({ ok: false, blocked: true, warnings: problems })
-      }
+      const problems = revalidate(t, run, facts, settings)
+      if (problems.length) return reply.status(409).send({ ok: false, blocked: true, warnings: problems })
+
+      // Runs already in flight are not in the facts yet. No await from here to the claim.
+      const mine = claimsOf(run.fields)
+      const clash = mine.filter(c => claims.has(c.key)).map(c => c.message)
+      if (clash.length) return reply.status(409).send({ ok: false, blocked: true, warnings: clash })
 
       const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(-4)}`
+      for (const c of mine) claims.set(c.key, jobId)
+      const release = () => { for (const c of mine) if (claims.get(c.key) === jobId) claims.delete(c.key) }
 
       // Fire-and-forget — execution runs in background, progress via WebSocket
-      deps.execute(jobId, plan).catch(err =>
-        fastify.log.error(`[wizard] Job ${jobId} failed: ${err.message}`)
-      )
+      deps.execute(jobId, run)
+        .catch(err => fastify.log.error(`[wizard] Job ${jobId} failed: ${err.message}`))
+        .finally(release)
 
       return reply.send({
         ok:      true,
         jobId,
-        message: `Executing ${plan.steps.length} steps. Track progress via WebSocket.`,
-        steps:   plan.steps.length,
+        message: `Executing ${run.steps.length} steps. Track progress via WebSocket.`,
+        steps:   run.steps.length,
       })
     })
 

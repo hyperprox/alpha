@@ -57,21 +57,31 @@ interface ProviderInfo {
 }
 
 interface WizardStep {
-  id:          string
-  type:        string
-  label:       string
-  description: string
-  params:      Record<string, any>
+  id:    string
+  type:  string
+  label: string
 }
 
 interface DeployPlan {
-  service:      string
-  domain:       string
-  understood:   string
-  steps:        WizardStep[]
-  requirements: { ram_mb: number; disk_gb: number; cpu_cores: number }
-  warnings:     string[]
+  service:    string
+  domain:     string
+  understood: string
+  steps:      WizardStep[]
+  warnings:   string[]
 }
+
+/** One field of the template, as the server derived it: what it is and where it came from. */
+interface PlanField {
+  value:  unknown
+  source: 'user' | 'fact' | 'derived' | 'fixed'
+  note?:  string
+}
+
+/** The fields shown with a plan, in this order; the rest are the template's constants. */
+const SHOWN_FIELDS: Array<[string, string]> = [
+  ['node', 'node'], ['vmid', 'ID'], ['ip', 'address'], ['gateway', 'gateway'], ['storage', 'storage'],
+  ['template', 'template'], ['hostname', 'hostname'], ['memory_mb', 'MB RAM'], ['disk_gb', 'GB disk'], ['cores', 'vCPU'],
+]
 
 type StepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
 
@@ -411,6 +421,7 @@ export default function AIPage() {
   const [plan,        setPlan]        = useState<DeployPlan | null>(null)
   // The server's id for the audited plan; only a plan with one can be executed.
   const [planId,      setPlanId]      = useState<string | null>(null)
+  const [planFields,  setPlanFields]  = useState<Record<string, PlanField>>({})
   const [planErr,     setPlanErr]     = useState<string | null>(null)
   const [executing,   setExecuting]   = useState(false)
   const [activeModel, setActiveModel] = useState<string>('llama3.2:3b')
@@ -481,7 +492,7 @@ export default function AIPage() {
     setProvResult(r => ({
       ...r,
       [id]: data.ok
-        ? `✓ ${data.sample.steps}-step plan in ${(data.ms / 1000).toFixed(1)}s`
+        ? `✓ read ${data.sample.fields} field${data.sample.fields === 1 ? '' : 's'}${data.sample.service ? ` (${data.sample.service})` : ''} in ${(data.ms / 1000).toFixed(1)}s`
         : `✗ ${data.error}`,
     }))
   }
@@ -569,12 +580,14 @@ export default function AIPage() {
 
     if (data.ok && data.plan) {
       setPlan(data.plan)
-      setPlanId(!data.blocked && typeof data.planId === 'string' ? data.planId : null)
+      setPlanFields(data.fields ?? {})
+      const ready = !data.blocked && typeof data.planId === 'string'
+      setPlanId(ready ? data.planId : null)
       setMessages(m => [...m, {
         role:    'assistant',
-        content: data.plan.domain
-          ? `Got it — here's my plan to deploy ${data.plan.service} at ${data.plan.domain}. Review the steps below and confirm to execute.`
-          : `Here's my plan to deploy ${data.plan.service}. Read the warnings first — it is not ready to run as written.`,
+        content: ready
+          ? `Here's my plan: ${data.plan.understood} Review the steps below and confirm to execute.`
+          : `I can't deploy ${data.plan.service || 'this'} yet. Read the warnings below.`,
       }])
     } else if (data.ok && data.conversational) {
       // Not every prompt is a deployment. Say what came back rather than
@@ -735,14 +748,16 @@ export default function AIPage() {
                 <div style={{ background: CARD, border: `1px solid ${alpha(ACCENT, 19)}`, borderRadius: 10, padding: '1.5rem', marginBottom: '1rem' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
                     <div>
-                      <div className="font-display" style={{ fontSize: 22, fontWeight: 600, color: 'var(--text-bright)', marginBottom: 2 }}>{plan.service} → {plan.domain}</div>
+                      <div className="font-display" style={{ fontSize: 22, fontWeight: 600, color: 'var(--text-bright)', marginBottom: 2 }}>{plan.service}{plan.domain ? ` → ${plan.domain}` : ''}</div>
                       <div style={{ fontSize: 14, color: 'var(--text-soft)' }}>{plan.understood}</div>
                     </div>
-                    <div style={{ display: 'flex', gap: 6, fontSize: 11, ...mono }}>
-                      <span style={badge('var(--text-muted)')}>{plan.requirements.ram_mb}MB RAM</span>
-                      <span style={badge('var(--text-muted)')}>{plan.requirements.disk_gb}GB disk</span>
-                      <span style={badge('var(--text-muted)')}>{plan.requirements.cpu_cores} vCPU</span>
-                    </div>
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, fontSize: 11, marginBottom: '1rem', ...mono }}>
+                    {SHOWN_FIELDS.filter(([k]) => planFields[k] && planFields[k].value !== '' && planFields[k].value != null).map(([k, label]) => (
+                      <span key={k} style={badge('var(--text-muted)')} title={planFields[k].note ?? planFields[k].source}>
+                        {['memory_mb', 'disk_gb', 'cores'].includes(k) ? `${String(planFields[k].value)} ${label}` : `${label} ${String(planFields[k].value)}`}
+                      </span>
+                    ))}
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: '1rem' }}>
                     {plan.steps.map((step, i) => (
@@ -750,7 +765,6 @@ export default function AIPage() {
                         <div style={{ fontSize: 16, width: 24, textAlign: 'center' }}>{stepIcon(step.type, 16) ?? '▸'}</div>
                         <div style={{ flex: 1 }}>
                           <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-bright)' }}>{i + 1}. {step.label}</div>
-                          <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{step.description}</div>
                         </div>
                       </div>
                     ))}
