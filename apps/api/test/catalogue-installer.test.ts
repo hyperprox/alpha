@@ -177,3 +177,17 @@ test("a catalogue Homepage install allows the address it was given", async () =>
   assert.equal(job.status, "completed", job.error)
   assert.match(scripts[0], /\nHOMEPAGE_ALLOWED_HOSTS=10\.0\.0\.30:3000\n/)
 })
+
+test("a Vaultwarden install gets a generated ADMIN_TOKEN, kept in the vault and shown once, with sign-ups off", async () => {
+  const scripts: string[] = [], logged: string[] = [], vault = new FakeVault()
+  const deps = installDeps("debian", scripts, logged, vault)
+  const job = await done((await startInstall({ recipeId: "vaultwarden", intoVmid: 130 }, deps)).jobId)
+  assert.equal(job.status, "completed", job.error)
+  const token = vault.items.get("apps/vaultwarden-130")!.admin_password
+  assert.ok(token && token.length >= 24, "randomBytes(18) as base64url")
+  assert.match(scripts[0], new RegExp(`\\nADMIN_TOKEN=${token}\\n`))
+  assert.match(scripts[0], /SIGNUPS_ALLOWED=false/)
+  assert.ok(!JSON.stringify(job).includes(token))
+  assert.ok(!logged.join("").includes(token))
+  assert.deepEqual(await readAdminCredential(job, deps), { user: "/admin", password: token })
+})

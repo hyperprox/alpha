@@ -131,7 +131,7 @@ test("admin_setup is required only for public setup-url recipes", () => {
   assert.equal(i.message, "This app's first visitor becomes its admin. Create the admin account now, or keep it LAN-only until you do?")
   assert.deepEqual(i.choices, ["now", "lock"], "both answers the question offers are buttons")
   assert.deepEqual(v({ ...without("admin_setup"), domain: undefined as any, exposure: u("lan") }), [])
-  assert.deepEqual(v({ ...without("admin_setup"), service: u("vaultwarden") }), [], "no first-run setup")
+  assert.deepEqual(v({ ...without("admin_setup"), service: u("homepage") }), [], "no first-run setup")
   const [l] = v({ ...full, admin_setup: u("lock") })
   assert.equal(l.message, "Keeping it LAN-only until setup needs proxy access lists, which HyperProx does not support yet. Choose now, or make it LAN-only.")
 })
