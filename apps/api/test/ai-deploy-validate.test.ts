@@ -231,3 +231,16 @@ test("plain wording: no '0 MB' without a recipe, an unreachable node said so, st
   const [s] = v({ ...full, disk_gb: u(900) })
   assert.match(s.message, /\?$/); assert.ok(s.choices?.length, "with buttons")
 })
+
+test("a malformed or wildcard domain is asked again in plain words, never accepted", () => {
+  for (const d of ["*.example.com", "a..example.com", "foo_bar.example.com", "x y.example.com"]) {
+    const [i] = v({ ...full, domain: u(d) })
+    assert.equal(i?.field, "domain", d)
+    assert.equal(i.kind, "invalid", d)
+    assert.ok(i.message.includes(d), `${d}: ${i.message}`)
+    assert.match(i.message, /Which hostname should it answer on\? Zones I manage: example\.com/, d)
+  }
+  assert.match(v({ ...full, domain: u("*.example.com") })[0].message, /wildcard/)
+  assert.match(v({ ...full, domain: u("kuma.*.example.com") })[0].message, /wildcard/, "a * label anywhere")
+  assert.equal(v({ ...full, domain: u(42) })[0]?.field, "domain", "a number is not a hostname")
+})

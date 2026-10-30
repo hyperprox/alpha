@@ -13,6 +13,7 @@ import { DOCKER_PACKAGES, distroOf } from '../../install-script'
 import { isHostAddress, parseCidr, pickTemplate } from '../../wizard-placement'
 import { zoneFor } from '../../dns-zones'
 import { archOfTemplate, type NodeFact, type StorageFact } from '../facts'
+import { isWildcard, publishableHostname } from './fields'
 import type { FieldIssue, FieldSpec, Fields, FieldValue, StepSpec, TaskTemplate, TemplateFacts, TemplateSettings } from './types'
 
 export interface DeployFields {
@@ -306,8 +307,18 @@ export function buildDeployService(deps: DeployServiceDeps = { recipes: wizardRe
       domain: () => {
         if (!pub) return null
         if (failed('zones')) return invalid('domain', `HyperProx couldn't read the DNS zones to check the name. ${AGAIN}`)
-        const d = str(f, 'domain').trim().toLowerCase().replace(/\.$/, '')
-        if (!d) return missing('domain', domainQuestion)
+        const raw = val(f, 'domain')
+        if (raw === undefined || raw === null || (typeof raw === 'string' && !raw.trim())) return missing('domain', domainQuestion)
+        // A value that did not coerce is kept by the loop so it can be asked about here; it is never
+        // carried on into a plan.
+        const ok = publishableHostname(raw)
+        if (!ok.ok) {
+          const shown = String(raw).trim()
+          return invalid('domain', isWildcard(raw)
+            ? `${shown} is a wildcard name, and HyperProx publishes one hostname at a time. ${domainQuestion}`
+            : `${shown} is not a valid hostname. ${domainQuestion}`)
+        }
+        const d = ok.value as string
         const z = zoneFor(d, facts.zones)
         if (!z) return invalid('domain', domainQuestion)
         // Never overwrite a record that is already there: not the zone's own address, not any name

@@ -53,13 +53,31 @@ export function coerce(spec: FieldSpec, raw: unknown, enumValues?: string[]): Co
       }
       return { ok: true, value: s }
     }
-    case 'hostname': {
-      if (typeof raw !== 'string') return bad(`${spec.name} must be a hostname`)
-      const h = raw.trim().toLowerCase().replace(/\.$/, '')
-      if (!h || h.length > 253 || !h.split('.').every(l => LABEL.test(l))) return bad(`${raw.trim()} is not a valid hostname`)
-      return { ok: true, value: h }
-    }
+    case 'hostname': return coerceHostname(spec.name, raw)
   }
+}
+
+/** RFC 1123 labels of letters, digits and inner hyphens; lowercased, trimmed, a trailing dot dropped. */
+export function coerceHostname(name: string, raw: unknown): Coerced {
+  if (typeof raw !== 'string') return { ok: false, message: `${name} must be a hostname` }
+  const h = raw.trim().toLowerCase().replace(/\.$/, '')
+  if (!h || h.length > 253 || !h.split('.').every(l => LABEL.test(l))) return { ok: false, message: `${raw.trim()} is not a valid hostname` }
+  return { ok: true, value: h }
+}
+
+/** A `*` label anywhere: a wildcard, which names every host under it and is never one to publish. */
+export function isWildcard(raw: unknown): boolean {
+  return typeof raw === 'string' && raw.trim().split('.').some(l => l === '*')
+}
+
+/**
+ * A name HyperProx may point a proxy host and a DNS record at: one hostname by coerce's own rule, never
+ * a wildcard. The same check in validate and in the executor, so a value that slipped past one is
+ * still refused by the other.
+ */
+export function publishableHostname(raw: unknown): Coerced {
+  if (isWildcard(raw)) return { ok: false, message: `${String(raw).trim()} is a wildcard name` }
+  return coerceHostname('domain', raw)
 }
 
 export function isRequired(spec: FieldSpec, f: Fields): boolean {

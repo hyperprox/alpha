@@ -227,3 +227,19 @@ test("an unknown step type fails the run rather than being skipped", async () =>
   assert.equal(job.status, "failed")
   assert.equal(statuses(job).complete_guest, "failed")
 })
+
+test("the executor refuses a malformed or wildcard domain at the proxy and the DNS step", async () => {
+  for (const d of ["*.example.com", "a..example.com", "foo_bar.example.com", "x y.example.com"]) {
+    const dns = fakeDeps()
+    await assert.rejects(stepCreateDNS(dnsJob(d), dns.deps as ExecDeps), /is not a hostname HyperProx will publish/, d)
+    assert.equal(dns.calls.records.length, 0, d)
+
+    const { job, calls } = await run(fields({ service: "homepage", exposure: "public", domain: d, hostname: "homepage" }), ALL)
+    assert.equal(job.status, "failed", d)
+    assert.equal(statuses(job).configure_proxy, "failed", d)
+    assert.match(job.steps.find(s => s.type === "configure_proxy")!.error!, /is not a hostname HyperProx will publish/, d)
+    assert.equal(statuses(job).create_dns, "pending", d)
+    assert.equal(calls.proxy.length, 0, d)
+    assert.equal(calls.records.length, 0, d)
+  }
+})

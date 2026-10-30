@@ -46,7 +46,14 @@ function harness() {
     intent: async (prompt: string): Promise<IntentResult> => /^what\b/.test(prompt)
       ? { template: "none", question: true, answer: "It watches services." }
       : { template: "deploy-service", question: false, answer: "" },
-    extract: async (_t: unknown, text: string): Promise<Extraction> => ({ values: { ...(EXTRACTIONS[text] ?? {}) }, dropped: [], invalid: [] }),
+    extract: async (_t: unknown, text: string): Promise<Extraction> => {
+      // A name that does not coerce comes back as invalid, and the loop keeps it for validate to ask about.
+      const bad = /^deploy homepage at (.+)$/.exec(text)
+      if (bad && !EXTRACTIONS[text]) {
+        return { values: { service: "homepage" }, dropped: [], invalid: [{ field: "domain", raw: bad[1], message: `${bad[1]} is not a valid hostname` }] }
+      }
+      return { values: { ...(EXTRACTIONS[text] ?? {}) }, dropped: [], invalid: [] }
+    },
     // Never settles: a run in flight holds its claims, as a real create would.
     execute: (jobId: string, run: DeployRun) => { executed.push({ jobId, run }); return new Promise<void>(() => {}) },
     prepared,
@@ -359,4 +366,16 @@ test("PreparedStore sweeps expired entries on take and keeps at most 20 per owne
   now = 1001
   assert.equal(store.take("unknown", "u"), null)          // a take sweeps everything expired
   assert.equal(store.size(), 0)
+})
+
+test("a malformed or wildcard domain gets a plain question and no planId", async () => {
+  const h = harness()
+  for (const d of ["*.example.com", "a..example.com", "foo_bar.example.com", "x y.example.com"]) {
+    const body = await h.plan(`deploy homepage at ${d}`)
+    assert.equal(body.ok, true, d)
+    assert.equal(body.blocked, true, d)
+    assert.equal(body.planId, undefined, d)
+    assert.ok(body.plan.warnings.some((w: string) => w.includes(d) && /Which hostname should it answer on\?/.test(w)), `${d}: ${body.plan.warnings.join(" | ")}`)
+  }
+  assert.equal(h.prepared.size(), 0)
 })

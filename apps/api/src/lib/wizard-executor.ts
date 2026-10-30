@@ -30,6 +30,7 @@ import { installScript, manualCommands, distroOf } from './install-script'
 import { assertVmidFree, bridgeInfo, findIpUser, parseCidr } from './wizard-placement'
 import { zoneFor } from './dns-zones'
 import { archOfKernel, archOfTemplate } from './ai/facts'
+import { publishableHostname } from './ai/templates/fields'
 import type { DeployFields } from './ai/templates/deploy-service'
 import type { StepSpec } from './ai/templates/types'
 import type { TerminalCredential } from './ssh-broker'
@@ -400,10 +401,13 @@ function assertNoFirstRun(job: JobState): void {
                   `Finish setup at http://${job.lxcIp ?? '?'}:${recipe.port}, then publish it.`)
 }
 
+/** The run's domain, checked again here: one valid hostname, never a wildcard, whatever validate let by. */
 function domainOf(job: JobState): string {
   const d = job.run.fields.domain
   if (!d) throw new Error('This run has no domain to publish on.')
-  return d
+  const ok = publishableHostname(d)
+  if (!ok.ok) throw new Error(`"${d}" is not a hostname HyperProx will publish (${ok.message}). Nothing was published.`)
+  return ok.value as string
 }
 
 async function stepConfigureProxy(job: JobState, d: ExecDeps): Promise<string> {
