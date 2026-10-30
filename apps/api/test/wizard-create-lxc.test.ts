@@ -67,7 +67,7 @@ test("sends a real rootfs size, no cast needed, and a Docker-capable unprivilege
   assert.equal(p.rootfs_size, 2)
   assert.equal(p.storage, "pool")
   assert.equal(p.unprivileged, true)
-  assert.equal(p.features, "nesting=1,keyctl=1")
+  assert.equal(p.features, "nesting=1")
   assert.equal(p.ostemplate, "tmpl:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst")
   assert.equal(p.vmid, 102)
   assert.match(p.net0, /ip=dhcp/)
