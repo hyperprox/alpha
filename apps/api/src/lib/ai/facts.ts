@@ -41,41 +41,82 @@ export function failedSources(results: Record<string, PromiseSettledResult<unkno
   return Object.entries(results).filter(([, r]) => r.status === 'rejected').map(([name]) => name)
 }
 
-export async function gatherFacts(): Promise<ClusterFacts> {
-  const client = pve()
+/**
+ * `fetchNode` is lenient: it resolves null on a failed request and never rejects, so a source read through it
+ * can never show up in `failedSources`. Everything that feeds `partial` is read with `fetchStrict`, which does reject.
+ */
+type StrictPve = Pick<ProxmoxClient, 'fetchStrict'>
 
+/** A 2xx that carries no data is as unread as a rejection; make it one. */
+function nonNull<C extends { fetchStrict: any }>(c: C): C {
+  return {
+    fetchStrict: async (path: string, ...rest: unknown[]) => {
+      const v = await c.fetchStrict(path, ...rest)
+      if (v == null) throw new Error(`Proxmox GET ${path}: no data`)
+      return v
+    },
+    fetchNode: (...a: unknown[]) => (c as any).fetchNode?.(...a),
+  } as unknown as C
+}
+
+/** Run `fn` over `items`, at most `limit` at a time, keeping the order of the results. */
+async function mapLimit<T, R>(items: T[], limit: number, fn: (x: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length)
+  let next = 0
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) { const i = next++; out[i] = await fn(items[i]) }
+  }))
+  return out
+}
+
+export interface LegacyFactsDeps {
+  pve: StrictPve & Pick<ProxmoxClient, 'fetchNode'>
+  zones(): Promise<string[]>
+  proxyHosts(): Promise<string[]>
+}
+
+export async function gatherFacts(over: Partial<LegacyFactsDeps> = {}): Promise<ClusterFacts> {
+  const client = nonNull(over.pve ?? pve())
+  const enc = encodeURIComponent
+
+  const nodesP = client.fetchStrict<any[]>('/nodes')
   const [nodesR, storageR, nextidR, proxyR, dnsR, resourcesR] = await Promise.allSettled([
-    client.getNodes(),
-    client.getAllStorage(),
-    client.getNextVMID(),
+    nodesP,
     (async () => {
+      const online = ((await nodesP) ?? []).filter((n: any) => n.status === 'online')
+      const per = await Promise.all(online.map(async (n: any) =>
+        (await client.fetchStrict<any[]>(`/nodes/${enc(n.node)}/storage`)).map(x => ({ ...x, node: n.node }))))
+      return per.flat()
+    })(),
+    client.fetchStrict<number | string>('/cluster/nextid'),
+    over.proxyHosts ? over.proxyHosts() : (async () => {
       const npm = await getProviderCredentials('proxy', 'npm').catch(() => null)
       if (!npm?.url) return [] as string[]
       const c = new NPMClient(npm.url, npm.email, npm.password)
       const hosts = await c.getProxyHosts()
       return (hosts ?? []).flatMap((h: any) => h.domain_names ?? [])
     })(),
-    (async () => {
+    over.zones ? over.zones() : (async () => {
       const gd = await getProviderCredentials('dns', 'godaddy').catch(() => null)
       if (!gd?.api_key || !gd?.api_secret) return [] as string[]
       const domains = await new GoDaddyClient(gd.api_key, gd.api_secret).getDomains()
       return (domains ?? []).map((d: any) => d.domain).filter(Boolean)
     })(),
-    client.fetchNode<any[]>('/cluster/resources?type=vm'),
+    client.fetchStrict<any[]>('/cluster/resources?type=vm'),
   ])
 
   const partial = failedSources({
     nodes: nodesR, storage: storageR, nextid: nextidR, proxy: proxyR, dns: dnsR, resources: resourcesR,
   })
 
-  const nodes = nodesR.status === 'fulfilled' ? nodesR.value : []
+  const nodes = nodesR.status === 'fulfilled' ? nodesR.value ?? [] : []
   const storage = storageR.status === 'fulfilled' ? storageR.value : []
 
   // The gateway is the bridge's, as the node itself has it configured. It is the only gateway the model is
   // allowed to use; it invented one when it was handed the Proxmox host's address under that name.
   let gateway = ''
   for (const n of nodes.filter((x: any) => x.status === 'online')) {
-    gateway = bridgeGateway(await client.fetchNode<any[]>(`/nodes/${encodeURIComponent(n.node)}/network`).catch(() => null))
+    gateway = bridgeGateway(await client.fetchNode<any[]>(`/nodes/${encodeURIComponent(n.node)}/network`).catch(() => null) as any)
     if (gateway) break
   }
 
@@ -164,7 +205,7 @@ export interface TemplateFacts {
   partial: string[]
 }
 export interface FactsDeps {
-  pve: Pick<ProxmoxClient, 'fetchNode' | 'fetchStrict' | 'getNodes'>
+  pve: Pick<ProxmoxClient, 'fetchStrict'>
   zones(): Promise<string[]>
   proxyHosts(): Promise<string[]>
   hasReverseProxy(): Promise<boolean>
@@ -178,7 +219,8 @@ function archOfKernel(machine: unknown): NodeFact['arch'] {
 
 /** The architecture a template names (`…_arm64.tar.zst`); one that names none is amd64. */
 function archOfTemplate(name: string): string {
-  return /_([a-z0-9]+)\.tar\./.exec(name)?.[1] ?? 'amd64'
+  const t = /_(amd64|arm64|armhf|i386|aarch64|x86_64)\.tar\./.exec(name)?.[1]
+  return t === 'aarch64' ? 'arm64' : !t || t === 'x86_64' ? 'amd64' : t
 }
 
 function defaultDeps(): FactsDeps {
@@ -197,20 +239,21 @@ function defaultDeps(): FactsDeps {
       return (hosts ?? []).flatMap((h: any) => h.domain_names ?? [])
     },
     hasReverseProxy: async () => Boolean((await getProviderCredentials('proxy', 'npm').catch(() => null))?.url),
-    hasLogin: async node => Boolean(await nodeCredential(node).catch(() => null)),
+    // A lookup that throws is a failed source (login:<node>), not "no login".
+    hasLogin: async node => Boolean(await nodeCredential(node)),
   }
 }
 
 export async function gatherTemplateFacts(over: Partial<FactsDeps> = {}): Promise<TemplateFacts> {
   const deps: FactsDeps = { ...defaultDeps(), ...over }
-  const { pve: client } = deps
+  const client = nonNull(deps.pve)
   const ok = <T>(r: PromiseSettledResult<T>, empty: T): T => (r.status === 'fulfilled' && r.value != null ? r.value : empty)
   const enc = encodeURIComponent
 
   const [nodesR, nextR, resR, zonesR, proxyR, rpR] = await Promise.allSettled([
-    client.getNodes(),
+    client.fetchStrict<any[]>('/nodes'),
     client.fetchStrict<number | string>('/cluster/nextid'),
-    client.fetchNode<any[]>('/cluster/resources?type=vm'),
+    client.fetchStrict<any[]>('/cluster/resources?type=vm'),
     deps.zones(), deps.proxyHosts(), deps.hasReverseProxy(),
   ])
   const partial = failedSources({ nodes: nodesR, nextid: nextR, resources: resR, zones: zonesR, proxy: proxyR })
@@ -233,13 +276,13 @@ export async function gatherTemplateFacts(over: Partial<FactsDeps> = {}): Promis
     if (!online) continue
 
     const [statusR, netR, storR, aplR, loginR] = await Promise.allSettled([
-      client.fetchNode<any>(`/nodes/${enc(n.node)}/status`),
-      client.fetchNode<any[]>(`/nodes/${enc(n.node)}/network`),
-      client.fetchNode<any[]>(`/nodes/${enc(n.node)}/storage`),
-      client.fetchNode<any[]>(`/nodes/${enc(n.node)}/aplinfo`),
+      client.fetchStrict<any>(`/nodes/${enc(n.node)}/status`),
+      client.fetchStrict<any[]>(`/nodes/${enc(n.node)}/network`),
+      client.fetchStrict<any[]>(`/nodes/${enc(n.node)}/storage`),
+      client.fetchStrict<any[]>(`/nodes/${enc(n.node)}/aplinfo`),
       deps.hasLogin(n.node),
     ])
-    for (const [k, r] of Object.entries({ status: statusR, network: netR, storage: storR }))
+    for (const [k, r] of Object.entries({ status: statusR, network: netR, storage: storR, aplinfo: aplR, login: loginR }))
       if (r.status === 'rejected' || r.value == null) partial.push(`${k}:${n.node}`)
     base.arch = archOfKernel(ok(statusR, null)?.['current-kernel']?.machine)
     base.hasLogin = ok(loginR, false)
@@ -255,7 +298,7 @@ export async function gatherTemplateFacts(over: Partial<FactsDeps> = {}): Promis
         shared: Boolean(s.shared), freeGb: Math.floor(Number(s.avail ?? 0) / 1073741824),
       })
       if (!active || !content.includes('vztmpl')) continue
-      const list = await client.fetchNode<any[]>(`/nodes/${enc(n.node)}/storage/${enc(s.storage)}/content?content=vztmpl`)
+      const list = await client.fetchStrict<any[]>(`/nodes/${enc(n.node)}/storage/${enc(s.storage)}/content?content=vztmpl`)
         .catch(() => null)
       if (list == null) { partial.push(`templates:${n.node}/${s.storage}`); continue }
       for (const c of list) {
@@ -271,14 +314,14 @@ export async function gatherTemplateFacts(over: Partial<FactsDeps> = {}): Promis
   }
 
   const resources: any[] = ok(resR, [])
-  const guests: GuestFact[] = await Promise.all(
-    resources.filter(r => r?.vmid && (r.type === 'lxc' || r.type === 'qemu')).map(async r => {
-      const cfg = await client.fetchNode<Record<string, unknown>>(
+  const guests: GuestFact[] = await mapLimit(
+    resources.filter(r => r?.vmid && (r.type === 'lxc' || r.type === 'qemu')), 8, async r => {
+      const cfg = await client.fetchStrict<Record<string, unknown>>(
         `/nodes/${enc(r.node)}/${r.type}/${Number(r.vmid)}/config`).catch(() => null)
+      if (cfg == null) partial.push(`config:${Number(r.vmid)}`)
       return { vmid: Number(r.vmid), node: String(r.node), type: r.type as 'lxc' | 'qemu',
                name: String(r.name ?? ''), addresses: configAddresses(cfg) }
-    }),
-  )
+    })
 
   return {
     nodes, storages, templates, downloadable, guests,

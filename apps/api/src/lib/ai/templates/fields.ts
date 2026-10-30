@@ -16,7 +16,8 @@ const LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
 
 function validIpv4(s: string): boolean {
   const m = OCTETS.exec(s)
-  return !!m && m.slice(1).every(o => Number(o) <= 255)
+  // No leading zeros: "010" is octal to some parsers and decimal to others.
+  return !!m && m.slice(1).every(o => (o === '0' || !o.startsWith('0')) && Number(o) <= 255)
 }
 
 export function coerce(spec: FieldSpec, raw: unknown, enumValues?: string[]): Coerced {

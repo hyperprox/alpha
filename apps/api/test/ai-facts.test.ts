@@ -1,19 +1,19 @@
 // Template facts against a fake Proxmox: per-node arch, bridges, storage, templates and guest addresses.
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { gatherTemplateFacts } from "../src/lib/ai/facts"
+import { gatherTemplateFacts, gatherFacts } from "../src/lib/ai/facts"
 import { isHostAddress, bridgeInfo } from "../src/lib/wizard-placement"
 
 const GB = 1024 ** 3
 function deps(over: Record<string, unknown> = {}) {
-  const pve: any = {
-    getNodes: async () => [
-      { node: "pve1", status: "online", maxcpu: 4, maxmem: 16 * GB, mem: 4 * GB },
-      { node: "pve2", status: "online", maxcpu: 4, maxmem: 8 * GB, mem: 2 * GB },
-      { node: "pve3", status: "offline" },
-    ],
-    fetchStrict: async (p: string) => { if (p === "/cluster/nextid") return "120"; throw new Error("unexpected " + p) },
-    fetchNode: async (p: string) => {
+  const route = (p: string): any => {
+      if (p === "/nodes") return [
+        { node: "pve1", status: "online", maxcpu: 4, maxmem: 16 * GB, mem: 4 * GB },
+        { node: "pve2", status: "online", maxcpu: 4, maxmem: 8 * GB, mem: 2 * GB },
+        { node: "pve3", status: "offline" },
+      ]
+      if (p === "/cluster/nextid") return "120"
+      if (p === "/nodes/pve2/aplinfo") return []
       if (p === "/nodes/pve1/status") return { "current-kernel": { machine: "x86_64" } }
       if (p === "/nodes/pve2/status") return { "current-kernel": { machine: "aarch64" } }
       if (p === "/nodes/pve1/network") return [
@@ -38,6 +38,14 @@ function deps(over: Record<string, unknown> = {}) {
       if (p === "/nodes/pve1/lxc/105/config") return { net0: "name=eth0,bridge=vmbr0,ip=10.0.0.45/24,gw=10.0.0.1" }
       if (p === "/nodes/pve2/qemu/106/config") return { ipconfig0: "ip=dhcp" }
       return null
+  }
+  // Like the real client: fetchNode resolves null on a failed read; fetchStrict rejects.
+  const pve: any = {
+    fetchNode: async (p: string) => route(p),
+    fetchStrict: async (p: string) => {
+      const v = route(p)
+      if (v == null) throw new Error("Proxmox GET " + p + ": HTTP 500")
+      return v
     },
   }
   return { pve, zones: async () => ["example.com"], proxyHosts: async () => ["a.example.com"],
@@ -99,4 +107,61 @@ test("isHostAddress refuses network, broadcast and gateway", () => {
   assert.equal(isHostAddress("10.0.0.1", "10.0.0.1", 24), false)
   assert.equal(isHostAddress("10.0.0.37", "10.0.0.1", 24), true)
   assert.equal(isHostAddress("10.0.1.37", "10.0.0.1", 24), false)
+})
+
+// fetchNode never rejects, so a source read through it can never be reported failed. These return null the way it does.
+function nullFor(...paths: string[]) {
+  const d = deps(); const full = d.pve.fetchStrict
+  d.pve.fetchStrict = async (p: string) => {
+    if (paths.includes(p)) return null            // a 2xx with no data, as well as a rejection, is a failed read
+    return full(p)
+  }
+  return d
+}
+test("template facts: every source that reads null or throws is named in partial", async () => {
+  const f = await gatherTemplateFacts(Object.assign(nullFor(
+    "/cluster/resources?type=vm", "/nodes/pve1/lxc/105/config", "/nodes/pve1/aplinfo", "/nodes/pve2/network", "/nodes/pve1/storage/tmpl/content?content=vztmpl"),
+    { hasLogin: async (n: string) => { if (n === "pve2") throw new Error("vault locked"); return true } }))
+  for (const want of ["resources", "aplinfo:pve1", "network:pve2", "login:pve2", "templates:pve1/tmpl"])
+    assert.ok(f.partial.includes(want), want + " in " + f.partial.join())
+  const g = await gatherTemplateFacts(Object.assign(nullFor("/nodes/pve1/lxc/105/config")))
+  assert.deepEqual(g.partial, ["config:105"])
+  const n = await gatherTemplateFacts(nullFor("/nodes"))
+  assert.ok(n.partial.includes("nodes"))
+})
+
+test("per-guest config reads run at most 8 at a time", async () => {
+  const d = deps(); const full = d.pve.fetchStrict
+  let live = 0, peak = 0
+  d.pve.fetchStrict = async (p: string) => {
+    if (p === "/cluster/resources?type=vm") return Array.from({ length: 30 }, (_, i) => ({ vmid: 200 + i, node: "pve1", type: "lxc", name: "g" + i }))
+    if (/\/lxc\/2\d\d\/config$/.test(p)) { live++; peak = Math.max(peak, live); await new Promise(r => setTimeout(r, 5)); live--; return {} }
+    return full(p)
+  }
+  const f = await gatherTemplateFacts(d)
+  assert.equal(f.guests.length, 30)
+  assert.ok(peak <= 8 && peak > 1, "peak " + peak)
+})
+
+test("template arch: only known tokens count; an unknown token is amd64; aarch64 is arm64", async () => {
+  const d = deps(); const full = d.pve.fetchStrict
+  d.pve.fetchStrict = async (p: string) => p === "/nodes/pve1/storage/tmpl/content?content=vztmpl"
+    ? [{ volid: "tmpl:vztmpl/debian-13-standard_13.1-2_weird.tar.zst" }, { volid: "tmpl:vztmpl/debian-12-standard_12.7-1_aarch64.tar.zst" }]
+    : full(p)
+  const f = await gatherTemplateFacts(d)
+  assert.deepEqual(f.templates.map(t => t.arch), ["amd64", "arm64"])
+})
+
+test("legacy gatherFacts: a source that reads null or throws lands in partial", async () => {
+  const run = async (nul: string[], over: Record<string, unknown> = {}) => {
+    const d = deps(); const full = d.pve.fetchStrict
+    d.pve.fetchStrict = async (p: string) => nul.includes(p) ? null : full(p)
+    return gatherFacts({ pve: d.pve, zones: d.zones, proxyHosts: d.proxyHosts, ...over } as any)
+  }
+  assert.deepEqual((await run([])).partial, [])
+  assert.ok((await run(["/cluster/resources?type=vm"])).partial.includes("resources"))
+  assert.ok((await run(["/nodes"])).partial.includes("nodes"))
+  assert.ok((await run(["/nodes/pve1/storage"])).partial.includes("storage"))
+  assert.ok((await run(["/cluster/nextid"])).partial.includes("nextid"))
+  assert.ok((await run([], { zones: async () => { throw new Error("dns") } })).partial.includes("dns"))
 })
