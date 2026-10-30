@@ -1,0 +1,148 @@
+// /wizard/execute runs only a plan the server produced and audited, once, for the user who asked for it.
+import { test } from "node:test"
+import assert from "node:assert/strict"
+import Fastify from "fastify"
+import { buildAiRoutes } from "../src/routes/ai"
+import { PreparedStore } from "../src/lib/ai/prepared"
+import type { Plan, ClusterFacts } from "../src/lib/ai/plan-schema"
+
+const baseFacts: ClusterFacts = {
+  nodes: [{ node: "pve1", cores: 4, freeMemMb: 8000, totalMemMb: 16000 }],
+  storages: [{ storage: "pool", type: "rbd", freeGb: 100, shared: true }],
+  domains: ["example.com"], proxyHosts: [], nextVmid: 102, usedVmids: [101], gateway: "10.0.0.1",
+  capabilities: { nodesWithLogin: ["pve1"], hasReverseProxy: true, installable: [] },
+}
+
+function fakePlan(service: string): Plan {
+  const base = { hostname: "", node: "", storage: "", cores: 0, memory_mb: 0, disk_gb: 0, port: 0, vmid: 0, ip: "", gateway: "" }
+  const step = (type: any, p = {}) => ({ id: type, type, label: type, description: "", params: { ...base, ...p } })
+  return {
+    service, domain: "app.example.com", understood: "",
+    steps: [step("create_lxc", { vmid: 250, node: "pve1", storage: "pool" }), step("install_service"),
+            step("configure_proxy"), step("create_dns"), step("wait_propagation"), step("request_ssl")],
+    requirements: { ram_mb: 256, disk_gb: 2, cpu_cores: 1 }, warnings: [],
+  }
+}
+
+function harness() {
+  let clock = 1_000_000
+  let user = "admin@example.com"
+  let factsCalls = 0
+  let laterFacts: ClusterFacts | null = null
+  const executed: Array<{ jobId: string; plan: Plan }> = []
+  const app = Fastify()
+  app.register(buildAiRoutes({
+    gatherFacts: async () => (factsCalls++ > 0 && laterFacts) ? laterFacts : baseFacts,
+    generatePlan: async (text: string) => fakePlan(/mystery/i.test(text) ? "Mystery App" : "Uptime Kuma"),
+    execute: async (jobId: string, plan: Plan) => { executed.push({ jobId, plan }) },
+    prepared: new PreparedStore<Plan>(30 * 60_000, () => clock),
+    whoami: () => user,
+    activeProvider: async () => "anthropic",
+    listProviders: async () => [],
+  }))
+  const inject = (url: string, payload: unknown) => app.inject({ method: "POST", url, payload: payload as any })
+  return {
+    app, inject, executed,
+    advance: (ms: number) => { clock += ms },
+    as: (email: string) => { user = email },
+    factsLater: (f: ClusterFacts) => { laterFacts = f },
+  }
+}
+
+test("a plan posted by the browser is refused and never executed", async () => {
+  const { inject, executed } = harness()
+  const res = await inject("/wizard/execute", { plan: { steps: [{ type: "create_lxc" }] } })
+  assert.equal(res.statusCode, 400)
+  assert.match(res.json().error, /never run/)
+  assert.equal(executed.length, 0)
+})
+
+test("a plan posted alongside a valid planId is still refused", async () => {
+  const { inject, executed } = harness()
+  const { planId } = (await inject("/wizard/plan", { prompt: "deploy uptime kuma" })).json()
+  const res = await inject("/wizard/execute", { planId, plan: { steps: [{ type: "create_lxc" }] } })
+  assert.equal(res.statusCode, 400)
+  assert.equal(executed.length, 0)
+})
+
+test("a non-string planId is refused", async () => {
+  const { inject, executed } = harness()
+  assert.equal((await inject("/wizard/execute", { planId: { $ne: "" } })).statusCode, 400)
+  assert.equal((await inject("/wizard/execute", {})).statusCode, 400)
+  assert.equal(executed.length, 0)
+})
+
+test("a blocked plan gets no planId", async () => {
+  const { inject } = harness()
+  const body = (await inject("/wizard/plan", { prompt: "deploy mystery app" })).json()
+  assert.equal(body.blocked, true)
+  assert.equal(body.planId, undefined)
+})
+
+test("execute runs the server's copy of the plan, once", async () => {
+  const { inject, executed } = harness()
+  const { planId, plan, blocked } = (await inject("/wizard/plan", { prompt: "deploy uptime kuma" })).json()
+  assert.equal(blocked, false)
+  assert.equal(typeof planId, "string")
+  const res = await inject("/wizard/execute", { planId })
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.json().ok, true)
+  assert.equal(executed.length, 1)
+  assert.equal(executed[0].jobId, res.json().jobId)
+  assert.deepEqual(executed[0].plan.steps, plan.steps)
+  assert.equal((await inject("/wizard/execute", { planId })).statusCode, 404)
+  assert.equal(executed.length, 1)
+})
+
+test("an unknown, expired or another user's planId is 404", async () => {
+  const h = harness()
+  assert.equal((await h.inject("/wizard/execute", { planId: "not-a-plan" })).statusCode, 404)
+
+  const { planId: stale } = (await h.inject("/wizard/plan", { prompt: "deploy uptime kuma" })).json()
+  h.advance(30 * 60_000 + 1)
+  const expired = await h.inject("/wizard/execute", { planId: stale })
+  assert.equal(expired.statusCode, 404)
+  assert.match(expired.json().error, /expired or was already run/)
+
+  const { planId: mine } = (await h.inject("/wizard/plan", { prompt: "deploy uptime kuma" })).json()
+  h.as("someone-else@example.com")
+  assert.equal((await h.inject("/wizard/execute", { planId: mine })).statusCode, 404)
+  // Trying it as another user must not burn it for the owner.
+  h.as("admin@example.com")
+  assert.equal((await h.inject("/wizard/execute", { planId: mine })).statusCode, 200)
+  assert.equal(h.executed.length, 1)
+})
+
+test("a request with no signed-in user gets no planId and cannot execute", async () => {
+  const h = harness()
+  h.as("")
+  const body = (await h.inject("/wizard/plan", { prompt: "deploy uptime kuma" })).json()
+  assert.equal(body.blocked, false)
+  assert.equal(body.planId, undefined)
+  assert.equal((await h.inject("/wizard/execute", { planId: "anything" })).statusCode, 404)
+  assert.equal(h.executed.length, 0)
+})
+
+test("facts that changed since planning re-block at execute", async () => {
+  const h = harness()
+  const { planId } = (await h.inject("/wizard/plan", { prompt: "deploy uptime kuma" })).json()
+  h.factsLater({ ...baseFacts, usedVmids: [101, 250] })
+  const res = await h.inject("/wizard/execute", { planId })
+  assert.equal(res.statusCode, 409)
+  assert.equal(res.json().blocked, true)
+  assert.ok(res.json().warnings.some((w: string) => /250 is already used/.test(w)))
+  assert.equal(h.executed.length, 0)
+})
+
+test("PreparedStore ids are unguessable and single-use", () => {
+  let now = 0
+  const store = new PreparedStore<number>(1000, () => now)
+  const a = store.put("u", 1), b = store.put("u", 2)
+  assert.notEqual(a, b)
+  assert.match(a, /^[0-9a-f-]{36}$/)
+  assert.equal(store.take(a, "u")?.payload, 1)
+  assert.equal(store.take(a, "u"), null)
+  now = 1001
+  assert.equal(store.take(b, "u"), null)
+  assert.equal(store.take("__proto__", "u"), null)
+})
