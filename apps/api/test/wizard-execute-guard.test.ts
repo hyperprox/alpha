@@ -4,6 +4,8 @@ import assert from "node:assert/strict"
 import Fastify from "fastify"
 import { buildAiRoutes } from "../src/routes/ai"
 import { PreparedStore } from "../src/lib/ai/prepared"
+import { failedSources } from "../src/lib/ai/facts"
+import { AUDIT_SOURCES } from "../src/lib/ai/plan-schema"
 import type { Plan, ClusterFacts } from "../src/lib/ai/plan-schema"
 
 const baseFacts: ClusterFacts = {
@@ -145,4 +147,57 @@ test("PreparedStore ids are unguessable and single-use", () => {
   now = 1001
   assert.equal(store.take(b, "u"), null)
   assert.equal(store.take("__proto__", "u"), null)
+})
+
+test("failedSources names each cluster source that could not be read", () => {
+  const ok = { status: "fulfilled", value: [] } as const
+  const bad = { status: "rejected", reason: new Error("down") } as const
+  assert.deepEqual(failedSources({ nodes: ok, resources: bad, dns: bad, proxy: ok }), ["resources", "dns"])
+  assert.deepEqual(failedSources({ nodes: ok }), [])
+})
+
+test("execute refuses, naming the source, when the facts the audit needs could not be read", async () => {
+  for (const source of AUDIT_SOURCES) {
+    const h = harness()
+    const { planId } = (await h.inject("/wizard/plan", { prompt: "deploy uptime kuma" })).json()
+    // An unreadable source reads as empty: no used IDs, no zones. That must not pass the re-audit.
+    h.factsLater({ ...baseFacts, usedVmids: [], domains: [], partial: [source] })
+    const res = await h.inject("/wizard/execute", { planId })
+    assert.equal(res.statusCode, 502, source)
+    assert.equal(res.json().blocked, true)
+    assert.deepEqual(res.json().unavailable, [source])
+    assert.match(res.json().error, new RegExp(source))
+    assert.equal(h.executed.length, 0)
+  }
+})
+
+test("a source the audit does not use failing does not block execute", async () => {
+  const h = harness()
+  const { planId } = (await h.inject("/wizard/plan", { prompt: "deploy uptime kuma" })).json()
+  h.factsLater({ ...baseFacts, partial: ["proxy"] })
+  assert.equal((await h.inject("/wizard/execute", { planId })).statusCode, 200)
+  assert.equal(h.executed.length, 1)
+})
+
+test("planning with an unreadable source still plans, and says what it could not check", async () => {
+  const h = harness()
+  h.factsLater({ ...baseFacts, partial: ["resources"] })
+  await h.inject("/wizard/plan", { prompt: "deploy uptime kuma" })   // first call uses baseFacts
+  const body = (await h.inject("/wizard/plan", { prompt: "deploy uptime kuma" })).json()
+  assert.equal(body.ok, true)
+  assert.ok(body.plan.warnings.some((w: string) => /could not read resources/i.test(w)), body.plan.warnings.join(" | "))
+})
+
+test("PreparedStore sweeps expired entries on take and keeps at most 20 per owner", () => {
+  let now = 0
+  const store = new PreparedStore<number>(1000, () => now)
+  const ids = Array.from({ length: 21 }, (_, i) => store.put("u", i))
+  const other = store.put("v", 99)
+  assert.equal(store.take(ids[0], "u"), null)            // the oldest was evicted
+  assert.equal(store.take(ids[1], "u")?.payload, 1)
+  assert.equal(store.size(), 20)                          // 19 of u's left, 1 of v's
+  assert.equal(store.take(other, "v")?.payload, 99)
+  now = 1001
+  assert.equal(store.take("unknown", "u"), null)          // a take sweeps everything expired
+  assert.equal(store.size(), 0)
 })

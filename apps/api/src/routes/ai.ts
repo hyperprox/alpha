@@ -14,7 +14,7 @@ import { setCredential }      from '../lib/credentials'
 import { executeWizardJob, getJob } from '../lib/wizard-executor'
 import { gatherFacts }        from '../lib/ai/facts'
 import { userPrompt }         from '../lib/ai/prompt'
-import { auditPlan, type Plan, type ClusterFacts } from '../lib/ai/plan-schema'
+import { auditPlan, unreadAuditSources, type Plan, type ClusterFacts } from '../lib/ai/plan-schema'
 import { PreparedStore }      from '../lib/ai/prepared'
 import { currentContext }     from '../lib/auth'
 import {
@@ -178,7 +178,12 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
         // The model's own warnings are what it noticed; the audit's are what the
         // cluster says. Both go in front of the user before anything is created.
         const problems = auditPlan(plan, facts)
-        const warnings = [...new Set([...plan.warnings, ...problems])]
+        // Planning goes ahead on partial facts, but says what it could not
+        // check; execute audits again and refuses if it still cannot read them.
+        const unread = unreadAuditSources(facts).map(src =>
+          `HyperProx could not read ${src} from the cluster, so this plan was not fully checked. ` +
+          `Execute checks again and will refuse if it still cannot.`)
+        const warnings = [...new Set([...plan.warnings, ...problems, ...unread])]
         const audited: Plan = { ...plan, warnings }
         const blocked = problems.length > 0
 
@@ -237,6 +242,15 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
         return reply.status(502).send({
           ok: false,
           error: `Cannot read the cluster, so the plan cannot be checked again before it runs: ${err.message}`,
+        })
+      }
+      // A source that failed reads as empty, and an empty list passes checks it
+      // should fail (a taken ID looks free, the zone check is skipped). Refuse.
+      const unavailable = unreadAuditSources(facts)
+      if (unavailable.length) {
+        return reply.status(502).send({
+          ok: false, blocked: true, unavailable,
+          error: `Cannot read ${unavailable.join(', ')} from the cluster, so the plan cannot be checked again before it runs. Plan it again.`,
         })
       }
       const problems = auditPlan(plan, facts)
