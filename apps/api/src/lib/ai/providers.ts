@@ -103,8 +103,7 @@ async function openaiPlan(userText: string): Promise<Plan> {
   })
 
   if (!res.ok) {
-    const body = await res.text()
-    throw new Error(`${model} returned HTTP ${res.status}: ${body.slice(0, 200)}`)
+    throw providerError(model, res.status, await res.text())
   }
   const data: any = await res.json()
   const text = data?.choices?.[0]?.message?.content
@@ -267,12 +266,45 @@ export interface StructuredOptions {
   numThread?: number
 }
 
-/** `refusal`: the model declined, retrying will not help. `parse`: two replies did not fit the schema. */
+/**
+ * `refusal`: the model declined. `truncated`: it ran out of tokens mid-reply. Neither is retried.
+ * `parse`: two replies did not fit the schema.
+ */
 export class StructuredOutputError extends Error {
-  constructor(message: string, readonly kind: 'refusal' | 'parse' = 'parse') {
+  constructor(message: string, readonly kind: 'refusal' | 'truncated' | 'parse' = 'parse') {
     super(message)
     this.name = 'StructuredOutputError'
   }
+}
+
+const REFUSED = 'The model declined this request. Rephrase it, or use a different provider.'
+const TRUNCATED = 'The model ran out of room before finishing its reply. Shorten the request or use a different model.'
+
+/** Status and the provider's error type or code; the body can echo the prompt, so none of it is quoted. */
+export function providerError(model: string, status: number, body: string): Error {
+  let tag = ''
+  try {
+    const e = JSON.parse(body)?.error
+    const t = [e?.type, e?.code].filter((x: unknown) => typeof x === 'string' && /^[\w.-]{1,60}$/.test(x as string))
+    if (t.length) tag = ` (${t.join(', ')})`
+  } catch { /* not JSON: the status alone */ }
+  return new Error(`${model} returned HTTP ${status}${tag}`)
+}
+
+export function openaiText(data: any): string {
+  const choice = data?.choices?.[0]
+  if (choice?.message?.refusal || choice?.finish_reason === 'content_filter') throw new StructuredOutputError(REFUSED, 'refusal')
+  if (choice?.finish_reason === 'length') throw new StructuredOutputError(TRUNCATED, 'truncated')
+  const text = choice?.message?.content
+  if (!text) throw new Error('The provider returned no content.')
+  return text
+}
+
+export function ollamaText(data: any): string {
+  if (data?.done_reason === 'length') throw new StructuredOutputError(TRUNCATED, 'truncated')
+  const text = data?.message?.content
+  if (!text) throw new Error(data?.error ? 'Ollama reported an error.' : 'Ollama returned no content.')
+  return text
 }
 
 const ANTHROPIC_STRUCTURED_MAX_TOKENS = 4096
@@ -312,27 +344,32 @@ export function ollamaBody(r: StructuredRequest<unknown>, model: string, numThre
     options: {
       temperature: 0.1,
       // Ollama sizes its thread count from the host's cores, not the container's CPU quota.
-      ...(numThread && numThread > 0 ? { num_thread: Math.floor(numThread) } : {}),
+      ...(typeof numThread === 'number' && Number.isInteger(numThread) && numThread >= 1 ? { num_thread: numThread } : {}),
     },
   }
 }
 
 /** Thread count and timeout for a local model on a CPU: slow, so patient, and told how many cores it really has. */
-export async function ollamaSettings(): Promise<{ numThread?: number; timeoutMs: number }> {
+export async function ollamaSettings(): Promise<{ numThread?: number; timeoutMs: number; unreadable?: string }> {
   const pos = (v: string): number | undefined => {
     const n = Number(v)
     return Number.isFinite(n) && n > 0 ? n : undefined
   }
-  const numThread = pos(await cred('ollama', 'num_thread').catch(() => '')) ?? pos(process.env.OLLAMA_NUM_THREAD ?? '')
-  const seconds = pos(await cred('ollama', 'timeout_s').catch(() => '')) ?? pos(process.env.OLLAMA_TIMEOUT_S ?? '') ?? OLLAMA_DEFAULT_TIMEOUT_S
-  return { numThread, timeoutMs: seconds * 1000 }
+  let unreadable: string | undefined
+  // A stored setting that cannot be read is not the same as one that was never set.
+  const read = async (key: string): Promise<string> => {
+    try { return await cred('ollama', key) } catch (e) { unreadable ??= e instanceof Error ? e.message : String(e); return '' }
+  }
+  const whole = (v: number | undefined) => (v !== undefined && Number.isInteger(v) ? v : undefined)
+  const numThread = whole(pos(await read('num_thread'))) ?? whole(pos(process.env.OLLAMA_NUM_THREAD ?? ''))
+  const seconds = pos(await read('timeout_s')) ?? pos(process.env.OLLAMA_TIMEOUT_S ?? '') ?? OLLAMA_DEFAULT_TIMEOUT_S
+  return { numThread, timeoutMs: seconds * 1000, ...(unreadable ? { unreadable } : {}) }
 }
 
 /** The text of an Anthropic reply; a refusal is an error, never an empty result. */
 export function anthropicText(response: { stop_reason?: string | null; content?: Array<{ type: string; text?: string }> }): string {
-  if (response.stop_reason === 'refusal') {
-    throw new StructuredOutputError('The model declined this request. Rephrase it, or use a different provider.', 'refusal')
-  }
+  if (response.stop_reason === 'refusal') throw new StructuredOutputError(REFUSED, 'refusal')
+  if (response.stop_reason === 'max_tokens') throw new StructuredOutputError(TRUNCATED, 'truncated')
   const block = response.content?.find(b => b.type === 'text')
   if (!block?.text) throw new Error('The provider returned no content.')
   return block.text
@@ -356,19 +393,13 @@ async function httpSend(provider: ProviderId, body: Record<string, unknown>): Pr
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(180_000),
     })
-    if (!res.ok) throw new Error(`${body.model} returned HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`)
-    const data: any = await res.json()
-    const choice = data?.choices?.[0]
-    if (choice?.message?.refusal) {
-      throw new StructuredOutputError('The model declined this request. Rephrase it, or use a different provider.', 'refusal')
-    }
-    const text = choice?.message?.content
-    if (!text) throw new Error('The provider returned no content.')
-    return text
+    if (!res.ok) throw providerError(String(body.model), res.status, await res.text())
+    return openaiText(await res.json())
   }
   const url = (await cred('ollama', 'url')) || process.env.OLLAMA_URL || ''
   if (!url) throw new Error('Ollama is not configured — add its address in Settings.')
-  const { timeoutMs } = await ollamaSettings()
+  const { timeoutMs, unreadable } = await ollamaSettings()
+  if (unreadable) throw new Error(`Ollama's settings could not be read: ${unreadable}`)
   const res = await fetch(`${url.replace(/\/+$/, '')}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -376,10 +407,7 @@ async function httpSend(provider: ProviderId, body: Record<string, unknown>): Pr
     signal: AbortSignal.timeout(timeoutMs),
   })
   if (!res.ok) throw new Error(`Ollama returned HTTP ${res.status}`)
-  const data: any = await res.json()
-  const text = data?.message?.content
-  if (!text) throw new Error(data?.error || 'Ollama returned no content.')
-  return text
+  return ollamaText(await res.json())
 }
 
 async function modelFor(provider: ProviderId): Promise<string> {
@@ -401,14 +429,11 @@ export async function callStructured<T>(
     : id === 'openai' ? openaiBody(r, model)
     : ollamaBody(r, model, numThread)
 
-  let lastError = ''
   for (let attempt = 0; attempt < 2; attempt++) {
     const text = await send(id, body) // transport errors and refusals are not parse failures: not retried
     try {
       return r.parse(JSON.parse(unwrapJson(String(text))))
-    } catch (e) {
-      lastError = e instanceof Error ? e.message : String(e)
-    }
+    } catch { /* the error text can quote the reply; not kept */ }
   }
-  throw new StructuredOutputError(`The model's reply did not match what was asked for (${lastError.slice(0, 200)}). Please rephrase your request.`, 'parse')
+  throw new StructuredOutputError(`The model's reply did not match what was asked for, after two tries. Please rephrase your request.`, 'parse')
 }

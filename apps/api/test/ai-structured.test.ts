@@ -82,3 +82,38 @@ test("a transport error is not retried as a parse failure", async () => {
   await assert.rejects(callStructured(req, "openai", send, opts), /HTTP 500/)
   assert.equal(n, 1)
 })
+
+import { openaiText, ollamaText, providerError, ollamaSettings } from "../src/lib/ai/providers"
+
+test("num_thread must be an integer of at least 1", () => {
+  for (const bad of [0, -2, 1.5, NaN]) assert.equal("num_thread" in (ollamaBody(req, "m", bad) as any).options, false, String(bad))
+  assert.equal((ollamaBody(req, "m", 4) as any).options.num_thread, 4)
+})
+
+test("provider error texts carry the status and error type, never the response body", async () => {
+  const body = JSON.stringify({ error: { type: "invalid_request_error", code: "bad_key", message: "secret prompt text sk-123" } })
+  const e = providerError("m", 401, body)
+  assert.match(e.message, /HTTP 401/); assert.match(e.message, /invalid_request_error/)
+  assert.doesNotMatch(e.message, /secret|sk-123/)
+  assert.doesNotMatch(providerError("m", 500, "<html>echoed prompt</html>").message, /echoed/)
+})
+
+test("refusals and truncation map to typed kinds and are not retried", async () => {
+  const kind = (f: () => unknown) => { try { f(); return null } catch (e: any) { return e instanceof StructuredOutputError ? e.kind : "other" } }
+  assert.equal(kind(() => openaiText({ choices: [{ finish_reason: "stop", message: { refusal: "no" } }] })), "refusal")
+  assert.equal(kind(() => openaiText({ choices: [{ finish_reason: "content_filter", message: { content: "x" } }] })), "refusal")
+  assert.equal(kind(() => openaiText({ choices: [{ finish_reason: "length", message: { content: "{" } }] })), "truncated")
+  assert.equal(openaiText({ choices: [{ finish_reason: "stop", message: { content: "{}" } }] }), "{}")
+  assert.equal(kind(() => anthropicText({ stop_reason: "max_tokens", content: [{ type: "text", text: "{" }] })), "truncated")
+  assert.equal(kind(() => ollamaText({ done_reason: "length", message: { content: "{" } })), "truncated")
+  let n = 0
+  const send: RawSend = async () => { n++; throw new StructuredOutputError("cut off", "truncated") }
+  await assert.rejects(callStructured(req, "openai", send, opts), (e: any) => e.kind === "truncated")
+  assert.equal(n, 1)
+})
+
+test("an unreadable credential is reported, not swallowed", async () => {
+  const s = await ollamaSettings() // vault is locked in tests
+  assert.ok(s.unreadable, "reports why")
+  assert.equal(s.timeoutMs, 300_000)
+})

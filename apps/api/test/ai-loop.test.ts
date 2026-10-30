@@ -71,14 +71,14 @@ test("an invalid user value is asked again, not replaced", async () => {
 })
 
 test("after 8 questions the session is blocked and lists what is missing", async () => {
-  const { d } = deps([ext({ service: "uptime-kuma" })])
-  let s = await startLoop("deploy uptime kuma", d)
-  for (let i = 0; i < 20 && s.state === "asking"; i++) s = await answerLoop(s, { text: "dunno" }, d)
+  const { d } = deps([ext({ service: "uptime-kuma" }), ext({ exposure: "public" })])
+  const s0 = await startLoop("deploy uptime kuma", d)
+  const s = await answerLoop({ ...s0, asked: 8 }, { text: "public" }, d)
   assert.equal(s.state, "blocked")
   assert.equal(s.asked, MAX_QUESTIONS)
   const last = s.transcript[s.transcript.length - 1]
   assert.equal(last.role, "assistant")
-  assert.match(last.text, /reachable from the internet/)
+  assert.match(last.text, /hostname/)
   assert.equal(s.pending, undefined)
 })
 
@@ -123,4 +123,48 @@ test("a domain with exposure lan asks once; answering lan clears the domain inst
   assert.equal(viaEdit.state, "ready")
   const pub = await answerLoop(s, { field: "exposure", value: "public" }, d)
   assert.equal(pub.fields.domain.value, "git.example.com", "public keeps the hostname")
+})
+
+import { LoopStateError } from "../src/lib/ai/loop"
+
+test("the model never decides: keys outside the template's extract fields are ignored", async () => {
+  const bad = JSON.parse('{"service":"gitea","exposure":"lan","gateway":"10.0.0.254","features":"keyctl=1","steps":[],"__proto__":{"x":1},"constructor":"c","hostname":"evil"}')
+  const { d } = deps([ext(bad)])
+  const s = await startLoop("deploy gitea", d)
+  assert.equal(s.fields.gateway, undefined); assert.notEqual(s.fields.features?.value, "keyctl=1")
+  assert.notEqual(s.fields.hostname?.value, "evil")
+  assert.equal(({} as any).x, undefined, "Object.prototype untouched")
+  assert.equal(Object.getPrototypeOf(s.fields), Object.prototype)
+  assert.equal((s.fields as any).constructor, Object)
+})
+
+test("a reply that does not set exposure=lan never clears the domain; a new domain with lan keeps it", async () => {
+  const { d } = deps([ext({ service: "gitea", exposure: "lan", domain: "git.example.com" }), ext(), ext({ exposure: "lan", domain: "other.example.com" })])
+  const s = await startLoop("deploy gitea lan at git.example.com", d)
+  const dunno = await answerLoop(s, { text: "dunno" }, d)
+  assert.equal(dunno.state, "asking"); assert.equal(dunno.fields.domain.value, "git.example.com")
+  assert.equal(dunno.pending!.field, "exposure")
+  const both = await answerLoop(s, { text: "lan, other.example.com" }, d)
+  assert.equal(both.fields.domain.value, "other.example.com")
+  const other = await answerLoop(s, { field: "service", value: "gitea" }, d)
+  assert.equal(other.fields.domain.value, "git.example.com", "answering another field keeps it")
+})
+
+test("settle counts and records a question only when it changes", async () => {
+  const { d } = deps([ext({ service: "gitea" })])
+  const s = await startLoop("deploy gitea", d)
+  const again = settle(s, d)
+  assert.equal(again.asked, s.asked); assert.equal(again.transcript.length, s.transcript.length)
+  const same = await answerLoop(s, { text: "dunno" }, d)
+  assert.equal(same.asked, 1)
+  assert.equal(same.transcript.length, s.transcript.length + 1, "only the user's turn is added")
+})
+
+test("answerLoop and editFields refuse executing, done and failed sessions", async () => {
+  const { d } = deps([ext({ service: "gitea", exposure: "lan" })])
+  const s = await startLoop("deploy gitea", d)
+  for (const state of ["executing", "done", "failed"] as const) {
+    await assert.rejects(answerLoop({ ...s, state }, { text: "x" }, d), LoopStateError)
+    assert.throws(() => editFields({ ...s, state }, { memory_mb: 2048 }, d), LoopStateError)
+  }
 })

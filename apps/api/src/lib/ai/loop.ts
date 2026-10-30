@@ -66,29 +66,45 @@ function answerOnly(prompt: string, answer: string, deps: LoopDeps): LoopState {
   }
 }
 
-/** A later value wins for the fields it names; null never overwrites. A value that did not coerce is kept, so validate asks again. */
-function merge(fields: Fields, x: Extraction, t: TaskTemplate): Fields {
+/**
+ * A later value wins for the fields it names; null never overwrites. A value that did not coerce is
+ * kept, so validate asks again. This is where "the model never decides" is enforced: only a key that
+ * is an extractable field of this template is read at all, so a gateway, a feature flag or a
+ * prototype key in a reply goes nowhere.
+ */
+function merge(fields: Fields, x: Extraction, t: TaskTemplate): { fields: Fields; set: Set<string> } {
+  const allowed = new Set(t.fields.filter(s => s.extract).map(s => s.name))
   const out: Fields = { ...fields }
-  for (const [k, v] of Object.entries(x.values)) {
-    if (v !== null && v !== undefined) out[k] = { value: v, source: 'user' }
+  const set = new Set<string>()
+  const put = (k: string, v: unknown) => { out[k] = { value: v, source: 'user' }; set.add(k) }
+  for (const k of Object.keys(x.values)) {
+    const v = x.values[k]
+    if (allowed.has(k) && v !== null && v !== undefined) put(k, v)
   }
   for (const bad of x.invalid) {
-    if (t.fields.some(s => s.name === bad.field && s.extract) && (typeof bad.raw === 'string' || typeof bad.raw === 'number')) {
-      out[bad.field] = { value: bad.raw, source: 'user' }
-    }
+    if (allowed.has(bad.field) && (typeof bad.raw === 'string' || typeof bad.raw === 'number')) put(bad.field, bad.raw)
   }
-  return out
+  return { fields: out, set }
 }
 
 /**
- * Answering "lan" to the exposure question withdraws the hostname that raised it. Without this the
- * domain stays, validate asks the same question, and the person is asked forever.
+ * Answering "lan" withdraws the hostname that raised the exposure question; without this the domain
+ * stays, validate asks the same question, and the person is asked forever. Only when this reply itself
+ * set exposure=lan, and never when it also gave a domain.
  */
-function lanDropsDomain(fields: Fields, answeredExposure: boolean): Fields {
-  if (!answeredExposure || fields.exposure?.value !== 'lan' || !fields.domain) return fields
+function lanDropsDomain(fields: Fields, set: Set<string>): Fields {
+  if (!set.has('exposure') || set.has('domain') || fields.exposure?.value !== 'lan' || !fields.domain) return fields
   const { domain: _gone, ...rest } = fields
   return rest
 }
+
+export class LoopStateError extends Error {
+  constructor(readonly state: LoopStateName) {
+    super(`This session is ${state} and can no longer be changed.`)
+    this.name = 'LoopStateError'
+  }
+}
+const FINAL: LoopStateName[] = ['executing', 'done', 'failed']
 
 /** derive → validate → the first issue becomes the one question; no issues is ready. */
 export function settle(s: LoopState, deps: LoopDeps): LoopState {
@@ -107,6 +123,9 @@ export function settle(s: LoopState, deps: LoopDeps): LoopState {
   }
   const first = issues[0]
   const pending: Pending = { field: first.field, question: first.message, ...(first.choices ? { choices: first.choices } : {}) }
+  // The same question again (a settle with nothing new, an answer that changed nothing) is not a new question.
+  const repeat = s.state === 'asking' && s.pending?.field === pending.field && s.pending.question === pending.question
+  if (repeat) return { ...base, state: 'asking', pending }
   return {
     ...base, state: 'asking', pending, asked: s.asked + 1,
     transcript: [...s.transcript, turn('assistant', first.message, deps)],
@@ -120,7 +139,7 @@ export async function startLoop(prompt: string, deps: LoopDeps): Promise<LoopSta
 
   const x = await deps.extract(t, prompt, deps.facts)
   const s: LoopState = {
-    template: t.id, templateVersion: t.version, state: 'asking', fields: merge({}, x, t), issues: [], asked: 0,
+    template: t.id, templateVersion: t.version, state: 'asking', fields: merge({}, x, t).fields, issues: [], asked: 0,
     transcript: [turn('user', prompt, deps)],
   }
   return settle(s, deps)
@@ -132,25 +151,29 @@ export async function answerLoop(
   deps: LoopDeps,
 ): Promise<LoopState> {
   const t = s.template ? getTemplate(s.template) : undefined
+  if (FINAL.includes(s.state)) throw new LoopStateError(s.state)
   if (!t || s.state !== 'asking') return s
 
   if ('text' in a) {
     const x = await deps.extract(t, a.text, deps.facts, s.pending ? { asking: { field: s.pending.field, question: s.pending.question } } : undefined)
-    return settle({ ...s, fields: lanDropsDomain(merge(s.fields, x, t), s.pending?.field === 'exposure'), transcript: [...s.transcript, turn('user', a.text, deps)] }, deps)
+    const m = merge(s.fields, x, t)
+    return settle({ ...s, fields: lanDropsDomain(m.fields, m.set), transcript: [...s.transcript, turn('user', a.text, deps)] }, deps)
   }
 
   // A button: coerced against its own field, no model call.
   const spec = t.fields.find(f => f.name === a.field)
   if (!spec || !spec.extract) throw new FieldLockedError(a.field)
   const c = coerce(spec, a.value, t.enums(deps.facts)[spec.name])
-  const fields = lanDropsDomain({ ...s.fields, [spec.name]: { value: c.ok ? c.value : a.value, source: 'user' } }, spec.name === 'exposure')
+  const fields = lanDropsDomain({ ...s.fields, [spec.name]: { value: c.ok ? c.value : a.value, source: 'user' } }, new Set([spec.name]))
   return settle({ ...s, fields, transcript: [...s.transcript, turn('user', String(a.value), deps)] }, deps)
 }
 
 /** The person's own edits. Facts and fixed values are the cluster's and the template's, not theirs. */
 export function editFields(s: LoopState, edits: Record<string, unknown>, deps: LoopDeps): LoopState {
+  if (FINAL.includes(s.state)) throw new LoopStateError(s.state)
   const t = s.template ? getTemplate(s.template) : undefined
   if (!t) return s
+  const set = new Set<string>()
   const fields: Fields = { ...s.fields }
   for (const [name, raw] of Object.entries(edits)) {
     const spec = t.fields.find(f => f.name === name)
@@ -158,6 +181,7 @@ export function editFields(s: LoopState, edits: Record<string, unknown>, deps: L
     if (raw === null) { delete fields[name]; continue }
     const c = coerce(spec, raw, t.enums(deps.facts)[name])
     fields[name] = { value: c.ok ? c.value : raw, source: 'user' }
+    set.add(name)
   }
-  return settle({ ...s, fields: lanDropsDomain(fields, 'exposure' in edits) }, deps)
+  return settle({ ...s, fields: lanDropsDomain(fields, set) }, deps)
 }
