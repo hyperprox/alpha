@@ -211,6 +211,16 @@ function recommendModels(hw: { totalRamGB: number; maxVramGB: number } | null): 
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 
+/**
+ * Forget the Ollama connection. The settings are read through the vault (getCredential), so they have to
+ * be cleared there; deleting rows from the old credential table, as this once did, reported ok and left
+ * the URL in place. An empty string clears a setting, the same way PUT /api/ai/provider/:id does.
+ */
+export async function clearOllamaConnection(set: typeof setCredential = setCredential): Promise<void> {
+  await set('ai', 'ollama', 'url', '', false)
+  await set('ai', 'ollama', 'model', '', false)
+}
+
 export const ollamaRoutes: FastifyPluginAsync = async (fastify) => {
 
   // GET /api/ai/status — connection status + installed models
@@ -279,10 +289,7 @@ export const ollamaRoutes: FastifyPluginAsync = async (fastify) => {
 
   // DELETE /api/ai/disconnect — remove Ollama connection
   fastify.delete('/disconnect', async (_req, reply) => {
-    const { PrismaClient } = await import('@prisma/client')
-    const prisma = new PrismaClient()
-    await prisma.credential.deleteMany({ where: { category: 'ai', provider: 'ollama' } })
-    await prisma.$disconnect()
+    await clearOllamaConnection()
     return reply.send({ ok: true })
   })
 
