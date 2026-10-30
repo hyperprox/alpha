@@ -113,6 +113,17 @@ async function openaiPlan(userText: string): Promise<Plan> {
 }
 
 // ---------------------------------------------------------------------------
+//  Small models wrap JSON in prose or fences no matter what they are told.
+// ---------------------------------------------------------------------------
+
+export function unwrapJson(text: string): string {
+  const cleaned = text.replace(/^```(?:json)?/i, '').replace(/```\s*$/, '').trim()
+  const start = cleaned.indexOf('{')
+  const end = cleaned.lastIndexOf('}')
+  return start >= 0 && end > start ? cleaned.slice(start, end + 1) : cleaned
+}
+
+// ---------------------------------------------------------------------------
 //  Ollama — unchanged in spirit, but now validated like the others
 // ---------------------------------------------------------------------------
 
@@ -144,11 +155,7 @@ async function ollamaPlan(userText: string): Promise<Plan> {
   const text = data?.message?.content
   if (!text) throw new Error(data?.error || 'Ollama returned no content.')
 
-  // Small models wrap JSON in prose or fences no matter what they are told.
-  const cleaned = String(text).replace(/^```(?:json)?/i, '').replace(/```\s*$/, '').trim()
-  const start = cleaned.indexOf('{')
-  const end = cleaned.lastIndexOf('}')
-  const json = start >= 0 && end > start ? cleaned.slice(start, end + 1) : cleaned
+  const json = unwrapJson(String(text))
   return PlanSchema.parse(JSON.parse(json))
 }
 
@@ -232,4 +239,176 @@ export async function listProviders(): Promise<ProviderInfo[]> {
       note: 'Free and private. Small models produce weaker plans — the output is validated before you see it.',
     },
   ]
+}
+
+// ===========================================================================
+//  One structured-output call, for every provider
+//
+//  The caller supplies one JSON Schema and one parse function. Each provider
+//  constrains generation its own way; the reply is then parsed identically, so
+//  nothing downstream depends on which provider answered.
+// ===========================================================================
+
+export interface StructuredRequest<T> {
+  name: string
+  system: string
+  user: string
+  schema: Record<string, unknown>
+  parse(raw: unknown): T
+}
+
+/** Returns the reply's text. */
+export type RawSend = (provider: ProviderId, body: Record<string, unknown>) => Promise<string>
+
+export interface StructuredOptions {
+  /** Overrides the stored model (and skips the credential lookup). */
+  model?: string
+  /** Ollama only: threads per request. Overrides the setting and OLLAMA_NUM_THREAD. */
+  numThread?: number
+}
+
+/** `refusal`: the model declined, retrying will not help. `parse`: two replies did not fit the schema. */
+export class StructuredOutputError extends Error {
+  constructor(message: string, readonly kind: 'refusal' | 'parse' = 'parse') {
+    super(message)
+    this.name = 'StructuredOutputError'
+  }
+}
+
+const ANTHROPIC_STRUCTURED_MAX_TOKENS = 4096
+const OLLAMA_DEFAULT_TIMEOUT_S = 300
+const OPENAI_DEFAULT_MODEL = 'gpt-4o'
+const OLLAMA_DEFAULT_MODEL = 'llama3.2:3b'
+
+export function anthropicBody(r: StructuredRequest<unknown>, model: string): Record<string, unknown> {
+  return {
+    model,
+    max_tokens: ANTHROPIC_STRUCTURED_MAX_TOKENS,
+    system: r.system,
+    messages: [{ role: 'user', content: r.user }],
+    output_config: { format: { type: 'json_schema', schema: r.schema } },
+  }
+}
+
+export function openaiBody(r: StructuredRequest<unknown>, model: string): Record<string, unknown> {
+  return {
+    model,
+    messages: [
+      { role: 'system', content: r.system },
+      { role: 'user', content: r.user },
+    ],
+    response_format: { type: 'json_schema', json_schema: { name: r.name, strict: true, schema: r.schema } },
+  }
+}
+
+export function ollamaBody(r: StructuredRequest<unknown>, model: string, numThread?: number): Record<string, unknown> {
+  return {
+    model, stream: false,
+    format: r.schema,
+    messages: [
+      { role: 'system', content: r.system },
+      { role: 'user', content: r.user },
+    ],
+    options: {
+      temperature: 0.1,
+      // Ollama sizes its thread count from the host's cores, not the container's CPU quota.
+      ...(numThread && numThread > 0 ? { num_thread: Math.floor(numThread) } : {}),
+    },
+  }
+}
+
+/** Thread count and timeout for a local model on a CPU: slow, so patient, and told how many cores it really has. */
+export async function ollamaSettings(): Promise<{ numThread?: number; timeoutMs: number }> {
+  const pos = (v: string): number | undefined => {
+    const n = Number(v)
+    return Number.isFinite(n) && n > 0 ? n : undefined
+  }
+  const numThread = pos(await cred('ollama', 'num_thread').catch(() => '')) ?? pos(process.env.OLLAMA_NUM_THREAD ?? '')
+  const seconds = pos(await cred('ollama', 'timeout_s').catch(() => '')) ?? pos(process.env.OLLAMA_TIMEOUT_S ?? '') ?? OLLAMA_DEFAULT_TIMEOUT_S
+  return { numThread, timeoutMs: seconds * 1000 }
+}
+
+/** The text of an Anthropic reply; a refusal is an error, never an empty result. */
+export function anthropicText(response: { stop_reason?: string | null; content?: Array<{ type: string; text?: string }> }): string {
+  if (response.stop_reason === 'refusal') {
+    throw new StructuredOutputError('The model declined this request. Rephrase it, or use a different provider.', 'refusal')
+  }
+  const block = response.content?.find(b => b.type === 'text')
+  if (!block?.text) throw new Error('The provider returned no content.')
+  return block.text
+}
+
+async function httpSend(provider: ProviderId, body: Record<string, unknown>): Promise<string> {
+  if (provider === 'anthropic') {
+    const apiKey = await cred('anthropic', 'api_key')
+    if (!apiKey) throw new Error('Anthropic is not configured — add an API key in Settings.')
+    const client = new Anthropic({ apiKey })
+    const response = await client.messages.create(body as any, { timeout: 180_000 })
+    return anthropicText(response as any)
+  }
+  if (provider === 'openai') {
+    const apiKey = await cred('openai', 'api_key')
+    if (!apiKey) throw new Error('OpenAI is not configured — add an API key in Settings.')
+    const base = ((await cred('openai', 'base_url')) || OPENAI_DEFAULT_BASE).replace(/\/+$/, '')
+    const res = await fetch(`${base}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(180_000),
+    })
+    if (!res.ok) throw new Error(`${body.model} returned HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`)
+    const data: any = await res.json()
+    const choice = data?.choices?.[0]
+    if (choice?.message?.refusal) {
+      throw new StructuredOutputError('The model declined this request. Rephrase it, or use a different provider.', 'refusal')
+    }
+    const text = choice?.message?.content
+    if (!text) throw new Error('The provider returned no content.')
+    return text
+  }
+  const url = (await cred('ollama', 'url')) || process.env.OLLAMA_URL || ''
+  if (!url) throw new Error('Ollama is not configured — add its address in Settings.')
+  const { timeoutMs } = await ollamaSettings()
+  const res = await fetch(`${url.replace(/\/+$/, '')}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs),
+  })
+  if (!res.ok) throw new Error(`Ollama returned HTTP ${res.status}`)
+  const data: any = await res.json()
+  const text = data?.message?.content
+  if (!text) throw new Error(data?.error || 'Ollama returned no content.')
+  return text
+}
+
+async function modelFor(provider: ProviderId): Promise<string> {
+  if (provider === 'anthropic') return (await cred('anthropic', 'model')) || ANTHROPIC_DEFAULT_MODEL
+  if (provider === 'openai') return (await cred('openai', 'model')) || OPENAI_DEFAULT_MODEL
+  return (await cred('ollama', 'model')) || process.env.OLLAMA_MODEL || OLLAMA_DEFAULT_MODEL
+}
+
+export async function callStructured<T>(
+  r: StructuredRequest<T>,
+  provider?: ProviderId,
+  send: RawSend = httpSend,
+  opts: StructuredOptions = {},
+): Promise<T> {
+  const id = provider ?? (await activeProvider())
+  const model = opts.model ?? (await modelFor(id))
+  const numThread = id === 'ollama' ? (opts.numThread ?? (await ollamaSettings()).numThread) : undefined
+  const body = id === 'anthropic' ? anthropicBody(r, model)
+    : id === 'openai' ? openaiBody(r, model)
+    : ollamaBody(r, model, numThread)
+
+  let lastError = ''
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const text = await send(id, body) // transport errors and refusals are not parse failures: not retried
+    try {
+      return r.parse(JSON.parse(unwrapJson(String(text))))
+    } catch (e) {
+      lastError = e instanceof Error ? e.message : String(e)
+    }
+  }
+  throw new StructuredOutputError(`The model's reply did not match what was asked for (${lastError.slice(0, 200)}). Please rephrase your request.`, 'parse')
 }
