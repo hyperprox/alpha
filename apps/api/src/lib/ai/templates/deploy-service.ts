@@ -10,9 +10,10 @@
 
 import { wizardRecipes, serviceKey, type CatalogueRecipe } from '../../catalogue'
 import { DOCKER_PACKAGES, distroOf } from '../../install-script'
-import { pickTemplate } from '../../wizard-placement'
+import { isHostAddress, parseCidr, pickTemplate } from '../../wizard-placement'
+import { zoneFor } from '../../dns-zones'
 import type { NodeFact } from '../facts'
-import type { FieldSpec, Fields, FieldValue, StepSpec, TaskTemplate, TemplateFacts, TemplateSettings } from './types'
+import type { FieldIssue, FieldSpec, Fields, FieldValue, StepSpec, TaskTemplate, TemplateFacts, TemplateSettings } from './types'
 
 export interface DeployFields {
   service: string; exposure: 'public' | 'lan'; domain?: string; admin_setup?: 'now' | 'lock'
@@ -48,6 +49,11 @@ const STORAGE_RANK: Record<string, number> = {
   rbd: 5, zfspool: 4, lvmthin: 3, lvm: 3, btrfs: 3, dir: 2, nfs: 1, cifs: 1,
 }
 const DISK_HEADROOM = 1.2
+const VMID_MIN = 100
+const VMID_MAX = 999_999_999
+const LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
+const AGAIN = 'Try again in a moment.'
+const LOCK_REFUSED = 'Keeping it LAN-only until setup needs proxy access lists, which HyperProx does not support yet. Choose now, or make it LAN-only.'
 
 const STEPS: Record<StepSpec['id'], string> = {
   create_lxc: 'Create the container',
@@ -217,6 +223,226 @@ export function buildDeployService(deps: DeployServiceDeps = { recipes: wizardRe
     return Object.fromEntries(fields.filter(x => out[x.name]).map(x => [x.name, out[x.name]]))
   }
 
+  /** The floor that applies to a recipe: Docker's when it runs under Docker, none otherwise. */
+  const floorOf = (r: CatalogueRecipe | undefined) =>
+    r && (r.needsDocker || r.install.kind === 'compose') ? CONSTANTS.floors.docker : { memory_mb: 1, disk_gb: 1 }
+
+  function validate(f: Fields, facts: TemplateFacts): FieldIssue[] {
+    const issues: FieldIssue[] = []
+    const failed = (p: string) => facts.partial.includes(p)
+    const failedPrefix = (p: string) => facts.partial.some(x => x.startsWith(p))
+    const missing = (field: string, message: string, choices?: string[]) =>
+      ({ field, kind: 'missing' as const, message, ...(choices ? { choices } : {}) })
+    const invalid = (field: string, message: string, choices?: string[]) =>
+      ({ field, kind: 'invalid' as const, message, ...(choices ? { choices } : {}) })
+
+    const recipes = deps.recipes()
+    const recipe = recipeOf(f)
+    const nodeName = str(f, 'node')
+    const node = facts.nodes.find(n => n.node === nodeName)
+    const bridge = node?.bridges.find(b => b.iface === str(f, 'bridge'))
+    const pub = isPublic(f)
+    const zones = facts.zones.join(', ')
+    const domainQuestion = `Which hostname should it answer on? Zones I manage: ${zones}`
+    const usedIds = new Set(facts.guests.map(g => g.vmid))
+    const nextFree = (): number => {
+      let n = Math.max(VMID_MIN, facts.nextVmid || VMID_MIN)
+      while (usedIds.has(n)) n++
+      return n
+    }
+    const mem = num(f, 'memory_mb')
+    const fits = (n: NodeFact) => n.online && n.hasLogin && !!n.arch && n.freeMemMb >= (mem ?? 0)
+
+    const check: Record<string, () => FieldIssue | null> = {
+      service: () => {
+        if (recipe) return null
+        const key = serviceKey(str(f, 'service'))
+        const suggestions = key ? recipes.filter(r => r.id.includes(key) || serviceKey(r.name).includes(key)) : []
+        const choices = [...new Set([...suggestions, ...recipes].map(r => r.id))]
+        const message = `Which service? I can install: ${recipes.map(r => r.name).join(', ')}`
+        return f.service ? invalid('service', message, choices) : missing('service', message, choices)
+      },
+
+      exposure: () => {
+        const e = val(f, 'exposure')
+        if (e !== 'public' && e !== 'lan') {
+          return missing('exposure', 'Should this be reachable from the internet, or only on your network?', ['public', 'lan'])
+        }
+        if (e === 'lan') return null
+        if (!facts.hasReverseProxy) {
+          return invalid('exposure', 'Publishing it needs a reverse proxy, and HyperProx has none configured. Make it LAN-only?', ['lan'])
+        }
+        if (!failed('zones') && !facts.zones.length) {
+          return invalid('exposure', 'Publishing it needs a DNS zone HyperProx manages, and none is configured. Make it LAN-only?', ['lan'])
+        }
+        return null
+      },
+
+      domain: () => {
+        if (!pub) return null
+        if (failed('zones')) return invalid('domain', `I could not read the DNS zones, so the hostname cannot be checked. ${AGAIN}`)
+        const d = str(f, 'domain').toLowerCase()
+        if (!d) return missing('domain', domainQuestion)
+        if (!zoneFor(d, facts.zones)) return invalid('domain', domainQuestion)
+        if (failed('proxy')) return invalid('domain', `I could not read the proxy hosts, so ${d} cannot be checked as free. ${AGAIN}`)
+        if (facts.proxyHosts.some(h => h.toLowerCase() === d)) {
+          return invalid('domain', `${d} is already a proxy host. ${domainQuestion}`)
+        }
+        return null
+      },
+
+      admin_setup: () => {
+        if (!(pub && recipe?.firstRun.kind === 'setup-url')) return null
+        const a = val(f, 'admin_setup')
+        if (a === 'now') return null
+        // Approved decision 7: lock needs proxy access lists; until then only 'now' is offered.
+        if (a === 'lock') return invalid('admin_setup', LOCK_REFUSED, ['now'])
+        const q = "This app's first visitor becomes its admin. Create the admin account now, or keep it LAN-only until you do?"
+        return a === undefined ? missing('admin_setup', q, ['now']) : invalid('admin_setup', q, ['now'])
+      },
+
+      node: () => {
+        const others = facts.nodes.filter(fits).map(n => n.node)
+        if (failed('nodes')) return invalid('node', `I could not read the cluster's nodes. ${AGAIN}`)
+        if (!nodeName) {
+          return missing('node', `No online node with a stored login has ${mem ?? 0} MB free for this. Which node, or how much memory?`,
+            others.length ? others : undefined)
+        }
+        const which = others.length ? others : undefined
+        if (!node) return invalid('node', `${nodeName} is not a node in this cluster. Which node?`, which)
+        if (!node.online) return invalid('node', `${nodeName} is not online. Which node?`, which)
+        if (failed(`status:${nodeName}`)) return invalid('node', `I could not read the status of ${nodeName}, so its CPU type is unknown. ${AGAIN}`)
+        if (failed(`login:${nodeName}`)) return invalid('node', `I could not check the stored login for ${nodeName}. ${AGAIN}`)
+        if (!node.hasLogin) return invalid('node', `${nodeName} has no stored login, so HyperProx cannot install on it. Which node?`, which)
+        if (!node.arch) return invalid('node', `HyperProx has no container templates for the CPU of ${nodeName}. Which node?`, which)
+        if (mem !== undefined && node.freeMemMb < mem) {
+          return invalid('node', `${nodeName} has ${node.freeMemMb} MB free, less than the ${mem} MB this needs. Which node?`, which)
+        }
+        return null
+      },
+
+      vmid: () => {
+        if (failed('resources')) return invalid('vmid', `I could not read which IDs are in use, so the container ID cannot be checked. ${AGAIN}`)
+        const id = num(f, 'vmid')
+        if (id === undefined) return missing('vmid', 'Which container ID should it use?')
+        if (!Number.isSafeInteger(id) || id < VMID_MIN || id > VMID_MAX) {
+          const n = nextFree()
+          return invalid('vmid', `Container ID ${id} is not valid (Proxmox allows ${VMID_MIN} to ${VMID_MAX}). Use ${n} instead?`, [String(n)])
+        }
+        if (usedIds.has(id)) {
+          const n = nextFree()
+          return invalid('vmid', `Container ID ${id} is taken by another guest. Use ${n} instead?`, [String(n)])
+        }
+        return null
+      },
+
+      ip: () => {
+        const ip = str(f, 'ip')
+        if (!ip) return missing('ip', 'Which address, or DHCP?', ['dhcp'])
+        if (ip === 'dhcp' || !bridge) return null // no bridge is the bridge's issue
+        if (!bridge.gateway) {
+          return invalid('ip', `${bridge.iface} on ${nodeName} has no gateway, so a static address cannot be routed. Use DHCP?`, ['dhcp'])
+        }
+        const c = parseCidr(ip)
+        if (!c || c.prefix !== bridge.prefix || !isHostAddress(c.ip, bridge.gateway, c.prefix)) {
+          return invalid('ip', `${ip} is not a usable address on ${bridge.iface} (a /${bridge.prefix} network with gateway ${bridge.gateway}). Which address, or DHCP?`, ['dhcp'])
+        }
+        if (failed('resources') || failedPrefix('config:')) {
+          return invalid('ip', `I could not read every guest's configuration, so ${c.ip} cannot be shown unused. ${AGAIN}`, ['dhcp'])
+        }
+        const user = facts.guests.find(g => g.addresses.includes(c.ip))
+        if (user) return invalid('ip', `${c.ip} is already used by guest ${user.vmid}. Which address, or DHCP?`, ['dhcp'])
+        return null
+      },
+
+      memory_mb: () => size('memory_mb', 'MB', 'How much memory should it have, in MB?'),
+      disk_gb: () => size('disk_gb', 'GB', 'How large should its disk be, in GB?'),
+      cores: () => {
+        const c = num(f, 'cores')
+        if (c === undefined) return recipe ? missing('cores', 'How many CPU cores should it have?') : null
+        if (c < 1) return invalid('cores', 'A container needs at least 1 core. Use 1?', ['1'])
+        if (node && node.cores > 0 && c > node.cores) {
+          return invalid('cores', `${nodeName} has ${node.cores} cores. Use ${node.cores}?`, [String(node.cores)])
+        }
+        return null
+      },
+
+      gateway: () => null, // read from the bridge; its absence is the ip's issue
+
+      bridge: () => {
+        if (!node?.online) return null
+        if (failed(`network:${nodeName}`)) return invalid('bridge', `I could not read the network of ${nodeName}. ${AGAIN}`)
+        if (!bridge) return missing('bridge', `${nodeName} does not have the network bridge HyperProx is set to use. Which node?`,
+          facts.nodes.filter(n => n.node !== nodeName && fits(n)).map(n => n.node))
+        return null
+      },
+
+      storage: () => {
+        if (!node?.online) return null
+        if (failed(`storage:${nodeName}`)) return invalid('storage', `I could not read the storage of ${nodeName}. ${AGAIN}`)
+        const disk = num(f, 'disk_gb') ?? 0
+        const need = Math.ceil(disk * DISK_HEADROOM)
+        const id = str(f, 'storage')
+        if (!id) return missing('storage', `No storage on ${nodeName} can hold this container: it needs ${need} GB free on storage that holds containers.`)
+        const s = facts.storages.find(x => x.node === nodeName && x.storage === id)
+        if (!s || !s.active || !s.content.includes('rootdir')) {
+          return invalid('storage', `${id} on ${nodeName} cannot hold containers. Which storage?`)
+        }
+        if (s.freeGb < disk * DISK_HEADROOM) return invalid('storage', `${id} has ${s.freeGb} GB free; this needs ${need} GB. Which storage?`)
+        return null
+      },
+
+      template: () => {
+        if (!node?.online || !node.arch) return null
+        const t = f.template
+        const fromDownload = !t?.value || t.note === 'download'
+        if (failedPrefix(`templates:${nodeName}/`) || (fromDownload && failed(`aplinfo:${nodeName}`))) {
+          return invalid('template', `I could not read the container templates on ${nodeName}. ${AGAIN}`)
+        }
+        // A missing template is a pre-flight failure, never a question. One for another CPU is refused here.
+        const v = str(f, 'template')
+        const arch = /_([a-z0-9]+)\.tar\./.exec(v)?.[1]
+        if (v && arch && arch !== node.arch) {
+          return invalid('template', `${v} is built for ${arch}, and ${nodeName} is ${node.arch}.`)
+        }
+        return null
+      },
+
+      hostname: () => {
+        if (failed('resources')) return invalid('hostname', `I could not read the guests' names, so the hostname cannot be checked. ${AGAIN}`)
+        const h = str(f, 'hostname')
+        if (!h) return recipe ? missing('hostname', 'Which hostname should the container have?') : null
+        const fallback = recipe ? hostLabel(recipe.id) : ''
+        if (!LABEL.test(h)) {
+          return invalid('hostname', `${h} is not a valid container hostname: one label of letters, digits and hyphens, at most 63.`
+            + (fallback && fallback !== h ? ` Use ${fallback}?` : ''), fallback && fallback !== h ? [fallback] : undefined)
+        }
+        const other = facts.guests.find(g => g.name.toLowerCase() === h)
+        if (other) return invalid('hostname', `${h} is already the name of guest ${other.vmid}. Which hostname should it have?`)
+        return null
+      },
+    }
+
+    function size(k: 'memory_mb' | 'disk_gb', unit: string, question: string): FieldIssue | null {
+      const n = num(f, k)
+      if (n === undefined) return recipe ? missing(k, question) : null
+      const floor = floorOf(recipe)[k]
+      if (n < floor) {
+        const message = floor === CONSTANTS.floors.docker[k]
+          ? `Docker needs at least ${floor} ${unit}. Use ${floor}?`
+          : `It needs at least ${floor} ${unit}. Use ${floor}?`
+        return invalid(k, message, [String(floor)])
+      }
+      return null
+    }
+
+    for (const spec of fields) {
+      const i = check[spec.name]?.()
+      if (i) issues.push(i)
+    }
+    return issues
+  }
+
   function steps(f: Fields): StepSpec[] {
     const ids: StepSpec['id'][] = ['create_lxc', 'start_and_verify', 'install_service', 'health_check']
     if (isPublic(f)) ids.push('configure_proxy', 'create_dns', 'wait_propagation', 'request_ssl')
@@ -243,7 +469,7 @@ export function buildDeployService(deps: DeployServiceDeps = { recipes: wizardRe
       admin_setup: ['now', 'lock'],
     }),
     derive,
-    validate: () => [],
+    validate,
     preflight: async () => [],
     steps,
   }
