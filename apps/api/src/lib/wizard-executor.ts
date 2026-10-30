@@ -253,13 +253,17 @@ export async function stepCreateLXC(
   // The create task starts the container but does not wait for it. A container whose start fails
   // can still read as running for a moment, so the start task's own result decides, and the guest
   // must read as running twice, five seconds apart.
+  // The create task's start time is the fourth field of its UPID, in hex, on the node's own clock.
+  const createdAt = parseInt(String(upid).split(':')[4] ?? '0', 16) || 0
   let running = false
   let seen = 0
   for (let i = 0; i < 8 && !running; i++) {
     await wait(5000)
     const starts = await pve.fetchNode<any[]>(
-      `/nodes/${node}/tasks?vmid=${vmid}&typefilter=vzstart&limit=1`).catch(() => []) ?? []
-    const start = starts[0]
+      `/nodes/${node}/tasks?vmid=${vmid}&typefilter=vzstart&limit=5`).catch(() => []) ?? []
+    // Task history outlives the guest: an earlier container with the same ID leaves its own start
+    // tasks behind, so only a start that began after this create counts.
+    const start = starts.find(t => Number(t.starttime) >= createdAt)
     if (start?.status && start.status !== 'OK') {
       throw new Error(`CT ${vmid} was created but would not start: ${start.status}`)
     }
