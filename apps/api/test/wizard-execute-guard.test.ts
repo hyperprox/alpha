@@ -4,7 +4,7 @@ import assert from "node:assert/strict"
 import Fastify from "fastify"
 import { buildAiRoutes } from "../src/routes/ai"
 import { PreparedStore } from "../src/lib/ai/prepared"
-import { failedSources } from "../src/lib/ai/facts"
+import { failedSources, gatherFacts } from "../src/lib/ai/facts"
 import { AUDIT_SOURCES } from "../src/lib/ai/plan-schema"
 import type { Plan, ClusterFacts } from "../src/lib/ai/plan-schema"
 
@@ -31,10 +31,11 @@ function harness() {
   let user = "admin@example.com"
   let factsCalls = 0
   let laterFacts: ClusterFacts | null = null
+  let laterGather: (() => Promise<ClusterFacts>) | null = null
   const executed: Array<{ jobId: string; plan: Plan }> = []
   const app = Fastify()
   app.register(buildAiRoutes({
-    gatherFacts: async () => (factsCalls++ > 0 && laterFacts) ? laterFacts : baseFacts,
+    gatherFacts: async () => (factsCalls++ > 0 && laterGather) ? laterGather() : (factsCalls > 1 && laterFacts) ? laterFacts : baseFacts,
     generatePlan: async (text: string) => fakePlan(/mystery/i.test(text) ? "Mystery App" : "Uptime Kuma"),
     execute: async (jobId: string, plan: Plan) => { executed.push({ jobId, plan }) },
     prepared: new PreparedStore<Plan>(30 * 60_000, () => clock),
@@ -48,6 +49,7 @@ function harness() {
     advance: (ms: number) => { clock += ms },
     as: (email: string) => { user = email },
     factsLater: (f: ClusterFacts) => { laterFacts = f },
+    gatherLater: (g: () => Promise<ClusterFacts>) => { laterGather = g },
   }
 }
 
@@ -200,4 +202,24 @@ test("PreparedStore sweeps expired entries on take and keeps at most 20 per owne
   now = 1001
   assert.equal(store.take("unknown", "u"), null)          // a take sweeps everything expired
   assert.equal(store.size(), 0)
+})
+
+test("execute refuses (502) when the real fact gatherer reads null for /cluster/resources", async () => {
+  const h = harness()
+  const { planId } = (await h.inject("/wizard/plan", { prompt: "deploy uptime kuma" })).json()
+  const GB = 1024 ** 3
+  const pve: any = {
+    fetchNode: async () => null,
+    fetchStrict: async (p: string) => {
+      if (p === "/nodes") return [{ node: "pve1", status: "online", maxcpu: 4, maxmem: 16 * GB, mem: 4 * GB }]
+      if (p === "/nodes/pve1/storage") return [{ storage: "pool", type: "rbd", content: "rootdir", active: 1, avail: 100 * GB }]
+      if (p === "/cluster/nextid") return "102"
+      return null                                    // /cluster/resources: a 2xx with no data
+    },
+  }
+  h.gatherLater(() => gatherFacts({ pve, zones: async () => ["example.com"], proxyHosts: async () => [] }))
+  const res = await h.inject("/wizard/execute", { planId })
+  assert.equal(res.statusCode, 502)
+  assert.deepEqual(res.json().unavailable, ["resources"])
+  assert.equal(h.executed.length, 0)
 })

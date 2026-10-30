@@ -56,3 +56,9 @@ test("isRequired evaluates a function against the fields", () => {
   assert.equal(isRequired(cond, {}), false)
   assert.equal(isRequired(vmid, {}), true)
 })
+
+test("ipv4cidr refuses leading-zero octets", () => {
+  assert.equal(coerce(ip, "010.0.0.1").ok, false)
+  assert.equal(coerce(ip, "10.0.0.01/24").ok, false)
+  assert.deepEqual(coerce(ip, "10.0.0.0"), { ok: true, value: "10.0.0.0" })
+})
