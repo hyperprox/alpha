@@ -57,6 +57,20 @@ test("node: most free memory among online nodes with a login, enough for the req
   assert.equal(d({ memory_mb: 4000 }, fx).node, undefined)
 })
 
+test("node: derive skips any node validate would refuse — unreadable, unknown CPU, or without the bridge", () => {
+  for (const spoil of [
+    (fx: TemplateFacts) => { fx.partial = ["status:pve2"] },
+    (fx: TemplateFacts) => { fx.partial = ["login:pve2"] },
+    (fx: TemplateFacts) => { fx.partial = ["network:pve2"] },
+    (fx: TemplateFacts) => { fx.nodes[1].arch = "" },
+    (fx: TemplateFacts) => { fx.nodes[1].bridges = [] },
+  ]) {
+    const fx = facts(); spoil(fx)
+    assert.equal(d({}, fx).node.value, "pve1", spoil.toString())
+    assert.deepEqual(deployService.validate(d({ exposure: "lan" }, fx), fx), [], spoil.toString())
+  }
+})
+
 test("derived sizes are raised to the Docker floor with a note; user sizes are not touched", () => {
   const tiny = { ...findRecipe("uptime-kuma")!, id: "tiny", name: "Tiny", defaults: { cores: 1, memoryMb: 256, diskGb: 2 } }
   const t = buildDeployService({ recipes: () => [tiny] })
@@ -98,7 +112,8 @@ test("an arm64 node is never given an amd64 template, local or downloadable", ()
   assert.deepEqual(d({}, fx).template, { value: "share:vztmpl/debian-12-standard_12.7-1_arm64.tar.zst", source: "fact" })
   // A node whose architecture could not be read is given no template at all.
   for (const n of fx.nodes) n.arch = ""
-  assert.equal(d({}, fx).template.value, "")
+  assert.equal(d({}, fx).node, undefined, "and is never picked")
+  assert.equal(d({ node: "pve2" }, fx).template.value, "")
 })
 
 test("features and packages are fixed; packages follow the template's distro", () => {
