@@ -137,6 +137,15 @@ function requireSid(): string {
   return sid
 }
 
+/**
+ * Whether a vault write can happen now, by requireSid's own rule: unlocked, and a signed-in session to
+ * write with. An unlocked vault with nobody signed in can be read but not written, so a caller about to
+ * create something that ends in a vault write asks this, not whether a read works.
+ */
+export function vaultWritable(): boolean {
+  try { requireSid(); return true } catch { return false }
+}
+
 // One vault write per item at a time, always sending the latest cached fields.
 // A vault write takes seconds, so writes that arrive while one is running are
 // coalesced into a single follow-up write (a settings form saving three keys of

@@ -9,13 +9,13 @@
 
 import { ProxmoxClient } from './proxmox-client'
 import { execInGuest, nodeCredential } from './node-exec'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import { findRecipe, type CatalogueRecipe } from './catalogue'
 import { installScript, distroOf, hostEnv, type Distro } from './install-script'
 import { pickTemplate } from './wizard-placement'
 import type { CreatePVE } from './wizard-executor'
 import type { ExecResult } from './node-exec'
-import { setCredential, setCredentials, getProviderCredentials } from './credentials'
+import { setCredential, setCredentials, getProviderCredentials, vaultWritable } from './credentials'
 import { saveSettings, getSettings } from './plugin-host'
 import { PLUGINS } from '../plugins'
 
@@ -27,6 +27,8 @@ export interface InstallStep {
 
 export interface InstallJob {
   jobId:    string
+  /** Who started it, as ownerOf() names them; only they can read it. '' is nobody, and nobody can. */
+  owner:    string
   recipeId: string
   status:   'running' | 'completed' | 'failed'
   steps:    InstallStep[]
@@ -59,7 +61,7 @@ export interface InstallDeps {
   exec:        (o: { host: string; cred: any; vmid: number; script: string; timeoutMs: number; onData: (c: string) => void }) => Promise<ExecResult>
   probe:       (url: string) => Promise<number | null>
   wait:        (ms: number) => Promise<unknown>
-  /** Is the vault open for writing? Asked before anything is created. */
+  /** Can the vault be written now (unlocked, with a signed-in session)? Asked before anything is created. */
   vaultOpen:   () => Promise<boolean>
   /** Write several keys of one vault item in a single write. */
   saveSecrets: (category: string, provider: string, values: Record<string, string>) => Promise<void>
@@ -73,7 +75,8 @@ const realDeps = (): InstallDeps => ({
   exec:       o => execInGuest(o),
   probe:      url => fetch(url, { signal: AbortSignal.timeout(4000) }).then(r => r.status).catch(() => null),
   wait:       sleep,
-  vaultOpen:   () => getProviderCredentials('apps', 'vault-probe').then(() => true, () => false),
+  // A read works whenever the vault is unlocked; the save at the install step also needs a session.
+  vaultOpen:   async () => vaultWritable(),
   saveSecrets: (c, p, v) => setCredentials(c, p, v),
   readSecrets: (c, p) => getProviderCredentials(c, p),
 })
@@ -280,7 +283,10 @@ export async function startInstall(opts: {
   intoVmid?: number
   node?: string
   resources?: { cores: number; memoryMb: number; diskGb: number }
-}, deps: InstallDeps = realDeps()): Promise<InstallJob> {
+  /** ownerOf() the request; the job is readable by this owner only. */
+  owner?: string
+}, over: Partial<InstallDeps> = {}): Promise<InstallJob> {
+  const deps: InstallDeps = { ...realDeps(), ...over }
   const recipe = findRecipe(opts.recipeId)
   if (!recipe) throw new Error(`No recipe called ${opts.recipeId}`)
 
@@ -293,7 +299,8 @@ export async function startInstall(opts: {
 
   const reuse = typeof opts.intoVmid === 'number'
   const job: InstallJob = {
-    jobId: `inst_${Date.now()}_${Math.random().toString(36).slice(-4)}`,
+    jobId: randomUUID(),
+    owner: opts.owner ?? '',
     recipeId: recipe.id,
     status: 'running',
     log: '',
