@@ -1,141 +1,303 @@
-// /wizard/execute runs only a plan the server produced and audited, once, for the user who asked for it.
+// /wizard/plan runs the question loop on the deploy-service template; /wizard/execute runs only a run the
+// server derived and validated, once, for the user who asked, after validating it again against fresh facts.
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 import Fastify from "fastify"
 import { buildAiRoutes } from "../src/routes/ai"
 import { PreparedStore } from "../src/lib/ai/prepared"
-import { failedSources, gatherFacts } from "../src/lib/ai/facts"
-import { AUDIT_SOURCES } from "../src/lib/ai/plan-schema"
-import type { Plan, ClusterFacts } from "../src/lib/ai/plan-schema"
+import { failedSources, gatherTemplateFacts } from "../src/lib/ai/facts"
+import type { DeployRun } from "../src/lib/wizard-executor"
+import type { Extraction, IntentResult } from "../src/lib/ai/loop"
+import type { TemplateFacts } from "../src/lib/ai/templates/types"
 
-const baseFacts: ClusterFacts = {
-  nodes: [{ node: "pve1", cores: 4, freeMemMb: 8000, totalMemMb: 16000 }],
-  storages: [{ storage: "pool", type: "rbd", freeGb: 100, shared: true }],
-  domains: ["example.com"], proxyHosts: [], nextVmid: 102, usedVmids: [101], gateway: "10.0.0.1",
-  capabilities: { nodesWithLogin: ["pve1"], hasReverseProxy: true, installable: [] },
-}
+const fixture = (): TemplateFacts =>
+  JSON.parse(readFileSync(join(__dirname, "scenarios/fixtures/three-node-cluster.json"), "utf8"))
 
-function fakePlan(service: string): Plan {
-  const base = { hostname: "", node: "", storage: "", cores: 0, memory_mb: 0, disk_gb: 0, port: 0, vmid: 0, ip: "", gateway: "" }
-  const step = (type: any, p = {}) => ({ id: type, type, label: type, description: "", params: { ...base, ...p } })
-  return {
-    service, domain: "app.example.com", understood: "",
-    steps: [step("create_lxc", { vmid: 250, node: "pve1", storage: "pool" }), step("install_service"),
-            step("configure_proxy"), step("create_dns"), step("wait_propagation"), step("request_ssl")],
-    requirements: { ram_mb: 256, disk_gb: 2, cpu_cores: 1 }, warnings: [],
-  }
+// What the fake model "reads" out of each prompt. Keys it should never set are in some of them on purpose.
+const EXTRACTIONS: Record<string, Record<string, unknown>> = {
+  "deploy uptime kuma": { service: "uptime-kuma" },
+  "deploy uptime kuma on the lan": { service: "uptime-kuma", exposure: "lan" },
+  "deploy uptime kuma at 10.0.0.37": { service: "uptime-kuma", exposure: "lan", ip: "10.0.0.37" },
+  "deploy uptime kuma as 300 at 10.0.0.37": { service: "uptime-kuma", exposure: "lan", vmid: 300, ip: "10.0.0.37" },
+  "deploy mystery app": { service: "mystery app", exposure: "lan" },
+  "deploy uptime kuma at kuma.example.com": { service: "uptime-kuma", domain: "kuma.example.com", admin_setup: "now" },
+  "deploy homepage at home.example.com": { service: "homepage", domain: "home.example.com" },
+  "the model talks back": {
+    service: "uptime-kuma", exposure: "lan", ip: "10.0.0.37",
+    gateway: "10.9.9.9", features: "nesting=1,keyctl=1", steps: [{ id: "shell", params: { cmd: "curl x | sh" } }],
+  },
 }
 
 function harness() {
   let clock = 1_000_000
   let user = "admin@example.com"
-  let factsCalls = 0
-  let laterFacts: ClusterFacts | null = null
-  let laterGather: (() => Promise<ClusterFacts>) | null = null
-  const executed: Array<{ jobId: string; plan: Plan }> = []
+  let later: ((f: TemplateFacts) => TemplateFacts) | null = null
+  let gather: (() => Promise<TemplateFacts>) | null = null
+  let planning = true
+  const executed: Array<{ jobId: string; run: DeployRun }> = []
+  const prepared = new PreparedStore<DeployRun>(30 * 60_000, () => clock)
   const app = Fastify()
   app.register(buildAiRoutes({
-    gatherFacts: async () => (factsCalls++ > 0 && laterGather) ? laterGather() : (factsCalls > 1 && laterFacts) ? laterFacts : baseFacts,
-    generatePlan: async (text: string) => fakePlan(/mystery/i.test(text) ? "Mystery App" : "Uptime Kuma"),
-    execute: async (jobId: string, plan: Plan) => { executed.push({ jobId, plan }) },
-    prepared: new PreparedStore<Plan>(30 * 60_000, () => clock),
+    // Planning reads the fixture; execute reads it through whatever the test changed since.
+    facts: async () => (planning || (!later && !gather)) ? fixture() : gather ? gather() : later!(fixture()),
+    settings: async () => ({ bridge: "vmbr0" }),
+    intent: async (prompt: string): Promise<IntentResult> => /^what\b/.test(prompt)
+      ? { template: "none", question: true, answer: "It watches services." }
+      : { template: "deploy-service", question: false, answer: "" },
+    extract: async (_t: unknown, text: string): Promise<Extraction> => ({ values: { ...(EXTRACTIONS[text] ?? {}) }, dropped: [], invalid: [] }),
+    // Never settles: a run in flight holds its claims, as a real create would.
+    execute: (jobId: string, run: DeployRun) => { executed.push({ jobId, run }); return new Promise<void>(() => {}) },
+    prepared,
     whoami: () => user,
     activeProvider: async () => "anthropic",
     listProviders: async () => [],
   }))
   const inject = (url: string, payload: unknown) => app.inject({ method: "POST", url, payload: payload as any })
+  const plan = async (prompt: string) => { planning = true; return (await inject("/wizard/plan", { prompt })).json() }
+  const execute = async (body: unknown) => { planning = false; return inject("/wizard/execute", body) }
   return {
-    app, inject, executed,
+    inject, plan, execute, executed, prepared,
     advance: (ms: number) => { clock += ms },
     as: (email: string) => { user = email },
-    factsLater: (f: ClusterFacts) => { laterFacts = f },
-    gatherLater: (g: () => Promise<ClusterFacts>) => { laterGather = g },
+    factsLater: (fn: (f: TemplateFacts) => TemplateFacts) => { later = fn },
+    gatherLater: (g: () => Promise<TemplateFacts>) => { gather = g },
   }
 }
 
-test("a plan posted by the browser is refused and never executed", async () => {
-  const { inject, executed } = harness()
-  const res = await inject("/wizard/execute", { plan: { steps: [{ type: "create_lxc" }] } })
+test("a plan or fields posted by the browser are refused and never executed", async () => {
+  const h = harness()
+  const res = await h.execute({ plan: { steps: [{ type: "create_lxc" }] } })
   assert.equal(res.statusCode, 400)
   assert.match(res.json().error, /never run/)
-  assert.equal(executed.length, 0)
+  assert.equal((await h.execute({ fields: { vmid: 250 } })).statusCode, 400)
+  assert.equal(h.executed.length, 0)
 })
 
 test("a plan posted alongside a valid planId is still refused", async () => {
-  const { inject, executed } = harness()
-  const { planId } = (await inject("/wizard/plan", { prompt: "deploy uptime kuma" })).json()
-  const res = await inject("/wizard/execute", { planId, plan: { steps: [{ type: "create_lxc" }] } })
-  assert.equal(res.statusCode, 400)
-  assert.equal(executed.length, 0)
+  const h = harness()
+  const { planId } = await h.plan("deploy uptime kuma on the lan")
+  assert.equal(typeof planId, "string")
+  assert.equal((await h.execute({ planId, plan: { steps: [{ type: "create_lxc" }] } })).statusCode, 400)
+  assert.equal((await h.execute({ planId, fields: { gateway: "10.9.9.9" } })).statusCode, 400)
+  assert.equal(h.executed.length, 0)
 })
 
 test("a non-string planId is refused", async () => {
-  const { inject, executed } = harness()
-  assert.equal((await inject("/wizard/execute", { planId: { $ne: "" } })).statusCode, 400)
-  assert.equal((await inject("/wizard/execute", {})).statusCode, 400)
-  assert.equal(executed.length, 0)
+  const h = harness()
+  assert.equal((await h.execute({ planId: { $ne: "" } })).statusCode, 400)
+  assert.equal((await h.execute({})).statusCode, 400)
+  assert.equal(h.executed.length, 0)
 })
 
-test("a blocked plan gets no planId", async () => {
-  const { inject } = harness()
-  const body = (await inject("/wizard/plan", { prompt: "deploy mystery app" })).json()
-  assert.equal(body.blocked, true)
+test("a request that is not ready gets warnings and no planId", async () => {
+  const h = harness()
+  const asking = await h.plan("deploy uptime kuma")
+  assert.equal(asking.ok, true)
+  assert.equal(asking.blocked, true)
+  assert.equal(asking.planId, undefined)
+  assert.ok(asking.plan.warnings.includes("Should this be reachable from the internet, or only on your network?"), asking.plan.warnings.join(" | "))
+  const unknown = await h.plan("deploy mystery app")
+  assert.equal(unknown.blocked, true)
+  assert.equal(unknown.planId, undefined)
+  assert.ok(unknown.plan.warnings.some((w: string) => /^Which service\?/.test(w)))
+})
+
+test("a question is answered, not planned", async () => {
+  const h = harness()
+  const body = await h.plan("what is uptime kuma?")
+  assert.equal(body.conversational, true)
+  assert.equal(body.message, "It watches services.")
   assert.equal(body.planId, undefined)
 })
 
-test("execute runs the server's copy of the plan, once", async () => {
-  const { inject, executed } = harness()
-  const { planId, plan, blocked } = (await inject("/wizard/plan", { prompt: "deploy uptime kuma" })).json()
-  assert.equal(blocked, false)
-  assert.equal(typeof planId, "string")
-  const res = await inject("/wizard/execute", { planId })
-  assert.equal(res.statusCode, 200)
-  assert.equal(res.json().ok, true)
-  assert.equal(executed.length, 1)
-  assert.equal(executed[0].jobId, res.json().jobId)
-  assert.deepEqual(executed[0].plan.steps, plan.steps)
-  assert.equal((await inject("/wizard/execute", { planId })).statusCode, 404)
-  assert.equal(executed.length, 1)
+test("a ready request shows its fields and the template's steps, and execute runs the server's copy once", async () => {
+  const h = harness()
+  const body = await h.plan("deploy uptime kuma on the lan")
+  assert.equal(body.blocked, false)
+  assert.equal(body.fields.service.value, "uptime-kuma")
+  assert.equal(body.fields.features.value, "nesting=1")
+  assert.deepEqual(body.plan.steps.map((s: any) => s.type), ["create_lxc", "start_and_verify", "install_service", "health_check"])
+  assert.equal(body.plan.service, "Uptime Kuma")
+  const res = await h.execute({ planId: body.planId })
+  assert.equal(res.statusCode, 200, res.body)
+  assert.equal(h.executed.length, 1)
+  assert.equal(h.executed[0].jobId, res.json().jobId)
+  assert.equal(h.executed[0].run.fields.vmid, body.fields.vmid.value)
+  assert.equal(h.executed[0].run.owner, "admin@example.com")
+  assert.equal((await h.execute({ planId: body.planId })).statusCode, 404)
+  assert.equal(h.executed.length, 1)
+})
+
+test("the executed run is built from server fields; a gateway or step the model returned never reaches it", async () => {
+  const h = harness()
+  const body = await h.plan("the model talks back")
+  assert.equal(body.blocked, false, body.plan.warnings.join(" | "))
+  assert.equal((await h.execute({ planId: body.planId })).statusCode, 200)
+  const run = h.executed[0].run
+  assert.equal(run.fields.gateway, "10.0.0.1")
+  assert.equal(run.fields.ip, "10.0.0.37/24")
+  assert.equal(run.fields.features, "nesting=1")
+  assert.deepEqual(run.steps.map(s => s.id), ["create_lxc", "start_and_verify", "install_service", "health_check"])
+  assert.equal(JSON.stringify(run).includes("curl x"), false)
 })
 
 test("an unknown, expired or another user's planId is 404", async () => {
   const h = harness()
-  assert.equal((await h.inject("/wizard/execute", { planId: "not-a-plan" })).statusCode, 404)
+  assert.equal((await h.execute({ planId: "not-a-plan" })).statusCode, 404)
 
-  const { planId: stale } = (await h.inject("/wizard/plan", { prompt: "deploy uptime kuma" })).json()
+  const { planId: stale } = await h.plan("deploy uptime kuma on the lan")
   h.advance(30 * 60_000 + 1)
-  const expired = await h.inject("/wizard/execute", { planId: stale })
+  const expired = await h.execute({ planId: stale })
   assert.equal(expired.statusCode, 404)
   assert.match(expired.json().error, /expired or was already run/)
 
-  const { planId: mine } = (await h.inject("/wizard/plan", { prompt: "deploy uptime kuma" })).json()
+  const { planId: mine } = await h.plan("deploy uptime kuma on the lan")
   h.as("someone-else@example.com")
-  assert.equal((await h.inject("/wizard/execute", { planId: mine })).statusCode, 404)
+  assert.equal((await h.execute({ planId: mine })).statusCode, 404)
   // Trying it as another user must not burn it for the owner.
   h.as("admin@example.com")
-  assert.equal((await h.inject("/wizard/execute", { planId: mine })).statusCode, 200)
+  assert.equal((await h.execute({ planId: mine })).statusCode, 200)
   assert.equal(h.executed.length, 1)
 })
 
 test("a request with no signed-in user gets no planId and cannot execute", async () => {
   const h = harness()
   h.as("")
-  const body = (await h.inject("/wizard/plan", { prompt: "deploy uptime kuma" })).json()
+  const body = await h.plan("deploy uptime kuma on the lan")
   assert.equal(body.blocked, false)
   assert.equal(body.planId, undefined)
-  assert.equal((await h.inject("/wizard/execute", { planId: "anything" })).statusCode, 404)
+  assert.equal((await h.execute({ planId: "anything" })).statusCode, 404)
   assert.equal(h.executed.length, 0)
 })
 
 test("facts that changed since planning re-block at execute", async () => {
   const h = harness()
-  const { planId } = (await h.inject("/wizard/plan", { prompt: "deploy uptime kuma" })).json()
-  h.factsLater({ ...baseFacts, usedVmids: [101, 250] })
-  const res = await h.inject("/wizard/execute", { planId })
+  const { planId, fields } = await h.plan("deploy uptime kuma on the lan")
+  const vmid = fields.vmid.value
+  h.factsLater(f => ({ ...f, guests: [...f.guests, { vmid, node: "pve1", type: "lxc", name: "other", addresses: [] }] }))
+  const res = await h.execute({ planId })
   assert.equal(res.statusCode, 409)
   assert.equal(res.json().blocked, true)
-  assert.ok(res.json().warnings.some((w: string) => /250 is already used/.test(w)))
+  assert.ok(res.json().warnings.some((w: string) => new RegExp(`Container ID ${vmid} is taken`).test(w)), res.json().warnings.join(" | "))
   assert.equal(h.executed.length, 0)
+})
+
+test("a bridge gateway that changed since planning re-blocks at execute, naming it", async () => {
+  const h = harness()
+  const { planId, fields } = await h.plan("deploy uptime kuma at 10.0.0.37")
+  const node = fields.node.value
+  h.factsLater(f => ({ ...f, nodes: f.nodes.map(n => n.node === node ? { ...n, bridges: [{ iface: "vmbr0", gateway: "10.0.0.254", prefix: 24 }] } : n) }))
+  const res = await h.execute({ planId })
+  assert.equal(res.statusCode, 409)
+  assert.ok(res.json().warnings.some((w: string) => /gateway/.test(w) && /10\.0\.0\.254/.test(w)), res.json().warnings.join(" | "))
+  assert.equal(h.executed.length, 0)
+})
+
+test("two plans racing for the same ID or address: the second execute is refused", async () => {
+  const h = harness()
+  const a = await h.plan("deploy uptime kuma at 10.0.0.37")
+  const b = await h.plan("deploy uptime kuma at 10.0.0.37")
+  const c = await h.plan("deploy uptime kuma as 300 at 10.0.0.37")
+  assert.equal(a.fields.vmid.value, b.fields.vmid.value)
+  assert.equal((await h.execute({ planId: a.planId })).statusCode, 200)
+  const second = await h.execute({ planId: b.planId })
+  assert.equal(second.statusCode, 409)
+  assert.ok(second.json().warnings.some((w: string) => new RegExp(`Container ID ${a.fields.vmid.value}`).test(w)))
+  const third = await h.execute({ planId: c.planId })
+  assert.equal(third.statusCode, 409)
+  assert.ok(third.json().warnings.some((w: string) => /10\.0\.0\.37/.test(w)), third.json().warnings.join(" | "))
+  assert.equal(h.executed.length, 1)
+})
+
+test("execute refuses (502), naming the source, when a source the validation needs could not be read", async () => {
+  const lan = ["nodes", "resources", "status:@", "login:@", "network:@", "storage:@", "templates:@/share", "config:101"]
+  const pub = ["zones", "proxy", "records:example.com"]
+  for (const [prompt, sources] of [["deploy uptime kuma at 10.0.0.37", lan], ["deploy homepage at home.example.com", pub]] as const) {
+    for (const s of sources) {
+      const h = harness()
+      const { planId, fields, blocked } = await h.plan(prompt)
+      assert.equal(blocked, false, prompt)
+      const source = s.replace("@", fields.node.value)
+      h.factsLater(f => ({ ...f, partial: [source] }))
+      const res = await h.execute({ planId })
+      assert.equal(res.statusCode, 502, source)
+      assert.equal(res.json().blocked, true)
+      assert.deepEqual(res.json().unavailable, [source])
+      assert.match(res.json().error, new RegExp(source.replace(/[.]/g, "\\.")))
+      assert.equal(h.executed.length, 0)
+    }
+  }
+})
+
+test("a source the validation does not use failing does not block execute", async () => {
+  const h = harness()
+  const { planId, fields } = await h.plan("deploy uptime kuma on the lan")
+  const other = ["pve1", "pve2", "pve3"].find(n => n !== fields.node.value)
+  h.factsLater(f => ({ ...f, partial: [`status:${other}`, "nextid", "zones"] }))
+  assert.equal((await h.execute({ planId })).statusCode, 200)
+  assert.equal(h.executed.length, 1)
+})
+
+test("a run from an older template version cannot execute", async () => {
+  const h = harness()
+  const { planId } = await h.plan("deploy uptime kuma on the lan")
+  const run = h.prepared.take(planId, "admin@example.com")!.payload
+  const old = h.prepared.put("admin@example.com", { ...run, version: run.version - 1 })
+  const res = await h.execute({ planId: old })
+  assert.equal(res.statusCode, 409)
+  assert.match(res.json().error, /start again/i)
+  assert.equal(h.executed.length, 0)
+})
+
+test("publishing an app with a first-run page is planned with a warning that it will not be published yet", async () => {
+  const h = harness()
+  const body = await h.plan("deploy uptime kuma at kuma.example.com")
+  assert.equal(body.blocked, false, body.plan.warnings.join(" | "))
+  assert.ok(body.plan.warnings.some((w: string) => /first-run setup page/.test(w) && /will not publish it yet/.test(w)))
+  assert.equal(body.plan.domain, "kuma.example.com")
+})
+
+test("execute refuses (502) when the real fact gatherer reads null for /cluster/resources", async () => {
+  const h = harness()
+  const { planId } = await h.plan("deploy uptime kuma on the lan")
+  const GB = 1024 ** 3
+  const pve: any = {
+    fetchStrict: async (p: string) => {
+      if (p === "/nodes") return [{ node: "pve2", status: "online", maxcpu: 8, maxmem: 32 * GB, mem: 4 * GB }]
+      if (p === "/cluster/nextid") return "102"
+      if (p === "/nodes/pve2/status") return { "current-kernel": { machine: "x86_64" } }
+      if (p === "/nodes/pve2/network") return [{ iface: "vmbr0", type: "bridge", cidr: "10.0.0.2/24", gateway: "10.0.0.1" }]
+      if (p === "/nodes/pve2/storage") return [{ storage: "fast", type: "rbd", content: "rootdir", active: 1, avail: 400 * GB }]
+      if (p === "/nodes/pve2/aplinfo") return []
+      return null                                    // /cluster/resources: a 2xx with no data
+    },
+  }
+  h.gatherLater(() => gatherTemplateFacts({
+    pve, zones: async () => [], proxyHosts: async () => [], hasReverseProxy: async () => true,
+    hasLogin: async () => true, records: async () => [],
+  }))
+  const res = await h.execute({ planId })
+  assert.equal(res.statusCode, 502)
+  assert.ok(res.json().unavailable.includes("resources"))
+  assert.equal(h.executed.length, 0)
+})
+
+test("provider test extracts from a fixed request and counts the fields", async () => {
+  const app = Fastify()
+  app.register(buildAiRoutes({
+    facts: async () => fixture(),
+    extract: async (_t: unknown, text: string) => {
+      assert.equal(text, "Deploy Uptime Kuma. No domain yet.")
+      return { values: { service: "uptime-kuma", exposure: "lan" }, dropped: [], invalid: [] }
+    },
+    activeProvider: async () => "anthropic",
+  }))
+  const res = await app.inject({ method: "POST", url: "/provider/test", payload: { provider: "openai" } })
+  assert.equal(res.statusCode, 200, res.body)
+  assert.deepEqual(res.json().sample, { service: "uptime-kuma", fields: 2 })
+  assert.equal(res.json().provider, "openai")
 })
 
 test("PreparedStore ids are unguessable and single-use", () => {
@@ -158,38 +320,6 @@ test("failedSources names each cluster source that could not be read", () => {
   assert.deepEqual(failedSources({ nodes: ok }), [])
 })
 
-test("execute refuses, naming the source, when the facts the audit needs could not be read", async () => {
-  for (const source of AUDIT_SOURCES) {
-    const h = harness()
-    const { planId } = (await h.inject("/wizard/plan", { prompt: "deploy uptime kuma" })).json()
-    // An unreadable source reads as empty: no used IDs, no zones. That must not pass the re-audit.
-    h.factsLater({ ...baseFacts, usedVmids: [], domains: [], partial: [source] })
-    const res = await h.inject("/wizard/execute", { planId })
-    assert.equal(res.statusCode, 502, source)
-    assert.equal(res.json().blocked, true)
-    assert.deepEqual(res.json().unavailable, [source])
-    assert.match(res.json().error, new RegExp(source))
-    assert.equal(h.executed.length, 0)
-  }
-})
-
-test("a source the audit does not use failing does not block execute", async () => {
-  const h = harness()
-  const { planId } = (await h.inject("/wizard/plan", { prompt: "deploy uptime kuma" })).json()
-  h.factsLater({ ...baseFacts, partial: ["proxy"] })
-  assert.equal((await h.inject("/wizard/execute", { planId })).statusCode, 200)
-  assert.equal(h.executed.length, 1)
-})
-
-test("planning with an unreadable source still plans, and says what it could not check", async () => {
-  const h = harness()
-  h.factsLater({ ...baseFacts, partial: ["resources"] })
-  await h.inject("/wizard/plan", { prompt: "deploy uptime kuma" })   // first call uses baseFacts
-  const body = (await h.inject("/wizard/plan", { prompt: "deploy uptime kuma" })).json()
-  assert.equal(body.ok, true)
-  assert.ok(body.plan.warnings.some((w: string) => /could not read resources/i.test(w)), body.plan.warnings.join(" | "))
-})
-
 test("PreparedStore sweeps expired entries on take and keeps at most 20 per owner", () => {
   let now = 0
   const store = new PreparedStore<number>(1000, () => now)
@@ -202,24 +332,4 @@ test("PreparedStore sweeps expired entries on take and keeps at most 20 per owne
   now = 1001
   assert.equal(store.take("unknown", "u"), null)          // a take sweeps everything expired
   assert.equal(store.size(), 0)
-})
-
-test("execute refuses (502) when the real fact gatherer reads null for /cluster/resources", async () => {
-  const h = harness()
-  const { planId } = (await h.inject("/wizard/plan", { prompt: "deploy uptime kuma" })).json()
-  const GB = 1024 ** 3
-  const pve: any = {
-    fetchNode: async () => null,
-    fetchStrict: async (p: string) => {
-      if (p === "/nodes") return [{ node: "pve1", status: "online", maxcpu: 4, maxmem: 16 * GB, mem: 4 * GB }]
-      if (p === "/nodes/pve1/storage") return [{ storage: "pool", type: "rbd", content: "rootdir", active: 1, avail: 100 * GB }]
-      if (p === "/cluster/nextid") return "102"
-      return null                                    // /cluster/resources: a 2xx with no data
-    },
-  }
-  h.gatherLater(() => gatherFacts({ pve, zones: async () => ["example.com"], proxyHosts: async () => [] }))
-  const res = await h.inject("/wizard/execute", { planId })
-  assert.equal(res.statusCode, 502)
-  assert.deepEqual(res.json().unavailable, ["resources"])
-  assert.equal(h.executed.length, 0)
 })
