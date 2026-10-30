@@ -35,6 +35,16 @@ function packagesFor(r: CatalogueRecipe, distro: Distro): string[] {
   return [...new Set([...base, ...(r.packages?.[distro] ?? [])])]
 }
 
+/**
+ * The Host allow-list for a recipe that checks it: `address:port` as the health check and the LAN reach
+ * it, then the public name the proxy forwards. Empty for a recipe that does not check Host.
+ */
+export function hostEnv(r: CatalogueRecipe, at: { ip?: string; domain?: string }): Record<string, string> {
+  if (!r.allowedHostsEnv) return {}
+  if (!at.ip) throw new Error(`${r.name} answers only the hosts in ${r.allowedHostsEnv}, and the container has no address to put there.`)
+  return { [r.allowedHostsEnv]: [`${at.ip}:${r.port}`, ...(at.domain ? [at.domain] : [])].join(',') }
+}
+
 export function installScript(r: CatalogueRecipe, distro: Distro, env: Record<string, string> = {}): string {
   for (const k of Object.keys(env)) if (!ENV_KEY.test(k)) throw new Error(`Invalid environment variable name "${k}"`)
   const lines: string[] = ['set -e', 'export DEBIAN_FRONTEND=noninteractive']
@@ -49,6 +59,10 @@ export function installScript(r: CatalogueRecipe, distro: Distro, env: Record<st
   // service on a vendor default that everyone knows.
   if (r.firstRun.kind === 'env-admin' && !env[r.firstRun.passwordEnv]) {
     throw new Error(`${r.name} needs ${r.firstRun.passwordEnv} so it does not start with a default admin password.`)
+  }
+  // Without its allow-list the service refuses every request, its own health check included.
+  if (r.allowedHostsEnv && !env[r.allowedHostsEnv]) {
+    throw new Error(`${r.name} needs ${r.allowedHostsEnv} so it answers on its own address.`)
   }
   const pkgs = packagesFor(r, distro)
   lines.push('apt-get update -qq')
@@ -83,6 +97,7 @@ export function manualCommands(r: CatalogueRecipe, distro: Distro): string[] {
   out.push(`mkdir -p ${r.install.dir} && cd ${r.install.dir}`)
   out.push(`cat > docker-compose.yml << 'EOF'`, r.install.compose, 'EOF')
   if (r.firstRun.kind === 'env-admin') out.push(`# Choose an admin password and export ${r.firstRun.passwordEnv} before the next line.`)
+  if (r.allowedHostsEnv) out.push(`# export ${r.allowedHostsEnv}=<this container's address>:${r.port} (add the public name after a comma) before the next line.`)
   out.push('docker compose up -d')
   out.push(`# Service will be available on port ${r.port}`)
   return out

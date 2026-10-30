@@ -2,7 +2,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { CATALOGUE, findRecipe, matchRecipe, wizardRecipes } from "../src/lib/catalogue"
-import { installScript, distroOf, manualCommands, DOCKER_PACKAGES } from "../src/lib/install-script"
+import { installScript, distroOf, manualCommands, hostEnv, DOCKER_PACKAGES } from "../src/lib/install-script"
 
 test("installScript: set -e, noninteractive, distro packages, quiet pull, no || fallback", () => {
   const deb = installScript(findRecipe("uptime-kuma")!, "debian")
@@ -69,4 +69,18 @@ test("an env-admin recipe refuses to build a script without its admin password",
   assert.throws(() => installScript(findRecipe("grafana")!, "debian"), /GF_SECURITY_ADMIN_PASSWORD/)
   assert.doesNotMatch(findRecipe("grafana")!.install.kind === "compose" ? (findRecipe("grafana")!.install as any).compose : "", /:-admin/)
   assert.doesNotMatch(manualCommands(findRecipe("grafana")!, "debian").join("\n"), /GF_SECURITY_ADMIN_PASSWORD=(?!\$\{)\S/)
+})
+
+test("Homepage is told the Host it is reached by: its own address and port, plus the public name", () => {
+  const r = findRecipe("homepage")!
+  assert.equal(r.install.kind, "compose")
+  assert.match((r.install as any).compose, /HOMEPAGE_ALLOWED_HOSTS=\$\{HOMEPAGE_ALLOWED_HOSTS:\?/)
+  assert.deepEqual(hostEnv(r, { ip: "10.0.0.37" }), { HOMEPAGE_ALLOWED_HOSTS: "10.0.0.37:3000" })
+  assert.deepEqual(hostEnv(r, { ip: "10.0.0.37", domain: "home.example.com" }), { HOMEPAGE_ALLOWED_HOSTS: "10.0.0.37:3000,home.example.com" })
+  assert.throws(() => hostEnv(r, {}), /address/)
+  assert.deepEqual(hostEnv(findRecipe("gitea")!, {}), {}, "a recipe that does not check Host needs nothing")
+  const s = installScript(r, "debian", hostEnv(r, { ip: "10.0.0.37" }))
+  assert.match(s, /\nHOMEPAGE_ALLOWED_HOSTS=10\.0\.0\.37:3000\n/)
+  assert.throws(() => installScript(r, "debian"), /HOMEPAGE_ALLOWED_HOSTS/, "never started on a default that refuses its own health check")
+  assert.match(manualCommands(r, "debian").join("\n"), /HOMEPAGE_ALLOWED_HOSTS/)
 })

@@ -11,7 +11,7 @@ import { ProxmoxClient } from './proxmox-client'
 import { execInGuest, nodeCredential } from './node-exec'
 import { randomBytes } from 'node:crypto'
 import { findRecipe, type CatalogueRecipe } from './catalogue'
-import { installScript, distroOf, type Distro } from './install-script'
+import { installScript, distroOf, hostEnv, type Distro } from './install-script'
 import { pickTemplate } from './wizard-placement'
 import type { CreatePVE } from './wizard-executor'
 import type { ExecResult } from './node-exec'
@@ -350,7 +350,8 @@ export async function startInstall(opts: {
       // script's own output, which never echoes it.
       const admin = recipe.firstRun.kind === 'env-admin'
         ? { user: recipe.firstRun.user, password: randomBytes(18).toString('base64url') } : undefined
-      const env: Record<string, string> = {}
+      // Before the vault write: a container with no address fails here, leaving nothing saved.
+      const env: Record<string, string> = { ...hostEnv(recipe, { ip: job.ip }) }
       if (recipe.firstRun.kind === 'env-admin' && admin) {
         env[recipe.firstRun.passwordEnv] = admin.password
         if (recipe.firstRun.userEnv) env[recipe.firstRun.userEnv] = admin.user

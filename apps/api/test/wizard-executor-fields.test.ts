@@ -243,3 +243,14 @@ test("the executor refuses a malformed or wildcard domain at the proxy and the D
     assert.equal(calls.records.length, 0, d)
   }
 })
+
+test("Homepage's allowed hosts are the container's address and port, plus the domain when public", async () => {
+  const lan = await run(fields({ service: "homepage", hostname: "homepage" }))
+  assert.equal(lan.job.status, "completed", lan.job.error)
+  assert.match(lan.calls.scripts[0], /\nHOMEPAGE_ALLOWED_HOSTS=10\.0\.0\.37:3000\n/)
+  const pub = await run(fields({ service: "homepage", exposure: "public", domain: "home.example.com", hostname: "homepage" }), ALL)
+  assert.equal(pub.job.status, "completed", pub.job.error)
+  assert.match(pub.calls.scripts[0], /\nHOMEPAGE_ALLOWED_HOSTS=10\.0\.0\.37:3000,home\.example\.com\n/)
+  // The health check sends the same Host the variable allows.
+  assert.deepEqual(pub.calls.fetched, ["http://10.0.0.37:3000/"])
+})
