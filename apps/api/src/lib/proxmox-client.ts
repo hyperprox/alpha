@@ -307,6 +307,7 @@ export class ProxmoxClient {
     start?: boolean
     unprivileged?: boolean
     features?: string
+    onboot?: boolean
   }) {
     const body: Record<string, any> = {
       vmid:         params.vmid,
@@ -324,6 +325,7 @@ export class ProxmoxClient {
     if (params.password)        body.password = params.password
     if (params.ssh_public_keys) body.ssh_public_keys = params.ssh_public_keys
     if (params.features)        body.features = params.features
+    if (params.onboot !== undefined) body.onboot = params.onboot ? 1 : 0
     if (params.description)     body.description = params.description
     const lxcParams = new URLSearchParams(); Object.entries(body).forEach(([k,v]) => lxcParams.append(k, String(v)))
     // Strict: a refusal (bad rootfs, vmid taken, no such template) must reach the caller as Proxmox's own
