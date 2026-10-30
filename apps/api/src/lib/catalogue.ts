@@ -40,9 +40,11 @@ export interface CatalogueRecipe {
 }
 
 const DOCKER_PREAMBLE = `
+set -e
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq ca-certificates curl docker.io docker-compose-v2
+apt-get install -y -qq ca-certificates curl docker.io
+apt-get install -y -qq docker-compose-v2 || apt-get install -y -qq docker-compose
 systemctl enable --now docker
 `.trim()
 

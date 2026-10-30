@@ -91,7 +91,7 @@ export function getInstallCommands(serviceName: string, recipe: ServiceRecipe): 
   const slug = serviceName.toLowerCase().replace(/[^a-z0-9]/g, '-')
   return [
     `# Run these commands inside the container:`,
-    `apt-get update -qq && apt-get install -y docker.io docker-compose-v2`,
+    `apt-get update -qq && apt-get install -y docker.io && (apt-get install -y docker-compose-v2 || apt-get install -y docker-compose)`,
     `mkdir -p /opt/${slug} && cd /opt/${slug}`,
     `cat > docker-compose.yml << 'EOF'`,
     recipe.compose,

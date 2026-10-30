@@ -330,9 +330,14 @@ async function stepInstallService(job: JobState): Promise<string> {
   }
 
   const script = [
+    // Stop at the first failure, so the exit code and the output point at the step that broke rather
+    // than at a later command that could not exist without it.
+    'set -e',
     'export DEBIAN_FRONTEND=noninteractive',
     'apt-get update -qq',
-    'apt-get install -y -qq ca-certificates curl docker.io docker-compose-v2',
+    'apt-get install -y -qq ca-certificates curl docker.io',
+    // Ubuntu packages Compose v2 as docker-compose-v2; Debian ships v2 as docker-compose.
+    'apt-get install -y -qq docker-compose-v2 || apt-get install -y -qq docker-compose',
     'systemctl enable --now docker',
     `mkdir -p /opt/app && cd /opt/app`,
     `cat > docker-compose.yml <<'HP_COMPOSE'`,
@@ -347,7 +352,10 @@ async function stepInstallService(job: JobState): Promise<string> {
       host: nodeIp, cred, vmid: job.lxcVmid, script, timeoutMs: 20 * 60_000,
     })
     if (run.timedOut) throw new Error('the install ran for twenty minutes without finishing')
-    if (run.code !== 0) throw new Error(`the install exited ${run.code}`)
+    if (run.code !== 0) {
+      const tail = String(run.output ?? '').trim().split('\n').slice(-12).join('\n')
+      throw new Error(`the install exited ${run.code}${tail ? `. Last output:\n${tail}` : ''}`)
+    }
 
     job.serviceInstalled = true
     if (step) step.status = 'completed'
