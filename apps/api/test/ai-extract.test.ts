@@ -103,3 +103,16 @@ test("a reply that is not an object is retried, then reported as a parse failure
   await assert.rejects(extractFields(deployService, "x", facts(), { call, log: () => {} }), /rephrase/i)
   assert.equal(bodies.length, 2)
 })
+
+test("an invalid value is held for the loop but never echoed in the message or a log line", async () => {
+  const { call } = fakeCall({ ...nulls(), service: "evil<script>", ip: "999.1.1.1", domain: "bad_host!" })
+  const { logged, log } = logger()
+  const x = await extractFields(deployService, "x", facts(), { call, log })
+  assert.deepEqual(x.invalid.map(i => i.field).sort(), ["domain", "ip", "service"])
+  for (const i of x.invalid) {
+    assert.ok(!i.message.includes(String(i.raw)), i.message)
+    assert.ok(i.message.includes(i.field), i.message)
+  }
+  assert.equal(x.invalid.find(i => i.field === "service")!.raw, "evil<script>")
+  assert.equal(logged.length, 0)
+})

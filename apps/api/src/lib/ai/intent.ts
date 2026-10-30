@@ -27,17 +27,46 @@ const MAX_ANSWER = 2000
 
 type Kind = 'removal' | 'question' | 'task' | 'other'
 
-const REMOVAL = /\b(remove|delete|destroy|uninstall|purge|wipe|stop|kill|disable|shut\s*down|tear\s*down|get\s+rid\s+of)\b/
-const POLITE = /^(please\s+)?(can|could|would|will)\s+you\b|^please\b/
-const QUESTION = /^(what|who|whom|whose|why|how|when|where|which|is|are|was|were|does|do|did|has|have|should|am)\b/
-const TASK = /\b(deploy|install|set\s*up|spin\s*up|stand\s*up|bring\s*up|create|launch|provision|host|add|run|i\s+(want|need)|i'?d\s+like|give\s+me)\b/
+// Each test reads the start of a sentence: "deploy gitea and disable signups" is a deploy, and the
+// "?" in "Deploy Uptime Kuma, ok?" does not turn it into a question.
+const FILLER = /^((hey|hi|hello|ok|okay|so|now|then|also|and|please|pls)\b[\s,]*)+/
+const POLITE = /^(can|could|would|will)\s+you\b\s*(please\b\s*)?/
+const WANT = /^(i\s+(want|need|would\s+like)|i'?d\s+like)\b\s*/
+const TASK = /^(deploy|install|set\s*up|spin\s*up|stand\s*up|bring\s*up|create|launch|provision|host|add|run|make|build|give\s+me|get\s+me|let'?s)\b/
+const REMOVAL = /^(remove|delete|destroy|uninstall|purge|wipe|stop|kill|disable|drop|shut\s*down|tear\s*down|get\s+rid\s+of)\b/
+const QUESTION_START = /^(what|who|whom|whose|why|how|when|where|which|is|are|was|were|does|do|did|has|have|should|am|tell\s+me|explain|describe)\b/
+const QUESTION_WORD = /\b(tell\s+me|explain|how|why|what)\b/
 
-function classify(prompt: string): Kind {
-  const p = prompt.toLowerCase().replace(/\s+/g, ' ').trim()
+function sentenceKind(raw: string): Kind {
+  const ended = /\?\s*$/.test(raw)
+  let p = raw.toLowerCase().replace(/[.!?\s]+$/, '').replace(FILLER, '').trim()
+  if (!p) return 'other'
+  const polite = POLITE.exec(p)
+  if (polite) {
+    // "can you deploy …" is a request; "can you tell me how to install …" is a question.
+    p = p.slice(polite[0].length)
+    if (TASK.test(p)) return 'task'
+    return REMOVAL.test(p) ? 'removal' : 'question'
+  }
+  const want = WANT.exec(p)
+  if (want) {
+    const rest = p.slice(want[0].length)
+    if (!rest.startsWith('to ')) return 'task' // "I want a Grafana container"
+    const verb = rest.slice(3)
+    return TASK.test(verb) ? 'task' : REMOVAL.test(verb) ? 'removal' : QUESTION_WORD.test(verb) ? 'question' : 'other'
+  }
   if (REMOVAL.test(p)) return 'removal'
-  if (POLITE.test(p)) return TASK.test(p) ? 'task' : 'question'
-  if (QUESTION.test(p) || p.endsWith('?')) return 'question'
-  return TASK.test(p) ? 'task' : 'other'
+  if (QUESTION_START.test(p)) return 'question'
+  if (TASK.test(p)) return 'task'
+  return ended || QUESTION_WORD.test(p) ? 'question' : 'other'
+}
+
+/** Per sentence: any imperative task request wins ("what is Gitea? deploy it"), then a removal, then a question. */
+function classify(prompt: string): Kind {
+  // A sentence ends at . ! ? ; followed by space, so "status.example.com" and "10.0.0.50" stay whole.
+  const kinds = prompt.split(/(?<=[.!?;])\s+|;/).map(sentenceKind)
+  for (const k of ['task', 'removal', 'question'] as const) if (kinds.includes(k)) return k
+  return 'other'
 }
 
 /** Only one template today, so a task-shaped request is deploy-service. */

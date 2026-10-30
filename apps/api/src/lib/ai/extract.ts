@@ -62,6 +62,11 @@ function asObject(raw: unknown): Record<string, unknown> {
   return raw as Record<string, unknown>
 }
 
+const EXPECTED: Record<FieldSpec['type'], string> = {
+  string: 'text', int: 'a whole number', bool: 'true or false', enum: 'one of the choices',
+  ipv4cidr: 'an IPv4 address or dhcp', hostname: 'a valid hostname',
+}
+
 // A key echoed into a log line is still model output: bound and flatten it.
 const keyName = (k: string): string => k.replace(/[^\w.-]/g, '?').slice(0, 64)
 
@@ -93,7 +98,8 @@ export async function extractFields(
     if (v === null || v === undefined) continue
     const c = coerce(spec, v, enums[k])
     if (c.ok) out.values[k] = c.value
-    else out.invalid.push({ field: k, raw: v, message: c.message })
+    // The raw value is held for the loop to ask about; the message never repeats it.
+    else out.invalid.push({ field: k, raw: v, message: `${k} is not ${EXPECTED[spec.type]}` })
   }
   if (out.dropped.length) log('ai.extract.dropped', { template: t.id, keys: out.dropped })
   return out
