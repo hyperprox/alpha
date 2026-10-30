@@ -1,51 +1,32 @@
-// The create step against a fake Proxmox: the parameters it sends, the node it picks, and that a refusal
-// or a failed task reaches the user as Proxmox's own words instead of a ninety-second timeout.
+// The create step against a fake Proxmox: it sends the run's fields and the template's constants, refuses
+// anything that changed since the preview before creating, and surfaces Proxmox's own words on a refusal.
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { stepCreateLXC, executeWizardJob, getJob, type JobState } from "../src/lib/wizard-executor"
+import { stepCreateLXC, type JobState } from "../src/lib/wizard-executor"
+import type { DeployFields } from "../src/lib/ai/templates/deploy-service"
 import { ProxmoxClient } from "../src/lib/proxmox-client"
+import { fields, runOf, DEBIAN } from "./fakes/deploy-run"
 
-const GB = 1024 ** 3
-const UPID = "UPID:alpha:0001:0002:0003:vzcreate:250:root@pam:"
+const UPID = "UPID:alpha:0001:0002:00000064:vzcreate:250:root@pam:"
 
-function plan(params: Record<string, unknown> = {}) {
-  return {
-    service: "Uptime Kuma", domain: "kuma.example.com",
-    requirements: { ram_mb: 256, disk_gb: 2, cpu_cores: 1 },
-    steps: [{ id: "c", type: "create_lxc", label: "Create", params: { hostname: "", node: "", vmid: 0, ip: "", gateway: "", ...params } }],
-  }
-}
-const job = (p: any): JobState => ({ jobId: "j", status: "running", plan: p, steps: [], currentStep: 0, startedAt: 0 })
+const job = (f: DeployFields): JobState => ({ jobId: "j", status: "running", run: runOf(f), steps: [], currentStep: 0, startedAt: 0 })
 
 function fakePve(over: Record<string, any> = {}) {
   const calls: { create?: any; waited?: any[]; downloaded?: any[] } = {}
-  const guests = over.guests ?? [
-    { vmid: 101, type: "lxc", node: "alpha" },
-  ]
+  const guests = over.guests ?? [{ vmid: 101, type: "lxc", node: "alpha" }]
   const pve: any = {
-    getNodes: async () => over.nodes ?? [
-      { node: "alpha", status: "online", maxmem: 16 * GB, mem: 12 * GB },
-      { node: "beta",  status: "online", maxmem: 16 * GB, mem: 2 * GB },
-    ],
+    getNodes: async () => { throw new Error("the create step must not choose a node") },
     fetchStrict: async (path: string) => {
       if (path.startsWith("/cluster/resources")) return guests
-      if (path === "/cluster/nextid") return "102"
-      if (path.endsWith("/network")) return over.network ?? [{ iface: "vmbr0", type: "bridge", gateway: "10.0.0.1" }]
-      if (path.endsWith("/aplinfo")) return [{ template: "debian-13-standard_13.1-2_amd64.tar.zst" }]
+      if (path === "/cluster/nextid") throw new Error("the create step must not choose an ID")
+      if (/^\/nodes\/[^/]+\/network$/.test(path)) return over.network ?? [{ iface: "vmbr0", type: "bridge", cidr: "10.0.0.2/24", gateway: "10.0.0.1" }]
+      if (/^\/nodes\/[^/]+\/status$/.test(path)) return { "current-kernel": { machine: over.machine ?? "x86_64" } }
+      if (path.endsWith("/aplinfo")) return over.aplinfo ?? [{ template: "debian-13-standard_13.1-2_amd64.tar.zst" }]
+      if (path.includes("/content?content=vztmpl")) return over.templates ?? [{ volid: DEBIAN }]
+      if (path.endsWith("/config")) return over.configs?.[path] ?? { net0: "name=eth0,ip=10.0.0.50/24,gw=10.0.0.1" }
       throw new Error("unexpected strict " + path)
     },
-    fetchNode: async (path: string) => {
-      if (path.includes("/config")) return over.configs?.[path] ?? { net0: "name=eth0,ip=10.0.0.50/24,gw=10.0.0.1" }
-      if (path.includes("storage?content=vztmpl")) return over.tmplStorages ?? [{ storage: "tmpl" }]
-      if (path.includes("/content?content=vztmpl")) return over.templates ?? [
-        { volid: "tmpl:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst" },
-        { volid: "tmpl:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst" },
-      ]
-      if (path.includes("storage?content=rootdir")) return [{ storage: "pool", type: "rbd", enabled: 1, active: 1, avail: 100 * GB }]
-      if (path.endsWith("/status/current")) return { status: "running" }
-      if (path.endsWith("/interfaces")) return [{ name: "eth0", inet: "10.0.0.77/24" }]
-      return null
-    },
+    fetchNode: async () => null,
     createLXC: async (node: string, params: any) => {
       if (over.createError) throw new Error(over.createError)
       calls.create = { node, params }; return UPID
@@ -60,74 +41,94 @@ function fakePve(over: Record<string, any> = {}) {
 }
 const noWait = async () => {}
 
-test("sends a real rootfs size, no cast needed, and a Docker-capable unprivileged container", async () => {
+test("create uses the fields exactly: node, storage, template, vmid, address", async () => {
   const { pve, calls } = fakePve()
-  await stepCreateLXC(job(plan()), pve, noWait)
+  const j = job(fields({ node: "alpha", memory_mb: 768, disk_gb: 12, cores: 2 }))
+  await stepCreateLXC(j, pve, noWait)
+  assert.equal(calls.create.node, "alpha")
   const p = calls.create.params
-  assert.equal(p.rootfs_size, 8)  // the plan asked for 2; Docker installs never get less than 8
   assert.equal(p.storage, "pool")
-  assert.equal(p.unprivileged, true)
-  assert.equal(p.features, "nesting=1")
-  assert.equal(p.ostemplate, "tmpl:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst")
-  assert.equal(p.vmid, 102)
-  assert.match(p.net0, /ip=dhcp/)
+  assert.equal(p.ostemplate, DEBIAN)
+  assert.equal(p.vmid, 250)
+  assert.equal(p.hostname, "uptime-kuma")
+  assert.equal(p.memory, 768)
+  assert.equal(p.rootfs_size, 12)
+  assert.equal(p.cores, 2)
+  assert.match(p.net0, /^name=eth0,bridge=vmbr0,ip=10\.0\.0\.37\/24,gw=10\.0\.0\.1,firewall=1$/)
+  assert.equal(j.lxcVmid, 250)
+  assert.equal(j.lxcNode, "alpha")
+  assert.equal(j.lxcIp, "10.0.0.37")
+  assert.equal(j.createUpid, UPID)
 })
 
-test("waits on the create task's UPID, not on a blind poll", async () => {
+test("a DHCP run sends ip=dhcp and leaves the address to start_and_verify", async () => {
   const { pve, calls } = fakePve()
-  await stepCreateLXC(job(plan()), pve, noWait)
-  assert.equal(calls.waited![0][0], "beta")
+  const j = job(fields({ ip: "dhcp", gateway: undefined }))
+  await stepCreateLXC(j, pve, noWait)
+  assert.equal(calls.create.params.net0, "name=eth0,bridge=vmbr0,ip=dhcp,firewall=1")
+  assert.equal(j.lxcIp, undefined)
+})
+
+test("create sends the constants: unprivileged, nesting only, onboot, start", async () => {
+  const { pve, calls } = fakePve()
+  await stepCreateLXC(job(fields()), pve, noWait)
+  const p = calls.create.params
+  assert.equal(p.unprivileged, true)
+  assert.equal(p.features, "nesting=1")
+  assert.equal(p.onboot, true)
+  assert.equal(p.start, true)
+  // A field that says otherwise never reaches Proxmox.
+  await assert.rejects(stepCreateLXC(job(fields({ features: "nesting=1,keyctl=1" as any })), fakePve().pve, noWait), /nesting=1/)
+})
+
+test("waits on the create task's UPID", async () => {
+  const { pve, calls } = fakePve()
+  await stepCreateLXC(job(fields()), pve, noWait)
+  assert.equal(calls.waited![0][0], "alpha")
   assert.equal(calls.waited![0][1], UPID)
 })
 
 test("a refused create and a failed task both surface Proxmox's message", async () => {
-  await assert.rejects(stepCreateLXC(job(plan()), fakePve({ createError: "HTTP 400 — rootfs: invalid format" }).pve, noWait), /invalid format/)
-  await assert.rejects(stepCreateLXC(job(plan()), fakePve({ taskError: "Proxmox task failed (ERROR: unable to create)" }).pve, noWait), /unable to create/)
+  await assert.rejects(stepCreateLXC(job(fields()), fakePve({ createError: "HTTP 400 — rootfs: invalid format" }).pve, noWait), /invalid format/)
+  await assert.rejects(stepCreateLXC(job(fields()), fakePve({ taskError: "Proxmox task failed (ERROR: unable to create)" }).pve, noWait), /unable to create/)
 })
 
-test("the plan's node is used, even when another has more free memory", async () => {
-  const { pve, calls } = fakePve()
-  await stepCreateLXC(job(plan({ node: "alpha" })), pve, noWait)
-  assert.equal(calls.create.node, "alpha")
+test("a bridge gateway that changed since the preview stops the create", async () => {
+  const f = fakePve({ network: [{ iface: "vmbr0", type: "bridge", cidr: "10.0.0.2/24", gateway: "10.0.0.254" }] })
+  await assert.rejects(stepCreateLXC(job(fields()), f.pve, noWait), /gateway.*10\.0\.0\.254/)
+  assert.equal(f.calls.create, undefined)
+  const gone = fakePve({ network: [{ iface: "vmbr1", type: "bridge", cidr: "10.0.0.2/24", gateway: "10.0.0.1" }] })
+  await assert.rejects(stepCreateLXC(job(fields()), gone.pve, noWait), /vmbr0/)
+  assert.equal(gone.calls.create, undefined)
 })
 
-test("a named node that is offline or too full is refused, not silently replaced", async () => {
-  await assert.rejects(stepCreateLXC(job(plan({ node: "alpha" })), fakePve({ nodes: [
-    { node: "alpha", status: "online", maxmem: 16 * GB, mem: 16 * GB - 64 * 1048576 },
-    { node: "beta", status: "online", maxmem: 16 * GB, mem: 0 },
-  ] }).pve, noWait), /less than the 512 MB/)
+test("an ID or address taken since the preview is refused before anything is created", async () => {
+  const taken = fakePve({ guests: [{ vmid: 250, type: "lxc", node: "alpha" }] })
+  await assert.rejects(stepCreateLXC(job(fields()), taken.pve, noWait), /250.*already used/)
+  assert.equal(taken.calls.create, undefined)
+  const ip = fakePve({ configs: { "/nodes/alpha/lxc/101/config": { net0: "name=eth0,ip=10.0.0.37/24" } } })
+  await assert.rejects(stepCreateLXC(job(fields()), ip.pve, noWait), /10\.0\.0\.37 is already configured on guest 101/)
+  assert.equal(ip.calls.create, undefined)
 })
 
-test("a given vmid and ip are used; the gateway is the bridge's, whatever the plan says", async () => {
-  const { pve, calls } = fakePve()
-  const j = job(plan({ vmid: 250, ip: "10.0.0.37/24", gateway: "10.9.9.9" }))
-  await stepCreateLXC(j, pve, noWait)
-  assert.equal(calls.create.params.vmid, 250)
-  assert.match(calls.create.params.net0, /ip=10\.0\.0\.37\/24,gw=10\.0\.0\.1,/)
-  assert.equal(j.lxcIp, "10.0.0.37")
-})
-
-test("a vmid in use, an ip in use, a bad ip and an off-network ip are all refused before anything is created", async () => {
-  const run = (params: any) => { const f = fakePve(); return stepCreateLXC(job(plan(params)), f.pve, noWait).then(() => f.calls.create) }
-  await assert.rejects(run({ vmid: 101 }), /already used/)
-  await assert.rejects(run({ ip: "10.0.0.50/24" }), /already configured on guest 101/)
-  await assert.rejects(run({ ip: "10.0.0.300/24" }), /not an IPv4/)
-  await assert.rejects(run({ ip: "10.5.0.9/24" }), /not on the same network/)
-})
-
-test("an ip with no bridge gateway to read is refused rather than guessed", async () => {
-  await assert.rejects(stepCreateLXC(job(plan({ ip: "10.0.0.37/24", gateway: "10.0.0.1" })),
-    fakePve({ network: [{ iface: "vmbr0", type: "bridge" }] }).pve, noWait), /no gateway/)
-})
-
-test("a template is downloaded only when none exists, and the download is waited on", async () => {
+test("a template volid not yet on its storage is downloaded and waited on", async () => {
   const { pve, calls } = fakePve({ templates: [] })
-  await stepCreateLXC(job(plan()), pve, noWait)
-  assert.equal(calls.downloaded![0][2], "debian-13-standard_13.1-2_amd64.tar.zst")
-  assert.equal(calls.create.params.ostemplate, "tmpl:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst")
+  await stepCreateLXC(job(fields()), pve, noWait)
+  assert.deepEqual(calls.downloaded![0], ["alpha", "tmpl", "debian-13-standard_13.1-2_amd64.tar.zst"])
+  assert.equal(calls.waited![0][1], "UPID:dl")
+  assert.equal(calls.create.params.ostemplate, DEBIAN)
   const present = fakePve()
-  await stepCreateLXC(job(plan()), present.pve, noWait)
+  await stepCreateLXC(job(fields()), present.pve, noWait)
   assert.equal(present.calls.downloaded, undefined)
+})
+
+test("a template for another CPU than the node's is refused, present or to download", async () => {
+  const arm = fakePve({ machine: "aarch64" })
+  await assert.rejects(stepCreateLXC(job(fields()), arm.pve, noWait), /amd64.*arm64/)
+  assert.equal(arm.calls.create, undefined)
+  const notOffered = fakePve({ templates: [], aplinfo: [] })
+  await assert.rejects(stepCreateLXC(job(fields()), notOffered.pve, noWait), /not on offer/)
+  assert.equal(notOffered.calls.create, undefined)
 })
 
 // ── waitForTask, on the real client with its transport stubbed ──────────────────────────────
@@ -155,17 +156,4 @@ test("waitForTask: gives up after the timeout", async () => {
   await assert.rejects(
     clientWith([{ status: "running" }]).waitForTask("n", UPID, { timeoutMs: 4000, intervalMs: 2000, sleep: async () => {} }),
     /still running/)
-})
-
-// ── a failed or impossible install stops the run ───────────────────────────────────────────
-
-test("no install recipe: the run stops at install_service and the later steps stay pending", async () => {
-  const steps = ["install_service", "configure_proxy", "create_dns", "request_ssl"].map(t => ({ id: t, type: t, label: t }))
-  await executeWizardJob("j-norecipe", { service: "Mystery App", domain: "x.example.com", steps })
-  const j = getJob("j-norecipe")!
-  assert.equal(j.status, "failed")
-  assert.equal(j.steps[0].status, "failed")
-  assert.deepEqual(j.steps.slice(1).map(s => s.status), ["pending", "pending", "pending"])
-  assert.match(j.error!, /no install recipe/)
-  assert.match(j.error!, /Not run: configure_proxy, create_dns, request_ssl/)
 })

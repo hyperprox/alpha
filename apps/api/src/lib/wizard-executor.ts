@@ -1,27 +1,38 @@
 // =============================================================================
 //  HyperProx — Wizard Execution Engine
-//  Runs deployment plans step by step, broadcasting live progress via WebSocket.
+//  Runs a template's fixed step list from server-held typed fields, step by
+//  step, broadcasting live progress via WebSocket.
 //
-//  Step types:
-//    create_lxc        → Proxmox API: find best node, get VMID, create + start CT
-//    install_service   → Generate install commands, auto-complete with instructions
-//    configure_proxy   → NPM: create proxy host pointing to CT IP
-//    create_dns        → GoDaddy: create A record pointing to WAN IP
-//    wait_propagation  → Poll DNS until domain resolves correctly
-//    request_ssl       → NPM: request Let's Encrypt cert, attach to proxy host
+//  The executor decides nothing: the node, ID, storage, template, address and
+//  sizes are the run's fields, which were derived and validated against the
+//  cluster before the run was handed over. What it still does is refuse, loudly
+//  and before anything exists, when the cluster no longer matches them.
+//
+//  Steps (deploy-service):
+//    create_lxc        → Proxmox API: create the container exactly as the fields say
+//    start_and_verify  → the start task of this create succeeded, and it stays running
+//    install_service   → the recipe's install script, run on the node via pct exec
+//    health_check      → the service answers its health path with an expected status
+//    configure_proxy   → NPM: proxy host for the domain → container
+//    create_dns        → DNS: A record in the longest managed zone
+//    wait_propagation  → public resolvers return the WAN address
+//    request_ssl       → NPM: certificate, attached to the proxy host
 // =============================================================================
 
+import { randomBytes } from 'crypto'
 import { ProxmoxClient } from './proxmox-client'
 import { NPMClient }      from './npm-client'
 import { GoDaddyClient }  from './godaddy-client'
 import { getCredential }  from './credentials'
 import { execInGuest, nodeCredential } from './node-exec'
-import { matchRecipe } from './catalogue'
-import { installScript, manualCommands, distroOf, type Distro } from './install-script'
-import {
-  chooseNode, pickTemplate, pickDownloadable, assertVmidFree, parseCidr, sameSubnet,
-  findIpUser, bridgeGateway, type NodeInfo,
-} from './wizard-placement'
+import { wizardRecipes, type CatalogueRecipe } from './catalogue'
+import { installScript, manualCommands, distroOf } from './install-script'
+import { assertVmidFree, bridgeInfo, findIpUser, parseCidr } from './wizard-placement'
+import { zoneFor } from './dns-zones'
+import { archOfKernel, archOfTemplate } from './ai/facts'
+import type { DeployFields } from './ai/templates/deploy-service'
+import type { StepSpec } from './ai/templates/types'
+import type { TerminalCredential } from './ssh-broker'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -39,10 +50,19 @@ export interface StepState {
   completedAt?:    number
 }
 
+/** What runs: the template, its version, who it is for, its typed fields and its fixed steps. */
+export interface DeployRun {
+  template: 'deploy-service'
+  version:  number
+  owner:    string
+  fields:   DeployFields
+  steps:    StepSpec[]
+}
+
 export interface JobState {
   jobId:        string
   status:       'queued' | 'running' | 'completed' | 'failed'
-  plan:         any
+  run:          DeployRun
   steps:        StepState[]
   currentStep:  number
   startedAt:    number
@@ -52,13 +72,32 @@ export interface JobState {
   lxcVmid?:    number
   lxcNode?:    string
   lxcIp?:      string
-  /** Distro of the template the container was created from; picks the Docker packages. */
-  lxcDistro?:  Distro
   proxyHostId?: number
-  /** False once a step has configured around a service it could not install. */
-  serviceInstalled?: boolean
   certId?:      number
   wanIp?:       string
+  /** The create task's UPID; its start time filters the guest's task history. */
+  createUpid?:  string
+  /** True only once the install ran and exited 0; nothing is published otherwise. */
+  serviceInstalled?: boolean
+}
+
+/** The slice of the Proxmox client the create step uses — narrow so a test can stand in for it. */
+export type CreatePVE = Pick<ProxmoxClient,
+  'fetchNode' | 'fetchStrict' | 'getNodes' | 'createLXC' | 'waitForTask' | 'downloadTemplate'>
+
+export interface ExecDeps {
+  pve:   CreatePVE
+  wait(ms: number): Promise<unknown>
+  fetch: typeof fetch
+  exec:  typeof execInGuest
+  npm(): Promise<NPMClient | null>
+  dns(): Promise<GoDaddyClient | null>
+  /** The stored SSH login for a node, or null when there is none. */
+  login(node: string): Promise<TerminalCredential | null>
+  /** This site's public IPv4 address, for the A record. */
+  wanIp(): Promise<string>
+  /** A lookup against public resolvers, never the local one. */
+  resolve4(domain: string): Promise<string[]>
 }
 
 // ── In-memory job store ───────────────────────────────────────────────────────
@@ -121,277 +160,259 @@ async function getGoDaddy(): Promise<GoDaddyClient | null> {
   return new GoDaddyClient(key, secret)
 }
 
-// ── Sleep helper ──────────────────────────────────────────────────────────────
-
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
-// ── Step handlers ─────────────────────────────────────────────────────────────
-
-/** The slice of the Proxmox client the create step uses — narrow so a test can stand in for it. */
-export type CreatePVE = Pick<ProxmoxClient,
-  'fetchNode' | 'fetchStrict' | 'getNodes' | 'createLXC' | 'waitForTask' | 'downloadTemplate'>
-
-function hostnameFor(wanted: string | undefined, service: string | undefined): string {
-  const clean = (s: string) => s.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/^-+|-+$/g, '').slice(0, 60)
-  return clean(wanted ?? '') || clean(service ?? '') || 'hyperprox-ct'
+async function publicResolve4(domain: string): Promise<string[]> {
+  // Public resolvers directly: the system resolver caches the NXDOMAIN from before the record existed.
+  const { Resolver } = await import('dns/promises')
+  const resolver = new Resolver({ timeout: 5000, tries: 1 })
+  resolver.setServers((process.env.DNS_PROPAGATION_RESOLVERS ?? '1.1.1.1,8.8.8.8').split(',').map(s => s.trim()).filter(Boolean))
+  return resolver.resolve4(domain)
 }
 
-/** The least a Docker-based install fits in: the engine, Compose and one pulled image. */
-export const DOCKER_MIN_DISK_GB = 8
-export const DOCKER_MIN_RAM_MB  = 512
+function defaultDeps(): ExecDeps {
+  return {
+    pve: getPVE(), wait: sleep, fetch, exec: execInGuest, npm: getNPM, dns: getGoDaddy,
+    login: nodeCredential,
+    wanIp: async () => (await GoDaddyClient.getWanIP()).ip,
+    resolve4: publicResolve4,
+  }
+}
+
+/** The template's constants, as the create sends them. A run whose fields say otherwise does not run. */
+const FEATURES = 'nesting=1'
+const enc = encodeURIComponent
+
+function recipeFor(run: DeployRun): CatalogueRecipe {
+  const r = wizardRecipes().find(x => x.id === run.fields.service)
+  if (!r) throw new Error(`HyperProx has no install recipe for "${run.fields.service}".`)
+  return r
+}
+
+/** The create task's start time: the fourth field of its UPID, in hex, on the node's own clock. */
+function upidStart(upid: string | undefined): number {
+  return parseInt(String(upid ?? '').split(':')[4] ?? '0', 16) || 0
+}
+
+// ── Step handlers ─────────────────────────────────────────────────────────────
 
 export async function stepCreateLXC(
   job: JobState,
   pve: CreatePVE = getPVE(),
   wait: (ms: number) => Promise<unknown> = sleep,
 ): Promise<string> {
-  const planned = job.plan.steps?.find((s: any) => s.type === 'create_lxc')?.params ?? {}
-  // Every recipe runs under Docker, and Docker plus a pulled image needs room the service's own
-  // footprint does not suggest: a 2 GB disk sized for the app alone ran out while unpacking the image.
-  // The plan's size is a request; these floors are what an install actually needs.
-  const diskGB  = Math.max(job.plan.requirements?.disk_gb || 8, DOCKER_MIN_DISK_GB)
-  const ram     = Math.max(job.plan.requirements?.ram_mb  || 512, DOCKER_MIN_RAM_MB)
-  const cores   = job.plan.requirements?.cpu_cores || 1
+  void wait
+  const f = job.run.fields
+  const node = f.node
+  if (f.features !== FEATURES) throw new Error(`A HyperProx container gets features ${FEATURES} and nothing else, not "${f.features}".`)
 
-  // 1. Node. The plan's choice stands when the user named one, but it is checked here too: the plan was
-  //    made minutes ago, and a node can have gone offline or filled up since.
-  const node = chooseNode(await pve.getNodes() as NodeInfo[], String(planned.node ?? ''), ram)
+  // Everything below was validated when the run was prepared and again when it was handed over; the
+  // cluster can still move in between. Each check reads Proxmox strictly and refuses before the create.
 
-  // 2. ID. Every call below is strict: Proxmox answers most refusals as {"data":null}, which the lenient
-  //    fetchNode hands back as if nothing had happened.
+  // 1. ID.
   const guests = ((await pve.fetchStrict<any[]>('/cluster/resources?type=vm')) ?? [])
     .filter((r: any) => (r.type === 'lxc' || r.type === 'qemu') && r.vmid)
-  let vmid: number
-  if (Number(planned.vmid) > 0) {
-    vmid = Number(planned.vmid)
-    assertVmidFree(guests, vmid)
-  } else {
-    vmid = Number(await pve.fetchStrict<number>('/cluster/nextid'))
-  }
+  assertVmidFree(guests, f.vmid)
 
-  // 3. Network. A given address must be well-formed, unused, and on the bridge's own network. The gateway is
-  //    read from the node's bridge, never taken from the plan: a model asked for one will invent it.
-  let net0 = 'name=eth0,bridge=vmbr0,ip=dhcp,firewall=1'
+  // 2. Network: the bridge as the node has it now, and the gateway the preview showed.
+  const bridge = bridgeInfo(await pve.fetchStrict<any[]>(`/nodes/${enc(node)}/network`), f.bridge)
+  if (!bridge) throw new Error(`${node} no longer has the bridge ${f.bridge}. Nothing was created.`)
+  let net0 = `name=eth0,bridge=${f.bridge},ip=dhcp,firewall=1`
   let staticIp = ''
-  if (String(planned.ip ?? '')) {
-    const cidr = parseCidr(String(planned.ip))
-    if (!cidr) throw new Error(`"${planned.ip}" is not an IPv4 address in CIDR form (for example 10.0.0.5/24)`)
-    const gw = bridgeGateway(await pve.fetchStrict<any[]>(`/nodes/${encodeURIComponent(node)}/network`))
-    if (!gw) throw new Error(`Cannot give CT ${vmid} a fixed address: ${node} has no gateway set on vmbr0`)
-    if (!sameSubnet(cidr.ip, gw, cidr.prefix)) {
-      throw new Error(`${cidr.ip}/${cidr.prefix} is not on the same network as the bridge gateway ${gw}`)
+  if (f.ip !== 'dhcp') {
+    const cidr = parseCidr(f.ip)
+    if (!cidr) throw new Error(`"${f.ip}" is not an IPv4 address in CIDR form. Nothing was created.`)
+    if (!f.gateway || bridge.gateway !== f.gateway) {
+      throw new Error(`The gateway of ${f.bridge} on ${node} is now ${bridge.gateway || 'unset'}, not the ${f.gateway ?? 'unset'} ` +
+                      `this was planned with. Nothing was created; plan it again.`)
     }
     const configs = await Promise.all(guests.map(async (g: any) => ({
       vmid:   Number(g.vmid),
-      config: await pve.fetchNode<any>(`/nodes/${g.node}/${g.type}/${g.vmid}/config`).catch(() => null),
+      config: await pve.fetchStrict<any>(`/nodes/${enc(g.node)}/${g.type}/${Number(g.vmid)}/config`),
     })))
     const user = findIpUser(configs, cidr.ip)
-    if (user) throw new Error(`${cidr.ip} is already configured on guest ${user}`)
+    if (user) throw new Error(`${cidr.ip} is already configured on guest ${user}. Nothing was created.`)
     staticIp = cidr.ip
-    net0 = `name=eth0,bridge=vmbr0,ip=${cidr.ip}/${cidr.prefix},gw=${gw},firewall=1`
+    net0 = `name=eth0,bridge=${f.bridge},ip=${cidr.ip}/${cidr.prefix},gw=${f.gateway},firewall=1`
   }
 
-  // 4. Template: the newest Debian standard image on any storage that holds templates.
-  const templateStorages = await pve.fetchNode<any[]>(`/nodes/${node}/storage?content=vztmpl`).catch(() => []) ?? []
-  const volids: string[] = []
-  for (const stor of templateStorages) {
-    const contents = await pve.fetchNode<any[]>(
-      `/nodes/${node}/storage/${stor.storage}/content?content=vztmpl`).catch(() => []) ?? []
-    for (const c of contents) if (c.volid) volids.push(c.volid)
+  // 3. Template: built for this node's CPU, as the node reports it now; downloaded only if it is not there.
+  const status = await pve.fetchStrict<any>(`/nodes/${enc(node)}/status`)
+  const arch = archOfKernel(status?.['current-kernel']?.machine)
+  const tArch = archOfTemplate(f.template)
+  if (!arch || tArch !== arch) {
+    throw new Error(`${f.template} is built for ${tArch}, and ${node} is ${arch || 'an unknown CPU'}. Nothing was created.`)
   }
-  let template = pickTemplate(volids)
-
-  if (!template) {
-    // Last resort: download the newest Debian template Proxmox offers, and wait for the download to finish.
-    if (!templateStorages.length) {
-      throw new Error(`No LXC template found and ${node} has no storage that holds templates. Download a Debian template via Proxmox first.`)
-    }
-    const available = (await pve.fetchStrict<any[]>(`/nodes/${encodeURIComponent(node)}/aplinfo`)) ?? []
-    const name = pickDownloadable(available)
-    if (!name) throw new Error(`No Debian template is on offer to download to ${node}`)
-    const stor = templateStorages[0].storage
-    await pve.waitForTask(node, await pve.downloadTemplate(node, stor, name), { timeoutMs: 15 * 60_000 })
-    template = `${stor}:vztmpl/${name}`
+  const m = /^([^:]+):vztmpl\/(.+)$/.exec(f.template)
+  if (!m) throw new Error(`"${f.template}" is not a container template volume. Nothing was created.`)
+  const [, tStor, tName] = m
+  const present = ((await pve.fetchStrict<any[]>(`/nodes/${enc(node)}/storage/${enc(tStor)}/content?content=vztmpl`)) ?? [])
+    .some((c: any) => c?.volid === f.template)
+  if (!present) {
+    const offered = ((await pve.fetchStrict<any[]>(`/nodes/${enc(node)}/aplinfo`)) ?? [])
+      .some((a: any) => (a?.template ?? a?.package) === tName)
+    if (!offered) throw new Error(`${tName} is not on ${tStor} and is not on offer to download to ${node}. Nothing was created.`)
+    await pve.waitForTask(node, await pve.downloadTemplate(node, tStor, tName), { timeoutMs: 15 * 60_000 })
   }
 
-  // 5. Find rootdir storage with enough space
-  const rootStores = await pve.fetchNode<any[]>(`/nodes/${node}/storage?content=rootdir`).catch(() => []) ?? []
-
-  // Prefer real block storage (rbd/lvmthin/zfs) over network shares for rootfs
-  const TYPE_RANK: Record<string, number> = { rbd: 0, zfspool: 0, lvmthin: 1, lvm: 1, dir: 2, nfs: 3, cifs: 4 }
-  const candidates = rootStores
-    .filter((s: any) => s.enabled && s.active && s.avail > diskGB * 1024 * 1024 * 1024 * 1.2)
-    .sort((a: any, b: any) => {
-      const rank = (TYPE_RANK[a.type] ?? 5) - (TYPE_RANK[b.type] ?? 5)
-      return rank !== 0 ? rank : b.avail - a.avail
-    })
-
-  if (!candidates.length) {
-    throw new Error(`No storage on ${node} has ${diskGB}GB free for the container rootfs`)
-  }
-  const rootStor = candidates[0].storage
-
-  // 6. Create the LXC. nesting is what Docker needs inside an unprivileged container.
-  //    keyctl would help some images, but Proxmox lets only root@pam set any feature
-  //    flag other than nesting, and HyperProx signs in with an API token, so asking
-  //    for it fails the whole create with a 403 before anything exists.
-  const hostname = hostnameFor(planned.hostname, job.plan.service)
-  const pass     = Math.random().toString(36).slice(-12) + Math.random().toString(36).slice(-4).toUpperCase()
-
+  // 4. Create. Proxmox lets only root@pam set any feature flag other than nesting, and HyperProx signs in
+  //    with an API token, so nesting is the only one. The create task also starts the container.
   const upid = await pve.createLXC(node, {
-    vmid,
-    hostname,
-    ostemplate:   template,
-    memory:       ram,
-    cores,
-    storage:      rootStor,
-    rootfs_size:  diskGB,
+    vmid:         f.vmid,
+    hostname:     f.hostname,
+    ostemplate:   f.template,
+    memory:       f.memory_mb,
+    cores:        f.cores,
+    storage:      f.storage,
+    rootfs_size:  f.disk_gb,
     net0,
     unprivileged: true,
     start:        true,
-    password:     pass,
-    features:     'nesting=1',
+    onboot:       true,
+    password:     randomBytes(18).toString('base64url'),
+    features:     FEATURES,
     description:  `Deployed by HyperProx AI Wizard — ${new Date().toISOString()}`,
   })
-  job.lxcVmid = vmid
+  job.lxcVmid = f.vmid
   job.lxcNode = node
-  job.lxcDistro = distroOf(template) ?? undefined
+  job.createUpid = upid
+  if (staticIp) job.lxcIp = staticIp
 
-  // 7. Wait on the create task itself. Its exit status and log say what went wrong; polling the guest
-  //    could only say that it never appeared.
+  // 5. Wait on the create task itself: its exit status and log say what went wrong.
   await pve.waitForTask(node, upid, { timeoutMs: 5 * 60_000 })
+  return `CT ${f.vmid} (${f.hostname}) created on ${node} from ${tName}`
+}
 
-  // The create task starts the container but does not wait for it. A container whose start fails
-  // can still read as running for a moment, so the start task's own result decides, and the guest
-  // must read as running twice, five seconds apart.
-  // The create task's start time is the fourth field of its UPID, in hex, on the node's own clock.
-  const createdAt = parseInt(String(upid).split(':')[4] ?? '0', 16) || 0
+export async function stepStartAndVerify(
+  job: JobState,
+  pve: CreatePVE = getPVE(),
+  wait: (ms: number) => Promise<unknown> = sleep,
+): Promise<string> {
+  const node = job.lxcNode, vmid = job.lxcVmid
+  if (!node || !vmid || !job.createUpid) throw new Error('The container was not created, so there is nothing to start.')
+
+  // The create task starts the container but does not wait for it. A container whose start fails can still
+  // read as running for a moment, so the start task's own result decides, and the guest must read as
+  // running twice, five seconds apart. Task history outlives the guest: an earlier container with the same
+  // ID leaves its own start tasks behind, so only a start that began after this create counts.
+  const createdAt = upidStart(job.createUpid)
   let running = false
   let seen = 0
   for (let i = 0; i < 8 && !running; i++) {
     await wait(5000)
-    const starts = await pve.fetchNode<any[]>(
-      `/nodes/${node}/tasks?vmid=${vmid}&typefilter=vzstart&limit=5`).catch(() => []) ?? []
-    // Task history outlives the guest: an earlier container with the same ID leaves its own start
-    // tasks behind, so only a start that began after this create counts.
+    const starts = await pve.fetchNode<any[]>(`/nodes/${enc(node)}/tasks?vmid=${vmid}&typefilter=vzstart&limit=5`).catch(() => []) ?? []
     const start = starts.find(t => Number(t.starttime) >= createdAt)
-    if (start?.status && start.status !== 'OK') {
-      throw new Error(`CT ${vmid} was created but would not start: ${start.status}`)
-    }
-    const status = await pve.fetchNode<any>(`/nodes/${node}/lxc/${vmid}/status/current`).catch(() => null)
+    if (start?.status && start.status !== 'OK') throw new Error(`CT ${vmid} was created but would not start: ${start.status}`)
+    const status = await pve.fetchNode<any>(`/nodes/${enc(node)}/lxc/${vmid}/status/current`).catch(() => null)
     seen = status?.status === 'running' ? seen + 1 : 0
     running = seen >= 2
   }
   if (!running) throw new Error(`CT ${vmid} was created but is not running after 40s`)
 
-  // 8. Address: the one we set, or whatever DHCP hands out (wait up to 30s).
-  if (staticIp) {
-    job.lxcIp = staticIp
-  } else {
-    for (let i = 0; i < 6; i++) {
+  // The address: the one the fields set, or whatever DHCP hands out (up to 30s).
+  if (!job.lxcIp) {
+    for (let i = 0; i < 6 && !job.lxcIp; i++) {
       await wait(5000)
-      const ifaces = await pve.fetchNode<any[]>(`/nodes/${node}/lxc/${vmid}/interfaces`).catch(() => [])
-      const eth0   = (ifaces ?? []).find((f: any) => f.name === 'eth0')
-      const ip     = eth0?.['inet']?.split('/')?.[0]
-      if (ip && !ip.startsWith('169.254')) {
-        job.lxcIp = ip
-        break
-      }
+      const ifaces = await pve.fetchNode<any[]>(`/nodes/${enc(node)}/lxc/${vmid}/interfaces`).catch(() => [])
+      const ip = (ifaces ?? []).find((x: any) => x.name === 'eth0')?.inet?.split('/')?.[0]
+      if (ip && !ip.startsWith('169.254')) job.lxcIp = ip
     }
   }
-
-  return `CT ${vmid} (${hostname}) created on ${node}${job.lxcIp ? ` · IP: ${job.lxcIp}` : ' · IP pending'}`
+  return `CT ${vmid} is running${job.lxcIp ? ` · IP: ${job.lxcIp}` : ' · no address yet'}`
 }
 
-async function stepInstallService(job: JobState): Promise<string> {
-  // This used to install nothing at all: it printed commands and reported
-  // SKIPPED, because the executor had no shell on the container it had just
-  // created. Reporting anything else would have been worse — the wizard went on
-  // to point NPM at the box, create the DNS record and issue a real certificate,
-  // and announcing success there means handing someone a 502 and calling it a
-  // deployment.
-  //
-  // It can now run the install, via `pct exec` from the node. That needs an SSH
-  // login for the *node*, not the guest — a guest thirty seconds old has no
-  // credential, may have no sshd, and may not have finished DHCP. Where no node
-  // login is stored the old behaviour stands, honestly labelled, because a
-  // wizard that silently does half its job is how this bug existed in the first
-  // place.
-  const step = job.steps.find(s => s.type === 'install_service')
+async function stepInstallService(job: JobState, step: StepState, d: ExecDeps): Promise<string> {
+  job.serviceInstalled = false
+  const recipe = recipeFor(job.run)
+  const distro = distroOf(job.run.fields.template)
+  if (!distro) throw new Error(`INSTALL FAILED — ${job.run.fields.template} is neither Debian nor Ubuntu, and the Docker packages differ between them. Nothing was installed.`)
+  const commands = manualCommands(recipe, distro)
+  const node = job.lxcNode, vmid = job.lxcVmid
+  if (!node || !vmid) throw new Error('INSTALL FAILED — the container was not created.')
 
-  // No recipe, no install. The old fallback guessed `image: <name>:latest` on port 80, which starts nothing
-  // useful, and the run then published it behind a certificate.
-  const found = matchRecipe(job.plan.service ?? '').recipe
-  const svc = found?.wizard ? found : undefined
-  if (!svc) {
-    job.serviceInstalled = false
-    throw new Error(`INSTALL FAILED — HyperProx has no install recipe for "${job.plan.service ?? ''}". ` +
-                    `The container exists but is empty. Proxy, DNS and certificate steps were not run.`)
+  // The install runs via `pct exec` from the node, which needs an SSH login for the node, not the guest.
+  // Without one the commands are shown, honestly labelled, and nothing after this is published.
+  const cred = await d.login(node).catch(() => null)
+  if (!cred) {
+    step.commands = commands
+    step.status = 'skipped'
+    return `NOT INSTALLED — no SSH login is stored for node ${node}, so the commands below have to be run by hand ` +
+           `inside CT ${vmid}. Add one under Settings → Nodes and the wizard will do this itself next time.`
   }
-  const distro = job.lxcDistro
-  if (!distro) {
-    job.serviceInstalled = false
-    throw new Error(`INSTALL FAILED — the container's distribution is unknown, and the Docker packages differ between Debian and Ubuntu. Nothing was installed.`)
-  }
-  const commands = manualCommands(svc, distro)
-  job.plan._servicePort = svc.port
-
-  const cred = job.lxcNode ? await nodeCredential(job.lxcNode).catch(() => null) : null
-  if (!cred || !job.lxcNode || !job.lxcVmid) {
-    if (step) { step.commands = commands; step.status = 'skipped' }
-    job.serviceInstalled = false
-    return `NOT INSTALLED — no SSH login is stored for node ${job.lxcNode ?? '?'}, so the ` +
-           `commands below have to be run by hand inside CT ${job.lxcVmid ?? '?'}. Add one under ` +
-           `Settings → Nodes and the wizard will do this itself next time. Everything after this ` +
-           `step is configured and waiting.`
-  }
-
-  const script = installScript(svc, distro)
 
   try {
-    const nodeIp = await nodeAddressFor(job.lxcNode)
-    const run = await execInGuest({
-      host: nodeIp, cred, vmid: job.lxcVmid, script, timeoutMs: 20 * 60_000,
-    })
-    if (run.timedOut) throw new Error('the install ran for twenty minutes without finishing')
-    if (run.code !== 0) {
-      const tail = String(run.output ?? '').trim().split('\n').slice(-12).join('\n')
-      throw new Error(`the install exited ${run.code}${tail ? `. Last output:\n${tail}` : ''}`)
+    const host = await nodeAddress(d.pve, node)
+    const res = await d.exec({ host, cred, vmid, script: installScript(recipe, distro), timeoutMs: 20 * 60_000 })
+    if (res.timedOut) throw new Error('the install ran for twenty minutes without finishing')
+    if (res.code !== 0) {
+      const tail = String(res.output ?? '').trim().split('\n').slice(-12).join('\n')
+      throw new Error(`the install exited ${res.code}${tail ? `. Last output:\n${tail}` : ''}`)
     }
-
-    job.serviceInstalled = true
-    if (step) step.status = 'completed'
-    return `Installed and started on port ${svc.port} inside CT ${job.lxcVmid}.`
   } catch (e: any) {
-    // A failed install stops the run. The proxy, DNS record and certificate that follow would publish an
-    // empty box under a real hostname and report success; they stay pending instead, and the commands
-    // are kept on the step so the install can be finished by hand.
-    if (step) step.commands = commands
-    job.serviceInstalled = false
-    throw new Error(`INSTALL FAILED — ${e.message}. The commands on this step will do it by hand inside ` +
-                    `CT ${job.lxcVmid}. Proxy, DNS and certificate steps were not run.`)
+    step.commands = commands
+    throw new Error(`INSTALL FAILED — ${e.message}. The commands on this step will do it by hand inside CT ${vmid}.`)
   }
+  job.serviceInstalled = true
+  return `Installed and started on port ${recipe.port} inside CT ${vmid}.`
 }
 
 /** Node name to address; names are not reliably resolvable from a container. */
-async function nodeAddressFor(node: string): Promise<string> {
-  const status = await getPVE().fetchNode<any[]>('/cluster/status').catch(() => [])
+async function nodeAddress(pve: CreatePVE, node: string): Promise<string> {
+  const status = await pve.fetchStrict<any[]>('/cluster/status')
   const row = (status ?? []).find((r: any) => r.type === 'node' && r.name === node)
   if (!row?.ip) throw new Error(`no address found for node ${node}`)
   return row.ip
 }
 
-async function stepConfigureProxy(job: JobState): Promise<string> {
-  const npm = await getNPM()
+export async function stepHealthCheck(
+  job: JobState,
+  fetchImpl: typeof fetch = fetch,
+  wait: (ms: number) => Promise<unknown> = sleep,
+): Promise<string> {
+  const recipe = recipeFor(job.run)
+  if (!job.lxcIp) throw new Error('The container has no address, so the service cannot be checked.')
+  const url = `http://${job.lxcIp}:${recipe.port}${recipe.healthPath}`
+  const want = recipe.expectStatus.join(', ')
+  // A service just started by Compose can take a while to listen: up to two minutes, then a loud failure.
+  let last = ''
+  for (let i = 0; i < 24; i++) {
+    if (i) await wait(5000)
+    try {
+      const res = await fetchImpl(url, { redirect: 'manual', signal: AbortSignal.timeout(5000) })
+      if (recipe.expectStatus.includes(res.status)) return `${url} answered ${res.status}`
+      last = `${url} answered ${res.status}, expected ${want}`
+    } catch (e: any) {
+      last = `${url} did not answer: ${e?.cause?.message ?? e?.message ?? e}`
+    }
+  }
+  throw new Error(`HEALTH CHECK FAILED — ${last}.`)
+}
+
+function assertNoFirstRun(job: JobState): void {
+  const recipe = recipeFor(job.run)
+  if (recipe.firstRun.kind === 'none' || job.run.steps.some(s => s.id === 'secure_first_run')) return
+  throw new Error(`${recipe.name} shows a first-run setup page to whoever visits first, so HyperProx will not publish it yet. ` +
+                  `Finish setup at http://${job.lxcIp ?? '?'}:${recipe.port}, then publish it.`)
+}
+
+function domainOf(job: JobState): string {
+  const d = job.run.fields.domain
+  if (!d) throw new Error('This run has no domain to publish on.')
+  return d
+}
+
+async function stepConfigureProxy(job: JobState, d: ExecDeps): Promise<string> {
+  // Phase 5 replaces this guard with the first-run lock.
+  assertNoFirstRun(job)
+  const npm = await d.npm()
   if (!npm) throw new Error('Nginx Proxy Manager is not configured in HyperProx settings')
-
-  const ip   = job.lxcIp
-  if (!ip)   throw new Error('LXC IP not available — create_lxc step may have failed')
-
-  const port = job.plan._servicePort ?? job.plan.steps?.find((s: any) => s.type === 'install_service')?.params?.port ?? 80
+  const ip = job.lxcIp
+  if (!ip) throw new Error('The container has no address to point the proxy at.')
+  const port = recipeFor(job.run).port
+  const domain = domainOf(job)
 
   const host = await npm.createProxyHost({
-    domain_names:            [job.plan.domain],
+    domain_names:            [domain],
     forward_scheme:          'http',
     forward_host:            ip,
     forward_port:            port,
@@ -410,133 +431,96 @@ async function stepConfigureProxy(job: JobState): Promise<string> {
   } as any)
 
   job.proxyHostId = host.id
-  return `Proxy host created — ${job.plan.domain} → ${ip}:${port}`
+  return `Proxy host created — ${domain} → ${ip}:${port}`
 }
 
-async function stepCreateDNS(job: JobState): Promise<string> {
-  const gd = await getGoDaddy()
-  if (!gd) throw new Error('GoDaddy DNS is not configured in HyperProx settings')
+async function stepCreateDNS(job: JobState, d: ExecDeps): Promise<string> {
+  const gd = await d.dns()
+  if (!gd) throw new Error('DNS is not configured in HyperProx settings')
+  const domain = domainOf(job)
+  // The longest managed zone the name is in, never "the last two labels".
+  const zones = ((await gd.getDomains()) ?? []).map((x: any) => x.domain).filter(Boolean)
+  const z = zoneFor(domain, zones)
+  if (!z) throw new Error(`${domain} is in no DNS zone HyperProx manages.`)
+  if (z.name === '@') throw new Error(`${domain} is the main address of ${z.zone}; HyperProx will not replace it.`)
 
-  // Split domain into name + apex (e.g. cloud.mydomain.com → name=cloud, domain=mydomain.com)
-  const parts   = job.plan.domain.split('.')
-  const apex    = parts.slice(-2).join('.')
-  const name    = parts.slice(0, -2).join('.') || '@'
-
-  // Get WAN IP. getWanIP throws with detail if both lookup services fail or return
-  // a non-IPv4 value — let that message surface instead of collapsing it.
-  const wan = await GoDaddyClient.getWanIP()
-  job.wanIp = wan.ip
-
-  await gd.createRecord(apex, {
-    type: 'A',
-    name,
-    data: wan.ip,
-    ttl:  600,
-  })
-
-  return `DNS A record created — ${job.plan.domain} → ${wan.ip}`
+  const wan = await d.wanIp()
+  job.wanIp = wan
+  await gd.createRecord(z.zone, { type: 'A', name: z.name, data: wan, ttl: 600 })
+  return `DNS A record created — ${domain} → ${wan}`
 }
 
-async function stepWaitPropagation(job: JobState): Promise<string> {
-  const domain = job.plan.domain
+async function stepWaitPropagation(job: JobState, d: ExecDeps): Promise<string> {
+  const domain = domainOf(job)
   const wanIp  = job.wanIp
+  if (!wanIp) throw new Error('Cannot verify DNS propagation — the WAN IP is unknown, so create_dns did not complete')
 
-  if (!wanIp) {
-    throw new Error('Cannot verify DNS propagation — WAN IP is unknown, so the create_dns step did not complete')
-  }
-
-  // Query public resolvers directly rather than the system resolver, which caches
-  // the NXDOMAIN from before the record existed and would report a freshly created
-  // record as unpropagated for the length of the negative TTL.
-  const { Resolver } = await import('dns/promises')
-  const resolver = new Resolver({ timeout: 5000, tries: 1 })
-  resolver.setServers(
-    (process.env.DNS_PROPAGATION_RESOLVERS ?? '1.1.1.1,8.8.8.8')
-      .split(',').map(s => s.trim()).filter(Boolean)
-  )
-
-  // Poll up to 5 minutes (30 attempts × 10s)
   for (let i = 0; i < 30; i++) {
-    await sleep(10000)
-    try {
-      const addrs = await resolver.resolve4(domain)
-      if (addrs.includes(wanIp)) {
-        return `DNS propagated — ${domain} resolves to ${wanIp} (${i * 10 + 10}s)`
-      }
-    } catch {
-      // Not resolved yet — keep polling
-    }
+    await d.wait(10000)
+    const addrs = await d.resolve4(domain).catch(() => [] as string[])
+    if (addrs.includes(wanIp)) return `DNS propagated — ${domain} resolves to ${wanIp} (${i * 10 + 10}s)`
   }
-
-  // Fail the step. Continuing to request_ssl guarantees a failed Let's Encrypt
-  // challenge, and five of those per hostname per hour locks out issuance.
+  // Failing here keeps a doomed Let's Encrypt challenge from counting against the hourly limit.
   throw new Error(
     `DNS did not propagate within 5 minutes — ${domain} does not resolve to ${wanIp}. ` +
     `Stopping before the SSL step: requesting a certificate now would fail Let's Encrypt ` +
-    `validation and count against the 5-failures-per-hour limit for this hostname.`
-  )
+    `validation and count against the 5-failures-per-hour limit for this hostname.`)
 }
 
-async function stepRequestSSL(job: JobState): Promise<string> {
-  const npm = await getNPM()
+async function stepRequestSSL(job: JobState, d: ExecDeps): Promise<string> {
+  const npm = await d.npm()
   if (!npm) throw new Error('Nginx Proxy Manager is not configured')
   if (!job.proxyHostId) throw new Error('Proxy host ID not available')
+  const domain = domainOf(job)
 
-  // Get the letsencrypt email from NPM settings or env
   const email = process.env.LETSENCRYPT_EMAIL ?? process.env.NPM_EMAIL ?? ''
   if (!email) throw new Error('Let\'s Encrypt email not configured. Set LETSENCRYPT_EMAIL in HyperProx settings.')
 
   const cert = await npm.requestCertificate({
-    domain_names:        [job.plan.domain],
-    provider:            'letsencrypt',
-    nice_name:           job.plan.domain,
-    letsencrypt_email:   email,
+    domain_names: [domain], provider: 'letsencrypt', nice_name: domain, letsencrypt_email: email,
   })
-
   job.certId = cert.id
-
-  // Attach cert to the proxy host
   await npm.updateProxyHost(job.proxyHostId, {
-    certificate_id: cert.id,
-    ssl_forced:     true,
-    http2_support:  true,
-    hsts_enabled:   true,
+    certificate_id: cert.id, ssl_forced: true, http2_support: true, hsts_enabled: true,
   } as any)
-
-  if (job.serviceInstalled === false) {
-    return `Certificate issued and attached to ${job.plan.domain} over HTTPS. The service ` +
-           `itself is NOT yet installed — ${job.plan.domain} will return 502 until the install ` +
-           `commands from the earlier step are run inside CT ${job.lxcVmid ?? '?'}.`
-  }
-  return `SSL certificate issued and attached — ${job.plan.domain} is now HTTPS`
+  return `SSL certificate issued and attached — ${domain} is now HTTPS`
 }
 
 // ── Step dispatcher ───────────────────────────────────────────────────────────
 
-async function runStep(step: StepState, job: JobState): Promise<void> {
+const PUBLISHING = new Set(['configure_proxy', 'create_dns', 'wait_propagation', 'request_ssl', 'verify_url'])
+
+async function runStep(step: StepState, job: JobState, d: ExecDeps): Promise<void> {
   step.status    = 'running'
   step.startedAt = Date.now()
   emit(job.jobId)
 
   try {
     let output: string
-
     switch (step.type) {
-      case 'create_lxc':        output = await stepCreateLXC(job);       break
-      case 'install_service':   output = await stepInstallService(job);   break
-      case 'configure_proxy':   output = await stepConfigureProxy(job);   break
-      case 'create_dns':        output = await stepCreateDNS(job);        break
-      case 'wait_propagation':  output = await stepWaitPropagation(job);  break
-      case 'request_ssl':       output = await stepRequestSSL(job);       break
+      case 'create_lxc':        output = await stepCreateLXC(job, d.pve, d.wait);       break
+      case 'start_and_verify':  output = await stepStartAndVerify(job, d.pve, d.wait);  break
+      case 'install_service':   output = await stepInstallService(job, step, d);        break
+      case 'health_check':
+        if (!job.serviceInstalled) {
+          step.status = 'skipped'
+          output = 'Not checked — the service was not installed.'
+        } else {
+          output = await stepHealthCheck(job, d.fetch, d.wait)
+        }
+        break
+      case 'configure_proxy':   output = await stepConfigureProxy(job, d);   break
+      case 'create_dns':        output = await stepCreateDNS(job, d);        break
+      case 'wait_propagation':  output = await stepWaitPropagation(job, d);  break
+      case 'request_ssl':       output = await stepRequestSSL(job, d);       break
       default:
-        output = `Unknown step type: ${step.type} — skipped`
-        step.status = 'skipped'
+        // A step this executor cannot run is a failure, never a silent skip.
+        throw new Error(`HyperProx cannot run the step "${step.type}" yet.`)
     }
 
     if (step.status !== 'skipped') step.status = 'completed'
     step.output      = output
     step.completedAt = Date.now()
-
   } catch (err: any) {
     step.status      = 'failed'
     step.error       = err.message
@@ -549,42 +533,44 @@ async function runStep(step: StepState, job: JobState): Promise<void> {
 
 // ── Main entry point ──────────────────────────────────────────────────────────
 
-export async function executeWizardJob(jobId: string, plan: any): Promise<void> {
-  // Build initial job state
+export async function executeDeployJob(jobId: string, run: DeployRun, over: Partial<ExecDeps> = {}): Promise<void> {
+  const d: ExecDeps = { ...defaultDeps(), ...over }
   const job: JobState = {
     jobId,
     status:      'running',
-    plan,
+    run,
     currentStep: 0,
     startedAt:   Date.now(),
-    steps:       (plan.steps ?? []).map((s: any): StepState => ({
-      id:     s.id,
-      type:   s.type,
-      label:  s.label,
-      status: 'pending',
-    })),
+    steps:       run.steps.map((s): StepState => ({ id: s.id, type: s.id, label: s.label, status: 'pending' })),
   }
-
   jobs.set(jobId, job)
   emit(jobId)
 
+  const notRun = () => job.steps.filter(s => s.status === 'pending').map(s => s.label)
   try {
     for (let i = 0; i < job.steps.length; i++) {
+      const step = job.steps[i]
+      // Publishing needs a service that installed and answered. An install that was only shown, not run,
+      // stops the run here, before anything points a public name at an empty container.
+      if (PUBLISHING.has(step.type) && !job.serviceInstalled && run.steps.some(s => s.id === 'install_service')) {
+        job.status      = 'failed'
+        job.error       = `The service was not installed, so it was not published. Not run: ${notRun().join(', ')}.`
+        job.completedAt = Date.now()
+        emit(jobId)
+        return
+      }
       job.currentStep = i
       emit(jobId)
-      await runStep(job.steps[i], job)
-
+      await runStep(step, job, d)
     }
-
     job.status      = 'completed'
     job.completedAt = Date.now()
     emit(jobId)
-
   } catch (err: any) {
     // A failed step stops the run; whatever is still pending is left untouched and named here.
-    const notRun = job.steps.filter(s => s.status === 'pending').map(s => s.label)
+    const rest = notRun()
     job.status      = 'failed'
-    job.error       = notRun.length ? `${err.message} Not run: ${notRun.join(', ')}.` : err.message
+    job.error       = rest.length ? `${err.message} Not run: ${rest.join(', ')}.` : err.message
     job.completedAt = Date.now()
     emit(jobId)
   }
