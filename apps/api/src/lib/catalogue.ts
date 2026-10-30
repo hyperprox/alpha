@@ -18,35 +18,43 @@
 //  tell you its default credentials has handed you a locked box.
 // =============================================================================
 
+import type { Distro } from './install-script'
+
+/** What a person does the first time they open the service. */
+export type FirstRun =
+  | { kind: 'none' }
+  | { kind: 'setup-url'; path: string }
+  | { kind: 'env-admin'; userEnv?: string; passwordEnv: string; user: string }
+
 export interface CatalogueRecipe {
   id:          string
   name:        string
   /** One line: what it is, in the reader's terms. */
   summary:     string
-  category:    'proxy' | 'ai' | 'media' | 'monitoring'
+  category:    'proxy' | 'ai' | 'media' | 'monitoring' | 'apps'
   /** The plug-in or integration this satisfies once installed. */
   satisfies?:  { kind: 'plugin' | 'credential'; id: string; setting: string }
   /** Port the service answers on, used for the integration URL and the check. */
   port:        number
   /** Path that proves it is actually serving, not merely listening. */
   healthPath:  string
-  /** Docker needs a privileged container with nesting and keyctl. */
+  /** Statuses that count as serving at healthPath. */
+  expectStatus: number[]
+  /** Runs under Docker, in an unprivileged container with nesting only. */
   needsDocker: boolean
   defaults:    { cores: number; memoryMb: number; diskGb: number }
   /** Shown before anything runs, so the choice is informed. */
   firstLogin?: string
   notes?:      string[]
-  script:      string
+  firstRun:    FirstRun
+  /** Offered to the AI wizard, which installs only recipes with this set. */
+  wizard:      boolean
+  install:
+    | { kind: 'compose'; dir: string; compose: string }
+    | { kind: 'script'; script: string }
+  /** Extra packages on top of DOCKER_PACKAGES, by distro. */
+  packages?:   Partial<Record<Distro, string[]>>
 }
-
-const DOCKER_PREAMBLE = `
-set -e
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq ca-certificates curl docker.io
-apt-get install -y -qq docker-compose-v2 || apt-get install -y -qq docker-compose
-systemctl enable --now docker
-`.trim()
 
 export const CATALOGUE: CatalogueRecipe[] = [
   // ── Reverse proxy ───────────────────────────────────────────────────────
@@ -58,17 +66,17 @@ export const CATALOGUE: CatalogueRecipe[] = [
     satisfies: { kind: 'credential', id: 'npm', setting: 'url' },
     port: 81,
     healthPath: '/',
+    expectStatus: [200],
     needsDocker: true,
     defaults: { cores: 2, memoryMb: 1024, diskGb: 8 },
+    firstRun: { kind: 'none' },
+    wizard: false,
     firstLogin: 'admin@example.com / changeme — it forces a change on first sign-in.',
     notes: [
       'Takes ports 80 and 443 on this container, so give it an address nothing else is publishing from.',
       'Point your router’s port forwards at this container once it is up, or certificates cannot be issued.',
     ],
-    script: `${DOCKER_PREAMBLE}
-mkdir -p /opt/npm/data /opt/npm/letsencrypt
-cat > /opt/npm/docker-compose.yml <<'YAML'
-services:
+    install: { kind: 'compose', dir: '/opt/npm', compose: `services:
   app:
     image: jc21/nginx-proxy-manager:latest
     container_name: npm
@@ -79,10 +87,7 @@ services:
       - "443:443"
     volumes:
       - ./data:/data
-      - ./letsencrypt:/etc/letsencrypt
-YAML
-cd /opt/npm && docker compose up -d
-echo "Nginx Proxy Manager starting. Admin UI on port 81."`,
+      - ./letsencrypt:/etc/letsencrypt` },
   },
 
   // ── Local AI ────────────────────────────────────────────────────────────
@@ -94,15 +99,17 @@ echo "Nginx Proxy Manager starting. Admin UI on port 81."`,
     satisfies: { kind: 'credential', id: 'ollama', setting: 'url' },
     port: 11434,
     healthPath: '/api/tags',
+    expectStatus: [200],
     needsDocker: false,
     defaults: { cores: 4, memoryMb: 8192, diskGb: 40 },
+    firstRun: { kind: 'none' },
+    wizard: false,
     notes: [
       'No model is pulled here — an 8B model is around 5 GB and which one you want depends on your hardware. Pull one from the AI page once this is up.',
       'CPU only in a plain container. GPU passthrough is a separate piece of work HyperProx does not do for you yet.',
       'Disk fills up fast: each model is gigabytes. 40 GB holds a few.',
     ],
-    script: `export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
+    install: { kind: 'script', script: `apt-get update -qq
 apt-get install -y -qq curl ca-certificates
 curl -fsSL https://ollama.com/install.sh | sh
 
@@ -118,7 +125,7 @@ systemctl daemon-reload
 systemctl enable --now ollama
 systemctl restart ollama
 sleep 3
-echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."`,
+echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
   },
 
   // ── Plex history ────────────────────────────────────────────────────────
@@ -130,17 +137,17 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."`,
     satisfies: { kind: 'plugin', id: 'plex', setting: 'tautulli_url' },
     port: 8181,
     healthPath: '/auth/login',
+    expectStatus: [200],
     needsDocker: true,
+    firstRun: { kind: 'none' },
+    wizard: false,
     defaults: { cores: 1, memoryMb: 512, diskGb: 8 },
     firstLogin: 'It asks you to create an account on first open, then for your Plex server.',
     notes: [
       'Point it at your existing Plex server during its own setup — HyperProx does not do that part, because only you know which server and which token.',
       'History starts from the day it is installed. It cannot backfill what Plex has already forgotten.',
     ],
-    script: `${DOCKER_PREAMBLE}
-mkdir -p /opt/tautulli/config
-cat > /opt/tautulli/docker-compose.yml <<'YAML'
-services:
+    install: { kind: 'compose', dir: '/opt/tautulli', compose: `services:
   tautulli:
     image: ghcr.io/tautulli/tautulli:latest
     container_name: tautulli
@@ -152,13 +159,169 @@ services:
     ports:
       - "8181:8181"
     volumes:
-      - ./config:/config
-YAML
-cd /opt/tautulli && docker compose up -d
-echo "Tautulli starting on port 8181."`,
+      - ./config:/config` },
+  },
+
+  // ── Apps the AI wizard can install ──────────────────────────────────────
+  {
+    id: 'nextcloud',
+    name: 'Nextcloud',
+    summary: 'Files, calendar and contacts you host yourself.',
+    category: 'apps',
+    port: 80,
+    healthPath: '/status.php',
+    expectStatus: [200],
+    needsDocker: true,
+    defaults: { cores: 2, memoryMb: 2048, diskGb: 20 },
+    firstRun: { kind: 'setup-url', path: '/' },
+    wizard: true,
+    install: { kind: 'compose', dir: '/opt/app', compose: `services:
+  nextcloud:
+    image: nextcloud:latest
+    restart: unless-stopped
+    ports: ["80:80"]
+    volumes: ["./data:/var/www/html"]` },
+  },
+  {
+    id: 'jellyfin',
+    name: 'Jellyfin',
+    summary: 'A media server for your own films and shows.',
+    category: 'media',
+    port: 8096,
+    healthPath: '/health',
+    expectStatus: [200],
+    needsDocker: true,
+    defaults: { cores: 4, memoryMb: 2048, diskGb: 20 },
+    firstRun: { kind: 'setup-url', path: '/' },
+    wizard: true,
+    install: { kind: 'compose', dir: '/opt/app', compose: `services:
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    restart: unless-stopped
+    ports: ["8096:8096"]
+    volumes: ["./config:/config", "./media:/media"]` },
+  },
+  {
+    id: 'vaultwarden',
+    name: 'Vaultwarden',
+    summary: 'A Bitwarden-compatible password server.',
+    category: 'apps',
+    port: 80,
+    healthPath: '/alive',
+    expectStatus: [200],
+    needsDocker: true,
+    defaults: { cores: 1, memoryMb: 512, diskGb: 8 },
+    firstRun: { kind: 'none' },
+    wizard: true,
+    install: { kind: 'compose', dir: '/opt/app', compose: `services:
+  vaultwarden:
+    image: vaultwarden/server:latest
+    restart: unless-stopped
+    ports: ["80:80"]
+    volumes: ["./data:/data"]` },
+  },
+  {
+    id: 'gitea',
+    name: 'Gitea',
+    summary: 'A lightweight Git service with a web UI.',
+    category: 'apps',
+    port: 3000,
+    healthPath: '/',
+    expectStatus: [200],
+    needsDocker: true,
+    defaults: { cores: 2, memoryMb: 1024, diskGb: 12 },
+    firstRun: { kind: 'setup-url', path: '/' },
+    wizard: true,
+    install: { kind: 'compose', dir: '/opt/app', compose: `services:
+  gitea:
+    image: gitea/gitea:latest
+    restart: unless-stopped
+    ports: ["3000:3000"]
+    volumes: ["./data:/data"]` },
+  },
+  {
+    id: 'uptime-kuma',
+    name: 'Uptime Kuma',
+    summary: 'Watches your services and tells you when one goes down.',
+    category: 'monitoring',
+    port: 3001,
+    healthPath: '/',
+    expectStatus: [200, 302],
+    needsDocker: true,
+    defaults: { cores: 1, memoryMb: 512, diskGb: 8 },
+    firstRun: { kind: 'setup-url', path: '/' },
+    wizard: true,
+    install: { kind: 'compose', dir: '/opt/app', compose: `services:
+  uptime-kuma:
+    image: louislam/uptime-kuma:latest
+    restart: unless-stopped
+    ports: ["3001:3001"]
+    volumes: ["./data:/app/data"]` },
+  },
+  {
+    id: 'homepage',
+    name: 'Homepage',
+    summary: 'A start page that links to everything you run.',
+    category: 'apps',
+    port: 3000,
+    healthPath: '/',
+    expectStatus: [200],
+    needsDocker: true,
+    defaults: { cores: 1, memoryMb: 512, diskGb: 8 },
+    firstRun: { kind: 'none' },
+    wizard: true,
+    install: { kind: 'compose', dir: '/opt/app', compose: `services:
+  homepage:
+    image: ghcr.io/gethomepage/homepage:latest
+    restart: unless-stopped
+    ports: ["3000:3000"]
+    volumes: ["./config:/app/config"]` },
+  },
+  {
+    id: 'grafana',
+    name: 'Grafana',
+    summary: 'Dashboards for metrics and logs.',
+    category: 'monitoring',
+    port: 3000,
+    healthPath: '/api/health',
+    expectStatus: [200],
+    needsDocker: true,
+    defaults: { cores: 2, memoryMb: 512, diskGb: 8 },
+    firstRun: { kind: 'env-admin', passwordEnv: 'GF_SECURITY_ADMIN_PASSWORD', user: 'admin' },
+    wizard: true,
+    install: { kind: 'compose', dir: '/opt/app', compose: `services:
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    ports: ["3000:3000"]
+    volumes: ["./data:/var/lib/grafana"]
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=\${GF_SECURITY_ADMIN_PASSWORD:-admin}` },
   },
 ]
 
 export function findRecipe(id: string): CatalogueRecipe | undefined {
   return CATALOGUE.find(r => r.id === id)
+}
+
+/** Lowercase, trimmed, whitespace to hyphens: how a person or a model writes a service name. */
+export function serviceKey(name: string): string {
+  return String(name ?? '').toLowerCase().trim().replace(/\s+/g, '-')
+}
+
+/**
+ * Exact match on normalised id or name; anything looser is a suggestion, never an assumption.
+ * Lookups use Array.find, so prototype keys such as "toString" cannot match.
+ */
+export function matchRecipe(name: string): { recipe?: CatalogueRecipe; suggestions: CatalogueRecipe[] } {
+  const key = serviceKey(name)
+  if (!key) return { suggestions: [] }
+  const recipe = CATALOGUE.find(r => r.id === key || serviceKey(r.name) === key)
+  if (recipe) return { recipe, suggestions: [] }
+  const suggestions = wizardRecipes().filter(r => r.id.includes(key) || serviceKey(r.name).includes(key))
+  return { suggestions }
+}
+
+export function wizardRecipes(): CatalogueRecipe[] {
+  return CATALOGUE.filter(r => r.wizard)
 }

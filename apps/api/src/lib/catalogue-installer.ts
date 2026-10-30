@@ -10,6 +10,7 @@
 import { ProxmoxClient } from './proxmox-client'
 import { execInGuest, nodeCredential } from './node-exec'
 import { findRecipe, type CatalogueRecipe } from './catalogue'
+import { installScript } from './install-script'
 import { setCredential } from './credentials'
 import { saveSettings, getSettings } from './plugin-host'
 import { PLUGINS } from '../plugins'
@@ -280,7 +281,7 @@ export async function startInstall(opts: {
       }
       const nodeIp = await nodeAddress(job.node!)
       const run = await execInGuest({
-        host: nodeIp, cred, vmid: job.vmid!, script: recipe.script,
+        host: nodeIp, cred, vmid: job.vmid!, script: installScript(recipe, 'debian'),
         timeoutMs: 20 * 60_000,
         onData: chunk => { job.log = (job.log + chunk).slice(-20_000) },
       })

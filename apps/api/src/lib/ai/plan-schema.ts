@@ -12,7 +12,7 @@
 // subpath, and @anthropic-ai/sdk/helpers/zod is typed against v4 — importing
 // the classic entry point compiles everywhere except zodOutputFormat().
 import * as z from 'zod/v4'
-import { findRecipe } from '../service-recipes'
+import { matchRecipe } from '../catalogue'
 import { parseCidr, sameSubnet } from '../wizard-placement'
 
 export const STEP_TYPES = [
@@ -136,7 +136,7 @@ export function auditPlan(plan: Plan, facts: ClusterFacts): string[] {
 
   // A service with no install recipe cannot be deployed: the container would be created empty and then
   // given a proxy host, a DNS record and a certificate. Say so before anything is created.
-  if (plan.service && !findRecipe(plan.service)) {
+  if (plan.service && !matchRecipe(plan.service).recipe?.wizard) {
     problems.push(
       `HyperProx has no install recipe for "${plan.service}", so it cannot install it. ` +
       `The container would be created empty. Pick a service it supports, or install this one by hand.`)

@@ -16,7 +16,8 @@ import { NPMClient }      from './npm-client'
 import { GoDaddyClient }  from './godaddy-client'
 import { getCredential }  from './credentials'
 import { execInGuest, nodeCredential } from './node-exec'
-import { findRecipe, getInstallCommands } from './service-recipes'
+import { matchRecipe } from './catalogue'
+import { installScript, manualCommands, distroOf, type Distro } from './install-script'
 import {
   chooseNode, pickTemplate, pickDownloadable, assertVmidFree, parseCidr, sameSubnet,
   findIpUser, bridgeGateway, type NodeInfo,
@@ -51,6 +52,8 @@ export interface JobState {
   lxcVmid?:    number
   lxcNode?:    string
   lxcIp?:      string
+  /** Distro of the template the container was created from; picks the Docker packages. */
+  lxcDistro?:  Distro
   proxyHostId?: number
   /** False once a step has configured around a service it could not install. */
   serviceInstalled?: boolean
@@ -252,6 +255,7 @@ export async function stepCreateLXC(
   })
   job.lxcVmid = vmid
   job.lxcNode = node
+  job.lxcDistro = distroOf(template) ?? undefined
 
   // 7. Wait on the create task itself. Its exit status and log say what went wrong; polling the guest
   //    could only say that it never appeared.
@@ -317,13 +321,19 @@ async function stepInstallService(job: JobState): Promise<string> {
 
   // No recipe, no install. The old fallback guessed `image: <name>:latest` on port 80, which starts nothing
   // useful, and the run then published it behind a certificate.
-  const svc = findRecipe(job.plan.service ?? '')
+  const found = matchRecipe(job.plan.service ?? '').recipe
+  const svc = found?.wizard ? found : undefined
   if (!svc) {
     job.serviceInstalled = false
     throw new Error(`INSTALL FAILED — HyperProx has no install recipe for "${job.plan.service ?? ''}". ` +
                     `The container exists but is empty. Proxy, DNS and certificate steps were not run.`)
   }
-  const commands = getInstallCommands(job.plan.service ?? 'app', svc)
+  const distro = job.lxcDistro
+  if (!distro) {
+    job.serviceInstalled = false
+    throw new Error(`INSTALL FAILED — the container's distribution is unknown, and the Docker packages differ between Debian and Ubuntu. Nothing was installed.`)
+  }
+  const commands = manualCommands(svc, distro)
   job.plan._servicePort = svc.port
 
   const cred = job.lxcNode ? await nodeCredential(job.lxcNode).catch(() => null) : null
@@ -336,23 +346,7 @@ async function stepInstallService(job: JobState): Promise<string> {
            `step is configured and waiting.`
   }
 
-  const script = [
-    // Stop at the first failure, so the exit code and the output point at the step that broke rather
-    // than at a later command that could not exist without it.
-    'set -e',
-    'export DEBIAN_FRONTEND=noninteractive',
-    'apt-get update -qq',
-    'apt-get install -y -qq ca-certificates curl docker.io',
-    // Ubuntu packages Compose v2 as docker-compose-v2; Debian ships v2 as docker-compose.
-    'apt-get install -y -qq docker-compose-v2 || apt-get install -y -qq docker-compose',
-    'systemctl enable --now docker',
-    `mkdir -p /opt/app && cd /opt/app`,
-    `cat > docker-compose.yml <<'HP_COMPOSE'`,
-    svc.compose,
-    'HP_COMPOSE',
-    // --quiet-pull keeps download progress bars out of the output, so a failure's last lines are the error.
-    'docker compose up -d --quiet-pull',
-  ].join('\n')
+  const script = installScript(svc, distro)
 
   try {
     const nodeIp = await nodeAddressFor(job.lxcNode)
