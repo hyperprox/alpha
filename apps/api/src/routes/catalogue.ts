@@ -7,9 +7,11 @@
 //  fails.
 // =============================================================================
 
-import { FastifyPluginAsync } from 'fastify'
+import type { FastifyPluginAsync, FastifyRequest } from 'fastify'
 import { CATALOGUE, findRecipe } from '../lib/catalogue'
-import { startInstall, getInstallJob, readAdminCredential } from '../lib/catalogue-installer'
+import { startInstall, getInstallJob, readAdminCredential, type InstallJob } from '../lib/catalogue-installer'
+import { currentContext } from '../lib/auth'
+import { ownerOf } from './ai'
 import { nodeCredential, nodeCredentialId, execOnNode } from '../lib/node-exec'
 import { saveCredential, removeCredential } from '../lib/ssh-broker'
 import { getProviderCredentials } from '../lib/credentials'
@@ -47,7 +49,22 @@ async function alreadySatisfied(recipeId: string): Promise<string | null> {
   return v || null
 }
 
-export const catalogueRoutes: FastifyPluginAsync = async (fastify) => {
+/** What the install routes reach outside themselves for; tests pass fakes. */
+export interface CatalogueRouteDeps {
+  /** Who is asking, named exactly as the wizard names a plan's owner. */
+  whoami(req: FastifyRequest): string
+  start(opts: Parameters<typeof startInstall>[0]): Promise<InstallJob>
+  job(id: string): InstallJob | undefined
+}
+
+export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}): FastifyPluginAsync {
+  const deps: CatalogueRouteDeps = {
+    whoami: () => ownerOf(currentContext()),
+    start: opts => startInstall(opts),
+    job: getInstallJob,
+    ...overrides,
+  }
+  return async (fastify) => {
 
   // GET / — what can be installed, and what is already here
   fastify.get('/', async (_req, reply) => {
@@ -97,8 +114,12 @@ export const catalogueRoutes: FastifyPluginAsync = async (fastify) => {
     if (!recipeId) return reply.status(400).send({ success: false, error: 'recipeId is required' })
     if (!findRecipe(recipeId)) return reply.status(404).send({ success: false, error: 'No such recipe' })
 
+    // A job nobody owns could never be read back, so it is not started.
+    const owner = deps.whoami(req)
+    if (!owner) return reply.status(401).send({ success: false, error: 'Sign in to install.' })
+
     try {
-      const job = await startInstall({ recipeId, intoVmid, node, resources })
+      const job = await deps.start({ recipeId, intoVmid, node, resources, owner })
       return reply.send({ success: true, data: { jobId: job.jobId, steps: job.steps } })
     } catch (e: any) {
       return reply.status(500).send({ success: false, error: e.message })
@@ -107,11 +128,13 @@ export const catalogueRoutes: FastifyPluginAsync = async (fastify) => {
 
   // GET /jobs/:jobId — progress, including the live install log
   fastify.get<{ Params: { jobId: string } }>('/jobs/:jobId', async (req, reply) => {
-    const job = getInstallJob(req.params.jobId)
-    if (!job) return reply.status(404).send({ success: false, error: 'No such install job' })
+    // Another user's job reads as no job at all, as the wizard's do.
+    const job = deps.job(req.params.jobId)
+    const who = deps.whoami(req)
+    if (!job || !who || job.owner !== who) return reply.status(404).send({ success: false, error: 'No such install job' })
     // The generated admin login is read from the vault, only while the job is fresh and the vault
     // is unlocked. The job itself holds a reference, never the value.
-    const { adminCredential: _ref, ...rest } = job
+    const { adminCredential: _ref, owner: _owner, ...rest } = job
     const admin = await readAdminCredential(job)
     return reply.send({ success: true, data: { ...rest, ...(admin ? { adminCredential: { ...admin, savedInVault: true } } : {}) } })
   })
@@ -181,6 +204,9 @@ export const catalogueRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.status(400).send({ success: false, error: e.message })
     }
   })
+  }
 }
+
+export const catalogueRoutes: FastifyPluginAsync = buildCatalogueRoutes()
 
 export { nodeCredentialId }

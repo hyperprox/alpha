@@ -339,3 +339,27 @@ test('lock still voids everything: a token used after a lock gets 423', async ()
   await lock('manual')
   assert.equal((await app.inject({ method: 'GET', url: '/api/proxmox/resources', headers: bearer(t) })).statusCode, 423)
 })
+
+// ── The catalogue's vault check is the write check, made before anything exists ──────────────
+import { vaultWritable } from '../src/lib/credentials'
+import { startInstall } from '../src/lib/catalogue-installer'
+
+test('an env-admin install from a token with nobody signed in fails before any container exists', async () => {
+  await unlockAs()
+  assert.equal(vaultWritable(), true)
+  for (const s of allSessions()) removeSession(s.sid)
+  assert.equal(isUnlocked(), true)
+  assert.equal(vaultWritable(), false, 'unlocked is not writable without a session to write with')
+  const touched: string[] = []
+  const client: any = {
+    getNodes: async () => { touched.push('nodes'); return [{ node: 'pve1', status: 'online', maxmem: 1, mem: 0 }] },
+    getClusterResources: async () => { touched.push('resources'); return [] },
+    fetchStrict: async () => { touched.push('strict'); return '120' },
+    fetchNode: async () => { touched.push('node'); return null },
+    createLXC: async () => { touched.push('create'); return 'UPID:x' },
+    waitForTask: async () => {}, downloadTemplate: async () => 'UPID:dl',
+  }
+  await requestContext.run({ sid: 'token:x', email: 'token:t', role: 'admin' }, () =>
+    assert.rejects(startInstall({ recipeId: 'grafana', owner: 'token:x' }, { client, credential: async () => ({}) }), /vault is locked/))
+  assert.deepEqual(touched, [], 'nothing was read, placed or created')
+})
