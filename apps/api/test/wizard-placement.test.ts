@@ -84,3 +84,13 @@ test("gateway comes from the bridge's network config only", () => {
   assert.equal(bridgeGateway([{ iface: "vmbr0", type: "bridge" }]), "")
   assert.equal(bridgeGateway(null), "")
 })
+
+test('pickTemplate skips images built for another CPU', () => {
+  const v = [
+    'store:vztmpl/debian-13-standard_13.6-1_arm64.tar.zst',
+    'store:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst',
+    'store:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst',
+  ]
+  assert.equal(pickTemplate(v), 'store:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst')
+  assert.equal(pickTemplate(['store:vztmpl/debian-13-standard_13.6-1_arm64.tar.zst']), '')
+})

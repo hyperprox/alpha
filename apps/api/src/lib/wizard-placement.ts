@@ -38,7 +38,13 @@ export function chooseNode(nodes: NodeInfo[], wanted: string, needMemMb: number)
  * image (13, then 12, ...), then Ubuntu LTS, or '' when there is none. Within a
  * release the later patch version wins.
  */
-export function pickTemplate(volids: string[]): string {
+export function pickTemplate(volids: string[], arch = 'amd64'): string {
+  // A template built for another CPU extracts cleanly and then cannot start, so
+  // only an image for this architecture (or one that names none) is a candidate.
+  const forArch = (v: string): boolean => {
+    const m = /_([a-z0-9]+)\.tar\./.exec(v)
+    return !m || m[1] === arch
+  }
   const score = (v: string): number => {
     const d = /debian-(\d+)-standard/.exec(v)
     if (d) return 1000 + Number(d[1])
@@ -46,7 +52,7 @@ export function pickTemplate(volids: string[]): string {
     if (u) return Number(u[1])
     return -1
   }
-  const ranked = volids.filter(v => score(v) >= 0)
+  const ranked = volids.filter(v => forArch(v) && score(v) >= 0)
     .sort((a, b) => score(b) - score(a) || b.localeCompare(a, undefined, { numeric: true }))
   return ranked[0] ?? ''
 }

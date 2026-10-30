@@ -250,14 +250,24 @@ export async function stepCreateLXC(
   //    could only say that it never appeared.
   await pve.waitForTask(node, upid, { timeoutMs: 5 * 60_000 })
 
-  // The create task starts the container but does not wait for it, so give it a moment to be running.
+  // The create task starts the container but does not wait for it. A container whose start fails
+  // can still read as running for a moment, so the start task's own result decides, and the guest
+  // must read as running twice, five seconds apart.
   let running = false
-  for (let i = 0; i < 6 && !running; i++) {
+  let seen = 0
+  for (let i = 0; i < 8 && !running; i++) {
+    await wait(5000)
+    const starts = await pve.fetchNode<any[]>(
+      `/nodes/${node}/tasks?vmid=${vmid}&typefilter=vzstart&limit=1`).catch(() => []) ?? []
+    const start = starts[0]
+    if (start?.status && start.status !== 'OK') {
+      throw new Error(`CT ${vmid} was created but would not start: ${start.status}`)
+    }
     const status = await pve.fetchNode<any>(`/nodes/${node}/lxc/${vmid}/status/current`).catch(() => null)
-    if (status?.status === 'running') running = true
-    else await wait(5000)
+    seen = status?.status === 'running' ? seen + 1 : 0
+    running = seen >= 2
   }
-  if (!running) throw new Error(`CT ${vmid} was created but is not running after 30s`)
+  if (!running) throw new Error(`CT ${vmid} was created but is not running after 40s`)
 
   // 8. Address: the one we set, or whatever DHCP hands out (wait up to 30s).
   if (staticIp) {
