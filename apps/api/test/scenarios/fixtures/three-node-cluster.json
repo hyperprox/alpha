@@ -1,0 +1,37 @@
+{
+  "nodes": [
+    { "node": "pve1", "online": true, "cores": 4, "freeMemMb": 6000, "totalMemMb": 16000, "arch": "amd64", "hasLogin": true,
+      "bridges": [{ "iface": "vmbr0", "gateway": "10.0.0.1", "prefix": 24 }] },
+    { "node": "pve2", "online": true, "cores": 8, "freeMemMb": 12000, "totalMemMb": 32000, "arch": "amd64", "hasLogin": true,
+      "bridges": [{ "iface": "vmbr0", "gateway": "10.0.0.1", "prefix": 24 }] },
+    { "node": "pve3", "online": true, "cores": 4, "freeMemMb": 3000, "totalMemMb": 16000, "arch": "amd64", "hasLogin": true,
+      "bridges": [{ "iface": "vmbr0", "gateway": "10.0.0.1", "prefix": 24 }] }
+  ],
+  "storages": [
+    { "storage": "fast", "node": "pve1", "type": "rbd", "content": ["rootdir", "images"], "active": true, "shared": true, "freeGb": 400 },
+    { "storage": "share", "node": "pve1", "type": "cifs", "content": ["vztmpl", "rootdir"], "active": true, "shared": true, "freeGb": 900 },
+    { "storage": "fast", "node": "pve2", "type": "rbd", "content": ["rootdir", "images"], "active": true, "shared": true, "freeGb": 400 },
+    { "storage": "share", "node": "pve2", "type": "cifs", "content": ["vztmpl", "rootdir"], "active": true, "shared": true, "freeGb": 900 },
+    { "storage": "fast", "node": "pve3", "type": "rbd", "content": ["rootdir", "images"], "active": true, "shared": true, "freeGb": 400 },
+    { "storage": "share", "node": "pve3", "type": "cifs", "content": ["vztmpl", "rootdir"], "active": true, "shared": true, "freeGb": 900 }
+  ],
+  "templates": [
+    { "node": "pve1", "storage": "share", "volid": "share:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst", "arch": "amd64", "distro": "debian" },
+    { "node": "pve2", "storage": "share", "volid": "share:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst", "arch": "amd64", "distro": "debian" },
+    { "node": "pve3", "storage": "share", "volid": "share:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst", "arch": "amd64", "distro": "debian" }
+  ],
+  "downloadable": [
+    { "node": "pve1", "name": "debian-13-standard_13.1-2_amd64.tar.zst", "arch": "amd64", "distro": "debian" },
+    { "node": "pve2", "name": "debian-13-standard_13.1-2_amd64.tar.zst", "arch": "amd64", "distro": "debian" },
+    { "node": "pve3", "name": "debian-13-standard_13.1-2_amd64.tar.zst", "arch": "amd64", "distro": "debian" }
+  ],
+  "guests": [
+    { "vmid": 101, "node": "pve1", "type": "lxc", "name": "web", "addresses": ["10.0.0.50"] },
+    { "vmid": 105, "node": "pve2", "type": "lxc", "name": "db", "addresses": ["10.0.0.45"] }
+  ],
+  "nextVmid": 102,
+  "zones": ["example.com"],
+  "proxyHosts": ["old.example.com"],
+  "hasReverseProxy": true,
+  "partial": []
+}
