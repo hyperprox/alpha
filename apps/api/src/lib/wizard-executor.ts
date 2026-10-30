@@ -221,7 +221,10 @@ export async function stepCreateLXC(
   }
   const rootStor = candidates[0].storage
 
-  // 6. Create the LXC. nesting and keyctl are what Docker needs inside an unprivileged container.
+  // 6. Create the LXC. nesting is what Docker needs inside an unprivileged container.
+  //    keyctl would help some images, but Proxmox lets only root@pam set any feature
+  //    flag other than nesting, and HyperProx signs in with an API token, so asking
+  //    for it fails the whole create with a 403 before anything exists.
   const hostname = hostnameFor(planned.hostname, job.plan.service)
   const pass     = Math.random().toString(36).slice(-12) + Math.random().toString(36).slice(-4).toUpperCase()
 
@@ -237,7 +240,7 @@ export async function stepCreateLXC(
     unprivileged: true,
     start:        true,
     password:     pass,
-    features:     'nesting=1,keyctl=1',
+    features:     'nesting=1',
     description:  `Deployed by HyperProx AI Wizard — ${new Date().toISOString()}`,
   })
   job.lxcVmid = vmid
