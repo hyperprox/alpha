@@ -1,0 +1,12 @@
+id: deploy-024-wildcard-domain
+prompt: "Deploy Homepage at *.example.com"
+facts: fixtures/three-node-cluster.json
+answers:
+  - {"field": "domain", "value": "home.example.com"}
+expect:
+  state: ready
+  questions: ["domain"]
+  fields:
+    domain: "home.example.com"
+    exposure: "public"
+found_by: "2026-10-30 final review"
