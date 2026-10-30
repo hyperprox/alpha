@@ -98,6 +98,8 @@ export interface ExecDeps {
   wanIp(): Promise<string>
   /** A lookup against public resolvers, never the local one. */
   resolve4(domain: string): Promise<string[]>
+  /** The address Let's Encrypt is told; '' when none is configured. */
+  letsEncryptEmail(): string
 }
 
 // ── In-memory job store ───────────────────────────────────────────────────────
@@ -176,6 +178,7 @@ function defaultDeps(): ExecDeps {
     login: nodeCredential,
     wanIp: async () => (await GoDaddyClient.getWanIP()).ip,
     resolve4: publicResolve4,
+    letsEncryptEmail: () => process.env.LETSENCRYPT_EMAIL ?? process.env.NPM_EMAIL ?? '',
   }
 }
 
@@ -213,6 +216,8 @@ export async function stepCreateLXC(
   const guests = ((await pve.fetchStrict<any[]>('/cluster/resources?type=vm')) ?? [])
     .filter((r: any) => (r.type === 'lxc' || r.type === 'qemu') && r.vmid)
   assertVmidFree(guests, f.vmid)
+  const sameName = guests.find((g: any) => String(g.name ?? '').toLowerCase() === f.hostname.toLowerCase())
+  if (sameName) throw new Error(`${f.hostname} is already the name of guest ${sameName.vmid}. Nothing was created.`)
 
   // 2. Network: the bridge as the node has it now, and the gateway the preview showed.
   const bridge = bridgeInfo(await pve.fetchStrict<any[]>(`/nodes/${enc(node)}/network`), f.bridge)
@@ -434,7 +439,7 @@ async function stepConfigureProxy(job: JobState, d: ExecDeps): Promise<string> {
   return `Proxy host created — ${domain} → ${ip}:${port}`
 }
 
-async function stepCreateDNS(job: JobState, d: ExecDeps): Promise<string> {
+export async function stepCreateDNS(job: JobState, d: ExecDeps): Promise<string> {
   const gd = await d.dns()
   if (!gd) throw new Error('DNS is not configured in HyperProx settings')
   const domain = domainOf(job)
@@ -443,6 +448,11 @@ async function stepCreateDNS(job: JobState, d: ExecDeps): Promise<string> {
   const z = zoneFor(domain, zones)
   if (!z) throw new Error(`${domain} is in no DNS zone HyperProx manages.`)
   if (z.name === '@') throw new Error(`${domain} is the main address of ${z.zone}; HyperProx will not replace it.`)
+
+  // Read again right before the write: a record made since the plan is never overwritten or added to.
+  const existing = ((await gd.getRecords(z.zone)) ?? [])
+    .find((r: any) => ['A', 'AAAA', 'CNAME'].includes(r?.type) && String(r?.name ?? '').toLowerCase() === z.name)
+  if (existing) throw new Error(`${domain} already has a DNS record (${existing.type}). HyperProx will not change or add to it.`)
 
   const wan = await d.wanIp()
   job.wanIp = wan
@@ -473,7 +483,7 @@ async function stepRequestSSL(job: JobState, d: ExecDeps): Promise<string> {
   if (!job.proxyHostId) throw new Error('Proxy host ID not available')
   const domain = domainOf(job)
 
-  const email = process.env.LETSENCRYPT_EMAIL ?? process.env.NPM_EMAIL ?? ''
+  const email = d.letsEncryptEmail()
   if (!email) throw new Error('Let\'s Encrypt email not configured. Set LETSENCRYPT_EMAIL in HyperProx settings.')
 
   const cert = await npm.requestCertificate({
@@ -552,7 +562,9 @@ export async function executeDeployJob(jobId: string, run: DeployRun, over: Part
       const step = job.steps[i]
       // Publishing needs a service that installed and answered. An install that was only shown, not run,
       // stops the run here, before anything points a public name at an empty container.
-      if (PUBLISHING.has(step.type) && !job.serviceInstalled && run.steps.some(s => s.id === 'install_service')) {
+      // Fails closed: a run without a completed install step publishes nothing.
+      const installed = job.serviceInstalled === true && job.steps.some(s => s.type === 'install_service' && s.status === 'completed')
+      if (PUBLISHING.has(step.type) && !installed) {
         job.status      = 'failed'
         job.error       = `The service was not installed, so it was not published. Not run: ${notRun().join(', ')}.`
         job.completedAt = Date.now()
@@ -563,7 +575,14 @@ export async function executeDeployJob(jobId: string, run: DeployRun, over: Part
       emit(jobId)
       await runStep(step, job, d)
     }
-    job.status      = 'completed'
+    // A run whose install was only shown, not run, has deployed nothing that works: it ends failed.
+    const install = job.steps.find(s => s.type === 'install_service')
+    if (install?.status === 'skipped') {
+      job.status = 'failed'
+      job.error  = `The service was not installed: ${install.output ?? 'the install did not run.'}`
+    } else {
+      job.status = 'completed'
+    }
     job.completedAt = Date.now()
     emit(jobId)
   } catch (err: any) {

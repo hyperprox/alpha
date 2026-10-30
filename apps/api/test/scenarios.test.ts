@@ -1,7 +1,7 @@
 // One test per scenario file. CI replays the recorded model replies; SCENARIO_PROVIDER (set by
 // `pnpm test:scenarios --provider <id>`) calls that provider instead and prints extraction accuracy,
 // which never fails the run: it is for choosing a default model, not for gating a change.
-import { test, after } from "node:test"
+import { test } from "node:test"
 import assert from "node:assert/strict"
 import { join } from "node:path"
 import { loadScenarios, runPlanOnly, checkScenario, loadRecording, extractionAccuracy, SCENARIOS_ROOT } from "./scenarios/runner"
@@ -30,6 +30,7 @@ for (const s of loadScenarios(join(SCENARIOS_ROOT, "deploy-service"))) {
   })
 }
 
-after(() => {
+// An exit hook, not a node:test hook: a test hook would be counted as a test.
+process.on("exit", () => {
   if (provider && total) console.log(`${provider}: extraction accuracy ${hit}/${total} (${Math.round(100 * hit / total)}%)`)
 })

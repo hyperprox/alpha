@@ -1,0 +1,10 @@
+id: deploy-003-public-asks-domain
+prompt: "Deploy Uptime Kuma, make it public"
+facts: fixtures/three-node-cluster.json
+answers: []
+expect:
+  state: asking
+  questions: ["domain"]
+  fields:
+    exposure: "public"
+found_by: "spec seed inventory"

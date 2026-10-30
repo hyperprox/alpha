@@ -9,11 +9,12 @@
 // =============================================================================
 
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify'
+import { randomUUID }         from 'crypto'
 import { setCredential }      from '../lib/credentials'
-import { executeDeployJob, getJob, type DeployRun } from '../lib/wizard-executor'
+import { executeDeployJob, getJob, type DeployRun, type JobState } from '../lib/wizard-executor'
 import { gatherTemplateFacts } from '../lib/ai/facts'
 import { PreparedStore }      from '../lib/ai/prepared'
-import { currentContext }     from '../lib/auth'
+import { currentContext, type RequestContext } from '../lib/auth'
 import { startLoop, type Extraction, type IntentResult, type LoopDeps } from '../lib/ai/loop'
 import { matchIntent, NO_TASK_ANSWER } from '../lib/ai/intent'
 import { extractFields }      from '../lib/ai/extract'
@@ -48,7 +49,9 @@ export interface AiRouteDeps {
   execute(jobId: string, run: DeployRun): Promise<void>
   /** Runs the server derived and validated, waiting to be executed by id. */
   prepared: PreparedStore<DeployRun>
-  /** Who is asking; a run can only be executed by the user it was made for. */
+  /** A job by id, for the progress endpoint. */
+  job(jobId: string): JobState | undefined
+  /** Who is asking; a run can only be executed, and its job read, by the user it was made for. */
   whoami(req: FastifyRequest): string
   activeProvider(): Promise<ProviderId>
   listProviders(): Promise<ProviderInfo[]>
@@ -63,10 +66,20 @@ function defaultDeps(): AiRouteDeps {
       extractFields(t, text, facts, { asking: opts.asking, call: r => callStructured(r, opts.provider) }),
     execute: executeDeployJob,
     prepared: new PreparedStore<DeployRun>(),
-    whoami: () => currentContext()?.email ?? '',
+    job: getJob,
+    whoami: () => ownerOf(currentContext()),
     activeProvider,
     listProviders,
   }
+}
+
+/**
+ * Who owns a plan and its job. A signed-in user is their email; an API token is its id, never its name, so
+ * a token revoked and re-issued under the same name cannot use the old one's plans.
+ */
+export function ownerOf(ctx: Pick<RequestContext, 'sid' | 'email'> | undefined): string {
+  if (!ctx) return ''
+  return ctx.sid?.startsWith('token:') ? ctx.sid : (ctx.email ?? '')
 }
 
 // ── Checking a run again before it runs ─────────────────────────────────────
@@ -283,7 +296,8 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
           ...unread.map(src => `HyperProx could not read ${src} from the cluster, so this could not be fully checked. Try again in a moment.`),
           ...(notice ? [notice] : []),
         ])]
-        const blocked = !run || unread.length > 0
+        // Interim until the first-run lock: a public app with a first-run page is not planned at all.
+        const blocked = !run || unread.length > 0 || !!notice
 
         // Only a ready, fully checked run is kept, and only for the user who asked. Execute takes this id;
         // nothing the browser shows or sends is run.
@@ -361,7 +375,7 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
       const clash = mine.filter(c => claims.has(c.key)).map(c => c.message)
       if (clash.length) return reply.status(409).send({ ok: false, blocked: true, warnings: clash })
 
-      const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(-4)}`
+      const jobId = randomUUID()
       for (const c of mine) claims.set(c.key, jobId)
       const release = () => { for (const c of mine) if (claims.get(c.key) === jobId) claims.delete(c.key) }
 
@@ -380,8 +394,10 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
 
     // GET /api/ai/wizard/jobs/:jobId — get execution status (REST fallback for WS)
     fastify.get<{ Params: { jobId: string } }>('/wizard/jobs/:jobId', async (req, reply) => {
-      const job = getJob(req.params.jobId)
-      if (!job) return reply.status(404).send({ ok: false, error: 'Job not found' })
+      // Another user's job reads as no job at all.
+      const job = deps.job(req.params.jobId)
+      const who = deps.whoami(req)
+      if (!job || !who || job.run.owner !== who) return reply.status(404).send({ ok: false, error: 'Job not found' })
 
       return reply.send({
         ok:          true,

@@ -1,0 +1,8 @@
+id: deploy-004-unknown-service
+prompt: "Deploy Plex at plex.example.com"
+facts: fixtures/three-node-cluster.json
+answers: []
+expect:
+  state: asking
+  questions: ["service"]
+found_by: "spec seed inventory"

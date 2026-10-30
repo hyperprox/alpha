@@ -1,0 +1,13 @@
+id: deploy-009-ip-off-subnet
+prompt: "Deploy Uptime Kuma at 10.5.0.9, LAN only"
+facts: fixtures/three-node-cluster.json
+answers:
+  - {"field": "ip", "value": "10.0.0.40"}
+expect:
+  state: ready
+  questions: ["ip"]
+  fields:
+    ip: "10.0.0.40/24"
+    gateway: "{fact}"
+  dropped: ["gateway"]
+found_by: "spec seed inventory"

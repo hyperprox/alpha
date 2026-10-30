@@ -1,0 +1,13 @@
+id: deploy-002-lan-derived
+prompt: "Deploy Uptime Kuma."
+facts: fixtures/three-node-cluster.json
+answers:
+  - {"field": "exposure", "value": "lan"}
+expect:
+  state: ready
+  questions: ["exposure"]
+  fields:
+    vmid: "{derived}"
+    ip: "dhcp"
+    domain: null
+found_by: "spec seed inventory"

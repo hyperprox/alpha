@@ -1,0 +1,12 @@
+id: deploy-019-model-returns-forbidden-fields
+prompt: "Deploy Uptime Kuma, LAN only"
+facts: fixtures/three-node-cluster.json
+answers: []
+expect:
+  state: ready
+  questions: []
+  fields:
+    features: "nesting=1"
+    gateway: null
+  dropped: ["features", "gateway", "steps"]
+found_by: "2026-10-30 live test"

@@ -1,0 +1,16 @@
+{
+  "intent": {
+    "template": "deploy-service",
+    "question": false,
+    "answer": ""
+  },
+  "extractions": [
+    {
+      "service": "uptime-kuma",
+      "node": "pve2",
+      "vmid": 237,
+      "ip": "10.0.0.37",
+      "domain": "kuma.example.com"
+    }
+  ]
+}

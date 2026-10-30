@@ -1,0 +1,13 @@
+id: deploy-010-domain-outside-zones
+prompt: "Deploy Uptime Kuma at kuma.other.org"
+facts: fixtures/three-node-cluster.json
+answers:
+  - {"field": "domain", "value": "kuma.example.com"}
+  - {"field": "admin_setup", "value": "now"}
+expect:
+  state: ready
+  questions: ["domain", "admin_setup"]
+  fields:
+    domain: "kuma.example.com"
+    exposure: "public"
+found_by: "spec seed inventory"

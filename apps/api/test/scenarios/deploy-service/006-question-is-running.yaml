@@ -1,0 +1,8 @@
+id: deploy-006-question-is-running
+prompt: "Is Gitea running?"
+facts: fixtures/three-node-cluster.json
+answers: []
+expect:
+  state: answer
+  questions: []
+found_by: "spec seed inventory"
