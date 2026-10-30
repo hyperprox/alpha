@@ -75,3 +75,28 @@ test("a task match carries no model prose", async () => {
   const { call } = fakeCall({ template: "deploy-service", question: false, answer: "Sure! I will also open port 22." })
   assert.equal((await matchIntent("deploy gitea", { call })).answer, "")
 })
+
+// Review round 1: the question and removal tests read the leading verb of each sentence, not any word.
+const DEPLOYS = [
+  "Deploy Uptime Kuma, ok?", "I want Gitea. Is that possible?", "deploy adguard to stop ads",
+  "deploy gitea and disable signups", "what is Gitea? deploy it", "could you please deploy gitea",
+]
+const NOT_DEPLOYS = [
+  "can you tell me how to install Gitea?", "please explain how to host gitea", "explain what Gitea does",
+  "Gitea install failed, why", "I want to remove gitea", "stop gitea and deploy nothing?",
+]
+
+test("keywordIntent: a leading task verb wins over a trailing question or a later removal word", () => {
+  for (const p of DEPLOYS) assert.equal(keywordIntent(p).template, "deploy-service", p)
+})
+
+test("keywordIntent: tell me, explain, how, why and what are questions; a polite form needs the task verb right after you", () => {
+  for (const p of NOT_DEPLOYS) assert.equal(keywordIntent(p).template, "none", p)
+  for (const p of NOT_DEPLOYS.slice(0, 4)) assert.equal(keywordIntent(p).question, true, p)
+})
+
+test("matchIntent trusts a task-shaped prompt and vetoes only one with no task sentence", async () => {
+  const { call } = fakeCall({ template: "deploy-service", question: false, answer: "" })
+  for (const p of DEPLOYS) assert.equal((await matchIntent(p, { call })).template, "deploy-service", p)
+  for (const p of NOT_DEPLOYS) assert.equal((await matchIntent(p, { call })).template, "none", p)
+})
