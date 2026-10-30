@@ -9,8 +9,11 @@
 
 import { ProxmoxClient } from './proxmox-client'
 import { execInGuest, nodeCredential } from './node-exec'
+import { randomBytes } from 'node:crypto'
 import { findRecipe, type CatalogueRecipe } from './catalogue'
-import { installScript } from './install-script'
+import { installScript, distroOf, type Distro } from './install-script'
+import { pickTemplate } from './wizard-placement'
+import type { CreatePVE } from './wizard-executor'
 import { setCredential } from './credentials'
 import { saveSettings, getSettings } from './plugin-host'
 import { PLUGINS } from '../plugins'
@@ -61,51 +64,49 @@ function step(job: InstallJob, id: string): InstallStep {
 //  Container creation
 // ---------------------------------------------------------------------------
 
-async function createContainer(
+export async function createContainer(
   recipe: CatalogueRecipe,
   res: { cores: number; memoryMb: number; diskGb: number },
   preferNode?: string,
-): Promise<{ vmid: number; node: string }> {
-  const client = pve()
-  const vmid   = Number(await client.fetchNode<number>('/cluster/nextid'))
+  client: CreatePVE = pve(),
+): Promise<{ vmid: number; node: string; distro: Distro }> {
+  const vmid   = Number(await client.fetchStrict<number>('/cluster/nextid'))
 
   const nodes  = (await client.getNodes()).filter((n: any) => n.status === 'online')
   if (!nodes.length) throw new Error('No online Proxmox node to place this on.')
   const node = preferNode
     ? (nodes.find((n: any) => n.node === preferNode)?.node
        ?? (() => { throw new Error(`Node ${preferNode} is not online.`) })())
-    : nodes.sort((a: any, b: any) => (b.maxmem - b.mem) - (a.maxmem - a.mem))[0].node
+    : [...nodes].sort((a: any, b: any) => (b.maxmem - b.mem) - (a.maxmem - a.mem))[0].node
 
   // A template, preferring the newest Debian on offer.
-  const stores = await client.fetchNode<any[]>(`/nodes/${node}/storage?content=vztmpl`).catch(() => [])
-  let template = ''
+  const stores = await client.fetchNode<any[]>(`/nodes/${node}/storage?content=vztmpl`).catch(() => []) ?? []
+  const volids: string[] = []
   for (const s of stores) {
     const contents = await client
-      .fetchNode<any[]>(`/nodes/${node}/storage/${s.storage}/content?content=vztmpl`).catch(() => [])
-    const found = contents
-      .filter((c: any) => /debian-1[23]|ubuntu-2[24]/.test(c.volid ?? ''))
-      .sort((a: any, b: any) => String(b.volid).localeCompare(String(a.volid)))[0]
-    if (found) { template = found.volid; break }
+      .fetchNode<any[]>(`/nodes/${node}/storage/${s.storage}/content?content=vztmpl`).catch(() => []) ?? []
+    for (const c of contents) if (c.volid) volids.push(c.volid)
   }
+  const template = pickTemplate(volids)
   if (!template) {
     throw new Error(`No Debian or Ubuntu template on ${node}. Download one in Proxmox first — ` +
                     `local storage → CT Templates → Templates.`)
   }
+  const distro = distroOf(template)
+  if (!distro) throw new Error(`${template} is neither Debian nor Ubuntu; HyperProx installs only on those.`)
 
   // Same ranking the AI wizard uses: a container rootfs does not belong on a
   // network share just because the share is emptiest.
   const RANK: Record<string, number> = { rbd: 0, zfspool: 0, lvmthin: 1, lvm: 1, btrfs: 1, dir: 2, nfs: 3, cifs: 4 }
-  const roots = (await client.fetchNode<any[]>(`/nodes/${node}/storage?content=rootdir`).catch(() => []))
+  const roots = ((await client.fetchNode<any[]>(`/nodes/${node}/storage?content=rootdir`).catch(() => [])) ?? [])
     .filter((s: any) => s.enabled && s.active && s.avail > res.diskGb * 1024 ** 3 * 1.2)
     .sort((a: any, b: any) => (RANK[a.type] ?? 5) - (RANK[b.type] ?? 5) || b.avail - a.avail)
   if (!roots.length) throw new Error(`No storage on ${node} has ${res.diskGb} GB free for the rootfs.`)
 
-  // Docker in LXC needs a privileged container with nesting and keyctl. An
-  // unprivileged one fails at the first overlay mount, with an error that reads
-  // like a broken image rather than a container feature flag.
-  const docker = recipe.needsDocker
-
-  await client.createLXC(node, {
+  // Docker runs in an unprivileged container with nesting. HyperProx signs in with an API
+  // token, and Proxmox lets only root@pam set any feature flag other than nesting or create a
+  // privileged container, so asking for either fails the create with a 403 before anything exists.
+  const upid = await client.createLXC(node, {
     vmid,
     hostname:     recipe.id.slice(0, 60),
     ostemplate:   template,
@@ -114,14 +115,16 @@ async function createContainer(
     storage:      roots[0].storage,
     rootfs_size:  res.diskGb,
     net0:         'name=eth0,bridge=vmbr0,ip=dhcp,firewall=1',
-    unprivileged: !docker,
-    features:     docker ? 'nesting=1,keyctl=1' : 'nesting=1',
+    unprivileged: true,
+    features:     'nesting=1',
+    onboot:       true,
     start:        true,
-    password:     Math.random().toString(36).slice(-14) + 'Aa1',
+    password:     randomBytes(12).toString('base64url') + 'Aa1',
     description:  `${recipe.name}, installed by HyperProx on ${new Date().toISOString().slice(0, 10)}`,
   })
+  await client.waitForTask(node, upid, { timeoutMs: 5 * 60_000 })
 
-  return { vmid, node }
+  return { vmid, node, distro }
 }
 
 async function waitRunning(node: string, vmid: number): Promise<void> {
@@ -252,14 +255,20 @@ export async function startInstall(opts: {
   ;(async () => {
     try {
       // 1. A container to put it in.
+      let distro: Distro | null = null
       const s1 = step(job, 'container')
       if (reuse) {
         job.vmid = target.vmid; job.node = target.node
+        const cfg = await pve().fetchNode<any>(`/nodes/${target.node}/lxc/${target.vmid}/config`).catch(() => null)
+        distro = distroOf(String(cfg?.ostype ?? ''))
+        if (!distro) {
+          throw new Error(`CT ${target.vmid} is ${cfg?.ostype ? `"${cfg.ostype}"` : 'of unknown type'}, which is neither Debian nor Ubuntu; HyperProx installs only on those.`)
+        }
       } else {
         const made = await createContainer(recipe, opts.resources ?? {
           cores: recipe.defaults.cores, memoryMb: recipe.defaults.memoryMb, diskGb: recipe.defaults.diskGb,
         }, target.node)
-        job.vmid = made.vmid; job.node = made.node
+        job.vmid = made.vmid; job.node = made.node; distro = made.distro
         await waitRunning(made.node, made.vmid)
       }
       s1.status = 'done'
@@ -281,7 +290,7 @@ export async function startInstall(opts: {
       }
       const nodeIp = await nodeAddress(job.node!)
       const run = await execInGuest({
-        host: nodeIp, cred, vmid: job.vmid!, script: installScript(recipe, 'debian'),
+        host: nodeIp, cred, vmid: job.vmid!, script: installScript(recipe, distro!),
         timeoutMs: 20 * 60_000,
         onData: chunk => { job.log = (job.log + chunk).slice(-20_000) },
       })
@@ -297,7 +306,7 @@ export async function startInstall(opts: {
         for (let i = 0; i < 10 && !ok; i++) {
           await sleep(3000)
           ok = await fetch(url + recipe.healthPath, { signal: AbortSignal.timeout(4000) })
-            .then(r => r.status < 500).catch(() => false)
+            .then(r => recipe.expectStatus.includes(r.status)).catch(() => false)
         }
         s4.status = ok ? 'done' : 'failed'
         s4.detail = ok ? `${url} is answering` : `${url} did not answer yet — it may still be starting`
