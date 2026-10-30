@@ -409,6 +409,8 @@ export default function AIPage() {
   const [prompt,      setPrompt]      = useState('')
   const [planning,    setPlanning]    = useState(false)
   const [plan,        setPlan]        = useState<DeployPlan | null>(null)
+  // The server's id for the audited plan; only a plan with one can be executed.
+  const [planId,      setPlanId]      = useState<string | null>(null)
   const [planErr,     setPlanErr]     = useState<string | null>(null)
   const [executing,   setExecuting]   = useState(false)
   const [activeModel, setActiveModel] = useState<string>('llama3.2:3b')
@@ -548,6 +550,7 @@ export default function AIPage() {
     const userMsg = prompt.trim()
     setPrompt('')
     setPlan(null)
+    setPlanId(null)
     setPlanErr(null)
     setPlanning(true)
     setMessages(m => [...m, { role: 'user', content: userMsg }])
@@ -566,6 +569,7 @@ export default function AIPage() {
 
     if (data.ok && data.plan) {
       setPlan(data.plan)
+      setPlanId(!data.blocked && typeof data.planId === 'string' ? data.planId : null)
       setMessages(m => [...m, {
         role:    'assistant',
         content: data.plan.domain
@@ -584,18 +588,19 @@ export default function AIPage() {
   }
 
   const handleExecute = async () => {
-    if (!plan) return
+    if (!plan || !planId) return
     setExecuting(true)
     const res  = await fetch('/api/ai/wizard/execute', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ plan }),
+      body:    JSON.stringify({ planId }),
     })
     const data = await res.json()
     setExecuting(false)
 
     if (data.ok) {
       setPlan(null)
+      setPlanId(null)
       setMessages([])
       // liveJob will populate via WebSocket
       // Seed it immediately so the UI switches right away
@@ -614,6 +619,14 @@ export default function AIPage() {
         if (j.ok) setLiveJob(j)
         if (j.status === 'completed' || j.status === 'failed') clearInterval(pollId)
       }, 2000)
+    } else {
+      // A refused execute has used the plan up (expired, already run, or the
+      // cluster changed since it was checked). Say why; it must be planned again.
+      setPlanId(null)
+      const why = data.warnings?.length
+        ? `${data.warnings.join(' ')} Plan it again.`
+        : (data.error ?? 'The plan could not be executed. Plan it again.')
+      setMessages(m => [...m, { role: 'assistant', content: `Not executed: ${why}` }])
     }
   }
 
@@ -750,11 +763,13 @@ export default function AIPage() {
                     </div>
                   )}
                   <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                    <button onClick={() => setPlan(null)} style={{ padding: '10px 18px', fontSize: 14, cursor: 'pointer', ...secondaryBtn }}>Cancel</button>
+                    <button onClick={() => { setPlan(null); setPlanId(null) }} style={{ padding: '10px 18px', fontSize: 14, cursor: 'pointer', ...secondaryBtn }}>Cancel</button>
+                    {planId && (
                     <button onClick={() => { if (window.confirm(`Execute ${plan?.steps?.length} steps to deploy ${plan?.service}?`)) handleExecute() }} disabled={executing}
                       style={{ padding: '10px 22px', fontSize: 14, cursor: executing ? 'default' : 'pointer', ...primaryBtn, opacity: executing ? 0.6 : 1 }}>
                       {executing ? 'Starting...' : `Execute ${plan.steps.length} steps →`}
                     </button>
+                    )}
                   </div>
                 </div>
               )}
