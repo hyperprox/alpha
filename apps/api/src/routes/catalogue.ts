@@ -9,7 +9,7 @@
 
 import { FastifyPluginAsync } from 'fastify'
 import { CATALOGUE, findRecipe } from '../lib/catalogue'
-import { startInstall, getInstallJob } from '../lib/catalogue-installer'
+import { startInstall, getInstallJob, readAdminCredential } from '../lib/catalogue-installer'
 import { nodeCredential, nodeCredentialId, execOnNode } from '../lib/node-exec'
 import { saveCredential, removeCredential } from '../lib/ssh-broker'
 import { getProviderCredentials } from '../lib/credentials'
@@ -109,10 +109,11 @@ export const catalogueRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get<{ Params: { jobId: string } }>('/jobs/:jobId', async (req, reply) => {
     const job = getInstallJob(req.params.jobId)
     if (!job) return reply.status(404).send({ success: false, error: 'No such install job' })
-    // The generated admin login is handed over once: the first read after completion takes it.
-    const out = { ...job }
-    if (job.adminCredential) delete job.adminCredential
-    return reply.send({ success: true, data: out })
+    // The generated admin login is read from the vault, only while the job is fresh and the vault
+    // is unlocked. The job itself holds a reference, never the value.
+    const { adminCredential: _ref, ...rest } = job
+    const admin = await readAdminCredential(job)
+    return reply.send({ success: true, data: { ...rest, ...(admin ? { adminCredential: { ...admin, savedInVault: true } } : {}) } })
   })
 
   // ── Node logins ──────────────────────────────────────────────────────────

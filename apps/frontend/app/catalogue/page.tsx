@@ -27,6 +27,7 @@ interface Step { id: string; label: string; status: string; detail?: string }
 interface Job {
   jobId: string; recipeId: string; status: string; steps: Step[]
   log: string; vmid?: number; node?: string; ip?: string; url?: string; error?: string
+  adminCredential?: { user: string; password: string; savedInVault: boolean }
 }
 
 const STATUS_COLOR: Record<string, string> = {
@@ -248,6 +249,24 @@ export default function CataloguePage() {
               style={{ background: 'var(--accent)', color: 'var(--accent-ink)', border: 'none' }}>
               Open {job.url} →
             </a>
+          )}
+          {job.adminCredential && job.status === 'completed' && (
+            <div className="rounded-md px-3 py-3 mb-3"
+              style={{ background: 'var(--ground-deep)', border: `1px solid ${BORDER}` }}>
+              <div className="text-sm mb-2" style={{ color: 'var(--text)' }}>
+                Admin sign-in for this install. Shown once; <strong>Saved in the vault</strong>.
+              </div>
+              <div className="flex items-center gap-3 flex-wrap">
+                <span className="font-mono text-[12px]" style={{ color: 'var(--text-muted)' }}>{job.adminCredential.user}</span>
+                <code className="font-mono text-[12px] select-all" style={{ color: 'var(--text-bright)' }}>{job.adminCredential.password}</code>
+                <button
+                  onClick={() => { void navigator.clipboard?.writeText(job.adminCredential!.password).catch(() => {}) }}
+                  className="h-8 rounded-md px-3 text-sm"
+                  style={{ border: `1px solid ${BORDER}`, color: 'var(--text)' }}>
+                  Copy password
+                </button>
+              </div>
+            </div>
           )}
           {job.log && (
             <pre className="rounded p-3 font-mono text-[10px] leading-relaxed overflow-auto"
