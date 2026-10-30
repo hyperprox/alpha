@@ -39,7 +39,7 @@ test("matchRecipe normalises, suggests, and never matches prototype keys", () =>
 test("every wizard recipe has a health path, an expected status and a first-run kind", () => {
   const w = wizardRecipes()
   assert.deepEqual(w.map(r => r.id).sort(),
-    ["gitea", "homepage", "jellyfin", "nextcloud", "uptime-kuma", "vaultwarden"])
+    ["gitea", "homepage", "jellyfin", "nextcloud", "uptime-kuma"])
   for (const r of w) {
     assert.ok(r.healthPath.startsWith("/"), r.id)
     assert.ok(r.expectStatus.length > 0, r.id)
@@ -47,7 +47,9 @@ test("every wizard recipe has a health path, an expected status and a first-run 
     assert.equal(r.install.kind, "compose", r.id)
   }
   assert.deepEqual(findRecipe("uptime-kuma")!.expectStatus, [200, 302])
-  for (const id of ["nginx-proxy-manager", "ollama", "tautulli"]) assert.equal(findRecipe(id)!.wizard, false)
+  for (const id of ["nginx-proxy-manager", "ollama", "tautulli", "grafana", "vaultwarden"]) assert.equal(findRecipe(id)!.wizard, false)
+  // The wizard cannot hand a generated admin secret back yet, so no wizard recipe needs one.
+  for (const r of w) assert.notEqual(r.firstRun.kind, "env-admin", r.id)
   assert.equal(CATALOGUE.length, 10)
 })
 
@@ -83,4 +85,16 @@ test("Homepage is told the Host it is reached by: its own address and port, plus
   assert.match(s, /\nHOMEPAGE_ALLOWED_HOSTS=10\.0\.0\.37:3000\n/)
   assert.throws(() => installScript(r, "debian"), /HOMEPAGE_ALLOWED_HOSTS/, "never started on a default that refuses its own health check")
   assert.match(manualCommands(r, "debian").join("\n"), /HOMEPAGE_ALLOWED_HOSTS/)
+})
+
+test("Vaultwarden starts with sign-ups off and a generated admin token, never a default", () => {
+  const r = findRecipe("vaultwarden")!
+  assert.deepEqual(r.firstRun, { kind: "env-admin", passwordEnv: "ADMIN_TOKEN", user: "/admin" })
+  const compose = (r.install as any).compose as string
+  assert.match(compose, /- SIGNUPS_ALLOWED=false$/m)
+  assert.match(compose, /- ADMIN_TOKEN=\$\{ADMIN_TOKEN:\?the installer sets this\}/)
+  assert.throws(() => installScript(r, "debian"), /ADMIN_TOKEN/)
+  const s = installScript(r, "debian", { ADMIN_TOKEN: "tok" })
+  assert.match(s, /\nADMIN_TOKEN=tok\n/)
+  assert.match(s, /SIGNUPS_ALLOWED=false/)
 })

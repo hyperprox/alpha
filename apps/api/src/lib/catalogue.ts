@@ -216,14 +216,23 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
     expectStatus: [200],
     needsDocker: true,
     defaults: { cores: 1, memoryMb: 512, diskGb: 8 },
-    firstRun: { kind: 'none' },
-    wizard: true,
+    // Sign-ups are off, so a published server is not open to anyone who finds it. The owner signs in to
+    // /admin with the generated token (shown once, kept in the vault) and invites users from there.
+    firstRun: { kind: 'env-admin', passwordEnv: 'ADMIN_TOKEN', user: '/admin' },
+    firstLogin: 'Open /admin and sign in with the admin token shown once after the install (it is kept in the vault). Sign-ups are off: invite each user from there.',
+    // Not offered to the wizard until phase 5's first-run lock exists, for the same reason as Grafana:
+    // the wizard cannot hand the generated token back to the person who asked. The catalogue page
+    // installs it with one.
+    wizard: false,
     install: { kind: 'compose', dir: '/opt/app', compose: `services:
   vaultwarden:
     image: vaultwarden/server:latest
     restart: unless-stopped
     ports: ["80:80"]
-    volumes: ["./data:/data"]` },
+    volumes: ["./data:/data"]
+    environment:
+      - SIGNUPS_ALLOWED=false
+      - ADMIN_TOKEN=\${ADMIN_TOKEN:?the installer sets this}` },
   },
   {
     id: 'gitea',
