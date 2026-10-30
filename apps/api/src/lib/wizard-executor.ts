@@ -26,7 +26,7 @@ import { GoDaddyClient }  from './godaddy-client'
 import { getCredential }  from './credentials'
 import { execInGuest, nodeCredential } from './node-exec'
 import { wizardRecipes, type CatalogueRecipe } from './catalogue'
-import { installScript, manualCommands, distroOf } from './install-script'
+import { installScript, manualCommands, distroOf, hostEnv } from './install-script'
 import { assertVmidFree, bridgeInfo, findIpUser, parseCidr } from './wizard-placement'
 import { zoneFor } from './dns-zones'
 import { archOfKernel, archOfTemplate } from './ai/facts'
@@ -348,7 +348,9 @@ async function stepInstallService(job: JobState, step: StepState, d: ExecDeps): 
 
   try {
     const host = await nodeAddress(d.pve, node)
-    const res = await d.exec({ host, cred, vmid, script: installScript(recipe, distro), timeoutMs: 20 * 60_000 })
+    const f = job.run.fields
+    const env = hostEnv(recipe, { ip: job.lxcIp, domain: f.exposure === 'public' ? f.domain : undefined })
+    const res = await d.exec({ host, cred, vmid, script: installScript(recipe, distro, env), timeoutMs: 20 * 60_000 })
     if (res.timedOut) throw new Error('the install ran for twenty minutes without finishing')
     if (res.code !== 0) {
       const tail = String(res.output ?? '').trim().split('\n').slice(-12).join('\n')

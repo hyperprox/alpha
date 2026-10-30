@@ -54,6 +54,11 @@ export interface CatalogueRecipe {
     | { kind: 'script'; script: string }
   /** Extra packages on top of DOCKER_PACKAGES, by distro. */
   packages?:   Partial<Record<Distro, string[]>>
+  /**
+   * The environment variable a service reads the Host headers it answers from. The installer sets it to
+   * the container's address and port (what the health check sends) and, when published, the domain.
+   */
+  allowedHostsEnv?: string
 }
 
 export const CATALOGUE: CatalogueRecipe[] = [
@@ -270,12 +275,17 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
     defaults: { cores: 1, memoryMb: 512, diskGb: 8 },
     firstRun: { kind: 'none' },
     wizard: true,
+    // Current images answer only a Host listed in HOMEPAGE_ALLOWED_HOSTS; anything else, the health
+    // check included, gets an error page.
+    allowedHostsEnv: 'HOMEPAGE_ALLOWED_HOSTS',
     install: { kind: 'compose', dir: '/opt/app', compose: `services:
   homepage:
     image: ghcr.io/gethomepage/homepage:latest
     restart: unless-stopped
     ports: ["3000:3000"]
-    volumes: ["./config:/app/config"]` },
+    volumes: ["./config:/app/config"]
+    environment:
+      - HOMEPAGE_ALLOWED_HOSTS=\${HOMEPAGE_ALLOWED_HOSTS:?the installer sets this}` },
   },
   {
     id: 'grafana',

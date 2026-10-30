@@ -170,3 +170,10 @@ test("a recipe with no environment admin returns no credential", async () => {
 test("Grafana is not offered to the wizard, and the installable list is wizard recipes only", () => {
   assert.equal(wizardRecipes().some(r => r.id === "grafana"), false)
 })
+
+test("a catalogue Homepage install allows the address it was given", async () => {
+  const scripts: string[] = []
+  const job = await done((await startInstall({ recipeId: "homepage", intoVmid: 130 }, installDeps("debian", scripts))).jobId)
+  assert.equal(job.status, "completed", job.error)
+  assert.match(scripts[0], /\nHOMEPAGE_ALLOWED_HOSTS=10\.0\.0\.30:3000\n/)
+})
