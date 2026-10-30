@@ -1,0 +1,102 @@
+// Template facts against a fake Proxmox: per-node arch, bridges, storage, templates and guest addresses.
+import { test } from "node:test"
+import assert from "node:assert/strict"
+import { gatherTemplateFacts } from "../src/lib/ai/facts"
+import { isHostAddress, bridgeInfo } from "../src/lib/wizard-placement"
+
+const GB = 1024 ** 3
+function deps(over: Record<string, unknown> = {}) {
+  const pve: any = {
+    getNodes: async () => [
+      { node: "pve1", status: "online", maxcpu: 4, maxmem: 16 * GB, mem: 4 * GB },
+      { node: "pve2", status: "online", maxcpu: 4, maxmem: 8 * GB, mem: 2 * GB },
+      { node: "pve3", status: "offline" },
+    ],
+    fetchStrict: async (p: string) => { if (p === "/cluster/nextid") return "120"; throw new Error("unexpected " + p) },
+    fetchNode: async (p: string) => {
+      if (p === "/nodes/pve1/status") return { "current-kernel": { machine: "x86_64" } }
+      if (p === "/nodes/pve2/status") return { "current-kernel": { machine: "aarch64" } }
+      if (p === "/nodes/pve1/network") return [
+        { iface: "vmbr0", type: "bridge", cidr: "10.0.0.2/24", gateway: "10.0.0.1" },
+        { iface: "vmbr1", type: "bridge", cidr: "10.1.0.2/16" },
+        { iface: "eth0", type: "eth" },
+      ]
+      if (p === "/nodes/pve2/network") return [{ iface: "vmbr0", type: "bridge", cidr: "10.0.0.3/24", gateway: "10.0.0.1" }]
+      if (p === "/nodes/pve1/storage") return [
+        { storage: "pool", type: "rbd", content: "rootdir,images", active: 1, shared: 1, avail: 100 * GB },
+        { storage: "tmpl", type: "dir", content: "vztmpl,iso", active: 1, shared: 0, avail: 10 * GB },
+      ]
+      if (p === "/nodes/pve2/storage") return [{ storage: "pool", type: "rbd", content: "rootdir", active: 1, shared: 1, avail: 100 * GB }]
+      if (p === "/nodes/pve1/storage/tmpl/content?content=vztmpl") return [
+        { volid: "tmpl:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst" },
+        { volid: "tmpl:vztmpl/ubuntu-24.04-standard_24.04-2_arm64.tar.zst" },
+      ]
+      if (p === "/nodes/pve1/aplinfo") return [{ template: "debian-12-standard_12.7-1_amd64.tar.zst" }]
+      if (p === "/cluster/resources?type=vm") return [
+        { vmid: 105, node: "pve1", type: "lxc", name: "web" }, { vmid: 106, node: "pve2", type: "qemu", name: "vm" },
+      ]
+      if (p === "/nodes/pve1/lxc/105/config") return { net0: "name=eth0,bridge=vmbr0,ip=10.0.0.45/24,gw=10.0.0.1" }
+      if (p === "/nodes/pve2/qemu/106/config") return { ipconfig0: "ip=dhcp" }
+      return null
+    },
+  }
+  return { pve, zones: async () => ["example.com"], proxyHosts: async () => ["a.example.com"],
+           hasReverseProxy: async () => true, hasLogin: async (n: string) => n === "pve1", ...over } as any
+}
+
+test("node arch comes from the running kernel", async () => {
+  const f = await gatherTemplateFacts(deps())
+  assert.equal(f.nodes.find(n => n.node === "pve1")!.arch, "amd64")
+  assert.equal(f.nodes.find(n => n.node === "pve2")!.arch, "arm64")
+  assert.equal(f.nodes.find(n => n.node === "pve3")!.online, false)
+  assert.equal(f.nodes.find(n => n.node === "pve1")!.hasLogin, true)
+})
+
+test("bridges carry gateway and prefix; a bridge with no gateway is kept with gateway ''", async () => {
+  const f = await gatherTemplateFacts(deps())
+  assert.deepEqual(f.nodes.find(n => n.node === "pve1")!.bridges, [
+    { iface: "vmbr0", gateway: "10.0.0.1", prefix: 24 }, { iface: "vmbr1", gateway: "", prefix: 16 },
+  ])
+})
+
+test("storage is per node, with content and free space", async () => {
+  const f = await gatherTemplateFacts(deps())
+  const pool = f.storages.filter(s => s.storage === "pool")
+  assert.deepEqual(pool.map(s => s.node), ["pve1", "pve2"])
+  assert.deepEqual(pool[0], { storage: "pool", node: "pve1", type: "rbd", content: ["rootdir", "images"], active: true, shared: true, freeGb: 100 })
+})
+
+test("templates carry their arch (none named is amd64) and distro; downloadable likewise", async () => {
+  const f = await gatherTemplateFacts(deps())
+  assert.deepEqual(f.templates.map(t => [t.arch, t.distro]), [["amd64", "debian"], ["arm64", "ubuntu"]])
+  assert.deepEqual(f.downloadable, [{ node: "pve1", name: "debian-12-standard_12.7-1_amd64.tar.zst", arch: "amd64", distro: "debian" }])
+})
+
+test("guest addresses come from each guest's config", async () => {
+  const f = await gatherTemplateFacts(deps())
+  assert.deepEqual(f.guests.find(g => g.vmid === 105)!.addresses, ["10.0.0.45"])
+  assert.deepEqual(f.guests.find(g => g.vmid === 106)!.addresses, [])
+  assert.equal(f.nextVmid, 120)
+})
+
+test("one unreachable source empties only its own fact and is named in partial", async () => {
+  const f = await gatherTemplateFacts(deps({ zones: async () => { throw new Error("dns down") } }))
+  assert.deepEqual(f.zones, [])
+  assert.deepEqual(f.partial, ["zones"])
+  assert.equal(f.nodes.length, 3)
+  assert.deepEqual(f.proxyHosts, ["a.example.com"])
+})
+
+test("bridgeInfo: missing bridge or address is null", () => {
+  assert.equal(bridgeInfo([], "vmbr0"), null)
+  assert.equal(bridgeInfo([{ iface: "vmbr0" }], "vmbr0"), null)
+  assert.equal(bridgeInfo(null), null)
+})
+
+test("isHostAddress refuses network, broadcast and gateway", () => {
+  assert.equal(isHostAddress("10.0.0.0", "10.0.0.1", 24), false)
+  assert.equal(isHostAddress("10.0.0.255", "10.0.0.1", 24), false)
+  assert.equal(isHostAddress("10.0.0.1", "10.0.0.1", 24), false)
+  assert.equal(isHostAddress("10.0.0.37", "10.0.0.1", 24), true)
+  assert.equal(isHostAddress("10.0.1.37", "10.0.0.1", 24), false)
+})

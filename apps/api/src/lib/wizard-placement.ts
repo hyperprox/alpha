@@ -123,3 +123,28 @@ export function bridgeGateway(
   const b = (networks ?? []).find(n => n.iface === bridge)
   return b?.gateway && parseCidr(`${b.gateway}/32`) ? b.gateway : ''
 }
+
+export interface BridgeFact { iface: string; gateway: string; prefix: number }
+
+/**
+ * A bridge as `/nodes/{node}/network` has it: its address prefix from `cidr` and its gateway ('' when it
+ * has none). null when there is no such bridge or it has no address to take a prefix from.
+ */
+export function bridgeInfo(networks: unknown[] | null | undefined, bridge = 'vmbr0'): BridgeFact | null {
+  const b = (Array.isArray(networks) ? networks : []).find((n: any) => n?.iface === bridge) as any
+  if (!b) return null
+  const c = typeof b.cidr === 'string' ? parseCidr(b.cidr) : null
+  if (!c) return null
+  const gateway = typeof b.gateway === 'string' && parseCidr(`${b.gateway}/32`) ? b.gateway : ''
+  return { iface: bridge, gateway, prefix: c.prefix }
+}
+
+/** True when `ip` is a usable host on the gateway's /prefix network: not the network, broadcast or gateway address. */
+export function isHostAddress(ip: string, gateway: string, prefix: number): boolean {
+  if (!sameSubnet(ip, gateway, prefix)) return false
+  const size = 2 ** (32 - prefix)
+  const n = toInt(ip)
+  const base = Math.floor(n / size) * size
+  if (n === base || n === base + size - 1) return false
+  return n !== toInt(gateway)
+}
