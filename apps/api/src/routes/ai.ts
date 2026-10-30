@@ -11,7 +11,7 @@
 
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify'
 import { setCredential }      from '../lib/credentials'
-import { executeWizardJob, getJob } from '../lib/wizard-executor'
+import { getJob } from '../lib/wizard-executor'
 import { gatherFacts }        from '../lib/ai/facts'
 import { userPrompt }         from '../lib/ai/prompt'
 import { auditPlan, unreadAuditSources, type Plan, type ClusterFacts } from '../lib/ai/plan-schema'
@@ -48,7 +48,9 @@ function defaultDeps(): AiRouteDeps {
   return {
     gatherFacts,
     generatePlan,
-    execute: executeWizardJob,
+    // The executor now runs typed template fields, not a model-written plan; the routes move onto the
+    // template next, and until then nothing a free-form plan describes is run.
+    execute: async () => { throw new Error('The wizard is moving to templates; free-form plans no longer run.') },
     prepared: new PreparedStore<Plan>(),
     whoami: () => currentContext()?.email ?? '',
     activeProvider,

@@ -217,7 +217,7 @@ export interface FactsDeps {
 }
 
 /** `x86_64` is amd64, `aarch64` is arm64; anything else is unknown (''). */
-function archOfKernel(machine: unknown): NodeFact['arch'] {
+export function archOfKernel(machine: unknown): NodeFact['arch'] {
   return machine === 'x86_64' ? 'amd64' : machine === 'aarch64' ? 'arm64' : ''
 }
 
