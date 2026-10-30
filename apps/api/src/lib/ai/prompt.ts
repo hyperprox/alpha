@@ -12,7 +12,7 @@
 // =============================================================================
 
 import type { ClusterFacts } from './plan-schema'
-import { SERVICE_CATALOG } from '../service-recipes'
+import { wizardRecipes } from '../catalogue'
 
 /** Static half — identical on every request, so it caches cleanly. */
 export const SYSTEM_PROMPT = `You plan service deployments on a Proxmox VE cluster for HyperProx.
@@ -128,7 +128,7 @@ export function clusterContext(facts: ClusterFacts): string {
     facts.capabilities?.nodesWithLogin?.length
       ? `Installs can run on: ${facts.capabilities.nodesWithLogin.join(', ')}`
       : 'Installs cannot run automatically anywhere — no node has an SSH login stored, so install_service will only print its commands.',
-    `Services with install recipes (anything else cannot be installed): ${Object.keys(SERVICE_CATALOG).join(', ')}`,
+    `Services with install recipes (anything else cannot be installed): ${wizardRecipes().map(r => r.id).join(', ')}`,
     facts.capabilities?.installable?.length
       ? `HyperProx can install these itself if missing: ${facts.capabilities.installable.join(', ')}`
       : '',
