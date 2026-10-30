@@ -1,0 +1,18 @@
+id: deploy-001-full-public
+prompt: "Deploy an Uptime Kuma container on pve2 using IP 10.0.0.37, container number 237, at kuma.example.com"
+facts: fixtures/three-node-cluster.json
+answers:
+  - {"field": "admin_setup", "value": "now"}
+expect:
+  state: ready
+  questions: ["admin_setup"]
+  fields:
+    service: "uptime-kuma"
+    node: "pve2"
+    vmid: 237
+    ip: "10.0.0.37/24"
+    gateway: "{fact}"
+    domain: "kuma.example.com"
+    features: "nesting=1"
+    disk_gb: ">=8"
+found_by: "2026-10-30 live test, rounds 1-7"

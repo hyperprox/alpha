@@ -1,0 +1,11 @@
+id: deploy-011-disk-below-floor
+prompt: "Deploy Uptime Kuma with 2 GB disk, LAN only"
+facts: fixtures/three-node-cluster.json
+answers:
+  - {"field": "disk_gb", "value": 8}
+expect:
+  state: ready
+  questions: ["disk_gb"]
+  fields:
+    disk_gb: 8
+found_by: "2026-10-30 live test"

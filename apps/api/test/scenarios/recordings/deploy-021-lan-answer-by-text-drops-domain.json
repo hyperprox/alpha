@@ -1,0 +1,17 @@
+{
+  "intent": {
+    "template": "deploy-service",
+    "question": false,
+    "answer": ""
+  },
+  "extractions": [
+    {
+      "service": "uptime-kuma",
+      "exposure": "lan",
+      "domain": "kuma.example.com"
+    },
+    {
+      "exposure": "lan"
+    }
+  ]
+}

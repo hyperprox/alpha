@@ -1,0 +1,8 @@
+{
+  "intent": {
+    "template": "none",
+    "question": true,
+    "answer": "Uptime Kuma is a self-hosted monitoring tool."
+  },
+  "extractions": []
+}

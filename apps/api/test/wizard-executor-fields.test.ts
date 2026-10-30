@@ -3,7 +3,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import {
-  executeDeployJob, getJob, stepStartAndVerify, stepHealthCheck, type ExecDeps, type JobState,
+  executeDeployJob, getJob, stepStartAndVerify, stepHealthCheck, stepCreateDNS, type ExecDeps, type JobState,
 } from "../src/lib/wizard-executor"
 import type { StepSpec } from "../src/lib/ai/templates/types"
 import { fields, runOf, DEBIAN } from "./fakes/deploy-run"
@@ -20,7 +20,7 @@ function fakeDeps(over: Record<string, any> = {}) {
   const pve: any = {
     getNodes: async () => [],
     fetchStrict: async (path: string) => {
-      if (path.startsWith("/cluster/resources")) return [{ vmid: 101, type: "lxc", node: "alpha" }]
+      if (path.startsWith("/cluster/resources")) return [{ vmid: 101, type: "lxc", node: "alpha", name: "web" }]
       if (path === "/cluster/status") return [{ type: "node", name: "alpha", ip: "10.0.0.2" }]
       if (/^\/nodes\/[^/]+\/network$/.test(path)) return [{ iface: "vmbr0", type: "bridge", cidr: "10.0.0.2/24", gateway: "10.0.0.1" }]
       if (/^\/nodes\/[^/]+\/status$/.test(path)) return { "current-kernel": { machine: "x86_64" } }
@@ -51,10 +51,12 @@ function fakeDeps(over: Record<string, any> = {}) {
     }) as any,
     dns: async () => ({
       getDomains: async () => (over.zones ?? ["example.com"]).map((domain: string) => ({ domain })),
+      getRecords: async (zone: string) => (over.records?.[zone] ?? []),
       createRecord: async (...a: any[]) => { calls.records.push(a) },
     }) as any,
     wanIp: async () => "203.0.113.5",
     resolve4: async () => ["203.0.113.5"],
+    letsEncryptEmail: () => "certs@example.com",
     ...over.deps,
   }
   return { deps, calls }
@@ -146,20 +148,58 @@ test("a public recipe with no first-run page is published to its port", async ()
   assert.deepEqual(calls.proxy[0].domain_names, ["home.example.com"])
 })
 
+const dnsJob = (domain: string): JobState => ({ jobId: "dns", status: "running", steps: [], currentStep: 0, startedAt: 0,
+  run: runOf(fields({ service: "homepage", exposure: "public", domain, hostname: "homepage" })) })
+
 test("create_dns writes to the longest matching zone", async () => {
-  const f = fields({ service: "homepage", exposure: "public", domain: "home.lab.example.com", hostname: "homepage" })
-  const { job, calls } = await run(f, ["create_dns"], { zones: ["example.com", "lab.example.com"] })
-  assert.equal(job.status, "completed", job.error)
+  const { deps, calls } = fakeDeps({ zones: ["example.com", "lab.example.com"] })
+  await stepCreateDNS(dnsJob("home.lab.example.com"), deps as ExecDeps)
   assert.deepEqual(calls.records[0], ["lab.example.com", { type: "A", name: "home", data: "203.0.113.5", ttl: 600 }])
-  const none = await run(fields({ service: "homepage", exposure: "public", domain: "home.example.net" }), ["create_dns"])
-  assert.equal(none.job.status, "failed")
-  assert.match(none.job.error!, /example\.net.*no DNS zone/)
+  const none = fakeDeps()
+  await assert.rejects(stepCreateDNS(dnsJob("home.example.net"), none.deps as ExecDeps), /example\.net.*no DNS zone/)
   assert.equal(none.calls.records.length, 0)
+})
+
+test("create_dns refuses a name that gained an A, AAAA or CNAME record since the plan, and never appends", async () => {
+  for (const type of ["A", "AAAA", "CNAME"]) {
+    const { deps, calls } = fakeDeps({ records: { "example.com": [{ type, name: "home", data: "x", ttl: 600 }] } })
+    await assert.rejects(stepCreateDNS(dnsJob("home.example.com"), deps as ExecDeps), /home\.example\.com already has a DNS record/, type)
+    assert.equal(calls.records.length, 0, type)
+  }
+  // A record for another name, or a TXT on this one, does not block it.
+  const ok = fakeDeps({ records: { "example.com": [{ type: "A", name: "www", data: "x", ttl: 600 }, { type: "TXT", name: "home", data: "x", ttl: 600 }] } })
+  await stepCreateDNS(dnsJob("home.example.com"), ok.deps as ExecDeps)
+  assert.equal(ok.calls.records.length, 1)
+})
+
+test("a run with no install step cannot publish", async () => {
+  const f = fields({ service: "homepage", exposure: "public", domain: "home.example.com", hostname: "homepage" })
+  const { job, calls } = await run(f, ["create_lxc", "start_and_verify", "configure_proxy", "create_dns"])
+  assert.equal(job.status, "failed")
+  assert.equal(statuses(job).configure_proxy, "pending")
+  assert.equal(calls.proxy.length, 0)
+  assert.equal(calls.records.length, 0)
+})
+
+test("the certificate email comes from the executor's deps, not the shell", async () => {
+  const f = fields({ service: "homepage", exposure: "public", domain: "home.example.com", hostname: "homepage" })
+  const none = await run(f, ALL, { deps: { letsEncryptEmail: () => "" } })
+  assert.equal(none.job.status, "failed")
+  assert.match(none.job.steps.find(s => s.type === "request_ssl")!.error!, /Let's Encrypt email not configured/)
+})
+
+test("a hostname taken by another guest since the plan is refused before the create", async () => {
+  const { job, calls } = await run(fields({ hostname: "web" }))
+  assert.equal(job.status, "failed")
+  assert.match(job.error!, /web is already the name of guest 101/)
+  assert.equal(calls.create, undefined)
 })
 
 test("with no node login the install is shown, not run; health_check is skipped and no publishing step runs", async () => {
   const lan = await run(fields(), undefined, { noLogin: true })
-  assert.equal(lan.job.status, "completed", lan.job.error)
+  // Nothing is running: the run says so, even on the LAN.
+  assert.equal(lan.job.status, "failed")
+  assert.match(lan.job.error!, /not installed/i)
   const install = lan.job.steps.find(s => s.type === "install_service")!
   assert.equal(install.status, "skipped")
   assert.ok(install.commands!.some(c => /docker compose up -d/.test(c)))
@@ -183,7 +223,7 @@ test("the install script follows the template's distro", async () => {
 })
 
 test("an unknown step type fails the run rather than being skipped", async () => {
-  const { job } = await run(fields(), ["create_lxc", "verify_url" as any])
+  const { job } = await run(fields(), ["create_lxc", "complete_guest"])
   assert.equal(job.status, "failed")
-  assert.equal(statuses(job).verify_url, "failed")
+  assert.equal(statuses(job).complete_guest, "failed")
 })

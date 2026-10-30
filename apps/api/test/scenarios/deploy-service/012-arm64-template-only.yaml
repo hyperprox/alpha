@@ -1,0 +1,10 @@
+id: deploy-012-arm64-template-only
+prompt: "Deploy Uptime Kuma, LAN only"
+facts: fixtures/arm64-template-only.json
+answers: []
+expect:
+  state: ready
+  questions: []
+  fields:
+    template: "share:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst"
+found_by: "spec seed inventory (plan-only part: the template choice; the pre-flight half waits for Task 24)"

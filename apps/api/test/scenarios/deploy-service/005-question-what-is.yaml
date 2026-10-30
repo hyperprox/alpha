@@ -1,0 +1,8 @@
+id: deploy-005-question-what-is
+prompt: "What is Uptime Kuma?"
+facts: fixtures/three-node-cluster.json
+answers: []
+expect:
+  state: answer
+  questions: []
+found_by: "spec seed inventory"

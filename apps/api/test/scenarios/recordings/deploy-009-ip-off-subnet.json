@@ -1,0 +1,15 @@
+{
+  "intent": {
+    "template": "deploy-service",
+    "question": false,
+    "answer": ""
+  },
+  "extractions": [
+    {
+      "service": "uptime-kuma",
+      "ip": "10.5.0.9",
+      "exposure": "lan",
+      "gateway": "10.5.0.1"
+    }
+  ]
+}

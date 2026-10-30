@@ -1,0 +1,11 @@
+id: deploy-008-ip-in-use
+prompt: "Deploy Uptime Kuma on 10.0.0.45, LAN only"
+facts: fixtures/three-node-cluster.json
+answers:
+  - {"field": "ip", "value": "dhcp"}
+expect:
+  state: ready
+  questions: ["ip"]
+  fields:
+    ip: "dhcp"
+found_by: "spec seed inventory"

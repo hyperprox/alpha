@@ -5,7 +5,7 @@ import assert from "node:assert/strict"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import Fastify from "fastify"
-import { buildAiRoutes } from "../src/routes/ai"
+import { buildAiRoutes, ownerOf } from "../src/routes/ai"
 import { PreparedStore } from "../src/lib/ai/prepared"
 import { failedSources, gatherTemplateFacts } from "../src/lib/ai/facts"
 import type { DeployRun } from "../src/lib/wizard-executor"
@@ -50,15 +50,20 @@ function harness() {
     // Never settles: a run in flight holds its claims, as a real create would.
     execute: (jobId: string, run: DeployRun) => { executed.push({ jobId, run }); return new Promise<void>(() => {}) },
     prepared,
+    job: (id: string) => {
+      const e = executed.find(x => x.jobId === id)
+      return e ? { jobId: id, status: "running", run: e.run, steps: [], currentStep: 0, startedAt: 0 } : undefined
+    },
     whoami: () => user,
     activeProvider: async () => "anthropic",
     listProviders: async () => [],
   }))
   const inject = (url: string, payload: unknown) => app.inject({ method: "POST", url, payload: payload as any })
+  const get = (url: string) => app.inject({ method: "GET", url })
   const plan = async (prompt: string) => { planning = true; return (await inject("/wizard/plan", { prompt })).json() }
   const execute = async (body: unknown) => { planning = false; return inject("/wizard/execute", body) }
   return {
-    inject, plan, execute, executed, prepared,
+    inject, get, plan, execute, executed, prepared,
     advance: (ms: number) => { clock += ms },
     as: (email: string) => { user = email },
     factsLater: (fn: (f: TemplateFacts) => TemplateFacts) => { later = fn },
@@ -251,12 +256,34 @@ test("a run from an older template version cannot execute", async () => {
   assert.equal(h.executed.length, 0)
 })
 
-test("publishing an app with a first-run page is planned with a warning that it will not be published yet", async () => {
+test("publishing an app with a first-run page is blocked at plan time; on the LAN it is allowed", async () => {
   const h = harness()
   const body = await h.plan("deploy uptime kuma at kuma.example.com")
-  assert.equal(body.blocked, false, body.plan.warnings.join(" | "))
-  assert.ok(body.plan.warnings.some((w: string) => /first-run setup page/.test(w) && /will not publish it yet/.test(w)))
+  assert.equal(body.blocked, true)
+  assert.equal(body.planId, undefined)
+  assert.ok(body.plan.warnings.some((w: string) => /first-run setup page/.test(w) && /will not publish it yet/.test(w)), body.plan.warnings.join(" | "))
   assert.equal(body.plan.domain, "kuma.example.com")
+  const lan = await h.plan("deploy uptime kuma on the lan")
+  assert.equal(lan.blocked, false)
+  assert.equal(typeof lan.planId, "string")
+})
+
+test("job ids are UUIDs, and a job is visible only to the user who ran it", async () => {
+  const h = harness()
+  const { planId } = await h.plan("deploy uptime kuma on the lan")
+  const { jobId } = (await h.execute({ planId })).json()
+  assert.match(jobId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+  assert.equal((await h.get(`/wizard/jobs/${jobId}`)).statusCode, 200)
+  h.as("someone-else@example.com")
+  assert.equal((await h.get(`/wizard/jobs/${jobId}`)).statusCode, 404)
+  h.as("")
+  assert.equal((await h.get(`/wizard/jobs/${jobId}`)).statusCode, 404)
+})
+
+test("an API token owns plans by its id, not its name; a signed-in user by their email", () => {
+  assert.equal(ownerOf({ sid: "token:3f2a", email: "token:automation", role: "admin" } as any), "token:3f2a")
+  assert.equal(ownerOf({ sid: "s-1", email: "admin@example.com", role: "admin" } as any), "admin@example.com")
+  assert.equal(ownerOf(undefined), "")
 })
 
 test("execute refuses (502) when the real fact gatherer reads null for /cluster/resources", async () => {

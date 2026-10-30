@@ -1,0 +1,11 @@
+id: deploy-007-vmid-taken
+prompt: "Deploy Uptime Kuma as container 101, LAN only"
+facts: fixtures/three-node-cluster.json
+answers:
+  - {"field": "vmid", "value": 102}
+expect:
+  state: ready
+  questions: ["vmid"]
+  fields:
+    vmid: 102
+found_by: "spec seed inventory"

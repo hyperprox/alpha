@@ -1,0 +1,12 @@
+id: deploy-021-lan-answer-by-text-drops-domain
+prompt: "Deploy Uptime Kuma, LAN only, at kuma.example.com"
+facts: fixtures/three-node-cluster.json
+answers:
+  - {"text": "lan"}
+expect:
+  state: ready
+  questions: ["exposure"]
+  fields:
+    exposure: "lan"
+    domain: null
+found_by: "2026-10-30 review"
