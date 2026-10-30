@@ -133,14 +133,21 @@ function hostnameFor(wanted: string | undefined, service: string | undefined): s
   return clean(wanted ?? '') || clean(service ?? '') || 'hyperprox-ct'
 }
 
+/** The least a Docker-based install fits in: the engine, Compose and one pulled image. */
+export const DOCKER_MIN_DISK_GB = 8
+export const DOCKER_MIN_RAM_MB  = 512
+
 export async function stepCreateLXC(
   job: JobState,
   pve: CreatePVE = getPVE(),
   wait: (ms: number) => Promise<unknown> = sleep,
 ): Promise<string> {
   const planned = job.plan.steps?.find((s: any) => s.type === 'create_lxc')?.params ?? {}
-  const diskGB  = job.plan.requirements?.disk_gb   || 8
-  const ram     = job.plan.requirements?.ram_mb    || 512
+  // Every recipe runs under Docker, and Docker plus a pulled image needs room the service's own
+  // footprint does not suggest: a 2 GB disk sized for the app alone ran out while unpacking the image.
+  // The plan's size is a request; these floors are what an install actually needs.
+  const diskGB  = Math.max(job.plan.requirements?.disk_gb || 8, DOCKER_MIN_DISK_GB)
+  const ram     = Math.max(job.plan.requirements?.ram_mb  || 512, DOCKER_MIN_RAM_MB)
   const cores   = job.plan.requirements?.cpu_cores || 1
 
   // 1. Node. The plan's choice stands when the user named one, but it is checked here too: the plan was
@@ -343,7 +350,8 @@ async function stepInstallService(job: JobState): Promise<string> {
     `cat > docker-compose.yml <<'HP_COMPOSE'`,
     svc.compose,
     'HP_COMPOSE',
-    'docker compose up -d',
+    // --quiet-pull keeps download progress bars out of the output, so a failure's last lines are the error.
+    'docker compose up -d --quiet-pull',
   ].join('\n')
 
   try {

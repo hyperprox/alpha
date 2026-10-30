@@ -64,7 +64,7 @@ test("sends a real rootfs size, no cast needed, and a Docker-capable unprivilege
   const { pve, calls } = fakePve()
   await stepCreateLXC(job(plan()), pve, noWait)
   const p = calls.create.params
-  assert.equal(p.rootfs_size, 2)
+  assert.equal(p.rootfs_size, 8)  // the plan asked for 2; Docker installs never get less than 8
   assert.equal(p.storage, "pool")
   assert.equal(p.unprivileged, true)
   assert.equal(p.features, "nesting=1")
@@ -95,7 +95,7 @@ test("a named node that is offline or too full is refused, not silently replaced
   await assert.rejects(stepCreateLXC(job(plan({ node: "alpha" })), fakePve({ nodes: [
     { node: "alpha", status: "online", maxmem: 16 * GB, mem: 16 * GB - 64 * 1048576 },
     { node: "beta", status: "online", maxmem: 16 * GB, mem: 0 },
-  ] }).pve, noWait), /less than the 256 MB/)
+  ] }).pve, noWait), /less than the 512 MB/)
 })
 
 test("a given vmid and ip are used; the gateway is the bridge's, whatever the plan says", async () => {
