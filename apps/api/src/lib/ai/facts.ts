@@ -12,6 +12,7 @@ import { GoDaddyClient } from '../godaddy-client'
 import { getProviderCredentials } from '../credentials'
 import { nodeCredential } from '../node-exec'
 import { CATALOGUE } from '../catalogue'
+import { bridgeGateway } from '../wizard-placement'
 import type { ClusterFacts } from './plan-schema'
 
 // Higher is a better home for a container rootfs. Shared block storage first
@@ -32,7 +33,7 @@ function pve(): ProxmoxClient {
 export async function gatherFacts(): Promise<ClusterFacts> {
   const client = pve()
 
-  const [nodesR, storageR, nextidR, proxyR, dnsR] = await Promise.allSettled([
+  const [nodesR, storageR, nextidR, proxyR, dnsR, resourcesR] = await Promise.allSettled([
     client.getNodes(),
     client.getAllStorage(),
     client.getNextVMID(),
@@ -49,10 +50,19 @@ export async function gatherFacts(): Promise<ClusterFacts> {
       const domains = await new GoDaddyClient(gd.api_key, gd.api_secret).getDomains()
       return (domains ?? []).map((d: any) => d.domain).filter(Boolean)
     })(),
+    client.fetchNode<any[]>('/cluster/resources?type=vm'),
   ])
 
   const nodes = nodesR.status === 'fulfilled' ? nodesR.value : []
   const storage = storageR.status === 'fulfilled' ? storageR.value : []
+
+  // The gateway is the bridge's, as the node itself has it configured. It is the only gateway the model is
+  // allowed to use; it invented one when it was handed the Proxmox host's address under that name.
+  let gateway = ''
+  for (const n of nodes.filter((x: any) => x.status === 'online')) {
+    gateway = bridgeGateway(await client.fetchNode<any[]>(`/nodes/${encodeURIComponent(n.node)}/network`).catch(() => null))
+    if (gateway) break
+  }
 
   return {
     nodes: nodes
@@ -95,7 +105,10 @@ export async function gatherFacts(): Promise<ClusterFacts> {
     domains:    dnsR.status === 'fulfilled' ? dnsR.value : [],
     proxyHosts: proxyR.status === 'fulfilled' ? proxyR.value : [],
     nextVmid:   nextidR.status === 'fulfilled' ? Number(nextidR.value) : 0,
-    gateway:    process.env.PROXMOX_HOST ?? '',
+    usedVmids:  resourcesR.status === 'fulfilled'
+      ? (resourcesR.value ?? []).map((r: any) => Number(r.vmid)).filter(Boolean)
+      : [],
+    gateway,
     capabilities: {
       nodesWithLogin: (await Promise.all(
         nodes.filter((n: any) => n.status === 'online').map(async (n: any) =>

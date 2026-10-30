@@ -298,9 +298,10 @@ export class ProxmoxClient {
     storage: string
     rootfs_size: number
     memory: number
-    swap: number
+    swap?: number
     cores: number
     net0?: string
+    description?: string
     password?: string
     ssh_public_keys?: string
     start?: boolean
@@ -323,7 +324,45 @@ export class ProxmoxClient {
     if (params.password)        body.password = params.password
     if (params.ssh_public_keys) body.ssh_public_keys = params.ssh_public_keys
     if (params.features)        body.features = params.features
-    const lxcParams = new URLSearchParams(); Object.entries(body).forEach(([k,v]) => lxcParams.append(k, String(v))); return this.fetchNode(`/nodes/${node}/lxc`, 'POST', lxcParams.toString())
+    if (params.description)     body.description = params.description
+    const lxcParams = new URLSearchParams(); Object.entries(body).forEach(([k,v]) => lxcParams.append(k, String(v)))
+    // Strict: a refusal (bad rootfs, vmid taken, no such template) must reach the caller as Proxmox's own
+    // words. fetchNode resolved it as null, and the wizard then waited ninety seconds for a container
+    // that was never going to exist. The answer is the task's UPID; see waitForTask.
+    return this.fetchStrict<string>(`/nodes/${node}/lxc`, 'POST', lxcParams.toString())
+  }
+
+  /**
+   * Wait for a Proxmox task to finish and say why if it did not succeed. Polls the task status rather than
+   * the guest, so a failed create reports its own log tail instead of timing out on a guest that is not there.
+   */
+  async waitForTask(
+    node: string, upid: string,
+    opts: { timeoutMs?: number; intervalMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+  ): Promise<void> {
+    const timeoutMs  = opts.timeoutMs  ?? 120_000
+    const intervalMs = opts.intervalMs ?? 2_000
+    const sleep      = opts.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)))
+    const base       = `/nodes/${encodeURIComponent(node)}/tasks/${encodeURIComponent(upid)}`
+
+    const tail = async (): Promise<string> => {
+      const log = await this.fetchNode<Array<{ n: number; t: string }>>(`${base}/log?limit=500`).catch(() => null)
+      return (Array.isArray(log) ? log : []).slice(-8).map(l => l.t).join('\n')
+    }
+
+    for (let waited = 0; ; waited += intervalMs) {
+      const st = await this.fetchStrict<{ status: string; exitstatus?: string }>(`${base}/status`)
+      if (st?.status === 'stopped') {
+        if (st.exitstatus === 'OK') return
+        const log = await tail()
+        throw new Error(`Proxmox task failed (${st.exitstatus ?? 'unknown'})${log ? `:\n${log}` : ''}`)
+      }
+      if (waited >= timeoutMs) {
+        const log = await tail()
+        throw new Error(`Proxmox task still running after ${Math.round(timeoutMs / 1000)}s${log ? `:\n${log}` : ''}`)
+      }
+      await sleep(intervalMs)
+    }
   }
 
   async createVM(node: string, params: {
@@ -389,7 +428,9 @@ export class ProxmoxClient {
     const params = new URLSearchParams()
     params.append('storage', storage)
     params.append('template', template)
-    return this.fetchNode(`/nodes/${node}/apldownload`, 'POST', params.toString())
+    // The appliance-info endpoint is where Proxmox takes template downloads (POST /aplinfo), and it answers
+    // with a task id to wait on. Strict, so a refused download says why.
+    return this.fetchStrict<string>(`/nodes/${encodeURIComponent(node)}/aplinfo`, 'POST', params.toString())
   }
 
   async deleteLXC(node: string, vmid: number): Promise<any> {

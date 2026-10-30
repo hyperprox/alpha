@@ -12,6 +12,8 @@
 // subpath, and @anthropic-ai/sdk/helpers/zod is typed against v4 — importing
 // the classic entry point compiles everywhere except zodOutputFormat().
 import * as z from 'zod/v4'
+import { findRecipe } from '../service-recipes'
+import { parseCidr, sameSubnet } from '../wizard-placement'
 
 export const STEP_TYPES = [
   'create_lxc',
@@ -35,6 +37,9 @@ export const PlanStepSchema = z.object({
     memory_mb:  z.number().int().describe('Memory in MB, 0 if not applicable'),
     disk_gb:    z.number().int().describe('Disk in GB, 0 if not applicable'),
     port:       z.number().int().describe('Service port, 0 if not applicable'),
+    vmid:       z.number().int().describe('Container ID the user asked for, 0 if they did not give one'),
+    ip:         z.string().describe('Fixed address in CIDR form, e.g. 10.0.0.5/24, only if the user gave one. Empty string if not given; never invent one.'),
+    gateway:    z.string().describe('Only when a fixed ip is given: the gateway copied exactly from the cluster facts. Empty string otherwise; never choose one yourself.'),
   }),
 })
 
@@ -65,11 +70,12 @@ export function planJsonSchema(): Record<string, unknown> {
       label: { type: 'string' }, description: { type: 'string' },
       params: {
         type: 'object', additionalProperties: false,
-        required: ['hostname', 'node', 'storage', 'cores', 'memory_mb', 'disk_gb', 'port'],
+        required: ['hostname', 'node', 'storage', 'cores', 'memory_mb', 'disk_gb', 'port', 'vmid', 'ip', 'gateway'],
         properties: {
           hostname: { type: 'string' }, node: { type: 'string' }, storage: { type: 'string' },
           cores: { type: 'integer' }, memory_mb: { type: 'integer' },
           disk_gb: { type: 'integer' }, port: { type: 'integer' },
+          vmid: { type: 'integer' }, ip: { type: 'string' }, gateway: { type: 'string' },
         },
       },
     },
@@ -128,6 +134,39 @@ export function auditPlan(plan: Plan, facts: ClusterFacts): string[] {
       `No node has ${need.ram_mb} MB free and ${need.cpu_cores} cores available right now.`)
   }
 
+  // A service with no install recipe cannot be deployed: the container would be created empty and then
+  // given a proxy host, a DNS record and a certificate. Say so before anything is created.
+  if (plan.service && !findRecipe(plan.service)) {
+    problems.push(
+      `HyperProx has no install recipe for "${plan.service}", so it cannot install it. ` +
+      `The container would be created empty. Pick a service it supports, or install this one by hand.`)
+  }
+
+  // Container ID and address, when the user asked for them. The executor checks that they are free; this
+  // catches the ones that could never be valid.
+  for (const step of plan.steps.filter(s => s.type === 'create_lxc')) {
+    const { vmid, ip, gateway } = step.params
+    if (vmid && (vmid < 100 || vmid > 999_999_999)) {
+      problems.push(`Container ID ${vmid} is not valid; Proxmox allows 100 to 999999999.`)
+    }
+    if (vmid && facts.usedVmids?.includes(vmid)) {
+      problems.push(`Container ID ${vmid} is already used by another guest.`)
+    }
+    if (ip) {
+      const cidr = parseCidr(ip)
+      if (!cidr) {
+        problems.push(`The address "${ip}" is not an IPv4 address in CIDR form (for example 10.0.0.5/24).`)
+      } else if (!facts.gateway) {
+        problems.push('A fixed address was asked for, but the cluster reports no gateway on vmbr0 to check it against.')
+      } else if (!sameSubnet(cidr.ip, facts.gateway, cidr.prefix)) {
+        problems.push(`The address ${ip} is not on the same network as the cluster gateway ${facts.gateway}.`)
+      }
+    }
+    if (gateway && gateway !== facts.gateway) {
+      problems.push(`The plan names gateway ${gateway}, which is not the cluster's (${facts.gateway || 'unknown'}). It will be ignored.`)
+    }
+  }
+
   const types = plan.steps.map(s => s.type)
   if (plan.domain && !types.includes('create_dns')) {
     problems.push('A domain was given but the plan has no DNS step.')
@@ -167,6 +206,9 @@ export interface ClusterFacts {
   domains:   string[]
   proxyHosts: string[]
   nextVmid:  number
+  /** Container IDs already taken by a VM or container anywhere in the cluster. */
+  usedVmids?: number[]
+  /** The vmbr0 gateway, read from a node's network config. '' when none is set. */
   gateway:   string
   /**
    * What this install can actually carry out, as opposed to plan.
