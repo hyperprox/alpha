@@ -14,6 +14,7 @@ import { findRecipe, type CatalogueRecipe } from './catalogue'
 import { installScript, distroOf, type Distro } from './install-script'
 import { pickTemplate } from './wizard-placement'
 import type { CreatePVE } from './wizard-executor'
+import type { ExecResult } from './node-exec'
 import { setCredential } from './credentials'
 import { saveSettings, getSettings } from './plugin-host'
 import { PLUGINS } from '../plugins'
@@ -36,6 +37,12 @@ export interface InstallJob {
   ip?:      string
   url?:     string
   error?:   string
+  /**
+   * Admin login the installer generated, for recipes that take one from the environment. Set when
+   * the install completes and removed the first time the job is read, so it is shown once. It is
+   * never logged and never stored.
+   */
+  adminCredential?: { user: string; password: string }
   startedAt: number
   finishedAt?: number
 }
@@ -44,6 +51,23 @@ const JOBS = new Map<string, InstallJob>()
 export const getInstallJob = (id: string) => JOBS.get(id)
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+/** Everything startInstall reaches outside itself for, so a test can stand in for each. */
+export interface InstallDeps {
+  client:      CreatePVE & Pick<ProxmoxClient, 'getClusterResources'>
+  credential:  (node: string) => Promise<any>
+  exec:        (o: { host: string; cred: any; vmid: number; script: string; timeoutMs: number; onData: (c: string) => void }) => Promise<ExecResult>
+  probe:       (url: string) => Promise<number | null>
+  wait:        (ms: number) => Promise<unknown>
+}
+
+const realDeps = (): InstallDeps => ({
+  client:     pve(),
+  credential: node => nodeCredential(node),
+  exec:       o => execInGuest(o),
+  probe:      url => fetch(url, { signal: AbortSignal.timeout(4000) }).then(r => r.status).catch(() => null),
+  wait:       sleep,
+})
 
 function pve(): ProxmoxClient {
   return new ProxmoxClient(
@@ -127,20 +151,20 @@ export async function createContainer(
   return { vmid, node, distro }
 }
 
-async function waitRunning(node: string, vmid: number): Promise<void> {
-  const client = pve()
+async function waitRunning(d: InstallDeps, node: string, vmid: number): Promise<void> {
+  const client = d.client
   for (let i = 0; i < 24; i++) {
-    await sleep(5000)
+    await d.wait(5000)
     const st = await client.fetchNode<any>(`/nodes/${node}/lxc/${vmid}/status/current`).catch(() => null)
     if (st?.status === 'running') return
   }
   throw new Error(`CT ${vmid} did not start within two minutes.`)
 }
 
-async function waitAddress(node: string, vmid: number): Promise<string | undefined> {
-  const client = pve()
+async function waitAddress(d: InstallDeps, node: string, vmid: number): Promise<string | undefined> {
+  const client = d.client
   for (let i = 0; i < 12; i++) {
-    await sleep(5000)
+    await d.wait(5000)
     const ifs = await client.fetchNode<any[]>(`/nodes/${node}/lxc/${vmid}/interfaces`).catch(() => [])
     const ip  = (ifs ?? []).find((f: any) => f.name === 'eth0')?.inet?.split('/')[0]
     if (ip && !ip.startsWith('169.254')) return ip
@@ -181,15 +205,15 @@ async function wireUp(recipe: CatalogueRecipe, url: string): Promise<string> {
  * user a stray guest to clean up, for a job that could never have succeeded.
  * The check that matters is the one that happens before the side effect.
  */
-async function preflight(opts: { intoVmid?: number; node?: string }): Promise<{ node: string; vmid?: number }> {
-  const client = pve()
+async function preflight(d: InstallDeps, opts: { intoVmid?: number; node?: string }): Promise<{ node: string; vmid?: number }> {
+  const client = d.client
 
   if (typeof opts.intoVmid === 'number') {
     const all = await client.getClusterResources('vm')
     const g = (all as any[]).find(r => Number(r.vmid) === opts.intoVmid && r.type === 'lxc')
     if (!g) throw new Error(`CT ${opts.intoVmid} was not found. Only containers can be used, not VMs.`)
     if (g.status !== 'running') throw new Error(`CT ${opts.intoVmid} is not running.`)
-    if (!await nodeCredential(g.node).catch(() => null)) {
+    if (!await d.credential(g.node).catch(() => null)) {
       throw new Error(`CT ${opts.intoVmid} is on ${g.node}, which has no SSH login stored. ` +
                       `Add one on the Catalogue page and try again.`)
     }
@@ -202,7 +226,7 @@ async function preflight(opts: { intoVmid?: number; node?: string }): Promise<{ 
   if (opts.node) {
     const n = online.find((x: any) => x.node === opts.node)
     if (!n) throw new Error(`Node ${opts.node} is not online.`)
-    if (!await nodeCredential(opts.node).catch(() => null)) {
+    if (!await d.credential(opts.node).catch(() => null)) {
       throw new Error(`Node ${opts.node} has no SSH login stored, so the install could not be run there. ` +
                       `Add one on the Catalogue page and try again.`)
     }
@@ -212,7 +236,7 @@ async function preflight(opts: { intoVmid?: number; node?: string }): Promise<{ 
   // Auto-placement only considers nodes the install can actually run on. The
   // roomiest node is no use if nothing can execute there.
   const usable = (await Promise.all(online.map(async (n: any) =>
-    (await nodeCredential(n.node).catch(() => null)) ? n : null))).filter(Boolean) as any[]
+    (await d.credential(n.node).catch(() => null)) ? n : null))).filter(Boolean) as any[]
 
   if (!usable.length) {
     throw new Error('No node has an SSH login stored, so nothing can be installed yet. ' +
@@ -227,13 +251,13 @@ export async function startInstall(opts: {
   intoVmid?: number
   node?: string
   resources?: { cores: number; memoryMb: number; diskGb: number }
-}): Promise<InstallJob> {
+}, deps: InstallDeps = realDeps()): Promise<InstallJob> {
   const recipe = findRecipe(opts.recipeId)
   if (!recipe) throw new Error(`No recipe called ${opts.recipeId}`)
 
   // Throws before a job exists, so a refusal is an error the caller sees rather
   // than a job that fails asynchronously three minutes later.
-  const target = await preflight(opts)
+  const target = await preflight(deps, opts)
 
   const reuse = typeof opts.intoVmid === 'number'
   const job: InstallJob = {
@@ -259,7 +283,7 @@ export async function startInstall(opts: {
       const s1 = step(job, 'container')
       if (reuse) {
         job.vmid = target.vmid; job.node = target.node
-        const cfg = await pve().fetchNode<any>(`/nodes/${target.node}/lxc/${target.vmid}/config`).catch(() => null)
+        const cfg = await deps.client.fetchNode<any>(`/nodes/${target.node}/lxc/${target.vmid}/config`).catch(() => null)
         distro = distroOf(String(cfg?.ostype ?? ''))
         if (!distro) {
           throw new Error(`CT ${target.vmid} is ${cfg?.ostype ? `"${cfg.ostype}"` : 'of unknown type'}, which is neither Debian nor Ubuntu; HyperProx installs only on those.`)
@@ -267,30 +291,40 @@ export async function startInstall(opts: {
       } else {
         const made = await createContainer(recipe, opts.resources ?? {
           cores: recipe.defaults.cores, memoryMb: recipe.defaults.memoryMb, diskGb: recipe.defaults.diskGb,
-        }, target.node)
+        }, target.node, deps.client)
         job.vmid = made.vmid; job.node = made.node; distro = made.distro
-        await waitRunning(made.node, made.vmid)
+        await waitRunning(deps, made.node, made.vmid)
       }
       s1.status = 'done'
       s1.detail = `CT ${job.vmid} on ${job.node}`
 
       // 2. An address, so the health check and the integration have somewhere to point.
       const s2 = step(job, 'network')
-      job.ip = await waitAddress(job.node!, job.vmid!)
+      job.ip = await waitAddress(deps, job.node!, job.vmid!)
       s2.status = job.ip ? 'done' : 'skipped'
       s2.detail = job.ip ?? 'no address yet — DHCP may still be running'
 
       // 3. The recipe itself, run from the node.
       const s3 = step(job, 'install')
-      const cred = await nodeCredential(job.node!)
+      const cred = await deps.credential(job.node!)
       if (!cred) {
         throw new Error(
           `No SSH login stored for node ${job.node}. HyperProx runs the install with ` +
           `\`pct exec\` from the node, which needs one. Add it under Settings → Nodes.`)
       }
-      const nodeIp = await nodeAddress(job.node!)
-      const run = await execInGuest({
-        host: nodeIp, cred, vmid: job.vmid!, script: installScript(recipe, distro!),
+      const nodeIp = await nodeAddress(deps.client, job.node!)
+      // A recipe that takes its admin login from the environment gets a generated one. It travels in
+      // the script and the job result only; it is not logged, and the output tail below is the
+      // script's own output, which never echoes it.
+      const admin = recipe.firstRun.kind === 'env-admin'
+        ? { user: recipe.firstRun.user, password: randomBytes(18).toString('base64url') } : undefined
+      const env: Record<string, string> = {}
+      if (recipe.firstRun.kind === 'env-admin' && admin) {
+        env[recipe.firstRun.passwordEnv] = admin.password
+        if (recipe.firstRun.userEnv) env[recipe.firstRun.userEnv] = admin.user
+      }
+      const run = await deps.exec({
+        host: nodeIp, cred, vmid: job.vmid!, script: installScript(recipe, distro!, env),
         timeoutMs: 20 * 60_000,
         onData: chunk => { job.log = (job.log + chunk).slice(-20_000) },
       })
@@ -304,9 +338,9 @@ export async function startInstall(opts: {
       if (url) {
         let ok = false
         for (let i = 0; i < 10 && !ok; i++) {
-          await sleep(3000)
-          ok = await fetch(url + recipe.healthPath, { signal: AbortSignal.timeout(4000) })
-            .then(r => recipe.expectStatus.includes(r.status)).catch(() => false)
+          await deps.wait(3000)
+          const status = await deps.probe(url + recipe.healthPath)
+          ok = status !== null && recipe.expectStatus.includes(status)
         }
         s4.status = ok ? 'done' : 'failed'
         s4.detail = ok ? `${url} is answering` : `${url} did not answer yet — it may still be starting`
@@ -321,6 +355,7 @@ export async function startInstall(opts: {
       s5.detail = url ? await wireUp(recipe, url) : 'no address, so nothing was configured'
       s5.status = url ? 'done' : 'skipped'
 
+      if (admin) job.adminCredential = admin
       job.status = 'completed'
     } catch (e: any) {
       job.status = 'failed'
@@ -336,8 +371,8 @@ export async function startInstall(opts: {
 }
 
 /** Node name to address. Names are not reliably resolvable from a container. */
-async function nodeAddress(node: string): Promise<string> {
-  const status = await pve().fetchNode<any[]>('/cluster/status').catch(() => [])
+async function nodeAddress(client: Pick<CreatePVE, 'fetchNode'>, node: string): Promise<string> {
+  const status = await client.fetchNode<any[]>('/cluster/status').catch(() => [])
   const row = (status ?? []).find((r: any) => r.type === 'node' && r.name === node)
   if (!row?.ip) throw new Error(`Could not find an address for node ${node}.`)
   return row.ip

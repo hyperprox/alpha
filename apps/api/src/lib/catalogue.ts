@@ -288,7 +288,10 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
     needsDocker: true,
     defaults: { cores: 2, memoryMb: 512, diskGb: 8 },
     firstRun: { kind: 'env-admin', passwordEnv: 'GF_SECURITY_ADMIN_PASSWORD', user: 'admin' },
-    wizard: true,
+    // Not offered to the wizard until phase 5's first-run lock exists: the wizard cannot hand a
+    // generated admin password back to the person who asked, and a service nobody can sign in to
+    // safely is not a deployment. The catalogue page installs it with a generated password.
+    wizard: false,
     install: { kind: 'compose', dir: '/opt/app', compose: `services:
   grafana:
     image: grafana/grafana:latest
@@ -296,7 +299,7 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
     ports: ["3000:3000"]
     volumes: ["./data:/var/lib/grafana"]
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=\${GF_SECURITY_ADMIN_PASSWORD:-admin}` },
+      - GF_SECURITY_ADMIN_PASSWORD=\${GF_SECURITY_ADMIN_PASSWORD:?the installer sets this}` },
   },
 ]
 

@@ -11,7 +11,7 @@ import { NPMClient } from '../npm-client'
 import { GoDaddyClient } from '../godaddy-client'
 import { getProviderCredentials } from '../credentials'
 import { nodeCredential } from '../node-exec'
-import { CATALOGUE } from '../catalogue'
+import { wizardRecipes } from '../catalogue'
 import { bridgeGateway, bridgeInfo, configAddresses, type BridgeFact } from '../wizard-placement'
 import { distroOf, type Distro } from '../install-script'
 import type { ClusterFacts } from './plan-schema'
@@ -133,7 +133,7 @@ export async function gatherFacts(): Promise<ClusterFacts> {
       // asks whether one is configured at all, not whether it is being used.
       hasReverseProxy: Boolean(
         (await getProviderCredentials('proxy', 'npm').catch(() => null))?.url),
-      installable: CATALOGUE.map(r => r.name),
+      installable: wizardRecipes().map(r => r.name),
     },
     partial,
   }
