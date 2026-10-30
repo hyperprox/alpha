@@ -39,7 +39,7 @@ test("matchRecipe normalises, suggests, and never matches prototype keys", () =>
 test("every wizard recipe has a health path, an expected status and a first-run kind", () => {
   const w = wizardRecipes()
   assert.deepEqual(w.map(r => r.id).sort(),
-    ["gitea", "grafana", "homepage", "jellyfin", "nextcloud", "uptime-kuma", "vaultwarden"])
+    ["gitea", "homepage", "jellyfin", "nextcloud", "uptime-kuma", "vaultwarden"])
   for (const r of w) {
     assert.ok(r.healthPath.startsWith("/"), r.id)
     assert.ok(r.expectStatus.length > 0, r.id)
@@ -63,4 +63,10 @@ test("manual commands carry the distro's packages and no secrets", () => {
   const c = manualCommands(findRecipe("gitea")!, "ubuntu").join("\n")
   assert.match(c, new RegExp(DOCKER_PACKAGES.ubuntu.join(" ")))
   assert.doesNotMatch(c, /docker-compose( |$)/m)
+})
+
+test("an env-admin recipe refuses to build a script without its admin password", () => {
+  assert.throws(() => installScript(findRecipe("grafana")!, "debian"), /GF_SECURITY_ADMIN_PASSWORD/)
+  assert.doesNotMatch(findRecipe("grafana")!.install.kind === "compose" ? (findRecipe("grafana")!.install as any).compose : "", /:-admin/)
+  assert.doesNotMatch(manualCommands(findRecipe("grafana")!, "debian").join("\n"), /GF_SECURITY_ADMIN_PASSWORD=(?!\$\{)\S/)
 })

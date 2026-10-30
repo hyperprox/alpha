@@ -109,7 +109,10 @@ export const catalogueRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get<{ Params: { jobId: string } }>('/jobs/:jobId', async (req, reply) => {
     const job = getInstallJob(req.params.jobId)
     if (!job) return reply.status(404).send({ success: false, error: 'No such install job' })
-    return reply.send({ success: true, data: job })
+    // The generated admin login is handed over once: the first read after completion takes it.
+    const out = { ...job }
+    if (job.adminCredential) delete job.adminCredential
+    return reply.send({ success: true, data: out })
   })
 
   // ── Node logins ──────────────────────────────────────────────────────────

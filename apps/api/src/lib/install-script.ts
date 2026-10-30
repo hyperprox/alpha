@@ -45,6 +45,11 @@ export function installScript(r: CatalogueRecipe, distro: Distro, env: Record<st
     return lines.join('\n')
   }
 
+  // An env-admin recipe must be given its admin password; starting without one would leave the
+  // service on a vendor default that everyone knows.
+  if (r.firstRun.kind === 'env-admin' && !env[r.firstRun.passwordEnv]) {
+    throw new Error(`${r.name} needs ${r.firstRun.passwordEnv} so it does not start with a default admin password.`)
+  }
   const pkgs = packagesFor(r, distro)
   lines.push('apt-get update -qq')
   if (pkgs.length) lines.push(`apt-get install -y -qq ${pkgs.join(' ')}`)
@@ -77,6 +82,7 @@ export function manualCommands(r: CatalogueRecipe, distro: Distro): string[] {
   out.push('systemctl enable --now docker')
   out.push(`mkdir -p ${r.install.dir} && cd ${r.install.dir}`)
   out.push(`cat > docker-compose.yml << 'EOF'`, r.install.compose, 'EOF')
+  if (r.firstRun.kind === 'env-admin') out.push(`# Choose an admin password and export ${r.firstRun.passwordEnv} before the next line.`)
   out.push('docker compose up -d')
   out.push(`# Service will be available on port ${r.port}`)
   return out
