@@ -81,9 +81,11 @@ RULES:
 6. "understood" is one sentence in plain language, addressed to the user. No
    restating the schema, no listing the steps — they can see the steps.
 
-TYPICAL SIZES, as a starting point only — adjust for what the user says:
-  Nextcloud 2048MB/20GB/2   Jellyfin 2048MB/20GB/4   Vaultwarden 512MB/2GB/1
-  Gitea 1024MB/10GB/2       Grafana 512MB/5GB/2      Uptime Kuma 256MB/2GB/1
+TYPICAL SIZES, as a starting point only — adjust for what the user says. Every
+install runs under Docker inside the container, so these include the engine and
+the image; HyperProx never goes below 512MB and 8GB whatever the plan says:
+  Nextcloud 2048MB/20GB/2   Jellyfin 2048MB/20GB/4   Vaultwarden 512MB/8GB/1
+  Gitea 1024MB/12GB/2       Grafana 512MB/8GB/2      Uptime Kuma 512MB/8GB/1
   Home Assistant 2048MB/16GB/2   Paperless 2048MB/20GB/2   Immich 4096MB/40GB/4`
 
 /** Volatile half — the cluster as it is right now. */
