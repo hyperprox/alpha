@@ -70,6 +70,9 @@ const EXPECTED: Record<FieldSpec['type'], string> = {
 // A key echoed into a log line is still model output: bound and flatten it.
 const keyName = (k: string): string => k.replace(/[^\w.-]/g, '?').slice(0, 64)
 
+// A wildcard name as the person typed it: a `*` label followed by a dotted name.
+const WILDCARD = /(?<![\w*.-])\*(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+/i
+
 export async function extractFields(
   t: TaskTemplate,
   text: string,
@@ -100,6 +103,13 @@ export async function extractFields(
     if (c.ok) out.values[k] = c.value
     // The raw value is held for the loop to ask about; the message never repeats it.
     else out.invalid.push({ field: k, raw: v, message: `${k} is not ${EXPECTED[spec.type]}` })
+  }
+  // A model told "never guess" often answers null for a name like *.example.com, which would drop the
+  // refusal and leave only the exposure question. The wildcard is the person's own word: hold it as an
+  // invalid domain so validate says why it was refused. Never over a domain the model did extract.
+  if (specs.has('domain') && !('domain' in out.values) && !out.invalid.some(i => i.field === 'domain')) {
+    const w = WILDCARD.exec(text)
+    if (w) out.invalid.push({ field: 'domain', raw: w[0], message: `domain is not ${EXPECTED.hostname}` })
   }
   if (out.dropped.length) log('ai.extract.dropped', { template: t.id, keys: out.dropped })
   return out

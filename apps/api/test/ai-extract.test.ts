@@ -116,3 +116,23 @@ test("an invalid value is held for the loop but never echoed in the message or a
   assert.equal(x.invalid.find(i => i.field === "service")!.raw, "evil<script>")
   assert.equal(logged.length, 0)
 })
+
+test("a wildcard in the user's words is held as an invalid domain when the model leaves domain null", async () => {
+  const { call } = fakeCall({ ...nulls(), service: "gitea", domain: null })
+  const x = await extractFields(deployService, "Deploy Gitea at *.example.com", facts(), { call, log: () => {} })
+  assert.equal("domain" in x.values, false)
+  assert.equal(x.invalid.length, 1)
+  assert.equal(x.invalid[0].field, "domain")
+  assert.equal(x.invalid[0].raw, "*.example.com")
+  assert.doesNotMatch(x.invalid[0].message, /example\.com/, "the message never repeats the raw value")
+})
+
+test("the wildcard recovery never overrides a domain the model did extract, and ignores a plain request", async () => {
+  const withDomain = fakeCall({ ...nulls(), service: "gitea", domain: "git.example.com" })
+  const a = await extractFields(deployService, "Deploy Gitea at git.example.com, not *.example.com", facts(), { call: withDomain.call, log: () => {} })
+  assert.equal(a.values.domain, "git.example.com")
+  assert.deepEqual(a.invalid, [])
+  const plain = fakeCall({ ...nulls(), service: "gitea" })
+  const b = await extractFields(deployService, "Deploy Gitea", facts(), { call: plain.call, log: () => {} })
+  assert.deepEqual(b.invalid, [])
+})
