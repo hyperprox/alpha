@@ -23,6 +23,16 @@ function safeNext(raw: string | null): string {
 
 const MIN_PASSWORD = 12
 
+/** Why it locked, from the lock alert's link (?locked=1&reason=...). Unknown or absent: the plain notice. */
+function lockedNotice(reason: string | null): string {
+  switch (reason) {
+    case 'idle':      return 'HyperProx locked itself after being idle. Sign in with your vault account to unlock it.'
+    case 'keyholder': return 'HyperProx locked because its keyholder service restarted. Sign in with your vault account to unlock it.'
+    case 'restart':   return 'HyperProx locked because it restarted. Sign in with your vault account to unlock it.'
+    default:          return 'HyperProx is locked. Sign in with your vault account to unlock it.'
+  }
+}
+
 /** Maps a failed auth call to words a person can act on. */
 function authError(r: { status: number; code?: string; error?: string }, fallback: string): string {
   switch (r.code) {
@@ -32,6 +42,7 @@ function authError(r: { status: number; code?: string; error?: string }, fallbac
     case 'not_member':      return 'This vault account is not a member of the HyperProx organization.'
     case 'unauthenticated': return 'Your session has ended. Sign in again.'
     case 'locked_out':      return 'Too many failed attempts. Wait a few minutes and try again.'
+    case 'keyholder_unavailable': return 'The keyholder service is not running, so HyperProx cannot unlock. On the host: systemctl start hyperprox-keyholder'
   }
   if (r.status === 0) return 'Could not reach the API.'
   if (r.status === 502 || r.status === 503 || r.status === 504) return 'The vault is unreachable. HyperProx cannot sign anyone in until it is back.'
@@ -254,7 +265,7 @@ function LoginForm() {
   return (
     <div className="w-full max-w-sm space-y-4">
       {params.get('locked') && (
-        <Notice kind="warn">HyperProx is locked. Sign in with your vault account to unlock it.</Notice>
+        <Notice kind="warn">{lockedNotice(params.get('reason'))}</Notice>
       )}
       {status && !status.reachable && (
         <Notice kind="error">The vault is unreachable. Sign-in will fail until it is running again.</Notice>

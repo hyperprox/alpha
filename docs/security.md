@@ -19,14 +19,30 @@ Bitwarden-compatible, zero-knowledge vault. Every install runs its own, stock an
 - **One login.** You sign in to HyperProx with your vault account: email, master password, and a
   two-factor code. HyperProx has no password of its own. The very first visit to `/login` offers to create
   the **owner** account, and two-factor is mandatory for it.
-- **Starts locked.** After a restart HyperProx is locked: nothing is decrypted, and every route except
+- **Starts locked.** After a reboot HyperProx is locked: nothing is decrypted, and every route except
   health and sign-in answers "locked" (HTTP 423). Your first successful sign-in unlocks it.
+- **Deploys do not lock it.** The unlocked state is held by a small separate service, the **keyholder**
+  (`hyperprox-keyholder`), as well as by the API. Restarting the API (every `deploy.sh` does) re-attaches
+  to it and carries on unlocked, with everyone still signed in. The keyholder holds it in memory only
+  (no disk, no swap, no core dumps), answers only on a root-only unix socket, and only to a process
+  running as the API's user inside the `hyperprox-api` service (checked with `SO_PEERCRED`); it has no
+  network access at all. Stopping, restarting or crashing the keyholder, or rebooting, **locks**.
+  `deploy.sh` restarts the keyholder only when its own program changed, and says so.
 - **Secrets live in memory only.** On unlock, the credentials HyperProx needs (hypervisor token, DNS and
   proxy logins, and so on) are read from the vault into process memory, and a fresh random session-signing
   key is generated. Neither is ever written to disk. Nothing in the database, `.env` or a backup can mint a
   session or be decrypted into a credential.
 - **Auto-lock.** After `VAULT_IDLE_LOCK_MINUTES` (default 30) with no request from any signed-in session,
-  HyperProx wipes the cache and the key and voids every session. `hyperprox lock` does the same on demand.
+  HyperProx wipes the cache and the key and voids every session. The keyholder keeps this timer, so it
+  holds even if the API is down. `hyperprox lock` and **Lock now** do the same on demand.
+- **Lock alert.** When HyperProx locks by itself (idle, keyholder stopped, reboot while unlocked) it posts
+  one message with a link to the sign-in page: open it and sign in to unlock. Set `LOCK_ALERT_URL` in
+  `.env` (an ntfy topic, a Gotify `/message` URL, a Discord webhook or any webhook; `LOCK_ALERT_KIND` if
+  the address does not say which, `LOCK_ALERT_TOKEN` for an ntfy or Gotify token) and
+  `HYPERPROX_PUBLIC_URL` (the address you open HyperProx at) for the link. Without `LOCK_ALERT_URL` the
+  Updates or Certificates webhook is used if one is set. The address has to be readable while locked, so
+  it is ordinary config, not a vault secret: someone who reads it can post to that channel. The message
+  never carries a secret, token or session; signing in is the unlock. A manual lock sends nothing.
 - **Roles.** They come from the person's membership in the vault's "HyperProx" organization:
 
   | Vault role | HyperProx role | Can |
@@ -60,7 +76,7 @@ in the vault signs in through the Bitwarden CLI instead, which takes 15 to 20 se
 ## From the command line
 
 ```bash
-hyperprox status   # is the vault up? is HyperProx locked or unlocked?
+hyperprox status   # is the vault up? the keyholder? is HyperProx locked or unlocked?
 hyperprox lock     # lock now: wipe memory, end all sessions
 ```
 
@@ -121,7 +137,7 @@ release. Do not assume them.
   property holds, but someone with that token can lock people out or invite an account of their own. It is
   not reachable from the network by default; treat the file as sensitive (it is mode 0600).
 - **While unlocked, root on the machine can read memory.** Decrypted secrets and the signing key live in the
-  API process. Anyone with root on the HyperProx machine during that time can read them (or change the
+  API process and in the keyholder. Anyone with root on the HyperProx machine during that time can read them (or change the
   running code). Auto-lock and `hyperprox lock` shorten that window; a tamper check to catch changed code is
   not built yet. While **locked**, there is nothing usable in memory or on disk.
 - **The master password is the key.** It is entered in your browser and passed to HyperProx's API to sign
