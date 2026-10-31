@@ -168,3 +168,13 @@ test("answerLoop and editFields refuse executing, done and failed sessions", asy
     assert.throws(() => editFields({ ...s, state }, { memory_mb: 2048 }, d), LoopStateError)
   }
 })
+
+test("a wildcard domain the model reported as invalid asks the domain question with the wildcard reason, not exposure", async () => {
+  const { d } = deps([ext({ service: "gitea" }, [{ field: "domain", raw: "*.example.com", message: "domain is not a valid hostname" }])])
+  const s = await startLoop("Deploy Gitea at *.example.com", d)
+  assert.equal(s.state, "asking")
+  assert.equal(s.pending!.field, "domain")
+  assert.match(s.pending!.question, /^\*\.example\.com is a wildcard name, and HyperProx publishes one hostname at a time\./)
+  assert.equal(s.fields.exposure.value, "public", "a domain given implies public")
+  assert.equal(s.fields.domain.value, "*.example.com")
+})
