@@ -50,7 +50,13 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
   async function startSession(req: FastifyRequest, reply: FastifyReply, vs: VaultSession) {
     // unlock() is idempotent and shares one in-flight unlock, so concurrent sign-ins keep one key.
     const wasLocked = !isUnlocked()
-    await unlock(vs.sid)
+    try {
+      await unlock(vs.sid)
+    } catch (e) {
+      // e.g. the keyholder is not running: stay locked, and leave no vault session behind.
+      await getBroker().signOut(vs.sid).catch(() => undefined)
+      throw e
+    }
     addSession(vs)
     touch()
 
@@ -161,7 +167,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     return { ok: true }
   })
 
-  // POST /api/auth/lock — wipe the unlock state and end every session.
+  // POST /api/auth/lock — wipe the unlock state (here and in the keyholder) and end every session.
   // Owner/admin session, or `hyperprox lock` from the host itself (loopback, no cookie, not proxied).
   // 200 when it locked; 423 when HyperProx was already locked.
   fastify.post('/lock', async (req, reply) => {

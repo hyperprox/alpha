@@ -166,6 +166,9 @@ export async function registerGate(server: FastifyInstance): Promise<void> {
       return reply.status(401).send({ ok: false, code: 'session_expired', error: 'Your vault session has ended — sign in again' })
     }
     if ((err as Error)?.name === 'VaultLockedError') return reply.status(423).send({ ok: false, locked: true })
+    if ((err as Error)?.name === 'KeyholderUnavailableError') {
+      return reply.status(503).send({ ok: false, locked: true, code: 'keyholder_unavailable', error: (err as Error).message })
+    }
     reply.send(err)
   })
 

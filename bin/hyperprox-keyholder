@@ -1,0 +1,415 @@
+#!/usr/bin/env python3
+# =============================================================================
+#  HyperProx keyholder
+#
+#  Holds the unlocked vault state in memory, in a process of its own, so that
+#  restarting the API (every deploy) does not lock HyperProx. The API puts an
+#  opaque snapshot here at unlock, keeps it current, and reads it back after a
+#  restart. This process never decrypts, parses or logs it.
+#
+#  Locks (wipes the snapshot) on: the idle timeout, an explicit lock request, a
+#  stop or crash of this process (memory is gone: fail closed). It never
+#  writes the snapshot to disk, puts it in its environment, or logs it.
+#
+#  Reached only over a unix socket in a root-only (0700) directory. Every
+#  connection is checked with SO_PEERCRED: the peer's uid must be allowed, and
+#  with --allow-unit, the peer process must be in that systemd unit's cgroup.
+#  No network listener. Python standard library only.
+#
+#  Protocol: one JSON object per line, both ways.
+#    -> {"id":1,"op":"hello"}                      <- {"id":1,"ok":true,"v":1,"instance":..,"unlocked":..,"epoch":..,"lastLock":..}
+#    -> {"id":2,"op":"unlock","snapshot":B64,"idleMs":N}   only while locked; <- {"ok":true,"epoch":E}
+#    -> {"id":3,"op":"update","epoch":E,"snapshot":B64}    only for the current unlock
+#    -> {"id":4,"op":"get"}                        <- {"ok":true,"unlocked":true,"epoch":E,"snapshot":B64,"remainingMs":N}
+#    -> {"id":5,"op":"touch"}                      resets the idle timer
+#    -> {"id":6,"op":"lock","reason":"manual"}     wipes; every connection gets {"event":"locked","reason":..}
+#  Errors: {"id":..,"ok":false,"error":"locked"|"already_unlocked"|"bad_request"|...}
+# =============================================================================
+
+import argparse
+import ctypes
+import json
+import os
+import re
+import resource
+import secrets
+import selectors
+import signal
+import socket
+import stat
+import struct
+import sys
+import time
+
+PROTOCOL = 1
+MAX_LINE = 32 * 1024 * 1024          # a snapshot is a few KB to a few hundred KB
+MAX_CLIENTS = 16
+MIN_IDLE_MS = 50
+MAX_IDLE_MS = 24 * 3600 * 1000
+LOCK_REASONS = {'idle', 'manual', 'restart', 'stop'}
+B64 = re.compile(rb'^[A-Za-z0-9+/]*={0,2}$')
+
+
+def log(msg):
+    # Only events and peer identities. Never a request body, never the snapshot.
+    print(f'hyperprox-keyholder: {msg}', file=sys.stderr, flush=True)
+
+
+def harden():
+    """No core dumps, not ptrace-able by other users: the snapshot must not leave memory."""
+    try:
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    except (ValueError, OSError):
+        pass
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        PR_SET_DUMPABLE = 4
+        libc.prctl(PR_SET_DUMPABLE, 0, 0, 0, 0)
+    except OSError:
+        pass
+
+
+def wipe(buf):
+    if buf is None or len(buf) == 0:
+        return
+    ctypes.memset((ctypes.c_char * len(buf)).from_buffer(buf), 0, len(buf))
+
+
+def sd_notify(msg):
+    addr = os.environ.get('NOTIFY_SOCKET')
+    if not addr:
+        return
+    if addr.startswith('@'):
+        addr = '\0' + addr[1:]
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        s.connect(addr)
+        s.send(msg.encode())
+        s.close()
+    except OSError:
+        pass
+
+
+def peer_of(conn):
+    raw = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize('3i'))
+    return struct.unpack('3i', raw)  # pid, uid, gid
+
+
+def unit_of(pid):
+    """The systemd unit whose cgroup holds pid (cgroup v2 '0::/system.slice/x.service'), or ''."""
+    try:
+        with open(f'/proc/{pid}/cgroup') as f:
+            for line in f:
+                path = line.strip().split(':', 2)[-1]
+                for part in reversed(path.split('/')):
+                    if part.endswith('.service') or part.endswith('.scope'):
+                        return part
+    except OSError:
+        pass
+    return ''
+
+
+class Stop(Exception):
+    """SIGTERM/SIGINT: leave the loop, wipe, exit 0."""
+
+
+class Client:
+    def __init__(self, conn, pid):
+        self.conn = conn
+        self.pid = pid
+        self.inbuf = bytearray()
+        self.outbuf = bytearray()
+
+
+class Keyholder:
+    def __init__(self, args):
+        self.args = args
+        self.instance = secrets.token_hex(8)
+        self.snapshot = None      # bytearray of base64 text, or None when locked
+        self.epoch = None
+        self.idle_ms = 0
+        self.deadline = None      # time.monotonic() at which the idle lock fires
+        self.last_lock = None     # {'reason', 'at'}: why the last unlock ended (no secret in it)
+        self.sel = selectors.DefaultSelector()
+        self.clients = {}
+
+    # ---- state ---------------------------------------------------------------
+
+    def unlocked(self):
+        return self.snapshot is not None
+
+    def lock(self, reason):
+        was = self.unlocked()
+        wipe(self.snapshot)
+        self.snapshot = None
+        self.epoch = None
+        self.deadline = None
+        if was:
+            self.last_lock = {'reason': reason, 'at': int(time.time() * 1000)}
+            log(f'locked ({reason})')
+            for c in list(self.clients.values()):
+                self.send(c, {'event': 'locked', 'reason': reason})
+        return was
+
+    def arm(self):
+        self.deadline = time.monotonic() + self.idle_ms / 1000.0
+
+    # ---- socket --------------------------------------------------------------
+
+    def listen(self):
+        path = self.args.socket
+        d = os.path.dirname(path) or '.'
+        st = os.stat(d)
+        if st.st_uid != os.geteuid() or (st.st_mode & 0o077):
+            raise SystemExit(f'hyperprox-keyholder: refusing to start: {d} must be owned by uid {os.geteuid()} with mode 0700')
+        try:
+            if stat.S_ISSOCK(os.lstat(path).st_mode):
+                os.unlink(path)
+        except FileNotFoundError:
+            pass
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        old = os.umask(0o177)
+        try:
+            srv.bind(path)
+        finally:
+            os.umask(old)
+        os.chmod(path, 0o600)
+        srv.listen(8)
+        srv.setblocking(False)
+        self.sel.register(srv, selectors.EVENT_READ, None)
+        self.srv = srv
+
+    def accept(self):
+        try:
+            conn, _ = self.srv.accept()
+        except BlockingIOError:
+            return
+        try:
+            pid, uid, _gid = peer_of(conn)
+        except OSError:
+            conn.close()
+            return
+        refusal = None
+        if uid not in self.args.allow_uid:
+            refusal = f'uid {uid} not allowed'
+        elif self.args.allow_unit and unit_of(pid) not in self.args.allow_unit:
+            refusal = f'unit {unit_of(pid) or "(none)"} not allowed'
+        elif len(self.clients) >= MAX_CLIENTS:
+            refusal = 'too many connections'
+        if refusal:
+            log(f'refused a connection from pid {pid}: {refusal}')
+            try:
+                conn.sendall(b'{"ok":false,"error":"peer_refused"}\n')
+            except OSError:
+                pass
+            conn.close()
+            return
+        conn.setblocking(False)
+        c = Client(conn, pid)
+        self.clients[conn.fileno()] = c
+        self.sel.register(conn, selectors.EVENT_READ, c)
+
+    def drop(self, c):
+        self.clients.pop(c.conn.fileno(), None)
+        try:
+            self.sel.unregister(c.conn)
+        except (KeyError, ValueError):
+            pass
+        c.conn.close()
+        wipe(c.inbuf)
+        wipe(c.outbuf)
+
+    def send(self, c, obj, raw_snapshot=None):
+        if raw_snapshot is None:
+            data = json.dumps(obj, separators=(',', ':')).encode() + b'\n'
+        else:
+            # The snapshot is spliced in as bytes (it is checked base64): no str copy of it is made here.
+            head = json.dumps(obj, separators=(',', ':')).encode()
+            data = head[:-1] + b',"snapshot":"' + bytes(raw_snapshot) + b'"}\n'
+        c.outbuf += data
+        self.flush(c)
+
+    def flush(self, c):
+        while c.outbuf:
+            try:
+                n = c.conn.send(c.outbuf)
+            except BlockingIOError:
+                break
+            except OSError:
+                self.drop(c)
+                return
+            c.outbuf[:n] = bytes(n)   # zero what was sent before releasing it
+            del c.outbuf[:n]
+        try:
+            self.sel.modify(c.conn, selectors.EVENT_READ | (selectors.EVENT_WRITE if c.outbuf else 0), c)
+        except (KeyError, ValueError):
+            pass
+
+    def read(self, c):
+        try:
+            chunk = c.conn.recv(65536)
+        except BlockingIOError:
+            return
+        except OSError:
+            chunk = b''
+        if not chunk:
+            self.drop(c)
+            return
+        c.inbuf += chunk
+        while True:
+            i = c.inbuf.find(b'\n')
+            if i < 0:
+                if len(c.inbuf) > MAX_LINE:
+                    log(f'dropped a connection from pid {c.pid}: request too large')
+                    self.drop(c)
+                return
+            line = bytes(c.inbuf[:i])
+            c.inbuf[:i] = bytes(i)   # zero what was read before releasing it
+            del c.inbuf[:i + 1]
+            self.handle(c, line)
+            if c.conn.fileno() < 0:
+                return
+
+    # ---- requests ------------------------------------------------------------
+
+    def handle(self, c, line):
+        try:
+            req = json.loads(line)
+            if not isinstance(req, dict):
+                raise ValueError
+        except ValueError:
+            self.send(c, {'ok': False, 'error': 'bad_request'})
+            return
+        rid = req.get('id')
+        op = req.get('op')
+
+        def reply(**kw):
+            self.send(c, {'id': rid, **kw})
+
+        def snap_arg():
+            s = req.get('snapshot')
+            if not isinstance(s, str) or not s:
+                return None
+            b = bytearray(s.encode('ascii', 'replace'))
+            if not B64.match(b):
+                wipe(b)
+                return None
+            return b
+
+        if op == 'hello':
+            reply(ok=True, v=PROTOCOL, instance=self.instance, unlocked=self.unlocked(),
+                  epoch=self.epoch, lastLock=self.last_lock)
+        elif op == 'get':
+            if not self.unlocked():
+                reply(ok=True, unlocked=False, lastLock=self.last_lock)
+            else:
+                remaining = max(0, int((self.deadline - time.monotonic()) * 1000))
+                self.send(c, {'id': rid, 'ok': True, 'unlocked': True, 'epoch': self.epoch, 'remainingMs': remaining},
+                          raw_snapshot=self.snapshot)
+        elif op == 'unlock':
+            if self.unlocked():
+                reply(ok=False, error='already_unlocked')
+                return
+            idle = req.get('idleMs')
+            snap = snap_arg()
+            if not isinstance(idle, int) or idle < MIN_IDLE_MS or idle > MAX_IDLE_MS or snap is None:
+                reply(ok=False, error='bad_request')
+                return
+            self.snapshot = snap
+            self.epoch = secrets.token_hex(16)
+            self.idle_ms = idle
+            self.arm()
+            log(f'unlocked (idle lock after {idle // 1000} s)')
+            reply(ok=True, epoch=self.epoch)
+        elif op == 'update':
+            if not self.unlocked() or req.get('epoch') != self.epoch:
+                reply(ok=False, error='locked')
+                return
+            snap = snap_arg()
+            if snap is None:
+                reply(ok=False, error='bad_request')
+                return
+            wipe(self.snapshot)
+            self.snapshot = snap
+            reply(ok=True)
+        elif op == 'touch':
+            if self.unlocked():
+                self.arm()
+            reply(ok=True, unlocked=self.unlocked())
+        elif op == 'lock':
+            reason = req.get('reason')
+            if reason not in LOCK_REASONS:
+                reason = 'manual'
+            was = self.lock(reason)
+            reply(ok=True, wasUnlocked=was)
+        else:
+            reply(ok=False, error='unknown_op')
+
+    # ---- loop ----------------------------------------------------------------
+
+    def run(self):
+        self.listen()
+        log(f'listening on {self.args.socket} (instance {self.instance}); locked')
+        sd_notify('READY=1')
+        try:
+            self.loop()
+        except Stop:
+            pass
+        finally:
+            self.shutdown()
+
+    def loop(self):
+        while True:
+            timeout = None
+            if self.deadline is not None:
+                timeout = max(0.0, self.deadline - time.monotonic())
+            for key, events in self.sel.select(timeout):
+                if key.data is None:
+                    self.accept()
+                    continue
+                c = key.data
+                if events & selectors.EVENT_READ:
+                    self.read(c)
+                if events & selectors.EVENT_WRITE and c.conn.fileno() >= 0:
+                    self.flush(c)
+            if self.deadline is not None and time.monotonic() >= self.deadline:
+                self.lock('idle')
+
+    def shutdown(self):
+        self.lock('stop')
+        for c in list(self.clients.values()):
+            self.drop(c)
+        try:
+            os.unlink(self.args.socket)
+        except OSError:
+            pass
+        log('stopped; nothing held')
+
+
+def main():
+    p = argparse.ArgumentParser(description='HyperProx keyholder: holds the unlocked vault state in memory.')
+    p.add_argument('--socket', required=True, help='unix socket path; its directory must be mode 0700')
+    p.add_argument('--allow-uid', type=int, action='append', help='uid allowed to connect (repeatable; default: own uid)')
+    p.add_argument('--allow-unit', action='append', help='systemd unit the peer must run in (repeatable)')
+    args = p.parse_args()
+    if not args.allow_uid:
+        args.allow_uid = [os.geteuid()]
+    harden()
+    kh = Keyholder(args)
+
+    def stop(_sig, _frm):
+        raise Stop()
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    try:
+        kh.run()
+    except SystemExit:
+        raise
+    except Exception as e:  # noqa: BLE001  any crash is a lock: memory goes with the process
+        log(f'crashed ({type(e).__name__}); nothing held')
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()

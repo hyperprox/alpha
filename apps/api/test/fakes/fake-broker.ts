@@ -102,6 +102,14 @@ export class FakeBroker implements VaultBroker {
     this.items.delete(name)
   }
 
+  // Like the real broker: the sessions go into the keyholder's snapshot and come back after a restart.
+  exportSessions() { return [...this.sessions.values()] }
+  async importSessions(data: unknown) {
+    this.rec('importSessions')
+    this.sessions.clear()
+    for (const s of data as VaultSession[]) this.sessions.set(s.sid, { ...s })
+  }
+
   async createSend(sid: string, text: string, opts?: { hours?: number; maxViews?: number; password?: string }) {
     this.rec('createSend', sid, text, opts)
     this.session(sid)

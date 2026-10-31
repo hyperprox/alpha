@@ -8,6 +8,7 @@
 
 import { AsyncLocalStorage } from 'async_hooks'
 import type { Role } from './vault/broker'
+import { registerSnapshotPart, snapshotChanged } from './vault/snapshot'
 
 export const SESSION_SECONDS   = 12 * 60 * 60
 export const RECONFIRM_SECONDS = 5 * 60
@@ -27,6 +28,7 @@ const sessions = new Map<string, ActiveSession>()
 export function addSession(s: { sid: string; email: string; role: Role; userId: string }): ActiveSession {
   const session: ActiveSession = { ...s, reconfirmedUntil: 0, lastSeen: Date.now() }
   sessions.set(s.sid, session)
+  snapshotChanged()
   return session
 }
 
@@ -35,7 +37,7 @@ export function getSession(sid: string): ActiveSession | undefined {
 }
 
 export function removeSession(sid: string): void {
-  sessions.delete(sid)
+  if (sessions.delete(sid)) snapshotChanged()
 }
 
 export function clearSessions(): void {
@@ -50,6 +52,7 @@ export function markReconfirmed(sid: string, now = Date.now()): number {
   const s = sessions.get(sid)
   if (!s) return 0
   s.reconfirmedUntil = now + RECONFIRM_SECONDS * 1000
+  snapshotChanged()
   return s.reconfirmedUntil
 }
 
@@ -57,6 +60,22 @@ export function isReconfirmed(sid: string, now = Date.now()): boolean {
   const s = sessions.get(sid)
   return !!s && s.reconfirmedUntil > now
 }
+
+// Kept in the keyholder's snapshot (vault/state.ts), so an API restart keeps everyone signed in.
+registerSnapshotPart('sessions', {
+  save: () => [...sessions.values()],
+  load: (data) => {
+    if (!Array.isArray(data)) throw new Error('sessions part is not a list')
+    sessions.clear()
+    for (const s of data as ActiveSession[]) {
+      if (typeof s?.sid !== 'string' || typeof s?.email !== 'string' || typeof s?.role !== 'string') continue
+      sessions.set(s.sid, {
+        sid: s.sid, email: s.email, role: s.role, userId: String(s.userId ?? ''),
+        reconfirmedUntil: Number(s.reconfirmedUntil) || 0, lastSeen: Number(s.lastSeen) || Date.now(),
+      })
+    }
+  },
+})
 
 // ── Request context ──────────────────────────────────────────────────────────
 // The credential store writes through to the vault as the user who made the

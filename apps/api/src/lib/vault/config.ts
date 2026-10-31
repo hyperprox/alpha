@@ -55,6 +55,20 @@ export function fastSignInEnabled(): boolean {
   return process.env.VAULT_FAST_SIGNIN !== '0'
 }
 
+/**
+ * The keyholder's unix socket (./keyholder.ts). Set (by the hyperprox-api systemd drop-in the installer and
+ * deploy.sh write), the unlocked state is held by the hyperprox-keyholder service and survives an API restart.
+ * Unset, it is held in this process only, as before: a restart locks.
+ */
+export function keyholderSocket(): string | undefined {
+  return process.env.VAULT_KEYHOLDER_SOCKET || undefined
+}
+
+/** Where small non-secret state lives (whether HyperProx was unlocked, for the lock alert after a restart). */
+export function dataDir(): string {
+  return process.env.HYPERPROX_DATA_DIR || '/opt/hyperprox/data'
+}
+
 /** tmpfs root for the per-session CLI data dirs. */
 export function sessionRoot(): string {
   return process.env.VAULT_SESSION_ROOT || '/dev/shm/hyperprox-vault'

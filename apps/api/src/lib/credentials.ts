@@ -17,7 +17,7 @@ import { PrismaClient } from '@prisma/client'
 import { chmodSync, existsSync, readFileSync, writeFileSync } from 'fs'
 import { decrypt, mask } from './crypto'
 import { getBroker, type SecretItem } from './vault/broker'
-import { isUnlocked, cachedSecret, putCachedSecret, removeCachedSecret, onLock } from './vault/state'
+import { isUnlocked, cachedSecret, putCachedSecret, removeCachedSecret, onLock, onUnlock } from './vault/state'
 import { actingSid } from './auth'
 
 export interface CredentialDef {
@@ -233,6 +233,8 @@ function ensureLockListener(): void {
   if (lockListener) return
   lockListener = true
   onLock(() => restoreEnvAfterLock())
+  // After an API restart that the keyholder carried across, the env copies the old code reads come back too.
+  onUnlock((how) => { if (how === 'restored') hydrateEnvFromVault() })
 }
 ensureLockListener()
 
