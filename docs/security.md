@@ -23,11 +23,17 @@ Bitwarden-compatible, zero-knowledge vault. Every install runs its own, stock an
   health and sign-in answers "locked" (HTTP 423). Your first successful sign-in unlocks it.
 - **Deploys do not lock it.** The unlocked state is held by a small separate service, the **keyholder**
   (`hyperprox-keyholder`), as well as by the API. Restarting the API (every `deploy.sh` does) re-attaches
-  to it and carries on unlocked, with everyone still signed in. The keyholder holds it in memory only
-  (no disk, no swap, no core dumps), answers only on a root-only unix socket, and only to a process
-  running as the API's user inside the `hyperprox-api` service (checked with `SO_PEERCRED`); it has no
-  network access at all. Stopping, restarting or crashing the keyholder, or rebooting, **locks**.
-  `deploy.sh` restarts the keyholder only when its own program changed, and says so.
+  to it and carries on unlocked, with everyone still signed in. The keyholder holds it in memory only;
+  both it and the API run with swap and core dumps turned off for their service (`MemorySwapMax=0`,
+  `LimitCORE=0`), so neither writes it to a swap device or a crash file. The keyholder answers only on a
+  root-only unix socket, and only to a process running as the API's user whose cgroup is exactly
+  `/system.slice/hyperprox-api.service` (checked with `SO_PEERCRED` and, where the kernel has it,
+  `SO_PEERPIDFD`); it has no network access, no capabilities and a system-call filter. Stopping,
+  restarting or crashing the keyholder, or rebooting, **locks**. `deploy.sh` restarts the keyholder only
+  when its own program changed, and says so. If the keyholder will not start, `deploy.sh` removes the
+  API's keyholder setting first, so the API keeps today's behaviour (a restart locks) instead of being
+  unable to unlock. Lock now is reported only once the keyholder confirmed it wiped its copy (or was
+  restarted, which wipes it); otherwise it answers an error, never "locked".
 - **Secrets live in memory only.** On unlock, the credentials HyperProx needs (hypervisor token, DNS and
   proxy logins, and so on) are read from the vault into process memory, and a fresh random session-signing
   key is generated. Neither is ever written to disk. Nothing in the database, `.env` or a backup can mint a
@@ -136,6 +142,11 @@ release. Do not assume them.
   which are end-to-end encrypted with keys derived from each user's master password. So the zero-knowledge
   property holds, but someone with that token can lock people out or invite an account of their own. It is
   not reachable from the network by default; treat the file as sensitive (it is mode 0600).
+- **A deploy starts new code with the vault already unlocked.** Because the unlock survives an API
+  restart, code that `deploy.sh` ships starts with every unlocked secret, the signing key and the vault
+  sessions (refresh tokens included) available to it, without anyone signing in again. Before the
+  keyholder, a deploy locked, so new code saw nothing until a person unlocked it. This is the accepted
+  price of deploys not locking: only deploy code you trust, or lock (`hyperprox lock`) before deploying.
 - **While unlocked, root on the machine can read memory.** Decrypted secrets and the signing key live in the
   API process and in the keyholder. Anyone with root on the HyperProx machine during that time can read them (or change the
   running code). Auto-lock and `hyperprox lock` shorten that window; a tamper check to catch changed code is

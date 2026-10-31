@@ -252,11 +252,20 @@ standard library, its own systemd unit) that holds that state as one opaque snap
   `touch`), an explicit lock (Lock now / `hyperprox lock`, passed on to the keyholder), a keyholder stop,
   crash or restart, or a reboot. The API holds one connection; the keyholder pushes `locked` events, and
   the connection closing is a lock too. **Fail closed:** no keyholder, no unlock (sign-in answers 503).
-- **Security.** Memory only: no disk, env or logs; non-dumpable, `LimitCORE=0`, `MemorySwapMax=0`.
-  A unix socket in a 0700 root-only runtime directory (the keyholder refuses to start otherwise), socket
-  0600. Every connection is checked with `SO_PEERCRED`: the uid must be the API service user's and the
-  pid must be inside `hyperprox-api.service`'s cgroup. No network listener (`PrivateNetwork=yes`,
-  `RestrictAddressFamilies=AF_UNIX`). It logs events and refused peers, never a request body.
+- **Security.** Memory only: no disk, env or logs; non-dumpable, `LimitCORE=0`, `MemorySwapMax=0` (the
+  API's drop-in sets the same two for the API). A unix socket in a 0700 root-only runtime directory (the
+  keyholder refuses to start otherwise), socket 0600. Every connection is checked with `SO_PEERCRED`
+  (uid) and the peer's cgroup must be exactly `/system.slice/hyperprox-api.service`, read through
+  `SO_PEERPIDFD` where available so a recycled pid cannot pass. No network listener
+  (`PrivateNetwork=yes`, `RestrictAddressFamilies=AF_UNIX`), empty capability set,
+  `SystemCallFilter=@system-service`, `MemoryDenyWriteExecute=yes` (verified with the python keyholder).
+  Not yet `DynamicUser=`: it runs as root without capabilities. It logs events and refused peers, never
+  a request body.
+- **Lock is confirmed.** The keyholder is told first; HyperProx reports locked only once it answers ok,
+  else it is restarted (which wipes it), else the lock answers an error. A failed or timed-out unlock is
+  locked again (or the keyholder restarted) before the sign-in fails.
+- **Accepted risk.** Code shipped by `deploy.sh` starts with the vault already unlocked, refresh tokens
+  included. Before, a deploy locked, so new code saw nothing until someone signed in.
 - **Deploys.** `bin/install-keyholder` (run by `install.sh` and `deploy.sh`) installs a copy of the
   program, the unit and an API drop-in (`Wants=`/`After=`, not `Requires=`, so a keyholder restart never
   restarts the API, and `VAULT_KEYHOLDER_SOCKET`). It starts the keyholder if it is not running, and
