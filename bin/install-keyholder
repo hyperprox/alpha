@@ -70,6 +70,17 @@ MemorySwapMax=0
 PrivateNetwork=yes
 RestrictAddressFamilies=AF_UNIX
 NoNewPrivileges=yes
+# Root without capabilities: it only needs its own runtime directory and to read /proc/<pid>/cgroup
+# (so /proc must stay visible to it). Not DynamicUser yet: the socket check is written for a root keyholder.
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
+PrivateDevices=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
@@ -98,9 +109,13 @@ After=${UNIT}
 
 [Service]
 Environment=VAULT_KEYHOLDER_SOCKET=${SOCKET}
+# The API holds the same unlocked state as the keyholder: no core dumps or swap for it either.
+LimitCORE=0
+MemorySwapMax=0
 EOF
 }
 
+DROPIN="${SYSTEMD_DIR}/${API_UNIT}.d/keyholder.conf"
 reload=0
 unit_changed=0
 write_if_changed() {   # path, text
@@ -117,12 +132,23 @@ write_if_changed() {   # path, text
 }
 
 if write_if_changed "${SYSTEMD_DIR}/${UNIT}" "$(unit_text)"; then unit_changed=1; fi
-write_if_changed "${SYSTEMD_DIR}/${API_UNIT}.d/keyholder.conf" "$(dropin_text)" || true
+write_if_changed "$DROPIN" "$(dropin_text)" || true
 [[ "$reload" == "1" ]] && systemctl daemon-reload
 systemctl enable "$UNIT" --quiet
 
+# If the keyholder will not run, the API must not be pointed at it: with the drop-in in place the next API
+# start could never unlock. Take the drop-in out (the API stays as it is today: a restart locks) and stop.
+give_up() {
+  rm -f "$DROPIN"
+  systemctl daemon-reload || true
+  echo "✗ The keyholder did not start (journalctl -u ${UNIT} -n 50). The API drop-in was removed, so" >&2
+  echo "  the API keeps working as before (an API restart locks HyperProx). Fix it and run this again." >&2
+  exit 1
+}
+
 if ! systemctl is-active --quiet "$UNIT"; then
-  systemctl start "$UNIT"
+  systemctl start "$UNIT" || give_up
+  systemctl is-active --quiet "$UNIT" || give_up
   echo "  keyholder started (${UNIT})"
   if [[ "$first_install" == "1" ]]; then
     echo "  ⚠ First install of the keyholder: the API restart that follows locks HyperProx ONE last time."
@@ -131,7 +157,8 @@ if ! systemctl is-active --quiet "$UNIT"; then
 elif [[ "$program_changed" == "1" ]]; then
   echo "  ⚠ The keyholder program changed. Restarting it now LOCKS HyperProx (and sends the lock alert):"
   echo "    sign in again afterwards."
-  systemctl restart "$UNIT"
+  systemctl restart "$UNIT" || give_up
+  systemctl is-active --quiet "$UNIT" || give_up
   echo "  keyholder restarted: HyperProx is locked"
 else
   echo "  keyholder unchanged and running: left alone (HyperProx stays unlocked across this deploy)"

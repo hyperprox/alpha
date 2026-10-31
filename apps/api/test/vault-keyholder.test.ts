@@ -2,8 +2,9 @@
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { KeyholderClient, KeyholderError } from '../src/lib/vault/keyholder'
-import { keyholderDir, startKeyholder, waitFor, type RunningKeyholder } from './fakes/keyholder'
+import { KEYHOLDER_BIN, keyholderDir, startKeyholder, waitFor, type RunningKeyholder } from './fakes/keyholder'
 
 const running: RunningKeyholder[] = []
 after(async () => { for (const k of running) await k.stop('SIGKILL') })
@@ -112,7 +113,36 @@ test('a peer outside the allowed systemd unit is refused', async () => {
   const { c } = client(k)
   await c.connect()
   await assert.rejects(c.hello(), (e: any) => e instanceof KeyholderError)
-  await waitFor(() => /refused a connection .*: unit .* not allowed/.test(k.output()), 2000, 'refusal in the log')
+  await waitFor(() => /refused a connection .*: cgroup .* not allowed/.test(k.output()), 2000, 'refusal in the log')
+})
+
+test('the unit check matches the whole cgroup path, not a suffix', () => {
+  const code = `
+import importlib.machinery, importlib.util, json, sys
+loader = importlib.machinery.SourceFileLoader('kh', sys.argv[1])
+spec = importlib.util.spec_from_loader('kh', loader); kh = importlib.util.module_from_spec(spec); loader.exec_module(kh)
+allowed = ['hyperprox-api.service']
+cases = {
+  'real':      '0::/system.slice/hyperprox-api.service\\n',
+  'nested':    '0::/system.slice/evil.slice/hyperprox-api.service\\n',
+  'user':      '0::/user.slice/user-0.slice/hyperprox-api.service\\n',
+  'prefixed':  '0::/system.slice/x-hyperprox-api.service\\n',
+  'v1 only':   '12:pids:/system.slice/hyperprox-api.service\\n',
+  'none':      '',
+}
+print(json.dumps({k: kh.unit_allowed(kh.cgroup_path(v), allowed) for k, v in cases.items()}))
+`
+  const r = spawnSync('python3', ['-B', '-c', code, KEYHOLDER_BIN], { encoding: 'utf8' })
+  assert.equal(r.status, 0, r.stderr)
+  assert.deepEqual(JSON.parse(r.stdout), { real: true, nested: false, user: false, prefixed: false, 'v1 only': false, none: false })
+})
+
+test('says which peer check it uses: pidfd where the kernel has it, else SO_PEERCRED pid', async () => {
+  const k = await kh(['--allow-unit', 'hyperprox-api.service'])
+  const { c } = client(k)
+  await c.connect()
+  await assert.rejects(c.hello())
+  await waitFor(() => /peer check: (pidfd|peercred pid)/.test(k.output()), 2000, 'peer check method in the log')
 })
 
 test('a keyholder restart is a lock: the new process holds nothing, the old connection is gone', async () => {

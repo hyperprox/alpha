@@ -90,23 +90,74 @@ def sd_notify(msg):
         pass
 
 
+SO_PEERPIDFD = getattr(socket, 'SO_PEERPIDFD', 77)   # Linux 6.5+; the constant is in Python 3.13+
+
+
 def peer_of(conn):
     raw = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize('3i'))
     return struct.unpack('3i', raw)  # pid, uid, gid
 
 
-def unit_of(pid):
-    """The systemd unit whose cgroup holds pid (cgroup v2 '0::/system.slice/x.service'), or ''."""
-    try:
-        with open(f'/proc/{pid}/cgroup') as f:
-            for line in f:
-                path = line.strip().split(':', 2)[-1]
-                for part in reversed(path.split('/')):
-                    if part.endswith('.service') or part.endswith('.scope'):
-                        return part
-    except OSError:
-        pass
+def cgroup_path(text):
+    """The cgroup v2 path ('0::/system.slice/x.service' -> '/system.slice/x.service'), or ''."""
+    for line in text.splitlines():
+        if line.startswith('0::'):
+            return line[3:].strip()
     return ''
+
+
+def unit_allowed(path, units):
+    """Exactly a system service's own cgroup: '/system.slice/<unit>'. Never a suffix match, so a unit of
+    the same name nested in another slice, or in a user's session, does not pass. A value with a '/' is
+    taken as a full cgroup path."""
+    return bool(path) and any(path == (u if '/' in u else f'/system.slice/{u}') for u in units)
+
+
+def pidfd_pid(pidfd):
+    """The pid a pidfd refers to, from /proc/self/fdinfo; -1 once that process has exited."""
+    with open(f'/proc/self/fdinfo/{pidfd}') as f:
+        for line in f:
+            if line.startswith('Pid:'):
+                return int(line.split()[1])
+    raise OSError('no Pid in fdinfo')
+
+
+class PeerCheck:
+    """Reads the peer's cgroup. With SO_PEERPIDFD (pidfd) the pid cannot be recycled under us: the pidfd
+    pins that very process, and its pid is re-read after the cgroup to prove it was still alive. Without
+    it, the SO_PEERCRED pid (taken at connect time) is used."""
+
+    def __init__(self):
+        self.method = 'peercred pid'
+        try:
+            a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                fd = struct.unpack('i', a.getsockopt(socket.SOL_SOCKET, SO_PEERPIDFD, 4))[0]
+                if pidfd_pid(fd) == os.getpid():
+                    self.method = 'pidfd'
+                os.close(fd)
+            finally:
+                a.close(); b.close()
+        except OSError:
+            pass
+
+    def cgroup_of(self, conn, cred_pid):
+        if self.method == 'pidfd':
+            fd = struct.unpack('i', conn.getsockopt(socket.SOL_SOCKET, SO_PEERPIDFD, 4))[0]
+            try:
+                pid = pidfd_pid(fd)
+                if pid <= 0:
+                    return ''
+                with open(f'/proc/{pid}/cgroup') as f:
+                    text = f.read()
+                return cgroup_path(text) if pidfd_pid(fd) == pid else ''
+            finally:
+                os.close(fd)
+        try:
+            with open(f'/proc/{cred_pid}/cgroup') as f:
+                return cgroup_path(f.read())
+        except OSError:
+            return ''
 
 
 class Stop(Exception):
@@ -132,6 +183,7 @@ class Keyholder:
         self.last_lock = None     # {'reason', 'at'}: why the last unlock ended (no secret in it)
         self.sel = selectors.DefaultSelector()
         self.clients = {}
+        self.peer = PeerCheck()
 
     # ---- state ---------------------------------------------------------------
 
@@ -192,9 +244,14 @@ class Keyholder:
         refusal = None
         if uid not in self.args.allow_uid:
             refusal = f'uid {uid} not allowed'
-        elif self.args.allow_unit and unit_of(pid) not in self.args.allow_unit:
-            refusal = f'unit {unit_of(pid) or "(none)"} not allowed'
-        elif len(self.clients) >= MAX_CLIENTS:
+        elif self.args.allow_unit:
+            try:
+                cg = self.peer.cgroup_of(conn, pid)
+            except OSError:
+                cg = ''
+            if not unit_allowed(cg, self.args.allow_unit):
+                refusal = f'cgroup {cg or "(unknown)"} not allowed'
+        if not refusal and len(self.clients) >= MAX_CLIENTS:
             refusal = 'too many connections'
         if refusal:
             log(f'refused a connection from pid {pid}: {refusal}')
@@ -349,7 +406,7 @@ class Keyholder:
 
     def run(self):
         self.listen()
-        log(f'listening on {self.args.socket} (instance {self.instance}); locked')
+        log(f'listening on {self.args.socket} (instance {self.instance}); locked; peer check: {self.peer.method}')
         sd_notify('READY=1')
         try:
             self.loop()

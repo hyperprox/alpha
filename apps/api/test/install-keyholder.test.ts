@@ -23,14 +23,14 @@ function setup() {
 echo "$*" >> ${JSON.stringify(calls)}
 case "$1" in
   is-active) [ -f ${JSON.stringify(active)} ] ;;
-  start|restart) touch ${JSON.stringify(active)} ;;
+  start|restart) [ -n "\${STUB_START_FAIL:-}" ] && exit 1; touch ${JSON.stringify(active)} ;;
   show) echo "" ;;
 esac
 `, { mode: 0o755 })
-  const run = () => spawnSync('bash', [SCRIPT], {
+  const run = (extra: Record<string, string> = {}) => spawnSync('bash', [SCRIPT], {
     encoding: 'utf8',
     env: {
-      ...process.env, PATH: `${bin}:${process.env.PATH}`, HYPERPROX_DIR: hp,
+      ...process.env, ...extra, PATH: `${bin}:${process.env.PATH}`, HYPERPROX_DIR: hp,
       SYSTEMD_DIR: path.join(tmp, 'systemd'), KEYHOLDER_LIB: path.join(tmp, 'lib'),
     },
   })
@@ -45,13 +45,19 @@ test('first run: installs the unit and the API drop-in, starts the keyholder, wa
   assert.equal(r.status, 0, r.stderr)
   const unit = fs.readFileSync(path.join(t.tmp, 'systemd', 'hyperprox-keyholder.service'), 'utf8')
   assert.match(unit, /--socket \/run\/hyperprox-keyholder\/keyholder.sock --allow-uid 0 --allow-unit hyperprox-api.service/)
-  for (const line of ['RuntimeDirectoryMode=0700', 'PrivateNetwork=yes', 'RestrictAddressFamilies=AF_UNIX', 'LimitCORE=0', 'MemorySwapMax=0', 'Type=notify']) {
+  for (const line of ['RuntimeDirectoryMode=0700', 'PrivateNetwork=yes', 'RestrictAddressFamilies=AF_UNIX', 'LimitCORE=0', 'MemorySwapMax=0', 'Type=notify',
+    'CapabilityBoundingSet=\n', 'SystemCallFilter=@system-service', 'SystemCallArchitectures=native', 'PrivateDevices=yes', 'ProtectKernelLogs=yes',
+    'ProtectClock=yes', 'ProtectHostname=yes', 'RestrictSUIDSGID=yes']) {
     assert.ok(unit.includes(line), line)
   }
+  assert.doesNotMatch(unit, /ProtectProc=invisible/, 'the keyholder reads the peer\'s /proc/<pid>/cgroup')
   const dropin = fs.readFileSync(path.join(t.tmp, 'systemd', 'hyperprox-api.service.d', 'keyholder.conf'), 'utf8')
   assert.match(dropin, /^Wants=hyperprox-keyholder.service$/m)
   assert.doesNotMatch(dropin, /Requires=|BindsTo=|PartOf=/, 'a keyholder restart must not restart the API')
   assert.match(dropin, /^Environment=VAULT_KEYHOLDER_SOCKET=\/run\/hyperprox-keyholder\/keyholder.sock$/m)
+  // The API holds the same state: no core dumps or swap for it either.
+  assert.match(dropin, /^LimitCORE=0$/m)
+  assert.match(dropin, /^MemorySwapMax=0$/m)
   assert.ok(t.callsNow().includes('daemon-reload'))
   assert.ok(t.callsNow().includes('start hyperprox-keyholder.service'))
   assert.match(r.stdout, /First install of the keyholder/)
@@ -89,4 +95,25 @@ test('a stopped keyholder is started again, without a restart of anything else',
   assert.equal(r.status, 0, r.stderr)
   assert.deepEqual(t.callsNow().filter(c => /^(start|restart|stop)/.test(c)), ['start hyperprox-keyholder.service'])
   assert.doesNotMatch(r.stdout, /First install/)
+})
+
+test('the keyholder fails to start: the API drop-in is removed and reloaded before exiting, so the API stays in today\'s mode', () => {
+  const t = setup()
+  const r = t.run({ STUB_START_FAIL: '1' })
+  assert.notEqual(r.status, 0)
+  assert.equal(fs.existsSync(path.join(t.tmp, 'systemd', 'hyperprox-api.service.d', 'keyholder.conf')), false)
+  const calls = t.callsNow()
+  assert.ok(calls.lastIndexOf('daemon-reload') > calls.indexOf('start hyperprox-keyholder.service'), calls.join('; '))
+  assert.match(r.stderr, /keyholder did not start/)
+})
+
+test('a changed program whose restart fails: the drop-in is removed too', () => {
+  const t = setup()
+  assert.equal(t.run().status, 0)
+  fs.appendFileSync(path.join(t.hp, 'bin', 'hyperprox-keyholder'), '\n# broken\n')
+  t.reset()
+  const r = t.run({ STUB_START_FAIL: '1' })
+  assert.notEqual(r.status, 0)
+  assert.equal(fs.existsSync(path.join(t.tmp, 'systemd', 'hyperprox-api.service.d', 'keyholder.conf')), false)
+  assert.ok(t.callsNow().includes('daemon-reload'))
 })
