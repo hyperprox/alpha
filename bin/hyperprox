@@ -37,6 +37,15 @@ cmd_status() {
   fi
   echo "vault:  ${vault}  (${VAULT_URL})"
 
+  # The keyholder holds the unlocked state across API restarts; restarting it locks HyperProx.
+  if systemctl is-active --quiet hyperprox-keyholder 2>/dev/null; then
+    echo "keyholder: up  (API restarts keep HyperProx unlocked)"
+  elif systemctl cat hyperprox-keyholder >/dev/null 2>&1; then
+    echo "keyholder: DOWN  (HyperProx cannot unlock: systemctl start hyperprox-keyholder)"; rc=1
+  else
+    echo "keyholder: not installed  (an API restart locks HyperProx; deploy.sh installs it)"
+  fi
+
   if api="$(curl -fsS --max-time 5 "${API_URL}/api/auth/status" 2>/dev/null)"; then
     locked="$(printf '%s' "$api" | jget locked)"
     case "$locked" in
@@ -64,8 +73,15 @@ cmd_lock() {
   code="${out##*$'\n'}"; body="${out%$'\n'*}"
   case "$rc" in
     0)  ;;
-    7)  echo "lock:   FAILED - could not reach the API at ${API_URL} (journalctl -u hyperprox-api -n 50)" >&2; return 1 ;;
-    28) echo "lock:   FAILED - the API did not answer within 30 s; check with: hyperprox status" >&2; return 1 ;;
+    7|28)
+      # The API is down or stuck, but the keyholder may still hold the unlocked state: restarting it wipes it.
+      if systemctl is-active --quiet hyperprox-keyholder 2>/dev/null; then
+        systemctl restart hyperprox-keyholder \
+          && { echo "lock:   LOCKED - the API did not answer, so the keyholder was restarted (that wipes the unlocked state)"; return 0; }
+      fi
+      if [[ "$rc" == "7" ]]; then echo "lock:   FAILED - could not reach the API at ${API_URL} (journalctl -u hyperprox-api -n 50)" >&2
+      else echo "lock:   FAILED - the API did not answer within 30 s; check with: hyperprox status" >&2; fi
+      return 1 ;;
     *)  echo "lock:   FAILED - request to ${API_URL} failed (curl exit ${rc})" >&2; return 1 ;;
   esac
   msg="$(printf '%s' "$body" | jget error)"

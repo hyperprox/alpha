@@ -307,7 +307,8 @@ install_prerequisites() {
   run_with_spinner "Updating apt" apt-get update -qq
 
   local pkgs=(curl wget git gnupg lsb-release ca-certificates
-              apt-transport-https openssl jq unzip build-essential)
+              apt-transport-https openssl jq unzip build-essential
+              python3)   # the keyholder (bin/hyperprox-keyholder) is a python3 standard-library script
   # Not packaged on Debian 13 (trixie) and nothing below needs it; install it only where it exists.
   if apt-cache show software-properties-common >/dev/null 2>&1; then
     pkgs+=(software-properties-common)
@@ -682,6 +683,11 @@ configure_vault_env() {
   # Empty = Send links and invitations use the loopback origin. Set to the https address people can reach.
   env_has VAULT_PUBLIC_URL || { echo "VAULT_PUBLIC_URL=" >> "${ENV_FILE}"; added=true; }
   env_has VAULT_IDLE_LOCK_MINUTES || { echo "VAULT_IDLE_LOCK_MINUTES=30" >> "${ENV_FILE}"; added=true; }
+  # Lock alert: when HyperProx locks by itself, post a message with a sign-in link (docs/security.md).
+  # Empty LOCK_ALERT_URL = the Updates/Certificates webhook_url if one is set, else no alert.
+  env_has HYPERPROX_PUBLIC_URL || { echo "HYPERPROX_PUBLIC_URL=" >> "${ENV_FILE}"; added=true; }
+  env_has LOCK_ALERT_URL || { echo "LOCK_ALERT_URL=" >> "${ENV_FILE}"; added=true; }
+  env_has LOCK_ALERT_KIND || { echo "LOCK_ALERT_KIND=auto" >> "${ENV_FILE}"; added=true; }
   chmod 600 "${ENV_FILE}"
   [[ "${added}" == "true" ]] && ok "Vault settings written to .env" || ok "Vault settings already present"
 }
@@ -948,7 +954,8 @@ EOF
 # ── CLI ───────────────────────────────────────────────────────────────────────
 install_cli() {
   step "Installing the hyperprox command"
-  chmod +x "${HYPERPROX_DIR}/bin/hyperprox" "${HYPERPROX_DIR}/bin/wait-for-vault"
+  chmod +x "${HYPERPROX_DIR}/bin/hyperprox" "${HYPERPROX_DIR}/bin/wait-for-vault" \
+    "${HYPERPROX_DIR}/bin/hyperprox-keyholder" "${HYPERPROX_DIR}/bin/install-keyholder"
   ln -sf "${HYPERPROX_DIR}/bin/hyperprox" /usr/local/bin/hyperprox
   ok "hyperprox status | hyperprox lock"
 }
@@ -1000,6 +1007,9 @@ start_services() {
   run_migrations
 
   step "Starting HyperProx services"
+  # The keyholder holds the unlocked vault state, so API restarts (deploys) do not lock HyperProx.
+  info "Installing the keyholder..."
+  bash "${HYPERPROX_DIR}/bin/install-keyholder" || die "The keyholder could not be installed (see above)"
   systemctl enable hyperprox-api hyperprox-frontend hyperprox-setup --quiet
 
   info "Starting hyperprox-api..."
