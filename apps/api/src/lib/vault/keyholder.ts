@@ -48,7 +48,8 @@ export class KeyholderClient {
   private pending = new Map<number, Pending>()
   private closed = false
 
-  constructor(private path: string, private events: KeyholderEvents, private timeoutMs = 5000) {}
+  constructor(private path: string, private events: KeyholderEvents,
+    private timeoutMs = Number(process.env.VAULT_KEYHOLDER_TIMEOUT_MS) || 5000) {}
 
   get connected(): boolean { return this.sock !== null && !this.closed }
 

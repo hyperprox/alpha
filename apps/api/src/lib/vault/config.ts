@@ -64,6 +64,11 @@ export function keyholderSocket(): string | undefined {
   return process.env.VAULT_KEYHOLDER_SOCKET || undefined
 }
 
+/** The keyholder's systemd unit: restarted (which wipes it) when it does not confirm a lock. */
+export function keyholderUnit(): string {
+  return process.env.VAULT_KEYHOLDER_UNIT || 'hyperprox-keyholder.service'
+}
+
 /** Where small non-secret state lives (whether HyperProx was unlocked, for the lock alert after a restart). */
 export function dataDir(): string {
   return process.env.HYPERPROX_DATA_DIR || '/opt/hyperprox/data'

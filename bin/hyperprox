@@ -76,6 +76,9 @@ cmd_lock() {
     7|28)
       # The API is down or stuck, but the keyholder may still hold the unlocked state: restarting it wipes it.
       if systemctl is-active --quiet hyperprox-keyholder 2>/dev/null; then
+        # Say why first, so the API does not alert "the keyholder restarted" for a lock asked for here.
+        local data="${HYPERPROX_DATA_DIR:-${HYPERPROX_DIR}/data}"
+        mkdir -p "$data" && (umask 077; printf '{"reason":"manual","at":%s}\n' "$(date +%s%3N)" > "${data}/keyholder-restart-reason.json")
         systemctl restart hyperprox-keyholder \
           && { echo "lock:   LOCKED - the API did not answer, so the keyholder was restarted (that wipes the unlocked state)"; return 0; }
       fi

@@ -22,8 +22,9 @@
 // =============================================================================
 
 import crypto from 'node:crypto'
+import { execFile } from 'node:child_process'
 import { getBroker, type SecretItem } from './broker'
-import { idleLockMs, keyholderSocket } from './config'
+import { idleLockMs, keyholderSocket, keyholderUnit } from './config'
 import { KeyholderClient, KeyholderError, KEYHOLDER_PROTOCOL, type KeyholderLastLock } from './keyholder'
 import { loadParts, registerSnapshotPart, saveParts, setSnapshotListener } from './snapshot'
 
@@ -36,6 +37,28 @@ export class KeyholderUnavailableError extends Error {
     super('the keyholder service is not running, so HyperProx cannot unlock (systemctl status hyperprox-keyholder)')
     this.name = 'KeyholderUnavailableError'
   }
+}
+
+/**
+ * Lock asked for, but the keyholder neither confirmed it nor could be restarted: it may still hold the
+ * unlocked state. This process has wiped its own copy; HyperProx must not be reported as locked.
+ */
+export class KeyholderLockError extends Error {
+  constructor() {
+    super('the keyholder did not confirm the lock and could not be restarted; it may still hold the unlocked state (systemctl restart hyperprox-keyholder)')
+    this.name = 'KeyholderLockError'
+  }
+}
+
+/** Restarting the keyholder wipes it: the last resort when it does not confirm a lock. */
+type Restarter = (reason: LockReason) => Promise<void>
+const systemctlRestart: Restarter = () => new Promise((resolve, reject) => {
+  execFile('systemctl', ['restart', keyholderUnit()], { timeout: 30_000 }, (err) => err ? reject(err) : resolve())
+})
+let restartKeyholderImpl: Restarter = systemctlRestart
+/** Tests swap in their own; null puts systemctl back. */
+export function setKeyholderRestarter(fn: Restarter | null): void {
+  restartKeyholderImpl = fn ?? systemctlRestart
 }
 
 let key: Buffer | null = null
@@ -273,18 +296,23 @@ export async function unlock(fromSid: string): Promise<void> {
     if (keyholderMode()) {
       if (!(await connectKeyholder()) || !kh) { k.fill(0); throw new KeyholderUnavailableError() }
       const snap = buildSnapshot(k, next)
+      let rolledBack = false
       try {
-        khEpoch = await kh.unlock(snap, idleLockMs())
-      } catch (e) {
-        if (e instanceof KeyholderError && e.code === 'already_unlocked') {
+        try {
+          khEpoch = await kh.unlock(snap, idleLockMs())
+        } catch (e) {
+          if (!(e instanceof KeyholderError && e.code === 'already_unlocked')) throw e
           // Held by an unlock this process does not know about (it could not restore it): replace it.
-          await kh.lock('restart').catch(() => undefined)
-          try { khEpoch = await kh!.unlock(snap, idleLockMs()) }
-          catch { k.fill(0); throw new KeyholderUnavailableError() }
-        } else {
-          k.fill(0)
-          throw new KeyholderUnavailableError()
+          if (!(await ensureKeyholderLocked('restart'))) { rolledBack = true; throw e }
+          if (!kh && !(await connectKeyholder())) { rolledBack = true; throw e }
+          khEpoch = await kh!.unlock(snap, idleLockMs())
         }
+      } catch {
+        // A timeout or error does not prove it took nothing: lock it (or restart it) before giving up.
+        k.fill(0)
+        khEpoch = null
+        if (!rolledBack) await ensureKeyholderLocked('restart')
+        throw new KeyholderUnavailableError()
       }
       lastTouchSent = Date.now()
     } else {
@@ -317,12 +345,38 @@ async function lockLocal(reason: LockReason, force = false): Promise<void> {
   try { await getBroker().signOutAll() } catch { /* dirs are best-effort; state is already locked */ }
 }
 
-export async function lock(reason: LockReason): Promise<void> {
+/**
+ * Makes sure the keyholder holds nothing: asks it to lock, and if it does not answer ok, restarts it
+ * (a restart wipes it). True once one of the two is confirmed. The connection is dropped before a
+ * restart, so its closing is not taken for a crash (no "keyholder restarted" alert for this).
+ */
+async function ensureKeyholderLocked(reason: LockReason): Promise<boolean> {
   const client = kh
-  const tell = keyholderMode() && client?.connected && reason !== 'keyholder'
+  if (client?.connected) {
+    try { await client.lock(reason); return true } catch { /* not confirmed: restart below */ }
+  }
+  if (kh === client) { kh = null; khEpoch = null }
+  client?.close()
+  try {
+    await restartKeyholderImpl(reason)
+    return true
+  } catch (e) {
+    log.warn(`[vault] the keyholder did not confirm the lock and its restart failed (${(e as Error).name})`)
+    return false
+  } finally {
+    scheduleReconnect()
+  }
+}
+
+/**
+ * Locks. With a keyholder it is told FIRST, and HyperProx counts as locked only once the keyholder
+ * confirmed (or was restarted); otherwise this throws KeyholderLockError after wiping this process.
+ */
+export async function lock(reason: LockReason): Promise<void> {
+  const tell = keyholderMode() && reason !== 'keyholder'
+  const confirmed = tell ? await ensureKeyholderLocked(reason) : true
   await lockLocal(reason)
-  // The keyholder wipes its copy too. It answers with a 'locked' event this process ignores (already locked).
-  if (tell) await client!.lock(reason).catch(() => undefined)
+  if (!confirmed) throw new KeyholderLockError()
 }
 
 /** The current session-signing key, or null when locked. Do not keep a copy. */
