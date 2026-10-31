@@ -171,23 +171,52 @@ export function readMarker(): { unlocked: boolean } | null {
   try { return JSON.parse(fs.readFileSync(markerPath(), 'utf8')) } catch { return null }
 }
 
+/**
+ * Why the keyholder is about to be restarted, left by whoever restarts it on purpose (`hyperprox lock`
+ * with the API down). A fresh 'manual' turns the "keyholder restarted" alert into no alert. Not secret.
+ */
+export function restartReasonPath(): string {
+  return path.join(dataDir(), 'keyholder-restart-reason.json')
+}
+
+export function writeRestartReason(reason: 'manual', at = Date.now()): void {
+  try {
+    fs.mkdirSync(dataDir(), { recursive: true })
+    fs.writeFileSync(restartReasonPath(), JSON.stringify({ reason, at }) + '\n', { mode: 0o600 })
+  } catch { /* best effort */ }
+}
+
+/** The reason, if one was left in the last two minutes; consumed either way. */
+export function takeRestartReason(maxAgeMs = 120_000): 'manual' | null {
+  let v: any = null
+  try { v = JSON.parse(fs.readFileSync(restartReasonPath(), 'utf8')) } catch { return null }
+  try { fs.rmSync(restartReasonPath(), { force: true }) } catch { /* best effort */ }
+  const at = typeof v?.at === 'number' ? v.at : Date.parse(String(v?.at ?? ''))
+  return v?.reason === 'manual' && Number.isFinite(at) && Date.now() - at <= maxAgeMs ? 'manual' : null
+}
+
 function alertReason(r: string | undefined): AlertReason {
   return r === 'idle' ? 'idle' : r === 'stop' || r === 'keyholder' ? 'keyholder' : 'restart'
 }
 
 let installed = false
+let currentDeps: AlertDeps = {}
 
 /**
  * Hooks the alert to the unlock state. Call once at startup, before attachUnlockState().
  * Then call startupCheck() after it: HyperProx was unlocked before this start and is locked now.
  */
 export function installLockAlerts(deps: AlertDeps = {}): { startupCheck(): Promise<void> } {
+  currentDeps = deps
   if (!installed) {
     installed = true
     onUnlock(() => writeMarker(true))
     onLock((reason) => {
       writeMarker(false)
-      if (reason !== 'manual') void sendLockAlert(reason, deps)
+      if (reason === 'manual') return
+      // The keyholder went away because someone locked by restarting it: that is a manual lock.
+      if ((reason === 'keyholder' || reason === 'restart') && takeRestartReason() === 'manual') return
+      void sendLockAlert(reason, currentDeps)
     })
   }
   return {
@@ -195,6 +224,7 @@ export function installLockAlerts(deps: AlertDeps = {}): { startupCheck(): Promi
       if (isUnlocked()) return   // restored from the keyholder: nothing was lost
       if (!readMarker()?.unlocked) return
       writeMarker(false)
+      if (takeRestartReason() === 'manual') return
       await sendLockAlert(alertReason(keyholderLastLock()?.reason), deps)
     },
   }

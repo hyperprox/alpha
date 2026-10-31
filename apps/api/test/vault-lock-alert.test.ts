@@ -6,7 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import {
   buildAlert, detectKind, lockAlertConfig, lockMessage, sendLockAlert, unlockLink, resetLockAlertForTests,
-  installLockAlerts, readMarker, writeMarker,
+  installLockAlerts, readMarker, writeMarker, writeRestartReason, takeRestartReason,
 } from '../src/lib/vault/lock-alert'
 import { lock, unlock, isUnlocked } from '../src/lib/vault/state'
 import { setBroker } from '../src/lib/vault/broker'
@@ -122,4 +122,36 @@ test('in-process mode: idle and restart alert, "Lock now" does not; the marker t
   await startupCheck()
   assert.deepEqual(sent, ['idle', 'restart'])
   assert.equal(readMarker()?.unlocked, false)
+})
+
+test('a keyholder restart that was a manual lock (hyperprox lock with the API down) sends no alert', async () => {
+  const sent: string[] = []
+  const deps = {
+    env: { LOCK_ALERT_URL: 'https://hooks.example.com/x', HYPERPROX_PUBLIC_URL: PUBLIC },
+    fetch: async (_u: string, init: any) => { sent.push(JSON.parse(init.body).reason); return { ok: true, status: 200 } },
+  }
+  // At the API's next start.
+  writeMarker(true)
+  writeRestartReason('manual')
+  const { startupCheck } = installLockAlerts(deps)
+  await startupCheck()
+  assert.deepEqual(sent, [])
+  assert.equal(readMarker()?.unlocked, false)
+  assert.equal(takeRestartReason(), null, 'consumed')
+
+  // While running: the keyholder connection drops because of that manual restart.
+  const broker = new FakeBroker()
+  broker.addUser('m@example.com', 'a long master password', 'owner')
+  setBroker(broker)
+  const s = await broker.signIn('m@example.com', 'a long master password', '123456')
+  await unlock(s.sid)
+  resetLockAlertForTests()
+  writeRestartReason('manual')
+  await lock('keyholder')
+  await new Promise(r => setTimeout(r, 20))
+  assert.deepEqual(sent, [], 'the manual-lock alert is not sent by the other installLockAlerts either')
+
+  // An old reason does not hide a real restart.
+  writeRestartReason('manual', Date.now() - 10 * 60_000)
+  assert.equal(takeRestartReason(), null)
 })
