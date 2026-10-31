@@ -284,6 +284,26 @@ describe('fast path against a fake vault', () => {
     s.close()
   })
 
+  it('a snapshot brings a session back after an API restart: items, password check, token refresh', async () => {
+    const s = await NativeVaultSession.open(api(), EMAIL, PW, TOTP)
+    const snap = JSON.parse(JSON.stringify(s.toSnapshot()))   // what the keyholder holds: plain JSON
+    s.close()
+    const back = NativeVaultSession.fromSnapshot(api(), snap)
+    assert.equal(back.userId, USER_ID)
+    assert.equal(back.collectionId, COL_ID)
+    const n = fake.requests.length
+    const items = byName(await back.listItems())
+    assert.deepEqual(items['hyperprox:proxy/npm'].fields, [{ name: 'password', value: 'p-1' }], 'the org key decrypts after restore')
+    assert.deepEqual(fake.requests.slice(n), ['GET /api/sync'], 'a restored session re-syncs, no new sign-in')
+    assert.equal(await back.verifyPassword(PW), true)
+    assert.equal(await back.verifyPassword('wrong'), false)
+    fake.expireNextAccess = true
+    await back.deleteItems('no such item')
+    assert.notEqual(back.toSnapshot().accessToken, snap.accessToken, 'the refreshed token is what the next snapshot carries')
+    assert.throws(() => NativeVaultSession.fromSnapshot(api(), { ...snap, userKey: { enc: 'AA==', mac: 'AA==' } }), /malformed key/)
+    back.close()
+  })
+
   it('a 401 refreshes the token once and retries; a refused refresh is NativeSessionExpired', async () => {
     const s = await NativeVaultSession.open(api(), EMAIL, PW, TOTP)
     fake.expireNextAccess = true
@@ -339,6 +359,21 @@ else if (a[0] === 'list') process.stdout.write('[]')
     assert.equal(await broker.getBroker().verifyPassword(s.sid, PW), true)
     await broker.getBroker().signOut(s.sid)
     await assert.rejects(broker.getBroker().listSecrets(s.sid), broker.VaultSessionError)
+  })
+
+  it('exportSessions / importSessions carry a fast session across an API restart', async () => {
+    const s = await broker.getBroker().signIn(EMAIL, PW, TOTP)
+    const exported = JSON.parse(JSON.stringify(broker.getBroker().exportSessions!()))
+    broker.setBroker(null as any)            // a new process: a fresh broker with no sessions
+    const fresh = broker.getBroker()
+    await assert.rejects(fresh.listSecrets(s.sid), broker.VaultSessionError)
+    await fresh.importSessions!(exported)
+    assert.deepEqual((await fresh.listSecrets(s.sid)).map(i => i.name).sort(), ['hyperprox:dns/example', 'hyperprox:proxy/npm', 'legacy/login'])
+    assert.equal(await fresh.verifyPassword(s.sid, PW), true)
+    // A CLI session whose tmpfs dir is gone is not brought back.
+    await fresh.importSessions!([{ kind: 'cli', sid: 'a'.repeat(32), email: EMAIL, role: 'admin', userId: 'u', dir: path.join(tmp, 'sessions', 'gone'), sessionKey: 'k', orgId: ORG_ID }])
+    await assert.rejects(fresh.listSecrets('a'.repeat(32)), broker.VaultSessionError)
+    await fresh.signOutAll()
   })
 
   it('auth failures come back as contract codes and do not fall back', async () => {

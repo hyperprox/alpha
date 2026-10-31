@@ -28,6 +28,7 @@ import {
   sendKeyFromSeed, sendPasswordHash, stretchMasterKey, symKeyFromBytes,
   type IdentityToken, type KdfConfig, type SymKey,
 } from './bw-crypto'
+import { snapshotChanged } from './snapshot'
 
 const FRESH_SYNC_MS = 30_000
 const DEVICE_NAME = 'hyperprox'
@@ -69,6 +70,25 @@ export interface DecryptedItem {
 
 function str(v: unknown): string | null {
   return typeof v === 'string' && v ? v : null
+}
+
+/**
+ * A session's state for the keyholder's snapshot (state.ts), so an API restart keeps it. Holds the user and
+ * organization keys and the tokens, base64: kept in memory only (this process and the keyholder), never logged.
+ */
+export interface NativeSessionSnapshot {
+  email: string
+  userId: string
+  orgId: string
+  memberType: number
+  collectionId?: string
+  kdf: KdfConfig
+  localHash: string
+  userKey: { enc: string; mac: string }
+  orgKey: { enc: string; mac: string }
+  accessToken: string
+  refreshToken?: string
+  expiresAt: number
 }
 
 function zero(k: SymKey | null | undefined): void {
@@ -175,6 +195,37 @@ export class NativeVaultSession {
     }
   }
 
+  // ---- keyholder snapshot -------------------------------------------------
+
+  toSnapshot(): NativeSessionSnapshot {
+    const k = (x: SymKey) => ({ enc: x.enc.toString('base64'), mac: x.mac.toString('base64') })
+    return {
+      email: this.email, userId: this.userId, orgId: this.orgId, memberType: this.memberType,
+      ...(this.collectionId ? { collectionId: this.collectionId } : {}),
+      kdf: this.kdf, localHash: this.localHash.toString('base64'),
+      userKey: k(this.userKey), orgKey: k(this.orgKey),
+      accessToken: this.accessToken, ...(this.refreshToken ? { refreshToken: this.refreshToken } : {}),
+      expiresAt: this.expiresAt,
+    }
+  }
+
+  /** A session from toSnapshot(), after an API restart. Its item cache starts empty (the next read syncs). */
+  static fromSnapshot(api: VaultwardenApi, s: NativeSessionSnapshot): NativeVaultSession {
+    const k = (x: { enc: string; mac: string }): SymKey => {
+      const key = { enc: Buffer.from(String(x?.enc ?? ''), 'base64'), mac: Buffer.from(String(x?.mac ?? ''), 'base64') }
+      if (key.enc.length !== 32 || key.mac.length !== 32) throw new Error('vault session snapshot has a malformed key')
+      return key
+    }
+    if (!s || !s.email || !s.userId || !s.orgId || !s.accessToken) throw new Error('vault session snapshot is incomplete')
+    const session = new NativeVaultSession(
+      api, String(s.email), String(s.userId), String(s.orgId), Number(s.memberType), s.collectionId ? String(s.collectionId) : undefined,
+      s.kdf, Buffer.from(String(s.localHash ?? ''), 'base64'), k(s.userKey), k(s.orgKey),
+      String(s.accessToken), s.refreshToken ? String(s.refreshToken) : undefined, Number(s.expiresAt) || 0, [],
+    )
+    session.cache = null
+    return session
+  }
+
   // ---- transport ----------------------------------------------------------
 
   private async refresh(): Promise<void> {
@@ -188,6 +239,7 @@ export class NativeVaultSession {
     this.accessToken = t.accessToken
     if (t.refreshToken) this.refreshToken = t.refreshToken
     this.expiresAt = Date.now() + (t.expiresIn ?? 3600) * 1000
+    snapshotChanged()   // the keyholder's copy must carry the new tokens
   }
 
   private async call(method: string, path: string, body?: unknown): Promise<any> {

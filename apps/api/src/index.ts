@@ -32,7 +32,8 @@ import { certsRoutes }            from './routes/certs'
 import { prismaPlugin }         from './plugins/prisma'
 import { redisPlugin }          from './plugins/redis'
 import { registerGate }         from './lib/gate'
-import { lock }                 from './lib/vault/state'
+import { attachUnlockState, setStateLogger } from './lib/vault/state'
+import { installLockAlerts }    from './lib/vault/lock-alert'
 import { setApiTokenStore, PrismaApiTokenStore } from './lib/api-tokens'
 
 const server = Fastify({
@@ -88,8 +89,15 @@ async function main() {
   // Terminal sockets live under /ws because nginx proxies upgrades only there.
   await server.register(terminalWsRoutes,         { prefix: '/ws/terminal' })
 
-  // Always start locked, and clear CLI session dirs a previous process left in /dev/shm.
-  await lock('restart')
+  // Without a keyholder: always start locked, and clear CLI session dirs a previous process left in
+  // /dev/shm. With one (VAULT_KEYHOLDER_SOCKET, set by the hyperprox-api drop-in): carry on unlocked if
+  // it holds the state, so a deploy does not lock HyperProx. Then alert if a lock happened while down.
+  const vaultLog = { info: (m: string) => server.log.info(m), warn: (m: string) => server.log.warn(m) }
+  setStateLogger(vaultLog)
+  const alerts = installLockAlerts({ log: vaultLog })
+  const attached = await attachUnlockState()
+  server.log.info(`[vault] unlock state: ${attached.mode}${attached.mode === 'keyholder' ? (attached.reachable ? ', keyholder reachable' : ', keyholder NOT reachable') : ' (a restart locks)'}`)
+  await alerts.startupCheck()
 
   // Credentials move into the vault on the first Owner sign-in (lib/credentials.ts seedFromEnv),
   // not here: while locked there is no vault session to write with.

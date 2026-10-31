@@ -27,7 +27,8 @@ import {
 } from './bw-crypto'
 import { bwErrorMessage, encodeJson, runBw } from './bw-cli'
 import { fastSignInEnabled, sessionRoot, vaultAdminToken, vaultCaCert, vaultPublicUrl, vaultUrl } from './config'
-import { FastPathFailed, NativeSessionExpired, NativeVaultSession, NotMemberError, type DecryptedItem } from './native'
+import { FastPathFailed, NativeSessionExpired, NativeVaultSession, NotMemberError, type DecryptedItem, type NativeSessionSnapshot } from './native'
+import { snapshotChanged } from './snapshot'
 
 // ---------------------------------------------------------------------------
 //  Contract types
@@ -92,7 +93,18 @@ export interface VaultBroker {
   upsertSecret(sid: string, name: string, fields: Record<string, string>, notes?: string): Promise<SecretItem>
   deleteSecret(sid: string, name: string): Promise<void>
   createSend(sid: string, text: string, opts?: { hours?: number; maxViews?: number; password?: string }): Promise<{ url: string; expiresAt: string }>
+  /**
+   * Additive, optional: the open sessions as JSON-serialisable data, for the keyholder's snapshot
+   * (state.ts), and back after an API restart. Holds session keys: only ever kept in memory.
+   */
+  exportSessions?(): unknown
+  importSessions?(data: unknown): Promise<void>
 }
+
+/** One vault session in the keyholder's snapshot. */
+type SessionSnapshot =
+  | { kind: 'fast'; sid: string; email: string; role: Role; userId: string; vault: NativeSessionSnapshot }
+  | { kind: 'cli'; sid: string; email: string; role: Role; userId: string; dir: string; sessionKey: string; orgId: string; collectionId?: string }
 
 // ---------------------------------------------------------------------------
 //  Helpers
@@ -347,6 +359,7 @@ class CliVaultBroker implements VaultBroker {
     }
     const s: FastSession = { kind: 'fast', sid: crypto.randomBytes(16).toString('hex'), email, role, userId: vault.userId, vault, queue: Promise.resolve() }
     this.sessions.set(s.sid, s)
+    snapshotChanged()
     return s
   }
 
@@ -418,6 +431,7 @@ class CliVaultBroker implements VaultBroker {
 
     const s: CliSession = { kind: 'cli', sid, email, role, userId, dir, sessionKey, orgId: String(org.id), collectionId, queue: Promise.resolve(), syncedAt: Date.now() /* login syncs */ }
     this.sessions.set(sid, s)
+    snapshotChanged()
     return s
   }
 
@@ -436,6 +450,7 @@ class CliVaultBroker implements VaultBroker {
       } catch (err) {
         if (err instanceof NativeSessionExpired) {
           this.sessions.delete(sid)
+          snapshotChanged()
           if (s.kind === 'fast') s.vault.close()
           throw new VaultSessionError()
         }
@@ -454,6 +469,7 @@ class CliVaultBroker implements VaultBroker {
       const key = r.stdout.trim()
       if (r.code !== 0 || !key) return false
       s.sessionKey = key // unlock re-wraps the local key; the new session key replaces the old one
+      snapshotChanged()
       return true
     })
   }
@@ -462,6 +478,7 @@ class CliVaultBroker implements VaultBroker {
     const s = SID_RE.test(sid) ? this.sessions.get(sid) : undefined
     if (!s) return
     this.sessions.delete(sid)
+    snapshotChanged()
     await s.queue.catch(() => undefined)
     if (s.kind === 'fast') { s.vault.close(); return }
     await runBw(['logout'], { dir: s.dir, timeoutMs: 15_000 }).catch(() => undefined)
@@ -476,6 +493,37 @@ class CliVaultBroker implements VaultBroker {
     const root = sessionRoot()
     if (fs.existsSync(root)) {
       for (const name of fs.readdirSync(root)) fs.rmSync(path.join(root, name), { recursive: true, force: true })
+    }
+  }
+
+  // ---- keyholder snapshot -------------------------------------------------
+
+  exportSessions(): SessionSnapshot[] {
+    const out: SessionSnapshot[] = []
+    for (const s of this.sessions.values()) {
+      const base = { sid: s.sid, email: s.email, role: s.role, userId: s.userId }
+      if (s.kind === 'fast') out.push({ kind: 'fast', ...base, vault: s.vault.toSnapshot() })
+      else out.push({ kind: 'cli', ...base, dir: s.dir, sessionKey: s.sessionKey, orgId: s.orgId, collectionId: s.collectionId })
+    }
+    return out
+  }
+
+  async importSessions(data: unknown): Promise<void> {
+    if (!Array.isArray(data)) throw new Error('broker part is not a list')
+    for (const s of this.sessions.values()) if (s.kind === 'fast') s.vault.close()
+    this.sessions.clear()
+    const root = path.resolve(sessionRoot())
+    for (const d of data as SessionSnapshot[]) {
+      if (!d || typeof d.sid !== 'string' || !SID_RE.test(d.sid)) continue
+      const base = { sid: d.sid, email: String(d.email), role: d.role, userId: String(d.userId ?? ''), queue: Promise.resolve() as Promise<unknown> }
+      if (d.kind === 'fast') {
+        this.sessions.set(d.sid, { kind: 'fast', ...base, vault: NativeVaultSession.fromSnapshot(this.api(), d.vault) })
+      } else if (d.kind === 'cli') {
+        // The CLI's data dir is on tmpfs and outlives an API restart; a session without it is gone.
+        const dir = path.resolve(String(d.dir))
+        if (path.dirname(dir) !== root || !fs.existsSync(dir)) continue
+        this.sessions.set(d.sid, { kind: 'cli', ...base, dir, sessionKey: String(d.sessionKey), orgId: String(d.orgId), collectionId: d.collectionId })
+      }
     }
   }
 
