@@ -79,6 +79,12 @@ if [ ! -d "$STANDALONE/.next/static/css" ]; then
   exit 1
 fi
 
+# The keyholder holds the unlocked vault state, so the API restart below does not lock HyperProx. It is
+# installed or started if needed and otherwise left alone; restarted only when its own program changed
+# (which locks HyperProx, and bin/install-keyholder says so). Never restarted just because this is a deploy.
+echo "→ Checking the keyholder..."
+bash bin/install-keyholder
+
 echo "→ Restarting services..."
 systemctl restart hyperprox-api hyperprox-frontend
 
