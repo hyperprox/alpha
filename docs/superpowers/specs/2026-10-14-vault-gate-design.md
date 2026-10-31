@@ -231,3 +231,60 @@ it reveal or exfiltrate a secret.
 - `docs/security.md`: the model above, written for users, including what recovery can and cannot do.
 - Installer screens for the access mode and the Master Reset Password, with plain-language warnings.
 - `README.md`: "Security" section linking to the above.
+
+## Addendum (2026-10-31): the unlock survives API restarts; lock alert
+
+Status: built on branch `vault-survives-restart`, not deployed.
+
+**Problem.** "A restart always starts locked" meant every deploy (`deploy.sh` restarts the API) locked
+HyperProx, and nobody was told. The unlocked state was the API's memory: the session-signing key, the
+decrypted secrets cache, the signed-in sessions, and the vault sessions (user and organization keys,
+tokens; or a CLI session key plus its tmpfs dir). The vault container itself holds only encrypted data.
+
+**Design.** A **keyholder**: a small, separate, long-lived process (`bin/hyperprox-keyholder`, python3
+standard library, its own systemd unit) that holds that state as one opaque snapshot, in memory only.
+
+- At unlock the API puts the snapshot there (`unlock`, which also sets the idle timeout and returns an
+  epoch); every change (sign-in, sign-out, re-confirmation, secret write, token refresh) sends a fresh one
+  (`update`, only for the current epoch, so a late write can never reopen a lock). After a restart the
+  API reads it back (`get`) and carries on unlocked: same cookies, same secrets, same vault sessions.
+- **Locks** only on: the idle timeout (kept by the keyholder; the API forwards activity as rate-limited
+  `touch`), an explicit lock (Lock now / `hyperprox lock`, passed on to the keyholder), a keyholder stop,
+  crash or restart, or a reboot. The API holds one connection; the keyholder pushes `locked` events, and
+  the connection closing is a lock too. **Fail closed:** no keyholder, no unlock (sign-in answers 503).
+- **Security.** Memory only: no disk, env or logs; non-dumpable, `LimitCORE=0`, `MemorySwapMax=0`.
+  A unix socket in a 0700 root-only runtime directory (the keyholder refuses to start otherwise), socket
+  0600. Every connection is checked with `SO_PEERCRED`: the uid must be the API service user's and the
+  pid must be inside `hyperprox-api.service`'s cgroup. No network listener (`PrivateNetwork=yes`,
+  `RestrictAddressFamilies=AF_UNIX`). It logs events and refused peers, never a request body.
+- **Deploys.** `bin/install-keyholder` (run by `install.sh` and `deploy.sh`) installs a copy of the
+  program, the unit and an API drop-in (`Wants=`/`After=`, not `Requires=`, so a keyholder restart never
+  restarts the API, and `VAULT_KEYHOLDER_SOCKET`). It starts the keyholder if it is not running, and
+  restarts it only when its program changed, printing that this locks HyperProx. Without
+  `VAULT_KEYHOLDER_SOCKET` the API behaves as before (in-process, a restart locks).
+- **Lock alert.** When HyperProx locks by itself (idle, keyholder, restart while unlocked; not a manual
+  lock) the API posts one message: ntfy (`Click` + a view action: one tap on Android), Gotify (click URL),
+  Discord, or a generic webhook. Channel: `LOCK_ALERT_URL`, else the existing Updates/Certificates
+  `webhook_url`. Link: `HYPERPROX_PUBLIC_URL` + `/login?locked=1&reason=…`. The address must be readable
+  while locked, so it is config, not a vault secret (the same exception as the metrics exporter). The
+  message carries no secret or token. A non-secret marker in `data/` records "was unlocked", so the API
+  can alert after a restart that found the keyholder empty.
+
+**Threat model change.** While unlocked, the state now sits in two processes instead of one; root can
+read either, as before. Locked is unchanged: nothing usable anywhere.
+
+**Passkey unlock (design only, not built).** HyperProx sign-in has no WebAuthn today. The form already
+carries `username` / `current-password` / `one-time-code` autocomplete hints, so a phone's password
+manager can fill it behind a fingerprint. A passkey cannot simply replace the master password: the vault
+is zero-knowledge, its keys come from that password, Vaultwarden has no passkey (PRF) login grant, and
+its WebAuthn 2FA is bound to the vault's own origin. Two possible steps:
+
+1. *Passkey as the second factor* (password still autofilled): register WebAuthn as a Vaultwarden 2FA
+   provider with the vault's `DOMAIN` on HyperProx's site, and have the broker relay the challenge
+   (provider 7) between the browser and the vault. Medium effort; mostly config and broker plumbing.
+2. *Fingerprint only*: a HyperProx passkey with the WebAuthn **PRF** extension. At enrolment (signed in,
+   re-confirmed) HyperProx stores a blob, encrypted under a key derived from the PRF output, holding what
+   a sign-in needs (master-key material and Vaultwarden's remember-device token). Unlock: one assertion,
+   the API decrypts the blob and signs in. At rest the blob is useless without the authenticator. Cost:
+   a WebAuthn library, a passkey table, enrol and unlock UI, re-enrolment on password change, and a policy
+   decision, since it trades "master password + TOTP" for "phone + biometric". Not small; not built.
