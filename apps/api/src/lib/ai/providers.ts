@@ -86,14 +86,35 @@ export async function setActiveProvider(id: ProviderId): Promise<void> {
  * connection status the rest of the app shows.
  */
 async function ollamaReachable(url: string): Promise<boolean> {
+  return (await ollamaTags(url)).up
+}
+
+/** The models an Ollama server has installed; `up` is false when it does not answer. */
+export async function ollamaTags(url: string, fetchFn: typeof fetch = fetch): Promise<{ up: boolean; models: string[] }> {
   try {
-    const res = await fetch(`${url.replace(/\/+$/, '')}/api/tags`, {
-      signal: AbortSignal.timeout(2500),
-    })
-    return res.ok
+    const res = await fetchFn(`${url.replace(/\/+$/, '')}/api/tags`, { signal: AbortSignal.timeout(2500) })
+    if (!res.ok) return { up: false, models: [] }
+    const data = await res.json().catch(() => ({})) as { models?: Array<{ name?: unknown }> }
+    return { up: true, models: (data.models ?? []).map(m => m.name).filter((n): n is string => typeof n === 'string') }
   } catch {
-    return false
+    return { up: false, models: [] }
   }
+}
+
+/** A name with no tag is its `latest` tag, as Ollama reads it. */
+export function modelInstalled(model: string, installed: string[]): boolean {
+  const want = model.includes(':') ? model : `${model}:latest`
+  return installed.includes(want)
+}
+
+/** Reachable is not usable: the model stored for the wizard has to be one the server has. */
+export function ollamaProviderState(addr: string, model: string, tags: { up: boolean; models: string[] }): { configured: boolean; missing: string[] } {
+  if (!addr) return { configured: false, missing: ['server address'] }
+  if (!tags.up) return { configured: false, missing: ['a reachable server — ' + addr + ' does not answer'] }
+  if (!modelInstalled(model, tags.models)) {
+    return { configured: false, missing: [`the model ${model} is not installed on the server — pick one under Models`] }
+  }
+  return { configured: true, missing: [] }
 }
 
 export async function listProviders(): Promise<ProviderInfo[]> {
@@ -104,7 +125,9 @@ export async function listProviders(): Promise<ProviderInfo[]> {
   ])
 
   const ollamaAddr = ollamaUrl || process.env.OLLAMA_URL || ''
-  const ollamaUp   = ollamaAddr ? await ollamaReachable(ollamaAddr) : false
+  const ollamaTagList = ollamaAddr ? await ollamaTags(ollamaAddr) : { up: false, models: [] }
+  const ollamaStored = ollamaModel || process.env.OLLAMA_MODEL || OLLAMA_DEFAULT_MODEL
+  const ollamaState = ollamaProviderState(ollamaAddr, ollamaStored, ollamaTagList)
 
   return [
     {
@@ -123,11 +146,9 @@ export async function listProviders(): Promise<ProviderInfo[]> {
     },
     {
       id: 'ollama', name: 'Ollama', kind: 'local',
-      configured: ollamaUp,
-      model: ollamaModel || process.env.OLLAMA_MODEL || 'llama3.2:3b',
-      missing: ollamaAddr
-        ? (ollamaUp ? [] : ['a reachable server — ' + ollamaAddr + ' does not answer'])
-        : ['server address'],
+      configured: ollamaState.configured,
+      model: ollamaStored,
+      missing: ollamaState.missing,
       note: 'Free and private. Small models produce weaker plans — the output is validated before you see it.',
     },
   ]
