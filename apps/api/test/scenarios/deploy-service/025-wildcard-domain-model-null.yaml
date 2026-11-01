@@ -1,0 +1,11 @@
+id: deploy-025-wildcard-domain-model-null
+prompt: "Deploy Gitea at *.example.com"
+facts: fixtures/three-node-cluster.json
+answers: []
+expect:
+  state: asking
+  questions: ["domain"]
+  fields:
+    domain: "*.example.com"
+    exposure: "public"
+found_by: "2026-10-31 live plan: the model left domain null, so only the exposure question was asked"
