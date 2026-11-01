@@ -469,3 +469,34 @@ test('a bind-mounted container is updated without a snapshot instead of being sk
   assert.equal(fake.ran(/^snapshot/, '101'), false, 'Proxmox was never asked for a snapshot it refuses')
   assert.equal((await store.getJob(job.id))!.status, 'done')
 })
+
+test('a finished run publishes one notification: info when all went well, with a link to the Updates page', async () => {
+  const fake = cluster()
+  const published: any[] = []
+  const store = new MemoryStore()
+  const runner = new UpdatesRunner({ store, exec: fake, loadPolicy: policyLoad(POLICY), timing: FAST, hostname: 'not-a-guest', publish: async e => { published.push(e) } })
+  await runner.start('run', 'schedule'); await settle(runner)
+  assert.equal(published.length, 1)
+  assert.equal(published[0].type, 'updates.job.finished')
+  assert.equal(published[0].severity, 'info')
+  assert.equal(published[0].title, 'Updates finished')
+  assert.equal(published[0].link, '/updates')
+  assert.match(published[0].lines[0], /16 steps ok, 0 skipped, 0 failed/)
+})
+
+test('a node-upgrade failure pauses the run and publishes one critical notification', async () => {
+  const fake = cluster()
+  fake.inject = (w, c) => (w === 'node-a' && /apt-get .* (dist-)?upgrade$/.test(c) ? { code: 100, output: 'dpkg error', timedOut: false } : undefined)
+  const published: any[] = []
+  const runner = new UpdatesRunner({ store: new MemoryStore(), exec: fake, loadPolicy: policyLoad(POLICY), timing: FAST, hostname: 'not-a-guest', publish: async e => { published.push(e) } })
+  await runner.start('run', 'schedule'); await settle(runner)
+  assert.deepEqual(published.map(e => [e.type, e.severity, e.title]), [['updates.job.paused', 'critical', 'Updates paused']])
+})
+
+test('a publisher that throws never fails the job', async () => {
+  const fake = cluster()
+  const store = new MemoryStore()
+  const runner = new UpdatesRunner({ store, exec: fake, loadPolicy: policyLoad(POLICY), timing: FAST, hostname: 'not-a-guest', publish: async () => { throw new Error('bus down') } })
+  const job = await runner.start('run', 'schedule'); await settle(runner)
+  assert.equal((await store.getJob(job.id))!.status, 'done')
+})

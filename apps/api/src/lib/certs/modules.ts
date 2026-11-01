@@ -28,7 +28,8 @@ import { issueCertificate, fetchAri, zonesFor } from './acme'
 import { probeEndpoint, verdictFor } from './probe'
 import { discoverProbeTargets, buildInventory } from './inventory'
 import { listHousekeeping, applyHousekeeping } from './housekeeping'
-import { alertChanges, sendWebhook } from './alerts'
+import { alertChanges, certsEvent } from './alerts'
+import type { NotifyEventInput, Severity } from '../notify/types'
 
 export type { KeyType, TargetSpec, CertsPolicy } from './policy'
 export type { DnsProvider } from './dns01'
@@ -57,14 +58,14 @@ export interface CertsModules {
   listHousekeeping(d: HousekeepingDeps, now: Date): Promise<CertsHousekeepingItem[]>
   applyHousekeeping(item: CertsHousekeepingItem, d: HousekeepingDeps): Promise<string>
   alertChanges(prev: Map<string, AlertState>, next: AlertState[], now: Date, lastReminder: Date | null):
-    { messages: string[]; state: Map<string, AlertState>; reminderSent: boolean }
-  sendWebhook(url: string, messages: string[]): Promise<void>
+    { messages: string[]; state: Map<string, AlertState>; reminderSent: boolean; severity?: Severity; reminderOnly?: boolean }
+  certsEvent(messages: string[], severity: Severity, reminderOnly: boolean): NotifyEventInput
 }
 
 export const defaultModules: CertsModules = {
   loadCertsPolicy, LE_STAGING, renewAfter, dueForRenewal,
   godaddyProvider, issueCertificate, fetchAri, zonesFor, probeEndpoint, verdictFor,
-  discoverProbeTargets, buildInventory, listHousekeeping, applyHousekeeping, alertChanges, sendWebhook,
+  discoverProbeTargets, buildInventory, listHousekeeping, applyHousekeeping, alertChanges, certsEvent,
 }
 
 // --- Sources for inventory, discovery and housekeeping ------------------------------------------

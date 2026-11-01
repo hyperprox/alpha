@@ -56,7 +56,9 @@ test('Discord: the link without a preview, and no mention can ping', () => {
   const r = buildAlert({ url: 'https://discord.com/api/webhooks/1/abc', kind: 'discord', publicUrl: PUBLIC }, 'keyholder', now)
   const b = JSON.parse(r.body)
   assert.deepEqual(b.allowed_mentions, { parse: [] })
-  assert.match(b.content, /<https:\/\/hyperprox\.example\.com\/login\?locked=1&reason=keyholder>/)
+  assert.equal(b.embeds[0].url, 'https://hyperprox.example.com/login?locked=1&reason=keyholder')
+  assert.equal(b.embeds[0].title, 'HyperProx is locked')
+  assert.match(b.embeds[0].description, /keyholder service stopped/)
 })
 
 test('Gotify: click URL in extras, app token in X-Gotify-Key; generic webhook: content + text + url', () => {
@@ -64,9 +66,11 @@ test('Gotify: click URL in extras, app token in X-Gotify-Key; generic webhook: c
   assert.equal(g.headers['X-Gotify-Key'], 'A1')
   assert.equal(JSON.parse(g.body).extras['client::notification'].click.url, `${PUBLIC}/login?locked=1&reason=restart`)
   const w = JSON.parse(buildAlert({ url: 'https://hooks.example.com/x', kind: 'webhook', publicUrl: PUBLIC }, 'restart', now).body)
-  assert.equal(w.event, 'hyperprox.locked')
+  assert.equal(w.type, 'vault.locked')
+  assert.equal(w.severity, 'critical')
+  assert.deepEqual(w.subject, { kind: 'vault', name: 'restart' })
   assert.equal(w.url, `${PUBLIC}/login?locked=1&reason=restart`)
-  assert.match(w.content, /Tap to unlock/)
+  assert.match(w.content, /Unlock: https:\/\/hyperprox\.example\.com\/login/)
   assert.equal(w.text, w.content)
 })
 
@@ -100,7 +104,7 @@ test('in-process mode: idle and restart alert, "Lock now" does not; the marker t
   setBroker(broker)
   const { startupCheck } = installLockAlerts({
     env: { LOCK_ALERT_URL: 'https://hooks.example.com/x', HYPERPROX_PUBLIC_URL: PUBLIC },
-    fetch: async (_u, init) => { sent.push(JSON.parse(init.body).reason); return { ok: true, status: 200 } },
+    fetch: async (_u, init) => { sent.push(JSON.parse(init.body).subject.name); return { ok: true, status: 200 } },
   })
   const s = await broker.signIn('o@example.com', 'a long master password', '123456')
   await unlock(s.sid)
@@ -128,7 +132,7 @@ test('a keyholder restart that was a manual lock (hyperprox lock with the API do
   const sent: string[] = []
   const deps = {
     env: { LOCK_ALERT_URL: 'https://hooks.example.com/x', HYPERPROX_PUBLIC_URL: PUBLIC },
-    fetch: async (_u: string, init: any) => { sent.push(JSON.parse(init.body).reason); return { ok: true, status: 200 } },
+    fetch: async (_u: string, init: any) => { sent.push(JSON.parse(init.body).subject.name); return { ok: true, status: 200 } },
   }
   // At the API's next start.
   writeMarker(true)
