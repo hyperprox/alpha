@@ -19,6 +19,7 @@ import { productionExecutor, type UpdatesExecutor } from '../lib/updates/executo
 import { readInventory, selfVmidOf } from '../lib/updates/inventory'
 import { buildPlan } from '../lib/updates/planner'
 import { UpdatesRunner, PolicyRequiredError, JobStateError, type RunnerTiming } from '../lib/updates/runner'
+import { publish, type NotifyEventInput } from '../lib/notify'
 import { UpdatesScheduler } from '../lib/updates/scheduler'
 import { ActiveJobError, PrismaStore, jobView, type UpdatesStore } from '../lib/updates/store'
 import { APPROVAL_ID, productionAppEnv, type AppEnv } from '../lib/updates/apps'
@@ -36,6 +37,8 @@ export interface UpdatesRouteDeps {
   apps?:       AppEnv
   /** Exposes the runner so tests can wait for a job to settle. */
   onRunner?:   (runner: UpdatesRunner) => void
+  /** The notification bus; default the installed one (a no-op until it is installed). */
+  publish?:    (e: NotifyEventInput) => Promise<void>
 }
 
 // Sockets on /ws/updates, each opened by an admin. The general /ws channel is viewer-level, and
@@ -111,6 +114,7 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       hostname: deps.hostname,
       timing: deps.timing,
       apps,
+      publish: deps.publish ?? publish,
     })
     deps.onRunner?.(runner)
 

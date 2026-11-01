@@ -5,13 +5,21 @@
 //  unlocked) it posts one message to a phone-friendly channel with a link to the
 //  sign-in page. A manual lock sends nothing: whoever locked it knows.
 //
-//  The channel has to be readable while locked, so its address is ordinary
-//  config, not a vault secret (like the metrics exporter's read-only token):
+//  Where it goes: the notification channels marked "usable while locked"
+//  (Settings → Notifications, lib/notify). Their secrets live in
+//  data/notify-locked-channels.json, so delivery needs neither the vault nor
+//  Postgres. On the first start of this version the old settings are moved
+//  there once (lib/notify/service.ts seedLockChannel):
 //    LOCK_ALERT_URL        where to post; unset: the Updates or Certificates
 //                          webhook_url (config/updates.yaml, config/certs.yaml)
 //    LOCK_ALERT_KIND       auto (default) | discord | ntfy | gotify | webhook
 //    LOCK_ALERT_TOKEN      optional: ntfy access token / Gotify app token
+//  Until that has happened they are still read here (the legacy path below).
 //    HYPERPROX_PUBLIC_URL  the address you open HyperProx at, for the link
+//
+//  This file keeps the lock-specific rules: one message per lock, no message
+//  for a manual lock, and the "was unlocked" marker for the alert after a
+//  restart. The rendering per kind is the shared notification adapters'.
 //
 //  The message carries the reason and the link, never a secret, token or
 //  session. Nothing here logs the channel address or the token.
@@ -23,6 +31,11 @@ import { dataDir, idleLockMs } from './config'
 import { isUnlocked, keyholderLastLock, onLock, onUnlock, type LockReason } from './state'
 import { loadPolicy } from '../updates/policy'
 import { loadCertsPolicy } from '../certs/policy'
+import { buildRequest } from '../notify/adapters'
+import { toMessage } from '../notify/render'
+import { guardedSend } from '../notify/ssrf'
+import { getNotifyService } from '../notify'
+import { SELF_HOSTABLE, type NotifyEventInput } from '../notify/types'
 
 export type AlertKind = 'discord' | 'ntfy' | 'gotify' | 'webhook'
 export type AlertReason = Exclude<LockReason, 'manual'>
@@ -81,67 +94,73 @@ export function lockMessage(reason: AlertReason, idleMinutes = Math.round(idleLo
   }
 }
 
-export function buildAlert(cfg: LockAlertConfig, reason: AlertReason, now = new Date(), idleMinutes?: number): AlertRequest {
-  const title = 'HyperProx is locked'
-  const text = lockMessage(reason, idleMinutes)
-  const link = unlockLink(cfg.publicUrl, reason)
-  const tail = link ? `Tap to unlock: ${link}` : 'Sign in at /login on HyperProx to unlock (set HYPERPROX_PUBLIC_URL for a one-tap link).'
-  const json = { 'Content-Type': 'application/json' }
-  switch (cfg.kind) {
-    case 'discord':
-      // <link> stops Discord from unfurling a preview; no mentions can ever ping.
-      return { url: cfg.url, method: 'POST', headers: json, body: JSON.stringify({
-        content: `**${title}**\n${text}\n${link ? `Tap to unlock: <${link}>` : tail}`,
-        allowed_mentions: { parse: [] },
-      }) }
-    case 'ntfy': {
-      const headers: Record<string, string> = { 'Content-Type': 'text/plain; charset=utf-8', Title: title, Tags: 'lock', Priority: '4' }
-      if (link) { headers.Click = link; headers.Actions = `view, Unlock, ${link}, clear=true` }
-      if (cfg.token) headers.Authorization = `Bearer ${cfg.token}`
-      return { url: cfg.url, method: 'POST', headers, body: `${text}\n${tail}` }
-    }
-    case 'gotify': {
-      const headers: Record<string, string> = { ...json }
-      if (cfg.token) headers['X-Gotify-Key'] = cfg.token
-      return { url: cfg.url, method: 'POST', headers, body: JSON.stringify({
-        title, message: `${text}\n${tail}`, priority: 8,
-        extras: { 'client::display': { contentType: 'text/plain' }, ...(link ? { 'client::notification': { click: { url: link } } } : {}) },
-      }) }
-    }
-    case 'webhook':
-      // `content` for Discord-compatible receivers, `text` for Slack-compatible ones, the rest for anything else.
-      return { url: cfg.url, method: 'POST', headers: json, body: JSON.stringify({
-        event: 'hyperprox.locked', reason, at: now.toISOString(), title, message: text, url: link,
-        content: `${title}: ${text} ${tail}`, text: `${title}: ${text} ${tail}`,
-      }) }
+/** The lock alert as a notification event: critical, family vault, the sign-in page as its link. */
+export function lockEvent(reason: AlertReason, idleMinutes?: number): NotifyEventInput {
+  return {
+    type: 'vault.locked', severity: 'critical', title: 'HyperProx is locked',
+    lines: [lockMessage(reason, idleMinutes)],
+    link: `/login?locked=1&reason=${reason}`, linkLabel: 'Unlock',
+    hint: 'Sign in at /login on HyperProx to unlock (set HYPERPROX_PUBLIC_URL for a one-tap link).',
+    subject: { kind: 'vault', name: reason }, fingerprint: 'vault.locked',
   }
+}
+
+/** The request for one channel, through the shared adapter for its kind. */
+export function buildAlert(cfg: LockAlertConfig, reason: AlertReason, now = new Date(), idleMinutes?: number): AlertRequest {
+  const msg = toMessage(lockEvent(reason, idleMinutes), { publicUrl: cfg.publicUrl, now })
+  const req = buildRequest(cfg.kind, { url: cfg.url, ...(cfg.token ? { token: cfg.token } : {}) }, {}, msg, now)
+  return { url: req.url, method: 'POST', headers: req.headers, body: req.body }
 }
 
 // ---------------------------------------------------------------------------
 //  Sending, and the "was unlocked" marker for the alert after a restart
 // ---------------------------------------------------------------------------
 
+export interface LockNotifier {
+  lockSeeded(): boolean
+  deliverLocked(e: NotifyEventInput): Promise<{ result: 'sent' | 'failed' | 'unconfigured'; kinds: string[]; failures: string[] }>
+}
+
 export interface AlertDeps {
+  /** Legacy path only: replaces the guarded send (tests). */
   fetch?: (url: string, init: { method: string; headers: Record<string, string>; body: string; signal: AbortSignal }) => Promise<{ ok: boolean; status: number }>
   log?: { info(msg: string): void; warn(msg: string): void }
   env?: Env
   fallback?: () => string | undefined
+  /** The notification channels; default the installed service. null: the legacy path only. */
+  notify?: LockNotifier | null
 }
 
 let lastSentAt = 0
 
 export async function sendLockAlert(reason: AlertReason, deps: AlertDeps = {}): Promise<'sent' | 'unconfigured' | 'failed' | 'suppressed'> {
   const log = deps.log ?? { info: () => undefined, warn: () => undefined }
+  const notify = deps.notify === undefined ? getNotifyService() : deps.notify
+  if (notify?.lockSeeded()) {
+    // One message per lock: the keyholder's event and its connection closing can both arrive.
+    if (Date.now() - lastSentAt < 10_000) return 'suppressed'
+    lastSentAt = Date.now()
+    const r = await notify.deliverLocked(lockEvent(reason))
+    if (r.result === 'unconfigured') { log.info('[vault] locked; no notification channel is set to receive lock alerts (Settings, Notifications)'); return 'unconfigured' }
+    for (const f of r.failures) log.warn(`[vault] lock alert (${f}) could not be sent`)
+    if (r.result === 'sent') log.info(`[vault] lock alert sent (${r.kinds.join(', ')}, ${reason})`)
+    return r.result
+  }
+
+  // Legacy: the .env settings, until the first start of this version has moved them onto a channel.
   const cfg = lockAlertConfig(deps.env ?? process.env, deps.fallback ?? existingWebhook)
   if (!cfg) { log.info('[vault] locked; no lock alert channel is set (LOCK_ALERT_URL)'); return 'unconfigured' }
-  // One message per lock: the keyholder's event and its connection closing can both arrive.
   if (Date.now() - lastSentAt < 10_000) return 'suppressed'
   lastSentAt = Date.now()
   const req = buildAlert(cfg, reason)
-  const f = deps.fetch ?? ((url, init) => fetch(url, init))
   try {
-    const res = await f(req.url, { method: req.method, headers: req.headers, body: req.body, signal: AbortSignal.timeout(10_000) })
-    if (!res.ok) { log.warn(`[vault] lock alert (${cfg.kind}) was refused: HTTP ${res.status}`); return 'failed' }
+    let res: { ok: boolean; status?: number; code?: string }
+    if (deps.fetch) res = await deps.fetch(req.url, { method: req.method, headers: req.headers, body: req.body, signal: AbortSignal.timeout(10_000) })
+    else res = await guardedSend(req, cfg.kind, { lanOverride: SELF_HOSTABLE.includes(cfg.kind) })
+    if (!res.ok) {
+      log.warn(res.status ? `[vault] lock alert (${cfg.kind}) was refused: HTTP ${res.status}` : `[vault] lock alert (${cfg.kind}) could not be sent: ${res.code ?? 'error'}`)
+      return 'failed'
+    }
     log.info(`[vault] lock alert sent (${cfg.kind}, ${reason})`)
     return 'sent'
   } catch (e) {

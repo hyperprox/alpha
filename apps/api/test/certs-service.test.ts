@@ -96,10 +96,10 @@ function world(): World {
       const messages = next.filter(s => prev.get(s.key)?.verdict !== s.verdict && s.verdict !== 'ok').map(s => `${s.key}: ${s.verdict}`)
       return { messages, state: new Map(next.map(s => [s.key, s])), reminderSent: false }
     },
-    sendWebhook: async (_url, m) => { w.webhooks.push(m) },
   }
   w.svc = new CertsService({
     store, secrets: vault, modules,
+    publish: async e => { w.webhooks.push(e.lines ?? []) },
     dnsProviders: async () => [],
     deploy: {
       guestPush: async (vmid, files) => { w.pushes.push({ vmid, paths: files.map(f => f.path) }); return { code: 0, output: 'wrote' } },
@@ -300,7 +300,7 @@ test('the daily check retries a failed delivery with the certificate already iss
   assert.equal((await w.store.listTargets('mail')).every(t => t.ok === true), true)
 })
 
-test('the daily check probes, alerts on a change of verdict, and sends the webhook once', async () => {
+test('the daily check probes, alerts on a change of verdict, and publishes one notification', async () => {
   const w = world()
   await issueOk(w)
   w.served.set('mail.example.com:993', 'DE:AD')   // another tool overwrote the certificate
@@ -310,7 +310,7 @@ test('the daily check probes, alerts on a change of verdict, and sends the webho
   await w.svc.dailyCheck()
   assert.equal(w.webhooks.length, 1, 'no repeat while nothing changed')
   const alert = (await w.svc.events(undefined, 50)).find(e => e.kind === 'alert')!
-  assert.match(alert.detail, /sent to the webhook/)
+  assert.match(alert.detail, /sent to notifications/)
 })
 
 test('restart recovery releases an issuance cut off mid-way', async () => {

@@ -33,7 +33,9 @@ test('the shipped example loads and every section is read', () => {
   assert.equal(p.acme.email, 'admin@example.com')
   assert.equal(p.acme.keyType, 'ec256')
   assert.equal(p.schedule.check, '15 6 * * *')
-  assert.equal(p.alerts.webhookUrl, 'https://hooks.example.com/certificates')
+  // The webhook moved to Settings → Notifications; the example no longer sets it (the key still parses, below).
+  assert.equal(p.alerts.webhookUrl, null)
+  assert.equal(parseCertsPolicy('alerts: { webhook_url: https://hooks.example.com/certificates }').alerts.webhookUrl, 'https://hooks.example.com/certificates')
   assert.deepEqual(p.certificates.mail, { names: ['mail.example.com'], deploy: [{ target: 'mail-guest' }] })
   assert.deepEqual(p.certificates.wildcard.names, ['example.com', '*.example.com'])
   assert.deepEqual(p.probes[1], { host: 'mail.example.com', port: 587, starttls: 'smtp', internal: false, connect: null })

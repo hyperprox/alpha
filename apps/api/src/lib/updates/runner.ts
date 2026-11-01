@@ -37,6 +37,7 @@ import { handoffNodeOf, handoffTag, readHandoff, selfGuestScript, selfNodeReboot
 import { type AppEnv, APPROVAL_ID, runAppStep } from './apps'
 import { ActiveJobError, TERMINAL, jobView, stepView, type JobRecord, type StepRecord, type UpdatesStore } from './store'
 import type { UpdatesJobStatus } from './types'
+import type { NotifyEventInput, Severity } from '../notify/types'
 
 export class PolicyRequiredError extends Error {
   constructor(detail?: string) {
@@ -80,7 +81,8 @@ export interface RunnerDeps {
   emit?:      (payload: UpdatesWsPayload) => void
   /** Called with every inventory the runner reads, so the API's cache stays current. */
   onInventory?: (r: InventoryResult) => void
-  notify?:    (url: string, text: string) => Promise<void>
+  /** The notification bus (lib/notify). Without it, nothing is announced. */
+  publish?:   (e: NotifyEventInput) => Promise<void>
   log?:       (msg: string) => void
   hostname?:  string
   timing?:    Partial<RunnerTiming>
@@ -103,13 +105,15 @@ const NOT_FINISHED: UpdatesJobStatus[] = ['planned', 'awaiting-confirm', 'runnin
 const SNAPSHOT_PREFIX = 'hp-upd-'
 const BOOT_ID = 'cat /proc/sys/kernel/random/boot_id'
 
-async function defaultNotify(url: string, text: string): Promise<void> {
-  const ctrl = new AbortController()
-  const t = setTimeout(() => ctrl.abort(), 10_000)
-  try {
-    // `content` is what chat webhooks (Discord, Slack-compatible) read; the full detail stays in the UI.
-    await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: text.slice(0, 1900) }), signal: ctrl.signal })
-  } finally { clearTimeout(t) }
+// Reasons a step is skipped in an ordinary, healthy run: not worth more than an "info" message.
+const ROUTINE_SKIP = /^(no reboot needed|no Ceph packages pending|cancelled|the run stopped before|reboot: manual|no snapshot possible|rolled back to)/
+
+/** info if all went well, warning if anything failed or was held back by a gate, critical if a node update failed. */
+export function reportSeverity(status: string, steps: StepRecord[]): Severity {
+  if (steps.some(s => s.status === 'failed' && (s.action === 'node-upgrade' || s.action === 'node-reboot'))) return 'critical'
+  if (status === 'failed' || status === 'paused' || steps.some(s => s.status === 'failed')) return 'warning'
+  if (steps.some(s => s.status === 'skipped' && s.reason && !ROUTINE_SKIP.test(s.reason))) return 'warning'
+  return 'info'
 }
 
 export class UpdatesRunner {
@@ -890,7 +894,11 @@ export class UpdatesRunner {
   private async pause(jobId: string, reason: string): Promise<void> {
     if (!await this.transition(jobId, ['running'], { status: 'paused', pauseReason: reason })) return
     await this.store.audit('updates.job.paused', jobId, { reason })
-    await this.sendReport(jobId, `HyperProx updates paused: ${reason}`)
+    const steps = await this.store.getSteps(jobId)
+    await this.announce({
+      type: 'updates.job.paused', severity: reportSeverity('paused', steps), title: 'Updates paused',
+      lines: [`${reason.replace(/\.$/, '')}.`, 'Resume or cancel it on the Updates page.'],
+    }, jobId)
   }
 
   private async cancelNow(jobId: string): Promise<void> {
@@ -911,7 +919,19 @@ export class UpdatesRunner {
     await this.store.releaseLock(jobId)
     this.runStartedAt.delete(jobId)
     this.cephKnown.delete(jobId)
-    await this.sendReport(jobId, rep.summary)
+    const steps = await this.store.getSteps(jobId)
+    const count = (st: string) => steps.filter(x => x.status === st).length
+    const severity = reportSeverity(status, steps)
+    const title = status === 'cancelled' ? 'Updates cancelled' : status === 'failed' ? 'Updates failed'
+      : severity === 'info' ? 'Updates finished' : 'Updates finished with problems'
+    await this.announce({
+      type: 'updates.job.finished', severity, title,
+      lines: [
+        `${count('ok')} steps ok, ${count('skipped')} skipped, ${count('failed')} failed.`,
+        ...(reason && status !== 'done' ? [`${reason.replace(/\.$/, '')}.`] : []),
+        ...(rep.rebootsPending.length ? [`Reboot pending: ${rep.rebootsPending.join(', ')}.`] : []),
+      ],
+    }, jobId)
     return job
   }
 
@@ -937,11 +957,11 @@ export class UpdatesRunner {
     }
   }
 
-  private async sendReport(jobId: string, text: string): Promise<void> {
-    const url = this.deps.loadPolicy().policy.webhookUrl
-    if (!url) return
-    try { await (this.deps.notify ?? defaultNotify)(url, `${text}\nJob ${jobId} — details on the Updates page.`) }
-    catch (e: any) { this.log(`report webhook failed: ${e.message}`) }
+  /** One message per run outcome, through the notification bus. Never fails the job. */
+  private async announce(e: Omit<NotifyEventInput, 'link' | 'where'>, jobId: string): Promise<void> {
+    if (!this.deps.publish) return
+    try { await this.deps.publish({ ...e, link: '/updates', where: 'Updates page', fingerprint: `updates.job:${jobId}` }) }
+    catch (err: any) { this.log(`could not announce the job: ${err?.name ?? 'error'}`) }
   }
 
   private async ceph(jobId: string): Promise<boolean> {

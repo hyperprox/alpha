@@ -22,6 +22,8 @@ import type { PrismaClient } from '@prisma/client'
 import { GoDaddyClient } from '../godaddy-client'
 import { getCredential, getProviderCredentials, setCredential, setCredentials } from '../credentials'
 import { nextRun } from '../updates/cron'
+import { publish } from '../notify'
+import type { NotifyEventInput } from '../notify/types'
 import { productionExecutor } from '../updates/executor'
 import {
   defaultModules, productionSources,
@@ -138,6 +140,8 @@ export interface CertsServiceDeps {
   probeOptions?: ProbeOptions
   /** Script runner in the proxy's guest for housekeeping; shorter-lived than a deploy. Defaults to deploy.guestExec. */
   housekeepingExec?(vmid: number, script: string): Promise<{ code: number; output: string }>
+  /** The notification bus (lib/notify). Without it, alerts are only recorded in the history. */
+  publish?(e: NotifyEventInput): Promise<void>
 }
 
 const INVENTORY_TTL_MS = 5 * 60_000
@@ -778,9 +782,11 @@ export class CertsService {
     const res = this.m.alertChanges(prev, next, now, lastReminder ? new Date(lastReminder) : null)
     if (res.messages.length) {
       let sent = ''
-      if (policy.alerts.webhookUrl) {
-        try { await this.m.sendWebhook(policy.alerts.webhookUrl, res.messages); sent = ' (sent to the webhook)' }
-        catch (e) { sent = ` (the webhook failed: ${msg(e)})` }
+      if (this.deps.publish) {
+        try {
+          await this.deps.publish(this.m.certsEvent(res.messages, res.severity ?? 'warning', !!res.reminderOnly))
+          sent = ' (sent to notifications)'
+        } catch (e) { sent = ` (notifications failed: ${(e as Error)?.name ?? 'error'})` }
       }
       await this.event(null, 'alert', !sent.includes('failed'), `${res.messages.join('\n')}${sent}`)
     }
@@ -809,5 +815,6 @@ export function productionCertsService(db: PrismaClient, log: (m: string) => voi
     housekeepingExec: guestRunner(exec, 60_000).guestExec,
     sources: productionSources(),
     log,
+    publish,
   })
 }
