@@ -191,6 +191,17 @@ export class StructuredOutputError extends Error {
   }
 }
 
+/**
+ * A model call that failed for a reason a person can act on. The message is written to be shown as is:
+ * it names the cause and never quotes the provider's body, which can echo the prompt.
+ */
+export class ModelCallError extends Error {
+  constructor(message: string, readonly kind: 'unreachable' | 'model-missing' | 'timeout' | 'rejected') {
+    super(message)
+    this.name = 'ModelCallError'
+  }
+}
+
 const REFUSED = 'The model declined this request. Rephrase it, or use a different provider.'
 const TRUNCATED = 'The model ran out of room before finishing its reply. Shorten the request or use a different model.'
 
@@ -314,14 +325,37 @@ async function httpSend(provider: ProviderId, body: Record<string, unknown>): Pr
   if (!url) throw new Error('Ollama is not configured — add its address in Settings.')
   const { timeoutMs, unreadable } = await ollamaSettings()
   if (unreadable) throw new Error(`Ollama's settings could not be read: ${unreadable}`)
-  const res = await fetch(`${url.replace(/\/+$/, '')}/api/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
-  })
-  if (!res.ok) throw new Error(`Ollama returned HTTP ${res.status}`)
-  return ollamaText(await res.json())
+  return ollamaSend(url, body, timeoutMs)
+}
+
+/** One Ollama chat call. Every failure is a ModelCallError that says which of four things went wrong. */
+export async function ollamaSend(
+  url: string, body: Record<string, unknown>, timeoutMs: number, fetchFn: typeof fetch = fetch,
+): Promise<string> {
+  const model = String(body.model ?? 'the model')
+  try {
+    const res = await fetchFn(`${url.replace(/\/+$/, '')}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    if (res.status === 404) {
+      throw new ModelCallError(`The local model ${model} isn't installed. Pick one under Models.`, 'model-missing')
+    }
+    if (!res.ok) throw new ModelCallError(`Ollama refused the request (HTTP ${res.status}).`, 'rejected')
+    return ollamaText(await res.json())
+  } catch (e) {
+    if (e instanceof ModelCallError || e instanceof StructuredOutputError) throw e
+    const name = (e as { name?: string })?.name
+    if (name === 'TimeoutError' || name === 'AbortError') {
+      throw new ModelCallError(`The local model ${model} took too long (over ${Math.round(timeoutMs / 1000)} s).`, 'timeout')
+    }
+    if (e instanceof TypeError) {
+      throw new ModelCallError(`The local model server can't be reached. Check that Ollama is running and its address under Settings.`, 'unreachable')
+    }
+    throw e
+  }
 }
 
 async function modelFor(provider: ProviderId): Promise<string> {
