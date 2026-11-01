@@ -23,6 +23,8 @@ export interface SourceSummary {
   locked?: boolean
   /** Parts that could not be read, in words. */
   unread?: string[]
+  /** A plug-in with no summary hook: attached, but there is nothing to read, which is not a failure to read. */
+  noSummary?: boolean
   /** Whatever the source's own `answer` needs. */
   data?: unknown
 }
@@ -82,6 +84,11 @@ export function selectSources(prompt: string, sources: AskSource[]): AskSource[]
   return sources
     .map(s => ({ s, n: (p.match(new RegExp(s.aliases.source, 'gi')) ?? []).length }))
     .filter(x => x.n > 0).sort((a, b) => b.n - a.n).slice(0, 3).map(x => x.s)
+}
+
+/** The names only, for the overview: the catalogue blurbs are for the model's prompt, never for the person. */
+export function namesText(sources: AskSource[]): string {
+  return 'Attached: ' + sources.map(s => s.title).join(', ')
 }
 
 export function indexText(sources: AskSource[]): string {
@@ -167,7 +174,9 @@ export async function answerQuestion(
 
   if (OVERVIEW.test(prompt.toLowerCase())) {
     const all = await Promise.all(sources.map(async s => ({ s, sum: await loadSafe(s) })))
-    return `${index}.\n` + all.map(({ s, sum }) => sum.locked ? `${s.title}: locked.` : sum.headline).join('\n') + noteOf(all)
+    // One line per source: its short headline. Plug-ins with nothing to read are not "could not read".
+    return `${namesText(sources)}.\n` + all.map(({ s, sum }) => sum.locked ? `${s.title}: locked.` : sum.headline).join('\n')
+      + noteOf(all.map(l => l.sum.noSummary ? { sum: { ...l.sum, unread: undefined } } : l))
   }
 
   const chosen = selectSources(prompt, sources)

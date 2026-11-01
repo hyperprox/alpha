@@ -8,5 +8,6 @@ expect:
   questions: []
   intent_calls: 0
   model_calls: 0
-  answer_includes: ["Attached:", "Cluster: 2/2 nodes online", "Certificates: 2"]
+  answer_includes: ["Attached:", "Cluster: 2/2 nodes online", "Certificates: 2", "Home Assistant: 3 entities"]
+  answer_excludes: ["Proxmox nodes, guests", "What has stopped responding", "\u2026"]
 found_by: "live bug: the AI page could not answer questions about the cluster"

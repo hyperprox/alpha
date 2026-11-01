@@ -1,1 +1,1 @@
-{"intent":{"template":"deploy-service","question":false,"answer":""},"extractions":[{"service":"gitea"}]}
+{"intent":{"template":"none","question":true,"answer":"Yes, you can get a Gitea instance."},"extractions":[{"service":"gitea"}]}

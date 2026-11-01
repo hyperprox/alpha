@@ -2,7 +2,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { answerQuestion, looksLikeRequest, selectSources, promptText, indexText, lineAnswer, LOCKED_NOTE, type AskSource } from "../src/lib/ai/ask"
 import {
-  clusterAnswer, clusterSummary, gatherClusterSummary, backupSummary, gatherBackups, certSummary, certAnswer,
+  clusterAnswer, clusterSummary, gatherClusterSummary, backupSummary, gatherBackups, shorten, certSummary, certAnswer,
   coreSources, pluginSources, type ClusterSummary, type CertLite,
 } from "../src/lib/ai/ask-sources"
 import { homeAssistantPlugin } from "../src/plugins/home-assistant"
@@ -60,19 +60,81 @@ test("gatherClusterSummary reads one resources call and tolerates missing Ceph/H
   assert.deepEqual(bad.partial, ["resources"])
 })
 
-test("backups: the latest run's result, and none in three days", async () => {
-  const now = 1_000_000
-  const tasks = [
-    { type: "vzdump", id: "1", node: "a", status: "OK", endtime: now - 3600 },
-    { type: "vzdump", id: "2", node: "a", status: "job errors", endtime: now - 3700 },
-    { type: "vzdump", id: "3", node: "a", status: "OK", endtime: now - 100 * 3600 },   // older than the window
-    { type: "qmstart", id: "9", node: "a", status: "OK", endtime: now - 10 },
-  ]
-  const runs = await gatherBackups((async () => tasks) as never, now * 1000)
-  assert.equal(runs.length, 2)
-  const sum = backupSummary(runs)
-  assert.match(sum.lines[0], /1 ok, 1 failed/); assert.match(sum.lines[1], /Failed guests: 2/)
-  assert.match(backupSummary([]).lines[0], /No backup job finished/)
+const upid = (n: string, k: string) => `UPID:${n}:${k}:vzdump::root@pam:`
+const logOf = (ids: string[], bad: string[] = []) => [
+  ...ids.flatMap(i => bad.includes(i) ? [`INFO: Starting Backup of VM ${i} (lxc)`, `ERROR: Backup of VM ${i} failed - storage offline`]
+    : [`INFO: Starting Backup of VM ${i} (lxc)`, `INFO: Finished Backup of VM ${i} (00:01:00)`]),
+  "INFO: Backup finished at 2026-10-31 03:43:00",
+]
+// 06:00 UTC start (02:00 local, UTC-4); node b's task runs to 07:43 UTC.
+const backupFetch = (over: { aLog?: string[]; bFail?: boolean; bRunning?: boolean; bDown?: boolean } = {}) => {
+  const T = Date.UTC(2026, 9, 31, 6, 0, 0) / 1000
+  const tasks: Record<string, any[]> = {
+    a: [{ type: "vzdump", upid: upid("a", "new"), starttime: T, endtime: T + 240, status: "OK" },
+        { type: "vzdump", upid: upid("a", "old"), starttime: T - 86400, endtime: T - 86000, status: "OK" }],
+    b: [{ type: "vzdump", upid: upid("b", "new"), starttime: T + 3, ...(over.bRunning ? {} : { endtime: T + 6187 }), status: over.bFail ? "job errors" : "OK" },
+        { type: "vzdump", upid: upid("b", "sun"), starttime: T - 3600, endtime: T - 3000, status: "OK" }],   // the 01:00 weekly job: another run
+  }
+  const logs: Record<string, string[]> = {
+    [upid("a", "new")]: over.aLog ?? [...logOf(["112", "230"]).slice(0, -1), "INFO: Backup finished at 2026-10-31 02:04:00"],
+    [upid("b", "new")]: logOf(["700", "710", "711", "724", "729", "742", "747", "751", "752"], over.bFail ? ["711"] : []),
+  }
+  const fetchStrict = async (p: string) => {
+    if (p === "/nodes") return [{ node: "a" }, { node: "b" }]
+    let m = /^\/nodes\/(\w+)\/tasks\?typefilter=vzdump/.exec(p)
+    if (m) { if (over.bDown && m[1] === "b") throw new Error("down"); return tasks[m[1]] }
+    m = /^\/nodes\/\w+\/tasks\/([^/]+)\/log/.exec(p)
+    if (m) return logs[decodeURIComponent(m[1])].map((t, n) => ({ n, t }))
+    throw new Error("unexpected " + p)
+  }
+  return { fetchStrict: fetchStrict as never, now: (T + 6200 + 3600) * 1000 }
+}
+
+test("backups: per guest, across ALL nodes, for the most recent scheduled run only", async () => {
+  const { fetchStrict, now } = backupFetch()
+  const r = await gatherBackups(fetchStrict, now)
+  assert.equal(r.guests.length, 11); assert.equal(r.guests.filter(g => !g.ok).length, 0)   // not 2 node tasks, not the older runs
+  assert.equal(r.offset, -4 * 3600)
+  const sum = backupSummary(r, now)
+  assert.equal(sum.lines[0], "Last night's backup (02:00): 11 guests backed up, 0 failed, finished 03:43.")
+})
+
+test("backups: a failed guest is named, and a running or unreadable node is said", async () => {
+  const bad = backupSummary(await gatherBackups(backupFetch({ bFail: true }).fetchStrict, backupFetch().now), backupFetch().now)
+  assert.match(bad.lines[0], /10 guests backed up, 1 failed/); assert.match(bad.lines[1], /guest 711 \(storage offline\)/)
+  const run = backupSummary(await gatherBackups(backupFetch({ bRunning: true }).fetchStrict, backupFetch().now), backupFetch().now)
+  assert.match(run.lines[0], /still running/)
+  const part = backupSummary(await gatherBackups(backupFetch({ bDown: true }).fetchStrict, backupFetch().now), backupFetch().now)
+  assert.deepEqual(part.unread, ["the backup tasks of b"])
+  const a = await answerQuestion("Did last night's backup work?", { sources: coreSources({ ...backupFetch({ bDown: true }), facts: { partial: [] } as never, certs: async () => [], unlocked: () => true }), call: never, fallback: "x" })
+  assert.match(a!, /2 guests backed up.*could not read the backup tasks of b/)
+})
+
+test("backups: none in three days", async () => {
+  const { fetchStrict } = backupFetch()
+  const sum = backupSummary(await gatherBackups(fetchStrict, Date.UTC(2027, 0, 1)), Date.UTC(2027, 0, 1))
+  assert.match(sum.lines[0], /No backup job finished/)
+})
+
+test("shorten never cuts mid-word", () => {
+  const t = "Transcode workers across every node: what is encoding right now and how deep the queue is"
+  for (const n of [20, 33, 41, 60]) {
+    const s = shorten(t, n), body = s.slice(0, -1)
+    assert.ok(s.length <= n); assert.match(s, /\u2026$/); assert.ok(t.startsWith(body)); assert.match(t.slice(body.length), /^[\s:,;]/, s)   // the cut falls on a space
+  }
+  assert.equal(shorten("short", 60), "short")
+})
+
+test("overview: names, then one short headline per source, never a catalogue description", async () => {
+  const long = { manifest: { id: "arrstack", name: "Arr Stack", description: "The whole pipeline - Sonarr, Radarr, Prowlarr and qBittorrent - as one view, with search across every indexer." } } as unknown as Plugin
+  const src = [...ha(), ...pluginSources({ plugins: [long], unlocked: () => true, run: async () => ({ title: "", lines: [] }) })]
+  const out = (await answerQuestion("What's on my network?", { sources: src, call: never, fallback: "x" }))!
+  const lines = out.split("\n")
+  assert.equal(lines[0], "Attached: Home Assistant, Bare Thing, Arr Stack.")
+  assert.equal(lines[1], "Home Assistant: 4 entities, 0 unavailable, 1 lights on")
+  assert.equal(lines.length, 4); assert.doesNotMatch(out, /Sonarr|Prowlarr|could not read/i)
+  assert.ok(lines.every(l => l.length <= 80))
+  for (const x of src) assert.ok(x.blurb.length <= 60)
 })
 
 test("certificates: expiring within 30 days, none, and counts", () => {
@@ -195,7 +257,7 @@ test("an overview lists the index and each source's headline, with locked and un
   const bad: AskSource = { ...fake("bad", /bad/, []), load: async () => { throw new Error("down") } }
   const locked: AskSource = { ...fake("vault", /vault/, []), load: async () => ({ headline: "x", lines: [], locked: true }) }
   const out = await answerQuestion("What can you see?", { sources: [fake("alpha", /alpha/, []), bad, locked], call: never, fallback: "x" })
-  assert.match(out!, /^Attached: alpha \(the alpha\); bad \(the bad\); vault/); assert.match(out!, /alpha: fine\./)
+  assert.match(out!, /^Attached: alpha, bad, vault\./); assert.match(out!, /alpha: fine\./)
   assert.match(out!, /vault: locked\./); assert.match(out!, /could not read bad/)
 })
 

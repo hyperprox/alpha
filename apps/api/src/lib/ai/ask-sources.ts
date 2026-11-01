@@ -133,25 +133,117 @@ export function clusterSummary(s: ClusterSummary): SourceSummary {
 //  Backups (PVE vzdump tasks)
 // ---------------------------------------------------------------------------
 
-export interface BackupRun { vmid: string; node: string; ok: boolean; status: string; endtime: number }
+export interface BackupRun { vmid: string; node: string; ok: boolean; status: string }
 
-export async function gatherBackups(fetchStrict: Fetch, now = Date.now()): Promise<BackupRun[]> {
-  const tasks = await fetchStrict<any[]>('/cluster/tasks')
-  const day = now / 1000 - 3 * 86400
-  return tasks.filter(t => t?.type === 'vzdump' && t.endtime && t.endtime > day)
-    .map(t => ({ vmid: String(t.id ?? ''), node: String(t.node ?? ''), ok: t.status === 'OK', status: String(t.status ?? ''), endtime: Number(t.endtime) }))
-    .sort((a, b) => b.endtime - a.endtime)
+export interface BackupReport {
+  /** Unix seconds: when the most recent scheduled run began, and when its last node finished (null while running). */
+  start: number | null
+  end: number | null
+  /** Seconds the nodes' clocks are ahead of UTC, read from their own task logs; null when it could not be told. */
+  offset: number | null
+  /** One row per guest across every node of that run. */
+  guests: BackupRun[]
+  /** Guests whose backup had started but not finished, on a node whose task is still going. */
+  running: number
+  /** Nodes whose tasks or logs could not be read. */
+  unread: string[]
 }
 
-export function backupSummary(runs: BackupRun[]): SourceSummary {
-  if (!runs.length) return { headline: 'Backups: no backup job finished in the last 3 days.', lines: ['No backup job finished in the last 3 days.'], data: runs }
-  const last = runs[0].endtime
-  const latest = runs.filter(r => last - r.endtime < 6 * 3600)          // the most recent run of the nightly job
-  const bad = latest.filter(r => !r.ok)
-  const when = new Date(last * 1000).toISOString().replace('T', ' ').slice(0, 16) + ' UTC'
-  const lines = [`Last backups finished ${when}: ${latest.length - bad.length} ok, ${bad.length} failed.`]
-  if (bad.length) lines.push('Failed guests: ' + bad.slice(0, 10).map(r => `${r.vmid || r.node} (${r.status.slice(0, 60)})`).join(', '))
-  return { headline: `Backups: last run ${when}, ${bad.length ? bad.length + ' failed' : 'all ok'}.`, lines, data: runs }
+const enc = encodeURIComponent
+const RUN_WINDOW_S = 20 * 60          // the nodes start one scheduled run within seconds of each other
+const LOOKBACK_S = 3 * 86400
+
+const localSeconds = (stamp: string) => Date.parse(stamp.replace(' ', 'T') + 'Z') / 1000
+
+/** Cuts at a word boundary, never mid-word; adds an ellipsis only when something was cut. */
+export function shorten(text: string, max: number): string {
+  const t = text.replace(/\s+/g, ' ').trim()
+  if (t.length <= max) return t
+  const cut = t.slice(0, max - 1)
+  const at = cut.lastIndexOf(' ')
+  return (at > max / 2 ? cut.slice(0, at) : cut.replace(/\S*$/, '')).replace(/[\s,;:(-]+$/, '') + '\u2026'
+}
+
+/** Per-guest results from one node's vzdump task log. */
+export function parseBackupLog(node: string, lines: string[], finished: boolean, status: string): { guests: BackupRun[]; running: number; localEnd: string | null } {
+  const guests: BackupRun[] = []
+  const started = new Set<string>(), done = new Set<string>()
+  let localEnd: string | null = null
+  for (const t of lines) {
+    let m: RegExpExecArray | null
+    if ((m = /^INFO: Starting Backup of VM (\d+)/.exec(t))) started.add(m[1])
+    else if ((m = /^INFO: Finished Backup of VM (\d+)/.exec(t))) { done.add(m[1]); guests.push({ vmid: m[1], node, ok: true, status: 'OK' }) }
+    else if ((m = /^ERROR: Backup of VM (\d+) failed\s*-?\s*(.*)$/.exec(t))) { done.add(m[1]); guests.push({ vmid: m[1], node, ok: false, status: shorten(m[2] || 'failed', 60) }) }
+    else if ((m = /^INFO: Backup finished at (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)/.exec(t))) localEnd = m[1]
+  }
+  let running = 0
+  for (const v of started) if (!done.has(v)) {
+    if (finished) guests.push({ vmid: v, node, ok: false, status: 'did not finish' })
+    else running++
+  }
+  // A task that failed as a whole with no guest named: one failure for the node, not silence.
+  if (finished && !/^(OK|WARNINGS)/.test(status) && !guests.some(g => !g.ok)) guests.push({ vmid: '', node, ok: false, status: shorten(status || 'failed', 60) })
+  return { guests, running, localEnd }
+}
+
+/**
+ * The most recent scheduled backup run across ALL nodes. Each node runs its own vzdump task for the job (its
+ * id is empty, so /cluster/tasks cannot say which guests were in it, and it lists only the newest tasks of
+ * the whole cluster), so each node's recent vzdump tasks are listed and the log of every task in the run is
+ * read for its per-guest results.
+ */
+export async function gatherBackups(fetchStrict: Fetch, now = Date.now()): Promise<BackupReport> {
+  const nodes = (await fetchStrict<any[]>('/nodes')).map(n => String(n?.node ?? '')).filter(Boolean)
+  const unread: string[] = []
+  const lists = await Promise.all(nodes.map(async node => {
+    try { return (await fetchStrict<any[]>(`/nodes/${enc(node)}/tasks?typefilter=vzdump&limit=10`)).map(t => ({ ...t, node })) }
+    catch { unread.push(node); return [] }
+  }))
+  const since = now / 1000 - LOOKBACK_S
+  const tasks = lists.flat().filter(t => t?.type === 'vzdump' && Number(t.starttime) > since && t.upid)
+  if (!tasks.length) return { start: null, end: null, offset: null, guests: [], running: 0, unread }
+  const start = Math.max(...tasks.map(t => Number(t.starttime)))
+  const run = tasks.filter(t => start - Number(t.starttime) <= RUN_WINDOW_S)
+
+  const guests: BackupRun[] = []
+  let running = 0, end: number | null = 0, offset: number | null = null
+  await Promise.all(run.map(async t => {
+    const node = String(t.node), finished = !!t.endtime
+    let log: string[]
+    try { log = (await fetchStrict<any[]>(`/nodes/${enc(node)}/tasks/${enc(String(t.upid))}/log?limit=0`)).map(x => String(x?.t ?? '')) }
+    catch { unread.push(node); return }
+    const r = parseBackupLog(node, log, finished, String(t.status ?? ''))
+    guests.push(...r.guests); running += r.running
+    if (!finished) end = null
+    else if (end !== null) end = Math.max(end, Number(t.endtime))
+    if (finished && r.localEnd && offset === null) {
+      const diff = localSeconds(r.localEnd) - Number(t.endtime), q = Math.round(diff / 900) * 900
+      if (Math.abs(diff - q) < 300) offset = q
+    }
+  }))
+  guests.sort((a, b) => Number(a.vmid) - Number(b.vmid))
+  return { start, end: end || null, offset, guests, running, unread: [...new Set(unread)] }
+}
+
+export function backupSummary(r: BackupReport, now = Date.now()): SourceSummary {
+  const unread = r.unread.length ? [`the backup tasks of ${r.unread.join(', ')}`] : undefined
+  if (r.start === null || (!r.guests.length && !r.running)) {
+    return r.unread.length && r.start === null
+      ? { headline: 'Backups: could not be read.', lines: ['No backup run could be read.'], unread, data: r }
+      : { headline: 'Backups: no backup job finished in the last 3 days.', lines: ['No backup job finished in the last 3 days.'], unread, data: r }
+  }
+  const at = (t: number) => t + (r.offset ?? 0)
+  const clock = (t: number) => new Date(at(t) * 1000).toISOString().slice(11, 16) + (r.offset === null ? ' UTC' : '')
+  const day = (t: number) => new Date(at(t) * 1000).toISOString().slice(0, 10)
+  const label = now / 1000 - r.start < 30 * 3600 ? `Last night's backup (${clock(r.start)})` : `Last backup (${day(r.start)} ${clock(r.start)})`
+  const bad = r.guests.filter(g => !g.ok)
+  const okN = r.guests.length - bad.length
+  const lines = [r.end === null
+    ? `${label} is still running: ${plural(okN, 'guest')} done, ${bad.length} failed so far, ${r.running} in progress.`
+    : `${label}: ${plural(okN, 'guest')} backed up, ${bad.length} failed, finished ${clock(r.end)}.`]
+  if (bad.length) lines.push('Failed: ' + bad.slice(0, 10).map(g => `${g.vmid ? 'guest ' + g.vmid : g.node} (${g.status})`).join(', '))
+  const headline = r.end === null ? `Backups: running, ${okN} guests done.` : `Backups: ${okN} guests ok, ${bad.length} failed (${clock(r.start)} run).`
+  return { headline, lines, unread, data: r }
 }
 
 export function backupAnswer(prompt: string, s: SourceSummary): string | null {
@@ -234,7 +326,7 @@ export function coreSources(d: CoreDeps): AskSource[] {
     {
       id: 'backups', title: 'Backups', blurb: 'recent backup job results',
       aliases: /\b(backups?|backed up|vzdump|pbs|snapshots?|restore)\b/,
-      load: async () => backupSummary(await gatherBackups(d.fetchStrict, d.now)),
+      load: async () => backupSummary(await gatherBackups(d.fetchStrict, d.now), d.now),
       answer: backupAnswer,
     },
   ]
@@ -265,13 +357,14 @@ export function pluginSources(d: PluginDeps): AskSource[] {
     }
     const alias = [...names.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), extra[m.id]].filter(Boolean).join('|')
     return {
-      id: `plugin:${m.id}`, title: m.name, blurb: m.description.split(/[.;]/)[0].slice(0, 60),
+      id: `plugin:${m.id}`, title: m.name, blurb: shorten(m.description.split(/[.;]/)[0], 60),
       aliases: new RegExp(`\\b(${alias})\\b`, 'i'), matchLines: true,
       load: async (): Promise<SourceSummary> => {
-        if (!p.summary) return { headline: `${m.name}: no summary available.`, lines: [], unread: [`${m.name} (it offers no summary)`] }
+        if (!p.summary) return { headline: `${m.name}: connected, nothing to summarise.`, lines: [], unread: [`${m.name} (it offers no summary)`], noSummary: true }
         if (!d.unlocked()) return { headline: `${m.name}: locked.`, lines: [], locked: true }
         const r = await d.run(p)
-        return { headline: `${r.title}: ${r.lines[0] ?? 'nothing to report'}`, lines: r.lines.slice(0, 40).map(l => l.slice(0, 160)) }
+        // The plug-in's own first line is its headline ("12 entities, 1 unavailable"); the catalogue description never is.
+        return { headline: shorten(`${r.title}: ${r.lines[0] ?? 'nothing to report'}`, 80), lines: r.lines.slice(0, 40).map(l => shorten(l, 160)) }
       },
     }
   })

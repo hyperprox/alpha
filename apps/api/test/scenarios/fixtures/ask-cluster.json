@@ -13,11 +13,20 @@
   ],
   "ceph": {"health":{"status":"HEALTH_OK"}},
   "ha": [{"type":"service","sid":"ct:101","state":"started"}],
-  "tasks": [
-    {"type":"vzdump","id":"101","node":"alpha","status":"OK","endtime":1767218400},
-    {"type":"vzdump","id":"102","node":"alpha","status":"OK","endtime":1767218300},
-    {"type":"vzdump","id":"201","node":"beta","status":"job errors","endtime":1767218200}
-  ],
+  "nodes": [{"node":"alpha"},{"node":"beta"}],
+  "backupTasks": {
+    "alpha": [
+      {"type":"vzdump","upid":"UPID:alpha:1:1:1:vzdump::root@pam:","starttime":1767218400,"endtime":1767219000,"status":"OK"},
+      {"type":"vzdump","upid":"UPID:alpha:old:1:1:vzdump::root@pam:","starttime":1767132000,"endtime":1767132600,"status":"OK"}
+    ],
+    "beta": [
+      {"type":"vzdump","upid":"UPID:beta:1:1:1:vzdump::root@pam:","starttime":1767218401,"endtime":1767219300,"status":"job errors"}
+    ]
+  },
+  "backupLogs": {
+    "UPID:alpha:1:1:1:vzdump::root@pam:": ["INFO: Starting Backup of VM 101 (lxc)","INFO: Finished Backup of VM 101 (00:01:00)","INFO: Starting Backup of VM 102 (lxc)","INFO: Finished Backup of VM 102 (00:01:00)","INFO: Backup finished at 2025-12-31 22:10:00","INFO: Backup job finished successfully"],
+    "UPID:beta:1:1:1:vzdump::root@pam:": ["INFO: Starting Backup of VM 201 (qemu)","ERROR: Backup of VM 201 failed - storage is offline","INFO: Backup finished at 2025-12-31 22:15:00"]
+  },
   "certs": [
     {"names":["app.example.com"],"daysLeft":9,"notAfter":"2026-01-10T00:00:00Z","verdict":"warn","source":"npm"},
     {"names":["pve.example.com"],"daysLeft":80,"notAfter":"2026-03-22T00:00:00Z","verdict":"ok","source":"pve"}

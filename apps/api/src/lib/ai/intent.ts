@@ -75,6 +75,8 @@ function classify(prompt: string): Kind {
   return 'other'
 }
 
+const recipeNames = () => wizardRecipes().flatMap(r => [r.id, r.name.toLowerCase()])
+
 /** Only one template today, so a task-shaped request is deploy-service. */
 const KEYWORD_TEMPLATE = 'deploy-service'
 
@@ -95,6 +97,22 @@ export function confidentDeploy(prompt: string): boolean {
   const p = prompt.trim().toLowerCase()
   if (!DEPLOY_VERB.test(p) || p.includes('?')) return false
   return !sentenceKinds(prompt).some(k => k === 'question' || k === 'removal')
+}
+
+const GET_VERB = /\b(get|have|host|put|want|need|like|set\s*up|run|install|add)\b/
+// Asking for information or about the state of something already there, not for it to be put there.
+const NOT_A_REQUEST = /\b(how\s+(do|to|can|does|much|many)|explain|tell\s+me|why|what\s+(is|does|are)|know|installed|running|already|status|working|exists?)\b/
+
+/**
+ * True when a want or get verb sits next to a recipe's name: "Can I get a Gitea instance?", "I'd like Gitea",
+ * "Put Gitea on my cluster". The keyword decides, not the model: a small model answers these as chat. The model
+ * only fills the fields afterwards. `services`: recipe ids and lower-case names.
+ */
+export function wantsRecipe(prompt: string, services: string[]): boolean {
+  const p = prompt.toLowerCase()
+  if (!GET_VERB.test(p) || NOT_A_REQUEST.test(p)) return false
+  if (sentenceKinds(prompt).includes('removal')) return false
+  return services.some(s => s && new RegExp(`\\b${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(p))
 }
 
 /** True when every sentence is a question and none asks for a task or a removal. */
@@ -162,6 +180,8 @@ function intentRequest(prompt: string) {
 
 export async function matchIntent(prompt: string, opts: { call?: ModelCall } = {}): Promise<IntentResult> {
   if (confidentDeploy(prompt) && getTemplate(KEYWORD_TEMPLATE)) return keywordIntent(prompt)
+  // A want or get verb plus a recipe's name is a deploy whatever the model would say, and whatever the sentence's shape.
+  if (getTemplate(KEYWORD_TEMPLATE) && wantsRecipe(prompt, recipeNames())) return { template: KEYWORD_TEMPLATE, question: false, answer: '' }
   const call: ModelCall = opts.call ?? (r => callStructured(r))
   let got: { template: string; question: boolean; answer: string }
   try {
@@ -176,7 +196,7 @@ export async function matchIntent(prompt: string, opts: { call?: ModelCall } = {
   const kind = classify(prompt)
   const known = got.template !== 'none' && !!getTemplate(got.template)
   // "Can I get a Gitea instance?" is shaped like a question and is a request: the model's call stands.
-  const asking = kind === 'question' && !looksLikeRequest(prompt, wizardRecipes().flatMap(r => [r.id, r.name.toLowerCase()]))
+  const asking = kind === 'question' && !looksLikeRequest(prompt, recipeNames())
   if (!known || got.question || kind === 'removal' || asking) {
     const question = got.question || asking
     // The model's prose is kept only where it was asked for: a reply to something that is not a task.

@@ -8,5 +8,5 @@ expect:
   questions: []
   intent_calls: 0
   model_calls: 0
-  answer_includes: ["2 ok", "1 failed"]
+  answer_includes: ["Last night's backup (22:00)", "2 guests backed up", "1 failed", "guest 201 (storage is offline)"]
 found_by: "live bug: the AI page could not answer questions about the cluster"
