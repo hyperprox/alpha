@@ -17,6 +17,14 @@ import { PreparedStore }      from '../lib/ai/prepared'
 import { currentContext, type RequestContext } from '../lib/auth'
 import { startLoop, type Extraction, type IntentResult, type LoopDeps } from '../lib/ai/loop'
 import { matchIntent, NO_TASK_ANSWER } from '../lib/ai/intent'
+import { answerQuestion, type AskSource } from '../lib/ai/ask'
+import { coreSources, pluginSources, type CertLite } from '../lib/ai/ask-sources'
+import { PLUGINS }            from '../plugins'
+import { ProxmoxClient }      from '../lib/proxmox-client'
+import type { ModelCall }     from '../lib/ai/extract'
+import { runPluginSummary }   from '../lib/plugin-host'
+import { isUnlocked }         from '../lib/vault/state'
+import { productionCertsService } from '../lib/certs/service'
 import { extractFields }      from '../lib/ai/extract'
 import { getTemplate }        from '../lib/ai/templates'
 import { deployService, toDeployFields, type DeployFields } from '../lib/ai/templates/deploy-service'
@@ -57,6 +65,10 @@ export interface AiRouteDeps {
   saveModel(model: string): Promise<void>
   activeProvider(): Promise<ProviderId>
   listProviders(): Promise<ProviderInfo[]>
+  /** The read-only knowledge sources a question can be answered from; built per request from its facts. */
+  sources(facts: TemplateFacts, prisma?: unknown): AskSource[]
+  /** The model call for a question. */
+  askCall(provider?: ProviderId, model?: string): ModelCall
 }
 
 function defaultDeps(): AiRouteDeps {
@@ -77,6 +89,23 @@ function defaultDeps(): AiRouteDeps {
     saveModel: model => setCredential('ai', 'ollama', 'model', model, false),
     activeProvider,
     listProviders,
+    sources: (facts, prisma) => {
+      const client = new ProxmoxClient(
+        process.env.PROXMOX_HOST!, Number(process.env.PROXMOX_PORT ?? 8006),
+        `${process.env.PROXMOX_USER}!${process.env.PROXMOX_TOKEN_ID}`, process.env.PROXMOX_TOKEN_SECRET!)
+      const fetchStrict = <T,>(p: string) => client.fetchStrict<T>(p)
+      return [
+        ...coreSources({
+          fetchStrict, facts, unlocked: isUnlocked,
+          certs: async (): Promise<CertLite[]> => {
+            const svc = productionCertsService(prisma as any, () => {})
+            return (await svc.overview(false)).inventory.map(e => ({ names: e.names, daysLeft: e.daysLeft, notAfter: e.notAfter, verdict: e.verdict, source: e.source }))
+          },
+        }),
+        ...pluginSources({ plugins: PLUGINS, unlocked: isUnlocked, run: runPluginSummary }),
+      ]
+    },
+    askCall: (provider, model) => r => callStructured(r, provider, undefined, model ? { model } : {}),
   }
 }
 
@@ -272,6 +301,7 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
         const loopDeps: LoopDeps = {
           facts, settings, now: () => new Date(),
           intent: p => deps.intent(p, chosen, model),
+          ask: p => answerQuestion(p, { sources: deps.sources(facts, (fastify as any).prisma), call: deps.askCall(chosen, model), fallback: NO_TASK_ANSWER }),
           extract: (t, text, f, opts) => deps.extract(t, text, f, { ...opts, provider: chosen, model }),
         }
         let s

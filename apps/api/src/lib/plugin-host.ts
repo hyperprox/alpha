@@ -167,6 +167,13 @@ export interface Plugin {
    * every provider of every bundled plug-in.
    */
   appUpdates?: AppUpdateProvider[]
+  /**
+   * A few lines a person (or the AI page) can read to learn the current state: "Outside light: on".
+   * Read-only, through the same brokered context as load(). Never include a secret, token, password,
+   * webhook URL or log text; keep it to what answers "what is the state of this right now".
+   * Optional: a plug-in without one is listed to the AI page but cannot be asked about.
+   */
+  summary?(ctx: PluginContext): Promise<{ title: string; lines: string[] }>
 }
 
 // ---------------------------------------------------------------------------
@@ -593,6 +600,11 @@ export async function runPlugin(plugin: Plugin): Promise<PluginTileData> {
 export async function runPluginDetail(plugin: Plugin): Promise<PluginDetail> {
   if (!plugin.detail) throw new Error(`${plugin.manifest.name} has no detailed view.`)
   return plugin.detail(await contextFor(plugin))
+}
+
+export async function runPluginSummary(plugin: Plugin): Promise<{ title: string; lines: string[] }> {
+  if (!plugin.summary) return { title: plugin.manifest.name, lines: [] }
+  return plugin.summary(await contextFor(plugin))
 }
 
 export async function runPluginMetrics(plugin: Plugin): Promise<PluginMetric[]> {

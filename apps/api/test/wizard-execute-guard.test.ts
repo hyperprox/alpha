@@ -43,6 +43,9 @@ function harness() {
     // Planning reads the fixture; execute reads it through whatever the test changed since.
     facts: async () => (planning || (!later && !gather)) ? fixture() : gather ? gather() : later!(fixture()),
     settings: async () => ({ bridge: "vmbr0" }),
+    // A question goes down the read-only path: no sources here, and the model replies from its (empty) summary.
+    sources: () => [],
+    askCall: () => (async () => ({ answer: "It watches services." })) as never,
     intent: async (prompt: string): Promise<IntentResult> => /^what\b/.test(prompt)
       ? { template: "none", question: true, answer: "It watches services." }
       : { template: "deploy-service", question: false, answer: "" },

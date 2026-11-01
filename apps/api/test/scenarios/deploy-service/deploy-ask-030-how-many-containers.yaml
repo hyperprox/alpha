@@ -1,0 +1,12 @@
+id: deploy-ask-030-how-many-containers
+prompt: "How many containers do I have?"
+facts: fixtures/three-node-cluster.json
+ask: fixtures/ask-cluster.json
+answers: []
+expect:
+  state: answer
+  questions: []
+  intent_calls: 0
+  model_calls: 0
+  answer_includes: ["3 containers", "2 running", "1 stopped"]
+found_by: "live bug: the AI page could not answer questions about the cluster"

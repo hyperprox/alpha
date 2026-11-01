@@ -7,6 +7,7 @@
 //  the database) and a half-finished turn can never leave a half-merged session.
 // =============================================================================
 
+import { isQuestionPrompt } from './intent'
 import { coerce } from './templates/fields'
 import { getTemplate } from './templates'
 import type { FieldIssue, Fields, StepSpec, TaskTemplate, TemplateFacts, TemplateSettings } from './templates/types'
@@ -44,6 +45,8 @@ export interface LoopDeps {
   facts: TemplateFacts
   settings: TemplateSettings
   intent: IntentFn
+  /** A read-only answer to a question, from the cluster's own state; null leaves it to the intent call. */
+  ask?: (prompt: string) => Promise<string | null>
   extract: ExtractFn
   now(): Date
 }
@@ -133,6 +136,10 @@ export function settle(s: LoopState, deps: LoopDeps): LoopState {
 }
 
 export async function startLoop(prompt: string, deps: LoopDeps): Promise<LoopState> {
+  if (deps.ask && isQuestionPrompt(prompt)) {
+    const a = await deps.ask(prompt)
+    if (a) return answerOnly(prompt, a, deps)
+  }
   const intent = await deps.intent(prompt)
   const t = intent.template === 'none' || intent.question ? undefined : getTemplate(intent.template)
   if (!t) return answerOnly(prompt, intent.answer, deps)

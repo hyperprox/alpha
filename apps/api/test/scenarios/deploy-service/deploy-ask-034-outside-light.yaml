@@ -1,0 +1,12 @@
+id: deploy-ask-034-outside-light
+prompt: "Is the outside light on?"
+facts: fixtures/three-node-cluster.json
+ask: fixtures/ask-cluster.json
+answers: []
+expect:
+  state: answer
+  questions: []
+  intent_calls: 0
+  model_calls: 0
+  answer_includes: ["Outside light: on"]
+found_by: "live bug: the AI page could not answer questions about the cluster"

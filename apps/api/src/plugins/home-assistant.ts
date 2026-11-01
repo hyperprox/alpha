@@ -252,6 +252,23 @@ export const homeAssistantPlugin: Plugin = {
     }
   },
 
+  async summary(ctx: PluginContext) {
+    const states: HAState[] = await ctx.get('/api/states', { timeoutMs: 15_000 })
+    const list = Array.isArray(states) ? states : []
+    // Things a person asks about: lights, switches, locks, covers, doors and windows, climate. Names only,
+    // never attributes, and nothing that sounds like a credential.
+    const rank: Record<string, number> = { light: 0, switch: 1, lock: 2, cover: 3, binary_sensor: 4, climate: 5 }
+    const picked = list.filter(s => domainOf(s.entity_id) in rank && !/pass|code|token|\bkey\b|\bpin\b/i.test(nameOf(s)))
+      .filter(s => domainOf(s.entity_id) !== 'binary_sensor' || ['door', 'window', 'garage_door', 'opening', 'motion'].includes(s.attributes?.device_class))
+      .sort((a, b) => rank[domainOf(a.entity_id)] - rank[domainOf(b.entity_id)])
+    const on = list.filter(s => s.state === 'on' && domainOf(s.entity_id) === 'light').length
+    return {
+      title: 'Home Assistant',
+      lines: [`${list.length} entities, ${list.filter(s => DEAD.has(s.state)).length} unavailable, ${on} lights on`,
+        ...picked.slice(0, 40).map(s => `${nameOf(s)}: ${s.state}`)],
+    }
+  },
+
   async metrics(ctx: PluginContext): Promise<PluginMetric[]> {
     const states: HAState[] = await ctx.get('/api/states', { timeoutMs: 20_000 })
     const list = Array.isArray(states) ? states : []
