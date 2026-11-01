@@ -6,7 +6,7 @@ answers: []
 expect:
   state: asking
   questions: [exposure]
-  intent_calls: 1
+  intent_calls: 0
   model_calls: 0
   fields:
     service: "gitea"

@@ -41,6 +41,7 @@ export interface Scenario {
     model_calls?: number
     /** Text the answer must contain. */
     answer_includes?: string[]
+    answer_excludes?: string[]
     preflight?: "all-pass" | Record<string, boolean>
   }
   outcome?: unknown
@@ -104,6 +105,7 @@ export function checkScenario(s: Scenario, r: RunResult): string[] {
   if (e.intent_calls !== undefined && r.intentCalls !== e.intent_calls) out.push(`intent calls: expected ${e.intent_calls}, got ${r.intentCalls}`)
   if (e.model_calls !== undefined && r.modelCalls !== e.model_calls) out.push(`model calls: expected ${e.model_calls}, got ${r.modelCalls}`)
   for (const t of e.answer_includes ?? []) if (!(r.state.answer ?? "").includes(t)) out.push(`answer lacks "${t}": ${r.state.answer}`)
+  for (const t of e.answer_excludes ?? []) if ((r.state.answer ?? "").includes(t)) out.push(`answer has "${t}": ${r.state.answer}`)
   if (e.preflight !== undefined) out.push("preflight: not supported by the runner yet")
   return out
 }
@@ -162,7 +164,11 @@ export async function runPlanOnly(s: Scenario, rec: Recording | "live", provider
           if (p === "/cluster/resources") return fake.resources
           if (p === "/cluster/ceph/status") return fake.ceph
           if (p === "/cluster/ha/status/current") return fake.ha
-          if (p === "/cluster/tasks") return fake.tasks
+          if (p === "/nodes") return fake.nodes
+          const t = /^\/nodes\/([^/]+)\/tasks\?/.exec(p)
+          if (t) return fake.backupTasks[t[1]] ?? []
+          const l = /^\/nodes\/[^/]+\/tasks\/([^/]+)\/log/.exec(p)
+          if (l) return fake.backupLogs[decodeURIComponent(l[1])].map((t: string, n: number) => ({ n: n + 1, t }))
           throw new Error("unexpected " + p)
         }
         const sources = [
