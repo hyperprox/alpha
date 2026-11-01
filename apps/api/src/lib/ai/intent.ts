@@ -9,7 +9,7 @@
 // =============================================================================
 
 import * as z from 'zod/v4'
-import { StructuredOutputError } from './providers'
+import { StructuredOutputError, ModelCallError } from './providers'
 import { TEMPLATES, getTemplate } from './templates'
 import type { ModelCall } from './extract'
 import { callStructured } from './providers'
@@ -72,11 +72,22 @@ function classify(prompt: string): Kind {
 /** Only one template today, so a task-shaped request is deploy-service. */
 const KEYWORD_TEMPLATE = 'deploy-service'
 
-export function keywordIntent(prompt: string): IntentResult {
+/**
+ * `cause`: why the model could not be asked, in words for the user. Without one the fallback is a
+ * keyword match because no provider is configured at all.
+ */
+export function keywordIntent(prompt: string, cause?: string): IntentResult {
   const kind = classify(prompt)
   if (kind === 'task' && getTemplate(KEYWORD_TEMPLATE)) return { template: KEYWORD_TEMPLATE, question: false, answer: '' }
-  if (kind === 'question') return { template: 'none', question: true, answer: `${NO_PROVIDER_QUESTION} ${NO_TASK_ANSWER}` }
-  return { template: 'none', question: false, answer: NO_TASK_ANSWER }
+  if (kind === 'question') return { template: 'none', question: true, answer: `${cause ?? NO_PROVIDER_QUESTION} ${NO_TASK_ANSWER}` }
+  return { template: 'none', question: false, answer: cause ? `${cause} ${NO_TASK_ANSWER}` : NO_TASK_ANSWER }
+}
+
+/** The real reason a model call failed, as a sentence to show. */
+function causeOf(e: unknown): string {
+  if (e instanceof ModelCallError || e instanceof StructuredOutputError) return e.message
+  const msg = e instanceof Error ? e.message : String(e)
+  return `The AI provider failed: ${msg.replace(/[.\s]+$/, '')}.`
 }
 
 // ---------------------------------------------------------------------------
@@ -131,7 +142,7 @@ export async function matchIntent(prompt: string, opts: { call?: ModelCall } = {
   } catch (e) {
     // A refusal is the model's answer, not an outage: keywords must not route around it.
     if (e instanceof StructuredOutputError && e.kind === 'refusal') return { template: 'none', question: false, answer: e.message }
-    return keywordIntent(prompt)
+    return keywordIntent(prompt, causeOf(e))
   }
 
   const prose = got.answer.trim().slice(0, MAX_ANSWER)
