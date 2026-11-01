@@ -256,6 +256,10 @@ export default function SettingsPage() {
                 style={{ borderColor: 'var(--border-strong)', color: 'var(--accent)' }}>
             API tokens &rarr;
           </Link>
+          <Link href="/settings/notifications" className="inline-block rounded-md border px-3 py-1.5 text-sm font-medium"
+                style={{ borderColor: 'var(--border-strong)', color: 'var(--accent)' }}>
+            Notifications &rarr;
+          </Link>
         </div>
       </div>
 
