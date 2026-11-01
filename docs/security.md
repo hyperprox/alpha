@@ -42,13 +42,23 @@ Bitwarden-compatible, zero-knowledge vault. Every install runs its own, stock an
   HyperProx wipes the cache and the key and voids every session. The keyholder keeps this timer, so it
   holds even if the API is down. `hyperprox lock` and **Lock now** do the same on demand.
 - **Lock alert.** When HyperProx locks by itself (idle, keyholder stopped, reboot while unlocked) it posts
-  one message with a link to the sign-in page: open it and sign in to unlock. Set `LOCK_ALERT_URL` in
-  `.env` (an ntfy topic, a Gotify `/message` URL, a Discord webhook or any webhook; `LOCK_ALERT_KIND` if
-  the address does not say which, `LOCK_ALERT_TOKEN` for an ntfy or Gotify token) and
-  `HYPERPROX_PUBLIC_URL` (the address you open HyperProx at) for the link. Without `LOCK_ALERT_URL` the
-  Updates or Certificates webhook is used if one is set. The address has to be readable while locked, so
-  it is ordinary config, not a vault secret: someone who reads it can post to that channel. The message
-  never carries a secret, token or session; signing in is the unlock. A manual lock sends nothing.
+  one message with a link to the sign-in page: open it and sign in to unlock. It goes to the notification
+  channels marked **Works while locked** (Settings → Notifications, see `docs/notifications.md`), with
+  `HYPERPROX_PUBLIC_URL` (the address you open HyperProx at) for the link. Those channels' addresses and
+  tokens cannot be in the vault, which is what is locked, so they are kept in
+  `data/notify-locked-channels.json` (mode 0600, git-ignored): anyone who can read that file (root on the
+  host, a copy of its disk or backups) can post to those channels. Only an owner can mark a channel that
+  way, per channel; every other channel's secret is a vault item. An existing `LOCK_ALERT_URL` /
+  `LOCK_ALERT_KIND` / `LOCK_ALERT_TOKEN` in `.env` (or, without one, the Updates or Certificates webhook
+  it used to fall back to) is moved onto such a channel once, at the first start of this version, and is
+  not read after that. The message never carries a secret, token or session; signing in is the unlock. A
+  manual lock sends nothing.
+- **Notification channels.** Only admins add or edit them, and every send passes an SSRF guard: https
+  only (http only with the per-channel "Self-hosted on my network" switch), Discord, Slack, Teams and
+  Telegram pinned to their public hosts, the address resolved and checked at send time, link-local and
+  metadata addresses always refused, private and loopback addresses only with the switch and never on
+  HyperProx's own service ports, and no redirects followed. Logs, the delivery history and the audit log
+  record a channel's id, kind, HTTP status and an error code, never its address, token or a response body.
 - **Roles.** They come from the person's membership in the vault's "HyperProx" organization:
 
   | Vault role | HyperProx role | Can |

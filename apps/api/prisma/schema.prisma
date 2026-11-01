@@ -276,3 +276,57 @@ model CertState {
   value     Json
   updatedAt DateTime @updatedAt
 }
+
+// --- Notifications -----------------------------------------------------------
+// Channels and delivery history for lib/notify. No secret is stored here: a
+// channel's webhook URL or token is a vault item (hyperprox:notify/<id>), or,
+// for a channel marked usable while locked, in data/notify-locked-channels.json.
+
+model NotifyChannel {
+  id                String    @id
+  name              String
+  kind              String              // discord | slack | teams | ntfy | gotify | telegram | webhook
+  enabled           Boolean   @default(true)
+  minSeverity       String    @default("warning")   // info | warning | critical
+  eventFilter       Json                // "all" or a list of families
+  quietHours        Json?
+  lanOverride       Boolean   @default(false)       // "Self-hosted on my network"
+  usableWhileLocked Boolean   @default(false)
+  nonSecret         Json                // e.g. { chatId } for Telegram
+  lastResult        Json?               // { ok, status?, code?, at }
+  lastSentAt        DateTime?
+  failingSince      DateTime?
+  seededFrom        String?             // lock-alert | updates | certs
+  createdBy         String
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+}
+
+// One row per event per channel: the queue, and the delivery history (pruned after 30 days).
+model NotifyOutbox {
+  id            String    @id @default(uuid())
+  eventId       String
+  channelId     String
+  type          String
+  severity      String
+  fingerprint   String?
+  resolved      Boolean   @default(false)
+  payload       Json                // the scrubbed message, never a secret or a log
+  status        String              // queued | held-quiet | held-locked | sent | failed | dropped
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime  @default(now())
+  httpStatus    Int?
+  errorCode     String?
+  createdAt     DateTime  @default(now())
+  sentAt        DateTime?
+
+  @@index([status, nextAttemptAt])
+  @@index([channelId, createdAt])
+}
+
+// Small named values (which old settings have been moved onto channels).
+model NotifyState {
+  id        String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}

@@ -383,6 +383,25 @@ export async function deleteCredential(category: string, provider: string, key: 
   if (def) setEnvFromVault(def, undefined)
 }
 
+/**
+ * Remove a whole provider item (every key) in one vault write: the item is deleted, not left empty.
+ * For per-object items such as a notification channel's secret (hyperprox:notify/<id>).
+ */
+export async function deleteProviderCredentials(category: string, provider: string): Promise<void> {
+  const sid  = requireSid()
+  const name = itemName(category, provider)
+  const prev = cachedSecret(name)
+  if (!prev) return
+  putCachedSecret({ ...prev, fields: {} })
+  try {
+    await writeThrough(name, sid)
+  } catch (e) {
+    const now = cachedSecret(name)
+    if (!now || Object.keys(now.fields).length === 0) putCachedSecret(prev)
+    throw e
+  }
+}
+
 // ---------------------------------------------------------------------------
 //  List the keys under a provider — without exposing the values.
 // ---------------------------------------------------------------------------

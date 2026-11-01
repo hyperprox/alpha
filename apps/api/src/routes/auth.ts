@@ -14,6 +14,7 @@ import {
 } from '../lib/auth'
 import { hasRole } from '../lib/roles'
 import { startMigration, migrationStatus, hydrateEnvFromVault } from '../lib/credentials'
+import { getNotifyService } from '../lib/notify'
 
 const LIMIT = { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }
 const MIN_MASTER_PASSWORD = 12
@@ -68,6 +69,8 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       const m = await startMigration(vs.sid, (msg, err) => req.log.error({ err }, msg))
       if (m.error) migration = { ok: false, error: m.error }
       else if (m.started) migration = { ok: true, running: true }
+      // The old Updates/Certificates webhooks become notification channels (once), after the migration.
+      void getNotifyService()?.seedOnOwnerUnlock()
     }
     if (wasLocked) hydrateEnvFromVault()
 

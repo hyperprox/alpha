@@ -29,12 +29,18 @@ import { catalogueRoutes } from './routes/catalogue'
 import { terminalWsRoutes }           from './routes/terminal-ws'
 import { updatesRoutes, updatesWsRoutes } from './routes/updates'
 import { certsRoutes }            from './routes/certs'
+import { notifyRoutes }           from './routes/notify'
 import { prismaPlugin }         from './plugins/prisma'
 import { redisPlugin }          from './plugins/redis'
 import { registerGate }         from './lib/gate'
 import { attachUnlockState, setStateLogger } from './lib/vault/state'
 import { installLockAlerts }    from './lib/vault/lock-alert'
 import { setApiTokenStore, PrismaApiTokenStore } from './lib/api-tokens'
+import { setNotifyService } from './lib/notify'
+import { productionNotifyService } from './lib/notify/service'
+import { migrationSettled } from './lib/credentials'
+import { loadPolicy as loadUpdatesPolicy } from './lib/updates/policy'
+import { loadCertsPolicy } from './lib/certs/policy'
 
 const server = Fastify({
   logger: {
@@ -62,6 +68,17 @@ async function main() {
   setApiTokenStore(new PrismaApiTokenStore(server.prisma))
   await registerGate(server)
 
+  // -- Notifications (lib/notify) ---------------------------------------------
+  // The one sender: channels under Settings → Notifications, an outbox in Postgres. Installed before the
+  // routes so Updates and Certificates publish to it from their first job. The old YAML webhooks are still
+  // read (as the legacy fallback) until the first Owner sign-in moves them onto channels.
+  const notify = productionNotifyService(server.prisma, {
+    updatesUrl: () => loadUpdatesPolicy().policy.webhookUrl,
+    certsUrl: () => loadCertsPolicy().policy.alerts.webhookUrl ?? undefined,
+  }, m => server.log.info(m), () => migrationSettled())
+  setNotifyService(notify)
+  server.addHook('onClose', async () => notify.stop())
+
   await server.register(authRoutes,           { prefix: '/api/auth' })
   await server.register(apiTokenRoutes,       { prefix: '/api/auth/tokens' })
   await server.register(secretsRoutes,        { prefix: '/api/secrets' })
@@ -85,6 +102,7 @@ async function main() {
   await server.register(updatesRoutes,        { prefix: '/api/updates' })
   await server.register(updatesWsRoutes,      { prefix: '/ws/updates' })
   await server.register(certsRoutes,          { prefix: '/api/certs' })
+  await server.register(notifyRoutes,         { prefix: '/api/settings/notifications' })
   await server.register(wsRoutes,             { prefix: '/ws' })
   // Terminal sockets live under /ws because nginx proxies upgrades only there.
   await server.register(terminalWsRoutes,         { prefix: '/ws/terminal' })
@@ -97,6 +115,9 @@ async function main() {
   const alerts = installLockAlerts({ log: vaultLog })
   const attached = await attachUnlockState()
   server.log.info(`[vault] unlock state: ${attached.mode}${attached.mode === 'keyholder' ? (attached.reachable ? ', keyholder reachable' : ', keyholder NOT reachable') : ' (a restart locks)'}`)
+  // Seeds the lock channel from LOCK_ALERT_* (file only: no vault, no Postgres needed) before the
+  // start-up lock alert below, then starts working the outbox.
+  await notify.start()
   await alerts.startupCheck()
 
   // Credentials move into the vault on the first Owner sign-in (lib/credentials.ts seedFromEnv),

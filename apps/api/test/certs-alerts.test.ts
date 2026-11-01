@@ -1,9 +1,8 @@
 // Alerts: one message per change of verdict, saying which way it went; one daily reminder while anything is
-// critical; a webhook body Discord accepts, cut on whole lines with a count of what was left out.
+// critical; and one notification event per check (the bus renders and delivers it, lib/notify).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import http from 'node:http'
-import { alertChanges, sendWebhook, webhookBody, DISCORD_LIMIT, type AlertState } from '../src/lib/certs/alerts'
+import { alertChanges, certsEvent, type AlertState } from '../src/lib/certs/alerts'
 
 const NOW = new Date('2026-10-26T06:15:00Z')
 const H = 3_600_000
@@ -58,42 +57,23 @@ test('daily reminder: everything still critical, not what was just announced, at
   assert.deepEqual([calm.messages, calm.reminderSent], [[], false])
 })
 
-test('webhook body: under the limit, whole lines, a count of what was dropped, no mentions', () => {
-  const small = webhookBody(['one', 'two'])
-  assert.equal(small.content, 'HyperProx certificates\none\ntwo')
-  assert.deepEqual(small.allowed_mentions, { parse: [] })
-
-  const many = Array.from({ length: 100 }, (_, i) => `line ${i}: ${'x'.repeat(40)}`)
-  const big = webhookBody(many)
-  assert.ok(big.content.length <= DISCORD_LIMIT, String(big.content.length))
-  const shown = big.content.split('\n').filter(l => l.startsWith('line ')).length
-  assert.ok(shown > 10 && shown < 100)
-  assert.match(big.content, new RegExp(`\\.\\.\\.and ${100 - shown} more line\\(s\\); see the Certificates page$`))
-
-  const huge = webhookBody(['y'.repeat(5000)])
-  assert.ok(huge.content.length <= DISCORD_LIMIT)
-  assert.match(huge.content, /and 1 more line/)
+test('severity: a change is as bad as its worse side; the daily reminder is critical', () => {
+  assert.equal(alertChanges(map(s('a', 'ok')), [s('a', 'warn')], NOW, NOW).severity, 'warning')
+  assert.equal(alertChanges(map(s('a', 'critical')), [s('a', 'ok')], NOW, NOW).severity, 'critical', 'better from critical')
+  assert.equal(alertChanges(map(), [s('n', 'error', 'refused')], NOW, NOW).severity, 'critical')
+  const only = alertChanges(map(s('c', 'critical')), [s('c', 'critical')], NOW, new Date(NOW.getTime() - 24 * H))
+  assert.equal(only.severity, 'critical')
+  assert.equal(only.reminderOnly, true)
 })
 
-test('sendWebhook posts JSON, skips empty batches, and reports a refusal', async () => {
-  const got: Array<{ body: any; type: string | undefined }> = []
-  let status = 204
-  const server = http.createServer((req, res) => {
-    let b = ''
-    req.on('data', c => { b += c })
-    req.on('end', () => { got.push({ body: JSON.parse(b), type: req.headers['content-type'] }); res.statusCode = status; res.end(status >= 400 ? 'bad embed' : '') })
-  })
-  await new Promise<void>(r => server.listen(0, '127.0.0.1', () => r()))
-  const url = `http://127.0.0.1:${(server.address() as any).port}/hook`
-  try {
-    await sendWebhook(url, [])
-    assert.equal(got.length, 0)
-    await sendWebhook(url, ['Worse: a: OK -> CRITICAL'])
-    assert.equal(got[0].type, 'application/json')
-    assert.equal(got[0].body.content, 'HyperProx certificates\nWorse: a: OK -> CRITICAL')
-    status = 400
-    await assert.rejects(sendWebhook(url, ['x']), /answered 400: bad embed/)
-  } finally {
-    server.close()
-  }
+test('one event per check: title from the change, the messages as lines, a link to the page', () => {
+  const one = certsEvent(['Worse: mail.example.com:993: OK -> CRITICAL - expired'], 'critical', false)
+  assert.equal(one.type, 'certs.verdict.changed')
+  assert.equal(one.title, 'Certificate worse: mail.example.com:993')
+  assert.equal(one.link, '/certificates')
+  assert.deepEqual(one.lines, ['Worse: mail.example.com:993: OK -> CRITICAL - expired'])
+  assert.equal(certsEvent(['New: a:443: WARN', 'Better: b:443: ERROR -> OK'], 'critical', false).title, '2 certificate changes')
+  const rem = certsEvent(['Still critical (2):', '- a: CRITICAL', '- b: CRITICAL'], 'critical', true)
+  assert.equal(rem.type, 'certs.still.critical')
+  assert.equal(rem.title, '2 certificates are still critical')
 })

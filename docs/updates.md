@@ -74,7 +74,8 @@ Docker image is pulled. (The design's example file uses `dist-upgrade` and
    HyperProx's own container is `self.vmid`, or else the one container whose name matches
    this host's hostname. Its own images are updated by deploying HyperProx, not by a run.
 7. **Report**: what changed, what was skipped and why, and which reboots are pending —
-   in the job history, and to `notify.webhook_url` if set.
+   in the job history, and as one notification (`updates.job.finished`; `updates.job.paused` when a
+   run pauses) to the channels under Settings → Notifications that take Updates events.
 
 One job runs at a time, enforced in the database. Asking for another while one is
 running, awaiting confirmation or paused answers `409` with the id of the active job.
@@ -105,7 +106,7 @@ running, awaiting confirmation or paused answers `409` with the id of the active
 | `min_root_free_mb` | `1024` | Preflight minimum free space on each node's `/`. |
 | `self.node_order` | `last` | HyperProx's node goes last. |
 | `self.vmid` | detected | HyperProx's own container. |
-| `notify.webhook_url` | none | Receives `{"content": "<summary>"}`, at most 1900 characters. |
+| `notify.webhook_url` | none | **Moved.** Read only until the first Owner sign-in of the notifications release, which turns it into the channel "Updates reports" under Settings → Notifications; ignored after that, removed from the parser in a later release. |
 | `apps.enabled` | `true` | Look for apps that plug-in providers know (read-only). `false`: no app is looked for, listed or updated. |
 | `apps.default` | `manual` | Mode for every app not named below: `manual` (only when approved for a run), `auto` (every run, scheduled ones included) or `off` (listed, never updated). |
 | `apps.<app id>` | | Mode for one app, by its provider id, e.g. `apps.meshcentral: auto`. An id no installed plug-in provides is named in the plan's warnings. |
