@@ -6,7 +6,7 @@ answers: []
 expect:
   state: answer
   questions: []
-  intent_calls: 0
-  model_calls: 1
-  answer_includes: ["do not have that information"]
-found_by: "live bug: the AI page could not answer questions about the cluster"
+  intent_calls: 1
+  model_calls: 0
+  answer_includes: ["cannot tell"]
+found_by: "live bug: nothing here knows the weather, so it falls through to the intent call as before"

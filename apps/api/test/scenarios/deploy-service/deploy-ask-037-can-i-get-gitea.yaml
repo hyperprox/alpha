@@ -1,0 +1,13 @@
+id: deploy-ask-037-can-i-get-gitea
+prompt: "Can I get a Gitea instance?"
+facts: fixtures/three-node-cluster.json
+ask: fixtures/ask-cluster.json
+answers: []
+expect:
+  state: asking
+  questions: [exposure]
+  intent_calls: 1
+  model_calls: 0
+  fields:
+    service: "gitea"
+found_by: "review: a question-shaped deploy request was answered 'I cannot change anything'"

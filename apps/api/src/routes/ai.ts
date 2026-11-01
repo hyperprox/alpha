@@ -71,6 +71,9 @@ export interface AiRouteDeps {
   askCall(provider?: ProviderId, model?: string): ModelCall
 }
 
+/** Built on the first certificate question and kept: its inventory cache is per instance. */
+let certsService: ReturnType<typeof productionCertsService> | undefined
+
 function defaultDeps(): AiRouteDeps {
   return {
     facts: () => gatherTemplateFacts(),
@@ -98,7 +101,7 @@ function defaultDeps(): AiRouteDeps {
         ...coreSources({
           fetchStrict, facts, unlocked: isUnlocked,
           certs: async (): Promise<CertLite[]> => {
-            const svc = productionCertsService(prisma as any, () => {})
+            const svc = (certsService ??= productionCertsService(prisma as any, () => {}))
             return (await svc.overview(false)).inventory.map(e => ({ names: e.names, daysLeft: e.daysLeft, notAfter: e.notAfter, verdict: e.verdict, source: e.source }))
           },
         }),
@@ -301,7 +304,8 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
         const loopDeps: LoopDeps = {
           facts, settings, now: () => new Date(),
           intent: p => deps.intent(p, chosen, model),
-          ask: p => answerQuestion(p, { sources: deps.sources(facts, (fastify as any).prisma), call: deps.askCall(chosen, model), fallback: NO_TASK_ANSWER }),
+          ask: p => answerQuestion(p, { sources: deps.sources(facts, (fastify as any).prisma), call: deps.askCall(chosen, model), fallback: NO_TASK_ANSWER,
+            services: wizardRecipes().flatMap(r => [r.id, r.name.toLowerCase()]) }),
           extract: (t, text, f, opts) => deps.extract(t, text, f, { ...opts, provider: chosen, model }),
         }
         let s

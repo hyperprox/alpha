@@ -15,6 +15,7 @@ import { matchIntent, type IntentResult } from "../../src/lib/ai/intent"
 import { callStructured, type ProviderId } from "../../src/lib/ai/providers"
 import { answerQuestion } from "../../src/lib/ai/ask"
 import { coreSources, pluginSources } from "../../src/lib/ai/ask-sources"
+import { wizardRecipes } from "../../src/lib/catalogue"
 import { homeAssistantPlugin } from "../../src/plugins/home-assistant"
 import type { FieldValue, TemplateFacts } from "../../src/lib/ai/templates/types"
 
@@ -169,7 +170,7 @@ export async function runPlanOnly(s: Scenario, rec: Recording | "live", provider
           ...pluginSources({ plugins: [homeAssistantPlugin], unlocked: () => fake.unlocked,
             run: p => p.summary!({ get: async () => fake.haStates } as never) }),
         ]
-        return answerQuestion(prompt, { sources, call: askCall, fallback: "canned" })
+        return answerQuestion(prompt, { sources, call: askCall, fallback: "canned", services: wizardRecipes().flatMap(r => [r.id, r.name.toLowerCase()]) })
       },
     } : {}),
   }
