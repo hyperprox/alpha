@@ -88,9 +88,11 @@ At `schedule.check` (five-field cron, local time, default `15 6 * * *`):
 2. Deliveries that failed are retried with the certificate already issued.
 3. Every known endpoint is probed: the policy's probes, every proxy host, the hypervisor
    and backup node consoles, and each managed certificate's targets.
-4. Alerts go to `alerts.webhook_url` (Discord-compatible) on a change of verdict, with a
-   daily reminder while anything is critical. A failing renewal alerts once its
-   certificate is inside `warn_fraction` of its lifetime or `critical_days`.
+4. Alerts go to the notification channels that take Certificates events (Settings →
+   Notifications) on a change of verdict, as one message per check, with a daily reminder
+   while anything is critical. A failing renewal alerts once its certificate is inside
+   `warn_fraction` of its lifetime or `critical_days`. (`alerts.webhook_url` is read only
+   until the first Owner sign-in moves it onto a channel.)
 
 A check that falls while HyperProx is locked is skipped and recorded in the history: the
 keys, the DNS credential and the node logins are in the vault. It is not caught up later.

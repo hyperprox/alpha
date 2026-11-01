@@ -29,7 +29,8 @@ schedule:
 alerts:
   warn_fraction: 0.33          # default 0.33. Warn when less than this share of the lifetime remains.
   critical_days: 7             # default 7. Critical below this many days, whatever the lifetime.
-  webhook_url: https://hooks.example.com/certificates   # default none. Discord-compatible {"content": ...} POST.
+  # webhook_url: moved to Settings → Notifications. An existing value becomes a channel at the first
+  # Owner sign-in and is not read after that.
 
 # Certificates HyperProx issues itself, over DNS-01. Every name must lie in a DNS zone HyperProx manages;
 # a name that does not is shown as "DNS provider not managed" and never attempted. Issued names are public

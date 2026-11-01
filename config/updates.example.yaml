@@ -66,4 +66,5 @@ apps:
   # A config change a provider offers (MeshCentral's allowedOrigin, say) always needs its own approval.
 
 notify:
-  # webhook_url: https://chat.example.com/hooks/updates   # gets a one-line summary ({"content": ...})
+  # webhook_url: moved to Settings → Notifications. An existing value becomes a channel at the first
+  # Owner sign-in and is not read after that.
