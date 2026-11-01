@@ -1,0 +1,12 @@
+id: deploy-ask-032-weather
+prompt: "what is the weather today"
+facts: fixtures/three-node-cluster.json
+ask: fixtures/ask-cluster.json
+answers: []
+expect:
+  state: answer
+  questions: []
+  intent_calls: 0
+  model_calls: 1
+  answer_includes: ["do not have that information"]
+found_by: "live bug: the AI page could not answer questions about the cluster"

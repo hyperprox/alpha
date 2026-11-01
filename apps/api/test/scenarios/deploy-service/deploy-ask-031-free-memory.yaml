@@ -1,0 +1,12 @@
+id: deploy-ask-031-free-memory
+prompt: "How much free memory?"
+facts: fixtures/three-node-cluster.json
+ask: fixtures/ask-cluster.json
+answers: []
+expect:
+  state: answer
+  questions: []
+  intent_calls: 0
+  model_calls: 0
+  answer_includes: ["20.0 GB of 32.0 GB", "alpha 12.0 GB"]
+found_by: "live bug: the AI page could not answer questions about the cluster"

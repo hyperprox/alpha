@@ -95,6 +95,11 @@ export function confidentDeploy(prompt: string): boolean {
   return !sentenceKinds(prompt).some(k => k === 'question' || k === 'removal')
 }
 
+/** True when every sentence is a question and none asks for a task or a removal. */
+export function isQuestionPrompt(prompt: string): boolean {
+  return classify(prompt) === 'question'
+}
+
 export function keywordIntent(prompt: string, cause?: string): IntentResult {
   const kind = classify(prompt)
   if (kind === 'task' && getTemplate(KEYWORD_TEMPLATE)) return { template: KEYWORD_TEMPLATE, question: false, answer: '' }

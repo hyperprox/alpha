@@ -1,0 +1,12 @@
+id: deploy-ask-036-network-index
+prompt: "What's on my network?"
+facts: fixtures/three-node-cluster.json
+ask: fixtures/ask-cluster.json
+answers: []
+expect:
+  state: answer
+  questions: []
+  intent_calls: 0
+  model_calls: 0
+  answer_includes: ["Attached:", "Cluster: 2/2 nodes online", "Certificates: 2"]
+found_by: "live bug: the AI page could not answer questions about the cluster"

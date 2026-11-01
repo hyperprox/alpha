@@ -1,0 +1,30 @@
+{
+  "unlocked": true,
+  "resources": [
+    {"type":"node","node":"alpha","status":"online","maxcpu":8,"mem":4294967296,"maxmem":17179869184},
+    {"type":"node","node":"beta","status":"online","maxcpu":4,"mem":8589934592,"maxmem":17179869184},
+    {"type":"lxc","vmid":101,"node":"alpha","name":"web","status":"running"},
+    {"type":"lxc","vmid":102,"node":"alpha","name":"db","status":"running"},
+    {"type":"lxc","vmid":103,"node":"beta","name":"old","status":"stopped"},
+    {"type":"qemu","vmid":201,"node":"beta","name":"win","status":"running"},
+    {"type":"storage","storage":"local","node":"alpha","disk":10737418240,"maxdisk":21474836480},
+    {"type":"storage","storage":"ceph","node":"alpha","shared":1,"disk":5368709120,"maxdisk":107374182400},
+    {"type":"storage","storage":"ceph","node":"beta","shared":1,"disk":5368709120,"maxdisk":107374182400}
+  ],
+  "ceph": {"health":{"status":"HEALTH_OK"}},
+  "ha": [{"type":"service","sid":"ct:101","state":"started"}],
+  "tasks": [
+    {"type":"vzdump","id":"101","node":"alpha","status":"OK","endtime":1767218400},
+    {"type":"vzdump","id":"102","node":"alpha","status":"OK","endtime":1767218300},
+    {"type":"vzdump","id":"201","node":"beta","status":"job errors","endtime":1767218200}
+  ],
+  "certs": [
+    {"names":["app.example.com"],"daysLeft":9,"notAfter":"2026-01-10T00:00:00Z","verdict":"warn","source":"npm"},
+    {"names":["pve.example.com"],"daysLeft":80,"notAfter":"2026-03-22T00:00:00Z","verdict":"ok","source":"pve"}
+  ],
+  "haStates": [
+    {"entity_id":"light.outside","state":"on","attributes":{"friendly_name":"Outside light"},"last_changed":"","last_updated":""},
+    {"entity_id":"light.hall","state":"off","attributes":{"friendly_name":"Hall light"},"last_changed":"","last_updated":""},
+    {"entity_id":"lock.front","state":"locked","attributes":{"friendly_name":"Front door lock"},"last_changed":"","last_updated":""}
+  ]
+}

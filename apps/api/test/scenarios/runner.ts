@@ -13,6 +13,9 @@ import { startLoop, answerLoop, type LoopDeps, type LoopState, type LoopStateNam
 import { extractFields, type ModelCall } from "../../src/lib/ai/extract"
 import { matchIntent, type IntentResult } from "../../src/lib/ai/intent"
 import { callStructured, type ProviderId } from "../../src/lib/ai/providers"
+import { answerQuestion } from "../../src/lib/ai/ask"
+import { coreSources, pluginSources } from "../../src/lib/ai/ask-sources"
+import { homeAssistantPlugin } from "../../src/plugins/home-assistant"
 import type { FieldValue, TemplateFacts } from "../../src/lib/ai/templates/types"
 
 // js-yaml ships no types; only load() is used.
@@ -23,6 +26,8 @@ export interface Scenario {
   id: string
   prompt: string
   facts: string
+  /** A fake cluster for a read-only question (test/scenarios/fixtures/ask-*.json); the question path is on. */
+  ask?: string
   answers: Array<{ field: string; value: unknown } | { text: string }>
   expect: {
     state: LoopStateName
@@ -31,13 +36,17 @@ export interface Scenario {
     dropped?: string[]
     /** How many intent model calls the run makes. A prompt the keywords are sure of makes none. */
     intent_calls?: number
+    /** How many model calls answer the question. Exact answers make none. */
+    model_calls?: number
+    /** Text the answer must contain. */
+    answer_includes?: string[]
     preflight?: "all-pass" | Record<string, boolean>
   }
   outcome?: unknown
   found_by: string
 }
-export interface Recording { intent: IntentResult; extractions: Array<Record<string, unknown>> }
-export interface RunResult { state: LoopState; questions: string[]; dropped: string[]; extractions: Array<Record<string, unknown>>; intentCalls: number }
+export interface Recording { intent: IntentResult; ask?: { answer: string }; extractions: Array<Record<string, unknown>> }
+export interface RunResult { state: LoopState; questions: string[]; dropped: string[]; extractions: Array<Record<string, unknown>>; intentCalls: number; modelCalls: number }
 
 /** test/scenarios: facts paths resolve against it and recordings live under it. */
 export const SCENARIOS_ROOT = __dirname
@@ -92,6 +101,8 @@ export function checkScenario(s: Scenario, r: RunResult): string[] {
   }
   if (e.dropped && JSON.stringify([...e.dropped].sort()) !== JSON.stringify(r.dropped)) out.push(`dropped: expected [${[...e.dropped].sort()}], got [${r.dropped}]`)
   if (e.intent_calls !== undefined && r.intentCalls !== e.intent_calls) out.push(`intent calls: expected ${e.intent_calls}, got ${r.intentCalls}`)
+  if (e.model_calls !== undefined && r.modelCalls !== e.model_calls) out.push(`model calls: expected ${e.model_calls}, got ${r.modelCalls}`)
+  for (const t of e.answer_includes ?? []) if (!(r.state.answer ?? "").includes(t)) out.push(`answer lacks "${t}": ${r.state.answer}`)
   if (e.preflight !== undefined) out.push("preflight: not supported by the runner yet")
   return out
 }
@@ -129,7 +140,10 @@ export async function runPlanOnly(s: Scenario, rec: Recording | "live", provider
     return reply
   })
 
+  let modelCalls = 0
+  const askCall = modelCall(() => { modelCalls++; return (rec as Recording).ask })
   const dropped = new Set<string>()
+  const fake = s.ask ? JSON.parse(readFileSync(join(SCENARIOS_ROOT, s.ask), "utf8")) : null
   const deps: LoopDeps = {
     facts: loadFacts(s.facts),
     settings: { bridge: "vmbr0" },
@@ -140,6 +154,24 @@ export async function runPlanOnly(s: Scenario, rec: Recording | "live", provider
       return x
     },
     now: () => new Date("2026-01-01T00:00:00Z"),
+    ...(fake ? {
+      ask: (prompt: string) => {
+        const facts = loadFacts(s.facts)
+        const fetchStrict = async (p: string) => {
+          if (p === "/cluster/resources") return fake.resources
+          if (p === "/cluster/ceph/status") return fake.ceph
+          if (p === "/cluster/ha/status/current") return fake.ha
+          if (p === "/cluster/tasks") return fake.tasks
+          throw new Error("unexpected " + p)
+        }
+        const sources = [
+          ...coreSources({ fetchStrict: fetchStrict as never, facts, unlocked: () => fake.unlocked, certs: async () => fake.certs, now: 1767225600000 }),
+          ...pluginSources({ plugins: [homeAssistantPlugin], unlocked: () => fake.unlocked,
+            run: p => p.summary!({ get: async () => fake.haStates } as never) }),
+        ]
+        return answerQuestion(prompt, { sources, call: askCall, fallback: "canned" })
+      },
+    } : {}),
   }
 
   const questions: string[] = []
@@ -159,7 +191,7 @@ export async function runPlanOnly(s: Scenario, rec: Recording | "live", provider
   if (!live) {
     if (replay.length) throw new Error(`scenario ${s.id}: ${replay.length} recorded extraction(s) unused`)
   }
-  return { state: st, questions, dropped: [...dropped].sort(), extractions: seen, intentCalls }
+  return { state: st, questions, dropped: [...dropped].sort(), extractions: seen, intentCalls, modelCalls }
 }
 
 // ---------------------------------------------------------------------------

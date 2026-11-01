@@ -1,0 +1,12 @@
+id: deploy-ask-033-certs-expire
+prompt: "Which certificates expire soon?"
+facts: fixtures/three-node-cluster.json
+ask: fixtures/ask-cluster.json
+answers: []
+expect:
+  state: answer
+  questions: []
+  intent_calls: 0
+  model_calls: 0
+  answer_includes: ["app.example.com in 9 days"]
+found_by: "live bug: the AI page could not answer questions about the cluster"
