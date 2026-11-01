@@ -46,8 +46,8 @@ apps/api/src/lib/notify/render.ts                    message limits, scrubbing, 
 apps/api/src/lib/notify/adapters/{discord,slack,teams,ntfy,gotify,telegram,webhook,index}.ts
 apps/api/src/lib/notify/secrets.ts                   vault items, locked-channels file, masks
 apps/api/src/lib/notify/store.ts                     NotifyStore: Memory + Prisma
-apps/api/src/lib/notify/bus.ts                       publish(): filters, outbox rows
-apps/api/src/lib/notify/dispatcher.ts                quiet hours, grouping, brake, retries, digests
+apps/api/src/lib/notify/dispatcher.ts                publish(): filters, outbox rows; quiet hours, grouping, brake, retries, digests
+apps/api/src/lib/notify/index.ts                     process-wide publish() and the installed service
 apps/api/src/lib/notify/migrate.ts                   seeding + legacy fallback channels
 apps/api/src/lib/notify/service.ts                   channel CRUD, Send test, wiring, singleton publish()
 apps/api/src/routes/notify.ts                        /api/settings/notifications/*
@@ -95,7 +95,7 @@ export function detectKind(url): ChannelKind
 export function publish(e: NotifyEventInput): Promise<void>        // the only way anything sends
 export class NotifyService { listChannels(); createChannel(input, actor); updateChannel(id, input, actor);
   deleteChannel(id, actor); testChannel(id, actor); deliveries(channelId?); deliverLocked(e) }
-export class Dispatcher { tick(now?): Promise<void>; kick(): void }
+export class NotifyCore { publish(e, o?); tick(): Promise<void>; kick(): void }   // dispatcher.ts: bus + dispatcher
 ```
 
 ## Tasks

@@ -683,11 +683,10 @@ configure_vault_env() {
   # Empty = Send links and invitations use the loopback origin. Set to the https address people can reach.
   env_has VAULT_PUBLIC_URL || { echo "VAULT_PUBLIC_URL=" >> "${ENV_FILE}"; added=true; }
   env_has VAULT_IDLE_LOCK_MINUTES || { echo "VAULT_IDLE_LOCK_MINUTES=30" >> "${ENV_FILE}"; added=true; }
-  # Lock alert: when HyperProx locks by itself, post a message with a sign-in link (docs/security.md).
-  # Empty LOCK_ALERT_URL = the Updates/Certificates webhook_url if one is set, else no alert.
+  # The address people open HyperProx at: notification messages link to it (docs/notifications.md).
+  # Where notifications and lock alerts go is set under Settings → Notifications, not here; an existing
+  # LOCK_ALERT_* line is moved onto a channel once, at the first start, and then no longer read.
   env_has HYPERPROX_PUBLIC_URL || { echo "HYPERPROX_PUBLIC_URL=" >> "${ENV_FILE}"; added=true; }
-  env_has LOCK_ALERT_URL || { echo "LOCK_ALERT_URL=" >> "${ENV_FILE}"; added=true; }
-  env_has LOCK_ALERT_KIND || { echo "LOCK_ALERT_KIND=auto" >> "${ENV_FILE}"; added=true; }
   chmod 600 "${ENV_FILE}"
   [[ "${added}" == "true" ]] && ok "Vault settings written to .env" || ok "Vault settings already present"
 }
