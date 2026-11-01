@@ -6,6 +6,7 @@ answers:
 expect:
   state: ready
   questions: ["exposure"]
+  intent_calls: 0
   fields:
     vmid: "{derived}"
     ip: "dhcp"
