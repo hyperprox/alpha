@@ -29,13 +29,15 @@ export interface Scenario {
     questions: string[]
     fields?: Record<string, unknown>
     dropped?: string[]
+    /** How many intent model calls the run makes. A prompt the keywords are sure of makes none. */
+    intent_calls?: number
     preflight?: "all-pass" | Record<string, boolean>
   }
   outcome?: unknown
   found_by: string
 }
 export interface Recording { intent: IntentResult; extractions: Array<Record<string, unknown>> }
-export interface RunResult { state: LoopState; questions: string[]; dropped: string[]; extractions: Array<Record<string, unknown>> }
+export interface RunResult { state: LoopState; questions: string[]; dropped: string[]; extractions: Array<Record<string, unknown>>; intentCalls: number }
 
 /** test/scenarios: facts paths resolve against it and recordings live under it. */
 export const SCENARIOS_ROOT = __dirname
@@ -89,6 +91,7 @@ export function checkScenario(s: Scenario, r: RunResult): string[] {
     if (why) out.push(`field ${k}: ${why}`)
   }
   if (e.dropped && JSON.stringify([...e.dropped].sort()) !== JSON.stringify(r.dropped)) out.push(`dropped: expected [${[...e.dropped].sort()}], got [${r.dropped}]`)
+  if (e.intent_calls !== undefined && r.intentCalls !== e.intent_calls) out.push(`intent calls: expected ${e.intent_calls}, got ${r.intentCalls}`)
   if (e.preflight !== undefined) out.push("preflight: not supported by the runner yet")
   return out
 }
@@ -117,7 +120,8 @@ export async function runPlanOnly(s: Scenario, rec: Recording | "live", provider
       ? callStructured({ ...r, parse: raw => { seen.push(raw as Record<string, unknown>); return r.parse(raw) } }, provider)
       : (() => { const reply = next(); return callStructured(r, asProvider, async () => JSON.stringify(reply), { model: "recorded" }) })()
 
-  const intentCall = modelCall(() => (rec as Recording).intent)
+  let intentCalls = 0
+  const intentCall = modelCall(() => { intentCalls++; return (rec as Recording).intent })
   const extractCall = modelCall(() => {
     const reply = replay.shift()
     if (!reply) throw new Error("recording has no extraction left for this call")
@@ -155,7 +159,7 @@ export async function runPlanOnly(s: Scenario, rec: Recording | "live", provider
   if (!live) {
     if (replay.length) throw new Error(`scenario ${s.id}: ${replay.length} recorded extraction(s) unused`)
   }
-  return { state: st, questions, dropped: [...dropped].sort(), extractions: seen }
+  return { state: st, questions, dropped: [...dropped].sort(), extractions: seen, intentCalls }
 }
 
 // ---------------------------------------------------------------------------

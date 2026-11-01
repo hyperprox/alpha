@@ -62,9 +62,13 @@ function sentenceKind(raw: string): Kind {
 }
 
 /** Per sentence: any imperative task request wins ("what is Gitea? deploy it"), then a removal, then a question. */
-function classify(prompt: string): Kind {
+function sentenceKinds(prompt: string): Kind[] {
   // A sentence ends at . ! ? ; followed by space, so "status.example.com" and "10.0.0.50" stay whole.
-  const kinds = prompt.split(/(?<=[.!?;])\s+|;/).map(sentenceKind)
+  return prompt.split(/(?<=[.!?;])\s+|;/).map(sentenceKind)
+}
+
+function classify(prompt: string): Kind {
+  const kinds = sentenceKinds(prompt)
   for (const k of ['task', 'removal', 'question'] as const) if (kinds.includes(k)) return k
   return 'other'
 }
@@ -76,6 +80,21 @@ const KEYWORD_TEMPLATE = 'deploy-service'
  * `cause`: why the model could not be asked, in words for the user. Without one the fallback is a
  * keyword match because no provider is configured at all.
  */
+// Verbs that can only mean "put a service on the cluster". The wider TASK list (create, run, add, make,
+// build) also covers things the model must judge, such as "create a backup of Gitea".
+const DEPLOY_VERB = /^(please\s+)?(deploy|install|set\s*up|spin\s*up|stand\s*up|launch|provision)\b/
+
+/**
+ * True when the request opens with a deploy verb and nothing in it asks a question or removes anything.
+ * The intent call would say the same, so it is not made: on a CPU-only model it is half the latency.
+ * Extraction still asks which service, and the plan is validated either way.
+ */
+export function confidentDeploy(prompt: string): boolean {
+  const p = prompt.trim().toLowerCase()
+  if (!DEPLOY_VERB.test(p) || p.includes('?')) return false
+  return !sentenceKinds(prompt).some(k => k === 'question' || k === 'removal')
+}
+
 export function keywordIntent(prompt: string, cause?: string): IntentResult {
   const kind = classify(prompt)
   if (kind === 'task' && getTemplate(KEYWORD_TEMPLATE)) return { template: KEYWORD_TEMPLATE, question: false, answer: '' }
@@ -135,6 +154,7 @@ function intentRequest(prompt: string) {
 }
 
 export async function matchIntent(prompt: string, opts: { call?: ModelCall } = {}): Promise<IntentResult> {
+  if (confidentDeploy(prompt) && getTemplate(KEYWORD_TEMPLATE)) return keywordIntent(prompt)
   const call: ModelCall = opts.call ?? (r => callStructured(r))
   let got: { template: string; question: boolean; answer: string }
   try {

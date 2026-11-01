@@ -1,0 +1,12 @@
+id: deploy-026-polite-request-still-asks-the-model
+prompt: "Could you deploy Uptime Kuma, LAN only"
+facts: fixtures/three-node-cluster.json
+answers: []
+expect:
+  state: ready
+  questions: []
+  intent_calls: 1
+  fields:
+    service: "uptime-kuma"
+    exposure: "lan"
+found_by: "2026-11-01 local latency: only a confident deploy verb skips the intent call"

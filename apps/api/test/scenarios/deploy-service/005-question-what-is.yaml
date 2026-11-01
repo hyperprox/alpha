@@ -5,4 +5,5 @@ answers: []
 expect:
   state: answer
   questions: []
+  intent_calls: 1
 found_by: "spec seed inventory"
