@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { wsBase } from '@/lib/ws'
 import { alpha } from '@/lib/theme'
+import { pickOllamaModel } from '@/lib/ollama-model'
 import { BoxIcon, SplitIcon, GlobeIcon, HourglassIcon, LockIcon, GearIcon, BoltIcon } from './icons'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -424,7 +425,7 @@ export default function AIPage() {
   const [planFields,  setPlanFields]  = useState<Record<string, PlanField>>({})
   const [planErr,     setPlanErr]     = useState<string | null>(null)
   const [executing,   setExecuting]   = useState(false)
-  const [activeModel, setActiveModel] = useState<string>('llama3.2:3b')
+  const [activeModel, setActiveModel] = useState<string>('')
   const [providers,   setProviders]   = useState<ProviderInfo[]>([])
   const [activeProv,  setActiveProv]  = useState<ProviderId>('ollama')
   const [provDraft,   setProvDraft]   = useState<Record<string, Record<string, string>>>({})
@@ -444,7 +445,12 @@ export default function AIPage() {
     const [s, c, pr] = await Promise.all([statusRes.json(), catalogRes.json(), provRes.json()])
     setStatus(s)
     if (c.ok) setCatalog(c)
-    if (pr.ok) { setProviders(pr.providers); setActiveProv(pr.active) }
+    if (pr.ok) {
+      setProviders(pr.providers); setActiveProv(pr.active)
+      // The stored model is the starting point; a later pick by the user is kept.
+      const stored = pr.providers.find((p: ProviderInfo) => p.id === 'ollama')?.model ?? ''
+      setActiveModel(cur => cur || stored)
+    }
     setLoading(false)
   }, [])
 
@@ -452,6 +458,9 @@ export default function AIPage() {
   // "configured" as soon as an address is stored, but it is only usable once
   // that address answers — hence the two different checks.
   const activeInfo     = providers.find(p => p.id === activeProv) ?? null
+  // What the dropdown shows is what is sent: a stored model that is not installed would otherwise
+  // display as the first installed one while the request carried the stored name.
+  const shownModel = pickOllamaModel(activeModel, (status?.models ?? []).map(m => m.name))
   const providerReady  = activeProv === 'ollama'
     ? Boolean(status?.connected)
     : Boolean(activeInfo?.configured)
@@ -572,7 +581,7 @@ export default function AIPage() {
       // The model override only means anything for Ollama, where the dropdown
       // lists what is installed. Cloud models are set once, in Settings.
       body:    JSON.stringify(activeProv === 'ollama'
-        ? { prompt: userMsg, provider: activeProv, model: activeModel }
+        ? { prompt: userMsg, provider: activeProv, model: shownModel }
         : { prompt: userMsg, provider: activeProv }),
     })
     const data = await res.json()
@@ -798,7 +807,7 @@ export default function AIPage() {
                   ))}
                 </select>
                 {activeProv === 'ollama' ? (
-                  <select value={activeModel} onChange={e => { setActiveModel(e.target.value); fetch('/api/ai/model/select', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: e.target.value }) }) }}
+                  <select value={shownModel} onChange={e => { setActiveModel(e.target.value); fetch('/api/ai/model/select', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: e.target.value }) }) }}
                     style={{ flex: 1, padding: '8px 12px', ...inputStyle, fontSize: 13, ...mono, cursor: 'pointer' }}>
                     {(status?.models ?? []).map((m: any) => (<option key={m.name} value={m.name}>{m.name}</option>))}
                   </select>
