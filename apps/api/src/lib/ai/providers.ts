@@ -274,6 +274,58 @@ export function ollamaBody(r: StructuredRequest<unknown>, model: string, numThre
   }
 }
 
+// ---------------------------------------------------------------------------
+//  Threads. Ollama sizes its pool from the host's cores, not from the container's CPU quota, so a
+//  bundled server capped at 3 CPUs on a 24-thread host runs 24 threads fighting over 3 CPUs' time.
+//  The bundled service's `cpus:` limit is the right count; it is read from docker, once in a while.
+// ---------------------------------------------------------------------------
+
+const BUNDLED_CONTAINER = 'hyperprox-ollama'
+const wholeOnly = (v: number | undefined) => (v !== undefined && Number.isInteger(v) && v >= 1 ? v : undefined)
+
+/** `docker inspect -f '{{.HostConfig.NanoCpus}}'`, as whole cores. 0 and anything unreadable are no limit. */
+export function cpuLimitFromNano(out: string): number | undefined {
+  const n = Number(out.trim())
+  if (!Number.isFinite(n) || n <= 0) return undefined
+  return Math.max(1, Math.floor(n / 1e9))
+}
+
+/** The stored setting wins, then OLLAMA_NUM_THREAD, then the container's limit. */
+export function resolveThreads(v: { stored?: number; env?: number; cpuLimit?: number }): number | undefined {
+  return wholeOnly(v.stored) ?? wholeOnly(v.env) ?? wholeOnly(v.cpuLimit)
+}
+
+export function isLocalAddress(url: string): boolean {
+  try {
+    const h = new URL(url).hostname
+    return h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h === '::1'
+  } catch { return false }
+}
+
+async function inspectBundledCpus(): Promise<number | undefined> {
+  const { execFile } = await import('node:child_process')
+  const out = await new Promise<string>((resolve, reject) =>
+    execFile('docker', ['inspect', '-f', '{{.HostConfig.NanoCpus}}', BUNDLED_CONTAINER], { timeout: 3000 },
+      (err, stdout) => (err ? reject(err) : resolve(stdout))))
+  return cpuLimitFromNano(out)
+}
+
+const CPU_LIMIT_TTL_MS = 5 * 60_000
+let cpuLimitCache: { at: number; value: number | undefined } | undefined
+
+/** The bundled server's CPU limit, when the address is a local one. Never throws: no answer is no limit. */
+export async function bundledCpuLimit(
+  url: string, probe: () => Promise<number | undefined> = inspectBundledCpus,
+): Promise<number | undefined> {
+  if (!isLocalAddress(url)) return undefined
+  const useCache = probe === inspectBundledCpus
+  if (useCache && cpuLimitCache && Date.now() - cpuLimitCache.at < CPU_LIMIT_TTL_MS) return cpuLimitCache.value
+  let value: number | undefined
+  try { value = await probe() } catch { value = undefined }
+  if (useCache) cpuLimitCache = { at: Date.now(), value }
+  return value
+}
+
 /** Thread count and timeout for a local model on a CPU: slow, so patient, and told how many cores it really has. */
 export async function ollamaSettings(): Promise<{ numThread?: number; timeoutMs: number; unreadable?: string }> {
   const pos = (v: string): number | undefined => {
@@ -285,8 +337,13 @@ export async function ollamaSettings(): Promise<{ numThread?: number; timeoutMs:
   const read = async (key: string): Promise<string> => {
     try { return await cred('ollama', key) } catch (e) { unreadable ??= e instanceof Error ? e.message : String(e); return '' }
   }
-  const whole = (v: number | undefined) => (v !== undefined && Number.isInteger(v) ? v : undefined)
-  const numThread = whole(pos(await read('num_thread'))) ?? whole(pos(process.env.OLLAMA_NUM_THREAD ?? ''))
+  const stored = wholeOnly(pos(await read('num_thread')))
+  const env = wholeOnly(pos(process.env.OLLAMA_NUM_THREAD ?? ''))
+  // Only asked when nothing else decided the count.
+  const cpuLimit = stored === undefined && env === undefined
+    ? await bundledCpuLimit((await read('url')) || process.env.OLLAMA_URL || '')
+    : undefined
+  const numThread = resolveThreads({ stored, env, cpuLimit })
   const seconds = pos(await read('timeout_s')) ?? pos(process.env.OLLAMA_TIMEOUT_S ?? '') ?? OLLAMA_DEFAULT_TIMEOUT_S
   return { numThread, timeoutMs: seconds * 1000, ...(unreadable ? { unreadable } : {}) }
 }

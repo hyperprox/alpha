@@ -750,6 +750,15 @@ Then point the wizard at it with `PUT /api/ai/provider/ollama` and `{"url":"http
 (or Settings → AI). Models are stored in the `ollama_data` volume. Expect small 4-bit models of about 4B parameters;
 on CPU a plan takes tens of seconds to minutes.
 
+**Threads.** Ollama sizes its thread pool from the host's cores, not from the container's CPU quota, so on a large host a
+capped container runs far more threads than it has CPU time for (a 4B model took about 5 minutes per call instead of
+about 35 s). HyperProx therefore sets Ollama's `num_thread` itself: when the Ollama address is a local one, it reads the
+`cpus` limit of the `hyperprox-ollama` container from `docker inspect` (re-read every five minutes) and uses that. To
+change the count, change `OLLAMA_CPUS` in `.env` (it feeds the compose `cpus:` limit) and recreate the service. These
+override the automatic value, in this order: the `num_thread` setting stored for Ollama, then the `OLLAMA_NUM_THREAD`
+environment variable. A remote Ollama is never inspected; set `OLLAMA_NUM_THREAD` for it. `OLLAMA_TIMEOUT_S` (default
+300) sets how long a call may take before the page reports that the local model took too long.
+
 ### Prometheus Storage Planning
 
 | Cluster Size | 90-day Retention |
