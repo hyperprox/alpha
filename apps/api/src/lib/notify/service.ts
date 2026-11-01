@@ -20,7 +20,7 @@ import {
 } from './migrate'
 import { testMessage, toMessage } from './render'
 import { ChannelSecrets, LockedChannelsFile, maskSecret, vaultSecretBackend, type LockedEntry } from './secrets'
-import { checkChannelUrl, classifyAddress, guardedSend } from './ssrf'
+import { checkChannelUrl, classifyAddress, guardedSend, withTimeout } from './ssrf'
 import { PrismaNotifyStore, type NotifyStore } from './store'
 import {
   CHANNEL_KINDS, FAMILIES, LOCKED_OK, SELF_HOSTABLE, isFamily, isKind, isSeverity,
@@ -96,7 +96,7 @@ export function publicUrlFrom(env: Env): string | undefined {
 /** Whether a URL's host is (or resolves to) a private or loopback address. */
 export async function resolvesPrivate(url: string): Promise<boolean> {
   const h = new URL(url).hostname.replace(/^\[|\]$/g, '')
-  const addrs = classifyAddress(h) !== 'blocked' ? [h] : (await dns.lookup(h, { all: true })).map(a => a.address)
+  const addrs = classifyAddress(h) !== 'blocked' ? [h] : (await withTimeout(dns.lookup(h, { all: true }), 5_000, 'DNSTimeout')).map(a => a.address)
   return addrs.some(a => { const c = classifyAddress(a); return c === 'private' || c === 'loopback' })
 }
 

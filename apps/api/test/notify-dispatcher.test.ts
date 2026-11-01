@@ -238,3 +238,45 @@ test('publishing never throws, even with the database down', async () => {
   await r.core.tick()
   assert.equal(r.sent.length, 0)
 })
+
+// --- Fix round 1 -------------------------------------------------------------------------------
+
+test('more than 1000 held rows on one vault-only channel do not stop delivery to the others', async () => {
+  const r = rig()
+  await r.channel('vaulted')
+  await r.channel('lockedok', { usableWhileLocked: true })
+  await r.channel('quiet', { usableWhileLocked: true, quietHours: { start: '11:00', end: '13:00', tz: 'UTC', criticalBreaksThrough: true } })
+  r.v.open = false
+  const msg = { id: 'e', type: 'certs.verdict.changed', severity: 'warning' as const, resolved: false, title: 'Old', lines: [], link: null, linkLabel: 'Open', hint: '', at: T0.toISOString() }
+  await r.store.addOutbox(Array.from({ length: 1500 }, () => ({
+    eventId: 'e', channelId: 'vaulted', type: msg.type, severity: msg.severity, fingerprint: null, resolved: false,
+    payload: msg, status: 'held-locked' as const, createdAt: new Date(T0.getTime() - 3600_000), nextAttemptAt: T0,
+  })))
+  await r.core.publish(r.ev({ title: 'Still delivered' }))
+  await r.core.tick()
+  assert.deepEqual(r.to('lockedok').map(s => s.body.title), ['Still delivered'])
+  assert.equal(r.store.outbox.find(o => o.channelId === 'quiet' && o.payload.title === 'Still delivered')!.status, 'held-quiet', 'held rows of other channels are still worked')
+})
+
+test('channels are sent to at the same time; a hung one is given up on and not sent to twice', async () => {
+  const store = new MemoryNotifyStore()
+  const v = vault()
+  const secrets = new ChannelSecrets(v, new LockedChannelsFile(path.join(dir, `hung${n++}.json`)))
+  const calls: string[] = []
+  const core = new NotifyCore({
+    store, secrets, publicUrl: () => undefined, now: () => T0, log: () => undefined, autoKick: false, channelTimeoutMs: 50,
+    transport: req => { calls.push(req.url); return req.url.endsWith('/hung') ? new Promise(() => undefined) : Promise.resolve({ ok: true, status: 204 }) },
+  })
+  for (const id of ['hung', 'fast']) {
+    const c = await store.createChannel({ id, name: id, kind: 'webhook', enabled: true, minSeverity: 'info', eventFilter: 'all', quietHours: null,
+      lanOverride: false, usableWhileLocked: false, nonSecret: {}, seededFrom: null, createdBy: 't' })
+    await secrets.put(c, { url: `https://hooks.example.com/${id}` })
+  }
+  await core.publish({ type: 'certs.verdict.changed', severity: 'warning', title: 'X' })
+  const t0 = Date.now()
+  await core.tick()
+  assert.ok(Date.now() - t0 < 2000, 'the tick did not wait for the hung channel')
+  assert.equal(store.outbox.find(o => o.channelId === 'fast')!.status, 'sent')
+  await core.tick()
+  assert.equal(calls.filter(u => u.endsWith('/hung')).length, 1, 'still busy: not sent again')
+})
