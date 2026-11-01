@@ -14,6 +14,8 @@ import { TEMPLATES, getTemplate } from './templates'
 import type { ModelCall } from './extract'
 import { callStructured } from './providers'
 import type { IntentFn, IntentResult } from './loop'
+import { looksLikeRequest } from './ask'
+import { wizardRecipes } from '../catalogue'
 
 export type { IntentResult }
 
@@ -173,8 +175,10 @@ export async function matchIntent(prompt: string, opts: { call?: ModelCall } = {
   const prose = got.answer.trim().slice(0, MAX_ANSWER)
   const kind = classify(prompt)
   const known = got.template !== 'none' && !!getTemplate(got.template)
-  if (!known || got.question || kind === 'removal' || kind === 'question') {
-    const question = got.question || kind === 'question'
+  // "Can I get a Gitea instance?" is shaped like a question and is a request: the model's call stands.
+  const asking = kind === 'question' && !looksLikeRequest(prompt, wizardRecipes().flatMap(r => [r.id, r.name.toLowerCase()]))
+  if (!known || got.question || kind === 'removal' || asking) {
+    const question = got.question || asking
     // The model's prose is kept only where it was asked for: a reply to something that is not a task.
     return { template: 'none', question, answer: prose || NO_TASK_ANSWER }
   }

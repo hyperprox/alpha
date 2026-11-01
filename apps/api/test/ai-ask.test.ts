@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { answerQuestion, selectSources, promptText, indexText, lineAnswer, LOCKED_NOTE, type AskSource } from "../src/lib/ai/ask"
+import { answerQuestion, looksLikeRequest, selectSources, promptText, indexText, lineAnswer, LOCKED_NOTE, type AskSource } from "../src/lib/ai/ask"
 import {
   clusterAnswer, clusterSummary, gatherClusterSummary, backupSummary, gatherBackups, certSummary, certAnswer,
   coreSources, pluginSources, type ClusterSummary, type CertLite,
@@ -99,7 +99,7 @@ test("certificates are locked, not failed, while the vault is locked", async () 
   const facts: any = { zones: [], records: {}, proxyHosts: [], hasReverseProxy: false, partial: [] }
   const src = coreSources({ fetchStrict: (async () => []) as never, facts, certs: async () => { throw new Error("must not read") }, unlocked: () => false })
   const a = await answerQuestion("which certificates expire soon", { sources: src, call: never, fallback: "x" })
-  assert.match(a, /locked/i)
+  assert.match(a!, /locked/i)
 })
 
 // ---- plug-ins -------------------------------------------------------------
@@ -130,14 +130,14 @@ test("plug-in source: 'Is the outside light on?' is answered from its lines with
 })
 
 test("plug-in source: locked while the vault is locked; one without a hook says so", async () => {
-  assert.match(await answerQuestion("is the outside light on?", { sources: ha(false), call: never, fallback: "x" }), /locked/i)
+  assert.match((await answerQuestion("is the outside light on?", { sources: ha(false), call: never, fallback: "x" }))!, /locked/i)
   const bare = ha().find(s => s.id === "plugin:bare")!
   assert.match((await bare.load()).unread![0], /no summary/)
 })
 
 test("a plug-in that throws is unread, and the question is not answered from nothing", async () => {
   const a = await answerQuestion("is the outside light on?", { sources: ha(true, async () => { throw new Error("connect refused") }), call: never, fallback: "x" })
-  assert.match(a, /could not read Home Assistant/)
+  assert.match(a!, /could not read Home Assistant \(Error\)/)
 })
 
 // ---- selection and the prompt ---------------------------------------------
@@ -162,22 +162,41 @@ test("the model sees the index and only the selected sources, within about 500 t
   assert.ok(seen.length < 2600, `prompt is ${seen.length} characters`)
 })
 
-test("an unanswerable question goes to the model with the index only, told to answer from the summary", async () => {
+test("a question no source is about returns null and makes no model call, so the intent call decides", async () => {
+  const out = await answerQuestion("what is the weather", { sources: [fake("alpha", /alpha/, ["x"])], call: never, fallback: "x" })
+  assert.equal(out, null)
+})
+
+test("the model is told to answer only from the summary, plainly, short, read-only", async () => {
   let req: any
-  const call: ModelCall = async r => { req = r; return { answer: "I do not have that." } as never }
-  const out = await answerQuestion("what is the weather", { sources: [fake("alpha", /alpha/, ["x"])], call, fallback: "x" })
-  assert.equal(out, "I do not have that.")
+  const call: ModelCall = async r => { req = r; return { answer: "ok" } as never }
+  await answerQuestion("alpha?", { sources: [fake("alpha", /alpha/, ["x"])], call, fallback: "x" })
   assert.match(req.system, /Answer only from the SUMMARY/); assert.match(req.system, /plainly that you do not have/)
   assert.match(req.system, /cannot change anything/); assert.match(req.system, /2 or 3 short sentences/)
-  assert.doesNotMatch(req.user, /x\n/)
+})
+
+test("question-shaped deploy requests are not ours, even when a source matches", async () => {
+  const sources = [fake("cluster", /cluster|plex|server/, ["x"])]
+  const services = ["gitea", "uptime-kuma", "uptime kuma"]
+  for (const p of ["Can I get a Gitea instance?", "Could I have a Plex server?", "Is there a way to host Gitea?", "Put Gitea on my cluster?", "I want Gitea on the cluster", "Do you have a way to get Gitea?"])
+    assert.equal(await answerQuestion(p, { sources, call: never, fallback: "x", services }), null, p)
+  assert.equal(looksLikeRequest("How many containers do I have?", services), false)
+  assert.equal(looksLikeRequest("Is Gitea running?", services), false)
+  assert.equal(looksLikeRequest("Do I have Gitea installed?", services), true)   // names a service with 'have': the planner or intent decides
+})
+
+test("an unread source is named with the error kind, never the raw message", async () => {
+  const bad: AskSource = { ...fake("bad", /bad/, []), load: async () => { throw new TypeError("connect ECONNREFUSED 10.1.2.3:8006 secret=abc") } }
+  const out = await answerQuestion("bad?", { sources: [bad], call: never, fallback: "x" })
+  assert.match(out!, /could not read bad \(TypeError\)/); assert.doesNotMatch(out!, /ECONNREFUSED|10\.1|secret/)
 })
 
 test("an overview lists the index and each source's headline, with locked and unread said", async () => {
   const bad: AskSource = { ...fake("bad", /bad/, []), load: async () => { throw new Error("down") } }
   const locked: AskSource = { ...fake("vault", /vault/, []), load: async () => ({ headline: "x", lines: [], locked: true }) }
   const out = await answerQuestion("What can you see?", { sources: [fake("alpha", /alpha/, []), bad, locked], call: never, fallback: "x" })
-  assert.match(out, /^Attached: alpha \(the alpha\); bad \(the bad\); vault/); assert.match(out, /alpha: fine\./)
-  assert.match(out, /vault: locked\./); assert.match(out, /could not read bad/)
+  assert.match(out!, /^Attached: alpha \(the alpha\); bad \(the bad\); vault/); assert.match(out!, /alpha: fine\./)
+  assert.match(out!, /vault: locked\./); assert.match(out!, /could not read bad/)
 })
 
 test("no provider: the typed reason, then the canned text; a refusal is shown as is", async () => {
@@ -185,7 +204,7 @@ test("no provider: the typed reason, then the canned text; a refusal is shown as
   const down: ModelCall = async () => { throw new ModelCallError("Ollama is not reachable at http://x.", "unreachable") }
   assert.equal(await answerQuestion("alpha?", { sources: src, call: down, fallback: "CANNED" }), "Ollama is not reachable at http://x. CANNED")
   const generic: ModelCall = async () => { throw new Error("no provider configured") }
-  assert.match(await answerQuestion("alpha?", { sources: src, call: generic, fallback: "CANNED" }), /^The AI provider failed: no provider configured\. CANNED$/)
+  assert.match((await answerQuestion("alpha?", { sources: src, call: generic, fallback: "CANNED" }))!, /^The AI provider failed: no provider configured\. CANNED$/)
 })
 
 test("lineAnswer needs every content word, and stays quiet on many matches", () => {

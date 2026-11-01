@@ -56,12 +56,26 @@ async function loadSafe(s: AskSource): Promise<SourceSummary> {
   try {
     return await withTimeout(s.load(), LOAD_TIMEOUT_MS)
   } catch (e) {
-    const why = e instanceof Error ? e.message : String(e)
-    return { headline: `${s.title}: could not be read`, lines: [], unread: [`${s.title} (${why.replace(/[.\s]+$/, '').slice(0, 80)})`] }
+    // The source and the kind of error only: a raw message can carry an address or a fragment of a reply.
+    const kind = e instanceof Error && e.message === 'timed out' ? 'timed out' : e instanceof Error ? e.name : 'error'
+    return { headline: `${s.title}: could not be read`, lines: [], unread: [`${s.title} (${kind})`] }
   }
 }
 
 const OVERVIEW = /\b(what can you see|status overview|overview|everything|what'?s (on|attached|connected|running on)|what is (on|attached|connected)|on my network|attached|connected to hyperprox|how is everything|how'?s everything|summary of)\b/
+
+// A question-shaped request to have something set up: "Can I get a Gitea instance?", "Is there a way to host
+// Gitea?", "Put Gitea on my cluster?". These are for the planner, not for a read-only answer.
+const REQUEST_SHAPE = /\b(can|could|may|might|would)\s+(i|we)\s+(please\s+)?(get|have|host|put|set\s*up|install|run)\b|\bis\s+there\s+a\s+way\s+to\b|\b(i|we)\s+(want|need|would\s+like)\b|^\s*(please\s+)?(put|host|get|set\s*up|give)\b/i
+const WANT_VERB = /\b(get|have|host|put|want|need|set\s*up)\b/i
+
+/** True when the question is really a request to put a service on the cluster. `services`: recipe names and ids. */
+export function looksLikeRequest(prompt: string, services: string[] = []): boolean {
+  if (REQUEST_SHAPE.test(prompt)) return true
+  const p = prompt.toLowerCase()
+  if (/\b(how\s+(do|to|can|does)|explain|tell\s+me|why|what\s+(is|does|are))\b/.test(p)) return false   // asking for information
+  return WANT_VERB.test(p) && services.some(s => s && new RegExp(`\\b${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(p))
+}
 
 export function selectSources(prompt: string, sources: AskSource[]): AskSource[] {
   const p = prompt.toLowerCase()
@@ -138,15 +152,18 @@ const noteOf = (loaded: Array<{ sum: SourceSummary }>) => {
 }
 
 /**
- * Answers a question. Overviews and common questions from code; the model otherwise, told to use only
+ * Answers a question, or null when it is not one for this path (a request to deploy, or no source is about
+ * it), and the caller carries on as before. Overviews and common questions from code; the model otherwise, told to use only
  * the selected summaries. When no provider responds, the typed reason and the canned text (`fallback`).
  */
 export async function answerQuestion(
   prompt: string,
-  ctx: { sources: AskSource[]; call: ModelCall; fallback: string },
-): Promise<string> {
+  ctx: { sources: AskSource[]; call: ModelCall; fallback: string; services?: string[] },
+): Promise<string | null> {
   const { sources } = ctx
   const index = indexText(sources)
+  // Not ours: a request to have something deployed goes to the planner.
+  if (looksLikeRequest(prompt, ctx.services)) return null
 
   if (OVERVIEW.test(prompt.toLowerCase())) {
     const all = await Promise.all(sources.map(async s => ({ s, sum: await loadSafe(s) })))
@@ -154,6 +171,8 @@ export async function answerQuestion(
   }
 
   const chosen = selectSources(prompt, sources)
+  // Nothing here knows what this is about: leave it to the intent call, as before.
+  if (!chosen.length) return null
   const loaded = await Promise.all(chosen.map(async s => ({ s, sum: await loadSafe(s) })))
 
   for (const { s, sum } of loaded) {
