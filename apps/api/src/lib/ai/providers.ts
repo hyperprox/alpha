@@ -86,14 +86,35 @@ export async function setActiveProvider(id: ProviderId): Promise<void> {
  * connection status the rest of the app shows.
  */
 async function ollamaReachable(url: string): Promise<boolean> {
+  return (await ollamaTags(url)).up
+}
+
+/** The models an Ollama server has installed; `up` is false when it does not answer. */
+export async function ollamaTags(url: string, fetchFn: typeof fetch = fetch): Promise<{ up: boolean; models: string[] }> {
   try {
-    const res = await fetch(`${url.replace(/\/+$/, '')}/api/tags`, {
-      signal: AbortSignal.timeout(2500),
-    })
-    return res.ok
+    const res = await fetchFn(`${url.replace(/\/+$/, '')}/api/tags`, { signal: AbortSignal.timeout(2500) })
+    if (!res.ok) return { up: false, models: [] }
+    const data = await res.json().catch(() => ({})) as { models?: Array<{ name?: unknown }> }
+    return { up: true, models: (data.models ?? []).map(m => m.name).filter((n): n is string => typeof n === 'string') }
   } catch {
-    return false
+    return { up: false, models: [] }
   }
+}
+
+/** A name with no tag is its `latest` tag, as Ollama reads it. */
+export function modelInstalled(model: string, installed: string[]): boolean {
+  const want = model.includes(':') ? model : `${model}:latest`
+  return installed.includes(want)
+}
+
+/** Reachable is not usable: the model stored for the wizard has to be one the server has. */
+export function ollamaProviderState(addr: string, model: string, tags: { up: boolean; models: string[] }): { configured: boolean; missing: string[] } {
+  if (!addr) return { configured: false, missing: ['server address'] }
+  if (!tags.up) return { configured: false, missing: ['a reachable server — ' + addr + ' does not answer'] }
+  if (!modelInstalled(model, tags.models)) {
+    return { configured: false, missing: [`the model ${model} is not installed on the server — pick one under Models`] }
+  }
+  return { configured: true, missing: [] }
 }
 
 export async function listProviders(): Promise<ProviderInfo[]> {
@@ -104,7 +125,9 @@ export async function listProviders(): Promise<ProviderInfo[]> {
   ])
 
   const ollamaAddr = ollamaUrl || process.env.OLLAMA_URL || ''
-  const ollamaUp   = ollamaAddr ? await ollamaReachable(ollamaAddr) : false
+  const ollamaTagList = ollamaAddr ? await ollamaTags(ollamaAddr) : { up: false, models: [] }
+  const ollamaStored = ollamaModel || process.env.OLLAMA_MODEL || OLLAMA_DEFAULT_MODEL
+  const ollamaState = ollamaProviderState(ollamaAddr, ollamaStored, ollamaTagList)
 
   return [
     {
@@ -123,11 +146,9 @@ export async function listProviders(): Promise<ProviderInfo[]> {
     },
     {
       id: 'ollama', name: 'Ollama', kind: 'local',
-      configured: ollamaUp,
-      model: ollamaModel || process.env.OLLAMA_MODEL || 'llama3.2:3b',
-      missing: ollamaAddr
-        ? (ollamaUp ? [] : ['a reachable server — ' + ollamaAddr + ' does not answer'])
-        : ['server address'],
+      configured: ollamaState.configured,
+      model: ollamaStored,
+      missing: ollamaState.missing,
       note: 'Free and private. Small models produce weaker plans — the output is validated before you see it.',
     },
   ]
@@ -167,6 +188,17 @@ export class StructuredOutputError extends Error {
   constructor(message: string, readonly kind: 'refusal' | 'truncated' | 'parse' = 'parse') {
     super(message)
     this.name = 'StructuredOutputError'
+  }
+}
+
+/**
+ * A model call that failed for a reason a person can act on. The message is written to be shown as is:
+ * it names the cause and never quotes the provider's body, which can echo the prompt.
+ */
+export class ModelCallError extends Error {
+  constructor(message: string, readonly kind: 'unreachable' | 'model-missing' | 'timeout' | 'rejected') {
+    super(message)
+    this.name = 'ModelCallError'
   }
 }
 
@@ -242,6 +274,58 @@ export function ollamaBody(r: StructuredRequest<unknown>, model: string, numThre
   }
 }
 
+// ---------------------------------------------------------------------------
+//  Threads. Ollama sizes its pool from the host's cores, not from the container's CPU quota, so a
+//  bundled server capped at 3 CPUs on a 24-thread host runs 24 threads fighting over 3 CPUs' time.
+//  The bundled service's `cpus:` limit is the right count; it is read from docker, once in a while.
+// ---------------------------------------------------------------------------
+
+const BUNDLED_CONTAINER = 'hyperprox-ollama'
+const wholeOnly = (v: number | undefined) => (v !== undefined && Number.isInteger(v) && v >= 1 ? v : undefined)
+
+/** `docker inspect -f '{{.HostConfig.NanoCpus}}'`, as whole cores. 0 and anything unreadable are no limit. */
+export function cpuLimitFromNano(out: string): number | undefined {
+  const n = Number(out.trim())
+  if (!Number.isFinite(n) || n <= 0) return undefined
+  return Math.max(1, Math.floor(n / 1e9))
+}
+
+/** The stored setting wins, then OLLAMA_NUM_THREAD, then the container's limit. */
+export function resolveThreads(v: { stored?: number; env?: number; cpuLimit?: number }): number | undefined {
+  return wholeOnly(v.stored) ?? wholeOnly(v.env) ?? wholeOnly(v.cpuLimit)
+}
+
+export function isLocalAddress(url: string): boolean {
+  try {
+    const h = new URL(url).hostname
+    return h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h === '::1'
+  } catch { return false }
+}
+
+async function inspectBundledCpus(): Promise<number | undefined> {
+  const { execFile } = await import('node:child_process')
+  const out = await new Promise<string>((resolve, reject) =>
+    execFile('docker', ['inspect', '-f', '{{.HostConfig.NanoCpus}}', BUNDLED_CONTAINER], { timeout: 3000 },
+      (err, stdout) => (err ? reject(err) : resolve(stdout))))
+  return cpuLimitFromNano(out)
+}
+
+const CPU_LIMIT_TTL_MS = 5 * 60_000
+let cpuLimitCache: { at: number; value: number | undefined } | undefined
+
+/** The bundled server's CPU limit, when the address is a local one. Never throws: no answer is no limit. */
+export async function bundledCpuLimit(
+  url: string, probe: () => Promise<number | undefined> = inspectBundledCpus,
+): Promise<number | undefined> {
+  if (!isLocalAddress(url)) return undefined
+  const useCache = probe === inspectBundledCpus
+  if (useCache && cpuLimitCache && Date.now() - cpuLimitCache.at < CPU_LIMIT_TTL_MS) return cpuLimitCache.value
+  let value: number | undefined
+  try { value = await probe() } catch { value = undefined }
+  if (useCache) cpuLimitCache = { at: Date.now(), value }
+  return value
+}
+
 /** Thread count and timeout for a local model on a CPU: slow, so patient, and told how many cores it really has. */
 export async function ollamaSettings(): Promise<{ numThread?: number; timeoutMs: number; unreadable?: string }> {
   const pos = (v: string): number | undefined => {
@@ -253,8 +337,13 @@ export async function ollamaSettings(): Promise<{ numThread?: number; timeoutMs:
   const read = async (key: string): Promise<string> => {
     try { return await cred('ollama', key) } catch (e) { unreadable ??= e instanceof Error ? e.message : String(e); return '' }
   }
-  const whole = (v: number | undefined) => (v !== undefined && Number.isInteger(v) ? v : undefined)
-  const numThread = whole(pos(await read('num_thread'))) ?? whole(pos(process.env.OLLAMA_NUM_THREAD ?? ''))
+  const stored = wholeOnly(pos(await read('num_thread')))
+  const env = wholeOnly(pos(process.env.OLLAMA_NUM_THREAD ?? ''))
+  // Only asked when nothing else decided the count.
+  const cpuLimit = stored === undefined && env === undefined
+    ? await bundledCpuLimit((await read('url')) || process.env.OLLAMA_URL || '')
+    : undefined
+  const numThread = resolveThreads({ stored, env, cpuLimit })
   const seconds = pos(await read('timeout_s')) ?? pos(process.env.OLLAMA_TIMEOUT_S ?? '') ?? OLLAMA_DEFAULT_TIMEOUT_S
   return { numThread, timeoutMs: seconds * 1000, ...(unreadable ? { unreadable } : {}) }
 }
@@ -293,14 +382,37 @@ async function httpSend(provider: ProviderId, body: Record<string, unknown>): Pr
   if (!url) throw new Error('Ollama is not configured — add its address in Settings.')
   const { timeoutMs, unreadable } = await ollamaSettings()
   if (unreadable) throw new Error(`Ollama's settings could not be read: ${unreadable}`)
-  const res = await fetch(`${url.replace(/\/+$/, '')}/api/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
-  })
-  if (!res.ok) throw new Error(`Ollama returned HTTP ${res.status}`)
-  return ollamaText(await res.json())
+  return ollamaSend(url, body, timeoutMs)
+}
+
+/** One Ollama chat call. Every failure is a ModelCallError that says which of four things went wrong. */
+export async function ollamaSend(
+  url: string, body: Record<string, unknown>, timeoutMs: number, fetchFn: typeof fetch = fetch,
+): Promise<string> {
+  const model = String(body.model ?? 'the model')
+  try {
+    const res = await fetchFn(`${url.replace(/\/+$/, '')}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    if (res.status === 404) {
+      throw new ModelCallError(`The local model ${model} isn't installed. Pick one under Models.`, 'model-missing')
+    }
+    if (!res.ok) throw new ModelCallError(`Ollama refused the request (HTTP ${res.status}).`, 'rejected')
+    return ollamaText(await res.json())
+  } catch (e) {
+    if (e instanceof ModelCallError || e instanceof StructuredOutputError) throw e
+    const name = (e as { name?: string })?.name
+    if (name === 'TimeoutError' || name === 'AbortError') {
+      throw new ModelCallError(`The local model ${model} took too long (over ${Math.round(timeoutMs / 1000)} s).`, 'timeout')
+    }
+    if (e instanceof TypeError) {
+      throw new ModelCallError(`The local model server can't be reached. Check that Ollama is running and its address under Settings.`, 'unreachable')
+    }
+    throw e
+  }
 }
 
 async function modelFor(provider: ProviderId): Promise<string> {

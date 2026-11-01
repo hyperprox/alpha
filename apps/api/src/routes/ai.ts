@@ -42,10 +42,10 @@ export interface AiRouteDeps {
   facts(): Promise<TemplateFacts>
   settings(): Promise<TemplateSettings>
   /** Which template a request is for; the provider is the one this request chose. */
-  intent(prompt: string, provider?: ProviderId): Promise<IntentResult>
+  intent(prompt: string, provider?: ProviderId, model?: string): Promise<IntentResult>
   /** The template's extractable fields, read from the user's words. */
   extract(t: TaskTemplate, text: string, facts: TemplateFacts,
-          opts?: { asking?: { field: string; question: string }; provider?: ProviderId }): Promise<Extraction>
+          opts?: { asking?: { field: string; question: string }; provider?: ProviderId; model?: string }): Promise<Extraction>
   execute(jobId: string, run: DeployRun): Promise<void>
   /** Runs the server derived and validated, waiting to be executed by id. */
   prepared: PreparedStore<DeployRun>
@@ -53,6 +53,8 @@ export interface AiRouteDeps {
   job(jobId: string): JobState | undefined
   /** Who is asking; a run can only be executed, and its job read, by the user it was made for. */
   whoami(req: FastifyRequest): string
+  /** Keeps the model picked on the AI page as the stored Ollama model. */
+  saveModel(model: string): Promise<void>
   activeProvider(): Promise<ProviderId>
   listProviders(): Promise<ProviderInfo[]>
 }
@@ -61,13 +63,18 @@ function defaultDeps(): AiRouteDeps {
   return {
     facts: () => gatherTemplateFacts(),
     settings: async () => ({ bridge: 'vmbr0' }),
-    intent: (prompt, provider) => matchIntent(prompt, { call: r => callStructured(r, provider) }),
+    intent: (prompt, provider, model) =>
+      matchIntent(prompt, { call: r => callStructured(r, provider, undefined, model ? { model } : {}) }),
     extract: (t, text, facts, opts = {}) =>
-      extractFields(t, text, facts, { asking: opts.asking, call: r => callStructured(r, opts.provider) }),
+      extractFields(t, text, facts, {
+        asking: opts.asking,
+        call: r => callStructured(r, opts.provider, undefined, opts.model ? { model: opts.model } : {}),
+      }),
     execute: executeDeployJob,
     prepared: new PreparedStore<DeployRun>(),
     job: getJob,
     whoami: () => ownerOf(currentContext()),
+    saveModel: model => setCredential('ai', 'ollama', 'model', model, false),
     activeProvider,
     listProviders,
   }
@@ -248,12 +255,12 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
 
         const chosen = provider ?? await deps.activeProvider()
 
-        // A per-request model override is only meaningful for Ollama, where the
-        // UI lists the models that are actually installed. Persist it so the
-        // dropdown and the next request agree.
-        if (req.body.model && chosen === 'ollama') {
-          await setCredential('ai', 'ollama', 'model', req.body.model, false)
-        }
+        // A per-request model is only meaningful for Ollama, where the UI lists the models that are
+        // installed. It is used for this request's calls directly (not read back from the store), and
+        // persisted so the dropdown and the next request agree.
+        const model = chosen === 'ollama' && typeof req.body.model === 'string' && req.body.model.trim()
+          ? req.body.model.trim() : undefined
+        if (model) await deps.saveModel(model)
 
         let facts: TemplateFacts, settings: TemplateSettings
         try {
@@ -264,8 +271,8 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
 
         const loopDeps: LoopDeps = {
           facts, settings, now: () => new Date(),
-          intent: p => deps.intent(p, chosen),
-          extract: (t, text, f, opts) => deps.extract(t, text, f, { ...opts, provider: chosen }),
+          intent: p => deps.intent(p, chosen, model),
+          extract: (t, text, f, opts) => deps.extract(t, text, f, { ...opts, provider: chosen, model }),
         }
         let s
         try {
@@ -308,7 +315,7 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
         return reply.send({
           ok: true,
           provider: chosen,
-          model: (await deps.listProviders()).find(p => p.id === chosen)?.model,
+          model: model ?? (await deps.listProviders()).find(p => p.id === chosen)?.model,
           plan: {
             service: name,
             domain: typeof fields.domain?.value === 'string' ? fields.domain.value : '',

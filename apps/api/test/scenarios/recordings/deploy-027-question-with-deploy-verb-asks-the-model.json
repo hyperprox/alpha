@@ -1,0 +1,4 @@
+{
+  "intent": { "template": "none", "question": true, "answer": "I can deploy it, but I cannot see whether it is already running." },
+  "extractions": []
+}
