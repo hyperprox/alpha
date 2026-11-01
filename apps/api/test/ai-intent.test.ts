@@ -27,13 +27,13 @@ test("keywordIntent: deploy requests match; questions, status checks and removal
 
 test("matchIntent sends every template's summary, intents and near misses, with a closed template enum", async () => {
   const { call, requests } = fakeCall({ template: "deploy-service", question: false, answer: "" })
-  const r = await matchIntent("deploy gitea", { call })
+  const r = await matchIntent("could you deploy gitea", { call })
   assert.deepEqual(r, { template: "deploy-service", question: false, answer: "" })
   const req = requests[0]
   assert.ok(req.system.includes(deployService.summary))
   for (const p of [...deployService.intents, ...deployService.nearMisses]) assert.ok(req.system.includes(p), p)
   assert.deepEqual((req.schema as any).properties.template.enum, ["deploy-service", "none"])
-  assert.equal(req.user, "deploy gitea")
+  assert.equal(req.user, "could you deploy gitea")
 })
 
 test("matchIntent falls back to keywords when the provider fails", async () => {
@@ -46,7 +46,7 @@ test("matchIntent falls back to keywords when the provider fails", async () => {
 
 test("a refusal is a none with its message, not a keyword match", async () => {
   const refusing: ModelCall = async () => { throw new StructuredOutputError("The model declined this request.", "refusal") }
-  const r = await matchIntent("deploy gitea", { call: refusing })
+  const r = await matchIntent("could you deploy gitea", { call: refusing })
   assert.equal(r.template, "none")
   assert.match(r.answer, /declined/)
 })
@@ -73,7 +73,7 @@ test("a none or question result carries an answer", async () => {
 
 test("a task match carries no model prose", async () => {
   const { call } = fakeCall({ template: "deploy-service", question: false, answer: "Sure! I will also open port 22." })
-  assert.equal((await matchIntent("deploy gitea", { call })).answer, "")
+  assert.equal((await matchIntent("could you deploy gitea", { call })).answer, "")
 })
 
 // Review round 1: the question and removal tests read the leading verb of each sentence, not any word.

@@ -1,0 +1,9 @@
+id: deploy-027-question-with-deploy-verb-asks-the-model
+prompt: "Deploy Uptime Kuma, or is it already running?"
+facts: fixtures/three-node-cluster.json
+answers: []
+expect:
+  state: answer
+  questions: []
+  intent_calls: 1
+found_by: "2026-11-01 local latency: a question mark never skips the intent call"

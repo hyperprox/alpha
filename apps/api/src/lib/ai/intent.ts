@@ -9,7 +9,7 @@
 // =============================================================================
 
 import * as z from 'zod/v4'
-import { StructuredOutputError } from './providers'
+import { StructuredOutputError, ModelCallError } from './providers'
 import { TEMPLATES, getTemplate } from './templates'
 import type { ModelCall } from './extract'
 import { callStructured } from './providers'
@@ -62,9 +62,13 @@ function sentenceKind(raw: string): Kind {
 }
 
 /** Per sentence: any imperative task request wins ("what is Gitea? deploy it"), then a removal, then a question. */
-function classify(prompt: string): Kind {
+function sentenceKinds(prompt: string): Kind[] {
   // A sentence ends at . ! ? ; followed by space, so "status.example.com" and "10.0.0.50" stay whole.
-  const kinds = prompt.split(/(?<=[.!?;])\s+|;/).map(sentenceKind)
+  return prompt.split(/(?<=[.!?;])\s+|;/).map(sentenceKind)
+}
+
+function classify(prompt: string): Kind {
+  const kinds = sentenceKinds(prompt)
   for (const k of ['task', 'removal', 'question'] as const) if (kinds.includes(k)) return k
   return 'other'
 }
@@ -72,11 +76,37 @@ function classify(prompt: string): Kind {
 /** Only one template today, so a task-shaped request is deploy-service. */
 const KEYWORD_TEMPLATE = 'deploy-service'
 
-export function keywordIntent(prompt: string): IntentResult {
+/**
+ * `cause`: why the model could not be asked, in words for the user. Without one the fallback is a
+ * keyword match because no provider is configured at all.
+ */
+// Verbs that can only mean "put a service on the cluster". The wider TASK list (create, run, add, make,
+// build) also covers things the model must judge, such as "create a backup of Gitea".
+const DEPLOY_VERB = /^(please\s+)?(deploy|install|set\s*up|spin\s*up|stand\s*up|launch|provision)\b/
+
+/**
+ * True when the request opens with a deploy verb and nothing in it asks a question or removes anything.
+ * The intent call would say the same, so it is not made: on a CPU-only model it is half the latency.
+ * Extraction still asks which service, and the plan is validated either way.
+ */
+export function confidentDeploy(prompt: string): boolean {
+  const p = prompt.trim().toLowerCase()
+  if (!DEPLOY_VERB.test(p) || p.includes('?')) return false
+  return !sentenceKinds(prompt).some(k => k === 'question' || k === 'removal')
+}
+
+export function keywordIntent(prompt: string, cause?: string): IntentResult {
   const kind = classify(prompt)
   if (kind === 'task' && getTemplate(KEYWORD_TEMPLATE)) return { template: KEYWORD_TEMPLATE, question: false, answer: '' }
-  if (kind === 'question') return { template: 'none', question: true, answer: `${NO_PROVIDER_QUESTION} ${NO_TASK_ANSWER}` }
-  return { template: 'none', question: false, answer: NO_TASK_ANSWER }
+  if (kind === 'question') return { template: 'none', question: true, answer: `${cause ?? NO_PROVIDER_QUESTION} ${NO_TASK_ANSWER}` }
+  return { template: 'none', question: false, answer: cause ? `${cause} ${NO_TASK_ANSWER}` : NO_TASK_ANSWER }
+}
+
+/** The real reason a model call failed, as a sentence to show. */
+function causeOf(e: unknown): string {
+  if (e instanceof ModelCallError || e instanceof StructuredOutputError) return e.message
+  const msg = e instanceof Error ? e.message : String(e)
+  return `The AI provider failed: ${msg.replace(/[.\s]+$/, '')}.`
 }
 
 // ---------------------------------------------------------------------------
@@ -124,6 +154,7 @@ function intentRequest(prompt: string) {
 }
 
 export async function matchIntent(prompt: string, opts: { call?: ModelCall } = {}): Promise<IntentResult> {
+  if (confidentDeploy(prompt) && getTemplate(KEYWORD_TEMPLATE)) return keywordIntent(prompt)
   const call: ModelCall = opts.call ?? (r => callStructured(r))
   let got: { template: string; question: boolean; answer: string }
   try {
@@ -131,7 +162,7 @@ export async function matchIntent(prompt: string, opts: { call?: ModelCall } = {
   } catch (e) {
     // A refusal is the model's answer, not an outage: keywords must not route around it.
     if (e instanceof StructuredOutputError && e.kind === 'refusal') return { template: 'none', question: false, answer: e.message }
-    return keywordIntent(prompt)
+    return keywordIntent(prompt, causeOf(e))
   }
 
   const prose = got.answer.trim().slice(0, MAX_ANSWER)
