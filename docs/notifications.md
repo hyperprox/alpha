@@ -68,8 +68,11 @@ token controls the whole bot); email (a later phase) never will be.
 Every send is checked at send time, after DNS resolution: https only (http with the self-hosted switch),
 Discord, Slack, Teams and Telegram only at their public hosts, link-local and metadata addresses always
 refused, private and loopback addresses only with the self-hosted switch and never on HyperProx's own
-service ports (API, Prometheus, Grafana, exporters, Ollama, Postgres, Redis, the vault; add more with
-`NOTIFY_BLOCKED_PORTS=port,port`). Redirects are not followed; at most 1 KB of an answer is read.
+service ports (API, Prometheus, Grafana, exporters, Ollama, Postgres, Redis, the vault, the proxy
+manager's admin port 81; add more with `NOTIFY_BLOCKED_PORTS=port,port`), however the address is written
+(IPv4 inside IPv6, NAT64, expanded or compressed). Container networks on the HyperProx host (Docker
+bridges) are always refused. Name lookups time out after 5 seconds. Redirects are not followed; at most
+1 KB of an answer is read.
 
 ## Links
 

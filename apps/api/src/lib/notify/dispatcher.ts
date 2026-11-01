@@ -50,6 +50,8 @@ export interface NotifyCoreDeps {
   now?: () => Date
   log?: (m: string) => void
   virtualChannels?: () => Promise<VirtualChannel[]>
+  /** A channel's whole pass (DNS, connect, retries bookkeeping) may take at most this long (default 30 s). */
+  channelTimeoutMs?: number
   /** Work the outbox shortly after each publish (default). Tests call tick() themselves. */
   autoKick?: boolean
 }
@@ -119,6 +121,8 @@ export class NotifyCore {
   private again = false
   private kickTimer: NodeJS.Timeout | null = null
   private lastPrune = 0
+  /** Channels whose previous pass has not finished (a hung receiver): skipped until it does. */
+  private busy = new Set<string>()
 
   constructor(private readonly d: NotifyCoreDeps) {}
 
@@ -206,11 +210,23 @@ export class NotifyCore {
     const byChannel = new Map<string, OutboxRecord[]>()
     for (const r of pending) byChannel.set(r.channelId, [...(byChannel.get(r.channelId) ?? []), r])
 
-    for (const [channelId, rows] of byChannel) {
+    // Channels are independent: each is worked at the same time, and a slow or hung one is given up on
+    // after channelTimeoutMs so the others are not held behind it. A channel still busy from an earlier
+    // pass is skipped, so its rows are never sent twice at once.
+    const limit = this.d.channelTimeoutMs ?? 30_000
+    await Promise.all([...byChannel].map(async ([channelId, rows]) => {
+      if (this.busy.has(channelId)) return
       const t = targets.get(channelId)
-      if (!t || !t.channel.enabled) { await store.updateOutbox(rows.map(r => r.id), { status: 'dropped' }); continue }
-      await this.channelPass(t, rows, now)
-    }
+      if (!t || !t.channel.enabled) { await store.updateOutbox(rows.map(r => r.id), { status: 'dropped' }); return }
+      this.busy.add(channelId)
+      const work = this.channelPass(t, rows, now)
+        .catch(err => this.log(`channel ${channelId} pass failed: ${(err as any)?.code ?? (err as Error)?.name ?? 'error'}`))
+        .finally(() => this.busy.delete(channelId))
+      let timer: NodeJS.Timeout | undefined
+      const late = new Promise<void>(res => { timer = setTimeout(() => { this.log(`channel ${channelId} (${t.channel.kind}) is slow; moving on`); res() }, limit) })
+      await Promise.race([work, late])
+      clearTimeout(timer)
+    }))
   }
 
   private async channelPass(t: Target, rows: OutboxRecord[], now: Date): Promise<void> {

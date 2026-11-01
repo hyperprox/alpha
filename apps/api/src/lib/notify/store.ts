@@ -27,7 +27,11 @@ export interface NotifyStore {
   deleteChannel(id: string): Promise<void>
 
   addOutbox(rows: NewOutbox[]): Promise<OutboxRecord[]>
-  /** Rows the dispatcher may act on: queued and due, and everything held. */
+  /**
+   * Rows the dispatcher may act on: queued and due (at most QUEUED_LIMIT, soonest first), and held rows
+   * (at most HELD_PER_CHANNEL per channel, oldest first). Fetched apart, so a channel with a pile of held
+   * rows can never crowd out what is due for the others.
+   */
   pendingOutbox(now: Date): Promise<OutboxRecord[]>
   updateOutbox(ids: string[], patch: OutboxPatch): Promise<void>
   /** Rows actually sent to a channel since `since` (rate brake, grouping window). */
@@ -41,6 +45,8 @@ export interface NotifyStore {
 }
 
 const HELD: OutboxStatus[] = ['held-quiet', 'held-locked']
+export const QUEUED_LIMIT = 1000
+export const HELD_PER_CHANNEL = 200
 const clone = <T>(v: T): T => structuredClone(v)
 
 export class MemoryNotifyStore implements NotifyStore {
@@ -83,7 +89,15 @@ export class MemoryNotifyStore implements NotifyStore {
   }
   async pendingOutbox(now: Date) {
     this.up()
-    return this.outbox.filter(r => (r.status === 'queued' && r.nextAttemptAt <= now) || HELD.includes(r.status)).map(clone)
+    const queued = this.outbox.filter(r => r.status === 'queued' && r.nextAttemptAt <= now)
+      .sort((a, b) => a.nextAttemptAt.getTime() - b.nextAttemptAt.getTime()).slice(0, QUEUED_LIMIT)
+    const held = new Map<string, OutboxRecord[]>()
+    for (const r of [...this.outbox].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())) {
+      if (!HELD.includes(r.status)) continue
+      const l = held.get(r.channelId) ?? []
+      if (l.length < HELD_PER_CHANNEL) { l.push(r); held.set(r.channelId, l) }
+    }
+    return [...queued, ...[...held.values()].flat()].map(clone)
   }
   async updateOutbox(ids: string[], patch: OutboxPatch) {
     this.up()
@@ -160,10 +174,16 @@ export class PrismaNotifyStore implements NotifyStore {
     return made
   }
   async pendingOutbox(now: Date) {
-    return (await this.t.notifyOutbox.findMany({
-      where: { OR: [{ status: 'queued', nextAttemptAt: { lte: now } }, { status: { in: HELD } }] },
-      orderBy: { createdAt: 'asc' }, take: 1000,
-    })).map(outboxFrom)
+    const queued = await this.t.notifyOutbox.findMany({
+      where: { status: 'queued', nextAttemptAt: { lte: now } }, orderBy: { nextAttemptAt: 'asc' }, take: QUEUED_LIMIT,
+    })
+    const channels: Array<{ channelId: string }> = await this.t.notifyOutbox.findMany({
+      where: { status: { in: HELD } }, distinct: ['channelId'], select: { channelId: true },
+    })
+    const held = await Promise.all(channels.map(c => this.t.notifyOutbox.findMany({
+      where: { channelId: c.channelId, status: { in: HELD } }, orderBy: { createdAt: 'asc' }, take: HELD_PER_CHANNEL,
+    })))
+    return [...queued, ...held.flat()].map(outboxFrom)
   }
   async updateOutbox(ids: string[], patch: OutboxPatch) {
     if (ids.length) await this.t.notifyOutbox.updateMany({ where: { id: { in: ids } }, data: patch })

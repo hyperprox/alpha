@@ -3,7 +3,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { checkChannelUrl, classifyAddress, checkResolved, guardedSend, ownServicePorts } from '../src/lib/notify/ssrf'
+import net from 'node:net'
+import { checkChannelUrl, classifyAddress, checkResolved, guardedSend, ownServicePorts, canonicalIp, bridgeNets } from '../src/lib/notify/ssrf'
 
 const lookupTo = (...addrs: string[]) => async () => addrs.map(a => ({ address: a, family: a.includes(':') ? 6 : 4 }))
 
@@ -107,4 +108,71 @@ test('a 302 is a failure and is not followed; only 1 KB of a body is read', asyn
     const refused = await guardedSend({ url: `http://127.0.0.1:1/x`, method: 'POST', headers: {}, body: '' }, 'webhook', o)
     assert.equal(refused.ok, false); assert.equal(refused.code, 'ECONNREFUSED')
   } finally { server.close() }
+})
+
+// --- Fix round 1 -------------------------------------------------------------------------------
+
+const OWN = '192.168.50.7'
+const OWN_FORMS = [
+  '::ffff:192.168.50.7', '::ffff:c0a8:3207', '::FFFF:C0A8:3207', '0:0:0:0:0:ffff:c0a8:3207',
+  '0000:0000:0000:0000:0000:ffff:c0a8:3207', '::0:ffff:c0a8:3207',
+  '64:ff9b::c0a8:3207', '64:ff9b::192.168.50.7', '[::ffff:c0a8:3207]',
+]
+
+test('every spelling of an IPv4 inside IPv6 is the same address', () => {
+  for (const f of OWN_FORMS) assert.equal(canonicalIp(f), OWN, f)
+  assert.equal(canonicalIp('2001:db8::1'), '2001:db8:0:0:0:0:0:1')
+  assert.equal(canonicalIp('2001:0DB8:0000:0000:0000:0000:0000:0001'), '2001:db8:0:0:0:0:0:1')
+  assert.equal(canonicalIp('fe80::1%eth0'), 'fe80:0:0:0:0:0:0:1')
+  assert.equal(canonicalIp('not-an-ip'), null)
+  for (const a of ['::ffff:7f00:1', '0:0:0:0:0:ffff:7f00:0001', '64:ff9b::7f00:1', '::127.0.0.1']) assert.equal(classifyAddress(a), 'loopback', a)
+  assert.equal(classifyAddress('::ffff:a9fe:a9fe'), 'blocked', 'metadata, hex-mapped')
+  assert.equal(classifyAddress('64:ff9b::a9fe:a9fe'), 'blocked', 'metadata through NAT64')
+  assert.equal(classifyAddress('64:ff9b::808:808'), 'public')
+  assert.equal(classifyAddress('::ffff:c0a8:3207'), 'private')
+})
+
+test("this host's own address on a service port is refused in every spelling, self-hosted switch on", async () => {
+  const ports = ownServicePorts({})
+  for (const f of [OWN, ...OWN_FORMS]) {
+    assert.equal(checkResolved('webhook', [f], 9090, true, ports, new Set([OWN])).ok, false, f)
+    // ...and the own-address set itself may be in any spelling.
+    assert.equal(checkResolved('webhook', [OWN], 9090, true, ports, new Set([f])).ok, false, `own as ${f}`)
+  }
+  assert.equal(checkResolved('webhook', [OWN], 8080, true, ports, new Set([OWN])).ok, true, 'another port on this host is fine')
+  const connected: string[] = []
+  const o = { lanOverride: true, blockedPorts: ports, ownAddresses: [OWN], bridges: new net.BlockList(), connect: async (_r: any, a: string) => { connected.push(a); return { status: 200 } } }
+  for (const u of ['http://[::ffff:c0a8:3207]:9090/-/quit', 'http://[::ffff:192.168.50.7]:9090/-/quit', 'http://[0:0:0:0:0:ffff:c0a8:3207]:9090/-/quit',
+                   'http://[64:ff9b::c0a8:3207]:9090/-/quit', 'http://[::ffff:7f00:1]:9090/-/quit']) {
+    assert.equal((await guardedSend({ url: u, method: 'POST', headers: {}, body: '' }, 'webhook', o)).code, 'blocked-address', u)
+  }
+  assert.deepEqual(connected, [])
+})
+
+test('NPM admin port 81 is one of the blocked ports', () => {
+  assert.ok(ownServicePorts({}).has(81))
+  assert.equal(checkResolved('webhook', ['127.0.0.1'], 81, true, ownServicePorts({})).ok, false)
+})
+
+test('Docker bridge networks are refused, self-hosted or not, in any spelling', () => {
+  const ifaces: any = {
+    lo: [{ address: '127.0.0.1', netmask: '255.0.0.0', family: 'IPv4', cidr: '127.0.0.1/8', internal: true, mac: '' }],
+    eth0: [{ address: '10.1.2.3', netmask: '255.255.255.0', family: 'IPv4', cidr: '10.1.2.3/24', internal: false, mac: '' }],
+    docker0: [{ address: '172.17.0.1', netmask: '255.255.0.0', family: 'IPv4', cidr: '172.17.0.1/16', internal: false, mac: '' }],
+    'br-0123456789ab': [{ address: '172.18.0.1', netmask: '255.255.0.0', family: 'IPv4', cidr: '172.18.0.1/16', internal: false, mac: '' }],
+  }
+  const b = bridgeNets(ifaces)
+  const ports = ownServicePorts({})
+  for (const a of ['172.17.0.2', '172.18.0.5', '::ffff:172.18.0.5', '::ffff:ac12:5']) {
+    assert.equal(checkResolved('ntfy', [a], 8080, true, ports, new Set(), b).ok, false, a)
+  }
+  assert.equal(checkResolved('ntfy', ['10.1.2.50'], 8080, true, ports, new Set(), b).ok, true, 'the LAN is not a bridge')
+  assert.equal(checkResolved('ntfy', ['172.19.0.5'], 8080, true, ports, new Set(), b).ok, true, 'another 172.16/12 network without a bridge')
+})
+
+test('a DNS answer that never comes times out', async () => {
+  const r = await guardedSend({ url: 'https://slow.example.com/x', method: 'POST', headers: {}, body: '' }, 'webhook',
+    { lanOverride: false, dnsTimeoutMs: 50, lookup: () => new Promise(() => undefined), connect: async () => ({ status: 200 }) })
+  assert.equal(r.ok, false)
+  assert.equal(r.code, 'DNSTimeout')
 })
