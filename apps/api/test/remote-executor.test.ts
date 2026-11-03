@@ -7,7 +7,7 @@ import { productionRemoteExecutor, type TransportDeps } from '../src/lib/remote/
 const SCRIPT = "HP_KEY='tskey-auth-SECRET'\necho hi"
 
 function setup(o: { agent?: boolean; vmLogin?: { username: string; port: number } | null } = {}) {
-  const calls: Array<{ host: string; port?: number; user: string; command: string; input?: string }> = []
+  const calls: Array<{ host: string; port?: number; user: string; command: string; input?: string; requirePin?: boolean }> = []
   const pveCalls: Array<{ path: string; method?: string; body?: string }> = []
   const pve: any = {
     fetchStrict: async (path: string, method?: string, body?: string) => {
@@ -20,12 +20,14 @@ function setup(o: { agent?: boolean; vmLogin?: { username: string; port: number 
       ]
       if (path.endsWith('/qemu/102/config')) return { ostype: 'l26' }
       if (path.endsWith('/agent/ping')) { if (o.agent) return {}; throw new Error('QEMU guest agent is not running') }
+      if (path === '/cluster/firewall/options') return { enable: 1 }
+      if (path.endsWith('/firewall/rules') && (method ?? 'GET') === 'GET') return [{ pos: 0, type: 'in', action: 'ACCEPT', iface: 'vmbr0', dport: '8006' }]
       return {}
     },
   }
   const t: TransportDeps = {
     ssh: (async (x: any) => {
-      calls.push({ host: x.host, port: x.port, user: x.cred.username, command: x.command, input: x.input })
+      calls.push({ host: x.host, port: x.port, user: x.cred.username, command: x.command, input: x.input, requirePin: x.requirePin })
       if (x.command.startsWith('qm guest exec')) return { code: 0, output: JSON.stringify({ exited: 1, exitcode: 0, 'out-data': 'hi\n' }), timedOut: false }
       return { code: 0, output: 'hi\n', timedOut: false }
     }) as any,
@@ -84,4 +86,26 @@ test('container config is changed through the Proxmox API with a PUT, never by e
   await ex.setLxcConfig(ct, { dev0: '/dev/net/tun' })
   const put = pveCalls.at(-1)!
   assert.deepEqual(put, { path: '/nodes/pve-a/lxc/101/config', method: 'PUT', body: 'dev0=%2Fdev%2Fnet%2Ftun' })
+})
+
+test('SSH to VMs and hand-added hosts requires a pinned host key; node and pct transports keep the node pin', async () => {
+  const { ex, calls } = setup({ agent: false })
+  for (const m of await ex.listMachines()) await ex.run(m, SCRIPT)
+  const pinned = Object.fromEntries(calls.map(c => [c.command.startsWith('sudo') || c.host === '192.0.2.50' ? `${c.host}` : c.command, c.requirePin === true]))
+  assert.equal(pinned['192.0.2.102'], true, 'VM over SSH')
+  assert.equal(pinned['192.0.2.50'], true, 'hand-added host')
+  assert.equal(calls.find(c => c.command === 'bash -s' && c.host === '192.0.2.11')?.requirePin, undefined)
+})
+
+test('the config PUT carries the digest from the GET; firewall state and rules go through the API', async () => {
+  const { ex, pveCalls } = setup()
+  const ct = (await ex.listMachines()).find(m => m.id === 'lxc-101')!
+  await ex.setLxcConfig(ct, { dev1: '/dev/net/tun' }, 'abc123')
+  assert.deepEqual(pveCalls.at(-1), { path: '/nodes/pve-a/lxc/101/config', method: 'PUT', body: 'dev1=%2Fdev%2Fnet%2Ftun&digest=abc123' })
+  const st = await ex.firewallState('pve-a')
+  assert.equal(st.clusterEnabled, true); assert.equal(st.rules.length, 1)
+  await ex.addFirewallRule('pve-a', { type: 'in', action: 'ACCEPT', iface: 'tailscale0', source: '100.64.0.0/10', proto: 'tcp', dport: '22,8006' })
+  const post = pveCalls.at(-1)!
+  assert.equal(post.path, '/nodes/pve-a/firewall/rules'); assert.equal(post.method, 'POST')
+  assert.match(post.body ?? '', /iface=tailscale0/); assert.match(post.body ?? '', /dport=22%2C8006/)
 })

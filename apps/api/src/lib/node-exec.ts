@@ -73,6 +73,28 @@ export interface ExecOptions {
   input?:    string
   /** SSH port; 22 unless the login says otherwise (a hand-added host). */
   port?:     number
+  /**
+   * Refuse a host whose key has never been pinned, instead of trusting it. For targets reached with a script
+   * that carries a key (remote access to VMs and hand-added hosts): the admin pins it in the Terminal first.
+   */
+  requirePin?: boolean
+}
+
+/** A host with no pinned key, refused because the caller required one. The message names the fingerprint. */
+export class HostKeyNotPinnedError extends Error {
+  constructor(readonly host: string, readonly port: number, readonly fingerprint: string) {
+    super(`${host}:${port} has no pinned host key, so HyperProx will not send it anything. Its key is ${fingerprint}. ` +
+      'Open it once in the Terminal, check that fingerprint against the machine, and accept it; then try again.')
+    this.name = 'HostKeyNotPinnedError'
+  }
+}
+
+export type HostKeyDecision = 'accept' | 'reject-unpinned' | 'reject-changed'
+
+/** The pin rule, alone: a pinned key must match; an unpinned one is accepted only when the caller allows it. */
+export function hostKeyDecision(pinned: string | null | undefined, fingerprint: string, requirePin: boolean): HostKeyDecision {
+  if (pinned) return pinned === fingerprint ? 'accept' : 'reject-changed'
+  return requirePin ? 'reject-unpinned' : 'accept'
 }
 
 /**
@@ -92,6 +114,7 @@ export function execOnNode(opts: ExecOptions): Promise<ExecResult> {
     let out = ''
     let settled = false
     let timedOut = false
+    let unpinned: string | null = null
 
     const finish = (r: ExecResult) => {
       if (settled) return
@@ -113,7 +136,7 @@ export function execOnNode(opts: ExecOptions): Promise<ExecResult> {
       finish({ code: -1, output: out, timedOut: true })
     }, timeoutMs)
 
-    client.on('error', e => fail(e as Error))
+    client.on('error', e => fail(unpinned ? new HostKeyNotPinnedError(host, opts.port ?? 22, unpinned) : e as Error))
     client.on('ready', () => {
       client.exec(command, (err, stream) => {
         if (err) return fail(err)
@@ -137,7 +160,11 @@ export function execOnNode(opts: ExecOptions): Promise<ExecResult> {
       hostVerifier: (key: Buffer, verified: (ok: boolean) => void) => {
         const fp = fingerprintOf(key)
         getCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, credentialId(`${host}:${opts.port ?? 22}`))
-          .then(pinned => verified(!pinned || pinned === fp))
+          .then(pinned => {
+            const d = hostKeyDecision(pinned, fp, !!opts.requirePin)
+            if (d === 'reject-unpinned') unpinned = fp
+            verified(d === 'accept')
+          })
           .catch(() => verified(false))
       },
     }
