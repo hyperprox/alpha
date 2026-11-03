@@ -1,10 +1,11 @@
 // =============================================================================
 //  HyperProx — Remote access: keeping keys out of logs
 //
-//  Every line of output from an install passes through a redactor made for
-//  that install before it is stored or shown. It removes the key that install
-//  minted, wherever it appears, and anything shaped like a Tailscale key or a
-//  NetBird token whether or not HyperProx knows it.
+//  Output arrives in SSH data chunks of any size, so a key can straddle two
+//  of them. StreamRedactor holds back a tail long enough to contain any key
+//  and only releases text it has checked. It removes the keys of the current
+//  install, anything shaped like a Tailscale key or a NetBird token, and,
+//  while a NetBird setup key is live, anything shaped like one.
 // =============================================================================
 
 const KEY_SHAPES = [
@@ -12,20 +13,67 @@ const KEY_SHAPES = [
   /nbp_[A-Za-z0-9]{20,}/g,          // NetBird personal access tokens
 ]
 
+/** NetBird setup keys are upper-case UUIDs. Applied only while one is live: ordinary ids look the same. */
+export const NETBIRD_SETUP_KEY = /[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}/g
+
 export const REDACTED = '[redacted]'
 
-export function redactKnownKeyShapes(s: string): string {
+/** Longest key shape the stream redactor will ever need to see whole. */
+const MAX_SHAPE_LEN = 256
+
+export interface RedactOptions { netbird?: boolean }
+
+function shapes(o: RedactOptions): RegExp[] {
+  return o.netbird ? [...KEY_SHAPES, NETBIRD_SETUP_KEY] : KEY_SHAPES
+}
+
+export function redactKnownKeyShapes(s: string, o: RedactOptions = {}): string {
   let out = s
-  for (const re of KEY_SHAPES) out = out.replace(re, REDACTED)
+  for (const re of shapes(o)) out = out.replace(new RegExp(re.source, 'g'), REDACTED)
   return out
 }
 
-/** A redactor for these secrets plus every known key shape. Empty strings are ignored. */
-export function makeRedactor(secrets: string[]): (s: string) => string {
+/** A redactor for these secrets plus every known key shape. Short or empty strings are ignored. */
+export function makeRedactor(secrets: string[], o: RedactOptions = {}): (s: string) => string {
   const exact = secrets.filter(s => s && s.length >= 6)
   return (s: string) => {
     let out = s
     for (const k of exact) out = out.split(k).join(REDACTED)
-    return redactKnownKeyShapes(out)
+    return redactKnownKeyShapes(out, o)
+  }
+}
+
+/** Redacts a stream: push() chunks in, get checked text out; flush() at the end. */
+export class StreamRedactor {
+  private carry = ''
+  private readonly exact: string[]
+  private readonly hold: number
+  private readonly redact: (s: string) => string
+  private readonly res: RegExp[]
+
+  constructor(secrets: string[], private readonly o: RedactOptions = {}) {
+    this.exact = secrets.filter(s => s && s.length >= 6)
+    this.hold = Math.max(MAX_SHAPE_LEN, ...this.exact.map(s => s.length))
+    this.redact = makeRedactor(this.exact, o)
+    this.res = shapes(o).map(r => new RegExp(r.source, 'g'))
+  }
+
+  push(chunk: string): string {
+    const text = this.carry + chunk
+    let cut = Math.max(0, text.length - this.hold)
+    // Never cut inside something that is, or may become, a key: move the cut to its start.
+    const starts: Array<[number, number]> = []
+    for (const k of this.exact) for (let i = text.indexOf(k); i !== -1; i = text.indexOf(k, i + 1)) starts.push([i, i + k.length])
+    for (const re of this.res) { re.lastIndex = 0; for (let m = re.exec(text); m; m = re.exec(text)) starts.push([m.index, m.index + m[0].length]) }
+    for (const [a, b] of starts) if (a < cut && (b > cut || b === text.length)) cut = a
+    // A prefix of a key at the very end is not a match yet; it is inside the held tail as long as hold > key length.
+    this.carry = text.slice(cut)
+    return this.redact(text.slice(0, cut))
+  }
+
+  flush(): string {
+    const out = this.redact(this.carry)
+    this.carry = ''
+    return out
   }
 }
