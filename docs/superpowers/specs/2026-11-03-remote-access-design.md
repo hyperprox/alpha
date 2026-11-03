@@ -271,6 +271,34 @@ once and never stored, and the request is audited. The device is matched on the 
   package install, a mocked provider API, and a recording stand-in for the client's `up` that proves the
   key arrived on stdin and never on disk or argv.
 
+## Revision after the security review (2026-11-03)
+
+The review found the first build too trusting in places. These replace the corresponding text above where
+they differ; docs/remote-access.md describes the result.
+
+- **Durable revocation.** `RemoteAccessPendingRevoke` holds every key id that has left HyperProx until the
+  provider confirms it is revoked (`keyRevoked`). A sweep runs at start-up (revoking every leftover install
+  key at once), after unlock and every minute; manual keys are rows due in 30 minutes. `close()` waits,
+  with a limit, for revokes in flight.
+- **Durable guard.** `RemoteAccessInflight` holds a node change between its before-snapshot and its verdict,
+  with a serialisable undo plan. A row left by another process is re-checked on boot and rolled back when
+  the node differs. Finished jobs are pruned after six hours.
+- **Firewall.** Nodes: Tailscale `--netfilter-mode=off`, NetBird `--disable-firewall=true`; every NetBird
+  boolean explicit; never `--allow-server-ssh`. A previewed, confirmed node rule for TCP 22 and 8006 on the
+  overlay interface from 100.64.0.0/10, through the Proxmox API, only when the cluster firewall is on.
+- **Guard.** All routing tables and policy rules (normalised; the client's own interface, table and rules
+  allowed, never a default route), `ip route get` to every corosync and Ceph peer, per-link DNS, ruleset
+  hashes, corosync links, forwarding; the after-check 15 s after the change.
+- **Routing.** NetBird routes go to a `hyperprox-routes` group; exit nodes carry `skip_auto_apply`; no exit
+  node on a node; the overlap check covers every cluster network, IPv4 and IPv6; the result is read back
+  from the client (NetBird config, Tailscale advertised routes). No forwarding change on nodes; a guest's
+  previous values are restored.
+- **Existing clients** need Adopt or Replace; Replace and uninstall keep the client state aside to put back.
+  Devices are deleted only by recorded id. A failed install is always cleaned up.
+- **Smaller fixes.** Stream redaction across chunks; NetBird https only and no redirects; SSH to VMs and
+  hand-added hosts requires a pinned key; raw `lxc` tun entries and the config digest; below-admin overview
+  without addresses; re-confirmation for check and update on nodes.
+
 ## Phase 2
 
 - **Self-hosted NetBird recipe** in the Catalogue. It does not fit the current recipe model cleanly:
