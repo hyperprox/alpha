@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import type { RemoteCell, RemoteFirewallPreview, RemoteJob, RemoteMachineRow, RemoteManualKey, RemoteProviderId } from '@hyperprox/types'
+import type { RemoteCell, RemoteFirewallPreview, RemoteHostKey, RemoteJob, RemoteMachineRow, RemoteManualKey, RemoteProviderId } from '@hyperprox/types'
 import { Badge, Btn, ConfirmDialog, Notice, Panel, StepIcon, TH, THEAD_STYLE, fmtTime } from '@/components/updates/ui'
 
 // Pieces of the Remote access page. Built from the Updates primitives so the page looks like the rest of
@@ -342,6 +342,38 @@ export function FirewallDialog({ row, provider, preview, error, onCancel, onConf
       )}
       <div className="flex justify-end gap-2">
         <Btn kind="primary" disabled={!preview || !preview.clusterEnabled || preview.exists} onClick={onConfirm}>Add this rule</Btn>
+        <Btn onClick={onCancel}>Cancel</Btn>
+      </div>
+    </ConfirmDialog>
+  )
+}
+
+export function HostKeyDialog({ row, info, error, onCancel, onConfirm }: {
+  row: RemoteMachineRow; info: RemoteHostKey | null; error: string | null; onCancel: () => void; onConfirm: () => void
+}) {
+  return (
+    <ConfirmDialog title={`Host key for ${row.name}`} onClose={onCancel}>
+      <p className="text-sm" style={{ color: 'var(--text-soft)' }}>
+        HyperProx sends scripts only to a host whose key is pinned. Check this fingerprint against the machine itself
+        (for example <code>ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</code> on its console) before you trust it.
+        The pin is shared with the Terminal.
+      </p>
+      {error && <Notice tone="crit">{error}</Notice>}
+      {!info && !error && <p className="text-sm" style={{ color: 'var(--text-dim)' }}>Reading the key…</p>}
+      {info && (
+        <>
+          <div className="text-sm" style={{ color: 'var(--text-muted)' }}>{info.host}:{info.port}</div>
+          <code className="block break-all rounded-md border px-3 py-2 font-mono text-xs" style={{ background: 'var(--ground-inset)', borderColor: 'var(--border)', color: 'var(--text-bright)' }}>
+            {info.fingerprint}
+          </code>
+          {info.pinned && info.pinned !== info.fingerprint && (
+            <Notice tone="crit">A different key is pinned ({info.pinned}). If the machine was rebuilt, clear the old pin in the Terminal; HyperProx will not replace it.</Notice>
+          )}
+          {info.pinned === info.fingerprint && <Notice tone="info">This key is already pinned.</Notice>}
+        </>
+      )}
+      <div className="flex justify-end gap-2">
+        <Btn kind="primary" disabled={!info || !!info.pinned} onClick={onConfirm}>Trust this key</Btn>
         <Btn onClick={onCancel}>Cancel</Btn>
       </div>
     </ConfirmDialog>

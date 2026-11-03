@@ -60,4 +60,6 @@ export interface RemoteJob {
 
 export interface RemoteFirewallPreview { clusterEnabled: boolean; exists: boolean; rule: Record<string, string>; message: string }
 
+export interface RemoteHostKey { host: string; port: number; fingerprint: string; pinned: string | null }
+
 export interface RemoteManualKey { secret: string; expiresAt: string; downloadUrl: string; note: string }
