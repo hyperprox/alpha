@@ -192,8 +192,8 @@ cd /opt/hyperprox && git pull && bash deploy.sh
 
 `deploy.sh` brings per-install settings up to date (`bin/hyperprox-config`, the same step the
 installer runs), checks the nginx config, installs dependencies, applies migrations, rebuilds, restarts
-the API and frontend, then reloads nginx and applies any changed Prometheus and Grafana container
-settings. Sessions survive it because the keyholder keeps the unlocked state. If it says the install
+the API and frontend, then reloads nginx, checks that `/grafana/` is gated (if it is not, it stops
+Grafana and fails), and applies any changed Prometheus and Grafana container settings. Sessions survive it because the keyholder keeps the unlocked state. If it says the install
 has no vault yet, re-run `install.sh` first.
 
 ## Optional integrations
@@ -444,11 +444,14 @@ hyperprox token create ci --role admin --expires-days 90
 hyperprox token list
 hyperprox token revoke ci
 hyperprox pve-exporter                             # give the PVE exporter its read-only token (unlocked)
+hyperprox pve-exporter --fresh                     # replace one that is not read-only
 ```
 
-**What is exposed on the network.** Only nginx, on 80 and 443. Everything else, Prometheus and Grafana
-included, is bound to loopback. Grafana's anonymous read-only viewer is reached only through nginx at
-`/grafana/`, which checks for a HyperProx session first. Put HyperProx on a network you trust; access
+**What is exposed on the network.** Only nginx, on 80 and 443. Everything else, the API, the frontend,
+Prometheus and Grafana included, is bound to loopback (`deploy.sh` adds systemd drop-ins that move an
+older install's API and frontend there too). Grafana's anonymous read-only viewer is reached only
+through nginx at `/grafana/`, which checks for a HyperProx session first; every signed-in person sees
+every metric (see [docs/security.md](docs/security.md)). Put HyperProx on a network you trust; access
 over the internet needs your own TLS and access controls in front of it.
 
 **Keep safe:** `/opt/hyperprox/.env` (mode 0600, holds `VAULT_ADMIN_TOKEN` and the database password)
