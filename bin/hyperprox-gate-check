@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# hyperprox-gate-check - prove that nginx is serving the gated /grafana/, after a deploy reloads it.
+#
+# `nginx -s reload` succeeds as soon as the signal is sent; if the master then rejects the new config it
+# goes on serving the old one, and before this release /grafana/ had no session check. So this asks for
+# /grafana/api/health with no cookie and requires the answer the gate gives: a 302 to /login. Anything
+# else stops Grafana (it must not run ungated), says why, and exits 1.
+#
+#   bash /opt/hyperprox/bin/hyperprox-gate-check    # HPX_GATE_URL and GRAFANA_CONTAINER override, for tests
+set -uo pipefail
+
+URL="${HPX_GATE_URL:-https://127.0.0.1/grafana/api/health}"
+CONTAINER="${GRAFANA_CONTAINER:-hyperprox-grafana}"
+
+got=""
+for _ in 1 2 3 4 5; do   # nginx's workers take a moment to pick up a reload
+  got="$(curl -sk -o /dev/null --max-time 10 -w '%{http_code} %{redirect_url}' "$URL" 2>/dev/null || true)"
+  if [[ "$got" =~ ^302\ .*/login(\?|$) ]]; then echo "  /grafana/ is gated (no session: 302 to /login)"; exit 0; fi
+  sleep 1
+done
+
+echo "✗ /grafana/ is not gated: ${URL} without a session answered '${got:-no answer}', not a 302 to /login." >&2
+echo "  nginx is probably still serving its previous config (check: docker logs hyperprox-nginx)." >&2
+if docker ps -q --filter "name=^${CONTAINER}$" 2>/dev/null | grep -q .; then
+  docker stop "$CONTAINER" >/dev/null \
+    && echo "  Stopped ${CONTAINER} so it is not reachable ungated. Fix nginx, then: docker compose up -d --no-deps grafana" >&2
+fi
+exit 1

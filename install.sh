@@ -930,6 +930,8 @@ WantedBy=multi-user.target
 EOF
 
   systemctl daemon-reload
+  # The same loopback drop-ins deploy.sh keeps in place (a re-run over an old install has old units).
+  bash "${HYPERPROX_DIR}/bin/hyperprox-bind" || die "bin/hyperprox-bind failed (see above)"
   ok "Systemd units created"
 }
 

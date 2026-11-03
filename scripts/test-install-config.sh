@@ -21,7 +21,7 @@ mkinstall() {  # mkinstall <.env contents> -> prints the new install dir
   printf '%s\n' "$1" > "${d}/.env"; chmod 644 "${d}/.env"
   echo "$d"
 }
-run() { HYPERPROX_DIR="$1" bash "$cfg" 2>&1; }
+run() { HYPERPROX_DIR="$1" bash "$cfg" 2>&1; }   # HPX_LOCAL_ADDRS, when set, passes through
 envval() { grep -m1 "^$2=" "$1/.env" | cut -d= -f2-; }
 digest() { find "$1" -type f -print0 | sort -z | xargs -0 sha256sum; find "$1" -printf '%p %m %U\n' | sort; }
 
@@ -117,9 +117,21 @@ check "and a second run changes nothing"                   '[[ -z "$(run "$d")" 
 
 d="$(mkinstall 'METRICS_TOKEN=x
 HYPERPROX_PUBLIC_URL=https://hyperprox.example.com/
-NEXT_PUBLIC_GRAFANA_URL=http://192.0.2.10:3003/')"
+NEXT_PUBLIC_GRAFANA_URL=http://hyperprox.example.com:3003/d/hyperprox-cluster')"
 run "$d" >/dev/null
+check "a :3003 URL on this machine with a path still moves" '[[ "$(envval "$d" NEXT_PUBLIC_GRAFANA_URL)" == /grafana ]]'
 check "GRAFANA_ROOT_URL prefers HYPERPROX_PUBLIC_URL"      '[[ "$(envval "$d" GRAFANA_ROOT_URL)" == https://hyperprox.example.com/grafana/ ]]'
+
+d="$(mkinstall 'METRICS_TOKEN=x
+NEXT_PUBLIC_GRAFANA_URL=http://192.0.2.77:3003/grafana')"
+HPX_LOCAL_ADDRS="192.0.2.77 192.0.2.78" run "$d" >/dev/null
+check "a :3003 URL on one of this machine's addresses moves" '[[ "$(envval "$d" NEXT_PUBLIC_GRAFANA_URL)" == /grafana ]]'
+
+d="$(mkinstall 'METRICS_TOKEN=x
+HOST_IP=192.0.2.10
+NEXT_PUBLIC_GRAFANA_URL=http://192.0.2.99:3003')"
+HPX_LOCAL_ADDRS="" run "$d" >/dev/null
+check "a Grafana on :3003 of another machine is left alone" '[[ "$(envval "$d" NEXT_PUBLIC_GRAFANA_URL)" == http://192.0.2.99:3003 ]] && ! grep -q "^GRAFANA_ROOT_URL=" "$d/.env"'
 
 d="$(mkinstall 'METRICS_TOKEN=x
 NEXT_PUBLIC_GRAFANA_URL=/grafana
@@ -147,6 +159,31 @@ check "install.sh runs it (main calls apply_install_config)" '[[ -n "$ic" ]] && 
 check "  before it builds"                                 '[[ "$ic" -lt "$(grep -n "^  build_app$" "${here}/install.sh" | cut -d: -f1)" ]]'
 check "install.sh no longer maps INSTALL_NPM to a profile" '! grep -q "INSTALL_NPM=true" "${here}/install.sh"'
 
+# ── bin/hyperprox-bind: the API and frontend on loopback ──────────────────────
+sd="${tmp}/systemd"; mkdir -p "$sd/hyperprox-api.service.d"
+echo 'Environment=VAULT_KEYHOLDER_SOCKET=/run/x.sock' > "$sd/hyperprox-api.service.d/keyholder.conf"
+calls="${tmp}/systemctl.calls"; stub="${tmp}/systemctl"; printf '#!/bin/sh\necho "$*" >> "%s"\n' "$calls" > "$stub"; chmod +x "$stub"
+bind() { SYSTEMD_DIR="$sd" SYSTEMCTL="$stub" bash "${here}/bin/hyperprox-bind" 2>&1; }
+out="$(bind)"
+check "bind: the API gets API_BIND=127.0.0.1 in a drop-in"         'grep -qx "Environment=API_BIND=127.0.0.1" "$sd/hyperprox-api.service.d/bind.conf" && grep -qx "\[Service\]" "$sd/hyperprox-api.service.d/bind.conf"'
+check "bind: the frontend gets HOSTNAME=127.0.0.1 in a drop-in"    'grep -qx "Environment=HOSTNAME=127.0.0.1" "$sd/hyperprox-frontend.service.d/bind.conf"'
+check "bind: other drop-ins are left alone"                        'grep -q VAULT_KEYHOLDER_SOCKET "$sd/hyperprox-api.service.d/keyholder.conf"'
+check "bind: systemd is reloaded once, nothing is restarted"       '[[ "$(cat "$calls")" == daemon-reload ]]'
+check "bind: each change is logged"                                '[[ "$(grep -c "drop-in" <<<"$out")" == 2 ]]'
+before="$(digest "$sd")"
+out="$(bind)"
+check "bind: a second run changes nothing, says nothing, reloads nothing" '[[ -z "$out" && "$(digest "$sd")" == "$before" && "$(wc -l < "$calls")" == 1 ]]'
+printf '[Service]\nEnvironment=HOSTNAME=0.0.0.0\n' > "$sd/hyperprox-frontend.service.d/bind.conf"
+out="$(bind)"
+check "bind: a drop-in edited by hand is put back, and systemd reloaded" 'grep -qx "Environment=HOSTNAME=127.0.0.1" "$sd/hyperprox-frontend.service.d/bind.conf" && [[ "$(wc -l < "$calls")" == 2 && "$out" == *hyperprox-frontend* ]]'
+rc="$(line "${here}/deploy.sh" "bin/hyperprox-bind")"
+check "deploy.sh writes the drop-ins before its one restart"     '[[ -n "$rc" && "$rc" -lt "$(line "${here}/deploy.sh" "systemctl restart hyperprox-api")" ]]'
+check "install.sh writes them with the units"                    'sed -n "/^write_systemd_services()/,/^}/p" "${here}/install.sh" | grep -q "bin/hyperprox-bind"'
+gc="$(line "${here}/deploy.sh" "bin/hyperprox-gate-check")"
+check "deploy.sh checks the gate after the nginx reload"         '[[ -n "$gc" && "$gc" -gt "$(line "${here}/deploy.sh" "nginx -s reload")" ]]'
+check "  and before it recreates Grafana"                        '[[ "$gc" -lt "$(line "${here}/deploy.sh" "docker compose up -d --no-deps prometheus grafana")" ]]'
+check "  and a failed check ends the deploy before 'Deploy complete'" 'sed -n "${gc},\$p" "${here}/deploy.sh" | head -4 | grep -q "exit 1"'
+
 # ── docker-compose.yml ────────────────────────────────────────────────────────
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   cp "${here}/docker-compose.yml" "${tmp}/docker-compose.yml"
@@ -157,6 +194,10 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
   check "compose: Grafana on the host network, bound to 127.0.0.1:3003" \
     'jq -e ".services.grafana.network_mode == \"host\" and .services.grafana.environment.GF_SERVER_HTTP_ADDR == \"127.0.0.1\" and .services.grafana.environment.GF_SERVER_HTTP_PORT == \"3003\"" <<<"$json" >/dev/null'
   check "compose: Grafana publishes no ports"               'jq -e ".services.grafana.ports == null" <<<"$json" >/dev/null'
+  check "compose: Grafana's login form, basic auth and plugin admin are off; version hidden" \
+    'jq -e ".services.grafana.environment | .GF_AUTH_DISABLE_LOGIN_FORM == \"true\" and .GF_AUTH_BASIC_ENABLED == \"false\" and .GF_PLUGINS_PLUGIN_ADMIN_ENABLED == \"false\" and .GF_AUTH_ANONYMOUS_HIDE_VERSION == \"true\"" <<<"$json" >/dev/null'
+  check "compose: Grafana and Prometheus are pinned by digest"  \
+    'jq -e "[.services.grafana.image, .services.prometheus.image, .services.vault.image] | all(test(\":[0-9v][^@]*@sha256:[0-9a-f]{64}$\"))" <<<"$json" >/dev/null'
   check "compose: no Nginx Proxy Manager service"           'jq -e "[.services[] | .image] | map(test(\"nginx-proxy-manager\")) | any | not" <<<"$json" >/dev/null'
   check "compose: no service publishes on a non-loopback address" \
     'jq -e "[.services[] | (.ports // [])[] | .host_ip] | all(. == \"127.0.0.1\")" <<<"$json" >/dev/null'
