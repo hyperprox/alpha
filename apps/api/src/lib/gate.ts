@@ -134,9 +134,13 @@ export async function registerGate(server: FastifyInstance): Promise<void> {
       session = await authenticate(req)
       if (session) {
         req.session = session
-        session.lastSeen = Date.now()
-        // Grafana behind /grafana/ asks on every request, dashboards refresh themselves: not a person.
-        if (path !== SESSION_CHECK) touch()
+        // Grafana behind /grafana/ asks on every request and dashboards refresh themselves: not a person.
+        // So the check neither resets the idle timer nor makes this the "most recent" session that
+        // actingSid() lends to token requests and background vault writes.
+        if (path !== SESSION_CHECK) {
+          session.lastSeen = Date.now()
+          touch()
+        }
       }
     }
 
