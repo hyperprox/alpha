@@ -85,7 +85,7 @@ test("state from an old .env with INSTALL_NPM=true reports no npm choice", async
 // ── The exporter's read-only token, as the connect step makes it ───────────────────────────────────────
 function fakePve(userid: string, tokens: Array<{ tokenid: string; secret: string; comment?: string; privsep?: number }>) {
   const calls: string[] = []
-  const acls: Array<{ path: string; role: string; token: string }> = []
+  const acls: Array<{ path: string; roleid: string; type: string; ugid: string }> = []
   let n = 0
   return {
     calls, acls, tokens,
@@ -97,7 +97,17 @@ function fakePve(userid: string, tokens: Array<{ tokenid: string; secret: string
       tokens.push({ tokenid: name, secret, comment: o.comment, privsep: o.privsep })
       return { "full-tokenid": `${userid}!${name}`, value: secret }
     },
-    async setAcl(a: { path: string; role: string; token: string }) { calls.push(`acl ${a.path} ${a.role} ${a.token}`); acls.push(a) },
+    async setAcl(a: { path: string; role: string; token: string }) {
+      calls.push(`acl ${a.path} ${a.role} ${a.token}`)
+      acls.push({ path: a.path, roleid: a.role, type: "token", ugid: a.token })
+    },
+    async getToken(name: string, u = userid) {
+      calls.push(`get ${u}!${name}`)
+      const t = tokens.find((x) => x.tokenid === name)
+      if (!t) throw new Error("PVE 500: no such token")
+      return { privsep: t.privsep ?? 0 }
+    },
+    async listAcl() { calls.push("acls"); return acls },
     async tokenWorks(fullId: string, secret: string) {
       const [u, name] = fullId.split("!")
       return u === userid && tokens.some((t) => t.tokenid === name && t.secret === secret)
@@ -114,7 +124,8 @@ test("connect: the exporter gets <token>-exporter, privilege-separated, PVEAudit
   const r = await setup.setupExporter(pve, "root@pam", "hyperprox-node-a-0a1b2c3d", file, () => { restarts++ })
   assert.deepEqual(r, { ok: true, action: "create", tokenId: "root@pam!hyperprox-node-a-0a1b2c3d-exporter" })
   assert.deepEqual(pve.calls, ["list", "create hyperprox-node-a-0a1b2c3d-exporter privsep=1",
-    "acl / PVEAuditor root@pam!hyperprox-node-a-0a1b2c3d-exporter"])
+    "acl / PVEAuditor root@pam!hyperprox-node-a-0a1b2c3d-exporter",
+    "get root@pam!hyperprox-node-a-0a1b2c3d-exporter", "acls"])
   assert.equal(statSync(file).mode & 0o777, 0o600)
   assert.deepEqual(shared.readPveYml(file), { user: "root@pam", tokenName: "hyperprox-node-a-0a1b2c3d-exporter", secret: "exp-secret-1" })
   assert.equal(restarts, 1)
@@ -123,7 +134,7 @@ test("connect: the exporter gets <token>-exporter, privilege-separated, PVEAudit
   pve.calls.length = 0
   const again = await setup.setupExporter(pve, "root@pam", "hyperprox-node-a-0a1b2c3d", file, () => { restarts++ })
   assert.equal(again.action, "reuse")
-  assert.deepEqual(pve.calls, ["acl / PVEAuditor root@pam!hyperprox-node-a-0a1b2c3d-exporter"])
+  assert.deepEqual(pve.calls, ["get root@pam!hyperprox-node-a-0a1b2c3d-exporter", "acls"], "checked, nothing written")
   assert.equal(restarts, 1)
 })
 

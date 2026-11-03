@@ -89,38 +89,44 @@ function Bar({ value, color }: { value: number; color: string }) {
 // ---------------------------------------------------------------------------
 // The PVE exporter's read-only token (Grafana's Proxmox panels read through it)
 // ---------------------------------------------------------------------------
-interface ExporterStatus { configured: boolean; tokenId?: string; readOnly: boolean }
+interface ExporterStatus { configured: boolean; tokenId?: string; readOnly: boolean | null; reasons?: string[]; checkError?: string }
 
 function PveExporterPanel() {
   const { role } = useSession()
-  const [st, setSt]     = useState<ExporterStatus | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [msg, setMsg]   = useState<{ ok: boolean; text: string } | null>(null)
+  const [st, setSt]       = useState<ExporterStatus | null>(null)
+  const [busy, setBusy]   = useState(false)
+  const [msg, setMsg]     = useState<{ ok: boolean; text: string } | null>(null)
+  // Proxmox says the token is not read-only: the next press asks for a fresh one.
+  const [fresh, setFresh] = useState(false)
 
   const load = useCallback(async () => {
     const r = await apiJson<{ data: ExporterStatus }>('/api/monitoring/pve-exporter')
-    if (r.ok && r.body) setSt(r.body.data)
+    if (r.ok && r.body) { setSt(r.body.data); setFresh(r.body.data.readOnly === false && !!r.body.data.configured) }
   }, [])
   useEffect(() => { load() }, [load])
 
-  // Nothing to say once the exporter has the read-only token HyperProx makes.
-  if (!st || (st.configured && st.readOnly && !msg)) return null
+  // Nothing to say once Proxmox confirms the exporter's token is read-only.
+  if (!st || (st.configured && st.readOnly === true && !msg)) return null
 
   const setup = async () => {
     setBusy(true); setMsg(null)
-    const r = await apiJson<{ data: { tokenId: string; restarted: boolean } }>('/api/monitoring/pve-exporter', 'POST')
+    const r = await apiJson<{ data: { tokenId: string; restarted: boolean } }>('/api/monitoring/pve-exporter', 'POST', fresh ? { fresh: true } : undefined)
     setBusy(false)
     if (r.ok && r.body) {
       setMsg({ ok: true, text: `Read-only token ${r.body.data.tokenId} is in place${r.body.data.restarted ? ' and the exporter was restarted' : ''}. Proxmox panels fill in within a minute.` })
+      setFresh(false)
       load()
     } else {
+      if (r.code === 'not_read_only') setFresh(true)
       setMsg({ ok: false, text: r.error || 'Could not set up the token' })
     }
   }
 
   const why = !st.configured
     ? 'The PVE exporter has no Proxmox token yet, so Grafana\'s Proxmox panels are empty.'
-    : `The PVE exporter signs in as ${st.tokenId}, which is not the read-only token HyperProx makes and may be able to change things.`
+    : st.readOnly === false
+      ? `The PVE exporter signs in as ${st.tokenId}, which is not read-only: ${(st.reasons ?? []).join('; ')}.`
+      : `The PVE exporter signs in as ${st.tokenId}; Proxmox could not be asked whether it is read-only (${st.checkError ?? 'unknown'}).`
   return (
     <div style={{ marginBottom: 16, padding: '12px 16px', borderRadius: 8, border: '1px solid var(--border-soft)', background: 'var(--surface-notice)', display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
       <div style={{ flex: '1 1 320px', fontSize: 14, color: msg ? (msg.ok ? 'var(--good)' : 'var(--crit)') : 'var(--text-soft)' }}>
@@ -130,7 +136,7 @@ function PveExporterPanel() {
       {atLeast(role, 'admin') && !(msg && msg.ok) && (
         <button onClick={setup} disabled={busy}
           style={{ padding: '6px 14px', borderRadius: 6, border: '1px solid color-mix(in srgb, var(--accent) 35%, transparent)', background: 'color-mix(in srgb, var(--accent) 10%, transparent)', color: 'var(--accent)', fontSize: 14, fontWeight: 600, cursor: busy ? 'wait' : 'pointer' }}>
-          {busy ? 'Setting up…' : 'Set up Proxmox metrics'}
+          {busy ? 'Setting up…' : fresh ? 'Make a fresh read-only token' : 'Set up Proxmox metrics'}
         </button>
       )}
     </div>

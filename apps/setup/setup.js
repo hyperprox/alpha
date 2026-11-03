@@ -254,6 +254,9 @@ function pveAdapter(host, port, auth, userid) {
     // (name, comment) for HyperProx's own token; (name, { privsep, comment }) for the exporter's.
     createToken: (name, o) => pveCall(host, port, 'POST', `${tokens}/${encodeURIComponent(name)}`,
       typeof o === 'string' ? { privsep: '0', comment: o } : { privsep: String(o.privsep), comment: o.comment }, auth),
+    getToken:    (name, user = userid) => pveCall(host, port, 'GET',
+      `/access/users/${encodeURIComponent(user)}/token/${encodeURIComponent(name)}`, null, auth),
+    listAcl:     () => pveCall(host, port, 'GET', '/access/acl', null, auth),
     setAcl:      ({ path: p, role, token }) => pveCall(host, port, 'PUT', '/access/acl',
       { path: p, roles: role, tokens: token, propagate: '1' }, auth),
     tokenWorks:  (id, secret) => tokenWorks(host, port, id, secret),
