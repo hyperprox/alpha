@@ -32,6 +32,7 @@ const NAV = [
       { href: '/proxy',    label: 'Proxy',        icon: ProxyIcon    },
       { href: '/dns',      label: 'DNS',          icon: DNSIcon      },
       { href: '/certificates', label: 'Certificates', icon: CertIcon   },
+      { href: '/remote-access', label: 'Remote access', icon: () => <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5}><circle cx="3.5" cy="8" r="1.8" /><circle cx="12.5" cy="3.5" r="1.8" /><circle cx="12.5" cy="12.5" r="1.8" /><path d="M5.1 7.2l5.8-2.9M5.1 8.8l5.8 2.9" strokeLinecap="round" /></svg> },
       { href: '/storage',     label: 'Storage',      icon: StorageIcon     },
       { href: '/monitoring',   label: 'Monitoring',   icon: MonitoringIcon  },
     ],
