@@ -40,7 +40,23 @@ export class TransportError extends Error {
 
 const asRoot = (cred: TerminalCredential) => (cred.username === 'root' ? 'bash -s' : 'sudo -n bash -s')
 
-export function productionRemoteExecutor(pve: ProxmoxClient = livePve()): RemoteExecutor {
+/** What the production executor reaches outside itself for, so a test can check every command it builds. */
+export interface TransportDeps {
+  ssh:               typeof execOnNode
+  nodeCredential:    typeof nodeCredential
+  loadCredential:    typeof loadCredential
+  listManualHosts:   typeof listManualHosts
+  listHostAddresses: typeof listHostAddresses
+}
+
+const realTransport: TransportDeps = { ssh: execOnNode, nodeCredential, loadCredential, listManualHosts, listHostAddresses }
+
+export function productionRemoteExecutor(
+  pve: Pick<ProxmoxClient, 'fetchStrict'> = livePve(),
+  t: TransportDeps = realTransport,
+): RemoteExecutor {
+  const execOnNode = t.ssh
+  const { nodeCredential, loadCredential, listManualHosts, listHostAddresses } = t
   let nodeIps: Record<string, string> = {}
 
   async function nodeHost(node: string): Promise<string> {
@@ -95,7 +111,8 @@ export function productionRemoteExecutor(pve: ProxmoxClient = livePve()): Remote
         try { m.ostype = String((await pve.fetchStrict<any>(`/nodes/${encodeURIComponent(m.node!)}/qemu/${m.vmid}/config`))?.ostype ?? '') }
         catch { /* unreadable: the planner reads the OS itself */ }
       }))
-      return out.sort((a, b) => (a.kind === 'node' ? 0 : 1) - (b.kind === 'node' ? 0 : 1) || (a.vmid ?? 0) - (b.vmid ?? 0) || a.name.localeCompare(b.name))
+      const rank = (m: Machine) => (m.kind === 'node' ? 0 : m.kind === 'host' ? 2 : 1)
+      return out.sort((a, b) => rank(a) - rank(b) || (a.vmid ?? 0) - (b.vmid ?? 0) || a.name.localeCompare(b.name))
     },
 
     async run(m, script, o = {}) {
