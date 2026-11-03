@@ -250,7 +250,7 @@ test('routing: acknowledged, valid, never an exit node on a node, never overlapp
   assert.match(checkRouting(ct, { subnets: ['198.51.100.128/25'], exitNode: false }, true, nets) ?? '', /198\.51\.100\.0\/24/)
   assert.match(checkRouting(ct, { subnets: ['2001:db8:5::/48'], exitNode: false }, true, nets) ?? '', /2001:db8:5::11\/64/)
   assert.match(checkRouting(ct, { subnets: ['203.0.113.0/24'], exitNode: false }, true, nets) ?? '', /203\.0\.113\.7/)
-  assert.equal(checkRouting(ct, { subnets: ['10.20.0.0/16'], exitNode: false }, true, nets), null)
+  assert.equal(checkRouting(ct, { subnets: ['192.0.2.128/25'], exitNode: false }, true, nets), null)
   assert.equal(checkRouting(ct, { subnets: [], exitNode: true }, true, nets), null)
 })
 
