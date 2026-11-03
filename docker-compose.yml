@@ -79,7 +79,9 @@ services:
       start_period: 15s
 
   prometheus:
-    image: prom/prometheus:latest
+    # Pinned by digest (never :latest). Version: Prometheus 3.11.2 (multi-arch index digest). To update,
+    # change the tag AND the digest together.
+    image: prom/prometheus:v3.11.2@sha256:5550dc63da361dc30f6fe02ac0e4dfc736ededfef3c8d12a634db04a67824d78
     container_name: hyperprox-prometheus
     restart: unless-stopped
     profiles: [monitoring]
@@ -109,7 +111,10 @@ services:
       retries: 3
 
   grafana:
-    image: grafana/grafana:latest
+    # Pinned by digest (never :latest): Grafana is served on HyperProx's own origin, so a Grafana change
+    # is a HyperProx change. Version: Grafana 13.0.1 (multi-arch index digest). To update, change the tag
+    # AND the digest together.
+    image: grafana/grafana:13.0.1@sha256:0f86bada30d65ef9d0183b90c1e2682ac92d53d95da8bed322b984ea78a4a73a
     container_name: hyperprox-grafana
     restart: unless-stopped
     profiles: [monitoring]
@@ -127,6 +132,13 @@ services:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_NAME=Main Org.
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_AUTH_ANONYMOUS_HIDE_VERSION=true
+      # No way to become anything but that anonymous viewer from behind nginx: no login form, no basic
+      # auth, no plugin admin. (nginx also strips Cookie and Authorization, so no session or service
+      # account token reaches it.) Admin work: docker exec hyperprox-grafana grafana cli admin ...
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+      - GF_AUTH_BASIC_ENABLED=false
+      - GF_PLUGINS_PLUGIN_ADMIN_ENABLED=false
       - GF_SECURITY_ALLOW_EMBEDDING=true
       - GF_SECURITY_COOKIE_SAMESITE=disabled
       # The Monitoring page embeds Grafana from the same origin, at https://<host>/grafana/: the installer
