@@ -240,25 +240,57 @@ export function updateScript(p: ProviderId, s: Extract<Support, { ok: true }>): 
 const SYSCTL_FILE = '/etc/sysctl.d/99-hyperprox-remote-access.conf'
 
 /**
- * Turn routing on or off. Tailscale: `tailscale set` with exactly the routes asked for. NetBird: reconnect with
- * the given flags (routing on drops only --disable-server-routes); the routes themselves are made in the API.
- * Forwarding is switched on with routing and the file HyperProx wrote is removed with it.
+ * NetBird keeps its settings in its own config file. Only these four booleans are read from it (the file also
+ * holds the peer's private key, which never leaves the machine).
  */
-export function routingScript(p: ProviderId, o: { subnets: string[]; exitNode: boolean; flags: string[] }): string {
+const NB_FLAGS_READBACK =
+  `grep -hoE '"(DisableServerRoutes|DisableClientRoutes|DisableDNS|DisableFirewall)": *(true|false)' ` +
+  `/var/lib/netbird/*.json /etc/netbird/config.json 2>/dev/null | tr -d ' "' | sed 's/^/HP_NB_FLAG /' || true`
+
+/**
+ * Turn routing on or off.
+ *  - Tailscale: `tailscale set` with exactly the routes asked for. The routes are then approved in the API.
+ *  - NetBird: reconnect with every flag explicit (`--disable-server-routes=false` to serve routes: an omitted
+ *    flag keeps the stored value), then read the client's own config back so the result is checked, not assumed.
+ *  - Forwarding, guests only (`forwarding: 'guest'`): the values before are printed (HP_FWD_BEFORE) so they can be
+ *    restored exactly when routing goes off. A node's forwarding is never touched (`forwarding: 'leave'`).
+ */
+export function routingScript(p: ProviderId, o: {
+  subnets: string[]; exitNode: boolean; flags: string[]
+  forwarding: 'leave' | 'guest'
+  /** Guests, turning off: the values recorded when routing went on, as "v4:v6". */
+  restoreForwarding?: string | null
+}): string {
   const on = o.subnets.length > 0 || o.exitNode
   const L = ['set -e']
-  if (on) {
-    L.push(`printf 'net.ipv4.ip_forward = 1\\nnet.ipv6.conf.all.forwarding = 1\\n' > ${SYSCTL_FILE}`, `sysctl -q -p ${SYSCTL_FILE}`)
-  } else {
-    L.push(`if [ -f ${SYSCTL_FILE} ]; then rm -f ${SYSCTL_FILE}; sysctl -q --system >/dev/null 2>&1 || true; fi`)
+  if (o.forwarding === 'guest') {
+    L.push('echo "HP_FWD_BEFORE=$(cat /proc/sys/net/ipv4/ip_forward):$(cat /proc/sys/net/ipv6/conf/all/forwarding)"')
+    if (on) {
+      L.push(`printf 'net.ipv4.ip_forward = 1\\nnet.ipv6.conf.all.forwarding = 1\\n' > ${SYSCTL_FILE}`, `sysctl -q -p ${SYSCTL_FILE}`)
+    } else {
+      L.push(`rm -f ${SYSCTL_FILE}`)
+      const m = /^([01]):([01])$/.exec(o.restoreForwarding ?? '')
+      if (m) L.push(`sysctl -q -w net.ipv4.ip_forward=${m[1]} net.ipv6.conf.all.forwarding=${m[2]}`)
+    }
   }
   if (p === 'tailscale') {
-    L.push(`tailscale set --advertise-routes=${o.subnets.join(',')} --advertise-exit-node=${o.exitNode ? 'true' : 'false'}`)
+    L.push(`tailscale set ${sq(`--advertise-routes=${o.subnets.join(',')}`)} --advertise-exit-node=${o.exitNode ? 'true' : 'false'}`)
   } else {
-    L.push('netbird down >/dev/null 2>&1 || true', `netbird up ${o.flags.map(sq).join(' ')}`)
+    L.push('netbird down >/dev/null 2>&1 || true', `netbird up ${o.flags.map(sq).join(' ')}`, NB_FLAGS_READBACK)
   }
   L.push(statusScript(p))
   return L.join('\n')
+}
+
+/** NetBird's stored flags, as the client itself has them. */
+export function parseNetbirdFlags(output: string): Record<string, boolean> {
+  const out: Record<string, boolean> = {}
+  for (const m of output.matchAll(/^HP_NB_FLAG (\w+):(true|false)$/gm)) out[m[1]] = m[2] === 'true'
+  return out
+}
+
+export function parseForwardingBefore(output: string): string | null {
+  return /^HP_FWD_BEFORE=([01]:[01])$/m.exec(output)?.[1] ?? null
 }
 
 /** Removes the client, its state, and the repository HyperProx added. Nothing else (no autoremove). */
@@ -284,20 +316,101 @@ export function uninstallScript(p: ProviderId, s: Extract<Support, { ok: true }>
     L.push(`rm -f /etc/apt/sources.list.d/netbird.list ${NB_KEYRING} /etc/yum.repos.d/netbird.repo`)
     L.push('rm -rf /etc/netbird /var/lib/netbird')
   }
-  L.push(`if [ -f ${SYSCTL_FILE} ]; then rm -f ${SYSCTL_FILE}; sysctl -q --system >/dev/null 2>&1 || true; fi`)
+  // Only a guest ever has this file (nodes' forwarding is never changed); restoring the values is the routing
+  // action's job, so the file is simply removed and the running values are left as they are.
+  L.push(`rm -f ${SYSCTL_FILE}`)
   // `hash -r`: bash remembers where it last ran `${p}` from, and `command -v` would report the deleted path.
   L.push('hash -r')
   L.push(`command -v ${p} >/dev/null 2>&1 && echo HP_STILL_INSTALLED || echo HP_REMOVED`)
   return L.join('\n')
 }
 
-// ── Node guard snapshot (read-only) ─────────────────────────────────────────
+// ── Keeping an existing client's state ───────────────────────────────────────
+//  Before replacing a client that was already there, or uninstalling one, its own state (and the repository
+//  file) is copied aside, root-only, so a rollback can put the machine back exactly as it was.
 
-export const SNAPSHOT_SCRIPT = [
-  'echo "HP_DEF4=$(ip -4 route show default 2>/dev/null | sort | tr \'\\n\' \';\')"',
-  'echo "HP_DEF6=$(ip -6 route show default 2>/dev/null | sort | tr \'\\n\' \';\')"',
-  'echo "HP_RESOLV_LINK=$(readlink -f /etc/resolv.conf 2>/dev/null)"',
-  'echo "HP_RESOLV=$(grep -E \'^[[:space:]]*(nameserver|search|domain)\' /etc/resolv.conf 2>/dev/null | tr -s \' \\t\' \' \' | tr \'\\n\' \';\')"',
-  'if [ ! -e /etc/pve/corosync.conf ]; then echo HP_QUORATE=standalone',
-  "else q=$(pvecm status 2>/dev/null | awk -F: '/^Quorate/ {gsub(/[[:space:]]/, \"\", $2); print $2}'); echo \"HP_QUORATE=${q:-unknown}\"; fi",
-].join('\n')
+const BACKUP_DIR = '/var/lib/hyperprox-remote-access'
+const STATE: Record<ProviderId, string[]> = {
+  tailscale: ['/var/lib/tailscale', '/etc/default/tailscaled', '/etc/apt/sources.list.d/tailscale.list', '/usr/share/keyrings/tailscale-archive-keyring.gpg', '/etc/yum.repos.d/tailscale.repo'],
+  netbird:   ['/etc/netbird', '/var/lib/netbird', '/etc/apt/sources.list.d/netbird.list', NB_KEYRING, '/etc/yum.repos.d/netbird.repo'],
+}
+
+export function backupStateScript(p: ProviderId): string {
+  const dir = `${BACKUP_DIR}/${p}`
+  return [
+    'set -e', 'umask 077',
+    `rm -rf ${dir} && mkdir -p ${dir}`,
+    `${p === 'tailscale' ? 'tailscale version' : 'netbird version'} 2>/dev/null | head -n1 > ${dir}/.version || true`,
+    ...STATE[p].map(f => `if [ -e ${f} ]; then mkdir -p ${dir}$(dirname ${f}) && cp -a ${f} ${dir}${f}; fi`),
+    'echo HP_BACKUP_OK',
+  ].join('\n')
+}
+
+/** Put the client back as it was: the package (from the repository saved with it) and its state, then start it. */
+export function restoreStateScript(p: ProviderId, s: Extract<Support, { ok: true }>): string {
+  const dir = `${BACKUP_DIR}/${p}`
+  const svc = p === 'tailscale' ? 'systemctl stop tailscaled >/dev/null 2>&1 || true' : 'netbird service stop >/dev/null 2>&1 || true'
+  const start = p === 'tailscale' ? 'systemctl enable tailscaled >/dev/null 2>&1 || true; systemctl restart tailscaled' : 'netbird service install >/dev/null 2>&1 || true; netbird service start'
+  const L = [
+    'set -e', 'export DEBIAN_FRONTEND=noninteractive LC_ALL=C',
+    `[ -d ${dir} ] || { echo HP_NO_BACKUP; exit 3; }`,
+    svc,
+    ...STATE[p].map(f => `rm -rf ${f}; if [ -e ${dir}${f} ]; then mkdir -p $(dirname ${f}) && cp -a ${dir}${f} ${f}; fi`),
+  ]
+  if (s.pm === 'apt') L.push(`if ! command -v ${p} >/dev/null 2>&1; then ${aptRefreshOnly(`${p}.list`)}; apt-get install -y -qq ${p}; fi`)
+  else L.push(`command -v ${p} >/dev/null 2>&1 || dnf install -y -q ${p}`)
+  L.push(start, `rm -rf ${dir}`, 'echo HP_RESTORED', statusScript(p))
+  return L.join('\n')
+}
+
+export function dropBackupScript(p: ProviderId): string {
+  return `rm -rf ${BACKUP_DIR}/${p}`
+}
+
+// ── Node guard snapshot (read-only) ─────────────────────────────────────────
+//  Everything that decides whether a node is still part of its cluster: every routing table and policy rule,
+//  the path to every corosync and Ceph peer, the resolver (file and per-link), the firewall ruleset (hashed),
+//  corosync's own link state, forwarding, and quorum. Also lists the cluster's networks, for the routing check.
+
+export const SNAPSHOT_SCRIPT = String.raw`
+for f in 4 6; do
+  ip -$f route show table all 2>/dev/null | sed "s/^/HP_ROUTE$f /"
+  ip -$f rule show 2>/dev/null | sed "s/^/HP_RULE$f /"
+done
+echo "HP_RESOLV_LINK=$(readlink -f /etc/resolv.conf 2>/dev/null)"
+echo "HP_RESOLV=$(grep -E '^[[:space:]]*(nameserver|search|domain|options)' /etc/resolv.conf 2>/dev/null | tr -s ' \t' ' ' | tr '\n' ';')"
+if command -v resolvectl >/dev/null 2>&1 && systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+  echo HP_RESOLVED=active
+  resolvectl dns 2>/dev/null | sed 's/^/HP_LINKDNS /'
+  resolvectl domain 2>/dev/null | sed 's/^/HP_LINKDOMAIN /'
+else
+  echo HP_RESOLVED=inactive
+fi
+if command -v nft >/dev/null 2>&1; then echo "HP_FW_NFT=$(nft list ruleset 2>/dev/null | sed -E 's/counter packets [0-9]+ bytes [0-9]+/counter/g' | sha256sum | cut -c1-64)"; else echo HP_FW_NFT=none; fi
+hp_fw() { if command -v "$1" >/dev/null 2>&1; then "$1" 2>/dev/null | grep -v '^#' | sed -E 's/\[[0-9]+:[0-9]+\]//g' | sha256sum | cut -c1-64; else echo none; fi; }
+echo "HP_FW_IPT4=$(hp_fw iptables-save)"
+echo "HP_FW_IPT6=$(hp_fw ip6tables-save)"
+echo "HP_FWD4=$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null)"
+echo "HP_FWD6=$(cat /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null)"
+hp_peers=""
+if [ -r /etc/pve/corosync.conf ]; then
+  for h in $(awk '/ring[0-9]+_addr/ {print $2}' /etc/pve/corosync.conf); do
+    a=$(getent ahosts "$h" 2>/dev/null | awk 'NR==1 {print $1}'); [ -n "$a" ] || a="$h"
+    hp_peers="$hp_peers $a"; echo "HP_NET corosync $a"
+  done
+fi
+if [ -r /etc/pve/ceph.conf ]; then
+  awk -F= 'tolower($1) ~ /^[ \t]*(public|cluster)[_ ]network[ \t]*$/ {gsub(/[ \t]/, "", $2); n = split($2, a, ","); for (i = 1; i <= n; i++) print "HP_NET ceph " a[i]}' /etc/pve/ceph.conf
+  for a in $(grep -iE '^[[:space:]]*(mon[_ ]host|public[_ ]addr|mon[_ ]addr)' /etc/pve/ceph.conf | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | sort -u); do
+    hp_peers="$hp_peers $a"; echo "HP_NET ceph $a"
+  done
+fi
+ip -o addr show scope global 2>/dev/null | awk '{print "HP_NET own " $4}'
+for a in $(printf '%s\n' $hp_peers | sort -u); do echo "HP_PATH $a $(ip -o route get "$a" 2>/dev/null | head -n1)"; done
+if command -v corosync-cfgtool >/dev/null 2>&1 && [ -e /etc/pve/corosync.conf ]; then
+  corosync-cfgtool -s 2>/dev/null | awk '/^LINK ID/ {l = $3} /nodeid/ {gsub(/:/, " "); print "HP_COROSYNC link" l " node" $2 " " $NF}'
+fi
+if [ ! -e /etc/pve/corosync.conf ]; then echo HP_QUORATE=standalone
+else q=$(pvecm status 2>/dev/null | awk -F: '/^Quorate/ {gsub(/[[:space:]]/, "", $2); print $2}'); echo "HP_QUORATE=${'$'}{q:-unknown}"; fi
+echo HP_SNAPSHOT_END
+`.trim()
