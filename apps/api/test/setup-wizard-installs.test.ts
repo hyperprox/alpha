@@ -8,6 +8,7 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { mkdtempSync, writeFileSync, readFileSync, statSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import vm from "node:vm"
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const setup = require("../../setup/setup.js")
@@ -21,6 +22,14 @@ test("the install step offers Prometheus and Grafana, not Nginx Proxy Manager", 
   assert.match(html, /key:'grafana'/)
   assert.match(html, /installs: \{ grafana: true, prometheus: true \}/)
   assert.match(html, /Install it from the <strong>Catalogue<\/strong>/, "points to the Catalogue instead")
+})
+
+test("the page's script still compiles, and puts Proxmox's error text in the page escaped", () => {
+  const html: string = setup.WIZARD_HTML
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1])
+  assert.ok(scripts.length > 0)
+  for (const src of scripts) assert.doesNotThrow(() => new vm.Script(src))
+  assert.match(html, /could not be made \(\$\{escHtml\(S\.exporter\.error\)\}\)/)
 })
 
 test("the page no longer names the monitoring ports, which are loopback-only now", () => {
