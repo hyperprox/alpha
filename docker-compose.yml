@@ -3,9 +3,9 @@
 # Do not add 'version:' — deprecated in Compose v2
 #
 # The one compose file: install.sh, deploy.sh and the setup wizard all use this file as it is. Anything
-# per-install comes from .env, including COMPOSE_PROFILES (monitoring, npm), which compose reads itself.
+# per-install comes from .env, including COMPOSE_PROFILES (monitoring, ai), which compose reads itself.
 #
-# Nothing here is published beyond loopback except nginx on 80 and 443 (and the optional npm profile). Prometheus and Grafana use the host
+# Nothing here is published beyond loopback except nginx on 80 and 443. Prometheus and Grafana use the host
 # network so Grafana can reach Prometheus on 127.0.0.1; both bind 127.0.0.1, and Grafana is reached only
 # through nginx at /grafana/, which asks the API for a valid HyperProx session first.
 
@@ -190,20 +190,8 @@ services:
       # Under data/, so it is gitignored; an empty or missing directory means loopback only.
       - ./data/nginx/trusted-proxies:/etc/nginx/trusted-proxies:ro
 
-  nginx-proxy-manager:
-    image: jc21/nginx-proxy-manager:latest
-    container_name: hyperprox-npm
-    restart: unless-stopped
-    profiles: [npm]
-    ports:
-      - "80:80"
-      - "81:81"
-      - "443:443"
-    volumes:
-      - npm_data:/data
-      - npm_letsencrypt:/etc/letsencrypt
-    networks:
-      - hyperprox-net
+  # There is no bundled Nginx Proxy Manager: it needs ports 80 and 443, which nginx above holds, so it could
+  # never start. Install NPM into its own container from the Catalogue instead.
 
 networks:
   hyperprox-net:
@@ -214,6 +202,4 @@ volumes:
   redis_data:
   vault_data:
   grafana_data:
-  npm_data:
-  npm_letsencrypt:
   ollama_data:

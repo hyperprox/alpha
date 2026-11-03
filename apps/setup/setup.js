@@ -332,11 +332,14 @@ function resumeStep(env, proxmoxOk) {
   return 3
 }
 
-/** The compose profiles the step-2 choices stand for (written to .env as COMPOSE_PROFILES). */
+/**
+ * The compose profiles the step-2 choices stand for (written to .env as COMPOSE_PROFILES). There is no
+ * bundled Nginx Proxy Manager any more (it needs ports 80 and 443, which HyperProx's nginx holds, so it
+ * never started); an old INSTALL_NPM=true is ignored. NPM comes from the Catalogue instead.
+ */
 function composeProfiles(env) {
   const profiles = []
   if (env.INSTALL_PROMETHEUS === 'true' || env.INSTALL_GRAFANA === 'true') profiles.push('monitoring')
-  if (env.INSTALL_NPM === 'true') profiles.push('npm')
   return profiles.join(',')
 }
 
@@ -513,7 +516,7 @@ const S = {
   proxmox:  { host:'', port:'8006', tokenId:'root@pam!hyperprox', tokenSecret:'', publicUrl:'' },
   cluster:  null,
   services: {},
-  installs: { npm: false, grafana: true, prometheus: true },
+  installs: { grafana: true, prometheus: true },
   providers:{ godaddy:{ enabled:false, key:'', secret:'' }, npm:{ enabled:false, host:'', port:'81' } }
 }
 
@@ -632,9 +635,8 @@ function stepServices(){
     : '<div style="color:var(--muted);font-size:14px">No existing services detected.</div>'
 
   const installCards = [
-    { key:'npm',        name:'Nginx Proxy Manager', desc:'Reverse proxy + SSL — ports 80, 81, 443' },
-    { key:'prometheus', name:'Prometheus',           desc:'Metrics collection — port 9090' },
-    { key:'grafana',    name:'Grafana',              desc:'Monitoring dashboards — port 3003' },
+    { key:'prometheus', name:'Prometheus',           desc:'Metrics collection — on this machine only, read through HyperProx' },
+    { key:'grafana',    name:'Grafana',              desc:'Dashboards on the Monitoring page — for signed-in users only' },
   ].map(s => \`<div class="svc-card \${inst[s.key]?'on':''}" onclick="toggleInstall('\${s.key}')">
     <div>
       <div class="svc-name">\${s.name}</div>
@@ -650,6 +652,7 @@ function stepServices(){
     <div class="card-title" style="margin-top:1.25rem">Install with HyperProx</div>
     <div class="card-desc">Select services to spin up as Docker containers alongside HyperProx.</div>
     \${installCards}
+    <div class="field-hint" style="margin-top:.75rem">Need Nginx Proxy Manager? Install it from the <strong>Catalogue</strong> after setup: it gets a container of its own, with ports 80 and 443 to itself.</div>
     <div class="btn-row">
       <button class="btn btn-ghost" onclick="go(1)">← Back</button>
       <button class="btn btn-primary" id="btn-installs">Continue →</button>
@@ -694,8 +697,7 @@ function stepDone(){
     <div class="card-desc" style="margin-bottom:1rem">One step left: <strong>create the owner vault account</strong>. Open HyperProx and you will land on the sign-in page, which offers to create it. Choose an email and a master password, then scan the QR code with an authenticator app.</div>
     <div class="card-desc" style="margin-bottom:1.5rem">Two-factor authentication is required for the owner. The master password unlocks HyperProx and is never stored, so keep it safe: this release has no password recovery.</div>
     <div class="link-row"><span style="color:var(--muted)">Create owner</span><span class="link-url">\${APP}/login</span></div>
-    <div class="link-row"><span style="color:var(--muted)">Grafana</span><span class="link-url">\${location.port === '3001' ? 'http://' + ip + ':3003' : APP + '/grafana/'}</span></div>
-    <div class="link-row"><span style="color:var(--muted)">Prometheus</span><span class="link-url">http://\${ip}:9090</span></div>
+    <div class="link-row"><span style="color:var(--muted)">Grafana</span><span class="link-url">\${location.port === '3001' ? 'https://' + ip : APP}/grafana/ (after you sign in)</span></div>
     <div style="margin-top:1.5rem">
       <a href="\${APP}/login" style="display:block">
         <button class="btn btn-primary" style="width:100%;font-size:16px">Create the owner account →</button>
@@ -760,8 +762,6 @@ function bind(){
         if(r.ok && r.services){
           S.services = {}
           r.services.forEach(s => { S.services[s.key] = { ...s, enabled: s.found } })
-          // Never offer to install a second proxy manager on top of one the cluster already runs.
-          if (S.services.npm && S.services.npm.found) S.installs.npm = false
         }
         resolve()
       }).catch(() => resolve())
@@ -930,7 +930,7 @@ const server = http.createServer(async (req, res) => {
       }
       const step = resumeStep(env, Boolean(cluster))
       const installs = 'INSTALL_PROMETHEUS' in env
-        ? { npm: env.INSTALL_NPM === 'true', grafana: env.INSTALL_GRAFANA === 'true', prometheus: env.INSTALL_PROMETHEUS === 'true' }
+        ? { grafana: env.INSTALL_GRAFANA === 'true', prometheus: env.INSTALL_PROMETHEUS === 'true' }
         : null
       return sendJson(res, 200, {
         ok: true, step, cluster, error, installs,
@@ -1071,7 +1071,6 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && route === 'save-installs') {
       const { installs = {} } = body
       writeEnv({
-        INSTALL_NPM:        installs.npm        ? 'true' : 'false',
         INSTALL_GRAFANA:    installs.grafana    ? 'true' : 'false',
         INSTALL_PROMETHEUS: installs.prometheus ? 'true' : 'false',
       })
@@ -1149,7 +1148,7 @@ const server = http.createServer(async (req, res) => {
   }
 })
 
-module.exports = { tokenName, tokenComment, ensureToken, heldToken, resumeStep, composeProfiles }
+module.exports = { tokenName, tokenComment, ensureToken, heldToken, resumeStep, composeProfiles, WIZARD_HTML }
 
 if (require.main === module) {
   setupSecret()
