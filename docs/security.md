@@ -134,29 +134,43 @@ the rules below ([docs/remote-access.md](remote-access.md)).
 
 - **Provider credentials are vault items** (`hyperprox:remote/tailscale`, `hyperprox:remote/netbird`),
   masked when read back, like every other integration. Use a NetBird service user or a narrowly scoped
-  Tailscale OAuth client rather than a personal admin token where you can.
-- **Keys are minted per install**: single use, not ephemeral, 10 minutes (Tailscale) or one day, NetBird's
-  minimum, and revoked by HyperProx as soon as the install ends, whether it was used or not. A key exists
-  only in the API's memory. It travels to the target inside the script on the SSH channel's stdin and
-  reaches the client on a pipe (`--auth-key=file:/dev/stdin`, `--setup-key-file /dev/stdin`), so it is on
-  no command line and in no file HyperProx writes, on the node or in the guest. Job output passes through a
-  redactor that removes the key and anything key-shaped before it is stored or shown. Provider errors carry
-  a status and message, never a request.
+  Tailscale OAuth client rather than a personal admin token where you can. The NetBird URL must be
+  `https://`, and no provider request follows a redirect.
+- **Keys are minted per install**: single use, not ephemeral, 10 minutes (Tailscale) or one day (NetBird's
+  minimum). Before a key leaves HyperProx its id (never the key) is written to the database as pending
+  revocation. HyperProx revokes it as soon as the install ends, asks the provider to confirm, and only
+  then deletes the row. A sweep at start-up, after every unlock and every minute revokes whatever is left,
+  so a crash or a restart cannot leave a key alive. Shutdown waits a few seconds for revokes in flight.
+- **A key exists only in the API's memory and on the target's stdin.** It travels inside the script on the
+  SSH channel's stdin and reaches the client on a pipe (`--auth-key=file:/dev/stdin`,
+  `--setup-key-file /dev/stdin`), so it is on no command line and in no file HyperProx writes, on the node
+  or in the guest. Job output passes through a stream redactor that holds back enough of each chunk to
+  catch a key split across two, and removes the key, Tailscale and NetBird token shapes and, while a
+  NetBird key is live, NetBird setup-key shapes. Provider errors carry a status and message, never a request.
 - **The one exception is the manual flow** for Windows and macOS: an admin who has just re-entered the
-  master password can be shown a single-use key once. It is audited, sent with `Cache-Control: no-store`,
-  and not stored. Tailscale's expires in 10 minutes; HyperProx deletes NetBird's after 30.
-- **Re-confirmation** is required to install, change routing, uninstall, add `/dev/net/tun` and make a
-  manual key. API tokens cannot re-confirm, so **no API token can open a tunnel into the cluster**, at any
-  role. Check and Update need the admin role but no re-confirmation.
-- **Status is visible to every role**: which machines are on which overlay, their overlay addresses and
-  client versions. Job logs are admin-only.
-- **Proxmox nodes keep their DNS and routes** and advertise nothing; a before/after check of the default
-  routes, resolver and quorum rolls back any install that changed them. Routing through a node needs an
-  explicit acknowledgement, and a subnet containing the node's cluster address is refused.
-- **Guest config is changed only through the Proxmox API** (`devN: /dev/net/tun`), never by editing or
-  appending to a config file. HyperProx does not restart the container for you.
+  master password can be shown a single-use key once. It is recorded for revocation first, audited, sent
+  with `Cache-Control: no-store`, not stored, and revoked after 30 minutes even across a restart.
+- **Re-confirmation** is required to install, change routing, uninstall, add `/dev/net/tun`, add the
+  firewall rule, make a manual key, and to check or update a client on a Proxmox node. API tokens cannot
+  re-confirm, so **no API token can open a tunnel into the cluster or run anything on a node**, at any role.
+- **Status for roles below admin** is overlay state only: connected, overlay IP, client version, last seen.
+  No LAN or cluster addresses, no routes. Job logs are admin-only.
+- **Proxmox nodes keep their DNS, routes and firewall.** No DNS, no accepted routes, no client firewall
+  rules (`--netfilter-mode=off`, `--disable-firewall=true`), never an exit node, never a forwarding change.
+  Every change on a node is guarded by a before/after comparison of routing tables and rules, paths to
+  cluster peers, resolver and per-link DNS, firewall ruleset hashes, corosync links, forwarding and quorum,
+  15 seconds apart, with automatic rollback; an in-flight record makes a restart re-run the check. The only
+  firewall change HyperProx offers is one rule for TCP 22 and 8006 from the overlay on its interface,
+  previewed and confirmed.
+- **Existing clients are not touched** without an explicit Adopt or Replace, and a Replace keeps the old
+  state to put back. Provider devices are deleted only by the id recorded when the client reported itself,
+  never by name.
+- **SSH to VMs and hand-added hosts fails closed** when the host key has never been pinned in the Terminal.
+- **Guest config is changed only through the Proxmox API** (`devN: /dev/net/tun`, with the config digest),
+  never by editing or appending to a config file. HyperProx does not restart the container for you.
 - **Audit**: `remote.install`, `remote.update`, `remote.routing`, `remote.uninstall`, `remote.check`,
-  `remote.tun` and `remote.manual-key` are written with the user, the machines and the provider.
+  `remote.rollback`, `remote.cleanup`, `remote.recovered`, `remote.tun`, `remote.firewall` and
+  `remote.manual-key` are written with the user, the machines and the provider.
 
 ## Not built yet
 
