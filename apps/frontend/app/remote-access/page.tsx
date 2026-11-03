@@ -2,13 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
-import type { RemoteJob, RemoteMachineRow, RemoteManualKey, RemoteOverview, RemoteProviderId } from '@hyperprox/types'
+import type { RemoteFirewallPreview, RemoteJob, RemoteMachineRow, RemoteManualKey, RemoteOverview, RemoteProviderId } from '@hyperprox/types'
 import { apiJson, atLeast, type ApiResult } from '@/lib/api'
 import { useSession } from '@/lib/session'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { Badge, Btn, Empty, Notice, Panel } from '@/components/updates/ui'
 import {
-  InstallDialog, JobPanel, MachinesTable, ManualKeyDialog, PROVIDERS, PROVIDER_LABEL, RoutingDialog, UninstallDialog, type CellAction,
+  FirewallDialog, InstallDialog, JobPanel, MachinesTable, ManualKeyDialog, PROVIDERS, PROVIDER_LABEL, RoutingDialog, UninstallDialog, type CellAction,
 } from '@/components/remote-access/parts'
 
 type Dialog =
@@ -16,6 +16,7 @@ type Dialog =
   | { kind: 'routing'; provider: RemoteProviderId; row: RemoteMachineRow }
   | { kind: 'uninstall'; provider: RemoteProviderId; row: RemoteMachineRow }
   | { kind: 'manual'; provider: RemoteProviderId; row: RemoteMachineRow; result: RemoteManualKey | null; error: string | null }
+  | { kind: 'firewall'; provider: RemoteProviderId; row: RemoteMachineRow; preview: RemoteFirewallPreview | null; error: string | null }
 
 const enc = encodeURIComponent
 
@@ -79,6 +80,12 @@ export default function RemoteAccessPage() {
     if (a === 'routing') { setDialog({ kind: 'routing', provider: p, row }); return }
     if (a === 'uninstall') { setDialog({ kind: 'uninstall', provider: p, row }); return }
     if (a === 'manual-key') { setDialog({ kind: 'manual', provider: p, row, result: null, error: null }); return }
+    if (a === 'firewall') {
+      setDialog({ kind: 'firewall', provider: p, row, preview: null, error: null })
+      const r = await apiJson<RemoteFirewallPreview>(`/api/remote/machines/${enc(row.id)}/${p}/firewall`)
+      setDialog(d => (d?.kind === 'firewall' ? { ...d, preview: r.ok ? r.body : null, error: r.ok ? null : r.error ?? 'Could not read the firewall' } : d))
+      return
+    }
     if (a === 'check' || a === 'update') started(await send<{ job: RemoteJob }>(`/api/remote/machines/${enc(row.id)}/${p}/${a}`, 'POST'))
   }
 
@@ -126,6 +133,15 @@ export default function RemoteAccessPage() {
         </div>
       )}
 
+      {ov && ov.attention.some(a => a.interrupted) && (
+        <Notice tone="crit">
+          A restart interrupted a change on {ov.attention.filter(a => a.interrupted).map(a => rows.find(r => r.id === a.machineId)?.name ?? a.machineId).join(', ')}.
+          HyperProx re-checks it (and rolls it back if the node differs) as soon as it can reach the node.
+        </Notice>
+      )}
+      {admin && ov && ov.pendingRevokes > 0 && (
+        <Notice tone="warn">{ov.pendingRevokes} key{ov.pendingRevokes === 1 ? ' has' : 's have'} not been confirmed revoked yet. HyperProx retries every minute.</Notice>
+      )}
       {job && <JobPanel job={job} onClose={() => setJob(null)} />}
       {tunAsk.length > 0 && admin && (
         <Notice tone="warn">
@@ -163,7 +179,7 @@ export default function RemoteAccessPage() {
       {dialog?.kind === 'install' && (
         <InstallDialog provider={dialog.provider} rows={dialog.rows} onCancel={() => setDialog(null)} onConfirm={async o => {
           setDialog(null)
-          started(await send<{ job: RemoteJob }>('/api/remote/jobs', 'POST', { provider: dialog.provider, machineIds: dialog.rows.map(r => r.id), tags: o.tags, mode: o.mode }))
+          started(await send<{ job: RemoteJob }>('/api/remote/jobs', 'POST', { provider: dialog.provider, machineIds: dialog.rows.map(r => r.id), tags: o.tags, mode: o.mode, existing: o.existing }))
           setSelected(new Set())
         }} />
       )}
@@ -186,6 +202,15 @@ export default function RemoteAccessPage() {
             const r = await send<RemoteManualKey>(`/api/remote/machines/${enc(dialog.row.id)}/${dialog.provider}/manual-key`, 'POST', {})
             if (!r) return
             setDialog(d => (d?.kind === 'manual' ? { ...d, result: r.ok ? r.body : null, error: r.ok ? null : r.error ?? 'Could not make a key' } : d))
+          }} />
+      )}
+      {dialog?.kind === 'firewall' && (
+        <FirewallDialog row={dialog.row} provider={dialog.provider} preview={dialog.preview} error={dialog.error} onCancel={() => setDialog(null)}
+          onConfirm={async () => {
+            const r = await send<{ added: boolean; message: string }>(`/api/remote/machines/${enc(dialog.row.id)}/${dialog.provider}/firewall`, 'POST', { confirm: true })
+            if (!r) return
+            setDialog(null)
+            setNotice(r.ok && r.body ? { tone: 'info', text: r.body.message } : { tone: 'crit', text: r.error ?? 'Could not add the rule' })
           }} />
       )}
       {confirm && <ReconfirmModal onDone={() => confirm()} onClose={() => setConfirm(null)} />}
