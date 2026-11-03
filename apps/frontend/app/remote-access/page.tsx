@@ -2,13 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
-import type { RemoteFirewallPreview, RemoteJob, RemoteMachineRow, RemoteManualKey, RemoteOverview, RemoteProviderId } from '@hyperprox/types'
+import type { RemoteFirewallPreview, RemoteHostKey, RemoteJob, RemoteMachineRow, RemoteManualKey, RemoteOverview, RemoteProviderId } from '@hyperprox/types'
 import { apiJson, atLeast, type ApiResult } from '@/lib/api'
 import { useSession } from '@/lib/session'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { Badge, Btn, Empty, Notice, Panel } from '@/components/updates/ui'
 import {
-  FirewallDialog, InstallDialog, JobPanel, MachinesTable, ManualKeyDialog, PROVIDERS, PROVIDER_LABEL, RoutingDialog, UninstallDialog, type CellAction,
+  FirewallDialog, HostKeyDialog, InstallDialog, JobPanel, MachinesTable, ManualKeyDialog, PROVIDERS, PROVIDER_LABEL, RoutingDialog, UninstallDialog, type CellAction,
 } from '@/components/remote-access/parts'
 
 type Dialog =
@@ -17,6 +17,7 @@ type Dialog =
   | { kind: 'uninstall'; provider: RemoteProviderId; row: RemoteMachineRow }
   | { kind: 'manual'; provider: RemoteProviderId; row: RemoteMachineRow; result: RemoteManualKey | null; error: string | null }
   | { kind: 'firewall'; provider: RemoteProviderId; row: RemoteMachineRow; preview: RemoteFirewallPreview | null; error: string | null }
+  | { kind: 'host-key'; row: RemoteMachineRow; info: RemoteHostKey | null; error: string | null }
 
 const enc = encodeURIComponent
 
@@ -95,10 +96,20 @@ export default function RemoteAccessPage() {
     setNotice(r.ok && r.body ? { tone: r.body.applied ? 'info' : 'warn', text: r.body.message } : { tone: 'crit', text: r.error ?? 'Could not change the container' })
   }
 
+  const openHostKey = async (row: RemoteMachineRow) => {
+    setDialog({ kind: 'host-key', row, info: null, error: null })
+    const r = await apiJson<RemoteHostKey>(`/api/remote/machines/${enc(row.id)}/host-key`)
+    setDialog(d => (d?.kind === 'host-key' ? { ...d, info: r.ok ? r.body : null, error: r.ok ? null : r.error ?? 'Could not read the key' } : d))
+  }
+
   const busy = job?.status === 'running'
   const rows = ov?.machines ?? []
   const selectedRows = rows.filter(r => selected.has(r.id))
   // Containers the last job stopped on for want of /dev/net/tun.
+  // Machines the last job refused because their host key was never pinned.
+  const pinAsk = job && job.status === 'failed'
+    ? job.steps.filter(s => s.status === 'failed' && /no pinned host key/.test(s.detail ?? '')).map(s => rows.find(r => r.id === s.machineId)).filter((r): r is RemoteMachineRow => !!r)
+    : []
   const tunAsk = job && job.status === 'failed'
     ? job.steps.filter(s => s.status === 'failed' && /\/dev\/net\/tun/.test(s.detail ?? '')).map(s => rows.find(r => r.id === s.machineId)).filter((r): r is RemoteMachineRow => !!r && r.kind === 'lxc')
     : []
@@ -143,6 +154,14 @@ export default function RemoteAccessPage() {
         <Notice tone="warn">{ov.pendingRevokes} key{ov.pendingRevokes === 1 ? ' has' : 's have'} not been confirmed revoked yet. HyperProx retries every minute.</Notice>
       )}
       {job && <JobPanel job={job} onClose={() => setJob(null)} />}
+      {pinAsk.length > 0 && admin && (
+        <Notice tone="warn">
+          <div className="space-y-2">
+            <div>HyperProx will not send anything to a host whose key has never been pinned. Check the key and trust it, then run the job again.</div>
+            <div className="flex flex-wrap gap-2">{pinAsk.map(r => <Btn key={r.id} small onClick={() => openHostKey(r)}>Check the host key for {r.name}</Btn>)}</div>
+          </div>
+        </Notice>
+      )}
       {tunAsk.length > 0 && admin && (
         <Notice tone="warn">
           <div className="space-y-2">
@@ -211,6 +230,16 @@ export default function RemoteAccessPage() {
             if (!r) return
             setDialog(null)
             setNotice(r.ok && r.body ? { tone: 'info', text: r.body.message } : { tone: 'crit', text: r.error ?? 'Could not add the rule' })
+          }} />
+      )}
+      {dialog?.kind === 'host-key' && (
+        <HostKeyDialog row={dialog.row} info={dialog.info} error={dialog.error} onCancel={() => setDialog(null)}
+          onConfirm={async () => {
+            if (!dialog.info) return
+            const r = await send<{ pinned: boolean; message: string }>(`/api/remote/machines/${enc(dialog.row.id)}/host-key`, 'POST', { fingerprint: dialog.info.fingerprint })
+            if (!r) return
+            setDialog(null)
+            setNotice(r.ok && r.body ? { tone: 'info', text: r.body.message } : { tone: 'crit', text: r.error ?? 'Could not pin the key' })
           }} />
       )}
       {confirm && <ReconfirmModal onDone={() => confirm()} onClose={() => setConfirm(null)} />}
