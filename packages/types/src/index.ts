@@ -119,3 +119,6 @@ export * from './updates'
 
 // Certificates feature
 export * from './certs'
+
+// Remote access feature
+export * from './remote'
