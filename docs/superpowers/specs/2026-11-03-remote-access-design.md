@@ -253,8 +253,8 @@ POST   /api/settings/test/remote/:provider  the Test button
 ## Manual flow (Windows, macOS, anything unsupported)
 
 The page shows the official download page and, on request, a one-time key: Tailscale `reusable: false`,
-10 minutes; NetBird `one-off`, one use, deleted by HyperProx after 24 hours at the latest (NetBird's
-minimum lifetime). This is the one place a key reaches the browser. It needs a re-confirmation, is shown
+10 minutes; NetBird `one-off`, one use, deleted by HyperProx after 30 minutes (NetBird's own one-day
+minimum lifetime applies if HyperProx restarts before then). This is the one place a key reaches the browser. It needs a re-confirmation, is shown
 once and never stored, and the request is audited. The device is matched on the next overview by hostname.
 
 ## Testing

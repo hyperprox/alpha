@@ -127,6 +127,37 @@ Send it as `Authorization: Bearer hpx_...`. It is shown once; HyperProx stores o
 - **Revoking** takes effect at once from Settings; from `hyperprox token revoke`, within 10 seconds. A revoked
   token keeps its name, so pick a new name for its replacement. A bad, revoked or expired token gets 401.
 
+## Remote access
+
+Installing a VPN client opens a way into the machine from outside your network, so this feature is held to
+the rules below ([docs/remote-access.md](remote-access.md)).
+
+- **Provider credentials are vault items** (`hyperprox:remote/tailscale`, `hyperprox:remote/netbird`),
+  masked when read back, like every other integration. Use a NetBird service user or a narrowly scoped
+  Tailscale OAuth client rather than a personal admin token where you can.
+- **Keys are minted per install**: single use, not ephemeral, 10 minutes (Tailscale) or one day, NetBird's
+  minimum, and revoked by HyperProx as soon as the install ends, whether it was used or not. A key exists
+  only in the API's memory. It travels to the target inside the script on the SSH channel's stdin and
+  reaches the client on a pipe (`--auth-key=file:/dev/stdin`, `--setup-key-file /dev/stdin`), so it is on
+  no command line and in no file HyperProx writes, on the node or in the guest. Job output passes through a
+  redactor that removes the key and anything key-shaped before it is stored or shown. Provider errors carry
+  a status and message, never a request.
+- **The one exception is the manual flow** for Windows and macOS: an admin who has just re-entered the
+  master password can be shown a single-use key once. It is audited, sent with `Cache-Control: no-store`,
+  and not stored. Tailscale's expires in 10 minutes; HyperProx deletes NetBird's after 30.
+- **Re-confirmation** is required to install, change routing, uninstall, add `/dev/net/tun` and make a
+  manual key. API tokens cannot re-confirm, so **no API token can open a tunnel into the cluster**, at any
+  role. Check and Update need the admin role but no re-confirmation.
+- **Status is visible to every role**: which machines are on which overlay, their overlay addresses and
+  client versions. Job logs are admin-only.
+- **Proxmox nodes keep their DNS and routes** and advertise nothing; a before/after check of the default
+  routes, resolver and quorum rolls back any install that changed them. Routing through a node needs an
+  explicit acknowledgement, and a subnet containing the node's cluster address is refused.
+- **Guest config is changed only through the Proxmox API** (`devN: /dev/net/tun`), never by editing or
+  appending to a config file. HyperProx does not restart the container for you.
+- **Audit**: `remote.install`, `remote.update`, `remote.routing`, `remote.uninstall`, `remote.check`,
+  `remote.tun` and `remote.manual-key` are written with the user, the machines and the provider.
+
 ## Not built yet
 
 These are designed ([design](superpowers/specs/2026-10-14-vault-gate-design.md)) but are **not** in this
