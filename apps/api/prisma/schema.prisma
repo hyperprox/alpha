@@ -348,6 +348,8 @@ model RemoteAccessDevice {
   routes      String[]
   exitNode    Boolean   @default(false)
   routeIds    String[]  // NetBird routes HyperProx created
+  adopted     Boolean   @default(false)   // already there; HyperProx only recorded it
+  forwardingBefore String?               // a guest's "v4:v6" forwarding before routing went on
   connected   Boolean?
   checkedAt   DateTime?
   lastError   String?
@@ -355,4 +357,32 @@ model RemoteAccessDevice {
   updatedAt   DateTime  @updatedAt
 
   @@unique([machineId, provider])
+}
+
+// Every key that has left HyperProx and is not yet confirmed revoked. The key id only, never the key.
+model RemoteAccessPendingRevoke {
+  id          String   @id @default(cuid())
+  provider    String
+  keyId       String
+  revokeAfter DateTime
+  reason      String   // install | manual
+  attempts    Int      @default(0)
+  lastError   String?
+  createdAt   DateTime @default(now())
+
+  @@index([revokeAfter])
+}
+
+// A change on a node that started and has not passed its guard yet. Found after a restart: re-check, roll back.
+model RemoteAccessInflight {
+  id        String   @id @default(cuid())
+  machineId String
+  provider  String
+  action    String
+  jobId     String
+  by        String
+  owner     String
+  before    Json
+  undo      Json
+  startedAt DateTime @default(now())
 }

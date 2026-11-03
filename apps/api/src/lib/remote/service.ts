@@ -2,25 +2,32 @@
 //  HyperProx — Remote access: the service
 //
 //  Jobs run one machine at a time and stop at the first failure. One job runs
-//  at a time. On a Proxmox node, every change is wrapped in the guard: the
-//  default routes, the resolver and quorum are read before and after, and any
-//  difference rolls the change back on the spot.
+//  at a time. On a Proxmox node every change is wrapped in the guard: a full
+//  snapshot before, the change, a settle period, a snapshot after, and an
+//  automatic rollback when anything differs. A change that fails is cleaned up
+//  the same way even when nothing differs.
 //
-//  A key is minted per machine just before `up`, revoked as soon as `up` ends
-//  (used or not), and only ever in memory. Every byte of output passes through
-//  a redactor made for that key before it reaches the job log.
+//  Two things survive a restart, in the database:
+//   - every key that has left HyperProx, until the provider confirms it is
+//     revoked (the sweep retries at start, on unlock, and every minute);
+//   - every node change between its before-snapshot and its guard verdict, so
+//     a restart in the middle re-runs the after-check on boot and rolls back.
+//
+//  A key is only ever in memory and on the target's stdin. Output passes
+//  through a stream redactor before it reaches the job log.
 // =============================================================================
 
 import { randomUUID } from 'node:crypto'
 import type { RemoteExecutor } from './executor'
-import type { RemoteRecord, RemoteRecordInput, RemoteStore } from './store'
+import type { Inflight, RemoteRecord, RemoteRecordInput, RemoteStore } from './store'
 import {
-  DETECT_SCRIPT, SNAPSHOT_SCRIPT, installScript, parseFacts, parseStatus, routingScript, statusScript, uninstallScript, updateScript,
-  osSupport, upScript, type ClientStatus, type NetMode, type OsFacts, type Support,
+  DETECT_SCRIPT, SNAPSHOT_SCRIPT, backupStateScript, dropBackupScript, installScript, osSupport, parseFacts,
+  parseForwardingBefore, parseNetbirdFlags, parseStatus, restoreStateScript, routingScript, statusScript,
+  uninstallScript, updateScript, upScript, type ClientStatus, type NetMode, type OsFacts, type Support,
 } from './scripts'
-import { checkRouting, clientFlags, planInstall, safeHostname, tunFix } from './planner'
-import { compareSnapshots, parseSnapshot, snapshotReady, type NodeSnapshot } from './guard'
-import { makeRedactor, redactKnownKeyShapes } from './redact'
+import { checkRouting, clientFlags, planInstall, safeHostname, tunFix, type ExistingChoice } from './planner'
+import { clusterNetworks, compareSnapshots, parseSnapshot, snapshotReady, type NodeSnapshot } from './guard'
+import { StreamRedactor, redactKnownKeyShapes } from './redact'
 import { TAG_RE } from './tailscale'
 import {
   DOWNLOAD_URL, PROVIDER_IDS, PROVIDER_LABEL, isProviderId,
@@ -40,6 +47,8 @@ export interface JobRequest {
   /** Tailscale tags or NetBird group names. Omitted: the provider's defaults from Settings. */
   tags?:       string[]
   mode?:       NetMode
+  /** What to do with a client HyperProx did not install. Without one, such a machine is refused. */
+  existing?:   ExistingChoice
   subnets?:    string[]
   exitNode?:   boolean
   acknowledge?: boolean
@@ -49,7 +58,7 @@ export type StepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped'
 export interface JobStep { machineId: string; name: string; status: StepStatus; detail?: string }
 
 export interface RemoteJob {
-  id: string; action: JobAction; provider: ProviderId; by: string
+  id: string; action: JobAction | 'recovery'; provider: ProviderId; by: string
   status: 'running' | 'completed' | 'failed'
   steps: JobStep[]; log: string; error?: string
   startedAt: string; finishedAt?: string
@@ -59,10 +68,10 @@ export type CellState = 'connected' | 'offline' | 'missing' | 'not-installed' | 
 
 export interface RemoteCell {
   state: CellState
-  /** True when HyperProx installed it (there is a record); false for a device found only by name. */
+  /** True when HyperProx installed or adopted it (there is a record); false for a device found only by name. */
   managed: boolean
   ip: string | null; version: string | null; lastSeen: string | null; deviceName: string | null
-  mode: NetMode | null; routes: string[]; exitNode: boolean; lastError: string | null
+  mode: NetMode | null; routes: string[]; exitNode: boolean; lastError: string | null; adopted: boolean
 }
 
 export interface RemoteMachineRow extends Machine { cells: Record<ProviderId, RemoteCell> }
@@ -71,6 +80,10 @@ export interface RemoteOverview {
   providers: Array<{ id: ProviderId; label: string; configured: boolean; error: string | null; devices: number }>
   machines: RemoteMachineRow[]
   activeJobId: string | null
+  /** Node changes not yet through their guard; `interrupted` ones were cut off by a restart and wait for a check. */
+  attention: Array<{ machineId: string; provider: ProviderId; action: string; since: string; interrupted: boolean }>
+  /** Keys whose revocation is overdue and not yet confirmed. */
+  pendingRevokes: number
 }
 
 export interface ProviderSettings { tags: string[]; managementUrl?: string }
@@ -78,61 +91,194 @@ export interface ProviderSettings { tags: string[]; managementUrl?: string }
 export interface RemoteDeps {
   store:    RemoteStore
   exec:     RemoteExecutor
-  /** The provider built from the vault, or null when it is not configured. */
+  /** The provider built from the vault, or null when it is not configured. Throws while locked. */
   provider: (id: ProviderId) => Promise<RemoteProvider | null>
   providerSettings: (id: ProviderId) => Promise<ProviderSettings>
   log?:     (m: string) => void
+  /** Between a node change and its after-check, so delayed effects show up. Default 15 s. */
+  settleMs?: number
+  sleep?:   (ms: number) => Promise<void>
+  now?:     () => number
+  /** How often the revoke-and-recover sweep runs. Default 60 s. */
+  sweepEveryMs?: number
 }
+
+type SupportOk = Extract<Support, { ok: true }>
+
+/** How to put a machine back. Stored with a node change so a restart can still do it. */
+export type UndoPlan =
+  | { kind: 'remove'; provider: ProviderId; support: SupportOk; deviceId: string | null }
+  | { kind: 'restore'; provider: ProviderId; support: SupportOk; deviceId: string | null; previousDeviceId: string | null }
+  | { kind: 'restart'; provider: ProviderId }
+  | { kind: 'routing'; provider: ProviderId; previous: RoutingRequest; flags: string[]; forwarding: 'leave' | 'guest';
+      restoreForwarding: string | null; deviceId: string | null; deviceName: string; routeIds: string[] }
 
 const LOG_CAP = 40_000
 const MAX_MACHINES = 100
 const NB_GROUP_RE = /^[A-Za-z0-9 _.-]{1,64}$/
 const MANUAL_KEY_REVOKE_MS = 30 * 60_000
+const INSTALL_KEY_GRACE_MS = 15 * 60_000
 const DEVICE_CACHE_MS = 30_000
+const JOB_KEEP_MS = 6 * 3600_000
+const JOB_KEEP_MAX = 100
 
-class StepFailure extends Error {}
+class GuardError extends Error {
+  constructor(m: string, readonly cleanupFailed: boolean) { super(m); this.name = 'GuardError' }
+}
 
 function emptyCell(state: CellState): RemoteCell {
-  return { state, managed: false, ip: null, version: null, lastSeen: null, deviceName: null, mode: null, routes: [], exitNode: false, lastError: null }
+  return { state, managed: false, ip: null, version: null, lastSeen: null, deviceName: null, mode: null, routes: [], exitNode: false, lastError: null, adopted: false }
+}
+
+const msg = (e: unknown) => String((e as any)?.message ?? e)
+
+/** What a role below admin may see: overlay status, version and connection state. No LAN or cluster addresses. */
+export function overviewForRole(ov: RemoteOverview, admin: boolean): RemoteOverview {
+  if (admin) return ov
+  return {
+    ...ov,
+    attention: ov.attention.map(a => ({ ...a })),
+    machines: ov.machines.map(({ address: _a, ostype: _o, ...m }) => ({
+      ...m,
+      cells: Object.fromEntries(Object.entries(m.cells).map(([k, c]) => [k, {
+        ...emptyCell(c.state), managed: c.managed, ip: c.ip, version: c.version, lastSeen: c.lastSeen,
+      }])) as Record<ProviderId, RemoteCell>,
+    })),
+  }
+}
+
+export const FIREWALL_PORTS = '22,8006'
+
+/** The one host-firewall rule HyperProx offers: SSH and the web UI, from the overlay, on the overlay interface. */
+export function firewallRule(p: ProviderId): Record<string, string> {
+  return {
+    type: 'in', action: 'ACCEPT', iface: p === 'tailscale' ? 'tailscale0' : 'wt0', source: '100.64.0.0/10',
+    proto: 'tcp', dport: FIREWALL_PORTS, enable: '1', comment: `HyperProx remote access: SSH and web UI over ${PROVIDER_LABEL[p]}`,
+  }
 }
 
 export class RemoteAccessService {
   private jobs = new Map<string, RemoteJob>()
   private active: string | null = null
   private devices = new Map<ProviderId, { at: number; list: ProviderDevice[] }>()
-  private pendingRevokes = new Set<{ timer: NodeJS.Timeout; run: () => void }>()
+  private revoking = new Set<Promise<unknown>>()
+  private sweepTimer: NodeJS.Timeout | null = null
+  private sweeping: Promise<void> | null = null
+  /** This process. An in-flight row owned by anyone else was left by a process that is gone. */
+  readonly instance = randomUUID()
+  private readonly sleep: (ms: number) => Promise<void>
+  private readonly now: () => number
+  private readonly settleMs: number
 
-  constructor(private readonly d: RemoteDeps) {}
+  constructor(private readonly d: RemoteDeps) {
+    this.sleep = d.sleep ?? (ms => new Promise(r => setTimeout(r, ms)))
+    this.now = d.now ?? Date.now
+    this.settleMs = d.settleMs ?? 15_000
+  }
 
   getJob(id: string): RemoteJob | undefined { return this.jobs.get(id) }
   get activeJobId(): string | null { return this.active }
 
-  /** Revoke every outstanding manual key now and clear the timers. */
-  close(): void {
-    for (const p of this.pendingRevokes) { clearTimeout(p.timer); p.run() }
-    this.pendingRevokes.clear()
+  // ── Start, sweep, close ───────────────────────────────────────────────────
+
+  /** Sweep now, then every minute. */
+  start(): void {
+    // At start no install can be running, so every install key left over is revoked now, whatever its due time.
+    void this.sweep({ startup: true })
+    if (!this.sweepTimer) {
+      this.sweepTimer = setInterval(() => { void this.sweep() }, this.d.sweepEveryMs ?? 60_000)
+      this.sweepTimer.unref?.()
+    }
+  }
+
+  /** Stop sweeping and wait, at most `timeoutMs`, for revokes already on their way. */
+  async close(timeoutMs = 5000): Promise<void> {
+    if (this.sweepTimer) { clearInterval(this.sweepTimer); this.sweepTimer = null }
+    const all = Promise.allSettled([...this.revoking, ...(this.sweeping ? [this.sweeping] : [])])
+    let t: NodeJS.Timeout | undefined
+    await Promise.race([all, new Promise<void>(r => { t = setTimeout(r, timeoutMs); t.unref?.() })])
+    if (t) clearTimeout(t)
+  }
+
+  /** Revoke every key that is due, then re-check any node change a restart cut off. Needs the vault unlocked. */
+  sweep(o: { startup?: boolean } = {}): Promise<void> {
+    if (this.sweeping) return this.sweeping
+    this.sweeping = (async () => {
+      try {
+        const due = (await this.d.store.listPendingRevokes())
+          .filter(r => new Date(r.revokeAfter).getTime() <= this.now() || (o.startup && r.reason === 'install'))
+        for (const r of due) {
+          let p: RemoteProvider | null
+          try { p = await this.d.provider(r.provider) } catch { return }       // locked: try again after unlock
+          if (!p) { await this.d.store.notePendingRevokeFailure(r.id, `${PROVIDER_LABEL[r.provider]} is not configured`); continue }
+          await this.revokeDurably(p, r.id, r.keyId)
+        }
+        await this.recover()
+      } catch (e) {
+        this.d.log?.(`[remote] sweep: ${msg(e)}`)
+      } finally {
+        this.sweeping = null
+      }
+    })()
+    return this.sweeping
+  }
+
+  /** Revoke, confirm with the provider, and only then forget the pending row. False when it must be retried. */
+  private revokeDurably(p: RemoteProvider, pendingId: string, keyId: string, job?: RemoteJob): Promise<boolean> {
+    const run = (async () => {
+      try {
+        await p.revokeKey(keyId)
+        if (!(await p.keyRevoked(keyId))) throw new Error('the provider still lists the key as usable')
+        await this.d.store.removePendingRevoke(pendingId)
+        return true
+      } catch (e) {
+        const m = redactKnownKeyShapes(msg(e))
+        await this.d.store.notePendingRevokeFailure(pendingId, m).catch(() => undefined)
+        if (job) this.appendRaw(job, `\nCould not confirm the install key is revoked (${m}); HyperProx keeps trying.\n`)
+        return false
+      }
+    })()
+    this.revoking.add(run)
+    void run.finally(() => this.revoking.delete(run))
+    return run
+  }
+
+  /** Mint a key and record it as pending revocation before it goes anywhere. */
+  private async mintRecorded(p: RemoteProvider, provider: ProviderId, name: string, tags: string[], revokeAfterMs: number, reason: string) {
+    const key = await p.mintKey({ name, tags })
+    let pendingId: string
+    try {
+      pendingId = await this.d.store.addPendingRevoke({ provider, keyId: key.id, revokeAfter: new Date(this.now() + revokeAfterMs), reason })
+    } catch (e) {
+      // Not recorded, so it must not leave: revoke it now.
+      await p.revokeKey(key.id).catch(() => undefined)
+      throw new Error(`could not record the new key for revocation, so it was revoked unused (${msg(e)})`)
+    }
+    return { key, pendingId }
   }
 
   // ── Overview ──────────────────────────────────────────────────────────────
 
   private async deviceList(id: ProviderId, p: RemoteProvider, fresh = false): Promise<ProviderDevice[]> {
     const c = this.devices.get(id)
-    if (!fresh && c && Date.now() - c.at < DEVICE_CACHE_MS) return c.list
+    if (!fresh && c && this.now() - c.at < DEVICE_CACHE_MS) return c.list
     const list = await p.listDevices()
-    this.devices.set(id, { at: Date.now(), list })
+    this.devices.set(id, { at: this.now(), list })
     return list
   }
 
   async overview(): Promise<RemoteOverview> {
-    const [machines, records] = await Promise.all([this.d.exec.listMachines(), this.d.store.list()])
+    const [machines, records, inflight, pending] = await Promise.all([
+      this.d.exec.listMachines(), this.d.store.list(), this.d.store.listInflight(), this.d.store.listPendingRevokes(),
+    ])
     const providers: RemoteOverview['providers'] = []
     const lists = new Map<ProviderId, ProviderDevice[] | null>()
     for (const id of PROVIDER_IDS) {
       let p: RemoteProvider | null = null
       let error: string | null = null
-      try { p = await this.d.provider(id) } catch (e: any) { error = redactKnownKeyShapes(e?.message ?? String(e)) }
+      try { p = await this.d.provider(id) } catch (e) { error = redactKnownKeyShapes(msg(e)) }
       let list: ProviderDevice[] | null = null
-      if (p) { try { list = await this.deviceList(id, p) } catch (e: any) { error = redactKnownKeyShapes(e?.message ?? String(e)) } }
+      if (p) { try { list = await this.deviceList(id, p) } catch (e) { error = redactKnownKeyShapes(msg(e)) } }
       lists.set(id, p ? list : null)
       providers.push({ id, label: PROVIDER_LABEL[id], configured: !!p, error, devices: list?.length ?? 0 })
     }
@@ -144,6 +290,7 @@ export class RemoteAccessService {
         const rec = records.find(r => r.machineId === m.id && r.provider === id)
         const list = lists.get(id)
         if (!conf && !rec) { cells[id] = emptyCell('unconfigured'); continue }
+        // A record matches only by the identity recorded at install; a name match is shown, never acted on.
         const dev = rec ? this.matchRecord(rec, list ?? []) : (list ?? []).find(x => (x.hostname ?? x.name).toLowerCase() === safeHostname(m.name))
         if (!rec && !dev) {
           cells[id] = emptyCell(m.kind === 'qemu' && /^win/i.test(m.ostype ?? '') ? 'manual' : 'not-installed')
@@ -157,11 +304,16 @@ export class RemoteAccessService {
           lastSeen: dev?.lastSeen ?? null,
           deviceName: dev?.name ?? rec?.hostname ?? null,
           mode: rec?.mode ?? null, routes: rec?.routes ?? [], exitNode: rec?.exitNode ?? false, lastError: rec?.lastError ?? null,
+          adopted: rec?.adopted ?? false,
         }
       }
       return { ...m, cells }
     })
-    return { providers, machines: rows, activeJobId: this.active }
+    return {
+      providers, machines: rows, activeJobId: this.active,
+      attention: inflight.map(x => ({ machineId: x.machineId, provider: x.provider, action: x.action, since: new Date(x.startedAt).toISOString(), interrupted: x.owner !== this.instance })),
+      pendingRevokes: pending.filter(r => new Date(r.revokeAfter).getTime() <= this.now()).length,
+    }
   }
 
   private matchRecord(rec: RemoteRecord, list: ProviderDevice[]): ProviderDevice | undefined {
@@ -170,13 +322,21 @@ export class RemoteAccessService {
       ?? list.find(x => rec.address && x.addresses.includes(rec.address))
   }
 
-  private matchStatus(st: ClientStatus, list: ProviderDevice[], hostname: string): ProviderDevice | undefined {
+  /** The device the client itself reported: Tailscale's node id, or the overlay address. Never a name. */
+  private matchStatus(st: ClientStatus, list: ProviderDevice[]): ProviderDevice | undefined {
     return list.find(x => st.nodeKey && x.nodeKey === st.nodeKey)
       ?? list.find(x => st.ip && x.addresses.includes(st.ip))
-      ?? list.find(x => (x.hostname ?? x.name).toLowerCase() === hostname)
   }
 
   // ── Jobs ──────────────────────────────────────────────────────────────────
+
+  private prune(): void {
+    const done = [...this.jobs.values()].filter(j => j.status !== 'running')
+    const cutoff = this.now() - JOB_KEEP_MS
+    for (const j of done) if (j.finishedAt && Date.parse(j.finishedAt) < cutoff) this.jobs.delete(j.id)
+    const left = [...this.jobs.values()].filter(j => j.status !== 'running').sort((a, b) => a.startedAt.localeCompare(b.startedAt))
+    while (left.length > JOB_KEEP_MAX) this.jobs.delete(left.shift()!.id)
+  }
 
   startJob(req: JobRequest, by: string): RemoteJob {
     if (!isProviderId(req.provider)) throw new RemoteInputError('provider must be tailscale or netbird')
@@ -188,6 +348,7 @@ export class RemoteAccessService {
     if (req.action !== 'install' && ids.length !== 1) throw new RemoteInputError(`${req.action} works on one machine at a time`)
     if (ids.some(i => !/^(node|lxc|qemu|host)-[A-Za-z0-9._-]{1,120}$/.test(i))) throw new RemoteInputError('Unknown machine id format')
     if (req.mode !== undefined && req.mode !== 'kernel' && req.mode !== 'userspace') throw new RemoteInputError('mode must be kernel or userspace')
+    if (req.existing !== undefined && req.existing !== 'adopt' && req.existing !== 'replace') throw new RemoteInputError('existing must be adopt or replace')
     if (req.tags !== undefined) {
       if (!Array.isArray(req.tags) || req.tags.length > 20) throw new RemoteInputError('tags must be a list of at most 20')
       const re = req.provider === 'tailscale' ? TAG_RE : NB_GROUP_RE
@@ -198,11 +359,12 @@ export class RemoteAccessService {
       if (!Array.isArray(req.subnets ?? []) || typeof (req.exitNode ?? false) !== 'boolean') throw new RemoteInputError('routing needs subnets (a list) and exitNode (true or false)')
     }
     if (this.active) throw new RemoteBusyError('A remote access job is already running', this.active)
+    this.prune()
 
     const job: RemoteJob = {
       id: randomUUID(), action: req.action, provider: req.provider, by, status: 'running',
       steps: ids.map(machineId => ({ machineId, name: machineId, status: 'pending' as StepStatus })),
-      log: '', startedAt: new Date().toISOString(),
+      log: '', startedAt: new Date(this.now()).toISOString(),
     }
     this.jobs.set(job.id, job)
     this.active = job.id
@@ -210,12 +372,12 @@ export class RemoteAccessService {
     return job
   }
 
-  private append(job: RemoteJob, redact: (s: string) => string, chunk: string) {
-    job.log = (job.log + redact(chunk)).slice(-LOG_CAP)
+  private appendRaw(job: RemoteJob, text: string) {
+    job.log = (job.log + text).slice(-LOG_CAP)
   }
 
   private async runJob(job: RemoteJob, req: JobRequest): Promise<void> {
-    const plain = (s: string) => redactKnownKeyShapes(s)
+    const plain = (s: string) => redactKnownKeyShapes(s, { netbird: req.provider === 'netbird' })
     try {
       const provider = await this.d.provider(req.provider)
       if (!provider) throw new Error(`${PROVIDER_LABEL[req.provider]} is not configured. Add it under Settings → Credentials → Remote access.`)
@@ -228,86 +390,179 @@ export class RemoteAccessService {
         const m = machines.find(x => x.id === step.machineId)!
         step.name = m.name
         step.status = 'running'
-        this.append(job, plain, `\n── ${m.name} (${m.id}) ──\n`)
+        this.appendRaw(job, `\n── ${m.name} (${m.id}) ──\n`)
         try {
-          step.detail = await this.runStep(job, req, provider, settings, m)
+          step.detail = plain(await this.runStep(job, req, provider, settings, m, machines))
           step.status = 'done'
-        } catch (e: any) {
+        } catch (e) {
           step.status = 'failed'
-          step.detail = plain(e?.message ?? String(e))
-          throw new StepFailure(`${m.name}: ${step.detail}`)
+          step.detail = plain(msg(e))
+          throw new Error(`${m.name}: ${step.detail}`)
         }
       }
       job.status = 'completed'
-    } catch (e: any) {
+    } catch (e) {
       job.status = 'failed'
-      job.error = plain(e?.message ?? String(e))
+      job.error = plain(msg(e))
     } finally {
-      job.finishedAt = new Date().toISOString()
+      job.finishedAt = new Date(this.now()).toISOString()
       // Released in the same tick the job's status settles, so a caller that sees it finished can start the next.
       if (this.active === job.id) this.active = null
       this.devices.delete(req.provider)
       await this.d.store.audit(`remote.${req.action}`, req.machineIds.join(','), {
         by: job.by, provider: req.provider, status: job.status, error: job.error ?? null,
         ...(req.action === 'routing' ? { subnets: req.subnets ?? [], exitNode: !!req.exitNode } : {}),
-      }).catch(err => this.d.log?.(`[remote] audit write failed: ${err?.message}`))
+        ...(req.existing ? { existing: req.existing } : {}),
+      }).catch(err => this.d.log?.(`[remote] audit write failed: ${msg(err)}`))
     }
   }
 
-  private async exec(job: RemoteJob, m: Machine, script: string, redact: (s: string) => string, timeoutMs = 15 * 60_000) {
-    const r = await this.d.exec.run(m, script, { timeoutMs, onData: c => this.append(job, redact, c) })
-    if (r.timedOut) throw new Error('timed out')
-    return r
+  /** Run a script, its output redacted on the way into the log (across chunk boundaries). */
+  private async exec(job: RemoteJob, m: Machine, script: string, o: { secrets?: string[]; netbird?: boolean; timeoutMs?: number } = {}) {
+    const r = new StreamRedactor(o.secrets ?? [], { netbird: o.netbird })
+    try {
+      const res = await this.d.exec.run(m, script, { timeoutMs: o.timeoutMs ?? 15 * 60_000, onData: c => this.appendRaw(job, r.push(c)) })
+      if (res.timedOut) throw new Error('timed out')
+      return res
+    } finally {
+      this.appendRaw(job, r.flush())
+    }
   }
 
   private async detect(job: RemoteJob, m: Machine): Promise<OsFacts> {
-    const r = await this.exec(job, m, DETECT_SCRIPT, redactKnownKeyShapes, 60_000)
+    const r = await this.exec(job, m, DETECT_SCRIPT, { timeoutMs: 60_000 })
     if (r.code !== 0) throw new Error(`could not read the operating system (exit ${r.code})`)
     return parseFacts(r.output)
   }
 
-  private async snapshot(job: RemoteJob, m: Machine): Promise<NodeSnapshot> {
-    const r = await this.exec(job, m, SNAPSHOT_SCRIPT, redactKnownKeyShapes, 60_000)
-    return r.code === 0 ? parseSnapshot(r.output) : parseSnapshot('')
+  private async support(job: RemoteJob, m: Machine): Promise<SupportOk> {
+    const s = osSupport(await this.detect(job, m))
+    if (!s.ok) throw new Error(s.reason)
+    return s
+  }
+
+  /** A node snapshot. Its output is not logged: it is long and only the verdict matters. */
+  private async snapshot(m: Machine): Promise<NodeSnapshot> {
+    try {
+      const r = await this.d.exec.run(m, SNAPSHOT_SCRIPT, { timeoutMs: 90_000 })
+      return r.code === 0 && !r.timedOut ? parseSnapshot(r.output) : parseSnapshot('')
+    } catch { return parseSnapshot('') }
+  }
+
+  // ── Undo ──────────────────────────────────────────────────────────────────
+
+  /** Put the machine back according to `plan`. Returns what was done, or throws. Used live and after a restart. */
+  private async runUndo(job: RemoteJob, m: Machine, plan: UndoPlan, p: RemoteProvider | null): Promise<string> {
+    const nb = plan.provider === 'netbird'
+    const done: string[] = []
+    if (plan.kind === 'remove') {
+      const r = await this.exec(job, m, uninstallScript(plan.provider, plan.support), { netbird: nb, timeoutMs: 5 * 60_000 })
+      if (!/HP_REMOVED/.test(r.output)) throw new Error('the client could not be removed')
+      done.push('removed the client')
+    } else if (plan.kind === 'restore') {
+      const r = await this.exec(job, m, restoreStateScript(plan.provider, plan.support), { netbird: nb, timeoutMs: 10 * 60_000 })
+      if (!/HP_RESTORED/.test(r.output)) throw new Error('the previous client state could not be put back')
+      done.push('put the previous client and its state back')
+    } else if (plan.kind === 'restart') {
+      const r = await this.exec(job, m, plan.provider === 'tailscale' ? 'systemctl restart tailscaled' : 'netbird service restart', { timeoutMs: 60_000 })
+      if (r.code !== 0) throw new Error('the client could not be restarted')
+      done.push('restarted the client')
+    } else {
+      const r = await this.exec(job, m, routingScript(plan.provider, {
+        ...plan.previous, flags: plan.flags, forwarding: plan.forwarding, restoreForwarding: plan.restoreForwarding,
+      }), { netbird: nb, timeoutMs: 2 * 60_000 })
+      if (r.code !== 0) throw new Error('the previous routing could not be put back on the machine')
+      done.push('put the previous routing back on the machine')
+      if (p && plan.deviceId) {
+        const ids = await p.setRouting({ id: plan.deviceId, name: plan.deviceName, addresses: [], online: true, lastSeen: null, version: null }, plan.previous, plan.routeIds)
+        const rec = await this.d.store.get(m.id, plan.provider)
+        if (rec) { const { installedAt: _i, updatedAt: _u, ...b } = rec; await this.d.store.upsert({ ...b, routeIds: ids }) }
+        done.push(`and at ${PROVIDER_LABEL[plan.provider]}`)
+      }
+    }
+    // Devices are deleted by the id recorded when the client reported itself, never by name.
+    if ((plan.kind === 'remove' || plan.kind === 'restore') && p) {
+      const prev = plan.kind === 'restore' ? plan.previousDeviceId : null
+      if (plan.deviceId && plan.deviceId !== prev) {
+        await p.deleteDevice(plan.deviceId)
+        done.push(`deleted the new device from ${PROVIDER_LABEL[plan.provider]}`)
+      } else if (!plan.deviceId && plan.kind === 'remove') {
+        done.push(`no device was identified, so nothing was deleted at ${PROVIDER_LABEL[plan.provider]}`)
+      }
+    }
+    return done.join(', ')
   }
 
   /**
-   * Run `change` on a node between two snapshots. Anything different afterwards runs `undo`, snapshots again
-   * and fails with what changed and whether the undo restored the node. Not a node: just runs `change`.
+   * Run `change` under the guard. On a node: snapshot, refuse if not ready, record the change as in flight,
+   * change, settle, snapshot, compare. Anything different (or, with undoOnFailure, a failed change) runs the
+   * undo plan, settles, and snapshots again to say whether the node is back as it was. Off a node: the change,
+   * and the undo on failure.
    */
-  private async guarded<T>(job: RemoteJob, m: Machine, change: () => Promise<T>, undo: () => Promise<void>): Promise<T> {
-    if (m.kind !== 'node') return change()
-    const before = await this.snapshot(job, m)
+  private async guarded<T>(job: RemoteJob, m: Machine, provider: ProviderId, p: RemoteProvider, action: string,
+    undo: { plan: UndoPlan; persist?: () => Promise<void> },
+    change: () => Promise<T>,
+    o: { undoOnFailure: boolean; precheck?: (before: NodeSnapshot) => void },
+  ): Promise<T> {
+    if (m.kind !== 'node') {
+      try { return await change() } catch (e) {
+        if (!o.undoOnFailure) throw e
+        let note: string; let failed = false
+        try { note = `Cleaned up: ${await this.runUndo(job, m, undo.plan, p)}.` } catch (u) { failed = true; note = `Cleaning up failed too: ${msg(u)}. Check ${m.name} by hand.` }
+        await this.d.store.audit('remote.cleanup', m.id, { by: job.by, provider, action, ok: !failed, note }).catch(() => undefined)
+        throw new GuardError(`${msg(e)}. ${note}`, failed)
+      }
+    }
+
+    const before = await this.snapshot(m)
     const notReady = snapshotReady(before)
     if (notReady) throw new Error(`${notReady}; nothing was changed`)
-    let result: T | undefined
-    let failure: unknown = null
-    try { result = await change() } catch (e) { failure = e }
-    const diff = compareSnapshots(before, await this.snapshot(job, m))
-    if (diff.length) {
-      let undoNote = ''
-      try { await undo() } catch (e: any) { undoNote = ` The rollback itself failed: ${e?.message ?? e}.` }
-      const left = compareSnapshots(before, await this.snapshot(job, m))
-      throw new Error(`Rolled back because ${diff.join('; ')}.${undoNote} ` +
-        (left.length ? `After the rollback the node still differs: ${left.join('; ')}. Check it by hand now.` : 'The node is back as it was.'))
+    o.precheck?.(before)
+    const inflightId = await this.d.store.addInflight({
+      machineId: m.id, provider, action, jobId: job.id, by: job.by, owner: this.instance, before, undo: undo.plan,
+    })
+    undo.persist = () => this.d.store.updateInflightUndo(inflightId, undo.plan)
+    try {
+      let result: T | undefined
+      let failure: unknown = null
+      try { result = await change() } catch (e) { failure = e }
+      await this.sleep(this.settleMs)
+      const diff = compareSnapshots(before, await this.snapshot(m), provider)
+      if (diff.length || (failure && o.undoOnFailure)) {
+        let note: string; let failed = false
+        try { note = await this.runUndo(job, m, undo.plan, p) } catch (u) { failed = true; note = `the rollback itself failed: ${msg(u)}` }
+        await this.sleep(this.settleMs)
+        const left = compareSnapshots(before, await this.snapshot(m), provider)
+        const why = diff.length ? `Rolled back because ${diff.join('; ')}` : `${msg(failure)}. Cleaned up`
+        const end = left.length
+          ? `After the rollback the node still differs: ${left.join('; ')}. Check it by hand now.`
+          : 'The node is back as it was.'
+        await this.d.store.audit('remote.rollback', m.id, { by: job.by, provider, action, changes: diff, ok: !failed && !left.length }).catch(() => undefined)
+        throw new GuardError(`${why}: ${note}. ${end}`, failed || left.length > 0)
+      }
+      if (failure) throw failure
+      return result as T
+    } finally {
+      await this.d.store.removeInflight(inflightId).catch(() => undefined)
     }
-    if (failure) throw failure
-    return result as T
   }
 
-  private async runStep(job: RemoteJob, req: JobRequest, p: RemoteProvider, settings: ProviderSettings, m: Machine): Promise<string> {
+  private async runStep(job: RemoteJob, req: JobRequest, p: RemoteProvider, settings: ProviderSettings, m: Machine, all: Machine[]): Promise<string> {
     switch (req.action) {
       case 'install':   return this.install(job, req, p, settings, m)
       case 'check':     return this.check(job, req.provider, p, m)
-      case 'update':    return this.update(job, req.provider, m)
-      case 'routing':   return this.routing(job, req, p, settings, m)
+      case 'update':    return this.update(job, req.provider, p, m)
+      case 'routing':   return this.routing(job, req, p, settings, m, all)
       case 'uninstall': return this.uninstall(job, req.provider, p, m)
     }
   }
 
+  // ── Install, adopt ────────────────────────────────────────────────────────
+
   private async install(job: RemoteJob, req: JobRequest, p: RemoteProvider, settings: ProviderSettings, m: Machine): Promise<string> {
     const facts = m.kind === 'qemu' && /^win/i.test(m.ostype ?? '') ? null : await this.detect(job, m)
-    const plan = planInstall({ machine: m, provider: req.provider, facts, mode: req.mode })
+    const rec = await this.d.store.get(m.id, req.provider)
+    const plan = planInstall({ machine: m, provider: req.provider, facts, mode: req.mode, managed: !!rec, existing: req.existing })
     if (plan.kind === 'manual') {
       throw new Error(`${plan.os === 'windows' ? 'Windows' : 'macOS'} is not installed automatically. Download ${PROVIDER_LABEL[req.provider]} from ${DOWNLOAD_URL[req.provider]} and use “One-time key” on this machine.`)
     }
@@ -315,49 +570,88 @@ export class RemoteAccessService {
     if (plan.kind === 'needs-tun') {
       const fix = tunFix(await this.d.exec.lxcConfig(m).catch(() => ({})), m.vmid!)
       throw new Error(fix.configured
-        ? `This container is configured with /dev/net/tun but cannot open it yet: restart it, or install in userspace mode.`
+        ? 'This container is configured with /dev/net/tun but cannot open it yet: restart it, or install in userspace mode.'
         : `This container has no /dev/net/tun. Either give it the device (“Add /dev/net/tun”, the same as \`${fix.command}\` on the node, then restart the container), or install in userspace mode.`)
     }
+    if (plan.kind === 'adopt') return this.adopt(job, req.provider, p, m)
 
+    const nb = req.provider === 'netbird'
     const hostname = safeHostname(m.name)
-    const flags = clientFlags(req.provider, { hostname, managementUrl: settings.managementUrl })
-    const undo = async () => {
-      await this.exec(job, m, uninstallScript(req.provider, plan.support), redactKnownKeyShapes, 5 * 60_000).catch(() => undefined)
-      const dev = (await this.deviceList(req.provider, p, true).catch(() => [] as ProviderDevice[])).find(x => (x.hostname ?? x.name).toLowerCase() === hostname)
-      if (dev) await p.deleteDevice(dev.id)
-      await this.d.store.remove(m.id, req.provider)
+    const flags = clientFlags(req.provider, { hostname, kind: m.kind, managementUrl: settings.managementUrl })
+    const undo: { plan: UndoPlan; persist?: () => Promise<void> } = {
+      plan: plan.existing
+        ? { kind: 'restore', provider: req.provider, support: plan.support, deviceId: null, previousDeviceId: rec?.deviceId ?? null }
+        : { kind: 'remove', provider: req.provider, support: plan.support, deviceId: null },
     }
 
-    const status = await this.guarded(job, m, async () => {
-      const inst = await this.exec(job, m, installScript(req.provider, plan.support, plan.mode), redactKnownKeyShapes)
-      if (inst.code !== 0) throw new Error(`installing the ${PROVIDER_LABEL[req.provider]} package failed (exit ${inst.code}); see the log`)
-      const key = await p.mintKey({ name: `HyperProx ${m.id}`, tags: req.tags ?? settings.tags })
-      const redact = makeRedactor([key.secret])
-      try {
-        const up = await this.exec(job, m, upScript(req.provider, { secret: key.secret, flags }), redact, 5 * 60_000)
-        if (up.code !== 0) throw new Error(`${req.provider} up failed (exit ${up.code}); see the log`)
-        return parseStatus(req.provider, up.output)
-      } finally {
-        await p.revokeKey(key.id).catch(e => this.append(job, redact, `\nCould not revoke the install key: ${e?.message ?? e}\n`))
+    let out: { status: ClientStatus; dev?: ProviderDevice }
+    try {
+      out = await this.guarded(job, m, req.provider, p, 'install', undo, async () => {
+        if (plan.existing) {
+          const b = await this.exec(job, m, backupStateScript(req.provider), { netbird: nb, timeoutMs: 2 * 60_000 })
+          if (!/HP_BACKUP_OK/.test(b.output)) throw new Error('could not keep a copy of the existing client\'s state, so it was not touched')
+        }
+        const inst = await this.exec(job, m, installScript(req.provider, plan.support, plan.mode), { netbird: nb })
+        if (inst.code !== 0) throw new Error(`installing the ${PROVIDER_LABEL[req.provider]} package failed (exit ${inst.code}); see the log`)
+        // Due in 15 minutes, so a sweep never revokes it mid-install; the install revokes it the moment `up` ends.
+        const { key, pendingId } = await this.mintRecorded(p, req.provider, `HyperProx ${m.id}`, req.tags ?? settings.tags, INSTALL_KEY_GRACE_MS, 'install')
+        let status: ClientStatus
+        try {
+          const up = await this.exec(job, m, upScript(req.provider, { secret: key.secret, flags }), { secrets: [key.secret], netbird: nb, timeoutMs: 5 * 60_000 })
+          status = parseStatus(req.provider, up.output)
+          if (up.code !== 0) throw new Error(`${req.provider} up failed (exit ${up.code}); see the log`)
+        } finally {
+          await this.revokeDurably(p, pendingId, key.id, job)
+        }
+        const dev = this.matchStatus(status, await this.deviceList(req.provider, p, true).catch(() => []))
+        if (dev && (undo.plan.kind === 'remove' || undo.plan.kind === 'restore')) { undo.plan.deviceId = dev.id; await undo.persist?.() }
+        return { status, dev }
+      }, { undoOnFailure: true })
+    } catch (e) {
+      if (e instanceof GuardError && e.cleanupFailed) {
+        // Leave a trace in the table: the machine may be half-changed, and the overview must not say "not installed".
+        await this.d.store.upsert({
+          machineId: m.id, provider: req.provider, deviceId: rec?.deviceId ?? null, nodeKey: rec?.nodeKey ?? null, hostname,
+          address: rec?.address ?? null, mode: plan.mode, version: rec?.version ?? null, routes: rec?.routes ?? [], exitNode: rec?.exitNode ?? false,
+          routeIds: rec?.routeIds ?? [], adopted: rec?.adopted ?? false, forwardingBefore: rec?.forwardingBefore ?? null,
+          connected: null, checkedAt: new Date(this.now()), lastError: e.message.slice(0, 500),
+        })
       }
-    }, undo)
+      throw e
+    }
 
-    const dev = this.matchStatus(status, await this.deviceList(req.provider, p, true).catch(() => []), hostname)
-    const prev = await this.d.store.get(m.id, req.provider)
+    if (plan.existing) await this.exec(job, m, dropBackupScript(req.provider), { timeoutMs: 60_000 }).catch(() => undefined)
+    const { status, dev } = out
     await this.d.store.upsert({
       machineId: m.id, provider: req.provider, deviceId: dev?.id ?? null, nodeKey: status.nodeKey ?? dev?.nodeKey ?? null,
       hostname: status.hostname ?? hostname, address: status.ip ?? dev?.addresses[0] ?? null, mode: plan.mode,
-      version: status.version, routes: prev?.routes ?? [], exitNode: prev?.exitNode ?? false, routeIds: prev?.routeIds ?? [],
-      connected: status.connected, checkedAt: new Date(), lastError: null,
+      version: status.version, routes: [], exitNode: false, routeIds: [], adopted: false, forwardingBefore: null,
+      connected: status.connected, checkedAt: new Date(this.now()), lastError: null,
     })
     const where = status.ip ? ` as ${status.ip}` : ''
     return `${status.connected ? 'Connected' : 'Installed, not connected yet'}${where} (${PROVIDER_LABEL[req.provider]} ${status.version ?? '?'}${plan.mode === 'userspace' ? ', userspace networking' : ''})` +
+      (plan.existing ? ', replacing the client that was there' : '') +
       (dev ? '' : '. Not found in the provider\'s device list yet.')
+  }
+
+  /** Record a client that is already there and signed in to the configured account. Changes nothing on the machine. */
+  private async adopt(job: RemoteJob, provider: ProviderId, p: RemoteProvider, m: Machine): Promise<string> {
+    const r = await this.exec(job, m, statusScript(provider), { timeoutMs: 60_000 })
+    const st = parseStatus(provider, r.output)
+    if (!st.installed) throw new Error(`${PROVIDER_LABEL[provider]} is not installed on ${m.name}`)
+    const dev = this.matchStatus(st, await this.deviceList(provider, p, true))
+    if (!dev) throw new Error(`${m.name}'s client is not in the configured ${PROVIDER_LABEL[provider]} account (it may be signed in elsewhere); nothing was recorded`)
+    await this.d.store.upsert({
+      machineId: m.id, provider, deviceId: dev.id, nodeKey: st.nodeKey ?? dev.nodeKey ?? null, hostname: st.hostname ?? dev.hostname ?? null,
+      address: st.ip ?? dev.addresses[0] ?? null, mode: 'kernel', version: st.version, routes: [], exitNode: false, routeIds: [],
+      adopted: true, forwardingBefore: null, connected: st.connected, checkedAt: new Date(this.now()), lastError: null,
+    })
+    return `Adopted as it is: ${st.connected ? 'connected' : 'not connected'}${st.ip ? ` as ${st.ip}` : ''}, matched to “${dev.name}”. Nothing on the machine was changed.`
   }
 
   private async record(m: Machine, provider: ProviderId): Promise<RemoteRecord> {
     const r = await this.d.store.get(m.id, provider)
-    if (!r) throw new Error(`HyperProx has not installed ${PROVIDER_LABEL[provider]} on ${m.name}`)
+    if (!r) throw new Error(`HyperProx has not installed or adopted ${PROVIDER_LABEL[provider]} on ${m.name}`)
     return r
   }
 
@@ -365,74 +659,184 @@ export class RemoteAccessService {
     const prev = await this.d.store.get(m.id, provider)
     if (!prev) return
     const { installedAt: _i, updatedAt: _u, ...base } = prev
-    await this.d.store.upsert({ ...base, address: st.ip ?? prev.address, version: st.version ?? prev.version, connected: st.connected, checkedAt: new Date(), lastError: null, ...extra })
+    await this.d.store.upsert({ ...base, address: st.ip ?? prev.address, version: st.version ?? prev.version, connected: st.connected, checkedAt: new Date(this.now()), lastError: null, ...extra })
   }
 
+  // ── Check, update ─────────────────────────────────────────────────────────
+
   private async check(job: RemoteJob, provider: ProviderId, p: RemoteProvider, m: Machine): Promise<string> {
-    const r = await this.exec(job, m, statusScript(provider), redactKnownKeyShapes, 60_000)
+    const r = await this.exec(job, m, statusScript(provider), { timeoutMs: 60_000 })
     const st = parseStatus(provider, r.output)
     if (!st.installed) return `${PROVIDER_LABEL[provider]} is not installed`
     await this.saveStatus(m, provider, st)
-    const dev = this.matchStatus(st, await this.deviceList(provider, p, true).catch(() => []), safeHostname(m.name))
+    const dev = this.matchStatus(st, await this.deviceList(provider, p, true).catch(() => []))
     return `${st.connected ? 'Connected' : 'Not connected'}${st.ip ? ` as ${st.ip}` : ''}, version ${st.version ?? '?'}` +
       (dev ? `, matched to “${dev.name}” (last seen ${dev.lastSeen ?? 'never'})` : ', not in the provider\'s device list')
   }
 
-  private async support(job: RemoteJob, m: Machine): Promise<Extract<Support, { ok: true }>> {
-    const s = osSupport(await this.detect(job, m))
-    if (!s.ok) throw new Error(s.reason)
-    return s
-  }
-
-  private async update(job: RemoteJob, provider: ProviderId, m: Machine): Promise<string> {
+  private async update(job: RemoteJob, provider: ProviderId, p: RemoteProvider, m: Machine): Promise<string> {
     await this.record(m, provider)
     const s = await this.support(job, m)
-    const r = await this.guarded(job, m, () => this.exec(job, m, updateScript(provider, s), redactKnownKeyShapes), async () => {
-      // An update cannot be un-installed to the old version safely; restarting the client reapplies its flags.
-      await this.exec(job, m, provider === 'tailscale' ? 'systemctl restart tailscaled' : 'netbird service restart', redactKnownKeyShapes, 60_000)
-    })
-    if (r.code !== 0) throw new Error(`the update failed (exit ${r.code}); see the log`)
+    const r = await this.guarded(job, m, provider, p, 'update', { plan: { kind: 'restart', provider } },
+      async () => {
+        const x = await this.exec(job, m, updateScript(provider, s), { netbird: provider === 'netbird' })
+        if (x.code !== 0) throw new Error(`the update failed (exit ${x.code}); see the log`)
+        return x
+      }, { undoOnFailure: false })
     const st = parseStatus(provider, r.output)
     await this.saveStatus(m, provider, st)
     return `Now ${PROVIDER_LABEL[provider]} ${st.version ?? '?'}, ${st.connected ? 'connected' : 'not connected'}`
   }
 
-  private async routing(job: RemoteJob, req: JobRequest, p: RemoteProvider, settings: ProviderSettings, m: Machine): Promise<string> {
+  // ── Routing ───────────────────────────────────────────────────────────────
+
+  private async routing(job: RemoteJob, req: JobRequest, p: RemoteProvider, settings: ProviderSettings, m: Machine, all: Machine[]): Promise<string> {
+    const provider = req.provider
     const r: RoutingRequest = { subnets: [...new Set((req.subnets ?? []).map(s => String(s).trim()).filter(Boolean))], exitNode: !!req.exitNode }
-    const refusal = checkRouting(m, r, req.acknowledge === true)
-    if (refusal) throw new Error(refusal)
-    const rec = await this.record(m, req.provider)
-    const flagsFor = (rr: RoutingRequest) => clientFlags(req.provider, { hostname: safeHostname(m.name), managementUrl: settings.managementUrl, routing: rr })
+    const on = r.subnets.length > 0 || r.exitNode
+    const early = checkRouting(m, r, req.acknowledge === true)
+    if (early) throw new Error(early)
+    const rec = await this.record(m, provider)
+    if (!rec.deviceId) throw new Error('no device id was recorded for this machine, so its routes cannot be set at the provider; run Check, or uninstall and install again')
+
+    // The cluster's networks, from the node itself (a guest's own node): every corosync link, Ceph network and
+    // monitor, and the node's addresses, IPv4 and IPv6.
+    if (m.kind !== 'node' && m.node && on) {
+      const host = all.find(x => x.kind === 'node' && x.node === m.node)
+      const snap = host ? await this.snapshot(host) : parseSnapshot('')
+      if (!snap.read) throw new Error(`could not read the cluster's networks from node ${m.node}, so routing was not changed`)
+      const refusal = checkRouting(m, r, true, clusterNetworks(snap))
+      if (refusal) throw new Error(refusal)
+    }
+
+    const forwarding = m.kind === 'node' ? 'leave' as const : 'guest' as const
     const previous: RoutingRequest = { subnets: rec.routes, exitNode: rec.exitNode }
-    const out = await this.guarded(job, m,
-      () => this.exec(job, m, routingScript(req.provider, { ...r, flags: flagsFor(r) }), redactKnownKeyShapes, 2 * 60_000),
-      async () => { await this.exec(job, m, routingScript(req.provider, { ...previous, flags: flagsFor(previous) }), redactKnownKeyShapes, 2 * 60_000) })
-    if (out.code !== 0) throw new Error(`changing routing failed (exit ${out.code}); see the log`)
-    const st = parseStatus(req.provider, out.output)
-    const dev = this.matchRecord(rec, await this.deviceList(req.provider, p, true)) ?? this.matchStatus(st, await this.deviceList(req.provider, p), safeHostname(m.name))
-    if (!dev) throw new Error('the machine is not in the provider\'s device list, so its routes cannot be approved there')
-    const routeIds = await p.setRouting(dev, r, rec.routeIds)
-    await this.saveStatus(m, req.provider, st, { routes: r.subnets, exitNode: r.exitNode, routeIds, deviceId: dev.id })
-    const on = [...(r.subnets.length ? [`subnets ${r.subnets.join(', ')}`] : []), ...(r.exitNode ? ['exit node'] : [])]
-    return on.length ? `Routing on: ${on.join(' and ')}` : 'Routing off'
+    const flagsFor = (rr: RoutingRequest) => clientFlags(provider, { hostname: safeHostname(m.name), kind: m.kind, managementUrl: settings.managementUrl, routing: rr })
+    const undo: { plan: UndoPlan; persist?: () => Promise<void> } = {
+      plan: {
+        kind: 'routing', provider, previous, flags: flagsFor(previous), forwarding,
+        restoreForwarding: rec.forwardingBefore, deviceId: rec.deviceId, deviceName: rec.hostname ?? safeHostname(m.name), routeIds: rec.routeIds,
+      },
+    }
+    const dev: ProviderDevice = { id: rec.deviceId, name: rec.hostname ?? safeHostname(m.name), addresses: [], online: true, lastSeen: null, version: null }
+
+    const res = await this.guarded(job, m, provider, p, 'routing', undo, async () => {
+      const out = await this.exec(job, m, routingScript(provider, { ...r, flags: flagsFor(r), forwarding, restoreForwarding: rec.forwardingBefore }),
+        { netbird: provider === 'netbird', timeoutMs: 2 * 60_000 })
+      if (out.code !== 0) throw new Error(`changing routing failed (exit ${out.code}); see the log`)
+      const fwdBefore = parseForwardingBefore(out.output)
+      if (undo.plan.kind === 'routing' && on && !previous.subnets.length && !previous.exitNode) { undo.plan.restoreForwarding = fwdBefore; await undo.persist?.() }
+      if (provider === 'netbird') {
+        // Checked in the client's own config: an omitted or ignored flag must never read as success.
+        const flags = parseNetbirdFlags(out.output)
+        if (flags.DisableServerRoutes === undefined) throw new Error('could not read NetBird\'s own settings back, so the change is not confirmed')
+        if (flags.DisableServerRoutes !== !on) throw new Error(`NetBird did not take the change: it still has DisableServerRoutes=${flags.DisableServerRoutes}`)
+      }
+      const routeIds = await p.setRouting(dev, r, rec.routeIds)
+      if (undo.plan.kind === 'routing') { undo.plan.routeIds = routeIds; await undo.persist?.() }
+      if (provider === 'tailscale' && p.advertisedRoutes) {
+        const want = [...r.subnets, ...(r.exitNode ? ['0.0.0.0/0', '::/0'] : [])].sort()
+        let got: string[] = []
+        for (let i = 0; i < 5; i++) {
+          got = (await p.advertisedRoutes(dev)).sort()
+          if (JSON.stringify(got) === JSON.stringify(want)) break
+          await this.sleep(2000)
+        }
+        if (JSON.stringify(got) !== JSON.stringify(want)) throw new Error(`Tailscale reports the machine advertising ${got.join(', ') || 'nothing'}, not ${want.join(', ') || 'nothing'}`)
+      }
+      return { routeIds, fwdBefore, st: parseStatus(provider, out.output) }
+    }, {
+      undoOnFailure: true,
+      precheck: before => {
+        const refusal = checkRouting(m, r, true, clusterNetworks(before))
+        if (refusal) throw new Error(refusal)
+        if (r.subnets.length && before.forwarding.v4 !== '1') {
+          throw new Error('IP forwarding is off on this node, and HyperProx never changes a node\'s forwarding. Turn it on yourself first if you really want this node to route.')
+        }
+      },
+    })
+    await this.saveStatus(m, provider, res.st, {
+      routes: r.subnets, exitNode: r.exitNode, routeIds: res.routeIds,
+      forwardingBefore: forwarding === 'guest' ? (on ? (rec.forwardingBefore ?? res.fwdBefore) : null) : null,
+    })
+    const label = [...(r.subnets.length ? [`subnets ${r.subnets.join(', ')}`] : []), ...(r.exitNode ? ['exit node'] : [])]
+    return label.length ? `Routing on: ${label.join(' and ')}` : 'Routing off'
   }
 
+  // ── Uninstall ─────────────────────────────────────────────────────────────
+
   private async uninstall(job: RemoteJob, provider: ProviderId, p: RemoteProvider, m: Machine): Promise<string> {
-    const rec = await this.d.store.get(m.id, provider)
-    let s: Extract<Support, { ok: true }> | null = null
-    try { const x = osSupport(await this.detect(job, m)); s = x.ok ? x : null } catch { s = null }
-    const r = await this.exec(job, m, uninstallScript(provider, s), redactKnownKeyShapes, 5 * 60_000)
-    if (/HP_STILL_INSTALLED/.test(r.output) || !/HP_REMOVED/.test(r.output)) {
-      throw new Error(`the client is still installed on ${m.name}; the device was left at ${PROVIDER_LABEL[provider]} so nothing is orphaned`)
+    const rec = await this.record(m, provider)
+    const s = await this.support(job, m)
+    const nb = provider === 'netbird'
+    const undo = { plan: { kind: 'restore', provider, support: s, deviceId: null, previousDeviceId: rec.deviceId } as UndoPlan }
+    await this.guarded(job, m, provider, p, 'uninstall', undo, async () => {
+      const b = await this.exec(job, m, backupStateScript(provider), { netbird: nb, timeoutMs: 2 * 60_000 })
+      if (!/HP_BACKUP_OK/.test(b.output)) throw new Error('could not keep a copy of the client\'s state first, so nothing was removed')
+      const r = await this.exec(job, m, uninstallScript(provider, s), { netbird: nb, timeoutMs: 5 * 60_000 })
+      if (!/HP_REMOVED/.test(r.output)) throw new Error(`the client is still installed on ${m.name}`)
+    }, { undoOnFailure: true })
+
+    // The machine is clean and the guard passed: now the provider side, by the recorded id only.
+    const notes: string[] = []
+    if (rec.deviceId) {
+      if (rec.routeIds.length) await p.setRouting({ id: rec.deviceId, name: rec.hostname ?? m.name, addresses: [], online: true, lastSeen: null, version: null }, { subnets: [], exitNode: false }, rec.routeIds).catch(() => [])
+      await p.deleteDevice(rec.deviceId)
+      notes.push(`deleted “${rec.hostname ?? rec.deviceId}” from ${PROVIDER_LABEL[provider]}`)
+    } else {
+      notes.push(`no device id was recorded, so nothing was deleted at ${PROVIDER_LABEL[provider]}; remove it there by hand if it is listed`)
     }
-    const list = await this.deviceList(provider, p, true)
-    const dev = rec ? this.matchRecord(rec, list) : list.find(x => (x.hostname ?? x.name).toLowerCase() === safeHostname(m.name))
-    if (dev) {
-      if (rec?.routeIds.length) await p.setRouting(dev, { subnets: [], exitNode: false }, rec.routeIds).catch(() => [])
-      await p.deleteDevice(dev.id)
-    }
+    await this.exec(job, m, dropBackupScript(provider), { timeoutMs: 60_000 }).catch(() => undefined)
     await this.d.store.remove(m.id, provider)
-    return `Removed from ${m.name}${dev ? ` and deleted “${dev.name}” from ${PROVIDER_LABEL[provider]}` : '; no matching device was left at the provider'}`
+    return `Removed from ${m.name}; ${notes.join('; ')}`
+  }
+
+  // ── Recovery after a restart ──────────────────────────────────────────────
+
+  /** Re-check every node change another (now gone) process left in flight. Roll back when the node differs. */
+  async recover(): Promise<void> {
+    if (this.active) return
+    const rows = (await this.d.store.listInflight()).filter(x => x.owner !== this.instance)
+    if (!rows.length) return
+    const machines = await this.d.exec.listMachines()
+    for (const row of rows) await this.recoverOne(row, machines)
+  }
+
+  private async recoverOne(row: Inflight, machines: Machine[]): Promise<void> {
+    const m = machines.find(x => x.id === row.machineId)
+    const job: RemoteJob = {
+      id: randomUUID(), action: 'recovery', provider: row.provider, by: 'HyperProx (after a restart)', status: 'running',
+      steps: [{ machineId: row.machineId, name: m?.name ?? row.machineId, status: 'running' }], log: '', startedAt: new Date(this.now()).toISOString(),
+    }
+    const step = job.steps[0]
+    const what = `A restart interrupted ${row.action} of ${PROVIDER_LABEL[row.provider]} on ${m?.name ?? row.machineId} (started by ${row.by})`
+    if (!m) {
+      step.status = 'failed'; step.detail = `${what}; that machine no longer exists.`
+    } else {
+      const after = await this.snapshot(m)
+      if (!after.read) return     // the node cannot be reached yet (locked, or down): keep the row and try again
+      let p: RemoteProvider | null = null
+      try { p = await this.d.provider(row.provider) } catch { p = null }
+      const diff = compareSnapshots(row.before as NodeSnapshot, after, row.provider)
+      if (diff.length) {
+        let note: string
+        try { note = await this.runUndo(job, m, row.undo as UndoPlan, p) } catch (u) { note = `the rollback itself failed: ${msg(u)}` }
+        await this.sleep(this.settleMs)
+        const left = compareSnapshots(row.before as NodeSnapshot, await this.snapshot(m), row.provider)
+        step.status = 'failed'
+        step.detail = `${what}. On restart the node differed (${diff.join('; ')}), so it was rolled back: ${note}. ` +
+          (left.length ? `It still differs: ${left.join('; ')}. Check it by hand now.` : 'The node is back as it was.')
+      } else {
+        step.status = 'failed'
+        step.detail = `${what}. The node is as it was before the change, so nothing was undone. The client may be installed but not recorded: use Check, then adopt or uninstall it.`
+      }
+    }
+    job.status = 'failed'
+    job.error = step.detail
+    job.finishedAt = new Date(this.now()).toISOString()
+    this.jobs.set(job.id, job)
+    await this.d.store.removeInflight(row.id)
+    await this.d.store.audit('remote.recovered', row.machineId, { provider: row.provider, action: row.action, by: row.by, detail: step.detail }).catch(() => undefined)
   }
 
   // ── Containers: /dev/net/tun ──────────────────────────────────────────────
@@ -441,19 +845,48 @@ export class RemoteAccessService {
     const m = (await this.d.exec.listMachines()).find(x => x.id === machineId)
     if (!m) throw new RemoteNotFoundError(`No such machine: ${machineId}`)
     if (m.kind !== 'lxc') throw new RemoteInputError('Only containers need /dev/net/tun added')
-    const fix = tunFix(await this.d.exec.lxcConfig(m), m.vmid!)
+    const config = await this.d.exec.lxcConfig(m)
+    const fix = tunFix(config, m.vmid!)
     if (fix.configured) return { applied: false, message: 'This container already has /dev/net/tun configured. Restart it if the device is not there yet.' }
     try {
-      await this.d.exec.setLxcConfig(m, { [fix.param!]: fix.value! })
-    } catch (e: any) {
+      await this.d.exec.setLxcConfig(m, { [fix.param!]: fix.value! }, typeof config.digest === 'string' ? config.digest : undefined)
+    } catch (e) {
       await this.d.store.audit('remote.tun', m.id, { by, applied: false, param: fix.param })
       return {
         applied: false, command: fix.command,
-        message: `Proxmox did not accept the change from HyperProx (${redactKnownKeyShapes(String(e?.message ?? e)).slice(0, 200)}). Run this on node ${m.node} instead, then restart the container: ${fix.command}`,
+        message: `Proxmox did not accept the change from HyperProx (${redactKnownKeyShapes(msg(e)).slice(0, 200)}). Run this on node ${m.node} instead, then restart the container: ${fix.command}`,
       }
     }
     await this.d.store.audit('remote.tun', m.id, { by, applied: true, param: fix.param })
     return { applied: true, message: `Added ${fix.param}: /dev/net/tun. It takes effect when the container next restarts; HyperProx does not restart it for you.` }
+  }
+
+  // ── Node host firewall: SSH and the web UI from the overlay ───────────────
+
+  async firewallPreview(machineId: string, provider: ProviderId): Promise<{ clusterEnabled: boolean; exists: boolean; rule: Record<string, string>; message: string }> {
+    if (!isProviderId(provider)) throw new RemoteInputError('provider must be tailscale or netbird')
+    const m = (await this.d.exec.listMachines()).find(x => x.id === machineId)
+    if (!m) throw new RemoteNotFoundError(`No such machine: ${machineId}`)
+    if (m.kind !== 'node') throw new RemoteInputError('The firewall rule is for Proxmox nodes')
+    const rule = firewallRule(provider)
+    const st = await this.d.exec.firewallState(m.node!)
+    const exists = st.rules.some(x => x.comment === rule.comment ||
+      (x.action === 'ACCEPT' && x.iface === rule.iface && x.source === rule.source && String(x.dport ?? '') === rule.dport))
+    const message = !st.clusterEnabled
+      ? 'The Proxmox firewall is off for this cluster, so nothing blocks the overlay and no rule is needed.'
+      : exists ? 'The rule is already there.'
+      : `Adds one rule to ${m.name}'s host firewall: accept TCP ${rule.dport} (SSH and the web UI) on ${rule.iface} from ${rule.source}. Nothing else: corosync, Ceph and migration stay LAN-only.`
+    return { clusterEnabled: st.clusterEnabled, exists, rule, message }
+  }
+
+  async addFirewallRule(machineId: string, provider: ProviderId, by: string): Promise<{ added: boolean; message: string }> {
+    const pv = await this.firewallPreview(machineId, provider)
+    if (!pv.clusterEnabled) throw new RemoteInputError(pv.message)
+    if (pv.exists) return { added: false, message: pv.message }
+    const m = (await this.d.exec.listMachines()).find(x => x.id === machineId)!
+    await this.d.exec.addFirewallRule(m.node!, pv.rule)
+    await this.d.store.audit('remote.firewall', m.id, { by, provider, rule: pv.rule })
+    return { added: true, message: `Added to ${m.name}: accept TCP ${pv.rule.dport} on ${pv.rule.iface} from ${pv.rule.source}.` }
   }
 
   // ── Manual flow (Windows, macOS) ──────────────────────────────────────────
@@ -465,19 +898,16 @@ export class RemoteAccessService {
     const p = await this.d.provider(provider)
     if (!p) throw new RemoteInputError(`${PROVIDER_LABEL[provider]} is not configured`)
     const settings = await this.d.providerSettings(provider)
-    const key = await p.mintKey({ name: `HyperProx manual ${m.id}`, tags: tags ?? settings.tags })
-    const entry = {
-      timer: setTimeout(() => { entry.run(); this.pendingRevokes.delete(entry) }, MANUAL_KEY_REVOKE_MS),
-      run: () => { void p.revokeKey(key.id).catch(() => undefined) },
-    }
-    entry.timer.unref?.()
-    this.pendingRevokes.add(entry)
+    // Recorded before it is shown: the sweep revokes it in 30 minutes even if HyperProx restarts meanwhile.
+    const { key } = await this.mintRecorded(p, provider, `HyperProx manual ${m.id}`, tags ?? settings.tags, MANUAL_KEY_REVOKE_MS, 'manual')
     await this.d.store.audit('remote.manual-key', m.id, { by, provider, expiresAt: key.expiresAt })
+    const extra = provider === 'tailscale' ? ' --accept-dns=false --accept-routes=false' : (settings.managementUrl ? ` --management-url ${settings.managementUrl}` : '')
     return {
       secret: key.secret, expiresAt: key.expiresAt, downloadUrl: DOWNLOAD_URL[provider],
-      note: provider === 'tailscale'
-        ? 'Single use, expires in 10 minutes. In the app, sign in with an auth key, or run: tailscale up --auth-key=<key> --accept-dns=false --accept-routes=false'
-        : 'Single use. HyperProx deletes it in 30 minutes. Run: netbird up --setup-key <key>' + (settings.managementUrl ? ` --management-url ${settings.managementUrl}` : ''),
+      note: (provider === 'tailscale' ? 'Single use, expires in 10 minutes. ' : 'Single use. HyperProx revokes it in 30 minutes. ') +
+        'In the app, sign in with the key. From a terminal (macOS), pass it on stdin, never as an argument: run ' +
+        (provider === 'tailscale' ? `tailscale up --auth-key=file:/dev/stdin${extra}` : `netbird up --setup-key-file /dev/stdin${extra}`) +
+        ', paste the key, then press Ctrl-D.',
     }
   }
 }

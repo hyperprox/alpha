@@ -71,15 +71,19 @@ const DESTROY = /^\/api\/proxmox\/nodes\/[^/]+\/(lxc|qemu)\/[^/]+$/
 // Role management (no routes yet; reserved so they are owner-only from day one).
 const ROLE_MGMT = /^\/api\/(auth\/)?roles(\/|$)/
 // Remote access: what opens a tunnel into the cluster, routes through a machine, removes a device or shows
-// a key. Re-confirmed, which also keeps API tokens out (a token cannot re-confirm). Check and update are not.
+// a key. Re-confirmed, which also keeps API tokens out (a token cannot re-confirm). Check and update are not,
+// except on a node.
 const REMOTE_RECONFIRM: Array<[string, RegExp]> = [
   ['POST',   /^\/api\/remote\/jobs$/],
   ['POST',   /^\/api\/remote\/machines\/[^/]+\/(tailscale|netbird)\/(routing|manual-key)$/],
   ['DELETE', /^\/api\/remote\/machines\/[^/]+\/(tailscale|netbird)$/],
   ['POST',   /^\/api\/remote\/machines\/[^/]+\/tun$/],
+  ['POST',   /^\/api\/remote\/machines\/[^/]+\/(tailscale|netbird)\/firewall$/],
+  // On a Proxmox node even a check or an update is re-confirmed: it runs a script on the hypervisor.
+  ['POST',   /^\/api\/remote\/machines\/node-[^/]+\/(tailscale|netbird)\/(check|update)$/],
 ]
 // Remote access job output names hosts, packages and addresses: admins only, like Updates.
-const REMOTE_JOBS = /^\/api\/remote\/jobs(\/|$)/
+const REMOTE_JOBS = /^\/api\/remote\/(jobs(\/|$)|machines\/[^/]+\/(tailscale|netbird)\/firewall$)/
 
 /**
  * The role a request needs, or null when it needs no session.
