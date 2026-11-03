@@ -215,8 +215,40 @@ export function cephInstallCommand(pkgs: { name: string; to: string }[]): string
   return `${APT_ENV}; apt-get -y -q ${CONFOLD} --no-remove --only-upgrade install ${spec}`
 }
 
-export function cephRestartCommand(daemon: 'mon' | 'mgr' | 'osd'): string {
+/** Mons and mgrs only. OSDs are never restarted by target: that takes every OSD on the node down at once. */
+export function cephRestartCommand(daemon: 'mon' | 'mgr'): string {
   return `if systemctl list-unit-files ceph-${daemon}.target >/dev/null 2>&1; then systemctl restart ceph-${daemon}.target; else echo "no ceph-${daemon} on this node"; fi`
+}
+
+/** One OSD. The id is a number by construction; anything else is refused before it reaches a shell. */
+export function cephOsdRestartCommand(id: number): string {
+  if (!Number.isInteger(id) || id < 0) throw new Error(`not an OSD id: ${id}`)
+  return `systemctl restart ceph-osd@${id}.service`
+}
+
+/** Read-only: pools (size, min_size), the CRUSH tree, every PG's OSDs, and per-pool usage. Parsed by parseCephLayout. */
+export const CEPH_LAYOUT_COMMAND = [
+  'echo HP_POOLS; ceph osd pool ls detail -f json 2>/dev/null; echo',
+  'echo HP_TREE; ceph osd tree -f json 2>/dev/null; echo',
+  'echo HP_PGS; ceph pg dump pgs_brief -f json 2>/dev/null; echo',
+  'echo HP_DF; ceph df -f json 2>/dev/null; echo',
+  'echo HP_END',
+].join('; ')
+
+/** Read-only: the instances of a Ceph daemon that exist on this node, e.g. ceph-osd@3.service. */
+export function cephUnitsCommand(daemon: 'mon' | 'mgr' | 'osd' | 'mds'): string {
+  return `systemctl list-units 'ceph-${daemon}@*' --all --plain --no-legend 2>/dev/null | awk '{print $1}'`
+}
+
+/** Read-only. stdout is JSON; the exit code is not 0 when Ceph says no. */
+export function cephOsdOkToStopCommand(ids: number[]): string {
+  if (!ids.length || ids.some(id => !Number.isInteger(id) || id < 0)) throw new Error(`not OSD ids: ${ids.join(',')}`)
+  return `ceph osd ok-to-stop ${ids.join(' ')} -f json 2>/dev/null; echo "HP_RC $?"`
+}
+
+/** Read-only. Mons and MDSs answer in words; mgrs have no such check. */
+export function cephDaemonOkToStopCommand(daemon: 'mon' | 'mds', ids: string[]): string {
+  return `ceph ${daemon} ok-to-stop ${ids.map(shq).join(' ')} 2>&1; echo "HP_RC $?"`
 }
 
 export const CEPH_NOOUT_SET   = 'ceph osd set noout'

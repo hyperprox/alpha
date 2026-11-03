@@ -19,17 +19,21 @@
 // =============================================================================
 
 import type { UpdatesPlan, UpdatesReport, UpdatesStepAction, UpdatesWsPayload } from './types'
-import type { UpdatesExecutor, GuestListing, LineSink } from './executor'
+import type { UpdatesExecutor, GuestListing, LineSink, CephHealth } from './executor'
+import {
+  type CephLayout, parseCephLayout, osdsOnNode, assessOsdRestart, describeBlockers, parseOsdOkToStop, parseDaemonOkToStop, parseUnitIds,
+} from './ceph-safety'
 import { type PolicyLoad, type Policy, guestPolicy, nodePolicy } from './policy'
 import { readInventory, findSelfGuest, selfVmidOf, type InventoryResult } from './inventory'
 import { buildPlan, detailKey, DETAIL } from './planner'
 import {
   preflight, quorumGate, cephGate, haGate, holdsPinGate, freeSpaceGate, streamGate, judgeCeph, judgeCephSettled,
-  unknownPolicyNodes, type GateResult,
+  judgeCephRestored, unknownPolicyNodes, type GateResult,
 } from './gates'
 import {
   GUEST_REFRESH_SCRIPT, GUEST_UPGRADE_SCRIPT, NODE_FACTS_COMMAND, NODE_SERVICES_COMMAND, NODE_REBOOT_COMMAND,
-  CEPH_NOOUT_SET, CEPH_NOOUT_UNSET, cephInstallCommand, cephRestartCommand, guestCheckScript, guestDockerScript,
+  CEPH_NOOUT_SET, CEPH_NOOUT_UNSET, CEPH_LAYOUT_COMMAND, cephInstallCommand, cephRestartCommand, cephOsdRestartCommand,
+  cephUnitsCommand, cephOsdOkToStopCommand, cephDaemonOkToStopCommand, guestCheckScript, guestDockerScript,
   guestRebootCommand, haMaintenance, haSetState, isCephPackage, kernelPurgeCommand, kernelsToRemove, nodeUpgradeCommand,
   parseNodeFacts, tail, type NodeFacts,
 } from './commands'
@@ -104,6 +108,8 @@ const INTERRUPTED = 'interrupted by a HyperProx restart'
 const NOT_FINISHED: UpdatesJobStatus[] = ['planned', 'awaiting-confirm', 'running', 'paused']
 const SNAPSHOT_PREFIX = 'hp-upd-'
 const BOOT_ID = 'cat /proc/sys/kernel/random/boot_id'
+/** How a Ceph step that would have been unsafe begins its reason. The report counts these apart from successes. */
+export const SAFETY_SKIP = 'skipped for safety:'
 
 // Reasons a step is skipped in an ordinary, healthy run: not worth more than an "info" message.
 const ROUTINE_SKIP = /^(no reboot needed|no Ceph packages pending|cancelled|the run stopped before|reboot: manual|no snapshot possible|rolled back to)/
@@ -114,6 +120,11 @@ export function reportSeverity(status: string, steps: StepRecord[]): Severity {
   if (status === 'failed' || status === 'paused' || steps.some(s => s.status === 'failed')) return 'warning'
   if (steps.some(s => s.status === 'skipped' && s.reason && !ROUTINE_SKIP.test(s.reason))) return 'warning'
   return 'info'
+}
+
+/** Steps a safety check turned into a dry run. Never a success, whatever the job status. */
+export function safetySkips(steps: StepRecord[]): StepRecord[] {
+  return steps.filter(s => s.status === 'skipped' && (s.reason ?? '').startsWith(SAFETY_SKIP))
 }
 
 export class UpdatesRunner {
@@ -572,25 +583,113 @@ export class UpdatesRunner {
       const r = await this.exec.nodeExec(step.target, cephInstallCommand(pending), log, 30 * 60_000)
       return r.code === 0 ? { status: 'ok', output: tail(r.output) } : { status: 'failed', reason: 'Ceph package install failed', output: tail(r.output) }
     }
-    if (verb === DETAIL.cephRestart && ['mon', 'mgr', 'osd'].includes(arg)) {
-      const daemon = arg as 'mon' | 'mgr' | 'osd'
-      const peer = await this.peerOf(step.target)
-      if (daemon === 'osd') await this.mustExec(peer, CEPH_NOOUT_SET, log)
+    if (verb === DETAIL.cephRestart && arg === 'osd') return this.cephOsdRestart(step, policy, log)
+    if (verb === DETAIL.cephRestart && (arg === 'mon' || arg === 'mgr')) {
+      const daemon = arg
+      // Ceph offers ok-to-stop for mons (and mds), not for mgrs. A no turns the step into a dry run.
+      if (daemon === 'mon') {
+        const ids = parseUnitIds('mon', (await this.exec.nodeExec(step.target, cephUnitsCommand('mon'), undefined, 60_000)).output)
+        if (ids.length) {
+          const peer = await this.peerOf(step.target)
+          const verdict = parseDaemonOkToStop('mon', (await this.exec.nodeExec(peer, cephDaemonOkToStopCommand('mon', ids), log, 60_000)).output)
+          if (!verdict.ok) {
+            return {
+              status: 'skipped',
+              reason: `${SAFETY_SKIP} ${verdict.reason}. Restarting mon ${ids.join(', ')} on ${step.target} could cost the cluster its quorum, so it was not restarted.`,
+              output: `would run: ${cephRestartCommand('mon')}`,
+            }
+          }
+          log(`ok-to-stop: ${verdict.reason}`)
+        }
+      }
+      const baseline = await this.exec.cephHealth()
       const r = await this.exec.nodeExec(step.target, cephRestartCommand(daemon), log, 10 * 60_000)
-      if (r.code !== 0) return { status: 'failed', reason: `restarting ceph-${daemon} failed${daemon === 'osd' ? '; noout left set' : ''}`, output: tail(r.output) }
-      let last = ''
-      const healthy = await this.waitFor(async () => {
-        const h = await this.exec.cephHealth()
-        const accepted = [...policy.acceptedWarnings, ...(daemon === 'osd' ? ['OSDMAP_FLAGS'] : [])]
-        const a = judgeCeph(h, accepted), b = judgeCephSettled(h)
-        last = a.ok ? b.reason : a.reason
-        return a.ok && b.ok
-      }, this.timing.cephSettleMs)
-      if (!healthy) return { status: 'failed', reason: `Ceph did not settle after restarting ceph-${daemon} on ${step.target}: ${last}${daemon === 'osd' ? '; noout left set' : ''}` }
-      if (daemon === 'osd') await this.mustExec(peer, CEPH_NOOUT_UNSET, log)
-      return { status: 'ok', output: tail(r.output) + `\nCeph settled: ${last}` }
+      if (r.code !== 0) return { status: 'failed', reason: `restarting ceph-${daemon} failed`, output: tail(r.output) }
+      const settled = await this.cephSettle(policy, baseline, [])
+      if (!settled.ok) return { status: 'failed', reason: `Ceph did not settle after restarting ceph-${daemon} on ${step.target}: ${settled.last}` }
+      return { status: 'ok', output: tail(r.output) + `\nCeph settled: ${settled.last}` }
     }
     return { status: 'failed', reason: `unknown Ceph step "${step.detail}"` }
+  }
+
+  /**
+   * A node's OSDs, one at a time. First, read-only: every pool's size and min_size, which PGs live on this
+   * node's OSDs, and `ceph osd ok-to-stop` for all of them together. If a pool with no second copy (size=1)
+   * has data here, or any PG would drop below min_size, or Ceph says no, nothing is restarted: the step is
+   * a dry run that says what would go offline. Otherwise noout is set, each OSD is asked about again,
+   * restarted alone and waited for, and noout is cleared at the end whatever happened.
+   */
+  private async cephOsdRestart(step: StepRecord, policy: Policy, log: LineSink): Promise<Outcome> {
+    const node = step.target
+    const peer = await this.peerOf(node)
+    let layout: CephLayout
+    try { layout = parseCephLayout((await this.exec.nodeExec(peer, CEPH_LAYOUT_COMMAND, undefined, 120_000)).output) }
+    catch (e: any) { return { status: 'failed', reason: `could not read the Ceph pool layout, so nothing was restarted: ${e.message}` } }
+    const units = parseUnitIds('osd', (await this.exec.nodeExec(node, cephUnitsCommand('osd'), undefined, 60_000)).output)
+      .filter(id => /^\d+$/.test(id)).map(Number)
+    const osds = osdsOnNode(layout, node, units)
+    if (!osds.length) return { status: 'ok', output: `no OSDs on ${node}` }
+    const names = osds.map(o => `osd.${o}`).join(', ')
+
+    const blockers = assessOsdRestart(layout, osds)
+    const together = parseOsdOkToStop((await this.exec.nodeExec(peer, cephOsdOkToStopCommand(osds), undefined, 60_000)).output)
+    if (blockers.length || !together.ok) {
+      const why = [
+        ...(blockers.length ? [`restarting ${names} on ${node} would take data out of service — ${describeBlockers(blockers)}`] : []),
+        ...(!together.ok ? [together.reason] : []),
+      ].join('; ')
+      return {
+        status: 'skipped',
+        reason: `${SAFETY_SKIP} ${why}. Nothing on ${node} was restarted; its OSDs keep running the previous Ceph until they are restarted by hand at a time when that is acceptable.`,
+        output: ['Dry run only. With it safe, this step would set noout and then, one at a time with a health check between:',
+          ...osds.map(o => `would run: ${cephOsdRestartCommand(o)}`)].join('\n'),
+      }
+    }
+    log(`ok-to-stop for ${names}: ${together.reason}`)
+
+    const baseline = await this.exec.cephHealth()
+    await this.mustExec(peer, CEPH_NOOUT_SET, log)
+    const done: string[] = []
+    let out: Outcome
+    try {
+      out = await (async (): Promise<Outcome> => {
+        for (const [i, id] of osds.entries()) {
+          const rest = osds.slice(i + 1).map(o => `osd.${o}`)
+          const left = rest.length ? `; ${rest.join(', ')} not restarted` : ''
+          const each = parseOsdOkToStop((await this.exec.nodeExec(peer, cephOsdOkToStopCommand([id]), undefined, 60_000)).output)
+          if (!each.ok) return { status: 'failed', reason: `stopped before osd.${id} on ${node}: ${each.reason}${left}` }
+          const cmd = cephOsdRestartCommand(id)
+          log(`${node}$ ${cmd}`)
+          const r = await this.exec.nodeExec(node, cmd, log, 10 * 60_000)
+          if (r.code !== 0) return { status: 'failed', reason: `restarting osd.${id} failed${left}`, output: tail(r.output) }
+          const settled = await this.cephSettle(policy, baseline, ['OSDMAP_FLAGS'])
+          if (!settled.ok) return { status: 'failed', reason: `Ceph did not recover after restarting osd.${id} on ${node}: ${settled.last}${left}` }
+          done.push(`osd.${id} back: ${settled.last}`)
+          log(done[done.length - 1])
+        }
+        return { status: 'ok', output: done.join('\n') }
+      })()
+    } catch (e: any) {
+      out = { status: 'failed', reason: e?.message ?? String(e) }
+    }
+    const cleared = await this.exec.nodeExec(peer, CEPH_NOOUT_UNSET, log, 120_000).then(r => r.code === 0, () => false)
+    if (out.status === 'failed') return { ...out, reason: `${out.reason}; ${cleared ? 'noout cleared' : 'noout is LEFT ON — clear it by hand (ceph osd unset noout)'}` }
+    if (!cleared) return { status: 'failed', reason: `${names} restarted, but noout could not be cleared — it is LEFT ON; clear it by hand (ceph osd unset noout)`, output: out.output }
+    return { ...out, output: `${out.output ?? ''}\nnoout cleared` }
+  }
+
+  /** After a daemon restart: wait until health is back to accepted-only and PGs are clean or back to how they were. */
+  private async cephSettle(policy: Policy, baseline: CephHealth, alsoAccepted: string[]): Promise<{ ok: boolean; last: string }> {
+    let last = ''
+    // Give the daemon a moment to drop out and rejoin, so the first read is not taken before it went down.
+    await this.exec.sleep(this.timing.pollMs)
+    const ok = await this.waitFor(async () => {
+      const h = await this.exec.cephHealth()
+      const a = judgeCeph(h, [...policy.acceptedWarnings, ...alsoAccepted]), b = judgeCephRestored(baseline, h)
+      last = !b.ok ? b.reason : !a.ok ? a.reason : b.reason
+      return a.ok && b.ok
+    }, this.timing.cephSettleMs)
+    return { ok, last }
   }
 
   // --- Nodes ---------------------------------------------------------------------------
@@ -922,12 +1021,16 @@ export class UpdatesRunner {
     const steps = await this.store.getSteps(jobId)
     const count = (st: string) => steps.filter(x => x.status === st).length
     const severity = reportSeverity(status, steps)
+    const safety = safetySkips(steps)
     const title = status === 'cancelled' ? 'Updates cancelled' : status === 'failed' ? 'Updates failed'
-      : severity === 'info' ? 'Updates finished' : 'Updates finished with problems'
+      : severity === 'info' ? 'Updates finished'
+      : safety.length && !steps.some(x => x.status === 'failed') ? 'Updates finished with steps skipped for safety'
+      : 'Updates finished with problems'
     await this.announce({
       type: 'updates.job.finished', severity, title,
       lines: [
         `${count('ok')} steps ok, ${count('skipped')} skipped, ${count('failed')} failed.`,
+        ...safety.map(x => `${x.target}: ${x.detail ?? x.action} ${x.reason}`),
         ...(reason && status !== 'done' ? [`${reason.replace(/\.$/, '')}.`] : []),
         ...(rep.rebootsPending.length ? [`Reboot pending: ${rep.rebootsPending.join(', ')}.`] : []),
       ],
@@ -946,10 +1049,13 @@ export class UpdatesRunner {
     const skipped = steps.filter(s => s.status === 'skipped' && s.reason).map(s => ({ target: s.target, reason: `${s.action}: ${s.reason}` }))
     const count = (st: string) => steps.filter(s => s.status === st).length
     const pending = [...this.rebootPending].sort()
-    const head = status === 'done' ? 'Updates finished' : status === 'cancelled' ? 'Updates cancelled' : 'Updates failed'
+    const safety = safetySkips(steps)
+    const head = status === 'done' ? (safety.length ? 'Updates finished with steps skipped for safety' : 'Updates finished')
+      : status === 'cancelled' ? 'Updates cancelled' : 'Updates failed'
     return {
       summary: `${head}: ${count('ok')} ok, ${count('skipped')} skipped, ${count('failed')} failed.` +
         (reason && status !== 'done' ? ` ${reason}.` : '') +
+        (safety.length ? ` Skipped for safety, nothing restarted: ${safety.map(s => `${s.detail ?? s.action} on ${s.target}`).join(', ')}.` : '') +
         (pending.length ? ` Reboot pending: ${pending.join(', ')}.` : ''),
       changed: [...changed].map(([target, packages]) => ({ target, packages })),
       skipped,
