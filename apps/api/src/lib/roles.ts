@@ -58,8 +58,6 @@ export function bypassesLock(path: string): boolean {
 // Guest power actions. Both route families exist: /api/infra (infrastructure.ts)
 // and /api/proxmox (proxmox.ts).
 const POWER = /^\/api\/(infra|proxmox)\/vms\/[^/]+\/[^/]+\/[^/]+\/(start|stop|shutdown|reboot)$/
-// Console ticket for the browser VNC/xterm.js console.
-const CONSOLE = /^\/api\/infra\/vms\/[^/]+\/[^/]+\/[^/]+\/vnc$/
 // Terminal (Deck) actions that only use a saved login, never change one.
 const TERMINAL_OPERATOR: Array<[string, RegExp]> = [
   ['POST',   /^\/api\/terminal\/hosts\/[^/]+\/tmux-sessions$/],
@@ -103,7 +101,7 @@ export function requiredRole(method: string, path: string): Role | null {
     return 'viewer'
   }
 
-  if (m === 'POST' && (POWER.test(p) || CONSOLE.test(p))) return 'operator'
+  if (m === 'POST' && POWER.test(p)) return 'operator'
   for (const [tm, re] of TERMINAL_OPERATOR) if (m === tm && re.test(p)) return 'operator'
 
   return 'admin'
