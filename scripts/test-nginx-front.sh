@@ -16,7 +16,7 @@ name=abtest-setup-nginx
 tmp="$(mktemp -d)"
 stub_pid=""
 cleanup() {
-  docker rm -f "${name}" >/dev/null 2>&1 || true
+  docker rm -f "${name}" abtest-gate-grafana >/dev/null 2>&1 || true
   [[ -n "${stub_pid}" ]] && kill "${stub_pid}" 2>/dev/null || true
   rm -rf "${tmp}"
 }
@@ -46,18 +46,26 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 
 cat > "${tmp}/stub.js" <<'EOF'
 const http = require('http'), crypto = require('crypto')
 const labels = { 18291: 'frontend', 18292: 'api', 18293: 'setup', 18294: 'grafana' }
-// The stub API's session check: 204 for the cookie hyperprox_token=good, 403 for an API token, 503 for
-// hyperprox_token=down (the API failing), 401 otherwise. It refuses anything but a bodiless GET with no
-// Upgrade header, so a check that leaked the browser's method, body or upgrade would show up as a failure.
+// The stub API's session check, accepting what the real one accepts (lib/auth.ts extractToken): the
+// hyperprox_token cookie (name trimmed, first one wins) or a Bearer session JWT ("good" here). 204 for
+// "good", 403 for an API token (Bearer hpx_...), 503 for "down" (the API failing), no answer at all for
+// "hang", 401 otherwise. It refuses anything but a bodiless GET with no Upgrade header, so a check that
+// leaked the browser's method, body or upgrade would show up as a failure.
 function sessionCheck(req, res) {
   let body = ''
   req.on('data', c => { body += c })
   req.on('end', () => {
-    const cookie = req.headers.cookie || ''
     if (req.method !== 'GET' || body || req.headers['content-length'] || req.headers.upgrade) { res.statusCode = 400; return res.end() }
-    if (/^Bearer /.test(req.headers.authorization || '')) { res.statusCode = 403; return res.end() }
-    if (/(^|;\s*)hyperprox_token=down(;|$)/.test(cookie)) { res.statusCode = 503; return res.end() }
-    res.statusCode = /(^|;\s*)hyperprox_token=good(;|$)/.test(cookie) ? 204 : 401
+    const auth = req.headers.authorization || ''
+    if (/^Bearer hpx_/.test(auth)) { res.statusCode = 403; return res.end() }
+    let token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : null
+    if (token === null) for (const part of (req.headers.cookie || '').split(';')) {
+      const eq = part.indexOf('=')
+      if (eq !== -1 && part.slice(0, eq).trim() === 'hyperprox_token') { token = part.slice(eq + 1).trim(); break }
+    }
+    if (token === 'hang') return
+    if (token === 'down') { res.statusCode = 503; return res.end() }
+    res.statusCode = token === 'good' ? 204 : 401
     res.end()
   })
 }
@@ -67,7 +75,7 @@ for (const [port, label] of Object.entries(labels)) {
     let body = ''
     req.on('data', c => { body += c })
     req.on('end', () => res.end(`${label} ${req.method} ${req.url} proto=${req.headers['x-forwarded-proto'] || '-'}` +
-      (label === 'grafana' ? ` cookie=[${req.headers.cookie || ''}] body=[${body}]` : '') + '\n'))
+      (label === 'grafana' ? ` cookie=[${req.headers.cookie || ''}] auth=[${req.headers.authorization || ''}] body=[${body}]` : '') + '\n'))
   })
   s.on('upgrade', (req, sock) => {
     if (label === 'api' && req.url === '/api/auth/check') { sock.end('HTTP/1.1 400 Bad Request\r\n\r\n'); return }
@@ -116,10 +124,20 @@ expect "grafana: no session is sent to sign in"            "/login?next=%2Fmonit
 expect "grafana: a bad session is sent to sign in"         "HTTP/1.1 302"                            --http1.1 -D - -o /dev/null -b 'hyperprox_token=nope' "${S}/grafana/d/x"
 expect "grafana: a session, sub-path passed through whole" "grafana GET /grafana/d/x?orgId=1&kiosk" -b "${G}" "${S}/grafana/d/x?orgId=1&kiosk"
 expect "grafana: a query POST reaches Grafana with its body (the check itself is a bodiless GET)" \
-  'grafana POST /grafana/api/ds/query proto=https cookie=[] body=[{"queries":[]}]' -b "${G}" -H 'Content-Type: application/json' -d '{"queries":[]}' "${S}/grafana/api/ds/query"
-expect "grafana: HyperProx's session cookie is not passed on, other cookies are" \
-  "cookie=[grafana_session=g1; theme=dark]"                -H "Cookie: grafana_session=g1; ${G}; theme=dark" "${S}/grafana/api/user"
-expect "grafana: ...first cookie or last, the same"         "cookie=[; theme=dark]"                   -H "Cookie: ${G}; theme=dark" "${S}/grafana/x"
+  'grafana POST /grafana/api/ds/query proto=https cookie=[] auth=[] body=[{"queries":[]}]' -b "${G}" -H 'Content-Type: application/json' -d '{"queries":[]}' "${S}/grafana/api/ds/query"
+expect "grafana: no cookie at all reaches Grafana, the session's or any other" \
+  "cookie=[] auth=[]"                                      -H "Cookie: grafana_session=g1; ${G}; theme=dark" "${S}/grafana/api/user"
+expect "grafana: a duplicated session cookie is not passed on" "cookie=[] auth=[]"                -H "Cookie: ${G}; ${G}" "${S}/grafana/x"
+expect "grafana: a session cookie with a space before = is not passed on" "cookie=[] auth=[]"     -H "Cookie: hyperprox_token =good" "${S}/grafana/x"
+expect "grafana: a Bearer session passes the check but its header is not passed on" "cookie=[] auth=[]" -H "Authorization: Bearer good" "${S}/grafana/x"
+start=$(date +%s)
+expect "grafana: an API that never answers is a 500 within seconds" "HTTP/1.1 500"               --http1.1 --max-time 20 -D - -o /dev/null -b 'hyperprox_token=hang' "${S}/grafana/d/x"
+took=$(( $(date +%s) - start ))
+if [[ "$took" -le 8 ]]; then echo "ok    grafana: ...in ${took}s (check timeout 2s connect, 5s read)"; else echo "FAIL  grafana: the hanging check took ${took}s"; fail=1; fi
+expect "grafana: the datasource proxy is refused even with a session" "HTTP/1.1 403"             --http1.1 -D - -o /dev/null -b "${G}" "${S}/grafana/api/datasources/proxy/uid/x/api/v1/status/config"
+expect "grafana: ...also spelled with an encoded letter"   "HTTP/1.1 403"                            --http1.1 -D - -o /dev/null -b "${G}" "${S}/grafana/api/datasources/%70roxy/1/api/v1/targets"
+expect "grafana: the datasource list is refused even with a session" "HTTP/1.1 403"             --http1.1 -D - -o /dev/null -b "${G}" "${S}/grafana/api/datasources"
+expect "grafana: other datasource routes still reach Grafana" "grafana GET /grafana/api/datasources/uid/x/resources/api/v1/labels" -b "${G}" "${S}/grafana/api/datasources/uid/x/resources/api/v1/labels"
 expect "grafana: an API token gets 403"                    "HTTP/1.1 403"                            --http1.1 -D - -o /dev/null -H 'Authorization: Bearer hpx_x' "${S}/grafana/d/x"
 expect "grafana: the API failing is a 500, never a pass"   "HTTP/1.1 500"                            --http1.1 -D - -o /dev/null -b 'hyperprox_token=down' "${S}/grafana/d/x"
 expect "grafana: the check location is not reachable from outside" "HTTP/1.1 404"                    --http1.1 -D - -o /dev/null -b "${G}" "${S}/_hpx/session"
@@ -131,6 +149,20 @@ expect "wss: live updates upgrade on /ws"                  "X-Stub: api"        
   -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' "${S}/ws"
 expect "wss: the terminal upgrades on /ws/terminal/term"   "101 Switching Protocols"                 --http1.1 -D - -o /dev/null \
   -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' "${S}/ws/terminal/term?x=1"
+
+# ── bin/hyperprox-gate-check, which deploy.sh runs after reloading nginx ─────────
+docker run -d --name abtest-gate-grafana --network none nginx:alpine >/dev/null
+if out="$(HPX_GATE_URL="${S}/grafana/api/health" GRAFANA_CONTAINER=abtest-gate-grafana bash "${here}/bin/hyperprox-gate-check" 2>&1)"; then
+  echo "ok    gate-check: passes against the gated config"
+else echo "FAIL  gate-check: refused the gated config: ${out}"; fail=1; fi
+# The previous (ungated) /grafana/ answers like Grafana itself: here, the stub Grafana straight.
+if out="$(HPX_GATE_URL="http://127.0.0.1:18294/grafana/api/health" GRAFANA_CONTAINER=abtest-gate-grafana bash "${here}/bin/hyperprox-gate-check" 2>&1)"; then
+  echo "FAIL  gate-check: passed an ungated /grafana/"; fail=1
+else
+  if [[ "$(docker inspect -f '{{.State.Running}}' abtest-gate-grafana)" == false && "$out" == *"is not gated"* && "$out" == *"Stopped abtest-gate-grafana"* ]]; then
+    echo "ok    gate-check: an ungated /grafana/ fails it, says why, and stops Grafana"
+  else echo "FAIL  gate-check: ungated, but Grafana was not stopped or the reason not given: ${out}"; fail=1; fi
+fi
 
 if [[ "${fail}" -ne 0 ]]; then echo; docker logs "${name}" 2>&1 | tail -20; fi
 exit "${fail}"

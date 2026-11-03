@@ -76,13 +76,15 @@ docker run -d --name "${P}-nginx" --network host \
 
 S=https://127.0.0.1:18343
 up=false
-for _ in $(seq 1 180); do   # a fresh Grafana runs its database migrations first: up to a minute or two
+for _ in $(seq 1 360); do   # a fresh Grafana runs its database migrations first: minutes on a busy host
   if curl -sf -o /dev/null http://127.0.0.1:13003/grafana/api/health && curl -sf -o /dev/null http://127.0.0.1:19090/-/ready \
      && grep -q ready "${tmp}/api.log" && curl -s -o /dev/null http://127.0.0.1:18380/nginx-health; then up=true; break; fi
   sleep 1
 done
 if [[ "$up" != true ]]; then
-  echo "FAIL  the stack did not come up"; docker logs "${P}-grafana" 2>&1 | tail -15; tail -5 "${tmp}/api.log"; exit 1
+  echo "FAIL  the stack did not come up"
+  echo "grafana: $(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:13003/grafana/api/health)  prometheus: $(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:19090/-/ready)  nginx: $(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18380/nginx-health)"
+  docker logs "${P}-grafana" 2>&1 | grep -iE "fatal|listen" | tail -4; docker logs "${P}-nginx" 2>&1 | tail -5; tail -5 "${tmp}/api.log"; exit 1
 fi
 
 fail=0
@@ -138,6 +140,27 @@ check "Grafana Live: the WebSocket upgrades through nginx with a session" '[[ "$
 ws0="$(curl -sk --http1.1 -D - -o /dev/null --max-time 3 -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
   -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' -H "Origin: ${S}" "${S}/grafana/api/live/ws" || true)"
 check "Grafana Live: refused without a session"            '[[ "$ws0" == *" 302"* && "$ws0" != *"101 Switching"* ]]' "$ws0"
+
+# ── Nothing behind the gate turns a viewer into more ─────────────────────────
+G=http://127.0.0.1:13003/grafana
+code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{"user":"admin","password":"abtest-admin-pw"}' "${G}/login")"
+check "Grafana's login form refuses the admin password (GF_AUTH_DISABLE_LOGIN_FORM)" '[[ "$code" != 200 ]]' "$code"
+code="$(curl -sk -b "$J" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{"user":"admin","password":"abtest-admin-pw"}' "${S}/grafana/login")"
+check "...and through nginx with a session"               '[[ "$code" != 200 ]]' "$code"
+code="$(curl -s -o /dev/null -w '%{http_code}' -u admin:abtest-admin-pw "${G}/api/admin/settings")"
+check "Grafana refuses basic auth even on loopback (GF_AUTH_BASIC_ENABLED)" '[[ "$code" == 401 || "$code" == 403 ]]' "$code"
+code="$(curl -sk -b "$J" -o /dev/null -w '%{http_code}' -u admin:abtest-admin-pw "${S}/grafana/api/admin/settings")"
+check "...and through nginx with a session (Authorization is not passed on)" '[[ "$code" == 401 || "$code" == 403 ]]' "$code"
+fs="$(curl -sk -b "$J" "${S}/grafana/api/frontend/settings")"
+check "plugin admin is off and the version is hidden from the viewer" \
+  '[[ "$(jq -r .pluginAdminEnabled <<<"$fs")" == false && "$(jq -r ".buildInfo.version // \"\"" <<<"$fs")" != 13.* ]]' "$(jq -c "{p:.pluginAdminEnabled,v:.buildInfo.version}" <<<"$fs" 2>/dev/null)"
+code="$(curl -sk -b "$J" -o /dev/null -w '%{http_code}' "${S}/grafana/api/datasources/proxy/uid/${ds_uid}/api/v1/status/config")"
+check "the datasource proxy is refused to a signed-in viewer" '[[ "$code" == 403 ]]' "$code"
+code="$(curl -sk -b "$J" -o /dev/null -w '%{http_code}' "${S}/grafana/api/datasources")"
+check "the datasource list is refused to a signed-in viewer"  '[[ "$code" == 403 ]]' "$code"
+jwt="$(awk '$6 == "hyperprox_token" {print $7}' "$J")"
+code="$(curl -sk -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${jwt}" "${S}/grafana/api/health")"
+check "a Bearer session passes the gate (and its header goes no further)" '[[ -n "$jwt" && "$code" == 200 ]]' "$code"
 
 # ── Locked ────────────────────────────────────────────────────────────────────
 curl -s -o /dev/null -X POST -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:18392/api/auth/lock   # as `hyperprox lock` does
