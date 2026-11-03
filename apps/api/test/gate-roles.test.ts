@@ -25,7 +25,7 @@ test('requiredRole: viewer reads, operator power/terminal, admin the rest, owner
     ['POST',   '/api/infra/vms/n1/100/qemu/shutdown',     'operator'],
     ['POST',   '/api/proxmox/vms/n1/100/lxc/reboot',      'operator'],
     ['POST',   '/api/proxmox/vms/n1/100/lxc/stop',        'operator'],
-    ['POST',   '/api/infra/vms/n1/100/qemu/vnc',          'operator'],
+    ['POST',   '/api/infra/vms/n1/100/qemu/vnc',          'admin'],     // no such route; no operator grant either
     ['POST',   '/api/terminal/hosts/abc/tmux-sessions',   'operator'],
     ['PUT',    '/api/terminal/layouts',                   'operator'],
     ['DELETE', '/api/terminal/layouts/main',              'operator'],

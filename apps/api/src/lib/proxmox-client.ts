@@ -169,16 +169,6 @@ export class ProxmoxClient {
     return this.fetchNode<any>(`/nodes/${node}/${type}/${vmid}/config`)
   }
 
-  async updateVMConfig(node: string, vmid: number, type: 'qemu' | 'lxc', config: Record<string, any>) {
-    await this.fetchNode(`/nodes/${node}/${type}/${vmid}/config`, 'PUT', JSON.stringify(config))
-  }
-
-  async getVNCTicket(node: string, vmid: number, type: 'qemu' | 'lxc'): Promise<{
-    ticket: string; port: string; cert: string; user: string
-  }> {
-    return this.fetchNode(`/nodes/${node}/${type}/${vmid}/vncproxy`, 'POST')
-  }
-
   async getSnapshots(node: string, vmid: number, type: 'qemu' | 'lxc') {
     return this.fetchNode<any[]>(`/nodes/${node}/${type}/${vmid}/snapshot`)
   }
