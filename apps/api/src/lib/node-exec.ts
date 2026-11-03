@@ -22,7 +22,7 @@ import {
   credentialId, fingerprintOf,
   CREDENTIAL_CATEGORY, CRED_PROVIDER, type TerminalCredential,
 } from './ssh-broker'
-import { getCredential } from './credentials'
+import { getCredential, setCredential } from './credentials'
 
 const HOSTKEY_PROVIDER = 'hostkey'
 
@@ -95,6 +95,32 @@ export type HostKeyDecision = 'accept' | 'reject-unpinned' | 'reject-changed'
 export function hostKeyDecision(pinned: string | null | undefined, fingerprint: string, requirePin: boolean): HostKeyDecision {
   if (pinned) return pinned === fingerprint ? 'accept' : 'reject-changed'
   return requirePin ? 'reject-unpinned' : 'accept'
+}
+
+/** The pin the Terminal and every exec path share for `host:port`, or null. */
+export async function pinnedHostKey(host: string, port = 22): Promise<string | null> {
+  return getCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, credentialId(`${host}:${port}`))
+}
+
+/** Pin `host:port` to `fingerprint`, in the same place the Terminal pins it. */
+export async function pinHostKey(host: string, port: number, fingerprint: string): Promise<void> {
+  await setCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, credentialId(`${host}:${port}`), fingerprint, false)
+}
+
+/** Read a host's key fingerprint without logging in (the connection is refused right after the key arrives). */
+export function probeHostKey(host: string, port = 22, timeoutMs = 15_000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const client = new Client()
+    let fp: string | null = null
+    const done = (e?: Error) => { try { client.end() } catch { /* gone */ } ; fp ? resolve(fp) : reject(e ?? new Error(`no host key from ${host}:${port}`)) }
+    client.on('error', e => done(e as Error))
+    try {
+      client.connect({
+        host, port, username: 'hyperprox-probe', readyTimeout: timeoutMs,
+        hostVerifier: (key: Buffer) => { fp = fingerprintOf(key); setImmediate(() => done()); return false },
+      } as ConnectConfig)
+    } catch (e: any) { done(e) }
+  })
 }
 
 /**

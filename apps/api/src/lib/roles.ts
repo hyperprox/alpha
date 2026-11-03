@@ -79,11 +79,12 @@ const REMOTE_RECONFIRM: Array<[string, RegExp]> = [
   ['DELETE', /^\/api\/remote\/machines\/[^/]+\/(tailscale|netbird)$/],
   ['POST',   /^\/api\/remote\/machines\/[^/]+\/tun$/],
   ['POST',   /^\/api\/remote\/machines\/[^/]+\/(tailscale|netbird)\/firewall$/],
+  ['POST',   /^\/api\/remote\/machines\/[^/]+\/host-key$/],
   // On a Proxmox node even a check or an update is re-confirmed: it runs a script on the hypervisor.
   ['POST',   /^\/api\/remote\/machines\/node-[^/]+\/(tailscale|netbird)\/(check|update)$/],
 ]
 // Remote access job output names hosts, packages and addresses: admins only, like Updates.
-const REMOTE_JOBS = /^\/api\/remote\/(jobs(\/|$)|machines\/[^/]+\/(tailscale|netbird)\/firewall$)/
+const REMOTE_JOBS = /^\/api\/remote\/(jobs(\/|$)|machines\/[^/]+\/((tailscale|netbird)\/firewall|host-key)$)/
 
 /**
  * The role a request needs, or null when it needs no session.

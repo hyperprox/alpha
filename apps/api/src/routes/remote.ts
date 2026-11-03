@@ -146,6 +146,21 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
       } catch (e) { return sendError(reply, e) }
     })
 
+    // Host keys: a preview of what the machine presents, then a pin of exactly the key the admin checked.
+    fastify.get<{ Params: { id: string } }>('/machines/:id/host-key', { preHandler: adminOnly }, async (req, reply) => {
+      try {
+        if (!MACHINE_ID.test(req.params.id)) throw new RemoteInputError('Unknown machine id format')
+        return await service.hostKeyPreview(req.params.id)
+      } catch (e) { return sendError(reply, e) }
+    })
+    fastify.post<{ Params: { id: string }; Body: { fingerprint?: unknown } }>('/machines/:id/host-key', { preHandler: adminOnly }, async (req, reply) => {
+      try {
+        if (!MACHINE_ID.test(req.params.id)) throw new RemoteInputError('Unknown machine id format')
+        if (typeof req.body?.fingerprint !== 'string') throw new RemoteInputError('fingerprint is required')
+        return await service.pinHostKey(req.params.id, req.body.fingerprint, by(req))
+      } catch (e) { return sendError(reply, e) }
+    })
+
     // The one route that sends a key to the browser: re-confirmed, audited, single use, short-lived, never cached.
     fastify.post<{ Params: MachineParams; Body: { tags?: unknown } }>('/machines/:id/:provider/manual-key', { preHandler: adminOnly }, async (req, reply) => {
       try {

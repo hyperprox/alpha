@@ -22,7 +22,9 @@ function SNAP(o: { def4?: string; resolv?: string; q?: string; fw?: string; fwd4
     'HP_ROUTE4 192.0.2.0/24 dev vmbr0 proto kernel scope link src 192.0.2.11',
     'HP_RULE4 32766: from all lookup main',
     'HP_RESOLV_LINK=/etc/resolv.conf', `HP_RESOLV=${o.resolv ?? 'nameserver 192.0.2.1;'}`, 'HP_RESOLVED=inactive',
-    `HP_FW_NFT=${o.fw ?? 'aaa'}`, 'HP_FW_IPT4=bbb', 'HP_FW_IPT6=ccc', `HP_FWD4=${o.fwd4 ?? '0'}`, 'HP_FWD6=0',
+    'HP_FWSRC nft present', 'HP_FWL nft table inet filter {', 'HP_FWL nft chain input {', 'HP_FWL nft tcp dport 22 counter packets 5 bytes 300 accept',
+    ...(o.fw ? [`HP_FWL nft ${o.fw}`] : []), 'HP_FWL nft }', 'HP_FWL nft }', 'HP_FWSRC ipt4 present', 'HP_FWL ipt4 -A INPUT -j PVEFW-INPUT',
+    `HP_FWD4=${o.fwd4 ?? '0'}`, 'HP_FWD6=0',
     ...(o.nets ?? ['HP_NET corosync 192.0.2.12', 'HP_NET own 192.0.2.11/24']),
     'HP_PATH 192.0.2.12 192.0.2.12 dev vmbr0 src 192.0.2.11',
     'HP_COROSYNC link0 node1 localhost', 'HP_COROSYNC link0 node2 connected',
@@ -35,13 +37,14 @@ const TS_STATUS = (m: Machine, ip: string) => `HP_STATUS_BEGIN\n${JSON.stringify
 interface Ran { machine: string; kind: string; script: string }
 
 function classify(script: string): string {
+  if (script.includes('HP_BUSY=')) return 'busy'
   if (script.includes('HP_OS_ID=')) return 'detect'
   if (script.includes('HP_SNAPSHOT_END')) return 'snapshot'
   if (script.includes('HP_KEY=')) return 'up'
   if (script.includes('HP_BACKUP_OK')) return 'backup'
   if (script.includes('HP_RESTORED')) return 'restore'
   if (script.includes('HP_REMOVED')) return 'uninstall'
-  if (/^rm -rf \/var\/lib\/hyperprox-remote-access/.test(script)) return 'drop'
+  if (script.includes('find /var/lib/hyperprox-remote-access')) return 'drop'
   if (script.includes('--only-upgrade')) return 'update'
   if (script.includes('tailscale set') || script.includes('netbird down')) return 'routing'
   if (script.includes('apt-get install -y -qq')) return 'install'
@@ -69,13 +72,14 @@ function world(o: { machines?: Machine[]; answer?: Answer; onRun?: (m: Machine, 
       const n = (counts.get(k) ?? 0) + 1
       counts.set(k, n)
       const out = o.answer?.(m, kind, n, script) ?? (
+        kind === 'busy' ? [0, 'HP_BUSY='] :
         kind === 'detect' ? [0, FACTS()] :
         kind === 'snapshot' ? [0, SNAP()] :
         kind === 'up' ? [0, `the key was ${/HP_KEY='([^']+)'/.exec(script)?.[1]}\n${TS_STATUS(m, `100.64.0.${++ip}`)}`] :
         kind === 'backup' ? [0, 'HP_BACKUP_OK'] :
         kind === 'restore' ? [0, `HP_RESTORED\n${TS_STATUS(m, '100.64.0.99')}`] :
         kind === 'uninstall' ? [0, 'HP_REMOVED'] :
-        kind === 'routing' ? [0, `HP_FWD_BEFORE=0:0\nHP_NB_FLAG DisableServerRoutes:${/disable-server-routes=true/.test(script)}\n${TS_STATUS(m, '100.64.0.9')}`] :
+        kind === 'routing' ? [0, `HP_FWD_BEFORE=0:0\nHP_NB_CONFIG=/etc/netbird/config.json\nHP_NB_FLAG DisableServerRoutes:${/disable-server-routes=true/.test(script)}\n${TS_STATUS(m, '100.64.0.9')}`] :
         kind === 'status' || kind === 'update' ? [0, TS_STATUS(m, '100.64.0.9').replace('1.90.1', '1.92.0')] :
         [0, 'ok'])
       // Delivered in small pieces, as SSH does, so redaction across chunk boundaries is exercised.
@@ -219,21 +223,22 @@ test('a node that is not quorate is not touched', async () => {
   assert.deepEqual(w.kinds(), ['detect', 'snapshot'])
 })
 
-for (const [what, after] of [
-  ['routing tables', SNAP({ def4: 'default dev tailscale0 proto static' })],
-  ['resolver', SNAP({ resolv: 'nameserver 100.100.100.100;' })],
-  ['nftables ruleset', SNAP({ fw: 'changed' })],
-  ['quorum', SNAP({ q: 'No' })],
+for (const [what, after, samples] of [
+  ['routing tables', SNAP({ def4: 'default dev tailscale0 proto static' }), 1],
+  ['resolver', SNAP({ resolv: 'nameserver 100.100.100.100;' }), 1],
+  ['nftables ruleset', SNAP({ fw: 'udp dport 5405 drop' }), 2],
+  ['quorum', SNAP({ q: 'No' }), 1],
 ] as const) {
   test(`node guard: a changed ${what} rolls the install back and deletes the new device by its id`, async () => {
-    const w = world({ answer: (_m, kind, n) => (kind === 'snapshot' && n === 2 ? [0, after] : undefined) })
+    // A firewall-only difference gets a second sample; the change persists in it, so it is not churn.
+    const w = world({ answer: (_m, kind, n) => (kind === 'snapshot' && n >= 2 && n < 2 + samples ? [0, after] : undefined) })
     const { svc, store, prov } = service(w)
     deviceFor(prov, NODE_A, '100.64.0.1')
     const job = await install(svc, ['node-pve-a', 'node-pve-b'])
     assert.equal(job.status, 'failed')
     const d = job.steps[0].detail ?? ''
     assert.match(d, /Rolled back because/); assert.match(d, new RegExp(what)); assert.match(d, /node is back as it was/)
-    assert.deepEqual(w.kinds(), ['detect', 'snapshot', 'install', 'up', 'snapshot', 'uninstall', 'snapshot'])
+    assert.deepEqual(w.kinds(), ['detect', 'snapshot', 'install', 'up', ...Array(samples).fill('snapshot'), 'uninstall', 'snapshot'])
     assert.deepEqual(prov.deleted, ['dev-node-pve-a'])
     assert.ok(prov.revoked.has('key1'))
     assert.equal(await store.get('node-pve-a', 'tailscale'), null)
@@ -370,28 +375,118 @@ test('after a restart, an interrupted node change whose node now differs is roll
   const prov = fakeProvider()
   const { svc } = service(w, prov, store)
   await svc.sweep()
-  assert.deepEqual(w.kinds(), ['snapshot', 'uninstall', 'snapshot'])
+  assert.deepEqual(w.kinds(), ['busy', 'snapshot', 'uninstall', 'snapshot'])
   assert.deepEqual(prov.deleted, ['dev-x'])
   assert.equal(store.inflight.size, 0)
   const rec = store.audits.find(a => a.action === 'remote.recovered')!
   assert.match(String(rec.details.detail), /A restart interrupted install.*rolled back.*back as it was/s)
 })
 
-test('after a restart, an interrupted change on an unchanged node is reported and nothing is undone', async () => {
+test('after a restart, an interrupted install is always undone, even when the node looks unchanged', async () => {
   const store = new MemoryRemoteStore()
-  await leftover(store, { kind: 'remove', provider: 'tailscale', support: SUPPORT, deviceId: null })
+  await leftover(store, { kind: 'remove', provider: 'tailscale', support: SUPPORT, deviceId: null, nodeKey: 'n-node-pve-a', address: '100.64.0.1' })
+  const w = world()
+  const prov = fakeProvider()
+  deviceFor(prov, NODE_A, '100.64.0.1')
+  prov.devices.push({ id: 'same-name', name: 'pve-a', hostname: 'pve-a', addresses: ['100.64.9.9'], online: true, lastSeen: null, version: null })
+  const { svc } = service(w, prov, store)
+  await svc.sweep()
+  assert.deepEqual(w.kinds(), ['busy', 'snapshot', 'uninstall', 'snapshot'])
+  assert.deepEqual(prov.deleted, ['dev-node-pve-a'], 'found by the identity up reported, never by name')
+  assert.equal(store.inflight.size, 0)
+  assert.match(String(store.audits.find(a => a.action === 'remote.recovered')!.details.detail), /never reached its guard verdict, so it was undone/)
+})
+
+test('after a restart, an interrupted update on an unchanged node is reported and nothing is undone', async () => {
+  const store = new MemoryRemoteStore()
+  await store.addInflight({ machineId: 'node-pve-a', provider: 'tailscale', action: 'update', jobId: 'old', by: 'a', owner: 'gone', before: parseSnapshot(SNAP()), undo: { kind: 'restart', provider: 'tailscale' } })
   const w = world()
   const { svc } = service(w, fakeProvider(), store)
   await svc.sweep()
-  assert.deepEqual(w.kinds(), ['snapshot'])
-  assert.equal(store.inflight.size, 0)
+  assert.deepEqual(w.kinds(), ['busy', 'snapshot'])
   assert.match(String(store.audits.find(a => a.action === 'remote.recovered')!.details.detail), /nothing was undone/)
+})
+
+test('recovery waits for the dead job\'s script and apt to finish, then settles before the after-check', async () => {
+  const store = new MemoryRemoteStore()
+  await leftover(store, { kind: 'remove', provider: 'tailscale', support: SUPPORT, deviceId: null })
+  const waits: number[] = []
+  let now = 0
+  const w = world({ answer: (_m, kind, n) => (kind === 'busy' && n <= 2 ? [0, `HP_BUSY= hyperprox-job apt-get`] : undefined) })
+  const { svc } = service(w, fakeProvider(), store, { settleMs: 15_000, now: () => now, sleep: async ms => { waits.push(ms); now += ms } })
+  await svc.sweep()
+  assert.deepEqual(w.kinds().slice(0, 4), ['busy', 'busy', 'busy', 'snapshot'])
+  assert.deepEqual(waits.slice(0, 3), [10_000, 10_000, 15_000], 'polled while busy, then settled before the after-check')
+})
+
+test('recovery that is still blocked after its time limit reports it once, undoes nothing, and keeps the record', async () => {
+  const store = new MemoryRemoteStore()
+  await leftover(store, { kind: 'remove', provider: 'tailscale', support: SUPPORT, deviceId: null })
+  let now = 0
+  const w = world({ answer: (_m, kind) => (kind === 'busy' ? [0, 'HP_BUSY= dpkg'] : undefined) })
+  const { svc } = service(w, fakeProvider(), store, { recoveryWaitMs: 60_000, now: () => now, sleep: async ms => { now += ms } })
+  await svc.sweep()
+  await svc.sweep()
+  assert.ok(!w.kinds().includes('uninstall'))
+  assert.equal(store.inflight.size, 1)
+  const notes = store.audits.filter(a => a.action === 'remote.recovered')
+  assert.equal(notes.length, 1, 'reported once')
+  assert.match(String(notes[0].details.detail), /dpkg is still running on the node, so nothing was undone/)
+})
+
+test('a node script records its pid for the job, so a later process can see whether it still runs', async () => {
+  const w = world()
+  const { svc } = service(w)
+  const job = await install(svc, ['node-pve-a'])
+  for (const r of w.ran.filter(r => r.machine === 'node-pve-a' && !['snapshot'].includes(r.kind))) {
+    assert.match(r.script, new RegExp(`^echo \\$\\$ > /run/hyperprox-remote-access-${job.id}\\.pid`), r.kind)
+  }
+  assert.doesNotMatch(w.ran.find(r => r.machine === 'node-pve-a' && r.kind === 'detect')!.script, /tskey/)
+})
+
+test('the identity up reports is saved to the in-flight record before anything else happens', async () => {
+  const store = new MemoryRemoteStore()
+  let undo: any = null
+  const w = world({ onRun: (_m, kind) => { if (kind === 'snapshot' && store.inflight.size) undo = [...store.inflight.values()][0].undo } })
+  const { svc } = service(w, fakeProvider(), store)
+  await install(svc, ['node-pve-a'])
+  assert.equal(undo?.nodeKey, 'n-node-pve-a')
+  assert.match(undo?.address ?? '', /^100\.64\.0\./)
+})
+
+test('an unlock sweep never revokes the key of an install running in this process', async () => {
+  let release!: () => void
+  const hold = new Promise<void>(r => { release = r })
+  let reached!: () => void
+  const atUp = new Promise<void>(r => { reached = r })
+  const w = world()
+  const run = w.exec.run
+  w.exec.run = async (m, script, o) => { if (script.includes('HP_KEY=')) { reached(); await hold } return run(m, script, o) }
+  const prov = fakeProvider()
+  const { svc, store } = service(w, prov)
+  const job = svc.startJob({ action: 'install', provider: 'tailscale', machineIds: ['lxc-101'] }, 'a')
+  await atUp
+  assert.equal(store.pending.size, 1)
+  await svc.sweep({ startup: true })
+  assert.equal(prov.revoked.size, 0, 'the running install\'s key was left alone')
+  release()
+  const done = await settle(svc, job)
+  assert.equal(done.status, 'completed', done.error)
+  assert.deepEqual([...prov.revoked], ['key1'])
+})
+
+test('a restore that fails keeps the copy root-only and says where it is and how to remove it', async () => {
+  const w = world({ answer: (m, kind, n, script) => HAS(m, kind) ?? (kind === 'up' ? [1, 'failed'] : kind === 'restore' ? [1, 'HP_RESTORE_FAILED /var/lib/hyperprox-remote-access/tailscale'] : undefined) })
+  const { svc } = service(w)
+  const job = await install(svc, ['lxc-101'], { existing: 'replace' })
+  assert.equal(job.status, 'failed')
+  assert.match(job.steps[0].detail ?? '', /kept, root-only, at \/var\/lib\/hyperprox-remote-access\/tailscale.*shred -u/s)
 })
 
 test('an interrupted change on a node that cannot be read yet is kept for the next sweep, and shown', async () => {
   const store = new MemoryRemoteStore()
   await leftover(store, { kind: 'restart', provider: 'tailscale' })
-  const w = world({ answer: (_m, kind) => (kind === 'snapshot' ? [255, 'ssh: connect refused'] : undefined) })
+  const w = world({ answer: (_m, kind) => (kind === 'busy' ? [255, 'ssh: connect refused'] : undefined) })
   const { svc } = service(w, fakeProvider(), store)
   await svc.sweep()
   assert.equal(store.inflight.size, 1)
@@ -434,12 +529,12 @@ test('adopt refuses a client signed in to another account', async () => {
 })
 
 test('replace keeps the old state aside; a guard trip puts it back instead of uninstalling', async () => {
-  const w = world({ answer: (m, kind, n) => HAS(m, kind) ?? (kind === 'snapshot' && n === 2 ? [0, SNAP({ fw: 'changed' })] : undefined) })
+  const w = world({ answer: (m, kind, n) => HAS(m, kind) ?? (kind === 'snapshot' && (n === 2 || n === 3) ? [0, SNAP({ fw: 'udp dport 5405 drop' })] : undefined) })
   const { svc, prov } = service(w)
   deviceFor(prov, NODE_A, '100.64.0.1')
   const job = await install(svc, ['node-pve-a'], { existing: 'replace' })
   assert.equal(job.status, 'failed')
-  assert.deepEqual(w.kinds(), ['detect', 'snapshot', 'backup', 'install', 'up', 'snapshot', 'restore', 'snapshot'])
+  assert.deepEqual(w.kinds(), ['detect', 'snapshot', 'backup', 'install', 'up', 'snapshot', 'snapshot', 'restore', 'snapshot'])
   assert.ok(!w.kinds().includes('uninstall'))
   assert.match(job.steps[0].detail ?? '', /put the previous client and its state back/)
 })
@@ -469,7 +564,7 @@ test('node uninstall is guarded, deletes the device by its recorded id, and forg
 })
 
 test('a node uninstall that trips the guard puts the client back and keeps the device', async () => {
-  const w = world({ answer: (_m, kind, n) => (kind === 'snapshot' && n === 4 ? [0, SNAP({ fw: 'changed' })] : undefined) })
+  const w = world({ answer: (_m, kind, n) => (kind === 'snapshot' && (n === 4 || n === 5) ? [0, SNAP({ fw: 'udp dport 5405 drop' })] : undefined) })
   const { svc, store, prov } = service(w)
   deviceFor(prov, NODE_A, '100.64.0.1')
   await install(svc, ['node-pve-a'])
@@ -560,7 +655,7 @@ test('routing on a guest: checked against its node\'s cluster networks; forwardi
 })
 
 test('NetBird routing is confirmed from the client\'s own config, never from the flag', async () => {
-  const w = world({ answer: (_m, kind) => (kind === 'routing' ? [0, 'HP_NB_FLAG DisableServerRoutes:true\nHP_STATUS_BEGIN\n{}\nHP_STATUS_END'] : undefined) })
+  const w = world({ answer: (_m, kind) => (kind === 'routing' ? [0, 'HP_NB_CONFIG=/var/lib/netbird/default.json\nHP_NB_FLAG DisableServerRoutes:true\nHP_STATUS_BEGIN\n{}\nHP_STATUS_END'] : undefined) })
   const prov = fakeProvider()
   const store = new MemoryRemoteStore()
   await store.upsert({ machineId: 'lxc-101', provider: 'netbird', deviceId: 'peer1', nodeKey: null, hostname: 'web', address: '100.92.0.4', mode: 'kernel', version: '0.82.0', routes: [], exitNode: false, routeIds: [], adopted: false, forwardingBefore: null, connected: true, checkedAt: null, lastError: null })
@@ -650,4 +745,38 @@ test('input checks, one job at a time, and finished jobs are pruned', async () =
   now += 7 * 3600_000
   await settle(svc, svc.startJob({ action: 'check', provider: 'tailscale', machineIds: ['lxc-101'] }, 'a'))
   assert.equal(svc.getJob(first.id), undefined, 'a job finished hours ago is gone')
+})
+
+// ── Host keys ───────────────────────────────────────────────────────────────
+
+function pins(w: ReturnType<typeof world>, presented = 'SHA256:' + 'A'.repeat(43), pinned: string | null = null) {
+  const saved: Array<[string, number, string]> = []
+  w.exec.hostKeyTarget = async m => ({ host: m.kind === 'host' ? '192.0.2.50' : '192.0.2.11', port: 22 })
+  w.exec.probeHostKey = async () => presented
+  w.exec.pinnedHostKey = async () => pinned
+  w.exec.pinHostKey = async (h, p, f) => { saved.push([h, p, f]) }
+  return saved
+}
+
+test('host key: the admin pins exactly the key presented now, in the Terminal\'s store', async () => {
+  const w = world()
+  const fp = 'SHA256:' + 'A'.repeat(43)
+  const saved = pins(w, fp)
+  const { svc, store } = service(w)
+  const pv = await svc.hostKeyPreview('lxc-101')
+  assert.deepEqual(pv, { host: '192.0.2.11', port: 22, fingerprint: fp, pinned: null })
+  await assert.rejects(svc.pinHostKey('lxc-101', 'SHA256:' + 'B'.repeat(43), 'a'), /presents SHA256:A+ now/)
+  await assert.rejects(svc.pinHostKey('lxc-101', 'not a fingerprint', 'a'), RemoteInputError)
+  assert.equal((await svc.pinHostKey('lxc-101', fp, 'admin@example.com')).pinned, true)
+  assert.deepEqual(saved, [['192.0.2.11', 22, fp]])
+  assert.ok(store.audits.some(a => a.action === 'remote.pin-host-key'))
+})
+
+test('host key: a different existing pin is never replaced from here', async () => {
+  const w = world()
+  const fp = 'SHA256:' + 'A'.repeat(43)
+  const saved = pins(w, fp, 'SHA256:' + 'C'.repeat(43))
+  const { svc } = service(w)
+  await assert.rejects(svc.pinHostKey('node-pve-a', fp, 'a'), /different key is pinned.*Terminal/)
+  assert.deepEqual(saved, [])
 })

@@ -12,6 +12,7 @@ import type { AddressInfo } from 'node:net'
 import { RemoteAccessService, type RemoteJob } from '../src/lib/remote/service'
 import { MemoryRemoteStore } from '../src/lib/remote/store'
 import { TailscaleClient } from '../src/lib/remote/tailscale'
+import { installScript, osSupport, parseFacts, DETECT_SCRIPT } from '../src/lib/remote/scripts'
 import type { RemoteExecutor } from '../src/lib/remote/executor'
 import type { Machine } from '../src/lib/remote/types'
 
@@ -44,7 +45,18 @@ const SHIMS = `set -e
 mkdir -p /run/systemd/system /hp-e2e
 cat > /usr/local/sbin/systemctl <<'X'
 #!/bin/sh
+# A stand-in that remembers enabled/active per unit, so a restore can be checked.
 echo "$*" >> /hp-e2e/systemctl.log
+d=/hp-e2e/units; mkdir -p $d
+cmd=$1; shift
+case "$cmd" in
+  enable)  for u; do case "$u" in -*) ;; *) echo enabled > $d/$u.enabled ;; esac; done ;;
+  disable) for u; do case "$u" in -*) ;; *) echo disabled > $d/$u.enabled ;; esac; done ;;
+  start|restart) for u; do case "$u" in -*) ;; *) echo active > $d/$u.active ;; esac; done ;;
+  stop)    for u; do case "$u" in -*) ;; *) echo inactive > $d/$u.active ;; esac; done ;;
+  is-enabled) s=$(cat $d/$1.enabled 2>/dev/null || echo disabled); echo $s; [ "$s" = enabled ]; exit $? ;;
+  is-active) q=0; [ "$1" = --quiet ] && { q=1; shift; }; s=$(cat $d/$1.active 2>/dev/null || echo inactive); [ $q = 1 ] || echo $s; [ "$s" = active ]; exit $? ;;
+esac
 exit 0
 X
 chmod +x /usr/local/sbin/systemctl
@@ -77,6 +89,10 @@ const exec: RemoteExecutor = {
   setLxcConfig: async () => { throw new Error('not in this test') },
   firewallState: async () => { throw new Error('not in this test') },
   addFirewallRule: async () => { throw new Error('not in this test') },
+  hostKeyTarget: async () => { throw new Error('not in this test') },
+  probeHostKey: async () => { throw new Error('not in this test') },
+  pinnedHostKey: async () => null,
+  pinHostKey: async () => { throw new Error('not in this test') },
 }
 
 async function settle(svc: RemoteAccessService, job: RemoteJob): Promise<RemoteJob> {
@@ -169,6 +185,38 @@ test('e2e: real repository and package, key on stdin only, device recorded, then
   assert.equal((await docker(['exec', NAME, 'test', '-e', '/usr/bin/tailscale'])).code, 1, 'package removed')
   assert.equal((await docker(['exec', NAME, 'test', '-e', '/etc/apt/sources.list.d/tailscale.list'])).code, 1, 'repository removed')
   assert.deepEqual(api.deleted, ['d-e2e'])
+  assert.equal(await store.get('lxc-990', 'tailscale'), null)
+  await svc.close()
+})
+
+test('e2e: a replace that fails puts the old client back exactly: version, state, service, and wipes the copy', { skip: !ENABLED, timeout: 15 * 60_000 }, async () => {
+  const sh = async (script: string) => { const r = await docker(['exec', '-i', NAME, 'bash', '-s'], script); assert.equal(r.code, 0, r.output); return r.output.trim() }
+  // An existing Tailscale that HyperProx did not install: an older version, disabled and stopped, with state.
+  const support = osSupport(parseFacts(await sh(DETECT_SCRIPT)))
+  assert.ok(support.ok)
+  if (!support.ok) return
+  await sh(installScript('tailscale', support, 'kernel'))
+  const old = await sh(`apt-cache madison tailscale | awk 'NR==3 {print $3}'`)
+  assert.ok(old, 'an older version is on offer')
+  await sh(`apt-get install -y -qq --allow-downgrades tailscale=${old} >/dev/null && systemctl disable tailscaled && systemctl stop tailscaled && mkdir -p /var/lib/tailscale && echo kept > /var/lib/tailscale/hp-marker`)
+  // `up` fails, so the replace must be rolled back.
+  await sh(`cat > /usr/local/bin/tailscale <<'X'\n#!/bin/bash\n[ "$1" = up ] && { echo "backend error"; exit 1; }\nexec /usr/bin/tailscale "$@"\nX\nchmod +x /usr/local/bin/tailscale`)
+  shimmed = true
+  api.revoked.length = 0
+  const store = new MemoryRemoteStore()
+  const provider = new TailscaleClient({ apiToken: 'tskey-api-e2e' }, { base })
+  const svc = new RemoteAccessService({ store, exec, provider: async id => (id === 'tailscale' ? provider : null), providerSettings: async () => ({ tags: [] }), settleMs: 0 })
+  const job = await settle(svc, svc.startJob({ action: 'install', provider: 'tailscale', machineIds: ['lxc-990'], mode: 'userspace', existing: 'replace' }, 'e2e'))
+  assert.equal(job.status, 'failed')
+  assert.match(job.steps[0].detail ?? '', /put the previous client and its state back/, `${job.steps[0].detail}\n${job.log.slice(-2000)}`)
+  assert.equal(await sh(`dpkg-query -W -f='\${Version}' tailscale`), old, 'the exact earlier version')
+  assert.equal(await sh('cat /var/lib/tailscale/hp-marker'), 'kept')
+  assert.equal(await sh('cat /hp-e2e/units/tailscaled.enabled'), 'disabled')
+  assert.equal(await sh('cat /hp-e2e/units/tailscaled.active'), 'inactive')
+  assert.equal(await sh('test -e /var/lib/hyperprox-remote-access/tailscale && echo still || echo gone'), 'gone', 'the copy was wiped')
+  assert.doesNotMatch(await sh('cat /etc/default/tailscaled'), /userspace/, 'the old defaults file is back')
+  assert.deepEqual(api.revoked, ['k-e2e'])
+  assert.equal(store.pending.size, 0)
   assert.equal(await store.get('lxc-990', 'tailscale'), null)
   await svc.close()
 })
