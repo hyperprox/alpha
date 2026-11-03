@@ -59,6 +59,8 @@ export interface RemoteProvider {
   /** A key for exactly one install. `tags` are Tailscale tags or NetBird group names. */
   mintKey(o: { name: string; tags: string[] }): Promise<MintedKey>
   revokeKey(id: string): Promise<void>
+  /** True once the provider no longer accepts the key (gone, revoked or expired). Asked after every revoke. */
+  keyRevoked(id: string): Promise<boolean>
   listDevices(): Promise<ProviderDevice[]>
   deleteDevice(id: string): Promise<void>
   /**
@@ -66,6 +68,8 @@ export interface RemoteProvider {
    * (NetBird); they are removed first. Returns the ids to remember (empty for Tailscale).
    */
   setRouting(device: ProviderDevice, r: RoutingRequest, previous: string[]): Promise<string[]>
+  /** What the client itself advertises, as the provider sees it (Tailscale). Undefined where not available. */
+  advertisedRoutes?(device: ProviderDevice): Promise<string[]>
 }
 
 /** A provider API failure. The message carries the status and the provider's own message, never a credential. */

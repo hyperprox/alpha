@@ -89,6 +89,13 @@ export class TailscaleClient implements RemoteProvider {
     await this.call(`/api/v2/tailnet/${this.tailnet}/keys/${encodeURIComponent(id)}`, 'revoke key', { method: 'DELETE', okStatus: [404] })
   }
 
+  async keyRevoked(id: string): Promise<boolean> {
+    const r = await this.call<any>(`/api/v2/tailnet/${this.tailnet}/keys/${encodeURIComponent(id)}`, 'read key', { okStatus: [404] })
+    if (!r || !r.id) return true                                       // 404: gone
+    if (r.revoked || r.invalid === true) return true
+    return !!r.expires && Date.parse(r.expires) <= Date.now()
+  }
+
   async listDevices(): Promise<ProviderDevice[]> {
     const r = await this.call<any>(`/api/v2/tailnet/${this.tailnet}/devices?fields=all`, 'list devices')
     return (Array.isArray(r?.devices) ? r.devices : []).map((d: any): ProviderDevice => ({
@@ -107,6 +114,11 @@ export class TailscaleClient implements RemoteProvider {
 
   async deleteDevice(id: string): Promise<void> {
     await this.call(`/api/v2/device/${encodeURIComponent(id)}`, 'delete device', { method: 'DELETE', okStatus: [404] })
+  }
+
+  async advertisedRoutes(device: ProviderDevice): Promise<string[]> {
+    const r = await this.call<any>(`/api/v2/device/${encodeURIComponent(device.id)}/routes`, 'read routes')
+    return Array.isArray(r?.advertisedRoutes) ? r.advertisedRoutes.map(String) : []
   }
 
   async setRouting(device: ProviderDevice, r: RoutingRequest, _previous: string[]): Promise<string[]> {
