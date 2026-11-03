@@ -17,6 +17,7 @@ import { isUnlocked, onLock } from '../lib/vault/state'
 import { loadPolicy as loadPolicyFile, policyStatus, type PolicyLoad } from '../lib/updates/policy'
 import { productionExecutor, type UpdatesExecutor } from '../lib/updates/executor'
 import { readInventory, selfVmidOf } from '../lib/updates/inventory'
+import { annotatePlanSafety } from '../lib/updates/ceph-checks'
 import { buildPlan } from '../lib/updates/planner'
 import { UpdatesRunner, PolicyRequiredError, JobStateError, type RunnerTiming } from '../lib/updates/runner'
 import { publish, type NotifyEventInput } from '../lib/notify'
@@ -160,12 +161,16 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       try {
         const load = loadPolicy()
         const inv = await inventory(false)
-        return buildPlan(inv, load.policy, {
+        const plan = buildPlan(inv, load.policy, {
           approvals, appProviders,
           scope: req.query.scope === 'guests' ? 'guests' : 'all',
           selfVmid: selfVmidOf(inv, load.policy, deps.hostname),
           policyNote: load.loaded ? undefined : `${load.error ?? 'No policy file'} — this plan uses the built-in safe defaults.`,
         })
+        // Read-only: what each Ceph restart and node reboot would do, checked again when it runs.
+        if (!plan.steps.some(s => s.action === 'ceph' || s.action === 'node-reboot' || s.action === 'self')) return plan
+        try { return await annotatePlanSafety(exec, plan, await exec.cephPresent()) }
+        catch (e: any) { return { ...plan, warnings: [...plan.warnings, `Ceph safety not checked: ${e?.message ?? e}`] } }
       } catch (e) { return sendError(reply, e) }
     })
 

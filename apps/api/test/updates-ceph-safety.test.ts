@@ -10,6 +10,8 @@ import {
 } from '../src/lib/updates/ceph-safety'
 import { CEPH_LAYOUT_COMMAND, cephOsdRestartCommand } from '../src/lib/updates/commands'
 import { FakeCluster, node, pkg, policyLoad, FAST, type FakeCephLayout } from './updates-fake'
+import { annotatePlanSafety, SAFETY_MARK } from '../src/lib/updates/ceph-checks'
+import type { NotifyEventInput } from '../src/lib/notify/types'
 
 const POLICY = `
 nodes:
@@ -39,10 +41,11 @@ function cephCluster(layout: FakeCephLayout): FakeCluster {
 }
 function setup(fake: FakeCluster) {
   const store = new MemoryStore()
-  return { store, runner: new UpdatesRunner({ store, exec: fake, loadPolicy: policyLoad(POLICY), timing: FAST, hostname: 'not-a-guest' }) }
+  const published: NotifyEventInput[] = []
+  return { store, published, runner: new UpdatesRunner({ store, exec: fake, loadPolicy: policyLoad(POLICY), timing: FAST, hostname: 'not-a-guest', publish: async e => { published.push(e) } }) }
 }
 async function settle(r: UpdatesRunner) { await r.idle(); await r.idle(); await r.idle() }
-const osdStep = (steps: StepRecord[], target: string) => steps.find(s => s.target === target && s.action === 'ceph' && s.detail === 'restart osd')!
+const osdStep = (steps: StepRecord[], target: string) => steps.find(s => s.target === target && s.action === 'ceph' && (s.detail ?? '').startsWith('restart osd'))!
 const layoutOf = (fake: FakeCluster) => parseCephLayout(String((fake as any).layoutOutput()))
 
 // --- pure decisions -------------------------------------------------------------------------------
@@ -112,7 +115,10 @@ test('size=3: OSDs restart one at a time under noout, with a health check betwee
   // Per node: layout read, noout set, then for each OSD ok-to-stop → restart, noout cleared at the end.
   const a = fake.calls.filter(c => /ceph osd (set|unset) noout|restart ceph-osd@|ceph osd ok-to-stop|^echo HP_POOLS/.test(c.cmd))
     .map(c => c.cmd.replace(/ -f json.*$/, '').replace(/^echo HP_POOLS.*$/, 'layout'))
-  const firstNode = a.slice(0, a.indexOf('ceph osd unset noout') + 1)
+  // Plan time read the layout and asked ok-to-stop for every node first (K5b); execution asks again.
+  const start = a.lastIndexOf('layout', a.indexOf('ceph osd set noout'))
+  assert.ok(start >= 6, 'plan-time checks ran before execution')
+  const firstNode = a.slice(start, a.indexOf('ceph osd unset noout') + 1)
   assert.deepEqual(firstNode, [
     'layout', 'ceph osd ok-to-stop 0 1', 'ceph osd set noout',
     'ceph osd ok-to-stop 0', 'systemctl restart ceph-osd@0.service',
@@ -171,38 +177,43 @@ test('ok-to-stop says no (size=3 pool): dry run, nothing restarted on that node,
   assert.match((await store.getJob(job.id))!.report!.summary, /skipped for safety/)
 })
 
-test('an OSD that does not rejoin aborts the step: the next OSD is not restarted, and noout is cleared', async () => {
+test('an OSD that does not rejoin aborts the step and LEAVES noout set, with a critical notification', async () => {
   const fake = cephCluster(REPLICATED)
   fake.osdStuck.add(0)
-  const { runner, store } = setup(fake)
+  const { runner, store, published } = setup(fake)
   const job = await runner.start('run', 'schedule'); await settle(runner)
   const j = (await store.getJob(job.id))!
   assert.equal(j.status, 'paused')
   const a = osdStep(await store.getSteps(job.id), 'node-a')
   assert.equal(a.status, 'failed')
-  assert.match(a.reason!, /after restarting osd\.0 on node-a.*OSD\(s\) down.*noout cleared/)
+  assert.match(a.reason!, /after restarting osd\.0 on node-a.*OSD\(s\) down.*osd\.1 not restarted.*noout is LEFT SET/)
   assert.deepEqual(fake.restartedOsds, [0])
-  assert.equal(fake.noout, false)
+  assert.equal(fake.noout, true, 'data must not start moving because a restart failed')
+  assert.equal(fake.ran(/ceph osd unset noout/), false)
+  const n = published.find(e => e.severity === 'critical' && /noout is still set/.test(e.title))
+  assert.ok(n, 'a critical notification about noout')
+  assert.ok(n!.lines!.some(l => /did not recover after restarting osd\.0/.test(l)))
+  assert.ok(n!.lines!.some(l => /ceph osd unset noout/.test(l)))
 })
 
-test('a failing restart command still clears noout', async () => {
+test('a failing restart command also leaves noout set', async () => {
   const fake = cephCluster(REPLICATED)
   fake.inject = (_w, c) => (c === 'systemctl restart ceph-osd@1.service' ? { code: 1, output: 'Job failed', timedOut: false } : undefined)
-  const { runner, store } = setup(fake)
+  const { runner, store, published } = setup(fake)
   const job = await runner.start('run', 'schedule'); await settle(runner)
   const a = osdStep(await store.getSteps(job.id), 'node-a')
   assert.equal(a.status, 'failed')
-  assert.match(a.reason!, /restarting osd\.1 failed.*noout cleared/)
-  assert.equal(fake.noout, false)
+  assert.match(a.reason!, /restarting osd\.1 failed.*noout is LEFT SET/)
+  assert.equal(fake.noout, true)
+  assert.ok(published.some(e => e.severity === 'critical' && /noout/.test(e.title)))
 })
 
-test('noout that cannot be cleared is named in the failure', async () => {
+test('only a step where every OSD came back clears noout; if clearing fails, that is named', async () => {
   const fake = cephCluster(REPLICATED)
-  fake.osdStuck.add(0)
   fake.inject = (_w, c) => (c === 'ceph osd unset noout' ? { code: 1, output: 'mon down', timedOut: false } : undefined)
   const { runner, store } = setup(fake)
   const job = await runner.start('run', 'schedule'); await settle(runner)
-  assert.match(osdStep(await store.getSteps(job.id), 'node-a').reason!, /noout is LEFT ON/)
+  assert.match(osdStep(await store.getSteps(job.id), 'node-a').reason!, /noout could not be cleared — it is LEFT SET/)
 })
 
 test('unreadable pool layout: the step fails before restarting anything', async () => {
@@ -222,7 +233,7 @@ test('mons keep their order and are asked ok-to-stop first; a no is a dry run', 
   const { runner, store } = setup(fake)
   const job = await runner.start('run', 'schedule'); await settle(runner)
   const steps = await store.getSteps(job.id)
-  const mon = steps.find(s => s.target === 'node-a' && s.detail === 'restart mon')!
+  const mon = steps.find(s => s.target === 'node-a' && (s.detail ?? '').startsWith('restart mon'))!
   assert.equal(mon.status, 'skipped')
   assert.match(mon.reason!, /^skipped for safety: ceph mon ok-to-stop says no/)
   assert.equal(fake.ran(/ceph-mon\.target/), false)
@@ -238,4 +249,107 @@ test('mon, mgr, then OSD: the existing order holds', async () => {
   assert.deepEqual(order.filter((x, i) => order.indexOf(x) === i), [
     'node-a:mon', 'node-b:mon', 'node-c:mon', 'node-a:mgr', 'node-b:mgr', 'node-c:mgr', 'node-a:osd', 'node-b:osd', 'node-c:osd',
   ])
+})
+
+// --- node reboots get the same gate ---------------------------------------------------------------
+
+const KERNEL = pkg('proxmox-kernel-7.0.2-1-pve-signed', '7.0.2-1', null)
+function rebootCluster(layout: FakeCephLayout): FakeCluster {
+  const fake = new FakeCluster({ nodes: ['node-a', 'node-b', 'node-c'].map(n => node(n, { pending: [pkg('curl', '8.1-2'), KERNEL] })) })
+  fake.cephLayout = layout
+  return fake
+}
+const rebootStep = (steps: StepRecord[], target: string) => steps.find(s => s.target === target && s.action === 'node-reboot')!
+
+test('reboot: a node holding size=1 data is not rebooted; packages stay installed and the reboot is pending', async () => {
+  const fake = rebootCluster(WITH_SINGLE_COPY)
+  const { runner, store } = setup(fake)
+  const job = await runner.start('run', 'schedule'); await settle(runner)
+  const j = (await store.getJob(job.id))!
+  const steps = await store.getSteps(job.id)
+  const c = rebootStep(steps, 'node-c')
+  assert.equal(c.status, 'skipped')
+  assert.match(c.reason!, /^skipped for safety: rebooting node-c would take data out of service — pool "bulk-media" \(size=1, min_size=1\): 100% of it \(16 of 16 placement groups\), about 8\.0 TB would go offline/)
+  assert.match(c.reason!, /reboot is pending — reboot it by hand in a maintenance window/)
+  assert.equal(fake.ran(/^systemctl reboot$/, 'node-c'), false)
+  assert.equal(fake.ran(/node-maintenance enable 'node-c'/), false)
+  assert.equal(steps.find(s => s.target === 'node-c' && s.action === 'node-upgrade')!.status, 'ok', 'packages installed')
+  assert.ok(runner.rebootPending.has('node-c'))
+  assert.deepEqual(j.report!.rebootsPending, ['node-c'])
+  assert.match(j.report!.summary, /skipped for safety/)
+  // The others have only replicated data and reboot as before.
+  assert.equal(rebootStep(steps, 'node-a').status, 'ok')
+  assert.equal(fake.noout, false)
+})
+
+test('reboot: ok-to-stop says no, so no reboot', async () => {
+  const fake = rebootCluster(REPLICATED)
+  fake.okToStopOverride = ids => (ids.includes(0) ? false : undefined)
+  const { runner, store } = setup(fake)
+  const job = await runner.start('run', 'schedule'); await settle(runner)
+  const a = rebootStep(await store.getSteps(job.id), 'node-a')
+  assert.equal(a.status, 'skipped')
+  assert.match(a.reason!, /^skipped for safety: ceph osd ok-to-stop says no/)
+  assert.equal(fake.ran(/^systemctl reboot$/, 'node-a'), false)
+  assert.ok(runner.rebootPending.has('node-a'))
+})
+
+test('reboot: an unreadable layout refuses the reboot', async () => {
+  const fake = rebootCluster(REPLICATED)
+  fake.inject = (_w, c) => (c === CEPH_LAYOUT_COMMAND ? { code: 0, output: 'HP_POOLS\nHP_END', timedOut: false } : undefined)
+  const { runner, store } = setup(fake)
+  const job = await runner.start('run', 'schedule'); await settle(runner)
+  assert.equal((await store.getJob(job.id))!.status, 'paused')
+  assert.match(rebootStep(await store.getSteps(job.id), 'node-a').reason!, /could not read the Ceph pool layout.*node-a was not rebooted/)
+  assert.equal(fake.ran(/^systemctl reboot$/), false)
+})
+
+// --- K5b: the plan says what each Ceph step and reboot would do --------------------------------------
+
+test('plan time: each Ceph restart and reboot carries its safety decision, and unsafe ones are warnings', async () => {
+  const fake = rebootCluster(WITH_SINGLE_COPY)
+  for (const n of fake.nodes) n.pending.push(...CEPH)
+  const { runner, store } = setup(fake)
+  const job = await runner.start('dry-run', 'manual'); await settle(runner)
+  const plan = (await store.getJob(job.id))!.plan
+  const d = (t: string, re: RegExp) => plan.steps.find(s => s.target === t && re.test(s.detail ?? ''))!.detail!
+  assert.equal(d('node-a', /^restart osd/), `restart osd${SAFETY_MARK}will restart osd.0, osd.1 one at a time under noout`)
+  assert.match(d('node-c', /^restart osd/), / · safety: skipped for safety: restarting osd\.4, osd\.5 on node-c would take data out of service — pool "bulk-media".*about 8\.0 TB would go offline/)
+  assert.match(d('node-a', /^restart mon/), / · safety: will restart \(quorum should be preserved/)
+  assert.match(d('node-a', /^restart mgr/), / · safety: will restart \(Ceph has no ok-to-stop check for mgrs\)/)
+  assert.match(plan.steps.find(s => s.target === 'node-a' && s.action === 'node-reboot')!.detail!, / · safety: will reboot if needed \(osd\.0, osd\.1 can all be down at once\)/)
+  assert.match(plan.steps.find(s => s.target === 'node-c' && s.action === 'node-reboot')!.detail!, / · safety: skipped for safety: rebooting node-c .*the reboot would be left pending/)
+  assert.ok(plan.warnings.some(w => /^node-c: restart osd skipped for safety/.test(w)))
+  assert.ok(plan.warnings.some(w => /^node-c: reboot skipped for safety/.test(w)))
+  // A dry run only reads.
+  assert.equal(fake.ran(/noout|systemctl (restart|reboot)|apt-get|node-maintenance/), false)
+})
+
+test('plan time: an unreadable layout is shown as a refusal, not as safe', async () => {
+  const fake = cephCluster(REPLICATED)
+  fake.inject = (_w, c) => (c === CEPH_LAYOUT_COMMAND ? { code: 0, output: 'HP_POOLS\nHP_END', timedOut: false } : undefined)
+  const plan = await annotatePlanSafety(fake, { steps: [{ seq: 1, target: 'node-a', action: 'ceph', detail: 'restart osd' }], warnings: [] }, true)
+  assert.match(plan.steps[0].detail!, / · safety: the step would refuse: could not read the Ceph pool layout/)
+  assert.equal(plan.warnings.length, 1)
+})
+
+test('plan time: no Ceph, no notes', async () => {
+  const fake = cephCluster(REPLICATED)
+  const plan = await annotatePlanSafety(fake, { steps: [{ seq: 1, target: 'node-a', action: 'node-reboot', detail: 'auto — if needed' }], warnings: [] }, false)
+  assert.equal(plan.steps[0].detail, 'auto — if needed')
+  assert.equal(fake.calls.length, 0)
+})
+
+test('the check runs again at execution: safe when planned, unsafe by the time it runs, so skipped', async () => {
+  const fake = cephCluster(REPLICATED)
+  const { runner, store } = setup(fake)
+  const job = await runner.start('run', 'manual'); await settle(runner)
+  assert.equal((await store.getJob(job.id))!.status, 'awaiting-confirm')
+  assert.match(osdStep(await store.getSteps(job.id), 'node-c').detail!, /will restart osd\.4, osd\.5/)
+  fake.cephLayout = WITH_SINGLE_COPY
+  await runner.confirm(job.id); await settle(runner)
+  const c = osdStep(await store.getSteps(job.id), 'node-c')
+  assert.equal(c.status, 'skipped')
+  assert.match(c.reason!, /^skipped for safety: .*bulk-media/)
+  assert.equal(fake.restartedOsds.includes(4), false)
 })
