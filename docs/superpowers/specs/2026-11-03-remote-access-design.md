@@ -299,6 +299,24 @@ they differ; docs/remote-access.md describes the result.
   hand-added hosts requires a pinned key; raw `lxc` tun entries and the config digest; below-admin overview
   without addresses; re-confirmation for check and update on nodes.
 
+### Round 2 (before any install on a real node)
+
+- **Guard.** A client's own routes only inside its overlay prefixes (100.64.0.0/10, and fd7a:115c:a1e0::/48
+  for Tailscale) or of type local, broadcast, multicast or throw; /1 splits and anything else in table
+  52/7120 refused; each policy rule pinned to its exact priority and shape; paths to gateways, resolvers and
+  IPv6 Ceph monitors.
+- **Firewall as text**, not a hash: nftables, iptables/ip6tables on both backends, ipset, ebtables, with
+  fail2ban, per-guest chains, PVESIG, timed set elements and counter values left out; a firewall-only
+  difference gets a second sample and what keeps moving between the two is discounted.
+- **Recovery** waits for the dead job's own script (it records its pid in /run) and apt/dpkg, settles, always
+  undoes an interrupted install, and finds its device by the identity `up` reported, which is saved at once.
+- **Replace rollback** restores the package version, the unit and its environment, and the enabled/active
+  state, and shreds the copy; a failed restore keeps it at 0700 and says how to remove it.
+- **Sweeps** never touch a key of an install running in this process. NetBird flags come from the running
+  daemon's config. Every SSH path needs a pinned host key, with a check-and-trust action sharing the
+  Terminal's pins.
+- **Migrations**: the first stays as it was; `20261103130000_remote_access_durability` adds the rest.
+
 ## Phase 2
 
 - **Self-hosted NetBird recipe** in the Catalogue. It does not fit the current recipe model cleanly:
