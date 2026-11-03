@@ -75,6 +75,8 @@ const exec: RemoteExecutor = {
   },
   lxcConfig: async () => ({}),
   setLxcConfig: async () => { throw new Error('not in this test') },
+  firewallState: async () => { throw new Error('not in this test') },
+  addFirewallRule: async () => { throw new Error('not in this test') },
 }
 
 async function settle(svc: RemoteAccessService, job: RemoteJob): Promise<RemoteJob> {
@@ -104,6 +106,10 @@ before(async () => {
         return send(200, { id: 'k-e2e', key: KEY, expires: new Date(Date.now() + 600_000).toISOString() })
       }
       if (req.method === 'DELETE' && url.pathname.startsWith('/api/v2/tailnet/-/keys/')) { api.revoked.push(url.pathname.split('/').pop()!); return send(200, {}) }
+      if (req.method === 'GET' && url.pathname.startsWith('/api/v2/tailnet/-/keys/')) {
+        const id = url.pathname.split('/').pop()!
+        return api.revoked.includes(id) ? send(404, { message: 'not found' }) : send(200, { id, expires: new Date(Date.now() + 600_000).toISOString() })
+      }
       if (req.method === 'GET' && url.pathname === '/api/v2/tailnet/-/devices') return send(200, { devices: api.devices })
       if (req.method === 'DELETE' && url.pathname.startsWith('/api/v2/device/')) { api.deleted.push(url.pathname.split('/').pop()!); api.devices = []; return send(200, {}) }
       send(404, { message: 'not mocked' })
@@ -126,7 +132,7 @@ after(async () => {
 test('e2e: real repository and package, key on stdin only, device recorded, then a clean uninstall', { skip: !ENABLED, timeout: 15 * 60_000 }, async () => {
   const store = new MemoryRemoteStore()
   const provider = new TailscaleClient({ apiToken: 'tskey-api-e2e' }, { base })
-  const svc = new RemoteAccessService({ store, exec, provider: async id => (id === 'tailscale' ? provider : null), providerSettings: async () => ({ tags: [] }) })
+  const svc = new RemoteAccessService({ store, exec, provider: async id => (id === 'tailscale' ? provider : null), providerSettings: async () => ({ tags: [] }), settleMs: 0 })
 
   // No /dev/net/tun in a plain Docker container: refused with the way forward, nothing installed.
   const refused = await settle(svc, svc.startJob({ action: 'install', provider: 'tailscale', machineIds: ['lxc-990'] }, 'e2e'))
@@ -153,6 +159,7 @@ test('e2e: real repository and package, key on stdin only, device recorded, then
   assert.equal(grep.output.trim(), '', `key found on disk: ${grep.output}`)
   assert.doesNotMatch(job.log, new RegExp(KEY))
   assert.deepEqual(api.revoked, ['k-e2e'], 'the key was revoked once used')
+  assert.equal(store.pending.size, 0, 'and the provider confirmed it, so nothing is left to sweep')
   assert.equal((await store.get('lxc-990', 'tailscale'))?.deviceId, 'd-e2e')
 
   // The stand-in goes first, or uninstall would rightly report a `tailscale` still on PATH.
@@ -163,5 +170,5 @@ test('e2e: real repository and package, key on stdin only, device recorded, then
   assert.equal((await docker(['exec', NAME, 'test', '-e', '/etc/apt/sources.list.d/tailscale.list'])).code, 1, 'repository removed')
   assert.deepEqual(api.deleted, ['d-e2e'])
   assert.equal(await store.get('lxc-990', 'tailscale'), null)
-  svc.close()
+  await svc.close()
 })

@@ -12,16 +12,21 @@
 
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { hasRole } from '../lib/roles'
+import { onUnlock } from '../lib/vault/state'
 import { livePve } from '../lib/pve-env'
 import {
-  RemoteAccessService, RemoteBusyError, RemoteInputError, RemoteNotFoundError, type JobRequest,
+  RemoteAccessService, RemoteBusyError, RemoteInputError, RemoteNotFoundError, overviewForRole, type JobRequest,
 } from '../lib/remote/service'
 import { PrismaRemoteStore } from '../lib/remote/store'
 import { productionRemoteExecutor } from '../lib/remote/executor'
 import { providerFromVault, providerSettingsFromVault } from '../lib/remote/providers'
 import { ProviderError, isProviderId } from '../lib/remote/types'
 
-export interface RemoteRouteDeps { service?: RemoteAccessService }
+export interface RemoteRouteDeps {
+  service?: RemoteAccessService
+  /** Tests turn the sweep off; production wants it (revokes leftover keys, re-checks interrupted node changes). */
+  sweep?: boolean
+}
 
 const MACHINE_ID = /^(node|lxc|qemu|host)-[A-Za-z0-9._-]{1,120}$/
 
@@ -59,13 +64,21 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
       providerSettings: id => providerSettingsFromVault(id),
       log: m => fastify.log.info(m),
     })
+    if (deps.sweep !== false) {
+      // Provider credentials and node logins are vault items, so a sweep that runs while locked does nothing and
+      // the one after unlock does the work.
+      fastify.addHook('onReady', async () => service.start())
+      onUnlock(() => { void service.sweep({ startup: true }) })
+    }
     fastify.addHook('onClose', async () => service.close())
 
     const by = (req: FastifyRequest) => req.session?.email ?? 'unknown'
 
     // Viewer and up. The gate has already required a session.
-    fastify.get('/overview', async (_req, reply) => {
-      try { return await service.overview() } catch (e) { return sendError(reply, e) }
+    // Below admin: overlay status, version and connection only; no LAN or cluster addresses.
+    fastify.get('/overview', async (req, reply) => {
+      try { return overviewForRole(await service.overview(), !!req.session && hasRole(req.session.role, 'admin')) }
+      catch (e) { return sendError(reply, e) }
     })
 
     fastify.get<{ Params: { id: string } }>('/jobs/:id', { preHandler: adminOnly }, async (req, reply) => {
@@ -78,7 +91,7 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
       const b = req.body ?? {}
       try {
         const job = service.startJob({
-          action: 'install', provider: b.provider as any, machineIds: b.machineIds as any, tags: b.tags, mode: b.mode,
+          action: 'install', provider: b.provider as any, machineIds: b.machineIds as any, tags: b.tags, mode: b.mode, existing: b.existing,
         }, by(req))
         return reply.status(202).send({ job })
       } catch (e) { return sendError(reply, e) }
@@ -118,6 +131,18 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
       try {
         if (!MACHINE_ID.test(req.params.id)) throw new RemoteInputError('Unknown machine id format')
         return await service.applyTun(req.params.id, by(req))
+      } catch (e) { return sendError(reply, e) }
+    })
+
+    // The node host-firewall rule for SSH and the web UI over the overlay: a preview, then an explicit confirm.
+    fastify.get<{ Params: MachineParams }>('/machines/:id/:provider/firewall', { preHandler: adminOnly }, async (req, reply) => {
+      try { const { id, provider } = params(req); return await service.firewallPreview(id, provider) } catch (e) { return sendError(reply, e) }
+    })
+    fastify.post<{ Params: MachineParams; Body: { confirm?: unknown } }>('/machines/:id/:provider/firewall', { preHandler: adminOnly }, async (req, reply) => {
+      try {
+        const { id, provider } = params(req)
+        if (req.body?.confirm !== true) throw new RemoteInputError('Send { confirm: true } after showing the preview')
+        return await service.addFirewallRule(id, provider, by(req))
       } catch (e) { return sendError(reply, e) }
     })
 
