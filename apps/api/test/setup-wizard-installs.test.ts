@@ -1,15 +1,18 @@
 // The setup wizard's "Install with HyperProx" step no longer offers Nginx Proxy Manager (it needs ports 80
 // and 443, which HyperProx's own nginx holds, so the bundled one could never start), and it no longer
-// points at Prometheus or Grafana ports that are now loopback-only. These drive the real page and server.
+// points at Prometheus or Grafana ports that are now loopback-only. The connect step also gives the PVE
+// exporter its own read-only token. These drive the real page, the real server and setupExporter.
 import { test, after } from "node:test"
 import assert from "node:assert/strict"
 import { spawn, type ChildProcess } from "node:child_process"
-import { mkdtempSync, writeFileSync, readFileSync } from "node:fs"
+import { mkdtempSync, writeFileSync, readFileSync, statSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const setup = require("../../setup/setup.js")
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const shared = require("../../setup/pve-exporter.js")
 
 test("the install step offers Prometheus and Grafana, not Nginx Proxy Manager", () => {
   const html: string = setup.WIZARD_HTML
@@ -68,4 +71,57 @@ test("state from an old .env with INSTALL_NPM=true reports no npm choice", async
   const { call } = await serve("INSTALL_PROMETHEUS=true\nINSTALL_GRAFANA=true\nINSTALL_NPM=true\n")
   const body = await call("GET", "state")
   assert.deepEqual(body.installs, { grafana: true, prometheus: true })
+})
+
+// ── The exporter's read-only token, as the connect step makes it ───────────────────────────────────────
+function fakePve(userid: string, tokens: Array<{ tokenid: string; secret: string; comment?: string; privsep?: number }>) {
+  const calls: string[] = []
+  const acls: Array<{ path: string; role: string; token: string }> = []
+  let n = 0
+  return {
+    calls, acls, tokens,
+    async listTokens() { calls.push("list"); return tokens.map((t) => ({ tokenid: t.tokenid, comment: t.comment ?? "" })) },
+    async deleteToken(name: string) { calls.push(`delete ${name}`); tokens.splice(tokens.findIndex((t) => t.tokenid === name), 1) },
+    async createToken(name: string, o: { privsep: number; comment: string }) {
+      calls.push(`create ${name} privsep=${o.privsep}`)
+      const secret = `exp-secret-${++n}`
+      tokens.push({ tokenid: name, secret, comment: o.comment, privsep: o.privsep })
+      return { "full-tokenid": `${userid}!${name}`, value: secret }
+    },
+    async setAcl(a: { path: string; role: string; token: string }) { calls.push(`acl ${a.path} ${a.role} ${a.token}`); acls.push(a) },
+    async tokenWorks(fullId: string, secret: string) {
+      const [u, name] = fullId.split("!")
+      return u === userid && tokens.some((t) => t.tokenid === name && t.secret === secret)
+    },
+  }
+}
+
+test("connect: the exporter gets <token>-exporter, privilege-separated, PVEAuditor on /, in pve.yml 0600", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "hpx-setup-exporter-"))
+  const file = join(dir, "config", "pve-exporter", "pve.yml")
+  mkdirSync(file, { recursive: true })          // the directory Docker makes for a missing bind-mount source
+  const pve = fakePve("root@pam", [{ tokenid: "hyperprox-node-a-0a1b2c3d", secret: "admin" }])
+  let restarts = 0
+  const r = await setup.setupExporter(pve, "root@pam", "hyperprox-node-a-0a1b2c3d", file, () => { restarts++ })
+  assert.deepEqual(r, { ok: true, action: "create", tokenId: "root@pam!hyperprox-node-a-0a1b2c3d-exporter" })
+  assert.deepEqual(pve.calls, ["list", "create hyperprox-node-a-0a1b2c3d-exporter privsep=1",
+    "acl / PVEAuditor root@pam!hyperprox-node-a-0a1b2c3d-exporter"])
+  assert.equal(statSync(file).mode & 0o777, 0o600)
+  assert.deepEqual(shared.readPveYml(file), { user: "root@pam", tokenName: "hyperprox-node-a-0a1b2c3d-exporter", secret: "exp-secret-1" })
+  assert.equal(restarts, 1)
+
+  // Connecting again (a reload, a second attempt) keeps the token and does not restart the exporter.
+  pve.calls.length = 0
+  const again = await setup.setupExporter(pve, "root@pam", "hyperprox-node-a-0a1b2c3d", file, () => { restarts++ })
+  assert.equal(again.action, "reuse")
+  assert.deepEqual(pve.calls, ["acl / PVEAuditor root@pam!hyperprox-node-a-0a1b2c3d-exporter"])
+  assert.equal(restarts, 1)
+})
+
+test("connect: an exporter token someone else made is left alone", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "hpx-setup-exporter-"))
+  const file = join(dir, "pve.yml")
+  const pve = fakePve("root@pam", [{ tokenid: "hyperprox-exporter", secret: "theirs", comment: "mine, not HyperProx's" }])
+  await assert.rejects(setup.setupExporter(pve, "root@pam", "hyperprox", file, () => {}), /was not made by HyperProx/)
+  assert.ok(!pve.calls.some((c) => c.startsWith("delete")), "nothing deleted")
 })

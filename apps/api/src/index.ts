@@ -30,6 +30,7 @@ import { terminalWsRoutes }           from './routes/terminal-ws'
 import { updatesRoutes, updatesWsRoutes } from './routes/updates'
 import { certsRoutes }            from './routes/certs'
 import { notifyRoutes }           from './routes/notify'
+import { monitoringRoutes }       from './routes/monitoring'
 import { prismaPlugin }         from './plugins/prisma'
 import { redisPlugin }          from './plugins/redis'
 import { registerGate }         from './lib/gate'
@@ -96,6 +97,7 @@ async function main() {
   await server.register(aiRoutes,    { prefix: '/api/ai' })
   await server.register(gpuRoutes,   { prefix: '/api/gpu' })
   await server.register(targetsRoutes, { prefix: '/api/targets' })
+  await server.register(monitoringRoutes, { prefix: '/api/monitoring' })
   await server.register(terminalRoutes,           { prefix: '/api/terminal' })
   await server.register(pluginRoutes,          { prefix: '/api/plugins' })
   await server.register(catalogueRoutes,      { prefix: '/api/catalogue' })
