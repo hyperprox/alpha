@@ -23,6 +23,7 @@ broker.addUser('admin@example.com', 'admin master password', 'admin')
 broker.addUser('op@example.com', 'operator master password', 'operator')
 broker.addUser('viewer@example.com', 'viewer master password', 'viewer')
 
+const FP = 'SHA256:' + 'A'.repeat(43)
 const ran: string[] = []
 let hold: Promise<void> = Promise.resolve()
 const exec: RemoteExecutor = {
@@ -41,6 +42,10 @@ const exec: RemoteExecutor = {
   setLxcConfig: async () => undefined,
   firewallState: async () => ({ clusterEnabled: true, rules: [] }),
   addFirewallRule: async () => undefined,
+  hostKeyTarget: async () => ({ host: '192.0.2.11', port: 22 }),
+  probeHostKey: async () => FP,
+  pinnedHostKey: async () => null,
+  pinHostKey: async () => undefined,
 }
 const provider: RemoteProvider = {
   id: 'tailscale', test: async () => 'ok',
@@ -75,6 +80,7 @@ const RECONFIRMED: Array<[string, string]> = [
   ['DELETE', '/api/remote/machines/lxc-101/tailscale'],
   ['POST', '/api/remote/machines/lxc-101/tun'],
   ['POST', '/api/remote/machines/node-pve-a/tailscale/firewall'],
+  ['POST', '/api/remote/machines/lxc-101/host-key'],
   ['POST', '/api/remote/machines/node-pve-a/tailscale/check'],
   ['POST', '/api/remote/machines/node-pve-a/netbird/update'],
 ]
@@ -87,6 +93,7 @@ test('the role matrix: overview is viewer, jobs and every action admin, the dang
   assert.equal(requiredRole('GET', '/api/remote/overview'), 'viewer')
   assert.equal(requiredRole('GET', '/api/remote/jobs/abc'), 'admin')
   assert.equal(requiredRole('GET', '/api/remote/machines/node-pve-a/tailscale/firewall'), 'admin')
+  assert.equal(requiredRole('GET', '/api/remote/machines/lxc-101/host-key'), 'admin')
   for (const [m, p] of [...RECONFIRMED, ...ADMIN_PLAIN]) assert.equal(requiredRole(m, p), 'admin', `${m} ${p}`)
   for (const [m, p] of RECONFIRMED) assert.equal(needsReconfirm(m, p), true, `${m} ${p}`)
   for (const [m, p] of ADMIN_PLAIN) assert.equal(needsReconfirm(m, p), false, `${m} ${p}`)
@@ -190,4 +197,19 @@ test('admin: the overview keeps addresses; the firewall rule needs a preview, th
   const ok = await app.inject({ method: 'POST', url: '/api/remote/machines/node-pve-a/tailscale/firewall', headers: { cookie }, payload: { confirm: true } })
   assert.equal(ok.statusCode, 200, ok.body)
   assert.equal(ok.json().added, true)
+})
+
+test('admin: a host key is previewed, then pinned only after re-confirmation and only as presented', async () => {
+  const { cookie } = await signIn(app, 'admin@example.com', 'admin master password')
+  const pv = await app.inject({ method: 'GET', url: '/api/remote/machines/lxc-101/host-key', headers: { cookie } })
+  assert.equal(pv.statusCode, 200, pv.body)
+  assert.equal(pv.json().fingerprint, FP)
+  const noRc = await app.inject({ method: 'POST', url: '/api/remote/machines/lxc-101/host-key', headers: { cookie }, payload: { fingerprint: FP } })
+  assert.equal(noRc.json().code, 'reconfirm_required')
+  await app.inject({ method: 'POST', url: '/api/auth/reconfirm', headers: { cookie }, payload: { password: 'admin master password' } })
+  const wrong = await app.inject({ method: 'POST', url: '/api/remote/machines/lxc-101/host-key', headers: { cookie }, payload: { fingerprint: 'SHA256:' + 'B'.repeat(43) } })
+  assert.equal(wrong.statusCode, 400)
+  const ok = await app.inject({ method: 'POST', url: '/api/remote/machines/lxc-101/host-key', headers: { cookie }, payload: { fingerprint: FP } })
+  assert.equal(ok.statusCode, 200, ok.body)
+  assert.equal(ok.json().pinned, true)
 })

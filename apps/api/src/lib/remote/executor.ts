@@ -16,7 +16,7 @@
 
 import { livePve } from '../pve-env'
 import type { ProxmoxClient } from '../proxmox-client'
-import { execOnNode, nodeCredential, type ExecResult } from '../node-exec'
+import { execOnNode, nodeCredential, pinHostKey, pinnedHostKey, probeHostKey, type ExecResult } from '../node-exec'
 import { loadCredential, type TerminalCredential } from '../ssh-broker'
 import { listManualHosts, listHostAddresses } from '../terminal-hosts'
 import type { Machine } from './types'
@@ -39,6 +39,13 @@ export interface RemoteExecutor {
   /** Whether the datacenter firewall is on, and the node's own host firewall rules. */
   firewallState(node: string): Promise<{ clusterEnabled: boolean; rules: Array<Record<string, unknown>> }>
   addFirewallRule(node: string, rule: Record<string, string>): Promise<void>
+  /** The SSH endpoint whose host key protects scripts sent to `m`: its node's for node, pct and agent paths. */
+  hostKeyTarget(m: Machine): Promise<{ host: string; port: number }>
+  /** The key that endpoint presents now, read without logging in. */
+  probeHostKey(host: string, port: number): Promise<string>
+  pinnedHostKey(host: string, port: number): Promise<string | null>
+  /** Saved where the Terminal keeps its pins, so a pin made in either place serves both. */
+  pinHostKey(host: string, port: number, fingerprint: string): Promise<void>
 }
 
 export class TransportError extends Error {
@@ -50,13 +57,16 @@ const asRoot = (cred: TerminalCredential) => (cred.username === 'root' ? 'bash -
 /** What the production executor reaches outside itself for, so a test can check every command it builds. */
 export interface TransportDeps {
   ssh:               typeof execOnNode
+  probeHostKey?:     typeof probeHostKey
+  pinnedHostKey?:    typeof pinnedHostKey
+  pinHostKey?:       typeof pinHostKey
   nodeCredential:    typeof nodeCredential
   loadCredential:    typeof loadCredential
   listManualHosts:   typeof listManualHosts
   listHostAddresses: typeof listHostAddresses
 }
 
-const realTransport: TransportDeps = { ssh: execOnNode, nodeCredential, loadCredential, listManualHosts, listHostAddresses }
+const realTransport: TransportDeps = { ssh: execOnNode, nodeCredential, loadCredential, listManualHosts, listHostAddresses, probeHostKey, pinnedHostKey, pinHostKey }
 
 export function productionRemoteExecutor(
   pve: Pick<ProxmoxClient, 'fetchStrict'> = livePve(),
@@ -125,12 +135,12 @@ export function productionRemoteExecutor(
 
     async run(m, script, o = {}) {
       if (m.kind === 'node') {
-        return execOnNode({ host: await nodeHost(m.node!), cred: await nodeCred(m.node!), command: 'bash -s', input: script, timeoutMs: o.timeoutMs, onData: o.onData })
+        return execOnNode({ host: await nodeHost(m.node!), cred: await nodeCred(m.node!), command: 'bash -s', input: script, timeoutMs: o.timeoutMs, onData: o.onData, requirePin: true })
       }
       if (m.kind === 'lxc') {
         return execOnNode({
           host: await nodeHost(m.node!), cred: await nodeCred(m.node!),
-          command: `pct exec ${Number(m.vmid)} -- bash -s`, input: script, timeoutMs: o.timeoutMs, onData: o.onData,
+          command: `pct exec ${Number(m.vmid)} -- bash -s`, input: script, timeoutMs: o.timeoutMs, onData: o.onData, requirePin: true,
         })
       }
       if (m.kind === 'qemu') {
@@ -138,7 +148,7 @@ export function productionRemoteExecutor(
           const secs = Math.ceil((o.timeoutMs ?? 15 * 60_000) / 1000)
           const r = await execOnNode({
             host: await nodeHost(m.node!), cred: await nodeCred(m.node!), timeoutMs: (secs + 30) * 1000,
-            command: `qm guest exec ${Number(m.vmid)} --timeout ${secs} --pass-stdin 1 -- bash`, input: script,
+            command: `qm guest exec ${Number(m.vmid)} --timeout ${secs} --pass-stdin 1 -- bash`, input: script, requirePin: true,
           })
           if (r.code !== 0) return r
           try {
@@ -177,5 +187,23 @@ export function productionRemoteExecutor(
     async addFirewallRule(node, rule) {
       await pve.fetchStrict(`/nodes/${encodeURIComponent(node)}/firewall/rules`, 'POST', new URLSearchParams(rule).toString())
     },
+
+    async hostKeyTarget(m) {
+      if (m.kind === 'node' || m.kind === 'lxc') return { host: await nodeHost(m.node!), port: 22 }
+      if (m.kind === 'qemu') {
+        if (await agentAnswers(m)) return { host: await nodeHost(m.node!), port: 22 }
+        const id = `qemu-${m.vmid}`
+        const c = await loadCredential(id)
+        const address = (await listHostAddresses().catch(() => ({} as Record<string, string>)))[id]
+        if (!c || !address) throw new TransportError(`No login or address saved for ${id} in the Terminal`)
+        return { host: address, port: c.port || 22 }
+      }
+      const c = await loadCredential(m.id.replace(/^host-/, ''))
+      if (!m.address) throw new TransportError(`No address known for ${m.name}`)
+      return { host: m.address, port: c?.port || 22 }
+    },
+    probeHostKey: (host, port) => (t.probeHostKey ?? probeHostKey)(host, port),
+    pinnedHostKey: (host, port) => (t.pinnedHostKey ?? pinnedHostKey)(host, port),
+    pinHostKey: (host, port, fp) => (t.pinHostKey ?? pinHostKey)(host, port, fp),
   }
 }

@@ -88,13 +88,25 @@ test('container config is changed through the Proxmox API with a PUT, never by e
   assert.deepEqual(put, { path: '/nodes/pve-a/lxc/101/config', method: 'PUT', body: 'dev0=%2Fdev%2Fnet%2Ftun' })
 })
 
-test('SSH to VMs and hand-added hosts requires a pinned host key; node and pct transports keep the node pin', async () => {
-  const { ex, calls } = setup({ agent: false })
-  for (const m of await ex.listMachines()) await ex.run(m, SCRIPT)
-  const pinned = Object.fromEntries(calls.map(c => [c.command.startsWith('sudo') || c.host === '192.0.2.50' ? `${c.host}` : c.command, c.requirePin === true]))
-  assert.equal(pinned['192.0.2.102'], true, 'VM over SSH')
-  assert.equal(pinned['192.0.2.50'], true, 'hand-added host')
-  assert.equal(calls.find(c => c.command === 'bash -s' && c.host === '192.0.2.11')?.requirePin, undefined)
+test('every transport requires a pinned host key: node, pct, guest agent, VM over SSH, hand-added host', async () => {
+  for (const agent of [true, false]) {
+    const { ex, calls } = setup({ agent })
+    for (const m of await ex.listMachines()) await ex.run(m, SCRIPT)
+    assert.equal(calls.length, 4)
+    for (const c of calls) assert.equal(c.requirePin, true, `${c.host} ${c.command}`)
+  }
+})
+
+test('the host key that protects each machine: its node\'s for node, pct and agent paths; its own over SSH', async () => {
+  const { ex } = setup({ agent: true })
+  const ms = await ex.listMachines()
+  const t = async (id: string) => ex.hostKeyTarget(ms.find(m => m.id === id)!)
+  assert.deepEqual(await t('node-pve-a'), { host: '192.0.2.11', port: 22 })
+  assert.deepEqual(await t('lxc-101'), { host: '192.0.2.11', port: 22 })
+  assert.deepEqual(await t('qemu-102'), { host: '192.0.2.11', port: 22 })
+  assert.deepEqual(await t('host-ssh-nas'), { host: '192.0.2.50', port: 22 })
+  const { ex: ex2 } = setup({ agent: false })
+  assert.deepEqual(await ex2.hostKeyTarget((await ex2.listMachines()).find(m => m.id === 'qemu-102')!), { host: '192.0.2.102', port: 2222 })
 })
 
 test('the config PUT carries the digest from the GET; firewall state and rules go through the API', async () => {
