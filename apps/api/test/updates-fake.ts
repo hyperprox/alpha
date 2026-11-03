@@ -5,7 +5,7 @@
 
 import type { UpdatesExecutor, ClusterStatus, HaStatus, CephHealth, GuestListing, GuestRef, ExecResult, LineSink } from '../src/lib/updates/executor'
 import type { UpdatesPkgChange } from '../src/lib/updates/types'
-import { NODE_FACTS_COMMAND, GUEST_PENDING_SCRIPT, GUEST_UPGRADE_SCRIPT, GUEST_REFRESH_SCRIPT, isKernelPackage } from '../src/lib/updates/commands'
+import { NODE_FACTS_COMMAND, GUEST_PENDING_SCRIPT, GUEST_UPGRADE_SCRIPT, GUEST_REFRESH_SCRIPT, CEPH_LAYOUT_COMMAND, isKernelPackage } from '../src/lib/updates/commands'
 import { parsePolicy, type PolicyLoad } from '../src/lib/updates/policy'
 
 export interface FakeNode {
@@ -30,6 +30,11 @@ export interface FakeGuest extends GuestListing {
 }
 
 export interface Call { where: string; cmd: string; t: number }
+
+/** A Ceph pool in the pretend cluster. `hosts` limits where its PGs land (default: every node with OSDs). */
+export interface FakePool { id: number; name: string; size: number; minSize: number; pgNum: number; storedBytes: number; hosts?: string[] }
+export interface FakeCephLayout { pools: FakePool[]; osdsByNode: Record<string, number[]> }
+export interface FakePg { pgid: string; pool: number; osds: number[] }
 
 const ok = (output = ''): ExecResult => ({ code: 0, output, timedOut: false })
 
@@ -78,6 +83,15 @@ export class FakeCluster implements UpdatesExecutor {
   scripted = new Map<string, (script: string) => ExecResult>()
   concurrentGuests = 0
   maxConcurrentGuests = 0
+  /** Pools and OSD placement. null: two OSDs per node and one replicated pool across all of them. */
+  cephLayout: FakeCephLayout | null = null
+  /** Overrides the computed `ceph osd ok-to-stop` answer when it returns a boolean. */
+  okToStopOverride: (ids: number[]) => boolean | undefined = () => undefined
+  monOkToStop = true
+  /** OSDs that never come back up after a restart. */
+  osdStuck = new Set<number>()
+  restartedOsds: number[] = []
+  private osdDownPolls = new Map<number, number>()
 
   constructor(init?: { nodes?: FakeNode[]; guests?: FakeGuest[] }) {
     this.nodes = init?.nodes ?? []
@@ -112,6 +126,67 @@ export class FakeCluster implements UpdatesExecutor {
     return n.online
   }
 
+  layout(): FakeCephLayout {
+    if (this.cephLayout) return this.cephLayout
+    const osdsByNode = Object.fromEntries(this.nodes.map((n, i) => [n.name, [2 * i, 2 * i + 1]]))
+    const size = Math.min(3, this.nodes.length)
+    return { osdsByNode, pools: [{ id: 1, name: 'vm-disks', size, minSize: size >= 3 ? 2 : 1, pgNum: 32, storedBytes: 100e9 }] }
+  }
+  /** Each PG on `size` distinct hosts, round robin: deterministic, so tests can count. */
+  pgs(): FakePg[] {
+    const l = this.layout()
+    const out: FakePg[] = []
+    for (const p of l.pools) {
+      const hosts = (p.hosts ?? Object.keys(l.osdsByNode)).filter(h => l.osdsByNode[h]?.length)
+      for (let i = 0; i < p.pgNum; i++) {
+        const osds: number[] = []
+        for (let k = 0; k < Math.min(p.size, hosts.length); k++) {
+          const ids = l.osdsByNode[hosts[(i + k) % hosts.length]]
+          osds.push(ids[i % ids.length])
+        }
+        out.push({ pgid: `${p.id}.${i.toString(16)}`, pool: p.id, osds })
+      }
+    }
+    return out
+  }
+  okToStop(ids: number[]): { ok: boolean; bad: number } {
+    const forced = this.okToStopOverride(ids)
+    const l = this.layout()
+    const down = new Set(ids)
+    let bad = 0
+    for (const pg of this.pgs()) {
+      const pool = l.pools.find(p => p.id === pg.pool)!
+      if (!pg.osds.some(o => down.has(o))) continue
+      if (pg.osds.filter(o => !down.has(o)).length < Math.max(1, pool.minSize)) bad++
+    }
+    return { ok: forced ?? bad === 0, bad: forced === false && !bad ? 1 : bad }
+  }
+  private layoutOutput(): string {
+    const l = this.layout()
+    const hosts = Object.keys(l.osdsByNode)
+    const nodes: any[] = [{ id: -1, name: 'default', type: 'root', children: hosts.map((_, i) => -2 - i) }]
+    hosts.forEach((h, i) => {
+      nodes.push({ id: -2 - i, name: h, type: 'host', children: l.osdsByNode[h] })
+      for (const o of l.osdsByNode[h]) nodes.push({ id: o, name: `osd.${o}`, type: 'osd', status: 'up' })
+    })
+    return [
+      'HP_POOLS', JSON.stringify(l.pools.map(p => ({ pool_id: p.id, pool_name: p.name, size: p.size, min_size: p.minSize, pg_num: p.pgNum }))),
+      'HP_TREE', JSON.stringify({ nodes, stray: [] }),
+      'HP_PGS', JSON.stringify({ pg_ready: true, pg_stats: this.pgs().map(p => ({ pgid: p.pgid, state: 'active+clean', up: p.osds, acting: p.osds })) }),
+      'HP_DF', JSON.stringify({ pools: l.pools.map(p => ({ name: p.name, id: p.id, stats: { stored: p.storedBytes } })) }),
+      'HP_END',
+    ].join('\n')
+  }
+  private downOsds(): number {
+    let n = [...this.osdStuck].filter(id => this.restartedOsds.includes(id)).length
+    for (const [id, polls] of this.osdDownPolls) {
+      if (polls <= 0) continue
+      n++
+      this.osdDownPolls.set(id, polls - 1)
+    }
+    return n
+  }
+
   // --- reads --------------------------------------------------------------------------
   async clusterStatus(): Promise<ClusterStatus> {
     this.failIf('clusterStatus')
@@ -128,7 +203,11 @@ export class FakeCluster implements UpdatesExecutor {
     this.failIf('cephHealth')
     if (!this.ceph) throw new Error('Proxmox GET /cluster/ceph/status: HTTP 500 — binary not installed')
     const down = this.nodes.filter(n => !this.isOnline(n)).length
-    return { ...this.ceph, numUpOsds: this.ceph.numUpOsds - down * 2, checks: this.noout ? [...this.ceph.checks, 'OSDMAP_FLAGS'] : this.ceph.checks }
+    const osdsDown = this.downOsds()
+    const checks = [...this.ceph.checks, ...(this.noout ? ['OSDMAP_FLAGS'] : []), ...(osdsDown ? ['OSD_DOWN', 'PG_DEGRADED'] : [])]
+    const total = Object.values(this.ceph.pgStates).reduce((a, b) => a + b, 0)
+    const pgStates = osdsDown ? { 'active+clean': total - 8, 'active+undersized+degraded': 8 } : this.ceph.pgStates
+    return { ...this.ceph, numUpOsds: this.ceph.numUpOsds - down * 2 - osdsDown, checks, pgStates }
   }
   async listGuests() { this.failIf('listGuests'); return this.guests.map(({ vmid, type, node, name, running, template }) => ({ vmid, type, node, name, running, template })) }
   async guestConfig(g: GuestRef) { this.failIf('guestConfig'); return { ...(this.guests.find(x => x.vmid === g.vmid)?.config ?? {}) } }
@@ -186,6 +265,28 @@ export class FakeCluster implements UpdatesExecutor {
       }
       n.online = false
       n.offlineUntil = this.t + this.rebootTakesMs
+      return ok()
+    }
+    if (cmd === CEPH_LAYOUT_COMMAND) return ok(this.layoutOutput())
+    let u = /^systemctl list-units 'ceph-(osd|mon|mgr|mds)@\*'/.exec(cmd)
+    if (u) {
+      const ids = u[1] === 'osd' ? (this.layout().osdsByNode[name] ?? []).map(String) : [name]
+      return ok(ids.map(i => `ceph-${u![1]}@${i}.service`).join('\n'))
+    }
+    u = /^ceph osd ok-to-stop ([\d ]+) -f json/.exec(cmd)
+    if (u) {
+      const ids = u[1].trim().split(/\s+/).map(Number)
+      const r = this.okToStop(ids)
+      return ok(`${JSON.stringify({ ok_to_stop: r.ok, osds: ids, num_ok_pgs: 10, num_not_ok_pgs: r.bad })}\nHP_RC ${r.ok ? 0 : 16}`)
+    }
+    if (/^ceph mon ok-to-stop/.test(cmd)) {
+      return ok(this.monOkToStop ? `quorum should be preserved (others) after stopping [${name}]\nHP_RC 0` : `Error EBUSY: not enough monitors would be available after stopping mons [${name}]\nHP_RC 16`)
+    }
+    u = /^systemctl restart ceph-osd@(\d+)\.service$/.exec(cmd)
+    if (u) {
+      const id = Number(u[1])
+      this.restartedOsds.push(id)
+      if (!this.osdStuck.has(id)) this.osdDownPolls.set(id, 1)
       return ok()
     }
     if (cmd === 'ceph osd set noout') { this.noout = true; return ok() }
