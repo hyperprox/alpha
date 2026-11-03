@@ -16,11 +16,17 @@ fi
 docker compose up -d --no-deps vault >/dev/null
 chmod 600 .env
 
+# Per-install settings this version expects (METRICS_TOKEN, pve.yml, Grafana behind /grafana/, no npm
+# profile). Idempotent, restarts nothing, and runs before the build because NEXT_PUBLIC_* is baked in.
+echo "→ Bringing this install's configuration up to date..."
+bash bin/hyperprox-config
+
 # The front door is https through hyperprox-nginx, which shares the host network and reads certs/. An
 # install from before that has no certificate yet: make the same self-signed one the installer makes
 # (kept from then on; replace certs/*.pem with your own any time). Then check the config with the real
-# mounts before swapping containers, so a bad config leaves the running nginx alone instead of taking
-# the site down. The swap is the only interruption: a second or two on :80/:443.
+# mounts here, before anything is built, so a bad config stops the deploy with the running nginx left
+# alone. The swap itself happens after the API restart below, because the new config sends /grafana/
+# through an API check that only the new API has. The swap is a second or two on :80/:443.
 echo "→ Checking the nginx front door..."
 mkdir -p certs data/nginx/trusted-proxies   # the second: proxies whose X-Forwarded-Proto is believed
 if [ ! -s certs/cert.pem ] || [ ! -s certs/key.pem ]; then
@@ -38,7 +44,6 @@ if ! NGINX_T="$(docker compose run --rm --no-deps -T nginx nginx -t -q 2>&1)"; t
   echo "✗ The nginx config does not pass nginx -t; the running nginx was left as it was." >&2
   exit 1
 fi
-docker compose up -d --no-deps nginx >/dev/null
 
 echo "→ Installing dependencies..."
 pnpm install --frozen-lockfile >/dev/null
@@ -87,6 +92,21 @@ bash bin/install-keyholder
 
 echo "→ Restarting services..."
 systemctl restart hyperprox-api hyperprox-frontend
+
+# compose recreates the container only when its definition changed; the files under config/nginx are
+# bind mounts, so a changed config needs the reload (graceful: open connections finish on the old one).
+echo "→ Swapping in the checked nginx config..."
+docker compose up -d --no-deps nginx >/dev/null
+docker exec hyperprox-nginx nginx -s reload >/dev/null
+
+# Prometheus listens on 127.0.0.1:9090 and Grafana on 127.0.0.1:3003 (host network, reached only through
+# nginx at /grafana/). Compose recreates each container once, the first time its settings differ, and
+# leaves it alone on every deploy after that. Its data is in data/prometheus and the grafana_data volume.
+if [[ ",$(grep -m1 '^COMPOSE_PROFILES=' .env | cut -d= -f2- | tr -d "\"' "),"  == *",monitoring,"* ]] \
+   || docker ps -a --format '{{.Names}}' | grep -qxE 'hyperprox-(prometheus|grafana)'; then
+  echo "→ Applying the monitoring containers' settings..."
+  docker compose up -d --no-deps prometheus grafana
+fi
 
 sleep 3
 systemctl status hyperprox-api hyperprox-frontend --no-pager | grep -E "Active|Main PID"
