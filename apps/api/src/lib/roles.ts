@@ -70,6 +70,16 @@ const TERMINAL_OPERATOR: Array<[string, RegExp]> = [
 const DESTROY = /^\/api\/proxmox\/nodes\/[^/]+\/(lxc|qemu)\/[^/]+$/
 // Role management (no routes yet; reserved so they are owner-only from day one).
 const ROLE_MGMT = /^\/api\/(auth\/)?roles(\/|$)/
+// Remote access: what opens a tunnel into the cluster, routes through a machine, removes a device or shows
+// a key. Re-confirmed, which also keeps API tokens out (a token cannot re-confirm). Check and update are not.
+const REMOTE_RECONFIRM: Array<[string, RegExp]> = [
+  ['POST',   /^\/api\/remote\/jobs$/],
+  ['POST',   /^\/api\/remote\/machines\/[^/]+\/(tailscale|netbird)\/(routing|manual-key)$/],
+  ['DELETE', /^\/api\/remote\/machines\/[^/]+\/(tailscale|netbird)$/],
+  ['POST',   /^\/api\/remote\/machines\/[^/]+\/tun$/],
+]
+// Remote access job output names hosts, packages and addresses: admins only, like Updates.
+const REMOTE_JOBS = /^\/api\/remote\/jobs(\/|$)/
 
 /**
  * The role a request needs, or null when it needs no session.
@@ -100,6 +110,7 @@ export function requiredRole(method: string, path: string): Role | null {
     if (p === '/api/settings' || p.startsWith('/api/settings/')) return 'admin'
     // Certificates: the inventory maps every endpoint, and the history names keys and targets.
     if (p === '/api/certs' || p.startsWith('/api/certs/')) return 'admin'
+    if (REMOTE_JOBS.test(p)) return 'admin'
     return 'viewer'
   }
 
@@ -118,5 +129,6 @@ export function needsReconfirm(method: string, path: string): boolean {
   if (m !== 'GET' && m !== 'HEAD' && ROLE_MGMT.test(p)) return true
   // Creating or revoking an API token.
   if ((m === 'POST' || m === 'DELETE') && TOKENS.test(p)) return true
+  for (const [rm, re] of REMOTE_RECONFIRM) if (m === rm && re.test(p)) return true
   return false
 }
