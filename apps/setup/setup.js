@@ -587,6 +587,9 @@ function setErr(id, msg){
   el.textContent = msg
   el.style.display = msg ? 'block' : 'none'
 }
+function escHtml(v){
+  return String(v).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]))
+}
 
 // The installer prints the wizard link with the setup key (?k=...). It is kept for this tab only and
 // taken out of the address bar, so it does not linger in history or get copied into a screenshot.
@@ -656,7 +659,7 @@ function stepCluster(){
     <div class="detect-row"><span>Running workloads</span><span style="font-family:'IBM Plex Mono',monospace">\${c.runningVms} VMs · \${c.runningCts} CTs</span><span class="badge badge-ok">✓</span></div>
     \${c.ceph ? \`<div class="detect-row"><span>CEPH storage</span><span style="font-family:'IBM Plex Mono',monospace">\${c.ceph.pools} pools</span><span class="badge \${c.ceph.healthy?'badge-ok':'badge-warn'}">\${c.ceph.healthy?'healthy':'degraded'}</span></div>\` : ''}
     <div class="node-grid">\${nodeCards}</div>
-    \${S.exporter && !S.exporter.ok ? \`<div class="field-hint" style="margin-top:.75rem">Proxmox metrics: the exporter's read-only token could not be made (\${S.exporter.error}). After setup, run <code>hyperprox pve-exporter</code> on this machine.</div>\` : ''}
+    \${S.exporter && !S.exporter.ok ? \`<div class="field-hint" style="margin-top:.75rem">Proxmox metrics: the exporter's read-only token could not be made (\${escHtml(S.exporter.error)}). After setup, run <code>hyperprox pve-exporter</code> on this machine.</div>\` : ''}
     <div class="btn-row">
       <button class="btn btn-ghost" onclick="go(0)">← Back</button>
       <button class="btn btn-primary" id="btn-cluster-ok">Looks right →</button>
