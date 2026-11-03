@@ -18,7 +18,7 @@ import { MemoryApiTokenStore, setApiTokenStore, createApiToken, tokenState } fro
 import {
   shared, tokenPve, provisionPveExporter, exporterStatus, pveAccessFromEnv, pveExporterConfigPath, type ExporterPve,
 } from '../src/lib/pve-exporter'
-import { runPveExporterCli } from '../src/cli/pve-exporter'
+import { runPveExporterCli, ONE_OFF_TTL_MS } from '../src/cli/pve-exporter'
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'hpx-pve-exporter-'))
 const ACCESS = { host: '192.0.2.5', port: 8006, user: 'root@pam', tokenName: 'hyperprox-node-a-0a1b2c3d', secret: 'admin-secret' }
@@ -26,65 +26,128 @@ const EXP = 'hyperprox-node-a-0a1b2c3d-exporter'
 const MARK = `[exporter for root@pam!hyperprox-node-a-0a1b2c3d]`
 
 type Tok = { tokenid: string; secret: string; comment?: string; privsep?: number }
-function fakePve(tokens: Tok[]): ExporterPve & { calls: string[]; tokens: Tok[] } {
+type Acl = { path: string; roleid: string; type: string; ugid: string }
+/** A pretend Proxmox for one user: tokens with privsep, and the ACL list, as PVE answers them. */
+function fakePve(tokens: Tok[], acls: Acl[] = [], user = 'root@pam'): ExporterPve & { calls: string[]; tokens: Tok[]; acls: Acl[] } {
   const calls: string[] = []
   let n = 0
   return {
-    calls, tokens,
+    calls, tokens, acls,
     async listTokens() { calls.push('list'); return tokens.map(t => ({ tokenid: t.tokenid, comment: t.comment ?? '' })) },
-    async deleteToken(name) { calls.push(`delete ${name}`); tokens.splice(tokens.findIndex(t => t.tokenid === name), 1) },
+    async getToken(name, u = user) {
+      calls.push(`get ${u}!${name}`)
+      const t = u === user ? tokens.find(x => x.tokenid === name) : undefined
+      if (!t) throw new Error(`Proxmox GET /access/users/${u}/token/${name}: HTTP 500 — no such token`)
+      return { privsep: t.privsep ?? 1, comment: t.comment }
+    },
+    async listAcl() { calls.push('acls'); return acls.map(a => ({ ...a })) },
+    async deleteToken(name) {
+      calls.push(`delete ${name}`)
+      tokens.splice(tokens.findIndex(t => t.tokenid === name), 1)
+      for (let i = acls.length - 1; i >= 0; i--) if (acls[i].ugid === `${user}!${name}`) acls.splice(i, 1)   // as PVE does
+    },
     async createToken(name, o) {
       calls.push(`create ${name} privsep=${o.privsep}`)
       const secret = `exp-${++n}`
       tokens.push({ tokenid: name, secret, comment: o.comment, privsep: o.privsep })
       return { value: secret }
     },
-    async setAcl(a) { calls.push(`acl ${a.path} ${a.role} ${a.token}`) },
+    async setAcl(a) {
+      calls.push(`acl ${a.path} ${a.role} ${a.token}`)
+      if (!acls.some(x => x.path === a.path && x.roleid === a.role && x.ugid === a.token)) acls.push({ path: a.path, roleid: a.role, type: 'token', ugid: a.token })
+    },
     async tokenWorks(id, secret) { const [, name] = id.split('!'); return tokens.some(t => t.tokenid === name && t.secret === secret) },
   }
 }
+const auditor = (token: string): Acl => ({ path: '/', roleid: 'PVEAuditor', type: 'token', ugid: token })
+const FULL = `root@pam!${EXP}`
+const HELD = { user: 'root@pam', tokenName: EXP, secret: 'kept' }
+const opts = (held: typeof HELD | null, fresh = false) => ({ userid: 'root@pam', adminTokenName: ACCESS.tokenName, held, fresh })
 
 // ── The shared rules ─────────────────────────────────────────────────────────
 
-test('a new exporter token: named after HyperProx\'s, privilege-separated, PVEAuditor on / only', async () => {
-  const pve = fakePve([{ tokenid: ACCESS.tokenName, secret: 'admin-secret' }])
-  const r = await shared.ensureExporterToken(pve, { userid: 'root@pam', adminTokenName: ACCESS.tokenName, held: null })
+test('a new exporter token: named after HyperProx\'s, privilege-separated, PVEAuditor on / only, and checked', async () => {
+  const pve = fakePve([{ tokenid: ACCESS.tokenName, secret: 'admin-secret', privsep: 0 }])
+  const r = await shared.ensureExporterToken(pve, opts(null))
   assert.equal(r.action, 'create')
-  assert.equal(r.fullTokenId, `root@pam!${EXP}`)
-  assert.deepEqual(pve.calls, ['list', `create ${EXP} privsep=1`, `acl / PVEAuditor root@pam!${EXP}`])
+  assert.equal(r.fullTokenId, FULL)
+  assert.deepEqual(pve.calls, ['list', `create ${EXP} privsep=1`, `acl / PVEAuditor ${FULL}`, `get ${FULL}`, 'acls'])
   assert.ok(pve.tokens.find(t => t.tokenid === EXP)!.comment!.includes(MARK))
 })
 
-test('a held secret that still works is reused; only the ACL is re-applied', async () => {
-  const pve = fakePve([{ tokenid: EXP, secret: 'kept', comment: MARK }])
-  const r = await shared.ensureExporterToken(pve, { userid: 'root@pam', adminTokenName: ACCESS.tokenName,
-    held: { user: 'root@pam', tokenName: EXP, secret: 'kept' } })
+test('a held secret is reused only when Proxmox says the token is read-only; nothing is changed', async () => {
+  const pve = fakePve([{ tokenid: EXP, secret: 'kept', comment: MARK, privsep: 1 }], [auditor(FULL)])
+  const r = await shared.ensureExporterToken(pve, opts(HELD))
   assert.equal(r.action, 'reuse')
   assert.equal(r.secret, 'kept')
-  assert.deepEqual(pve.calls, [`acl / PVEAuditor root@pam!${EXP}`])
+  assert.deepEqual(pve.calls, [`get ${FULL}`, 'acls'], 'no token or ACL is written')
+})
+
+test('reuse refuses a working token with privilege separation off, as not read-only', async () => {
+  const pve = fakePve([{ tokenid: EXP, secret: 'kept', comment: MARK, privsep: 0 }], [auditor(FULL)])
+  await assert.rejects(shared.ensureExporterToken(pve, opts(HELD)),
+    (e: any) => e.code === 'not_read_only' && /not read-only \(privilege separation is off/.test(e.message) && /--fresh/.test(e.message))
+  assert.ok(!pve.calls.some(c => /^(create|delete|acl) /.test(c)), 'nothing changed')
+})
+
+test('reuse refuses a token with any ACL besides PVEAuditor on /, or without that one', async () => {
+  for (const [acls, why] of [
+    [[auditor(FULL), { path: '/vms', roleid: 'PVEVMAdmin', type: 'token', ugid: FULL }], /also has PVEVMAdmin on \/vms/],
+    [[{ path: '/', roleid: 'Administrator', type: 'token', ugid: FULL }], /no PVEAuditor ACL on \/.*also has Administrator on \//],
+    [[], /no PVEAuditor ACL on \//],
+  ] as Array<[Acl[], RegExp]>) {
+    const pve = fakePve([{ tokenid: EXP, secret: 'kept', comment: MARK, privsep: 1 }], acls)
+    await assert.rejects(shared.ensureExporterToken(pve, opts(HELD)), (e: any) => e.code === 'not_read_only' && why.test(e.message), String(why))
+  }
+})
+
+test('an ACL for another token or a user does not count against it', async () => {
+  const pve = fakePve([{ tokenid: EXP, secret: 'kept', comment: MARK, privsep: 1 }],
+    [auditor(FULL), { path: '/', roleid: 'Administrator', type: 'token', ugid: 'root@pam!hyperprox' },
+     { path: '/', roleid: 'Administrator', type: 'user', ugid: 'root@pam' }])
+  assert.equal((await shared.ensureExporterToken(pve, opts(HELD))).action, 'reuse')
+})
+
+test('fresh replaces our not-read-only token with a new one; its old ACLs go with it', async () => {
+  const pve = fakePve([{ tokenid: EXP, secret: 'kept', comment: MARK, privsep: 0 }],
+    [{ path: '/', roleid: 'Administrator', type: 'token', ugid: FULL }])
+  const r = await shared.ensureExporterToken(pve, opts(HELD, true))
+  assert.equal(r.action, 'recreate')
+  assert.notEqual(r.secret, 'kept')
+  assert.equal(pve.tokens.find(t => t.tokenid === EXP)!.privsep, 1)
+  assert.deepEqual(pve.acls, [auditor(FULL)])
+})
+
+test('fresh still refuses to replace a token HyperProx did not make', async () => {
+  const pve = fakePve([{ tokenid: EXP, secret: 'kept', comment: 'made by hand', privsep: 0 }])
+  await assert.rejects(shared.ensureExporterToken(pve, opts(HELD, true)), /was not made by HyperProx/)
+  assert.ok(!pve.calls.some(c => c.startsWith('delete')))
+})
+
+test('a new token that does not come out read-only is not handed out', async () => {
+  // e.g. an ACL Proxmox kept for that token id from before: the check after creating catches it.
+  const pve = fakePve([], [{ path: '/storage', roleid: 'PVEDatastoreAdmin', type: 'token', ugid: FULL }])
+  await assert.rejects(shared.ensureExporterToken(pve, opts(null)), (e: any) => e.code === 'not_read_only' && /PVEDatastoreAdmin/.test(e.message))
 })
 
 test('our token with its secret lost is made again; nothing else is touched', async () => {
-  const pve = fakePve([{ tokenid: EXP, secret: 'gone', comment: MARK }, { tokenid: 'other', secret: 'x' }])
-  const r = await shared.ensureExporterToken(pve, { userid: 'root@pam', adminTokenName: ACCESS.tokenName,
-    held: { user: 'root@pam', tokenName: EXP, secret: 'wrong' } })
+  const pve = fakePve([{ tokenid: EXP, secret: 'gone', comment: MARK }, { tokenid: 'other', secret: 'x' }], [auditor(FULL)])
+  const r = await shared.ensureExporterToken(pve, opts({ ...HELD, secret: 'wrong' }))
   assert.equal(r.action, 'recreate')
-  assert.deepEqual(pve.calls, ['list', `delete ${EXP}`, `create ${EXP} privsep=1`, `acl / PVEAuditor root@pam!${EXP}`])
+  assert.deepEqual(pve.calls, ['list', `delete ${EXP}`, `create ${EXP} privsep=1`, `acl / PVEAuditor ${FULL}`, `get ${FULL}`, 'acls'])
   assert.ok(pve.tokens.some(t => t.tokenid === 'other'))
 })
 
 test('a token of that name HyperProx did not make is refused and kept', async () => {
   const pve = fakePve([{ tokenid: EXP, secret: 'theirs', comment: 'made by hand' }])
-  await assert.rejects(shared.ensureExporterToken(pve, { userid: 'root@pam', adminTokenName: ACCESS.tokenName, held: null }),
-    /already exists and was not made by HyperProx/)
+  await assert.rejects(shared.ensureExporterToken(pve, opts(null)), /already exists and was not made by HyperProx/)
   assert.deepEqual(pve.calls, ['list'])
 })
 
 test('an exporter running on HyperProx\'s own full token is moved to a read-only one', async () => {
   // What a hand-filled pve.yml from the old README looks like: the admin token itself.
-  const pve = fakePve([{ tokenid: ACCESS.tokenName, secret: 'admin-secret' }])
-  const r = await shared.ensureExporterToken(pve, { userid: 'root@pam', adminTokenName: ACCESS.tokenName,
-    held: { user: 'root@pam', tokenName: ACCESS.tokenName, secret: 'admin-secret' } })
+  const pve = fakePve([{ tokenid: ACCESS.tokenName, secret: 'admin-secret', privsep: 0 }])
+  const r = await shared.ensureExporterToken(pve, opts({ user: 'root@pam', tokenName: ACCESS.tokenName, secret: 'admin-secret' }))
   assert.equal(r.action, 'create')
   assert.equal(r.tokenName, EXP)
   assert.ok(pve.tokens.some(t => t.tokenid === ACCESS.tokenName), 'the admin token is left alone')
@@ -122,21 +185,57 @@ test('provisioning writes pve.yml, restarts the exporter only on a change, and n
   const pve = fakePve([])
   let restarts = 0
   const r1 = await provisionPveExporter({ access: ACCESS, pve, file, restart: async () => { restarts++; return true } })
-  assert.deepEqual(r1, { action: 'create', tokenId: `root@pam!${EXP}`, changed: true, restarted: true })
+  assert.deepEqual(r1, { action: 'create', tokenId: FULL, changed: true, restarted: true })
   assert.ok(!JSON.stringify(r1).includes('exp-1'))
   assert.deepEqual(shared.readPveYml(file), { user: 'root@pam', tokenName: EXP, secret: 'exp-1' })
   const r2 = await provisionPveExporter({ access: ACCESS, pve, file, restart: async () => { restarts++; return true } })
-  assert.deepEqual(r2, { action: 'reuse', tokenId: `root@pam!${EXP}`, changed: false, restarted: false })
+  assert.deepEqual(r2, { action: 'reuse', tokenId: FULL, changed: false, restarted: false })
   assert.equal(restarts, 1)
-  assert.deepEqual(exporterStatus(file), { configured: true, tokenId: `root@pam!${EXP}`, readOnly: true })
+  assert.deepEqual(await exporterStatus({ file, pve: () => pve }), { configured: true, tokenId: FULL, readOnly: true })
 })
 
-test('status: no token, or the full admin token, is reported as not read-only', () => {
+test('provisioning with fresh replaces a held token that is not read-only', async () => {
+  const file = path.join(tmp(), 'pve.yml')
+  fs.writeFileSync(file, shared.renderPveYml(HELD))
+  const pve = fakePve([{ tokenid: EXP, secret: 'kept', comment: MARK, privsep: 0 }], [auditor(FULL)])
+  await assert.rejects(provisionPveExporter({ access: ACCESS, pve, file, restart: async () => true }), (e: any) => e.code === 'not_read_only')
+  assert.equal(shared.readPveYml(file)!.secret, 'kept', 'pve.yml untouched by the refusal')
+  const r = await provisionPveExporter({ access: ACCESS, pve, file, restart: async () => true, fresh: true })
+  assert.equal(r.action, 'recreate')
+  assert.notEqual(shared.readPveYml(file)!.secret, 'kept')
+})
+
+test('status asks Proxmox, not the name: a "-exporter" token with privsep off is not read-only', async () => {
   const dir = tmp()
-  assert.deepEqual(exporterStatus(path.join(dir, 'missing.yml')), { configured: false, readOnly: false })
+  assert.deepEqual(await exporterStatus({ file: path.join(dir, 'missing.yml'), pve: () => fakePve([]) }), { configured: false, readOnly: false })
   const f = path.join(dir, 'pve.yml')
+  fs.writeFileSync(f, shared.renderPveYml(HELD))
+  const st = await exporterStatus({ file: f, pve: () => fakePve([{ tokenid: EXP, secret: 'kept', privsep: 0 }], [auditor(FULL)]) })
+  assert.equal(st.readOnly, false)
+  assert.match(st.reasons!.join(), /privilege separation is off/)
+  // The admin token itself, named anything: what its ACLs and privsep say decide.
   fs.writeFileSync(f, shared.renderPveYml({ user: 'root@pam', tokenName: 'hyperprox', secret: 's' }))
-  assert.deepEqual(exporterStatus(f), { configured: true, tokenId: 'root@pam!hyperprox', readOnly: false })
+  const admin = await exporterStatus({ file: f, pve: () => fakePve([{ tokenid: 'hyperprox', secret: 's', privsep: 0 }],
+    [{ path: '/', roleid: 'Administrator', type: 'token', ugid: 'root@pam!hyperprox' }]) })
+  assert.equal(admin.readOnly, false)
+  // A token under another user is looked up under that user.
+  fs.writeFileSync(f, shared.renderPveYml({ user: 'metrics@pve', tokenName: 'ro', secret: 's' }))
+  const other = fakePve([{ tokenid: 'ro', secret: 's', privsep: 1 }], [auditor('metrics@pve!ro')], 'metrics@pve')
+  assert.deepEqual(await exporterStatus({ file: f, pve: () => other }), { configured: true, tokenId: 'metrics@pve!ro', readOnly: true })
+  assert.ok(other.calls.includes('get metrics@pve!ro'))
+})
+
+test('status: when Proxmox cannot be asked, read-only is unknown, not true', async () => {
+  const f = path.join(tmp(), 'pve.yml')
+  fs.writeFileSync(f, shared.renderPveYml(HELD))
+  const locked = await exporterStatus({ file: f, pve: () => { throw new Error('HyperProx is locked') } })
+  assert.equal(locked.readOnly, null)
+  assert.match(locked.checkError!, /locked/)
+  const down = fakePve([])
+  down.listAcl = async () => { throw new Error('Proxmox GET /access/acl: no answer within 20s') }
+  ;(down as any).getToken = async () => ({ privsep: 1 })
+  const st = await exporterStatus({ file: f, pve: () => down })
+  assert.equal(st.readOnly, null)
 })
 
 test('the adapter: the Proxmox calls it makes with HyperProx\'s admin token', async () => {
@@ -154,11 +253,17 @@ test('the adapter: the Proxmox calls it makes with HyperProx\'s admin token', as
   await pve.createToken('n-exporter', { privsep: 1, comment: 'c [x]' })
   await pve.deleteToken('n-exporter')
   await pve.setAcl({ path: '/', role: 'PVEAuditor', token: 'root@pam!n-exporter' })
+  await pve.getToken('n-exporter')
+  await pve.getToken('ro', 'metrics@pve')
+  await pve.listAcl()
   assert.deepEqual(calls, [
     'root@pam!hyperprox-node-a-0a1b2c3d GET /access/users/root%40pam/token',
     'root@pam!hyperprox-node-a-0a1b2c3d POST /access/users/root%40pam/token/n-exporter privsep=1&comment=c+%5Bx%5D',
     'root@pam!hyperprox-node-a-0a1b2c3d DELETE /access/users/root%40pam/token/n-exporter',
     'root@pam!hyperprox-node-a-0a1b2c3d PUT /access/acl path=%2F&roles=PVEAuditor&tokens=root%40pam%21n-exporter&propagate=1',
+    'root@pam!hyperprox-node-a-0a1b2c3d GET /access/users/root%40pam/token/n-exporter',
+    'root@pam!hyperprox-node-a-0a1b2c3d GET /access/users/metrics%40pve/token/ro',
+    'root@pam!hyperprox-node-a-0a1b2c3d GET /access/acl',
   ])
   assert.equal(await pve.tokenWorks('root@pam!n-exporter', 'good'), true)
   assert.equal(await pve.tokenWorks('root@pam!n-exporter', 'bad'), false)
@@ -185,7 +290,8 @@ broker.addUser('owner@example.com', 'correct horse battery staple', 'owner')
 broker.addUser('viewer@example.com', 'viewer master password', 'viewer')
 const store = new MemoryApiTokenStore()
 let provisions = 0
-let failNext = false
+let failNext: 'proxmox' | 'not_read_only' | null = null
+let lastFresh: boolean | null = null
 async function routesApp() {
   setBroker(broker)
   setApiTokenStore(store)
@@ -197,9 +303,12 @@ async function routesApp() {
   await app.register(authRoutes, { prefix: '/api/auth' })
   await app.register(monitoringRoutes, {
     prefix: '/api/monitoring',
-    status: () => ({ configured: true, tokenId: `root@pam!${EXP}`, readOnly: true }),
-    provision: async () => {
-      if (failNext) { failNext = false; throw new Error('Proxmox POST /access/acl: HTTP 403 — Permission check failed') }
+    status: async () => ({ configured: true, tokenId: `root@pam!${EXP}`, readOnly: true }),
+    provision: async ({ fresh }) => {
+      lastFresh = fresh
+      const f = failNext; failNext = null
+      if (f === 'proxmox') throw new Error('Proxmox POST /access/acl: HTTP 403 — Permission check failed')
+      if (f === 'not_read_only') throw new shared.NotReadOnlyError(`root@pam!${EXP}`, ['privilege separation is off, so it has every right its user has'])
       provisions++
       return { action: 'create' as const, tokenId: `root@pam!${EXP}`, changed: true, restarted: true }
     },
@@ -237,10 +346,26 @@ test('routes: an owner provisions without re-confirming; a Proxmox refusal comes
   const p = await app.inject({ method: 'POST', url: '/api/monitoring/pve-exporter', headers: { cookie } })
   assert.equal(p.statusCode, 200)
   assert.deepEqual(p.json().data, { action: 'create', tokenId: `root@pam!${EXP}`, changed: true, restarted: true })
-  failNext = true
+  assert.equal(lastFresh, false)
+  failNext = 'proxmox'
   const f = await app.inject({ method: 'POST', url: '/api/monitoring/pve-exporter', headers: { cookie } })
   assert.equal(f.statusCode, 502)
   assert.match(f.json().error, /Permission check failed/)
+})
+
+test('routes: a token that is not read-only is a 409 not_read_only; { fresh: true } asks for a new one', async () => {
+  const app = await appP
+  const { cookie } = await signIn(app, 'owner@example.com', 'correct horse battery staple')
+  failNext = 'not_read_only'
+  const r = await app.inject({ method: 'POST', url: '/api/monitoring/pve-exporter', headers: { cookie } })
+  assert.equal(r.statusCode, 409)
+  assert.equal(r.json().code, 'not_read_only')
+  assert.match(r.json().reasons.join(), /privilege separation is off/)
+  const f = await app.inject({ method: 'POST', url: '/api/monitoring/pve-exporter', headers: { cookie }, payload: { fresh: true } })
+  assert.equal(f.statusCode, 200)
+  assert.equal(lastFresh, true)
+  await app.inject({ method: 'POST', url: '/api/monitoring/pve-exporter', headers: { cookie }, payload: { fresh: 'yes' } })
+  assert.equal(lastFresh, false, 'only a real true counts')
 })
 
 test('routes: an admin API token may provision (the host CLI uses one); a viewer token may not', async () => {
@@ -256,17 +381,19 @@ test('routes: an admin API token may provision (the host CLI uses one); a viewer
 
 let urlP: Promise<string> | null = null
 const apiUrl = () => (urlP ??= appP.then(app => app.listen({ port: 0, host: '127.0.0.1' })))
+const T = Date.now()
+const one = (k: number) => `host-cli-pve-exporter-${T + k}`
 const io = () => { const out: string[] = [], err: string[] = []; return { out, err, io: { out: (l: string) => out.push(l), err: (l: string) => err.push(l) } } }
 
 test('cli: provisions through the API with a one-off admin token, then revokes it', async () => {
   const url = await apiUrl()
   await signIn(await appP, 'owner@example.com', 'correct horse battery staple')
   const o = io()
-  const code = await runPveExporterCli([], { store, apiUrl: url, now: () => 1000 }, o.io)
+  const code = await runPveExporterCli([], { store, apiUrl: url, now: () => T + 1000 }, o.io)
   assert.equal(code, 0, o.err.join('\n'))
   assert.match(o.out.join('\n'), /read-only token root@pam!hyperprox-node-a-0a1b2c3d-exporter created \(PVEAuditor on \/\)/)
   assert.match(o.out.join('\n'), /exporter restarted/)
-  const row = await store.findByName('host-cli-pve-exporter-1000')
+  const row = await store.findByName(one(1000))
   assert.ok(row, 'the one-off token was made in the database')
   assert.equal(row!.role, 'admin')
   assert.equal(tokenState(row!), 'revoked')
@@ -276,11 +403,11 @@ test('cli: locked, it says to sign in first, changes nothing, and still revokes 
   const url = await apiUrl()
   const before = provisions
   const o = io()
-  const code = await runPveExporterCli([], { store, apiUrl: url, now: () => 2000 }, o.io)
+  const code = await runPveExporterCli([], { store, apiUrl: url, now: () => T + 2000 }, o.io)
   assert.equal(code, 1)
   assert.match(o.err.join('\n'), /HyperProx is locked\. Sign in at \/login first/)
   assert.equal(provisions, before)
-  assert.equal(tokenState((await store.findByName('host-cli-pve-exporter-2000'))!), 'revoked')
+  assert.equal(tokenState((await store.findByName(one(2000)))!), 'revoked')
 })
 
 test('cli: status reads with a viewer token; an unreachable API is reported as such', async () => {
@@ -288,12 +415,64 @@ test('cli: status reads with a viewer token; an unreachable API is reported as s
   const url = await apiUrl()
   await signIn(app, 'viewer@example.com', 'viewer master password')
   const o = io()
-  assert.equal(await runPveExporterCli(['status'], { store, apiUrl: url, now: () => 3000 }, o.io), 0, o.err.join('\n'))
-  assert.match(o.out.join('\n'), /uses root@pam!hyperprox-node-a-0a1b2c3d-exporter \(read-only, PVEAuditor\)/)
-  assert.equal((await store.findByName('host-cli-pve-exporter-3000'))!.role, 'viewer')
+  assert.equal(await runPveExporterCli(['status'], { store, apiUrl: url, now: () => T + 3000 }, o.io), 0, o.err.join('\n'))
+  assert.match(o.out.join('\n'), /uses root@pam!hyperprox-node-a-0a1b2c3d-exporter \(read-only: privilege separation on, only PVEAuditor on \/\)/)
+  assert.equal((await store.findByName(one(3000)))!.role, 'viewer')
   const d = io()
-  assert.equal(await runPveExporterCli([], { store, apiUrl: 'http://127.0.0.1:1', now: () => 4000 }, d.io), 1)
+  assert.equal(await runPveExporterCli([], { store, apiUrl: 'http://127.0.0.1:1', now: () => T + 4000 }, d.io), 1)
   assert.match(d.err.join('\n'), /could not reach the API/)
-  assert.equal(tokenState((await store.findByName('host-cli-pve-exporter-4000'))!), 'revoked')
+  assert.equal(tokenState((await store.findByName(one(4000)))!), 'revoked')
   assert.equal(await runPveExporterCli(['bogus'], { store, apiUrl: url }, io().io), 2)
+})
+
+test('cli: the one-off token lives ten minutes at most', async () => {
+  const url = await apiUrl()
+  await signIn(await appP, 'owner@example.com', 'correct horse battery staple')
+  await runPveExporterCli([], { store, apiUrl: url, now: () => T + 5000 }, io().io)
+  const row = (await store.findByName(one(5000)))!
+  assert.equal(row.expiresAt!.getTime() - (T + 5000), ONE_OFF_TTL_MS)
+  assert.equal(ONE_OFF_TTL_MS, 10 * 60_000)
+})
+
+test('cli: --fresh asks the API for a new token', async () => {
+  const url = await apiUrl()
+  await signIn(await appP, 'owner@example.com', 'correct horse battery staple')
+  assert.equal(await runPveExporterCli(['--fresh'], { store, apiUrl: url, now: () => T + 6000 }, io().io), 0)
+  assert.equal(lastFresh, true)
+  assert.equal(await runPveExporterCli([], { store, apiUrl: url, now: () => T + 6001 }, io().io), 0)
+  assert.equal(lastFresh, false)
+})
+
+test('cli: every run revokes one-off tokens an earlier run left active, and nothing else', async () => {
+  const url = await apiUrl()
+  await signIn(await appP, 'owner@example.com', 'correct horse battery staple')
+  await createApiToken({ name: one(7000), role: 'admin', expiresDays: 1 }, 'host-cli', store)   // a SIGKILLed run
+  await createApiToken({ name: 'host-cli-pve-exporterx', role: 'admin' }, 'host-cli', store)
+  await createApiToken({ name: 'ci-deploy', role: 'admin' }, 'host-cli', store)
+  const o = io()
+  assert.equal(await runPveExporterCli(['status'], { store, apiUrl: url, now: () => T + 7001 }, o.io), 0)
+  assert.equal(tokenState((await store.findByName(one(7000)))!), 'revoked')
+  assert.match(o.err.join('\n'), new RegExp(`revoked a one-off API token an earlier run left active \\(${one(7000)}\\)`))
+  assert.equal(tokenState((await store.findByName('host-cli-pve-exporterx'))!), 'active')
+  assert.equal(tokenState((await store.findByName('ci-deploy'))!), 'active')
+})
+
+test('cli: Ctrl-C or SIGTERM mid-request revokes the one-off token and exits 130/143', async () => {
+  for (const [sig, want, k] of [['SIGINT', 130, 8000], ['SIGTERM', 143, 8001]] as const) {
+    let handler: ((s: string) => Promise<number>) | null = null
+    let unhooked = false
+    let exitCode: number | null = null
+    const run = runPveExporterCli([], {
+      store, apiUrl: 'http://127.0.0.1:1', now: () => T + k,
+      fetch: () => new Promise(() => {}),        // the API call never finishes: the user gives up
+      onSignal: (h) => { handler = h; return () => { unhooked = true } },
+    }, io().io)
+    void run
+    while (!handler) await new Promise(r => setTimeout(r, 5))
+    assert.equal(tokenState((await store.findByName(one(k)))!), 'active', 'live while the request runs')
+    exitCode = await handler!(sig)
+    assert.equal(exitCode, want)
+    assert.equal(tokenState((await store.findByName(one(k)))!), 'revoked', `${sig} revoked it`)
+    assert.equal(unhooked, false, 'the run itself never finished; the process exits on the handler\'s code')
+  }
 })

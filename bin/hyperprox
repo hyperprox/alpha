@@ -7,7 +7,7 @@
 #   hyperprox token list | revoke <name|id>
 #                      API tokens for automation; writes the database directly, works while locked.
 #                      create prints the token once on stdout (messages go to stderr)
-#   hyperprox pve-exporter [status]
+#   hyperprox pve-exporter [status | --fresh]
 #                      give the PVE exporter its own read-only Proxmox token (PVEAuditor) and restart it;
 #                      needs HyperProx unlocked, since it is made with the admin token held in memory
 # Talks only to localhost; run it as root on the HyperProx machine.

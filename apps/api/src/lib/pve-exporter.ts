@@ -21,6 +21,8 @@ export interface ExporterToken { user: string; tokenName: string; secret: string
 /** The cluster as HyperProx's own token sees it, in the shape apps/setup/pve-exporter.js expects. */
 export interface ExporterPve {
   listTokens(): Promise<Array<{ tokenid: string; comment?: string }>>
+  getToken(name: string, user?: string): Promise<{ privsep?: number | string; comment?: string }>
+  listAcl(): Promise<Array<{ path: string; roleid: string; type: string; ugid: string }>>
   createToken(name: string, opts: { privsep: number; comment: string }): Promise<{ value?: string; 'full-tokenid'?: string }>
   deleteToken(name: string): Promise<unknown>
   setAcl(acl: { path: string; role: string; token: string }): Promise<unknown>
@@ -34,8 +36,10 @@ interface Shared {
   parsePveYml(text: string): ExporterToken | null
   readPveYml(file: string): ExporterToken | null
   writePveYml(file: string, content: string, uid?: number): boolean
-  ensureExporterToken(pve: ExporterPve, o: { userid: string; adminTokenName: string; held: ExporterToken | null }):
+  ensureExporterToken(pve: ExporterPve, o: { userid: string; adminTokenName: string; held: ExporterToken | null; fresh?: boolean }):
     Promise<{ action: 'reuse' | 'create' | 'recreate'; user: string; tokenName: string; fullTokenId: string; secret: string }>
+  checkReadOnly(pve: ExporterPve, name: string, user: string): Promise<{ readOnly: boolean; reasons: string[] }>
+  NotReadOnlyError: new (tokenId: string, reasons: string[]) => Error & { code: string; reasons: string[] }
 }
 
 // The wizard's file, not a copy. src/lib and dist/lib are both two levels below apps/api.
@@ -72,6 +76,9 @@ export function tokenPve(
   const tokens = `/access/users/${encodeURIComponent(a.user)}/token`
   return {
     listTokens:  () => admin.fetchStrict<any[]>(tokens).then(r => r ?? []),
+    getToken:    (name, user = a.user) =>
+      admin.fetchStrict<any>(`/access/users/${encodeURIComponent(user)}/token/${encodeURIComponent(name)}`),
+    listAcl:     () => admin.fetchStrict<any[]>('/access/acl').then(r => r ?? []),
     createToken: (name, o) => admin.fetchStrict<any>(`${tokens}/${encodeURIComponent(name)}`, 'POST',
       form({ privsep: String(o.privsep), comment: o.comment })),
     deleteToken: (name) => admin.fetchStrict(`${tokens}/${encodeURIComponent(name)}`, 'DELETE'),
@@ -100,17 +107,21 @@ export interface ProvisionResult {
   restarted: boolean
 }
 
-/** Make or repair the exporter token and pve.yml. Never returns the secret. */
+/**
+ * Make or repair the exporter token and pve.yml. Never returns the secret. A working token that is not
+ * read-only is refused (NotReadOnlyError, code not_read_only) unless `fresh` asks for a new one.
+ */
 export async function provisionPveExporter(deps: {
   access:   PveAccess
   pve?:     ExporterPve
   file?:    string
   restart?: () => Promise<boolean>
+  fresh?:   boolean
 }): Promise<ProvisionResult> {
   const file = deps.file ?? pveExporterConfigPath()
   const pve = deps.pve ?? tokenPve(deps.access)
   const r = await shared.ensureExporterToken(pve, {
-    userid: deps.access.user, adminTokenName: deps.access.tokenName, held: shared.readPveYml(file),
+    userid: deps.access.user, adminTokenName: deps.access.tokenName, held: shared.readPveYml(file), fresh: deps.fresh,
   })
   const changed = shared.writePveYml(file, shared.renderPveYml({ user: r.user, tokenName: r.tokenName, secret: r.secret }))
   const restarted = changed ? await (deps.restart ?? restartExporter)() : false
@@ -122,12 +133,28 @@ export interface ExporterStatus {
   configured: boolean
   /** user!token it holds, when configured. */
   tokenId?:   string
-  /** The token is the read-only one HyperProx makes (named `<HyperProx token>-exporter`). */
-  readOnly:   boolean
+  /**
+   * What Proxmox says about that token: true when privilege separation is on and its only ACL is
+   * PVEAuditor on /; false otherwise; null when it could not be asked (reason in checkError).
+   */
+  readOnly:   boolean | null
+  /** Why it is not read-only. */
+  reasons?:   string[]
+  checkError?: string
 }
 
-export function exporterStatus(file = pveExporterConfigPath()): ExporterStatus {
-  const t = shared.readPveYml(file)
+/** Which token the exporter uses, checked against Proxmox (privsep and ACLs, never the name). */
+export async function exporterStatus(deps: { file?: string; pve?: () => ExporterPve } = {}): Promise<ExporterStatus> {
+  const t = shared.readPveYml(deps.file ?? pveExporterConfigPath())
   if (!t) return { configured: false, readOnly: false }
-  return { configured: true, tokenId: `${t.user}!${t.tokenName}`, readOnly: /-exporter$/.test(t.tokenName) }
+  const tokenId = `${t.user}!${t.tokenName}`
+  let pve: ExporterPve
+  try { pve = deps.pve ? deps.pve() : tokenPve(pveAccessFromEnv()) }
+  catch (e: any) { return { configured: true, tokenId, readOnly: null, checkError: e?.message ?? String(e) } }
+  try {
+    const c = await shared.checkReadOnly(pve, t.tokenName, t.user)
+    return { configured: true, tokenId, readOnly: c.readOnly, ...(c.readOnly ? {} : { reasons: c.reasons }) }
+  } catch (e: any) {
+    return { configured: true, tokenId, readOnly: null, checkError: e?.message ?? String(e) }
+  }
 }

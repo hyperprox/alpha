@@ -11,12 +11,13 @@
  * it can read everything the exporter reports and change nothing, whatever the user itself may do.
  *
  * It is changed on Proxmox as little as possible (the same rules as the wizard's own token):
- *   reuse    - pve.yml already holds a secret for that token that still authenticates; nothing is made
+ *   reuse    - pve.yml already holds a secret for that token that still authenticates, and Proxmox says
+ *              the token is read-only (privsep on, exactly PVEAuditor on /); otherwise it is refused as
+ *              not read-only, and `fresh` replaces it
  *   create   - no token of that name exists yet
  *   recreate - it exists, its comment says this HyperProx made it, and the secret is gone (Proxmox shows a
  *              secret only once): that one token is deleted and made again
- * A token of that name that HyperProx did not make is refused, never replaced. The ACL is set every time
- * (it is idempotent), which also repairs one that was removed by hand.
+ * A token of that name that HyperProx did not make is refused, never replaced.
  */
 
 const fs   = require('fs')
@@ -86,44 +87,77 @@ function writePveYml(file, content, uid = EXPORTER_UID) {
   return before !== content
 }
 
+/** Raised when the token pve.yml holds works but is not read-only; `make a fresh one` replaces it. */
+class NotReadOnlyError extends Error {
+  constructor(tokenId, reasons) {
+    super(`The exporter token ${tokenId} is not read-only (${reasons.join('; ')}). Make a fresh one: hyperprox pve-exporter --fresh, or Monitoring > Grafana > Make a fresh read-only token.`)
+    this.name = 'NotReadOnlyError'
+    this.code = 'not_read_only'
+    this.reasons = reasons
+  }
+}
+
 /**
- * Make sure the exporter token exists with its ACL, and return what pve.yml should hold.
+ * Whether a token is the read-only kind, from Proxmox itself (not from its name): privilege separation on,
+ * and exactly one ACL, PVEAuditor on `/`. `user` defaults to the adapter's own. Returns
+ * { readOnly, reasons } where reasons say what is wrong.
+ */
+async function checkReadOnly(pve, name, user) {
+  const full = `${user}!${name}`
+  const reasons = []
+  let info
+  try { info = await pve.getToken(name, user) }
+  catch (e) { return { readOnly: false, reasons: [`Proxmox has no token ${full} (${e.message})`] } }
+  if (Number(info && info.privsep) !== 1) reasons.push('privilege separation is off, so it has every right its user has')
+  const acls = ((await pve.listAcl()) || []).filter(a => a && a.type === 'token' && a.ugid === full)
+  if (!acls.some(a => a.path === '/' && a.roleid === EXPORTER_ROLE)) reasons.push(`it has no ${EXPORTER_ROLE} ACL on /`)
+  for (const a of acls) if (!(a.path === '/' && a.roleid === EXPORTER_ROLE)) reasons.push(`it also has ${a.roleid} on ${a.path}`)
+  return { readOnly: reasons.length === 0, reasons }
+}
+
+/**
+ * Make sure the exporter token exists, is read-only, and return what pve.yml should hold.
  * `pve`: the cluster through HyperProx's own access (a sign-in session, or its admin token):
- *   { listTokens(), createToken(name, { privsep, comment }), deleteToken(name),
- *     setAcl({ path, role, token }), tokenWorks(fullTokenId, secret) }
+ *   { listTokens(), getToken(name, user?), createToken(name, { privsep, comment }), deleteToken(name),
+ *     listAcl(), setAcl({ path, role, token }), tokenWorks(fullTokenId, secret) }
  * `held`: what pve.yml holds now ({ user, tokenName, secret }) or null.
+ * `fresh`: replace the token even if pve.yml's secret still works (only one HyperProx made).
+ * A held token that works is reused only if Proxmox says it is read-only; otherwise NotReadOnlyError.
+ * A newly made token is checked the same way before it is handed out.
  * Returns { action, user, tokenName, fullTokenId, secret }.
  */
-async function ensureExporterToken(pve, { userid, adminTokenName, held }) {
+async function ensureExporterToken(pve, { userid, adminTokenName, held, fresh = false }) {
   if (!userid || !adminTokenName) throw new Error('HyperProx has no Proxmox token yet, so there is nothing to name the exporter token after')
   const name = exporterTokenName(adminTokenName)
   const fullTokenId = `${userid}!${name}`
   const comment = exporterComment(userid, adminTokenName)
 
-  let action, secret
-  if (held && held.user === userid && held.tokenName === name && held.secret
+  if (!fresh && held && held.user === userid && held.tokenName === name && held.secret
       && await pve.tokenWorks(fullTokenId, held.secret)) {
-    action = 'reuse'
-    secret = held.secret
-  } else {
-    const existing = ((await pve.listTokens()) || []).find(t => t && t.tokenid === name)
-    action = 'create'
-    if (existing) {
-      if (!String(existing.comment || '').includes(`[exporter for ${userid}!${adminTokenName}]`)) {
-        throw new Error(`A Proxmox token named ${fullTokenId} already exists and was not made by HyperProx, so it was left alone. Remove it in Proxmox, then try again.`)
-      }
-      await pve.deleteToken(name)
-      action = 'recreate'
-    }
-    const tok = await pve.createToken(name, { privsep: 1, comment })
-    if (!tok || !tok.value) throw new Error('Proxmox created the exporter token but returned no secret')
-    secret = tok.value
+    const check = await checkReadOnly(pve, name, userid)
+    if (!check.readOnly) throw new NotReadOnlyError(fullTokenId, check.reasons)
+    return { action: 'reuse', user: userid, tokenName: name, fullTokenId, secret: held.secret }
   }
+
+  const existing = ((await pve.listTokens()) || []).find(t => t && t.tokenid === name)
+  let action = 'create'
+  if (existing) {
+    if (!String(existing.comment || '').includes(`[exporter for ${userid}!${adminTokenName}]`)) {
+      throw new Error(`A Proxmox token named ${fullTokenId} already exists and was not made by HyperProx, so it was left alone. Remove it in Proxmox, then try again.`)
+    }
+    // Deleting a token removes its ACLs with it, so the new one starts with none.
+    await pve.deleteToken(name)
+    action = 'recreate'
+  }
+  const tok = await pve.createToken(name, { privsep: 1, comment })
+  if (!tok || !tok.value) throw new Error('Proxmox created the exporter token but returned no secret')
   await pve.setAcl({ path: '/', role: EXPORTER_ROLE, token: fullTokenId })
-  return { action, user: userid, tokenName: name, fullTokenId, secret }
+  const check = await checkReadOnly(pve, name, userid)
+  if (!check.readOnly) throw new NotReadOnlyError(fullTokenId, check.reasons)
+  return { action, user: userid, tokenName: name, fullTokenId, secret: tok.value }
 }
 
 module.exports = {
   EXPORTER_ROLE, EXPORTER_UID, exporterTokenName, exporterComment,
-  renderPveYml, parsePveYml, readPveYml, writePveYml, ensureExporterToken,
+  renderPveYml, parsePveYml, readPveYml, writePveYml, ensureExporterToken, checkReadOnly, NotReadOnlyError,
 }
