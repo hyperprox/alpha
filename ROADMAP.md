@@ -2,7 +2,7 @@
 
 > *"Your Proxmox infrastructure, hypercharged."*
 >
-> Built by [HyperProx](https://example.net) — every feature comes from real operational pain running TitanCluster, a 5-node Proxmox homelab with 26+ containers.
+> Built by [HyperProx](https://example.net) — every feature comes from real operational pain running a real 5-node Proxmox homelab.
 
 ---
 

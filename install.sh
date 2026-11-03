@@ -814,7 +814,7 @@ EOF
   # to a `cat >` that cannot write onto a directory; the redirect failed, the
   # script reported success, and the exporter crash-looped on IsADirectoryError
   # forever. It could never self-heal, because every reinstall repeated it.
-  # Observed on TitanCluster 2026-09-02: 3,572 restarts since 2026-05-05.
+  # Seen in production: 3,572 restarts over four months.
   mkdir -p "${HYPERPROX_DIR}/config/pve-exporter"
   if [[ -d "${HYPERPROX_DIR}/config/pve-exporter/pve.yml" ]]; then
     warn "pve.yml exists as a directory (Docker bind-mount artefact) — removing"
