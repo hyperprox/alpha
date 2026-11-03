@@ -29,9 +29,16 @@ export interface RemoteExecutor {
   /** Nodes, guests (templates left out) and the Terminal's hand-added hosts. */
   listMachines(): Promise<Machine[]>
   run(m: Machine, script: string, o?: RunOptions): Promise<ExecResult>
+  /** The container's config as the API returns it, `digest` included. */
   lxcConfig(m: Machine): Promise<Record<string, unknown>>
-  /** Through the Proxmox API only. Never by editing or appending to the config file. */
-  setLxcConfig(m: Machine, params: Record<string, string>): Promise<void>
+  /**
+   * Through the Proxmox API only, never by editing or appending to the config file. `digest` (from lxcConfig)
+   * makes Proxmox refuse the change if the config was edited in between.
+   */
+  setLxcConfig(m: Machine, params: Record<string, string>, digest?: string): Promise<void>
+  /** Whether the datacenter firewall is on, and the node's own host firewall rules. */
+  firewallState(node: string): Promise<{ clusterEnabled: boolean; rules: Array<Record<string, unknown>> }>
+  addFirewallRule(node: string, rule: Record<string, string>): Promise<void>
 }
 
 export class TransportError extends Error {
@@ -84,7 +91,8 @@ export function productionRemoteExecutor(
     const c = cred ?? await loadCredential(hostId)
     if (!c) throw new TransportError(`No login saved for ${hostId} in the Terminal`)
     if (!address) throw new TransportError(`No address known for ${hostId}; connect to it once in the Terminal so HyperProx remembers it`)
-    return execOnNode({ host: address, port: c.port || 22, cred: c, command: asRoot(c), input: script, timeoutMs: o.timeoutMs, onData: o.onData })
+    // Fail closed: a host whose key was never pinned in the Terminal is not sent a script that may carry a key.
+    return execOnNode({ host: address, port: c.port || 22, cred: c, command: asRoot(c), input: script, timeoutMs: o.timeoutMs, onData: o.onData, requirePin: true })
   }
 
   return {
@@ -152,8 +160,22 @@ export function productionRemoteExecutor(
       return (await pve.fetchStrict<any>(`/nodes/${encodeURIComponent(m.node!)}/lxc/${Number(m.vmid)}/config`)) ?? {}
     },
 
-    async setLxcConfig(m, params) {
-      await pve.fetchStrict(`/nodes/${encodeURIComponent(m.node!)}/lxc/${Number(m.vmid)}/config`, 'PUT', new URLSearchParams(params).toString())
+    async setLxcConfig(m, params, digest) {
+      const body = new URLSearchParams(params)
+      if (digest) body.set('digest', digest)
+      await pve.fetchStrict(`/nodes/${encodeURIComponent(m.node!)}/lxc/${Number(m.vmid)}/config`, 'PUT', body.toString())
+    },
+
+    async firewallState(node) {
+      const [opts, rules] = await Promise.all([
+        pve.fetchStrict<any>('/cluster/firewall/options'),
+        pve.fetchStrict<any[]>(`/nodes/${encodeURIComponent(node)}/firewall/rules`),
+      ])
+      return { clusterEnabled: Number(opts?.enable ?? 0) === 1, rules: Array.isArray(rules) ? rules : [] }
+    },
+
+    async addFirewallRule(node, rule) {
+      await pve.fetchStrict(`/nodes/${encodeURIComponent(node)}/firewall/rules`, 'POST', new URLSearchParams(rule).toString())
     },
   }
 }
