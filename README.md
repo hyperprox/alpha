@@ -13,89 +13,93 @@
 
 ---
 
-HyperProx is an open-source infrastructure management platform built on top of Proxmox VE. It consolidates the tools that homelab operators and MSPs currently juggle — proxy management, DNS, SSL, monitoring, AI-driven deployments, and network storage health — into a single interface deployed with one command.
+HyperProx is a self-hosted control panel that sits on top of Proxmox VE. It puts the things a
+homelab runs around the hypervisor (reverse proxy hosts, DNS records, TLS certificates, monitoring,
+updates, SSH access and the services on your network) into one web interface, behind a built-in,
+zero-knowledge vault.
 
----
+It runs in a single container on your cluster, installs with one command, and talks to Proxmox
+through its API.
 
-## Install
+## Highlights
 
-On any Proxmox node, as root:
+| Area | What you get |
+|---|---|
+| Proxmox | Every VM and container with power actions, snapshots, migration, HA state and console; create guests from any template or ISO on any node |
+| Dashboard | Real-time nodes, Ceph, HA and quorum, GPU, network, bandwidth and per-node power |
+| Monitoring | Bundled Prometheus and Grafana with HyperProx dashboards and alert rules |
+| Storage | Every storage on every node, Ceph health, OSDs and pools, and per-guest disks |
+| Reverse proxy | Nginx Proxy Manager hosts and certificates: create, edit, enable, disable, delete |
+| DNS | GoDaddy records with guided creation, domain expiry, WAN IP mismatch flags and DDNS |
+| Certificates | Inventory of every endpoint's certificate, ACME DNS-01 issuance and renewal, delivery into guests |
+| Updates | Pending packages everywhere, and a gated update run that respects Ceph, HA and quorum |
+| Terminal | Browser SSH with persistent tmux sessions, split panes and saved layouts |
+| Catalogue | One-click installs of NPM, Ollama, Tautulli, Nextcloud, Jellyfin, Gitea and more |
+| AI assistant | Questions about your cluster, and plain-language deploys run end to end after you confirm |
+| Plug-ins | Arr Stack, Unmanic, MikroTik, Plex, Home Assistant and MeshCentral, with no access to credentials |
+| Notifications | Discord, Slack, Teams, ntfy, Gotify, Telegram and generic webhooks |
+| Security | Built-in Vaultwarden sign-in with 2FA, secrets in memory only, auto-lock, roles and API tokens |
+
+## Quick start
+
+| Requirement | Details |
+|---|---|
+| Proxmox VE | Shell access as `root` on one node |
+| Container (bootstrap defaults) | 4 cores, 8 GB RAM, 100 GB disk, privileged with nesting and keyctl |
+| Network | Outbound internet during install (Debian, Docker, NodeSource and GitHub) |
+| Browser | Any current browser on Windows, macOS, Linux, iOS or Android |
+
+Open a shell on a Proxmox node: **Node → Shell** in the Proxmox web interface, or `ssh root@<your-node>`
+from Windows PowerShell, macOS Terminal or Linux. Then run:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/bootstrap.sh | bash
 ```
 
-That is the whole thing, and the recommended way. It picks a free container ID and
-the storage with the most room, fetches the current Debian template, creates the
-container with the features Docker actually needs, mints the Proxmox API token,
-installs `node_exporter` on every node so Monitoring has data immediately,
-installs HyperProx, and prints you a URL: `https://<container-ip>/`.
+When it finishes, open the setup link it prints (`https://<container-ip>/setup?k=<setup key>`), finish
+the wizard, then create the owner account at `https://<container-ip>/login`.
 
-It is safe to re-run — anything already correct is left alone.
+## Installation
 
-Already have a container, a VM or a machine for it? Use
-[install.sh from a clone](#alternative-installsh-from-a-clone) instead.
+### Option 1: bootstrap.sh (recommended)
 
-<details>
-<summary>Options, if the defaults do not suit you</summary>
+`bootstrap.sh` runs on a Proxmox node as root. It picks the next free container ID and the storage
+with the most free space, downloads the newest Debian template, and creates a **privileged** container
+with `nesting=1` and `keyctl=1` (Docker's overlay driver needs them), the TUN device for Tailscale, and
+start on boot. It then creates the API token `root@pam!hyperprox` with `Administrator` on `/`; on every
+node it can reach over the cluster's SSH trust, installs node_exporter, the power udev rule and, on
+Intel GPU nodes, the Intel GPU exporter (see [Optional integrations](#optional-integrations)); runs
+`install.sh` inside the container; and prints the address and generated root password. It asks once
+before creating anything. If a token named `hyperprox` already exists it is left alone, and the setup
+wizard makes its own.
 
-```
---vmid N            Container ID           (default: next free)
---hostname NAME     Container hostname     (default: hyperprox)
---cores N           CPU cores              (default: 4)
---memory MB         Memory                 (default: 8192)
---disk GB           Disk                   (default: 100)
---storage NAME      Storage for the rootfs (default: most free space)
---bridge NAME       Network bridge         (default: vmbr0)
---ip CIDR           Static address, e.g. 192.168.1.50/24  (default: dhcp)
---gateway IP        Gateway, required with --ip
---skip-exporter     Do not install node_exporter on the nodes
---skip-rapl         Do not install the power-metrics udev rule
---skip-gpu-exporter Do not install the Intel GPU exporter
--y, --yes           Do not ask for confirmation
+Pass options through `bash -s --`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/bootstrap.sh | bash -s -- --ip 192.0.2.50/24 --gateway 192.0.2.1 -y
 ```
 
-</details>
+| Option | Default | Meaning |
+|---|---|---|
+| `--vmid N` | next free | Container ID |
+| `--hostname NAME` | `hyperprox` | Container hostname |
+| `--cores N` | `4` | CPU cores |
+| `--memory MB` | `8192` | Memory |
+| `--disk GB` | `100` | Root disk |
+| `--storage NAME` | most free space | Storage for the root disk |
+| `--bridge NAME` | `vmbr0` | Network bridge |
+| `--ip CIDR` | `dhcp` | Static address, for example `192.0.2.50/24` |
+| `--gateway IP` | | Gateway, required with `--ip` |
+| `--password PASS` | generated | Container root password |
+| `--skip-exporter` | | Do not install node_exporter on the nodes |
+| `--skip-rapl` | | Do not make CPU energy counters readable (no power figures) |
+| `--skip-gpu-exporter` | | Do not start the Intel GPU exporter |
+| `-y`, `--yes` | | Do not ask for confirmation |
 
-### What it does for you, that you used to do by hand
+### Option 2: install.sh on a machine you already have
 
-| Was | Now |
-|---|---|
-| Download a template, then `pct create` with the right flags | Chosen and created for you |
-| Remember that the container must be **privileged** with nesting and keyctl, or Docker fails with an overlay error | Set correctly, every time |
-| Add the TUN device rules by hand for Tailscale | Included |
-| `pveum user token add`, then `pveum acl modify`, then paste the secret into a wizard | Created, granted and written into the config |
-| Install `node_exporter` on each node individually | Installed across the cluster |
-| Discover that power metrics silently need a udev rule, on every node | The rule is written and applied (`--skip-rapl` to decline) |
-| Work out which nodes have an Intel iGPU and hand-run a container on each | Detected by PCI vendor and installed only there (`--skip-gpu-exporter` to decline) |
-| Find the CEPH monitor node and set `CEPH_MON_NODE` | Detected at runtime, and re-detected if that node goes away |
-| Type the address of every service you want a plug-in for | **Scan for services** finds them |
-
-### Finding your services
-
-Open **Plug-ins** and press **Scan for services**. HyperProx already knows every
-guest on the cluster and its address, so it probes them for services it has a
-plug-in for and offers to configure what it finds:
-
-```
-qBittorrent  http://10.0.0.20:8080   on media-stack (201)
-Sonarr       http://10.0.0.20:8989   on media-stack (201)   still needs an API key
-Unmanic      http://10.0.0.21:8888   on transcoder (202)
-```
-
-Every probe is an unauthenticated GET against a port a known service answers on.
-Nothing is written until you press **Use this**, and an API key is never guessed
-— where one is needed it says so and opens the settings form.
-
-Only running containers with an address Proxmox can read are scanned. A VM
-without the guest agent has no address to probe, and nothing outside the cluster
-is touched.
-
-### Alternative: install.sh from a clone
-
-`bootstrap.sh` runs this same installer inside the container it creates. Run it
-yourself when the machine already exists — your own container, a VM, or bare
-metal (Debian 12 or 13, or Ubuntu 22.04 / 24.04), as root:
+Use this for your own container, a VM or bare metal. Supported systems are Debian 12 or 13 and
+Ubuntu 22.04 or 24.04. As root:
 
 ```bash
 apt update && apt install -y git curl
@@ -103,835 +107,443 @@ git clone https://github.com/hyperprox/alpha.git /opt/hyperprox
 bash /opt/hyperprox/install.sh
 ```
 
-The installer works from that clone: `/opt/hyperprox/docker-compose.yml` and
-`config/` are used as they are, and everything specific to your install goes in
-`/opt/hyperprox/.env`. Re-running it is safe and keeps your data and settings.
+The installer works in `/opt/hyperprox`. It installs Docker CE, Node.js 20 and pnpm 9, builds the
+app, generates `/opt/hyperprox/.env` (mode 0600), sets up the vault, starts the Docker services and
+the systemd units. In a container it disables AppArmor and, when run interactively on DHCP, offers to
+set a static address. It asks before installing directly on a Proxmox node.
 
-It does not create the container or the Proxmox token for you; the steps below
-cover both.
-
-<details>
-<summary>Manual container creation and token setup</summary>
-
-The container must be **privileged**, with **nesting** and **keyctl**. Without
-those, Docker fails with an overlay filesystem error.
+If you create the container yourself, it must be privileged with nesting and keyctl, or Docker fails
+with an overlay error:
 
 ```bash
-pveam update
-pveam download local debian-13-standard_13.1-2_amd64.tar.zst
-
-pct create <CTID> local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst \
-  --hostname hyperprox --cores 4 --memory 8192 \
-  --rootfs local-lvm:100 \
+pct create <ctid> <template-storage>:vztmpl/<debian-template>.tar.zst \
+  --hostname hyperprox --cores 4 --memory 8192 --rootfs <storage>:100 \
   --net0 name=eth0,bridge=vmbr0,ip=dhcp \
-  --unprivileged 0 --features keyctl=1,nesting=1 \
-  --password --start 1
+  --unprivileged 0 --features keyctl=1,nesting=1 --onboot 1 --start 1
 ```
 
-For Tailscale, add the TUN device:
-
-```bash
-echo "lxc.cgroup2.devices.allow: c 10:200 rwm" >> /etc/pve/lxc/<CTID>.conf
-echo "lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file" >> /etc/pve/lxc/<CTID>.conf
-pct reboot <CTID>
-```
-
-You do not need to make an API token: the setup wizard signs in with your Proxmox
-login and creates one for itself (see **First-run setup** below). If you would
-rather hand it one, create it and paste it under **Advanced** on the wizard's
-first step:
-
-```bash
-pveum user token add root@pam hyperprox --privsep=0
-pveum acl modify / --token 'root@pam!hyperprox' --role Administrator
-```
-
-Then, inside the container, clone and run the installer as shown above.
-
-</details>
+No API token is needed for this path: the setup wizard makes one from your Proxmox login. Re-running
+`install.sh` is safe; it keeps an existing `.env`, certificates and data.
 
 ### HTTPS
 
-HyperProx is served by its bundled nginx on `https://<container-ip>/`; plain http
-on port 80 redirects there. The app's own services listen on loopback only and
-are reached through nginx, WebSockets (live updates, the terminal) included.
-Grafana is served on the same origin at `/grafana/`, so the Monitoring page can
-embed it.
+HyperProx is served by its own nginx on `https://<container-ip>/`, and port 80 redirects there. The
+API, frontend and setup wizard listen on loopback only; nginx also serves WebSockets and Grafana (at
+`/grafana/`) on the same origin.
 
-The installer generates a self-signed certificate when you have not supplied one,
-so the browser warns once. To use your own, put the full chain in
-`/opt/hyperprox/certs/cert.pem` and the key in `/opt/hyperprox/certs/key.pem`
-(before installing, or any time after), then `docker restart hyperprox-nginx`.
+The installer makes a self-signed certificate, so the browser warns until you either accept it or
+replace it. To use your own, put the full chain in `/opt/hyperprox/certs/cert.pem` and the key in
+`/opt/hyperprox/certs/key.pem`, then run `docker restart hyperprox-nginx`. The Certificates page can
+also issue and install a real certificate for HyperProx itself (see [Certificates](#certificates)).
 
-If another reverse proxy (Nginx Proxy Manager, say) terminates TLS in front of
-HyperProx, point it at `http://<container-ip>:80` and tell nginx to trust it.
-nginx believes a proxy's `X-Forwarded-Proto: https`, and serves its requests
-instead of redirecting them, only from loopback and the addresses you list:
+To trust the self-signed certificate instead, copy it to your computer
+(`scp root@<container-ip>:/opt/hyperprox/certs/cert.pem .` works on Windows, macOS and Linux) and:
+
+| System | Command |
+|---|---|
+| Windows (admin PowerShell) | `certutil -addstore -f Root cert.pem` |
+| macOS | `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain cert.pem` |
+| Debian or Ubuntu | `sudo cp cert.pem /usr/local/share/ca-certificates/hyperprox.crt && sudo update-ca-certificates` |
+| Firefox (any system) | Settings → Privacy & Security → Certificates → Import |
+
+**Behind another reverse proxy.** If a proxy such as Nginx Proxy Manager terminates TLS in front of
+HyperProx, point it at `http://<container-ip>:80` and tell nginx to trust it. nginx believes
+`X-Forwarded-Proto: https` only from loopback and the addresses you list:
 
 ```bash
-mkdir -p /opt/hyperprox/data/nginx/trusted-proxies
-echo '10.0.0.7 1;' > /opt/hyperprox/data/nginx/trusted-proxies/proxies.conf   # your proxy's address or CIDR
+echo '192.0.2.10 1;' > /opt/hyperprox/data/nginx/trusted-proxies/proxies.conf   # your proxy's address or CIDR
 docker restart hyperprox-nginx
 ```
 
-From any other address the header is ignored, so nobody can use it to talk
-plain http to port 80.
-
-HSTS is not sent. With a self-signed certificate on a LAN address it would lock
-browsers out the day the certificate changes. If you serve HyperProx under a
-real domain with a real certificate, you can add
-`add_header Strict-Transport-Security "max-age=31536000" always;` to the
-:443 server in `config/nginx/conf.d/hyperprox.conf`.
+HSTS is not sent. With a real domain and certificate you can add a `Strict-Transport-Security`
+header to the `:443` server in `config/nginx/conf.d/hyperprox.conf`.
 
 ### First-run setup
 
-When the install finishes it prints the wizard link, `https://<container-ip>/setup?k=<setup key>`. The key is what lets the wizard accept requests, so keep the link private; if you lose it, `grep SETUP_SECRET /opt/hyperprox/.env` on the host gives it back.
+The installer prints a wizard link with a setup key: `https://<container-ip>/setup?k=<key>`. Keep it
+private. If you lose it, run `grep SETUP_SECRET /opt/hyperprox/.env` on the HyperProx machine. The
+wizard saves its progress, so reloading it resumes at the step you reached.
 
-The wizard keeps its progress on the server. Reload it, or open the link again
-tomorrow, and it picks up at the step it had reached.
+1. **Connect your Proxmox.** Sign in with your Proxmox web login (two-factor codes are supported).
+   HyperProx uses it once to create its own API token, `hyperprox-<hostname>-<install id>`, and never
+   stores the password. You can paste an existing token under **Advanced** instead. If bootstrap
+   already configured a token, this step is skipped.
+2. **Cluster detected.** Nodes, version, quorum, running guests and Ceph, read through the token.
+3. **Services.** Finds Nginx Proxy Manager, Ollama and Proxmox Backup Server already on your network,
+   and lets you choose which bundled services to run (Prometheus and Grafana, and optionally Nginx
+   Proxy Manager; see [Troubleshooting](#troubleshooting) before choosing that one).
+4. **DNS provider.** Optionally enter a GoDaddy API key and secret.
+5. **Done.** The wizard starts your chosen services, restarts HyperProx and exits for good.
 
-1. **Connect your Proxmox** — sign in with the same username and password you use
-   for the Proxmox web interface (two-factor codes are supported). HyperProx uses
-   that login once to create its own API token, named
-   `hyperprox-<container-hostname>-<install id>`, and never stores your password.
-   The install id is random, made once and kept in `.env` (`HYPERPROX_INSTALL_ID`),
-   so two installs never share a token name, even when both containers are called
-   `hyperprox`. Connecting again reuses the token while HyperProx still holds its
-   secret. If the secret has been lost, it deletes and recreates that one token,
-   but only when the token's comment carries this install's id. Any other token is
-   never touched.
-2. **Cluster detected** — nodes, storage and Ceph, read back through the new token.
-3. **Existing services** — Nginx Proxy Manager and Proxmox Backup Server already on
-   the cluster are found by their web interface, and HyperProx will not offer to
-   install a second NPM over one it found.
-4. **DNS provider**, then **Cluster connected**, which sends you to HyperProx's sign-in page.
+Then open `https://<container-ip>/login` and **create the owner account**: an email, a master password
+and an authenticator app (two-factor is required for the owner). HyperProx has no password of its own;
+you sign in with this vault account from now on.
 
-The wizard no longer asks you to invent an admin password: **HyperProx has no password of its own.**
-Open `https://<container-ip>/login` and **create the owner vault account**: an email, a master
-password and a two-factor code (an authenticator app; 2FA is required for the owner). From then on you
-sign in with those. See [Security](#security) for what that protects and what it does not.
+> There is no recovery for a lost owner master password or two-factor device. Store both safely.
 
-Check on it from the machine with `hyperprox status`; `hyperprox lock` locks it at once.
+### Updating HyperProx
 
-### GoDaddy API key — only if you want DNS management
+```bash
+cd /opt/hyperprox && git pull && bash deploy.sh
+```
 
-1. [developer.godaddy.com/keys](https://developer.godaddy.com/keys) → **Create New App**
-2. Environment: **Production** — the OTE test keys will not work
-3. Copy the key and secret into Settings → DNS
+`deploy.sh` checks the nginx config, installs dependencies, applies migrations, rebuilds, and restarts
+the API and frontend. Sessions survive it because the keyholder keeps the unlocked state. If it says
+the install has no vault yet, re-run `install.sh` first.
 
----
+## Optional integrations
 
-## Monitoring — additional setup required
+### node_exporter (node metrics)
 
-The monitoring page, node metrics, and wattage display require `node_exporter` installed on each Proxmox **host** (not inside the HyperProx CT). Prometheus and Grafana are bundled and started automatically by the installer — no manual setup needed.
-
-### node_exporter (required for all node metrics)
-
-Install on every Proxmox node you want to monitor:
+The Monitoring page, node cards and power figures need `node_exporter` on each Proxmox **node**.
+`bootstrap.sh` installs it. By hand, on each node:
 
 ```bash
 apt update && apt install -y prometheus-node-exporter
 systemctl enable --now prometheus-node-exporter
-```
-
-Verify it's working:
-```bash
 curl -s http://localhost:9100/metrics | head -5
 ```
 
-### Power measurement
+Scrape targets are written by HyperProx, not by editing `prometheus.yml`. The wizard writes node
+targets when it finishes, and `POST /api/targets/sync` (admin) detects every node, Ceph manager and
+GPU exporter and adds them to `config/prometheus/targets/`.
 
-Power comes from your CPU's RAPL energy counters, read by node_exporter's
-`rapl` collector, plus `nvidia-smi` for discrete GPUs. `bootstrap.sh` sets this
-up on every node; the rest of this section is what it does and why, for anyone
-installing by hand or wondering why a node reads nothing.
+### Power
 
-**The permission that decides whether any of this works.** Since kernel 5.10,
-`/sys/class/powercap/*/energy_uj` is `0400` root-only — a PLATYPUS mitigation,
-because energy readings are fine-grained enough to leak AES keys. node_exporter
-runs unprivileged, so without a change it gets `EACCES` and the rapl collector
-yields **nothing**: no error, no warning, just a metric that never appears. A
-cluster total then silently covers only the nodes that happened to be readable,
-and looks perfectly healthy while doing it.
-
-`bootstrap.sh` installs this rule on each node, and `--skip-rapl` declines it:
+Power comes from node_exporter's `rapl` collector plus NVIDIA GPU draw. Since kernel 5.10,
+`/sys/class/powercap/*/energy_uj` is readable by root only, so node_exporter silently gets nothing.
+`bootstrap.sh` installs this udev rule on each node (decline with `--skip-rapl`):
 
 ```
+# /etc/udev/rules.d/99-hyperprox-rapl.rules
 SUBSYSTEM=="powercap", ACTION=="add|change", RUN+="/bin/chmod o+r /sys%p/energy_uj"
 ```
 
-It chmods the device udev is reporting rather than walking the tree. A rule of
-the form `find /sys/class/powercap -name energy_uj -exec chmod …` looks correct
-and never fires: `RUN+=` runs once per domain *as each appears*, so the find
-searches a directory that is not yet populated. Delete
-`/etc/udev/rules.d/99-hyperprox-rapl.rules` to undo it.
+This is a deliberate trade: any local user on that node can then read energy use. Delete the file to
+undo it.
 
-**Which domains are added, and which are not.** RAPL exposes several and they
-are not peers:
+HyperProx uses the `psys` platform rail where the board has one, otherwise `package` plus `dram`,
+and adds NVIDIA GPU draw. It is silicon draw, not wall power: drives, fans and PSU losses are not
+measured. A node that reports nothing shows `no meter`, never a quiet zero.
 
-| Domain | Treatment | Why |
+### GPUs
+
+- **Intel iGPU.** `bootstrap.sh` starts this on Intel nodes that have Docker. By hand:
+
+  ```bash
+  docker run -d --name intel-gpu-exporter --restart unless-stopped \
+    --privileged --pid host -v /dev/dri:/dev/dri -p 8081:8080 \
+    ghcr.io/onedr0p/intel-gpu-exporter:rolling
+  ```
+
+- **NVIDIA.** Install [nvidia_gpu_exporter](https://github.com/utkuozdemir/nvidia_gpu_exporter) on the
+  node as a systemd service. It listens on `:9835`, which is where target sync looks.
+
+GPUs are detected from each node's PCI devices. `NEXT_PUBLIC_GPU_NODES` in `.env` (node names,
+comma-separated) adds a GPU badge on Infrastructure; it is read at build time, so run `deploy.sh` after.
+
+### DNS provider (GoDaddy)
+
+1. Go to [developer.godaddy.com/keys](https://developer.godaddy.com/keys) and create a key.
+2. Choose **Production**. OTE test keys do not work.
+3. Enter the key and secret in the setup wizard, or under **Settings → DNS → GoDaddy**, and press
+   **Test**.
+
+GoDaddy is the only DNS provider with a working client today. Settings also shows Cloudflare and
+Namecheap fields; those clients are on the roadmap.
+
+### AI providers
+
+Configure providers on the **AI Assistant** page. Keys are stored in the vault and never sent to the
+browser.
+
+| Provider | Needs | Default model |
 |---|---|---|
-| `package-0` | base figure | the CPU package |
-| `core`, `uncore` | **never read** | slices of `package` — adding them counts the same watts two or three times |
-| `dram` | **added** | a genuinely separate rail |
-| `psys` | **replaces** package + dram | the platform rail, including VRM and board losses the CPU domains cannot see. On a board that exposes it, psys typically reads two to three times package+dram |
-| discrete GPU | **added** | on PCIe, outside every domain above, `psys` included |
-| `igpu_power_package` | stand-in only | the same package domain read by `intel_gpu_top`; used only where RAPL cannot be read, never in addition |
+| Anthropic | API key | `claude-opus-5-5` |
+| OpenAI or compatible | API key, optional base URL (OpenRouter, Groq and similar) | `gpt-4o` |
+| Ollama | A reachable Ollama server | `llama3.2:3b` |
 
-**What it does not cover.** Drives, fans, memory outside the DRAM rail, and PSU
-conversion losses are not instrumented by any of this. The figure is silicon
-draw, not wall draw — a node with a stack of spinning disks can easily draw
-another 40–60 W that nothing here sees. `psys` is the closest available proxy
-for board power, and most boards do not expose it. For true wall power you need
-a metered PDU or a UPS that reports load.
-
-**Reading the display.** The dashboard tile shows `POWER 4/5` when a node
-reports nothing, rather than quietly summing what it has. Each node card and
-each Infrastructure chip shows its own figure, or `no meter` — those two states
-are drawn differently on purpose, because a node measuring nothing and a node
-drawing nothing are not the same fact.
-
-If a node reads `no meter`, check in this order: node_exporter is installed;
-`/etc/udev/rules.d/99-hyperprox-rapl.rules` exists; `stat -c %a
-/sys/class/powercap/intel-rapl:0/energy_uj` returns `404` and not `400`; and the
-CPU exposes RAPL at all (`ls /sys/class/powercap/`).
-
-### GPU metrics (optional — NVIDIA only)
-
-If you have NVIDIA GPUs on any Proxmox node, install `nvidia_gpu_exporter`:
+Small local models answer more weakly; 8B models plan noticeably better than 3B ones. For a CPU-only
+test there is a bundled Ollama (3 CPUs, 4 GB, bound to `127.0.0.1:11434`):
 
 ```bash
-wget https://github.com/utkuozdemir/nvidia_gpu_exporter/releases/download/v1.1.0/nvidia_gpu_exporter_1.1.0_linux_amd64.tar.gz
-tar -xzf nvidia_gpu_exporter_1.1.0_linux_amd64.tar.gz
-mv nvidia_gpu_exporter /usr/local/bin/
-chmod +x /usr/local/bin/nvidia_gpu_exporter
-
-cat > /etc/systemd/system/nvidia_gpu_exporter.service << 'EOF'
-[Unit]
-Description=NVIDIA GPU Exporter
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/nvidia_gpu_exporter
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable --now nvidia_gpu_exporter
-```
-
-### Intel GPU metrics (optional — Intel iGPUs)
-
-`bootstrap.sh` installs this automatically on nodes with an Intel GPU, and skips
-AMD and NVIDIA nodes — `intel_gpu_top` has nothing to talk to there and the
-container would crash-loop. `--skip-gpu-exporter` declines it. By hand:
-
-```bash
-docker run -d --name intel-gpu-exporter --restart unless-stopped \
-  --privileged --pid host -v /dev/dri:/dev/dri -p 8081:8080 \
-  ghcr.io/onedr0p/intel-gpu-exporter:rolling
-```
-
-It reports iGPU utilisation, and a package power figure that stands in where
-RAPL cannot be read. Measured against RAPL on the same hosts, its
-`igpu_power_package` tracks `node_rapl_package_joules_total` within 1%.
-
-**You do not need to edit `prometheus.yml`.** HyperProx detects nodes and writes
-the scrape target files itself — Settings → Targets, or `POST
-/api/targets/sync`.
-
----
-
-## AI Assistant — current state
-
-The assistant turns a sentence into a deployment plan, then runs it. It is still
-early, and the section below says exactly where the edges are.
-
-**Three providers, one interface.** Pick one in Settings → AI:
-
-| Provider | Needs | Notes |
-|---|---|---|
-| **Anthropic** | An API key | The plan schema constrains generation natively, so a malformed plan is not a failure mode. Defaults to `claude-opus-5-5` (Claude Opus 5.5); set a different model in Settings → AI. |
-| **OpenAI** | An API key | Uses JSON-schema structured output. The base URL is settable, so the same path also reaches OpenRouter, Groq, Together or any OpenAI-compatible server. |
-| **Ollama** | A reachable Ollama server | Free and private. Point it at a server you already run, or enable the bundled CPU-only one (see Local AI below). |
-
-Cloud keys are kept in the vault like every other credential, and are never sent to the browser.
-
-**The model is given your actual cluster.** Before a plan is generated, HyperProx
-gathers the live facts — every online node with its free memory, every storage
-that can hold a container ranked best-first, the DNS zones you manage, the proxy
-hosts already in use, and the next free VMID — and puts them in the prompt. It
-plans against what is there rather than what it can imagine.
-
-**Every plan is audited before you see it.** A schema-valid plan can still be
-undeployable, so the plan is checked against the same facts: a node that does not
-exist, a storage that was never configured, a domain outside your zones, a size
-no node can fit, a missing DNS step. Anything it finds is shown as a warning
-alongside the model's own.
-
-**What still does not work:**
-- Installing the service needs an SSH login for the node; without one the
-  `install_service` step is skipped and shows you the commands to run instead.
-- Small local models still produce weaker plans. The output is validated either
-  way, so a bad one is rejected rather than executed.
-
-> **Local model recommendation:** `llama3.2:3b` works but is inconsistent.
-> `qwen3:8b` or `deepseek-r1:8b` handle structured planning noticeably better.
-> If you have no GPU to spare, a cloud provider costs a few cents per plan and
-> works on day one.
-
----
-
-### Plug-in consoles
-
-A plug-in whose device also takes an interactive login declares
-`consoleAccess` in its manifest, and the device then appears in the Terminal
-host list under **From plug-ins** — no second address to type, and no way for
-the two to drift apart, because the address comes from the plug-in's own base
-URL.
-
-Credentials are deliberately *not* shared with the plug-in. A plug-in is told a
-read-only account is enough; reusing that for a shell would either fail or
-quietly hand a browser more access than the plug-in was granted. The console
-asks for its own login like any other host.
-
-Appliances declare `tmux: false`, because RouterOS and its kind answer SSH with
-their own CLI rather than a POSIX shell — there is nothing for tmux to run in,
-and probing for it only wastes a round trip on every connect.
-
-### Bandwidth meters
-
-The dashboard's WAN and LAN dials come from whichever plug-in implements
-`bandwidth()` — the MikroTik plug-in does. The cluster's own netin/netout cannot
-answer this: that is only the traffic Proxmox itself moves, so a house
-saturating the uplink is invisible to it.
-
-Two optional settings turn the dials from a bare number into utilisation. In the
-MikroTik plug-in's settings:
-
-- **Plan download / upload (Mbps)** — what you pay for, not what the port
-  negotiated. A gigabit port on a 500/50 plan is a 500/50 link, and only the
-  person paying the bill knows that. Left blank, each dial scales to the largest
-  rate it has seen and labels itself `auto`.
-- **LAN interface** — blank prefers a bridge, which on a typical router is every
-  LAN port at once. Set it to a trunk if your local traffic crosses one: a
-  bridge counter does not see switch-to-switch traffic.
-
----
-
-## Security
-
-HyperProx can change everything it manages, so it holds nothing of value outside a vault. Every install
-runs its own stock, unmodified [Vaultwarden](https://github.com/dani-garcia/vaultwarden) (pinned by
-digest, listening on the loopback interface only), and HyperProx will not start without it. You sign in
-with your vault account (email, master password, two-factor code); roles come from the vault
-organization; HyperProx starts **locked** and locks itself again when idle.
-
-```bash
-hyperprox status   # is the vault up, is HyperProx locked?
-hyperprox lock     # lock it now: wipe secrets from memory, end every session
-```
-
-**Shipped (phase 1):** the built-in Vaultwarden, vault sign-in with 2FA required for the owner, secrets
-held in memory only, auto-lock and `hyperprox lock`, four roles (Owner, Admin, Operator, Viewer),
-re-confirmation for dangerous actions, and Bitwarden Sends for handing a secret to someone.
-
-Read [docs/security.md](docs/security.md) for the model in plain language, what is protected now, what
-is **not** yet, and the caveats that matter.
-
----
-
-## What's Built & Working
-
-| Feature | Status |
-|---|---|
-| VM & LXC management — live metrics, power actions | ✅ Shipped |
-| Nginx Proxy Manager full CRUD | ✅ Shipped |
-| GoDaddy DNS — all record types, DDNS, stale IP detection, domain expiry | ✅ Shipped |
-| Bundled Prometheus + Grafana — auto-started by installer | ✅ Shipped |
-| Real-time WebSocket dashboard — nodes, GPU, CEPH, HA, network | ✅ Shipped |
-| Storage page — CEPH health, OSD status, VM/CT disk breakdown | ✅ Shipped |
-| Monitoring page — node health, active alerts, Grafana embed | ✅ Shipped |
-| **Vault gate — built-in Vaultwarden, vault sign-in with 2FA, secrets in memory only, auto-lock, four roles** | ✅ Shipped |
-| One-shot installer + first-run setup wizard (Debian 12/13, Ubuntu 22.04/24.04) | ✅ Shipped |
-| **Setup wizard signs in with your Proxmox login and creates its own uniquely named token** | ✅ Shipped |
-| **Setup wizard locked to a per-install setup key, same-origin only** | ✅ Shipped |
-| **Service scan finds the NPM, PBS, Grafana and Prometheus you already run** | ✅ Shipped |
-| LXC creation — template picker, node resource limits, storage with free space | ✅ Shipped |
-| VM creation — ISO auto-detection, network config, storage picker | ✅ Shipped |
-| CT/VM deletion with confirmation guard | ✅ Shipped |
-| CT template + ISO auto-detection across all nodes and storage pools | ✅ Shipped |
-| **Terminal — SSH panes for every host, sessions that outlive the browser** | ✅ Shipped |
-| **Terminal — split panes, tabs, and saved layouts** | ✅ Shipped |
-| **Plug-ins — brokered plug-in system: Arr Stack, Unmanic, MikroTik, Plex/Tautulli and Home Assistant** | ✅ Shipped |
-| **MikroTik plug-in — the whole router, per-device bandwidth and an SSH console** | ✅ Shipped |
-| **Dashboard — speedometer dials, trend sparklines and live throughput charts** | ✅ Shipped |
-| **WAN and LAN bandwidth meters, read from a plug-in** | ✅ Shipped |
-| **Per-node and cluster power, from every RAPL domain the board exposes** | ✅ Shipped |
-| **Terminal — host palette on Ctrl/⌘ K, no second sidebar** | ✅ Shipped |
-| **Terminal — open a host's existing tmux sessions in their own panes, singly or all at once** | ✅ Shipped |
-| **Service catalogue — install a reverse proxy, Ollama or Tautulli you do not have** | ✅ Shipped |
-| **AI wizard installs the service itself, where a node login is stored** | ✅ Shipped |
-| **Home Assistant plug-in — dead entities, flat batteries, pending updates** | ✅ Shipped |
-| **Responsive down to a phone, with a navigation drawer** | ✅ Shipped |
-| **Installable as a PWA — offline page, shortcuts, never caches live data** | ✅ Shipped |
-| **Light and dark mode, one design language throughout** | ✅ Shipped |
-| **90-day metrics history in the bundled Prometheus, sized by the wizard for your cluster** | ✅ Shipped |
-| AI deployment — plan generation from natural language | ✅ Shipped |
-| **AI providers — Anthropic, OpenAI or any OpenAI-compatible endpoint, alongside Ollama** | ✅ Shipped |
-| **AI plans are grounded in live cluster facts and audited before they are shown** | ✅ Shipped |
-| AI deployment — plan execution, end to end: container, service install, proxy host, DNS record, certificate | ✅ Shipped |
-| Run commands inside any guest from the node, without a guest credential | ✅ Shipped |
-| Connect to existing Grafana / Prometheus instance — works through `PROMETHEUS_URL` and `NEXT_PUBLIC_GRAFANA_URL` in `.env`; no settings UI yet | ⚠️ Partial |
-
----
-
-## Terminal
-
-An SSH terminal for every host on the cluster, in the browser.
-
-The host list is not something you fill in: HyperProx already knows every VM and
-container, so all of them are listed the first time you open it, with addresses
-taken from the guest config. Hosts Proxmox has never heard of — a router, a NAS,
-a VPS — can be added by hand and sit in the same list. One shared login covers
-every host that has none of its own, because entering the same root password
-twenty-seven times is how a tool gets abandoned in week one.
-
-Sessions run in **tmux on the target**, so the browser is only a window onto
-them: close the tab, come back tomorrow, and the session is still there with its
-scrollback. Hosts without tmux get a plain shell and say so — and offer to
-install it, over the credential the pane is already using.
-
-A pane already lives inside tmux, so typing `tmux attach` in it would nest one tmux
-in another, and tmux refuses. Instead, the pane header has a **Sessions** menu
-listing what is already running on that host (its windows, attached clients and
-last activity). Pick one to open it in a pane of its own, attached directly, beside
-the pane you came from; **Open all** opens every session at once, side by side for
-two and in a grid for more.
-
-Hosts are opened from a palette rather than a permanent column: the **+** in the
-tab bar, or **Ctrl/⌘ K** from anywhere on the page. Type to filter, arrows to
-move, Enter to open, Escape to leave. A terminal wants width, and a list of
-hosts is only needed at the moment you open one — a second menu stacked against
-the app's own nav earned its place on neither count.
-
-Panes can be tabbed, split side by side, stacked, or gridded, and an arrangement
-can be saved by name and reopened later. Host keys are pinned on first connect
-and a change is refused with both fingerprints shown.
-
----
-
-## On a phone
-
-The interface is responsive, and it installs. Open it on a phone and use the
-browser's *Add to Home Screen* — it then runs full-screen with its own icon,
-and the shortcuts drop you straight into the Terminal, Dashboard or Plug-ins.
-
-Below the `md` breakpoint the navigation becomes a drawer, the dashboard's
-columns stack, dial rows wrap, tables scroll inside their own container rather
-than dragging the page sideways, and the Terminal shows one pane at a time
-whatever the view mode says — two 80-column shells side by side on a phone is
-two unreadable shells. Panes stay connected either way; the layout only decides
-what is drawn.
-
-**The service worker never caches an API response, by design.** This is a
-console for live infrastructure: a stored `/api/proxmox/summary` replayed as
-current shows a node up that went down an hour ago, and that is the reading
-someone acts on. Hashed static assets are cached, because a filename containing
-a content hash cannot go stale. When there is no network you get an offline page
-that says plainly it is not showing your cluster, rather than a convincing
-screenshot of the past.
-
-`sw.js`, the manifest and the offline page are served without a session — a
-browser fetches the manifest before anyone signs in, and shows the offline page
-exactly when it cannot reach the server to authenticate. They contain the app's
-name, colours and caching rules and nothing else; every API route and page stays
-behind auth.
-
----
-
-## Service catalogue
-
-Everything else in HyperProx assumes you already run the thing it talks to. This
-is the page for when you do not: a reverse proxy, Ollama, Tautulli. It creates a
-container, installs the service, checks it answers, and writes the address into
-the integration that was waiting for it — the last step being the point, since an
-install that leaves you copying a URL into a settings form has done the easy half.
-
-**It needs one SSH login per node, and that is a real decision.** Installs run
-with `pct exec` from the node rather than by SSH into the container. The
-alternative needs a credential for a guest that is a minute old, an sshd that may
-not be installed, and a DHCP lease that may not have arrived — `pct exec` needs
-none of those, because the node already owns the container.
-
-The consequence is that HyperProx asks for a login on the hypervisor. It is
-tested before it is stored, it is kept in the vault with everything
-else, and it is deliberately **not** shared with the Terminal's guest login: that
-password was given so one root account could cover a shelf of containers, and
-borrowing it to reach the hosts would be both a guess and a quiet widening of
-what you granted. A key is the better answer — it can be revoked on the node
-without changing anything else.
-
-Nothing is created before that check passes. An earlier build checked at the
-install step, which is to say after building a container, and a missing login
-then cost you a stray guest to clean up for a job that could never have finished.
-
-| Recipe | Provides | Notes |
-|---|---|---|
-| **Nginx Proxy Manager** | the reverse proxy HyperProx drives for proxy hosts and certificates | takes 80 and 443 on its container |
-| **Ollama** | a local provider for the deployment wizard | binds `0.0.0.0` on purpose — the default loopback bind is the usual reason a model server "cannot be reached". No model is pulled; do that from the AI page |
-| **Tautulli** | Plex history for the Plex plug-in | history starts the day it is installed; it cannot backfill |
-
-Installs are tracked in memory, so restarting the API loses the progress view of
-one already running. The container and the service it installed are unaffected.
-
----
-
-## Plug-ins
-
-Plug-ins teach HyperProx about things that are not Proxmox — a router, a media
-server — and render them as tiles.
-
-**A plug-in never sees a credential.** It declares in its manifest which settings
-it needs and how those settings authenticate an HTTP call; the host resolves
-them, makes the request, and returns only the response. That boundary is
-deliberate: this process holds your Proxmox token, your proxy and DNS logins and
-your SSH keys, and a plug-in able to read the credential store would be a plug-in
-able to read all of it. Non-secret settings are readable through `ctx.option()`,
-because a plug-in legitimately needs its own configuration; values declared
-`secret` never are.
-
-Bundled today — the live list is on the **Plug-ins** page, which is the one that
-cannot go stale:
-
-| Plug-in | What it shows |
-|---|---|
-| **Arr Stack** | Sonarr, Radarr, Prowlarr and qBittorrent as one thing, because they are one thing. What needs a person versus what automation will retry on its own, the queue with season packs marked as packs, active downloads, torrents by state, anything with no progress in over an hour, indexer health. |
-| **Unmanic** | Transcode workers across every node: what each is working on, how far in, what is queued and what failed. |
-| **MikroTik** | The whole router: identity, model, RouterOS and RouterBOARD firmware, CPU, memory, temperature and input voltage; per-device and per-interface throughput; port forwards, firewall counters, WireGuard peers, LLDP/CDP neighbours, listening services, accounts, DNS and the recent log. Feeds the dashboard's WAN and LAN meters, and offers an SSH console. Read-only by intent. |
-| **Plex activity** | Who is watching, what they are watching, what is transcoding and what it costs in bandwidth — read through Tautulli, which also supplies the history: recent plays, top watchers, most-watched titles. |
-| **Home Assistant** | What has quietly stopped working. Unavailable entities sorted longest-dead first, batteries under a level you set, updates waiting, automations and when each last ran, what is on right now, entities by domain, and the error lines from the log. **Read-only by intent** — every write against this API actuates something physical, so it never calls `/api/services`. |
-
-| **MeshCentral** | Not a tile so much as an updater: finds MeshCentral installed with npm in any guest and puts it on the Updates page with release notes, a security flag, an origin pre-flight for reverse proxies, and a real sign-in check through the public URL after updating. |
-
-Each plug-in's real output is shown on its gallery card, so you can see what it
-renders before placing it anywhere, and a plug-in quietly returning nothing is
-obvious rather than discovered later.
-
-### App updates from plug-ins
-
-apt and docker cannot see an app installed some other way — `npm install` into a
-directory and a systemd unit, a tarball in `/opt`. A plug-in can contribute an
-**app-update provider** (`appUpdates` on the plug-in, interface `AppUpdateProvider` in
-`apps/api/src/lib/plugin-host.ts`) that, for one guest:
-
-- **detects** installs: where, which version, which user owns it, how it runs;
-- reports the **latest** version with release notes and an `isSecurity` flag;
-- runs a read-only **pre-flight**, and may offer a config change as a separately
-  approved **fix**;
-- **applies** an exact version, stopping the service first;
-- **verifies** with a real functional check;
-- describes the **rollback**.
-
-The Updates feature decides when any of it runs: from the policy (`apps.*`, default
-manual) and a person's approval, after a snapshot, in the guest phase of a run. See
-`docs/updates.md`.
-
-This is the one place a plug-in is given more than a brokered HTTP call: a provider's
-scripts run **as root inside the guest** the host hands it. It still cannot pick another
-guest, reach a node shell, the Proxmox API or the credential store, and it reads settings
-through `option()`, which never returns a secret. Treat a provider as part of HyperProx:
-only bundled plug-ins are asked for one.
-
-Apps that are npm packages can use the shared helper in
-`apps/api/src/lib/app-updates/npm-app.ts` — install discovery, the npm registry, GitHub
-release notes and advisories, and the stop → `npm install` as the owner → `npm ls` →
-start sequence. The MeshCentral plug-in (`apps/api/src/plugins/meshcentral.ts`) is the
-worked example.
-
-### Asking for one that does not exist
-
-The Plug-ins page also lists what has **not** been built — Proxmox Backup Server,
-Pi-hole, UniFi, TrueNAS, Frigate, a UPS, and others — each with a button that
-opens a pre-filled issue on GitHub in your browser. Ideas, not promises: nothing
-there is scheduled, and asking is what moves one up.
-
-HyperProx holds no GitHub token and posts nothing on your behalf. The request
-arrives under your own name, and no installation has to store a credential so a
-button can work.
-
-### Plug-ins in Prometheus and Grafana
-
-A tile answers *what is happening now*. Prometheus answers *what has been
-happening* — whether the link saturates at 3am, whether transcoding piles up on
-Sundays, how device count moves across a week.
-
-Plug-ins that publish metrics are scraped at `/api/plugins/metrics` and land in
-the bundled Prometheus, ready to graph in the bundled Grafana:
-
-| Metric | From |
-|---|---|
-| `hyperprox_plugin_up` | every plug-in — 1 when it answered its device on the last scrape |
-| `hyperprox_plugin_network_bits_per_second` | MikroTik, labelled `direction` and `interface` |
-| `hyperprox_plugin_network_devices` | MikroTik, labelled `state` (awake / leased) |
-| `hyperprox_plugin_home_entities`, `..._entities_unavailable` | Home Assistant |
-| `hyperprox_plugin_home_batteries_low`, `..._updates_pending` | Home Assistant |
-| `hyperprox_plugin_home_automations` | Home Assistant, labelled `state` (on / off) |
-| `hyperprox_plugin_router_cpu_percent`, `..._memory_bytes` | MikroTik |
-| `hyperprox_plugin_plex_streams` | Plex, labelled `decision` (all / transcode / direct_play) |
-| `hyperprox_plugin_plex_bandwidth_kbps` | Plex, labelled `scope` (total / lan / wan) |
-
-Metrics are declared separately from tile text on purpose: tile text is written
-to be read, and parsing numbers back out of prose is how a metric quietly
-becomes wrong.
-
-A **HyperProx — Plug-ins** dashboard is provisioned into Grafana automatically,
-so the data arrives on a panel rather than as a query you have to write: WAN
-throughput with upload mirrored below the axis, devices awake against devices
-leased, router load, Plex streams stacked by decision, and a plug-in health row
-that tells you *why* the panels above went quiet.
-
-The endpoint authenticates with `METRICS_TOKEN` from `.env` as a bearer token,
-because a scraper has no session to present. **With no token set it refuses**
-rather than exposing device names and viewing habits to anything that can reach
-the port. The installer generates one; the bundled Prometheus job is configured
-to match. A plug-in that fails to answer reports `hyperprox_plugin_up 0` and the
-others still publish — one broken device does not blank the scrape.
-
----
-
-## Known Issues
-
-| Issue | Status |
-|---|---|
-| **The AI wizard needs one SSH login per node to install anything** — with one stored it creates the container and installs the service itself. Without one it still creates everything else and prints the commands, and says so rather than reporting success. | ℹ️ Add node logins on the Catalogue page |
-| **A node shows `no meter` for power** — usually the udev rule rather than the hardware: `energy_uj` is root-only from kernel 5.10 and node_exporter runs unprivileged, so the rapl collector silently yields nothing. `bootstrap.sh` installs the rule; see [Power measurement](#power-measurement) for the order to check things in. Genuinely absent on some CPUs and inside VMs. | ℹ️ Usually fixable |
-| **HA card can read 0** on a cluster that has HA resources — the count is being checked against token privileges | Investigating |
-| **Storage gauge and the Ceph bar can disagree** (raw vs usable capacity) | Investigating |
-| **NPM and Prometheus can stay on "checking…"** on a fresh install although both are running; Grafana shows no status pill | Investigating |
-| **Power reads "–" with no reason** when no node exposes RAPL | Planned: say why, or hide the card |
-| **Tokens from earlier wizard runs stay on the cluster** — before the wizard reused its token, each connect made a new `hyperprox-<host>-<random>` one. HyperProx never deletes tokens it does not own by its current name, so remove old ones under Datacenter → Permissions → API Tokens | ℹ️ One-time cleanup |
-
-### Workarounds
-
-**CEPH MON node** — detected automatically at runtime and re-detected if that node
-stops answering, so no configuration is needed. `CEPH_MON_NODE` in `.env` remains
-supported as an explicit override; leave it empty unless you need to pin one.
-
-
----
-
-## System Requirements
-
-### Minimum (testing, no local AI)
-- 2 CPU cores · 4GB RAM · 20GB storage
-
-### Recommended
-- 4 CPU cores · 8GB RAM · 100GB SSD
-
-### With Local AI (Ollama + GPU)
-- A GPU-backed Ollama should run on a **separate machine or node**. For a small CPU-only test, the bundled `ollama` service (below) runs beside HyperProx
-- 16GB RAM · 16GB VRAM recommended for the Ollama host
-
-### Local AI (bundled Ollama, CPU only)
-
-An optional `ollama` service ships in `docker-compose.yml` under the `ai` profile. It is capped at 3 CPUs and 4 GB,
-and is published on `127.0.0.1:11434` only, because Ollama has no authentication. Start just that service:
-
-```bash
+cd /opt/hyperprox
 docker compose --profile ai up -d --no-deps ollama
 docker exec hyperprox-ollama ollama pull <model>
 ```
 
-Then point the wizard at it with `PUT /api/ai/provider/ollama` and `{"url":"http://127.0.0.1:11434","model":"<model>"}`
-(or Settings → AI). Models are stored in the `ollama_data` volume. Expect small 4-bit models of about 4B parameters;
-on CPU a plan takes tens of seconds to minutes.
+Then connect `http://127.0.0.1:11434` on the AI Assistant page. HyperProx sets Ollama's thread count
+from the container's CPU limit (`OLLAMA_CPUS`); `OLLAMA_NUM_THREAD` overrides it and
+`OLLAMA_TIMEOUT_S` (default 300) sets how long a call may take.
 
-**Threads.** Ollama sizes its thread pool from the host's cores, not from the container's CPU quota, so on a large host a
-capped container runs far more threads than it has CPU time for (a 4B model took about 5 minutes per call instead of
-about 35 s). HyperProx therefore sets Ollama's `num_thread` itself: when the Ollama address is a local one, it reads the
-`cpus` limit of the `hyperprox-ollama` container from `docker inspect` (re-read every five minutes) and uses that. To
-change the count, change `OLLAMA_CPUS` in `.env` (it feeds the compose `cpus:` limit) and recreate the service. These
-override the automatic value, in this order: the `num_thread` setting stored for Ollama, then the `OLLAMA_NUM_THREAD`
-environment variable. A remote Ollama is never inspected; set `OLLAMA_NUM_THREAD` for it. `OLLAMA_TIMEOUT_S` (default
-300) sets how long a call may take before the page reports that the local model took too long.
+### Plug-in metrics in Prometheus
 
-### Prometheus Storage Planning
+Plug-ins publish metrics at `/api/plugins/metrics`, and a **HyperProx — Plug-ins** Grafana dashboard
+is provisioned for them. The endpoint refuses to serve until you set a bearer token:
 
-| Cluster Size | 90-day Retention |
+```bash
+TOKEN="$(openssl rand -hex 32)"
+echo "METRICS_TOKEN=$TOKEN" >> /opt/hyperprox/.env
+printf '%s' "$TOKEN" > /opt/hyperprox/config/prometheus/secrets/metrics_token
+systemctl restart hyperprox-api && docker restart hyperprox-prometheus
+```
+
+## Using HyperProx
+
+### Dashboard
+
+Cluster overview with speedometer dials and trend lines: per-node CPU, memory, disk, temperature and
+power; Ceph capacity and OSDs; HA quorum, fencing and resources; GPU use and VRAM; network
+throughput; and the state of connected services. If a plug-in reports bandwidth (MikroTik does), WAN
+and LAN dials show it, scaled to your plan speed when you set one in the plug-in's settings.
+
+### Infrastructure
+
+Every VM and container, with filters for running, stopped, containers and VMs, and search by name
+or ID. Open one for power actions, snapshots, migration (admin),
+HA state, its config, and **Console**, which opens it in the Terminal. **Create** builds a container
+from a template or a VM from an ISO, with a storage picker that shows free space. Deleting a guest asks
+for your master password again.
+
+### Terminal
+
+SSH in the browser to every guest (addresses come from Proxmox) and to hosts you add by hand, such as
+a router or a NAS. One shared login can cover every host that has none of its own. Sessions run in
+tmux on the target, so they survive closing the tab; a host without tmux gets a plain shell and an
+offer to install it. The **Sessions** menu opens a host's existing tmux sessions in their own panes.
+
+Open hosts from the palette (**+** or **Ctrl+K** on Windows and Linux, **Cmd+K** on macOS). Panes can
+be tabs, columns, rows or a grid, and layouts can be saved by name. Host keys are pinned on first
+connect, and a changed key is refused with both fingerprints shown.
+
+### Proxy and DNS
+
+**Proxy** manages Nginx Proxy Manager hosts and their certificates; connect NPM under **Settings →
+Proxy** with its URL, email and password, or install it from the Catalogue. **DNS** lists your GoDaddy
+domains with their expiry dates and every record. **Add record** starts from what you want to do
+(point at this server, a subdomain, email, verification) or a custom record. A records that differ
+from your current WAN IP are flagged, and **DDNS Update** rewrites them to it.
+
+### Certificates
+
+Probes every endpoint HyperProx knows the way a client would, issues and renews certificates over ACME
+DNS-01 through GoDaddy, delivers them into guests or to HyperProx's own nginx, and checks each delivery
+by fingerprint. Configure it in `config/certs.yaml` (copy `config/certs.example.yaml`), start with
+`acme.directory: staging`, and press **Issue**. Admin-only. See [docs/certificates.md](docs/certificates.md).
+
+### Storage and Monitoring
+
+**Storage** shows every storage on every node, including shared NFS and CIFS, Ceph health, OSDs (with
+latency) and pools, and the disks of each guest. **Monitoring** shows node health, active Prometheus
+alerts (node down, CPU, memory, disk, Ceph and GPU rules) and the embedded Grafana dashboards.
+Prometheus keeps 90 days or 40 GB, whichever comes first (`PROMETHEUS_RETENTION` and
+`PROMETHEUS_RETENTION_SIZE` in `.env`).
+
+### Updates
+
+Shows pending packages and kernel pins on every node and guest, and runs a full update round: preflight
+checks, guests in batches with a snapshot first, Ceph packages levelled across nodes, then nodes one at
+a time with HA maintenance mode and `noout` around any reboot. It stops at the first failure. Rules
+such as "this node only gets `apt upgrade`" or "check these package holds" go in
+`config/updates.yaml` (copy `config/updates.example.yaml`). Without a policy file you get dry runs only.
+Plug-ins can add app updates for software installed outside apt and Docker; MeshCentral is bundled.
+Admin-only. See [docs/updates.md](docs/updates.md).
+
+### AI Assistant
+
+Type a question ("how many containers are running?") or a request ("deploy Gitea at
+git.example.com"). Questions are answered from live summaries of the cluster, DNS, proxy, certificates
+and plug-ins, and common ones are answered without calling a model. Requests become a plan built from
+the real cluster (nodes, free memory, storage, DNS zones, free IDs) and checked before you see it; the
+assistant asks for anything it is missing. After you confirm, it creates the container, installs the
+service, adds the proxy host and DNS record, waits for DNS and requests the certificate through
+Nginx Proxy Manager (using `LETSENCRYPT_EMAIL` from `.env`, or the NPM account email).
+
+The assistant can install Nextcloud, Jellyfin, Gitea, Uptime Kuma and Homepage. Installing needs a
+node login (see Catalogue); without one, it does everything else and shows the commands to run.
+
+### Catalogue
+
+Installs a service you do not run yet into a new unprivileged container, checks that it answers, and
+connects it to HyperProx: Nginx Proxy Manager, Ollama, Tautulli, Nextcloud, Jellyfin, Vaultwarden,
+Gitea, Uptime Kuma, Homepage and Grafana. Each recipe states its first login before anything runs.
+
+Installs run with `pct exec` from the node, so they need one **node login** per node, entered at the
+top of the Catalogue page. It is tested before it is stored, kept in the vault, and never borrowed from
+the Terminal's shared guest login. An SSH key is better than a password.
+
+### Plug-ins
+
+| Plug-in | What it shows |
 |---|---|
-| 5 nodes, 50 CTs | ~45GB |
-| 10 nodes, 100 CTs | ~90GB |
+| Arr Stack | Sonarr, Radarr, Prowlarr and qBittorrent together: what needs a person, the queue, stalled downloads, indexer health |
+| Unmanic | Transcode workers on every node, the queue and failures |
+| MikroTik | The router's health, per-device and per-interface throughput, firewall, WireGuard, neighbours and log; feeds the bandwidth dials and offers an SSH console |
+| Plex activity | Current streams, transcodes and bandwidth, and history, read through Tautulli |
+| Home Assistant | Unavailable entities, low batteries, pending updates, automations and log errors (read-only) |
+| MeshCentral | Finds npm installs in guests and adds them to Updates |
 
-The setup wizard calculates recommended storage automatically based on your cluster size.
+**Scan for services** finds qBittorrent, Sonarr, Radarr, Prowlarr, Unmanic and Tautulli on running
+guests and offers to configure them; nothing is saved until you press **Use this**, and API keys are
+never guessed. A plug-in declares the settings it needs and HyperProx makes its HTTP calls for it, so
+the plug-in never reads a credential. The page also lists plug-ins that do not exist yet, each with a
+button that opens a pre-filled GitHub issue in your browser.
 
----
+### Settings
+
+- **Credentials** for Proxmox, Nginx Proxy Manager and GoDaddy, each with a **Test** button.
+- **Secrets**: names of everything in the vault. Owners and admins can reveal a value, send it as an
+  expiring one-view link (a Bitwarden Send), or generate and store a new password.
+- **API tokens** for scripts: see [Security model](#security-model).
+- **Notifications**: channels for lock alerts, update runs and certificate changes, with severity
+  filters, quiet hours and a test button. See [docs/notifications.md](docs/notifications.md).
+
+### On a phone
+
+The interface is responsive and installs as an app: **Add to Home Screen** in Safari (iOS) or Chrome
+(Android), or the install icon in Chrome and Edge on Windows and macOS. The service worker caches
+static files only, never live data.
+
+## Security model
+
+HyperProx can change everything it manages, so it is built around a vault. Full details, and what is
+not protected, are in [docs/security.md](docs/security.md).
+
+- **Built-in vault.** Every install runs stock Vaultwarden, pinned by digest and bound to
+  `127.0.0.1:8222` over TLS. The API does not start without it. Public sign-ups are off.
+- **One login.** You sign in with your vault account: email, master password and two-factor code.
+- **Locked by default.** After a reboot nothing is decrypted and every route except health and sign-in
+  answers `423`. Signing in unlocks it. It locks again after `VAULT_IDLE_LOCK_MINUTES` (default 30)
+  with no activity, or at once with **Lock now** or `hyperprox lock`.
+- **Secrets in memory only.** Credentials are read from the vault into memory on unlock and never
+  written to disk. A small `hyperprox-keyholder` service holds the unlocked state so `deploy.sh` does
+  not lock you out; restarting the keyholder, or rebooting, locks.
+- **Roles** come from the vault's "HyperProx" organization:
+
+  | Vault role | HyperProx role | Can |
+  |---|---|---|
+  | Owner | owner | Everything, including role management |
+  | Admin | admin | Everything except role management |
+  | Manager | operator | View, start, stop and restart guests, open consoles |
+  | User | viewer | View only |
+
+- **Re-confirmation.** Revealing a secret, destroying a guest, and creating or revoking an API token
+  ask for the master password again (valid five minutes).
+- **API tokens** (`Authorization: Bearer hpx_...`) carry a role of viewer, operator or admin, stop
+  working while HyperProx is locked, and can never read secrets, open the terminal or WebSockets, or
+  manage tokens. Only a SHA-256 hash is stored.
+
+From the HyperProx machine, as root:
+
+```bash
+hyperprox status                                   # vault, keyholder, locked or unlocked
+hyperprox lock                                     # lock now: wipe memory, end every session
+hyperprox token create ci --role admin --expires-days 90
+hyperprox token list
+hyperprox token revoke ci
+```
+
+**What is exposed on the network.** nginx on 80 and 443. Grafana is also published on port 3003 with
+anonymous read-only access, and Prometheus listens on port 9090 without authentication. Postgres,
+Redis, the vault, the bundled Ollama and the PVE exporter are bound to loopback. Put HyperProx on a
+network you trust; access over the internet needs your own TLS and access controls in front of it.
+
+**Keep safe:** `/opt/hyperprox/.env` (mode 0600, holds `VAULT_ADMIN_TOKEN` and the database password)
+and the `vault_data` Docker volume, which holds every account. Back up the volume; losing it loses the
+vault.
 
 ## Architecture
 
-The HyperProx app (frontend, API, setup wizard) runs as systemd services; `docker compose` runs everything around it:
+```mermaid
+flowchart LR
+  B[Browser] -->|HTTPS 443| N[nginx]
+  subgraph Host[HyperProx container]
+    N --> F[Frontend<br/>Next.js :3000]
+    N --> A[API<br/>Fastify :3002]
+    N --> S[Setup wizard :3001]
+    N --> G[Grafana :3003]
+    A --> V[Vaultwarden :8222]
+    A --> K[keyholder<br/>unix socket]
+    A --> D[(PostgreSQL)]
+    A --> R[(Redis)]
+    A --> P[Prometheus :9090]
+    G --> P
+  end
+  A -->|API token| PVE[Proxmox VE API]
+  A -->|node login, pct exec| NODES[Proxmox nodes]
+  A --> EXT[NPM, GoDaddy, ACME, plug-in devices]
+  P --> NE[node_exporter and GPU exporters]
+```
 
-| Service | Purpose | Port |
+The API, frontend, setup wizard and keyholder run as systemd services. Everything else runs from the
+single `docker-compose.yml`; `COMPOSE_PROFILES` in `.env` picks the optional parts.
+
+| Container | Purpose | Listens on |
 |---|---|---|
-| hyperprox-frontend | Next.js dashboard | 127.0.0.1:3000 |
-| hyperprox-api | Fastify API + WebSockets | 3002 |
-| hyperprox-setup | First-run setup wizard | 127.0.0.1:3001 |
-| hyperprox-vault | Vaultwarden: the sign-in gate and secret store (loopback only) | 127.0.0.1:8222 |
-| prometheus | Metrics collection | 9090 |
-| grafana | Visualization | 3003 |
-| pve-exporter | Proxmox metrics bridge | 9221 |
-| postgres | Config + state storage | 5432 |
-| redis | Queue + cache | 6379 |
-| nginx | The front door: TLS, and the route to every service above | 443 (80 redirects) |
-| nginx-proxy-manager | Optional bundled NPM (compose profile `npm`), when you do not already run one | 80/443/81 |
-
-> Prometheus runs with `network_mode: host` so it can scrape node_exporter directly on the host network, and nginx does too so it reaches the app's loopback-only services. The other containers run on an internal bridge network.
->
-> `docker-compose.yml` in the repo is the only compose file; the installer, `deploy.sh` and the setup wizard all use it as it is. Per-install settings live in `.env`, including `COMPOSE_PROFILES` (`monitoring`, `npm`), which compose reads itself.
-
----
-
-## Tech Stack
+| `hyperprox-nginx` | TLS front door and routing (host network) | 80, 443 |
+| `hyperprox-vault` | Vaultwarden: sign-in and secret store | 127.0.0.1:8222 |
+| `hyperprox-postgres` | Configuration and state | 127.0.0.1:5432 |
+| `hyperprox-redis` | Key-value store the API connects to at start-up | 127.0.0.1:6379 |
+| `hyperprox-prometheus` | Metrics (profile `monitoring`, host network) | 9090 |
+| `hyperprox-grafana` | Dashboards (profile `monitoring`) | 3003 |
+| `hyperprox-pve-exporter` | Proxmox metrics bridge (profile `monitoring`) | 127.0.0.1:9221 |
+| `hyperprox-ollama` | Optional local AI (profile `ai`) | 127.0.0.1:11434 |
+| `hyperprox-npm` | Optional Nginx Proxy Manager (profile `npm`) | 80, 81, 443 |
 
 | Layer | Technology |
 |---|---|
-| Frontend | Next.js 14 · Radix UI (shadcn/ui) |
-| Backend | Node.js · Fastify |
-| Real-time | WebSockets |
-| Database | PostgreSQL · Prisma ORM |
-| Queue | BullMQ · Redis |
-| Monitoring | Prometheus · Grafana (bundled, auto-configured) |
-| AI | Anthropic, any OpenAI-compatible endpoint, or Ollama (external, optional) |
-| Containers | Docker · Compose |
+| Frontend | Next.js 14, React 18, Tailwind CSS, Radix UI, xterm.js |
+| API | Node.js 20, Fastify 4, WebSockets, ssh2 |
+| Data | PostgreSQL 16 with Prisma, Redis 7 |
+| Secrets | Vaultwarden 1.37.4 and the Bitwarden protocol |
+| Monitoring | Prometheus, Grafana, prometheus-pve-exporter |
 
----
+## Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| Install fails with an overlay error | The container must be privileged with `nesting=1` and `keyctl=1`: `pct set <ctid> --features keyctl=1,nesting=1`, set **Unprivileged** to No, and reboot it. |
+| Every page says HyperProx is locked | Expected after a reboot or idle timeout. Sign in at `/login`. `hyperprox status` shows the vault and keyholder state. |
+| HyperProx will not start | The API waits for the vault. Check `docker logs hyperprox-vault` and `journalctl -u hyperprox-api -n 50`. |
+| The setup page says a key is required | Use the link with `?k=`. Get the key with `grep SETUP_SECRET /opt/hyperprox/.env`. |
+| The bundled Nginx Proxy Manager does not start | It needs ports 80 and 443, which HyperProx's own nginx already uses. Install NPM into its own container from the Catalogue instead. |
+| HA shows `n/a` | The Proxmox token needs `Sys.Audit` on `/` to read HA status. |
+| A node shows `no meter` | Check that node_exporter runs, that `/etc/udev/rules.d/99-hyperprox-rapl.rules` exists, that `stat -c %a /sys/class/powercap/intel-rapl:0/energy_uj` prints `404`, and that the CPU exposes RAPL at all (`ls /sys/class/powercap/`). VMs and some CPUs have none. |
+| Monitoring has no node data | Run `POST /api/targets/sync` as an admin, or check `config/prometheus/targets/nodes.json`. The wizard writes nodes by name, so they must resolve from the container. |
+| Grafana's Proxmox panels are empty | `config/pve-exporter/pve.yml` ships with an empty token. Fill in a Proxmox user, token name and secret, then `docker restart hyperprox-pve-exporter`. |
+| Ceph views are empty on a Ceph cluster | The monitor node is detected automatically. To pin one, set `CEPH_MON_NODE` in `.env` and restart `hyperprox-api`. |
+| The AI assistant does not install the service | Add a node login on the Catalogue page. |
 
 ## Roadmap
 
-### Next — designed, not built yet
+The full roadmap is in [ROADMAP.md](ROADMAP.md), and designs for upcoming work are in
+[docs/superpowers/specs/](docs/superpowers/specs/). Not built yet:
 
-Each of these has a written design in [`docs/superpowers/specs/`](docs/superpowers/specs/). Comments
-on them are welcome before the code exists.
+- **Guest and HA editing**: a structured config and mount-point editor, an HA rule editor, and
+  migration preflight.
+- **Consoles**: noVNC and container text consoles as Terminal panes, for guests SSH cannot reach.
+- **Ceph operations**: version skew, restart safety, guided rolling restarts and slow-op history.
+- **More providers**: Cloudflare and Namecheap DNS; Traefik, Caddy and other proxies.
+- **Smart suggestions**, network-mount health and Proxmox Backup Server monitoring.
+- **Vault phase 2**: temporary users, master password recovery, VPN and internet access modes, a
+  tamper check and an audit timeline.
+- **Releases**: versioned builds and `hyperprox update`, `rollback` and `uninstall`.
+- **Later**: multi-cluster management, migration from other hypervisors, LDAP and SSO.
 
-- **Vault gate, phase 2** ([design](docs/superpowers/specs/2026-10-14-vault-gate-design.md)). Phase 1
-  is built and shipping — see [Security](#security). Designed, not built yet:
-  - **Temporary users:** access to named guests that expires on its own.
-  - **Recovery:** `hyperprox --force-reset <email>` from a sealed Master Reset Password.
-  - **Editions:** Homelab (everything) and Business (media plug-ins removed); a Homelab install can move
-    to Business, not back.
-  - **Access modes:** local network only is the default today; the built-in WireGuard VPN, hardened
-    internet access and existing-tunnel modes are not built.
-  - **Tamper check** of the installed files before every unlock, and an **audit timeline** joining the
-    vault's events with HyperProx's own.
-  - **Least-privilege tokens** per role, and credential rotation in the target system.
-  - **AI:** the assistant never sees a secret (applies when the operator arrives).
-- **Updates** ([design](docs/superpowers/specs/2026-10-06-updates-design.md)). One page shows what's
-  pending on every node, container and VM, and runs the round on demand or on a schedule.
-  - **One node at a time:** checks Ceph and quorum health before each node and stops at the first
-    failure. Reboots use HA maintenance mode and Ceph `noout`.
-  - **Your rules, in your config file:** for example "this node gets `apt upgrade` only, never
-    `dist-upgrade`, and stop if its kernel pin is missing", or "don't reboot while a Plex stream is
-    playing". The rules live in a local file, not in the code.
-- **Releases, update and uninstall** ([design](docs/superpowers/specs/2026-10-06-installer-design.md),
-  [plan](docs/superpowers/plans/2026-10-06-installer.md)).
-  - **Releases:** versioned, prebuilt and checksum-verified, each one proven by an automated install
-    on a clean Proxmox before it's published.
-  - **Installer:** Default and Advanced menus.
-  - **CLI:** `hyperprox update | rollback | uninstall`; a failed update puts the old version back.
+## How it compares
 
-### v1.0 — The Glue Layer
+The Proxmox VE web interface manages the hypervisor itself, and Proxmox Datacenter Manager adds a
+view across several clusters. HyperProx works on one cluster and covers the layer around it: proxy
+hosts, DNS, certificates for your services, monitoring, updates, SSH and the apps you run. It talks to
+Proxmox through the same API and does not replace either; you will still open the Proxmox interface
+for tasks HyperProx does not cover yet, such as editing guest hardware.
 
-Struck items are done. Two things changed since this list was written: the
-plug-in system arrived, which absorbs several of these more cheaply than a
-bespoke feature would, and the wizard learned to run commands inside a guest,
-which was the blocker under the autonomous-deployment item.
+## Contributing and licence
 
-- ~~**AI deployment wizard — full autonomous execution**~~ — **done.** The
-  wizard creates the container, installs the service with `pct exec` from the
-  node, configures the proxy host, creates the DNS record, waits for
-  propagation and requests the certificate. Needs one SSH login per node; with
-  none stored it does everything except the install and says so.
-- **Connect to existing Grafana / Prometheus** — *half done.* Both are already
-  configurable in `.env`; what is missing is a settings surface and a
-  credential-store entry so it is not a file edit.
-- **Smart Suggestion Engine** — cross-system awareness: new proxy host → suggest DNS record, WAN IP change → flag stale A records, SSL expiring → suggest renewal. Nothing acts without user confirmation.
-- **Network Storage Health** — monitor CIFS/NFS mounts across all nodes, surface offline mounts as named alerts, correlate mount failures with downstream monitoring issues.
-- **Multi-provider DNS** — GoDaddy + Cloudflare + Namecheap simultaneously.
-  GoDaddy is the only client written; the other two already have credential
-  definitions, so this is a client each against an interface that exists.
-- **Multi-instance proxy** — NPM + Traefik + Caddy + HAProxy + Pangolin
-  simultaneously. Same shape as above: NPM is the only client so far.
-- **Proxmox rolling updates** — CEPH-aware, per-node sequencing. *Designed:* see **Updates** above.
-- **HyperProx self-update** — one-click from UI. *Designed:* see **Releases, update and uninstall** above.
-- **PBS backup monitoring** — datastore usage, job history, retention policies.
-  Better served as a plug-in now that plug-ins exist; it is already in the
-  catalogue's "not built yet" list, where anyone can ask for it.
-- **GitOps export** — encrypted YAML backup/restore of entire HyperProx configuration
+Bug reports, ideas and pull requests are welcome through
+[GitHub Issues](https://github.com/hyperprox/alpha/issues).
 
-### v2.0 — The Platform
-
-- **Bare metal Proxmox installer** — custom ISO/PXE with HyperProx baked in
-- **Post-install bootstrap wizard** — networking, storage, cluster formation
-- **Node expansion** — add new nodes to existing clusters from the dashboard
-- **Multi-cluster management** — unlimited clusters from one UI
-- **Cross-cluster live migration** — move VMs between clusters with zero downtime
-- **ESXi live migration** — import VMware workloads directly into Proxmox
-- **XCP-NG support** — manage Xen alongside Proxmox
-- **VPN management** — WireGuard + Tailscale + Pangolin
-- **CVE scanner + PVE hardening**
-- **Role-based access control (RBAC)** — four roles shipped with the vault gate (Owner, Admin, Operator, Viewer); Temporary users are next
-- **LDAP / OIDC / SSO support**
-- **Commercial licensing tier** — MSPs and enterprise deployments
-
-See [ROADMAP.md](ROADMAP.md) for full details.
-
----
-
-## vs. The Alternatives
-
-| Feature | HyperProx | PegaProx | PDM | Coolify/Dokploy |
-|---|---|---|---|---|
-| Proxy management | ✅ | ❌ | ❌ | Partial |
-| DNS management | ✅ | ❌ | ❌ | ❌ |
-| SSL lifecycle | ✅ | ❌ | ❌ | Partial |
-| Network storage health | 🔜 v1.0 | ❌ | ❌ | ❌ |
-| Smart suggestion engine | 🔜 v1.0 | ❌ | ❌ | ❌ |
-| AI deployment wizard | ✅ | ❌ | ❌ | ❌ |
-| Bundled monitoring | ✅ | ❌ | ❌ | ❌ |
-| Runs in Docker | ✅ | ❌ | ❌ | ✅ |
-| curl \| bash install | ✅ | ✅ | ❌ | ✅ |
-| Multi-cluster | 🔜 v2.0 | ✅ | ✅ | ❌ |
-| Cross-cluster migration | 🔜 v2.0 | ✅ | ❌ | ❌ |
-| ESXi migration | 🔜 v2.0 | ✅ | ❌ | ❌ |
-| XCP-NG support | 🔜 v2.0 | ✅ | ❌ | ❌ |
-| VPN management | 🔜 v2.0 | ❌ | ❌ | ❌ |
-| RBAC | ✅ four roles | ✅ | ✅ | Partial |
-| CVE scanner | 🔜 v2.0 | ✅ | ❌ | ❌ |
-| PVE hardening | 🔜 v2.0 | ✅ | ❌ | ❌ |
-| Bare metal installer | 🔜 v2.0 | ❌ | ✅ | ❌ |
-| Load balancing (DRS) | ❌ | ✅ | ❌ | ❌ |
-| Free & open source | ✅ AGPL v3 | ✅ AGPL v3 | ✅ AGPL v3 | ✅ |
-
-✅ shipped · 🔜 planned for the version shown.
-
-**HyperProx owns the application delivery layer. No competitor connects proxy + DNS + SSL + AI + network storage health in a single platform.**
-
----
-
-## Contributing
-
-Bug reports, feature requests, and pull requests welcome via [GitHub Issues](https://github.com/hyperprox/alpha/issues).
-
----
-
-## License
-
-[AGPL v3](LICENSE) — free for personal and open-source use.
-
-Commercial licensing for MSPs and enterprise deployments coming in v2.0.
+HyperProx is free software under the [GNU AGPL v3](https://www.gnu.org/licenses/agpl-3.0).
 
 ---
 
