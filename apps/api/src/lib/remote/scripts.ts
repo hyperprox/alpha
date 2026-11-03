@@ -285,6 +285,8 @@ export function uninstallScript(p: ProviderId, s: Extract<Support, { ok: true }>
     L.push('rm -rf /etc/netbird /var/lib/netbird')
   }
   L.push(`if [ -f ${SYSCTL_FILE} ]; then rm -f ${SYSCTL_FILE}; sysctl -q --system >/dev/null 2>&1 || true; fi`)
+  // `hash -r`: bash remembers where it last ran `${p}` from, and `command -v` would report the deleted path.
+  L.push('hash -r')
   L.push(`command -v ${p} >/dev/null 2>&1 && echo HP_STILL_INSTALLED || echo HP_REMOVED`)
   return L.join('\n')
 }
