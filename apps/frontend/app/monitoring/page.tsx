@@ -26,7 +26,8 @@ interface NodeStat {
   txKBs?: number
 }
 
-const GRAFANA = process.env.NEXT_PUBLIC_GRAFANA_URL || 'http://localhost:3003'
+// Same origin, through nginx, which lets only signed-in users through (Grafana itself is on loopback).
+const GRAFANA = process.env.NEXT_PUBLIC_GRAFANA_URL || '/grafana'
 const DASHBOARDS = [
   { uid: 'hyperprox-cluster', title: 'Cluster Overview', orgId: 1, vars: '' },
   { uid: 'hyperprox-plugins', title: 'Plug-ins',         orgId: 1, vars: '' },

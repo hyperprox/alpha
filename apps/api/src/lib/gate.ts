@@ -17,7 +17,7 @@ import jwt from '@fastify/jwt'
 import { isUnlocked, signingKey, touch, onLock } from './vault/state'
 import { VaultSessionError, type Role } from './vault/broker'
 import { bearerApiToken, tokenForbidden, verifyApiToken, apiTokenStore, type ApiTokenRecord } from './api-tokens'
-import { requiredRole, needsReconfirm, hasRole, bypassesLock, normalisePath } from './roles'
+import { requiredRole, needsReconfirm, hasRole, bypassesLock, normalisePath, SESSION_CHECK } from './roles'
 import {
   extractToken, getSession, clearSessions, removeSession, requestContext, isReconfirmed, isLocalCliRequest,
   buildAuthCookie, type ActiveSession,
@@ -135,7 +135,8 @@ export async function registerGate(server: FastifyInstance): Promise<void> {
       if (session) {
         req.session = session
         session.lastSeen = Date.now()
-        touch()
+        // Grafana behind /grafana/ asks on every request, dashboards refresh themselves: not a person.
+        if (path !== SESSION_CHECK) touch()
       }
     }
 

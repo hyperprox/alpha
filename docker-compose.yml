@@ -4,6 +4,10 @@
 #
 # The one compose file: install.sh, deploy.sh and the setup wizard all use this file as it is. Anything
 # per-install comes from .env, including COMPOSE_PROFILES (monitoring, npm), which compose reads itself.
+#
+# Nothing here is published beyond loopback except nginx on 80 and 443 (and the optional npm profile). Prometheus and Grafana use the host
+# network so Grafana can reach Prometheus on 127.0.0.1; both bind 127.0.0.1, and Grafana is reached only
+# through nginx at /grafana/, which asks the API for a valid HyperProx session first.
 
 services:
   postgres:
@@ -82,6 +86,8 @@ services:
     network_mode: host
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
+      # Loopback only: no authentication of its own, and --web.enable-lifecycle below accepts /-/quit.
+      - "--web.listen-address=127.0.0.1:9090"
       - "--storage.tsdb.path=/prometheus"
       - "--storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-90d}"
       - "--storage.tsdb.retention.size=${PROMETHEUS_RETENTION_SIZE:-40GB}"
@@ -97,7 +103,7 @@ services:
       - ./config/prometheus/secrets:/etc/prometheus/secrets:ro
       - ./data/prometheus:/prometheus
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/-/healthy"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -105,11 +111,13 @@ services:
   grafana:
     image: grafana/grafana:latest
     container_name: hyperprox-grafana
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     profiles: [monitoring]
+    # Host network, loopback only: it reads Prometheus on 127.0.0.1:9090, and browsers reach it only through
+    # nginx at /grafana/ (gated on a HyperProx session), so its anonymous viewer is never on the network.
+    network_mode: host
     environment:
+      - GF_SERVER_HTTP_ADDR=127.0.0.1
       - GF_SERVER_HTTP_PORT=3003
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
@@ -121,18 +129,14 @@ services:
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
       - GF_SECURITY_ALLOW_EMBEDDING=true
       - GF_SECURITY_COOKIE_SAMESITE=disabled
-      # The Monitoring page embeds Grafana, and an http iframe on the https app is blocked as mixed content.
-      # So the installer serves it through nginx at https://<host>/grafana/ by setting these in .env. Unset,
-      # Grafana answers at the root of :3003 exactly as before (these defaults are Grafana's own).
+      # The Monitoring page embeds Grafana from the same origin, at https://<host>/grafana/: the installer
+      # (and bin/hyperprox-config for older installs) sets these in .env. Unset, Grafana answers at the root
+      # of 127.0.0.1:3003, which nginx does not serve (these defaults are Grafana's own).
       - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-%(protocol)s://%(domain)s:%(http_port)s/}
       - GF_SERVER_SERVE_FROM_SUB_PATH=${GRAFANA_SERVE_FROM_SUB_PATH:-false}
     volumes:
       - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana_data:/var/lib/grafana
-    ports:
-      - "3003:3003"
-    networks:
-      - hyperprox-net
 
   pve-exporter:
     image: prompve/prometheus-pve-exporter:latest

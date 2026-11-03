@@ -8,8 +8,10 @@ import axios from 'axios'
 
 import { clusterPower }  from '../lib/power'
 import { ProxmoxClient } from '../lib/proxmox-client'
+import { prometheusBase } from '../lib/service-health'
 
-const PROMETHEUS = process.env.PROMETHEUS_URL ?? `http://${process.env.HOST_IP ?? 'localhost'}:9090`
+// Prometheus listens on 127.0.0.1 only; this used to be HOST_IP, which it no longer answers on.
+const PROMETHEUS = prometheusBase()
 
 export async function prometheusRoutes(fastify: FastifyInstance) {
 
