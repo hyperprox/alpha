@@ -2,14 +2,14 @@
 //  HyperProx — Remote access: what to do on one machine, decided before doing it
 //
 //  Pure functions. The planner turns a machine and what detection found into
-//  install / manual / needs-tun / refuse, and builds the client flags. The flags
-//  are not defaults the caller may override: they are what is sent. The only way
-//  to route through a machine is the explicit routing action, checked by
-//  checkRouting().
+//  install / adopt / manual / needs-tun / refuse, and builds the client flags.
+//  The flags are not defaults the caller may override: they are what is sent.
+//  Every NetBird boolean is written out as =true or =false, because NetBird
+//  only applies a flag that was given and otherwise keeps the stored value.
 // =============================================================================
 
 import { isIP } from 'node:net'
-import type { Machine, ProviderId, RoutingRequest } from './types'
+import type { Machine, MachineKind, ProviderId, RoutingRequest } from './types'
 import { osSupport, type NetMode, type OsFacts, type Support } from './scripts'
 
 export function safeHostname(raw: string): string {
@@ -18,29 +18,44 @@ export function safeHostname(raw: string): string {
 }
 
 /**
- * The client's flags. Tailscale: never accept DNS or routes; advertising is done only by the routing action.
- * NetBird: never configure DNS or accept routes; serve routes only when routing has been turned on.
+ * The client's flags.
+ *  Tailscale: never accept DNS or routes; advertising is done only by the routing action. On a node, no
+ *    netfilter rules at all (`--netfilter-mode=off`), so pve-firewall stays the only firewall.
+ *  NetBird: never configure DNS or accept routes; serve routes only when routing is on. On a node, no firewall
+ *    rules of its own (`--disable-firewall=true`). Never `--allow-server-ssh`.
  */
-export function clientFlags(p: ProviderId, o: { hostname: string; managementUrl?: string; routing?: RoutingRequest }): string[] {
+export function clientFlags(p: ProviderId, o: { hostname: string; kind: MachineKind; managementUrl?: string; routing?: RoutingRequest }): string[] {
   const host = safeHostname(o.hostname)
-  if (p === 'tailscale') return [`--hostname=${host}`, '--accept-dns=false', '--accept-routes=false']
+  const node = o.kind === 'node'
+  if (p === 'tailscale') {
+    return [`--hostname=${host}`, '--accept-dns=false', '--accept-routes=false', ...(node ? ['--netfilter-mode=off'] : [])]
+  }
   const routing = !!o.routing && (o.routing.subnets.length > 0 || o.routing.exitNode)
   return [
     ...(o.managementUrl ? [`--management-url=${o.managementUrl}`] : []),
     `--hostname=${host}`,
-    '--disable-dns',
-    '--disable-client-routes',
-    ...(routing ? [] : ['--disable-server-routes']),
+    '--disable-dns=true',
+    '--disable-client-routes=true',
+    `--disable-server-routes=${routing ? 'false' : 'true'}`,
+    `--disable-firewall=${node ? 'true' : 'false'}`,
   ]
 }
 
+export type ExistingChoice = 'adopt' | 'replace'
+
 export type InstallPlan =
-  | { kind: 'install'; support: Extract<Support, { ok: true }>; mode: NetMode; reinstall: boolean }
+  | { kind: 'install'; support: Extract<Support, { ok: true }>; mode: NetMode; existing: boolean }
+  | { kind: 'adopt' }
   | { kind: 'manual'; os: 'windows' | 'macos' }
   | { kind: 'needs-tun' }
   | { kind: 'refuse'; reason: string }
 
-export function planInstall(o: { machine: Machine; provider: ProviderId; facts: OsFacts | null; mode?: NetMode }): InstallPlan {
+export function planInstall(o: {
+  machine: Machine; provider: ProviderId; facts: OsFacts | null; mode?: NetMode
+  /** HyperProx already has a record for this machine and provider (a re-run of its own install). */
+  managed?: boolean
+  existing?: ExistingChoice
+}): InstallPlan {
   const { machine: m } = o
   if (m.kind === 'qemu' && /^win/i.test(m.ostype ?? '')) return { kind: 'manual', os: 'windows' }
   if (!m.running) return { kind: 'refuse', reason: `${m.name} is not running` }
@@ -48,6 +63,16 @@ export function planInstall(o: { machine: Machine; provider: ProviderId; facts: 
   const s = osSupport(o.facts)
   if (!s.ok) return s.manual ? { kind: 'manual', os: s.manual } : { kind: 'refuse', reason: s.reason }
   if (!o.facts.root) return { kind: 'refuse', reason: `the login used for ${m.name} is not root and cannot use sudo without a password` }
+
+  const present = o.facts.installed[o.provider]
+  if (present && !o.managed) {
+    if (o.existing === 'adopt') return { kind: 'adopt' }
+    if (o.existing !== 'replace') {
+      return { kind: 'refuse', reason: `${m.name} already runs ${o.provider === 'tailscale' ? 'Tailscale' : 'NetBird'} (${present}), which HyperProx did not install. ` +
+        'Choose “adopt” to record it as it is (nothing on the machine changes), or “replace” to sign it in to the configured account (its current state is kept aside and put back if anything goes wrong).' }
+    }
+  }
+
   if (m.kind === 'node' && o.mode === 'userspace') {
     return { kind: 'refuse', reason: 'userspace networking is for containers without /dev/net/tun; a Proxmox node uses the kernel device' }
   }
@@ -56,35 +81,81 @@ export function planInstall(o: { machine: Machine; provider: ProviderId; facts: 
     if (m.kind === 'lxc') return { kind: 'needs-tun' }
     return { kind: 'refuse', reason: `${m.name} has no usable /dev/net/tun` }
   }
-  return { kind: 'install', support: s, mode, reinstall: !!o.facts.installed[o.provider] }
+  return { kind: 'install', support: s, mode, existing: !!present }
 }
 
 export interface TunFix { configured: boolean; param?: string; value?: string; command?: string }
 
-/** The `devN: /dev/net/tun` change for a container, or that it is already there (and needs a restart). */
+const TUN_RAW = /(\/dev\/net\/tun|dev\/net\/tun|c 10:200 )/
+
+/**
+ * The `devN: /dev/net/tun` change for a container, or that it is already there (and needs a restart). Raw
+ * `lxc.*` lines come back from the API as one `lxc: [[key, value], ...]` array; those count too.
+ */
 export function tunFix(config: Record<string, unknown>, vmid: number): TunFix {
   const keys = Object.keys(config)
+  const raw = Array.isArray(config.lxc) ? (config.lxc as unknown[]).filter(Array.isArray).map(x => [String((x as unknown[])[0]), String((x as unknown[])[1] ?? '')]) : []
   const has = keys.some(k => {
     const v = String(config[k] ?? '')
     if (/^dev\d+$/.test(k)) return v.split(',')[0] === '/dev/net/tun'
-    if (k === 'lxc.mount.entry' || k.startsWith('lxc.mount.entry')) return /\/dev\/net\/tun|dev\/net\/tun/.test(v)
+    if (k.startsWith('lxc.')) return TUN_RAW.test(`${v} `)
     return false
-  })
+  }) || raw.some(([k, v]) => /^lxc\.(mount\.entry|cgroup2?\.devices\.allow)$/.test(k) && TUN_RAW.test(`${v} `))
   if (has) return { configured: true }
   let i = 0
   while (keys.includes(`dev${i}`)) i++
   return { configured: false, param: `dev${i}`, value: '/dev/net/tun', command: `pct set ${vmid} --dev${i} /dev/net/tun` }
 }
 
-function ipv4ToInt(ip: string): number { return ip.split('.').reduce((a, o) => (a << 8) + Number(o), 0) >>> 0 }
+// ── Address arithmetic, IPv4 and IPv6 ───────────────────────────────────────
 
-/** Does IPv4 `cidr` contain `ip`? */
+function toBig(ip: string): { v: 4 | 6; n: bigint } | null {
+  const ver = isIP(ip)
+  if (ver === 4) return { v: 4, n: ip.split('.').reduce((a, o) => (a << 8n) + BigInt(Number(o)), 0n) }
+  if (ver === 6) {
+    let s = ip.toLowerCase().split('%')[0]
+    if (s.includes('.')) {   // ::ffff:192.0.2.1
+      const i = s.lastIndexOf(':'); const v4 = toBig(s.slice(i + 1))
+      if (!v4) return null
+      s = `${s.slice(0, i)}:${((v4.n >> 16n) & 0xffffn).toString(16)}:${(v4.n & 0xffffn).toString(16)}`
+    }
+    const [h, t] = s.split('::')
+    const head = h ? h.split(':') : []
+    const tail = t !== undefined ? (t ? t.split(':') : []) : []
+    const groups = t !== undefined ? [...head, ...Array(8 - head.length - tail.length).fill('0'), ...tail] : head
+    if (groups.length !== 8) return null
+    return { v: 6, n: groups.reduce((a, g) => (a << 16n) + BigInt(parseInt(g || '0', 16)), 0n) }
+  }
+  return null
+}
+
+interface Net { v: 4 | 6; base: bigint; bits: number }
+
+function parseCidr(c: string): Net | null {
+  const m = /^([^/]+)\/(\d{1,3})$/.exec(c.trim())
+  const addr = m ? m[1] : c.trim()
+  const a = toBig(addr)
+  if (!a) return null
+  const max = a.v === 4 ? 32 : 128
+  const bits = m ? Number(m[2]) : max
+  if (bits < 0 || bits > max) return null
+  const mask = bits === 0 ? 0n : ((1n << BigInt(bits)) - 1n) << BigInt(max - bits)
+  return { v: a.v, base: a.n & mask, bits }
+}
+
+/** Do two networks share any address? */
+export function cidrOverlaps(a: string, b: string): boolean {
+  const x = parseCidr(a), y = parseCidr(b)
+  if (!x || !y || x.v !== y.v) return false
+  const max = x.v === 4 ? 32 : 128
+  const bits = Math.min(x.bits, y.bits)
+  const mask = bits === 0 ? 0n : ((1n << BigInt(bits)) - 1n) << BigInt(max - bits)
+  return (x.base & mask) === (y.base & mask)
+}
+
+/** Does IPv4 or IPv6 `cidr` contain `ip`? */
 export function cidrContains(cidr: string, ip: string): boolean {
-  const [net, bitsRaw] = cidr.split('/')
-  const bits = Number(bitsRaw)
-  if (isIP(net) !== 4 || isIP(ip) !== 4) return false
-  const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0
-  return (ipv4ToInt(net) & mask) === (ipv4ToInt(ip) & mask)
+  return isIP(ip) !== 0 && cidrOverlaps(cidr, ip)
 }
 
 function validCidr(c: string): boolean {
@@ -98,15 +169,20 @@ export const ROUTING_WARNING =
   'Cluster traffic (corosync, Ceph, migration) must stay on the LAN. Advertising a subnet that contains the ' +
   'cluster network from a node can move that traffic into the tunnel and get nodes fenced.'
 
-/** Null when the request may go ahead, or the reason it may not. */
-export function checkRouting(m: Machine, r: RoutingRequest, acknowledged: boolean): string | null {
+/**
+ * Null when the request may go ahead, or the reason it may not. `clusterNets` are every corosync link, Ceph
+ * network and monitor, and the node's own addresses (IPv4 and IPv6), read from the node itself.
+ */
+export function checkRouting(m: Machine, r: RoutingRequest, acknowledged: boolean, clusterNets: string[] = []): string | null {
   const turningOn = r.subnets.length > 0 || r.exitNode
+  if (m.kind === 'node' && r.exitNode) return 'A Proxmox node is never made an exit node: it would forward and masquerade other devices\' internet traffic on the hypervisor.'
   if (turningOn && !acknowledged) return `Routing through ${m.name} must be acknowledged: ${ROUTING_WARNING}`
   if (r.subnets.length > 32) return 'At most 32 subnets'
   for (const s of r.subnets) if (!validCidr(s)) return `${s} is not a subnet (expected something like 198.51.100.0/24)`
-  if (m.kind === 'node' && m.address) {
-    const hit = r.subnets.find(s => cidrContains(s, m.address!))
-    if (hit) return `${hit} contains this node's cluster address. Advertising the cluster network from a node is refused: ${ROUTING_WARNING}`
+  const nets = [...clusterNets, ...(m.address ? [m.address] : [])]
+  for (const s of r.subnets) {
+    const hit = nets.find(n => cidrOverlaps(s, n))
+    if (hit) return `${s} overlaps the cluster network ${hit}. Advertising the cluster network is refused: ${ROUTING_WARNING}`
   }
   return null
 }
