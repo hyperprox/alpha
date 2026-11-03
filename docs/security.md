@@ -157,15 +157,22 @@ the rules below ([docs/remote-access.md](remote-access.md)).
   No LAN or cluster addresses, no routes. Job logs are admin-only.
 - **Proxmox nodes keep their DNS, routes and firewall.** No DNS, no accepted routes, no client firewall
   rules (`--netfilter-mode=off`, `--disable-firewall=true`), never an exit node, never a forwarding change.
-  Every change on a node is guarded by a before/after comparison of routing tables and rules, paths to
-  cluster peers, resolver and per-link DNS, firewall ruleset hashes, corosync links, forwarding and quorum,
-  15 seconds apart, with automatic rollback; an in-flight record makes a restart re-run the check. The only
+  Every change on a node is guarded by a before/after comparison of routing tables and rules (the client's
+  own only inside its overlay prefixes, its rules only at their exact priorities), paths to cluster peers,
+  Ceph monitors (IPv4 and IPv6), gateways and resolvers, resolver and per-link DNS, the firewall rules as
+  text on every backend, corosync links, forwarding and quorum, 15 seconds apart, with automatic rollback.
+  An in-flight record makes a restart wait for any running script or apt, re-run the check, and always
+  undo an interrupted install. The only
   firewall change HyperProx offers is one rule for TCP 22 and 8006 from the overlay on its interface,
   previewed and confirmed.
 - **Existing clients are not touched** without an explicit Adopt or Replace, and a Replace keeps the old
-  state to put back. Provider devices are deleted only by the id recorded when the client reported itself,
+  state (files, unit and environment, package version, service state) root-only to put back, then
+  overwrites and removes the copy. Provider devices are deleted only by the id recorded when the client reported itself,
   never by name.
-- **SSH to VMs and hand-added hosts fails closed** when the host key has never been pinned in the Terminal.
+- **Every SSH path fails closed** when the host key has never been pinned: nodes, `pct exec`, the guest
+  agent, VMs and hand-added hosts. The refusal shows the fingerprint; an admin who has re-confirmed can pin
+  exactly the key presented (it is read again and must match), in the store the Terminal uses. An existing
+  different pin is never replaced from here.
 - **Guest config is changed only through the Proxmox API** (`devN: /dev/net/tun`, with the config digest),
   never by editing or appending to a config file. HyperProx does not restart the container for you.
 - **Audit**: `remote.install`, `remote.update`, `remote.routing`, `remote.uninstall`, `remote.check`,

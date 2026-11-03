@@ -60,9 +60,11 @@ How HyperProx reaches each machine:
 | VM | The QEMU guest agent from its node; without the agent, the VM's Terminal login over SSH |
 | Hand-added host | Its Terminal login over SSH |
 
-A login that is not `root` must be able to use `sudo` without a password. Over SSH to a VM or a hand-added
-host, the host key must already be pinned: open the machine once in the Terminal, check the fingerprint,
-and accept it. HyperProx refuses an unpinned host and shows its fingerprint.
+A login that is not `root` must be able to use `sudo` without a password. Every path needs a pinned host
+key: the node's for nodes, containers and the guest agent, the machine's own for SSH. HyperProx refuses an
+unpinned host and shows its fingerprint; check it against the machine and press **Trust this key** (or
+accept it in the Terminal). Pins are shared with the Terminal, so a node you already opened there works as
+it is. A different key already pinned is never replaced from the Remote access page.
 
 ### A client that is already there
 
@@ -71,8 +73,11 @@ unless you choose what to do in the install dialog:
 
 - **Adopt**: record it as it is. No key, no package, no `up`; nothing on the machine changes. It must
   already be signed in to the configured account.
-- **Replace**: sign it in to the configured account. Its state (and repository file) is copied aside first,
-  and put back exactly if anything goes wrong.
+- **Replace**: sign it in to the configured account. Its state, repository file, systemd unit and its
+  environment, the exact package version, and whether the service was enabled and running are copied aside
+  first (root-only). If anything goes wrong, all of it is put back, the package downgraded to the version it
+  had, and the copy is then overwritten and removed. If putting it back fails, the copy is kept at
+  `/var/lib/hyperprox-remote-access/<client>` (mode 0700) and the job says how to remove it.
 
 ### Containers and /dev/net/tun
 
@@ -108,19 +113,28 @@ kind after 30 minutes, and that revocation survives a restart.
 - **Nothing is advertised** (no subnet routes) unless you turn routing on for that node, and a node is
   **never** an exit node.
 - **Checked before and after.** HyperProx records, on the node: every routing table and policy rule
-  (Tailscale's table 52 included), the route to every corosync and Ceph peer (`ip route get`), the
-  resolver (`/etc/resolv.conf` and systemd-resolved's per-link DNS), a hash of the nftables, iptables and
-  ip6tables rulesets, `corosync-cfgtool -s` link state, IP forwarding, and `pvecm status` quorum. Values
-  that tick on their own (router-advertisement lifetimes, cache ages) are ignored. The client may add
-  routes on its own interface and table, and its own policy rules, but never a default route and never a
-  change to the path to a cluster peer. A node that is not quorate, or has a corosync link down, is not
-  touched. The after-check runs 15 seconds after the change, so delayed effects have time to show.
+  (Tailscale's table 52 included); the route (`ip route get`) to every corosync peer, every Ceph monitor
+  (IPv4 and IPv6), the default gateways and the resolvers; the resolver (`/etc/resolv.conf` and
+  systemd-resolved's per-link DNS); the firewall rules as text (nftables, iptables and ip6tables on both the
+  nft and legacy backends, ipset, ebtables); `corosync-cfgtool -s` link state; IP forwarding; and
+  `pvecm status` quorum. Values that tick on their own (router-advertisement lifetimes, cache ages,
+  counters and quotas) are ignored, and so is firewall text that changes by itself: fail2ban's chains and
+  sets, pve-firewall's per-guest chains and the jumps to them, its `PVESIG` signatures, and the elements of
+  sets with timeouts. If only the firewall text differs, HyperProx takes one more sample and discounts what
+  is still moving between the two. The client may add routes on its own interface or in its own table only
+  inside its overlay (`100.64.0.0/10`, and `fd7a:115c:a1e0::/48` for Tailscale) or of type local,
+  broadcast, multicast or throw, and only its own policy rules at their exact priorities; never a default
+  route, a `/1` split or anything else in its table. A node that is not quorate, or has a corosync link
+  down, is not touched. The after-check runs 15 seconds after the change, so delayed effects have time to
+  show.
   If anything differs, HyperProx rolls the change back on the spot, checks again, and reports what changed
   and whether the node is back as it was.
-- **A restart cannot skip the check.** A node change is recorded as in flight, with its before-snapshot
-  and how to undo it, until its guard passes. If HyperProx restarts in the middle, it re-runs the
-  after-check on boot (as soon as the vault is unlocked) and rolls back if the node differs. The page shows
-  such a node until then.
+- **A restart cannot skip the check.** A node change is recorded as in flight, with its before-snapshot,
+  how to undo it and the device identity the client reported, until its guard passes. If HyperProx restarts
+  in the middle, it waits (up to ten minutes) for the interrupted job's own script and for any apt or dpkg
+  run to finish, lets the node settle, and re-runs the after-check. An interrupted install is always undone;
+  any other change is rolled back if the node differs. If something is still running after ten minutes,
+  HyperProx says so, undoes nothing, and checks again later. The page shows such a node until then.
 - **One node at a time**, stopping at the first failure. Install, update, routing and uninstall on a node
   are all guarded.
 
@@ -172,7 +186,9 @@ Off by default everywhere. Turning it on asks you to acknowledge:
 - **Tailscale**: `tailscale set --advertise-routes=… --advertise-exit-node=…`, then exactly those routes
   are approved in the Tailscale API, and HyperProx checks the machine really advertises them.
 - **NetBird**: the client is reconnected with `--disable-server-routes=false` (or `=true` to turn routing
-  off), and HyperProx reads the client's own settings back to confirm it. The routes are created with this
+  off), and HyperProx reads the setting back from the config file the running daemon uses (its `--config`
+  argument, else the active profile, else the only config present). If it cannot tell which file that is,
+  the change is not confirmed and is rolled back. The routes are created with this
   peer as the router and distributed to the **`hyperprox-routes`** group only, which HyperProx creates the
   first time. Add the peers that should use the routes to that group. An exit node is created with
   *skip auto apply*, so no peer's default route moves until its user picks it.
