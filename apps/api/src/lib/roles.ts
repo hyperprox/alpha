@@ -46,6 +46,13 @@ const PUBLIC_AUTH = new Set([
   '/api/auth/sign-in',
 ])
 
+/**
+ * nginx's auth_request for /grafana/ (config/nginx/conf.d/hyperprox-routes.inc). It answers for itself:
+ * 204 for a signed-in person while unlocked, 401 otherwise, locked included. It needs any session (viewer),
+ * and its requests do not reset the idle timer: a Grafana tab refreshing itself is not a person.
+ */
+export const SESSION_CHECK = '/api/auth/check'
+
 // API token management lives under /api/auth but is an ordinary admin route: locked is 423.
 const TOKENS = /^\/api\/auth\/tokens(\/|$)/
 
@@ -89,6 +96,7 @@ export function requiredRole(method: string, path: string): Role | null {
   // Sign-out only clears the caller's own cookie, so it must work with a stale one.
   if (p === '/api/auth/sign-out') return null
   if (p === '/api/auth/reconfirm') return 'viewer'
+  if (p === SESSION_CHECK) return 'viewer'
   if (p === '/api/auth/lock') return 'admin'
   // API tokens: listing them is admin too (names, roles, who made them).
   if (TOKENS.test(p)) return 'admin'
