@@ -29,7 +29,8 @@ export async function requestJson<T = any>(fetchFn: FetchFn, url: string, what: 
 
   let res: Response
   try {
-    res = await fetchFn(url, { method: r.method ?? 'GET', headers, body, signal: AbortSignal.timeout(r.timeoutMs ?? 15_000) })
+    // Never follow a redirect: a token is only ever sent to the origin it was configured for.
+    res = await fetchFn(url, { method: r.method ?? 'GET', headers, body, redirect: 'error', signal: AbortSignal.timeout(r.timeoutMs ?? 15_000) })
   } catch (e: any) {
     throw new ProviderError(`${what}: could not reach ${new URL(url).host} (${e?.name === 'TimeoutError' ? 'timed out' : e?.cause?.code ?? e?.message ?? 'network error'})`)
   }

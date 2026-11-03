@@ -7,32 +7,20 @@
 //  and deletes the key the moment the install ends.
 // =============================================================================
 
-import { isIP } from 'node:net'
 import { requestJson, type FetchFn } from './http'
 import { ProviderError, type MintedKey, type ProviderDevice, type RemoteProvider, type RoutingRequest } from './types'
 
 export const NETBIRD_CLOUD = 'https://api.netbird.io'
 /** NetBird's minimum setup-key lifetime. */
 export const SETUP_KEY_EXPIRY_SECONDS = 86400
+/** Routes HyperProx creates are distributed to this group only, never to All. Peers join it on purpose. */
+export const ROUTES_GROUP = 'hyperprox-routes'
 
 export interface NetbirdCreds { managementUrl?: string; apiToken: string }
 
-function privateAddress(host: string): boolean {
-  const h = host.replace(/^\[|\]$/g, '')
-  if (h === 'localhost') return true
-  const v = isIP(h)
-  if (v === 4) {
-    const [a, b, c] = h.split('.').map(Number)
-    return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) ||
-      (a === 100 && b >= 64 && b <= 127) || (a === 192 && b === 0 && c === 2) || (a === 169 && b === 254)
-  }
-  if (v === 6) return h === '::1' || /^f[cd]/i.test(h) || /^fe80/i.test(h)
-  return false
-}
-
 /**
  * The API base for a management URL as people paste it (`https://nb.example.com`, `.../api/`). Blank is
- * NetBird Cloud. Plain http only to a loopback or private address: the token travels in a header.
+ * NetBird Cloud. https only, with no exception: the token travels in a header.
  */
 export function normaliseManagementUrl(raw: string | undefined): string {
   const s = (raw ?? '').trim()
@@ -40,9 +28,7 @@ export function normaliseManagementUrl(raw: string | undefined): string {
   let u: URL
   try { u = new URL(s) } catch { throw new ProviderError(`Not a URL: ${s.slice(0, 80)} (it should start with https://)`) }
   if (u.username || u.password) throw new ProviderError('The management URL must not contain credentials')
-  if (u.protocol !== 'https:' && !(u.protocol === 'http:' && privateAddress(u.hostname))) {
-    throw new ProviderError('The management URL must use https:// (plain http is allowed only to a private address)')
-  }
+  if (u.protocol !== 'https:') throw new ProviderError('The management URL must use https://')
   const path = u.pathname.replace(/\/+$/, '').replace(/\/api$/, '')
   return `${u.protocol}//${u.host}${path}`
 }
@@ -93,6 +79,22 @@ export class NetbirdClient implements RemoteProvider {
     await this.call(`/setup-keys/${encodeURIComponent(id)}`, 'delete setup key', { method: 'DELETE', okStatus: [404] })
   }
 
+  async keyRevoked(id: string): Promise<boolean> {
+    const r = await this.call<any>(`/setup-keys/${encodeURIComponent(id)}`, 'read setup key', { okStatus: [404] })
+    if (!r || !r.id) return true
+    return r.revoked === true || r.valid === false || r.state === 'revoked' || r.state === 'expired'
+  }
+
+  /** The id of the HyperProx routes group, made the first time it is needed. */
+  private async routesGroup(): Promise<string> {
+    const groups = await this.call<any[]>('/groups', 'list groups')
+    const hit = (Array.isArray(groups) ? groups : []).find((g: any) => g.name === ROUTES_GROUP)
+    if (hit?.id) return String(hit.id)
+    const made = await this.call<any>('/groups', 'create group', { method: 'POST', json: { name: ROUTES_GROUP } })
+    if (!made?.id) throw new ProviderError(`NetBird create group: no id for ${ROUTES_GROUP}`)
+    return String(made.id)
+  }
+
   async listDevices(): Promise<ProviderDevice[]> {
     const r = await this.call<any[]>('/peers', 'list peers')
     return (Array.isArray(r) ? r : []).map((p: any): ProviderDevice => ({
@@ -115,7 +117,7 @@ export class NetbirdClient implements RemoteProvider {
     for (const id of previous) await this.call(`/routes/${encodeURIComponent(id)}`, 'delete route', { method: 'DELETE', okStatus: [404] })
     const networks = [...r.subnets, ...(r.exitNode ? ['0.0.0.0/0'] : [])]
     if (!networks.length) return []
-    const [all] = await this.groupIds(['All'])
+    const group = await this.routesGroup()
     const made: string[] = []
     for (const network of networks) {
       const res = await this.call<any>('/routes', 'create route', {
@@ -123,7 +125,9 @@ export class NetbirdClient implements RemoteProvider {
         json: {
           description: `HyperProx: ${network === '0.0.0.0/0' ? 'exit node' : network} via ${device.name}`.slice(0, 100),
           network_id: `hp-${device.name}-${network}`.replace(/[^A-Za-z0-9.-]/g, '-').slice(0, 40),
-          enabled: true, peer: device.id, network, metric: 9999, masquerade: true, groups: [all], keep_route: false,
+          enabled: true, peer: device.id, network, metric: 9999, masquerade: true, groups: [group], keep_route: false,
+          // An exit node is offered, never pushed: no peer's default route moves until its user picks it.
+          ...(network === '0.0.0.0/0' ? { skip_auto_apply: true } : {}),
         },
       })
       if (res?.id) made.push(String(res.id))

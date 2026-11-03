@@ -125,12 +125,12 @@ test('tailscale: an error answer becomes a ProviderError with status and message
 
 // ── NetBird ──────────────────────────────────────────────────────────────────
 
-test('netbird: management URL defaults to the cloud, strips /api, and refuses plain http to a public host', () => {
+test('netbird: management URL defaults to the cloud, strips /api, and is https only, private addresses included', () => {
   assert.equal(normaliseManagementUrl(''), 'https://api.netbird.io')
   assert.equal(normaliseManagementUrl('https://nb.example.com/api/'), 'https://nb.example.com')
   assert.equal(normaliseManagementUrl('https://nb.example.com:33073'), 'https://nb.example.com:33073')
-  assert.equal(normaliseManagementUrl('http://127.0.0.1:8081'), 'http://127.0.0.1:8081')
-  assert.equal(normaliseManagementUrl('http://192.0.2.10'), 'http://192.0.2.10')   // documentation range counts as private here
+  assert.throws(() => normaliseManagementUrl('http://127.0.0.1:8081'), /https/)
+  assert.throws(() => normaliseManagementUrl('http://192.0.2.10'), /https/)
   assert.throws(() => normaliseManagementUrl('http://nb.example.com'), /https/)
   assert.throws(() => normaliseManagementUrl('ftp://x'), /https/)
   assert.throws(() => normaliseManagementUrl('https://user:pw@nb.example.com'), /credentials/)
@@ -184,10 +184,12 @@ test('netbird: peers map to the common shape; delete key and peer', async () => 
   assert.equal(m.calls.length, 3)
 })
 
-test('netbird: setRouting replaces the routes it made before with one per subnet (exit node = 0.0.0.0/0), distributed to All', async () => {
+test('netbird: setRouting replaces its earlier routes, sends them to a dedicated group (made once), and never auto-applies an exit node', async () => {
   let n = 0
+  let groups: any[] = [{ id: 'g-all', name: 'All' }]
   const m = mockFetch({
-    'GET /api/groups': () => [200, [{ id: 'g-all', name: 'All' }]],
+    'GET /api/groups': () => [200, groups],
+    'POST /api/groups': c => { groups = [...groups, { id: 'g-hp', name: c.body.name }]; return [200, { id: 'g-hp' }] },
     'DELETE /api/routes/old1': () => [200, undefined],
     'POST /api/routes': () => [200, { id: `r${++n}` }],
   })
@@ -195,17 +197,51 @@ test('netbird: setRouting replaces the routes it made before with one per subnet
   const dev = { id: 'p1', name: 'pve-a', addresses: [], online: true, lastSeen: null, version: null }
   const ids = await c.setRouting(dev, { subnets: ['192.0.2.0/24'], exitNode: true }, ['old1'])
   assert.deepEqual(ids, ['r1', 'r2'])
-  const posts = m.calls.filter(x => x.method === 'POST').map(x => x.body)
+  assert.deepEqual(m.calls.filter(x => x.method === 'POST' && x.url.endsWith('/api/groups')).map(x => x.body), [{ name: 'hyperprox-routes' }])
+  const posts = m.calls.filter(x => x.method === 'POST' && x.url.endsWith('/api/routes')).map(x => x.body)
   assert.deepEqual(posts.map(p => p.network), ['192.0.2.0/24', '0.0.0.0/0'])
   for (const p of posts) {
-    assert.equal(p.peer, 'p1'); assert.deepEqual(p.groups, ['g-all']); assert.equal(p.enabled, true)
+    assert.equal(p.peer, 'p1'); assert.deepEqual(p.groups, ['g-hp'], 'never All'); assert.equal(p.enabled, true)
     assert.ok(p.network_id.length <= 40)
   }
+  assert.equal(posts[0].skip_auto_apply, undefined)
+  assert.equal(posts[1].skip_auto_apply, true)
   assert.ok(m.calls.some(x => x.method === 'DELETE' && x.url.endsWith('/api/routes/old1')))
+  // A second time the group is found, not made again.
+  m.calls.length = 0
+  await c.setRouting(dev, { subnets: ['192.0.2.0/24'], exitNode: false }, [])
+  assert.equal(m.calls.filter(x => x.method === 'POST' && x.url.endsWith('/api/groups')).length, 0)
   // Off: only deletes.
   m.calls.length = 0
   assert.deepEqual(await c.setRouting(dev, { subnets: [], exitNode: false }, ['r1', 'r2']), [])
   assert.equal(m.calls.filter(x => x.method === 'POST').length, 0)
+})
+
+test('revocation is confirmed with the provider: gone, revoked or expired counts; valid does not', async () => {
+  const ts = (body: any, status = 200) => new TailscaleClient({ apiToken: 't' }, { fetch: mockFetch({ 'GET /api/v2/tailnet/-/keys/k1': () => [status, body] }).fn })
+  assert.equal(await ts({ message: 'not found' }, 404).keyRevoked('k1'), true)
+  assert.equal(await ts({ id: 'k1', revoked: '2026-11-03T10:00:00Z' }).keyRevoked('k1'), true)
+  assert.equal(await ts({ id: 'k1', expires: '2000-01-01T00:00:00Z' }).keyRevoked('k1'), true)
+  assert.equal(await ts({ id: 'k1', expires: '2999-01-01T00:00:00Z' }).keyRevoked('k1'), false)
+  const nb = (body: any, status = 200) => new NetbirdClient({ managementUrl: '', apiToken: 't' }, { fetch: mockFetch({ 'GET /api/setup-keys/s1': () => [status, body] }).fn })
+  assert.equal(await nb({}, 404).keyRevoked('s1'), true)
+  assert.equal(await nb({ id: 's1', revoked: true, valid: false }).keyRevoked('s1'), true)
+  assert.equal(await nb({ id: 's1', revoked: false, valid: true, state: 'valid' }).keyRevoked('s1'), false)
+})
+
+test('no request follows a redirect: the token goes only to the origin it was configured for', async () => {
+  let init: any = null
+  const f = (async (_u: any, i: any) => { init = i; return new Response('[]', { status: 200 }) }) as typeof fetch
+  await new NetbirdClient({ managementUrl: 'https://nb.example.com', apiToken: 't' }, { fetch: f }).listDevices()
+  assert.equal(init.redirect, 'error')
+  await new TailscaleClient({ apiToken: 't' }, { fetch: f }).listDevices()
+  assert.equal(init.redirect, 'error')
+})
+
+test('tailscale: advertisedRoutes reads what the client advertises', async () => {
+  const m = mockFetch({ 'GET /api/v2/device/9001/routes': () => [200, { advertisedRoutes: ['198.51.100.0/24'], enabledRoutes: [] }] })
+  const c = new TailscaleClient({ apiToken: 't' }, { fetch: m.fn })
+  assert.deepEqual(await c.advertisedRoutes({ id: '9001', name: 'x', addresses: [], online: true, lastSeen: null, version: null }), ['198.51.100.0/24'])
 })
 
 // ── Built from the vault ─────────────────────────────────────────────────────
