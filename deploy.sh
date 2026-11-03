@@ -90,6 +90,11 @@ fi
 echo "→ Checking the keyholder..."
 bash bin/install-keyholder
 
+# Units from before the nginx front door bind every interface; a drop-in pins both to loopback. It only
+# reloads systemd (when it changed something): the restart below is the one there always was.
+echo "→ Keeping the API and frontend on loopback..."
+bash bin/hyperprox-bind
+
 echo "→ Restarting services..."
 systemctl restart hyperprox-api hyperprox-frontend
 
@@ -98,6 +103,15 @@ systemctl restart hyperprox-api hyperprox-frontend
 echo "→ Swapping in the checked nginx config..."
 docker compose up -d --no-deps nginx >/dev/null
 docker exec hyperprox-nginx nginx -s reload >/dev/null
+
+# A reload that nginx rejects leaves the old config running, and the old /grafana/ had no session check.
+# So prove the gate is there before Grafana is (re)created: no cookie must get a 302 to /login. If not,
+# hyperprox-gate-check stops Grafana and the deploy ends here, without claiming it completed.
+echo "→ Checking that /grafana/ is gated..."
+if ! bash bin/hyperprox-gate-check; then
+  echo "✗ Deploy stopped: nginx is not serving the gated config. The API and frontend are already updated." >&2
+  exit 1
+fi
 
 # Prometheus listens on 127.0.0.1:9090 and Grafana on 127.0.0.1:3003 (host network, reached only through
 # nginx at /grafana/). Compose recreates each container once, the first time its settings differ, and

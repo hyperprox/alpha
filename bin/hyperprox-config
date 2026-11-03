@@ -16,7 +16,8 @@
 #   npm profile      The bundled Nginx Proxy Manager is gone (it could never start: it needs ports 80 and
 #                    443, which HyperProx's own nginx holds), so `npm` is dropped from COMPOSE_PROFILES.
 #   Grafana          Served only through nginx at /grafana/ now. An install that embedded the bundled
-#                    Grafana from port 3003 is moved to the sub-path; a Grafana elsewhere is left alone.
+#                    Grafana from port 3003 on this machine (any path) is moved to the sub-path; a
+#                    Grafana on another machine is left alone.
 set -euo pipefail
 
 HYPERPROX_DIR="${HYPERPROX_DIR:-/opt/hyperprox}"
@@ -127,10 +128,30 @@ drop_npm_profile() {
 }
 
 # ── Grafana behind nginx ─────────────────────────────────────────────────────
+# The host part of a URL (no scheme, port, path or query).
+url_host() { local u="${1#*://}"; u="${u%%/*}"; u="${u%%\?*}"; printf '%s' "${u%:*}"; }
+
+# True when $1 names this machine: loopback, HOST_IP, HYPERPROX_PUBLIC_URL's host, the hostname, or any
+# address on an interface (HPX_LOCAL_ADDRS replaces the interface list, for the tests).
+is_this_host() {
+  local h="$1" a
+  case "$h" in localhost|127.0.0.1|'[::1]') return 0 ;; esac
+  for a in "$(cfg_get HOST_IP)" "$(url_host "$(cfg_get HYPERPROX_PUBLIC_URL)")" "$(hostname 2>/dev/null)" \
+           "$(hostname -f 2>/dev/null)" ${HPX_LOCAL_ADDRS-$(hostname -I 2>/dev/null)}; do
+    [[ -n "$a" && "$h" == "$a" ]] && return 0
+  done
+  return 1
+}
+
+# A URL for the bundled Grafana: port 3003 on this machine, with any path.
+is_bundled_grafana_url() {
+  [[ "$1" =~ ^https?://[^/]+:3003(/.*)?$ ]] && is_this_host "$(url_host "$1")"
+}
+
 grafana_behind_nginx() {
   local url front="${HYPERPROX_DIR}/apps/frontend/.env.production"
   url="$(cfg_get NEXT_PUBLIC_GRAFANA_URL)"
-  if [[ "$url" =~ ^https?://[^/]+:3003/?$ ]]; then
+  if is_bundled_grafana_url "$url"; then
     cfg_set NEXT_PUBLIC_GRAFANA_URL /grafana
     log "NEXT_PUBLIC_GRAFANA_URL: ${url} -> /grafana (Grafana now listens on loopback, behind nginx)"
     url=/grafana
@@ -139,7 +160,7 @@ grafana_behind_nginx() {
   fi
   # The frontend build reads this copy too (the installer writes it); keep it in step.
   if [[ -f "$front" && ! -L "$front" ]] && cfg_has NEXT_PUBLIC_GRAFANA_URL "$front" \
-     && [[ "$(cfg_get NEXT_PUBLIC_GRAFANA_URL "$front")" =~ ^https?://[^/]+:3003/?$ ]]; then
+     && is_bundled_grafana_url "$(cfg_get NEXT_PUBLIC_GRAFANA_URL "$front")"; then
     cfg_set NEXT_PUBLIC_GRAFANA_URL /grafana "$front"
     log "apps/frontend/.env.production: NEXT_PUBLIC_GRAFANA_URL -> /grafana"
   fi

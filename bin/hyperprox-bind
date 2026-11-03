@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# hyperprox-bind - keep the API and the frontend on loopback, behind nginx.
+#
+# Installs from before the nginx front door have units that bind every interface (the API ignored
+# API_BIND then; the frontend unit said HOSTNAME=0.0.0.0). This writes one systemd drop-in per service
+# that pins them to 127.0.0.1, and reloads systemd when it changed one. It restarts nothing: deploy.sh
+# and install.sh restart the services right after, as they always do. Idempotent; one line per change.
+#
+#   bash /opt/hyperprox/bin/hyperprox-bind      # SYSTEMD_DIR and SYSTEMCTL override, for the tests
+set -euo pipefail
+
+SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+changed=0
+
+# dropin <service> <variable> <value>
+dropin() {
+  local dir="${SYSTEMD_DIR}/$1.service.d" want
+  want="$(printf '%s\n' \
+    '# Written by HyperProx (bin/hyperprox-bind). Loopback only: browsers reach this through nginx.' \
+    '[Service]' "Environment=$2=$3")"
+  if [[ "$(cat "${dir}/bind.conf" 2>/dev/null)" != "$want" ]]; then
+    mkdir -p "$dir"
+    printf '%s\n' "$want" > "${dir}/bind.conf.tmp"
+    chmod 644 "${dir}/bind.conf.tmp"
+    mv -f "${dir}/bind.conf.tmp" "${dir}/bind.conf"
+    printf '  %s: %s=%s (drop-in %s/bind.conf)\n' "$1" "$2" "$3" "$dir"
+    changed=1
+  fi
+}
+
+dropin hyperprox-api      API_BIND 127.0.0.1
+dropin hyperprox-frontend HOSTNAME 127.0.0.1
+if [[ "$changed" == 1 ]]; then "$SYSTEMCTL" daemon-reload; fi
