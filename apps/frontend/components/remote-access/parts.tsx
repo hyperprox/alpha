@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import type { RemoteCell, RemoteJob, RemoteMachineRow, RemoteManualKey, RemoteProviderId } from '@hyperprox/types'
+import type { RemoteCell, RemoteFirewallPreview, RemoteJob, RemoteMachineRow, RemoteManualKey, RemoteProviderId } from '@hyperprox/types'
 import { Badge, Btn, ConfirmDialog, Notice, Panel, StepIcon, TH, THEAD_STYLE, fmtTime } from '@/components/updates/ui'
 
 // Pieces of the Remote access page. Built from the Updates primitives so the page looks like the rest of
@@ -31,7 +31,7 @@ export function StateBadge({ cell }: { cell: RemoteCell }) {
   return <Badge tone={s.tone} title={s.hint}>{s.label}</Badge>
 }
 
-export type CellAction = 'install' | 'check' | 'update' | 'routing' | 'uninstall' | 'manual-key' | 'tun'
+export type CellAction = 'install' | 'check' | 'update' | 'routing' | 'uninstall' | 'manual-key' | 'tun' | 'firewall'
 
 function Cell({ row, provider, cell, admin, busy, onAction }: {
   row: RemoteMachineRow; provider: RemoteProviderId; cell: RemoteCell; admin: boolean; busy: boolean
@@ -43,6 +43,7 @@ function Cell({ row, provider, cell, admin, busy, onAction }: {
     <div className="space-y-1">
       <div className="flex flex-wrap items-center gap-1.5">
         <StateBadge cell={cell} />
+        {cell.adopted && <Badge tone="muted" title="It was already there; HyperProx recorded it without changing it">adopted</Badge>}
         {cell.mode === 'userspace' && <Badge tone="muted" title="Userspace networking: reachable over the overlay, its own traffic does not go through it">userspace</Badge>}
         {(cell.routes.length > 0 || cell.exitNode) && (
           <Badge tone="warn" title={[...cell.routes, ...(cell.exitNode ? ['exit node'] : [])].join(', ')}>routing</Badge>
@@ -64,6 +65,7 @@ function Cell({ row, provider, cell, admin, busy, onAction }: {
               <Btn small disabled={busy} onClick={act('check')}>Check</Btn>
               <Btn small disabled={busy} onClick={act('update')}>Update</Btn>
               <Btn small disabled={busy} onClick={act('routing')}>Routing…</Btn>
+              {row.kind === 'node' && <Btn small disabled={busy} onClick={act('firewall')} title="Let SSH and the web UI through the Proxmox firewall from the overlay">Firewall…</Btn>}
               <Btn small kind="danger" disabled={busy} onClick={act('uninstall')}>Uninstall</Btn>
             </>
           ) : cell.state === 'manual' ? (
@@ -130,7 +132,7 @@ export function MachinesTable({ rows, admin, busy, selected, onSelect, onAction 
 }
 
 const STEP_ICON: Record<string, 'ok' | 'failed' | 'running' | 'skipped' | 'pending'> = { done: 'ok', failed: 'failed', running: 'running', skipped: 'skipped', pending: 'pending' }
-const ACTION_TITLE: Record<RemoteJob['action'], string> = { install: 'Installing', check: 'Checking', update: 'Updating', routing: 'Changing routing', uninstall: 'Uninstalling' }
+const ACTION_TITLE: Record<RemoteJob['action'], string> = { install: 'Installing', check: 'Checking', update: 'Updating', routing: 'Changing routing', uninstall: 'Uninstalling', recovery: 'Re-checking after a restart:' }
 
 export function JobPanel({ job, onClose }: { job: RemoteJob; onClose: () => void }) {
   const el = useRef<HTMLPreElement>(null)
@@ -175,10 +177,11 @@ const FIELD: React.CSSProperties = {
 
 export function InstallDialog({ provider, rows, onCancel, onConfirm }: {
   provider: RemoteProviderId; rows: RemoteMachineRow[]
-  onCancel: () => void; onConfirm: (o: { tags: string[] | undefined; mode: 'kernel' | 'userspace' }) => void
+  onCancel: () => void; onConfirm: (o: { tags: string[] | undefined; mode: 'kernel' | 'userspace'; existing?: 'adopt' | 'replace' }) => void
 }) {
   const [tags, setTags] = useState('')
   const [userspace, setUserspace] = useState(false)
+  const [existing, setExisting] = useState<'' | 'adopt' | 'replace'>('')
   const nodes = rows.filter(r => r.kind === 'node').length
   const containers = rows.filter(r => r.kind === 'lxc').length
   const parsed = tags.split(/[,\s]+/).map(t => t.trim()).filter(Boolean)
@@ -205,8 +208,16 @@ export function InstallDialog({ provider, rows, onCancel, onConfirm }: {
           <span>Use userspace networking for containers without /dev/net/tun. They can be reached over the overlay, but their own traffic does not go through it. Leave off to be told which containers need the device.</span>
         </label>
       )}
+      <label className="block text-sm" style={{ color: 'var(--text-muted)' }}>
+        If {PROVIDER_LABEL[provider]} is already on a machine (not installed by HyperProx)
+        <select value={existing} onChange={e => setExisting(e.target.value as any)} style={{ ...FIELD, marginTop: 6 }}>
+          <option value="">Leave it alone and skip the machine</option>
+          <option value="adopt">Adopt it: record it as it is, change nothing</option>
+          <option value="replace">Replace it: sign it in to this account (its state is kept aside and put back if anything goes wrong)</option>
+        </select>
+      </label>
       <div className="flex justify-end gap-2">
-        <Btn kind="primary" onClick={() => onConfirm({ tags: parsed.length ? parsed : undefined, mode: userspace ? 'userspace' : 'kernel' })}>Install</Btn>
+        <Btn kind="primary" onClick={() => onConfirm({ tags: parsed.length ? parsed : undefined, mode: userspace ? 'userspace' : 'kernel', existing: existing || undefined })}>Install</Btn>
         <Btn onClick={onCancel}>Cancel</Btn>
       </div>
     </ConfirmDialog>
@@ -218,7 +229,7 @@ export function RoutingDialog({ row, provider, cell, onCancel, onConfirm }: {
   onCancel: () => void; onConfirm: (o: { subnets: string[]; exitNode: boolean; acknowledge: boolean }) => void
 }) {
   const [subnets, setSubnets] = useState(cell.routes.join('\n'))
-  const [exitNode, setExitNode] = useState(cell.exitNode)
+  const [exitNode, setExitNode] = useState(cell.exitNode && row.kind !== 'node')
   const [ack, setAck] = useState(false)
   const list = subnets.split(/[\s,]+/).map(s => s.trim()).filter(Boolean)
   const turningOn = list.length > 0 || exitNode
@@ -230,10 +241,17 @@ export function RoutingDialog({ row, provider, cell, onCancel, onConfirm }: {
         <textarea style={{ ...FIELD, marginTop: 6, minHeight: 72, fontFamily: 'var(--font-mono, monospace)' }} value={subnets}
                   onChange={e => setSubnets(e.target.value)} placeholder="198.51.100.0/24" />
       </label>
-      <label className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-soft)' }}>
-        <input type="checkbox" checked={exitNode} onChange={e => setExitNode(e.target.checked)} />
-        Offer this machine as an exit node (all internet traffic of devices that choose it)
-      </label>
+      {row.kind === 'node' ? (
+        <p className="text-xs" style={{ color: 'var(--text-dim)' }}>
+          A Proxmox node is never made an exit node, and HyperProx never changes a node&apos;s IP forwarding: turn it on yourself first if this node should route.
+          Subnets that overlap any corosync link, Ceph network or the node&apos;s own addresses are refused.
+        </p>
+      ) : (
+        <label className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-soft)' }}>
+          <input type="checkbox" checked={exitNode} onChange={e => setExitNode(e.target.checked)} />
+          Offer this machine as an exit node (devices choose it; nobody&apos;s traffic moves until they do)
+        </label>
+      )}
       {turningOn && (
         <label className="flex items-start gap-2 text-sm" style={{ color: 'var(--text-bright)' }}>
           <input type="checkbox" checked={ack} onChange={e => setAck(e.target.checked)} className="mt-1" />
@@ -241,7 +259,7 @@ export function RoutingDialog({ row, provider, cell, onCancel, onConfirm }: {
         </label>
       )}
       <p className="text-xs" style={{ color: 'var(--text-dim)' }}>
-        {provider === 'tailscale' ? 'HyperProx advertises these and approves exactly these routes in Tailscale.' : 'HyperProx creates these as NetBird network routes with this peer as the router, for the All group.'}
+        {provider === 'tailscale' ? 'HyperProx advertises these, approves exactly these routes in Tailscale, and checks the machine really advertises them.' : 'HyperProx creates these as NetBird routes with this peer as the router, for the hyperprox-routes group only (add the peers that should use them), and checks the client took the change.'}
       </p>
       <div className="flex justify-end gap-2">
         <Btn kind={turningOn ? 'danger' : 'primary'} disabled={turningOn && !ack} onClick={() => onConfirm({ subnets: list, exitNode, acknowledge: ack })}>
@@ -298,6 +316,34 @@ export function ManualKeyDialog({ row, provider, result, error, onRequest, onClo
         <Btn kind="primary" onClick={onRequest}>Make a one-time key</Btn>
       )}
       <div className="flex justify-end"><Btn onClick={onClose}>Close</Btn></div>
+    </ConfirmDialog>
+  )
+}
+
+export function FirewallDialog({ row, provider, preview, error, onCancel, onConfirm }: {
+  row: RemoteMachineRow; provider: RemoteProviderId; preview: RemoteFirewallPreview | null; error: string | null
+  onCancel: () => void; onConfirm: () => void
+}) {
+  return (
+    <ConfirmDialog title={`Firewall on ${row.name}`} onClose={onCancel}>
+      <p className="text-sm" style={{ color: 'var(--text-soft)' }}>
+        On a node, {PROVIDER_LABEL[provider]} adds no firewall rules of its own, so the Proxmox firewall decides what the overlay may reach.
+        HyperProx can add one rule: SSH and the web UI, from the overlay, on its interface. Never corosync, Ceph or migration.
+      </p>
+      {error && <Notice tone="crit">{error}</Notice>}
+      {!preview && !error && <p className="text-sm" style={{ color: 'var(--text-dim)' }}>Reading the firewall…</p>}
+      {preview && (
+        <>
+          <code className="block rounded-md border px-3 py-2 font-mono text-xs" style={{ background: 'var(--ground-inset)', borderColor: 'var(--border)', color: 'var(--text-bright)' }}>
+            IN ACCEPT -i {preview.rule.iface} -source {preview.rule.source} -p {preview.rule.proto} -dport {preview.rule.dport}
+          </code>
+          <Notice tone={preview.clusterEnabled && !preview.exists ? 'info' : 'warn'}>{preview.message}</Notice>
+        </>
+      )}
+      <div className="flex justify-end gap-2">
+        <Btn kind="primary" disabled={!preview || !preview.clusterEnabled || preview.exists} onClick={onConfirm}>Add this rule</Btn>
+        <Btn onClick={onCancel}>Cancel</Btn>
+      </div>
     </ConfirmDialog>
   )
 }
