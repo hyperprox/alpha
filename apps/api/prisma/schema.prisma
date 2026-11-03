@@ -330,3 +330,29 @@ model NotifyState {
   value     Json
   updatedAt DateTime @updatedAt
 }
+
+// -----------------------------------------------------------------------------
+//  Remote access (lib/remote): what HyperProx installed where. Nothing secret.
+// -----------------------------------------------------------------------------
+
+model RemoteAccessDevice {
+  id          String    @id @default(cuid())
+  machineId   String    // node-<name> | lxc-<id> | qemu-<id> | host-<id>
+  provider    String    // tailscale | netbird
+  deviceId    String?   // the provider's device or peer id
+  nodeKey     String?   // Tailscale's stable node id
+  hostname    String?
+  address     String?   // overlay address
+  mode        String    @default("kernel")   // kernel | userspace
+  version     String?
+  routes      String[]
+  exitNode    Boolean   @default(false)
+  routeIds    String[]  // NetBird routes HyperProx created
+  connected   Boolean?
+  checkedAt   DateTime?
+  lastError   String?
+  installedAt DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([machineId, provider])
+}

@@ -207,3 +207,19 @@ test('netbird: setRouting replaces the routes it made before with one per subnet
   assert.deepEqual(await c.setRouting(dev, { subnets: [], exitNode: false }, ['r1', 'r2']), [])
   assert.equal(m.calls.filter(x => x.method === 'POST').length, 0)
 })
+
+// ── Built from the vault ─────────────────────────────────────────────────────
+
+test('providers from the vault: null until configured; the Test button says what to add', async () => {
+  const { providerFromVault, providerSettingsFromVault, testProvider } = await import('../src/lib/remote/providers')
+  const empty = async () => ({})
+  assert.equal(await providerFromVault('tailscale', empty), null)
+  assert.equal(await providerFromVault('netbird', empty), null)
+  await assert.rejects(testProvider('tailscale', empty), /API access token, or an OAuth client/)
+  await assert.rejects(testProvider('zerotier', empty), /No remote access provider/)
+  const m = mockFetch({ 'GET /api/peers': () => [200, []] })
+  const nb = async () => ({ api_token: 't', management_url: 'https://nb.example.com', default_groups: 'servers, lab' })
+  assert.equal(await testProvider('netbird', nb, m.fn), 'Connected — 0 peers')
+  assert.deepEqual(await providerSettingsFromVault('netbird', nb), { tags: ['servers', 'lab'], managementUrl: 'https://nb.example.com' })
+  assert.deepEqual(await providerSettingsFromVault('tailscale', async () => ({ default_tags: 'tag:a,tag:b' })), { tags: ['tag:a', 'tag:b'] })
+})

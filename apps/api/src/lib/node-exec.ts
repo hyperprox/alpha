@@ -71,6 +71,8 @@ export interface ExecOptions {
    * any user on the node could read it from the process list; a script carrying a private key goes this way.
    */
   input?:    string
+  /** SSH port; 22 unless the login says otherwise (a hand-added host). */
+  port?:     number
 }
 
 /**
@@ -128,13 +130,13 @@ export function execOnNode(opts: ExecOptions): Promise<ExecResult> {
     })
 
     const config: ConnectConfig = {
-      host, port: 22, username: cred.username,
+      host, port: opts.port ?? 22, username: cred.username,
       readyTimeout: 15_000, keepaliveInterval: 20_000,
       // Same pin the Terminal uses. A node whose key changed is refused here for
       // exactly the reason it is refused there.
       hostVerifier: (key: Buffer, verified: (ok: boolean) => void) => {
         const fp = fingerprintOf(key)
-        getCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, credentialId(`${host}:22`))
+        getCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, credentialId(`${host}:${opts.port ?? 22}`))
           .then(pinned => verified(!pinned || pinned === fp))
           .catch(() => verified(false))
       },
