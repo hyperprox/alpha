@@ -85,7 +85,7 @@ function deps(f: FakePve, over: Partial<WizardDeps> = {}): Partial<WizardDeps> {
   return {
     client: f.client, credential: async () => ({ id: "login" }) as any, wait: async () => {}, probe: async () => 200,
     exec: async () => ({ code: 0, output: "", timedOut: false }) as any,
-    vaultOpen: async () => true, saveSecrets: async () => {}, readSecrets: async () => ({}),
+    vaultOpen: async () => true, saveSecrets: async () => {}, readSecrets: async () => ({}), deleteSecrets: async () => {},
     ping: async () => false, readRule: async () => rule, saveRule: async r => { rule = r }, now: Date.now,
     ...over,
   }
@@ -349,4 +349,56 @@ test("access: every wizard route is admin, reads included; apply and clean-up ne
   assert.equal(needsReconfirm("POST", "/api/catalogue/wizard/apply"), true)
   assert.equal(needsReconfirm("POST", "/api/catalogue/wizard/jobs/abc/cleanup"), true)
   assert.equal(needsReconfirm("POST", "/api/catalogue/wizard/preview"), false)
+})
+
+// ── Fix round: the vault item, CIFS storage, promised memory ────────────────
+
+test("clean-up: the generated-login vault item goes too, but only one this install created", async () => {
+  for (const existed of [false, true]) {
+    const f = new FakePve()
+    const items = new Map<string, Record<string, string>>()
+    if (existed) items.set("apps/grafana-102", { note: "kept by someone" })
+    const deleted: string[] = []
+    const d = deps(f, {
+      exec: async () => ({ code: 1, output: "", timedOut: false }) as any,
+      readSecrets: async (c, p) => ({ ...(items.get(`${c}/${p}`) ?? {}) }),
+      saveSecrets: async (c, p, v) => { items.set(`${c}/${p}`, { ...(items.get(`${c}/${p}`) ?? {}), ...v }) },
+      deleteSecrets: async (c, p) => { deleted.push(`${c}/${p}`); items.delete(`${c}/${p}`) },
+    })
+    const { preview } = await previewInstall(INPUT({ recipeId: "grafana", hostname: "grafana" }), "a@example.com", d)
+    const job = await settled((await applyPreview(preview!.id, "a@example.com", d)).jobId)
+    assert.equal(job.status, "failed")
+    const msg = await removeFailedInstall(job.jobId, "a@example.com", d)
+    if (existed) {
+      assert.deepEqual(deleted, [])
+      assert.match(msg, /existed before this install, so it was kept/)
+    } else {
+      assert.deepEqual(deleted, ["apps/grafana-102"])
+      assert.match(msg, /removed from the vault/)
+    }
+  }
+})
+
+test("preview: a CIFS storage is refused with the reason, even when it says it holds containers", async () => {
+  const f = new FakePve()
+  const orig = f.answer.bind(f)
+  f.answer = async (p: string, m: string, b?: string) => /^\/nodes\/[^/]+\/storage$/.test(p)
+    ? [...await orig(p, m, b), { storage: "nas", type: "cifs", content: "rootdir,vztmpl", active: 1, shared: 1, avail: 5000 * GB }]
+    : orig(p, m, b)
+  const r = await previewInstall(INPUT({ storage: "nas" }), "a@example.com", deps(f))
+  assert.equal(r.preview, undefined)
+  assert.match(r.errors.join(" "), /CIFS\/SMB shares cannot hold a container's root disk/)
+  const view = await readCluster(f.client, async () => true)
+  const p = placementFor(findRecipe("gitea")!, { cores: 1, memoryMb: 512, diskGb: 8 }, view)
+  const a = p.nodes.find(n => n.node === "node-a")!
+  assert.deepEqual(a.rootStorages.map(s => s.storage), ["pool"])
+  assert.deepEqual(a.excludedStorages.map(s => s.storage), ["nas"])
+})
+
+test("placement: promised memory is the sum of running guests' maxmem per node", async () => {
+  const f = new FakePve()
+  f.guests[0].maxmem = 4 * GB
+  f.guests.push({ vmid: 150, type: "lxc", node: "node-a", name: "off", status: "stopped", maxmem: 16 * GB })
+  const view = await readCluster(f.client, async () => true)
+  assert.equal(view.nodes.find(n => n.node === "node-a")!.memCommittedMb, 4096, "stopped guests promise nothing")
 })

@@ -33,14 +33,22 @@ owner-only and expires after ten minutes. `/install` now only installs into an e
 
 ### Scoring
 
-Per eligible node: RAM left after the install (as a share and in absolute terms) with a heavy penalty below
-20% free, CPU headroom, room on the chosen storage, a bonus for shared storage (HA can start the guest
-elsewhere), a penalty for a node with a discrete GPU unless the app needs one, and a small capped penalty per
-running guest. Ineligible: offline, no node login, not enough RAM, too few cores, no container storage with
-room (disk x 1.2). The AI deploy template uses the same scorer and the same next-free ID.
+Per eligible node: RAM left after the install, judged on the worse of what is in use and what is promised
+to running guests (the sum of their maxmem), as a share and in absolute terms, with a heavy penalty below 20%
+free; CPU headroom from a single reading taken now; room on the chosen storage; a bonus for shared storage
+(HA can start the guest elsewhere); a penalty for a node with a discrete GPU unless the app needs or wants
+one; a bonus for any GPU, integrated included, when the recipe wants one for transcoding; and a small
+capped penalty per running guest. Ineligible: offline, no node login, not enough RAM in use right now, too
+few cores, no container storage with room (disk x 1.2). The AI deploy template uses the same scorer and the
+same next-free ID.
 
-A node "has a GPU" when its PCI bus shows an NVIDIA display controller, or a guest on it has `hostpciN`,
-NVIDIA device nodes or a cgroup allow for major 195. `/dev/dri` alone does not count.
+Rootfs storage: shared block storage first, then NFS, then local. CIFS/SMB is never offered, even when
+Proxmox lists it for containers: SMB does not keep Linux ownership, special files or locks reliably.
+
+GPUs: a discrete GPU is an NVIDIA or AMD card on the PCI bus, or a passthrough to a guest (`hostpciN`,
+NVIDIA device nodes, cgroup major 195). Integrated graphics are Intel or AMD APU graphics on the PCI bus
+(told apart from AMD cards by the APU code name), or `/dev/dri` given to a guest. Integrated graphics carry
+no penalty for ordinary apps.
 
 ### Container ID rule
 
@@ -63,4 +71,5 @@ checks ran.
 - Every wizard route is admin-only, reads included. Apply and clean-up also need the master password
   re-entered (`roles.ts`).
 - A failed install can remove its own container: only when the job created it, the container still carries
-  the job's mark in its description, and it is not under HA.
+  the job's mark in its description, and it is not under HA. The vault item holding its generated admin
+  login (`apps/<recipe>-<vmid>`) is deleted with it, only when this install created that item.
