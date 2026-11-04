@@ -58,17 +58,20 @@ export class NPMClient {
   private email:    string
   private password: string
   private cache:    TokenCache = null
+  private fetchImpl: (url: string, init?: RequestInit) => Promise<Response>
 
-  constructor(url: string, email: string, password: string) {
+  /** `fetchImpl` is for tests (recorded fixtures); production uses the global fetch. */
+  constructor(url: string, email: string, password: string, fetchImpl?: (url: string, init?: RequestInit) => Promise<Response>) {
     this.url      = url.replace(/\/$/, '')
     this.email    = email
     this.password = password
+    this.fetchImpl = fetchImpl ?? ((u, i) => fetch(u, i))
   }
 
   private async getToken(): Promise<string> {
     if (this.cache && this.cache.expires > new Date()) return this.cache.token
 
-    const res  = await fetch(`${this.url}/api/tokens`, {
+    const res  = await this.fetchImpl(`${this.url}/api/tokens`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ identity: this.email, secret: this.password }),
     })
@@ -80,14 +83,14 @@ export class NPMClient {
 
   private async get<T>(path: string): Promise<T> {
     const token = await this.getToken()
-    const res   = await fetch(`${this.url}/api${path}`, { headers: { Authorization: `Bearer ${token}` } })
+    const res   = await this.fetchImpl(`${this.url}/api${path}`, { headers: { Authorization: `Bearer ${token}` } })
     if (!res.ok) throw new Error(`NPM API error ${res.status} on ${path}`)
     return res.json() as Promise<T>
   }
 
   private async req<T>(method: string, path: string, body?: unknown): Promise<T> {
     const token = await this.getToken()
-    const res   = await fetch(`${this.url}/api${path}`, {
+    const res   = await this.fetchImpl(`${this.url}/api${path}`, {
       method,
       headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),

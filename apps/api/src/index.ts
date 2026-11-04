@@ -7,6 +7,7 @@ import websocket  from '@fastify/websocket'
 
 import { healthRoute }          from './routes/health'
 import { proxmoxRoutes }        from './routes/proxmox'
+import { proxyService } from './lib/proxy'
 import { proxyRoutes }          from './routes/proxy'
 import { dnsRoutes }            from './routes/dns'
 import { wsRoutes }             from './routes/ws'
@@ -67,6 +68,8 @@ async function main() {
   // switch to turn it off.
   // API tokens (lib/api-tokens.ts) are looked up in the database the rest of the API uses.
   setApiTokenStore(new PrismaApiTokenStore(server.prisma))
+  // Proxy instances (lib/proxy): the registry the Proxy page, the wizard and Certificates read through.
+  proxyService(server.prisma)
   await registerGate(server)
 
   // -- Notifications (lib/notify) ---------------------------------------------
