@@ -75,7 +75,8 @@ export class FakeNpm {
       const host = this.hosts.find(x => x.id === Number(one[1]))
       if (!host) return notFound
       if (m === 'GET') return { status: 200, body: clone(host) }
-      // NPM's PUT is a patch: fields not sent keep their values.
+      // NPM's PUT is a patch: fields not sent keep their values. Its schema refuses a locations that is not an array.
+      if (m === 'PUT' && 'locations' in (body ?? {}) && !Array.isArray(body.locations)) return { status: 400, body: { error: { code: 400, message: 'data/locations must be array' } } }
       if (m === 'PUT') { Object.assign(host, body, { modified_on: `now-${this.log.length}` }); return { status: 200, body: clone(host) } }
       if (m === 'DELETE') { this.hosts = this.hosts.filter(x => x !== host); return { status: 200, body: true } }
       if (m === 'POST' && one[3]) {

@@ -384,3 +384,20 @@ test('12: the Settings NPM is listed as locked when its login cannot be read, no
   const r = await w.service.allHosts()
   assert.match(r.errors.find(e => e.instanceId === 'npm')!.error, /locked/)
 })
+
+// --- final round: hosts made before this branch have locations: null ---------------------------------------------
+
+test('locations: null (every host made before the provider layer) updates, keeps null, and sends no locations', async () => {
+  const w = await world()
+  w.npm1.hosts.push({ id: 70, created_on: 'x', modified_on: 'x', owner_user_id: 1, domain_names: ['old.hpx.invalid'], forward_scheme: 'http', forward_host: '192.0.2.62',
+    forward_port: 80, access_list_id: 0, certificate_id: 0, ssl_forced: false, caching_enabled: false, block_exploits: true, advanced_config: '',
+    meta: { nginx_online: true, nginx_err: null }, allow_websocket_upgrade: false, http2_support: false, enabled: true, locations: null,
+    hsts_enabled: false, hsts_subdomains: false })
+  const r = await w.planner.apply((await w.planner.preview(LEGACY_NPM_ID, { action: 'update', hostId: '70', host: { forwardPort: 81 } }, actor)).id, actor)
+  assert.equal(r.ok, true, r.message)
+  const h = w.npm1.hosts.find(x => x.id === 70)!
+  assert.equal(h.forward_port, 81)
+  assert.equal(h.locations, null)
+  const put = w.npm1.log.filter(l => l.method === 'PUT').at(-1)!
+  assert.equal('locations' in put.body, false)
+})

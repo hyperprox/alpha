@@ -57,6 +57,16 @@ if (!LIVE) {
     assert.equal((await native()).certificate_id, certId)
   })
 
+  test('final round: a host made without locations (locations: null, as every older host) can be updated', async () => {
+    const h = await npm.createProxyHost({ domain_names: [`old-${run}.hpx.invalid`], forward_scheme: 'http', forward_host: bHost, forward_port: Number(bPort),
+      certificate_id: 0, meta: {} as any, advanced_config: '' } as any)
+    made.push(h.id)
+    assert.equal(((await npm.getProxyHost(h.id)) as any).locations, null, 'NPM 2.16.0 stores no locations as null')
+    const r = await planner.apply((await planner.preview(LEGACY_NPM_ID, { action: 'update', hostId: String(h.id), host: { forwardPort: Number(bPort) + 1 } }, actor)).id, actor)
+    assert.equal(r.ok, true, r.message)
+    assert.equal((await npm.getProxyHost(h.id)).forward_port, Number(bPort) + 1)
+  })
+
   test('finding 1: a partial NPM update merges; nothing it did not name changes, and the read-back checks every field', async () => {
     const before = pick(await native())
     const plan = await planner.preview(LEGACY_NPM_ID, { action: 'update', hostId: String(hostId), host: { npm: { block_exploits: true } } }, actor)

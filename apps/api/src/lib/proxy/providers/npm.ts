@@ -87,6 +87,9 @@ export class NpmProvider implements ProxyProvider {
     if (spec.websockets !== undefined) out.allow_websocket_upgrade = spec.websockets
     for (const [k, v] of Object.entries(spec.npm ?? {})) if (v !== undefined) out[k] = v
     out.certificate_id = certNum(out.certificate_id) || 0
+    // NPM stores "no custom locations" as null on every host made without them, and its PUT schema refuses
+    // null. The PUT is a patch, so leaving it out keeps the host's value.
+    if (!Array.isArray(out.locations)) delete out.locations
     return out
   }
 
