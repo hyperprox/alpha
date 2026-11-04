@@ -167,9 +167,13 @@ export interface PlacementNode {
   cpuLoad?:       number
   memTotalMb:     number
   memUsedMb:      number
+  /** RAM promised to its running guests (the sum of their maxmem). */
+  memCommittedMb?: number
   runningGuests?: number
-  /** Holds a discrete GPU (seen on the PCI bus, or passed through to a guest). */
+  /** Holds a discrete GPU (NVIDIA or AMD card, seen on the PCI bus or passed through to a guest). */
   hasGpu?:        boolean
+  /** Has integrated graphics (Intel, AMD APU, or /dev/dri given to a guest). No penalty; transcoders like it. */
+  hasIgpu?:       boolean
   /** false when no node login is stored; installs run with pct exec from the node. */
   hasLogin?:      boolean
 }
@@ -183,6 +187,8 @@ export interface PlacementStorage {
 export interface PlacementNeed {
   cores: number; memoryMb: number; diskGb: number
   needsGpu?: boolean
+  /** Prefers a node with any GPU, integrated included (hardware transcoding). */
+  wantsGpu?: boolean
   /** A storage the person chose; otherwise the best one on each node. */
   storage?: string
 }
@@ -196,7 +202,10 @@ export interface NodeVerdict {
   notes:          string[]
   score:          number
   storage:        PlacementStorage | null
+  /** RAM free after the install, by the worse of in-use and promised. What the score uses. */
   freeMemAfterMb: number
+  /** RAM free after the install by live use alone. What decides whether it fits at all. */
+  freeMemAfterLiveMb: number
 }
 
 export const PLACEMENT = Object.freeze({
@@ -206,25 +215,36 @@ export const PLACEMENT = Object.freeze({
   diskHeadroom:     1.2,
   headroomPenalty:  30,
   gpuPenalty:       25,
+  gpuPreferBonus:   15,
   guestPenaltyEach: 0.5,
   guestPenaltyMax:  10,
 })
 
-// Higher is a better home for a container rootfs: block storage before file shares, and a file share
-// that cannot hold POSIX ownership (CIFS) last of all.
+// Higher is a better home for a container rootfs: block storage before file shares.
 export const ROOT_STORAGE_RANK: Record<string, number> = {
-  rbd: 5, zfspool: 4, lvmthin: 3, lvm: 3, btrfs: 3, dir: 2, nfs: 1, cifs: 0,
+  rbd: 5, zfspool: 4, lvmthin: 3, lvm: 3, btrfs: 3, dir: 2, nfs: 1,
+}
+/** Storage types never offered for a container rootfs, with the reason shown to the person. */
+export const ROOTFS_EXCLUDED: Record<string, string> = {
+  cifs: "CIFS/SMB shares cannot hold a container's root disk reliably: SMB does not keep Linux ownership, " +
+        'special files or locks the way a root filesystem needs.',
 }
 /** Shared storage lets HA start the guest on another node, so it is preferred. */
 const SHARED_BONUS = 2.5
 
 function storageRank(s: PlacementStorage): number {
-  return (ROOT_STORAGE_RANK[s.type] ?? 1) + (s.shared && s.type !== 'cifs' ? SHARED_BONUS : 0)
+  return (ROOT_STORAGE_RANK[s.type] ?? 1) + (s.shared ? SHARED_BONUS : 0)
 }
 
-/** Storages on `node` that can hold a container rootfs, best first: shared, then block, then room. */
+/** Storages on `node` that say they hold containers but are never offered for one, and why. */
+export function excludedRootStorages(storages: PlacementStorage[], node: string): Array<PlacementStorage & { reason: string }> {
+  return storages.filter(s => s.node === node && s.content.includes('rootdir') && ROOTFS_EXCLUDED[s.type])
+    .map(s => ({ ...s, reason: ROOTFS_EXCLUDED[s.type] }))
+}
+
+/** Storages on `node` that can hold a container rootfs, best first: shared block, NFS, local, then room. CIFS never. */
 export function rootStorages(storages: PlacementStorage[], node: string): PlacementStorage[] {
-  return storages.filter(s => s.node === node && s.active && s.content.includes('rootdir'))
+  return storages.filter(s => s.node === node && s.active && s.content.includes('rootdir') && !ROOTFS_EXCLUDED[s.type])
     .sort((a, b) => storageRank(b) - storageRank(a) || b.freeGb - a.freeGb)
 }
 
@@ -235,6 +255,8 @@ export function storageFor(
   const need = Math.ceil(diskGb * PLACEMENT.diskHeadroom)
   const roots = rootStorages(storages, node)
   if (wanted) {
+    const banned = storages.find(x => x.node === node && x.storage === wanted && ROOTFS_EXCLUDED[x.type])
+    if (banned) return { storage: null, why: ROOTFS_EXCLUDED[banned.type] }
     const s = roots.find(x => x.storage === wanted)
     if (!s) return { storage: null, why: `${wanted} is not a container storage on this node` }
     if (s.freeGb < need) return { storage: null, why: `${wanted} has ${s.freeGb} GB free, this needs ${need} GB` }
@@ -253,16 +275,22 @@ export function scoreNodes(nodes: PlacementNode[], storages: PlacementStorage[],
   const out = nodes.map((n): NodeVerdict => {
     const why: string[] = []
     const notes: string[] = []
-    const freeAfter = n.memTotalMb - n.memUsedMb - need.memoryMb
-    const v: NodeVerdict = { node: n.node, eligible: false, why, notes, score: 0, storage: null, freeMemAfterMb: freeAfter }
+    // Live use decides whether it fits; the worse of live use and what is promised to running guests
+    // decides how good a home it is, so an overcommitted node is not recommended on a quiet moment.
+    const freeAfterLive = n.memTotalMb - n.memUsedMb - need.memoryMb
+    const promised = Math.max(n.memUsedMb, n.memCommittedMb ?? 0)
+    const freeAfter = n.memTotalMb - promised - need.memoryMb
+    const v: NodeVerdict = {
+      node: n.node, eligible: false, why, notes, score: 0, storage: null, freeMemAfterMb: freeAfter, freeMemAfterLiveMb: freeAfterLive,
+    }
 
     if (!n.online) { why.push('offline'); return v }
     if (n.hasLogin === false) why.push('no node login stored, so nothing can be installed here')
-    if (freeAfter < 0) {
+    if (freeAfterLive < 0) {
       why.push(`not enough RAM: ${Math.max(0, n.memTotalMb - n.memUsedMb)} MB free, this needs ${need.memoryMb} MB`)
     }
     if (n.cores > 0 && need.cores > n.cores) why.push(`has ${n.cores} cores, this asks for ${need.cores}`)
-    if (need.needsGpu && !n.hasGpu) why.push('no GPU, and this app needs one')
+    if (need.needsGpu && !n.hasGpu && !n.hasIgpu) why.push('no GPU, and this app needs one')
     const st = storageFor(storages, n.node, need.diskGb, need.storage)
     v.storage = st.storage
     if (!st.storage) why.push(`not enough disk: ${st.why}`)
@@ -273,16 +301,22 @@ export function scoreNodes(nodes: PlacementNode[], storages: PlacementStorage[],
     score += 25 * clamp01(freeAfter / n.memTotalMb) + 15 * clamp01(freeAfter / 32768)
     if (freeAfter < n.memTotalMb * PLACEMENT.memHeadroom) {
       score -= PLACEMENT.headroomPenalty
-      notes.push(`would leave less than ${Math.round(PLACEMENT.memHeadroom * 100)}% of its RAM free`)
+      notes.push((n.memCommittedMb ?? 0) > n.memUsedMb
+        ? `less than ${Math.round(PLACEMENT.memHeadroom * 100)}% of its RAM is left once what is promised to its guests is counted`
+        : `would leave less than ${Math.round(PLACEMENT.memHeadroom * 100)}% of its RAM free`)
     }
     // CPU headroom; unknown load scores as half busy.
     score += 20 * (n.cpuLoad === undefined ? 0.5 : 1 - clamp01(n.cpuLoad))
     // Room on the storage beyond this install (250 GB counts as plenty), and shared storage for HA.
     const s = st.storage!
     score += 15 * clamp01((s.freeGb - need.diskGb) / 250)
-    if (s.shared && s.type !== 'cifs') score += 10
+    if (s.shared) score += 10
     else notes.push('local storage only, so HA cannot move it to another node')
-    if (n.hasGpu && !need.needsGpu) {
+    const wantsGpu = need.needsGpu || need.wantsGpu
+    if (wantsGpu && (n.hasGpu || n.hasIgpu)) {
+      score += PLACEMENT.gpuPreferBonus
+      notes.push(`has a ${n.hasGpu ? 'GPU' : 'integrated GPU'} for transcoding`)
+    } else if (n.hasGpu && !wantsGpu) {
       score -= PLACEMENT.gpuPenalty
       notes.push('holds a GPU this app does not need')
     }
@@ -312,7 +346,7 @@ export function recommend(
   const mostRam = ok.every(v => v.freeMemAfterMb <= top.freeMemAfterMb)
   parts.push(`${mostRam && ok.length > 1 ? 'most free RAM after install' : 'RAM free after install'} (${gb(top.freeMemAfterMb)})`)
   const s = top.storage!
-  parts.push(s.shared && s.type !== 'cifs' ? `shared storage (${s.storage})` : `local storage (${s.storage})`)
+  parts.push(s.shared ? `shared storage (${s.storage})` : `local storage (${s.storage})`)
   const load = byName.get(top.node)?.cpuLoad
   if (ok.length > 1 && load !== undefined && ok.every(v => (byName.get(v.node)?.cpuLoad ?? 1) >= load)) {
     parts.push(`lightest CPU load (${Math.round(load * 100)}%)`)
@@ -339,10 +373,42 @@ export function configUsesGpu(config: Record<string, unknown> | null | undefined
   return false
 }
 
-/** True when `/nodes/{node}/hardware/pci` lists an NVIDIA display controller (class 0x03xxxx). */
+// AMD integrated graphics share the vendor ID with AMD cards; the APU code names tell them apart.
+const AMD_APU = /\b(Kaveri|Carrizo|Stoney|Raven|Picasso|Renoir|Lucienne|Cezanne|Barcelo|Rembrandt|Mendocino|Phoenix|Hawk Point|Strix|Krackan|Van Gogh|Raphael|Granite Ridge|Dragon Range)\b/i
+
+/**
+ * What `/nodes/{node}/hardware/pci` shows in display controllers (class 0x03xxxx): a discrete card
+ * (NVIDIA, or an AMD card that is not APU graphics) and integrated graphics (Intel, or AMD APU graphics).
+ */
+export function pciGpus(pci: unknown): { discrete: boolean; integrated: boolean } {
+  const out = { discrete: false, integrated: false }
+  if (!Array.isArray(pci)) return out
+  for (const d of pci as any[]) {
+    if (!/^0x03/i.test(String(d?.class ?? ''))) continue
+    const vendor = String(d?.vendor ?? '').toLowerCase()
+    if (vendor === '0x10de') out.discrete = true
+    else if (vendor === '0x8086') out.integrated = true
+    else if (vendor === '0x1002') {
+      if (AMD_APU.test(String(d?.device_name ?? ''))) out.integrated = true
+      else out.discrete = true
+    }
+  }
+  return out
+}
+
+/** True when the PCI bus shows a discrete GPU (NVIDIA, or an AMD card). */
 export function pciHasDiscreteGpu(pci: unknown): boolean {
-  if (!Array.isArray(pci)) return false
-  return pci.some((d: any) => /^0x03/i.test(String(d?.class ?? '')) && /^0x10de$/i.test(String(d?.vendor ?? '')))
+  return pciGpus(pci).discrete
+}
+
+/** The kind of GPU a guest config is given: a passthrough or NVIDIA nodes are discrete, /dev/dri alone integrated. */
+export function configGpuKind(config: Record<string, unknown> | null | undefined): 'discrete' | 'integrated' | null {
+  if (configUsesGpu(config)) return 'discrete'
+  for (const [k, v] of Object.entries(config ?? {})) {
+    const text = typeof v === 'string' ? v : Array.isArray(v) ? JSON.stringify(v) : ''
+    if ((/^dev\d+$/.test(k) || k === 'lxc') && /\/dev\/dri/.test(text)) return 'integrated'
+  }
+  return null
 }
 
 // =============================================================================

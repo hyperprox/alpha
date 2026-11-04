@@ -69,7 +69,7 @@ test("placement: rootStorages prefers shared, then block, then room; file shares
     store({ storage: "pool", node: "n", type: "rbd", shared: true, freeGb: 50 }),
     store({ storage: "nfs", node: "n", type: "nfs", shared: true, freeGb: 50 }),
   ]
-  assert.deepEqual(rootStorages(s, "n").map(x => x.storage), ["pool", "nfs", "local-lvm", "nas"])
+  assert.deepEqual(rootStorages(s, "n").map(x => x.storage), ["pool", "nfs", "local-lvm"], "CIFS is never offered")
 })
 
 test("placement: not enough disk anywhere on a node makes it ineligible; a chosen storage is honoured", () => {
