@@ -7,6 +7,7 @@ import websocket  from '@fastify/websocket'
 
 import { healthRoute }          from './routes/health'
 import { proxmoxRoutes }        from './routes/proxmox'
+import { proxyService } from './lib/proxy'
 import { proxyRoutes }          from './routes/proxy'
 import { dnsRoutes }            from './routes/dns'
 import { wsRoutes }             from './routes/ws'
@@ -26,10 +27,13 @@ import { secretsRoutes }          from './routes/secrets'
 import { terminalRoutes }             from './routes/terminal'
 import { pluginRoutes }           from './routes/plugins'
 import { catalogueRoutes } from './routes/catalogue'
+import { setWizardStore, PrismaWizardStore } from './lib/catalogue-store'
+import { restoreWizardState } from './lib/catalogue-installer'
 import { terminalWsRoutes }           from './routes/terminal-ws'
 import { updatesRoutes, updatesWsRoutes } from './routes/updates'
 import { certsRoutes }            from './routes/certs'
 import { notifyRoutes }           from './routes/notify'
+import { monitoringRoutes }       from './routes/monitoring'
 import { prismaPlugin }         from './plugins/prisma'
 import { redisPlugin }          from './plugins/redis'
 import { registerGate }         from './lib/gate'
@@ -66,7 +70,16 @@ async function main() {
   // switch to turn it off.
   // API tokens (lib/api-tokens.ts) are looked up in the database the rest of the API uses.
   setApiTokenStore(new PrismaApiTokenStore(server.prisma))
+  // Proxy instances (lib/proxy): the registry the Proxy page, the wizard and Certificates read through.
+  proxyService(server.prisma)
   await registerGate(server)
+
+  // -- Catalogue install wizard: previews, jobs and create marks survive a restart -------------
+  // A job that was mid-install is marked interrupted, so its half-made container can be cleaned up.
+  setWizardStore(new PrismaWizardStore(server.prisma))
+  await restoreWizardState().then(
+    r => { if (r.interrupted) server.log.warn({ interrupted: r.interrupted }, 'catalogue installs were interrupted by a restart') },
+    e => server.log.error({ err: e }, 'could not restore catalogue install state'))
 
   // -- Notifications (lib/notify) ---------------------------------------------
   // The one sender: channels under Settings → Notifications, an outbox in Postgres. Installed before the
@@ -96,6 +109,7 @@ async function main() {
   await server.register(aiRoutes,    { prefix: '/api/ai' })
   await server.register(gpuRoutes,   { prefix: '/api/gpu' })
   await server.register(targetsRoutes, { prefix: '/api/targets' })
+  await server.register(monitoringRoutes, { prefix: '/api/monitoring' })
   await server.register(terminalRoutes,           { prefix: '/api/terminal' })
   await server.register(pluginRoutes,          { prefix: '/api/plugins' })
   await server.register(catalogueRoutes,      { prefix: '/api/catalogue' })

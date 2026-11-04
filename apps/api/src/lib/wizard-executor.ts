@@ -21,7 +21,8 @@
 
 import { randomBytes } from 'crypto'
 import { ProxmoxClient } from './proxmox-client'
-import { NPMClient }      from './npm-client'
+import { wizardCreateHost, wizardRequestCertificate, wizardUpdateHost } from './proxy'
+import type { HostPatch, HostSpec } from './proxy/types'
 import { GoDaddyClient }  from './godaddy-client'
 import { getCredential }  from './credentials'
 import { execInGuest, nodeCredential } from './node-exec'
@@ -91,7 +92,8 @@ export interface ExecDeps {
   wait(ms: number): Promise<unknown>
   fetch: typeof fetch
   exec:  typeof execInGuest
-  npm(): Promise<NPMClient | null>
+  /** The proxy, through lib/proxy (preview → apply → read-back, audited). The wizard's confirm step is the preview. */
+  proxy: WizardProxy
   dns(): Promise<GoDaddyClient | null>
   /** The stored SSH login for a node, or null when there is none. */
   login(node: string): Promise<TerminalCredential | null>
@@ -101,6 +103,18 @@ export interface ExecDeps {
   resolve4(domain: string): Promise<string[]>
   /** The address Let's Encrypt is told; '' when none is configured. */
   letsEncryptEmail(): string
+}
+
+export interface WizardProxy {
+  createHost(spec: HostSpec, actor: { email: string }): Promise<{ hostId: string }>
+  updateHost(hostId: string, patch: HostPatch, actor: { email: string }): Promise<unknown>
+  requestCertificate(domains: string[], email: string, actor: { email: string }): Promise<{ id: string }>
+}
+
+const productionProxy: WizardProxy = {
+  createHost: (spec, actor) => wizardCreateHost(spec, actor),
+  updateHost: (id, patch, actor) => wizardUpdateHost(id, patch, actor),
+  requestCertificate: (domains, email, actor) => wizardRequestCertificate(domains, email, actor),
 }
 
 // ── In-memory job store ───────────────────────────────────────────────────────
@@ -145,17 +159,6 @@ function getPVE(): ProxmoxClient {
   )
 }
 
-async function getNPM(): Promise<NPMClient | null> {
-  const url  = await getCredential('proxy', 'npm', 'url').catch(() => null)
-  const em   = await getCredential('proxy', 'npm', 'email').catch(() => null)
-  const pass = await getCredential('proxy', 'npm', 'password').catch(() => null)
-  if (!url || !em || !pass) {
-    if (process.env.NPM_URL) return new NPMClient(process.env.NPM_URL, process.env.NPM_EMAIL!, process.env.NPM_PASSWORD!)
-    return null
-  }
-  return new NPMClient(url, em, pass)
-}
-
 async function getGoDaddy(): Promise<GoDaddyClient | null> {
   const key    = await getCredential('dns', 'godaddy', 'api_key').catch(() => null)
   const secret = await getCredential('dns', 'godaddy', 'api_secret').catch(() => null)
@@ -175,7 +178,7 @@ async function publicResolve4(domain: string): Promise<string[]> {
 
 function defaultDeps(): ExecDeps {
   return {
-    pve: getPVE(), wait: sleep, fetch, exec: execInGuest, npm: getNPM, dns: getGoDaddy,
+    pve: getPVE(), wait: sleep, fetch, exec: execInGuest, proxy: productionProxy, dns: getGoDaddy,
     login: nodeCredential,
     wanIp: async () => (await GoDaddyClient.getWanIP()).ip,
     resolve4: publicResolve4,
@@ -415,33 +418,19 @@ function domainOf(job: JobState): string {
 async function stepConfigureProxy(job: JobState, d: ExecDeps): Promise<string> {
   // Phase 5 replaces this guard with the first-run lock.
   assertNoFirstRun(job)
-  const npm = await d.npm()
-  if (!npm) throw new Error('Nginx Proxy Manager is not configured in HyperProx settings')
   const ip = job.lxcIp
   if (!ip) throw new Error('The container has no address to point the proxy at.')
   const port = recipeFor(job.run).port
   const domain = domainOf(job)
 
-  const host = await npm.createProxyHost({
-    domain_names:            [domain],
-    forward_scheme:          'http',
-    forward_host:            ip,
-    forward_port:            port,
-    ssl_forced:              false,
-    block_exploits:          true,
-    allow_websocket_upgrade: true,
-    http2_support:           false,
-    hsts_enabled:            false,
-    hsts_subdomains:         false,
-    caching_enabled:         false,
-    enabled:                 true,
-    certificate_id:          false,
-    trust_forwarded_proto:   false,
-    advanced_config:         '',
-    meta:                    {},
-  } as any)
+  // The options the wizard has always set; everything else is NPM's default for a new host.
+  const host = await d.proxy.createHost({
+    domains: [domain], forwardScheme: 'http', forwardHost: ip, forwardPort: port, enabled: true, websockets: true,
+    npm: { certificate_id: false, ssl_forced: false, block_exploits: true, http2_support: false, hsts_enabled: false,
+      hsts_subdomains: false, caching_enabled: false, advanced_config: '' },
+  }, { email: job.run.owner })
 
-  job.proxyHostId = host.id
+  job.proxyHostId = Number(host.hostId)
   return `Proxy host created — ${domain} → ${ip}:${port}`
 }
 
@@ -484,21 +473,19 @@ async function stepWaitPropagation(job: JobState, d: ExecDeps): Promise<string> 
 }
 
 async function stepRequestSSL(job: JobState, d: ExecDeps): Promise<string> {
-  const npm = await d.npm()
-  if (!npm) throw new Error('Nginx Proxy Manager is not configured')
   if (!job.proxyHostId) throw new Error('Proxy host ID not available')
   const domain = domainOf(job)
 
   const email = d.letsEncryptEmail()
   if (!email) throw new Error('Let\'s Encrypt email not configured. Set LETSENCRYPT_EMAIL in HyperProx settings.')
 
-  const cert = await npm.requestCertificate({
-    domain_names: [domain], provider: 'letsencrypt', nice_name: domain, letsencrypt_email: email,
-  })
-  job.certId = cert.id
-  await npm.updateProxyHost(job.proxyHostId, {
-    certificate_id: cert.id, ssl_forced: true, http2_support: true, hsts_enabled: true,
-  } as any)
+  const actor = { email: job.run.owner }
+  const cert = await d.proxy.requestCertificate([domain], email, actor)
+  job.certId = Number(cert.id)
+  // A patch: only these four options change; the host keeps everything else it has.
+  await d.proxy.updateHost(String(job.proxyHostId), {
+    npm: { certificate_id: Number(cert.id), ssl_forced: true, http2_support: true, hsts_enabled: true },
+  }, actor)
   return `SSL certificate issued and attached — ${domain} is now HTTPS`
 }
 

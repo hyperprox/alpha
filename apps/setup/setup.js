@@ -13,6 +13,7 @@ const fs        = require('fs')
 const path      = require('path')
 const crypto    = require('crypto')
 const { exec }  = require('child_process')
+const exporter  = require('./pve-exporter')
 
 const PORT     = parseInt(process.env.SETUP_PORT || '3001', 10)
 const ENV_PATH = path.resolve(process.env.ENV_FILE_PATH || '/opt/hyperprox/.env')
@@ -119,15 +120,17 @@ function pveRequest(host, port, tokenId, tokenSecret, path) {
 }
 
 /**
- * Any Proxmox API call with a ticket (cookie + CSRF) or none, form-encoded body. Used only by
- * connectWithLogin below, which needs the user's own session to create HyperProx's token.
+ * Any Proxmox API call with a ticket (cookie + CSRF), an API token ({ token: 'PVEAPIToken=...' }) or none,
+ * form-encoded body. connectWithLogin uses the user's own session to create HyperProx's token; the
+ * exporter's read-only token is made with whichever of the two the wizard has.
  */
 function pveCall(host, port, method, path, form, auth) {
   return new Promise((resolve, reject) => {
     const body = form ? new URLSearchParams(form).toString() : ''
     const headers = {}
     if (body) { headers['Content-Type'] = 'application/x-www-form-urlencoded'; headers['Content-Length'] = Buffer.byteLength(body) }
-    if (auth) { headers.Cookie = `PVEAuthCookie=${encodeURIComponent(auth.ticket)}`; headers.CSRFPreventionToken = auth.csrf }
+    if (auth && auth.token) headers.Authorization = auth.token
+    else if (auth) { headers.Cookie = `PVEAuthCookie=${encodeURIComponent(auth.ticket)}`; headers.CSRFPreventionToken = auth.csrf }
     const req = https.request({ hostname: host, port: parseInt(port, 10), path: `/api2/json${path}`, method, headers,
       rejectUnauthorized: false, timeout: 15000 }, res => {
       let out = ''
@@ -227,21 +230,69 @@ async function connectWithLogin(host, port, username, password, otp, held = null
     t = await pveCall(host, port, 'POST', '/access/ticket', { username: userid, 'tfa-challenge': t.ticket, password: `totp:${otp}` })
   }
   const auth = { ticket: t.ticket, csrf: t.CSRFPreventionToken }
-  const tokens = `/access/users/${encodeURIComponent(userid)}/token`
-  const pve = {
-    listTokens:  () => pveCall(host, port, 'GET', tokens, null, auth),
-    deleteToken: (name) => pveCall(host, port, 'DELETE', `${tokens}/${encodeURIComponent(name)}`, null, auth),
-    createToken: (name, comment) => pveCall(host, port, 'POST', `${tokens}/${encodeURIComponent(name)}`,
-      { privsep: '0', comment }, auth),
-    tokenWorks:  (id, secret) => tokenWorks(host, port, id, secret),
-  }
+  const pve = pveAdapter(host, port, auth, userid)
   const hostname = require('os').hostname()
   const id = installId()
   const { tokenId, tokenSecret, action } = await ensureToken(pve,
     { userid, name: tokenName(hostname, id), held, installId: id, comment: tokenComment(hostname, id) })
   console.log(`[setup] Proxmox token ${tokenId}: ${action}`)
   const cluster = await testProxmox(host, port, tokenId, tokenSecret)
-  return { tokenId, tokenSecret, cluster }
+  const exporterResult = await setupExporterSafely(pve, userid, tokenId.split('!')[1])
+  return { tokenId, tokenSecret, cluster, exporter: exporterResult }
+}
+
+/**
+ * The token calls on one Proxmox user, through a sign-in ticket or an API token (see pveCall). HyperProx's
+ * own token is made with privilege separation off (it acts with the user's rights); the exporter's with it
+ * on, plus one PVEAuditor ACL, so it can only read (apps/setup/pve-exporter.js).
+ */
+function pveAdapter(host, port, auth, userid) {
+  const tokens = `/access/users/${encodeURIComponent(userid)}/token`
+  return {
+    listTokens:  () => pveCall(host, port, 'GET', tokens, null, auth),
+    deleteToken: (name) => pveCall(host, port, 'DELETE', `${tokens}/${encodeURIComponent(name)}`, null, auth),
+    // (name, comment) for HyperProx's own token; (name, { privsep, comment }) for the exporter's.
+    createToken: (name, o) => pveCall(host, port, 'POST', `${tokens}/${encodeURIComponent(name)}`,
+      typeof o === 'string' ? { privsep: '0', comment: o } : { privsep: String(o.privsep), comment: o.comment }, auth),
+    getToken:    (name, user = userid) => pveCall(host, port, 'GET',
+      `/access/users/${encodeURIComponent(user)}/token/${encodeURIComponent(name)}`, null, auth),
+    listAcl:     () => pveCall(host, port, 'GET', '/access/acl', null, auth),
+    setAcl:      ({ path: p, role, token }) => pveCall(host, port, 'PUT', '/access/acl',
+      { path: p, roles: role, tokens: token, propagate: '1' }, auth),
+    tokenWorks:  (id, secret) => tokenWorks(host, port, id, secret),
+  }
+}
+
+/** Where the exporter reads its token: config/pve-exporter/pve.yml next to this install's .env. */
+function exporterConfigPath() {
+  return path.join(path.dirname(ENV_PATH), 'config', 'pve-exporter', 'pve.yml')
+}
+
+function restartExporter() {
+  exec('docker restart hyperprox-pve-exporter', (err) => {
+    if (err) console.log('[setup] pve-exporter not restarted (not running yet; it reads pve.yml when it starts)')
+  })
+}
+
+/**
+ * Give the PVE exporter its read-only token and write pve.yml (0600, the exporter's own). Restarts the
+ * exporter only when the file changed. `pve` is pveAdapter() for HyperProx's user.
+ */
+async function setupExporter(pve, userid, adminTokenName, file = exporterConfigPath(), restart = restartExporter) {
+  const r = await exporter.ensureExporterToken(pve, { userid, adminTokenName, held: exporter.readPveYml(file) })
+  const changed = exporter.writePveYml(file, exporter.renderPveYml({ user: r.user, tokenName: r.tokenName, secret: r.secret }))
+  if (changed) restart()
+  console.log(`[setup] exporter token ${r.fullTokenId}: ${r.action}`)
+  return { ok: true, action: r.action, tokenId: r.fullTokenId }
+}
+
+/** Never fails the connect step: monitoring without Proxmox panels is still a working HyperProx. */
+async function setupExporterSafely(pve, userid, adminTokenName) {
+  try { return await setupExporter(pve, userid, adminTokenName) }
+  catch (err) {
+    console.warn('[setup] could not set up the exporter token:', err.message)
+    return { ok: false, error: err.message }
+  }
 }
 
 /** The token .env already records for this Proxmox address, if any - the one ensureToken may reuse. */
@@ -332,11 +383,14 @@ function resumeStep(env, proxmoxOk) {
   return 3
 }
 
-/** The compose profiles the step-2 choices stand for (written to .env as COMPOSE_PROFILES). */
+/**
+ * The compose profiles the step-2 choices stand for (written to .env as COMPOSE_PROFILES). There is no
+ * bundled Nginx Proxy Manager any more (it needs ports 80 and 443, which HyperProx's nginx holds, so it
+ * never started); an old INSTALL_NPM=true is ignored. NPM comes from the Catalogue instead.
+ */
 function composeProfiles(env) {
   const profiles = []
   if (env.INSTALL_PROMETHEUS === 'true' || env.INSTALL_GRAFANA === 'true') profiles.push('monitoring')
-  if (env.INSTALL_NPM === 'true') profiles.push('npm')
   return profiles.join(',')
 }
 
@@ -513,7 +567,7 @@ const S = {
   proxmox:  { host:'', port:'8006', tokenId:'root@pam!hyperprox', tokenSecret:'', publicUrl:'' },
   cluster:  null,
   services: {},
-  installs: { npm: false, grafana: true, prometheus: true },
+  installs: { grafana: true, prometheus: true },
   providers:{ godaddy:{ enabled:false, key:'', secret:'' }, npm:{ enabled:false, host:'', port:'81' } }
 }
 
@@ -535,6 +589,9 @@ function setErr(id, msg){
   if(!el) return
   el.textContent = msg
   el.style.display = msg ? 'block' : 'none'
+}
+function escHtml(v){
+  return String(v).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]))
 }
 
 // The installer prints the wizard link with the setup key (?k=...). It is kept for this tab only and
@@ -605,6 +662,7 @@ function stepCluster(){
     <div class="detect-row"><span>Running workloads</span><span style="font-family:'IBM Plex Mono',monospace">\${c.runningVms} VMs · \${c.runningCts} CTs</span><span class="badge badge-ok">✓</span></div>
     \${c.ceph ? \`<div class="detect-row"><span>CEPH storage</span><span style="font-family:'IBM Plex Mono',monospace">\${c.ceph.pools} pools</span><span class="badge \${c.ceph.healthy?'badge-ok':'badge-warn'}">\${c.ceph.healthy?'healthy':'degraded'}</span></div>\` : ''}
     <div class="node-grid">\${nodeCards}</div>
+    \${S.exporter && !S.exporter.ok ? \`<div class="field-hint" style="margin-top:.75rem">Proxmox metrics: the exporter's read-only token could not be made (\${escHtml(S.exporter.error)}). After setup, run <code>hyperprox pve-exporter</code> on this machine.</div>\` : ''}
     <div class="btn-row">
       <button class="btn btn-ghost" onclick="go(0)">← Back</button>
       <button class="btn btn-primary" id="btn-cluster-ok">Looks right →</button>
@@ -632,9 +690,8 @@ function stepServices(){
     : '<div style="color:var(--muted);font-size:14px">No existing services detected.</div>'
 
   const installCards = [
-    { key:'npm',        name:'Nginx Proxy Manager', desc:'Reverse proxy + SSL — ports 80, 81, 443' },
-    { key:'prometheus', name:'Prometheus',           desc:'Metrics collection — port 9090' },
-    { key:'grafana',    name:'Grafana',              desc:'Monitoring dashboards — port 3003' },
+    { key:'prometheus', name:'Prometheus',           desc:'Metrics collection — on this machine only, read through HyperProx' },
+    { key:'grafana',    name:'Grafana',              desc:'Dashboards on the Monitoring page — for signed-in users only' },
   ].map(s => \`<div class="svc-card \${inst[s.key]?'on':''}" onclick="toggleInstall('\${s.key}')">
     <div>
       <div class="svc-name">\${s.name}</div>
@@ -650,6 +707,7 @@ function stepServices(){
     <div class="card-title" style="margin-top:1.25rem">Install with HyperProx</div>
     <div class="card-desc">Select services to spin up as Docker containers alongside HyperProx.</div>
     \${installCards}
+    <div class="field-hint" style="margin-top:.75rem">Need Nginx Proxy Manager? Install it from the <strong>Catalogue</strong> after setup: it gets a container of its own, with ports 80 and 443 to itself.</div>
     <div class="btn-row">
       <button class="btn btn-ghost" onclick="go(1)">← Back</button>
       <button class="btn btn-primary" id="btn-installs">Continue →</button>
@@ -694,8 +752,7 @@ function stepDone(){
     <div class="card-desc" style="margin-bottom:1rem">One step left: <strong>create the owner vault account</strong>. Open HyperProx and you will land on the sign-in page, which offers to create it. Choose an email and a master password, then scan the QR code with an authenticator app.</div>
     <div class="card-desc" style="margin-bottom:1.5rem">Two-factor authentication is required for the owner. The master password unlocks HyperProx and is never stored, so keep it safe: this release has no password recovery.</div>
     <div class="link-row"><span style="color:var(--muted)">Create owner</span><span class="link-url">\${APP}/login</span></div>
-    <div class="link-row"><span style="color:var(--muted)">Grafana</span><span class="link-url">\${location.port === '3001' ? 'http://' + ip + ':3003' : APP + '/grafana/'}</span></div>
-    <div class="link-row"><span style="color:var(--muted)">Prometheus</span><span class="link-url">http://\${ip}:9090</span></div>
+    <div class="link-row"><span style="color:var(--muted)">Grafana</span><span class="link-url">\${location.port === '3001' ? 'https://' + ip : APP}/grafana/ (after you sign in)</span></div>
     <div style="margin-top:1.5rem">
       <a href="\${APP}/login" style="display:block">
         <button class="btn btn-primary" style="width:100%;font-size:16px">Create the owner account →</button>
@@ -734,11 +791,15 @@ function bind(){
       res = await api('POST','/api/setup/connect-proxmox',{ host, port, username:user, password:pass, otp, publicUrl:pub })
     } else {
       res = await api('POST','/api/setup/test-proxmox',{ host, port, tokenId:tid, tokenSecret:sec })
-      if(res.ok) await api('POST','/api/setup/save-proxmox',{ host, port, tokenId:tid, tokenSecret:sec, publicUrl:pub, cephMonNode: res.cluster.cephMonNode || '' })
+      if(res.ok){
+        const saved = await api('POST','/api/setup/save-proxmox',{ host, port, tokenId:tid, tokenSecret:sec, publicUrl:pub, cephMonNode: res.cluster.cephMonNode || '' })
+        res.exporter = saved.exporter
+      }
     }
     if(res.ok){
       Object.assign(S.proxmox, { host, port, username:user, publicUrl:pub, tokenId: res.tokenId || tid, tokenSecret:'' })
       S.cluster = res.cluster
+      S.exporter = res.exporter || null
       go(1)
     } else {
       if(res.needTfa){ S.proxmox.needTfa = true; document.getElementById('px-otp-wrap').style.display = 'block'; document.getElementById('px-otp').focus() }
@@ -760,8 +821,6 @@ function bind(){
         if(r.ok && r.services){
           S.services = {}
           r.services.forEach(s => { S.services[s.key] = { ...s, enabled: s.found } })
-          // Never offer to install a second proxy manager on top of one the cluster already runs.
-          if (S.services.npm && S.services.npm.found) S.installs.npm = false
         }
         resolve()
       }).catch(() => resolve())
@@ -930,7 +989,7 @@ const server = http.createServer(async (req, res) => {
       }
       const step = resumeStep(env, Boolean(cluster))
       const installs = 'INSTALL_PROMETHEUS' in env
-        ? { npm: env.INSTALL_NPM === 'true', grafana: env.INSTALL_GRAFANA === 'true', prometheus: env.INSTALL_PROMETHEUS === 'true' }
+        ? { grafana: env.INSTALL_GRAFANA === 'true', prometheus: env.INSTALL_PROMETHEUS === 'true' }
         : null
       return sendJson(res, 200, {
         ok: true, step, cluster, error, installs,
@@ -961,13 +1020,13 @@ const server = http.createServer(async (req, res) => {
       const { host, port = '8006', username = 'root@pam', password, otp, publicUrl } = body
       if (!host || !password) return sendJson(res, 400, { error: 'The Proxmox address and password are required.' })
       try {
-        const { tokenId, tokenSecret, cluster } = await connectWithLogin(host, port, username, password, otp, heldToken(readEnv(), host, port))
+        const { tokenId, tokenSecret, cluster, exporter: exp } = await connectWithLogin(host, port, username, password, otp, heldToken(readEnv(), host, port))
         const [proxmoxUser, proxmoxTokenId] = tokenId.split('!')
         writeEnv({
           PROXMOX_HOST: host, PROXMOX_PORT: port, PROXMOX_USER: proxmoxUser, PROXMOX_TOKEN_ID: proxmoxTokenId,
           PROXMOX_TOKEN_SECRET: tokenSecret, CEPH_MON_NODE: '', ...(publicUrl ? { PROXMOX_PUBLIC_URL: publicUrl } : {}),
         })
-        return sendJson(res, 200, { ok: true, cluster, tokenId })
+        return sendJson(res, 200, { ok: true, cluster, tokenId, exporter: exp })
       } catch (err) {
         let error = err.message
         if (err.needTfa) return sendJson(res, 400, { ok: false, needTfa: true, error })
@@ -997,7 +1056,11 @@ const server = http.createServer(async (req, res) => {
         CEPH_MON_NODE:        cephMon,
         ...(publicUrl ? { PROXMOX_PUBLIC_URL: publicUrl } : {}),
       })
-      return sendJson(res, 200, { ok: true })
+      // A pasted token makes the exporter's read-only one too, if it may (it needs User.Modify and
+      // Permissions.Modify; a token without them gets a hint to run `hyperprox pve-exporter` later).
+      const pve = pveAdapter(host, port, { token: `PVEAPIToken=${proxmoxUser}!${proxmoxTokenId}=${tokenSecret}` }, proxmoxUser)
+      const exp = await setupExporterSafely(pve, proxmoxUser, proxmoxTokenId)
+      return sendJson(res, 200, { ok: true, exporter: exp })
     }
 
     // The wizard no longer creates an admin account: HyperProx has no password of its own. The owner
@@ -1071,7 +1134,6 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && route === 'save-installs') {
       const { installs = {} } = body
       writeEnv({
-        INSTALL_NPM:        installs.npm        ? 'true' : 'false',
         INSTALL_GRAFANA:    installs.grafana    ? 'true' : 'false',
         INSTALL_PROMETHEUS: installs.prometheus ? 'true' : 'false',
       })
@@ -1149,7 +1211,7 @@ const server = http.createServer(async (req, res) => {
   }
 })
 
-module.exports = { tokenName, tokenComment, ensureToken, heldToken, resumeStep, composeProfiles }
+module.exports = { tokenName, tokenComment, ensureToken, heldToken, resumeStep, composeProfiles, setupExporter, pveAdapter, WIZARD_HTML }
 
 if (require.main === module) {
   setupSecret()

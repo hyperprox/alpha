@@ -32,7 +32,9 @@ test("install choices saved: step 3 (Providers), whichever way they were answere
 
 test("install choices map onto compose profiles", () => {
   assert.equal(setup.composeProfiles({ INSTALL_PROMETHEUS: "true", INSTALL_GRAFANA: "true", INSTALL_NPM: "false" }), "monitoring")
-  assert.equal(setup.composeProfiles({ INSTALL_PROMETHEUS: "true", INSTALL_NPM: "true" }), "monitoring,npm")
+  // There is no bundled Nginx Proxy Manager any more: an old INSTALL_NPM=true no longer becomes a profile.
+  assert.equal(setup.composeProfiles({ INSTALL_PROMETHEUS: "true", INSTALL_NPM: "true" }), "monitoring")
+  assert.equal(setup.composeProfiles({ INSTALL_PROMETHEUS: "false", INSTALL_GRAFANA: "false", INSTALL_NPM: "true" }), "")
   assert.equal(setup.composeProfiles({ INSTALL_PROMETHEUS: "false", INSTALL_GRAFANA: "false", INSTALL_NPM: "false" }), "")
 })
 
@@ -83,7 +85,7 @@ test("state with a saved token Proxmox refuses: step 0, address prefilled, a rea
   assert.equal(body.proxmox.host, "127.0.0.1")
   assert.equal(body.proxmox.tokenId, "root@pam!hyperprox-node-a")
   assert.match(body.error, /no longer works/)
-  assert.deepEqual(body.installs, { npm: false, grafana: true, prometheus: true })
+  assert.deepEqual(body.installs, { grafana: true, prometheus: true })
   assert.deepEqual(body.providers, { godaddy: { enabled: true } })
   const text = JSON.stringify(body)
   for (const secret of ["do-not-leak", "enc-key", "enc-secret"]) assert.ok(!text.includes(secret), `${secret} not returned`)

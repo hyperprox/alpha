@@ -1,0 +1,194 @@
+#!/usr/bin/env bash
+# hyperprox-config - bring an install's own configuration up to what this version of HyperProx expects.
+#
+# install.sh runs it on every install (fresh or re-run) and deploy.sh on every update, before anything is
+# built or restarted. It is idempotent: run it as often as you like. It never rotates a credential that
+# already exists, never restarts anything, and prints one line for each change it makes (nothing when
+# there is nothing to do).
+#
+#   bash /opt/hyperprox/bin/hyperprox-config          # HYPERPROX_DIR overrides /opt/hyperprox
+#
+#   METRICS_TOKEN    Generated once if .env has none (or adopted from Prometheus's secret file), then
+#                    written to config/prometheus/secrets/metrics_token for the plug-in metrics scrape.
+#   pve.yml          config/pve-exporter/pve.yml exists as a file, never as the directory Docker makes
+#                    for a missing bind-mount source. Its token is filled in by the setup wizard,
+#                    bootstrap.sh or `hyperprox pve-exporter`; an existing one is never touched.
+#   npm profile      The bundled Nginx Proxy Manager is gone (it could never start: it needs ports 80 and
+#                    443, which HyperProx's own nginx holds), so `npm` is dropped from COMPOSE_PROFILES.
+#   Grafana          Served only through nginx at /grafana/ now. An install that embedded the bundled
+#                    Grafana from port 3003 on this machine (any path) is moved to the sub-path; a
+#                    Grafana on another machine is left alone.
+set -euo pipefail
+
+HYPERPROX_DIR="${HYPERPROX_DIR:-/opt/hyperprox}"
+ENV_FILE="${ENV_FILE:-${HYPERPROX_DIR}/.env}"
+# The users the two containers run as: prom/prometheus is nobody, prometheus-pve-exporter is uid 101.
+PROMETHEUS_UID="${PROMETHEUS_UID:-65534}"
+EXPORTER_UID="${EXPORTER_UID:-101}"
+
+log()  { printf '  %s\n' "$*"; }
+warn() { printf '  warning: %s\n' "$*" >&2; }
+
+# ── .env helpers ─────────────────────────────────────────────────────────────
+# Values are read without surrounding quotes and written as given. ENVIRON, not awk -v, so a value is
+# never put through awk's escape processing.
+cfg_has() { grep -qE "^$1=" "${2:-$ENV_FILE}" 2>/dev/null; }
+cfg_get() {
+  [[ -r "${2:-$ENV_FILE}" ]] || return 0
+  grep -m1 -E "^$1=" "${2:-$ENV_FILE}" | cut -d= -f2- | sed -e "s/^['\"]//" -e "s/['\"]\$//" || true
+}
+# cfg_set KEY VALUE [FILE]: replace the first KEY= line, or append one. The file keeps its mode.
+cfg_set() {
+  local file="${3:-$ENV_FILE}" tmp
+  tmp="$(mktemp "${file}.XXXXXX")"
+  K="$1" V="$2" awk '
+    BEGIN { k = ENVIRON["K"]; v = ENVIRON["V"]; done = 0 }
+    !done && index($0, k "=") == 1 { print k "=" v; done = 1; next }
+    { print }
+    END { if (!done) print k "=" v }
+  ' "$file" > "$tmp"
+  chmod --reference="$file" "$tmp" 2>/dev/null || chmod 600 "$tmp"
+  mv -f "$tmp" "$file"
+}
+
+# ── METRICS_TOKEN ────────────────────────────────────────────────────────────
+ensure_metrics_token() {
+  local file="${HYPERPROX_DIR}/config/prometheus/secrets/metrics_token" token
+  mkdir -p "$(dirname "$file")"
+  [[ -d "$file" ]] && { rm -rf "$file"; log "metrics_token: removed a directory Docker had made in its place"; }
+
+  token="$(cfg_get METRICS_TOKEN)"
+  if [[ -z "$token" && -s "$file" ]]; then
+    # Prometheus already has one (set by hand from the old instructions): keep it rather than rotate.
+    token="$(tr -d '\r\n' < "$file")"
+    cfg_set METRICS_TOKEN "$token"
+    log "METRICS_TOKEN: added to .env from the token Prometheus already uses"
+  elif [[ -z "$token" ]]; then
+    token="$(openssl rand -hex 32)"
+    cfg_set METRICS_TOKEN "$token"
+    log "METRICS_TOKEN: generated (bearer token for the plug-in metrics scrape)"
+  fi
+
+  # The API reads .env, Prometheus reads this file: they must hold the same value, and .env is the source.
+  if [[ ! -f "$file" || "$(cat "$file")" != "$token" ]]; then
+    local had=false; [[ -f "$file" ]] && had=true
+    ( umask 077; printf '%s' "$token" > "${file}.tmp" )
+    mv -f "${file}.tmp" "$file"
+    if [[ "$had" == true ]]; then log "metrics_token: rewritten to match METRICS_TOKEN in .env"
+    else log "metrics_token: written for Prometheus"; fi
+  fi
+  chown "${PROMETHEUS_UID}:${PROMETHEUS_UID}" "$file" 2>/dev/null || warn "could not chown ${file} to ${PROMETHEUS_UID}"
+  chmod 600 "$file"
+}
+
+# ── pve-exporter config ──────────────────────────────────────────────────────
+# If compose starts before this file exists, Docker creates a DIRECTORY at the bind-mount path and the
+# exporter crash-loops on IsADirectoryError forever (seen in production: 3,572 restarts in four months).
+ensure_pve_exporter_file() {
+  local file="${HYPERPROX_DIR}/config/pve-exporter/pve.yml"
+  mkdir -p "$(dirname "$file")"
+  if [[ -d "$file" ]]; then
+    rm -rf "$file"
+    log "pve.yml: removed a directory Docker had made in its place"
+  fi
+  if [[ ! -f "$file" ]]; then
+    ( umask 077; cat > "$file" <<'EOF'
+# prometheus-pve-exporter: the read-only Proxmox API token it signs in with.
+# Filled in by the setup wizard, bootstrap.sh, or `hyperprox pve-exporter` (Monitoring page:
+# "Set up Proxmox metrics"). Until then the exporter runs but cannot read Proxmox.
+default:
+  user: hyperprox@pve
+  token_name: hyperprox
+  token_value: ""
+  verify_ssl: false
+EOF
+    )
+    log "pve.yml: written (no token yet: the setup wizard or 'hyperprox pve-exporter' fills it in)"
+  fi
+  # It holds a token: owner-only, owned by the exporter's user (root-owned 0600 is a PermissionError).
+  chown "${EXPORTER_UID}:${EXPORTER_UID}" "$file" 2>/dev/null || warn "could not chown ${file} to ${EXPORTER_UID}"
+  chmod 600 "$file"
+}
+
+# ── The retired npm profile ──────────────────────────────────────────────────
+drop_npm_profile() {
+  cfg_has COMPOSE_PROFILES || return 0
+  local profiles kept="" p
+  profiles="$(cfg_get COMPOSE_PROFILES)"
+  [[ ",${profiles// /}," == *",npm,"* ]] || return 0
+  IFS=',' read -ra parts <<< "$profiles"
+  for p in "${parts[@]}"; do
+    p="${p// /}"
+    [[ -z "$p" || "$p" == npm ]] && continue
+    kept="${kept:+${kept},}${p}"
+  done
+  cfg_set COMPOSE_PROFILES "$kept"
+  log "COMPOSE_PROFILES: dropped 'npm' (now '${kept}'). The bundled Nginx Proxy Manager could never start, since"
+  log "  HyperProx's nginx holds ports 80 and 443, so nothing was running. Install NPM from the Catalogue instead."
+}
+
+# ── Grafana behind nginx ─────────────────────────────────────────────────────
+# The host part of a URL (no scheme, port, path or query).
+url_host() { local u="${1#*://}"; u="${u%%/*}"; u="${u%%\?*}"; printf '%s' "${u%:*}"; }
+
+# True when $1 names this machine: loopback, HOST_IP, HYPERPROX_PUBLIC_URL's host, the hostname, or any
+# address on an interface (HPX_LOCAL_ADDRS replaces the interface list, for the tests).
+is_this_host() {
+  local h="$1" a
+  case "$h" in localhost|127.0.0.1|'[::1]') return 0 ;; esac
+  for a in "$(cfg_get HOST_IP)" "$(url_host "$(cfg_get HYPERPROX_PUBLIC_URL)")" "$(hostname 2>/dev/null)" \
+           "$(hostname -f 2>/dev/null)" ${HPX_LOCAL_ADDRS-$(hostname -I 2>/dev/null)}; do
+    [[ -n "$a" && "$h" == "$a" ]] && return 0
+  done
+  return 1
+}
+
+# A URL for the bundled Grafana: port 3003 on this machine, with any path.
+is_bundled_grafana_url() {
+  [[ "$1" =~ ^https?://[^/]+:3003(/.*)?$ ]] && is_this_host "$(url_host "$1")"
+}
+
+grafana_behind_nginx() {
+  local url front="${HYPERPROX_DIR}/apps/frontend/.env.production"
+  url="$(cfg_get NEXT_PUBLIC_GRAFANA_URL)"
+  if is_bundled_grafana_url "$url"; then
+    cfg_set NEXT_PUBLIC_GRAFANA_URL /grafana
+    log "NEXT_PUBLIC_GRAFANA_URL: ${url} -> /grafana (Grafana now listens on loopback, behind nginx)"
+    url=/grafana
+  elif [[ -n "$url" && "$url" != /grafana && "$url" != /grafana/ ]]; then
+    return 0   # a Grafana of your own somewhere else: not ours to move
+  fi
+  # The frontend build reads this copy too (the installer writes it); keep it in step.
+  if [[ -f "$front" && ! -L "$front" ]] && cfg_has NEXT_PUBLIC_GRAFANA_URL "$front" \
+     && is_bundled_grafana_url "$(cfg_get NEXT_PUBLIC_GRAFANA_URL "$front")"; then
+    cfg_set NEXT_PUBLIC_GRAFANA_URL /grafana "$front"
+    log "apps/frontend/.env.production: NEXT_PUBLIC_GRAFANA_URL -> /grafana"
+  fi
+  if [[ "$(cfg_get GRAFANA_SERVE_FROM_SUB_PATH)" != true ]]; then
+    cfg_set GRAFANA_SERVE_FROM_SUB_PATH true
+    log "GRAFANA_SERVE_FROM_SUB_PATH: true (Grafana answers at /grafana/)"
+  fi
+  if [[ -z "$(cfg_get GRAFANA_ROOT_URL)" ]]; then
+    local base host
+    base="$(cfg_get HYPERPROX_PUBLIC_URL)"; base="${base%/}"
+    if [[ -z "$base" ]]; then
+      host="$(cfg_get HOST_IP)"
+      [[ -n "$host" ]] || host="$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+' || hostname -I 2>/dev/null | awk '{print $1}')"
+      base="https://${host:-localhost}"
+    fi
+    cfg_set GRAFANA_ROOT_URL "${base}/grafana/"
+    log "GRAFANA_ROOT_URL: ${base}/grafana/"
+  fi
+}
+
+main() {
+  [[ -f "$ENV_FILE" ]] || { echo "hyperprox-config: ${ENV_FILE} not found" >&2; exit 1; }
+  ensure_metrics_token
+  ensure_pve_exporter_file
+  drop_npm_profile
+  grafana_behind_nginx
+  chmod 600 "$ENV_FILE"
+}
+
+# Sourced by the tests for its functions; run, it does the work.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi

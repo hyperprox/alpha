@@ -1,0 +1,58 @@
+{
+ "data": {
+  "resources": [
+   {
+    "resourceId": 2,
+    "niceId": "coordinated-northern-crested-newt",
+    "name": "legacy-pangolin",
+    "ssl": true,
+    "fullDomain": "legacy-pangolin.hpx.invalid",
+    "passwordId": null,
+    "sso": 1,
+    "pincodeId": null,
+    "whitelist": 0,
+    "mtls": false,
+    "proxyPort": null,
+    "wildcard": false,
+    "mode": "http",
+    "enabled": true,
+    "domainId": "test",
+    "headerAuthId": null,
+    "health": "unknown",
+    "targets": [
+     {
+      "targetId": 2,
+      "resourceId": 2,
+      "siteId": 1,
+      "ip": "192.0.2.39",
+      "port": 9000,
+      "enabled": true,
+      "healthStatus": "unknown",
+      "hcEnabled": false,
+      "siteName": "probe-local",
+      "siteNiceId": "kindly-indian-gerbil",
+      "siteOnline": true,
+      "siteType": "local"
+     }
+    ],
+    "sites": [
+     {
+      "siteId": 1,
+      "siteName": "probe-local",
+      "siteNiceId": "kindly-indian-gerbil"
+     }
+    ],
+    "labels": []
+   }
+  ],
+  "pagination": {
+   "total": 1,
+   "pageSize": 1000,
+   "page": 1
+  }
+ },
+ "success": true,
+ "error": false,
+ "message": "Resources retrieved successfully",
+ "status": 200
+}

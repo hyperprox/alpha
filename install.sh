@@ -560,8 +560,8 @@ PROMETHEUS_RETENTION=90d
 PROMETHEUS_RETENTION_SIZE=40GB
 
 # ── Docker Compose ────────────────────────────────────────────────────────────
-# Optional parts of docker-compose.yml to run: monitoring (Prometheus, Grafana, PVE exporter) and npm
-# (Nginx Proxy Manager). docker compose reads this itself; the setup wizard rewrites it from your choices.
+# Optional parts of docker-compose.yml to run: monitoring (Prometheus, Grafana, PVE exporter) and ai (a
+# local Ollama). docker compose reads this itself; the setup wizard rewrites it from your choices.
 COMPOSE_PROFILES=monitoring
 
 # ── Proxmox (filled in by setup wizard) ──────────────────────────────────────
@@ -691,6 +691,17 @@ configure_vault_env() {
   [[ "${added}" == "true" ]] && ok "Vault settings written to .env" || ok "Vault settings already present"
 }
 
+# ── Per-install configuration ─────────────────────────────────────────────────
+# bin/hyperprox-config: METRICS_TOKEN (generated once, never rotated) and its copy for Prometheus,
+# config/pve-exporter/pve.yml, no retired npm profile, Grafana behind nginx at /grafana/. The same step
+# deploy.sh runs on every update, so a re-run of this installer and an update agree. Idempotent.
+apply_install_config() {
+  step "Checking per-install configuration"
+  HYPERPROX_DIR="${HYPERPROX_DIR}" bash "${HYPERPROX_DIR}/bin/hyperprox-config" \
+    || die "bin/hyperprox-config failed (see above)"
+  ok "Per-install configuration is up to date"
+}
+
 # ── Docker Compose Stack ───────────────────────────────────────────────────────
 # The repo's docker-compose.yml is the only compose file. This installer used to carry its own copy in a
 # heredoc, written only when the clone had none - which a clone always has - so the copy was never used and
@@ -706,9 +717,8 @@ configure_compose() {
     if env_has INSTALL_PROMETHEUS; then
       profiles=""
       grep -qE '^INSTALL_(PROMETHEUS|GRAFANA)=true' "${ENV_FILE}" && profiles="monitoring"
-      grep -q '^INSTALL_NPM=true' "${ENV_FILE}" && profiles="${profiles:+${profiles},}npm"
     fi
-    printf '\n# Optional compose profiles (monitoring, npm); docker compose reads this itself.\nCOMPOSE_PROFILES=%s\n' "${profiles}" >> "${ENV_FILE}"
+    printf '\n# Optional compose profiles (monitoring, ai); docker compose reads this itself.\nCOMPOSE_PROFILES=%s\n' "${profiles}" >> "${ENV_FILE}"
     ok "Compose profiles: ${profiles:-none}"
   fi
 
@@ -742,7 +752,7 @@ rule_files:
 scrape_configs:
   - job_name: prometheus
     static_configs:
-      - targets: ['localhost:9090']
+      - targets: ['127.0.0.1:9090']
 
   - job_name: node
     scrape_interval: 60s
@@ -807,35 +817,8 @@ EOF
   # Grafana's provisioning (datasource, dashboards) ships in the repo under config/grafana/provisioning,
   # which is what docker-compose.yml mounts. Nothing to write.
 
-  # pve-exporter config — preserve on reinstall.
-  #
-  # If compose starts before this file exists, Docker creates a DIRECTORY at the
-  # bind-mount path. `-f` is false for a directory, so the old guard fell through
-  # to a `cat >` that cannot write onto a directory; the redirect failed, the
-  # script reported success, and the exporter crash-looped on IsADirectoryError
-  # forever. It could never self-heal, because every reinstall repeated it.
-  # Seen in production: 3,572 restarts over four months.
-  mkdir -p "${HYPERPROX_DIR}/config/pve-exporter"
-  if [[ -d "${HYPERPROX_DIR}/config/pve-exporter/pve.yml" ]]; then
-    warn "pve.yml exists as a directory (Docker bind-mount artefact) — removing"
-    rm -rf "${HYPERPROX_DIR}/config/pve-exporter/pve.yml"
-  fi
-  if [[ ! -f "${HYPERPROX_DIR}/config/pve-exporter/pve.yml" ]]; then
-    cat > "${HYPERPROX_DIR}/config/pve-exporter/pve.yml" <<'EOF'
-# PVE Exporter configuration
-# Populated by setup wizard after Proxmox connection
-default:
-  user: hyperprox@pve
-  token_name: hyperprox
-  token_value: ""
-  verify_ssl: false
-EOF
-    ok "PVE exporter config written"
-  fi
-  # The image runs as uid 101 (prometheus). Root-owned 0600 gives PermissionError
-  # and the same crash loop with a different exception.
-  chown 101:101 "${HYPERPROX_DIR}/config/pve-exporter/pve.yml"
-  chmod 640 "${HYPERPROX_DIR}/config/pve-exporter/pve.yml"
+  # config/pve-exporter/pve.yml and the plug-in scrape's METRICS_TOKEN are made by bin/hyperprox-config
+  # (apply_install_config), which deploy.sh runs too.
 }
 
 # ── TLS for the front door ────────────────────────────────────────────────────
@@ -947,6 +930,8 @@ WantedBy=multi-user.target
 EOF
 
   systemctl daemon-reload
+  # The same loopback drop-ins deploy.sh keeps in place (a re-run over an old install has old units).
+  bash "${HYPERPROX_DIR}/bin/hyperprox-bind" || die "bin/hyperprox-bind failed (see above)"
   ok "Systemd units created"
 }
 
@@ -1091,6 +1076,7 @@ main() {
   clone_repo
   configure_env
   configure_vault_env
+  apply_install_config
   build_app
   configure_compose
   write_monitoring_config

@@ -342,7 +342,7 @@ test('lock still voids everything: a token used after a lock gets 423', async ()
 
 // ── The catalogue's vault check is the write check, made before anything exists ──────────────
 import { vaultWritable } from '../src/lib/credentials'
-import { startInstall } from '../src/lib/catalogue-installer'
+import { startInstall, previewInstall } from '../src/lib/catalogue-installer'
 
 test('an env-admin install from a token with nobody signed in fails before any container exists', async () => {
   await unlockAs()
@@ -359,7 +359,14 @@ test('an env-admin install from a token with nobody signed in fails before any c
     createLXC: async () => { touched.push('create'); return 'UPID:x' },
     waitForTask: async () => {}, downloadTemplate: async () => 'UPID:dl',
   }
-  await requestContext.run({ sid: 'token:x', email: 'token:t', role: 'admin' }, () =>
-    assert.rejects(startInstall({ recipeId: 'grafana', owner: 'token:x' }, { client, credential: async () => ({}) }), /vault is locked/))
+  // A new container is planned by the install wizard; its preview refuses before reading the cluster.
+  const input = { recipeId: 'grafana', node: 'pve1', vmid: 120, hostname: 'grafana', cores: 1, memoryMb: 512, swapMb: 0,
+    diskGb: 8, storage: 'pool', bridge: 'vmbr0', ip: 'dhcp' }
+  const r = await requestContext.run({ sid: 'token:x', email: 'token:t', role: 'admin' }, () =>
+    previewInstall(input, 'token:x', { client, credential: async () => ({}) as any }))
+  assert.equal(r.preview, undefined)
+  assert.match(r.errors.join(' '), /vault is locked/)
+  // And the old one-call path no longer creates anything at all.
+  await assert.rejects(startInstall({ recipeId: 'grafana', owner: 'token:x' }, { client, credential: async () => ({}) }), /install wizard/)
   assert.deepEqual(touched, [], 'nothing was read, placed or created')
 })

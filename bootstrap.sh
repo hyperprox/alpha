@@ -192,6 +192,26 @@ fi
 pveum acl modify / --token 'root@pam!hyperprox' --role Administrator >/dev/null 2>&1 \
   && ok "Granted Administrator on /" || warn "Could not set the ACL; grant it by hand."
 
+# The PVE exporter (Grafana's Proxmox panels) gets a token of its own that can only read: privilege
+# separation on, PVEAuditor on / and nothing else. Named and marked the way HyperProx's own provisioning
+# does it (apps/setup/pve-exporter.js), so `hyperprox pve-exporter` can later repair it.
+EXPORTER_SECRET=""
+EXPORTER_TOKEN="hyperprox-exporter"
+if pveum user token list root@pam --output-format json 2>/dev/null | grep -q "\"${EXPORTER_TOKEN}\""; then
+  warn "A token named '${EXPORTER_TOKEN}' already exists; its secret is only shown once."
+  note "After signing in to HyperProx, run in the container: hyperprox pve-exporter"
+else
+  EXPORTER_SECRET="$(pveum user token add root@pam "${EXPORTER_TOKEN}" --privsep 1 \
+    --comment 'HyperProx metrics exporter, read-only (PVEAuditor) [exporter for root@pam!hyperprox]' --output-format json \
+    | sed -n 's/.*"value"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || true)"
+  if [ -n "$EXPORTER_SECRET" ] && pveum acl modify / --token "root@pam!${EXPORTER_TOKEN}" --role PVEAuditor >/dev/null 2>&1; then
+    ok "Token root@pam!${EXPORTER_TOKEN} created (read-only: PVEAuditor on /)"
+  else
+    warn "Could not make the exporter's read-only token; after setup, run in the container: hyperprox pve-exporter"
+    EXPORTER_SECRET=""
+  fi
+fi
+
 # ---------------------------------------------------------------------------
 #  7. node_exporter on every node, so Monitoring has data on day one
 # ---------------------------------------------------------------------------
@@ -322,6 +342,27 @@ if [ -n "$TOKEN_SECRET" ]; then
     set_kv PROXMOX_TOKEN_SECRET '$TOKEN_SECRET'
     systemctl restart hyperprox-api 2>/dev/null || true
   " && ok "Proxmox connection configured — the setup wizard will not ask again"
+fi
+
+if [ -n "$EXPORTER_SECRET" ]; then
+  # pve.yml as apps/setup/pve-exporter.js writes it: 0600 and owned by the exporter's user (uid 101).
+  _pveyml="$(mktemp)"; chmod 600 "$_pveyml"
+  cat > "$_pveyml" <<PVEYML
+# prometheus-pve-exporter: the read-only Proxmox API token it signs in with (PVEAuditor on /).
+# Written by bootstrap.sh. To make a new one: hyperprox pve-exporter.
+default:
+  user: "root@pam"
+  token_name: "${EXPORTER_TOKEN}"
+  token_value: "${EXPORTER_SECRET}"
+  verify_ssl: false
+PVEYML
+  if pct push "$CTID" "$_pveyml" /opt/hyperprox/config/pve-exporter/pve.yml --perms 0600 --user 101 --group 101; then
+    pct exec "$CTID" -- docker restart hyperprox-pve-exporter >/dev/null 2>&1 || true
+    ok "PVE exporter configured with its read-only token"
+  else
+    warn "Could not write the exporter's pve.yml; after setup, run in the container: hyperprox pve-exporter"
+  fi
+  rm -f "$_pveyml"
 fi
 
 # ---------------------------------------------------------------------------

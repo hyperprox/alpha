@@ -3,7 +3,11 @@
 # Do not add 'version:' — deprecated in Compose v2
 #
 # The one compose file: install.sh, deploy.sh and the setup wizard all use this file as it is. Anything
-# per-install comes from .env, including COMPOSE_PROFILES (monitoring, npm), which compose reads itself.
+# per-install comes from .env, including COMPOSE_PROFILES (monitoring, ai), which compose reads itself.
+#
+# Nothing here is published beyond loopback except nginx on 80 and 443. Prometheus and Grafana use the host
+# network so Grafana can reach Prometheus on 127.0.0.1; both bind 127.0.0.1, and Grafana is reached only
+# through nginx at /grafana/, which asks the API for a valid HyperProx session first.
 
 services:
   postgres:
@@ -75,13 +79,17 @@ services:
       start_period: 15s
 
   prometheus:
-    image: prom/prometheus:latest
+    # Pinned by digest (never :latest). Version: Prometheus 3.11.2 (multi-arch index digest). To update,
+    # change the tag AND the digest together.
+    image: prom/prometheus:v3.11.2@sha256:5550dc63da361dc30f6fe02ac0e4dfc736ededfef3c8d12a634db04a67824d78
     container_name: hyperprox-prometheus
     restart: unless-stopped
     profiles: [monitoring]
     network_mode: host
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
+      # Loopback only: no authentication of its own, and --web.enable-lifecycle below accepts /-/quit.
+      - "--web.listen-address=127.0.0.1:9090"
       - "--storage.tsdb.path=/prometheus"
       - "--storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-90d}"
       - "--storage.tsdb.retention.size=${PROMETHEUS_RETENTION_SIZE:-40GB}"
@@ -97,19 +105,24 @@ services:
       - ./config/prometheus/secrets:/etc/prometheus/secrets:ro
       - ./data/prometheus:/prometheus
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/-/healthy"]
       interval: 30s
       timeout: 5s
       retries: 3
 
   grafana:
-    image: grafana/grafana:latest
+    # Pinned by digest (never :latest): Grafana is served on HyperProx's own origin, so a Grafana change
+    # is a HyperProx change. Version: Grafana 13.0.1 (multi-arch index digest). To update, change the tag
+    # AND the digest together.
+    image: grafana/grafana:13.0.1@sha256:0f86bada30d65ef9d0183b90c1e2682ac92d53d95da8bed322b984ea78a4a73a
     container_name: hyperprox-grafana
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     profiles: [monitoring]
+    # Host network, loopback only: it reads Prometheus on 127.0.0.1:9090, and browsers reach it only through
+    # nginx at /grafana/ (gated on a HyperProx session), so its anonymous viewer is never on the network.
+    network_mode: host
     environment:
+      - GF_SERVER_HTTP_ADDR=127.0.0.1
       - GF_SERVER_HTTP_PORT=3003
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
@@ -119,20 +132,23 @@ services:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_NAME=Main Org.
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_AUTH_ANONYMOUS_HIDE_VERSION=true
+      # No way to become anything but that anonymous viewer from behind nginx: no login form, no basic
+      # auth, no plugin admin. (nginx also strips Cookie and Authorization, so no session or service
+      # account token reaches it.) Admin work: docker exec hyperprox-grafana grafana cli admin ...
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+      - GF_AUTH_BASIC_ENABLED=false
+      - GF_PLUGINS_PLUGIN_ADMIN_ENABLED=false
       - GF_SECURITY_ALLOW_EMBEDDING=true
       - GF_SECURITY_COOKIE_SAMESITE=disabled
-      # The Monitoring page embeds Grafana, and an http iframe on the https app is blocked as mixed content.
-      # So the installer serves it through nginx at https://<host>/grafana/ by setting these in .env. Unset,
-      # Grafana answers at the root of :3003 exactly as before (these defaults are Grafana's own).
+      # The Monitoring page embeds Grafana from the same origin, at https://<host>/grafana/: the installer
+      # (and bin/hyperprox-config for older installs) sets these in .env. Unset, Grafana answers at the root
+      # of 127.0.0.1:3003, which nginx does not serve (these defaults are Grafana's own).
       - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-%(protocol)s://%(domain)s:%(http_port)s/}
       - GF_SERVER_SERVE_FROM_SUB_PATH=${GRAFANA_SERVE_FROM_SUB_PATH:-false}
     volumes:
       - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana_data:/var/lib/grafana
-    ports:
-      - "3003:3003"
-    networks:
-      - hyperprox-net
 
   pve-exporter:
     image: prompve/prometheus-pve-exporter:latest
@@ -186,20 +202,8 @@ services:
       # Under data/, so it is gitignored; an empty or missing directory means loopback only.
       - ./data/nginx/trusted-proxies:/etc/nginx/trusted-proxies:ro
 
-  nginx-proxy-manager:
-    image: jc21/nginx-proxy-manager:latest
-    container_name: hyperprox-npm
-    restart: unless-stopped
-    profiles: [npm]
-    ports:
-      - "80:80"
-      - "81:81"
-      - "443:443"
-    volumes:
-      - npm_data:/data
-      - npm_letsencrypt:/etc/letsencrypt
-    networks:
-      - hyperprox-net
+  # There is no bundled Nginx Proxy Manager: it needs ports 80 and 443, which nginx above holds, so it could
+  # never start. Install NPM into its own container from the Catalogue instead.
 
 networks:
   hyperprox-net:
@@ -210,6 +214,4 @@ volumes:
   redis_data:
   vault_data:
   grafana_data:
-  npm_data:
-  npm_letsencrypt:
   ollama_data:

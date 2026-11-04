@@ -2,6 +2,8 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { PluginCards } from '@/components/plugins/PluginCards'
+import { apiJson, atLeast } from '@/lib/api'
+import { useSession } from '@/lib/session'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -26,7 +28,8 @@ interface NodeStat {
   txKBs?: number
 }
 
-const GRAFANA = process.env.NEXT_PUBLIC_GRAFANA_URL || 'http://localhost:3003'
+// Same origin, through nginx, which lets only signed-in users through (Grafana itself is on loopback).
+const GRAFANA = process.env.NEXT_PUBLIC_GRAFANA_URL || '/grafana'
 const DASHBOARDS = [
   { uid: 'hyperprox-cluster', title: 'Cluster Overview', orgId: 1, vars: '' },
   { uid: 'hyperprox-plugins', title: 'Plug-ins',         orgId: 1, vars: '' },
@@ -79,6 +82,63 @@ function Bar({ value, color }: { value: number; color: string }) {
   return (
     <div style={{ position: 'relative', height: 4, background: 'var(--border)', borderRadius: 2, overflow: 'hidden' }}>
       <div style={{ position: 'absolute', left: 0, top: 0, height: '100%', width: `${pct}%`, background: c, borderRadius: 2, transition: 'width 0.5s' }} />
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// The PVE exporter's read-only token (Grafana's Proxmox panels read through it)
+// ---------------------------------------------------------------------------
+interface ExporterStatus { configured: boolean; tokenId?: string; readOnly: boolean | null; reasons?: string[]; checkError?: string }
+
+function PveExporterPanel() {
+  const { role } = useSession()
+  const [st, setSt]       = useState<ExporterStatus | null>(null)
+  const [busy, setBusy]   = useState(false)
+  const [msg, setMsg]     = useState<{ ok: boolean; text: string } | null>(null)
+  // Proxmox says the token is not read-only: the next press asks for a fresh one.
+  const [fresh, setFresh] = useState(false)
+
+  const load = useCallback(async () => {
+    const r = await apiJson<{ data: ExporterStatus }>('/api/monitoring/pve-exporter')
+    if (r.ok && r.body) { setSt(r.body.data); setFresh(r.body.data.readOnly === false && !!r.body.data.configured) }
+  }, [])
+  useEffect(() => { load() }, [load])
+
+  // Nothing to say once Proxmox confirms the exporter's token is read-only.
+  if (!st || (st.configured && st.readOnly === true && !msg)) return null
+
+  const setup = async () => {
+    setBusy(true); setMsg(null)
+    const r = await apiJson<{ data: { tokenId: string; restarted: boolean } }>('/api/monitoring/pve-exporter', 'POST', fresh ? { fresh: true } : undefined)
+    setBusy(false)
+    if (r.ok && r.body) {
+      setMsg({ ok: true, text: `Read-only token ${r.body.data.tokenId} is in place${r.body.data.restarted ? ' and the exporter was restarted' : ''}. Proxmox panels fill in within a minute.` })
+      setFresh(false)
+      load()
+    } else {
+      if (r.code === 'not_read_only') setFresh(true)
+      setMsg({ ok: false, text: r.error || 'Could not set up the token' })
+    }
+  }
+
+  const why = !st.configured
+    ? 'The PVE exporter has no Proxmox token yet, so Grafana\'s Proxmox panels are empty.'
+    : st.readOnly === false
+      ? `The PVE exporter signs in as ${st.tokenId}, which is not read-only: ${(st.reasons ?? []).join('; ')}.`
+      : `The PVE exporter signs in as ${st.tokenId}; Proxmox could not be asked whether it is read-only (${st.checkError ?? 'unknown'}).`
+  return (
+    <div style={{ marginBottom: 16, padding: '12px 16px', borderRadius: 8, border: '1px solid var(--border-soft)', background: 'var(--surface-notice)', display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+      <div style={{ flex: '1 1 320px', fontSize: 14, color: msg ? (msg.ok ? 'var(--good)' : 'var(--crit)') : 'var(--text-soft)' }}>
+        {msg ? msg.text : why}
+        {!msg && !atLeast(role, 'admin') && ' An admin can set up a read-only token here.'}
+      </div>
+      {atLeast(role, 'admin') && !(msg && msg.ok) && (
+        <button onClick={setup} disabled={busy}
+          style={{ padding: '6px 14px', borderRadius: 6, border: '1px solid color-mix(in srgb, var(--accent) 35%, transparent)', background: 'color-mix(in srgb, var(--accent) 10%, transparent)', color: 'var(--accent)', fontSize: 14, fontWeight: 600, cursor: busy ? 'wait' : 'pointer' }}>
+          {busy ? 'Setting up…' : fresh ? 'Make a fresh read-only token' : 'Set up Proxmox metrics'}
+        </button>
+      )}
     </div>
   )
 }
@@ -327,7 +387,8 @@ export default function MonitoringPage() {
       {/* ------------------------------------------------------------------ */}
       {/* TAB: GRAFANA                                                         */}
       {/* ------------------------------------------------------------------ */}
-      {tab === 'grafana' && (
+      {tab === 'grafana' && (<>
+        <PveExporterPanel />
         <div>
           {/* Dashboard selector */}
           <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
@@ -368,7 +429,7 @@ export default function MonitoringPage() {
             />
           </div>
         </div>
-      )}
+      </>)}
 
       {/* ------------------------------------------------------------------ */}
       {/* TAB: ALERTS                                                          */}

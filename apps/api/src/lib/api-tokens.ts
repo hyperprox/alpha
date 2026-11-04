@@ -242,14 +242,18 @@ export type CreateTokenInput = z.input<typeof createTokenInput>
  */
 export async function createApiToken(
   input: CreateTokenInput, createdBy: string, s: ApiTokenStore = apiTokenStore(), now = Date.now(),
+  /** Host-side callers only (never a request body): an expiry shorter than a day, in milliseconds. */
+  opts: { expiresInMs?: number } = {},
 ): Promise<{ token: string; record: ApiTokenRecord }> {
   const parsed = createTokenInput.safeParse(input)
   if (!parsed.success) throw new ApiTokenInputError(parsed.error.issues.map(i => i.message).join('; '))
   const { name, role, expiresDays } = parsed.data
+  if (opts.expiresInMs !== undefined && !(opts.expiresInMs > 0)) throw new ApiTokenInputError('expiresInMs must be positive')
   const token = generateToken()
   const record = await s.create({
     name, role, tokenHash: hashToken(token), createdBy,
-    expiresAt: expiresDays ? new Date(now + expiresDays * 86_400_000) : null,
+    expiresAt: opts.expiresInMs !== undefined ? new Date(now + opts.expiresInMs)
+      : expiresDays ? new Date(now + expiresDays * 86_400_000) : null,
   })
   await s.audit('api_token.create', name, { id: record.id, role, by: createdBy, expiresAt: iso(record.expiresAt) })
   return { token, record }

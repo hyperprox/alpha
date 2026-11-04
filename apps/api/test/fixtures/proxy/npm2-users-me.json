@@ -1,0 +1,13 @@
+{
+ "id": 1,
+ "created_on": "2026-11-04 16:40:12",
+ "modified_on": "2026-11-04 16:40:12",
+ "is_disabled": false,
+ "email": "admin@example.invalid",
+ "name": "Administrator",
+ "nickname": "Admin",
+ "avatar": "",
+ "roles": [
+  "admin"
+ ]
+}
