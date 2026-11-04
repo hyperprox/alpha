@@ -42,7 +42,12 @@ export interface CatalogueRecipe {
   expectStatus: number[]
   /** Runs under Docker, in an unprivileged container with nesting only. */
   needsDocker: boolean
-  defaults:    { cores: number; memoryMb: number; diskGb: number }
+  /** What the wizard pre-fills: the recommended size. */
+  defaults:    { cores: number; memoryMb: number; diskGb: number; swapMb?: number }
+  /** Below this it may not start or will struggle; the wizard warns, it does not refuse. */
+  minimum:     { cores: number; memoryMb: number; diskGb: number }
+  /** Needs a GPU on its node. Placement otherwise keeps GPU nodes free. */
+  needsGpu?:   boolean
   /** Shown before anything runs, so the choice is informed. */
   firstLogin?: string
   notes?:      string[]
@@ -73,7 +78,8 @@ export const CATALOGUE: CatalogueRecipe[] = [
     healthPath: '/',
     expectStatus: [200],
     needsDocker: true,
-    defaults: { cores: 2, memoryMb: 1024, diskGb: 8 },
+    defaults: { cores: 2, memoryMb: 1024, diskGb: 8, swapMb: 512 },
+    minimum: { cores: 1, memoryMb: 512, diskGb: 8 },
     firstRun: { kind: 'none' },
     wizard: false,
     firstLogin: 'admin@example.com / changeme — it forces a change on first sign-in.',
@@ -106,7 +112,8 @@ export const CATALOGUE: CatalogueRecipe[] = [
     healthPath: '/api/tags',
     expectStatus: [200],
     needsDocker: false,
-    defaults: { cores: 4, memoryMb: 8192, diskGb: 40 },
+    defaults: { cores: 4, memoryMb: 8192, diskGb: 40, swapMb: 1024 },
+    minimum: { cores: 2, memoryMb: 4096, diskGb: 20 },
     firstRun: { kind: 'none' },
     wizard: false,
     notes: [
@@ -146,7 +153,8 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
     needsDocker: true,
     firstRun: { kind: 'none' },
     wizard: false,
-    defaults: { cores: 1, memoryMb: 512, diskGb: 8 },
+    defaults: { cores: 1, memoryMb: 512, diskGb: 8, swapMb: 512 },
+    minimum: { cores: 1, memoryMb: 512, diskGb: 8 },
     firstLogin: 'It asks you to create an account on first open, then for your Plex server.',
     notes: [
       'Point it at your existing Plex server during its own setup — HyperProx does not do that part, because only you know which server and which token.',
@@ -177,7 +185,8 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
     healthPath: '/status.php',
     expectStatus: [200],
     needsDocker: true,
-    defaults: { cores: 2, memoryMb: 2048, diskGb: 20 },
+    defaults: { cores: 2, memoryMb: 2048, diskGb: 20, swapMb: 512 },
+    minimum: { cores: 1, memoryMb: 1024, diskGb: 10 },
     firstRun: { kind: 'setup-url', path: '/' },
     wizard: true,
     install: { kind: 'compose', dir: '/opt/app', compose: `services:
@@ -196,7 +205,8 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
     healthPath: '/health',
     expectStatus: [200],
     needsDocker: true,
-    defaults: { cores: 4, memoryMb: 2048, diskGb: 20 },
+    defaults: { cores: 4, memoryMb: 2048, diskGb: 20, swapMb: 512 },
+    minimum: { cores: 2, memoryMb: 1024, diskGb: 10 },
     firstRun: { kind: 'setup-url', path: '/' },
     wizard: true,
     install: { kind: 'compose', dir: '/opt/app', compose: `services:
@@ -215,7 +225,8 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
     healthPath: '/alive',
     expectStatus: [200],
     needsDocker: true,
-    defaults: { cores: 1, memoryMb: 512, diskGb: 8 },
+    defaults: { cores: 1, memoryMb: 512, diskGb: 8, swapMb: 512 },
+    minimum: { cores: 1, memoryMb: 512, diskGb: 8 },
     // Sign-ups are off, so a published server is not open to anyone who finds it. The owner signs in to
     // /admin with the generated token (shown once, kept in the vault) and invites users from there.
     firstRun: { kind: 'env-admin', passwordEnv: 'ADMIN_TOKEN', user: '/admin' },
@@ -243,7 +254,8 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
     healthPath: '/',
     expectStatus: [200],
     needsDocker: true,
-    defaults: { cores: 2, memoryMb: 1024, diskGb: 12 },
+    defaults: { cores: 2, memoryMb: 1024, diskGb: 12, swapMb: 512 },
+    minimum: { cores: 1, memoryMb: 512, diskGb: 8 },
     firstRun: { kind: 'setup-url', path: '/' },
     wizard: true,
     install: { kind: 'compose', dir: '/opt/app', compose: `services:
@@ -262,7 +274,8 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
     healthPath: '/',
     expectStatus: [200, 302],
     needsDocker: true,
-    defaults: { cores: 1, memoryMb: 512, diskGb: 8 },
+    defaults: { cores: 1, memoryMb: 512, diskGb: 8, swapMb: 512 },
+    minimum: { cores: 1, memoryMb: 512, diskGb: 8 },
     firstRun: { kind: 'setup-url', path: '/' },
     wizard: true,
     install: { kind: 'compose', dir: '/opt/app', compose: `services:
@@ -281,7 +294,8 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
     healthPath: '/',
     expectStatus: [200],
     needsDocker: true,
-    defaults: { cores: 1, memoryMb: 512, diskGb: 8 },
+    defaults: { cores: 1, memoryMb: 512, diskGb: 8, swapMb: 512 },
+    minimum: { cores: 1, memoryMb: 512, diskGb: 8 },
     firstRun: { kind: 'none' },
     wizard: true,
     // Current images answer only a Host listed in HOMEPAGE_ALLOWED_HOSTS; anything else, the health
@@ -305,7 +319,8 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
     healthPath: '/api/health',
     expectStatus: [200],
     needsDocker: true,
-    defaults: { cores: 2, memoryMb: 512, diskGb: 8 },
+    defaults: { cores: 2, memoryMb: 512, diskGb: 8, swapMb: 512 },
+    minimum: { cores: 1, memoryMb: 512, diskGb: 8 },
     firstRun: { kind: 'env-admin', passwordEnv: 'GF_SECURITY_ADMIN_PASSWORD', user: 'admin' },
     // Not offered to the wizard until phase 5's first-run lock exists: the wizard cannot hand a
     // generated admin password back to the person who asked, and a service nobody can sign in to

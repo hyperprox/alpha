@@ -148,3 +148,355 @@ export function isHostAddress(ip: string, gateway: string, prefix: number): bool
   if (n === base || n === base + size - 1) return false
   return n !== toInt(gateway)
 }
+
+// =============================================================================
+//  Placement scoring, shared by the Catalogue wizard and the AI deploy path
+//
+//  One function decides "where should this go", so the two places that create
+//  containers cannot disagree. It scores each node on what is left after the
+//  install, not on what is free now, and says in words why a node was passed
+//  over: a greyed-out row with no reason is a puzzle.
+// =============================================================================
+
+/** A node as placement sees it. Fields that could not be read are left undefined and score as neutral. */
+export interface PlacementNode {
+  node:           string
+  online:         boolean
+  cores:          number
+  /** Proxmox's CPU fraction, 0..1. */
+  cpuLoad?:       number
+  memTotalMb:     number
+  memUsedMb:      number
+  runningGuests?: number
+  /** Holds a discrete GPU (seen on the PCI bus, or passed through to a guest). */
+  hasGpu?:        boolean
+  /** false when no node login is stored; installs run with pct exec from the node. */
+  hasLogin?:      boolean
+}
+
+/** A storage on one node. */
+export interface PlacementStorage {
+  storage: string; node: string; type: string; content: string[]
+  active: boolean; shared: boolean; freeGb: number; totalGb?: number
+}
+
+export interface PlacementNeed {
+  cores: number; memoryMb: number; diskGb: number
+  needsGpu?: boolean
+  /** A storage the person chose; otherwise the best one on each node. */
+  storage?: string
+}
+
+export interface NodeVerdict {
+  node:           string
+  eligible:       boolean
+  /** Why it cannot take this install, in words. Empty when eligible. */
+  why:            string[]
+  /** What counted against it although it is eligible. */
+  notes:          string[]
+  score:          number
+  storage:        PlacementStorage | null
+  freeMemAfterMb: number
+}
+
+export const PLACEMENT = Object.freeze({
+  /** Keep this share of a node's RAM free after the install. */
+  memHeadroom:      0.2,
+  /** A rootfs needs this multiple of its size free on the storage. */
+  diskHeadroom:     1.2,
+  headroomPenalty:  30,
+  gpuPenalty:       25,
+  guestPenaltyEach: 0.5,
+  guestPenaltyMax:  10,
+})
+
+// Higher is a better home for a container rootfs: block storage before file shares, and a file share
+// that cannot hold POSIX ownership (CIFS) last of all.
+export const ROOT_STORAGE_RANK: Record<string, number> = {
+  rbd: 5, zfspool: 4, lvmthin: 3, lvm: 3, btrfs: 3, dir: 2, nfs: 1, cifs: 0,
+}
+/** Shared storage lets HA start the guest on another node, so it is preferred. */
+const SHARED_BONUS = 2.5
+
+function storageRank(s: PlacementStorage): number {
+  return (ROOT_STORAGE_RANK[s.type] ?? 1) + (s.shared && s.type !== 'cifs' ? SHARED_BONUS : 0)
+}
+
+/** Storages on `node` that can hold a container rootfs, best first: shared, then block, then room. */
+export function rootStorages(storages: PlacementStorage[], node: string): PlacementStorage[] {
+  return storages.filter(s => s.node === node && s.active && s.content.includes('rootdir'))
+    .sort((a, b) => storageRank(b) - storageRank(a) || b.freeGb - a.freeGb)
+}
+
+/** The storage this install would use on `node`, or why there is none. */
+export function storageFor(
+  storages: PlacementStorage[], node: string, diskGb: number, wanted?: string,
+): { storage: PlacementStorage | null; why?: string } {
+  const need = Math.ceil(diskGb * PLACEMENT.diskHeadroom)
+  const roots = rootStorages(storages, node)
+  if (wanted) {
+    const s = roots.find(x => x.storage === wanted)
+    if (!s) return { storage: null, why: `${wanted} is not a container storage on this node` }
+    if (s.freeGb < need) return { storage: null, why: `${wanted} has ${s.freeGb} GB free, this needs ${need} GB` }
+    return { storage: s }
+  }
+  if (!roots.length) return { storage: null, why: 'no storage here can hold containers' }
+  const s = roots.find(x => x.freeGb >= need)
+  if (!s) return { storage: null, why: `no container storage has the ${need} GB free this needs` }
+  return { storage: s }
+}
+
+const clamp01 = (x: number) => Math.max(0, Math.min(1, x))
+
+/** Every node, scored for this install. Eligible nodes first, best first. */
+export function scoreNodes(nodes: PlacementNode[], storages: PlacementStorage[], need: PlacementNeed): NodeVerdict[] {
+  const out = nodes.map((n): NodeVerdict => {
+    const why: string[] = []
+    const notes: string[] = []
+    const freeAfter = n.memTotalMb - n.memUsedMb - need.memoryMb
+    const v: NodeVerdict = { node: n.node, eligible: false, why, notes, score: 0, storage: null, freeMemAfterMb: freeAfter }
+
+    if (!n.online) { why.push('offline'); return v }
+    if (n.hasLogin === false) why.push('no node login stored, so nothing can be installed here')
+    if (freeAfter < 0) {
+      why.push(`not enough RAM: ${Math.max(0, n.memTotalMb - n.memUsedMb)} MB free, this needs ${need.memoryMb} MB`)
+    }
+    if (n.cores > 0 && need.cores > n.cores) why.push(`has ${n.cores} cores, this asks for ${need.cores}`)
+    if (need.needsGpu && !n.hasGpu) why.push('no GPU, and this app needs one')
+    const st = storageFor(storages, n.node, need.diskGb, need.storage)
+    v.storage = st.storage
+    if (!st.storage) why.push(`not enough disk: ${st.why}`)
+    if (why.length) return v
+
+    let score = 0
+    // RAM left after the install: as a share of the node, and in absolute terms (32 GB counts as plenty).
+    score += 25 * clamp01(freeAfter / n.memTotalMb) + 15 * clamp01(freeAfter / 32768)
+    if (freeAfter < n.memTotalMb * PLACEMENT.memHeadroom) {
+      score -= PLACEMENT.headroomPenalty
+      notes.push(`would leave less than ${Math.round(PLACEMENT.memHeadroom * 100)}% of its RAM free`)
+    }
+    // CPU headroom; unknown load scores as half busy.
+    score += 20 * (n.cpuLoad === undefined ? 0.5 : 1 - clamp01(n.cpuLoad))
+    // Room on the storage beyond this install (250 GB counts as plenty), and shared storage for HA.
+    const s = st.storage!
+    score += 15 * clamp01((s.freeGb - need.diskGb) / 250)
+    if (s.shared && s.type !== 'cifs') score += 10
+    else notes.push('local storage only, so HA cannot move it to another node')
+    if (n.hasGpu && !need.needsGpu) {
+      score -= PLACEMENT.gpuPenalty
+      notes.push('holds a GPU this app does not need')
+    }
+    const guests = n.runningGuests ?? 0
+    const busy = Math.min(PLACEMENT.guestPenaltyMax, guests * PLACEMENT.guestPenaltyEach)
+    if (busy >= 2) notes.push(`already runs ${guests} guests`)
+    score -= busy
+
+    v.score = Math.round(score * 10) / 10
+    v.eligible = true
+    return v
+  })
+  return out.sort((a, b) => Number(b.eligible) - Number(a.eligible) || b.score - a.score || a.node.localeCompare(b.node))
+}
+
+const gb = (mb: number) => `${(mb / 1024).toFixed(1)} GB`
+
+/** The top pick and one line saying why, or null when no node can take it. */
+export function recommend(
+  verdicts: NodeVerdict[], nodes: PlacementNode[],
+): { node: string; reason: string; storage: string } | null {
+  const ok = verdicts.filter(v => v.eligible)
+  const top = ok[0]
+  if (!top) return null
+  const byName = new Map(nodes.map(n => [n.node, n]))
+  const parts: string[] = []
+  const mostRam = ok.every(v => v.freeMemAfterMb <= top.freeMemAfterMb)
+  parts.push(`${mostRam && ok.length > 1 ? 'most free RAM after install' : 'RAM free after install'} (${gb(top.freeMemAfterMb)})`)
+  const s = top.storage!
+  parts.push(s.shared && s.type !== 'cifs' ? `shared storage (${s.storage})` : `local storage (${s.storage})`)
+  const load = byName.get(top.node)?.cpuLoad
+  if (ok.length > 1 && load !== undefined && ok.every(v => (byName.get(v.node)?.cpuLoad ?? 1) >= load)) {
+    parts.push(`lightest CPU load (${Math.round(load * 100)}%)`)
+  }
+  if (!byName.get(top.node)?.hasGpu && nodes.some(n => n.hasGpu && n.online)) parts.push('keeps the GPU node free')
+  return { node: top.node, reason: `${top.node}: ${parts.join(', ')}`, storage: s.storage }
+}
+
+// ── GPU detection ──────────────────────────────────────────────────────────
+
+/**
+ * True when a guest config passes a GPU through: a VM's hostpciN, or a container given NVIDIA device
+ * nodes (devN or a cgroup allow for major 195). /dev/dri alone is not counted: integrated graphics are
+ * common and nothing to keep free.
+ */
+export function configUsesGpu(config: Record<string, unknown> | null | undefined): boolean {
+  if (!config) return false
+  for (const [k, v] of Object.entries(config)) {
+    if (/^hostpci\d+$/.test(k)) return true
+    const text = typeof v === 'string' ? v : Array.isArray(v) ? JSON.stringify(v) : ''
+    if (/^dev\d+$/.test(k) && /\/dev\/nvidia/.test(text)) return true
+    if (k === 'lxc' && /devices\.allow[^\]]*c\s+195:|\/dev\/nvidia/.test(text)) return true
+  }
+  return false
+}
+
+/** True when `/nodes/{node}/hardware/pci` lists an NVIDIA display controller (class 0x03xxxx). */
+export function pciHasDiscreteGpu(pci: unknown): boolean {
+  if (!Array.isArray(pci)) return false
+  return pci.some((d: any) => /^0x03/i.test(String(d?.class ?? '')) && /^0x10de$/i.test(String(d?.vendor ?? '')))
+}
+
+// =============================================================================
+//  Container IDs
+// =============================================================================
+
+/** The lowest legal ID at or above `from` that no guest (CT or VM) has. */
+export function nextFreeVmid(used: Iterable<number>, from = VMID_MIN): number {
+  const taken = new Set(Array.from(used, Number))
+  let n = Math.max(VMID_MIN, Math.floor(from))
+  while (taken.has(n)) n++
+  return n
+}
+
+export type VmidRule = { kind: 'next-free' } | { kind: 'pattern'; pattern: string }
+
+const TOKEN = /\{(node_digit|ip_last2|ip_last3)\}/g
+
+/** Why a pattern is not usable, or null when it is. Tokens: {node_digit}, {ip_last2}, {ip_last3}; digits otherwise. */
+export function patternProblem(pattern: string): string | null {
+  const p = String(pattern ?? '').trim()
+  if (!p) return 'The pattern is empty.'
+  if (p.length > 40) return 'The pattern is too long.'
+  if (!/\{(node_digit|ip_last2|ip_last3)\}/.test(p)) return 'The pattern needs at least one of {node_digit}, {ip_last2} or {ip_last3}.'
+  const rest = p.replace(TOKEN, '')
+  if (!/^\d*$/.test(rest)) return 'Outside the {tokens}, a pattern may contain only digits.'
+  if (/\{ip_last2\}.*\{ip_last3\}|\{ip_last3\}.*\{ip_last2\}/.test(p)) return 'Use {ip_last2} or {ip_last3}, not both.'
+  for (const t of ['node_digit', 'ip_last2', 'ip_last3']) {
+    if (p.split(`{${t}}`).length > 2) return `Use {${t}} once.`
+  }
+  return null
+}
+
+/** The trailing number in a node name ("node-3" → "3"), or null when it ends in none. */
+export function nodeDigit(node: string): string | null {
+  return /(\d+)$/.exec(String(node ?? ''))?.[1] ?? null
+}
+
+/** The last `n` digits of an IPv4 address's final octet, zero-padded (".5" → "05"), or null when not an address. */
+export function ipLastDigits(ip: string, n: 2 | 3): string | null {
+  const c = parseCidr(ip.includes('/') ? ip : `${ip}/32`)
+  if (!c) return null
+  return c.ip.split('.')[3].padStart(3, '0').slice(-n)
+}
+
+/** The ID a pattern gives for this node and address, or why it gives none. */
+export function deriveVmid(pattern: string, at: { node: string; ip?: string }): { vmid: number } | { error: string } {
+  const bad = patternProblem(pattern)
+  if (bad) return { error: bad }
+  let missing = ''
+  const s = pattern.trim().replace(TOKEN, (_m, t: string) => {
+    if (t === 'node_digit') {
+      const d = nodeDigit(at.node)
+      if (d === null) missing ||= `${at.node} has no trailing number to use as {node_digit}.`
+      return d ?? ''
+    }
+    if (!at.ip) { missing ||= 'Pick a static address first: this pattern uses the IP.'; return '' }
+    const d = ipLastDigits(at.ip, t === 'ip_last2' ? 2 : 3)
+    if (d === null) missing ||= `${at.ip} is not an IPv4 address.`
+    return d ?? ''
+  })
+  if (missing) return { error: missing }
+  const vmid = Number(s)
+  if (!Number.isSafeInteger(vmid) || vmid < VMID_MIN || vmid > VMID_MAX) {
+    return { error: `The pattern gives ${s}, which is not a legal ID (${VMID_MIN} to ${VMID_MAX}).` }
+  }
+  return { vmid }
+}
+
+/**
+ * The other direction: which node and which final-octet digits an ID stands for. `nodes` are the names to
+ * match {node_digit} against; the first that fits wins. `octetDigits` is undefined when the pattern has no IP.
+ */
+export function reverseVmid(
+  pattern: string, vmid: number, nodes: string[],
+): { node?: string; octetDigits?: string; width?: 2 | 3 } | { error: string } {
+  const bad = patternProblem(pattern)
+  if (bad) return { error: bad }
+  const id = String(vmid)
+  const candidates = /\{node_digit\}/.test(pattern) ? nodes.filter(n => nodeDigit(n) !== null) : [undefined]
+  for (const node of candidates) {
+    let width: 2 | 3 | undefined
+    const re = pattern.trim().replace(TOKEN, (_m, t: string) => {
+      if (t === 'node_digit') return `(?<nd>${nodeDigit(node!)})`
+      width = t === 'ip_last2' ? 2 : 3
+      return `(?<ip>\\d{${width}})`
+    })
+    const m = new RegExp(`^${re}$`).exec(id)
+    if (m) return { node, octetDigits: m.groups?.ip, width }
+  }
+  return { error: `${vmid} does not fit the pattern ${pattern} for any node.` }
+}
+
+/**
+ * `base` with its final octet's last digits replaced (".205" with "42" → ".242"). The digits above them come
+ * from `base`. null when the result is not an address.
+ */
+export function withOctetDigits(base: string, digits: string, width: 2 | 3): string | null {
+  const c = parseCidr(base.includes('/') ? base : `${base}/32`)
+  if (!c || !/^\d+$/.test(digits) || digits.length !== width) return null
+  const o = c.ip.split('.')
+  const last = Number(o[3].padStart(3, '0').slice(0, 3 - width) + digits)
+  if (last > 255) return null
+  o[3] = String(last)
+  return o.join('.')
+}
+
+// =============================================================================
+//  Address collisions
+// =============================================================================
+
+export interface IpSighting {
+  ip: string
+  /** Who has it: a guest ID, or a node name. */
+  vmid?: number
+  node?: string
+  name?: string
+  source: 'config' | 'live' | 'node' | 'ping'
+}
+
+/** IPv4 addresses from an LXC `/interfaces` answer or a QEMU agent `network-get-interfaces` answer. */
+export function liveAddresses(answer: unknown): string[] {
+  const list: any[] = Array.isArray(answer) ? answer : Array.isArray((answer as any)?.result) ? (answer as any).result : []
+  const out: string[] = []
+  for (const f of list) {
+    if (typeof f?.inet === 'string') out.push(f.inet.split('/')[0])
+    for (const a of Array.isArray(f?.['ip-addresses']) ? f['ip-addresses'] : []) {
+      if (a?.['ip-address-type'] === 'ipv4' && typeof a['ip-address'] === 'string') out.push(a['ip-address'])
+    }
+  }
+  return out.filter(ip => parseCidr(`${ip}/32`) && !ip.startsWith('127.'))
+}
+
+/** Everyone already using `ip`: guest configs, addresses guests report while running, and the nodes themselves. */
+export function ipConflicts(ip: string, known: {
+  configs: Array<{ vmid: number; name?: string; config: Record<string, unknown> | null }>
+  live?:   Array<{ vmid: number; name?: string; addresses: string[] }>
+  nodes?:  Array<{ node: string; ip?: string }>
+}): IpSighting[] {
+  const out: IpSighting[] = []
+  for (const g of known.configs) {
+    if (configAddresses(g.config).includes(ip)) out.push({ ip, vmid: g.vmid, name: g.name, source: 'config' })
+  }
+  for (const g of known.live ?? []) {
+    if (g.addresses.includes(ip) && !out.some(o => o.vmid === g.vmid)) out.push({ ip, vmid: g.vmid, name: g.name, source: 'live' })
+  }
+  for (const n of known.nodes ?? []) if (n.ip === ip) out.push({ ip, node: n.node, source: 'node' })
+  return out
+}
+
+/** One sentence for a sighting. */
+export function describeSighting(s: IpSighting): string {
+  if (s.source === 'node') return `${s.ip} is the address of node ${s.node}.`
+  if (s.source === 'ping') return `Something on the network already answers on ${s.ip}.`
+  const who = `guest ${s.vmid}${s.name ? ` (${s.name})` : ''}`
+  return s.source === 'config' ? `${s.ip} is set in the config of ${who}.` : `${s.ip} is in use right now by ${who}.`
+}
