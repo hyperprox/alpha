@@ -38,8 +38,14 @@ export interface InstallJob {
   /** Who started it, as ownerOf() names them; only they can read it. '' is nobody, and nobody can. */
   owner:    string
   recipeId: string
-  /** 'interrupted': HyperProx restarted while it was running. Its container may exist; clean-up checks. */
-  status:   'running' | 'completed' | 'failed' | 'interrupted'
+  /**
+   * 'interrupted': HyperProx restarted while its create mark was held, so its container may exist and clean-up
+   * is offered (the mark checks decide). 'unknown': the store said running but had no create mark, so how it
+   * ended cannot be told; no clean-up is offered, because it may be a finished, working service.
+   */
+  status:   'running' | 'completed' | 'failed' | 'interrupted' | 'unknown'
+  /** Set when the job's final state could not be saved to the store. */
+  storeError?: string
   steps:    InstallStep[]
   /** Live output from the recipe, so a five-minute apt run is not a blank screen. */
   log:      string
@@ -131,21 +137,41 @@ function pve(): ProxmoxClient {
 function step(job: InstallJob, id: string): InstallStep {
   const s = job.steps.find(x => x.id === id)!
   s.status = 'running'
-  void persistJob(job)
+  void persistJob(job).catch(() => {})
   return s
 }
 
 /** How long a finished job is kept, in the store and in memory, so its result and clean-up stay reachable. */
 export const JOB_KEEP_MS = 7 * 24 * 3600_000
 
+/** Each job's writes, chained so they reach the store in the order they were made. */
+const CHAINS = new Map<string, Promise<void>>()
+
 /**
- * Write the job to the store, best effort: an install is not failed because Postgres blinked. The log is kept
- * short there; the live tail stays in memory.
+ * Whether a job's row may be pruned after JOB_KEEP_MS: only when nothing it made can still be out there.
+ * Finished jobs, cleaned or confirmed-gone ones, and failed ones that created nothing. A job whose container
+ * may exist (running, interrupted, failed after creating, or of unknown outcome) is kept until it is cleaned up.
  */
-export async function persistJob(job: InstallJob): Promise<void> {
-  const data = { ...job, log: job.log.slice(-4000) }
-  await wizardStore().put({ id: job.jobId, kind: 'job', owner: job.owner, data, expiresAt: new Date(job.startedAt + JOB_KEEP_MS) })
-    .catch(() => {})
+export function jobPrunable(job: Pick<InstallJob, 'status' | 'created' | 'removed'>): boolean {
+  if (job.removed) return true
+  if (job.status === 'completed') return true
+  return job.status === 'failed' && !job.created
+}
+
+/**
+ * Write the job to the store. Writes for one job are chained, so a slow early write can never land after a
+ * later one. The log is kept short there; the live tail stays in memory. The promise rejects when the write
+ * fails: the final write is awaited and its failure recorded on the job, never swallowed.
+ */
+export function persistJob(job: InstallJob): Promise<void> {
+  const data = structuredClone({ ...job, log: job.log.slice(-4000) })
+  const expiresAt = jobPrunable(job) ? new Date(job.startedAt + JOB_KEEP_MS) : null
+  const prev = CHAINS.get(job.jobId) ?? Promise.resolve()
+  const write = prev.then(() => wizardStore().put({ id: job.jobId, kind: 'job', owner: job.owner, data, expiresAt }))
+  const tail = write.catch(() => {})
+  CHAINS.set(job.jobId, tail)
+  void tail.then(() => { if (CHAINS.get(job.jobId) === tail) CHAINS.delete(job.jobId) })
+  return write
 }
 
 // ---------------------------------------------------------------------------
@@ -284,6 +310,7 @@ export async function startInstall(opts: {
   }
   const target = await preflight(deps, opts.intoVmid)
   const job = newJob(recipe, opts.owner ?? '', `Use CT ${opts.intoVmid}`)
+  void persistJob(job).catch(() => {})
   void runJob(job, recipe, deps, async () => {
     job.vmid = target.vmid; job.node = target.node
     const cfg = await deps.client.fetchNode<any>(`/nodes/${target.node}/lxc/${target.vmid}/config`).catch(() => null)
@@ -302,7 +329,6 @@ function newJob(recipe: CatalogueRecipe, owner: string, first: string): InstallJ
     steps: STEPS(recipe, first),
   }
   JOBS.set(job.jobId, job)
-  void persistJob(job)
   return job
 }
 
@@ -358,7 +384,7 @@ async function runJob(
       const createdByJob = before !== null && Object.keys(before).length === 0
       await deps.saveSecrets('apps', provider, { admin_user: admin.user, admin_password: admin.password })
       job.vaultItem = { category: 'apps', provider, createdByJob }
-      await persistJob(job)
+      await persistJob(job).catch(() => {})
     }
     const run = await deps.exec({
       host: nodeIp, cred, vmid: job.vmid!, script: installScript(recipe, distro, env),
@@ -401,7 +427,11 @@ async function runJob(
     if (running) { running.status = 'failed'; running.detail = e.message }
   } finally {
     job.finishedAt = Date.now()
-    await persistJob(job)
+    try { await persistJob(job) }
+    catch (e: any) {
+      job.storeError = `The result of this install could not be saved: ${e.message}. After a restart HyperProx will not know how it ended.`
+      console.error(`[catalogue] job ${job.jobId}: ${job.storeError}`)
+    }
     await Promise.resolve(onSettled()).catch(() => {})
   }
 }
@@ -476,10 +506,11 @@ export interface InstallPlan {
   /** The template is not on the node yet and is downloaded first. */
   downloadTemplate?: boolean
   /**
-   * The person ticked "I checked this address": some sources could not be read (a guest that could not be
-   * asked, the node list), so the static address could not be proven free by HyperProx alone.
+   * The person ticked "I checked this address" for exactly these unknowns (live:<vmid>, cluster-status): some
+   * sources could not be read, so the static address could not be proven free by HyperProx alone. A tick
+   * covers only what it lists; anything more unknown at apply is refused and asked again.
    */
-  addressAck?: boolean
+  addressAck?: string[]
   unprivileged: true
 }
 
@@ -703,6 +734,8 @@ export interface AddressCheck {
   problems: string[]
   /** What could not be checked, in words. Non-empty means "unknown", never "free". */
   unknowns: string[]
+  /** The same, as keys (live:<vmid>, cluster-status): what a tick is given for. */
+  unknownKeys: string[]
   /** true: something answered a ping. false: nothing did. null: no ping was sent. */
   pinged:   boolean | null
 }
@@ -775,7 +808,7 @@ export async function checkIdentity(input: {
     const c = parseCidr(staticIp)
     const pinged = ping && c && !a.problems.length ? await ping(input.node, c.ip).catch(() => null) : null
     if (pinged) a.problems.push(describeSighting({ ip: c!.ip, source: 'ping' }))
-    out.ip = { value: staticIp, problems: a.problems, unknowns: a.unknowns, pinged }
+    out.ip = { value: staticIp, problems: a.problems, unknowns: a.unknowns, unknownKeys: a.unknownKeys, pinged }
   }
   return out
 }
@@ -800,10 +833,10 @@ function nameGuests(list: Array<{ vmid: number; name: string; why: string }>): s
  */
 function addressProblems(
   cidr: string, gateway: string | undefined, bridge: BridgeView | undefined, view: ClusterView, live: LiveRead,
-): { problems: string[]; unknowns: string[] } {
+): { problems: string[]; unknowns: string[]; unknownKeys: string[] } {
   const c = parseCidr(cidr)
-  if (!c) return { problems: [`"${cidr}" is not an address with a prefix, like 192.0.2.50/24.`], unknowns: [] }
-  const out: string[] = [], unknowns: string[] = []
+  if (!c) return { problems: [`"${cidr}" is not an address with a prefix, like 192.0.2.50/24.`], unknowns: [], unknownKeys: [] }
+  const out: string[] = [], unknowns: string[] = [], unknownKeys: string[] = []
   if (gateway) {
     if (!parseCidr(`${gateway}/32`)) out.push(`"${gateway}" is not an IPv4 address.`)
     else if (!sameSubnet(c.ip, gateway, c.prefix)) out.push(`${gateway} is not on the ${c.ip}/${c.prefix} network.`)
@@ -811,9 +844,13 @@ function addressProblems(
   }
   const unread = view.partial.filter(p => p.startsWith('config:'))
   if (unread.length) out.push(`HyperProx could not read every guest's settings (${unread.length} unread), so it cannot promise ${c.ip} is free.`)
-  if (view.partial.includes('cluster-status')) unknowns.push(`The nodes' own addresses could not be read, so ${c.ip} may be a node's address.`)
+  if (view.partial.includes('cluster-status')) {
+    unknowns.push(`The nodes' own addresses could not be read, so ${c.ip} may be a node's address.`)
+    unknownKeys.push('cluster-status')
+  }
   if (live.unknown.length) {
     unknowns.push(`These running guests could not be asked which address they hold: ${nameGuests(live.unknown)}.`)
+    unknownKeys.push(...live.unknown.map(u => `live:${u.vmid}`))
   }
   const seen: IpSighting[] = ipConflicts(c.ip, {
     configs: view.guests.map(g => ({ vmid: g.vmid, name: g.name, config: g.config })),
@@ -824,7 +861,7 @@ function addressProblems(
     const b = parseCidr(bridge.cidr)
     if (b && !sameSubnet(c.ip, b.ip, b.prefix)) out.push(`${c.ip} is not on ${bridge.iface}'s network (${bridge.cidr}).`)
   }
-  return { problems: out, unknowns }
+  return { problems: out, unknowns, unknownKeys }
 }
 
 /** The address facts that were proven, in words that claim no more than was checked. */
@@ -844,7 +881,7 @@ const DNS_LIST = /^\s*\d{1,3}(\.\d{1,3}){3}(\s*[ ,]\s*\d{1,3}(\.\d{1,3}){3})*\s*
 
 /** Every value of a plan held against the cluster as it is now. Errors refuse; warnings are shown. */
 export function checkPlan(
-  input: WizardInput & { addressAck?: boolean }, recipe: CatalogueRecipe, view: ClusterView,
+  input: WizardInput & { addressAck?: string[] }, recipe: CatalogueRecipe, view: ClusterView,
   live: LiveRead, pinged: boolean | null,
 ): { errors: string[]; warnings: string[]; checks: string[]; unknowns: string[] } {
   const errors: string[] = [], warnings: string[] = [], checks: string[] = [], unknowns: string[] = []
@@ -930,9 +967,14 @@ export function checkPlan(
       errors.push(...a.problems)
       if (pinged) errors.push(describeSighting({ ip: c.ip, source: 'ping' }))
       unknowns.push(...a.unknowns)
-      if (a.unknowns.length && !input.addressAck) {
+      const acked = Array.isArray(input.addressAck) ? input.addressAck : []
+      const fresh = a.unknownKeys.filter(k => !acked.includes(k))
+      if (a.unknownKeys.length && !acked.length) {
         errors.push(`HyperProx could not check everything about ${c.ip}. ${a.unknowns.join(' ')} ` +
                     'Check it yourself, then tick "I checked this address" to go ahead.')
+      } else if (fresh.length) {
+        errors.push(`HyperProx found more could not be checked than when you ticked (${fresh.join(', ')}). ${a.unknowns.join(' ')} ` +
+                    'Look at the address again, and tick again if it is still free.')
       } else if (a.unknowns.length) {
         warnings.push(`You confirmed you checked ${c.ip} yourself. Not checked by HyperProx: ${a.unknowns.join(' ')}`)
       }
@@ -971,7 +1013,7 @@ export class WizardRefusal extends Error {
 
 /** Check a plan against the cluster now and hold it, server-side, under an id. Nothing is created. */
 export async function previewInstall(
-  input: WizardInput & { addressAck?: boolean }, owner: string, over: Partial<WizardDeps> = {},
+  input: WizardInput & { addressAck?: string[] }, owner: string, over: Partial<WizardDeps> = {},
 ): Promise<{ preview?: Preview; errors: string[]; warnings: string[]; checks: string[]; unknowns?: string[] }> {
   const deps = wizardDeps(over)
   const recipe = findRecipe(input.recipeId)
@@ -1003,7 +1045,7 @@ export async function previewInstall(
       storage: input.storage, bridge: input.bridge, ip: input.ip,
       ...(input.ip !== 'dhcp' && input.gateway ? { gateway: input.gateway } : {}),
       ...(input.dns ? { dns: input.dns.trim().split(/[\s,]+/).join(' ') } : {}),
-      ...(input.ip !== 'dhcp' && input.addressAck ? { addressAck: true } : {}),
+      ...(input.ip !== 'dhcp' && input.addressAck?.length ? { addressAck: [...input.addressAck].sort() } : {}),
       template: t.template, ...(t.download ? { downloadTemplate: true } : {}), unprivileged: true,
     },
   }
@@ -1060,8 +1102,10 @@ export async function applyPreview(id: string, owner: string, over: Partial<Wiza
     const job = newJob(recipe, owner, `Create CT ${plan.vmid} (${plan.hostname}) on ${plan.node}`)
     job.vmid = plan.vmid; job.node = plan.node
     const markId = `creating:${plan.vmid}`
-    // The mark is written before the create: after a restart it says this job may have made a container.
+    // The job row first, then the mark, then the create. After a restart the mark says this job may have
+    // made a container, and there is always a job row for it to point at.
     try {
+      await persistJob(job)
       await store.put({ id: markId, kind: 'creating', owner, data: { jobId: job.jobId, vmid: plan.vmid, node: plan.node }, expiresAt: null })
     } catch (e: any) {
       CREATING.delete(plan.vmid)
@@ -1069,7 +1113,7 @@ export async function applyPreview(id: string, owner: string, over: Partial<Wiza
       throw new WizardRefusal(`HyperProx could not record the install, so nothing was created: ${e.message}`, 'changed')
     }
     void runJob(job, recipe, deps, async () => {
-      await createFromPlan(plan, recipe, job.jobId, deps.client, () => { job.created = true; void persistJob(job) })
+      await createFromPlan(plan, recipe, job.jobId, deps.client, () => { job.created = true; void persistJob(job).catch(() => {}) })
       await waitRunning(deps, plan.node, plan.vmid)
       const distro = distroOf(plan.template)
       if (!distro) throw new Error(`${plan.template} is neither Debian nor Ubuntu.`)
@@ -1090,32 +1134,40 @@ export async function applyPreview(id: string, owner: string, over: Partial<Wiza
 export const isCreating = (vmid: number) => CREATING.has(vmid)
 
 /**
- * After an API restart: a job that was running is marked interrupted, and if its "creating" mark is still
- * there it may have made a container, so clean-up is offered (the mark checks still decide). Expired
- * previews and old jobs are pruned. Call once at start-up, before routes serve.
+ * After an API restart. A job the store says was running is marked interrupted, and offered for clean-up, only
+ * when its create mark survived: the mark is held from before the create until the job settles, so it is the
+ * one record that says the job was really cut off. A running row without a mark (a final write that was lost)
+ * may be a finished, working service: it comes back as "outcome unknown", with no clean-up. Expired previews
+ * and prunable old jobs are deleted. Call once at start-up, before routes serve.
  */
-export async function restoreWizardState(now = Date.now()): Promise<{ interrupted: number; restored: number }> {
+export async function restoreWizardState(now = Date.now()): Promise<{ interrupted: number; unknown: number; restored: number }> {
   const store = wizardStore()
   await store.pruneExpired(new Date(now))
   const marks = new Map((await store.list('creating')).map(m => [String(m.data?.jobId), m]))
-  let interrupted = 0
+  let interrupted = 0, unknown = 0
   const jobs = await store.list('job')
   for (const r of jobs) {
     const job = r.data as InstallJob
     if (job.status === 'running') {
-      job.status = 'interrupted'
-      job.error = 'HyperProx restarted while this install was running. Its container may exist half-made.'
       for (const st of job.steps) if (st.status === 'running') { st.status = 'failed'; st.detail = 'interrupted by a restart' }
-      if (marks.has(job.jobId)) job.created = true
       job.finishedAt = now
-      interrupted++
+      if (marks.has(job.jobId)) {
+        job.status = 'interrupted'
+        job.created = true
+        job.error = 'HyperProx restarted while this install was running. Its container may exist half-made.'
+        interrupted++
+      } else {
+        job.status = 'unknown'
+        job.error = `HyperProx restarted and could not tell how this install ended${job.vmid ? `. Check CT ${job.vmid} on ${job.node} yourself` : ''}.`
+        unknown++
+      }
       await persistJob(job)
     }
     JOBS.set(job.jobId, job)
   }
   // No job is running after a restart, so no ID is being created.
   for (const m of marks.values()) await store.delete(m.id).catch(() => {})
-  return { interrupted, restored: jobs.length }
+  return { interrupted, unknown, restored: jobs.length }
 }
 
 /** The caller's installs that left a container behind and can be cleaned up: failed or interrupted, not removed. */
@@ -1146,7 +1198,7 @@ export async function removeFailedInstall(jobId: string, owner: string, over: Pa
   if (!here) {
     job.removed = true
     const msg = `CT ${job.vmid} no longer exists, so there was nothing to remove.${await removeVaultItem(job, deps)}`
-    await persistJob(job)
+    await persistJob(job).catch(() => {})
     return msg
   }
   if (here.node !== job.node || here.type !== 'lxc') {
@@ -1174,7 +1226,7 @@ export async function removeFailedInstall(jobId: string, owner: string, over: Pa
   if ((left ?? []).some((r: any) => Number(r?.vmid) === job.vmid)) throw new Error(`CT ${job.vmid} is still listed after the removal.`)
   job.removed = true
   const msg = `CT ${job.vmid} was removed from ${job.node}.${await removeVaultItem(job, deps)}`
-  await persistJob(job)
+  await persistJob(job).catch(() => {})
   return msg
 }
 
