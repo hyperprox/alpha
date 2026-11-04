@@ -48,6 +48,8 @@ export interface CatalogueRecipe {
   minimum:     { cores: number; memoryMb: number; diskGb: number }
   /** Needs a GPU on its node. Placement otherwise keeps GPU nodes free. */
   needsGpu?:   boolean
+  /** Works better with any GPU, integrated included (hardware transcoding). Placement prefers one. */
+  wantsGpu?:   boolean
   /** Shown before anything runs, so the choice is informed. */
   firstLogin?: string
   notes?:      string[]
@@ -205,6 +207,7 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
     healthPath: '/health',
     expectStatus: [200],
     needsDocker: true,
+    wantsGpu: true,
     defaults: { cores: 4, memoryMb: 2048, diskGb: 20, swapMb: 512 },
     minimum: { cores: 2, memoryMb: 1024, diskGb: 10 },
     firstRun: { kind: 'setup-url', path: '/' },
