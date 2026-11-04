@@ -1,0 +1,38 @@
+{
+ "admin": {
+  "listen": "0.0.0.0:2019"
+ },
+ "apps": {
+  "http": {
+   "servers": {
+    "srv0": {
+     "listen": [
+      ":80"
+     ],
+     "routes": [
+      {
+       "handle": [
+        {
+         "handler": "reverse_proxy",
+         "upstreams": [
+          {
+           "dial": "192.0.2.38:9000"
+          }
+         ]
+        }
+       ],
+       "match": [
+        {
+         "host": [
+          "legacy-caddy.hpx.invalid"
+         ]
+        }
+       ],
+       "terminal": true
+      }
+     ]
+    }
+   }
+  }
+ }
+}
