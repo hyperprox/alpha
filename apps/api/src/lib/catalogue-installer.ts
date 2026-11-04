@@ -14,7 +14,7 @@ import { findRecipe, type CatalogueRecipe } from './catalogue'
 import { installScript, distroOf, hostEnv, type Distro } from './install-script'
 import {
   pickTemplate, pickDownloadable, scoreNodes, recommend, rootStorages, excludedRootStorages, configGpuKind, pciGpus, ROOTFS_EXCLUDED,
-  nextFreeVmid, deriveVmid, reverseVmid, withOctetDigits, patternProblem, parseCidr, isHostAddress, sameSubnet,
+  nextFreeVmid, deriveVmid, reverseVmid, octetFromDigits, patternProblem, parseCidr, isHostAddress, sameSubnet,
   ipConflicts, liveAddresses, describeSighting,
   type PlacementNode, type PlacementStorage, type NodeVerdict, type VmidRule, type IpSighting,
 } from './wizard-placement'
@@ -25,6 +25,7 @@ import type { ExecResult } from './node-exec'
 import { setCredential, setCredentials, getProviderCredentials, vaultWritable, deleteProviderCredentials } from './credentials'
 import { saveSettings, getSettings } from './plugin-host'
 import { PLUGINS } from '../plugins'
+import { wizardStore } from './catalogue-store'
 
 export type Phase = 'pending' | 'running' | 'done' | 'failed' | 'skipped'
 
@@ -37,7 +38,8 @@ export interface InstallJob {
   /** Who started it, as ownerOf() names them; only they can read it. '' is nobody, and nobody can. */
   owner:    string
   recipeId: string
-  status:   'running' | 'completed' | 'failed'
+  /** 'interrupted': HyperProx restarted while it was running. Its container may exist; clean-up checks. */
+  status:   'running' | 'completed' | 'failed' | 'interrupted'
   steps:    InstallStep[]
   /** Live output from the recipe, so a five-minute apt run is not a blank screen. */
   log:      string
@@ -129,7 +131,21 @@ function pve(): ProxmoxClient {
 function step(job: InstallJob, id: string): InstallStep {
   const s = job.steps.find(x => x.id === id)!
   s.status = 'running'
+  void persistJob(job)
   return s
+}
+
+/** How long a finished job is kept, in the store and in memory, so its result and clean-up stay reachable. */
+export const JOB_KEEP_MS = 7 * 24 * 3600_000
+
+/**
+ * Write the job to the store, best effort: an install is not failed because Postgres blinked. The log is kept
+ * short there; the live tail stays in memory.
+ */
+export async function persistJob(job: InstallJob): Promise<void> {
+  const data = { ...job, log: job.log.slice(-4000) }
+  await wizardStore().put({ id: job.jobId, kind: 'job', owner: job.owner, data, expiresAt: new Date(job.startedAt + JOB_KEEP_MS) })
+    .catch(() => {})
 }
 
 // ---------------------------------------------------------------------------
@@ -286,6 +302,7 @@ function newJob(recipe: CatalogueRecipe, owner: string, first: string): InstallJ
     steps: STEPS(recipe, first),
   }
   JOBS.set(job.jobId, job)
+  void persistJob(job)
   return job
 }
 
@@ -296,6 +313,7 @@ function newJob(recipe: CatalogueRecipe, owner: string, first: string): InstallJ
 async function runJob(
   job: InstallJob, recipe: CatalogueRecipe, deps: InstallDeps,
   container: () => Promise<{ distro: Distro; ip?: string }>,
+  onSettled: () => Promise<void> | void = () => {},
 ): Promise<void> {
   try {
     // 1. A container to put it in.
@@ -340,6 +358,7 @@ async function runJob(
       const createdByJob = before !== null && Object.keys(before).length === 0
       await deps.saveSecrets('apps', provider, { admin_user: admin.user, admin_password: admin.password })
       job.vaultItem = { category: 'apps', provider, createdByJob }
+      await persistJob(job)
     }
     const run = await deps.exec({
       host: nodeIp, cred, vmid: job.vmid!, script: installScript(recipe, distro, env),
@@ -382,6 +401,8 @@ async function runJob(
     if (running) { running.status = 'failed'; running.detail = e.message }
   } finally {
     job.finishedAt = Date.now()
+    await persistJob(job)
+    await Promise.resolve(onSettled()).catch(() => {})
   }
 }
 
@@ -454,6 +475,11 @@ export interface InstallPlan {
   template: string
   /** The template is not on the node yet and is downloaded first. */
   downloadTemplate?: boolean
+  /**
+   * The person ticked "I checked this address": some sources could not be read (a guest that could not be
+   * asked, the node list), so the static address could not be proven free by HyperProx alone.
+   */
+  addressAck?: boolean
   unprivileged: true
 }
 
@@ -480,9 +506,17 @@ export interface WizardDeps extends InstallDeps {
 }
 
 export const PREVIEW_TTL_MS = 10 * 60_000
-const PREVIEWS = new Map<string, Preview>()
-/** IDs an apply is creating right now, so two applies cannot race to the same one. */
+/** Open previews kept at once, across everyone. Beyond it a new preview is refused until some expire. */
+export const PREVIEW_CAP = 200
+/** Swap ceiling: twice the RAM, and never more than 8 GB. */
+export const swapCeiling = (memoryMb: number) => Math.min(Math.max(0, memoryMb) * 2, 8192)
+/**
+ * IDs an apply is creating, held from the create until its job settles, so two applies cannot race to one.
+ * Mirrored in the store (kind "creating"), so after a restart an interrupted job is known to have maybe created.
+ */
 const CREATING = new Set<number>()
+/** Preview ids being applied right now: checked and set with no await between, so a preview applies once. */
+const APPLYING = new Set<string>()
 
 const RULE_CATEGORY = 'catalogue', RULE_PROVIDER = 'wizard', RULE_KEY = 'vmid_rule'
 
@@ -607,20 +641,40 @@ export async function readCluster(
   return { nodes, storages, guests, partial, ...(nextId && Number.isSafeInteger(nextId) ? { nextId } : {}) }
 }
 
-/** Addresses running guests report: LXC interfaces, and the QEMU guest agent where it is enabled. */
-export async function readLiveAddresses(
-  client: Pick<CreatePVE, 'fetchStrict'>, guests: GuestView[],
-): Promise<Array<{ vmid: number; name: string; addresses: string[] }>> {
+/** What running guests report, and which could not be asked. */
+export interface LiveRead {
+  seen:    Array<{ vmid: number; name: string; addresses: string[] }>
+  /** Running guests whose live address is unknown: the read failed, or a VM has no guest agent. */
+  unknown: Array<{ vmid: number; name: string; why: 'no guest agent' | 'read failed' }>
+}
+
+/**
+ * Addresses running guests report: LXC interfaces, and the QEMU guest agent where it is enabled. A read that
+ * fails, and a running VM with no agent, are unknown, never "no address": either may hold the address.
+ */
+export async function readLiveAddresses(client: Pick<CreatePVE, 'fetchStrict'>, guests: GuestView[]): Promise<LiveRead> {
   const enc = encodeURIComponent
-  const running = guests.filter(g => g.status === 'running' &&
-    (g.type === 'lxc' || /^(1|enabled=1)/.test(String(g.config?.agent ?? ''))))
-  return mapLimit(running, 8, async g => {
+  const out: LiveRead = { seen: [], unknown: [] }
+  const running = guests.filter(g => g.status === 'running')
+  for (const g of running) {
+    if (g.type === 'qemu' && !/^(1|enabled=1)/.test(String(g.config?.agent ?? ''))) out.unknown.push({ vmid: g.vmid, name: g.name, why: 'no guest agent' })
+  }
+  const asked = running.filter(g => g.type === 'lxc' || /^(1|enabled=1)/.test(String(g.config?.agent ?? '')))
+  await mapLimit(asked, 8, async g => {
     const path = g.type === 'lxc'
       ? `/nodes/${enc(g.node)}/lxc/${g.vmid}/interfaces`
       : `/nodes/${enc(g.node)}/qemu/${g.vmid}/agent/network-get-interfaces`
     const answer = await client.fetchStrict<unknown>(path, 'GET', undefined, 8000).catch(() => null)
-    return { vmid: g.vmid, name: g.name, addresses: liveAddresses(answer) }
+    if (answer == null) out.unknown.push({ vmid: g.vmid, name: g.name, why: 'read failed' })
+    else out.seen.push({ vmid: g.vmid, name: g.name, addresses: liveAddresses(answer) })
   })
+  out.unknown.sort((a, b) => a.vmid - b.vmid)
+  return out
+}
+
+/** Name the unknown live reads in `view.partial` as live:<vmid>, so every source that was not read is listed. */
+export function notePartial(view: ClusterView, live: LiveRead): void {
+  for (const u of live.unknown) if (!view.partial.includes(`live:${u.vmid}`)) view.partial.push(`live:${u.vmid}`)
 }
 
 export interface Need { cores: number; memoryMb: number; diskGb: number; storage?: string }
@@ -643,6 +697,16 @@ const usedIds = (view: ClusterView) => view.guests.map(g => g.vmid)
 /** The next ID no CT or VM has, from where the cluster's own next-ID range starts. */
 export const nextIdOf = (view: ClusterView) => nextFreeVmid(usedIds(view), view.nextId ?? 100)
 
+export interface AddressCheck {
+  value:    string
+  /** Reasons the address cannot be used. */
+  problems: string[]
+  /** What could not be checked, in words. Non-empty means "unknown", never "free". */
+  unknowns: string[]
+  /** true: something answered a ping. false: nothing did. null: no ping was sent. */
+  pinged:   boolean | null
+}
+
 export interface IdentityAnswer {
   /** The ID to offer: the rule's, or the next free one. */
   suggestedVmid:  number
@@ -650,17 +714,23 @@ export interface IdentityAnswer {
   vmid?:          { value: number; free: boolean; problem?: string }
   /** With the pattern rule: the ID the node and address give. */
   derived?:       { vmid?: number; taken?: boolean; problem?: string }
-  /** With the pattern rule and an ID typed in: the node and address it stands for. */
-  reverse?:       { node?: string; ip?: string; problem?: string }
-  ip?:            { value: string; problems: string[]; pinged: boolean | null }
+  /**
+   * With the pattern rule and an ID typed in: the node and address it stands for. `nodes` lists every node the
+   * ID fits; with more than one, `node` is left unset and the person picks.
+   */
+  reverse?:       { node?: string; nodes?: string[]; ip?: string; problem?: string }
+  ip?:            AddressCheck
   bridges:        BridgeView[]
 }
 
-/** What the identity step shows as the person types: ID suggestion, the pattern both ways, address checks. */
+/**
+ * What the identity step shows as the person types: ID suggestion, the pattern both ways, address checks.
+ * `ping` is passed only when the person pressed "Check address"; typing never sends one.
+ */
 export async function checkIdentity(input: {
   node: string; bridge?: string; vmid?: number; ip?: string; gateway?: string
-}, view: ClusterView, rule: VmidRule, live: Array<{ vmid: number; name: string; addresses: string[] }>,
-  ping: (node: string, ip: string) => Promise<boolean | null>,
+}, view: ClusterView, rule: VmidRule, live: LiveRead,
+  ping?: (node: string, ip: string) => Promise<boolean | null>,
 ): Promise<IdentityAnswer> {
   const used = usedIds(view)
   const node = view.nodes.find(n => n.node === input.node)
@@ -679,11 +749,21 @@ export async function checkIdentity(input: {
       const r = reverseVmid(rule.pattern, input.vmid, view.nodes.map(n => n.node))
       if ('error' in r) out.reverse = { problem: r.error }
       else {
-        const base = staticIp ?? bridge?.gateway ?? bridge?.cidr
-        const ip = r.octetDigits && r.width && base ? withOctetDigits(base.split('/')[0], r.octetDigits, r.width) : undefined
+        // The digits go into the bridge's own address (its network), not the gateway's: a gateway at .1 would
+        // turn ID x42 into .42 when the network's guests are at .2xx.
+        const base = staticIp ?? bridge?.cidr ?? bridge?.gateway
         const prefix = bridge?.prefix ?? (staticIp ? parseCidr(staticIp)?.prefix : undefined)
-        out.reverse = { node: r.node, ...(ip ? { ip: prefix ? `${ip}/${prefix}` : ip } : {}),
-          ...(r.octetDigits && !ip ? { problem: 'The ID gives address digits, but there is no address on the bridge to put them in.' } : {}) }
+        let ip: string | undefined, problem: string | undefined
+        if (r.octetDigits && r.width) {
+          if (!base) problem = 'The ID gives address digits, but the bridge has no address to put them in.'
+          else {
+            const o = octetFromDigits(base.split('/')[0], r.octetDigits, r.width)
+            if ('ip' in o) ip = prefix ? `${o.ip}/${prefix}` : o.ip
+            else problem = o.error
+          }
+        }
+        if (!problem && r.nodes && r.nodes.length > 1) problem = `ID ${input.vmid} fits more than one node (${r.nodes.join(', ')}). Pick the node.`
+        out.reverse = { ...(r.node ? { node: r.node } : {}), ...(r.nodes ? { nodes: r.nodes } : {}), ...(ip ? { ip } : {}), ...(problem ? { problem } : {}) }
       }
     }
   }
@@ -691,11 +771,11 @@ export async function checkIdentity(input: {
   if (typeof input.vmid === 'number') out.vmid = idVerdict(input.vmid, used)
 
   if (staticIp) {
-    const problems = addressProblems(staticIp, input.gateway, bridge, view, live)
+    const a = addressProblems(staticIp, input.gateway, bridge, view, live)
     const c = parseCidr(staticIp)
-    const pinged = c && !problems.length ? await ping(input.node, c.ip).catch(() => null) : null
-    if (pinged) problems.push(describeSighting({ ip: c!.ip, source: 'ping' }))
-    out.ip = { value: staticIp, problems, pinged }
+    const pinged = ping && c && !a.problems.length ? await ping(input.node, c.ip).catch(() => null) : null
+    if (pinged) a.problems.push(describeSighting({ ip: c!.ip, source: 'ping' }))
+    out.ip = { value: staticIp, problems: a.problems, unknowns: a.unknowns, pinged }
   }
   return out
 }
@@ -708,14 +788,22 @@ function idVerdict(vmid: number, used: number[]): { value: number; free: boolean
   return { value: vmid, free: true }
 }
 
-/** Why a static address cannot be used here, in words. Empty when nothing is wrong with it. */
+/** "101 (web, no guest agent), 102 (read failed)" — at most eight named. */
+function nameGuests(list: Array<{ vmid: number; name: string; why: string }>): string {
+  const shown = list.slice(0, 8).map(u => `${u.vmid}${u.name ? ` (${u.name}, ${u.why})` : ` (${u.why})`}`).join(', ')
+  return list.length > 8 ? `${shown} and ${list.length - 8} more` : shown
+}
+
+/**
+ * Why a static address cannot be used here, and what could not be checked. A source that was not read is
+ * an unknown: it never counts as "nobody has it".
+ */
 function addressProblems(
-  cidr: string, gateway: string | undefined, bridge: BridgeView | undefined, view: ClusterView,
-  live: Array<{ vmid: number; name: string; addresses: string[] }>,
-): string[] {
+  cidr: string, gateway: string | undefined, bridge: BridgeView | undefined, view: ClusterView, live: LiveRead,
+): { problems: string[]; unknowns: string[] } {
   const c = parseCidr(cidr)
-  if (!c) return [`"${cidr}" is not an address with a prefix, like 192.0.2.50/24.`]
-  const out: string[] = []
+  if (!c) return { problems: [`"${cidr}" is not an address with a prefix, like 192.0.2.50/24.`], unknowns: [] }
+  const out: string[] = [], unknowns: string[] = []
   if (gateway) {
     if (!parseCidr(`${gateway}/32`)) out.push(`"${gateway}" is not an IPv4 address.`)
     else if (!sameSubnet(c.ip, gateway, c.prefix)) out.push(`${gateway} is not on the ${c.ip}/${c.prefix} network.`)
@@ -723,15 +811,31 @@ function addressProblems(
   }
   const unread = view.partial.filter(p => p.startsWith('config:'))
   if (unread.length) out.push(`HyperProx could not read every guest's settings (${unread.length} unread), so it cannot promise ${c.ip} is free.`)
+  if (view.partial.includes('cluster-status')) unknowns.push(`The nodes' own addresses could not be read, so ${c.ip} may be a node's address.`)
+  if (live.unknown.length) {
+    unknowns.push(`These running guests could not be asked which address they hold: ${nameGuests(live.unknown)}.`)
+  }
   const seen: IpSighting[] = ipConflicts(c.ip, {
     configs: view.guests.map(g => ({ vmid: g.vmid, name: g.name, config: g.config })),
-    live, nodes: view.nodes.map(n => ({ node: n.node, ip: n.address })),
+    live: live.seen, nodes: view.nodes.map(n => ({ node: n.node, ip: n.address })),
   })
   for (const s of seen) out.push(describeSighting(s))
   if (bridge?.cidr && !gateway) {
     const b = parseCidr(bridge.cidr)
     if (b && !sameSubnet(c.ip, b.ip, b.prefix)) out.push(`${c.ip} is not on ${bridge.iface}'s network (${bridge.cidr}).`)
   }
+  return { problems: out, unknowns }
+}
+
+/** The address facts that were proven, in words that claim no more than was checked. */
+function addressChecks(ip: string, node: string, view: ClusterView, live: LiveRead, pinged: boolean | null): string[] {
+  const out = [`${ip} is in no guest config.`]
+  out.push(live.unknown.length
+    ? `Of the running guests HyperProx could ask, none reports ${ip}; ${live.unknown.length} could not be asked.`
+    : `No running guest reports ${ip}.`)
+  out.push(view.partial.includes('cluster-status') ? 'The nodes\' own addresses could not be read.' : `${ip} is no node's address.`)
+  out.push(pinged === false ? `Nothing answered a ping to ${ip} from ${node} (a firewalled device would not).`
+    : `${ip} was not pinged from ${node}.`)
   return out
 }
 
@@ -740,10 +844,10 @@ const DNS_LIST = /^\s*\d{1,3}(\.\d{1,3}){3}(\s*[ ,]\s*\d{1,3}(\.\d{1,3}){3})*\s*
 
 /** Every value of a plan held against the cluster as it is now. Errors refuse; warnings are shown. */
 export function checkPlan(
-  input: WizardInput, recipe: CatalogueRecipe, view: ClusterView,
-  live: Array<{ vmid: number; name: string; addresses: string[] }>, pinged: boolean | null,
-): { errors: string[]; warnings: string[]; checks: string[] } {
-  const errors: string[] = [], warnings: string[] = [], checks: string[] = []
+  input: WizardInput & { addressAck?: boolean }, recipe: CatalogueRecipe, view: ClusterView,
+  live: LiveRead, pinged: boolean | null,
+): { errors: string[]; warnings: string[]; checks: string[]; unknowns: string[] } {
+  const errors: string[] = [], warnings: string[] = [], checks: string[] = [], unknowns: string[] = []
   const int = (x: unknown) => typeof x === 'number' && Number.isSafeInteger(x)
   const node = view.nodes.find(n => n.node === input.node)
 
@@ -758,12 +862,16 @@ export function checkPlan(
   else if (node && node.cores > 0 && input.cores > node.cores) errors.push(`${node.node} has ${node.cores} cores; ${input.cores} were asked for.`)
   if (!int(input.memoryMb) || input.memoryMb < 64) errors.push('RAM must be a whole number of MB, at least 64.')
   if (!int(input.swapMb) || input.swapMb < 0) errors.push('Swap must be a whole number of MB, 0 or more.')
+  else if (int(input.memoryMb) && input.swapMb > swapCeiling(input.memoryMb)) {
+    errors.push(`Swap can be at most ${swapCeiling(input.memoryMb)} MB here: twice the RAM, and never more than 8 GB.`)
+  }
   if (!int(input.diskGb) || input.diskGb < 1) errors.push('Disk must be a whole number of GB, at least 1.')
   const min = recipe.minimum
   if (int(input.cores) && input.cores < min.cores) warnings.push(`${input.cores} cores is below the ${min.cores} ${recipe.name} needs.`)
   if (int(input.memoryMb) && input.memoryMb < min.memoryMb) warnings.push(`${input.memoryMb} MB RAM is below the ${min.memoryMb} MB ${recipe.name} needs.`)
   if (int(input.diskGb) && input.diskGb < min.diskGb) warnings.push(`${input.diskGb} GB disk is below the ${min.diskGb} GB ${recipe.name} needs.`)
-  if (recipe.needsGpu && node && !node.hasGpu && !node.hasIgpu) warnings.push(`${recipe.name} wants a GPU and ${node.node} has none HyperProx can see.`)
+  // The same rule placement greys a node out by: a recipe that needs a GPU is refused on a node without one.
+  if (recipe.needsGpu && node && !node.hasGpu && !node.hasIgpu) errors.push(`${recipe.name} needs a GPU and ${node.node} has none HyperProx can see.`)
 
   // Room on the node and the storage, now.
   if (node?.online && int(input.memoryMb)) {
@@ -818,20 +926,23 @@ export function checkPlan(
     if (!c) errors.push(`"${input.ip}" is not an address with a prefix, like 192.0.2.50/24.`)
     else {
       if (!input.gateway) warnings.push('No gateway: the container can reach only its own network.')
-      const problems = addressProblems(input.ip, input.gateway, bridge, view, live)
-      errors.push(...problems)
+      const a = addressProblems(input.ip, input.gateway, bridge, view, live)
+      errors.push(...a.problems)
       if (pinged) errors.push(describeSighting({ ip: c.ip, source: 'ping' }))
-      if (!problems.length) {
-        checks.push(`${c.ip} is in no guest config, no running guest reports it, and it is no node's address.`)
-        checks.push(pinged === false ? `Nothing answered a ping to ${c.ip} from ${input.node} (a firewalled device would not).`
-          : pinged === null ? `${c.ip} could not be pinged from ${input.node}; only the cluster's own records were checked.` : '')
+      unknowns.push(...a.unknowns)
+      if (a.unknowns.length && !input.addressAck) {
+        errors.push(`HyperProx could not check everything about ${c.ip}. ${a.unknowns.join(' ')} ` +
+                    'Check it yourself, then tick "I checked this address" to go ahead.')
+      } else if (a.unknowns.length) {
+        warnings.push(`You confirmed you checked ${c.ip} yourself. Not checked by HyperProx: ${a.unknowns.join(' ')}`)
       }
+      if (!a.problems.length) checks.push(...addressChecks(c.ip, input.node, view, live, pinged))
     }
   }
   if (input.dns && !DNS_LIST.test(input.dns)) errors.push(`"${input.dns}" is not a list of IPv4 DNS servers.`)
   else if (input.dns && input.dns.split(/[\s,]+/).some(d => !parseCidr(`${d}/32`))) errors.push(`"${input.dns}" holds an address that is not IPv4.`)
 
-  return { errors, warnings, checks: checks.filter(Boolean) }
+  return { errors, warnings, checks: checks.filter(Boolean), unknowns }
 }
 
 /** The template to create from on `node`: the newest Debian (then Ubuntu) there, or one to download. */
@@ -860,8 +971,8 @@ export class WizardRefusal extends Error {
 
 /** Check a plan against the cluster now and hold it, server-side, under an id. Nothing is created. */
 export async function previewInstall(
-  input: WizardInput, owner: string, over: Partial<WizardDeps> = {},
-): Promise<{ preview?: Preview; errors: string[]; warnings: string[]; checks: string[] }> {
+  input: WizardInput & { addressAck?: boolean }, owner: string, over: Partial<WizardDeps> = {},
+): Promise<{ preview?: Preview; errors: string[]; warnings: string[]; checks: string[]; unknowns?: string[] }> {
   const deps = wizardDeps(over)
   const recipe = findRecipe(input.recipeId)
   if (!recipe) return { errors: [`No recipe called ${input.recipeId}.`], warnings: [], checks: [] }
@@ -869,6 +980,12 @@ export async function previewInstall(
   // Before anything is read: a plan that cannot keep its generated password is not worth placing.
   if (recipe.firstRun.kind === 'env-admin' && !await deps.vaultOpen()) {
     return { errors: [`${recipe.name} gets a generated admin password, which is saved in the vault, and the vault is locked. Sign in to unlock it.`], warnings: [], checks: [] }
+  }
+  const store = wizardStore()
+  const now = deps.now()
+  await store.pruneExpired(new Date(now))
+  if (await store.count('preview') >= PREVIEW_CAP) {
+    return { errors: [`There are already ${PREVIEW_CAP} open install previews. Wait ten minutes for them to expire.`], warnings: [], checks: [] }
   }
   const { view, live, pinged } = await freshRead(input, deps)
   const r = checkPlan(input, recipe, view, live, pinged)
@@ -878,8 +995,6 @@ export async function previewInstall(
   if (t.download) r.warnings.push(`The template ${t.template.split('/').pop()} is downloaded to ${input.node} first.`)
   r.checks.push(`Created from ${t.template.split('/').pop()}.`)
 
-  const now = deps.now()
-  for (const [k, p] of PREVIEWS) if (p.expiresAt < now - PREVIEW_TTL_MS) PREVIEWS.delete(k)
   const preview: Preview = {
     id: randomUUID(), owner, checks: r.checks, warnings: r.warnings, createdAt: now, expiresAt: now + PREVIEW_TTL_MS, used: false,
     plan: {
@@ -888,23 +1003,27 @@ export async function previewInstall(
       storage: input.storage, bridge: input.bridge, ip: input.ip,
       ...(input.ip !== 'dhcp' && input.gateway ? { gateway: input.gateway } : {}),
       ...(input.dns ? { dns: input.dns.trim().split(/[\s,]+/).join(' ') } : {}),
+      ...(input.ip !== 'dhcp' && input.addressAck ? { addressAck: true } : {}),
       template: t.template, ...(t.download ? { downloadTemplate: true } : {}), unprivileged: true,
     },
   }
-  PREVIEWS.set(preview.id, preview)
+  await store.put({ id: preview.id, kind: 'preview', owner, data: preview, expiresAt: new Date(preview.expiresAt) })
   return { preview, ...r }
 }
 
+/** A fresh read for preview and apply: never cached, and the ping is always sent for a static address. */
 async function freshRead(input: Pick<WizardInput, 'node' | 'ip'>, deps: WizardDeps) {
   const view = await readCluster(deps.client, async n => Boolean(await deps.credential(n)))
   const staticIp = input.ip && input.ip !== 'dhcp' ? parseCidr(input.ip) : null
-  const live = staticIp ? await readLiveAddresses(deps.client, view.guests) : []
+  const live: LiveRead = staticIp ? await readLiveAddresses(deps.client, view.guests) : { seen: [], unknown: [] }
+  notePartial(view, live)
   const pinged = staticIp ? await deps.ping(input.node, staticIp.ip).catch(() => null) : null
   return { view, live, pinged }
 }
 
-export const getPreview = (id: string, owner: string): Preview | undefined => {
-  const p = PREVIEWS.get(id)
+export async function getPreview(id: string, owner: string): Promise<Preview | undefined> {
+  const r = await wizardStore().get(id).catch(() => null)
+  const p = r?.kind === 'preview' ? (r.data as Preview) : undefined
   return p && owner && p.owner === owner ? p : undefined
 }
 
@@ -914,47 +1033,110 @@ export const getPreview = (id: string, owner: string): Preview | undefined => {
  */
 export async function applyPreview(id: string, owner: string, over: Partial<WizardDeps> = {}): Promise<InstallJob> {
   const deps = wizardDeps(over)
-  const p = PREVIEWS.get(id)
-  if (!p || !owner || p.owner !== owner) throw new WizardRefusal('No such preview.', 'not-found')
-  if (p.used) throw new WizardRefusal('This preview was already applied. Make a new one.', 'used')
-  if (deps.now() > p.expiresAt) throw new WizardRefusal('This preview has expired. Review the plan again.', 'expired')
-  p.used = true
-  const plan = p.plan
-  const recipe = findRecipe(plan.recipeId)!
+  const store = wizardStore()
+  // Taken synchronously, before any await, so the same preview cannot be applied twice at once.
+  if (APPLYING.has(id)) throw new WizardRefusal('This preview is being applied already.', 'used')
+  APPLYING.add(id)
+  try {
+    const rec = await store.get(id)
+    const p = rec?.kind === 'preview' ? (rec.data as Preview) : undefined
+    if (!p || !owner || p.owner !== owner) throw new WizardRefusal('No such preview.', 'not-found')
+    if (p.used) throw new WizardRefusal('This preview was already applied. Make a new one.', 'used')
+    if (deps.now() > p.expiresAt) throw new WizardRefusal('This preview has expired. Review the plan again.', 'expired')
+    p.used = true
+    await store.put({ id, kind: 'preview', owner, data: p, expiresAt: new Date(p.expiresAt) })
+    const plan = p.plan
+    const recipe = findRecipe(plan.recipeId)!
 
-  const { view, live, pinged } = await freshRead(plan, deps)
-  const r = checkPlan(plan, recipe, view, live, pinged)
-  if (recipe.firstRun.kind === 'env-admin' && !await deps.vaultOpen()) r.errors.push('The vault is locked, so the generated admin password could not be kept.')
-  if (r.errors.length) {
-    throw new WizardRefusal('The cluster changed since the preview, so nothing was created.', 'changed', r.errors)
-  }
-  if (CREATING.has(plan.vmid)) throw new WizardRefusal('Another install is creating that ID now.', 'changed', [`ID ${plan.vmid} is being created.`])
-  CREATING.add(plan.vmid)
+    const { view, live, pinged } = await freshRead(plan, deps)
+    const r = checkPlan(plan, recipe, view, live, pinged)
+    if (recipe.firstRun.kind === 'env-admin' && !await deps.vaultOpen()) r.errors.push('The vault is locked, so the generated admin password could not be kept.')
+    if (r.errors.length) {
+      throw new WizardRefusal('The cluster changed since the preview, so nothing was created.', 'changed', r.errors)
+    }
+    if (CREATING.has(plan.vmid)) throw new WizardRefusal('Another install is creating that ID now.', 'changed', [`ID ${plan.vmid} is being created.`])
+    CREATING.add(plan.vmid)
 
-  const job = newJob(recipe, owner, `Create CT ${plan.vmid} (${plan.hostname}) on ${plan.node}`)
-  job.vmid = plan.vmid; job.node = plan.node
-  void runJob(job, recipe, deps, async () => {
+    const job = newJob(recipe, owner, `Create CT ${plan.vmid} (${plan.hostname}) on ${plan.node}`)
+    job.vmid = plan.vmid; job.node = plan.node
+    const markId = `creating:${plan.vmid}`
+    // The mark is written before the create: after a restart it says this job may have made a container.
     try {
-      await createFromPlan(plan, recipe, job.jobId, deps.client, () => { job.created = true })
-    } finally { CREATING.delete(plan.vmid) }
-    await waitRunning(deps, plan.node, plan.vmid)
-    const distro = distroOf(plan.template)
-    if (!distro) throw new Error(`${plan.template} is neither Debian nor Ubuntu.`)
-    return { distro, ...(plan.ip !== 'dhcp' ? { ip: parseCidr(plan.ip)!.ip } : {}) }
-  })
-  return job
+      await store.put({ id: markId, kind: 'creating', owner, data: { jobId: job.jobId, vmid: plan.vmid, node: plan.node }, expiresAt: null })
+    } catch (e: any) {
+      CREATING.delete(plan.vmid)
+      JOBS.delete(job.jobId)
+      throw new WizardRefusal(`HyperProx could not record the install, so nothing was created: ${e.message}`, 'changed')
+    }
+    void runJob(job, recipe, deps, async () => {
+      await createFromPlan(plan, recipe, job.jobId, deps.client, () => { job.created = true; void persistJob(job) })
+      await waitRunning(deps, plan.node, plan.vmid)
+      const distro = distroOf(plan.template)
+      if (!distro) throw new Error(`${plan.template} is neither Debian nor Ubuntu.`)
+      return { distro, ...(plan.ip !== 'dhcp' ? { ip: parseCidr(plan.ip)!.ip } : {}) }
+    }, async () => {
+      // Held until the whole job settles, not just the create: an apply that read the cluster before this
+      // container showed up must still be refused.
+      CREATING.delete(plan.vmid)
+      await store.delete(markId).catch(() => {})
+    })
+    return job
+  } finally {
+    APPLYING.delete(id)
+  }
+}
+
+/** True while an apply holds this ID. */
+export const isCreating = (vmid: number) => CREATING.has(vmid)
+
+/**
+ * After an API restart: a job that was running is marked interrupted, and if its "creating" mark is still
+ * there it may have made a container, so clean-up is offered (the mark checks still decide). Expired
+ * previews and old jobs are pruned. Call once at start-up, before routes serve.
+ */
+export async function restoreWizardState(now = Date.now()): Promise<{ interrupted: number; restored: number }> {
+  const store = wizardStore()
+  await store.pruneExpired(new Date(now))
+  const marks = new Map((await store.list('creating')).map(m => [String(m.data?.jobId), m]))
+  let interrupted = 0
+  const jobs = await store.list('job')
+  for (const r of jobs) {
+    const job = r.data as InstallJob
+    if (job.status === 'running') {
+      job.status = 'interrupted'
+      job.error = 'HyperProx restarted while this install was running. Its container may exist half-made.'
+      for (const st of job.steps) if (st.status === 'running') { st.status = 'failed'; st.detail = 'interrupted by a restart' }
+      if (marks.has(job.jobId)) job.created = true
+      job.finishedAt = now
+      interrupted++
+      await persistJob(job)
+    }
+    JOBS.set(job.jobId, job)
+  }
+  // No job is running after a restart, so no ID is being created.
+  for (const m of marks.values()) await store.delete(m.id).catch(() => {})
+  return { interrupted, restored: jobs.length }
+}
+
+/** The caller's installs that left a container behind and can be cleaned up: failed or interrupted, not removed. */
+export function cleanupCandidates(owner: string): InstallJob[] {
+  if (!owner) return []
+  return [...JOBS.values()].filter(j => j.owner === owner && (j.status === 'failed' || j.status === 'interrupted') && j.created && !j.removed)
+    .sort((a, b) => b.startedAt - a.startedAt)
 }
 
 /**
  * Remove the container a failed install made. Only a container this job created, still carrying this
- * job's mark, not under HA, and only after the install failed. Anything else is refused.
+ * job's mark, not under HA (and HA must be readable to say so), and only after the install failed or was
+ * interrupted. Anything else is refused. The delete purges the container's own config and referenced disks;
+ * it never sweeps other volumes that happen to carry the same ID.
  */
 export async function removeFailedInstall(jobId: string, owner: string, over: Partial<WizardDeps> = {}): Promise<string> {
   const deps = wizardDeps(over)
   const enc = encodeURIComponent
   const job = JOBS.get(jobId)
   if (!job || !owner || job.owner !== owner) throw new WizardRefusal('No such install job.', 'not-found')
-  if (job.status !== 'failed') throw new WizardRefusal('Only a failed install can be cleaned up.', 'changed')
+  if (job.status !== 'failed' && job.status !== 'interrupted') throw new WizardRefusal('Only a failed or interrupted install can be cleaned up.', 'changed')
   if (job.removed) throw new WizardRefusal('Its container was already removed.', 'used')
   if (!job.created || !job.vmid || !job.node) throw new WizardRefusal('This install did not create a container, so there is nothing of its own to remove.', 'changed')
   const base = `/nodes/${enc(job.node)}/lxc/${job.vmid}`
@@ -963,7 +1145,9 @@ export async function removeFailedInstall(jobId: string, owner: string, over: Pa
   const here = (listed ?? []).find((r: any) => Number(r?.vmid) === job.vmid)
   if (!here) {
     job.removed = true
-    return `CT ${job.vmid} no longer exists, so there was nothing to remove.${await removeVaultItem(job, deps)}`
+    const msg = `CT ${job.vmid} no longer exists, so there was nothing to remove.${await removeVaultItem(job, deps)}`
+    await persistJob(job)
+    return msg
   }
   if (here.node !== job.node || here.type !== 'lxc') {
     throw new WizardRefusal(`ID ${job.vmid} is now a ${here.type === 'qemu' ? 'VM' : 'container'} on ${here.node}, not this install's container.`, 'changed')
@@ -972,20 +1156,26 @@ export async function removeFailedInstall(jobId: string, owner: string, over: Pa
   if (!String(cfg?.description ?? '').includes(installMark(job.jobId))) {
     throw new WizardRefusal(`CT ${job.vmid} does not carry this install's mark, so HyperProx will not remove it.`, 'changed')
   }
-  const ha = await deps.client.fetchStrict<any[]>('/cluster/ha/resources').catch(() => [] as any[])
-  if ((ha ?? []).some((h: any) => h?.sid === `ct:${job.vmid}`)) {
+  let ha: any[]
+  try { ha = (await deps.client.fetchStrict<any[]>('/cluster/ha/resources')) ?? [] }
+  catch { throw new WizardRefusal(`HyperProx could not confirm whether CT ${job.vmid} is under HA, so it was not removed. Try again.`, 'changed') }
+  if (ha.some((h: any) => h?.sid === `ct:${job.vmid}`)) {
     throw new WizardRefusal(`CT ${job.vmid} is managed by HA now; remove it from HA first.`, 'changed')
   }
   const st = await deps.client.fetchStrict<any>(`${base}/status/current`)
   if (st?.status === 'running') {
     await deps.client.waitForTask(job.node, await deps.client.fetchStrict<string>(`${base}/status/stop`, 'POST'), { timeoutMs: 2 * 60_000 })
   }
+  // purge=1 only: it removes the container, its referenced disks and its job/HA entries. Never
+  // destroy-unreferenced-disks, which also deletes any older volume named for this ID that this install did not make.
   await deps.client.waitForTask(job.node,
-    await deps.client.fetchStrict<string>(`${base}?purge=1&destroy-unreferenced-disks=1`, 'DELETE'), { timeoutMs: 5 * 60_000 })
+    await deps.client.fetchStrict<string>(`${base}?purge=1`, 'DELETE'), { timeoutMs: 5 * 60_000 })
   const left = await deps.client.fetchStrict<any[]>('/cluster/resources?type=vm')
   if ((left ?? []).some((r: any) => Number(r?.vmid) === job.vmid)) throw new Error(`CT ${job.vmid} is still listed after the removal.`)
   job.removed = true
-  return `CT ${job.vmid} was removed from ${job.node}.${await removeVaultItem(job, deps)}`
+  const msg = `CT ${job.vmid} was removed from ${job.node}.${await removeVaultItem(job, deps)}`
+  await persistJob(job)
+  return msg
 }
 
 /** Delete the generated-login vault item, only when this job created it. Returns a sentence to append. */
@@ -1020,3 +1210,27 @@ export async function wizardView(over: Partial<WizardDeps> = {}) {
   const deps = wizardDeps(over)
   return { deps, view: await readCluster(deps.client, async n => Boolean(await deps.credential(n))) }
 }
+
+/** How long the identity step reuses one read of the cluster while the person types. */
+export const IDENTITY_CACHE_MS = 10_000
+const VIEW_CACHE = new Map<string, { at: number; view: ClusterView; live?: LiveRead }>()
+
+/**
+ * The cluster read for as-you-type identity checks, reused for about ten seconds per signed-in person, with
+ * live addresses read only when a static address is being checked. Preview and apply never use this.
+ */
+export async function identityView(key: string, wantLive: boolean, over: Partial<WizardDeps> = {}): Promise<{ deps: WizardDeps; view: ClusterView; live: LiveRead }> {
+  const deps = wizardDeps(over)
+  const now = deps.now()
+  for (const [k, v] of VIEW_CACHE) if (now - v.at > IDENTITY_CACHE_MS) VIEW_CACHE.delete(k)
+  let hit = key ? VIEW_CACHE.get(key) : undefined
+  if (!hit) {
+    hit = { at: now, view: await readCluster(deps.client, async n => Boolean(await deps.credential(n))) }
+    if (key) VIEW_CACHE.set(key, hit)
+  }
+  if (wantLive && !hit.live) { hit.live = await readLiveAddresses(deps.client, hit.view.guests); notePartial(hit.view, hit.live) }
+  return { deps, view: hit.view, live: hit.live ?? { seen: [], unknown: [] } }
+}
+
+/** Tests: forget cached reads. */
+export const clearIdentityCache = () => VIEW_CACHE.clear()

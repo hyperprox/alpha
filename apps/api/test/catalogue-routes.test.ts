@@ -3,40 +3,23 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import Fastify from "fastify"
 import { buildCatalogueRoutes } from "../src/routes/catalogue"
-import { startInstall, getInstallJob, type InstallDeps } from "../src/lib/catalogue-installer"
+import { getInstallJob } from "../src/lib/catalogue-installer"
 import { requestContext } from "../src/lib/auth"
+import { FakePve, deps, INPUT } from "./fakes/catalogue-pve"
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
-function fake(): InstallDeps {
-  const client: any = {
-    getClusterResources: async () => [{ vmid: 130, type: "lxc", node: "pve1", status: "running" }],
-    getNodes: async () => [], fetchStrict: async () => { throw new Error("no create expected") },
-    createLXC: async () => { throw new Error("no create expected") }, waitForTask: async () => {}, downloadTemplate: async () => "",
-    fetchNode: async (p: string) => {
-      if (p.endsWith("/config")) return { ostype: "debian" }
-      if (p.endsWith("/interfaces")) return [{ name: "eth0", inet: "10.0.0.30/24" }]
-      if (p === "/cluster/status") return [{ type: "node", name: "pve1", ip: "10.0.0.1" }]
-      return null
-    },
-  }
-  return {
-    client, wait: async () => {}, credential: async () => ({ id: "c" }), probe: async () => 200,
-    exec: async () => ({ code: 0, output: "", timedOut: false }) as any,
-    vaultOpen: async () => true, saveSecrets: async () => {}, readSecrets: async () => ({}), deleteSecrets: async () => {},
-  }
-}
-
-function app(over: Parameters<typeof buildCatalogueRoutes>[0]) {
-  const a = Fastify()
-  a.register(buildCatalogueRoutes({ start: o => startInstall(o, fake()), ...over }))
-  return a
+async function install(a: ReturnType<typeof Fastify>) {
+  const pv = await a.inject({ method: "POST", url: "/wizard/preview", payload: INPUT() })
+  assert.equal(pv.statusCode, 200, pv.body)
+  return a.inject({ method: "POST", url: "/wizard/apply", payload: { previewId: pv.json().data.previewId } })
 }
 
 test("a catalogue job is read only by the user who started it, and its id is a UUID", async () => {
   let user = "a@example.com"
-  const a = app({ whoami: () => user })
-  const res = await a.inject({ method: "POST", url: "/install", payload: { recipeId: "gitea", intoVmid: 130 } })
+  const a = Fastify()
+  a.register(buildCatalogueRoutes({ whoami: () => user, wizard: deps(new FakePve()) }))
+  const res = await install(a)
   assert.equal(res.statusCode, 200, res.body)
   const { jobId } = res.json().data
   assert.match(jobId, UUID)
@@ -48,20 +31,21 @@ test("a catalogue job is read only by the user who started it, and its id is a U
   assert.equal((await a.inject({ method: "GET", url: `/jobs/${jobId}` })).statusCode, 404)
 })
 
-test("with nobody to own it, an install is refused before anything starts", async () => {
-  let started = 0
-  const a = app({ whoami: () => "", start: async () => { started++; throw new Error("not reached") } })
-  const res = await a.inject({ method: "POST", url: "/install", payload: { recipeId: "gitea", intoVmid: 130 } })
-  assert.equal(res.statusCode, 401)
-  assert.equal(started, 0)
+test("with nobody to own it, a preview and an apply are refused before anything starts", async () => {
+  const f = new FakePve()
+  const a = Fastify()
+  a.register(buildCatalogueRoutes({ whoami: () => "", wizard: deps(f) }))
+  assert.equal((await a.inject({ method: "POST", url: "/wizard/preview", payload: INPUT() })).statusCode, 401)
+  assert.equal((await a.inject({ method: "POST", url: "/wizard/apply", payload: { previewId: "x" } })).statusCode, 401)
+  assert.equal(f.creates.length, 0)
 })
 
 test("by default the owner is ownerOf the request: an API token by its id, not its name", async () => {
   const a = Fastify()
   // As the gate does: the rest of the request runs inside the caller's context.
   a.addHook("onRequest", (_req, _res, done) => requestContext.run({ sid: "token:abc", email: "token:deploy-bot", role: "admin" } as any, done))
-  a.register(buildCatalogueRoutes({ start: o => startInstall(o, fake()) }))
-  const res = await a.inject({ method: "POST", url: "/install", payload: { recipeId: "gitea", intoVmid: 130 } })
+  a.register(buildCatalogueRoutes({ wizard: deps(new FakePve()) }))
+  const res = await install(a)
   assert.equal(res.statusCode, 200, res.body)
   assert.equal(getInstallJob(res.json().data.jobId)!.owner, "token:abc")
 })
