@@ -37,7 +37,7 @@ model Node {
 // --- Proxy -------------------------------------------------------------------
 // One row per proxy instance added on the Proxy page (lib/proxy). No secrets: those are in the vault,
 // one item per instance (hyperprox:proxy-instance/<id>). The legacy NPM login in Settings is not a row.
-// Replaces the unused ProxyProvider/ProxyHost tables (dropped by 20261104120000_proxy_instances).
+// Replaces the unused ProxyProvider/ProxyHost tables (dropped by 20261104140000_proxy_instances).
 
 model ProxyInstance {
   id        String   @id
@@ -318,4 +318,18 @@ model NotifyState {
   id        String   @id
   value     Json
   updatedAt DateTime @updatedAt
+}
+
+// The Catalogue install wizard: previews, install jobs and "ID being created" marks, so an API restart
+// does not orphan a container that was mid-install. The record itself is JSON; expiresAt drives pruning.
+model CatalogueRecord {
+  id        String    @id
+  kind      String              // preview | job | creating
+  owner     String
+  data      Json
+  expiresAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([kind, expiresAt])
 }

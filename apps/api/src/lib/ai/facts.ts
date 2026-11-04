@@ -10,7 +10,7 @@ import { NPMClient } from '../npm-client'
 import { GoDaddyClient } from '../godaddy-client'
 import { getProviderCredentials } from '../credentials'
 import { nodeCredential } from '../node-exec'
-import { bridgeInfo, configAddresses, type BridgeFact } from '../wizard-placement'
+import { bridgeInfo, configAddresses, configGpuKind, pciGpus, type BridgeFact } from '../wizard-placement'
 import { distroOf, type Distro } from '../install-script'
 
 function pve(): ProxmoxClient {
@@ -71,6 +71,10 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (x: T) => Promise<R
 export interface NodeFact {
   node: string; online: boolean; cores: number; freeMemMb: number; totalMemMb: number
   arch: 'amd64' | 'arm64' | ''; hasLogin: boolean; bridges: BridgeFact[]
+  /** For placement scoring, as the Catalogue wizard reads them: CPU fraction, running guests, a GPU. */
+  cpuLoad?: number; runningGuests?: number; hasGpu?: boolean; hasIgpu?: boolean
+  /** RAM promised to running guests (sum of their maxmem), in MB. */
+  committedMemMb?: number
 }
 export interface StorageFact {
   storage: string; node: string; type: string; content: string[]; active: boolean; shared: boolean; freeGb: number
@@ -164,10 +168,13 @@ export async function gatherTemplateFacts(over: Partial<FactsDeps> = {}): Promis
       freeMemMb: Math.max(0, Math.round((Number(n.maxmem ?? 0) - Number(n.mem ?? 0)) / 1048576)),
       totalMemMb: Math.round(Number(n.maxmem ?? 0) / 1048576),
       arch: '', hasLogin: false, bridges: [],
+      cpuLoad: typeof n.cpu === 'number' ? n.cpu : undefined,
     }
     nodes.push(base)
     if (!online) continue
 
+    // Extra for scoring only, never a failed source: some tokens cannot read the PCI bus.
+    const pciP = client.fetchStrict<any[]>(`/nodes/${enc(n.node)}/hardware/pci`).catch(() => null)
     const [statusR, netR, storR, aplR, loginR] = await Promise.allSettled([
       client.fetchStrict<any>(`/nodes/${enc(n.node)}/status`),
       client.fetchStrict<any[]>(`/nodes/${enc(n.node)}/network`),
@@ -179,6 +186,9 @@ export async function gatherTemplateFacts(over: Partial<FactsDeps> = {}): Promis
       if (r.status === 'rejected' || r.value == null) partial.push(`${k}:${n.node}`)
     base.arch = archOfKernel(ok(statusR, null)?.['current-kernel']?.machine)
     base.hasLogin = ok(loginR, false)
+    const bus = pciGpus(await pciP)
+    base.hasGpu = bus.discrete
+    base.hasIgpu = bus.integrated
     const nets = ok(netR, [])
     base.bridges = nets.filter((x: any) => x?.type === 'bridge')
       .map((x: any) => bridgeInfo(nets, x.iface)).filter((b): b is BridgeFact => b !== null)
@@ -212,6 +222,16 @@ export async function gatherTemplateFacts(over: Partial<FactsDeps> = {}): Promis
       const cfg = await client.fetchStrict<Record<string, unknown>>(
         `/nodes/${enc(r.node)}/${r.type}/${Number(r.vmid)}/config`).catch(() => null)
       if (cfg == null) partial.push(`config:${Number(r.vmid)}`)
+      const host = nodes.find(x => x.node === r.node)
+      if (host) {
+        if (r.status === 'running') {
+          host.runningGuests = (host.runningGuests ?? 0) + 1
+          host.committedMemMb = (host.committedMemMb ?? 0) + Math.round(Number(r.maxmem ?? 0) / 1048576)
+        }
+        const kind = configGpuKind(cfg)
+        if (kind === 'discrete') host.hasGpu = true
+        if (kind === 'integrated') host.hasIgpu = true
+      }
       return { vmid: Number(r.vmid), node: String(r.node), type: r.type as 'lxc' | 'qemu',
                name: String(r.name ?? ''), addresses: configAddresses(cfg) }
     })

@@ -49,15 +49,6 @@ echo "→ Installing dependencies..."
 pnpm install --frozen-lockfile >/dev/null
 (cd apps/api && npx prisma generate --schema ./prisma/schema.prisma >/dev/null)
 
-echo "→ Applying database migrations..."
-# DATABASE_URL stays in .env (the database is needed before the vault is unlocked).
-DATABASE_URL="$(grep -m1 '^DATABASE_URL=' .env | cut -d= -f2-)"
-if [ -z "$DATABASE_URL" ]; then
-  echo "✗ DATABASE_URL is not in .env; migrations not applied." >&2
-  exit 1
-fi
-(cd apps/api && DATABASE_URL="$DATABASE_URL" npx prisma migrate deploy --schema ./prisma/schema.prisma)
-
 echo "→ Building API..."
 cd apps/api && npx tsc -p tsconfig.json
 cd /opt/hyperprox
@@ -83,6 +74,18 @@ if [ ! -d "$STANDALONE/.next/static/css" ]; then
   echo "✗ Static assets were not copied — refusing to restart into an unstyled site." >&2
   exit 1
 fi
+
+# Migrations last, after everything that can still fail: a type error, a failed build or missing assets
+# stop the deploy with the live database untouched, so the running API keeps the schema it expects. The new
+# code is only started after this (below). apps/api/test/deploy-order.test.ts checks the order.
+echo "→ Applying database migrations..."
+# DATABASE_URL stays in .env (the database is needed before the vault is unlocked).
+DATABASE_URL="$(grep -m1 '^DATABASE_URL=' .env | cut -d= -f2-)"
+if [ -z "$DATABASE_URL" ]; then
+  echo "✗ DATABASE_URL is not in .env; migrations not applied." >&2
+  exit 1
+fi
+(cd apps/api && DATABASE_URL="$DATABASE_URL" npx prisma migrate deploy --schema ./prisma/schema.prisma)
 
 # The keyholder holds the unlocked vault state, so the API restart below does not lock HyperProx. It is
 # installed or started if needed and otherwise left alone; restarted only when its own program changed

@@ -261,6 +261,10 @@ export default function SettingsPage() {
                 style={{ borderColor: 'var(--border-strong)', color: 'var(--accent)' }}>
             Notifications &rarr;
           </Link>
+          <Link href="/catalogue/settings" className="inline-block rounded-md border px-3 py-1.5 text-sm font-medium"
+                style={{ borderColor: 'var(--border-strong)', color: 'var(--accent)' }}>
+            Container ID rule &rarr;
+          </Link>
         </div>
       </div>
 
