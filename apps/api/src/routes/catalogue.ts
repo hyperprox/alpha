@@ -11,10 +11,10 @@ import type { FastifyPluginAsync, FastifyRequest } from 'fastify'
 import { CATALOGUE, findRecipe } from '../lib/catalogue'
 import {
   startInstall, getInstallJob, readAdminCredential, previewInstall, applyPreview, removeFailedInstall, getPreview,
-  wizardView, placementFor, checkIdentity, readLiveAddresses, readVmidRule, saveVmidRule, WizardRefusal,
+  wizardView, placementFor, nextIdOf, checkIdentity, readLiveAddresses, readVmidRule, saveVmidRule, WizardRefusal,
   type InstallJob, type WizardDeps, type WizardInput,
 } from '../lib/catalogue-installer'
-import { nextFreeVmid, parseCidr } from '../lib/wizard-placement'
+import { parseCidr } from '../lib/wizard-placement'
 import { currentContext } from '../lib/auth'
 import { ownerOf } from './ai'
 import { nodeCredential, nodeCredentialId, execOnNode } from '../lib/node-exec'
@@ -163,7 +163,7 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
         const placed = placementFor(recipe, need, view)
         return reply.send({ success: true, data: {
           need, ...placed, partial: view.partial, rule,
-          nextVmid: nextFreeVmid(view.guests.map(g => g.vmid)),
+          nextVmid: nextIdOf(view),
         } })
       } catch (e) { return refusal(reply, e) }
     })
