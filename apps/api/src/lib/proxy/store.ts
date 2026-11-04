@@ -9,13 +9,13 @@ import { Prisma, type PrismaClient } from '@prisma/client'
 import { deleteProviderCredentials, getProviderCredentials, setCredentials } from '../credentials'
 import type { ManagedRef, ProxyInstance, ProxyKind, InstanceMode } from './types'
 
-export type StoredInstance = Omit<ProxyInstance, 'legacy'>
-export type InstancePatch = Partial<Pick<StoredInstance, 'name' | 'url' | 'mode' | 'managed' | 'settings'>>
+export type StoredInstance = Omit<ProxyInstance, 'legacy' | 'status' | 'owned'> & { owned: string[] }
+export type InstancePatch = Partial<Pick<StoredInstance, 'name' | 'url' | 'mode' | 'managed' | 'settings' | 'owned'>>
 
 export interface ProxyStore {
   list(): Promise<StoredInstance[]>
   get(id: string): Promise<StoredInstance | null>
-  create(i: Omit<StoredInstance, 'createdAt' | 'updatedAt'>): Promise<StoredInstance>
+  create(i: Omit<StoredInstance, 'createdAt' | 'updatedAt' | 'owned'>): Promise<StoredInstance>
   update(id: string, patch: InstancePatch): Promise<StoredInstance>
   remove(id: string): Promise<void>
   audit(action: string, resource: string, details?: Record<string, unknown>): Promise<void>
@@ -28,10 +28,10 @@ export class MemoryProxyStore implements ProxyStore {
   audits: Array<{ action: string; resource: string; details?: Record<string, unknown> }> = []
   async list() { return [...this.rows.values()].map(clone).sort((a, b) => a.createdAt.localeCompare(b.createdAt)) }
   async get(id: string) { const r = this.rows.get(id); return r ? clone(r) : null }
-  async create(i: Omit<StoredInstance, 'createdAt' | 'updatedAt'>) {
+  async create(i: Omit<StoredInstance, 'createdAt' | 'updatedAt' | 'owned'>) {
     if (this.rows.has(i.id)) throw new Error(`proxy instance ${i.id} exists`)
     const now = new Date().toISOString()
-    const row = { ...clone(i), createdAt: now, updatedAt: now }
+    const row = { ...clone(i), owned: [], createdAt: now, updatedAt: now }
     this.rows.set(i.id, row)
     return clone(row)
   }
@@ -45,12 +45,13 @@ export class MemoryProxyStore implements ProxyStore {
   async audit(action: string, resource: string, details?: Record<string, unknown>) { this.audits.push({ action, resource, details }) }
 }
 
-type Row = { id: string; kind: string; name: string; url: string; mode: string; managed: unknown; settings: unknown; createdBy: string; createdAt: Date; updatedAt: Date }
+type Row = { id: string; kind: string; name: string; url: string; mode: string; managed: unknown; settings: unknown; owned: unknown; createdBy: string; createdAt: Date; updatedAt: Date }
 
 function fromRow(r: Row): StoredInstance {
   return {
     id: r.id, kind: r.kind as ProxyKind, name: r.name, url: r.url, mode: r.mode as InstanceMode,
     managed: (r.managed as ManagedRef | null) ?? null, settings: (r.settings as Record<string, string>) ?? {},
+    owned: Array.isArray(r.owned) ? (r.owned as unknown[]).map(String) : [],
     createdBy: r.createdBy, createdAt: r.createdAt.toISOString(), updatedAt: r.updatedAt.toISOString(),
   }
 }
@@ -60,7 +61,7 @@ export class PrismaProxyStore implements ProxyStore {
   private get t(): any { return (this.db as any).proxyInstance }
   async list() { return ((await this.t.findMany({ orderBy: { createdAt: 'asc' } })) as Row[]).map(fromRow) }
   async get(id: string) { const r = await this.t.findUnique({ where: { id } }); return r ? fromRow(r) : null }
-  async create(i: Omit<StoredInstance, 'createdAt' | 'updatedAt'>) {
+  async create(i: Omit<StoredInstance, 'createdAt' | 'updatedAt' | 'owned'>) {
     return fromRow(await this.t.create({ data: { id: i.id, kind: i.kind, name: i.name, url: i.url, mode: i.mode,
       managed: i.managed ?? undefined, settings: i.settings, createdBy: i.createdBy } }))
   }

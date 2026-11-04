@@ -24,6 +24,8 @@ export interface PangolinConfig {
   orgId:   string
   /** The site targets go through; empty = the organisation's first site. */
   siteId?: number
+  /** Resource ids HyperProx recorded creating. A resource is HyperProx's only if it is here and its niceId has the hpx- prefix. */
+  owned?:  Set<string>
 }
 
 interface Target { targetId: number; ip: string; port: number; method?: string | null; enabled?: boolean; siteId?: number }
@@ -83,7 +85,7 @@ export class PangolinProvider implements ProxyProvider {
 
   private record(r: Resource): ProxyHostRecord {
     const t = r.targets?.[0]
-    const owned = r.niceId.startsWith(PREFIX)
+    const owned = r.niceId.startsWith(PREFIX) && !!this.cfg.owned?.has(String(r.resourceId))
     return {
       id: String(r.resourceId), domains: r.fullDomain ? [r.fullDomain.toLowerCase()] : [],
       forwardScheme: t?.method === 'https' ? 'https' : 'http', forwardHost: t?.ip ?? '', forwardPort: Number(t?.port ?? 0),
@@ -91,6 +93,7 @@ export class PangolinProvider implements ProxyProvider {
       readOnlyReason: owned ? undefined : `Made outside HyperProx (Pangolin resource "${r.name}")`,
       tls: r.ssl ? { kind: 'auto' } : { kind: 'none' },
       online: r.health === 'healthy' ? true : r.health === 'unhealthy' ? false : null,
+      state: owned ? { ...r, health: undefined, targets: (r.targets ?? []).map(t => ({ ...t, healthStatus: undefined, siteOnline: undefined })) } : undefined,
       detail: `${r.niceId}${(r.targets?.length ?? 0) > 1 ? `, ${r.targets!.length} targets` : ''}`,
     }
   }
@@ -118,7 +121,7 @@ export class PangolinProvider implements ProxyProvider {
   private async owned(id: string): Promise<Resource> {
     const r = (await this.resources()).find(x => String(x.resourceId) === id)
     if (!r) throw new ProxyRefusal(`Pangolin has no resource ${id}.`, 404)
-    if (!r.niceId.startsWith(PREFIX)) throw new ProxyRefusal(`Pangolin resource "${r.name}" was not made by HyperProx; it is read-only.`)
+    if (!r.niceId.startsWith(PREFIX) || !this.cfg.owned?.has(id)) throw new ProxyRefusal(`Pangolin resource "${r.name}" was not made by HyperProx; it is read-only.`)
     return r
   }
 

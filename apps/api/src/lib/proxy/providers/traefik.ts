@@ -32,6 +32,8 @@ export interface TraefikConfig {
   /** Set to give HyperProx's routers TLS from this certificate resolver. */
   certResolver?: string
   transport:     FileTransport
+  /** Serialises writes to the file; the instance id. */
+  lockKey?:      string
   /** How long to wait for Traefik to pick the file up. */
   settleMs?:     number
 }
@@ -39,12 +41,24 @@ export interface TraefikConfig {
 interface Router { name: string; provider: string; rule: string; service: string; entryPoints?: string[]; middlewares?: string[]; status?: string; tls?: { certResolver?: string } }
 interface Service { name: string; provider: string; loadBalancer?: { servers?: { url: string }[] }; serverStatus?: Record<string, string> }
 
+/** HyperProx's file, whole: routers and services are edited, every other key is kept as it was. */
 interface DynFile {
+  [key: string]: any
   http: {
+    [key: string]: any
     routers:     Record<string, any>
     services:    Record<string, any>
-    middlewares: Record<string, any>
   }
+}
+
+// One write at a time per instance: a write is read-modify-write of one file, so two at once would lose one.
+const locks = new Map<string, Promise<unknown>>()
+export async function withFileLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = locks.get(key) ?? Promise.resolve()
+  const run = prev.catch(() => undefined).then(fn)
+  const tail = run.catch(() => undefined)
+  locks.set(key, tail)
+  try { return await run } finally { if (locks.get(key) === tail) locks.delete(key) }
 }
 
 /** Every Host(`name`) in a rule. */
@@ -91,19 +105,31 @@ export class TraefikProvider implements ProxyProvider {
 
   private async readFile(): Promise<DynFile> {
     const text = await this.cfg.transport.read(this.cfg.file)
-    const empty: DynFile = { http: { routers: {}, services: {}, middlewares: {} } }
-    if (text === null || !text.trim()) return empty
+    if (text === null || !text.trim()) return { http: { routers: {}, services: {} } }
     if (!text.startsWith(TRAEFIK_HEADER)) throw new ProxyRefusal(`${this.cfg.file} on the Traefik host was not written by HyperProx, so HyperProx will not change it. Point the instance at a file of its own.`)
-    const doc = (yaml.load(text) ?? {}) as any
-    return { http: { routers: { ...(doc.http?.routers ?? {}) }, services: { ...(doc.http?.services ?? {}) }, middlewares: { ...(doc.http?.middlewares ?? {}) } } }
+    const doc = ((yaml.load(text) ?? {}) as any)
+    doc.http = { ...(doc.http ?? {}) }
+    doc.http.routers = { ...(doc.http.routers ?? {}) }
+    doc.http.services = { ...(doc.http.services ?? {}) }
+    return doc
   }
 
   private async writeFile(doc: DynFile): Promise<void> {
-    const http: any = { routers: doc.http.routers, services: doc.http.services }
+    const mws = { ...(doc.http.middlewares ?? {}) }
     const anyDisabled = Object.values(doc.http.routers).some((r: any) => (r.middlewares ?? []).includes(DISABLED_MW))
-    if (anyDisabled) http.middlewares = { [DISABLED_MW]: { ipAllowList: { sourceRange: ['255.255.255.255/32'] } } }
-    const body = Object.keys(doc.http.routers).length ? yaml.dump({ http }, { lineWidth: 200, noRefs: true }) : '{}\n'
+    if (anyDisabled) mws[DISABLED_MW] = { ipAllowList: { sourceRange: ['255.255.255.255/32'] } }
+    else delete mws[DISABLED_MW]
+    const http: any = { ...doc.http }
+    if (Object.keys(mws).length) http.middlewares = mws; else delete http.middlewares
+    for (const k of ['routers', 'services']) if (!Object.keys(http[k] ?? {}).length) delete http[k]
+    const out: any = { ...doc, http }
+    if (!Object.keys(http).length) delete out.http
+    const body = Object.keys(out).length ? yaml.dump(out, { lineWidth: 200, noRefs: true }) : '{}\n'
     await this.cfg.transport.write(this.cfg.file, `${TRAEFIK_HEADER}\n${body}`)
+  }
+
+  private locked<T>(fn: () => Promise<T>): Promise<T> {
+    return withFileLock(this.cfg.lockKey ?? `${this.cfg.transport.describe()}|${this.cfg.file}`, fn)
   }
 
   private routerFor(spec: HostSpec, service: string): any {
@@ -149,6 +175,7 @@ export class TraefikProvider implements ProxyProvider {
         tls: r.tls ? { kind: 'auto' } : { kind: 'none' },
         online: status ? Object.values(status).some(s => s === 'UP') : null,
         detail: r.rule,
+        state: owned ? { router: mine!.http.routers[base], service: mine!.http.services[mine!.http.routers[base].service] } : undefined,
       })
     }
     // A host in HyperProx's file that Traefik has not loaded (yet, or because it rejected it) is still shown.
@@ -157,7 +184,8 @@ export class TraefikProvider implements ProxyProvider {
       const up = parseUpstreamUrl(mine!.http.services[r.service]?.loadBalancer?.servers?.[0]?.url ?? '')
       out.push({ id: name, domains: hostsInRule(r.rule ?? ''), forwardScheme: up.scheme, forwardHost: up.host, forwardPort: up.port,
         enabled: !(r.middlewares ?? []).includes(DISABLED_MW), owned: true, tls: r.tls ? { kind: 'auto' } : { kind: 'none' },
-        online: false, detail: `${r.rule} (in HyperProx's file, not loaded by Traefik)` })
+        online: false, detail: `${r.rule} (in HyperProx's file, not loaded by Traefik)`,
+        state: { router: r, service: mine!.http.services[r.service] } })
     }
     return out
   }
@@ -181,44 +209,52 @@ export class TraefikProvider implements ProxyProvider {
   }
 
   async createHost(spec: HostSpec): Promise<string> {
-    const doc = await this.readFile()
-    const live = await this.http.get<Router[]>('/api/http/routers?per_page=1000')
-    const taken = new Set([...Object.keys(doc.http.routers), ...live.map(r => r.name.replace(/@[^@]*$/, ''))])
-    const id = slugFor(spec, taken)
-    doc.http.services[id] = this.serviceFor(spec)
-    doc.http.routers[id] = this.routerFor(spec, id)
-    await this.writeFile(doc)
-    await this.settle(rs => rs.some(r => r.name === `${id}@file`))
-    return id
+    return this.locked(async () => {
+      const doc = await this.readFile()
+      const live = await this.http.get<Router[]>('/api/http/routers?per_page=1000')
+      const taken = new Set([...Object.keys(doc.http.routers), ...live.map(r => r.name.replace(/@[^@]*$/, ''))])
+      const id = slugFor(spec, taken)
+      doc.http.services[id] = this.serviceFor(spec)
+      doc.http.routers[id] = this.routerFor(spec, id)
+      await this.writeFile(doc)
+      await this.settle(rs => rs.some(r => r.name === `${id}@file`))
+      return id
+    })
   }
 
   async updateHost(id: string, spec: HostSpec): Promise<void> {
-    const doc = await this.readFile()
-    const cur = this.ownedOrRefuse(doc, id)
-    doc.http.services[cur.service] = this.serviceFor(spec)
-    doc.http.routers[id] = this.routerFor(spec, cur.service)
-    await this.writeFile(doc)
-    const rule = ruleFor(spec.domains)
-    await this.settle(rs => rs.some(r => r.name === `${id}@file` && r.rule === rule))
+    return this.locked(async () => {
+      const doc = await this.readFile()
+      const cur = this.ownedOrRefuse(doc, id)
+      doc.http.services[cur.service] = this.serviceFor(spec)
+      doc.http.routers[id] = this.routerFor(spec, cur.service)
+      await this.writeFile(doc)
+      const rule = ruleFor(spec.domains)
+      await this.settle(rs => rs.some(r => r.name === `${id}@file` && r.rule === rule))
+    })
   }
 
   async setEnabled(id: string, enabled: boolean): Promise<void> {
-    const doc = await this.readFile()
-    const cur = this.ownedOrRefuse(doc, id)
-    const mws = (cur.middlewares ?? []).filter((m: string) => m !== DISABLED_MW)
-    if (!enabled) mws.push(DISABLED_MW)
-    if (mws.length) cur.middlewares = mws; else delete cur.middlewares
-    await this.writeFile(doc)
-    await this.settle(rs => rs.some(r => r.name === `${id}@file` && (r.middlewares ?? []).some(m => m.startsWith(DISABLED_MW)) === !enabled))
+    return this.locked(async () => {
+      const doc = await this.readFile()
+      const cur = this.ownedOrRefuse(doc, id)
+      const mws = (cur.middlewares ?? []).filter((m: string) => m !== DISABLED_MW)
+      if (!enabled) mws.push(DISABLED_MW)
+      if (mws.length) cur.middlewares = mws; else delete cur.middlewares
+      await this.writeFile(doc)
+      await this.settle(rs => rs.some(r => r.name === `${id}@file` && (r.middlewares ?? []).some(m => m.startsWith(DISABLED_MW)) === !enabled))
+    })
   }
 
   async deleteHost(id: string): Promise<void> {
-    const doc = await this.readFile()
-    const cur = this.ownedOrRefuse(doc, id)
-    delete doc.http.routers[id]
-    if (!Object.values(doc.http.routers).some((r: any) => r.service === cur.service)) delete doc.http.services[cur.service]
-    await this.writeFile(doc)
-    await this.settle(rs => !rs.some(r => r.name === `${id}@file`))
+    return this.locked(async () => {
+      const doc = await this.readFile()
+      const cur = this.ownedOrRefuse(doc, id)
+      delete doc.http.routers[id]
+      if (!Object.values(doc.http.routers).some((r: any) => r.service === cur.service)) delete doc.http.services[cur.service]
+      await this.writeFile(doc)
+      await this.settle(rs => !rs.some(r => r.name === `${id}@file`))
+    })
   }
 
   async listCertificates(): Promise<ProxyCertificate[]> { return [] }

@@ -20,7 +20,7 @@ export const KIND_LABEL: Record<ProxyKind, string> = {
   npm: 'Nginx Proxy Manager', traefik: 'Traefik', caddy: 'Caddy', haproxy: 'HAProxy', pangolin: 'Pangolin',
 }
 
-/** NPM-only options a host may carry; the other providers ignore them. */
+/** NPM-only options a host may carry; the other providers ignore them. Omitted keys keep the host's value. */
 export interface NpmExtras {
   certificate_id?:          number | false
   ssl_forced?:              boolean
@@ -39,14 +39,22 @@ export interface HostSpec {
   forwardHost:   string
   forwardPort:   number
   enabled:       boolean
+  /** Omitted on an update: the host keeps its current value. */
   websockets?:   boolean
   npm?:          NpmExtras
 }
+
+/** An update: only the fields given change; everything else keeps the host's current value. */
+export type HostPatch = Partial<Omit<HostSpec, 'npm'>> & { npm?: NpmExtras }
+
+/** One field a change touches, for the preview's words and the read-back. */
+export interface FieldChange { field: string; label: string; from: unknown; to: unknown }
 
 export interface HostTls {
   /** none: plain HTTP. certificate: a certificate the proxy holds (id below). auto: the proxy gets its own (ACME). */
   kind:           'none' | 'certificate' | 'auto'
   certificateId?: string
+  certificateName?: string
   expiresAt?:     string | null
   forced?:        boolean
 }
@@ -70,7 +78,11 @@ export interface ProxyHostRecord {
   websockets?:   boolean
   /** A short provider-native summary for display (a Traefik rule, an HAProxy condition). */
   detail?:       string
-  /** NPM: the native host, so the edit form keeps every NPM option. */
+  /** Provider options the preview and read-back compare (NPM: certificate, HTTPS options, advanced config). */
+  options?:      Record<string, string | number | boolean | null>
+  /** The full owned entry as the proxy holds it, minus volatile fields: what the preview's fingerprint covers. */
+  state?:        unknown
+  /** NPM: the native host, so the edit form keeps every NPM option. Admins only. */
   native?:       Record<string, unknown>
 }
 
@@ -142,6 +154,10 @@ export interface ProxyInstance {
   settings:  Record<string, string>
   /** The instance backed by the old single NPM login (Settings → Proxy). It cannot be removed here. */
   legacy?:   boolean
+  /** locked: the vault is locked, so its login cannot be read (it is still listed). */
+  status?:   'ok' | 'locked' | 'unavailable'
+  /** Host ids HyperProx created on this instance (Caddy, HAProxy, Pangolin): ownership is this record plus the name prefix. */
+  owned?:    string[]
   createdBy: string
   createdAt: string
   updatedAt: string

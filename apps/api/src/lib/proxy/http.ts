@@ -44,13 +44,17 @@ export class ProxyHttp {
     const timer = setTimeout(() => ctl.abort(), this.timeoutMs)
     let res: Response
     try {
-      res = await this.fetchImpl(this.base + path, { method, headers, body, signal: ctl.signal })
+      // Never follow a redirect: it would carry the credentials to wherever the answer points.
+      res = await this.fetchImpl(this.base + path, { method, headers, body, signal: ctl.signal, redirect: 'manual' })
     } catch (e: any) {
       const why = e?.name === 'AbortError' ? `no answer within ${this.timeoutMs / 1000}s` : (e?.cause?.code ?? e?.message ?? String(e))
       throw new ProxyHttpError(`${this.label}: ${method} ${path} could not be sent (${why})`, 0, '')
     } finally { clearTimeout(timer) }
     const text = await res.text()
     const ok = opts.okStatuses ? opts.okStatuses.includes(res.status) : res.ok
+    if (res.status >= 300 && res.status < 400 && !(opts.okStatuses ?? []).includes(res.status)) {
+      throw new ProxyHttpError(`${this.label}: ${method} ${path} answered with a redirect (${res.status}); HyperProx does not follow redirects`, res.status, '')
+    }
     if (!ok) {
       throw new ProxyHttpError(`${this.label}: ${method} ${path} answered ${res.status}${summarise(text)}`, res.status, text)
     }

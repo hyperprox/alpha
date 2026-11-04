@@ -2,6 +2,8 @@
 //  HyperProx — Nginx Proxy Manager API Client
 // =============================================================================
 
+import { createHash } from 'node:crypto'
+
 export interface NPMProxyHost {
   id:                      number
   domain_names:            string[]
@@ -53,6 +55,14 @@ export interface NPMStats {
 
 type TokenCache = { token: string; expires: Date } | null
 
+// Tokens are shared by every client for the same NPM and login, until shortly before NPM says they expire:
+// a new NPMClient per request no longer means a new sign-in per request.
+const tokens = new Map<string, { token: string; expires: Date }>()
+// A sign-in in flight, shared by every request that needs it (two lists fetched at once sign in once).
+const signingIn = new Map<string, Promise<{ token: string; expires: Date }>>()
+/** Tests: forget every cached token. */
+export function clearNpmTokens(): void { tokens.clear(); signingIn.clear() }
+
 export class NPMClient {
   private url:      string
   private email:    string
@@ -68,22 +78,56 @@ export class NPMClient {
     this.fetchImpl = fetchImpl ?? ((u, i) => fetch(u, i))
   }
 
+  private cacheKey(): string {
+    return `${this.url}\n${this.email}\n${createHash('sha256').update(this.password).digest('hex')}`
+  }
+
   private async getToken(): Promise<string> {
     if (this.cache && this.cache.expires > new Date()) return this.cache.token
+    const shared = tokens.get(this.cacheKey())
+    if (shared && shared.expires > new Date()) { this.cache = shared; return shared.token }
 
-    const res  = await this.fetchImpl(`${this.url}/api/tokens`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+    const key = this.cacheKey()
+    let pending = signingIn.get(key)
+    if (!pending) {
+      pending = this.signIn().finally(() => signingIn.delete(key))
+      signingIn.set(key, pending)
+    }
+    this.cache = await pending
+    tokens.set(key, this.cache)
+    return this.cache.token
+  }
+
+  private async signIn(): Promise<{ token: string; expires: Date }> {
+    // Never follow a redirect here: it would resend the password to wherever NPM pointed.
+    const res  = await this.idempotent(`${this.url}/api/tokens`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, redirect: 'manual',
       body: JSON.stringify({ identity: this.email, secret: this.password }),
     })
-    if (!res.ok) throw new Error(`NPM auth failed: ${res.status}`)
+    if (!res.ok) throw new Error(res.status >= 300 && res.status < 400 ? `NPM answered the sign-in with a redirect (${res.status}); HyperProx does not follow it` : `NPM auth failed: ${res.status}`)
     const json = await res.json() as { token: string; expires: string }
-    this.cache = { token: json.token, expires: new Date(Date.now() + 23 * 60 * 60 * 1000) }
-    return json.token
+    const said = Date.parse(json.expires ?? '')
+    const until = Number.isFinite(said) ? Math.min(said - 5 * 60_000, Date.now() + 23 * 3600_000) : Date.now() + 23 * 3600_000
+    return { token: json.token, expires: new Date(until) }
   }
+
+  /**
+   * GETs and the sign-in are retried on a connection error (never on an HTTP answer): NPM reloads its own
+   * nginx, which also fronts its API, after every write, so the API refuses connections for a moment.
+   */
+  private async idempotent(url: string, init: RequestInit): Promise<Response> {
+    for (let i = 0; ; i++) {
+      try { return await this.fetchImpl(url, init) }
+      catch (e) { if (i >= 4) throw e; await new Promise(r => setTimeout(r, 400 * (i + 1))) }
+    }
+  }
+
+  private forgetToken(): void { this.cache = null; tokens.delete(this.cacheKey()) }
 
   private async get<T>(path: string): Promise<T> {
     const token = await this.getToken()
-    const res   = await this.fetchImpl(`${this.url}/api${path}`, { headers: { Authorization: `Bearer ${token}` } })
+    const res   = await this.idempotent(`${this.url}/api${path}`, { headers: { Authorization: `Bearer ${token}` }, redirect: 'manual' })
+    if (res.status === 401) this.forgetToken()
     if (!res.ok) throw new Error(`NPM API error ${res.status} on ${path}`)
     return res.json() as Promise<T>
   }
@@ -94,7 +138,9 @@ export class NPMClient {
       method,
       headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),
+      redirect: 'manual',
     })
+    if (res.status === 401) this.forgetToken()
     if (!res.ok) {
       const err = await res.text()
       throw new Error(`NPM ${method} ${path} failed ${res.status}: ${err}`)
@@ -128,6 +174,8 @@ export class NPMClient {
       domain_names: data.domain_names,
       provider:     data.provider,
       nice_name:    data.nice_name,
+      // The address Let's Encrypt is told, and the agreement NPM requires before it asks.
+      ...(data.letsencrypt_email ? { meta: { letsencrypt_email: data.letsencrypt_email, letsencrypt_agree: true, dns_challenge: false } } : {}),
     })
   }
 

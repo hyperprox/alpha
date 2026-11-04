@@ -47,6 +47,7 @@ model ProxyInstance {
   mode      String   @default("byo")   // byo | managed
   managed   Json?               // { node, vmid, recipe } when the Catalogue installed it
   settings  Json                // non-secret options per kind
+  owned     Json     @default("[]")   // host ids HyperProx created here (Caddy, HAProxy, Pangolin)
   createdBy String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

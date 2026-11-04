@@ -12,6 +12,7 @@ CREATE TABLE "ProxyInstance" (
     "mode" TEXT NOT NULL DEFAULT 'byo',
     "managed" JSONB,
     "settings" JSONB NOT NULL,
+    "owned" JSONB NOT NULL DEFAULT '[]',
     "createdBy" TEXT NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,

@@ -9,9 +9,13 @@
 //       proxyService().createInstance(managedInstanceInput(...), actor).
 //  The compose files are the ones the live tests ran against.
 //
-//  Caddy's admin API has no login of its own: the Managed container listens
-//  for it on its own address, so put that address where only HyperProx can
-//  reach it. Traefik's API and HAProxy's Data Plane take the generated secret.
+//  Caddy's admin API has no login of its own, so the Managed container binds
+//  it to 127.0.0.1 (host networking: the container's own loopback) and
+//  HyperProx reaches it through the container (`pct exec` on the node with
+//  the vault-held login, then curl to loopback; settings api_via=guest).
+//  Nothing on the network can reach it. HAProxy's Data Plane is bound to
+//  loopback the same way, and keeps its generated password as well.
+//  Traefik's API takes the generated secret (a {SHA} hash in its own file).
 // =============================================================================
 
 import { createHash, randomBytes } from 'node:crypto'
@@ -23,7 +27,9 @@ export type ManagedKind = 'traefik' | 'caddy' | 'haproxy'
 export function managedSecret(): string { return randomBytes(18).toString('base64url') }
 
 const base = { category: 'proxy' as const, needsDocker: true, firstRun: { kind: 'none' as const }, wizard: false,
-  defaults: { cores: 1, memoryMb: 512, diskGb: 4 } }
+  defaults: { cores: 1, memoryMb: 512, diskGb: 4 },
+  // curl inside the container: how HyperProx reaches an API bound to loopback there.
+  packages: { debian: ['curl'], ubuntu: ['curl'] } }
 
 const TRAEFIK_FILE_DIR = '/opt/traefik/dynamic'
 
@@ -48,26 +54,26 @@ export function managedProxyRecipe(kind: ManagedKind, secret: string): Catalogue
     volumes: ["./dynamic:/dynamic"]
 ` } }
     case 'caddy':
-      return { ...base, id: 'caddy', name: 'Caddy', port: 2019, healthPath: '/config/', expectStatus: [200],
-        summary: 'A reverse proxy with automatic HTTPS. HyperProx drives it through its admin API.',
-        notes: ['Takes ports 80 and 443 on this container.', 'Its admin API (port 2019) has no login: keep this container’s address reachable only by HyperProx.'],
+      return { ...base, id: 'caddy', name: 'Caddy', port: 80, healthPath: '/', expectStatus: [200, 404, 308],
+        summary: 'A reverse proxy with automatic HTTPS. HyperProx drives it through its admin API, which only the container itself can reach.',
+        notes: ['Takes ports 80 and 443 on this container.', 'Its admin API listens on 127.0.0.1 inside the container; HyperProx reaches it through the node.'],
         install: { kind: 'compose', dir: '/opt/caddy', compose: `services:
   caddy:
     image: caddy:2.10
     restart: unless-stopped
+    network_mode: host
     command: ["caddy", "run", "--resume", "--config", "/etc/caddy/initial.json"]
-    ports: ["80:80", "443:443", "2019:2019"]
     volumes: ["./initial.json:/etc/caddy/initial.json:ro", "./data:/data", "./config:/config"]
 ` } }
     case 'haproxy':
-      return { ...base, id: 'haproxy', name: 'HAProxy', port: 5555, healthPath: '/v3/info', expectStatus: [200, 401],
+      return { ...base, id: 'haproxy', name: 'HAProxy', port: 80, healthPath: '/', expectStatus: [503, 200],
         summary: 'A load balancer and reverse proxy. HyperProx drives it through the Data Plane API, validating every change before HAProxy reloads.',
-        notes: ['Takes port 80 on this container.'],
+        notes: ['Takes port 80 on this container.', 'The Data Plane API listens on 127.0.0.1 inside the container; HyperProx reaches it through the node.'],
         install: { kind: 'compose', dir: '/opt/haproxy', compose: `services:
   haproxy:
     image: haproxytech/haproxy-debian:3.2
     restart: unless-stopped
-    ports: ["80:80", "5555:5555"]
+    network_mode: host
     volumes: ["./cfg:/usr/local/etc/haproxy"]
 ` } }
   }
@@ -94,7 +100,7 @@ export function managedProxyFiles(kind: ManagedKind, secret: string): Record<str
       middlewares: [api-auth]
 ` }
     }
-    case 'caddy': return { '/opt/caddy/initial.json': JSON.stringify({ admin: { listen: '0.0.0.0:2019' }, apps: { http: { servers: { srv0: { listen: [':80'], routes: [] } } } } }, null, 2) + '\n' }
+    case 'caddy': return { '/opt/caddy/initial.json': JSON.stringify({ admin: { listen: '127.0.0.1:2019' }, apps: { http: { servers: { srv0: { listen: [':80'], routes: [] } } } } }, null, 2) + '\n' }
     case 'haproxy': return {
       '/opt/haproxy/cfg/haproxy.cfg': `global
   master-worker
@@ -115,7 +121,7 @@ frontend http
   bind :80
 `,
       '/opt/haproxy/cfg/dataplaneapi.yml': `dataplaneapi:
-  host: 0.0.0.0
+  host: 127.0.0.1
   port: 5555
   transaction:
     transaction_dir: /tmp/haproxy
@@ -142,8 +148,9 @@ export function managedInstanceInput(kind: ManagedKind, o: { name: string; ip: s
   switch (kind) {
     case 'traefik': return { kind, name: o.name, url: `http://${o.ip}:8282`, mode: 'managed', managed,
       settings: { api_user: 'hyperprox', file: `${TRAEFIK_FILE_DIR}/hyperprox.yml`, entrypoints: 'web', transport: 'guest' }, secrets: { api_password: o.secret } }
-    case 'caddy': return { kind, name: o.name, url: `http://${o.ip}:2019`, mode: 'managed', managed, settings: {}, secrets: {} }
-    case 'haproxy': return { kind, name: o.name, url: `http://${o.ip}:5555`, mode: 'managed', managed,
-      settings: { user: 'hyperprox', frontend: 'http' }, secrets: { password: o.secret } }
+    // Loopback inside the container, reached through it: `ip` is not used for these two.
+    case 'caddy': return { kind, name: o.name, url: 'http://127.0.0.1:2019', mode: 'managed', managed, settings: { api_via: 'guest' }, secrets: {} }
+    case 'haproxy': return { kind, name: o.name, url: 'http://127.0.0.1:5555', mode: 'managed', managed,
+      settings: { api_via: 'guest', user: 'hyperprox', frontend: 'http' }, secrets: { password: o.secret } }
   }
 }

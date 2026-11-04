@@ -28,6 +28,8 @@ export interface CaddyConfig {
   auth?:    HttpAuth
   /** The server in apps.http.servers to put hosts in; empty = the first that listens on :80 or :443. */
   server?:  string
+  /** Route ids HyperProx recorded creating. A route is HyperProx's only if it is here and has the hpx- prefix. */
+  owned?:   Set<string>
 }
 
 interface Route { '@id'?: string; match?: Array<{ host?: string[] }>; handle?: any[]; terminal?: boolean }
@@ -85,7 +87,7 @@ export class CaddyProvider implements ProxyProvider {
 
   private record(r: Route, index: number, srv: string): ProxyHostRecord {
     const id = r['@id']
-    const owned = !!id && id.startsWith(PREFIX)
+    const owned = !!id && id.startsWith(PREFIX) && !!this.cfg.owned?.has(id)
     const vars = (r.handle ?? []).find(h => h?.handler === 'vars')
     const proxy = findProxy(r.handle)
     let scheme: 'http' | 'https' = proxy?.transport?.tls ? 'https' : 'http'
@@ -100,7 +102,8 @@ export class CaddyProvider implements ProxyProvider {
       id: owned ? id! : `${srv}#${index}${id ? `:${id}` : ''}`,
       domains: (r.match ?? []).flatMap(m => m.host ?? []).map(h => h.toLowerCase()),
       forwardScheme: scheme, forwardHost: host, forwardPort: port, enabled: !disabled, owned,
-      readOnlyReason: owned ? undefined : 'Made outside HyperProx (a Caddy route without a HyperProx @id)',
+      readOnlyReason: owned ? undefined : 'Made outside HyperProx (no record of HyperProx creating this Caddy route)',
+      state: owned ? r : undefined,
       tls: { kind: 'auto' }, online: null, websockets: true,
       detail: proxy ? undefined : (owned ? 'Disabled: answers 503' : 'No reverse_proxy handler'),
     }
@@ -128,7 +131,7 @@ export class CaddyProvider implements ProxyProvider {
   }
 
   private async ownedRoute(id: string): Promise<Route> {
-    if (!id.startsWith(PREFIX)) throw new ProxyRefusal(`Caddy route ${id} was not made by HyperProx; it is read-only.`)
+    if (!id.startsWith(PREFIX) || !this.cfg.owned?.has(id)) throw new ProxyRefusal(`Caddy route ${id} was not made by HyperProx; it is read-only.`)
     try { return await this.http.get<Route>(`/id/${encodeURIComponent(id)}`) }
     catch (e) { if (e instanceof ProxyHttpError && e.status === 404) throw new ProxyRefusal(`Caddy has no route ${id}.`, 404); throw e }
   }
