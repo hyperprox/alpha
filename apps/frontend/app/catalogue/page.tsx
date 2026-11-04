@@ -8,18 +8,17 @@
 // =============================================================================
 
 import { useCallback, useEffect, useState } from 'react'
+import Link from 'next/link'
 import { alpha } from '@/lib/theme'
+import { apiJson } from '@/lib/api'
+import { InstallWizard, type WizardRecipe } from '@/components/catalogue/InstallWizard'
+import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 
 const ACCENT = 'var(--accent)'
 const BORDER = 'var(--border)'
 const CARD   = 'var(--surface)'
 
-interface Recipe {
-  id: string; name: string; summary: string; category: string
-  port: number; needsDocker: boolean
-  defaults: { cores: number; memoryMb: number; diskGb: number }
-  firstLogin: string | null; notes: string[]
-  satisfies: { kind: string; id: string; setting: string } | null
+interface Recipe extends WizardRecipe {
   installedAt: string | null
 }
 interface NodeLogin { node: string; address: string | null; hasLogin: boolean }
@@ -27,6 +26,8 @@ interface Step { id: string; label: string; status: string; detail?: string }
 interface Job {
   jobId: string; recipeId: string; status: string; steps: Step[]
   log: string; vmid?: number; node?: string; ip?: string; url?: string; error?: string
+  /** This install created its container (so a failed one can be cleaned up), and whether that was done. */
+  created?: boolean; removed?: boolean
   adminCredential?: { user: string; password: string; savedInVault: boolean }
 }
 
@@ -40,8 +41,10 @@ export default function CataloguePage() {
   const [canInstall, setCanInstall] = useState(false)
   const [loading, setLoading] = useState(true)
   const [job,     setJob]     = useState<Job | null>(null)
-  const [busy,    setBusy]    = useState<string | null>(null)
   const [notice,  setNotice]  = useState<string | null>(null)
+  const [wizard,  setWizard]  = useState<Recipe | null>(null)
+  const [cleaning, setCleaning] = useState(false)
+  const [reconfirmCleanup, setReconfirmCleanup] = useState(false)
 
   // Node login form
   const [formNode, setFormNode] = useState('')
@@ -76,18 +79,21 @@ export default function CataloguePage() {
     return () => clearInterval(id)
   }, [job, load])
 
-  const install = async (r: Recipe) => {
-    if (!window.confirm(
-      `Create a container for ${r.name} (${r.defaults.cores} cores, ` +
-      `${r.defaults.memoryMb} MB, ${r.defaults.diskGb} GB) and install it?`)) return
-    setBusy(r.id)
-    const res = await fetch('/api/catalogue/install', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ recipeId: r.id }),
-    }).then(x => x.json()).catch(() => null)
-    setBusy(null)
-    if (!res?.success) return setNotice(res?.error ?? 'The install could not be started.')
-    setJob({ jobId: res.data.jobId, recipeId: r.id, status: 'running', steps: res.data.steps, log: '' })
+  // Every install goes through the wizard: nothing is placed or numbered without being shown first.
+  const install = (r: Recipe) => setWizard(r)
+
+  // A failed install may leave a half-made container. Only the one this install created is offered,
+  // and the server checks the container's mark before it removes anything.
+  const cleanup = async () => {
+    if (!job?.vmid) return
+    if (!window.confirm(`Remove CT ${job.vmid} on ${job.node}? It was created by this install, which failed. Its disk is deleted.`)) return
+    setCleaning(true)
+    const r = await apiJson<{ data: { detail: string } }>(`/api/catalogue/wizard/jobs/${job.jobId}/cleanup`, 'POST')
+    setCleaning(false)
+    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirmCleanup(true); return }
+    if (!r.ok) return setNotice(r.error ?? 'The container could not be removed.')
+    setNotice(r.body!.data.detail)
+    setJob({ ...job, removed: true })
   }
 
   const saveLogin = async () => {
@@ -123,8 +129,12 @@ export default function CataloguePage() {
           Service Catalogue
         </h1>
         <p className="max-w-[680px] text-[15px] leading-relaxed" style={{ color: 'var(--text-soft)' }}>
-          HyperProx talks to things you already run. This is for the ones you do not.
+          HyperProx talks to things you already run. This is for the ones you do not. Each install walks you through
+          its size, the node it goes on, its ID and its network, and shows the exact plan before anything is created.
         </p>
+        <Link href="/catalogue/settings" className="text-sm hover:underline w-fit" style={{ color: 'var(--accent)' }}>
+          Container ID rule →
+        </Link>
       </div>
 
       {notice && (
@@ -268,6 +278,16 @@ export default function CataloguePage() {
               </div>
             </div>
           )}
+          {job.status === 'failed' && job.created && !job.removed && (
+            <div className="flex flex-wrap items-center gap-3 mb-3">
+              <button onClick={cleanup} disabled={cleaning}
+                className="h-10 rounded-md border px-4 text-sm font-semibold"
+                style={{ borderColor: 'color-mix(in srgb, var(--crit) 45%, transparent)', color: 'var(--crit-soft)', background: 'transparent', opacity: cleaning ? 0.5 : 1 }}>
+                {cleaning ? 'removing…' : `Remove the half-made CT ${job.vmid}`}
+              </button>
+              <span className="text-[13px]" style={{ color: 'var(--text-dim)' }}>Only the container this install created; nothing else is touched.</span>
+            </div>
+          )}
           {job.log && (
             <pre className="rounded p-3 font-mono text-[10px] leading-relaxed overflow-auto"
               style={{ background: 'var(--ground-deep)', border: `1px solid ${BORDER}`, color: 'var(--text-muted)', maxHeight: 260 }}>
@@ -275,6 +295,14 @@ export default function CataloguePage() {
             </pre>
           )}
         </div>
+      )}
+
+      {wizard && (
+        <InstallWizard recipe={wizard} onClose={() => setWizard(null)}
+          onStarted={j => { setJob({ jobId: j.jobId, recipeId: wizard.id, status: 'running', steps: j.steps, log: '' }); setWizard(null) }} />
+      )}
+      {reconfirmCleanup && (
+        <ReconfirmModal onClose={() => setReconfirmCleanup(false)} onDone={() => { setReconfirmCleanup(false); void cleanup() }} />
       )}
 
       {/* ── Recipes ─────────────────────────────────────────────────────────── */}
@@ -295,6 +323,7 @@ export default function CataloguePage() {
 
             <div className="flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] mb-4" style={{ color: 'var(--text-dim)' }}>
               <span>{r.defaults.cores} cores</span>
+              {/* recommended size; the wizard warns below the minimum */}
               <span>{r.defaults.memoryMb} MB</span>
               <span>{r.defaults.diskGb} GB</span>
               <span>port {r.port}</span>
@@ -316,15 +345,15 @@ export default function CataloguePage() {
             )}
 
             <div className="mt-auto flex items-center gap-2">
-              <button onClick={() => install(r)} disabled={!canInstall || busy === r.id || job?.status === 'running'}
+              <button onClick={() => install(r)} disabled={!canInstall || job?.status === 'running'}
                 className={r.installedAt ? 'h-10 rounded-md border px-5 text-sm font-semibold' : 'h-10 rounded-md px-5 text-sm font-semibold'}
                 style={{
                   background: r.installedAt ? 'transparent' : ACCENT,
                   color: r.installedAt ? ACCENT : 'var(--accent-ink)',
                   border: r.installedAt ? `1px solid ${ACCENT}` : 'none',
-                  opacity: (!canInstall || busy === r.id || job?.status === 'running') ? 0.35 : 1,
+                  opacity: (!canInstall || job?.status === 'running') ? 0.35 : 1,
                 }}>
-                {busy === r.id ? 'starting…' : r.installedAt ? 'Install another' : 'Install'}
+                {r.installedAt ? 'Install another…' : 'Install…'}
               </button>
               {r.installedAt && (
                 <span className="font-mono text-[11px] truncate" style={{ color: 'var(--text-dim)' }}>{r.installedAt}</span>
