@@ -374,7 +374,10 @@ export function configUsesGpu(config: Record<string, unknown> | null | undefined
 }
 
 // AMD integrated graphics share the vendor ID with AMD cards; the APU code names tell them apart.
-const AMD_APU = /\b(Kaveri|Carrizo|Stoney|Raven|Picasso|Renoir|Lucienne|Cezanne|Barcelo|Rembrandt|Mendocino|Phoenix|Hawk Point|Strix|Krackan|Van Gogh|Raphael|Granite Ridge|Dragon Range)\b/i
+const AMD_APU = /\b(Kaveri|Godavari|Carrizo|Bristol Ridge|Stoney|Kabini|Temash|Mullins|Beema|Carrizo-L|Trinity|Richland|Llano|Sumo|Wrestler|Ontario|Zacate|Raven|Picasso|Dali|Pollock|Renoir|Lucienne|Cezanne|Barcelo|Rembrandt|Mendocino|Phoenix|Hawk Point|Strix|Krackan|Van Gogh|Aerith|Sephiroth|Raphael|Granite Ridge|Dragon Range)\d*\b/i
+// Intel's discrete cards: Arc desktop and laptop GPUs (DG1, DG2/Alchemist, Battlemage). "Arc Graphics" inside a
+// Core Ultra CPU is integrated and does not match.
+const INTEL_DISCRETE = /\b(DG1|DG2|Alchemist|Battlemage|Arc [AB]\d{3})/i
 
 /**
  * What `/nodes/{node}/hardware/pci` shows in display controllers (class 0x03xxxx): a discrete card
@@ -387,7 +390,10 @@ export function pciGpus(pci: unknown): { discrete: boolean; integrated: boolean 
     if (!/^0x03/i.test(String(d?.class ?? ''))) continue
     const vendor = String(d?.vendor ?? '').toLowerCase()
     if (vendor === '0x10de') out.discrete = true
-    else if (vendor === '0x8086') out.integrated = true
+    else if (vendor === '0x8086') {
+      if (INTEL_DISCRETE.test(String(d?.device_name ?? ''))) out.discrete = true
+      else out.integrated = true
+    }
     else if (vendor === '0x1002') {
       if (AMD_APU.test(String(d?.device_name ?? ''))) out.integrated = true
       else out.discrete = true
@@ -484,11 +490,12 @@ export function deriveVmid(pattern: string, at: { node: string; ip?: string }): 
  */
 export function reverseVmid(
   pattern: string, vmid: number, nodes: string[],
-): { node?: string; octetDigits?: string; width?: 2 | 3 } | { error: string } {
+): { node?: string; nodes?: string[]; octetDigits?: string; width?: 2 | 3 } | { error: string } {
   const bad = patternProblem(pattern)
   if (bad) return { error: bad }
   const id = String(vmid)
   const candidates = /\{node_digit\}/.test(pattern) ? nodes.filter(n => nodeDigit(n) !== null) : [undefined]
+  const hits: Array<{ node?: string; octetDigits?: string; width?: 2 | 3 }> = []
   for (const node of candidates) {
     let width: 2 | 3 | undefined
     const re = pattern.trim().replace(TOKEN, (_m, t: string) => {
@@ -497,9 +504,28 @@ export function reverseVmid(
       return `(?<ip>\\d{${width}})`
     })
     const m = new RegExp(`^${re}$`).exec(id)
-    if (m) return { node, octetDigits: m.groups?.ip, width }
+    if (m) hits.push({ node, octetDigits: m.groups?.ip, width })
+  }
+  if (hits.length) {
+    // Two nodes whose names end in the same number both fit; the person picks, nothing is guessed.
+    const named = hits.map(h => h.node).filter((n): n is string => !!n)
+    const digits = hits[0].octetDigits, width = hits[0].width
+    if (!named.length) return { octetDigits: digits, width }
+    return { ...(named.length === 1 ? { node: named[0] } : {}), nodes: named, octetDigits: digits, width }
   }
   return { error: `${vmid} does not fit the pattern ${pattern} for any node.` }
+}
+
+/** Like withOctetDigits, with the reason when there is no address. */
+export function octetFromDigits(base: string, digits: string, width: 2 | 3): { ip: string } | { error: string } {
+  const c = parseCidr(base.includes('/') ? base : `${base}/32`)
+  if (!c) return { error: `${base} is not an address to build on.` }
+  if (!/^\d+$/.test(digits) || digits.length !== width) return { error: `"${digits}" are not ${width} address digits.` }
+  const o = c.ip.split('.')
+  const last = Number(o[3].padStart(3, '0').slice(0, 3 - width) + digits)
+  if (last > 255) return { error: `That gives .${last} as the last number of the address, which is over 255.` }
+  o[3] = String(last)
+  return { ip: o.join('.') }
 }
 
 /**

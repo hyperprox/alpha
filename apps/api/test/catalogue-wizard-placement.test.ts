@@ -156,9 +156,9 @@ test("pattern: node and address give the ID, and say why when they cannot", () =
 
 test("pattern: the reverse, an ID gives the node and the address digits", () => {
   const nodes = ["node-1", "node-2", "node-7"]
-  assert.deepEqual(reverseVmid("{node_digit}{ip_last2}", 742, nodes), { node: "node-7", octetDigits: "42", width: 2 })
+  assert.deepEqual(reverseVmid("{node_digit}{ip_last2}", 742, nodes), { node: "node-7", nodes: ["node-7"], octetDigits: "42", width: 2 })
   assert.match((reverseVmid("{node_digit}{ip_last2}", 942, nodes) as any).error, /does not fit/)
-  assert.deepEqual(reverseVmid("9{ip_last3}", 9010, nodes), { node: undefined, octetDigits: "010", width: 3 })
+  assert.deepEqual(reverseVmid("9{ip_last3}", 9010, nodes), { octetDigits: "010", width: 3 })
   assert.equal(withOctetDigits("192.0.2.205", "42", 2), "192.0.2.242")
   assert.equal(withOctetDigits("192.0.2.1", "42", 2), "192.0.2.42")
   assert.equal(withOctetDigits("192.0.2.1", "010", 3), "192.0.2.10")
