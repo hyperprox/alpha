@@ -95,6 +95,19 @@ about the node's OSDs. The step does not run when:
 - any placement group would be left with fewer than `min_size` copies (its I/O would stop);
 - `ceph osd ok-to-stop` does not answer with a clear yes.
 
+Survivors are counted from each placement group's *acting* set: an OSD that is only in the
+`up` set is still backfilling and holds no complete copy. Erasure-coded pools are labelled
+as such, and a PG left with fewer than `k` shards counts as offline.
+
+**Which OSDs are on the node** comes from three sources that must agree: the CRUSH tree
+(the host bucket with the node's name, plus any host bucket holding an OSD that reports
+this host, such as a per-device-class bucket), the `hostname` in `ceph osd metadata`, and
+the `ceph-osd@` units on the node. If they disagree, if the unit listing fails, or if the
+node has OSD units that name no OSD, the layout counts as unreadable. A node counts as
+having no OSDs only when all three say so. The layout is also unreadable when the PG map
+is not `pg_ready` or a pool has fewer PG rows than its `pg_num` (a freshly restarted
+manager can serve a partial map).
+
 Such a step is marked **skipped for safety** with what would go offline — the pool, its
 share of placement groups and roughly how many GB — and the report and notification say
 so instead of reporting success. A skipped reboot leaves the packages installed and the
@@ -109,12 +122,34 @@ a skipped restart costs a manual step, a wrong restart can cost data availabilit
 
 The same check runs when the plan is built: the plan preview and a dry run show, for each
 Ceph restart and node reboot, whether it would run or be skipped for safety and why. It
-runs again when the step executes, because the cluster may have changed in between.
+runs again when the step executes, because the cluster may have changed in between, and
+for a reboot once more right before `systemctl reboot`, after HA has moved the guests off.
+For HyperProx's own node the handoff script runs that last check itself, against the OSD
+set the API checked; a no there is a safety skip with the reboot left pending.
+
+Between OSD restarts the health gate compares by identity, not by count: the restarted OSD
+must be up and in with none of its PGs degraded or undersized, every PG must be active,
+and no OSD may be down or out, and no PG at risk (`degraded`, `undersized`,
+`backfill_toofull`, `recovery_toofull` and the like), that was not already so before the
+step. The only OSD map flag that may appear during the step is the `noout` it set; any
+other (`pause`, `nodown`…) fails it, whatever `accepted_warnings` says.
 
 If an OSD does not come back, or its restart fails, the step stops and **`noout` is left
 set**, so Ceph never marks the OSD out and starts moving data because a restart failed.
 A critical notification says that `noout` is still set and why. Only a step in which every
 OSD came back clears it.
+
+Outside a step `noout` is never HyperProx's, so a `noout` found at the start of a run, on
+Resume, or after HyperProx restarted mid-job was left behind (or set by hand). It is
+reported by name, with a critical notification, and nothing restarts or reboots while it
+is set. Listing `OSDMAP_FLAGS` in `ceph.accepted_warnings` does not hide it.
+
+**Package scripts.** Node package upgrades and the Ceph install run with a temporary
+`/usr/sbin/policy-rc.d` that refuses every start and restart of a Ceph unit, so a
+package's `postinst` cannot restart OSDs behind the runner's back or start an OSD a person
+stopped on purpose. Any `policy-rc.d` that was already there still decides everything else
+and is put back afterwards, also when apt fails. `NEEDRESTART_SUSPEND=1` keeps needrestart
+from restarting services after a library upgrade.
 
 ## The policy file
 
