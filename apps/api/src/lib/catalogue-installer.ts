@@ -415,6 +415,8 @@ export interface ClusterView {
   nodes:    NodeView[]
   storages: PlacementStorage[]
   guests:   GuestView[]
+  /** What /cluster/nextid answers: the lowest free ID in the cluster's configured range. */
+  nextId?:  number
   /** Sources that could not be read, by name. A check that needed one says so instead of passing. */
   partial:  string[]
 }
@@ -526,10 +528,11 @@ export async function readCluster(
     client.fetchStrict<any[]>('/nodes'),
     client.fetchStrict<any[]>('/cluster/resources?type=vm'),
   ])
-  const [status, ha] = await Promise.all([
+  const [status, ha, nextId] = await Promise.all([
     soft('cluster-status', client.fetchStrict<any[]>('/cluster/status')),
     // No HA configured answers an empty list; a refusal is only a missing extra.
     client.fetchStrict<any[]>('/cluster/ha/status/current').catch(() => [] as any[]),
+    client.fetchStrict<number | string>('/cluster/nextid').then(Number).catch(() => undefined),
   ])
   const addr: Record<string, string> = {}
   for (const r of status ?? []) if (r?.type === 'node' && r.name && r.ip) addr[r.name] = r.ip
@@ -581,7 +584,7 @@ export async function readCluster(
     }).sort((a: BridgeView, b: BridgeView) => a.iface.localeCompare(b.iface))
     return v
   }))
-  return { nodes, storages, guests, partial }
+  return { nodes, storages, guests, partial, ...(nextId && Number.isSafeInteger(nextId) ? { nextId } : {}) }
 }
 
 /** Addresses running guests report: LXC interfaces, and the QEMU guest agent where it is enabled. */
@@ -616,6 +619,8 @@ export function placementFor(recipe: CatalogueRecipe, need: Need, view: ClusterV
 }
 
 const usedIds = (view: ClusterView) => view.guests.map(g => g.vmid)
+/** The next ID no CT or VM has, from where the cluster's own next-ID range starts. */
+export const nextIdOf = (view: ClusterView) => nextFreeVmid(usedIds(view), view.nextId ?? 100)
 
 export interface IdentityAnswer {
   /** The ID to offer: the rule's, or the next free one. */
@@ -640,7 +645,7 @@ export async function checkIdentity(input: {
   const node = view.nodes.find(n => n.node === input.node)
   const bridge = node?.bridges.find(b => b.iface === input.bridge) ?? node?.bridges[0]
   const staticIp = input.ip && input.ip !== 'dhcp' ? input.ip : undefined
-  const out: IdentityAnswer = { suggestedVmid: nextFreeVmid(used), rule, bridges: node?.bridges ?? [] }
+  const out: IdentityAnswer = { suggestedVmid: nextIdOf(view), rule, bridges: node?.bridges ?? [] }
 
   if (rule.kind === 'pattern') {
     const d = deriveVmid(rule.pattern, { node: input.node, ip: staticIp })
