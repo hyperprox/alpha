@@ -6,7 +6,8 @@ import assert from 'node:assert/strict'
 import { UpdatesRunner } from '../src/lib/updates/runner'
 import { MemoryStore, type StepRecord } from '../src/lib/updates/store'
 import {
-  parseCephLayout, assessOsdRestart, osdsOnNode, describeBlockers, parseOsdOkToStop, parseDaemonOkToStop, parseUnitIds,
+  parseCephLayout, assessOsdRestart, nodeOsdSet, describeBlockers, parseOsdOkToStop, parseDaemonOkToStop, parseUnitIds, parseUnitListing,
+  parseCephState, judgeRestoredState, RISKY_PG, type CephLayout,
 } from '../src/lib/updates/ceph-safety'
 import { CEPH_LAYOUT_COMMAND, cephOsdRestartCommand } from '../src/lib/updates/commands'
 import { FakeCluster, node, pkg, policyLoad, FAST, type FakeCephLayout } from './updates-fake'
@@ -47,6 +48,11 @@ function setup(fake: FakeCluster) {
 async function settle(r: UpdatesRunner) { await r.idle(); await r.idle(); await r.idle() }
 const osdStep = (steps: StepRecord[], target: string) => steps.find(s => s.target === target && s.action === 'ceph' && (s.detail ?? '').startsWith('restart osd'))!
 const layoutOf = (fake: FakeCluster) => parseCephLayout(String((fake as any).layoutOutput()))
+const onNode = (l: CephLayout, node: string) => {
+  const r = nodeOsdSet(l, node, { ok: true, ids: (l.osdsByHost[node] ?? []).map(String) })
+  if (!r.ok) throw new Error(r.reason)
+  return r.osds
+}
 
 // --- pure decisions -------------------------------------------------------------------------------
 
@@ -60,25 +66,25 @@ test('layout: pools, hosts and PGs are read from Ceph JSON, and a missing part i
 
 test('size=3: one node down leaves two copies of everything, so nothing blocks', () => {
   const l = layoutOf(cephCluster(REPLICATED))
-  assert.deepEqual(assessOsdRestart(l, osdsOnNode(l, 'node-a', [])), [])
+  assert.deepEqual(assessOsdRestart(l, onNode(l, 'node-a')), [])
 })
 
 test('size=1: every PG on the node goes offline, stated as pool, GB and percent', () => {
   const l = layoutOf(cephCluster(WITH_SINGLE_COPY))
-  const b = assessOsdRestart(l, osdsOnNode(l, 'node-c', []))
+  const b = assessOsdRestart(l, onNode(l, 'node-c'))
   assert.equal(b.length, 1)
-  assert.deepEqual({ ...b[0] }, { pool: 'bulk-media', size: 1, minSize: 1, kind: 'offline', pgs: 16, pgNum: 16, percent: 100, approxBytes: 8000e9 })
+  assert.deepEqual({ ...b[0] }, { pool: 'bulk-media', size: 1, minSize: 1, erasure: false, k: null, m: null, kind: 'offline', pgs: 16, pgNum: 16, percent: 100, approxBytes: 8000e9 })
   assert.match(describeBlockers(b), /pool "bulk-media" \(size=1, min_size=1\): 100% of it \(16 of 16 placement groups\), about 8\.0 TB would go offline/)
   // A single OSD of the two holds half of it.
   const half = assessOsdRestart(l, [4])[0]
   assert.equal(half.percent, 50); assert.equal(half.approxBytes, 4000e9)
   // The other nodes hold none of it.
-  assert.deepEqual(assessOsdRestart(l, osdsOnNode(l, 'node-a', [])), [])
+  assert.deepEqual(assessOsdRestart(l, onNode(l, 'node-a')), [])
 })
 
 test('size=2, min_size=2: one copy left is below min_size, so I/O would stop', () => {
   const l = layoutOf(cephCluster({ osdsByNode: OSDS, pools: [{ id: 1, name: 'strict', size: 2, minSize: 2, pgNum: 12, storedBytes: 120e9 }] }))
-  const b = assessOsdRestart(l, osdsOnNode(l, 'node-a', []))
+  const b = assessOsdRestart(l, onNode(l, 'node-a'))
   assert.equal(b[0].kind, 'blocked')
   assert.match(describeBlockers(b), /would stop accepting reads and writes/)
 })
@@ -186,7 +192,7 @@ test('an OSD that does not rejoin aborts the step and LEAVES noout set, with a c
   assert.equal(j.status, 'paused')
   const a = osdStep(await store.getSteps(job.id), 'node-a')
   assert.equal(a.status, 'failed')
-  assert.match(a.reason!, /after restarting osd\.0 on node-a.*OSD\(s\) down.*osd\.1 not restarted.*noout is LEFT SET/)
+  assert.match(a.reason!, /after restarting osd\.0 on node-a: osd\.0 is not up; osd\.1 not restarted; noout is LEFT SET/)
   assert.deepEqual(fake.restartedOsds, [0])
   assert.equal(fake.noout, true, 'data must not start moving because a restart failed')
   assert.equal(fake.ran(/ceph osd unset noout/), false)

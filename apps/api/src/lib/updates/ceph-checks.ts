@@ -13,7 +13,7 @@ import type { UpdatesExecutor } from './executor'
 import type { UpdatesPlan } from './types'
 import { CEPH_LAYOUT_COMMAND, cephUnitsCommand, cephOsdOkToStopCommand, cephDaemonOkToStopCommand } from './commands'
 import {
-  parseCephLayout, osdsOnNode, assessOsdRestart, describeBlockers, parseOsdOkToStop, parseDaemonOkToStop, parseUnitIds,
+  parseCephLayout, nodeOsdSet, assessOsdRestart, describeBlockers, parseOsdOkToStop, parseDaemonOkToStop, parseUnitListing,
 } from './ceph-safety'
 
 /** How a Ceph step or reboot that would have been unsafe begins its reason. Counted apart from successes. */
@@ -44,10 +44,14 @@ export async function osdVerdict(exec: UpdatesExecutor, node: string, peer: stri
   let layout
   try { layout = parseCephLayout((await exec.nodeExec(peer, CEPH_LAYOUT_COMMAND, undefined, 120_000)).output) }
   catch (e: any) { return { kind: 'unreadable', reason: `could not read the Ceph pool layout: ${e.message}` } }
-  const units = parseUnitIds('osd', (await exec.nodeExec(node, cephUnitsCommand('osd'), undefined, 60_000)).output)
-    .filter(id => /^\d+$/.test(id)).map(Number)
-  const osds = osdsOnNode(layout, node, units)
-  if (!osds.length) return { kind: 'none', reason: `no OSDs on ${node}` }
+  let listing
+  try { listing = parseUnitListing('osd', (await exec.nodeExec(node, cephUnitsCommand('osd'), undefined, 60_000)).output) }
+  catch (e: any) { listing = { ok: false, ids: [] as string[], reason: e.message } }
+  const set = nodeOsdSet(layout, node, listing)
+  if (!set.ok) return { kind: 'unreadable', reason: set.reason }
+  const osds = set.osds
+  // Empty only when CRUSH, OSD metadata and the node's units all say so.
+  if (!osds.length) return { kind: 'none', reason: `no OSDs on ${node} (CRUSH, OSD metadata and systemd units agree)` }
 
   const blockers = assessOsdRestart(layout, osds)
   const together = parseOsdOkToStop((await exec.nodeExec(peer, cephOsdOkToStopCommand(osds), undefined, 60_000)).output)
@@ -62,12 +66,15 @@ export async function osdVerdict(exec: UpdatesExecutor, node: string, peer: stri
 }
 
 /** `ceph mon ok-to-stop` for the mons on `node`. A node without a mon is a yes. */
-export async function monVerdict(exec: UpdatesExecutor, node: string, peer: string): Promise<{ ok: boolean; ids: string[]; reason: string }> {
-  const ids = parseUnitIds('mon', (await exec.nodeExec(node, cephUnitsCommand('mon'), undefined, 60_000)).output)
-  if (!ids.length) return { ok: true, ids, reason: `no mon on ${node}` }
-  const v = parseDaemonOkToStop('mon', (await exec.nodeExec(peer, cephDaemonOkToStopCommand('mon', ids), undefined, 60_000)).output)
+export async function daemonVerdict(exec: UpdatesExecutor, daemon: 'mon' | 'mds', node: string, peer: string): Promise<{ ok: boolean; ids: string[]; reason: string }> {
+  const listing = parseUnitListing(daemon, (await exec.nodeExec(node, cephUnitsCommand(daemon), undefined, 60_000)).output)
+  if (!listing.ok) return { ok: false, ids: [], reason: `could not list the ceph-${daemon} units on ${node}: ${listing.reason}` }
+  const ids = listing.ids
+  if (!ids.length) return { ok: true, ids, reason: `no ${daemon} on ${node}` }
+  const v = parseDaemonOkToStop(daemon, (await exec.nodeExec(peer, cephDaemonOkToStopCommand(daemon, ids), undefined, 60_000)).output)
   return { ok: v.ok, ids, reason: v.reason }
 }
+export const monVerdict = (exec: UpdatesExecutor, node: string, peer: string) => daemonVerdict(exec, 'mon', node, peer)
 
 /** What the plan preview appends to a step's detail. The runner keys only on the words before it. */
 export const SAFETY_MARK = ' · safety: '
@@ -92,10 +99,11 @@ export async function annotatePlanSafety(exec: UpdatesExecutor, plan: UpdatesPla
     const verdict = await once(`${isReboot ? 'reboot' : daemon}:${s.target}`, async () => {
       const peer = await peerFor(exec, s.target)
       if (daemon === 'mgr') return 'will restart (Ceph has no ok-to-stop check for mgrs)'
-      if (daemon === 'mon') {
-        const m = await monVerdict(exec, s.target, peer)
+      if (daemon === 'mon' || daemon === 'mds') {
+        const m = await daemonVerdict(exec, daemon, s.target, peer)
         return m.ok ? `will restart (${m.reason})` : `${SAFETY_SKIP} ${m.reason}`
       }
+      if (daemon !== null && daemon !== 'osd') return `the step would refuse: HyperProx has no safety check for ceph-${daemon}`
       const v = await osdVerdict(exec, s.target, peer, isReboot ? 'rebooting' : 'restarting')
       if (v.kind === 'none') return isReboot ? `will reboot if needed (${v.reason})` : `nothing to restart (${v.reason})`
       if (v.kind === 'unreadable') return `the step would refuse: ${v.reason}`
