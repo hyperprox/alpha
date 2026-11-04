@@ -64,7 +64,7 @@ test('viewer and operator: read hosts with their instance; no settings; every wr
     assert.equal(hosts.statusCode, 200, hosts.body)
     assert.ok(hosts.json().data.hosts.every((h: any) => h.instanceId && h.instanceName))
     const inst = await app.inject({ method: 'GET', url: `${B}/instances`, headers: { cookie } })
-    assert.deepEqual(inst.json().data.map((i: any) => i.settings), [{}])
+    assert.deepEqual(Object.keys(inst.json().data[0]).sort(), ['id', 'kind', 'kindLabel', 'legacy', 'mode', 'name', 'status'])
     for (const [method, url] of WRITES) {
       const r = await app.inject({ method: method as any, url, headers: { cookie }, payload: method === 'DELETE' ? undefined : {} })
       assert.equal(r.statusCode, 403, `${email} ${method} ${url}`)
@@ -109,4 +109,43 @@ test('admin: add an instance, preview, apply, read back; refusals are 4xx with t
   const cert = await app.inject({ method: 'POST', url: `${B}/instances/${id}/certificates`, headers: { cookie }, payload: { domains: ['routes.hpx.invalid'], email: 'a@example.invalid' } })
   assert.equal(cert.statusCode, 400)
   assert.match(cert.json().error, /gets its own certificates/)
+})
+
+test('6: viewers get names, targets, status and the certificate name and expiry, nothing else; admins never get certificate meta', async () => {
+  w.npm1.certs.push({ id: 6, nice_name: 'dns cert', domain_names: ['secret.hpx.invalid'], expires_on: '2027-01-01 00:00:00', provider: 'letsencrypt', meta: { dns_provider_credentials: 'dns_cloudflare_api_token = TOKEN-XYZ' } })
+  w.npm1.hosts.push({ id: 60, domain_names: ['secret.hpx.invalid'], forward_scheme: 'http', forward_host: '192.0.2.61', forward_port: 80, certificate_id: 6, enabled: true,
+    advanced_config: 'proxy_set_header Authorization "Bearer ADV-SECRET";', meta: { nginx_online: true }, access_list_id: 0, locations: [] })
+  w.service.invalidate('npm')
+  const viewer = (await signIn(app, 'viewer@example.com', 'viewer master password')).cookie
+  for (const url of [`${B}/hosts`, `${B}/instances/npm/hosts`, `${B}/certificates`, `${B}/instances/npm/certificates`, `${B}/instances`, `${B}/instances/npm/health`]) {
+    const r = await app.inject({ method: 'GET', url, headers: { cookie: viewer } })
+    assert.equal(r.statusCode, 200, url)
+    for (const secret of ['TOKEN-XYZ', 'ADV-SECRET', 'advanced_config', '"meta"', '"native"', '192.0.2.37:81', 'admin@example.invalid']) assert.equal(r.body.includes(secret), false, `${url} leaks ${secret}`)
+  }
+  const h = (await app.inject({ method: 'GET', url: `${B}/hosts`, headers: { cookie: viewer } })).json().data.hosts.find((x: any) => x.id === '60')
+  assert.deepEqual(Object.keys(h).sort(), ['domains', 'enabled', 'forwardHost', 'forwardPort', 'forwardScheme', 'id', 'instanceId', 'instanceName', 'kind', 'online', 'readOnly', 'tls'])
+  assert.deepEqual(h.tls, { kind: 'certificate', certificateName: 'dns cert', expiresAt: '2027-01-01 00:00:00' })
+  const admin = (await signIn(app, 'admin@example.com', 'admin master password')).cookie
+  for (const url of [`${B}/hosts`, `${B}/certificates`, `${B}/instances/npm/certificates`]) {
+    const r = await app.inject({ method: 'GET', url, headers: { cookie: admin } })
+    assert.equal(r.body.includes('TOKEN-XYZ'), false, `${url} gives admins the certificate meta`)
+  }
+})
+
+test('10: a proxy’s own error text reaches admins, never viewers', async () => {
+  const inner = w.npm1.fetch
+  w.npm1.fetch = (async () => new Response('upstream said: internal-detail-123', { status: 500 })) as any
+  w.service.invalidate('npm')
+  try {
+    const viewer = (await signIn(app, 'viewer@example.com', 'viewer master password')).cookie
+    const v = await app.inject({ method: 'GET', url: `${B}/hosts`, headers: { cookie: viewer } })
+    assert.deepEqual(v.json().data.errors.find((e: any) => e.instanceId === 'npm').error, 'not answering')
+    const v2 = await app.inject({ method: 'GET', url: `${B}/instances/npm/hosts`, headers: { cookie: viewer } })
+    assert.equal(v2.statusCode, 502)
+    assert.equal(v2.body.includes('500'), false)
+    w.service.invalidate('npm')
+    const admin = (await signIn(app, 'admin@example.com', 'admin master password')).cookie
+    const a = await app.inject({ method: 'GET', url: `${B}/hosts`, headers: { cookie: admin } })
+    assert.match(a.json().data.errors.find((e: any) => e.instanceId === 'npm').error, /500/)
+  } finally { w.npm1.fetch = inner; w.service.invalidate('npm') }
 })

@@ -7,7 +7,7 @@ import { TraefikProvider } from './providers/traefik'
 import { CaddyProvider } from './providers/caddy'
 import { HaproxyProvider } from './providers/haproxy'
 import { PangolinProvider } from './providers/pangolin'
-import { GuestFileTransport, SshFileTransport, type FileTransport, type GuestExec } from './transport'
+import { GuestFileTransport, SshFileTransport, guestFetch, type FileTransport, type GuestExec } from './transport'
 import type { FetchLike } from './http'
 import { KIND_LABEL, ProxyRefusal, type ProxyInstance, type ProxyKind, type ProxyProvider } from './types'
 
@@ -65,6 +65,8 @@ export const KINDS: Record<ProxyKind, KindInfo> = {
   caddy: {
     kind: 'caddy', label: KIND_LABEL.caddy, urlLabel: 'Admin API URL', urlHint: 'http://192.0.2.10:2019',
     fields: [
+      { key: 'api_via', label: 'How HyperProx reaches the API', secret: false, required: false, default: 'direct', options: ['direct', 'guest'],
+        help: 'guest (Managed only): the API listens on 127.0.0.1 in the container and HyperProx reaches it through the container.' },
       { key: 'server', label: 'Server', secret: false, required: false, help: 'The apps.http server to use; empty picks the one on :80/:443.' },
       { key: 'admin_user', label: 'Basic auth user', secret: false, required: false, help: 'Only if the admin API sits behind something that checks it.' },
       { key: 'admin_password', label: 'Basic auth password', secret: true, required: false },
@@ -75,6 +77,8 @@ export const KINDS: Record<ProxyKind, KindInfo> = {
   haproxy: {
     kind: 'haproxy', label: KIND_LABEL.haproxy, urlLabel: 'Data Plane API URL', urlHint: 'http://192.0.2.10:5555',
     fields: [
+      { key: 'api_via', label: 'How HyperProx reaches the API', secret: false, required: false, default: 'direct', options: ['direct', 'guest'],
+        help: 'guest (Managed only): the API listens on 127.0.0.1 in the container and HyperProx reaches it through the container.' },
       { key: 'user', label: 'Data Plane user', secret: false, required: true },
       { key: 'password', label: 'Data Plane password', secret: true, required: true },
       { key: 'frontend', label: 'Frontend', secret: false, required: false, help: 'Where HyperProx adds its rules; empty picks the first.' },
@@ -103,9 +107,16 @@ export interface BuildDeps {
   fileTransport?: (inst: ProxyInstance) => FileTransport
 }
 
-/** Build the provider for an instance from its settings and secrets. */
-export function buildProvider(inst: ProxyInstance, secrets: Record<string, string>, deps: BuildDeps = {}): ProxyProvider {
+/** Build the provider for an instance from its settings and secrets. `owned` is the instance's record of the hosts it made. */
+export function buildProvider(inst: ProxyInstance, secrets: Record<string, string>, deps: BuildDeps = {}, owned: Set<string> = new Set(inst.owned ?? [])): ProxyProvider {
   const s = inst.settings
+  // Managed Caddy and HAProxy listen on loopback inside their container: their API is reached through it.
+  const apiFetch = (): FetchLike | undefined => {
+    if (s.api_via !== 'guest') return deps.fetch
+    if (inst.mode !== 'managed' || !inst.managed) throw new ProxyRefusal(`${inst.name}: reaching the API through the container needs a Managed instance.`, 400)
+    if (!deps.guestExec) throw new ProxyRefusal(`${inst.name}: reaching the API through the container is not available here.`, 400)
+    return guestFetch(deps.guestExec(inst.managed.node, inst.managed.vmid))
+  }
   const need = (k: string, v: string | undefined, label: string) => { if (!v) throw new ProxyRefusal(`${inst.name}: ${label} is not set.`, 400); return v }
   switch (inst.kind) {
     case 'npm':
@@ -125,17 +136,17 @@ export function buildProvider(inst: ProxyInstance, secrets: Record<string, strin
         apiUrl: inst.url, file: need('file', s.file, 'the dynamic file'),
         auth: s.api_user ? { basic: { user: s.api_user, password: secrets.api_password ?? '' } } : {},
         entryPoints: (s.entrypoints || 'web').split(',').map(x => x.trim()).filter(Boolean),
-        certResolver: s.cert_resolver || undefined, transport,
+        certResolver: s.cert_resolver || undefined, transport, lockKey: inst.id,
       }, deps.fetch)
     }
     case 'caddy':
-      return new CaddyProvider({ adminUrl: inst.url, server: s.server || undefined,
-        auth: s.admin_user ? { basic: { user: s.admin_user, password: secrets.admin_password ?? '' } } : {} }, deps.fetch)
+      return new CaddyProvider({ adminUrl: inst.url, server: s.server || undefined, owned,
+        auth: s.admin_user ? { basic: { user: s.admin_user, password: secrets.admin_password ?? '' } } : {} }, apiFetch())
     case 'haproxy':
-      return new HaproxyProvider({ url: inst.url, frontend: s.frontend || undefined,
-        auth: { basic: { user: need('user', s.user, 'the Data Plane user'), password: need('password', secrets.password, 'the Data Plane password') } } }, deps.fetch)
+      return new HaproxyProvider({ url: inst.url, frontend: s.frontend || undefined, owned,
+        auth: { basic: { user: need('user', s.user, 'the Data Plane user'), password: need('password', secrets.password, 'the Data Plane password') } } }, apiFetch())
     case 'pangolin':
       return new PangolinProvider({ url: inst.url, apiKey: need('api_key', secrets.api_key, 'the API key'),
-        orgId: need('org_id', s.org_id, 'the organisation id'), siteId: s.site_id ? Number(s.site_id) : undefined }, deps.fetch)
+        orgId: need('org_id', s.org_id, 'the organisation id'), siteId: s.site_id ? Number(s.site_id) : undefined, owned }, deps.fetch)
   }
 }

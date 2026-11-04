@@ -86,18 +86,72 @@ function sftpOf(c: Client): Promise<SFTPWrapper> {
   return new Promise((res, rej) => c.sftp((e, s) => (e ? rej(e) : res(s))))
 }
 
+// One SSH connection per server and login, reused while it is busy and closed after a minute idle: a page
+// refreshing every 30 s no longer means an SSH handshake every 30 s.
+const IDLE_MS = 60_000
+interface Pooled { client: Client; sftp: SFTPWrapper; timer: NodeJS.Timeout | null; busy: number }
+const pool = new Map<string, Promise<Pooled>>()
+
+function poolKey(t: SshTarget): string {
+  const cred = createHash('sha256').update(`${t.password ?? ''}\n${t.privateKey ?? ''}\n${t.passphrase ?? ''}`).digest('hex')
+  return `${t.username}@${t.host}:${t.port}|${t.hostKey ?? ''}|${cred}`
+}
+
+function drop(key: string, p?: Pooled): void {
+  pool.delete(key)
+  if (p) { if (p.timer) clearTimeout(p.timer); try { p.client.end() } catch { /* gone */ } }
+}
+
+async function acquire(t: SshTarget): Promise<{ key: string; p: Pooled }> {
+  const key = poolKey(t)
+  let pending = pool.get(key)
+  if (!pending) {
+    pending = (async () => {
+      const client = await connect(t)
+      const sftp = await sftpOf(client).catch(e => { client.end(); throw e })
+      const p: Pooled = { client, sftp, timer: null, busy: 0 }
+      client.on('close', () => { if (pool.get(key) === pending) pool.delete(key) })
+      client.on('error', () => { if (pool.get(key) === pending) pool.delete(key) })
+      return p
+    })()
+    pool.set(key, pending)
+    pending.catch(() => { if (pool.get(key) === pending) pool.delete(key) })
+  }
+  const p = await pending
+  if (p.timer) { clearTimeout(p.timer); p.timer = null }
+  p.busy++
+  return { key, p }
+}
+
+function release(key: string, p: Pooled): void {
+  p.busy--
+  if (p.busy === 0 && pool.has(key)) { p.timer = setTimeout(() => drop(key, p), IDLE_MS); p.timer.unref?.() }
+}
+
+/** Tests and shutdown: close every pooled connection. */
+export function closeSshPool(): void { for (const [k, v] of [...pool]) v.then(p => drop(k, p), () => pool.delete(k)) }
+export function sshPoolSize(): number { return pool.size }
+
 export class SshFileTransport implements FileTransport {
   constructor(private t: SshTarget) {}
   describe() { return `SFTP ${this.t.username}@${this.t.host}:${this.t.port}` }
 
   private async with<T>(fn: (s: SFTPWrapper) => Promise<T>): Promise<T> {
-    const c = await connect(this.t)
-    try { return await fn(await sftpOf(c)) } finally { c.end() }
+    for (let attempt = 0; ; attempt++) {
+      const { key, p } = await acquire(this.t)
+      try { return await fn(p.sftp) }
+      catch (e: any) {
+        // A connection the server closed while idle: try once more on a fresh one. A file error is final.
+        const broken = !e?.code || /No response|not connected|ECONNRESET|channel|closed/i.test(String(e?.message))
+        if (broken && !(e instanceof HostKeyMismatch)) drop(key, p)
+        if (!broken || attempt > 0) throw e
+      } finally { release(key, p) }
+    }
   }
 
   read(file: string): Promise<string | null> {
     return this.with(s => new Promise((res, rej) => s.readFile(file, (e: any, b) => {
-      if (e) return e.code === 2 ? res(null) : rej(new Error(`Cannot read ${file}: ${e.message}`))
+      if (e) return e.code === 2 ? res(null) : rej(Object.assign(new Error(`Cannot read ${file}: ${e.message}`), { code: e.code }))
       res(b.toString('utf8'))
     })))
   }
@@ -105,7 +159,7 @@ export class SshFileTransport implements FileTransport {
   write(file: string, text: string): Promise<void> {
     const tmp = path.join(path.dirname(file), `.${path.basename(file)}.hyperprox-${process.pid}-${Date.now()}`)
     return this.with(async s => {
-      await new Promise<void>((res, rej) => s.writeFile(tmp, text, { mode: 0o644 }, (e: any) => (e ? rej(new Error(`Cannot write ${tmp}: ${e.message}`)) : res())))
+      await new Promise<void>((res, rej) => s.writeFile(tmp, text, { mode: 0o644 }, (e: any) => (e ? rej(Object.assign(new Error(`Cannot write ${tmp}: ${e.message}`), { code: e.code ?? 'EWRITE' })) : res())))
       // OpenSSH's posix-rename replaces the target in one step; plain SFTP rename refuses an existing target.
       await new Promise<void>((res, rej) => {
         const done = (e: any) => (e ? rej(e) : res())
@@ -113,7 +167,7 @@ export class SshFileTransport implements FileTransport {
         else s.rename(tmp, file, done)
       }).catch(async (e: any) => {
         await new Promise<void>(r => s.unlink(tmp, () => r()))
-        throw new Error(`Cannot move the new file over ${file}: ${e.message}`)
+        throw Object.assign(new Error(`Cannot move the new file over ${file}: ${e.message}`), { code: e.code ?? 'ERENAME' })
       })
     })
   }
@@ -145,5 +199,45 @@ export class GuestFileTransport implements FileTransport {
     const b64 = Buffer.from(text, 'utf8').toString('base64')
     const r = await this.exec(`set -e\numask 022\nprintf '%s' '${b64}' | base64 -d > ${shq(tmp)}\nmv -f ${shq(tmp)} ${shq(file)}\necho WROTE\n`)
     if (r.code !== 0 || !/WROTE/.test(r.output)) throw new Error(`Writing ${file} in the container failed (exit ${r.code})`)
+  }
+}
+
+// --- HTTP through the container (Managed Caddy and HAProxy, whose APIs listen on loopback only) ---------
+
+const HTTP_BEGIN = '---HYPERPROX-HTTP---'
+const HTTP_END = '---HYPERPROX-HTTP-END---'
+
+/**
+ * A fetch that runs curl inside the Managed container, so an admin API bound to 127.0.0.1 there is reachable
+ * by HyperProx and by nothing else on the network. Headers (credentials included) and the body travel as
+ * files, never on curl's command line. Redirects are never followed.
+ */
+export function guestFetch(exec: GuestExec): (url: string, init?: RequestInit) => Promise<Response> {
+  return async (url, init = {}) => {
+    const u = new URL(url)
+    if (u.hostname !== '127.0.0.1' && u.hostname !== 'localhost' && u.hostname !== '[::1]') throw new Error('guestFetch reaches loopback addresses only')
+    const method = (init.method ?? 'GET').toUpperCase()
+    if (!/^[A-Z]+$/.test(method)) throw new Error('bad method')
+    const headers = Object.entries((init.headers ?? {}) as Record<string, string>)
+      .filter(([k]) => /^[A-Za-z0-9-]+$/.test(k)).map(([k, v]) => `${k}: ${String(v).replace(/[\r\n]/g, '')}`).join('\n')
+    const body = typeof init.body === 'string' ? init.body : init.body ? String(init.body) : null
+    const b64 = (x: string) => Buffer.from(x, 'utf8').toString('base64')
+    const script = [
+      'set -e', 'd=$(mktemp -d)', "trap 'rm -rf \"$d\"' EXIT",
+      `printf '%s' '${b64(headers)}' | base64 -d > "$d/h"`,
+      body !== null ? `printf '%s' '${b64(body)}' | base64 -d > "$d/b"` : ': > "$d/b"',
+      `code=$(curl -sS --max-redirs 0 --max-time 30 -X ${method} -H @"$d/h" ${body !== null ? '--data-binary @"$d/b"' : ''} -D "$d/rh" -o "$d/rb" -w '%{http_code}' ${shq(u.toString())})`,
+      `echo ${HTTP_BEGIN} "$code"`, 'base64 -w0 "$d/rh"; echo', 'base64 -w0 "$d/rb"; echo', `echo ${HTTP_END}`,
+    ].join('\n') + '\n'
+    const r = await exec(script)
+    const m = new RegExp(`${HTTP_BEGIN} (\\d{3})\\s*\\n([A-Za-z0-9+/=]*)\\s*\\n([A-Za-z0-9+/=]*)\\s*\\n${HTTP_END}`).exec(r.output)
+    if (r.code !== 0 || !m) throw Object.assign(new Error(`The request through the container failed (exit ${r.code})`), { cause: { code: 'EGUEST' } })
+    const rh = new Headers()
+    for (const line of Buffer.from(m[2], 'base64').toString('utf8').split(/\r?\n/)) {
+      const i = line.indexOf(':')
+      if (i > 0 && !/^HTTP\//.test(line)) rh.append(line.slice(0, i).trim(), line.slice(i + 1).trim())
+    }
+    const status = Number(m[1])
+    return new Response(status === 204 || status === 304 ? null : Buffer.from(m[3], 'base64'), { status, headers: rh })
   }
 }

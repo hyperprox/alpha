@@ -39,7 +39,10 @@ test('HAProxy: a configuration haproxy -c rejects is never committed; the transa
   w.haproxy.rejectIf = '192.0.2.66'
   const before = { version: w.haproxy.version, state: JSON.stringify(w.haproxy.state) }
   const plan = await w.planner.preview(w.ids.haproxy, { action: 'create', host: { ...host(['bad.hpx.invalid']), forwardHost: '192.0.2.66' } }, actor)
-  await assert.rejects(w.planner.apply(plan.id, actor), /HAProxy rejected the new configuration .* nothing was applied\. .*bad server/)
+  const rej = await w.planner.apply(plan.id, actor)
+  assert.equal(rej.ok, false)
+  assert.equal(rej.cleanup, undefined, 'nothing was made, so there is nothing to clean up')
+  assert.match(rej.message, /nothing was made .*HAProxy rejected the new configuration .* nothing was applied\. .*bad server/)
   assert.equal(w.haproxy.validations, 1)
   assert.equal(w.haproxy.version, before.version)
   assert.equal(JSON.stringify(w.haproxy.state), before.state)
@@ -84,7 +87,9 @@ test('Traefik: a file HyperProx did not write is never overwritten', async () =>
   assert.equal(health.ok, false)
   assert.match(health.checks.find(c => c.name === 'file')!.detail, /not written by HyperProx/)
   const plan = await w.planner.preview(w.ids.traefik, { action: 'create', host: host(['t.hpx.invalid']) }, actor)
-  await assert.rejects(w.planner.apply(plan.id, actor), /not written by HyperProx/)
+  const r = await w.planner.apply(plan.id, actor)
+  assert.equal(r.ok, false)
+  assert.match(r.message, /not written by HyperProx/)
   assert.equal(w.files.files.get('/etc/traefik/dynamic/hyperprox.yml'), 'http:\n  routers: {}\n')
   assert.equal(w.files.writes, 0)
 })
@@ -126,7 +131,9 @@ test('Pangolin: one name per host, under one of the organisation’s domains', a
   const w = await world()
   await assert.rejects(w.planner.preview(w.ids.pangolin, { action: 'create', host: host(['a.hpx.invalid', 'b.hpx.invalid']) }, actor), /one name each/)
   const plan = await w.planner.preview(w.ids.pangolin, { action: 'create', host: host(['a.other.invalid']) }, actor)
-  await assert.rejects(w.planner.apply(plan.id, actor), /under none of this Pangolin organisation's domains \(hpx\.invalid\)/)
+  const r = await w.planner.apply(plan.id, actor)
+  assert.equal(r.ok, false)
+  assert.match(r.message, /under none of this Pangolin organisation's domains \(hpx\.invalid\)/)
   assert.equal(w.pangolin.resources.length, 1)
 })
 
@@ -142,6 +149,9 @@ test('instances: bad input is refused with the reason; the legacy NPM is managed
   await bad({ kind: 'traefik', name: 'x', url: 'http://192.0.2.1', settings: { ssh_host: 'h', ssh_user: 'u' } }, /SSH password or a private key/)
   await bad({ kind: 'caddy', name: 'caddy', url: 'http://192.0.2.1' }, /exists/)
   await bad({ kind: 'caddy', name: 'm', url: 'http://192.0.2.1', mode: 'managed' }, /needs its container/)
+  await bad({ kind: 'caddy', name: 'm', url: 'http://192.0.2.1', mode: 'managed', managed: { node: 'node1', vmid: 9404 } }, /is a VM/)
+  await bad({ kind: 'caddy', name: 'm', url: 'http://192.0.2.1', mode: 'managed', managed: { node: 'node1', vmid: 9405 } }, /not running/)
+  await bad({ kind: 'caddy', name: 'm', url: 'http://192.0.2.1', mode: 'managed', managed: { node: 'node9', vmid: 9406 } }, /not found/)
   await assert.rejects(w.service.deleteInstance(LEGACY_NPM_ID, actor), /Settings → Proxy/)
   await assert.rejects(w.service.updateInstance(LEGACY_NPM_ID, { name: 'x' }, actor), /Settings → Proxy/)
   await assert.rejects(w.service.getInstance('../../etc'), /no proxy instance/)
@@ -200,9 +210,9 @@ test('guest transport: the scripts it sends read and replace a file, in a real s
 
 test('inventory hook: every instance’s hosts, certificate ids only from the NPM whose certificates are listed', async () => {
   const w = await world()
-  await w.planner.apply((await w.planner.preview(w.ids.caddy, { action: 'create', host: host(['inv.hpx.invalid']) }, actor)).id, actor)
   w.npm1.hosts[0].certificate_id = 7
   w.npm1.certs.push({ id: 7, nice_name: 'x', domain_names: ['legacy-npm1.hpx.invalid'], expires_on: '2027-01-01 00:00:00', provider: 'letsencrypt', meta: {} })
+  await w.planner.apply((await w.planner.preview(w.ids.caddy, { action: 'create', host: host(['inv.hpx.invalid']) }, actor)).id, actor)
   setProxyService(w.service)
   try {
     const rows = await inventoryHosts()

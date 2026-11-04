@@ -26,16 +26,18 @@ interface HostView {
   tls: { kind: 'none' | 'certificate' | 'auto'; certificateId?: string; expiresAt?: string | null; forced?: boolean }
   online?: boolean | null; websockets?: boolean; detail?: string; native?: Record<string, any>
 }
+// Viewers get id, kind, name, mode and status only; the rest is for admins.
 interface Instance {
-  id: string; kind: Kind; kindLabel: string; name: string; url: string; mode: 'byo' | 'managed'
-  managed: { node: string; vmid: number; recipe: string } | null; settings: Record<string, string>; legacy?: boolean; secretsSet: string[]
+  id: string; kind: Kind; kindLabel: string; name: string; url?: string; mode: 'byo' | 'managed'
+  managed?: { node: string; vmid: number; recipe: string } | null; settings?: Record<string, string>; legacy?: boolean; secretsSet?: string[]
+  status?: 'ok' | 'locked' | 'unavailable'
 }
 interface KindField { key: string; label: string; secret: boolean; required: boolean | 'conditional'; help?: string; default?: string; options?: string[] }
 interface KindInfo { kind: Kind; label: string; urlLabel: string; urlHint: string; fields: KindField[]; notes: string[] }
 interface Cert { id: string; names: string[]; expiresAt: string | null; issuer: string; instanceId: string }
 interface Health { ok: boolean; version?: string; checks: { name: string; ok: boolean; detail: string; warn?: boolean }[] }
 interface Plan { id: string; instanceName: string; action: string; changes: string[]; consequences: string[]; warnings: string[]; expiresAt: string }
-interface ApplyResult { ok: boolean; message: string; mismatch: string[] }
+interface ApplyResult { ok: boolean; message: string; mismatch: string[]; cleanup?: Plan }
 
 const KIND_SHORT: Record<Kind, string> = { npm: 'NPM', traefik: 'Traefik', caddy: 'Caddy', haproxy: 'HAProxy', pangolin: 'Pangolin' }
 const KIND_COLOR: Record<Kind, string> = { npm: 'var(--accent)', traefik: 'var(--accent-2)', caddy: 'var(--good)', haproxy: 'var(--violet-2)', pangolin: 'var(--warn-2)' }
@@ -115,7 +117,8 @@ function Modal({ title, eyebrow, onClose, children, wide }: { title: string; eye
 //  Preview → apply → read back
 // ---------------------------------------------------------------------------
 
-function PlanDialog({ plan, onClose, onDone }: { plan: Plan; onClose: () => void; onDone: () => void }) {
+function PlanDialog({ plan: first, onClose, onDone }: { plan: Plan; onClose: () => void; onDone: () => void }) {
+  const [plan, setPlan] = useState(first)
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<ApplyResult | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -153,6 +156,11 @@ function PlanDialog({ plan, onClose, onDone }: { plan: Plan; onClose: () => void
           {result.message}
           {result.mismatch.length > 0 && <ul className="mt-2 list-disc pl-5">{result.mismatch.map((m, i) => <li key={i}>{m}</li>)}</ul>}
         </div>
+      )}
+      {result?.cleanup && (
+        <button onClick={() => { setPlan(result.cleanup!); setResult(null) }} style={{ ...BTN_SECONDARY, marginBottom: 16 }}>
+          Review removing only what was made
+        </button>
       )}
       {error && <div className="text-sm mb-4" style={{ color: 'var(--crit-2)' }}>{error}</div>}
       <div className="flex justify-end gap-2">
@@ -431,13 +439,14 @@ function InstancesPanel({ instances, kinds, admin, onChanged }: { instances: Ins
                 <Badge label={i.mode === 'managed' ? 'MANAGED' : 'BRING YOUR OWN'} color={i.mode === 'managed' ? 'var(--good)' : 'var(--text-muted)'}
                   title={i.mode === 'managed' && i.managed ? `Container ${i.managed.vmid} on ${i.managed.node}` : 'Credentials given to HyperProx'} />
                 {i.legacy && <Badge label="SETTINGS LOGIN" color="var(--text-dim)" title="The NPM login in Settings → Proxy" />}
-                <span className="font-mono text-xs" style={{ color: 'var(--text-dim)' }}>{i.url}</span>
+                {i.status && i.status !== 'ok' && <Badge label={i.status === 'locked' ? 'LOCKED' : 'UNAVAILABLE'} color="var(--warn-2)" title="Its login cannot be read until HyperProx is unlocked" />}
+                {i.url && <span className="font-mono text-xs" style={{ color: 'var(--text-dim)' }}>{i.url}</span>}
                 <div className="ml-auto flex gap-2">
                   <button onClick={() => check(i.id)} className="text-xs px-2 py-1 rounded" style={{ color: 'var(--text-soft)', border: '1px solid var(--border-strong)' }}>{h === 'checking' ? 'Checking…' : 'Check'}</button>
                   {admin && !i.legacy && <button onClick={() => remove(i)} className="text-xs px-2 py-1 rounded" style={{ color: 'var(--crit-2)', border: '1px solid var(--border-strong)' }}>Forget</button>}
                 </div>
               </div>
-              {admin && i.settings.ssh_host_key && <div className="text-xs font-mono mt-1" style={{ color: 'var(--text-dim)' }}>SSH host key pinned: {i.settings.ssh_host_key}</div>}
+              {admin && i.settings?.ssh_host_key && <div className="text-xs font-mono mt-1" style={{ color: 'var(--text-dim)' }}>SSH host key pinned: {i.settings.ssh_host_key}</div>}
               {h && h !== 'checking' && <div className="mt-2"><HealthList health={h} /></div>}
             </div>
           )
@@ -523,7 +532,14 @@ export default function ProxyPage() {
     finally { setLoading(false) }
   }, [])
 
-  useEffect(() => { load(); const t = setInterval(load, 30_000); return () => clearInterval(t) }, [load])
+  // Poll only while the tab is visible; catch up as soon as it is shown again.
+  useEffect(() => {
+    load()
+    const t = setInterval(() => { if (!document.hidden) load() }, 30_000)
+    const onShow = () => { if (!document.hidden) load() }
+    document.addEventListener('visibilitychange', onShow)
+    return () => { clearInterval(t); document.removeEventListener('visibilitychange', onShow) }
+  }, [load])
 
   const act = async (h: HostView, action: 'enable' | 'disable' | 'delete') => {
     setActionError(null)

@@ -41,6 +41,12 @@ export class FakeNpm {
   certs: any[]
   next = 100
   password: string
+  /** Every request, method and path, for counting PUTs and sign-ins. */
+  log: Array<{ method: string; path: string; body?: any }> = []
+  /** Tests: the next create makes the host and then answers 500 (a create that fails part-way). */
+  failAfterCreate = false
+  /** Tests: answer the sign-in with a redirect. */
+  redirectTokens = false
   constructor(which: 1 | 2 = 1, password = 'npm-test-password') {
     this.hosts = fixture(`npm${which}-proxy-hosts`)
     this.certs = fixture(`npm${which}-certificates`)
@@ -48,15 +54,20 @@ export class FakeNpm {
   }
   fetch = server((m, url, body, h) => {
     const p = url.pathname.replace(/^\/api/, '')
-    if (m === 'POST' && p === '/tokens') return body?.secret === this.password ? { status: 200, body: { token: 'tok', expires: '2099-01-01' } } : unauth
+    this.log.push({ method: m, path: p, body })
+    if (m === 'POST' && p === '/tokens' && this.redirectTokens) return { status: 307, headers: { location: 'http://192.0.2.200/steal' } }
+    if (m === 'POST' && p === '/tokens') return body?.secret === this.password ? { status: 200, body: { token: 'tok', expires: '2099-01-01T00:00:00Z' } } : unauth
     if (h.authorization !== 'Bearer tok') return unauth
     if (m === 'GET' && p === '/users/me') return { status: 200, body: { id: 1, roles: ['admin'] } }
     if (m === 'GET' && p === '/nginx/certificates') return { status: 200, body: clone(this.certs) }
     if (m === 'GET' && p === '/nginx/proxy-hosts') return { status: 200, body: clone(this.hosts) }
     if (m === 'POST' && p === '/nginx/proxy-hosts') {
       if (this.hosts.some(x => x.domain_names.some((d: string) => body.domain_names.includes(d)))) return { status: 400, body: { error: { message: 'domain already in use' } } }
-      const host = { id: this.next++, created_on: 'now', modified_on: 'now', owner_user_id: 1, access_list_id: 0, locations: [], meta: { nginx_online: true, nginx_err: null }, ...body, enabled: true }
+      // NPM 2.16.0: `enabled` on create is honoured.
+      const host = { id: this.next++, created_on: 'now', modified_on: 'now', owner_user_id: 1, access_list_id: 0, locations: [], trust_forwarded_proto: false,
+        ...body, meta: { nginx_online: true, nginx_err: null }, enabled: body.enabled === undefined ? true : !!body.enabled }
       this.hosts.push(host)
+      if (this.failAfterCreate) { this.failAfterCreate = false; return { status: 500, body: { error: { message: 'Internal Error' } } } }
       return { status: 201, body: clone(host) }
     }
     const one = /^\/nginx\/proxy-hosts\/(\d+)(\/(enable|disable))?$/.exec(p)
@@ -64,9 +75,14 @@ export class FakeNpm {
       const host = this.hosts.find(x => x.id === Number(one[1]))
       if (!host) return notFound
       if (m === 'GET') return { status: 200, body: clone(host) }
-      if (m === 'PUT') { Object.assign(host, body); return { status: 200, body: clone(host) } }
+      // NPM's PUT is a patch: fields not sent keep their values.
+      if (m === 'PUT') { Object.assign(host, body, { modified_on: `now-${this.log.length}` }); return { status: 200, body: clone(host) } }
       if (m === 'DELETE') { this.hosts = this.hosts.filter(x => x !== host); return { status: 200, body: true } }
-      if (m === 'POST' && one[3]) { host.enabled = one[3] === 'enable'; return { status: 200, body: true } }
+      if (m === 'POST' && one[3]) {
+        const want = one[3] === 'enable'
+        if (!!host.enabled === want) return { status: 400, body: { error: { code: 400, message: `Host is already ${want ? 'enabled' : 'disabled'}` } } }
+        host.enabled = want; return { status: 200, body: true }
+      }
     }
     return notFound
   })
@@ -186,6 +202,9 @@ export class FakeHaproxy {
   /** Tests: make the commit drop every frontend (a broken reload). */
   dropFrontendsOnCommit = false
   validations = 0
+  /** Every configuration text handed out, so a raw POST of it can put that state back (a rollback). */
+  snapshots = new Map<string, HaState>()
+  rollbacks = 0
   constructor(private user = 'hpx', private password = 'haproxy-test-password') {
     const fes = fixture('haproxy-frontends')
     this.state = {
@@ -246,7 +265,16 @@ export class FakeHaproxy {
     const rl = /^\/services\/haproxy\/reloads\/(.+)$/.exec(p)
     if (rl) return this.reloads.has(rl[1]) ? { status: 200, body: { id: rl[1], status: this.reloads.get(rl[1]) } } : notFound
     if (p === '/services/haproxy/configuration/raw') {
-      if (m === 'GET') return { status: 200, text: this.render(s), headers: { 'content-type': 'text/plain' } }
+      if (m === 'GET') { const text = this.render(s); this.snapshots.set(text, clone(s)); return { status: 200, text, headers: { 'content-type': 'text/plain' } } }
+      if (m === 'POST' && url.searchParams.get('only_validate') !== 'true') {
+        const back = this.snapshots.get(String(body).replace(/\n$/, '')) ?? this.snapshots.get(String(body))
+        if (!back) return { status: 400, body: { message: 'unknown configuration' } }
+        this.state = clone(back); this.version++; this.rollbacks++
+        this.dropFrontendsOnCommit = false
+        const rid = `r-${++this.reloadCount}`
+        this.reloads.set(rid, 'succeeded')
+        return { status: 202, text: '', headers: { 'Reload-ID': rid } }
+      }
       if (m === 'POST' && url.searchParams.get('only_validate') === 'true') {
         this.validations++
         if (this.rejectIf && String(body).includes(this.rejectIf)) return { status: 400, body: { message: `validation error: msg="config parsing [/tmp/onlyvalidate1:9] bad server '${this.rejectIf}'."` } }

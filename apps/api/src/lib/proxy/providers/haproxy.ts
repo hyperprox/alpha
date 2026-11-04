@@ -28,6 +28,8 @@ export interface HaproxyConfig {
   /** The frontend HyperProx adds its rules to; empty = the first frontend. */
   frontend?: string
   reloadTimeoutMs?: number
+  /** Backends HyperProx recorded creating. A rule is HyperProx's only if its backend is here and has the hpx_ prefix. */
+  owned?:    Set<string>
 }
 
 interface Rule { name: string; cond?: string; cond_test?: string }
@@ -99,7 +101,7 @@ export class HaproxyProvider implements ProxyProvider {
     const out: ProxyHostRecord[] = []
     for (const fe of fes) {
       for (const [i, rule] of (fe.backend_switching_rule_list ?? []).entries()) {
-        const owned = fe.name === mine && rule.name.startsWith(PREFIX)
+        const owned = fe.name === mine && rule.name.startsWith(PREFIX) && !!this.cfg.owned?.has(rule.name)
         let srv: Server | undefined
         try { srv = (await this.servers(rule.name))[0] } catch { /* a backend with no servers */ }
         const domains = hostsInCond(rule.cond_test)
@@ -110,6 +112,7 @@ export class HaproxyProvider implements ProxyProvider {
           enabled: srv?.maintenance !== 'enabled', owned,
           readOnlyReason: owned ? undefined : `Made outside HyperProx (frontend "${fe.name}" → backend "${rule.name}")`,
           tls: { kind: 'none' }, online: null,
+          state: owned ? { rule, servers: srv ? [srv] : [] } : undefined,
           detail: `use_backend ${rule.name} ${rule.cond ?? ''} ${rule.cond_test ?? ''}`.replace(/\s+/g, ' ').trim(),
         })
       }
@@ -124,12 +127,13 @@ export class HaproxyProvider implements ProxyProvider {
     const fe = await this.frontend()
     const before = (await this.frontends()).map(f => f.name)
     const version = await this.http.get<number>(`${CFG}/version`)
+    // The configuration as it is now, to put back if the commit goes wrong after the point of no return.
+    const previous = asText((await this.http.raw('GET', `${CFG}/raw`, { headers: { Accept: 'text/plain' } })).body)
     const tx = (await this.http.json<{ id: string }>('POST', `/v3/services/haproxy/transactions?version=${version}`)).body.id
     try {
       await fn(tx, fe)
       // 1. Validate: the transaction's full configuration through haproxy -c, before anything reloads.
-      const raw = (await this.http.raw('GET', `${CFG}/raw?transaction_id=${tx}`, { headers: { Accept: 'text/plain' } })).body
-      const text = raw.trim().startsWith('"') ? JSON.parse(raw) : raw
+      const text = asText((await this.http.raw('GET', `${CFG}/raw?transaction_id=${tx}`, { headers: { Accept: 'text/plain' } })).body)
       try {
         await this.http.raw('POST', `${CFG}/raw?only_validate=true&skip_version=true`, { text: text.endsWith('\n') ? text : text + '\n' })
       } catch (e) {
@@ -142,12 +146,34 @@ export class HaproxyProvider implements ProxyProvider {
     }
     // 2. Commit: Data Plane validates again and reloads.
     const commit = await this.http.raw('PUT', `/v3/services/haproxy/transactions/${tx}`, { okStatuses: [200, 202] })
-    const reloadId = commit.headers.get('reload-id')
-    if (reloadId) await this.waitReload(reloadId, what)
-    // 3. Re-check: every frontend that existed before still exists.
+    try {
+      const reloadId = commit.headers.get('reload-id')
+      if (reloadId) await this.waitReload(reloadId, what)
+      // 3. Re-check: every frontend that existed before still exists.
+      await this.checkFrontends(before, `After ${what}`)
+    } catch (e: any) {
+      // 4. Roll back: the configuration from before this change, reloaded and checked the same way.
+      throw new Error(`${String(e.message).replace(/\.?$/, '.')} ${await this.rollback(previous, before)}`)
+    }
+  }
+
+  private async checkFrontends(before: string[], when: string): Promise<void> {
     const after = new Set((await this.frontends()).map(f => f.name))
     const lost = before.filter(n => !after.has(n))
-    if (lost.length) throw new Error(`After ${what}, HAProxy no longer has frontend(s) ${lost.join(', ')}.`)
+    if (lost.length) throw new Error(`${when}, HAProxy no longer has frontend(s) ${lost.join(', ')}.`)
+  }
+
+  /** Put the previous configuration back through the Data Plane, reload, re-check. Returns what happened, in words. */
+  private async rollback(previous: string, before: string[]): Promise<string> {
+    try {
+      const r = await this.http.raw('POST', `${CFG}/raw?skip_version=true`, { text: previous.endsWith('\n') ? previous : previous + '\n', okStatuses: [200, 201, 202] })
+      const id = r.headers.get('reload-id')
+      if (id) await this.waitReload(id, 'the rollback')
+      await this.checkFrontends(before, 'After the rollback')
+      return 'HyperProx put the previous configuration back, reloaded HAProxy and checked that every frontend is there again.'
+    } catch (e: any) {
+      return `Putting the previous configuration back FAILED as well (${e.message}): check HAProxy now.`
+    }
   }
 
   private async waitReload(id: string, what: string): Promise<void> {
@@ -177,7 +203,7 @@ export class HaproxyProvider implements ProxyProvider {
   }
 
   private async ownedOrRefuse(id: string): Promise<{ fe: string; index: number }> {
-    if (!id.startsWith(PREFIX)) throw new ProxyRefusal(`HAProxy rule ${id} was not made by HyperProx; it is read-only.`)
+    if (!id.startsWith(PREFIX) || !this.cfg.owned?.has(id)) throw new ProxyRefusal(`HAProxy rule ${id} was not made by HyperProx; it is read-only.`)
     const fe = await this.frontend()
     const index = await this.ruleIndex(fe, id)
     if (index < 0) throw new ProxyRefusal(`HAProxy frontend "${fe}" has no HyperProx rule for ${id}.`, 404)
@@ -238,6 +264,9 @@ export class HaproxyProvider implements ProxyProvider {
     }))
   }
 }
+
+/** Data Plane answers raw configuration as text, or as a JSON string. */
+function asText(raw: string): string { return raw.trim().startsWith('"') ? JSON.parse(raw) : raw }
 
 /** The useful lines of a validation error, without file paths HyperProx wrote. */
 function validationReason(body: string): string {
