@@ -1,665 +1,550 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+// =============================================================================
+//  HyperProx — Proxy page
+//  Every proxy instance (Nginx Proxy Manager, Traefik, Caddy, HAProxy,
+//  Pangolin; several of each) in one table. Every host names the instance
+//  that owns it; hosts made outside HyperProx are read-only. Every write is
+//  previewed first, then applied, then read back from the proxy.
+// =============================================================================
+
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { alpha } from '@/lib/theme'
+import { atLeast } from '@/lib/api'
+import { useSession } from '@/lib/session'
 
 // ---------------------------------------------------------------------------
-//  Types
+//  Types (the API's shapes, apps/api/src/lib/proxy/types.ts)
 // ---------------------------------------------------------------------------
 
-interface Certificate {
-  id:           number
-  nice_name:    string
-  domain_names: string[]
-  expires_on:   string
-  provider:     string
-}
+type Kind = 'npm' | 'traefik' | 'caddy' | 'haproxy' | 'pangolin'
 
-interface ProxyHost {
-  id:                      number
-  domain_names:            string[]
-  forward_host:            string
-  forward_port:            number
-  forward_scheme:          string
-  certificate_id:          number | false
-  ssl_forced:              boolean
-  enabled:                 boolean
-  block_exploits:          boolean
-  allow_websocket_upgrade: boolean
-  http2_support:           boolean
-  hsts_enabled:            boolean
-  hsts_subdomains:         boolean
-  caching_enabled:         boolean
-  trust_forwarded_proto:   boolean
-  advanced_config:         string
-  created_on:              string
-  modified_on:             string
-  meta:        { nginx_online: boolean; nginx_err: string | null; letsencrypt_email?: string }
-  certificate?: Certificate
+interface HostView {
+  id: string; instanceId: string; instanceName: string; kind: Kind
+  domains: string[]; forwardScheme: 'http' | 'https'; forwardHost: string; forwardPort: number
+  enabled: boolean; readOnly: boolean; readOnlyReason?: string
+  tls: { kind: 'none' | 'certificate' | 'auto'; certificateId?: string; expiresAt?: string | null; forced?: boolean }
+  online?: boolean | null; websockets?: boolean; detail?: string; native?: Record<string, any>
 }
+interface Instance {
+  id: string; kind: Kind; kindLabel: string; name: string; url: string; mode: 'byo' | 'managed'
+  managed: { node: string; vmid: number; recipe: string } | null; settings: Record<string, string>; legacy?: boolean; secretsSet: string[]
+}
+interface KindField { key: string; label: string; secret: boolean; required: boolean | 'conditional'; help?: string; default?: string; options?: string[] }
+interface KindInfo { kind: Kind; label: string; urlLabel: string; urlHint: string; fields: KindField[]; notes: string[] }
+interface Cert { id: string; names: string[]; expiresAt: string | null; issuer: string; instanceId: string }
+interface Health { ok: boolean; version?: string; checks: { name: string; ok: boolean; detail: string; warn?: boolean }[] }
+interface Plan { id: string; instanceName: string; action: string; changes: string[]; consequences: string[]; warnings: string[]; expiresAt: string }
+interface ApplyResult { ok: boolean; message: string; mismatch: string[] }
 
-interface Stats {
-  total: number; enabled: number; disabled: number
-  online: number; ssl: number; expiring: number; expired: number
-}
+const KIND_SHORT: Record<Kind, string> = { npm: 'NPM', traefik: 'Traefik', caddy: 'Caddy', haproxy: 'HAProxy', pangolin: 'Pangolin' }
+const KIND_COLOR: Record<Kind, string> = { npm: 'var(--accent)', traefik: 'var(--accent-2)', caddy: 'var(--good)', haproxy: 'var(--violet-2)', pangolin: 'var(--warn-2)' }
 
 // ---------------------------------------------------------------------------
-//  Helpers
+//  Style
 // ---------------------------------------------------------------------------
-
-function daysUntilExpiry(expiresOn: string): number {
-  return Math.floor((new Date(expiresOn).getTime() - Date.now()) / 86400000)
-}
-
-function sslStatus(host: ProxyHost): 'valid' | 'expiring' | 'expired' | 'none' {
-  if (!host.certificate) return 'none'
-  const d = daysUntilExpiry(host.certificate.expires_on)
-  if (d < 0)  return 'expired'
-  if (d < 30) return 'expiring'
-  return 'valid'
-}
-
-const SSL_COLOR: Record<string, string> = { valid: 'var(--good)', expiring: 'var(--warn-2)', expired: 'var(--crit-2)', none: 'var(--text-dimmer)' }
-const SSL_LABEL: Record<string, string> = { valid: '✓ SSL', expiring: '⚠ SSL', expired: '✗ SSL', none: 'No SSL' }
 
 const INPUT = {
   background: 'var(--ground-deep)', border: '1px solid var(--border-strong)',
   color: 'var(--text-bright)', borderRadius: 6, padding: '0 12px', minHeight: 40,
   fontFamily: 'IBM Plex Mono, monospace', fontSize: 13, outline: 'none', width: '100%',
 } as React.CSSProperties
-
 const LABEL = { display: 'block', fontSize: 11, fontFamily: 'IBM Plex Mono, monospace',
   color: 'var(--text-dim)', textTransform: 'uppercase' as const, letterSpacing: '0.14em', marginBottom: 6 }
-
 const BTN_SECONDARY = {
   background: 'transparent', color: 'var(--text)', border: '1px solid var(--border-strong)',
   borderRadius: 6, height: 40, padding: '0 16px', fontSize: 14, fontWeight: 500,
 } as React.CSSProperties
-
 const BTN_PRIMARY = {
   background: 'var(--accent)', color: 'var(--accent-ink)', border: 'none',
   borderRadius: 6, height: 40, padding: '0 20px', fontSize: 14, fontWeight: 600,
 } as React.CSSProperties
 
-// ---------------------------------------------------------------------------
-//  Toggle switch
-// ---------------------------------------------------------------------------
+async function api<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init?.body ? { ...init, headers: { 'Content-Type': 'application/json', ...(init.headers ?? {}) } } : init)
+  const json = await res.json().catch(() => ({ success: false, error: `HTTP ${res.status}` }))
+  if (!json.success) throw new Error(json.error ?? `HTTP ${res.status}`)
+  return json.data as T
+}
+
+function daysLeft(iso?: string | null): number | null {
+  if (!iso) return null
+  const t = Date.parse(iso.replace(' ', 'T'))
+  return Number.isFinite(t) ? Math.floor((t - Date.now()) / 86_400_000) : null
+}
+
+function Badge({ label, color, title }: { label: string; color: string; title?: string }) {
+  return (
+    <span title={title} className="font-mono px-1.5 py-0.5 rounded whitespace-nowrap" style={{
+      fontSize: 10, background: `${alpha(color, 8)}`, color, border: `1px solid ${alpha(color, 19)}`,
+    }}>{label}</span>
+  )
+}
 
 function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
   return (
     <label className="flex items-center gap-2 cursor-pointer select-none">
-      <div
-        onClick={() => onChange(!checked)}
-        className="relative rounded-full transition-colors duration-200"
-        style={{ width: 32, height: 18, background: checked ? 'var(--accent)' : 'var(--text-faint)', border: `1px solid ${checked ? 'var(--accent)' : 'var(--text-dimmer)'}` }}
-      >
-        <div className="absolute top-0.5 rounded-full transition-all duration-200"
-          style={{ width: 14, height: 14, background: 'var(--surface)', left: checked ? 14 : 2 }} />
+      <div onClick={() => onChange(!checked)} className="relative rounded-full transition-colors duration-200"
+        style={{ width: 32, height: 18, background: checked ? 'var(--accent)' : 'var(--text-faint)', border: `1px solid ${checked ? 'var(--accent)' : 'var(--text-dimmer)'}` }}>
+        <div className="absolute top-0.5 rounded-full transition-all duration-200" style={{ width: 14, height: 14, background: 'var(--surface)', left: checked ? 14 : 2 }} />
       </div>
       <span style={{ fontSize: 14, color: checked ? 'var(--text-bright)' : 'var(--text-soft)' }}>{label}</span>
     </label>
   )
 }
 
-// ---------------------------------------------------------------------------
-//  Create / Edit modal
-// ---------------------------------------------------------------------------
-
-const EMPTY_FORM = {
-  domain_names:            [''],
-  forward_scheme:          'http',
-  forward_host:            '',
-  forward_port:            80,
-  ssl_forced:              false,
-  block_exploits:          true,
-  allow_websocket_upgrade: false,
-  http2_support:           false,
-  hsts_enabled:            false,
-  hsts_subdomains:         false,
-  caching_enabled:         false,
-  trust_forwarded_proto:   false,
-  advanced_config:         '',
-  // SSL options
-  requestSSL:              false,
-  letsencrypt_email:       '',
+function Modal({ title, eyebrow, onClose, children, wide }: { title: string; eyebrow?: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.6)' }} onClick={onClose}>
+      <div className="rounded-lg border w-full overflow-y-auto" onClick={e => e.stopPropagation()}
+        style={{ maxWidth: wide ? 720 : 560, maxHeight: '90vh', background: 'var(--surface)', borderColor: 'var(--border-strong)' }}>
+        <div className="flex items-start justify-between p-5 border-b" style={{ borderColor: 'var(--border-soft)' }}>
+          <div>
+            {eyebrow && <div className="font-mono uppercase mb-1" style={{ fontSize: 11, letterSpacing: '0.14em', color: 'var(--accent)' }}>{eyebrow}</div>}
+            <div className="font-display" style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-bright)' }}>{title}</div>
+          </div>
+          <button onClick={onClose} aria-label="Close" style={{ color: 'var(--text-dim)', fontSize: 18 }}>✕</button>
+        </div>
+        <div className="p-5">{children}</div>
+      </div>
+    </div>
+  )
 }
 
-type FormState = typeof EMPTY_FORM
+// ---------------------------------------------------------------------------
+//  Preview → apply → read back
+// ---------------------------------------------------------------------------
 
-function HostModal({
-  host, certs, onClose, onSave,
-}: {
-  host:    ProxyHost | null
-  certs:   Certificate[]
-  onClose: () => void
-  onSave:  () => void
+function PlanDialog({ plan, onClose, onDone }: { plan: Plan; onClose: () => void; onDone: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<ApplyResult | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const apply = async () => {
+    setBusy(true); setError(null)
+    try { setResult(await api<ApplyResult>(`/api/proxy/plans/${plan.id}/apply`, { method: 'POST' })); onDone() }
+    catch (e: any) { setError(e.message) }
+    finally { setBusy(false) }
+  }
+
+  const List = ({ items, color }: { items: string[]; color: string }) => (
+    <ul className="flex flex-col gap-1.5 mb-4">{items.map((x, i) => (
+      <li key={i} className="text-sm pl-3" style={{ color: 'var(--text)', borderLeft: `2px solid ${color}` }}>{x}</li>
+    ))}</ul>
+  )
+
+  return (
+    <Modal title={result ? (result.ok ? 'Applied and checked' : 'Applied, but not as planned') : 'Check before applying'} eyebrow={plan.instanceName} onClose={onClose}>
+      {!result && <>
+        <div style={LABEL}>What changes</div>
+        <List items={plan.changes} color="var(--accent)" />
+        <div style={LABEL}>What that means</div>
+        <List items={plan.consequences} color="var(--warn-2)" />
+        {plan.warnings.length > 0 && <><div style={LABEL}>Worth knowing</div><List items={plan.warnings} color="var(--violet-2)" /></>}
+        <div className="text-xs mb-4" style={{ color: 'var(--text-dim)' }}>
+          This preview is held by HyperProx until {new Date(plan.expiresAt).toLocaleTimeString()}. If the host changes on the proxy before you apply, nothing is changed.
+        </div>
+      </>}
+      {result && (
+        <div className="text-sm mb-4 rounded-md p-3" style={{
+          color: result.ok ? 'var(--good)' : 'var(--crit-2)',
+          background: alpha(result.ok ? 'var(--good)' : 'var(--crit-2)', 8), border: `1px solid ${alpha(result.ok ? 'var(--good)' : 'var(--crit-2)', 19)}`,
+        }}>
+          {result.message}
+          {result.mismatch.length > 0 && <ul className="mt-2 list-disc pl-5">{result.mismatch.map((m, i) => <li key={i}>{m}</li>)}</ul>}
+        </div>
+      )}
+      {error && <div className="text-sm mb-4" style={{ color: 'var(--crit-2)' }}>{error}</div>}
+      <div className="flex justify-end gap-2">
+        <button onClick={onClose} style={BTN_SECONDARY}>{result ? 'Close' : 'Cancel'}</button>
+        {!result && <button onClick={apply} disabled={busy} style={{ ...BTN_PRIMARY, opacity: busy ? 0.6 : 1 }}>{busy ? 'Applying…' : 'Apply'}</button>}
+      </div>
+    </Modal>
+  )
+}
+
+// ---------------------------------------------------------------------------
+//  Host form (create / edit) — the same fields for every proxy; NPM adds its own
+// ---------------------------------------------------------------------------
+
+function HostForm({ host, instances, onClose, onPlan }: {
+  host: HostView | null; instances: Instance[]; onClose: () => void; onPlan: (p: Plan) => void
 }) {
-  const isEdit = !!host
-  const [form, setForm]       = useState<FormState>(() => {
-    if (!host) return EMPTY_FORM
-    return {
-      domain_names:            host.domain_names,
-      forward_scheme:          host.forward_scheme,
-      forward_host:            host.forward_host,
-      forward_port:            host.forward_port,
-      ssl_forced:              host.ssl_forced,
-      block_exploits:          host.block_exploits,
-      allow_websocket_upgrade: host.allow_websocket_upgrade,
-      http2_support:           host.http2_support,
-      hsts_enabled:            host.hsts_enabled,
-      hsts_subdomains:         host.hsts_subdomains,
-      caching_enabled:         host.caching_enabled,
-      trust_forwarded_proto:   host.trust_forwarded_proto,
-      advanced_config:         host.advanced_config ?? '',
-      requestSSL:              false,
-      letsencrypt_email:       host.meta?.letsencrypt_email ?? '',
-    }
+  const n = host?.native ?? {}
+  const [instanceId, setInstanceId] = useState(host?.instanceId ?? instances[0]?.id ?? '')
+  const inst = instances.find(i => i.id === instanceId)
+  const [domains, setDomains] = useState((host?.domains ?? []).join(', '))
+  const [scheme, setScheme] = useState<'http' | 'https'>(host?.forwardScheme ?? 'http')
+  const [fhost, setFhost] = useState(host?.forwardHost ?? '')
+  const [port, setPort] = useState(String(host?.forwardPort ?? 80))
+  const [enabled, setEnabled] = useState(host?.enabled ?? true)
+  const [ws, setWs] = useState(host?.websockets ?? true)
+  const [npm, setNpm] = useState({
+    certificate_id: (typeof n.certificate_id === 'number' && n.certificate_id > 0 ? n.certificate_id : false) as number | false,
+    ssl_forced: !!n.ssl_forced, block_exploits: host ? !!n.block_exploits : true, http2_support: !!n.http2_support,
+    hsts_enabled: !!n.hsts_enabled, hsts_subdomains: !!n.hsts_subdomains, caching_enabled: !!n.caching_enabled,
+    advanced_config: String(n.advanced_config ?? ''),
+  })
+  const [certs, setCerts] = useState<Cert[]>([])
+  const [certEmail, setCertEmail] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (inst?.kind !== 'npm') { setCerts([]); return }
+    api<Cert[]>(`/api/proxy/instances/${inst.id}/certificates`).then(setCerts).catch(() => setCerts([]))
+  }, [inst?.id, inst?.kind])
+
+  const body = () => ({
+    domains: domains.split(/[\s,]+/).map(d => d.trim()).filter(Boolean),
+    forwardScheme: scheme, forwardHost: fhost.trim(), forwardPort: Number(port), enabled, websockets: ws,
+    ...(inst?.kind === 'npm' ? { npm } : {}),
   })
 
-  const [saving,  setSaving]  = useState(false)
-  const [status,  setStatus]  = useState<string | null>(null)
-  const [error,   setError]   = useState<string | null>(null)
-  const [certId,  setCertId]  = useState<number | false>(host?.certificate_id ?? false)
-  const [tab,     setTab]     = useState<'details' | 'ssl' | 'advanced'>('details')
-
-  const set = (k: keyof FormState, v: any) => setForm(f => ({ ...f, [k]: v }))
-
-  const handleSave = async () => {
-    setSaving(true)
-    setError(null)
-    setStatus(null)
-
+  const preview = async () => {
+    setBusy(true); setError(null)
     try {
-      let finalCertId: number | false | 0 = certId
-
-      // Step 1 — request new cert if checked
-      if (form.requestSSL && !isEdit) {
-        setStatus('Requesting Let\'s Encrypt certificate...')
-        const certRes = await fetch('/api/proxy/certificates', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            domain_names:      form.domain_names.filter(Boolean),
-            provider:          'letsencrypt',
-            nice_name:         form.domain_names[0],
-            letsencrypt_email: form.letsencrypt_email,
-          }),
-        })
-        const certJson = await certRes.json()
-        if (!certJson.success) throw new Error(certJson.error ?? 'Certificate request failed')
-        finalCertId = certJson.data.id
-        setStatus('Certificate obtained. Saving host...')
-      }
-
-      // Step 2 — create or update host
-      const payload = {
-        domain_names:            form.domain_names.filter(Boolean),
-        forward_scheme:          form.forward_scheme,
-        forward_host:            form.forward_host,
-        forward_port:            Number(form.forward_port),
-        certificate_id:          finalCertId || 0,
-        ssl_forced:              form.ssl_forced,
-        block_exploits:          form.block_exploits,
-        allow_websocket_upgrade: form.allow_websocket_upgrade,
-        http2_support:           form.http2_support,
-        hsts_enabled:            form.hsts_enabled,
-        hsts_subdomains:         form.hsts_subdomains,
-        caching_enabled:         form.caching_enabled,
-        trust_forwarded_proto:   form.trust_forwarded_proto,
-        advanced_config:         form.advanced_config,
-        meta: {
-          letsencrypt_agree: form.requestSSL,
-          letsencrypt_email: form.letsencrypt_email,
-          dns_challenge:     false,
-        },
-      }
-
-      const url    = isEdit ? `/api/proxy/hosts/${host!.id}` : '/api/proxy/hosts'
-      const method = isEdit ? 'PUT' : 'POST'
-
-      const res  = await fetch(url, {
-        method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-      })
-      const json = await res.json()
-      if (!json.success) throw new Error(json.error ?? 'Failed to save host')
-
-      setStatus('Saved!')
-      setTimeout(() => { onSave(); onClose() }, 600)
-    } catch (e: any) {
-      setError(e.message)
-    } finally {
-      setSaving(false)
-    }
+      onPlan(await api<Plan>(`/api/proxy/instances/${instanceId}/preview`, { method: 'POST',
+        body: JSON.stringify(host ? { action: 'update', hostId: host.id, host: body() } : { action: 'create', host: body() }) }))
+    } catch (e: any) { setError(e.message) }
+    finally { setBusy(false) }
   }
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(4px)' }}>
-      <div className="w-full max-w-2xl rounded-xl border overflow-hidden" style={{
-        background: 'var(--surface-raised)', borderColor: 'color-mix(in srgb, var(--accent) 15%, transparent)',
-        boxShadow: '0 0 40px color-mix(in srgb, var(--accent) 3%, transparent)',
-      }}>
+  const requestCert = async () => {
+    setBusy(true); setError(null); setMsg('Requesting a certificate from Let’s Encrypt through NPM…')
+    try {
+      const c = await api<Cert>(`/api/proxy/instances/${instanceId}/certificates`, { method: 'POST', body: JSON.stringify({ domains: body().domains, email: certEmail }) })
+      setCerts(cs => [...cs, { ...c, instanceId }])
+      setNpm(x => ({ ...x, certificate_id: Number(c.id), ssl_forced: true }))
+      setMsg(`Certificate #${c.id} issued. It is attached when you preview and apply.`)
+    } catch (e: any) { setError(e.message); setMsg(null) }
+    finally { setBusy(false) }
+  }
 
-        {/* Modal header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b" style={{ borderColor: 'var(--border-dim)' }}>
-          <div className="flex items-center gap-3">
-            <div className="w-1 h-5 rounded-full" style={{ background: 'var(--accent)', boxShadow: '0 0 8px var(--accent)' }} />
-            <h2 className="font-display" style={{ color: 'var(--text-bright)', fontSize: 22, fontWeight: 600 }}>
-              {isEdit ? 'Edit Proxy Host' : 'New Proxy Host'}
-            </h2>
-          </div>
-          <button onClick={onClose} style={{ color: 'var(--text-dimmer)', fontSize: 20, lineHeight: 1 }}>✕</button>
+  const writable = instances.filter(i => !host || i.id === host.instanceId)
+  return (
+    <Modal title={host ? host.domains[0] ?? host.id : 'New host'} eyebrow={host ? `Edit on ${host.instanceName}` : 'Add a proxy host'} onClose={onClose} wide>
+      <div className="grid gap-4">
+        <div>
+          <label style={LABEL}>Proxy</label>
+          <select value={instanceId} onChange={e => setInstanceId(e.target.value)} disabled={!!host} style={INPUT}>
+            {writable.map(i => <option key={i.id} value={i.id}>{i.name} — {KIND_SHORT[i.kind]}{i.mode === 'managed' ? ' (Managed)' : ''}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={LABEL}>Domain names</label>
+          <input value={domains} onChange={e => setDomains(e.target.value)} placeholder="app.example.com, www.app.example.com" style={INPUT} />
+          {inst?.kind === 'pangolin' && <div className="text-xs mt-1" style={{ color: 'var(--text-dim)' }}>Pangolin: one name, under one of the organisation’s domains.</div>}
+        </div>
+        <div className="grid gap-3" style={{ gridTemplateColumns: '110px 1fr 110px' }}>
+          <div><label style={LABEL}>Scheme</label>
+            <select value={scheme} onChange={e => setScheme(e.target.value as any)} style={INPUT}><option value="http">http</option><option value="https">https</option></select></div>
+          <div><label style={LABEL}>Forward host</label><input value={fhost} onChange={e => setFhost(e.target.value)} placeholder="192.0.2.10" style={INPUT} /></div>
+          <div><label style={LABEL}>Port</label><input value={port} onChange={e => setPort(e.target.value.replace(/\D/g, ''))} style={INPUT} /></div>
+        </div>
+        <div className="flex gap-6 flex-wrap">
+          <Toggle checked={enabled} onChange={setEnabled} label="Enabled" />
+          {inst?.kind === 'npm' && <Toggle checked={ws} onChange={setWs} label="Websockets" />}
         </div>
 
-        {/* Tabs */}
-        <div className="flex border-b" style={{ borderColor: 'var(--border-dim)' }}>
-          {(['details', 'ssl', 'advanced'] as const).map(t => (
-            <button key={t} onClick={() => setTab(t)}
-              className="px-5 py-3 text-sm font-semibold transition-colors capitalize"
-              style={{
-                borderBottom: tab === t ? '2px solid var(--accent)' : '2px solid transparent',
-                color: tab === t ? 'var(--accent)' : 'var(--text-dim)',
-                background: 'transparent',
-              }}>{t}</button>
+        {inst?.kind === 'npm' && (
+          <div className="grid gap-3 rounded-md p-4" style={{ border: '1px solid var(--border-soft)' }}>
+            <div style={LABEL}>NPM options</div>
+            <div>
+              <label style={LABEL}>Certificate</label>
+              <select value={npm.certificate_id === false ? '' : String(npm.certificate_id)} onChange={e => setNpm(x => ({ ...x, certificate_id: e.target.value ? Number(e.target.value) : false }))} style={INPUT}>
+                <option value="">None</option>
+                {certs.map(c => <option key={c.id} value={c.id}>#{c.id} {c.names.join(', ')}{c.expiresAt ? ` (until ${c.expiresAt.slice(0, 10)})` : ''}</option>)}
+              </select>
+            </div>
+            <div className="flex gap-2 items-end">
+              <div className="flex-1"><label style={LABEL}>Let’s Encrypt email (new certificate)</label><input value={certEmail} onChange={e => setCertEmail(e.target.value)} placeholder="you@example.com" style={INPUT} /></div>
+              <button onClick={requestCert} disabled={busy || !certEmail} style={{ ...BTN_SECONDARY, opacity: busy || !certEmail ? 0.5 : 1 }}>Request</button>
+            </div>
+            <div className="flex gap-x-6 gap-y-2 flex-wrap">
+              {([['ssl_forced', 'Force HTTPS'], ['block_exploits', 'Block exploits'], ['http2_support', 'HTTP/2'], ['hsts_enabled', 'HSTS'], ['hsts_subdomains', 'HSTS subdomains'], ['caching_enabled', 'Caching']] as const)
+                .map(([k, l]) => <Toggle key={k} checked={npm[k]} onChange={v => setNpm(x => ({ ...x, [k]: v }))} label={l} />)}
+            </div>
+            <div><label style={LABEL}>Advanced configuration</label>
+              <textarea value={npm.advanced_config} onChange={e => setNpm(x => ({ ...x, advanced_config: e.target.value }))} rows={4} style={{ ...INPUT, padding: 10 }} /></div>
+          </div>
+        )}
+
+        {msg && <div className="text-sm" style={{ color: 'var(--text-soft)' }}>{msg}</div>}
+        {error && <div className="text-sm" style={{ color: 'var(--crit-2)' }}>{error}</div>}
+        <div className="flex justify-end gap-2">
+          <button onClick={onClose} style={BTN_SECONDARY}>Cancel</button>
+          <button onClick={preview} disabled={busy || !instanceId} style={{ ...BTN_PRIMARY, opacity: busy ? 0.6 : 1 }}>Preview</button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+// ---------------------------------------------------------------------------
+//  Instances: Bring Your Own or Managed, any kind, any number
+// ---------------------------------------------------------------------------
+
+function InstanceForm({ kinds, onClose, onSaved }: { kinds: KindInfo[]; onClose: () => void; onSaved: () => void }) {
+  const [kind, setKind] = useState<Kind>('npm')
+  const info = kinds.find(k => k.kind === kind)
+  const [name, setName] = useState('')
+  const [url, setUrl] = useState('')
+  const [mode, setMode] = useState<'byo' | 'managed'>('byo')
+  const [node, setNode] = useState('')
+  const [vmid, setVmid] = useState('')
+  const [values, setValues] = useState<Record<string, string>>({})
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [health, setHealth] = useState<Health | null>(null)
+
+  useEffect(() => {
+    setValues(Object.fromEntries((info?.fields ?? []).filter(f => f.default).map(f => [f.key, f.default!])))
+  }, [kind, info])
+
+  const save = async () => {
+    setBusy(true); setError(null)
+    const settings: Record<string, string> = {}, secrets: Record<string, string> = {}
+    for (const f of info?.fields ?? []) if (values[f.key]) (f.secret ? secrets : settings)[f.key] = values[f.key]
+    try {
+      const r = await api<{ instance: Instance; health: Health }>('/api/proxy/instances', { method: 'POST', body: JSON.stringify({
+        kind, name, url, mode, settings, secrets, ...(mode === 'managed' ? { managed: { node, vmid: Number(vmid), recipe: kind } } : {}),
+      }) })
+      setHealth(r.health)
+      onSaved()
+    } catch (e: any) { setError(e.message) }
+    finally { setBusy(false) }
+  }
+
+  if (health) return (
+    <Modal title={health.ok ? 'Instance added' : 'Added, but not answering yet'} eyebrow={name} onClose={onClose}>
+      <HealthList health={health} />
+      <div className="flex justify-end mt-4"><button onClick={onClose} style={BTN_PRIMARY}>Done</button></div>
+    </Modal>
+  )
+
+  return (
+    <Modal title="Add a proxy" eyebrow="Proxy instances" onClose={onClose} wide>
+      <div className="grid gap-4">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div><label style={LABEL}>Kind</label>
+            <select value={kind} onChange={e => setKind(e.target.value as Kind)} style={INPUT}>
+              {kinds.map(k => <option key={k.kind} value={k.kind}>{k.label}</option>)}
+            </select></div>
+          <div><label style={LABEL}>Name</label><input value={name} onChange={e => setName(e.target.value)} placeholder="edge" style={INPUT} /></div>
+        </div>
+        <div><label style={LABEL}>{info?.urlLabel ?? 'URL'}</label><input value={url} onChange={e => setUrl(e.target.value)} placeholder={info?.urlHint} style={INPUT} /></div>
+        <div>
+          <label style={LABEL}>Who runs it</label>
+          <div className="flex gap-2">
+            {(['byo', 'managed'] as const).map(m => (
+              <button key={m} onClick={() => setMode(m)} className="text-sm px-3 py-1.5 rounded-md" style={{
+                background: mode === m ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'transparent',
+                color: mode === m ? 'var(--accent)' : 'var(--text-dim)', border: `1px solid ${mode === m ? 'var(--accent)' : 'var(--border-strong)'}`,
+              }}>{m === 'byo' ? 'Bring your own' : 'Managed by HyperProx'}</button>
+            ))}
+          </div>
+          <div className="text-xs mt-1" style={{ color: 'var(--text-dim)' }}>
+            {mode === 'byo' ? 'A proxy you run; HyperProx uses the login you give it.' : 'Installed by the Catalogue into a container HyperProx knows, so Updates can update it.'}
+          </div>
+        </div>
+        {mode === 'managed' && (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div><label style={LABEL}>Node</label><input value={node} onChange={e => setNode(e.target.value)} style={INPUT} /></div>
+            <div><label style={LABEL}>Container id</label><input value={vmid} onChange={e => setVmid(e.target.value.replace(/\D/g, ''))} style={INPUT} /></div>
+          </div>
+        )}
+        <div className="grid gap-3 sm:grid-cols-2">
+          {(info?.fields ?? []).filter(f => f.key !== 'ssh_host_key').map(f => (
+            <div key={f.key} className={f.key === 'ssh_private_key' || f.key === 'file' ? 'sm:col-span-2' : ''}>
+              <label style={LABEL}>{f.label}{f.required === true ? ' *' : ''}</label>
+              {f.options ? (
+                <select value={values[f.key] ?? ''} onChange={e => setValues(v => ({ ...v, [f.key]: e.target.value }))} style={INPUT}>
+                  {f.options.map(o => <option key={o} value={o}>{o}</option>)}
+                </select>
+              ) : f.key === 'ssh_private_key' ? (
+                <textarea value={values[f.key] ?? ''} onChange={e => setValues(v => ({ ...v, [f.key]: e.target.value }))} rows={3} style={{ ...INPUT, padding: 10 }} />
+              ) : (
+                <input type={f.secret ? 'password' : 'text'} value={values[f.key] ?? ''} onChange={e => setValues(v => ({ ...v, [f.key]: e.target.value }))} style={INPUT} autoComplete="off" />
+              )}
+              {f.help && <div className="text-xs mt-1" style={{ color: 'var(--text-dim)' }}>{f.help}</div>}
+            </div>
           ))}
         </div>
-
-        {/* Tab content */}
-        <div className="p-6 space-y-4 overflow-y-auto" style={{ maxHeight: '60vh' }}>
-
-          {/* DETAILS TAB */}
-          {tab === 'details' && (
-            <>
-              <div>
-                <label style={LABEL}>Domain Name(s)</label>
-                {form.domain_names.map((d, i) => (
-                  <div key={i} className="flex gap-2 mb-2">
-                    <input
-                      style={INPUT} value={d} placeholder="domain.example.com"
-                      onChange={e => {
-                        const arr = [...form.domain_names]
-                        arr[i] = e.target.value
-                        set('domain_names', arr)
-                      }}
-                    />
-                    {i === form.domain_names.length - 1 ? (
-                      <button onClick={() => set('domain_names', [...form.domain_names, ''])}
-                        className="px-3 rounded-md text-sm"
-                        style={{ background: 'transparent', color: 'var(--accent)', border: '1px solid var(--accent)', whiteSpace: 'nowrap' }}>
-                        + Add
-                      </button>
-                    ) : (
-                      <button onClick={() => set('domain_names', form.domain_names.filter((_, j) => j !== i))}
-                        className="px-3 rounded-md text-sm"
-                        style={{ background: 'transparent', color: 'var(--crit)', border: '1px solid var(--crit)' }}>
-                        ✕
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
-
-              <div className="grid grid-cols-4 gap-3">
-                <div>
-                  <label style={LABEL}>Scheme</label>
-                  <select style={{ ...INPUT, cursor: 'pointer' }} value={form.forward_scheme}
-                    onChange={e => set('forward_scheme', e.target.value)}>
-                    <option value="http">http</option>
-                    <option value="https">https</option>
-                  </select>
-                </div>
-                <div className="col-span-2">
-                  <label style={LABEL}>Forward Host / IP</label>
-                  <input style={INPUT} value={form.forward_host} placeholder="10.0.0.x or hostname"
-                    onChange={e => set('forward_host', e.target.value)} />
-                </div>
-                <div>
-                  <label style={LABEL}>Port</label>
-                  <input style={INPUT} type="number" value={form.forward_port}
-                    onChange={e => set('forward_port', Number(e.target.value))} />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3 pt-2">
-                <Toggle checked={form.block_exploits}          onChange={v => set('block_exploits', v)}          label="Block Common Exploits" />
-                <Toggle checked={form.allow_websocket_upgrade} onChange={v => set('allow_websocket_upgrade', v)} label="WebSocket Support" />
-                <Toggle checked={form.caching_enabled}         onChange={v => set('caching_enabled', v)}         label="Cache Assets" />
-                <Toggle checked={form.trust_forwarded_proto}   onChange={v => set('trust_forwarded_proto', v)}   label="Trust Forwarded IP" />
-              </div>
-            </>
-          )}
-
-          {/* SSL TAB */}
-          {tab === 'ssl' && (
-            <>
-              {/* Existing cert selector */}
-              <div>
-                <label style={LABEL}>SSL Certificate</label>
-                <select
-                  style={{ ...INPUT, cursor: 'pointer' }}
-                  value={typeof certId === 'number' ? certId : 0}
-                  onChange={e => {
-                    const v = Number(e.target.value)
-                    setCertId(v === 0 ? false : v)
-                    if (v !== 0) set('requestSSL', false)
-                  }}
-                >
-                  <option value={0}>No SSL</option>
-                  {certs.map(c => (
-                    <option key={c.id} value={c.id}>
-                      {c.nice_name} (exp. {new Date(c.expires_on).toLocaleDateString()})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {!isEdit && (
-                <div className="p-4 rounded-lg border" style={{ background: 'var(--ground-deep)', borderColor: 'var(--border-soft)' }}>
-                  <Toggle checked={form.requestSSL} onChange={v => { set('requestSSL', v); if (v) setCertId(false) }}
-                    label="Request new Let's Encrypt certificate" />
-                  {form.requestSSL && (
-                    <div className="mt-3">
-                      <label style={LABEL}>Let's Encrypt Email</label>
-                      <input style={INPUT} value={form.letsencrypt_email}
-                        onChange={e => set('letsencrypt_email', e.target.value)} />
-                      <div className="mt-2 text-sm" style={{ color: 'var(--text-soft)' }}>
-                        DNS for {form.domain_names.filter(Boolean).join(', ') || 'your domain'} must point to NPM before saving.
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {(certId || form.requestSSL) && (
-                <div className="grid grid-cols-2 gap-3 pt-1">
-                  <Toggle checked={form.ssl_forced}    onChange={v => set('ssl_forced', v)}    label="Force HTTPS" />
-                  <Toggle checked={form.http2_support} onChange={v => set('http2_support', v)} label="HTTP/2" />
-                  <Toggle checked={form.hsts_enabled}  onChange={v => set('hsts_enabled', v)}  label="HSTS" />
-                  {form.hsts_enabled && (
-                    <Toggle checked={form.hsts_subdomains} onChange={v => set('hsts_subdomains', v)} label="HSTS Subdomains" />
-                  )}
-                </div>
-              )}
-            </>
-          )}
-
-          {/* ADVANCED TAB */}
-          {tab === 'advanced' && (
-            <div>
-              <label style={LABEL}>Custom Nginx Config</label>
-              <textarea
-                style={{ ...INPUT, height: 200, padding: '10px 12px', resize: 'vertical' as const }}
-                value={form.advanced_config}
-                placeholder="# Custom nginx directives..."
-                onChange={e => set('advanced_config', e.target.value)}
-              />
-              <div className="mt-2 text-sm" style={{ color: 'var(--text-dim)' }}>
-                Injected into the nginx location block for this host.
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-between px-6 py-4 border-t" style={{ borderColor: 'var(--border-dim)' }}>
-          <div className="text-sm" style={{ color: error ? 'var(--crit-2)' : 'var(--good)' }}>
-            {error ?? status ?? ''}
-          </div>
-          <div className="flex gap-2">
-            <button onClick={onClose} className="transition-colors"
-              style={BTN_SECONDARY}>
-              Cancel
-            </button>
-            <button onClick={handleSave} disabled={saving}
-              className="transition-all"
-              style={{
-                ...BTN_PRIMARY,
-                opacity: saving ? 0.5 : 1,
-                cursor:  saving ? 'not-allowed' : 'pointer',
-              }}>
-              {saving ? 'Saving...' : isEdit ? 'Save Changes' : 'Create Host'}
-            </button>
-          </div>
+        {(info?.notes ?? []).map((x, i) => <div key={i} className="text-xs" style={{ color: 'var(--text-soft)' }}>{x}</div>)}
+        <div className="text-xs" style={{ color: 'var(--text-dim)' }}>Passwords, keys and tokens are stored in the vault, never in the database.</div>
+        {error && <div className="text-sm" style={{ color: 'var(--crit-2)' }}>{error}</div>}
+        <div className="flex justify-end gap-2">
+          <button onClick={onClose} style={BTN_SECONDARY}>Cancel</button>
+          <button onClick={save} disabled={busy || !name || !url} style={{ ...BTN_PRIMARY, opacity: busy || !name || !url ? 0.6 : 1 }}>{busy ? 'Checking…' : 'Add and test'}</button>
         </div>
       </div>
-    </div>
+    </Modal>
   )
 }
 
-// ---------------------------------------------------------------------------
-//  Delete confirmation modal
-// ---------------------------------------------------------------------------
+function HealthList({ health }: { health: Health }) {
+  return (
+    <ul className="flex flex-col gap-1.5">
+      {health.checks.map((c, i) => {
+        const col = c.ok ? 'var(--good)' : c.warn ? 'var(--warn-2)' : 'var(--crit-2)'
+        return <li key={i} className="text-sm pl-3" style={{ borderLeft: `2px solid ${col}`, color: 'var(--text)' }}>
+          <span className="font-mono" style={{ color: col }}>{c.name}</span> — {c.detail}
+        </li>
+      })}
+    </ul>
+  )
+}
 
-function DeleteModal({ host, onClose, onDelete }: {
-  host:     ProxyHost
-  onClose:  () => void
-  onDelete: () => void
-}) {
-  const [deleting, setDeleting] = useState(false)
+function InstancesPanel({ instances, kinds, admin, onChanged }: { instances: Instance[]; kinds: KindInfo[]; admin: boolean; onChanged: () => void }) {
+  const [adding, setAdding] = useState(false)
+  const [health, setHealth] = useState<Record<string, Health | 'checking'>>({})
+  const [error, setError] = useState<string | null>(null)
 
-  const handleDelete = async () => {
-    setDeleting(true)
-    try {
-      await fetch(`/api/proxy/hosts/${host.id}`, { method: 'DELETE' })
-      onDelete()
-      onClose()
-    } catch (e) {
-      setDeleting(false)
-    }
+  const check = async (id: string) => {
+    setHealth(h => ({ ...h, [id]: 'checking' }))
+    try { const r = await api<Health>(`/api/proxy/instances/${id}/health`); setHealth(h => ({ ...h, [id]: r })) }
+    catch (e: any) { setHealth(h => ({ ...h, [id]: { ok: false, checks: [{ name: 'api', ok: false, detail: e.message }] } })) }
+  }
+  const remove = async (i: Instance) => {
+    if (!confirm(`Forget "${i.name}"? HyperProx stops showing and managing it; nothing on the proxy itself changes.`)) return
+    setError(null)
+    try { await api(`/api/proxy/instances/${i.id}`, { method: 'DELETE' }); onChanged() } catch (e: any) { setError(e.message) }
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(4px)' }}>
-      <div className="w-full max-w-md rounded-xl border p-6" style={{
-        background: 'var(--surface-raised)', borderColor: 'color-mix(in srgb, var(--crit-2) 15%, transparent)',
-      }}>
-        <h2 className="font-display mb-2" style={{ color: 'var(--crit-2)', fontSize: 22, fontWeight: 600 }}>Delete Proxy Host</h2>
-        <p className="text-sm mb-1" style={{ color: 'var(--text-soft)' }}>This will permanently delete:</p>
-        <p className="text-sm font-mono mb-4" style={{ color: 'var(--text-bright)' }}>
-          {host.domain_names.join(', ')}
-        </p>
-        <p className="text-sm mb-6" style={{ color: 'var(--text-dim)' }}>
-          The SSL certificate will not be deleted. The nginx configuration will be removed immediately.
-        </p>
-        <div className="flex gap-2 justify-end">
-          <button onClick={onClose}
-            style={BTN_SECONDARY}>
-            Cancel
-          </button>
-          <button onClick={handleDelete} disabled={deleting}
-            style={{ ...BTN_SECONDARY, color: 'var(--crit)', borderColor: 'var(--crit)' }}>
-            {deleting ? 'Deleting...' : 'Delete Host'}
-          </button>
-        </div>
+    <div className="rounded-lg border p-4 mb-6" style={{ background: 'var(--surface)', borderColor: 'var(--border-soft)' }}>
+      <div className="flex items-center justify-between mb-3">
+        <div className="font-mono uppercase" style={{ fontSize: 11, letterSpacing: '0.14em', color: 'var(--text-dim)' }}>Proxies ({instances.length})</div>
+        {admin && <button onClick={() => setAdding(true)} className="text-sm px-3 py-1 rounded-md" style={{ color: 'var(--accent)', border: '1px solid var(--accent)' }}>+ Add proxy</button>}
       </div>
+      {instances.length === 0 && <div className="text-sm" style={{ color: 'var(--text-soft)' }}>No proxy is connected yet. Add one, or set the NPM login in Settings → Proxy.</div>}
+      <div className="grid gap-2">
+        {instances.map(i => {
+          const h = health[i.id]
+          return (
+            <div key={i.id} className="rounded-md p-3" style={{ border: '1px solid var(--border-soft)' }}>
+              <div className="flex items-center gap-2 flex-wrap">
+                <Badge label={KIND_SHORT[i.kind]} color={KIND_COLOR[i.kind]} />
+                <span className="font-display" style={{ fontSize: 17, fontWeight: 600, color: 'var(--text-bright)' }}>{i.name}</span>
+                <Badge label={i.mode === 'managed' ? 'MANAGED' : 'BRING YOUR OWN'} color={i.mode === 'managed' ? 'var(--good)' : 'var(--text-muted)'}
+                  title={i.mode === 'managed' && i.managed ? `Container ${i.managed.vmid} on ${i.managed.node}` : 'Credentials given to HyperProx'} />
+                {i.legacy && <Badge label="SETTINGS LOGIN" color="var(--text-dim)" title="The NPM login in Settings → Proxy" />}
+                <span className="font-mono text-xs" style={{ color: 'var(--text-dim)' }}>{i.url}</span>
+                <div className="ml-auto flex gap-2">
+                  <button onClick={() => check(i.id)} className="text-xs px-2 py-1 rounded" style={{ color: 'var(--text-soft)', border: '1px solid var(--border-strong)' }}>{h === 'checking' ? 'Checking…' : 'Check'}</button>
+                  {admin && !i.legacy && <button onClick={() => remove(i)} className="text-xs px-2 py-1 rounded" style={{ color: 'var(--crit-2)', border: '1px solid var(--border-strong)' }}>Forget</button>}
+                </div>
+              </div>
+              {admin && i.settings.ssh_host_key && <div className="text-xs font-mono mt-1" style={{ color: 'var(--text-dim)' }}>SSH host key pinned: {i.settings.ssh_host_key}</div>}
+              {h && h !== 'checking' && <div className="mt-2"><HealthList health={h} /></div>}
+            </div>
+          )
+        })}
+      </div>
+      {error && <div className="text-sm mt-2" style={{ color: 'var(--crit-2)' }}>{error}</div>}
+      {adding && <InstanceForm kinds={kinds} onClose={() => setAdding(false)} onSaved={onChanged} />}
     </div>
   )
 }
 
 // ---------------------------------------------------------------------------
-//  Stat card
+//  Host table
 // ---------------------------------------------------------------------------
 
-function StatCard({ label, value, color }: { label: string; value: number; color: string }) {
+function HostRow({ h, admin, onEdit, onAction }: { h: HostView; admin: boolean; onEdit: (h: HostView) => void; onAction: (h: HostView, a: 'enable' | 'disable' | 'delete') => void }) {
+  const days = daysLeft(h.tls.expiresAt)
+  const tlsCol = h.tls.kind === 'none' ? 'var(--text-dimmer)' : days !== null && days < 0 ? 'var(--crit-2)' : days !== null && days < 30 ? 'var(--warn-2)' : 'var(--good)'
+  const tlsLabel = h.tls.kind === 'none' ? 'No TLS' : h.tls.kind === 'auto' ? 'Auto TLS' : 'Certificate'
+  const dot = !h.enabled ? 'var(--text-dimmer)' : h.online === false ? 'var(--warn-2)' : 'var(--good)'
   return (
-    <div className="rounded-lg border p-4 flex flex-col gap-1" style={{ background: 'var(--surface)', borderColor: 'var(--border-soft)' }}>
-      <div className="font-display" style={{ color, fontSize: 28, fontWeight: 700 }}>{value}</div>
-      <div className="font-mono uppercase" style={{ color: 'var(--text-dim)', fontSize: 11, letterSpacing: '0.14em' }}>{label}</div>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-//  Host row
-// ---------------------------------------------------------------------------
-
-function HostRow({ host, onEdit, onDelete, onToggle }: {
-  host:     ProxyHost
-  onEdit:   (h: ProxyHost) => void
-  onDelete: (h: ProxyHost) => void
-  onToggle: (id: number, enabled: boolean) => void
-}) {
-  const ssl    = sslStatus(host)
-  const sslCol = SSL_COLOR[ssl]
-  const days   = host.certificate ? daysUntilExpiry(host.certificate.expires_on) : null
-  const target = `${host.forward_scheme}://${host.forward_host}:${host.forward_port}`
-
-  return (
-    <tr style={{ borderBottom: '1px solid var(--border-soft)' }}
-      onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface)'}
-      onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
-    >
-      <td className="px-4 py-3 w-6">
-        <div className="w-2 h-2 rounded-full" style={{
-          background:  host.enabled && host.meta?.nginx_online ? 'var(--good)' : host.enabled ? 'var(--warn-2)' : 'var(--text-dimmer)',
-          boxShadow:   host.enabled && host.meta?.nginx_online ? '0 0 5px var(--good)' : 'none',
-        }} />
+    <tr style={{ borderBottom: '1px solid var(--border-soft)' }}>
+      <td className="px-4 py-3 w-6"><div className="w-2 h-2 rounded-full" style={{ background: dot }} title={h.enabled ? (h.online === false ? 'Enabled, not answering' : 'Enabled') : 'Disabled'} /></td>
+      <td className="px-4 py-3">
+        <div className="font-mono text-sm" style={{ color: 'var(--text-bright)' }}>{h.domains[0] ?? <span style={{ color: 'var(--text-dim)' }}>(no Host rule)</span>}</div>
+        {h.domains.length > 1 && <div className="text-xs" style={{ color: 'var(--text-dim)' }} title={h.domains.join(', ')}>+{h.domains.length - 1} more</div>}
+        {h.detail && h.kind !== 'npm' && <div className="text-xs font-mono truncate" style={{ color: 'var(--text-dimmer)', maxWidth: 360 }} title={h.detail}>{h.detail}</div>}
       </td>
       <td className="px-4 py-3">
-        <div className="font-mono text-sm" style={{ color: 'var(--text-bright)' }}>{host.domain_names[0]}</div>
-        {host.domain_names.length > 1 && (
-          <div className="text-xs" style={{ color: 'var(--text-dim)' }}>+{host.domain_names.length - 1} more</div>
-        )}
+        <div className="flex items-center gap-2"><Badge label={KIND_SHORT[h.kind]} color={KIND_COLOR[h.kind]} /><span className="text-sm" style={{ color: 'var(--text)' }}>{h.instanceName}</span></div>
       </td>
-      <td className="px-4 py-3">
-        <span className="text-xs font-mono" style={{ color: 'var(--text-soft)' }}>{target}</span>
-      </td>
+      <td className="px-4 py-3"><span className="text-xs font-mono" style={{ color: 'var(--text-soft)' }}>{h.forwardHost ? `${h.forwardScheme}://${h.forwardHost}:${h.forwardPort}` : '—'}</span></td>
       <td className="px-4 py-3">
         <div className="flex items-center gap-2">
-          <span className="text-xs font-mono px-2 py-0.5 rounded" style={{
-            background: `${alpha(sslCol, 8)}`, color: sslCol, border: `1px solid ${alpha(sslCol, 19)}`,
-          }}>{SSL_LABEL[ssl]}</span>
-          {days !== null && (
-            <span className="text-xs font-mono" style={{ color: days < 14 ? 'var(--crit-2)' : 'var(--text-dimmer)' }}>{days}d</span>
-          )}
+          <Badge label={tlsLabel} color={tlsCol} />
+          {days !== null && <span className="text-xs font-mono" style={{ color: days < 14 ? 'var(--crit-2)' : 'var(--text-dimmer)' }}>{days}d</span>}
         </div>
       </td>
       <td className="px-4 py-3">
-        <div className="flex gap-1 flex-wrap">
-          {host.block_exploits          && <Badge label="SEC"   color="var(--violet-2)" />}
-          {host.allow_websocket_upgrade && <Badge label="WS"    color="var(--accent-2)" />}
-          {host.http2_support           && <Badge label="H2"    color="var(--accent-2)" />}
-          {host.ssl_forced              && <Badge label="HTTPS" color="var(--good)" />}
-        </div>
-      </td>
-      <td className="px-4 py-3">
-        <div className="flex items-center gap-1">
-          {/* Edit */}
-          <button onClick={() => onEdit(host)}
-            className="px-3 py-1 rounded-md text-sm transition-all"
-            style={{ background: 'transparent', color: 'var(--accent)', border: '1px solid var(--accent)' }}>
-            Edit
-          </button>
-          {/* Enable/Disable */}
-          <button onClick={() => onToggle(host.id, host.enabled)}
-            className="px-3 py-1 rounded-md text-sm transition-all"
-            style={{
-              background: 'transparent',
-              color:      host.enabled ? 'var(--crit)'   : 'var(--good)',
-              border:     `1px solid ${host.enabled ? 'var(--crit)' : 'var(--good)'}`,
-            }}>
-            {host.enabled ? 'Off' : 'On'}
-          </button>
-          {/* Delete */}
-          <button onClick={() => onDelete(host)}
-            className="px-2 py-1 rounded-md text-sm transition-all"
-            style={{ background: 'transparent', color: 'var(--text-dimmer)', border: '1px solid transparent' }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--crit-2)'; (e.currentTarget as HTMLElement).style.borderColor = 'color-mix(in srgb, var(--crit-2) 19%, transparent)' }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = 'var(--text-dimmer)'; (e.currentTarget as HTMLElement).style.borderColor = 'transparent' }}
-          >✕</button>
-        </div>
+        {h.readOnly ? <Badge label="READ-ONLY" color="var(--text-muted)" title={h.readOnlyReason ?? 'Made outside HyperProx; never rewritten'} />
+          : admin ? (
+            <div className="flex items-center gap-1">
+              <button onClick={() => onEdit(h)} className="px-3 py-1 rounded-md text-sm" style={{ color: 'var(--accent)', border: '1px solid var(--accent)' }}>Edit</button>
+              <button onClick={() => onAction(h, h.enabled ? 'disable' : 'enable')} className="px-3 py-1 rounded-md text-sm"
+                style={{ color: h.enabled ? 'var(--crit)' : 'var(--good)', border: `1px solid ${h.enabled ? 'var(--crit)' : 'var(--good)'}` }}>{h.enabled ? 'Off' : 'On'}</button>
+              <button onClick={() => onAction(h, 'delete')} className="px-2 py-1 rounded-md text-sm" style={{ color: 'var(--text-dimmer)' }} aria-label="Delete">✕</button>
+            </div>
+          ) : null}
       </td>
     </tr>
   )
 }
 
-function Badge({ label, color }: { label: string; color: string }) {
-  return (
-    <span className="font-mono px-1 py-0.5 rounded" style={{
-      fontSize: 9, background: `${alpha(color, 8)}`, color, border: `1px solid ${alpha(color, 15)}`,
-    }}>{label}</span>
-  )
-}
-
 // ---------------------------------------------------------------------------
-//  Main proxy page
+//  Page
 // ---------------------------------------------------------------------------
 
 export default function ProxyPage() {
-  const [hosts,     setHosts]     = useState<ProxyHost[]>([])
-  const [certs,     setCerts]     = useState<Certificate[]>([])
-  const [stats,     setStats]     = useState<Stats | null>(null)
-  const [loading,   setLoading]   = useState(true)
-  const [error,     setError]     = useState<string | null>(null)
-  const [filter,    setFilter]    = useState<'all' | 'enabled' | 'disabled' | 'expiring'>('all')
-  const [search,    setSearch]    = useState('')
-  const [lastSync,  setLastSync]  = useState<Date | null>(null)
-  const [editHost,  setEditHost]  = useState<ProxyHost | null | undefined>(undefined) // undefined=closed, null=new
-  const [deleteHost, setDeleteHost] = useState<ProxyHost | null>(null)
+  const { role } = useSession()
+  const admin = atLeast(role, 'admin')
+  const [hosts, setHosts] = useState<HostView[]>([])
+  const [failing, setFailing] = useState<Array<{ instanceName: string; error: string }>>([])
+  const [instances, setInstances] = useState<Instance[]>([])
+  const [kinds, setKinds] = useState<KindInfo[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [only, setOnly] = useState<string>('all')
+  const [filter, setFilter] = useState<'all' | 'enabled' | 'disabled' | 'read-only' | 'expiring'>('all')
+  const [search, setSearch] = useState('')
+  const [lastSync, setLastSync] = useState<Date | null>(null)
+  const [editing, setEditing] = useState<HostView | null | undefined>(undefined)
+  const [plan, setPlan] = useState<Plan | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
 
-  const fetchData = useCallback(async () => {
+  const load = useCallback(async () => {
     try {
-      const [hostsRes, statsRes, certsRes] = await Promise.all([
-        fetch('/api/proxy/hosts'),
-        fetch('/api/proxy/stats'),
-        fetch('/api/proxy/certificates'),
+      const [h, i, k] = await Promise.all([
+        api<{ hosts: HostView[]; errors: Array<{ instanceName: string; error: string }> }>('/api/proxy/hosts'),
+        api<Instance[]>('/api/proxy/instances'), api<KindInfo[]>('/api/proxy/kinds'),
       ])
-      const [hostsJson, statsJson, certsJson] = await Promise.all([
-        hostsRes.json(), statsRes.json(), certsRes.json(),
-      ])
-      if (hostsJson.success) { setHosts(hostsJson.data); setError(null) }
-      else { setHosts([]); setError(hostsJson.error ?? 'NPM not configured') }
-      if (statsJson.success) setStats(statsJson.data)
-      else setStats(null)
-      if (certsJson.success) setCerts(certsJson.data)
-      setLastSync(new Date())
+      setHosts(h.hosts); setFailing(h.errors); setInstances(i); setKinds(k); setError(null); setLastSync(new Date())
     } catch (e: any) { setError(e.message) }
     finally { setLoading(false) }
   }, [])
 
-  useEffect(() => {
-    fetchData()
-    const t = setInterval(fetchData, 30000)
-    return () => clearInterval(t)
-  }, [fetchData])
+  useEffect(() => { load(); const t = setInterval(load, 30_000); return () => clearInterval(t) }, [load])
 
-  const handleToggle = async (id: number, enabled: boolean) => {
-    await fetch(`/api/proxy/hosts/${id}/${enabled ? 'disable' : 'enable'}`, { method: 'POST' })
-    fetchData()
+  const act = async (h: HostView, action: 'enable' | 'disable' | 'delete') => {
+    setActionError(null)
+    try { setPlan(await api<Plan>(`/api/proxy/instances/${h.instanceId}/preview`, { method: 'POST', body: JSON.stringify({ action, hostId: h.id }) })) }
+    catch (e: any) { setActionError(e.message) }
   }
 
-  const filtered = hosts
+  const shown = useMemo(() => hosts
+    .filter(h => only === 'all' || h.instanceId === only)
     .filter(h => {
-      if (filter === 'enabled')  return h.enabled
+      if (filter === 'enabled') return h.enabled
       if (filter === 'disabled') return !h.enabled
-      if (filter === 'expiring') { const s = sslStatus(h); return s === 'expiring' || s === 'expired' }
+      if (filter === 'read-only') return h.readOnly
+      if (filter === 'expiring') { const d = daysLeft(h.tls.expiresAt); return d !== null && d < 30 }
       return true
     })
-    .filter(h => {
-      if (!search) return true
-      const q = search.toLowerCase()
-      return h.domain_names.some(d => d.toLowerCase().includes(q)) || h.forward_host.toLowerCase().includes(q)
-    })
-    .sort((a, b) => a.domain_names[0].localeCompare(b.domain_names[0]))
+    .filter(h => !search || h.domains.some(d => d.includes(search.toLowerCase())) || h.forwardHost.includes(search.toLowerCase()) || h.instanceName.toLowerCase().includes(search.toLowerCase()))
+    .sort((a, b) => (a.domains[0] ?? '~').localeCompare(b.domains[0] ?? '~')), [hosts, only, filter, search])
 
-  if (error) return (
-    <div className="min-h-full flex items-center justify-center" style={{ background: "var(--ground)" }}>
-      <div className="text-center">
-        <div className="mb-4 flex justify-center" style={{ color: "var(--text-dimmer)" }}>
-          {/* A plug with nothing to plug into: the proxy manager this page fronts is not reachable. */}
-          <svg width="40" height="40" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M6 1.5v3M10 1.5v3" />
-            <rect x="3.5" y="4.5" width="9" height="5" rx="1" />
-            <path d="M8 9.5v3a2 2 0 0 0 2 2h1" />
-          </svg>
-        </div>
-        <div className="font-display mb-2" style={{ color: "var(--text-bright)", fontSize: 28, fontWeight: 700 }}>NPM Not Connected</div>
-        <div className="text-sm mb-6 max-w-sm" style={{ color: "var(--text-soft)" }}>{error}</div>
-        <a href="/settings" className="px-4 py-2 rounded text-xs font-mono" style={{ background: "color-mix(in srgb, var(--accent) 8%, transparent)", color: "var(--accent)", border: "1px solid color-mix(in srgb, var(--accent) 19%, transparent)" }}>Configure in Settings →</a>
-      </div>
-    </div>
-  )
+  const counts = { total: hosts.length, enabled: hosts.filter(h => h.enabled).length, readOnly: hosts.filter(h => h.readOnly).length, tls: hosts.filter(h => h.tls.kind !== 'none').length }
+  const writable = instances
 
   if (loading) return (
     <div className="min-h-full flex items-center justify-center" style={{ background: 'var(--ground)' }}>
@@ -669,106 +554,78 @@ export default function ProxyPage() {
 
   return (
     <div className="min-h-full p-4 sm:p-8 lg:p-10" style={{ background: 'var(--ground)' }}>
-
-      {/* Header */}
       <div className="flex items-end justify-between mb-8 flex-wrap gap-4">
         <div>
-          <div className="font-mono uppercase mb-2" style={{ fontSize: 11, letterSpacing: '0.14em', color: 'var(--accent)' }}>NPM</div>
-          <h1 className="font-display" style={{ fontSize: 36, fontWeight: 700, color: 'var(--text-bright)', lineHeight: 1.15 }}>
-            Proxy Manager
-          </h1>
+          <div className="font-mono uppercase mb-2" style={{ fontSize: 11, letterSpacing: '0.14em', color: 'var(--accent)' }}>Reverse proxies</div>
+          <h1 className="font-display" style={{ fontSize: 36, fontWeight: 700, color: 'var(--text-bright)', lineHeight: 1.15 }}>Proxy Manager</h1>
         </div>
         <div className="flex items-center gap-3">
           {lastSync && <span className="text-xs" style={{ color: 'var(--text-dim)' }}>synced {lastSync.toLocaleTimeString()}</span>}
-          <button
-            onClick={() => setEditHost(null)}
-            className="flex items-center gap-2 px-4 rounded-md text-sm transition-all"
-            style={{ height: 40, background: 'var(--accent)', color: 'var(--accent-ink)', fontWeight: 600, border: 'none' }}
-          >
-            <span style={{ fontSize: 14 }}>+</span> New Host
-          </button>
+          {admin && writable.length > 0 && (
+            <button onClick={() => setEditing(null)} className="flex items-center gap-2 px-4 rounded-md text-sm" style={{ height: 40, background: 'var(--accent)', color: 'var(--accent-ink)', fontWeight: 600 }}>
+              <span style={{ fontSize: 14 }}>+</span> New Host
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Stats */}
-      {stats && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3 mb-6">
-          <StatCard label="Total"    value={stats.total}    color="var(--text-muted)" />
-          <StatCard label="Enabled"  value={stats.enabled}  color="var(--good)" />
-          <StatCard label="Disabled" value={stats.disabled} color="var(--text-dimmer)" />
-          <StatCard label="Online"   value={stats.online}   color="var(--accent)" />
-          <StatCard label="SSL"      value={stats.ssl}      color="var(--good)" />
-          <StatCard label="Expiring" value={stats.expiring} color="var(--warn-2)" />
-          <StatCard label="Expired"  value={stats.expired}  color="var(--crit-2)" />
+      {error && <div className="text-sm mb-4" style={{ color: 'var(--crit-2)' }}>{error}</div>}
+      {failing.map((f, i) => (
+        <div key={i} className="text-sm mb-2 rounded-md p-3" style={{ color: 'var(--warn-2)', background: alpha('var(--warn-2)', 8), border: `1px solid ${alpha('var(--warn-2)', 19)}` }}>
+          {f.instanceName} is not answering: {f.error}. Its hosts are not shown.
         </div>
-      )}
+      ))}
 
-      {/* Filter + search */}
+      <InstancesPanel instances={instances} kinds={kinds} admin={admin} onChanged={load} />
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+        {([['Hosts', counts.total, 'var(--text-muted)'], ['Enabled', counts.enabled, 'var(--good)'], ['TLS', counts.tls, 'var(--accent)'], ['Read-only', counts.readOnly, 'var(--text-dimmer)']] as const).map(([l, v, c]) => (
+          <div key={l} className="rounded-lg border p-4" style={{ background: 'var(--surface)', borderColor: 'var(--border-soft)' }}>
+            <div className="font-display" style={{ color: c, fontSize: 28, fontWeight: 700 }}>{v}</div>
+            <div className="font-mono uppercase" style={{ color: 'var(--text-dim)', fontSize: 11, letterSpacing: '0.14em' }}>{l}</div>
+          </div>
+        ))}
+      </div>
+
       <div className="flex items-center gap-3 mb-4 flex-wrap">
-        <div className="flex gap-1">
-          {(['all', 'enabled', 'disabled', 'expiring'] as const).map(f => (
-            <button key={f} onClick={() => setFilter(f)}
-              className="text-sm px-3 py-1.5 rounded-md transition-colors capitalize"
-              style={{
-                background: filter === f ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'transparent',
-                color:      filter === f ? 'var(--accent)'   : 'var(--text-dim)',
-                border:     `1px solid ${filter === f ? 'var(--accent)' : 'var(--border-strong)'}`,
-              }}>{f}</button>
+        <select value={only} onChange={e => setOnly(e.target.value)} style={{ ...INPUT, width: 'auto', minHeight: 36 }}>
+          <option value="all">All proxies</option>
+          {instances.map(i => <option key={i.id} value={i.id}>{i.name} ({KIND_SHORT[i.kind]})</option>)}
+        </select>
+        <div className="flex gap-1 flex-wrap">
+          {(['all', 'enabled', 'disabled', 'read-only', 'expiring'] as const).map(f => (
+            <button key={f} onClick={() => setFilter(f)} className="text-sm px-3 py-1.5 rounded-md capitalize" style={{
+              background: filter === f ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'transparent',
+              color: filter === f ? 'var(--accent)' : 'var(--text-dim)', border: `1px solid ${filter === f ? 'var(--accent)' : 'var(--border-strong)'}`,
+            }}>{f}</button>
           ))}
         </div>
-        <input
-          type="text" placeholder="Search domain or host..." value={search}
-          onChange={e => setSearch(e.target.value)}
-          className="ml-auto text-sm px-3 rounded-md outline-none w-56 focus:border-[var(--accent)]"
-          style={{ height: 36, background: 'var(--ground-deep)', border: '1px solid var(--border-strong)', color: 'var(--text-bright)', caretColor: 'var(--accent)' }}
-        />
-        <span className="text-xs" style={{ color: 'var(--text-dim)' }}>{filtered.length} hosts</span>
+        <input type="text" placeholder="Search domain, host or proxy..." value={search} onChange={e => setSearch(e.target.value)}
+          className="sm:ml-auto text-sm px-3 rounded-md outline-none w-full sm:w-64"
+          style={{ height: 36, background: 'var(--ground-deep)', border: '1px solid var(--border-strong)', color: 'var(--text-bright)' }} />
+        <span className="text-xs" style={{ color: 'var(--text-dim)' }}>{shown.length} hosts</span>
       </div>
+      {actionError && <div className="text-sm mb-3" style={{ color: 'var(--crit-2)' }}>{actionError}</div>}
 
-      {/* Table */}
       <div className="rounded-lg border overflow-hidden" style={{ borderColor: 'var(--border-soft)', background: 'var(--surface)' }}>
         <div className="hp-table-scroll overflow-x-auto"><table className="w-full">
           <thead>
             <tr style={{ background: 'var(--ground-deep)', borderBottom: '1px solid var(--border-soft)' }}>
               <th className="px-4 py-3 w-6" />
-              {['Domain', 'Target', 'SSL', 'Features', 'Actions'].map(h => (
-                <th key={h} className="px-4 py-3 text-left font-mono font-normal uppercase" style={{ color: 'var(--text-dim)', fontSize: 11, letterSpacing: '0.14em' }}>{h}</th>
+              {['Domain', 'Proxy', 'Target', 'TLS', ''].map((h, i) => (
+                <th key={i} className="px-4 py-3 text-left font-mono font-normal uppercase" style={{ color: 'var(--text-dim)', fontSize: 11, letterSpacing: '0.14em' }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {filtered.map(host => (
-              <HostRow key={host.id} host={host}
-                onEdit={setEditHost}
-                onDelete={setDeleteHost}
-                onToggle={handleToggle}
-              />
-            ))}
-            {filtered.length === 0 && (
-              <tr><td colSpan={6} className="px-4 py-8 text-center text-sm" style={{ color: 'var(--text-dim)' }}>
-                No hosts match the current filter
-              </td></tr>
-            )}
+            {shown.map(h => <HostRow key={`${h.instanceId}/${h.id}`} h={h} admin={admin} onEdit={setEditing} onAction={act} />)}
+            {shown.length === 0 && <tr><td colSpan={6} className="px-4 py-8 text-center text-sm" style={{ color: 'var(--text-dim)' }}>No hosts match the current filter</td></tr>}
           </tbody>
         </table></div>
       </div>
 
-      {/* Modals */}
-      {editHost !== undefined && (
-        <HostModal
-          host={editHost}
-          certs={certs}
-          onClose={() => setEditHost(undefined)}
-          onSave={fetchData}
-        />
-      )}
-      {deleteHost && (
-        <DeleteModal
-          host={deleteHost}
-          onClose={() => setDeleteHost(null)}
-          onDelete={fetchData}
-        />
-      )}
+      {editing !== undefined && <HostForm host={editing} instances={writable} onClose={() => setEditing(undefined)} onPlan={p => { setEditing(undefined); setPlan(p) }} />}
+      {plan && <PlanDialog plan={plan} onClose={() => setPlan(null)} onDone={load} />}
     </div>
   )
 }
