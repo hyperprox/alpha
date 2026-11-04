@@ -85,10 +85,10 @@ test("derived sizes are raised to the Docker floor with a note; user sizes are n
   assert.deepEqual(k.disk_gb, { value: 8, source: "derived" }, "a recipe default at the floor carries no note")
 })
 
-test("storage prefers block storage over a larger file share", () => {
+test("storage prefers block storage, and never a CIFS share however large", () => {
   assert.deepEqual(d({}).storage, { value: "fast", source: "derived" })
-  // Not enough room for disk x 1.2 on the block storage: the share is next.
-  assert.equal(d({ disk_gb: 350 }).storage.value, "share")
+  // Not enough room for disk x 1.2 on the block storage, and the CIFS share cannot hold a rootfs.
+  assert.equal(d({ disk_gb: 350 }).storage, undefined)
   assert.equal(d({ disk_gb: 800 }).storage, undefined)
 })
 

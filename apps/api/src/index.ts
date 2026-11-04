@@ -27,6 +27,8 @@ import { secretsRoutes }          from './routes/secrets'
 import { terminalRoutes }             from './routes/terminal'
 import { pluginRoutes }           from './routes/plugins'
 import { catalogueRoutes } from './routes/catalogue'
+import { setWizardStore, PrismaWizardStore } from './lib/catalogue-store'
+import { restoreWizardState } from './lib/catalogue-installer'
 import { terminalWsRoutes }           from './routes/terminal-ws'
 import { updatesRoutes, updatesWsRoutes } from './routes/updates'
 import { certsRoutes }            from './routes/certs'
@@ -71,6 +73,13 @@ async function main() {
   // Proxy instances (lib/proxy): the registry the Proxy page, the wizard and Certificates read through.
   proxyService(server.prisma)
   await registerGate(server)
+
+  // -- Catalogue install wizard: previews, jobs and create marks survive a restart -------------
+  // A job that was mid-install is marked interrupted, so its half-made container can be cleaned up.
+  setWizardStore(new PrismaWizardStore(server.prisma))
+  await restoreWizardState().then(
+    r => { if (r.interrupted) server.log.warn({ interrupted: r.interrupted }, 'catalogue installs were interrupted by a restart') },
+    e => server.log.error({ err: e }, 'could not restore catalogue install state'))
 
   // -- Notifications (lib/notify) ---------------------------------------------
   // The one sender: channels under Settings → Notifications, an outbox in Postgres. Installed before the

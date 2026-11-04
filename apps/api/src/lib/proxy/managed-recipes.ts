@@ -27,7 +27,9 @@ export type ManagedKind = 'traefik' | 'caddy' | 'haproxy'
 export function managedSecret(): string { return randomBytes(18).toString('base64url') }
 
 const base = { category: 'proxy' as const, needsDocker: true, firstRun: { kind: 'none' as const }, wizard: false,
-  defaults: { cores: 1, memoryMb: 512, diskGb: 4 },
+  defaults: { cores: 1, memoryMb: 512, diskGb: 8, swapMb: 512 },
+  // One small proxy in Docker: below this the image pull or the first reload struggles.
+  minimum:  { cores: 1, memoryMb: 256, diskGb: 4 },
   // curl inside the container: how HyperProx reaches an API bound to loopback there.
   packages: { debian: ['curl'], ubuntu: ['curl'] } }
 
