@@ -243,6 +243,9 @@ test("clean-up: refuses a container without this install's mark, one under HA, a
   assert.equal(failed.status, "failed")
   g.configs[102] = { description: "not ours" }
   await assert.rejects(removeFailedInstall(failed.jobId, "a@example.com", e), /does not carry this install's mark/)
+  g.guests = g.guests.filter(x => x.vmid !== 102)
+  assert.match(await removeFailedInstall(failed.jobId, "a@example.com", e), /no longer exists/)
+  assert.deepEqual(g.deletes, [])
 })
 
 test("create: DHCP plans send ip=dhcp and no gateway; no DNS means no nameserver", async () => {
