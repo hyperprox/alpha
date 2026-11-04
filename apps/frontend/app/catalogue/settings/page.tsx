@@ -97,6 +97,24 @@ export default function CatalogueSettings() {
               </p>
             </div>
           )}
+          <div className="rounded-lg border p-4" style={{ borderColor: 'var(--border-soft)', background: 'var(--surface)' }}>
+            <p className="font-display text-[18px] font-semibold mb-1" style={{ color: 'var(--text-bright)' }}>What the address check can and can&rsquo;t prove</p>
+            <p className="text-sm mb-2" style={{ color: 'var(--text-muted)' }}>
+              When you pick a fixed IP, the wizard refuses it if it finds any of these:
+            </p>
+            <ul className="text-[13px] space-y-0.5 mb-2" style={{ color: 'var(--text-muted)' }}>
+              <li>· the address is written in a container or VM config in this cluster;</li>
+              <li>· a running container reports it, or a running VM reports it through its guest agent;</li>
+              <li>· it is the address of one of the nodes;</li>
+              <li>· something answers a ping to it, sent from the node you chose.</li>
+            </ul>
+            <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+              It cannot prove the address is free. A device outside the cluster that blocks ping, a machine that is
+              switched off, a VM without a guest agent, or an address your router has handed out by DHCP will not be
+              seen. Keep fixed addresses out of your router&rsquo;s DHCP range. The review screen says which checks ran,
+              and when ping could not be sent.
+            </p>
+          </div>
           {msg && <Notice kind={msg.kind}>{msg.text}</Notice>}
           <PrimaryButton onClick={() => void save()} disabled={saving}>{saving ? 'Saving…' : 'Save'}</PrimaryButton>
         </div>
