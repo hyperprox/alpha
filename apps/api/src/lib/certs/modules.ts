@@ -12,6 +12,7 @@
 import type { GoDaddyClient } from '../godaddy-client'
 import { NPMClient, type NPMCertificate } from '../npm-client'
 import { getProviderCredentials } from '../credentials'
+import { inventoryHosts } from '../proxy'
 import { livePve } from '../pve-env'
 import type { CertsHousekeepingItem, CertsInventoryEntry, CertsProbe, CertsVerdict } from './types'
 import type { KeyType, CertsPolicy } from './policy'
@@ -92,11 +93,9 @@ async function npmClient(): Promise<NPMClient> {
 export function productionSources(): CertsSources {
   return {
     npmCertificates: async () => (await npmClient()).getCertificates(),
-    npmHosts: async () => (await (await npmClient()).getProxyHosts()).map(h => ({
-      domain_names: h.domain_names,
-      certificate_id: certId(h.certificate_id),
-      enabled: !!h.enabled,
-    })),
+    // Every proxy instance's hosts, so endpoints behind Traefik, Caddy, HAProxy and Pangolin are probed too.
+    // Certificate ids stay the legacy NPM's: its certificates are the ones listed and housekept.
+    npmHosts: () => inventoryHosts(),
     nodeCertificates: () => nodeCertificatesFromPve(),
     async npmCertificateUsers() {
       const npm = await npmClient()

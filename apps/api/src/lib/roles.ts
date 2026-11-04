@@ -75,6 +75,12 @@ const TERMINAL_OPERATOR: Array<[string, RegExp]> = [
 ]
 // Guest destroy.
 const DESTROY = /^\/api\/proxmox\/nodes\/[^/]+\/(lxc|qemu)\/[^/]+$/
+// Proxy (routes/proxy.ts). Reads are viewer, as the host list always was: kinds, instances (the route
+// strips settings for anyone below admin), hosts, certificates, stats, per-instance hosts, certificates and
+// health. Every write is admin: instances, previews, applying a preview, certificate requests. A GET under
+// /api/proxy that is not one of these is admin too, so a new read route is closed until it is listed here.
+const PROXY = /^\/api\/proxy(\/|$)/
+const PROXY_READ = /^\/api\/proxy\/(kinds|instances|hosts|certificates|stats|instances\/[^/]+\/(hosts|certificates|health))$/
 // Role management (no routes yet; reserved so they are owner-only from day one).
 const ROLE_MGMT = /^\/api\/(auth\/)?roles(\/|$)/
 
@@ -100,6 +106,7 @@ export function requiredRole(method: string, path: string): Role | null {
   if (p === '/api/auth/lock') return 'admin'
   // API tokens: listing them is admin too (names, roles, who made them).
   if (TOKENS.test(p)) return 'admin'
+  if (PROXY.test(p)) return (m === 'GET' || m === 'HEAD') && PROXY_READ.test(p) ? 'viewer' : 'admin'
 
   if (m === 'GET' || m === 'HEAD') {
     // Interactive shells on guests and nodes.
