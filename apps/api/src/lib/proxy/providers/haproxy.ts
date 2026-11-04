@@ -148,7 +148,6 @@ export class HaproxyProvider implements ProxyProvider {
     const after = new Set((await this.frontends()).map(f => f.name))
     const lost = before.filter(n => !after.has(n))
     if (lost.length) throw new Error(`After ${what}, HAProxy no longer has frontend(s) ${lost.join(', ')}.`)
-    void fe
   }
 
   private async waitReload(id: string, what: string): Promise<void> {

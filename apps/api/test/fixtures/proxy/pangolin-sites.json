@@ -1,0 +1,38 @@
+{
+ "data": {
+  "sites": [
+   {
+    "siteId": 1,
+    "niceId": "kindly-indian-gerbil",
+    "name": "probe-local",
+    "pubKey": null,
+    "subnet": "0.0.0.0/32",
+    "megabytesIn": 0,
+    "megabytesOut": 0,
+    "orgName": "HPX test",
+    "type": "local",
+    "address": null,
+    "newtVersion": null,
+    "agent": null,
+    "agentVersion": null,
+    "exitNodeId": null,
+    "exitNodeName": null,
+    "exitNodeEndpoint": null,
+    "remoteExitNodeId": null,
+    "resourceCount": 1,
+    "status": "approved",
+    "newtUpdateAvailable": false,
+    "labels": []
+   }
+  ],
+  "pagination": {
+   "total": 1,
+   "pageSize": 1000,
+   "page": 1
+  }
+ },
+ "success": true,
+ "error": false,
+ "message": "Sites retrieved successfully",
+ "status": 200
+}

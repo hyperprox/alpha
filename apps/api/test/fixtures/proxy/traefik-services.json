@@ -1,0 +1,44 @@
+[
+ {
+  "status": "enabled",
+  "usedBy": [
+   "dashboard@file"
+  ],
+  "name": "api@internal",
+  "provider": "internal"
+ },
+ {
+  "status": "enabled",
+  "name": "dashboard@internal",
+  "provider": "internal"
+ },
+ {
+  "loadBalancer": {
+   "servers": [
+    {
+     "url": "http://192.0.2.38:9000"
+    }
+   ],
+   "strategy": "wrr",
+   "passHostHeader": true,
+   "responseForwarding": {
+    "flushInterval": "100ms"
+   }
+  },
+  "status": "enabled",
+  "usedBy": [
+   "legacy@file"
+  ],
+  "serverStatus": {
+   "http://192.0.2.38:9000": "UP"
+  },
+  "name": "legacy@file",
+  "provider": "file",
+  "type": "loadbalancer"
+ },
+ {
+  "status": "enabled",
+  "name": "noop@internal",
+  "provider": "internal"
+ }
+]

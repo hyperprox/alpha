@@ -5,7 +5,7 @@
 //  the in-memory secrets, which keep the same rules.
 // =============================================================================
 
-import type { PrismaClient } from '@prisma/client'
+import { Prisma, type PrismaClient } from '@prisma/client'
 import { deleteProviderCredentials, getProviderCredentials, setCredentials } from '../credentials'
 import type { ManagedRef, ProxyInstance, ProxyKind, InstanceMode } from './types'
 
@@ -66,7 +66,7 @@ export class PrismaProxyStore implements ProxyStore {
   }
   async update(id: string, patch: InstancePatch) {
     const data: any = { ...patch }
-    if ('managed' in patch && patch.managed === null) data.managed = { set: null }
+    if ('managed' in patch && patch.managed === null) data.managed = Prisma.DbNull
     return fromRow(await this.t.update({ where: { id }, data }))
   }
   async remove(id: string) { await this.t.delete({ where: { id } }).catch(() => undefined) }
