@@ -840,11 +840,12 @@ export async function previewInstall(
   const recipe = findRecipe(input.recipeId)
   if (!recipe) return { errors: [`No recipe called ${input.recipeId}.`], warnings: [], checks: [] }
   if (!owner) return { errors: ['Sign in to install.'], warnings: [], checks: [] }
+  // Before anything is read: a plan that cannot keep its generated password is not worth placing.
+  if (recipe.firstRun.kind === 'env-admin' && !await deps.vaultOpen()) {
+    return { errors: [`${recipe.name} gets a generated admin password, which is saved in the vault, and the vault is locked. Sign in to unlock it.`], warnings: [], checks: [] }
+  }
   const { view, live, pinged } = await freshRead(input, deps)
   const r = checkPlan(input, recipe, view, live, pinged)
-  if (recipe.firstRun.kind === 'env-admin' && !await deps.vaultOpen()) {
-    r.errors.push(`${recipe.name} gets a generated admin password, which is saved in the vault, and the vault is locked. Sign in to unlock it.`)
-  }
   if (r.errors.length) return r
   const t = await resolveTemplate(deps.client, input.node, view)
   if ('error' in t) return { ...r, errors: [t.error] }
@@ -931,6 +932,13 @@ export async function removeFailedInstall(jobId: string, owner: string, over: Pa
   if (job.removed) throw new WizardRefusal('Its container was already removed.', 'used')
   if (!job.created || !job.vmid || !job.node) throw new WizardRefusal('This install did not create a container, so there is nothing of its own to remove.', 'changed')
   const base = `/nodes/${enc(job.node)}/lxc/${job.vmid}`
+  // A create whose task failed is usually rolled back by Proxmox itself; then there is nothing to remove.
+  const listed = await deps.client.fetchStrict<any[]>('/cluster/resources?type=vm')
+  const here = (listed ?? []).find((r: any) => Number(r?.vmid) === job.vmid)
+  if (!here) { job.removed = true; return `CT ${job.vmid} no longer exists, so there was nothing to remove.` }
+  if (here.node !== job.node || here.type !== 'lxc') {
+    throw new WizardRefusal(`ID ${job.vmid} is now a ${here.type === 'qemu' ? 'VM' : 'container'} on ${here.node}, not this install's container.`, 'changed')
+  }
   const cfg = await deps.client.fetchStrict<Record<string, unknown>>(`${base}/config`)
   if (!String(cfg?.description ?? '').includes(installMark(job.jobId))) {
     throw new WizardRefusal(`CT ${job.vmid} does not carry this install's mark, so HyperProx will not remove it.`, 'changed')
