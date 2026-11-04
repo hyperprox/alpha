@@ -61,15 +61,26 @@ the address digits, and a derived ID that is taken is reported, not used.
 
 A static address is refused when it is in any guest config (`netN`/`ipconfigN`), reported live by a running
 guest (LXC interfaces, or the QEMU guest agent where enabled), is a node's own address, or answers a ping
-sent from the chosen node. No answer to a ping is not proof (firewalls drop it); the review says which
-checks ran.
+sent from the chosen node. A source that cannot be read is **unknown, never free**: a running guest whose
+interfaces could not be read, a running VM with no guest agent, and the node list when `/cluster/status`
+fails are named in `partial` and in the review. With any unknown, a static address needs an explicit
+"I checked this address" tick, kept in the preview. Typing reuses one cluster read for about ten seconds
+and never pings; the ping is sent on "Check address" and at preview and apply. No answer to a ping is not
+proof (firewalls drop it).
 
 ### Safety
 
+- Previews, jobs and the "ID being created" marks are kept in Postgres (`CatalogueRecord`). After a restart
+  a job that was mid-install is marked interrupted; the Catalogue page lists it under "Unfinished installs"
+  and offers the same checked clean-up. Expired previews are pruned; at most 200 are open at once.
+- The ID is held from the create until the job settles, not just until the create returns.
+- There is no one-call `/install` route: every install is preview, then apply.
 - Creates go through the Proxmox API (`POST /nodes/{node}/lxc`), unprivileged with `nesting=1` only, never
   by writing a config file.
 - Every wizard route is admin-only, reads included. Apply and clean-up also need the master password
   re-entered (`roles.ts`).
-- A failed install can remove its own container: only when the job created it, the container still carries
-  the job's mark in its description, and it is not under HA. The vault item holding its generated admin
-  login (`apps/<recipe>-<vmid>`) is deleted with it, only when this install created that item.
+- A failed or interrupted install can remove its own container: only when the job created it, the container
+  still carries the job's mark in its description, and HA can be read and does not manage it. The delete
+  is `purge=1` only, never `destroy-unreferenced-disks`, which would also delete older volumes named for the
+  same ID. The vault item holding its generated admin login (`apps/<recipe>-<vmid>`) is deleted with it,
+  only when this install created that item.
