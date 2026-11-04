@@ -44,7 +44,9 @@ export default function CataloguePage() {
   const [notice,  setNotice]  = useState<string | null>(null)
   const [wizard,  setWizard]  = useState<Recipe | null>(null)
   const [cleaning, setCleaning] = useState(false)
-  const [reconfirmCleanup, setReconfirmCleanup] = useState(false)
+  const [reconfirmCleanup, setReconfirmCleanup] = useState<{ jobId: string; vmid?: number; node?: string } | null>(null)
+  // Installs that failed or were cut off by a restart and left a container behind, from earlier sessions too.
+  const [leftovers, setLeftovers] = useState<Array<{ jobId: string; recipeId: string; status: string; vmid?: number; node?: string; error?: string }>>([])
 
   // Node login form
   const [formNode, setFormNode] = useState('')
@@ -54,6 +56,7 @@ export default function CataloguePage() {
   const [saving,   setSaving]   = useState(false)
 
   const load = useCallback(async () => {
+    void apiJson<{ data: { jobs: typeof leftovers } }>('/api/catalogue/wizard/jobs').then(r => { if (r.ok) setLeftovers(r.body?.data.jobs ?? []) })
     const res = await fetch('/api/catalogue').then(r => r.json()).catch(() => null)
     if (res?.success) {
       setRecipes(res.data.recipes)
@@ -84,16 +87,17 @@ export default function CataloguePage() {
 
   // A failed install may leave a half-made container. Only the one this install created is offered,
   // and the server checks the container's mark before it removes anything.
-  const cleanup = async () => {
-    if (!job?.vmid) return
-    if (!window.confirm(`Remove CT ${job.vmid} on ${job.node}? It was created by this install, which failed. Its disk is deleted.`)) return
+  const cleanup = async (target: { jobId: string; vmid?: number; node?: string } | null = job, skipConfirm = false) => {
+    if (!target?.vmid) return
+    if (!skipConfirm && !window.confirm(`Remove CT ${target.vmid} on ${target.node}? It was created by an install that did not finish. Its disk is deleted.`)) return
     setCleaning(true)
-    const r = await apiJson<{ data: { detail: string } }>(`/api/catalogue/wizard/jobs/${job.jobId}/cleanup`, 'POST')
+    const r = await apiJson<{ data: { detail: string } }>(`/api/catalogue/wizard/jobs/${target.jobId}/cleanup`, 'POST')
     setCleaning(false)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirmCleanup(true); return }
+    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirmCleanup(target); return }
     if (!r.ok) return setNotice(r.error ?? 'The container could not be removed.')
     setNotice(r.body!.data.detail)
-    setJob({ ...job, removed: true })
+    if (job?.jobId === target.jobId) setJob({ ...job, removed: true })
+    setLeftovers(l => l.filter(x => x.jobId !== target.jobId))
   }
 
   const saveLogin = async () => {
@@ -278,9 +282,9 @@ export default function CataloguePage() {
               </div>
             </div>
           )}
-          {job.status === 'failed' && job.created && !job.removed && (
+          {(job.status === 'failed' || job.status === 'interrupted') && job.created && !job.removed && (
             <div className="flex flex-wrap items-center gap-3 mb-3">
-              <button onClick={cleanup} disabled={cleaning}
+              <button onClick={() => void cleanup(job)} disabled={cleaning}
                 className="h-10 rounded-md border px-4 text-sm font-semibold"
                 style={{ borderColor: 'color-mix(in srgb, var(--crit) 45%, transparent)', color: 'var(--crit-soft)', background: 'transparent', opacity: cleaning ? 0.5 : 1 }}>
                 {cleaning ? 'removing…' : `Remove the half-made CT ${job.vmid}`}
@@ -302,11 +306,36 @@ export default function CataloguePage() {
           onStarted={j => { setJob({ jobId: j.jobId, recipeId: wizard.id, status: 'running', steps: j.steps, log: '' }); setWizard(null) }} />
       )}
       {reconfirmCleanup && (
-        <ReconfirmModal onClose={() => setReconfirmCleanup(false)} onDone={() => { setReconfirmCleanup(false); void cleanup() }} />
+        <ReconfirmModal onClose={() => setReconfirmCleanup(null)} onDone={() => { const t = reconfirmCleanup; setReconfirmCleanup(null); void cleanup(t, true) }} />
+      )}
+
+      {/* ── Unfinished installs, kept across restarts ─────────────────────── */}
+      {leftovers.filter(l => l.jobId !== job?.jobId).length > 0 && (
+        <div className="rounded-lg border p-5 mb-8" style={{ background: CARD, borderColor: 'color-mix(in srgb, var(--warn) 35%, transparent)' }}>
+          <p className="font-display text-[20px] font-semibold mb-1" style={{ color: 'var(--text-bright)' }}>Unfinished installs</p>
+          <p className="text-[13px] mb-3" style={{ color: 'var(--text-muted)' }}>
+            These failed, or were cut off when HyperProx restarted, and may have left a container. Removing one deletes only the
+            container that install created; HyperProx checks its mark first.
+          </p>
+          <div className="flex flex-col gap-2">
+            {leftovers.filter(l => l.jobId !== job?.jobId).map(l => (
+              <div key={l.jobId} className="flex flex-wrap items-center gap-3">
+                <span className="font-mono text-[12px]" style={{ color: 'var(--text)' }}>CT {l.vmid} · {l.node}</span>
+                <span className="text-[13px]" style={{ color: 'var(--text-dim)' }}>
+                  {recipes.find(r => r.id === l.recipeId)?.name ?? l.recipeId} · {l.status === 'interrupted' ? 'interrupted by a restart' : 'failed'}
+                </span>
+                <button onClick={() => void cleanup(l)} disabled={cleaning} className="h-9 rounded-md border px-3 text-sm"
+                  style={{ borderColor: 'color-mix(in srgb, var(--crit) 45%, transparent)', color: 'var(--crit-soft)', background: 'transparent' }}>
+                  Remove CT {l.vmid}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
 
       {/* ── Recipes ─────────────────────────────────────────────────────────── */}
-      <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill,minmax(330px,1fr))' }}>
+      <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill,minmax(min(330px,100%),1fr))' }}>
         {recipes.map(r => (
           <div key={r.id} className="rounded-lg border p-6 flex flex-col"
             style={{ background: CARD, borderColor: r.installedAt ? 'color-mix(in srgb, var(--good) 30%, transparent)' : 'var(--border-soft)' }}>

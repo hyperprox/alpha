@@ -41,8 +41,8 @@ interface Identity {
   rule: Placement['rule']
   vmid?: { value: number; free: boolean; problem?: string }
   derived?: { vmid?: number; taken?: boolean; problem?: string }
-  reverse?: { node?: string; ip?: string; problem?: string }
-  ip?: { value: string; problems: string[]; pinged: boolean | null }
+  reverse?: { node?: string; nodes?: string[]; ip?: string; problem?: string }
+  ip?: { value: string; problems: string[]; unknowns: string[]; pinged: boolean | null }
   bridges: Bridge[]
 }
 interface PreviewData {
@@ -112,6 +112,9 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
   const [dns, setDns] = useState('')
   const [identity, setIdentity] = useState<Identity | null>(null)
   const [checking, setChecking] = useState(false)
+  const [pinging, setPinging] = useState(false)
+  const [pingResult, setPingResult] = useState<{ ip: string; answered: boolean | null; problems: string[] } | null>(null)
+  const [addressAck, setAddressAck] = useState(false)
   const lastEdit = useRef<'vmid' | 'ip' | 'node' | null>(null)
 
   // Step 5: the held plan.
@@ -140,6 +143,8 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
     const keep = p.nodes.find(n => n.node === node && n.verdict.eligible)
     const pick = keep ?? p.nodes.find(n => n.node === p.recommendation?.node)
     if (pick) {
+      // An auto-picked node counts as a choice, so the ID rule fills the ID from it.
+      if (!keep) lastEdit.current = 'node'
       setNode(pick.node)
       setStorage(s => pick.rootStorages.some(x => x.storage === s) && s ? s : (pick.verdict.storage?.storage ?? ''))
     }
@@ -176,6 +181,10 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
         // The rule fills in the other side of whatever was just edited, and never fights the person.
         if ((lastEdit.current === 'ip' || lastEdit.current === 'node') && a.derived?.vmid && !a.derived.taken && a.derived.vmid !== vmid) {
           lastEdit.current = null; setVmid(a.derived.vmid)
+        } else if (lastEdit.current === 'vmid' && a.reverse && (a.reverse.nodes?.length ?? 0) > 1) {
+          // Two or more nodes fit the ID: nothing is guessed, the person picks one below.
+          lastEdit.current = null
+          if (a.reverse.ip) { setMode('static'); setIp(a.reverse.ip) }
         } else if (lastEdit.current === 'vmid' && a.reverse && !a.reverse.problem) {
           lastEdit.current = null
           if (a.reverse.node && a.reverse.node !== node && placement?.nodes.find(n => n.node === a.reverse!.node)?.verdict.eligible) setNode(a.reverse.node)
@@ -186,13 +195,32 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
     return () => clearTimeout(t)
   }, [step, node, bridge, vmid, mode, ip, gateway, placement])
 
+  // A changed address is a new address: its tick and its ping no longer apply.
+  useEffect(() => { setAddressAck(false); setPingResult(null) }, [ip, mode, node])
+
+  /** Ask once, on request: does anything answer a ping on this address, from the chosen node? */
+  const checkAddress = async () => {
+    if (mode !== 'static' || !ip) return
+    setPinging(true)
+    const r = await apiJson<{ data: Identity }>('/api/catalogue/wizard/identity', 'POST',
+      { node, bridge, ip, ...(gateway ? { gateway } : {}), ping: true })
+    setPinging(false)
+    if (r.ok && r.body?.data?.ip) {
+      setIdentity(r.body.data)
+      setPingResult({ ip, answered: r.body.data.ip.pinged, problems: r.body.data.ip.problems })
+    }
+  }
+  const unknowns = mode === 'static' ? (identity?.ip?.unknowns ?? []) : []
+  const swapMax = Math.min(Math.max(0, memoryMb) * 2, 8192)
+
   const canNext = (() => {
-    if (step === 1) return cores >= 1 && memoryMb >= 64 && diskGb >= 1
+    if (step === 1) return cores >= 1 && memoryMb >= 64 && diskGb >= 1 && swapMb >= 0 && swapMb <= swapMax
     if (step === 2) return Boolean(selected?.verdict.eligible && storage)
     if (step === 3) {
       if (typeof vmid !== 'number' || !hostname || !bridge) return false
       if (identity?.vmid && !identity.vmid.free) return false
       if (mode === 'static' && (!ip || (identity?.ip?.problems.length ?? 0) > 0)) return false
+      if (unknowns.length && !addressAck) return false
       return true
     }
     return true
@@ -203,6 +231,7 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
     const r = await apiJson<{ data: PreviewData }>('/api/catalogue/wizard/preview', 'POST', {
       recipeId: recipe.id, node, vmid, hostname, cores, memoryMb, swapMb, diskGb, storage, bridge,
       ip: mode === 'dhcp' ? 'dhcp' : ip, ...(mode === 'static' && gateway ? { gateway } : {}), ...(dns ? { dns } : {}),
+      ...(mode === 'static' && addressAck ? { addressAck: true } : {}),
     })
     setBusy(false)
     if (!r.ok) { setError(r.error ?? 'The plan could not be checked.'); setProblems((r.body as any)?.problems ?? []); setWarnings((r.body as any)?.warnings ?? []); return }
@@ -307,8 +336,9 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
                 <Field label="RAM (MB)" hint={below.memory ? <span style={{ color: 'var(--warn)' }}>Below the minimum of {recipe.minimum.memoryMb} MB</span> : `min ${recipe.minimum.memoryMb}`}>
                   <input type="number" min={64} step={256} value={memoryMb} onChange={e => setMemoryMb(Number(e.target.value))} style={INPUT} inputMode="numeric" />
                 </Field>
-                <Field label="Swap (MB)" hint="0 for none">
-                  <input type="number" min={0} step={256} value={swapMb} onChange={e => setSwapMb(Number(e.target.value))} style={INPUT} inputMode="numeric" />
+                <Field label="Swap (MB)" hint={swapMb > swapMax
+                  ? <span style={{ color: 'var(--crit-soft)' }}>At most {swapMax} MB: twice the RAM, never over 8 GB</span> : `0 for none, up to ${swapMax}`}>
+                  <input type="number" min={0} max={swapMax} step={256} value={swapMb} onChange={e => setSwapMb(Number(e.target.value))} style={INPUT} inputMode="numeric" />
                 </Field>
                 <Field label="Disk (GB)" hint={below.disk ? <span style={{ color: 'var(--warn)' }}>Below the minimum of {recipe.minimum.diskGb} GB</span> : `min ${recipe.minimum.diskGb}`}>
                   <input type="number" min={1} value={diskGb} onChange={e => setDiskGb(Number(e.target.value))} style={INPUT} inputMode="numeric" />
@@ -477,8 +507,8 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
                 <div className="grid gap-4 sm:grid-cols-3">
                   <Field label="IP address / prefix" hint={
                     identity?.ip?.problems.length ? <span style={{ color: 'var(--crit-soft)' }}>{identity.ip.problems.join(' ')}</span>
-                      : identity?.ip ? (identity.ip.pinged === false ? 'Free: nothing in the cluster uses it, and nothing answered a ping.'
-                        : 'Nothing in the cluster uses it. (It could not be pinged.)')
+                      : identity?.ip ? (identity.ip.unknowns.length ? 'Not found in use, but not everything could be checked (see below).'
+                        : 'Nothing in the cluster uses it. Press Check address to ping it.')
                         : bridgeInfo?.prefix ? `For example ${(bridgeInfo.gateway ?? '192.0.2.1').replace(/\.\d+$/, '.50')}/${bridgeInfo.prefix}` : 'Like 192.0.2.50/24'
                   }>
                     <input value={ip} onChange={e => { lastEdit.current = 'ip'; setIp(e.target.value.trim()) }} placeholder="192.0.2.50/24"
@@ -496,6 +526,45 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
                 <Field label="DNS servers" hint="Optional. Blank uses what DHCP or the node gives.">
                   <input value={dns} onChange={e => setDns(e.target.value)} placeholder="192.0.2.53" style={INPUT} inputMode="decimal" />
                 </Field>
+              )}
+              {identity?.reverse?.nodes && identity.reverse.nodes.length > 1 && (
+                <div className="rounded-lg border p-3 space-y-2" style={{ borderColor: 'color-mix(in srgb, var(--warn) 35%, transparent)' }}>
+                  <p className="text-sm" style={{ color: 'var(--warn-2)' }}>
+                    ID {vmid} fits more than one node by your ID rule. Which one did you mean?
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {identity.reverse.nodes.map(n => {
+                      const ok = placement?.nodes.find(x => x.node === n)?.verdict.eligible
+                      return <GhostButton key={n} type="button" disabled={!ok} onClick={() => setNode(n)}
+                        style={{ height: 34, borderColor: n === node ? 'var(--accent)' : undefined }}>
+                        {n}{n === node ? ' ✓' : ''}{ok ? '' : ' (not usable)'}
+                      </GhostButton>
+                    })}
+                  </div>
+                </div>
+              )}
+              {mode === 'static' && ip && (
+                <div className="flex flex-wrap items-center gap-3">
+                  <GhostButton type="button" onClick={() => void checkAddress()} disabled={pinging || (identity?.ip?.problems.length ?? 0) > 0}
+                    style={{ height: 34 }}>{pinging ? 'Checking…' : 'Check address'}</GhostButton>
+                  <span className="text-[12px]" style={{ color: 'var(--text-dim)' }}>
+                    {pingResult?.ip === ip
+                      ? (pingResult.answered === true ? <span style={{ color: 'var(--crit-soft)' }}>Something answered on {ip}.</span>
+                        : pingResult.answered === false ? `Nothing answered a ping from ${node}. A firewalled device would not either.`
+                          : `${ip} could not be pinged from ${node}.`)
+                      : 'Sends one ping from the node. Install pings again before it creates anything.'}
+                  </span>
+                </div>
+              )}
+              {unknowns.length > 0 && (
+                <div className="rounded-lg border p-3 space-y-2" style={{ borderColor: 'color-mix(in srgb, var(--warn) 35%, transparent)', background: 'color-mix(in srgb, var(--warn) 6%, transparent)' }}>
+                  <p className="text-sm" style={{ color: 'var(--warn-2)' }}>HyperProx could not check everything about this address:</p>
+                  <ul className="text-[13px] space-y-0.5" style={{ color: 'var(--text-muted)' }}>{unknowns.map((u, i) => <li key={i}>· {u}</li>)}</ul>
+                  <label className="flex items-center gap-2 text-sm" style={{ color: 'var(--text)' }}>
+                    <input type="checkbox" checked={addressAck} onChange={e => setAddressAck(e.target.checked)} />
+                    I checked this address myself, and nothing else uses it.
+                  </label>
+                </div>
               )}
               {checking && <p className="text-[12px] animate-pulse" style={{ color: 'var(--text-dim)' }}>Checking…</p>}
             </div>
