@@ -42,7 +42,7 @@ interface Identity {
   vmid?: { value: number; free: boolean; problem?: string }
   derived?: { vmid?: number; taken?: boolean; problem?: string }
   reverse?: { node?: string; nodes?: string[]; ip?: string; problem?: string }
-  ip?: { value: string; problems: string[]; unknowns: string[]; pinged: boolean | null }
+  ip?: { value: string; problems: string[]; unknowns: string[]; unknownKeys: string[]; pinged: boolean | null }
   bridges: Bridge[]
 }
 interface PreviewData {
@@ -114,7 +114,8 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
   const [checking, setChecking] = useState(false)
   const [pinging, setPinging] = useState(false)
   const [pingResult, setPingResult] = useState<{ ip: string; answered: boolean | null; problems: string[] } | null>(null)
-  const [addressAck, setAddressAck] = useState(false)
+  // The tick is given for exactly the unknowns shown when it was ticked; a different set needs a new tick.
+  const [ackedKeys, setAckedKeys] = useState<string[] | null>(null)
   const lastEdit = useRef<'vmid' | 'ip' | 'node' | null>(null)
 
   // Step 5: the held plan.
@@ -196,7 +197,7 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
   }, [step, node, bridge, vmid, mode, ip, gateway, placement])
 
   // A changed address is a new address: its tick and its ping no longer apply.
-  useEffect(() => { setAddressAck(false); setPingResult(null) }, [ip, mode, node])
+  useEffect(() => { setAckedKeys(null); setPingResult(null) }, [ip, mode, node])
 
   /** Ask once, on request: does anything answer a ping on this address, from the chosen node? */
   const checkAddress = async () => {
@@ -211,6 +212,8 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
     }
   }
   const unknowns = mode === 'static' ? (identity?.ip?.unknowns ?? []) : []
+  const unknownKeys = mode === 'static' ? (identity?.ip?.unknownKeys ?? []) : []
+  const addressAck = ackedKeys !== null && unknownKeys.every(k => ackedKeys.includes(k))
   const swapMax = Math.min(Math.max(0, memoryMb) * 2, 8192)
 
   const canNext = (() => {
@@ -231,7 +234,7 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
     const r = await apiJson<{ data: PreviewData }>('/api/catalogue/wizard/preview', 'POST', {
       recipeId: recipe.id, node, vmid, hostname, cores, memoryMb, swapMb, diskGb, storage, bridge,
       ip: mode === 'dhcp' ? 'dhcp' : ip, ...(mode === 'static' && gateway ? { gateway } : {}), ...(dns ? { dns } : {}),
-      ...(mode === 'static' && addressAck ? { addressAck: true } : {}),
+      ...(mode === 'static' && ackedKeys?.length ? { addressAck: ackedKeys } : {}),
     })
     setBusy(false)
     if (!r.ok) { setError(r.error ?? 'The plan could not be checked.'); setProblems((r.body as any)?.problems ?? []); setWarnings((r.body as any)?.warnings ?? []); return }
@@ -561,7 +564,7 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
                   <p className="text-sm" style={{ color: 'var(--warn-2)' }}>HyperProx could not check everything about this address:</p>
                   <ul className="text-[13px] space-y-0.5" style={{ color: 'var(--text-muted)' }}>{unknowns.map((u, i) => <li key={i}>· {u}</li>)}</ul>
                   <label className="flex items-center gap-2 text-sm" style={{ color: 'var(--text)' }}>
-                    <input type="checkbox" checked={addressAck} onChange={e => setAddressAck(e.target.checked)} />
+                    <input type="checkbox" checked={addressAck} onChange={e => setAckedKeys(e.target.checked ? unknownKeys : null)} />
                     I checked this address myself, and nothing else uses it.
                   </label>
                 </div>
