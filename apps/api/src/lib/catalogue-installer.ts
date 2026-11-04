@@ -13,7 +13,7 @@ import { randomBytes, randomUUID } from 'node:crypto'
 import { findRecipe, type CatalogueRecipe } from './catalogue'
 import { installScript, distroOf, hostEnv, type Distro } from './install-script'
 import {
-  pickTemplate, pickDownloadable, scoreNodes, recommend, rootStorages, configUsesGpu, pciHasDiscreteGpu,
+  pickTemplate, pickDownloadable, scoreNodes, recommend, rootStorages, excludedRootStorages, configGpuKind, pciGpus, ROOTFS_EXCLUDED,
   nextFreeVmid, deriveVmid, reverseVmid, withOctetDigits, patternProblem, parseCidr, isHostAddress, sameSubnet,
   ipConflicts, liveAddresses, describeSighting,
   type PlacementNode, type PlacementStorage, type NodeVerdict, type VmidRule, type IpSighting,
@@ -22,7 +22,7 @@ import { archOfKernel, archOfTemplate } from './ai/facts'
 import { execOnNode } from './node-exec'
 import type { CreatePVE } from './wizard-executor'
 import type { ExecResult } from './node-exec'
-import { setCredential, setCredentials, getProviderCredentials, vaultWritable } from './credentials'
+import { setCredential, setCredentials, getProviderCredentials, vaultWritable, deleteProviderCredentials } from './credentials'
 import { saveSettings, getSettings } from './plugin-host'
 import { PLUGINS } from '../plugins'
 
@@ -58,6 +58,8 @@ export interface InstallJob {
   created?: boolean
   /** Set once the half-made container was removed on request. */
   removed?: boolean
+  /** The vault item holding the generated admin login, and whether this job created it (not merged into one). */
+  vaultItem?: { category: string; provider: string; createdByJob: boolean }
 }
 
 const JOBS = new Map<string, InstallJob>()
@@ -78,6 +80,8 @@ export interface InstallDeps {
   saveSecrets: (category: string, provider: string, values: Record<string, string>) => Promise<void>
   /** Read a vault item's keys, or throw if the vault is locked. */
   readSecrets: (category: string, provider: string) => Promise<Record<string, string>>
+  /** Delete a whole vault item. */
+  deleteSecrets: (category: string, provider: string) => Promise<void>
 }
 
 const realDeps = (): InstallDeps => ({
@@ -90,6 +94,7 @@ const realDeps = (): InstallDeps => ({
   vaultOpen:   async () => vaultWritable(),
   saveSecrets: (c, p, v) => setCredentials(c, p, v),
   readSecrets: (c, p) => getProviderCredentials(c, p),
+  deleteSecrets: (c, p) => deleteProviderCredentials(c, p),
 })
 
 /** How long after an install the generated admin login is still served to the page. */
@@ -328,8 +333,13 @@ async function runJob(
       env[recipe.firstRun.passwordEnv] = admin.password
       if (recipe.firstRun.userEnv) env[recipe.firstRun.userEnv] = admin.user
       // Saved before the install runs: a password that exists only in a script that already ran
-      // is a lockout. If the vault write fails, nothing is installed.
-      await deps.saveSecrets('apps', `${recipe.id}-${job.vmid}`, { admin_user: admin.user, admin_password: admin.password })
+      // is a lockout. If the vault write fails, nothing is installed. Whether the item already existed is
+      // recorded first, so a clean-up deletes only an item this job made.
+      const provider = `${recipe.id}-${job.vmid}`
+      const before = await deps.readSecrets('apps', provider).catch(() => null)
+      const createdByJob = before !== null && Object.keys(before).length === 0
+      await deps.saveSecrets('apps', provider, { admin_user: admin.user, admin_password: admin.password })
+      job.vaultItem = { category: 'apps', provider, createdByJob }
     }
     const run = await deps.exec({
       host: nodeIp, cred, vmid: job.vmid!, script: installScript(recipe, distro, env),
@@ -404,10 +414,13 @@ export interface NodeView extends PlacementNode {
   haGuests:  number
   /** What the GPU flag rests on, in words, when there is one. */
   gpuSource?: string
+  igpuSource?: string
 }
 
 export interface GuestView {
   vmid: number; node: string; type: 'lxc' | 'qemu'; name: string; status: string
+  /** The RAM the guest may use, as configured. */
+  maxmemMb?: number
   config: Record<string, unknown> | null
 }
 
@@ -543,6 +556,7 @@ export async function readCluster(
   const guestRows = (resources ?? []).filter((r: any) => r?.vmid && (r.type === 'lxc' || r.type === 'qemu'))
   const guests: GuestView[] = await mapLimit(guestRows, 8, async (r: any) => ({
     vmid: Number(r.vmid), node: String(r.node), type: r.type, name: String(r.name ?? ''), status: String(r.status ?? ''),
+    maxmemMb: Math.round(Number(r.maxmem ?? 0) / 1048576),
     config: await soft(`config:${Number(r.vmid)}`, client.fetchStrict<Record<string, unknown>>(`/nodes/${enc(r.node)}/${r.type}/${Number(r.vmid)}/config`)),
   }))
 
@@ -550,13 +564,17 @@ export async function readCluster(
   const nodes: NodeView[] = await Promise.all((rawNodes ?? []).map(async (n: any): Promise<NodeView> => {
     const online = n.status === 'online'
     const mine = guests.filter(g => g.node === n.node)
-    const gpuGuest = mine.find(g => configUsesGpu(g.config))
+    const gpuGuest = mine.find(g => configGpuKind(g.config) === 'discrete')
+    const igpuGuest = mine.find(g => configGpuKind(g.config) === 'integrated')
+    const running = mine.filter(g => g.status === 'running')
     const v: NodeView = {
       node: String(n.node), online, cores: Number(n.maxcpu ?? 0),
       cpuLoad: typeof n.cpu === 'number' ? n.cpu : undefined,
       memTotalMb: Math.round(Number(n.maxmem ?? 0) / 1048576), memUsedMb: Math.round(Number(n.mem ?? 0) / 1048576),
-      runningGuests: mine.filter(g => g.status === 'running').length,
+      memCommittedMb: running.reduce((t, g) => t + (g.maxmemMb ?? 0), 0),
+      runningGuests: running.length,
       hasGpu: Boolean(gpuGuest), gpuSource: gpuGuest ? `a GPU is passed through to guest ${gpuGuest.vmid}` : undefined,
+      hasIgpu: Boolean(igpuGuest), igpuSource: igpuGuest ? `/dev/dri is given to guest ${igpuGuest.vmid}` : undefined,
       address: addr[n.node], bridges: [], haMaster: haMaster ? haMaster === n.node : undefined, haGuests: haGuests[n.node] ?? 0,
     }
     if (!online) return v
@@ -568,7 +586,9 @@ export async function readCluster(
       hasLogin(n.node).catch(() => { partial.push(`login:${n.node}`); return false }),
     ])
     v.hasLogin = login
-    if (pciHasDiscreteGpu(pci)) { v.hasGpu = true; v.gpuSource = 'an NVIDIA GPU is on its PCI bus' }
+    const bus = pciGpus(pci)
+    if (bus.discrete) { v.hasGpu = true; v.gpuSource = 'a GPU card is on its PCI bus' }
+    if (bus.integrated) { v.hasIgpu = true; v.igpuSource = 'integrated graphics are on its PCI bus' }
     for (const s of stor ?? []) {
       storages.push({
         storage: String(s.storage), node: v.node, type: String(s.type ?? ''),
@@ -607,13 +627,14 @@ export interface Need { cores: number; memoryMb: number; diskGb: number; storage
 
 /** The node table and the recommendation for one recipe at one size. */
 export function placementFor(recipe: CatalogueRecipe, need: Need, view: ClusterView): {
-  nodes: Array<NodeView & { verdict: NodeVerdict; rootStorages: PlacementStorage[] }>
+  nodes: Array<NodeView & { verdict: NodeVerdict; rootStorages: PlacementStorage[]; excludedStorages: Array<PlacementStorage & { reason: string }> }>
   recommendation: { node: string; reason: string; storage: string } | null
 } {
-  const verdicts = scoreNodes(view.nodes, view.storages, { ...need, needsGpu: recipe.needsGpu })
+  const verdicts = scoreNodes(view.nodes, view.storages, { ...need, needsGpu: recipe.needsGpu, wantsGpu: recipe.wantsGpu })
   const byNode = new Map(view.nodes.map(n => [n.node, n]))
   return {
-    nodes: verdicts.map(v => ({ ...byNode.get(v.node)!, verdict: v, rootStorages: rootStorages(view.storages, v.node) })),
+    nodes: verdicts.map(v => ({ ...byNode.get(v.node)!, verdict: v, rootStorages: rootStorages(view.storages, v.node),
+      excludedStorages: excludedRootStorages(view.storages, v.node) })),
     recommendation: recommend(verdicts, view.nodes),
   }
 }
@@ -742,21 +763,26 @@ export function checkPlan(
   if (int(input.cores) && input.cores < min.cores) warnings.push(`${input.cores} cores is below the ${min.cores} ${recipe.name} needs.`)
   if (int(input.memoryMb) && input.memoryMb < min.memoryMb) warnings.push(`${input.memoryMb} MB RAM is below the ${min.memoryMb} MB ${recipe.name} needs.`)
   if (int(input.diskGb) && input.diskGb < min.diskGb) warnings.push(`${input.diskGb} GB disk is below the ${min.diskGb} GB ${recipe.name} needs.`)
-  if (recipe.needsGpu && node && !node.hasGpu) warnings.push(`${recipe.name} wants a GPU and ${node.node} has none HyperProx can see.`)
+  if (recipe.needsGpu && node && !node.hasGpu && !node.hasIgpu) warnings.push(`${recipe.name} wants a GPU and ${node.node} has none HyperProx can see.`)
 
   // Room on the node and the storage, now.
   if (node?.online && int(input.memoryMb)) {
     const free = node.memTotalMb - node.memUsedMb
     if (free < input.memoryMb) errors.push(`${node.node} has ${free} MB RAM free; this needs ${input.memoryMb} MB.`)
     else {
-      checks.push(`${node.node} has ${free} MB RAM free; ${free - input.memoryMb} MB is left after this.`)
+      checks.push(`${node.node} has ${free} MB RAM free right now; ${free - input.memoryMb} MB is left after this.`)
+      const promised = node.memCommittedMb ?? 0
       if (free - input.memoryMb < node.memTotalMb * 0.2) warnings.push(`${node.node} would have less than 20% of its RAM free afterwards.`)
+      else if (node.memTotalMb - Math.max(promised, node.memUsedMb) - input.memoryMb < node.memTotalMb * 0.2) {
+        warnings.push(`${node.node} has promised ${promised} MB of its ${node.memTotalMb} MB to running guests; with this one, less than 20% is left if they all use what they are allowed.`)
+      }
     }
   }
   if (node?.online) {
     if (view.partial.includes(`storage:${node.node}`)) errors.push(`HyperProx could not read the storage on ${node.node}.`)
     const s = view.storages.find(x => x.node === node.node && x.storage === input.storage)
     if (!s) errors.push(`${input.storage || 'No storage'} is not a storage on ${node.node}.`)
+    else if (ROOTFS_EXCLUDED[s.type]) errors.push(`${s.storage}: ${ROOTFS_EXCLUDED[s.type]}`)
     else if (!s.active || !s.content.includes('rootdir')) errors.push(`${s.storage} on ${node.node} cannot hold containers.`)
     else if (int(input.diskGb) && s.freeGb < Math.ceil(input.diskGb * 1.2)) errors.push(`${s.storage} has ${s.freeGb} GB free; this needs ${Math.ceil(input.diskGb * 1.2)} GB.`)
     else {
@@ -935,7 +961,10 @@ export async function removeFailedInstall(jobId: string, owner: string, over: Pa
   // A create whose task failed is usually rolled back by Proxmox itself; then there is nothing to remove.
   const listed = await deps.client.fetchStrict<any[]>('/cluster/resources?type=vm')
   const here = (listed ?? []).find((r: any) => Number(r?.vmid) === job.vmid)
-  if (!here) { job.removed = true; return `CT ${job.vmid} no longer exists, so there was nothing to remove.` }
+  if (!here) {
+    job.removed = true
+    return `CT ${job.vmid} no longer exists, so there was nothing to remove.${await removeVaultItem(job, deps)}`
+  }
   if (here.node !== job.node || here.type !== 'lxc') {
     throw new WizardRefusal(`ID ${job.vmid} is now a ${here.type === 'qemu' ? 'VM' : 'container'} on ${here.node}, not this install's container.`, 'changed')
   }
@@ -956,7 +985,21 @@ export async function removeFailedInstall(jobId: string, owner: string, over: Pa
   const left = await deps.client.fetchStrict<any[]>('/cluster/resources?type=vm')
   if ((left ?? []).some((r: any) => Number(r?.vmid) === job.vmid)) throw new Error(`CT ${job.vmid} is still listed after the removal.`)
   job.removed = true
-  return `CT ${job.vmid} was removed from ${job.node}.`
+  return `CT ${job.vmid} was removed from ${job.node}.${await removeVaultItem(job, deps)}`
+}
+
+/** Delete the generated-login vault item, only when this job created it. Returns a sentence to append. */
+async function removeVaultItem(job: InstallJob, deps: WizardDeps): Promise<string> {
+  const item = job.vaultItem
+  if (!item) return ''
+  if (!item.createdByJob) return ` The vault item ${item.category}/${item.provider} existed before this install, so it was kept.`
+  try {
+    await deps.deleteSecrets(item.category, item.provider)
+    job.vaultItem = undefined
+    return ` Its generated login (${item.category}/${item.provider}) was removed from the vault.`
+  } catch (e: any) {
+    return ` Its generated login (${item.category}/${item.provider}) could not be removed from the vault: ${e.message}`
+  }
 }
 
 /** The ID rule setting. */

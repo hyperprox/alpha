@@ -23,7 +23,7 @@ function fake(): InstallDeps {
   return {
     client, wait: async () => {}, credential: async () => ({ id: "c" }), probe: async () => 200,
     exec: async () => ({ code: 0, output: "", timedOut: false }) as any,
-    vaultOpen: async () => true, saveSecrets: async () => {}, readSecrets: async () => ({}),
+    vaultOpen: async () => true, saveSecrets: async () => {}, readSecrets: async () => ({}), deleteSecrets: async () => {},
   }
 }
 

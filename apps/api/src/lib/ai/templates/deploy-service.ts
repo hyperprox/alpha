@@ -11,7 +11,7 @@
 import { wizardRecipes, serviceKey, type CatalogueRecipe } from '../../catalogue'
 import { DOCKER_PACKAGES, distroOf } from '../../install-script'
 import {
-  isHostAddress, parseCidr, pickTemplate, scoreNodes, nextFreeVmid, rootStorages as rankRootStorages, PLACEMENT,
+  isHostAddress, parseCidr, pickTemplate, scoreNodes, nextFreeVmid, rootStorages as rankRootStorages, PLACEMENT, ROOTFS_EXCLUDED,
 } from '../../wizard-placement'
 import { zoneFor } from '../../dns-zones'
 import { archOfTemplate, type NodeFact, type StorageFact } from '../facts'
@@ -85,10 +85,13 @@ function rootStorages(facts: TemplateFacts, node: string): StorageFact[] {
 }
 
 /** The best node for this size among those that fit, by the Catalogue wizard's scoring. */
-function bestNode(facts: TemplateFacts, candidates: NodeFact[], need: { memoryMb: number; diskGb: number; cores: number }): NodeFact | undefined {
+function bestNode(
+  facts: TemplateFacts, candidates: NodeFact[], need: { memoryMb: number; diskGb: number; cores: number; wantsGpu?: boolean; needsGpu?: boolean },
+): NodeFact | undefined {
   const verdicts = scoreNodes(candidates.map(n => ({
     node: n.node, online: n.online, cores: n.cores, cpuLoad: n.cpuLoad, memTotalMb: n.totalMemMb,
-    memUsedMb: n.totalMemMb - n.freeMemMb, runningGuests: n.runningGuests, hasGpu: n.hasGpu, hasLogin: n.hasLogin,
+    memUsedMb: n.totalMemMb - n.freeMemMb, memCommittedMb: n.committedMemMb, runningGuests: n.runningGuests,
+    hasGpu: n.hasGpu, hasIgpu: n.hasIgpu, hasLogin: n.hasLogin,
   })), facts.storages, need)
   const top = verdicts.find(v => v.eligible)
   return top ? candidates.find(n => n.node === top.node) : undefined
@@ -192,7 +195,7 @@ export function buildDeployService(deps: DeployServiceDeps = { recipes: wizardRe
     if (!out.node) {
       const need = num(out, 'memory_mb') ?? 0
       const best = bestNode(facts, facts.nodes.filter(n => nodeFits(n, facts, s.bridge, need)),
-        { memoryMb: need, diskGb: num(out, 'disk_gb') ?? 0, cores: num(out, 'cores') ?? 1 })
+        { memoryMb: need, diskGb: num(out, 'disk_gb') ?? 0, cores: num(out, 'cores') ?? 1, wantsGpu: recipe?.wantsGpu, needsGpu: recipe?.needsGpu })
       if (best) out.node = { value: best.node, source: 'derived' }
     }
     const node: NodeFact | undefined = facts.nodes.find(n => n.node === str(out, 'node'))
@@ -452,6 +455,7 @@ export function buildDeployService(deps: DeployServiceDeps = { recipes: wizardRe
         if (!s || !s.active || !s.content.includes('rootdir')) {
           return invalid('storage', `${id} on ${nodeName} cannot hold containers. Which storage?`)
         }
+        if (ROOTFS_EXCLUDED[s.type]) return invalid('storage', `${id}: ${ROOTFS_EXCLUDED[s.type]} Which storage?`)
         if (s.freeGb < disk * DISK_HEADROOM) return invalid('storage', `${id} has ${s.freeGb} GB free; this needs ${need} GB. Which storage?`)
         return null
       },

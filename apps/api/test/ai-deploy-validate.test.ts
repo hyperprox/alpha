@@ -109,7 +109,8 @@ test("sizes must fit: memory on the node, cores on the node, disk on its storage
   const [c] = v({ ...full, cores: u(6) })
   assert.equal(c.field, "cores"); assert.deepEqual(c.choices, ["4"])
   assert.equal(v({ ...full, cores: u(0) })[0].field, "cores")
-  assert.deepEqual(v({ ...full, disk_gb: u(900) })[0].choices, ["750"], "the largest disk that fits is offered")
+  assert.deepEqual(v({ ...full, disk_gb: u(900) })[0].choices, ["333"], "the largest disk that fits on block storage is offered; CIFS is never offered")
+  assert.match(v({ ...full, storage: u("share") })[0].message, /CIFS\/SMB shares cannot hold/)
 })
 
 test("node: must exist, be online, have a stored login and a known CPU", () => {

@@ -70,6 +70,7 @@ class FakeVault {
       if (!this.open) throw new Error("locked")
       return { ...(this.items.get(`${c}/${p}`) ?? {}) }
     },
+    deleteSecrets: async (c: string, p: string) => { this.items.delete(`${c}/${p}`) },
   }
 }
 
