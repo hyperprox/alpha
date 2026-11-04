@@ -70,9 +70,14 @@ proof (firewalls drop it).
 
 ### Safety
 
-- Previews, jobs and the "ID being created" marks are kept in Postgres (`CatalogueRecord`). After a restart
-  a job that was mid-install is marked interrupted; the Catalogue page lists it under "Unfinished installs"
-  and offers the same checked clean-up. Expired previews are pruned; at most 200 are open at once.
+- Previews, jobs and the "ID being created" marks are kept in Postgres (`CatalogueRecord`). A job's writes
+  are chained so they land in order, the job row is written before the create mark, and a failed final
+  write is shown on the job. After a restart, a running job whose create mark survived is marked
+  interrupted and listed under "Unfinished installs" with the same checked clean-up; a running job without
+  its mark is "outcome unknown" and gets no clean-up, since it may be a finished service. A job whose
+  container may still exist is never pruned. Expired previews are pruned; at most 200 are open at once.
+- The "I checked this address" tick is stored with the exact unknowns it was given for; if more is unknown
+  at apply, the apply is refused and the person is asked again.
 - The ID is held from the create until the job settles, not just until the create returns.
 - There is no one-call `/install` route: every install is preview, then apply.
 - Creates go through the Proxmox API (`POST /nodes/{node}/lxc`), unprivileged with `nesting=1` only, never

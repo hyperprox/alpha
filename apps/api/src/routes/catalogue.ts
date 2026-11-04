@@ -185,7 +185,9 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
       cores: num(b.cores) as number, memoryMb: num(b.memoryMb) as number, swapMb: num(b.swapMb) ?? 0, diskGb: num(b.diskGb) as number,
       storage: String(b.storage ?? ''), bridge: String(b.bridge ?? ''), ip: String(b.ip ?? 'dhcp').trim() || 'dhcp',
       ...(b.gateway ? { gateway: String(b.gateway).trim() } : {}), ...(b.dns ? { dns: String(b.dns).trim() } : {}),
-      ...(b.addressAck === true ? { addressAck: true } : {}),
+      // The unknowns the person ticked for, as keys; anything else is dropped.
+      ...(Array.isArray(b.addressAck) ? { addressAck: [...new Set((b.addressAck as unknown[])
+        .filter((k): k is string => typeof k === 'string' && /^(live:\d{1,9}|cluster-status)$/.test(k)))].slice(0, 500) } : {}),
     }
     if (!findRecipe(input.recipeId)) return reply.status(404).send({ success: false, error: 'No such recipe' })
     try {
