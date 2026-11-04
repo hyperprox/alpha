@@ -8,7 +8,9 @@
 
 import type { UpdatesPkgChange } from './types'
 
-const APT_ENV = 'export DEBIAN_FRONTEND=noninteractive LC_ALL=C'
+// NEEDRESTART_SUSPEND: needrestart must not restart services (every ceph-osd at once, on a node set to
+// restart automatically) after a library upgrade.
+const APT_ENV = 'export DEBIAN_FRONTEND=noninteractive LC_ALL=C NEEDRESTART_SUSPEND=1'
 // Keep the local version of any config file the admin changed; never stop to ask.
 const CONFOLD = '-o Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-confdef'
 
@@ -204,7 +206,36 @@ export function parseNodeFacts(output: string): NodeFacts {
  */
 export function nodeUpgradeCommand(policyUpgrade: 'upgrade' | 'dist-upgrade'): string {
   const verb = policyUpgrade === 'dist-upgrade' ? 'dist-upgrade' : 'upgrade'
-  return `${APT_ENV}; apt-get -y -q ${CONFOLD} ${verb}`
+  return withCephStartGuard(`apt-get -y -q ${CONFOLD} ${verb}`)
+}
+
+/** Marks the policy-rc.d HyperProx writes, so a copy left by a killed run is recognised and replaced. */
+export const POLICY_RC_MARK = '# HyperProx: no Ceph daemon starts or restarts during a package upgrade'
+
+/**
+ * Run an apt command on a node with Ceph daemons fenced off from package scripts. A temporary
+ * /usr/sbin/policy-rc.d refuses (101) every start and restart of a ceph unit — so a postinst
+ * `deb-systemd-invoke start ceph-osd.target` cannot revive an OSD a person stopped on purpose, and nothing
+ * restarts OSDs behind the runner's back — and defers to any policy-rc.d that was already there for
+ * everything else. NEEDRESTART_SUSPEND keeps needrestart from restarting services. The previous
+ * policy-rc.d is put back when the command ends, fails, or the shell is killed.
+ */
+export function withCephStartGuard(aptLine: string, sbin = '/usr/sbin'): string {
+  if (!/^\/[A-Za-z0-9_./-]+$/.test(sbin)) throw new Error(`not a directory path: ${sbin}`)
+  return [
+    APT_ENV,
+    `P=${sbin}/policy-rc.d; B=${sbin}/policy-rc.d.hyperprox-saved`,
+    // A copy of ours left by a run that was killed is replaced; a saved original is restored first.
+    `if [ -e "$P" ] && grep -qF '${POLICY_RC_MARK}' "$P"; then rm -f "$P"; [ -e "$B" ] && mv "$B" "$P"; fi`,
+    '[ -e "$B" ] && { echo "refusing: $B exists and is not ours to remove"; exit 1; }',
+    '[ -e "$P" ] && mv "$P" "$B"',
+    `printf '%s\\n' '#!/bin/sh' '${POLICY_RC_MARK}' 'case "$1" in ceph*) exit 101 ;; esac' '[ -x ${sbin}/policy-rc.d.hyperprox-saved ] && exec ${sbin}/policy-rc.d.hyperprox-saved "$@"' 'exit 0' > "$P"`,
+    'chmod 755 "$P"',
+    'unguard() { rm -f "$P"; [ -e "$B" ] && mv "$B" "$P"; }',
+    'trap unguard EXIT',
+    "trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM",
+    aptLine,
+  ].join('\n')
 }
 
 export const NODE_SERVICES_COMMAND = 'systemctl is-active pve-cluster pvedaemon pveproxy pvestatd'
@@ -212,7 +243,7 @@ export const NODE_SERVICES_COMMAND = 'systemctl is-active pve-cluster pvedaemon 
 /** Install exact versions so every node lands on the same Ceph; refuse anything that would remove a package. */
 export function cephInstallCommand(pkgs: { name: string; to: string }[]): string {
   const spec = pkgs.map(p => shq(`${p.name}=${p.to}`)).join(' ')
-  return `${APT_ENV}; apt-get -y -q ${CONFOLD} --no-remove --only-upgrade install ${spec}`
+  return withCephStartGuard(`apt-get -y -q ${CONFOLD} --no-remove --only-upgrade install ${spec}`)
 }
 
 /** Mons and mgrs only. OSDs are never restarted by target: that takes every OSD on the node down at once. */
@@ -232,13 +263,26 @@ export const CEPH_LAYOUT_COMMAND = [
   'echo HP_TREE; ceph osd tree -f json 2>/dev/null; echo',
   'echo HP_PGS; ceph pg dump pgs_brief -f json 2>/dev/null; echo',
   'echo HP_DF; ceph df -f json 2>/dev/null; echo',
+  'echo HP_META; ceph osd metadata -f json 2>/dev/null; echo',
+  'echo HP_EC; for p in $(ceph osd erasure-code-profile ls 2>/dev/null); do echo "$p $(ceph osd erasure-code-profile get "$p" -f json 2>/dev/null)"; done',
   'echo HP_END',
 ].join('; ')
 
 /** Read-only: the instances of a Ceph daemon that exist on this node, e.g. ceph-osd@3.service. */
 export function cephUnitsCommand(daemon: 'mon' | 'mgr' | 'osd' | 'mds'): string {
-  return `systemctl list-units 'ceph-${daemon}@*' --all --plain --no-legend 2>/dev/null | awk '{print $1}'`
+  // No pipe: the listing's own exit status is what HP_RC reports (parseUnitListing).
+  return `systemctl list-units 'ceph-${daemon}@*' --all --plain --no-legend; echo "HP_RC $?"`
 }
+
+/** Read-only: OSD up/in and flags, and every PG's state and OSDs. Parsed by parseCephState. */
+export const CEPH_STATE_COMMAND = [
+  'echo HP_OSDS; ceph osd dump -f json 2>/dev/null; echo',
+  'echo HP_PGS; ceph pg dump pgs_brief -f json 2>/dev/null; echo',
+  'echo HP_END',
+].join('; ')
+
+/** Read-only: the OSD map, for its flags (noout above all). */
+export const CEPH_OSD_DUMP_COMMAND = 'ceph osd dump -f json 2>/dev/null'
 
 /** Read-only. stdout is JSON; the exit code is not 0 when Ceph says no. */
 export function cephOsdOkToStopCommand(ids: number[]): string {
