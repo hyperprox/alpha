@@ -6,6 +6,7 @@
 
 import { FastifyPluginAsync } from 'fastify'
 import { getCredential, setCredential } from '../lib/credentials'
+import { prometheusBase } from '../lib/service-health'
 
 // ── Model catalog ─────────────────────────────────────────────────────────────
 
@@ -180,7 +181,7 @@ async function getSystemHardware() {
     // Check Prometheus for GPU VRAM if available
     try {
       const vramRes = await fetch(
-        `http://localhost:9090/api/v1/query?query=nvidia_smi_memory_total_bytes`,
+        `${prometheusBase()}/api/v1/query?query=nvidia_smi_memory_total_bytes`,
         { signal: AbortSignal.timeout(2000) }
       )
       const vramJson = await vramRes.json() as any

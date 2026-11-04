@@ -1,0 +1,29 @@
+{
+ "data": {
+  "org": {
+   "orgId": "hpx-test",
+   "name": "HPX test",
+   "subnet": "100.90.128.0/24",
+   "utilitySubnet": "100.96.128.0/24",
+   "createdAt": "2026-11-04T16:48:31.566Z",
+   "requireTwoFactor": null,
+   "maxSessionLengthHours": null,
+   "passwordExpiryDays": null,
+   "settingsLogRetentionDaysRequest": 7,
+   "settingsLogRetentionDaysAccess": 0,
+   "settingsLogRetentionDaysAction": 0,
+   "settingsLogRetentionDaysConnection": 0,
+   "settingsLogRetentionDaysAISessions": 7,
+   "settingsLogRetentionDaysSsh": 0,
+   "sshCaPublicKey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIgYr3Egz09WhreD+M+lGZyG/XIWTCT9j5ual1Kt4hG6 pangolin-ssh-ca-hpx-test",
+   "isBillingOrg": null,
+   "billingOrgId": null,
+   "settingsEnableGlobalNewtAutoUpdate": false,
+   "settingsJitModeLimit": 250
+  }
+ },
+ "success": true,
+ "error": false,
+ "message": "Organization retrieved successfully",
+ "status": 200
+}

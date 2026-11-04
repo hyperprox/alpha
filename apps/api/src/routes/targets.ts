@@ -6,6 +6,7 @@ import { FastifyPluginAsync } from 'fastify'
 import { getProviderCredentials } from '../lib/credentials'
 import { ProxmoxClient } from '../lib/proxmox-client'
 import { detectNodeGPUs } from './gpu'
+import { prometheusBase } from '../lib/service-health'
 import * as fs from 'fs'
 import * as path from 'path'
 
@@ -160,7 +161,7 @@ export const targetsRoutes: FastifyPluginAsync = async (fastify) => {
 
       // Reload Prometheus
       try {
-        await fetch('http://localhost:9090/-/reload', { method: 'POST' })
+        await fetch(`${prometheusBase()}/-/reload`, { method: 'POST' })
       } catch { /* Prometheus may not be running */ }
 
       return {

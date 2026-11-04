@@ -9,7 +9,12 @@
 
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify'
 import { CATALOGUE, findRecipe } from '../lib/catalogue'
-import { startInstall, getInstallJob, readAdminCredential, type InstallJob } from '../lib/catalogue-installer'
+import {
+  getInstallJob, readAdminCredential, previewInstall, applyPreview, removeFailedInstall, getPreview, cleanupCandidates,
+  wizardView, identityView, placementFor, nextIdOf, checkIdentity, readVmidRule, saveVmidRule, WizardRefusal,
+  type InstallJob, type WizardDeps, type WizardInput,
+} from '../lib/catalogue-installer'
+import { parseCidr } from '../lib/wizard-placement'
 import { currentContext } from '../lib/auth'
 import { ownerOf } from './ai'
 import { nodeCredential, nodeCredentialId, execOnNode } from '../lib/node-exec'
@@ -53,15 +58,16 @@ async function alreadySatisfied(recipeId: string): Promise<string | null> {
 export interface CatalogueRouteDeps {
   /** Who is asking, named exactly as the wizard names a plan's owner. */
   whoami(req: FastifyRequest): string
-  start(opts: Parameters<typeof startInstall>[0]): Promise<InstallJob>
   job(id: string): InstallJob | undefined
+  /** Stand-ins for what the wizard reaches (Proxmox, node logins, ping, the rule store). */
+  wizard: Partial<WizardDeps>
 }
 
 export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}): FastifyPluginAsync {
   const deps: CatalogueRouteDeps = {
     whoami: () => ownerOf(currentContext()),
-    start: opts => startInstall(opts),
     job: getInstallJob,
+    wizard: {},
     ...overrides,
   }
   return async (fastify) => {
@@ -82,7 +88,8 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
 
     const recipes = await Promise.all(CATALOGUE.map(async r => ({
       id: r.id, name: r.name, summary: r.summary, category: r.category,
-      port: r.port, needsDocker: r.needsDocker, defaults: r.defaults,
+      port: r.port, needsDocker: r.needsDocker, defaults: r.defaults, minimum: r.minimum,
+      needsGpu: Boolean(r.needsGpu), firstRunKind: r.firstRun.kind, healthPath: r.healthPath,
       firstLogin: r.firstLogin ?? null, notes: r.notes ?? [],
       satisfies: r.satisfies ?? null,
       // A recipe whose integration already has an address is not offered as a
@@ -101,29 +108,131 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
     })
   })
 
-  // POST /install — create or reuse a container, run the recipe, wire it up
-  fastify.post<{
-    Body: {
-      recipeId: string
-      intoVmid?: number
-      node?: string
-      resources?: { cores: number; memoryMb: number; diskGb: number }
-    }
-  }>('/install', async (req, reply) => {
-    const { recipeId, intoVmid, node, resources } = req.body ?? {}
-    if (!recipeId) return reply.status(400).send({ success: false, error: 'recipeId is required' })
-    if (!findRecipe(recipeId)) return reply.status(404).send({ success: false, error: 'No such recipe' })
+  // There is no one-call install route. Every install goes through the wizard: preview, then apply.
 
-    // A job nobody owns could never be read back, so it is not started.
+  // ── The install wizard ───────────────────────────────────────────────────
+
+  const num = (x: unknown): number | undefined => {
+    const n = typeof x === 'number' ? x : typeof x === 'string' && x.trim() ? Number(x) : NaN
+    return Number.isFinite(n) ? n : undefined
+  }
+  const refusal = (reply: any, e: unknown) => {
+    if (e instanceof WizardRefusal) {
+      const status = { 'not-found': 404, expired: 410, used: 409, changed: 409 }[e.code]
+      return reply.status(status).send({ success: false, code: e.code, error: e.message, problems: e.problems })
+    }
+    return reply.status(500).send({ success: false, error: (e as Error).message })
+  }
+
+  // GET /wizard/placement — every node with its room, and where this recipe would go best
+  fastify.get<{ Querystring: { recipeId?: string; cores?: string; memoryMb?: string; diskGb?: string; storage?: string } }>(
+    '/wizard/placement', async (req, reply) => {
+      const recipe = findRecipe(String(req.query.recipeId ?? ''))
+      if (!recipe) return reply.status(404).send({ success: false, error: 'No such recipe' })
+      const need = {
+        cores: num(req.query.cores) ?? recipe.defaults.cores,
+        memoryMb: num(req.query.memoryMb) ?? recipe.defaults.memoryMb,
+        diskGb: num(req.query.diskGb) ?? recipe.defaults.diskGb,
+        storage: req.query.storage || undefined,
+      }
+      try {
+        const { view, deps: d } = await wizardView(deps.wizard)
+        const rule = await d.readRule()
+        const placed = placementFor(recipe, need, view)
+        return reply.send({ success: true, data: {
+          need, ...placed, partial: view.partial, rule,
+          nextVmid: nextIdOf(view),
+        } })
+      } catch (e) { return refusal(reply, e) }
+    })
+
+  // POST /wizard/identity — the ID to suggest, the ID rule both ways, and whether a static address is free
+  // Called as the person types, so it reuses one cluster read for ~10 s per person, and pings only when
+  // the person presses "Check address" (ping: true).
+  fastify.post<{ Body: { node?: string; bridge?: string; vmid?: number; ip?: string; gateway?: string; ping?: boolean } }>(
+    '/wizard/identity', async (req, reply) => {
+      const b = req.body ?? {}
+      if (!b.node) return reply.status(400).send({ success: false, error: 'node is required' })
+      try {
+        const staticIp = Boolean(b.ip && b.ip !== 'dhcp' && parseCidr(b.ip))
+        const { view, live, deps: d } = await identityView(deps.whoami(req), staticIp, deps.wizard)
+        const rule = await d.readRule()
+        const vmid = num(b.vmid)
+        const data = await checkIdentity({ node: b.node, bridge: b.bridge, vmid, ip: b.ip, gateway: b.gateway }, view, rule, live,
+          b.ping === true ? d.ping : undefined)
+        return reply.send({ success: true, data })
+      } catch (e) { return refusal(reply, e) }
+    })
+
+  // GET/PUT /wizard/settings — the container ID rule
+  fastify.get('/wizard/settings', async (_req, reply) => {
+    try { return reply.send({ success: true, data: { vmidRule: await readVmidRule(deps.wizard) } }) }
+    catch (e) { return refusal(reply, e) }
+  })
+  fastify.put<{ Body: { vmidRule?: unknown } }>('/wizard/settings', async (req, reply) => {
+    try { return reply.send({ success: true, data: { vmidRule: await saveVmidRule(req.body?.vmidRule, deps.wizard) } }) }
+    catch (e: any) { return reply.status(400).send({ success: false, error: e.message }) }
+  })
+
+  // POST /wizard/preview — check the whole plan against the cluster and hold it server-side
+  fastify.post<{ Body: Partial<WizardInput> }>('/wizard/preview', async (req, reply) => {
     const owner = deps.whoami(req)
     if (!owner) return reply.status(401).send({ success: false, error: 'Sign in to install.' })
-
-    try {
-      const job = await deps.start({ recipeId, intoVmid, node, resources, owner })
-      return reply.send({ success: true, data: { jobId: job.jobId, steps: job.steps } })
-    } catch (e: any) {
-      return reply.status(500).send({ success: false, error: e.message })
+    const b: any = req.body ?? {}
+    const input: WizardInput = {
+      recipeId: String(b.recipeId ?? ''), node: String(b.node ?? ''), vmid: num(b.vmid) as number,
+      hostname: String(b.hostname ?? '').trim().toLowerCase(),
+      cores: num(b.cores) as number, memoryMb: num(b.memoryMb) as number, swapMb: num(b.swapMb) ?? 0, diskGb: num(b.diskGb) as number,
+      storage: String(b.storage ?? ''), bridge: String(b.bridge ?? ''), ip: String(b.ip ?? 'dhcp').trim() || 'dhcp',
+      ...(b.gateway ? { gateway: String(b.gateway).trim() } : {}), ...(b.dns ? { dns: String(b.dns).trim() } : {}),
+      // The unknowns the person ticked for, as keys; anything else is dropped.
+      ...(Array.isArray(b.addressAck) ? { addressAck: [...new Set((b.addressAck as unknown[])
+        .filter((k): k is string => typeof k === 'string' && /^(live:\d{1,9}|cluster-status)$/.test(k)))].slice(0, 500) } : {}),
     }
+    if (!findRecipe(input.recipeId)) return reply.status(404).send({ success: false, error: 'No such recipe' })
+    try {
+      const r = await previewInstall(input, owner, deps.wizard)
+      if (!r.preview) return reply.status(422).send({ success: false, error: 'The plan cannot be used as it is.', problems: r.errors, warnings: r.warnings, unknowns: r.unknowns ?? [] })
+      const p = r.preview
+      return reply.send({ success: true, data: { previewId: p.id, plan: p.plan, checks: p.checks, warnings: p.warnings, expiresAt: p.expiresAt } })
+    } catch (e) { return refusal(reply, e) }
+  })
+
+  // GET /wizard/preview/:id — the held plan, for a review screen that was reloaded
+  fastify.get<{ Params: { id: string } }>('/wizard/preview/:id', async (req, reply) => {
+    const p = await getPreview(req.params.id, deps.whoami(req))
+    if (!p) return reply.status(404).send({ success: false, error: 'No such preview' })
+    return reply.send({ success: true, data: { previewId: p.id, plan: p.plan, checks: p.checks, warnings: p.warnings, expiresAt: p.expiresAt, used: p.used } })
+  })
+
+  // POST /wizard/apply — create and install exactly what a preview holds. The id is the only input.
+  fastify.post<{ Body: { previewId?: string } }>('/wizard/apply', async (req, reply) => {
+    const owner = deps.whoami(req)
+    if (!owner) return reply.status(401).send({ success: false, error: 'Sign in to install.' })
+    const id = req.body?.previewId
+    if (!id || typeof id !== 'string') return reply.status(400).send({ success: false, error: 'previewId is required' })
+    const extra = Object.keys(req.body ?? {}).filter(k => k !== 'previewId')
+    if (extra.length) return reply.status(400).send({ success: false, error: `Apply takes only previewId, not ${extra.join(', ')}.` })
+    try {
+      const job = await applyPreview(id, owner, deps.wizard)
+      return reply.send({ success: true, data: { jobId: job.jobId, steps: job.steps } })
+    } catch (e) { return refusal(reply, e) }
+  })
+
+  // GET /wizard/jobs — the caller's failed or interrupted installs that left a container to clean up
+  fastify.get('/wizard/jobs', async (req, reply) => {
+    const jobs = cleanupCandidates(deps.whoami(req)).map(j => ({
+      jobId: j.jobId, recipeId: j.recipeId, status: j.status, vmid: j.vmid, node: j.node, error: j.error, startedAt: j.startedAt,
+    }))
+    return reply.send({ success: true, data: { jobs } })
+  })
+
+  // POST /wizard/jobs/:jobId/cleanup — remove the container a failed install made, and only that
+  fastify.post<{ Params: { jobId: string } }>('/wizard/jobs/:jobId/cleanup', async (req, reply) => {
+    try {
+      const detail = await removeFailedInstall(req.params.jobId, deps.whoami(req), deps.wizard)
+      return reply.send({ success: true, data: { detail } })
+    } catch (e) { return refusal(reply, e) }
   })
 
   // GET /jobs/:jobId — progress, including the live install log

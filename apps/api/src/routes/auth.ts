@@ -95,6 +95,16 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     }
   })
 
+  // GET /api/auth/check — nginx's auth_request for /grafana/ (config/nginx/conf.d/hyperprox-routes.inc).
+  // 204 for a signed-in person while HyperProx is unlocked; 401 for anything else, locked included (nginx
+  // passes only 2xx, 401 and 403 through, so locked cannot be the gate's usual 423). An API token gets 403
+  // from the gate. Not rate limited: every Grafana asset and query asks, all of them from nginx's address.
+  fastify.get('/check', { config: { rateLimit: false } }, async (req, reply) => {
+    reply.header('Cache-Control', 'no-store')
+    if (!isUnlocked() || !req.session || req.apiToken) return reply.status(401).send()
+    return reply.status(204).send()
+  })
+
   // POST /api/auth/bootstrap — create the Owner account (only before the vault has a HyperProx org)
   fastify.post<{ Body: { email?: string; password?: string } }>('/bootstrap', LIMIT, async (req, reply) => {
     const email = str(req.body?.email).trim().toLowerCase()

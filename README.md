@@ -66,10 +66,11 @@ the wizard, then create the owner account at `https://<container-ip>/login`.
 `bootstrap.sh` runs on a Proxmox node as root. It picks the next free container ID and the storage
 with the most free space, downloads the newest Debian template, and creates a **privileged** container
 with `nesting=1` and `keyctl=1` (Docker's overlay driver needs them), the TUN device for Tailscale, and
-start on boot. It then creates the API token `root@pam!hyperprox` with `Administrator` on `/`; on every
-node it can reach over the cluster's SSH trust, installs node_exporter, the power udev rule and, on
-Intel GPU nodes, the Intel GPU exporter (see [Optional integrations](#optional-integrations)); runs
-`install.sh` inside the container; and prints the address and generated root password. It asks once
+start on boot. It then creates the API token `root@pam!hyperprox` with `Administrator` on `/`, and a
+read-only `root@pam!hyperprox-exporter` (`PVEAuditor` on `/`) for the PVE exporter; on every node it
+can reach over the cluster's SSH trust, installs node_exporter, the power udev rule and, on Intel GPU
+nodes, the Intel GPU exporter (see [Optional integrations](#optional-integrations)); runs `install.sh`
+inside the container; and prints the address and generated root password. It asks once
 before creating anything. If a token named `hyperprox` already exists it is left alone, and the setup
 wizard makes its own.
 
@@ -108,9 +109,9 @@ bash /opt/hyperprox/install.sh
 ```
 
 The installer works in `/opt/hyperprox`. It installs Docker CE, Node.js 20 and pnpm 9, builds the
-app, generates `/opt/hyperprox/.env` (mode 0600), sets up the vault, starts the Docker services and
-the systemd units. In a container it disables AppArmor and, when run interactively on DHCP, offers to
-set a static address. It asks before installing directly on a Proxmox node.
+app, generates `/opt/hyperprox/.env` (mode 0600) with every credential HyperProx's own services need,
+sets up the vault, starts the Docker services and the systemd units. In a container it disables
+AppArmor and, when run interactively on DHCP, offers to set a static address. It asks before installing directly on a Proxmox node.
 
 If you create the container yourself, it must be privileged with nesting and keyctl, or Docker fails
 with an overlay error:
@@ -128,8 +129,9 @@ No API token is needed for this path: the setup wizard makes one from your Proxm
 ### HTTPS
 
 HyperProx is served by its own nginx on `https://<container-ip>/`, and port 80 redirects there. The
-API, frontend and setup wizard listen on loopback only; nginx also serves WebSockets and Grafana (at
-`/grafana/`) on the same origin.
+API, frontend, setup wizard, Prometheus and Grafana listen on loopback only. nginx also serves
+WebSockets and Grafana (at `/grafana/`) on the same origin, and lets a request through to Grafana only
+with a valid HyperProx session while HyperProx is unlocked.
 
 The installer makes a self-signed certificate, so the browser warns until you either accept it or
 replace it. To use your own, put the full chain in `/opt/hyperprox/certs/cert.pem` and the key in
@@ -165,13 +167,14 @@ private. If you lose it, run `grep SETUP_SECRET /opt/hyperprox/.env` on the Hype
 wizard saves its progress, so reloading it resumes at the step you reached.
 
 1. **Connect your Proxmox.** Sign in with your Proxmox web login (two-factor codes are supported).
-   HyperProx uses it once to create its own API token, `hyperprox-<hostname>-<install id>`, and never
-   stores the password. You can paste an existing token under **Advanced** instead. If bootstrap
-   already configured a token, this step is skipped.
+   HyperProx uses it once to create its own API token, `hyperprox-<hostname>-<install id>`, and a
+   read-only one for the PVE exporter (`<that token>-exporter`, `PVEAuditor` on `/`), and never stores
+   the password. You can paste an existing token under **Advanced** instead. If bootstrap already
+   configured a token, this step is skipped.
 2. **Cluster detected.** Nodes, version, quorum, running guests and Ceph, read through the token.
 3. **Services.** Finds Nginx Proxy Manager, Ollama and Proxmox Backup Server already on your network,
-   and lets you choose which bundled services to run (Prometheus and Grafana, and optionally Nginx
-   Proxy Manager; see [Troubleshooting](#troubleshooting) before choosing that one).
+   and lets you choose whether to run the bundled Prometheus and Grafana. To run Nginx Proxy Manager,
+   install it from the [Catalogue](#catalogue) after setup.
 4. **DNS provider.** Optionally enter a GoDaddy API key and secret.
 5. **Done.** The wizard starts your chosen services, restarts HyperProx and exits for good.
 
@@ -187,9 +190,11 @@ you sign in with this vault account from now on.
 cd /opt/hyperprox && git pull && bash deploy.sh
 ```
 
-`deploy.sh` checks the nginx config, installs dependencies, applies migrations, rebuilds, and restarts
-the API and frontend. Sessions survive it because the keyholder keeps the unlocked state. If it says
-the install has no vault yet, re-run `install.sh` first.
+`deploy.sh` brings per-install settings up to date (`bin/hyperprox-config`, the same step the
+installer runs), checks the nginx config, installs dependencies, applies migrations, rebuilds, restarts
+the API and frontend, then reloads nginx, checks that `/grafana/` is gated (if it is not, it stops
+Grafana and fails), and applies any changed Prometheus and Grafana container settings. Sessions survive it because the keyholder keeps the unlocked state. If it says the install
+has no vault yet, re-run `install.sh` first.
 
 ## Optional integrations
 
@@ -279,14 +284,9 @@ from the container's CPU limit (`OLLAMA_CPUS`); `OLLAMA_NUM_THREAD` overrides it
 ### Plug-in metrics in Prometheus
 
 Plug-ins publish metrics at `/api/plugins/metrics`, and a **HyperProx — Plug-ins** Grafana dashboard
-is provisioned for them. The endpoint refuses to serve until you set a bearer token:
-
-```bash
-TOKEN="$(openssl rand -hex 32)"
-echo "METRICS_TOKEN=$TOKEN" >> /opt/hyperprox/.env
-printf '%s' "$TOKEN" > /opt/hyperprox/config/prometheus/secrets/metrics_token
-systemctl restart hyperprox-api && docker restart hyperprox-prometheus
-```
+is provisioned for them. The endpoint asks for a bearer token, `METRICS_TOKEN` in `.env`. The installer
+generates it once and gives Prometheus the same value in `config/prometheus/secrets/metrics_token`;
+an existing install gets it on its next `deploy.sh`. It is never rotated.
 
 ## Using HyperProx
 
@@ -335,7 +335,9 @@ by fingerprint. Configure it in `config/certs.yaml` (copy `config/certs.example.
 
 **Storage** shows every storage on every node, including shared NFS and CIFS, Ceph health, OSDs (with
 latency) and pools, and the disks of each guest. **Monitoring** shows node health, active Prometheus
-alerts (node down, CPU, memory, disk, Ceph and GPU rules) and the embedded Grafana dashboards.
+alerts (node down, CPU, memory, disk, Ceph and GPU rules) and the embedded Grafana dashboards. If the
+PVE exporter has no read-only token yet (an install from before this release), an admin can make one
+from the Grafana tab with **Set up Proxmox metrics**, or with `hyperprox pve-exporter`.
 Prometheus keeps 90 days or 40 GB, whichever comes first (`PROMETHEUS_RETENTION` and
 `PROMETHEUS_RETENTION_SIZE` in `.env`).
 
@@ -441,12 +443,16 @@ hyperprox lock                                     # lock now: wipe memory, end 
 hyperprox token create ci --role admin --expires-days 90
 hyperprox token list
 hyperprox token revoke ci
+hyperprox pve-exporter                             # give the PVE exporter its read-only token (unlocked)
+hyperprox pve-exporter --fresh                     # replace one that is not read-only
 ```
 
-**What is exposed on the network.** nginx on 80 and 443. Grafana is also published on port 3003 with
-anonymous read-only access, and Prometheus listens on port 9090 without authentication. Postgres,
-Redis, the vault, the bundled Ollama and the PVE exporter are bound to loopback. Put HyperProx on a
-network you trust; access over the internet needs your own TLS and access controls in front of it.
+**What is exposed on the network.** Only nginx, on 80 and 443. Everything else, the API, the frontend,
+Prometheus and Grafana included, is bound to loopback (`deploy.sh` adds systemd drop-ins that move an
+older install's API and frontend there too). Grafana's anonymous read-only viewer is reached only
+through nginx at `/grafana/`, which checks for a HyperProx session first; every signed-in person sees
+every metric (see [docs/security.md](docs/security.md)). Put HyperProx on a network you trust; access
+over the internet needs your own TLS and access controls in front of it.
 
 **Keep safe:** `/opt/hyperprox/.env` (mode 0600, holds `VAULT_ADMIN_TOKEN` and the database password)
 and the `vault_data` Docker volume, which holds every account. Back up the volume; losing it loses the
@@ -484,11 +490,10 @@ single `docker-compose.yml`; `COMPOSE_PROFILES` in `.env` picks the optional par
 | `hyperprox-vault` | Vaultwarden: sign-in and secret store | 127.0.0.1:8222 |
 | `hyperprox-postgres` | Configuration and state | 127.0.0.1:5432 |
 | `hyperprox-redis` | Key-value store the API connects to at start-up | 127.0.0.1:6379 |
-| `hyperprox-prometheus` | Metrics (profile `monitoring`, host network) | 9090 |
-| `hyperprox-grafana` | Dashboards (profile `monitoring`) | 3003 |
+| `hyperprox-prometheus` | Metrics (profile `monitoring`, host network) | 127.0.0.1:9090 |
+| `hyperprox-grafana` | Dashboards, served at `/grafana/` (profile `monitoring`, host network) | 127.0.0.1:3003 |
 | `hyperprox-pve-exporter` | Proxmox metrics bridge (profile `monitoring`) | 127.0.0.1:9221 |
 | `hyperprox-ollama` | Optional local AI (profile `ai`) | 127.0.0.1:11434 |
-| `hyperprox-npm` | Optional Nginx Proxy Manager (profile `npm`) | 80, 81, 443 |
 
 | Layer | Technology |
 |---|---|
@@ -506,11 +511,11 @@ single `docker-compose.yml`; `COMPOSE_PROFILES` in `.env` picks the optional par
 | Every page says HyperProx is locked | Expected after a reboot or idle timeout. Sign in at `/login`. `hyperprox status` shows the vault and keyholder state. |
 | HyperProx will not start | The API waits for the vault. Check `docker logs hyperprox-vault` and `journalctl -u hyperprox-api -n 50`. |
 | The setup page says a key is required | Use the link with `?k=`. Get the key with `grep SETUP_SECRET /opt/hyperprox/.env`. |
-| The bundled Nginx Proxy Manager does not start | It needs ports 80 and 443, which HyperProx's own nginx already uses. Install NPM into its own container from the Catalogue instead. |
 | HA shows `n/a` | The Proxmox token needs `Sys.Audit` on `/` to read HA status. |
 | A node shows `no meter` | Check that node_exporter runs, that `/etc/udev/rules.d/99-hyperprox-rapl.rules` exists, that `stat -c %a /sys/class/powercap/intel-rapl:0/energy_uj` prints `404`, and that the CPU exposes RAPL at all (`ls /sys/class/powercap/`). VMs and some CPUs have none. |
 | Monitoring has no node data | Run `POST /api/targets/sync` as an admin, or check `config/prometheus/targets/nodes.json`. The wizard writes nodes by name, so they must resolve from the container. |
-| Grafana's Proxmox panels are empty | `config/pve-exporter/pve.yml` ships with an empty token. Fill in a Proxmox user, token name and secret, then `docker restart hyperprox-pve-exporter`. |
+| Grafana's Proxmox panels are empty | The PVE exporter has no token. Sign in, then press **Set up Proxmox metrics** on Monitoring → Grafana, or run `hyperprox pve-exporter`. |
+| `/grafana/` sends you to the sign-in page | It needs a HyperProx session, and HyperProx unlocked. Sign in at `/login`. |
 | Ceph views are empty on a Ceph cluster | The monitor node is detected automatically. To pin one, set `CEPH_MON_NODE` in `.env` and restart `hyperprox-api`. |
 | The AI assistant does not install the service | Add a node login on the Catalogue page. |
 

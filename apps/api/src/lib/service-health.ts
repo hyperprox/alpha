@@ -33,6 +33,16 @@ const PROMETHEUS_PORT = 9090
 
 function trimSlash(u: string): string { return u.replace(/\/+$/, '') }
 
+/**
+ * Where HyperProx's own code queries the bundled Prometheus. It listens on 127.0.0.1:9090 only (host
+ * network), so loopback is the address; HOST_IP is not, and `localhost` can resolve to ::1, where it is not
+ * listening either. PROMETHEUS_URL overrides it for a Prometheus somewhere else.
+ */
+export function prometheusBase(env: NodeJS.ProcessEnv = process.env): string {
+  const o = env.PROMETHEUS_URL?.trim()
+  return o ? trimSlash(o) : `http://127.0.0.1:${PROMETHEUS_PORT}`
+}
+
 /** Ordered candidate base URLs for a service. An explicit override is the only candidate. */
 export function candidateUrls(
   override: string | undefined, port: number, composeName: string, env: NodeJS.ProcessEnv = process.env,

@@ -10,7 +10,9 @@
 
 import { wizardRecipes, serviceKey, type CatalogueRecipe } from '../../catalogue'
 import { DOCKER_PACKAGES, distroOf } from '../../install-script'
-import { isHostAddress, parseCidr, pickTemplate } from '../../wizard-placement'
+import {
+  isHostAddress, parseCidr, pickTemplate, scoreNodes, nextFreeVmid, rootStorages as rankRootStorages, PLACEMENT, ROOTFS_EXCLUDED,
+} from '../../wizard-placement'
 import { zoneFor } from '../../dns-zones'
 import { archOfTemplate, type NodeFact, type StorageFact } from '../facts'
 import { isWildcard, publishableHostname } from './fields'
@@ -44,12 +46,9 @@ const CONSTANTS = Object.freeze({
   propagationWaitMs: 5 * 60_000,
 })
 
-// Higher is a better home for a container rootfs: shared block storage first (a guest on it can
-// migrate), then node-local, then network file shares.
-const STORAGE_RANK: Record<string, number> = {
-  rbd: 5, zfspool: 4, lvmthin: 3, lvm: 3, btrfs: 3, dir: 2, nfs: 1, cifs: 1,
-}
-const DISK_HEADROOM = 1.2
+// Storage ranking, headroom and node scoring are the Catalogue wizard's (wizard-placement), so the two
+// recommend the same node and storage for the same request.
+const DISK_HEADROOM = PLACEMENT.diskHeadroom
 const VMID_MIN = 100
 const VMID_MAX = 999_999_999
 const LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
@@ -80,10 +79,22 @@ function nodeFits(n: NodeFact, facts: TemplateFacts, bridge: string, memMb: numb
   return n.online && !unread && n.hasLogin && !!n.arch && n.bridges.some(b => b.iface === bridge) && n.freeMemMb >= memMb
 }
 
-/** Storages on `node` that can hold a container root disk, best first: block before file shares, then room. */
+/** Storages on `node` that can hold a container root disk, best first: shared, then block, then room. */
 function rootStorages(facts: TemplateFacts, node: string): StorageFact[] {
-  return facts.storages.filter(x => x.node === node && x.active && x.content.includes('rootdir'))
-    .sort((a, b) => (STORAGE_RANK[b.type] ?? 0) - (STORAGE_RANK[a.type] ?? 0) || b.freeGb - a.freeGb)
+  return rankRootStorages(facts.storages, node) as StorageFact[]
+}
+
+/** The best node for this size among those that fit, by the Catalogue wizard's scoring. */
+function bestNode(
+  facts: TemplateFacts, candidates: NodeFact[], need: { memoryMb: number; diskGb: number; cores: number; wantsGpu?: boolean; needsGpu?: boolean },
+): NodeFact | undefined {
+  const verdicts = scoreNodes(candidates.map(n => ({
+    node: n.node, online: n.online, cores: n.cores, cpuLoad: n.cpuLoad, memTotalMb: n.totalMemMb,
+    memUsedMb: n.totalMemMb - n.freeMemMb, memCommittedMb: n.committedMemMb, runningGuests: n.runningGuests,
+    hasGpu: n.hasGpu, hasIgpu: n.hasIgpu, hasLogin: n.hasLogin,
+  })), facts.storages, need)
+  const top = verdicts.find(v => v.eligible)
+  return top ? candidates.find(n => n.node === top.node) : undefined
 }
 const storageFor = (facts: TemplateFacts, node: string, diskGb: number) =>
   rootStorages(facts, node).find(x => x.freeGb >= diskGb * DISK_HEADROOM)
@@ -183,8 +194,8 @@ export function buildDeployService(deps: DeployServiceDeps = { recipes: wizardRe
 
     if (!out.node) {
       const need = num(out, 'memory_mb') ?? 0
-      const best = facts.nodes.filter(n => nodeFits(n, facts, s.bridge, need))
-        .sort((a, b) => b.freeMemMb - a.freeMemMb)[0]
+      const best = bestNode(facts, facts.nodes.filter(n => nodeFits(n, facts, s.bridge, need)),
+        { memoryMb: need, diskGb: num(out, 'disk_gb') ?? 0, cores: num(out, 'cores') ?? 1, wantsGpu: recipe?.wantsGpu, needsGpu: recipe?.needsGpu })
       if (best) out.node = { value: best.node, source: 'derived' }
     }
     const node: NodeFact | undefined = facts.nodes.find(n => n.node === str(out, 'node'))
@@ -194,7 +205,10 @@ export function buildDeployService(deps: DeployServiceDeps = { recipes: wizardRe
     // bridge that was wanted, which validate has no settings to read from.
     out.bridge = bridge ? { value: bridge.iface, source: 'fact' } : { value: '', source: 'fact', note: s.bridge }
 
-    if (!out.vmid && facts.nextVmid > 0) out.vmid = { value: facts.nextVmid, source: 'derived' }
+    // The next ID no CT or VM has, the same answer the Catalogue wizard gives.
+    if (!out.vmid && !facts.partial.includes('resources')) {
+      out.vmid = { value: nextFreeVmid(facts.guests.map(g => g.vmid), facts.nextVmid || VMID_MIN), source: 'derived' }
+    }
 
     if (!out.ip) out.ip = { value: 'dhcp', source: 'derived' }
     else if (bridge && typeof out.ip.value === 'string' && out.ip.value !== 'dhcp' && !out.ip.value.includes('/')) {
@@ -263,11 +277,7 @@ export function buildDeployService(deps: DeployServiceDeps = { recipes: wizardRe
     const zones = facts.zones.join(', ')
     const domainQuestion = `Which hostname should it answer on? Zones I manage: ${zones}`
     const usedIds = new Set(facts.guests.map(g => g.vmid))
-    const nextFree = (): number => {
-      let n = Math.max(VMID_MIN, facts.nextVmid || VMID_MIN)
-      while (usedIds.has(n)) n++
-      return n
-    }
+    const nextFree = (): number => nextFreeVmid(usedIds, facts.nextVmid || VMID_MIN)
     const mem = num(f, 'memory_mb')
     const wantedBridge = str(f, 'bridge') || f.bridge?.note || ''
     const fits = (n: NodeFact) => nodeFits(n, facts, wantedBridge, mem ?? 0)
@@ -445,6 +455,7 @@ export function buildDeployService(deps: DeployServiceDeps = { recipes: wizardRe
         if (!s || !s.active || !s.content.includes('rootdir')) {
           return invalid('storage', `${id} on ${nodeName} cannot hold containers. Which storage?`)
         }
+        if (ROOTFS_EXCLUDED[s.type]) return invalid('storage', `${id}: ${ROOTFS_EXCLUDED[s.type]} Which storage?`)
         if (s.freeGb < disk * DISK_HEADROOM) return invalid('storage', `${id} has ${s.freeGb} GB free; this needs ${need} GB. Which storage?`)
         return null
       },
