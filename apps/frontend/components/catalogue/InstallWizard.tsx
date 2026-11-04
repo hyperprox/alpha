@@ -25,11 +25,12 @@ export interface WizardRecipe {
 
 interface Storage { storage: string; type: string; shared: boolean; freeGb: number; totalGb?: number; content: string[] }
 interface Bridge { iface: string; cidr?: string; gateway?: string; prefix?: number }
-interface Verdict { eligible: boolean; why: string[]; notes: string[]; score: number; storage: Storage | null; freeMemAfterMb: number }
+interface Verdict { eligible: boolean; why: string[]; notes: string[]; score: number; storage: Storage | null; freeMemAfterMb: number; freeMemAfterLiveMb: number }
 interface NodeRow {
-  node: string; online: boolean; cores: number; cpuLoad?: number; memTotalMb: number; memUsedMb: number
-  runningGuests?: number; hasGpu?: boolean; gpuSource?: string; haMaster?: boolean; haGuests: number; hasLogin?: boolean
-  bridges: Bridge[]; rootStorages: Storage[]; verdict: Verdict
+  node: string; online: boolean; cores: number; cpuLoad?: number; memTotalMb: number; memUsedMb: number; memCommittedMb?: number
+  runningGuests?: number; hasGpu?: boolean; gpuSource?: string; hasIgpu?: boolean; igpuSource?: string
+  haMaster?: boolean; haGuests: number; hasLogin?: boolean
+  bridges: Bridge[]; rootStorages: Storage[]; excludedStorages?: Array<Storage & { reason: string }>; verdict: Verdict
 }
 interface Placement {
   nodes: NodeRow[]; recommendation: { node: string; reason: string; storage: string } | null
@@ -324,7 +325,7 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
             <div className="space-y-4">
               <div className="flex items-center justify-between gap-3">
                 <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-                  Live from Proxmox. Pick any node that is not greyed out.
+                  Live from Proxmox. CPU is a single reading taken right now; RAM is judged on the worse of what is in use and what is promised to running guests. Pick any node that is not greyed out.
                 </p>
                 <GhostButton onClick={() => void loadPlacement()} disabled={placing} style={{ height: 34 }}>{placing ? 'Reading…' : 'Refresh'}</GhostButton>
               </div>
@@ -361,6 +362,7 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
                         <span className="font-display text-[19px] font-semibold" style={{ color: 'var(--text-bright)' }}>{n.node}</span>
                         {placement.recommendation?.node === n.node && <Badge tone="var(--accent)">recommended</Badge>}
                         {n.hasGpu && <Badge tone="var(--violet)">GPU</Badge>}
+                        {n.hasIgpu && !n.hasGpu && <Badge tone="var(--violet)">iGPU</Badge>}
                         {n.haMaster && <Badge>HA manager</Badge>}
                         {!n.online && <Badge tone="var(--crit)">offline</Badge>}
                       </div>
@@ -369,16 +371,22 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
                           <div>
                             <div className="flex justify-between text-[12px]" style={{ color: 'var(--text-muted)' }}>
                               <span>CPU · {n.cores} cores</span>
-                              <span className={MONO}>{n.cpuLoad !== undefined ? `${Math.round(n.cpuLoad * 100)}% busy` : '—'}</span>
+                              <span className={MONO}>{n.cpuLoad !== undefined ? `${Math.round(n.cpuLoad * 100)}% busy right now` : '—'}</span>
                             </div>
                             <Bar used={n.cpuLoad ?? 0} total={1} />
                           </div>
                           <div>
                             <div className="flex justify-between text-[12px]" style={{ color: 'var(--text-muted)' }}>
-                              <span>RAM · {gb(n.memUsedMb)} used of {gb(n.memTotalMb)}</span>
+                              <span>RAM · {gb(n.memUsedMb)} in use of {gb(n.memTotalMb)}</span>
                               <span className={MONO}>{gb(freeMb)} free</span>
                             </div>
                             <Bar used={n.memUsedMb} total={n.memTotalMb} />
+                            {n.memCommittedMb !== undefined && (
+                              <div className="flex justify-between text-[12px] mt-0.5" style={{ color: 'var(--text-dim)' }}>
+                                <span>promised to running guests</span>
+                                <span className={MONO}>{gb(n.memCommittedMb)}</span>
+                              </div>
+                            )}
                           </div>
                           <div className="text-[12px] space-y-0.5" style={{ color: 'var(--text-muted)' }}>
                             {n.rootStorages.length === 0 && <div>No storage for containers.</div>}
@@ -388,14 +396,19 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
                                 <span className={MONO}>{s.freeGb} GB free</span>
                               </div>
                             ))}
+                            {(n.excludedStorages ?? []).map(s => (
+                              <div key={s.storage} className="flex justify-between gap-2" style={{ color: 'var(--text-dimmer)' }} title={s.reason}>
+                                <span className="truncate"><span className={MONO}>{s.storage}</span> · {s.type} · not offered</span>
+                              </div>
+                            ))}
                           </div>
                           <div className="text-[12px]" style={{ color: 'var(--text-dim)' }}>
-                            {n.runningGuests ?? 0} guests running{n.haGuests ? ` · ${n.haGuests} under HA` : ''}{n.gpuSource ? ` · ${n.gpuSource}` : ''}
+                            {n.runningGuests ?? 0} guests running{n.haGuests ? ` · ${n.haGuests} under HA` : ''}{n.gpuSource ? ` · ${n.gpuSource}` : ''}{!n.gpuSource && n.igpuSource ? ` · ${n.igpuSource}` : ''}
                           </div>
                         </div>
                       )}
                       {ok && <div className="mt-2 text-[12px]" style={{ color: 'var(--text-soft)' }}>
-                        After install: {gb(n.verdict.freeMemAfterMb)} RAM free{n.verdict.notes.length ? ` · ${n.verdict.notes.join(' · ')}` : ''}
+                        After install: {gb(n.verdict.freeMemAfterLiveMb)} RAM free now{n.verdict.freeMemAfterMb < n.verdict.freeMemAfterLiveMb ? `, ${gb(n.verdict.freeMemAfterMb)} if every guest uses what it is promised` : ''}{n.verdict.notes.length ? ` · ${n.verdict.notes.join(' · ')}` : ''}
                       </div>}
                       {!ok && n.verdict.why.length > 0 && (
                         <div className="mt-2 text-[12px]" style={{ color: 'var(--crit-soft)' }}>Can&rsquo;t use: {n.verdict.why.join('; ')}</div>
@@ -405,7 +418,8 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
                 })}
               </div>
               {selected?.verdict.eligible && (
-                <Field label={`Storage on ${selected.node}`} hint="Shared storage lets HA start it on another node if this one fails.">
+                <Field label={`Storage on ${selected.node}`} hint={<>Shared storage lets HA start it on another node if this one fails. Shared block storage (such as Ceph RBD) is preferred over NFS.
+                  {(selected.excludedStorages?.length ?? 0) > 0 && <> Not offered: {selected.excludedStorages!.map(s => s.storage).join(', ')}. {selected.excludedStorages![0].reason}</>}</>}>
                   <select value={storage} onChange={e => setStorage(e.target.value)} style={INPUT}>
                     {selected.rootStorages.map(s => {
                       const room = s.freeGb >= Math.ceil(diskGb * 1.2)
