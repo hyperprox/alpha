@@ -77,10 +77,11 @@ export function formBody(p: Record<string, string | number | boolean | undefined
   return u.toString()
 }
 
-/** crs: "ha=dynamic,ha-rebalance-on-start=1,ha-auto-rebalance=1" */
+/** crs: "ha=dynamic,ha-rebalance-on-start=1,ha-auto-rebalance=1", or as /cluster/options returns it, an object. */
 export function parseCrs(s: unknown): HaSnapshot['crs'] {
   const kv: Record<string, string> = {}
-  for (const part of String(s ?? '').split(',')) { const [k, v] = part.split('='); if (k) kv[k.trim()] = (v ?? '').trim() }
+  if (s && typeof s === 'object') for (const [k, v] of Object.entries(s as Record<string, unknown>)) kv[k] = String(v)
+  else for (const part of String(s ?? '').split(',')) { const [k, v] = part.split('='); if (k) kv[k.trim()] = (v ?? '').trim() }
   const mode = kv.ha === 'static' || kv.ha === 'dynamic' ? kv.ha : 'basic'
   return { mode, rebalanceOnStart: kv['ha-rebalance-on-start'] === '1', autoRebalance: kv['ha-auto-rebalance'] === '1' }
 }
