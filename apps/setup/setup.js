@@ -14,9 +14,12 @@ const path      = require('path')
 const crypto    = require('crypto')
 const { exec }  = require('child_process')
 const exporter  = require('./pve-exporter')
+const onboard   = require('./onboarding')
 
 const PORT     = parseInt(process.env.SETUP_PORT || '3001', 10)
 const ENV_PATH = path.resolve(process.env.ENV_FILE_PATH || '/opt/hyperprox/.env')
+const HPX_DIR  = process.env.HYPERPROX_DIR || '/opt/hyperprox'
+const API_PORT = parseInt(process.env.API_PORT || '3002', 10)
 
 // ── Bail if already set up ────────────────────────────────────────────────────
 // Only when run as the service: tests load this file for its decision functions.
@@ -70,24 +73,18 @@ function writeEnv(updates) {
   Object.assign(process.env, updates)
 }
 
-// =============================================================================
-// Crypto helpers  (AES-256-GCM)
-// =============================================================================
-
-function getKey() {
-  const raw = readEnv().ENCRYPTION_KEY || process.env.ENCRYPTION_KEY || ''
-  const buf = Buffer.from(raw, 'hex')
-  if (buf.length !== 32) throw new Error('ENCRYPTION_KEY must be 64 hex chars')
-  return buf
-}
-
-function encrypt(plaintext) {
-  const key = getKey()
-  const iv  = crypto.randomBytes(16)
-  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv)
-  const enc    = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])
-  const tag    = cipher.getAuthTag()
-  return Buffer.concat([iv, tag, enc]).toString('base64')
+/** Remove keys from .env entirely (SETUP_SECRET once setup is done). */
+function removeEnv(keys) {
+  let raw = ''
+  try { raw = fs.readFileSync(ENV_PATH, 'utf8') } catch { return }
+  const drop = new Set(keys)
+  const kept = raw.split('\n').filter(line => {
+    const t = line.trim(); const eq = t.indexOf('=')
+    return !(eq > 0 && !t.startsWith('#') && drop.has(t.slice(0, eq).trim()))
+  })
+  fs.writeFileSync(ENV_PATH, kept.join('\n'), { encoding: 'utf8', mode: 0o600 })
+  fs.chmodSync(ENV_PATH, 0o600)
+  for (const k of keys) delete process.env[k]
 }
 
 // =============================================================================
@@ -561,14 +558,15 @@ body{background:var(--bg);color:var(--text);font-family:'Barlow',system-ui,sans-
 </div>
 
 <script>
-const STEPS = ['Proxmox','Cluster','Services','Providers','Done']
+const STEPS = ['Proxmox','Cluster','Services','Options','Done']
 let cur = 0
 const S = {
   proxmox:  { host:'', port:'8006', tokenId:'root@pam!hyperprox', tokenSecret:'', publicUrl:'' },
   cluster:  null,
   services: {},
   installs: { grafana: true, prometheus: true },
-  providers:{ godaddy:{ enabled:false, key:'', secret:'' }, npm:{ enabled:false, host:'', port:'81' } }
+  providers:{ godaddy:{ enabled:false, key:'', secret:'' }, npm:{ enabled:false, host:'', port:'81' } },
+  hw: null, answers: {}, login: { username:'root', password:'', privateKey:'' }, loginRows: null, apply: null, finish: null
 }
 
 function renderSteps(){
@@ -662,6 +660,7 @@ function stepCluster(){
     <div class="detect-row"><span>Running workloads</span><span style="font-family:'IBM Plex Mono',monospace">\${c.runningVms} VMs · \${c.runningCts} CTs</span><span class="badge badge-ok">✓</span></div>
     \${c.ceph ? \`<div class="detect-row"><span>CEPH storage</span><span style="font-family:'IBM Plex Mono',monospace">\${c.ceph.pools} pools</span><span class="badge \${c.ceph.healthy?'badge-ok':'badge-warn'}">\${c.ceph.healthy?'healthy':'degraded'}</span></div>\` : ''}
     <div class="node-grid">\${nodeCards}</div>
+    \${S.hw ? '<div class="card-desc" style="margin:1rem 0 0" id="hw-summary">' + escHtml(S.hw.summary) + '</div>' : '<div class="field-hint" style="margin-top:1rem">Looking at the hardware on each node...</div>'}
     \${S.exporter && !S.exporter.ok ? \`<div class="field-hint" style="margin-top:.75rem">Proxmox metrics: the exporter's read-only token could not be made (\${escHtml(S.exporter.error)}). After setup, run <code>hyperprox pve-exporter</code> on this machine.</div>\` : ''}
     <div class="btn-row">
       <button class="btn btn-ghost" onclick="go(0)">← Back</button>
@@ -704,8 +703,8 @@ function stepServices(){
     <div class="card-title">Existing services</div>
     <div class="card-desc">HyperProx scanned your cluster. Enable what you want to manage, skip the rest — you can connect more later.</div>
     \${cards}
-    <div class="card-title" style="margin-top:1.25rem">Install with HyperProx</div>
-    <div class="card-desc">Select services to spin up as Docker containers alongside HyperProx.</div>
+    <div class="card-title" style="margin-top:1.25rem">Do you want charts and dashboards (Prometheus and Grafana)?</div>
+    <div class="card-desc">Runs Prometheus and Grafana on this machine. You reach them only through HyperProx.</div>
     \${installCards}
     <div class="field-hint" style="margin-top:.75rem">Need Nginx Proxy Manager? Install it from the <strong>Catalogue</strong> after setup: it gets a container of its own, with ports 80 and 443 to itself.</div>
     <div class="btn-row">
@@ -715,28 +714,62 @@ function stepServices(){
   </div>\`
 }
 
-// ── Step 3: Providers ─────────────────────────────────────────────────────────
+// ── Step 3: Options — the installer's questions, then doing them ────────────
+function qOn(id){ return S.answers[id] === true }
+function anyNodeWork(){ return (S.hw && S.hw.questions || []).some(q => q.nodeWork && qOn(q.id)) }
+function checkRows(rows){
+  return (rows||[]).map(r => {
+    const mark = (r.status==='done'||r.status==='already'||r.status==='ok') ? '<span class="badge badge-ok">done</span>'
+      : r.status==='skipped' ? '<span class="badge badge-off">skipped</span>' : '<span class="badge badge-warn">failed</span>'
+    return '<div class="detect-row"><span>' + escHtml((r.label||r.id||'') + (r.node ? ' · ' + r.node : '')) + '<br><span class="hint">' + escHtml(r.reason||'') + '</span></span>' + mark + '</div>'
+  }).join('')
+}
 function stepProviders(){
-  const gd = S.providers.godaddy
-  return \`<div class="card">
-    <div class="card-title">DNS provider</div>
-    <div class="card-desc">Connect a DNS provider to manage records, DDNS, and SSL. You can add more providers later in Settings.</div>
-    <div class="svc-card \${gd.enabled?'on':''}" onclick="toggleProv('godaddy')" style="margin-bottom:8px">
-      <div><div class="svc-name">GoDaddy</div><div class="svc-detail">Manage records, DDNS, domain expiry</div></div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <div class="toggle \${gd.enabled?'on':''}"></div>
-      </div>
-    </div>
-    \${gd.enabled ? \`
-    \${gd.saved ? '<div class="field-hint" style="margin-bottom:.75rem">A key is already saved. Leave these empty to keep it.</div>' : ''}
-    <div class="field"><label>API Key</label><input id="gd-key" placeholder="dh3jdK..." value="\${gd.key}"></div>
-    <div class="field"><label>API Secret</label><input id="gd-sec" type="password" placeholder="QzX7s..." value="\${gd.secret}"></div>\` : ''}
-    <div class="err" id="prov-err"></div>
-    <div class="btn-row">
-      <button class="btn btn-ghost" onclick="go(2)">← Back</button>
-      <button class="btn btn-primary" id="btn-prov">Finish setup →</button>
-    </div>
-  </div>\`
+  const hw = S.hw
+  if(!hw) return '<div class="card"><div class="card-title">Looking at your nodes...</div></div>'
+  const boot = hw.bootstrap
+  let h = '<div class="card"><div class="eyebrow">Step 4 of 5</div><div class="card-title">A few questions</div>'
+  h += '<div class="card-desc">' + escHtml(hw.summary) + ' HyperProx does each thing you say yes to, then checks that it worked.</div>'
+  if (boot) h += '<div class="field-hint" style="margin-bottom:1rem">You answered these when you ran bootstrap.sh, which did the node work already:</div>' + checkRows(boot.results)
+  for (const q of hw.questions) {
+    if (q.id === 'charts') continue
+    if (boot && q.id !== 'dns') continue
+    if (q.id === 'proxmox-metrics' && S.exporter && S.exporter.ok) {
+      h += '<div class="detect-row"><span>' + escHtml(q.ask) + '<br><span class="hint">Done: made when you connected.</span></span><span class="badge badge-ok">done</span></div>'
+      continue
+    }
+    const on = qOn(q.id)
+    h += '<div class="q" style="padding:12px 0;border-bottom:1px solid var(--border)">'
+      + '<div class="svc-name">' + escHtml(q.ask) + '</div><div class="hint" style="margin:4px 0 8px">' + escHtml(q.what) + '</div>'
+      + (q.notes||[]).map(n => '<div class="hint" style="color:var(--amber)">' + escHtml(n) + '</div>').join('')
+      + '<div style="display:flex;gap:8px;margin-top:6px"><button class="btn ' + (on?'btn-primary':'btn-ghost') + '" data-q="' + q.id + '" data-v="1">Yes</button>'
+      + '<button class="btn ' + (!on?'btn-primary':'btn-ghost') + '" data-q="' + q.id + '" data-v="0">No</button></div>'
+    if (q.id === 'dns' && on) {
+      h += (S.providers.godaddy.saved ? '<div class="field-hint">A key is already held. Leave these empty to keep it.</div>' : '')
+        + '<div class="field" style="margin-top:.75rem"><label>GoDaddy API key</label><input id="gd-key" autocomplete="off"></div>'
+        + '<div class="field"><label>API secret</label><input id="gd-sec" type="password" autocomplete="off"></div>'
+        + '<div class="field-hint">A Production key from developer.godaddy.com/keys. It is checked now, then kept in the vault.</div>'
+    }
+    h += '</div>'
+  }
+  if (!boot && anyNodeWork()) {
+    h += '<div style="margin-top:1.25rem"><div class="svc-name">Sign in to your nodes, once</div>'
+      + '<div class="hint" style="margin:4px 0 10px">To set these up, HyperProx signs in to each node. Use the login you use for SSH, usually root. It is tested on every node now, kept only in memory until you create the owner account, and then kept in the vault. It is never written to a file.</div>'
+      + '<div class="row"><div class="field"><label>User</label><input id="nl-user" value="' + escHtml(S.login.username) + '"></div>'
+      + '<div class="field"><label>Password</label><input id="nl-pass" type="password" autocomplete="off"></div></div>'
+      + '<details class="adv"><summary>Use a private key instead</summary><div class="field"><label>Private key</label><textarea id="nl-key" rows="4" style="width:100%;background:#0d1624;color:var(--text);border:1px solid var(--border);border-radius:8px;font-family:IBM Plex Mono,monospace;font-size:12px"></textarea></div></details>'
+      + (S.loginRows ? checkRows(S.loginRows.map(r => ({ label: 'Login', node: r.node, status: r.ok ? 'ok' : 'failed', reason: r.reason }))) : '')
+      + '</div>'
+  }
+  if (S.apply) {
+    h += '<div style="margin-top:1.25rem"><div class="svc-name">' + (S.apply.status === 'running' ? '<span class="spinner"></span>Setting up your nodes, one at a time...' : 'What was done') + '</div>'
+      + checkRows(S.apply.results) + checkRows((S.apply.checks||[]).map(c => ({ label: 'Check', node: c.node, status: c.status, reason: c.reason }))) + '</div>'
+  }
+  const ready = !anyNodeWork() || boot || (S.apply && S.apply.status !== 'running')
+  h += '<div class="err" id="prov-err"></div><div class="btn-row"><button class="btn btn-ghost" onclick="go(2)">← Back</button>'
+    + (ready ? '<button class="btn btn-primary" id="btn-prov">Finish setup →</button>' : '<button class="btn btn-primary" id="btn-apply">Set it up →</button>')
+    + '</div></div>'
+  return h
 }
 
 // ── Step 4: Done ──────────────────────────────────────────────────────────────
@@ -749,6 +782,7 @@ function stepDone(){
   return \`<div class="card" style="text-align:center">
     <div class="success-icon">✓</div>
     <div class="card-title" style="margin-bottom:.5rem">Cluster connected</div>
+    \${S.finish ? '<div style="text-align:left;margin-bottom:1rem">' + checkRows(S.finish.checklist) + '</div>' : ''}
     <div class="card-desc" style="margin-bottom:1rem">One step left: <strong>create the owner vault account</strong>. Open HyperProx and you will land on the sign-in page, which offers to create it. Choose an email and a master password, then scan the QR code with an authenticator app.</div>
     <div class="card-desc" style="margin-bottom:1.5rem">Two-factor authentication is required for the owner. The master password unlocks HyperProx and is never stored, so keep it safe: this release has no password recovery.</div>
     <div class="link-row"><span style="color:var(--muted)">Create owner</span><span class="link-url">\${APP}/login</span></div>
@@ -801,6 +835,7 @@ function bind(){
       S.cluster = res.cluster
       S.exporter = res.exporter || null
       go(1)
+      loadHardware()
     } else {
       if(res.needTfa){ S.proxmox.needTfa = true; document.getElementById('px-otp-wrap').style.display = 'block'; document.getElementById('px-otp').focus() }
       setErr('px-err', res.error || 'Could not connect')
@@ -812,6 +847,7 @@ function bind(){
   // Step 1 - cluster confirmed: scan for existing services, then move on
   const btnCl = document.getElementById('btn-cluster-ok')
   if(btnCl) btnCl.onclick = () => {
+    if(!S.hw) loadHardware()
     btnCl.disabled = true
     btnCl.innerHTML = '<span class="spinner"></span>Scanning...'
     go(2)
@@ -838,27 +874,70 @@ function bind(){
     go(3)
   }
 
-  // Step 3 — save providers
-  const btnProv = document.getElementById('btn-prov')
-  if(btnProv) btnProv.onclick = async () => {
-    const gd = S.providers.godaddy
-    if(gd.enabled){
-      gd.key    = (document.getElementById('gd-key')  || {}).value || gd.key
-      gd.secret = (document.getElementById('gd-sec')  || {}).value || gd.secret
-      // A key saved before a reload is kept unless a new one is typed; it is never sent back to the page.
-      if((!gd.key || !gd.secret) && !gd.saved){ setErr('prov-err','GoDaddy API Key and Secret are required.'); return }
-    }
-    btnProv.disabled = true
-    btnProv.innerHTML = '<span class="spinner"></span>Finishing...'
+  // Step 3 — yes/no answers
+  document.querySelectorAll('[data-q]').forEach(b => { b.onclick = () => { keepFields(); S.answers[b.dataset.q] = b.dataset.v === '1'; render() } })
+
+  const btnApply = document.getElementById('btn-apply')
+  if(btnApply) btnApply.onclick = async () => {
+    keepFields()
     setErr('prov-err','')
-    await api('POST','/api/setup/save-providers',{ providers: S.providers })
-    const res = await api('POST','/api/setup/complete',{})
-    if(res.ok){ go(4) } else {
-      setErr('prov-err', (res.errors || [res.error]).join(' '))
-      btnProv.disabled = false
-      btnProv.textContent = 'Finish setup →'
+    if(!(await saveDns())) return
+    btnApply.disabled = true
+    btnApply.innerHTML = '<span class="spinner"></span>Testing the login on each node...'
+    const t = await api('POST','/api/setup/node-login', { username: S.login.username, password: S.login.password, privateKey: S.login.privateKey })
+    S.login.password = ''; S.login.privateKey = ''
+    S.loginRows = t.nodes || null
+    if(!t.ok){ render(); setErr('prov-err', t.error || 'That login did not work on any node.'); return }
+    await api('POST','/api/setup/apply', { answers: S.answers })
+    S.apply = { status: 'running', results: [], checks: [] }
+    render()
+    for(let i = 0; i < 600; i++){
+      await new Promise(r => setTimeout(r, 1500))
+      const st = await api('GET','/api/setup/apply-status')
+      if(st.ok){ S.apply = st.job; render() }
+      if(st.ok && st.job.status !== 'running') break
     }
   }
+
+  const btnProv = document.getElementById('btn-prov')
+  if(btnProv) btnProv.onclick = async () => {
+    keepFields()
+    setErr('prov-err','')
+    if(!(await saveDns())) return
+    btnProv.disabled = true
+    btnProv.innerHTML = '<span class="spinner"></span>Finishing...'
+    const res = await api('POST','/api/setup/complete',{ answers: S.answers })
+    if(!res.ok){
+      setErr('prov-err', (res.errors || [res.error]).join(' '))
+      btnProv.disabled = false; btnProv.textContent = 'Finish setup →'; return
+    }
+    for(let i = 0; i < 120; i++){
+      await new Promise(r => setTimeout(r, 1500))
+      let st = null
+      try { st = await api('GET','/api/setup/finish-status') } catch {}
+      if(st && st.ok && st.finish){ S.finish = st.finish; if(st.finish.status !== 'running') break }
+    }
+    go(4)
+  }
+}
+
+function keepFields(){
+  const v = id => { const el = document.getElementById(id); return el ? el.value : null }
+  if(v('nl-user') !== null) S.login.username = v('nl-user').trim() || 'root'
+  if(v('nl-pass')) S.login.password = v('nl-pass')
+  if(v('nl-key')) S.login.privateKey = v('nl-key')
+  if(v('gd-key') !== null){ S.providers.godaddy.key = v('gd-key').trim(); S.providers.godaddy.secret = v('gd-sec') || '' }
+}
+// A GoDaddy key is checked and held in the wizard's memory; it never goes into a file.
+async function saveDns(){
+  const gd = S.providers.godaddy
+  if(!qOn('dns') || (!gd.key && gd.saved)) return true
+  if(!gd.key || !gd.secret){ setErr('prov-err','Paste the GoDaddy API key and secret, or answer No.'); return false }
+  const r = await api('POST','/api/setup/save-providers',{ providers: { godaddy: { enabled: true, key: gd.key, secret: gd.secret } } })
+  gd.key = ''; gd.secret = ''
+  if(!r.ok){ setErr('prov-err', r.error || 'GoDaddy did not accept that key.'); return false }
+  gd.saved = true
+  return true
 }
 
 function toggleSvc(key){
@@ -891,6 +970,19 @@ async function init(){
   }
   render()
   if (st && st.error) setErr('px-err', st.error)
+  if (cur >= 1) loadHardware()
+}
+
+async function loadHardware(){
+  try {
+    const r = await api('GET','/api/setup/hardware')
+    if(r.ok){
+      S.hw = r
+      for (const q of r.questions) if (!(q.id in S.answers)) S.answers[q.id] = q.default
+      if (r.held && r.held.godaddy) S.providers.godaddy.saved = true
+      render()
+    }
+  } catch {}
 }
 
 init()
@@ -899,17 +991,128 @@ init()
 </html>`
 
 // =============================================================================
+// The installer's questions: context, answers, finishing
+// =============================================================================
+
+/** Proxmox, the online nodes and their addresses, from the token in .env (pre-vault, setup only). */
+async function clusterCtx() {
+  const env = readEnv()
+  if (!env.PROXMOX_HOST || !env.PROXMOX_TOKEN_SECRET) return null
+  const tid = `${env.PROXMOX_USER}!${env.PROXMOX_TOKEN_ID}`
+  const pve = p => pveRequest(env.PROXMOX_HOST, env.PROXMOX_PORT || '8006', tid, env.PROXMOX_TOKEN_SECRET, p)
+  const nodes = ((await pve('/nodes').catch(() => [])) || []).filter(n => !n.status || n.status === 'online').map(n => n.node).sort()
+  const addrs = {}
+  for (const r of (await pve('/cluster/status').catch(() => [])) || []) if (r && r.type === 'node' && r.name && r.ip) addrs[r.name] = r.ip
+  return { pve, nodes, addrs }
+}
+
+/** How node scripts run: over SSH, or (tests) a stand-in named by HPX_SETUP_NODE_RUNNER. */
+function nodeRunner() {
+  if (process.env.HPX_SETUP_NODE_RUNNER) return require(process.env.HPX_SETUP_NODE_RUNNER)
+  return onboard.sshRun
+}
+
+function sanitizeAnswers(a) {
+  const out = {}
+  for (const q of onboard.hw.QUESTIONS) if (a && typeof a[q.id] === 'boolean') out[q.id] = a[q.id]
+  return out
+}
+
+/** Commands that change this machine: docker compose, systemctl. HPX_SETUP_RUN names a stand-in (tests). */
+function runCmd(cmd) {
+  return new Promise(resolve => {
+    const full = process.env.HPX_SETUP_RUN ? `${process.env.HPX_SETUP_RUN} ${cmd}` : cmd
+    exec(full, { cwd: HPX_DIR, timeout: 15 * 60_000 }, (err, stdout, stderr) => resolve({ ok: !err, out: String(stdout || '') + String(stderr || '') }))
+  })
+}
+
+let finish = null
+
+/**
+ * Finish: record the choices, write Prometheus's lists from what was found, start the chosen services,
+ * check the outcome in Prometheus, restart HyperProx, hand the held secrets to it, then remove the setup
+ * key from .env and exit. Every step adds a line to the checklist the Done page shows.
+ */
+async function finishSetup(answers) {
+  const list = finish.checklist
+  const add = (label, status, reason) => list.push({ label, status, reason })
+  const env = readEnv()
+
+  const ai = answers.ai === true
+  writeEnv({ SETUP_COMPLETE: 'true', INSTALL_OLLAMA: ai ? 'true' : 'false', ...(ai ? { OLLAMA_URL: 'http://127.0.0.1:11434', OLLAMA_MODEL: onboard.hw.AI_MODEL } : {}) })
+  const profiles = composeProfiles(readEnv()).split(',').filter(Boolean)
+  if (ai) profiles.push('ai')
+  writeEnv({ COMPOSE_PROFILES: profiles.join(',') })
+
+  const ctx = await clusterCtx().catch(() => null)
+  const nodes = onboard.job.nodes.length ? onboard.job.nodes : ctx ? await onboard.detectFromProxmox(ctx.pve, ctx.nodes, ctx.addrs) : []
+  try {
+    onboard.writeTargets(path.join(HPX_DIR, 'config/prometheus/targets'), nodes, ctx ? ctx.addrs : {})
+    add('Metrics list', 'done', `${nodes.length} node(s), with their GPUs; kept up to date by HyperProx from now on`)
+  } catch (e) { add('Metrics list', 'failed', e.message) }
+
+  const up = await runCmd('docker compose up -d --remove-orphans')
+  add('Services', up.ok ? 'done' : 'failed', up.ok ? (profiles.length ? `started: ${profiles.join(', ')}` : 'started') : up.out.trim().split('\n').pop())
+
+  if (ai && up.ok) {
+    // About 2 GB: started in the background, and shown done on Settings → Setup checklist once it is there.
+    const pull = `bash -c 'for i in $(seq 1 30); do docker exec hyperprox-ollama ollama list >/dev/null 2>&1 && break; sleep 2; done; docker exec hyperprox-ollama ollama pull ${onboard.hw.AI_MODEL}'`
+    const child = require('child_process').spawn('bash', ['-c', process.env.HPX_SETUP_RUN ? `${process.env.HPX_SETUP_RUN} ${pull}` : pull], { detached: true, stdio: 'ignore' })
+    child.unref()
+    add('Local AI', 'done', `Ollama started; ${onboard.hw.AI_MODEL} is downloading (about 2 GB)`)
+  }
+
+  // Check in Prometheus, not the scripts' word. It scrapes every 15 s; give it a minute.
+  const monitoring = profiles.includes('monitoring')
+  if (monitoring && Object.keys(answers).some(k => ['node-health', 'power', 'gpu'].includes(k) && answers[k])) {
+    await runCmd('curl -fsS -X POST http://127.0.0.1:9090/-/reload')
+    let checks = []
+    const deadline = Date.now() + Number(process.env.HPX_SETUP_VERIFY_MS || 75_000)
+    do {
+      checks = await onboard.hw.verifyOutcome(answers, nodes, onboard.promQuery())
+      if (checks.every(c => c.status === 'ok')) break
+      await new Promise(r => setTimeout(r, 5000))
+    } while (Date.now() < deadline)
+    for (const c of checks) add(`Prometheus: ${c.id}`, c.status === 'ok' ? 'done' : c.status === 'waiting' ? 'skipped' : 'failed', `${c.node ? c.node + ': ' : ''}${c.reason}`)
+  }
+
+  const rs = await runCmd('systemctl restart hyperprox-api hyperprox-frontend')
+  if (!rs.ok) add('Restart', 'failed', rs.out.trim().split('\n').pop())
+  for (let i = 0; i < 60; i++) {
+    if (await onboard.getText(`http://127.0.0.1:${API_PORT}/health`, 2000)) break
+    await new Promise(r => setTimeout(r, 1000))
+  }
+  const held = onboard.heldSummary()
+  if (held.nodeLogin || held.godaddy) {
+    const h = await onboard.handOff(API_PORT, setupSecret())
+    const what = [held.nodeLogin ? 'the node login' : '', held.godaddy ? 'the GoDaddy key' : ''].filter(Boolean).join(' and ')
+    add('Your keys', h.ok ? 'done' : 'failed', h.ok ? `${what}: held by HyperProx until you create the owner account, then kept in the vault`
+      : `${what} could not be handed over (${h.error}); add them under Settings → Setup checklist`)
+  }
+  // The setup key has done its job. It is not kept: re-running install.sh makes a new one if ever needed.
+  removeEnv(['SETUP_SECRET'])
+  finish.status = list.some(r => r.status === 'failed') ? 'done-with-problems' : 'done'
+  setTimeout(() => { console.log('[setup] Complete. Shutting down setup service.'); process.exit(0) }, Number(process.env.HPX_SETUP_EXIT_MS || 30_000)).unref()
+}
+
+// =============================================================================
 // HTTP Server
 // =============================================================================
 
-/** The setup key, from .env; generated (and logged) if an older install never had one. */
+/**
+ * The setup key, from .env; generated (and logged) if an older install never had one. Read once and kept
+ * in memory: when setup completes it is removed from .env, and the last few requests still need it.
+ */
+let SETUP_KEY_MEM = ''
 function setupSecret() {
+  if (SETUP_KEY_MEM) return SETUP_KEY_MEM
   let secret = readEnv().SETUP_SECRET || process.env.SETUP_SECRET || ''
   if (!secret) {
     secret = crypto.randomBytes(32).toString('hex')
     writeEnv({ SETUP_SECRET: secret })
     console.log('[setup] generated a setup key - open the wizard at http://<host>:' + PORT + '/?k=' + secret)
   }
+  SETUP_KEY_MEM = secret
   return secret
 }
 
@@ -995,7 +1198,7 @@ const server = http.createServer(async (req, res) => {
         ok: true, step, cluster, error, installs,
         proxmox: { host: env.PROXMOX_HOST || '', port: env.PROXMOX_PORT || '8006', username: env.PROXMOX_USER || 'root@pam',
                    tokenId: fullTokenId, publicUrl: env.PROXMOX_PUBLIC_URL || '' },
-        providers: { godaddy: { enabled: env.GODADDY_ENABLED === 'true' } },
+        providers: { godaddy: { enabled: env.GODADDY_ENABLED === 'true' || onboard.heldSummary().godaddy } },
       })
     }
 
@@ -1144,11 +1347,13 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && route === 'save-providers') {
       const { providers = {} } = body
       const updates = {}
+      // A GoDaddy key is a secret: checked, then held in memory only, and handed to the vault when setup
+      // completes (onboarding.js). It is never written to .env.
       const gd = providers.godaddy
       if (gd && gd.enabled && gd.key && gd.secret) {
-        updates.GODADDY_API_KEY    = encrypt(gd.key)
-        updates.GODADDY_API_SECRET = encrypt(gd.secret)
-        updates.GODADDY_ENABLED    = 'true'
+        const t = await (process.env.HPX_SETUP_FAKE_GODADDY ? Promise.resolve({ ok: gd.key !== 'bad' }) : onboard.testGodaddy(gd.key, gd.secret))
+        if (!t.ok) return sendJson(res, 400, { ok: false, error: t.error || 'GoDaddy did not accept that key.' })
+        onboard.holdGodaddy(gd.key, gd.secret)
       }
       const npm = providers.npm
       if (npm && npm.enabled) {
@@ -1160,46 +1365,64 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true })
     }
 
+    // ── hardware: what each node has, and the questions that apply ────────────
+    if (req.method === 'GET' && route === 'hardware') {
+      const ctx = await clusterCtx()
+      if (!ctx) return sendJson(res, 400, { ok: false, error: 'Connect your Proxmox first.' })
+      const nodes = onboard.job.nodes.length ? onboard.job.nodes : await onboard.detectFromProxmox(ctx.pve, ctx.nodes, ctx.addrs)
+      const env = readEnv()
+      const questions = onboard.hw.applicableQuestions(nodes, { charts: env.INSTALL_PROMETHEUS !== 'false' })
+      return sendJson(res, 200, { ok: true, summary: onboard.hw.summarise(nodes), nodes, questions,
+        bootstrap: onboard.bootstrapAnswers(HPX_DIR), held: onboard.heldSummary() })
+    }
+
+    // ── node-login: asked once, tested on every node, held in memory only ─────
+    if (req.method === 'POST' && route === 'node-login') {
+      const ctx = await clusterCtx()
+      if (!ctx) return sendJson(res, 400, { ok: false, error: 'Connect your Proxmox first.' })
+      const r = await onboard.testNodeLogin(body, ctx.nodes, ctx.addrs, nodeRunner())
+      return sendJson(res, 200, r)
+    }
+
+    // ── apply: carry out the node answers, one node at a time ─────────────────
+    if (req.method === 'POST' && route === 'apply') {
+      const ctx = await clusterCtx()
+      if (!ctx) return sendJson(res, 400, { ok: false, error: 'Connect your Proxmox first.' })
+      const answers = sanitizeAnswers(body.answers)
+      void onboard.applyAnswers(answers, ctx, nodeRunner())
+      return sendJson(res, 200, { ok: true })
+    }
+    if (req.method === 'GET' && route === 'apply-status') {
+      const j = onboard.job
+      return sendJson(res, 200, { ok: true, job: { status: j.status, results: j.results, checks: j.checks, summary: j.summary } })
+    }
+
+    // ── hold-secrets: bootstrap.sh hands over a GoDaddy key on stdin ──────────
+    if (req.method === 'POST' && route === 'hold-secrets') {
+      const gd = body.godaddy
+      if (!gd || !gd.key || !gd.secret) return sendJson(res, 400, { ok: false, error: 'Nothing to hold.' })
+      onboard.holdGodaddy(gd.key, gd.secret)
+      return sendJson(res, 200, { ok: true, held: onboard.heldSummary() })
+    }
+
+    if (req.method === 'GET' && route === 'finish-status') {
+      return sendJson(res, 200, { ok: true, finish })
+    }
+
     // ── complete ──────────────────────────────────────────────────────────────
     if (req.method === 'POST' && route === 'complete') {
       const env = readEnv()
       const errors = []
       if (!env.PROXMOX_HOST || !env.PROXMOX_TOKEN_SECRET) errors.push('Proxmox not configured')
       if (errors.length) return sendJson(res, 400, { ok: false, errors })
-
-      writeEnv({ SETUP_COMPLETE: 'true' })
-
-      // Write Prometheus node targets
-      try {
-        // The full `user@realm!name` id: the bare name never authenticated, so this file was never written.
-        const cluster = await testProxmox(env.PROXMOX_HOST, env.PROXMOX_PORT || '8006', `${env.PROXMOX_USER}!${env.PROXMOX_TOKEN_ID}`, env.PROXMOX_TOKEN_SECRET)
-        const targets  = cluster.nodes.map(n => ({ targets: [`${n.node}:9100`], labels: { node: n.node } }))
-        const dest     = '/opt/hyperprox/config/prometheus/targets/nodes.json'
-        fs.writeFileSync(dest, JSON.stringify(targets, null, 2))
-      } catch (e) {
-        console.warn('[setup] Could not write Prometheus targets:', e.message)
-      }
-
+      if (finish && finish.status === 'running') return sendJson(res, 200, { ok: true })
+      const answers = { ...(onboard.bootstrapAnswers(HPX_DIR) || {}).answers, ...sanitizeAnswers(body.answers) }
+      finish = { status: 'running', checklist: [] }
       sendJson(res, 200, { ok: true })
-
-      // Start optional containers then restart services and shut down
-      setTimeout(() => {
-        // Recorded as COMPOSE_PROFILES in .env, which docker compose reads itself, so every later
-        // `docker compose up` (deploy, a reboot by hand) keeps the services chosen here.
-        writeEnv({ COMPOSE_PROFILES: composeProfiles(readEnv()) })
-        const composeCmd = 'docker compose up -d --remove-orphans'
-        console.log('[setup] Running:', composeCmd)
-        exec(composeCmd, { cwd: '/opt/hyperprox' }, (err, stdout, stderr) => {
-          if (err) console.warn('[setup] docker compose error:', err.message)
-          if (stderr) console.warn('[setup] docker compose stderr:', stderr)
-          if (stdout) console.log('[setup] docker compose stdout:', stdout)
-          exec('systemctl restart hyperprox-api hyperprox-frontend', err2 => {
-            if (err2) console.warn('[setup] Restart warning:', err2.message)
-            console.log('[setup] Complete. Shutting down setup service.')
-            process.exit(0)
-          })
-        })
-      }, 1000)
+      void finishSetup(answers).catch(e => {
+        finish.status = 'failed'
+        finish.checklist.push({ label: 'Finishing', status: 'failed', reason: e && e.message ? e.message : String(e) })
+      })
       return
     }
 
