@@ -8,7 +8,7 @@ const path = require('path')
 const { spawnSync, execFileSync } = require('child_process')
 
 const TOOLS = ['awk', 'ls', 'grep', 'sed', 'tr', 'stat', 'cat', 'uname', 'cut', 'sleep', 'mkdir', 'chmod', 'mv',
-  'mktemp', 'rm', 'head', 'sha256sum', 'tar', 'install', 'dirname', 'basename', 'printf', 'env', 'sort', 'wc']
+  'mktemp', 'rm', 'head', 'sha256sum', 'tar', 'install', 'dirname', 'basename', 'printf', 'env', 'sort', 'wc', 'readlink', 'xargs']
 
 function which(t) { try { return execFileSync('bash', ['-c', `command -v ${t}`], { encoding: 'utf8' }).trim() } catch { return '' } }
 
@@ -37,8 +37,16 @@ function fakeNode(fixture) {
   for (const [r, info] of Object.entries(fixture.render ?? {})) {
     fs.writeFileSync(path.join(sys, 'dev/dri', r), '')
     fs.chmodSync(path.join(sys, 'dev/dri', r), parseInt(info.mode, 8))
-    const dev = path.join(sys, 'sys/class/drm', r, 'device')
-    fs.mkdirSync(dev, { recursive: true })
+    // With a PCI address, the device is a link to the PCI device, as in real sysfs.
+    let dev = path.join(sys, 'sys/class/drm', r, 'device')
+    if (info.pci) {
+      const pci = path.join(sys, 'sys/bus/pci/devices', info.pci)
+      fs.mkdirSync(pci, { recursive: true })
+      fs.mkdirSync(path.dirname(dev), { recursive: true })
+      fs.symlinkSync(pci, dev)
+      dev = pci
+      fs.writeFileSync(path.join(dev, 'device'), (info.device ?? '0x0000') + '\n')
+    } else fs.mkdirSync(dev, { recursive: true })
     fs.writeFileSync(path.join(dev, 'vendor'), info.vendor + '\n')
   }
   if (fixture.ceph) { fs.mkdirSync(path.join(sys, 'etc/pve'), { recursive: true }); fs.writeFileSync(path.join(sys, 'etc/pve/ceph.conf'), '') }

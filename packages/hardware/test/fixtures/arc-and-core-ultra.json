@@ -41,11 +41,15 @@
   "render": {
     "renderD128": {
       "vendor": "0x8086",
-      "mode": "660"
+      "mode": "660",
+      "pci": "0000:00:02.0",
+      "device": "0x7d55"
     },
     "renderD129": {
       "vendor": "0x8086",
-      "mode": "660"
+      "mode": "660",
+      "pci": "0000:03:00.0",
+      "device": "0x56a5"
     }
   }
 }

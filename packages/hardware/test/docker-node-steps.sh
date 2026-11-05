@@ -25,7 +25,7 @@ $body" 2>&1)"
 
 PRELUDE='
 set -u
-step() { cat /node/common.sh /node/$1.sh > /tmp/$1.run; bash /tmp/$1.run; }
+step() { { cat /node/common.sh; case "$1" in igpu-access*) echo HPX_PROBE_LIB=1; cat /node/probe.sh;; esac; cat /node/$1.sh; } > /tmp/$1.run; bash /tmp/$1.run; }
 result() { printf "%s\n" "$1" | grep "^HPX-RESULT" | tail -1 | cut -f2; }
 die() { echo "CASE-FAIL: $*"; exit 1; }
 # Stand-in systemctl: "enable --now UNIT" starts the unit'"'"'s ExecStart in the background; the rest is a no-op.
@@ -187,35 +187,28 @@ echo CASE-OK'
 # ── Built-in graphics for containers: the rule, idempotent, undone; nothing on an NVIDIA-only node ─────
 run_case igpu-access '
 export HPX_SYSROOT=/fake
-mkdir -p /fake/dev/dri /fake/sys/class/drm/renderD128/device /fake/etc/udev/rules.d
-: > /fake/dev/dri/renderD128; chmod 0660 /fake/dev/dri/renderD128; echo 0x8086 > /fake/sys/class/drm/renderD128/device/vendor
+mkdir -p /fake/dev/dri /fake/sys/class/drm/renderD128 /fake/sys/class/drm/renderD129 /fake/etc/udev/rules.d
+mkdir -p /fake/sys/bus/pci/devices/0000:00:02.0 /fake/sys/bus/pci/devices/0000:01:00.0
+echo 0x8086 > /fake/sys/bus/pci/devices/0000:00:02.0/vendor; echo 0x5912 > /fake/sys/bus/pci/devices/0000:00:02.0/device
+echo 0x10de > /fake/sys/bus/pci/devices/0000:01:00.0/vendor; echo 0x1b82 > /fake/sys/bus/pci/devices/0000:01:00.0/device
+ln -s /fake/sys/bus/pci/devices/0000:00:02.0 /fake/sys/class/drm/renderD128/device
+ln -s /fake/sys/bus/pci/devices/0000:01:00.0 /fake/sys/class/drm/renderD129/device
+: > /fake/dev/dri/renderD128; chmod 0660 /fake/dev/dri/renderD128; : > /fake/dev/dri/renderD129; chmod 0660 /fake/dev/dri/renderD129
 f=/fake/etc/udev/rules.d/99-hyperprox-igpu.rules
 r1="$(step igpu-access)"; [ "$(result "$r1")" = done ] || die "first: $r1"
-grep -qx "SUBSYSTEM==\"drm\", KERNEL==\"renderD\*\", MODE=\"0666\"" "$f" || die "rule content: $(cat $f)"
+grep -qx "SUBSYSTEM==\"drm\", KERNEL==\"renderD\*\", KERNELS==\"0000:00:02.0\", MODE=\"0666\"" "$f" || die "rule content: $(cat $f)"
+grep -q "0000:01:00.0" "$f" && die "the NVIDIA render node is in the rule"
 [ "$(stat -c %a "$f")" = 644 ] || die "rule mode"
 sum="$(sha256sum "$f")"
 r2="$(step igpu-access)"; [ "$(result "$r2")" = already ] || die "second: $r2"
 [ "$(sha256sum "$f")" = "$sum" ] || die "rewritten"
 u1="$(step igpu-access-undo)"; [ "$(result "$u1")" = done ] || die "undo: $u1"; [ ! -e "$f" ] || die "rule still there"
 u2="$(step igpu-access-undo)"; [ "$(result "$u2")" = already ] || die "second undo: $u2"
-echo 0x10de > /fake/sys/class/drm/renderD128/device/vendor
+echo 0x10de > /fake/sys/bus/pci/devices/0000:00:02.0/vendor
 r3="$(step igpu-access)"; [ "$(result "$r3")" = skipped ] || die "NVIDIA only: $r3"; [ ! -e "$f" ] || die "wrote a rule on an NVIDIA-only node"
 echo CASE-OK'
 
-# ── AMD GPU: node_exporter's drm collector through a drop-in that keeps every existing flag ──────────
-# The real node_exporter from apt, reading a fake amdgpu card through --path.sysfs (a flag the drop-in
-# must keep, or no figures appear). The stand-in systemctl here understands cat, is-active and restart.
-run_case amd-gpu-metrics '
-apt-get -q update >/dev/null && apt-get -q -y install --no-install-recommends prometheus-node-exporter curl >/dev/null
-export HPX_SYSROOT=/fake
-c=/fake/sys/class/drm/card1/device
-mkdir -p $c /fake/sys/bus/pci/drivers/amdgpu
-ln -s /fake/sys/bus/pci/drivers/amdgpu $c/driver
-echo 0x1002 > $c/vendor; echo 0x15d8 > $c/device; printf "DRIVER=amdgpu\nPCI_ID=1002:15D8\n" > $c/uevent
-echo 7 > $c/gpu_busy_percent; echo 0 > $c/mem_busy_percent
-for f in mem_info_gtt_total mem_info_gtt_used mem_info_vis_vram_total mem_info_vis_vram_used mem_info_vram_total mem_info_vram_used; do echo 2147483648 > $c/$f; done
-echo "ARGS=\"--path.sysfs=/fake/sys --collector.disable-defaults --collector.loadavg\"" > /etc/default/prometheus-node-exporter
-cat > /usr/local/sbin/systemctl <<"SC"
+SYSTEMCTL_STUB='cat > /usr/local/sbin/systemctl <<"SC"
 #!/bin/bash
 # Stand-in: the unit file and its drop-ins, last ExecStart wins (an empty one resets), EnvironmentFile read.
 files() { for f in /etc/systemd/system/$1.service /usr/lib/systemd/system/$1.service /lib/systemd/system/$1.service; do [ -f "$f" ] && { echo "$f"; break; }; done
@@ -237,7 +230,22 @@ case "$cmd" in
   *) exit 0;;
 esac
 SC
-chmod +x /usr/local/sbin/systemctl
+chmod +x /usr/local/sbin/systemctl'
+
+# ── AMD GPU: node_exporter's drm collector through a drop-in that keeps every existing flag ──────────
+# The real node_exporter from apt, reading a fake amdgpu card through --path.sysfs (a flag the drop-in
+# must keep, or no figures appear). The stand-in systemctl here understands cat, is-active and restart.
+run_case amd-gpu-metrics '
+apt-get -q update >/dev/null && apt-get -q -y install --no-install-recommends prometheus-node-exporter curl >/dev/null
+export HPX_SYSROOT=/fake
+c=/fake/sys/class/drm/card1/device
+mkdir -p $c /fake/sys/bus/pci/drivers/amdgpu
+ln -s /fake/sys/bus/pci/drivers/amdgpu $c/driver
+echo 0x1002 > $c/vendor; echo 0x15d8 > $c/device; printf "DRIVER=amdgpu\nPCI_ID=1002:15D8\n" > $c/uevent
+echo 7 > $c/gpu_busy_percent; echo 0 > $c/mem_busy_percent
+for f in mem_info_gtt_total mem_info_gtt_used mem_info_vis_vram_total mem_info_vis_vram_used mem_info_vram_total mem_info_vram_used; do echo 2147483648 > $c/$f; done
+echo "ARGS=\"--path.sysfs=/fake/sys --collector.disable-defaults --collector.loadavg\"" > /etc/default/prometheus-node-exporter
+'"$SYSTEMCTL_STUB"'
 systemctl enable --now prometheus-node-exporter
 curl -fsS localhost:9100/metrics | grep -q ^node_exporter_build_info || die "node_exporter did not start: $(cat /tmp/prometheus-node-exporter.log)"
 curl -fsS localhost:9100/metrics | grep -q ^node_drm_ && die "drm figures before the step"
@@ -256,6 +264,22 @@ curl -fsS localhost:9100/metrics | grep -q ^node_drm_ && die "drm figures after 
 u2="$(step amd-gpu-metrics-undo)"; [ "$(result "$u2")" = already ] || die "second undo: $u2"
 echo 0x10de > $c/vendor
 r3="$(step amd-gpu-metrics)"; [ "$(result "$r3")" = skipped ] || die "no AMD: $r3"
+echo CASE-OK'
+
+run_case amd-no-figures-undone '
+apt-get -q update >/dev/null && apt-get -q -y install --no-install-recommends prometheus-node-exporter curl >/dev/null
+export HPX_SYSROOT=/fake
+c=/fake/sys/class/drm/card1/device
+mkdir -p $c; echo 0x1002 > $c/vendor
+echo "ARGS=\"--path.sysfs=/fake/sys --collector.disable-defaults --collector.loadavg\"" > /etc/default/prometheus-node-exporter
+'"$SYSTEMCTL_STUB"'
+systemctl enable --now prometheus-node-exporter
+before="$(systemctl cat prometheus-node-exporter)"
+r="$(step amd-gpu-metrics)"; [ "$(result "$r")" = failed ] || die "$r"
+printf "%s" "$r" | grep -q "so the change was undone and node_exporter runs as before" || die "$r"
+[ ! -e /etc/systemd/system/prometheus-node-exporter.service.d/hyperprox-amd-gpu.conf ] || die "drop-in left behind"
+[ "$(systemctl cat prometheus-node-exporter)" = "$before" ] || die "the unit is not as it was"
+curl -fsS localhost:9100/metrics | grep -q ^node_exporter_build_info || die "node_exporter is not answering"
 echo CASE-OK'
 
 run_case amd-needs-node-exporter '

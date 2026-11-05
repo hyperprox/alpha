@@ -1,0 +1,56 @@
+{
+  "about": "A Ryzen APU node with a Radeon card added: the APU graphics are built in, the card is dedicated. Only the built-in one may be opened.",
+  "lspci": "05:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. [AMD/ATI] Picasso/Raven 2 [Radeon Vega Series / Radeon Vega Mobile Series] [1002:15d8] (rev c2)\n0b:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. [AMD/ATI] Navi 23 [Radeon RX 6600/6600 XT/6600M] [1002:73ff] (rev c7)\n",
+  "drm_vendors": [
+    "0x1002",
+    "0x1002"
+  ],
+  "dri": [
+    "by-path",
+    "card0",
+    "card1"
+  ],
+  "render": {
+    "renderD128": {
+      "vendor": "0x1002",
+      "mode": "660",
+      "pci": "0000:05:00.0",
+      "device": "0x15d8"
+    },
+    "renderD129": {
+      "vendor": "0x1002",
+      "mode": "660",
+      "pci": "0000:0b:00.0",
+      "device": "0x73ff"
+    }
+  },
+  "powercap": {
+    "intel-rapl:0": {
+      "name": "package-0",
+      "mode": "404"
+    }
+  },
+  "commands": [],
+  "answering": {},
+  "ceph": false,
+  "expect": {
+    "gpus": [
+      [
+        "amd",
+        "integrated",
+        "1002:15d8",
+        "AMD Radeon Vega Series / Radeon Vega Mobile Series"
+      ],
+      [
+        "amd",
+        "dedicated",
+        "1002:73ff",
+        "AMD Radeon RX 6600/6600 XT/6600M"
+      ]
+    ],
+    "rapl": "readable",
+    "nodeExporter": "absent",
+    "docker": false,
+    "igpuAccess": "closed"
+  }
+}

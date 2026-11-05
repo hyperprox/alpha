@@ -48,7 +48,7 @@ esac`)
     fs.writeFileSync(path.join(envs, name), Object.entries(n.env).map(([k, v]) => `export ${k}='${v}'`).join('\n') + '\n')
   }
   w('ssh', `node="\${@: -2:1}"; s="$(cat)"
-if grep -q '^# HyperProx hardware probe' <<< "$s"; then ( . ${envs}/$node; printf '%s' "$s" | /bin/bash -s ); exit $?; fi
+if ! grep -q '^# HyperProx node-side helpers' <<< "$s" && grep -q '^# HyperProx hardware probe' <<< "$s"; then ( . ${envs}/$node; printf '%s' "$s" | /bin/bash -s ); exit $?; fi
 step="$(grep -m1 -oE '^# (node_exporter|Power|Intel GPU|NVIDIA GPU|AMD GPU|Let containers)' <<< "$s" | cut -c3-)"
 echo "$node $step" >> ${root}/steps.log
 printf 'HPX-RESULT\\tdone\\tset up (%s)\\n' "$step"`)

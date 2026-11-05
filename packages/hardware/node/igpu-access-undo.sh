@@ -1,12 +1,25 @@
-# Undo "let containers use this node's built-in graphics": remove HyperProx's rule and re-apply the
-# defaults, which puts the render nodes back to 0660 for the render group.
+# Undo "let containers use this node's built-in graphics": remove HyperProx's rule, re-apply the defaults,
+# and put back each render node's mode as it was recorded before the first change. Every render node that
+# was touched is checked, not only renderD128.
 RULE_FILE="$R/etc/udev/rules.d/99-hyperprox-igpu.rules"
-[ -e "$RULE_FILE" ] || hp_result already "there is no HyperProx graphics rule on this node"
+STATE="$R/var/lib/hyperprox/igpu-access.modes"
+[ -e "$RULE_FILE" ] || [ -s "$STATE" ] || hp_result already "there is no HyperProx graphics rule on this node"
 rm -f "$RULE_FILE" || hp_result failed "could not remove $RULE_FILE"
-[ -n "$R" ] && hp_result done "rule removed (udev does not run here, so it applies at the next boot)"
-udevadm control --reload >/dev/null 2>&1 || true
-udevadm trigger --subsystem-match=drm >/dev/null 2>&1 || true
-sleep 1
-m="$(stat -c %a /dev/dri/renderD128 2>/dev/null || echo none)"
-[ "$m" = 666 ] && hp_result failed "rule removed, but renderD128 is still 666 (another rule may open it)"
-hp_result done "rule removed; renderD128 is back to $m"
+if [ -z "$R" ]; then
+  udevadm control --reload >/dev/null 2>&1 || true
+  udevadm trigger --subsystem-match=drm >/dev/null 2>&1 || true
+  sleep 1
+fi
+bad=""; restored=""
+if [ -s "$STATE" ]; then
+  while IFS=$'\t' read -r n addr mode; do
+    [ -n "$n" ] || continue
+    f="$R/dev/dri/$n"
+    [ -e "$f" ] || continue
+    [ "$(stat -c %a "$f")" = "$mode" ] || chmod "$mode" "$f" 2>/dev/null
+    if [ "$(stat -c %a "$f")" = "$mode" ]; then restored="$restored $n=$mode"; else bad="$bad $n"; fi
+  done < "$STATE"
+fi
+[ -z "$bad" ] || hp_result failed "rule removed, but${bad} did not go back to its old mode"
+rm -f "$STATE"
+hp_result done "rule removed; render nodes back as they were:${restored:- (none recorded)}"

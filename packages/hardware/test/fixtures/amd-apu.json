@@ -43,7 +43,9 @@
   "render": {
     "renderD128": {
       "vendor": "0x1002",
-      "mode": "660"
+      "mode": "660",
+      "pci": "0000:05:00.0",
+      "device": "0x15d8"
     }
   }
 }

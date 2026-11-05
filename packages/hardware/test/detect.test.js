@@ -197,3 +197,62 @@ test('AMD is checked in Prometheus by its busy percentage', async () => {
   const none = await hw.verifyOutcome({ gpu: true }, [n], async () => [])
   assert.deepEqual(none.map(r => `${r.node}/${r.status}`), ['a/failed'])
 })
+
+test('built-in graphics: only the built-in GPU is opened, by its PCI address; a dedicated AMD card never', () => {
+  const fx = loadFixtures().find(f => f.file === 'amd-apu-plus-card.json')
+  const n = fakeNode(fx)
+  try {
+    const hwf = hw.parseProbe(n.run(hw.probeScript()).stdout, 'n')
+    assert.deepEqual(hwf.renderNodes.map(r => `${r.name}/${r.address}/${r.vendor}/${r.kind}/${r.mode}`),
+      ['renderD128/0000:05:00.0/amd/integrated/660', 'renderD129/0000:0b:00.0/amd/dedicated/660'])
+    assert.equal(hwf.igpuAccess, 'closed')
+    const r = n.run(hw.stepScript('igpu-access'))
+    assert.equal(hw.parseResult(r.stdout).status, 'done', r.stdout + r.stderr)
+    const rule = require('fs').readFileSync(require('path').join(n.sys, 'etc/udev/rules.d/99-hyperprox-igpu.rules'), 'utf8')
+    const lines = rule.split('\n').filter(l => !l.startsWith('#') && l.trim())
+    assert.deepEqual(lines, ['SUBSYSTEM=="drm", KERNEL=="renderD*", KERNELS=="0000:05:00.0", MODE="0666"'])
+    assert.doesNotMatch(rule, /0b:00\.0/)
+  } finally { n.cleanup() }
+})
+
+test('built-in graphics: NVIDIA and unnamed render nodes are never counted as built in', () => {
+  const nv = fakeNode(loadFixtures().find(f => f.file === 'nvidia-dedicated.json'))
+  try {
+    const h = hw.parseProbe(nv.run(hw.probeScript()).stdout, 'n')
+    assert.equal(h.renderNodes[0].kind, 'dedicated')
+    assert.equal(h.igpuAccess, 'none')
+    assert.equal(hw.parseResult(nv.run(hw.stepScript('igpu-access')).stdout).status, 'skipped')
+  } finally { nv.cleanup() }
+  const fx = loadFixtures().find(f => f.file === 'fresh-intel-node.json')
+  const bare = fakeNode({ ...fx, render: { renderD128: { vendor: '0x8086', mode: '660' } } })
+  try {
+    const h = hw.parseProbe(bare.run(hw.probeScript()).stdout, 'n')
+    assert.equal(h.renderNodes[0].kind, 'unknown', 'no PCI address: not built in')
+    assert.equal(h.igpuAccess, 'none')
+  } finally { bare.cleanup() }
+})
+
+test('built-in graphics undo: every touched render node goes back to the mode it had', () => {
+  const fs = require('fs'), path = require('path')
+  const fx = loadFixtures().find(f => f.file === 'arc-and-core-ultra.json')
+  const n = fakeNode({ ...fx, render: { ...fx.render, renderD128: { ...fx.render.renderD128, mode: '640' } } })
+  try {
+    const d128 = path.join(n.sys, 'dev/dri/renderD128'), d129 = path.join(n.sys, 'dev/dri/renderD129')
+    assert.equal(hw.parseResult(n.run(hw.stepScript('igpu-access')).stdout).status, 'done')
+    const st = fs.readFileSync(path.join(n.sys, 'var/lib/hyperprox/igpu-access.modes'), 'utf8')
+    assert.equal(st, 'renderD128\t0000:00:02.0\t640\n', 'the Arc card (renderD129) is not recorded: it is not touched')
+    // As udev would after the rule: the built-in render node becomes 666.
+    fs.chmodSync(d128, 0o666)
+    const again = n.run(hw.stepScript('igpu-access'))
+    assert.equal(hw.parseResult(again.stdout).status, 'already')
+    assert.equal(fs.readFileSync(path.join(n.sys, 'var/lib/hyperprox/igpu-access.modes'), 'utf8'), st, 'the original mode is kept, not the opened one')
+    const u = n.run(hw.stepScript('igpu-access-undo'))
+    assert.equal(hw.parseResult(u.stdout).status, 'done', u.stdout)
+    assert.match(hw.parseResult(u.stdout).reason, /renderD128=640/)
+    assert.equal((fs.statSync(d128).mode & 0o777).toString(8), '640')
+    assert.equal((fs.statSync(d129).mode & 0o777).toString(8), '660')
+    assert.ok(!fs.existsSync(path.join(n.sys, 'etc/udev/rules.d/99-hyperprox-igpu.rules')))
+    assert.ok(!fs.existsSync(path.join(n.sys, 'var/lib/hyperprox/igpu-access.modes')))
+    assert.equal(hw.parseResult(n.run(hw.stepScript('igpu-access-undo')).stdout).status, 'already')
+  } finally { n.cleanup() }
+})

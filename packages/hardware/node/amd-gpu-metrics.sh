@@ -44,9 +44,11 @@ if hp_answers 9100 '^node_drm_gpu_busy_percent'; then
   [ "$state" = same ] && hp_result already "AMD GPU figures answer on port 9100"
   hp_result done "AMD GPU figures answer on port 9100 (node_exporter's drm collector is on)"
 fi
-# Health monitoring must not be the price of a GPU figure: put node_exporter back as it was.
-if ! hp_answers 9100 '^node_exporter_build_info'; then
-  rm -f "$dir/$DROPIN_NAME"; systemctl daemon-reload >/dev/null 2>&1; systemctl restart "$unit" >/dev/null 2>&1
-  hp_result failed "node_exporter did not come back with the drm collector, so the change was undone"
+# No AMD figures: put node_exporter back exactly as it was (a drop-in that was already there stays).
+if [ "$state" = written ]; then
+  rm -f "$dir/$DROPIN_NAME"; rmdir "$dir" 2>/dev/null || true
+  systemctl daemon-reload >/dev/null 2>&1; systemctl restart "$unit" >/dev/null 2>&1
+  hp_answers 9100 '^node_exporter_build_info' || hp_result failed "no AMD GPU figures appeared, so the change was undone, but node_exporter does not answer on port 9100 now"
+  hp_result failed "node_exporter's drm collector reported no AMD GPU (is the amdgpu driver loaded?), so the change was undone and node_exporter runs as before"
 fi
 hp_result failed "node_exporter runs with --collector.drm but reports no AMD GPU (is the amdgpu driver loaded?)"
