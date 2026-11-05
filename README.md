@@ -307,11 +307,29 @@ and LAN dials show it, scaled to your plan speed when you set one in the plug-in
 
 ### Infrastructure
 
-Every VM and container, with filters for running, stopped, containers and VMs, and search by name
-or ID. Open one for power actions, snapshots, migration (admin),
-HA state, its config, and **Console**, which opens it in the Terminal. **Create** builds a container
-from a template or a VM from an ISO, with a storage picker that shows free space. Deleting a guest asks
-for your master password again.
+Every VM and container in one list: status, node, CPU, memory and disk, address, tags, HA state, and a
+GPU tag on guests that have graphics passed through. Filter, search, or group by node; it works on a
+phone too. **Create** builds a container from a template or a VM from an ISO. Deleting a guest asks for
+your master password again.
+
+Open a guest for its overview, snapshots, network, terminal, high availability and its **Config**:
+
+- **Change settings on the fly**: cores, memory, swap, start-up order, tags, DNS, network cards, disks
+  and mount points (a folder shared from the host is only marked as available on every node once
+  HyperProx has checked it really exists on every node). Every change shows you exactly what will
+  change first, is refused if someone else changed the guest in the meantime, and is checked
+  afterwards. Changes that only apply after a restart say so, and offer the restart.
+- **History and undo**: every change HyperProx makes is kept, and any earlier version can be put back
+  in one click. Passwords and keys in a guest's settings are hidden in the history.
+- **GPUs and other devices**: give a container a GPU, or switch its GPU access off and back on with one
+  switch. **Portable GPU** lets a container use whichever node's graphics it ends up on, so a guest that
+  moves to another node during a failover picks up that node's GPU by itself, and HyperProx tells you
+  which one it is using. Settings Proxmox's own tools cannot change are written with extra checks, and
+  only for real graphics and device entries.
+
+Each node's **Devices** list shows its graphics cards, USB devices (Zigbee sticks, tuners and the like),
+serial ports and cards that can be passed to a VM, each named in plain words, with who uses it now and
+whether it can be shared.
 
 ### High availability
 
@@ -595,7 +613,6 @@ single `docker-compose.yml`; `COMPOSE_PROFILES` in `.env` picks the optional par
 The full roadmap is in [ROADMAP.md](ROADMAP.md), and designs for upcoming work are in
 [docs/superpowers/specs/](docs/superpowers/specs/). Not built yet:
 
-- **Guest editing**: a structured config and mount-point editor, and GPU and device sharing.
 - **Consoles**: noVNC and container text consoles as Terminal panes, for guests SSH cannot reach.
 - **Ceph operations**: version-skew view, guided rolling restarts and slow-op history (restart and
   reboot safety in Updates is built).
