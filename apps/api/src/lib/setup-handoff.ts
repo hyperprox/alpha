@@ -10,7 +10,8 @@
 //  them again. That is the price of never writing them down.
 // =============================================================================
 
-import { readFileSync, writeFileSync, renameSync, chmodSync } from 'fs'
+import { readFileSync, writeFileSync, renameSync, chmodSync, existsSync, mkdirSync, rmSync } from 'fs'
+import { dirname, join } from 'path'
 import { saveCredential } from './ssh-broker'
 import { pinHostKey } from './node-exec'
 import { setCredentials } from './credentials'
@@ -33,16 +34,35 @@ export interface HeldSecrets {
 }
 
 let held: HeldSecrets = {}
-// The hand-over is accepted once. A second one (or one after the owner exists) is refused: by then the
-// way to give HyperProx a login is Settings → Setup checklist, as a signed-in owner.
-let accepted = false
-export class HandoffRefused extends Error {}
+// The hand-over is accepted once, ever: a flag file records it, so a restart does not open it again. A
+// second one, or one after the owner exists, is refused: by then logins go in through Settings → Setup
+// checklist, as a signed-in owner.
+export class HandoffRefused extends Error {
+  constructor(message: string, public status = 409) { super(message) }
+}
+export function handoffFlagPath(env: NodeJS.ProcessEnv = process.env): string {
+  return env.HPX_HANDOFF_FLAG || join(dirname(env.ENV_FILE_PATH || '/opt/hyperprox/.env'), 'data/setup/handed-over')
+}
 
-/** Refuse unless this is the first hand-over and no owner exists yet. Marks it accepted. */
-export function acceptHandoff(ownerExists: boolean): void {
-  if (ownerExists) throw new HandoffRefused('The owner account already exists. Add logins and keys on Settings → Setup checklist.')
-  if (accepted) throw new HandoffRefused('The setup wizard has already handed over what it held.')
-  accepted = true
+/** Refuse unless the vault answers, no owner exists, and nothing was handed over before. Marks it done. */
+export function acceptHandoff(vault: { reachable: boolean; bootstrapped: boolean }): void {
+  if (!vault.reachable) throw new HandoffRefused('The vault is not answering, so HyperProx cannot tell whether an owner exists. Try again once it is up.', 503)
+  if (vault.bootstrapped) throw new HandoffRefused('The owner account already exists. Add logins and keys on Settings → Setup checklist.')
+  const flag = handoffFlagPath()
+  if (existsSync(flag)) throw new HandoffRefused('The setup wizard has already handed over what it held.')
+  mkdirSync(dirname(flag), { recursive: true, mode: 0o700 })
+  writeFileSync(flag, `${new Date().toISOString()}\n`, { mode: 0o600 })
+}
+
+/** What a hand-over body holds once validated, or null when it holds nothing usable. Nothing is kept. */
+export function validateHandoff(body: unknown): HeldSecrets | null {
+  const saved = held
+  held = {}
+  try {
+    holdSetupSecrets(body)
+    const v = held
+    return v.nodeLogin || v.godaddy ? v : null
+  } finally { held = saved }
 }
 
 const str = (v: unknown, max = 16_384) => typeof v === 'string' && v.length > 0 && v.length <= max ? v : undefined
@@ -76,7 +96,15 @@ export function heldSummary(): { nodeLogin: { nodes: string[] } | null; godaddy:
   return { nodeLogin: held.nodeLogin ? { nodes: [...held.nodeLogin.nodes] } : null, godaddy: Boolean(held.godaddy) }
 }
 
-export function clearHeldSecrets(): void { held = {}; accepted = false }
+/** Tests: forget what is held, and the hand-over flag. */
+export function clearHeldSecrets(): void { held = {}; rmSync(handoffFlagPath(), { force: true }) }
+
+/** Hold a body that validateHandoff already accepted. */
+export function holdValidated(v: HeldSecrets): ReturnType<typeof heldSummary> {
+  if (v.nodeLogin) held.nodeLogin = v.nodeLogin
+  if (v.godaddy) held.godaddy = v.godaddy
+  return heldSummary()
+}
 
 /**
  * The owner exists, so setup is done whatever .env says: record SETUP_COMPLETE=true and remove the setup

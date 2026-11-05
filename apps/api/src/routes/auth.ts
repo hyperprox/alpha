@@ -18,7 +18,7 @@ import { getNotifyService } from '../lib/notify'
 import { ensureGrafanaAdmin } from '../lib/grafana-admin'
 import { migrationSettled } from '../lib/credentials'
 import { requestContext } from '../lib/auth'
-import { holdSetupSecrets, flushHeldSecrets, acceptHandoff, HandoffRefused, markSetupDone } from '../lib/setup-handoff'
+import { validateHandoff, holdValidated, flushHeldSecrets, acceptHandoff, HandoffRefused, markSetupDone } from '../lib/setup-handoff'
 import { readFileSync } from 'fs'
 import { createHash, timingSafeEqual } from 'crypto'
 
@@ -147,9 +147,12 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.status(403).send({ ok: false, error: 'Only the setup wizard on this machine can hand over secrets' })
     }
     if (!setupKeyMatches(req.headers['x-setup-key'])) return reply.status(401).send({ ok: false, error: 'setup key required' })
-    try { acceptHandoff((await vaultStatus()).bootstrapped) }
-    catch (e) { if (e instanceof HandoffRefused) return reply.status(409).send({ ok: false, error: e.message }); throw e }
-    return { ok: true, held: holdSetupSecrets(req.body) }
+    // Validated first: a body with nothing usable in it does not use up the one hand-over.
+    const v = validateHandoff(req.body)
+    if (!v) return reply.status(400).send({ ok: false, error: 'Nothing usable to hand over: a node login or a GoDaddy key is required.' })
+    try { acceptHandoff(await vaultStatus()) }
+    catch (e) { if (e instanceof HandoffRefused) return reply.status(e.status).send({ ok: false, error: e.message }); throw e }
+    return { ok: true, held: holdValidated(v) }
   })
 
   // POST /api/auth/bootstrap — create the Owner account (only before the vault has a HyperProx org)
