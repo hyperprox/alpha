@@ -34,14 +34,17 @@ export function PreviewDialog({ guest, change, title, onClose, onApplied }: {
   const [result, setResult] = useState<ApplyData | null>(null)
   const [restart, setRestart] = useState<{ pv: PreviewData | null; result: ApplyData | null; later: boolean }>({ pv: null, result: null, later: false })
   const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
+  // "Remove these too?": hand-written entries the person ticks are added to the change, and it is previewed again.
+  const [also, setAlso] = useState<Array<{ key: string; value: string }>>([])
+  const effective = change?.kind === 'gpu-off' && also.length ? { ...change, off: { alsoRemove: also } } : change
 
   const load = useCallback(async () => {
     setBusy(true); setErr(null)
-    const r = await apiJson<{ data: PreviewData }>(`${API}/preview`, 'POST', { node: guest.node, type: guest.type, vmid: guest.vmid, change })
+    const r = await apiJson<{ data: PreviewData }>(`${API}/preview`, 'POST', { node: guest.node, type: guest.type, vmid: guest.vmid, change: effective })
     setBusy(false)
     if (!r.ok) { setErr(r.error ?? 'Could not build the preview'); return }
     setPv(r.body!.data)
-  }, [guest.node, guest.type, guest.vmid, change])
+  }, [guest.node, guest.type, guest.vmid, JSON.stringify(effective)])   // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { void load() }, [load])
 
   const applyId = async (previewId: string, onOk: (d: ApplyData) => void) => {
@@ -108,6 +111,19 @@ export function PreviewDialog({ guest, change, title, onClose, onApplied }: {
                 </ul>
               ) : pv.kind === 'restart' ? null : <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No changes.</p>}
 
+              {pv.options.length > 0 && (
+                <div className="rounded-md border p-3 space-y-1" style={{ borderColor: 'var(--border-dim)' }}>
+                  <p className="text-sm" style={{ color: 'var(--text)' }}>Hand-written GPU entries HyperProx did not add. They stay unless you tick them. Remove these too?</p>
+                  {pv.options.map(o => (
+                    <label key={`${o.key}${o.value}`} className="flex items-start gap-2 font-mono cursor-pointer break-all" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                      <input type="checkbox" className="mt-0.5" checked={also.some(a => a.key === o.key && a.value === o.value)}
+                        onChange={e => setAlso(x => e.target.checked ? [...x, { key: o.key, value: o.value }] : x.filter(a => !(a.key === o.key && a.value === o.value)))} />
+                      {o.label}
+                    </label>
+                  ))}
+                </div>
+              )}
+              {pv.rawFile && <Notice kind="info">Proxmox’s API refuses raw lxc.* lines, so this rewrites the whole config file over the node login: only these lines change, snapshots and every other line stay byte for byte, and it is refused if the file changed since this preview. It applies the next time the container starts.</Notice>}
               {pv.restartNeeded && pv.guest.running && <Notice kind="warn">Some of this applies only after the guest restarts. You can restart it after saving, or leave it pending.</Notice>}
               {pv.errors.map((e, i) => <Notice key={`e${i}`} kind="error">{e}</Notice>)}
               {pv.warnings.map((w, i) => <Notice key={`w${i}`} kind="warn">{w}</Notice>)}
