@@ -12,6 +12,7 @@ import { currentContext } from '../lib/auth'
 import { VaultLockedError } from '../lib/credentials'
 import {
   HaRefusal, badges, guestView, haPlanner, overview, preflightGrid, readConfig, readMigratePreconditions, readSnapshot, sidOf,
+  nodeAddress, pinFingerprint, pinnedFingerprint, probeFingerprint,
   type HaPlanner, type HaPve, type HaSnapshot,
 } from '../lib/ha'
 import { livePve } from '../lib/pve-env'
@@ -76,17 +77,37 @@ export function buildHaRoutes(deps: { planner?: () => HaPlanner; pve?: () => HaP
           const g = snap.guests.find(y => y.sid === x.sid)
           return { sid: x.sid, name: g?.name ?? x.sid, node: g?.node ?? '' }
         }),
-        quorate: snap.quorate, fencing: snap.fencing,
+        quorate: snap.quorate, fencing: snap.fencing, disarmMode: snap.disarmMode,
       }
     }))
 
     fastify.get<{ Params: { type: string; vmid: string } }>('/guests/:type/:vmid/preflight', async (q, r) => wrap(r, async () => {
       const sid = guestParams(q.params)
-      const snap = await readSnapshot(pve(), { configs: 'none' })
+      const snap = await readSnapshot(pve(), { configs: 'none', extra: [sid] })
       const g = snap.guests.find(x => x.sid === sid)
       if (!g) throw new HaRefusal(`There is no guest ${sid}.`, 404)
       const [pre, config] = await Promise.all([readMigratePreconditions(pve(), g.node, sid), readConfig(pve(), g.node, sid)])
-      return preflightGrid(snap, g, pre, config)
+      return preflightGrid(snap, g, pre, config, g.hardware)
+    }))
+
+    // Node SSH host keys, for maintenance mode: see what the node presents, then pin exactly that key.
+    const nodeHost = async (node: string) => {
+      if (!/^[A-Za-z0-9][A-Za-z0-9.-]{0,62}$/.test(node)) throw new HaRefusal(`There is no node ${node}.`, 404)
+      const snap = await readSnapshot(pve(), { configs: 'none' })
+      if (!snap.nodes.some(n => n.node === node)) throw new HaRefusal(`There is no node ${node}.`, 404)
+      return nodeAddress(pve() as any, node)
+    }
+    fastify.post<{ Params: { node: string } }>('/nodes/:node/hostkey/check', async (q, r) => wrap(r, async () => {
+      const host = await nodeHost(q.params.node)
+      const [pinned, presented] = await Promise.all([pinnedFingerprint(host).catch(() => null), probeFingerprint(host)])
+      return { node: q.params.node, pinned, presented, matches: pinned ? pinned === presented : null,
+        words: pinned ? (pinned === presented ? 'Pinned, and the node still presents that key.' : 'The node presents a DIFFERENT key from the pinned one. Do not pin it unless you know the node was rebuilt.')
+          : `Not pinned. Compare ${presented} with \`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub\` on the node's own console before pinning.` }
+    }))
+    fastify.post<{ Params: { node: string }; Body: any }>('/nodes/:node/hostkey/pin', async (q, r) => wrap(r, async () => {
+      const host = await nodeHost(q.params.node)
+      try { return await pinFingerprint(host, String((q.body as any)?.fingerprint ?? '')) }
+      catch (e: any) { throw new HaRefusal(e?.message ?? String(e), 409) }
     }))
 
     fastify.post<{ Body: any }>('/preview', async (q, r) => wrap(r, async () => {

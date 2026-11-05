@@ -89,7 +89,7 @@ const CATALOGUE_RECONFIRM = /^\/api\/catalogue\/wizard\/(apply|jobs\/[^/]+\/clea
 // which writes cluster-wide HA configuration and so also needs the master password re-entered.
 const HA = /^\/api\/ha(\/|$)/
 const HA_READ = /^\/api\/ha\/(overview|badges|guests\/(lxc|qemu)\/\d+(\/preflight)?)$/
-const HA_RECONFIRM = /^\/api\/ha\/plans\/[^/]+\/apply$/
+const HA_RECONFIRM = /^\/api\/ha\/(plans\/[^/]+\/apply|nodes\/[^/]+\/hostkey\/pin)$/
 // Role management (no routes yet; reserved so they are owner-only from day one).
 const ROLE_MGMT = /^\/api\/(auth\/)?roles(\/|$)/
 
