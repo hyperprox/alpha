@@ -7,6 +7,7 @@ import { useState } from 'react'
 import { formatBytes, formatUptime } from '@/lib/utils'
 import { PreviewDialog } from './PreviewDialog'
 import { VENDOR_LABEL, type GuestRow, type VpnStatus } from './types'
+import { HaBadge, sidOf, type HaBadgeInfo } from '@/components/ha'
 
 export const STATUS_COLOR: Record<string, string> = { running: 'var(--good)', stopped: 'var(--text-dimmer)', paused: 'var(--warn-2)', suspended: 'var(--violet-2)' }
 
@@ -56,7 +57,10 @@ function Tags({ row }: { row: GuestRow }) {
   )
 }
 
-function HaCell({ row }: { row: GuestRow }) {
+/** HA in a row: the HA page's own badge (home, warnings) when it has one, else the state Proxmox reports. */
+function HaCell({ row, ha }: { row: GuestRow; ha?: (sid: string) => HaBadgeInfo | undefined }) {
+  const info = ha?.(sidOf(row.type, row.vmid))
+  if (info) return <HaBadge info={info} />
   if (!row.ha.managed) return <span className="text-xs" style={{ color: 'var(--text-faint)' }}>—</span>
   const c = row.ha.state === 'started' ? 'var(--violet)' : 'var(--text-dimmer)'
   return <span className="font-mono text-[11px]" style={{ color: c }} title={row.ha.status ?? undefined}>HA {row.ha.state}</span>
@@ -86,8 +90,10 @@ function RowMenu({ row, canOperate, canAdmin, onPower, onOpen, onRefresh }: { ro
   )
 }
 
-export function GuestTable({ rows, canOperate, canAdmin, onOpen, onPower, onRefresh }: {
+export function GuestTable({ rows, canOperate, canAdmin, onOpen, onPower, onRefresh, ha }: {
   rows: GuestRow[]; canOperate: boolean; canAdmin: boolean
+  /** HA badges, read once per list (useHaBadges). */
+  ha?: (sid: string) => HaBadgeInfo | undefined
   onOpen: (r: GuestRow) => void; onPower: (r: GuestRow, a: string) => void; onRefresh: () => void
 }) {
   return (
@@ -119,7 +125,7 @@ export function GuestTable({ rows, canOperate, canAdmin, onOpen, onPower, onRefr
                   <td className="px-2 py-2 font-mono text-[11px]" style={{ color: 'var(--text-dimmer)' }}>{r.uptime ? formatUptime(r.uptime) : '—'}</td>
                   <td className="px-2 py-2 font-mono text-[11px]" style={{ color: 'var(--text-muted)' }}>{r.ip ?? '—'}</td>
                   <td className="px-2 py-2"><Tags row={r} /></td>
-                  <td className="px-2 py-2"><HaCell row={r} /></td>
+                  <td className="px-2 py-2"><HaCell row={r} ha={ha} /></td>
                   <td className="px-2 py-2"><RowMenu row={r} canOperate={canOperate} canAdmin={canAdmin} onPower={onPower} onOpen={() => onOpen(r)} onRefresh={onRefresh} /></td>
                 </tr>
               )
@@ -140,7 +146,7 @@ export function GuestTable({ rows, canOperate, canAdmin, onOpen, onPower, onRefr
                 <RowMenu row={r} canOperate={canOperate} canAdmin={canAdmin} onPower={onPower} onOpen={() => onOpen(r)} onRefresh={onRefresh} />
               </div>
               <div className="font-mono text-[11px] flex flex-wrap gap-x-3" style={{ color: 'var(--text-dimmer)' }}>
-                <span>#{r.vmid}</span><span>{r.node}</span>{r.ip && <span>{r.ip}</span>}{r.uptime > 0 && <span>{formatUptime(r.uptime)}</span>}<HaCell row={r} />
+                <span>#{r.vmid}</span><span>{r.node}</span>{r.ip && <span>{r.ip}</span>}{r.uptime > 0 && <span>{formatUptime(r.uptime)}</span>}<HaCell row={r} ha={ha} />
               </div>
               {running && (
                 <div className="grid grid-cols-3 gap-2 font-mono text-[10px]" style={{ color: 'var(--text-dimmer)' }}>

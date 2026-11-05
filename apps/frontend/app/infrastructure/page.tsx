@@ -14,6 +14,7 @@ import { GuestDrawer } from '@/components/guest-config/GuestDrawer'
 import { DevicesPanel } from '@/components/guest-config/DevicesPanel'
 import { CreateGuestModal } from '@/components/guest-config/CreateGuest'
 import { API, type GuestRow } from '@/components/guest-config/types'
+import { useHaBadges } from '@/components/ha'
 
 interface PVENode { node: string; status: string; maxcpu: number; maxmem: number; cpu?: number; mem?: number }
 
@@ -51,6 +52,7 @@ export default function InfrastructurePage() {
   const [create, setCreate] = useState<null | 'lxc' | 'qemu'>(null)
   const [msg, setMsg] = useState<string | null>(null)
   const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
+  const haBadges = useHaBadges()
 
   useEffect(() => { try { setGroup(localStorage.getItem('infra.group') === '1') } catch { /* private mode */ } }, [])
   const toggleGroup = () => setGroup(g => { try { localStorage.setItem('infra.group', g ? '0' : '1') } catch { /* ignore */ } return !g })
@@ -171,7 +173,7 @@ export default function InfrastructurePage() {
               {groups.map(gr => (
                 <section key={gr.node ?? 'all'} className="space-y-2">
                   {gr.node && <h2 className="font-display font-semibold" style={{ fontSize: 18, color: 'var(--text-bright)' }}>{gr.node} <span className="font-mono text-xs" style={{ color: 'var(--text-dimmer)' }}>{gr.rows.length}</span></h2>}
-                  <GuestTable rows={gr.rows} canOperate={canOperate} canAdmin={canAdmin} onOpen={r => setSelected({ type: r.type, vmid: r.vmid })} onPower={power} onRefresh={fetchData} />
+                  <GuestTable rows={gr.rows} canOperate={canOperate} canAdmin={canAdmin} onOpen={r => setSelected({ type: r.type, vmid: r.vmid })} onPower={power} onRefresh={() => { void fetchData(); void haBadges.reload() }} ha={haBadges.get} />
                 </section>
               ))}
               {filtered.length === 0 && <p className="text-sm" style={{ color: 'var(--text-dimmer)' }}>No guests match.</p>}
