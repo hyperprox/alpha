@@ -265,7 +265,7 @@ export function buildEditPlan(g: GuestCtx, e: StructuredEdit, pathChecks: Record
   if (e.description !== undefined) {
     // HyperProx's hidden marker (<!-- hpx-id:… -->) is kept whatever the new text is.
     const marker = /<!-- hpx-id:[0-9a-f-]{36} -->/.exec(str(cfg.description))?.[0]
-    const text = String(e.description ?? '').replace(/\n?<!-- hpx-id:[0-9a-f-]{36} -->/g, '')
+    const text = stripMarker(String(e.description ?? ''))
     if (typeof e.description !== 'string' || text.length > 8192) p.errors.push('The description must be text, at most 8 KB.')
     else if (marker) want('description', `${text.replace(/\n+$/, '')}\n${marker}`)
     else want('description', text === '' ? null : text)
@@ -612,7 +612,7 @@ export function buildRevertPlan(g: GuestCtx, target: PveConfig, pathChecks: Reco
     if (k === 'description') {
       // The current marker stays: a revert never drops or swaps HyperProx's identity for this guest.
       const marker = /<!-- hpx-id:[0-9a-f-]{36} -->/.exec(c ?? '')?.[0]
-      const text = (t ?? '').replace(/\n?<!-- hpx-id:[0-9a-f-]{36} -->/g, '').replace(/\n+$/, '')
+      const text = stripMarker(t ?? '')
       const next = marker ? `${text}\n${marker}` : (text || null)
       if (next === null) { if (c !== null) del.push(k) } else if (normalise(k, next) !== normalise(k, c ?? '')) set[k] = next
       continue
@@ -624,4 +624,10 @@ export function buildRevertPlan(g: GuestCtx, target: PveConfig, pathChecks: Reco
   addConfigChanges(p, g, set, del)
   if (!p.changes.length && !p.errors.length) p.errors.push('Nothing to revert: the editable settings already match that version.')
   return p
+}
+
+/** The description without HyperProx's marker, leaving no empty line or trailing space where it was. */
+export function stripMarker(desc: string): string {
+  const re = /<!-- hpx-id:[0-9a-f-]{36} -->/g
+  return desc.split('\n').flatMap(l => { if (!/<!-- hpx-id:/.test(l)) return [l]; const t = l.replace(re, '').replace(/[ \t]+$/, ''); return t ? [t] : [] }).join('\n').replace(/\n+$/, '')
 }
