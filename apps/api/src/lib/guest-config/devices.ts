@@ -35,7 +35,7 @@ echo '##tun'; ls -1 /dev/net/tun 2>/dev/null
 echo '##iommu'; find /sys/kernel/iommu_groups/ -mindepth 3 -maxdepth 3 2>/dev/null
 echo '##procdevices'; cat /proc/devices
 echo '##nvmodule'; cat /sys/module/nvidia/version 2>/dev/null
-echo '##chardev'; for p in /dev/dri/* /dev/nvidia* /dev/nvidia-caps/* /dev/kfd /dev/net/tun /dev/apex_* /dev/video* /dev/ttyUSB* /dev/ttyACM*; do [ -c "$p" ] && [ ! -L "$p" ] && echo "$p|$(stat -c %t "$p")"; done; true
+echo '##chardev'; for p in /dev/dri/* /dev/nvidia* /dev/nvidia-caps/* /dev/kfd /dev/net/tun /dev/apex_* /dev/video* /dev/ttyUSB* /dev/ttyACM*; do [ -c "$p" ] && [ ! -L "$p" ] && echo "$p|$(stat -c %t:%T "$p")"; done; true
 echo '##end'
 `
 
@@ -102,7 +102,7 @@ export interface NodeInventory {
   collectedAt: number
   problem?: string
   /** Character device nodes that are not symlinks, with their major: the only paths a raw line may bind. */
-  charDevices?: Record<string, number>
+  charDevices?: Record<string, { major: number; minor: number }>
 }
 
 // ── built-in table of common homelab devices ──────────────────────────────────
@@ -363,8 +363,11 @@ export function parseProbe(node: string, out: string, now = Date.now()): NodeInv
       if (d.resetRisk) d.notes.push(d.resetRisk)
     }
   }
-  const charDevices: Record<string, number> = {}
-  for (const l of get('chardev')) { const [p, hex] = l.split('|'); const n = parseInt(hex ?? '', 16); if (p?.startsWith('/dev/') && Number.isFinite(n)) charDevices[p.trim()] = n }
+  const charDevices: Record<string, { major: number; minor: number }> = {}
+  for (const l of get('chardev')) {
+    const [p, hex] = l.split('|'); const [ma, mi] = (hex ?? '').trim().split(':').map(x => parseInt(x, 16))
+    if (p?.startsWith('/dev/') && Number.isFinite(ma) && Number.isFinite(mi)) charDevices[p.trim()] = { major: ma, minor: mi }
+  }
   return { node, devices, majors, nvidiaDriver, nvidiaNodes, collectedAt: now, charDevices }
 }
 

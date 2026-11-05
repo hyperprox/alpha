@@ -67,8 +67,11 @@ export const NOT_A_DEVICE_LINE = 'HyperProx only edits device lines; hooks and o
 /** The only directories that may be bound: the GPU device directories. */
 export const DEVICE_DIRS = ['/dev/dri', '/dev/nvidia-caps']
 
-/** What the node actually has: character device nodes (not symlinks) from its inventory, and their majors. */
-export interface RawAllow { devices: Set<string>; majors: Set<number> }
+/**
+ * What the node actually has: character device nodes (not symlinks) from its inventory with their exact numbers,
+ * and the GPU majors (DRM, NVIDIA's from /proc/devices) for which "MAJOR:*" may be allowed.
+ */
+export interface RawAllow { devices: Map<string, { major: number; minor: number }>; gpuMajors: Set<number> }
 
 /**
  * The form of a device line: the key is one of the three device keys, and the value has the device-line shape.
@@ -104,6 +107,7 @@ export function rawLineAllowed(l: [string, string], allow: RawAllow | null): str
     if (src.split('/').some(seg => seg === '.' || seg === '..')) return `${k}: a path with “.” or “..” segments is refused (${src}).`
     if (HOST_MEMORY.test(src)) return `${k}: ${src} is host memory or I/O ports; it is never passed to a container.`
     if (/^\/dev\/disk(\/|$)/.test(src) || /^\/dev\/(sd|nvme|vd|hd|xvd|md|dm-|loop|nbd|zd|rbd)/.test(src)) return `${k}: disks are out of scope; ${src} is never bound.`
+    if (/(^|,)(mode|uid|gid)=/.test(opts)) return `${k}: mode=, uid= and gid= are refused on a device bind: the device keeps the node’s own owner and mode.`
     if (DEVICE_DIRS.includes(src)) {
       if (!/create=dir/.test(opts)) return `${k}: a device directory is bound with create=dir.`
       return null
@@ -120,8 +124,11 @@ export function rawLineAllowed(l: [string, string], allow: RawAllow | null): str
   const m = /^c (\d+):(\d+|\*) ([rwm]+)$/.exec(t)
   if (!m) return `${k}: not a device allow of the form “c MAJOR:MINOR rwm”.`
   if (m[3] !== 'rwm') return `${k}: device allows are written as rwm (“${t}”).`
-  if (!allow) return `${k}: there is no device inventory for this node to check major ${m[1]} against.`
-  if (!allow.majors.has(Number(m[1]))) return `${k}: major ${m[1]} is not a GPU or inventory device on this node, so it is refused.`
+  if (!allow) return `${k}: there is no device inventory for this node to check ${m[1]}:${m[2]} against.`
+  const major = Number(m[1])
+  if (m[2] === '*') return allow.gpuMajors.has(major) ? null : `${k}: “${m[1]}:*” is only for GPU majors; name the device’s exact MAJOR:MINOR.`
+  const minor = Number(m[2])
+  if (![...allow.devices.values()].some(d => d.major === major && d.minor === minor)) return `${k}: ${major}:${minor} is not an inventory device on this node, so it is refused.`
   return null
 }
 
@@ -226,7 +233,7 @@ export function verifyScript(paths: string[]): string {
     'set -u', '# HPX verify devices',
     `for p in ${paths.map(p => `'${p}'`).join(' ')}; do`,
     '  if [ -L "$p" ]; then echo "L $p"',
-    `  elif [ -c "$p" ]; then echo "C $p $(stat -c %t "$p") $(realpath -e -- "$p")"`,
+    `  elif [ -c "$p" ]; then echo "C $p $(stat -c %t:%T "$p") $(realpath -e -- "$p")"`,
     '  elif [ -d "$p" ]; then echo "D $p $(realpath -e -- "$p")"',
     '  elif [ -e "$p" ]; then echo "O $p"',
     '  else echo "M $p"; fi',
@@ -234,13 +241,13 @@ export function verifyScript(paths: string[]): string {
   ].join('\n')
 }
 
-export type Verified = { kind: 'char'; major: number; real: string } | { kind: 'dir'; real: string } | { kind: 'symlink' } | { kind: 'other' } | { kind: 'missing' }
+export type Verified = { kind: 'char'; major: number; minor: number; real: string } | { kind: 'dir'; real: string } | { kind: 'symlink' } | { kind: 'other' } | { kind: 'missing' }
 export function parseVerify(out: string): Record<string, Verified> {
   const r: Record<string, Verified> = {}
   for (const l of out.split('\n')) {
     const [t, p, a, b] = l.trim().split(/\s+/)
     if (!p) continue
-    if (t === 'C') r[p] = { kind: 'char', major: parseInt(a, 16), real: b }
+    if (t === 'C') { const [ma, mi] = (a ?? '').split(':'); r[p] = { kind: 'char', major: parseInt(ma, 16), minor: parseInt(mi ?? '0', 16), real: b } }
     else if (t === 'D') r[p] = { kind: 'dir', real: a }
     else if (t === 'L') r[p] = { kind: 'symlink' }
     else if (t === 'O') r[p] = { kind: 'other' }
@@ -283,19 +290,30 @@ export function cleanupScript(node: string, vmid: number, files: string[]): stri
  * write the new bytes to a temp file beside it (removed on any exit), rename over it, and print the new file
  * (base64) and its hash for the caller to compare.
  */
-export function writeScript(node: string, vmid: number, expectSha: string, content: string, sources: string[] = []): string {
+/**
+ * A mount source the node re-checks under the lock: `expect` is the hex "MAJOR:MINOR" seen at preview (a
+ * character device), "dir" for a GPU device directory, or "absent" for an optional entry naming a device this
+ * node lacks, which must still be absent.
+ */
+export interface SourceCheck { path: string; expect: string }
+
+export function writeScript(node: string, vmid: number, expectSha: string, content: string, sources: SourceCheck[] = []): string {
   const f = confPath(node, vmid)
   if (!/^[0-9a-f]{64}$/.test(expectSha)) throw new Error('Bad hash.')
-  for (const p of sources) if (!SAFE_DEV.test(p)) throw new Error(`Not a device path HyperProx writes: ${p}`)
-  // Every added source is checked again here, under the lock: never a symlink; if present, its realpath is itself
-  // and it is a character device (or one of the GPU device directories). A missing one is an optional entry.
+  for (const s of sources) {
+    if (!SAFE_DEV.test(s.path)) throw new Error(`Not a device path HyperProx writes: ${s.path}`)
+    if (!/^([0-9a-f]{1,8}:[0-9a-f]{1,8}|dir|absent)$/.test(s.expect)) throw new Error(`Bad device expectation: ${s.expect}`)
+  }
+  // Every added source is checked again here, under the lock, against what the preview saw: never a symlink; a
+  // character device with the same major:minor and its own realpath, a GPU device directory, or still absent.
   const check = sources.length ? [
-    `for p in ${sources.map(p => `'${p}'`).join(' ')}; do`,
+    `for e in ${sources.map(s => `'${s.path}|${s.expect}'`).join(' ')}; do`,
+    '  p="${e%%|*}"; x="${e#*|}"',
     '  if [ -L "$p" ]; then echo "HPX-BAD-DEVICE $p"; exit 6; fi',
-    '  if [ -e "$p" ]; then',
-    '    [ "$(realpath -e -- "$p")" = "$p" ] || { echo "HPX-BAD-DEVICE $p"; exit 6; }',
-    `    if [ -c "$p" ] || [ "$p" = /dev/dri ] || [ "$p" = /dev/nvidia-caps ]; then :; else echo "HPX-BAD-DEVICE $p"; exit 6; fi`,
-    '  fi',
+    '  if [ "$x" = absent ]; then [ -e "$p" ] && { echo "HPX-BAD-DEVICE $p"; exit 6; }; continue; fi',
+    '  [ -e "$p" ] && [ "$(realpath -e -- "$p")" = "$p" ] || { echo "HPX-BAD-DEVICE $p"; exit 6; }',
+    '  if [ "$x" = dir ]; then [ -d "$p" ] || { echo "HPX-BAD-DEVICE $p"; exit 6; }; continue; fi',
+    `  [ -c "$p" ] && [ "$(stat -c '%t:%T' "$p")" = "$x" ] || { echo "HPX-BAD-DEVICE $p"; exit 6; }`,
     'done',
   ] : []
   const b64 = Buffer.from(content, 'utf8').toString('base64')
