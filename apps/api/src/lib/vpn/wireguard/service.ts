@@ -87,6 +87,8 @@ export class WireguardService {
     const m = (await this.d.exec.listMachines()).find(x => x.id === id)
     if (!m) throw new WgNotFoundError(`No such machine: ${id}`)
     if (!m.running) throw new WgInputError(`${m.name} is not running`)
+    // Excluded guests are never looked inside or changed (every script also goes through remote.run, which refuses).
+    if (await this.d.remote.isExcluded(m)) throw new WgInputError(`${m.name} is excluded from VPN work; HyperProx never looks inside it or changes it.`)
     return m
   }
 

@@ -75,6 +75,10 @@ export interface RemoteStore {
   /** Device ids the VPN poller has already seen at a provider. */
   listKnownDevices(provider: ProviderId): Promise<string[]>
   addKnownDevices(provider: ProviderId, ids: string[]): Promise<void>
+  /** Guests HyperProx must never look inside or touch (machine ids only). */
+  listExclusions(): Promise<string[]>
+  /** Replace the list whole. */
+  setExclusions(ids: string[], by: string): Promise<void>
 }
 
 const clone = <T>(x: T): T => JSON.parse(JSON.stringify(x))
@@ -121,6 +125,9 @@ export class MemoryRemoteStore implements RemoteStore {
 
   async listKnownDevices(p: ProviderId) { return [...(this.known.get(p) ?? [])] }
   async addKnownDevices(p: ProviderId, ids: string[]) { const s = this.known.get(p) ?? new Set(); ids.forEach(i => s.add(i)); this.known.set(p, s) }
+  private excluded: string[] = []
+  async listExclusions() { return [...this.excluded] }
+  async setExclusions(ids: string[]) { this.excluded = [...new Set(ids)].sort() }
 }
 
 export class PrismaRemoteStore implements RemoteStore {
@@ -181,4 +188,16 @@ export class PrismaRemoteStore implements RemoteStore {
   async addKnownDevices(provider: ProviderId, ids: string[]) {
     if (ids.length) await (this.db as any).remoteAccessKnownDevice.createMany({ data: ids.map(deviceId => ({ provider, deviceId })), skipDuplicates: true })
   }
+
+  async listExclusions() {
+    return (await (this.db as any).vpnExclusion.findMany({ orderBy: { machineId: 'asc' } })).map((r: any) => String(r.machineId))
+  }
+  async setExclusions(ids: string[], by: string) {
+    const want = [...new Set(ids)]
+    await this.db.$transaction([
+      (this.db as any).vpnExclusion.deleteMany({ where: { machineId: { notIn: want } } }),
+      ...want.map(machineId => (this.db as any).vpnExclusion.upsert({ where: { machineId }, create: { machineId, addedBy: by }, update: {} })),
+    ])
+  }
+
 }

@@ -118,13 +118,15 @@ const REMOTE_RECONFIRM: Array<[string, RegExp]> = [
   ['DELETE', /^\/api\/remote\/devices\/(tailscale|netbird)\/[^/]+$/],
   // On a Proxmox node even a check or an update is re-confirmed: it runs a script on the hypervisor.
   ['POST',   /^\/api\/remote\/machines\/node-[^/]+\/(tailscale|netbird)\/(check|update)$/],
+  // Which guests HyperProx must never look inside.
+  ['PUT',    /^\/api\/remote\/exclusions$/],
 ]
 // WireGuard (/api/vpn): admin for every call, reads included; every change, reveal or rotation re-confirmed.
 // Previews (POST .../preview) only read, so they are not.
 const VPN = /^\/api\/vpn(\/|$)/
 const VPN_PREVIEW = /^\/api\/vpn\/wg\/router\/peers\/preview$/
 // Remote access job output names hosts, packages and addresses: admins only, like Updates.
-const REMOTE_JOBS = /^\/api\/remote\/((v1\/)?jobs(\/|$)|machines\/[^/]+\/((tailscale|netbird)\/firewall|host-key)$|v1\/machines\/[^/]+\/(tailscale|netbird)\/(install-preview|settings)$)/
+const REMOTE_JOBS = /^\/api\/remote\/(exclusions$|(v1\/)?jobs(\/|$)|machines\/[^/]+\/((tailscale|netbird)\/firewall|host-key)$|v1\/machines\/[^/]+\/(tailscale|netbird)\/(install-preview|settings)$)/
 
 /**
  * The role a request needs, or null when it needs no session.

@@ -21,9 +21,10 @@ import {
 } from '../lib/remote/service'
 import { PrismaRemoteStore } from '../lib/remote/store'
 import { productionRemoteExecutor, type RemoteExecutor } from '../lib/remote/executor'
-import { ClientDetector } from '../lib/remote/detect'
+import { ClientDetector, MAX_PROBE_OUTPUT } from '../lib/remote/detect'
+import { appendCapped } from '../lib/node-exec'
 import { spawn } from 'node:child_process'
-import os from 'node:os'
+import { findSelf, localIdentity } from '../lib/remote/self'
 import { providerFromVault, providerSettingsFromVault, setCredentialAuditor } from '../lib/remote/providers'
 import { publish } from '../lib/notify'
 import type { VpnPrefs } from '../lib/remote/planner'
@@ -37,22 +38,27 @@ export interface RemoteRouteDeps {
 }
 
 /** The read-only probe, run on the machine HyperProx itself runs on: no login, never logged. */
-function runLocally(script: string): Promise<{ code: number; output: string; timedOut: boolean }> {
+function runLocally(script: string): Promise<{ code: number; output: string; timedOut: boolean; truncated: boolean }> {
   return new Promise(resolve => {
     const p = spawn('bash', ['-s'], { stdio: ['pipe', 'pipe', 'ignore'] })
-    let out = '', timedOut = false
+    let out = '', timedOut = false, truncated = false
     const t = setTimeout(() => { timedOut = true; p.kill('SIGKILL') }, 45_000)
-    p.stdout.on('data', d => { if (out.length < 512_000) out += d })
-    p.on('error', () => { clearTimeout(t); resolve({ code: -1, output: out, timedOut }) })
-    p.on('close', code => { clearTimeout(t); resolve({ code: code ?? -1, output: out, timedOut }) })
+    p.stdout.on('data', d => {
+      if (truncated) return
+      const r = appendCapped(out, String(d), MAX_PROBE_OUTPUT)
+      out = r.out
+      if (r.over) { truncated = true; p.kill('SIGKILL') }
+    })
+    p.on('error', () => { clearTimeout(t); resolve({ code: -1, output: out, timedOut, truncated }) })
+    p.on('close', code => { clearTimeout(t); resolve({ code: code ?? -1, output: out, timedOut, truncated }) })
     p.stdin.end(script)
   })
 }
 
-/** HyperProx's own container: exactly one running container named like this host (as the Updates page finds it). */
+/** HyperProx's own guest: the one whose network config carries this machine's MAC (or static address). Never by name. */
 async function selfMachineId(exec: RemoteExecutor): Promise<string | null> {
-  const named = (await exec.listMachines()).filter(m => m.kind === 'lxc' && m.running && m.name === os.hostname())
-  return named.length === 1 ? named[0].id : null
+  const pve = livePve()
+  return findSelf(await exec.listMachines(), m => pve.fetchStrict<any>(`/nodes/${encodeURIComponent(m.node!)}/${m.kind}/${Number(m.vmid)}/config`).then(c => c ?? {}), localIdentity())
 }
 
 const MACHINE_ID = /^(node|lxc|qemu|host)-[A-Za-z0-9._-]{1,120}$/
@@ -85,15 +91,23 @@ function params(req: FastifyRequest<{ Params: MachineParams }>): { id: string; p
 export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsync {
   return async (fastify) => {
     const exec = productionRemoteExecutor(livePve())
-    const service = deps.service ?? new RemoteAccessService({
+    // Which guest is HyperProx itself, by its MACs and addresses against the guest configs: asked once, at start-up.
+    let selfOnce: Promise<string | null> | null = null
+    const selfId = () => (selfOnce ??= selfMachineId(exec))
+    let svcRef: RemoteAccessService | null = null
+    const service = deps.service ?? (svcRef = new RemoteAccessService({
       store: new PrismaRemoteStore((fastify as any).prisma),
       exec,
-      detector: new ClientDetector({ listMachines: () => exec.listMachines(), run: (m, s, o) => exec.run(m, s, o), local: runLocally, selfId: () => selfMachineId(exec) }),
+      selfId,
+      detector: new ClientDetector({
+        listMachines: () => exec.listMachines(), run: (m, s, o) => exec.run(m, s, o), local: runLocally, selfId,
+        excluded: m => svcRef!.isExcluded(m),
+      }),
       provider: id => providerFromVault(id),
       providerSettings: id => providerSettingsFromVault(id),
       log: m => fastify.log.info(m),
       publish: (e, o) => publish(e, o),
-    })
+    }))
     if (!deps.service) {
       const store = new PrismaRemoteStore((fastify as any).prisma)
       setCredentialAuditor((a, r, d) => store.audit(a, r, d))
@@ -120,8 +134,18 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
     })
 
     // Refresh: probe every running machine now, read-only, and answer with the new overview.
+    // At most once a minute; a press sooner answers with the cached results and how old they are (`refreshNote`).
     fastify.post('/detect/refresh', { preHandler: adminOnly }, async (_req, reply) => {
-      try { await service.refreshDetection(); return overviewForRole(await service.overview(), true) }
+      try { const r = await service.refreshDetection(); return { ...overviewForRole(await service.overview(), true), refreshNote: r.note } }
+      catch (e) { return sendError(reply, e) }
+    })
+
+    // Guests HyperProx must never look inside. Admin; changing the list is re-confirmed (lib/roles.ts).
+    fastify.get('/exclusions', { preHandler: adminOnly }, async (_req, reply) => {
+      try { return { machineIds: await service.getExclusions(), tag: 'hyperprox-ignore' } } catch (e) { return sendError(reply, e) }
+    })
+    fastify.put<{ Body: { machineIds?: unknown } }>('/exclusions', { preHandler: adminOnly }, async (req, reply) => {
+      try { return { machineIds: await service.setExclusions(req.body?.machineIds as string[], by(req)), tag: 'hyperprox-ignore' } }
       catch (e) { return sendError(reply, e) }
     })
 

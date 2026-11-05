@@ -110,8 +110,8 @@ test('a viewer\'s read never probes; an admin\'s read probes only when the cache
   assert.ok(n >= 4, 'admin, stale: probed')
   await r.svc.overview({ mayProbe: true })
   assert.equal(r.probes.length, n, 'admin, fresh: not again')
-  await r.svc.refreshDetection()
-  assert.equal(r.probes.length, n * 2, 'Refresh: again')
+  await r.svc.refreshDetection({ force: true })
+  assert.equal(r.probes.length, n * 2, 'a forced probe: again')
   const v = overviewForRole(await r.svc.overview(), false).machines.find(m => m.id === 'node-pve-b')!.cells.tailscale
   assert.equal(v.state, 'connected'); assert.equal(v.detectedText, 'Tailscale installed, connected as pve-b.tail0000.ts.net (100.64.0.11)')
 })

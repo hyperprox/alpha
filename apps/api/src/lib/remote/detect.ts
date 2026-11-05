@@ -68,6 +68,13 @@ export const DETECT_CLIENTS_SCRIPT = [
   'echo HP_DETECT_END',
 ].join('\n')
 
+/** The most a probe may print; past it the read is aborted and the machine reads as an error. */
+export const MAX_PROBE_OUTPUT = 512 * 1024
+/** Every string field kept from a probe is cut to this, and every list to MAX_LIST entries. */
+const MAX_FIELD = 255
+const MAX_LIST = 64
+const cap = (v: string | null): string | null => (v === null ? null : v.slice(0, MAX_FIELD))
+
 const NONE: DetectedClient = {
   installed: false, running: false, loggedIn: false, connected: false, tailnet: null, ip: null, dnsName: null, version: null, keyExpiry: null,
   acceptDns: null, acceptRoutes: null, ssh: null, exitNode: null, advertiseExitNode: false, advertisedRoutes: [],
@@ -133,9 +140,17 @@ function netbird(out: string): DetectedClient {
   }
 }
 
+/** Whatever a machine printed, nothing longer than a sane length is kept. */
+function capped(c: DetectedClient): DetectedClient {
+  return {
+    ...c, tailnet: cap(c.tailnet), ip: cap(c.ip), dnsName: cap(c.dnsName), version: cap(c.version), keyExpiry: cap(c.keyExpiry), exitNode: cap(c.exitNode),
+    advertisedRoutes: c.advertisedRoutes.slice(0, MAX_LIST).map(r => r.slice(0, MAX_FIELD)),
+  }
+}
+
 export function parseDetection(out: string): Detection {
-  const body = block(out, 'HP_DETECT') ?? ''
-  return { tailscale: tailscale(body), netbird: netbird(body) }
+  const body = block(out.slice(0, MAX_PROBE_OUTPUT), 'HP_DETECT') ?? ''
+  return { tailscale: capped(tailscale(body)), netbird: capped(netbird(body)) }
 }
 
 const LABEL: Record<ProviderId, string> = { tailscale: 'Tailscale', netbird: 'NetBird' }
@@ -164,9 +179,11 @@ export interface DetectEntry {
 
 export interface DetectorDeps {
   listMachines(): Promise<Machine[]>
-  run(m: Machine, script: string, o?: { timeoutMs?: number }): Promise<{ code: number; output: string; timedOut: boolean }>
+  run(m: Machine, script: string, o?: { timeoutMs?: number; maxOutputBytes?: number }): Promise<{ code: number; output: string; timedOut: boolean; truncated?: boolean }>
   /** Run the probe on the machine HyperProx itself runs on, with no login (HyperProx's own container). */
-  local?: (script: string) => Promise<{ code: number; output: string; timedOut: boolean }>
+  local?: (script: string) => Promise<{ code: number; output: string; timedOut: boolean; truncated?: boolean }>
+  /** Guests HyperProx must never look inside (the VPN page's setting, or the `hyperprox-ignore` tag). */
+  excluded?: (m: Machine) => Promise<boolean>
   /** HyperProx's own machine id, if it is one of the listed guests. */
   selfId?: () => Promise<string | null>
   now?: () => number
@@ -208,8 +225,15 @@ export class ClientDetector {
   }
 
   private async probeAll(): Promise<void> {
-    const machines = (await this.d.listMachines()).filter(m => m.running && (m.kind === 'node' || m.kind === 'lxc' || m.kind === 'qemu') &&
+    const listed = (await this.d.listMachines()).filter(m => m.running && (m.kind === 'node' || m.kind === 'lxc' || m.kind === 'qemu') &&
       !(m.kind === 'qemu' && /^win/i.test(m.ostype ?? '')))
+    // An excluded guest is never sent anything, not even this read-only probe.
+    const machines: Machine[] = []
+    for (const m of listed) {
+      let out = m.tags?.includes('hyperprox-ignore') ?? false
+      if (!out && this.d.excluded) { try { out = await this.d.excluded(m) } catch { out = true } }
+      if (!out) machines.push(m)
+    }
     const self = await this.d.selfId?.().catch(() => null) ?? null
     const queue = [...machines]
     const seen = new Set<string>()
@@ -218,7 +242,8 @@ export class ClientDetector {
         const isSelf = m.id === self
         seen.add(m.id)
         try {
-          const r = isSelf && this.d.local ? await this.d.local(DETECT_CLIENTS_SCRIPT) : await this.d.run(m, DETECT_CLIENTS_SCRIPT, { timeoutMs: 45_000 })
+          const r = isSelf && this.d.local ? await this.d.local(DETECT_CLIENTS_SCRIPT) : await this.d.run(m, DETECT_CLIENTS_SCRIPT, { timeoutMs: 45_000, maxOutputBytes: MAX_PROBE_OUTPUT })
+          if (r.truncated || r.output.length > MAX_PROBE_OUTPUT) throw new Error('the probe printed more than 512 KB, so the read was stopped and nothing from it is used')
           if (r.timedOut) throw new Error('the probe timed out')
           if (!/HP_DETECT_END/.test(r.output)) throw new Error('the probe did not finish')
           this.entries.set(m.id, { machineId: m.id, at: this.now(), result: parseDetection(r.output), error: null, self: isSelf })

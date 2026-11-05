@@ -82,6 +82,8 @@ export type CellState = 'connected' | 'offline' | 'missing' | 'not-installed' | 
   | 'signed-out'
   /** Not looked at yet (nothing probed, no provider key). */
   | 'unchecked'
+  /** A guest HyperProx never looks inside (the VPN page's exclusions, or the `hyperprox-ignore` tag). */
+  | 'excluded'
 
 export interface RemoteCell {
   state: CellState
@@ -114,6 +116,9 @@ export interface RemoteMachineRow extends Machine {
   cells: Record<ProviderId, RemoteCell>
   /** HyperProx's own container: shown, never changed from here. */
   self: boolean
+  /** Never looked inside or touched for VPN work, and why. */
+  excluded?: boolean
+  excludedBy?: 'setting' | 'tag'
 }
 
 export interface RemoteOverview {
@@ -165,7 +170,18 @@ export interface RemoteDeps {
   pollEveryMs?: number
   /** Finds clients already on each machine, read-only, with no provider key. Default: none (nothing probed). */
   detector?: ClientDetector
+  /**
+   * HyperProx's own guest, found by network identity at start-up. Called once, when the service is made; no job
+   * runs until it has answered.
+   */
+  selfId?: () => Promise<string | null>
 }
+
+/** The Proxmox tag that keeps HyperProx out of a guest. */
+export const IGNORE_TAG = 'hyperprox-ignore'
+const GUEST_ID = /^(lxc|qemu)-\d{1,9}$/
+/** The least time between two Refresh probes. */
+export const REFRESH_MIN_MS = 60_000
 
 type SupportOk = Extract<Support, { ok: true }>
 
@@ -281,6 +297,8 @@ export class RemoteAccessService {
   /** This process. An in-flight row owned by anyone else was left by a process that is gone. */
   readonly instance = randomUUID()
   private readonly sleep: (ms: number) => Promise<void>
+  private readonly selfP: Promise<string | null>
+  private selfKnown: string | null = null
   private readonly now: () => number
   private readonly settleMs: number
   /** Keys of installs running in this process: no sweep touches them, whatever their due time. */
@@ -293,6 +311,9 @@ export class RemoteAccessService {
 
   constructor(private readonly d: RemoteDeps) {
     this.sleep = d.sleep ?? (ms => new Promise(r => setTimeout(r, ms)))
+    // Which guest is HyperProx itself: asked once, now; runJob waits for the answer before anything runs.
+    this.selfP = (d.selfId ? d.selfId().catch(e => { d.log?.(`[remote] could not tell which guest is HyperProx: ${msg(e)}`); return null }) : Promise.resolve(null))
+      .then(id => { this.selfKnown = id; return id })
     this.now = d.now ?? Date.now
     this.settleMs = d.settleMs ?? 15_000
   }
@@ -427,8 +448,14 @@ export class RemoteAccessService {
       providers.push({ id, label: PROVIDER_LABEL[id], configured: !!p, error, devices: list?.length ?? 0, onTailnet, summary })
     }
 
+    const excludedIds = new Set(await this.d.store.listExclusions())
     const rows: RemoteMachineRow[] = machines.map(m => {
       const cells = {} as Record<ProviderId, RemoteCell>
+      const byTag = !!m.tags?.includes(IGNORE_TAG)
+      if (byTag || excludedIds.has(m.id)) {
+        for (const id of PROVIDER_IDS) cells[id] = emptyCell('excluded')
+        return { ...m, cells, self: false, excluded: true, excludedBy: byTag ? 'tag' as const : 'setting' as const }
+      }
       const probed = found.get(m.id)
       const at = probed ? new Date(probed.at).toISOString() : null
       const windows = m.kind === 'qemu' && /^win/i.test(m.ostype ?? '')
@@ -471,7 +498,7 @@ export class RemoteAccessService {
           detected: dc, detectedText: dc ? describeDetected(id, dc) : null, checkedAt: at,
         }
       }
-      return { ...m, cells, self: !!probed?.self }
+      return { ...m, cells, self: m.id === this.selfMachineId() || !!probed?.self }
     })
     return {
       providers, machines: rows, activeJobId: this.active,
@@ -486,15 +513,56 @@ export class RemoteAccessService {
   }
 
   /** Probe every running machine now (the page's Refresh). Admins only, by the route. */
-  async refreshDetection(): Promise<void> {
-    if (!this.d.detector) throw new RemoteInputError('Detection is not running')
-    await this.d.detector.refresh()
+  /**
+   * Probe every running machine now (the page's Refresh; admins only, by the route). At most once a minute: a
+   * press sooner returns what is cached and says how old it is. `force` is for HyperProx itself, never a route.
+   */
+  async refreshDetection(o: { force?: boolean } = {}): Promise<{ refreshed: boolean; note: string | null }> {
+    const det = this.d.detector
+    if (!det) throw new RemoteInputError('Detection is not running')
+    const last = det.checkedAt()
+    if (!o.force && last !== null && this.now() - last < REFRESH_MIN_MS) {
+      const ago = Math.max(0, Math.round((this.now() - last) / 1000))
+      return { refreshed: false, note: `Refreshed ${ago} s ago; you can refresh again in ${Math.ceil((REFRESH_MIN_MS - (this.now() - last)) / 1000)} s.` }
+    }
+    await det.refresh()
+    return { refreshed: true, note: null }
   }
 
-  /** HyperProx's own container, as the probe found it; null before the first probe. */
+  /** HyperProx's own container: found by network identity at start-up, else as the probe marked it. */
   private selfMachineId(): string | null {
+    if (this.selfKnown) return this.selfKnown
     for (const e of this.d.detector?.cached().values() ?? []) if (e.self) return e.machineId
     return null
+  }
+
+  // ── Exclusions ─────────────────────────────────────────────────────────────
+
+  /** Guests listed on the VPN page as never to be looked inside. */
+  getExclusions(): Promise<string[]> { return this.d.store.listExclusions() }
+
+  /** Replace the list (guest ids only). Audited with the ids; there is nothing secret in it. */
+  async setExclusions(ids: string[], by: string): Promise<string[]> {
+    if (!Array.isArray(ids) || ids.length > 500) throw new RemoteInputError('Send a list of at most 500 guest ids')
+    const bad = ids.filter(i => typeof i !== 'string' || !GUEST_ID.test(i))
+    if (bad.length) throw new RemoteInputError(`Not a guest machine id (lxc-<vmid> or qemu-<vmid>): ${bad.map(String).join(', ').slice(0, 200)}`)
+    const before = await this.d.store.listExclusions()
+    await this.d.store.setExclusions(ids, by)
+    const after = await this.d.store.listExclusions()
+    await this.d.store.audit('remote.exclusions', 'vpn', { by, added: after.filter(i => !before.includes(i)), removed: before.filter(i => !after.includes(i)) })
+    return after
+  }
+
+  /** Is this guest one HyperProx never looks inside? By the tag, or by the list. */
+  async isExcluded(m: Machine): Promise<boolean> {
+    if (m.tags?.includes(IGNORE_TAG)) return true
+    return (await this.d.store.listExclusions()).includes(m.id)
+  }
+
+  private async refuseExcluded(m: Machine): Promise<void> {
+    if (await this.isExcluded(m)) {
+      throw new Error(`${m.name} is excluded from VPN work (${m.tags?.includes(IGNORE_TAG) ? `Proxmox tag ${IGNORE_TAG}` : 'the VPN page\'s exclusions'}); HyperProx never looks inside it or changes it.`)
+    }
   }
 
   private matchRecord(rec: RemoteRecord, list: ProviderDevice[]): ProviderDevice | undefined {
@@ -575,6 +643,9 @@ export class RemoteAccessService {
       const machines = await this.d.exec.listMachines()
       const unknown = req.machineIds.filter(id => !machines.some(m => m.id === id))
       if (unknown.length) throw new Error(`No such machine: ${unknown.join(', ')}`)
+      // Not before HyperProx knows which guest is its own, and never on an excluded one.
+      await this.selfP
+      for (const id of req.machineIds) await this.refuseExcluded(machines.find(m => m.id === id)!)
       const self = this.selfMachineId()
       if (self && req.machineIds.includes(self)) {
         throw new Error('That is this HyperProx\'s own container: its VPN client is shown read-only and never changed from here, so HyperProx cannot cut itself off.')
@@ -1301,7 +1372,8 @@ export class RemoteAccessService {
   // ── For the WireGuard service: the same transports, logging and node guard ─
 
   /** Run a script on a machine for a job, logged through the same redactor (or withheld with `quiet`). */
-  run(job: RemoteJob, m: Machine, script: string, o: { secrets?: string[]; timeoutMs?: number; quiet?: string } = {}) {
+  async run(job: RemoteJob, m: Machine, script: string, o: { secrets?: string[]; timeoutMs?: number; quiet?: string } = {}) {
+    await this.refuseExcluded(m)
     return this.exec(job, m, script, o)
   }
 

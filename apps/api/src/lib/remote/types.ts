@@ -32,6 +32,8 @@ export interface Machine {
   ostype?:  string
   /** An address HyperProx knows for the machine (a node's cluster address, a guest's LAN address). */
   address?: string
+  /** Proxmox tags on a guest, lower-case (`hyperprox-ignore` keeps HyperProx out of it). */
+  tags?: string[]
 }
 
 /** A device (Tailscale) or peer (NetBird), in one shape. */
