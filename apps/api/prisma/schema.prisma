@@ -355,3 +355,15 @@ model GuestConfigVersion {
   @@index([guest, createdAt])
   @@index([previewId])
 }
+
+// Each guest's GPU toggle state: the entries HyperProx added and the open "GPU off", so the toggle never depends
+// on how many history rows are read or kept.
+model GuestGpuState {
+  guest     String    @id      // "lxc/123"
+  dev       Json               // devN key -> value HyperProx wrote
+  raw       Json               // raw device lines HyperProx wrote
+  off       Json?              // the open "GPU off": what was removed
+  offAt     DateTime?
+  offRow    String?
+  updatedAt DateTime  @updatedAt
+}

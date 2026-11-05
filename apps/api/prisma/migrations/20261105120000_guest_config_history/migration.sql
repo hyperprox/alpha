@@ -23,3 +23,16 @@ CREATE INDEX "GuestConfigVersion_guest_createdAt_idx" ON "GuestConfigVersion"("g
 
 -- CreateIndex
 CREATE INDEX "GuestConfigVersion_previewId_idx" ON "GuestConfigVersion"("previewId");
+
+-- CreateTable
+CREATE TABLE "GuestGpuState" (
+    "guest" TEXT NOT NULL,
+    "dev" JSONB NOT NULL,
+    "raw" JSONB NOT NULL,
+    "off" JSONB,
+    "offAt" TIMESTAMP(3),
+    "offRow" TEXT,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "GuestGpuState_pkey" PRIMARY KEY ("guest")
+);

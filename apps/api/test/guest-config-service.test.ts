@@ -311,3 +311,102 @@ test('history keeps the last 50 versions plus everything from the last 90 days',
   assert.ok(drop.every(id => Number(id.slice(1)) * 3 > 90), 'nothing from the last 90 days goes')
   assert.equal(drop.length, 80 - 50)
 })
+
+// ── round 2: the writer ────────────────────────────────────────────────────────
+
+test('revert never touches a raw line it is not reverting: an unchanged secret-bearing line stays as it is', async () => {
+  const s = rawSetup({ lxc: [['lxc.cgroup2.devices.allow', 'c 10:200 rwm'], ['lxc.environment', 'TOKEN=real-secret-value']] })
+  const p = await s.service.preview(OWNER, CT, { kind: 'raw', raw: { add: [ADD] } })
+  const r = await s.service.apply(OWNER, p.id, { name: 'web' })
+  assert.equal(r.ok, true, JSON.stringify(r.outcome?.problems))
+  const rv = await s.service.preview(OWNER, CT, { kind: 'revert', historyId: r.historyId!, which: 'before' })
+  assert.deepEqual(rv.plan.errors, [])
+  assert.deepEqual(rv.plan.rawFile, { remove: [ADD], add: [] }, 'only the line being reverted')
+  assert.ok(!rv.file!.after.includes('**redacted**'))
+  assert.ok(rv.file!.after.includes('lxc.environment: TOKEN=real-secret-value'))
+  assert.equal((await s.service.apply(OWNER, rv.id, { name: 'web' })).ok, true)
+  assert.deepEqual(s.pve.g('lxc', 901).config.lxc, [['lxc.cgroup2.devices.allow', 'c 10:200 rwm'], ['lxc.environment', 'TOKEN=real-secret-value']])
+})
+
+test('history keeps HMACs of raw lines, never a plain hash of the unredacted file', async () => {
+  const s = rawSetup()
+  const p = await s.service.preview(OWNER, CT, { kind: 'raw', raw: { add: [ADD] } })
+  await s.service.apply(OWNER, p.id, { name: 'web' })
+  const h = (await s.history.list('lxc/901'))[0]
+  const meta = h.meta as any
+  assert.equal(meta.fileSha, undefined)
+  assert.ok(!JSON.stringify(h).includes(p.file!.sha), 'the compare-and-swap hash lives only in the preview')
+  assert.equal(meta.rawHmac.before.length, 1); assert.equal(meta.rawHmac.after.length, 2)
+})
+
+test('a hook line is shown and refused; only device lines are written', async () => {
+  const s = rawSetup()
+  const p = await s.service.preview(OWNER, CT, { kind: 'raw', raw: { add: [['lxc.hook.start-host', '/bin/sh -c id']] } })
+  assert.ok(p.plan.changes.some(c => /lxc.hook.start-host/.test(c.words)))
+  assert.ok(p.plan.errors.some(e => /hooks and other raw settings run as root on the node/.test(e)))
+  assert.equal(p.file, undefined)
+})
+
+test('a guest with a lock: key, or the config lock held too long, writes nothing', async () => {
+  const s = rawSetup({ lock: 'backup' })
+  const p = await s.service.preview(OWNER, CT, { kind: 'raw', raw: { add: [ADD] } })
+  assert.ok(p.plan.errors.some(e => /locked \(backup\)/.test(e)))
+  const t = rawSetup()
+  const q = await t.service.preview(OWNER, CT, { kind: 'raw', raw: { add: [ADD] } })
+  t.shell.beforeWrite = () => { /* a backup starts after the hash check */ }
+  const orig = t.shell.run.bind(t.shell)
+  t.shell.run = async (n, c) => c.includes('# HPX write config file') ? { code: 4, output: 'HPX-LOCK-TIMEOUT\n' } : orig(n, c)
+  await refusal(t.service.apply(OWNER, q.id, { name: 'web' }), 'refused')
+})
+
+test('the session drops after the rename: a fresh read showing the planned file is a success, not "write failed"', async () => {
+  const s = rawSetup()
+  const p = await s.service.preview(OWNER, CT, { kind: 'raw', raw: { add: [ADD] } })
+  s.shell.dropAfterWrite = true
+  const r = await s.service.apply(OWNER, p.id, { name: 'web' })
+  assert.equal(r.ok, true, JSON.stringify(r.outcome?.problems))
+  assert.ok((await s.history.list('lxc/901'))[0].outcome === 'ok')
+})
+
+test('temp files an earlier run left behind are reported at the next preview and removed', async () => {
+  const s = rawSetup()
+  s.shell.leftovers['901'] = ['/etc/pve/nodes/node-a/lxc/901.conf.tmp.hpx.4242']
+  const p = await s.service.preview(OWNER, CT, { kind: 'raw', raw: { add: [ADD] } })
+  assert.ok(p.plan.warnings.some(w => /901\.conf\.tmp\.hpx\.4242.*were removed/.test(w)), p.plan.warnings.join('\n'))
+  assert.deepEqual(s.shell.removed, ['/etc/pve/nodes/node-a/lxc/901.conf.tmp.hpx.4242'])
+  assert.ok(s.audits.some(a => a.action === 'guest_config.clean_temp'))
+})
+
+test('CRLF config files, "key = value" lines and dashed keys survive a write and read back through PVE’s grammar', async () => {
+  const s = setup()
+  s.shell.files['901'] = 'arch: amd64\r\nhostname: web\r\nlxc.hook.pre-start: /var/lib/vz/snippets/h.sh\r\nlxc.cgroup2.devices.allow = c 10:200 rwm\r\nmemory: 512\r\n'
+  s.pve.g('lxc', 901).config.lxc = [['lxc.hook.pre-start', '/var/lib/vz/snippets/h.sh'], ['lxc.cgroup2.devices.allow', 'c 10:200 rwm']]
+  const p = await s.service.preview(OWNER, CT, { kind: 'raw', raw: { add: [ADD], remove: [['lxc.cgroup2.devices.allow', 'c 10:200 rwm']] } })
+  assert.deepEqual(p.plan.errors, [])
+  const r = await s.service.apply(OWNER, p.id, { name: 'web' })
+  assert.equal(r.ok, true, JSON.stringify(r.outcome?.problems))
+  assert.equal(s.shell.files['901'], `arch: amd64\r\nhostname: web\r\nlxc.hook.pre-start: /var/lib/vz/snippets/h.sh\r\nmemory: 512\r\n${ADD[0]}: ${ADD[1]}\r\n`)
+  assert.deepEqual(s.pve.g('lxc', 901).config.lxc, [['lxc.hook.pre-start', '/var/lib/vz/snippets/h.sh'], ADD])
+})
+
+test('retention never drops the open GPU-off row or the rows that record managed entries; the toggle state has its own store', async () => {
+  const { prunable, pinned } = await import('../src/lib/guest-config/history/store')
+  const day = 86_400_000, now = 1000 * day
+  const rows = Array.from({ length: 80 }, (_, i) => ({ id: `r${i}`, createdAt: new Date(now - i * 3 * day), meta: i === 70 ? { gpuOff: { removed: {} } } : i === 75 ? { gpuManaged: { dev0: '/dev/dri/renderD128' } } : null }))
+  const drop = prunable(rows, now)
+  assert.ok(!drop.includes('r70') && !drop.includes('r75'))
+  assert.ok(pinned({ meta: { gpuManagedRaw: [] } }))
+  // The toggle comes from the GPU state store, however many other rows there are.
+  const s = makeService()
+  s.shell.probes['node-b'] = FIX('probe-igpu.txt')
+  s.pve.add({ node: 'node-b', type: 'lxc', vmid: 941, status: 'stopped', config: smallCt({ hostname: 'tv' }) })
+  const G = { node: 'node-b', type: 'lxc' as const, vmid: 941 }
+  const gpu = (await s.service.inventory('node-b')).devices.find(d => d.kind === 'gpu')!
+  await s.service.apply(OWNER, (await s.service.preview(OWNER, G, { kind: 'gpu-grant', grant: { deviceId: gpu.id, renderGid: 993 } })).id, { name: 'tv' })
+  await s.service.apply(OWNER, (await s.service.preview(OWNER, G, { kind: 'gpu-off' })).id, { name: 'tv' })
+  for (let i = 0; i < 60; i++) await s.service.apply(OWNER, (await s.service.preview(OWNER, G, { kind: 'edit', edit: { memory: 600 + i } })).id)
+  assert.equal((await s.service.view(G)).gpu.toggle, 'off')
+  assert.equal((await s.service.overview()).find(r => r.vmid === 941)!.gpu.toggle, 'off')
+  const on = await s.service.preview(OWNER, G, { kind: 'gpu-on' })
+  assert.deepEqual(on.plan.errors, [])
+})
