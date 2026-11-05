@@ -19,12 +19,31 @@ export const REMOTE_CATEGORY = 'remote'
 type Reader = (category: string, provider: string) => Promise<Record<string, string>>
 
 const list = (v: string | undefined) => (v ?? '').split(/[,\s]+/).map(s => s.trim()).filter(Boolean)
+const yes = (v: string | undefined) => /^(1|y|yes|on|true)$/i.test((v ?? '').trim())
+
+/**
+ * Every read of a provider credential is audited, without the value. Reads happen on each page load, so one
+ * entry per provider per minute is written, not one per read.
+ */
+type Auditor = (provider: ProviderId) => void
+let auditor: Auditor | null = null
+const lastAudit = new Map<ProviderId, number>()
+export function setCredentialAuditor(fn: ((action: string, resource: string, details: Record<string, unknown>) => Promise<unknown>) | null): void {
+  auditor = fn ? (id => {
+    const t = Date.now()
+    if ((lastAudit.get(id) ?? 0) > t - 60_000) return
+    lastAudit.set(id, t)
+    void fn('remote.credential.read', `${REMOTE_CATEGORY}/${id}`, { provider: id }).catch(() => undefined)
+  }) : null
+}
 
 // OAuth tokens are cached inside a client, so the client is reused while the stored values stay the same.
 const cache = new Map<ProviderId, { sig: string; p: RemoteProvider }>()
 
 export async function providerFromVault(id: ProviderId, read: Reader = getProviderCredentials, fetchFn?: FetchFn): Promise<RemoteProvider | null> {
+  // While locked this throws "HyperProx is locked — sign in to ...": there is nothing to fall back to.
   const c = await read(REMOTE_CATEGORY, id)
+  auditor?.(id)
   const sig = JSON.stringify(c)
   const hit = cache.get(id)
   if (hit && hit.sig === sig && !fetchFn) return hit.p
@@ -42,9 +61,10 @@ export async function providerFromVault(id: ProviderId, read: Reader = getProvid
 
 export async function providerSettingsFromVault(id: ProviderId, read: Reader = getProviderCredentials): Promise<ProviderSettings> {
   const c = await read(REMOTE_CATEGORY, id)
-  if (id === 'tailscale') return { tags: list(c.default_tags) }
+  const dns = { acceptDnsCt: yes(c.default_accept_dns_ct), acceptDnsVm: yes(c.default_accept_dns_vm) }
+  if (id === 'tailscale') return { tags: list(c.default_tags), ...dns }
   const p = await providerFromVault(id, read).catch(() => null)
-  return { tags: list(c.default_groups), managementUrl: p instanceof NetbirdClient ? p.clientManagementUrl : undefined }
+  return { tags: list(c.default_groups), managementUrl: p instanceof NetbirdClient ? p.clientManagementUrl : undefined, ...dns }
 }
 
 /** The Settings Test button: one line, or throws with a reason a person can act on. */

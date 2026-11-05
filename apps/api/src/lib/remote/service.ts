@@ -18,15 +18,20 @@
 // =============================================================================
 
 import { randomUUID } from 'node:crypto'
+import type { NotifyEventInput } from '../notify/types'
 import type { RemoteExecutor } from './executor'
 import type { Inflight, RemoteRecord, RemoteRecordInput, RemoteStore } from './store'
 import {
   DETECT_SCRIPT, SNAPSHOT_SCRIPT, backupDir, backupStateScript, busyScript, dropBackupScript, installScript, osSupport, parseBusy, parseFacts,
   withJobPid,
   parseForwardingBefore, parseNetbirdFlags, parseStatus, restoreStateScript, routingScript, statusScript,
-  uninstallScript, updateScript, upScript, type ClientStatus, type NetMode, type OsFacts, type Support,
+  uninstallScript, updateScript, upScript, configureScript, loginScript, parseLoginUrl, parseTailscalePrefs, TS_PREFS_READBACK,
+  NB_FLAGS_READBACK, type ClientPrefs, type ClientStatus, type NetMode, type OsFacts, type Support,
 } from './scripts'
-import { checkRouting, clientFlags, planInstall, safeHostname, tunFix, type ExistingChoice } from './planner'
+import {
+  DEFAULT_PREFS, checkPrefs, checkRouting, clientFlags, describePrefs, planInstall, safeHostname, tunFix,
+  type ExistingChoice, type VpnPrefs,
+} from './planner'
 import { clusterNetworks, compareSnapshots, onlyFirewall, parseSnapshot, snapshotReady, type NodeSnapshot } from './guard'
 import { StreamRedactor, redactKnownKeyShapes } from './redact'
 import { TAG_RE } from './tailscale'
@@ -39,7 +44,7 @@ export class RemoteInputError extends Error { constructor(m: string) { super(m);
 export class RemoteBusyError extends Error { constructor(m: string, readonly jobId: string) { super(m); this.name = 'RemoteBusyError' } }
 export class RemoteNotFoundError extends Error { constructor(m: string) { super(m); this.name = 'RemoteNotFoundError' } }
 
-export type JobAction = 'install' | 'check' | 'update' | 'routing' | 'uninstall'
+export type JobAction = 'install' | 'check' | 'update' | 'routing' | 'uninstall' | 'configure'
 
 export interface JobRequest {
   action:      JobAction
@@ -50,6 +55,12 @@ export interface JobRequest {
   mode?:       NetMode
   /** What to do with a client HyperProx did not install. Without one, such a machine is refused. */
   existing?:   ExistingChoice
+  /** Install: sign in with an auth/setup key (default), or interactively with the owner's own account. */
+  auth?:       'key' | 'login'
+  /** Install on a guest: let the client manage DNS (MagicDNS / NetBird DNS). Never on a node. */
+  acceptDns?:  boolean
+  /** Configure: the settings to change; the rest stay as they are on the machine. */
+  prefs?:      Partial<VpnPrefs>
   subnets?:    string[]
   exitNode?:   boolean
   acknowledge?: boolean
@@ -73,6 +84,20 @@ export interface RemoteCell {
   managed: boolean
   ip: string | null; version: string | null; lastSeen: string | null; deviceName: string | null
   mode: NetMode | null; routes: string[]; exitNode: boolean; lastError: string | null; adopted: boolean
+  /** MagicDNS / NetBird name. */
+  dnsName: string | null
+  /** When the key (Tailscale) or login (NetBird) expires; null when it does not or is unknown. */
+  expiresAt: string | null
+  /** Expires within 14 days. */
+  expiryWarning: boolean
+  keyExpiryDisabled: boolean
+  /** Waiting for approval at the provider. */
+  pending: boolean
+  tags: string[]
+  /** The client's own settings as last read back from it. */
+  prefs: ClientPrefs | null
+  /** A sign-in link is waiting for this machine (admins can reveal it). */
+  loginPending: boolean
 }
 
 export interface RemoteMachineRow extends Machine { cells: Record<ProviderId, RemoteCell> }
@@ -85,9 +110,17 @@ export interface RemoteOverview {
   attention: Array<{ machineId: string; provider: ProviderId; action: string; since: string; interrupted: boolean }>
   /** Keys whose revocation is overdue and not yet confirmed. */
   pendingRevokes: number
+  /** Devices waiting for approval at a provider (admins only). */
+  pendingDevices: Array<{ provider: ProviderId; id: string; name: string; os: string | null; user: string | null; createdAt: string | null; machineId: string | null }>
 }
 
-export interface ProviderSettings { tags: string[]; managementUrl?: string }
+export interface ProviderSettings {
+  tags: string[]
+  managementUrl?: string
+  /** One-click installs: whether a container / a VM lets the client manage its DNS. Default off. */
+  acceptDnsCt?: boolean
+  acceptDnsVm?: boolean
+}
 
 export interface RemoteDeps {
   store:    RemoteStore
@@ -104,6 +137,10 @@ export interface RemoteDeps {
   sweepEveryMs?: number
   /** After a restart, how long to wait for an interrupted job's script, apt or dpkg to finish. Default 10 min. */
   recoveryWaitMs?: number
+  /** The notification bus (sign-in links, new devices). Default: none. */
+  publish?: (e: NotifyEventInput, o?: { privateOnly?: boolean }) => Promise<unknown>
+  /** How often to look for new devices at each provider. Default 3 minutes. */
+  pollEveryMs?: number
 }
 
 type SupportOk = Extract<Support, { ok: true }>
@@ -113,12 +150,15 @@ export type UndoPlan =
   | { kind: 'remove'; provider: ProviderId; support: SupportOk; deviceId: string | null; nodeKey?: string | null; address?: string | null }
   | { kind: 'restore'; provider: ProviderId; support: SupportOk; deviceId: string | null; previousDeviceId: string | null; nodeKey?: string | null; address?: string | null }
   | { kind: 'restart'; provider: ProviderId }
+  | { kind: 'configure'; provider: ProviderId; previous: VpnPrefs; flags: string[] }
   | { kind: 'routing'; provider: ProviderId; previous: RoutingRequest; flags: string[]; forwarding: 'leave' | 'guest';
       restoreForwarding: string | null; deviceId: string | null; deviceName: string; routeIds: string[] }
 
 const LOG_CAP = 40_000
 const MAX_MACHINES = 100
 const NB_GROUP_RE = /^[A-Za-z0-9 _.-]{1,64}$/
+/** A marker in the known-device table: the provider has been looked at once, so what is new from now on is announced. */
+const SEEDED = '__seeded__'
 const MANUAL_KEY_REVOKE_MS = 30 * 60_000
 const INSTALL_KEY_GRACE_MS = 15 * 60_000
 const DEVICE_CACHE_MS = 30_000
@@ -130,8 +170,21 @@ class GuardError extends Error {
 }
 
 function emptyCell(state: CellState): RemoteCell {
-  return { state, managed: false, ip: null, version: null, lastSeen: null, deviceName: null, mode: null, routes: [], exitNode: false, lastError: null, adopted: false }
+  return {
+    state, managed: false, ip: null, version: null, lastSeen: null, deviceName: null, mode: null, routes: [], exitNode: false, lastError: null,
+    adopted: false, dnsName: null, expiresAt: null, expiryWarning: false, keyExpiryDisabled: false, pending: false, tags: [], prefs: null, loginPending: false,
+  }
 }
+
+/** The settings after a change. Choosing an exit node keeps LAN access on unless the change says otherwise. */
+export function mergePrefs(current: VpnPrefs, change: Partial<VpnPrefs>): VpnPrefs {
+  const out: VpnPrefs = { ...current, ...change, subnets: change.subnets ?? current.subnets }
+  if (change.exitNode && change.exitNode !== current.exitNode && change.exitNodeAllowLan === undefined) out.exitNodeAllowLan = true
+  return out
+}
+
+const EXPIRY_WARN_MS = 14 * 86400_000
+const LOGIN_URL_TTL_MS = 10 * 60_000
 
 const msg = (e: unknown) => String((e as any)?.message ?? e)
 
@@ -145,8 +198,10 @@ export function overviewForRole(ov: RemoteOverview, admin: boolean): RemoteOverv
       ...m,
       cells: Object.fromEntries(Object.entries(m.cells).map(([k, c]) => [k, {
         ...emptyCell(c.state), managed: c.managed, ip: c.ip, version: c.version, lastSeen: c.lastSeen,
+        dnsName: c.dnsName, expiresAt: c.expiresAt, expiryWarning: c.expiryWarning,
       }])) as Record<ProviderId, RemoteCell>,
     })),
+    pendingDevices: [],
   }
 }
 
@@ -175,6 +230,10 @@ export class RemoteAccessService {
   /** Keys of installs running in this process: no sweep touches them, whatever their due time. */
   private liveKeys = new Set<string>()
   private reportedBusy = new Set<string>()
+  /** Sign-in links, in memory only, until they expire or the machine signs in. Never stored, never logged. */
+  private logins = new Map<string, { url: string; until: number }>()
+  private pollTimer: NodeJS.Timeout | null = null
+  private polling: Promise<void> | null = null
 
   constructor(private readonly d: RemoteDeps) {
     this.sleep = d.sleep ?? (ms => new Promise(r => setTimeout(r, ms)))
@@ -195,11 +254,17 @@ export class RemoteAccessService {
       this.sweepTimer = setInterval(() => { void this.sweep() }, this.d.sweepEveryMs ?? 60_000)
       this.sweepTimer.unref?.()
     }
+    void this.pollDevices()
+    if (!this.pollTimer) {
+      this.pollTimer = setInterval(() => { void this.pollDevices() }, this.d.pollEveryMs ?? 3 * 60_000)
+      this.pollTimer.unref?.()
+    }
   }
 
   /** Stop sweeping and wait, at most `timeoutMs`, for revokes already on their way. */
   async close(timeoutMs = 5000): Promise<void> {
     if (this.sweepTimer) { clearInterval(this.sweepTimer); this.sweepTimer = null }
+    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null }
     const all = Promise.allSettled([...this.revoking, ...(this.sweeping ? [this.sweeping] : [])])
     let t: NodeJS.Timeout | undefined
     await Promise.race([all, new Promise<void>(r => { t = setTimeout(r, timeoutMs); t.unref?.() })])
@@ -312,6 +377,14 @@ export class RemoteAccessService {
           deviceName: dev?.name ?? rec?.hostname ?? null,
           mode: rec?.mode ?? null, routes: rec?.routes ?? [], exitNode: rec?.exitNode ?? false, lastError: rec?.lastError ?? null,
           adopted: rec?.adopted ?? false,
+          dnsName: dev?.dnsName ?? null,
+          expiresAt: dev?.expiresAt ?? null,
+          expiryWarning: !!dev?.expiresAt && !dev.keyExpiryDisabled && Date.parse(dev.expiresAt) - this.now() < EXPIRY_WARN_MS,
+          keyExpiryDisabled: dev?.keyExpiryDisabled ?? false,
+          pending: dev?.pending ?? false,
+          tags: dev?.tags ?? [],
+          prefs: rec?.prefs ?? null,
+          loginPending: this.loginFor(m.id, id) !== null,
         }
       }
       return { ...m, cells }
@@ -320,6 +393,10 @@ export class RemoteAccessService {
       providers, machines: rows, activeJobId: this.active,
       attention: inflight.map(x => ({ machineId: x.machineId, provider: x.provider, action: x.action, since: new Date(x.startedAt).toISOString(), interrupted: x.owner !== this.instance })),
       pendingRevokes: pending.filter(r => new Date(r.revokeAfter).getTime() <= this.now()).length,
+      pendingDevices: PROVIDER_IDS.flatMap(id => (lists.get(id) ?? []).filter(d => d.pending).map(d => ({
+        provider: id, id: d.id, name: d.name, os: d.os ?? null, user: d.user ?? null, createdAt: d.createdAt ?? null,
+        machineId: records.find(r => r.provider === id && r.deviceId === d.id)?.machineId ?? null,
+      }))),
     }
   }
 
@@ -347,7 +424,7 @@ export class RemoteAccessService {
 
   startJob(req: JobRequest, by: string): RemoteJob {
     if (!isProviderId(req.provider)) throw new RemoteInputError('provider must be tailscale or netbird')
-    const actions: JobAction[] = ['install', 'check', 'update', 'routing', 'uninstall']
+    const actions: JobAction[] = ['install', 'check', 'update', 'routing', 'uninstall', 'configure']
     if (!actions.includes(req.action)) throw new RemoteInputError(`action must be one of ${actions.join(', ')}`)
     const ids = Array.isArray(req.machineIds) ? [...new Set(req.machineIds.map(String))] : []
     if (!ids.length) throw new RemoteInputError('Choose at least one machine')
@@ -356,6 +433,17 @@ export class RemoteAccessService {
     if (ids.some(i => !/^(node|lxc|qemu|host)-[A-Za-z0-9._-]{1,120}$/.test(i))) throw new RemoteInputError('Unknown machine id format')
     if (req.mode !== undefined && req.mode !== 'kernel' && req.mode !== 'userspace') throw new RemoteInputError('mode must be kernel or userspace')
     if (req.existing !== undefined && req.existing !== 'adopt' && req.existing !== 'replace') throw new RemoteInputError('existing must be adopt or replace')
+    if (req.auth !== undefined && req.auth !== 'key' && req.auth !== 'login') throw new RemoteInputError('auth must be key or login')
+    if (req.acceptDns !== undefined && typeof req.acceptDns !== 'boolean') throw new RemoteInputError('acceptDns must be true or false')
+    if (req.action === 'configure') {
+      const pr = req.prefs
+      if (!pr || typeof pr !== 'object') throw new RemoteInputError('configure needs prefs')
+      for (const k of ['acceptDns', 'acceptRoutes', 'ssh', 'advertiseExitNode', 'exitNodeAllowLan'] as const) {
+        if (pr[k] !== undefined && typeof pr[k] !== 'boolean') throw new RemoteInputError(`${k} must be true or false`)
+      }
+      if (pr.exitNode !== undefined && pr.exitNode !== null && typeof pr.exitNode !== 'string') throw new RemoteInputError('exitNode must be a string or null')
+      if (pr.subnets !== undefined && (!Array.isArray(pr.subnets) || !pr.subnets.every(x => typeof x === 'string'))) throw new RemoteInputError('subnets must be a list of CIDRs')
+    }
     if (req.tags !== undefined) {
       if (!Array.isArray(req.tags) || req.tags.length > 20) throw new RemoteInputError('tags must be a list of at most 20')
       const re = req.provider === 'tailscale' ? TAG_RE : NB_GROUP_RE
@@ -425,8 +513,16 @@ export class RemoteAccessService {
   }
 
   /** Run a script, its output redacted on the way into the log (across chunk boundaries). */
-  private async exec(job: RemoteJob, m: Machine, script: string, o: { secrets?: string[]; netbird?: boolean; timeoutMs?: number } = {}) {
+  private async exec(job: RemoteJob, m: Machine, script: string, o: { secrets?: string[]; netbird?: boolean; timeoutMs?: number; quiet?: string } = {}) {
     const r = new StreamRedactor(o.secrets ?? [], { netbird: o.netbird })
+    // Output that carries a sign-in link is not logged at all, not even redacted.
+    if (o.quiet) {
+      this.appendRaw(job, `[${o.quiet}]\n`)
+      if (m.kind === 'node') script = withJobPid(job.id, script)
+      const res = await this.d.exec.run(m, script, { timeoutMs: o.timeoutMs ?? 15 * 60_000 })
+      if (res.timedOut) throw new Error('timed out')
+      return res
+    }
     // On a node, the script records its pid, so a restart can tell whether it is still running.
     if (m.kind === 'node') script = withJobPid(job.id, script)
     try {
@@ -476,6 +572,10 @@ export class RemoteAccessService {
           `Once you have restored or no longer need it, remove it with: find ${dir} -type f -exec shred -u {} + && rm -rf ${dir}`)
       }
       done.push('put the previous client and its state back')
+    } else if (plan.kind === 'configure') {
+      const r = await this.exec(job, m, configureScript(plan.provider, plan.previous, plan.flags), { netbird: nb, timeoutMs: 2 * 60_000 })
+      if (r.code !== 0) throw new Error('the previous settings could not be put back')
+      done.push('put the previous settings back')
     } else if (plan.kind === 'restart') {
       const r = await this.exec(job, m, plan.provider === 'tailscale' ? 'systemctl restart tailscaled' : 'netbird service restart', { timeoutMs: 60_000 })
       if (r.code !== 0) throw new Error('the client could not be restarted')
@@ -585,6 +685,7 @@ export class RemoteAccessService {
       case 'update':    return this.update(job, req.provider, p, m)
       case 'routing':   return this.routing(job, req, p, settings, m, all)
       case 'uninstall': return this.uninstall(job, req.provider, p, m)
+      case 'configure': return this.configure(job, req, p, settings, m, all)
     }
   }
 
@@ -608,7 +709,11 @@ export class RemoteAccessService {
 
     const nb = req.provider === 'netbird'
     const hostname = safeHostname(m.name)
-    const flags = clientFlags(req.provider, { hostname, kind: m.kind, managementUrl: settings.managementUrl })
+    const prefs: VpnPrefs = { ...DEFAULT_PREFS, acceptDns: !!req.acceptDns }
+    const locked = checkPrefs(m, req.provider, prefs)
+    if (locked) throw new Error(locked)
+    const flags = clientFlags(req.provider, { hostname, kind: m.kind, managementUrl: settings.managementUrl, prefs })
+    const login = req.auth === 'login'
     const undo: { plan: UndoPlan; persist?: () => Promise<void> } = {
       plan: plan.existing
         ? { kind: 'restore', provider: req.provider, support: plan.support, deviceId: null, previousDeviceId: rec?.deviceId ?? null }
@@ -624,6 +729,16 @@ export class RemoteAccessService {
         }
         const inst = await this.exec(job, m, installScript(req.provider, plan.support, plan.mode), { netbird: nb })
         if (inst.code !== 0) throw new Error(`installing the ${PROVIDER_LABEL[req.provider]} package failed (exit ${inst.code}); see the log`)
+        if (login) {
+          // No key at all: the client asks for a sign-in, and the link it prints is kept in memory only.
+          const up = await this.exec(job, m, loginScript(req.provider, flags), { netbird: nb, timeoutMs: 2 * 60_000, quiet: 'output withheld: it contains a sign-in link' })
+          const status = parseStatus(req.provider, up.output)
+          const url = parseLoginUrl(req.provider, up.output)
+          if (undo.plan.kind === 'remove' || undo.plan.kind === 'restore') { undo.plan.nodeKey = status.nodeKey ?? null; undo.plan.address = status.ip; await undo.persist?.() }
+          if (!url && !status.connected) throw new Error(`${PROVIDER_LABEL[req.provider]} did not print a sign-in link and is not connected`)
+          if (url) await this.captureLogin(m, req.provider, url)
+          return { status, dev: undefined as ProviderDevice | undefined }
+        }
         // Due in 15 minutes, so a sweep never revokes it mid-install; the install revokes it the moment `up` ends.
         const { key, pendingId } = await this.mintRecorded(p, req.provider, `HyperProx ${m.id}`, req.tags ?? settings.tags, INSTALL_KEY_GRACE_MS, 'install')
         this.liveKeys.add(key.id)
@@ -665,8 +780,11 @@ export class RemoteAccessService {
       machineId: m.id, provider: req.provider, deviceId: dev?.id ?? null, nodeKey: status.nodeKey ?? dev?.nodeKey ?? null,
       hostname: status.hostname ?? hostname, address: status.ip ?? dev?.addresses[0] ?? null, mode: plan.mode,
       version: status.version, routes: [], exitNode: false, routeIds: [], adopted: false, forwardingBefore: null,
-      connected: status.connected, checkedAt: new Date(this.now()), lastError: null,
+      connected: status.connected, checkedAt: new Date(this.now()), lastError: null, prefs: { ...prefs, tags: req.tags ?? settings.tags, netfilterOff: m.kind === 'node' },
     })
+    if (login && !status.connected) {
+      return `Installed. Waiting for a sign-in: the link is on ${m.name}'s VPN panel (admins only) and was sent to private notification channels. It expires in about 10 minutes.`
+    }
     const where = status.ip ? ` as ${status.ip}` : ''
     return `${status.connected ? 'Connected' : 'Installed, not connected yet'}${where} (${PROVIDER_LABEL[req.provider]} ${status.version ?? '?'}${plan.mode === 'userspace' ? ', userspace networking' : ''})` +
       (plan.existing ? ', replacing the client that was there' : '') +
@@ -708,6 +826,13 @@ export class RemoteAccessService {
     const st = parseStatus(provider, r.output)
     if (!st.installed) return `${PROVIDER_LABEL[provider]} is not installed`
     await this.saveStatus(m, provider, st)
+    if (st.connected) this.logins.delete(`${m.id}|${provider}`)
+    if (st.needsLogin) {
+      // The key expired, or the client was signed out: it is waiting with a sign-in link of its own.
+      const url = parseLoginUrl(provider, r.output)
+      if (url) await this.captureLogin(m, provider, url)
+      return `${PROVIDER_LABEL[provider]} needs a sign-in on ${m.name}${url ? ': the link is on the VPN panel and was sent to private channels. It expires in about 10 minutes.' : '.'}`
+    }
     const dev = this.matchStatus(st, await this.deviceList(provider, p, true).catch(() => []))
     return `${st.connected ? 'Connected' : 'Not connected'}${st.ip ? ` as ${st.ip}` : ''}, version ${st.version ?? '?'}` +
       (dev ? `, matched to “${dev.name}” (last seen ${dev.lastSeen ?? 'never'})` : ', not in the provider\'s device list')
@@ -940,6 +1065,250 @@ export class RemoteAccessService {
     await this.d.exec.addFirewallRule(m.node!, pv.rule)
     await this.d.store.audit('remote.firewall', m.id, { by, provider, rule: pv.rule })
     return { added: true, message: `Added to ${m.name}: accept TCP ${pv.rule.dport} on ${pv.rule.iface} from ${pv.rule.source}.` }
+  }
+
+  // ── VPN: sign-in links ────────────────────────────────────────────────────
+
+  private loginFor(machineId: string, provider: ProviderId): { url: string; until: number } | null {
+    const k = `${machineId}|${provider}`
+    const v = this.logins.get(k)
+    if (v && v.until <= this.now()) { this.logins.delete(k); return null }
+    return v ?? null
+  }
+
+  /** Keep a sign-in link in memory and send it to private channels only, as a sensitive link. */
+  private async captureLogin(m: Machine, provider: ProviderId, url: string): Promise<void> {
+    const until = this.now() + LOGIN_URL_TTL_MS
+    this.logins.set(`${m.id}|${provider}`, { url, until })
+    await this.d.publish?.({
+      type: 'vpn.login.needed', severity: 'warning',
+      title: `${m.name} needs a ${PROVIDER_LABEL[provider]} sign-in`,
+      lines: [`Open the link to sign ${m.name} in to ${PROVIDER_LABEL[provider]}. It expires in about 10 minutes.`],
+      sensitiveLink: url, sensitiveUntil: new Date(until), linkLabel: 'Sign in', where: 'VPN page',
+      subject: { kind: 'machine', name: m.name },
+    }, { privateOnly: true }).catch(() => undefined)
+  }
+
+  /** The sign-in link waiting for a machine, for an admin who has re-confirmed. Audited without the link. */
+  async revealLogin(machineId: string, provider: ProviderId, by: string): Promise<{ url: string; expiresAt: string } | null> {
+    if (!isProviderId(provider)) throw new RemoteInputError('provider must be tailscale or netbird')
+    const v = this.loginFor(machineId, provider)
+    await this.d.store.audit('remote.login-url.reveal', machineId, { by, provider, found: !!v })
+    return v ? { url: v.url, expiresAt: new Date(v.until).toISOString() } : null
+  }
+
+  // ── VPN: one-click install ────────────────────────────────────────────────
+
+  /** What a one-click install would do, in words, with the provider's defaults. Changes nothing. */
+  async installPreview(machineId: string, provider: ProviderId): Promise<{
+    machineId: string; provider: ProviderId; profile: 'node' | 'guest'; tags: string[]; acceptDns: boolean; flags: string[]; steps: string[]
+  }> {
+    if (!isProviderId(provider)) throw new RemoteInputError('provider must be tailscale or netbird')
+    const m = (await this.d.exec.listMachines()).find(x => x.id === machineId)
+    if (!m) throw new RemoteNotFoundError(`No such machine: ${machineId}`)
+    const settings = await this.d.providerSettings(provider)
+    const acceptDns = m.kind === 'node' ? false : m.kind === 'lxc' ? !!settings.acceptDnsCt : !!settings.acceptDnsVm
+    const flags = clientFlags(provider, { hostname: safeHostname(m.name), kind: m.kind, managementUrl: settings.managementUrl, prefs: { acceptDns } })
+    const label = PROVIDER_LABEL[provider]
+    const steps = [
+      `Install ${label} on ${m.name} from the official repository.`,
+      `Sign it in with a single-use key${settings.tags.length ? ` tagged ${settings.tags.join(', ')}` : ''}; the key is revoked straight after.`,
+      ...(m.kind === 'node'
+        ? ['Proxmox node profile: its own DNS and routes, no SSH over the overlay, no firewall rules of its own, never an exit node. Checked before and after, rolled back on any change.']
+        : [acceptDns ? `Let ${label} manage ${m.name}'s DNS so overlay names resolve.` : `Leave ${m.name}'s DNS as it is.`, 'Accept no routes from other devices; offer none.']),
+    ]
+    return { machineId, provider, profile: m.kind === 'node' ? 'node' : 'guest', tags: settings.tags, acceptDns, flags, steps }
+  }
+
+  /** One click: install with the provider's defaults. Admin and re-confirmation are checked by the route. */
+  async oneClickInstall(machineId: string, provider: ProviderId, by: string): Promise<RemoteJob> {
+    const pv = await this.installPreview(machineId, provider)
+    return this.startJob({ action: 'install', provider, machineIds: [machineId], tags: pv.tags, acceptDns: pv.acceptDns }, by)
+  }
+
+  // ── VPN: per-machine settings ─────────────────────────────────────────────
+
+  /** The client's settings as it reports them now. */
+  private async readPrefs(job: RemoteJob, m: Machine, provider: ProviderId, rec: RemoteRecord): Promise<VpnPrefs> {
+    if (provider === 'tailscale') {
+      const r = await this.exec(job, m, TS_PREFS_READBACK, { timeoutMs: 60_000 })
+      const p = parseTailscalePrefs(r.output)
+      if (!p) throw new Error('could not read Tailscale\'s settings back from the machine')
+      return { acceptDns: p.acceptDns, acceptRoutes: p.acceptRoutes, ssh: p.ssh, advertiseExitNode: p.advertiseExitNode, exitNode: p.exitNode, exitNodeAllowLan: p.exitNodeAllowLan, subnets: p.subnets }
+    }
+    const r = await this.exec(job, m, NB_FLAGS_READBACK, { timeoutMs: 60_000, netbird: true })
+    const f = parseNetbirdFlags(r.output)
+    if (!f.config) throw new Error('could not tell which config file the running NetBird daemon uses')
+    return {
+      acceptDns: f.DisableDNS === false, acceptRoutes: f.DisableClientRoutes === false && !rec.prefs?.exitNode, ssh: f.ServerSSHAllowed === true,
+      advertiseExitNode: rec.exitNode, exitNode: rec.prefs?.exitNode ?? null, exitNodeAllowLan: rec.prefs?.exitNodeAllowLan ?? true, subnets: rec.routes,
+    }
+  }
+
+  /** Read the machine's settings now, and say in words what `change` would do. Changes nothing. */
+  async configurePreview(machineId: string, provider: ProviderId, change: Partial<VpnPrefs>): Promise<{ current: VpnPrefs; desired: VpnPrefs; changes: string[]; refusal: string | null }> {
+    if (!isProviderId(provider)) throw new RemoteInputError('provider must be tailscale or netbird')
+    const m = (await this.d.exec.listMachines()).find(x => x.id === machineId)
+    if (!m) throw new RemoteNotFoundError(`No such machine: ${machineId}`)
+    const rec = await this.record(m, provider).catch(e => { throw new RemoteInputError(msg(e)) })
+    const scratch: RemoteJob = { id: randomUUID(), action: 'configure', provider, by: 'preview', status: 'running', steps: [], log: '', startedAt: new Date(this.now()).toISOString() }
+    const current = await this.readPrefs(scratch, m, provider, rec)
+    const desired = mergePrefs(current, change)
+    const refusal = checkPrefs(m, provider, desired) ?? (desired.subnets.length || desired.advertiseExitNode ? checkRouting(m, { subnets: desired.subnets, exitNode: desired.advertiseExitNode }, true) : null)
+    return { current, desired, changes: describePrefs(m, provider, current, desired), refusal }
+  }
+
+  private async configure(job: RemoteJob, req: JobRequest, p: RemoteProvider, settings: ProviderSettings, m: Machine, all: Machine[]): Promise<string> {
+    const provider = req.provider
+    const rec = await this.record(m, provider)
+    const current = await this.readPrefs(job, m, provider, rec)
+    const desired = mergePrefs(current, req.prefs ?? {})
+    const refusal = checkPrefs(m, provider, desired)
+    if (refusal) throw new Error(refusal)
+    const words = describePrefs(m, provider, current, desired)
+    if (!words.length) return 'Nothing to change.'
+
+    // Offering routes or an exit node goes through the routing action, with its overlap checks and approvals.
+    const routingChanged = desired.advertiseExitNode !== current.advertiseExitNode ||
+      JSON.stringify([...desired.subnets].sort()) !== JSON.stringify([...current.subnets].sort())
+    if (routingChanged) {
+      await this.routing(job, { ...req, action: 'routing', subnets: desired.subnets, exitNode: desired.advertiseExitNode, acknowledge: req.acknowledge }, p, settings, m, all)
+    }
+    const clientChanged = (['acceptDns', 'acceptRoutes', 'ssh', 'exitNode', 'exitNodeAllowLan'] as const).some(k => desired[k] !== current[k])
+    if (clientChanged) {
+      const routing = { subnets: desired.subnets, exitNode: desired.advertiseExitNode }
+      const flagsFor = (pr: VpnPrefs) => clientFlags(provider, { hostname: safeHostname(m.name), kind: m.kind, managementUrl: settings.managementUrl, routing, prefs: pr })
+      const undo: { plan: UndoPlan; persist?: () => Promise<void> } = { plan: { kind: 'configure', provider, previous: current, flags: flagsFor(current) } }
+      await this.guarded(job, m, provider, p, 'configure', undo, async () => {
+        const out = await this.exec(job, m, configureScript(provider, desired, flagsFor(desired)), { netbird: provider === 'netbird', timeoutMs: 2 * 60_000 })
+        if (out.code !== 0) throw new Error(`changing ${PROVIDER_LABEL[provider]}'s settings failed (exit ${out.code}); see the log`)
+        // Confirmed from the client itself, never from the flags sent.
+        const wrong: string[] = []
+        if (provider === 'tailscale') {
+          const got = parseTailscalePrefs(out.output)
+          if (!got) throw new Error('could not read Tailscale\'s settings back, so the change is not confirmed')
+          for (const k of ['acceptDns', 'acceptRoutes', 'ssh', 'exitNodeAllowLan'] as const) if (got[k] !== desired[k]) wrong.push(`${k} is ${got[k]}`)
+          if (!!got.exitNode !== !!desired.exitNode) wrong.push(`the exit node is ${got.exitNode ?? 'none'}`)
+        } else {
+          const f = parseNetbirdFlags(out.output)
+          if (!f.config) throw new Error('could not tell which config file the running NetBird daemon uses, so the change is not confirmed')
+          if (f.DisableDNS !== !desired.acceptDns) wrong.push(`DisableDNS is ${f.DisableDNS}`)
+          if (f.DisableClientRoutes !== !(desired.acceptRoutes || !!desired.exitNode)) wrong.push(`DisableClientRoutes is ${f.DisableClientRoutes}`)
+          if ((f.ServerSSHAllowed ?? false) !== desired.ssh) wrong.push(`ServerSSHAllowed is ${f.ServerSSHAllowed}`)
+          if (desired.exitNode && !new RegExp(`^HP_NB_NET .*${desired.exitNode.replace(/[^A-Za-z0-9_-]/g, '')}.*(selected|✓|true)`, 'im').test(out.output)) wrong.push('the exit node is not selected')
+          if (desired.ssh !== current.ssh && rec.deviceId && p.setSsh) await p.setSsh({ id: rec.deviceId, name: rec.hostname ?? m.name, addresses: [], online: true, lastSeen: null, version: null }, desired.ssh)
+        }
+        if (wrong.length) throw new Error(`the client did not take the change: ${wrong.join(', ')}`)
+      }, { undoOnFailure: true })
+    }
+    const { installedAt: _i, updatedAt: _u, ...base } = await this.record(m, provider)
+    await this.d.store.upsert({ ...base, prefs: { ...desired, tags: rec.prefs?.tags ?? [], netfilterOff: m.kind === 'node' } })
+    await this.d.store.audit('remote.configure', m.id, { by: job.by, provider, changes: words })
+    return words.join(' ')
+  }
+
+  // ── VPN: devices at the provider ──────────────────────────────────────────
+
+  private async machineDevice(machineId: string, provider: ProviderId): Promise<{ p: RemoteProvider; dev: ProviderDevice; rec: RemoteRecord }> {
+    if (!isProviderId(provider)) throw new RemoteInputError('provider must be tailscale or netbird')
+    const rec = await this.d.store.get(machineId, provider)
+    if (!rec?.deviceId) throw new RemoteNotFoundError(`No ${PROVIDER_LABEL[provider]} device is recorded for ${machineId}`)
+    const p = await this.d.provider(provider)
+    if (!p) throw new RemoteInputError(`${PROVIDER_LABEL[provider]} is not configured`)
+    return { p, rec, dev: { id: rec.deviceId, name: rec.hostname ?? machineId, addresses: [], online: true, lastSeen: null, version: null } }
+  }
+
+  /** Turn key expiry (Tailscale) or login expiration (NetBird) off for a server, or back on. */
+  async setKeyExpiry(machineId: string, provider: ProviderId, disabled: boolean, by: string): Promise<string> {
+    const { p, dev } = await this.machineDevice(machineId, provider)
+    if (!p.setKeyExpiry) throw new RemoteInputError(`${PROVIDER_LABEL[provider]} cannot change key expiry`)
+    await p.setKeyExpiry(dev, disabled)
+    this.devices.delete(provider)
+    await this.d.store.audit('remote.key-expiry', machineId, { by, provider, disabled })
+    return disabled ? 'Key expiry is off: this machine stays signed in until you remove it.' : 'Key expiry is on again.'
+  }
+
+  /** Replace the device's Tailscale tags or NetBird groups. */
+  async setTags(machineId: string, provider: ProviderId, tags: string[], by: string): Promise<string> {
+    if (!Array.isArray(tags) || tags.length > 20 || !tags.every(t => typeof t === 'string' && (provider === 'tailscale' ? TAG_RE : NB_GROUP_RE).test(t))) {
+      throw new RemoteInputError(provider === 'tailscale' ? 'Tags look like tag:server (at most 20)' : 'Group names are letters, numbers, spaces, dots and dashes (at most 20)')
+    }
+    const { p, dev } = await this.machineDevice(machineId, provider)
+    if (!p.setTags) throw new RemoteInputError(`${PROVIDER_LABEL[provider]} cannot change tags`)
+    await p.setTags(dev, tags)
+    this.devices.delete(provider)
+    await this.d.store.audit('remote.tags', machineId, { by, provider, tags })
+    return tags.length ? `Now ${tags.join(', ')}.` : 'No tags or groups.'
+  }
+
+  /** Approve a device that waits for approval (any device at the provider, managed or not). */
+  async approveDevice(provider: ProviderId, deviceId: string, by: string): Promise<string> {
+    if (!isProviderId(provider)) throw new RemoteInputError('provider must be tailscale or netbird')
+    const p = await this.d.provider(provider)
+    if (!p?.approve) throw new RemoteInputError(`${PROVIDER_LABEL[provider]} is not configured or cannot approve devices`)
+    const dev = (await this.deviceList(provider, p, true)).find(d => d.id === deviceId)
+    if (!dev) throw new RemoteNotFoundError(`No such ${PROVIDER_LABEL[provider]} device: ${deviceId}`)
+    await p.approve(dev)
+    this.devices.delete(provider)
+    await this.d.store.audit('remote.device.approve', `${provider}:${deviceId}`, { by, name: dev.name })
+    return `Approved ${dev.name}.`
+  }
+
+  /** Remove a device from the provider by its id. The machine, if HyperProx manages it, keeps its client. */
+  async removeDevice(provider: ProviderId, deviceId: string, by: string): Promise<string> {
+    if (!isProviderId(provider)) throw new RemoteInputError('provider must be tailscale or netbird')
+    const p = await this.d.provider(provider)
+    if (!p) throw new RemoteInputError(`${PROVIDER_LABEL[provider]} is not configured`)
+    const dev = (await this.deviceList(provider, p, true)).find(d => d.id === deviceId)
+    if (!dev) throw new RemoteNotFoundError(`No such ${PROVIDER_LABEL[provider]} device: ${deviceId}`)
+    await p.deleteDevice(deviceId)
+    this.devices.delete(provider)
+    await this.d.store.audit('remote.device.remove', `${provider}:${deviceId}`, { by, name: dev.name })
+    return `Removed ${dev.name} from ${PROVIDER_LABEL[provider]}.`
+  }
+
+  /**
+   * Look for devices that appeared at each provider since the last look, and announce each one once. Devices
+   * HyperProx installed are expected and not announced. Paused while locked (the provider cannot be read).
+   */
+  pollDevices(): Promise<void> {
+    if (this.polling) return this.polling
+    this.polling = (async () => {
+      try {
+        for (const id of PROVIDER_IDS) {
+          let p: RemoteProvider | null
+          try { p = await this.d.provider(id) } catch { return }      // locked: resume after unlock
+          if (!p) continue
+          let list: ProviderDevice[]
+          try { list = await this.deviceList(id, p, true) } catch { continue }
+          const known = new Set(await this.d.store.listKnownDevices(id))
+          const fresh = list.filter(d => !known.has(d.id))
+          if (!fresh.length) { if (!known.size) await this.d.store.addKnownDevices(id, [SEEDED]); continue }
+          if (known.size) {
+            const ours = new Set((await this.d.store.list()).filter(r => r.provider === id && r.deviceId).map(r => r.deviceId!))
+            for (const d of fresh.filter(d => !ours.has(d.id))) {
+              await this.d.publish?.({
+                type: 'vpn.device.new', severity: d.pending ? 'warning' : 'info',
+                title: `New ${PROVIDER_LABEL[id]} device: ${d.name}`,
+                lines: [
+                  `${d.os ? `${d.os}, ` : ''}added by ${d.user ?? 'an unknown user'}.`,
+                  d.pending ? 'It is waiting for approval: approve or remove it on the VPN page.' : 'Review it on the VPN page; remove it there if you do not know it.',
+                ],
+                link: '/vpn', linkLabel: d.pending ? 'Approve or remove' : 'Review', where: 'VPN page',
+                subject: { kind: 'device', name: d.name }, fingerprint: `vpn.device.new:${id}:${d.id}`,
+              }).catch(() => undefined)
+            }
+          }
+          // The first look only learns what is there; from then on each new device is announced once.
+          await this.d.store.addKnownDevices(id, [...fresh.map(d => d.id), ...(known.size ? [] : [SEEDED])])
+        }
+      } catch (e) {
+        this.d.log?.(`[remote] device poll: ${msg(e)}`)
+      } finally {
+        this.polling = null
+      }
+    })()
+    return this.polling
   }
 
   // ── Host keys: every script goes only to a pinned key ─────────────────────

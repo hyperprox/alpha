@@ -340,6 +340,7 @@ model RemoteAccessDevice {
   routeIds    String[]  // NetBird routes HyperProx created
   adopted     Boolean   @default(false)   // already there; HyperProx only recorded it
   forwardingBefore String?               // a guest's "v4:v6" forwarding before routing went on
+  prefs       Json?     // the client's own settings as last read back (no secrets)
   connected   Boolean?
   checkedAt   DateTime?
   lastError   String?

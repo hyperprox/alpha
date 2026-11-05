@@ -10,9 +10,9 @@
 // =============================================================================
 
 import { randomUUID } from 'node:crypto'
-import type { PrismaClient } from '@prisma/client'
+import { Prisma, type PrismaClient } from '@prisma/client'
 import type { ProviderId } from './types'
-import type { NetMode } from './scripts'
+import type { ClientPrefs, NetMode } from './scripts'
 
 export interface RemoteRecord {
   machineId:  string
@@ -32,13 +32,15 @@ export interface RemoteRecord {
   /** A guest's forwarding before HyperProx turned routing on, "v4:v6", restored when it goes off. */
   forwardingBefore: string | null
   connected:  boolean | null
+  /** The client's own settings, as last read back from it. */
+  prefs:      ClientPrefs | null
   checkedAt:  Date | null
   lastError:  string | null
   installedAt: Date
   updatedAt:  Date
 }
 
-export type RemoteRecordInput = Omit<RemoteRecord, 'installedAt' | 'updatedAt'>
+export type RemoteRecordInput = Omit<RemoteRecord, 'installedAt' | 'updatedAt' | 'prefs'> & { prefs?: ClientPrefs | null }
 
 export interface PendingRevoke {
   id: string; provider: ProviderId; keyId: string; revokeAfter: Date; reason: string
@@ -68,6 +70,10 @@ export interface RemoteStore {
   updateInflightUndo(id: string, undo: unknown): Promise<void>
   listInflight(): Promise<Inflight[]>
   removeInflight(id: string): Promise<void>
+
+  /** Device ids the VPN poller has already seen at a provider. */
+  listKnownDevices(provider: ProviderId): Promise<string[]>
+  addKnownDevices(provider: ProviderId, ids: string[]): Promise<void>
 }
 
 const clone = <T>(x: T): T => JSON.parse(JSON.stringify(x))
@@ -76,6 +82,7 @@ export class MemoryRemoteStore implements RemoteStore {
   private rows = new Map<string, RemoteRecord>()
   readonly pending = new Map<string, PendingRevoke>()
   readonly inflight = new Map<string, Inflight>()
+  readonly known = new Map<string, Set<string>>()
   readonly audits: Array<{ action: string; resource: string; details: Record<string, any> }> = []
   private key(m: string, p: string) { return `${m}|${p}` }
 
@@ -83,7 +90,7 @@ export class MemoryRemoteStore implements RemoteStore {
   async get(m: string, p: ProviderId) { const r = this.rows.get(this.key(m, p)); return r ? { ...r } : null }
   async upsert(r: RemoteRecordInput) {
     const prev = this.rows.get(this.key(r.machineId, r.provider))
-    const row: RemoteRecord = { ...r, installedAt: prev?.installedAt ?? new Date(), updatedAt: new Date() }
+    const row: RemoteRecord = { ...r, prefs: r.prefs === undefined ? prev?.prefs ?? null : r.prefs, installedAt: prev?.installedAt ?? new Date(), updatedAt: new Date() }
     this.rows.set(this.key(r.machineId, r.provider), row)
     return { ...row }
   }
@@ -110,6 +117,9 @@ export class MemoryRemoteStore implements RemoteStore {
   async updateInflightUndo(id: string, undo: unknown) { const x = this.inflight.get(id); if (x) x.undo = clone(undo) }
   async listInflight() { return [...this.inflight.values()].map(x => clone(x)) }
   async removeInflight(id: string) { this.inflight.delete(id) }
+
+  async listKnownDevices(p: ProviderId) { return [...(this.known.get(p) ?? [])] }
+  async addKnownDevices(p: ProviderId, ids: string[]) { const s = this.known.get(p) ?? new Set(); ids.forEach(i => s.add(i)); this.known.set(p, s) }
 }
 
 export class PrismaRemoteStore implements RemoteStore {
@@ -123,7 +133,7 @@ export class PrismaRemoteStore implements RemoteStore {
       machineId: x.machineId, provider: x.provider, deviceId: x.deviceId, nodeKey: x.nodeKey, hostname: x.hostname,
       address: x.address, mode: x.mode === 'userspace' ? 'userspace' : 'kernel', version: x.version,
       routes: x.routes ?? [], exitNode: !!x.exitNode, routeIds: x.routeIds ?? [], adopted: !!x.adopted,
-      forwardingBefore: x.forwardingBefore ?? null, connected: x.connected,
+      forwardingBefore: x.forwardingBefore ?? null, connected: x.connected, prefs: x.prefs ?? null,
       checkedAt: x.checkedAt, lastError: x.lastError, installedAt: x.installedAt, updatedAt: x.updatedAt,
     }
   }
@@ -134,9 +144,12 @@ export class PrismaRemoteStore implements RemoteStore {
     return x ? PrismaRemoteStore.row(x) : null
   }
   async upsert(r: RemoteRecordInput) {
+    // A JSON column is cleared with Prisma's DbNull marker, not a plain null; an absent prefs is left as it is.
+    const { prefs, ...rest } = r
+    const data: any = { ...rest, ...(prefs === undefined ? {} : { prefs: prefs === null ? Prisma.DbNull : prefs }) }
     const x = await this.t.upsert({
       where: { machineId_provider: { machineId: r.machineId, provider: r.provider } },
-      create: { ...r }, update: { ...r },
+      create: data, update: data,
     })
     return PrismaRemoteStore.row(x)
   }
@@ -160,4 +173,11 @@ export class PrismaRemoteStore implements RemoteStore {
   async updateInflightUndo(id: string, undo: unknown) { await this.inf.updateMany({ where: { id }, data: { undo: undo as any } }) }
   async listInflight() { return (await this.inf.findMany({ orderBy: { startedAt: 'asc' } })) as Inflight[] }
   async removeInflight(id: string) { await this.inf.deleteMany({ where: { id } }) }
+
+  async listKnownDevices(provider: ProviderId) {
+    return (await (this.db as any).remoteAccessKnownDevice.findMany({ where: { provider }, select: { deviceId: true } })).map((r: any) => String(r.deviceId))
+  }
+  async addKnownDevices(provider: ProviderId, ids: string[]) {
+    if (ids.length) await (this.db as any).remoteAccessKnownDevice.createMany({ data: ids.map(deviceId => ({ provider, deviceId })), skipDuplicates: true })
+  }
 }

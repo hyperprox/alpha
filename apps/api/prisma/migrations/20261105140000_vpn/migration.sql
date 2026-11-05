@@ -4,6 +4,9 @@
 -- AlterTable
 ALTER TABLE "NotifyChannel" ADD COLUMN "private" BOOLEAN NOT NULL DEFAULT false;
 
+-- AlterTable
+ALTER TABLE "RemoteAccessDevice" ADD COLUMN "prefs" JSONB;
+
 -- CreateTable
 CREATE TABLE "RemoteAccessKnownDevice" (
     "provider" TEXT NOT NULL,
