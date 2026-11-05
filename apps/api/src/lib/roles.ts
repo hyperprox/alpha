@@ -95,6 +95,31 @@ const HA_READ = /^\/api\/ha\/(overview|badges|guests\/(lxc|qemu)\/\d+(\/prefligh
 const HA_RECONFIRM = /^\/api\/ha\/(plans\/[^/]+\/apply|nodes\/[^/]+\/hostkey\/pin)$/
 // Role management (no routes yet; reserved so they are owner-only from day one).
 const ROLE_MGMT = /^\/api\/(auth\/)?roles(\/|$)/
+// Remote access: what opens a tunnel into the cluster, routes through a machine, removes a device or shows
+// a key. Re-confirmed, which also keeps API tokens out (a token cannot re-confirm). Check and update are not,
+// except on a node.
+const REMOTE_RECONFIRM: Array<[string, RegExp]> = [
+  ['POST',   /^\/api\/remote\/jobs$/],
+  ['POST',   /^\/api\/remote\/machines\/[^/]+\/(tailscale|netbird)\/(routing|manual-key)$/],
+  ['DELETE', /^\/api\/remote\/machines\/[^/]+\/(tailscale|netbird)$/],
+  ['POST',   /^\/api\/remote\/machines\/[^/]+\/tun$/],
+  ['POST',   /^\/api\/remote\/machines\/[^/]+\/(tailscale|netbird)\/firewall$/],
+  ['POST',   /^\/api\/remote\/machines\/[^/]+\/host-key$/],
+  // VPN page and the /v1 API other pages use.
+  ['POST',   /^\/api\/remote\/v1\/machines\/[^/]+\/(tailscale|netbird)\/(install|settings)$/],
+  ['DELETE', /^\/api\/remote\/v1\/machines\/[^/]+\/(tailscale|netbird)$/],
+  ['POST',   /^\/api\/remote\/machines\/[^/]+\/(tailscale|netbird)\/(key-expiry|tags|login-url)$/],
+  ['POST',   /^\/api\/remote\/devices\/(tailscale|netbird)\/[^/]+\/approve$/],
+  ['DELETE', /^\/api\/remote\/devices\/(tailscale|netbird)\/[^/]+$/],
+  // On a Proxmox node even a check or an update is re-confirmed: it runs a script on the hypervisor.
+  ['POST',   /^\/api\/remote\/machines\/node-[^/]+\/(tailscale|netbird)\/(check|update)$/],
+]
+// WireGuard (/api/vpn): admin for every call, reads included; every change, reveal or rotation re-confirmed.
+// Previews (POST .../preview) only read, so they are not.
+const VPN = /^\/api\/vpn(\/|$)/
+const VPN_PREVIEW = /^\/api\/vpn\/wg\/router\/peers\/preview$/
+// Remote access job output names hosts, packages and addresses: admins only, like Updates.
+const REMOTE_JOBS = /^\/api\/remote\/((v1\/)?jobs(\/|$)|machines\/[^/]+\/((tailscale|netbird)\/firewall|host-key)$|v1\/machines\/[^/]+\/(tailscale|netbird)\/(install-preview|settings)$)/
 
 /**
  * The role a request needs, or null when it needs no session.
@@ -129,6 +154,8 @@ export function requiredRole(method: string, path: string): Role | null {
     if (p === '/api/settings' || p.startsWith('/api/settings/')) return 'admin'
     // Certificates: the inventory maps every endpoint, and the history names keys and targets.
     if (p === '/api/certs' || p.startsWith('/api/certs/')) return 'admin'
+    if (REMOTE_JOBS.test(p)) return 'admin'
+    if (VPN.test(p)) return 'admin'
     return 'viewer'
   }
 
@@ -150,5 +177,7 @@ export function needsReconfirm(method: string, path: string): boolean {
   if (m === 'POST' && HA_RECONFIRM.test(p)) return true
   // Creating or revoking an API token.
   if ((m === 'POST' || m === 'DELETE') && TOKENS.test(p)) return true
+  for (const [rm, re] of REMOTE_RECONFIRM) if (m === rm && re.test(p)) return true
+  if (m !== 'GET' && m !== 'HEAD' && VPN.test(p) && !VPN_PREVIEW.test(p)) return true
   return false
 }

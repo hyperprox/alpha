@@ -9,6 +9,7 @@
 //  out through here: views carry a mask, results carry a status and a code.
 // =============================================================================
 
+import { unmarkPlain } from './render'
 import crypto from 'node:crypto'
 import dns from 'node:dns/promises'
 import type { PrismaClient } from '@prisma/client'
@@ -45,6 +46,8 @@ export interface ChannelInput {
   quietHours?: QuietHours | null
   lanOverride?: boolean
   usableWhileLocked?: boolean
+  /** Only private channels receive sign-in links. */
+  private?: boolean
   chatId?: string
   // Secrets: required on create; blank or absent on edit keeps the stored value.
   url?: string
@@ -57,7 +60,7 @@ export interface ChannelInput {
 
 export interface ChannelView {
   id: string; name: string; kind: ChannelKind; enabled: boolean; minSeverity: Severity; eventFilter: EventFilter
-  quietHours: QuietHours | null; lanOverride: boolean; usableWhileLocked: boolean; chatId: string | null
+  quietHours: QuietHours | null; lanOverride: boolean; usableWhileLocked: boolean; private: boolean; chatId: string | null
   mask: string; secretReadable: boolean; hasToken: boolean; hasSigningSecret: boolean
   lastResult: (DeliveryResult & { text: string }) | null; lastSentAt: string | null; failingSince: string | null
   seededFrom: string | null; createdBy: string; createdAt: string; updatedAt: string
@@ -192,7 +195,7 @@ export class NotifyService {
       if (have.has(e.id)) continue
       await this.d.store.createChannel({
         id: e.id, name: e.name, kind: e.kind, enabled: e.enabled, minSeverity: e.minSeverity, eventFilter: e.eventFilter,
-        quietHours: e.quietHours, lanOverride: e.lanOverride, usableWhileLocked: true, nonSecret: e.nonSecret,
+        quietHours: e.quietHours, lanOverride: e.lanOverride, usableWhileLocked: true, private: false, nonSecret: e.nonSecret,
         seededFrom: e.id === SEED_IDS.lock ? 'lock-alert' : null, createdBy: 'migration',
       })
     }
@@ -235,7 +238,7 @@ export class NotifyService {
         const id = seedId(g.sources)
         const rec = {
           id, name: seedName(g.sources), kind: shape.kind, enabled: true, minSeverity: min, eventFilter: families as EventFilter,
-          quietHours: null, lanOverride: shape.lanOverride, usableWhileLocked: false, nonSecret: {},
+          quietHours: null, lanOverride: shape.lanOverride, usableWhileLocked: false, private: false, nonSecret: {},
           seededFrom: g.sources.map(s => s.key).join('+'), createdBy: 'migration',
         }
         const now = this.now()
@@ -293,7 +296,7 @@ export class NotifyService {
     const secret = this.d.secrets.get(c)
     return {
       id: c.id, name: c.name, kind: c.kind, enabled: c.enabled, minSeverity: c.minSeverity, eventFilter: c.eventFilter,
-      quietHours: c.quietHours, lanOverride: c.lanOverride, usableWhileLocked: c.usableWhileLocked, chatId: c.nonSecret.chatId ?? null,
+      quietHours: c.quietHours, lanOverride: c.lanOverride, usableWhileLocked: c.usableWhileLocked, private: !!c.private, chatId: c.nonSecret.chatId ?? null,
       mask: maskSecret(c.kind, secret, c.nonSecret), secretReadable: !!secret, hasToken: !!secret?.token,
       hasSigningSecret: !!secret?.signingSecret,
       lastResult: c.lastResult ? { ...c.lastResult, text: describeResult(c.lastResult) } : null,
@@ -373,7 +376,7 @@ export class NotifyService {
     return {
       fields: {
         name, kind: k, enabled: input.enabled ?? prev?.enabled ?? true, minSeverity, eventFilter, quietHours,
-        lanOverride, usableWhileLocked, nonSecret: k === 'telegram' ? { chatId } : {},
+        lanOverride, usableWhileLocked, private: !!(input.private ?? prev?.private ?? false), nonSecret: k === 'telegram' ? { chatId } : {},
       },
       secret: changed ? next : null,
     }
@@ -437,7 +440,7 @@ export class NotifyService {
 
   async deliveries(channelId: string | undefined, limit = 50): Promise<DeliveryView[]> {
     return (await this.d.store.listOutbox({ channelId, limit: Math.min(Math.max(1, limit), 200) })).map(r => ({
-      id: r.id, channelId: r.channelId, type: r.type, severity: r.severity, title: r.payload?.title ?? '', status: r.status,
+      id: r.id, channelId: r.channelId, type: r.type, severity: r.severity, title: unmarkPlain(r.payload?.title ?? ''), status: r.status,
       attempts: r.attempts, httpStatus: r.httpStatus, errorCode: r.errorCode, createdAt: r.createdAt.toISOString(), sentAt: iso(r.sentAt),
       text: r.status === 'sent' ? describeResult({ ok: true, status: r.httpStatus ?? undefined })
         : r.status === 'failed' ? describeResult({ ok: false, status: r.httpStatus ?? undefined, code: r.errorCode ?? undefined })

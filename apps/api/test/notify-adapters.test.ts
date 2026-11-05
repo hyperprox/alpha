@@ -124,3 +124,24 @@ test('generic webhook: the documented payload, and an HMAC signature when a secr
   assert.equal(signed.headers['X-HyperProx-Signature'], `sha256=${want}`)
   assert.equal(signed.body.includes('s3cret'), false)
 })
+
+test('values from outside (a device name, OS, user) are plain text on Discord and Teams: no markdown, no links', async () => {
+  const { toMessage, groupMessage } = await import('../src/lib/notify/render')
+  const name = '**pwn** [click](https://evil.example.com/x) `code` _i_ ~s~ | > #h'
+  const user = 'mallory <https://evil.example.com/y>'
+  const m = toMessage({ type: 'vpn.device.new', severity: 'info', title: `New Tailscale device: ${name}`, lines: [`Linux, added by ${user}.`], link: '/vpn', plain: [name, user] }, { publicUrl: 'https://hyperprox.example.com' })
+  for (const kind of ['discord', 'teams'] as const) {
+    const body = buildRequest(kind, { url: kind === 'discord' ? 'https://discord.com/api/webhooks/1/abc' : 'https://prod-01.westus.logic.azure.com/workflows/x' }, {}, m).body
+    const text = JSON.stringify(JSON.parse(body))
+    assert.ok(!text.includes('https://evil'), `${kind}: no link to click: ${text}`)
+    assert.ok(!text.includes('**pwn**') && !text.includes('[click](') && !text.includes('`code`'), `${kind}: markdown escaped: ${text}`)
+    assert.match(text, /hyperprox\.example\.com\/vpn/, `${kind}: HyperProx's own link is intact`)
+    assert.match(text, /pwn/); assert.match(text, /mallory/)
+  }
+  // The same values are untouched where nothing renders markdown.
+  const ntfy = JSON.stringify(buildRequest('ntfy', { url: 'https://ntfy.example.com/t' }, {}, m))
+  assert.ok(ntfy.includes('mallory') && !/\\uE000|\\uE001|\uE000|\uE001/.test(ntfy), ntfy)
+  // A grouped message keeps them plain too.
+  const g = groupMessage([m, { ...m, id: 'evt_2' }], { publicUrl: 'https://hyperprox.example.com' })
+  assert.ok(!buildRequest('discord', { url: 'https://discord.com/api/webhooks/1/abc' }, {}, g).body.includes('https://evil'))
+})
