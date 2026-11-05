@@ -1,6 +1,6 @@
 {
   "uid": "hyperprox-cluster",
-  "title": "HyperProx \u2014 Cluster Overview",
+  "title": "HyperProx — Cluster Overview",
   "tags": [
     "hyperprox"
   ],
@@ -11,7 +11,7 @@
     {
       "id": 1,
       "type": "timeseries",
-      "title": "CPU Usage \u2014 All Nodes",
+      "title": "CPU Usage — All Nodes",
       "gridPos": {
         "x": 0,
         "y": 0,
@@ -36,7 +36,7 @@
     {
       "id": 2,
       "type": "timeseries",
-      "title": "Memory Usage \u2014 All Nodes",
+      "title": "Memory Usage — All Nodes",
       "gridPos": {
         "x": 12,
         "y": 0,
@@ -61,7 +61,7 @@
     {
       "id": 3,
       "type": "timeseries",
-      "title": "Network I/O \u2014 All Nodes",
+      "title": "Network I/O — All Nodes",
       "gridPos": {
         "x": 0,
         "y": 8,
@@ -72,12 +72,12 @@
         {
           "datasource": "Prometheus",
           "expr": "rate(node_network_receive_bytes_total{device=\"vmbr0\"}[5m])",
-          "legendFormat": "{{node}} \u2193"
+          "legendFormat": "{{node}} ↓"
         },
         {
           "datasource": "Prometheus",
           "expr": "rate(node_network_transmit_bytes_total{device=\"vmbr0\"}[5m])",
-          "legendFormat": "{{node}} \u2191"
+          "legendFormat": "{{node}} ↑"
         }
       ],
       "fieldConfig": {
@@ -89,7 +89,7 @@
     {
       "id": 7,
       "type": "bargauge",
-      "title": "Disk Usage \u2014 Root Filesystem",
+      "title": "Disk Usage — Root Filesystem",
       "gridPos": {
         "x": 12,
         "y": 8,
@@ -128,12 +128,26 @@
       }
     },
     {
-      "id": 8,
-      "type": "timeseries",
-      "title": "Intel GPU \u2014 Engine Utilization",
+      "id": 100,
+      "type": "row",
+      "title": "Intel GPUs",
+      "collapsed": false,
+      "repeat": "intel",
+      "panels": [],
       "gridPos": {
         "x": 0,
         "y": 16,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Intel GPU — Engine Utilization",
+      "gridPos": {
+        "x": 0,
+        "y": 17,
         "w": 12,
         "h": 8
       },
@@ -170,10 +184,10 @@
     {
       "id": 9,
       "type": "timeseries",
-      "title": "Intel GPU \u2014 Memory Bandwidth",
+      "title": "Intel GPU — Memory Bandwidth",
       "gridPos": {
         "x": 12,
-        "y": 16,
+        "y": 17,
         "w": 12,
         "h": 8
       },
@@ -198,10 +212,10 @@
     {
       "id": 10,
       "type": "timeseries",
-      "title": "Intel GPU \u2014 Power Draw",
+      "title": "Intel GPU — Power Draw",
       "gridPos": {
         "x": 0,
-        "y": 24,
+        "y": 25,
         "w": 12,
         "h": 8
       },
@@ -226,10 +240,10 @@
     {
       "id": 11,
       "type": "timeseries",
-      "title": "Intel GPU \u2014 Frequency",
+      "title": "Intel GPU — Frequency",
       "gridPos": {
         "x": 12,
-        "y": 24,
+        "y": 25,
         "w": 12,
         "h": 8
       },
@@ -252,14 +266,28 @@
       }
     },
     {
+      "id": 101,
+      "type": "row",
+      "title": "AMD GPUs",
+      "collapsed": false,
+      "repeat": "amd",
+      "panels": [],
+      "gridPos": {
+        "x": 0,
+        "y": 33,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
       "id": 12,
       "type": "timeseries",
-      "title": "AMD GPU \u2014 Utilization",
+      "title": "AMD GPU — Utilization",
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 32
+        "y": 34
       },
       "targets": [
         {
@@ -279,12 +307,12 @@
     {
       "id": 13,
       "type": "timeseries",
-      "title": "AMD GPU \u2014 VRAM Usage",
+      "title": "AMD GPU — VRAM Usage",
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 32
+        "y": 34
       },
       "targets": [
         {
@@ -303,6 +331,182 @@
           "unit": "decgbytes"
         }
       }
+    },
+    {
+      "id": 102,
+      "type": "row",
+      "title": "NVIDIA GPUs",
+      "collapsed": false,
+      "repeat": "nvidia",
+      "panels": [],
+      "gridPos": {
+        "x": 0,
+        "y": 42,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "NVIDIA GPU — Utilization",
+      "gridPos": {
+        "x": 0,
+        "y": 43,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "nvidia_smi_utilization_gpu_ratio * 100",
+          "legendFormat": "{{node}} {{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent"
+        }
+      }
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "NVIDIA GPU — Memory",
+      "gridPos": {
+        "x": 12,
+        "y": 43,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "nvidia_smi_memory_used_bytes / 1024 / 1024 / 1024",
+          "legendFormat": "{{node}} Used (GB)"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "nvidia_smi_memory_total_bytes / 1024 / 1024 / 1024",
+          "legendFormat": "{{node}} Total (GB)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decgbytes"
+        }
+      }
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "NVIDIA GPU — Power Draw",
+      "gridPos": {
+        "x": 0,
+        "y": 51,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "nvidia_smi_power_draw_watts",
+          "legendFormat": "{{node}} {{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt"
+        }
+      }
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "NVIDIA GPU — Temperature",
+      "gridPos": {
+        "x": 12,
+        "y": 51,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "nvidia_smi_temperature_gpu",
+          "legendFormat": "{{node}} {{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius"
+        }
+      }
     }
-  ]
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "intel",
+        "label": "Intel GPUs",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": {
+          "query": "label_values(igpu_power_package, job)",
+          "refId": "intel"
+        },
+        "definition": "label_values(igpu_power_package, job)",
+        "hide": 2,
+        "includeAll": false,
+        "multi": false,
+        "refresh": 2,
+        "current": {},
+        "options": [],
+        "regex": "",
+        "sort": 0,
+        "description": "Hidden. Has a value only when some node reports igpu_power_package, so the Intel GPUs row is drawn only on clusters that have one."
+      },
+      {
+        "name": "amd",
+        "label": "AMD GPUs",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": {
+          "query": "label_values(node_drm_gpu_busy_percent, job)",
+          "refId": "amd"
+        },
+        "definition": "label_values(node_drm_gpu_busy_percent, job)",
+        "hide": 2,
+        "includeAll": false,
+        "multi": false,
+        "refresh": 2,
+        "current": {},
+        "options": [],
+        "regex": "",
+        "sort": 0,
+        "description": "Hidden. Has a value only when some node reports node_drm_gpu_busy_percent, so the AMD GPUs row is drawn only on clusters that have one."
+      },
+      {
+        "name": "nvidia",
+        "label": "NVIDIA GPUs",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": {
+          "query": "label_values(nvidia_smi_memory_total_bytes, job)",
+          "refId": "nvidia"
+        },
+        "definition": "label_values(nvidia_smi_memory_total_bytes, job)",
+        "hide": 2,
+        "includeAll": false,
+        "multi": false,
+        "refresh": 2,
+        "current": {},
+        "options": [],
+        "regex": "",
+        "sort": 0,
+        "description": "Hidden. Has a value only when some node reports nvidia_smi_memory_total_bytes, so the NVIDIA GPUs row is drawn only on clusters that have one."
+      }
+    ]
+  },
+  "description": "Each GPU vendor's row is repeated over a hidden variable that has a value only when that vendor reports data, so a cluster without that hardware shows no empty row."
 }
