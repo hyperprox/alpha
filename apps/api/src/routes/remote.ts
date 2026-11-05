@@ -20,7 +20,10 @@ import {
   RemoteAccessService, RemoteBusyError, RemoteInputError, RemoteNotFoundError, overviewForRole, type JobRequest,
 } from '../lib/remote/service'
 import { PrismaRemoteStore } from '../lib/remote/store'
-import { productionRemoteExecutor } from '../lib/remote/executor'
+import { productionRemoteExecutor, type RemoteExecutor } from '../lib/remote/executor'
+import { ClientDetector } from '../lib/remote/detect'
+import { spawn } from 'node:child_process'
+import os from 'node:os'
 import { providerFromVault, providerSettingsFromVault, setCredentialAuditor } from '../lib/remote/providers'
 import { publish } from '../lib/notify'
 import type { VpnPrefs } from '../lib/remote/planner'
@@ -31,6 +34,25 @@ export interface RemoteRouteDeps {
   service?: RemoteAccessService
   /** Tests turn the sweep off; production wants it (revokes leftover keys, re-checks interrupted node changes). */
   sweep?: boolean
+}
+
+/** The read-only probe, run on the machine HyperProx itself runs on: no login, never logged. */
+function runLocally(script: string): Promise<{ code: number; output: string; timedOut: boolean }> {
+  return new Promise(resolve => {
+    const p = spawn('bash', ['-s'], { stdio: ['pipe', 'pipe', 'ignore'] })
+    let out = '', timedOut = false
+    const t = setTimeout(() => { timedOut = true; p.kill('SIGKILL') }, 45_000)
+    p.stdout.on('data', d => { if (out.length < 512_000) out += d })
+    p.on('error', () => { clearTimeout(t); resolve({ code: -1, output: out, timedOut }) })
+    p.on('close', code => { clearTimeout(t); resolve({ code: code ?? -1, output: out, timedOut }) })
+    p.stdin.end(script)
+  })
+}
+
+/** HyperProx's own container: exactly one running container named like this host (as the Updates page finds it). */
+async function selfMachineId(exec: RemoteExecutor): Promise<string | null> {
+  const named = (await exec.listMachines()).filter(m => m.kind === 'lxc' && m.running && m.name === os.hostname())
+  return named.length === 1 ? named[0].id : null
 }
 
 const MACHINE_ID = /^(node|lxc|qemu|host)-[A-Za-z0-9._-]{1,120}$/
@@ -62,9 +84,11 @@ function params(req: FastifyRequest<{ Params: MachineParams }>): { id: string; p
 
 export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsync {
   return async (fastify) => {
+    const exec = productionRemoteExecutor(livePve())
     const service = deps.service ?? new RemoteAccessService({
       store: new PrismaRemoteStore((fastify as any).prisma),
-      exec: productionRemoteExecutor(livePve()),
+      exec,
+      detector: new ClientDetector({ listMachines: () => exec.listMachines(), run: (m, s, o) => exec.run(m, s, o), local: runLocally, selfId: () => selfMachineId(exec) }),
       provider: id => providerFromVault(id),
       providerSettings: id => providerSettingsFromVault(id),
       log: m => fastify.log.info(m),
@@ -89,7 +113,15 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
     // Viewer and up. The gate has already required a session.
     // Below admin: overlay status, version and connection only; no LAN or cluster addresses.
     fastify.get('/overview', async (req, reply) => {
-      try { return overviewForRole(await service.overview(), !!req.session && hasRole(req.session.role, 'admin')) }
+      // Only an admin's read may start the read-only probe (and only when its cache has aged out).
+      const admin = !!req.session && hasRole(req.session.role, 'admin')
+      try { return overviewForRole(await service.overview({ mayProbe: admin }), admin) }
+      catch (e) { return sendError(reply, e) }
+    })
+
+    // Refresh: probe every running machine now, read-only, and answer with the new overview.
+    fastify.post('/detect/refresh', { preHandler: adminOnly }, async (_req, reply) => {
+      try { await service.refreshDetection(); return overviewForRole(await service.overview(), true) }
       catch (e) { return sendError(reply, e) }
     })
 

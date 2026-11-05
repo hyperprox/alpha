@@ -15,7 +15,7 @@ const LOCKED = 'HyperProx is locked — sign in to see VPN status.'
 
 function stateOf(c: RemoteCell): VpnGuestStatus['state'] {
   if (c.state === 'connected') return 'connected'
-  if (c.state === 'offline' || c.state === 'missing') return 'disconnected'
+  if (c.state === 'offline' || c.state === 'missing' || c.state === 'signed-out') return 'disconnected'
   if (c.state === 'unknown') return 'unknown'
   return 'none'
 }
@@ -32,7 +32,11 @@ export function guestStatus(row: RemoteMachineRow): VpnGuestStatus {
     state: stateOf(c), provider: p,
     ...(c.ip ? { address: c.ip } : {}), ...(c.dnsName || c.deviceName ? { hostname: c.dnsName ?? c.deviceName ?? undefined } : {}),
     ...(c.lastSeen ? { lastSeen: c.lastSeen } : {}),
-    detail: [`${PROVIDER_LABEL[p]} ${c.state}${c.expiryWarning ? ', key expires soon' : ''}`, ...(others.length ? [`also ${others.join('; ')}`] : [])].join('; '),
+    detail: [
+      `${c.detectedText ?? `${PROVIDER_LABEL[p]} ${c.state}`}${c.expiryWarning ? ', key expires soon' : ''}`,
+      ...(!c.managed && c.detected?.installed ? ['found, not managed by HyperProx'] : []),
+      ...(others.length ? [`also ${others.join('; ')}`] : []),
+    ].join('; '),
   }
 }
 
@@ -41,7 +45,8 @@ export function remoteVpnSource(service: Pick<RemoteAccessService, 'overview'>, 
     name: 'VPN',
     async available() {
       if (!isUnlocked()) return true    // say "locked" per guest rather than "not set up"
-      try { return (await service.overview()).providers.some(p => p.configured) } catch { return true }
+      // Available with no API key too: clients already on the machines are found and shown.
+      try { const ov = await service.overview(); return ov.providers.some(p => p.configured) || !!ov.detection?.checkedAt } catch { return true }
     },
     async statusFor(guests: VpnGuestRef[]) {
       const out = new Map<GuestKey, VpnGuestStatus>()
