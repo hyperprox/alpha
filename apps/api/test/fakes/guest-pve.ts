@@ -6,7 +6,8 @@ import { join } from 'node:path'
 import type { GuestPve, NodeShell } from '../../src/lib/guest-config/service'
 import { GuestConfigService } from '../../src/lib/guest-config/service'
 import { MemoryHistoryStore } from '../../src/lib/guest-config/history/store'
-import { splitConf, sha256 } from '../../src/lib/guest-config/rawfile'
+import { sha256 } from '../../src/lib/guest-config/rawfile'
+import { pveParseRaw, pveHasLock } from './pve-conf'
 
 export const FIX = (name: string) => readFileSync(join(__dirname, '..', 'fixtures', 'guest-config', name), 'utf8')
 
@@ -150,6 +151,11 @@ export class FakeShell implements NodeShell {
   tail: Record<string, string> = {}
   /** Change the file between read and write (a concurrent edit on the node). */
   beforeWrite?: (vmid: string) => void
+  /** The session drops after the rename: the write lands, the answer never arrives. */
+  dropAfterWrite = false
+  /** Temp files left by an earlier, interrupted run, by vmid. */
+  leftovers: Record<string, string[]> = {}
+  removed: string[] = []
   constructor(private pve?: FakePve) {}
   fileOf(vmid: string): string {
     if (this.files[vmid] !== undefined) return this.files[vmid]
@@ -164,20 +170,32 @@ export class FakeShell implements NodeShell {
     this.commands.push({ node, command })
     if (!this.logins.has(node)) return null
     let w = /f='\/etc\/pve\/nodes\/[^/]+\/lxc\/(\d+)\.conf'/.exec(command)
-    if (w && command.includes('HPX-CAS-MISMATCH')) {
+    if (w && command.includes('# HPX write config file')) {
       const vmid = w[1]
+      if (!command.includes('flock -w')) throw new Error('fake: a write without the config lock')
       this.beforeWrite?.(vmid)
       const cur = this.fileOf(vmid)
       const expect = /if \[ "\$cur" != '([0-9a-f]{64})' \]/.exec(command)![1]
       if (sha256(cur) !== expect) return { code: 3, output: `HPX-CAS-MISMATCH ${sha256(cur)}\n` }
+      if (pveHasLock(cur)) return { code: 5, output: 'HPX-GUEST-LOCKED\n' }
       const text = Buffer.from(/printf '%s' '([^']*)'/.exec(command)![1], 'base64').toString('utf8')
       this.files[vmid] = text
-      // Proxmox parses the file: its main-section raw lines are what the API now reads.
+      // Proxmox re-parses the file (its own grammar, not the writer's): its main-section raw lines are what the API reads.
       const g = this.pve?.g('lxc', Number(vmid))
-      if (g) { const raw = splitConf(text).rawMain; if (raw.length) g.config.lxc = raw; else delete g.config.lxc }
+      if (g) { const raw = pveParseRaw(text); if (raw.length) g.config.lxc = raw; else delete g.config.lxc }
+      if (this.dropAfterWrite) { this.dropAfterWrite = false; throw new Error('fake: connection reset by peer') }
       return { code: 0, output: `${Buffer.from(text).toString('base64')}\n${sha256(text)}\n` }
     }
-    if (w) { const t = this.fileOf(w[1]); return { code: 0, output: `${Buffer.from(t).toString('base64')}\n${sha256(t)}\n` } }
+    if (w && command.includes('# HPX clean config temp files')) {
+      const files = [...command.matchAll(/rm -f '([^']+)'/g)].map(m => m[1])
+      this.removed.push(...files)
+      this.leftovers[w[1]] = (this.leftovers[w[1]] ?? []).filter(x => !files.includes(x))
+      return { code: 0, output: 'HPX-CLEANED\n' }
+    }
+    if (w) {
+      const t = this.fileOf(w[1])
+      return { code: 0, output: `${Buffer.from(t).toString('base64')}\n${sha256(t)}\n${(this.leftovers[w[1]] ?? []).map(x => `HPX-LEFTOVER ${x}\n`).join('')}` }
+    }
     if (command.includes("echo '##lspci'")) return { code: 0, output: this.probes[node] ?? '##end\n' }
     let m = /if \[ -d '([^']+)' \]/.exec(command)
     if (m) { const t = this.dirs[node]?.[m[1]]; return { code: 0, output: t ? `${t}\n` : 'MISSING\n' } }

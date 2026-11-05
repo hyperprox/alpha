@@ -11,6 +11,7 @@
 // =============================================================================
 
 import { parseProps, getProp, rawLines, str, freeIndex, type GuestType, type PveConfig } from './keys'
+import { rawLineAllowed } from './rawfile'
 import { emptyPlan, addConfigChanges, type GuestCtx, type Plan } from './plan'
 import { gpuMajors, resetRiskOf, vendorOf, type Device, type NodeInventory, type Vendor, type GuestRef } from './devices'
 
@@ -287,13 +288,21 @@ export function buildRawEditPlan(g: GuestCtx, edit: RawEdit): Plan {
   const lines = rawLines(g.config)
   const has = (l: [string, string]) => lines.some(x => x[0] === l[0] && x[1] === l[1])
   const remove: Array<[string, string]> = [], add: Array<[string, string]> = []
-  const ok = (l: unknown): l is [string, string] => Array.isArray(l) && l.length === 2 && typeof l[0] === 'string' && typeof l[1] === 'string' && /^lxc\.[A-Za-z0-9_.]+$/.test(l[0]) && !/[\r\n\0]/.test(l[1])
+  const ok = (l: unknown): l is [string, string] => Array.isArray(l) && l.length === 2 && typeof l[0] === 'string' && typeof l[1] === 'string' && /^lxc\.[a-z0-9_\-.]+$/.test(l[0]) && !/[\r\n\0]/.test(l[1])
   for (const l of [...(edit.remove ?? []), ...(edit.add ?? []), ...(edit.change ?? []).flatMap(c => [c?.from, c?.to])]) if (!ok(l)) { p.errors.push('Each raw line is an lxc.* key and a one-line value.'); return p }
   for (const l of edit.remove ?? []) { if (!has(l)) p.errors.push(`${l[0]}: ${l[1]} is not on this guest.`); else remove.push(l) }
   for (const c of edit.change ?? []) { if (!has(c.from)) p.errors.push(`${c.from[0]}: ${c.from[1]} is not on this guest.`); else { remove.push(c.from); add.push(c.to) } }
   for (const l of edit.add ?? []) { if (has(l)) p.errors.push(`${l[0]}: ${l[1]} is already there.`); else add.push(l) }
   if (p.errors.length) return p
   if (!remove.length && !add.length) { p.errors.push('Nothing to change.'); return p }
+  // Only device lines may be written. Anything else is shown, so the person sees what was asked, and refused.
+  const refused = [...remove, ...add].map(l => rawLineAllowed(l)).filter((x): x is string => !!x)
+  if (refused.length) {
+    for (const [k, v] of remove) p.changes.push({ key: k, label: 'Raw line', before: v, after: null, words: `Remove ${k}: ${v}`, restart: 'restart' })
+    for (const [k, v] of add) p.changes.push({ key: k, label: 'Raw line', before: null, after: v, words: `Add ${k}: ${v}`, restart: 'restart' })
+    p.errors.push(...new Set(refused))
+    return p
+  }
   rawChanges(p, g, remove, add)
   p.checks.push(`${lines.length} raw line(s) now; ${lines.length - remove.length + add.length} after this change`)
   const gpuAdded = add.filter(l => detectGpu('lxc', { lxc: [l] } as any).entries.length)
