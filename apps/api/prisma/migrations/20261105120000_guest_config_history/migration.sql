@@ -20,3 +20,6 @@ CREATE TABLE "GuestConfigVersion" (
 
 -- CreateIndex
 CREATE INDEX "GuestConfigVersion_guest_createdAt_idx" ON "GuestConfigVersion"("guest", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "GuestConfigVersion_previewId_idx" ON "GuestConfigVersion"("previewId");
