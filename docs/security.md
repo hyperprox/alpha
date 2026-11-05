@@ -107,7 +107,8 @@ Bitwarden-compatible, zero-knowledge vault. Every install runs its own, stock an
   `.env` are written to the vault and read back; only then are the old rows deleted and the keys blanked
   in `.env` (`ENCRYPTION_KEY` and `JWT_SECRET` too). No plaintext copy of the old file is kept. Earlier
   versions kept one as `.env.pre-vault`: if any is left, Settings → Setup checklist lists it and offers to
-  shred it (overwritten twice, then deleted; asks for the master password).
+  shred it (overwritten and deleted; copies may remain in snapshots or backups; asks for the master
+  password). A symlink with such a name is never followed or touched.
 
 Deleting a secret from the Secrets page moves it to the vault's trash, so it can be recovered from the vault
 until the trash is emptied. Signing in takes about a second: HyperProx talks to Vaultwarden's API directly. An account set to Argon2id
@@ -148,8 +149,9 @@ where the test passed.
 - **Before the vault exists.** The setup wizard runs before anyone has created the owner account. A node
   login (or a GoDaddy key) given to it is held in the wizard's memory only. When setup finishes, the wizard
   hands it to the API over loopback (`POST /api/auth/setup-handoff`), which answers only to a request
-  from the same machine that did not come through nginx, carrying the setup key, accepts it exactly once,
-  and refuses it once the vault has an owner (from then on, logins go in through the Setup checklist). The API holds it in
+  from the same machine that did not come through nginx, carrying the setup key, checks the body first,
+  accepts it exactly once (recorded in `data/setup/handed-over`, so a restart does not reopen it), refuses
+  it when the vault does not answer, and refuses it once the vault has an owner (from then on, logins go in through the Setup checklist). The API holds it in
   memory until the owner's first sign-in, stores it in the vault, then drops it. If HyperProx restarts in
   between, it is gone and the Setup checklist asks again; that is the price of never writing it down.
   `bootstrap.sh` hands over a GoDaddy key the same way, on stdin, so it is on no command line.
@@ -180,8 +182,8 @@ network you trust, or firewall these ports to the HyperProx machine.
 | Power | `/etc/udev/rules.d/99-hyperprox-rapl.rules` | nothing | Makes `energy_uj` readable by every local user on that node (kernels since 5.10 keep it root-only as a mitigation for energy side channels such as PLATYPUS). Delete the file to undo it. |
 | Intel GPU, Docker present | The `intel-gpu-exporter` container, pinned by digest (privileged, host PID namespace, `/dev/dri`) | `:8081`, every interface | GPU busy, frequency and power. The container is privileged because `intel_gpu_top` needs the kernel's perf counters. |
 | Intel GPU, no Docker | `intel-gpu-tools` from apt, and the `hyperprox-intel-gpu-exporter` service (a small Python script, run as root for the same reason) | `:8081`, every interface | The same metrics. HyperProx never installs Docker on a node. |
-| Built-in graphics for containers | `/etc/udev/rules.d/99-hyperprox-igpu.rules` (`SUBSYSTEM=="drm", KERNEL=="renderD*", MODE="0666"`) | nothing | Any container on that node can then use its built-in graphics, not only those whose user maps onto the host's render group. Offered only on nodes with built-in Intel or AMD graphics, and the answer defaults to no. Undo: delete the file and run `udevadm trigger --subsystem-match=drm`, or press undo on the Setup checklist. |
-| AMD GPU | A systemd drop-in for node_exporter, `/etc/systemd/system/<unit>.service.d/hyperprox-amd-gpu.conf`, that repeats the unit's own command with `--collector.drm` added (every existing flag kept) | `:9100` (node_exporter's own port) | GPU busy percentage and VRAM size and use, alongside node_exporter's other figures. Nothing is installed. Undo: delete the drop-in, then `systemctl daemon-reload` and restart node_exporter. |
+| Built-in graphics for containers | `/etc/udev/rules.d/99-hyperprox-igpu.rules`, one line per built-in GPU, matched by its PCI address (`SUBSYSTEM=="drm", KERNEL=="renderD*", KERNELS=="0000:00:02.0", MODE="0666"`), and `/var/lib/hyperprox/igpu-access.modes` with each render node's mode before the change | nothing | Any container on that node can then use its built-in graphics, not only those whose user maps onto the host's render group. Only built-in Intel or AMD graphics are opened: an NVIDIA card, a dedicated AMD or Arc card, or a render node whose GPU cannot be identified never is. Offered only on nodes with built-in graphics, and the answer defaults to no. Undo (the Setup checklist) removes the rule, re-triggers udev and puts every render node it touched back to its recorded mode, checking each one. |
+| AMD GPU | A systemd drop-in for node_exporter, `/etc/systemd/system/<unit>.service.d/hyperprox-amd-gpu.conf`, that repeats the unit's own command with `--collector.drm` added (every existing flag kept) | `:9100` (node_exporter's own port) | GPU busy percentage and VRAM size and use, alongside node_exporter's other figures. Nothing is installed. If node_exporter then reports no AMD figures, the drop-in is removed again and node_exporter restarted as it was. Undo: delete the drop-in, then `systemctl daemon-reload` and restart node_exporter. |
 | NVIDIA GPU | `nvidia_gpu_exporter` 1.15.1, checksum-checked, as the `hyperprox-nvidia-gpu-exporter` service (systemd `DynamicUser`) | `:9835`, every interface | GPU use, memory, temperature and power, read with `nvidia-smi`. It never installs or changes a driver. |
 
 The Prometheus and Grafana that the charts question starts listen on loopback on the HyperProx machine,

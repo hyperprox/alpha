@@ -26,7 +26,9 @@ function probeScript() { return read('probe.sh') }
 /** A node-side step, whole (helpers first), to send on stdin. */
 function stepScript(step) {
   if (!STEPS.includes(step)) throw new Error(`Unknown node step: ${step}`)
-  return `${read('common.sh')}\n${read(`${step}.sh`)}`
+  // The built-in graphics steps decide which render nodes are built in with the probe's own functions.
+  const lib = step.startsWith('igpu-access') ? `HPX_PROBE_LIB=1\n${read('probe.sh')}\n` : ''
+  return `${read('common.sh')}\n${lib}${read(`${step}.sh`)}`
 }
 
 // ── Parsing ──────────────────────────────────────────────────────────────────
@@ -39,7 +41,7 @@ function parseGpuLine(cols) {
 /** probe.sh output → facts about one node. Unknown lines are ignored, missing ones stay null. */
 function parseProbe(text, node) {
   const hw = {
-    node: node ?? null, source: 'probe', gpus: [], dri: [], nvidiaSmi: null, rapl: null, raplDomains: [],
+    node: node ?? null, source: 'probe', gpus: [], renderNodes: [], dri: [], nvidiaSmi: null, rapl: null, raplDomains: [],
     nodeExporter: null, docker: null, python3: null, intelGpuTop: null, intelExporter: null, nvidiaExporter: null, amdMetrics: null,
     ceph: null, arch: null, pve: null, igpuAccess: null, igpuRule: null,
   }
@@ -49,6 +51,11 @@ function parseProbe(text, node) {
     const [k, v = '', w = ''] = cols
     switch (k) {
       case 'gpu': hw.gpus.push(parseGpuLine(cols.slice(1))); break
+      case 'render': {
+        const [vendor, kind] = (cols[3] ?? 'unknown').split('/')
+        hw.renderNodes.push({ name: cols[1], address: cols[2] === 'unknown' ? null : cols[2], vendor: vendor ?? 'unknown', kind: kind ?? 'unknown', mode: cols[4] ?? '' })
+        break
+      }
       case 'dri': hw.dri = v.split(/\s+/).filter(Boolean); break
       case 'nvidia_smi': hw.nvidiaSmi = yes(v); break
       case 'rapl': hw.rapl = ['none', 'readable', 'root-only'].includes(v) ? v : null; hw.raplDomains = w.split(',').filter(Boolean); break

@@ -15,7 +15,7 @@ module.exports = async function run(host, cred, script) {
   fs.appendFileSync(process.env.HPX_TEST_LOG, JSON.stringify({ node: NAMES[host], kind: /^pveversion/.test(script) ? 'login' : /^# HyperProx hardware probe/m.test(script) ? 'probe' : 'step', step: (/^# (node_exporter|Power|Intel GPU|NVIDIA GPU)/m.exec(script) || [])[1] || null }) + '\n')
   if (cred.password !== process.env.HPX_TEST_PASSWORD) throw new Error('All configured authentication methods failed')
   if (/^pveversion/.test(script)) return { code: 0, output: 'pve-manager/9.1.0/abc (running kernel: 7.0.0-1-pve)\n', hostKey: hostKey(host) }
-  if (/^# HyperProx hardware probe/m.test(script)) {
+  if (!/^# HyperProx node-side helpers/m.test(script) && /^# HyperProx hardware probe/m.test(script)) {
     made[host] = made[host] || fakeNode(FX[MAP[host]])
     const r = made[host].run(script)
     return { code: r.status, output: r.stdout, hostKey: hostKey(host) }

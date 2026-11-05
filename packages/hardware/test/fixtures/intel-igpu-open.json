@@ -58,13 +58,15 @@
   "render": {
     "renderD128": {
       "vendor": "0x8086",
-      "mode": "666"
+      "mode": "666",
+      "pci": "0000:00:02.0",
+      "device": "0x5912"
     }
   },
   "udev_rules": [
     {
       "name": "99-hyperprox-igpu.rules",
-      "content": "SUBSYSTEM==\"drm\", KERNEL==\"renderD*\", MODE=\"0666\"\n"
+      "content": "SUBSYSTEM==\"drm\", KERNEL==\"renderD*\", KERNELS==\"0000:00:02.0\", MODE=\"0666\"\n"
     }
   ]
 }

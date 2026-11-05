@@ -4,6 +4,8 @@ export interface NodeHardware {
   node: string | null
   source: 'probe' | 'proxmox-api'
   gpus: Gpu[]
+  /** Each render node, the PCI address of its GPU, and whether that GPU is built in. */
+  renderNodes: Array<{ name: string; address: string | null; vendor: string; kind: 'integrated' | 'dedicated' | 'unknown'; mode: string }>
   dri: string[]
   nvidiaSmi: boolean | null
   rapl: 'none' | 'readable' | 'root-only' | null

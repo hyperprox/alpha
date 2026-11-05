@@ -13,6 +13,7 @@
 #   node_exporter running|installed|absent                          intel_gpu_top yes|no
 #   intel_exporter running|absent        nvidia_exporter running|absent                pve <version>
 #   amd_metrics on|off                    node_exporter reports AMD GPU figures (its drm collector)
+#   render <renderDn> <pci address|unknown> <vendor/integrated|dedicated|unknown> <mode>
 #   igpu_access open|closed|none rule|no-rule   can containers use the built-in graphics (render nodes 0666)
 #
 #   probe.sh            probe this machine
@@ -115,20 +116,46 @@ node_exporter() {
   else echo absent; fi
 }
 
-# Built-in graphics open to containers? none: no Intel or AMD built-in GPU with a render node.
-igpu_access() {
-  local gpus="$1" r v any=0 open=1 rule=no-rule
-  grep -qE $'^gpu\t(intel|amd)\tintegrated' <<< "$gpus" || { printf 'igpu_access\tnone\t\n'; return; }
+# lspci's name for a PCI address ("0000:00:02.0" or "00:02.0"), or nothing without lspci.
+pci_name() {
+  local short="${1#0000:}"
+  { if [ -n "${HPX_LSPCI:-}" ]; then cat "$HPX_LSPCI"; elif [ -z "$R" ] && command -v lspci >/dev/null 2>&1; then lspci -nn 2>/dev/null; fi; } \
+    | awk -v a="$short" 'index($0, a " ") == 1 {
+        line = $0
+        if (!match(line, /\[[0-9a-f][0-9a-f][0-9a-f][0-9a-f]:[0-9a-f][0-9a-f][0-9a-f][0-9a-f]\]( \(rev [0-9a-f]+\))?$/)) next
+        name = substr(line, 1, RSTART - 2); sub(/^[^]]*\[03[0-9a-f][0-9a-f]\]: /, "", name); print name; exit }'
+}
+
+# Every render node: name, the PCI address of the GPU behind it, its vendor, built in or dedicated (the
+# same classifier as above), and its mode. A render node whose GPU cannot be named is "unknown" and is
+# never treated as built in.
+render_nodes() {
+  local r n dev addr v d kind
   for r in "$R"/dev/dri/renderD*; do
     [ -e "$r" ] || continue
-    v="$(cat "$R/sys/class/drm/$(basename "$r")/device/vendor" 2>/dev/null || echo unknown)"
-    case "$v" in 0x8086|0x1002) ;; *) continue ;; esac
-    any=1
-    [ "$(stat -c %a "$r" 2>/dev/null)" = 666 ] || open=0
+    n="$(basename "$r")"
+    dev="$R/sys/class/drm/$n/device"
+    addr="$(basename "$(readlink -f "$dev" 2>/dev/null)" 2>/dev/null)"
+    v="$(cat "$dev/vendor" 2>/dev/null || echo unknown)"; d="$(cat "$dev/device" 2>/dev/null || echo unknown)"
+    kind=unknown
+    if [[ "$addr" =~ ^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]$ ]] && [ "$v" != unknown ]; then
+      kind="$(printf '%s\t%s\t%s\n' "$v" "$d" "$(pci_name "$addr")" | classify | awk -F'\t' '{print $2 "/" $3}')"
+      [ -n "$kind" ] || kind="other/dedicated"
+    else addr=unknown; fi
+    printf 'render\t%s\t%s\t%s\t%s\n' "$n" "$addr" "${kind:-unknown}" "$(stat -c %a "$r" 2>/dev/null)"
   done
+}
+
+# Only built-in Intel or AMD graphics: never NVIDIA, never a dedicated AMD (or Arc) card.
+integrated_render_nodes() { render_nodes | awk -F'\t' '$4 == "intel/integrated" || $4 == "amd/integrated"'; }
+
+# Built-in graphics open to containers? none: no built-in Intel or AMD GPU with a render node.
+igpu_access() {
+  local rows rule=no-rule
+  rows="$(integrated_render_nodes)"
   [ -e "$R/etc/udev/rules.d/99-hyperprox-igpu.rules" ] && rule=rule
-  if [ "$any" = 0 ]; then printf 'igpu_access\tnone\t%s\n' "$rule"
-  elif [ "$open" = 1 ]; then printf 'igpu_access\topen\t%s\n' "$rule"
+  if [ -z "$rows" ]; then printf 'igpu_access\tnone\t%s\n' "$rule"
+  elif awk -F'\t' '$5 != "666" { bad = 1 } END { exit bad }' <<< "$rows"; then printf 'igpu_access\topen\t%s\n' "$rule"
   else printf 'igpu_access\tclosed\t%s\n' "$rule"; fi
 }
 
@@ -148,11 +175,15 @@ probe() {
   printf 'nvidia_exporter\t%s\n' "$(answers 9835 '^nvidia_smi_memory_total_bytes' && echo running || echo absent)"
   printf 'ceph\t%s\n' "$( [ -e "$R/etc/pve/ceph.conf" ] && echo yes || echo no)"
   printf 'arch\t%s\n' "$(uname -m)"
-  igpu_access "$gpus"
+  render_nodes
+  igpu_access
   printf 'pve\t%s\n' "$( (has pveversion && pveversion 2>/dev/null | cut -d/ -f2) || echo '')"
 }
 
-case "${1:-}" in
-  classify) classify ;;
-  *) probe ;;
-esac
+# HPX_PROBE_LIB=1: only define the functions (the built-in graphics steps use them).
+if [ "${HPX_PROBE_LIB:-}" != 1 ]; then
+  case "${1:-}" in
+    classify) classify ;;
+    *) probe ;;
+  esac
+fi

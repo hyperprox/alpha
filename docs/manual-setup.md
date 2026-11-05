@@ -90,16 +90,18 @@ file and run the same two commands.
 <details>
 <summary>Let containers use a node's built-in graphics</summary>
 
-On a node with built-in Intel or AMD graphics, create `/etc/udev/rules.d/99-hyperprox-igpu.rules`
-containing:
+On a node with built-in Intel or AMD graphics, find the built-in GPU's PCI address (`lspci -D | grep -i vga`,
+for example `0000:00:02.0`; not an NVIDIA or other add-in card) and create
+`/etc/udev/rules.d/99-hyperprox-igpu.rules` containing:
 
 ```
-SUBSYSTEM=="drm", KERNEL=="renderD*", MODE="0666"
+SUBSYSTEM=="drm", KERNEL=="renderD*", KERNELS=="0000:00:02.0", MODE="0666"
 ```
 
-Then `udevadm control --reload && udevadm trigger --subsystem-match=drm`. `stat -c %a /dev/dri/renderD128`
-should print `666`. The trade-off: any container on that node can then use its built-in graphics. To undo
-it, delete the file and run the trigger again.
+Then `udevadm control --reload && udevadm trigger --subsystem-match=drm`. The render node of that GPU
+(`ls -l /dev/dri/by-path/`) should now be mode 666. The trade-off: any container on that node can then
+use its built-in graphics. To undo it, delete the file, run the trigger again, and check the render node
+is back to its old mode (usually 660).
 </details>
 
 <details>

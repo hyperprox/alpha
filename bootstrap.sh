@@ -454,13 +454,19 @@ fi
 #  is then checked from here: the exporter answers over the network (which is
 #  what Prometheus needs), and power reads more than zero.
 # ---------------------------------------------------------------------------
+# A step as one script: the helpers, then (for the built-in graphics steps) the probe's own functions.
+step_text() {
+  cat "$NODE_DIR/common.sh"
+  case "$1" in igpu-access*) echo 'HPX_PROBE_LIB=1'; cat "$NODE_DIR/probe.sh";; esac
+  cat "$NODE_DIR/$1.sh"
+}
 metrics_from() { curl -fsS --max-time 5 "http://$1:$2/metrics" 2>/dev/null; }
 rapl_joules() { metrics_from "$1" 9100 | awk '/^node_rapl_package_joules_total/ {s += $2} END {printf "%.3f", s + 0}'; }
 
 if [ "${#PLAN[@]}" -gt 0 ]; then say "Setting up your nodes"; fi
 for p in "${PLAN[@]}"; do
   node="${p%%$'\t'*}"; step="${p#*$'\t'}"; label="$(step_label "$step")"
-  out="$(cat "$NODE_DIR/common.sh" "$NODE_DIR/$step.sh" | node_run "$node" 2>&1)" || true
+  out="$(step_text "$step" | node_run "$node" 2>&1)" || true
   res="$(grep '^HPX-RESULT' <<< "$out" | tail -1)"
   if [ -z "$res" ]; then check failed "$label" "$node" "could not run the step there"; warn "$node — $label: could not run the step there"; continue; fi
   st="$(cut -f2 <<< "$res")"; why="$(cut -f3- <<< "$res")"
