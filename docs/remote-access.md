@@ -196,6 +196,37 @@ key that expires in less than 14 days is flagged.
 - **Waiting for approval**: if your tailnet or NetBird account requires device approval, devices waiting
   for it are listed with their OS and who added them, and can be approved or removed.
 
+### Clients already on your machines
+
+HyperProx finds Tailscale and NetBird clients that are already installed, with no provider API key. For
+each running node and guest it sends a read-only check over the same paths as everything else: the node
+login, `pct exec` for containers, and the guest agent for VMs (or the Terminal's saved login when the agent
+does not answer). The check asks whether `tailscale` and
+`netbird` are installed, whether their services run, and what each client reports about itself: signed
+in or not, the tailnet (or NetBird management server), the overlay address and name, the version, the
+key expiry, and its DNS, routes, exit node and SSH settings. Nothing on the machine is changed. If a
+signed-out client holds a sign-in link, the link is blanked on the machine before the answer is sent
+back. Only the parsed fields are kept, in memory.
+
+The results are kept for five minutes. An admin opening the page starts a new check once they are older
+than that, and **Refresh** checks every machine at once. A viewer opening the page never starts a check;
+it shows what is already known. Each machine shows its real state, for example *Tailscale installed,
+connected as web.example.ts.net (100.64.0.5)*, *installed, signed out* or *not installed*. The guest VPN
+tab shows the same.
+
+A client HyperProx did not install shows as **found, not managed by HyperProx**. **Manage it here**
+adopts it with the adopt flow above, node-lock rules included. On a node that does not meet the locks,
+**Manage + apply node locks** applies them first, as a guarded change. Without an API key, the client is
+recorded from the machine, and the job says the provider API does not know it yet.
+
+Without an API key, reading a machine, checking it, changing its settings, updating it and adopting it
+still work. Only what needs the provider's API waits for a key: one-click installs (they need a one-time
+install key), device approval, route approval, tags and key-expiry changes. The provider card says how
+many machines are already on a tailnet and that an API key manages installs and approvals.
+
+HyperProx's own container is checked locally and marked **this HyperProx**. It is shown read-only: no
+job runs on it, so HyperProx cannot cut itself off.
+
 ### Signing in with your own account
 
 Instead of a key, **Advanced… → Sign in with my account** starts the client without one. The client prints

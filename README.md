@@ -398,7 +398,10 @@ container, phones and laptops by QR code (keys made in the browser and kept in t
 clients, and the MikroTik router's WireGuard peers. On the router HyperProx only adds and removes WireGuard peers it created itself, using a separate router login you create for it; it never changes the router's firewall, addresses or routes, and shows you the exact command when a firewall rule is missing. Each install gets its own
 single-use key, which is revoked when it is done. On a Proxmox node the client never takes over DNS or
 routes; HyperProx checks the default route, resolver and quorum before and after, and undoes the install
-if anything changed. Viewers see status; changes are admin-only. See [docs/remote-access.md](docs/remote-access.md).
+if anything changed. Clients that are already installed are found with no API key. Each machine shows
+whether it is connected, signed out or not installed, and **Manage it here** adopts a client HyperProx did not
+install. The API key is needed only for installs and approvals. Viewers see status; changes are
+admin-only. See [docs/remote-access.md](docs/remote-access.md).
 
 ### Storage and Monitoring
 
