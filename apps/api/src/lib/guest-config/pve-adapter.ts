@@ -36,7 +36,12 @@ export function liveNodeShell(audit?: (action: string, resource: string, details
       if (!cred) return null
       const host = await nodeAddress(node)
       if (!host) return null
-      const purpose = command.includes("echo '##lspci'") ? 'device probe' : /^pct exec/.test(command) ? 'look inside a container' : 'path check'
+      const purpose = command.includes('# HPX write config file') ? 'write config file'
+        : command.includes('# HPX read config file') ? 'read config file'
+        : command.includes('# HPX clean config temp files') ? 'clean config temp files'
+        : command.includes("echo '##lspci'") ? 'device probe'
+        : /^pct exec/.test(command) ? 'look inside a container'
+        : /if \[ -d '/.test(command) ? 'path check' : 'node command'
       await audit?.('node_login.use', node, { purpose }).catch(() => {})
       const r = await execOnNode({ host, cred, command: 'bash -s', input: command, timeoutMs })
       return { code: r.code, output: r.output }
@@ -48,4 +53,16 @@ export function prismaAudit(db: PrismaClient) {
   return async (action: string, resource: string, details: Record<string, unknown>) => {
     await db.auditLog.create({ data: { action, resource, details: details as any } })
   }
+}
+
+import { getCredential, setCredential } from '../credentials'
+import { randomBytes } from 'node:crypto'
+
+/** The history HMAC key, kept in the vault (created on first use). Never in .env, files or Postgres. */
+export async function vaultHmacKey(): Promise<Buffer> {
+  const cur = await getCredential('system', 'guest-config', 'history_hmac_key')
+  if (cur && /^[0-9a-f]{64}$/.test(cur)) return Buffer.from(cur, 'hex')
+  const k = randomBytes(32).toString('hex')
+  await setCredential('system', 'guest-config', 'history_hmac_key', k, true)
+  return Buffer.from(k, 'hex')
 }

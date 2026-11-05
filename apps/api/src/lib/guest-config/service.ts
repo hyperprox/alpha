@@ -27,9 +27,10 @@ import {
   type GpuGrant, type GpuOffRecord, type GpuOffInput, type RawEdit, type HostpciEdit, type DeviceGrant,
 } from './gpu'
 import { PROBE_SCRIPT, parseProbe, attachUsage, type GuestRef, type NodeInventory } from './devices'
-import { openGpuOff, managedGpuEntries, managedRawLines, type HistoryStore, type HistoryRow } from './history/store'
+import { type HistoryStore, type HistoryRow, type GpuState } from './history/store'
+import { createHmac, randomBytes } from 'node:crypto'
 import { maskConfig, isSecretKey, redactConfFile, redactText, redactValue, REDACTED } from './secrets'
-import { splitConf, rewriteRawLines, readScript, writeScript, parseRead, sha256 } from './rawfile'
+import { splitConf, rewriteRawLines, readScript, writeScript, parseRead, cleanupScript, rawLineAllowed, sha256 } from './rawfile'
 import { vpnStatuses, vpnStatusSource, type VpnStatusSource } from './vpn'
 
 // ── what the service reaches ──────────────────────────────────────────────────
@@ -47,6 +48,11 @@ export interface NodeShell {
 }
 
 export interface GuestConfigDeps {
+  /**
+   * The key for the HMACs history keeps of raw-line values (so a revert can tell an unchanged secret-bearing
+   * line from a changed one without storing either). Read from the vault in production.
+   */
+  hmacKey?: () => Promise<Buffer>
   pve: GuestPve
   shell: NodeShell
   history: HistoryStore
@@ -230,7 +236,7 @@ export class GuestConfigService {
     const gpu = detectGpu(g.type, ctx.config, inv)
     const keys = keyInventory(g.type, maskConfig(ctx.config))
     const rows = await this.d.history.list(`${g.type}/${g.vmid}`, 50).catch(() => [] as HistoryRow[])
-    const off = openGpuOff(rows)
+    const st = await this.d.history.getGpu(`${g.type}/${g.vmid}`).catch(() => null)
     return {
       guest: { ...g, name: ctx.name, running: ctx.running, haManaged: ctx.haManaged },
       config: maskConfig(ctx.config), digest: ctx.config.digest ?? '',
@@ -238,8 +244,8 @@ export class GuestConfigService {
       keys: { modelled: keys.modelled, raw: keys.raw, unknown: keys.unknown, rawCount: keys.raw.length, unknownCount: keys.unknown.length },
       pending: { keys: ctx.pendingKeys, rows: ctx.pending.filter(r => r.pending !== undefined || r.delete).map(r => ({ ...r, value: r.value === undefined ? undefined : redactValue(r.key, str(r.value)), pending: r.pending === undefined ? undefined : redactValue(r.key, str(r.pending)) })) },
       gpu: {
-        ...gpu, toggle: off ? 'off' : gpu.entries.length ? 'on' : 'none', offSince: off?.createdAt ?? null,
-        managed: managedGpuEntries(rows), managedRaw: managedRawLines(rows),
+        ...gpu, toggle: st?.off ? 'off' : gpu.entries.length ? 'on' : 'none', offSince: st?.offAt ?? null,
+        managed: st?.dev ?? {}, managedRaw: st?.raw ?? [],
       },
       sharers: inv ? sharers(g, inv.devices) : [],
       historyCount: rows.length,
@@ -339,27 +345,48 @@ export class GuestConfigService {
         plan = buildRevertPlan(ctx, target, checks); kind = 'revert'
         plan.checks.push(`Reverting to the config ${input.which === 'after' ? 'after' : 'before'} the change of ${row.createdAt.toISOString()} by ${row.actor}`)
         if (g.type === 'lxc') {
-          // Raw lines come back through the whole-file writer: from the stored file when there is one.
-          const fileText = (row.meta as any)?.[input.which === 'after' ? 'fileAfter' : 'fileBefore']
-          const want = typeof fileText === 'string' ? splitConf(fileText).rawMain : rawLines(target)
+          // Raw lines come back through the whole-file writer. A line is matched by key plus an HMAC of its real
+          // value (kept in history instead of the value), so an unchanged secret-bearing line is left exactly as
+          // it is, and only device lines are ever written.
+          const which = input.which === 'after' ? 'after' : 'before'
+          const fileText = (row.meta as any)?.[which === 'after' ? 'fileAfter' : 'fileBefore']
+          const stored = typeof fileText === 'string' ? splitConf(fileText).rawMain : rawLines(target)
+          const storedH: string[] | null = Array.isArray((row.meta as any)?.rawHmac?.[which]) && (row.meta as any).rawHmac[which].length === stored.length ? (row.meta as any).rawHmac[which] : null
           const have = rawLines(ctx.config)
-          const same = (a: [string, string], b: [string, string]) => a[0] === b[0] && a[1] === b[1]
-          const remove = have.filter(h => !want.some(w => same(w, h)))
-          const add = want.filter(w => !have.some(h => same(w, h)))
-          const secret = add.filter(([, v]) => v.includes(REDACTED))
-          if (secret.length) plan.warnings.push(`Not reverted: ${secret.map(([k]) => k).join(', ')} (the value held a secret, which history does not keep).`)
-          const addOk = add.filter(l => !secret.includes(l))
-          if (remove.length || addOk.length) { rawChanges(plan, ctx, remove, addOk); plan.errors = plan.errors.filter(e => !/^Nothing to revert/.test(e)) }
+          const haveH = await this.hmacs(have)
+          const used = new Set<number>()
+          const unmatched: Array<[string, string]> = []
+          stored.forEach((e, i) => {
+            const j = have.findIndex((h, jj) => !used.has(jj) && h[0] === e[0] && (storedH ? haveH[jj] === storedH[i] : h[1] === e[1]))
+            if (j >= 0) used.add(j); else unmatched.push(e)
+          })
+          const notReverted: string[] = []
+          const add: Array<[string, string]> = []
+          for (const e of unmatched) {
+            if (e[1].includes(REDACTED)) notReverted.push(`${e[0]} (its value held a secret, which history does not keep)`)
+            else if (rawLineAllowed(e)) notReverted.push(`${e[0]} (HyperProx only edits device lines)`)
+            else add.push(e)
+          }
+          const keepKeys = new Set(unmatched.filter(e => e[1].includes(REDACTED)).map(e => e[0]))
+          const remove: Array<[string, string]> = []
+          have.forEach((h, j) => {
+            if (used.has(j)) return
+            if (keepKeys.has(h[0])) return
+            if (rawLineAllowed(h)) { notReverted.push(`${h[0]} (HyperProx only edits device lines)`); return }
+            remove.push(h)
+          })
+          if (notReverted.length) plan.warnings.push(`Raw lines not reverted: ${[...new Set(notReverted)].join(', ')}.`)
+          if (remove.length || add.length) { rawChanges(plan, ctx, remove, add); plan.errors = plan.errors.filter(e => !/^Nothing to revert/.test(e)) }
         }
         break
       }
       case 'gpu-grant': plan = buildGpuGrantPlan(ctx, await this.inventory(g.node, true), input.grant, await this.guestsOn(g.node)); kind = 'device'; break
-      case 'gpu-revoke': plan = buildGpuRevokePlan(ctx, managedGpuEntries(await rows())); kind = 'device'; break
-      case 'gpu-off': { const r = await rows(); plan = buildGpuOffPlan(ctx, { dev: managedGpuEntries(r), raw: managedRawLines(r) }, input.off ?? {}, await this.inventory(g.node).catch(() => null)); kind = 'gpu-off'; break }
+      case 'gpu-revoke': plan = buildGpuRevokePlan(ctx, (await this.gpuState(g)).dev); kind = 'device'; break
+      case 'gpu-off': { const st = await this.gpuState(g); plan = buildGpuOffPlan(ctx, { dev: st.dev, raw: st.raw }, input.off ?? {}, await this.inventory(g.node).catch(() => null)); kind = 'gpu-off'; break }
       case 'gpu-on': {
-        const off = openGpuOff(await rows())
-        plan = buildGpuOnPlan(ctx, ((off?.meta as any)?.gpuOff ?? null) as GpuOffRecord | null); kind = 'gpu-on'
-        if (off) (plan.meta ??= {}).fromHistory = off.id
+        const st = await this.gpuState(g)
+        plan = buildGpuOnPlan(ctx, st.off as GpuOffRecord | null); kind = 'gpu-on'
+        if (st.offRow) (plan.meta ??= {}).fromHistory = st.offRow
         break
       }
       case 'gpu-convert': plan = buildGpuConvertPlan(ctx, await this.inventory(g.node, true)); kind = 'device'; break
@@ -404,7 +431,14 @@ export class GuestConfigService {
         else if (r.code !== 0) plan.errors.push(`The config file could not be read on ${g.node}.`)
         else {
           try {
-            const { text, sha } = parseRead(r.output)
+            const { text, sha, leftovers } = parseRead(r.output)
+            if (leftovers.length) {
+              // An earlier write was interrupted before its trap ran: report it, and remove exactly those files.
+              const c = await this.d.shell.run(g.node, cleanupScript(g.node, g.vmid, leftovers), 20_000).catch(() => null)
+              const ok = !!c && /HPX-CLEANED/.test(c.output)
+              plan.warnings.push(`An earlier interrupted write left ${leftovers.length} temp file(s) beside this guest’s config (${leftovers.map(x => x.split('/').pop()).join(', ')}); ${ok ? 'they were removed' : 'they could not be removed and are still there'}.`)
+              await this.d.audit('guest_config.clean_temp', `${g.type}/${g.vmid}`, { node: g.node, files: leftovers.length, removed: ok }).catch(() => {})
+            }
             if (splitConf(text).hasPending) plan.errors.push('The config file has a [pve:pending] section; restart the guest (so it applies) before changing raw lines.')
             else {
               const after = rewriteRawLines(text, rf)
@@ -502,17 +536,26 @@ export class GuestConfigService {
         if (splitConf(now.text).hasPending) throw new GuestConfigRefusal('The config file now has a [pve:pending] section, so nothing was written.', 'changed')
         const q2 = await this.quorum()
         if (!q2.quorate) throw new GuestConfigRefusal(q2.why, 'not-quorate')
-        const w = await this.d.shell.run(p.guest.node, writeScript(p.guest.node, p.guest.vmid, p.file.sha, p.file.after), 30_000).catch((e: any) => ({ code: -1, output: String(e?.message ?? e) }))
-        if (!w) throw new GuestConfigRefusal('The node login went away, so nothing was written.', 'refused')
-        if (/HPX-CAS-MISMATCH/.test(w.output)) throw new GuestConfigRefusal('The config file changed at the last moment, so nothing was written. Review it again.', 'changed')
-        if (w.code !== 0) failed = `the config file write failed on ${p.guest.node}`
+        let w: { code: number; output: string } | null = null
+        let dropped: string | null = null
+        try { w = await this.d.shell.run(p.guest.node, writeScript(p.guest.node, p.guest.vmid, p.file.sha, p.file.after), 30_000) }
+        catch (e: any) { dropped = String(e?.message ?? e) }
+        if (w && /HPX-CAS-MISMATCH/.test(w.output)) throw new GuestConfigRefusal('The config file changed at the last moment, so nothing was written. Review it again.', 'changed')
+        if (w && /HPX-GUEST-LOCKED/.test(w.output)) throw new GuestConfigRefusal('The guest was locked (a backup, migration or snapshot) at the last moment, so nothing was written.', 'changed')
+        if (w && /HPX-LOCK-TIMEOUT/.test(w.output)) throw new GuestConfigRefusal('Proxmox held this guest’s config lock for more than 10 seconds, so nothing was written. Try again.', 'refused')
+        let back: { text: string } | null = null
+        if (w && w.code === 0) { try { back = parseRead(w.output) } catch { back = null } }
+        if (!back) {
+          // The session dropped, or the answer was cut off: what is on the node now decides, not the error.
+          const rr = await this.d.shell.run(p.guest.node, readScript(p.guest.node, p.guest.vmid), 20_000).catch(() => null)
+          try { if (rr && rr.code === 0) back = parseRead(rr.output) } catch { back = null }
+          if (back && sha256(back.text) === sha256(p.file.after)) steps.push(`the node session ${dropped ? 'dropped' : 'ended badly'} after the write; a fresh read shows the planned file`)
+        }
+        if (!back) failed = `the config file could not be read back on ${p.guest.node}${dropped ? ` (${dropped})` : ''}`
         else {
-          try {
-            const back = parseRead(w.output)
-            fileAfter = back.text
-            if (back.text !== p.file.after) failed = 'the config file read back is not byte for byte the planned file'
-            else steps.push('raw lines written (whole file, compared and swapped)')
-          } catch (e: any) { failed = String(e?.message ?? e) }
+          fileAfter = back.text
+          if (back.text !== p.file.after) failed = sha256(back.text) === p.file.sha ? `the config file write failed on ${p.guest.node}; the file is unchanged` : 'the config file read back is not byte for byte the planned file'
+          else steps.push('raw lines written (whole file, compared and swapped under the config lock)')
         }
         // Proxmox must still parse it, and the API's digest moves on.
         const parsed = await this.d.pve.get<PveConfig>(`${this.base(p.guest)}/config`).catch(() => null)
@@ -541,6 +584,7 @@ export class GuestConfigService {
       const problems = [...(failed ? [`Proxmox refused a step: ${failed}`] : []), ...(outcome?.problems ?? []), ...(after ? [] : ['The config could not be read back after the write'])]
       const ok = !failed && !!outcome?.ok
       const row = await this.record(p, owner, after, ok, problems, steps, fileAfter)
+      if (ok) await this.updateGpuState(p, row?.id ?? null).catch(e => problems.push(`The GPU toggle state could not be stored: ${e?.message ?? e}`))
       const pendingKeys = outcome?.pendingKeys ?? []
       return {
         ok, outcome: outcome ? { ...outcome, problems, ok } : null, pendingKeys,
@@ -558,7 +602,7 @@ export class GuestConfigService {
         guest: resource, node: p.guest.node, kind: p.kind, tag, actor: owner, previewId: p.id,
         before: p.before, after, changes: p.plan.changes.map(c => ({ key: c.key, words: redactText(c.words) })),
         outcome: ok ? 'ok' : 'failed', problems: problems.map(redactText),
-        meta: p.file ? { ...(p.plan.meta ?? {}), fileBefore: redactConfFile(p.file.before), fileAfter: redactConfFile(fileAfter ?? p.file.after), fileSha: sha256(p.file.before) } : (p.plan.meta ?? null),
+        meta: await this.historyMeta(p, after, fileAfter),
       })
     } catch (e: any) { problems.push(`The change was made but its history row could not be stored: ${e?.message ?? e}`) }
     await this.d.audit('guest_config.apply', resource, {
@@ -566,6 +610,41 @@ export class GuestConfigService {
       keys: p.plan.touched, steps, problems,
     }).catch(() => { /* the history row is the record; an audit outage must not hide the outcome */ })
     return row
+  }
+
+  /**
+   * The meta a history row keeps: the plan's own, the redacted config files for a whole-file write, and HMACs of
+   * every raw line before and after (never a plain hash of anything unredacted).
+   */
+  private async historyMeta(p: Preview, after: PveConfig | null, fileAfter: string | null): Promise<Record<string, unknown> | null> {
+    const m: Record<string, unknown> = { ...(p.plan.meta ?? {}) }
+    if (p.guest.type === 'lxc') {
+      const b = p.file ? splitConf(p.file.before).rawMain : rawLines(p.before)
+      const a = fileAfter ? splitConf(fileAfter).rawMain : after ? rawLines(after) : null
+      m.rawHmac = { before: await this.hmacs(b), after: a ? await this.hmacs(a) : null }
+    }
+    if (p.file) { m.fileBefore = redactConfFile(p.file.before); m.fileAfter = redactConfFile(fileAfter ?? p.file.after) }
+    return Object.keys(m).length ? m : null
+  }
+
+  private hmacKeyCache: Buffer | null = null
+  private async hmacs(lines: Array<[string, string]>): Promise<string[]> {
+    this.hmacKeyCache ??= this.d.hmacKey ? await this.d.hmacKey() : randomBytes(32)
+    return lines.map(([k, v]) => createHmac('sha256', this.hmacKeyCache!).update(`${k}\u0000${v}`).digest('hex'))
+  }
+
+  async gpuState(g: GuestId): Promise<GpuState> { return this.d.history.getGpu(`${g.type}/${g.vmid}`) }
+
+  /** Keep the GPU toggle state in step with a successful write. */
+  private async updateGpuState(p: Preview, rowId: string | null): Promise<void> {
+    const m = (p.plan.meta ?? {}) as any
+    if (!m.gpuManaged && !m.gpuManagedRaw && p.kind !== 'gpu-off' && p.kind !== 'gpu-on') return
+    const st = await this.gpuState(p.guest)
+    if (m.gpuManaged) Object.assign(st.dev, m.gpuManaged)
+    for (const l of (m.gpuManagedRaw ?? []) as Array<[string, string]>) if (!st.raw.some(r => r[0] === l[0] && r[1] === l[1])) st.raw.push([l[0], l[1]])
+    if (p.kind === 'gpu-off' && m.gpuOff) { st.off = m.gpuOff; st.offAt = new Date(this.d.now()); st.offRow = rowId }
+    if (p.kind === 'gpu-on') { st.off = null; st.offAt = null; st.offRow = null }
+    await this.d.history.setGpu(st)
   }
 
   /** Poll a task by UPID until it stops; its exit status is read, a task that never finishes is reported. */
@@ -652,7 +731,8 @@ export class GuestConfigService {
     const invs = new Map<string, NodeInventory | null>()
     for (const n of new Set(guests.map(x => x.node as string))) { const hit = this.inv.get(n); invs.set(n, hit ? hit.inv : null) }
     // The GPU toggle state needs the guest's history: an "off" with nothing turned back on since.
-    const offs = await Promise.all(guests.map(x => x.type === 'lxc' ? this.d.history.list(`lxc/${x.vmid}`, 30).then(r => !!openGpuOff(r)).catch(() => false) : Promise.resolve(false)))
+    const states = new Map((await this.d.history.listGpu().catch(() => [] as GpuState[])).map(st => [st.guest, st]))
+    const offs = guests.map(x => !!states.get(`${x.type}/${x.vmid}`)?.off)
     const vpn = await vpnStatuses(guests.map(x => ({ node: x.node, type: x.type, vmid: Number(x.vmid), name: x.name })), this.d.vpn ?? vpnStatusSource())
     return guests.map((x, i) => {
       const cfg = configs[i] ?? {}
