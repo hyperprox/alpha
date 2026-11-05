@@ -59,14 +59,15 @@ export interface TransportDeps {
   ssh:               typeof execOnNode
   probeHostKey?:     typeof probeHostKey
   pinnedHostKey?:    typeof pinnedHostKey
-  pinHostKey?:       typeof pinHostKey
+  pinHostKey?:       (host: string, port: number, fingerprint: string) => Promise<void>
   nodeCredential:    typeof nodeCredential
   loadCredential:    typeof loadCredential
   listManualHosts:   typeof listManualHosts
   listHostAddresses: typeof listHostAddresses
 }
 
-const realTransport: TransportDeps = { ssh: execOnNode, nodeCredential, loadCredential, listManualHosts, listHostAddresses, probeHostKey, pinnedHostKey, pinHostKey }
+const realTransport: TransportDeps = { ssh: execOnNode, nodeCredential, loadCredential, listManualHosts, listHostAddresses, probeHostKey, pinnedHostKey,
+  pinHostKey: (h: string, p: number, f: string) => pinHostKey(h, p, f, 'confirmed') }
 
 export function productionRemoteExecutor(
   pve: Pick<ProxmoxClient, 'fetchStrict'> = livePve(),
@@ -204,6 +205,7 @@ export function productionRemoteExecutor(
     },
     probeHostKey: (host, port) => (t.probeHostKey ?? probeHostKey)(host, port),
     pinnedHostKey: (host, port) => (t.pinnedHostKey ?? pinnedHostKey)(host, port),
-    pinHostKey: (host, port, fp) => (t.pinHostKey ?? pinHostKey)(host, port, fp),
+    // The admin checked this key in Remote access's confirm step.
+    pinHostKey: (host, port, fp) => (t.pinHostKey ?? ((h: string, p: number, f: string) => pinHostKey(h, p, f, 'confirmed')))(host, port, fp),
   }
 }

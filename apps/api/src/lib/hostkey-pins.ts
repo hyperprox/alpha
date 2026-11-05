@@ -4,10 +4,12 @@
 //  A pin is the fingerprint HyperProx accepts for host:port (vault item hyperprox:deck/hostkey). Next to it,
 //  hyperprox:deck/hostkey-source records how it got there:
 //
-//    terminal   learned when someone opened the host in the Terminal, which shows the key it learned
-//    confirmed  an admin checked the fingerprint and pressed confirm (Setup checklist, Remote access, HA)
-//    wizard     the setup wizard saw it on first connection (its fingerprints were on screen, not confirmed)
-//    api        HyperProx's own node runner learned it on first use, with nobody looking
+//    terminal       a person explicitly accepted the displayed fingerprint in the Terminal (reserved; the
+//                   Terminal does not ask yet, so nothing writes it today)
+//    confirmed      an admin checked the fingerprint and pressed confirm (Setup checklist, Remote access, HA)
+//    terminal-auto  the Terminal learned it on first connection; it was shown, but nobody accepted it
+//    wizard         the setup wizard saw it on first connection (on screen, not confirmed)
+//    api            HyperProx's own node runner learned it on first use, with nobody looking
 //
 //  Only terminal and confirmed count as confirmed. requirePin callers accept nothing else, and the Setup
 //  checklist lists every other pin (and a pin from before provenance was kept, which has no source) with a
@@ -19,9 +21,9 @@ import { getCredential, setCredential, deleteCredential, listCredentialKeys } fr
 const CATEGORY = 'deck'
 const PIN = 'hostkey'
 const SOURCE = 'hostkey-source'
-export type PinSource = 'terminal' | 'confirmed' | 'wizard' | 'api'
+export type PinSource = 'terminal' | 'confirmed' | 'terminal-auto' | 'wizard' | 'api'
 const CONFIRMED: PinSource[] = ['terminal', 'confirmed']
-const SOURCES: PinSource[] = ['terminal', 'confirmed', 'wizard', 'api']
+const SOURCES: PinSource[] = ['terminal', 'confirmed', 'terminal-auto', 'wizard', 'api']
 
 /** Same id the Terminal and node-exec use for host:port. */
 export function pinId(host: string, port = 22): string {

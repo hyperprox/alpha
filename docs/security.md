@@ -162,10 +162,12 @@ where the test passed.
 - **Every use is audited** in the database's audit log: which node, what for, and who; never the value.
   `test/setup-onboarding.test.ts` plants marker values in a node login and a GoDaddy key and proves none
   reaches Postgres, a file, a log, an audit row or an API answer.
-- **Where a pin came from.** Each pin records its source: `terminal` (learned in the Terminal, which
-  shows the key), `confirmed` (an admin compared the fingerprint and pressed confirm: Setup checklist,
-  Remote access, HA), `wizard` or `api` (learned on first use, nobody confirming). Calls that require a pin
-  (Remote access scripts, HA maintenance mode) accept only `terminal` or `confirmed` pins. Settings → Setup
+- **Where a pin came from.** Each pin records its source: `confirmed` (an admin compared the fingerprint
+  and pressed confirm: Setup checklist, Remote access, HA), or one of the first-use sources nobody
+  confirmed: `terminal-auto` (learned when the host was first opened in the Terminal; the key is shown,
+  but nobody accepted it), `wizard` or `api`. Calls that require a pin (Remote access scripts, HA
+  maintenance mode) accept only confirmed pins (`terminal`, a person accepting the fingerprint in the
+  Terminal, is reserved for when the Terminal asks). Settings → Setup
   checklist shows every node's fingerprint, and every pin that is not confirmed (including pins from before
   sources were kept, which are left as they are), with a confirm button that needs the master password and
   only accepts the key the host presents at that moment.

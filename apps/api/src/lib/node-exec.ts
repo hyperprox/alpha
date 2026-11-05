@@ -85,7 +85,8 @@ export interface ExecOptions {
 export class HostKeyNotPinnedError extends Error {
   constructor(readonly host: string, readonly port: number, readonly fingerprint: string) {
     super(`${host}:${port} has no pinned host key, so HyperProx will not send it anything. Its key is ${fingerprint}. ` +
-      'Open it once in the Terminal, check that fingerprint against the machine, and accept it; then try again.')
+      'Check that fingerprint against the machine and confirm it (Remote access, or Settings → Setup checklist); ' +
+      'opening it in the Terminal alone does not confirm it. Then try again.')
     this.name = 'HostKeyNotPinnedError'
   }
 }
@@ -105,9 +106,9 @@ export async function pinnedHostKey(host: string, port = 22): Promise<string | n
 
 /**
  * Pin `host:port` to `fingerprint`, in the same place the Terminal pins it, recording where it came from.
- * Callers that pin a key an admin checked (Remote access) use the default, 'confirmed'.
+ * The source is required: there is no default, so nothing becomes "confirmed" by omission.
  */
-export async function pinHostKey(host: string, port: number, fingerprint: string, source: PinSource = 'confirmed'): Promise<void> {
+export async function pinHostKey(host: string, port: number, fingerprint: string, source: PinSource): Promise<void> {
   await recordPin(host, port, fingerprint, source)
 }
 
@@ -115,7 +116,7 @@ export async function pinHostKey(host: string, port: number, fingerprint: string
 export class HostKeyNotConfirmedError extends Error {
   constructor(readonly host: string, readonly port: number, readonly fingerprint: string) {
     super(`${host}:${port} is pinned to ${fingerprint}, but nobody has confirmed that key, so HyperProx will not send it anything. ` +
-      'Confirm it on Settings → Setup checklist (or open it in the Terminal), then try again.')
+      'Confirm it on Settings → Setup checklist (opening it in the Terminal does not confirm it), then try again.')
     this.name = 'HostKeyNotConfirmedError'
   }
 }

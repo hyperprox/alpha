@@ -209,9 +209,10 @@ export function connect(opts: ConnectOptions): Promise<ConnectResult> {
         getCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, pinKey)
           .then(async pinned => {
             if (!pinned) {
-              // The Terminal shows the key it learned, so this pin counts as confirmed by the person at it.
+              // Learned on first connection. The Terminal shows it, but nobody has accepted it, so it is NOT a
+              // confirmed pin: requirePin callers refuse it until an admin confirms it (Setup checklist).
               await setCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, pinKey, fingerprint, false)
-              await setCredential(CREDENTIAL_CATEGORY, 'hostkey-source', pinKey, 'terminal', false)
+              await setCredential(CREDENTIAL_CATEGORY, 'hostkey-source', pinKey, 'terminal-auto', false)
               hostKeyLearned = true
               return verified(true)
             }
