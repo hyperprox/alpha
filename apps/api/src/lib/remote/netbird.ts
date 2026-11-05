@@ -157,13 +157,32 @@ export class NetbirdClient implements RemoteProvider {
     if (missing.length) throw new ProviderError(`NetBird has no group called ${missing.join(', ')}`)
     for (const g of list) {
       if (g.name === 'All') continue
-      const ids: string[] = (Array.isArray(g.peers) ? g.peers : []).map((x: any) => String(typeof x === 'string' ? x : x?.id))
-      const member = ids.includes(device.id)
+      const member = peerIds(g).includes(device.id)
       const want = names.includes(g.name)
-      if (want === member) continue
-      const peers = want ? [...ids, device.id] : ids.filter(i => i !== device.id)
-      await this.call(`/groups/${encodeURIComponent(g.id)}`, 'update group', { method: 'PUT', json: { name: g.name, peers } })
+      if (want !== member) await this.setMembership(String(g.id), device.id, want)
     }
+  }
+
+  /**
+   * Add or remove one peer in a group: the group is read whole, written back with only its peers changed, and
+   * read again to confirm. If someone else changed it in between, it is done once more from a fresh read;
+   * a second clash is refused rather than overwritten.
+   */
+  private async setMembership(groupId: string, peerId: string, want: boolean): Promise<void> {
+    const path = `/groups/${encodeURIComponent(groupId)}`
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const g = await this.call<any>(path, 'read group')
+      const ids = peerIds(g)
+      const peers = want ? (ids.includes(peerId) ? ids : [...ids, peerId]) : ids.filter(i => i !== peerId)
+      const body: Record<string, unknown> = { name: g.name, peers }
+      if (Array.isArray(g.resources)) body.resources = g.resources.map((r: any) => ({ id: r.id, type: r.type }))
+      await this.call(path, 'update group', { method: 'PUT', json: body })
+      const back = await this.call<any>(path, 'read group')
+      const same = back?.name === g.name && sameSet(peerIds(back), peers) &&
+        JSON.stringify(resourceKeys(back)) === JSON.stringify(resourceKeys(body))
+      if (same) return
+    }
+    throw new ProviderError(`NetBird group ${groupId} changed while HyperProx was writing it, twice; nothing more was changed. Try again.`)
   }
 
   async deleteDevice(id: string): Promise<void> {
@@ -191,4 +210,15 @@ export class NetbirdClient implements RemoteProvider {
     }
     return made
   }
+}
+
+function peerIds(g: any): string[] {
+  return (Array.isArray(g?.peers) ? g.peers : []).map((x: any) => String(typeof x === 'string' ? x : x?.id))
+}
+function sameSet(a: string[], b: string[]): boolean {
+  const A = new Set(a), B = new Set(b)
+  return A.size === B.size && [...A].every(x => B.has(x))
+}
+function resourceKeys(g: any): string[] {
+  return (Array.isArray(g?.resources) ? g.resources : []).map((r: any) => `${r.type}:${r.id}`).sort()
 }
