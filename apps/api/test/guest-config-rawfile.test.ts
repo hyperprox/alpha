@@ -30,8 +30,12 @@ const ODD = [
 const MIXED = 'arch: amd64\r\nlxc.cgroup2.devices.allow: c 226:* rwm\r\n\n[pve:pending]\ncores: 2\n'
 const MIXED_SNAP = 'arch: amd64\r\nlxc.cgroup2.devices.allow: c 226:* rwm\r\n\n[snap1]\r\nlxc.cgroup2.devices.allow: c 226:* rwm\n'
 const NV: RawAllow = {
-  devices: new Set(['/dev/nvidia0', '/dev/nvidiactl', '/dev/nvidia-uvm', '/dev/dri/renderD128', '/dev/dri/card0', '/dev/nvidia-caps/nvidia-cap1', '/dev/net/tun']),
-  majors: new Set([195, 226, 508, 511, 10]),
+  devices: new Map([
+    ['/dev/nvidia0', { major: 195, minor: 0 }], ['/dev/nvidiactl', { major: 195, minor: 255 }], ['/dev/nvidia-uvm', { major: 508, minor: 0 }],
+    ['/dev/dri/renderD128', { major: 226, minor: 128 }], ['/dev/dri/card0', { major: 226, minor: 0 }],
+    ['/dev/nvidia-caps/nvidia-cap1', { major: 511, minor: 1 }], ['/dev/net/tun', { major: 10, minor: 200 }],
+  ]),
+  gpuMajors: new Set([195, 226, 508, 511]),
 }
 
 test('raw lines parse the way Proxmox parses them: dashes in keys, "key = value", trimmed values, no leading whitespace, PVE’s key filter', () => {
@@ -68,6 +72,11 @@ test('an added mount source must be an exact character device from the node inve
     ['/dev/port dev/port none bind,create=file', /host memory/],
     ['/dev/sda dev/sda none bind,create=file', /disks are out of scope/],
     ['/dev/ttyS9 dev/ttyS9 none bind,create=file', /not in .*inventory/],
+    ['/dev/uinput dev/uinput none bind,optional,create=file', /not in .*inventory/],
+    ['/dev/fuse dev/fuse none bind,optional,create=file', /not in .*inventory/],
+    ['/dev/nvidia0 dev/nvidia0 none bind,optional,create=file,mode=0666', /mode=, uid= and gid=/],
+    ['/dev/nvidia0 dev/nvidia0 none bind,optional,create=file,uid=0', /mode=, uid= and gid=/],
+    ['/dev/nvidia0 dev/nvidia0 none bind,optional,create=file,gid=44', /mode=, uid= and gid=/],
     ['/dev/dri/../mem dev/dri/../mem none bind,create=file', /“\.” or “\.\.”/],
     ['/etc dev/x none bind', /only \/dev device nodes/],
   ]
@@ -78,10 +87,15 @@ test('an added mount source must be an exact character device from the node inve
   assert.match(rawLineAllowed(['lxc.mount.entry', '/dev/nvidia0 dev/nvidia0 none bind,optional,create=file'], null)!, /inventory/)
 })
 
-test('an added cgroup line names one inventory major, character devices only, rwm', () => {
+test('an added cgroup line: MAJOR:* only for GPU majors, otherwise the exact MAJOR:MINOR of an inventory device, rwm', () => {
   assert.equal(rawLineAllowed(['lxc.cgroup2.devices.allow', 'c 226:* rwm'], NV), null)
+  assert.equal(rawLineAllowed(['lxc.cgroup2.devices.allow', 'c 195:* rwm'], NV), null)
   assert.equal(rawLineAllowed(['lxc.cgroup2.devices.allow', 'c 195:0 rwm'], NV), null)
-  for (const [v, re] of [['c *:* rwm', /every device/], ['a', /every device/], ['b 8:* rwm', /block/], ['c 1:1 rwm', /not a GPU or inventory device/], ['c 226:* r', /rwm/]] as Array<[string, RegExp]>) {
+  assert.equal(rawLineAllowed(['lxc.cgroup2.devices.allow', 'c 10:200 rwm'], NV), null, 'tun, exactly')
+  for (const [v, re] of [
+    ['c *:* rwm', /every device/], ['a', /every device/], ['b 8:* rwm', /block/], ['c 1:1 rwm', /not an inventory device/], ['c 226:* r', /rwm/],
+    ['c 10:* rwm', /only for GPU majors/], ['c 10:232 rwm', /not an inventory device/],
+  ] as Array<[string, RegExp]>) {
     const why = rawLineAllowed(['lxc.cgroup2.devices.allow', v], NV)
     assert.ok(why && re.test(why), `${v} → ${why}`)
   }
@@ -90,8 +104,8 @@ test('an added cgroup line names one inventory major, character devices only, rw
 test('the node verifies every added source itself: a character device (or one of the two directories), not a symlink, realpath equal', () => {
   const v = verifyScript(['/dev/nvidia0', '/dev/dri'])
   assert.ok(v.includes('realpath -e') && v.includes('[ -L "$p" ]') && v.includes('[ -c "$p" ]'))
-  assert.deepEqual(parseVerify('C /dev/nvidia0 c3 /dev/nvidia0\nD /dev/dri /dev/dri\nL /dev/fd\nM /dev/nvidia1\nO /dev/sda\n'), {
-    '/dev/nvidia0': { kind: 'char', major: 0xc3, real: '/dev/nvidia0' }, '/dev/dri': { kind: 'dir', real: '/dev/dri' },
+  assert.deepEqual(parseVerify('C /dev/nvidia0 c3:0 /dev/nvidia0\nD /dev/dri /dev/dri\nL /dev/fd\nM /dev/nvidia1\nO /dev/sda\n'), {
+    '/dev/nvidia0': { kind: 'char', major: 0xc3, minor: 0, real: '/dev/nvidia0' }, '/dev/dri': { kind: 'dir', real: '/dev/dri' },
     '/dev/fd': { kind: 'symlink' }, '/dev/nvidia1': { kind: 'missing' }, '/dev/sda': { kind: 'other' },
   })
   assert.throws(() => verifyScript(["/dev/x'; rm -rf /"]))
@@ -139,7 +153,7 @@ test('a rewrite refuses a line that is not there, a pending section, a disallowe
 })
 
 test('the node script: config lock across check and rename, refuses lock: and pending, re-checks added devices, cleans up on every path', () => {
-  const s = writeScript('node-a', 901, sha256(FILE), FILE, ['/dev/nvidia0'])
+  const s = writeScript('node-a', 901, sha256(FILE), FILE, [{ path: '/dev/nvidia0', expect: 'c3:0' }, { path: '/dev/dri', expect: 'dir' }, { path: '/dev/nvidia1', expect: 'absent' }])
   assert.match(s, /^set -eu/)
   assert.ok(s.includes('flock -w') && s.includes('/run/lock/lxc/pve-config-901.lock'))
   assert.ok(s.indexOf('flock -w') < s.indexOf('sha256sum'), 'the lock is taken before the hash check')
@@ -147,11 +161,14 @@ test('the node script: config lock across check and rename, refuses lock: and pe
   assert.ok(s.includes('HPX-GUEST-LOCKED'))
   assert.ok(s.includes("grep -qi '^\\[pve:pending\\]'"), 'pending is refused in the script too, case-insensitively')
   assert.ok(s.includes('HPX-BAD-DEVICE') && s.indexOf('HPX-BAD-DEVICE') < s.indexOf('mv -f'), 'added sources are re-checked before the rename')
+  assert.ok(s.includes(`stat -c '%t:%T'`) && s.includes(`'/dev/nvidia0|c3:0'`), 'each device’s expected major:minor is compared under the lock')
+  assert.ok(s.includes(`'/dev/nvidia1|absent'`) && s.includes(`'/dev/dri|dir'`))
   assert.match(s, /mv -f "\$t" "\$f"/)
   assert.ok(!/>>/.test(s) && !/sed -i/.test(s), 'never appends, never edits in place')
   assert.ok(!s.includes('memory: 512'), 'content travels base64-encoded')
   assert.throws(() => writeScript('node a;rm', 901, sha256(FILE), FILE))
-  assert.throws(() => writeScript('node-a', 901, sha256(FILE), FILE, ['/dev/x y']))
+  assert.throws(() => writeScript('node-a', 901, sha256(FILE), FILE, [{ path: '/dev/x y', expect: 'absent' }]))
+  assert.throws(() => writeScript('node-a', 901, sha256(FILE), FILE, [{ path: '/dev/x', expect: "c3:0'; reboot" }]))
   const r = readScript('node-a', 901)
   assert.ok(r.includes('base64 -w0') && r.includes('.tmp.hpx.'), 'the read lists leftover temp files')
   assert.ok(!r.includes('flock'), 'a plain read takes no lock')

@@ -171,6 +171,22 @@ release. Do not assume them.
 - **Audit timeline**: the vault's event log joined with HyperProx's own action log.
 - Least-privilege hypervisor tokens per role, and rotating a credential in the system it belongs to.
 
+## Raw device lines in guest configs
+
+Proxmox's API refuses every `lxc.*` line, so the GPU and device editor writes the few it needs by rewriting the
+guest's config file over the node login. Only device lines are written: `lxc.cgroup2.devices.allow` /
+`lxc.cgroup.devices.allow` for one character device (`MAJOR:*` only for a GPU major, otherwise the exact
+`MAJOR:MINOR` from the node's inventory) and `lxc.mount.entry` binds of an inventory device node onto the same path,
+without `mode=`, `uid=` or `gid=`. Hooks, AppArmor, idmaps, capabilities and everything else are refused. Each
+write is a compare-and-swap under Proxmox's own config lock, re-checks every added device's major:minor on the node
+at that moment, and is read back byte for byte.
+
+**The limit of that check.** It proves what the node had when the file was written. LXC resolves a mount source
+again every time the container starts. If a device node is later replaced (a different device at the same path, or
+a symlink in its place), the container binds whatever is there at start; an `optional` entry whose device has gone
+is skipped silently. Re-open the guest's GPU section after hardware or driver changes on its nodes: the drill-down
+shows which device it actually sees.
+
 ## Honest caveats
 
 - **The vault admin token is on disk.** `VAULT_ADMIN_TOKEN` in `.env` (its hash is in the vault's
