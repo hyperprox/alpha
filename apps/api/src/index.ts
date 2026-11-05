@@ -36,6 +36,7 @@ import { restoreWizardState } from './lib/catalogue-installer'
 import { terminalWsRoutes }           from './routes/terminal-ws'
 import { updatesRoutes, updatesWsRoutes } from './routes/updates'
 import { certsRoutes }            from './routes/certs'
+import { haRoutes }               from './routes/ha'
 import { notifyRoutes }           from './routes/notify'
 import { monitoringRoutes }       from './routes/monitoring'
 import { prismaPlugin }         from './plugins/prisma'
@@ -125,6 +126,7 @@ async function main() {
   await server.register(updatesRoutes,        { prefix: '/api/updates' })
   await server.register(updatesWsRoutes,      { prefix: '/ws/updates' })
   await server.register(certsRoutes,          { prefix: '/api/certs' })
+  await server.register(haRoutes,             { prefix: '/api/ha' })
   await server.register(notifyRoutes,         { prefix: '/api/settings/notifications' })
   await server.register(wsRoutes,             { prefix: '/ws' })
   // Terminal sockets live under /ws because nginx proxies upgrades only there.

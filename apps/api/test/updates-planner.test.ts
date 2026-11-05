@@ -171,7 +171,7 @@ test('Proxmox apt list (scrubbed fixture shape) parses to name/from/to', () => {
   ])
   assert.deepEqual(parsePveAptList(null), [])
   assert.ok(isKernelPackage('proxmox-kernel-7.0.2-1-pve-signed') && isKernelPackage('proxmox-default-kernel') && !isKernelPackage('linux-libc-dev'))
-  assert.ok(isCephPackage('ceph-osd') && isCephPackage('librados2') && isCephPackage('python3-rbd') && !isCephPackage('cephalopod-tools'))
+  assert.ok(isCephPackage('ceph-osd') && isCephPackage('librados2') && isCephPackage('python3-rbd') && !isCephPackage('python3-requests'))
 })
 
 test('guest apt list output parses; no apt and reboot-required are recognised', () => {
