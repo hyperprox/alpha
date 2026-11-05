@@ -9,6 +9,7 @@
 //  out through here: views carry a mask, results carry a status and a code.
 // =============================================================================
 
+import { unmarkPlain } from './render'
 import crypto from 'node:crypto'
 import dns from 'node:dns/promises'
 import type { PrismaClient } from '@prisma/client'
@@ -439,7 +440,7 @@ export class NotifyService {
 
   async deliveries(channelId: string | undefined, limit = 50): Promise<DeliveryView[]> {
     return (await this.d.store.listOutbox({ channelId, limit: Math.min(Math.max(1, limit), 200) })).map(r => ({
-      id: r.id, channelId: r.channelId, type: r.type, severity: r.severity, title: r.payload?.title ?? '', status: r.status,
+      id: r.id, channelId: r.channelId, type: r.type, severity: r.severity, title: unmarkPlain(r.payload?.title ?? ''), status: r.status,
       attempts: r.attempts, httpStatus: r.httpStatus, errorCode: r.errorCode, createdAt: r.createdAt.toISOString(), sentAt: iso(r.sentAt),
       text: r.status === 'sent' ? describeResult({ ok: true, status: r.httpStatus ?? undefined })
         : r.status === 'failed' ? describeResult({ ok: false, status: r.httpStatus ?? undefined, code: r.errorCode ?? undefined })

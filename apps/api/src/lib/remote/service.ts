@@ -1444,6 +1444,8 @@ export class RemoteAccessService {
                 ],
                 link: '/vpn', linkLabel: d.pending ? 'Approve or remove' : 'Review', where: 'VPN page',
                 subject: { kind: 'device', name: d.name }, fingerprint: `vpn.device.new:${id}:${d.id}`,
+                // Named by whoever added the device: plain text on channels that render markdown.
+                plain: [d.name, ...(d.os ? [d.os] : []), ...(d.user ? [d.user] : [])],
               }).catch(() => undefined)
             }
           }
