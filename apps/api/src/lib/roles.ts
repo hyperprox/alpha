@@ -46,6 +46,13 @@ const PUBLIC_AUTH = new Set([
   '/api/auth/sign-in',
 ])
 
+/**
+ * nginx's auth_request for /grafana/ (config/nginx/conf.d/hyperprox-routes.inc). It answers for itself:
+ * 204 for a signed-in person while unlocked, 401 otherwise, locked included. It needs any session (viewer),
+ * and its requests do not reset the idle timer: a Grafana tab refreshing itself is not a person.
+ */
+export const SESSION_CHECK = '/api/auth/check'
+
 // API token management lives under /api/auth but is an ordinary admin route: locked is 423.
 const TOKENS = /^\/api\/auth\/tokens(\/|$)/
 
@@ -68,6 +75,17 @@ const TERMINAL_OPERATOR: Array<[string, RegExp]> = [
 ]
 // Guest destroy.
 const DESTROY = /^\/api\/proxmox\/nodes\/[^/]+\/(lxc|qemu)\/[^/]+$/
+// Proxy (routes/proxy.ts). Reads are viewer, as the host list always was: kinds, instances (the route
+// returns only names, kind, mode and status below admin), hosts, certificates, stats, per-instance hosts, certificates and
+// health. Every write is admin: instances, previews, applying a preview, certificate requests. A GET under
+// /api/proxy that is not one of these is admin too, so a new read route is closed until it is listed here.
+const PROXY = /^\/api\/proxy(\/|$)/
+const PROXY_READ = /^\/api\/proxy\/(kinds|instances|hosts|certificates|stats|instances\/[^/]+\/(hosts|certificates|health))$/
+// The Catalogue install wizard: the node table, ID and address checks, previews and applies. Admin for every
+// method, reads included: it maps every node, guest and address. Apply and clean-up create or destroy a
+// container, so both also need the master password re-entered.
+const CATALOGUE_WIZARD = /^\/api\/catalogue\/wizard(\/|$)/
+const CATALOGUE_RECONFIRM = /^\/api\/catalogue\/wizard\/(apply|jobs\/[^/]+\/cleanup)$/
 // Role management (no routes yet; reserved so they are owner-only from day one).
 const ROLE_MGMT = /^\/api\/(auth\/)?roles(\/|$)/
 // Remote access: what opens a tunnel into the cluster, routes through a machine, removes a device or shows
@@ -104,9 +122,12 @@ export function requiredRole(method: string, path: string): Role | null {
   // Sign-out only clears the caller's own cookie, so it must work with a stale one.
   if (p === '/api/auth/sign-out') return null
   if (p === '/api/auth/reconfirm') return 'viewer'
+  if (p === SESSION_CHECK) return 'viewer'
   if (p === '/api/auth/lock') return 'admin'
   // API tokens: listing them is admin too (names, roles, who made them).
   if (TOKENS.test(p)) return 'admin'
+  if (PROXY.test(p)) return (m === 'GET' || m === 'HEAD') && PROXY_READ.test(p) ? 'viewer' : 'admin'
+  if (CATALOGUE_WIZARD.test(p)) return 'admin'
 
   if (m === 'GET' || m === 'HEAD') {
     // Interactive shells on guests and nodes.
@@ -132,6 +153,7 @@ export function needsReconfirm(method: string, path: string): boolean {
   if (m === 'DELETE' && DESTROY.test(p)) return true
   if (m === 'POST' && p === '/api/secrets/reveal') return true
   if (m !== 'GET' && m !== 'HEAD' && ROLE_MGMT.test(p)) return true
+  if (m === 'POST' && CATALOGUE_RECONFIRM.test(p)) return true
   // Creating or revoking an API token.
   if ((m === 'POST' || m === 'DELETE') && TOKENS.test(p)) return true
   for (const [rm, re] of REMOTE_RECONFIRM) if (m === rm && re.test(p)) return true

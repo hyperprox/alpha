@@ -44,11 +44,11 @@ function fakeDeps(over: Record<string, any> = {}) {
     fetch: (async (url: string) => { calls.fetched.push(url); return { status: over.health ?? 200 } }) as any,
     exec: (async (o: any) => { calls.scripts.push(o.script); return { code: over.installCode ?? 0, output: over.installOutput ?? "", timedOut: false } }) as any,
     login: async () => (over.noLogin ? null : ({ username: "root", password: "x" } as any)),
-    npm: async () => ({
-      createProxyHost: async (h: any) => { calls.proxy.push(h); return { id: 7 } },
-      requestCertificate: async () => ({ id: 9 }),
-      updateProxyHost: async () => ({}),
-    }) as any,
+    proxy: {
+      createHost: async (h: any) => { calls.proxy.push(h); return { hostId: "7" } },
+      requestCertificate: async () => ({ id: "9" }),
+      updateHost: async () => ({}),
+    },
     dns: async () => ({
       getDomains: async () => (over.zones ?? ["example.com"]).map((domain: string) => ({ domain })),
       getRecords: async (zone: string) => (over.records?.[zone] ?? []),
@@ -143,9 +143,9 @@ test("a public recipe with no first-run page is published to its port", async ()
   const f = fields({ service: "homepage", exposure: "public", domain: "home.example.com", hostname: "homepage" })
   const { job, calls } = await run(f, ALL)
   assert.equal(job.status, "completed", job.error)
-  assert.equal(calls.proxy[0].forward_host, "10.0.0.37")
-  assert.equal(calls.proxy[0].forward_port, 3000)
-  assert.deepEqual(calls.proxy[0].domain_names, ["home.example.com"])
+  assert.equal(calls.proxy[0].forwardHost, "10.0.0.37")
+  assert.equal(calls.proxy[0].forwardPort, 3000)
+  assert.deepEqual(calls.proxy[0].domains, ["home.example.com"])
 })
 
 const dnsJob = (domain: string): JobState => ({ jobId: "dns", status: "running", steps: [], currentStep: 0, startedAt: 0,

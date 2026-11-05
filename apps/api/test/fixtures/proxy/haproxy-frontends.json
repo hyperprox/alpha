@@ -1,0 +1,19 @@
+[
+ {
+  "from": "unnamed_defaults_1",
+  "name": "http",
+  "backend_switching_rule_list": [
+   {
+    "cond": "if",
+    "cond_test": "{ req.hdr(host),field(1,:) -i legacy-haproxy.hpx.invalid }",
+    "name": "legacy"
+   }
+  ],
+  "binds": {
+   ":80": {
+    "name": ":80",
+    "port": 80
+   }
+  }
+ }
+]

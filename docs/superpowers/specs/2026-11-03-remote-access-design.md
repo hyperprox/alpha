@@ -315,7 +315,7 @@ they differ; docs/remote-access.md describes the result.
 - **Sweeps** never touch a key of an install running in this process. NetBird flags come from the running
   daemon's config. Every SSH path needs a pinned host key, with a check-and-trust action sharing the
   Terminal's pins.
-- **Migrations**: the first stays as it was; `20261103130000_remote_access_durability` adds the rest.
+- **Migrations**: the first stays as it was; `20261105130000_remote_access_durability` adds the rest.
 
 ## Phase 2
 
