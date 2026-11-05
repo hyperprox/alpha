@@ -8,6 +8,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { apiJson } from '@/lib/api'
 import { HomePicker, weightsOf } from './HomePicker'
 import { Btn, Dialog, Label, Note } from './ui'
+import { RefusalNote, type Refusal } from './PreviewDialog'
 import type { HaRule, Headroom, HomeChoice, RuleProblem } from './types'
 
 interface CheckResult { blocking: RuleProblem[]; existing: RuleProblem[]; words: string; headroom: Headroom[] }
@@ -27,8 +28,8 @@ export function RuleEditor({ initial, guests, nodes, onClose, onPreview }: {
   guests: Array<{ sid: string; name: string }>
   nodes: Array<{ node: string; online: boolean; maintenance: boolean }>
   onClose: () => void
-  /** Hands the finished change to the page, which previews it. */
-  onPreview: (change: Record<string, unknown>) => void
+  /** Hands the finished change to the page, which previews it; a refusal comes back to show here. */
+  onPreview: (change: Record<string, unknown>) => Promise<Refusal | null>
 }) {
   const editing = !!initial
   const [id, setId] = useState(initial?.id ?? '')
@@ -37,15 +38,18 @@ export function RuleEditor({ initial, guests, nodes, onClose, onPreview }: {
   const [resources, setResources] = useState<string[]>(initial?.resources ?? [])
   const [home, setHome] = useState<HomeChoice>({ mode: initial?.strict ? 'only' : 'prefer', tiers: tiersFromNodes(initial?.nodes) })
   const [avoid, setAvoid] = useState(initial?.type === 'node-affinity' && initial.affinity === 'negative')
+  // An avoid rule's own strictness, kept as it is unless the person changes it (Advanced).
+  const [avoidStrict, setAvoidStrict] = useState(initial?.type === 'node-affinity' && initial.affinity === 'negative' ? !!initial.strict : false)
+  const [refusal, setRefusal] = useState<Refusal | null>(null)
   const [comment, setComment] = useState(initial?.comment ?? '')
   const [check, setCheck] = useState<CheckResult | null>(null)
   const [checkErr, setCheckErr] = useState('')
   const [strictAsk, setStrictAsk] = useState(false)
 
   const rule = useMemo<HaRule>(() => type === 'node-affinity'
-    ? { id, type, affinity: avoid ? 'negative' : 'positive', strict: !avoid && home.mode === 'only', nodes: avoid ? home.tiers.flat().map(node => ({ node, priority: 0 })) : nodesFromTiers(home.tiers), resources, disabled: initial?.disabled ?? false, ...(comment ? { comment } : {}) }
+    ? { id, type, affinity: avoid ? 'negative' : 'positive', strict: avoid ? avoidStrict : home.mode === 'only', nodes: avoid ? home.tiers.flat().map(node => ({ node, priority: 0 })) : nodesFromTiers(home.tiers), resources, disabled: initial?.disabled ?? false, ...(comment ? { comment } : {}) }
     : { id, type, affinity, resources, disabled: initial?.disabled ?? false, ...(comment ? { comment } : {}) },
-  [id, type, affinity, resources, home, avoid, comment, initial?.disabled])
+  [id, type, affinity, resources, home, avoid, avoidStrict, comment, initial?.disabled])
 
   // Live check, debounced: what PVE would say, before anything is sent.
   useEffect(() => {
@@ -57,9 +61,14 @@ export function RuleEditor({ initial, guests, nodes, onClose, onPreview }: {
     return () => clearTimeout(t)
   }, [rule, id, resources.length, initial?.id])
 
-  const strict = type === 'node-affinity' && !avoid && home.mode === 'only'
+  const strict = type === 'node-affinity' && (avoid ? avoidStrict : home.mode === 'only')
+  const wasStrict = initial?.type === 'node-affinity' && !!initial.strict
   const ready = id && resources.length && (type === 'resource-affinity' || home.tiers.flat().length) && !(check?.blocking.length)
-  const submit = (confirmStrict = false) => onPreview({ action: editing ? 'update-rule' : 'create-rule', rule, ...(confirmStrict ? { confirmStrict: true } : {}) })
+  const submit = async (confirmStrict = false, extra: Record<string, unknown> = {}) => {
+    setRefusal(null)
+    const ref = await onPreview({ action: editing ? 'update-rule' : 'create-rule', rule, ...(confirmStrict ? { confirmStrict: true } : {}), ...extra })
+    if (ref) setRefusal(ref)
+  }
   const toggle = (sid: string) => setResources(r => r.includes(sid) ? r.filter(x => x !== sid) : [...r, sid])
 
   return (
@@ -105,6 +114,11 @@ export function RuleEditor({ initial, guests, nodes, onClose, onPreview }: {
           <label className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-muted)' }}>
             <input type="checkbox" checked={avoid} onChange={e => setAvoid(e.target.checked)} /> Advanced: avoid the nodes listed instead (run anywhere except these)
           </label>
+          {avoid && (
+            <label className="flex items-center gap-2 text-sm" style={{ color: avoidStrict ? 'var(--crit-soft)' : 'var(--text-muted)' }}>
+              <input type="checkbox" checked={avoidStrict} onChange={e => setAvoidStrict(e.target.checked)} /> Strict: never on these nodes, even if that means staying off
+            </label>
+          )}
         </div>
       )}
 
@@ -113,9 +127,11 @@ export function RuleEditor({ initial, guests, nodes, onClose, onPreview }: {
       </label>
 
       {check && <Note tone={check.blocking.length ? 'warn' : 'info'}>{check.words}</Note>}
-      {strict && <Note tone="crit">Strict: if every node listed is down, these guests do not start anywhere.</Note>}
+      {strict && <Note tone="crit">{avoid ? 'Strict: these guests never run on the avoided nodes; if every other node is down, they stay off.' : 'Strict: if every node listed is down, these guests do not start anywhere.'}</Note>}
+      {editing && wasStrict && !strict && <Note tone="crit">This rule stops being strict: its guests may then run on nodes it kept them off. You will be asked to confirm.</Note>}
+      {refusal && <RefusalNote refusal={refusal} onFix={r => void onPreview({ action: 'flatten', ruleId: r })} onConfirm={flag => void submit(flag === 'confirmStrict', flag === 'confirmNoRoom' ? { confirmNoRoom: true, ...(strict ? { confirmStrict: true } : {}) } : {})} />}
       {check?.blocking.map((p, i) => (
-        <Note key={i} tone="warn">{p.message}{p.fix && <> <button type="button" className="underline" style={{ color: 'var(--accent)' }} onClick={() => onPreview({ action: 'flatten', ruleId: p.fix!.rule })}>Fix it first: {p.fix.words}</button></>}</Note>
+        <Note key={i} tone="warn">{p.message}{p.fix && <> <button type="button" className="underline" style={{ color: 'var(--accent)' }} onClick={() => void onPreview({ action: 'flatten', ruleId: p.fix!.rule })}>Fix it first: {p.fix.words}</button></>}</Note>
       ))}
       {check?.headroom.filter(h => h.level !== 'ok').map(h => <Note key={h.rule} tone={h.level === 'tight' ? 'info' : 'warn'}>{h.words}</Note>)}
       {checkErr && <Note tone="warn">{checkErr}</Note>}
@@ -123,12 +139,14 @@ export function RuleEditor({ initial, guests, nodes, onClose, onPreview }: {
 
       <div className="flex justify-end gap-2">
         <Btn onClick={onClose}>Cancel</Btn>
-        <Btn kind={strict ? 'danger' : 'primary'} disabled={!ready} onClick={() => strict ? setStrictAsk(true) : submit()}>Preview</Btn>
+        <Btn kind={strict || (wasStrict && !strict) ? 'danger' : 'primary'} disabled={!ready} onClick={() => (strict && !(editing && wasStrict)) || (editing && wasStrict && !strict) ? setStrictAsk(true) : void submit()}>Preview</Btn>
       </div>
       {strictAsk && (
-        <Dialog title="A strict rule?" onClose={() => setStrictAsk(false)}>
-          <Note tone="crit">Strict means nowhere else, ever: when the listed nodes are down, these guests stay off instead of running on a healthy node.</Note>
-          <div className="flex justify-end gap-2"><Btn onClick={() => setStrictAsk(false)}>Cancel</Btn><Btn kind="danger" onClick={() => { setStrictAsk(false); submit(true) }}>Yes, strict</Btn></div>
+        <Dialog title={strict ? 'A strict rule?' : 'Stop being strict?'} onClose={() => setStrictAsk(false)}>
+          <Note tone="crit">{strict
+            ? 'Strict means nowhere else, ever: when the allowed nodes are down, these guests stay off instead of running on a healthy node.'
+            : 'Without strict, these guests may run on nodes this rule kept them off, for example a node without the hardware they need.'}</Note>
+          <div className="flex justify-end gap-2"><Btn onClick={() => setStrictAsk(false)}>Cancel</Btn><Btn kind="danger" onClick={() => { setStrictAsk(false); void submit(true) }}>{strict ? 'Yes, strict' : 'Yes, no longer strict'}</Btn></div>
         </Dialog>
       )}
     </Dialog>

@@ -65,8 +65,10 @@ export function HaPanel({ type, vmid, onChanged, hidePreflight }: HaPanelProps) 
   const homeDirty = JSON.stringify(home) !== JSON.stringify(g.home.disabled || g.home.avoid.length ? { mode: 'none', tiers: [] } : g.home.choice)
   const saveHome = (confirmStrict = false) => ask({ action: 'set-home', sid: g.sid, home, ...(confirmStrict ? { confirmStrict: true } : {}) })
   const removeRelation = (rule: string, others: string[]) => {
+    // `others` are the guests that stay; the rule needs two to mean anything.
     if (others.length <= 1) return ask({ action: 'delete-rule', ruleId: rule })
-    return ask({ action: 'update-rule', rule: { id: rule, type: 'resource-affinity', affinity: g.apart.some(a => a.rule === rule) ? 'negative' : 'positive', resources: others } })
+    // A patch: only the guest list changes; the rule keeps its on/off state, note and everything else.
+    return ask({ action: 'update-rule', rule: { id: rule, resources: [...others] } })
   }
   const addRelation = () => {
     if (!partner) return
@@ -77,6 +79,11 @@ export function HaPanel({ type, vmid, onChanged, hidePreflight }: HaPanelProps) 
   return (
     <div className="space-y-4">
       {!g.quorate && <Note tone="crit">The cluster has lost quorum. HA cannot act, and HyperProx changes nothing until quorum is back.</Note>}
+      {(g.fencing === 'disarmed' || g.fencing === 'disarming') && (
+        <Note tone="warn">{g.disarmMode === 'ignore'
+          ? 'HA is disarmed in ignore mode: it has let go of every guest. Start and stop go straight to Proxmox, and nothing is restarted after a node failure until HA is armed again.'
+          : 'HA is disarmed (freeze): guests are kept as they are, and nothing is restarted or moved until HA is armed again.'}</Note>
+      )}
 
       {/* 1. The switch */}
       <Section title="Automatic restart">
@@ -97,13 +104,14 @@ export function HaPanel({ type, vmid, onChanged, hidePreflight }: HaPanelProps) 
               <Tag tone={g.haState === 'started' ? 'good' : g.haState === 'error' ? 'crit' : 'muted'}>HA: {g.haState ?? g.resource?.state}</Tag>
               {admin && <Btn small disabled={change.busy || g.resource?.state === 'started'} onClick={() => ask({ action: 'set-state', sid: g.sid, state: 'started' })}>Start through HA</Btn>}
               {admin && <Btn small disabled={change.busy || g.resource?.state === 'stopped'} onClick={() => ask({ action: 'set-state', sid: g.sid, state: 'stopped' })}>Stop through HA</Btn>}
-              <span className="text-xs" style={{ color: 'var(--text-dim)' }}>An HA guest is started and stopped through HA, from here and from every power button in HyperProx.</span>
+              <span className="text-xs" style={{ color: 'var(--text-dim)' }}>Start/stop of HA guests is handled by HA.</span>
             </div>
           )}
         </div>
       </Section>
 
-      {refusal && <RefusalNote refusal={refusal} onFix={admin ? rule => ask({ action: 'flatten', ruleId: rule }) : undefined} />}
+      {refusal && <RefusalNote refusal={refusal} onFix={admin ? rule => ask({ action: 'flatten', ruleId: rule }) : undefined}
+        onConfirm={admin ? async flag => { setRefusal(null); const ref = await change.confirm(flag); if (ref) setRefusal(ref) } : undefined} />}
 
       {g.protected && (
         <>
@@ -193,7 +201,7 @@ export function HaPanel({ type, vmid, onChanged, hidePreflight }: HaPanelProps) 
         </Dialog>
       )}
       {change.dialog}
-      <Label>{g.fencing === 'armed' ? 'HA fencing is armed on this cluster' : `HA fencing: ${g.fencing}`}</Label>
+      <Label>{g.fencing === 'armed' ? 'HA fencing is armed on this cluster' : `HA fencing: ${g.fencing}${g.disarmMode ? ` (${g.disarmMode})` : ''}`}</Label>
     </div>
   )
 }
