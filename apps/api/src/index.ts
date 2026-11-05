@@ -34,6 +34,7 @@ import { updatesRoutes, updatesWsRoutes } from './routes/updates'
 import { certsRoutes }            from './routes/certs'
 import { notifyRoutes }           from './routes/notify'
 import { remoteRoutes }           from './routes/remote'
+import { vpnRoutes }              from './routes/vpn'
 import { monitoringRoutes }       from './routes/monitoring'
 import { prismaPlugin }         from './plugins/prisma'
 import { redisPlugin }          from './plugins/redis'
@@ -119,6 +120,7 @@ async function main() {
   await server.register(certsRoutes,          { prefix: '/api/certs' })
   await server.register(notifyRoutes,         { prefix: '/api/settings/notifications' })
   await server.register(remoteRoutes,         { prefix: '/api/remote' })
+  await server.register(vpnRoutes,            { prefix: '/api/vpn' })
   await server.register(wsRoutes,             { prefix: '/ws' })
   // Terminal sockets live under /ws because nginx proxies upgrades only there.
   await server.register(terminalWsRoutes,         { prefix: '/ws/terminal' })

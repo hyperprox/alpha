@@ -32,7 +32,7 @@ import {
   DEFAULT_PREFS, checkPrefs, checkRouting, clientFlags, describePrefs, planInstall, safeHostname, tunFix,
   type ExistingChoice, type VpnPrefs,
 } from './planner'
-import { clusterNetworks, compareSnapshots, onlyFirewall, parseSnapshot, snapshotReady, type NodeSnapshot } from './guard'
+import { clusterNetworks, compareSnapshots, onlyFirewall, parseSnapshot, snapshotReady, type CustomSubject, type GuardSubject, type NodeSnapshot } from './guard'
 import { StreamRedactor, redactKnownKeyShapes } from './redact'
 import { TAG_RE } from './tailscale'
 import {
@@ -107,7 +107,7 @@ export interface RemoteOverview {
   machines: RemoteMachineRow[]
   activeJobId: string | null
   /** Node changes not yet through their guard; `interrupted` ones were cut off by a restart and wait for a check. */
-  attention: Array<{ machineId: string; provider: ProviderId; action: string; since: string; interrupted: boolean }>
+  attention: Array<{ machineId: string; provider: ProviderId | 'wireguard'; action: string; since: string; interrupted: boolean }>
   /** Keys whose revocation is overdue and not yet confirmed. */
   pendingRevokes: number
   /** Devices waiting for approval at a provider (admins only). */
@@ -151,6 +151,8 @@ export type UndoPlan =
   | { kind: 'restore'; provider: ProviderId; support: SupportOk; deviceId: string | null; previousDeviceId: string | null; nodeKey?: string | null; address?: string | null }
   | { kind: 'restart'; provider: ProviderId }
   | { kind: 'configure'; provider: ProviderId; previous: VpnPrefs; flags: string[] }
+  /** A WireGuard interface HyperProx manages: put its previous config back, or take it down if there was none. */
+  | { kind: 'wg-restore'; provider: 'wireguard'; subject: CustomSubject; iface: string; previousConf: string | null }
   | { kind: 'routing'; provider: ProviderId; previous: RoutingRequest; flags: string[]; forwarding: 'leave' | 'guest';
       restoreForwarding: string | null; deviceId: string | null; deviceName: string; routeIds: string[] }
 
@@ -572,6 +574,11 @@ export class RemoteAccessService {
           `Once you have restored or no longer need it, remove it with: find ${dir} -type f -exec shred -u {} + && rm -rf ${dir}`)
       }
       done.push('put the previous client and its state back')
+    } else if (plan.kind === 'wg-restore') {
+      const { wgRestoreScript } = await import('../vpn/wireguard/scripts')
+      const r = await this.exec(job, m, wgRestoreScript(plan.iface, plan.previousConf), { timeoutMs: 2 * 60_000 })
+      if (r.code !== 0) throw new Error(`the WireGuard interface ${plan.iface} could not be put back`)
+      done.push(plan.previousConf ? `put ${plan.iface}'s previous configuration back` : `took ${plan.iface} down and removed it`)
     } else if (plan.kind === 'configure') {
       const r = await this.exec(job, m, configureScript(plan.provider, plan.previous, plan.flags), { netbird: nb, timeoutMs: 2 * 60_000 })
       if (r.code !== 0) throw new Error('the previous settings could not be put back')
@@ -618,10 +625,10 @@ export class RemoteAccessService {
    * undo plan, settles, and snapshots again to say whether the node is back as it was. Off a node: the change,
    * and the undo on failure.
    */
-  private async guarded<T>(job: RemoteJob, m: Machine, provider: ProviderId, p: RemoteProvider, action: string,
+  private async guarded<T>(job: RemoteJob, m: Machine, provider: ProviderId | 'wireguard', p: RemoteProvider | null, action: string,
     undo: { plan: UndoPlan; persist?: () => Promise<void> },
     change: () => Promise<T>,
-    o: { undoOnFailure: boolean; precheck?: (before: NodeSnapshot) => void },
+    o: { undoOnFailure: boolean; precheck?: (before: NodeSnapshot) => void; subject?: GuardSubject },
   ): Promise<T> {
     if (m.kind !== 'node') {
       try { return await change() } catch (e) {
@@ -646,12 +653,13 @@ export class RemoteAccessService {
       let failure: unknown = null
       try { result = await change() } catch (e) { failure = e }
       await this.sleep(this.settleMs)
-      const diff = await this.judge(m, before, await this.snapshot(m), provider)
+      const subject: GuardSubject = o.subject ?? (provider as ProviderId)
+      const diff = await this.judge(m, before, await this.snapshot(m), subject)
       if (diff.length || (failure && o.undoOnFailure)) {
         let note: string; let failed = false
         try { note = await this.runUndo(job, m, undo.plan, p) } catch (u) { failed = true; note = `the rollback itself failed: ${msg(u)}` }
         await this.sleep(this.settleMs)
-        const left = await this.judge(m, before, await this.snapshot(m), provider)
+        const left = await this.judge(m, before, await this.snapshot(m), subject)
         const why = diff.length ? `Rolled back because ${diff.join('; ')}` : `${msg(failure)}. Cleaned up`
         const end = left.length
           ? `After the rollback the node still differs: ${left.join('; ')}. Check it by hand now.`
@@ -670,7 +678,7 @@ export class RemoteAccessService {
    * Compare, and when only the firewall text differs take one more sample: lines that change between the two
    * after-samples are churn (bans, guests starting, counters), not the change being judged.
    */
-  private async judge(m: Machine, before: NodeSnapshot, after: NodeSnapshot, provider: ProviderId): Promise<string[]> {
+  private async judge(m: Machine, before: NodeSnapshot, after: NodeSnapshot, provider: GuardSubject): Promise<string[]> {
     const diff = compareSnapshots(before, after, provider)
     if (!diff.length || !onlyFirewall(before, after, provider)) return diff
     const again = await this.snapshot(m)
@@ -970,11 +978,11 @@ export class RemoteAccessService {
   private async recoverOne(row: Inflight, machines: Machine[]): Promise<void> {
     const m = machines.find(x => x.id === row.machineId)
     const job: RemoteJob = {
-      id: randomUUID(), action: 'recovery', provider: row.provider, by: 'HyperProx (after a restart)', status: 'running',
+      id: randomUUID(), action: 'recovery', provider: row.provider === 'wireguard' ? 'tailscale' : row.provider, by: 'HyperProx (after a restart)', status: 'running',
       steps: [{ machineId: row.machineId, name: m?.name ?? row.machineId, status: 'running' }], log: '', startedAt: new Date(this.now()).toISOString(),
     }
     const step = job.steps[0]
-    const what = `A restart interrupted ${row.action} of ${PROVIDER_LABEL[row.provider]} on ${m?.name ?? row.machineId} (started by ${row.by})`
+    const what = `A restart interrupted ${row.action} of ${row.provider === 'wireguard' ? 'WireGuard' : PROVIDER_LABEL[row.provider]} on ${m?.name ?? row.machineId} (started by ${row.by})`
     const finish = async (detail: string, remove: boolean) => {
       step.status = 'failed'; step.detail = detail
       job.status = 'failed'; job.error = detail; job.finishedAt = new Date(this.now()).toISOString()
@@ -1002,15 +1010,17 @@ export class RemoteAccessService {
     const after = await this.snapshot(m)
     if (!after.read) return
     let p: RemoteProvider | null = null
-    try { p = await this.d.provider(row.provider) } catch { p = null }
+    const plan = row.undo as UndoPlan
+    const subject: GuardSubject = plan.kind === 'wg-restore' ? plan.subject : (row.provider as ProviderId)
+    try { p = row.provider === 'wireguard' ? null : await this.d.provider(row.provider) } catch { p = null }
     const before = row.before as NodeSnapshot
-    const diff = await this.judge(m, before, after, row.provider)
+    const diff = await this.judge(m, before, after, subject)
     // An interrupted install is always undone: the client may be in place, unrecorded, with no guard verdict.
     if (diff.length || row.action === 'install') {
       let note: string
       try { note = await this.runUndo(job, m, row.undo as UndoPlan, p) } catch (u) { note = `the rollback itself failed: ${msg(u)}` }
       await this.sleep(this.settleMs)
-      const left = await this.judge(m, before, await this.snapshot(m), row.provider)
+      const left = await this.judge(m, before, await this.snapshot(m), subject)
       const why = diff.length ? `On restart the node differed (${diff.join('; ')}), so it was rolled back` : 'The install never reached its guard verdict, so it was undone'
       return finish(`${what}. ${why}: ${note}. ` + (left.length ? `It still differs: ${left.join('; ')}. Check it by hand now.` : 'The node is back as it was.'), true)
     }
@@ -1065,6 +1075,29 @@ export class RemoteAccessService {
     await this.d.exec.addFirewallRule(m.node!, pv.rule)
     await this.d.store.audit('remote.firewall', m.id, { by, provider, rule: pv.rule })
     return { added: true, message: `Added to ${m.name}: accept TCP ${pv.rule.dport} on ${pv.rule.iface} from ${pv.rule.source}.` }
+  }
+
+  // ── For the WireGuard service: the same transports, logging and node guard ─
+
+  /** Run a script on a machine for a job, logged through the same redactor (or withheld with `quiet`). */
+  run(job: RemoteJob, m: Machine, script: string, o: { secrets?: string[]; timeoutMs?: number; quiet?: string } = {}) {
+    return this.exec(job, m, script, o)
+  }
+
+  /** A change to a WireGuard interface on a node goes through the same guard, in-flight record and recovery. */
+  guardWireguard<T>(job: RemoteJob, m: Machine, subject: CustomSubject, undo: { plan: UndoPlan; persist?: () => Promise<void> },
+    change: () => Promise<T>, precheck?: (before: NodeSnapshot) => void): Promise<T> {
+    return this.guarded(job, m, 'wireguard', null, 'wireguard', undo, change, { undoOnFailure: true, subject, precheck })
+  }
+
+  /** The cluster's networks as read from a node (for a guest, its own node): every corosync link, Ceph network, own address. */
+  async clusterNetworksFor(m: Machine): Promise<string[]> {
+    const all = await this.d.exec.listMachines()
+    const host = m.kind === 'node' ? m : all.find(x => x.kind === 'node' && x.node === m.node)
+    if (!host) return m.address ? [m.address] : []
+    const snap = await this.snapshot(host)
+    if (!snap.read) throw new Error(`could not read the cluster's networks from node ${host.name}`)
+    return clusterNetworks(snap)
   }
 
   // ── VPN: sign-in links ────────────────────────────────────────────────────

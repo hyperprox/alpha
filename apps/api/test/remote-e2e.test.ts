@@ -35,7 +35,7 @@ function docker(args: string[], input?: string, onData?: (s: string) => void): P
 }
 
 // The mocked control plane: Tailscale's API, as much of it as the service uses.
-const api = { minted: 0, revoked: [] as string[], deleted: [] as string[], devices: [] as any[] }
+const api = { minted: 0, revoked: [] as string[], deleted: [] as string[], devices: [] as any[], routes: [] as string[] }
 let server: http.Server
 let base = ''
 
@@ -77,9 +77,15 @@ chmod +x /usr/local/bin/tailscale`
 
 const machine: Machine = { id: 'lxc-990', kind: 'lxc', name: 'e2e-web', node: 'pve-test', vmid: 990, running: true, ostype: 'debian' }
 let shimmed = false
+// The container's node exists only as a canned snapshot: routing on a guest reads the cluster's networks from it.
+const NODE_SNAPSHOT = ['HP_ROUTE4 default via 192.0.2.1 dev vmbr0', 'HP_RULE4 32766: from all lookup main', 'HP_RESOLV_LINK=/etc/resolv.conf',
+  'HP_RESOLV=nameserver 192.0.2.1;', 'HP_RESOLVED=inactive', 'HP_FWSRC nft present', 'HP_FWL nft table inet filter {', 'HP_FWL nft }',
+  'HP_FWD4=0', 'HP_FWD6=0', 'HP_NET corosync 192.0.2.12', 'HP_NET own 192.0.2.11/24', 'HP_QUORATE=Yes', 'HP_SNAPSHOT_END'].join('\n')
+const pveNode: Machine = { id: 'node-pve-test', kind: 'node', name: 'pve-test', node: 'pve-test', running: true, address: '192.0.2.11' }
 const exec: RemoteExecutor = {
-  listMachines: async () => [machine],
-  run: async (_m, script, o) => {
+  listMachines: async () => [machine, pveNode],
+  run: async (m, script, o) => {
+    if (m.kind === 'node') return { code: 0, output: NODE_SNAPSHOT, timedOut: false }
     // After the package install, before `up`: put the client stand-in in front of the real binary.
     if (!shimmed && script.includes('HP_KEY=')) { await docker(['exec', '-i', NAME, 'bash', '-s'], TS_SHIM); shimmed = true }
     const r = await docker(['exec', '-i', NAME, 'bash', '-s'], script, o?.onData)
@@ -127,6 +133,10 @@ before(async () => {
         return api.revoked.includes(id) ? send(404, { message: 'not found' }) : send(200, { id, expires: new Date(Date.now() + 600_000).toISOString() })
       }
       if (req.method === 'GET' && url.pathname === '/api/v2/tailnet/-/devices') return send(200, { devices: api.devices })
+      if (url.pathname === '/api/v2/device/d-e2e/routes') {
+        if (req.method === 'POST') { api.routes = JSON.parse(body).routes; return send(200, {}) }
+        return send(200, { advertisedRoutes: api.routes, enabledRoutes: api.routes })
+      }
       if (req.method === 'DELETE' && url.pathname.startsWith('/api/v2/device/')) { api.deleted.push(url.pathname.split('/').pop()!); api.devices = []; return send(200, {}) }
       send(404, { message: 'not mocked' })
     })
@@ -218,5 +228,42 @@ test('e2e: a replace that fails puts the old client back exactly: version, state
   assert.deepEqual(api.revoked, ['k-e2e'])
   assert.equal(store.pending.size, 0)
   assert.equal(await store.get('lxc-990', 'tailscale'), null)
+  await svc.close()
+})
+
+test('e2e: VPN settings against a real tailscaled: accept-dns, accept-routes, SSH, exit node and subnet routes, read back from the client', { skip: !ENABLED, timeout: 15 * 60_000 }, async () => {
+  const sh = async (script: string) => { const r = await docker(['exec', '-i', NAME, 'bash', '-s'], script); assert.equal(r.code, 0, r.output); return r.output.trim() }
+  // A real daemon, in userspace mode, never signed in: settings still apply locally and read back.
+  await sh(`rm -f /usr/local/bin/tailscale
+cat > /usr/local/sbin/sysctl <<'X'\n#!/bin/sh\necho "$*" >> /hp-e2e/sysctl.log\nX\nchmod +x /usr/local/sbin/sysctl
+mkdir -p /run/tailscale /var/lib/tailscale
+nohup tailscaled --tun=userspace-networking --statedir=/var/lib/tailscale --socket=/run/tailscale/tailscaled.sock >/hp-e2e/tailscaled.log 2>&1 &
+for i in $(seq 30); do tailscale debug prefs >/dev/null 2>&1 && break; sleep 1; done
+tailscale debug prefs >/dev/null`)
+  const store = new MemoryRemoteStore()
+  await store.upsert({ machineId: 'lxc-990', provider: 'tailscale', deviceId: 'd-e2e', nodeKey: 'nE2E', hostname: 'e2e-web', address: '100.64.0.42', mode: 'userspace', version: null,
+    routes: [], exitNode: false, routeIds: [], adopted: true, forwardingBefore: null, connected: true, checkedAt: null, lastError: null })
+  const provider = new TailscaleClient({ apiToken: 'tskey-api-e2e' }, { base })
+  const svc = new RemoteAccessService({ store, exec, provider: async id => (id === 'tailscale' ? provider : null), providerSettings: async () => ({ tags: [] }), settleMs: 0 })
+  const run = async (prefs: Record<string, unknown>) => settle(svc, svc.startJob({ action: 'configure', provider: 'tailscale', machineIds: ['lxc-990'], prefs, acknowledge: true }, 'e2e'))
+
+  const a = await run({ acceptDns: true, acceptRoutes: true, ssh: true })
+  assert.equal(a.status, 'completed', `${a.error}\n${a.log.slice(-2000)}`)
+  const prefs = JSON.parse(await sh(`tailscale debug prefs | grep -E '"(CorpDNS|RouteAll|RunSSH)"' | tr -d '\\t' | sed 's/,$//' | paste -sd, | sed 's/^/{/; s/$/}/'`))
+  assert.deepEqual(prefs, { RouteAll: true, CorpDNS: true, RunSSH: true }, 'the real client has them')
+  assert.doesNotMatch(a.log, /privkey:|nlpriv:/, 'the read-back never carries the node keys')
+
+  const b = await run({ advertiseExitNode: true, subnets: ['198.51.100.0/24'] })
+  assert.equal(b.status, 'completed', `${b.error}\n${b.log.slice(-2000)}`)
+  const adv = await sh(`tailscale debug prefs | tr -d ' \\t\\n' | grep -oE '"AdvertiseRoutes":\\[[^]]*\\]'`)
+  for (const r of ['198.51.100.0/24', '0.0.0.0/0', '::/0']) assert.ok(adv.includes(r), `${r} in ${adv}`)
+  assert.deepEqual([...api.routes].sort(), ['0.0.0.0/0', '198.51.100.0/24', '::/0'], 'approved in the tailnet through the API')
+
+  const c = await run({ acceptDns: false, ssh: false, advertiseExitNode: false, subnets: [] })
+  assert.equal(c.status, 'completed', `${c.error}\n${c.log.slice(-2000)}`)
+  const off = await sh(`tailscale debug prefs | tr -d ' \\t\\n'`)
+  assert.match(off, /"CorpDNS":false/); assert.match(off, /"RunSSH":false/); assert.match(off, /"AdvertiseRoutes":null|"AdvertiseRoutes":\[\]/)
+  assert.deepEqual(api.routes, [])
+  await sh('pkill tailscaled || true')
   await svc.close()
 })

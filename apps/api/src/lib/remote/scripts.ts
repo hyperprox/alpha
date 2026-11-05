@@ -356,7 +356,7 @@ export function routingScript(p: ProviderId, o: {
   if (o.forwarding === 'guest') {
     L.push('echo "HP_FWD_BEFORE=$(cat /proc/sys/net/ipv4/ip_forward):$(cat /proc/sys/net/ipv6/conf/all/forwarding)"')
     if (on) {
-      L.push(`printf 'net.ipv4.ip_forward = 1\\nnet.ipv6.conf.all.forwarding = 1\\n' > ${SYSCTL_FILE}`, `sysctl -q -p ${SYSCTL_FILE}`)
+      L.push('mkdir -p /etc/sysctl.d', `printf 'net.ipv4.ip_forward = 1\\nnet.ipv6.conf.all.forwarding = 1\\n' > ${SYSCTL_FILE}`, `sysctl -q -p ${SYSCTL_FILE}`)
     } else {
       L.push(`rm -f ${SYSCTL_FILE}`)
       const m = /^([01]):([01])$/.exec(o.restoreForwarding ?? '')
