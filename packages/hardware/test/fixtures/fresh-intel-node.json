@@ -1,0 +1,11 @@
+{
+  "about": "A fresh node: the same HD 630 hardware with kernel defaults (energy_uj 0400), nothing installed yet.",
+  "lspci": "00:02.0 VGA compatible controller [0300]: Intel Corporation HD Graphics 630 [8086:5912] (rev 04)\n",
+  "drm_vendors": ["0x8086"],
+  "dri": ["by-path", "card0", "renderD128"],
+  "powercap": { "intel-rapl:0": { "name": "package-0", "mode": "400" }, "intel-rapl:0:0": { "name": "core", "mode": "400" } },
+  "commands": ["python3"],
+  "answering": {},
+  "ceph": false,
+  "expect": { "gpus": [["intel", "integrated", "8086:5912", "Intel HD Graphics 630"]], "rapl": "root-only", "nodeExporter": "absent", "intelExporter": "absent", "docker": false }
+}
