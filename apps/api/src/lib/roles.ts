@@ -86,6 +86,9 @@ const PROXY_READ = /^\/api\/proxy\/(kinds|instances|hosts|certificates|stats|ins
 // container, so both also need the master password re-entered.
 const CATALOGUE_WIZARD = /^\/api\/catalogue\/wizard(\/|$)/
 const CATALOGUE_RECONFIRM = /^\/api\/catalogue\/wizard\/(apply|jobs\/[^/]+\/cleanup)$/
+// Guest config editor (routes/guest-config.ts): reads are viewer like any GET, previews admin by the default
+// rule, and applying a preview writes a cluster-replicated guest config, so it also needs the master password.
+const GUEST_CONFIG_APPLY = /^\/api\/infra\/guest-config\/(apply|guests\/[^/]+\/[^/]+\/[^/]+\/reveal)$/
 // Role management (no routes yet; reserved so they are owner-only from day one).
 const ROLE_MGMT = /^\/api\/(auth\/)?roles(\/|$)/
 
@@ -138,6 +141,7 @@ export function needsReconfirm(method: string, path: string): boolean {
   if (m === 'POST' && p === '/api/secrets/reveal') return true
   if (m !== 'GET' && m !== 'HEAD' && ROLE_MGMT.test(p)) return true
   if (m === 'POST' && CATALOGUE_RECONFIRM.test(p)) return true
+  if (m === 'POST' && GUEST_CONFIG_APPLY.test(p)) return true
   // Creating or revoking an API token.
   if ((m === 'POST' || m === 'DELETE') && TOKENS.test(p)) return true
   return false
