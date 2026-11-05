@@ -357,7 +357,7 @@ async function runItem(job: Job, by: string, deps: ChecklistDeps): Promise<void>
 
 const SOURCE_WORDS: Record<string, string> = {
   terminal: 'confirmed in the Terminal', confirmed: 'confirmed by an admin', wizard: 'learned by the setup wizard, not confirmed',
-  api: 'learned by HyperProx on first use, not confirmed', none: 'pinned before HyperProx kept track, not confirmed',
+  api: 'learned by HyperProx on first use, not confirmed', 'terminal-auto': 'learned when it was opened in the Terminal, not confirmed', none: 'pinned before HyperProx kept track, not confirmed',
 }
 
 async function hostKeyItem(deps: ChecklistDeps, nodes: string[], addrs: Record<string, string>): Promise<ChecklistItem> {

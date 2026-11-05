@@ -78,9 +78,9 @@ test('confirming the fingerprint (it must be the key shown now) makes requirePin
   })
 })
 
-test('a Terminal pin counts as confirmed; the wizard\'s and a pin from before sources were kept do not', async () => {
+test('a confirmed pin counts; the wizard\'s and a pin from before sources were kept do not', async () => {
   await asOwner(async () => {
-    await recordPin('192.0.2.10', 22, 'SHA256:' + 'T'.repeat(43), 'terminal')
+    await recordPin('192.0.2.10', 22, 'SHA256:' + 'T'.repeat(43), 'confirmed')
     assert.equal(await pinHostKeyIfFree('192.0.2.11', 'SHA256:' + 'W'.repeat(43)), 'pinned')
     assert.equal(await pinSource('192.0.2.11', 22), 'wizard')
     await recordPin('192.0.2.12', 22, 'SHA256:' + 'L'.repeat(43), 'api')
@@ -107,7 +107,7 @@ test('the Setup checklist shows each node\'s fingerprint and every unconfirmed p
     }
     const item = (await checklistState(deps)).items.find((i: any) => i.id === 'host-keys')!
     const row = (n: string) => item.rows.find((r: any) => r.node === n)!
-    assert.equal(row('node-a').state, 'done'); assert.match(row('node-a').reason, /confirmed in the Terminal/)
+    assert.equal(row('node-a').state, 'done'); assert.match(row('node-a').reason, /confirmed by an admin/)
     assert.equal(row('node-b').state, 'not-done'); assert.match(row('node-b').reason, /SHA256:N+: not pinned yet/)
     assert.equal(row('node-b').fingerprint, 'SHA256:' + 'N'.repeat(43))
     assert.match(row(pinId('192.0.2.11', 22)).reason, /learned by the setup wizard, not confirmed/)
@@ -129,4 +129,38 @@ test('the hand-over flag is created exclusively: one written by someone else is 
     assert.equal(readFileSync(handoffFlagPath(), 'utf8'), 'another process\n')
     void first
   } finally { if (prev === undefined) delete process.env.HPX_HANDOFF_FLAG; else process.env.HPX_HANDOFF_FLAG = prev }
+})
+
+test('a first Terminal connection to an unknown host pins its key, but that does not satisfy requirePin', async () => {
+  const { connect } = await import('../src/lib/ssh-broker')
+  const mod: any = await import('ssh2')
+  const { Server, utils } = mod.default ?? mod
+  const kp = utils.generateKeyPairSync('ed25519')
+  const srv = new Server({ hostKeys: [kp.private] }, (client: any) => {
+    client.on('authentication', (ctx: any) => ctx.method === 'password' && ctx.password === PW ? ctx.accept() : ctx.reject())
+    client.on('ready', () => client.on('session', (accept: any) => {
+      const s = accept()
+      s.on('pty', (a: any) => a && a()); s.on('exec', (a: any) => { const c = a(); c.exit(1); c.end() })
+      s.on('shell', (a: any) => { const c = a(); c.write('$ '); setTimeout(() => { c.exit(0); c.end() }, 50) })
+    }))
+    client.on('error', () => undefined)
+  })
+  await new Promise<void>(r => srv.listen(0, '127.0.0.1', r))
+  const p = srv.address().port
+  try {
+    await asOwner(async () => {
+      const r: any = await connect({ host: '127.0.0.1', port: p, cred, cols: 80, rows: 24, useTmux: false })
+      try { r.channel?.end?.(); r.client?.end?.() } catch { /* closed */ }
+      assert.equal(await pinSource('127.0.0.1', p), 'terminal-auto', 'learned, shown, not accepted')
+      assert.equal((await listPins()).find(x => x.id === pinId('127.0.0.1', p))!.confirmed, false)
+      await assert.rejects(execOnNode({ host: '127.0.0.1', port: p, cred, command: 'true', requirePin: true }),
+        (e: any) => e instanceof HostKeyNotConfirmedError)
+      assert.equal(await confirmedFingerprint('127.0.0.1', p), false)
+    })
+  } finally { srv.close() }
+})
+
+test('pinHostKey has no default source: the type requires one', () => {
+  const src = readFileSync(join(__dirname, '..', 'src', 'lib', 'node-exec.ts'), 'utf8')
+  assert.match(src, /export async function pinHostKey\(host: string, port: number, fingerprint: string, source: PinSource\)/)
 })
