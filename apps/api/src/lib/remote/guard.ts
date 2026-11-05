@@ -99,7 +99,9 @@ function normaliseNft(lines: string[]): string[] {
         if (!dropping()) out.push(cleanCounters(l))
         continue
       }
-      stack.push({ drop: dropping() || dynamicName(l), set: /^(set|map) /.test(l), timeout: false })
+      // A table, chain or set whose own name is dynamic is left out whole.
+      const name = /^(?:table \S+|chain|set|map) (\S+)/.exec(l)?.[1] ?? ''
+      stack.push({ drop: dropping() || dynamicName(name), set: /^(set|map) /.test(l), timeout: false })
       if (!dropping()) out.push(cleanCounters(l))
       continue
     }
@@ -109,16 +111,33 @@ function normaliseNft(lines: string[]): string[] {
       for (let i = 0; i < closes - opens; i++) stack.pop()
       continue
     }
-    if (dropping() || inTimeoutSet || dynamicName(l) || /PVESIG:/.test(l) || /\bexpires\b/.test(l)) continue
+    const jump = /\b(?:jump|goto) (\S+)/.exec(l)
+    if (dropping() || inTimeoutSet || (jump && dynamicName(jump[1])) || /PVESIG:/.test(l) || /\bexpires\b/.test(l)) continue
     const c = cleanCounters(l)
     if (c) out.push(c)
   }
   return out
 }
 
+/**
+ * iptables/ebtables save output. A dynamic chain (fail2ban, a guest's own chain) is left out whole: its
+ * declaration, its rules, and the rules that jump or go to it. A rule that merely mentions such a name
+ * (matching a guest's interface, say) is a real rule and is kept.
+ */
 function normaliseSave(lines: string[]): string[] {
+  const dyn = new Set<string>()
+  for (const l of lines) { const m = /^:(\S+)/.exec(l); if (m && dynamicName(m[1])) dyn.add(m[1]) }
   return lines
-    .filter(l => l.trim() && !l.startsWith('#') && !dynamicName(l) && !/PVESIG:/.test(l))
+    .filter(l => {
+      if (!l.trim() || l.startsWith('#') || /PVESIG:/.test(l)) return false
+      const decl = /^:(\S+)/.exec(l)
+      if (decl) return !dyn.has(decl[1])
+      const member = /^-[AIN] (\S+)/.exec(l)
+      if (member && (dyn.has(member[1]) || dynamicName(member[1]))) return false
+      const jump = /\s-[jg] (\S+)/.exec(l)
+      if (jump && (dyn.has(jump[1]) || dynamicName(jump[1]))) return false
+      return true
+    })
     .map(cleanCounters)
 }
 
@@ -141,6 +160,11 @@ export function normaliseFirewall(src: string, lines: string[]): string[] {
   return [...n].sort()
 }
 
+/** Optional fields newer iproute prints (`proto kernel`, `proto boot`) say nothing about what the rule does. */
+export function normaliseRule(r: string): string {
+  return r.replace(/\bproto \S+/g, '').replace(/\s+/g, ' ').trim()
+}
+
 // ── Parsing ─────────────────────────────────────────────────────────────────
 
 export function parseSnapshot(output: string): NodeSnapshot {
@@ -154,7 +178,7 @@ export function parseSnapshot(output: string): NodeSnapshot {
     const line = raw.replace(/\r$/, '')
     let m: RegExpExecArray | null
     if ((m = /^HP_ROUTE([46]) (.*)$/.exec(line))) s.routes.push(`${m[1]} ${normaliseRoute(m[2])}`)
-    else if ((m = /^HP_RULE([46]) (.*)$/.exec(line))) s.rules.push(`${m[1]} ${m[2].replace(/\s+/g, ' ').trim()}`)
+    else if ((m = /^HP_RULE([46]) (.*)$/.exec(line))) s.rules.push(`${m[1]} ${normaliseRule(m[2])}`)
     else if ((m = /^HP_LINK(DNS|DOMAIN) (.*)$/.exec(line))) s.linkDns.push(`${m[1]} ${m[2].replace(/^Link \d+ /, '').replace(/\s+/g, ' ').trim()}`)
     else if ((m = /^HP_NET (\w+) (\S+)$/.exec(line))) s.nets.push(`${m[1]} ${m[2]}`)
     else if ((m = /^HP_PATH (\S+) ?(.*)$/.exec(line))) s.paths[m[1]] = normaliseRoute(m[2])
@@ -210,7 +234,8 @@ const OWN_RULES: Record<ProviderId, Set<string>> = {
   ])),
 }
 const ROUTE_TYPES = new Set(['unicast', 'local', 'broadcast', 'multicast', 'throw', 'unreachable', 'prohibit', 'blackhole', 'anycast', 'nat'])
-const HARMLESS_TYPES = new Set(['local', 'broadcast', 'multicast', 'throw'])
+// `local` is not here: a local route is fine only for the overlay itself (checked below like any other).
+const HARMLESS_TYPES = new Set(['broadcast', 'multicast', 'throw'])
 
 /** "4 throw 127.0.0.0/8 table 52" → { family, type, dest }. */
 export function parseRoute(r: string): { family: '4' | '6'; type: string; dest: string } {
@@ -253,9 +278,6 @@ function list(xs: string[], n = 3): string {
 
 const FW_NAME: Record<string, string> = { nft: 'nftables', ipt4: 'iptables', ipt6: 'ip6tables', iptl4: 'iptables (legacy)', iptl6: 'ip6tables (legacy)', ipset: 'ipset', ebt: 'ebtables' }
 
-/** A line's shape with its numbers taken out: a counter or a timestamp changing does not change its shape. */
-const shape = (l: string) => l.replace(/\d+/g, '#')
-
 /** Firewall differences only. `churn` is a second sample: lines whose shape changes between samples are noise. */
 export function firewallChanges(before: NodeSnapshot, after: NodeSnapshot, churn?: NodeSnapshot): string[] {
   const out: string[] = []
@@ -264,9 +286,10 @@ export function firewallChanges(before: NodeSnapshot, after: NodeSnapshot, churn
     let { added, removed } = setDiff(before.firewall[src], after.firewall[src])
     if (churn && src in churn.firewall) {
       const moving = setDiff(after.firewall[src], churn.firewall[src])
-      const noisy = new Set([...moving.added, ...moving.removed].map(shape))
-      added = added.filter(l => !noisy.has(shape(l)))
-      removed = removed.filter(l => !noisy.has(shape(l)))
+      // Exactly the lines that differ between the two after-samples; a line that only looks similar is not noise.
+      const noisy = new Set([...moving.added, ...moving.removed])
+      added = added.filter(l => !noisy.has(l))
+      removed = removed.filter(l => !noisy.has(l))
     }
     if (added.length || removed.length) {
       out.push(`the ${FW_NAME[src] ?? src} ruleset changed (${[...added.map(l => `added ${l}`), ...removed.map(l => `removed ${l}`)].slice(0, 3).join('; ')})`)

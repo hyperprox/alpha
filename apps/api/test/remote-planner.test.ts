@@ -463,16 +463,19 @@ test('guard B: a real firewall change is caught, in each backend, and named', ()
   assert.match(firewallChanges(snap(), legacy).join(), /iptables \(legacy\) ruleset appeared/)
 })
 
-test('guard B: a second sample discounts churn the ignore list does not know, and nothing else', () => {
+test('guard B: the second sample discounts exactly the lines that moved between the two after-samples', () => {
   const plus = (extra: string[]) => snap({ fwLines: fwText(undefined, { ipt4: extra }) })
-  const before = plus(['-A PVEFW-INPUT -m set --match-set seen-1730 src -j ACCEPT'])
+  const before = plus([])
+  // A rule that rotates on its own appears in "after" and has moved again by the second sample.
   const after = plus(['-A PVEFW-INPUT -m set --match-set seen-1745 src -j ACCEPT', '-A INPUT -i wt0 -j ACCEPT'])
   const again = plus(['-A PVEFW-INPUT -m set --match-set seen-1760 src -j ACCEPT', '-A INPUT -i wt0 -j ACCEPT'])
   const d = firewallChanges(before, after, again)
   assert.equal(d.length, 1)
   assert.match(d[0], /wt0 -j ACCEPT/)
   assert.doesNotMatch(d[0], /seen-/)
-  assert.deepEqual(firewallChanges(before, plus(['-A PVEFW-INPUT -m set --match-set seen-1745 src -j ACCEPT']), again), [])
+  // Shape is not enough: a line that only looks like a moving one is still a change.
+  const lookalike = plus(['-A PVEFW-INPUT -m set --match-set seen-9999 src -j ACCEPT'])
+  assert.match(firewallChanges(before, lookalike, plus(['-A PVEFW-INPUT -m set --match-set seen-9999 src -j ACCEPT'])).join(), /seen-9999/)
 })
 
 test('normaliseFirewall keeps rule order out of it and drops comments', () => {
@@ -557,4 +560,56 @@ test('restore (D): the exact package version, the unit and its environment, enab
   assert.doesNotMatch(r, /netbird service install/, 'the unit is restored as it was, not regenerated')
   const rpm = restoreStateScript('tailscale', { ok: true, pm: 'dnf', label: 'rocky 9', tsRepo: 'x' })
   assert.match(rpm, /dnf install -y -q "tailscale-\$hp_ver" \|\| dnf downgrade -y -q "tailscale-\$hp_ver"/)
+})
+
+// ── Round 2 re-check: six LOW findings ──────────────────────────────────────
+
+test('LOW 1: a local route in the client\'s table is allowed only for the overlay', () => {
+  assert.equal(ownRouteProblem('4 local 100.64.0.5 dev tailscale0 table local proto kernel scope host src 100.64.0.5', 'tailscale'), null)
+  assert.match(ownRouteProblem('4 local 192.0.2.11 dev tailscale0 table local proto kernel scope host', 'tailscale') ?? '', /outside the overlay/)
+  assert.match(ownRouteProblem('4 local 0.0.0.0/0 dev lo table 52', 'tailscale') ?? '', /default/)
+  assert.equal(ownRouteProblem('6 local fe80::1:2 dev tailscale0 table local proto kernel metric 0 pref medium', 'tailscale'), null)
+  assert.equal(ownRouteProblem('4 broadcast 100.92.255.255 dev wt0 table local', 'netbird'), null)
+})
+
+test('LOW 2: only rules jumping into, or belonging to, a dynamic chain are left out; a mention is not enough', () => {
+  const lines = [
+    ':f2b-sshd - [0:0]', '-A INPUT -p tcp -m multiport --dports 22 -j f2b-sshd', '-A f2b-sshd -s 198.51.100.66/32 -j REJECT',
+    ':tap105i0-IN - [0:0]', '-A PVEFW-FWBR-IN -m physdev --physdev-out tap105i0 --physdev-is-bridged -j tap105i0-IN',
+    '-A INPUT -i tap105i0 -j ACCEPT', '-A INPUT -m comment --comment "f2b-sshd exception" -j ACCEPT',
+  ]
+  assert.deepEqual(normaliseFirewall('ipt4', lines), ['-A INPUT -i tap105i0 -j ACCEPT', '-A INPUT -m comment --comment "f2b-sshd exception" -j ACCEPT'].sort())
+  const nft = ['table inet filter {', 'chain input {', 'jump f2b-chain', 'iifname "tap105i0" accept', '}', 'chain f2b-chain {', 'ip saddr 198.51.100.66 drop', '}', '}']
+  assert.deepEqual(normaliseFirewall('nft', nft), ['table inet filter {', 'chain input {', 'iifname "tap105i0" accept', '}', '}'].sort())
+})
+
+test('LOW 5: optional fields in ip rule output do not make a rule look new', () => {
+  const a = snap({ rule: [...BASE.rule, '4 5270: from all lookup 52'] })
+  const b = parseSnapshot(snapText({ rule: [...BASE.rule, '4 5270: from all lookup 52 proto kernel'] }).replace('HP_RULE4 32766: from all lookup main', 'HP_RULE4 32766:\tfrom all lookup main proto boot'))
+  assert.deepEqual(compareSnapshots(a, b, 'tailscale'), [])
+})
+
+test('LOW 4: a link-local gateway is looked up on its own uplink', () => {
+  assert.match(SNAPSHOT_SCRIPT, /ip -o route get "\$hp_a" oif "\$hp_d"/)
+})
+
+test('LOW 6: the busy check ignores zombies and removes a stale pid file', async () => {
+  const { busyScript, parseBusy } = await import('../src/lib/remote/scripts')
+  const { execFileSync } = await import('node:child_process')
+  const { mkdtempSync, writeFileSync, existsSync, rmSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const s = busyScript('job-1')
+  assert.match(s, /pgrep -x -r R,S,D/)
+  const dir = mkdtempSync(join(tmpdir(), 'hp-run-'))
+  try {
+    const f = join(dir, 'hyperprox-remote-access-job-1.pid')
+    writeFileSync(f, '999999\n')   // no such process
+    const out = execFileSync('bash', ['-s'], { input: s, env: { ...process.env, HP_RUN_DIR: dir } }).toString()
+    assert.ok(!(parseBusy(out) ?? ['x']).includes('hyperprox-job'))
+    assert.equal(existsSync(f), false, 'the stale pid file is gone')
+    writeFileSync(f, `${process.pid}\n`)   // a live process
+    const live = execFileSync('bash', ['-s'], { input: s, env: { ...process.env, HP_RUN_DIR: dir } }).toString()
+    assert.ok((parseBusy(live) ?? []).includes('hyperprox-job'))
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })

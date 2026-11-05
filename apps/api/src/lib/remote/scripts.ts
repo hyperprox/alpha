@@ -429,21 +429,29 @@ export function dropBackupScript(p: ProviderId): string {
 
 // ── Recovery: is the node still busy? (read-only) ───────────────────────────
 
-/** Where a node script of job `jobId` records its own pid while it runs (tmpfs; no secret). */
-export const jobPidFile = (jobId: string) => `/run/hyperprox-remote-access-${jobId.replace(/[^A-Za-z0-9-]/g, '')}.pid`
+/** Where a node script of job `jobId` records its own pid while it runs (tmpfs; no secret). HP_RUN_DIR is a test seam. */
+const pidPath = (jobId: string) => `"$hp_run/hyperprox-remote-access-${jobId.replace(/[^A-Za-z0-9-]/g, '')}.pid"`
+const RUN_DIR = 'hp_run=/run; [ -n "$HP_RUN_DIR" ] && hp_run="$HP_RUN_DIR"'
 
 /** Wraps a node script so a later process can tell whether it is still running. */
 export function withJobPid(jobId: string, script: string): string {
-  const f = jobPidFile(jobId)
-  return [`echo $$ > ${f}`, `trap 'rm -f ${f}' EXIT`, script].join('\n')
+  const f = pidPath(jobId)
+  return [RUN_DIR, `echo $$ > ${f}`, `trap 'rm -f ${f}' EXIT`, script].join('\n')
 }
 
+/** Read-only, except that a pid file whose process is gone (or a zombie) is removed. */
 export function busyScript(jobId: string): string {
-  const f = jobPidFile(jobId)
+  const f = pidPath(jobId)
   return [
+    RUN_DIR,
     'hp_busy=""',
-    `if [ -f ${f} ] && kill -0 "$(cat ${f})" 2>/dev/null; then hp_busy="$hp_busy hyperprox-job"; fi`,
-    'for hp_p in apt-get apt dpkg unattended-upgr; do pgrep -x "$hp_p" >/dev/null 2>&1 && hp_busy="$hp_busy $hp_p"; done',
+    `if [ -f ${f} ]; then`,
+    `  hp_pid=$(cat ${f} 2>/dev/null)`,
+    `  hp_st=$(sed -n 's/.*) \\(.\\).*/\\1/p' "/proc/$hp_pid/stat" 2>/dev/null)`,
+    `  case "$hp_st" in R|S|D) hp_busy="$hp_busy hyperprox-job" ;; *) rm -f ${f} ;; esac`,
+    'fi',
+    // -r R,S,D: running, sleeping or in disk wait. A zombie (Z) is finished work, not a reason to wait.
+    'for hp_p in apt-get apt dpkg unattended-upgr; do pgrep -x -r R,S,D "$hp_p" >/dev/null 2>&1 && hp_busy="$hp_busy $hp_p"; done',
     'echo "HP_BUSY=$hp_busy"',
   ].join('\n')
 }
@@ -502,8 +510,12 @@ if [ -r "$hp_ceph" ]; then
 fi
 ip -o addr show scope global 2>/dev/null | awk '{print "HP_NET own " $4}'
 # Also the way out (default gateways) and to every resolver.
-hp_extra=$( { ip -4 route show default; ip -6 route show default; } 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "via") print $(i + 1) }')
-hp_extra="$hp_extra $(grep -E '^[[:space:]]*nameserver' /etc/resolv.conf 2>/dev/null | awk '{ print $2 }')"
+# Default gateways, each looked up on its own uplink (a link-local gateway means nothing without one).
+{ ip -4 route show default; ip -6 route show default; } 2>/dev/null | awk '{ v = ""; d = ""; for (i = 1; i < NF; i++) { if ($i == "via") v = $(i + 1); if ($i == "dev") d = $(i + 1) } if (v != "") print v, d }' | sort -u | while read -r hp_a hp_d; do
+  case "$hp_a$hp_d" in *[!0-9A-Za-z.:_-]*) continue ;; esac
+  case "$hp_a" in [Ff][Ee]80:*) echo "HP_PATH $hp_a $(ip -o route get "$hp_a" oif "$hp_d" 2>/dev/null | head -n1)" ;; *) echo "HP_PATH $hp_a $(ip -o route get "$hp_a" 2>/dev/null | head -n1)" ;; esac
+done
+hp_extra="$(grep -E '^[[:space:]]*nameserver' /etc/resolv.conf 2>/dev/null | awk '{ print $2 }')"
 if command -v resolvectl >/dev/null 2>&1 && systemctl is-active --quiet systemd-resolved 2>/dev/null; then
   hp_extra="$hp_extra $(resolvectl dns 2>/dev/null | cut -d: -f2- | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}|([0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}')"
 fi
