@@ -98,11 +98,17 @@ const REMOTE_RECONFIRM: Array<[string, RegExp]> = [
   ['POST',   /^\/api\/remote\/machines\/[^/]+\/tun$/],
   ['POST',   /^\/api\/remote\/machines\/[^/]+\/(tailscale|netbird)\/firewall$/],
   ['POST',   /^\/api\/remote\/machines\/[^/]+\/host-key$/],
+  // VPN page and the /v1 API other pages use.
+  ['POST',   /^\/api\/remote\/v1\/machines\/[^/]+\/(tailscale|netbird)\/(install|settings)$/],
+  ['DELETE', /^\/api\/remote\/v1\/machines\/[^/]+\/(tailscale|netbird)$/],
+  ['POST',   /^\/api\/remote\/machines\/[^/]+\/(tailscale|netbird)\/(key-expiry|tags|login-url)$/],
+  ['POST',   /^\/api\/remote\/devices\/(tailscale|netbird)\/[^/]+\/approve$/],
+  ['DELETE', /^\/api\/remote\/devices\/(tailscale|netbird)\/[^/]+$/],
   // On a Proxmox node even a check or an update is re-confirmed: it runs a script on the hypervisor.
   ['POST',   /^\/api\/remote\/machines\/node-[^/]+\/(tailscale|netbird)\/(check|update)$/],
 ]
 // Remote access job output names hosts, packages and addresses: admins only, like Updates.
-const REMOTE_JOBS = /^\/api\/remote\/(jobs(\/|$)|machines\/[^/]+\/((tailscale|netbird)\/firewall|host-key)$)/
+const REMOTE_JOBS = /^\/api\/remote\/((v1\/)?jobs(\/|$)|machines\/[^/]+\/((tailscale|netbird)\/firewall|host-key)$|v1\/machines\/[^/]+\/(tailscale|netbird)\/(install-preview|settings)$)/
 
 /**
  * The role a request needs, or null when it needs no session.

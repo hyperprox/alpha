@@ -19,7 +19,10 @@ import {
 } from '../lib/remote/service'
 import { PrismaRemoteStore } from '../lib/remote/store'
 import { productionRemoteExecutor } from '../lib/remote/executor'
-import { providerFromVault, providerSettingsFromVault } from '../lib/remote/providers'
+import { providerFromVault, providerSettingsFromVault, setCredentialAuditor } from '../lib/remote/providers'
+import { publish } from '../lib/notify'
+import type { VpnPrefs } from '../lib/remote/planner'
+import type { RemoteOverview, RemoteMachineRow } from '../lib/remote/service'
 import { ProviderError, isProviderId } from '../lib/remote/types'
 
 export interface RemoteRouteDeps {
@@ -63,12 +66,17 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
       provider: id => providerFromVault(id),
       providerSettings: id => providerSettingsFromVault(id),
       log: m => fastify.log.info(m),
+      publish: (e, o) => publish(e, o),
     })
+    if (!deps.service) {
+      const store = new PrismaRemoteStore((fastify as any).prisma)
+      setCredentialAuditor((a, r, d) => store.audit(a, r, d))
+    }
     if (deps.sweep !== false) {
       // Provider credentials and node logins are vault items, so a sweep that runs while locked does nothing and
       // the one after unlock does the work.
       fastify.addHook('onReady', async () => service.start())
-      onUnlock(() => { void service.sweep({ startup: true }) })
+      onUnlock(() => { void service.sweep({ startup: true }); void service.pollDevices() })
     }
     fastify.addHook('onClose', async () => service.close())
 
@@ -92,6 +100,7 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
       try {
         const job = service.startJob({
           action: 'install', provider: b.provider as any, machineIds: b.machineIds as any, tags: b.tags, mode: b.mode, existing: b.existing,
+          auth: b.auth, acceptDns: b.acceptDns,
         }, by(req))
         return reply.status(202).send({ job })
       } catch (e) { return sendError(reply, e) }
@@ -159,6 +168,111 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
         if (typeof req.body?.fingerprint !== 'string') throw new RemoteInputError('fingerprint is required')
         return await service.pinHostKey(req.params.id, req.body.fingerprint, by(req))
       } catch (e) { return sendError(reply, e) }
+    })
+
+    // ── VPN: per-machine settings and provider device actions ───────────────
+
+    fastify.post<{ Params: MachineParams; Body: { disabled?: unknown } }>('/machines/:id/:provider/key-expiry', { preHandler: adminOnly }, async (req, reply) => {
+      try {
+        const { id, provider } = params(req)
+        if (typeof req.body?.disabled !== 'boolean') throw new RemoteInputError('disabled must be true or false')
+        return { message: await service.setKeyExpiry(id, provider, req.body.disabled, by(req)) }
+      } catch (e) { return sendError(reply, e) }
+    })
+
+    fastify.post<{ Params: MachineParams; Body: { tags?: unknown } }>('/machines/:id/:provider/tags', { preHandler: adminOnly }, async (req, reply) => {
+      try {
+        const { id, provider } = params(req)
+        return { message: await service.setTags(id, provider, req.body?.tags as string[], by(req)) }
+      } catch (e) { return sendError(reply, e) }
+    })
+
+    // A sign-in link is sensitive: admins only, re-confirmed, never cached, audited without the link.
+    fastify.post<{ Params: MachineParams }>('/machines/:id/:provider/login-url', { preHandler: adminOnly }, async (req, reply) => {
+      try {
+        const { id, provider } = params(req)
+        reply.header('cache-control', 'no-store')
+        const v = await service.revealLogin(id, provider, by(req))
+        if (!v) return reply.status(404).send({ error: 'No sign-in link is waiting for this machine (they expire after about ten minutes).' })
+        return v
+      } catch (e) { return sendError(reply, e) }
+    })
+
+    const DEVICE = /^[A-Za-z0-9_.:-]{1,120}$/
+    fastify.post<{ Params: { provider: string; deviceId: string } }>('/devices/:provider/:deviceId/approve', { preHandler: adminOnly }, async (req, reply) => {
+      try {
+        if (!isProviderId(req.params.provider) || !DEVICE.test(req.params.deviceId)) throw new RemoteInputError('Unknown provider or device id')
+        return { message: await service.approveDevice(req.params.provider, req.params.deviceId, by(req)) }
+      } catch (e) { return sendError(reply, e) }
+    })
+    fastify.delete<{ Params: { provider: string; deviceId: string } }>('/devices/:provider/:deviceId', { preHandler: adminOnly }, async (req, reply) => {
+      try {
+        if (!isProviderId(req.params.provider) || !DEVICE.test(req.params.deviceId)) throw new RemoteInputError('Unknown provider or device id')
+        return { message: await service.removeDevice(req.params.provider, req.params.deviceId, by(req)) }
+      } catch (e) { return sendError(reply, e) }
+    })
+
+    // ── /v1: the small, stable API other pages use (VpnStatusSource) ────────
+    //  Documented in docs/remote-access.md, "API for other pages". Status is for every role (role-filtered);
+    //  everything that changes something is admin, and install, uninstall and settings are re-confirmed.
+
+    const isAdmin = (req: FastifyRequest) => !!req.session && hasRole(req.session.role, 'admin')
+    const statusOf = (m: RemoteMachineRow, admin: boolean) => ({
+      machineId: m.id, kind: m.kind, name: m.name, node: m.node ?? null, vmid: m.vmid ?? null, running: m.running,
+      providers: Object.fromEntries(Object.entries(m.cells).map(([p, c]) => [p, {
+        state: c.state, installed: c.managed, ip: c.ip, dnsName: c.dnsName, version: c.version, lastSeen: c.lastSeen,
+        expiresAt: c.expiresAt, expiryWarning: c.expiryWarning,
+        ...(admin ? { loginPending: c.loginPending, pending: c.pending, tags: c.tags, routes: c.routes, exitNode: c.exitNode, prefs: c.prefs } : {}),
+        panel: `/vpn?machine=${encodeURIComponent(m.id)}&provider=${p}`,
+      }])),
+    })
+    const overview = async (req: FastifyRequest): Promise<RemoteOverview> => overviewForRole(await service.overview(), isAdmin(req))
+
+    fastify.get('/v1/status', async (req, reply) => {
+      try { const ov = await overview(req); return { providers: ov.providers.map(p => ({ id: p.id, label: p.label, configured: p.configured })), machines: ov.machines.map(m => statusOf(m, isAdmin(req))) } }
+      catch (e) { return sendError(reply, e) }
+    })
+    fastify.get<{ Params: { id: string } }>('/v1/status/:id', async (req, reply) => {
+      try {
+        if (!MACHINE_ID.test(req.params.id)) throw new RemoteInputError('Unknown machine id format')
+        const m = (await overview(req)).machines.find(x => x.id === req.params.id)
+        if (!m) return reply.status(404).send({ error: `No such machine: ${req.params.id}` })
+        return statusOf(m, isAdmin(req))
+      } catch (e) { return sendError(reply, e) }
+    })
+    fastify.get<{ Params: MachineParams }>('/v1/machines/:id/:provider/install-preview', { preHandler: adminOnly }, async (req, reply) => {
+      try { const { id, provider } = params(req); return await service.installPreview(id, provider) } catch (e) { return sendError(reply, e) }
+    })
+    fastify.post<{ Params: MachineParams; Body: { confirm?: unknown } }>('/v1/machines/:id/:provider/install', { preHandler: adminOnly }, async (req, reply) => {
+      try {
+        const { id, provider } = params(req)
+        if (req.body?.confirm !== true) throw new RemoteInputError('Send { confirm: true } after showing the install preview')
+        return reply.status(202).send({ job: await service.oneClickInstall(id, provider, by(req)) })
+      } catch (e) { return sendError(reply, e) }
+    })
+    fastify.delete<{ Params: MachineParams }>('/v1/machines/:id/:provider', { preHandler: adminOnly }, async (req, reply) => {
+      try {
+        const { id, provider } = params(req)
+        return reply.status(202).send({ job: service.startJob({ action: 'uninstall', provider, machineIds: [id] }, by(req)) })
+      } catch (e) { return sendError(reply, e) }
+    })
+    fastify.get<{ Params: MachineParams }>('/v1/machines/:id/:provider/settings', { preHandler: adminOnly }, async (req, reply) => {
+      try { const { id, provider } = params(req); return { current: (await service.configurePreview(id, provider, {})).current } } catch (e) { return sendError(reply, e) }
+    })
+    fastify.post<{ Params: MachineParams; Body: { prefs?: Partial<VpnPrefs> } }>('/v1/machines/:id/:provider/settings/preview', { preHandler: adminOnly }, async (req, reply) => {
+      try { const { id, provider } = params(req); return await service.configurePreview(id, provider, req.body?.prefs ?? {}) } catch (e) { return sendError(reply, e) }
+    })
+    fastify.post<{ Params: MachineParams; Body: { prefs?: Partial<VpnPrefs>; acknowledge?: unknown; confirm?: unknown } }>('/v1/machines/:id/:provider/settings', { preHandler: adminOnly }, async (req, reply) => {
+      try {
+        const { id, provider } = params(req)
+        if (req.body?.confirm !== true) throw new RemoteInputError('Send { confirm: true } after showing the settings preview')
+        return reply.status(202).send({ job: service.startJob({ action: 'configure', provider, machineIds: [id], prefs: req.body?.prefs, acknowledge: req.body?.acknowledge === true }, by(req)) })
+      } catch (e) { return sendError(reply, e) }
+    })
+    fastify.get<{ Params: { id: string } }>('/v1/jobs/:id', { preHandler: adminOnly }, async (req, reply) => {
+      const job = service.getJob(req.params.id)
+      if (!job) return reply.status(404).send({ error: `No job ${req.params.id}` })
+      return { job }
     })
 
     // The one route that sends a key to the browser: re-confirmed, audited, single use, short-lived, never cached.

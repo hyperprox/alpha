@@ -81,12 +81,21 @@ const RECONFIRMED: Array<[string, string]> = [
   ['POST', '/api/remote/machines/lxc-101/tun'],
   ['POST', '/api/remote/machines/node-pve-a/tailscale/firewall'],
   ['POST', '/api/remote/machines/lxc-101/host-key'],
+  ['POST', '/api/remote/v1/machines/lxc-101/tailscale/install'],
+  ['DELETE', '/api/remote/v1/machines/lxc-101/tailscale'],
+  ['POST', '/api/remote/v1/machines/lxc-101/tailscale/settings'],
+  ['POST', '/api/remote/machines/lxc-101/tailscale/key-expiry'],
+  ['POST', '/api/remote/machines/lxc-101/tailscale/tags'],
+  ['POST', '/api/remote/machines/lxc-101/tailscale/login-url'],
+  ['POST', '/api/remote/devices/tailscale/dev1/approve'],
+  ['DELETE', '/api/remote/devices/tailscale/dev1'],
   ['POST', '/api/remote/machines/node-pve-a/tailscale/check'],
   ['POST', '/api/remote/machines/node-pve-a/netbird/update'],
 ]
 const ADMIN_PLAIN: Array<[string, string]> = [
   ['POST', '/api/remote/machines/lxc-101/tailscale/check'],
   ['POST', '/api/remote/machines/lxc-101/tailscale/update'],
+  ['POST', '/api/remote/v1/machines/lxc-101/tailscale/settings/preview'],
 ]
 
 test('the role matrix: overview is viewer, jobs and every action admin, the dangerous ones re-confirmed', () => {
@@ -94,6 +103,11 @@ test('the role matrix: overview is viewer, jobs and every action admin, the dang
   assert.equal(requiredRole('GET', '/api/remote/jobs/abc'), 'admin')
   assert.equal(requiredRole('GET', '/api/remote/machines/node-pve-a/tailscale/firewall'), 'admin')
   assert.equal(requiredRole('GET', '/api/remote/machines/lxc-101/host-key'), 'admin')
+  assert.equal(requiredRole('GET', '/api/remote/v1/status'), 'viewer')
+  assert.equal(requiredRole('GET', '/api/remote/v1/status/lxc-101'), 'viewer')
+  for (const p of ['/api/remote/v1/machines/lxc-101/tailscale/install-preview', '/api/remote/v1/machines/lxc-101/tailscale/settings', '/api/remote/v1/jobs/x']) {
+    assert.equal(requiredRole('GET', p), 'admin', p)
+  }
   for (const [m, p] of [...RECONFIRMED, ...ADMIN_PLAIN]) assert.equal(requiredRole(m, p), 'admin', `${m} ${p}`)
   for (const [m, p] of RECONFIRMED) assert.equal(needsReconfirm(m, p), true, `${m} ${p}`)
   for (const [m, p] of ADMIN_PLAIN) assert.equal(needsReconfirm(m, p), false, `${m} ${p}`)
@@ -212,4 +226,34 @@ test('admin: a host key is previewed, then pinned only after re-confirmation and
   const ok = await app.inject({ method: 'POST', url: '/api/remote/machines/lxc-101/host-key', headers: { cookie }, payload: { fingerprint: FP } })
   assert.equal(ok.statusCode, 200, ok.body)
   assert.equal(ok.json().pinned, true)
+})
+
+test('the /v1 status API: every role, filtered below admin; install needs a preview, a confirm and a re-confirmation', async () => {
+  const v = await signIn(app, 'viewer@example.com', 'viewer master password')
+  const st = await app.inject({ method: 'GET', url: '/api/remote/v1/status', headers: { cookie: v.cookie } })
+  assert.equal(st.statusCode, 200, st.body)
+  assert.deepEqual(st.json().machines.map((m: any) => m.machineId), ['node-pve-a', 'lxc-101', 'qemu-103'])
+  assert.doesNotMatch(st.body, /192\.0\.2\./)
+  const one = await app.inject({ method: 'GET', url: '/api/remote/v1/status/lxc-101', headers: { cookie: v.cookie } })
+  assert.equal(one.statusCode, 200)
+  assert.equal(one.json().providers.tailscale.panel, '/vpn?machine=lxc-101&provider=tailscale')
+  assert.equal(one.json().providers.tailscale.prefs, undefined, 'admin-only fields are left out')
+  assert.equal((await app.inject({ method: 'GET', url: '/api/remote/v1/status/lxc-999', headers: { cookie: v.cookie } })).statusCode, 404)
+
+  const { cookie } = await signIn(app, 'admin@example.com', 'admin master password')
+  const pv = await app.inject({ method: 'GET', url: '/api/remote/v1/machines/lxc-101/tailscale/install-preview', headers: { cookie } })
+  assert.equal(pv.statusCode, 200, pv.body)
+  assert.equal(pv.json().profile, 'guest')
+  const noRc = await app.inject({ method: 'POST', url: '/api/remote/v1/machines/lxc-101/tailscale/install', headers: { cookie }, payload: { confirm: true } })
+  assert.equal(noRc.json().code, 'reconfirm_required')
+  await app.inject({ method: 'POST', url: '/api/auth/reconfirm', headers: { cookie }, payload: { password: 'admin master password' } })
+  assert.equal((await app.inject({ method: 'POST', url: '/api/remote/v1/machines/lxc-101/tailscale/install', headers: { cookie }, payload: {} })).statusCode, 400)
+  const ok = await app.inject({ method: 'POST', url: '/api/remote/v1/machines/lxc-101/tailscale/install', headers: { cookie }, payload: { confirm: true } })
+  assert.equal(ok.statusCode, 202, ok.body)
+  await waitIdle()
+  const j = await app.inject({ method: 'GET', url: `/api/remote/v1/jobs/${ok.json().job.id}`, headers: { cookie } })
+  assert.equal(j.statusCode, 200)
+  const login = await app.inject({ method: 'POST', url: '/api/remote/machines/lxc-101/tailscale/login-url', headers: { cookie } })
+  assert.equal(login.statusCode, 404)
+  assert.equal(login.headers['cache-control'], 'no-store')
 })
