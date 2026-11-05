@@ -542,7 +542,7 @@ test('round 4: Portable GPU tells HA which GPU each node would give the guest', 
     ['lxc.mount.entry', '/dev/nvidia0 dev/nvidia0 none bind,optional,create=file'],
   ] }) })
   s.pve.add({ node: 'node-a', type: 'lxc', vmid: 911, status: 'running', ha: 'started', config: JSON.parse(FIX('ct-nvidia.json')) })
-  await s.service.refreshPortability()
+  await s.service.refreshPortability({ probe: true })
   const p = s.service.portabilityOf('ct:961') as any
   assert.equal(p.portable, true)
   assert.equal(p.perNode['node-a'], 'NVIDIA GeForce GTX 1070 Ti')

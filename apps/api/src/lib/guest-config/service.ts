@@ -74,6 +74,8 @@ export class GuestConfigRefusal extends Error {
 export const PREVIEW_TTL_MS = 10 * 60_000
 export const PREVIEW_CAP = 200
 export const INVENTORY_TTL_MS = 60_000
+/** How often Portable GPU re-reads every node's devices for HA's note (a node login each); cache in between. */
+export const PORTABLE_REFRESH_MS = 15 * 60_000
 
 export type PreviewInput =
   | { kind: 'edit'; edit: StructuredEdit }
@@ -384,10 +386,10 @@ export class GuestConfigService {
         break
       }
       case 'gpu-grant': plan = buildGpuGrantPlan(ctx, await this.inventory(g.node, true), input.grant, await this.guestsOn(g.node)); kind = 'device'; break
-      case 'gpu-revoke': plan = buildGpuRevokePlan(ctx, (await this.gpuState(g, ctx.config)).dev); kind = 'device'; break
-      case 'gpu-off': { const st = await this.gpuState(g, ctx.config); plan = buildGpuOffPlan(ctx, { dev: st.dev, raw: st.raw }, input.off ?? {}, await this.inventory(g.node).catch(() => null)); kind = 'gpu-off'; break }
+      case 'gpu-revoke': plan = buildGpuRevokePlan(ctx, (await this.gpuState(g, ctx.config, true)).dev); kind = 'device'; break
+      case 'gpu-off': { const st = await this.gpuState(g, ctx.config, true); plan = buildGpuOffPlan(ctx, { dev: st.dev, raw: st.raw }, input.off ?? {}, await this.inventory(g.node).catch(() => null)); kind = 'gpu-off'; break }
       case 'gpu-on': {
-        const st = await this.gpuState(g, ctx.config)
+        const st = await this.gpuState(g, ctx.config, true)
         plan = buildGpuOnPlan(ctx, st.off as GpuOffRecord | null); kind = 'gpu-on'
         if (st.offRow) (plan.meta ??= {}).fromHistory = st.offRow
         break
@@ -497,11 +499,12 @@ export class GuestConfigService {
    * Refresh, for every HA-managed container with GPU lines: portable when it carries optional GPU bind lines
    * (Portable GPU), and per node, the GPU it would bind there (from that node's inventory), or none.
    */
-  async refreshPortability(): Promise<number> {
+  async refreshPortability(opts: { probe?: boolean } = {}): Promise<number> {
     const guests = await this.haGpuGuests()
     const nodes = ((await this.d.pve.get<any[]>('/nodes').catch(() => [])) ?? []).filter(n => n.status === 'online').map(n => String(n.node))
     const invs = new Map<string, NodeInventory>()
-    for (const n of nodes) { const i = await this.inventory(n).catch(() => null); if (i && !i.problem) invs.set(n, i) }
+    // `probe`: read each node's devices afresh (a node login each). Otherwise only what is cached, however old.
+    for (const n of nodes) { const i = await this.inventory(n, !!opts.probe, { cachedOnly: !opts.probe }).catch(() => null); if (i && !i.problem) invs.set(n, i) }
     const next = new Map<string, any>()
     for (const g of guests) {
       const cfg = await this.d.pve.get<PveConfig>(`/nodes/${encodeURIComponent(g.node)}/lxc/${g.vmid}/config`).catch(() => null)
@@ -712,12 +715,27 @@ export class GuestConfigService {
     return lines.map(([k, v]) => createHmac('sha256', this.hmacKeyCache!).update(`${k}\u0000${v}`).digest('hex'))
   }
 
-  /** A guest's GPU state, found by its marker; state stored under an older key for this VMID is adopted once. */
-  async gpuState(g: GuestId, cfg: PveConfig): Promise<GpuState> {
+  /**
+   * A guest's GPU state, found by its marker. `migrate` (admin actions only) adopts state stored under an older key
+   * for this VMID first; a read for anyone else never writes.
+   */
+  async gpuState(g: GuestId, cfg: PveConfig, migrate = false): Promise<GpuState> {
     const key = gpuKey(g, cfg)
     if (!key) return emptyGpuState(`${g.type}/${g.vmid}/-`)
-    await this.d.history.adoptLegacyGpu(g.type, g.vmid, key)
+    if (migrate) await this.d.history.adoptLegacyGpu(g.type, g.vmid, key)
     return this.d.history.getGpu(key)
+  }
+
+  /** Once at start-up (first unlock): move every marked guest's GPU state from an older key. Returns how many moved. */
+  async migrateLegacyGpuState(): Promise<number> {
+    const res = await this.d.pve.get<any[]>('/cluster/resources?type=vm')
+    let moved = 0
+    for (const r of (res ?? []).filter(x => x.type === 'lxc' || x.type === 'qemu')) {
+      const cfg = await this.d.pve.get<PveConfig>(`/nodes/${encodeURIComponent(r.node)}/${r.type}/${r.vmid}/config`).catch(() => null)
+      const key = cfg ? gpuKey({ type: r.type, vmid: Number(r.vmid) }, cfg) : null
+      if (key && await this.d.history.adoptLegacyGpu(r.type, Number(r.vmid), key)) moved++
+    }
+    return moved
   }
 
   private stateKey(p: Preview): string {
@@ -929,9 +947,15 @@ export function ipOf(type: GuestType, cfg: PveConfig): string | null {
 }
 
 /** HyperProx's own identity marker for a guest, kept as a hidden comment in its description. */
-export const MARKER_RE = /\n?<!-- hpx-id:([0-9a-f-]{36}) -->/
+export const MARKER_RE = /<!-- hpx-id:([0-9a-f-]{36}) -->/
 export function markerOf(cfg: PveConfig): string | null { return MARKER_RE.exec(str(cfg.description))?.[1] ?? null }
-export function withoutMarker(desc: string): string { return desc.replace(MARKER_RE, '') }
+/** The description without the marker: no line left behind for it, and no trailing space where it shared a line. */
+export function withoutMarker(desc: string): string {
+  return desc.split('\n')
+    .map(l => (MARKER_RE.test(l) ? { had: true, l: l.replace(new RegExp(MARKER_RE.source, 'g'), '').replace(/[ \t]+$/, '') } : { had: false, l }))
+    .filter(x => !(x.had && x.l === ''))
+    .map(x => x.l).join('\n').replace(/\n+$/, '')
+}
 export function withMarker(desc: string, id: string): string { return `${withoutMarker(desc).replace(/\n+$/, '')}\n<!-- hpx-id:${id} -->` }
 
 /**
