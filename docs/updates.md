@@ -55,13 +55,17 @@ Docker image is pulled. (The design's example file uses `dist-upgrade` and
 4. **Ceph**, only when Ceph packages are pending. The same version is installed on every
    node that has it pending (exact `package=version`, and apt is not allowed to remove
    anything), then daemons restart node by node — all monitors, then all managers, then
-   OSDs with `noout` set — and Ceph must be back to the accepted health before the next.
-   If nodes would install different Ceph versions, neither the Ceph nor the node phase is
-   planned.
+   OSDs — and Ceph must be back to the accepted health before the next. Monitors are
+   asked `ceph mon ok-to-stop` first. OSDs are restarted **one at a time**, never through
+   `ceph-osd.target`, with `noout` set around them and a health gate after each (every
+   PG active+clean, or no worse than before the step). See *Ceph restart and reboot
+   safety* below. If nodes would install different Ceph versions, neither the Ceph nor
+   the node phase is planned.
 5. **Nodes, one at a time**, gates checked before each. `apt-get upgrade` or
    `apt-get dist-upgrade` as the node's policy says → Proxmox services active → holds and
    pin checked again. If a reboot is needed and the policy says `reboot: auto`: wait for
-   viewers (below), check quorum, Ceph and HA again (the wait can be hours), set `noout`,
+   viewers (below), check quorum, Ceph and HA again (the wait can be hours), run the
+   Ceph safety check below for every OSD on the node, set `noout`,
    turn on HA maintenance for the node, wait for HA to move its guests, reboot, and wait
    up to 15 minutes for the node to be online **with a new boot id**, every OSD up and
    every PG active+clean, then maintenance off and `noout` cleared. With `reboot: manual`
@@ -79,6 +83,73 @@ Docker image is pulled. (The design's example file uses `dist-upgrade` and
 
 One job runs at a time, enforced in the database. Asking for another while one is
 running, awaiting confirmation or paused answers `409` with the id of the active job.
+
+## Ceph restart and reboot safety
+
+Before every OSD restart step and every node reboot, HyperProx reads every pool's
+`size` and `min_size`, the CRUSH tree and the PG map, and asks `ceph osd ok-to-stop`
+about the node's OSDs. The step does not run when:
+
+- any OSD on the node holds placement groups of a pool with `size=1` (that share of the
+  pool has no other copy and would go offline);
+- any placement group would be left with fewer than `min_size` copies (its I/O would stop);
+- `ceph osd ok-to-stop` does not answer with a clear yes.
+
+Survivors are counted from each placement group's *acting* set: an OSD that is only in the
+`up` set is still backfilling and holds no complete copy. Erasure-coded pools are labelled
+as such, and a PG left with fewer than `k` shards counts as offline.
+
+**Which OSDs are on the node** comes from three sources that must agree: the CRUSH tree
+(the host bucket with the node's name, plus any host bucket holding an OSD that reports
+this host, such as a per-device-class bucket), the `hostname` in `ceph osd metadata`, and
+the `ceph-osd@` units on the node. If they disagree, if the unit listing fails, or if the
+node has OSD units that name no OSD, the layout counts as unreadable. A node counts as
+having no OSDs only when all three say so. The layout is also unreadable when the PG map
+is not `pg_ready` or a pool has fewer PG rows than its `pg_num` (a freshly restarted
+manager can serve a partial map).
+
+Such a step is marked **skipped for safety** with what would go offline — the pool, its
+share of placement groups and roughly how many GB — and the report and notification say
+so instead of reporting success. A skipped reboot leaves the packages installed and the
+node *reboot pending*, for a person to reboot by hand in a maintenance window. If the
+layout cannot be read, the step refuses and the job pauses.
+
+**The check is deliberately strict.** It treats every OSD on the node as down at the same
+time, for an OSD restart as well as a reboot, even though OSDs are then restarted one by
+one. With a CRUSH rule whose failure domain is the OSD rather than the host, a node that
+could have been restarted one OSD at a time may be skipped. That is the intended trade:
+a skipped restart costs a manual step, a wrong restart can cost data availability.
+
+The same check runs when the plan is built: the plan preview and a dry run show, for each
+Ceph restart and node reboot, whether it would run or be skipped for safety and why. It
+runs again when the step executes, because the cluster may have changed in between, and
+for a reboot once more right before `systemctl reboot`, after HA has moved the guests off.
+For HyperProx's own node the handoff script runs that last check itself, against the OSD
+set the API checked; a no there is a safety skip with the reboot left pending.
+
+Between OSD restarts the health gate compares by identity, not by count: the restarted OSD
+must be up and in with none of its PGs degraded or undersized, every PG must be active,
+and no OSD may be down or out, and no PG at risk (`degraded`, `undersized`,
+`backfill_toofull`, `recovery_toofull` and the like), that was not already so before the
+step. The only OSD map flag that may appear during the step is the `noout` it set; any
+other (`pause`, `nodown`…) fails it, whatever `accepted_warnings` says.
+
+If an OSD does not come back, or its restart fails, the step stops and **`noout` is left
+set**, so Ceph never marks the OSD out and starts moving data because a restart failed.
+A critical notification says that `noout` is still set and why. Only a step in which every
+OSD came back clears it.
+
+Outside a step `noout` is never HyperProx's, so a `noout` found at the start of a run, on
+Resume, or after HyperProx restarted mid-job was left behind (or set by hand). It is
+reported by name, with a critical notification, and nothing restarts or reboots while it
+is set. Listing `OSDMAP_FLAGS` in `ceph.accepted_warnings` does not hide it.
+
+**Package scripts.** Node package upgrades and the Ceph install run with a temporary
+`/usr/sbin/policy-rc.d` that refuses every start and restart of a Ceph unit, so a
+package's `postinst` cannot restart OSDs behind the runner's back or start an OSD a person
+stopped on purpose. Any `policy-rc.d` that was already there still decides everything else
+and is put back afterwards, also when apt fails. `NEEDRESTART_SUSPEND=1` keeps needrestart
+from restarting services after a library upgrade.
 
 ## The policy file
 
@@ -224,6 +295,9 @@ set `public_url` where that matters). The page check follows redirects on the sa
 | HA cannot move every guest off a node | Maintenance and `noout` are cleared (the node never went down), the node is not rebooted, and the job pauses. |
 | A node stays up but its boot id never changes, or refuses the reboot | It did not reboot: both flags are cleared and the job pauses. |
 | A flag cannot be cleared | The job pauses and names the flag that is LEFT ON. |
+| A Ceph restart or reboot would take data offline (size=1 pool, below min_size, or `ok-to-stop` says no) | Nothing is restarted or rebooted: the step is **skipped for safety** with the pool, its share and roughly how many GB; a reboot is left *pending*. The run carries on and the report says so. |
+| The Ceph pool layout cannot be read before a restart or reboot | The step refuses and the job pauses. Nothing was restarted. |
+| An OSD does not come back after its restart, or the restart fails | The job pauses with **`noout` LEFT SET** and a critical notification. Bring the OSD back, `ceph osd unset noout`, then Resume or Cancel. |
 | A node does not come back within 15 minutes | The job **fails** and leaves `noout` and HA maintenance **on**, so data does not move and guests do not bounce. Clear them by hand once the node is healthy: `ha-manager crm-command node-maintenance disable <node>` and `ceph osd unset noout`. |
 | Old kernel removal would take more than the old kernels with it | Nothing is removed; the step fails and the run continues. |
 | HyperProx restarts mid-job | On start, the job is paused ("HyperProx restarted mid-job") — never resumed on its own. A step that was running is marked failed ("interrupted by a HyperProx restart"), so an interrupted guest still holds back the node phase; Resume retries it (every step is safe to run twice). A self-handoff keeps running on its node; its result is collected rather than the step being restarted. |
