@@ -220,6 +220,16 @@ check "install.sh makes a setup key on a re-run only while setup is unfinished" 
 check "install.sh no longer writes NEXT_PUBLIC_GPU_NODES"           '! grep -q "NEXT_PUBLIC_GPU_NODES" "${here}/install.sh"'
 check "install.sh does not print the Grafana password"              '! grep -q "Grafana admin password:" "${here}/install.sh"'
 
+# ── The cluster dashboard ─────────────────────────────────────────────────────
+d="$(mkinstall 'HOST_IP=192.0.2.10')"
+mkdir -p "$d/config/grafana/dashboards" "$d/packages/hardware"
+cp "${here}/config/grafana/dashboards/hyperprox-cluster.json" "$d/config/grafana/dashboards/"
+cp "${here}/packages/hardware/dashboard.js" "$d/packages/hardware/"
+echo '["amd"]' > "$d/config/grafana/gpu-vendors.json"
+out="$(run "$d")"
+check "the cluster dashboard is drawn for the saved GPU vendors" 'grep -q "\"AMD GPUs\"" "$d/config/grafana/provisioning/dashboards/hyperprox-cluster.json" && ! grep -q "\"Intel GPUs\"" "$d/config/grafana/provisioning/dashboards/hyperprox-cluster.json"'
+check "  and that is logged once"                                 '[[ "$out" == *"cluster dashboard: drawn for amd GPUs"* && -z "$(run "$d")" ]]'
+
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   cp "${here}/docker-compose.yml" "${tmp}/docker-compose.yml"
   printf 'POSTGRES_USER=u\nPOSTGRES_PASSWORD=p\nPOSTGRES_DB=d\nGRAFANA_ADMIN_PASSWORD=x\nGRAFANA_SECRET_KEY=y\nCOMPOSE_PROFILES=monitoring\n' > "${tmp}/.env"

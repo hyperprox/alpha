@@ -9,6 +9,8 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import { hardware } from './hardware'
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const dashboard = require('@hyperprox/hardware/dashboard') as { vendorsOf(n: unknown[]): string[]; writeClusterDashboard(dir: string, v?: string[]): { changed: boolean; vendors: string[] } }
 import { getProviderCredentials } from './credentials'
 import { ProxmoxClient } from './proxmox-client'
 import { prometheusBase } from './service-health'
@@ -42,6 +44,8 @@ export interface TargetSyncDeps {
   cephMgrs(nodes: string[]): Promise<Set<string>>
   reload(): Promise<void>
   dir: string
+  /** Draw the cluster dashboard with only these GPU vendors' rows. */
+  dashboard?(vendors: string[]): void
 }
 
 async function client(): Promise<ProxmoxClient> {
@@ -74,10 +78,11 @@ export async function productionTargetDeps(): Promise<TargetSyncDeps> {
     },
     async reload() { try { await fetch(`${prometheusBase()}/-/reload`, { method: 'POST' }) } catch { /* not running */ } },
     dir: targetsDir(),
+    dashboard: vendors => { dashboard.writeClusterDashboard(process.env.HYPERPROX_DIR || '/opt/hyperprox', vendors) },
   }
 }
 
-export interface SyncResult { nodes: string[]; added: Record<string, string[]>; at: string }
+export interface SyncResult { nodes: string[]; added: Record<string, string[]>; at: string; gpuVendors: string[] }
 let last: SyncResult | null = null
 export function lastSync(): SyncResult | null { return last }
 
@@ -98,7 +103,10 @@ export async function syncTargets(deps?: TargetSyncDeps): Promise<SyncResult> {
     added[file] = r.added
   }
   await d.reload()
-  last = { nodes: names, added, at: new Date().toISOString() }
+  // The dashboard follows the same detection: a GPU row only for a vendor this cluster has.
+  const gpuVendors = dashboard.vendorsOf(facts)
+  try { d.dashboard?.(gpuVendors) } catch { /* the template is missing: an install without the dashboards */ }
+  last = { nodes: names, added, at: new Date().toISOString(), gpuVendors }
   return last
 }
 
