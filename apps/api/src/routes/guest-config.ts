@@ -46,7 +46,7 @@ import { livePveAdapter, liveNodeShell, prismaAudit, vaultHmacKey } from '../lib
 import { PrismaHistoryStore } from '../lib/guest-config/history/store'
 import { GpuMoveWatcher } from '../lib/guest-config/gpu-watch'
 import { publish } from '../lib/notify'
-import { isUnlocked } from '../lib/vault/state'
+import { isUnlocked, onLock } from '../lib/vault/state'
 
 let shared: GuestConfigService | null = null
 export function guestConfigService(db: PrismaClient): GuestConfigService {
@@ -185,6 +185,8 @@ export function buildGuestConfigRoutes(deps: () => GuestConfigRouteDeps): Fastif
 
 export const guestConfigRoutes: FastifyPluginAsync = async (fastify) => {
   const service = guestConfigService(fastify.prisma)
+  // Key material is not held past a lock.
+  onLock(() => service.forgetKeys())
   // After an HA move, check that a GPU guest still sees a GPU and say so. Checks only, every minute, and only
   // while unlocked: the node logins it reads with come from the vault.
   const watcher = new GpuMoveWatcher(service, async e => publish({

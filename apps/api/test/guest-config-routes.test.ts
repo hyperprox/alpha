@@ -97,6 +97,7 @@ test('planted marker: a secret in a guest config never reaches history (memory o
   const MARKER = 'PLANTED-SECRET-7f3e9c'
   const s = makeService()
   s.pve.add({ node: 'node-a', type: 'qemu', vmid: 921, status: 'stopped', config: { name: 'vm', memory: 1024, cores: 1, cipassword: MARKER, sshkeys: `ssh-ed25519%20${MARKER}`, ipconfig0: 'ip=dhcp', description: `db password=${MARKER}` } })
+  s.shell.probes['node-a'] = FIX('probe-igpu.txt')
   s.pve.add({ node: 'node-a', type: 'lxc', vmid: 901, status: 'stopped', config: smallCt({ env: `DB_PASSWORD=${MARKER}\u0000TZ=UTC`, lxc: [['lxc.cgroup2.devices.allow', 'c 10:200 rwm'], ['lxc.environment', `API_TOKEN=${MARKER}`]] }) })
   const G = { node: 'node-a', type: 'qemu' as const, vmid: 921 }
   const C = { node: 'node-a', type: 'lxc' as const, vmid: 901 }
