@@ -12,7 +12,9 @@
 
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { hasRole } from '../lib/roles'
-import { onUnlock } from '../lib/vault/state'
+import { isUnlocked, onUnlock } from '../lib/vault/state'
+import { setVpnStatusSource } from '../lib/guest-config/vpn'
+import { remoteVpnSource } from '../lib/remote/vpn-source'
 import { livePve } from '../lib/pve-env'
 import {
   RemoteAccessService, RemoteBusyError, RemoteInputError, RemoteNotFoundError, overviewForRole, type JobRequest,
@@ -71,6 +73,8 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
     if (!deps.service) {
       const store = new PrismaRemoteStore((fastify as any).prisma)
       setCredentialAuditor((a, r, d) => store.audit(a, r, d))
+      // The Infrastructure list badges and the guest drill-down's VPN tab read from this.
+      setVpnStatusSource(remoteVpnSource(service, isUnlocked))
     }
     if (deps.sweep !== false) {
       // Provider credentials and node logins are vault items, so a sweep that runs while locked does nothing and
