@@ -79,6 +79,10 @@ export const CREDENTIAL_DEFS: CredentialDef[] = [
 
   // HyperProx system
   { category: 'system', provider: 'hyperprox', key: 'app_url',   label: 'App URL',   masked: false, envKey: 'NEXT_PUBLIC_API_URL' },
+  // Grafana's admin password: read by Grafana only when it first sets up its database, and needed after
+  // that only for `grafana cli` work (its login form and basic auth are off). The installer puts it in
+  // .env for that first start; the first Owner sign-in moves it here and blanks it in .env.
+  { category: 'system', provider: 'grafana',   key: 'admin_password', label: 'Grafana admin password', masked: true, envKey: 'GRAFANA_ADMIN_PASSWORD' },
 ]
 
 /** .env keys that grant access and are blanked once their value is in the vault. */

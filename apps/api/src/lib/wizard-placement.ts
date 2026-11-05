@@ -8,6 +8,8 @@
 //  gateway) lives in one place.
 // =============================================================================
 
+import * as hardware from '@hyperprox/hardware'
+
 export interface NodeInfo { node: string; status: string; maxmem: number; mem: number }
 
 /**
@@ -373,33 +375,15 @@ export function configUsesGpu(config: Record<string, unknown> | null | undefined
   return false
 }
 
-// AMD integrated graphics share the vendor ID with AMD cards; the APU code names tell them apart.
-const AMD_APU = /\b(Kaveri|Godavari|Carrizo|Bristol Ridge|Stoney|Kabini|Temash|Mullins|Beema|Carrizo-L|Trinity|Richland|Llano|Sumo|Wrestler|Ontario|Zacate|Raven|Picasso|Dali|Pollock|Renoir|Lucienne|Cezanne|Barcelo|Rembrandt|Mendocino|Phoenix|Hawk Point|Strix|Krackan|Van Gogh|Aerith|Sephiroth|Raphael|Granite Ridge|Dragon Range)\d*\b/i
-// Intel's discrete cards: Arc desktop and laptop GPUs (DG1, DG2/Alchemist, Battlemage). "Arc Graphics" inside a
-// Core Ultra CPU is integrated and does not match.
-const INTEL_DISCRETE = /\b(DG1|DG2|Alchemist|Battlemage|Arc [AB]\d{3})/i
-
 /**
- * What `/nodes/{node}/hardware/pci` shows in display controllers (class 0x03xxxx): a discrete card
- * (NVIDIA, or an AMD card that is not APU graphics) and integrated graphics (Intel, or AMD APU graphics).
+ * What `/nodes/{node}/hardware/pci` shows in display controllers (class 0x03xxxx): a discrete card and
+ * integrated graphics. Classified by @hyperprox/hardware's probe script, the one place that decides it
+ * (AMD APU graphics and Intel's built-in "Arc Graphics" are integrated; NVIDIA, AMD cards and Arc cards
+ * are discrete).
  */
 export function pciGpus(pci: unknown): { discrete: boolean; integrated: boolean } {
-  const out = { discrete: false, integrated: false }
-  if (!Array.isArray(pci)) return out
-  for (const d of pci as any[]) {
-    if (!/^0x03/i.test(String(d?.class ?? ''))) continue
-    const vendor = String(d?.vendor ?? '').toLowerCase()
-    if (vendor === '0x10de') out.discrete = true
-    else if (vendor === '0x8086') {
-      if (INTEL_DISCRETE.test(String(d?.device_name ?? ''))) out.discrete = true
-      else out.integrated = true
-    }
-    else if (vendor === '0x1002') {
-      if (AMD_APU.test(String(d?.device_name ?? ''))) out.integrated = true
-      else out.discrete = true
-    }
-  }
-  return out
+  const gpus = hardware.classifyPci(pci)
+  return { discrete: gpus.some(g => g.kind === 'dedicated'), integrated: gpus.some(g => g.kind === 'integrated') }
 }
 
 /** True when the PCI bus shows a discrete GPU (NVIDIA, or an AMD card). */

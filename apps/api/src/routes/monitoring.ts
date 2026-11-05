@@ -5,9 +5,16 @@
 //    POST /api/monitoring/pve-exporter   make or repair its read-only token (admin, like every write);
 //                                        body { fresh: true } replaces a token that is not read-only
 //  No re-confirmation: the token it makes can only read. `hyperprox pve-exporter` calls the POST.
+//    POST /api/monitoring/grafana-admin/reset   new Grafana admin password, set in Grafana and kept only in
+//                                               the vault (admin, master password re-entered). Reveal it
+//                                               under Settings → Secrets (hyperprox:system/grafana).
 // =============================================================================
 
 import type { FastifyPluginAsync } from 'fastify'
+import { spawn } from 'child_process'
+import { randomBytes } from 'crypto'
+import { setCredential } from '../lib/credentials'
+import { auditCredentialUse } from '../lib/audit'
 import {
   exporterStatus, provisionPveExporter, pveAccessFromEnv, type ExporterStatus, type ProvisionResult,
 } from '../lib/pve-exporter'
@@ -15,6 +22,21 @@ import {
 export interface MonitoringRouteOptions {
   status?:    () => Promise<ExporterStatus>
   provision?: (o: { fresh: boolean }) => Promise<ProvisionResult>
+  /** Sets Grafana's admin password; the value goes on stdin, never on a command line. */
+  grafanaReset?: (password: string) => Promise<void>
+}
+
+/** `grafana cli admin reset-admin-password --password-from-stdin` inside the bundled Grafana. */
+export function grafanaCliReset(password: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const p = spawn('docker', ['exec', '-i', 'hyperprox-grafana', 'grafana', 'cli', 'admin', 'reset-admin-password', '--password-from-stdin'],
+      { stdio: ['pipe', 'ignore', 'pipe'] })
+    let err = ''
+    p.stderr.on('data', d => { err += d })
+    p.on('error', reject)
+    p.on('close', code => code === 0 ? resolve() : reject(new Error(`grafana cli exited ${code}: ${err.trim().split('\n').pop()}`)))
+    p.stdin.end(password + '\n')
+  })
 }
 
 export const monitoringRoutes: FastifyPluginAsync<MonitoringRouteOptions> = async (fastify, opts) => {
@@ -22,6 +44,20 @@ export const monitoringRoutes: FastifyPluginAsync<MonitoringRouteOptions> = asyn
   const provision = opts.provision ?? ((o: { fresh: boolean }) => provisionPveExporter({ access: pveAccessFromEnv(), fresh: o.fresh }))
 
   fastify.get('/pve-exporter', async () => ({ success: true, data: await status() }))
+
+  // Grafana's login form and basic auth are off, so this password is only for `grafana cli` work. It is
+  // made here, set in Grafana, and kept in the vault; it is never written to .env and never returned.
+  fastify.post('/grafana-admin/reset', async (req, reply) => {
+    const password = randomBytes(18).toString('base64url')
+    try {
+      await (opts.grafanaReset ?? grafanaCliReset)(password)
+      await setCredential('system', 'grafana', 'admin_password', password)
+      await auditCredentialUse('grafana_admin.reset', 'system:grafana', { by: req.session?.email })
+      return { success: true, data: { savedInVault: 'hyperprox:system/grafana' } }
+    } catch (e: any) {
+      return reply.status(502).send({ success: false, error: e?.message ?? String(e) })
+    }
+  })
 
   fastify.post<{ Body: { fresh?: unknown } | undefined }>('/pve-exporter', async (req, reply) => {
     const fresh = req.body?.fresh === true
