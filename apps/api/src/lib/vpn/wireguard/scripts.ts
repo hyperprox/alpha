@@ -24,6 +24,15 @@ export function wgInstallScript(s: Extract<Support, { ok: true }>): string {
     : 'set -e\ncommand -v wg >/dev/null 2>&1 || dnf install -y -q wireguard-tools iproute\nwg --version | head -n1 | sed "s/^/HP_WG_VERSION=/"'
 }
 
+/**
+ * `wg syncconf` input for a live interface: the stripped file plus the private key, which awk reads from the
+ * key file itself. A stripped file alone would make syncconf remove the key (it does), and putting the key on
+ * a command line would show it in the process list.
+ */
+function syncconf(n: string): string {
+  return `wg syncconf ${n} <(wg-quick strip ${n} | awk -v kf=/etc/wireguard/${n}.key 'BEGIN { getline k < kf } { print } /^\\[Interface\\]/ { print "PrivateKey = " k }')`
+}
+
 /** Make the machine's key if it has none (kept if it has), and print the public half. */
 export function wgKeyScript(i: string): string {
   const k = `/etc/wireguard/${iface(i)}.key`
@@ -45,7 +54,7 @@ export function wgApplyScript(spec: WgInterfaceSpec, o: { forwarding?: boolean }
     `cat > ${conf}.new <<'HP_WG'`, renderInterface(spec).trimEnd(), 'HP_WG',
     `mv ${conf}.new ${conf}`,
     ...(o.forwarding ? ['mkdir -p /etc/sysctl.d', `printf 'net.ipv4.ip_forward = 1\\n' > /etc/sysctl.d/99-hyperprox-${i}.conf`, `sysctl -q -p /etc/sysctl.d/99-hyperprox-${i}.conf || true`] : []),
-    `if ip link show ${i} >/dev/null 2>&1; then wg syncconf ${i} <(wg-quick strip ${i}); else systemctl enable wg-quick@${i} >/dev/null 2>&1 || true; wg-quick up ${i}; fi`,
+    `if ip link show ${i} >/dev/null 2>&1; then ${syncconf(i)}; else systemctl enable wg-quick@${i} >/dev/null 2>&1 || true; wg-quick up ${i}; fi`,
     wgStatusScript(i),
   ].join('\n')
 }
@@ -59,7 +68,7 @@ export function wgRestoreScript(i: string, previousConf: string | null): string 
       `rm -f ${conf} ${conf}.hp-prev /etc/wireguard/${n}.key /etc/sysctl.d/99-hyperprox-${n}.conf`, 'echo HP_WG_GONE'].join('\n')
   }
   return ['set -e', 'umask 077', `cat > ${conf} <<'HP_WG'`, previousConf.trimEnd(), 'HP_WG',
-    `if ip link show ${n} >/dev/null 2>&1; then wg syncconf ${n} <(wg-quick strip ${n}); else wg-quick up ${n}; fi`, 'echo HP_WG_RESTORED'].join('\n')
+    `if ip link show ${n} >/dev/null 2>&1; then ${syncconf(n)}; else wg-quick up ${n}; fi`, 'echo HP_WG_RESTORED'].join('\n')
 }
 
 /** The interface's public key, port and peers. `wg show dump`'s first line holds the private key: never read. */
