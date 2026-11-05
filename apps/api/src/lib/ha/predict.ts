@@ -131,16 +131,21 @@ export function startBlock(snap: HaSnapshot, sid: Sid, node: string): string | n
   const hw = g.hardware
   if (!hw) return null
   const missing = hw.devices.filter(d => d.required && !(d.nodes ?? [g.node]).includes(node)).map(d => d.what.replace(/^(an?|the) /, 'its '))
-  for (const b of hw.bindMounts) if (node !== g.node) missing.push(`its local bind mount (${b.path})`)
   for (const l of hw.localVolumes) if (node !== g.node) missing.push(`its disk on node-local storage "${l.storage}"`)
   return missing.length ? `where it cannot start without ${list(missing)}` : null
 }
 
-/** A container is never refused for CPUs: it runs, limited to the node's CPUs. */
+/**
+ * Soft notes about the node it lands on: a container is never refused for CPUs (it runs on fewer), and a plain
+ * bind mount only fails the start where the path is missing, which HyperProx cannot see from here.
+ */
 function cpuNote(snap: HaSnapshot, sid: Sid, node: string): string {
   const g = snap.guests.find(x => x.sid === sid)
   const n = snap.nodes.find(x => x.node === node)
-  return g?.type === 'lxc' && g.cpus && n?.maxcpu && n.maxcpu < g.cpus ? ` It will be limited to ${n.maxcpu} CPUs on ${node}.` : ''
+  let out = g?.type === 'lxc' && g.cpus && n?.maxcpu && n.maxcpu < g.cpus ? ` It will be limited to ${n.maxcpu} CPUs on ${node}.` : ''
+  const binds = g && node !== g.node ? (g.hardware?.bindMounts ?? []) : []
+  if (binds.length) out += ` It has a local bind mount: it may not start on ${node} if ${list(binds.map(b => b.path))} ${binds.length > 1 ? 'are' : 'is'} missing there.`
+  return out
 }
 
 function failoverWords(snap: HaSnapshot, sid: Sid, from: string, to: string | null, candidates: string[], tries: string[], blocks: string[]): string {
