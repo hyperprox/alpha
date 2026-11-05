@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { UpdatesRunner } from '../src/lib/updates/runner'
 import { MemoryStore, type StepRecord } from '../src/lib/updates/store'
 import { parsePolicy } from '../src/lib/updates/policy'
-import { parseAptSimulation, parseNodeFacts, withCephStartGuard, CEPH_LAYOUT_COMMAND } from '../src/lib/updates/commands'
+import { parseAptSimulation, parseNodeFacts, withCephStartGuard, isCephPackage, CEPH_LAYOUT_COMMAND } from '../src/lib/updates/commands'
 import { annotatePlanSafety, osdVerdict } from '../src/lib/updates/ceph-checks'
 import { REBOOT_CHECK_PY } from '../src/lib/updates/handoff'
 import { FakeCluster, node, pkg, policyLoad, FAST, type FakeCephLayout } from './updates-fake'
@@ -50,15 +50,21 @@ test('simulation parsing: installs, upgrades and removals, with versions', () =>
     'Inst libnew (1.0 stable [amd64])',
     'Remv librados2 [19.2.6-pve4]',
     'Conf curl (8.1-2 stable [amd64])',
-    'HP_SIM_END',
+    'HP_SIM_END 0',
   ].join('\n')
-  assert.deepEqual(parseAptSimulation(out), [
+  assert.deepEqual(parseAptSimulation(out).changes, [
     { name: 'ceph-osd', from: '19.2.6-pve4', to: '19.2.7-pve1', action: 'upgrade' },
     { name: 'curl', from: '8.1-1', to: '8.1-2', action: 'upgrade' },
     { name: 'libnew', from: null, to: '1.0', action: 'install' },
     { name: 'librados2', from: '19.2.6-pve4', to: null, action: 'remove' },
   ])
-  assert.equal(parseAptSimulation('Inst curl [8.1-1] (8.1-2 stable [amd64])'), null, 'no end marker: the simulation did not finish')
+  const cut = parseAptSimulation('Inst curl [8.1-1] (8.1-2 stable [amd64])')
+  assert.equal(cut.changes, null, 'no end marker: the simulation did not finish')
+  assert.match(cut.error!, /did not finish/)
+  const failed = parseAptSimulation('Reading package lists...\nE: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 4242 (apt-get)\nE: Unable to acquire the dpkg frontend lock\nHP_SIM_END 100')
+  assert.equal(failed.changes, null, 'apt exited 100: refused even though the shell exited 0')
+  assert.match(failed.error!, /exited 100: E: Could not get lock \/var\/lib\/dpkg\/lock-frontend\. It is held by process 4242 \(apt-get\); E: Unable to acquire the dpkg frontend lock/)
+  assert.equal(parseAptSimulation('HP_SIM_END').changes, null, 'a marker without a status')
 })
 
 test('a node upgrade that would change a Ceph package is refused, and nothing is installed', async () => {
@@ -80,18 +86,48 @@ test('the simulation runs before every node upgrade; without Ceph in it the upgr
   const job = await runner.start('run', 'schedule'); await settle(runner)
   assert.equal(step(await store.getSteps(job.id), 'node-a', 'node-upgrade').status, 'ok')
   const cmds = fake.cmds('node-a')
-  const sim = cmds.findIndex(c => /apt-get -s .*dist-upgrade; echo HP_SIM_END$/.test(c))
+  const sim = cmds.findIndex(c => /apt-get -s .*dist-upgrade 2>&1; echo "HP_SIM_END \$\?"$/.test(c))
   const real = cmds.findIndex(c => /apt-get -y -q .*dist-upgrade$/.test(c))
   assert.ok(sim >= 0 && real > sim, 'simulated first')
 })
 
-test('a simulation that fails or does not finish refuses the upgrade', async () => {
+test('a simulation where apt fails is refused, quoting apt, although the shell exits 0', async () => {
   const fake = cluster()
-  fake.inject = (w, c) => (w === 'node-a' && /HP_SIM_END$/.test(c) ? { code: 100, output: 'E: Could not get lock', timedOut: false } : undefined)
+  fake.nodes[0].simFail = ['E: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 4242 (apt-get)', 'E: Unable to acquire the dpkg frontend lock']
   const { runner, store } = setup(fake)
   const job = await runner.start('run', 'schedule'); await settle(runner)
-  assert.match(step(await store.getSteps(job.id), 'node-a', 'node-upgrade').reason!, /could not simulate apt-get dist-upgrade on node-a/)
+  const a = step(await store.getSteps(job.id), 'node-a', 'node-upgrade')
+  assert.equal(a.status, 'failed')
+  assert.match(a.reason!, /could not simulate apt-get dist-upgrade on node-a, so nothing was installed: apt-get exited 100: E: Could not get lock .*; E: Unable to acquire the dpkg frontend lock/)
   assert.equal(fake.ran(/apt-get -y -q .*dist-upgrade$/, 'node-a'), false)
+})
+
+test('a simulation cut off before its marker is refused', async () => {
+  const fake = cluster()
+  fake.inject = (w, c) => (w === 'node-a' && /HP_SIM_END/.test(c) ? { code: 0, output: 'Reading package lists...\nInst curl [8.1-1] (8.1-2 stable [amd64])', timedOut: false } : undefined)
+  const { runner, store } = setup(fake)
+  const job = await runner.start('run', 'schedule'); await settle(runner)
+  assert.match(step(await store.getSteps(job.id), 'node-a', 'node-upgrade').reason!, /could not simulate .*did not finish/)
+  assert.equal(fake.ran(/apt-get -y -q .*dist-upgrade$/, 'node-a'), false)
+})
+
+test('Ceph packages are matched by prefix, including the ones a fixed list missed', () => {
+  for (const p of ['ceph', 'ceph-osd', 'ceph-common', 'cephadm', 'cephfs-shell', 'ceph-volume', 'libcephfs2', 'libcephfs-dev', 'librados2',
+    'librados-dev', 'librbd1', 'librbd-dev', 'librgw2', 'libradosstriper1', 'libsqlite3-mod-ceph', 'python3-ceph-argparse', 'python3-cephfs',
+    'python3-rados', 'python3-rbd', 'python3-rgw', 'radosgw', 'rbd-nbd', 'rbd-fuse', 'rbd-mirror']) {
+    assert.equal(isCephPackage(p), true, p)
+  }
+  for (const p of ['curl', 'python3-requests', 'libssl3', 'pve-manager', 'proxmox-kernel-7.0.2-1-pve-signed']) assert.equal(isCephPackage(p), false, p)
+})
+
+test('a missed Ceph package in the simulation still refuses the node upgrade', async () => {
+  for (const name of ['libsqlite3-mod-ceph', 'cephadm', 'cephfs-shell', 'librados-dev', 'librbd-dev']) {
+    const fake = cluster()
+    fake.nodes[0].simExtra = [pkg(name, '19.2.7-pve1', '19.2.6-pve4')]
+    const { runner, store } = setup(fake)
+    const job = await runner.start('run', 'schedule'); await settle(runner)
+    assert.match(step(await store.getSteps(job.id), 'node-a', 'node-upgrade').reason!, new RegExp(`would also change Ceph packages \\(${name} `), name)
+  }
 })
 
 // --- 2. OSDMAP_FLAGS cannot be accepted -----------------------------------------------------------

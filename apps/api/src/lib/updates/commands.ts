@@ -16,7 +16,9 @@ const CONFOLD = '-o Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-c
 
 // --- Packages that change how a run must treat a node ------------------------------
 
-const CEPH_PKG   = /^(ceph(-[a-z0-9-]+)?|librados2|librbd1|libcephfs2|libradosstriper1|librgw2|python3-(ceph[a-z0-9-]*|rados|rbd|cephfs|rgw)|radosgw|rbd-(nbd|fuse|mirror))$/
+// By prefix: a fixed list misses packages (cephadm, cephfs-shell, the -dev libraries, the sqlite VFS). A false
+// positive only means a package waits for the Ceph phase; a miss would let a node upgrade move Ceph.
+const CEPH_PKG   = /^(ceph|libceph|librados|librbd|librgw|libradosstriper|libsqlite3-mod-ceph|python3-(ceph|rados|rbd|rgw)|radosgw|rbd-)/
 const KERNEL_PKG = /^(proxmox-kernel-|pve-kernel-|proxmox-default-kernel$)/
 
 export const isCephPackage   = (name: string) => CEPH_PKG.test(name)
