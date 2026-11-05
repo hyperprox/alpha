@@ -211,7 +211,7 @@ export function buildSnapshot(raw: RawHa): HaSnapshot {
     const cfg = raw.configs?.[sid]
     return {
       vmid: num(v.vmid), type, sid, name: String(v.name ?? ''), node: String(v.node), status: String(v.status ?? 'unknown'),
-      maxmem: num(v.maxmem), template: num(v.template) === 1,
+      maxmem: num(v.maxmem), cpus: num(v.maxcpu), template: num(v.template) === 1,
       ...(cfg !== undefined ? { hardware: hardwareOf(type, cfg, sharedStorage) } : {}),
     }
   }).sort((a: HaGuest, b: HaGuest) => a.vmid - b.vmid)

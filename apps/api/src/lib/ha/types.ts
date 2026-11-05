@@ -87,6 +87,8 @@ export interface HaGuest {
   node:    string
   status:  string           // running | stopped | ...
   maxmem:  number
+  /** vCPUs (cores × sockets for a VM, cores for a container), as /cluster/resources reports them. 0 = unknown. */
+  cpus:    number
   template: boolean
   /** Filled in for HA guests, and for any guest whose config was read. */
   hardware?: GuestHardware

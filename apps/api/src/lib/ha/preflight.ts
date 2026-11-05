@@ -28,7 +28,7 @@ const gib = (b: number) => `${(b / 1024 ** 3).toFixed(b >= 10 * 1024 ** 3 ? 0 : 
 /**
  * Builds the grid. `pve` is PVE's own answer for the guest; `config` its config (for bind mounts and devices).
  */
-export function preflightGrid(snap: HaSnapshot, guest: { sid: Sid; type: GuestType; node: string; maxmem: number }, pve: any, config: Record<string, unknown> | null, hw?: GuestHardware): Preflight {
+export function preflightGrid(snap: HaSnapshot, guest: { sid: Sid; type: GuestType; node: string; maxmem: number; cpus?: number }, pve: any, config: Record<string, unknown> | null, hw?: GuestHardware): Preflight {
   const label = labelOf(snap)
   const notAllowed: Record<string, any> = pve?.['not-allowed-nodes'] ?? pve?.not_allowed_nodes ?? {}
   const allowedList: string[] = (pve?.['allowed-nodes'] ?? pve?.allowed_nodes ?? []).map(String)
@@ -66,6 +66,7 @@ export function preflightGrid(snap: HaSnapshot, guest: { sid: Sid; type: GuestTy
     if (guest.type === 'lxc') for (const l of hardware.localVolumes) if (!reasons.some(r => r.includes(`"${l.storage}"`))) reasons.push(`A disk is on node-local storage "${l.storage}", which a container cannot take with it.`)
     for (const d of localDisks) notes.push(`Its disk ${d.volid ?? ''} is on local storage: it is copied across, which takes time.`.replace('  ', ' '))
     for (const r of localRes) if (!hardware.devices.some(d => d.key === r)) reasons.push(`It uses a local device (${r}), such as a GPU or USB device.`)
+    if (guest.cpus && n.maxcpu && n.maxcpu < guest.cpus) reasons.push(`Not enough CPUs: it has ${guest.cpus} vCPUs, ${n.node} has ${n.maxcpu}.`)
     const free = n.maxmem - n.mem
     if (n.maxmem && guest.maxmem && free < guest.maxmem) reasons.push(`Not enough memory: it needs ${gib(guest.maxmem)}, ${n.node} has ${gib(Math.max(0, free))} free.`)
     if (!reasons.length && allowedList.length && !allowedList.includes(n.node) && !na) notes.push('Proxmox did not list this node as allowed.')
