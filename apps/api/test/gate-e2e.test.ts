@@ -191,7 +191,7 @@ describe('vault gate end to end (real Vaultwarden over TLS)', { timeout: 900_000
     assert.match(env, /^ENCRYPTION_KEY=$/m)
     assert.match(env, /^JWT_SECRET=$/m)
     assert.match(env, /^PROXMOX_HOST=192\.168\.1\.5$/m)
-    assert.equal(fs.statSync(envPath + '.pre-vault').mode & 0o777, 0o600)
+    assert.equal(fs.existsSync(envPath + '.pre-vault'), false, 'no plaintext backup of the blanked keys')
 
     const l2 = await app.inject({ method: 'POST', url: '/api/auth/lock', headers: { cookie: fresh }, payload: {} })
     assert.equal(l2.statusCode, 200)

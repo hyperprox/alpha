@@ -6,14 +6,19 @@ const FX = Object.fromEntries(loadFixtures().map(f => [f.file.replace(/\.json$/,
 const MAP = JSON.parse(process.env.HPX_TEST_NODES)          // { address: fixture }
 const NAMES = JSON.parse(process.env.HPX_TEST_NAMES)        // { address: node name }
 const made = {}
+// The host key each address shows, read on every call so a test can change one mid-run.
+const hostKey = host => JSON.parse(fs.readFileSync(process.env.HPX_TEST_HOSTKEYS, 'utf8'))[host]
+// Like the SSH runner: the key is checked against the wizard's pins before anything is sent.
+const onboard = require('../../../setup/onboarding')
 module.exports = async function run(host, cred, script) {
+  if (!onboard.checkPin(host, hostKey(host))) throw new onboard.HostKeyChanged(host, onboard.pins[host], hostKey(host))
   fs.appendFileSync(process.env.HPX_TEST_LOG, JSON.stringify({ node: NAMES[host], kind: /^pveversion/.test(script) ? 'login' : /^# HyperProx hardware probe/m.test(script) ? 'probe' : 'step', step: (/^# (node_exporter|Power|Intel GPU|NVIDIA GPU)/m.exec(script) || [])[1] || null }) + '\n')
   if (cred.password !== process.env.HPX_TEST_PASSWORD) throw new Error('All configured authentication methods failed')
-  if (/^pveversion/.test(script)) return { code: 0, output: 'pve-manager/9.1.0/abc (running kernel: 7.0.0-1-pve)\n' }
+  if (/^pveversion/.test(script)) return { code: 0, output: 'pve-manager/9.1.0/abc (running kernel: 7.0.0-1-pve)\n', hostKey: hostKey(host) }
   if (/^# HyperProx hardware probe/m.test(script)) {
     made[host] = made[host] || fakeNode(FX[MAP[host]])
     const r = made[host].run(script)
-    return { code: r.status, output: r.stdout }
+    return { code: r.status, output: r.stdout, hostKey: hostKey(host) }
   }
-  return { code: 0, output: `HPX-RESULT\tdone\tset up on ${NAMES[host]}\n` }
+  return { code: 0, output: `HPX-RESULT\tdone\tset up on ${NAMES[host]}\n`, hostKey: hostKey(host) }
 }

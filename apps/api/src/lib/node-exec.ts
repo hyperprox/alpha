@@ -22,9 +22,29 @@ import {
   credentialId, fingerprintOf,
   CREDENTIAL_CATEGORY, CRED_PROVIDER, type TerminalCredential,
 } from './ssh-broker'
-import { getCredential } from './credentials'
+import { getCredential, setCredential } from './credentials'
 
 const HOSTKEY_PROVIDER = 'hostkey'
+
+/**
+ * Trust on first use, as the Deck does: the first key seen for host:22 is pinned in the vault, and every
+ * later connection must present the same one. A changed key is always refused; clearing the pin is a
+ * deliberate act (the Deck's host-key list).
+ */
+export async function checkHostKey(host: string, fingerprint: string): Promise<boolean> {
+  const id = credentialId(`${host}:22`)
+  const pinned = await getCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, id)
+  if (!pinned) { await setCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, id, fingerprint, false); return true }
+  return pinned === fingerprint
+}
+
+/** Pin a key learned elsewhere (the setup wizard's first connection). An existing, different pin wins. */
+export async function pinHostKey(host: string, fingerprint: string): Promise<'pinned' | 'same' | 'conflict'> {
+  const id = credentialId(`${host}:22`)
+  const pinned = await getCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, id)
+  if (!pinned) { await setCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, id, fingerprint, false); return 'pinned' }
+  return pinned === fingerprint ? 'same' : 'conflict'
+}
 
 /** Credential id for a node, distinct from any guest that shares its name. */
 export function nodeCredentialId(node: string): string {
@@ -130,13 +150,11 @@ export function execOnNode(opts: ExecOptions): Promise<ExecResult> {
     const config: ConnectConfig = {
       host, port: 22, username: cred.username,
       readyTimeout: 15_000, keepaliveInterval: 20_000,
-      // Same pin the Terminal uses. A node whose key changed is refused here for
-      // exactly the reason it is refused there.
+      // Same pin the Terminal uses: learned on first use, then required. A node whose key changed is
+      // refused here for exactly the reason it is refused there.
       hostVerifier: (key: Buffer, verified: (ok: boolean) => void) => {
         const fp = fingerprintOf(key)
-        getCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, credentialId(`${host}:22`))
-          .then(pinned => verified(!pinned || pinned === fp))
-          .catch(() => verified(false))
+        checkHostKey(host, fp).then(verified, () => verified(false))
       },
     }
     if (cred.privateKey) {

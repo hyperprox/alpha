@@ -104,9 +104,10 @@ test('first Owner unlock moves Postgres rows + env values into the vault and bla
   assert.match(env, /^METRICS_TOKEN=keep-me$/m, 'unrelated keys stay')
   assert.match(env, /^# HyperProx$/m)
 
-  const backup = envPath + '.pre-vault'
-  assert.equal(readFileSync(backup, 'utf8'), original)
-  assert.equal(statSync(backup).mode & 0o777, 0o600)
+  // No plaintext copy of the old file: the vault holds every blanked value, read back before blanking.
+  assert.deepEqual(readdirSync(dir).sort(), ['.env'])
+  assert.equal(statSync(envPath).mode & 0o777, 0o600)
+  void original
 
   assert.equal(process.env.ENCRYPTION_KEY, undefined)
   assert.equal(process.env.JWT_SECRET, undefined)
@@ -119,7 +120,7 @@ test('first Owner unlock moves Postgres rows + env values into the vault and bla
   assert.deepEqual(again, { migrated: 0, rowsDeleted: 0, envBlanked: [] })
   assert.equal(broker.callsTo('upsertSecret').length, upserts)
   assert.equal(readFileSync(envPath, 'utf8'), env)
-  assert.deepEqual(readdirSync(dir).sort(), ['.env', '.env.pre-vault'])
+  assert.deepEqual(readdirSync(dir).sort(), ['.env'])
 
   // And again after a restart-style lock + Owner unlock.
   await resetLock()

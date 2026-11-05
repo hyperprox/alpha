@@ -11,10 +11,7 @@
 // =============================================================================
 
 import type { FastifyPluginAsync } from 'fastify'
-import { spawn } from 'child_process'
-import { randomBytes } from 'crypto'
-import { setCredential } from '../lib/credentials'
-import { auditCredentialUse } from '../lib/audit'
+import { grafanaCliReset, resetGrafanaAdmin, productionGrafanaDeps } from '../lib/grafana-admin'
 import {
   exporterStatus, provisionPveExporter, pveAccessFromEnv, type ExporterStatus, type ProvisionResult,
 } from '../lib/pve-exporter'
@@ -26,18 +23,7 @@ export interface MonitoringRouteOptions {
   grafanaReset?: (password: string) => Promise<void>
 }
 
-/** `grafana cli admin reset-admin-password --password-from-stdin` inside the bundled Grafana. */
-export function grafanaCliReset(password: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const p = spawn('docker', ['exec', '-i', 'hyperprox-grafana', 'grafana', 'cli', 'admin', 'reset-admin-password', '--password-from-stdin'],
-      { stdio: ['pipe', 'ignore', 'pipe'] })
-    let err = ''
-    p.stderr.on('data', d => { err += d })
-    p.on('error', reject)
-    p.on('close', code => code === 0 ? resolve() : reject(new Error(`grafana cli exited ${code}: ${err.trim().split('\n').pop()}`)))
-    p.stdin.end(password + '\n')
-  })
-}
+export { grafanaCliReset }
 
 export const monitoringRoutes: FastifyPluginAsync<MonitoringRouteOptions> = async (fastify, opts) => {
   const status = opts.status ?? (() => exporterStatus())
@@ -46,13 +32,13 @@ export const monitoringRoutes: FastifyPluginAsync<MonitoringRouteOptions> = asyn
   fastify.get('/pve-exporter', async () => ({ success: true, data: await status() }))
 
   // Grafana's login form and basic auth are off, so this password is only for `grafana cli` work. It is
-  // made here, set in Grafana, and kept in the vault; it is never written to .env and never returned.
+  // made here, written to the vault and read back, then set in Grafana; if Grafana refuses it, the vault
+  // is put back. It is never written to .env and never returned.
   fastify.post('/grafana-admin/reset', async (req, reply) => {
-    const password = randomBytes(18).toString('base64url')
     try {
-      await (opts.grafanaReset ?? grafanaCliReset)(password)
-      await setCredential('system', 'grafana', 'admin_password', password)
-      await auditCredentialUse('grafana_admin.reset', 'system:grafana', { by: req.session?.email })
+      const d = productionGrafanaDeps()
+      if (opts.grafanaReset) d.apply = opts.grafanaReset
+      await resetGrafanaAdmin(d, req.session?.email)
       return { success: true, data: { savedInVault: 'hyperprox:system/grafana' } }
     } catch (e: any) {
       return reply.status(502).send({ success: false, error: e?.message ?? String(e) })
