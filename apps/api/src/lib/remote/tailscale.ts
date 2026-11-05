@@ -109,11 +109,32 @@ export class TailscaleClient implements RemoteProvider {
       // "1.90.1-t1234abcd-g..." → "1.90.1"
       version:   d.clientVersion ? String(d.clientVersion).split('-')[0] : null,
       os:        d.os ? String(d.os) : undefined,
+      dnsName:   d.name ? String(d.name) : null,
+      expiresAt: d.expires && !d.keyExpiryDisabled && !String(d.expires).startsWith('0001-') ? String(d.expires) : null,
+      keyExpiryDisabled: d.keyExpiryDisabled === true,
+      pending:   d.authorized === false,
+      tags:      Array.isArray(d.tags) ? d.tags.map(String) : [],
+      user:      d.user ? String(d.user) : null,
+      createdAt: d.created ? String(d.created) : null,
     }))
   }
 
   async deleteDevice(id: string): Promise<void> {
     await this.call(`/api/v2/device/${encodeURIComponent(id)}`, 'delete device', { method: 'DELETE', okStatus: [404] })
+  }
+
+  async setKeyExpiry(device: ProviderDevice, disabled: boolean): Promise<void> {
+    await this.call(`/api/v2/device/${encodeURIComponent(device.id)}/key`, 'set key expiry', { method: 'POST', json: { keyExpiryDisabled: disabled } })
+  }
+
+  async setTags(device: ProviderDevice, tags: string[]): Promise<void> {
+    const bad = tags.filter(t => !TAG_RE.test(t))
+    if (bad.length) throw new ProviderError(`Not a Tailscale tag: ${bad.join(', ')} (tags look like tag:server)`)
+    await this.call(`/api/v2/device/${encodeURIComponent(device.id)}/tags`, 'set tags', { method: 'POST', json: { tags } })
+  }
+
+  async approve(device: ProviderDevice): Promise<void> {
+    await this.call(`/api/v2/device/${encodeURIComponent(device.id)}/authorized`, 'approve device', { method: 'POST', json: { authorized: true } })
   }
 
   async advertisedRoutes(device: ProviderDevice): Promise<string[]> {

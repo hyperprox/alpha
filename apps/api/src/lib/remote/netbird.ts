@@ -95,8 +95,19 @@ export class NetbirdClient implements RemoteProvider {
     return String(made.id)
   }
 
+  /** The account's login expiration, for working out when each peer's login runs out. Read once per client. */
+  private expiry: Promise<number | null> | null = null
+  private loginExpirySeconds(): Promise<number | null> {
+    this.expiry ??= this.call<any[]>('/accounts', 'read account').then(a => {
+      const st = (Array.isArray(a) ? a[0] : a)?.settings
+      return st?.peer_login_expiration_enabled && Number(st.peer_login_expiration) > 0 ? Number(st.peer_login_expiration) : null
+    }).catch(() => null)
+    return this.expiry
+  }
+
   async listDevices(): Promise<ProviderDevice[]> {
     const r = await this.call<any[]>('/peers', 'list peers')
+    const expiry = (Array.isArray(r) && r.some((p: any) => p.login_expiration_enabled)) ? await this.loginExpirySeconds() : null
     return (Array.isArray(r) ? r : []).map((p: any): ProviderDevice => ({
       id:        String(p.id ?? ''),
       name:      String(p.name ?? p.hostname ?? ''),
@@ -106,7 +117,53 @@ export class NetbirdClient implements RemoteProvider {
       lastSeen:  p.last_seen ? String(p.last_seen) : null,
       version:   p.version ? String(p.version) : null,
       os:        p.os ? String(p.os) : undefined,
+      dnsName:   p.dns_label ? String(p.dns_label) : null,
+      expiresAt: p.login_expiration_enabled && expiry && p.last_login ? new Date(Date.parse(p.last_login) + expiry * 1000).toISOString() : null,
+      keyExpiryDisabled: p.login_expiration_enabled === false,
+      pending:   p.approval_required === true,
+      tags:      Array.isArray(p.groups) ? p.groups.map((g: any) => String(g?.name ?? '')).filter((n: string) => n && n !== 'All') : [],
+      user:      p.user_id ? String(p.user_id) : null,
+      createdAt: null,
     }))
+  }
+
+  /** Change some of a peer's settings: NetBird replaces the whole peer, so the others are read and sent back. */
+  private async updatePeer(id: string, patch: Record<string, unknown>): Promise<void> {
+    const p = await this.call<any>(`/peers/${encodeURIComponent(id)}`, 'read peer')
+    const body: Record<string, unknown> = {
+      name: p?.name, ssh_enabled: !!p?.ssh_enabled, login_expiration_enabled: !!p?.login_expiration_enabled,
+      inactivity_expiration_enabled: !!p?.inactivity_expiration_enabled, approval_required: !!p?.approval_required, ...patch,
+    }
+    await this.call(`/peers/${encodeURIComponent(id)}`, 'update peer', { method: 'PUT', json: body })
+  }
+
+  async setKeyExpiry(device: ProviderDevice, disabled: boolean): Promise<void> {
+    await this.updatePeer(device.id, { login_expiration_enabled: !disabled })
+  }
+
+  async setSsh(device: ProviderDevice, on: boolean): Promise<void> {
+    await this.updatePeer(device.id, { ssh_enabled: on })
+  }
+
+  async approve(device: ProviderDevice): Promise<void> {
+    await this.updatePeer(device.id, { approval_required: false })
+  }
+
+  /** The peer's groups become exactly `names` (All is never touched). Every name must exist. */
+  async setTags(device: ProviderDevice, names: string[]): Promise<void> {
+    const groups = await this.call<any[]>('/groups', 'list groups')
+    const list = Array.isArray(groups) ? groups : []
+    const missing = names.filter(n => !list.some((g: any) => g.name === n))
+    if (missing.length) throw new ProviderError(`NetBird has no group called ${missing.join(', ')}`)
+    for (const g of list) {
+      if (g.name === 'All') continue
+      const ids: string[] = (Array.isArray(g.peers) ? g.peers : []).map((x: any) => String(typeof x === 'string' ? x : x?.id))
+      const member = ids.includes(device.id)
+      const want = names.includes(g.name)
+      if (want === member) continue
+      const peers = want ? [...ids, device.id] : ids.filter(i => i !== device.id)
+      await this.call(`/groups/${encodeURIComponent(g.id)}`, 'update group', { method: 'PUT', json: { name: g.name, peers } })
+    }
   }
 
   async deleteDevice(id: string): Promise<void> {
