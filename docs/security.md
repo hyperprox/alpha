@@ -187,6 +187,12 @@ a symlink in its place), the container binds whatever is there at start; an `opt
 is skipped silently. Re-open the guest's GPU section after hardware or driver changes on its nodes: the drill-down
 shows which device it actually sees.
 
+**The hidden GPU marker.** A guest's GPU state (what HyperProx added, and an open "GPU off") is kept under a hidden
+`<!-- hpx-id:… -->` comment in its description. HyperProx's own edits and reverts keep it, but editing the
+description in the Proxmox UI can delete it. If it is deleted, HyperProx no longer recognises that state as this
+guest's: its GPU entries show as hand-written (GPU off leaves them unless ticked) and an open GPU off cannot be
+turned back on from the toggle. Nothing in the config changes; the next GPU change writes a new marker.
+
 ## Honest caveats
 
 - **The vault admin token is on disk.** `VAULT_ADMIN_TOKEN` in `.env` (its hash is in the vault's
