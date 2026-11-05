@@ -1,8 +1,5 @@
 'use client'
 
-const gpuNodes = (process.env.NEXT_PUBLIC_GPU_NODES ?? '').split(',').filter(Boolean)
-
-
 import { useEffect, useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { formatBytes, formatUptime } from '@/lib/utils'
@@ -371,6 +368,13 @@ function ActionBtn({ label, color, onClick, disabled }: { label:string; color:st
 
 // Main infrastructure page
 export default function InfrastructurePage() {
+  // Nodes with a GPU, as HyperProx detected them (built in or dedicated): nobody types this list any more.
+  const [gpuNodes, setGpuNodes] = useState<string[]>([])
+  useEffect(() => {
+    fetch('/api/gpu/badges').then(r => r.json()).then(j => {
+      if (j?.success) setGpuNodes((j.data as Array<{ node: string; gpus: unknown[] }>).filter(n => n.gpus.length).map(n => n.node))
+    }).catch(() => {})
+  }, [])
   const [nodes,     setNodes]     = useState<PVENode[]>([])
   // Watts per node, keyed by name. Null means the node reports no source at
   // all, which is a different thing from drawing nothing and is shown as such.

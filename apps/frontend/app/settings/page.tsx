@@ -249,6 +249,10 @@ export default function SettingsPage() {
           Settings
         </h1>
         <div className="mt-3 flex flex-wrap gap-2">
+          <Link href="/settings/setup-checklist" className="inline-block rounded-md border px-3 py-1.5 text-sm font-medium"
+                style={{ borderColor: 'var(--border-strong)', color: 'var(--accent)' }}>
+            Setup checklist &rarr;
+          </Link>
           <Link href="/settings/secrets" className="inline-block rounded-md border px-3 py-1.5 text-sm font-medium"
                 style={{ borderColor: 'var(--border-strong)', color: 'var(--accent)' }}>
             Secrets &rarr;
