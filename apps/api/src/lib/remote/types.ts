@@ -46,6 +46,18 @@ export interface ProviderDevice {
   lastSeen:  string | null
   version:   string | null
   os?:       string
+  /** MagicDNS / NetBird DNS name. */
+  dnsName?:  string | null
+  /** When the node key (Tailscale) or login (NetBird) expires; null when it does not or is unknown. */
+  expiresAt?: string | null
+  keyExpiryDisabled?: boolean
+  /** Waiting for approval in a tailnet or account that requires it. */
+  pending?:  boolean
+  /** Tailscale tags, or NetBird group names (All left out). */
+  tags?:     string[]
+  /** Who added it (Tailscale user login, NetBird user id). */
+  user?:     string | null
+  createdAt?: string | null
 }
 
 export interface MintedKey { id: string; secret: string; expiresAt: string }
@@ -70,6 +82,14 @@ export interface RemoteProvider {
   setRouting(device: ProviderDevice, r: RoutingRequest, previous: string[]): Promise<string[]>
   /** What the client itself advertises, as the provider sees it (Tailscale). Undefined where not available. */
   advertisedRoutes?(device: ProviderDevice): Promise<string[]>
+  /** Turn key expiry (Tailscale) or login expiration (NetBird) off or back on. */
+  setKeyExpiry?(device: ProviderDevice, disabled: boolean): Promise<void>
+  /** Tailscale tags, or NetBird groups by name. Replaces the set. */
+  setTags?(device: ProviderDevice, tags: string[]): Promise<void>
+  /** Approve a device waiting for approval. */
+  approve?(device: ProviderDevice): Promise<void>
+  /** NetBird: allow SSH to the peer in the management server (the client must also allow it). */
+  setSsh?(device: ProviderDevice, on: boolean): Promise<void>
 }
 
 /** A provider API failure. The message carries the status and the provider's own message, never a credential. */

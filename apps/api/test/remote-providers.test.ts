@@ -95,6 +95,7 @@ test('tailscale: devices map to the common shape; revoke and delete use the righ
   assert.deepEqual(d, {
     id: '9001', nodeKey: 'nABC', name: 'pve-a.tail0.ts.net', hostname: 'pve-a', addresses: ['100.64.0.7', 'fd7a::7'],
     online: true, lastSeen: '2026-11-03T09:00:00Z', version: '1.90.1', os: 'linux',
+    dnsName: 'pve-a.tail0.ts.net', expiresAt: null, keyExpiryDisabled: false, pending: false, tags: [], user: null, createdAt: null,
   })
   await c.revokeKey('k1')
   await c.deleteDevice('9001')
@@ -178,6 +179,7 @@ test('netbird: peers map to the common shape; delete key and peer', async () => 
   const c = new NetbirdClient({ managementUrl: '', apiToken: 't' }, { fetch: m.fn })
   assert.deepEqual(await c.listDevices(), [{
     id: 'p1', name: 'pve-a', hostname: 'pve-a', addresses: ['100.92.0.4'], online: false, lastSeen: '2026-11-02T08:00:00Z', version: '0.59.1', os: 'Debian 13',
+    dnsName: null, expiresAt: null, keyExpiryDisabled: false, pending: false, tags: [], user: null, createdAt: null,
   }])
   await c.revokeKey('sk1')
   await c.deleteDevice('p1')
@@ -258,4 +260,73 @@ test('providers from the vault: null until configured; the Test button says what
   assert.equal(await testProvider('netbird', nb, m.fn), 'Connected — 0 peers')
   assert.deepEqual(await providerSettingsFromVault('netbird', nb), { tags: ['servers', 'lab'], managementUrl: 'https://nb.example.com' })
   assert.deepEqual(await providerSettingsFromVault('tailscale', async () => ({ default_tags: 'tag:a,tag:b' })), { tags: ['tag:a', 'tag:b'] })
+})
+
+// ── VPN: per-device features ─────────────────────────────────────────────────
+
+test('tailscale: devices carry their MagicDNS name, key expiry, approval, tags and owner', async () => {
+  const m = mockFetch({ 'GET /api/v2/tailnet/-/devices': () => [200, { devices: [{
+    id: '1', nodeId: 'n1', name: 'web.tail0.ts.net', hostname: 'web', addresses: ['100.64.0.8'], connectedToControl: false,
+    lastSeen: '2026-11-04T09:00:00Z', clientVersion: '1.92.0', os: 'linux', expires: '2026-11-15T00:00:00Z', keyExpiryDisabled: false,
+    authorized: false, tags: ['tag:server'], user: 'admin@example.com', created: '2026-11-04T08:00:00Z',
+  }] }] })
+  const [d] = await new TailscaleClient({ apiToken: 't' }, { fetch: m.fn }).listDevices()
+  assert.equal(d.dnsName, 'web.tail0.ts.net'); assert.equal(d.expiresAt, '2026-11-15T00:00:00Z'); assert.equal(d.pending, true)
+  assert.deepEqual(d.tags, ['tag:server']); assert.equal(d.user, 'admin@example.com'); assert.equal(d.createdAt, '2026-11-04T08:00:00Z')
+})
+
+test('tailscale: key expiry, tags and approval go to the right endpoints; bad tags are refused first', async () => {
+  const m = mockFetch({
+    'POST /api/v2/device/1/key': () => [200, {}], 'POST /api/v2/device/1/tags': () => [200, {}], 'POST /api/v2/device/1/authorized': () => [200, {}],
+  })
+  const c = new TailscaleClient({ apiToken: 't' }, { fetch: m.fn })
+  const dev = { id: '1', name: 'web', addresses: [], online: true, lastSeen: null, version: null }
+  await c.setKeyExpiry!(dev, true)
+  await c.setTags!(dev, ['tag:server', 'tag:web'])
+  await c.approve!(dev)
+  assert.deepEqual(m.calls.map(x => [new URL(x.url).pathname, x.body]), [
+    ['/api/v2/device/1/key', { keyExpiryDisabled: true }],
+    ['/api/v2/device/1/tags', { tags: ['tag:server', 'tag:web'] }],
+    ['/api/v2/device/1/authorized', { authorized: true }],
+  ])
+  await assert.rejects(c.setTags!(dev, ['server']), /tag:/)
+  assert.equal(m.calls.length, 3)
+})
+
+test('netbird: peers carry their DNS label, approval, groups, owner and login expiry from the account setting', async () => {
+  const m = mockFetch({
+    'GET /api/peers': () => [200, [{ id: 'p1', name: 'web', hostname: 'web', ip: '100.92.0.4', connected: true, last_seen: '2026-11-04T09:00:00Z',
+      version: '0.82.0', os: 'Debian 13', dns_label: 'web.netbird.cloud', login_expiration_enabled: true, last_login: '2026-11-01T00:00:00Z',
+      approval_required: true, groups: [{ id: 'g-all', name: 'All' }, { id: 'g-srv', name: 'servers' }], user_id: 'u-1', ssh_enabled: false }]],
+    'GET /api/accounts': () => [200, [{ id: 'a', settings: { peer_login_expiration_enabled: true, peer_login_expiration: 86400 * 14 } }]],
+  })
+  const [d] = await new NetbirdClient({ managementUrl: '', apiToken: 't' }, { fetch: m.fn }).listDevices()
+  assert.equal(d.dnsName, 'web.netbird.cloud'); assert.equal(d.pending, true); assert.deepEqual(d.tags, ['servers'])
+  assert.equal(d.user, 'u-1'); assert.equal(d.keyExpiryDisabled, false); assert.equal(d.expiresAt, '2026-11-15T00:00:00.000Z')
+})
+
+test('netbird: login expiration, SSH and approval update the peer with its other fields kept; groups add and remove the peer', async () => {
+  const peer = { id: 'p1', name: 'web', ssh_enabled: false, login_expiration_enabled: true, inactivity_expiration_enabled: false, approval_required: true }
+  let groups: any[] = [{ id: 'g-all', name: 'All', peers: [{ id: 'p1' }] }, { id: 'g-srv', name: 'servers', peers: [] }, { id: 'g-old', name: 'old', peers: [{ id: 'p1' }, { id: 'p2' }] }]
+  const m = mockFetch({
+    'GET /api/peers/p1': () => [200, peer],
+    'PUT /api/peers/p1': c => { Object.assign(peer, c.body); return [200, peer] },
+    'GET /api/groups': () => [200, groups],
+    'PUT /api/groups/g-srv': () => [200, {}], 'PUT /api/groups/g-old': () => [200, {}],
+  })
+  const c = new NetbirdClient({ managementUrl: '', apiToken: 't' }, { fetch: m.fn })
+  const dev = { id: 'p1', name: 'web', addresses: [], online: true, lastSeen: null, version: null }
+  await c.setKeyExpiry!(dev, true)
+  assert.equal(peer.login_expiration_enabled, false)
+  await c.setSsh!(dev, true)
+  assert.equal(peer.ssh_enabled, true); assert.equal(peer.login_expiration_enabled, false, 'other fields kept')
+  await c.approve!(dev)
+  assert.equal(peer.approval_required, false)
+  await c.setTags!(dev, ['servers'])
+  const puts = m.calls.filter(x => x.method === 'PUT' && x.url.includes('/groups/')).map(x => [new URL(x.url).pathname, x.body])
+  assert.deepEqual(puts, [
+    ['/api/groups/g-srv', { name: 'servers', peers: ['p1'] }],
+    ['/api/groups/g-old', { name: 'old', peers: ['p2'] }],
+  ])
+  await assert.rejects(c.setTags!(dev, ['nope']), /no group called nope/)
 })
