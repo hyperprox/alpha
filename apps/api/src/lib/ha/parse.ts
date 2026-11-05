@@ -6,7 +6,7 @@
 // =============================================================================
 
 import type {
-  GuestHardware, GuestType, HaGuest, HaResource, HaRule, HaServiceStatus, HaSnapshot, NodeHealth, NodePriority, Sid,
+  DeviceKind, GuestHardware, GuestType, HaGuest, HaResource, HaRule, HaServiceStatus, HaSnapshot, NodeHealth, NodePriority, Sid,
 } from './types'
 
 const num = (v: unknown, d = 0) => { const n = Number(v); return Number.isFinite(n) ? n : d }
@@ -90,11 +90,34 @@ export function parseCrs(s: unknown): HaSnapshot['crs'] {
 
 const VOLUME_KEY = /^(rootfs|mp\d+|scsi\d+|virtio\d+|sata\d+|ide\d+|efidisk\d+|tpmstate\d+|unused\d+)$/
 
-/** Reads a guest config for the things that pin it to a node. `shared` lists storage ids reachable from every node. */
-export function hardwareOf(type: GuestType, config: Record<string, unknown> | null | undefined, shared: string[]): GuestHardware {
+/** "0000:01:00.0", "01:00", "0000:01:00" → "0000:01:00" (domain, bus, slot; the function is dropped). */
+export function pciAddress(a: string): string {
+  const x = String(a).trim().toLowerCase().replace(/\.[0-7]$/, '')
+  return /^[0-9a-f]{4}:/.test(x) ? x : `0000:${x}`
+}
+
+/** A PCI class code (0x030000) in words, and whether it is a GPU. */
+export function pciKind(cls: string | undefined): { kind: DeviceKind; words: string } {
+  const c = String(cls ?? '').toLowerCase().replace(/^0x/, '')
+  if (c.startsWith('03')) return { kind: 'gpu', words: 'a GPU' }
+  if (c.startsWith('02')) return { kind: 'nic', words: 'a network card' }
+  if (c.startsWith('01')) return { kind: 'hba', words: 'a storage controller (HBA)' }
+  if (c.startsWith('0c03')) return { kind: 'usb', words: 'a USB controller' }
+  return { kind: 'pci', words: 'a PCI device' }
+}
+
+/**
+ * Reads a guest config for the things that pin it to a node. `shared` lists storage ids reachable from every
+ * node; `pci` maps the guest's node's PCI addresses to their class (from /nodes/{node}/hardware/pci);
+ * `mappings` maps a resource-mapping id to the nodes it exists on.
+ */
+export function hardwareOf(type: GuestType, config: Record<string, unknown> | null | undefined, shared: string[],
+  pci: Record<string, string> = {}, mappings: Record<string, string[]> = {}, node?: string): GuestHardware {
   const hw: GuestHardware = { bindMounts: [], sharedMounts: [], devices: [], localVolumes: [] }
   if (!config) return hw
   const sharedSet = new Set(shared)
+  const here = node ? [node] : undefined
+  const push = (d: GuestHardware['devices'][number]) => { if (!hw.devices.some(x => x.what === d.what && x.required === d.required)) hw.devices.push(d) }
   for (const [key, raw] of Object.entries(config)) {
     const v = String(raw ?? '')
     if (type === 'lxc' && /^(rootfs|mp\d+)$/.test(key)) {
@@ -114,48 +137,49 @@ export function hardwareOf(type: GuestType, config: Record<string, unknown> | nu
     if (type === 'qemu' && VOLUME_KEY.test(key) && !key.startsWith('unused')) {
       if (/media=cdrom/.test(v) && (/^none/.test(v) || /^cdrom/.test(v))) continue
       const first = v.split(',')[0]
-      if (first.startsWith('/')) { hw.devices.push({ key, what: `a host disk (${first})` }); continue }
+      if (first.startsWith('/')) { push({ key, what: `a host disk (${first})`, kind: 'disk', required: true, nodes: here }); continue }
       const storage = first.includes(':') ? first.split(':')[0] : ''
       if (storage && storage !== 'none' && !sharedSet.has(storage) && !/media=cdrom/.test(v)) hw.localVolumes.push({ key, storage })
       continue
     }
     if (type === 'qemu' && /^hostpci\d+$/.test(key)) {
       const mapped = /mapping=([^,]+)/.exec(v)
-      hw.devices.push({ key, what: mapped ? `a mapped PCI device (${mapped[1]})` : `a PCI device (${v.split(',')[0]}), such as a GPU` })
+      if (mapped) { push({ key, what: `a mapped PCI device (${mapped[1]})`, kind: 'pci', required: true, nodes: mappings[mapped[1]] ?? here }); continue }
+      const addrs = v.split(',')[0].split(';').map(pciAddress)
+      const k = pciKind(pci[addrs[0]])
+      push({ key, what: `${k.words} (${addrs.join(', ')})`, kind: k.kind, required: true, nodes: here })
       continue
     }
     if (type === 'qemu' && /^usb\d+$/.test(key)) {
-      if (/host=/.test(v) || /mapping=/.test(v)) hw.devices.push({ key, what: `a USB device (${v.split(',')[0]})` })
+      if (/host=/.test(v) || /mapping=/.test(v)) push({ key, what: `a USB device (${v.split(',')[0]})`, kind: 'usb', required: false, nodes: here })
       continue
     }
-    if (type === 'lxc' && /^dev\d+$/.test(key)) { hw.devices.push({ key, what: `a host device (${v.split(',')[0]})` }); continue }
-    if (type === 'lxc' && key === 'lxc' && Array.isArray(raw)) continue
-    if (type === 'lxc' && /^lxc\.(cgroup2?\.devices\.allow|mount\.entry)/.test(key)) {
-      // PVE returns raw lxc.* lines as [key, value] pairs under `lxc`; some readers flatten them.
-      const what = lxcDeviceWords(v)
-      if (what) hw.devices.push({ key, what })
-    }
+    if (type === 'lxc' && /^dev\d+$/.test(key)) { push({ key, what: `a host device (${v.split(',')[0]})`, kind: 'dev', required: true, nodes: here }); continue }
   }
   // Raw lxc.* lines, as /config returns them: { lxc: [["lxc.cgroup2.devices.allow", "c 195:* rwm"], ...] }
   const rawLxc = (config as any).lxc
-  if (type === 'lxc' && Array.isArray(rawLxc)) {
-    for (const pair of rawLxc) {
-      if (!Array.isArray(pair)) continue
-      const [k, v] = pair
-      if (!/^lxc\.(cgroup2?\.devices\.allow|mount\.entry)/.test(String(k))) continue
-      const what = lxcDeviceWords(String(v))
-      if (what && !hw.devices.some(d => d.what === what)) hw.devices.push({ key: String(k), what })
-    }
+  const lines: Array<[string, string]> = []
+  if (type === 'lxc' && Array.isArray(rawLxc)) for (const pair of rawLxc) if (Array.isArray(pair)) lines.push([String(pair[0]), String(pair[1])])
+  if (type === 'lxc') for (const [k, v] of Object.entries(config)) if (/^lxc\./.test(k)) lines.push([k, String(v)])
+  for (const [k, v] of lines) {
+    if (!/^lxc\.(cgroup2?\.devices\.allow|mount\.entry)/.test(k)) continue
+    const d = lxcDevice(v)
+    if (!d) continue
+    // A cgroup permission alone never blocks a start; a mount entry does unless it is marked optional.
+    const required = /mount\.entry/.test(k) && !/\boptional\b/.test(v)
+    push({ key: k, what: d.what, kind: d.kind, required, nodes: here })
   }
+  // A device that is also mounted optionally is optional overall.
+  hw.devices = hw.devices.filter(d => d.required || !hw.devices.some(x => x !== d && x.what === d.what && x.required))
   return hw
 }
 
-function lxcDeviceWords(v: string): string | null {
-  if (/\bc 195:|nvidia/i.test(v)) return 'an NVIDIA GPU'
-  if (/\bc 226:|\/dev\/dri/.test(v)) return 'a GPU (/dev/dri)'
-  if (/\bc 189:|\/dev\/bus\/usb/.test(v)) return 'USB devices'
-  if (/\/dev\/(tty(USB|ACM)\w*|serial)/.test(v)) return 'a serial/USB adapter'
-  if (/^\/dev\//.test(v)) return `a host device (${v.split(' ')[0]})`
+function lxcDevice(v: string): { what: string; kind: DeviceKind } | null {
+  if (/\bc 195:|nvidia/i.test(v)) return { what: 'an NVIDIA GPU', kind: 'gpu' }
+  if (/\bc 226:|\/dev\/dri/.test(v)) return { what: 'a GPU (/dev/dri)', kind: 'gpu' }
+  if (/\bc 189:|\/dev\/bus\/usb/.test(v)) return { what: 'USB devices', kind: 'usb' }
+  if (/\/dev\/(tty(USB|ACM)\w*|serial)/.test(v)) return { what: 'a serial/USB adapter', kind: 'dev' }
+  if (/^\/dev\//.test(v)) return { what: `a host device (${v.split(' ')[0]})`, kind: 'dev' }
   return null
 }
 
@@ -183,6 +207,10 @@ export interface RawHa {
   storage:    any[]
   options?:   any
   configs?:   Record<string, Record<string, unknown> | null>
+  /** node → PCI address → class, for nodes whose HA VMs pass PCI devices through. */
+  pci?:       Record<string, Record<string, string>>
+  /** PCI resource mappings: id → nodes it exists on. */
+  mappings?:  Record<string, string[]>
 }
 
 export function buildSnapshot(raw: RawHa): HaSnapshot {
@@ -209,10 +237,12 @@ export function buildSnapshot(raw: RawHa): HaSnapshot {
     const type = v.type as GuestType
     const sid = sidOf(type, v.vmid)
     const cfg = raw.configs?.[sid]
+    // A container with no `cores` is not limited, and PVE then reports its host's thread count: not a need.
+    const cpus = type === 'lxc' && cfg && cfg.cores === undefined ? 0 : num(v.maxcpu)
     return {
       vmid: num(v.vmid), type, sid, name: String(v.name ?? ''), node: String(v.node), status: String(v.status ?? 'unknown'),
-      maxmem: num(v.maxmem), cpus: num(v.maxcpu), template: num(v.template) === 1,
-      ...(cfg !== undefined ? { hardware: hardwareOf(type, cfg, sharedStorage) } : {}),
+      maxmem: num(v.maxmem), cpus, template: num(v.template) === 1,
+      ...(cfg !== undefined ? { hardware: hardwareOf(type, cfg, sharedStorage, raw.pci?.[String(v.node)] ?? {}, raw.mappings ?? {}, String(v.node)) } : {}),
     }
   }).sort((a: HaGuest, b: HaGuest) => a.vmid - b.vmid)
   const services: HaServiceStatus[] = statusRows.filter((r: any) => r.type === 'service').map((r: any) => ({
@@ -220,10 +250,12 @@ export function buildSnapshot(raw: RawHa): HaSnapshot {
     ...(r.crm_state ? { crmState: String(r.crm_state) } : {}),
   }))
   const armed = String(fencingRow?.['armed-state'] ?? '')
+  const rmode = String(fencingRow?.['resource-mode'] ?? (/resource mode: (\w+)/.exec(String(fencingRow?.status ?? ''))?.[1] ?? ''))
   return {
     resources, rules, nodes, guests, services,
     quorate: quorumRow ? num(quorumRow.quorate) === 1 : false,
-    fencing: armed === 'armed' ? 'armed' : armed === 'disarmed' ? 'disarmed' : 'unknown',
+    fencing: (['armed', 'standby', 'disarming', 'disarmed'].includes(armed) ? armed : 'unknown') as HaSnapshot['fencing'],
+    disarmMode: armed === 'disarmed' || armed === 'disarming' ? (rmode === 'ignore' ? 'ignore' : rmode === 'freeze' ? 'freeze' : null) : null,
     master: masterRow?.node ? String(masterRow.node) : null,
     crs: parseCrs(raw.options?.crs),
     digests: { resources: raw.resources?.[0]?.digest ?? null, rules: raw.rules?.[0]?.digest ?? null },

@@ -73,11 +73,17 @@ export interface GuestHardware {
   bindMounts:    Array<{ key: string; path: string; target?: string }>
   /** Bind mounts marked shared=1: allowed to move (the path is promised on every node). */
   sharedMounts:  Array<{ key: string; path: string }>
-  /** Passed-through host devices: GPUs, USB, /dev entries. */
-  devices:       Array<{ key: string; what: string }>
+  /**
+   * Passed-through host devices. `required`: the guest will not start where the device is missing (a VM's
+   * hostpci, a container's devN, a non-optional mount entry). Not required: it runs without it (optional
+   * mount entries, cgroup permissions, a VM's USB device). `nodes`: where it is known to exist.
+   */
+  devices:       Array<{ key: string; what: string; kind: DeviceKind; required: boolean; nodes?: string[] }>
   /** Volumes on storage that exists on one node only. */
   localVolumes:  Array<{ key: string; storage: string }>
 }
+
+export type DeviceKind = 'gpu' | 'nic' | 'hba' | 'usb' | 'pci' | 'dev' | 'disk'
 
 export interface HaGuest {
   vmid:    number
@@ -111,7 +117,9 @@ export interface HaSnapshot {
   services:  HaServiceStatus[]
   quorate:   boolean
   /** "armed" | "disarmed" | "unknown"; PVE 9.2 reports it as its own status row. */
-  fencing:   'armed' | 'disarmed' | 'unknown'
+  fencing:   'armed' | 'standby' | 'disarming' | 'disarmed' | 'unknown'
+  /** While disarmed: freeze (guests kept as they are) or ignore (HA lets go of them; Proxmox acts directly). */
+  disarmMode: 'freeze' | 'ignore' | null
   /** The HA master, when one is active. */
   master:    string | null
   crs:       { mode: 'basic' | 'static' | 'dynamic'; rebalanceOnStart: boolean; autoRebalance: boolean }
@@ -142,7 +150,7 @@ export type ProblemCode =
   | 'unknown-guest' | 'not-ha' | 'unknown-node' | 'no-nodes' | 'no-resources' | 'duplicate-id' | 'bad-id'
   | 'two-homes' | 'too-few-guests' | 'more-than-nodes' | 'together-and-apart'
   | 'weighted-with-affinity' | 'together-split-homes' | 'apart-too-few-nodes'
-  | 'negative-all-nodes' | 'negative-priorities'
+  | 'negative-all-nodes' | 'negative-priorities' | 'hostkey-unpinned' | 'no-room' | 'confirm-strict'
 
 export interface RuleProblem {
   code:     ProblemCode

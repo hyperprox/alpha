@@ -181,19 +181,15 @@ test('CRS settings read in both spellings (/cluster/options returns an object)',
   assert.equal(parseCrs(undefined).mode, 'basic')
 })
 
-test('vCPUs: a node with fewer CPUs than the guest has vCPUs is never a failover target', async () => {
+test('vCPUs: a VM is tried on its best node first; too few CPUs there means it moves on to the next', async () => {
   const f = threeNodes()
   f.nodes.find(n => n.node === 'node-b')!.maxcpu = 4
   f.nodes.find(n => n.node === 'node-c')!.maxcpu = 16
   f.guests.find(g => g.vmid === 904)!.maxcpu = 12
-  f.addResource('vm:904'); f.addResource('ct:903')   // node-c already busier than node-b
+  f.addResource('vm:904'); f.addResource('ct:903')
   const p = predictFailover(await readSnapshot(f), 'vm:904')
-  assert.equal(p.to, 'node-c', 'node-b has 4 CPUs for a 12-vCPU guest')
-  assert.deepEqual(p.candidates, ['node-c'])
-  f.nodes.find(n => n.node === 'node-c')!.maxcpu = 8
-  const none = predictFailover(await readSnapshot(f), 'vm:904')
-  assert.equal(none.to, null)
-  assert.match(none.words, /no node .* enough CPUs|no node it is allowed on/)
+  assert.equal(p.to, 'node-c')
+  assert.deepEqual(p.tries, ['node-b', 'node-c'])
 })
 
 test('vCPUs: the migration grid says when a node has too few CPUs', async () => {

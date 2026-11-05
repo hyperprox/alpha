@@ -62,11 +62,18 @@ export function preflightGrid(snap: HaSnapshot, guest: { sid: Sid; type: GuestTy
       if (na['unavailable-resources'] ?? na.unavailable_resources) for (const s of na['unavailable-resources'] ?? na.unavailable_resources) reasons.push(`Missing mapped device "${s}" on ${n.node}.`)
     }
     for (const b of hardware.bindMounts) reasons.push(`A local bind mount (${b.path}) cannot move between nodes.`)
-    for (const d of hardware.devices) reasons.push(`It uses local devices: ${d.what}.`)
+    for (const d of hardware.devices) {
+      if (d.required && !(d.nodes ?? [guest.node]).includes(n.node)) reasons.push(`It uses local devices: ${d.what}. It will not start on ${n.node} without it.`)
+      else if (!d.required && !(d.nodes ?? [guest.node]).includes(n.node)) notes.push(`It runs on ${n.node} without ${d.what.replace(/^(an?) /, 'its ')}.`)
+    }
     if (guest.type === 'lxc') for (const l of hardware.localVolumes) if (!reasons.some(r => r.includes(`"${l.storage}"`))) reasons.push(`A disk is on node-local storage "${l.storage}", which a container cannot take with it.`)
     for (const d of localDisks) notes.push(`Its disk ${d.volid ?? ''} is on local storage: it is copied across, which takes time.`.replace('  ', ' '))
     for (const r of localRes) if (!hardware.devices.some(d => d.key === r)) reasons.push(`It uses a local device (${r}), such as a GPU or USB device.`)
-    if (guest.cpus && n.maxcpu && n.maxcpu < guest.cpus) reasons.push(`Not enough CPUs: it has ${guest.cpus} vCPUs, ${n.node} has ${n.maxcpu}.`)
+    if (guest.cpus && n.maxcpu && n.maxcpu < guest.cpus) {
+      // A VM with more vCPUs than the node has threads is refused at start; a container just runs on fewer.
+      if (guest.type === 'qemu') reasons.push(`Not enough CPUs: it has ${guest.cpus} vCPUs, ${n.node} has ${n.maxcpu}.`)
+      else notes.push(`It will be limited to ${n.maxcpu} CPUs on ${n.node} (it has ${guest.cpus}).`)
+    }
     const free = n.maxmem - n.mem
     if (n.maxmem && guest.maxmem && free < guest.maxmem) reasons.push(`Not enough memory: it needs ${gib(guest.maxmem)}, ${n.node} has ${gib(Math.max(0, free))} free.`)
     if (!reasons.length && allowedList.length && !allowedList.includes(n.node) && !na) notes.push('Proxmox did not list this node as allowed.')

@@ -103,7 +103,7 @@ test('strict home needs its own confirmation and carries a red warning', async (
   await refuses(() => p.preview({ action: 'set-home', sid: 'ct:901', home: { mode: 'only', tiers: [['node-a']] } }, ADMIN), /Confirm it/, 400)
   const plan = await p.preview({ action: 'set-home', sid: 'ct:901', home: { mode: 'only', tiers: [['node-a']] }, confirmStrict: true }, ADMIN)
   assert.equal(plan.strict, true)
-  assert.match(plan.warnings.join('\n'), /does not start anywhere/)
+  assert.match(plan.critical.join('\n'), /does not start anywhere/)
   assert.match(plan.effects.join('\n'), /Nothing moves now/)
 })
 
@@ -188,7 +188,7 @@ test('maintenance mode: runs the documented command over the node login, preview
   f.addResource('ct:901')
   const cmds: string[] = []
   const { p } = planner(f, {
-    hasNodeLogin: async () => true,
+    hasNodeLogin: async () => true, hostKeyPinned: async () => true,
     nodeExec: async (node, command) => { cmds.push(`${node}: ${command}`); f.nodes.find(n => n.node === 'node-a')!.maintenance = true; return { code: 0, output: '' } },
   })
   const plan = await p.preview({ action: 'maintenance', node: 'node-a', enable: true }, ADMIN)

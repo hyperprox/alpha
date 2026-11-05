@@ -17,6 +17,9 @@ export class FakeHaPve {
   rules: any[] = []
   quorate = true
   fencing = 'armed'
+  resourceMode: string | null = null
+  /** Per node: PCI address → class, as /nodes/{node}/hardware/pci reports it. */
+  pci: Record<string, Record<string, string>> = {}
   crs = 'ha=basic'
   storage: Array<{ storage: string; shared: number }> = [{ storage: 'shared-rbd', shared: 1 }, { storage: 'local-lvm', shared: 0 }]
   migrate: Record<string, any> = {}
@@ -66,6 +69,8 @@ export class FakeHaPve {
       if (p === '/cluster/status') return this.nodes.map((n, i) => ({ type: 'node', name: n.node, ip: `10.0.0.${i + 1}` })) as T
       const cfg = /^\/nodes\/([^/]+)\/(lxc|qemu)\/(\d+)\/config$/.exec(p)
       if (cfg) { const g = this.guests.find(x => x.vmid === Number(cfg[3])); if (!g) fail('no such guest'); return (g!.config ?? {}) as T }
+      const pci = /^\/nodes\/([^/]+)\/hardware\/pci$/.exec(p)
+      if (pci) return Object.entries(this.pci[pci[1]] ?? {}).map(([id, cls]) => ({ id: `${id}.0`, class: cls, vendor_name: 'v', device_name: 'd' })) as T
       const mig = /^\/nodes\/([^/]+)\/(lxc|qemu)\/(\d+)\/migrate$/.exec(p)
       if (mig) return (this.migrate[mig[3]] ?? { 'allowed-nodes': this.nodes.filter(n => n.node !== mig[1]).map(n => n.node), 'not-allowed-nodes': {}, running: 1 }) as T
       fail(`fake has no GET ${p}`)
@@ -133,7 +138,7 @@ export class FakeHaPve {
   private status() {
     const rows: any[] = [{ id: 'quorum', type: 'quorum', node: this.nodes[0].node, quorate: this.quorate ? 1 : 0, status: this.quorate ? 'OK' : 'No quorum' }]
     rows.push({ id: 'master', type: 'master', node: this.nodes[0].node, status: 'active' })
-    rows.push({ id: 'fencing', type: 'fencing', node: this.nodes[0].node, 'armed-state': this.fencing })
+    rows.push({ id: 'fencing', type: 'fencing', node: this.nodes[0].node, 'armed-state': this.fencing, ...(this.resourceMode ? { 'resource-mode': this.resourceMode, status: `${this.fencing}, resource mode: ${this.resourceMode}` } : {}) })
     for (const n of this.nodes) rows.push({ id: `lrm:${n.node}`, type: 'lrm', node: n.node, status: `${n.node} (${n.maintenance ? 'maintenance mode' : 'active'})` })
     for (const r of this.resources) {
       const g = this.guestOfSid(r.sid)
