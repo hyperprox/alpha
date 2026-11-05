@@ -153,6 +153,8 @@ export const NODE_FACTS_COMMAND = [
   'echo HP_HOLDS_BEGIN; apt-mark showhold 2>/dev/null || true; echo HP_HOLDS_END',
   'echo HP_PIN_BEGIN; proxmox-boot-tool kernel list 2>/dev/null || true; echo HP_PIN_END',
   'echo HP_KPKG_BEGIN; dpkg-query -W -f=\'${Package} ${Status}\\n\' \'proxmox-kernel-*\' \'pve-kernel-*\' 2>/dev/null || true; echo HP_KPKG_END',
+  // A Ceph start fence (withCephStartGuard) that a killed run left behind.
+  'if grep -qsF "HyperProx: no Ceph daemon starts" /usr/sbin/policy-rc.d; then echo HP_FENCE_LEFT; elif [ -e /usr/sbin/policy-rc.d.hyperprox-saved ]; then echo HP_FENCE_SAVED; fi',
 ].join('; ')
 
 export interface NodeFacts {
@@ -163,6 +165,8 @@ export interface NodeFacts {
   pinned:         string | null
   /** Versioned kernel packages that are installed, e.g. proxmox-kernel-7.0.14-14-pve-signed. */
   kernelPackages: string[]
+  /** A Ceph start fence left by an interrupted run: our policy-rc.d still in place, or only its saved original. */
+  fence?:         'ours' | 'saved' | null
 }
 
 function between(lines: string[], begin: string, end: string): string[] {
@@ -196,6 +200,7 @@ export function parseNodeFacts(output: string): NodeFacts {
     holds:          between(lines, 'HP_HOLDS_BEGIN', 'HP_HOLDS_END').filter(Boolean),
     pinned,
     kernelPackages,
+    fence: lines.includes('HP_FENCE_LEFT') ? 'ours' : lines.includes('HP_FENCE_SAVED') ? 'saved' : null,
   }
 }
 
@@ -207,6 +212,31 @@ export function parseNodeFacts(output: string): NodeFacts {
 export function nodeUpgradeCommand(policyUpgrade: 'upgrade' | 'dist-upgrade'): string {
   const verb = policyUpgrade === 'dist-upgrade' ? 'dist-upgrade' : 'upgrade'
   return withCephStartGuard(`apt-get -y -q ${CONFOLD} ${verb}`)
+}
+
+/**
+ * Read-only: what the node upgrade would do, without doing it. The end marker proves the simulation finished;
+ * the line ends with it so that nothing matching the real upgrade line can be mistaken for it.
+ */
+export function nodeSimulateCommand(policyUpgrade: 'upgrade' | 'dist-upgrade'): string {
+  const verb = policyUpgrade === 'dist-upgrade' ? 'dist-upgrade' : 'upgrade'
+  return `${APT_ENV}; apt-get -s -q -o Debug::NoLocking=1 ${CONFOLD} ${verb}; echo HP_SIM_END`
+}
+
+export interface AptSimChange { name: string; from: string | null; to: string | null; action: 'install' | 'upgrade' | 'remove' }
+
+/** `Inst`/`Remv`/`Purg` lines of `apt-get -s`. Null when the end marker is missing (the simulation did not finish). */
+export function parseAptSimulation(output: string): AptSimChange[] | null {
+  const lines = output.split('\n').map(l => l.trim())
+  if (!lines.includes('HP_SIM_END')) return null
+  const out: AptSimChange[] = []
+  for (const l of lines) {
+    let m = /^Inst (\S+)(?: \[([^\]]+)\])? \((\S+)/.exec(l)
+    if (m) { out.push({ name: m[1].replace(/:.*/, ''), from: m[2] ?? null, to: m[3], action: m[2] ? 'upgrade' : 'install' }); continue }
+    m = /^(?:Remv|Purg) (\S+)(?: \[([^\]]+)\])?/.exec(l)
+    if (m) out.push({ name: m[1].replace(/:.*/, ''), from: m[2] ?? null, to: null, action: 'remove' })
+  }
+  return out
 }
 
 /** Marks the policy-rc.d HyperProx writes, so a copy left by a killed run is recognised and replaced. */
@@ -229,7 +259,7 @@ export function withCephStartGuard(aptLine: string, sbin = '/usr/sbin'): string 
     `if [ -e "$P" ] && grep -qF '${POLICY_RC_MARK}' "$P"; then rm -f "$P"; [ -e "$B" ] && mv "$B" "$P"; fi`,
     '[ -e "$B" ] && { echo "refusing: $B exists and is not ours to remove"; exit 1; }',
     '[ -e "$P" ] && mv "$P" "$B"',
-    `printf '%s\\n' '#!/bin/sh' '${POLICY_RC_MARK}' 'case "$1" in ceph*) exit 101 ;; esac' '[ -x ${sbin}/policy-rc.d.hyperprox-saved ] && exec ${sbin}/policy-rc.d.hyperprox-saved "$@"' 'exit 0' > "$P"`,
+    `printf '%s\\n' '#!/bin/sh' '${POLICY_RC_MARK}' 'for a in "$@"; do case "$a" in -*) ;; *) id="$a"; break ;; esac; done' 'case "$id" in ceph*) exit 101 ;; esac' '[ -x ${sbin}/policy-rc.d.hyperprox-saved ] && exec ${sbin}/policy-rc.d.hyperprox-saved "$@"' 'exit 0' > "$P"`,
     'chmod 755 "$P"',
     'unguard() { rm -f "$P"; [ -e "$B" ] && mv "$B" "$P"; }',
     'trap unguard EXIT',

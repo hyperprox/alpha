@@ -34,6 +34,7 @@ import {
   CEPH_NOOUT_SET, CEPH_NOOUT_UNSET, cephInstallCommand, cephRestartCommand, cephOsdRestartCommand,
   CEPH_STATE_COMMAND, CEPH_OSD_DUMP_COMMAND, cephOsdOkToStopCommand, guestCheckScript, guestDockerScript,
   guestRebootCommand, haMaintenance, haSetState, isCephPackage, kernelPurgeCommand, kernelsToRemove, nodeUpgradeCommand,
+  nodeSimulateCommand, parseAptSimulation,
   parseNodeFacts, tail, type NodeFacts,
 } from './commands'
 import { handoffNodeOf, handoffTag, readHandoff, selfGuestScript, selfNodeRebootScript, startHandoff } from './handoff'
@@ -310,7 +311,15 @@ export class UpdatesRunner {
       const pf0 = await preflight(this.exec, policy, box.inv.facts, await this.ceph(jobId))
       const noout = await this.nooutGate(jobId)
       if (!noout.ok && noout.reason === STALE_NOOUT) await this.announceStaleNoout(jobId, 'at the start of an Updates run')
-      const pf = noout.ok ? pf0 : { ok: false, reason: [pf0.ok ? '' : pf0.reason, noout.reason].filter(Boolean).join('; ') }
+      const pf1 = noout.ok ? pf0 : { ok: false, reason: [pf0.ok ? '' : pf0.reason, noout.reason].filter(Boolean).join('; ') }
+      // A Ceph start fence left by a killed run: reported, and replaced by the next guarded install on that node.
+      const fences = Object.entries(box.inv.facts).filter(([, f]) => f?.fence).map(([n, f]) => f!.fence === 'ours'
+        ? `${n}: a Ceph start fence (policy-rc.d) left by an interrupted run is still in place; the next package install on ${n} replaces it`
+        : `${n}: a saved policy-rc.d from an interrupted run (/usr/sbin/policy-rc.d.hyperprox-saved) is still there; package installs on ${n} refuse until a person restores or removes it`)
+      if (fences.length) {
+        await this.announce({ type: 'updates.fence_left', severity: 'warning', title: 'Updates found a package-script fence left by an interrupted run', lines: fences }, `${jobId}:fence`)
+      }
+      const pf = fences.length ? { ...pf1, reason: [pf1.reason, ...fences].join('; ') } : pf1
       // A node whose pending list or shell could not be read is not "reachable", whatever the gates say.
       const unread = box.inv.inventory.nodes.filter(n => n.error).map(n => `${n.node}: ${n.error}`)
       const g = unread.length ? { ok: false, reason: [pf.ok ? '' : pf.reason, ...unread].filter(Boolean).join('; ') } : pf
@@ -784,6 +793,21 @@ export class UpdatesRunner {
     const before = await this.nodeFacts(node)
     const pre = await this.combine([Promise.resolve(holdsPinGate(node, before, pol)), Promise.resolve(freeSpaceGate(node, before, policy))])
     if (!pre.ok) return { status: 'failed', reason: `stopped before installing: ${pre.reason}` }
+
+    // Ceph moves only in the Ceph phase (one exact version, daemons in order). If the upgrade would touch a
+    // Ceph package — one that arrived after the plan, say — the step refuses. No apt-mark hold: a hold
+    // HyperProx placed and failed to lift would block the Ceph phase itself later.
+    const sim = await this.exec.nodeExec(node, nodeSimulateCommand(pol.upgrade), undefined, 10 * 60_000)
+    const changes = sim.code === 0 ? parseAptSimulation(sim.output) : null
+    if (!changes) return { status: 'failed', reason: `could not simulate apt-get ${pol.upgrade} on ${node}, so nothing was installed`, output: tail(sim.output) }
+    const ceph = changes.filter(c => isCephPackage(c.name))
+    if (ceph.length) {
+      const what = ceph.map(c => c.action === 'remove' ? `${c.name} removed` : `${c.name} ${c.from ?? 'new'} → ${c.to}`).join(', ')
+      return {
+        status: 'failed',
+        reason: `refusing: apt-get ${pol.upgrade} on ${node} would also change Ceph packages (${what}). Ceph is upgraded only in the Ceph phase, to one exact version on every node with its daemons restarted in order — start a new run so the plan includes it`,
+      }
+    }
 
     const r = await this.exec.nodeExec(node, nodeUpgradeCommand(pol.upgrade), log, 60 * 60_000)
     if (r.code !== 0) return { status: 'failed', reason: `apt-get ${pol.upgrade} failed`, output: tail(r.output) }
