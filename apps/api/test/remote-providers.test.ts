@@ -258,8 +258,8 @@ test('providers from the vault: null until configured; the Test button says what
   const m = mockFetch({ 'GET /api/peers': () => [200, []] })
   const nb = async () => ({ api_token: 't', management_url: 'https://nb.example.com', default_groups: 'servers, lab' })
   assert.equal(await testProvider('netbird', nb, m.fn), 'Connected — 0 peers')
-  assert.deepEqual(await providerSettingsFromVault('netbird', nb), { tags: ['servers', 'lab'], managementUrl: 'https://nb.example.com' })
-  assert.deepEqual(await providerSettingsFromVault('tailscale', async () => ({ default_tags: 'tag:a,tag:b' })), { tags: ['tag:a', 'tag:b'] })
+  assert.deepEqual(await providerSettingsFromVault('netbird', nb), { tags: ['servers', 'lab'], managementUrl: 'https://nb.example.com', acceptDnsCt: false, acceptDnsVm: false })
+  assert.deepEqual(await providerSettingsFromVault('tailscale', async () => ({ default_tags: 'tag:a,tag:b', default_accept_dns_vm: 'yes' })), { tags: ['tag:a', 'tag:b'], acceptDnsCt: false, acceptDnsVm: true })
 })
 
 // ── VPN: per-device features ─────────────────────────────────────────────────
@@ -329,4 +329,19 @@ test('netbird: login expiration, SSH and approval update the peer with its other
     ['/api/groups/g-old', { name: 'old', peers: ['p2'] }],
   ])
   await assert.rejects(c.setTags!(dev, ['nope']), /no group called nope/)
+})
+
+test('every provider credential read is audited without its value (one entry a minute), and a locked vault is said plainly', async () => {
+  const { providerFromVault, setCredentialAuditor } = await import('../src/lib/remote/providers')
+  const audits: any[] = []
+  setCredentialAuditor(async (action, resource, details) => { audits.push({ action, resource, details }) })
+  try {
+    const read = async () => ({ api_token: 'tskey-api-MARKERVALUE123' })
+    await providerFromVault('tailscale', read); await providerFromVault('tailscale', read)
+    assert.equal(audits.length, 1)
+    assert.deepEqual(audits[0], { action: 'remote.credential.read', resource: 'remote/tailscale', details: { provider: 'tailscale' } })
+    assert.doesNotMatch(JSON.stringify(audits), /MARKERVALUE/)
+    const locked = async () => { const { VaultLockedError } = await import('../src/lib/credentials'); throw new VaultLockedError('remote/netbird') }
+    await assert.rejects(providerFromVault('netbird', locked), /HyperProx is locked — sign in to/)
+  } finally { setCredentialAuditor(null) }
 })

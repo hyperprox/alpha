@@ -83,9 +83,13 @@ export const CREDENTIAL_DEFS: CredentialDef[] = [
   { category: 'remote', provider: 'tailscale', key: 'oauth_client_secret', label: 'OAuth client secret',              masked: true  },
   { category: 'remote', provider: 'tailscale', key: 'tailnet',             label: 'Tailnet (blank: your own)',        masked: false },
   { category: 'remote', provider: 'tailscale', key: 'default_tags',        label: 'Default tags, e.g. tag:server',    masked: false },
+  { category: 'remote', provider: 'tailscale', key: 'default_accept_dns_ct', label: 'One-click: MagicDNS on containers (yes/no)', masked: false },
+  { category: 'remote', provider: 'tailscale', key: 'default_accept_dns_vm', label: 'One-click: MagicDNS on VMs (yes/no)', masked: false },
   { category: 'remote', provider: 'netbird',   key: 'management_url',      label: 'Management URL (blank: NetBird Cloud)', masked: false },
   { category: 'remote', provider: 'netbird',   key: 'api_token',           label: 'Personal access token',            masked: true  },
   { category: 'remote', provider: 'netbird',   key: 'default_groups',      label: 'Default groups (comma separated)', masked: false },
+  { category: 'remote', provider: 'netbird',   key: 'default_accept_dns_ct', label: 'One-click: NetBird DNS on containers (yes/no)', masked: false },
+  { category: 'remote', provider: 'netbird',   key: 'default_accept_dns_vm', label: 'One-click: NetBird DNS on VMs (yes/no)', masked: false },
 
   // HyperProx system
   { category: 'system', provider: 'hyperprox', key: 'app_url',   label: 'App URL',   masked: false, envKey: 'NEXT_PUBLIC_API_URL' },
