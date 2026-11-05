@@ -16,7 +16,7 @@ import {
 import { CHANNEL_KINDS, FAMILIES, LOCKED_OK, SELF_HOSTABLE } from '../lib/notify/types'
 
 const INPUT_KEYS: Array<keyof ChannelInput> = [
-  'name', 'kind', 'enabled', 'minSeverity', 'eventFilter', 'quietHours', 'lanOverride', 'usableWhileLocked', 'chatId',
+  'name', 'kind', 'enabled', 'minSeverity', 'eventFilter', 'quietHours', 'lanOverride', 'usableWhileLocked', 'private', 'chatId',
   'url', 'token', 'botToken', 'signingSecret', 'clearToken', 'clearSigningSecret',
 ]
 

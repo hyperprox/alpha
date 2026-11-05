@@ -281,6 +281,7 @@ model NotifyChannel {
   quietHours        Json?
   lanOverride       Boolean   @default(false)       // "Self-hosted on my network"
   usableWhileLocked Boolean   @default(false)
+  private           Boolean   @default(false)       // trusted readers only: receives sign-in links
   nonSecret         Json                // e.g. { chatId } for Telegram
   lastResult        Json?               // { ok, status?, code?, at }
   lastSentAt        DateTime?
@@ -388,4 +389,13 @@ model CatalogueRecord {
   updatedAt DateTime  @updatedAt
 
   @@index([kind, expiresAt])
+}
+
+// Devices the VPN poller has already seen at each provider, so a new one is announced once, restart or not.
+model RemoteAccessKnownDevice {
+  provider  String
+  deviceId  String
+  firstSeen DateTime @default(now())
+
+  @@id([provider, deviceId])
 }
