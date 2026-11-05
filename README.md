@@ -63,16 +63,29 @@ the wizard, then create the owner account at `https://<container-ip>/login`.
 
 ### Option 1: bootstrap.sh (recommended)
 
-`bootstrap.sh` runs on a Proxmox node as root. It picks the next free container ID and the storage
-with the most free space, downloads the newest Debian template, and creates a **privileged** container
-with `nesting=1` and `keyctl=1` (Docker's overlay driver needs them), the TUN device for Tailscale, and
-start on boot. It then creates the API token `root@pam!hyperprox` (privilege separation off, so it has root's rights), and a
-read-only `root@pam!hyperprox-exporter` (`PVEAuditor` on `/`) for the PVE exporter; on every node it
-can reach over the cluster's SSH trust, installs node_exporter, the power udev rule and, on Intel GPU
-nodes, the Intel GPU exporter (see [Optional integrations](#optional-integrations)); runs `install.sh`
-inside the container; and prints the address and generated root password. It asks once
-before creating anything. If a token named `hyperprox` already exists it is left alone, and the setup
-wizard makes its own.
+`bootstrap.sh` sets up everything from one command on a Proxmox node, as root.
+
+First it looks at every node and tells you what it found, for example: "Found 3 nodes. node-a: NVIDIA
+GeForce GTX 1070 Ti (dedicated). node-b: Intel UHD Graphics 630 (built in)." Then it asks a few yes/no
+questions, only the ones that apply to your hardware (see
+[Monitoring, power, GPUs and more](#monitoring-power-gpus-and-more)). It shows the whole plan and asks once
+before it changes anything.
+
+Then it does the work:
+
+- It creates a **privileged** container on the next free ID and the storage with the most free space,
+  from the newest Debian template, with `nesting=1` and `keyctl=1` (Docker needs them), the TUN device for
+  Tailscale, and start on boot.
+- It makes the API token `root@pam!hyperprox` (privilege separation off, so it has root's rights) and,
+  if you want Proxmox's own metrics, a read-only `root@pam!hyperprox-exporter` (`PVEAuditor` on `/`).
+  A token named `hyperprox` that already exists is left alone, and the setup wizard makes its own.
+- It carries out your answers on each node, one node at a time, over the cluster's own SSH trust, then
+  checks them over the network from the node you ran it on: each exporter answers, and power reads above
+  zero.
+- It installs HyperProx in the container, then prints the address, the root password and a short list of
+  what was done, skipped or failed, with the reason for each.
+
+`-y` takes every default. `--dry-run` looks and asks, shows the plan, and changes nothing.
 
 Pass options through `bash -s --`:
 
@@ -92,10 +105,14 @@ curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/bootstrap.sh |
 | `--ip CIDR` | `dhcp` | Static address, for example `192.0.2.50/24` |
 | `--gateway IP` | | Gateway, required with `--ip` |
 | `--password PASS` | generated | Container root password |
-| `--skip-exporter` | | Do not install node_exporter on the nodes |
-| `--skip-rapl` | | Do not make CPU energy counters readable (no power figures) |
-| `--skip-gpu-exporter` | | Do not start the Intel GPU exporter |
-| `-y`, `--yes` | | Do not ask for confirmation |
+| `--skip-exporter` | | Answer no to watching node health |
+| `--skip-rapl` | | Answer no to power monitoring |
+| `--skip-gpu-exporter` | | Answer no to GPU monitoring |
+| `--no-charts` | | Answer no to Prometheus and Grafana |
+| `--no-pve-metrics` | | Answer no to reading Proxmox's own metrics |
+| `--ai`, `--no-ai` | | Answer yes or no to a local AI assistant |
+| `--dry-run` | | Look and ask, then show what would be done; change nothing |
+| `-y`, `--yes` | | Take every default and do not ask |
 
 ### Option 2: install.sh on a machine you already have
 
@@ -114,10 +131,17 @@ machine gets its address by DHCP, it offers to give it a fixed one. It asks firs
 directly on a Proxmox node rather than in a container. Inside a container it turns AppArmor off for
 that container, because Docker cannot run there with it on.
 
-Your credentials (Proxmox, proxies, DNS, app logins and everything else you add) are kept in the vault,
-never in a file. The installer also writes `/opt/hyperprox/.env`, readable only by root. It holds the
-start-up keys HyperProx's own internal services need before anyone signs in: the database and cache
-passwords, the vault's admin key, the monitoring keys and the one-time setup key.
+Your credentials (Proxmox, node logins, proxies, DNS, app logins and everything else you add) are kept
+in the vault, never in a file. The installer also writes `/opt/hyperprox/.env`, readable only by root. It
+holds only the start-up keys HyperProx's own services need before anyone signs in: the database and cache
+passwords, the vault's admin key, Grafana's encryption key and the key Prometheus uses to read plug-in
+metrics.
+
+Two more keys are there only for a short while. The setup key is removed when setup finishes. Grafana's
+first admin password moves into the vault when you create the owner account. Until then there is no
+vault to hold anything, so the access key HyperProx makes for itself in Proxmox waits in `.env` and also
+moves into the vault at that first sign-in. Anything you type during setup, such as a node login or a DNS
+key, is held in memory only until then. [docs/security.md](docs/security.md) lists every key and why.
 
 If you create the container yourself, it must be privileged with nesting and keyctl, or Docker fails
 with an overlay error:
@@ -169,20 +193,28 @@ header to the `:443` server in `config/nginx/conf.d/hyperprox.conf`.
 ### First-run setup
 
 The installer prints a wizard link with a setup key: `https://<container-ip>/setup?k=<key>`. Keep it
-private. If you lose it, run `grep SETUP_SECRET /opt/hyperprox/.env` on the HyperProx machine. The
-wizard saves its progress, so reloading it resumes at the step you reached.
+private. If you lose it before setup is done, run `grep SETUP_SECRET /opt/hyperprox/.env` on the
+HyperProx machine. The key is removed once setup finishes. The wizard saves its progress, so reloading it
+resumes at the step you reached.
 
 1. **Connect your Proxmox.** Sign in with your Proxmox web login (two-factor codes are supported).
    HyperProx uses it once to create its own API token, `hyperprox-<hostname>-<install id>`, and a
    read-only one for the PVE exporter (`<that token>-exporter`, `PVEAuditor` on `/`), and never stores
    the password. You can paste an existing token under **Advanced** instead. If bootstrap already
    configured a token, this step is skipped.
-2. **Cluster detected.** Nodes, version, quorum, running guests and Ceph, read through the token.
+2. **Cluster detected.** Nodes, version, quorum, running guests and Ceph, and a line on what each node
+   has: its GPUs, built in or dedicated.
 3. **Services.** Finds Nginx Proxy Manager, Ollama and Proxmox Backup Server already on your network,
-   and lets you choose whether to run the bundled Prometheus and Grafana. To run Nginx Proxy Manager,
+   and asks whether you want charts and dashboards (Prometheus and Grafana). To run Nginx Proxy Manager,
    install it from the [Catalogue](#catalogue) after setup.
-4. **DNS provider.** Optionally enter a GoDaddy API key and secret.
-5. **Done.** The wizard starts your chosen services, restarts HyperProx and exits for good.
+4. **Options.** The same yes/no questions as `bootstrap.sh`, only those that apply (see
+   [Monitoring, power, GPUs and more](#monitoring-power-gpus-and-more)). If you say yes to anything on
+   your nodes, it asks once for the login you use to SSH to them (usually root), tests it on every node,
+   then does the work one node at a time and shows what it did. If you ran `bootstrap.sh`, this step shows
+   what it already did instead.
+5. **Done.** The wizard starts your chosen services, writes Prometheus's list of nodes and GPUs, checks
+   in Prometheus that each answer worked, restarts HyperProx, and exits for good. It ends with a list of
+   what was done, skipped or failed, and why.
 
 Then open `https://<container-ip>/login` and **create the owner account**: an email, a master password
 and an authenticator app (two-factor is required for the owner). HyperProx has no password of its own;
@@ -204,66 +236,33 @@ not, it stops Grafana and fails), and applies any changed Prometheus and Grafana
 Sessions survive it because the keyholder keeps the unlocked state. If it says the install has no vault
 yet, re-run `install.sh` first.
 
-## Optional integrations
+## Monitoring, power, GPUs and more
 
-### node_exporter (node metrics)
+You do not set any of this up by hand. The installer asks a few plain questions, does what you say yes
+to, and checks that it worked. Each question appears only when it applies to your hardware.
 
-The Monitoring page, node cards and power figures need `node_exporter` on each Proxmox **node**.
-`bootstrap.sh` installs it. By hand, on each node:
+| Question | What saying yes does |
+|---|---|
+| Do you want HyperProx to watch the health of each of your nodes (CPU, memory, disks)? | Installs node_exporter on every node. |
+| Do you want HyperProx to monitor the power on each of your nodes? | Lets HyperProx read the CPU energy counters. The trade-off: any local user on that node can then read energy use. Asked only if a node has power counters. |
+| Do you want HyperProx to monitor your GPUs? | Adds a small exporter for each Intel or NVIDIA GPU. It only reads the GPU; drivers are never touched. Asked only if a GPU was found. AMD GPUs are listed but not monitored yet. |
+| Do you want charts and dashboards (Prometheus and Grafana)? | Runs Prometheus and Grafana on the HyperProx machine, reachable only through HyperProx. |
+| Do you want HyperProx to read Proxmox's own metrics? | Makes a read-only Proxmox token for the metrics exporter. |
+| Do you manage your domains at GoDaddy? Paste a key to let HyperProx manage DNS. | Tests the key and keeps it in the vault. You can skip it. |
+| Do you want a local AI assistant? | Runs a small one (Ollama) on the HyperProx machine and downloads its model, about 2 GB. Or connect one later on the AI Assistant page. |
 
-```bash
-apt update && apt install -y prometheus-node-exporter
-systemctl enable --now prometheus-node-exporter
-curl -s http://localhost:9100/metrics | head -5
-```
+HyperProx also keeps Prometheus's list of nodes and GPUs up to date by itself, after setup and whenever a
+node joins. There is nothing to ask.
 
-Scrape targets are written by HyperProx, not by editing `prometheus.yml`. The wizard writes node
-targets when it finishes, and `POST /api/targets/sync` (admin) detects every node, Ceph manager and
-GPU exporter and adds them to `config/prometheus/targets/`.
+**Changing an answer later.** Open **Settings → Setup checklist**. It shows each question, whether it is
+done on each node right now, and a button to do it. Work on your nodes needs a login for them: you enter
+it once, HyperProx tests it on every node and keeps it in the vault.
 
-### Power
-
-Power comes from node_exporter's `rapl` collector plus NVIDIA GPU draw. Since kernel 5.10,
-`/sys/class/powercap/*/energy_uj` is readable by root only, so node_exporter silently gets nothing.
-`bootstrap.sh` installs this udev rule on each node (decline with `--skip-rapl`):
-
-```
-# /etc/udev/rules.d/99-hyperprox-rapl.rules
-SUBSYSTEM=="powercap", ACTION=="add|change", RUN+="/bin/chmod o+r /sys%p/energy_uj"
-```
-
-This is a deliberate trade: any local user on that node can then read energy use. Delete the file to
-undo it.
-
-HyperProx uses the `psys` platform rail where the board has one, otherwise `package` plus `dram`,
-and adds NVIDIA GPU draw. It is silicon draw, not wall power: drives, fans and PSU losses are not
-measured. A node that reports nothing shows `no meter`, never a quiet zero.
-
-### GPUs
-
-- **Intel iGPU.** `bootstrap.sh` starts this on Intel nodes that have Docker. By hand:
-
-  ```bash
-  docker run -d --name intel-gpu-exporter --restart unless-stopped \
-    --privileged --pid host -v /dev/dri:/dev/dri -p 8081:8080 \
-    ghcr.io/onedr0p/intel-gpu-exporter:rolling
-  ```
-
-- **NVIDIA.** Install [nvidia_gpu_exporter](https://github.com/utkuozdemir/nvidia_gpu_exporter) on the
-  node as a systemd service. It listens on `:9835`, which is where target sync looks.
-
-GPUs are detected from each node's PCI devices. `NEXT_PUBLIC_GPU_NODES` in `.env` (node names,
-comma-separated) adds a GPU badge on Infrastructure; it is read at build time, so run `deploy.sh` after.
-
-### DNS provider (GoDaddy)
-
-1. Go to [developer.godaddy.com/keys](https://developer.godaddy.com/keys) and create a key.
-2. Choose **Production**. OTE test keys do not work.
-3. Enter the key and secret in the setup wizard, or under **Settings → DNS → GoDaddy**, and press
-   **Test**.
-
-GoDaddy is the only DNS provider with a working client today. Settings also shows Cloudflare and
-Namecheap fields; those clients are on the roadmap.
+**What the node work changes.** It only adds packages and never upgrades or removes one. It does not touch
+kernels, drivers or apt holds, so a node that pins its kernel for a GPU driver is safe. It runs one node at
+a time and leaves alone anything already set up. Power figures are CPU and GPU draw, not wall power: drives,
+fans and power-supply losses are not measured, and a node with nothing to read shows `no meter` rather than
+zero. If you want to see or do the steps yourself, [docs/manual-setup.md](docs/manual-setup.md) has them.
 
 ### AI providers
 
@@ -276,16 +275,9 @@ browser.
 | OpenAI or compatible | API key, optional base URL (OpenRouter, Groq and similar) | `gpt-4o` |
 | Ollama | A reachable Ollama server | `llama3.2:3b` |
 
-Small local models answer more weakly; 8B models plan noticeably better than 3B ones. For a CPU-only
-test there is a bundled Ollama (3 CPUs, 4 GB, bound to `127.0.0.1:11434`):
-
-```bash
-cd /opt/hyperprox
-docker compose --profile ai up -d --no-deps ollama
-docker exec hyperprox-ollama ollama pull <model>
-```
-
-Then connect `http://127.0.0.1:11434` on the AI Assistant page. HyperProx sets Ollama's thread count
+Small local models answer more weakly; 8B models plan noticeably better than 3B ones. The bundled
+Ollama (3 CPUs, 4 GB, bound to `127.0.0.1:11434`) is what the installer's local AI question starts, with
+`llama3.2:3b`, and it is connected for you. HyperProx sets Ollama's thread count
 from the container's CPU limit (`OLLAMA_CPUS`); `OLLAMA_NUM_THREAD` overrides it and
 `OLLAMA_TIMEOUT_S` (default 300) sets how long a call may take.
 
@@ -435,6 +427,8 @@ button that opens a pre-filled GitHub issue in your browser.
 
 ### Settings
 
+- **Setup checklist**: the installer's questions, whether each is done on every node, and a button to
+  do it now.
 - **Credentials** for Proxmox, your first Nginx Proxy Manager and GoDaddy, each with a **Test** button
   (other proxies are added on the Proxy page).
 - **Secrets**: names of everything in the vault. Owners and admins can reveal a value, send it as an
@@ -473,8 +467,8 @@ not protected, are in [docs/security.md](docs/security.md).
   | User | viewer | View only |
 
 - **Re-confirmation.** Revealing a secret, destroying a guest, creating or revoking an API token,
-  changing roles, and installing from the Catalogue (or removing a failed install) ask for the master
-  password again (valid five minutes).
+  changing roles, installing from the Catalogue (or removing a failed install) and resetting Grafana's
+  admin password ask for the master password again (valid five minutes).
 - **API tokens** (`Authorization: Bearer hpx_...`) carry a role of viewer, operator or admin, stop
   working while HyperProx is locked, and can never read secrets, open the terminal or WebSockets, or
   manage tokens. Only a SHA-256 hash is stored.
@@ -499,7 +493,8 @@ every metric (see [docs/security.md](docs/security.md)). Put HyperProx on a netw
 over the internet needs your own TLS and access controls in front of it.
 
 **Keep safe:** `/opt/hyperprox/.env` (readable only by root; it holds the internal start-up keys,
-including `VAULT_ADMIN_TOKEN` and the database password, but none of your own credentials)
+including `VAULT_ADMIN_TOKEN` and the database password, but none of your own credentials once the owner
+account exists)
 and the `vault_data` Docker volume, which holds every account. Back up the volume; losing it loses the
 vault.
 
@@ -556,10 +551,10 @@ single `docker-compose.yml`; `COMPOSE_PROFILES` in `.env` picks the optional par
 | Install fails with an overlay error | The container must be privileged with `nesting=1` and `keyctl=1`: `pct set <ctid> --features keyctl=1,nesting=1`, set **Unprivileged** to No, and reboot it. |
 | Every page says HyperProx is locked | Expected after a reboot or idle timeout. Sign in at `/login`. `hyperprox status` shows the vault and keyholder state. |
 | HyperProx will not start | The API waits for the vault. Check `docker logs hyperprox-vault` and `journalctl -u hyperprox-api -n 50`. |
-| The setup page says a key is required | Use the link with `?k=`. Get the key with `grep SETUP_SECRET /opt/hyperprox/.env`. |
+| The setup page says a key is required | Use the link with `?k=`. While setup is unfinished, get the key with `grep SETUP_SECRET /opt/hyperprox/.env`. Once setup is done there is no key and no setup page: sign in at `/login`. |
 | HA shows `n/a` | The Proxmox token needs `Sys.Audit` on `/` to read HA status. |
-| A node shows `no meter` | Check that node_exporter runs, that `/etc/udev/rules.d/99-hyperprox-rapl.rules` exists, that `stat -c %a /sys/class/powercap/intel-rapl:0/energy_uj` prints `404`, and that the CPU exposes RAPL at all (`ls /sys/class/powercap/`). VMs and some CPUs have none. |
-| Monitoring has no node data | Run `POST /api/targets/sync` as an admin, or check `config/prometheus/targets/nodes.json`. The wizard writes nodes by name, so they must resolve from the container. |
+| A node shows `no meter` | Open **Settings → Setup checklist**: it shows, per node, whether health and power monitoring are on and why not. Some CPUs and all VMs have no power counters. |
+| Monitoring has no node data | **Settings → Setup checklist → Check now** updates Prometheus's list of nodes. Check there that health monitoring is done on each node. |
 | Grafana's Proxmox panels are empty | The PVE exporter has no token. Sign in, then press **Set up Proxmox metrics** on Monitoring → Grafana, or run `hyperprox pve-exporter`. |
 | `/grafana/` sends you to the sign-in page | It needs a HyperProx session, and HyperProx unlocked. Sign in at `/login`. |
 | Ceph views are empty on a Ceph cluster | The monitor node is detected automatically. To pin one, set `CEPH_MON_NODE` in `.env` and restart `hyperprox-api`. |
