@@ -18,6 +18,9 @@
 #   Grafana          Served only through nginx at /grafana/ now. An install that embedded the bundled
 #                    Grafana from port 3003 on this machine (any path) is moved to the sub-path; a
 #                    Grafana on another machine is left alone.
+#   Dashboard        config/grafana/provisioning/dashboards/hyperprox-cluster.json is drawn from the template
+#                    with a GPU row only for the vendors found (packages/hardware/dashboard.js); the set is
+#                    kept in config/grafana/gpu-vendors.json, which target sync updates.
 #   Fewer keys on disk  .env keeps only what HyperProx needs before it is unlocked. Once setup is done
 #                    (SETUP_COMPLETE=true, or the vault already has an owner),
 #                    SETUP_SECRET is removed (re-running install.sh makes a new one if setup ever has to run
@@ -221,6 +224,16 @@ fewer_keys_on_disk() {
   return 0
 }
 
+# ── The cluster dashboard, for the GPUs this cluster has ────────────────────
+draw_cluster_dashboard() {
+  local gen="${HYPERPROX_DIR}/packages/hardware/dashboard.js"
+  [[ -f "$gen" && -f "${HYPERPROX_DIR}/config/grafana/dashboards/hyperprox-cluster.json" ]] || return 0
+  command -v node >/dev/null 2>&1 || { warn "node not found; the cluster dashboard was not drawn"; return 0; }
+  local out; out="$(node "$gen" "$HYPERPROX_DIR" 2>&1)" || { warn "could not draw the cluster dashboard: ${out}"; return 0; }
+  [[ -n "$out" ]] && log "$out"
+  return 0
+}
+
 main() {
   [[ -f "$ENV_FILE" ]] || { echo "hyperprox-config: ${ENV_FILE} not found" >&2; exit 1; }
   ensure_metrics_token
@@ -228,6 +241,7 @@ main() {
   drop_npm_profile
   grafana_behind_nginx
   fewer_keys_on_disk
+  draw_cluster_dashboard
   chmod 600 "$ENV_FILE"
 }
 

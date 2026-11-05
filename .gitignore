@@ -53,3 +53,7 @@ config/vault-tls/
 # Updates policy — cluster-specific, see config/updates.example.yaml
 config/updates.yaml
 config/certs.yaml
+
+# Drawn per install from config/grafana/dashboards/hyperprox-cluster.json for the GPUs found
+config/grafana/provisioning/dashboards/hyperprox-cluster.json
+config/grafana/gpu-vendors.json

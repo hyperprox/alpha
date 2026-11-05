@@ -132,7 +132,6 @@
       "type": "row",
       "title": "Intel GPUs",
       "collapsed": false,
-      "repeat": "intel",
       "panels": [],
       "gridPos": {
         "x": 0,
@@ -270,7 +269,6 @@
       "type": "row",
       "title": "AMD GPUs",
       "collapsed": false,
-      "repeat": "amd",
       "panels": [],
       "gridPos": {
         "x": 0,
@@ -337,7 +335,6 @@
       "type": "row",
       "title": "NVIDIA GPUs",
       "collapsed": false,
-      "repeat": "nvidia",
       "panels": [],
       "gridPos": {
         "x": 0,
@@ -445,68 +442,7 @@
     }
   ],
   "templating": {
-    "list": [
-      {
-        "name": "intel",
-        "label": "Intel GPUs",
-        "type": "query",
-        "datasource": "Prometheus",
-        "query": {
-          "query": "label_values(igpu_power_package, job)",
-          "refId": "intel"
-        },
-        "definition": "label_values(igpu_power_package, job)",
-        "hide": 2,
-        "includeAll": false,
-        "multi": false,
-        "refresh": 2,
-        "current": {},
-        "options": [],
-        "regex": "",
-        "sort": 0,
-        "description": "Hidden. Has a value only when some node reports igpu_power_package, so the Intel GPUs row is drawn only on clusters that have one."
-      },
-      {
-        "name": "amd",
-        "label": "AMD GPUs",
-        "type": "query",
-        "datasource": "Prometheus",
-        "query": {
-          "query": "label_values(node_drm_gpu_busy_percent, job)",
-          "refId": "amd"
-        },
-        "definition": "label_values(node_drm_gpu_busy_percent, job)",
-        "hide": 2,
-        "includeAll": false,
-        "multi": false,
-        "refresh": 2,
-        "current": {},
-        "options": [],
-        "regex": "",
-        "sort": 0,
-        "description": "Hidden. Has a value only when some node reports node_drm_gpu_busy_percent, so the AMD GPUs row is drawn only on clusters that have one."
-      },
-      {
-        "name": "nvidia",
-        "label": "NVIDIA GPUs",
-        "type": "query",
-        "datasource": "Prometheus",
-        "query": {
-          "query": "label_values(nvidia_smi_memory_total_bytes, job)",
-          "refId": "nvidia"
-        },
-        "definition": "label_values(nvidia_smi_memory_total_bytes, job)",
-        "hide": 2,
-        "includeAll": false,
-        "multi": false,
-        "refresh": 2,
-        "current": {},
-        "options": [],
-        "regex": "",
-        "sort": 0,
-        "description": "Hidden. Has a value only when some node reports nvidia_smi_memory_total_bytes, so the NVIDIA GPUs row is drawn only on clusters that have one."
-      }
-    ]
+    "list": []
   },
-  "description": "Each GPU vendor's row is repeated over a hidden variable that has a value only when that vendor reports data, so a cluster without that hardware shows no empty row."
+  "description": "Template. HyperProx writes provisioning/dashboards/hyperprox-cluster.json from it with only the GPU rows for the vendors your nodes have (packages/hardware/dashboard.js)."
 }

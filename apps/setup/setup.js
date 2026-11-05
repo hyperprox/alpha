@@ -1050,6 +1050,7 @@ async function finishSetup(answers) {
   const nodes = onboard.job.nodes.length ? onboard.job.nodes : ctx ? await onboard.detectFromProxmox(ctx.pve, ctx.nodes, ctx.addrs) : []
   try {
     onboard.writeTargets(path.join(HPX_DIR, 'config/prometheus/targets'), nodes, ctx ? ctx.addrs : {})
+    try { require('../../packages/hardware/dashboard').writeClusterDashboard(HPX_DIR, require('../../packages/hardware/dashboard').vendorsOf(nodes)) } catch {}
     add('Metrics list', 'done', `${nodes.length} node(s), with their GPUs; kept up to date by HyperProx from now on`)
   } catch (e) { add('Metrics list', 'failed', e.message) }
 
