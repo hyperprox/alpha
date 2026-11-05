@@ -31,7 +31,7 @@ export function StateBadge({ cell }: { cell: RemoteCell }) {
   return <Badge tone={s.tone} title={s.hint}>{s.label}</Badge>
 }
 
-export type CellAction = 'install' | 'check' | 'update' | 'routing' | 'uninstall' | 'manual-key' | 'tun' | 'firewall'
+export type CellAction = 'install' | 'one-click' | 'panel' | 'check' | 'update' | 'routing' | 'uninstall' | 'manual-key' | 'tun' | 'firewall'
 
 function Cell({ row, provider, cell, admin, busy, onAction }: {
   row: RemoteMachineRow; provider: RemoteProviderId; cell: RemoteCell; admin: boolean; busy: boolean
@@ -43,6 +43,9 @@ function Cell({ row, provider, cell, admin, busy, onAction }: {
     <div className="space-y-1">
       <div className="flex flex-wrap items-center gap-1.5">
         <StateBadge cell={cell} />
+        {cell.pending && <Badge tone="warn" title="The provider is waiting for this device to be approved">approval</Badge>}
+        {cell.loginPending && <Badge tone="warn" title="Waiting for a sign-in; admins can open the link in the panel">sign-in</Badge>}
+        {cell.expiryWarning && <Badge tone="warn" title={cell.expiresAt ? `Key expires ${fmtTime(cell.expiresAt)}` : ''}>key expires soon</Badge>}
         {cell.adopted && <Badge tone="muted" title="It was already there; HyperProx recorded it without changing it">adopted</Badge>}
         {cell.mode === 'userspace' && <Badge tone="muted" title="Userspace networking: reachable over the overlay, its own traffic does not go through it">userspace</Badge>}
         {(cell.routes.length > 0 || cell.exitNode) && (
@@ -57,11 +60,14 @@ function Cell({ row, provider, cell, admin, busy, onAction }: {
           {cell.ip ?? ''}{cell.ip && cell.version ? ' · ' : ''}{cell.version ? `v${cell.version}` : ''}
         </div>
       )}
+      {cell.dnsName && <div className="truncate font-mono text-xs" style={{ color: 'var(--text-dim)' }} title={cell.dnsName}>{cell.dnsName}</div>}
       {cell.lastSeen && cell.state !== 'connected' && <div className="text-xs" style={{ color: 'var(--text-dim)' }}>last seen {fmtTime(cell.lastSeen)}</div>}
+      {cell.expiresAt && !cell.keyExpiryDisabled && <div className="text-xs" style={{ color: cell.expiryWarning ? 'var(--warn)' : 'var(--text-dim)' }}>key expires {fmtTime(cell.expiresAt)}</div>}
       {admin && cell.state !== 'unconfigured' && (
         <div className="flex flex-wrap gap-1 pt-0.5">
           {installed ? (
             <>
+              <Btn small disabled={busy} onClick={act('panel')}>Settings…</Btn>
               <Btn small disabled={busy} onClick={act('check')}>Check</Btn>
               <Btn small disabled={busy} onClick={act('update')}>Update</Btn>
               <Btn small disabled={busy} onClick={act('routing')}>Routing…</Btn>
@@ -72,7 +78,8 @@ function Cell({ row, provider, cell, admin, busy, onAction }: {
             <Btn small disabled={busy} onClick={act('manual-key')}>One-time key…</Btn>
           ) : cell.state === 'not-installed' ? (
             <>
-              <Btn small disabled={busy || !row.running} onClick={act('install')} title={row.running ? undefined : 'Not running'}>Install</Btn>
+              <Btn small kind="primary" disabled={busy || !row.running} onClick={act('one-click')} title={row.running ? 'Install with the defaults from VPN settings' : 'Not running'}>Install</Btn>
+              <Btn small disabled={busy || !row.running} onClick={act('install')}>Advanced…</Btn>
               {(row.kind === 'host' || row.kind === 'qemu') && <Btn small disabled={busy} onClick={act('manual-key')}>One-time key…</Btn>}
             </>
           ) : null}
@@ -132,7 +139,7 @@ export function MachinesTable({ rows, admin, busy, selected, onSelect, onAction 
 }
 
 const STEP_ICON: Record<string, 'ok' | 'failed' | 'running' | 'skipped' | 'pending'> = { done: 'ok', failed: 'failed', running: 'running', skipped: 'skipped', pending: 'pending' }
-const ACTION_TITLE: Record<RemoteJob['action'], string> = { install: 'Installing', check: 'Checking', update: 'Updating', routing: 'Changing routing', uninstall: 'Uninstalling', recovery: 'Re-checking after a restart:' }
+const ACTION_TITLE: Record<RemoteJob['action'], string> = { install: 'Installing', check: 'Checking', update: 'Updating', routing: 'Changing routing', uninstall: 'Uninstalling', recovery: 'Re-checking after a restart:', configure: 'Changing settings for' }
 
 export function JobPanel({ job, onClose }: { job: RemoteJob; onClose: () => void }) {
   const el = useRef<HTMLPreElement>(null)
@@ -177,8 +184,9 @@ const FIELD: React.CSSProperties = {
 
 export function InstallDialog({ provider, rows, onCancel, onConfirm }: {
   provider: RemoteProviderId; rows: RemoteMachineRow[]
-  onCancel: () => void; onConfirm: (o: { tags: string[] | undefined; mode: 'kernel' | 'userspace'; existing?: 'adopt' | 'replace' }) => void
+  onCancel: () => void; onConfirm: (o: { tags: string[] | undefined; mode: 'kernel' | 'userspace'; existing?: 'adopt' | 'replace'; auth?: 'key' | 'login' }) => void
 }) {
+  const [login, setLogin] = useState(false)
   const [tags, setTags] = useState('')
   const [userspace, setUserspace] = useState(false)
   const [existing, setExisting] = useState<'' | 'adopt' | 'replace'>('')
@@ -208,6 +216,10 @@ export function InstallDialog({ provider, rows, onCancel, onConfirm }: {
           <span>Use userspace networking for containers without /dev/net/tun. They can be reached over the overlay, but their own traffic does not go through it. Leave off to be told which containers need the device.</span>
         </label>
       )}
+      <label className="flex items-start gap-2 text-sm" style={{ color: 'var(--text-soft)' }}>
+        <input type="checkbox" checked={login} onChange={e => setLogin(e.target.checked)} className="mt-1" />
+        <span>Sign in with my account instead of a key. HyperProx shows the sign-in link on the machine&apos;s panel and sends it to your private notification channels; it expires after about ten minutes.</span>
+      </label>
       <label className="block text-sm" style={{ color: 'var(--text-muted)' }}>
         If {PROVIDER_LABEL[provider]} is already on a machine (not installed by HyperProx)
         <select value={existing} onChange={e => setExisting(e.target.value as any)} style={{ ...FIELD, marginTop: 6 }}>
@@ -217,7 +229,7 @@ export function InstallDialog({ provider, rows, onCancel, onConfirm }: {
         </select>
       </label>
       <div className="flex justify-end gap-2">
-        <Btn kind="primary" onClick={() => onConfirm({ tags: parsed.length ? parsed : undefined, mode: userspace ? 'userspace' : 'kernel', existing: existing || undefined })}>Install</Btn>
+        <Btn kind="primary" onClick={() => onConfirm({ tags: parsed.length ? parsed : undefined, mode: userspace ? 'userspace' : 'kernel', existing: existing || undefined, auth: login ? 'login' : 'key' })}>Install</Btn>
         <Btn onClick={onCancel}>Cancel</Btn>
       </div>
     </ConfirmDialog>

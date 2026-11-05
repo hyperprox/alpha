@@ -23,7 +23,7 @@ interface LastResult { ok: boolean; status?: number; code?: string; at: string; 
 
 interface Channel {
   id: string; name: string; kind: Kind; enabled: boolean; minSeverity: Severity; eventFilter: 'all' | Family[]
-  quietHours: QuietHours | null; lanOverride: boolean; usableWhileLocked: boolean; chatId: string | null
+  quietHours: QuietHours | null; lanOverride: boolean; usableWhileLocked: boolean; private?: boolean; chatId: string | null
   mask: string; secretReadable: boolean; hasToken: boolean; hasSigningSecret: boolean
   lastResult: LastResult | null; lastSentAt: string | null; failingSince: string | null; seededFrom: string | null
 }
@@ -97,7 +97,7 @@ interface Form {
   name: string; kind: Kind; kindTouched: boolean; enabled: boolean; minSeverity: Severity
   allEvents: boolean; families: Family[]
   quiet: boolean; qStart: string; qEnd: string; qTz: string; qDays: number[]; qBreak: boolean
-  lanOverride: boolean; usableWhileLocked: boolean
+  lanOverride: boolean; usableWhileLocked: boolean; private: boolean
   url: string; token: string; botToken: string; chatId: string; signingSecret: string
   clearToken: boolean; clearSigningSecret: boolean
 }
@@ -108,7 +108,7 @@ function emptyForm(): Form {
   return {
     name: '', kind: 'ntfy', kindTouched: false, enabled: true, minSeverity: 'warning', allEvents: true, families: [],
     quiet: false, qStart: '22:00', qEnd: '07:00', qTz: tz, qDays: [], qBreak: true,
-    lanOverride: false, usableWhileLocked: false,
+    lanOverride: false, usableWhileLocked: false, private: false,
     url: '', token: '', botToken: '', chatId: '', signingSecret: '', clearToken: false, clearSigningSecret: false,
   }
 }
@@ -120,7 +120,7 @@ function formFrom(c: Channel): Form {
     allEvents: c.eventFilter === 'all', families: c.eventFilter === 'all' ? [] : c.eventFilter,
     quiet: !!c.quietHours, qStart: c.quietHours?.start ?? f.qStart, qEnd: c.quietHours?.end ?? f.qEnd,
     qTz: c.quietHours?.tz ?? f.qTz, qDays: c.quietHours?.days ?? [], qBreak: c.quietHours?.criticalBreaksThrough ?? true,
-    lanOverride: c.lanOverride, usableWhileLocked: c.usableWhileLocked, chatId: c.chatId ?? '',
+    lanOverride: c.lanOverride, usableWhileLocked: c.usableWhileLocked, private: !!c.private, chatId: c.chatId ?? '',
   }
 }
 
@@ -131,6 +131,7 @@ function payloadFrom(f: Form, editing: boolean): Record<string, unknown> {
     quietHours: f.quiet ? { start: f.qStart, end: f.qEnd, ...(f.qTz ? { tz: f.qTz } : {}), ...(f.qDays.length ? { days: f.qDays } : {}), criticalBreaksThrough: f.qBreak } : null,
     lanOverride: KINDS[f.kind].selfHost ? f.lanOverride : false,
     usableWhileLocked: f.usableWhileLocked,
+    private: f.private,
   }
   if (f.kind === 'telegram') { p.chatId = f.chatId.trim(); if (f.botToken.trim()) p.botToken = f.botToken.trim() }
   else {
@@ -272,6 +273,13 @@ function ChannelModal({ editing, meta, onSaved, onClose }: {
           </div>
         )}
 
+        <div className="space-y-1">
+          <Toggle id="n-private" checked={f.private} onChange={v => set('private', v)} label="Private: only I (or people I trust) read this channel" />
+          <p className="text-xs" style={{ color: 'var(--text-dim)' }}>
+            Only private channels receive VPN sign-in links, which let whoever opens them add a machine to your network.
+          </p>
+        </div>
+
         {k.lockedOk && (
           <div className="space-y-1">
             <Toggle id="n-locked" checked={f.usableWhileLocked} onChange={v => set('usableWhileLocked', v)} disabled={!meta.canSetUsableWhileLocked}
@@ -408,6 +416,7 @@ export default function NotificationsPage() {
                       {!c.enabled && <Tag>Paused</Tag>}
                       {c.usableWhileLocked && <Tag colour="var(--accent)">Works while locked</Tag>}
                       {c.lanOverride && <Tag colour="var(--warn)">Self-hosted</Tag>}
+                      {c.private && <Tag colour="var(--good)">Private</Tag>}
                       {c.failingSince && <Tag colour="var(--crit-soft)">Failing since {fmt(c.failingSince)}</Tag>}
                     </div>
                     <div className="mt-1 text-xs break-all" style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
