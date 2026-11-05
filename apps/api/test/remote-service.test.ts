@@ -581,7 +581,7 @@ test('adopt refuses a client signed in to another account', async () => {
   const w = world({ answer: HAS })
   const { svc, store } = service(w)
   const job = await install(svc, ['node-pve-a'], { existing: 'adopt' })
-  assert.match(job.steps[0].detail ?? '', /not in the configured Tailscale account/)
+  assert.match(job.steps[0].detail ?? '', /not known to the configured Tailscale account yet/)
   assert.equal(await store.get('node-pve-a', 'tailscale'), null)
 })
 

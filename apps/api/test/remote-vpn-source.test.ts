@@ -42,3 +42,23 @@ test('nothing configured: the slot says not available', async () => {
   const m = await vpnStatuses([{ node: 'pve-a', type: 'lxc', vmid: 101, name: 'web' }], src)
   assert.equal(m.get('lxc/101')?.state, 'not-available')
 })
+
+test('no API key, but the machines were probed: the slot is available and shows what is on each guest', async () => {
+  const det = (text: string) => ({ detected: { installed: true }, detectedText: text, managed: false })
+  const probed = {
+    ...ov,
+    providers: ov.providers.map((p: any) => ({ ...p, configured: false })),
+    detection: { checkedAt: '2026-11-05T10:00:00Z', running: false },
+    machines: [
+      { ...ov.machines[0], cells: { tailscale: cell('connected', '100.64.0.21', { dnsName: 'web.tail0000.ts.net', ...det('Tailscale installed, connected as web.tail0000.ts.net (100.64.0.21)') }), netbird: cell('not-installed') } },
+      { ...ov.machines[1], cells: { tailscale: cell('signed-out', null, det('Tailscale installed, signed out')), netbird: cell('not-installed') } },
+    ],
+  }
+  const src = remoteVpnSource({ overview: async () => probed }, () => true)
+  assert.equal(await src.available(), true)
+  const m = await vpnStatuses([{ node: 'pve-a', type: 'lxc', vmid: 101, name: 'web' }, { node: 'pve-a', type: 'qemu', vmid: 102, name: 'app' }], src)
+  assert.equal(m.get('lxc/101')?.state, 'connected')
+  assert.equal(m.get('lxc/101')?.detail, 'Tailscale installed, connected as web.tail0000.ts.net (100.64.0.21); found, not managed by HyperProx')
+  assert.equal(m.get('qemu/102')?.state, 'disconnected')
+  assert.match(m.get('qemu/102')?.detail ?? '', /signed out/)
+})

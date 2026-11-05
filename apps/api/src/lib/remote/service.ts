@@ -33,6 +33,7 @@ import {
   type ExistingChoice, type LockObservation, type VpnPrefs,
 } from './planner'
 import { clusterNetworks, compareSnapshots, onlyFirewall, parseSnapshot, snapshotReady, type CustomSubject, type GuardSubject, type NodeSnapshot } from './guard'
+import { describeDetected, type ClientDetector, type DetectedClient } from './detect'
 import { StreamRedactor, holdsSignInLink, redactKnownKeyShapes } from './redact'
 import { TAG_RE } from './tailscale'
 import {
@@ -77,6 +78,10 @@ export interface RemoteJob {
 }
 
 export type CellState = 'connected' | 'offline' | 'missing' | 'not-installed' | 'manual' | 'unconfigured' | 'unknown'
+  /** Installed, its daemon running, but not signed in to a tailnet / account. */
+  | 'signed-out'
+  /** Not looked at yet (nothing probed, no provider key). */
+  | 'unchecked'
 
 export interface RemoteCell {
   state: CellState
@@ -98,12 +103,29 @@ export interface RemoteCell {
   prefs: ClientPrefs | null
   /** A sign-in link is waiting for this machine (admins can reveal it). */
   loginPending: boolean
+  /** What the read-only probe found on the machine itself, and when; null when it was not looked at. */
+  detected: DetectedClient | null
+  /** The same, in words: "Tailscale installed, connected as web.example.ts.net (100.64.0.5)". */
+  detectedText: string | null
+  checkedAt: string | null
 }
 
-export interface RemoteMachineRow extends Machine { cells: Record<ProviderId, RemoteCell> }
+export interface RemoteMachineRow extends Machine {
+  cells: Record<ProviderId, RemoteCell>
+  /** HyperProx's own container: shown, never changed from here. */
+  self: boolean
+}
 
 export interface RemoteOverview {
-  providers: Array<{ id: ProviderId; label: string; configured: boolean; error: string | null; devices: number }>
+  providers: Array<{
+    id: ProviderId; label: string; configured: boolean; error: string | null; devices: number
+    /** Machines whose client reports it is signed in, from the probe (no API key needed). */
+    onTailnet: number
+    /** The card's line when there is no API key, in words; null when the provider is set up. */
+    summary: string | null
+  }>
+  /** The read-only probe of every machine: when it last finished, and whether one is running now. */
+  detection: { checkedAt: string | null; running: boolean }
   machines: RemoteMachineRow[]
   activeJobId: string | null
   /** Node changes not yet through their guard; `interrupted` ones were cut off by a restart and wait for a check. */
@@ -141,6 +163,8 @@ export interface RemoteDeps {
   publish?: (e: NotifyEventInput, o?: { privateOnly?: boolean }) => Promise<unknown>
   /** How often to look for new devices at each provider. Default 3 minutes. */
   pollEveryMs?: number
+  /** Finds clients already on each machine, read-only, with no provider key. Default: none (nothing probed). */
+  detector?: ClientDetector
 }
 
 type SupportOk = Extract<Support, { ok: true }>
@@ -159,6 +183,11 @@ export type UndoPlan =
       restoreForwarding: string | null; deviceId: string | null; deviceName: string; routeIds: string[] }
 
 const LOG_CAP = 40_000
+
+function need(p: RemoteProvider | null): RemoteProvider {
+  if (!p) throw new Error('This needs the provider\'s API key. Add it under Settings → Credentials → Remote access.')
+  return p
+}
 const MAX_MACHINES = 100
 const NB_GROUP_RE = /^[A-Za-z0-9 _.-]{1,64}$/
 /** A marker in the known-device table: the provider has been looked at once, so what is new from now on is announced. */
@@ -177,6 +206,24 @@ function emptyCell(state: CellState): RemoteCell {
   return {
     state, managed: false, ip: null, version: null, lastSeen: null, deviceName: null, mode: null, routes: [], exitNode: false, lastError: null,
     adopted: false, dnsName: null, expiresAt: null, expiryWarning: false, keyExpiryDisabled: false, pending: false, tags: [], prefs: null, loginPending: false,
+    detected: null, detectedText: null, checkedAt: null,
+  }
+}
+
+/** The state a probed client is in. */
+function detectedState(c: DetectedClient): CellState {
+  if (c.connected) return 'connected'
+  if (c.running && !c.loggedIn) return 'signed-out'
+  return 'offline'
+}
+
+/** A cell from what the probe found, for a client HyperProx has no record of. */
+function detectedCell(p: ProviderId, c: DetectedClient, at: string): RemoteCell {
+  return {
+    ...emptyCell(detectedState(c)),
+    ip: c.ip, version: c.version, dnsName: c.dnsName, deviceName: c.dnsName?.split('.')[0] ?? null, expiresAt: c.keyExpiry,
+    routes: c.advertisedRoutes, exitNode: c.advertiseExitNode,
+    detected: c, detectedText: describeDetected(p, c), checkedAt: at,
   }
 }
 
@@ -204,6 +251,8 @@ export function overviewForRole(ov: RemoteOverview, admin: boolean): RemoteOverv
       cells: Object.fromEntries(Object.entries(m.cells).map(([k, c]) => [k, {
         ...emptyCell(c.state), managed: c.managed, ip: c.ip, version: c.version, lastSeen: c.lastSeen,
         dnsName: c.dnsName, expiresAt: c.expiresAt, expiryWarning: c.expiryWarning,
+        // The state in words; the client's own settings are for admins.
+        detectedText: c.detectedText, checkedAt: c.checkedAt,
       }])) as Record<ProviderId, RemoteCell>,
     })),
     pendingDevices: [],
@@ -338,7 +387,8 @@ export class RemoteAccessService {
 
   // ── Overview ──────────────────────────────────────────────────────────────
 
-  private async deviceList(id: ProviderId, p: RemoteProvider, fresh = false): Promise<ProviderDevice[]> {
+  private async deviceList(id: ProviderId, p: RemoteProvider | null, fresh = false): Promise<ProviderDevice[]> {
+    if (!p) return []   // no API key: the provider's list is not readable
     const c = this.devices.get(id)
     if (!fresh && c && this.now() - c.at < DEVICE_CACHE_MS) return c.list
     const list = await p.listDevices()
@@ -346,7 +396,14 @@ export class RemoteAccessService {
     return list
   }
 
-  async overview(): Promise<RemoteOverview> {
+  /**
+   * Everything the VPN page shows. `mayProbe` (an admin's read): when the probe cache has aged out, a new probe
+   * starts in the background. A viewer's read never probes; it shows what is cached.
+   */
+  async overview(o: { mayProbe?: boolean } = {}): Promise<RemoteOverview> {
+    const det = this.d.detector
+    if (o.mayProbe && det?.stale()) void det.refresh({ ifStale: true }).catch(e => this.d.log?.(`[remote] probe: ${msg(e)}`))
+    const found = det?.cached() ?? new Map()
     const [machines, records, inflight, pending] = await Promise.all([
       this.d.exec.listMachines(), this.d.store.list(), this.d.store.listInflight(), this.d.store.listPendingRevokes(),
     ])
@@ -359,45 +416,66 @@ export class RemoteAccessService {
       let list: ProviderDevice[] | null = null
       if (p) { try { list = await this.deviceList(id, p) } catch (e) { error = redactKnownKeyShapes(msg(e)) } }
       lists.set(id, p ? list : null)
-      providers.push({ id, label: PROVIDER_LABEL[id], configured: !!p, error, devices: list?.length ?? 0 })
+      const onTailnet = [...found.values()].filter(e => e.result?.[id].installed && e.result[id].loggedIn).length
+      const installedCount = [...found.values()].filter(e => e.result?.[id].installed).length
+      const net = id === 'tailscale' ? 'a tailnet' : 'NetBird'
+      const plural = (n: number) => `${n} machine${n === 1 ? '' : 's'}`
+      const summary = p ? null
+        : onTailnet ? `${plural(onTailnet)} already on ${net} — add an API key to manage installs and approvals`
+          : installedCount ? `${PROVIDER_LABEL[id]} found on ${plural(installedCount)}, not signed in — add an API key to manage installs and approvals`
+            : `No ${PROVIDER_LABEL[id]} client found yet — add an API key to install it and approve devices`
+      providers.push({ id, label: PROVIDER_LABEL[id], configured: !!p, error, devices: list?.length ?? 0, onTailnet, summary })
     }
 
     const rows: RemoteMachineRow[] = machines.map(m => {
       const cells = {} as Record<ProviderId, RemoteCell>
+      const probed = found.get(m.id)
+      const at = probed ? new Date(probed.at).toISOString() : null
+      const windows = m.kind === 'qemu' && /^win/i.test(m.ostype ?? '')
       for (const id of PROVIDER_IDS) {
         const conf = providers.find(x => x.id === id)!.configured
         const rec = records.find(r => r.machineId === m.id && r.provider === id)
         const list = lists.get(id)
-        if (!conf && !rec) { cells[id] = emptyCell('unconfigured'); continue }
+        const dc: DetectedClient | null = probed?.result?.[id] ?? null
+        if (!conf && !rec) {
+          // No API key: what the machine itself says, found, not managed by HyperProx.
+          if (dc?.installed) cells[id] = detectedCell(id, dc, at!)
+          else if (dc) cells[id] = { ...emptyCell('not-installed'), detected: dc, detectedText: 'not installed', checkedAt: at }
+          else cells[id] = { ...emptyCell(windows ? 'manual' : m.running ? 'unchecked' : 'offline'), lastError: probed?.error ?? null, checkedAt: at }
+          continue
+        }
         // A record matches only by the identity recorded at install; a name match is shown, never acted on.
         const dev = rec ? this.matchRecord(rec, list ?? []) : (list ?? []).find(x => (x.hostname ?? x.name).toLowerCase() === safeHostname(m.name))
         if (!rec && !dev) {
-          cells[id] = emptyCell(m.kind === 'qemu' && /^win/i.test(m.ostype ?? '') ? 'manual' : 'not-installed')
+          cells[id] = dc?.installed ? detectedCell(id, dc, at!) : { ...emptyCell(windows ? 'manual' : 'not-installed'), detected: dc, detectedText: dc ? 'not installed' : null, checkedAt: at }
           continue
         }
-        const state: CellState = dev ? (dev.online ? 'connected' : 'offline') : list ? 'missing' : 'unknown'
+        // Without the provider's list (no key), the machine's own report decides.
+        const state: CellState = dev ? (dev.online ? 'connected' : 'offline') : list ? 'missing' : dc?.installed ? detectedState(dc) : 'unknown'
         cells[id] = {
           state, managed: !!rec,
-          ip: dev?.addresses[0] ?? rec?.address ?? null,
-          version: dev?.version ?? rec?.version ?? null,
+          ip: dev?.addresses[0] ?? rec?.address ?? dc?.ip ?? null,
+          version: dev?.version ?? dc?.version ?? rec?.version ?? null,
           lastSeen: dev?.lastSeen ?? null,
           deviceName: dev?.name ?? rec?.hostname ?? null,
           mode: rec?.mode ?? null, routes: rec?.routes ?? [], exitNode: rec?.exitNode ?? false, lastError: rec?.lastError ?? null,
           adopted: rec?.adopted ?? false,
-          dnsName: dev?.dnsName ?? null,
-          expiresAt: dev?.expiresAt ?? null,
+          dnsName: dev?.dnsName ?? dc?.dnsName ?? null,
+          expiresAt: dev?.expiresAt ?? dc?.keyExpiry ?? null,
           expiryWarning: !!dev?.expiresAt && !dev.keyExpiryDisabled && Date.parse(dev.expiresAt) - this.now() < EXPIRY_WARN_MS,
           keyExpiryDisabled: dev?.keyExpiryDisabled ?? false,
           pending: dev?.pending ?? false,
           tags: dev?.tags ?? [],
           prefs: rec?.prefs ?? null,
           loginPending: this.loginFor(m.id, id) !== null,
+          detected: dc, detectedText: dc ? describeDetected(id, dc) : null, checkedAt: at,
         }
       }
-      return { ...m, cells }
+      return { ...m, cells, self: !!probed?.self }
     })
     return {
       providers, machines: rows, activeJobId: this.active,
+      detection: { checkedAt: det?.checkedAt() ? new Date(det.checkedAt()!).toISOString() : null, running: !!det?.busy() },
       attention: inflight.map(x => ({ machineId: x.machineId, provider: x.provider, action: x.action, since: new Date(x.startedAt).toISOString(), interrupted: x.owner !== this.instance })),
       pendingRevokes: pending.filter(r => new Date(r.revokeAfter).getTime() <= this.now()).length,
       pendingDevices: PROVIDER_IDS.flatMap(id => (lists.get(id) ?? []).filter(d => d.pending).map(d => ({
@@ -405,6 +483,18 @@ export class RemoteAccessService {
         machineId: records.find(r => r.provider === id && r.deviceId === d.id)?.machineId ?? null,
       }))),
     }
+  }
+
+  /** Probe every running machine now (the page's Refresh). Admins only, by the route. */
+  async refreshDetection(): Promise<void> {
+    if (!this.d.detector) throw new RemoteInputError('Detection is not running')
+    await this.d.detector.refresh()
+  }
+
+  /** HyperProx's own container, as the probe found it; null before the first probe. */
+  private selfMachineId(): string | null {
+    for (const e of this.d.detector?.cached().values() ?? []) if (e.self) return e.machineId
+    return null
   }
 
   private matchRecord(rec: RemoteRecord, list: ProviderDevice[]): ProviderDevice | undefined {
@@ -482,12 +572,21 @@ export class RemoteAccessService {
   private async runJob(job: RemoteJob, req: JobRequest): Promise<void> {
     const plain = (s: string) => redactKnownKeyShapes(s, { netbird: req.provider === 'netbird' })
     try {
-      const provider = await this.d.provider(req.provider)
-      if (!provider) throw new Error(`${PROVIDER_LABEL[req.provider]} is not configured. Add it under Settings → Credentials → Remote access.`)
-      const settings = await this.d.providerSettings(req.provider)
       const machines = await this.d.exec.listMachines()
       const unknown = req.machineIds.filter(id => !machines.some(m => m.id === id))
       if (unknown.length) throw new Error(`No such machine: ${unknown.join(', ')}`)
+      const self = this.selfMachineId()
+      if (self && req.machineIds.includes(self)) {
+        throw new Error('That is this HyperProx\'s own container: its VPN client is shown read-only and never changed from here, so HyperProx cannot cut itself off.')
+      }
+      const provider = await this.d.provider(req.provider)
+      // What the machine can do on its own works without a key: reading it, its settings, updating it, adopting it.
+      const noKeyOk = req.action === 'check' || req.action === 'update' || req.action === 'configure' ||
+        (req.action === 'install' && (req.existing === 'adopt' || req.existing === 'adopt-lock'))
+      if (!provider && !noKeyOk) {
+        throw new Error(`This needs a ${PROVIDER_LABEL[req.provider]} API key (it makes install keys and approves devices). Add it under Settings → Credentials → Remote access.`)
+      }
+      const settings = await this.d.providerSettings(req.provider)
 
       for (const step of job.steps) {
         const m = machines.find(x => x.id === step.machineId)!
@@ -725,20 +824,21 @@ export class RemoteAccessService {
     return compareSnapshots(before, after, provider, again)
   }
 
-  private async runStep(job: RemoteJob, req: JobRequest, p: RemoteProvider, settings: ProviderSettings, m: Machine, all: Machine[]): Promise<string> {
+  // (need(): the actions that cannot run without the provider's API; runJob has already refused them.)
+  private async runStep(job: RemoteJob, req: JobRequest, p: RemoteProvider | null, settings: ProviderSettings, m: Machine, all: Machine[]): Promise<string> {
     switch (req.action) {
       case 'install':   return this.install(job, req, p, settings, m)
       case 'check':     return this.check(job, req.provider, p, m)
       case 'update':    return this.update(job, req.provider, p, m)
-      case 'routing':   return this.routing(job, req, p, settings, m, all)
-      case 'uninstall': return this.uninstall(job, req.provider, p, m)
+      case 'routing':   return this.routing(job, req, need(p), settings, m, all)
+      case 'uninstall': return this.uninstall(job, req.provider, need(p), m)
       case 'configure': return this.configure(job, req, p, settings, m, all)
     }
   }
 
   // ── Install, adopt ────────────────────────────────────────────────────────
 
-  private async install(job: RemoteJob, req: JobRequest, p: RemoteProvider, settings: ProviderSettings, m: Machine): Promise<string> {
+  private async install(job: RemoteJob, req: JobRequest, p: RemoteProvider | null, settings: ProviderSettings, m: Machine): Promise<string> {
     const facts = m.kind === 'qemu' && /^win/i.test(m.ostype ?? '') ? null : await this.detect(job, m)
     const rec = await this.d.store.get(m.id, req.provider)
     const plan = planInstall({ machine: m, provider: req.provider, facts, mode: req.mode, managed: !!rec, existing: req.existing })
@@ -753,6 +853,7 @@ export class RemoteAccessService {
         : `This container has no /dev/net/tun. Either give it the device (“Add /dev/net/tun”, the same as \`${fix.command}\` on the node, then restart the container), or install in userspace mode.`)
     }
     if (plan.kind === 'adopt') return this.adopt(job, req.provider, p, m, plan.lock, settings)
+    if (!p) throw new Error(`Installing needs a ${PROVIDER_LABEL[req.provider]} API key (for the one-time install key). Add it under Settings → Credentials → Remote access.`)
 
     const nb = req.provider === 'netbird'
     const hostname = safeHostname(m.name)
@@ -884,12 +985,17 @@ export class RemoteAccessService {
    * machine. On a node the client must already meet the node locks; `lock` instead applies them first, as a
    * guarded change confirmed from the client, and puts the old settings back if anything goes wrong.
    */
-  private async adopt(job: RemoteJob, provider: ProviderId, p: RemoteProvider, m: Machine, lock = false, settings?: ProviderSettings): Promise<string> {
+  private async adopt(job: RemoteJob, provider: ProviderId, p: RemoteProvider | null, m: Machine, lock = false, settings?: ProviderSettings): Promise<string> {
     const r = await this.exec(job, m, statusScript(provider), { timeoutMs: 60_000 })
     const st = parseStatus(provider, r.output)
     if (!st.installed) throw new Error(`${PROVIDER_LABEL[provider]} is not installed on ${m.name}`)
-    const dev = this.matchStatus(st, await this.deviceList(provider, p, true))
-    if (!dev) throw new Error(`${m.name}'s client is not in the configured ${PROVIDER_LABEL[provider]} account (it may be signed in elsewhere); nothing was recorded`)
+    // With a key, the client must be in the configured account. Without one, it is recorded from the machine and
+    // linked to its device once a key is added.
+    const dev = p ? this.matchStatus(st, await this.deviceList(provider, p, true)) : undefined
+    if (p && !dev) {
+      throw new Error(`${m.name}'s client is not known to the configured ${PROVIDER_LABEL[provider]} account yet (it may be signed in to another ` +
+        `${provider === 'tailscale' ? 'tailnet' : 'account'}, or still waiting for approval); nothing was recorded`)
+    }
     let locked = false
     if (m.kind === 'node') {
       const { problems, ts, obs } = await this.observeLocks(job, m, provider)
@@ -919,13 +1025,13 @@ export class RemoteAccessService {
       }
     }
     await this.d.store.upsert({
-      machineId: m.id, provider, deviceId: dev.id, nodeKey: st.nodeKey ?? dev.nodeKey ?? null, hostname: st.hostname ?? dev.hostname ?? null,
-      address: st.ip ?? dev.addresses[0] ?? null, mode: 'kernel', version: st.version, routes: [], exitNode: false, routeIds: [],
+      machineId: m.id, provider, deviceId: dev?.id ?? null, nodeKey: st.nodeKey ?? dev?.nodeKey ?? null, hostname: st.hostname ?? dev?.hostname ?? null,
+      address: st.ip ?? dev?.addresses[0] ?? null, mode: 'kernel', version: st.version, routes: [], exitNode: false, routeIds: [],
       adopted: true, forwardingBefore: null, connected: st.connected, checkedAt: new Date(this.now()), lastError: null,
       ...(m.kind === 'node' ? { prefs: { ...DEFAULT_PREFS, tags: [], netfilterOff: true } } : {}),
     })
     if (locked) await this.d.store.audit('remote.adopt.lock', m.id, { by: job.by, provider })
-    return `Adopted${locked ? ' and put under the node locks' : ' as it is'}: ${st.connected ? 'connected' : 'not connected'}${st.ip ? ` as ${st.ip}` : ''}, matched to “${dev.name}”. ` +
+    return `Adopted${locked ? ' and put under the node locks' : ' as it is'}: ${st.connected ? 'connected' : 'not connected'}${st.ip ? ` as ${st.ip}` : ''}, ${dev ? `matched to “${dev.name}”` : `not known to the ${PROVIDER_LABEL[provider]} API yet (no API key): device actions wait until one is added`}. ` +
       (locked ? 'Overlay DNS, accepted routes, overlay SSH and client firewall rules are now off, confirmed from the client.' : 'Nothing on the machine was changed.')
   }
 
@@ -944,7 +1050,7 @@ export class RemoteAccessService {
 
   // ── Check, update ─────────────────────────────────────────────────────────
 
-  private async check(job: RemoteJob, provider: ProviderId, p: RemoteProvider, m: Machine): Promise<string> {
+  private async check(job: RemoteJob, provider: ProviderId, p: RemoteProvider | null, m: Machine): Promise<string> {
     const r = await this.exec(job, m, statusScript(provider), { timeoutMs: 60_000 })
     const st = parseStatus(provider, r.output)
     if (!st.installed) return `${PROVIDER_LABEL[provider]} is not installed`
@@ -961,7 +1067,7 @@ export class RemoteAccessService {
       (dev ? `, matched to “${dev.name}” (last seen ${dev.lastSeen ?? 'never'})` : ', not in the provider\'s device list')
   }
 
-  private async update(job: RemoteJob, provider: ProviderId, p: RemoteProvider, m: Machine): Promise<string> {
+  private async update(job: RemoteJob, provider: ProviderId, p: RemoteProvider | null, m: Machine): Promise<string> {
     await this.record(m, provider)
     const s = await this.support(job, m)
     const r = await this.guarded(job, m, provider, p, 'update', { plan: { kind: 'restart', provider } },
@@ -1306,7 +1412,7 @@ export class RemoteAccessService {
     return { current, desired, changes: describePrefs(m, provider, current, desired), refusal }
   }
 
-  private async configure(job: RemoteJob, req: JobRequest, p: RemoteProvider, settings: ProviderSettings, m: Machine, all: Machine[]): Promise<string> {
+  private async configure(job: RemoteJob, req: JobRequest, p: RemoteProvider | null, settings: ProviderSettings, m: Machine, all: Machine[]): Promise<string> {
     const provider = req.provider
     const rec = await this.record(m, provider)
     const current = await this.readPrefs(job, m, provider, rec)
@@ -1320,7 +1426,7 @@ export class RemoteAccessService {
     const routingChanged = desired.advertiseExitNode !== current.advertiseExitNode ||
       JSON.stringify([...desired.subnets].sort()) !== JSON.stringify([...current.subnets].sort())
     if (routingChanged) {
-      await this.routing(job, { ...req, action: 'routing', subnets: desired.subnets, exitNode: desired.advertiseExitNode, acknowledge: req.acknowledge }, p, settings, m, all)
+      await this.routing(job, { ...req, action: 'routing', subnets: desired.subnets, exitNode: desired.advertiseExitNode, acknowledge: req.acknowledge }, need(p), settings, m, all)
     }
     const clientChanged = (['acceptDns', 'acceptRoutes', 'ssh', 'exitNode', 'exitNodeAllowLan'] as const).some(k => desired[k] !== current[k])
     if (clientChanged) {
@@ -1344,7 +1450,7 @@ export class RemoteAccessService {
           if (f.DisableClientRoutes !== !(desired.acceptRoutes || !!desired.exitNode)) wrong.push(`DisableClientRoutes is ${f.DisableClientRoutes}`)
           if ((f.ServerSSHAllowed ?? false) !== desired.ssh) wrong.push(`ServerSSHAllowed is ${f.ServerSSHAllowed}`)
           if (desired.exitNode && !new RegExp(`^HP_NB_NET .*${desired.exitNode.replace(/[^A-Za-z0-9_-]/g, '')}.*(selected|✓|true)`, 'im').test(out.output)) wrong.push('the exit node is not selected')
-          if (desired.ssh !== current.ssh && rec.deviceId && p.setSsh) await p.setSsh({ id: rec.deviceId, name: rec.hostname ?? m.name, addresses: [], online: true, lastSeen: null, version: null }, desired.ssh)
+          if (desired.ssh !== current.ssh && rec.deviceId && p?.setSsh) await p.setSsh({ id: rec.deviceId, name: rec.hostname ?? m.name, addresses: [], online: true, lastSeen: null, version: null }, desired.ssh)
         }
         if (wrong.length) throw new Error(`the client did not take the change: ${wrong.join(', ')}`)
       }, { undoOnFailure: true })
