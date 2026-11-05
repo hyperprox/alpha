@@ -15,6 +15,7 @@ import { PreviewDialog } from './PreviewDialog'
 import { GUEST_TABS } from './tabs'
 import { MiniBar, StatusDot, TypeBadge, VpnBadge, GpuBadge } from './GuestList'
 import { gpath, type GuestRow, type GuestView, type HistoryItem } from './types'
+import { HaPanel } from '@/components/ha'
 
 export function GuestDrawer({ row, nodes, canOperate, canAdmin, onClose, onRefresh }: {
   row: GuestRow; nodes: Array<{ node: string; status: string }>; canOperate: boolean; canAdmin: boolean
@@ -64,6 +65,7 @@ export function GuestDrawer({ row, nodes, canOperate, canAdmin, onClose, onRefre
           {tab === 'config' && (view ? <ConfigEditor key={view.digest} view={view} canEdit={canAdmin} onSaved={saved} /> : <BusyNote>Reading the config…</BusyNote>)}
           {tab === 'network' && (view ? <NetworkEditor view={view} canEdit={canAdmin} onSaved={saved} /> : <BusyNote>Reading the config…</BusyNote>)}
           {tab === 'devices' && (view ? <GpuPanel view={view} nodes={nodes.map(n => n.node)} canEdit={canAdmin} onSaved={saved} /> : <BusyNote>Reading the config…</BusyNote>)}
+          {tab === 'ha' && <HaPanel type={row.type} vmid={row.vmid} onChanged={saved} />}
           {tab === 'snapshots' && <SnapshotsTab row={row} canAdmin={canAdmin} onRefresh={onRefresh} />}
           {tab === 'console' && <ConsoleTab row={row} />}
           {tab === 'history' && view && <HistoryTab view={view} canAdmin={canAdmin} onSaved={saved} />}

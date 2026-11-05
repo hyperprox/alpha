@@ -14,6 +14,7 @@ export const GUEST_TABS: TabDef[] = [
   { id: 'config', label: 'Config' },
   { id: 'network', label: 'Network' },
   { id: 'devices', label: 'GPU & devices' },
+  { id: 'ha', label: 'High availability' },
   { id: 'snapshots', label: 'Snapshots' },
   { id: 'console', label: 'Console', when: (_g, c) => c.canOperate },
   { id: 'history', label: 'History' },
