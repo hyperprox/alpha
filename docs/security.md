@@ -240,6 +240,82 @@ Send it as `Authorization: Bearer hpx_...`. It is shown once; HyperProx stores o
 - **Revoking** takes effect at once from Settings; from `hyperprox token revoke`, within 10 seconds. A revoked
   token keeps its name, so pick a new name for its replacement. A bad, revoked or expired token gets 401.
 
+## Remote access
+
+Installing a VPN client opens a way into the machine from outside your network, so this feature is held to
+the rules below ([docs/remote-access.md](remote-access.md)).
+
+- **Provider credentials are vault items** (`hyperprox:remote/tailscale`, `hyperprox:remote/netbird`),
+  masked when read back, like every other integration. Use a NetBird service user or a narrowly scoped
+  Tailscale OAuth client rather than a personal admin token where you can. The NetBird URL must be
+  `https://`, and no provider request follows a redirect.
+- **Keys are minted per install**: single use, not ephemeral, 10 minutes (Tailscale) or one day (NetBird's
+  minimum). Before a key leaves HyperProx its id (never the key) is written to the database as pending
+  revocation. HyperProx revokes it as soon as the install ends, asks the provider to confirm, and only
+  then deletes the row. A sweep at start-up, after every unlock and every minute revokes whatever is left,
+  so a crash or a restart cannot leave a key alive. Shutdown waits a few seconds for revokes in flight.
+- **A key exists only in the API's memory and on the target's stdin.** It travels inside the script on the
+  SSH channel's stdin and reaches the client on a pipe (`--auth-key=file:/dev/stdin`,
+  `--setup-key-file /dev/stdin`), so it is on no command line and in no file HyperProx writes, on the node
+  or in the guest. Job output passes through a stream redactor that holds back enough of each chunk to
+  catch a key split across two, and removes the key, Tailscale and NetBird token shapes and, while a
+  NetBird key is live, NetBird setup-key shapes. Provider errors carry a status and message, never a request.
+- **The one exception is the manual flow** for Windows and macOS: an admin who has just re-entered the
+  master password can be shown a single-use key once. It is recorded for revocation first, audited, sent
+  with `Cache-Control: no-store`, not stored, and revoked after 30 minutes even across a restart.
+- **Re-confirmation** is required to install, change routing, uninstall, add `/dev/net/tun`, add the
+  firewall rule, make a manual key, and to check or update a client on a Proxmox node. API tokens cannot
+  re-confirm, so **no API token can open a tunnel into the cluster or run anything on a node**, at any role.
+- **Status for roles below admin** is overlay state only: connected, overlay IP, client version, last seen.
+  No LAN or cluster addresses, no routes. Job logs are admin-only.
+- **Proxmox nodes keep their DNS, routes and firewall.** No DNS, no accepted routes, no client firewall
+  rules (`--netfilter-mode=off`, `--disable-firewall=true`), never an exit node, never a forwarding change.
+  Every change on a node is guarded by a before/after comparison of routing tables and rules (the client's
+  own only inside its overlay prefixes, its rules only at their exact priorities), paths to cluster peers,
+  Ceph monitors (IPv4 and IPv6), gateways and resolvers, resolver and per-link DNS, the firewall rules as
+  text on every backend, corosync links, forwarding and quorum, 15 seconds apart, with automatic rollback.
+  An in-flight record makes a restart wait for any running script or apt, re-run the check, and always
+  undo an interrupted install. The only
+  firewall change HyperProx offers is one rule for TCP 22 and 8006 from the overlay on its interface,
+  previewed and confirmed.
+- **Existing clients are not touched** without an explicit Adopt or Replace, and a Replace keeps the old
+  state (files, unit and environment, package version, service state) root-only to put back, then
+  overwrites and removes the copy. Provider devices are deleted only by the id recorded when the client reported itself,
+  never by name.
+- **Every SSH path fails closed** when the host key has never been pinned: nodes, `pct exec`, the guest
+  agent, VMs and hand-added hosts. The refusal shows the fingerprint; an admin who has re-confirmed can pin
+  exactly the key presented (it is read again and must match), in the store the Terminal uses. An existing
+  different pin is never replaced from here.
+- **Guest config is changed only through the Proxmox API** (`devN: /dev/net/tun`, with the config digest),
+  never by editing or appending to a config file. HyperProx does not restart the container for you.
+- **Sign-in links** (when an owner signs a machine in with their own account, or a key expired) are
+  sensitive: whoever opens one adds a machine to the network. HyperProx captures them from output it does
+  not log, keeps them in memory only for about ten minutes, shows them only to admins after
+  re-confirmation (`Cache-Control: no-store`, audited without the link), and sends them only to
+  notification channels marked **private**, as a sensitive link that is never written to the outbox. After
+  it expires, or after a restart, the notification says the link has expired instead.
+- **Every read of a provider credential is audited** without its value (`remote.credential.read`, at most
+  once a minute per provider). While HyperProx is locked, every VPN action says "HyperProx is locked — sign in
+  to …" and does nothing; the revoke sweep and the new-device poller pause and resume on unlock.
+- **WireGuard keys.** A server's or machine's private key is made on that machine and never leaves it
+  (wg-quick loads it from its own file; no interface file HyperProx writes has a `PrivateKey` line). A
+  phone or laptop client's keypair is made in the browser (or, as a fallback, on the server container, in
+  output HyperProx never logs) and kept with its config as one vault item per peer, revealed again only
+  after re-confirmation, audited. A rotated key is kept seven days, marked rotated, then deleted. A server
+  key goes to the vault only if the owner opts in. Postgres holds public keys only.
+- **The MikroTik router** is written to only with a separate RouterOS login in the vault (group policies
+  read, write, api, rest-api), never the admin login; without it the view is read-only. RouterOS cannot
+  limit a login to WireGuard peers (`write` allows other changes), so that limit is enforced by HyperProx:
+  its REST writer refuses every path but `/interface/wireguard/peers`. Only peers marked
+  `comment=hyperprox:<id>` are ever changed or removed. Firewall, addresses and routes are never written; a
+  missing input rule for a listen port is shown as a command for the owner to run.
+- **Locked means nothing**: while HyperProx is locked no credential is in memory; every VPN and WireGuard
+  action says "HyperProx is locked — sign in to …" and does nothing, and the background work (revoke sweep,
+  new-device poller, rotation sweep) waits for the next unlock.
+- **Audit**: `remote.install`, `remote.update`, `remote.routing`, `remote.uninstall`, `remote.check`,
+  `remote.rollback`, `remote.cleanup`, `remote.recovered`, `remote.tun`, `remote.firewall` and
+  `remote.manual-key` are written with the user, the machines and the provider.
+
 ## Not built yet
 
 These are designed ([design](superpowers/specs/2026-10-14-vault-gate-design.md)) but are **not** in this
@@ -256,6 +332,28 @@ release. Do not assume them.
 - **Tamper check**: verifying the installed files against signed checksums before each unlock.
 - **Audit timeline**: the vault's event log joined with HyperProx's own action log.
 - Least-privilege hypervisor tokens per role, and rotating a credential in the system it belongs to.
+
+## Raw device lines in guest configs
+
+Proxmox's API refuses every `lxc.*` line, so the GPU and device editor writes the few it needs by rewriting the
+guest's config file over the node login. Only device lines are written: `lxc.cgroup2.devices.allow` /
+`lxc.cgroup.devices.allow` for one character device (`MAJOR:*` only for a GPU major, otherwise the exact
+`MAJOR:MINOR` from the node's inventory) and `lxc.mount.entry` binds of an inventory device node onto the same path,
+without `mode=`, `uid=` or `gid=`. Hooks, AppArmor, idmaps, capabilities and everything else are refused. Each
+write is a compare-and-swap under Proxmox's own config lock, re-checks every added device's major:minor on the node
+at that moment, and is read back byte for byte.
+
+**The limit of that check.** It proves what the node had when the file was written. LXC resolves a mount source
+again every time the container starts. If a device node is later replaced (a different device at the same path, or
+a symlink in its place), the container binds whatever is there at start; an `optional` entry whose device has gone
+is skipped silently. Re-open the guest's GPU section after hardware or driver changes on its nodes: the drill-down
+shows which device it actually sees.
+
+**The hidden GPU marker.** A guest's GPU state (what HyperProx added, and an open "GPU off") is kept under a hidden
+`<!-- hpx-id:… -->` comment in its description. HyperProx's own edits and reverts keep it, but editing the
+description in the Proxmox UI can delete it. If it is deleted, HyperProx no longer recognises that state as this
+guest's: its GPU entries show as hand-written (GPU off leaves them unless ticked) and an open GPU off cannot be
+turned back on from the toggle. Nothing in the config changes; the next GPU change writes a new marker.
 
 ## Honest caveats
 

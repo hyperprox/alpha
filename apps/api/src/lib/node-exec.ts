@@ -26,26 +26,6 @@ import { getCredential, setCredential } from './credentials'
 
 const HOSTKEY_PROVIDER = 'hostkey'
 
-/**
- * Trust on first use, as the Deck does: the first key seen for host:22 is pinned in the vault, and every
- * later connection must present the same one. A changed key is always refused; clearing the pin is a
- * deliberate act (the Deck's host-key list).
- */
-export async function checkHostKey(host: string, fingerprint: string): Promise<boolean> {
-  const id = credentialId(`${host}:22`)
-  const pinned = await getCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, id)
-  if (!pinned) { await setCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, id, fingerprint, false); return true }
-  return pinned === fingerprint
-}
-
-/** Pin a key learned elsewhere (the setup wizard's first connection). An existing, different pin wins. */
-export async function pinHostKey(host: string, fingerprint: string): Promise<'pinned' | 'same' | 'conflict'> {
-  const id = credentialId(`${host}:22`)
-  const pinned = await getCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, id)
-  if (!pinned) { await setCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, id, fingerprint, false); return 'pinned' }
-  return pinned === fingerprint ? 'same' : 'conflict'
-}
-
 /** Credential id for a node, distinct from any guest that shares its name. */
 export function nodeCredentialId(node: string): string {
   return credentialId(`node-${node}`)
@@ -91,6 +71,73 @@ export interface ExecOptions {
    * any user on the node could read it from the process list; a script carrying a private key goes this way.
    */
   input?:    string
+  /** SSH port; 22 unless the login says otherwise (a hand-added host). */
+  port?:     number
+  /**
+   * Refuse a host whose key has never been pinned, instead of trusting it. For targets reached with a script
+   * that carries a key (remote access to VMs and hand-added hosts): the admin pins it in the Terminal first.
+   */
+  requirePin?: boolean
+}
+
+/** A host with no pinned key, refused because the caller required one. The message names the fingerprint. */
+export class HostKeyNotPinnedError extends Error {
+  constructor(readonly host: string, readonly port: number, readonly fingerprint: string) {
+    super(`${host}:${port} has no pinned host key, so HyperProx will not send it anything. Its key is ${fingerprint}. ` +
+      'Open it once in the Terminal, check that fingerprint against the machine, and accept it; then try again.')
+    this.name = 'HostKeyNotPinnedError'
+  }
+}
+
+export type HostKeyDecision = 'accept' | 'reject-unpinned' | 'reject-changed'
+
+/** The pin rule, alone: a pinned key must match; an unpinned one is accepted only when the caller allows it. */
+export function hostKeyDecision(pinned: string | null | undefined, fingerprint: string, requirePin: boolean): HostKeyDecision {
+  if (pinned) return pinned === fingerprint ? 'accept' : 'reject-changed'
+  return requirePin ? 'reject-unpinned' : 'accept'
+}
+
+/** The pin the Terminal and every exec path share for `host:port`, or null. */
+export async function pinnedHostKey(host: string, port = 22): Promise<string | null> {
+  return getCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, credentialId(`${host}:${port}`))
+}
+
+/** Pin `host:port` to `fingerprint`, in the same place the Terminal pins it. */
+export async function pinHostKey(host: string, port: number, fingerprint: string): Promise<void> {
+  await setCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, credentialId(`${host}:${port}`), fingerprint, false)
+}
+
+/**
+ * Trust on first use, as the Deck does: with no pin yet, the key seen is pinned; after that only that key is
+ * accepted. A changed key is always refused; clearing the pin is a deliberate act (the Terminal).
+ */
+export async function checkHostKey(host: string, fingerprint: string, port = 22): Promise<boolean> {
+  const pinned = await pinnedHostKey(host, port)
+  if (!pinned) { await pinHostKey(host, port, fingerprint); return true }
+  return pinned === fingerprint
+}
+
+/** Pin a key learned elsewhere (the setup wizard's first connection). An existing, different pin wins. */
+export async function pinHostKeyIfFree(host: string, fingerprint: string, port = 22): Promise<'pinned' | 'same' | 'conflict'> {
+  const pinned = await pinnedHostKey(host, port)
+  if (!pinned) { await pinHostKey(host, port, fingerprint); return 'pinned' }
+  return pinned === fingerprint ? 'same' : 'conflict'
+}
+
+/** Read a host's key fingerprint without logging in (the connection is refused right after the key arrives). */
+export function probeHostKey(host: string, port = 22, timeoutMs = 15_000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const client = new Client()
+    let fp: string | null = null
+    const done = (e?: Error) => { try { client.end() } catch { /* gone */ } ; fp ? resolve(fp) : reject(e ?? new Error(`no host key from ${host}:${port}`)) }
+    client.on('error', e => done(e as Error))
+    try {
+      client.connect({
+        host, port, username: 'hyperprox-probe', readyTimeout: timeoutMs,
+        hostVerifier: (key: Buffer) => { fp = fingerprintOf(key); setImmediate(() => done()); return false },
+      } as ConnectConfig)
+    } catch (e: any) { done(e) }
+  })
 }
 
 /**
@@ -110,6 +157,7 @@ export function execOnNode(opts: ExecOptions): Promise<ExecResult> {
     let out = ''
     let settled = false
     let timedOut = false
+    let unpinned: string | null = null
 
     const finish = (r: ExecResult) => {
       if (settled) return
@@ -131,7 +179,7 @@ export function execOnNode(opts: ExecOptions): Promise<ExecResult> {
       finish({ code: -1, output: out, timedOut: true })
     }, timeoutMs)
 
-    client.on('error', e => fail(e as Error))
+    client.on('error', e => fail(unpinned ? new HostKeyNotPinnedError(host, opts.port ?? 22, unpinned) : e as Error))
     client.on('ready', () => {
       client.exec(command, (err, stream) => {
         if (err) return fail(err)
@@ -148,13 +196,21 @@ export function execOnNode(opts: ExecOptions): Promise<ExecResult> {
     })
 
     const config: ConnectConfig = {
-      host, port: 22, username: cred.username,
+      host, port: opts.port ?? 22, username: cred.username,
       readyTimeout: 15_000, keepaliveInterval: 20_000,
-      // Same pin the Terminal uses: learned on first use, then required. A node whose key changed is
-      // refused here for exactly the reason it is refused there.
+      // Same pin the Terminal uses. A node whose key changed is refused here for exactly the reason it is
+      // refused there. An unpinned key is pinned on first use, unless the caller requires a pin already.
       hostVerifier: (key: Buffer, verified: (ok: boolean) => void) => {
         const fp = fingerprintOf(key)
-        checkHostKey(host, fp).then(verified, () => verified(false))
+        const port = opts.port ?? 22
+        getCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, credentialId(`${host}:${port}`))
+          .then(async pinned => {
+            const d = hostKeyDecision(pinned, fp, !!opts.requirePin)
+            if (d === 'reject-unpinned') unpinned = fp
+            if (d === 'accept' && !pinned) await pinHostKey(host, port, fp)
+            verified(d === 'accept')
+          })
+          .catch(() => verified(false))
       },
     }
     if (cred.privateKey) {

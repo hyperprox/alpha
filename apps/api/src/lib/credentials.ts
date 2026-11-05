@@ -77,6 +77,23 @@ export const CREDENTIAL_DEFS: CredentialDef[] = [
   { category: 'ai', provider: 'openai',    key: 'model',    label: 'OpenAI Model',      masked: false, envKey: 'OPENAI_MODEL' },
   { category: 'ai', provider: 'openai',    key: 'base_url', label: 'OpenAI Base URL',   masked: false, envKey: 'OPENAI_BASE_URL' },
 
+  // Remote access (lib/remote). No envKey: these were never in .env.
+  { category: 'remote', provider: 'tailscale', key: 'api_token',           label: 'API access token',                 masked: true  },
+  { category: 'remote', provider: 'tailscale', key: 'oauth_client_id',     label: 'OAuth client ID (instead of a token)', masked: false },
+  { category: 'remote', provider: 'tailscale', key: 'oauth_client_secret', label: 'OAuth client secret',              masked: true  },
+  { category: 'remote', provider: 'tailscale', key: 'tailnet',             label: 'Tailnet (blank: your own)',        masked: false },
+  { category: 'remote', provider: 'tailscale', key: 'default_tags',        label: 'Default tags, e.g. tag:server',    masked: false },
+  { category: 'remote', provider: 'tailscale', key: 'default_accept_dns_ct', label: 'One-click: MagicDNS on containers (yes/no)', masked: false },
+  { category: 'remote', provider: 'tailscale', key: 'default_accept_dns_vm', label: 'One-click: MagicDNS on VMs (yes/no)', masked: false },
+  { category: 'remote', provider: 'netbird',   key: 'management_url',      label: 'Management URL (blank: NetBird Cloud)', masked: false },
+  { category: 'remote', provider: 'netbird',   key: 'api_token',           label: 'Personal access token',            masked: true  },
+  { category: 'remote', provider: 'netbird',   key: 'default_groups',      label: 'Default groups (comma separated)', masked: false },
+  { category: 'remote', provider: 'netbird',   key: 'default_accept_dns_ct', label: 'One-click: NetBird DNS on containers (yes/no)', masked: false },
+  { category: 'remote', provider: 'netbird',   key: 'default_accept_dns_vm', label: 'One-click: NetBird DNS on VMs (yes/no)', masked: false },
+  // MikroTik WireGuard: a separate, limited RouterOS login (group: read, write, api, rest-api) for peers only.
+  { category: 'remote', provider: 'routeros-write', key: 'username', label: 'MikroTik WireGuard login (limited group)', masked: false },
+  { category: 'remote', provider: 'routeros-write', key: 'password', label: 'Its password', masked: true },
+
   // HyperProx system
   { category: 'system', provider: 'hyperprox', key: 'app_url',   label: 'App URL',   masked: false, envKey: 'NEXT_PUBLIC_API_URL' },
   // Grafana's admin password: read by Grafana only when it first sets up its database, and needed after

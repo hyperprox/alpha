@@ -7,7 +7,7 @@
 // =============================================================================
 
 import type { FastifyPluginAsync, FastifyReply } from 'fastify'
-import { currentContext } from '../lib/auth'
+import { currentContext, isReconfirmed } from '../lib/auth'
 import { getNotifyService } from '../lib/notify'
 import {
   NotifyForbiddenError, NotifyInputError, NotifyNotFoundError, NotifyUnavailableError, publicUrlFrom,
@@ -16,7 +16,7 @@ import {
 import { CHANNEL_KINDS, FAMILIES, LOCKED_OK, SELF_HOSTABLE } from '../lib/notify/types'
 
 const INPUT_KEYS: Array<keyof ChannelInput> = [
-  'name', 'kind', 'enabled', 'minSeverity', 'eventFilter', 'quietHours', 'lanOverride', 'usableWhileLocked', 'chatId',
+  'name', 'kind', 'enabled', 'minSeverity', 'eventFilter', 'quietHours', 'lanOverride', 'usableWhileLocked', 'private', 'chatId',
   'url', 'token', 'botToken', 'signingSecret', 'clearToken', 'clearSigningSecret',
 ]
 
@@ -64,12 +64,26 @@ export function buildNotifyRoutes(deps: { service?: NotifyService } = {}): Fasti
       } catch (e) { return fail(reply, e) }
     })
 
+    /**
+     * Marking a channel private lets sign-in links reach it, so it needs the master password again (an API
+     * token can never do it). Other edits do not.
+     */
+    const privateNeedsReconfirm = async (body: unknown, id: string | null): Promise<boolean> => {
+      if ((body as any)?.private !== true) return false
+      if (id) { const cur = (await svc().listChannels()).find(c => c.id === id); if (cur?.private) return false }
+      const c = currentContext()
+      return !c || !isReconfirmed(c.sid)
+    }
+    const RECONFIRM = { ok: false, code: 'reconfirm_required', error: 'Re-enter your master password to mark a channel private' }
+
     fastify.post('/channels', async (req, reply) => {
+      if (await privateNeedsReconfirm(req.body, null)) return reply.status(403).send(RECONFIRM)
       try { return reply.status(201).send({ ok: true, channel: await svc().createChannel(pick(req.body), actor()) }) }
       catch (e) { return fail(reply, e) }
     })
 
     fastify.put<{ Params: { id: string } }>('/channels/:id', async (req, reply) => {
+      try { if (await privateNeedsReconfirm(req.body, req.params.id)) return reply.status(403).send(RECONFIRM) } catch (e) { return fail(reply, e) }
       try { return { ok: true, channel: await svc().updateChannel(req.params.id, pick(req.body), actor()) } }
       catch (e) { return fail(reply, e) }
     })

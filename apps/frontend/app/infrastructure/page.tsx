@@ -1,933 +1,188 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
-import { useRouter } from 'next/navigation'
-import { formatBytes, formatUptime } from '@/lib/utils'
-import { alpha } from '@/lib/theme'
-import { atLeast } from '@/lib/api'
+// Infrastructure: every guest at a glance (status, resources, address, tags, GPU, VPN and HA), fast filters,
+// grouping by node, a drill-down per guest with the config editor, and a Devices view per node.
+
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
+import { alpha } from '@/lib/theme'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
+import { Notice } from '@/components/vault/ui'
+import { GuestTable } from '@/components/guest-config/GuestList'
+import { GuestDrawer } from '@/components/guest-config/GuestDrawer'
+import { DevicesPanel } from '@/components/guest-config/DevicesPanel'
+import { CreateGuestModal } from '@/components/guest-config/CreateGuest'
+import { API, type GuestRow } from '@/components/guest-config/types'
+import { useHaBadges } from '@/components/ha'
 
-interface PVENode { node: string; status: string; maxcpu: number; maxmem: number }
-interface PVEVM {
-  vmid: number; name: string; status: string; type: 'qemu'|'lxc'
-  node: string; cpus: number; cpu: number; mem: number; maxmem: number
-  maxdisk: number; disk: number; uptime: number; hastate?: string; tags?: string
+interface PVENode { node: string; status: string; maxcpu: number; maxmem: number; cpu?: number; mem?: number }
+
+type StatusFilter = 'all' | 'running' | 'stopped'
+type TypeFilter = 'all' | 'lxc' | 'qemu'
+
+function Chip({ active, onClick, children, title }: { active: boolean; onClick: () => void; children: React.ReactNode; title?: string }) {
+  return (
+    <button onClick={onClick} title={title} className="text-sm px-3 rounded-md whitespace-nowrap" style={{
+      height: 34, background: active ? 'color-mix(in srgb, var(--accent) 10%, transparent)' : 'transparent',
+      color: active ? 'var(--accent)' : 'var(--text-dim)', border: `1px solid ${active ? 'color-mix(in srgb, var(--accent) 35%, transparent)' : 'var(--border-dim)'}`,
+    }}>{children}</button>
+  )
 }
-interface Snapshot { name: string; description: string; snaptime: number; vmstate: number; parent?: string }
 
-type ActionState = { vmid: number; action: string } | null
-
-const STATUS_COLOR: Record<string, string> = {
-  running: 'var(--good)', stopped: 'var(--text-dimmer)', paused: 'var(--warn-2)', suspended: 'var(--violet-2)',
-}
-
-function Badge({ label, color }: { label: string; color: string }) {
-  return <span className="font-mono px-1.5 py-0.5 rounded" style={{ fontSize: 9, background: `${alpha(color, 8)}`, color, border: `1px solid ${alpha(color, 15)}` }}>{label}</span>
-}
-
-// VM detail / actions panel
-function VMPanel({ vm, nodes, onClose, onRefresh }: {
-  vm: PVEVM; nodes: PVENode[]; onClose: () => void; onRefresh: () => void
-}) {
-  const [tab,        setTab]       = useState<'overview'|'snapshots'|'migrate'|'config'>('overview')
-  const [snapshots,  setSnapshots] = useState<Snapshot[]>([])
-  const [snapName,   setSnapName]  = useState('')
-  const [confirmDelete, setConfirmDelete] = useState(false)
-  const [migrTarget, setMigrTarget] = useState('')
-  const [acting,     setActing]    = useState(false)
-  const [status,     setStatus]    = useState<string|null>(null)
-  const [error,      setError]     = useState<string|null>(null)
-  const [config,     setConfig]    = useState<any>(null)
-  const router = useRouter()
-  // Hiding is a courtesy; the server enforces the same matrix.
+export default function InfrastructurePage() {
   const { role } = useSession()
   const canOperate = atLeast(role, 'operator')
-  const canAdmin   = atLeast(role, 'admin')
-  const [reconfirm, setReconfirm] = useState(false)
-
-
-  useEffect(() => {
-    if (tab === 'snapshots') {
-      fetch(`/api/infra/vms/${vm.node}/${vm.vmid}/${vm.type}/snapshots`)
-        .then(r=>r.json()).then(j=>{ if(j.success) setSnapshots(j.data) })
-    }
-    if (tab === 'config') {
-      fetch(`/api/infra/vms/${vm.node}/${vm.vmid}/${vm.type}/config`)
-        .then(r=>r.json()).then(j=>{ if(j.success) setConfig(j.data) })
-    }
-  }, [tab, vm])
-
-  const doAction = async (action: string) => {
-    setActing(true); setStatus(`${action}...`); setError(null)
-    try {
-      const res  = await fetch(`/api/infra/vms/${vm.node}/${vm.vmid}/${vm.type}/${action}`, { method: 'POST' })
-      const json = await res.json()
-      if (!json.success) throw new Error(json.error)
-      setStatus(`${action} initiated`)
-      setTimeout(() => { onRefresh(); setStatus(null) }, 1500)
-    } catch(e: any) { setError(e.message) }
-    finally { setActing(false) }
-  }
-
-  // Opens a pane on the Terminal page rather than a Proxmox noVNC popup.
-  //
-  // The popup never worked: the URL was built from NEXT_PUBLIC_PROXMOX_URL,
-  // which is read in one line of this repo and set nowhere, so it opened a
-  // relative path at our own root and middleware bounced it to /login. Our own
-  // terminal is also the better destination — it reconnects, it keeps
-  // scrollback, and its session survives closing the tab.
-  const openConsole = () => {
-    router.push(`/terminal?open=${vm.type}-${vm.vmid}`)
-  }
-
-  const setHAState = async (state: 'started'|'stopped'|'disabled') => {
-    const sid = `${vm.type==='qemu'?'vm':'ct'}:${vm.vmid}`
-    setActing(true); setStatus(`Setting HA ${state}...`); setError(null)
-    try {
-      const res  = await fetch(`/api/infra/ha/${encodeURIComponent(sid)}`, {
-        method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ state }),
-      })
-      const json = await res.json()
-      if (!json.success) throw new Error(json.error)
-      setStatus(`HA state set to ${state}`)
-      setTimeout(() => { onRefresh(); setStatus(null) }, 1500)
-    } catch(e: any) { setError((e as any).message) }
-    finally { setActing(false) }
-  }
-
-  const deleteVM = async () => {
-    setActing(true)
-    try {
-      const endpoint = vm.type === 'lxc'
-        ? `/api/proxmox/nodes/${vm.node}/lxc/${vm.vmid}`
-        : `/api/proxmox/nodes/${vm.node}/qemu/${vm.vmid}`
-      const raw = await fetch(endpoint, { method: 'DELETE' })
-      // Destroying a guest needs the master password again (valid 5 minutes).
-      if (raw.status === 403) {
-        const b = await raw.clone().json().catch(()=>null)
-        if (b?.code === 'reconfirm_required' || /confirm/i.test(String(b?.error ?? ''))) { setReconfirm(true); return }
-      }
-      const res = await raw.json()
-      if (res.success) {
-        setStatus('Deleted successfully')
-        setConfirmDelete(false)
-        onClose()
-      } else {
-        setStatus('Delete failed: ' + (res.error ?? 'unknown error'))
-      }
-    } catch (e: any) {
-      setStatus('Delete failed: ' + e.message)
-    } finally {
-      setActing(false) }
-  }
-
-  const createSnapshot = async () => {
-    if (!snapName.trim()) return
-    setActing(true); setStatus('Creating snapshot...')
-    try {
-      const res  = await fetch(`/api/infra/vms/${vm.node}/${vm.vmid}/${vm.type}/snapshots`, {
-        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name: snapName }),
-      })
-      const json = await res.json()
-      if (!json.success) throw new Error(json.error)
-      setSnapName(''); setStatus('Snapshot created')
-      setTimeout(() => { setTab('snapshots'); setStatus(null) }, 1000)
-    } catch(e: any) { setError((e as any).message) }
-    finally { setActing(false) }
-  }
-
-  const deleteSnapshot = async (snapname: string) => {
-    setActing(true)
-    try {
-      await fetch(`/api/infra/vms/${vm.node}/${vm.vmid}/${vm.type}/snapshots/${snapname}`, { method: 'DELETE' })
-      setSnapshots(s => s.filter(x => x.name !== snapname))
-    } finally { setActing(false) }
-  }
-
-  const rollbackSnapshot = async (snapname: string) => {
-    if (!confirm(`Rollback to ${snapname}? This cannot be undone.`)) return
-    setActing(true); setStatus('Rolling back...')
-    try {
-      const res  = await fetch(`/api/infra/vms/${vm.node}/${vm.vmid}/${vm.type}/snapshots/${snapname}/rollback`, { method: 'POST' })
-      const json = await res.json()
-      if (!json.success) throw new Error(json.error)
-      setStatus('Rollback initiated')
-      setTimeout(() => { onRefresh(); onClose() }, 1500)
-    } catch(e: any) { setError((e as any).message) }
-    finally { setActing(false) }
-  }
-
-  const migrate = async () => {
-    if (!migrTarget) return
-    setActing(true); setStatus(`Migrating to ${migrTarget}...`)
-    try {
-      const res  = await fetch(`/api/infra/vms/${vm.node}/${vm.vmid}/${vm.type}/migrate`, {
-        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ target: migrTarget }),
-      })
-      const json = await res.json()
-      if (!json.success) throw new Error(json.error)
-      setStatus('Migration started')
-      setTimeout(() => { onRefresh(); onClose() }, 2000)
-    } catch(e: any) { setError((e as any).message) }
-    finally { setActing(false) }
-  }
-
-  const INPUT = { background:'var(--ground-deep)', border:'1px solid var(--border-strong)', color:'var(--text-bright)', borderRadius:6, padding:'0 12px', height:40, fontFamily:'inherit', fontSize:14, outline:'none' } as React.CSSProperties
-  const isRunning = vm.status === 'running'
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4" style={{ background:'rgba(0,0,0,0.85)', backdropFilter:'blur(4px)' }}>
-      {reconfirm && <ReconfirmModal onClose={()=>setReconfirm(false)} onDone={()=>{ setReconfirm(false); deleteVM() }} />}
-      <div className="w-full max-w-2xl rounded-xl border overflow-hidden" style={{ background:'var(--surface-raised)', borderColor:'color-mix(in srgb, var(--accent) 15%, transparent)', boxShadow:'0 0 40px color-mix(in srgb, var(--accent) 3%, transparent)' }}>
-
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor:'var(--border-dim)' }}>
-          <div className="flex items-center gap-3">
-            <div className="w-2 h-2 rounded-full" style={{ background: STATUS_COLOR[vm.status]??'var(--text-dimmer)', boxShadow:`0 0 5px ${STATUS_COLOR[vm.status]??'var(--text-dimmer)'}` }}/>
-            <span className="font-display font-semibold" style={{ color:'var(--text-bright)', fontSize:20 }}>{vm.name}</span>
-            <Badge label={vm.type.toUpperCase()} color={vm.type==='lxc'?'var(--accent)':'var(--violet)'}/>
-            <Badge label={`CT/VM ${vm.vmid}`} color="var(--text-dimmer)"/>
-            <Badge label={vm.node} color="var(--text-muted)"/>
-          </div>
-          <button onClick={onClose} style={{ color:'var(--text-dimmer)', fontSize:18 }}>✕</button>
-        </div>
-
-        {/* Tabs */}
-        <div className="flex border-b" style={{ borderColor:'var(--border-dim)' }}>
-          {(['overview','snapshots','migrate','config'] as const).filter(t=>canAdmin||t!=='migrate').map(t=>(
-            <button key={t} onClick={()=>setTab(t)} className="px-4 py-2.5 text-sm font-medium capitalize transition-colors"
-              style={{ borderBottom: tab===t?'2px solid var(--accent)':'2px solid transparent', color: tab===t?'var(--accent)':'var(--text-dim)', background:'transparent' }}>
-              {t}
-            </button>
-          ))}
-        </div>
-
-        {/* Content */}
-        <div className="p-5 overflow-y-auto" style={{ maxHeight:'55vh' }}>
-
-          {/* Status/error bar */}
-          {(status||error) && (
-            <div className="mb-4 px-3 py-2 rounded text-sm" style={{
-              background: error?'color-mix(in srgb, var(--crit-2) 6%, transparent)':'color-mix(in srgb, var(--good) 6%, transparent)',
-              color:      error?'var(--crit-soft)':'var(--good)',
-              border:     `1px solid ${error?'color-mix(in srgb, var(--crit-2) 19%, transparent)':'color-mix(in srgb, var(--good) 19%, transparent)'}`,
-            }}>{error??status}</div>
-          )}
-
-          {/* OVERVIEW */}
-          {tab === 'overview' && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-3 gap-3">
-                {[
-                  {label:'Status',  value:vm.status,                        color:STATUS_COLOR[vm.status]??'var(--text-dimmer)'},
-                  {label:'CPU',     value:`${Math.round(vm.cpu*100)}% / ${vm.cpus} cores`, color:'var(--accent)'},
-                  {label:'Memory',  value:`${formatBytes(vm.mem)} / ${formatBytes(vm.maxmem)}`, color:'var(--accent)'},
-                  {label:'Disk',    value:formatBytes(vm.maxdisk),           color:'var(--violet-2)'},
-                  {label:'Uptime',  value:vm.uptime?formatUptime(vm.uptime):'—', color:'var(--text-muted)'},
-                  {label:'HA',      value:vm.hastate??'none',                color:vm.hastate==='started'?'var(--good)':vm.hastate?'var(--warn-2)':'var(--text-dimmer)'},
-                ].map(({label,value,color})=>(
-                  <div key={label} className="p-3 rounded" style={{background:'var(--ground-deep)',border:'1px solid var(--border-dim)'}}>
-                    <div className="text-xs mb-1" style={{color:'var(--text-dimmer)'}}>{label}</div>
-                    <div className="text-xs font-mono font-semibold" style={{color}}>{value}</div>
-                  </div>
-                ))}
-              </div>
-
-              {/* Power actions */}
-              <div>
-                <div className="text-xs font-mono uppercase mb-2" style={{color:'var(--text-dimmer)',letterSpacing:'0.14em'}}>Power</div>
-                <div className="flex gap-2 flex-wrap">
-                  {canOperate && !isRunning && (
-                    <ActionBtn label="Start"    color="var(--good)" onClick={()=>doAction('start')}    disabled={acting}/>
-                  )}
-                  {canOperate && isRunning && (
-                    <>
-                      <ActionBtn label="Shutdown"  color="var(--warn-2)" onClick={()=>doAction('shutdown')} disabled={acting}/>
-                      <ActionBtn label="Reboot"    color="var(--violet-2)" onClick={()=>doAction('reboot')}   disabled={acting}/>
-                      <ActionBtn label="Stop"      color="var(--crit-2)" onClick={()=>doAction('stop')}     disabled={acting}/>
-                    </>
-                  )}
-                  {canOperate && <ActionBtn label="Console" color="var(--accent)" onClick={openConsole} disabled={acting}/>}
-                </div>
-              </div>
-
-              {/* HA actions */}
-              {canAdmin && vm.hastate !== undefined && (
-                <div>
-                  <div className="text-xs font-mono uppercase mb-2" style={{color:'var(--text-dimmer)',letterSpacing:'0.14em'}}>HA State</div>
-                  <div className="flex gap-2">
-                    <ActionBtn label="Start HA"   color="var(--good)" onClick={()=>setHAState('started')}  disabled={acting||vm.hastate==='started'}/>
-                    <ActionBtn label="Stop HA"    color="var(--warn-2)" onClick={()=>setHAState('stopped')}  disabled={acting||vm.hastate==='stopped'}/>
-                    <ActionBtn label="Disable HA" color="var(--text-dimmer)" onClick={()=>setHAState('disabled')} disabled={acting||vm.hastate==='disabled'}/>
-                  </div>
-                </div>
-              )}
-
-              {/* Quick snapshot */}
-              {canAdmin && <div>
-                <div className="text-xs font-mono uppercase mb-2" style={{color:'var(--text-dimmer)',letterSpacing:'0.14em'}}>Quick Snapshot</div>
-                <div className="flex gap-2">
-                  <input style={{...INPUT, flex:1}} value={snapName} placeholder="snapshot-name"
-                    onChange={e=>setSnapName(e.target.value)}
-                    onKeyDown={e=>e.key==='Enter'&&createSnapshot()}/>
-                  <ActionBtn label="Create" color="var(--accent)" onClick={createSnapshot} disabled={acting||!snapName.trim()}/>
-                </div>
-              </div>
-              }
-              {/* Danger zone */}
-              {canAdmin && <div className="mt-2 pt-3" style={{borderTop:'1px solid var(--text-faint)'}}>
-                <div className="text-xs font-mono uppercase mb-2" style={{color:'var(--text-dimmer)',letterSpacing:'0.14em'}}>Danger Zone</div>
-                {!confirmDelete ? (
-                  <ActionBtn label={`Delete ${vm.type.toUpperCase()}`} color="var(--crit-2)" onClick={()=>setConfirmDelete(true)} disabled={acting||isRunning}/>
-                ) : (
-                  <div className="flex items-center gap-2 p-2 rounded" style={{background:'color-mix(in srgb, var(--crit-2) 8%, transparent)',border:'1px solid color-mix(in srgb, var(--crit-2) 19%, transparent)'}}>
-                    <span className="text-sm flex-1" style={{color:'var(--crit-soft)'}}>Delete {vm.name} ({vm.vmid})? This cannot be undone.</span>
-                    <ActionBtn label="Confirm" color="var(--crit-2)" onClick={deleteVM} disabled={acting}/>
-                    <ActionBtn label="Cancel" color="var(--text-dimmer)" onClick={()=>setConfirmDelete(false)} disabled={acting}/>
-                  </div>
-                )}
-                {isRunning && <div className="text-xs mt-1" style={{color:'var(--text-dimmer)'}}>Stop the {vm.type.toUpperCase()} before deleting</div>}
-              </div>}
-            </div>
-          )}
-
-          {/* SNAPSHOTS */}
-          {tab === 'snapshots' && (
-            <div className="space-y-3">
-              {canAdmin && <div className="flex gap-2 mb-4">
-                <input style={{...INPUT,flex:1}} value={snapName} placeholder="New snapshot name"
-                  onChange={e=>setSnapName(e.target.value)}/>
-                <ActionBtn label="Create" color="var(--accent)" onClick={createSnapshot} disabled={acting||!snapName.trim()}/>
-              </div>}
-              {snapshots.length === 0 ? (
-                <div className="text-sm text-center py-4" style={{color:'var(--text-dimmer)'}}>No snapshots</div>
-              ) : snapshots.filter(s=>s.name!=='current').map(snap=>(
-                <div key={snap.name} className="flex items-center gap-3 p-3 rounded" style={{background:'var(--ground-deep)',border:'1px solid var(--border-dim)'}}>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-mono" style={{color:'var(--text-bright)'}}>{snap.name}</div>
-                    {snap.description&&<div className="text-xs truncate" style={{color:'var(--text-dimmer)'}}>{snap.description}</div>}
-                    <div className="text-xs" style={{color:'var(--text-faint)'}}>{snap.snaptime?new Date(snap.snaptime*1000).toLocaleString():''}</div>
-                  </div>
-                  <div className="flex gap-1">
-                    {canAdmin && <ActionBtn label="Rollback" color="var(--warn-2)" onClick={()=>rollbackSnapshot(snap.name)} disabled={acting}/>}
-                    {canAdmin && <ActionBtn label="Delete"   color="var(--crit-2)" onClick={()=>deleteSnapshot(snap.name)}   disabled={acting}/>}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* MIGRATE */}
-          {tab === 'migrate' && (
-            <div className="space-y-4">
-              <div>
-                <div className="text-sm mb-2" style={{color:'var(--text-muted)'}}>Target Node</div>
-                <select style={{...INPUT,width:'100%',cursor:'pointer'}} value={migrTarget} onChange={e=>setMigrTarget(e.target.value)}>
-                  <option value="">Select target node...</option>
-                  {nodes.filter(n=>n.node!==vm.node&&n.status==='online').map(n=>(
-                    <option key={n.node} value={n.node}>{n.node}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="p-3 rounded text-sm" style={{background:'color-mix(in srgb, var(--warn) 10%, transparent)',border:'1px solid color-mix(in srgb, var(--warn) 35%, transparent)',color:'var(--warn-2)'}}>
-                {vm.type==='qemu'?'Live migration — VM will continue running during migration.':'CT migration requires the container to be stopped first.'}
-              </div>
-              <ActionBtn label={`Migrate to ${migrTarget||'...'}`} color="var(--accent)" onClick={migrate} disabled={acting||!migrTarget}/>
-            </div>
-          )}
-
-          {/* CONFIG */}
-          {tab === 'config' && (
-            <div>
-              {config ? (
-                <pre className="text-xs font-mono overflow-auto" style={{color:'var(--text-muted)', maxHeight:300}}>
-                  {JSON.stringify(config,null,2)}
-                </pre>
-              ) : (
-                <div className="text-sm animate-pulse" style={{color:'var(--text-dimmer)'}}>Loading config...</div>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function ActionBtn({ label, color, onClick, disabled }: { label:string; color:string; onClick:()=>void; disabled?:boolean }) {
-  return (
-    <button onClick={onClick} disabled={disabled} className="px-3 py-1.5 rounded-md text-sm font-medium transition-all" style={{
-      background: disabled?'var(--text-faint)':`${alpha(color, 8)}`,
-      color:      disabled?'var(--text-dimmer)':color,
-      border:     `1px solid ${disabled?'var(--text-faint)':`${alpha(color, 19)}`}`,
-      cursor:     disabled?'not-allowed':'pointer',
-    }}>{label}</button>
-  )
-}
-
-// Main infrastructure page
-export default function InfrastructurePage() {
-  // Nodes with a GPU, as HyperProx detected them (built in or dedicated): nobody types this list any more.
-  const [gpuNodes, setGpuNodes] = useState<string[]>([])
-  useEffect(() => {
-    fetch('/api/gpu/badges').then(r => r.json()).then(j => {
-      if (j?.success) setGpuNodes((j.data as Array<{ node: string; gpus: unknown[] }>).filter(n => n.gpus.length).map(n => n.node))
-    }).catch(() => {})
-  }, [])
-  const [nodes,     setNodes]     = useState<PVENode[]>([])
-  // Watts per node, keyed by name. Null means the node reports no source at
-  // all, which is a different thing from drawing nothing and is shown as such.
+  const canAdmin = atLeast(role, 'admin')
+  const [view, setView] = useState<'guests' | 'devices'>('guests')
+  const [nodes, setNodes] = useState<PVENode[]>([])
+  const [rows, setRows] = useState<GuestRow[]>([])
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState<string | null>(null)
+  const [lastSync, setLastSync] = useState<Date | null>(null)
   const [nodePower, setNodePower] = useState<Record<string, number | null>>({})
-  const [vms,       setVMs]       = useState<PVEVM[]>([])
-  const [loading,   setLoading]   = useState(true)
-  const [selected,  setSelected]  = useState<PVEVM|null>(null)
-  const [filter,    setFilter]    = useState<'all'|'running'|'stopped'|'lxc'|'qemu'>('all')
-  const [nodeFilter,setNodeFilter]= useState<string>('all')
-  const [search,    setSearch]    = useState('')
-  const [lastSync,  setLastSync]  = useState<Date|null>(null)
-  const [acting,    setActing]    = useState<ActionState>(null)
+  const [status, setStatus] = useState<StatusFilter>('all')
+  const [type, setType] = useState<TypeFilter>('all')
+  const [node, setNode] = useState('all')
+  const [onlyGpu, setOnlyGpu] = useState(false)
+  const [onlyHa, setOnlyHa] = useState(false)
+  const [search, setSearch] = useState('')
+  const [group, setGroup] = useState(false)
+  const [selected, setSelected] = useState<{ type: string; vmid: number } | null>(null)
+  const [create, setCreate] = useState<null | 'lxc' | 'qemu'>(null)
+  const [msg, setMsg] = useState<string | null>(null)
+  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
+  const haBadges = useHaBadges()
+
+  useEffect(() => { try { setGroup(localStorage.getItem('infra.group') === '1') } catch { /* private mode */ } }, [])
+  const toggleGroup = () => setGroup(g => { try { localStorage.setItem('infra.group', g ? '0' : '1') } catch { /* ignore */ } return !g })
 
   const fetchData = useCallback(async () => {
-    try {
-      const [nodesRes, vmsRes] = await Promise.all([
-        fetch('/api/proxmox/nodes'),
-        fetch('/api/proxmox/vms'),
-      ])
-      const nodesJson = await nodesRes.json()
-      const vmsJson   = await vmsRes.json()
-      if (nodesJson.success) setNodes(nodesJson.data)
-
-      fetch('/api/prometheus/power')
-        .then(r => r.json())
-        .then(d => {
-          if (!d.success) return
-          setNodePower(Object.fromEntries(
-            d.data.nodes.map((n: any) => [n.node, n.total as number | null])))
-        })
-        .catch(() => { /* the chips simply carry no wattage */ })
-      if (vmsJson.success)   setVMs(vmsJson.data)
-      setLastSync(new Date())
-    } catch(e) { console.error(e) }
-    finally { setLoading(false) }
+    const [n, o] = await Promise.all([apiJson<{ data: PVENode[] }>('/api/proxmox/nodes'), apiJson<{ data: GuestRow[] }>(`${API}/overview`)])
+    if (n.ok) setNodes(n.body!.data ?? [])
+    if (o.ok) { setRows(o.body!.data ?? []); setErr(null); setLastSync(new Date()) } else setErr(o.error ?? 'Could not read the guests')
+    setLoading(false)
   }, [])
+  useEffect(() => { void fetchData(); const t = setInterval(fetchData, 8000); return () => clearInterval(t) }, [fetchData])
+  useEffect(() => {
+    apiJson<{ data: { nodes: Array<{ node: string; total: number | null }> } }>('/api/prometheus/power')
+      .then(r => { if (r.ok) setNodePower(Object.fromEntries(r.body!.data.nodes.map(x => [x.node, x.total]))) })
+  }, [lastSync?.getMinutes()])   // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => { fetchData(); const t = setInterval(fetchData, 5000); return ()=>clearInterval(t) }, [fetchData])
-
-  const quickAction = async (vm: PVEVM, action: string) => {
-    setActing({ vmid: vm.vmid, action })
-    try {
-      await fetch(`/api/infra/vms/${vm.node}/${vm.vmid}/${vm.type}/${action}`, { method:'POST' })
-      setTimeout(fetchData, 1000)
-    } finally { setActing(null) }
+  /** Power from the list. HA guests go through HA state; the rest use the power routes as before. */
+  const power = async (g: GuestRow, action: string) => {
+    const ha = action.startsWith('ha:')
+    const path = ha ? `/api/infra/ha/${encodeURIComponent(`${g.type === 'qemu' ? 'vm' : 'ct'}:${g.vmid}`)}` : `/api/infra/vms/${g.node}/${g.vmid}/${g.type}/${action}`
+    const r = await apiJson(path, ha ? 'PUT' : 'POST', ha ? { state: action.slice(3) } : undefined)
+    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void power(g, action)); return }
+    setMsg(r.ok ? `${g.name}: ${ha ? `HA ${action.slice(3)}` : action} requested` : `${g.name}: ${r.error ?? 'failed'}`)
+    setTimeout(fetchData, 1200)
   }
 
-  const [showCreate, setShowCreate] = useState(false)
-  const { role: myRole } = useSession()
-  const mayOperate = atLeast(myRole, 'operator')
-  const mayAdmin   = atLeast(myRole, 'admin')
-  const [createType, setCreateType] = useState<'lxc'|'qemu'>('lxc')
-  const [templates, setTemplates] = useState<any[]>([])
-  const [nextId, setNextId] = useState<number>(100)
-  const [createForm, setCreateForm] = useState({
-    node: '', hostname: '', vmid: '', ostemplate: '', storage: 'local-lvm',
-    cores: '1', memory: '512', swap: '512', rootfs_size: '8',
-    net0: 'name=eth0,bridge=vmbr0,ip=dhcp', password: '', start: true, unprivileged: true,
-    // VM specific
-    name: '', disk_size: '32', iso: '', ostype: 'l26',
-  })
-  const [nodeStorages, setNodeStorages] = useState<any[]>([])
-  const [isos, setISOs] = useState<any[]>([])
-  const [nodeLoading, setNodeLoading] = useState(false)
-  const [nodeSpec, setNodeSpec] = useState<{cpus:number,maxmem:number}|null>(null)
-  const [creating, setCreating] = useState(false)
-  const [createError, setCreateError] = useState('')
-  const [createSuccess, setCreateSuccess] = useState('')
+  const q = search.trim().toLowerCase()
+  const filtered = useMemo(() => rows
+    .filter(r => !r.template)
+    .filter(r => status === 'all' || (status === 'running' ? r.status === 'running' : r.status !== 'running'))
+    .filter(r => type === 'all' || r.type === type)
+    .filter(r => node === 'all' || r.node === node)
+    .filter(r => !onlyGpu || r.gpu.vendors.length > 0 || r.gpu.toggle === 'off')
+    .filter(r => !onlyHa || r.ha.managed)
+    .filter(r => !q || r.name.toLowerCase().includes(q) || String(r.vmid).includes(q) || (r.ip ?? '').includes(q) || r.tags.some(t => t.includes(q)))
+    .sort((a, b) => a.vmid - b.vmid), [rows, status, type, node, onlyGpu, onlyHa, q])
 
-  const loadNodeData = async (node: string) => {
-    setNodeLoading(true)
-    try {
-      const [storRes, nodeRes] = await Promise.all([
-        fetch('/api/proxmox/storage').then(r=>r.json()),
-        fetch(`/api/proxmox/nodes/${node}`).then(r=>r.json()),
-      ])
-      if (storRes.success) {
-        const suitable = storRes.data.filter((s:any) =>
-          s.node === node && s.active === 1 &&
-          (s.content?.includes('rootdir') || s.content?.includes('images'))
-        )
-        setNodeStorages(suitable)
-        if (suitable.length > 0) setCreateForm(f=>({...f, storage: suitable[0].storage}))
-      }
-      if (nodeRes.success) {
-        setNodeSpec({ cpus: nodeRes.data.cpuinfo?.cpus ?? 1, maxmem: nodeRes.data.memory?.total ?? 0 })
-      }
-    } catch {}
-    finally { setNodeLoading(false) }
-  }
+  const groups = useMemo(() => {
+    if (!group) return [{ node: null as string | null, rows: filtered }]
+    const by = new Map<string, GuestRow[]>()
+    for (const r of filtered) by.set(r.node, [...(by.get(r.node) ?? []), r])
+    return [...by.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([n, rs]) => ({ node: n, rows: rs }))
+  }, [filtered, group])
 
-  const openCreate = async (type: 'lxc'|'qemu') => {
-    setCreateType(type)
-    setCreateError('')
-    setCreateSuccess('')
-    setShowCreate(true)
-    try {
-      fetch('/api/proxmox/isos').then(r=>r.json()).then(r=>{ if(r.success) setISOs(r.data) }).catch(()=>{})
-    const [tplRes, idRes] = await Promise.all([
-        fetch('/api/proxmox/templates').then(r=>r.json()),
-        fetch('/api/proxmox/nextid').then(r=>r.json()),
-      ])
-      if (tplRes.success) setTemplates(tplRes.data)
-      if (idRes.success) {
-        const firstNode = nodes[0]?.node ?? ''
-        setNextId(Number(idRes.data))
-        setCreateForm(f=>({...f, vmid: String(idRes.data), node: firstNode}))
-        if (firstNode) loadNodeData(firstNode)
-      }
-    } catch {}
-  }
-
-  const submitCreate = async () => {
-    setCreating(true)
-    setCreateError('')
-    setCreateSuccess('')
-    try {
-      const endpoint = createType === 'lxc' ? '/api/proxmox/lxc' : '/api/proxmox/vm'
-      const params = createType === 'lxc' ? {
-        vmid: Number(createForm.vmid),
-        hostname: createForm.hostname,
-        ostemplate: createForm.ostemplate,
-        storage: createForm.storage,
-        rootfs_size: Number(createForm.rootfs_size),
-        memory: Number(createForm.memory),
-        swap: Number(createForm.swap),
-        cores: Number(createForm.cores),
-        net0: createForm.net0,
-        password: createForm.password,
-        start: createForm.start,
-        unprivileged: createForm.unprivileged,
-      } : {
-        vmid: Number(createForm.vmid),
-        name: createForm.name,
-        memory: Number(createForm.memory),
-        cores: Number(createForm.cores),
-        storage: createForm.storage,
-        disk_size: Number(createForm.disk_size),
-        iso: createForm.iso,
-        ostype: createForm.ostype,
-        start: createForm.start,
-      }
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ node: createForm.node, params }),
-      }).then(r=>r.json())
-      if (res.success) {
-        setCreateSuccess(`${createType.toUpperCase()} ${createForm.vmid} created successfully!`)
-        setTimeout(() => { setShowCreate(false); setCreateSuccess('') }, 2000)
-      } else {
-        setCreateError(res.error ?? 'Creation failed')
-      }
-    } catch (e: any) {
-      setCreateError(e.message ?? 'Unknown error')
-    } finally {
-      setCreating(false)
-    }
-  }
-
-  const filtered = vms
-    .filter(v => {
-      if (filter === 'running') return v.status === 'running'
-      if (filter === 'stopped') return v.status === 'stopped'
-      if (filter === 'lxc')    return v.type === 'lxc'
-      if (filter === 'qemu')   return v.type === 'qemu'
-      return true
-    })
-    .filter(v => nodeFilter === 'all' || v.node === nodeFilter)
-    .filter(v => !search || v.name.toLowerCase().includes(search.toLowerCase()) || String(v.vmid).includes(search))
-    .sort((a,b) => a.vmid - b.vmid)
-
-  const running = vms.filter(v=>v.status==='running').length
-
-  const FIELD = {background:'var(--ground-deep)',border:'1px solid var(--border-strong)',color:'var(--text-bright)',borderRadius:6,padding:'0 12px',height:40,fontSize:14,fontFamily:'inherit',width:'100%',outline:'none'}
-  const SELECT = {...FIELD}
+  const sel = selected ? rows.find(r => r.type === selected.type && r.vmid === selected.vmid) ?? null : null
+  const running = rows.filter(r => r.status === 'running').length
+  const sortedNodes = [...nodes].sort((a, b) => a.node.localeCompare(b.node))
 
   return (
-    <div className="min-h-full p-4 sm:p-8" style={{background:'var(--ground)'}}>
-      {/* Create Modal */}
-      {showCreate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{background:'rgba(0,0,0,0.8)',paddingLeft:'220px'}}>
-          <div className="rounded-xl border p-6" style={{background:'var(--surface)',borderColor:'var(--border-soft)',maxHeight:'90vh',overflowY:'auto',width:'100%',maxWidth:'480px'}}>
-            <div className="flex items-center justify-between mb-5">
-              <div className="flex items-center gap-3">
-                <div className="w-1 h-5 rounded-full" style={{background: createType==='lxc'?'var(--accent)':'var(--violet)'}}/>
-                <h2 className="font-display font-semibold text-xl whitespace-nowrap" style={{color: createType==='lxc'?'var(--accent)':'var(--violet)'}}>{createType === 'lxc' ? 'Create LXC Container' : 'Create Virtual Machine'}</h2>
-              </div>
-              <button onClick={()=>setShowCreate(false)} style={{color:'var(--text-dim)',fontSize:18}}>✕</button>
-            </div>
+    <div className="min-h-full px-4 py-5 sm:p-8" style={{ background: 'var(--ground)' }}>
+      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
+      {create && <CreateGuestModal type={create} nodes={nodes} onClose={() => { setCreate(null); void fetchData() }} />}
 
-            {nodeLoading && (
-              <div className="flex items-center gap-2 px-3 py-2 rounded mb-2 text-sm" style={{background:'color-mix(in srgb, var(--accent) 3%, transparent)',border:'1px solid color-mix(in srgb, var(--accent) 13%, transparent)',color:'var(--accent)'}}>
-                <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" strokeOpacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" /></svg>
-                Scanning node for available resources...
-              </div>
-            )}
-            <div className="grid gap-3" style={{opacity: nodeLoading ? 0.4 : 1, pointerEvents: nodeLoading ? 'none' : 'auto', transition:'opacity 0.2s'}}>
-              {/* Node */}
-              <div>
-                <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>Node</label>
-                <select style={SELECT} value={createForm.node} onChange={e=>{ setCreateForm(f=>({...f,node:e.target.value})); loadNodeData(e.target.value) }}>
-                  {nodes.map(n=><option key={n.node} value={n.node}>{n.node}</option>)}
-                </select>
-              </div>
-
-              {/* VM ID */}
-              <div>
-                <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>VM ID</label>
-                <input style={FIELD} value={createForm.vmid} onChange={e=>setCreateForm(f=>({...f,vmid:e.target.value}))} placeholder="100"/>
-              </div>
-
-              {/* Hostname / Name */}
-              <div>
-                <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>{createType==='lxc'?'Hostname':'Name'}</label>
-                <input style={FIELD}
-                  value={createType==='lxc'?createForm.hostname:createForm.name}
-                  onChange={e=>setCreateForm(f=>createType==='lxc'?{...f,hostname:e.target.value}:{...f,name:e.target.value})}
-                  placeholder={createType==='lxc'?'my-container':'my-vm'}/>
-              </div>
-
-              {/* Template (LXC) or ISO (VM) */}
-              {createType === 'lxc' ? (
-                <div>
-                  <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>Template</label>
-                  <select style={SELECT} value={createForm.ostemplate} onChange={e=>setCreateForm(f=>({...f,ostemplate:e.target.value}))}>
-                    <option value="">— select template —</option>
-                    {templates.map(t=><option key={t.volid} value={t.volid}>{t.name}</option>)}
-                  </select>
-                </div>
-              ) : (
-                <>
-                  <div>
-                    <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>ISO (optional)</label>
-                    <select style={SELECT} value={createForm.iso} onChange={e=>setCreateForm(f=>({...f,iso:e.target.value}))}>
-                      <option value="">— no ISO / boot from disk —</option>
-                      {isos.map(i=><option key={i.volid} value={i.volid}>{i.name} ({i.storage})</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>Network (net0)</label>
-                    <input style={FIELD} value={createForm.net0} onChange={e=>setCreateForm(f=>({...f,net0:e.target.value}))}/>
-                  </div>
-                </>
-              )}
-
-              {/* Resources row */}
-              <div className="grid grid-cols-3 gap-2">
-                <div>
-                  <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>Cores {nodeSpec ? <span style={{color:'var(--text-dim)'}}>/ {nodeSpec.cpus} max</span> : ''}</label>
-                  <input style={FIELD} type="number" min="1" max={nodeSpec?.cpus ?? 999} value={createForm.cores} onChange={e=>setCreateForm(f=>({...f,cores:e.target.value}))}/>
-                </div>
-                <div>
-                  <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>RAM (MB) {nodeSpec ? <span style={{color:'var(--text-dim)'}}>/ {Math.round(nodeSpec.maxmem/1048576/1024)}GB ({Math.round(nodeSpec.maxmem/1048576)}MB) max</span> : ''}</label>
-                  <input style={FIELD} type="number" min="64" max={nodeSpec ? Math.round(nodeSpec.maxmem/1048576) : 999999} value={createForm.memory} onChange={e=>setCreateForm(f=>({...f,memory:e.target.value}))}/>
-                </div>
-                <div>
-                  <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>{createType==='lxc'?'Swap (MB)':'Disk (GB)'}</label>
-                  <input style={FIELD} type="number" min="0"
-                    value={createType==='lxc'?createForm.swap:createForm.disk_size}
-                    onChange={e=>setCreateForm(f=>createType==='lxc'?{...f,swap:e.target.value}:{...f,disk_size:e.target.value})}/>
-                </div>
-              </div>
-
-              {/* Storage */}
-              <div>
-                <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>{createType==='lxc'?'Root Disk Storage':'Storage'}</label>
-                <select style={SELECT} value={createForm.storage} onChange={e=>setCreateForm(f=>({...f,storage:e.target.value}))}>
-                  {nodeStorages.length === 0 && <option value="">Loading storage...</option>}
-                  {nodeStorages.map(s => {
-                    const free = s.avail ? `${(s.avail/1073741824).toFixed(1)}GB free` : 'N/A'
-                    const total = s.total ? `/ ${(s.total/1073741824).toFixed(1)}GB` : ''
-                    return <option key={s.storage} value={s.storage}>{s.storage} — {free} {total}</option>
-                  })}
-                </select>
-              </div>
-
-              {createType === 'lxc' && (
-                <>
-                  {/* Disk size */}
-                  <div>
-                    <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>Root Disk Size (GB)</label>
-                    <input style={FIELD} type="number" min="1" value={createForm.rootfs_size} onChange={e=>setCreateForm(f=>({...f,rootfs_size:e.target.value}))}/>
-                  </div>
-                  {/* Network */}
-                  <div>
-                    <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>Network (net0)</label>
-                    <input style={FIELD} value={createForm.net0} onChange={e=>setCreateForm(f=>({...f,net0:e.target.value}))}/>
-                  </div>
-                  {/* Password */}
-                  <div>
-                    <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>Root Password</label>
-                    <input style={FIELD} type="password" value={createForm.password} onChange={e=>setCreateForm(f=>({...f,password:e.target.value}))} placeholder="optional"/>
-                  </div>
-                  {/* Options */}
-                  <div className="flex gap-4">
-                    <label className="flex items-center gap-2 text-sm cursor-pointer" style={{color:'var(--text-muted)'}}>
-                      <input type="checkbox" checked={createForm.unprivileged} onChange={e=>setCreateForm(f=>({...f,unprivileged:e.target.checked}))}/>
-                      Unprivileged
-                    </label>
-                    <label className="flex items-center gap-2 text-sm cursor-pointer" style={{color:'var(--text-muted)'}}>
-                      <input type="checkbox" checked={createForm.start} onChange={e=>setCreateForm(f=>({...f,start:e.target.checked}))}/>
-                      Start after create
-                    </label>
-                  </div>
-                </>
-              )}
-
-              {createType === 'qemu' && (
-                <div className="flex gap-4">
-                  <label className="flex items-center gap-2 text-sm cursor-pointer" style={{color:'var(--text-muted)'}}>
-                    <input type="checkbox" checked={createForm.start} onChange={e=>setCreateForm(f=>({...f,start:e.target.checked}))}/>
-                    Start after create
-                  </label>
-                </div>
-              )}
-
-              {/* Error / Success */}
-              {createError && <div className="text-sm px-3 py-2 rounded" style={{background:'color-mix(in srgb, var(--crit) 8%, transparent)',border:'1px solid color-mix(in srgb, var(--crit) 19%, transparent)',color:'var(--crit)'}}>{createError}</div>}
-              {createSuccess && <div className="text-sm px-3 py-2 rounded" style={{background:'color-mix(in srgb, var(--good) 8%, transparent)',border:'1px solid color-mix(in srgb, var(--good) 19%, transparent)',color:'var(--good)'}}>{createSuccess}</div>}
-            </div>
-            <div className="flex justify-end gap-2 mt-5">
-              <button onClick={()=>setShowCreate(false)} className="px-4 rounded-md text-sm font-medium" style={{height:40,background:'transparent',border:'1px solid var(--border-strong)',color:'var(--text)'}}>Cancel</button>
-              <button onClick={submitCreate} disabled={creating} className="px-5 rounded-md text-sm font-semibold transition-all"
-                style={{height:40,background: createType==='lxc'?'var(--accent)':'var(--violet)', border:'none', color:'var(--accent-ink)', opacity: creating?0.5:1}}>
-                {creating ? 'Creating...' : `Create ${createType.toUpperCase()}`}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Header */}
-      <div className="flex items-end justify-between flex-wrap gap-4 mb-8">
+      <div className="flex items-end justify-between flex-wrap gap-4 mb-6">
         <div>
-          <div className="font-mono uppercase" style={{fontSize:12,letterSpacing:'0.14em',color:'var(--accent)'}}>Compute</div>
-          <h1 className="font-display font-bold mt-2" style={{fontSize:36,lineHeight:1.1,color:'var(--text-bright)'}}>Infrastructure</h1>
+          <div className="font-mono uppercase" style={{ fontSize: 12, letterSpacing: '0.14em', color: 'var(--accent)' }}>Compute</div>
+          <h1 className="font-display font-bold mt-1" style={{ fontSize: 36, lineHeight: 1.1, color: 'var(--text-bright)' }}>Infrastructure</h1>
+          <p className="text-sm mt-1" style={{ color: 'var(--text-dimmer)' }}>{running} running of {rows.filter(r => !r.template).length}{lastSync ? ` · synced ${lastSync.toLocaleTimeString()}` : ''}</p>
         </div>
-        <div className="flex items-center gap-3 flex-wrap">
-          {lastSync && <span className="text-sm" style={{color:'var(--text-dimmer)'}}>synced {lastSync.toLocaleTimeString()}</span>}
-          <div className="flex items-center gap-1.5 px-2 py-1 rounded text-xs font-mono" style={{background:'color-mix(in srgb, var(--good) 6%, transparent)',border:'1px solid color-mix(in srgb, var(--good) 19%, transparent)'}}>
-            <span style={{color:'var(--good)'}}>{running}</span>
-            <span style={{color:'var(--text-dimmer)'}}>running</span>
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex rounded-md border overflow-hidden" style={{ borderColor: 'var(--border-strong)' }}>
+            {(['guests', 'devices'] as const).map(v => (
+              <button key={v} onClick={() => setView(v)} className="px-4 text-sm" style={{ height: 38, background: view === v ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'transparent', color: view === v ? 'var(--accent)' : 'var(--text-dim)' }}>{v === 'guests' ? 'Guests' : 'Devices'}</button>
+            ))}
           </div>
-          <div className="flex items-center gap-1.5 px-2 py-1 rounded text-xs font-mono" style={{background:'var(--text-dimmer)',border:'1px solid var(--text-faint)'}}>
-            <span style={{color:'var(--text-muted)'}}>{vms.length}</span>
-            <span style={{color:'var(--text-dimmer)'}}>total</span>
-          </div>
-          {mayAdmin && <button onClick={()=>openCreate('lxc')} className="px-4 rounded-md text-sm font-semibold transition-all" style={{height:40,background:'var(--accent)',border:'none',color:'var(--accent-ink)'}}>+ LXC</button>}
-          {mayAdmin && <button onClick={()=>openCreate('qemu')} className="px-4 rounded-md text-sm font-semibold transition-all" style={{height:40,background:'transparent',border:'1px solid var(--violet)',color:'var(--violet)'}}>+ VM</button>}
+          {canAdmin && <button onClick={() => setCreate('lxc')} className="px-4 rounded-md text-sm font-semibold" style={{ height: 38, background: 'var(--accent)', color: 'var(--accent-ink)' }}>+ LXC</button>}
+          {canAdmin && <button onClick={() => setCreate('qemu')} className="px-4 rounded-md text-sm font-semibold" style={{ height: 38, border: '1px solid var(--violet)', color: 'var(--violet)' }}>+ VM</button>}
         </div>
       </div>
 
-      {/* Node summary row */}
-      <div className="grid gap-3 mb-6" style={{gridTemplateColumns:'repeat(auto-fill,minmax(160px,1fr))'}}>
-        {nodes.sort((a,b)=>gpuNodes.includes(a.node)?-1:gpuNodes.includes(b.node)?1:a.node.localeCompare(b.node)).map(node=>{
-          const nodeVMs  = vms.filter(v=>v.node===node.node)
-          const nodeRunning = nodeVMs.filter(v=>v.status==='running').length
-          const isGpu    = gpuNodes.includes(node.node)
-          const accent   = isGpu?'var(--violet)':'var(--accent)'
-          const isActive = nodeFilter===node.node
+      {/* nodes: tap to filter */}
+      <div className="flex gap-2 overflow-x-auto pb-1 mb-5 -mx-4 px-4 sm:mx-0 sm:px-0 sm:grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))' }}>
+        {sortedNodes.map(n => {
+          const nr = rows.filter(r => r.node === n.node && !r.template)
+          const on = nr.filter(r => r.status === 'running').length
+          const gpu = nr.some(r => r.gpu.vendors.length)
+          const active = node === n.node
+          const memPct = n.maxmem && n.mem ? Math.round(n.mem / n.maxmem * 100) : null
           return (
-            <button key={node.node} onClick={()=>setNodeFilter(isActive?'all':node.node)}
-              className="p-3 rounded-lg border text-left transition-all"
-              style={{background:isActive?`${alpha(accent, 8)}`:'var(--surface)',borderColor:isActive?`${alpha(accent, 25)}`:`${alpha(accent, 13)}`}}>
-              <div className="flex items-center gap-2 mb-2">
-                <div className="w-1.5 h-1.5 rounded-full" style={{background:accent,boxShadow:`0 0 4px ${accent}`}}/>
-                <span className="font-display font-semibold text-base" style={{color:accent}}>{node.node}</span>
-                {isGpu&&<span className="font-mono" style={{fontSize:8,background:'color-mix(in srgb, var(--violet) 13%, transparent)',color:'var(--violet)',border:'1px solid color-mix(in srgb, var(--violet) 25%, transparent)',padding:'0 4px',borderRadius:3}}>GPU</span>}
+            <button key={n.node} onClick={() => setNode(active ? 'all' : n.node)} className="shrink-0 min-w-[150px] rounded-lg border p-3 text-left"
+              style={{ background: active ? alpha('var(--accent)', 8) : 'var(--surface)', borderColor: active ? alpha('var(--accent)', 35) : 'var(--border-dim)' }}>
+              <div className="flex items-center gap-2">
+                <span className="w-1.5 h-1.5 rounded-full" style={{ background: n.status === 'online' ? 'var(--good)' : 'var(--crit-2)' }} />
+                <span className="font-display font-semibold" style={{ fontSize: 17, color: 'var(--text-bright)' }}>{n.node}</span>
+                {gpu && <span className="font-mono rounded px-1" style={{ fontSize: 9, color: 'var(--violet)', border: '1px solid color-mix(in srgb, var(--violet) 35%, transparent)' }}>GPU</span>}
               </div>
-              <div className="flex gap-2 text-xs font-mono items-baseline">
-                <span style={{color:'var(--good)'}}>{nodeRunning} on</span>
-                <span style={{color:'var(--text-dimmer)'}}>{nodeVMs.length-nodeRunning} off</span>
-                {node.node in nodePower && (
-                  <span className="ml-auto" style={{color: nodePower[node.node] === null ? 'var(--text-dimmer)' : 'var(--warn)', fontVariantNumeric:'tabular-nums'}}
-                    title={nodePower[node.node] === null
-                      ? 'Nothing on this node reports watts — no RAPL, and no exporter publishing a package figure.'
-                      : 'CPU package plus any discrete GPU. Drives, fans and PSU losses are not measured.'}>
-                    {nodePower[node.node] === null ? '— W' : `${Math.round(nodePower[node.node]!)} W`}
-                  </span>
-                )}
+              <div className="flex gap-2 text-xs font-mono mt-1" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                <span style={{ color: 'var(--good)' }}>{on} on</span><span style={{ color: 'var(--text-dimmer)' }}>{nr.length - on} off</span>
+                {memPct !== null && <span style={{ color: 'var(--text-dimmer)' }}>RAM {memPct}%</span>}
+                {n.node in nodePower && <span className="ml-auto" style={{ color: nodePower[n.node] === null ? 'var(--text-dimmer)' : 'var(--warn)' }}
+                  title="CPU package plus any discrete GPU. Drives, fans and PSU losses are not measured.">{nodePower[n.node] === null ? '— W' : `${Math.round(nodePower[n.node]!)} W`}</span>}
               </div>
             </button>
           )
         })}
       </div>
 
-      {/* Filters */}
-      <div className="flex items-center gap-3 mb-4 flex-wrap">
-        <div className="flex gap-1">
-          {(['all','running','stopped','lxc','qemu'] as const).map(f=>(
-            <button key={f} onClick={()=>setFilter(f)} className="text-sm px-3 py-1.5 rounded-md capitalize" style={{
-              background: filter===f?'color-mix(in srgb, var(--accent) 8%, transparent)':'transparent',
-              color:      filter===f?'var(--accent)':'var(--text-dim)',
-              border:     `1px solid ${filter===f?'color-mix(in srgb, var(--accent) 19%, transparent)':'var(--text-faint)'}`,
-            }}>{f}</button>
-          ))}
-        </div>
-        <input type="text" placeholder="Search name or ID..." value={search} onChange={e=>setSearch(e.target.value)}
-          className="ml-auto text-sm px-3 rounded-md outline-none w-56"
-          style={{height:40,background:'var(--ground-deep)',border:'1px solid var(--border-strong)',color:'var(--text-bright)',caretColor:'var(--accent)'}}/>
-        <span className="text-sm" style={{color:'var(--text-dimmer)'}}>{filtered.length} shown</span>
-      </div>
-
-      {/* VM Grid */}
-      {loading ? (
-        <div className="text-sm animate-pulse" style={{color:'var(--text-dimmer)'}}>Loading infrastructure...</div>
-      ) : (
-        <div className="grid gap-2">
-          {/* VM Cards grid */}
-          <div className="grid gap-3" style={{gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))'}}>
-            {filtered.map(vm=>{
-              const isActing  = acting?.vmid === vm.vmid
-              const isRunning = vm.status === 'running'
-              const isGpu     = gpuNodes.includes(vm.node)
-              const typeColor = vm.type === 'lxc' ? 'var(--accent)' : 'var(--violet)'
-              const statusColor = STATUS_COLOR[vm.status] ?? 'var(--text-dimmer)'
-              const cpuPct    = isRunning ? Math.round(vm.cpu * 100) : 0
-              const memPct    = vm.maxmem > 0 ? Math.round((vm.mem / vm.maxmem) * 100) : 0
-              const barColor  = (p: number) => p > 90 ? 'var(--crit-2)' : p > 75 ? 'var(--warn-2)' : typeColor
-
-              return (
-                <div key={`${vm.node}-${vm.vmid}`}
-                  className="rounded-lg border p-5 cursor-pointer flex flex-col gap-3 transition-all duration-150"
-                  style={{
-                    background:   'var(--surface)',
-                    borderColor:  isRunning ? `${alpha(typeColor, 19)}` : 'var(--border-dim)',
-                    boxShadow:    isRunning ? `0 0 12px ${alpha(typeColor, 2)}` : 'none',
-                  }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = `${alpha(typeColor, 31)}`; (e.currentTarget as HTMLElement).style.transform = 'translateY(-1px)' }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = isRunning ? `${alpha(typeColor, 19)}` : 'var(--border-dim)'; (e.currentTarget as HTMLElement).style.transform = 'translateY(0)' }}
-                  onClick={() => setSelected(vm)}
-                >
-                  {/* Card header */}
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <div className="w-2 h-2 rounded-full flex-shrink-0" style={{
-                        background: statusColor,
-                        boxShadow:  isRunning ? `0 0 6px ${statusColor}` : 'none',
-                      }}/>
-                      <span className="font-display text-lg font-semibold truncate" style={{color:'var(--text-bright)'}}>{vm.name}</span>
-                    </div>
-                    <div className="flex items-center gap-1.5 flex-shrink-0 ml-2">
-                      {isGpu && <span className="font-mono px-1.5 py-0.5 rounded" style={{fontSize:8,background:'color-mix(in srgb, var(--violet) 13%, transparent)',color:'var(--violet)',border:'1px solid color-mix(in srgb, var(--violet) 25%, transparent)'}}>GPU</span>}
-                      {vm.hastate && <span className="font-mono px-1.5 py-0.5 rounded" style={{fontSize:8,background:'color-mix(in srgb, var(--violet) 8%, transparent)',color:'var(--violet)',border:'1px solid color-mix(in srgb, var(--violet) 19%, transparent)'}}>HA</span>}
-                      <span className="font-mono px-1.5 py-0.5 rounded" style={{fontSize:8,background:`${alpha(typeColor, 8)}`,color:typeColor,border:`1px solid ${alpha(typeColor, 19)}`}}>{vm.type.toUpperCase()}</span>
-                    </div>
-                  </div>
-
-                  {/* Meta row */}
-                  <div className="flex items-center gap-3 text-xs font-mono" style={{color:'var(--text-dimmer)'}}>
-                    <span>#{vm.vmid}</span>
-                    <span style={{color:'var(--text-dimmer)'}}>·</span>
-                    <span style={{color: gpuNodes.includes(vm.node)?'var(--violet)':'var(--text-dim)'}}>{vm.node}</span>
-                    {vm.uptime > 0 && <>
-                      <span style={{color:'var(--text-dimmer)'}}>·</span>
-                      <span style={{color:'var(--text-dimmer)'}}>{formatUptime(vm.uptime)}</span>
-                    </>}
-                  </div>
-
-                  {/* Resource bars — only when running */}
-                  {isRunning && (
-                    <div className="space-y-1.5">
-                      <div>
-                        <div className="flex justify-between text-xs font-mono mb-0.5">
-                          <span style={{color:'var(--text-dimmer)'}}>CPU</span>
-                          <span style={{color:barColor(cpuPct)}}>{cpuPct}%</span>
-                        </div>
-                        <div className="h-1 rounded-full overflow-hidden" style={{background:'var(--text-faint)'}}>
-                          <div className="h-full rounded-full transition-all duration-500" style={{width:`${cpuPct}%`,background:barColor(cpuPct)}}/>
-                        </div>
-                      </div>
-                      {vm.maxmem > 0 && (() => {
-                        // For a VM, Proxmox reports what the guest has taken from
-                        // the host — which for any Linux guest includes its page
-                        // cache. That climbs to the ceiling and stays there on a
-                        // perfectly healthy machine, so colouring it red says
-                        // "out of memory" about something that is fine. A
-                        // container reports real cgroup usage and is coloured
-                        // normally.
-                        const isVM = vm.type === 'qemu'
-                        const memColor = isVM ? 'var(--text-muted)' : barColor(memPct)
-                        return (
-                          <div>
-                            <div className="flex justify-between text-xs font-mono mb-0.5">
-                              <span style={{color:'var(--text-dimmer)'}}>
-                                MEM{isVM && <span style={{color:'var(--text-faint)'}}> allocated</span>}
-                              </span>
-                              <span
-                                style={{color:memColor}}
-                                title={isVM
-                                  ? 'Memory the guest has taken from the host, which counts the guest\u2019s page cache. Linux fills spare RAM with cache and releases it on demand, so this sits near the ceiling on a healthy VM. Install the guest agent to see what is actually in use.'
-                                  : undefined}
-                              >
-                                {formatBytes(vm.mem)} / {formatBytes(vm.maxmem)}
-                              </span>
-                            </div>
-                            <div className="h-1 rounded-full overflow-hidden" style={{background:'var(--text-faint)'}}>
-                              <div className="h-full rounded-full transition-all duration-500"
-                                style={{width:`${memPct}%`,background:memColor}}/>
-                            </div>
-                          </div>
-                        )
-                      })()}
-                    </div>
-                  )}
-
-                  {/* Stopped state */}
-                  {!isRunning && (
-                    <div className="text-sm" style={{color:'var(--text-dimmer)'}}>
-                      {formatBytes(vm.maxdisk)} disk · {vm.cpus} cores · {formatBytes(vm.maxmem)} RAM
-                    </div>
-                  )}
-
-                  {/* Actions */}
-                  <div className="flex gap-1.5 pt-1 border-t" style={{borderColor:'var(--border-dim)'}} onClick={e=>e.stopPropagation()}>
-                    {!mayOperate ? null : isRunning ? (
-                      <>
-                        <ActionBtn label="■ Stop"    color="var(--crit-2)" onClick={()=>quickAction(vm,'stop')}     disabled={isActing}/>
-                        <ActionBtn label="↺ Reboot"  color="var(--violet-2)" onClick={()=>quickAction(vm,'reboot')}   disabled={isActing}/>
-                      </>
-                    ) : (
-                      <ActionBtn label="▶ Start" color="var(--good)" onClick={()=>quickAction(vm,'start')} disabled={isActing}/>
-                    )}
-                    {mayAdmin && vm.hastate === 'stopped' && (
-                      <ActionBtn label="HA ▶" color="var(--violet)" onClick={async()=>{
-                        const sid=`${vm.type==='qemu'?'vm':'ct'}:${vm.vmid}`
-                        await fetch(`/api/infra/ha/${encodeURIComponent(sid)}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({state:'started'})})
-                        fetchData()
-                      }} disabled={isActing}/>
-                    )}
-                    <button
-                      className="ml-auto px-2.5 py-1 rounded-md text-sm transition-all"
-                      style={{background:`${alpha(typeColor, 6)}`,color:`${alpha(typeColor, 50)}`,border:`1px solid ${alpha(typeColor, 13)}`}}
-                      onClick={e=>{e.stopPropagation();setSelected(vm)}}
-                    >Details →</button>
-                  </div>
-                </div>
-              )
-            })}
+      {view === 'devices' ? <DevicesPanel nodes={sortedNodes.map(n => n.node)} /> : (
+        <>
+          <div className="flex flex-wrap items-center gap-2 mb-4">
+            <input type="search" placeholder="Search name, ID, IP or tag" value={search} onChange={e => setSearch(e.target.value)} aria-label="Search guests"
+              className="text-sm px-3 rounded-md outline-none w-full sm:w-64 order-first" style={{ height: 38, background: 'var(--ground-deep)', border: '1px solid var(--border-strong)', color: 'var(--text-bright)' }} />
+            <div className="flex gap-1.5 overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0 w-[calc(100%+2rem)] sm:w-auto">
+              {(['all', 'running', 'stopped'] as const).map(s => <Chip key={s} active={status === s} onClick={() => setStatus(s)}>{s === 'all' ? 'All' : s === 'running' ? 'Running' : 'Stopped'}</Chip>)}
+              <span className="w-px shrink-0" style={{ background: 'var(--border-dim)' }} />
+              {(['all', 'lxc', 'qemu'] as const).map(t => <Chip key={t} active={type === t} onClick={() => setType(t)}>{t === 'all' ? 'Any type' : t === 'lxc' ? 'Containers' : 'VMs'}</Chip>)}
+              <span className="w-px shrink-0" style={{ background: 'var(--border-dim)' }} />
+              <Chip active={onlyGpu} onClick={() => setOnlyGpu(x => !x)}>GPU</Chip>
+              <Chip active={onlyHa} onClick={() => setOnlyHa(x => !x)}>HA</Chip>
+              <Chip active={group} onClick={toggleGroup} title="Group the list by node">By node</Chip>
+            </div>
+            <span className="text-sm sm:ml-auto" style={{ color: 'var(--text-dimmer)' }}>{filtered.length} shown</span>
           </div>
-        </div>
+          {msg && <div className="mb-3"><Notice kind="info">{msg}</Notice></div>}
+          {err && <div className="mb-3"><Notice kind="error">{err}</Notice></div>}
+          {loading ? <div className="text-sm animate-pulse" style={{ color: 'var(--text-dimmer)' }}>Loading infrastructure…</div> : (
+            <div className="space-y-6">
+              {groups.map(gr => (
+                <section key={gr.node ?? 'all'} className="space-y-2">
+                  {gr.node && <h2 className="font-display font-semibold" style={{ fontSize: 18, color: 'var(--text-bright)' }}>{gr.node} <span className="font-mono text-xs" style={{ color: 'var(--text-dimmer)' }}>{gr.rows.length}</span></h2>}
+                  <GuestTable rows={gr.rows} canOperate={canOperate} canAdmin={canAdmin} onOpen={r => setSelected({ type: r.type, vmid: r.vmid })} onPower={power} onRefresh={() => { void fetchData(); void haBadges.reload() }} ha={haBadges.get} />
+                </section>
+              ))}
+              {filtered.length === 0 && <p className="text-sm" style={{ color: 'var(--text-dimmer)' }}>No guests match.</p>}
+            </div>
+          )}
+        </>
       )}
 
-      {/* VM Panel */}
-      {selected && (
-        <VMPanel
-          vm={selected}
-          nodes={nodes}
-          onClose={()=>setSelected(null)}
-          onRefresh={fetchData}
-        />
-      )}
+      {sel && <GuestDrawer row={sel} nodes={nodes} canOperate={canOperate} canAdmin={canAdmin} onClose={() => setSelected(null)} onRefresh={fetchData} />}
     </div>
   )
 }
