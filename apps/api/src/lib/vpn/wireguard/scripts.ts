@@ -18,10 +18,36 @@ function iface(i: string): string {
   return i
 }
 
+/**
+ * Install wireguard-tools and nothing else: no recommends, no other package named, never an upgrade. The
+ * package lists are refreshed only when the package is not in them. The install is simulated first and
+ * refused if it would upgrade or remove anything (a node's packages are not HyperProx's to move).
+ */
 export function wgInstallScript(s: Extract<Support, { ok: true }>): string {
-  return s.pm === 'apt'
-    ? 'set -e\nexport DEBIAN_FRONTEND=noninteractive\ncommand -v wg >/dev/null 2>&1 || { apt-get update -qq; apt-get install -y -qq wireguard-tools iproute2; }\nwg --version | head -n1 | sed "s/^/HP_WG_VERSION=/"'
-    : 'set -e\ncommand -v wg >/dev/null 2>&1 || dnf install -y -q wireguard-tools iproute\nwg --version | head -n1 | sed "s/^/HP_WG_VERSION=/"'
+  if (s.pm === 'apt') {
+    return [
+      'set -e',
+      'export DEBIAN_FRONTEND=noninteractive',
+      'if ! command -v wg >/dev/null 2>&1; then',
+      '  if ! LC_ALL=C apt-cache policy wireguard-tools 2>/dev/null | grep -q "Candidate: [^(]"; then apt-get update -qq; fi',
+      '  hp_sim=$(LC_ALL=C apt-get -s install -y --no-install-recommends wireguard-tools)',
+      // `Inst pkg [old] (new …)` is an upgrade of something installed; `Remv` a removal.
+      '  hp_bad=$(printf "%s\\n" "$hp_sim" | awk \'/^Remv / || /^Inst [^ ]+ \\[/ { printf "%s%s", sep, $2; sep=" " }\')',
+      '  if [ -n "$hp_bad" ]; then echo "HP_WG_REFUSED=installing wireguard-tools would upgrade or remove: $hp_bad"; exit 3; fi',
+      '  apt-get install -y -qq --no-install-recommends wireguard-tools',
+      'fi',
+      'wg --version | head -n1 | sed "s/^/HP_WG_VERSION=/"',
+    ].join('\n')
+  }
+  return [
+    'set -e',
+    'if ! command -v wg >/dev/null 2>&1; then',
+    '  hp_sim=$(LC_ALL=C dnf install --assumeno --setopt=install_weak_deps=False wireguard-tools 2>&1 || true)',
+    '  if printf "%s\\n" "$hp_sim" | grep -qE "^(Upgrading|Removing|Downgrading|Removing dependent packages):"; then echo "HP_WG_REFUSED=installing wireguard-tools would upgrade or remove packages"; exit 3; fi',
+    '  dnf install -y -q --setopt=install_weak_deps=False wireguard-tools',
+    'fi',
+    'wg --version | head -n1 | sed "s/^/HP_WG_VERSION=/"',
+  ].join('\n')
 }
 
 /**
