@@ -31,7 +31,7 @@ import { HaRefusal, type Actor, type HaResource, type HaRule, type HaSnapshot, t
 // --- requests -----------------------------------------------------------------------------------------
 
 export type HaChange =
-  | { action: 'protect'; sid: Sid; maxRestart?: number; maxRelocate?: number; state?: 'started' | 'stopped'; failback?: boolean; comment?: string }
+  | { action: 'protect'; sid: Sid; maxRestart?: number; maxRelocate?: number; state?: 'started' | 'stopped'; failback?: boolean; autoRebalance?: boolean; comment?: string }
   | { action: 'unprotect'; sid: Sid }
   | { action: 'update-resource'; sid: Sid; maxRestart?: number; maxRelocate?: number; failback?: boolean; autoRebalance?: boolean; comment?: string }
   | { action: 'set-state'; sid: Sid; state: 'started' | 'stopped' | 'disabled' | 'ignored' }
@@ -235,9 +235,10 @@ export class HaPlanner {
         const state = req.state === 'stopped' ? 'stopped' : 'started'
         const params: Record<string, string> = { sid: g.sid, state, max_restart: String(maxRestart), max_relocate: String(maxRelocate) }
         if (req.failback === false) params.failback = '0'
+        if (req.autoRebalance === false) params['auto-rebalance'] = '0'
         if (req.comment) params.comment = String(req.comment).slice(0, 200)
         ops.push({ kind: 'resource-create', sid: g.sid, params })
-        const res: HaResource = { sid: g.sid, type: g.type === 'lxc' ? 'ct' : 'vm', vmid: g.vmid, state, maxRestart, maxRelocate, failback: req.failback !== false, autoRebalance: true, ...(params.comment ? { comment: params.comment } : {}) }
+        const res: HaResource = { sid: g.sid, type: g.type === 'lxc' ? 'ct' : 'vm', vmid: g.vmid, state, maxRestart, maxRelocate, failback: req.failback !== false, autoRebalance: req.autoRebalance !== false, ...(params.comment ? { comment: params.comment } : {}) }
         resources = [...resources, res]
         touchedSids.push(g.sid)
         title = `Protect ${label(g.sid)}`
@@ -462,7 +463,7 @@ export class HaPlanner {
         }
         effects.push(...(moves.length ? moves : ['Nothing moves now.']))
         for (const sid of affected) if (resources.some(r => r.sid === sid)) effects.push(`${label(sid)}: ${predictFailover(after, sid).words}`)
-        if (snap.crs.autoRebalance && moves.length === 0) effects.push('HA may still move guests later on its own to balance load (automatic rebalancing is on).')
+        if (snap.crs.autoRebalance && moves.length === 0 && [...affected].some(s => resources.find(r => r.sid === s)?.autoRebalance)) effects.push('HA may still move guests later on its own to balance load (automatic rebalancing is on).')
       }
     }
     return { title, changes, effects, warnings, strict, existing: existingProblems, ops, expect: { resources, rules, touchedSids, touchedRules, ...(maintenance ? { maintenance } : {}) } }
