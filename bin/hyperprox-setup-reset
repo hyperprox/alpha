@@ -21,6 +21,8 @@ status="$(curl -fsS --max-time 5 "$url" 2>/dev/null)" || {
   echo "  setup reset: the API did not answer, so it is unknown whether an owner exists; the hand-over record is kept" >&2
   exit 0
 }
+# Only a vault that answered can say there is no owner: "unreachable" is unknown, never "no owner".
+grep -q '"reachable"[[:space:]]*:[[:space:]]*true' <<< "$status" || { echo "  setup reset: the vault did not answer, so the hand-over record is kept" >&2; exit 0; }
 grep -q '"bootstrapped"[[:space:]]*:[[:space:]]*false' <<< "$status" || exit 0
 rm -f "$flag"
 echo "  setup reset: no owner yet, so the earlier wizard's hand-over record was cleared for this setup"
