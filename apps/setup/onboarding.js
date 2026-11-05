@@ -31,6 +31,28 @@ function heldSummary() {
 function holdGodaddy(key, secret) { held.godaddy = { key: String(key), secret: String(secret) } }
 function forget() { held.nodeLogin = null; held.godaddy = null }
 
+// ── Host keys: pinned on first connection, required for the rest of the run ──
+// address -> SHA256 fingerprint. Handed to the API with the login, which pins them in the vault.
+const pins = {}
+function fingerprintOf(key) { return 'SHA256:' + require('crypto').createHash('sha256').update(key).digest('base64').replace(/=+$/, '') }
+/** Pin on first sight; afterwards only the same key is accepted. */
+function checkPin(host, fp) {
+  if (!fp) return false
+  if (!pins[host]) { pins[host] = fp; return true }
+  return pins[host] === fp
+}
+class HostKeyChanged extends Error {
+  constructor(host, want, got) { super(`the host key of ${host} changed during setup (was ${want}, now ${got}), so HyperProx stopped talking to it`) }
+}
+/** Wrap a runner so every result's host key is checked against the pin (the SSH runner also checks before signing in). */
+function pinned(run) {
+  return async (host, cred, script, t) => {
+    const r = await run(host, cred, script, t)
+    if (!checkPin(host, r.hostKey)) throw new HostKeyChanged(host, pins[host], r.hostKey)
+    return r
+  }
+}
+
 // ── Running a script on a node ───────────────────────────────────────────────
 
 /** Run `script` on host over SSH (script on stdin, never on a command line). Resolves { code, output }. */
@@ -38,18 +60,20 @@ function sshRun(host, cred, script, timeoutMs = 15 * 60_000) {
   const { Client } = ssh2()
   return new Promise((resolve, reject) => {
     const c = new Client()
-    let out = '', done = false
+    let out = '', done = false, seen = null, refused = false
     const end = (fn, v) => { if (done) return; done = true; clearTimeout(t); try { c.end() } catch {} ; fn(v) }
     const t = setTimeout(() => end(resolve, { code: -1, output: out + '\n(timed out)' }), timeoutMs)
-    c.on('error', e => end(reject, e))
+    c.on('error', e => end(reject, refused ? new HostKeyChanged(host, pins[host], seen) : e))
     c.on('ready', () => c.exec('bash -s', (err, stream) => {
       if (err) return end(reject, err)
       stream.on('data', d => { out += d })
       stream.stderr.on('data', d => { out += d })
-      stream.on('close', code => end(resolve, { code: code == null ? 0 : code, output: out }))
+      stream.on('close', code => end(resolve, { code: code == null ? 0 : code, output: out, hostKey: seen }))
       stream.end(script)
     }))
-    const cfg = { host, port: 22, username: cred.username, readyTimeout: 15_000 }
+    // Checked before any password is sent: a node that shows a different key from the first one is refused.
+    const cfg = { host, port: 22, username: cred.username, readyTimeout: 15_000,
+      hostVerifier: (key) => { seen = fingerprintOf(key); const ok = checkPin(host, seen); refused = !ok; return ok } }
     if (cred.privateKey) { cfg.privateKey = cred.privateKey; if (cred.passphrase) cfg.passphrase = cred.passphrase }
     else cfg.password = cred.password
     try { c.connect(cfg) } catch (e) { end(reject, e) }
@@ -86,7 +110,8 @@ async function detectFromProxmox(pve, nodes, addrs) {
 
 // ── The node login: asked once, tested on every node, held in memory ─────────
 
-async function testNodeLogin(input, nodes, addrs, run = sshRun) {
+async function testNodeLogin(input, nodes, addrs, rawRun = sshRun) {
+  const run = pinned(rawRun)
   const username = String(input && input.username || '').trim()
   const password = input && input.password ? String(input.password) : ''
   const privateKey = input && input.privateKey ? String(input.privateKey) : ''
@@ -97,15 +122,18 @@ async function testNodeLogin(input, nodes, addrs, run = sshRun) {
   for (const n of nodes) {
     try {
       const r = await run(addrs[n] || n, cred, 'pveversion\n', 20_000)
+      const a = addrs[n] || n
       rows.push(r.code === 0 && /pve-manager/.test(r.output)
-        ? { node: n, ok: true, reason: r.output.trim().split('\n')[0] }
-        : { node: n, ok: false, reason: 'signed in, but this does not look like a Proxmox node' })
+        ? { node: n, ok: true, reason: r.output.trim().split('\n')[0], fingerprint: pins[a] || null }
+        : { node: n, ok: false, reason: 'signed in, but this does not look like a Proxmox node', fingerprint: pins[a] || null })
     } catch (e) {
       rows.push({ node: n, ok: false, reason: /authentication/i.test(e && e.message || '') ? 'that login was not accepted' : `could not connect: ${e && e.message}` })
     }
   }
   const okNodes = rows.filter(r => r.ok).map(r => r.node)
-  if (okNodes.length) held.nodeLogin = { ...cred, nodes: okNodes }
+  const hostKeys = {}
+  for (const n of okNodes) { const a = addrs[n] || n; if (pins[a]) hostKeys[n] = { address: a, fingerprint: pins[a] } }
+  if (okNodes.length) held.nodeLogin = { ...cred, nodes: okNodes, hostKeys }
   return { ok: okNodes.length > 0, nodes: rows }
 }
 
@@ -117,7 +145,8 @@ const job = { status: 'idle', events: [], results: [], checks: [], nodes: [], su
  * Probe every node with the held login (falling back to Proxmox's view where it does not work), plan the
  * node work for these answers, run it one node at a time, then check from here.
  */
-async function applyAnswers(answers, ctx, run = sshRun) {
+async function applyAnswers(answers, ctx, rawRun = sshRun) {
+  const run = pinned(rawRun)
   if (job.status === 'running') return { ok: false, error: 'Already running.' }
   Object.assign(job, { status: 'running', events: [], results: [], checks: [], answers })
   try {
@@ -254,6 +283,7 @@ function bootstrapAnswers(dir) {
 }
 
 module.exports = {
+  pins, checkPin, fingerprintOf, HostKeyChanged,
   hw, held, heldSummary, holdGodaddy, forget, sshRun, testNodeLogin, applyAnswers, job, checkFromHere,
   detectFromProxmox, writeTargets, promQuery, handOff, testGodaddy, bootstrapAnswers, getText,
 }

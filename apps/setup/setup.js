@@ -758,7 +758,8 @@ function stepProviders(){
       + '<div class="row"><div class="field"><label>User</label><input id="nl-user" value="' + escHtml(S.login.username) + '"></div>'
       + '<div class="field"><label>Password</label><input id="nl-pass" type="password" autocomplete="off"></div></div>'
       + '<details class="adv"><summary>Use a private key instead</summary><div class="field"><label>Private key</label><textarea id="nl-key" rows="4" style="width:100%;background:#0d1624;color:var(--text);border:1px solid var(--border);border-radius:8px;font-family:IBM Plex Mono,monospace;font-size:12px"></textarea></div></details>'
-      + (S.loginRows ? checkRows(S.loginRows.map(r => ({ label: 'Login', node: r.node, status: r.ok ? 'ok' : 'failed', reason: r.reason }))) : '')
+      + (S.loginRows ? checkRows(S.loginRows.map(r => ({ label: 'Login', node: r.node, status: r.ok ? 'ok' : 'failed', reason: r.reason + (r.fingerprint ? ' · host key ' + r.fingerprint : '') }))) : '')
+      + (S.loginRows && S.loginRows.some(r => r.fingerprint) ? '<div class="hint" style="margin-top:6px">To be sure you reached your own nodes, compare each host key with the one the node prints: on its console run <code>for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf $f; done</code>. HyperProx accepts only these keys from now on.</div>' : '')
       + '</div>'
   }
   if (S.apply) {
@@ -1007,8 +1008,9 @@ async function clusterCtx() {
 }
 
 /** How node scripts run: over SSH, or (tests) a stand-in named by HPX_SETUP_NODE_RUNNER. */
+const TESTING = process.env.NODE_ENV === 'test'
 function nodeRunner() {
-  if (process.env.HPX_SETUP_NODE_RUNNER) return require(process.env.HPX_SETUP_NODE_RUNNER)
+  if (TESTING && process.env.HPX_SETUP_NODE_RUNNER) return require(process.env.HPX_SETUP_NODE_RUNNER)
   return onboard.sshRun
 }
 
@@ -1021,7 +1023,7 @@ function sanitizeAnswers(a) {
 /** Commands that change this machine: docker compose, systemctl. HPX_SETUP_RUN names a stand-in (tests). */
 function runCmd(cmd) {
   return new Promise(resolve => {
-    const full = process.env.HPX_SETUP_RUN ? `${process.env.HPX_SETUP_RUN} ${cmd}` : cmd
+    const full = TESTING && process.env.HPX_SETUP_RUN ? `${process.env.HPX_SETUP_RUN} ${cmd}` : cmd
     exec(full, { cwd: HPX_DIR, timeout: 15 * 60_000 }, (err, stdout, stderr) => resolve({ ok: !err, out: String(stdout || '') + String(stderr || '') }))
   })
 }
@@ -1057,7 +1059,7 @@ async function finishSetup(answers) {
   if (ai && up.ok) {
     // About 2 GB: started in the background, and shown done on Settings → Setup checklist once it is there.
     const pull = `bash -c 'for i in $(seq 1 30); do docker exec hyperprox-ollama ollama list >/dev/null 2>&1 && break; sleep 2; done; docker exec hyperprox-ollama ollama pull ${onboard.hw.AI_MODEL}'`
-    const child = require('child_process').spawn('bash', ['-c', process.env.HPX_SETUP_RUN ? `${process.env.HPX_SETUP_RUN} ${pull}` : pull], { detached: true, stdio: 'ignore' })
+    const child = require('child_process').spawn('bash', ['-c', TESTING && process.env.HPX_SETUP_RUN ? `${process.env.HPX_SETUP_RUN} ${pull}` : pull], { detached: true, stdio: 'ignore' })
     child.unref()
     add('Local AI', 'done', `Ollama started; ${onboard.hw.AI_MODEL} is downloading (about 2 GB)`)
   }
@@ -1351,7 +1353,7 @@ const server = http.createServer(async (req, res) => {
       // completes (onboarding.js). It is never written to .env.
       const gd = providers.godaddy
       if (gd && gd.enabled && gd.key && gd.secret) {
-        const t = await (process.env.HPX_SETUP_FAKE_GODADDY ? Promise.resolve({ ok: gd.key !== 'bad' }) : onboard.testGodaddy(gd.key, gd.secret))
+        const t = await ((TESTING && process.env.HPX_SETUP_FAKE_GODADDY) ? Promise.resolve({ ok: gd.key !== 'bad' }) : onboard.testGodaddy(gd.key, gd.secret))
         if (!t.ok) return sendJson(res, 400, { ok: false, error: t.error || 'GoDaddy did not accept that key.' })
         onboard.holdGodaddy(gd.key, gd.secret)
       }
