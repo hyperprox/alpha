@@ -550,8 +550,8 @@ REDIS_PASSWORD=
 
 # ── Security ──────────────────────────────────────────────────────────────────
 # ENCRYPTION_KEY and JWT_SECRET are legacy. Credentials and sessions now live behind the vault gate; the
-# first owner unlock migrates stored credentials into the vault and blanks these two lines (a copy is
-# kept in .env.pre-vault, mode 0600 - delete it once you have checked your credentials).
+# first owner unlock migrates stored credentials into the vault, reads them back, and only then blanks
+# these lines. No plaintext copy is kept.
 # The vault settings (VAULT_*) are added further down by the installer.
 ENCRYPTION_KEY=${AES_KEY}
 JWT_SECRET=${JWT_SECRET}

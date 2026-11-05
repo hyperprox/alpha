@@ -96,15 +96,18 @@ Bitwarden-compatible, zero-knowledge vault. Every install runs its own, stock an
   them an operator (put them in the group "HyperProx operators"), or as **User** for a viewer (group
   "HyperProx viewers"). Owner and Admin memberships are full. The owner's two-factor code is enforced at
   every sign-in.
-- **Re-confirmation.** Revealing a secret, destroying a guest, changing roles and resetting Grafana's
-  admin password ask for the master password again (valid for five minutes).
+- **Re-confirmation.** Revealing a secret, destroying a guest, changing roles, resetting Grafana's admin
+  password, and every change on the Setup checklist (saving a node login, running an item on your nodes,
+  shredding old backups, opening or closing built-in graphics) ask for the master password again (valid
+  for five minutes).
 - **Secrets page** (Settings, Secrets): names only. Owners and admins can reveal a value (with
   re-confirmation), **Send** it to a person as an expiring, view-limited, encrypted link (a Bitwarden Send,
   24 hours and one view by default), or **generate** a strong password that is saved straight to the vault.
 - **Existing installs migrate.** On the first owner unlock, credentials from the old encrypted table and
-  `.env` are written to the vault and verified; then the old rows are deleted and `ENCRYPTION_KEY` and
-  `JWT_SECRET` are blanked, with a copy kept in `.env.pre-vault` (mode 0600). Delete that file once you
-  have checked your credentials.
+  `.env` are written to the vault and read back; only then are the old rows deleted and the keys blanked
+  in `.env` (`ENCRYPTION_KEY` and `JWT_SECRET` too). No plaintext copy of the old file is kept. Earlier
+  versions kept one as `.env.pre-vault`: if any is left, Settings → Setup checklist lists it and offers to
+  shred it (overwritten twice, then deleted; asks for the master password).
 
 Deleting a secret from the Secrets page moves it to the vault's trash, so it can be recovered from the vault
 until the trash is emptied. Signing in takes about a second: HyperProx talks to Vaultwarden's API directly. An account set to Argon2id
@@ -128,9 +131,9 @@ Three more keys are there only for a while, and then removed:
 
 | Key | How long |
 |---|---|
-| `SETUP_SECRET` | Until setup finishes. The wizard removes it as it finishes, `bin/hyperprox-config` removes it from older installs (on the next `deploy.sh`) and never adds it back. Re-running `install.sh` makes a new one only if setup has not finished. |
-| `GRAFANA_ADMIN_PASSWORD` | Grafana reads it only when it first sets up its database. The first owner sign-in moves it to the vault item `hyperprox:system/grafana` and blanks it; `bin/hyperprox-config` then removes the empty line. Grafana recreated without it keeps its admin password (`scripts/test-grafana-admin-absent.sh` proves it against the pinned image). Its login form and basic auth are off, so the password is only for `grafana cli` work: reveal it on the Secrets page, or press reset (`POST /api/monitoring/grafana-admin/reset`), which sets a new one in Grafana over stdin and keeps it only in the vault. |
-| `PROXMOX_TOKEN_SECRET` (and the rest of the Proxmox connection) | Until the first owner sign-in. Setup runs before the vault exists, so the access key HyperProx makes for itself waits here; the first sign-in moves it into the vault and blanks it, with a copy in `.env.pre-vault` (0600) to delete once you have checked. |
+| `SETUP_SECRET` | Until setup finishes. The wizard removes it as it finishes, and so does the owner's first sign-in. Setup counts as finished when `.env` says so or when the vault already has an owner, so `bin/hyperprox-config` (on the next `deploy.sh`) also removes it from an older install that never recorded `SETUP_COMPLETE`, and never adds it back. Re-running `install.sh` makes a new one only if setup has not finished. |
+| `GRAFANA_ADMIN_PASSWORD` | Grafana reads it only when it first sets up its database. The first owner sign-in moves it to the vault item `hyperprox:system/grafana` and blanks it; `bin/hyperprox-config` then removes the empty line. Grafana recreated without it keeps its admin password (`scripts/test-grafana-admin-absent.sh` proves it against the pinned image). A Grafana that starts on a new database without it would otherwise keep its default admin/admin, so on every owner or admin sign-in, and after the charts are started, HyperProx sets Grafana's admin password to the vault's (making and storing one first if the vault has none). Its login form and basic auth are off, so the password is only for `grafana cli` work: reveal it on the Secrets page, or press reset (`POST /api/monitoring/grafana-admin/reset`), which writes a new one to the vault, reads it back, then sets it in Grafana over stdin; if Grafana refuses it, the vault is put back. |
+| `PROXMOX_TOKEN_SECRET` (and the rest of the Proxmox connection) | Until the first owner sign-in. Setup runs before the vault exists, so the access key HyperProx makes for itself waits here; the first sign-in writes it to the vault, reads it back, and only then blanks it. No copy is kept. |
 
 ## The node login
 
@@ -145,7 +148,8 @@ where the test passed.
 - **Before the vault exists.** The setup wizard runs before anyone has created the owner account. A node
   login (or a GoDaddy key) given to it is held in the wizard's memory only. When setup finishes, the wizard
   hands it to the API over loopback (`POST /api/auth/setup-handoff`), which answers only to a request
-  from the same machine that did not come through nginx, carrying the setup key. The API holds it in
+  from the same machine that did not come through nginx, carrying the setup key, accepts it exactly once,
+  and refuses it once the vault has an owner (from then on, logins go in through the Setup checklist). The API holds it in
   memory until the owner's first sign-in, stores it in the vault, then drops it. If HyperProx restarts in
   between, it is gone and the Setup checklist asks again; that is the price of never writing it down.
   `bootstrap.sh` hands over a GoDaddy key the same way, on stdin, so it is on no command line.
@@ -155,8 +159,11 @@ where the test passed.
 - **Every use is audited** in the database's audit log: which node, what for, and who; never the value.
   `test/setup-onboarding.test.ts` plants marker values in a node login and a GoDaddy key and proves none
   reaches Postgres, a file, a log, an audit row or an API answer.
-- **Host keys.** The API checks a node's SSH host key against the one pinned for it, when there is one.
-  The setup wizard does not pin keys: it runs once, on your own network, before anything is stored.
+- **Host keys.** Pinned on first use, then required. The setup wizard pins each node's key the first
+  time it connects, refuses any other key for the rest of its run (before it sends a password), shows the
+  fingerprints so you can compare them on each node's console, and hands them to the API with the login,
+  which pins them in the vault. After that, and for any node first reached later, the API does the same as
+  the Deck terminal: the first key is pinned, a key that changes is always refused.
 - **What it can do.** It is a root login to your hypervisors. The installer's node scripts only add
   packages (apt is asked first and an install that would upgrade or remove anything is refused), never
   touch kernels, drivers or apt holds, and run one node at a time.
@@ -171,12 +178,21 @@ network you trust, or firewall these ports to the HyperProx machine.
 |---|---|---|---|
 | Node health | `prometheus-node-exporter` from your distribution | `:9100`, every interface | CPU, memory, disk, network and (with power) energy figures. |
 | Power | `/etc/udev/rules.d/99-hyperprox-rapl.rules` | nothing | Makes `energy_uj` readable by every local user on that node (kernels since 5.10 keep it root-only as a mitigation for energy side channels such as PLATYPUS). Delete the file to undo it. |
-| Intel GPU, Docker present | The `intel-gpu-exporter` container (privileged, host PID namespace, `/dev/dri`) | `:8081`, every interface | GPU busy, frequency and power. The container is privileged because `intel_gpu_top` needs the kernel's perf counters. |
+| Intel GPU, Docker present | The `intel-gpu-exporter` container, pinned by digest (privileged, host PID namespace, `/dev/dri`) | `:8081`, every interface | GPU busy, frequency and power. The container is privileged because `intel_gpu_top` needs the kernel's perf counters. |
 | Intel GPU, no Docker | `intel-gpu-tools` from apt, and the `hyperprox-intel-gpu-exporter` service (a small Python script, run as root for the same reason) | `:8081`, every interface | The same metrics. HyperProx never installs Docker on a node. |
+| Built-in graphics for containers | `/etc/udev/rules.d/99-hyperprox-igpu.rules` (`SUBSYSTEM=="drm", KERNEL=="renderD*", MODE="0666"`) | nothing | Any container on that node can then use its built-in graphics, not only those whose user maps onto the host's render group. Offered only on nodes with built-in Intel or AMD graphics, and the answer defaults to no. Undo: delete the file and run `udevadm trigger --subsystem-match=drm`, or press undo on the Setup checklist. |
 | NVIDIA GPU | `nvidia_gpu_exporter` 1.15.1, checksum-checked, as the `hyperprox-nvidia-gpu-exporter` service (systemd `DynamicUser`) | `:9835`, every interface | GPU use, memory, temperature and power, read with `nvidia-smi`. It never installs or changes a driver. |
 
 The Prometheus and Grafana that the charts question starts listen on loopback on the HyperProx machine,
 as described above.
+
+**Built-in graphics, for other pages.** `igpuAccess(node)` in `apps/api/src/lib/igpu-access.ts` returns
+`{ node, state, ruleInstalled, apply(), undo() }`: `state` is `open` (render nodes 0666), `closed` (built-in
+Intel or AMD graphics only the render group can use) or `none` (no built-in graphics, or NVIDIA only).
+`apply()` and `undo()` resolve to `{ status: done|already|skipped|failed, reason, state }`. Over HTTP, admin
+only: `GET /api/setup-checklist/igpu-access/:node`, and `POST .../:node/apply` and `POST .../:node/undo`
+(both ask for the master password again). It uses the node login from the vault, so while HyperProx is
+locked it answers locked, and a node with no saved login answers 409.
 
 ## From the command line
 

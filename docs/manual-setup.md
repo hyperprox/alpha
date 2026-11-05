@@ -46,7 +46,7 @@ If the node already runs Docker:
 ```bash
 docker run -d --name intel-gpu-exporter --restart unless-stopped \
   --privileged --pid host -v /dev/dri:/dev/dri -p 8081:8080 \
-  ghcr.io/onedr0p/intel-gpu-exporter:rolling
+  ghcr.io/onedr0p/intel-gpu-exporter:rolling@sha256:90a95483bf5d3752f4db2ab2e1663f19bba307fd832bf53557cbdc38c3701f84
 ```
 
 Without Docker, HyperProx installs `intel-gpu-tools` and runs its own small exporter (the Python script
@@ -66,6 +66,21 @@ on port 9835. The unit it writes is in
 [`nvidia-gpu-exporter.sh`](../packages/hardware/node/nvidia-gpu-exporter.sh).
 
 AMD GPUs are listed but not monitored yet.
+</details>
+
+<details>
+<summary>Let containers use a node's built-in graphics</summary>
+
+On a node with built-in Intel or AMD graphics, create `/etc/udev/rules.d/99-hyperprox-igpu.rules`
+containing:
+
+```
+SUBSYSTEM=="drm", KERNEL=="renderD*", MODE="0666"
+```
+
+Then `udevadm control --reload && udevadm trigger --subsystem-match=drm`. `stat -c %a /dev/dri/renderD128`
+should print `666`. The trade-off: any container on that node can then use its built-in graphics. To undo
+it, delete the file and run the trigger again.
 </details>
 
 <details>
