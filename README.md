@@ -257,7 +257,7 @@ node joins. There is nothing to ask.
 
 **Changing an answer later.** Open **Settings → Setup checklist**. It shows each question, whether it is
 done on each node right now, and a button to do it. Work on your nodes needs a login for them: you enter
-it once, HyperProx tests it on every node and keeps it in the vault.
+it once, HyperProx tests it on every node and keeps it in the vault. Each node's identity key is shown there too: compare it with the node's own console and press **Confirm this key**. VPN installs on a node and maintenance mode only run against a node whose key you have confirmed.
 
 **What the node work changes.** It only adds packages and never upgrades or removes one. It does not touch
 kernels, drivers or apt holds, so a node that pins its kernel for a GPU driver is safe. It runs one node at
