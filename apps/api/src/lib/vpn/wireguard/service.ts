@@ -371,9 +371,6 @@ export class WireguardService {
       address = o.router!.address
     }
 
-    const job = this.job('connect machine', by)
-    const s = await this.support(job, m)
-    if ((await this.d.remote.run(job, m, wgInstallScript(s), { timeoutMs: 10 * 60_000 })).code !== 0) throw new Error('installing wireguard-tools failed')
     // The overlay pool (the server's network, or this machine's own tunnel address on the router) and the
     // declared remote sites do not count toward a node's coverage limit; everything is checked for overlaps.
     const pool = server ? [server.address] : [address]
@@ -385,35 +382,38 @@ export class WireguardService {
     const specBad = checkSpec(spec)
     if (specBad) throw new WgInputError(specBad)
 
-    // The key comes first (a rebuilt machine has no key file: a new one is made), so the other end can be told
-    // before this side comes up: its first handshake is then answered instead of waiting for a retry.
-    const k = await this.d.remote.run(job, m, wgKeyScript(iface), { timeoutMs: 60_000 })
-    const publicKey = parsePublicKey(k.output) ?? ''
-    if (!isWgKey(publicKey)) throw new Error('the machine key could not be made')
+    const job = this.job('connect machine', by)
+    const s = await this.support(job, m)
+    let publicKey = ''
+    let peer: WgPeer | null = null
+    let routerPeerAdded: string | null = null, routerPeerRemoved = false
+
+    // In order: install, key (a rebuilt machine has none, so a new one is made), tell the other end, then bring
+    // this side up, so its first handshake is answered. On a node all of it runs under the guard.
     const change = async () => {
+      const inst = await this.d.remote.run(job, m, wgInstallScript(s), { timeoutMs: 10 * 60_000 })
+      if (inst.code !== 0) throw new Error(/HP_WG_REFUSED=(.*)/.exec(inst.output)?.[1] ?? 'installing wireguard-tools failed')
+      const k = await this.d.remote.run(job, m, wgKeyScript(iface), { timeoutMs: 60_000 })
+      publicKey = parsePublicKey(k.output) ?? ''
+      if (!isWgKey(publicKey)) throw new Error('the machine key could not be made')
+      const row = {
+        serverId: o.serverId ?? null, routerIface: o.router?.iface ?? null, routerPeerId: existing?.routerPeerId ?? null, kind: 'machine' as const,
+        name: m.name, machineId: m.id, iface, publicKey, address, allowedIps: [address, ...sites], clientAllowedIps: clientAllowed,
+        keepalive: o.keepalive ?? 25, previousPublicKey: null, previousUntil: null, rotatedAt: null,
+      }
+      peer = existing ? await this.d.store.updatePeer(existing.id, row) : await this.d.store.addPeer(row)
+      if (server) {
+        await this.applyServer(job, server)
+      } else if (!existing?.routerPeerId || existing.publicKey !== publicKey) {
+        if (existing?.routerPeerId) { await this.removeRouterPeer(existing.routerPeerId, by); routerPeerRemoved = true }
+        const added = await this.addRouterPeer({ iface: o.router!.iface, publicKey, allowedAddress: row.allowedIps, keepalive: null, id: peer.id, name: m.name }, by)
+        routerPeerAdded = added.id
+        peer = await this.d.store.updatePeer(peer.id, { routerPeerId: added.id })
+      }
       const up = await this.d.remote.run(job, m, wgApplyScript(spec), { timeoutMs: 2 * 60_000 })
       if (up.code !== 0 || parsePublicKey(up.output) !== publicKey) throw new Error(`${iface} did not come up on ${m.name}`)
     }
-    const row = {
-      serverId: o.serverId ?? null, routerIface: o.router?.iface ?? null, routerPeerId: existing?.routerPeerId ?? null, kind: 'machine' as const,
-      name: m.name, machineId: m.id, iface, publicKey, address, allowedIps: [address, ...sites], clientAllowedIps: clientAllowed,
-      keepalive: o.keepalive ?? 25, previousPublicKey: null, previousUntil: null, rotatedAt: null,
-    }
-    let peer: WgPeer
-    if (existing) {
-      peer = await this.d.store.updatePeer(existing.id, row)
-    } else {
-      peer = await this.d.store.addPeer(row)
-    }
-    if (server) {
-      await this.applyServer(job, server)
-    } else {
-      if (existing?.routerPeerId && existing.publicKey !== publicKey) await this.removeRouterPeer(existing.routerPeerId, by).catch(() => undefined)
-      if (!existing?.routerPeerId || existing.publicKey !== publicKey) {
-        const added = await this.addRouterPeer({ iface: o.router!.iface, publicKey, allowedAddress: row.allowedIps, keepalive: null, id: peer.id, name: m.name }, by)
-        peer = await this.d.store.updatePeer(peer.id, { routerPeerId: added.id })
-      }
-    }
+
     try {
       if (m.kind === 'node') {
         const prev = await this.d.remote.run(job, m, `cat /etc/wireguard/${iface}.conf 2>/dev/null || true`, { timeoutMs: 30_000 })
@@ -424,17 +424,35 @@ export class WireguardService {
         await change()
       }
     } catch (e) {
-      // This side did not come up: a new peer is taken back off the other end, so nothing is left half-made.
-      if (!existing) {
-        await this.d.store.removePeer(peer.id).catch(() => undefined)
-        if (server) await this.applyServer(job, server).catch(() => undefined)
-        else if (peer.routerPeerId) await this.removeRouterPeer(peer.routerPeerId, by).catch(() => undefined)
-      }
+      await this.undoConnect(job, { existing, peer, server, routerPeerAdded, routerPeerRemoved, by })
       throw e
     }
 
     await this.d.store.audit('wireguard.machine.connect', m.id, { by, iface, target: o.serverId ? `server:${o.serverId}` : `router:${o.router!.iface}`, rebuilt: !!existing && existing.publicKey !== publicKey })
-    return { peer, log: job.log }
+    return { peer: peer!, log: job.log }
+  }
+
+  /**
+   * This side did not come up: put the other end back as it was. A new peer is taken off the server or router;
+   * a rebuilt machine's old key goes back on, so nothing is left pointing at a key no machine holds.
+   */
+  private async undoConnect(job: RemoteJob, u: { existing: WgPeer | undefined; peer: WgPeer | null; server: WgServer | null; routerPeerAdded: string | null; routerPeerRemoved: boolean; by: string }): Promise<void> {
+    const quiet = async (f: () => Promise<unknown>) => { try { await f() } catch (e) { job.log += `[undo] ${(e as Error).message}\n` } }
+    if (u.routerPeerAdded) await quiet(() => this.removeRouterPeer(u.routerPeerAdded!, u.by))
+    if (!u.existing) {
+      if (u.peer) await quiet(() => this.d.store.removePeer(u.peer!.id))
+    } else {
+      const { id: _id, createdAt: _c, ...old } = u.existing as WgPeer & { createdAt?: unknown }
+      await quiet(() => this.d.store.updatePeer(u.existing!.id, { ...old, routerPeerId: u.existing!.routerPeerId }))
+      if (!u.server && (u.routerPeerRemoved || u.routerPeerAdded) && u.existing.routerIface) {
+        await quiet(async () => {
+          const back = await this.addRouterPeer({ iface: u.existing!.routerIface!, publicKey: u.existing!.publicKey, allowedAddress: u.existing!.allowedIps, keepalive: null, id: u.existing!.id, name: u.existing!.name }, u.by)
+          await this.d.store.updatePeer(u.existing!.id, { routerPeerId: back.id })
+        })
+      }
+    }
+    if (u.server) await quiet(() => this.applyServer(job, u.server!))
+    await this.d.store.audit('wireguard.machine.connect.undone', u.existing?.id ?? u.peer?.id ?? '', { by: u.by, restoredOldKey: !!u.existing })
   }
 
   // ── Status ────────────────────────────────────────────────────────────────

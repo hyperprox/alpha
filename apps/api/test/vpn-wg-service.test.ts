@@ -34,6 +34,7 @@ function fleet() {
   const confs = new Map<string, string>()
   const ran: Array<{ machine: string; script: string }> = []
   let snapAfter = ''
+  const failUp = new Set<string>()
   const exec: RemoteExecutor = {
     listMachines: async () => [NODE, SRV, APP],
     run: async (m, script, o) => {
@@ -49,6 +50,7 @@ function fleet() {
       const id = `${m.id}/${iface}`
       if (script.includes('wg genkey >')) { if (!keys.has(id)) keys.set(id, keypair()); return say(`HP_WG_PUB=${keys.get(id)!.pub}`) }
       if (script.includes('HP_WG_PRIV=$(cat')) return say(`HP_WG_PRIV=${keys.get(id)!.priv}`)
+      if (script.includes('HP_WG\n') && failUp.has(m.id)) return { code: 1, output: 'RTNETLINK answers: Operation not permitted', timedOut: false }
       if (script.includes('HP_WG\n')) { confs.set(id, /<<'HP_WG'\n([\s\S]*?)\nHP_WG/.exec(script)?.[1] ?? ''); return say(`HP_WG_PUB=${keys.get(id)?.pub}\nHP_WG_PORT=51820\nHP_WG_DUMP_BEGIN\nHP_WG_DUMP_END`) }
       if (script.includes('wg show')) return say(`HP_WG_PUB=${keys.get(id)?.pub}\nHP_WG_PORT=51820\nHP_WG_DUMP_BEGIN\nHP_WG_DUMP_END`)
       if (script.startsWith('cat /etc/wireguard')) return say('')
@@ -59,7 +61,7 @@ function fleet() {
     firewallState: async () => ({ clusterEnabled: false, rules: [] }), addFirewallRule: async () => undefined,
     hostKeyTarget: async () => ({ host: '192.0.2.11', port: 22 }), probeHostKey: async () => 'x', pinnedHostKey: async () => 'x', pinHostKey: async () => undefined,
   }
-  return { exec, keys, confs, ran, setSnapAfter: (s: string) => { snapAfter = s } }
+  return { exec, keys, confs, ran, failUp, setSnapAfter: (s: string) => { snapAfter = s } }
 }
 
 function vault(): WgVault & { items: Map<string, Record<string, string>> } {
@@ -196,6 +198,10 @@ test('a node is connected under the guard: never its default route, never a clus
   assert.equal(ok.peer.kind, 'machine')
   const node = x.f.ran.filter(r => r.machine === 'node-pve-a').map(r => r.script)
   assert.ok(node.filter(sc => sc.includes('HP_SNAPSHOT_END')).length >= 2, 'snapshot before and after')
+  // The whole install runs under the guard: after its before-snapshot, before its after-snapshot.
+  const busy = node.findIndex(sc => sc.includes('cat /etc/wireguard/hp-wg1.conf')), inst = node.findIndex(sc => sc.includes('HP_WG_VERSION'))
+  const lastSnap = node.map((sc, i) => (sc.includes('HP_SNAPSHOT_END') ? i : -1)).filter(i => i >= 0).at(-1)!
+  assert.ok(busy >= 0 && inst > busy && node.slice(busy, inst).some(sc => sc.includes('HP_SNAPSHOT_END')) && lastSnap > inst, node.map(sc => (sc.includes('HP_BUSY=') ? 'BUSY' : sc.includes('HP_SNAPSHOT_END') ? 'SNAP' : sc.includes('HP_WG_VERSION') ? 'INST' : sc.includes('HP_OS_ID=') ? 'OS' : '?')).join(' '))
   assert.match(x.f.confs.get('lxc-120/hp-wg0')!, new RegExp(x.f.keys.get('node-pve-a/hp-wg1')!.pub.replace(/[+/]/g, '.')))
   assert.ok(!JSON.stringify(await x.store.listPeers()).includes(x.f.keys.get('node-pve-a/hp-wg1')!.priv))
 })
@@ -231,6 +237,41 @@ test('a rebuilt machine gets a new key, and its server peer is updated, keeping 
   assert.notEqual(again.peer.publicKey, old)
   const conf = x.f.confs.get('lxc-120/hp-wg0')!
   assert.match(conf, new RegExp(again.peer.publicKey.replace(/[+/]/g, '.'))); assert.doesNotMatch(conf, new RegExp(old.replace(/[+/]/g, '.')))
+})
+
+test('a rebuilt machine that does not come up: the server gets the old key back, and the store keeps it', async () => {
+  const x = rig()
+  const s = await server(x)
+  const first = await x.svc.connectMachine({ machineId: 'lxc-121', serverId: s.id, allowedIps: ['100.64.10.0/24'] }, 'a')
+  const old = first.peer.publicKey
+  x.f.keys.delete('lxc-121/hp-wg1'); x.f.failUp.add('lxc-121')
+  await assert.rejects(x.svc.connectMachine({ machineId: 'lxc-121', serverId: s.id, allowedIps: ['100.64.10.0/24'] }, 'a'), /did not come up/)
+  const conf = x.f.confs.get('lxc-120/hp-wg0')!
+  assert.match(conf, new RegExp(old.replace(/[+/]/g, '.')), 'the old key is back on the server')
+  assert.doesNotMatch(conf, new RegExp(x.f.keys.get('lxc-121/hp-wg1')!.pub.replace(/[+/]/g, '.')))
+  assert.equal((await x.store.listPeers()).find(p => p.id === first.peer.id)?.publicKey, old)
+})
+
+test('a new machine that does not come up is taken off the server again', async () => {
+  const x = rig()
+  const s = await server(x)
+  x.f.failUp.add('lxc-121')
+  await assert.rejects(x.svc.connectMachine({ machineId: 'lxc-121', serverId: s.id, allowedIps: ['100.64.10.0/24'] }, 'a'), /did not come up/)
+  assert.equal((await x.store.listPeers()).length, 0)
+  assert.doesNotMatch(x.f.confs.get('lxc-120/hp-wg0')!, /\[Peer\]/)
+})
+
+test('a rebuilt machine on the router that does not come up: the old router peer is put back', async () => {
+  const x = rig({ write: true })
+  const target = { iface: 'wg-home', endpoint: 'home.example.com:13231', address: '100.64.20.61/32' }
+  const first = await x.svc.connectMachine({ machineId: 'lxc-121', router: target, allowedIps: ['100.64.20.0/24'] }, 'a')
+  const old = first.peer.publicKey
+  x.f.keys.delete('lxc-121/hp-wg1'); x.f.failUp.add('lxc-121')
+  await assert.rejects(x.svc.connectMachine({ machineId: 'lxc-121', router: target, allowedIps: ['100.64.20.0/24'] }, 'a'), /did not come up/)
+  const mine = x.r.state.peers.filter(p => String(p.comment ?? '').startsWith('hyperprox:'))
+  assert.deepEqual(mine.map(p => p['public-key']), [old], 'only the old key is on the router')
+  const row = (await x.store.listPeers()).find(p => p.id === first.peer.id)!
+  assert.equal(row.publicKey, old); assert.equal(row.routerPeerId, mine[0]['.id'])
 })
 
 // ── The router ───────────────────────────────────────────────────────────────

@@ -11,7 +11,7 @@ import { compareSnapshots, ownRouteProblem, parseSnapshot } from '../src/lib/rem
 const SNAP = (extra = '') => ['HP_ROUTE4 default via 192.0.2.1 dev vmbr0', 'HP_RULE4 32766: from all lookup main', 'HP_RESOLV_LINK=/etc/resolv.conf',
   'HP_RESOLV=nameserver 192.0.2.1;', 'HP_RESOLVED=inactive', 'HP_FWSRC nft present', 'HP_FWL nft table inet filter {', 'HP_FWL nft }',
   'HP_FWD4=0', 'HP_FWD6=0', 'HP_NET own 192.0.2.11/24', extra, 'HP_QUORATE=Yes', 'HP_SNAPSHOT_END'].join('\n')
-import { wgApplyScript, wgKeyScript, wgRestoreScript, wgStatusScript, SERVER_KEYGEN_SCRIPT, wgKeyRestoreScript } from '../src/lib/vpn/wireguard/scripts'
+import { wgApplyScript, wgInstallScript, wgKeyScript, wgRestoreScript, wgStatusScript, SERVER_KEYGEN_SCRIPT, wgKeyRestoreScript } from '../src/lib/vpn/wireguard/scripts'
 import { publicOf } from '../src/lib/vpn/wireguard/service'
 
 function keypair() {
@@ -130,3 +130,65 @@ test('the server keygen script runs in real bash and prints a matching pair', { 
 })
 
 function hasWg(): boolean { try { execFileSync('bash', ['-c', 'command -v wg']); return true } catch { return false } }
+
+// ── Installing wireguard-tools: run in real bash against a stand-in apt ──────────────────────────────────────
+
+const APT = { ok: true as const, pm: 'apt' as const, label: 'Debian 13', tsRepo: 'debian/trixie' }
+
+/** Run the install script with stand-in apt-get, apt-cache and wg; returns what was called and the output. */
+function runInstall(o: { hasWg?: boolean; inCache?: boolean; sim?: string; dnf?: boolean }): { code: number; out: string; calls: string[] } {
+  const { mkdtempSync, writeFileSync, readFileSync, rmSync, chmodSync } = require('node:fs')
+  const { join } = require('node:path')
+  const dir = mkdtempSync(join(require('node:os').tmpdir(), 'hp-wg-apt-'))
+  const log = join(dir, 'calls')
+  writeFileSync(log, '')
+  const stub = (name: string, body: string) => { writeFileSync(join(dir, name), `#!/bin/bash\necho "${name} $*" >> ${log}\n${body}\n`); chmodSync(join(dir, name), 0o755) }
+  stub('apt-cache', o.inCache ? 'echo "  Candidate: 1.0.20210914-1"' : 'echo "  Candidate: (none)"')
+  writeFileSync(join(dir, 'sim.txt'), (o.sim ?? 'Inst wireguard-tools (1.0.20210914-1 Debian:13/stable [amd64])') + '\n')
+  stub('apt-get', `case " $* " in *" -s "*) cat ${join(dir, 'sim.txt')} ;; esac; exit 0`)
+  if (o.hasWg) stub('wg', 'echo "wireguard-tools v1.0.20210914"')
+  // Only these tools on PATH, so a wg on the test machine does not count.
+  for (const t of ['awk', 'grep', 'head', 'sed', 'cat']) {
+    const real = require('node:child_process').execFileSync('bash', ['-c', `command -v ${t}`], { encoding: 'utf8' }).trim()
+    require('node:fs').symlinkSync(real, join(dir, t))
+  }
+  try {
+    const r = require('node:child_process').spawnSync(require('node:child_process').execFileSync('bash', ['-c', 'command -v bash'], { encoding: 'utf8' }).trim(), ['-s'], { input: wgInstallScript(APT), env: { PATH: dir }, encoding: 'utf8' })
+    return { code: r.status ?? -1, out: r.stdout + r.stderr, calls: readFileSync(log, 'utf8').trim().split('\n').filter(Boolean) }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+}
+
+test('install: wireguard-tools only, no recommends, nothing else named', () => {
+  const sc = wgInstallScript(APT)
+  assert.match(sc, /apt-get install -y -qq --no-install-recommends wireguard-tools/)
+  assert.doesNotMatch(sc, /iproute|apt-get (dist-|full-)?upgrade|autoremove|--only-upgrade/)
+})
+
+test('install: already there, nothing is touched', () => {
+  const r = runInstall({ hasWg: true })
+  assert.equal(r.code, 0, r.out)
+  assert.deepEqual(r.calls.filter(c => c.startsWith('apt')), [])
+})
+
+test('install: in the cache, no refresh; simulated first, then installed', () => {
+  const r = runInstall({ inCache: true })
+  assert.equal(r.code, 0, r.out)
+  assert.ok(!r.calls.some(c => c.startsWith('apt-get update')), r.calls.join('\n'))
+  const sim = r.calls.findIndex(c => / -s /.test(` ${c} `)), inst = r.calls.findIndex(c => /^apt-get install/.test(c) && !/ -s /.test(` ${c} `))
+  assert.ok(sim >= 0 && inst > sim, r.calls.join('\n'))
+})
+
+test('install: missing from the cache, refreshed once', () => {
+  const r = runInstall({ inCache: false })
+  assert.equal(r.code, 0, r.out)
+  assert.equal(r.calls.filter(c => c.startsWith('apt-get update')).length, 1)
+})
+
+test('install: refused when it would upgrade or remove anything', () => {
+  for (const sim of ['Inst libc6 [2.41-11] (2.41-12 Debian:13/stable [amd64])\nInst wireguard-tools (1.0 Debian:13/stable [amd64])', 'Remv ifupdown [0.8.44]\nInst wireguard-tools (1.0 Debian:13/stable [amd64])']) {
+    const r = runInstall({ inCache: true, sim })
+    assert.notEqual(r.code, 0)
+    assert.match(r.out, /HP_WG_REFUSED=/)
+    assert.ok(!r.calls.some(c => /^apt-get install/.test(c) && !/ -s /.test(` ${c} `)), 'nothing installed')
+  }
+})
