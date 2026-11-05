@@ -13,7 +13,7 @@
 import { readFileSync, writeFileSync, renameSync, chmodSync, existsSync, mkdirSync, rmSync } from 'fs'
 import { dirname, join } from 'path'
 import { saveCredential } from './ssh-broker'
-import { pinHostKey } from './node-exec'
+import { pinHostKeyIfFree } from './node-exec'
 import { setCredentials } from './credentials'
 import { requestContext, type RequestContext } from './auth'
 import { auditCredentialUse } from './audit'
@@ -141,7 +141,7 @@ export async function flushHeldSecrets(as: RequestContext): Promise<{ stored: st
         // address means something changed since: the login is not stored for it.
         const hk = nl.hostKeys?.[node]
         if (hk) {
-          const pin = await pinHostKey(hk.address, hk.fingerprint).catch(() => 'conflict' as const)
+          const pin = await pinHostKeyIfFree(hk.address, hk.fingerprint).catch(() => 'conflict' as const)
           if (pin === 'conflict') { failed.push(`node login for ${node} (its host key does not match the one already pinned)`); continue }
         }
         try {

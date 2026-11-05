@@ -12,9 +12,9 @@ let service: NotifyService | null = null
 export function setNotifyService(s: NotifyService | null): void { service = s }
 export function getNotifyService(): NotifyService | null { return service }
 
-export async function publish(e: NotifyEventInput): Promise<void> {
+export async function publish(e: NotifyEventInput, o?: { privateOnly?: boolean }): Promise<void> {
   if (!service) return
-  await service.publish(e)
+  await service.publish(e, o)
 }
 
 export type { NotifyEventInput, Severity, ChannelKind } from './types'

@@ -12,7 +12,7 @@ export type ChannelKind = typeof CHANNEL_KINDS[number]
 export const SEVERITIES = ['info', 'warning', 'critical'] as const
 export type Severity = typeof SEVERITIES[number]
 
-export const FAMILIES = ['vault', 'updates', 'certs', 'jobs', 'backups', 'resources'] as const
+export const FAMILIES = ['vault', 'updates', 'certs', 'jobs', 'backups', 'resources', 'vpn'] as const
 export type Family = typeof FAMILIES[number]
 
 /** Kinds people run on their own network: only these may use a private address. */
@@ -32,7 +32,7 @@ export const isFamily = (v: unknown): v is Family => typeof v === 'string' && (F
 export function familyOf(type: string): Family | null {
   const head = type.split('.')[0]
   switch (head) {
-    case 'vault': case 'updates': case 'certs': return head
+    case 'vault': case 'updates': case 'certs': case 'vpn': return head
     case 'wizard': case 'catalogue': return 'jobs'
     case 'backup': return 'backups'
     case 'alert': return 'resources'
@@ -64,6 +64,17 @@ export interface NotifyEventInput {
   fingerprint?: string
   resolved?: boolean
   at?: Date
+  /**
+   * Values that came from outside HyperProx (a device name, its OS, the user who added it). Channels that
+   * render markdown (Discord, Teams) show them as plain text: markdown escaped, links not clickable.
+   */
+  plain?: string[]
+  /**
+   * A link that must not be stored or shown to anyone but its owner (a sign-in URL). It goes only to channels
+   * marked private, lives in memory until `sensitiveUntil`, and is never written to the outbox.
+   */
+  sensitiveLink?: string
+  sensitiveUntil?: Date
 }
 
 /** An event after the limits and scrubbing: what the outbox stores and the adapters render. */
@@ -81,6 +92,8 @@ export interface NotifyMessage {
   subject?: { kind: string; name: string }
   fingerprint?: string
   at: string
+  /** Its link is held in memory only (see NotifyEventInput.sensitiveLink); private channels only. */
+  sensitive?: boolean
 }
 
 export interface ChannelSecret {
@@ -112,6 +125,8 @@ export interface ChannelRecord {
   quietHours: QuietHours | null
   lanOverride: boolean
   usableWhileLocked: boolean
+  /** Read only by people trusted with sign-in links. Only private channels receive sensitive events. */
+  private: boolean
   nonSecret: ChannelNonSecret
   lastResult: DeliveryResult | null
   lastSentAt: Date | null

@@ -281,6 +281,7 @@ model NotifyChannel {
   quietHours        Json?
   lanOverride       Boolean   @default(false)       // "Self-hosted on my network"
   usableWhileLocked Boolean   @default(false)
+  private           Boolean   @default(false)       // trusted readers only: receives sign-in links
   nonSecret         Json                // e.g. { chatId } for Telegram
   lastResult        Json?               // { ok, status?, code?, at }
   lastSentAt        DateTime?
@@ -320,6 +321,63 @@ model NotifyState {
   updatedAt DateTime @updatedAt
 }
 
+// -----------------------------------------------------------------------------
+//  Remote access (lib/remote): what HyperProx installed where. Nothing secret.
+// -----------------------------------------------------------------------------
+
+model RemoteAccessDevice {
+  id          String    @id @default(cuid())
+  machineId   String    // node-<name> | lxc-<id> | qemu-<id> | host-<id>
+  provider    String    // tailscale | netbird
+  deviceId    String?   // the provider's device or peer id
+  nodeKey     String?   // Tailscale's stable node id
+  hostname    String?
+  address     String?   // overlay address
+  mode        String    @default("kernel")   // kernel | userspace
+  version     String?
+  routes      String[]
+  exitNode    Boolean   @default(false)
+  routeIds    String[]  // NetBird routes HyperProx created
+  adopted     Boolean   @default(false)   // already there; HyperProx only recorded it
+  forwardingBefore String?               // a guest's "v4:v6" forwarding before routing went on
+  prefs       Json?     // the client's own settings as last read back (no secrets)
+  connected   Boolean?
+  checkedAt   DateTime?
+  lastError   String?
+  installedAt DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([machineId, provider])
+}
+
+// Every key that has left HyperProx and is not yet confirmed revoked. The key id only, never the key.
+model RemoteAccessPendingRevoke {
+  id          String   @id @default(cuid())
+  provider    String
+  keyId       String
+  revokeAfter DateTime
+  reason      String   // install | manual
+  attempts    Int      @default(0)
+  lastError   String?
+  createdAt   DateTime @default(now())
+
+  @@index([revokeAfter])
+}
+
+// A change on a node that started and has not passed its guard yet. Found after a restart: re-check, roll back.
+model RemoteAccessInflight {
+  id        String   @id @default(cuid())
+  machineId String
+  provider  String
+  action    String
+  jobId     String
+  by        String
+  owner     String
+  before    Json
+  undo      Json
+  startedAt DateTime @default(now())
+}
+
 // The Catalogue install wizard: previews, install jobs and "ID being created" marks, so an API restart
 // does not orphan a container that was mid-install. The record itself is JSON; expiresAt drives pruning.
 model CatalogueRecord {
@@ -332,4 +390,86 @@ model CatalogueRecord {
   updatedAt DateTime  @updatedAt
 
   @@index([kind, expiresAt])
+}
+
+// Devices the VPN poller has already seen at each provider, so a new one is announced once, restart or not.
+model RemoteAccessKnownDevice {
+  provider  String
+  deviceId  String
+  firstSeen DateTime @default(now())
+
+  @@id([provider, deviceId])
+}
+
+// -----------------------------------------------------------------------------
+//  WireGuard (lib/vpn/wireguard): servers and peers HyperProx manages. Public keys only: a client's private
+//  key and config are vault items; a server's or machine's private key stays on that machine.
+// -----------------------------------------------------------------------------
+
+model WgServer {
+  id          String   @id @default(cuid())
+  machineId   String
+  iface       String
+  listenPort  Int
+  address     String   // the server's tunnel address and pool, e.g. 192.0.2.1/24
+  endpoint    String   // host:port clients connect to
+  publicKey   String
+  keyBackedUp Boolean  @default(false)   // the owner chose to keep a copy of the server key in the vault
+  createdAt   DateTime @default(now())
+
+  @@unique([machineId, iface])
+}
+
+model WgPeer {
+  id                String    @id @default(cuid())
+  serverId          String?
+  routerIface       String?
+  routerPeerId      String?
+  kind              String    // device | machine
+  name              String
+  machineId         String?
+  iface             String?
+  publicKey         String
+  address           String
+  allowedIps        String[]
+  clientAllowedIps  String[]
+  keepalive         Int?
+  previousPublicKey String?
+  previousUntil     DateTime?
+  rotatedAt         DateTime?
+  createdAt         DateTime  @default(now())
+}
+
+// Guest config editor (lib/guest-config): the config before and after every write HyperProx makes to a guest,
+// so its history can be read and any version reverted to (through a fresh preview). Secrets are redacted.
+model GuestConfigVersion {
+  id        String   @id @default(uuid())
+  guest     String              // "lxc/123" | "qemu/123"
+  node      String
+  kind      String              // edit | revert | device | gpu-off | gpu-on | restart
+  tag       String?
+  actor     String
+  previewId String
+  before    Json
+  after     Json?
+  changes   Json
+  outcome   String              // ok | failed
+  problems  Json?
+  meta      Json?
+  createdAt DateTime @default(now())
+
+  @@index([guest, createdAt])
+  @@index([previewId])
+}
+
+// Each guest's GPU toggle state: the entries HyperProx added and the open "GPU off", so the toggle never depends
+// on how many history rows are read or kept.
+model GuestGpuState {
+  guest     String    @id      // "lxc/123"
+  dev       Json               // devN key -> value HyperProx wrote
+  raw       Json               // raw device lines HyperProx wrote
+  off       Json?              // the open "GPU off": what was removed
+  offAt     DateTime?
+  offRow    String?
+  updatedAt DateTime  @updatedAt
 }

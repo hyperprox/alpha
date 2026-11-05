@@ -1,5 +1,5 @@
 // Shared bits for the per-kind adapters: colours, text, limits.
-import { fitLines, linkLine, severityPrefix } from '../render'
+import { fitLines, linkLine, mapPlain, severityPrefix, unmarkPlain } from '../render'
 import type { NotifyMessage } from '../types'
 
 export const JSON_HEADERS = { 'Content-Type': 'application/json' }
@@ -23,4 +23,22 @@ export function bodyText(m: NotifyMessage, limit: number): string {
 export function plainText(m: NotifyMessage, limit: number): string {
   const head = `${severityPrefix(m)}${m.title}`
   return `${head}\n${bodyText(m, limit - head.length - 1)}`
+}
+
+/** Markdown escaped and links broken, so a value shows as typed and cannot be clicked. */
+export function plainMarkdown(v: string): string {
+  return v
+    .replace(/[\\`*_~|<>\[\]()#+\-=!{}.]/g, c => `\\${c}`)
+    .replace(/:\\?\/\\?\//g, '[:]//')
+    .replace(/\bwww\\?\./gi, 'www[.]')
+}
+
+/** For a markdown channel: every marked outside value made plain; marks removed. */
+export function withPlainValues(m: NotifyMessage): NotifyMessage {
+  return { ...m, title: mapPlain(m.title, plainMarkdown), lines: m.lines.map(l => mapPlain(l, plainMarkdown)) }
+}
+
+/** For every other channel: the marks removed, the text as it was. */
+export function withoutMarks(m: NotifyMessage): NotifyMessage {
+  return { ...m, title: unmarkPlain(m.title), lines: m.lines.map(unmarkPlain) }
 }

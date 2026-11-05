@@ -130,7 +130,7 @@ function channelFrom(r: any): ChannelRecord {
   return {
     id: r.id, name: r.name, kind: r.kind, enabled: r.enabled, minSeverity: r.minSeverity,
     eventFilter: r.eventFilter ?? 'all', quietHours: r.quietHours ?? null, lanOverride: r.lanOverride,
-    usableWhileLocked: r.usableWhileLocked, nonSecret: r.nonSecret ?? {}, lastResult: r.lastResult ?? null,
+    usableWhileLocked: r.usableWhileLocked, private: !!r.private, nonSecret: r.nonSecret ?? {}, lastResult: r.lastResult ?? null,
     lastSentAt: r.lastSentAt, failingSince: r.failingSince, seededFrom: r.seededFrom, createdBy: r.createdBy,
     createdAt: r.createdAt, updatedAt: r.updatedAt,
   }
@@ -155,7 +155,7 @@ export class PrismaNotifyStore implements NotifyStore {
   async createChannel(c: NewChannel) {
     return channelFrom(await this.t.notifyChannel.create({ data: {
       id: c.id, name: c.name, kind: c.kind, enabled: c.enabled, minSeverity: c.minSeverity, eventFilter: c.eventFilter as any,
-      quietHours: json(c.quietHours), lanOverride: c.lanOverride, usableWhileLocked: c.usableWhileLocked, nonSecret: c.nonSecret as any,
+      quietHours: json(c.quietHours), lanOverride: c.lanOverride, usableWhileLocked: c.usableWhileLocked, private: !!c.private, nonSecret: c.nonSecret as any,
       lastResult: json(c.lastResult), lastSentAt: c.lastSentAt ?? null, failingSince: c.failingSince ?? null,
       seededFrom: c.seededFrom, createdBy: c.createdBy,
     } }))

@@ -85,6 +85,11 @@ export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
           return { success: true, data: { message: `Connected — ${domains.length} active domains`, domains: domains.map(d => d.domain) } }
         }
 
+        if (category === 'remote') {
+          const { testProvider } = await import('../lib/remote/providers')
+          return { success: true, data: { message: await testProvider(provider) } }
+        }
+
         return { success: false, error: `No test available for ${category}/${provider}` }
       } catch (e: any) {
         return r.status(400).send({ success: false, error: e.message })

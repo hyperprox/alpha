@@ -13,6 +13,7 @@ import { dnsRoutes }            from './routes/dns'
 import { wsRoutes }             from './routes/ws'
 import { settingsRoutes }       from './routes/settings'
 import { infrastructureRoutes } from './routes/infrastructure'
+import { guestConfigRoutes }    from './routes/guest-config'
 import { serviceRoutes }         from './routes/services'
 import { networkRoutes }         from './routes/network'
 import { prometheusRoutes } from './routes/prometheus'
@@ -38,6 +39,8 @@ import { updatesRoutes, updatesWsRoutes } from './routes/updates'
 import { certsRoutes }            from './routes/certs'
 import { haRoutes }               from './routes/ha'
 import { notifyRoutes }           from './routes/notify'
+import { remoteRoutes }           from './routes/remote'
+import { vpnRoutes }              from './routes/vpn'
 import { monitoringRoutes }       from './routes/monitoring'
 import { prismaPlugin }         from './plugins/prisma'
 import { redisPlugin }          from './plugins/redis'
@@ -110,6 +113,7 @@ async function main() {
   await server.register(dnsRoutes,            { prefix: '/api/dns' })
   await server.register(settingsRoutes,       { prefix: '/api/settings' })
   await server.register(infrastructureRoutes, { prefix: '/api/infra' })
+  await server.register(guestConfigRoutes,    { prefix: '/api/infra/guest-config' })
   await server.register(serviceRoutes,         { prefix: '/api/services' })
   await server.register(networkRoutes,         { prefix: '/api/network' })
   await server.register(storageRoutes,         { prefix: '/api/storage' })
@@ -128,6 +132,8 @@ async function main() {
   await server.register(certsRoutes,          { prefix: '/api/certs' })
   await server.register(haRoutes,             { prefix: '/api/ha' })
   await server.register(notifyRoutes,         { prefix: '/api/settings/notifications' })
+  await server.register(remoteRoutes,         { prefix: '/api/remote' })
+  await server.register(vpnRoutes,            { prefix: '/api/vpn' })
   await server.register(wsRoutes,             { prefix: '/ws' })
   // Terminal sockets live under /ws because nginx proxies upgrades only there.
   await server.register(terminalWsRoutes,         { prefix: '/ws/terminal' })

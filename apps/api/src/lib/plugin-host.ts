@@ -592,6 +592,20 @@ async function contextFor(plugin: Plugin): Promise<BrokerContext> {
   return new BrokerContext(plugin.manifest, settings)
 }
 
+/**
+ * A read through a plug-in's own connection, for a core feature that builds on it (the VPN page lists the
+ * MikroTik's WireGuard peers this way). GET only, and the plug-in's credential stays inside this module.
+ */
+export async function pluginRead(plugin: Plugin, path: string, timeoutMs?: number): Promise<any> {
+  return (await contextFor(plugin)).get(path, { timeoutMs })
+}
+
+/** A plug-in's address and TLS rule (both non-secret), for a write client that brings its own credential. */
+export async function pluginAddress(plugin: Plugin): Promise<{ url: string; insecureTLS: boolean } | null> {
+  const url = (await getSettings(plugin.manifest.id).catch(() => ({} as Record<string, string>)))[plugin.manifest.baseUrlSetting]
+  return url ? { url: url.replace(/\/+$/, ''), insecureTLS: !!plugin.manifest.insecureTLS } : null
+}
+
 /** Run a plug-in. Returns its tile data, or throws with a readable reason. */
 export async function runPlugin(plugin: Plugin): Promise<PluginTileData> {
   return plugin.load(await contextFor(plugin))
