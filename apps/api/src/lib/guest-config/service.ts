@@ -23,7 +23,7 @@ import {
 } from './plan'
 import {
   detectGpu, buildGpuGrantPlan, buildGpuRevokePlan, buildGpuOffPlan, buildGpuOnPlan, buildGpuConvertPlan, buildRawEditPlan,
-  buildHostpciPlan, buildDeviceGrantPlan, containerNvidiaVersion, driverMatch, sharers,
+  buildHostpciPlan, buildDeviceGrantPlan, containerNvidiaVersion, driverMatch, sharers, buildPortableGpuPlan, PORTABLE_WHY_RAW, PORTABLE_NO_WRITER,
   type GpuGrant, type GpuOffRecord, type RawEdit, type HostpciEdit, type DeviceGrant,
 } from './gpu'
 import { PROBE_SCRIPT, parseProbe, attachUsage, type GuestRef, type NodeInventory } from './devices'
@@ -77,6 +77,8 @@ export type PreviewInput =
   | { kind: 'raw'; raw: RawEdit }
   | { kind: 'hostpci'; hostpci: HostpciEdit }
   | { kind: 'device'; device: DeviceGrant }
+  /** Portable GPU: every eligible node's GPU as optional raw lines (previewed; see gpu.ts for why it is not written). */
+  | { kind: 'gpu-portable'; nodes?: string[] }
   /** `after`: the id of an applied preview whose device checks this restart verifies. */
   | { kind: 'restart'; after?: string }
 
@@ -240,7 +242,14 @@ export class GuestConfigService {
       const r = await this.d.shell.run(g.node, `pct exec ${g.vmid} -- getent group render video`, 15_000).catch(() => null)
       if (r) { groups = {}; for (const l of r.output.split('\n')) { const [n, , gid] = l.split(':'); if (n === 'render' || n === 'video') groups[n] = Number(gid) } }
     }
-    return { gpu, driver, groups, devices: inv?.devices.filter(d => d.kind === 'gpu') ?? [], inventoryProblem: inv?.problem ?? null, sharers: inv ? sharers(g, inv.devices) : [] }
+    // The GPU it is using now: the first GPU device node visible inside, named from this node's inventory.
+    let inUse: { device: string; name: string } | null = null
+    if (g.type === 'lxc' && ctx.running && gpu.entries.length) {
+      const r = await this.d.shell.run(g.node, `pct exec ${g.vmid} -- sh -c 'ls -1 /dev/nvidia0 /dev/dri/renderD* 2>/dev/null'`, 15_000).catch(() => null)
+      const dev = r?.output.split('\n').map(l => l.trim()).find(Boolean)
+      if (dev) inUse = { device: dev, name: inv?.devices.find(d => d.kind === 'gpu' && d.paths.includes(dev))?.name ?? dev }
+    }
+    return { gpu, driver, groups, inUse, portable: { whyRaw: PORTABLE_WHY_RAW, noWriter: PORTABLE_NO_WRITER }, devices: inv?.devices.filter(d => d.kind === 'gpu') ?? [], inventoryProblem: inv?.problem ?? null, sharers: inv ? sharers(g, inv.devices) : [] }
   }
 
   /** Check one host path on every online node, for shared=1. Read-only. */
@@ -309,6 +318,14 @@ export class GuestConfigService {
       case 'gpu-convert': plan = buildGpuConvertPlan(ctx, await this.inventory(g.node, true)); kind = 'device'; break
       case 'raw': plan = buildRawEditPlan(ctx, input.raw ?? {}); kind = 'raw'; break
       case 'hostpci': plan = buildHostpciPlan(ctx, await this.inventory(g.node, true), input.hostpci ?? {}, await this.guestsOn(g.node)); kind = 'device'; break
+      case 'gpu-portable': {
+        const all = ((await this.d.pve.get<any[]>('/nodes').catch(() => [])) ?? []).filter(n => n.status === 'online').map(n => String(n.node))
+        const eligible = (input.nodes?.length ? input.nodes.filter(n => all.includes(n)) : all)
+        const targets = await Promise.all(eligible.map(async n => ({ node: n, inv: await this.inventory(n, true) })))
+        const det = ctx.running ? await this.gpuDetail(g).catch(() => null) : null
+        plan = buildPortableGpuPlan(ctx, targets.filter(t => t.inv.problem || t.inv.devices.some(d => d.kind === 'gpu')), det?.groups ?? null); kind = 'raw'
+        break
+      }
       case 'device': plan = buildDeviceGrantPlan(ctx, await this.inventory(g.node, true), input.device ?? ({} as any)); kind = 'device'; break
       case 'restart': {
         plan = emptyPlan(); kind = 'restart'
@@ -342,6 +359,21 @@ export class GuestConfigService {
     }
     this.previews.set(p.id, p)
     return p
+  }
+
+  shell(): NodeShell { return this.d.shell }
+
+  /** HA-managed containers with GPU entries, where they run now. For the move watcher. */
+  async haGpuGuests(): Promise<Array<{ vmid: number; name: string; node: string; status: string }>> {
+    const [res, ha] = await Promise.all([this.d.pve.get<any[]>('/cluster/resources?type=vm'), this.d.pve.get<any[]>('/cluster/ha/resources').catch(() => [] as any[])])
+    const sids = new Set((ha ?? []).map(r => r.sid))
+    const cts = (res ?? []).filter(r => r.type === 'lxc' && sids.has(`ct:${r.vmid}`))
+    const out: Array<{ vmid: number; name: string; node: string; status: string }> = []
+    for (const r of cts) {
+      const cfg = await this.d.pve.get<PveConfig>(`/nodes/${encodeURIComponent(r.node)}/lxc/${r.vmid}/config`).catch(() => null)
+      if (cfg && detectGpu('lxc', cfg).entries.length) out.push({ vmid: Number(r.vmid), name: str(r.name), node: r.node, status: r.status })
+    }
+    return out
   }
 
   async historyOf(g: GuestId, limit = 100): Promise<HistoryRow[]> { return this.d.history.list(`${g.type}/${g.vmid}`, limit) }

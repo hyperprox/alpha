@@ -16,6 +16,9 @@ import { GuestConfigService, GuestConfigRefusal, type GuestId, type PreviewInput
 import { redactForViewer } from '../lib/guest-config/devices'
 import { livePveAdapter, liveNodeShell, prismaAudit } from '../lib/guest-config/pve-adapter'
 import { PrismaHistoryStore } from '../lib/guest-config/history/store'
+import { GpuMoveWatcher } from '../lib/guest-config/gpu-watch'
+import { publish } from '../lib/notify'
+import { isUnlocked } from '../lib/vault/state'
 
 let shared: GuestConfigService | null = null
 export function guestConfigService(db: PrismaClient): GuestConfigService {
@@ -132,6 +135,15 @@ export function buildGuestConfigRoutes(deps: () => GuestConfigRouteDeps): Fastif
 
 export const guestConfigRoutes: FastifyPluginAsync = async (fastify) => {
   const service = guestConfigService(fastify.prisma)
+  // After an HA move, check that a GPU guest still sees a GPU and say so. Checks only, every minute, and only
+  // while unlocked: the node logins it reads with come from the vault.
+  const watcher = new GpuMoveWatcher(service, async e => publish({
+    type: e.type, severity: e.severity, title: e.title, where: 'Infrastructure page', link: '/infrastructure',
+    subject: { kind: 'guest', name: e.guest.name }, fingerprint: `${e.type}:${e.guest.vmid}:${e.guest.to}`,
+  }))
+  const timer = setInterval(() => { if (isUnlocked()) watcher.tick().catch(err => fastify.log.warn({ err: err?.message }, '[guest-config] GPU move check failed')) }, 60_000)
+  timer.unref()
+  fastify.addHook('onClose', async () => clearInterval(timer))
   await fastify.register(buildGuestConfigRoutes(() => ({
     service,
     whoami: () => ownerOf(currentContext()),
