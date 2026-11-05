@@ -208,10 +208,10 @@ test('health gate: sets, not counts — one PG recovering cannot hide another de
   assert.ok(!RISKY_PG.test('active+remapped+backfilling'))
 })
 
-test('health gate, runner: an OSD map flag other than our noout during the step fails it, even when OSDMAP_FLAGS is accepted', async () => {
+test('health gate, runner: an OSD map flag other than our noout during the step fails it', async () => {
   const fake = cluster(REPLICATED, 'ceph')
   fake.flagsAfterRestart = ['pause']
-  const { runner, store } = setup(fake, POLICY.replace('[POOL_NO_REDUNDANCY]', '[POOL_NO_REDUNDANCY, OSDMAP_FLAGS]'))
+  const { runner, store } = setup(fake)
   const job = await runner.start('run', 'schedule'); await settle(runner)
   assert.match(step(await store.getSteps(job.id), 'node-a', 'ceph', /^restart osd/).reason!, /OSD map flag set during the step: pause/)
   assert.deepEqual(fake.restartedOsds, [0])
@@ -317,10 +317,10 @@ test('reboot, own node: the handoff checker itself decides like the API', { skip
 
 // --- 6. Stale noout -------------------------------------------------------------------------------
 
-test('stale noout at the start of a run: named in the preflight, a critical notification, nothing runs — even with OSDMAP_FLAGS accepted', async () => {
+test('stale noout at the start of a run: named in the preflight, a critical notification, nothing runs (OSDMAP_FLAGS cannot be accepted at all)', async () => {
   const fake = cluster(REPLICATED, 'ceph')
   fake.noout = true
-  const { runner, store, published } = setup(fake, POLICY.replace('[POOL_NO_REDUNDANCY]', '[POOL_NO_REDUNDANCY, OSDMAP_FLAGS]'))
+  const { runner, store, published } = setup(fake)
   const job = await runner.start('run', 'schedule'); await settle(runner)
   const j = (await store.getJob(job.id))!
   assert.equal(j.status, 'failed')
