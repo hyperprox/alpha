@@ -126,7 +126,7 @@ export async function legacyVirtualChannels(l: LegacySources, isPrivate: (url: s
     const channel: ChannelRecord = {
       id: `legacy:${g.sources.map(s => s.key).join('+')}`, name: seedName(g.sources), kind: shape.kind, enabled: true,
       minSeverity: g.sources.map(s => s.min).reduce(lower), eventFilter: [...new Set(g.sources.flatMap(s => s.families))],
-      quietHours: null, lanOverride: shape.lanOverride, usableWhileLocked: true, nonSecret: {}, lastResult: null,
+      quietHours: null, lanOverride: shape.lanOverride, usableWhileLocked: true, private: false, nonSecret: {}, lastResult: null,
       lastSentAt: null, failingSince: null, seededFrom: null, createdBy: 'config', createdAt: now, updatedAt: now,
     }
     out.push({ channel, secret: { url: g.url } })

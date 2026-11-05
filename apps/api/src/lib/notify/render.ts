@@ -79,7 +79,8 @@ export function toMessage(e: NotifyEventInput, ctx: RenderContext): NotifyMessag
   let lines = (e.lines ?? []).map(l => cut(oneLine(scrub(l, secrets)), LINE_MAX)).filter(Boolean)
   const seeMore = (n: number) => `...and ${n} more; see the ${where}`
   if (lines.length > LINES_MAX) lines = [...lines.slice(0, LINES_MAX - 1), cut(seeMore(lines.length - (LINES_MAX - 1)), LINE_MAX)]
-  const link = joinLink(e.link ?? null, ctx.publicUrl)
+  // A sensitive link is never part of the message that is stored; the dispatcher adds it at send time.
+  const link = e.sensitiveLink ? null : joinLink(e.link ?? null, ctx.publicUrl)
   const hint = cut(oneLine(e.hint ?? `Open the ${where} in HyperProx.`), LINE_MAX)
   const budget = BODY_MAX - (link ? link.length + 10 : hint.length + 1)
   while (lines.length && lines.join('\n').length > budget) lines = lines.slice(0, -1)
@@ -94,6 +95,7 @@ export function toMessage(e: NotifyEventInput, ctx: RenderContext): NotifyMessag
     ...(e.subject ? { subject: { kind: oneLine(e.subject.kind).slice(0, 40), name: cut(oneLine(scrub(e.subject.name, secrets)), 80) } } : {}),
     ...(e.fingerprint ? { fingerprint: e.fingerprint.slice(0, 200) } : {}),
     at: (e.at ?? ctx.now ?? new Date()).toISOString(),
+    ...(e.sensitiveLink ? { sensitive: true } : {}),
   }
 }
 

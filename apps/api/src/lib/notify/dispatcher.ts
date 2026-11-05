@@ -61,7 +61,11 @@ export interface PublishOptions {
   exclude?: string[]
   /** Only these channels. */
   only?: string[]
+  /** Only channels marked private (implied for an event with a sensitive link). */
+  privateOnly?: boolean
 }
+
+const SENSITIVE_EXPIRED = 'The sign-in link has expired. Open the VPN page in HyperProx to get a new one.'
 
 export function matches(c: Pick<ChannelRecord, 'enabled' | 'minSeverity' | 'eventFilter'>, m: Pick<NotifyMessage, 'type' | 'severity'>): boolean {
   if (!c.enabled) return false
@@ -123,6 +127,8 @@ export class NotifyCore {
   private lastPrune = 0
   /** Channels whose previous pass has not finished (a hung receiver): skipped until it does. */
   private busy = new Set<string>()
+  /** Sensitive links by event id, in memory only, until they expire. A restart forgets them, on purpose. */
+  private sensitive = new Map<string, { link: string; until: number }>()
 
   constructor(private readonly d: NotifyCoreDeps) {}
 
@@ -150,8 +156,13 @@ export class NotifyCore {
     try {
       const now = this.now()
       const msg = toMessage(e, { publicUrl: this.d.publicUrl(), now })
+      const privateOnly = !!(o.privateOnly || msg.sensitive)
+      if (msg.sensitive && e.sensitiveLink) {
+        this.sensitive.set(msg.id, { link: e.sensitiveLink, until: (e.sensitiveUntil ?? new Date(now.getTime() + 10 * 60_000)).getTime() })
+      }
       const targets = (await this.targets()).filter(t =>
-        matches(t.channel, msg) && !(o.exclude ?? []).includes(t.channel.id) && (!o.only || o.only.includes(t.channel.id)))
+        matches(t.channel, msg) && !(o.exclude ?? []).includes(t.channel.id) && (!o.only || o.only.includes(t.channel.id)) &&
+        (!privateOnly || (!t.virtual && t.channel.private === true)))
       if (!targets.length) return msg
 
       let dropIds: string[] = []
@@ -255,6 +266,12 @@ export class NotifyCore {
 
     const ctx = { publicUrl: this.d.publicUrl(), now }
     const sends: Array<{ rows: OutboxRecord[]; msg: NotifyMessage }> = []
+    // A sensitive event always goes on its own, never inside a digest or a group.
+    for (const list of [lockedDigest, quietDigest, fresh]) {
+      for (let i = list.length - 1; i >= 0; i--) {
+        if (list[i].payload.sensitive) { sends.push({ rows: [list[i]], msg: list[i].payload }); list.splice(i, 1) }
+      }
+    }
     if (lockedDigest.length) sends.push({ rows: lockedDigest, msg: lockedDigest.length === 1 ? lockedDigest[0].payload : digestMessage(lockedDigest.map(r => r.payload), 'locked', ctx) })
     if (quietDigest.length) sends.push({ rows: quietDigest, msg: digestMessage(quietDigest.map(r => r.payload), 'quiet', ctx) })
     if (fresh.length) {
@@ -296,9 +313,18 @@ export class NotifyCore {
     return true
   }
 
+  /** The message as it is sent: a sensitive one gets its link from memory, or says it has expired. */
+  private withSensitive(msg: NotifyMessage, at: Date): NotifyMessage {
+    if (!msg.sensitive) return msg
+    for (const [id, v] of this.sensitive) if (v.until <= at.getTime()) this.sensitive.delete(id)
+    const s = this.sensitive.get(msg.id)
+    return s ? { ...msg, link: s.link } : { ...msg, link: null, hint: SENSITIVE_EXPIRED }
+  }
+
   private async deliver(t: Target, rows: OutboxRecord[], msg: NotifyMessage, at: Date): Promise<void> {
     const store = this.d.store
     const ch = t.channel
+    msg = this.withSensitive(msg, at)
     const secret = this.secretFor(t)
     if (!secret) { await store.updateOutbox(rows.map(r => r.id), { status: 'held-locked' }); return }
     let out: SendOutcome
