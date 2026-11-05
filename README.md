@@ -335,7 +335,7 @@ rule conflicts before Proxmox refuses them. Maintenance mode moves a node's gues
 on it.
 
 Every change is previewed first, including what would move straight away. It is refused if the cluster
-has lost quorum or the HA setup changed since the preview, and it goes through Proxmox's own HA API.
+has lost quorum or the HA setup changed since the preview, and it goes through Proxmox's own HA tools.
 Applying a change asks for your master password again.
 
 ### Terminal
