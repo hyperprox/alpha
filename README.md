@@ -372,7 +372,7 @@ restarting an OSD or rebooting a node, HyperProx asks Ceph whether it is safe to
 pool's copies: if a pool has only one copy on that node, or a restart would leave too few copies, the
 step is skipped for safety and says what would have gone offline. The plan shows this decision before
 you run it, and it is checked again right before a reboot. If a restart fails, `noout` stays set and
-you get an urgent notification, so Ceph never starts moving data because of it. Rules
+you get an urgent notification, so Ceph never starts moving data because of it. A node update never upgrades Ceph by itself: HyperProx tries the update first without installing anything, and if any Ceph package would change, it stops and leaves Ceph to its own careful step. Rules
 such as "this node only gets `apt upgrade`" or "check these package holds" go in
 `config/updates.yaml` (copy `config/updates.example.yaml`). Without a policy file you get dry runs only.
 Plug-ins can add app updates for software installed outside apt and Docker; MeshCentral is bundled.

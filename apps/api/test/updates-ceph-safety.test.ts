@@ -335,7 +335,7 @@ test('plan time: an unreadable layout is shown as a refusal, not as safe', async
   const fake = cephCluster(REPLICATED)
   fake.inject = (_w, c) => (c === CEPH_LAYOUT_COMMAND ? { code: 0, output: 'HP_POOLS\nHP_END', timedOut: false } : undefined)
   const plan = await annotatePlanSafety(fake, { steps: [{ seq: 1, target: 'node-a', action: 'ceph', detail: 'restart osd' }], warnings: [] }, true)
-  assert.match(plan.steps[0].detail!, / · safety: the step would refuse: could not read the Ceph pool layout/)
+  assert.match(plan.steps[0].detail!, / · safety: the step would refuse: the Ceph layout is unreadable: could not read the Ceph pool layout/)
   assert.equal(plan.warnings.length, 1)
 })
 
