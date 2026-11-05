@@ -206,6 +206,11 @@ about ten minutes; after that, or after HyperProx restarts, it is gone and a **C
 same happens when a key has expired and the client is waiting for a sign-in of its own. Marking a channel
 private needs your master password again.
 
+Every `netbird up` (install, settings, routing, node locks) runs with its output captured rather than
+streamed: if NetBird asks for a sign-in instead of connecting, the link goes only through this flow and is
+cut out of the job log by its exact value. Job logs also redact NetBird, OAuth device-flow and other SSO
+link shapes, and a job whose output ever held a link has its whole log dropped ten minutes later.
+
 On a **Proxmox node** the guard stays open while the link is out: HyperProx polls the client until it
 reports it has joined, then runs the guard's after-check and confirms the node locks from the client (no
 overlay DNS, no accepted routes, no overlay SSH, netfilter or firewall off). Any change elsewhere on the

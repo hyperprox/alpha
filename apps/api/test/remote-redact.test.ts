@@ -2,7 +2,7 @@
 // setup keys have a shape of their own while one is live.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { StreamRedactor, makeRedactor, NETBIRD_SETUP_KEY } from '../src/lib/remote/redact'
+import { StreamRedactor, makeRedactor, redactKnownKeyShapes, NETBIRD_SETUP_KEY } from '../src/lib/remote/redact'
 
 const KEY = 'tskey-auth-kAbCdEf1234CNTRL-abcdefghijklmnop'
 
@@ -39,4 +39,30 @@ test('NetBird setup keys are redacted by shape when asked, and only then', () =>
   assert.equal(makeRedactor([])(`id ${nb}.`), `id ${nb}.`)
   const r = new StreamRedactor([], { netbird: true })
   assert.equal(r.push(`k=${nb.slice(0, 10)}`) + r.push(`${nb.slice(10)};`) + r.flush(), 'k=[redacted];')
+})
+
+test('sign-in links of every shape are redacted: NetBird, device flows and generic SSO; package URLs are not', () => {
+  const links = [
+    'https://login.netbird.io/activate?user_code=MARK-NBLK',
+    'https://idp.example.com/device?user_code=QWER-TYUI',
+    'https://auth.example.com/realms/home/device',
+    'https://sso.example.com/oauth2/authorize?client_id=netbird&state=abc123&code_challenge=xyz',
+    'https://id.example.com/application/o/authorize/?response_type=code&state=s3cr3t',
+    'https://login.example.org/activate',
+  ]
+  for (const l of links) {
+    const out = redactKnownKeyShapes(`use this URL to log in:\n\n${l}\n\nthen come back`)
+    assert.ok(!out.includes(l), l)
+    assert.match(out, /\[redacted\]/)
+  }
+  // Streamed in small pieces, the same.
+  const r = new StreamRedactor([])
+  let got = ''
+  const text = `Please do the SSO login in your browser.\n${links[0]}\nok\n`
+  for (let i = 0; i < text.length; i += 3) got += r.push(text.slice(i, i + 3))
+  got += r.flush()
+  assert.ok(!got.includes('MARK-NBLK'), got)
+  for (const keep of ['https://pkgs.netbird.io/debian stable main', 'https://pkgs.tailscale.com/stable/debian/trixie.noarmor.gpg', 'https://api.netbird.io:443']) {
+    assert.equal(redactKnownKeyShapes(keep), keep)
+  }
 })
