@@ -21,6 +21,8 @@ export interface FakeNode {
   offlineUntil?: number      // Infinity: never comes back
   /** Packages a simulated upgrade would also change, beyond `pending` (e.g. Ceph arriving after the plan). */
   simExtra?: UpdatesPkgChange[]
+  /** `E:` lines a simulated upgrade fails with (apt exits 100), as apt prints them. */
+  simFail?: string[]
   /** A Ceph start fence left on the node by a killed run: our policy-rc.d, or a saved original with none. */
   fenceLeft?: 'ours' | 'saved'
   goDownAt?: number          // still up (old boot) until then, then down for good
@@ -290,8 +292,11 @@ export class FakeCluster implements UpdatesExecutor {
         ...(n.fenceLeft === 'ours' ? ['HP_FENCE_LEFT'] : n.fenceLeft === 'saved' ? ['HP_FENCE_SAVED'] : []),
       ].join('\n'))
     }
-    if (/apt-get -s .*upgrade; echo HP_SIM_END$/.test(cmd)) {
-      return ok([...n.pending, ...(n.simExtra ?? [])].map(p => `Inst ${p.name} [${p.from ?? '0'}] (${p.to} stable [amd64])`).concat('HP_SIM_END').join('\n'))
+    if (/apt-get -s .*upgrade 2>&1; echo "HP_SIM_END \$\?"$/.test(cmd)) {
+      // As the real shell answers: apt's lines (stderr folded in), then the marker with apt's exit status;
+      // the command as a whole exits 0 because echo ran last.
+      if (n.simFail) return ok([...n.simFail, 'HP_SIM_END 100'].join('\n'))
+      return ok([...n.pending, ...(n.simExtra ?? [])].map(p => `Inst ${p.name} [${p.from ?? '0'}] (${p.to} stable [amd64])`).concat('HP_SIM_END 0').join('\n'))
     }
     if (/apt-get .* (dist-)?upgrade$/.test(cmd) || /--only-upgrade install/.test(cmd)) {
       const ceph = /--only-upgrade install/.test(cmd)
