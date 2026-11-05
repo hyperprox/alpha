@@ -185,6 +185,32 @@ check "  and before it recreates Grafana"                        '[[ "$gc" -lt "
 check "  and a failed check ends the deploy before 'Deploy complete'" 'sed -n "${gc},\$p" "${here}/deploy.sh" | head -4 | grep -q "exit 1"'
 
 # ── docker-compose.yml ────────────────────────────────────────────────────────
+# ── Fewer keys on disk ────────────────────────────────────────────────────────
+d="$(mkinstall 'SETUP_COMPLETE=true
+SETUP_SECRET=abc
+GRAFANA_ADMIN_PASSWORD=
+GRAFANA_SECRET_KEY=keep-me
+POSTGRES_PASSWORD=keep-me-too
+METRICS_TOKEN=t
+NEXT_PUBLIC_GPU_NODES=a,b')"
+out="$(run "$d")"
+check "setup done: SETUP_SECRET is removed"                         '! grep -q "^SETUP_SECRET" "$d/.env"'
+check "a blanked GRAFANA_ADMIN_PASSWORD line is removed"            '! grep -q "^GRAFANA_ADMIN_PASSWORD" "$d/.env"'
+check "NEXT_PUBLIC_GPU_NODES is removed (GPUs are detected)"        '! grep -q "^NEXT_PUBLIC_GPU_NODES" "$d/.env"'
+check "the start-up keys stay"                                      'grep -q "^GRAFANA_SECRET_KEY=keep-me$" "$d/.env" && grep -q "^POSTGRES_PASSWORD=keep-me-too$" "$d/.env"'
+check "each removal is logged, no value is"                         '[[ "$out" == *"SETUP_SECRET: removed"* && "$out" != *abc* ]]'
+before="$(digest "$d")"
+check "and a second run does not add SETUP_SECRET back"             '[[ -z "$(run "$d")" && "$(digest "$d")" == "$before" ]]'
+d="$(mkinstall 'SETUP_COMPLETE=false
+SETUP_SECRET=abc
+GRAFANA_ADMIN_PASSWORD=still-needed-for-first-start')"
+run "$d" >/dev/null
+check "setup not done: SETUP_SECRET stays"                          'grep -q "^SETUP_SECRET=abc$" "$d/.env"'
+check "a Grafana password not yet moved to the vault stays"         'grep -q "^GRAFANA_ADMIN_PASSWORD=still-needed-for-first-start$" "$d/.env"'
+check "install.sh makes a setup key on a re-run only while setup is unfinished" 'grep -q "Made a new setup key (setup has not finished yet)" "${here}/install.sh"'
+check "install.sh no longer writes NEXT_PUBLIC_GPU_NODES"           '! grep -q "NEXT_PUBLIC_GPU_NODES" "${here}/install.sh"'
+check "install.sh does not print the Grafana password"              '! grep -q "Grafana admin password:" "${here}/install.sh"'
+
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   cp "${here}/docker-compose.yml" "${tmp}/docker-compose.yml"
   printf 'POSTGRES_USER=u\nPOSTGRES_PASSWORD=p\nPOSTGRES_DB=d\nGRAFANA_ADMIN_PASSWORD=x\nGRAFANA_SECRET_KEY=y\nCOMPOSE_PROFILES=monitoring\n' > "${tmp}/.env"
@@ -198,6 +224,8 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
     'jq -e ".services.grafana.environment | .GF_AUTH_DISABLE_LOGIN_FORM == \"true\" and .GF_AUTH_BASIC_ENABLED == \"false\" and .GF_PLUGINS_PLUGIN_ADMIN_ENABLED == \"false\" and .GF_AUTH_ANONYMOUS_HIDE_VERSION == \"true\"" <<<"$json" >/dev/null'
   check "compose: Grafana and Prometheus are pinned by digest"  \
     'jq -e "[.services.grafana.image, .services.prometheus.image, .services.vault.image] | all(test(\":[0-9v][^@]*@sha256:[0-9a-f]{64}$\"))" <<<"$json" >/dev/null'
+  check "compose: Grafana's admin password may be absent (it moves to the vault)" \
+    'grep -q "GF_SECURITY_ADMIN_PASSWORD=\${GRAFANA_ADMIN_PASSWORD:-}" "${here}/docker-compose.yml"'
   check "compose: no Nginx Proxy Manager service"           'jq -e "[.services[] | .image] | map(test(\"nginx-proxy-manager\")) | any | not" <<<"$json" >/dev/null'
   check "compose: no service publishes on a non-loopback address" \
     'jq -e "[.services[] | (.ports // [])[] | .host_ip] | all(. == \"127.0.0.1\")" <<<"$json" >/dev/null'
