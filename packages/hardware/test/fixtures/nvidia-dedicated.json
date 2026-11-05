@@ -1,0 +1,11 @@
+{
+  "about": "Threadripper 1920X node with a GTX 1070 Ti; AMD RAPL with core root-only; exporters already running. Anonymised from a real lspci -nn and /sys/class/powercap.",
+  "lspci": "00:00.0 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Root Complex [1022:1450]\n41:00.0 PCI bridge [0604]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) PCIe GPP Bridge [1022:1453]\n42:00.0 VGA compatible controller [0300]: NVIDIA Corporation GP104 [GeForce GTX 1070 Ti] [10de:1b82] (rev a1)\n42:00.1 Audio device [0403]: NVIDIA Corporation GP104 High Definition Audio Controller [10de:10f0] (rev a1)\n",
+  "drm_vendors": ["0x10de"],
+  "dri": ["by-path", "card0", "card1", "renderD128"],
+  "powercap": { "intel-rapl:0": { "name": "package-0", "mode": "404" }, "intel-rapl:0:0": { "name": "core", "mode": "400" } },
+  "commands": ["nvidia-smi", "python3"],
+  "answering": { "9100": "node_exporter_build_info{version=\"1.8.2\"} 1", "9835": "nvidia_smi_memory_total_bytes{uuid=\"x\"} 8.589934592e+09" },
+  "ceph": true,
+  "expect": { "gpus": [["nvidia", "dedicated", "10de:1b82", "NVIDIA GeForce GTX 1070 Ti"]], "rapl": "readable", "nodeExporter": "running", "nvidiaExporter": "running", "docker": false }
+}

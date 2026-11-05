@@ -1,0 +1,11 @@
+{
+  "about": "Core Ultra with built-in Arc Graphics plus an Arc A380 card: one integrated, one dedicated, both Intel.",
+  "lspci": "00:02.0 VGA compatible controller [0300]: Intel Corporation Meteor Lake-P [Intel Arc Graphics] [8086:7d55] (rev 08)\n03:00.0 VGA compatible controller [0300]: Intel Corporation DG2 [Arc A380] [8086:56a5] (rev 05)\n",
+  "drm_vendors": ["0x8086", "0x8086"],
+  "dri": ["card0", "card1", "renderD128", "renderD129"],
+  "powercap": { "intel-rapl:0": { "name": "package-0", "mode": "400" } },
+  "commands": [],
+  "answering": {},
+  "ceph": false,
+  "expect": { "gpus": [["intel", "integrated", "8086:7d55", "Intel Arc Graphics"], ["intel", "dedicated", "8086:56a5", "Intel Arc A380"]], "rapl": "root-only", "nodeExporter": "absent", "docker": false }
+}

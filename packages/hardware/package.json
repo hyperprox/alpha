@@ -1,0 +1,11 @@
+{
+  "name": "@hyperprox/hardware",
+  "version": "0.2.0-alpha",
+  "private": true,
+  "description": "What each Proxmox node has, and the node-side steps HyperProx's installer offers. Shared by bootstrap.sh, the setup wizard and the API.",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}
