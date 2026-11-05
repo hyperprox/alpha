@@ -86,6 +86,12 @@ const PROXY_READ = /^\/api\/proxy\/(kinds|instances|hosts|certificates|stats|ins
 // container, so both also need the master password re-entered.
 const CATALOGUE_WIZARD = /^\/api\/catalogue\/wizard(\/|$)/
 const CATALOGUE_RECONFIRM = /^\/api\/catalogue\/wizard\/(apply|jobs\/[^/]+\/cleanup)$/
+// HA management (routes/ha.ts). Reads (the HA page, a guest's panel, the migration grid, list badges) are
+// viewer: they are status. Every write is admin: previews, the live rule check, and applying a preview,
+// which writes cluster-wide HA configuration and so also needs the master password re-entered.
+const HA = /^\/api\/ha(\/|$)/
+const HA_READ = /^\/api\/ha\/(overview|badges|guests\/(lxc|qemu)\/\d+(\/preflight)?)$/
+const HA_RECONFIRM = /^\/api\/ha\/plans\/[^/]+\/apply$/
 // Role management (no routes yet; reserved so they are owner-only from day one).
 const ROLE_MGMT = /^\/api\/(auth\/)?roles(\/|$)/
 
@@ -113,6 +119,7 @@ export function requiredRole(method: string, path: string): Role | null {
   if (TOKENS.test(p)) return 'admin'
   if (PROXY.test(p)) return (m === 'GET' || m === 'HEAD') && PROXY_READ.test(p) ? 'viewer' : 'admin'
   if (CATALOGUE_WIZARD.test(p)) return 'admin'
+  if (HA.test(p)) return (m === 'GET' || m === 'HEAD') && HA_READ.test(p) ? 'viewer' : 'admin'
 
   if (m === 'GET' || m === 'HEAD') {
     // Interactive shells on guests and nodes.
@@ -138,6 +145,7 @@ export function needsReconfirm(method: string, path: string): boolean {
   if (m === 'POST' && p === '/api/secrets/reveal') return true
   if (m !== 'GET' && m !== 'HEAD' && ROLE_MGMT.test(p)) return true
   if (m === 'POST' && CATALOGUE_RECONFIRM.test(p)) return true
+  if (m === 'POST' && HA_RECONFIRM.test(p)) return true
   // Creating or revoking an API token.
   if ((m === 'POST' || m === 'DELETE') && TOKENS.test(p)) return true
   return false
