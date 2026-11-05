@@ -101,16 +101,22 @@ export function predictFailover(snap: HaSnapshot, sid: Sid, failed?: string): Pr
   const counts = new Map<string, number>()
   for (const s of together) { const p = place.get(s); if (p?.active && p.node !== from && pri.includes(p.node)) counts.set(p.node, (counts.get(p.node) ?? 0) + 1) }
   if (counts.size) { const best = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0][0]; pri = [best] }
+  // Too few CPUs: a node with fewer CPUs than the guest has vCPUs cannot start it.
+  const cpus = snap.guests.find(g => g.sid === sid)?.cpus ?? 0
+  const before = pri.length
+  pri = pri.filter(n => { const nd = snap.nodes.find(x => x.node === n); return !cpus || !nd?.maxcpu || nd.maxcpu >= cpus })
+  const cpuBlocked = before > pri.length
   const comigrate = [...together].filter(s => place.get(s)?.node === from)
   const exclude = new Set(comigrate)
   const candidates = pri.sort((a, b) => score(snap, a, sid, place, exclude) - score(snap, b, sid, place, exclude) || a.localeCompare(b))
   const to = candidates[0] ?? null
-  return { sid, from, to, candidates, comigrate, words: failoverWords(snap, sid, from, to, candidates) }
+  return { sid, from, to, candidates, comigrate, words: failoverWords(snap, sid, from, to, candidates, cpuBlocked ? cpus : 0) }
 }
 
-function failoverWords(snap: HaSnapshot, sid: Sid, from: string, to: string | null, candidates: string[]): string {
+function failoverWords(snap: HaSnapshot, sid: Sid, from: string, to: string | null, candidates: string[], cpuShort = 0): string {
   const home = homeOf(snap.rules, sid)
   if (!to) {
+    if (cpuShort && home.choice.mode !== 'only') return `If ${from} fails there is no node it is allowed on with enough CPUs for its ${cpuShort} vCPUs, so it stays off.`
     if (home.choice.mode === 'only') return `If ${from} fails it stays off until ${list(home.choice.tiers.flat(), 'or')} is back: it may only run there.`
     return `If ${from} fails there is no node it is allowed on right now, so it stays off.`
   }

@@ -179,3 +179,46 @@ test('CRS settings read in both spellings (/cluster/options returns an object)',
   assert.deepEqual(parseCrs('ha=static'), { mode: 'static', rebalanceOnStart: false, autoRebalance: false })
   assert.equal(parseCrs(undefined).mode, 'basic')
 })
+
+test('vCPUs: a node with fewer CPUs than the guest has vCPUs is never a failover target', async () => {
+  const f = threeNodes()
+  f.nodes.find(n => n.node === 'node-b')!.maxcpu = 4
+  f.nodes.find(n => n.node === 'node-c')!.maxcpu = 16
+  f.guests.find(g => g.vmid === 904)!.maxcpu = 12
+  f.addResource('vm:904'); f.addResource('ct:903')   // node-c already busier than node-b
+  const p = predictFailover(await readSnapshot(f), 'vm:904')
+  assert.equal(p.to, 'node-c', 'node-b has 4 CPUs for a 12-vCPU guest')
+  assert.deepEqual(p.candidates, ['node-c'])
+  f.nodes.find(n => n.node === 'node-c')!.maxcpu = 8
+  const none = predictFailover(await readSnapshot(f), 'vm:904')
+  assert.equal(none.to, null)
+  assert.match(none.words, /no node .* enough CPUs|no node it is allowed on/)
+})
+
+test('vCPUs: the migration grid says when a node has too few CPUs', async () => {
+  const f = threeNodes()
+  f.nodes.find(n => n.node === 'node-b')!.maxcpu = 4
+  f.guests.find(g => g.vmid === 904)!.maxcpu = 12
+  const snap = await readSnapshot(f)
+  const vm = snap.guests.find(x => x.sid === 'vm:904')!
+  const grid = preflightGrid(snap, vm, { allowed_nodes: ['node-b', 'node-c'], not_allowed_nodes: {}, running: 1 }, { scsi0: 'shared-rbd:x' })
+  assert.match(grid.rows.find(r => r.node === 'node-b')!.reasons.join(' '), /Not enough CPUs: it has 12 vCPUs, node-b has 4/)
+  assert.equal(grid.rows.find(r => r.node === 'node-c')!.allowed, false, 'node-c has 8')
+})
+
+test('hardware-bound guest with only a preferred home: an informational note, not a warning', async () => {
+  const f = threeNodes()
+  f.addResource('ct:903')
+  f.addRule({ rule: 'h903', type: 'node-affinity', resources: 'ct:903', nodes: 'node-c' })
+  const snap = await readSnapshot(f)
+  const v = guestView(snap, 'ct:903')!
+  assert.equal(v.warnings.length, 0)
+  assert.match(v.notes.join(' '), /If node-c fails this will run on node-a without its GPU \(GPU work such as transcoding falls back to the CPU\)/)
+  const ov = overview(snap)
+  assert.equal(ov.counts.hardware, 0)
+  assert.equal(ov.hardwareNotes.length, 1)
+  assert.equal(ov.hardwareNotes[0].sid, 'ct:903')
+  // Strict: it stays off instead, so no note.
+  f.rules[0].strict = 1
+  assert.equal(overview(await readSnapshot(f)).hardwareNotes.length, 0)
+})

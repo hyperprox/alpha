@@ -6,7 +6,7 @@
 import { createHash } from 'node:crypto'
 
 export interface FakeNode { node: string; status?: 'online' | 'offline'; mem?: number; maxmem?: number; cpu?: number; maxcpu?: number; maintenance?: boolean }
-export interface FakeGuest { vmid: number; type: 'lxc' | 'qemu'; node: string; name?: string; status?: string; maxmem?: number; template?: number; config?: Record<string, unknown> }
+export interface FakeGuest { vmid: number; type: 'lxc' | 'qemu'; node: string; name?: string; status?: string; maxmem?: number; maxcpu?: number; template?: number; config?: Record<string, unknown> }
 
 const GiB = 1024 ** 3
 
@@ -28,7 +28,7 @@ export class FakeHaPve {
 
   constructor(o: { nodes: FakeNode[]; guests: FakeGuest[] }) {
     this.nodes = o.nodes.map(n => ({ status: 'online', mem: 4 * GiB, maxmem: 32 * GiB, cpu: 0.1, maxcpu: 8, ...n }))
-    this.guests = o.guests.map(g => ({ status: 'running', maxmem: 2 * GiB, name: `g${g.vmid}`, ...g }))
+    this.guests = o.guests.map(g => ({ status: 'running', maxmem: 2 * GiB, maxcpu: 1, name: `g${g.vmid}`, ...g }))
   }
 
   get writes() { return this.calls.filter(c => c.method !== 'GET') }
@@ -60,7 +60,7 @@ export class FakeHaPve {
         node_status: Object.fromEntries(this.nodes.map(n => [n.node, n.status === 'online' ? (n.maintenance ? 'maintenance' : 'online') : 'unknown'])),
       } as T
       if (p === '/nodes') return this.nodes.map(n => ({ node: n.node, status: n.status, mem: n.mem, maxmem: n.maxmem, cpu: n.cpu, maxcpu: n.maxcpu })) as T
-      if (p === '/cluster/resources' && q.get('type') === 'vm') return this.guests.map(g => ({ vmid: g.vmid, type: g.type, node: g.node, name: g.name, status: g.status, maxmem: g.maxmem, template: g.template ?? 0 })) as T
+      if (p === '/cluster/resources' && q.get('type') === 'vm') return this.guests.map(g => ({ vmid: g.vmid, type: g.type, node: g.node, name: g.name, status: g.status, maxmem: g.maxmem, maxcpu: g.maxcpu, template: g.template ?? 0 })) as T
       if (p === '/cluster/resources' && q.get('type') === 'storage') return this.storage as T
       if (p === '/cluster/options') return { crs: this.crs } as T
       if (p === '/cluster/status') return this.nodes.map((n, i) => ({ type: 'node', name: n.node, ip: `10.0.0.${i + 1}` })) as T
