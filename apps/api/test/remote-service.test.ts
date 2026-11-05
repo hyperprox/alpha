@@ -439,7 +439,7 @@ test('a node script records its pid for the job, so a later process can see whet
   const { svc } = service(w)
   const job = await install(svc, ['node-pve-a'])
   for (const r of w.ran.filter(r => r.machine === 'node-pve-a' && !['snapshot'].includes(r.kind))) {
-    assert.match(r.script, new RegExp(`^echo \\$\\$ > /run/hyperprox-remote-access-${job.id}\\.pid`), r.kind)
+    assert.match(r.script, new RegExp(`^hp_run=/run;.*\\n echo \\$\\$ > "\\$hp_run/hyperprox-remote-access-${job.id}\\.pid"`.replace('\\n ', '\\n')), r.kind)
   }
   assert.doesNotMatch(w.ran.find(r => r.machine === 'node-pve-a' && r.kind === 'detect')!.script, /tskey/)
 })
