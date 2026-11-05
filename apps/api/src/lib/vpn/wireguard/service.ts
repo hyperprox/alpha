@@ -32,7 +32,7 @@ import {
   SERVER_KEYGEN_SCRIPT, parsePrivateKey, parsePublicKey, wgApplyScript, wgInstallScript, wgKeyBackupScript, wgKeyScript, wgStatusScript,
 } from './scripts'
 import {
-  MARK, WRITE_ACCESS_COMMANDS, firewallAllows, firewallRule, mapInterfaces, mapPeers, peerBody,
+  MARK, WRITE_ACCESS_COMMANDS, WRITE_ACCESS_NOTE, firewallAllows, firewallRule, mapInterfaces, mapPeers, peerBody,
   type RouterApi, type RouterWgInterface, type RouterWgPeer,
 } from './routeros'
 import type { WgPeer, WgServer, WgStore } from './store'
@@ -246,6 +246,8 @@ export class WireguardService {
     if (o.name !== undefined && !NAME_RE.test(o.name)) throw new WgInputError('Give the peer a name (letters, numbers, spaces, dots, dashes)')
     if (o.clientAllowedIps && (!o.clientAllowedIps.length || !o.clientAllowedIps.every(validCidr))) throw new WgInputError('Allowed IPs must be addresses with prefixes')
     if (o.keepalive != null && !(Number.isInteger(o.keepalive) && o.keepalive >= 0 && o.keepalive <= 3600)) throw new WgInputError('Keepalive must be 0-3600 seconds')
+    // A machine routes what it was connected with, checked and guarded then; changing it means connecting again.
+    if (p.kind === 'machine' && o.clientAllowedIps) throw new WgInputError('To change what a machine routes, connect it again: that is checked and, on a node, guarded')
     const next = await this.d.store.updatePeer(p.id, { ...(o.name !== undefined ? { name: o.name } : {}), ...(o.clientAllowedIps ? { clientAllowedIps: o.clientAllowedIps } : {}), ...(o.keepalive !== undefined ? { keepalive: o.keepalive } : {}) })
     if (p.kind === 'device' && p.serverId && (o.clientAllowedIps || o.keepalive !== undefined)) {
       const s = await this.server(p.serverId)
@@ -332,12 +334,14 @@ export class WireguardService {
 
   /**
    * Connect a node or guest to a HyperProx server or to the router. Its key is made on it and never leaves it.
-   * `allowedIps` is what it routes through the tunnel; `siteSubnets` (site-to-site) is what the other end routes
+   * `allowedIps` is what it routes through the tunnel; `remoteSubnets` (site-to-site) are the other side's
+   * networks it also routes there, declared so a node may reach a site larger than the coverage limit allows;
+   * `siteSubnets` (site-to-site) is what the other end routes
    * to it. A rebuilt machine (same machine, same target) gets a new key, and the other end is updated.
    */
   async connectMachine(o: {
     machineId: string; serverId?: string; router?: { iface: string; endpoint: string; address: string }
-    allowedIps: string[]; siteSubnets?: string[]; keepalive?: number; iface?: string
+    allowedIps: string[]; siteSubnets?: string[]; remoteSubnets?: string[]; keepalive?: number; iface?: string
   }, by: string): Promise<{ peer: WgPeer; log: string }> {
     const m = await this.machine(o.machineId)
     if (!!o.serverId === !!o.router) throw new WgInputError('Connect to either a HyperProx server or the router')
@@ -346,9 +350,9 @@ export class WireguardService {
     if (!sites.every(validCidr)) throw new WgInputError('Site subnets must be addresses with prefixes')
     const iface = o.iface ?? 'hp-wg1'
     if (!IFACE_RE.test(iface)) throw new WgInputError('The interface name must look like hp-wg1')
-    const nets = await this.d.remote.clusterNetworksFor(m)
-    const bad = checkAllowedIps(o.allowedIps, { node: m.kind === 'node', clusterNets: nets }) ?? checkAllowedIps(sites, { node: m.kind === 'node', clusterNets: nets })
-    if (bad) throw new WgInputError(bad)
+    const remoteSites = o.remoteSubnets ?? []
+    if (!remoteSites.every(validCidr)) throw new WgInputError('Remote site subnets must be addresses with prefixes')
+    const clientAllowed = [...new Set([...o.allowedIps, ...remoteSites])]
 
     let serverPub: string, endpoint: string, address: string
     const existing = (await this.d.store.listPeers()).find(p => p.machineId === m.id && (o.serverId ? p.serverId === o.serverId : p.routerIface === o.router!.iface))
@@ -370,7 +374,14 @@ export class WireguardService {
     const job = this.job('connect machine', by)
     const s = await this.support(job, m)
     if ((await this.d.remote.run(job, m, wgInstallScript(s), { timeoutMs: 10 * 60_000 })).code !== 0) throw new Error('installing wireguard-tools failed')
-    const spec: WgInterfaceSpec = { iface, address, peers: [{ publicKey: serverPub, allowedIps: o.allowedIps, endpoint, keepalive: o.keepalive ?? 25 }] }
+    // The overlay pool (the server's network, or this machine's own tunnel address on the router) and the
+    // declared remote sites do not count toward a node's coverage limit; everything is checked for overlaps.
+    const pool = server ? [server.address] : [address]
+    const nets = await this.d.remote.clusterNetworksFor(m)
+    const bad = checkAllowedIps(clientAllowed, { node: m.kind === 'node', clusterNets: nets, pool, sites: remoteSites })
+      ?? checkAllowedIps(sites, { node: false, clusterNets: nets })
+    if (bad) throw new WgInputError(bad)
+    const spec: WgInterfaceSpec = { iface, address, peers: [{ publicKey: serverPub, allowedIps: clientAllowed, endpoint, keepalive: o.keepalive ?? 25 }] }
     const specBad = checkSpec(spec)
     if (specBad) throw new WgInputError(specBad)
 
@@ -385,7 +396,7 @@ export class WireguardService {
     }
     const row = {
       serverId: o.serverId ?? null, routerIface: o.router?.iface ?? null, routerPeerId: existing?.routerPeerId ?? null, kind: 'machine' as const,
-      name: m.name, machineId: m.id, iface, publicKey, address, allowedIps: [address, ...sites], clientAllowedIps: o.allowedIps,
+      name: m.name, machineId: m.id, iface, publicKey, address, allowedIps: [address, ...sites], clientAllowedIps: clientAllowed,
       keepalive: o.keepalive ?? 25, previousPublicKey: null, previousUntil: null, rotatedAt: null,
     }
     let peer: WgPeer
@@ -407,8 +418,8 @@ export class WireguardService {
       if (m.kind === 'node') {
         const prev = await this.d.remote.run(job, m, `cat /etc/wireguard/${iface}.conf 2>/dev/null || true`, { timeoutMs: 30_000 })
         const previousConf = /\[Interface\]/.test(prev.output) ? prev.output : null
-        await this.d.remote.guardWireguard(job, m, { dev: iface.replace(/[^a-z0-9-]/g, ''), prefixes: [...o.allowedIps, address] },
-          { plan: { kind: 'wg-restore', provider: 'wireguard', subject: { dev: iface, prefixes: [...o.allowedIps, address] }, iface, previousConf } }, change)
+        const subject = { dev: iface.replace(/[^a-z0-9-]/g, ''), prefixes: [...clientAllowed, address], pool: [...pool, address], sites: remoteSites }
+        await this.d.remote.guardWireguard(job, m, subject, { plan: { kind: 'wg-restore', provider: 'wireguard', subject, iface, previousConf } }, change)
       } else {
         await change()
       }
@@ -451,7 +462,7 @@ export class WireguardService {
   /** The router's WireGuard as it is: interfaces, peers with handshakes and traffic, and whether HyperProx may write. */
   async routerView(): Promise<{
     interfaces: Array<RouterWgInterface & { firewallOk: boolean | null; firewallCommand: string | null }>
-    peers: RouterWgPeer[]; writable: boolean; setup: string[] | null
+    peers: RouterWgPeer[]; writable: boolean; setup: string[] | null; setupNote: string
   }> {
     const api = await this.api()
     const [ifs, peers, rules] = await Promise.all([
@@ -464,7 +475,7 @@ export class WireguardService {
         firewallCommand: rules && i.listenPort && !firewallAllows(rules, i.listenPort) ? firewallRule(i.listenPort, i.name).command : null,
       })),
       peers: mapPeers(peers), writable: !!api.write,
-      setup: api.write ? null : WRITE_ACCESS_COMMANDS,
+      setup: api.write ? null : WRITE_ACCESS_COMMANDS, setupNote: WRITE_ACCESS_NOTE,
     }
   }
 
@@ -529,29 +540,6 @@ export class WireguardService {
       previousPublicKey: null, previousUntil: null, rotatedAt: null,
     })
     return { peer, config }
-  }
-
-  /** The missing input rule for a router interface, previewed; adding it is a separate, confirmed call. */
-  async routerFirewallPreview(iface: string): Promise<{ needed: boolean; body: Record<string, string>; command: string }> {
-    const api = await this.api()
-    const rif = (await this.routerInterfaces()).find(i => i.name === iface)
-    if (!rif?.listenPort) throw new WgInputError(`The router has no WireGuard interface ${iface} with a listen port`)
-    const rules: any[] = await api.read('/rest/ip/firewall/filter')
-    // At the top of the input chain, ahead of any drop rule.
-    const first = (Array.isArray(rules) ? rules : []).find(r => r.chain === 'input')?.['.id']
-    return { needed: !firewallAllows(rules, rif.listenPort), ...firewallRule(rif.listenPort, iface, first ? String(first) : null) }
-  }
-
-  async routerFirewallAdd(iface: string, by: string): Promise<string> {
-    const api = await this.api()
-    if (!api.write) throw new WgInputError('HyperProx has no write access to the router; run the command shown instead.')
-    const pv = await this.routerFirewallPreview(iface)
-    if (!pv.needed) return 'The router already accepts WireGuard on that port.'
-    await api.write.put('/rest/ip/firewall/filter', pv.body)
-    const after = await api.read('/rest/ip/firewall/filter')
-    if (!after.some((r: any) => r.comment === pv.body.comment)) throw new Error('The router did not show the new rule when read back')
-    await this.d.store.audit('wireguard.router.firewall.add', iface, { by, credential: 'remote/routeros-write', rule: pv.body })
-    return `Added at the top of the input chain: ${pv.command}`
   }
 }
 

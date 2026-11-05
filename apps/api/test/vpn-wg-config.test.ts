@@ -6,6 +6,11 @@ import { execFileSync } from 'node:child_process'
 import { generateKeyPairSync } from 'node:crypto'
 import { checkAllowedIps, checkSpec, nextAddress, parseDump, renderClientConfig, renderInterface } from '../src/lib/vpn/wireguard/config'
 import { isWgKey } from '../src/lib/vpn/wireguard/keys'
+import { compareSnapshots, ownRouteProblem, parseSnapshot } from '../src/lib/remote/guard'
+
+const SNAP = (extra = '') => ['HP_ROUTE4 default via 192.0.2.1 dev vmbr0', 'HP_RULE4 32766: from all lookup main', 'HP_RESOLV_LINK=/etc/resolv.conf',
+  'HP_RESOLV=nameserver 192.0.2.1;', 'HP_RESOLVED=inactive', 'HP_FWSRC nft present', 'HP_FWL nft table inet filter {', 'HP_FWL nft }',
+  'HP_FWD4=0', 'HP_FWD6=0', 'HP_NET own 192.0.2.11/24', extra, 'HP_QUORATE=Yes', 'HP_SNAPSHOT_END'].join('\n')
 import { wgApplyScript, wgKeyScript, wgRestoreScript, wgStatusScript, SERVER_KEYGEN_SCRIPT, wgKeyRestoreScript } from '../src/lib/vpn/wireguard/scripts'
 import { publicOf } from '../src/lib/vpn/wireguard/service'
 
@@ -54,6 +59,38 @@ test('a node never routes its default through WireGuard, and nothing overlaps a 
   assert.match(checkAllowedIps(['198.51.100.0/25'], { node: false, clusterNets: nets }) ?? '', /overlaps the cluster network 198\.51\.100\.0\/24/)
   assert.equal(checkAllowedIps(['203.0.113.0/24'], { node: true, clusterNets: nets }), null)
   assert.equal(checkAllowedIps(['0.0.0.0/0'], { node: false, clusterNets: [] }), null, 'a guest may send everything through the tunnel')
+})
+
+test('a node: AllowedIPs are judged by how much of the address space they cover together, not by prefix length', () => {
+  const nets = ['192.0.2.12/32', '198.51.100.0/24']
+  const node = (a: string[], extra: { pool?: string[]; sites?: string[] } = {}) => checkAllowedIps(a, { node: true, clusterNets: nets, ...extra })
+  assert.match(node(['0.0.0.0/2', '64.0.0.0/2', '128.0.0.0/2', '192.0.0.0/2']) ?? '', /default/, 'four /2 make the default route')
+  assert.match(node(['0.0.0.0/3']) ?? '', /more than a \/8/)
+  assert.match(node(['10.0.0.0/8', '11.0.0.0/8']) ?? '', /more than a \/8/, 'two /8 together are a /7')
+  assert.match(node(Array.from({ length: 257 }, (_, i) => `${20 + (i >> 8)}.${i & 255}.0.0/16`)) ?? '', /more than a \/8/, '257 /16s')
+  assert.equal(node(['10.0.0.0/8']), null, 'exactly a /8 is allowed')
+  assert.equal(node(['10.0.0.0/8', '10.1.0.0/16']), null, 'overlapping entries are counted once')
+  assert.equal(node(['100.64.0.0/10', '10.0.0.0/8'], { pool: ['100.64.0.0/10'] }), null, 'the overlay pool does not count')
+  assert.equal(node(['20.0.0.0/7'], { sites: ['20.0.0.0/7'] }), null, 'a declared site-to-site subnet does not count')
+  assert.match(node(['20.0.0.0/7'], { sites: ['198.51.100.0/24'] }) ?? '', /more than a \/8/)
+  assert.match(node(['0.0.0.0/1', '128.0.0.0/1'], { sites: ['0.0.0.0/1', '128.0.0.0/1'] }) ?? '', /default/, 'a site is never the default route')
+  assert.match(node(['2000::/3']) ?? '', /more than a \/8/)
+  assert.match(node(['::/1', '8000::/1']) ?? '', /default/)
+  assert.equal(checkAllowedIps(['0.0.0.0/3', '32.0.0.0/3'], { node: false, clusterNets: [] }), null, 'guests are not limited')
+})
+
+test('the node guard uses the same coverage rule for routes the WireGuard interface adds', () => {
+  const subj = { dev: 'hp-wg1', prefixes: ['100.64.10.0/24', '10.0.0.0/7'], pool: ['100.64.10.0/24'] }
+  assert.match(ownRouteProblem('4 10.0.0.0/7 dev hp-wg1 scope link', subj) ?? '', /more than a \/8/, 'inside its prefixes, but too large')
+  assert.equal(ownRouteProblem('4 100.64.10.0/24 dev hp-wg1 scope link', subj), null)
+  assert.equal(ownRouteProblem('4 10.0.0.0/8 dev hp-wg1 scope link', subj), null)
+  assert.match(ownRouteProblem('4 0.0.0.0/2 dev hp-wg1 scope link', { dev: 'hp-wg1', prefixes: ['0.0.0.0/2'] }) ?? '', /more than a \/8|default/)
+  assert.equal(ownRouteProblem('4 20.0.0.0/7 dev hp-wg1 scope link', { dev: 'hp-wg1', prefixes: ['20.0.0.0/7'], sites: ['20.0.0.0/7'] }), null)
+  // Together: two /8 routes, each allowed alone, are refused as a /7.
+  const base = parseSnapshot(SNAP())
+  const after = parseSnapshot(SNAP('HP_ROUTE4 10.0.0.0/8 dev hp-wg1 scope link\nHP_ROUTE4 11.0.0.0/8 dev hp-wg1 scope link'))
+  const out = compareSnapshots(base, after, { dev: 'hp-wg1', prefixes: ['10.0.0.0/8', '11.0.0.0/8'], pool: [] })
+  assert.match(out.join('\n'), /more than a \/8/)
 })
 
 test('tunnel addresses are handed out from the server\'s pool, never twice', () => {

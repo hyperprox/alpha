@@ -18,7 +18,7 @@ interface Live { publicKey: string; latestHandshake: string | null; rx: number; 
 interface RouterView {
   interfaces: Array<{ id: string; name: string; listenPort: number | null; publicKey: string | null; running: boolean; firewallOk: boolean | null; firewallCommand: string | null }>
   peers: Array<{ id: string; interface: string; name: string | null; allowedAddress: string[]; currentEndpoint: string | null; lastHandshake: string | null; rx: number; tx: number; comment: string | null; managed: boolean }>
-  writable: boolean; setup: string[] | null
+  writable: boolean; setup: string[] | null; setupNote: string
 }
 
 const FIELD: React.CSSProperties = { background: 'var(--ground-deep)', border: '1px solid var(--border-strong)', color: 'var(--text-bright)', borderRadius: 6, padding: '6px 10px', fontSize: 14, width: '100%' }
@@ -119,6 +119,7 @@ export function WireguardSection({ machines, send, notice }: { machines: RemoteM
                   </div>
                 </Notice>
               )}
+              <p className="text-xs" style={{ color: 'var(--text-dim)' }}>{router.setupNote} HyperProx never changes the router&apos;s firewall, addresses or routes.</p>
               {router.interfaces.map(i => (
                 <div key={i.id} className="rounded-md border p-3 text-sm" style={{ borderColor: 'var(--border)' }}>
                   <div className="flex flex-wrap items-center gap-2">
@@ -130,9 +131,8 @@ export function WireguardSection({ machines, send, notice }: { machines: RemoteM
                   {i.firewallOk === false && (
                     <Notice tone="warn">
                       <div className="space-y-1">
-                        <div>No input rule lets WireGuard in on UDP {i.listenPort}. Review this command and run it on the router:</div>
+                        <div>No input rule lets WireGuard in on UDP {i.listenPort}. HyperProx does not change the router&apos;s firewall. Review this command and run it on the router yourself:</div>
                         <code className="block break-all font-mono text-xs">{i.firewallCommand}</code>
-                        {router.writable && <Btn small onClick={async () => done(await send(`/api/vpn/wg/router/firewall/${encodeURIComponent(i.name)}`, 'POST', { confirm: true }), 'Firewall rule added.')}>Add it for me</Btn>}
                       </div>
                     </Notice>
                   )}
@@ -224,12 +224,14 @@ export function WireguardSection({ machines, send, notice }: { machines: RemoteM
             </>
           )}
           <input style={FIELD} placeholder="Networks it reaches through the tunnel, e.g. 100.64.10.0/24" value={f.allowed ?? ''} onChange={e => setF({ ...f, allowed: e.target.value })} />
+          <input style={FIELD} placeholder="Site-to-site: the other side's subnets it reaches (optional)" value={f.remote ?? ''} onChange={e => setF({ ...f, remote: e.target.value })} />
           <input style={FIELD} placeholder="Site-to-site: its own subnets the other side may reach (optional)" value={f.sites ?? ''} onChange={e => setF({ ...f, sites: e.target.value })} />
-          <p className="text-xs" style={{ color: 'var(--text-dim)' }}>The key is made on the machine and never leaves it. On a Proxmox node no default route goes through the tunnel, nothing may overlap a cluster network, and the change is checked before and after and rolled back if anything else moved.</p>
+          <p className="text-xs" style={{ color: 'var(--text-dim)' }}>The key is made on the machine and never leaves it. On a Proxmox node no default route goes through the tunnel, and what it routes may together cover at most a /8 outside the tunnel network (a declared other-side subnet excepted); nothing may overlap a cluster network, and the change is checked before and after and rolled back if anything else moved.</p>
           <div className="flex justify-end gap-2">
             <Btn kind="primary" onClick={async () => {
               const [kind, target] = String(f.target ?? '').split(':')
               const body = { allowedIps: String(f.allowed ?? '').split(/[\s,]+/).filter(Boolean), siteSubnets: String(f.sites ?? '').split(/[\s,]+/).filter(Boolean),
+                remoteSubnets: String(f.remote ?? '').split(/[\s,]+/).filter(Boolean),
                 ...(kind === 'server' ? { serverId: target } : { router: { iface: target, endpoint: f.endpoint, address: f.address } }) }
               done(await send(`/api/vpn/wg/machines/${encodeURIComponent(f.machineId ?? '')}/connect`, 'POST', body), 'Connected.')
             }}>Connect</Btn>

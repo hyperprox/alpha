@@ -200,6 +200,18 @@ test('a node is connected under the guard: never its default route, never a clus
   assert.ok(!JSON.stringify(await x.store.listPeers()).includes(x.f.keys.get('node-pve-a/hp-wg1')!.priv))
 })
 
+test('a node never routes a large share through WireGuard; a declared remote site may be larger, and must pass the overlap checks', async () => {
+  const x = rig()
+  const s = await server(x)
+  await assert.rejects(x.svc.connectMachine({ machineId: 'node-pve-a', serverId: s.id, allowedIps: ['100.64.10.0/24', '0.0.0.0/2', '64.0.0.0/2', '128.0.0.0/2', '192.0.0.0/2'] }, 'a'), /default route/)
+  await assert.rejects(x.svc.connectMachine({ machineId: 'node-pve-a', serverId: s.id, allowedIps: ['100.64.10.0/24', '10.0.0.0/8', '11.0.0.0/8'] }, 'a'), /more than a \/8/)
+  await assert.rejects(x.svc.connectMachine({ machineId: 'node-pve-a', serverId: s.id, allowedIps: ['100.64.10.0/24'], remoteSubnets: ['198.51.100.0/23'] }, 'a'), /overlaps the cluster network/)
+  assert.ok(!x.f.ran.some(r => r.machine === 'node-pve-a' && /wg genkey|<<'HP_WG'|wg-quick up/.test(r.script)), 'refused before anything changed on the node')
+  const ok = await x.svc.connectMachine({ machineId: 'node-pve-a', serverId: s.id, allowedIps: ['100.64.10.0/24'], remoteSubnets: ['20.0.0.0/7'] }, 'a')
+  assert.deepEqual(ok.peer.clientAllowedIps, ['100.64.10.0/24', '20.0.0.0/7'])
+  assert.match(x.f.confs.get('node-pve-a/hp-wg1')!, /AllowedIPs = 100\.64\.10\.0\/24, 20\.0\.0\.0\/7/)
+})
+
 test('a node change that moves its routes is rolled back and the interface removed', async () => {
   const x = rig()
   const s = await server(x)
@@ -233,7 +245,7 @@ test('router view: interfaces and peers with handshakes; private and preshared k
   assert.match(v.setup!.join('\n'), /\/user group add name=hyperprox-wg policy=read,write,api,rest-api/)
   assert.doesNotMatch(v.setup!.join('\n'), /full|policy=.*(ssh|ftp|policy|sensitive)/)
   assert.equal(v.interfaces[0].firewallOk, false)
-  assert.match(v.interfaces[0].firewallCommand!, /\/ip firewall filter add chain="input" action="accept" protocol="udp" dst-port="13231" comment="hyperprox:wg-wg-home"/)
+  assert.match(v.interfaces[0].firewallCommand!, /\/ip firewall filter add chain="input" action="accept" protocol="udp" dst-port="13231" comment="wg-wg-home"/)
 })
 
 test('router without the limited write login: read-only, and says how to get it', async () => {
@@ -268,12 +280,34 @@ test('connect this machine to the router: key on the machine, peer on the router
   assert.equal(added['allowed-address'], '100.64.20.61/32,203.0.113.0/24')
 })
 
-test('router firewall: previewed, added only on request, at the top of the input chain, marked', async () => {
+test('router firewall: HyperProx never writes it; a missing input rule is shown as a command for the owner', async () => {
   const x = rig({ write: true })
-  const pv = await x.svc.routerFirewallPreview('wg-home')
-  assert.equal(pv.needed, true); assert.equal(pv.body['place-before'], '*10')
-  assert.equal(x.r.state.writes.length, 0)
-  await x.svc.routerFirewallAdd('wg-home', 'a')
-  assert.equal(x.r.state.rules[0].comment, 'hyperprox:wg-wg-home')
-  assert.equal((await x.svc.routerFirewallPreview('wg-home')).needed, false)
+  assert.equal((x.svc as any).routerFirewallAdd, undefined, 'no firewall write exists')
+  assert.equal((x.svc as any).routerFirewallPreview, undefined)
+  const v = await x.svc.routerView()
+  assert.match(v.interfaces[0].firewallCommand!, /^\/ip firewall filter add .*dst-port="13231"/)
+  // Every router flow, with write access: only WireGuard peers are ever written.
+  const k = keypair()
+  const d = await x.svc.addRouterDevice({ iface: 'wg-home', endpoint: 'home.example.com:13231', address: '100.64.20.60/32', allowedIps: ['100.64.10.0/24'], name: 'phone', publicKey: k.pub, privateKey: k.priv }, 'a')
+  await x.svc.connectMachine({ machineId: 'lxc-121', router: { iface: 'wg-home', endpoint: 'home.example.com:13231', address: '100.64.20.61/32' }, allowedIps: ['100.64.10.0/24'], siteSubnets: ['203.0.113.0/24'] }, 'a')
+  await x.svc.removePeer(d.peer.id, 'a')
+  assert.ok(x.r.state.writes.length >= 3)
+  for (const w of x.r.state.writes) assert.match(w, /^(PUT|DELETE) \/rest\/interface\/wireguard\/peers(\/| |$)/, w)
+})
+
+test('router setup is honest: the write policy is broader than peers, and HyperProx is what limits it', async () => {
+  const x = rig()
+  const v = await x.svc.routerView()
+  assert.match(v.setupNote!, /RouterOS cannot limit a login to WireGuard peers/)
+  assert.match(v.setupNote!, /enforced by HyperProx/)
+})
+
+test('the REST writer refuses any path but WireGuard peers before it sends anything', async () => {
+  const { restWriter } = await import('../src/lib/vpn/wireguard/routeros')
+  const w = restWriter({ url: 'http://127.0.0.1:9', insecureTLS: false }, { username: 'u', password: 'p' })
+  await assert.rejects(w.put('/rest/ip/firewall/filter', { chain: 'input' }), /only writes WireGuard peers/)
+  await assert.rejects(w.put('/rest/ip/address', {}), /only writes WireGuard peers/)
+  await assert.rejects(w.del('/rest/ip/route/*1'), /only writes WireGuard peers/)
+  await assert.rejects(w.put('/rest/interface/wireguard', {}), /only writes WireGuard peers/)
+  await assert.rejects(w.del('/rest/interface/wireguard/peers/../../ip/route/*1'), /only writes WireGuard peers/)
 })

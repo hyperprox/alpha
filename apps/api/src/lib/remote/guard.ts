@@ -26,6 +26,7 @@
 //  PVESIG signatures, sets with timeouts, and counter and quota values.
 // =============================================================================
 
+import { coverageProblem } from './coverage'
 import { cidrOverlaps } from './planner'
 import type { ProviderId } from './types'
 
@@ -260,20 +261,30 @@ function within(inner: string, outer: string): boolean {
  * its interface name pattern and the prefixes its routes may cover (its tunnel address and AllowedIPs).
  * Serialisable, so an in-flight change can be judged the same way after a restart.
  */
-export interface CustomSubject { dev: string; prefixes: string[] }
+export interface CustomSubject {
+  dev: string; prefixes: string[]
+  /** The overlay pool and declared site-to-site subnets: not counted toward the coverage limit. */
+  pool?: string[]; sites?: string[]
+}
 export type GuardSubject = ProviderId | CustomSubject
 
 const subjectDev = (s: GuardSubject) => (typeof s === 'string' ? OVERLAY_DEV[s] : new RegExp(`\\bdev (?:${s.dev})\\b`))
 const subjectTable = (s: GuardSubject) => (typeof s === 'string' ? OWN_TABLE[s] : /$^/)
 const subjectPrefixes = (s: GuardSubject) => (typeof s === 'string' ? OVERLAY_PREFIXES[s] : s.prefixes)
 const subjectRules = (s: GuardSubject) => (typeof s === 'string' ? OWN_RULES[s] : new Set<string>())
+/** What does not count toward the coverage limit: a mesh client's overlay, a WireGuard pool and declared sites. */
+const subjectExempt = (s: GuardSubject) => (typeof s === 'string' ? OVERLAY_PREFIXES[s] : [...(s.pool ?? []), ...(s.sites ?? [])])
 
 /** Null when the client may own this route, or why not. */
 export function ownRouteProblem(r: string, p: GuardSubject): string | null {
   const { family, type, dest } = parseRoute(r)
   if (HARMLESS_TYPES.has(type)) return null
   if (family === '6' && within(dest, 'fe80::/64') && subjectDev(p).test(r)) return null
-  if (subjectPrefixes(p).some(o => within(dest, o))) return null
+  if (subjectPrefixes(p).some(o => within(dest, o))) {
+    // Inside what it may route, but never a large share of the address space (the same rule as AllowedIPs).
+    const big = coverageProblem([dest], subjectExempt(p), 'the route')
+    return big ? `${big} (${r.slice(2)})` : null
+  }
   const len = prefixLen(dest)
   if (len === 0) return `a default route (${r.slice(2)})`
   if (len <= 2) return `a /${len} split of the default route (${r.slice(2)})`
@@ -325,6 +336,12 @@ export function compareSnapshots(before: NodeSnapshot, after: NodeSnapshot, prov
   if (foreign.length) out.push(`the routing tables changed (${foreign.slice(0, 4).join('; ')})`)
   const badOwn = routes.added.filter(own).map(r => ownRouteProblem(r, provider!)).filter((x): x is string => !!x)
   if (badOwn.length) out.push(`the client added ${badOwn.slice(0, 3).join('; ')}`)
+  else if (provider) {
+    // Each route may be fine alone; together they must not cover a large share either.
+    const dests = routes.added.filter(own).map(parseRoute).filter(x => !HARMLESS_TYPES.has(x.type)).map(x => x.dest)
+    const big = coverageProblem(dests, subjectExempt(provider), 'its routes together')
+    if (big) out.push(`the client added routes: ${big}`)
+  }
 
   const rules = setDiff(before.rules, after.rules)
   const badRules = [...rules.added, ...rules.removed].filter(r => !(provider && subjectRules(provider).has(r)))

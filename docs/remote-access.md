@@ -261,13 +261,20 @@ If the MikroTik plug-in is set up, the VPN page shows the router's WireGuard int
 (handshake, traffic, endpoint) as **Router**, read through the plug-in's own read-only connection. Private
 and preshared keys in RouterOS's answers are dropped.
 
-To add peers, HyperProx needs its **own limited login** on the router, never the admin one. Without it the
+To add peers, HyperProx needs its **own login** on the router, never the admin one. Without it the
 router view is read-only and shows these commands to create it:
 
 ```
-/user group add name=hyperprox-wg policy=read,write,api,rest-api comment="HyperProx: WireGuard peers only"
-/user add name=hyperprox-wg group=hyperprox-wg comment="HyperProx: WireGuard peers only" password="<a long random password>"
+/user group add name=hyperprox-wg policy=read,write,api,rest-api comment="HyperProx: WireGuard peers"
+/user add name=hyperprox-wg group=hyperprox-wg comment="HyperProx: WireGuard peers" password="<a long random password>"
 ```
+
+Be clear about what this login can do. RouterOS policies cover whole areas, not menus; RouterOS 7 has no
+narrower policy for the WireGuard REST endpoints, and `write` lets the login change other configuration too.
+The group leaves out `policy`, `sensitive`, `password`, `ssh`, `ftp`, `telnet`, `winbox`, `web`, `reboot`,
+`test` and `sniff`, so it cannot manage users, read secrets or log in interactively. **"WireGuard peers
+only" is enforced by HyperProx, not by RouterOS**: its REST writer refuses every path except
+`/interface/wireguard/peers`. Keep the password in the vault only.
 
 Then add it under **Settings → Credentials → Remote access → MikroTik WireGuard**. With it, HyperProx can:
 
@@ -277,9 +284,8 @@ Then add it under **Settings → Credentials → Remote access → MikroTik Wire
   that mark is never changed or removed;
 - site-to-site: a node or guest peer whose AllowedIPs are its own subnets, with the overlap checks.
 
-HyperProx never changes the router's firewall, addresses or routes on its own. If no input rule lets UDP in
-on an interface's listen port, the page shows the exact command for you to review and run, and offers to
-add that one rule (previewed, marked `hyperprox:wg-<interface>`, at the top of the input chain).
+HyperProx never writes the router's firewall, addresses or routes. If no input rule lets UDP in on an
+interface's listen port, the page shows the exact command for you to review and run yourself, nothing more.
 
 ### The Infrastructure VPN slot and tab
 
