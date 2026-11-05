@@ -26,6 +26,7 @@ const STATE: Record<RemoteCell['state'], { tone: 'good' | 'warn' | 'crit' | 'mut
   'unknown':       { tone: 'muted',  label: 'Unknown',         hint: 'The provider could not be asked.' },
   'signed-out':    { tone: 'warn',   label: 'Signed out',      hint: 'The client is installed and running, but not signed in.' },
   'unchecked':     { tone: 'muted',  label: 'Not checked',     hint: 'Not looked at yet. An admin can press Refresh to check every machine.' },
+  'excluded':      { tone: 'muted',  label: 'Excluded',        hint: 'HyperProx never looks inside this guest or changes it (VPN exclusions, or the Proxmox tag hyperprox-ignore).' },
 }
 
 export function StateBadge({ cell }: { cell: RemoteCell }) {
@@ -77,7 +78,7 @@ function Cell({ row, provider, cell, admin, busy, configured, onAction }: {
       {cell.dnsName && <div className="truncate font-mono text-xs" style={{ color: 'var(--text-dim)' }} title={cell.dnsName}>{cell.dnsName}</div>}
       {cell.lastSeen && cell.state !== 'connected' && <div className="text-xs" style={{ color: 'var(--text-dim)' }}>last seen {fmtTime(cell.lastSeen)}</div>}
       {cell.expiresAt && !cell.keyExpiryDisabled && <div className="text-xs" style={{ color: cell.expiryWarning ? 'var(--warn)' : 'var(--text-dim)' }}>key expires {fmtTime(cell.expiresAt)}</div>}
-      {admin && !row.self && cell.state !== 'unconfigured' && (
+      {admin && !row.self && !row.excluded && cell.state !== 'unconfigured' && (
         <div className="flex flex-wrap gap-1 pt-0.5">
           {found ? (
             <>
@@ -135,7 +136,7 @@ export function MachinesTable({ rows, admin, busy, selected, onSelect, onAction,
             <tr key={r.id} style={{ borderBottom: '1px solid var(--border-dim)', verticalAlign: 'top' }}>
               {admin && (
                 <td className="px-4 py-2.5">
-                  <input type="checkbox" aria-label={`Select ${r.name}`} disabled={!!r.self} checked={selected.has(r.id)} onChange={e => onSelect([r.id], e.target.checked)} />
+                  <input type="checkbox" aria-label={`Select ${r.name}`} disabled={!!r.self || !!r.excluded} checked={selected.has(r.id)} onChange={e => onSelect([r.id], e.target.checked)} />
                 </td>
               )}
               <td className="px-4 py-2.5">
@@ -143,6 +144,7 @@ export function MachinesTable({ rows, admin, busy, selected, onSelect, onAction,
                   <span className="font-semibold" style={{ color: 'var(--text-bright)' }}>{r.name}</span>
                   <Badge tone={r.kind === 'node' ? 'violet' : 'muted'}>{KIND_LABEL[r.kind]}{r.vmid ? ` ${r.vmid}` : ''}</Badge>
                   {!r.running && <Badge tone="muted">stopped</Badge>}
+                  {r.excluded && <Badge tone="muted" title={r.excludedBy === 'tag' ? 'Proxmox tag hyperprox-ignore' : 'Listed under VPN exclusions'}>excluded</Badge>}
                   {r.self && <Badge tone="accent" title="HyperProx runs here. Its VPN client is shown read-only and never changed from this page.">this HyperProx</Badge>}
                 </div>
                 {r.node && r.kind !== 'node' && <div className="text-xs" style={{ color: 'var(--text-dim)' }}>on {r.node}</div>}

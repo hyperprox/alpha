@@ -3,7 +3,7 @@
 
 export type RemoteProviderId = 'tailscale' | 'netbird'
 export type RemoteMachineKind = 'node' | 'lxc' | 'qemu' | 'host'
-export type RemoteCellState = 'connected' | 'offline' | 'missing' | 'not-installed' | 'manual' | 'unconfigured' | 'unknown' | 'signed-out' | 'unchecked'
+export type RemoteCellState = 'connected' | 'offline' | 'missing' | 'not-installed' | 'manual' | 'unconfigured' | 'unknown' | 'signed-out' | 'unchecked' | 'excluded'
 
 export interface RemoteCell {
   state: RemoteCellState
@@ -60,6 +60,9 @@ export interface RemoteMachineRow {
   cells: Record<RemoteProviderId, RemoteCell>
   /** HyperProx's own container: shown read-only. */
   self?: boolean
+  /** Never looked inside or touched for VPN work: by the VPN page's exclusions, or the hyperprox-ignore tag. */
+  excluded?: boolean
+  excludedBy?: 'setting' | 'tag'
 }
 
 export interface RemoteOverview {

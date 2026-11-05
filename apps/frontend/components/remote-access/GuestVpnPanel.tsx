@@ -77,7 +77,7 @@ export function GuestVpnPanel({ type, vmid, name, admin, source = vpnStatusSourc
           <div key={p} className="rounded-md border p-3" style={{ borderColor: 'var(--border)' }}>
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-semibold" style={{ color: 'var(--text-bright)' }}>{LABEL[p]}</span>
-              <Badge tone={c.state === 'connected' ? 'good' : c.state === 'not-installed' || c.state === 'unconfigured' || c.state === 'unchecked' ? 'muted' : 'warn'}>{c.state}</Badge>
+              <Badge tone={c.state === 'connected' ? 'good' : c.state === 'not-installed' || c.state === 'unconfigured' || c.state === 'unchecked' || c.state === 'excluded' ? 'muted' : 'warn'}>{c.state}</Badge>
               {c.expiryWarning && <Badge tone="warn">key expires soon</Badge>}
               {c.found && !c.installed && <Badge tone="accent" title="On this machine, but not installed by HyperProx">found, not managed by HyperProx</Badge>}
               {st.self && <Badge tone="accent" title="HyperProx runs here; shown read-only">this HyperProx</Badge>}
@@ -92,7 +92,7 @@ export function GuestVpnPanel({ type, vmid, name, admin, source = vpnStatusSourc
                 <a href={source.panelUrl(id, p)} className="text-xs underline self-center" style={{ color: 'var(--accent)' }}>Manage it here (on the VPN page)</a>
               </div>
             )}
-            {isAdmin && !st.self && !(c.found && !c.installed) && c.state !== 'unconfigured' && (
+            {isAdmin && !st.self && c.state !== 'excluded' && !(c.found && !c.installed) && c.state !== 'unconfigured' && (
               <div className="mt-2 flex flex-wrap gap-2">
                 {!c.installed && c.state === 'not-installed' && (
                   <Btn small kind="primary" onClick={() => act(async () => setPreview({ p, pv: await source.installPreview(id, p) }))}>Install</Btn>
