@@ -217,11 +217,12 @@ the rules below ([docs/remote-access.md](remote-access.md)).
   output HyperProx never logs) and kept with its config as one vault item per peer, revealed again only
   after re-confirmation, audited. A rotated key is kept seven days, marked rotated, then deleted. A server
   key goes to the vault only if the owner opts in. Postgres holds public keys only.
-- **The MikroTik router** is written to only with a separate, limited RouterOS login in the vault (group
-  policies read, write, api, rest-api), never the admin login; without it the view is read-only. Only
-  peers marked `comment=hyperprox:<id>` are ever changed or removed. Firewall, addresses and routes are never
-  changed on their own; the one input rule for a listen port is shown as a command and added only on a
-  confirmed request.
+- **The MikroTik router** is written to only with a separate RouterOS login in the vault (group policies
+  read, write, api, rest-api), never the admin login; without it the view is read-only. RouterOS cannot
+  limit a login to WireGuard peers (`write` allows other changes), so that limit is enforced by HyperProx:
+  its REST writer refuses every path but `/interface/wireguard/peers`. Only peers marked
+  `comment=hyperprox:<id>` are ever changed or removed. Firewall, addresses and routes are never written; a
+  missing input rule for a listen port is shown as a command for the owner to run.
 - **Locked means nothing**: while HyperProx is locked no credential is in memory; every VPN and WireGuard
   action says "HyperProx is locked — sign in to …" and does nothing, and the background work (revoke sweep,
   new-device poller, rotation sweep) waits for the next unlock.

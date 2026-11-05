@@ -9,6 +9,7 @@
 
 import { isIP } from 'node:net'
 import { cidrOverlaps } from '../../remote/planner'
+import { coverageProblem } from '../../remote/coverage'
 import { isWgKey } from './keys'
 
 export const IFACE_RE = /^hp-wg\d{1,2}$/
@@ -52,13 +53,17 @@ export function checkSpec(s: WgInterfaceSpec): string | null {
 }
 
 /**
- * Null when these AllowedIPs may be routed on this machine, or why not. On a Proxmox node: no default route,
- * no /1 split, nothing overlapping a cluster network. Everywhere: nothing overlapping the cluster networks.
+ * Null when these AllowedIPs may be routed on this machine, or why not. Everywhere: nothing overlapping a
+ * cluster network. On a Proxmox node also: never the default route, and together (not prefix by prefix) no
+ * more than a /8 outside the overlay `pool`, unless it is a declared site-to-site subnet (`sites`), which
+ * passes the same overlap checks.
  */
-export function checkAllowedIps(allowed: string[], o: { node: boolean; clusterNets: string[] }): string | null {
-  for (const a of allowed) {
-    const bits = Number(a.split('/')[1])
-    if (o.node && bits <= 1) return `${a} would send the node's traffic through the tunnel; a Proxmox node never routes its default through WireGuard`
+export function checkAllowedIps(allowed: string[], o: { node: boolean; clusterNets: string[]; pool?: string[]; sites?: string[] }): string | null {
+  if (o.node) {
+    const why = coverageProblem(allowed, [...(o.pool ?? []), ...(o.sites ?? [])], `AllowedIPs ${allowed.join(', ')}`.slice(0, 120))
+    if (why) return `${why}; a Proxmox node never routes its default, or a large share of the address space, through WireGuard`
+  }
+  for (const a of [...allowed, ...(o.sites ?? [])]) {
     const hit = o.clusterNets.find(n => cidrOverlaps(a, n))
     if (hit) return `${a} overlaps the cluster network ${hit}; cluster traffic must stay on the LAN`
   }

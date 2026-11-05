@@ -139,7 +139,7 @@ export function buildVpnRoutes(deps: VpnRouteDeps = {}): FastifyPluginAsync {
       try {
         if (!MACHINE.test(req.params.id)) throw new WgInputError('Unknown machine id format')
         const b: any = req.body ?? {}
-        return await service.connectMachine({ machineId: req.params.id, serverId: b.serverId, router: b.router, allowedIps: b.allowedIps ?? [], siteSubnets: b.siteSubnets, keepalive: b.keepalive, iface: b.iface }, by(req))
+        return await service.connectMachine({ machineId: req.params.id, serverId: b.serverId, router: b.router, allowedIps: b.allowedIps ?? [], siteSubnets: b.siteSubnets, remoteSubnets: b.remoteSubnets, keepalive: b.keepalive, iface: b.iface }, by(req))
       } catch (e) { return sendError(reply, e) }
     })
     fastify.get('/wg/router', wrap(() => service.routerView()))
@@ -155,15 +155,6 @@ export function buildVpnRoutes(deps: VpnRouteDeps = {}): FastifyPluginAsync {
     })
     fastify.delete<{ Params: { id: string } }>('/wg/router/peers/:id', async (req, reply) => {
       try { if (!/^\*[0-9A-F]{1,8}$/.test(req.params.id)) throw new WgInputError('Not a RouterOS id'); await service.removeRouterPeer(req.params.id, by(req)); return { ok: true } } catch (e) { return sendError(reply, e) }
-    })
-    fastify.get<{ Params: { iface: string } }>('/wg/router/firewall/:iface', async (req, reply) => {
-      try { return await service.routerFirewallPreview(req.params.iface) } catch (e) { return sendError(reply, e) }
-    })
-    fastify.post<{ Params: { iface: string }; Body: any }>('/wg/router/firewall/:iface', async (req, reply) => {
-      try {
-        if ((req.body as any)?.confirm !== true) throw new WgInputError('Send { confirm: true } after showing the preview')
-        return { message: await service.routerFirewallAdd(req.params.iface, by(req)) }
-      } catch (e) { return sendError(reply, e) }
     })
   }
 }

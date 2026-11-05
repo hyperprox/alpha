@@ -2,14 +2,17 @@
 //  HyperProx — WireGuard on a MikroTik router (RouterOS REST)
 //
 //  Reads go through the MikroTik plug-in's own read-only connection. Writes
-//  need a separate, limited login in the vault (remote/routeros-write): a
-//  RouterOS group with only read, write, api and rest-api. Without it the
-//  router view is read-only and says how to create that group and user.
-//  HyperProx never uses or asks for the router's admin login.
+//  need a separate login in the vault (remote/routeros-write): a RouterOS
+//  group with only read, write, api and rest-api. RouterOS policies are not
+//  per-menu, so `write` lets that login change other configuration too; the
+//  "WireGuard peers only" limit is enforced here (restWriter refuses every
+//  other path), not by RouterOS. Without the login the router view is
+//  read-only and says how to create the group and user. HyperProx never uses
+//  or asks for the router's admin login.
 //
 //  Only peers HyperProx created are ever changed or removed: they carry
 //  comment=hyperprox:<id>. Interfaces, addresses, routes and firewall rules are
-//  never changed on their own; a missing input rule is shown as a command.
+//  never written; a missing input rule is shown as a command for the owner.
 // =============================================================================
 
 export const MARK = 'hyperprox:'
@@ -58,11 +61,20 @@ export function mapPeers(rows: any[]): RouterWgPeer[] {
   })
 }
 
-/** The RouterOS commands that create the limited write login. Shown, never run. */
+/** The RouterOS commands that create the write login. Shown, never run. */
 export const WRITE_ACCESS_COMMANDS = [
-  '/user group add name=hyperprox-wg policy=read,write,api,rest-api comment="HyperProx: WireGuard peers only"',
-  '/user add name=hyperprox-wg group=hyperprox-wg comment="HyperProx: WireGuard peers only" password="<a long random password>"',
+  '/user group add name=hyperprox-wg policy=read,write,api,rest-api comment="HyperProx: WireGuard peers"',
+  '/user add name=hyperprox-wg group=hyperprox-wg comment="HyperProx: WireGuard peers" password="<a long random password>"',
 ]
+
+/** What that login can and cannot do, said plainly. */
+export const WRITE_ACCESS_NOTE =
+  'RouterOS cannot limit a login to WireGuard peers: its policies cover whole areas, and "write" allows other configuration changes too. ' +
+  'This group leaves out policy, sensitive, password, ssh, ftp, telnet, winbox, web, reboot, test and sniff, so it cannot manage users, read secrets or log in interactively. ' +
+  '"WireGuard peers only" is enforced by HyperProx, which sends writes to /interface/wireguard/peers and nothing else; keep the password in the vault only.'
+
+/** The only REST paths HyperProx writes: the peer list, or one peer by its RouterOS id. */
+const WRITE_PATH = /^\/rest\/interface\/wireguard\/peers(?:\/\*[0-9A-Fa-f]{1,8}|\/%2A[0-9A-Fa-f]{1,8})?$/
 
 const quoteRos = (v: string) => `"${v.replace(/["\\$]/g, c => `\\${c}`)}"`
 
@@ -103,11 +115,10 @@ export function firewallAllows(rules: any[], port: number): boolean {
   return false
 }
 
-/** The input rule for a WireGuard listen port, placed before `before` (the first input rule) when given. */
-export function firewallRule(port: number, iface: string, before: string | null = null): { body: Record<string, string>; command: string } {
-  const body: Record<string, string> = { chain: 'input', action: 'accept', protocol: 'udp', 'dst-port': String(port), comment: `${MARK}wg-${iface}`, ...(before ? { 'place-before': before } : {}) }
-  const { 'place-before': _b, ...shown } = body
-  return { body, command: `/ip firewall filter add ${Object.entries(shown).map(([k, v]) => `${k}=${quoteRos(v)}`).join(' ')} place-before=0` }
+/** The input rule for a WireGuard listen port, as a command for the owner to run. HyperProx never adds it. */
+export function firewallRule(port: number, iface: string): { command: string } {
+  const body: Record<string, string> = { chain: 'input', action: 'accept', protocol: 'udp', 'dst-port': String(port), comment: `wg-${iface}` }
+  return { command: `/ip firewall filter add ${Object.entries(body).map(([k, v]) => `${k}=${quoteRos(v)}`).join(' ')} place-before=0` }
 }
 
 // ── Production binding ──────────────────────────────────────────────────────
@@ -116,6 +127,7 @@ export function firewallRule(port: number, iface: string, before: string | null 
 export function restWriter(base: { url: string; insecureTLS: boolean }, cred: { username: string; password: string }): NonNullable<RouterApi['write']> {
   const auth = 'Basic ' + Buffer.from(`${cred.username}:${cred.password}`).toString('base64')
   async function call(method: 'PUT' | 'DELETE', path: string, body?: Record<string, string>): Promise<any> {
+    if (!WRITE_PATH.test(path)) throw new Error(`HyperProx only writes WireGuard peers on the router; refused ${method} ${path.slice(0, 80)}`)
     const url = new URL(base.url + path)
     const payload = body ? JSON.stringify(body) : undefined
     const headers: Record<string, string> = { authorization: auth, accept: 'application/json', ...(payload ? { 'content-type': 'application/json' } : {}) }
