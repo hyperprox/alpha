@@ -312,7 +312,9 @@ test('netbird: login expiration, SSH and approval update the peer with its other
     'GET /api/peers/p1': () => [200, peer],
     'PUT /api/peers/p1': c => { Object.assign(peer, c.body); return [200, peer] },
     'GET /api/groups': () => [200, groups],
-    'PUT /api/groups/g-srv': () => [200, {}], 'PUT /api/groups/g-old': () => [200, {}],
+    'GET /api/groups/g-srv': () => [200, groups[1]], 'GET /api/groups/g-old': () => [200, groups[2]],
+    'PUT /api/groups/g-srv': c => { groups[1] = { ...groups[1], peers: c.body.peers.map((id: string) => ({ id })) }; return [200, groups[1]] },
+    'PUT /api/groups/g-old': c => { groups[2] = { ...groups[2], peers: c.body.peers.map((id: string) => ({ id })) }; return [200, groups[2]] },
   })
   const c = new NetbirdClient({ managementUrl: '', apiToken: 't' }, { fetch: m.fn })
   const dev = { id: 'p1', name: 'web', addresses: [], online: true, lastSeen: null, version: null }
@@ -329,6 +331,39 @@ test('netbird: login expiration, SSH and approval update the peer with its other
     ['/api/groups/g-old', { name: 'old', peers: ['p2'] }],
   ])
   await assert.rejects(c.setTags!(dev, ['nope']), /no group called nope/)
+})
+
+test('netbird: setTags writes a group back whole with only its peers changed, re-reads it, and survives one concurrent change', async () => {
+  const resources = [{ id: 'res-1', type: 'host' }]
+  let g: any = { id: 'g-srv', name: 'servers', peers: [{ id: 'p2', name: 'other' }], peers_count: 1, resources, resources_count: 1, issued: 'api' }
+  let racer = 0, extra = 0
+  const m = mockFetch({
+    'GET /api/groups': () => [200, [{ id: 'g-all', name: 'All', peers: [] }, g]],
+    'GET /api/groups/g-srv': () => [200, g],
+    'PUT /api/groups/g-srv': c => {
+      g = { ...g, name: c.body.name, peers: c.body.peers.map((id: string) => ({ id })), resources: c.body.resources ?? [] }
+      // Someone else adds a peer right after the first write.
+      if (racer-- > 0) g = { ...g, peers: [...g.peers, { id: `p9-${++extra}` }] }
+      return [200, g]
+    },
+  })
+  const c = new NetbirdClient({ managementUrl: '', apiToken: 't' }, { fetch: m.fn })
+  const dev = { id: 'p1', name: 'web', addresses: [], online: true, lastSeen: null, version: null }
+  await c.setTags!(dev, ['servers'])
+  const put = m.calls.find(x => x.method === 'PUT')!
+  assert.deepEqual(put.body, { name: 'servers', peers: ['p2', 'p1'], resources }, 'name and resources kept, read-only fields left out')
+  assert.ok(m.calls.filter(x => x.method === 'GET' && x.url.endsWith('/api/groups/g-srv')).length >= 2, 'read before and after')
+
+  // A concurrent change: retried once from a fresh read, keeping the other writer's peer.
+  g = { ...g, peers: [{ id: 'p2' }] }; racer = 1; m.calls.length = 0
+  await c.setTags!(dev, ['servers'])
+  assert.deepEqual(new Set(g.peers.map((p: any) => p.id)), new Set(['p2', 'p1', 'p9-1']))
+  assert.equal(m.calls.filter(x => x.method === 'PUT').length, 2)
+
+  // Changing under it every time: refused after one retry.
+  g = { ...g, peers: [{ id: 'p2' }] }; racer = 5; m.calls.length = 0
+  await assert.rejects(c.setTags!(dev, ['servers']), /changed while HyperProx was writing it/)
+  assert.equal(m.calls.filter(x => x.method === 'PUT').length, 2)
 })
 
 test('every provider credential read is audited without its value (one entry a minute), and a locked vault is said plainly', async () => {
