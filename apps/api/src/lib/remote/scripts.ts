@@ -241,6 +241,8 @@ export const TS_PREFS_READBACK = [
 export interface ClientPrefs {
   acceptDns: boolean; acceptRoutes: boolean; ssh: boolean; advertiseExitNode: boolean; exitNode: string | null
   exitNodeAllowLan: boolean; subnets: string[]; tags: string[]; netfilterOff: boolean
+  /** 0 off, 1 nodivert, 2 on (Tailscale's own numbers). */
+  netfilterMode?: number
 }
 
 export function parseTailscalePrefs(output: string): ClientPrefs | null {
@@ -257,6 +259,7 @@ export function parseTailscalePrefs(output: string): ClientPrefs | null {
     subnets: routes.filter(r => r !== '0.0.0.0/0' && r !== '::/0'),
     tags: Array.isArray(j.AdvertiseTags) ? j.AdvertiseTags.map(String) : [],
     netfilterOff: j.NetfilterMode === 0,
+    netfilterMode: typeof j.NetfilterMode === 'number' ? j.NetfilterMode : 2,
   }
 }
 
@@ -279,6 +282,16 @@ export function configureScript(p: ProviderId, prefs: { acceptDns: boolean; acce
     `netbird networks ls 2>/dev/null | sed 's/^/HP_NB_NET /' || true`,
     statusScript(p),
   ].join('\n')
+}
+
+/**
+ * Put a node's client under the locks, or back as it was: Tailscale `tailscale set` with exactly these flags,
+ * NetBird reconnected with every flag explicit. Both read the client's own settings back.
+ */
+export function lockScript(p: ProviderId, flags: string[]): string {
+  return p === 'tailscale'
+    ? ['set -e', `tailscale set ${flags.map(sq).join(' ')}`, TS_PREFS_READBACK, statusScript(p)].join('\n')
+    : ['set -e', 'netbird down >/dev/null 2>&1 || true', `netbird up ${flags.map(sq).join(' ')} 2>&1`, NB_FLAGS_READBACK, statusScript(p)].join('\n')
 }
 
 /** Start the client without a key so it asks for an interactive sign-in. Its output carries the URL. */

@@ -508,13 +508,70 @@ test('an existing client HyperProx did not install is refused without a choice, 
   assert.equal(prov.minted.length, 0)
 })
 
-test('adopt records the client as it is, without a key, a package or up --reset', async () => {
-  const w = world({ answer: HAS })
+const TS_PREFS = (o: { dns?: boolean; routes?: boolean; ssh?: boolean; nf?: number; exit?: string }) =>
+  `HP_PREFS_BEGIN\n\t"RouteAll": ${!!o.routes},\n\t"ExitNodeID": "${o.exit ?? ''}",\n\t"CorpDNS": ${!!o.dns},\n\t"RunSSH": ${!!o.ssh},\n\t"AdvertiseRoutes": null,\n\t"NetfilterMode": ${o.nf ?? 0},\nHP_PREFS_END`
+const LOCKED = TS_PREFS({})
+const UNLOCKED = TS_PREFS({ dns: true, nf: 2 })
+/** An existing client on a node whose settings read back as `prefs`, and as `after` once `tailscale set` ran. */
+const HAS_PREFS = (prefs: string, after = prefs): Answer => (m, kind, _n, script) =>
+  HAS(m, kind) ?? (script.includes('HP_PREFS_BEGIN') && kind === 'routing' ? [0, `${after}\n${TS_STATUS(m, '100.64.0.9')}`] : script.includes('HP_PREFS_BEGIN') ? [0, prefs] : undefined)
+
+test('adopt on a node: a client that already meets the node locks is recorded as it is', async () => {
+  const w = world({ answer: HAS_PREFS(LOCKED) })
   const { svc, store, prov } = service(w)
   deviceFor(prov, NODE_A, '100.64.0.9')
   const job = await install(svc, ['node-pve-a'], { existing: 'adopt' })
   assert.equal(job.status, 'completed', job.error)
-  assert.deepEqual(w.kinds(), ['detect', 'status'])
+  assert.ok(!w.kinds('node-pve-a').includes('routing'), 'nothing changed on the node')
+  assert.equal((await store.get('node-pve-a', 'tailscale'))?.adopted, true)
+})
+
+test('adopt on a node refuses a client that does not meet the node locks, says what differs, and offers adopt-and-lock', async () => {
+  const w = world({ answer: HAS_PREFS(UNLOCKED) })
+  const { svc, store, prov } = service(w)
+  deviceFor(prov, NODE_A, '100.64.0.9')
+  const job = await install(svc, ['node-pve-a'], { existing: 'adopt' })
+  assert.equal(job.status, 'failed')
+  assert.match(job.steps[0].detail ?? '', /accepts DNS/)
+  assert.match(job.steps[0].detail ?? '', /netfilter/)
+  assert.match(job.steps[0].detail ?? '', /Adopt and apply the node locks/)
+  assert.ok(!w.kinds('node-pve-a').includes('routing'))
+  assert.equal(await store.get('node-pve-a', 'tailscale'), null)
+})
+
+test('adopt and apply the node locks: a guarded change, confirmed from the client', async () => {
+  const w = world({ answer: HAS_PREFS(UNLOCKED, LOCKED) })
+  const { svc, store, prov } = service(w)
+  deviceFor(prov, NODE_A, '100.64.0.9')
+  const job = await install(svc, ['node-pve-a'], { existing: 'adopt-lock' })
+  assert.equal(job.status, 'completed', job.error)
+  const set = w.ran.find(r => r.machine === 'node-pve-a' && r.kind === 'routing')!.script
+  for (const f of ['--accept-dns=false', '--accept-routes=false', '--ssh=false', '--netfilter-mode=off', '--exit-node=', '--advertise-exit-node=false']) assert.ok(set.includes(f), f)
+  const k = w.kinds('node-pve-a'), i = k.indexOf('routing')
+  assert.ok(k.slice(0, i).includes('snapshot') && k.slice(i).includes('snapshot'), `under the guard: ${k.join(' ')}`)
+  const rec = await store.get('node-pve-a', 'tailscale')
+  assert.equal(rec?.adopted, true); assert.equal(rec?.prefs?.netfilterOff, true)
+})
+
+test('adopt and lock that the client does not take is put back as it was', async () => {
+  const w = world({ answer: HAS_PREFS(UNLOCKED, UNLOCKED) })
+  const { svc, store, prov } = service(w)
+  deviceFor(prov, NODE_A, '100.64.0.9')
+  const job = await install(svc, ['node-pve-a'], { existing: 'adopt-lock' })
+  assert.equal(job.status, 'failed')
+  const sets = w.ran.filter(r => r.machine === 'node-pve-a' && r.kind === 'routing').map(r => r.script)
+  assert.equal(sets.length, 2, 'the lock, then the previous settings')
+  assert.ok(sets[1].includes('--accept-dns=true') && sets[1].includes('--netfilter-mode=on'), sets[1])
+  assert.equal(await store.get('node-pve-a', 'tailscale'), null)
+})
+
+test('adopt records the client as it is, without a key, a package or up --reset', async () => {
+  const w = world({ answer: HAS_PREFS(LOCKED) })
+  const { svc, store, prov } = service(w)
+  deviceFor(prov, NODE_A, '100.64.0.9')
+  const job = await install(svc, ['node-pve-a'], { existing: 'adopt' })
+  assert.equal(job.status, 'completed', job.error)
+  assert.deepEqual(w.kinds(), ['detect', 'status', 'other'])
   assert.equal(prov.minted.length, 0)
   const rec = await store.get('node-pve-a', 'tailscale')
   assert.equal(rec?.adopted, true); assert.equal(rec?.deviceId, 'dev-node-pve-a')

@@ -27,7 +27,7 @@ test('the prefs readback prints only the settings it needs: never the node key o
   const p = parseTailscalePrefs(out)
   assert.deepEqual(p, {
     acceptDns: false, acceptRoutes: true, ssh: true, advertiseExitNode: true, exitNode: '100.64.0.9', exitNodeAllowLan: true,
-    subnets: ['198.51.100.0/24'], tags: ['tag:server'], netfilterOff: false,
+    subnets: ['198.51.100.0/24'], tags: ['tag:server'], netfilterOff: false, netfilterMode: 2,
   })
   assert.equal(parseTailscalePrefs('garbage'), null)
 })
