@@ -7,6 +7,7 @@ import { apiJson, atLeast, type ApiResult } from '@/lib/api'
 import { useSession } from '@/lib/session'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { MachinePanel, OneClickDialog, PendingDevices } from '@/components/remote-access/vpn-panel'
+import { WireguardSection } from '@/components/remote-access/WireguardSection'
 import { Badge, Btn, Empty, Notice, Panel } from '@/components/updates/ui'
 import {
   FirewallDialog, HostKeyDialog, InstallDialog, JobPanel, MachinesTable, ManualKeyDialog, PROVIDERS, PROVIDER_LABEL, RoutingDialog, UninstallDialog, type CellAction,
@@ -211,6 +212,8 @@ export default function VpnPage() {
         )}
         {!admin && ov && <p className="px-5 pb-4 text-xs" style={{ color: 'var(--text-dim)' }}>Installing and changing remote access is for admins. You can see status.</p>}
       </Panel>
+
+      {admin && ov && <WireguardSection machines={ov.machines} send={send} notice={(tone, text) => setNotice({ tone, text })} />}
 
       {dialog?.kind === 'install' && (
         <InstallDialog provider={dialog.provider} rows={dialog.rows} onCancel={() => setDialog(null)} onConfirm={async o => {
