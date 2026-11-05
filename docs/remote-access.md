@@ -281,6 +281,28 @@ HyperProx never changes the router's firewall, addresses or routes on its own. I
 on an interface's listen port, the page shows the exact command for you to review and run, and offers to
 add that one rule (previewed, marked `hyperprox:wg-<interface>`, at the top of the input chain).
 
+### The Infrastructure VPN slot and tab
+
+- **Server side**: `lib/guest-config/vpn.ts` (shared with the Infrastructure pages) defines the slot;
+  `lib/remote/vpn-source.ts` fills it from this page's overview and is set with `setVpnStatusSource()` when
+  the remote routes start. One status per guest, keyed `lxc/<vmid>` or `qemu/<vmid>`: the connected provider
+  first, any other named in `detail`. While HyperProx is locked every guest is `unknown` with "HyperProx is
+  locked" in `detail`.
+- **The VPN tab**: `components/remote-access/GuestVpnPanel.tsx` exports `GuestVpnPanel`:
+
+  | Prop | Type | |
+  |---|---|---|
+  | `type` | `'lxc' \| 'qemu'` | the guest's type |
+  | `vmid` | `number` | its id |
+  | `name` | `string?` | shown in headings |
+  | `admin` | `boolean?` | show install, settings and uninstall (default: from the session role) |
+  | `source` | `VpnStatusSource?` | default `lib/vpn.ts` (the `/v1` API above) |
+  | `onChanged` | `() => void?` | called when a job finishes, to refresh the host page's badges |
+
+  It shows each provider's state, overlay IP, name, version, last seen and key expiry, and for admins a
+  one-click install with its preview, settings with a preview in words, and uninstall, asking for the
+  master password when the API wants it.
+
 ## Per-machine actions
 
 | Action | Who | Notes |
