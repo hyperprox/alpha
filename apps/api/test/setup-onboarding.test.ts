@@ -24,7 +24,7 @@ import { buildSetupChecklistRoutes } from '../src/routes/setup-checklist'
 import { monitoringRoutes } from '../src/routes/monitoring'
 import { detectNode, detectCluster, type HardwareDeps } from '../src/lib/hardware'
 import { syncTargets, readTargets } from '../src/lib/targets'
-import { clearHeldSecrets, heldSummary } from '../src/lib/setup-handoff'
+import { clearHeldSecrets, heldSummary, handoffFlagPath, acceptHandoff } from '../src/lib/setup-handoff'
 import { pciGpus } from '../src/lib/wizard-placement'
 import type { ChecklistDeps } from '../src/lib/setup-checklist'
 
@@ -81,9 +81,9 @@ const hwDeps: HardwareDeps = {
     execCalls.push({ node, script, cred })
     if (cred.password !== NODE_PW) throw new Error('All configured authentication methods failed')
     if (/^pveversion/.test(script)) return { code: 0, output: 'pve-manager/9.1.0/abc (running kernel: 7.0.0-1-pve)\n' }
-    if (/^# HyperProx hardware probe/m.test(script)) { const r = fakes[node].run(script); return { code: r.status ?? 1, output: r.stdout } }
     // The built-in graphics steps run for real against the fake node's sysroot (udev does not run there).
     if (/^# (Let containers|Undo "let containers)/m.test(script)) { const r = fakes[node].run(script); return { code: r.status ?? 1, output: r.stdout } }
+    if (/^# HyperProx hardware probe/m.test(script)) { const r = fakes[node].run(script); return { code: r.status ?? 1, output: r.stdout } }
     // Any other node step: reported, not run (the Docker tests run them for real).
     return { code: 0, output: `HPX-RESULT\tdone\tset up on ${node}\n` }
   },
@@ -214,8 +214,17 @@ test('hand-over: held in memory, then stored in the vault at the owner\'s sign-i
   broker.bootstrapped = false   // setup finishing: no owner yet
   const hostKeys = Object.fromEntries(Object.entries(ADDR).map(([n, a], i) => [n, { address: a, fingerprint: 'SHA256:' + 'ABC'[i].repeat(43) }]))
   const body = { nodeLogin: { username: 'root', password: NODE_PW, nodes: ['node-a', 'node-b', 'node-c'], hostKeys }, godaddy: { key: GD_KEY, secret: GD_SECRET }, extra: 'dropped' }
+  // Nothing usable: refused, and the one hand-over is not used up by it.
+  assert.equal((await call('POST', '/api/auth/setup-handoff', undefined, { nodeLogin: { username: 'root' } }, { 'x-setup-key': SETUP_KEY })).statusCode, 400)
+  // The vault not answering is "cannot tell", never "no owner".
+  broker.reachable = false
+  assert.equal((await call('POST', '/api/auth/setup-handoff', undefined, body, { 'x-setup-key': SETUP_KEY })).statusCode, 503)
+  broker.reachable = true
+  assert.ok(!existsSync(handoffFlagPath()), 'neither refusal used up the hand-over')
   const r = await call('POST', '/api/auth/setup-handoff', undefined, body, { 'x-setup-key': SETUP_KEY })
   assert.equal(r.statusCode, 200, r.body)
+  assert.ok(existsSync(handoffFlagPath()), 'recorded on disk, so a restart does not open it again')
+  assert.throws(() => acceptHandoff({ reachable: true, bootstrapped: false }), /already handed over/, 'the file alone refuses it, as after a restart')
   const again = await call('POST', '/api/auth/setup-handoff', undefined, body, { 'x-setup-key': SETUP_KEY })
   assert.equal(again.statusCode, 409, 'accepted exactly once')
   broker.bootstrapped = true
@@ -387,12 +396,21 @@ test('igpuAccess: state per node, apply writes the rule, undo removes it; NVIDIA
 test('leftover .env.pre-vault files are shown and shredded (with the master password)', async () => {
   writeFileSync(join(dir, '.env.pre-vault'), 'PROXMOX_TOKEN_SECRET=old-plaintext\n')
   writeFileSync(join(dir, '.env.pre-vault.1700000000000'), 'X=1\n')
+  // A symlink named like a backup is never followed, listed or shredded.
+  const outside = join(mkdtempSync(join(tmpdir(), 'hpx-outside-')), 'keep.txt')
+  writeFileSync(outside, 'not ours\n')
+  require('node:fs').symlinkSync(outside, join(dir, '.env.pre-vault.1'))
   const cookie = await ownerCookie()
   const item = (await call('GET', '/api/setup-checklist', cookie)).json().data.items.find((x: any) => x.id === 'old-backups')
   assert.deepEqual(item.rows.map((r: any) => r.node), ['.env.pre-vault', '.env.pre-vault.1700000000000'])
   const r = await call('POST', '/api/setup-checklist/old-backups/run', cookie)
   await waitJob(cookie, r.json().data.id)
   assert.ok(!existsSync(join(dir, '.env.pre-vault')) && !existsSync(join(dir, '.env.pre-vault.1700000000000')))
+  assert.equal(readFileSync(outside, 'utf8'), 'not ours\n', 'the symlink target is untouched')
+  assert.ok(require('node:fs').lstatSync(join(dir, '.env.pre-vault.1')).isSymbolicLink(), 'the symlink itself is left alone')
+  const job = (await call('GET', `/api/setup-checklist/jobs/${r.json().data.id}`, cookie)).json().data
+  assert.ok(job.results.every((x: any) => /copies may remain in snapshots or backups/.test(x.reason)))
+  require('node:fs').unlinkSync(join(dir, '.env.pre-vault.1'))
   assert.ok(!(await call('GET', '/api/setup-checklist', cookie)).json().data.items.some((x: any) => x.id === 'old-backups'))
 })
 

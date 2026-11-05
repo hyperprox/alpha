@@ -329,7 +329,7 @@ async function runItem(job: Job, by: string, deps: ChecklistDeps): Promise<void>
   }
   if (id === 'old-backups') {
     for (const f of oldBackups(deps.envFile)) {
-      try { shred(f); job.results.push({ label: path.basename(f), status: 'done', reason: 'overwritten and deleted' }) }
+      try { shred(f); job.results.push({ label: path.basename(f), status: 'done', reason: 'overwritten and deleted (copies may remain in snapshots or backups)' }) }
       catch (e: any) { job.results.push({ label: path.basename(f), status: 'failed', reason: e?.message ?? String(e) }) }
     }
     await auditCredentialUse('env_backup.shred', 'system:env', { by, files: job.results.map(r => r.label) })
@@ -347,14 +347,17 @@ async function runItem(job: Job, by: string, deps: ChecklistDeps): Promise<void>
 export function oldBackups(envFile: string): string[] {
   const dir = path.dirname(envFile)
   try {
+    // lstat, never stat: a symlink named like a backup is not followed, listed or shredded.
     return fs.readdirSync(dir).filter(f => /^\.env\.pre-vault(\.\d+)?$/.test(f)).map(f => path.join(dir, f))
-      .filter(f => fs.statSync(f).isFile()).sort()
+      .filter(f => fs.lstatSync(f).isFile()).sort()
   } catch { return [] }
 }
 
-/** Overwrite with random bytes (twice), flush, then delete. */
+/** Overwrite with random bytes (twice), flush, then delete. Copies in snapshots or backups are not reached. */
 export function shred(file: string): void {
-  const size = fs.statSync(file).size
+  const st = fs.lstatSync(file)
+  if (!st.isFile()) throw new Error(`${path.basename(file)} is not a plain file, so it was left alone`)
+  const size = st.size
   for (let pass = 0; pass < 2; pass++) {
     const fd = fs.openSync(file, 'r+')
     try { fs.writeSync(fd, require('crypto').randomBytes(Math.max(size, 1)), 0, Math.max(size, 1), 0); fs.fsyncSync(fd) }
