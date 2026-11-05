@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import type { GuestPve, NodeShell } from '../../src/lib/guest-config/service'
 import { GuestConfigService } from '../../src/lib/guest-config/service'
 import { MemoryHistoryStore } from '../../src/lib/guest-config/history/store'
+import { splitConf, sha256 } from '../../src/lib/guest-config/rawfile'
 
 export const FIX = (name: string) => readFileSync(join(__dirname, '..', 'fixtures', 'guest-config', name), 'utf8')
 
@@ -143,10 +144,40 @@ export class FakeShell implements NodeShell {
   libs: Record<string, string> = {}
   logins = new Set(['node-a', 'node-b', 'node-c'])
   commands: Array<{ node: string; command: string }> = []
+  /** Config files as the node has them, by vmid; made from the fake's config when first read. */
+  files: Record<string, string> = {}
+  /** Snapshot sections or other text after the main section, by vmid. */
+  tail: Record<string, string> = {}
+  /** Change the file between read and write (a concurrent edit on the node). */
+  beforeWrite?: (vmid: string) => void
   constructor(private pve?: FakePve) {}
+  fileOf(vmid: string): string {
+    if (this.files[vmid] !== undefined) return this.files[vmid]
+    const g = this.pve?.g('lxc', Number(vmid))
+    const c = g ? g.config : {}
+    const main = Object.entries(c).filter(([k]) => k !== 'lxc').sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k}: ${v}`)
+    const raw = ((c as any).lxc ?? []).map(([k, v]: [string, string]) => `${k}: ${v}`)
+    this.files[vmid] = [...main, ...raw].join('\n') + '\n' + (this.tail[vmid] ?? '')
+    return this.files[vmid]
+  }
   async run(node: string, command: string) {
     this.commands.push({ node, command })
     if (!this.logins.has(node)) return null
+    let w = /f='\/etc\/pve\/nodes\/[^/]+\/lxc\/(\d+)\.conf'/.exec(command)
+    if (w && command.includes('HPX-CAS-MISMATCH')) {
+      const vmid = w[1]
+      this.beforeWrite?.(vmid)
+      const cur = this.fileOf(vmid)
+      const expect = /if \[ "\$cur" != '([0-9a-f]{64})' \]/.exec(command)![1]
+      if (sha256(cur) !== expect) return { code: 3, output: `HPX-CAS-MISMATCH ${sha256(cur)}\n` }
+      const text = Buffer.from(/printf '%s' '([^']*)'/.exec(command)![1], 'base64').toString('utf8')
+      this.files[vmid] = text
+      // Proxmox parses the file: its main-section raw lines are what the API now reads.
+      const g = this.pve?.g('lxc', Number(vmid))
+      if (g) { const raw = splitConf(text).rawMain; if (raw.length) g.config.lxc = raw; else delete g.config.lxc }
+      return { code: 0, output: `${Buffer.from(text).toString('base64')}\n${sha256(text)}\n` }
+    }
+    if (w) { const t = this.fileOf(w[1]); return { code: 0, output: `${Buffer.from(t).toString('base64')}\n${sha256(t)}\n` } }
     if (command.includes("echo '##lspci'")) return { code: 0, output: this.probes[node] ?? '##end\n' }
     let m = /if \[ -d '([^']+)' \]/.exec(command)
     if (m) { const t = this.dirs[node]?.[m[1]]; return { code: 0, output: t ? `${t}\n` : 'MISSING\n' } }
