@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# hyperprox-setup-reset - install.sh runs this when it deliberately starts the setup wizard again.
+#
+# The wizard hands its held node login and DNS key to HyperProx once, ever, and data/setup/handed-over
+# records that. If setup is being started again before anyone has created the owner account, that record
+# belongs to the setup that is being replaced, so it is removed and the new wizard can hand over its own.
+# With setup finished, or an owner in the vault, nothing is touched.
+#
+#   bash /opt/hyperprox/bin/hyperprox-setup-reset     (HYPERPROX_DIR, ENV_FILE and HPX_API_STATUS_URL override)
+set -uo pipefail
+HYPERPROX_DIR="${HYPERPROX_DIR:-/opt/hyperprox}"
+ENV_FILE="${ENV_FILE:-${HYPERPROX_DIR}/.env}"
+flag="${HYPERPROX_DIR}/data/setup/handed-over"
+
+envval() { grep -m1 -E "^$1=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- | sed -e "s/^['\"]//" -e "s/['\"]\$//"; }
+
+[[ -e "$flag" ]] || exit 0
+[[ "$(envval SETUP_COMPLETE)" == true ]] && exit 0
+port="$(envval API_PORT)"; url="${HPX_API_STATUS_URL:-http://127.0.0.1:${port:-3002}/api/auth/status}"
+status="$(curl -fsS --max-time 5 "$url" 2>/dev/null)" || {
+  echo "  setup reset: the API did not answer, so it is unknown whether an owner exists; the hand-over record is kept" >&2
+  exit 0
+}
+grep -q '"bootstrapped"[[:space:]]*:[[:space:]]*false' <<< "$status" || exit 0
+rm -f "$flag"
+echo "  setup reset: no owner yet, so the earlier wizard's hand-over record was cleared for this setup"

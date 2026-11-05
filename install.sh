@@ -1011,6 +1011,8 @@ start_services() {
   sleep 1
 
   info "Starting hyperprox-setup..."
+  # A setup started again before any owner exists may hand over its own login and key.
+  HYPERPROX_DIR="${HYPERPROX_DIR}" bash "${HYPERPROX_DIR}/bin/hyperprox-setup-reset" || true
   systemctl restart hyperprox-setup
   sleep 1
 
