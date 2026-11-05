@@ -203,7 +203,14 @@ a sign-in link; HyperProx captures it from output it never logs, keeps it in mem
 machine's panel to admins (after your master password, with a copy button), and sends it to your
 notification channels **marked private** (Settings → Notifications). The link works once and expires after
 about ten minutes; after that, or after HyperProx restarts, it is gone and a **Check** gets a new one. The
-same happens when a key has expired and the client is waiting for a sign-in of its own.
+same happens when a key has expired and the client is waiting for a sign-in of its own. Marking a channel
+private needs your master password again.
+
+On a **Proxmox node** the guard stays open while the link is out: HyperProx polls the client until it
+reports it has joined, then runs the guard's after-check and confirms the node locks from the client (no
+overlay DNS, no accepted routes, no overlay SSH, netfilter or firewall off). Any change elsewhere on the
+node, or a lock not in force, rolls the install back. If nobody signs in before the link expires, the
+client is taken off the node again.
 
 ### New devices
 
