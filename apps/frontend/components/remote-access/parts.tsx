@@ -184,12 +184,12 @@ const FIELD: React.CSSProperties = {
 
 export function InstallDialog({ provider, rows, onCancel, onConfirm }: {
   provider: RemoteProviderId; rows: RemoteMachineRow[]
-  onCancel: () => void; onConfirm: (o: { tags: string[] | undefined; mode: 'kernel' | 'userspace'; existing?: 'adopt' | 'replace'; auth?: 'key' | 'login' }) => void
+  onCancel: () => void; onConfirm: (o: { tags: string[] | undefined; mode: 'kernel' | 'userspace'; existing?: 'adopt' | 'adopt-lock' | 'replace'; auth?: 'key' | 'login' }) => void
 }) {
   const [login, setLogin] = useState(false)
   const [tags, setTags] = useState('')
   const [userspace, setUserspace] = useState(false)
-  const [existing, setExisting] = useState<'' | 'adopt' | 'replace'>('')
+  const [existing, setExisting] = useState<'' | 'adopt' | 'adopt-lock' | 'replace'>('')
   const nodes = rows.filter(r => r.kind === 'node').length
   const containers = rows.filter(r => r.kind === 'lxc').length
   const parsed = tags.split(/[,\s]+/).map(t => t.trim()).filter(Boolean)
@@ -224,7 +224,8 @@ export function InstallDialog({ provider, rows, onCancel, onConfirm }: {
         If {PROVIDER_LABEL[provider]} is already on a machine (not installed by HyperProx)
         <select value={existing} onChange={e => setExisting(e.target.value as any)} style={{ ...FIELD, marginTop: 6 }}>
           <option value="">Leave it alone and skip the machine</option>
-          <option value="adopt">Adopt it: record it as it is, change nothing</option>
+          <option value="adopt">Adopt it: record it as it is, change nothing (on a Proxmox node only if it already meets the node locks)</option>
+          <option value="adopt-lock">Adopt and apply the node locks: on a node, switch off overlay DNS, accepted routes, overlay SSH and client firewall rules, guarded</option>
           <option value="replace">Replace it: sign it in to this account (its state is kept aside and put back if anything goes wrong)</option>
         </select>
       </label>

@@ -26,11 +26,11 @@ import {
   withJobPid,
   parseForwardingBefore, parseNetbirdFlags, parseStatus, restoreStateScript, routingScript, statusScript,
   uninstallScript, updateScript, upScript, configureScript, loginScript, parseLoginUrl, parseTailscalePrefs, TS_PREFS_READBACK,
-  NB_FLAGS_READBACK, type ClientPrefs, type ClientStatus, type NetMode, type OsFacts, type Support,
+  NB_FLAGS_READBACK, lockScript, type ClientPrefs, type ClientStatus, type NetMode, type OsFacts, type Support,
 } from './scripts'
 import {
-  DEFAULT_PREFS, checkPrefs, checkRouting, clientFlags, describePrefs, planInstall, safeHostname, tunFix,
-  type ExistingChoice, type VpnPrefs,
+  DEFAULT_PREFS, checkPrefs, checkRouting, clientFlags, describePrefs, nodeLockProblems, planInstall, safeHostname, tailscaleLockFlags, tunFix,
+  type ExistingChoice, type LockObservation, type VpnPrefs,
 } from './planner'
 import { clusterNetworks, compareSnapshots, onlyFirewall, parseSnapshot, snapshotReady, type CustomSubject, type GuardSubject, type NodeSnapshot } from './guard'
 import { StreamRedactor, redactKnownKeyShapes } from './redact'
@@ -151,6 +151,8 @@ export type UndoPlan =
   | { kind: 'restore'; provider: ProviderId; support: SupportOk; deviceId: string | null; previousDeviceId: string | null; nodeKey?: string | null; address?: string | null }
   | { kind: 'restart'; provider: ProviderId }
   | { kind: 'configure'; provider: ProviderId; previous: VpnPrefs; flags: string[] }
+  /** A node's client put under the locks: these flags put it back as it was. */
+  | { kind: 'lock-restore'; provider: ProviderId; flags: string[] }
   /** A WireGuard interface HyperProx manages: put its previous config back, or take it down if there was none. */
   | { kind: 'wg-restore'; provider: 'wireguard'; subject: CustomSubject; iface: string; previousConf: string | null }
   | { kind: 'routing'; provider: ProviderId; previous: RoutingRequest; flags: string[]; forwarding: 'leave' | 'guest';
@@ -434,7 +436,7 @@ export class RemoteAccessService {
     if (req.action !== 'install' && ids.length !== 1) throw new RemoteInputError(`${req.action} works on one machine at a time`)
     if (ids.some(i => !/^(node|lxc|qemu|host)-[A-Za-z0-9._-]{1,120}$/.test(i))) throw new RemoteInputError('Unknown machine id format')
     if (req.mode !== undefined && req.mode !== 'kernel' && req.mode !== 'userspace') throw new RemoteInputError('mode must be kernel or userspace')
-    if (req.existing !== undefined && req.existing !== 'adopt' && req.existing !== 'replace') throw new RemoteInputError('existing must be adopt or replace')
+    if (req.existing !== undefined && req.existing !== 'adopt' && req.existing !== 'adopt-lock' && req.existing !== 'replace') throw new RemoteInputError('existing must be adopt, adopt-lock or replace')
     if (req.auth !== undefined && req.auth !== 'key' && req.auth !== 'login') throw new RemoteInputError('auth must be key or login')
     if (req.acceptDns !== undefined && typeof req.acceptDns !== 'boolean') throw new RemoteInputError('acceptDns must be true or false')
     if (req.action === 'configure') {
@@ -583,6 +585,10 @@ export class RemoteAccessService {
       const r = await this.exec(job, m, configureScript(plan.provider, plan.previous, plan.flags), { netbird: nb, timeoutMs: 2 * 60_000 })
       if (r.code !== 0) throw new Error('the previous settings could not be put back')
       done.push('put the previous settings back')
+    } else if (plan.kind === 'lock-restore') {
+      const r = await this.exec(job, m, lockScript(plan.provider, plan.flags), { netbird: nb, timeoutMs: 2 * 60_000 })
+      if (r.code !== 0) throw new Error('the client\'s previous settings could not be put back')
+      done.push('put the client\'s previous settings back')
     } else if (plan.kind === 'restart') {
       const r = await this.exec(job, m, plan.provider === 'tailscale' ? 'systemctl restart tailscaled' : 'netbird service restart', { timeoutMs: 60_000 })
       if (r.code !== 0) throw new Error('the client could not be restarted')
@@ -713,7 +719,7 @@ export class RemoteAccessService {
         ? 'This container is configured with /dev/net/tun but cannot open it yet: restart it, or install in userspace mode.'
         : `This container has no /dev/net/tun. Either give it the device (“Add /dev/net/tun”, the same as \`${fix.command}\` on the node, then restart the container), or install in userspace mode.`)
     }
-    if (plan.kind === 'adopt') return this.adopt(job, req.provider, p, m)
+    if (plan.kind === 'adopt') return this.adopt(job, req.provider, p, m, plan.lock, settings)
 
     const nb = req.provider === 'netbird'
     const hostname = safeHostname(m.name)
@@ -799,19 +805,71 @@ export class RemoteAccessService {
       (dev ? '' : '. Not found in the provider\'s device list yet.')
   }
 
-  /** Record a client that is already there and signed in to the configured account. Changes nothing on the machine. */
-  private async adopt(job: RemoteJob, provider: ProviderId, p: RemoteProvider, m: Machine): Promise<string> {
+  /**
+   * What a client on a node reports about the locks, read from the client itself: the observation, and how it
+   * differs from the locks in words (empty when it meets them).
+   */
+  private async observeLocks(job: RemoteJob, m: Machine, provider: ProviderId): Promise<{ obs: LockObservation; problems: string[]; ts: ClientPrefs | null }> {
+    if (provider === 'tailscale') {
+      const ts = parseTailscalePrefs((await this.exec(job, m, TS_PREFS_READBACK, { timeoutMs: 60_000 })).output)
+      if (!ts) throw new Error(`could not read Tailscale's settings back from ${m.name}`)
+      const obs: LockObservation = { provider, prefs: ts }
+      return { obs, problems: nodeLockProblems(obs), ts }
+    }
+    const f = parseNetbirdFlags((await this.exec(job, m, NB_FLAGS_READBACK, { timeoutMs: 60_000, netbird: true })).output)
+    if (!f.config) throw new Error(`could not tell which config file NetBird uses on ${m.name}`)
+    const obs: LockObservation = { provider, flags: f }
+    return { obs, problems: nodeLockProblems(obs), ts: null }
+  }
+
+  /**
+   * Record a client that is already there and signed in to the configured account. Changes nothing on the
+   * machine. On a node the client must already meet the node locks; `lock` instead applies them first, as a
+   * guarded change confirmed from the client, and puts the old settings back if anything goes wrong.
+   */
+  private async adopt(job: RemoteJob, provider: ProviderId, p: RemoteProvider, m: Machine, lock = false, settings?: ProviderSettings): Promise<string> {
     const r = await this.exec(job, m, statusScript(provider), { timeoutMs: 60_000 })
     const st = parseStatus(provider, r.output)
     if (!st.installed) throw new Error(`${PROVIDER_LABEL[provider]} is not installed on ${m.name}`)
     const dev = this.matchStatus(st, await this.deviceList(provider, p, true))
     if (!dev) throw new Error(`${m.name}'s client is not in the configured ${PROVIDER_LABEL[provider]} account (it may be signed in elsewhere); nothing was recorded`)
+    let locked = false
+    if (m.kind === 'node') {
+      const { problems, ts, obs } = await this.observeLocks(job, m, provider)
+      if (problems.length && !lock) {
+        throw new Error(`${m.name} is a Proxmox node and its ${PROVIDER_LABEL[provider]} client does not meet the node locks: ${problems.join('; ')}. ` +
+          'Nothing was recorded or changed. Choose “Adopt and apply the node locks” to switch those off as a guarded change (checked before and after, rolled back if anything else moves).')
+      }
+      if (problems.length) {
+        const nb = provider === 'netbird'
+        const lockFlags = nb ? clientFlags(provider, { hostname: st.hostname ?? m.name, kind: 'node', managementUrl: settings?.managementUrl }) : tailscaleLockFlags()
+        const f = (obs as Extract<LockObservation, { provider: 'netbird' }>).flags
+        const backFlags = nb
+          ? [...(settings?.managementUrl ? [`--management-url=${settings.managementUrl}`] : []), `--disable-dns=${f.DisableDNS === true}`, `--disable-client-routes=${f.DisableClientRoutes === true}`,
+             `--disable-server-routes=${f.DisableServerRoutes !== false}`, `--disable-firewall=${f.DisableFirewall === true}`, `--allow-server-ssh=${f.ServerSSHAllowed === true}`]
+          : tailscaleLockFlags({ ...ts!, netfilterMode: ts!.netfilterMode ?? 2 })
+        const undo: { plan: UndoPlan; persist?: () => Promise<void> } = { plan: { kind: 'lock-restore', provider, flags: backFlags } }
+        await this.guarded(job, m, provider, p, 'configure', undo, async () => {
+          const out = await this.exec(job, m, lockScript(provider, lockFlags), { netbird: nb, timeoutMs: 2 * 60_000 })
+          if (out.code !== 0) throw new Error(`applying the node locks failed (exit ${out.code}); see the log`)
+          // Confirmed from the client itself, never from the flags sent.
+          const left = nb
+            ? nodeLockProblems({ provider, flags: parseNetbirdFlags(out.output) })
+            : (() => { const g = parseTailscalePrefs(out.output); return g ? nodeLockProblems({ provider, prefs: g }) : ['its settings could not be read back'] })()
+          if (left.length) throw new Error(`the client did not take the node locks: ${left.join('; ')}`)
+        }, { undoOnFailure: true })
+        locked = true
+      }
+    }
     await this.d.store.upsert({
       machineId: m.id, provider, deviceId: dev.id, nodeKey: st.nodeKey ?? dev.nodeKey ?? null, hostname: st.hostname ?? dev.hostname ?? null,
       address: st.ip ?? dev.addresses[0] ?? null, mode: 'kernel', version: st.version, routes: [], exitNode: false, routeIds: [],
       adopted: true, forwardingBefore: null, connected: st.connected, checkedAt: new Date(this.now()), lastError: null,
+      ...(m.kind === 'node' ? { prefs: { ...DEFAULT_PREFS, tags: [], netfilterOff: true } } : {}),
     })
-    return `Adopted as it is: ${st.connected ? 'connected' : 'not connected'}${st.ip ? ` as ${st.ip}` : ''}, matched to “${dev.name}”. Nothing on the machine was changed.`
+    if (locked) await this.d.store.audit('remote.adopt.lock', m.id, { by: job.by, provider })
+    return `Adopted${locked ? ' and put under the node locks' : ' as it is'}: ${st.connected ? 'connected' : 'not connected'}${st.ip ? ` as ${st.ip}` : ''}, matched to “${dev.name}”. ` +
+      (locked ? 'Overlay DNS, accepted routes, overlay SSH and client firewall rules are now off, confirmed from the client.' : 'Nothing on the machine was changed.')
   }
 
   private async record(m: Machine, provider: ProviderId): Promise<RemoteRecord> {

@@ -72,7 +72,13 @@ If Tailscale or NetBird is already on a machine and HyperProx did not install it
 unless you choose what to do in the install dialog:
 
 - **Adopt**: record it as it is. No key, no package, no `up`; nothing on the machine changes. It must
-  already be signed in to the configured account.
+  already be signed in to the configured account. On a Proxmox node it must also already meet the node
+  locks (no overlay DNS, no accepted routes, no overlay SSH, no client firewall rules, no exit node), read
+  from the client itself; otherwise adopting is refused and says what differs.
+- **Adopt and apply the node locks** (nodes): the same, but the locks are switched on first as a guarded
+  change (`tailscale set --accept-dns=false --accept-routes=false --ssh=false --netfilter-mode=off
+  --exit-node= --advertise-exit-node=false`, or NetBird reconnected with the node flags), confirmed from
+  the client, and the previous settings put back if anything else on the node moves.
 - **Replace**: sign it in to the configured account. Its state, repository file, systemd unit and its
   environment, the exact package version, and whether the service was enabled and running are copied aside
   first (root-only). If anything goes wrong, all of it is put back, the package downgraded to the version it

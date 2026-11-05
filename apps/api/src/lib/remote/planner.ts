@@ -64,6 +64,49 @@ export interface VpnPrefs {
 
 export const DEFAULT_PREFS: VpnPrefs = { acceptDns: false, acceptRoutes: false, ssh: false, advertiseExitNode: false, exitNode: null, exitNodeAllowLan: true, subnets: [] }
 
+// ── The node locks ───────────────────────────────────────────────────────────
+
+/** What a client on a node reports about itself, from TS_PREFS_READBACK or NB_FLAGS_READBACK. */
+export type LockObservation =
+  | { provider: 'tailscale'; prefs: { acceptDns: boolean; acceptRoutes: boolean; ssh: boolean; netfilterOff: boolean; advertiseExitNode: boolean; exitNode: string | null } }
+  | { provider: 'netbird'; flags: Record<string, boolean> }
+
+/**
+ * How a client on a Proxmox node differs from the node locks, in words; empty when it meets them. The locks:
+ * no overlay DNS, no accepted routes, no overlay SSH, no client firewall rules (Tailscale netfilter off,
+ * NetBird firewall off), never an exit node and never using one.
+ */
+export function nodeLockProblems(o: LockObservation): string[] {
+  const out: string[] = []
+  if (o.provider === 'tailscale') {
+    const p = o.prefs
+    if (p.acceptDns) out.push('it accepts DNS from the tailnet')
+    if (p.acceptRoutes) out.push('it accepts routes from the tailnet')
+    if (p.ssh) out.push('Tailscale SSH is on')
+    if (!p.netfilterOff) out.push('it manages netfilter rules (netfilter mode is not off)')
+    if (p.advertiseExitNode) out.push('it offers itself as an exit node')
+    if (p.exitNode) out.push('it sends its traffic through an exit node')
+  } else {
+    const f = o.flags
+    if (f.DisableDNS !== true) out.push('it accepts DNS from NetBird')
+    if (f.DisableClientRoutes !== true) out.push('it accepts routes from NetBird')
+    if (f.ServerSSHAllowed === true) out.push('NetBird SSH is on')
+    if (f.DisableFirewall !== true) out.push('it manages firewall rules (NetBird firewall is not disabled)')
+  }
+  return out
+}
+
+/**
+ * Tailscale flags for `tailscale set` that put a node under the locks, or (`restore`) back as it was. NetBird
+ * is reconnected with clientFlags(…, kind 'node'), which already carry the locks.
+ */
+export function tailscaleLockFlags(prev?: { acceptDns: boolean; acceptRoutes: boolean; ssh: boolean; netfilterMode: number; advertiseExitNode: boolean; exitNode: string | null }): string[] {
+  if (!prev) return ['--accept-dns=false', '--accept-routes=false', '--ssh=false', '--netfilter-mode=off', '--exit-node=', '--advertise-exit-node=false']
+  const nf = prev.netfilterMode === 0 ? 'off' : prev.netfilterMode === 1 ? 'nodivert' : 'on'
+  return [`--accept-dns=${prev.acceptDns}`, `--accept-routes=${prev.acceptRoutes}`, `--ssh=${prev.ssh}`, `--netfilter-mode=${nf}`,
+    `--exit-node=${prev.exitNode ?? ''}`, `--advertise-exit-node=${prev.advertiseExitNode}`]
+}
+
 /** Null when these settings may be applied to `m`, or why not. Routing overlap is checked by checkRouting. */
 export function checkPrefs(m: Machine, p: ProviderId, pr: VpnPrefs): string | null {
   if (m.kind === 'node') {
@@ -111,11 +154,11 @@ export function describePrefs(m: Machine, p: ProviderId, from: VpnPrefs, to: Vpn
   return out
 }
 
-export type ExistingChoice = 'adopt' | 'replace'
+export type ExistingChoice = 'adopt' | 'adopt-lock' | 'replace'
 
 export type InstallPlan =
   | { kind: 'install'; support: Extract<Support, { ok: true }>; mode: NetMode; existing: boolean }
-  | { kind: 'adopt' }
+  | { kind: 'adopt'; lock: boolean }
   | { kind: 'manual'; os: 'windows' | 'macos' }
   | { kind: 'needs-tun' }
   | { kind: 'refuse'; reason: string }
@@ -136,7 +179,7 @@ export function planInstall(o: {
 
   const present = o.facts.installed[o.provider]
   if (present && !o.managed) {
-    if (o.existing === 'adopt') return { kind: 'adopt' }
+    if (o.existing === 'adopt' || o.existing === 'adopt-lock') return { kind: 'adopt', lock: o.existing === 'adopt-lock' }
     if (o.existing !== 'replace') {
       return { kind: 'refuse', reason: `${m.name} already runs ${o.provider === 'tailscale' ? 'Tailscale' : 'NetBird'} (${present}), which HyperProx did not install. ` +
         'Choose “adopt” to record it as it is (nothing on the machine changes), or “replace” to sign it in to the configured account (its current state is kept aside and put back if anything goes wrong).' }

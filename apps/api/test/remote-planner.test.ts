@@ -213,7 +213,8 @@ test('planner: an existing client HyperProx did not install is refused unless th
   const f = facts({ HP_HAS_TAILSCALE: '1.90.1' })
   const p = planInstall({ machine: vm, provider: 'tailscale', facts: f })
   assert.equal(p.kind, 'refuse'); assert.match((p as any).reason, /adopt.*replace/s)
-  assert.deepEqual(planInstall({ machine: vm, provider: 'tailscale', facts: f, existing: 'adopt' }), { kind: 'adopt' })
+  assert.deepEqual(planInstall({ machine: vm, provider: 'tailscale', facts: f, existing: 'adopt' }), { kind: 'adopt', lock: false })
+  assert.deepEqual(planInstall({ machine: vm, provider: 'tailscale', facts: f, existing: 'adopt-lock' }), { kind: 'adopt', lock: true })
   const r = planInstall({ machine: vm, provider: 'tailscale', facts: f, existing: 'replace' })
   assert.equal(r.kind, 'install'); if (r.kind === 'install') assert.equal(r.existing, true)
   // HyperProx's own earlier install is not "someone else's".
