@@ -47,6 +47,7 @@ import { PrismaHistoryStore } from '../lib/guest-config/history/store'
 import { GpuMoveWatcher } from '../lib/guest-config/gpu-watch'
 import { publish } from '../lib/notify'
 import { isUnlocked, onLock } from '../lib/vault/state'
+import { setGpuPortability } from '../lib/ha'
 
 let shared: GuestConfigService | null = null
 export function guestConfigService(db: PrismaClient): GuestConfigService {
@@ -193,9 +194,12 @@ export const guestConfigRoutes: FastifyPluginAsync = async (fastify) => {
     type: e.type, severity: e.severity, title: e.title, where: 'Infrastructure page', link: '/infrastructure',
     subject: { kind: 'guest', name: e.guest.name }, fingerprint: `${e.type}:${e.guest.vmid}:${e.guest.to}`,
   }), () => Date.now(), () => !isUnlocked())
-  const timer = setInterval(() => { if (isUnlocked()) watcher.tick().catch(err => fastify.log.warn({ err: err?.message }, '[guest-config] GPU move check failed')) }, 60_000)
+  // HA's failover note asks how a guest's GPU follows it: Portable GPU answers from its last refresh.
+  setGpuPortability(g => service.portabilityOf(g.sid))
+  const refreshPortable = () => service.refreshPortability().catch(err => fastify.log.warn({ err: err?.message }, '[guest-config] portability refresh failed'))
+  const timer = setInterval(() => { if (isUnlocked()) { void refreshPortable(); watcher.tick().catch(err => fastify.log.warn({ err: err?.message }, '[guest-config] GPU move check failed')) } }, 60_000)
   timer.unref()
-  fastify.addHook('onClose', async () => clearInterval(timer))
+  fastify.addHook('onClose', async () => { clearInterval(timer); setGpuPortability(null) })
   await fastify.register(buildGuestConfigRoutes(() => ({
     service,
     whoami: () => ownerOf(currentContext()),

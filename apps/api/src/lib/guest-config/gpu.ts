@@ -161,7 +161,7 @@ export function buildGpuGrantPlan(g: GuestCtx, inv: NodeInventory, grant: GpuGra
   void others
   p.warnings.push('Sharing this gives the container full access to the device.')
   if (g.running) p.warnings.push('Device entries apply when the container restarts.')
-  p.meta = { gpuManaged: set, device: dev.name }
+  p.meta = { gpuManaged: { ...set }, device: dev.name }
   return p
 }
 
@@ -331,7 +331,7 @@ export function buildGpuConvertPlan(g: GuestCtx, inv: NodeInventory | null): Pla
   p.ops.push({ kind: 'config', set, delete: [] })
   addConfigChanges(p, g, set, [])
   p.warnings.push(`The ${gpu.rawCount} raw line(s) stay as they are: the API cannot remove them. Once the devN entries work, remove these by hand on the node: ${gpu.entries.filter(e => e.via !== 'devN').map(e => `“${e.key}: ${e.value}”`).join(', ')}.`)
-  p.meta = { gpuManaged: set }
+  p.meta = { gpuManaged: { ...set } }
   return p
 }
 

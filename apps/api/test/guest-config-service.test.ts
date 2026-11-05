@@ -421,7 +421,12 @@ test('round 3: an added line must name an inventory character device on the node
     [['lxc.mount.entry', '/dev/fd dev/fd none bind,create=dir'], /not a device/],
     [['lxc.mount.entry', '/dev/nvidia0 dev/nvidia0 none bind,create=file'], /not in the node’s device inventory/],
     [['lxc.cgroup2.devices.allow', 'c *:* rwm'], /every device/],
-    [['lxc.cgroup2.devices.allow', 'c 195:* rwm'], /not a GPU or inventory device/],
+    [['lxc.cgroup2.devices.allow', 'c 195:* rwm'], /only for GPU majors/],
+    [['lxc.cgroup2.devices.allow', 'c 10:* rwm'], /only for GPU majors/],
+    [['lxc.cgroup2.devices.allow', 'c 10:232 rwm'], /not an inventory device/],
+    [['lxc.mount.entry', '/dev/uinput dev/uinput none bind,optional,create=file'], /not in the node’s device inventory/],
+    [['lxc.mount.entry', '/dev/fuse dev/fuse none bind,optional,create=file'], /not in the node’s device inventory/],
+    [['lxc.mount.entry', '/dev/dri/renderD128 dev/dri/renderD128 none bind,optional,create=file,mode=0666'], /mode=, uid= and gid=/],
   ] as Array<[[string, string], RegExp]>) {
     const p = await s.service.preview(OWNER, CT, { kind: 'raw', raw: { add: [line] } })
     assert.ok(p.plan.errors.some(e => re.test(e)), `${line[1]} → ${p.plan.errors.join(' | ')}`)
@@ -435,7 +440,7 @@ test('round 3: the node re-checks added devices at write time; a device that bec
   const s = rawSetup()
   const p = await s.service.preview(OWNER, CT, { kind: 'raw', raw: { add: [ADD] } })
   assert.deepEqual(p.plan.errors, [])
-  assert.deepEqual(p.file!.sources, ['/dev/dri/renderD128'])
+  assert.deepEqual(p.file!.sources, [{ path: '/dev/dri/renderD128', expect: 'e2:80' }])
   s.shell.symlinks['node-a'] = ['/dev/dri/renderD128']
   await refusal(s.service.apply(OWNER, p.id, { name: 'web' }), 'refused')
 })
@@ -463,7 +468,7 @@ test('round 3: a GPU off whose devN step fails still records the raw lines it re
   s.shell.probes['node-a'] = FIX('probe-nvidia.txt')
   s.pve.add({ node: 'node-a', type: 'lxc', vmid: 911, status: 'stopped', config: { ...JSON.parse(FIX('ct-nvidia.json')), dev0: '/dev/nvidia0' } })
   const G = { node: 'node-a', type: 'lxc' as const, vmid: 911 }
-  const raw = ['lxc.mount.entry', '/dev/nvidia-uvm-tools dev/nvidia-uvm-tools none bind,optional,create=file,mode=0666']
+  const raw = ['lxc.cgroup2.devices.allow', 'c 510:* rwm']
   const p = await s.service.preview(OWNER, G, { kind: 'gpu-off', off: { alsoRemove: [{ key: raw[0], value: raw[1] }, { key: 'dev0', value: '/dev/nvidia0' }] } })
   assert.deepEqual(p.plan.errors, [])
   const orig = s.pve.put.bind(s.pve)
@@ -478,12 +483,74 @@ test('round 3: a GPU off whose devN step fails still records the raw lines it re
   assert.deepEqual(on.plan.rawFile?.add, [raw])
 })
 
-test('round 3: a reused VMID does not inherit the old guest’s GPU state', async () => {
-  const { gpuKey } = await import('../src/lib/guest-config/service')
-  const a = gpuKey({ type: 'lxc', vmid: 901 }, { net0: 'name=eth0,bridge=vmbr0,hwaddr=BC:24:11:00:00:01' })
-  const b = gpuKey({ type: 'lxc', vmid: 901 }, { net0: 'name=eth0,bridge=vmbr0,hwaddr=BC:24:11:00:00:02' })
-  assert.notEqual(a, b)
-  assert.equal(a, gpuKey({ type: 'lxc', vmid: 901 }, { net0: 'name=eth0,hwaddr=BC:24:11:00:00:01,bridge=vmbr1', memory: 9 }), 'stable across ordinary edits')
+test('round 4: GPU state is keyed by a hidden HyperProx marker in the description, written with the first GPU change and kept by every edit', async () => {
+  const { markerOf } = await import('../src/lib/guest-config/service')
+  const s = makeService()
+  s.shell.probes['node-b'] = FIX('probe-igpu.txt')
+  s.pve.add({ node: 'node-b', type: 'lxc', vmid: 941, status: 'stopped', config: smallCt({ hostname: 'tv', description: 'Media box' }) })
+  const G = { node: 'node-b', type: 'lxc' as const, vmid: 941 }
+  const gpu = (await s.service.inventory('node-b')).devices.find(d => d.kind === 'gpu')!
+  const p = await s.service.preview(OWNER, G, { kind: 'gpu-grant', grant: { deviceId: gpu.id, renderGid: 993 } })
+  assert.deepEqual(p.plan.errors, [])
+  assert.ok(p.plan.checks.some(c => /hidden HyperProx marker/.test(c)))
+  assert.equal((await s.service.apply(OWNER, p.id, { name: 'tv' })).ok, true)
+  const id = markerOf(s.pve.g('lxc', 941).config)
+  assert.match(id ?? '', /^[0-9a-f-]{36}$/)
+  assert.ok(String(s.pve.g('lxc', 941).config.description).startsWith('Media box'))
+  // The editor never shows it, and an edit of the description keeps it.
+  const v = await s.service.view(G)
+  assert.equal(v.config.description, 'Media box')
+  await s.service.apply(OWNER, (await s.service.preview(OWNER, G, { kind: 'edit', edit: { description: 'Living-room media box' } })).id)
+  assert.equal(markerOf(s.pve.g('lxc', 941).config), id)
+  assert.deepEqual(Object.values((await s.service.view(G)).gpu.managed), ['/dev/dri/renderD128,gid=993'])
+  // A new guest reusing the VMID has no marker, so no inherited state.
+  s.pve.g('lxc', 941).config = smallCt({ hostname: 'tv' })
+  assert.deepEqual((await s.service.view(G)).gpu.managed, {})
+})
+
+test('round 4: state under an old key is adopted once by the marked guest, then the old key is gone', async () => {
+  const { MemoryHistoryStore, emptyGpuState } = await import('../src/lib/guest-config/history/store')
+  const h = new MemoryHistoryStore()
+  await h.setGpu({ ...emptyGpuState('lxc/941/0123456789abcdef'), dev: { dev0: '/dev/dri/renderD128' } })
+  const key = 'lxc/941/11111111-2222-3333-4444-555555555555'
+  assert.equal(await h.adoptLegacyGpu('lxc', 941, key), true)
+  assert.deepEqual((await h.getGpu(key)).dev, { dev0: '/dev/dri/renderD128' })
+  assert.equal(await h.adoptLegacyGpu('lxc', 941, key), false, 'once')
+  assert.deepEqual((await h.listGpu()).map(x => x.guest), [key])
+})
+
+test('round 4: a GPU off whose partial record cannot be stored stops before the devN step and says so', async () => {
+  const s = makeService()
+  s.shell.probes['node-a'] = FIX('probe-nvidia.txt')
+  s.pve.add({ node: 'node-a', type: 'lxc', vmid: 911, status: 'stopped', config: { ...JSON.parse(FIX('ct-nvidia.json')), dev0: '/dev/nvidia0' } })
+  const G = { node: 'node-a', type: 'lxc' as const, vmid: 911 }
+  const p = await s.service.preview(OWNER, G, { kind: 'gpu-off', off: { alsoRemove: [{ key: 'lxc.cgroup2.devices.allow', value: 'c 510:* rwm' }, { key: 'dev0', value: '/dev/nvidia0' }] } })
+  assert.deepEqual(p.plan.errors, [])
+  s.history.updateGpu = async () => { throw new Error('database unavailable') }
+  const r = await s.service.apply(OWNER, p.id, { name: 'coder' })
+  assert.equal(r.ok, false)
+  assert.ok(r.outcome!.problems.some(x => /could not be recorded \(database unavailable\)/.test(x)), JSON.stringify(r.outcome!.problems))
+  assert.equal(s.pve.g('lxc', 911).config.dev0, '/dev/nvidia0', 'the devN step did not run')
+})
+
+test('round 4: Portable GPU tells HA which GPU each node would give the guest', async () => {
+  const s = makeService()
+  s.shell.probes['node-a'] = FIX('probe-nvidia.txt'); s.shell.probes['node-b'] = FIX('probe-igpu.txt'); s.shell.probes['node-c'] = FIX('probe-homelab.txt')
+  s.pve.add({ node: 'node-b', type: 'lxc', vmid: 961, status: 'running', ha: 'started', config: smallCt({ hostname: 'media', lxc: [
+    ['lxc.cgroup2.devices.allow', 'c 226:* rwm'], ['lxc.cgroup2.devices.allow', 'c 195:* rwm'],
+    ['lxc.mount.entry', '/dev/dri/renderD128 dev/dri/renderD128 none bind,optional,create=file'],
+    ['lxc.mount.entry', '/dev/nvidia0 dev/nvidia0 none bind,optional,create=file'],
+  ] }) })
+  s.pve.add({ node: 'node-a', type: 'lxc', vmid: 911, status: 'running', ha: 'started', config: JSON.parse(FIX('ct-nvidia.json')) })
+  await s.service.refreshPortability()
+  const p = s.service.portabilityOf('ct:961') as any
+  assert.equal(p.portable, true)
+  assert.equal(p.perNode['node-a'], 'NVIDIA GeForce GTX 1070 Ti')
+  assert.equal(p.perNode['node-b'], 'Intel HD Graphics 630')
+  assert.deepEqual(s.service.portabilityOf('ct:911'), { portable: false }, 'hand-written non-optional lines are not portable')
+  const { gpuPortability, setGpuPortability } = await import('../src/lib/ha/gpu')
+  setGpuPortability(g => s.service.portabilityOf(g.sid))
+  try { assert.equal((gpuPortability({ sid: 'ct:961' } as any) as any).perNode['node-b'], 'Intel HD Graphics 630') } finally { setGpuPortability(null) }
 })
 
 test('round 3: the HMAC key is loaded once for concurrent first uses, and forgotten on lock', async () => {
