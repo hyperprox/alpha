@@ -139,3 +139,19 @@ test('planted marker: a secret in a guest config never reaches history (memory o
     assert.ok(!JSON.stringify(s.audits).includes(MARKER), 'audited without values')
   } finally { console.log = origLog; console.error = origErr; console.warn = origWarn }
 })
+
+test('viewers: history and pending rows carry no device paths or raw lines', async () => {
+  const s = makeService()
+  s.shell.probes['node-b'] = FIX('probe-igpu.txt')
+  s.pve.add({ node: 'node-b', type: 'lxc', vmid: 941, status: 'running', config: smallCt({ hostname: 'tv' }) })
+  const G = { node: 'node-b', type: 'lxc' as const, vmid: 941 }
+  const gpu = (await s.service.inventory('node-b')).devices.find(d => d.kind === 'gpu')!
+  await s.service.apply(OWNER, (await s.service.preview(OWNER, G, { kind: 'gpu-grant', grant: { deviceId: gpu.id, renderGid: 993 } })).id, { name: 'tv' })
+  const a = Fastify()
+  a.register(buildGuestConfigRoutes(() => ({ service: s.service, whoami: () => 'viewer@example.com', isAdmin: () => false })))
+  const hist = (await a.inject({ method: 'GET', url: '/guests/node-b/lxc/941/history' })).body
+  const view = (await a.inject({ method: 'GET', url: '/guests/node-b/lxc/941' })).body
+  for (const b of [hist, view]) assert.ok(!/\/dev\/dri|renderD128|lxc\.cgroup|10:200/.test(b), b.slice(0, 400))
+  assert.match(hist, /Device entry dev0 changed \(shown to admins\)/)
+  assert.ok(JSON.parse(view).data.pending.rows.some((r: any) => r.key === 'dev0' && r.pending === 'set'))
+})
