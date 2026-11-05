@@ -17,9 +17,13 @@ export interface NodeHardware {
   ceph: boolean | null
   arch: string | null
   pve: string | null
+  /** Can containers use the built-in graphics: render nodes 0666 (open), not (closed), or no built-in graphics (none). */
+  igpuAccess: 'open' | 'closed' | 'none' | null
+  /** HyperProx's 99-hyperprox-igpu.rules is present. */
+  igpuRule: boolean | null
 }
-export type StepId = 'node-exporter' | 'rapl' | 'intel-gpu-exporter' | 'nvidia-gpu-exporter'
-export type QuestionId = 'node-health' | 'power' | 'gpu' | 'charts' | 'proxmox-metrics' | 'dns' | 'ai'
+export type StepId = 'node-exporter' | 'rapl' | 'intel-gpu-exporter' | 'nvidia-gpu-exporter' | 'igpu-access' | 'igpu-access-undo'
+export type QuestionId = 'node-health' | 'power' | 'gpu' | 'igpu-access' | 'charts' | 'proxmox-metrics' | 'dns' | 'ai'
 export interface Question { id: QuestionId; nodeWork: boolean; default: boolean; optional?: boolean; ask: string; what: string; notes?: string[] }
 export type Answers = Partial<Record<QuestionId, boolean>>
 export interface PlanItem { node: string; step: StepId }

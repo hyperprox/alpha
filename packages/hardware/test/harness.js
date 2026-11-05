@@ -33,6 +33,14 @@ function fakeNode(fixture) {
   })
   fs.mkdirSync(path.join(sys, 'dev/dri'), { recursive: true })
   for (const d of fixture.dri ?? []) fs.writeFileSync(path.join(sys, 'dev/dri', d), '')
+  // Render nodes with the vendor of the GPU behind them and their mode, as /dev/dri and sysfs show them.
+  for (const [r, info] of Object.entries(fixture.render ?? {})) {
+    fs.writeFileSync(path.join(sys, 'dev/dri', r), '')
+    fs.chmodSync(path.join(sys, 'dev/dri', r), parseInt(info.mode, 8))
+    const dev = path.join(sys, 'sys/class/drm', r, 'device')
+    fs.mkdirSync(dev, { recursive: true })
+    fs.writeFileSync(path.join(dev, 'vendor'), info.vendor + '\n')
+  }
   if (fixture.ceph) { fs.mkdirSync(path.join(sys, 'etc/pve'), { recursive: true }); fs.writeFileSync(path.join(sys, 'etc/pve/ceph.conf'), '') }
   fs.mkdirSync(path.join(sys, 'etc/udev/rules.d'), { recursive: true })
   for (const f of fixture.udev_rules ?? []) fs.writeFileSync(path.join(sys, 'etc/udev/rules.d', f.name), f.content)

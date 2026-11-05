@@ -12,6 +12,7 @@
 #   rapl none|readable|root-only <domains>                          ceph yes|no        arch <uname -m>
 #   node_exporter running|installed|absent                          intel_gpu_top yes|no
 #   intel_exporter running|absent        nvidia_exporter running|absent                pve <version>
+#   igpu_access open|closed|none rule|no-rule   can containers use the built-in graphics (render nodes 0666)
 #
 #   probe.sh            probe this machine
 #   probe.sh classify   read "vendor<TAB>device<TAB>name" lines (hex ids, as Proxmox's API gives them) on
@@ -113,8 +114,27 @@ node_exporter() {
   else echo absent; fi
 }
 
+# Built-in graphics open to containers? none: no Intel or AMD built-in GPU with a render node.
+igpu_access() {
+  local gpus="$1" r v any=0 open=1 rule=no-rule
+  grep -qE $'^gpu\t(intel|amd)\tintegrated' <<< "$gpus" || { printf 'igpu_access\tnone\t\n'; return; }
+  for r in "$R"/dev/dri/renderD*; do
+    [ -e "$r" ] || continue
+    v="$(cat "$R/sys/class/drm/$(basename "$r")/device/vendor" 2>/dev/null || echo unknown)"
+    case "$v" in 0x8086|0x1002) ;; *) continue ;; esac
+    any=1
+    [ "$(stat -c %a "$r" 2>/dev/null)" = 666 ] || open=0
+  done
+  [ -e "$R/etc/udev/rules.d/99-hyperprox-igpu.rules" ] && rule=rule
+  if [ "$any" = 0 ]; then printf 'igpu_access\tnone\t%s\n' "$rule"
+  elif [ "$open" = 1 ]; then printf 'igpu_access\topen\t%s\n' "$rule"
+  else printf 'igpu_access\tclosed\t%s\n' "$rule"; fi
+}
+
 probe() {
-  pci_displays | classify
+  local gpus
+  gpus="$(pci_displays | classify)"
+  [ -n "$gpus" ] && printf '%s\n' "$gpus"
   printf 'dri\t%s\n' "$(ls "$R"/dev/dri 2>/dev/null | grep -E '^(card|renderD)[0-9]+$' | tr '\n' ' ' | sed 's/ $//')"
   printf 'nvidia_smi\t%s\n' "$(yn has nvidia-smi)"
   rapl
@@ -126,6 +146,7 @@ probe() {
   printf 'nvidia_exporter\t%s\n' "$(answers 9835 '^nvidia_smi_memory_total_bytes' && echo running || echo absent)"
   printf 'ceph\t%s\n' "$( [ -e "$R/etc/pve/ceph.conf" ] && echo yes || echo no)"
   printf 'arch\t%s\n' "$(uname -m)"
+  igpu_access "$gpus"
   printf 'pve\t%s\n' "$( (has pveversion && pveversion 2>/dev/null | cut -d/ -f2) || echo '')"
 }
 

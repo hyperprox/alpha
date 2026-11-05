@@ -7,7 +7,8 @@
 grep -qi 0x8086 "$R"/sys/class/drm/card*/device/vendor 2>/dev/null || hp_result skipped "no Intel GPU on this node"
 if hp_answers 8081 '^igpu_' 2>/dev/null; then hp_result already "the Intel GPU exporter already answers on port 8081"; fi
 
-IMAGE="ghcr.io/onedr0p/intel-gpu-exporter:rolling"
+# Pinned by digest, never a moving tag: this runs privileged on your node.
+IMAGE="ghcr.io/onedr0p/intel-gpu-exporter:rolling@sha256:90a95483bf5d3752f4db2ab2e1663f19bba307fd832bf53557cbdc38c3701f84"
 if hp_has docker; then
   if docker ps -a --format '{{.Names}}' | grep -qx intel-gpu-exporter; then
     docker start intel-gpu-exporter >/dev/null 2>&1 || hp_result failed "a container named intel-gpu-exporter exists but will not start"
