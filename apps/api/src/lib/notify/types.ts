@@ -65,6 +65,11 @@ export interface NotifyEventInput {
   resolved?: boolean
   at?: Date
   /**
+   * Values that came from outside HyperProx (a device name, its OS, the user who added it). Channels that
+   * render markdown (Discord, Teams) show them as plain text: markdown escaped, links not clickable.
+   */
+  plain?: string[]
+  /**
    * A link that must not be stored or shown to anyone but its owner (a sign-in URL). It goes only to channels
    * marked private, lives in memory until `sensitiveUntil`, and is never written to the outbox.
    */

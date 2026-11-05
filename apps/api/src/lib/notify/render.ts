@@ -75,8 +75,8 @@ export function newEventId(): string {
 export function toMessage(e: NotifyEventInput, ctx: RenderContext): NotifyMessage {
   const secrets = ctx.secrets ?? []
   const where = oneLine(scrub(e.where ?? 'HyperProx', secrets)) || 'HyperProx'
-  const title = cut(oneLine(scrub(e.title, secrets)) || 'HyperProx', TITLE_MAX)
-  let lines = (e.lines ?? []).map(l => cut(oneLine(scrub(l, secrets)), LINE_MAX)).filter(Boolean)
+  const title = cut(oneLine(scrub(markPlain(e.title, e.plain), secrets)) || 'HyperProx', TITLE_MAX)
+  let lines = (e.lines ?? []).map(l => cut(oneLine(scrub(markPlain(l, e.plain), secrets)), LINE_MAX)).filter(Boolean)
   const seeMore = (n: number) => `...and ${n} more; see the ${where}`
   if (lines.length > LINES_MAX) lines = [...lines.slice(0, LINES_MAX - 1), cut(seeMore(lines.length - (LINES_MAX - 1)), LINE_MAX)]
   // A sensitive link is never part of the message that is stored; the dispatcher adds it at send time.
@@ -97,6 +97,31 @@ export function toMessage(e: NotifyEventInput, ctx: RenderContext): NotifyMessag
     at: (e.at ?? ctx.now ?? new Date()).toISOString(),
     ...(e.sensitiveLink ? { sensitive: true } : {}),
   }
+}
+
+/**
+ * Outside values (NotifyEventInput.plain) are wrapped in two private-use characters before the text is scrubbed
+ * and cut, so they can be found again however the line was shortened. buildRequest makes them plain text for
+ * markdown channels and removes the marks for every other kind.
+ */
+export const PLAIN_OPEN = '\uE000', PLAIN_CLOSE = '\uE001'
+const PLAIN_MARKS = /[\uE000\uE001]/g
+
+function markPlain(text: string, values: string[] | undefined): string {
+  const vals = (values ?? []).map(v => String(v ?? '').replace(PLAIN_MARKS, '')).filter(v => v.length > 0).sort((a, b) => b.length - a.length)
+  const t = String(text ?? '').replace(PLAIN_MARKS, '')
+  if (!vals.length) return t
+  const re = new RegExp(vals.map(v => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'g')
+  return t.replace(re, v => `${PLAIN_OPEN}${v}${PLAIN_CLOSE}`)
+}
+
+/** Each marked span (to its close mark, or the end of the text when a cut removed it) through `f`; marks removed. */
+export function mapPlain(text: string, f: (v: string) => string): string {
+  return text.replace(/\uE000([^\uE000\uE001]*)(?:\uE001|$)/g, (_x, v) => f(v)).replace(PLAIN_MARKS, '')
+}
+
+export function unmarkPlain(text: string): string {
+  return text.replace(PLAIN_MARKS, '')
 }
 
 const worst = (ms: NotifyMessage[]): Severity => ms.reduce<Severity>((a, m) => maxSeverity(a, m.severity), 'info')

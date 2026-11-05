@@ -333,6 +333,7 @@ test('new devices: the first look learns what is there; each new one is announce
   assert.equal(e.type, 'vpn.device.new'); assert.equal(e.severity, 'warning')
   assert.match(e.title, /tablet/); assert.match(e.lines.join(' '), /iOS.*kid@example\.com.*approve/s)
   assert.equal(e.link, '/vpn'); assert.equal(r.published[0].o, undefined, 'not a sensitive event')
+  assert.deepEqual(e.plain, ['tablet', 'iOS', 'kid@example.com'], 'outside values are marked to show as plain text')
   await r.svc.pollDevices()
   assert.equal(r.published.length, 1, 'announced once')
 })
