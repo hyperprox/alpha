@@ -18,6 +18,10 @@
 #   Grafana          Served only through nginx at /grafana/ now. An install that embedded the bundled
 #                    Grafana from port 3003 on this machine (any path) is moved to the sub-path; a
 #                    Grafana on another machine is left alone.
+#   Fewer keys on disk  .env keeps only what HyperProx needs before it is unlocked. Once setup is done,
+#                    SETUP_SECRET is removed (re-running install.sh makes a new one if setup ever has to run
+#                    again). A GRAFANA_ADMIN_PASSWORD the first owner sign-in blanked (it moved to the vault)
+#                    is removed, as is NEXT_PUBLIC_GPU_NODES (GPUs are detected now).
 set -euo pipefail
 
 HYPERPROX_DIR="${HYPERPROX_DIR:-/opt/hyperprox}"
@@ -181,12 +185,39 @@ grafana_behind_nginx() {
   fi
 }
 
+# ── Fewer keys on disk ───────────────────────────────────────────────────────
+# cfg_drop KEY: remove every KEY= line. The file keeps its mode.
+cfg_drop() {
+  local file="${2:-$ENV_FILE}" tmp
+  cfg_has "$1" "$file" || return 0
+  tmp="$(mktemp "${file}.XXXXXX")"
+  K="$1" awk 'BEGIN { k = ENVIRON["K"] } index($0, k "=") != 1 { print }' "$file" > "$tmp"
+  chmod --reference="$file" "$tmp" 2>/dev/null || chmod 600 "$tmp"
+  mv -f "$tmp" "$file"
+}
+fewer_keys_on_disk() {
+  if [[ "$(cfg_get SETUP_COMPLETE)" == true ]] && cfg_has SETUP_SECRET; then
+    cfg_drop SETUP_SECRET
+    log "SETUP_SECRET: removed (setup is done; re-running install.sh makes a new one if it is ever needed)"
+  fi
+  if cfg_has GRAFANA_ADMIN_PASSWORD && [[ -z "$(cfg_get GRAFANA_ADMIN_PASSWORD)" ]]; then
+    cfg_drop GRAFANA_ADMIN_PASSWORD
+    log "GRAFANA_ADMIN_PASSWORD: removed the empty line (the password is in the vault now)"
+  fi
+  if cfg_has NEXT_PUBLIC_GPU_NODES; then
+    cfg_drop NEXT_PUBLIC_GPU_NODES
+    log "NEXT_PUBLIC_GPU_NODES: removed (GPUs are detected on each node now)"
+  fi
+  return 0
+}
+
 main() {
   [[ -f "$ENV_FILE" ]] || { echo "hyperprox-config: ${ENV_FILE} not found" >&2; exit 1; }
   ensure_metrics_token
   ensure_pve_exporter_file
   drop_npm_profile
   grafana_behind_nginx
+  fewer_keys_on_disk
   chmod 600 "$ENV_FILE"
 }
 

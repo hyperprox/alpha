@@ -504,6 +504,13 @@ configure_env() {
 
   if [[ -f "${ENV_FILE}" ]]; then
     warn ".env already exists — preserving existing configuration"
+    # The setup key is removed once setup is done. If setup has not finished, make sure there is one,
+    # so the wizard link below works.
+    if ! grep -q '^SETUP_COMPLETE=true' "${ENV_FILE}" && ! grep -q '^SETUP_SECRET=.' "${ENV_FILE}"; then
+      sed -i '/^SETUP_SECRET=/d' "${ENV_FILE}"
+      echo "SETUP_SECRET=$(openssl rand -hex 32)" >> "${ENV_FILE}"
+      ok "Made a new setup key (setup has not finished yet)"
+    fi
     return
   fi
 
@@ -548,9 +555,13 @@ REDIS_PASSWORD=
 # The vault settings (VAULT_*) are added further down by the installer.
 ENCRYPTION_KEY=${AES_KEY}
 JWT_SECRET=${JWT_SECRET}
+# The key in the setup wizard's link. Removed from this file once setup is done.
 SETUP_SECRET=${SETUP_SECRET}
 
 # ── Grafana ───────────────────────────────────────────────────────────────────
+# GRAFANA_ADMIN_PASSWORD is read only when Grafana first sets up its database. The first owner sign-in
+# moves it into the vault and takes it out of this file. GRAFANA_SECRET_KEY stays: Grafana needs it on
+# every start, before HyperProx is unlocked.
 GRAFANA_ADMIN_USER=admin
 GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
 GRAFANA_SECRET_KEY=${GRAFANA_SECRET_KEY}
@@ -587,10 +598,6 @@ NEXT_PUBLIC_GRAFANA_URL=/grafana
 GRAFANA_ROOT_URL=https://${HOST_IP}/grafana/
 GRAFANA_SERVE_FROM_SUB_PATH=true
 
-# Comma-separated list of node names that have a GPU (e.g. node1,node2)
-# Used to show GPU badge and violet accent on those nodes in the dashboard
-NEXT_PUBLIC_GPU_NODES=
-
 # The Proxmox node name to use for CEPH status/OSD queries
 # Auto-detected during setup wizard — override here if needed
 CEPH_MON_NODE=
@@ -618,7 +625,6 @@ EOF
 
   chmod 600 "${ENV_FILE}"
   ok "Generated .env at ${ENV_FILE}"
-  info "Grafana admin password: ${GRAFANA_ADMIN_PASSWORD} (also saved in .env)"
   info "Proxmox credentials will be configured through the setup wizard"
 }
 
@@ -1037,14 +1043,19 @@ print_summary() {
   # The wizard only answers requests carrying the setup key; the link carries it. Read from .env so a
   # re-run that kept an existing .env prints the key that is actually in force.
   SETUP_SECRET="$(grep -oP '^SETUP_SECRET=\K.*' "${ENV_FILE}" 2>/dev/null || true)"
-  echo -e "  ${C_CYAN}${C_BOLD}  https://${HOST_IP}/setup?k=${SETUP_SECRET}${C_RESET}"
-  echo -e "  ${C_DIM}Keep this link private - it is the key to the setup wizard.${C_RESET}"
+  if grep -q '^SETUP_COMPLETE=true' "${ENV_FILE}" 2>/dev/null; then
+    echo -e "  ${C_GREEN}  Setup is already done.${C_RESET} Sign in at https://${HOST_IP}/login"
+  else
+    echo -e "  ${C_CYAN}${C_BOLD}  https://${HOST_IP}/setup?k=${SETUP_SECRET}${C_RESET}"
+    echo -e "  ${C_DIM}Keep this link private - it is the key to the setup wizard.${C_RESET}"
+  fi
   echo -e "  ${C_DIM}The certificate is self-signed unless you supplied one, so the browser warns once.${C_RESET}"
   echo ""
   echo -e "  ${C_DIM}The wizard will guide you through:${C_RESET}"
   echo -e "  ${C_DIM}  • Connecting your Proxmox cluster${C_RESET}"
-  echo -e "  ${C_DIM}  • Detecting existing services (NPM, Grafana, Ollama)${C_RESET}"
-  echo -e "  ${C_DIM}  • Configuring DNS and proxy providers${C_RESET}"
+  echo -e "  ${C_DIM}  • Finding the GPUs and power meters on each node${C_RESET}"
+  echo -e "  ${C_DIM}  • A few yes/no questions (monitoring, power, GPUs, charts, DNS, local AI),${C_RESET}"
+  echo -e "  ${C_DIM}    which it then carries out on your nodes for you${C_RESET}"
   echo ""
   echo -e "  ${C_BOLD}Then create the owner account${C_RESET}"
   echo -e "  ${C_DIM}  HyperProx has no password of its own. After setup, open https://${HOST_IP}/login to${C_RESET}"
