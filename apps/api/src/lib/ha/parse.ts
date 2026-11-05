@@ -90,10 +90,15 @@ export function parseCrs(s: unknown): HaSnapshot['crs'] {
 
 const VOLUME_KEY = /^(rootfs|mp\d+|scsi\d+|virtio\d+|sata\d+|ide\d+|efidisk\d+|tpmstate\d+|unused\d+)$/
 
-/** "0000:01:00.0", "01:00", "0000:01:00" → "0000:01:00" (domain, bus, slot; the function is dropped). */
+/** "01:00" → "0000:01:00", "01:00.1" → "0000:01:00.1": the domain added, the function kept when given. */
 export function pciAddress(a: string): string {
-  const x = String(a).trim().toLowerCase().replace(/\.[0-7]$/, '')
+  const x = String(a).trim().toLowerCase()
   return /^[0-9a-f]{4}:/.test(x) ? x : `0000:${x}`
+}
+
+/** The class of a passed-through address: a whole device ("01:00") is classed by its function .0. */
+function pciClass(pci: Record<string, string>, addr: string): string | undefined {
+  return pci[addr] ?? (/\.[0-7]$/.test(addr) ? undefined : pci[`${addr}.0`])
 }
 
 /** A PCI class code (0x030000) in words, and whether it is a GPU. */
@@ -146,7 +151,7 @@ export function hardwareOf(type: GuestType, config: Record<string, unknown> | nu
       const mapped = /mapping=([^,]+)/.exec(v)
       if (mapped) { push({ key, what: `a mapped PCI device (${mapped[1]})`, kind: 'pci', required: true, nodes: mappings[mapped[1]] ?? here }); continue }
       const addrs = v.split(',')[0].split(';').map(pciAddress)
-      const k = pciKind(pci[addrs[0]])
+      const k = pciKind(pciClass(pci, addrs[0]))
       push({ key, what: `${k.words} (${addrs.join(', ')})`, kind: k.kind, required: true, nodes: here })
       continue
     }
