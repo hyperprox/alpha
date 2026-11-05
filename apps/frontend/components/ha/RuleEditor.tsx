@@ -47,8 +47,8 @@ export function RuleEditor({ initial, guests, nodes, onClose, onPreview }: {
   const [strictAsk, setStrictAsk] = useState(false)
 
   const rule = useMemo<HaRule>(() => type === 'node-affinity'
-    ? { id, type, affinity: avoid ? 'negative' : 'positive', strict: avoid ? avoidStrict : home.mode === 'only', nodes: avoid ? home.tiers.flat().map(node => ({ node, priority: 0 })) : nodesFromTiers(home.tiers), resources, disabled: initial?.disabled ?? false, ...(comment ? { comment } : {}) }
-    : { id, type, affinity, resources, disabled: initial?.disabled ?? false, ...(comment ? { comment } : {}) },
+    ? { id, type, affinity: avoid ? 'negative' : 'positive', strict: avoid ? avoidStrict : home.mode === 'only', nodes: avoid ? home.tiers.flat().map(node => ({ node, priority: 0 })) : nodesFromTiers(home.tiers), resources, disabled: initial?.disabled ?? false, ...(comment ? { comment } : initial?.comment ? { comment: '' } : {}) }
+    : { id, type, affinity, resources, disabled: initial?.disabled ?? false, ...(comment ? { comment } : initial?.comment ? { comment: '' } : {}) },
   [id, type, affinity, resources, home, avoid, avoidStrict, comment, initial?.disabled])
 
   // Live check, debounced: what PVE would say, before anything is sent.
