@@ -5,7 +5,7 @@
 //  against a fake. Reads only: the writes live in plans.ts and power.ts.
 // =============================================================================
 
-import { buildSnapshot, parseSid, type RawHa } from './parse'
+import { buildSnapshot, parseSid, pciAddress, type RawHa } from './parse'
 import type { HaSnapshot, Sid } from './types'
 
 /** The slice of ProxmoxClient HA needs. fetchStrict rejects on any non-2xx answer with PVE's own reason. */
@@ -49,6 +49,28 @@ export async function readRaw(pve: HaPve, opts: ReadOptions = {}): Promise<RawHa
       if (v) configs[sid] = await readConfig(pve, String(v.node), sid)
     }))
     raw.configs = configs
+    // PCI passthrough: the device class on the guest's node (a GPU is not a NIC), and where mappings exist.
+    const pciNodes = new Set<string>()
+    let mapped = false
+    for (const [sid, cfg] of Object.entries(configs)) {
+      if (!cfg || !sid.startsWith('vm:')) continue
+      for (const [k, v] of Object.entries(cfg)) if (/^hostpci\d+$/.test(k)) {
+        if (/mapping=/.test(String(v))) mapped = true
+        else { const vm = raw.vms.find((x: any) => `vm:${x.vmid}` === sid); if (vm) pciNodes.add(String(vm.node)) }
+      }
+    }
+    if (pciNodes.size) {
+      raw.pci = {}
+      await Promise.all([...pciNodes].map(async n => {
+        const rows = await pve.fetchStrict<any[]>(`/nodes/${enc(n)}/hardware/pci`).catch(() => [])
+        raw.pci![n] = Object.fromEntries((rows ?? []).map((r: any) => [pciAddress(String(r.id)), String(r.class ?? '')]))
+      }))
+    }
+    if (mapped) {
+      const rows = await pve.fetchStrict<any[]>('/cluster/mapping/pci').catch(() => [])
+      raw.mappings = Object.fromEntries((rows ?? []).map((r: any) => [String(r.id),
+        (Array.isArray(r.map) ? r.map : []).map((m: string) => /(?:^|,)node=([^,]+)/.exec(String(m))?.[1]).filter(Boolean) as string[]]))
+    }
   }
   return raw
 }

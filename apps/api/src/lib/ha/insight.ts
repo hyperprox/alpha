@@ -38,7 +38,9 @@ export function clusterWords(snap: HaSnapshot): ClusterWords {
   let headline: string
   if (!snap.quorate) headline = 'The cluster has lost quorum: HA cannot move or restart anything, and HyperProx will not change HA settings until quorum is back.'
   else if (snap.fencing === 'armed') headline = 'HA is armed: a node that loses contact with the others is restarted (fenced) after about 2 minutes, and its HA guests are started elsewhere.'
-  else if (snap.fencing === 'disarmed') headline = 'HA is disarmed: nodes are not fenced and guests are not recovered after a node failure.'
+  else if (snap.fencing === 'disarmed' || snap.fencing === 'disarming') headline = snap.disarmMode === 'ignore'
+    ? `HA is ${snap.fencing} (resource mode: ignore): nodes are not fenced, HA has let go of every guest, and start/stop goes straight to Proxmox.`
+    : `HA is ${snap.fencing} (resource mode: freeze): nodes are not fenced, and HA guests are frozen as they are, not recovered after a node failure.`
   else headline = snap.resources.length ? 'HA is idle: fencing is not active yet.' : 'HA is idle: no guest is protected, so nothing is fenced or recovered.'
   detail.push(`${online.length} of ${snap.nodes.length} nodes online${snap.quorate ? ', quorate' : ''}.`)
   if (snap.master) detail.push(`HA manager running on ${snap.master}.`)
@@ -83,13 +85,13 @@ export function hardwareNote(snap: HaSnapshot, sid: Sid): string | null {
   if (!home.rule || home.disabled || home.avoid.length || home.choice.mode !== 'prefer') return null
   if (!(home.choice.tiers[0] ?? []).includes(g.node)) return null   // that case is a warning, not a note
   const p = predictFailover(snap, sid)
+  // Only where it actually starts: a required device it lacks there is a failed start, which the prediction says.
   if (!p.to || p.to === g.node) return null
   const hw = g.hardware!
-  const gpu = hw.devices.some(d => /GPU/.test(d.what))
-  const without: string[] = []
-  for (const d of hw.devices.filter(d => !/GPU/.test(d.what))) without.push(d.what)
-  for (const b of hw.bindMounts) without.push(`its local bind mount (${b.path}), so it may not start there`)
-  for (const l of hw.localVolumes) without.push(`its disk on node-local storage "${l.storage}", so it may not start there`)
+  const left = hw.devices.filter(d => !d.required && !(d.nodes ?? [g.node]).includes(p.to!))
+  if (!left.length) return null
+  const gpu = left.some(d => d.kind === 'gpu')
+  const without = left.filter(d => d.kind !== 'gpu').map(d => d.what.replace(/^(an?) /, 'its '))
   const gp = gpu ? gpuPortability(g) : { portable: false as const }
   if (gpu && gp.portable) {
     const there = gp.perNode[p.to] ?? null
@@ -125,6 +127,9 @@ export function guestView(snap: HaSnapshot, sid: Sid): GuestHa | null {
 }
 
 function statusLine(snap: HaSnapshot, v: GuestHa): string {
+  const disarmed = snap.fencing === 'disarmed' || snap.fencing === 'disarming'
+    ? `HA is disarmed (${snap.disarmMode ?? 'freeze'} mode): nothing is restarted or moved until it is armed again. ` : ''
+  if (v.resource && disarmed) return `${disarmed}On ${v.node}.`
   if (!v.resource) {
     return v.status === 'running'
       ? `Running on ${v.node}. Not protected: if ${v.node} fails, this stays off until you start it.`
@@ -238,7 +243,7 @@ export function overview(snap: HaSnapshot): Overview {
     const p = v?.prediction ?? null
     prot.push({ sid: r.sid, vmid: r.vmid, type: r.type, name, node, state: snap.services.find(s => s.sid === r.sid)?.state ?? r.state,
       home: noHome ? 'No home' : homeWords(home.choice, home.avoid), homeless: noHome, failover: p?.words ?? '', to: p?.to ?? null })
-    if (noHome) homeless.push({ sid: r.sid, name, node, words: `${label(r.sid)}: no home. If ${node} fails it moves and never comes back on its own.` })
+    if (noHome) homeless.push({ sid: r.sid, name, node, words: `${label(r.sid)}: no home. If ${node} fails it moves, and then ${snap.crs.autoRebalance && r.autoRebalance ? 'may be moved back by auto-rebalance, or stay where it landed' : 'stays where it landed'}.` })
     const note = hardwareNote(snap, r.sid)
     if (note) hardwareNotes.push({ sid: r.sid, name, node, words: `${label(r.sid)}: ${note}` })
     if (g && tiedToNode(g.hardware)) {
@@ -263,7 +268,7 @@ export function overview(snap: HaSnapshot): Overview {
     protected: prot, unprotected, homeless, hardware, hardwareNotes, headroom: hr,
     rules: [...snap.rules].sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.id.localeCompare(b.id)).map(rule => ({ rule, words: ruleWords(rule, label), problems: problems.filter(p => p.rules.includes(rule.id)) })),
     problems,
-    counts: { protected: prot.length, unprotected: unprotected.length, homeless: homeless.length, hardware: hardware.length, tightHeadroom: hr.filter(h => h.level !== 'ok' && h.level !== 'tight').length },
+    counts: { protected: prot.length, unprotected: unprotected.length, homeless: homeless.length, hardware: hardware.length, tightHeadroom: hr.filter(h => h.level !== 'ok').length },
   }
 }
 

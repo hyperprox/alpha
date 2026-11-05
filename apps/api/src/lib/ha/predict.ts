@@ -21,6 +21,8 @@ export interface Prediction {
   to:         string | null
   /** Every node that would qualify, best first. */
   candidates: string[]
+  /** The nodes HA would try, in order, until one can start it (or max_relocate is used up). */
+  tries:      string[]
   /** Guests that would go with it (kept together). */
   comigrate:  Sid[]
   words:      string
@@ -101,30 +103,64 @@ export function predictFailover(snap: HaSnapshot, sid: Sid, failed?: string): Pr
   const counts = new Map<string, number>()
   for (const s of together) { const p = place.get(s); if (p?.active && p.node !== from && pri.includes(p.node)) counts.set(p.node, (counts.get(p.node) ?? 0) + 1) }
   if (counts.size) { const best = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0][0]; pri = [best] }
-  // Too few CPUs: a node with fewer CPUs than the guest has vCPUs cannot start it.
-  const cpus = snap.guests.find(g => g.sid === sid)?.cpus ?? 0
-  const before = pri.length
-  pri = pri.filter(n => { const nd = snap.nodes.find(x => x.node === n); return !cpus || !nd?.maxcpu || nd.maxcpu >= cpus })
-  const cpuBlocked = before > pri.length
   const comigrate = [...together].filter(s => place.get(s)?.node === from)
   const exclude = new Set(comigrate)
   const candidates = pri.sort((a, b) => score(snap, a, sid, place, exclude) - score(snap, b, sid, place, exclude) || a.localeCompare(b))
-  const to = candidates[0] ?? null
-  return { sid, from, to, candidates, comigrate, words: failoverWords(snap, sid, from, to, candidates, cpuBlocked ? cpus : 0) }
+  // HA does not filter by CPUs or devices: it starts the guest on its best node, and a failed start there moves
+  // it to the next (try-next), up to max_relocate times, then it is left in the error state.
+  const res = snap.resources.find(r => r.sid === sid)
+  const attempts = 1 + Math.max(0, res?.maxRelocate ?? 1)
+  const tries: string[] = []
+  const blocks: string[] = []
+  let to: string | null = null
+  for (const n of candidates.slice(0, attempts)) {
+    tries.push(n)
+    const b = startBlock(snap, sid, n)
+    if (!b) { to = n; break }
+    blocks.push(b)
+  }
+  return { sid, from, to, candidates, tries, comigrate, words: failoverWords(snap, sid, from, to, candidates, tries, blocks) }
 }
 
-function failoverWords(snap: HaSnapshot, sid: Sid, from: string, to: string | null, candidates: string[], cpuShort = 0): string {
+/** Why the guest cannot start on `node`, in words that follow "HA would try node-b first, …", or null. */
+export function startBlock(snap: HaSnapshot, sid: Sid, node: string): string | null {
+  const g = snap.guests.find(x => x.sid === sid)
+  const n = snap.nodes.find(x => x.node === node)
+  if (!g || !n) return null
+  if (g.type === 'qemu' && g.cpus && n.maxcpu && n.maxcpu < g.cpus) return `which has too few CPUs (${g.cpus} vCPUs, ${node} has ${n.maxcpu})`
+  const hw = g.hardware
+  if (!hw) return null
+  const missing = hw.devices.filter(d => d.required && !(d.nodes ?? [g.node]).includes(node)).map(d => d.what.replace(/^(an?|the) /, 'its '))
+  for (const b of hw.bindMounts) if (node !== g.node) missing.push(`its local bind mount (${b.path})`)
+  for (const l of hw.localVolumes) if (node !== g.node) missing.push(`its disk on node-local storage "${l.storage}"`)
+  return missing.length ? `where it cannot start without ${list(missing)}` : null
+}
+
+/** A container is never refused for CPUs: it runs, limited to the node's CPUs. */
+function cpuNote(snap: HaSnapshot, sid: Sid, node: string): string {
+  const g = snap.guests.find(x => x.sid === sid)
+  const n = snap.nodes.find(x => x.node === node)
+  return g?.type === 'lxc' && g.cpus && n?.maxcpu && n.maxcpu < g.cpus ? ` It will be limited to ${n.maxcpu} CPUs on ${node}.` : ''
+}
+
+function failoverWords(snap: HaSnapshot, sid: Sid, from: string, to: string | null, candidates: string[], tries: string[], blocks: string[]): string {
   const home = homeOf(snap.rules, sid)
+  const noHome = !home.rule || home.disabled
+  const tail = noHome ? (snap.crs.autoRebalance ? ', and then may be moved back by auto-rebalance, or stay where it landed' : ', and stay there: it has no home to return to') : ''
+  if (blocks.length) {
+    let w = `If ${from} fails HA would try ${tries[0]} first, ${blocks[0]}`
+    for (let i = 1; i < tries.length; i++) w += `, then ${tries[i]}${blocks[i] ? `, ${blocks[i]}` : ''}`
+    if (!to) return `${w}, and it ends in an error state: it does not run until you fix it.`
+    return `${w}${tail}.${cpuNote(snap, sid, to)}`
+  }
   if (!to) {
-    if (cpuShort && home.choice.mode !== 'only') return `If ${from} fails there is no node it is allowed on with enough CPUs for its ${cpuShort} vCPUs, so it stays off.`
     if (home.choice.mode === 'only') return `If ${from} fails it stays off until ${list(home.choice.tiers.flat(), 'or')} is back: it may only run there.`
     return `If ${from} fails there is no node it is allowed on right now, so it stays off.`
   }
   const likely = candidates.length > 1 && snap.crs.mode !== 'basic'
     ? `it will most likely move to ${to} (HA picks among ${list(candidates, 'and')} by load)`
     : `it will move to ${to}`
-  const tail = home.rule && !home.disabled ? '' : ', and stay there: it has no home to return to'
-  return `If ${from} fails ${likely}${tail}.`
+  return `If ${from} fails ${likely}${tail}.${cpuNote(snap, sid, to)}`
 }
 
 /** Where HA would put the guest right now under `rules`, when that differs from where it is: "it will move now". */

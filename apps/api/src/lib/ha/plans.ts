@@ -21,7 +21,7 @@
 
 import { createHash, randomUUID } from 'node:crypto'
 import { formBody, hardwareWords, parseSid, ruleParams, sidOf, tiedToNode } from './parse'
-import { flatten, freeRuleId, homeOf, homeRule, homeWords, list, problemsOfChange, ruleWords, RULE_ID } from './rules'
+import { flatten, freeRuleId, homeOf, homeRule, homeWords, list, problemsOfChange, ruleWords, RULE_ID, tiersOf } from './rules'
 import { headroom, labelOf, validateContext } from './insight'
 import { moveNow, predictFailover } from './predict'
 import { readSnapshot, type HaPve } from './read'
@@ -36,8 +36,9 @@ export type HaChange =
   | { action: 'update-resource'; sid: Sid; maxRestart?: number; maxRelocate?: number; failback?: boolean; autoRebalance?: boolean; comment?: string }
   | { action: 'set-state'; sid: Sid; state: 'started' | 'stopped' | 'disabled' | 'ignored' }
   | { action: 'set-home'; sid: Sid; home: HomeChoice; confirmStrict?: boolean }
-  | { action: 'create-rule'; rule: HaRule; confirmStrict?: boolean }
-  | { action: 'update-rule'; rule: HaRule; confirmStrict?: boolean }
+  | { action: 'create-rule'; rule: HaRule; confirmStrict?: boolean; confirmNoRoom?: boolean }
+  /** A patch: only the fields given change; the rest are kept from the stored rule. */
+  | { action: 'update-rule'; rule: Partial<HaRule> & { id: string }; confirmStrict?: boolean; confirmNoRoom?: boolean }
   | { action: 'delete-rule'; ruleId: string }
   | { action: 'enable-rule'; ruleId: string }
   | { action: 'disable-rule'; ruleId: string }
@@ -62,8 +63,10 @@ export interface HaPlan {
   /** What happens to running guests the moment it is applied. */
   effects:   string[]
   warnings:  string[]
-  /** True when the plan makes a guest strict ("only ever on…"): the UI shows it in red. */
+  /** True when the plan makes or unmakes a strict rule: the UI shows it in red. */
   strict:    boolean
+  /** Consequences shown in red: strictness, HyperProx moving itself. */
+  critical:  string[]
   /** Problems already in the rule set that this change neither causes nor fixes. */
   existing:  RuleProblem[]
   /** The exact PVE calls, for "Advanced". */
@@ -93,6 +96,12 @@ export interface PlannerDeps {
   sleep?:   (ms: number) => Promise<void>
   /** True while HyperProx is locked: the Proxmox token and node logins live in the vault, so nothing is written. */
   isLocked?: () => boolean
+  /** Whether the node's SSH host key is pinned. Maintenance mode refuses an unpinned node. */
+  hostKeyPinned?: (node: string) => Promise<boolean>
+  /** The guest HyperProx itself runs in, when known (ct:<id> / vm:<id>). */
+  selfSid?: (snap: HaSnapshot) => Sid | null
+  /** The secret parts of a node login, to cut out of anything a node echoes back. */
+  nodeSecrets?: (node: string) => Promise<string[]>
 }
 
 export const LOCKED_WRITE = 'HyperProx is locked — sign in to change HA settings. Nothing was changed.'
@@ -153,10 +162,67 @@ const intIn = (v: unknown, name: string, d: number) => {
 }
 const NODE_NAME = /^[A-Za-z0-9][A-Za-z0-9.-]{0,62}$/
 
+/** true / 1 / "1" / "true" and false / 0 / "0" / "false"; undefined stays undefined; anything else is refused. */
+export function parseBool(v: unknown, name: string): boolean | undefined {
+  if (v === undefined || v === null) return undefined
+  if (v === true || v === 1 || v === '1' || v === 'true') return true
+  if (v === false || v === 0 || v === '0' || v === 'false') return false
+  throw new HaRefusal(`${name} is true or false.`, 400)
+}
+
+const pri = (r: NodeAffinityRule) => [...r.nodes].sort((a, b) => b.priority - a.priority || a.node.localeCompare(b.node)).map(n => `${n.node}:${n.priority}`).join(', ')
+const yesNo = (b: boolean) => (b ? 'yes' : 'no')
+/** The nodes a node-affinity rule lets its guests run on (an avoid rule: every other node). */
+const allowedNodes = (r: NodeAffinityRule, all: string[]) => r.affinity === 'negative' ? all.filter(n => !r.nodes.some(x => x.node === n)) : r.nodes.map(n => n.node)
+/** Strict and narrower than the whole cluster: guests stay off when these nodes are down. */
+const narrowsStrictly = (r: HaRule, all: string[]) => r.type === 'node-affinity' && r.strict && allowedNodes(r, all).length < all.length
+
+/** Every field that differs between two versions of a rule, in words. */
+export function ruleChanges(before: HaRule, after: HaRule, label: (s: Sid) => string): string[] {
+  const out: string[] = []
+  if (before.affinity !== after.affinity) {
+    out.push(before.type === 'node-affinity'
+      ? `Kind: ${before.affinity === 'negative' ? 'avoid these nodes' : 'run on these nodes'} → ${after.affinity === 'negative' ? 'avoid these nodes' : 'run on these nodes'}.`
+      : `Kind: ${before.affinity === 'negative' ? 'keep apart' : 'keep together'} → ${after.affinity === 'negative' ? 'keep apart' : 'keep together'}.`)
+  }
+  const added = after.resources.filter(s => !before.resources.includes(s))
+  const removed = before.resources.filter(s => !after.resources.includes(s))
+  if (added.length || removed.length) out.push(`Guests: ${[added.length ? `add ${list(added.map(label))}` : '', removed.length ? `take ${list(removed.map(label))} out` : ''].filter(Boolean).join('; ')}.`)
+  if (before.type === 'node-affinity' && after.type === 'node-affinity') {
+    const bn = before.nodes.map(n => n.node).sort().join(','), an = after.nodes.map(n => n.node).sort().join(',')
+    if (bn !== an) out.push(`Nodes: ${list(before.nodes.map(n => n.node))} → ${list(after.nodes.map(n => n.node))}.`)
+    if (pri(before) !== pri(after) && (new Set(before.nodes.map(n => n.priority)).size > 1 || new Set(after.nodes.map(n => n.priority)).size > 1)) out.push(`Priorities: ${pri(before)} → ${pri(after)}.`)
+    if (before.strict !== after.strict) out.push(`Strict: ${yesNo(before.strict)} → ${yesNo(after.strict)}.`)
+  }
+  if (before.disabled !== after.disabled) out.push(after.disabled ? 'Turn the rule off: it is kept, but does nothing.' : 'Turn the rule on.')
+  if ((before.comment ?? '') !== (after.comment ?? '')) out.push(`Note: ${before.comment ? `"${before.comment}"` : '(none)'} → ${after.comment ? `"${after.comment}"` : 'removed'}.`)
+  return out
+}
+
+/** A refusal that only needs the person to confirm a strictness change; the UI offers the confirm. */
+function strictRefusal(msg: string, _status = 400): HaRefusal { return new HaRefusal(msg, 400, [{ code: 'confirm-strict', rules: [], message: msg }]) }
+
+/** An update: the stored rule with only the fields the caller gave laid over it. */
+export function mergeRule(before: HaRule, patch: any): HaRule {
+  const has = (k: string) => patch && Object.prototype.hasOwnProperty.call(patch, k) && patch[k] !== undefined
+  if (has('type') && patch.type !== before.type) throw new HaRefusal('A rule keeps its type; delete it and create a new one instead.', 400)
+  const raw: any = {
+    id: before.id, type: before.type,
+    affinity: has('affinity') ? patch.affinity : before.affinity,
+    resources: has('resources') ? patch.resources : before.resources,
+    disabled: has('disabled') ? patch.disabled : before.disabled,
+    comment: has('comment') ? patch.comment : before.comment,
+  }
+  if (before.type === 'node-affinity') { raw.strict = has('strict') ? patch.strict : before.strict; raw.nodes = has('nodes') ? patch.nodes : before.nodes }
+  return { ...normaliseRule(raw), ...(before.order !== undefined ? { order: before.order } : {}) }
+}
+
 // --- the planner --------------------------------------------------------------------------------------
 
 export class HaPlanner {
   private plans = new Map<string, HeldPlan>()
+  /** Applies run one at a time in this process: the second sees the first one's change and is refused. */
+  private applying: Promise<unknown> = Promise.resolve()
   constructor(private d: PlannerDeps) {}
   private now() { return (this.d.now ?? Date.now)() }
   private sweep() { const t = this.now(); for (const [k, p] of this.plans) if (Date.parse(p.expiresAt) < t) this.plans.delete(k) }
@@ -201,6 +267,8 @@ export class HaPlanner {
     let title = ''
     let maintenance: { node: string; enable: boolean } | undefined
     let existingProblems: RuleProblem[] = []
+    const critical: string[] = []
+    const allNodes = snap.nodes.map(n => n.node)
 
     const guestOf = (sid: unknown) => {
       const s = String(sid ?? '')
@@ -331,15 +399,28 @@ export class HaPlanner {
           }
           changes.push('No home: after a failover it stays wherever it lands.')
         } else {
-          const strictBefore = !!cur.rule && cur.rule.strict && cur.rule.affinity === 'positive'
-          if (choice.mode === 'only') {
+          const strictBefore = !!cur.rule && cur.rule.strict && !cur.rule.disabled && narrowsStrictly(cur.rule, allNodes)
+          const strictAfter = choice.mode === 'only'
+          if (strictAfter !== strictBefore || (strictAfter && !cur.rule)) {
             strict = true
-            if (!req.confirmStrict) throw new HaRefusal('"Only ever run on…" means the guest stays off when those nodes are down. Confirm it to continue.', 400)
+            if (!req.confirmStrict) throw strictRefusal(strictAfter
+              ? '"Only ever run on…" means the guest stays off when those nodes are down. Confirm it to continue.'
+              : `This makes ${label(g.sid)}'s home no longer strict: it may then run on nodes outside it. Confirm it to continue.`, 400)
           }
           if (cur.rule && !cur.sharedWith.length) {
-            const next: NodeAffinityRule = { ...homeRule(g.sid, cur.rule.id, choice, cur.rule.comment), order: cur.rule.order }
-            setRule(next, cur.rule)
-            changes.push(`Change home rule "${cur.rule.id}": ${homeWords(choice)}`)
+            const before = cur.rule
+            // Same order as now: keep the person's own weights (5/1 stays 5/1).
+            const sameOrder = before.affinity === 'positive' && JSON.stringify(tiersOf(before.nodes)) === JSON.stringify(choice.tiers)
+            const next: NodeAffinityRule = {
+              ...homeRule(g.sid, before.id, choice, before.comment),
+              ...(sameOrder ? { nodes: before.nodes } : {}),
+              ...(before.order !== undefined ? { order: before.order } : {}),
+            }
+            setRule(next, before)
+            if (before.affinity === 'negative') changes.push(`Replace the avoid rule "${before.id}" (never on ${list(before.nodes.map(n => n.node), 'or')}) with a home: ${homeWords(choice)}`)
+            else changes.push(`Change home rule "${before.id}": ${homeWords(choice)}`)
+            if (before.disabled) changes.push(`Turn rule "${before.id}" back on: it was off, so ${label(g.sid)} had no home until now.`)
+            for (const c of ruleChanges(before, next, label)) if (!/^Turn the rule on|^Kind:/.test(c)) changes.push(c)
           } else {
             if (cur.rule) {
               setRule({ ...cur.rule, resources: cur.rule.resources.filter(s => s !== g.sid) } as HaRule, cur.rule)
@@ -349,7 +430,8 @@ export class HaPlanner {
             setRule(homeRule(g.sid, id, choice), null)
             changes.push(`Add home rule "${id}": ${homeWords(choice)}`)
           }
-          if (choice.mode === 'only' && !strictBefore) warnings.push(`Strict: if ${list(choice.tiers.flat(), 'and')} ${choice.tiers.flat().length > 1 ? 'are all' : 'is'} down, ${label(g.sid)} does not start anywhere. That turns a preference into an outage.`)
+          if (strictAfter && !strictBefore) critical.push(`Strict: if ${list(choice.tiers.flat(), 'and')} ${choice.tiers.flat().length > 1 ? 'are all' : 'is'} down, ${label(g.sid)} does not start anywhere. That turns a preference into an outage.`)
+          if (!strictAfter && strictBefore) critical.push(`No longer strict: ${label(g.sid)} may now run on other nodes${tiedToNode(g.hardware) ? `, without ${g.node}'s hardware (${list(hardwareWords(g.hardware))})` : ''}.`)
           const top = choice.tiers[0] ?? []
           if (tiedToNode(g.hardware) && !top.includes(g.node)) warnings.push(`It needs ${g.node}'s hardware (${list(hardwareWords(g.hardware))}), but ${g.node} is not its first choice.`)
         }
@@ -357,22 +439,45 @@ export class HaPlanner {
       }
       case 'create-rule':
       case 'update-rule': {
-        const rule = normaliseRule(req.rule)
-        const before = req.action === 'update-rule' ? ruleOf(rule.id) : null
+        const before = req.action === 'update-rule' ? ruleOf((req.rule as any)?.id) : null
+        const rule = before ? mergeRule(before, req.rule) : normaliseRule(req.rule)
         if (req.action === 'create-rule' && snap.rules.some(r => r.id === rule.id)) throw new HaRefusal(`There is already a rule called "${rule.id}".`, 409)
-        if (before && before.type !== rule.type) throw new HaRefusal('A rule keeps its type; delete it and create a new one instead.', 400)
-        if (rule.type === 'node-affinity' && rule.strict && rule.affinity === 'positive') {
+        const diff = before ? ruleChanges(before, rule, label) : []
+        if (before && !diff.length) throw new HaRefusal('Nothing would change.', 400)
+        // Strictness, either way, and any strict rule that narrows where guests may run: confirmed, and in red.
+        const strictNow = narrowsStrictly(rule, allNodes) && !rule.disabled
+        const strictWas = !!before && narrowsStrictly(before, allNodes) && !before.disabled
+        const narrowed = !!before && before.type === 'node-affinity' && rule.type === 'node-affinity'
+          && allowedNodes(rule, allNodes).sort().join() !== allowedNodes(before, allNodes).sort().join()
+        if (strictNow !== strictWas || (strictNow && (!before || narrowed))) {
           strict = true
-          if (!req.confirmStrict) throw new HaRefusal('A strict rule keeps its guests off when its nodes are down. Confirm it to continue.', 400)
+          if (!req.confirmStrict) throw strictRefusal(strictNow
+            ? 'A strict rule keeps its guests off when its nodes are down. Confirm it to continue.'
+            : `This makes rule "${rule.id}" no longer strict: its guests may then run on nodes it kept them off. Confirm it to continue.`, 400)
         }
-        if (before && stable(normRule(before)) === stable(normRule({ ...rule, order: before.order }))) throw new HaRefusal('Nothing would change.', 400)
-        setRule(before ? { ...rule, order: before.order } : rule, before)
+        setRule(rule, before)
         title = `${before ? 'Change' : 'Add'} rule "${rule.id}"`
         changes.push(`${before ? 'Change' : 'Add'} rule "${rule.id}": ${ruleWords(rule, label)}`)
-        if (rule.type === 'node-affinity' && rule.strict && rule.affinity === 'positive' && !(before?.type === 'node-affinity' && before.strict)) {
-          warnings.push(`Strict: if ${list(rule.nodes.map(n => n.node), 'and')} are all down, ${list(rule.resources.map(label))} do${rule.resources.length === 1 ? 'es' : ''} not start anywhere.`)
+        changes.push(...diff)
+        if (strictNow && rule.type === 'node-affinity') {
+          const allowed = allowedNodes(rule, allNodes)
+          const who = list(rule.resources.map(label))
+          critical.push(rule.affinity === 'negative' && allowed.length === 1
+            ? `This is in effect a strict home on ${allowed[0]} only: if ${allowed[0]} is down, ${who} stays off.`
+            : `Strict: if ${list(allowed, 'and')} are all down, ${who} do${rule.resources.length === 1 ? 'es' : ''} not start anywhere.`)
+          warnings.push(...critical.filter(c => /in effect/.test(c)))
         }
-        for (const h of headroom(snap, rules).filter(h => h.rule === rule.id && h.level !== 'ok')) warnings.push(h.words)
+        if (strictWas && !strictNow) critical.push(`No longer strict: ${list(rule.resources.map(label))} may now run outside the nodes this rule allowed.`)
+        // Keep apart with no room right now: refused unless the consequence is confirmed.
+        for (const h of headroom(snap, rules).filter(h => h.rule === rule.id && h.level !== 'ok')) {
+          if (h.level === 'broken') {
+            if (!req.confirmNoRoom) {
+              const msg = `${h.words} Proxmox would accept this and leave one guest with nowhere to run right now. Confirm that one guest stays off to continue.`
+              throw new HaRefusal(msg, 409, [{ code: 'no-room', rules: [rule.id], message: msg }])
+            }
+            warnings.push(`Confirmed: one of these guests stays off until another eligible node is online. ${h.words}`)
+          } else warnings.push(h.words)
+        }
         break
       }
       case 'delete-rule': {
@@ -416,6 +521,10 @@ export class HaPlanner {
           throw new HaRefusal(`Proxmox has no API for maintenance mode, so HyperProx runs it over ${node}'s login. Add a login for ${node} (Terminal → node logins) first.`, 409)
         }
         if (enable && !n.online) throw new HaRefusal(`${node} is offline.`, 409)
+        if (!(await (this.d.hostKeyPinned?.(node) ?? Promise.resolve(false)))) {
+          const msg = `${node}'s SSH host key is not pinned, so HyperProx will not send it its login. Check and pin the key first (HA page → ${node} → Pin host key), then try again.`
+          throw new HaRefusal(msg, 409, [{ code: 'hostkey-unpinned', rules: [], message: msg }])
+        }
         ops.push({ kind: 'maintenance', node, enable })
         maintenance = { node, enable }
         title = `${enable ? 'Put' : 'Take'} ${node} ${enable ? 'into' : 'out of'} maintenance mode`
@@ -424,6 +533,9 @@ export class HaPlanner {
         const here = snap.resources.filter(r => place.get(r.sid) === node)
         if (enable) {
           if (!here.length) effects.push(`Nothing moves: no HA guest is on ${node}.`)
+          const self = this.d.selfSid?.(snap) ?? null
+          if (self && place.get(self) === node && here.some(r => r.sid === self)) critical.push(`HyperProx itself (${label(self)}) runs on ${node}: HyperProx will restart on another node and lock; sign in again afterwards.`)
+          else if (self && snap.guests.find(g => g.sid === self)?.node === node) critical.push(`HyperProx itself (${label(self)}) runs on ${node} and is not HA-managed: it stays there, and goes down with the node when you reboot it.`)
           for (const r of here) {
             const p = predictFailover(snap, r.sid, node)
             effects.push(p.to ? `${label(r.sid)} will migrate to ${p.to} now.` : `${label(r.sid)} has nowhere it is allowed to go, so it stays on ${node}.`)
@@ -466,10 +578,16 @@ export class HaPlanner {
         if (snap.crs.autoRebalance && moves.length === 0 && [...affected].some(s => resources.find(r => r.sid === s)?.autoRebalance)) effects.push('HA may still move guests later on its own to balance load (automatic rebalancing is on).')
       }
     }
-    return { title, changes, effects, warnings, strict, existing: existingProblems, ops, expect: { resources, rules, touchedSids, touchedRules, ...(maintenance ? { maintenance } : {}) } }
+    return { title, changes, effects, warnings, strict, critical, existing: existingProblems, ops, expect: { resources, rules, touchedSids, touchedRules, ...(maintenance ? { maintenance } : {}) } }
   }
 
-  async apply(planId: string, actor: Actor): Promise<HaApplyResult> {
+  apply(planId: string, actor: Actor): Promise<HaApplyResult> {
+    const run = this.applying.then(() => this.applyOne(planId, actor))
+    this.applying = run.catch(() => undefined)
+    return run
+  }
+
+  private async applyOne(planId: string, actor: Actor): Promise<HaApplyResult> {
     this.sweep()
     const plan = this.plans.get(String(planId))
     if (!plan) throw new HaRefusal('That preview has expired or was already used; preview the change again.', 410)
@@ -489,6 +607,12 @@ export class HaPlanner {
       await this.d.audit(`ha.${plan.action}`, 'ha', { by: actor.email, ok: false, refused: 'changed since preview', plan: plan.title })
       throw new HaRefusal('The HA configuration changed after the preview. Nothing was changed; preview again.', 409)
     }
+    const m = plan.expect.maintenance
+    if (m && !(await (this.d.hostKeyPinned?.(m.node) ?? Promise.resolve(false)))) {
+      await this.d.audit(`ha.${plan.action}`, 'ha', { by: actor.email, ok: false, refused: 'host key not pinned', plan: plan.title })
+      throw new HaRefusal(`${m.node}'s SSH host key is not pinned any more. Nothing was changed; pin it and preview again.`, 409)
+    }
+    const extra = m ? await (this.d.nodeSecrets?.(m.node) ?? Promise.resolve([])).catch(() => []) : []
     const done: string[] = []
     let digests = { ...now.digests }
     try {
@@ -502,7 +626,7 @@ export class HaPlanner {
         }
       }
     } catch (e: any) {
-      const why = redactText(String(e?.message ?? e))
+      const why = redactText(String(e?.message ?? e), undefined, extra)
       await this.d.audit(`ha.${plan.action}`, 'ha', { by: actor.email, ok: false, error: why, done, plan: plan.title })
       const partial = done.length ? ` These calls had already gone through: ${done.join('; ')}.` : ' Nothing was changed.'
       return { ok: false, planId: plan.id, message: `Proxmox refused: ${why}.${partial}`, mismatch: [], done }
@@ -558,14 +682,21 @@ export function normaliseRule(r: any): HaRule {
   const resources = Array.from(new Set((Array.isArray(r.resources) ? r.resources : []).map((s: unknown) => String(s).trim()).filter(Boolean))) as Sid[]
   for (const s of resources) if (!parseSid(s)) throw new HaRefusal(`"${s}" is not a guest (use ct:<id> or vm:<id>).`, 400)
   const comment = r.comment ? String(r.comment).slice(0, 200) : undefined
-  const base = { id, resources, disabled: !!r.disabled, ...(comment ? { comment } : {}) }
+  const base = { id, resources, disabled: parseBool(r.disabled, '"disabled"') ?? false, ...(comment ? { comment } : {}) }
+  if (r.affinity !== undefined && r.affinity !== 'positive' && r.affinity !== 'negative') throw new HaRefusal('affinity is positive or negative.', 400)
   if (r.type === 'node-affinity') {
-    const nodes = (Array.isArray(r.nodes) ? r.nodes : []).map((n: any) => ({ node: String(n?.node ?? n).trim(), priority: Number.isInteger(Number(n?.priority ?? 0)) ? Number(n?.priority ?? 0) : 0 }))
-    for (const n of nodes) {
-      if (!NODE_NAME.test(n.node)) throw new HaRefusal(`"${n.node}" is not a node name.`, 400)
-      if (n.priority < 0 || n.priority > 1000) throw new HaRefusal('Priorities are whole numbers from 0 to 1000.', 400)
+    const seen = new Map<string, number>()
+    for (const raw of Array.isArray(r.nodes) ? r.nodes : []) {
+      const node = String(raw?.node ?? raw).trim()
+      const p = raw?.priority ?? 0
+      const priority = Number(p)
+      if (!NODE_NAME.test(node)) throw new HaRefusal(`"${node}" is not a node name.`, 400)
+      if (!Number.isInteger(priority) || priority < 0 || priority > 1000) throw new HaRefusal('Priorities are whole numbers from 0 to 1000.', 400)
+      if (seen.has(node) && seen.get(node) !== priority) throw new HaRefusal(`${node} is listed twice, with priorities ${seen.get(node)} and ${priority}. List each node once.`, 400)
+      seen.set(node, priority)
     }
-    return { ...base, type: 'node-affinity', affinity: r.affinity === 'negative' ? 'negative' : 'positive', strict: !!r.strict, nodes }
+    const nodes = [...seen.entries()].map(([node, priority]) => ({ node, priority }))
+    return { ...base, type: 'node-affinity', affinity: r.affinity === 'negative' ? 'negative' : 'positive', strict: parseBool(r.strict, '"strict"') ?? false, nodes }
   }
   if (r.type === 'resource-affinity') return { ...base, type: 'resource-affinity', affinity: r.affinity === 'negative' ? 'negative' : 'positive' }
   throw new HaRefusal('A rule is node-affinity (where it runs) or resource-affinity (together or apart).', 400)

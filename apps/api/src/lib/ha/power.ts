@@ -65,6 +65,8 @@ export async function haPowerHook(req: { node: string; vmid: number; type: Guest
     return { handled: true, ok: false, status: 409, sid, state: target, message: `${label} is an HA guest and the cluster is not quorate, so HA cannot ${req.action} it now. Nothing was changed.` }
   }
   const svc = snap.services.find(s => s.sid === sid)
+  // Disarmed in ignore mode: HA has let go of every guest, so Proxmox's own start/stop is the right call.
+  if (snap.disarmMode === 'ignore' || svc?.state === 'ignore') return { handled: false }
   if (svc?.state === 'error') {
     return { handled: true, ok: false, status: 409, sid, state: target, message: `HA has ${label} in an error state. Turn HA off for it (or set it to disabled), fix it, then turn HA on again.` }
   }
