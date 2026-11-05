@@ -13,32 +13,25 @@ const wrap = async (reply: any, fn: () => Promise<any>) => {
 
 type VMParams     = { Params: { node: string; vmid: string; type: 'qemu' | 'lxc' } }
 type ActionParams = { Params: { node: string; vmid: string; type: 'qemu' | 'lxc'; action: 'start' | 'stop' | 'reboot' | 'shutdown' } }
+const POWER_ACTIONS: string[] = ['start', 'stop', 'reboot', 'shutdown']
 type SnapParams   = { Params: { node: string; vmid: string; type: 'qemu' | 'lxc'; snapname: string } }
 
 export const infrastructureRoutes: FastifyPluginAsync = async (fastify) => {
   const pve = livePve()   // resolves the current token on every call (see lib/pve-env.ts)
 
-  // Power actions
+  // Power actions. The last segment is a parameter, so anything else (an old `/vnc` call, say) is refused
+  // here rather than sent on to Proxmox as `/status/<whatever>`.
   fastify.post<ActionParams>('/vms/:node/:vmid/:type/:action', async (req, r) => {
     const { node, vmid, type, action } = req.params
+    if (!POWER_ACTIONS.includes(action)) return r.status(404).send({ success: false, error: `no such action: ${action}` })
     return wrap(r, () => pve.vmAction(node, Number(vmid), type, action))
   })
 
-  // VNC console ticket
-  fastify.post<VMParams>('/vms/:node/:vmid/:type/vnc', async (req, r) => {
-    const { node, vmid, type } = req.params
-    return wrap(r, () => pve.getVNCTicket(node, Number(vmid), type))
-  })
-
-  // VM config
+  // VM config, read-only. There is deliberately no console-ticket route (the browser must never hold a
+  // Proxmox ticket) and no raw config write (it forwarded any body, `delete=` keys included).
   fastify.get<VMParams>('/vms/:node/:vmid/:type/config', async (req, r) => {
     const { node, vmid, type } = req.params
     return wrap(r, () => pve.getVMConfig(node, Number(vmid), type))
-  })
-
-  fastify.put<VMParams & { Body: any }>('/vms/:node/:vmid/:type/config', async (req, r) => {
-    const { node, vmid, type } = req.params
-    return wrap(r, () => pve.updateVMConfig(node, Number(vmid), type, req.body as any))
   })
 
   // Snapshots

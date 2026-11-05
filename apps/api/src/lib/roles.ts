@@ -65,8 +65,6 @@ export function bypassesLock(path: string): boolean {
 // Guest power actions. Both route families exist: /api/infra (infrastructure.ts)
 // and /api/proxmox (proxmox.ts).
 const POWER = /^\/api\/(infra|proxmox)\/vms\/[^/]+\/[^/]+\/[^/]+\/(start|stop|shutdown|reboot)$/
-// Console ticket for the browser VNC/xterm.js console.
-const CONSOLE = /^\/api\/infra\/vms\/[^/]+\/[^/]+\/[^/]+\/vnc$/
 // Terminal (Deck) actions that only use a saved login, never change one.
 const TERMINAL_OPERATOR: Array<[string, RegExp]> = [
   ['POST',   /^\/api\/terminal\/hosts\/[^/]+\/tmux-sessions$/],
@@ -86,6 +84,15 @@ const PROXY_READ = /^\/api\/proxy\/(kinds|instances|hosts|certificates|stats|ins
 // container, so both also need the master password re-entered.
 const CATALOGUE_WIZARD = /^\/api\/catalogue\/wizard(\/|$)/
 const CATALOGUE_RECONFIRM = /^\/api\/catalogue\/wizard\/(apply|jobs\/[^/]+\/cleanup)$/
+// Guest config editor (routes/guest-config.ts): reads are viewer like any GET, previews admin by the default
+// rule, and applying a preview writes a cluster-replicated guest config, so it also needs the master password.
+const GUEST_CONFIG_APPLY = /^\/api\/infra\/guest-config\/(apply|guests\/[^/]+\/[^/]+\/[^/]+\/reveal)$/
+// HA management (routes/ha.ts). Reads (the HA page, a guest's panel, the migration grid, list badges) are
+// viewer: they are status. Every write is admin: previews, the live rule check, and applying a preview,
+// which writes cluster-wide HA configuration and so also needs the master password re-entered.
+const HA = /^\/api\/ha(\/|$)/
+const HA_READ = /^\/api\/ha\/(overview|badges|guests\/(lxc|qemu)\/\d+(\/preflight)?)$/
+const HA_RECONFIRM = /^\/api\/ha\/(plans\/[^/]+\/apply|nodes\/[^/]+\/hostkey\/pin)$/
 // Role management (no routes yet; reserved so they are owner-only from day one).
 const ROLE_MGMT = /^\/api\/(auth\/)?roles(\/|$)/
 // Remote access: what opens a tunnel into the cluster, routes through a machine, removes a device or shows
@@ -138,6 +145,7 @@ export function requiredRole(method: string, path: string): Role | null {
   if (TOKENS.test(p)) return 'admin'
   if (PROXY.test(p)) return (m === 'GET' || m === 'HEAD') && PROXY_READ.test(p) ? 'viewer' : 'admin'
   if (CATALOGUE_WIZARD.test(p)) return 'admin'
+  if (HA.test(p)) return (m === 'GET' || m === 'HEAD') && HA_READ.test(p) ? 'viewer' : 'admin'
 
   if (m === 'GET' || m === 'HEAD') {
     // Interactive shells on guests and nodes.
@@ -151,7 +159,7 @@ export function requiredRole(method: string, path: string): Role | null {
     return 'viewer'
   }
 
-  if (m === 'POST' && (POWER.test(p) || CONSOLE.test(p))) return 'operator'
+  if (m === 'POST' && POWER.test(p)) return 'operator'
   for (const [tm, re] of TERMINAL_OPERATOR) if (m === tm && re.test(p)) return 'operator'
 
   return 'admin'
@@ -165,6 +173,8 @@ export function needsReconfirm(method: string, path: string): boolean {
   if (m === 'POST' && p === '/api/secrets/reveal') return true
   if (m !== 'GET' && m !== 'HEAD' && ROLE_MGMT.test(p)) return true
   if (m === 'POST' && CATALOGUE_RECONFIRM.test(p)) return true
+  if (m === 'POST' && GUEST_CONFIG_APPLY.test(p)) return true
+  if (m === 'POST' && HA_RECONFIRM.test(p)) return true
   // Creating or revoking an API token.
   if ((m === 'POST' || m === 'DELETE') && TOKENS.test(p)) return true
   for (const [rm, re] of REMOTE_RECONFIRM) if (m === rm && re.test(p)) return true

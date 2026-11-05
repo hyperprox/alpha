@@ -13,6 +13,7 @@ import { dnsRoutes }            from './routes/dns'
 import { wsRoutes }             from './routes/ws'
 import { settingsRoutes }       from './routes/settings'
 import { infrastructureRoutes } from './routes/infrastructure'
+import { guestConfigRoutes }    from './routes/guest-config'
 import { serviceRoutes }         from './routes/services'
 import { networkRoutes }         from './routes/network'
 import { prometheusRoutes } from './routes/prometheus'
@@ -32,6 +33,7 @@ import { restoreWizardState } from './lib/catalogue-installer'
 import { terminalWsRoutes }           from './routes/terminal-ws'
 import { updatesRoutes, updatesWsRoutes } from './routes/updates'
 import { certsRoutes }            from './routes/certs'
+import { haRoutes }               from './routes/ha'
 import { notifyRoutes }           from './routes/notify'
 import { remoteRoutes }           from './routes/remote'
 import { vpnRoutes }              from './routes/vpn'
@@ -103,6 +105,7 @@ async function main() {
   await server.register(dnsRoutes,            { prefix: '/api/dns' })
   await server.register(settingsRoutes,       { prefix: '/api/settings' })
   await server.register(infrastructureRoutes, { prefix: '/api/infra' })
+  await server.register(guestConfigRoutes,    { prefix: '/api/infra/guest-config' })
   await server.register(serviceRoutes,         { prefix: '/api/services' })
   await server.register(networkRoutes,         { prefix: '/api/network' })
   await server.register(storageRoutes,         { prefix: '/api/storage' })
@@ -118,6 +121,7 @@ async function main() {
   await server.register(updatesRoutes,        { prefix: '/api/updates' })
   await server.register(updatesWsRoutes,      { prefix: '/ws/updates' })
   await server.register(certsRoutes,          { prefix: '/api/certs' })
+  await server.register(haRoutes,             { prefix: '/api/ha' })
   await server.register(notifyRoutes,         { prefix: '/api/settings/notifications' })
   await server.register(remoteRoutes,         { prefix: '/api/remote' })
   await server.register(vpnRoutes,            { prefix: '/api/vpn' })

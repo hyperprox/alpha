@@ -74,6 +74,8 @@ export const proxmoxRoutes: FastifyPluginAsync = async (fastify) => {
     Params: { node: string; vmid: string; type: 'qemu' | 'lxc'; action: 'start' | 'stop' | 'reboot' | 'shutdown' }
   }>('/vms/:node/:vmid/:type/:action', async (req, r) => {
     const { node, vmid, type, action } = req.params
+    // Only the four power actions: anything else would be sent on to Proxmox as /status/<whatever>.
+    if (!['start', 'stop', 'reboot', 'shutdown'].includes(action)) return r.status(404).send({ success: false, error: `no such action: ${action}` })
     return wrap(r, () => getClient().vmAction(node, Number(vmid), type, action))
   })
 

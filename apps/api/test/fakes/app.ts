@@ -45,9 +45,6 @@ export async function buildTestApp(broker?: VaultBroker): Promise<FastifyInstanc
     f.post('/domains/:domain/records', async (req: any) => ({ success: true, data: req.params }))
   }, { prefix: '/api/dns' })
   await app.register(async (f) => {
-    f.post('/vms/:node/:vmid/:type/vnc', async () => ({ success: true, data: { ticket: 'x' } }))
-  }, { prefix: '/api/infra' })
-  await app.register(async (f) => {
     f.get('/hosts', async () => ({ success: true, data: [] }))
   }, { prefix: '/api/terminal' })
   await app.register(async (f) => {

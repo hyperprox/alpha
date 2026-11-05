@@ -11,7 +11,7 @@ datasource db {
 
 model ProxmoxCluster {
   id          String   @id @default(uuid())
-  name        String   @default("TitanCluster")
+  name        String   @default("Proxmox Cluster")
   host        String
   port        Int      @default(8006)
   tokenId     String
@@ -438,4 +438,38 @@ model WgPeer {
   previousUntil     DateTime?
   rotatedAt         DateTime?
   createdAt         DateTime  @default(now())
+}
+
+// Guest config editor (lib/guest-config): the config before and after every write HyperProx makes to a guest,
+// so its history can be read and any version reverted to (through a fresh preview). Secrets are redacted.
+model GuestConfigVersion {
+  id        String   @id @default(uuid())
+  guest     String              // "lxc/123" | "qemu/123"
+  node      String
+  kind      String              // edit | revert | device | gpu-off | gpu-on | restart
+  tag       String?
+  actor     String
+  previewId String
+  before    Json
+  after     Json?
+  changes   Json
+  outcome   String              // ok | failed
+  problems  Json?
+  meta      Json?
+  createdAt DateTime @default(now())
+
+  @@index([guest, createdAt])
+  @@index([previewId])
+}
+
+// Each guest's GPU toggle state: the entries HyperProx added and the open "GPU off", so the toggle never depends
+// on how many history rows are read or kept.
+model GuestGpuState {
+  guest     String    @id      // "lxc/123"
+  dev       Json               // devN key -> value HyperProx wrote
+  raw       Json               // raw device lines HyperProx wrote
+  off       Json?              // the open "GPU off": what was removed
+  offAt     DateTime?
+  offRow    String?
+  updatedAt DateTime  @updatedAt
 }
