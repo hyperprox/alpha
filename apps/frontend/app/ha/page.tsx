@@ -16,6 +16,7 @@ import { HaPanel } from '@/components/ha/HaPanel'
 import { RuleEditor } from '@/components/ha/RuleEditor'
 import { RefusalNote, useHaChange, type Refusal } from '@/components/ha/PreviewDialog'
 import { Btn, Dialog, Note, Section, Tag } from '@/components/ha/ui'
+import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import type { HaRule, Overview } from '@/components/ha/types'
 
 const TH = 'px-3 py-2 text-left font-mono font-normal'
@@ -30,6 +31,24 @@ export default function HaPage() {
   const [editor, setEditor] = useState<{ rule: HaRule | null } | null>(null)
   const [refusal, setRefusal] = useState<Refusal | null>(null)
   const [showAllUnprotected, setShowAll] = useState(false)
+  // Host-key pinning for maintenance mode: what the node presents, then pin exactly that key.
+  const [pin, setPin] = useState<{ node: string; presented?: string; pinned?: string | null; words?: string; error?: string; busy?: boolean } | null>(null)
+  const [pinReconfirm, setPinReconfirm] = useState(false)
+  const [lastMaint, setLastMaint] = useState<{ node: string; enable: boolean } | null>(null)
+  const checkKey = async (node: string) => {
+    setPin({ node, busy: true })
+    const r = await apiJson<{ data: { presented: string; pinned: string | null; words: string } }>(`/api/ha/nodes/${encodeURIComponent(node)}/hostkey/check`, 'POST', {})
+    setPin(r.ok && r.body ? { node, ...r.body.data } : { node, error: r.error ?? 'Could not reach the node.' })
+  }
+  const pinKey = async () => {
+    if (!pin?.presented) return
+    setPin({ ...pin, busy: true, error: undefined })
+    const r = await apiJson(`/api/ha/nodes/${encodeURIComponent(pin.node)}/hostkey/pin`, 'POST', { fingerprint: pin.presented })
+    if (r.status === 403 && r.code === 'reconfirm_required') { setPin({ ...pin, busy: false }); setPinReconfirm(true); return }
+    if (!r.ok) { setPin({ ...pin, busy: false, error: r.error }); return }
+    setPin(null)
+    if (lastMaint) void ask({ action: 'maintenance', ...lastMaint })
+  }
 
   const load = useCallback(async () => {
     const r = await apiJson<{ data: Overview }>('/api/ha/overview')
@@ -53,7 +72,9 @@ export default function HaPage() {
 
       {error && <Note tone="warn">{error}</Note>}
       {!ov && !error && <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Reading HA…</p>}
-      {refusal && <RefusalNote refusal={refusal} onFix={admin ? rule => ask({ action: 'flatten', ruleId: rule }) : undefined} />}
+      {refusal && <RefusalNote refusal={refusal} onFix={admin ? rule => ask({ action: 'flatten', ruleId: rule }) : undefined}
+        onConfirm={admin ? async flag => { setRefusal(null); const ref = await change.confirm(flag); if (ref) setRefusal(ref) } : undefined}
+        onPinKey={admin && lastMaint ? () => { setRefusal(null); void checkKey(lastMaint.node) } : undefined} />}
 
       {ov && (
         <>
@@ -70,7 +91,7 @@ export default function HaPage() {
                     </div>
                     <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{n.haGuests} HA guest{n.haGuests === 1 ? '' : 's'}</p>
                     {admin && n.online && (
-                      <Btn small className="mt-2" disabled={change.busy} onClick={() => ask({ action: 'maintenance', node: n.node, enable: !n.maintenance })}
+                      <Btn small className="mt-2" disabled={change.busy} onClick={() => { setLastMaint({ node: n.node, enable: !n.maintenance }); void ask({ action: 'maintenance', node: n.node, enable: !n.maintenance }) }}
                         title={n.maintenance ? 'HA uses this node again' : 'HA moves its guests away first; turn off when done'}>
                         {n.maintenance ? 'End maintenance' : 'Maintenance mode…'}
                       </Btn>
@@ -188,8 +209,22 @@ export default function HaPage() {
       )}
       {editor && ov && (
         <RuleEditor initial={editor.rule} guests={guestsForRules} nodes={ov.nodes} onClose={() => setEditor(null)}
-          onPreview={async c => { const ref = await ask(c); if (!ref) setEditor(null) }} />
+          onPreview={async c => { const ref = await change.preview(c); if (!ref) setEditor(null); return ref }} />
       )}
+      {pin && (
+        <Dialog title={`SSH host key of ${pin.node}`} onClose={() => setPin(null)}>
+          <p className="text-sm" style={{ color: 'var(--text-soft)' }}>Maintenance mode runs over {pin.node}'s login, so HyperProx first makes sure it is talking to {pin.node} and nothing else. Nothing is sent to the node to read its key.</p>
+          {pin.busy && <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Asking the node…</p>}
+          {pin.presented && <pre className="overflow-x-auto rounded-md border p-3 font-mono text-xs" style={{ background: 'var(--ground-inset)', borderColor: 'var(--border)', color: 'var(--text-bright)' }}>{pin.presented}</pre>}
+          {pin.words && <Note tone={pin.pinned && pin.pinned !== pin.presented ? 'crit' : 'info'}>{pin.words}</Note>}
+          {pin.error && <Note tone="crit">{pin.error}</Note>}
+          <div className="flex justify-end gap-2">
+            <Btn onClick={() => setPin(null)}>Cancel</Btn>
+            {pin.presented && !pin.pinned && <Btn kind="primary" disabled={pin.busy} onClick={pinKey}>It matches: pin this key</Btn>}
+          </div>
+        </Dialog>
+      )}
+      {pinReconfirm && <ReconfirmModal onClose={() => setPinReconfirm(false)} onDone={() => { setPinReconfirm(false); void pinKey() }} />}
       {change.dialog}
     </div>
   )

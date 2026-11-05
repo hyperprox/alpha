@@ -37,11 +37,12 @@ export interface GuestHa {
   others: Array<{ sid: string; name: string; node: string }>
   quorate: boolean
   fencing: string
+  disarmMode: 'freeze' | 'ignore' | null
 }
 
 export interface HaPlan {
   id: string; action: string; title: string; changes: string[]; effects: string[]; warnings: string[]
-  strict: boolean; existing: RuleProblem[]; calls: string[]; expiresAt: string
+  strict: boolean; critical: string[]; existing: RuleProblem[]; calls: string[]; expiresAt: string
 }
 
 export interface HaApplyResult { ok: boolean; message: string; mismatch: string[]; done: string[] }
