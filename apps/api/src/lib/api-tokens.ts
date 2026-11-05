@@ -101,8 +101,6 @@ export function bearerApiToken(headers: Record<string, any>): string | null {
 
 // --- What a token may never do --------------------------------------------------------------
 
-const VNC = /^\/api\/infra\/vms\/[^/]+\/[^/]+\/[^/]+\/vnc$/
-
 /**
  * Routes refused to an API token whatever its role (403 token_forbidden):
  *   /api/auth/*        sign-in, sign-out, bootstrap, lock, reconfirm, and token
@@ -111,7 +109,6 @@ const VNC = /^\/api\/infra\/vms\/[^/]+\/[^/]+\/[^/]+\/vnc$/
  *                      value out) and generate
  *   /api/terminal*     saved SSH logins, host keys and shells (the Deck)
  *   /ws, /ws/*         live status, update progress and terminal sockets
- *   …/vnc              guest console tickets
  * Requests that need a re-confirmation (lib/roles.ts needsReconfirm) are refused
  * by the gate as reconfirm_required: a token has no master password.
  */
@@ -122,7 +119,6 @@ export function tokenForbidden(method: string, path: string): boolean {
   if (p === '/api/secrets' || p.startsWith('/api/secrets/')) return true
   if (p === '/api/terminal' || p.startsWith('/api/terminal/')) return true
   if (p === '/ws' || p.startsWith('/ws/')) return true
-  if (VNC.test(p)) return true
   return false
 }
 

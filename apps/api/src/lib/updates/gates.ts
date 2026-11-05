@@ -66,7 +66,38 @@ export function judgeCephSettled(h: CephHealth | null): GateResult {
   return pass('all OSDs up, all PGs active+clean')
 }
 
-const SETTLED_HA = new Set(['started', 'stopped', 'disabled', 'ignored'])
+// PG states that mean data is at risk or unavailable, as opposed to merely being moved (remapped, backfill).
+const RISKY_PG = /(^|\+)(degraded|undersized|down|stale|incomplete|peering|activating|unknown|inconsistent|recovery_unfound|backfill_unfound)(\+|$)/
+
+function pgCounts(states: Record<string, number>): { inactive: number; risky: number; unclean: number } {
+  let inactive = 0, risky = 0, unclean = 0
+  for (const [state, n] of Object.entries(states)) {
+    if (!n) continue
+    if (!state.split('+').includes('active')) inactive += n
+    if (RISKY_PG.test(state)) risky += n
+    if (!pgsClean({ [state]: n })) unclean += n
+  }
+  return { inactive, risky, unclean }
+}
+
+/**
+ * After restarting one daemon: settled (every OSD up and in, every PG active+clean), or at least back to
+ * how things were before the restart — as many OSDs up and in, every PG active, and no more PGs degraded,
+ * undersized or otherwise at risk than before. The second form lets a restart proceed while unrelated
+ * data movement (a rebalance's backfill) that was already running carries on.
+ */
+export function judgeCephRestored(before: CephHealth, now: CephHealth): GateResult {
+  const settled = judgeCephSettled(now)
+  if (settled.ok) return settled
+  if (now.numUpOsds < before.numUpOsds) return fail(`${before.numUpOsds - now.numUpOsds} OSD(s) down`)
+  if (now.numInOsds < before.numInOsds) return fail(`${before.numInOsds - now.numInOsds} OSD(s) out`)
+  const b = pgCounts(before.pgStates), c = pgCounts(now.pgStates)
+  if (c.inactive > 0) return fail(`${c.inactive} PG(s) not active`)
+  if (c.risky > b.risky) return fail(`${c.risky} PG(s) degraded or at risk (${b.risky} before the restart)`)
+  return pass(`back to the state before the restart: all PGs active, ${c.unclean} not clean (${b.unclean} before), none more at risk`)
+}
+
+const SETTLED_HA =new Set(['started', 'stopped', 'disabled', 'ignored'])
 
 export async function haGate(exec: UpdatesExecutor): Promise<GateResult> {
   try {

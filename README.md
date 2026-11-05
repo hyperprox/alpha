@@ -29,12 +29,12 @@ through its API.
 | Dashboard | Real-time nodes, Ceph, HA and quorum, GPU, network, bandwidth and per-node power |
 | Monitoring | Bundled Prometheus and Grafana with HyperProx dashboards and alert rules |
 | Storage | Every storage on every node, Ceph health, OSDs and pools, and per-guest disks |
-| Reverse proxy | Nginx Proxy Manager hosts and certificates: create, edit, enable, disable, delete |
+| Reverse proxy | Nginx Proxy Manager, Traefik, Caddy, HAProxy and Pangolin, several at once in one table; every change previewed, then read back |
 | DNS | GoDaddy records with guided creation, domain expiry, WAN IP mismatch flags and DDNS |
 | Certificates | Inventory of every endpoint's certificate, ACME DNS-01 issuance and renewal, delivery into guests |
-| Updates | Pending packages everywhere, and a gated update run that respects Ceph, HA and quorum |
+| Updates | Pending packages everywhere, and a gated update run that respects HA and quorum, restarts Ceph one OSD at a time and refuses any restart or reboot that would take data offline |
 | Terminal | Browser SSH with persistent tmux sessions, split panes and saved layouts |
-| Catalogue | One-click installs of NPM, Ollama, Tautulli, Nextcloud, Jellyfin, Gitea and more |
+| Catalogue | Guided installs of NPM, Ollama, Tautulli, Nextcloud, Jellyfin, Gitea and more: choose resources, see every node's free capacity with a recommended node, pick the ID and address |
 | AI assistant | Questions about your cluster, and plain-language deploys run end to end after you confirm |
 | Plug-ins | Arr Stack, Unmanic, MikroTik, Plex, Home Assistant and MeshCentral, with no access to credentials |
 | Notifications | Discord, Slack, Teams, ntfy, Gotify, Telegram and generic webhooks |
@@ -66,7 +66,7 @@ the wizard, then create the owner account at `https://<container-ip>/login`.
 `bootstrap.sh` runs on a Proxmox node as root. It picks the next free container ID and the storage
 with the most free space, downloads the newest Debian template, and creates a **privileged** container
 with `nesting=1` and `keyctl=1` (Docker's overlay driver needs them), the TUN device for Tailscale, and
-start on boot. It then creates the API token `root@pam!hyperprox` with `Administrator` on `/`, and a
+start on boot. It then creates the API token `root@pam!hyperprox` (privilege separation off, so it has root's rights), and a
 read-only `root@pam!hyperprox-exporter` (`PVEAuditor` on `/`) for the PVE exporter; on every node it
 can reach over the cluster's SSH trust, installs node_exporter, the power udev rule and, on Intel GPU
 nodes, the Intel GPU exporter (see [Optional integrations](#optional-integrations)); runs `install.sh`
@@ -108,10 +108,16 @@ git clone https://github.com/hyperprox/alpha.git /opt/hyperprox
 bash /opt/hyperprox/install.sh
 ```
 
-The installer works in `/opt/hyperprox`. It installs Docker CE, Node.js 20 and pnpm 9, builds the
-app, generates `/opt/hyperprox/.env` (mode 0600) with every credential HyperProx's own services need,
-sets up the vault, starts the Docker services and the systemd units. In a container it disables
-AppArmor and, when run interactively on DHCP, offers to set a static address. It asks before installing directly on a Proxmox node.
+The installer sets everything up in `/opt/hyperprox`: it installs what HyperProx runs on (Docker,
+Node.js 20 and pnpm 9), builds HyperProx, creates its built-in vault and starts its services. If the
+machine gets its address by DHCP, it offers to give it a fixed one. It asks first if you run it
+directly on a Proxmox node rather than in a container. Inside a container it turns AppArmor off for
+that container, because Docker cannot run there with it on.
+
+Your credentials (Proxmox, proxies, DNS, app logins and everything else you add) are kept in the vault,
+never in a file. The installer also writes `/opt/hyperprox/.env`, readable only by root. It holds the
+start-up keys HyperProx's own internal services need before anyone signs in: the database and cache
+passwords, the vault's admin key, the monitoring keys and the one-time setup key.
 
 If you create the container yourself, it must be privileged with nesting and keyctl, or Docker fails
 with an overlay error:
@@ -191,10 +197,12 @@ cd /opt/hyperprox && git pull && bash deploy.sh
 ```
 
 `deploy.sh` brings per-install settings up to date (`bin/hyperprox-config`, the same step the
-installer runs), checks the nginx config, installs dependencies, applies migrations, rebuilds, restarts
-the API and frontend, then reloads nginx, checks that `/grafana/` is gated (if it is not, it stops
-Grafana and fails), and applies any changed Prometheus and Grafana container settings. Sessions survive it because the keyholder keeps the unlocked state. If it says the install
-has no vault yet, re-run `install.sh` first.
+installer runs), checks the nginx config, installs dependencies and builds everything **before** it
+applies database migrations, so a failed build leaves the database and the running HyperProx as they
+were. It then restarts the API and frontend, reloads nginx, checks that `/grafana/` is gated (if it is
+not, it stops Grafana and fails), and applies any changed Prometheus and Grafana container settings.
+Sessions survive it because the keyholder keeps the unlocked state. If it says the install has no vault
+yet, re-run `install.sh` first.
 
 ## Optional integrations
 
@@ -299,11 +307,54 @@ and LAN dials show it, scaled to your plan speed when you set one in the plug-in
 
 ### Infrastructure
 
-Every VM and container, with filters for running, stopped, containers and VMs, and search by name
-or ID. Open one for power actions, snapshots, migration (admin),
-HA state, its config, and **Console**, which opens it in the Terminal. **Create** builds a container
-from a template or a VM from an ISO, with a storage picker that shows free space. Deleting a guest asks
-for your master password again.
+Every VM and container in one list: status, node, CPU, memory and disk, address, tags, HA state, and a
+GPU tag on guests that have graphics passed through. Filter, search, or group by node; it works on a
+phone too. **Create** builds a container from a template or a VM from an ISO. Deleting a guest asks for
+your master password again.
+
+Open a guest for its overview, snapshots, network, terminal, high availability and its **Config**:
+
+- **Change settings on the fly**: cores, memory, swap, start-up order, tags, DNS, network cards, disks
+  and mount points (a folder shared from the host is only marked as available on every node once
+  HyperProx has checked it really exists on every node). Every change shows you exactly what will
+  change first, is refused if someone else changed the guest in the meantime, and is checked
+  afterwards. Changes that only apply after a restart say so, and offer the restart.
+- **History and undo**: every change HyperProx makes is kept, and any earlier version can be put back
+  in one click. Passwords and keys in a guest's settings are hidden in the history.
+- **GPUs and other devices**: give a container a GPU, or switch its GPU access off and back on with one
+  switch. **Portable GPU** lets a container use whichever node's graphics it ends up on, so a guest that
+  moves to another node during a failover picks up that node's GPU by itself, and HyperProx tells you
+  which one it is using. Settings Proxmox's own tools cannot change are written with extra checks, and
+  only for real graphics and device entries.
+
+Each node's **Devices** list shows its graphics cards, USB devices (Zigbee sticks, tuners and the like),
+serial ports and cards that can be passed to a VM, each named in plain words, with who uses it now and
+whether it can be shared.
+
+### High availability
+
+**High availability** keeps your guests running when a node fails. On each guest you choose, in plain
+words:
+
+- **Restart this on another node if its node fails.** One switch turns protection on or off, and says what
+  turning it off means.
+- **Its home**: "prefer this node, but run anywhere if needed", or "only ever run on this node, even if that
+  means staying off". The strict choice is shown in red and needs a second confirmation.
+- **Keep apart from** or **keep together with** other guests.
+
+Each guest shows where it runs now and where it would go if its node failed, taking memory, CPUs and
+devices into account. A grid shows which nodes it could move to and, for each one that it can't, why: a
+local folder, a rule, missing storage, not enough memory, or a device only one node has.
+
+The High availability page shows whether HA is armed, which guests are not protected (each with a
+one-click **Protect**), guests with no home that may not come back after a failover, and guests that need
+a node's GPU or other hardware. Its rule editor explains each rule by what it does and catches Proxmox's
+rule conflicts before Proxmox refuses them. Maintenance mode moves a node's guests away before you work
+on it.
+
+Every change is previewed first, including what would move straight away. It is refused if the cluster
+has lost quorum or the HA setup changed since the preview, and it goes through Proxmox's own HA tools.
+Applying a change asks for your master password again.
 
 ### Terminal
 
@@ -318,8 +369,20 @@ connect, and a changed key is refused with both fingerprints shown.
 
 ### Proxy and DNS
 
-**Proxy** manages Nginx Proxy Manager hosts and their certificates; connect NPM under **Settings →
-Proxy** with its URL, email and password, or install it from the Catalogue. **DNS** lists your GoDaddy
+**Proxy** shows the hosts of every proxy you connect, in one table, each marked with the proxy that
+serves it: Nginx Proxy Manager, Traefik (its dynamic file over SFTP, host key pinned), Caddy (admin
+API), HAProxy (Data Plane API, config checked before every reload) and Pangolin (its API). Several at
+once are fine, two of the same kind included. The first Nginx Proxy Manager login lives under
+**Settings → Proxy**; add the others with **Add proxy** on the Proxy page. Each proxy is either one you
+already run (bring your own) or one HyperProx installed (managed).
+
+Every change is a preview first: it lists each setting that would change, in words, and warns when a
+certificate, force-HTTPS, HSTS or HTTP/2 is being taken off. Applying it changes only what you edited,
+refuses if the host changed since the preview, and reads the proxy back to confirm. Hosts that another
+tool made on Traefik, Caddy, HAProxy or Pangolin are shown read-only. Scripts use the same preview and
+apply calls (see [docs/proxy.md](docs/proxy.md)).
+
+**DNS** lists your GoDaddy
 domains with their expiry dates and every record. **Add record** starts from what you want to do
 (point at this server, a subdomain, email, verification) or a custom record. A records that differ
 from your current WAN IP are flagged, and **DDNS Update** rewrites them to it.
@@ -358,7 +421,14 @@ Prometheus keeps 90 days or 40 GB, whichever comes first (`PROMETHEUS_RETENTION`
 
 Shows pending packages and kernel pins on every node and guest, and runs a full update round: preflight
 checks, guests in batches with a snapshot first, Ceph packages levelled across nodes, then nodes one at
-a time with HA maintenance mode and `noout` around any reboot. It stops at the first failure. Rules
+a time with HA maintenance mode and `noout` around any reboot. It stops at the first failure.
+
+Ceph is handled with care. OSDs restart one at a time, each checked healthy before the next. Before
+restarting an OSD or rebooting a node, HyperProx asks Ceph whether it is safe to stop and checks every
+pool's copies: if a pool has only one copy on that node, or a restart would leave too few copies, the
+step is skipped for safety and says what would have gone offline. The plan shows this decision before
+you run it, and it is checked again right before a reboot. If a restart fails, `noout` stays set and
+you get an urgent notification, so Ceph never starts moving data because of it. A node update never upgrades Ceph by itself: HyperProx tries the update first without installing anything, and if any Ceph package would change, it stops and leaves Ceph to its own careful step. Rules
 such as "this node only gets `apt upgrade`" or "check these package holds" go in
 `config/updates.yaml` (copy `config/updates.example.yaml`). Without a policy file you get dry runs only.
 Plug-ins can add app updates for software installed outside apt and Docker; MeshCentral is bundled.
@@ -381,11 +451,26 @@ node login (see Catalogue); without one, it does everything else and shows the c
 
 Installs a service you do not run yet into a new unprivileged container, checks that it answers, and
 connects it to HyperProx: Nginx Proxy Manager, Ollama, Tautulli, Nextcloud, Jellyfin, Vaultwarden,
-Gitea, Uptime Kuma, Homepage and Grafana. Each recipe states its first login before anything runs.
+Gitea, Uptime Kuma, Homepage and Grafana.
+
+Every install is a short wizard:
+
+1. **The app**: what it is, what it needs, and its first login.
+2. **Resources**: cores, memory, swap and disk, filled in from the app's recommended size, with a warning
+   below its minimum.
+3. **Placement**: every node with its CPU load, memory in use and memory already promised to its guests,
+   and free space on each storage that can hold a container. HyperProx recommends a node and says why
+   (for example, most memory left after the install, on shared storage, keeping the GPU node free). You
+   can pick any node it has not ruled out; ruled-out nodes say why.
+4. **Identity and network**: the container ID (the next free one, or your own rule, such as an ID made
+   from the node number and the address), hostname, bridge, and DHCP or a static address. A static
+   address is checked against your guests; if something could not be checked, you are asked to confirm.
+5. **Review**: the exact plan. Installing it asks for your master password again.
 
 Installs run with `pct exec` from the node, so they need one **node login** per node, entered at the
 top of the Catalogue page. It is tested before it is stored, kept in the vault, and never borrowed from
-the Terminal's shared guest login. An SSH key is better than a password.
+the Terminal's shared guest login. An SSH key is better than a password. If an install fails, the
+wizard offers to remove only the container it made. See [docs/catalogue-wizard.md](docs/catalogue-wizard.md).
 
 ### Plug-ins
 
@@ -406,7 +491,8 @@ button that opens a pre-filled GitHub issue in your browser.
 
 ### Settings
 
-- **Credentials** for Proxmox, Nginx Proxy Manager and GoDaddy, each with a **Test** button.
+- **Credentials** for Proxmox, your first Nginx Proxy Manager and GoDaddy, each with a **Test** button
+  (other proxies are added on the Proxy page).
 - **Secrets**: names of everything in the vault. Owners and admins can reveal a value, send it as an
   expiring one-view link (a Bitwarden Send), or generate and store a new password.
 - **API tokens** for scripts: see [Security model](#security-model).
@@ -442,8 +528,9 @@ not protected, are in [docs/security.md](docs/security.md).
   | Manager | operator | View, start, stop and restart guests, open consoles |
   | User | viewer | View only |
 
-- **Re-confirmation.** Revealing a secret, destroying a guest, and creating or revoking an API token
-  ask for the master password again (valid five minutes).
+- **Re-confirmation.** Revealing a secret, destroying a guest, creating or revoking an API token,
+  changing roles, and installing from the Catalogue (or removing a failed install) ask for the master
+  password again (valid five minutes).
 - **API tokens** (`Authorization: Bearer hpx_...`) carry a role of viewer, operator or admin, stop
   working while HyperProx is locked, and can never read secrets, open the terminal or WebSockets, or
   manage tokens. Only a SHA-256 hash is stored.
@@ -467,7 +554,8 @@ through nginx at `/grafana/`, which checks for a HyperProx session first; every 
 every metric (see [docs/security.md](docs/security.md)). Put HyperProx on a network you trust; access
 over the internet needs your own TLS and access controls in front of it.
 
-**Keep safe:** `/opt/hyperprox/.env` (mode 0600, holds `VAULT_ADMIN_TOKEN` and the database password)
+**Keep safe:** `/opt/hyperprox/.env` (readable only by root; it holds the internal start-up keys,
+including `VAULT_ADMIN_TOKEN` and the database password, but none of your own credentials)
 and the `vault_data` Docker volume, which holds every account. Back up the volume; losing it loses the
 vault.
 
@@ -494,7 +582,8 @@ flowchart LR
   P --> NE[node_exporter and GPU exporters]
 ```
 
-The API, frontend, setup wizard and keyholder run as systemd services. Everything else runs from the
+The API, frontend and keyholder run as systemd services; the setup wizard runs only until first-run
+setup is finished. Everything else runs from the
 single `docker-compose.yml`; `COMPOSE_PROFILES` in `.env` picks the optional parts.
 
 | Container | Purpose | Listens on |
@@ -537,11 +626,10 @@ single `docker-compose.yml`; `COMPOSE_PROFILES` in `.env` picks the optional par
 The full roadmap is in [ROADMAP.md](ROADMAP.md), and designs for upcoming work are in
 [docs/superpowers/specs/](docs/superpowers/specs/). Not built yet:
 
-- **Guest and HA editing**: a structured config and mount-point editor, an HA rule editor, and
-  migration preflight.
 - **Consoles**: noVNC and container text consoles as Terminal panes, for guests SSH cannot reach.
-- **Ceph operations**: version skew, restart safety, guided rolling restarts and slow-op history.
-- **More providers**: Cloudflare and Namecheap DNS; Traefik, Caddy and other proxies.
+- **Ceph operations**: version-skew view, guided rolling restarts and slow-op history (restart and
+  reboot safety in Updates is built).
+- **More DNS providers**: Cloudflare, Namecheap, Route 53 and Porkbun.
 - **Smart suggestions**, network-mount health and Proxmox Backup Server monitoring.
 - **Vault phase 2**: temporary users, master password recovery, VPN and internet access modes, a
   tamper check and an audit timeline.

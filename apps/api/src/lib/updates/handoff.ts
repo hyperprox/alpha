@@ -52,7 +52,60 @@ if out=$(${run} 2>&1); then result true "guest ${guest.vmid} upgraded"; else res
  * before the reboot (else both flags come off and nothing reboots), and the node
  * only counts as back when its boot id has changed.
  */
-export function selfNodeRebootScript(jobId: string, stepId: string, target: string, opts: { ceph: boolean; waitMinutes?: number; drainMinutes?: number }): string {
+/**
+ * The reboot safety check, again, in the handoff — the API may be gone by then (HyperProx's guest moves
+ * during the drain). Same rules as ceph-checks.osdVerdict: the node's OSDs by OSD metadata must be the set
+ * the API checked; the PG map must be ready and complete; no PG on those OSDs may belong to a size=1 pool or
+ * drop below min_size (acting set only); and `ceph osd ok-to-stop` must say yes.
+ * Exit 0 safe, 1 unsafe, 2 unreadable; the reason is on stdout.
+ */
+export const REBOOT_CHECK_PY = `import json, subprocess, sys
+def unreadable(e):
+    # Exit 2 is "refuse": an error in this checker is never a safety verdict (1) or a pass (0).
+    print('the Ceph layout could not be read (%s: %s)' % (type(e).__name__, e)); sys.exit(2)
+sys.excepthook = lambda t, e, tb: unreadable(e)
+node, want = sys.argv[1], set(int(x) for x in sys.argv[2].split(',') if x)
+def ceph(*a):
+    r = subprocess.run(['ceph', *a, '-f', 'json'], capture_output=True, text=True, timeout=120)
+    if r.returncode:
+        raise RuntimeError('ceph ' + ' '.join(a) + ' failed')
+    return json.loads(r.stdout)
+try:
+    pools = {p['pool_id']: p for p in ceph('osd', 'pool', 'ls', 'detail')}
+    mine = {m['id'] for m in ceph('osd', 'metadata') if m.get('hostname') == node}
+    d = ceph('pg', 'dump', 'pgs_brief')
+except Exception as e:
+    print('the Ceph layout could not be read: %s' % e); sys.exit(2)
+if mine != want:
+    print('the OSDs on %s changed since the check: %s, now %s' % (node, sorted(want), sorted(mine))); sys.exit(2)
+if not isinstance(d, dict) or d.get('pg_ready') is not True:
+    print('the PG map is not ready'); sys.exit(2)
+rows = d.get('pg_stats') or []
+count = {}
+for r in rows:
+    pid = int(r['pgid'].split('.')[0]); count[pid] = count.get(pid, 0) + 1
+for pid, p in pools.items():
+    if count.get(pid, 0) != p['pg_num']:
+        print('the PG map is incomplete for pool %s' % p['pool_name']); sys.exit(2)
+bad = {}
+for r in rows:
+    p = pools[int(r['pgid'].split('.')[0])]
+    acting = [o for o in r.get('acting', []) if 0 <= o < 2147483647]
+    if not (set(acting) | set(r.get('up', []))) & mine:
+        continue
+    left = len([o for o in acting if o not in mine])
+    if (p.get('type') != 3 and p['size'] <= 1) or left < p['min_size']:
+        bad[p['pool_name']] = bad.get(p['pool_name'], 0) + 1
+if bad:
+    print('rebooting %s would take data out of service: %s' % (node, ', '.join('pool %s: %d PGs' % kv for kv in sorted(bad.items())))); sys.exit(1)
+if mine:
+    r = subprocess.run(['ceph', 'osd', 'ok-to-stop', *map(str, sorted(mine))], capture_output=True, text=True, timeout=120)
+    if r.returncode:
+        print('ceph osd ok-to-stop says no: %s' % (r.stderr or r.stdout).strip()[:200]); sys.exit(1)
+print('safe')
+`
+
+export function selfNodeRebootScript(jobId: string, stepId: string, target: string, opts: { ceph: boolean; osds?: number[]; waitMinutes?: number; drainMinutes?: number }): string {
   const file = resultFile(jobId, stepId)
   const wait = opts.waitMinutes ?? 15
   const drain = opts.drainMinutes ?? 10
@@ -88,6 +141,14 @@ if [ "$drained" != "1" ]; then
   else result false "HA did not move every guest off $target; not rebooted; ${flags} cleared"; fi
   exit 1
 fi
+${opts.ceph ? `# The drain can take minutes: the full Ceph safety check again, right before the reboot.
+why=$(echo ${Buffer.from(REBOOT_CHECK_PY).toString('base64')} | base64 -d | python3 - "$target" ${shq((opts.osds ?? []).map(n => String(Math.trunc(n))).join(','))} 2>&1); rc=$?
+if [ "$rc" != "0" ]; then
+  clear_flags
+  if [ "$rc" = "1" ]; then result false "skipped for safety: $why. $target was not rebooted; the reboot is pending — reboot it by hand in a maintenance window\${left:+; could not clear:$left (LEFT ON)}"
+  else result false "the reboot was refused: $why; $target was not rebooted\${left:+; could not clear:$left (LEFT ON)}"; fi
+  exit 1
+fi` : ''}
 ssh_t systemctl reboot || true   # the connection drops as it goes down
 sleep 90
 deadline=$(( $(date +%s) + ${wait} * 60 ))
