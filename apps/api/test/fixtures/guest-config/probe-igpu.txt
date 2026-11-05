@@ -1,0 +1,163 @@
+##lspci
+0000:00:00.0 Host bridge [0600]: Intel Corporation Xeon E3-1200 v6/7th Gen Core Processor Host Bridge/DRAM Registers [8086:591f] (rev 05)
+	Subsystem: Hewlett-Packard Company Device [103c:829e]
+	Kernel driver in use: skl_uncore
+0000:00:02.0 VGA compatible controller [0300]: Intel Corporation HD Graphics 630 [8086:5912] (rev 04)
+	DeviceName: Onboard IGD
+	Subsystem: Hewlett-Packard Company Device [103c:829e]
+	Kernel driver in use: i915
+	Kernel modules: i915
+0000:00:14.0 USB controller [0c03]: Intel Corporation 200 Series/Z370 Chipset Family USB 3.0 xHCI Controller [8086:a2af]
+	Subsystem: Hewlett-Packard Company Device [103c:829e]
+	Kernel driver in use: xhci_hcd
+	Kernel modules: xhci_pci
+0000:00:14.2 Signal processing controller [1180]: Intel Corporation 200 Series PCH Thermal Subsystem [8086:a2b1]
+	Subsystem: Hewlett-Packard Company Device [103c:829e]
+0000:00:16.0 Communication controller [0780]: Intel Corporation 200 Series PCH CSME HECI #1 [8086:a2ba]
+	Subsystem: Hewlett-Packard Company Device [103c:829e]
+	Kernel driver in use: mei_me
+	Kernel modules: mei_me
+0000:00:16.3 Serial controller [0700]: Intel Corporation 200 Series Chipset Family KT Redirection [8086:a2bd]
+	Subsystem: Hewlett-Packard Company Device [103c:829e]
+	Kernel driver in use: serial
+	Kernel modules: 8250_pci
+0000:00:17.0 SATA controller [0106]: Intel Corporation 200 Series PCH SATA controller [AHCI mode] [8086:a282]
+	Subsystem: Hewlett-Packard Company Device [103c:829e]
+	Kernel driver in use: ahci
+	Kernel modules: ahci
+0000:00:1d.0 PCI bridge [0604]: Intel Corporation 200 Series PCH PCI Express Root Port #9 [8086:a298] (rev f0)
+	Subsystem: Hewlett-Packard Company Device [103c:829e]
+	Kernel driver in use: pcieport
+	Kernel modules: shpchp
+0000:00:1f.0 ISA bridge [0601]: Intel Corporation 200 Series PCH LPC Controller (Q270) [8086:a2c6]
+	Subsystem: Hewlett-Packard Company Device [103c:829e]
+0000:00:1f.2 Memory controller [0580]: Intel Corporation 200 Series/Z370 Chipset Family Power Management Controller [8086:a2a1]
+	Subsystem: Hewlett-Packard Company Device [103c:829e]
+0000:00:1f.3 Audio device [0403]: Intel Corporation 200 Series PCH HD Audio [8086:a2f0]
+	Subsystem: Hewlett-Packard Company Device [103c:829e]
+	Kernel driver in use: snd_hda_intel
+	Kernel modules: snd_soc_avs, snd_hda_intel
+0000:00:1f.4 SMBus [0c05]: Intel Corporation 200 Series/Z370 Chipset Family SMBus Controller [8086:a2a3]
+	Subsystem: Hewlett-Packard Company Device [103c:829e]
+	Kernel driver in use: i801_smbus
+	Kernel modules: i2c_i801
+0000:00:1f.6 Ethernet controller [0200]: Intel Corporation Ethernet Connection (5) I219-LM [8086:15e3]
+	DeviceName: Onboard Lan
+	Subsystem: Hewlett-Packard Company Device [103c:829e]
+	Kernel driver in use: e1000e
+	Kernel modules: e1000e
+0000:01:00.0 Non-Volatile memory controller [0108]: Realtek Semiconductor Co., Ltd. RTS5765DL NVMe SSD Controller (DRAM-less) [10ec:5765] (rev 01)
+	Subsystem: Realtek Semiconductor Co., Ltd. RTS5765DL NVMe SSD Controller (DRAM-less) [10ec:5765]
+	Kernel driver in use: nvme
+	Kernel modules: nvme
+##lsusb
+Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
+Bus 002 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
+##usbsys
+usb1|1d6b|0002|1|1|09|Linux 7.0.14-26-pve xhci-hcd|xHCI Host Controller|0000:00:14.0
+usb2|1d6b|0003|2|1|09|Linux 7.0.14-26-pve xhci-hcd|xHCI Host Controller|0000:00:14.0
+##serial
+##tty
+##dri
+/dev/dri/card0|0000:00:02.0|e2:0
+/dev/dri/renderD128|0000:00:02.0|e2:80
+##bootvga
+0000:00:02.0|1
+##nvidia
+##nvdev
+##kfd
+##video
+##v4l
+##apex
+##tun
+/dev/net/tun
+##iommu
+/sys/kernel/iommu_groups/7/devices/0000:01:00.0
+/sys/kernel/iommu_groups/5/devices/0000:00:1d.0
+/sys/kernel/iommu_groups/3/devices/0000:00:16.0
+/sys/kernel/iommu_groups/3/devices/0000:00:16.3
+/sys/kernel/iommu_groups/1/devices/0000:00:00.0
+/sys/kernel/iommu_groups/6/devices/0000:00:1f.2
+/sys/kernel/iommu_groups/6/devices/0000:00:1f.0
+/sys/kernel/iommu_groups/6/devices/0000:00:1f.3
+/sys/kernel/iommu_groups/6/devices/0000:00:1f.6
+/sys/kernel/iommu_groups/6/devices/0000:00:1f.4
+/sys/kernel/iommu_groups/4/devices/0000:00:17.0
+/sys/kernel/iommu_groups/2/devices/0000:00:14.2
+/sys/kernel/iommu_groups/2/devices/0000:00:14.0
+/sys/kernel/iommu_groups/0/devices/0000:00:02.0
+##procdevices
+Character devices:
+  1 mem
+  4 /dev/vc/0
+  4 tty
+  4 ttyS
+  5 /dev/tty
+  5 /dev/console
+  5 /dev/ptmx
+  5 ttyprintk
+  7 vcs
+ 10 misc
+ 13 input
+ 21 sg
+ 29 fb
+ 89 i2c
+108 ppp
+116 alsa
+128 ptm
+136 pts
+180 usb
+189 usb_device
+202 cpu/msr
+204 ttyMAX
+226 drm
+235 aux
+236 cec
+237 lirc
+238 mei
+239 nvme-generic
+240 nvme
+241 ttyDBC
+242 bsg
+243 watchdog
+244 remoteproc
+245 ptp
+246 pps
+247 rtc
+248 dma_heap
+249 dax
+250 dimmctl
+251 ndctl
+252 tpm
+253 pwm
+254 gpiochip
+261 accel
+
+Block devices:
+  7 loop
+  8 sd
+  9 md
+ 11 sr
+ 65 sd
+ 66 sd
+ 67 sd
+ 68 sd
+ 69 sd
+ 70 sd
+ 71 sd
+128 sd
+129 sd
+130 sd
+131 sd
+132 sd
+133 sd
+134 sd
+135 sd
+230 zvol
+251 rbd
+252 device-mapper
+253 virtblk
+254 mdp
+259 blkext
+##nvmodule
+##end

@@ -1,0 +1,394 @@
+##lspci
+0000:00:00.0 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Root Complex [1022:1450]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Root Complex [1022:1450]
+0000:00:00.2 IOMMU [0806]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) I/O Memory Management Unit [1022:1451]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) I/O Memory Management Unit [1022:1451]
+0000:00:01.0 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-1fh) PCIe Dummy Host Bridge [1022:1452]
+0000:00:01.1 PCI bridge [0604]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) PCIe GPP Bridge [1022:1453]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) PCIe GPP Bridge [1022:1453]
+	Kernel driver in use: pcieport
+	Kernel modules: shpchp
+0000:00:01.3 PCI bridge [0604]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) PCIe GPP Bridge [1022:1453]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) PCIe GPP Bridge [1022:1453]
+	Kernel driver in use: pcieport
+	Kernel modules: shpchp
+0000:00:02.0 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-1fh) PCIe Dummy Host Bridge [1022:1452]
+0000:00:03.0 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-1fh) PCIe Dummy Host Bridge [1022:1452]
+0000:00:04.0 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-1fh) PCIe Dummy Host Bridge [1022:1452]
+0000:00:07.0 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-1fh) PCIe Dummy Host Bridge [1022:1452]
+0000:00:07.1 PCI bridge [0604]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Internal PCIe GPP Bridge 0 to Bus B [1022:1454]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Internal PCIe GPP Bridge 0 to Bus B [1022:1454]
+	Kernel driver in use: pcieport
+	Kernel modules: shpchp
+0000:00:08.0 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-1fh) PCIe Dummy Host Bridge [1022:1452]
+0000:00:08.1 PCI bridge [0604]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Internal PCIe GPP Bridge 0 to Bus B [1022:1454]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Internal PCIe GPP Bridge 0 to Bus B [1022:1454]
+	Kernel driver in use: pcieport
+	Kernel modules: shpchp
+0000:00:14.0 SMBus [0c05]: Advanced Micro Devices, Inc. [AMD] FCH SMBus Controller [1022:790b] (rev 59)
+	Subsystem: Gigabyte Technology Co., Ltd Device [1458:5001]
+	Kernel modules: i2c_piix4, sp5100_tco
+0000:00:14.3 ISA bridge [0601]: Advanced Micro Devices, Inc. [AMD] FCH LPC Bridge [1022:790e] (rev 51)
+	Subsystem: Gigabyte Technology Co., Ltd Device [1458:5001]
+0000:00:18.0 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Data Fabric: Device 18h; Function 0 [1022:1460]
+0000:00:18.1 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Data Fabric: Device 18h; Function 1 [1022:1461]
+0000:00:18.2 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Data Fabric: Device 18h; Function 2 [1022:1462]
+0000:00:18.3 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Data Fabric: Device 18h; Function 3 [1022:1463]
+	Kernel driver in use: k10temp
+	Kernel modules: k10temp
+0000:00:18.4 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Data Fabric: Device 18h; Function 4 [1022:1464]
+0000:00:18.5 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Data Fabric: Device 18h; Function 5 [1022:1465]
+0000:00:18.6 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Data Fabric: Device 18h; Function 6 [1022:1466]
+0000:00:18.7 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Data Fabric: Device 18h; Function 7 [1022:1467]
+0000:00:19.0 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Data Fabric: Device 18h; Function 0 [1022:1460]
+0000:00:19.1 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Data Fabric: Device 18h; Function 1 [1022:1461]
+0000:00:19.2 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Data Fabric: Device 18h; Function 2 [1022:1462]
+0000:00:19.3 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Data Fabric: Device 18h; Function 3 [1022:1463]
+	Kernel driver in use: k10temp
+	Kernel modules: k10temp
+0000:00:19.4 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Data Fabric: Device 18h; Function 4 [1022:1464]
+0000:00:19.5 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Data Fabric: Device 18h; Function 5 [1022:1465]
+0000:00:19.6 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Data Fabric: Device 18h; Function 6 [1022:1466]
+0000:00:19.7 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Data Fabric: Device 18h; Function 7 [1022:1467]
+0000:01:00.0 USB controller [0c03]: Advanced Micro Devices, Inc. [AMD] X399 Series Chipset USB 3.1 xHCI Controller [1022:43ba] (rev 02)
+	Subsystem: ASMedia Technology Inc. Device [1b21:1142]
+	Kernel driver in use: xhci_hcd
+	Kernel modules: xhci_pci
+0000:01:00.1 SATA controller [0106]: Advanced Micro Devices, Inc. [AMD] X399 Series Chipset SATA Controller [1022:43b6] (rev 02)
+	DeviceName: Promontory SATA
+	Subsystem: ASMedia Technology Inc. Device [1b21:1062]
+	Kernel driver in use: ahci
+	Kernel modules: ahci
+0000:01:00.2 PCI bridge [0604]: Advanced Micro Devices, Inc. [AMD] X399 Series Chipset PCIe Bridge [1022:43b1] (rev 02)
+	Subsystem: ASMedia Technology Inc. Device [1b21:0201]
+	Kernel driver in use: pcieport
+	Kernel modules: shpchp
+0000:02:00.0 PCI bridge [0604]: Advanced Micro Devices, Inc. [AMD] 300 Series Chipset PCIe Port [1022:43b4] (rev 02)
+	Subsystem: ASMedia Technology Inc. Device [1b21:3306]
+	Kernel driver in use: pcieport
+	Kernel modules: shpchp
+0000:02:02.0 PCI bridge [0604]: Advanced Micro Devices, Inc. [AMD] 300 Series Chipset PCIe Port [1022:43b4] (rev 02)
+	Subsystem: ASMedia Technology Inc. Device [1b21:3306]
+	Kernel driver in use: pcieport
+	Kernel modules: shpchp
+0000:02:03.0 PCI bridge [0604]: Advanced Micro Devices, Inc. [AMD] 300 Series Chipset PCIe Port [1022:43b4] (rev 02)
+	Subsystem: ASMedia Technology Inc. Device [1b21:3306]
+	Kernel driver in use: pcieport
+	Kernel modules: shpchp
+0000:02:04.0 PCI bridge [0604]: Advanced Micro Devices, Inc. [AMD] 300 Series Chipset PCIe Port [1022:43b4] (rev 02)
+	Subsystem: ASMedia Technology Inc. Device [1b21:3306]
+	Kernel driver in use: pcieport
+	Kernel modules: shpchp
+0000:03:00.0 USB controller [0c03]: ASMedia Technology Inc. ASM1143 USB 3.1 Host Controller [1b21:1343]
+	DeviceName: Onboard LAN Atheros
+	Subsystem: Gigabyte Technology Co., Ltd Device [1458:5007]
+	Kernel driver in use: xhci_hcd
+	Kernel modules: xhci_pci
+0000:04:00.0 Network controller [0280]: Intel Corporation Wireless 8265 / 8275 [8086:24fd] (rev 78)
+	DeviceName: Onboard LAN Realtek
+	Subsystem: Intel Corporation Dual Band Wireless-AC 8265 [8086:1010]
+	Kernel driver in use: iwlwifi
+	Kernel modules: iwlwifi
+0000:05:00.0 Ethernet controller [0200]: Qualcomm Atheros Killer E2500 Gigabit Ethernet Controller [1969:e0b1] (rev 10)
+	Subsystem: Gigabyte Technology Co., Ltd Device [1458:e000]
+	Kernel driver in use: alx
+	Kernel modules: alx
+0000:06:00.0 SATA controller [0106]: Marvell Technology Group Ltd. 88SE9215 PCIe 2.0 x1 4-port SATA 6 Gb/s Controller [1b4b:9215] (rev 11)
+	Subsystem: Marvell Technology Group Ltd. 88SE9215 PCIe 2.0 x1 4-port SATA 6 Gb/s Controller [1b4b:9215]
+	Kernel driver in use: ahci
+	Kernel modules: ahci
+0000:07:00.0 USB controller [0c03]: Renesas Electronics Corp. uPD720201 USB 3.0 Host Controller [1912:0014] (rev 03)
+	Kernel driver in use: xhci-pci-renesas
+	Kernel modules: xhci_pci, xhci_pci_renesas
+0000:08:00.0 Non-Essential Instrumentation [1300]: Advanced Micro Devices, Inc. [AMD] Zeppelin/Raven/Raven2 PCIe Dummy Function [1022:145a]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Zeppelin/Raven/Raven2 PCIe Dummy Function [1022:145a]
+0000:08:00.2 Encryption controller [1080]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Platform Security Processor (PSP) 3.0 Device [1022:1456]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Platform Security Processor (PSP) 3.0 Device [1022:1456]
+	Kernel driver in use: ccp
+	Kernel modules: ccp
+0000:08:00.3 USB controller [0c03]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) USB 3.0 Host Controller [1022:145c]
+	Subsystem: Gigabyte Technology Co., Ltd Device [1458:5007]
+	Kernel driver in use: xhci_hcd
+	Kernel modules: xhci_pci
+0000:09:00.0 Non-Essential Instrumentation [1300]: Advanced Micro Devices, Inc. [AMD] Zeppelin/Renoir PCIe Dummy Function [1022:1455]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Zeppelin/Renoir PCIe Dummy Function [1022:1455]
+0000:09:00.2 SATA controller [0106]: Advanced Micro Devices, Inc. [AMD] FCH SATA Controller [AHCI mode] [1022:7901] (rev 51)
+	DeviceName: DIE0 M.2 SATA
+	Subsystem: Gigabyte Technology Co., Ltd Device [1458:b002]
+	Kernel driver in use: ahci
+	Kernel modules: ahci
+0000:09:00.3 Audio device [0403]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) HD Audio Controller [1022:1457]
+	DeviceName: Audio Codec ALC1220
+	Subsystem: Gigabyte Technology Co., Ltd Device [1458:a0c2]
+	Kernel driver in use: snd_hda_intel
+	Kernel modules: snd_hda_intel
+0000:40:00.0 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Root Complex [1022:1450]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Root Complex [1022:1450]
+0000:40:00.2 IOMMU [0806]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) I/O Memory Management Unit [1022:1451]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) I/O Memory Management Unit [1022:1451]
+0000:40:01.0 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-1fh) PCIe Dummy Host Bridge [1022:1452]
+0000:40:01.1 PCI bridge [0604]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) PCIe GPP Bridge [1022:1453]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) PCIe GPP Bridge [1022:1453]
+	Kernel driver in use: pcieport
+	Kernel modules: shpchp
+0000:40:02.0 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-1fh) PCIe Dummy Host Bridge [1022:1452]
+0000:40:03.0 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-1fh) PCIe Dummy Host Bridge [1022:1452]
+0000:40:03.1 PCI bridge [0604]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) PCIe GPP Bridge [1022:1453]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) PCIe GPP Bridge [1022:1453]
+	Kernel driver in use: pcieport
+	Kernel modules: shpchp
+0000:40:04.0 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-1fh) PCIe Dummy Host Bridge [1022:1452]
+0000:40:07.0 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-1fh) PCIe Dummy Host Bridge [1022:1452]
+0000:40:07.1 PCI bridge [0604]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Internal PCIe GPP Bridge 0 to Bus B [1022:1454]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Internal PCIe GPP Bridge 0 to Bus B [1022:1454]
+	Kernel driver in use: pcieport
+	Kernel modules: shpchp
+0000:40:08.0 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-1fh) PCIe Dummy Host Bridge [1022:1452]
+0000:40:08.1 PCI bridge [0604]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Internal PCIe GPP Bridge 0 to Bus B [1022:1454]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Internal PCIe GPP Bridge 0 to Bus B [1022:1454]
+	Kernel driver in use: pcieport
+	Kernel modules: shpchp
+0000:41:00.0 Non-Volatile memory controller [0108]: Samsung Electronics Co Ltd NVMe SSD Controller SM961/PM961/SM963 [144d:a804]
+	Subsystem: Samsung Electronics Co Ltd SM963 2.5" NVMe PCIe SSD [144d:a801]
+	Kernel driver in use: nvme
+	Kernel modules: nvme
+0000:42:00.0 VGA compatible controller [0300]: NVIDIA Corporation GP104 [GeForce GTX 1070 Ti] [10de:1b82] (rev a1)
+	Subsystem: ASUSTeK Computer Inc. Device [1043:8623]
+	Kernel driver in use: nvidia
+	Kernel modules: nvidiafb, nouveau, nvidia_drm, nvidia
+0000:42:00.1 Audio device [0403]: NVIDIA Corporation GP104 High Definition Audio Controller [10de:10f0] (rev a1)
+	Subsystem: ASUSTeK Computer Inc. Device [1043:8623]
+	Kernel driver in use: snd_hda_intel
+	Kernel modules: snd_hda_intel
+0000:43:00.0 Non-Essential Instrumentation [1300]: Advanced Micro Devices, Inc. [AMD] Zeppelin/Raven/Raven2 PCIe Dummy Function [1022:145a]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Zeppelin/Raven/Raven2 PCIe Dummy Function [1022:145a]
+0000:43:00.2 Encryption controller [1080]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Platform Security Processor (PSP) 3.0 Device [1022:1456]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) Platform Security Processor (PSP) 3.0 Device [1022:1456]
+	Kernel driver in use: ccp
+	Kernel modules: ccp
+0000:43:00.3 USB controller [0c03]: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) USB 3.0 Host Controller [1022:145c]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Family 17h (Models 00h-0fh) USB 3.0 Host Controller [1022:145c]
+	Kernel driver in use: xhci_hcd
+	Kernel modules: xhci_pci
+0000:44:00.0 Non-Essential Instrumentation [1300]: Advanced Micro Devices, Inc. [AMD] Zeppelin/Renoir PCIe Dummy Function [1022:1455]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Zeppelin/Renoir PCIe Dummy Function [1022:1455]
+0000:44:00.2 SATA controller [0106]: Advanced Micro Devices, Inc. [AMD] FCH SATA Controller [AHCI mode] [1022:7901] (rev 51)
+	Subsystem: Gigabyte Technology Co., Ltd Device [1458:b002]
+	Kernel driver in use: ahci
+	Kernel modules: ahci
+##lsusb
+Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
+Bus 001 Device 002: ID 8087:0a2b Intel Corp. Bluetooth wireless interface
+Bus 001 Device 003: ID 048d:8295 Integrated Technology Express, Inc. ITE Device(8595)
+Bus 001 Device 004: ID 046d:c548 Logitech, Inc. Logi Bolt Receiver
+Bus 001 Device 005: ID 046d:c52b Logitech, Inc. Unifying Receiver
+Bus 002 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
+Bus 003 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
+Bus 004 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
+Bus 005 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
+Bus 005 Device 002: ID 046d:085c Logitech, Inc. C922 Pro Stream Webcam
+Bus 006 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
+Bus 007 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
+Bus 008 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
+Bus 009 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
+Bus 009 Device 002: ID 2109:2812 VIA Labs, Inc. VL812 Hub
+Bus 009 Device 008: ID 1b1c:0a44 Corsair CORSAIR VIRTUOSO Wireless Gaming Headset
+Bus 010 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
+Bus 010 Device 002: ID 2109:0812 VIA Labs, Inc. VL812 Hub
+##usbsys
+10-4|2109|0812|10|2|09|VIA Labs, Inc.         |USB3.0 Hub             |
+1-12|046d|c548|1|4|00|Logitech|USB Receiver|
+1-13|046d|c52b|1|5|00|Logitech|USB Receiver|
+1-7|8087|0a2b|1|2|e0|||
+1-8|048d|8295|1|3|00|ITE Tech. Inc.|ITE Device(8595)|
+5-4|046d|085c|5|2|ef||C922 Pro Stream Webcam|0A1B2C3D
+9-4|2109|2812|9|2|09|VIA Labs, Inc.         |USB2.0 Hub             |
+9-4.3|1b1c|0a44|9|8|00|Corsair|CORSAIR VIRTUOSO Wireless Gaming Headset|00000000000000aa
+usb1|1d6b|0002|1|1|09|Linux 7.0.14-14-pve xhci-hcd|xHCI Host Controller|0000:01:00.0
+usb10|1d6b|0003|10|1|09|Linux 7.0.14-14-pve xhci-hcd|xHCI Host Controller|0000:07:00.0
+usb2|1d6b|0003|2|1|09|Linux 7.0.14-14-pve xhci-hcd|xHCI Host Controller|0000:01:00.0
+usb3|1d6b|0002|3|1|09|Linux 7.0.14-14-pve xhci-hcd|xHCI Host Controller|0000:03:00.0
+usb4|1d6b|0003|4|1|09|Linux 7.0.14-14-pve xhci-hcd|xHCI Host Controller|0000:03:00.0
+usb5|1d6b|0002|5|1|09|Linux 7.0.14-14-pve xhci-hcd|xHCI Host Controller|0000:08:00.3
+usb6|1d6b|0003|6|1|09|Linux 7.0.14-14-pve xhci-hcd|xHCI Host Controller|0000:08:00.3
+usb7|1d6b|0002|7|1|09|Linux 7.0.14-14-pve xhci-hcd|xHCI Host Controller|0000:43:00.3
+usb8|1d6b|0003|8|1|09|Linux 7.0.14-14-pve xhci-hcd|xHCI Host Controller|0000:43:00.3
+usb9|1d6b|0002|9|1|09|Linux 7.0.14-14-pve xhci-hcd|xHCI Host Controller|0000:07:00.0
+##serial
+##tty
+##dri
+/dev/dri/card0|simple-framebuffer.0|e2:0
+/dev/dri/card1|0000:42:00.0|e2:1
+/dev/dri/renderD128|0000:42:00.0|e2:80
+##bootvga
+0000:42:00.0|1
+##nvidia
+00000000:42:00.0, NVIDIA GeForce GTX 1070 Ti, 580.173.02, 8192 MiB
+##nvdev
+/dev/nvidia0
+/dev/nvidia-caps
+/dev/nvidia-caps/nvidia-cap1
+/dev/nvidia-caps/nvidia-cap2
+/dev/nvidiactl
+/dev/nvidia-uvm
+/dev/nvidia-uvm-tools
+##kfd
+##video
+/dev/video0|C922 Pro Stream Webcam|/sys/devices/pci0000:00/0000:00:07.1/0000:08:00.3/usb5/5-4/5-4:1.0
+/dev/video1|C922 Pro Stream Webcam|/sys/devices/pci0000:00/0000:00:07.1/0000:08:00.3/usb5/5-4/5-4:1.0
+##v4l
+/dev/v4l/by-id/usb-046d_C922_Pro_Stream_Webcam_0A1B2C3D-video-index0|/dev/video0
+/dev/v4l/by-id/usb-046d_C922_Pro_Stream_Webcam_0A1B2C3D-video-index1|/dev/video1
+##apex
+##tun
+/dev/net/tun
+##iommu
+/sys/kernel/iommu_groups/7/devices/0000:00:18.3
+/sys/kernel/iommu_groups/7/devices/0000:00:18.1
+/sys/kernel/iommu_groups/7/devices/0000:00:18.6
+/sys/kernel/iommu_groups/7/devices/0000:00:18.4
+/sys/kernel/iommu_groups/7/devices/0000:00:18.2
+/sys/kernel/iommu_groups/7/devices/0000:00:18.0
+/sys/kernel/iommu_groups/7/devices/0000:00:18.7
+/sys/kernel/iommu_groups/7/devices/0000:00:18.5
+/sys/kernel/iommu_groups/5/devices/0000:00:08.0
+/sys/kernel/iommu_groups/5/devices/0000:09:00.0
+/sys/kernel/iommu_groups/5/devices/0000:09:00.3
+/sys/kernel/iommu_groups/5/devices/0000:00:08.1
+/sys/kernel/iommu_groups/5/devices/0000:09:00.2
+/sys/kernel/iommu_groups/13/devices/0000:43:00.2
+/sys/kernel/iommu_groups/13/devices/0000:43:00.0
+/sys/kernel/iommu_groups/13/devices/0000:40:07.0
+/sys/kernel/iommu_groups/13/devices/0000:43:00.3
+/sys/kernel/iommu_groups/13/devices/0000:40:07.1
+/sys/kernel/iommu_groups/3/devices/0000:00:04.0
+/sys/kernel/iommu_groups/11/devices/0000:40:03.1
+/sys/kernel/iommu_groups/11/devices/0000:42:00.0
+/sys/kernel/iommu_groups/11/devices/0000:40:03.0
+/sys/kernel/iommu_groups/11/devices/0000:42:00.1
+/sys/kernel/iommu_groups/1/devices/0000:00:02.0
+/sys/kernel/iommu_groups/8/devices/0000:00:19.6
+/sys/kernel/iommu_groups/8/devices/0000:00:19.4
+/sys/kernel/iommu_groups/8/devices/0000:00:19.2
+/sys/kernel/iommu_groups/8/devices/0000:00:19.0
+/sys/kernel/iommu_groups/8/devices/0000:00:19.7
+/sys/kernel/iommu_groups/8/devices/0000:00:19.5
+/sys/kernel/iommu_groups/8/devices/0000:00:19.3
+/sys/kernel/iommu_groups/8/devices/0000:00:19.1
+/sys/kernel/iommu_groups/6/devices/0000:00:14.3
+/sys/kernel/iommu_groups/6/devices/0000:00:14.0
+/sys/kernel/iommu_groups/14/devices/0000:40:08.0
+/sys/kernel/iommu_groups/14/devices/0000:40:08.1
+/sys/kernel/iommu_groups/14/devices/0000:44:00.2
+/sys/kernel/iommu_groups/14/devices/0000:44:00.0
+/sys/kernel/iommu_groups/4/devices/0000:08:00.2
+/sys/kernel/iommu_groups/4/devices/0000:08:00.0
+/sys/kernel/iommu_groups/4/devices/0000:00:07.0
+/sys/kernel/iommu_groups/4/devices/0000:08:00.3
+/sys/kernel/iommu_groups/4/devices/0000:00:07.1
+/sys/kernel/iommu_groups/12/devices/0000:40:04.0
+/sys/kernel/iommu_groups/2/devices/0000:00:03.0
+/sys/kernel/iommu_groups/10/devices/0000:40:02.0
+/sys/kernel/iommu_groups/0/devices/0000:03:00.0
+/sys/kernel/iommu_groups/0/devices/0000:02:00.0
+/sys/kernel/iommu_groups/0/devices/0000:00:01.0
+/sys/kernel/iommu_groups/0/devices/0000:01:00.2
+/sys/kernel/iommu_groups/0/devices/0000:02:03.0
+/sys/kernel/iommu_groups/0/devices/0000:01:00.0
+/sys/kernel/iommu_groups/0/devices/0000:07:00.0
+/sys/kernel/iommu_groups/0/devices/0000:00:01.3
+/sys/kernel/iommu_groups/0/devices/0000:06:00.0
+/sys/kernel/iommu_groups/0/devices/0000:02:02.0
+/sys/kernel/iommu_groups/0/devices/0000:00:01.1
+/sys/kernel/iommu_groups/0/devices/0000:05:00.0
+/sys/kernel/iommu_groups/0/devices/0000:01:00.1
+/sys/kernel/iommu_groups/0/devices/0000:04:00.0
+/sys/kernel/iommu_groups/0/devices/0000:02:04.0
+/sys/kernel/iommu_groups/9/devices/0000:40:01.0
+/sys/kernel/iommu_groups/9/devices/0000:41:00.0
+/sys/kernel/iommu_groups/9/devices/0000:40:01.1
+##procdevices
+Character devices:
+  1 mem
+  4 /dev/vc/0
+  4 tty
+  4 ttyS
+  5 /dev/tty
+  5 /dev/console
+  5 /dev/ptmx
+  5 ttyprintk
+  7 vcs
+ 10 misc
+ 13 input
+ 21 sg
+ 29 fb
+ 81 video4linux
+ 89 i2c
+108 ppp
+116 alsa
+128 ptm
+136 pts
+180 usb
+189 usb_device
+195 nvidia
+195 nvidia-modeset
+195 nvidiactl
+202 cpu/msr
+204 ttyMAX
+226 drm
+234 nvidia-caps-imex-channels
+235 media
+236 vfio-dev
+237 vfio
+238 hidraw
+239 nvme-generic
+240 nvme
+241 ttyDBC
+242 bsg
+243 watchdog
+244 remoteproc
+245 ptp
+246 pps
+247 rtc
+248 dma_heap
+249 dax
+250 dimmctl
+251 ndctl
+252 tpm
+253 pwm
+254 gpiochip
+261 accel
+508 nvidia-uvm
+509 nvidia-nvswitch
+510 nvidia-nvlink
+511 nvidia-caps
+
+Block devices:
+  7 loop
+  8 sd
+  9 md
+ 11 sr
+ 65 sd
+ 66 sd
+ 67 sd
+ 68 sd
+ 69 sd
+ 70 sd
+ 71 sd
+128 sd
+129 sd
+130 sd
+131 sd
+132 sd
+133 sd
+134 sd
+135 sd
+230 zvol
+251 rbd
+252 device-mapper
+253 virtblk
+254 mdp
+259 blkext
+##nvmodule
+580.173.02
+##end
