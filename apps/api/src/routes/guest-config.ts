@@ -14,6 +14,25 @@ import { ownerOf } from './ai'
 import { hasRole } from '../lib/roles'
 import { GuestConfigService, GuestConfigRefusal, type GuestId, type PreviewInput, type Preview } from '../lib/guest-config/service'
 import { redactForViewer } from '../lib/guest-config/devices'
+import { redactText, redactValue } from '../lib/guest-config/secrets'
+
+/** Viewers see what a guest has, by name and purpose, never device paths, PCI addresses or raw lines. */
+export function redactViewForViewer(v: any): any {
+  const DEV = /^(dev|hostpci|usb|serial)\d+$/
+  const config = Object.fromEntries(Object.entries(v.config ?? {}).filter(([k]) => k !== 'lxc').map(([k, val]) => [k, DEV.test(k) ? 'set' : val]))
+  return {
+    ...v, config,
+    keys: { ...v.keys, raw: (v.keys?.raw ?? []).map((r: any) => ({ key: r.key, value: '(admin only)' })), unknown: v.keys?.unknown ?? [] },
+    gpu: v.gpu ? { ...v.gpu, entries: (v.gpu.entries ?? []).map((e: any) => ({ ...e, value: '', device: '' })), managed: {}, managedRaw: [] } : v.gpu,
+  }
+}
+export function redactGpuForViewer(d: any): any {
+  return { ...d, gpu: d.gpu ? { ...d.gpu, entries: (d.gpu.entries ?? []).map((e: any) => ({ ...e, value: '', device: '' })) } : d.gpu, inUse: d.inUse ? { name: d.inUse.name.startsWith('/dev/') ? 'a GPU' : d.inUse.name, device: '' } : null }
+}
+
+/** `?refresh=1` on the device list: admins only, and at most once per node every 15 seconds. */
+const REFRESH_MS = 15_000
+const lastRefresh = new Map<string, number>()
 import { livePveAdapter, liveNodeShell, prismaAudit } from '../lib/guest-config/pve-adapter'
 import { PrismaHistoryStore } from '../lib/guest-config/history/store'
 import { GpuMoveWatcher } from '../lib/guest-config/gpu-watch'
@@ -51,7 +70,9 @@ function guestOf(p: { node: string; type: string; vmid: string }): GuestId {
 export function previewView(p: Preview) {
   return {
     previewId: p.id, kind: p.kind, guest: p.guest, expiresAt: p.expiresAt, quorate: p.quorate,
-    changes: p.plan.changes, warnings: p.plan.warnings, errors: p.plan.errors, checks: p.plan.checks,
+    changes: p.plan.changes.map(c => ({ ...c, before: c.before === null ? null : redactValue(c.key, c.before), after: c.after === null ? null : redactValue(c.key, c.after), words: redactText(c.words) })),
+    warnings: p.plan.warnings, errors: p.plan.errors.map(redactText), checks: p.plan.checks.map(redactText),
+    options: p.plan.options ?? [], rawFile: !!p.file,
     restartNeeded: p.plan.changes.some(c => c.restart !== 'live'), pendingBefore: p.pendingBefore,
     counts: p.counts, extraConfirm: p.plan.extraConfirm, confirmName: p.plan.confirmName,
     deviceChecks: p.plan.deviceChecks, canApply: p.plan.errors.length === 0,
@@ -69,20 +90,35 @@ export function buildGuestConfigRoutes(deps: () => GuestConfigRouteDeps): Fastif
     fastify.get<{ Params: { node: string }; Querystring: { refresh?: string } }>('/nodes/:node/devices', async (req, reply) => {
       try {
         const d = deps()
-        const inv = await d.service.inventory(req.params.node, req.query.refresh === '1')
-        return { success: true, data: d.isAdmin() ? inv : redactForViewer(inv), redacted: !d.isAdmin() }
+        const admin = d.isAdmin()
+        let refresh = false
+        if (req.query.refresh === '1') {
+          if (!admin) return reply.status(403).send({ success: false, error: 'Refreshing a node’s devices needs the admin role.' })
+          if (!(await d.service.knownNode(req.params.node))) return reply.status(404).send({ success: false, error: 'No such node.' })
+          const last = lastRefresh.get(req.params.node) ?? 0
+          if (Date.now() - last < REFRESH_MS) return reply.status(429).send({ success: false, error: 'Refreshed a moment ago; try again in a few seconds.' })
+          lastRefresh.set(req.params.node, Date.now()); refresh = true
+        }
+        // A viewer is answered from the cache: a viewer's request never logs in to a node.
+        const inv = await d.service.inventory(req.params.node, refresh, { cachedOnly: !admin })
+        return { success: true, data: admin ? inv : redactForViewer(inv), redacted: !admin }
       } catch (e) { return fail(reply, e) }
     })
 
     fastify.get<G>('/guests/:node/:type/:vmid', async (req, reply) => {
-      try { return { success: true, data: await deps().service.view(guestOf(req.params)) } } catch (e) { return fail(reply, e) }
+      try {
+        const d = deps(); const admin = d.isAdmin()
+        const v = await d.service.view(guestOf(req.params), { cachedOnly: !admin })
+        return { success: true, data: admin ? v : redactViewForViewer(v), redacted: !admin }
+      } catch (e) { return fail(reply, e) }
     })
 
     fastify.get<G>('/guests/:node/:type/:vmid/gpu', async (req, reply) => {
       try {
         const d = deps()
-        const data = await d.service.gpuDetail(guestOf(req.params))
-        return { success: true, data: d.isAdmin() ? data : { ...data, devices: redactForViewer({ node: req.params.node, devices: data.devices, majors: {}, nvidiaNodes: [], collectedAt: 0 }).devices } }
+        const admin = d.isAdmin()
+        const data = await d.service.gpuDetail(guestOf(req.params), { cachedOnly: !admin })
+        return { success: true, data: admin ? data : { ...redactGpuForViewer(data), devices: redactForViewer({ node: req.params.node, devices: data.devices, majors: {}, nvidiaNodes: [], collectedAt: 0 }).devices } }
       } catch (e) { return fail(reply, e) }
     })
 
@@ -140,7 +176,7 @@ export const guestConfigRoutes: FastifyPluginAsync = async (fastify) => {
   const watcher = new GpuMoveWatcher(service, async e => publish({
     type: e.type, severity: e.severity, title: e.title, where: 'Infrastructure page', link: '/infrastructure',
     subject: { kind: 'guest', name: e.guest.name }, fingerprint: `${e.type}:${e.guest.vmid}:${e.guest.to}`,
-  }))
+  }), () => Date.now(), () => !isUnlocked())
   const timer = setInterval(() => { if (isUnlocked()) watcher.tick().catch(err => fastify.log.warn({ err: err?.message }, '[guest-config] GPU move check failed')) }, 60_000)
   timer.unref()
   fastify.addHook('onClose', async () => clearInterval(timer))
