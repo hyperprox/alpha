@@ -58,11 +58,21 @@ export function prismaAudit(db: PrismaClient) {
 import { getCredential, setCredential } from '../credentials'
 import { randomBytes } from 'node:crypto'
 
-/** The history HMAC key, kept in the vault (created on first use). Never in .env, files or Postgres. */
-export async function vaultHmacKey(): Promise<Buffer> {
-  const cur = await getCredential('system', 'guest-config', 'history_hmac_key')
-  if (cur && /^[0-9a-f]{64}$/.test(cur)) return Buffer.from(cur, 'hex')
-  const k = randomBytes(32).toString('hex')
-  await setCredential('system', 'guest-config', 'history_hmac_key', k, true)
-  return Buffer.from(k, 'hex')
+/**
+ * The history HMAC key, kept in the vault and nowhere else. First use creates it if it is absent and then reads it
+ * back, so two concurrent first uses end up with the one key that was stored. Calls are serialised in-process.
+ */
+let keyLoad: Promise<Buffer> | null = null
+export function vaultHmacKey(): Promise<Buffer> {
+  keyLoad ??= (async () => {
+    const read = async () => { const v = await getCredential('system', 'guest-config', 'history_hmac_key'); return v && /^[0-9a-f]{64}$/.test(v) ? v : null }
+    let cur = await read()
+    if (!cur) {
+      await setCredential('system', 'guest-config', 'history_hmac_key', randomBytes(32).toString('hex'), true)
+      cur = await read()
+      if (!cur) throw new Error('The history key could not be stored in the vault.')
+    }
+    return Buffer.from(cur, 'hex')
+  })().finally(() => { keyLoad = null })
+  return keyLoad
 }

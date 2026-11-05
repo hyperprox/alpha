@@ -30,7 +30,8 @@ import { PROBE_SCRIPT, parseProbe, attachUsage, type GuestRef, type NodeInventor
 import { type HistoryStore, type HistoryRow, type GpuState } from './history/store'
 import { createHmac, randomBytes } from 'node:crypto'
 import { maskConfig, isSecretKey, redactConfFile, redactText, redactValue, REDACTED } from './secrets'
-import { splitConf, rewriteRawLines, readScript, writeScript, parseRead, cleanupScript, rawLineAllowed, sha256 } from './rawfile'
+import { splitConf, rewriteRawLines, readScript, writeScript, parseRead, cleanupScript, rawLineAllowed, rawLineForm, addedSources, verifyScript, parseVerify, DEVICE_DIRS, sha256, type RawAllow } from './rawfile'
+import { gpuMajors } from './devices'
 import { vpnStatuses, vpnStatusSource, type VpnStatusSource } from './vpn'
 
 // ── what the service reaches ──────────────────────────────────────────────────
@@ -106,7 +107,7 @@ export interface Preview {
   /** "Applies on next restart": keys already pending before this change. */
   pendingBefore: string[]
   /** The whole-file write for raw lines: the file and its hash at preview, and the exact bytes to write. */
-  file?: { sha: string; before: string; after: string }
+  file?: { sha: string; before: string; after: string; sources: string[] }
   quorate: boolean
   createdAt: number
   expiresAt: number
@@ -236,7 +237,7 @@ export class GuestConfigService {
     const gpu = detectGpu(g.type, ctx.config, inv)
     const keys = keyInventory(g.type, maskConfig(ctx.config))
     const rows = await this.d.history.list(`${g.type}/${g.vmid}`, 50).catch(() => [] as HistoryRow[])
-    const st = await this.d.history.getGpu(`${g.type}/${g.vmid}`).catch(() => null)
+    const st = await this.d.history.getGpu(gpuKey(g, ctx.config)).catch(() => null)
     return {
       guest: { ...g, name: ctx.name, running: ctx.running, haManaged: ctx.haManaged },
       config: maskConfig(ctx.config), digest: ctx.config.digest ?? '',
@@ -318,6 +319,8 @@ export class GuestConfigService {
     const q = await this.quorum()
     let plan: Plan
     let kind: PlanKind
+    /** The inventories an added raw line is checked against: the guest's node, or every Portable GPU node. */
+    let rawInvs: NodeInventory[] | null = null
     const rows = () => this.d.history.list(`${g.type}/${g.vmid}`, 200)
     switch (input.kind) {
       case 'edit': {
@@ -364,7 +367,7 @@ export class GuestConfigService {
           const add: Array<[string, string]> = []
           for (const e of unmatched) {
             if (e[1].includes(REDACTED)) notReverted.push(`${e[0]} (its value held a secret, which history does not keep)`)
-            else if (rawLineAllowed(e)) notReverted.push(`${e[0]} (HyperProx only edits device lines)`)
+            else if (rawLineForm(e)) notReverted.push(`${e[0]} (HyperProx only edits device lines)`)
             else add.push(e)
           }
           const keepKeys = new Set(unmatched.filter(e => e[1].includes(REDACTED)).map(e => e[0]))
@@ -372,7 +375,7 @@ export class GuestConfigService {
           have.forEach((h, j) => {
             if (used.has(j)) return
             if (keepKeys.has(h[0])) return
-            if (rawLineAllowed(h)) { notReverted.push(`${h[0]} (HyperProx only edits device lines)`); return }
+            if (rawLineForm(h)) { notReverted.push(`${h[0]} (HyperProx only edits device lines)`); return }
             remove.push(h)
           })
           if (notReverted.length) plan.warnings.push(`Raw lines not reverted: ${[...new Set(notReverted)].join(', ')}.`)
@@ -381,10 +384,10 @@ export class GuestConfigService {
         break
       }
       case 'gpu-grant': plan = buildGpuGrantPlan(ctx, await this.inventory(g.node, true), input.grant, await this.guestsOn(g.node)); kind = 'device'; break
-      case 'gpu-revoke': plan = buildGpuRevokePlan(ctx, (await this.gpuState(g)).dev); kind = 'device'; break
-      case 'gpu-off': { const st = await this.gpuState(g); plan = buildGpuOffPlan(ctx, { dev: st.dev, raw: st.raw }, input.off ?? {}, await this.inventory(g.node).catch(() => null)); kind = 'gpu-off'; break }
+      case 'gpu-revoke': plan = buildGpuRevokePlan(ctx, (await this.gpuState(g, ctx.config)).dev); kind = 'device'; break
+      case 'gpu-off': { const st = await this.gpuState(g, ctx.config); plan = buildGpuOffPlan(ctx, { dev: st.dev, raw: st.raw }, input.off ?? {}, await this.inventory(g.node).catch(() => null)); kind = 'gpu-off'; break }
       case 'gpu-on': {
-        const st = await this.gpuState(g)
+        const st = await this.gpuState(g, ctx.config)
         plan = buildGpuOnPlan(ctx, st.off as GpuOffRecord | null); kind = 'gpu-on'
         if (st.offRow) (plan.meta ??= {}).fromHistory = st.offRow
         break
@@ -396,6 +399,7 @@ export class GuestConfigService {
         const all = ((await this.d.pve.get<any[]>('/nodes').catch(() => [])) ?? []).filter(n => n.status === 'online').map(n => String(n.node))
         const eligible = (input.nodes?.length ? input.nodes.filter(n => all.includes(n)) : all)
         const targets = await Promise.all(eligible.map(async n => ({ node: n, inv: await this.inventory(n, true) })))
+        rawInvs = targets.map(t => t.inv)
         const det = ctx.running ? await this.gpuDetail(g).catch(() => null) : null
         plan = buildPortableGpuPlan(ctx, targets.filter(t => t.inv.problem || t.inv.devices.some(d => d.kind === 'gpu')), det?.groups ?? null); kind = 'device'
         break
@@ -441,8 +445,10 @@ export class GuestConfigService {
             }
             if (splitConf(text).hasPending) plan.errors.push('The config file has a [pve:pending] section; restart the guest (so it applies) before changing raw lines.')
             else {
+              const sources = addedSources(rf.add)
+              if (rf.add.length) await this.checkAddedRaw(g, rf.add, sources, rawInvs, plan)
               const after = rewriteRawLines(text, rf)
-              file = { sha, before: text, after }
+              file = { sha, before: text, after, sources }
               plan.expectRaw = splitConf(after).rawMain
             }
           } catch (e: any) { plan.errors.push(String(e?.message ?? e)) }
@@ -538,16 +544,19 @@ export class GuestConfigService {
         if (!q2.quorate) throw new GuestConfigRefusal(q2.why, 'not-quorate')
         let w: { code: number; output: string } | null = null
         let dropped: string | null = null
-        try { w = await this.d.shell.run(p.guest.node, writeScript(p.guest.node, p.guest.vmid, p.file.sha, p.file.after), 30_000) }
+        try { w = await this.d.shell.run(p.guest.node, writeScript(p.guest.node, p.guest.vmid, p.file.sha, p.file.after, p.file.sources), 30_000) }
         catch (e: any) { dropped = String(e?.message ?? e) }
         if (w && /HPX-CAS-MISMATCH/.test(w.output)) throw new GuestConfigRefusal('The config file changed at the last moment, so nothing was written. Review it again.', 'changed')
         if (w && /HPX-GUEST-LOCKED/.test(w.output)) throw new GuestConfigRefusal('The guest was locked (a backup, migration or snapshot) at the last moment, so nothing was written.', 'changed')
+        if (w && /HPX-PENDING/.test(w.output)) throw new GuestConfigRefusal('The config file gained a [pve:pending] section at the last moment, so nothing was written.', 'changed')
+        if (w && /HPX-BAD-DEVICE/.test(w.output)) throw new GuestConfigRefusal(`On ${p.guest.node}, ${/HPX-BAD-DEVICE (\S+)/.exec(w.output)?.[1] ?? 'a device'} is no longer a plain character device (a symlink, or something else), so nothing was written.`, 'refused')
         if (w && /HPX-LOCK-TIMEOUT/.test(w.output)) throw new GuestConfigRefusal('Proxmox held this guest’s config lock for more than 10 seconds, so nothing was written. Try again.', 'refused')
         let back: { text: string } | null = null
         if (w && w.code === 0) { try { back = parseRead(w.output) } catch { back = null } }
         if (!back) {
           // The session dropped, or the answer was cut off: what is on the node now decides, not the error.
-          const rr = await this.d.shell.run(p.guest.node, readScript(p.guest.node, p.guest.vmid), 20_000).catch(() => null)
+          // Under the config lock, so a write still running on the node finishes (or gives up) before this read.
+          const rr = await this.d.shell.run(p.guest.node, readScript(p.guest.node, p.guest.vmid, { locked: true }), 30_000).catch(() => null)
           try { if (rr && rr.code === 0) back = parseRead(rr.output) } catch { back = null }
           if (back && sha256(back.text) === sha256(p.file.after)) steps.push(`the node session ${dropped ? 'dropped' : 'ended badly'} after the write; a fresh read shows the planned file`)
         }
@@ -555,7 +564,12 @@ export class GuestConfigService {
         else {
           fileAfter = back.text
           if (back.text !== p.file.after) failed = sha256(back.text) === p.file.sha ? `the config file write failed on ${p.guest.node}; the file is unchanged` : 'the config file read back is not byte for byte the planned file'
-          else steps.push('raw lines written (whole file, compared and swapped under the config lock)')
+          else {
+            steps.push('raw lines written (whole file, compared and swapped under the config lock)')
+            // GPU off: what was removed from the file is recorded now, before any devN step can fail, so GPU on can
+            // always put it back.
+            if (p.kind === 'gpu-off') await this.recordGpuOff(p, null, true).catch(() => {})
+          }
         }
         // Proxmox must still parse it, and the API's digest moves on.
         const parsed = await this.d.pve.get<PveConfig>(`${this.base(p.guest)}/config`).catch(() => null)
@@ -628,23 +642,72 @@ export class GuestConfigService {
   }
 
   private hmacKeyCache: Buffer | null = null
+  private hmacKeyLoading: Promise<Buffer> | null = null
+  /** Drop key material held in memory (called when the vault locks). */
+  forgetKeys(): void { this.hmacKeyCache = null; this.hmacKeyLoading = null }
   private async hmacs(lines: Array<[string, string]>): Promise<string[]> {
-    this.hmacKeyCache ??= this.d.hmacKey ? await this.d.hmacKey() : randomBytes(32)
+    if (!this.hmacKeyCache) {
+      // One load at a time: concurrent first uses share it instead of each creating a key.
+      this.hmacKeyLoading ??= (this.d.hmacKey ? this.d.hmacKey() : Promise.resolve(randomBytes(32))).finally(() => { this.hmacKeyLoading = null })
+      this.hmacKeyCache = await this.hmacKeyLoading
+    }
     return lines.map(([k, v]) => createHmac('sha256', this.hmacKeyCache!).update(`${k}\u0000${v}`).digest('hex'))
   }
 
-  async gpuState(g: GuestId): Promise<GpuState> { return this.d.history.getGpu(`${g.type}/${g.vmid}`) }
+  async gpuState(g: GuestId, cfg: PveConfig): Promise<GpuState> { return this.d.history.getGpu(gpuKey(g, cfg)) }
 
-  /** Keep the GPU toggle state in step with a successful write. */
+  /** Record a GPU off: `partial` when only the raw-line step has landed so far (the devN step is still to come). */
+  private async recordGpuOff(p: Preview, rowId: string | null, partial: boolean): Promise<void> {
+    const rec = (p.plan.meta as any)?.gpuOff
+    if (!rec) return
+    await this.d.history.updateGpu(gpuKey(p.guest, p.before), st => {
+      st.off = partial ? { removed: {}, rawRemoved: rec.rawRemoved ?? [], kept: rec.kept ?? [] } : rec
+      st.offAt = new Date(this.d.now()); if (rowId) st.offRow = rowId
+      return st
+    })
+  }
+
+  /** Keep the GPU toggle state in step with a successful write, in one transaction. */
   private async updateGpuState(p: Preview, rowId: string | null): Promise<void> {
     const m = (p.plan.meta ?? {}) as any
     if (!m.gpuManaged && !m.gpuManagedRaw && p.kind !== 'gpu-off' && p.kind !== 'gpu-on') return
-    const st = await this.gpuState(p.guest)
-    if (m.gpuManaged) Object.assign(st.dev, m.gpuManaged)
-    for (const l of (m.gpuManagedRaw ?? []) as Array<[string, string]>) if (!st.raw.some(r => r[0] === l[0] && r[1] === l[1])) st.raw.push([l[0], l[1]])
-    if (p.kind === 'gpu-off' && m.gpuOff) { st.off = m.gpuOff; st.offAt = new Date(this.d.now()); st.offRow = rowId }
-    if (p.kind === 'gpu-on') { st.off = null; st.offAt = null; st.offRow = null }
-    await this.d.history.setGpu(st)
+    if (p.kind === 'gpu-off') return this.recordGpuOff(p, rowId, false)
+    await this.d.history.updateGpu(gpuKey(p.guest, p.before), st => {
+      if (m.gpuManaged) Object.assign(st.dev, m.gpuManaged)
+      for (const l of (m.gpuManagedRaw ?? []) as Array<[string, string]>) if (!st.raw.some(r => r[0] === l[0] && r[1] === l[1])) st.raw.push([l[0], l[1]])
+      if (p.kind === 'gpu-on') { st.off = null; st.offAt = null; st.offRow = null }
+      return st
+    })
+  }
+
+  /**
+   * Added raw lines: each must pass the allowlist against the node inventories (character devices that are not
+   * symlinks, their majors), and every mount source is looked at on the node itself: a character device whose
+   * realpath is itself, or one of the GPU device directories. A device the node lacks may only be named by an
+   * optional entry, and only if another eligible node's inventory has it.
+   */
+  private async checkAddedRaw(g: GuestId, add: Array<[string, string]>, sources: string[], invs: NodeInventory[] | null, plan: Plan): Promise<void> {
+    const list = invs ?? [await this.inventory(g.node).catch(() => null)].filter((x): x is NodeInventory => !!x)
+    const allow = allowFrom(list)
+    for (const l of add) { const why = rawLineAllowed(l, allow); if (why) plan.errors.push(why) }
+    if (!sources.length || plan.errors.length) return
+    const r = await this.d.shell.run(g.node, verifyScript(sources), 20_000).catch(() => null)
+    if (!r) { plan.errors.push(`The devices could not be checked on ${g.node} (no node login).`); return }
+    const v = parseVerify(r.output)
+    const here = list.find(i => i.node === g.node)
+    for (const src of sources) {
+      const x = v[src]
+      const line = add.find(([k, val]) => k === 'lxc.mount.entry' && val.trim().split(/\s+/)[0] === src)!
+      const optional = /(^|,)optional(,|$)/.test(line[1].trim().split(/\s+/)[3] ?? '')
+      if (!x) plan.errors.push(`${src} could not be checked on ${g.node}.`)
+      else if (x.kind === 'symlink') plan.errors.push(`${src} is a symlink on ${g.node}; only the device node itself may be bound.`)
+      else if (x.kind === 'other') plan.errors.push(`${src} on ${g.node} is not a character device (a block device or a file), so it is refused.`)
+      else if (x.kind === 'char' && x.real !== src) plan.errors.push(`${src} resolves to ${x.real} on ${g.node}; only the device node itself may be bound.`)
+      else if (x.kind === 'char' && here?.charDevices && here.charDevices[src] === undefined) plan.errors.push(`${src} is not in ${g.node}’s device inventory, so it is refused.`)
+      else if (x.kind === 'dir' && (!DEVICE_DIRS.includes(src) || x.real !== src)) plan.errors.push(`${src} is a directory; only ${DEVICE_DIRS.join(' and ')} may be bound.`)
+      else if (x.kind === 'missing' && !optional) plan.errors.push(`${src} does not exist on ${g.node}; only an optional entry may name a device another node has.`)
+    }
+    plan.checks.push(`Every added device was checked on ${g.node}: a character device (or GPU device directory), not a symlink, its own real path`)
   }
 
   /** Poll a task by UPID until it stops; its exit status is read, a task that never finishes is reported. */
@@ -732,7 +795,7 @@ export class GuestConfigService {
     for (const n of new Set(guests.map(x => x.node as string))) { const hit = this.inv.get(n); invs.set(n, hit ? hit.inv : null) }
     // The GPU toggle state needs the guest's history: an "off" with nothing turned back on since.
     const states = new Map((await this.d.history.listGpu().catch(() => [] as GpuState[])).map(st => [st.guest, st]))
-    const offs = guests.map(x => !!states.get(`${x.type}/${x.vmid}`)?.off)
+    const offs = guests.map((x, i) => !!states.get(gpuKey({ type: x.type, vmid: Number(x.vmid) }, configs[i] ?? {}))?.off)
     const vpn = await vpnStatuses(guests.map(x => ({ node: x.node, type: x.type, vmid: Number(x.vmid), name: x.name })), this.d.vpn ?? vpnStatusSource())
     return guests.map((x, i) => {
       const cfg = configs[i] ?? {}
@@ -764,4 +827,28 @@ export function ipOf(type: GuestType, cfg: PveConfig): string | null {
     if (type === 'qemu' && /^ipconfig\d+$/.test(k)) { const ip = /(?:^|,)ip=([^,]+)/.exec(str(v))?.[1]; if (ip && ip !== 'dhcp') return ip.split('/')[0] }
   }
   return null
+}
+
+/**
+ * The GPU state key: type, VMID and the guest's creation identity (a container's NIC MACs, a VM's SMBIOS UUID or
+ * generation ID), so a reused VMID never inherits another guest's GPU state.
+ */
+export function gpuKey(g: { type: GuestType; vmid: number }, cfg: PveConfig): string {
+  let id = ''
+  if (g.type === 'qemu') id = /uuid=([0-9a-f-]+)/i.exec(str(cfg.smbios1))?.[1] ?? str(cfg.vmgenid) ?? ''
+  else id = Object.keys(cfg).filter(k => /^net\d+$/.test(k)).sort().map(k => /hwaddr=([0-9A-Fa-f:]+)/.exec(str(cfg[k]))?.[1] ?? '').join(',')
+  if (!id) id = str(cfg.rootfs ?? cfg.scsi0 ?? '').split(',')[0]
+  return `${g.type}/${g.vmid}/${sha256(id).slice(0, 16)}`
+}
+
+/** What an added raw line may name: inventory character devices (not symlinks) and their majors, plus GPU majors. */
+export function allowFrom(invs: NodeInventory[]): RawAllow {
+  const devices = new Set<string>(), majors = new Set<number>()
+  for (const inv of invs) {
+    const chars = inv.charDevices ?? {}
+    const listed = new Set([...inv.devices.flatMap(d => d.paths), ...inv.nvidiaNodes])
+    for (const [p, maj] of Object.entries(chars)) if (listed.has(p)) { devices.add(p); majors.add(maj) }
+    if (Object.keys(inv.majors).length) for (const [maj, x] of gpuMajors(inv.majors)) if (!x.assumed) majors.add(maj)
+  }
+  return { devices, majors }
 }

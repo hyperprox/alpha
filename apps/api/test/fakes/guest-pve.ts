@@ -7,7 +7,7 @@ import type { GuestPve, NodeShell } from '../../src/lib/guest-config/service'
 import { GuestConfigService } from '../../src/lib/guest-config/service'
 import { MemoryHistoryStore } from '../../src/lib/guest-config/history/store'
 import { sha256 } from '../../src/lib/guest-config/rawfile'
-import { pveParseRaw, pveHasLock } from './pve-conf'
+import { pveParseRaw, pveHasLock, pveHasPending } from './pve-conf'
 
 export const FIX = (name: string) => readFileSync(join(__dirname, '..', 'fixtures', 'guest-config', name), 'utf8')
 
@@ -156,6 +156,13 @@ export class FakeShell implements NodeShell {
   /** Temp files left by an earlier, interrupted run, by vmid. */
   leftovers: Record<string, string[]> = {}
   removed: string[] = []
+  /** Device paths that are symlinks on a node (for the device check), by node. */
+  symlinks: Record<string, string[]> = {}
+  /** Character devices on a node: from the node's probe fixture (##chardev), unless set. */
+  chars(node: string): Record<string, string> {
+    const sec = (this.probes[node] ?? '').split('##chardev')[1]?.split('##end')[0] ?? ''
+    return Object.fromEntries(sec.split('\n').filter(l => l.includes('|')).map(l => l.trim().split('|') as [string, string]))
+  }
   constructor(private pve?: FakePve) {}
   fileOf(vmid: string): string {
     if (this.files[vmid] !== undefined) return this.files[vmid]
@@ -178,6 +185,9 @@ export class FakeShell implements NodeShell {
       const expect = /if \[ "\$cur" != '([0-9a-f]{64})' \]/.exec(command)![1]
       if (sha256(cur) !== expect) return { code: 3, output: `HPX-CAS-MISMATCH ${sha256(cur)}\n` }
       if (pveHasLock(cur)) return { code: 5, output: 'HPX-GUEST-LOCKED\n' }
+      if (pveHasPending(cur)) return { code: 7, output: 'HPX-PENDING\n' }
+      for (const p of [...command.matchAll(/^for p in (.*); do$/gm)].flatMap(m => [...m[1].matchAll(/'([^']+)'/g)].map(x => x[1])))
+        if ((this.symlinks[node] ?? []).includes(p)) return { code: 6, output: `HPX-BAD-DEVICE ${p}\n` }
       const text = Buffer.from(/printf '%s' '([^']*)'/.exec(command)![1], 'base64').toString('utf8')
       this.files[vmid] = text
       // Proxmox re-parses the file (its own grammar, not the writer's): its main-section raw lines are what the API reads.
@@ -185,6 +195,12 @@ export class FakeShell implements NodeShell {
       if (g) { const raw = pveParseRaw(text); if (raw.length) g.config.lxc = raw; else delete g.config.lxc }
       if (this.dropAfterWrite) { this.dropAfterWrite = false; throw new Error('fake: connection reset by peer') }
       return { code: 0, output: `${Buffer.from(text).toString('base64')}\n${sha256(text)}\n` }
+    }
+    if (command.includes('# HPX verify devices')) {
+      const paths = [...(/^for p in (.*); do$/m.exec(command)?.[1] ?? '').matchAll(/'([^']+)'/g)].map(x => x[1])
+      const ch = this.chars(node)
+      const dirs = new Set(Object.keys(ch).filter(p => p.startsWith('/dev/dri/') || p.startsWith('/dev/nvidia-caps/')).map(p => p.split('/').slice(0, 3).join('/')))
+      return { code: 0, output: paths.map(p => (this.symlinks[node] ?? []).includes(p) ? `L ${p}` : ch[p] ? `C ${p} ${ch[p]} ${p}` : dirs.has(p) ? `D ${p} ${p}` : `M ${p}`).join('\n') + '\n' }
     }
     if (w && command.includes('# HPX clean config temp files')) {
       const files = [...command.matchAll(/rm -f '([^']+)'/g)].map(m => m[1])

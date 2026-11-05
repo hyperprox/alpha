@@ -204,6 +204,7 @@ test('the NVIDIA fixture: an edit keeps all twelve raw lines, and a raw-line edi
 
 function rawSetup(over: any = {}, guest: any = {}) {
   const s = setup(over, guest)
+  s.shell.probes['node-a'] = FIX('probe-igpu.txt')
   s.shell.tail['901'] = '\n[before-change]\ncores: 1\nlxc.cgroup2.devices.allow: c 10:200 rwm\nsnaptime: 1700000000\n'
   return s
 }
@@ -379,6 +380,7 @@ test('temp files an earlier run left behind are reported at the next preview and
 
 test('CRLF config files, "key = value" lines and dashed keys survive a write and read back through PVE’s grammar', async () => {
   const s = setup()
+  s.shell.probes['node-a'] = FIX('probe-igpu.txt')
   s.shell.files['901'] = 'arch: amd64\r\nhostname: web\r\nlxc.hook.pre-start: /var/lib/vz/snippets/h.sh\r\nlxc.cgroup2.devices.allow = c 10:200 rwm\r\nmemory: 512\r\n'
   s.pve.g('lxc', 901).config.lxc = [['lxc.hook.pre-start', '/var/lib/vz/snippets/h.sh'], ['lxc.cgroup2.devices.allow', 'c 10:200 rwm']]
   const p = await s.service.preview(OWNER, CT, { kind: 'raw', raw: { add: [ADD], remove: [['lxc.cgroup2.devices.allow', 'c 10:200 rwm']] } })
@@ -409,4 +411,89 @@ test('retention never drops the open GPU-off row or the rows that record managed
   assert.equal((await s.service.overview()).find(r => r.vmid === 941)!.gpu.toggle, 'off')
   const on = await s.service.preview(OWNER, G, { kind: 'gpu-on' })
   assert.deepEqual(on.plan.errors, [])
+})
+
+test('round 3: an added line must name an inventory character device on the node; symlinks, host memory and every-device allows are refused', async () => {
+  const s = rawSetup()
+  for (const [line, re] of [
+    [['lxc.mount.entry', '/dev/mem dev/mem none bind,create=file'], /host memory/],
+    [['lxc.mount.entry', '/dev/. dev/. none bind,create=dir'], /“\.”/],
+    [['lxc.mount.entry', '/dev/fd dev/fd none bind,create=dir'], /not a device/],
+    [['lxc.mount.entry', '/dev/nvidia0 dev/nvidia0 none bind,create=file'], /not in the node’s device inventory/],
+    [['lxc.cgroup2.devices.allow', 'c *:* rwm'], /every device/],
+    [['lxc.cgroup2.devices.allow', 'c 195:* rwm'], /not a GPU or inventory device/],
+  ] as Array<[[string, string], RegExp]>) {
+    const p = await s.service.preview(OWNER, CT, { kind: 'raw', raw: { add: [line] } })
+    assert.ok(p.plan.errors.some(e => re.test(e)), `${line[1]} → ${p.plan.errors.join(' | ')}`)
+  }
+  s.shell.symlinks['node-a'] = ['/dev/dri/renderD128']
+  const sym = await s.service.preview(OWNER, CT, { kind: 'raw', raw: { add: [ADD] } })
+  assert.ok(sym.plan.errors.some(e => /symlink/.test(e)), sym.plan.errors.join(' | '))
+})
+
+test('round 3: the node re-checks added devices at write time; a device that became a symlink stops the write', async () => {
+  const s = rawSetup()
+  const p = await s.service.preview(OWNER, CT, { kind: 'raw', raw: { add: [ADD] } })
+  assert.deepEqual(p.plan.errors, [])
+  assert.deepEqual(p.file!.sources, ['/dev/dri/renderD128'])
+  s.shell.symlinks['node-a'] = ['/dev/dri/renderD128']
+  await refusal(s.service.apply(OWNER, p.id, { name: 'web' }), 'refused')
+})
+
+test('round 3: a pending section that appears on the node at the last moment is refused by the script', async () => {
+  const s = rawSetup()
+  const p = await s.service.preview(OWNER, CT, { kind: 'raw', raw: { add: [ADD] } })
+  s.shell.beforeWrite = v => { s.shell.files[v] = s.shell.files[v] }   // same bytes, so the CAS passes…
+  const orig = s.shell.run.bind(s.shell)
+  s.shell.run = async (n, c) => c.includes('# HPX write config file') ? { code: 7, output: 'HPX-PENDING\n' } : orig(n, c)
+  await refusal(s.service.apply(OWNER, p.id, { name: 'web' }), 'changed')
+})
+
+test('round 3: the re-read after a dropped session takes the config lock', async () => {
+  const s = rawSetup()
+  const p = await s.service.preview(OWNER, CT, { kind: 'raw', raw: { add: [ADD] } })
+  s.shell.dropAfterWrite = true
+  await s.service.apply(OWNER, p.id, { name: 'web' })
+  const reads = s.shell.commands.filter(c => c.command.includes('# HPX read config file'))
+  assert.ok(reads.at(-1)!.command.includes('flock -w'))
+})
+
+test('round 3: a GPU off whose devN step fails still records the raw lines it removed, so GPU on can restore them', async () => {
+  const s = makeService()
+  s.shell.probes['node-a'] = FIX('probe-nvidia.txt')
+  s.pve.add({ node: 'node-a', type: 'lxc', vmid: 911, status: 'stopped', config: { ...JSON.parse(FIX('ct-nvidia.json')), dev0: '/dev/nvidia0' } })
+  const G = { node: 'node-a', type: 'lxc' as const, vmid: 911 }
+  const raw = ['lxc.mount.entry', '/dev/nvidia-uvm-tools dev/nvidia-uvm-tools none bind,optional,create=file,mode=0666']
+  const p = await s.service.preview(OWNER, G, { kind: 'gpu-off', off: { alsoRemove: [{ key: raw[0], value: raw[1] }, { key: 'dev0', value: '/dev/nvidia0' }] } })
+  assert.deepEqual(p.plan.errors, [])
+  const orig = s.pve.put.bind(s.pve)
+  s.pve.put = async (path, params) => { if (params.delete) throw new Error('Proxmox PUT: HTTP 500 — boom'); return orig(path, params) }
+  const r = await s.service.apply(OWNER, p.id, { name: 'coder' })
+  assert.equal(r.ok, false)
+  s.pve.put = orig
+  const st = await s.service.gpuState(G, s.pve.view(s.pve.g('lxc', 911)))
+  assert.deepEqual(st.off?.rawRemoved, [raw])
+  const on = await s.service.preview(OWNER, G, { kind: 'gpu-on' })
+  assert.deepEqual(on.plan.errors, [])
+  assert.deepEqual(on.plan.rawFile?.add, [raw])
+})
+
+test('round 3: a reused VMID does not inherit the old guest’s GPU state', async () => {
+  const { gpuKey } = await import('../src/lib/guest-config/service')
+  const a = gpuKey({ type: 'lxc', vmid: 901 }, { net0: 'name=eth0,bridge=vmbr0,hwaddr=BC:24:11:00:00:01' })
+  const b = gpuKey({ type: 'lxc', vmid: 901 }, { net0: 'name=eth0,bridge=vmbr0,hwaddr=BC:24:11:00:00:02' })
+  assert.notEqual(a, b)
+  assert.equal(a, gpuKey({ type: 'lxc', vmid: 901 }, { net0: 'name=eth0,hwaddr=BC:24:11:00:00:01,bridge=vmbr1', memory: 9 }), 'stable across ordinary edits')
+})
+
+test('round 3: the HMAC key is loaded once for concurrent first uses, and forgotten on lock', async () => {
+  let loads = 0
+  const { GuestConfigService } = await import('../src/lib/guest-config/service')
+  const { MemoryHistoryStore } = await import('../src/lib/guest-config/history/store')
+  const s2 = new GuestConfigService({ pve: {} as any, shell: {} as any, history: new MemoryHistoryStore(), audit: async () => {}, hmacKey: async () => { loads++; await new Promise(r => setTimeout(r, 10)); return Buffer.alloc(32, 1) } })
+  await Promise.all([1, 2, 3].map(() => (s2 as any).hmacs([['lxc.mount.entry', 'x']])))
+  assert.equal(loads, 1)
+  s2.forgetKeys()
+  await (s2 as any).hmacs([['lxc.mount.entry', 'x']])
+  assert.equal(loads, 2)
 })

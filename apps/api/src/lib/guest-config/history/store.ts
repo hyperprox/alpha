@@ -68,6 +68,8 @@ export interface HistoryStore {
   get(id: string): Promise<HistoryRow | null>
   getGpu(guest: string): Promise<GpuState>
   setGpu(s: GpuState): Promise<void>
+  /** Read, change and write one guest's GPU state in a single transaction. */
+  updateGpu(guest: string, fn: (s: GpuState) => GpuState): Promise<GpuState>
   /** Every guest with GPU state, for the list view (one read, not one per guest). */
   listGpu(): Promise<GpuState[]>
 }
@@ -107,6 +109,12 @@ export class MemoryHistoryStore implements HistoryStore {
   gpu = new Map<string, GpuState>()
   async getGpu(guest: string) { return structuredClone(this.gpu.get(guest) ?? emptyGpuState(guest)) }
   async setGpu(st: GpuState) { this.gpu.set(st.guest, structuredClone(st)) }
+  async updateGpu(guest: string, fn: (s: GpuState) => GpuState) {
+    // No await between read and write: one step on the event loop, so nothing interleaves.
+    const next = fn(structuredClone(this.gpu.get(guest) ?? emptyGpuState(guest)))
+    this.gpu.set(guest, structuredClone({ ...next, guest }))
+    return structuredClone(next)
+  }
   async listGpu() { return structuredClone([...this.gpu.values()]) }
   private n = 0
   now = () => Date.now()
@@ -148,9 +156,19 @@ export class PrismaHistoryStore implements HistoryStore {
   async get(id: string) { const r = await (this.db as any).guestConfigVersion.findUnique({ where: { id } }); return r ? this.row(r) : null }
   private gpuRow = (r: any): GpuState => ({ guest: r.guest, dev: r.dev ?? {}, raw: r.raw ?? [], off: r.off ?? null, offAt: r.offAt ?? null, offRow: r.offRow ?? null })
   async getGpu(guest: string) { const r = await (this.db as any).guestGpuState.findUnique({ where: { guest } }); return r ? this.gpuRow(r) : emptyGpuState(guest) }
+  private gpuValues = (st: GpuState) => ({ dev: redactMeta(st.dev), raw: redactMeta(st.raw), off: (st.off ? redactMeta(st.off) : null) ?? undefined, offAt: st.offAt, offRow: st.offRow })
   async setGpu(st: GpuState) {
-    const v = { dev: redactMeta(st.dev), raw: redactMeta(st.raw), off: (st.off ? redactMeta(st.off) : null) ?? undefined, offAt: st.offAt, offRow: st.offRow }
+    const v = this.gpuValues(st)
     await (this.db as any).guestGpuState.upsert({ where: { guest: st.guest }, create: { guest: st.guest, ...v }, update: v })
+  }
+  async updateGpu(guest: string, fn: (s: GpuState) => GpuState) {
+    return (this.db as any).$transaction(async (tx: any) => {
+      const cur = await tx.guestGpuState.findUnique({ where: { guest } })
+      const next = { ...fn(cur ? this.gpuRow(cur) : emptyGpuState(guest)), guest }
+      const v = this.gpuValues(next)
+      await tx.guestGpuState.upsert({ where: { guest }, create: { guest, ...v }, update: v })
+      return next
+    }, { isolationLevel: 'Serializable' })
   }
   async listGpu() { return ((await (this.db as any).guestGpuState.findMany()) as any[]).map(this.gpuRow) }
 }
