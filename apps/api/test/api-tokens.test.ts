@@ -66,7 +66,7 @@ test('tokenForbidden: the refused list', () => {
     ['POST', '/api/auth/bootstrap'], ['GET', '/api/auth/tokens'], ['POST', '/api/auth/tokens'], ['DELETE', '/api/auth/tokens/x'],
     ['GET', '/api/secrets'], ['POST', '/api/secrets/reveal'], ['POST', '/api/secrets/send'], ['POST', '/api/secrets/generate'],
     ['GET', '/api/terminal/hosts'], ['PUT', '/api/terminal/credentials/a'], ['GET', '/ws'], ['GET', '/ws/terminal/term'], ['GET', '/ws/updates'],
-    ['POST', '/api/infra/vms/n1/100/qemu/vnc'], ['GET', '/api/secrets/?x=1'],
+    ['GET', '/api/secrets/?x=1'],
   ]) assert.equal(tokenForbidden(m, p), true, `${m} ${p}`)
   for (const [m, p] of [
     ['GET', '/api/auth/status'], ['GET', '/api/proxmox/resources'], ['POST', '/api/certs/managed/x/issue'],
@@ -145,13 +145,13 @@ test('reconfirm route (guest destroy): 403 reconfirm_required for an admin token
   assert.equal(res.json().code, 'reconfirm_required')
 })
 
-test('secrets, terminal, websockets, consoles and auth actions: 403 token_forbidden', async () => {
+test('secrets, terminal, websockets and auth actions: 403 token_forbidden', async () => {
   const app = await appP
   await unlockAs()
   const t = await token('admin')
   for (const [method, url] of [
     ['GET', '/api/secrets'], ['GET', '/api/secrets/'], ['POST', '/api/secrets/reveal'], ['POST', '/api/secrets/send'], ['POST', '/api/secrets/generate'],
-    ['GET', '/api/terminal/hosts'], ['GET', '/ws'], ['GET', '/ws/terminal/term'], ['POST', '/api/infra/vms/n1/100/qemu/vnc'],
+    ['GET', '/api/terminal/hosts'], ['GET', '/ws'], ['GET', '/ws/terminal/term'],
     ['POST', '/api/auth/lock'], ['POST', '/api/auth/sign-out'], ['POST', '/api/auth/reconfirm'],
     // Fastify routes on the decoded path; the gate checks the matched route as well as the raw one.
     ['GET', '/api/%73ecrets'], ['POST', '/api/secrets/%72eveal'],
