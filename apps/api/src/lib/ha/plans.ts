@@ -39,9 +39,9 @@ export type HaChange =
   | { action: 'create-rule'; rule: HaRule; confirmStrict?: boolean; confirmNoRoom?: boolean }
   /** A patch: only the fields given change; the rest are kept from the stored rule. */
   | { action: 'update-rule'; rule: Partial<HaRule> & { id: string }; confirmStrict?: boolean; confirmNoRoom?: boolean }
-  | { action: 'delete-rule'; ruleId: string }
-  | { action: 'enable-rule'; ruleId: string }
-  | { action: 'disable-rule'; ruleId: string }
+  | { action: 'delete-rule'; ruleId: string; confirmStrict?: boolean }
+  | { action: 'enable-rule'; ruleId: string; confirmStrict?: boolean; confirmNoRoom?: boolean }
+  | { action: 'disable-rule'; ruleId: string; confirmStrict?: boolean }
   | { action: 'flatten'; ruleId: string }
   | { action: 'maintenance'; node: string; enable: boolean }
 
@@ -292,6 +292,45 @@ export class HaPlanner {
       touchedRules.push(rule.id)
     }
     const dropRule = (id: string) => { ops.push({ kind: 'rule-delete', ruleId: id }); rules = rules.filter(r => r.id !== id); touchedRules.push(id) }
+    /**
+     * The checks every rule change runs against the rule as it will be (null: deleted), whatever the action:
+     * strictness gained or lost is confirmed and shown in red; a keep-apart rule with no room right now is
+     * refused unless that is confirmed. Call after the rule set has been changed.
+     */
+    const gateRule = (before: HaRule | null, after: HaRule | null) => {
+      const r = req as { confirmStrict?: boolean; confirmNoRoom?: boolean }
+      const strictNow = !!after && !after.disabled && narrowsStrictly(after, allNodes)
+      const strictWas = !!before && !before.disabled && narrowsStrictly(before, allNodes)
+      const narrowed = strictNow && strictWas && before!.type === 'node-affinity' && after!.type === 'node-affinity'
+        && allowedNodes(after as NodeAffinityRule, allNodes).sort().join() !== allowedNodes(before as NodeAffinityRule, allNodes).sort().join()
+      if (strictNow !== strictWas || narrowed) {
+        strict = true
+        const id = (after ?? before)!.id
+        if (!r.confirmStrict) throw strictRefusal(strictNow
+          ? 'A strict rule keeps its guests off when its nodes are down. Confirm it to continue.'
+          : `This makes rule "${id}" no longer strict: its guests may then run on nodes it kept them off. Confirm it to continue.`)
+      }
+      if (strictNow && after!.type === 'node-affinity' && (!strictWas || narrowed)) {
+        const allowed = allowedNodes(after as NodeAffinityRule, allNodes)
+        const who = list(after!.resources.map(label))
+        const text = after!.affinity === 'negative' && allowed.length === 1
+          ? `This is in effect a strict home on ${allowed[0]} only: if ${allowed[0]} is down, ${who} stays off.`
+          : `Strict: if ${list(allowed, 'and')} ${allowed.length > 1 ? 'are all' : 'is'} down, ${who} do${after!.resources.length === 1 ? 'es' : ''} not start anywhere.`
+        critical.push(text)
+        if (/in effect/.test(text)) warnings.push(text)
+      }
+      if (strictWas && !strictNow) critical.push(`No longer strict: ${list(before!.resources.map(label))} may now run outside the nodes rule "${before!.id}" allowed.`)
+      if (!after) return
+      for (const h of headroom(snap, rules).filter(h => h.rule === after.id && h.level !== 'ok')) {
+        if (h.level === 'broken') {
+          if (!r.confirmNoRoom) {
+            const msg = `${h.words} Proxmox would accept this and leave one guest with nowhere to run right now. Confirm that one guest stays off to continue.`
+            throw new HaRefusal(msg, 409, [{ code: 'no-room', rules: [after.id], message: msg }])
+          }
+          warnings.push(`Confirmed: one of these guests stays off until another eligible node is online. ${h.words}`)
+        } else warnings.push(h.words)
+      }
+    }
 
     switch (req.action) {
       case 'protect': {
@@ -444,45 +483,17 @@ export class HaPlanner {
         if (req.action === 'create-rule' && snap.rules.some(r => r.id === rule.id)) throw new HaRefusal(`There is already a rule called "${rule.id}".`, 409)
         const diff = before ? ruleChanges(before, rule, label) : []
         if (before && !diff.length) throw new HaRefusal('Nothing would change.', 400)
-        // Strictness, either way, and any strict rule that narrows where guests may run: confirmed, and in red.
-        const strictNow = narrowsStrictly(rule, allNodes) && !rule.disabled
-        const strictWas = !!before && narrowsStrictly(before, allNodes) && !before.disabled
-        const narrowed = !!before && before.type === 'node-affinity' && rule.type === 'node-affinity'
-          && allowedNodes(rule, allNodes).sort().join() !== allowedNodes(before, allNodes).sort().join()
-        if (strictNow !== strictWas || (strictNow && (!before || narrowed))) {
-          strict = true
-          if (!req.confirmStrict) throw strictRefusal(strictNow
-            ? 'A strict rule keeps its guests off when its nodes are down. Confirm it to continue.'
-            : `This makes rule "${rule.id}" no longer strict: its guests may then run on nodes it kept them off. Confirm it to continue.`, 400)
-        }
         setRule(rule, before)
         title = `${before ? 'Change' : 'Add'} rule "${rule.id}"`
         changes.push(`${before ? 'Change' : 'Add'} rule "${rule.id}": ${ruleWords(rule, label)}`)
         changes.push(...diff)
-        if (strictNow && rule.type === 'node-affinity') {
-          const allowed = allowedNodes(rule, allNodes)
-          const who = list(rule.resources.map(label))
-          critical.push(rule.affinity === 'negative' && allowed.length === 1
-            ? `This is in effect a strict home on ${allowed[0]} only: if ${allowed[0]} is down, ${who} stays off.`
-            : `Strict: if ${list(allowed, 'and')} are all down, ${who} do${rule.resources.length === 1 ? 'es' : ''} not start anywhere.`)
-          warnings.push(...critical.filter(c => /in effect/.test(c)))
-        }
-        if (strictWas && !strictNow) critical.push(`No longer strict: ${list(rule.resources.map(label))} may now run outside the nodes this rule allowed.`)
-        // Keep apart with no room right now: refused unless the consequence is confirmed.
-        for (const h of headroom(snap, rules).filter(h => h.rule === rule.id && h.level !== 'ok')) {
-          if (h.level === 'broken') {
-            if (!req.confirmNoRoom) {
-              const msg = `${h.words} Proxmox would accept this and leave one guest with nowhere to run right now. Confirm that one guest stays off to continue.`
-              throw new HaRefusal(msg, 409, [{ code: 'no-room', rules: [rule.id], message: msg }])
-            }
-            warnings.push(`Confirmed: one of these guests stays off until another eligible node is online. ${h.words}`)
-          } else warnings.push(h.words)
-        }
+        gateRule(before, rule)
         break
       }
       case 'delete-rule': {
         const r = ruleOf(req.ruleId)
         dropRule(r.id)
+        gateRule(r, null)
         title = `Remove rule "${r.id}"`
         changes.push(`Remove rule "${r.id}" (${ruleWords(r, label)}).`)
         if (r.type === 'node-affinity' && r.affinity === 'positive') for (const s of r.resources) if (snap.resources.some(x => x.sid === s)) {
@@ -496,6 +507,7 @@ export class HaPlanner {
         const disabled = req.action === 'disable-rule'
         if (r.disabled === disabled) throw new HaRefusal(`Rule "${r.id}" is already ${disabled ? 'off' : 'on'}.`, 400)
         setRule({ ...r, disabled } as HaRule, r)
+        gateRule(r, { ...r, disabled } as HaRule)
         title = `${disabled ? 'Turn off' : 'Turn on'} rule "${r.id}"`
         changes.push(`${disabled ? 'Turn off' : 'Turn on'} rule "${r.id}" (${ruleWords({ ...r, disabled: false } as HaRule, label)}).`)
         if (disabled) changes.push('A rule that is off is kept, but does nothing, until it is turned on again.')
