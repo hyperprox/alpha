@@ -374,24 +374,15 @@ export class WireguardService {
     const specBad = checkSpec(spec)
     if (specBad) throw new WgInputError(specBad)
 
-    let publicKey = ''
+    // The key comes first (a rebuilt machine has no key file: a new one is made), so the other end can be told
+    // before this side comes up: its first handshake is then answered instead of waiting for a retry.
+    const k = await this.d.remote.run(job, m, wgKeyScript(iface), { timeoutMs: 60_000 })
+    const publicKey = parsePublicKey(k.output) ?? ''
+    if (!isWgKey(publicKey)) throw new Error('the machine key could not be made')
     const change = async () => {
-      // A rebuilt machine has no key file: a new one is made, and the other end is told below.
-      const k = await this.d.remote.run(job, m, wgKeyScript(iface), { timeoutMs: 60_000 })
-      publicKey = parsePublicKey(k.output) ?? ''
-      if (!isWgKey(publicKey)) throw new Error('the machine key could not be made')
       const up = await this.d.remote.run(job, m, wgApplyScript(spec), { timeoutMs: 2 * 60_000 })
       if (up.code !== 0 || parsePublicKey(up.output) !== publicKey) throw new Error(`${iface} did not come up on ${m.name}`)
     }
-    if (m.kind === 'node') {
-      const prev = await this.d.remote.run(job, m, `cat /etc/wireguard/${iface}.conf 2>/dev/null || true`, { timeoutMs: 30_000 })
-      const previousConf = /\[Interface\]/.test(prev.output) ? prev.output : null
-      await this.d.remote.guardWireguard(job, m, { dev: iface.replace(/[^a-z0-9-]/g, ''), prefixes: [...o.allowedIps, address] },
-        { plan: { kind: 'wg-restore', provider: 'wireguard', subject: { dev: iface, prefixes: [...o.allowedIps, address] }, iface, previousConf } }, change)
-    } else {
-      await change()
-    }
-
     const row = {
       serverId: o.serverId ?? null, routerIface: o.router?.iface ?? null, routerPeerId: existing?.routerPeerId ?? null, kind: 'machine' as const,
       name: m.name, machineId: m.id, iface, publicKey, address, allowedIps: [address, ...sites], clientAllowedIps: o.allowedIps,
@@ -412,6 +403,25 @@ export class WireguardService {
         peer = await this.d.store.updatePeer(peer.id, { routerPeerId: added.id })
       }
     }
+    try {
+      if (m.kind === 'node') {
+        const prev = await this.d.remote.run(job, m, `cat /etc/wireguard/${iface}.conf 2>/dev/null || true`, { timeoutMs: 30_000 })
+        const previousConf = /\[Interface\]/.test(prev.output) ? prev.output : null
+        await this.d.remote.guardWireguard(job, m, { dev: iface.replace(/[^a-z0-9-]/g, ''), prefixes: [...o.allowedIps, address] },
+          { plan: { kind: 'wg-restore', provider: 'wireguard', subject: { dev: iface, prefixes: [...o.allowedIps, address] }, iface, previousConf } }, change)
+      } else {
+        await change()
+      }
+    } catch (e) {
+      // This side did not come up: a new peer is taken back off the other end, so nothing is left half-made.
+      if (!existing) {
+        await this.d.store.removePeer(peer.id).catch(() => undefined)
+        if (server) await this.applyServer(job, server).catch(() => undefined)
+        else if (peer.routerPeerId) await this.removeRouterPeer(peer.routerPeerId, by).catch(() => undefined)
+      }
+      throw e
+    }
+
     await this.d.store.audit('wireguard.machine.connect', m.id, { by, iface, target: o.serverId ? `server:${o.serverId}` : `router:${o.router!.iface}`, rebuilt: !!existing && existing.publicKey !== publicKey })
     return { peer, log: job.log }
   }
