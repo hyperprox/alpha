@@ -6,8 +6,17 @@
 #
 # Everything the README used to ask you to do by hand, this does: picks a
 # container ID and a storage, fetches the right template, creates the container
-# with the features Docker needs, mints the API token, installs node_exporter on
-# every node so monitoring works, then installs HyperProx and hands you a URL.
+# with the features Docker needs, mints the API token, then installs HyperProx
+# and hands you a URL.
+#
+# First it looks at every node (GPUs, power counters, what is already
+# installed), says what it found in a line or two, and asks a few yes/no
+# questions — only the ones that apply. Every answer is then carried out here,
+# one node at a time, and checked afterwards. -y takes every default.
+#
+# The node scripts live in packages/hardware/node/ (the same ones the setup
+# wizard and the API use). They only ever add packages, never upgrade or remove
+# one, and never touch kernels, drivers or apt holds.
 #
 # It is safe to re-run: anything already correct is left alone.
 
@@ -17,8 +26,10 @@ CTID=""            ; HOSTNAME="hyperprox"
 CORES=4            ; MEMORY=8192        ; DISK=100
 BRIDGE="vmbr0"     ; NET="dhcp"         ; GATEWAY=""
 STORAGE=""         ; TEMPLATE_STORAGE=""
-PASSWORD=""        ; ASSUME_YES=0       ; SKIP_EXPORTER=0
-SKIP_RAPL=0        ; SKIP_GPU_EXPORTER=0
+PASSWORD=""        ; ASSUME_YES=0       ; DRY_RUN=0
+# Answers: "" means ask (or take the default with -y); a flag below answers in advance.
+A_NODE_HEALTH=""   ; A_POWER=""         ; A_GPU=""
+A_CHARTS=""        ; A_PVE_METRICS=""   ; A_DNS=""          ; A_AI=""
 
 C_OK=$'\e[32m'; C_WARN=$'\e[33m'; C_ERR=$'\e[31m'; C_DIM=$'\e[90m'; C_ACC=$'\e[36m'; C_OFF=$'\e[0m'
 say()  { printf '%s→%s %s\n' "$C_ACC" "$C_OFF" "$*"; }
@@ -41,10 +52,14 @@ Usage: bootstrap.sh [options]
   --ip CIDR           Static address, e.g. 192.168.1.50/24 (default: dhcp)
   --gateway IP        Gateway, required with --ip
   --password PASS     Container root password (default: generated)
-  --skip-exporter     Do not install node_exporter on the nodes
-  --skip-rapl         Do not make CPU energy counters readable (see below)
-  --skip-gpu-exporter Do not install the Intel GPU exporter on Intel nodes
-  -y, --yes           Do not ask for confirmation
+  --skip-exporter     Answer no: do not watch node health (node_exporter)
+  --skip-rapl         Answer no: do not monitor power (CPU energy counters)
+  --skip-gpu-exporter Answer no: do not monitor GPUs
+  --no-charts         Answer no: no Prometheus and Grafana
+  --no-pve-metrics    Answer no: do not read Proxmox's own metrics
+  --ai | --no-ai      Answer yes or no: a local AI assistant (Ollama)
+  --dry-run           Look and ask, then show what would be done; change nothing
+  -y, --yes           Take every default and do not ask
 USAGE
 }
 
@@ -60,15 +75,106 @@ while [ $# -gt 0 ]; do
     --ip) NET="$2"; shift 2;;
     --gateway) GATEWAY="$2"; shift 2;;
     --password) PASSWORD="$2"; shift 2;;
-    --skip-exporter) SKIP_EXPORTER=1; shift;;
-    --skip-rapl) SKIP_RAPL=1; shift;;
-    --skip-gpu-exporter) SKIP_GPU_EXPORTER=1; shift;;
+    --skip-exporter) A_NODE_HEALTH=no; shift;;
+    --skip-rapl) A_POWER=no; shift;;
+    --skip-gpu-exporter) A_GPU=no; shift;;
+    --no-charts) A_CHARTS=no; shift;;
+    --no-pve-metrics) A_PVE_METRICS=no; shift;;
+    --ai) A_AI=yes; shift;;
+    --no-ai) A_AI=no; shift;;
+    --dry-run) DRY_RUN=1; shift;;
     -y|--yes) ASSUME_YES=1; shift;;
     -h|--help) usage; exit 0;;
     *) die "Unknown option: $1 (try --help)";;
   esac
 done
 
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+#  Questions. The words are the setup wizard's too (packages/hardware/index.js,
+#  QUESTIONS); a test keeps the two the same.
+# ---------------------------------------------------------------------------
+Q_NODE_HEALTH='Do you want HyperProx to watch the health of each of your nodes (CPU, memory, disks)?'
+W_NODE_HEALTH='Installs node_exporter on every node. It answers on port 9100.'
+Q_POWER='Do you want HyperProx to monitor the power on each of your nodes?'
+W_POWER='Lets HyperProx read the CPU energy counters. The trade-off: any local user on that node can then read energy use.'
+Q_GPU='Do you want HyperProx to monitor your GPUs?'
+W_GPU='Adds a small exporter for each GPU: Intel on port 8081, NVIDIA on port 9835. It only reads the GPU; drivers are never touched.'
+Q_CHARTS='Do you want charts and dashboards (Prometheus and Grafana)?'
+W_CHARTS='Runs Prometheus and Grafana on this machine. You reach them only through HyperProx.'
+Q_PVE_METRICS="Do you want HyperProx to read Proxmox's own metrics?"
+W_PVE_METRICS='Makes a read-only Proxmox token (PVEAuditor) for the metrics exporter.'
+Q_DNS='Do you manage your domains at GoDaddy? Paste a key to let HyperProx manage DNS.'
+W_DNS='The key is kept in the vault. You can skip this and add it later.'
+Q_AI='Do you want a local AI assistant? HyperProx can run a small one on this machine, or you can connect one later.'
+W_AI='Runs Ollama here (3 CPUs, 4 GB) and downloads a small model (about 2 GB).'
+
+# Where answers come from: the terminal, even under `curl | bash` (whose stdin is this script). Run from a
+# file with answers piped in (`printf 'y\nn\n' | bash bootstrap.sh`), they come from stdin.
+if [ -n "${HPX_TTY:-}" ]; then ASK_FROM="$HPX_TTY"
+elif [ -f "${BASH_SOURCE[0]:-}" ] && [ ! -t 0 ]; then ASK_FROM=/dev/stdin
+else ASK_FROM=/dev/tty; fi
+# Opened once, as fd 3: stdin may be a socket, which cannot be opened again by name.
+NO_TERMINAL=0
+if [ "$ASK_FROM" = /dev/stdin ]; then exec 3<&0
+elif ! exec 3< "$ASK_FROM"; then NO_TERMINAL=1; fi 2>/dev/null
+
+# ask_yn VAR DEFAULT(yes|no) QUESTION WHAT: sets VAR to yes or no. A value given by a flag wins.
+ask_yn() {
+  local var="$1" def="$2" q="$3" what="$4" reply hint
+  if [ -n "${!var}" ]; then printf '  %s %s\n' "$q" "${!var}"; return; fi
+  if [ "$ASSUME_YES" -eq 1 ] || [ "$NO_TERMINAL" -eq 1 ]; then printf -v "$var" '%s' "$def"; printf '  %s %s\n' "$q" "$def"; return; fi
+  [ "$def" = yes ] && hint='[Y/n]' || hint='[y/N]'
+  printf '\n  %s%s%s\n    %s%s%s\n  %s ' "$C_ACC" "$q" "$C_OFF" "$C_DIM" "$what" "$C_OFF" "$hint"
+  if ! IFS= read -r reply <&3; then reply=""; fi
+  case "$reply" in [yY]*) printf -v "$var" yes;; [nN]*) printf -v "$var" no;; *) printf -v "$var" '%s' "$def";; esac
+  [ -t 1 ] || echo
+}
+# ask_secret VAR PROMPT: read without echo. Held in this shell's memory only.
+ask_secret() {
+  local var="$1" reply=""
+  printf '    %s: ' "$2"
+  IFS= read -rs reply <&3 || reply=""
+  echo
+  printf -v "$var" '%s' "$reply"
+}
+
+# ---------------------------------------------------------------------------
+#  Node scripts and running them
+# ---------------------------------------------------------------------------
+RAW_BASE="${HPX_RAW_BASE:-https://raw.githubusercontent.com/hyperprox/alpha/main}"
+node_scripts_dir() {
+  local here="" d f
+  [ -f "${BASH_SOURCE[0]:-}" ] && here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [ -n "$here" ] && [ -f "$here/packages/hardware/node/probe.sh" ]; then echo "$here/packages/hardware/node"; return; fi
+  d="$(mktemp -d)"
+  for f in probe common node-exporter rapl intel-gpu-exporter nvidia-gpu-exporter; do
+    curl -fsSL "$RAW_BASE/packages/hardware/node/$f.sh" -o "$d/$f.sh" || die "Could not download the node scripts from $RAW_BASE"
+  done
+  echo "$d"
+}
+
+THIS_NODE="$(hostname)"
+# node_run NODE: run the script on stdin there. This node directly, the others over the cluster's SSH trust.
+node_run() {
+  if [ "$1" = "$THIS_NODE" ]; then bash -s
+  else ssh -o BatchMode=yes -o ConnectTimeout=8 "$1" 'bash -s'; fi
+}
+
+cluster_nodes() {
+  pvesh get /nodes --output-format json 2>/dev/null \
+    | sed 's/},{/}\n{/g' | sed -n 's/.*"node"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | sort -u
+}
+# The address each node has in the cluster, for checking its exporters from here.
+node_ip() {
+  pvesh get /cluster/status --output-format json 2>/dev/null | sed 's/},{/}\n{/g' \
+    | grep "\"name\"[[:space:]]*:[[:space:]]*\"$1\"" | sed -n 's/.*"ip"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+}
+
+declare -A HW_GPUS HW_RAPL HW_NX HW_INTEL_X HW_NV_X HW_OK
+CHECKLIST=()
+check() { CHECKLIST+=("$1"$'\t'"$2"$'\t'"$3"$'\t'"$4"); }   # status label node reason
 # ---------------------------------------------------------------------------
 #  1. Are we somewhere this can work?
 # ---------------------------------------------------------------------------
@@ -105,7 +211,7 @@ ok "Template storage: $TEMPLATE_STORAGE"
 #  3. Template — newest Debian, fetched only if absent
 # ---------------------------------------------------------------------------
 say "Preparing the container template"
-pveam update >/dev/null 2>&1 || warn "Could not refresh the template list; using what is cached."
+[ "$DRY_RUN" -eq 1 ] || pveam update >/dev/null 2>&1 || warn "Could not refresh the template list; using what is cached."
 
 TEMPLATE="$(pveam available --section system 2>/dev/null \
   | awk '/debian-1[0-9]-standard/ {print $2}' | sort -V | tail -1)"
@@ -113,11 +219,95 @@ TEMPLATE="$(pveam available --section system 2>/dev/null \
 
 if pveam list "$TEMPLATE_STORAGE" 2>/dev/null | grep -q "$TEMPLATE"; then
   ok "Template already downloaded: $TEMPLATE"
+elif [ "$DRY_RUN" -eq 1 ]; then
+  ok "Would download $TEMPLATE"
 else
   note "Downloading $TEMPLATE — this is the slow part, usually a minute or two."
   pveam download "$TEMPLATE_STORAGE" "$TEMPLATE" >/dev/null || die "Template download failed."
   ok "Downloaded $TEMPLATE"
 fi
+
+# ---------------------------------------------------------------------------
+#  3b. What every node has
+# ---------------------------------------------------------------------------
+say "Looking at your nodes"
+NODE_DIR="$(node_scripts_dir)"
+NODES=($(cluster_nodes))
+[ "${#NODES[@]}" -gt 0 ] || NODES=("$THIS_NODE")
+ANY_RAPL=0; ANY_INTEL=0; ANY_NVIDIA=0; ANY_AMD=0; ANY_CEPH=0
+SUMMARY="Found ${#NODES[@]} node$([ "${#NODES[@]}" -eq 1 ] || echo s)."
+for node in "${NODES[@]}"; do
+  if ! out="$(node_run "$node" < "$NODE_DIR/probe.sh" 2>/dev/null)" || ! grep -q '^arch' <<< "$out"; then
+    HW_OK[$node]=0
+    SUMMARY="$SUMMARY $node: could not be reached, so it is left out."
+    continue
+  fi
+  HW_OK[$node]=1
+  gpus="$(awk -F'\t' '$1=="gpu"{print $2"\t"$3"\t"$5}' <<< "$out")"
+  HW_GPUS[$node]="$gpus"
+  HW_RAPL[$node]="$(awk -F'\t' '$1=="rapl"{print $2}' <<< "$out")"
+  HW_NX[$node]="$(awk -F'\t' '$1=="node_exporter"{print $2}' <<< "$out")"
+  HW_INTEL_X[$node]="$(awk -F'\t' '$1=="intel_exporter"{print $2}' <<< "$out")"
+  HW_NV_X[$node]="$(awk -F'\t' '$1=="nvidia_exporter"{print $2}' <<< "$out")"
+  grep -q $'^ceph\tyes' <<< "$out" && ANY_CEPH=1
+  [ "${HW_RAPL[$node]}" != none ] && ANY_RAPL=1
+  grep -q $'^intel\t' <<< "$gpus" && ANY_INTEL=1
+  grep -q $'^nvidia\t' <<< "$gpus" && ANY_NVIDIA=1
+  grep -q $'^amd\t' <<< "$gpus" && ANY_AMD=1
+  # The same words as the setup wizard: "node-a: NVIDIA GeForce GTX 1070 Ti (dedicated)."
+  words="$(awk -F'\t' 'NF{printf "%s%s (%s)", (n++ ? ", " : ""), $3, ($2=="integrated" ? "built in" : "dedicated")}' <<< "$gpus")"
+  [ -n "$words" ] || words="no GPU"
+  extra=""
+  [ "${HW_RAPL[$node]}" = none ] && extra="${extra}; no power counters"
+  [ "${HW_NX[$node]}" = running ] && extra="${extra}; health monitoring already running"
+  SUMMARY="$SUMMARY $node: ${words}${extra}."
+done
+[ "$ANY_CEPH" -eq 1 ] && SUMMARY="$SUMMARY Ceph storage found."
+printf '%s\n' "$SUMMARY" | fold -s -w 96 | sed 's/^/    /'
+
+# ---------------------------------------------------------------------------
+#  3c. The questions — only those that apply
+# ---------------------------------------------------------------------------
+say "A few questions"
+[ "$NO_TERMINAL" -eq 1 ] && note "No terminal to ask on, so the defaults are shown. Re-run with -y to go ahead with them."
+ask_yn A_NODE_HEALTH yes "$Q_NODE_HEALTH" "$W_NODE_HEALTH"
+if [ "$ANY_RAPL" -eq 1 ]; then ask_yn A_POWER yes "$Q_POWER" "$W_POWER"; else A_POWER=no; fi
+if [ "$ANY_INTEL" -eq 1 ] || [ "$ANY_NVIDIA" -eq 1 ]; then
+  [ "$ANY_AMD" -eq 1 ] && note "AMD GPUs are not covered yet, so they will be listed but not monitored."
+  ask_yn A_GPU yes "$Q_GPU" "$W_GPU"
+else
+  A_GPU=no
+  [ "$ANY_AMD" -eq 1 ] && note "Found an AMD GPU. AMD GPUs are not covered yet, so there is no GPU question."
+fi
+ask_yn A_CHARTS yes "$Q_CHARTS" "$W_CHARTS"
+if [ "$A_CHARTS" = yes ]; then ask_yn A_PVE_METRICS yes "$Q_PVE_METRICS" "$W_PVE_METRICS"; else A_PVE_METRICS=no; fi
+GD_KEY=""; GD_SECRET=""
+ask_yn A_DNS no "$Q_DNS" "$W_DNS"
+if [ "$A_DNS" = yes ] && [ "$ASSUME_YES" -ne 1 ] && [ "$NO_TERMINAL" -ne 1 ]; then
+  note "Production key from developer.godaddy.com/keys (test keys do not work). Typing is hidden."
+  ask_secret GD_KEY "API key"
+  ask_secret GD_SECRET "API secret"
+  if [ -z "$GD_KEY" ] || [ -z "$GD_SECRET" ]; then A_DNS=no; note "No key given; add one later under Settings → Setup checklist."; fi
+fi
+ask_yn A_AI no "$Q_AI" "$W_AI"
+
+# The node work these answers mean, one node at a time: "node<TAB>step".
+PLAN=()
+for node in "${NODES[@]}"; do
+  [ "${HW_OK[$node]}" -eq 1 ] || continue
+  [ "$A_NODE_HEALTH" = yes ] && [ "${HW_NX[$node]}" != running ] && PLAN+=("$node"$'\t'node-exporter)
+  [ "$A_POWER" = yes ] && [ "${HW_RAPL[$node]}" = root-only ] && PLAN+=("$node"$'\t'rapl)
+  if [ "$A_GPU" = yes ]; then
+    grep -q $'^intel\t' <<< "${HW_GPUS[$node]}" && [ "${HW_INTEL_X[$node]}" != running ] && PLAN+=("$node"$'\t'intel-gpu-exporter)
+    grep -q $'^nvidia\t' <<< "${HW_GPUS[$node]}" && [ "${HW_NV_X[$node]}" != running ] && PLAN+=("$node"$'\t'nvidia-gpu-exporter)
+  fi
+done
+step_label() {
+  case "$1" in
+    node-exporter) echo "Health monitoring";; rapl) echo "Power monitoring";;
+    intel-gpu-exporter) echo "Intel GPU monitoring";; nvidia-gpu-exporter) echo "NVIDIA GPU monitoring";;
+  esac
+}
 
 # ---------------------------------------------------------------------------
 #  4. Confirm
@@ -126,15 +316,31 @@ NETCONF="name=eth0,bridge=${BRIDGE},ip=${NET}"
 [ -n "$GATEWAY" ] && NETCONF="${NETCONF},gw=${GATEWAY}"
 [ -n "$PASSWORD" ] || PASSWORD="$(openssl rand -base64 18 2>/dev/null | tr -d '/+=' | head -c 20)"
 
-if [ "$ASSUME_YES" -ne 1 ]; then
+show_plan() {
   echo
   echo "  About to create container $CTID:"
   echo "    ${CORES} cores · ${MEMORY} MB · ${DISK} GB on ${STORAGE}"
   echo "    network ${NETCONF}"
   echo "    privileged, with nesting, keyctl and tun"
+  if [ "${#PLAN[@]}" -gt 0 ]; then
+    echo "  Then, on your nodes, one at a time:"
+    local p
+    for p in "${PLAN[@]}"; do printf '    %s: %s\n' "${p%%$'\t'*}" "$(step_label "${p#*$'\t'}")"; done
+  else
+    echo "  Nothing to change on your nodes."
+  fi
+  echo "  In HyperProx: charts ${A_CHARTS} · Proxmox metrics ${A_PVE_METRICS} · GoDaddy ${A_DNS} · local AI ${A_AI}"
   echo
+}
+show_plan
+if [ "$DRY_RUN" -eq 1 ]; then
+  ok "Dry run: nothing was changed."
+  exit 0
+fi
+if [ "$ASSUME_YES" -ne 1 ]; then
+  [ "$NO_TERMINAL" -eq 1 ] && die "No terminal to confirm on. Re-run with -y to accept the plan above."
   printf "  Continue? [y/N] "
-  read -r reply < /dev/tty || reply=""
+  read -r reply <&3 || reply=""
   case "$reply" in [yY]*) ;; *) die "Cancelled.";; esac
 fi
 
@@ -158,7 +364,7 @@ pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" \
 
 # tun needs a device rule; --features tun=1 is not accepted on every PVE version,
 # so set it the way that works everywhere.
-CONF="/etc/pve/lxc/${CTID}.conf"
+CONF="${HPX_PVE_ETC:-/etc/pve}/lxc/${CTID}.conf"
 grep -q 'c 10:200 rwm' "$CONF" 2>/dev/null || {
   printf 'lxc.cgroup2.devices.allow: c 10:200 rwm\nlxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file\n' >> "$CONF"
 }
@@ -197,7 +403,9 @@ pveum acl modify / --token 'root@pam!hyperprox' --role Administrator >/dev/null 
 # does it (apps/setup/pve-exporter.js), so `hyperprox pve-exporter` can later repair it.
 EXPORTER_SECRET=""
 EXPORTER_TOKEN="hyperprox-exporter"
-if pveum user token list root@pam --output-format json 2>/dev/null | grep -q "\"${EXPORTER_TOKEN}\""; then
+if [ "$A_PVE_METRICS" != yes ]; then
+  ok "Proxmox metrics: skipped (you said no)"
+elif pveum user token list root@pam --output-format json 2>/dev/null | grep -q "\"${EXPORTER_TOKEN}\""; then
   warn "A token named '${EXPORTER_TOKEN}' already exists; its secret is only shown once."
   note "After signing in to HyperProx, run in the container: hyperprox pve-exporter"
 else
@@ -213,108 +421,52 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-#  7. node_exporter on every node, so Monitoring has data on day one
+#  7. Your answers, carried out on the nodes — one node at a time
+#
+#  Each step reports done, already, skipped or failed with a plain reason, and
+#  is then checked from here: the exporter answers over the network (which is
+#  what Prometheus needs), and power reads more than zero.
 # ---------------------------------------------------------------------------
-if [ "$SKIP_EXPORTER" -eq 0 ]; then
-  say "Installing node_exporter across the cluster"
-  for node in $(pvesh get /nodes --output-format json 2>/dev/null \
-      | sed -n 's/.*"node"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | sort -u); do
-    if [ "$node" = "$(hostname)" ]; then
-      if systemctl is-active --quiet prometheus-node-exporter 2>/dev/null; then
-        ok "$node — already running"
-      else
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq prometheus-node-exporter >/dev/null 2>&1 \
-          && ok "$node — installed" || warn "$node — install failed, do it by hand"
+metrics_from() { curl -fsS --max-time 5 "http://$1:$2/metrics" 2>/dev/null; }
+rapl_joules() { metrics_from "$1" 9100 | awk '/^node_rapl_package_joules_total/ {s += $2} END {printf "%.3f", s + 0}'; }
+
+if [ "${#PLAN[@]}" -gt 0 ]; then say "Setting up your nodes"; fi
+for p in "${PLAN[@]}"; do
+  node="${p%%$'\t'*}"; step="${p#*$'\t'}"; label="$(step_label "$step")"
+  out="$(cat "$NODE_DIR/common.sh" "$NODE_DIR/$step.sh" | node_run "$node" 2>&1)" || true
+  res="$(grep '^HPX-RESULT' <<< "$out" | tail -1)"
+  if [ -z "$res" ]; then check failed "$label" "$node" "could not run the step there"; warn "$node — $label: could not run the step there"; continue; fi
+  st="$(cut -f2 <<< "$res")"; why="$(cut -f3- <<< "$res")"
+  check "$st" "$label" "$node" "$why"
+  case "$st" in done|already) ok "$node — $label: $why";; skipped) note "$node — $label: $why";; *) warn "$node — $label: $why";; esac
+done
+
+# Check the outcome, not the scripts' word.
+if [ "$A_NODE_HEALTH" = yes ] || [ "$A_POWER" = yes ] || [ "$A_GPU" = yes ]; then
+  say "Checking from here"
+  for node in "${NODES[@]}"; do
+    [ "${HW_OK[$node]}" -eq 1 ] || { check failed "Node checks" "$node" "could not be reached"; continue; }
+    ip="$(node_ip "$node")"; ip="${ip:-$node}"
+    if [ "$A_NODE_HEALTH" = yes ]; then
+      if metrics_from "$ip" 9100 | grep -q '^node_exporter_build_info'; then check ok "Health answers" "$node" "port 9100 answers from here"
+      else check failed "Health answers" "$node" "port 9100 does not answer from here (a firewall?)"; fi
+    fi
+    if [ "$A_POWER" = yes ] && [ "${HW_RAPL[$node]}" != none ]; then
+      j1="$(rapl_joules "$ip")"; sleep 2; j2="$(rapl_joules "$ip")"
+      if awk -v a="$j1" -v b="$j2" 'BEGIN{exit !(b > a)}'; then
+        check ok "Power reading" "$node" "$(awk -v a="$j1" -v b="$j2" 'BEGIN{printf "%.1f W", (b-a)/2}')"
+      else check failed "Power reading" "$node" "node_exporter shows no energy use (is health monitoring on?)"; fi
+    fi
+    if [ "$A_GPU" = yes ]; then
+      if grep -q $'^intel\t' <<< "${HW_GPUS[$node]}"; then
+        metrics_from "$ip" 8081 | grep -q '^igpu_' && check ok "Intel GPU answers" "$node" "port 8081 answers from here" \
+          || check failed "Intel GPU answers" "$node" "port 8081 does not answer from here"
       fi
-    else
-      # Other nodes are reached over the cluster's own SSH trust.
-      if ssh -o BatchMode=yes -o ConnectTimeout=8 "$node" \
-          "systemctl is-active --quiet prometheus-node-exporter || DEBIAN_FRONTEND=noninteractive apt-get install -y -qq prometheus-node-exporter" >/dev/null 2>&1; then
-        ok "$node — ready"
-      else
-        warn "$node — could not reach it; install prometheus-node-exporter there yourself"
+      if grep -q $'^nvidia\t' <<< "${HW_GPUS[$node]}"; then
+        metrics_from "$ip" 9835 | grep -q '^nvidia_smi_memory_total_bytes' && check ok "NVIDIA GPU answers" "$node" "port 9835 answers from here" \
+          || check failed "NVIDIA GPU answers" "$node" "port 9835 does not answer from here"
       fi
     fi
-  done
-fi
-
-# ---------------------------------------------------------------------------
-#  7b. Power metrics
-#
-#  node_exporter's rapl collector reads /sys/class/powercap/*/energy_uj. Since
-#  kernel 5.10 those files are 0400 root-only — a PLATYPUS mitigation, because
-#  energy readings are fine-grained enough to leak AES keys. node_exporter runs
-#  unprivileged, so without this it gets EACCES and the collector yields
-#  *nothing*: no error, no warning, just a metric that never appears. A cluster
-#  power figure then silently covers only the nodes that happened to be readable.
-#
-#  Relaxing it to 0404 is a deliberate trade: an unprivileged local reader on
-#  your own hypervisor can observe energy draw. Pass --skip-rapl to decline, and
-#  accept that Monitoring will have no wattage.
-# ---------------------------------------------------------------------------
-if [ "$SKIP_RAPL" -eq 0 ]; then
-  say "Making CPU energy counters readable (pass --skip-rapl to decline)"
-  _rapl_rule='# Installed by HyperProx. Lets the unprivileged node_exporter read RAPL.
-# Kernel 5.10+ keeps energy_uj at 0400 as a PLATYPUS mitigation; this reverses
-# that on this host so power metrics exist. Delete this file to undo it.
-#
-# The chmod targets the device udev is reporting rather than walking the tree:
-# RUN+= fires once per domain as each appears, so a find over /sys/class/powercap
-# runs against a directory that is not yet populated and silently does nothing.
-SUBSYSTEM=="powercap", ACTION=="add|change", RUN+="/bin/chmod o+r /sys%p/energy_uj"'
-
-  _rapl_cmd='mkdir -p /etc/udev/rules.d && cat > /etc/udev/rules.d/99-hyperprox-rapl.rules <<"RULE"
-'"$_rapl_rule"'
-RULE
-udevadm control --reload-rules 2>/dev/null
-udevadm trigger --action=add --subsystem-match=powercap 2>/dev/null
-sleep 1
-ls /sys/class/powercap/*/energy_uj >/dev/null 2>&1 || exit 3
-systemctl restart prometheus-node-exporter 2>/dev/null || systemctl restart node_exporter 2>/dev/null || true'
-
-  for node in $(pvesh get /nodes --output-format json 2>/dev/null \
-      | sed -n 's/.*"node"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | sort -u); do
-    if [ "$node" = "$(hostname)" ]; then
-      if bash -c "$_rapl_cmd" >/dev/null 2>&1; then ok "$node — energy counters readable"
-      else warn "$node — no RAPL on this CPU, or the rule did not apply"; fi
-    else
-      if ssh -o BatchMode=yes -o ConnectTimeout=8 "$node" "$_rapl_cmd" >/dev/null 2>&1; then
-        ok "$node — energy counters readable"
-      else
-        warn "$node — could not apply the RAPL rule; power will be missing for it"
-      fi
-    fi
-  done
-fi
-
-# ---------------------------------------------------------------------------
-#  7c. Intel GPU exporter
-#
-#  On Intel nodes this reports iGPU utilisation, and a package power figure that
-#  stands in where RAPL cannot be read at all. Skipped on AMD and NVIDIA nodes:
-#  intel_gpu_top has nothing to talk to there and the container would crash-loop.
-#  HyperProx adds the scrape target itself — Settings → Targets, or
-#  POST /api/targets/sync — so nothing needs editing in prometheus.yml.
-# ---------------------------------------------------------------------------
-if [ "$SKIP_GPU_EXPORTER" -eq 0 ]; then
-  say "Installing the Intel GPU exporter where there is an Intel GPU"
-  _igpu_cmd='grep -qi 0x8086 /sys/class/drm/card*/device/vendor 2>/dev/null || exit 4
-command -v docker >/dev/null 2>&1 || exit 5
-docker ps -a --format "{{.Names}}" | grep -qx intel-gpu-exporter && exit 0
-docker run -d --name intel-gpu-exporter --restart unless-stopped \
-  --privileged --pid host -v /dev/dri:/dev/dri -p 8081:8080 \
-  ghcr.io/onedr0p/intel-gpu-exporter:rolling >/dev/null'
-
-  for node in $(pvesh get /nodes --output-format json 2>/dev/null \
-      | sed -n 's/.*"node"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | sort -u); do
-    if [ "$node" = "$(hostname)" ]; then bash -c "$_igpu_cmd" >/dev/null 2>&1; _rc=$?
-    else ssh -o BatchMode=yes -o ConnectTimeout=8 "$node" "$_igpu_cmd" >/dev/null 2>&1; _rc=$?; fi
-    case "$_rc" in
-      0) ok   "$node — Intel GPU exporter running";;
-      4) ok   "$node — no Intel GPU, skipped";;
-      5) warn "$node — has an Intel GPU but no Docker; install the exporter yourself";;
-      *) warn "$node — could not start the Intel GPU exporter";;
-    esac
   done
 fi
 
@@ -365,6 +517,58 @@ PVEYML
   rm -f "$_pveyml"
 fi
 
+
+# ---------------------------------------------------------------------------
+#  9b. Your other answers, handed to HyperProx
+#
+#  The choices go into the container as plain settings, plus what was found and
+#  done (no secrets) so the setup page can show it. A GoDaddy key is a secret:
+#  it is never written to a file. It goes to the setup wizard's memory over
+#  stdin, and from there into the vault once you create the owner account.
+# ---------------------------------------------------------------------------
+say "Handing your answers to HyperProx"
+_inst_prom=false; [ "$A_CHARTS" = yes ] && _inst_prom=true
+pct exec "$CTID" -- bash -c "
+  f=/opt/hyperprox/.env
+  set_kv() { grep -q \"^\$1=\" \"\$f\" 2>/dev/null && sed -i \"s|^\$1=.*|\$1=\$2|\" \"\$f\" || echo \"\$1=\$2\" >> \"\$f\"; }
+  set_kv INSTALL_PROMETHEUS '$_inst_prom'
+  set_kv INSTALL_GRAFANA '$_inst_prom'
+  set_kv INSTALL_OLLAMA '$([ "$A_AI" = yes ] && echo true || echo false)'
+" && ok "Charts: ${A_CHARTS} · local AI: ${A_AI}"
+
+_answers="$(mktemp)"; chmod 600 "$_answers"
+{
+  printf '{"source":"bootstrap","answers":{"node-health":%s,"power":%s,"gpu":%s,"charts":%s,"proxmox-metrics":%s,"dns":%s,"ai":%s},"results":[' \
+    "$([ "$A_NODE_HEALTH" = yes ] && echo true || echo false)" "$([ "$A_POWER" = yes ] && echo true || echo false)" \
+    "$([ "$A_GPU" = yes ] && echo true || echo false)" "$([ "$A_CHARTS" = yes ] && echo true || echo false)" \
+    "$([ "$A_PVE_METRICS" = yes ] && echo true || echo false)" "$([ "$A_DNS" = yes ] && echo true || echo false)" \
+    "$([ "$A_AI" = yes ] && echo true || echo false)"
+  _first=1
+  for row in "${CHECKLIST[@]}"; do
+    IFS=$'\t' read -r _s _l _n _w <<< "$row"
+    [ "$_first" -eq 1 ] || printf ','; _first=0
+    printf '{"status":"%s","label":"%s","node":"%s","reason":"%s"}' "$_s" "$_l" "$_n" "$(printf '%s' "$_w" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+  done
+  printf ']}\n'
+} > "$_answers"
+pct exec "$CTID" -- mkdir -p /opt/hyperprox/data/setup
+pct push "$CTID" "$_answers" /opt/hyperprox/data/setup/bootstrap.json --perms 0600 >/dev/null 2>&1 \
+  && ok "What was found and done is on the setup page too" || warn "Could not hand the results to the setup page"
+rm -f "$_answers"
+
+if [ "$A_DNS" = yes ] && [ -n "$GD_KEY" ]; then
+  # Sent on stdin, so it is on no command line; the wizard holds it in memory only.
+  if printf '{"godaddy":{"key":"%s","secret":"%s"}}' "$GD_KEY" "$GD_SECRET" | pct exec "$CTID" -- bash -c '
+      k="$(grep -oP "^SETUP_SECRET=\K.*" /opt/hyperprox/.env)"
+      for i in $(seq 1 30); do curl -fsS -o /dev/null http://127.0.0.1:3001/health && break; sleep 2; done
+      curl -fsS -o /dev/null -X POST -H "Content-Type: application/json" -H "X-Setup-Key: $k" --data-binary @- http://127.0.0.1:3001/api/setup/hold-secrets'; then
+    ok "GoDaddy key held in memory until you create the owner account, then kept in the vault"
+  else
+    warn "Could not hand over the GoDaddy key; add it on the setup page or under Settings → Setup checklist"
+  fi
+fi
+GD_KEY=""; GD_SECRET=""
+
 # ---------------------------------------------------------------------------
 #  Done
 # ---------------------------------------------------------------------------
@@ -375,6 +579,16 @@ echo
 echo "    Open       https://${CT_IP}/   (self-signed certificate: the browser warns once)"
 echo "    Container  $CTID  (pct enter $CTID)"
 [ -n "$PASSWORD" ] && echo "    Root pw    $PASSWORD"
+if [ "${#CHECKLIST[@]}" -gt 0 ]; then
+  echo
+  echo "    What was done on your nodes:"
+  for row in "${CHECKLIST[@]}"; do
+    IFS=$'\t' read -r _s _l _n _w <<< "$row"
+    case "$_s" in done|already|ok) _m="${C_OK}✓${C_OFF}";; skipped) _m="${C_DIM}–${C_OFF}";; *) _m="${C_ERR}✗${C_OFF}";; esac
+    printf '      %s %-22s %-12s %s\n' "$_m" "$_l" "$_n" "$_w"
+  done
+  note "Anything skipped or failed can be done later: Settings → Setup checklist."
+fi
 echo
 note "First: open the address above and create the owner account. HyperProx has no password of its own;"
 note "it signs in with its built-in vault (email, master password, required 2FA). See docs/security.md."
