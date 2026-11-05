@@ -127,9 +127,10 @@ export default function VpnPage() {
   const [refreshing, setRefreshing] = useState(false)
   const refresh = async () => {
     setRefreshing(true)
-    const r = await apiJson<RemoteOverview>('/api/remote/detect/refresh', 'POST')
+    const r = await apiJson<RemoteOverview & { refreshNote?: string | null }>('/api/remote/detect/refresh', 'POST')
     setRefreshing(false)
-    if (r.ok && r.body) setOv(r.body); else setNotice({ tone: 'crit', text: r.error ?? 'Could not check the machines' })
+    if (r.ok && r.body) { setOv(r.body); if (r.body.refreshNote) setNotice({ tone: 'info', text: r.body.refreshNote }) }
+    else setNotice({ tone: 'crit', text: r.error ?? 'Could not check the machines' })
   }
 
   // While the machines are being checked (an admin's page load started it), reload until it is done.
@@ -196,6 +197,7 @@ export default function VpnPage() {
         <Notice tone="warn">{ov.pendingRevokes} key{ov.pendingRevokes === 1 ? ' has' : 's have'} not been confirmed revoked yet. HyperProx retries every minute.</Notice>
       )}
       {job && <JobPanel job={job} onClose={() => setJob(null)} />}
+      {admin && ov && <Exclusions rows={rows} send={send} onSaved={() => load()} />}
       {admin && ov && <PendingDevices ov={ov} send={send} onDone={(text, ok) => { setNotice({ tone: ok ? 'info' : 'crit', text }); load() }} />}
       {pinAsk.length > 0 && admin && (
         <Notice tone="warn">
@@ -299,5 +301,57 @@ export default function VpnPage() {
       )}
       {confirm && <ReconfirmModal onDone={() => confirm()} onClose={() => setConfirm(null)} />}
     </div>
+  )
+}
+
+/**
+ * "Never look inside these guests": guests HyperProx must never probe or change for VPN work. Saving asks for the
+ * master password again. The Proxmox tag hyperprox-ignore does the same from Proxmox, and is shown here.
+ */
+function Exclusions({ rows, send, onSaved }: {
+  rows: RemoteMachineRow[]
+  send: <T>(path: string, method: string, body?: unknown) => Promise<ApiResult<T> | null>
+  onSaved: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [ids, setIds] = useState<Set<string> | null>(null)
+  const [msg, setMsg] = useState<string | null>(null)
+  useEffect(() => {
+    if (!open || ids) return
+    apiJson<{ machineIds: string[] }>('/api/remote/exclusions').then(r => setIds(new Set(r.ok ? r.body?.machineIds ?? [] : [])))
+  }, [open, ids])
+  const guests = rows.filter(r => r.kind === 'lxc' || r.kind === 'qemu')
+  const tagged = guests.filter(r => r.excludedBy === 'tag')
+  const count = rows.filter(r => r.excluded).length
+  return (
+    <Panel title="Never look inside these guests" right={<span className="text-xs" style={{ color: 'var(--text-dim)' }}>{count ? `${count} excluded` : 'none excluded'}</span>}>
+      <div className="space-y-3 p-4 text-sm" style={{ color: 'var(--text-soft)' }}>
+        <p>HyperProx never checks, installs on, adopts or changes a guest listed here, for any VPN. Tagging a guest <code className="font-mono">hyperprox-ignore</code> in Proxmox does the same.</p>
+        {!open ? <Btn small onClick={() => setOpen(true)}>Choose guests…</Btn> : !ids ? <p>Loading…</p> : (
+          <>
+            <div className="grid gap-1 sm:grid-cols-2 lg:grid-cols-3">
+              {guests.map(g => (
+                <label key={g.id} className="flex items-center gap-2">
+                  <input type="checkbox" disabled={g.excludedBy === 'tag'} checked={g.excludedBy === 'tag' || ids.has(g.id)}
+                         onChange={e => setIds(s => { const n = new Set(s ?? []); if (e.target.checked) n.add(g.id); else n.delete(g.id); return n })} />
+                  <span>{g.name} <span className="font-mono text-xs" style={{ color: 'var(--text-dim)' }}>{g.id}</span>{g.excludedBy === 'tag' ? ' (tagged in Proxmox)' : ''}</span>
+                </label>
+              ))}
+            </div>
+            {tagged.length > 0 && <p className="text-xs" style={{ color: 'var(--text-dim)' }}>Tagged guests are excluded by Proxmox; remove the tag there to include them.</p>}
+            <div className="flex gap-2">
+              <Btn small kind="primary" onClick={async () => {
+                const r = await send<{ machineIds: string[] }>('/api/remote/exclusions', 'PUT', { machineIds: [...(ids ?? [])] })
+                if (!r) return
+                setMsg(r.ok ? 'Saved.' : r.error ?? 'Could not save')
+                if (r.ok) { setOpen(false); setIds(null); onSaved() }
+              }}>Save</Btn>
+              <Btn small onClick={() => { setOpen(false); setIds(null) }}>Cancel</Btn>
+            </div>
+          </>
+        )}
+        {msg && <p className="text-xs">{msg}</p>}
+      </div>
+    </Panel>
   )
 }

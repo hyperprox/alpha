@@ -400,7 +400,8 @@ single-use key, which is revoked when it is done. On a Proxmox node the client n
 routes; HyperProx checks the default route, resolver and quorum before and after, and undoes the install
 if anything changed. Clients that are already installed are found with no API key. Each machine shows
 whether it is connected, signed out or not installed, and **Manage it here** adopts a client HyperProx did not
-install. The API key is needed only for installs and approvals. Viewers see status; changes are
+install. The API key is needed only for installs and approvals. Guests listed under **Never look inside
+these guests**, or tagged `hyperprox-ignore` in Proxmox, are never checked or changed. Viewers see status; changes are
 admin-only. See [docs/remote-access.md](docs/remote-access.md).
 
 ### Storage and Monitoring

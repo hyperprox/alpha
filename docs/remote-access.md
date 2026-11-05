@@ -209,7 +209,9 @@ signed-out client holds a sign-in link, the link is blanked on the machine befor
 back. Only the parsed fields are kept, in memory.
 
 The results are kept for five minutes. An admin opening the page starts a new check once they are older
-than that, and **Refresh** checks every machine at once. A viewer opening the page never starts a check;
+than that, and **Refresh** checks every machine at once, at most once a minute (a press sooner shows
+the cached results and how old they are). A check's output is capped at 512 KB: past that the read is
+stopped and nothing from it is used, and every value kept from it is cut to 255 characters. A viewer opening the page never starts a check;
 it shows what is already known. Each machine shows its real state, for example *Tailscale installed,
 connected as web.example.ts.net (100.64.0.5)*, *installed, signed out* or *not installed*. The guest VPN
 tab shows the same.
@@ -225,7 +227,17 @@ install key), device approval, route approval, tags and key-expiry changes. The 
 many machines are already on a tailnet and that an API key manages installs and approvals.
 
 HyperProx's own container is checked locally and marked **this HyperProx**. It is shown read-only: no
-job runs on it, so HyperProx cannot cut itself off.
+job runs on it, so HyperProx cannot cut itself off. HyperProx finds which guest it is at start-up by
+matching its network cards' MAC addresses (or, failing that, a static address) against the guest configs,
+never by name. No job runs until that check has answered.
+
+### Never look inside these guests
+
+On the VPN page, **Never look inside these guests** lists guests HyperProx must leave alone. Saving the
+list is admin-only and asks for your master password again. The list is kept in Postgres as guest ids
+only. Tagging a guest `hyperprox-ignore` in Proxmox does the same. An excluded guest is never checked,
+and no VPN action runs on it: no install, adopt, settings change, update, uninstall or WireGuard. It
+shows as **excluded**.
 
 ### Signing in with your own account
 
