@@ -211,12 +211,14 @@ test('Ceph restarts settle before moving on, and the OSD restart uses noout', as
   const { runner, store } = setup(fake)
   const job = await runner.start('run', 'schedule'); await settle(runner)
   assert.equal((await store.getJob(job.id))!.status, 'done')
-  const order = fake.calls.filter(c => /ceph-(mon|mgr|osd)\.target|noout/.test(c.cmd)).map(c => `${c.where}:${/ceph-(\w+)\.target/.exec(c.cmd)?.[1] ?? c.cmd}`)
+  const order = fake.calls.filter(c => /restart ceph-(mon|mgr)\.target|restart ceph-osd@|noout/.test(c.cmd))
+    .map(c => `${c.where}:${/ceph-(mon|mgr)\.target/.exec(c.cmd)?.[1] ?? /ceph-(osd@\d+)/.exec(c.cmd)?.[1] ?? c.cmd}`)
   assert.deepEqual(order, [
     'node-a:mon', 'node-b:mon', 'node-a:mgr', 'node-b:mgr',
-    'node-b:ceph osd set noout', 'node-a:osd', 'node-b:ceph osd unset noout',
-    'node-a:ceph osd set noout', 'node-b:osd', 'node-a:ceph osd unset noout',
+    'node-b:ceph osd set noout', 'node-a:osd@0', 'node-a:osd@1', 'node-b:ceph osd unset noout',
+    'node-a:ceph osd set noout', 'node-b:osd@2', 'node-b:osd@3', 'node-a:ceph osd unset noout',
   ])
+  assert.equal(fake.ran(/ceph-osd\.target/), false, 'never every OSD at once')
 })
 
 test('a node-upgrade failure pauses; resume retries it', async () => {
