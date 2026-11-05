@@ -44,6 +44,9 @@ const PUBLIC_AUTH = new Set([
   '/api/auth/bootstrap',
   '/api/auth/bootstrap/confirm',
   '/api/auth/sign-in',
+  // The setup wizard handing over what it held before the vault existed. It answers only to loopback,
+  // unproxied, with the setup key (routes/auth.ts).
+  '/api/auth/setup-handoff',
 ])
 
 /**
@@ -83,6 +86,8 @@ const PROXY_READ = /^\/api\/proxy\/(kinds|instances|hosts|certificates|stats|ins
 // method, reads included: it maps every node, guest and address. Apply and clean-up create or destroy a
 // container, so both also need the master password re-entered.
 const CATALOGUE_WIZARD = /^\/api\/catalogue\/wizard(\/|$)/
+// Settings → Setup checklist: maps every node and runs installs on them as root. Admin for reads too.
+const SETUP_CHECKLIST = /^\/api\/setup-checklist(\/|$)/
 const CATALOGUE_RECONFIRM = /^\/api\/catalogue\/wizard\/(apply|jobs\/[^/]+\/cleanup)$/
 // Role management (no routes yet; reserved so they are owner-only from day one).
 const ROLE_MGMT = /^\/api\/(auth\/)?roles(\/|$)/
@@ -111,6 +116,7 @@ export function requiredRole(method: string, path: string): Role | null {
   if (TOKENS.test(p)) return 'admin'
   if (PROXY.test(p)) return (m === 'GET' || m === 'HEAD') && PROXY_READ.test(p) ? 'viewer' : 'admin'
   if (CATALOGUE_WIZARD.test(p)) return 'admin'
+  if (SETUP_CHECKLIST.test(p)) return 'admin'
 
   if (m === 'GET' || m === 'HEAD') {
     // Interactive shells on guests and nodes.
@@ -134,6 +140,8 @@ export function needsReconfirm(method: string, path: string): boolean {
   const p = normalisePath(path)
   if (m === 'DELETE' && DESTROY.test(p)) return true
   if (m === 'POST' && p === '/api/secrets/reveal') return true
+  // A new Grafana admin password goes straight into the vault, but it is still a credential being replaced.
+  if (m === 'POST' && p === '/api/monitoring/grafana-admin/reset') return true
   if (m !== 'GET' && m !== 'HEAD' && ROLE_MGMT.test(p)) return true
   if (m === 'POST' && CATALOGUE_RECONFIRM.test(p)) return true
   // Creating or revoking an API token.

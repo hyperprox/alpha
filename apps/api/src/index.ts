@@ -21,6 +21,9 @@ import { ollamaRoutes }          from './routes/ollama'
 import { aiRoutes }              from './routes/ai'
 import { gpuRoutes }             from './routes/gpu'
 import { targetsRoutes }         from './routes/targets'
+import { setupChecklistRoutes }  from './routes/setup-checklist'
+import { setAuditSink, prismaAuditSink } from './lib/audit'
+import { watchTargets }          from './lib/targets'
 import { authRoutes }             from './routes/auth'
 import { apiTokenRoutes }         from './routes/api-tokens'
 import { secretsRoutes }          from './routes/secrets'
@@ -70,6 +73,8 @@ async function main() {
   // switch to turn it off.
   // API tokens (lib/api-tokens.ts) are looked up in the database the rest of the API uses.
   setApiTokenStore(new PrismaApiTokenStore(server.prisma))
+  // Credential use (node logins, DNS keys) is audited in the same database: names and outcomes, never values.
+  setAuditSink(prismaAuditSink(server.prisma))
   // Proxy instances (lib/proxy): the registry the Proxy page, the wizard and Certificates read through.
   proxyService(server.prisma)
   await registerGate(server)
@@ -109,6 +114,7 @@ async function main() {
   await server.register(aiRoutes,    { prefix: '/api/ai' })
   await server.register(gpuRoutes,   { prefix: '/api/gpu' })
   await server.register(targetsRoutes, { prefix: '/api/targets' })
+  await server.register(setupChecklistRoutes, { prefix: '/api/setup-checklist' })
   await server.register(monitoringRoutes, { prefix: '/api/monitoring' })
   await server.register(terminalRoutes,           { prefix: '/api/terminal' })
   await server.register(pluginRoutes,          { prefix: '/api/plugins' })
@@ -133,6 +139,10 @@ async function main() {
   // start-up lock alert below, then starts working the outbox.
   await notify.start()
   await alerts.startupCheck()
+
+  // Prometheus's node, GPU and Ceph lists keep themselves current: on unlock, then whenever a node joins.
+  const stopTargets = watchTargets({ log: m => server.log.info(m) })
+  server.addHook('onClose', async () => stopTargets())
 
   // Credentials move into the vault on the first Owner sign-in (lib/credentials.ts seedFromEnv),
   // not here: while locked there is no vault session to write with.

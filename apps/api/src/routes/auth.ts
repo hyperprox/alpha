@@ -15,6 +15,22 @@ import {
 import { hasRole } from '../lib/roles'
 import { startMigration, migrationStatus, hydrateEnvFromVault } from '../lib/credentials'
 import { getNotifyService } from '../lib/notify'
+import { holdSetupSecrets, flushHeldSecrets } from '../lib/setup-handoff'
+import { readFileSync } from 'fs'
+import { createHash, timingSafeEqual } from 'crypto'
+
+/** The setup key as .env holds it right now (it is removed once setup completes). */
+function currentSetupKey(): string {
+  try {
+    const m = /^SETUP_SECRET=['"]?([^'"\n]*)/m.exec(readFileSync(process.env.ENV_FILE_PATH || '/opt/hyperprox/.env', 'utf8'))
+    return m?.[1] ?? ''
+  } catch { return '' }
+}
+function setupKeyMatches(given: unknown): boolean {
+  const want = currentSetupKey()
+  if (!want || typeof given !== 'string' || !given) return false
+  return timingSafeEqual(createHash('sha256').update(given).digest(), createHash('sha256').update(want).digest())
+}
 
 const LIMIT = { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }
 const MIN_MASTER_PASSWORD = 12
@@ -71,6 +87,10 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       else if (m.started) migration = { ok: true, running: true }
       // The old Updates/Certificates webhooks become notification channels (once), after the migration.
       void getNotifyService()?.seedOnOwnerUnlock()
+      // What the setup wizard held in memory for want of a vault (a node login, a DNS key) goes in now.
+      void flushHeldSecrets({ sid: vs.sid, email: vs.email, role: vs.role }).then(
+        r => { if (r.stored.length || r.failed.length) req.log.info({ stored: r.stored, failed: r.failed }, '[setup] held secrets stored in the vault') },
+        e => req.log.error({ err: e?.message }, '[setup] could not store the held secrets'))
     }
     if (wasLocked) hydrateEnvFromVault()
 
@@ -103,6 +123,17 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     reply.header('Cache-Control', 'no-store')
     if (!isUnlocked() || !req.session || req.apiToken) return reply.status(401).send()
     return reply.status(204).send()
+  })
+
+  // POST /api/auth/setup-handoff — the setup wizard's node login and DNS key, held in memory until the
+  // owner's first sign-in puts them in the vault. Loopback only, never through nginx, and only with the
+  // setup key that is still in .env while setup is finishing.
+  fastify.post('/setup-handoff', LIMIT, async (req, reply) => {
+    if (!isLocalCliRequest(req.socket?.remoteAddress, req.headers as Record<string, any>)) {
+      return reply.status(403).send({ ok: false, error: 'Only the setup wizard on this machine can hand over secrets' })
+    }
+    if (!setupKeyMatches(req.headers['x-setup-key'])) return reply.status(401).send({ ok: false, error: 'setup key required' })
+    return { ok: true, held: holdSetupSecrets(req.body) }
   })
 
   // POST /api/auth/bootstrap — create the Owner account (only before the vault has a HyperProx org)
