@@ -353,4 +353,5 @@ model GuestConfigVersion {
   createdAt DateTime @default(now())
 
   @@index([guest, createdAt])
+  @@index([previewId])
 }
