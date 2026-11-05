@@ -519,6 +519,8 @@ export class GuestConfigService {
     const configs = await Promise.all(guests.map(x => this.d.pve.get<PveConfig>(`/nodes/${encodeURIComponent(x.node)}/${x.type}/${x.vmid}/config`).catch(() => null)))
     const invs = new Map<string, NodeInventory | null>()
     for (const n of new Set(guests.map(x => x.node as string))) { const hit = this.inv.get(n); invs.set(n, hit ? hit.inv : null) }
+    // The GPU toggle state needs the guest's history: an "off" with nothing turned back on since.
+    const offs = await Promise.all(guests.map(x => x.type === 'lxc' ? this.d.history.list(`lxc/${x.vmid}`, 30).then(r => !!openGpuOff(r)).catch(() => false) : Promise.resolve(false)))
     const vpn = await vpnStatuses(guests.map(x => ({ node: x.node, type: x.type, vmid: Number(x.vmid), name: x.name })), this.d.vpn ?? vpnStatusSource())
     return guests.map((x, i) => {
       const cfg = configs[i] ?? {}
@@ -533,7 +535,10 @@ export class GuestConfigService {
         tags: str(x.tags ?? cfg.tags).split(/[;, ]+/).filter(Boolean),
         ip: ipOf(x.type, cfg),
         ha: ha ? { managed: true, state: ha.state ?? 'started', status: hs?.status ?? hs?.state ?? null } : { managed: false },
-        gpu: { vendors: gpu.vendors, via: [...new Set(gpu.entries.map(e => e.via))] },
+        gpu: {
+          vendors: gpu.vendors, via: [...new Set(gpu.entries.map(e => e.via))],
+          toggle: gpu.entries.some(e => e.via === 'devN') ? 'on' : offs[i] ? 'off' : gpu.entries.length ? 'raw-only' : 'none',
+        },
         pending: false,
         vpn: vpn.get(`${x.type}/${x.vmid}` as any) ?? { state: 'not-available' },
       }
