@@ -72,16 +72,16 @@ test('flags: Tailscale never accepts DNS or routes, advertises nothing, and on a
   assert.ok(!clientFlags('tailscale', { hostname: 'web', kind: 'lxc' }).some(x => x.startsWith('--netfilter-mode')))
 })
 
-test('flags: every NetBird boolean is explicit; a node gets no NetBird firewall; never --allow-server-ssh', () => {
+test('flags: every NetBird boolean is explicit; a node gets no NetBird firewall and no SSH', () => {
   const f = clientFlags('netbird', { hostname: 'pve-a', kind: 'node', managementUrl: 'https://nb.example.com' })
   assert.deepEqual(f, ['--management-url=https://nb.example.com', '--hostname=pve-a', '--disable-dns=true',
-    '--disable-client-routes=true', '--disable-server-routes=true', '--disable-firewall=true'])
+    '--disable-client-routes=true', '--disable-server-routes=true', '--disable-firewall=true', '--allow-server-ssh=false'])
   const g = clientFlags('netbird', { hostname: 'web', kind: 'lxc' })
   assert.ok(g.includes('--disable-firewall=false'))
   const r = clientFlags('netbird', { hostname: 'web', kind: 'lxc', routing: { subnets: ['198.51.100.0/24'], exitNode: false } })
   assert.ok(r.includes('--disable-server-routes=false'), 'routing on is said, not implied by a missing flag')
   for (const set of [f, g, r]) {
-    assert.ok(!set.some(x => /allow-server-ssh/.test(x)))
+    assert.ok(!set.includes('--allow-server-ssh=true'), 'SSH only when asked for, and never on a node')
     for (const x of set.filter(x => /^--disable-/.test(x))) assert.match(x, /=(true|false)$/, x)
   }
 })
@@ -133,7 +133,7 @@ test('install scripts use the official repositories and contain no secret', () =
 
 test('status parsing for both clients', () => {
   const ts = parseStatus('tailscale', `x\nHP_STATUS_BEGIN\n${JSON.stringify({ BackendState: 'Running', Version: '1.90.1-tabc', Self: { ID: 'nABC', HostName: 'pve-a', TailscaleIPs: ['100.64.0.7', 'fd7a::7'], Online: true } })}\nHP_STATUS_END\n`)
-  assert.deepEqual(ts, { installed: true, connected: true, ip: '100.64.0.7', version: '1.90.1', nodeKey: 'nABC', hostname: 'pve-a' })
+  assert.deepEqual(ts, { installed: true, connected: true, ip: '100.64.0.7', version: '1.90.1', nodeKey: 'nABC', hostname: 'pve-a', needsLogin: false })
   const nb = parseStatus('netbird', `HP_STATUS_BEGIN\n${JSON.stringify({ management: { connected: true }, netbirdIp: '100.92.0.4/16', daemonVersion: '0.59.1', fqdn: 'pve-a.netbird.cloud' })}\nHP_STATUS_END`)
   assert.deepEqual(nb, { installed: true, connected: true, ip: '100.92.0.4', version: '0.59.1', nodeKey: undefined, hostname: 'pve-a.netbird.cloud' })
   assert.deepEqual(parseStatus('tailscale', 'HP_NOT_INSTALLED\n'), { installed: false, connected: false, ip: null, version: null })
@@ -170,7 +170,7 @@ test('routing script: NetBird reconnects with explicit flags and reads its own c
   const flags = clientFlags('netbird', { hostname: 'web', kind: 'lxc', routing: { subnets: ['198.51.100.0/24'], exitNode: false } })
   const s = routingScript('netbird', { subnets: ['198.51.100.0/24'], exitNode: false, flags, forwarding: 'guest' })
   assert.match(s, /netbird up .*'--disable-server-routes=false'/)
-  assert.match(s, /grep -oE '"\(DisableServerRoutes\|DisableClientRoutes\|DisableDNS\|DisableFirewall\)": \*\(true\|false\)' "\$hp_cfg"/)
+  assert.match(s, /grep -oE '"\(DisableServerRoutes\|DisableClientRoutes\|DisableDNS\|DisableFirewall\|ServerSSHAllowed\)": \*\(true\|false\)' "\$hp_cfg"/)
   assert.doesNotMatch(s, /cat [^|\n]*netbird/, 'the config file (with the private key) is never printed')
   assert.deepEqual(parseNetbirdFlags('HP_NB_CONFIG=/etc/netbird/config.json\nHP_NB_FLAG DisableServerRoutes:false\nHP_NB_FLAG DisableDNS:true\n'), { config: '/etc/netbird/config.json', DisableServerRoutes: false, DisableDNS: true })
 })

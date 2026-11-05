@@ -196,6 +196,8 @@ export function statusScript(p: ProviderId): string {
 
 export interface ClientStatus {
   installed: boolean; connected: boolean; ip: string | null; version: string | null; nodeKey?: string; hostname?: string
+  /** The client is waiting for an interactive sign-in. The URL itself is never part of this object. */
+  needsLogin?: boolean
 }
 
 export function parseStatus(p: ProviderId, output: string): ClientStatus {
@@ -211,6 +213,7 @@ export function parseStatus(p: ProviderId, output: string): ClientStatus {
       version:   j.Version ? String(j.Version).split('-')[0] : null,
       nodeKey:   j.Self?.ID ? String(j.Self.ID) : undefined,
       hostname:  j.Self?.HostName ? String(j.Self.HostName) : undefined,
+      needsLogin: j.BackendState === 'NeedsLogin',
     }
   }
   return {
@@ -221,6 +224,82 @@ export function parseStatus(p: ProviderId, output: string): ClientStatus {
     nodeKey:   undefined,
     hostname:  j.fqdn ? String(j.fqdn) : undefined,
   }
+}
+
+// ── VPN settings: read back, change, sign in ────────────────────────────────
+
+/**
+ * Tailscale's own settings, read back from the client. `tailscale debug prefs` also prints the node's private
+ * keys and the signed-in user, so only these top-level keys ever leave the machine.
+ */
+export const TS_PREFS_READBACK = [
+  'echo HP_PREFS_BEGIN',
+  `tailscale debug prefs 2>/dev/null | awk -v keep='^(RouteAll|ExitNodeID|ExitNodeIP|ExitNodeAllowLANAccess|CorpDNS|RunSSH|WantRunning|AdvertiseTags|AdvertiseRoutes|NetfilterMode|ShieldsUp)$' '/^[{}]/ { next } /^\t"[A-Za-z0-9]+":/ { k = $0; sub(/^\t"/, "", k); sub(/".*/, "", k); on = (k ~ keep) } on { print }'`,
+  'echo HP_PREFS_END',
+].join('\n')
+
+export interface ClientPrefs {
+  acceptDns: boolean; acceptRoutes: boolean; ssh: boolean; advertiseExitNode: boolean; exitNode: string | null
+  exitNodeAllowLan: boolean; subnets: string[]; tags: string[]; netfilterOff: boolean
+}
+
+export function parseTailscalePrefs(output: string): ClientPrefs | null {
+  const m = /HP_PREFS_BEGIN\n([\s\S]*?)\nHP_PREFS_END/.exec(output)
+  if (!m || !m[1].trim()) return null
+  let j: any
+  try { j = JSON.parse(`{${m[1].trim().replace(/,\s*$/, '')}}`) } catch { return null }
+  const routes: string[] = Array.isArray(j.AdvertiseRoutes) ? j.AdvertiseRoutes.map(String) : []
+  return {
+    acceptDns: j.CorpDNS === true, acceptRoutes: j.RouteAll === true, ssh: j.RunSSH === true,
+    advertiseExitNode: routes.includes('0.0.0.0/0') || routes.includes('::/0'),
+    exitNode: (j.ExitNodeIP || j.ExitNodeID) ? String(j.ExitNodeIP || j.ExitNodeID) : null,
+    exitNodeAllowLan: j.ExitNodeAllowLANAccess === true,
+    subnets: routes.filter(r => r !== '0.0.0.0/0' && r !== '::/0'),
+    tags: Array.isArray(j.AdvertiseTags) ? j.AdvertiseTags.map(String) : [],
+    netfilterOff: j.NetfilterMode === 0,
+  }
+}
+
+/**
+ * Change a client's own settings and read them back. Tailscale: `tailscale set` with exactly these flags.
+ * NetBird: reconnect with every flag explicit (`flags`, from clientFlags), select the exit node's network
+ * route if one is chosen, and read the daemon's own config back. Offering routes and exit nodes is the
+ * routing action's job.
+ */
+export function configureScript(p: ProviderId, prefs: { acceptDns: boolean; acceptRoutes: boolean; ssh: boolean; exitNode: string | null; exitNodeAllowLan: boolean }, flags: string[]): string {
+  if (p === 'tailscale') {
+    const set = [`--accept-dns=${prefs.acceptDns}`, `--accept-routes=${prefs.acceptRoutes}`, `--ssh=${prefs.ssh}`,
+      `--exit-node=${prefs.exitNode ?? ''}`, `--exit-node-allow-lan-access=${prefs.exitNodeAllowLan}`]
+    return ['set -e', `tailscale set ${set.map(sq).join(' ')}`, TS_PREFS_READBACK, statusScript(p)].join('\n')
+  }
+  return [
+    'set -e', 'netbird down >/dev/null 2>&1 || true', `netbird up ${flags.map(sq).join(' ')}`,
+    ...(prefs.exitNode ? [`netbird networks select ${sq(prefs.exitNode)}`] : []),
+    NB_FLAGS_READBACK,
+    `netbird networks ls 2>/dev/null | sed 's/^/HP_NB_NET /' || true`,
+    statusScript(p),
+  ].join('\n')
+}
+
+/** Start the client without a key so it asks for an interactive sign-in. Its output carries the URL. */
+export function loginScript(p: ProviderId, flags: string[]): string {
+  const f = flags.map(sq).join(' ')
+  return p === 'tailscale'
+    ? [`tailscale up ${f} --reset --timeout=20s 2>&1 || true`, statusScript(p)].join('\n')
+    : [`timeout 25 netbird up --no-browser ${f} 2>&1 || true`, statusScript(p)].join('\n')
+}
+
+/** The sign-in URL a client printed, or null. https only, and only one. */
+export function parseLoginUrl(p: ProviderId, output: string): string | null {
+  const ok = (u: string | undefined | null) => (u && /^https:\/\/[^\s"'<>]{4,2000}$/.test(u) ? u : null)
+  if (p === 'tailscale') {
+    const st = /HP_STATUS_BEGIN\n([\s\S]*?)\nHP_STATUS_END/.exec(output)
+    if (st) { try { const u = ok(JSON.parse(st[1].trim() || '{}').AuthURL); if (u) return u } catch { /* fall through */ } }
+    return ok(/https:\/\/login\.tailscale\.com\/a\/[A-Za-z0-9]+/.exec(output)?.[0]) ??
+      ok(/To authenticate, visit:\s+(https:\/\/\S+)/.exec(output)?.[1])
+  }
+  const after = /(?:SSO|log in|login)[\s\S]*?(https:\/\/\S+)/i.exec(output)?.[1]
+  return ok(after)
 }
 
 // ── Update, routing, uninstall ──────────────────────────────────────────────
@@ -254,7 +333,7 @@ export const NB_FLAGS_READBACK = [
   `case "$hp_cfg" in /*) ;; *) hp_cfg="" ;; esac`,
   'if [ -n "$hp_cfg" ] && [ -f "$hp_cfg" ]; then',
   '  echo "HP_NB_CONFIG=$hp_cfg"',
-  `  grep -oE '"(DisableServerRoutes|DisableClientRoutes|DisableDNS|DisableFirewall)": *(true|false)' "$hp_cfg" | tr -d ' "' | sed 's/^/HP_NB_FLAG /' || true`,
+  `  grep -oE '"(DisableServerRoutes|DisableClientRoutes|DisableDNS|DisableFirewall|ServerSSHAllowed)": *(true|false)' "$hp_cfg" | tr -d ' "' | sed 's/^/HP_NB_FLAG /' || true`,
   'else echo HP_NB_CONFIG=unknown; fi',
 ].join('\n')
 

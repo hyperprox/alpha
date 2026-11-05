@@ -24,21 +24,91 @@ export function safeHostname(raw: string): string {
  *  NetBird: never configure DNS or accept routes; serve routes only when routing is on. On a node, no firewall
  *    rules of its own (`--disable-firewall=true`). Never `--allow-server-ssh`.
  */
-export function clientFlags(p: ProviderId, o: { hostname: string; kind: MachineKind; managementUrl?: string; routing?: RoutingRequest }): string[] {
+export function clientFlags(p: ProviderId, o: { hostname: string; kind: MachineKind; managementUrl?: string; routing?: RoutingRequest; prefs?: Partial<VpnPrefs> }): string[] {
   const host = safeHostname(o.hostname)
   const node = o.kind === 'node'
+  // A node is locked whatever is asked: its own DNS, no accepted routes, no SSH over the overlay.
+  const pr = { ...DEFAULT_PREFS, ...(o.prefs ?? {}) }
+  const acceptDns = !node && pr.acceptDns
+  const acceptRoutes = !node && (pr.acceptRoutes || (p === 'netbird' && !!pr.exitNode))
+  const ssh = !node && pr.ssh
   if (p === 'tailscale') {
-    return [`--hostname=${host}`, '--accept-dns=false', '--accept-routes=false', ...(node ? ['--netfilter-mode=off'] : [])]
+    return [`--hostname=${host}`, `--accept-dns=${acceptDns}`, `--accept-routes=${acceptRoutes}`,
+      ...(ssh ? ['--ssh=true'] : []), ...(node ? ['--netfilter-mode=off'] : [])]
   }
   const routing = !!o.routing && (o.routing.subnets.length > 0 || o.routing.exitNode)
   return [
     ...(o.managementUrl ? [`--management-url=${o.managementUrl}`] : []),
     `--hostname=${host}`,
-    '--disable-dns=true',
-    '--disable-client-routes=true',
+    `--disable-dns=${!acceptDns}`,
+    `--disable-client-routes=${!acceptRoutes}`,
     `--disable-server-routes=${routing ? 'false' : 'true'}`,
     `--disable-firewall=${node ? 'true' : 'false'}`,
+    `--allow-server-ssh=${ssh}`,
   ]
+}
+
+// ── VPN per-machine settings ─────────────────────────────────────────────────
+
+export interface VpnPrefs {
+  acceptDns: boolean
+  acceptRoutes: boolean
+  ssh: boolean
+  advertiseExitNode: boolean
+  /** Tailscale: the exit node's overlay IP or MagicDNS name. NetBird: the exit node's network route id. */
+  exitNode: string | null
+  /** While using an exit node, keep reaching the local network directly (on by default). */
+  exitNodeAllowLan: boolean
+  subnets: string[]
+}
+
+export const DEFAULT_PREFS: VpnPrefs = { acceptDns: false, acceptRoutes: false, ssh: false, advertiseExitNode: false, exitNode: null, exitNodeAllowLan: true, subnets: [] }
+
+/** Null when these settings may be applied to `m`, or why not. Routing overlap is checked by checkRouting. */
+export function checkPrefs(m: Machine, p: ProviderId, pr: VpnPrefs): string | null {
+  if (m.kind === 'node') {
+    if (pr.acceptDns) return 'DNS from the overlay is locked off on a Proxmox node: the node keeps its own resolver.'
+    if (pr.acceptRoutes) return 'Accepting routes is locked off on a Proxmox node: cluster traffic must keep its own routing table.'
+    if (pr.ssh) return 'SSH over the overlay is locked off on a Proxmox node; use the node\'s own SSH from the LAN or over the overlay with its normal login.'
+    if (pr.advertiseExitNode) return 'A Proxmox node is never made an exit node.'
+    if (pr.exitNode) return 'A Proxmox node never sends its traffic through an exit node: cluster traffic must stay on the LAN.'
+  }
+  if (pr.advertiseExitNode && pr.exitNode) return 'A machine cannot both offer itself as an exit node and use one.'
+  if (pr.exitNode) {
+    const okTs = isIP(pr.exitNode) !== 0 || /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/.test(pr.exitNode)
+    const okNb = /^[A-Za-z0-9_-]{1,64}$/.test(pr.exitNode)
+    if (p === 'tailscale' ? !okTs : !okNb) return `${pr.exitNode} is not an exit node (${p === 'tailscale' ? 'an overlay IP or MagicDNS name' : 'a NetBird network route id'})`
+  }
+  return null
+}
+
+/** What each change does to this machine, in words. Empty when nothing changes. */
+export function describePrefs(m: Machine, p: ProviderId, from: VpnPrefs, to: VpnPrefs): string[] {
+  const name = p === 'tailscale' ? 'Tailscale' : 'NetBird'
+  const dns = p === 'tailscale' ? 'MagicDNS' : 'NetBird DNS'
+  const out: string[] = []
+  if (from.acceptDns !== to.acceptDns) out.push(to.acceptDns
+    ? `Uses ${dns}: ${name} takes over ${m.name}'s DNS (/etc/resolv.conf or systemd-resolved) so overlay names resolve; ordinary names are still looked up through it.`
+    : `Keeps its own DNS: ${m.name}'s /etc/resolv.conf is left as it is, and overlay names will not resolve there.`)
+  if (from.acceptRoutes !== to.acceptRoutes) out.push(to.acceptRoutes
+    ? `Accepts routes other devices offer: traffic from ${m.name} to those subnets goes through the tunnel.`
+    : `Ignores routes other devices offer: ${m.name}'s routing table is not changed by ${name}.`)
+  if (from.ssh !== to.ssh) out.push(to.ssh
+    ? `${name} SSH on: people your ${p === 'tailscale' ? 'tailnet ACL' : 'NetBird policy'} allows can open a shell on ${m.name} over ${name}.`
+    : `${name} SSH off: ${m.name} only takes its own SSH logins.`)
+  if (from.exitNode !== to.exitNode) out.push(to.exitNode
+    ? `Sends all its internet traffic through ${to.exitNode}.`
+    : 'Stops using an exit node: internet traffic goes out directly again.')
+  if (to.exitNode && (from.exitNodeAllowLan !== to.exitNodeAllowLan || from.exitNode !== to.exitNode)) out.push(to.exitNodeAllowLan
+    ? 'LAN access stays direct, so it keeps reaching the local network.'
+    : 'LAN traffic goes through the exit node too: it may lose access to the local network.')
+  if (from.advertiseExitNode !== to.advertiseExitNode) out.push(to.advertiseExitNode
+    ? `Offers itself as an exit node: devices that choose it send their internet traffic through ${m.name}.`
+    : 'Stops offering itself as an exit node.')
+  if (JSON.stringify([...from.subnets].sort()) !== JSON.stringify([...to.subnets].sort())) out.push(to.subnets.length
+    ? `Offers ${to.subnets.join(', ')} to the overlay: devices that accept routes reach those subnets through ${m.name}.`
+    : 'Stops offering subnets.')
+  return out
 }
 
 export type ExistingChoice = 'adopt' | 'replace'

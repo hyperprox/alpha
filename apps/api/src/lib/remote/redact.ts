@@ -11,6 +11,9 @@
 const KEY_SHAPES = [
   /tskey-[A-Za-z0-9_-]+/g,          // Tailscale auth, API and client keys
   /nbp_[A-Za-z0-9]{20,}/g,          // NetBird personal access tokens
+  /\b(?:privkey|nlpriv|mkey|nodekey|discokey):[0-9a-f]+/g,   // Tailscale key material
+  /https:\/\/login\.tailscale\.com\/a\/[A-Za-z0-9]+/g,    // Tailscale sign-in links
+  /(?<="AuthURL"\s*:\s*")[^"]+/g,  // any sign-in link in a status dump
 ]
 
 /** NetBird setup keys are upper-case UUIDs. Applied only while one is live: ordinary ids look the same. */
