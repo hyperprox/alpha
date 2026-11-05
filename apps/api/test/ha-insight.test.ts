@@ -6,7 +6,7 @@ import { readSnapshot } from '../src/lib/ha/read'
 import { predictFailover, moveNow } from '../src/lib/ha/predict'
 import { overview, guestView, headroom, badges, clusterWords } from '../src/lib/ha/insight'
 import { preflightGrid } from '../src/lib/ha/preflight'
-import { hardwareOf } from '../src/lib/ha/parse'
+import { hardwareOf, parseCrs } from '../src/lib/ha/parse'
 import { threeNodes, lxcGpuConfig, lxcBindConfig } from './ha-fake'
 
 test('no home: fails over to the node with the fewest HA guests (basic CRS), and says it stays there', async () => {
@@ -172,4 +172,10 @@ test('preflight grid: PVE blockers plus bind mounts, devices, storage and memory
   const vm = snap.guests.find(x => x.sid === 'vm:904')!
   const vgrid = preflightGrid(snap, vm, { allowed_nodes: ['node-b', 'node-c'], not_allowed_nodes: {}, local_resources: ['hostpci0'], running: 1 }, { hostpci0: '0000:01:00', scsi0: 'shared-rbd:x' })
   assert.match(vgrid.rows.find(r => r.node === 'node-b')!.reasons.join(' '), /local devices: a PCI device/)
+})
+
+test('CRS settings read in both spellings (/cluster/options returns an object)', () => {
+  assert.deepEqual(parseCrs({ ha: 'dynamic', 'ha-auto-rebalance': 1, 'ha-rebalance-on-start': 1 }), { mode: 'dynamic', rebalanceOnStart: true, autoRebalance: true })
+  assert.deepEqual(parseCrs('ha=static'), { mode: 'static', rebalanceOnStart: false, autoRebalance: false })
+  assert.equal(parseCrs(undefined).mode, 'basic')
 })
