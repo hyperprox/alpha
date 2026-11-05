@@ -22,7 +22,7 @@ import {
   credentialId, fingerprintOf,
   CREDENTIAL_CATEGORY, CRED_PROVIDER, type TerminalCredential,
 } from './ssh-broker'
-import { getCredential } from './credentials'
+import { getCredential, setCredential } from './credentials'
 
 const HOSTKEY_PROVIDER = 'hostkey'
 
@@ -71,6 +71,56 @@ export interface ExecOptions {
    * any user on the node could read it from the process list; a script carrying a private key goes this way.
    */
   input?:    string
+  /** SSH port; 22 unless the login says otherwise (a hand-added host). */
+  port?:     number
+  /**
+   * Refuse a host whose key has never been pinned, instead of trusting it. For targets reached with a script
+   * that carries a key (remote access to VMs and hand-added hosts): the admin pins it in the Terminal first.
+   */
+  requirePin?: boolean
+}
+
+/** A host with no pinned key, refused because the caller required one. The message names the fingerprint. */
+export class HostKeyNotPinnedError extends Error {
+  constructor(readonly host: string, readonly port: number, readonly fingerprint: string) {
+    super(`${host}:${port} has no pinned host key, so HyperProx will not send it anything. Its key is ${fingerprint}. ` +
+      'Open it once in the Terminal, check that fingerprint against the machine, and accept it; then try again.')
+    this.name = 'HostKeyNotPinnedError'
+  }
+}
+
+export type HostKeyDecision = 'accept' | 'reject-unpinned' | 'reject-changed'
+
+/** The pin rule, alone: a pinned key must match; an unpinned one is accepted only when the caller allows it. */
+export function hostKeyDecision(pinned: string | null | undefined, fingerprint: string, requirePin: boolean): HostKeyDecision {
+  if (pinned) return pinned === fingerprint ? 'accept' : 'reject-changed'
+  return requirePin ? 'reject-unpinned' : 'accept'
+}
+
+/** The pin the Terminal and every exec path share for `host:port`, or null. */
+export async function pinnedHostKey(host: string, port = 22): Promise<string | null> {
+  return getCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, credentialId(`${host}:${port}`))
+}
+
+/** Pin `host:port` to `fingerprint`, in the same place the Terminal pins it. */
+export async function pinHostKey(host: string, port: number, fingerprint: string): Promise<void> {
+  await setCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, credentialId(`${host}:${port}`), fingerprint, false)
+}
+
+/** Read a host's key fingerprint without logging in (the connection is refused right after the key arrives). */
+export function probeHostKey(host: string, port = 22, timeoutMs = 15_000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const client = new Client()
+    let fp: string | null = null
+    const done = (e?: Error) => { try { client.end() } catch { /* gone */ } ; fp ? resolve(fp) : reject(e ?? new Error(`no host key from ${host}:${port}`)) }
+    client.on('error', e => done(e as Error))
+    try {
+      client.connect({
+        host, port, username: 'hyperprox-probe', readyTimeout: timeoutMs,
+        hostVerifier: (key: Buffer) => { fp = fingerprintOf(key); setImmediate(() => done()); return false },
+      } as ConnectConfig)
+    } catch (e: any) { done(e) }
+  })
 }
 
 /**
@@ -90,6 +140,7 @@ export function execOnNode(opts: ExecOptions): Promise<ExecResult> {
     let out = ''
     let settled = false
     let timedOut = false
+    let unpinned: string | null = null
 
     const finish = (r: ExecResult) => {
       if (settled) return
@@ -111,7 +162,7 @@ export function execOnNode(opts: ExecOptions): Promise<ExecResult> {
       finish({ code: -1, output: out, timedOut: true })
     }, timeoutMs)
 
-    client.on('error', e => fail(e as Error))
+    client.on('error', e => fail(unpinned ? new HostKeyNotPinnedError(host, opts.port ?? 22, unpinned) : e as Error))
     client.on('ready', () => {
       client.exec(command, (err, stream) => {
         if (err) return fail(err)
@@ -128,14 +179,18 @@ export function execOnNode(opts: ExecOptions): Promise<ExecResult> {
     })
 
     const config: ConnectConfig = {
-      host, port: 22, username: cred.username,
+      host, port: opts.port ?? 22, username: cred.username,
       readyTimeout: 15_000, keepaliveInterval: 20_000,
       // Same pin the Terminal uses. A node whose key changed is refused here for
       // exactly the reason it is refused there.
       hostVerifier: (key: Buffer, verified: (ok: boolean) => void) => {
         const fp = fingerprintOf(key)
-        getCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, credentialId(`${host}:22`))
-          .then(pinned => verified(!pinned || pinned === fp))
+        getCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, credentialId(`${host}:${opts.port ?? 22}`))
+          .then(pinned => {
+            const d = hostKeyDecision(pinned, fp, !!opts.requirePin)
+            if (d === 'reject-unpinned') unpinned = fp
+            verified(d === 'accept')
+          })
           .catch(() => verified(false))
       },
     }

@@ -46,6 +46,7 @@ const CATEGORY_META: Record<string, { label: string; accent: string; providers: 
   // One NPM login lives here (it is the Proxy page's first instance). Further proxies, of any kind, are added on the Proxy page.
   proxy:   { label: 'Proxy',          accent: 'var(--accent)', providers: { npm: 'Nginx Proxy Manager' } },
   dns:     { label: 'DNS',            accent: 'var(--accent-2)', providers: { godaddy: 'GoDaddy', cloudflare: 'Cloudflare', namecheap: 'Namecheap' } },
+  remote:  { label: 'Remote access',  accent: 'var(--good)', providers: { tailscale: 'Tailscale', netbird: 'NetBird', 'routeros-write': 'MikroTik WireGuard (write, limited group)' } },
   system:  { label: 'System',         accent: 'var(--text-muted)', providers: { hyperprox: 'HyperProx' } },
 }
 
@@ -95,7 +96,8 @@ function ProviderSection({
     setTesting(false)
   }
 
-  const allSet = providerFields.every(f => f.isSet)
+  // Remote access providers have optional fields (OAuth instead of a token, defaults): one secret is enough.
+  const allSet = category === 'remote' ? providerFields.some(f => f.masked && f.isSet) : providerFields.every(f => f.isSet)
 
   return (
     <div className="rounded-lg border p-6" style={{
@@ -190,7 +192,7 @@ function ProviderSection({
 // ---------------------------------------------------------------------------
 
 export default function SettingsPage() {
-  const [tab,    setTab]    = useState<'proxmox' | 'proxy' | 'dns' | 'system'>('proxmox')
+  const [tab,    setTab]    = useState<'proxmox' | 'proxy' | 'dns' | 'remote' | 'system'>('proxmox')
   const [fields, setFields] = useState<Record<string, CredentialField[]>>({})
   const [loading, setLoading] = useState(true)
   const { role } = useSession()
@@ -202,8 +204,11 @@ export default function SettingsPage() {
   }, [])
 
   useEffect(() => {
-    Promise.all(['proxmox', 'proxy', 'dns', 'system'].map(fetchCategory))
+    Promise.all(['proxmox', 'proxy', 'dns', 'remote', 'system'].map(fetchCategory))
       .finally(() => setLoading(false))
+    // Other pages link straight to a tab (?tab=remote).
+    const want = new URLSearchParams(window.location.search).get('tab')
+    if (want && want in CATEGORY_META) setTab(want as any)
   }, [fetchCategory])
 
   const handleSave = async (category: string, provider: string, values: Record<string, string>) => {

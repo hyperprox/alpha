@@ -141,3 +141,22 @@ test('owner: may make a channel usable while locked; its secret then lives in th
   const lanOk = await app.inject({ method: 'POST', url: `${BASE}/channels`, headers: { cookie }, payload: { name: 'Lan', kind: 'ntfy', url: 'http://ntfy.lan/t', lanOverride: true } })
   assert.equal(lanOk.statusCode, 201)
 })
+
+test('marking a channel private needs the master password again; other edits do not', async () => {
+  const { cookie } = await signIn(app, 'admin@example.com', 'admin master password')
+  const url = 'https://discord.com/api/webhooks/43/private-path-0001'
+  const refused = await app.inject({ method: 'POST', url: `${BASE}/channels`, headers: { cookie }, payload: { name: 'Mine', kind: 'discord', url, private: true } })
+  assert.equal(refused.statusCode, 403); assert.equal(refused.json().code, 'reconfirm_required')
+  const plain = await app.inject({ method: 'POST', url: `${BASE}/channels`, headers: { cookie }, payload: { name: 'Mine', kind: 'discord', url } })
+  assert.equal(plain.statusCode, 201, plain.body)
+  const id = plain.json().channel.id
+  assert.equal((await app.inject({ method: 'PUT', url: `${BASE}/channels/${id}`, headers: { cookie }, payload: { name: 'Mine too' } })).statusCode, 200)
+  const mark = await app.inject({ method: 'PUT', url: `${BASE}/channels/${id}`, headers: { cookie }, payload: { private: true } })
+  assert.equal(mark.statusCode, 403); assert.equal(mark.json().code, 'reconfirm_required')
+  assert.equal((await svc.listChannels()).find(c => c.id === id)?.private, false, 'nothing changed')
+  await app.inject({ method: 'POST', url: '/api/auth/reconfirm', headers: { cookie }, payload: { password: 'admin master password' } })
+  const ok = await app.inject({ method: 'PUT', url: `${BASE}/channels/${id}`, headers: { cookie }, payload: { private: true } })
+  assert.equal(ok.statusCode, 200, ok.body)
+  assert.equal((await svc.listChannels()).find(c => c.id === id)?.private, true)
+  await app.inject({ method: 'DELETE', url: `${BASE}/channels/${id}`, headers: { cookie } })
+})

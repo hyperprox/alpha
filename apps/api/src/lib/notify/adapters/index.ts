@@ -4,6 +4,7 @@
 //  only build requests; sending (and the SSRF guard) is ssrf.guardedSend.
 // =============================================================================
 
+import { withPlainValues, withoutMarks } from './common'
 import type { ChannelKind, ChannelNonSecret, ChannelSecret, NotifyMessage, OutboundRequest } from '../types'
 import { discordRequest } from './discord'
 import { slackRequest } from './slack'
@@ -15,7 +16,9 @@ import { webhookRequest } from './webhook'
 
 export { telegramUrl, TELEGRAM_CHAT, TELEGRAM_TOKEN } from './telegram'
 
-export function buildRequest(kind: ChannelKind, secret: ChannelSecret, nonSecret: ChannelNonSecret, m: NotifyMessage, now = new Date()): OutboundRequest {
+export function buildRequest(kind: ChannelKind, secret: ChannelSecret, nonSecret: ChannelNonSecret, marked: NotifyMessage, now = new Date()): OutboundRequest {
+  // Outside values (a device name, its OS, a user) are plain text where markdown renders; elsewhere as they are.
+  const m = kind === 'discord' || kind === 'teams' ? withPlainValues(marked) : withoutMarks(marked)
   switch (kind) {
     case 'discord':  return discordRequest(secret, m)
     case 'slack':    return slackRequest(secret, m)
