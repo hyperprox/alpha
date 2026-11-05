@@ -233,10 +233,10 @@ check "  and that is logged once"                                 '[[ "$out" == 
 # ── Setup started again: the hand-over record ────────────────────────────────
 reset="${here}/bin/hyperprox-setup-reset"
 mkreset() { local d; d="$(mkinstall "$1")"; mkdir -p "$d/data/setup"; echo x > "$d/data/setup/handed-over"; echo "$d"; }
-d="$(mkreset 'SETUP_COMPLETE=false')"; printf '{"bootstrapped":false}' > "${tmp}/noowner.json"
+d="$(mkreset 'SETUP_COMPLETE=false')"; printf '{"reachable":true,"bootstrapped":false}' > "${tmp}/noowner.json"
 out="$(HYPERPROX_DIR="$d" HPX_API_STATUS_URL="file://${tmp}/noowner.json" bash "$reset")"
 check "setup restarted with no owner: the hand-over record is cleared"   '[[ ! -e "$d/data/setup/handed-over" && "$out" == *"cleared"* ]]'
-d="$(mkreset 'SETUP_COMPLETE=false')"; printf '{"bootstrapped":true}' > "${tmp}/owner2.json"
+d="$(mkreset 'SETUP_COMPLETE=false')"; printf '{"reachable":true,"bootstrapped":true}' > "${tmp}/owner2.json"
 HYPERPROX_DIR="$d" HPX_API_STATUS_URL="file://${tmp}/owner2.json" bash "$reset" >/dev/null
 check "an owner exists: the record stays"                                 '[[ -e "$d/data/setup/handed-over" ]]'
 d="$(mkreset 'SETUP_COMPLETE=true')"
@@ -245,6 +245,9 @@ check "setup finished: the record stays"                                   '[[ -
 d="$(mkreset 'SETUP_COMPLETE=false')"
 HYPERPROX_DIR="$d" HPX_API_STATUS_URL="file:///nonexistent" bash "$reset" >/dev/null 2>&1
 check "the API not answering: the record stays (unknown is not 'no owner')" '[[ -e "$d/data/setup/handed-over" ]]'
+d="$(mkreset 'SETUP_COMPLETE=false')"; printf '{"reachable":false,"bootstrapped":false}' > "${tmp}/novault.json"
+HYPERPROX_DIR="$d" HPX_API_STATUS_URL="file://${tmp}/novault.json" bash "$reset" >/dev/null 2>&1
+check "the vault not answering: the record stays, even though it says no owner" '[[ -e "$d/data/setup/handed-over" ]]'
 check "install.sh runs it right before it restarts the setup wizard" \
   '[[ "$(grep -n "hyperprox-setup-reset" "${here}/install.sh" | head -1 | cut -d: -f1)" -lt "$(grep -n "systemctl restart hyperprox-setup" "${here}/install.sh" | head -1 | cut -d: -f1)" ]]'
 
