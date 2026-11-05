@@ -69,6 +69,28 @@ export interface GuestHa {
   /** What ties it to its node, in words. */
   hardware:   string[]
   warnings:   string[]
+  /** Informational: what a failover means for a guest whose hardware stays behind (a deliberate non-strict home). */
+  notes:      string[]
+}
+
+/** "If node-c fails this will run on node-a without its GPU (…)", for a hardware-bound guest whose home is only preferred. */
+export function hardwareNote(snap: HaSnapshot, sid: Sid): string | null {
+  const g = snap.guests.find(x => x.sid === sid)
+  const res = snap.resources.find(r => r.sid === sid)
+  if (!g || !res || !tiedToNode(g.hardware)) return null
+  const home = homeOf(snap.rules, sid)
+  if (!home.rule || home.disabled || home.avoid.length || home.choice.mode !== 'prefer') return null
+  if (!(home.choice.tiers[0] ?? []).includes(g.node)) return null   // that case is a warning, not a note
+  const p = predictFailover(snap, sid)
+  if (!p.to || p.to === g.node) return null
+  const hw = g.hardware!
+  const parts: string[] = []
+  const gpu = hw.devices.filter(d => /GPU/.test(d.what))
+  if (gpu.length) parts.push('its GPU (GPU work such as transcoding falls back to the CPU)')
+  for (const d of hw.devices.filter(d => !/GPU/.test(d.what))) parts.push(d.what)
+  for (const b of hw.bindMounts) parts.push(`its local bind mount (${b.path}), so it may not start there`)
+  for (const l of hw.localVolumes) parts.push(`its disk on node-local storage "${l.storage}", so it may not start there`)
+  return `If ${g.node} fails this will run on ${p.to} without ${list(parts)}.`
 }
 
 export function guestView(snap: HaSnapshot, sid: Sid): GuestHa | null {
@@ -86,10 +108,12 @@ export function guestView(snap: HaSnapshot, sid: Sid): GuestHa | null {
     haState: svc?.state ?? null, home: { ...home, words: home.disabled ? 'Its home rule is turned off, so it has no home right now.' : homeWords(home.choice, home.avoid) },
     together: ra.filter(r => r.affinity === 'positive').map(r => ({ rule: r.id, with: r.resources.filter(s => s !== sid), disabled: r.disabled })),
     apart: ra.filter(r => r.affinity === 'negative').map(r => ({ rule: r.id, with: r.resources.filter(s => s !== sid), disabled: r.disabled })),
-    prediction, statusLine: '', hardware, warnings: [],
+    prediction, statusLine: '', hardware, warnings: [], notes: [],
   }
   v.statusLine = statusLine(snap, v)
   v.warnings = guestWarnings(snap, g, res, home)
+  const note = hardwareNote(snap, sid)
+  if (note) v.notes.push(note)
   return v
 }
 
@@ -181,6 +205,8 @@ export interface Overview {
   unprotected: Array<{ sid: Sid; vmid: number; type: string; name: string; node: string; status: string; words: string }>
   homeless:    Array<{ sid: Sid; name: string; node: string; words: string }>
   hardware:    Array<{ sid: Sid; name: string; node: string; needs: string[]; words: string }>
+  /** Hardware-bound guests with a deliberately non-strict home: informational, not a warning. */
+  hardwareNotes: Array<{ sid: Sid; name: string; node: string; words: string }>
   headroom:    Headroom[]
   rules:       Array<{ rule: HaRule; words: string; problems: RuleProblem[] }>
   problems:    RuleProblem[]
@@ -194,6 +220,7 @@ export function overview(snap: HaSnapshot): Overview {
   const prot: Overview['protected'] = []
   const homeless: Overview['homeless'] = []
   const hardware: Overview['hardware'] = []
+  const hardwareNotes: Overview['hardwareNotes'] = []
   for (const r of snap.resources) {
     const g = snap.guests.find(x => x.sid === r.sid)
     const v = guestView(snap, r.sid)
@@ -205,6 +232,8 @@ export function overview(snap: HaSnapshot): Overview {
     prot.push({ sid: r.sid, vmid: r.vmid, type: r.type, name, node, state: snap.services.find(s => s.sid === r.sid)?.state ?? r.state,
       home: noHome ? 'No home' : homeWords(home.choice, home.avoid), homeless: noHome, failover: p?.words ?? '', to: p?.to ?? null })
     if (noHome) homeless.push({ sid: r.sid, name, node, words: `${label(r.sid)}: no home. If ${node} fails it moves and never comes back on its own.` })
+    const note = hardwareNote(snap, r.sid)
+    if (note) hardwareNotes.push({ sid: r.sid, name, node, words: `${label(r.sid)}: ${note}` })
     if (g && tiedToNode(g.hardware)) {
       const top = home.choice.tiers[0] ?? []
       if (noHome || home.avoid.length || !top.includes(g.node)) {
@@ -224,7 +253,7 @@ export function overview(snap: HaSnapshot): Overview {
   return {
     cluster: clusterWords(snap),
     nodes: snap.nodes.map(n => ({ node: n.node, online: n.online, maintenance: n.maintenance, haGuests: snap.resources.filter(r => place.get(r.sid)?.node === n.node).length })),
-    protected: prot, unprotected, homeless, hardware, headroom: hr,
+    protected: prot, unprotected, homeless, hardware, hardwareNotes, headroom: hr,
     rules: [...snap.rules].sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.id.localeCompare(b.id)).map(rule => ({ rule, words: ruleWords(rule, label), problems: problems.filter(p => p.rules.includes(rule.id)) })),
     problems,
     counts: { protected: prot.length, unprotected: unprotected.length, homeless: homeless.length, hardware: hardware.length, tightHeadroom: hr.filter(h => h.level !== 'ok' && h.level !== 'tight').length },
