@@ -30,7 +30,7 @@ export function GpuToggleButton({ view, onChange }: { view: GuestView; onChange:
     <>
       {t === 'on' && <GhostButton style={{ height: 34 }} onClick={() => setChange({ kind: 'gpu-off' })}>GPU access: on · Turn off</GhostButton>}
       {t === 'off' && <PrimaryButton style={{ height: 34 }} onClick={() => setChange({ kind: 'gpu-on' })}>GPU access: off · Turn back on</PrimaryButton>}
-      {t === 'raw-only' && <GhostButton style={{ height: 34 }} onClick={() => setChange({ kind: 'gpu-off' })} title="Raw lxc lines: the API cannot remove them">GPU access: raw lines</GhostButton>}
+      {t === 'raw-only' && <GhostButton style={{ height: 34 }} onClick={() => setChange({ kind: 'gpu-off' })}>GPU access: on · Turn off</GhostButton>}
       {change && <PreviewDialog guest={view.guest} change={change} title={change.kind === 'gpu-off' ? 'Turn GPU access off' : 'Turn GPU access back on'} onClose={() => setChange(null)} onApplied={onChange} />}
     </>
   )
@@ -82,10 +82,16 @@ export function GpuPanel({ view, nodes, canEdit, onSaved }: { view: GuestView; n
               ))}
             </ul>
             {view.gpu.rawCount > 0 && (
-              <Notice kind="warn">
-                {view.gpu.rawCount} raw lxc.* line{view.gpu.rawCount === 1 ? '' : 's'}: Proxmox’s API does not accept lxc.* keys from any token, to set or to delete, so HyperProx cannot change these. It can add the equivalent devN entries; the raw lines then have to be removed by hand on the node.
+              <Notice kind="info">
+                {view.gpu.rawCount} raw lxc.* line{view.gpu.rawCount === 1 ? '' : 's'}. Proxmox’s API refuses these lines, so HyperProx changes them by rewriting the whole config file over the node login, after a preview listing every line, the guest’s name typed, and a compare-and-swap on the file. Changes apply the next time the container starts.
               </Notice>
             )}
+            {canEdit && isLxc && view.gpu.entries.filter(e => e.via !== 'devN').map(e => (
+              <div key={`${e.key}${e.value}`} className="flex items-center gap-2 text-xs font-mono">
+                <span className="break-all flex-1" style={{ color: 'var(--text-muted)' }}>{e.key}: {e.value}</span>
+                <GhostButton style={{ height: 28 }} onClick={() => setChange({ change: { kind: 'raw', raw: { remove: [[e.key, e.value]] } }, title: `Remove a raw line from ${view.guest.name}` })}>Remove…</GhostButton>
+              </div>
+            ))}
             {canEdit && isLxc && (
               <div className="flex gap-2 flex-wrap">
                 {view.gpu.rawCount > 0 && <GhostButton style={{ height: 34 }} onClick={() => setChange({ change: { kind: 'gpu-convert' }, title: 'Convert raw GPU lines to devN' })}>Convert to devN</GhostButton>}
@@ -125,8 +131,8 @@ export function GpuPanel({ view, nodes, canEdit, onSaved }: { view: GuestView; n
       {isLxc && (
         <Section title="Portable GPU (follows the guest between nodes)" note="One config covering every node's GPU, so wherever HA starts the container it binds the GPU that node has. Nothing runs at failover time.">
           {d && <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>{d.portable.whyRaw}</p>}
-          {d && <Notice kind="warn">{d.portable.noWriter}</Notice>}
-          <GhostButton onClick={() => setChange({ change: { kind: 'gpu-portable' }, title: `Portable GPU for ${view.guest.name}` })}>Show the portable lines for every node</GhostButton>
+          {d && <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>{d.portable.noWriter}</p>}
+          {canEdit && <GhostButton onClick={() => setChange({ change: { kind: 'gpu-portable' }, title: `Portable GPU for ${view.guest.name}` })}>Set up Portable GPU…</GhostButton>}
           {view.guest.haManaged && <p className="text-[12px]" style={{ color: 'var(--text-dimmer)' }}>After an HA move HyperProx checks inside the container for a GPU and sends a notification saying which GPU it now uses, or that it is on the CPU.</p>}
         </Section>
       )}

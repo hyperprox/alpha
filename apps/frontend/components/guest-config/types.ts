@@ -29,6 +29,10 @@ export interface PreviewData {
   extraConfirm: string[]; confirmName: boolean
   deviceChecks: Array<{ path: string; present: boolean }>
   canApply: boolean
+  /** Entries the person may add ("remove these too?"). */
+  options: Array<{ key: string; value: string; label: string }>
+  /** Raw lines are written by rewriting the whole config file over the node login. */
+  rawFile: boolean
 }
 
 export interface RestartResult {
@@ -52,7 +56,7 @@ export interface GuestView {
   secretKeys: string[]
   keys: { modelled: string[]; raw: Array<{ key: string; value: string }>; unknown: Array<{ key: string; value: string }>; rawCount: number; unknownCount: number }
   pending: { keys: string[]; rows: Array<{ key: string; value?: any; pending?: any; delete?: number }> }
-  gpu: { vendors: string[]; entries: GpuEntry[]; rawCount: number; toggle: 'on' | 'off' | 'raw-only' | 'none'; offSince: string | null; managed: Record<string, string> }
+  gpu: { vendors: string[]; entries: GpuEntry[]; rawCount: number; toggle: 'on' | 'off' | 'raw-only' | 'none'; offSince: string | null; managed: Record<string, string>; managedRaw: Array<[string, string]> }
   sharers: Array<{ device: string; users: string[] }>
   historyCount: number
 }
