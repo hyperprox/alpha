@@ -103,7 +103,7 @@ W_NODE_HEALTH='Installs node_exporter on every node. It answers on port 9100.'
 Q_POWER='Do you want HyperProx to monitor the power on each of your nodes?'
 W_POWER='Lets HyperProx read the CPU energy counters. The trade-off: any local user on that node can then read energy use.'
 Q_GPU='Do you want HyperProx to monitor your GPUs?'
-W_GPU='Adds a small exporter for each GPU: Intel on port 8081, NVIDIA on port 9835. It only reads the GPU; drivers are never touched.'
+W_GPU='Intel and NVIDIA GPUs get a small exporter (ports 8081, 9835); AMD GPUs are read by node_exporter. Drivers are never touched.'
 Q_IGPU='Do you want containers on these nodes to be able to use their built-in graphics (for video transcoding)?'
 W_IGPU='Opens the built-in Intel or AMD graphics to containers. The trade-off: any container on that node can then use its built-in graphics.'
 Q_CHARTS='Do you want charts and dashboards (Prometheus and Grafana)?'
@@ -154,7 +154,7 @@ node_scripts_dir() {
   [ -f "${BASH_SOURCE[0]:-}" ] && here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   if [ -n "$here" ] && [ -f "$here/packages/hardware/node/probe.sh" ]; then echo "$here/packages/hardware/node"; return; fi
   d="$(mktemp -d)"
-  for f in probe common node-exporter rapl intel-gpu-exporter nvidia-gpu-exporter igpu-access igpu-access-undo; do
+  for f in probe common node-exporter rapl intel-gpu-exporter nvidia-gpu-exporter amd-gpu-metrics amd-gpu-metrics-undo igpu-access igpu-access-undo; do
     curl -fsSL "$RAW_BASE/packages/hardware/node/$f.sh" -o "$d/$f.sh" || die "Could not download the node scripts from $RAW_BASE"
   done
   echo "$d"
@@ -177,7 +177,7 @@ node_ip() {
     | grep "\"name\"[[:space:]]*:[[:space:]]*\"$1\"" | sed -n 's/.*"ip"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
 }
 
-declare -A HW_GPUS HW_RAPL HW_NX HW_INTEL_X HW_NV_X HW_OK HW_IGPU
+declare -A HW_GPUS HW_RAPL HW_NX HW_INTEL_X HW_NV_X HW_OK HW_IGPU HW_AMD_X
 CHECKLIST=()
 check() { CHECKLIST+=("$1"$'\t'"$2"$'\t'"$3"$'\t'"$4"); }   # status label node reason
 # ---------------------------------------------------------------------------
@@ -254,6 +254,7 @@ for node in "${NODES[@]}"; do
   HW_NX[$node]="$(awk -F'\t' '$1=="node_exporter"{print $2}' <<< "$out")"
   HW_INTEL_X[$node]="$(awk -F'\t' '$1=="intel_exporter"{print $2}' <<< "$out")"
   HW_NV_X[$node]="$(awk -F'\t' '$1=="nvidia_exporter"{print $2}' <<< "$out")"
+  HW_AMD_X[$node]="$(awk -F'\t' '$1=="amd_metrics"{print $2}' <<< "$out")"
   HW_IGPU[$node]="$(awk -F'\t' '$1=="igpu_access"{print $2}' <<< "$out")"
   case "${HW_IGPU[$node]}" in open|closed) IGPU_NODES="${IGPU_NODES:+$IGPU_NODES, }$node";; esac
   grep -q $'^ceph\tyes' <<< "$out" && ANY_CEPH=1
@@ -279,12 +280,11 @@ say "A few questions"
 [ "$NO_TERMINAL" -eq 1 ] && note "No terminal to ask on, so the defaults are shown. Re-run with -y to go ahead with them."
 ask_yn A_NODE_HEALTH yes "$Q_NODE_HEALTH" "$W_NODE_HEALTH"
 if [ "$ANY_RAPL" -eq 1 ]; then ask_yn A_POWER yes "$Q_POWER" "$W_POWER"; else A_POWER=no; fi
-if [ "$ANY_INTEL" -eq 1 ] || [ "$ANY_NVIDIA" -eq 1 ]; then
-  [ "$ANY_AMD" -eq 1 ] && note "AMD GPUs are not covered yet, so they will be listed but not monitored."
+if [ "$ANY_INTEL" -eq 1 ] || [ "$ANY_NVIDIA" -eq 1 ] || [ "$ANY_AMD" -eq 1 ]; then
+  [ "$ANY_AMD" -eq 1 ] && note "AMD GPUs are read by node_exporter, so on those nodes this also needs node health monitoring."
   ask_yn A_GPU yes "$Q_GPU" "$W_GPU"
 else
   A_GPU=no
-  [ "$ANY_AMD" -eq 1 ] && note "Found an AMD GPU. AMD GPUs are not covered yet, so there is no GPU question."
 fi
 # Offered on nodes with built-in Intel or AMD graphics, but the default is no, even with -y.
 if [ -n "$IGPU_NODES" ]; then
@@ -322,6 +322,7 @@ for node in "${NODES[@]}"; do
   if [ "$A_GPU" = yes ]; then
     grep -q $'^intel\t' <<< "${HW_GPUS[$node]}" && [ "${HW_INTEL_X[$node]}" != running ] && PLAN+=("$node"$'\t'intel-gpu-exporter)
     grep -q $'^nvidia\t' <<< "${HW_GPUS[$node]}" && [ "${HW_NV_X[$node]}" != running ] && PLAN+=("$node"$'\t'nvidia-gpu-exporter)
+    grep -q $'^amd\t' <<< "${HW_GPUS[$node]}" && [ "${HW_AMD_X[$node]}" != on ] && PLAN+=("$node"$'\t'amd-gpu-metrics)
   fi
   [ "$A_IGPU" = yes ] && [ "${HW_IGPU[$node]}" = closed ] && PLAN+=("$node"$'\t'igpu-access)
 done
@@ -329,6 +330,7 @@ step_label() {
   case "$1" in
     node-exporter) echo "Health monitoring";; rapl) echo "Power monitoring";;
     intel-gpu-exporter) echo "Intel GPU monitoring";; nvidia-gpu-exporter) echo "NVIDIA GPU monitoring";;
+    amd-gpu-metrics) echo "AMD GPU monitoring";;
     igpu-access) echo "Built-in graphics for containers";;
   esac
 }
@@ -486,6 +488,10 @@ if [ "$A_NODE_HEALTH" = yes ] || [ "$A_POWER" = yes ] || [ "$A_GPU" = yes ]; the
       if grep -q $'^intel\t' <<< "${HW_GPUS[$node]}"; then
         metrics_from "$ip" 8081 | grep -q '^igpu_' && check ok "Intel GPU answers" "$node" "port 8081 answers from here" \
           || check failed "Intel GPU answers" "$node" "port 8081 does not answer from here"
+      fi
+      if grep -q $'^amd\t' <<< "${HW_GPUS[$node]}"; then
+        metrics_from "$ip" 9100 | grep -q '^node_drm_gpu_busy_percent' && check ok "AMD GPU answers" "$node" "node_exporter reports it from here" \
+          || check failed "AMD GPU answers" "$node" "node_exporter reports no AMD GPU figures"
       fi
       if grep -q $'^nvidia\t' <<< "${HW_GPUS[$node]}"; then
         metrics_from "$ip" 9835 | grep -q '^nvidia_smi_memory_total_bytes' && check ok "NVIDIA GPU answers" "$node" "port 9835 answers from here" \

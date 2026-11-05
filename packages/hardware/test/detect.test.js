@@ -75,9 +75,10 @@ test('questions: only the ones that apply, GPU only when a GPU was found', () =>
   const ids = nodes => hw.applicableQuestions(nodes).map(q => q.id)
   assert.deepEqual(ids([intel, plain]), ['node-health', 'power', 'gpu', 'igpu-access', 'charts', 'proxmox-metrics', 'dns', 'ai'])
   assert.deepEqual(ids([plain]), ['node-health', 'charts', 'proxmox-metrics', 'dns', 'ai'], 'no GPU and no power counters: neither question')
-  assert.ok(!ids([amd]).includes('gpu'), 'AMD only: nothing could be monitored, so no question')
+  assert.ok(ids([amd]).includes('gpu'), 'AMD only: AMD is covered, so it is asked')
   const mixed = hw.applicableQuestions([intel, amd]).find(q => q.id === 'gpu')
-  assert.match(mixed.notes.join(' '), /AMD GPUs are not covered yet/)
+  assert.match(mixed.notes.join(' '), /AMD GPUs are read by node_exporter/)
+  assert.doesNotMatch(JSON.stringify(hw.applicableQuestions([amd])), /not covered/)
   const power = hw.applicableQuestions([intel, plain]).find(q => q.id === 'power')
   assert.match(power.notes.join(' '), /^b has no power counters/)
   assert.ok(ids([intel]).includes('proxmox-metrics'))
@@ -176,4 +177,23 @@ test('the Intel exporter image is pinned by digest wherever it is named', () => 
     assert.ok(names.length > 0, f)
     for (const n of names) assert.match(n, /@sha256:[0-9a-f]{64}$/, `${f}: ${n}`)
   }
+})
+
+test('AMD: the probe sees whether node_exporter reports it, and the plan turns it on only where it does not', () => {
+  const fx = loadFixtures().find(f => f.file === 'amd-apu.json')
+  const off = fakeNode(fx), on = fakeNode({ ...fx, answering: { ...fx.answering, 9100: fx.answering['9100'] + '\nnode_drm_gpu_busy_percent{card="card1"} 2' } })
+  try {
+    const a = hw.parseProbe(off.run(hw.probeScript()).stdout, 'a'), b = hw.parseProbe(on.run(hw.probeScript()).stdout, 'b')
+    assert.equal(a.amdMetrics, 'off'); assert.equal(b.amdMetrics, 'on')
+    assert.deepEqual(hw.planNodeWork({ gpu: true }, [a, b]), [{ node: 'a', step: 'amd-gpu-metrics' }])
+    assert.equal(hw.STEP_LABEL['amd-gpu-metrics'], 'AMD GPU monitoring')
+  } finally { off.cleanup(); on.cleanup() }
+})
+
+test('AMD is checked in Prometheus by its busy percentage', async () => {
+  const n = hw.parseProbe('gpu\tamd\tintegrated\t1002:15d8\tAMD Radeon Vega', 'a')
+  const ok = await hw.verifyOutcome({ gpu: true }, [n], async e => e === 'node_drm_gpu_busy_percent' ? [{ node: 'a', value: 4 }] : [])
+  assert.deepEqual(ok.map(r => `${r.node}/${r.status}`), ['a/ok'])
+  const none = await hw.verifyOutcome({ gpu: true }, [n], async () => [])
+  assert.deepEqual(none.map(r => `${r.node}/${r.status}`), ['a/failed'])
 })

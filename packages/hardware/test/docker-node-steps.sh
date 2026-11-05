@@ -202,5 +202,72 @@ echo 0x10de > /fake/sys/class/drm/renderD128/device/vendor
 r3="$(step igpu-access)"; [ "$(result "$r3")" = skipped ] || die "NVIDIA only: $r3"; [ ! -e "$f" ] || die "wrote a rule on an NVIDIA-only node"
 echo CASE-OK'
 
+# ── AMD GPU: node_exporter's drm collector through a drop-in that keeps every existing flag ──────────
+# The real node_exporter from apt, reading a fake amdgpu card through --path.sysfs (a flag the drop-in
+# must keep, or no figures appear). The stand-in systemctl here understands cat, is-active and restart.
+run_case amd-gpu-metrics '
+apt-get -q update >/dev/null && apt-get -q -y install --no-install-recommends prometheus-node-exporter curl >/dev/null
+export HPX_SYSROOT=/fake
+c=/fake/sys/class/drm/card1/device
+mkdir -p $c /fake/sys/bus/pci/drivers/amdgpu
+ln -s /fake/sys/bus/pci/drivers/amdgpu $c/driver
+echo 0x1002 > $c/vendor; echo 0x15d8 > $c/device; printf "DRIVER=amdgpu\nPCI_ID=1002:15D8\n" > $c/uevent
+echo 7 > $c/gpu_busy_percent; echo 0 > $c/mem_busy_percent
+for f in mem_info_gtt_total mem_info_gtt_used mem_info_vis_vram_total mem_info_vis_vram_used mem_info_vram_total mem_info_vram_used; do echo 2147483648 > $c/$f; done
+echo "ARGS=\"--path.sysfs=/fake/sys --collector.disable-defaults --collector.loadavg\"" > /etc/default/prometheus-node-exporter
+cat > /usr/local/sbin/systemctl <<"SC"
+#!/bin/bash
+# Stand-in: the unit file and its drop-ins, last ExecStart wins (an empty one resets), EnvironmentFile read.
+files() { for f in /etc/systemd/system/$1.service /usr/lib/systemd/system/$1.service /lib/systemd/system/$1.service; do [ -f "$f" ] && { echo "$f"; break; }; done
+          ls /etc/systemd/system/$1.service.d/*.conf 2>/dev/null; }
+exec_of() { local c="" l f; for f in $(files "$1"); do while IFS= read -r l; do case "$l" in ExecStart=*) c="${l#ExecStart=}";; esac; done < "$f"; done; echo "$c"; }
+envf() { local f; for f in $(files "$1"); do grep -oP "^EnvironmentFile=-?\K.*" "$f"; done | tail -1; }
+pidf() { echo /run/stub-$1.pid; }
+active() { [ -f "$(pidf $1)" ] && kill -0 "$(cat "$(pidf $1)")" 2>/dev/null; }
+start() { local e; e="$(envf $1)"; ( [ -n "$e" ] && [ -f "$e" ] && . "$e"; eval "setsid $(exec_of $1) >/tmp/$1.log 2>&1 < /dev/null &"; echo $! > "$(pidf $1)" ); sleep 1; }
+stop() { active "$1" && { kill "$(cat "$(pidf $1)")"; sleep 1; }; pkill -f /usr/bin/prometheus-node-exporter; sleep 1; rm -f "$(pidf $1)"; }
+cmd="$1"; shift; [ "$cmd" = --quiet ] && { cmd="$1"; shift; }
+for a in "$@"; do [ "$a" = --quiet ] || u="$a"; done
+case "$cmd" in
+  cat) for f in $(files "$u"); do echo "# $f"; cat "$f"; echo; done;;
+  is-active) active "$u";;
+  restart|try-restart) stop "$u"; start "$u";;
+  enable) start "$u";;
+  daemon-reload) ;;
+  *) exit 0;;
+esac
+SC
+chmod +x /usr/local/sbin/systemctl
+systemctl enable --now prometheus-node-exporter
+curl -fsS localhost:9100/metrics | grep -q ^node_exporter_build_info || die "node_exporter did not start: $(cat /tmp/prometheus-node-exporter.log)"
+curl -fsS localhost:9100/metrics | grep -q ^node_drm_ && die "drm figures before the step"
+r1="$(step amd-gpu-metrics)"; [ "$(result "$r1")" = done ] || die "first: $r1 / $(cat /tmp/prometheus-node-exporter.log | tail -3)"
+d=/etc/systemd/system/prometheus-node-exporter.service.d/hyperprox-amd-gpu.conf
+grep -qx "ExecStart=" $d || die "no reset line"
+grep -qx "ExecStart=/usr/bin/prometheus-node-exporter \$ARGS --collector.drm" $d || die "flags not kept: $(grep ^ExecStart= $d)"
+curl -fsS localhost:9100/metrics | grep -q "^node_drm_gpu_busy_percent{card=\"card1\"} 7" || die "no AMD figure: $(curl -s localhost:9100/metrics | grep drm | head -3)"
+curl -fsS localhost:9100/metrics | grep -q "^node_drm_memory_vram_size_bytes" || die "no VRAM figure"
+sum="$(sha256sum $d)"
+r2="$(step amd-gpu-metrics)"; [ "$(result "$r2")" = already ] || die "second: $r2"
+[ "$(sha256sum $d)" = "$sum" ] || die "rewritten"
+u1="$(step amd-gpu-metrics-undo)"; [ "$(result "$u1")" = done ] || die "undo: $u1"
+[ ! -e $d ] || die "drop-in still there"
+curl -fsS localhost:9100/metrics | grep -q ^node_drm_ && die "drm figures after undo"
+u2="$(step amd-gpu-metrics-undo)"; [ "$(result "$u2")" = already ] || die "second undo: $u2"
+echo 0x10de > $c/vendor
+r3="$(step amd-gpu-metrics)"; [ "$(result "$r3")" = skipped ] || die "no AMD: $r3"
+echo CASE-OK'
+
+run_case amd-needs-node-exporter '
+export HPX_SYSROOT=/fake; mkdir -p /fake/sys/class/drm/card0/device; echo 0x1002 > /fake/sys/class/drm/card0/device/vendor
+cat > /usr/local/sbin/systemctl <<"SC"
+#!/bin/bash
+exit 3
+SC
+r="$(step amd-gpu-metrics)"; [ "$(result "$r")" = skipped ] || die "$r"
+printf "%s" "$r" | grep -q "answer yes to watching node health first" || die "$r"
+ls /etc/systemd/system/*.service.d/hyperprox-amd-gpu.conf >/dev/null 2>&1 && die "wrote a drop-in"
+echo CASE-OK'
+
 echo; echo "docker node steps: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
