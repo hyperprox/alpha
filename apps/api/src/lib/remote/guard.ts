@@ -255,12 +255,25 @@ function within(inner: string, outer: string): boolean {
   return cidrOverlaps(inner, outer) && prefixLen(inner) >= prefixLen(outer)
 }
 
+/**
+ * What is being changed, for the guard: a mesh client, or a WireGuard interface HyperProx manages, given by
+ * its interface name pattern and the prefixes its routes may cover (its tunnel address and AllowedIPs).
+ * Serialisable, so an in-flight change can be judged the same way after a restart.
+ */
+export interface CustomSubject { dev: string; prefixes: string[] }
+export type GuardSubject = ProviderId | CustomSubject
+
+const subjectDev = (s: GuardSubject) => (typeof s === 'string' ? OVERLAY_DEV[s] : new RegExp(`\\bdev (?:${s.dev})\\b`))
+const subjectTable = (s: GuardSubject) => (typeof s === 'string' ? OWN_TABLE[s] : /$^/)
+const subjectPrefixes = (s: GuardSubject) => (typeof s === 'string' ? OVERLAY_PREFIXES[s] : s.prefixes)
+const subjectRules = (s: GuardSubject) => (typeof s === 'string' ? OWN_RULES[s] : new Set<string>())
+
 /** Null when the client may own this route, or why not. */
-export function ownRouteProblem(r: string, p: ProviderId): string | null {
+export function ownRouteProblem(r: string, p: GuardSubject): string | null {
   const { family, type, dest } = parseRoute(r)
   if (HARMLESS_TYPES.has(type)) return null
-  if (family === '6' && within(dest, 'fe80::/64') && OVERLAY_DEV[p].test(r)) return null
-  if (OVERLAY_PREFIXES[p].some(o => within(dest, o))) return null
+  if (family === '6' && within(dest, 'fe80::/64') && subjectDev(p).test(r)) return null
+  if (subjectPrefixes(p).some(o => within(dest, o))) return null
   const len = prefixLen(dest)
   if (len === 0) return `a default route (${r.slice(2)})`
   if (len <= 2) return `a /${len} split of the default route (${r.slice(2)})`
@@ -302,10 +315,10 @@ export function firewallChanges(before: NodeSnapshot, after: NodeSnapshot, churn
  * Every difference that matters, in plain words. Empty when the node is as it was. `provider` is the client
  * being changed. `churn`, when given, is a second after-sample used only to discount firewall noise.
  */
-export function compareSnapshots(before: NodeSnapshot, after: NodeSnapshot, provider?: ProviderId, churn?: NodeSnapshot): string[] {
+export function compareSnapshots(before: NodeSnapshot, after: NodeSnapshot, provider?: GuardSubject, churn?: NodeSnapshot): string[] {
   if (!after.read) return ['could not read the node\'s routes, resolver, firewall and quorum after the change']
   const out: string[] = []
-  const own = (r: string) => !!provider && (OVERLAY_DEV[provider].test(r) || OWN_TABLE[provider].test(r))
+  const own = (r: string) => !!provider && (subjectDev(provider).test(r) || subjectTable(provider).test(r))
 
   const routes = setDiff(before.routes, after.routes)
   const foreign = [...routes.added.filter(r => !own(r)).map(r => `added ${r}`), ...routes.removed.filter(r => !own(r)).map(r => `removed ${r}`)]
@@ -314,7 +327,7 @@ export function compareSnapshots(before: NodeSnapshot, after: NodeSnapshot, prov
   if (badOwn.length) out.push(`the client added ${badOwn.slice(0, 3).join('; ')}`)
 
   const rules = setDiff(before.rules, after.rules)
-  const badRules = [...rules.added, ...rules.removed].filter(r => !(provider && OWN_RULES[provider].has(r)))
+  const badRules = [...rules.added, ...rules.removed].filter(r => !(provider && subjectRules(provider).has(r)))
   if (badRules.length) out.push(`the policy routing rules changed (${list(badRules)})`)
 
   for (const peer of new Set([...Object.keys(before.paths), ...Object.keys(after.paths)])) {
@@ -326,7 +339,7 @@ export function compareSnapshots(before: NodeSnapshot, after: NodeSnapshot, prov
   if (before.resolvLink !== after.resolvLink || before.resolv !== after.resolv) {
     out.push(`the resolver changed (was "${before.resolv || 'empty'}" via ${before.resolvLink || '?'}, now "${after.resolv || 'empty'}" via ${after.resolvLink || '?'})`)
   }
-  const ownLink = (l: string) => !!provider && (provider === 'tailscale' ? /\(tailscale\d*\)/ : /\(wt\d+\)/).test(l)
+  const ownLink = (l: string) => !!provider && (provider === 'tailscale' ? /\(tailscale\d*\)/ : provider === 'netbird' ? /\(wt\d+\)/ : new RegExp(`\\((?:${(provider as CustomSubject).dev})\\)`)).test(l)
   const dns = setDiff(before.linkDns.filter(l => !ownLink(l)), after.linkDns.filter(l => !ownLink(l)))
   const ownLinkSet = after.linkDns.filter(l => ownLink(l) && !/:\s*$/.test(l))
   if (before.resolved !== after.resolved || dns.added.length || dns.removed.length || ownLinkSet.length) {
@@ -347,7 +360,7 @@ export function compareSnapshots(before: NodeSnapshot, after: NodeSnapshot, prov
 }
 
 /** True when the only differences are in the firewall text, where a second sample can tell noise from change. */
-export function onlyFirewall(before: NodeSnapshot, after: NodeSnapshot, provider?: ProviderId): boolean {
+export function onlyFirewall(before: NodeSnapshot, after: NodeSnapshot, provider?: GuardSubject): boolean {
   const all = compareSnapshots(before, after, provider)
   const fw = firewallChanges(before, after)
   return all.length > 0 && all.length === fw.length

@@ -90,6 +90,9 @@ export const CREDENTIAL_DEFS: CredentialDef[] = [
   { category: 'remote', provider: 'netbird',   key: 'default_groups',      label: 'Default groups (comma separated)', masked: false },
   { category: 'remote', provider: 'netbird',   key: 'default_accept_dns_ct', label: 'One-click: NetBird DNS on containers (yes/no)', masked: false },
   { category: 'remote', provider: 'netbird',   key: 'default_accept_dns_vm', label: 'One-click: NetBird DNS on VMs (yes/no)', masked: false },
+  // MikroTik WireGuard: a separate, limited RouterOS login (group: read, write, api, rest-api) for peers only.
+  { category: 'remote', provider: 'routeros-write', key: 'username', label: 'MikroTik WireGuard login (limited group)', masked: false },
+  { category: 'remote', provider: 'routeros-write', key: 'password', label: 'Its password', masked: true },
 
   // HyperProx system
   { category: 'system', provider: 'hyperprox', key: 'app_url',   label: 'App URL',   masked: false, envKey: 'NEXT_PUBLIC_API_URL' },

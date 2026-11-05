@@ -400,3 +400,42 @@ model RemoteAccessKnownDevice {
 
   @@id([provider, deviceId])
 }
+
+// -----------------------------------------------------------------------------
+//  WireGuard (lib/vpn/wireguard): servers and peers HyperProx manages. Public keys only: a client's private
+//  key and config are vault items; a server's or machine's private key stays on that machine.
+// -----------------------------------------------------------------------------
+
+model WgServer {
+  id          String   @id @default(cuid())
+  machineId   String
+  iface       String
+  listenPort  Int
+  address     String   // the server's tunnel address and pool, e.g. 192.0.2.1/24
+  endpoint    String   // host:port clients connect to
+  publicKey   String
+  keyBackedUp Boolean  @default(false)   // the owner chose to keep a copy of the server key in the vault
+  createdAt   DateTime @default(now())
+
+  @@unique([machineId, iface])
+}
+
+model WgPeer {
+  id                String    @id @default(cuid())
+  serverId          String?
+  routerIface       String?
+  routerPeerId      String?
+  kind              String    // device | machine
+  name              String
+  machineId         String?
+  iface             String?
+  publicKey         String
+  address           String
+  allowedIps        String[]
+  clientAllowedIps  String[]
+  keepalive         Int?
+  previousPublicKey String?
+  previousUntil     DateTime?
+  rotatedAt         DateTime?
+  createdAt         DateTime  @default(now())
+}

@@ -48,7 +48,8 @@ export interface PendingRevoke {
 }
 
 export interface Inflight {
-  id: string; machineId: string; provider: ProviderId; action: string; jobId: string; by: string
+  /** A mesh provider, or 'wireguard' for an interface HyperProx manages. */
+  id: string; machineId: string; provider: ProviderId | 'wireguard'; action: string; jobId: string; by: string
   /** The process that started it; another process finding it means that one is gone. */
   owner: string
   before: unknown; undo: unknown; startedAt: Date
