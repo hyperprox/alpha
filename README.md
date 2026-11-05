@@ -306,6 +306,31 @@ HA state, its config, and **Console**, which opens it in the Terminal. **Create*
 from a template or a VM from an ISO, with a storage picker that shows free space. Deleting a guest asks
 for your master password again.
 
+### High availability
+
+**High availability** keeps your guests running when a node fails. On each guest you choose, in plain
+words:
+
+- **Restart this on another node if its node fails.** One switch turns protection on or off, and says what
+  turning it off means.
+- **Its home**: "prefer this node, but run anywhere if needed", or "only ever run on this node, even if that
+  means staying off". The strict choice is shown in red and needs a second confirmation.
+- **Keep apart from** or **keep together with** other guests.
+
+Each guest shows where it runs now and where it would go if its node failed, taking memory, CPUs and
+devices into account. A grid shows which nodes it could move to and, for each one that it can't, why: a
+local folder, a rule, missing storage, not enough memory, or a device only one node has.
+
+The High availability page shows whether HA is armed, which guests are not protected (each with a
+one-click **Protect**), guests with no home that may not come back after a failover, and guests that need
+a node's GPU or other hardware. Its rule editor explains each rule by what it does and catches Proxmox's
+rule conflicts before Proxmox refuses them. Maintenance mode moves a node's guests away before you work
+on it.
+
+Every change is previewed first, including what would move straight away. It is refused if the cluster
+has lost quorum or the HA setup changed since the preview, and it goes through Proxmox's own HA tools.
+Applying a change asks for your master password again.
+
 ### Terminal
 
 SSH in the browser to every guest (addresses come from Proxmox) and to hosts you add by hand, such as
@@ -365,7 +390,7 @@ restarting an OSD or rebooting a node, HyperProx asks Ceph whether it is safe to
 pool's copies: if a pool has only one copy on that node, or a restart would leave too few copies, the
 step is skipped for safety and says what would have gone offline. The plan shows this decision before
 you run it, and it is checked again right before a reboot. If a restart fails, `noout` stays set and
-you get an urgent notification, so Ceph never starts moving data because of it. Rules
+you get an urgent notification, so Ceph never starts moving data because of it. A node update never upgrades Ceph by itself: HyperProx tries the update first without installing anything, and if any Ceph package would change, it stops and leaves Ceph to its own careful step. Rules
 such as "this node only gets `apt upgrade`" or "check these package holds" go in
 `config/updates.yaml` (copy `config/updates.example.yaml`). Without a policy file you get dry runs only.
 Plug-ins can add app updates for software installed outside apt and Docker; MeshCentral is bundled.
@@ -567,8 +592,7 @@ single `docker-compose.yml`; `COMPOSE_PROFILES` in `.env` picks the optional par
 The full roadmap is in [ROADMAP.md](ROADMAP.md), and designs for upcoming work are in
 [docs/superpowers/specs/](docs/superpowers/specs/). Not built yet:
 
-- **Guest and HA editing**: a structured config and mount-point editor, an HA rule editor, and
-  migration preflight.
+- **Guest editing**: a structured config and mount-point editor, and GPU and device sharing.
 - **Consoles**: noVNC and container text consoles as Terminal panes, for guests SSH cannot reach.
 - **Ceph operations**: version-skew view, guided rolling restarts and slow-op history (restart and
   reboot safety in Updates is built).

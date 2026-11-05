@@ -64,7 +64,8 @@ const fileSchema = z.object({
     plex_streams_block_reboots: z.boolean().optional(),
   }).strict().optional(),
   ceph: z.object({
-    accepted_warnings: z.array(z.string().regex(/^[A-Z0-9_]+$/, 'a Ceph health code, e.g. POOL_NO_REDUNDANCY')).optional(),
+    accepted_warnings: z.array(z.string().regex(/^[A-Z0-9_]+$/, 'a Ceph health code, e.g. POOL_NO_REDUNDANCY')
+      .refine(c => c !== 'OSDMAP_FLAGS', 'OSDMAP_FLAGS cannot be accepted: it is how a noout left behind by a stopped run shows, and Updates must never restart or reboot past it')).optional(),
   }).strict().optional(),
   nodes:  z.record(nodeSchema).optional(),
   // Keys are `default`, `exclude` or a VMID, so the shape is checked by hand below.
