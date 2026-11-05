@@ -160,4 +160,8 @@ Block devices:
 254 mdp
 259 blkext
 ##nvmodule
+##chardev
+/dev/dri/card0|e2
+/dev/dri/renderD128|e2
+/dev/net/tun|a
 ##end

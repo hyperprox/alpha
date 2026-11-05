@@ -35,6 +35,7 @@ echo '##tun'; ls -1 /dev/net/tun 2>/dev/null
 echo '##iommu'; find /sys/kernel/iommu_groups/ -mindepth 3 -maxdepth 3 2>/dev/null
 echo '##procdevices'; cat /proc/devices
 echo '##nvmodule'; cat /sys/module/nvidia/version 2>/dev/null
+echo '##chardev'; for p in /dev/dri/* /dev/nvidia* /dev/nvidia-caps/* /dev/kfd /dev/net/tun /dev/apex_* /dev/video* /dev/ttyUSB* /dev/ttyACM*; do [ -c "$p" ] && [ ! -L "$p" ] && echo "$p|$(stat -c %t "$p")"; done; true
 echo '##end'
 `
 
@@ -100,6 +101,8 @@ export interface NodeInventory {
   nvidiaNodes: string[]
   collectedAt: number
   problem?: string
+  /** Character device nodes that are not symlinks, with their major: the only paths a raw line may bind. */
+  charDevices?: Record<string, number>
 }
 
 // ── built-in table of common homelab devices ──────────────────────────────────
@@ -360,7 +363,9 @@ export function parseProbe(node: string, out: string, now = Date.now()): NodeInv
       if (d.resetRisk) d.notes.push(d.resetRisk)
     }
   }
-  return { node, devices, majors, nvidiaDriver, nvidiaNodes, collectedAt: now }
+  const charDevices: Record<string, number> = {}
+  for (const l of get('chardev')) { const [p, hex] = l.split('|'); const n = parseInt(hex ?? '', 16); if (p?.startsWith('/dev/') && Number.isFinite(n)) charDevices[p.trim()] = n }
+  return { node, devices, majors, nvidiaDriver, nvidiaNodes, collectedAt: now, charDevices }
 }
 
 // ── who uses what ─────────────────────────────────────────────────────────────
@@ -438,7 +443,7 @@ function describeSharing(d: Device): void {
 /** What a viewer may see: names, purpose and usage. Paths, IDs, serials and addresses are admin-only. */
 export function redactForViewer(inv: NodeInventory): NodeInventory {
   return {
-    ...inv, majors: {}, nvidiaNodes: [],
+    ...inv, majors: {}, nvidiaNodes: [], charDevices: {},
     devices: inv.devices.map(d => ({
       ...d, id: d.id.replace(/:.*/, ':*'), vendorProduct: undefined, serial: undefined, stableRef: undefined, port: undefined,
       pciAddress: undefined, paths: [], name: d.unknown ? 'Unknown USB device' : d.name,
