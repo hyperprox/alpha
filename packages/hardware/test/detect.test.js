@@ -19,6 +19,8 @@ for (const fx of loadFixtures()) {
       if (fx.expect.intelExporter) assert.equal(facts.intelExporter, fx.expect.intelExporter)
       if (fx.expect.nvidiaExporter) assert.equal(facts.nvidiaExporter, fx.expect.nvidiaExporter)
       assert.equal(facts.nvidiaSmi, (fx.commands ?? []).includes('nvidia-smi'))
+      assert.equal(facts.igpuAccess, fx.expect.igpuAccess)
+      assert.equal(facts.igpuRule, Boolean(fx.expect.igpuRule))
     } finally { n.cleanup() }
   })
 }
@@ -71,7 +73,7 @@ test('questions: only the ones that apply, GPU only when a GPU was found', () =>
   const plain = hw.parseProbe('rapl\tnone\t', 'b')
   const amd = hw.parseProbe('gpu\tamd\tintegrated\t1002:15d8\tAMD Radeon Vega\nrapl\treadable\tpackage-0', 'c')
   const ids = nodes => hw.applicableQuestions(nodes).map(q => q.id)
-  assert.deepEqual(ids([intel, plain]), ['node-health', 'power', 'gpu', 'charts', 'proxmox-metrics', 'dns', 'ai'])
+  assert.deepEqual(ids([intel, plain]), ['node-health', 'power', 'gpu', 'igpu-access', 'charts', 'proxmox-metrics', 'dns', 'ai'])
   assert.deepEqual(ids([plain]), ['node-health', 'charts', 'proxmox-metrics', 'dns', 'ai'], 'no GPU and no power counters: neither question')
   assert.ok(!ids([amd]).includes('gpu'), 'AMD only: nothing could be monitored, so no question')
   const mixed = hw.applicableQuestions([intel, amd]).find(q => q.id === 'gpu')
@@ -147,4 +149,31 @@ test('verify checks the outcome in Prometheus, not the scripts\' word', async ()
   assert.deepEqual(rows.map(r => `${r.id}/${r.node}/${r.status}`), ['node-health/a/ok', 'node-health/b/failed', 'power/a/ok', 'gpu/a/failed'])
   const down = await hw.verifyOutcome({ 'node-health': true }, nodes, async () => { throw new Error('ECONNREFUSED') })
   assert.ok(down.every(r => r.status === 'waiting'))
+})
+
+test('built-in graphics for containers: the rule present reads open, absent reads closed, NVIDIA-only none', () => {
+  const read = f => { const n = fakeNode(loadFixtures().find(x => x.file === f)); try { return hw.parseProbe(n.run(hw.probeScript()).stdout, 'n') } finally { n.cleanup() } }
+  const open = read('intel-igpu-open.json'), closed = read('fresh-intel-node.json'), nv = read('nvidia-dedicated.json')
+  assert.deepEqual([open.igpuAccess, open.igpuRule], ['open', true])
+  assert.deepEqual([closed.igpuAccess, closed.igpuRule], ['closed', false])
+  assert.equal(nv.igpuAccess, 'none', 'an NVIDIA-only node has no built-in graphics to open')
+  open.node = 'a'; closed.node = 'b'; nv.node = 'c'
+  const q = hw.applicableQuestions([open, closed, nv]).find(x => x.id === 'igpu-access')
+  assert.equal(q.ask, 'Do you want containers on these nodes to be able to use their built-in graphics (for video transcoding)?')
+  assert.match(q.what, /any container on that node can then use its built-in graphics\./)
+  assert.deepEqual(q.notes, ['Applies to a, b.'])
+  assert.equal(q.default, false)
+  assert.ok(!hw.applicableQuestions([nv]).some(x => x.id === 'igpu-access'), 'not offered without built-in graphics')
+  assert.deepEqual(hw.planNodeWork({ 'igpu-access': true }, [open, closed, nv]), [{ node: 'b', step: 'igpu-access' }])
+  assert.deepEqual(hw.planNodeWork({}, [closed]), [], 'only on a yes')
+  assert.match(hw.stepScript('igpu-access-undo'), /rm -f "\$RULE_FILE"/)
+})
+
+test('the Intel exporter image is pinned by digest wherever it is named', () => {
+  const fs = require('fs'), path = require('path')
+  for (const f of [path.join(hw.NODE_DIR, 'intel-gpu-exporter.sh'), path.join(__dirname, '../../../docs/manual-setup.md')]) {
+    const names = fs.readFileSync(f, 'utf8').match(/ghcr\.io\/onedr0p\/intel-gpu-exporter[^\s"]*/g)
+    assert.ok(names.length > 0, f)
+    for (const n of names) assert.match(n, /@sha256:[0-9a-f]{64}$/, `${f}: ${n}`)
+  }
 })

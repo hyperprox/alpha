@@ -9,6 +9,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NODE="$(cd "$HERE/../node" && pwd)"
 IMAGE="${HPX_TEST_IMAGE:-debian:trixie}"
 pass=0; fail=0
+# Containers are --rm, but a killed run can leave one behind: remove this run's on any exit.
+trap 'docker ps -aq --filter "name=hpx-nodetest-$$-" | xargs -r docker rm -f >/dev/null 2>&1' EXIT
 ok()  { printf 'ok   %s\n' "$1"; pass=$((pass+1)); }
 bad() { printf 'FAIL %s\n%s\n' "$1" "${2:-}" | sed '2,$s/^/     /'; fail=$((fail+1)); }
 
@@ -180,6 +182,24 @@ run_case nvidia-without-driver '
 export HPX_SYSROOT=/fake; mkdir -p /fake/sys/class/drm/card0/device; echo 0x10de > /fake/sys/class/drm/card0/device/vendor
 r="$(step nvidia-gpu-exporter)"; [ "$(result "$r")" = skipped ] || die "$r"
 printf "%s" "$r" | grep -q "does not install drivers" || die "$r"
+echo CASE-OK'
+
+# ── Built-in graphics for containers: the rule, idempotent, undone; nothing on an NVIDIA-only node ─────
+run_case igpu-access '
+export HPX_SYSROOT=/fake
+mkdir -p /fake/dev/dri /fake/sys/class/drm/renderD128/device /fake/etc/udev/rules.d
+: > /fake/dev/dri/renderD128; chmod 0660 /fake/dev/dri/renderD128; echo 0x8086 > /fake/sys/class/drm/renderD128/device/vendor
+f=/fake/etc/udev/rules.d/99-hyperprox-igpu.rules
+r1="$(step igpu-access)"; [ "$(result "$r1")" = done ] || die "first: $r1"
+grep -qx "SUBSYSTEM==\"drm\", KERNEL==\"renderD\*\", MODE=\"0666\"" "$f" || die "rule content: $(cat $f)"
+[ "$(stat -c %a "$f")" = 644 ] || die "rule mode"
+sum="$(sha256sum "$f")"
+r2="$(step igpu-access)"; [ "$(result "$r2")" = already ] || die "second: $r2"
+[ "$(sha256sum "$f")" = "$sum" ] || die "rewritten"
+u1="$(step igpu-access-undo)"; [ "$(result "$u1")" = done ] || die "undo: $u1"; [ ! -e "$f" ] || die "rule still there"
+u2="$(step igpu-access-undo)"; [ "$(result "$u2")" = already ] || die "second undo: $u2"
+echo 0x10de > /fake/sys/class/drm/renderD128/device/vendor
+r3="$(step igpu-access)"; [ "$(result "$r3")" = skipped ] || die "NVIDIA only: $r3"; [ ! -e "$f" ] || die "wrote a rule on an NVIDIA-only node"
 echo CASE-OK'
 
 echo; echo "docker node steps: ${pass} passed, ${fail} failed"

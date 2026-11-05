@@ -29,7 +29,7 @@ STORAGE=""         ; TEMPLATE_STORAGE=""
 PASSWORD=""        ; ASSUME_YES=0       ; DRY_RUN=0
 # Answers: "" means ask (or take the default with -y); a flag below answers in advance.
 A_NODE_HEALTH=""   ; A_POWER=""         ; A_GPU=""
-A_CHARTS=""        ; A_PVE_METRICS=""   ; A_DNS=""          ; A_AI=""
+A_CHARTS=""        ; A_PVE_METRICS=""   ; A_DNS=""          ; A_AI=""          ; A_IGPU=""
 
 C_OK=$'\e[32m'; C_WARN=$'\e[33m'; C_ERR=$'\e[31m'; C_DIM=$'\e[90m'; C_ACC=$'\e[36m'; C_OFF=$'\e[0m'
 say()  { printf '%s→%s %s\n' "$C_ACC" "$C_OFF" "$*"; }
@@ -58,6 +58,7 @@ Usage: bootstrap.sh [options]
   --no-charts         Answer no: no Prometheus and Grafana
   --no-pve-metrics    Answer no: do not read Proxmox's own metrics
   --ai | --no-ai      Answer yes or no: a local AI assistant (Ollama)
+  --igpu | --no-igpu  Answer yes or no: let containers use the nodes' built-in graphics
   --dry-run           Look and ask, then show what would be done; change nothing
   -y, --yes           Take every default and do not ask
 USAGE
@@ -82,6 +83,8 @@ while [ $# -gt 0 ]; do
     --no-pve-metrics) A_PVE_METRICS=no; shift;;
     --ai) A_AI=yes; shift;;
     --no-ai) A_AI=no; shift;;
+    --igpu) A_IGPU=yes; shift;;
+    --no-igpu) A_IGPU=no; shift;;
     --dry-run) DRY_RUN=1; shift;;
     -y|--yes) ASSUME_YES=1; shift;;
     -h|--help) usage; exit 0;;
@@ -101,6 +104,8 @@ Q_POWER='Do you want HyperProx to monitor the power on each of your nodes?'
 W_POWER='Lets HyperProx read the CPU energy counters. The trade-off: any local user on that node can then read energy use.'
 Q_GPU='Do you want HyperProx to monitor your GPUs?'
 W_GPU='Adds a small exporter for each GPU: Intel on port 8081, NVIDIA on port 9835. It only reads the GPU; drivers are never touched.'
+Q_IGPU='Do you want containers on these nodes to be able to use their built-in graphics (for video transcoding)?'
+W_IGPU='Opens the built-in Intel or AMD graphics to containers. The trade-off: any container on that node can then use its built-in graphics.'
 Q_CHARTS='Do you want charts and dashboards (Prometheus and Grafana)?'
 W_CHARTS='Runs Prometheus and Grafana on this machine. You reach them only through HyperProx.'
 Q_PVE_METRICS="Do you want HyperProx to read Proxmox's own metrics?"
@@ -149,7 +154,7 @@ node_scripts_dir() {
   [ -f "${BASH_SOURCE[0]:-}" ] && here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   if [ -n "$here" ] && [ -f "$here/packages/hardware/node/probe.sh" ]; then echo "$here/packages/hardware/node"; return; fi
   d="$(mktemp -d)"
-  for f in probe common node-exporter rapl intel-gpu-exporter nvidia-gpu-exporter; do
+  for f in probe common node-exporter rapl intel-gpu-exporter nvidia-gpu-exporter igpu-access igpu-access-undo; do
     curl -fsSL "$RAW_BASE/packages/hardware/node/$f.sh" -o "$d/$f.sh" || die "Could not download the node scripts from $RAW_BASE"
   done
   echo "$d"
@@ -172,7 +177,7 @@ node_ip() {
     | grep "\"name\"[[:space:]]*:[[:space:]]*\"$1\"" | sed -n 's/.*"ip"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
 }
 
-declare -A HW_GPUS HW_RAPL HW_NX HW_INTEL_X HW_NV_X HW_OK
+declare -A HW_GPUS HW_RAPL HW_NX HW_INTEL_X HW_NV_X HW_OK HW_IGPU
 CHECKLIST=()
 check() { CHECKLIST+=("$1"$'\t'"$2"$'\t'"$3"$'\t'"$4"); }   # status label node reason
 # ---------------------------------------------------------------------------
@@ -234,7 +239,7 @@ say "Looking at your nodes"
 NODE_DIR="$(node_scripts_dir)"
 NODES=($(cluster_nodes))
 [ "${#NODES[@]}" -gt 0 ] || NODES=("$THIS_NODE")
-ANY_RAPL=0; ANY_INTEL=0; ANY_NVIDIA=0; ANY_AMD=0; ANY_CEPH=0
+ANY_RAPL=0; ANY_INTEL=0; ANY_NVIDIA=0; ANY_AMD=0; ANY_CEPH=0; IGPU_NODES=""
 SUMMARY="Found ${#NODES[@]} node$([ "${#NODES[@]}" -eq 1 ] || echo s)."
 for node in "${NODES[@]}"; do
   if ! out="$(node_run "$node" < "$NODE_DIR/probe.sh" 2>/dev/null)" || ! grep -q '^arch' <<< "$out"; then
@@ -249,6 +254,8 @@ for node in "${NODES[@]}"; do
   HW_NX[$node]="$(awk -F'\t' '$1=="node_exporter"{print $2}' <<< "$out")"
   HW_INTEL_X[$node]="$(awk -F'\t' '$1=="intel_exporter"{print $2}' <<< "$out")"
   HW_NV_X[$node]="$(awk -F'\t' '$1=="nvidia_exporter"{print $2}' <<< "$out")"
+  HW_IGPU[$node]="$(awk -F'\t' '$1=="igpu_access"{print $2}' <<< "$out")"
+  case "${HW_IGPU[$node]}" in open|closed) IGPU_NODES="${IGPU_NODES:+$IGPU_NODES, }$node";; esac
   grep -q $'^ceph\tyes' <<< "$out" && ANY_CEPH=1
   [ "${HW_RAPL[$node]}" != none ] && ANY_RAPL=1
   grep -q $'^intel\t' <<< "$gpus" && ANY_INTEL=1
@@ -279,6 +286,11 @@ else
   A_GPU=no
   [ "$ANY_AMD" -eq 1 ] && note "Found an AMD GPU. AMD GPUs are not covered yet, so there is no GPU question."
 fi
+# Offered on nodes with built-in Intel or AMD graphics, but the default is no, even with -y.
+if [ -n "$IGPU_NODES" ]; then
+  note "Applies to ${IGPU_NODES}."
+  ask_yn A_IGPU no "$Q_IGPU" "$W_IGPU"
+else A_IGPU=no; fi
 ask_yn A_CHARTS yes "$Q_CHARTS" "$W_CHARTS"
 if [ "$A_CHARTS" = yes ]; then ask_yn A_PVE_METRICS yes "$Q_PVE_METRICS" "$W_PVE_METRICS"; else A_PVE_METRICS=no; fi
 GD_KEY=""; GD_SECRET=""
@@ -288,6 +300,16 @@ if [ "$A_DNS" = yes ] && [ "$ASSUME_YES" -ne 1 ] && [ "$NO_TERMINAL" -ne 1 ]; th
   ask_secret GD_KEY "API key"
   ask_secret GD_SECRET "API secret"
   if [ -z "$GD_KEY" ] || [ -z "$GD_SECRET" ]; then A_DNS=no; note "No key given; add one later under Settings → Setup checklist."; fi
+  # Checked before it is held, as the setup wizard does. The key goes to curl on stdin, never on a command line.
+  if [ "$A_DNS" = yes ]; then
+    if printf 'Authorization: sso-key %s:%s\n' "$GD_KEY" "$GD_SECRET" \
+        | curl -fsS -o /dev/null --max-time 15 -H @- 'https://api.godaddy.com/v1/domains?limit=1' 2>/dev/null; then
+      ok "GoDaddy accepted the key"
+    else
+      A_DNS=no; GD_KEY=""; GD_SECRET=""
+      warn "GoDaddy did not accept that key (it must be a Production key). Add one later under Settings → Setup checklist."
+    fi
+  fi
 fi
 ask_yn A_AI no "$Q_AI" "$W_AI"
 
@@ -301,11 +323,13 @@ for node in "${NODES[@]}"; do
     grep -q $'^intel\t' <<< "${HW_GPUS[$node]}" && [ "${HW_INTEL_X[$node]}" != running ] && PLAN+=("$node"$'\t'intel-gpu-exporter)
     grep -q $'^nvidia\t' <<< "${HW_GPUS[$node]}" && [ "${HW_NV_X[$node]}" != running ] && PLAN+=("$node"$'\t'nvidia-gpu-exporter)
   fi
+  [ "$A_IGPU" = yes ] && [ "${HW_IGPU[$node]}" = closed ] && PLAN+=("$node"$'\t'igpu-access)
 done
 step_label() {
   case "$1" in
     node-exporter) echo "Health monitoring";; rapl) echo "Power monitoring";;
     intel-gpu-exporter) echo "Intel GPU monitoring";; nvidia-gpu-exporter) echo "NVIDIA GPU monitoring";;
+    igpu-access) echo "Built-in graphics for containers";;
   esac
 }
 
@@ -330,6 +354,7 @@ show_plan() {
     echo "  Nothing to change on your nodes."
   fi
   echo "  In HyperProx: charts ${A_CHARTS} · Proxmox metrics ${A_PVE_METRICS} · GoDaddy ${A_DNS} · local AI ${A_AI}"
+  [ -n "$IGPU_NODES" ] && echo "  Built-in graphics for containers: ${A_IGPU}"
   echo
 }
 show_plan
@@ -538,11 +563,11 @@ pct exec "$CTID" -- bash -c "
 
 _answers="$(mktemp)"; chmod 600 "$_answers"
 {
-  printf '{"source":"bootstrap","answers":{"node-health":%s,"power":%s,"gpu":%s,"charts":%s,"proxmox-metrics":%s,"dns":%s,"ai":%s},"results":[' \
+  printf '{"source":"bootstrap","answers":{"node-health":%s,"power":%s,"gpu":%s,"charts":%s,"proxmox-metrics":%s,"dns":%s,"ai":%s,"igpu-access":%s},"results":[' \
     "$([ "$A_NODE_HEALTH" = yes ] && echo true || echo false)" "$([ "$A_POWER" = yes ] && echo true || echo false)" \
     "$([ "$A_GPU" = yes ] && echo true || echo false)" "$([ "$A_CHARTS" = yes ] && echo true || echo false)" \
     "$([ "$A_PVE_METRICS" = yes ] && echo true || echo false)" "$([ "$A_DNS" = yes ] && echo true || echo false)" \
-    "$([ "$A_AI" = yes ] && echo true || echo false)"
+    "$([ "$A_AI" = yes ] && echo true || echo false)" "$([ "$A_IGPU" = yes ] && echo true || echo false)"
   _first=1
   for row in "${CHECKLIST[@]}"; do
     IFS=$'\t' read -r _s _l _n _w <<< "$row"

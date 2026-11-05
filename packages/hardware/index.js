@@ -16,7 +16,7 @@ const path = require('path')
 const { execFileSync } = require('child_process')
 
 const NODE_DIR = path.join(__dirname, 'node')
-const STEPS = ['node-exporter', 'rapl', 'intel-gpu-exporter', 'nvidia-gpu-exporter']
+const STEPS = ['node-exporter', 'rapl', 'intel-gpu-exporter', 'nvidia-gpu-exporter', 'igpu-access', 'igpu-access-undo']
 
 function read(name) { return fs.readFileSync(path.join(NODE_DIR, name), 'utf8') }
 
@@ -41,7 +41,7 @@ function parseProbe(text, node) {
   const hw = {
     node: node ?? null, source: 'probe', gpus: [], dri: [], nvidiaSmi: null, rapl: null, raplDomains: [],
     nodeExporter: null, docker: null, python3: null, intelGpuTop: null, intelExporter: null, nvidiaExporter: null,
-    ceph: null, arch: null, pve: null,
+    ceph: null, arch: null, pve: null, igpuAccess: null, igpuRule: null,
   }
   const yes = v => v === 'yes'
   for (const line of String(text ?? '').split('\n')) {
@@ -61,6 +61,7 @@ function parseProbe(text, node) {
       case 'ceph': hw.ceph = yes(v); break
       case 'arch': hw.arch = v || null; break
       case 'pve': hw.pve = v || null; break
+      case 'igpu_access': hw.igpuAccess = ['open', 'closed', 'none'].includes(v) ? v : null; hw.igpuRule = w === 'rule'; break
     }
   }
   return hw
@@ -125,6 +126,9 @@ const QUESTIONS = [
   { id: 'gpu', nodeWork: true, default: true,
     ask: 'Do you want HyperProx to monitor your GPUs?',
     what: 'Adds a small exporter for each GPU: Intel on port 8081, NVIDIA on port 9835. It only reads the GPU; drivers are never touched.' },
+  { id: 'igpu-access', nodeWork: true, default: false,
+    ask: 'Do you want containers on these nodes to be able to use their built-in graphics (for video transcoding)?',
+    what: 'Opens the built-in Intel or AMD graphics to containers. The trade-off: any container on that node can then use its built-in graphics.' },
   { id: 'charts', nodeWork: false, default: true,
     ask: 'Do you want charts and dashboards (Prometheus and Grafana)?',
     what: 'Runs Prometheus and Grafana on this machine. You reach them only through HyperProx.' },
@@ -168,6 +172,13 @@ function applicableQuestions(nodes, opts = {}) {
       if (gpus.some(g => g.vendor === 'amd')) item.notes.push('AMD GPUs are not covered yet, so they will be listed but not monitored.')
       if (!gpus.some(g => g.vendor === 'intel' || g.vendor === 'nvidia')) continue
     }
+    if (q.id === 'igpu-access') {
+      // Only nodes with built-in Intel or AMD graphics and a render node; an NVIDIA-only node has none.
+      const with_ = list.filter(n => n.igpuAccess === 'open' || n.igpuAccess === 'closed' ||
+        (n.igpuAccess === null && n.gpus.some(g => g.kind === 'integrated' && (g.vendor === 'intel' || g.vendor === 'amd'))))
+      if (!with_.length) continue
+      item.notes.push(`Applies to ${with_.map(n => n.node).join(', ')}.`)
+    }
     if (q.id === 'proxmox-metrics' && opts.charts === false) continue
     out.push(item)
   }
@@ -195,6 +206,7 @@ function planNodeWork(answers, nodes) {
       if (n.gpus.some(g => g.vendor === 'intel') && n.intelExporter !== 'running') plan.push({ node: n.node, step: 'intel-gpu-exporter' })
       if (n.gpus.some(g => g.vendor === 'nvidia') && n.nvidiaExporter !== 'running') plan.push({ node: n.node, step: 'nvidia-gpu-exporter' })
     }
+    if (a['igpu-access'] && n.igpuAccess === 'closed') plan.push({ node: n.node, step: 'igpu-access' })
   }
   return plan
 }
@@ -204,6 +216,8 @@ const STEP_LABEL = {
   'rapl': 'Power monitoring',
   'intel-gpu-exporter': 'Intel GPU monitoring',
   'nvidia-gpu-exporter': 'NVIDIA GPU monitoring',
+  'igpu-access': 'Built-in graphics for containers',
+  'igpu-access-undo': 'Built-in graphics closed to containers',
 }
 
 /**

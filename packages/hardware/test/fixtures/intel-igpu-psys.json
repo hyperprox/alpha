@@ -1,11 +1,63 @@
 {
   "about": "i5-7500T node: HD Graphics 630, five RAPL domains including psys, all opened by an earlier udev rule; Docker with the Intel exporter. Anonymised.",
   "lspci": "00:00.0 Host bridge [0600]: Intel Corporation Xeon E3-1200 v6/7th Gen Core Processor Host Bridge/DRAM Registers [8086:591f] (rev 05)\n00:02.0 VGA compatible controller [0300]: Intel Corporation HD Graphics 630 [8086:5912] (rev 04)\n00:1f.6 Ethernet controller [0200]: Intel Corporation Ethernet Connection (5) I219-LM [8086:15e3]\n",
-  "drm_vendors": ["0x8086"],
-  "dri": ["by-path", "card0", "renderD128"],
-  "powercap": { "intel-rapl:0": { "name": "package-0", "mode": "404" }, "intel-rapl:0:0": { "name": "core", "mode": "404" }, "intel-rapl:0:1": { "name": "uncore", "mode": "404" }, "intel-rapl:0:2": { "name": "dram", "mode": "404" }, "intel-rapl:1": { "name": "psys", "mode": "404" } },
-  "commands": ["docker", "python3"],
-  "answering": { "9100": "node_exporter_build_info{version=\"1.8.2\"} 1", "8081": "igpu_power_package 2.19" },
+  "drm_vendors": [
+    "0x8086"
+  ],
+  "dri": [
+    "by-path",
+    "card0"
+  ],
+  "powercap": {
+    "intel-rapl:0": {
+      "name": "package-0",
+      "mode": "404"
+    },
+    "intel-rapl:0:0": {
+      "name": "core",
+      "mode": "404"
+    },
+    "intel-rapl:0:1": {
+      "name": "uncore",
+      "mode": "404"
+    },
+    "intel-rapl:0:2": {
+      "name": "dram",
+      "mode": "404"
+    },
+    "intel-rapl:1": {
+      "name": "psys",
+      "mode": "404"
+    }
+  },
+  "commands": [
+    "docker",
+    "python3"
+  ],
+  "answering": {
+    "9100": "node_exporter_build_info{version=\"1.8.2\"} 1",
+    "8081": "igpu_power_package 2.19"
+  },
   "ceph": true,
-  "expect": { "gpus": [["intel", "integrated", "8086:5912", "Intel HD Graphics 630"]], "rapl": "readable", "nodeExporter": "running", "intelExporter": "running", "docker": true }
+  "expect": {
+    "gpus": [
+      [
+        "intel",
+        "integrated",
+        "8086:5912",
+        "Intel HD Graphics 630"
+      ]
+    ],
+    "rapl": "readable",
+    "nodeExporter": "running",
+    "intelExporter": "running",
+    "docker": true,
+    "igpuAccess": "closed"
+  },
+  "render": {
+    "renderD128": {
+      "vendor": "0x8086",
+      "mode": "660"
+    }
+  }
 }

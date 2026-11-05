@@ -33,11 +33,12 @@ function cluster(nodes) {
   w('pveum', 'case "$*" in *"token list"*) echo "[]";; *"token add"*) echo \'{"value":"tok-secret"}\';; esac; exit 0')
   // Exporters "answer" from here when the fixture says they would after the step: the stand-in curl
   // serves metrics for any node address on 9100, a rising RAPL counter, and the GPU ports.
-  w('curl', `for a in "$@"; do case "$a" in http://*) u="$a";; esac; done
+  w('curl', `for a in "$@"; do case "$a" in http://*|https://*) u="$a";; esac; done
 case "$u" in
   *:9100/metrics) echo 'node_exporter_build_info{version="1.9.1"} 1'; echo "node_rapl_package_joules_total{index=\\"0\\"} $(date +%s).5";;
   *:8081/metrics) echo 'igpu_power_package 2.1';;
   *:9835/metrics) echo 'nvidia_smi_memory_total_bytes 8.5e9';;
+  https://api.godaddy.com/*) h="$(cat)"; echo "$h" > ${root}/godaddy-header; [ "$h" = 'Authorization: sso-key good-key:good-secret' ] || exit 22; exit 0;;
   *) exit 7;;
 esac`)
   // ssh NODE 'bash -s': the probe runs against that node's fake sysroot; a step is recorded, not run.
@@ -48,7 +49,7 @@ esac`)
   }
   w('ssh', `node="\${@: -2:1}"; s="$(cat)"
 if grep -q '^# HyperProx hardware probe' <<< "$s"; then ( . ${envs}/$node; printf '%s' "$s" | /bin/bash -s ); exit $?; fi
-step="$(grep -m1 -oE '^# (node_exporter|Power|Intel GPU|NVIDIA GPU)' <<< "$s" | cut -c3-)"
+step="$(grep -m1 -oE '^# (node_exporter|Power|Intel GPU|NVIDIA GPU|Let containers)' <<< "$s" | cut -c3-)"
 echo "$node $step" >> ${root}/steps.log
 printf 'HPX-RESULT\\tdone\\tset up (%s)\\n' "$step"`)
   const run = (args, input, extra = {}) => spawnSync('/bin/bash', [BOOTSTRAP, ...args], {
@@ -71,6 +72,8 @@ test('-y --dry-run: says what it found in one plain paragraph, plans per node, c
     assert.match(out.replace(/\s*\n\s*/g, ' '), /Found 3 nodes\. node-a: NVIDIA GeForce GTX 1070 Ti \(dedicated\); health monitoring already running\. node-b: Intel HD Graphics 630 \(built in\)\. node-c: no GPU; no power counters\./)
     assert.match(out, /node-b: Health monitoring\n\s+node-b: Power monitoring\n\s+node-b: Intel GPU monitoring\n\s+node-c: Health monitoring\n/)
     assert.doesNotMatch(out, /node-a: (Health monitoring|NVIDIA GPU monitoring)/, 'already running on node-a: not planned')
+    assert.match(out, /built-in graphics \(for video transcoding\)\? no/, '-y offers it but answers no')
+    assert.doesNotMatch(out, /Built-in graphics for containers\n/, 'and plans nothing for it')
     assert.match(out, /Dry run: nothing was changed/)
     assert.doesNotMatch(c.calls(), /^(pct create|pveum|pveam download)/m)
     assert.deepEqual(c.steps(), [])
@@ -91,13 +94,14 @@ test('the same summary words as the setup wizard', () => {
 test('answers piped in: asked in order, only what applies, and the plan follows them', () => {
   const c = cluster({ 'node-a': 'fresh-intel-node', 'node-b': 'server-no-gpu' })
   try {
-    // health no, power yes, gpu no, charts yes, proxmox metrics no, dns no, ai no
-    const r = c.run(['--dry-run'], 'n\ny\nn\ny\nn\nn\nn\n')
+    // health no, power yes, gpu no, built-in graphics yes, charts yes, proxmox metrics no, dns no, ai no
+    const r = c.run(['--dry-run'], 'n\ny\nn\ny\ny\nn\nn\nn\n')
     const out = plain(r.stdout)
     assert.equal(r.status, 0, out + r.stderr)
     const asked = hw.QUESTIONS.filter(q => out.includes(q.ask)).map(q => q.id)
-    assert.deepEqual(asked, ['node-health', 'power', 'gpu', 'charts', 'proxmox-metrics', 'dns', 'ai'])
-    assert.match(out, /Then, on your nodes, one at a time:\n\s+node-a: Power monitoring\n\s+In HyperProx/)
+    assert.deepEqual(asked, ['node-health', 'power', 'gpu', 'igpu-access', 'charts', 'proxmox-metrics', 'dns', 'ai'])
+    assert.match(out, /Then, on your nodes, one at a time:\n\s+node-a: Power monitoring\n\s+node-a: Built-in graphics for containers\n\s+In HyperProx/)
+    assert.match(out, /Applies to node-a\./)
     assert.match(out, /charts yes · Proxmox metrics no · GoDaddy no · local AI no/)
   } finally { c.cleanup() }
 })
@@ -106,6 +110,7 @@ test('no GPU and no power counters anywhere: neither question is asked', () => {
   const c = cluster({ 'node-a': 'server-no-gpu' })
   try {
     const out = plain(c.run(['--dry-run'], 'y\ny\nn\nn\nn\n').stdout)
+    assert.ok(!out.includes(hw.QUESTIONS.find(q => q.id === 'igpu-access').ask), 'no built-in graphics: not offered')
     assert.ok(!out.includes(hw.QUESTIONS.find(q => q.id === 'gpu').ask))
     assert.ok(!out.includes(hw.QUESTIONS.find(q => q.id === 'power').ask))
     assert.ok(out.includes(hw.QUESTIONS.find(q => q.id === 'node-health').ask))
@@ -123,7 +128,7 @@ test('an AMD-only cluster is told plainly that AMD is not covered', () => {
 
 test('the shell asks exactly the words the wizard asks', () => {
   const src = fs.readFileSync(BOOTSTRAP, 'utf8')
-  const vars = { 'node-health': 'NODE_HEALTH', power: 'POWER', gpu: 'GPU', charts: 'CHARTS', 'proxmox-metrics': 'PVE_METRICS', dns: 'DNS', ai: 'AI' }
+  const vars = { 'node-health': 'NODE_HEALTH', power: 'POWER', gpu: 'GPU', 'igpu-access': 'IGPU', charts: 'CHARTS', 'proxmox-metrics': 'PVE_METRICS', dns: 'DNS', ai: 'AI' }
   for (const q of hw.QUESTIONS) {
     const v = vars[q.id]
     const get = k => { const m = new RegExp(`^${k}_${v}=(['"])(.*)\\1$`, 'm').exec(src); return m && m[2] }
@@ -160,4 +165,34 @@ test('without a terminal and without -y it shows the defaults and stops before c
     assert.doesNotMatch(c.calls(), /^pct create/m)
     assert.deepEqual(c.steps(), [])
   } finally { c.cleanup() }
+})
+
+test('--igpu -y: the built-in graphics step runs only on the node that has them', () => {
+  const c = cluster({ 'node-a': 'nvidia-dedicated', 'node-b': 'fresh-intel-node', 'node-c': 'intel-igpu-open' })
+  try {
+    const r = c.run(['-y', '--igpu', '--skip-exporter', '--skip-rapl', '--skip-gpu-exporter'])
+    assert.equal(r.status, 0, r.stdout + r.stderr)
+    assert.deepEqual(c.steps(), ['node-b Let containers'], 'node-a is NVIDIA only; node-c is open already')
+    assert.match(plain(r.stdout), /✓ Built-in graphics for containers\s+node-b/)
+  } finally { c.cleanup() }
+})
+
+test('a GoDaddy key is checked before it is held, and a wrong one is dropped', () => {
+  for (const [key, accepted] of [['good-key', true], ['bad-key', false]]) {
+    const c = cluster({ 'node-a': 'server-no-gpu' })
+    try {
+      // health no, charts no, dns yes + key + secret, ai no, then confirm
+      const r = c.run([], `n\nn\ny\n${key}\ngood-secret\nn\ny\n`)
+      const out = plain(r.stdout + r.stderr)
+      assert.equal(r.status, 0, out)
+      if (accepted) {
+        assert.match(out, /GoDaddy accepted the key/)
+        assert.match(out, /GoDaddy key held in memory until you create the owner account/)
+      } else {
+        assert.match(out, /GoDaddy did not accept that key/)
+        assert.doesNotMatch(out, /GoDaddy key held/)
+      }
+      assert.ok(!c.calls().split('\n').some(l => l.startsWith('curl') && l.includes(key)), 'never on a command line')
+    } finally { c.cleanup() }
+  }
 })
