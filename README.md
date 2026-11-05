@@ -402,7 +402,7 @@ access** and press **Test**, then press **Install** on a machine (one click, wit
 several and **Install on selected**. Each machine's panel changes DNS, routes, SSH and exit nodes with a
 preview, and new devices and sign-in links arrive as notifications. WireGuard is a third option: servers in a
 container, phones and laptops by QR code (keys made in the browser and kept in the vault), machines as
-clients, and the MikroTik router's WireGuard peers. Each install gets its own
+clients, and the MikroTik router's WireGuard peers. On the router HyperProx only adds and removes WireGuard peers it created itself, using a separate router login you create for it; it never changes the router's firewall, addresses or routes, and shows you the exact command when a firewall rule is missing. Each install gets its own
 single-use key, which is revoked when it is done. On a Proxmox node the client never takes over DNS or
 routes; HyperProx checks the default route, resolver and quorum before and after, and undoes the install
 if anything changed. Viewers see status; changes are admin-only. See [docs/remote-access.md](docs/remote-access.md).
