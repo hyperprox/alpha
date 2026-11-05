@@ -108,10 +108,16 @@ git clone https://github.com/hyperprox/alpha.git /opt/hyperprox
 bash /opt/hyperprox/install.sh
 ```
 
-The installer works in `/opt/hyperprox`. It installs Docker CE, Node.js 20 and pnpm 9, builds the
-app, generates `/opt/hyperprox/.env` (mode 0600) with every credential HyperProx's own services need,
-sets up the vault, starts the Docker services and the systemd units. In a container it disables
-AppArmor and, when run interactively on DHCP, offers to set a static address. It asks before installing directly on a Proxmox node.
+The installer sets everything up in `/opt/hyperprox`: it installs what HyperProx runs on (Docker,
+Node.js 20 and pnpm 9), builds HyperProx, creates its built-in vault and starts its services. If the
+machine gets its address by DHCP, it offers to give it a fixed one. It asks first if you run it
+directly on a Proxmox node rather than in a container. Inside a container it turns AppArmor off for
+that container, because Docker cannot run there with it on.
+
+Your credentials (Proxmox, proxies, DNS, app logins and everything else you add) are kept in the vault,
+never in a file. The installer also writes `/opt/hyperprox/.env`, readable only by root. It holds the
+start-up keys HyperProx's own internal services need before anyone signs in: the database and cache
+passwords, the vault's admin key, the monitoring keys and the one-time setup key.
 
 If you create the container yourself, it must be privileged with nesting and keyctl, or Docker fails
 with an overlay error:
@@ -492,7 +498,8 @@ through nginx at `/grafana/`, which checks for a HyperProx session first; every 
 every metric (see [docs/security.md](docs/security.md)). Put HyperProx on a network you trust; access
 over the internet needs your own TLS and access controls in front of it.
 
-**Keep safe:** `/opt/hyperprox/.env` (mode 0600, holds `VAULT_ADMIN_TOKEN` and the database password)
+**Keep safe:** `/opt/hyperprox/.env` (readable only by root; it holds the internal start-up keys,
+including `VAULT_ADMIN_TOKEN` and the database password, but none of your own credentials)
 and the `vault_data` Docker volume, which holds every account. Back up the volume; losing it loses the
 vault.
 
