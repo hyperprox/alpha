@@ -18,6 +18,8 @@ interface GpuDetail {
   devices: Device[]
   inventoryProblem: string | null
   sharers: Array<{ device: string; users: string[] }>
+  inUse: { device: string; name: string } | null
+  portable: { whyRaw: string; noWriter: string }
 }
 
 export function GpuToggleButton({ view, onChange }: { view: GuestView; onChange: () => void }) {
@@ -65,6 +67,8 @@ export function GpuPanel({ view, nodes, canEdit, onSaved }: { view: GuestView; n
               <GpuToggleButton view={view} onChange={onSaved} />
             </div>
             {view.gpu.toggle === 'off' && view.gpu.offSince && <Notice kind="info">GPU access was turned off {new Date(view.gpu.offSince).toLocaleString()}. Turning it back on restores exactly the entries that were removed.</Notice>}
+            {d?.inUse && <p className="text-sm" style={{ color: 'var(--text)' }}>In use now on {view.guest.node}: <b style={{ color: 'var(--text-bright)' }}>{d.inUse.name}</b> <span className="font-mono text-xs" style={{ color: 'var(--text-dimmer)' }}>{d.inUse.device}</span></p>}
+            {d && !d.inUse && view.guest.running && isLxc && <Notice kind="warn">No GPU device is visible inside the container on {view.guest.node}: anything that transcodes is on the CPU.</Notice>}
             {d?.driver?.state === 'mismatch' && <Notice kind="error">{d.driver.words}</Notice>}
             {d?.driver && d.driver.state !== 'mismatch' && <Notice kind={d.driver.state === 'match' ? 'info' : 'warn'}>{d.driver.words}</Notice>}
             <ul className="font-mono rounded-md border p-2 space-y-1 overflow-x-auto" style={{ fontSize: 12, borderColor: 'var(--border-dim)', background: 'var(--ground-deep)' }}>
@@ -117,6 +121,15 @@ export function GpuPanel({ view, nodes, canEdit, onSaved }: { view: GuestView; n
           </div>
         )}
       </Section>
+
+      {isLxc && (
+        <Section title="Portable GPU (follows the guest between nodes)" note="One config covering every node's GPU, so wherever HA starts the container it binds the GPU that node has. Nothing runs at failover time.">
+          {d && <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>{d.portable.whyRaw}</p>}
+          {d && <Notice kind="warn">{d.portable.noWriter}</Notice>}
+          <GhostButton onClick={() => setChange({ change: { kind: 'gpu-portable' }, title: `Portable GPU for ${view.guest.name}` })}>Show the portable lines for every node</GhostButton>
+          {view.guest.haManaged && <p className="text-[12px]" style={{ color: 'var(--text-dimmer)' }}>After an HA move HyperProx checks inside the container for a GPU and sends a notification saying which GPU it now uses, or that it is on the CPU.</p>}
+        </Section>
+      )}
 
       <Section title="Other devices" note="Serial sticks, USB devices, cameras, TPUs and /dev/net/tun, by their most stable name.">
         {devEntries.length === 0 ? <p className="text-sm" style={{ color: 'var(--text-dimmer)' }}>None.</p> : (

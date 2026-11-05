@@ -310,3 +310,61 @@ test('PCI names drop the vendor’s legal suffixes and keep the product', () => 
   assert.equal(pciProductName({ name: 'Realtek Semiconductor Co., Ltd. RTL8111/8168/8211/8411 PCI Express Gigabit Ethernet Controller', vendorId: '10ec', cls: '0200' } as any), 'Realtek RTL8111/8168/8211/8411 PCI Express Gigabit Ethernet Controller')
   assert.equal(pciProductName({ name: 'NVIDIA Corporation GP104 [GeForce GTX 1070 Ti]', vendorId: '10de', cls: '0300' } as any), 'NVIDIA GeForce GTX 1070 Ti')
 })
+
+// ── Portable GPU and the move check ───────────────────────────────────────────
+
+import { portableLines, buildPortableGpuPlan, PORTABLE_WHY_RAW } from '../src/lib/guest-config/gpu'
+import { GpuMoveWatcher } from '../src/lib/guest-config/gpu-watch'
+
+test('Portable GPU: every eligible node’s devices as optional lines, majors read per node, nothing duplicated', () => {
+  const { lines, perNode } = portableLines([{ node: 'node-a', inv: nvInv() }, { node: 'node-b', inv: igpuInv() }, { node: 'node-c', inv: homeInv() }])
+  const mounts = lines.filter(l => l[0] === 'lxc.mount.entry').map(l => l[1])
+  assert.ok(mounts.every(m => / none bind,optional,create=file$/.test(m)))
+  assert.ok(mounts.includes('/dev/nvidia0 dev/nvidia0 none bind,optional,create=file'))
+  assert.ok(mounts.includes('/dev/dri/renderD128 dev/dri/renderD128 none bind,optional,create=file'))
+  assert.equal(mounts.filter(m => m.startsWith('/dev/dri/renderD128 ')).length, 1, 'the same path on two nodes is one line')
+  const majors = lines.filter(l => l[0] === 'lxc.cgroup2.devices.allow').map(l => l[1])
+  for (const m of ['c 195:* rwm', 'c 226:* rwm', 'c 508:* rwm', 'c 511:* rwm']) assert.ok(majors.includes(m), m)
+  assert.ok(!majors.includes('c 240:* rwm'), 'the Coral major is not a GPU')
+  assert.equal(perNode.length, 3)
+})
+
+test('Portable GPU is previewed with the exact lines and refused plainly: no API writes raw lines, and why devN cannot do it', async () => {
+  const s = makeService()
+  s.shell.probes['node-a'] = FIX('probe-nvidia.txt'); s.shell.probes['node-b'] = FIX('probe-igpu.txt'); s.shell.probes['node-c'] = FIX('probe-homelab.txt')
+  s.pve.add({ node: 'node-a', type: 'lxc', vmid: 961, status: 'stopped', ha: 'started', config: smallCt({ hostname: 'media', dev0: '/dev/dri/renderD128,gid=104' }) })
+  const p = await s.service.preview(OWNER, { node: 'node-a', type: 'lxc', vmid: 961 }, { kind: 'gpu-portable' })
+  assert.ok(p.plan.changes.length >= 8)
+  assert.ok(p.plan.warnings.includes(PORTABLE_WHY_RAW))
+  assert.ok(p.plan.warnings.some(w => /dev0/.test(w) && /stop the container starting/.test(w)))
+  assert.ok(p.plan.errors.some(e => /root@pam/.test(e)))
+  await assert.rejects(s.service.apply(OWNER, p.id, { name: 'media' }), (e: any) => e.code === 'refused')
+  assert.equal(s.pve.writes.length, 0)
+  const vm = buildPortableGpuPlan({ type: 'qemu', vmid: 1, node: 'node-a', name: 'x', running: false, config: {}, pendingKeys: [], haManaged: true }, [], null)
+  assert.ok(vm.errors.length)
+})
+
+test('after an HA move the watcher looks inside and names the GPU it now uses, or says it is on the CPU; home is announced', async () => {
+  const s = makeService()
+  s.shell.probes['node-a'] = FIX('probe-nvidia.txt'); s.shell.probes['node-b'] = FIX('probe-igpu.txt')
+  const g = s.pve.add({ node: 'node-a', type: 'lxc', vmid: 971, status: 'running', ha: 'started', config: JSON.parse(FIX('ct-nvidia.json')) })
+  const sent: any[] = []
+  const w = new GpuMoveWatcher(s.service, async e => { sent.push(e) })
+  assert.deepEqual(await w.tick(), [])
+  g.node = 'node-b'
+  s.shell.inside['971'] = ['/dev/dri/renderD128']
+  const orig = s.shell.run.bind(s.shell)
+  s.shell.run = async (node, cmd) => cmd.includes("ls -1 /dev/nvidia0 /dev/dri/renderD*") ? { code: 0, output: (s.shell.inside['971'] ?? []).join('\n') } : orig(node, cmd)
+  let ev = await w.tick()
+  assert.equal(ev[0].title, 'coder moved from node-a to node-b and is now using Intel HD Graphics 630')
+  g.node = 'node-c'; s.shell.inside['971'] = []
+  ev = await w.tick()
+  assert.equal(ev[0].title, 'coder moved from node-b to node-c, but no GPU is visible: transcoding is on the CPU')
+  assert.equal(ev[0].severity, 'warning')
+  g.node = 'node-a'; s.shell.inside['971'] = ['/dev/nvidia0']
+  ev = await w.tick()
+  assert.equal(ev[0].type, 'guest.gpu.home')
+  assert.match(ev[0].title, /back on node-a and on its home GPU \(NVIDIA GeForce GTX 1070 Ti\)/)
+  assert.equal(sent.length, 3)
+  assert.ok(!s.pve.writes.length, 'checks only: nothing written')
+})

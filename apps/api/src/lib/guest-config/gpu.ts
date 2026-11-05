@@ -387,3 +387,60 @@ export function buildDeviceGrantPlan(g: GuestCtx, inv: NodeInventory, e: DeviceG
   if (g.running) p.warnings.push('Applies when the guest restarts.')
   return p
 }
+
+// ── Portable GPU: one config that works on whichever node HA starts the guest ──
+
+/**
+ * Why Portable GPU uses raw optional lines, and why HyperProx cannot write them yet. Both facts were measured on
+ * a live cluster: Proxmox answers `Device /dev/… does not exist` and refuses to start a container whose devN
+ * names a device the node lacks; and the API refuses every lxc.* key, to set or to delete, for an API token and
+ * for root@pam alike (`Unknown option: lxc.cgroup2.devices.allow`).
+ */
+export const PORTABLE_WHY_RAW = 'A devN entry whose device is missing on a node stops the container from starting there (Proxmox: “Device … does not exist”), so a portable config has to use lxc.mount.entry lines marked optional, which LXC skips when the device is absent.'
+export const PORTABLE_NO_WRITER = 'Proxmox’s API does not accept lxc.* lines from any caller — an API token or root@pam — and HyperProx writes guest configs only through the API. These lines are shown so they can be added on the node; HyperProx does not write them.'
+
+export interface PortableTarget { node: string; inv: NodeInventory }
+
+/** The raw lines that give a container every eligible node's GPU, each one optional. */
+export function portableLines(targets: PortableTarget[]): { lines: Array<[string, string]>; perNode: Array<{ node: string; gpu: string; paths: string[]; majors: number[] }> } {
+  const lines: Array<[string, string]> = []
+  const seen = new Set<string>()
+  const add = (k: string, v: string) => { const id = `${k}\u0000${v}`; if (!seen.has(id)) { seen.add(id); lines.push([k, v]) } }
+  const perNode: Array<{ node: string; gpu: string; paths: string[]; majors: number[] }> = []
+  const mounts: Array<[string, string]> = []
+  for (const t of targets) {
+    const gpus = t.inv.devices.filter(d => d.kind === 'gpu' && !d.vfio)
+    const paths = [...new Set(gpus.flatMap(d => d.paths.filter(p => /^\/dev\/(dri\/(renderD|card)\d+|nvidia[\w-]*|nvidia-caps\/[\w-]+|kfd)$/.test(p))))]
+    const majors = new Set<number>()
+    for (const [name, n] of Object.entries(t.inv.majors)) if (/^(nvidia|nvidiactl|nvidia-uvm|nvidia-caps|nvidia-modeset|drm|kfd)$/.test(name) && paths.some(p => (name === 'drm' ? p.startsWith('/dev/dri/') : name === 'kfd' ? p === '/dev/kfd' : p.startsWith('/dev/nvidia')))) majors.add(n)
+    for (const m of [...majors].sort((a, b) => a - b)) add('lxc.cgroup2.devices.allow', `c ${m}:* rwm`)
+    for (const p of paths) mounts.push(['lxc.mount.entry', `${p} ${p.slice(1)} none bind,optional,create=file`])
+    perNode.push({ node: t.node, gpu: gpus.map(d => d.name).join(', ') || 'no GPU', paths, majors: [...majors] })
+  }
+  for (const [k, v] of mounts) add(k, v)
+  return { lines, perNode }
+}
+
+export function buildPortableGpuPlan(g: GuestCtx, targets: PortableTarget[], groups: { render?: number; video?: number } | null): Plan {
+  const p = emptyPlan()
+  p.confirmName = true
+  if (g.type !== 'lxc') { p.errors.push('Portable GPU is for containers.'); return p }
+  if (!g.haManaged) p.warnings.push('This container is not HA-managed: it only moves when you migrate it.')
+  const missing = targets.filter(t => t.inv.problem)
+  for (const t of missing) p.errors.push(`${t.node}: ${t.inv.problem} Its GPU cannot be included.`)
+  const { lines, perNode } = portableLines(targets.filter(t => !t.inv.problem))
+  const have = rawLines(g.config)
+  const toAdd = lines.filter(([k, v]) => !have.some(h => h[0] === k && h[1] === v))
+  for (const n of perNode) p.checks.push(`${n.node}: ${n.gpu}${n.paths.length ? ` (${n.paths.join(', ')}; majors ${n.majors.join(', ') || 'none'})` : ''}`)
+  for (const [k, v] of toAdd) p.changes.push({ key: k, label: 'Raw line (optional)', before: null, after: v, words: `Add ${k}: ${v}`, restart: g.running ? 'restart' : 'live' })
+  const devs = detectGpu('lxc', g.config).entries.filter(e => e.via === 'devN')
+  if (devs.length) p.warnings.push(`The devN GPU entries (${devs.map(e => e.key).join(', ')}) would have to go: they stop the container starting on a node without that device.`)
+  p.warnings.push(PORTABLE_WHY_RAW)
+  if (Number(g.config.unprivileged) === 1) {
+    p.warnings.push(`Unprivileged container: a bind-mounted render node keeps its host group, which shows as nogroup inside, so it is usable only if the node gives others access (mode 0666) or the container maps the host’s render group.${groups?.render !== undefined ? ` Inside, render is gid ${groups.render}${groups.video !== undefined ? ` and video is gid ${groups.video}` : ''}.` : ''} NVIDIA nodes are 0666 by default; /dev/dri render nodes usually are not.`)
+  }
+  if (!toAdd.length) p.checks.push('Every portable line is already in the config.')
+  p.errors.push(PORTABLE_NO_WRITER)
+  p.meta = { portable: { lines: toAdd } }
+  return p
+}
