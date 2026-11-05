@@ -56,4 +56,11 @@ Character devices:
 Block devices:
   8 sd
 ##nvmodule
+##chardev
+/dev/dri/card0|e2
+/dev/dri/renderD128|e2
+/dev/net/tun|a
+/dev/apex_0|f0
+/dev/ttyUSB0|bc
+/dev/ttyACM0|a6
 ##end

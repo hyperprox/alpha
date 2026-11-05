@@ -11,7 +11,7 @@
 // =============================================================================
 
 import { parseProps, getProp, rawLines, str, freeIndex, type GuestType, type PveConfig } from './keys'
-import { rawLineAllowed } from './rawfile'
+import { rawLineForm } from './rawfile'
 import { emptyPlan, addConfigChanges, type GuestCtx, type Plan } from './plan'
 import { gpuMajors, resetRiskOf, vendorOf, type Device, type NodeInventory, type Vendor, type GuestRef } from './devices'
 
@@ -296,7 +296,7 @@ export function buildRawEditPlan(g: GuestCtx, edit: RawEdit): Plan {
   if (p.errors.length) return p
   if (!remove.length && !add.length) { p.errors.push('Nothing to change.'); return p }
   // Only device lines may be written. Anything else is shown, so the person sees what was asked, and refused.
-  const refused = [...remove, ...add].map(l => rawLineAllowed(l)).filter((x): x is string => !!x)
+  const refused = [...remove, ...add].map(l => rawLineForm(l)).filter((x): x is string => !!x)
   if (refused.length) {
     for (const [k, v] of remove) p.changes.push({ key: k, label: 'Raw line', before: v, after: null, words: `Remove ${k}: ${v}`, restart: 'restart' })
     for (const [k, v] of add) p.changes.push({ key: k, label: 'Raw line', before: null, after: v, words: `Add ${k}: ${v}`, restart: 'restart' })
