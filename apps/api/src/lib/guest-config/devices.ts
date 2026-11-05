@@ -171,13 +171,19 @@ export function parseLspci(lines: string[]): PciRow[] {
 }
 
 /** "NVIDIA Corporation GP104 [GeForce GTX 1070 Ti]" → "NVIDIA GeForce GTX 1070 Ti". */
-export function pciProductName(row: Pick<PciRow, 'name' | 'vendorId'>): string {
+export function pciProductName(row: Pick<PciRow, 'name' | 'vendorId'> & { cls?: string }): string {
   const vendorWord = ({ nvidia: 'NVIDIA', intel: 'Intel', amd: 'AMD' } as Record<string, string>)[vendorOf(row.vendorId)]
-  const bracket = /\[([^\]]+)\]\s*$/.exec(row.name)?.[1]
-  let base = row.name.replace(/\b(Corporation|Corp\.|Inc\.|Co\., Ltd\.|Technologies|Semiconductor)\b/g, '').replace(/\s+/g, ' ').trim()
-  if (bracket && vendorWord) return `${vendorWord} ${bracket.replace(/^(AMD|ATI)\s*\/?\s*(ATI\s*)?/, '')}`.trim()
-  if (vendorWord) base = base.replace(/^(NVIDIA|Intel|Advanced Micro Devices, \[AMD\/ATI\]|Advanced Micro Devices|AMD)\s*/i, `${vendorWord} `)
-  return base.trim()
+  // Vendor legal names first ("Advanced Micro Devices, Inc. [AMD/ATI]", "Realtek Semiconductor Co., Ltd.").
+  let base = row.name
+    .replace(/^Advanced Micro Devices, Inc\.\s*(\[(AMD\/ATI|AMD)\]\s*)?/, 'AMD ')
+    .replace(/^(NVIDIA|Intel) Corporation\s*/, '$1 ')
+    .replace(/,?\s*\b(Corporation|Corp\.|Inc\.|Co\., Ltd\.|Ltd\.|Technology Inc\.|Semiconductor)(?=\s|$)/g, '')
+    .replace(/\s+/g, ' ').trim()
+  // A GPU's marketing name is the bracketed part: "GP104 [GeForce GTX 1070 Ti]" → "GeForce GTX 1070 Ti".
+  const bracket = /\[([^\]]+)\]\s*$/.exec(base)?.[1]
+  if (bracket && vendorWord && (!row.cls || /^03/.test(row.cls))) return `${vendorWord} ${bracket.replace(/^(AMD|ATI)\s*\/?\s*(ATI\s*)?/, '')}`.trim()
+  if (vendorWord && !base.toUpperCase().startsWith(vendorWord.toUpperCase())) base = `${vendorWord} ${base}`
+  return base
 }
 
 interface UsbRow { port: string; vid: string; pid: string; bus: number; dev: number; cls: string; manufacturer: string; product: string; serial: string; dbName?: string }
