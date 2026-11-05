@@ -11,7 +11,7 @@ datasource db {
 
 model ProxmoxCluster {
   id          String   @id @default(uuid())
-  name        String   @default("TitanCluster")
+  name        String   @default("Proxmox Cluster")
   host        String
   port        Int      @default(8006)
   tokenId     String

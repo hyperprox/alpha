@@ -5,7 +5,7 @@
 
 import type { UpdatesExecutor, ClusterStatus, HaStatus, CephHealth, GuestListing, GuestRef, ExecResult, LineSink } from '../src/lib/updates/executor'
 import type { UpdatesPkgChange } from '../src/lib/updates/types'
-import { NODE_FACTS_COMMAND, GUEST_PENDING_SCRIPT, GUEST_UPGRADE_SCRIPT, GUEST_REFRESH_SCRIPT, isKernelPackage } from '../src/lib/updates/commands'
+import { NODE_FACTS_COMMAND, GUEST_PENDING_SCRIPT, GUEST_UPGRADE_SCRIPT, GUEST_REFRESH_SCRIPT, CEPH_LAYOUT_COMMAND, CEPH_STATE_COMMAND, CEPH_OSD_DUMP_COMMAND, isKernelPackage } from '../src/lib/updates/commands'
 import { parsePolicy, type PolicyLoad } from '../src/lib/updates/policy'
 
 export interface FakeNode {
@@ -30,6 +30,15 @@ export interface FakeGuest extends GuestListing {
 }
 
 export interface Call { where: string; cmd: string; t: number }
+
+/** A Ceph pool in the pretend cluster. `hosts` limits where its PGs land (default: every node with OSDs). */
+export interface FakePool {
+  id: number; name: string; size: number; minSize: number; pgNum: number; storedBytes: number; hosts?: string[]
+  /** Erasure-coded with this profile (size = k + m). */
+  ec?: { profile: string; k: number; m: number }
+}
+export interface FakeCephLayout { pools: FakePool[]; osdsByNode: Record<string, number[]> }
+export interface FakePg { pgid: string; pool: number; osds: number[] }
 
 const ok = (output = ''): ExecResult => ({ code: 0, output, timedOut: false })
 
@@ -78,6 +87,26 @@ export class FakeCluster implements UpdatesExecutor {
   scripted = new Map<string, (script: string) => ExecResult>()
   concurrentGuests = 0
   maxConcurrentGuests = 0
+  /** Pools and OSD placement. null: two OSDs per node and one replicated pool across all of them. */
+  cephLayout: FakeCephLayout | null = null
+  /** Overrides the computed `ceph osd ok-to-stop` answer when it returns a boolean. */
+  okToStopOverride: (ids: number[]) => boolean | undefined = () => undefined
+  monOkToStop = true
+  /** OSDs that never come back up after a restart. */
+  osdStuck = new Set<number>()
+  restartedOsds: number[] = []
+  private osdDownPolls = new Map<number, number>()
+  /** Hostname each OSD reports in `ceph osd metadata`; default: the node whose bucket holds it. */
+  osdHostOverride: Record<number, string> = {}
+  /** CRUSH host buckets to report instead of `osdsByNode` (e.g. per-device-class buckets). */
+  crushOverride: Record<string, number[]> | null = null
+  /** ceph-osd unit ids per node instead of the layout's; null makes the listing fail. */
+  unitsOverride: Record<string, string[] | null> = {}
+  /** Rows to drop from the PG map, and whether it reports pg_ready. */
+  pgRowsDropped = 0
+  pgReady = true
+  /** Extra OSD map flags (besides noout) that appear once an OSD has been restarted. */
+  flagsAfterRestart: string[] = []
 
   constructor(init?: { nodes?: FakeNode[]; guests?: FakeGuest[] }) {
     this.nodes = init?.nodes ?? []
@@ -112,6 +141,93 @@ export class FakeCluster implements UpdatesExecutor {
     return n.online
   }
 
+  layout(): FakeCephLayout {
+    if (this.cephLayout) return this.cephLayout
+    const osdsByNode = Object.fromEntries(this.nodes.map((n, i) => [n.name, [2 * i, 2 * i + 1]]))
+    const size = Math.min(3, this.nodes.length)
+    return { osdsByNode, pools: [{ id: 1, name: 'vm-disks', size, minSize: size >= 3 ? 2 : 1, pgNum: 32, storedBytes: 100e9 }] }
+  }
+  /** Each PG on `size` distinct hosts, round robin: deterministic, so tests can count. */
+  pgs(): FakePg[] {
+    const l = this.layout()
+    const out: FakePg[] = []
+    for (const p of l.pools) {
+      const hosts = (p.hosts ?? Object.keys(l.osdsByNode)).filter(h => l.osdsByNode[h]?.length)
+      for (let i = 0; i < p.pgNum; i++) {
+        const osds: number[] = []
+        for (let k = 0; k < Math.min(p.size, hosts.length); k++) {
+          const ids = l.osdsByNode[hosts[(i + k) % hosts.length]]
+          osds.push(ids[i % ids.length])
+        }
+        out.push({ pgid: `${p.id}.${i.toString(16)}`, pool: p.id, osds })
+      }
+    }
+    return this.pgRowsDropped ? out.slice(0, out.length - this.pgRowsDropped) : out
+  }
+  /** OSDs down right now: offline nodes', stuck ones after their restart, and ones still rejoining. */
+  downSet(tick: boolean): Set<number> {
+    const l = this.layout()
+    const down = new Set<number>([...this.osdStuck].filter(id => this.restartedOsds.includes(id)))
+    for (const n of this.nodes) if (!this.isOnline(n)) for (const id of l.osdsByNode[n.name] ?? []) down.add(id)
+    for (const [id, polls] of this.osdDownPolls) {
+      if (polls <= 0) continue
+      down.add(id)
+      if (tick) this.osdDownPolls.set(id, polls - 1)
+    }
+    return down
+  }
+  private flags(): string[] {
+    return [...(this.noout ? ['noout'] : []), ...(this.restartedOsds.length ? this.flagsAfterRestart : []), 'sortbitwise']
+  }
+  private stateOutput(): string {
+    const down = this.downSet(true)
+    const l = this.layout()
+    const ids = Object.values(l.osdsByNode).flat()
+    return [
+      'HP_OSDS', JSON.stringify({ flags: this.flags().join(','), flags_set: this.flags(), osds: ids.map(id => ({ osd: id, up: down.has(id) ? 0 : 1, in: 1 })) }),
+      'HP_PGS', JSON.stringify({ pg_ready: true, pg_stats: this.pgs().map(p => ({
+        pgid: p.pgid, state: p.osds.some(o => down.has(o)) ? 'active+undersized+degraded' : 'active+clean', up: p.osds, acting: p.osds,
+      })) }),
+      'HP_END',
+    ].join('\n')
+  }
+  okToStop(ids: number[]): { ok: boolean; bad: number } {
+    const forced = this.okToStopOverride(ids)
+    const l = this.layout()
+    const down = new Set(ids)
+    let bad = 0
+    for (const pg of this.pgs()) {
+      const pool = l.pools.find(p => p.id === pg.pool)!
+      if (!pg.osds.some(o => down.has(o))) continue
+      if (pg.osds.filter(o => !down.has(o)).length < Math.max(1, pool.minSize)) bad++
+    }
+    return { ok: forced ?? bad === 0, bad: forced === false && !bad ? 1 : bad }
+  }
+  private layoutOutput(): string {
+    const l = this.layout()
+    const buckets = this.crushOverride ?? l.osdsByNode
+    const hosts = Object.keys(buckets)
+    const nodes: any[] = [{ id: -1, name: 'default', type: 'root', children: hosts.map((_, i) => -2 - i) }]
+    hosts.forEach((h, i) => {
+      nodes.push({ id: -2 - i, name: h, type: 'host', children: buckets[h] })
+      for (const o of buckets[h]) nodes.push({ id: o, name: `osd.${o}`, type: 'osd', status: 'up' })
+    })
+    const meta = Object.entries(l.osdsByNode).flatMap(([h, ids]) => ids.map(id => ({ id, hostname: this.osdHostOverride[id] ?? h })))
+    const ec = l.pools.filter(p => p.ec).map(p => `${p.ec!.profile} ${JSON.stringify({ k: String(p.ec!.k), m: String(p.ec!.m), plugin: 'jerasure' })}`)
+    return [
+      'HP_POOLS', JSON.stringify(l.pools.map(p => ({
+        pool_id: p.id, pool_name: p.name, size: p.size, min_size: p.minSize, pg_num: p.pgNum,
+        type: p.ec ? 3 : 1, erasure_code_profile: p.ec?.profile ?? '',
+      }))),
+      'HP_TREE', JSON.stringify({ nodes, stray: [] }),
+      'HP_PGS', JSON.stringify({ pg_ready: this.pgReady, pg_stats: this.pgs().map(p => ({ pgid: p.pgid, state: 'active+clean', up: p.osds, acting: p.osds })) }),
+      'HP_DF', JSON.stringify({ pools: l.pools.map(p => ({ name: p.name, id: p.id, stats: { stored: p.storedBytes, bytes_used: p.storedBytes * p.size } })) }),
+      'HP_META', JSON.stringify(meta),
+      'HP_EC', ...ec,
+      'HP_END',
+    ].join('\n')
+  }
+
   // --- reads --------------------------------------------------------------------------
   async clusterStatus(): Promise<ClusterStatus> {
     this.failIf('clusterStatus')
@@ -128,7 +244,12 @@ export class FakeCluster implements UpdatesExecutor {
     this.failIf('cephHealth')
     if (!this.ceph) throw new Error('Proxmox GET /cluster/ceph/status: HTTP 500 — binary not installed')
     const down = this.nodes.filter(n => !this.isOnline(n)).length
-    return { ...this.ceph, numUpOsds: this.ceph.numUpOsds - down * 2, checks: this.noout ? [...this.ceph.checks, 'OSDMAP_FLAGS'] : this.ceph.checks }
+    const offlineIds = new Set(this.nodes.filter(n => !this.isOnline(n)).flatMap(n => this.layout().osdsByNode[n.name] ?? []))
+    const osdsDown = [...this.downSet(false)].filter(id => !offlineIds.has(id)).length
+    const checks = [...this.ceph.checks, ...(this.flags().length > 1 ? ['OSDMAP_FLAGS'] : []), ...(osdsDown ? ['OSD_DOWN', 'PG_DEGRADED'] : [])]
+    const total = Object.values(this.ceph.pgStates).reduce((a, b) => a + b, 0)
+    const pgStates = osdsDown ? { 'active+clean': total - 8, 'active+undersized+degraded': 8 } : this.ceph.pgStates
+    return { ...this.ceph, numUpOsds: this.ceph.numUpOsds - down * 2 - osdsDown, checks, pgStates }
   }
   async listGuests() { this.failIf('listGuests'); return this.guests.map(({ vmid, type, node, name, running, template }) => ({ vmid, type, node, name, running, template })) }
   async guestConfig(g: GuestRef) { this.failIf('guestConfig'); return { ...(this.guests.find(x => x.vmid === g.vmid)?.config ?? {}) } }
@@ -186,6 +307,32 @@ export class FakeCluster implements UpdatesExecutor {
       }
       n.online = false
       n.offlineUntil = this.t + this.rebootTakesMs
+      return ok()
+    }
+    if (cmd === CEPH_LAYOUT_COMMAND) return ok(this.layoutOutput())
+    if (cmd === CEPH_STATE_COMMAND) return ok(this.stateOutput())
+    if (cmd === CEPH_OSD_DUMP_COMMAND) return ok(JSON.stringify({ flags: this.flags().join(','), flags_set: this.flags(), osds: [] }))
+    let u = /^systemctl list-units 'ceph-(osd|mon|mgr|mds)@\*'/.exec(cmd)
+    if (u) {
+      const over = u[1] === 'osd' ? this.unitsOverride[name] : undefined
+      if (over === null) return ok('Failed to connect to bus: No such file or directory\nHP_RC 1')
+      const ids = u[1] === 'osd' ? (over ?? (this.layout().osdsByNode[name] ?? []).map(String)) : u[1] === 'mds' ? [] : [name]
+      return ok([...ids.map(i => `ceph-${u![1]}@${i}.service loaded active running Ceph daemon`), 'HP_RC 0'].join('\n'))
+    }
+    u = /^ceph osd ok-to-stop ([\d ]+) -f json/.exec(cmd)
+    if (u) {
+      const ids = u[1].trim().split(/\s+/).map(Number)
+      const r = this.okToStop(ids)
+      return ok(`${JSON.stringify({ ok_to_stop: r.ok, osds: ids, num_ok_pgs: 10, num_not_ok_pgs: r.bad })}\nHP_RC ${r.ok ? 0 : 16}`)
+    }
+    if (/^ceph mon ok-to-stop/.test(cmd)) {
+      return ok(this.monOkToStop ? `quorum should be preserved (others) after stopping [${name}]\nHP_RC 0` : `Error EBUSY: not enough monitors would be available after stopping mons [${name}]\nHP_RC 16`)
+    }
+    u = /^systemctl restart ceph-osd@(\d+)\.service$/.exec(cmd)
+    if (u) {
+      const id = Number(u[1])
+      this.restartedOsds.push(id)
+      if (!this.osdStuck.has(id)) this.osdDownPolls.set(id, 1)
       return ok()
     }
     if (cmd === 'ceph osd set noout') { this.noout = true; return ok() }

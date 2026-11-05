@@ -247,7 +247,7 @@ export function SaveLayoutDialog({ paneCount, existing, onSave, onClose }: {
       <div className="flex flex-col gap-3.5">
         <div>
           <Label>Name</Label>
-          <Field value={name} onChange={e => setName(e.target.value)} placeholder="TitanCoder" required autoFocus />
+          <Field value={name} onChange={e => setName(e.target.value)} placeholder="Main workspace" required autoFocus />
         </div>
         <p className="text-[13px] leading-relaxed" style={{ color: clash ? 'var(--warn)' : 'var(--text-dim)' }}>
           {clash
