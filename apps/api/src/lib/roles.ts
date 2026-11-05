@@ -140,6 +140,8 @@ export function needsReconfirm(method: string, path: string): boolean {
   const p = normalisePath(path)
   if (m === 'DELETE' && DESTROY.test(p)) return true
   if (m === 'POST' && p === '/api/secrets/reveal') return true
+  // Setup checklist changes: storing a node login, and anything that runs as root on your nodes or shreds files.
+  if (m !== 'GET' && m !== 'HEAD' && SETUP_CHECKLIST.test(p)) return true
   // A new Grafana admin password goes straight into the vault, but it is still a credential being replaced.
   if (m === 'POST' && p === '/api/monitoring/grafana-admin/reset') return true
   if (m !== 'GET' && m !== 'HEAD' && ROLE_MGMT.test(p)) return true

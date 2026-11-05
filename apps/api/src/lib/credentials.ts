@@ -14,7 +14,7 @@
 // =============================================================================
 
 import { PrismaClient } from '@prisma/client'
-import { chmodSync, existsSync, readFileSync, writeFileSync } from 'fs'
+import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from 'fs'
 import { decrypt, mask } from './crypto'
 import { getBroker, type SecretItem } from './vault/broker'
 import { isUnlocked, cachedSecret, putCachedSecret, removeCachedSecret, onLock, onUnlock } from './vault/state'
@@ -492,7 +492,7 @@ function blankEnv(text: string, keys: Set<string>): { text: string; blanked: str
  *  1. Collect every Postgres `credential` row (decrypted with the old ENCRYPTION_KEY) and every
  *     env-seeded value that has no row. A value already in the vault wins over both.
  *  2. Write them to the vault, then read the vault back and compare every value.
- *  3. Only then: delete the migrated rows, back up `.env` to `.env.pre-vault` (0600) and blank
+ *  3. Only then: delete the migrated rows and blank (no plaintext backup is kept)
  *     ENCRYPTION_KEY, JWT_SECRET and the seeded secrets in `.env`.
  * Any failure before step 3 leaves the old store untouched.
  */
@@ -651,14 +651,13 @@ export async function seedFromEnv(sidArg?: string, opts: { onCacheReady?: (hasWo
       if (v === undefined || v === '') keys.delete(def.envKey)
     }
     const { text, blanked } = blankEnv(envText, keys)
+    // No plaintext backup: every value blanked here was written to the vault and read back above (or
+    // was already there), so a copy of the old file would only be a second, unprotected store of it.
     if (blanked.length) {
-      const backup = envPath + '.pre-vault'
-      const target = existsSync(backup) ? `${backup}.${Date.now()}` : backup
-      writeFileSync(target, envText, { mode: 0o600 })
-      chmodSync(target, 0o600)
-      writeFileSync(envPath, text, { mode: 0o600 })
-      chmodSync(envPath, 0o600)
-      result.backup = target
+      const tmp = `${envPath}.hpx-tmp`
+      writeFileSync(tmp, text, { mode: 0o600 })
+      chmodSync(tmp, 0o600)
+      renameSync(tmp, envPath)
       result.envBlanked = blanked
     }
   }
@@ -669,7 +668,7 @@ export async function seedFromEnv(sidArg?: string, opts: { onCacheReady?: (hasWo
   if (result.migrated || result.rowsDeleted || result.envBlanked.length) {
     console.log(
       `[credentials] Vault migration: ${result.migrated} value(s) moved, ${result.rowsDeleted} row(s) deleted, ` +
-      `${result.envBlanked.length} .env key(s) blanked` + (result.backup ? ` (backup: ${result.backup} — delete it once you have checked HyperProx works)` : ''),
+      `${result.envBlanked.length} .env key(s) blanked` + '',
     )
   }
   return result

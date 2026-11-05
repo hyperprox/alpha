@@ -25,6 +25,9 @@ const dir = mkdtempSync(join(tmpdir(), 'hpx-wiz-'))
 const envFile = join(dir, '.env')
 const log = join(dir, 'runner.log')
 const runLog = join(dir, 'run.log')
+const hostKeys = join(dir, 'hostkeys.json')
+const FP_A = 'SHA256:' + 'A'.repeat(43), FP_B = 'SHA256:' + 'B'.repeat(43)
+writeFileSync(hostKeys, JSON.stringify({ '127.0.0.21': FP_A, '127.0.0.22': FP_B }))
 
 // Fake Proxmox
 execFileSync('openssl', ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-days', '1',
@@ -70,7 +73,7 @@ const ready = (async () => {
       HPX_SETUP_NODE_RUNNER: join(__dirname, 'fakes', 'setup-node-runner.js'), HPX_TEST_LOG: log, HPX_TEST_PASSWORD: PASSWORD,
       HPX_TEST_NODES: JSON.stringify({ '127.0.0.21': 'nvidia-dedicated', '127.0.0.22': 'fresh-intel-node' }),
       HPX_TEST_NAMES: JSON.stringify({ '127.0.0.21': 'node-a', '127.0.0.22': 'node-b' }),
-      HPX_SETUP_VERIFY_MS: '0', HPX_SETUP_EXIT_MS: '400' },
+      HPX_SETUP_VERIFY_MS: '0', HPX_SETUP_EXIT_MS: '400', NODE_ENV: 'test', HPX_TEST_HOSTKEYS: hostKeys },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   p.stdout!.on('data', d => { out += d }); p.stderr!.on('data', d => { out += d })
@@ -98,7 +101,7 @@ test('hardware: what was found, from Proxmox alone, and only the questions that 
   const r = await call('GET', 'hardware')
   assert.equal(r.status, 200)
   assert.equal(r.body.summary, 'Found 2 nodes. node-a: NVIDIA GeForce GTX 1070 Ti (dedicated). node-b: Intel HD Graphics 630 (built in).')
-  assert.deepEqual(r.body.questions.map((q: any) => q.id), ['node-health', 'power', 'gpu', 'charts', 'dns', 'ai'], 'charts off: no Proxmox-metrics question (charts itself is asked on the Services step)')
+  assert.deepEqual(r.body.questions.map((q: any) => q.id), ['node-health', 'power', 'gpu', 'igpu-access', 'charts', 'dns', 'ai'], 'charts off: no Proxmox-metrics question (charts itself is asked on the Services step)')
   assert.equal(calls().length, 0, 'no SSH before a login is given')
 })
 
@@ -109,6 +112,7 @@ test('the node login: tested on every node, refused when wrong, held only in mem
   const good = await call('POST', 'node-login', { username: 'root', password: PASSWORD })
   assert.equal(good.body.ok, true)
   assert.deepEqual(good.body.nodes.map((n: any) => n.ok), [true, true])
+  assert.deepEqual(good.body.nodes.map((n: any) => n.fingerprint), [FP_A, FP_B], 'host keys pinned on first connection and shown')
   assert.ok(!readFileSync(envFile, 'utf8').includes(MARK))
 })
 
@@ -122,6 +126,29 @@ test('apply: probes over the login, then one step at a time, only where needed, 
   assert.deepEqual(steps, ['node-b:node_exporter', 'node-b:Power', 'node-b:Intel GPU'])
   assert.deepEqual(job.results.map((r: any) => r.status), ['done', 'done', 'done'])
   assert.ok(job.checks.length > 0 && job.checks.every((c: any) => typeof c.reason === 'string' && c.reason.length))
+})
+
+test('a node whose host key changes during setup is refused, before anything is sent to it', async () => {
+  writeFileSync(hostKeys, JSON.stringify({ '127.0.0.21': FP_A, '127.0.0.22': 'SHA256:' + 'C'.repeat(43) }))
+  try {
+    const before = calls().filter(c => c.kind === 'step').length
+    await call('POST', 'apply', { answers: { 'node-health': true, power: true, gpu: true } })
+    let job: any
+    for (let i = 0; i < 100; i++) { job = (await call('GET', 'apply-status')).body.job; if (job.status !== 'running') break; await new Promise(r => setTimeout(r, 100)) }
+    const b = job.results.filter((r: any) => r.node === 'node-b')
+    assert.ok(b.length && b.every((r: any) => r.status === 'failed' && /host key of 127\.0\.0\.22 changed during setup/.test(r.reason)), JSON.stringify(job.results))
+    assert.equal(calls().filter(c => c.kind === 'step').length, before, 'no step ran on either node: node-a needs nothing, node-b was refused')
+  } finally { writeFileSync(hostKeys, JSON.stringify({ '127.0.0.21': FP_A, '127.0.0.22': FP_B })) }
+})
+
+test('the test hooks are honoured only under NODE_ENV=test', () => {
+  const src = readFileSync(join(__dirname, '..', '..', 'setup', 'setup.js'), 'utf8')
+  for (const v of ['HPX_SETUP_NODE_RUNNER', 'HPX_SETUP_FAKE_GODADDY', 'HPX_SETUP_RUN']) {
+    const uses = src.split('\n').filter(l => l.includes(`process.env.${v}`))
+    assert.ok(uses.length > 0, v)
+    for (const l of uses) assert.match(l, /TESTING &&/, `${v}: ${l.trim()}`)
+  }
+  assert.match(src, /const TESTING = process\.env\.NODE_ENV === 'test'/)
 })
 
 test('a GoDaddy key: checked, held in memory, never written to .env', async () => {
@@ -152,6 +179,7 @@ test('finish: targets from what was found, the API gets the held secrets, the se
   // The hand-over: what was held, to the API, with the setup key.
   assert.equal(handoffKey, KEY)
   assert.equal(handoff.nodeLogin.password, PASSWORD)
+  assert.deepEqual(handoff.nodeLogin.hostKeys, { 'node-a': { address: '127.0.0.21', fingerprint: FP_A }, 'node-b': { address: '127.0.0.22', fingerprint: FP_B } })
   assert.deepEqual(handoff.nodeLogin.nodes, ['node-a', 'node-b'])
   assert.deepEqual(handoff.godaddy, { key: 'gd-key', secret: GD_SECRET })
   const env = readFileSync(envFile, 'utf8')

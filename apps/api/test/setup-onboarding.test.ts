@@ -14,7 +14,11 @@ import { registerGate } from '../src/lib/gate'
 import { authRoutes } from '../src/routes/auth'
 import { setBroker } from '../src/lib/vault/broker'
 import { lock, isUnlocked } from '../src/lib/vault/state'
-import { setCredentialTable, getProviderCredentials } from '../src/lib/credentials'
+import { setCredentialTable, getProviderCredentials, setCredentials } from '../src/lib/credentials'
+import { saveCredential } from '../src/lib/ssh-broker'
+import { checkHostKey } from '../src/lib/node-exec'
+import { requestContext } from '../src/lib/auth'
+import { ensureGrafanaAdmin, resetGrafanaAdmin } from '../src/lib/grafana-admin'
 import { setAuditSink } from '../src/lib/audit'
 import { buildSetupChecklistRoutes } from '../src/routes/setup-checklist'
 import { monitoringRoutes } from '../src/routes/monitoring'
@@ -78,7 +82,9 @@ const hwDeps: HardwareDeps = {
     if (cred.password !== NODE_PW) throw new Error('All configured authentication methods failed')
     if (/^pveversion/.test(script)) return { code: 0, output: 'pve-manager/9.1.0/abc (running kernel: 7.0.0-1-pve)\n' }
     if (/^# HyperProx hardware probe/m.test(script)) { const r = fakes[node].run(script); return { code: r.status ?? 1, output: r.stdout } }
-    // A node step: reported, not run (the Docker tests run them for real).
+    // The built-in graphics steps run for real against the fake node's sysroot (udev does not run there).
+    if (/^# (Let containers|Undo "let containers)/m.test(script)) { const r = fakes[node].run(script); return { code: r.status ?? 1, output: r.stdout } }
+    // Any other node step: reported, not run (the Docker tests run them for real).
     return { code: 0, output: `HPX-RESULT\tdone\tset up on ${node}\n` }
   },
   metrics: async (addr, port) => (BY_ADDR[addr] === 'node-a' && port === 9100) ? 'node_exporter_build_info 1\nnode_rapl_package_joules_total 5\n' : null,
@@ -91,10 +97,10 @@ const checklistDeps = (): ChecklistDeps => ({
   ollamaModels: async () => null, pullModel: async () => {},
   pveExporter: async () => ({ configured: false, readOnly: false }), provisionPveExporter: async () => ({}),
   dnsKey: async () => { const c = await getProviderCredentials('dns', 'godaddy').catch(() => ({} as any)); return { key: c.api_key, secret: c.api_secret } },
-  saveDnsKey: async (k, s) => { await (await import('../src/lib/credentials')).setCredentials('dns', 'godaddy', { api_key: k, api_secret: s }) },
+  saveDnsKey: async (k, s) => { await setCredentials('dns', 'godaddy', { api_key: k, api_secret: s }) },
   testDnsKey: async (k, s) => { if (k !== GD_KEY || s !== GD_SECRET) throw Object.assign(new Error('401'), { response: { status: 401 } }); return 3 },
   setOllamaUrl: async () => {}, syncTargets: async () => ({ added: {} }),
-  saveNodeLogin: async (node, cred) => { await (await import('../src/lib/ssh-broker')).saveCredential(`node-${node}`, cred); logins.set(node, cred) },
+  saveNodeLogin: async (node, cred) => { await saveCredential(`node-${node}`, cred); logins.set(node, cred) },
 })
 process.env.HPX_CHECKLIST_SETTLE_MS = '0'
 
@@ -116,6 +122,11 @@ async function signIn(email: string, password: string) {
   const res = await app.inject({ method: 'POST', url: '/api/auth/sign-in', payload: { email, password, code: GOOD_CODE } })
   const raw = res.headers['set-cookie']
   return String(Array.isArray(raw) ? raw[0] : raw).split(';')[0]
+}
+async function ownerCookie() {
+  const cookie = await signIn('owner@example.com', 'owner master password')
+  await app.inject({ method: 'POST', url: '/api/auth/reconfirm', payload: { password: 'owner master password' }, headers: { cookie }, remoteAddress: '127.0.0.1' })
+  return cookie
 }
 const responses: string[] = []
 async function call(method: string, url: string, cookie?: string, payload?: unknown, extra: Record<string, string> = {}) {
@@ -192,14 +203,22 @@ test('hand-over: refused through nginx, from another address, or without the set
   assert.equal((await call('POST', '/api/auth/setup-handoff', undefined, body, { 'x-setup-key': SETUP_KEY, 'x-forwarded-for': '203.0.113.9' })).statusCode, 403)
   assert.equal((await call('POST', '/api/auth/setup-handoff', undefined, body, { 'x-setup-key': SETUP_KEY, 'x-remote': '192.0.2.5' })).statusCode, 403)
   assert.equal((await call('POST', '/api/auth/setup-handoff', undefined, body, { 'x-setup-key': 'wrong' })).statusCode, 401)
+  const owned = await call('POST', '/api/auth/setup-handoff', undefined, body, { 'x-setup-key': SETUP_KEY })
+  assert.equal(owned.statusCode, 409, 'an owner already exists: refused')
+  assert.match(owned.json().error, /owner account already exists/)
   assert.deepEqual(heldSummary(), { nodeLogin: null, godaddy: false })
 })
 
 test('hand-over: held in memory, then stored in the vault at the owner\'s sign-in, then forgotten', async () => {
   clearHeldSecrets()
-  const body = { nodeLogin: { username: 'root', password: NODE_PW, nodes: ['node-a', 'node-b', 'node-c'] }, godaddy: { key: GD_KEY, secret: GD_SECRET }, extra: 'dropped' }
+  broker.bootstrapped = false   // setup finishing: no owner yet
+  const hostKeys = Object.fromEntries(Object.entries(ADDR).map(([n, a], i) => [n, { address: a, fingerprint: 'SHA256:' + 'ABC'[i].repeat(43) }]))
+  const body = { nodeLogin: { username: 'root', password: NODE_PW, nodes: ['node-a', 'node-b', 'node-c'], hostKeys }, godaddy: { key: GD_KEY, secret: GD_SECRET }, extra: 'dropped' }
   const r = await call('POST', '/api/auth/setup-handoff', undefined, body, { 'x-setup-key': SETUP_KEY })
   assert.equal(r.statusCode, 200, r.body)
+  const again = await call('POST', '/api/auth/setup-handoff', undefined, body, { 'x-setup-key': SETUP_KEY })
+  assert.equal(again.statusCode, 409, 'accepted exactly once')
+  broker.bootstrapped = true
   assert.deepEqual(r.json().held, { nodeLogin: { nodes: ['node-a', 'node-b', 'node-c'] }, godaddy: true })
   assert.ok(!r.body.includes(MARK), 'the answer names what is held, never a value')
   assert.ok(![...broker.items.values()].some(i => JSON.stringify(i).includes(MARK)), 'nothing in the vault yet: there is no owner session')
@@ -218,6 +237,25 @@ test('hand-over: held in memory, then stored in the vault at the owner\'s sign-i
   }
   assert.ok(audits.some(a => a.action === 'node_login.save' && a.resource === 'node:node-a'))
   assert.ok(audits.some(a => a.action === 'dns_key.save'))
+  // The host keys the wizard saw are pinned with the login.
+  const pinsItem = broker.items.get('hyperprox:deck/hostkey')!
+  assert.deepEqual(Object.values(pinsItem.fields).sort(), ['SHA256:' + 'A'.repeat(43), 'SHA256:' + 'B'.repeat(43), 'SHA256:' + 'C'.repeat(43)])
+  // An owner exists: setup is done, and the setup key leaves .env.
+  const env = readFileSync(ENV, 'utf8')
+  assert.match(env, /^SETUP_COMPLETE=true$/m)
+  assert.doesNotMatch(env, /^SETUP_SECRET=/m)
+})
+
+test('the node runner pins a host key on first use and refuses a changed one', async () => {
+  const cookie = await ownerCookie(); void cookie
+  const sid = [...broker.sessions.values()].filter(x => x.email === 'owner@example.com').at(-1)!.sid
+  await requestContext.run({ sid, email: 'owner@example.com', role: 'owner' }, async () => {
+    const fp1 = 'SHA256:' + 'D'.repeat(43), fp2 = 'SHA256:' + 'E'.repeat(43)
+    assert.equal(await checkHostKey('10.9.9.9', fp1), true, 'first use: learned')
+    assert.equal(await checkHostKey('10.9.9.9', fp1), true, 'same key again: accepted')
+    assert.equal(await checkHostKey('10.9.9.9', fp2), false, 'a changed key: always refused')
+    assert.equal(await checkHostKey('10.0.0.1', 'SHA256:' + 'Z'.repeat(43)), false, 'the wizard\'s pin holds too')
+  })
 })
 
 // ── The checklist ────────────────────────────────────────────────────────────────────────────────────
@@ -238,8 +276,18 @@ test('the checklist: every question, done or not checked live, per node where it
   assert.match(item('power').what, /any local user on that node can then read energy use/)
 })
 
-test('running one item: one node at a time, only where needed, audited without values, then checked', async () => {
+test('changes on the checklist ask for the master password again', async () => {
   const cookie = await signIn('owner@example.com', 'owner master password')
+  for (const [m, u] of [['POST', '/api/setup-checklist/node-health/run'], ['PUT', '/api/setup-checklist/node-login'], ['POST', '/api/setup-checklist/igpu-access/node-b/apply']]) {
+    const r = await call(m, u, cookie, {})
+    assert.equal(r.statusCode, 403, `${m} ${u}`)
+    assert.equal(r.json().code, 'reconfirm_required')
+  }
+  assert.equal((await call('GET', '/api/setup-checklist', cookie)).statusCode, 200, 'reading does not')
+})
+
+test('running one item: one node at a time, only where needed, audited without values, then checked', async () => {
+  const cookie = await ownerCookie()
   const before = execCalls.length
   const r = await call('POST', '/api/setup-checklist/node-health/run', cookie)
   assert.equal(r.statusCode, 200, r.body)
@@ -252,7 +300,7 @@ test('running one item: one node at a time, only where needed, audited without v
 })
 
 test('a second item while one runs is refused, not queued behind it', async () => {
-  const cookie = await signIn('owner@example.com', 'owner master password')
+  const cookie = await ownerCookie()
   process.env.HPX_CHECKLIST_SETTLE_MS = '300'
   try {
     const a = await call('POST', '/api/setup-checklist/power/run', cookie)
@@ -263,7 +311,7 @@ test('a second item while one runs is refused, not queued behind it', async () =
 })
 
 test('one node login for every node: tested on each, stored only where it worked', async () => {
-  const cookie = await signIn('owner@example.com', 'owner master password')
+  const cookie = await ownerCookie()
   const bad = await call('PUT', '/api/setup-checklist/node-login', cookie, { username: 'root', password: 'wrong' })
   assert.deepEqual(bad.json().data.nodes.map((x: any) => x.ok), [false, false, false])
   assert.match(bad.json().data.nodes[0].reason, /was not accepted/)
@@ -274,7 +322,7 @@ test('one node login for every node: tested on each, stored only where it worked
 })
 
 test('a GoDaddy key is tested first, and a wrong one is an answer, not a stored secret', async () => {
-  const cookie = await signIn('owner@example.com', 'owner master password')
+  const cookie = await ownerCookie()
   const before = JSON.stringify(broker.items.get('hyperprox:dns/godaddy'))
   const bad = await call('POST', '/api/setup-checklist/dns/run', cookie, { key: 'nope', secret: 'nope' })
   assert.equal(bad.statusCode, 400)
@@ -286,7 +334,7 @@ test('a GoDaddy key is tested first, and a wrong one is an answer, not a stored 
 })
 
 test('charts: the compose profile is recorded in .env and the services are started', async () => {
-  const cookie = await signIn('owner@example.com', 'owner master password')
+  const cookie = await ownerCookie()
   profilesStarted = []
   const r = await call('POST', '/api/setup-checklist/charts/run', cookie)
   await waitJob(cookie, r.json().data.id)
@@ -296,16 +344,85 @@ test('charts: the compose profile is recorded in .env and the services are start
 
 test('Grafana admin reset: set in Grafana, kept in the vault, never in the answer or in .env', async () => {
   const cookie = await signIn('owner@example.com', 'owner master password')
-  // Re-confirmation first (the gate asks for it on this route).
+  // Re-confirmation first (the gate asks for it on this route). A fresh sign-in has not re-confirmed.
   assert.equal((await call('POST', '/api/monitoring/grafana-admin/reset', cookie)).statusCode, 403)
   await call('POST', '/api/auth/reconfirm', cookie, { password: 'owner master password' })
   const r = await call('POST', '/api/monitoring/grafana-admin/reset', cookie)
   assert.equal(r.statusCode, 200, r.body)
   const pw = grafanaSet.at(-1)!
+  assert.equal(grafanaSet.length, 1)
   assert.ok(pw.length >= 20)
   assert.equal(broker.items.get('hyperprox:system/grafana')!.fields.admin_password, pw)
   assert.ok(!r.body.includes(pw))
   assert.ok(!readFileSync(ENV, 'utf8').includes(pw))
+})
+
+// ── Built-in graphics for containers ──────────────────────────────────────────────────────────────────
+
+test('igpuAccess: state per node, apply writes the rule, undo removes it; NVIDIA-only is none', async () => {
+  const cookie = await ownerCookie()
+  const st = (n: string) => call('GET', `/api/setup-checklist/igpu-access/${n}`, cookie).then(r => r.json())
+  assert.deepEqual((await st('node-b')).data, { node: 'node-b', state: 'closed', ruleInstalled: false })
+  assert.equal((await st('node-a')).data.state, 'none')
+  const ap = (await call('POST', '/api/setup-checklist/igpu-access/node-b/apply', cookie)).json()
+  assert.equal(ap.data.status, 'done', JSON.stringify(ap))
+  assert.ok(existsSync(join(fakes['node-b'].sys, 'etc/udev/rules.d/99-hyperprox-igpu.rules')))
+  assert.equal((await st('node-b')).data.ruleInstalled, true)
+  const none = (await call('POST', '/api/setup-checklist/igpu-access/node-a/apply', cookie)).json()
+  assert.equal(none.data.status, 'skipped')
+  const un = (await call('POST', '/api/setup-checklist/igpu-access/node-b/undo', cookie)).json()
+  assert.equal(un.data.status, 'done')
+  assert.ok(!existsSync(join(fakes['node-b'].sys, 'etc/udev/rules.d/99-hyperprox-igpu.rules')))
+  assert.ok(audits.some(a => a.action === 'node_login.use' && /built-in graphics/.test(String(a.details?.purpose))))
+  const items = (await call('GET', '/api/setup-checklist', cookie)).json().data.items
+  const ig = items.find((x: any) => x.id === 'igpu-access')
+  assert.match(ig.what, /any container on that node can then use its built-in graphics/)
+  assert.deepEqual(ig.rows.map((r: any) => `${r.node}:${r.state}`), ['node-a:not-applicable', 'node-b:not-done', 'node-c:not-applicable'])
+  const none2 = await call('GET', '/api/setup-checklist/igpu-access/nobody', cookie)
+  assert.equal(none2.statusCode, 409, 'no login saved for that node')
+})
+
+// ── Old plaintext backups ─────────────────────────────────────────────────────────────────────────────
+
+test('leftover .env.pre-vault files are shown and shredded (with the master password)', async () => {
+  writeFileSync(join(dir, '.env.pre-vault'), 'PROXMOX_TOKEN_SECRET=old-plaintext\n')
+  writeFileSync(join(dir, '.env.pre-vault.1700000000000'), 'X=1\n')
+  const cookie = await ownerCookie()
+  const item = (await call('GET', '/api/setup-checklist', cookie)).json().data.items.find((x: any) => x.id === 'old-backups')
+  assert.deepEqual(item.rows.map((r: any) => r.node), ['.env.pre-vault', '.env.pre-vault.1700000000000'])
+  const r = await call('POST', '/api/setup-checklist/old-backups/run', cookie)
+  await waitJob(cookie, r.json().data.id)
+  assert.ok(!existsSync(join(dir, '.env.pre-vault')) && !existsSync(join(dir, '.env.pre-vault.1700000000000')))
+  assert.ok(!(await call('GET', '/api/setup-checklist', cookie)).json().data.items.some((x: any) => x.id === 'old-backups'))
+})
+
+// ── Grafana's admin password ──────────────────────────────────────────────────────────────────────────
+
+test('Grafana: none in the vault is generated, stored, read back and applied; reset is vault first', async () => {
+  let vault: string | null = null
+  const applied: string[] = []
+  let failApply = false, failWrite = false
+  const d = {
+    running: async () => true,
+    apply: async (pw: string) => { if (failApply) throw new Error('grafana refused'); applied.push(pw) },
+    read: async () => vault,
+    write: async (pw: string) => { if (failWrite) throw new Error('vault down'); vault = pw || null },
+    generate: () => `gen-${applied.length}-${Math.random()}`,
+  }
+  assert.equal(await ensureGrafanaAdmin(null), 'off', 'off unless the API turned it on')
+  assert.equal(await ensureGrafanaAdmin(d), 'generated')
+  assert.equal(applied.at(-1), vault, 'what Grafana has is what the vault has')
+  assert.equal(await ensureGrafanaAdmin(d), 'applied', 'a fresh Grafana database gets the vault password again, never admin/admin')
+  const before = vault
+  failWrite = true
+  await assert.rejects(resetGrafanaAdmin(d))
+  assert.equal(vault, before); assert.equal(applied.at(-1), before, 'vault write failed: nothing changed')
+  failWrite = false; failApply = true
+  await assert.rejects(resetGrafanaAdmin(d))
+  assert.equal(vault, before, 'Grafana refused: the vault is put back')
+  failApply = false
+  await resetGrafanaAdmin(d)
+  assert.notEqual(vault, before); assert.equal(applied.at(-1), vault)
 })
 
 // ── The planted-marker proof (runs last) ─────────────────────────────────────────────────────────────

@@ -24,6 +24,7 @@ import { targetsRoutes }         from './routes/targets'
 import { setupChecklistRoutes }  from './routes/setup-checklist'
 import { setAuditSink, prismaAuditSink } from './lib/audit'
 import { watchTargets }          from './lib/targets'
+import { enableGrafanaAdminSync } from './lib/grafana-admin'
 import { authRoutes }             from './routes/auth'
 import { apiTokenRoutes }         from './routes/api-tokens'
 import { secretsRoutes }          from './routes/secrets'
@@ -75,6 +76,8 @@ async function main() {
   setApiTokenStore(new PrismaApiTokenStore(server.prisma))
   // Credential use (node logins, DNS keys) is audited in the same database: names and outcomes, never values.
   setAuditSink(prismaAuditSink(server.prisma))
+  // Grafana's admin password follows the vault (lib/grafana-admin.ts): set on owner/admin sign-in.
+  enableGrafanaAdminSync()
   // Proxy instances (lib/proxy): the registry the Proxy page, the wizard and Certificates read through.
   proxyService(server.prisma)
   await registerGate(server)

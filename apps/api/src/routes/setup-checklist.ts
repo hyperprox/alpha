@@ -5,11 +5,17 @@
 //  PUT  /node-login        one login for every node: tested on each, then kept in the vault per node
 //  POST /:item/run         do it now (one item at a time; node work one node at a time)
 //  GET  /jobs/:id          progress and the checks afterwards
+//  GET  /igpu-access/:node            { node, state: 'open'|'closed'|'none', ruleInstalled }
+//  POST /igpu-access/:node/apply      let containers use the node's built-in graphics → { status, reason, state }
+//  POST /igpu-access/:node/undo       take that back → { status, reason, state }
+//  Every POST and PUT asks for the master password again (lib/roles.ts). The Infrastructure page's
+//  Portable GPU links here; lib/igpu-access.ts is the same thing as a function.
 // =============================================================================
 
 import type { FastifyPluginAsync } from 'fastify'
 import { checklistState, startItem, getJob, activeJob, saveNodeLoginForAll, ChecklistRefusal, productionChecklistDeps, type ChecklistDeps, type ItemId } from '../lib/setup-checklist'
 import { currentContext } from '../lib/auth'
+import { igpuAccess, IgpuRefusal } from '../lib/igpu-access'
 
 export function buildSetupChecklistRoutes(deps?: () => ChecklistDeps): FastifyPluginAsync {
   const d = deps ?? productionChecklistDeps
@@ -37,6 +43,18 @@ export function buildSetupChecklistRoutes(deps?: () => ChecklistDeps): FastifyPl
         return reply.send({ success: true, data: job })
       } catch (e) { return fail(reply, e) }
     })
+
+    const igpu = (reply: any, e: any) => e instanceof IgpuRefusal ? reply.status(e.status).send({ success: false, error: e.message }) : fail(reply, e)
+    fastify.get<{ Params: { node: string } }>('/igpu-access/:node', async (req, reply) => {
+      try { const a = await igpuAccess(req.params.node, d().hardware, who()); return reply.send({ success: true, data: { node: a.node, state: a.state, ruleInstalled: a.ruleInstalled } }) }
+      catch (e) { return igpu(reply, e) }
+    })
+    for (const verb of ['apply', 'undo'] as const) {
+      fastify.post<{ Params: { node: string } }>(`/igpu-access/:node/${verb}`, async (req, reply) => {
+        try { const a = await igpuAccess(req.params.node, d().hardware, who()); return reply.send({ success: true, data: await a[verb]() }) }
+        catch (e) { return igpu(reply, e) }
+      })
+    }
 
     fastify.get<{ Params: { id: string } }>('/jobs/:id', async (req, reply) => {
       const job = getJob(req.params.id)

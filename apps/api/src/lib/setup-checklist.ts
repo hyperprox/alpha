@@ -25,10 +25,11 @@ import { resolvePrometheusUrl } from './service-health'
 import { syncTargets, lastSync } from './targets'
 import { exporterStatus, provisionPveExporter, pveAccessFromEnv } from './pve-exporter'
 import { GoDaddyClient } from './godaddy-client'
+import { ensureGrafanaAdmin } from './grafana-admin'
 
 const run = promisify(execFile)
 
-export type ItemId = 'node-health' | 'power' | 'gpu' | 'charts' | 'proxmox-metrics' | 'dns' | 'ai' | 'targets'
+export type ItemId = 'node-health' | 'power' | 'gpu' | 'igpu-access' | 'charts' | 'proxmox-metrics' | 'dns' | 'ai' | 'targets' | 'old-backups'
 export type ItemState = 'done' | 'partly' | 'not-done' | 'not-applicable'
 
 export interface NodeRow { node: string; state: ItemState; reason: string }
@@ -141,7 +142,7 @@ export async function checklistState(deps: ChecklistDeps = productionChecklistDe
   const q = new Map(hardware.QUESTIONS.map(x => [x.id, x]))
   const notes = new Map(hardware.applicableQuestions(nodes).map(x => [x.id, x.notes ?? []]))
   const items: ChecklistItem[] = []
-  const base = (id: Exclude<ItemId, 'targets'>) => ({ id, ask: q.get(id)!.ask, what: q.get(id)!.what, notes: notes.get(id) ?? [] })
+  const base = (id: Exclude<ItemId, 'targets' | 'old-backups'>) => ({ id, ask: q.get(id)!.ask, what: q.get(id)!.what, notes: notes.get(id) ?? [] })
   const unknown = (n: NodeHardware) => n.source === 'proxmox-api' && !logins[n.node!]
 
   const health: NodeRow[] = nodes.map(n => n.nodeExporter === 'running'
@@ -170,6 +171,15 @@ export async function checklistState(deps: ChecklistDeps = productionChecklistDe
   items.push({ ...base('gpu'), rows: gpu, state: roll(gpu), needsNodeLogin: true,
     action: ['done', 'not-applicable'].includes(roll(gpu)) ? null : 'Add the GPU exporter where it is missing' })
 
+  if (hardware.applicableQuestions(nodes).some(x => x.id === 'igpu-access')) {
+    const ig: NodeRow[] = nodes.map(n => n.igpuAccess === 'none' || (n.igpuAccess === null && !n.gpus.some(g => g.kind === 'integrated' && g.vendor !== 'nvidia'))
+      ? { node: n.node!, state: 'not-applicable', reason: 'no built-in graphics' }
+      : n.igpuAccess === 'open' ? { node: n.node!, state: 'done', reason: 'containers can use the built-in graphics' }
+      : { node: n.node!, state: 'not-done', reason: n.igpuAccess === 'closed' ? 'only the render group can use them' : 'unknown until a node login is saved' })
+    items.push({ ...base('igpu-access'), rows: ig, state: roll(ig), needsNodeLogin: true,
+      action: ['done', 'not-applicable'].includes(roll(ig)) ? null : 'Open the built-in graphics to containers' })
+  }
+
   const charts = composeProfiles(deps.envFile).includes('monitoring')
   items.push({ ...base('charts'), rows: [], state: charts ? 'done' : 'not-done', needsNodeLogin: false,
     action: charts ? null : 'Start Prometheus and Grafana on this machine' })
@@ -189,6 +199,15 @@ export async function checklistState(deps: ChecklistDeps = productionChecklistDe
   items.push({ ...base('ai'), rows: [], state: aiDone ? 'done' : 'not-done', needsNodeLogin: false,
     notes: models && !aiDone ? [`Ollama is running; the model (${hardware.AI_MODEL}) is not there yet. It may still be downloading.`] : [],
     action: aiDone ? null : `Start the bundled Ollama and download ${hardware.AI_MODEL}` })
+
+  // Plaintext copies of .env that an earlier version kept when keys moved into the vault.
+  const old = oldBackups(deps.envFile)
+  if (old.length) {
+    items.push({ id: 'old-backups', ask: 'Old plaintext copies of .env were found. Do you want HyperProx to shred them?', notes: [],
+      what: 'An earlier version kept a copy of .env from before your keys moved into the vault. The vault has every key, so these copies are only a risk.',
+      rows: old.map(f => ({ node: path.basename(f), state: 'not-done' as const, reason: 'plaintext, readable by root' })),
+      state: 'not-done', needsNodeLogin: false, action: 'Shred them' })
+  }
 
   const ls = lastSync()
   items.push({ id: 'targets', ask: 'Metrics list kept up to date', automatic: true, notes: [],
@@ -224,7 +243,7 @@ export class ChecklistRefusal extends Error {
 /** Starts one item. One at a time: node changes never overlap. Returns at once; poll getJob(). */
 export async function startItem(id: ItemId, body: any, by: string, deps: ChecklistDeps = productionChecklistDeps()): Promise<Job> {
   if (active) throw new ChecklistRefusal(`"${active.item}" is still running. Wait for it to finish.`, 409)
-  if (!['node-health', 'power', 'gpu', 'charts', 'proxmox-metrics', 'dns', 'ai', 'targets'].includes(id)) throw new ChecklistRefusal('No such item', 404)
+  if (!['node-health', 'power', 'gpu', 'igpu-access', 'charts', 'proxmox-metrics', 'dns', 'ai', 'targets', 'old-backups'].includes(id)) throw new ChecklistRefusal('No such item', 404)
   // The DNS key is checked before the job exists, so a wrong key is an answer, not a failed job.
   if (id === 'dns') {
     const key = typeof body?.key === 'string' ? body.key.trim() : ''
@@ -252,7 +271,7 @@ export async function startItem(id: ItemId, body: any, by: string, deps: Checkli
 
 async function runItem(job: Job, by: string, deps: ChecklistDeps): Promise<void> {
   const id = job.item
-  if (id === 'node-health' || id === 'power' || id === 'gpu') {
+  if (id === 'node-health' || id === 'power' || id === 'gpu' || id === 'igpu-access') {
     const det = await detectCluster(deps.hardware)
     const plan = hardware.planNodeWork({ [id]: true }, det.nodes)
     if (!plan.length) { job.results.push({ label: id, status: 'already', reason: 'nothing to do on any node' }) }
@@ -272,6 +291,12 @@ async function runItem(job: Job, by: string, deps: ChecklistDeps): Promise<void>
     // Two scrapes, so a power rate exists before it is checked.
     await new Promise(r => setTimeout(r, Number(process.env.HPX_CHECKLIST_SETTLE_MS ?? 35_000)))
     const fresh = await detectCluster(deps.hardware)
+    if (id === 'igpu-access') {
+      for (const n of fresh.nodes.filter(x => plan.some(p => p.node === x.node))) {
+        job.checks.push(n.igpuAccess === 'open' ? { node: n.node!, status: 'ok', reason: 'renderD128 reads 666' } : { node: n.node!, status: 'failed', reason: `still ${n.igpuAccess ?? 'unknown'}` })
+      }
+      return
+    }
     for (const c of await hardware.verifyOutcome({ [id]: true }, fresh.nodes, deps.promQuery)) job.checks.push(c)
     return
   }
@@ -280,6 +305,10 @@ async function runItem(job: Job, by: string, deps: ChecklistDeps): Promise<void>
     await deps.compose(['up', '-d', 'prometheus', 'grafana', 'pve-exporter'])
     await deps.syncTargets().catch(() => undefined)
     job.results.push({ label: 'Charts', status: 'done', reason: 'Prometheus and Grafana started' })
+    // A Grafana that just set up a new database gets the vault's admin password, never admin/admin.
+    const g = await ensureGrafanaAdmin(undefined, by).catch((e: any) => `failed: ${e?.message ?? e}`)
+    if (g === 'applied' || g === 'generated') job.results.push({ label: 'Grafana admin password', status: 'done', reason: 'set from the vault' })
+    else if (typeof g === 'string' && g.startsWith('failed')) job.results.push({ label: 'Grafana admin password', status: 'failed', reason: g })
     return
   }
   if (id === 'proxmox-metrics') {
@@ -297,11 +326,40 @@ async function runItem(job: Job, by: string, deps: ChecklistDeps): Promise<void>
     job.results.push({ label: 'Local AI', status: 'done', reason: `Ollama started; ${hardware.AI_MODEL} is downloading (about 2 GB)` })
     return
   }
+  if (id === 'old-backups') {
+    for (const f of oldBackups(deps.envFile)) {
+      try { shred(f); job.results.push({ label: path.basename(f), status: 'done', reason: 'overwritten and deleted' }) }
+      catch (e: any) { job.results.push({ label: path.basename(f), status: 'failed', reason: e?.message ?? String(e) }) }
+    }
+    await auditCredentialUse('env_backup.shred', 'system:env', { by, files: job.results.map(r => r.label) })
+    return
+  }
   if (id === 'targets') {
     const r: any = await deps.syncTargets()
     const n = Object.values(r?.added ?? {}).reduce((a: number, x: any) => a + x.length, 0)
     job.results.push({ label: 'Metrics list', status: 'done', reason: n ? `${n} target(s) added` : 'already up to date' })
   }
+}
+
+// ── Old plaintext backups ────────────────────────────────────────────────────
+
+export function oldBackups(envFile: string): string[] {
+  const dir = path.dirname(envFile)
+  try {
+    return fs.readdirSync(dir).filter(f => /^\.env\.pre-vault(\.\d+)?$/.test(f)).map(f => path.join(dir, f))
+      .filter(f => fs.statSync(f).isFile()).sort()
+  } catch { return [] }
+}
+
+/** Overwrite with random bytes (twice), flush, then delete. */
+export function shred(file: string): void {
+  const size = fs.statSync(file).size
+  for (let pass = 0; pass < 2; pass++) {
+    const fd = fs.openSync(file, 'r+')
+    try { fs.writeSync(fd, require('crypto').randomBytes(Math.max(size, 1)), 0, Math.max(size, 1), 0); fs.fsyncSync(fd) }
+    finally { fs.closeSync(fd) }
+  }
+  fs.unlinkSync(file)
 }
 
 // ── The node login ───────────────────────────────────────────────────────────

@@ -15,7 +15,10 @@ import {
 import { hasRole } from '../lib/roles'
 import { startMigration, migrationStatus, hydrateEnvFromVault } from '../lib/credentials'
 import { getNotifyService } from '../lib/notify'
-import { holdSetupSecrets, flushHeldSecrets } from '../lib/setup-handoff'
+import { ensureGrafanaAdmin } from '../lib/grafana-admin'
+import { migrationSettled } from '../lib/credentials'
+import { requestContext } from '../lib/auth'
+import { holdSetupSecrets, flushHeldSecrets, acceptHandoff, HandoffRefused, markSetupDone } from '../lib/setup-handoff'
 import { readFileSync } from 'fs'
 import { createHash, timingSafeEqual } from 'crypto'
 
@@ -87,12 +90,23 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       else if (m.started) migration = { ok: true, running: true }
       // The old Updates/Certificates webhooks become notification channels (once), after the migration.
       void getNotifyService()?.seedOnOwnerUnlock()
+      // An owner exists, so setup is done: record it and drop the setup key from .env.
+      try { if (markSetupDone()) req.log.info('[setup] owner exists: setup recorded as done, setup key removed') } catch { /* .env not writable */ }
       // What the setup wizard held in memory for want of a vault (a node login, a DNS key) goes in now.
       void flushHeldSecrets({ sid: vs.sid, email: vs.email, role: vs.role }).then(
         r => { if (r.stored.length || r.failed.length) req.log.info({ stored: r.stored, failed: r.failed }, '[setup] held secrets stored in the vault') },
         e => req.log.error({ err: e?.message }, '[setup] could not store the held secrets'))
     }
     if (wasLocked) hydrateEnvFromVault()
+
+    // Grafana's admin password is the vault's, never a default left by a fresh database. After the
+    // migration, which may be moving the old one out of .env.
+    if (vs.role === 'owner' || vs.role === 'admin') {
+      void requestContext.run({ sid: vs.sid, email: vs.email, role: vs.role }, async () => {
+        await migrationSettled()
+        return ensureGrafanaAdmin(undefined, vs.email)
+      }).catch((e: any) => req.log.warn({ err: e?.message }, '[grafana] could not set the admin password from the vault'))
+    }
 
     const token = await reply.jwtSign(
       { sid: vs.sid, email: vs.email, role: vs.role },
@@ -133,6 +147,8 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.status(403).send({ ok: false, error: 'Only the setup wizard on this machine can hand over secrets' })
     }
     if (!setupKeyMatches(req.headers['x-setup-key'])) return reply.status(401).send({ ok: false, error: 'setup key required' })
+    try { acceptHandoff((await vaultStatus()).bootstrapped) }
+    catch (e) { if (e instanceof HandoffRefused) return reply.status(409).send({ ok: false, error: e.message }); throw e }
     return { ok: true, held: holdSetupSecrets(req.body) }
   })
 
