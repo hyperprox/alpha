@@ -164,7 +164,8 @@ export async function checklistState(deps: ChecklistDeps = productionChecklistDe
     const parts: ItemState[] = []
     if (n.gpus.some(g => g.vendor === 'intel')) parts.push(n.intelExporter === 'running' ? 'done' : 'not-done')
     if (n.gpus.some(g => g.vendor === 'nvidia')) parts.push(n.nvidiaExporter === 'running' ? 'done' : 'not-done')
-    if (!parts.length) { gpu.push({ node: n.node!, state: 'not-applicable', reason: `${words}: AMD GPUs are not covered yet` }); continue }
+    if (n.gpus.some(g => g.vendor === 'amd')) parts.push(n.amdMetrics === 'on' ? 'done' : 'not-done')
+    if (!parts.length) { gpu.push({ node: n.node!, state: 'not-applicable', reason: words }); continue }
     const st: ItemState = parts.every(p => p === 'done') ? 'done' : 'not-done'
     gpu.push({ node: n.node!, state: st, reason: `${words}: ${st === 'done' ? 'monitored' : 'no exporter answering'}` })
   }

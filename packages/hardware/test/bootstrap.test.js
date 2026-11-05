@@ -35,7 +35,7 @@ function cluster(nodes) {
   // serves metrics for any node address on 9100, a rising RAPL counter, and the GPU ports.
   w('curl', `for a in "$@"; do case "$a" in http://*|https://*) u="$a";; esac; done
 case "$u" in
-  *:9100/metrics) echo 'node_exporter_build_info{version="1.9.1"} 1'; echo "node_rapl_package_joules_total{index=\\"0\\"} $(date +%s).5";;
+  *:9100/metrics) echo 'node_exporter_build_info{version="1.9.1"} 1'; echo "node_rapl_package_joules_total{index=\\"0\\"} $(date +%s).5"; echo 'node_drm_gpu_busy_percent{card="card1"} 3';;
   *:8081/metrics) echo 'igpu_power_package 2.1';;
   *:9835/metrics) echo 'nvidia_smi_memory_total_bytes 8.5e9';;
   https://api.godaddy.com/*) h="$(cat)"; echo "$h" > ${root}/godaddy-header; [ "$h" = 'Authorization: sso-key good-key:good-secret' ] || exit 22; exit 0;;
@@ -49,7 +49,7 @@ esac`)
   }
   w('ssh', `node="\${@: -2:1}"; s="$(cat)"
 if grep -q '^# HyperProx hardware probe' <<< "$s"; then ( . ${envs}/$node; printf '%s' "$s" | /bin/bash -s ); exit $?; fi
-step="$(grep -m1 -oE '^# (node_exporter|Power|Intel GPU|NVIDIA GPU|Let containers)' <<< "$s" | cut -c3-)"
+step="$(grep -m1 -oE '^# (node_exporter|Power|Intel GPU|NVIDIA GPU|AMD GPU|Let containers)' <<< "$s" | cut -c3-)"
 echo "$node $step" >> ${root}/steps.log
 printf 'HPX-RESULT\\tdone\\tset up (%s)\\n' "$step"`)
   const run = (args, input, extra = {}) => spawnSync('/bin/bash', [BOOTSTRAP, ...args], {
@@ -117,12 +117,13 @@ test('no GPU and no power counters anywhere: neither question is asked', () => {
   } finally { c.cleanup() }
 })
 
-test('an AMD-only cluster is told plainly that AMD is not covered', () => {
+test('an AMD-only cluster is asked about its GPU, and the plan turns on node_exporter\'s AMD figures', () => {
   const c = cluster({ 'node-a': 'amd-apu' })
   try {
     const out = plain(c.run(['-y', '--dry-run']).stdout)
-    assert.match(out, /AMD GPUs are not covered yet/)
-    assert.ok(!out.includes(hw.QUESTIONS.find(q => q.id === 'gpu').ask))
+    assert.ok(out.includes(hw.QUESTIONS.find(q => q.id === 'gpu').ask))
+    assert.doesNotMatch(out, /not covered/)
+    assert.match(out, /node-a: AMD GPU monitoring/)
   } finally { c.cleanup() }
 })
 

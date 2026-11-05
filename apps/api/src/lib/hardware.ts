@@ -78,6 +78,7 @@ export async function detectNode(node: string, addr: string, deps: HardwareDeps,
     // node_exporter publishes RAPL only when it can read the counters.
     rapl: m9100 && /^node_rapl_package_joules_total/m.test(m9100) ? 'readable' : null,
     intelExporter: m8081 && /^igpu_/m.test(m8081) ? 'running' : 'absent',
+    amdMetrics: m9100 ? (/^node_drm_gpu_busy_percent/m.test(m9100) ? 'on' : 'off') : null,
     nvidiaExporter: m9835 && /^nvidia_smi_memory_total_bytes/m.test(m9835) ? 'running' : 'absent',
     ...(cred ? { error: 'the node login did not work, so only what Proxmox reports is shown' } : {}),
   } as any)

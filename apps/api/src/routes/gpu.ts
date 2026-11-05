@@ -55,10 +55,9 @@ const wrap = async (reply: any, fn: () => Promise<any>) => {
   catch (e: any) { return reply.status(500).send({ success: false, error: e.message }) }
 }
 
-// Where target sync looks for each exporter. AMD has none yet.
-const EXPORTER_PORTS: Record<GPUType, number> = { nvidia: 9835, amd: 0, 'intel-igpu': 8081, 'intel-arc': 8081, unknown: 0 }
+// Where each vendor's figures are served. AMD's come from node_exporter's drm collector, on its own port.
+const EXPORTER_PORTS: Record<GPUType, number> = { nvidia: 9835, amd: 9100, 'intel-igpu': 8081, 'intel-arc': 8081, unknown: 0 }
 const SETUP_HINT = { title: 'Not monitored yet', steps: ['Open Settings → Setup checklist and answer yes to "Do you want HyperProx to monitor your GPUs?". HyperProx installs the exporter for you.'] }
-const AMD_HINT = { title: 'AMD GPUs are not covered yet', steps: ['HyperProx lists this GPU but cannot monitor AMD GPUs yet.'] }
 
 export const gpuRoutes: FastifyPluginAsync = async (fastify) => {
 
@@ -94,7 +93,7 @@ async function statusFor(node: string, client: ProxmoxClient, addrs: Record<stri
   if (!gpus.length) return { node, reachable: false, gpus: [], install: null }
   const gpu = gpus.find(g => EXPORTER_PORTS[g.type]) ?? gpus[0]
   const port = EXPORTER_PORTS[gpu.type]
-  if (!port) return { node, reachable: false, gpus, port: null, install: AMD_HINT }
+  if (!port) return { node, reachable: false, gpus, port: null, install: SETUP_HINT }
   const reachable = await reachableAt(addrs[node] ?? node, port)
   return { node, reachable, gpus, port, install: reachable ? null : SETUP_HINT }
 }

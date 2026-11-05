@@ -12,6 +12,7 @@
 #   rapl none|readable|root-only <domains>                          ceph yes|no        arch <uname -m>
 #   node_exporter running|installed|absent                          intel_gpu_top yes|no
 #   intel_exporter running|absent        nvidia_exporter running|absent                pve <version>
+#   amd_metrics on|off                    node_exporter reports AMD GPU figures (its drm collector)
 #   igpu_access open|closed|none rule|no-rule   can containers use the built-in graphics (render nodes 0666)
 #
 #   probe.sh            probe this machine
@@ -143,6 +144,7 @@ probe() {
   printf 'python3\t%s\n' "$(yn has python3)"
   printf 'intel_gpu_top\t%s\n' "$(yn has intel_gpu_top)"
   printf 'intel_exporter\t%s\n' "$(answers 8081 '^igpu_' && echo running || echo absent)"
+  printf 'amd_metrics\t%s\n' "$(answers 9100 '^node_drm_gpu_busy_percent' && echo on || echo off)"
   printf 'nvidia_exporter\t%s\n' "$(answers 9835 '^nvidia_smi_memory_total_bytes' && echo running || echo absent)"
   printf 'ceph\t%s\n' "$( [ -e "$R/etc/pve/ceph.conf" ] && echo yes || echo no)"
   printf 'arch\t%s\n' "$(uname -m)"

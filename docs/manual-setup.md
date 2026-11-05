@@ -65,7 +65,26 @@ checks it against its published checksum, and runs it as the `hyperprox-nvidia-g
 on port 9835. The unit it writes is in
 [`nvidia-gpu-exporter.sh`](../packages/hardware/node/nvidia-gpu-exporter.sh).
 
-AMD GPUs are listed but not monitored yet.
+</details>
+
+<details>
+<summary>Monitor an AMD GPU (built in or a card)</summary>
+
+node_exporter can read AMD GPUs itself (busy %, VRAM size and use) with its `drm` collector, which is off
+by default. HyperProx turns it on with a systemd drop-in that repeats the unit's own command with
+`--collector.drm` added, so every flag the unit already had is kept. For the distribution's package, as
+`/etc/systemd/system/prometheus-node-exporter.service.d/hyperprox-amd-gpu.conf`:
+
+```
+[Service]
+ExecStart=
+ExecStart=/usr/bin/prometheus-node-exporter $ARGS --collector.drm
+```
+
+Copy your own unit's `ExecStart` (`systemctl cat <unit>`) if it differs. Then
+`systemctl daemon-reload && systemctl restart prometheus-node-exporter`, and check that
+`curl -s localhost:9100/metrics | grep node_drm_gpu_busy_percent` prints a line. To undo it, delete the
+file and run the same two commands.
 </details>
 
 <details>

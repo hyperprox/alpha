@@ -16,7 +16,7 @@ const path = require('path')
 const { execFileSync } = require('child_process')
 
 const NODE_DIR = path.join(__dirname, 'node')
-const STEPS = ['node-exporter', 'rapl', 'intel-gpu-exporter', 'nvidia-gpu-exporter', 'igpu-access', 'igpu-access-undo']
+const STEPS = ['node-exporter', 'rapl', 'intel-gpu-exporter', 'nvidia-gpu-exporter', 'igpu-access', 'igpu-access-undo', 'amd-gpu-metrics', 'amd-gpu-metrics-undo']
 
 function read(name) { return fs.readFileSync(path.join(NODE_DIR, name), 'utf8') }
 
@@ -40,7 +40,7 @@ function parseGpuLine(cols) {
 function parseProbe(text, node) {
   const hw = {
     node: node ?? null, source: 'probe', gpus: [], dri: [], nvidiaSmi: null, rapl: null, raplDomains: [],
-    nodeExporter: null, docker: null, python3: null, intelGpuTop: null, intelExporter: null, nvidiaExporter: null,
+    nodeExporter: null, docker: null, python3: null, intelGpuTop: null, intelExporter: null, nvidiaExporter: null, amdMetrics: null,
     ceph: null, arch: null, pve: null, igpuAccess: null, igpuRule: null,
   }
   const yes = v => v === 'yes'
@@ -57,6 +57,7 @@ function parseProbe(text, node) {
       case 'python3': hw.python3 = yes(v); break
       case 'intel_gpu_top': hw.intelGpuTop = yes(v); break
       case 'intel_exporter': hw.intelExporter = v === 'running' ? 'running' : 'absent'; break
+      case 'amd_metrics': hw.amdMetrics = v === 'on' ? 'on' : 'off'; break
       case 'nvidia_exporter': hw.nvidiaExporter = v === 'running' ? 'running' : 'absent'; break
       case 'ceph': hw.ceph = yes(v); break
       case 'arch': hw.arch = v || null; break
@@ -125,7 +126,7 @@ const QUESTIONS = [
     what: 'Lets HyperProx read the CPU energy counters. The trade-off: any local user on that node can then read energy use.' },
   { id: 'gpu', nodeWork: true, default: true,
     ask: 'Do you want HyperProx to monitor your GPUs?',
-    what: 'Adds a small exporter for each GPU: Intel on port 8081, NVIDIA on port 9835. It only reads the GPU; drivers are never touched.' },
+    what: 'Intel and NVIDIA GPUs get a small exporter (ports 8081, 9835); AMD GPUs are read by node_exporter. Drivers are never touched.' },
   { id: 'igpu-access', nodeWork: true, default: false,
     ask: 'Do you want containers on these nodes to be able to use their built-in graphics (for video transcoding)?',
     what: 'Opens the built-in Intel or AMD graphics to containers. The trade-off: any container on that node can then use its built-in graphics.' },
@@ -145,11 +146,8 @@ const QUESTIONS = [
 
 const AI_MODEL = 'llama3.2:3b'
 
-/** Why a GPU on this node gets no exporter, or null when it can have one. */
-function gpuGap(n) {
-  if (n.gpus.some(g => g.vendor === 'amd') && !n.gpus.some(g => g.vendor === 'intel' || g.vendor === 'nvidia')) return 'AMD GPUs are not covered yet'
-  return null
-}
+/** Why a GPU on this node cannot be monitored, or null when it can. Every vendor HyperProx finds is covered. */
+function gpuGap(_n) { return null }
 
 /**
  * The questions that apply to these nodes, in order, each with its default and a note on what it will
@@ -169,8 +167,7 @@ function applicableQuestions(nodes, opts = {}) {
     }
     if (q.id === 'gpu') {
       if (!gpus.length) continue
-      if (gpus.some(g => g.vendor === 'amd')) item.notes.push('AMD GPUs are not covered yet, so they will be listed but not monitored.')
-      if (!gpus.some(g => g.vendor === 'intel' || g.vendor === 'nvidia')) continue
+      if (gpus.some(g => g.vendor === 'amd')) item.notes.push("AMD GPUs are read by node_exporter, so on those nodes this also needs node health monitoring.")
     }
     if (q.id === 'igpu-access') {
       // Only nodes with built-in Intel or AMD graphics and a render node; an NVIDIA-only node has none.
@@ -205,6 +202,7 @@ function planNodeWork(answers, nodes) {
     if (a.gpu) {
       if (n.gpus.some(g => g.vendor === 'intel') && n.intelExporter !== 'running') plan.push({ node: n.node, step: 'intel-gpu-exporter' })
       if (n.gpus.some(g => g.vendor === 'nvidia') && n.nvidiaExporter !== 'running') plan.push({ node: n.node, step: 'nvidia-gpu-exporter' })
+      if (n.gpus.some(g => g.vendor === 'amd') && n.amdMetrics !== 'on') plan.push({ node: n.node, step: 'amd-gpu-metrics' })
     }
     if (a['igpu-access'] && n.igpuAccess === 'closed') plan.push({ node: n.node, step: 'igpu-access' })
   }
@@ -216,6 +214,8 @@ const STEP_LABEL = {
   'rapl': 'Power monitoring',
   'intel-gpu-exporter': 'Intel GPU monitoring',
   'nvidia-gpu-exporter': 'NVIDIA GPU monitoring',
+  'amd-gpu-metrics': 'AMD GPU monitoring',
+  'amd-gpu-metrics-undo': 'AMD GPU monitoring off',
   'igpu-access': 'Built-in graphics for containers',
   'igpu-access-undo': 'Built-in graphics closed to containers',
 }
@@ -306,6 +306,16 @@ async function verifyOutcome(answers, nodes, query) {
     }
   }
   if (answers.gpu) {
+    // AMD figures come from node_exporter (job "node"): a node counts once it reports a busy percentage.
+    const amd = nodes.filter(n => n.gpus.some(g => g.vendor === 'amd'))
+    if (amd.length) {
+      const busy = await ask('node_drm_gpu_busy_percent')
+      for (const n of amd) {
+        if (busy.error) { rows.push({ id: 'gpu', node: n.node, status: 'waiting', reason: 'Prometheus could not be asked yet' }); continue }
+        rows.push(busy.rows.some(x => x.node === n.node) ? { id: 'gpu', node: n.node, status: 'ok', reason: 'AMD GPU answering' }
+          : { id: 'gpu', node: n.node, status: 'failed', reason: 'no AMD GPU figures in Prometheus' })
+      }
+    }
     for (const [vendor, job] of [['intel', 'intel-gpu'], ['nvidia', 'nvidia']]) {
       const want = nodes.filter(n => n.gpus.some(g => g.vendor === vendor))
       if (!want.length) continue
