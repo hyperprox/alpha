@@ -81,3 +81,15 @@ test('an admin\'s page load probes once while stale; Refresh probes again and an
   assert.equal(o.json().machines[0].cells.tailscale.state, 'connected')
   assert.equal(probes.length, 2)
 })
+
+test('the /v1 API other pages use says what was found, in words, and the card line instead of "not set up"', async () => {
+  const { cookie } = await signIn(app, 'viewer@example.com', 'viewer master password')
+  const s = await app.inject({ method: 'GET', url: '/api/remote/v1/status/node-pve-a', headers: { cookie } })
+  assert.equal(s.statusCode, 200, s.body)
+  const ts = s.json().providers.tailscale
+  assert.equal(ts.found, true); assert.equal(ts.installed, false)
+  assert.equal(ts.text, 'Tailscale installed, connected as pve-a.tail0000.ts.net (100.64.0.11)')
+  const all = await app.inject({ method: 'GET', url: '/api/remote/v1/status', headers: { cookie } })
+  assert.equal(all.json().providers[0].summary, '1 machine already on a tailnet — add an API key to manage installs and approvals')
+  assert.doesNotMatch(all.body, /not set up/i)
+})

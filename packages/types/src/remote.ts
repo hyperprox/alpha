@@ -3,7 +3,7 @@
 
 export type RemoteProviderId = 'tailscale' | 'netbird'
 export type RemoteMachineKind = 'node' | 'lxc' | 'qemu' | 'host'
-export type RemoteCellState = 'connected' | 'offline' | 'missing' | 'not-installed' | 'manual' | 'unconfigured' | 'unknown'
+export type RemoteCellState = 'connected' | 'offline' | 'missing' | 'not-installed' | 'manual' | 'unconfigured' | 'unknown' | 'signed-out' | 'unchecked'
 
 export interface RemoteCell {
   state: RemoteCellState
@@ -26,6 +26,18 @@ export interface RemoteCell {
   tags: string[]
   prefs: VpnClientPrefs | null
   loginPending: boolean
+  /** What the read-only probe found on the machine (admins), in words (everyone), and when. */
+  detected?: VpnDetectedClient | null
+  detectedText: string | null
+  checkedAt: string | null
+}
+
+/** A client found on a machine by the read-only probe, with no provider key. */
+export interface VpnDetectedClient {
+  installed: boolean; running: boolean; loggedIn: boolean; connected: boolean
+  tailnet: string | null; ip: string | null; dnsName: string | null; version: string | null; keyExpiry: string | null
+  acceptDns: boolean | null; acceptRoutes: boolean | null; ssh: boolean | null; exitNode: string | null
+  advertiseExitNode: boolean; advertisedRoutes: string[]
 }
 
 /** A client's own settings, as read back from it. */
@@ -46,10 +58,20 @@ export interface RemoteMachineRow {
   ostype?: string
   address?: string
   cells: Record<RemoteProviderId, RemoteCell>
+  /** HyperProx's own container: shown read-only. */
+  self?: boolean
 }
 
 export interface RemoteOverview {
-  providers: Array<{ id: RemoteProviderId; label: string; configured: boolean; error: string | null; devices: number }>
+  providers: Array<{
+    id: RemoteProviderId; label: string; configured: boolean; error: string | null; devices: number
+    /** Machines already signed in (from the probe, no key needed). */
+    onTailnet: number
+    /** The card's line when there is no API key; null when the provider is set up. */
+    summary: string | null
+  }>
+  /** The read-only probe: when it last finished, and whether one is running. */
+  detection: { checkedAt: string | null; running: boolean }
   machines: RemoteMachineRow[]
   activeJobId: string | null
   /** Node changes not yet through their guard. `interrupted`: cut off by a restart, waiting to be re-checked. */
@@ -103,6 +125,11 @@ export interface VpnProviderStatus {
   expiryWarning: boolean
   /** The VPN page's panel for this machine and provider. */
   panel: string
+  /** The probe found this client on the machine (installed or adopted by HyperProx or not). */
+  found?: boolean
+  /** What the probe found, in words: "Tailscale installed, connected as …", "installed, signed out", "not installed". */
+  text?: string | null
+  checkedAt?: string | null
   loginPending?: boolean
   pending?: boolean
   tags?: string[]
@@ -119,6 +146,8 @@ export interface VpnMachineStatus {
   node: string | null
   vmid: number | null
   running: boolean
+  /** HyperProx's own container: shown read-only. */
+  self?: boolean
   providers: Record<RemoteProviderId, VpnProviderStatus>
 }
 

@@ -77,13 +77,22 @@ export function GuestVpnPanel({ type, vmid, name, admin, source = vpnStatusSourc
           <div key={p} className="rounded-md border p-3" style={{ borderColor: 'var(--border)' }}>
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-semibold" style={{ color: 'var(--text-bright)' }}>{LABEL[p]}</span>
-              <Badge tone={c.state === 'connected' ? 'good' : c.state === 'not-installed' || c.state === 'unconfigured' ? 'muted' : 'warn'}>{c.state}</Badge>
+              <Badge tone={c.state === 'connected' ? 'good' : c.state === 'not-installed' || c.state === 'unconfigured' || c.state === 'unchecked' ? 'muted' : 'warn'}>{c.state}</Badge>
               {c.expiryWarning && <Badge tone="warn">key expires soon</Badge>}
+              {c.found && !c.installed && <Badge tone="accent" title="On this machine, but not installed by HyperProx">found, not managed by HyperProx</Badge>}
+              {st.self && <Badge tone="accent" title="HyperProx runs here; shown read-only">this HyperProx</Badge>}
             </div>
+            {c.text && c.text !== 'not installed' && <div className="mt-1 text-xs" style={{ color: 'var(--text-soft)' }}>{c.text}</div>}
             <div className="mt-1 text-xs" style={{ color: 'var(--text-soft)' }}>
               {[c.ip, c.dnsName, c.version && `v${c.version}`, c.lastSeen && `last seen ${fmtTime(c.lastSeen)}`, c.expiresAt && `key expires ${fmtTime(c.expiresAt)}`].filter(Boolean).join(' · ') || '—'}
             </div>
-            {isAdmin && c.state !== 'unconfigured' && (
+            {isAdmin && st.self && <p className="mt-2 text-xs" style={{ color: 'var(--text-dim)' }}>HyperProx runs in this container, so its VPN client is never changed from here.</p>}
+            {isAdmin && !st.self && c.found && !c.installed && (
+              <div className="mt-2 flex flex-wrap gap-2">
+                <a href={source.panelUrl(id, p)} className="text-xs underline self-center" style={{ color: 'var(--accent)' }}>Manage it here (on the VPN page)</a>
+              </div>
+            )}
+            {isAdmin && !st.self && !(c.found && !c.installed) && c.state !== 'unconfigured' && (
               <div className="mt-2 flex flex-wrap gap-2">
                 {!c.installed && c.state === 'not-installed' && (
                   <Btn small kind="primary" onClick={() => act(async () => setPreview({ p, pv: await source.installPreview(id, p) }))}>Install</Btn>

@@ -17,13 +17,15 @@ const ROUTING_WARNING =
 const KIND_LABEL: Record<RemoteMachineRow['kind'], string> = { node: 'node', lxc: 'container', qemu: 'VM', host: 'host' }
 
 const STATE: Record<RemoteCell['state'], { tone: 'good' | 'warn' | 'crit' | 'muted' | 'accent'; label: string; hint: string }> = {
-  'connected':     { tone: 'good',   label: 'Connected',       hint: 'The provider reports this device online.' },
+  'connected':     { tone: 'good',   label: 'Connected',       hint: 'Online: reported by the provider, or by the client on the machine.' },
   'offline':       { tone: 'warn',   label: 'Offline',         hint: 'Known to the provider but not connected right now.' },
   'missing':       { tone: 'crit',   label: 'Missing',         hint: 'HyperProx installed it, but the provider no longer lists the device (deleted in its console?).' },
   'not-installed': { tone: 'muted',  label: 'Not installed',   hint: 'Not on this machine.' },
   'manual':        { tone: 'accent', label: 'Manual install',  hint: 'Windows or macOS: install the app yourself with a one-time key.' },
   'unconfigured':  { tone: 'muted',  label: '—',               hint: 'Set the provider up under Settings → Credentials → Remote access.' },
   'unknown':       { tone: 'muted',  label: 'Unknown',         hint: 'The provider could not be asked.' },
+  'signed-out':    { tone: 'warn',   label: 'Signed out',      hint: 'The client is installed and running, but not signed in.' },
+  'unchecked':     { tone: 'muted',  label: 'Not checked',     hint: 'Not looked at yet. An admin can press Refresh to check every machine.' },
 }
 
 export function StateBadge({ cell }: { cell: RemoteCell }) {
@@ -31,13 +33,19 @@ export function StateBadge({ cell }: { cell: RemoteCell }) {
   return <Badge tone={s.tone} title={s.hint}>{s.label}</Badge>
 }
 
-export type CellAction = 'install' | 'one-click' | 'panel' | 'check' | 'update' | 'routing' | 'uninstall' | 'manual-key' | 'tun' | 'firewall'
+export type CellAction = 'install' | 'one-click' | 'panel' | 'check' | 'update' | 'routing' | 'uninstall' | 'manual-key' | 'tun' | 'firewall' | 'adopt' | 'adopt-lock'
 
-function Cell({ row, provider, cell, admin, busy, onAction }: {
-  row: RemoteMachineRow; provider: RemoteProviderId; cell: RemoteCell; admin: boolean; busy: boolean
+/** The probe found this client on the machine, and HyperProx did not install or adopt it. */
+export function foundUnmanaged(cell: RemoteCell): boolean {
+  return !cell.managed && !!cell.detectedText && cell.detectedText !== 'not installed'
+}
+
+function Cell({ row, provider, cell, admin, busy, configured, onAction }: {
+  row: RemoteMachineRow; provider: RemoteProviderId; cell: RemoteCell; admin: boolean; busy: boolean; configured: boolean
   onAction: (a: CellAction, row: RemoteMachineRow, p: RemoteProviderId) => void
 }) {
   const installed = cell.managed && cell.state !== 'not-installed'
+  const found = foundUnmanaged(cell)
   const act = (a: CellAction) => () => onAction(a, row, provider)
   return (
     <div className="space-y-1">
@@ -51,10 +59,16 @@ function Cell({ row, provider, cell, admin, busy, onAction }: {
         {(cell.routes.length > 0 || cell.exitNode) && (
           <Badge tone="warn" title={[...cell.routes, ...(cell.exitNode ? ['exit node'] : [])].join(', ')}>routing</Badge>
         )}
-        {!cell.managed && cell.state !== 'not-installed' && cell.state !== 'unconfigured' && cell.state !== 'manual' && (
+        {found ? (
+          <Badge tone="accent" title="The client is on this machine, but HyperProx did not install it. Manage it here to adopt it.">found, not managed by HyperProx</Badge>
+        ) : !cell.managed && cell.state !== 'not-installed' && cell.state !== 'unconfigured' && cell.state !== 'manual' && cell.state !== 'unchecked' && (
           <Badge tone="muted" title="Found at the provider by name; not installed by HyperProx">not managed</Badge>
         )}
       </div>
+      {cell.detectedText && cell.detectedText !== 'not installed' && (
+        <div className="text-xs" style={{ color: 'var(--text-soft)' }} title={cell.checkedAt ? `Checked on the machine ${fmtTime(cell.checkedAt)}` : ''}>{cell.detectedText}</div>
+      )}
+      {cell.state === 'unchecked' && cell.lastError && <div className="text-xs" style={{ color: 'var(--text-dim)' }} title={cell.lastError}>could not check: {cell.lastError.slice(0, 80)}</div>}
       {(cell.ip || cell.version) && (
         <div className="font-mono text-xs" style={{ color: 'var(--text-soft)' }}>
           {cell.ip ?? ''}{cell.ip && cell.version ? ' · ' : ''}{cell.version ? `v${cell.version}` : ''}
@@ -63,9 +77,15 @@ function Cell({ row, provider, cell, admin, busy, onAction }: {
       {cell.dnsName && <div className="truncate font-mono text-xs" style={{ color: 'var(--text-dim)' }} title={cell.dnsName}>{cell.dnsName}</div>}
       {cell.lastSeen && cell.state !== 'connected' && <div className="text-xs" style={{ color: 'var(--text-dim)' }}>last seen {fmtTime(cell.lastSeen)}</div>}
       {cell.expiresAt && !cell.keyExpiryDisabled && <div className="text-xs" style={{ color: cell.expiryWarning ? 'var(--warn)' : 'var(--text-dim)' }}>key expires {fmtTime(cell.expiresAt)}</div>}
-      {admin && cell.state !== 'unconfigured' && (
+      {admin && !row.self && cell.state !== 'unconfigured' && (
         <div className="flex flex-wrap gap-1 pt-0.5">
-          {installed ? (
+          {found ? (
+            <>
+              <Btn small kind="primary" disabled={busy} onClick={act('adopt')}
+                   title={row.kind === 'node' ? 'Adopt it: recorded as it is, only if it already meets the node locks' : 'Adopt it: recorded as it is, nothing on the machine changes'}>Manage it here</Btn>
+              {row.kind === 'node' && <Btn small disabled={busy} onClick={act('adopt-lock')} title="Adopt it and switch off overlay DNS, accepted routes, overlay SSH and client firewall rules, as a guarded change">Manage + apply node locks</Btn>}
+            </>
+          ) : installed ? (
             <>
               <Btn small disabled={busy} onClick={act('panel')}>Settings…</Btn>
               <Btn small disabled={busy} onClick={act('check')}>Check</Btn>
@@ -78,8 +98,9 @@ function Cell({ row, provider, cell, admin, busy, onAction }: {
             <Btn small disabled={busy} onClick={act('manual-key')}>One-time key…</Btn>
           ) : cell.state === 'not-installed' ? (
             <>
-              <Btn small kind="primary" disabled={busy || !row.running} onClick={act('one-click')} title={row.running ? 'Install with the defaults from VPN settings' : 'Not running'}>Install</Btn>
-              <Btn small disabled={busy || !row.running} onClick={act('install')}>Advanced…</Btn>
+              <Btn small kind="primary" disabled={busy || !row.running || !configured} onClick={act('one-click')}
+                   title={!configured ? 'Installing needs an API key (for the one-time install key): add it under Settings → Credentials → Remote access' : row.running ? 'Install with the defaults from VPN settings' : 'Not running'}>Install</Btn>
+              <Btn small disabled={busy || !row.running || !configured} onClick={act('install')}>Advanced…</Btn>
               {(row.kind === 'host' || row.kind === 'qemu') && <Btn small disabled={busy} onClick={act('manual-key')}>One-time key…</Btn>}
             </>
           ) : null}
@@ -89,8 +110,8 @@ function Cell({ row, provider, cell, admin, busy, onAction }: {
   )
 }
 
-export function MachinesTable({ rows, admin, busy, selected, onSelect, onAction }: {
-  rows: RemoteMachineRow[]; admin: boolean; busy: boolean
+export function MachinesTable({ rows, admin, busy, selected, onSelect, onAction, configured = {} }: {
+  rows: RemoteMachineRow[]; admin: boolean; busy: boolean; configured?: Partial<Record<RemoteProviderId, boolean>>
   selected: Set<string>; onSelect: (ids: string[], on: boolean) => void
   onAction: (a: CellAction, row: RemoteMachineRow, p: RemoteProviderId) => void
 }) {
@@ -114,7 +135,7 @@ export function MachinesTable({ rows, admin, busy, selected, onSelect, onAction 
             <tr key={r.id} style={{ borderBottom: '1px solid var(--border-dim)', verticalAlign: 'top' }}>
               {admin && (
                 <td className="px-4 py-2.5">
-                  <input type="checkbox" aria-label={`Select ${r.name}`} checked={selected.has(r.id)} onChange={e => onSelect([r.id], e.target.checked)} />
+                  <input type="checkbox" aria-label={`Select ${r.name}`} disabled={!!r.self} checked={selected.has(r.id)} onChange={e => onSelect([r.id], e.target.checked)} />
                 </td>
               )}
               <td className="px-4 py-2.5">
@@ -122,12 +143,13 @@ export function MachinesTable({ rows, admin, busy, selected, onSelect, onAction 
                   <span className="font-semibold" style={{ color: 'var(--text-bright)' }}>{r.name}</span>
                   <Badge tone={r.kind === 'node' ? 'violet' : 'muted'}>{KIND_LABEL[r.kind]}{r.vmid ? ` ${r.vmid}` : ''}</Badge>
                   {!r.running && <Badge tone="muted">stopped</Badge>}
+                  {r.self && <Badge tone="accent" title="HyperProx runs here. Its VPN client is shown read-only and never changed from this page.">this HyperProx</Badge>}
                 </div>
                 {r.node && r.kind !== 'node' && <div className="text-xs" style={{ color: 'var(--text-dim)' }}>on {r.node}</div>}
               </td>
               {PROVIDERS.map(p => (
                 <td key={p} className="px-4 py-2.5">
-                  <Cell row={r} provider={p} cell={r.cells[p]} admin={admin} busy={busy} onAction={onAction} />
+                  <Cell row={r} provider={p} cell={r.cells[p]} admin={admin} busy={busy} configured={!!configured[p]} onAction={onAction} />
                 </td>
               ))}
             </tr>

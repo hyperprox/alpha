@@ -8,7 +8,7 @@ import { useSession } from '@/lib/session'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { MachinePanel, OneClickDialog, PendingDevices } from '@/components/remote-access/vpn-panel'
 import { WireguardSection } from '@/components/remote-access/WireguardSection'
-import { Badge, Btn, Empty, Notice, Panel } from '@/components/updates/ui'
+import { Badge, Btn, Empty, Notice, Panel, fmtTime } from '@/components/updates/ui'
 import {
   FirewallDialog, HostKeyDialog, InstallDialog, JobPanel, MachinesTable, ManualKeyDialog, PROVIDERS, PROVIDER_LABEL, RoutingDialog, UninstallDialog, type CellAction,
 } from '@/components/remote-access/parts'
@@ -104,6 +104,11 @@ export default function VpnPage() {
       setDialog(d => (d?.kind === 'firewall' ? { ...d, preview: r.ok ? r.body : null, error: r.ok ? null : r.error ?? 'Could not read the firewall' } : d))
       return
     }
+    if (a === 'adopt' || a === 'adopt-lock') {
+      // Manage it here: the adopt flow, with the node-lock rules; it works without an API key.
+      started(await send<{ job: RemoteJob }>('/api/remote/jobs', 'POST', { provider: p, machineIds: [row.id], existing: a }))
+      return
+    }
     if (a === 'check' || a === 'update') started(await send<{ job: RemoteJob }>(`/api/remote/machines/${enc(row.id)}/${p}/${a}`, 'POST'))
   }
 
@@ -118,6 +123,21 @@ export default function VpnPage() {
     const r = await apiJson<RemoteHostKey>(`/api/remote/machines/${enc(row.id)}/host-key`)
     setDialog(d => (d?.kind === 'host-key' ? { ...d, info: r.ok ? r.body : null, error: r.ok ? null : r.error ?? 'Could not read the key' } : d))
   }
+
+  const [refreshing, setRefreshing] = useState(false)
+  const refresh = async () => {
+    setRefreshing(true)
+    const r = await apiJson<RemoteOverview>('/api/remote/detect/refresh', 'POST')
+    setRefreshing(false)
+    if (r.ok && r.body) setOv(r.body); else setNotice({ tone: 'crit', text: r.error ?? 'Could not check the machines' })
+  }
+
+  // While the machines are being checked (an admin's page load started it), reload until it is done.
+  useEffect(() => {
+    if (!ov?.detection.running) return
+    const t = setTimeout(() => { load() }, 3000)
+    return () => clearTimeout(t)
+  }, [ov, load])
 
   const busy = job?.status === 'running'
   const rows = ov?.machines ?? []
@@ -153,11 +173,16 @@ export default function VpnPage() {
               <span className="font-semibold" style={{ color: 'var(--text-bright)' }}>{p.label}</span>
               {p.configured
                 ? (p.error ? <Badge tone="crit" title={p.error}>error</Badge> : <Badge tone="good">{p.devices} device{p.devices === 1 ? '' : 's'}</Badge>)
-                : <Badge tone="muted">not set up</Badge>}
-              {admin && <Link href="/settings?tab=remote" className="text-xs underline" style={{ color: 'var(--accent)' }}>{p.configured ? 'Settings' : 'Set up'}</Link>}
+                : <span className="text-xs" style={{ color: 'var(--text-soft)' }}>{p.summary}</span>}
+              {admin && <Link href="/settings?tab=remote" className="text-xs underline" style={{ color: 'var(--accent)' }}>{p.configured ? 'Settings' : 'Add an API key'}</Link>}
               {p.error && <span className="text-xs" style={{ color: 'var(--crit-soft)' }}>{p.error}</span>}
             </div>
           ))}
+          <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-dim)' }}>
+            {ov.detection.running ? 'Checking every machine…'
+              : ov.detection.checkedAt ? `Checked on the machines ${fmtTime(ov.detection.checkedAt)}` : 'Machines not checked yet'}
+            {admin && <Btn small disabled={refreshing || ov.detection.running} onClick={refresh} title="Look at every running node and guest now (read-only)">Refresh</Btn>}
+          </div>
         </div>
       )}
 
@@ -208,6 +233,7 @@ export default function VpnPage() {
       }>
         {!ov ? <Empty>Loading…</Empty> : rows.length === 0 ? <Empty>No nodes or guests found.</Empty> : (
           <MachinesTable rows={rows} admin={admin} busy={!!busy} selected={selected} onAction={onAction}
+                         configured={Object.fromEntries((ov?.providers ?? []).map(p => [p.id, p.configured]))}
                          onSelect={(ids, on) => setSelected(s => { const n = new Set(s); ids.forEach(i => (on ? n.add(i) : n.delete(i))); return n })} />
         )}
         {!admin && ov && <p className="px-5 pb-4 text-xs" style={{ color: 'var(--text-dim)' }}>Installing and changing remote access is for admins. You can see status.</p>}

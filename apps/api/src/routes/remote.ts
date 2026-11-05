@@ -254,10 +254,12 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
 
     const isAdmin = (req: FastifyRequest) => !!req.session && hasRole(req.session.role, 'admin')
     const statusOf = (m: RemoteMachineRow, admin: boolean) => ({
-      machineId: m.id, kind: m.kind, name: m.name, node: m.node ?? null, vmid: m.vmid ?? null, running: m.running,
+      machineId: m.id, kind: m.kind, name: m.name, node: m.node ?? null, vmid: m.vmid ?? null, running: m.running, self: !!m.self,
       providers: Object.fromEntries(Object.entries(m.cells).map(([p, c]) => [p, {
         state: c.state, installed: c.managed, ip: c.ip, dnsName: c.dnsName, version: c.version, lastSeen: c.lastSeen,
         expiresAt: c.expiresAt, expiryWarning: c.expiryWarning,
+        // Found on the machine by the read-only probe, in words, and whether HyperProx manages it.
+        found: !!c.detected?.installed || (!!c.detectedText && c.detectedText !== 'not installed'), text: c.detectedText, checkedAt: c.checkedAt,
         ...(admin ? { loginPending: c.loginPending, pending: c.pending, tags: c.tags, routes: c.routes, exitNode: c.exitNode, prefs: c.prefs } : {}),
         panel: `/vpn?machine=${encodeURIComponent(m.id)}&provider=${p}`,
       }])),
@@ -265,7 +267,7 @@ export function buildRemoteRoutes(deps: RemoteRouteDeps = {}): FastifyPluginAsyn
     const overview = async (req: FastifyRequest): Promise<RemoteOverview> => overviewForRole(await service.overview(), isAdmin(req))
 
     fastify.get('/v1/status', async (req, reply) => {
-      try { const ov = await overview(req); return { providers: ov.providers.map(p => ({ id: p.id, label: p.label, configured: p.configured })), machines: ov.machines.map(m => statusOf(m, isAdmin(req))) } }
+      try { const ov = await overview(req); return { providers: ov.providers.map(p => ({ id: p.id, label: p.label, configured: p.configured, summary: p.summary })), machines: ov.machines.map(m => statusOf(m, isAdmin(req))) } }
       catch (e) { return sendError(reply, e) }
     })
     fastify.get<{ Params: { id: string } }>('/v1/status/:id', async (req, reply) => {
