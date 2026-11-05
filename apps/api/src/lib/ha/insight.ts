@@ -10,6 +10,7 @@
 import { hardwareWords, tiedToNode } from './parse'
 import { allowedBy, homeOf, homeWords, list, ruleWords, validateRules, type HomeView } from './rules'
 import { placement, predictFailover, type Prediction } from './predict'
+import { gpuPortability } from './gpu'
 import type { HaGuest, HaResource, HaRule, HaSnapshot, NodeAffinityRule, ResourceAffinityRule, RuleProblem, Sid } from './types'
 
 export const labelOf = (snap: HaSnapshot) => (sid: Sid) => {
@@ -84,13 +85,19 @@ export function hardwareNote(snap: HaSnapshot, sid: Sid): string | null {
   const p = predictFailover(snap, sid)
   if (!p.to || p.to === g.node) return null
   const hw = g.hardware!
-  const parts: string[] = []
-  const gpu = hw.devices.filter(d => /GPU/.test(d.what))
-  if (gpu.length) parts.push('its GPU (GPU work such as transcoding falls back to the CPU)')
-  for (const d of hw.devices.filter(d => !/GPU/.test(d.what))) parts.push(d.what)
-  for (const b of hw.bindMounts) parts.push(`its local bind mount (${b.path}), so it may not start there`)
-  for (const l of hw.localVolumes) parts.push(`its disk on node-local storage "${l.storage}", so it may not start there`)
-  return `If ${g.node} fails this will run on ${p.to} without ${list(parts)}.`
+  const gpu = hw.devices.some(d => /GPU/.test(d.what))
+  const without: string[] = []
+  for (const d of hw.devices.filter(d => !/GPU/.test(d.what))) without.push(d.what)
+  for (const b of hw.bindMounts) without.push(`its local bind mount (${b.path}), so it may not start there`)
+  for (const l of hw.localVolumes) without.push(`its disk on node-local storage "${l.storage}", so it may not start there`)
+  const gp = gpu ? gpuPortability(g) : { portable: false as const }
+  if (gpu && gp.portable) {
+    const there = gp.perNode[p.to] ?? null
+    const head = there ? `If ${g.node} fails this runs on ${p.to} using its ${there}` : `If ${g.node} fails this runs on ${p.to} without a GPU`
+    return `${head}${without.length ? `, and without ${list(without)}` : ''}.`
+  }
+  const parts = [...(gpu ? ['its GPU (GPU work such as transcoding falls back to the CPU)'] : []), ...without]
+  return `If ${g.node} fails this will run on ${p.to} without ${list(parts)}.${gpu ? ` Turn on Portable GPU to use ${p.to}'s GPU there.` : ''}`
 }
 
 export function guestView(snap: HaSnapshot, sid: Sid): GuestHa | null {

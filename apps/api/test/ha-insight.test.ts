@@ -7,6 +7,7 @@ import { predictFailover, moveNow } from '../src/lib/ha/predict'
 import { overview, guestView, headroom, badges, clusterWords } from '../src/lib/ha/insight'
 import { preflightGrid } from '../src/lib/ha/preflight'
 import { hardwareOf, parseCrs } from '../src/lib/ha/parse'
+import { setGpuPortability } from '../src/lib/ha/gpu'
 import { threeNodes, lxcGpuConfig, lxcBindConfig } from './ha-fake'
 
 test('no home: fails over to the node with the fewest HA guests (basic CRS), and says it stays there', async () => {
@@ -221,4 +222,26 @@ test('hardware-bound guest with only a preferred home: an informational note, no
   // Strict: it stays off instead, so no note.
   f.rules[0].strict = 1
   assert.equal(overview(await readSnapshot(f)).hardwareNotes.length, 0)
+})
+
+test('Portable GPU: the note reads the guest\'s GPU setup through gpuPortability()', async () => {
+  const f = threeNodes()
+  f.addResource('ct:903')
+  f.addRule({ rule: 'h903', type: 'node-affinity', resources: 'ct:903', nodes: 'node-c' })
+  try {
+    // Stub (not portable): the CPU wording, plus the way out.
+    let v = guestView(await readSnapshot(f), 'ct:903')!
+    assert.match(v.notes[0], /without its GPU \(GPU work such as transcoding falls back to the CPU\)\. Turn on Portable GPU to use node-a's GPU there\.$/)
+    // Portable, and the target has a GPU.
+    setGpuPortability(() => ({ portable: true, perNode: { 'node-a': 'Intel UHD 630', 'node-b': null, 'node-c': 'NVIDIA GTX' } }))
+    v = guestView(await readSnapshot(f), 'ct:903')!
+    assert.equal(v.notes[0], 'If node-c fails this runs on node-a using its Intel UHD 630.')
+    // Portable, and the target has none.
+    setGpuPortability(() => ({ portable: true, perNode: { 'node-a': null } }))
+    v = guestView(await readSnapshot(f), 'ct:903')!
+    assert.equal(v.notes[0], 'If node-c fails this runs on node-a without a GPU.')
+    // A throwing implementation falls back to the stub's answer.
+    setGpuPortability(() => { throw new Error('boom') })
+    assert.match(guestView(await readSnapshot(f), 'ct:903')!.notes[0], /Turn on Portable GPU/)
+  } finally { setGpuPortability(null) }
 })
