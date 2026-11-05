@@ -12,7 +12,7 @@ import type { PrismaClient } from '@prisma/client'
 import { currentContext } from '../lib/auth'
 import { ownerOf } from './ai'
 import { hasRole } from '../lib/roles'
-import { GuestConfigService, GuestConfigRefusal, type GuestId, type PreviewInput, type Preview } from '../lib/guest-config/service'
+import { GuestConfigService, GuestConfigRefusal, PORTABLE_REFRESH_MS, type GuestId, type PreviewInput, type Preview } from '../lib/guest-config/service'
 import { redactForViewer } from '../lib/guest-config/devices'
 import { redactText, redactValue } from '../lib/guest-config/secrets'
 
@@ -196,8 +196,22 @@ export const guestConfigRoutes: FastifyPluginAsync = async (fastify) => {
   }), () => Date.now(), () => !isUnlocked())
   // HA's failover note asks how a guest's GPU follows it: Portable GPU answers from its last refresh.
   setGpuPortability(g => service.portabilityOf(g.sid))
-  const refreshPortable = () => service.refreshPortability().catch(err => fastify.log.warn({ err: err?.message }, '[guest-config] portability refresh failed'))
-  const timer = setInterval(() => { if (isUnlocked()) { void refreshPortable(); watcher.tick().catch(err => fastify.log.warn({ err: err?.message }, '[guest-config] GPU move check failed')) } }, 60_000)
+  // Every node's devices are re-read every 15 minutes (a node login each); in between, only the cache is read.
+  let lastProbe = 0
+  let migrated = false
+  const refreshPortable = () => {
+    const probe = Date.now() - lastProbe >= PORTABLE_REFRESH_MS
+    if (probe) lastProbe = Date.now()
+    return service.refreshPortability({ probe }).catch(err => fastify.log.warn({ err: err?.message }, '[guest-config] portability refresh failed'))
+  }
+  // Start-up: GPU state kept under an older key moves to the marker key once, on the first unlocked pass.
+  const migrateOnce = async () => {
+    if (migrated) return
+    migrated = true
+    try { const n = await service.migrateLegacyGpuState(); if (n) fastify.log.info(`[guest-config] moved GPU state of ${n} guest(s) to their marker keys`) }
+    catch (err: any) { migrated = false; fastify.log.warn({ err: err?.message }, '[guest-config] GPU state migration failed; retrying on the next pass') }
+  }
+  const timer = setInterval(() => { if (isUnlocked()) { void migrateOnce(); void refreshPortable(); watcher.tick().catch(err => fastify.log.warn({ err: err?.message }, '[guest-config] GPU move check failed')) } }, 60_000)
   timer.unref()
   fastify.addHook('onClose', async () => { clearInterval(timer); setGpuPortability(null) })
   await fastify.register(buildGuestConfigRoutes(() => ({
