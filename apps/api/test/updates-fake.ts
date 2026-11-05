@@ -19,6 +19,10 @@ export interface FakeNode {
   holds: string[]
   pinned: string | null
   offlineUntil?: number      // Infinity: never comes back
+  /** Packages a simulated upgrade would also change, beyond `pending` (e.g. Ceph arriving after the plan). */
+  simExtra?: UpdatesPkgChange[]
+  /** A Ceph start fence left on the node by a killed run: our policy-rc.d, or a saved original with none. */
+  fenceLeft?: 'ours' | 'saved'
   goDownAt?: number          // still up (old boot) until then, then down for good
 }
 
@@ -283,7 +287,11 @@ export class FakeCluster implements UpdatesExecutor {
         'HP_HOLDS_BEGIN', ...n.holds, 'HP_HOLDS_END',
         'HP_PIN_BEGIN', ...(n.pinned ? ['Pinned kernel:', n.pinned] : []), 'HP_PIN_END',
         'HP_KPKG_BEGIN', ...n.kernelPkgs.map(p => `${p} install ok installed`), 'HP_KPKG_END',
+        ...(n.fenceLeft === 'ours' ? ['HP_FENCE_LEFT'] : n.fenceLeft === 'saved' ? ['HP_FENCE_SAVED'] : []),
       ].join('\n'))
+    }
+    if (/apt-get -s .*upgrade; echo HP_SIM_END$/.test(cmd)) {
+      return ok([...n.pending, ...(n.simExtra ?? [])].map(p => `Inst ${p.name} [${p.from ?? '0'}] (${p.to} stable [amd64])`).concat('HP_SIM_END').join('\n'))
     }
     if (/apt-get .* (dist-)?upgrade$/.test(cmd) || /--only-upgrade install/.test(cmd)) {
       const ceph = /--only-upgrade install/.test(cmd)
