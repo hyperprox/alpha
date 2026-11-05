@@ -31,6 +31,8 @@ export interface GuestHa {
   statusLine: string
   hardware: string[]
   warnings: string[]
+  /** Informational: what a failover means for hardware it leaves behind. */
+  notes: string[]
   nodes: Array<{ node: string; online: boolean; maintenance: boolean }>
   others: Array<{ sid: string; name: string; node: string }>
   quorate: boolean
@@ -53,6 +55,7 @@ export interface Overview {
   unprotected: Array<{ sid: string; vmid: number; type: 'lxc' | 'qemu'; name: string; node: string; status: string; words: string }>
   homeless: Array<{ sid: string; name: string; node: string; words: string }>
   hardware: Array<{ sid: string; name: string; node: string; needs: string[]; words: string }>
+  hardwareNotes: Array<{ sid: string; name: string; node: string; words: string }>
   headroom: Headroom[]
   rules: Array<{ rule: HaRule; words: string; problems: RuleProblem[] }>
   problems: RuleProblem[]

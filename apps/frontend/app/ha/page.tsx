@@ -108,6 +108,14 @@ export default function HaPage() {
             </Section>
           )}
 
+          {ov.hardwareNotes.length > 0 && (
+            <Section title="Good to know">
+              <div className="space-y-2">
+                {ov.hardwareNotes.map(h => <Note key={`hn-${h.sid}`} tone="info">{h.words} Its home is a preference, so it keeps running elsewhere rather than staying off.</Note>)}
+              </div>
+            </Section>
+          )}
+
           <Section title="Protected guests">
             <div className="overflow-x-auto">
               <table className="w-full text-sm">

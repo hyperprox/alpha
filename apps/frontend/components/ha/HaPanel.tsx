@@ -91,6 +91,7 @@ export function HaPanel({ type, vmid, onChanged, hidePreflight }: HaPanelProps) 
             </ul>
           )}
           {g.warnings.map((w, i) => <Note key={i} tone="warn">{w}</Note>)}
+          {g.notes.map((w, i) => <Note key={`n${i}`} tone="info">{w}</Note>)}
           {g.protected && (
             <div className="flex flex-wrap items-center gap-2 pt-1">
               <Tag tone={g.haState === 'started' ? 'good' : g.haState === 'error' ? 'crit' : 'muted'}>HA: {g.haState ?? g.resource?.state}</Tag>
