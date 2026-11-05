@@ -41,9 +41,15 @@ export async function peerFor(exec: UpdatesExecutor, node: string): Promise<stri
  * `ceph osd ok-to-stop` for all of them is not a clear yes.
  */
 export async function osdVerdict(exec: UpdatesExecutor, node: string, peer: string, action: 'restarting' | 'rebooting'): Promise<OsdVerdict> {
+  // Anything that throws on the way is an unreadable layout: never a "safe", and never a safety skip either.
+  try { return await osdVerdictInner(exec, node, peer, action) }
+  catch (e: any) { return { kind: 'unreadable', reason: `the Ceph layout is unreadable: ${e?.message ?? e}` } }
+}
+
+async function osdVerdictInner(exec: UpdatesExecutor, node: string, peer: string, action: 'restarting' | 'rebooting'): Promise<OsdVerdict> {
   let layout
   try { layout = parseCephLayout((await exec.nodeExec(peer, CEPH_LAYOUT_COMMAND, undefined, 120_000)).output) }
-  catch (e: any) { return { kind: 'unreadable', reason: `could not read the Ceph pool layout: ${e.message}` } }
+  catch (e: any) { return { kind: 'unreadable', reason: `the Ceph layout is unreadable: could not read the Ceph pool layout: ${e.message}` } }
   let listing
   try { listing = parseUnitListing('osd', (await exec.nodeExec(node, cephUnitsCommand('osd'), undefined, 60_000)).output) }
   catch (e: any) { listing = { ok: false, ids: [] as string[], reason: e.message } }
@@ -87,7 +93,7 @@ export async function annotatePlanSafety(exec: UpdatesExecutor, plan: UpdatesPla
   if (!cephPresent) return plan
   const cache = new Map<string, Promise<string>>()
   const once = (key: string, f: () => Promise<string>) => {
-    if (!cache.has(key)) cache.set(key, f().catch((e: any) => `not checked: ${e?.message ?? e}`))
+    if (!cache.has(key)) cache.set(key, f().catch((e: any) => `the step would refuse: the Ceph layout is unreadable: ${e?.message ?? e}`))
     return cache.get(key)!
   }
   const warnings: string[] = []

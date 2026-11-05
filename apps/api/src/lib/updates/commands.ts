@@ -16,7 +16,9 @@ const CONFOLD = '-o Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-c
 
 // --- Packages that change how a run must treat a node ------------------------------
 
-const CEPH_PKG   = /^(ceph(-[a-z0-9-]+)?|librados2|librbd1|libcephfs2|libradosstriper1|librgw2|python3-(ceph[a-z0-9-]*|rados|rbd|cephfs|rgw)|radosgw|rbd-(nbd|fuse|mirror))$/
+// By prefix: a fixed list misses packages (cephadm, cephfs-shell, the -dev libraries, the sqlite VFS). A false
+// positive only means a package waits for the Ceph phase; a miss would let a node upgrade move Ceph.
+const CEPH_PKG   = /^(ceph|libceph|librados|librbd|librgw|libradosstriper|libsqlite3-mod-ceph|python3-(ceph|rados|rbd|rgw)|radosgw|rbd-)/
 const KERNEL_PKG = /^(proxmox-kernel-|pve-kernel-|proxmox-default-kernel$)/
 
 export const isCephPackage   = (name: string) => CEPH_PKG.test(name)
@@ -153,6 +155,8 @@ export const NODE_FACTS_COMMAND = [
   'echo HP_HOLDS_BEGIN; apt-mark showhold 2>/dev/null || true; echo HP_HOLDS_END',
   'echo HP_PIN_BEGIN; proxmox-boot-tool kernel list 2>/dev/null || true; echo HP_PIN_END',
   'echo HP_KPKG_BEGIN; dpkg-query -W -f=\'${Package} ${Status}\\n\' \'proxmox-kernel-*\' \'pve-kernel-*\' 2>/dev/null || true; echo HP_KPKG_END',
+  // A Ceph start fence (withCephStartGuard) that a killed run left behind.
+  'if grep -qsF "HyperProx: no Ceph daemon starts" /usr/sbin/policy-rc.d; then echo HP_FENCE_LEFT; elif [ -e /usr/sbin/policy-rc.d.hyperprox-saved ]; then echo HP_FENCE_SAVED; fi',
 ].join('; ')
 
 export interface NodeFacts {
@@ -163,6 +167,8 @@ export interface NodeFacts {
   pinned:         string | null
   /** Versioned kernel packages that are installed, e.g. proxmox-kernel-7.0.14-14-pve-signed. */
   kernelPackages: string[]
+  /** A Ceph start fence left by an interrupted run: our policy-rc.d still in place, or only its saved original. */
+  fence?:         'ours' | 'saved' | null
 }
 
 function between(lines: string[], begin: string, end: string): string[] {
@@ -196,6 +202,7 @@ export function parseNodeFacts(output: string): NodeFacts {
     holds:          between(lines, 'HP_HOLDS_BEGIN', 'HP_HOLDS_END').filter(Boolean),
     pinned,
     kernelPackages,
+    fence: lines.includes('HP_FENCE_LEFT') ? 'ours' : lines.includes('HP_FENCE_SAVED') ? 'saved' : null,
   }
 }
 
@@ -207,6 +214,37 @@ export function parseNodeFacts(output: string): NodeFacts {
 export function nodeUpgradeCommand(policyUpgrade: 'upgrade' | 'dist-upgrade'): string {
   const verb = policyUpgrade === 'dist-upgrade' ? 'dist-upgrade' : 'upgrade'
   return withCephStartGuard(`apt-get -y -q ${CONFOLD} ${verb}`)
+}
+
+/**
+ * Read-only: what the node upgrade would do, without doing it. The end marker proves the simulation finished;
+ * the line ends with it so that nothing matching the real upgrade line can be mistaken for it.
+ */
+export function nodeSimulateCommand(policyUpgrade: 'upgrade' | 'dist-upgrade'): string {
+  const verb = policyUpgrade === 'dist-upgrade' ? 'dist-upgrade' : 'upgrade'
+  return `${APT_ENV}; apt-get -s -q -o Debug::NoLocking=1 ${CONFOLD} ${verb} 2>&1; echo "HP_SIM_END $?"`
+}
+
+export interface AptSimChange { name: string; from: string | null; to: string | null; action: 'install' | 'upgrade' | 'remove' }
+
+/**
+ * `Inst`/`Remv`/`Purg` lines of `apt-get -s`. The shell exits 0 whatever apt did (echo runs last), so apt's own
+ * status is the number after the marker: anything but 0, or no marker at all, is an error quoting apt's E: lines.
+ */
+export function parseAptSimulation(output: string): { changes: AptSimChange[]; error?: undefined } | { changes: null; error: string } {
+  const lines = output.split('\n').map(l => l.trim())
+  const marker = lines.map(l => /^HP_SIM_END (\d+)$/.exec(l)).find(Boolean)
+  const errors = lines.filter(l => /^E: /.test(l)).join('; ')
+  if (!marker) return { changes: null, error: `the simulation did not finish${errors ? `: ${errors}` : ''}` }
+  if (marker[1] !== '0') return { changes: null, error: `apt-get exited ${marker[1]}${errors ? `: ${errors}` : ''}` }
+  const out: AptSimChange[] = []
+  for (const l of lines) {
+    let m = /^Inst (\S+)(?: \[([^\]]+)\])? \((\S+)/.exec(l)
+    if (m) { out.push({ name: m[1].replace(/:.*/, ''), from: m[2] ?? null, to: m[3], action: m[2] ? 'upgrade' : 'install' }); continue }
+    m = /^(?:Remv|Purg) (\S+)(?: \[([^\]]+)\])?/.exec(l)
+    if (m) out.push({ name: m[1].replace(/:.*/, ''), from: m[2] ?? null, to: null, action: 'remove' })
+  }
+  return { changes: out }
 }
 
 /** Marks the policy-rc.d HyperProx writes, so a copy left by a killed run is recognised and replaced. */
@@ -229,7 +267,7 @@ export function withCephStartGuard(aptLine: string, sbin = '/usr/sbin'): string 
     `if [ -e "$P" ] && grep -qF '${POLICY_RC_MARK}' "$P"; then rm -f "$P"; [ -e "$B" ] && mv "$B" "$P"; fi`,
     '[ -e "$B" ] && { echo "refusing: $B exists and is not ours to remove"; exit 1; }',
     '[ -e "$P" ] && mv "$P" "$B"',
-    `printf '%s\\n' '#!/bin/sh' '${POLICY_RC_MARK}' 'case "$1" in ceph*) exit 101 ;; esac' '[ -x ${sbin}/policy-rc.d.hyperprox-saved ] && exec ${sbin}/policy-rc.d.hyperprox-saved "$@"' 'exit 0' > "$P"`,
+    `printf '%s\\n' '#!/bin/sh' '${POLICY_RC_MARK}' 'for a in "$@"; do case "$a" in -*) ;; *) id="$a"; break ;; esac; done' 'case "$id" in ceph*) exit 101 ;; esac' '[ -x ${sbin}/policy-rc.d.hyperprox-saved ] && exec ${sbin}/policy-rc.d.hyperprox-saved "$@"' 'exit 0' > "$P"`,
     'chmod 755 "$P"',
     'unguard() { rm -f "$P"; [ -e "$B" ] && mv "$B" "$P"; }',
     'trap unguard EXIT',
