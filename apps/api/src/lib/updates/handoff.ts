@@ -60,6 +60,10 @@ if out=$(${run} 2>&1); then result true "guest ${guest.vmid} upgraded"; else res
  * Exit 0 safe, 1 unsafe, 2 unreadable; the reason is on stdout.
  */
 export const REBOOT_CHECK_PY = `import json, subprocess, sys
+def unreadable(e):
+    # Exit 2 is "refuse": an error in this checker is never a safety verdict (1) or a pass (0).
+    print('the Ceph layout could not be read (%s: %s)' % (type(e).__name__, e)); sys.exit(2)
+sys.excepthook = lambda t, e, tb: unreadable(e)
 node, want = sys.argv[1], set(int(x) for x in sys.argv[2].split(',') if x)
 def ceph(*a):
     r = subprocess.run(['ceph', *a, '-f', 'json'], capture_output=True, text=True, timeout=120)
