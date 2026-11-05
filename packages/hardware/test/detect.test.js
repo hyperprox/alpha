@@ -256,3 +256,24 @@ test('built-in graphics undo: every touched render node goes back to the mode it
     assert.equal(hw.parseResult(n.run(hw.stepScript('igpu-access-undo')).stdout).status, 'already')
   } finally { n.cleanup() }
 })
+
+test('built-in graphics undo finds each render node by its recorded PCI address, not its renderD name', () => {
+  const fs = require('fs'), path = require('path')
+  const fx = loadFixtures().find(f => f.file === 'arc-and-core-ultra.json')
+  const n = fakeNode({ ...fx, render: { ...fx.render, renderD128: { ...fx.render.renderD128, mode: '640' } } })
+  try {
+    assert.equal(hw.parseResult(n.run(hw.stepScript('igpu-access')).stdout).status, 'done')
+    // A reboot renumbers the render nodes: the built-in GPU (0000:00:02.0) is now renderD129, the Arc
+    // card renderD128. Both are opened as udev would leave them, to see which one undo puts back.
+    const dri = path.join(n.sys, 'dev/dri'), drm = path.join(n.sys, 'sys/class/drm')
+    fs.renameSync(path.join(dri, 'renderD128'), path.join(dri, 'tmp')); fs.renameSync(path.join(dri, 'renderD129'), path.join(dri, 'renderD128')); fs.renameSync(path.join(dri, 'tmp'), path.join(dri, 'renderD129'))
+    fs.renameSync(path.join(drm, 'renderD128'), path.join(drm, 'tmp')); fs.renameSync(path.join(drm, 'renderD129'), path.join(drm, 'renderD128')); fs.renameSync(path.join(drm, 'tmp'), path.join(drm, 'renderD129'))
+    fs.chmodSync(path.join(dri, 'renderD129'), 0o666)
+    fs.chmodSync(path.join(dri, 'renderD128'), 0o660)
+    const u = n.run(hw.stepScript('igpu-access-undo'))
+    assert.equal(hw.parseResult(u.stdout).status, 'done', u.stdout)
+    assert.equal((fs.statSync(path.join(dri, 'renderD129')).mode & 0o777).toString(8), '640', 'the built-in GPU, now renderD129, is back to 640')
+    assert.equal((fs.statSync(path.join(dri, 'renderD128')).mode & 0o777).toString(8), '660', 'the Arc card, now renderD128, is untouched')
+    assert.match(hw.parseResult(u.stdout).reason, /renderD129=640/)
+  } finally { n.cleanup() }
+})
