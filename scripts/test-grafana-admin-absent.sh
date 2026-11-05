@@ -35,4 +35,11 @@ start "" && ok "recreated with GRAFANA_ADMIN_PASSWORD absent (empty, as compose 
 printf 'second-password-2\n' | docker exec -i "$name" grafana cli admin reset-admin-password --password-from-stdin >/dev/null 2>&1 \
   && ok "grafana cli resets it with the password on stdin" || bad "reset from stdin"
 [ "$(as second-password-2)" = 200 ] && [ "$(as first-password-1)" = 401 ] && ok "  the new password works and the old one does not" || bad "after reset"
+# A new database with the variable absent (a volume reset after the password moved to the vault) starts
+# with Grafana's default admin/admin. HyperProx sets the vault's password at the next owner or admin
+# sign-in, through the same stdin reset; this shows the default is gone after it.
+docker rm -f "$name" >/dev/null 2>&1; docker volume rm "$vol" >/dev/null 2>&1; docker volume create "$vol" >/dev/null
+start "" && ok "a new database without the password starts" || bad "fresh start without the password"
+printf 'from-the-vault-3\n' | docker exec -i "$name" grafana cli admin reset-admin-password --password-from-stdin >/dev/null 2>&1
+[ "$(as admin)" = 401 ] && [ "$(as from-the-vault-3)" = 200 ] && ok "  after HyperProx applies the vault password, admin/admin no longer works" || bad "default left in place"
 exit "$fail"

@@ -21,7 +21,7 @@ mkinstall() {  # mkinstall <.env contents> -> prints the new install dir
   printf '%s\n' "$1" > "${d}/.env"; chmod 644 "${d}/.env"
   echo "$d"
 }
-run() { HYPERPROX_DIR="$1" bash "$cfg" 2>&1; }   # HPX_LOCAL_ADDRS, when set, passes through
+run() { HYPERPROX_DIR="$1" HPX_API_STATUS_URL="${HPX_API_STATUS_URL:-file:///nonexistent}" bash "$cfg" 2>&1; }   # HPX_LOCAL_ADDRS, when set, passes through
 envval() { grep -m1 "^$2=" "$1/.env" | cut -d= -f2-; }
 digest() { find "$1" -type f -print0 | sort -z | xargs -0 sha256sum; find "$1" -printf '%p %m %U\n' | sort; }
 
@@ -201,6 +201,15 @@ check "the start-up keys stay"                                      'grep -q "^G
 check "each removal is logged, no value is"                         '[[ "$out" == *"SETUP_SECRET: removed"* && "$out" != *abc* ]]'
 before="$(digest "$d")"
 check "and a second run does not add SETUP_SECRET back"             '[[ -z "$(run "$d")" && "$(digest "$d")" == "$before" ]]'
+d="$(mkinstall 'SETUP_SECRET=abc
+API_PORT=3002')"
+printf '{"ok":true,"locked":true,"bootstrapped":true}' > "${tmp}/owner.json"
+HPX_API_STATUS_URL="file://${tmp}/owner.json" run "$d" >/dev/null
+check "no SETUP_COMPLETE line, but the vault has an owner: SETUP_SECRET is removed" '! grep -q "^SETUP_SECRET" "$d/.env"'
+d="$(mkinstall 'SETUP_SECRET=abc')"
+printf '{"ok":true,"bootstrapped":false}' > "${tmp}/none.json"
+HPX_API_STATUS_URL="file://${tmp}/none.json" run "$d" >/dev/null
+check "no owner yet and no SETUP_COMPLETE: SETUP_SECRET stays"       'grep -q "^SETUP_SECRET=abc$" "$d/.env"'
 d="$(mkinstall 'SETUP_COMPLETE=false
 SETUP_SECRET=abc
 GRAFANA_ADMIN_PASSWORD=still-needed-for-first-start')"

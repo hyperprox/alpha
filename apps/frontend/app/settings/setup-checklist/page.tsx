@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { GhostButton, INPUT, LABEL, Notice, PrimaryButton } from '@/components/vault/ui'
+import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 
 type State = 'done' | 'partly' | 'not-done' | 'not-applicable'
 interface Row { node: string; state: State; reason: string }
@@ -37,6 +38,14 @@ export default function SetupChecklistPage() {
   const [loginRows, setLoginRows] = useState<Array<{ node: string; ok: boolean; reason: string }> | null>(null)
   const [dns, setDns] = useState({ key: '', secret: '' })
   const [busy, setBusy] = useState<string | null>(null)
+  // Every change here asks for the master password again; the request is retried once it is confirmed.
+  const [confirm, setConfirm] = useState<null | (() => void)>(null)
+  async function send(method: string, url: string, body: unknown, retry: () => void): Promise<any | null> {
+    const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) })
+    const j = await r.json().catch(() => ({}))
+    if (r.status === 403 && j.code === 'reconfirm_required') { setConfirm(() => retry); return null }
+    return j
+  }
 
   const load = useCallback(async () => {
     try {
@@ -63,8 +72,8 @@ export default function SetupChecklistPage() {
     setBusy(item.id); setError(null)
     try {
       const body = item.id === 'dns' ? dns : {}
-      const r = await fetch(`/api/setup-checklist/${item.id}/run`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-      const j = await r.json()
+      const j = await send('POST', `/api/setup-checklist/${item.id}/run`, body, () => run(item))
+      if (!j) return
       if (!j.success) throw new Error(j.error)
       setJob(j.data)
       if (item.id === 'dns') { setDns({ key: '', secret: '' }); void load() }
@@ -74,11 +83,22 @@ export default function SetupChecklistPage() {
   async function saveLogin() {
     setBusy('login'); setError(null)
     try {
-      const r = await fetch('/api/setup-checklist/node-login', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(login) })
-      const j = await r.json()
+      const j = await send('PUT', '/api/setup-checklist/node-login', login, () => saveLogin())
+      if (!j) return
       setLogin(l => ({ ...l, password: '', privateKey: '' }))
       if (j.data?.nodes) setLoginRows(j.data.nodes)
       if (!j.success && !j.data) throw new Error(j.error)
+      void load()
+    } catch (e: any) { setError(e.message) } finally { setBusy(null) }
+  }
+
+  async function igpu(node: string, verb: 'apply' | 'undo') {
+    setBusy(`igpu-${node}`); setError(null)
+    try {
+      const j = await send('POST', `/api/setup-checklist/igpu-access/${node}/${verb}`, {}, () => igpu(node, verb))
+      if (!j) return
+      if (!j.success) throw new Error(j.error)
+      if (j.data.status === 'failed') setError(`${node}: ${j.data.reason}`)
       void load()
     } catch (e: any) { setError(e.message) } finally { setBusy(null) }
   }
@@ -118,6 +138,8 @@ export default function SetupChecklistPage() {
         </section>
       )}
 
+      {confirm && <ReconfirmModal onClose={() => setConfirm(null)} onDone={() => { const f = confirm; setConfirm(null); f() }} />}
+
       <div className="space-y-3 max-w-3xl">
         {data?.items.map(item => (
           <section key={item.id} className="rounded-lg border p-4" style={{ borderColor: 'var(--border-dim)' }}>
@@ -131,7 +153,10 @@ export default function SetupChecklistPage() {
             </div>
             {item.rows.length > 0 && (
               <ul className="mt-3 text-sm space-y-1">
-                {item.rows.map(r => <li key={r.node} className="flex gap-2"><Tag s={r.state} /><span className="font-mono">{r.node}</span><span style={{ color: 'var(--text-muted)' }}>{r.reason}</span></li>)}
+                {item.rows.map(r => <li key={r.node} className="flex gap-2 items-center"><Tag s={r.state} /><span className="font-mono">{r.node}</span><span style={{ color: 'var(--text-muted)' }}>{r.reason}</span>
+                  {item.id === 'igpu-access' && r.state === 'done' && <GhostButton disabled={!!busy} onClick={() => igpu(r.node, 'undo')}>Undo</GhostButton>}
+                  {item.id === 'igpu-access' && r.state === 'not-done' && data.logins[r.node] && <GhostButton disabled={!!busy} onClick={() => igpu(r.node, 'apply')}>Open on this node</GhostButton>}
+                </li>)}
               </ul>
             )}
             {item.id === 'dns' && (
