@@ -195,7 +195,119 @@ test('the NVIDIA fixture: an edit keeps all twelve raw lines, and a raw-line edi
   assert.equal(r.ok, true, JSON.stringify(r.outcome?.problems))
   assert.equal(r.outcome!.rawBefore, 12); assert.equal(r.outcome!.rawAfter, 12)
   const raw = await s.service.preview(OWNER, g, { kind: 'raw', raw: { remove: [['lxc.cgroup2.devices.allow', 'c 195:* rwm']] } })
-  assert.ok(raw.plan.changes.some(c => /Remove lxc.cgroup2.devices.allow: c 195/.test(c.words)))
-  assert.ok(raw.plan.errors.some(e => /does not accept lxc/.test(e)))
-  await refusal(s.service.apply(OWNER, raw.id, { name: 'coder' }), 'refused')
+  assert.deepEqual(raw.plan.errors, [])
+  assert.ok(raw.plan.changes.some(c => /Remove lxc.cgroup2.devices.allow: c 195.*next time the container starts/.test(c.words)))
+  await refusal(s.service.apply(OWNER, raw.id), 'confirm')
+})
+
+// ── raw lines through the whole-file writer ───────────────────────────────────
+
+function rawSetup(over: any = {}, guest: any = {}) {
+  const s = setup(over, guest)
+  s.shell.tail['901'] = '\n[before-change]\ncores: 1\nlxc.cgroup2.devices.allow: c 10:200 rwm\nsnaptime: 1700000000\n'
+  return s
+}
+const ADD: [string, string] = ['lxc.mount.entry', '/dev/dri/renderD128 dev/dri/renderD128 none bind,optional,create=file']
+
+test('a raw-line change rewrites the whole file: compare-and-swap, byte-for-byte read back, parsed by the API, history keeps the old file', async () => {
+  const s = rawSetup()
+  const p = await s.service.preview(OWNER, CT, { kind: 'raw', raw: { add: [ADD] } })
+  assert.deepEqual(p.plan.errors, [])
+  assert.ok(p.file && p.file.sha.length === 64)
+  const r = await s.service.apply(OWNER, p.id, { name: 'web' })
+  assert.equal(r.ok, true, JSON.stringify(r.outcome?.problems))
+  const file = s.shell.files['901']
+  assert.ok(file.includes('lxc.mount.entry: /dev/dri/renderD128 dev/dri/renderD128 none bind,optional,create=file\n\n[before-change]'))
+  assert.ok(file.endsWith('[before-change]\ncores: 1\nlxc.cgroup2.devices.allow: c 10:200 rwm\nsnaptime: 1700000000\n'), 'snapshot section untouched')
+  assert.deepEqual(s.pve.g('lxc', 901).config.lxc, [['lxc.cgroup2.devices.allow', 'c 10:200 rwm'], ADD])
+  const writes = s.shell.commands.filter(c => c.command.includes('HPX-CAS-MISMATCH'))
+  assert.equal(writes.length, 1)
+  assert.ok(!/>>|sed -i/.test(writes[0].command))
+  const h = (await s.history.list('lxc/901'))[0]
+  assert.equal(typeof (h.meta as any).fileBefore, 'string')
+  assert.ok(!(h.meta as any).fileBefore.includes('renderD128') && (h.meta as any).fileAfter.includes('renderD128'))
+  // one-click revert takes the same path back
+  const rv = await s.service.preview(OWNER, CT, { kind: 'revert', historyId: h.id, which: 'before' })
+  assert.deepEqual(rv.plan.errors, [])
+  assert.ok(rv.file)
+  assert.equal((await s.service.apply(OWNER, rv.id, { name: 'web' })).ok, true)
+  assert.deepEqual(s.pve.g('lxc', 901).config.lxc, [['lxc.cgroup2.devices.allow', 'c 10:200 rwm']])
+})
+
+test('the file changed on the node since the preview: refused, nothing written', async () => {
+  const s = rawSetup()
+  const p = await s.service.preview(OWNER, CT, { kind: 'raw', raw: { add: [ADD] } })
+  s.shell.files['901'] += '# edited by hand\n'
+  await refusal(s.service.apply(OWNER, p.id, { name: 'web' }), 'changed')
+  assert.ok(!s.shell.commands.some(c => c.command.includes('HPX-CAS-MISMATCH')))
+})
+
+test('the file changes between the check and the write: the node script refuses (compare and swap)', async () => {
+  const s = rawSetup()
+  const p = await s.service.preview(OWNER, CT, { kind: 'raw', raw: { add: [ADD] } })
+  s.shell.beforeWrite = v => { s.shell.files[v] += '# raced\n' }
+  await refusal(s.service.apply(OWNER, p.id, { name: 'web' }), 'changed')
+  assert.ok(s.shell.files['901'].endsWith('# raced\n'), 'the racing edit stands')
+})
+
+test('a [pve:pending] section, no quorum, or no node login refuses a raw-line change', async () => {
+  const a = rawSetup(); a.shell.tail['901'] = '\n[pve:pending]\nmemory: 1024\n'
+  assert.ok((await a.service.preview(OWNER, CT, { kind: 'raw', raw: { add: [ADD] } })).plan.errors.some(e => /pve:pending/.test(e)))
+  const b = rawSetup(); b.pve.quorate = false
+  assert.ok((await b.service.preview(OWNER, CT, { kind: 'raw', raw: { add: [ADD] } })).plan.errors.some(e => /not quorate/.test(e)))
+  const c = rawSetup(); c.shell.logins.delete('node-a')
+  assert.ok((await c.service.preview(OWNER, CT, { kind: 'raw', raw: { add: [ADD] } })).plan.errors.some(e => /node login/.test(e)))
+  const d = rawSetup()
+  const p = await d.service.preview(OWNER, CT, { kind: 'raw', raw: { add: [ADD] } })
+  d.pve.quorate = false
+  await refusal(d.service.apply(OWNER, p.id, { name: 'web' }), 'not-quorate')
+})
+
+test('on a running container the raw change waits for the next start and the restart verifies the lines and the device', async () => {
+  const s = rawSetup({}, { status: 'running', ha: 'started' })
+  const p = await s.service.preview(OWNER, CT, { kind: 'raw', raw: { add: [ADD] } })
+  assert.ok(p.plan.warnings.some(w => /not changed while it runs/.test(w)))
+  const r = await s.service.apply(OWNER, p.id, { name: 'web' })
+  assert.equal(r.restartOffered, true)
+  s.shell.inside['901'] = ['/dev/dri/renderD128']
+  const rs = await s.service.preview(OWNER, CT, { kind: 'restart', after: p.id })
+  const rr = await s.service.apply(OWNER, rs.id)
+  assert.equal(rr.restart!.via, 'ha')
+  assert.equal(rr.restart!.rawSurvived, true)
+})
+
+test('revert re-checks shared=1 on every node before putting it back', async () => {
+  const s = setup({ mp0: '/mnt/media,mp=/media,shared=1' })
+  s.shell.dirs = { 'node-a': { '/mnt/media': 'ceph' }, 'node-b': { '/mnt/media': 'ceph' }, 'node-c': { '/mnt/media': 'ceph' } }
+  const rm = await s.service.preview(OWNER, CT, { kind: 'edit', edit: { mounts: { remove: ['mp0'] } } })
+  const rr = await s.service.apply(OWNER, rm.id)
+  delete s.shell.dirs['node-c']
+  const rv = await s.service.preview(OWNER, CT, { kind: 'revert', historyId: rr.historyId!, which: 'before' })
+  assert.ok(rv.plan.errors.some(e => /missing on node-c/.test(e)), rv.plan.errors.join())
+})
+
+test('a new VM NIC that landed with its MAC is a success', async () => {
+  const s = makeService()
+  s.pve.add({ node: 'node-a', type: 'qemu', vmid: 921, status: 'stopped', config: { name: 'vm', memory: 1024, net0: 'virtio=BC:24:11:00:09:21,bridge=vmbr0' } })
+  const orig = s.pve.put.bind(s.pve)
+  s.pve.put = async (path, params) => { if (params.net1) params = { ...params, net1: params.net1.replace(/^virtio,/, 'virtio=BC:24:11:00:00:09,') }; return orig(path, params) }
+  const p = await s.service.preview(OWNER, { node: 'node-a', type: 'qemu', vmid: 921 }, { kind: 'edit', edit: { net: { net1: { bridge: 'vmbr1' } } } })
+  const r = await s.service.apply(OWNER, p.id)
+  assert.equal(r.ok, true, JSON.stringify(r.outcome?.problems))
+})
+
+test('DNS servers must be real IPv4 or IPv6 addresses', async () => {
+  const s = setup()
+  assert.ok((await s.service.preview(OWNER, CT, { kind: 'edit', edit: { nameserver: 'dead beef' } })).plan.errors.some(e => /IPv4 or IPv6/.test(e)))
+  assert.deepEqual((await s.service.preview(OWNER, CT, { kind: 'edit', edit: { nameserver: '192.0.2.53 2001:db8::53' } })).plan.errors, [])
+})
+
+test('history keeps the last 50 versions plus everything from the last 90 days', async () => {
+  const { prunable } = await import('../src/lib/guest-config/history/store')
+  const day = 86_400_000, now = 1000 * day
+  const rows = Array.from({ length: 80 }, (_, i) => ({ id: `r${i}`, createdAt: new Date(now - i * 3 * day) }))   // newest first
+  const drop = prunable(rows, now)
+  assert.ok(drop.every(id => Number(id.slice(1)) >= 50), 'the newest 50 always stay')
+  assert.ok(drop.every(id => Number(id.slice(1)) * 3 > 90), 'nothing from the last 90 days goes')
+  assert.equal(drop.length, 80 - 50)
 })

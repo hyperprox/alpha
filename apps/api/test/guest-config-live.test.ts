@@ -106,11 +106,11 @@ test('live: container — edit, mount point add/remove, GPU on a real iGPU, togg
   // edit the entry (add card0 too), then the toggle: off (later → pending), restart; on, restart.
   const edit = await applyOk(s, G, { kind: 'gpu-grant', grant: { deviceId: gpu!.id, renderGid: det.groups?.render ?? 0, includeCard: true, videoGid: det.groups?.video ?? 44 } }, { name: before.hostname })
   await applyOk(s, G, { kind: 'restart', after: edit.p.id })
-  const off = await applyOk(s, G, { kind: 'gpu-off' })
+  const off = await applyOk(s, G, { kind: 'gpu-off' }, { name: before.hostname })
   assert.ok((await s.view(G)).pending.keys.length > 0 || off.r.pendingKeys.length === 0, 'off is pending while the container runs, or applied live')
   rs = await applyOk(s, G, { kind: 'restart', after: off.p.id })
   assert.ok(rs.r.restart!.devices.every(d => d.seen === false), JSON.stringify(rs.r.restart!.devices))
-  const on = await applyOk(s, G, { kind: 'gpu-on' })
+  const on = await applyOk(s, G, { kind: 'gpu-on' }, { name: before.hostname })
   rs = await applyOk(s, G, { kind: 'restart', after: on.p.id })
   assert.ok(rs.r.restart!.devices.every(d => d.seen === true), JSON.stringify(rs.r.restart!.devices))
   console.log('[live] GPU off/on round trip ok')
@@ -154,4 +154,60 @@ test('live: device inventory, read-only, on every listed node', { skip: !LIVE ||
     console.log(`[live] ${node}: ${inv.problem ?? `${inv.devices.length} devices`}`)
     for (const d of inv.devices) console.log(`[live]   ${d.name} | ${[d.vendorProduct, d.serial ? 'serial' : '', d.pciAddress ?? d.port ?? ''].filter(Boolean).join(' ')} | ${d.shareAs.join(',')} | used by ${d.usedBy.map(u => `${u.type}:${u.vmid}${u.running ? '(on)' : ''} via ${u.via}`).join(', ') || 'none'}${d.needsExtraConfirm ? ' | EXTRA CONFIRM' : ''}`)
   }
+})
+
+// Owner decision 2026-11-05: raw lines by whole-file rewrite over the node login, on throwaway CTs only.
+//   HPX_LIVE=1 HPX_LIVE_RAW=1 HPX_LIVE_NODES=… HPX_LIVE_CT=node:vmid HPX_LIVE_PORTABLE_NODES=a,b,c HPX_LIVE_MIGRATE_TO=node
+test('live: Portable GPU by whole-file write — a missing optional NVIDIA entry does not block the start, the iGPU is visible, and it starts after a migration too', { skip: !LIVE || process.env.HPX_LIVE_RAW !== '1' }, async () => {
+  const { node, vmid } = parse(process.env.HPX_LIVE_CT)
+  const before = await mustBeThrowaway('lxc', node, vmid)
+  const { s } = service()
+  const G = { node, type: 'lxc' as const, vmid }
+  const nodes = (process.env.HPX_LIVE_PORTABLE_NODES ?? '').split(',').filter(Boolean)
+  const p = await s.preview(OWNER, G, { kind: 'gpu-portable', nodes })
+  assert.deepEqual(p.plan.errors, [], p.plan.errors.join(' | '))
+  assert.ok(p.file, 'planned as a whole-file write')
+  const optionalNvidia = p.plan.changes.find(c => /\/dev\/nvidia0 dev\/nvidia0 none bind,optional/.test(c.after ?? ''))
+  assert.ok(optionalNvidia, 'an optional NVIDIA entry is in the plan')
+  console.log(`[live] portable plan: ${p.plan.changes.length} lines; file sha ${p.file!.sha.slice(0, 12)}…`)
+  const r = await s.apply(OWNER, p.id, { name: before.hostname })
+  assert.equal(r.ok, true, JSON.stringify(r.outcome?.problems))
+  const cfg = await pve.get(`/nodes/${node}/lxc/${vmid}/config`)
+  assert.ok((cfg.lxc as any[]).some((l: any) => l[1] === '/dev/nvidia0 dev/nvidia0 none bind,optional,create=file'), 'Proxmox parses the rewritten file')
+  console.log(`[live] written and read back byte for byte; API reads ${(cfg.lxc as any[]).length} raw lines`)
+
+  const startAndLook = async (n: string) => {
+    pvesh('create', `/nodes/${n}/lxc/${vmid}/status/start`)
+    let st = ''
+    for (let i = 0; i < 30 && (st = (await pve.get(`/nodes/${n}/lxc/${vmid}/status/current`)).status) !== 'running'; i++) await new Promise(res => setTimeout(res, 2000))
+    const inside = ssh(NODES[n], `pct exec ${vmid} -- sh -c 'ls -l /dev/dri/ 2>&1; ls /dev/nvidia0 2>&1; true'`)
+    console.log(`[live] on ${n}: status ${st}; inside:\n${inside.trim().split('\n').map(l => `[live]   ${l}`).join('\n')}`)
+    const det = await s.gpuDetail({ node: n, type: 'lxc', vmid })
+    console.log(`[live] HyperProx says in use on ${n}: ${det.inUse ? `${det.inUse.name} (${det.inUse.device})` : 'none'}`)
+    assert.equal(det.inUse?.device, '/dev/dri/renderD128', 'the empty placeholder /dev/nvidia0 is not taken for a GPU')
+    pvesh('create', `/nodes/${n}/lxc/${vmid}/status/stop`)
+    for (let i = 0; i < 30 && (await pve.get(`/nodes/${n}/lxc/${vmid}/status/current`)).status !== 'stopped'; i++) await new Promise(res => setTimeout(res, 2000))
+    return { st, inside }
+  }
+  const a = await startAndLook(node)
+  assert.equal(a.st, 'running', 'a missing optional /dev/nvidia0 entry did not block the start')
+  assert.match(a.inside, /renderD128/)
+  const to = process.env.HPX_LIVE_MIGRATE_TO
+  if (to) {
+    const upid = pvesh('create', `/nodes/${node}/lxc/${vmid}/migrate`, { target: to })
+    if (typeof upid === 'string' && upid.startsWith('UPID:')) await s.waitTask(upid)
+    const b = await startAndLook(to)
+    assert.equal(b.st, 'running', `starts on ${to} too`)
+    assert.match(b.inside, /renderD128/)
+    // and back, so the throwaway is destroyed where it was made
+    const back = pvesh('create', `/nodes/${to}/lxc/${vmid}/migrate`, { target: node })
+    if (typeof back === 'string' && back.startsWith('UPID:')) await s.waitTask(back)
+  }
+  // revert through the same write path
+  const rv = await s.preview(OWNER, G, { kind: 'revert', historyId: r.historyId!, which: 'before' })
+  assert.deepEqual(rv.plan.errors, [], rv.plan.errors.join(' | '))
+  assert.equal((await s.apply(OWNER, rv.id, { name: before.hostname })).ok, true)
+  const after = await pve.get(`/nodes/${node}/lxc/${vmid}/config`)
+  assert.ok(!after.lxc, 'reverted: no raw lines')
+  console.log('[live] reverted through the whole-file writer')
 })

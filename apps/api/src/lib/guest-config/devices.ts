@@ -314,11 +314,13 @@ export function parseProbe(node: string, out: string, now = Date.now()): NodeInv
   for (const d of devices.filter(x => x.vendorProduct && x.port)) byVp.set(d.vendorProduct!, [...(byVp.get(d.vendorProduct!) ?? []), d])
   for (const group of byVp.values()) {
     if (group.length < 2) continue
-    const noSerial = group.filter(d => !d.serial)
-    if (noSerial.length < 2 && group.every(d => d.serial)) continue
+    // Same vendor:product twice on one node: vendor:product is ambiguous, and Proxmox cannot select a USB device
+    // by serial, so each one is referenced by its physical port.
     for (const d of group) {
-      d.notes.push('These look identical; they’re told apart only by the USB port they’re plugged into, so keep them in the same ports.')
-      d.stableRef = d.kind === 'usb' || d.kind === 'tpu' ? `port ${d.port}` : d.stableRef
+      d.notes.push(group.every(x => x.serial)
+        ? 'Another device here has the same vendor:product. They have different serial numbers, but a VM can only be given one by the USB port it is plugged into, so keep it in that port.'
+        : 'These look identical; they’re told apart only by the USB port they’re plugged into, so keep them in the same ports.')
+      if (d.kind === 'usb' || d.kind === 'tpu') d.stableRef = `port ${d.port}`
     }
   }
 

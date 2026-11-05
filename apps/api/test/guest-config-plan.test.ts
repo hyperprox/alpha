@@ -147,5 +147,6 @@ test('revert: writes the editable keys back, never raw keys or disk sizes, and r
   assert.equal(op.set.mp0, 'fast-ssd:vm-901-disk-1,mp=/data,size=2G')
   assert.ok(!('lxc' in op.set) && !('rootfs' in op.set))
   assert.ok(!op.delete.includes('unused0'), 'deleting an unused key would destroy the volume')
-  assert.ok(p.warnings.some(w => /lxc \(raw/.test(w) && /rootfs/.test(w)))
+  assert.ok(p.warnings.some(w => /rootfs/.test(w)))
+  assert.ok(!p.touched.includes('lxc'), 'raw lines are never in an API write; the service reverts them through the file writer')
 })

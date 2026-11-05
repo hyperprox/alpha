@@ -114,11 +114,16 @@ function devEntries(g: GuestCtx, paths: Array<{ path: string; gid?: number }>, p
   for (const { path, gid } of paths) {
     if (already.has(path)) { p.checks.push(`${path} is already passed; left as it is`); continue }
     const key = `dev${freeIndex('dev', taken(g, Object.keys(set)))}`
+    if (gid !== undefined && !isGid(gid)) { p.errors.push('A group id is a whole number from 0 to 65535.'); return {} }
+    if (!/^\/dev\/[A-Za-z0-9_./:+-]+$/.test(path)) { p.errors.push(`${path} is not a device path HyperProx writes.`); return {} }
     set[key] = gid !== undefined ? `${path},gid=${gid}` : path
     p.deviceChecks.push({ path, present: true })
   }
   return set
 }
+
+/** A group id: an integer from 0 to 65535, nothing else (it is written into a devN value). */
+export function isGid(v: unknown): v is number { return typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 65535 }
 
 export function buildGpuGrantPlan(g: GuestCtx, inv: NodeInventory, grant: GpuGrant, others: GuestRef[]): Plan {
   const p = emptyPlan()
@@ -139,6 +144,7 @@ export function buildGpuGrantPlan(g: GuestCtx, inv: NodeInventory, grant: GpuGra
     const card = dev.paths.find(x => /card\d+$/.test(x))
     if (!render) { p.errors.push(`${dev.name} has no render node on the host.`); return p }
     if (grant.renderGid === undefined) { p.errors.push('The container’s render group id is needed (it is read from the container while it runs; enter it when it is stopped).'); return p }
+    if (!isGid(grant.renderGid) || (grant.videoGid !== undefined && !isGid(grant.videoGid))) { p.errors.push('A group id is a whole number from 0 to 65535.'); return p }
     paths.push({ path: render, gid: grant.renderGid })
     if (grant.includeCard && card) paths.push({ path: card, gid: grant.videoGid ?? grant.renderGid })
     if (dev.vendor === 'amd' && dev.paths.includes('/dev/kfd')) paths.push({ path: '/dev/kfd', gid: grant.renderGid })
@@ -177,40 +183,65 @@ export function buildGpuRevokePlan(g: GuestCtx, managed: Record<string, string>)
 
 // ── the GPU access toggle ─────────────────────────────────────────────────────
 
+/** What HyperProx itself added, from the guest's history: devN key → value, and raw lines. */
+export interface GpuManaged { dev: Record<string, string>; raw: Array<[string, string]> }
+
 export interface GpuOffRecord {
   /** devN entries removed, exactly as they were. */
   removed: Record<string, string>
-  /** Raw lines that could not be removed through the API. */
-  rawKept: Array<[string, string]>
+  /** Raw lines removed (through the whole-file writer), exactly as they were. */
+  rawRemoved: Array<[string, string]>
+  /** GPU entries left in place because HyperProx did not add them and nobody asked to remove them. */
+  kept: Array<{ key: string; value: string }>
 }
 
-export function buildGpuOffPlan(g: GuestCtx): Plan {
+export interface GpuOffInput {
+  /** Hand-written entries to remove as well ("remove these too?"); each must match one exactly. */
+  alsoRemove?: Array<{ key: string; value: string }>
+}
+
+const isManaged = (e: GpuEntry, m: GpuManaged) => (e.via === 'devN' ? m.dev[e.key] === e.value : m.raw.some(r => r[0] === e.key && r[1] === e.value))
+
+export function buildGpuOffPlan(g: GuestCtx, managed: GpuManaged, input: GpuOffInput = {}, inv: NodeInventory | null = null): Plan {
   const p = emptyPlan()
-  const gpu = detectGpu(g.type, g.config)
+  p.confirmName = true
   if (g.type !== 'lxc') { p.errors.push('The GPU access toggle is for containers; a VM’s passthrough is edited in the PCI picker.'); return p }
-  const devs = gpu.entries.filter(e => e.via === 'devN')
-  const raw = gpu.entries.filter(e => e.via !== 'devN')
-  if (raw.length) {
-    p.warnings.push(`${raw.length} raw lxc.* GPU line${raw.length === 1 ? '' : 's'} cannot be removed: Proxmox’s API does not accept lxc.* keys, to set or to delete, from any token. They stay, so the GPU stays reachable through them. Convert them to devN entries to make the toggle complete.`)
+  const gpu = detectGpu('lxc', g.config, inv)
+  if (!gpu.entries.length) { p.errors.push('This container has no GPU access to turn off.'); return p }
+  const also = input.alsoRemove ?? []
+  const unmanaged = gpu.entries.filter(e => !isManaged(e, managed))
+  for (const a of also) if (!unmanaged.some(e => e.key === a.key && e.value === a.value)) p.errors.push(`${a.key}: ${a.value} is not a hand-written GPU entry on this container.`)
+  const chosen = gpu.entries.filter(e => isManaged(e, managed) || also.some(a => a.key === e.key && a.value === e.value))
+  const kept = gpu.entries.filter(e => !chosen.includes(e))
+  p.options = unmanaged.map(e => ({ key: e.key, value: e.value, label: `${e.key}: ${e.value}` }))
+  if (kept.length) p.checks.push(`Left in place, because HyperProx did not add them: ${kept.map(e => `${e.key}: ${e.value}`).join('; ')}. Tick “remove these too” to include them.`)
+  if (!chosen.length) { p.errors.push('None of this container’s GPU entries were added by HyperProx. Choose which hand-written ones to remove, if any.'); return p }
+  const devs = chosen.filter(e => e.via === 'devN')
+  const raw = chosen.filter(e => e.via !== 'devN')
+  if (devs.length) {
+    const del = devs.map(e => e.key)
+    p.ops.push({ kind: 'config', set: {}, delete: del })
+    addConfigChanges(p, g, {}, del)
   }
-  if (!devs.length) { p.errors.push(raw.length ? 'This container’s GPU access is all raw lxc.* lines, which the API cannot remove. Use “Convert to devN” first.' : 'This container has no GPU access to turn off.'); return p }
-  const del = devs.map(e => e.key)
-  p.ops.push({ kind: 'config', set: {}, delete: del })
-  addConfigChanges(p, g, {}, del)
-  for (const e of devs) p.deviceChecks.push({ path: e.device, present: false })
-  const rec: GpuOffRecord = { removed: Object.fromEntries(devs.map(e => [e.key, e.value])), rawKept: raw.map(e => [e.key, e.value] as [string, string]) }
+  if (raw.length) rawChanges(p, g, raw.map(e => [e.key, e.value] as [string, string]), [])
+  // The device must be gone inside only when no kept entry still reaches it.
+  const keptPaths = new Set(kept.map(e => e.device))
+  for (const e of chosen) if (e.device.startsWith('/dev/') && !keptPaths.has(e.device) && !(e.device === '/dev/dri' || e.device === '/dev/nvidia-caps')) p.deviceChecks.push({ path: e.device, present: false })
+  const rec: GpuOffRecord = { removed: Object.fromEntries(devs.map(e => [e.key, e.value])), rawRemoved: raw.map(e => [e.key, e.value] as [string, string]), kept: kept.map(e => ({ key: e.key, value: e.value })) }
   p.meta = { gpuOff: rec }
-  if (g.running) p.warnings.push('Applies when the container restarts: until then it still has the GPU.')
+  if (g.running) p.warnings.push('Applies the next time the container starts: until then it still has the GPU.')
   return p
 }
 
 /** Put back exactly what the last "GPU off" removed. Refused per key when the slot or the device is taken since. */
 export function buildGpuOnPlan(g: GuestCtx, rec: GpuOffRecord | null): Plan {
   const p = emptyPlan()
-  if (!rec || !Object.keys(rec.removed).length) { p.errors.push('There is no “GPU off” in this container’s history to turn back on.'); return p }
+  p.confirmName = true
+  const rawRemoved = rec?.rawRemoved ?? []
+  if (!rec || (!Object.keys(rec.removed ?? {}).length && !rawRemoved.length)) { p.errors.push('There is no “GPU off” in this container’s history to turn back on.'); return p }
   const set: Record<string, string> = {}
   const present = new Set(Object.entries(g.config).filter(([k]) => /^dev\d+$/.test(k)).map(([, v]) => parseProps(str(v)).head))
-  for (const [k, v] of Object.entries(rec.removed)) {
+  for (const [k, v] of Object.entries(rec.removed ?? {})) {
     const path = parseProps(v).head ?? ''
     const cur = g.config[k] === undefined ? null : str(g.config[k])
     if (cur === v) { p.checks.push(`${k} is already back as it was`); continue }
@@ -219,34 +250,54 @@ export function buildGpuOnPlan(g: GuestCtx, rec: GpuOffRecord | null): Plan {
     set[k] = v
     p.deviceChecks.push({ path, present: true })
   }
+  const have = rawLines(g.config)
+  const addRaw = rawRemoved.filter(([k, v]) => !have.some(h => h[0] === k && h[1] === v))
   if (p.errors.length) return p
-  if (!Object.keys(set).length) { p.errors.push('GPU access is already on.'); return p }
-  p.ops.push({ kind: 'config', set, delete: [] })
-  addConfigChanges(p, g, set, [])
-  if (rec.rawKept.length) p.checks.push(`${rec.rawKept.length} raw line(s) were never removed and are still checked after the restart`)
-  if (g.running) p.warnings.push('Applies when the container restarts.')
-  p.meta = { gpuOn: { restored: set } }
+  if (!Object.keys(set).length && !addRaw.length) { p.errors.push('GPU access is already on.'); return p }
+  if (Object.keys(set).length) { p.ops.push({ kind: 'config', set, delete: [] }); addConfigChanges(p, g, set, []) }
+  if (addRaw.length) {
+    rawChanges(p, g, [], addRaw)
+    for (const [k, v] of addRaw) if (k === 'lxc.mount.entry') { const src = v.split(/\s+/)[0]; if (/^\/dev\/(dri\/|nvidia)/.test(src) && !/\/(dri|nvidia-caps)$/.test(src)) p.deviceChecks.push({ path: src, present: true }) }
+  }
+  if (g.running) p.warnings.push('Applies the next time the container starts.')
+  p.meta = { gpuOn: { restored: set, rawRestored: addRaw } }
   return p
 }
 
-// ── raw lines: shown, previewed, converted ────────────────────────────────────
+// ── raw lines: through the whole-file writer ──────────────────────────────────
+
+/** Record raw-line changes on a plan: they go through rawfile.ts, never the API, and wait for the next start. */
+export function rawChanges(p: Plan, g: GuestCtx, remove: Array<[string, string]>, add: Array<[string, string]>, words?: (k: string, v: string, op: 'add' | 'remove') => string): void {
+  for (const [k, v] of remove) p.changes.push({ key: k, label: 'Raw line', before: v, after: null, words: words?.(k, v, 'remove') ?? `Remove ${k}: ${v} — applies the next time the container starts`, restart: 'restart' })
+  for (const [k, v] of add) p.changes.push({ key: k, label: 'Raw line', before: null, after: v, words: words?.(k, v, 'add') ?? `Add ${k}: ${v} — applies the next time the container starts`, restart: 'restart' })
+  p.rawFile = { remove: [...(p.rawFile?.remove ?? []), ...remove], add: [...(p.rawFile?.add ?? []), ...add] }
+  p.confirmName = true
+  if (!p.checks.some(c => /whole config file/.test(c)))
+    p.checks.push('Proxmox’s API refuses lxc.* lines, so these are written by rewriting the whole config file over the node login: compared by hash first, temp file and rename, read back byte for byte, then read through the API.')
+  if (g.running && !p.warnings.some(w => /not changed while it runs/.test(w))) p.warnings.push('The running container is not changed while it runs: raw lines apply the next time it starts.')
+}
 
 export interface RawEdit { remove?: Array<[string, string]>; add?: Array<[string, string]>; change?: Array<{ from: [string, string]; to: [string, string] }> }
 
-/**
- * A raw-line edit is previewed in full and then refused: the API cannot write lxc.* keys. The preview still lists
- * every line, so the person can see what the equivalent devN conversion would do instead.
- */
+/** A raw-line edit: every line added or removed, written through the whole-file writer. */
 export function buildRawEditPlan(g: GuestCtx, edit: RawEdit): Plan {
   const p = emptyPlan()
   p.confirmName = true
+  if (g.type !== 'lxc') { p.errors.push('Raw lxc lines are a container feature.'); return p }
   const lines = rawLines(g.config)
   const has = (l: [string, string]) => lines.some(x => x[0] === l[0] && x[1] === l[1])
-  for (const l of edit.remove ?? []) { if (!has(l)) p.errors.push(`${l[0]}: ${l[1]} is not on this guest.`); else p.changes.push({ key: l[0], label: 'Raw line', before: l[1], after: null, words: `Remove ${l[0]}: ${l[1]}`, restart: g.running ? 'restart' : 'live' }) }
-  for (const l of edit.add ?? []) p.changes.push({ key: l[0], label: 'Raw line', before: null, after: l[1], words: `Add ${l[0]}: ${l[1]}`, restart: g.running ? 'restart' : 'live' })
-  for (const c of edit.change ?? []) { if (!has(c.from)) p.errors.push(`${c.from[0]}: ${c.from[1]} is not on this guest.`); else p.changes.push({ key: c.from[0], label: 'Raw line', before: c.from[1], after: c.to[1], words: `Change ${c.from[0]}: ${c.from[1]} → ${c.to[1]}`, restart: g.running ? 'restart' : 'live' }) }
-  p.checks.push(`${lines.length} raw line(s) on the guest now; ${lines.length - (edit.remove?.length ?? 0) - 0 + (edit.add?.length ?? 0)} after this edit`)
-  p.errors.push('Proxmox’s API does not accept lxc.* lines from any API token (to set or to delete), and HyperProx writes guest configs only through the API. Use “Convert to devN” for GPU lines, or edit these lines on the node by hand.')
+  const remove: Array<[string, string]> = [], add: Array<[string, string]> = []
+  const ok = (l: unknown): l is [string, string] => Array.isArray(l) && l.length === 2 && typeof l[0] === 'string' && typeof l[1] === 'string' && /^lxc\.[A-Za-z0-9_.]+$/.test(l[0]) && !/[\r\n\0]/.test(l[1])
+  for (const l of [...(edit.remove ?? []), ...(edit.add ?? []), ...(edit.change ?? []).flatMap(c => [c?.from, c?.to])]) if (!ok(l)) { p.errors.push('Each raw line is an lxc.* key and a one-line value.'); return p }
+  for (const l of edit.remove ?? []) { if (!has(l)) p.errors.push(`${l[0]}: ${l[1]} is not on this guest.`); else remove.push(l) }
+  for (const c of edit.change ?? []) { if (!has(c.from)) p.errors.push(`${c.from[0]}: ${c.from[1]} is not on this guest.`); else { remove.push(c.from); add.push(c.to) } }
+  for (const l of edit.add ?? []) { if (has(l)) p.errors.push(`${l[0]}: ${l[1]} is already there.`); else add.push(l) }
+  if (p.errors.length) return p
+  if (!remove.length && !add.length) { p.errors.push('Nothing to change.'); return p }
+  rawChanges(p, g, remove, add)
+  p.checks.push(`${lines.length} raw line(s) now; ${lines.length - remove.length + add.length} after this change`)
+  const gpuAdded = add.filter(l => detectGpu('lxc', { lxc: [l] } as any).entries.length)
+  if (gpuAdded.length) p.meta = { gpuManagedRaw: gpuAdded }
   return p
 }
 
@@ -277,7 +328,8 @@ export function buildGpuConvertPlan(g: GuestCtx, inv: NodeInventory | null): Pla
 
 // ── VMs: PCI passthrough ─────────────────────────────────────────────────────
 
-export interface HostpciEdit { add?: { deviceId: string; pcie?: boolean; xvga?: boolean; allFunctions?: boolean }; remove?: string; ackResetRisk?: boolean; ackDisplayGpu?: boolean; ackUnknown?: boolean }
+/** Risk acknowledgements are never part of the edit: they are ticked at apply (extraConfirm). */
+export interface HostpciEdit { add?: { deviceId: string; pcie?: boolean; xvga?: boolean; allFunctions?: boolean }; remove?: string }
 
 export function buildHostpciPlan(g: GuestCtx, inv: NodeInventory, e: HostpciEdit, guests: GuestRef[]): Plan {
   const p = emptyPlan()
@@ -304,9 +356,9 @@ export function buildHostpciPlan(g: GuestCtx, inv: NodeInventory, e: HostpciEdit
     p.errors.push(`Refused: ${dev.name} is in use by running ${names.join(', ')}. Passing it to a VM takes it away from them.`)
     return p
   }
-  if (dev.resetRisk) { p.warnings.push(dev.resetRisk); if (!e.ackResetRisk) p.extraConfirm.push('reset-risk') }
-  if (dev.bootDisplay) { p.warnings.push(`${dev.name} is the node’s display GPU: the host loses its console.`); if (!e.ackDisplayGpu) p.extraConfirm.push('display-gpu') }
-  if (dev.unknown && !e.ackUnknown) p.extraConfirm.push('unknown-device')
+  if (dev.resetRisk) { p.warnings.push(dev.resetRisk); p.extraConfirm.push('reset-risk') }
+  if (dev.bootDisplay) { p.warnings.push(`${dev.name} is the node’s display GPU: the host loses its console.`); p.extraConfirm.push('display-gpu') }
+  if (dev.unknown) p.extraConfirm.push('unknown-device')
   const addr = e.add.allFunctions ? dev.pciAddress!.slice(0, -2) : dev.pciAddress!
   const parts = [addr, ...(e.add.pcie ? ['pcie=1'] : []), ...(e.add.xvga ? ['x-vga=1'] : [])]
   if (e.add.pcie && !/q35/.test(str(g.config.machine))) p.warnings.push('pcie=1 needs the q35 machine type; this VM is not on q35.')
@@ -330,7 +382,7 @@ export function sharers(g: { vmid: number; node: string }, devices: Device[]): A
 
 // ── other shareable devices: serial sticks, USB, capture, TPUs, tun ───────────
 
-export interface DeviceGrant { deviceId: string; gid?: number; ackUnknown?: boolean; ackShared?: boolean; remove?: string }
+export interface DeviceGrant { deviceId: string; gid?: number; remove?: string }
 
 /**
  * Give a guest a non-GPU device from its node's inventory, by its most stable reference: the by-id link for a
@@ -354,14 +406,15 @@ export function buildDeviceGrantPlan(g: GuestCtx, inv: NodeInventory, e: DeviceG
     return p
   }
   if (dev.kind === 'gpu' || dev.kind === 'pci') { p.errors.push('GPUs and PCI devices have their own editor.'); return p }
-  if (dev.unknown && !e.ackUnknown) p.extraConfirm.push('unknown-device')
+  if (dev.unknown) p.extraConfirm.push('unknown-device')
+  if (e.gid !== undefined && !isGid(e.gid)) { p.errors.push('A group id is a whole number from 0 to 65535.'); return p }
   const others = [...new Map(dev.usedBy.filter(u => u.vmid !== g.vmid).map(u => [u.vmid, u])).values()]
   const exclusive = dev.kind === 'serial' || dev.shareAs.includes('lxc-dev-exclusive')
   if (exclusive && others.length) {
     const words = others.map(u => `${u.type === 'lxc' ? 'CT' : 'VM'} ${u.vmid} '${u.name}' (${u.running ? 'running' : 'stopped'})`).join(', ')
     if (others.some(u => u.running)) { p.errors.push(`Only one guest can use ${dev.name} at a time; it is used by ${words}.`); return p }
     p.warnings.push(`Only one guest can use this at a time; it is also set on ${words}, which must not run at the same time.`)
-    if (!e.ackShared) p.extraConfirm.push('exclusive-device')
+    p.extraConfirm.push('exclusive-device')
   }
   let set: Record<string, string> = {}
   if (g.type === 'lxc') {
@@ -372,11 +425,13 @@ export function buildDeviceGrantPlan(g: GuestCtx, inv: NodeInventory, e: DeviceG
     set = devEntries(g, [{ path, gid: e.gid }], p)
   } else {
     if (dev.shareAs.includes('vm-usb')) {
-      const twin = dev.notes.some(n => n.startsWith('These look identical'))
+      // Any other device with the same vendor:product on this node makes vendor:product ambiguous; QEMU cannot
+      // pick by serial, so it goes by the physical port.
+      const twin = inv.devices.some(o => o !== dev && o.vendorProduct && o.vendorProduct === dev.vendorProduct)
       const host = twin || !dev.vendorProduct ? dev.port : dev.vendorProduct
       if (!host) { p.errors.push('This USB device has no stable identity to pass.'); return p }
       set = { [`usb${freeIndex('usb', Object.keys(g.config), 13)}`]: `host=${host}` }
-      if (twin) p.warnings.push('These look identical; they’re told apart only by the USB port they’re plugged into, so keep them in the same ports.')
+      if (twin) p.warnings.push(dev.serial ? 'Another device on this node has the same vendor:product. Proxmox cannot pick a USB device by serial number, so this one is passed by the USB port it is plugged into: keep it in that port.' : 'These look identical; they’re told apart only by the USB port they’re plugged into, so keep them in the same ports.')
     } else { p.errors.push(`${dev.name} cannot be given to a VM except by PCI passthrough.`); return p }
   }
   if (!Object.keys(set).length) { p.errors.push('This guest already has that device.'); return p }
@@ -397,7 +452,7 @@ export function buildDeviceGrantPlan(g: GuestCtx, inv: NodeInventory, e: DeviceG
  * for root@pam alike (`Unknown option: lxc.cgroup2.devices.allow`).
  */
 export const PORTABLE_WHY_RAW = 'A devN entry whose device is missing on a node stops the container from starting there (Proxmox: “Device … does not exist”), so a portable config has to use lxc.mount.entry lines marked optional, which LXC skips when the device is absent.'
-export const PORTABLE_NO_WRITER = 'Proxmox’s API does not accept lxc.* lines from any caller — an API token or root@pam — and HyperProx writes guest configs only through the API. These lines are shown so they can be added on the node; HyperProx does not write them.'
+export const PORTABLE_NO_WRITER = 'Proxmox’s API does not accept lxc.* lines from any caller (an API token or root@pam), so HyperProx writes these by rewriting the whole config file over the node login, under its compare-and-swap guards.'
 
 export interface PortableTarget { node: string; inv: NodeInventory }
 
@@ -432,15 +487,26 @@ export function buildPortableGpuPlan(g: GuestCtx, targets: PortableTarget[], gro
   const have = rawLines(g.config)
   const toAdd = lines.filter(([k, v]) => !have.some(h => h[0] === k && h[1] === v))
   for (const n of perNode) p.checks.push(`${n.node}: ${n.gpu}${n.paths.length ? ` (${n.paths.join(', ')}; majors ${n.majors.join(', ') || 'none'})` : ''}`)
-  for (const [k, v] of toAdd) p.changes.push({ key: k, label: 'Raw line (optional)', before: null, after: v, words: `Add ${k}: ${v}`, restart: g.running ? 'restart' : 'live' })
   const devs = detectGpu('lxc', g.config).entries.filter(e => e.via === 'devN')
-  if (devs.length) p.warnings.push(`The devN GPU entries (${devs.map(e => e.key).join(', ')}) would have to go: they stop the container starting on a node without that device.`)
-  p.warnings.push(PORTABLE_WHY_RAW)
-  if (Number(g.config.unprivileged) === 1) {
-    p.warnings.push(`Unprivileged container: a bind-mounted render node keeps its host group, which shows as nogroup inside, so it is usable only if the node gives others access (mode 0666) or the container maps the host’s render group.${groups?.render !== undefined ? ` Inside, render is gid ${groups.render}${groups.video !== undefined ? ` and video is gid ${groups.video}` : ''}.` : ''} NVIDIA nodes are 0666 by default; /dev/dri render nodes usually are not.`)
+  if (devs.length) {
+    // A devN for a device a node lacks stops the start there, so the devN GPU entries go in the same change.
+    const del = devs.map(e => e.key)
+    p.ops.push({ kind: 'config', set: {}, delete: del })
+    addConfigChanges(p, g, {}, del)
+    p.warnings.push(`The devN GPU entries (${del.join(', ')}) are removed: they would stop the container starting on a node without that device.`)
   }
-  if (!toAdd.length) p.checks.push('Every portable line is already in the config.')
-  p.errors.push(PORTABLE_NO_WRITER)
-  p.meta = { portable: { lines: toAdd } }
+  if (toAdd.length) rawChanges(p, g, [], toAdd, (k, v) => `Add ${k}: ${v} (optional; applies the next time the container starts)`)
+  p.warnings.push(PORTABLE_WHY_RAW)
+  p.checks.push(PORTABLE_NO_WRITER)
+  if (Number(g.config.unprivileged) === 1) {
+    const here = targets.find(t => t.node === g.node)
+    const dri = here?.inv.devices.some(d => d.kind === 'gpu' && d.vendor !== 'nvidia')
+    p.warnings.push(`Group access in an unprivileged container: a bind-mounted device keeps its host owner and mode, and the host's render group shows as nogroup inside.${groups?.render !== undefined ? ` Inside, render is gid ${groups.render}${groups.video !== undefined ? ` and video is gid ${groups.video}` : ''}.` : ''} NVIDIA device nodes are mode 0666 on the host, so they work. Intel/AMD render nodes are 0660 (root:render) on the host, so inside they are visible but not usable until each iGPU node allows it (a udev rule giving renderD* mode 0666, or a render-group idmap with a matching /etc/subgid entry on every node). HyperProx does not change node files; this is not done for you.${dri ? '' : ''}`)
+  }
+  if (!toAdd.length && !devs.length) p.errors.push('Every portable line is already in the config.')
+  const herePaths = new Set(targets.find(t => t.node === g.node)?.inv.devices.filter(d => d.kind === 'gpu').flatMap(d => d.paths) ?? [])
+  const first = toAdd.map(([, v]) => v.split(/\s+/)[0]).find(x => herePaths.has(x) && /renderD|nvidia0/.test(x))
+  if (first) p.deviceChecks.push({ path: first, present: true })
+  p.meta = { portable: { lines: toAdd }, gpuManagedRaw: toAdd }
   return p
 }

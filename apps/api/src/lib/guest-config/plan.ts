@@ -7,6 +7,7 @@
 //  then checks plan.expect against a fresh read.
 // =============================================================================
 
+import { isIP } from 'node:net'
 import {
   type GuestType, type PveConfig, parseProps, getProp, setProp, buildProps, str, normalise, comparable,
   isEditable, isRaw, isDeviceKey, isVolatile, rawLines, freeIndex,
@@ -58,6 +59,15 @@ export interface Plan {
   confirmName: boolean
   /** Kept with the history row (e.g. the exact entries a "GPU off" removed). */
   meta?: Record<string, unknown>
+  /**
+   * Raw lxc.* lines to change in the guest's config file. The API refuses these, so they go through the whole-file
+   * writer (rawfile.ts) under its guards. Applies the next time the container starts.
+   */
+  rawFile?: { remove: Array<[string, string]>; add: Array<[string, string]> }
+  /** Entries the person may add to this change ("remove these too?"); not part of it unless chosen. */
+  options?: Array<{ key: string; value: string; label: string }>
+  /** When rawFile is set: the main section's raw lines the API must read back afterwards, in order. */
+  expectRaw?: Array<[string, string]>
 }
 
 export interface GuestCtx {
@@ -202,7 +212,7 @@ export interface PathCheck {
 
 const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/
 const CIDR4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}\/([0-9]|[12]\d|3[0-2])$/
-const IPV6ISH = /^[0-9a-f:]+$/i
+const isIp = (a: string) => isIP(a) !== 0
 const BRIDGE = /^[a-zA-Z][a-zA-Z0-9_.-]{0,14}$/
 const TAG = /^[a-z0-9_][a-z0-9_\-+.]*$/i
 const DOMAIN = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i
@@ -265,7 +275,7 @@ export function buildEditPlan(g: GuestCtx, e: StructuredEdit, pathChecks: Record
     if (e.nameserver === null || e.nameserver.trim() === '') want('nameserver', null)
     else {
       const list = e.nameserver.trim().split(/[\s,]+/)
-      if (list.some(a => !IPV4.test(a) && !IPV6ISH.test(a))) p.errors.push('DNS servers must be IP addresses, separated by spaces.')
+      if (list.some(a => !isIp(a))) p.errors.push('DNS servers must be IPv4 or IPv6 addresses, separated by spaces.')
       else want('nameserver', list.join(' '))
     }
   }
@@ -497,7 +507,11 @@ function valueLanded(e: Expect, actual: string | undefined, pending: Map<string,
   if (e.alloc) {
     if (!(got.head ?? '').startsWith(`${e.alloc.storage}:`)) return `${e.key} is on ${got.head}; expected a new volume on ${e.alloc.storage}`
     if (sizeGb(getProp(got, 'size')) !== e.alloc.sizeGb) return `${e.key} is ${getProp(got, 'size')}; expected ${e.alloc.sizeGb}G`
-  } else if ((want.head ?? '') !== (got.head ?? '')) return `${e.key} is ${actual}; expected ${e.value}`
+  } else if ((want.head ?? '') !== (got.head ?? '')) {
+    // A new VM NIC is written "virtio,bridge=…" and read back "virtio=<MAC>,bridge=…": the model gained its MAC.
+    const modelGotMac = want.head && !got.head && got.pairs.some(x => x[0] === want.head && x[1])
+    if (!modelGotMac) return `${e.key} is ${actual}; expected ${e.value}`
+  }
   // Proxmox adds a MAC to a new NIC and a size to a new volume; everything we set must be there as set.
   for (const [k, v] of want.pairs) {
     const gv = got.pairs.find(x => x[0] === k || (v === null && x[0] === k))
@@ -505,7 +519,7 @@ function valueLanded(e: Expect, actual: string | undefined, pending: Map<string,
     if (!gv) return `${e.key} lost ${k}; expected ${e.value}, read ${actual}`
     if (v !== null && gv[1] !== v) return `${e.key} has ${k}=${gv[1]}; expected ${k}=${v}`
   }
-  const extras = got.pairs.filter(x => !want.pairs.some(w => w[0] === x[0]) && !['hwaddr', 'size', 'type'].includes(x[0]) && !/^(virtio|e1000|e1000e|rtl8139|vmxnet3)$/.test(x[0]))
+  const extras = got.pairs.filter(x => !want.pairs.some(w => w[0] === x[0]) && x[0] !== want.head && !['hwaddr', 'size', 'type'].includes(x[0]) && !/^(virtio|e1000|e1000e|rtl8139|vmxnet3)$/.test(x[0]))
   if (extras.length) return `${e.key} gained ${extras.map(x => x[0]).join(', ')}; read ${actual}`
   return null
 }
@@ -531,7 +545,7 @@ export function verifyOutcome(type: GuestType, before: PveConfig, after: PveConf
   const SECRET = /(pass(word|wd)?|secret|token|sshkeys|apikey)/i
   const b = comparable(before), a = comparable(after)
   for (const m of [a, b]) for (const k of m.keys()) if (SECRET.test(k)) m.set(k, `set (${m.get(k)!.length} chars, hidden)`)
-  const touched = new Set(p.touched)
+  const touched = new Set([...p.touched, ...(p.expectRaw ? ['lxc'] : [])])
   const mayAppear = (k: string) => p.mayAppear.some(x => (x.endsWith('*') ? k.startsWith(x.slice(0, -1)) : x === k))
   for (const [k, v] of b) {
     if (touched.has(k)) continue
@@ -544,15 +558,20 @@ export function verifyOutcome(type: GuestType, before: PveConfig, after: PveConf
   const rawBefore = rb.length + Object.keys(before).filter(k => k !== 'lxc' && isRaw(k)).length
   const rawAfter = ra.length + Object.keys(after).filter(k => k !== 'lxc' && isRaw(k)).length
   const plannedRaw = p.touched.filter(k => isRaw(k))
-  if (!plannedRaw.length && rawBefore !== rawAfter) problems.push(`Raw lines: ${rawBefore} before, ${rawAfter} after`)
-  if (JSON.stringify(rb) !== JSON.stringify(ra)) { if (!problems.some(x => x.startsWith('lxc'))) problems.push('The raw lxc.* lines are not the same lines after the write') }
+  if (p.expectRaw) {
+    // A whole-file write: the API must read back exactly the planned raw lines (Proxmox still parses the file).
+    if (JSON.stringify(ra) !== JSON.stringify(p.expectRaw)) problems.push(`The raw lxc.* lines read back through the API are not the planned ones (${p.expectRaw.length} planned, ${ra.length} read)`)
+  } else {
+    if (!plannedRaw.length && rawBefore !== rawAfter) problems.push(`Raw lines: ${rawBefore} before, ${rawAfter} after`)
+    if (JSON.stringify(rb) !== JSON.stringify(ra)) { if (!problems.some(x => x.startsWith('lxc'))) problems.push('The raw lxc.* lines are not the same lines after the write') }
+  }
   return { ok: problems.length === 0, problems, pendingKeys: pendingKeysOf(pending), rawBefore, rawAfter, unknownBefore: inv(before), unknownAfter: inv(after) }
 }
 
 // ── revert to a stored version ────────────────────────────────────────────────
 
 /** A plan that brings the editable keys back to `target`. Raw and size changes are listed, never written. */
-export function buildRevertPlan(g: GuestCtx, target: PveConfig): Plan {
+export function buildRevertPlan(g: GuestCtx, target: PveConfig, pathChecks: Record<string, PathCheck> = {}): Plan {
   const p = emptyPlan()
   const set: Record<string, string> = {}
   const del: string[] = []
@@ -564,13 +583,19 @@ export function buildRevertPlan(g: GuestCtx, target: PveConfig): Plan {
     const c = cur[k] === undefined ? null : (k === 'lxc' ? JSON.stringify(rawLines(cur)) : str(cur[k]))
     const t = target[k] === undefined ? null : (k === 'lxc' ? JSON.stringify(rawLines(target)) : str(target[k]))
     if ((c === null ? null : normalise(k, c)) === (t === null ? null : normalise(k, t))) continue
-    if (k === 'lxc' || isRaw(k)) { notReverted.push(`${k} (raw: never written by a revert)`); continue }
+    if (k === 'lxc') continue   // raw lines are reverted through the whole-file writer (service.ts)
+    if (t !== null && t.includes('**redacted**')) { notReverted.push(`${k} (its value held a secret, which history does not keep)`); continue }
+    if (isRaw(k)) { notReverted.push(`${k} (raw: never written by a revert)`); continue }
     if (/^unused\d+$/.test(k)) continue   // follows the mount points below
     if (/^(rootfs|scsi\d+|virtio\d+|sata\d+|ide\d+)$/.test(k)) { notReverted.push(`${k} (disk: sizes are never shrunk)`); continue }
     if (/^mp\d+$/.test(k)) {
       if (t === null) { del.push(k); if (!(parseProps(c!).head ?? '').startsWith('/')) p.mayAppear.push('unused*'); continue }
       const tHead = parseProps(t).head ?? ''
-      if (tHead.startsWith('/')) { set[k] = t; continue }
+      if (tHead.startsWith('/')) {
+        // Putting shared=1 back is the same claim as setting it: the path must be on every node, checked now.
+        if (getProp(parseProps(t), 'shared') === '1' && getProp(parseProps(c ?? ''), 'shared') !== '1' && !sharedAllowed(tHead, pathChecks, p)) continue
+        set[k] = t; continue
+      }
       // A volume can come back only if it is still here as an unused disk (or already mounted, with other options).
       const unusedKey = Object.keys(cur).find(u => /^unused\d+$/.test(u) && str(cur[u]) === tHead)
       const curHead = c === null ? null : parseProps(c).head

@@ -22,12 +22,14 @@ import {
   type GuestCtx, type Plan, type PlanKind, type StructuredEdit, type PathCheck, type PendingRow, type Outcome,
 } from './plan'
 import {
-  detectGpu, buildGpuGrantPlan, buildGpuRevokePlan, buildGpuOffPlan, buildGpuOnPlan, buildGpuConvertPlan, buildRawEditPlan,
+  detectGpu, rawChanges, buildGpuGrantPlan, buildGpuRevokePlan, buildGpuOffPlan, buildGpuOnPlan, buildGpuConvertPlan, buildRawEditPlan,
   buildHostpciPlan, buildDeviceGrantPlan, containerNvidiaVersion, driverMatch, sharers, buildPortableGpuPlan, PORTABLE_WHY_RAW, PORTABLE_NO_WRITER,
-  type GpuGrant, type GpuOffRecord, type RawEdit, type HostpciEdit, type DeviceGrant,
+  type GpuGrant, type GpuOffRecord, type GpuOffInput, type RawEdit, type HostpciEdit, type DeviceGrant,
 } from './gpu'
 import { PROBE_SCRIPT, parseProbe, attachUsage, type GuestRef, type NodeInventory } from './devices'
-import { openGpuOff, managedGpuEntries, maskSecrets, isSecretKey, type HistoryStore, type HistoryRow } from './history/store'
+import { openGpuOff, managedGpuEntries, managedRawLines, type HistoryStore, type HistoryRow } from './history/store'
+import { maskConfig, isSecretKey, redactConfFile, redactText, redactValue, REDACTED } from './secrets'
+import { splitConf, rewriteRawLines, readScript, writeScript, parseRead, sha256 } from './rawfile'
 import { vpnStatuses, vpnStatusSource, type VpnStatusSource } from './vpn'
 
 // ── what the service reaches ──────────────────────────────────────────────────
@@ -71,7 +73,7 @@ export type PreviewInput =
   | { kind: 'revert'; historyId: string; which?: 'before' | 'after' }
   | { kind: 'gpu-grant'; grant: GpuGrant }
   | { kind: 'gpu-revoke' }
-  | { kind: 'gpu-off' }
+  | { kind: 'gpu-off'; off?: GpuOffInput }
   | { kind: 'gpu-on' }
   | { kind: 'gpu-convert' }
   | { kind: 'raw'; raw: RawEdit }
@@ -97,6 +99,8 @@ export interface Preview {
   counts: { raw: number; unknown: number }
   /** "Applies on next restart": keys already pending before this change. */
   pendingBefore: string[]
+  /** The whole-file write for raw lines: the file and its hash at preview, and the exact bytes to write. */
+  file?: { sha: string; before: string; after: string }
   quorate: boolean
   createdAt: number
   expiresAt: number
@@ -175,9 +179,25 @@ export class GuestConfigService {
   }
 
   /** The node's device inventory, from one read-only probe, cached a minute. */
-  async inventory(node: string, refresh = false): Promise<NodeInventory> {
+  private nodeList: { at: number; names: string[] } | null = null
+  /** Node names Proxmox knows, cached a minute: nothing is probed, or cached, for a name it does not know. */
+  async knownNode(node: string): Promise<boolean> {
+    if (!this.nodeList || this.d.now() - this.nodeList.at > INVENTORY_TTL_MS) {
+      const rows = await this.d.pve.get<any[]>('/nodes').catch(() => null)
+      if (rows) this.nodeList = { at: this.d.now(), names: rows.map(r => String(r.node)) }
+    }
+    return !!this.nodeList?.names.includes(node)
+  }
+
+  /**
+   * The node's device inventory, from one read-only probe, cached a minute. `cachedOnly` never runs a node
+   * command (viewers): it answers from the cache, or with a note that nothing has been read yet.
+   */
+  async inventory(node: string, refresh = false, opts: { cachedOnly?: boolean } = {}): Promise<NodeInventory> {
+    if (!(await this.knownNode(node))) throw new GuestConfigRefusal('No such node.', 'not-found')
     const hit = this.inv.get(node)
     if (!refresh && hit && this.d.now() - hit.at < INVENTORY_TTL_MS) return hit.inv
+    if (opts.cachedOnly) return hit?.inv ?? { node, devices: [], majors: {}, nvidiaNodes: [], collectedAt: this.d.now(), problem: `${node}’s devices have not been read yet; an admin can refresh them.` }
     let inv: NodeInventory
     const r = await this.d.shell.run(node, PROBE_SCRIPT, 30_000).catch((e: any) => ({ code: -1, output: '', err: String(e?.message ?? e) }) as any)
     if (!r) inv = { node, devices: [], majors: {}, nvidiaNodes: [], collectedAt: this.d.now(), problem: `No login for ${node}: add one under Settings → Nodes to list its devices.` }
@@ -204,30 +224,37 @@ export class GuestConfigService {
   }
 
   /** The guest drill-down's Config tab: fields, raw and unknown keys, pending keys, GPU, who shares its devices. */
-  async view(g: GuestId) {
+  async view(g: GuestId, opts: { cachedOnly?: boolean } = {}) {
     const ctx = await this.readGuest(g)
-    const inv = await this.inventory(g.node).catch(() => null)
+    const inv = await this.inventory(g.node, false, opts).catch(() => null)
     const gpu = detectGpu(g.type, ctx.config, inv)
-    const keys = keyInventory(g.type, maskSecrets(ctx.config))
+    const keys = keyInventory(g.type, maskConfig(ctx.config))
     const rows = await this.d.history.list(`${g.type}/${g.vmid}`, 50).catch(() => [] as HistoryRow[])
     const off = openGpuOff(rows)
     return {
       guest: { ...g, name: ctx.name, running: ctx.running, haManaged: ctx.haManaged },
-      config: maskSecrets(ctx.config), digest: ctx.config.digest ?? '',
+      config: maskConfig(ctx.config), digest: ctx.config.digest ?? '',
       secretKeys: Object.keys(ctx.config).filter(isSecretKey),
       keys: { modelled: keys.modelled, raw: keys.raw, unknown: keys.unknown, rawCount: keys.raw.length, unknownCount: keys.unknown.length },
-      pending: { keys: ctx.pendingKeys, rows: ctx.pending.filter(r => r.pending !== undefined || r.delete) },
-      gpu: { ...gpu, toggle: gpu.entries.some(e => e.via === 'devN') ? 'on' : off ? 'off' : gpu.entries.length ? 'raw-only' : 'none', offSince: off?.createdAt ?? null, managed: managedGpuEntries(rows) },
+      pending: { keys: ctx.pendingKeys, rows: ctx.pending.filter(r => r.pending !== undefined || r.delete).map(r => ({ ...r, value: r.value === undefined ? undefined : redactValue(r.key, str(r.value)), pending: r.pending === undefined ? undefined : redactValue(r.key, str(r.pending)) })) },
+      gpu: {
+        ...gpu, toggle: off ? 'off' : gpu.entries.length ? 'on' : 'none', offSince: off?.createdAt ?? null,
+        managed: managedGpuEntries(rows), managedRaw: managedRawLines(rows),
+      },
       sharers: inv ? sharers(g, inv.devices) : [],
       historyCount: rows.length,
     }
   }
 
   /** Read-only GPU detail, with the NVIDIA userland check for a running container. */
-  async gpuDetail(g: GuestId) {
+  async gpuDetail(g: GuestId, opts: { cachedOnly?: boolean } = {}) {
     const ctx = await this.readGuest(g)
-    const inv = await this.inventory(g.node).catch(() => null)
+    const inv = await this.inventory(g.node, false, opts).catch(() => null)
     const gpu = detectGpu(g.type, ctx.config, inv)
+    if (opts.cachedOnly) {
+      // A viewer never makes HyperProx log in to a node: no looking inside, no driver check.
+      return { gpu, driver: null, groups: null, inUse: null, portable: { whyRaw: PORTABLE_WHY_RAW, noWriter: PORTABLE_NO_WRITER }, devices: inv?.devices.filter(d => d.kind === 'gpu') ?? [], inventoryProblem: inv?.problem ?? null, sharers: inv ? sharers(g, inv.devices) : [] }
+    }
     let driver: ReturnType<typeof driverMatch> | null = null
     if (g.type === 'lxc' && gpu.vendors.includes('nvidia')) {
       let guestVer: string | null = null
@@ -245,8 +272,8 @@ export class GuestConfigService {
     // The GPU it is using now: the first GPU device node visible inside, named from this node's inventory.
     let inUse: { device: string; name: string } | null = null
     if (g.type === 'lxc' && ctx.running && gpu.entries.length) {
-      const r = await this.d.shell.run(g.node, `pct exec ${g.vmid} -- sh -c 'ls -1 /dev/nvidia0 /dev/dri/renderD* 2>/dev/null'`, 15_000).catch(() => null)
-      const dev = r?.output.split('\n').map(l => l.trim()).find(Boolean)
+      const r = await this.d.shell.run(g.node, `pct exec ${g.vmid} -- sh -c 'for p in /dev/nvidia0 /dev/dri/renderD*; do [ -c "$p" ] && echo "$p"; done; echo HPX-LOOKED'`, 15_000).catch(() => null)
+      const dev = r?.output.split('\n').map(l => l.trim()).find(l => l && l !== 'HPX-LOOKED')
       if (dev) inUse = { device: dev, name: inv?.devices.find(d => d.kind === 'gpu' && d.paths.includes(dev))?.name ?? dev }
     }
     return { gpu, driver, groups, inUse, portable: { whyRaw: PORTABLE_WHY_RAW, noWriter: PORTABLE_NO_WRITER }, devices: inv?.devices.filter(d => d.kind === 'gpu') ?? [], inventoryProblem: inv?.problem ?? null, sharers: inv ? sharers(g, inv.devices) : [] }
@@ -302,13 +329,33 @@ export class GuestConfigService {
         if (!row || row.guest !== `${g.type}/${g.vmid}`) throw new GuestConfigRefusal('No such version for this guest.', 'not-found')
         const target = input.which === 'after' ? row.after : row.before
         if (!target) throw new GuestConfigRefusal('That version has no config to revert to.', 'not-found')
-        plan = buildRevertPlan(ctx, target); kind = 'revert'
+        // Putting shared=1 back is checked on every node, exactly as setting it is.
+        const checks: Record<string, PathCheck> = {}
+        for (const [k, v] of Object.entries(target)) {
+          if (!/^mp\d+$/.test(k)) continue
+          const head = str(v).split(',')[0]
+          if (head.startsWith('/') && /(^|,)shared=1(,|$)/.test(str(v))) checks[head] ??= await this.checkPath(head).catch((e: any) => ({ path: head, ok: false, missing: [], unverified: [String(e?.message ?? e)], detail: [] }))
+        }
+        plan = buildRevertPlan(ctx, target, checks); kind = 'revert'
         plan.checks.push(`Reverting to the config ${input.which === 'after' ? 'after' : 'before'} the change of ${row.createdAt.toISOString()} by ${row.actor}`)
+        if (g.type === 'lxc') {
+          // Raw lines come back through the whole-file writer: from the stored file when there is one.
+          const fileText = (row.meta as any)?.[input.which === 'after' ? 'fileAfter' : 'fileBefore']
+          const want = typeof fileText === 'string' ? splitConf(fileText).rawMain : rawLines(target)
+          const have = rawLines(ctx.config)
+          const same = (a: [string, string], b: [string, string]) => a[0] === b[0] && a[1] === b[1]
+          const remove = have.filter(h => !want.some(w => same(w, h)))
+          const add = want.filter(w => !have.some(h => same(w, h)))
+          const secret = add.filter(([, v]) => v.includes(REDACTED))
+          if (secret.length) plan.warnings.push(`Not reverted: ${secret.map(([k]) => k).join(', ')} (the value held a secret, which history does not keep).`)
+          const addOk = add.filter(l => !secret.includes(l))
+          if (remove.length || addOk.length) { rawChanges(plan, ctx, remove, addOk); plan.errors = plan.errors.filter(e => !/^Nothing to revert/.test(e)) }
+        }
         break
       }
       case 'gpu-grant': plan = buildGpuGrantPlan(ctx, await this.inventory(g.node, true), input.grant, await this.guestsOn(g.node)); kind = 'device'; break
       case 'gpu-revoke': plan = buildGpuRevokePlan(ctx, managedGpuEntries(await rows())); kind = 'device'; break
-      case 'gpu-off': plan = buildGpuOffPlan(ctx); kind = 'gpu-off'; break
+      case 'gpu-off': { const r = await rows(); plan = buildGpuOffPlan(ctx, { dev: managedGpuEntries(r), raw: managedRawLines(r) }, input.off ?? {}, await this.inventory(g.node).catch(() => null)); kind = 'gpu-off'; break }
       case 'gpu-on': {
         const off = openGpuOff(await rows())
         plan = buildGpuOnPlan(ctx, ((off?.meta as any)?.gpuOff ?? null) as GpuOffRecord | null); kind = 'gpu-on'
@@ -323,7 +370,7 @@ export class GuestConfigService {
         const eligible = (input.nodes?.length ? input.nodes.filter(n => all.includes(n)) : all)
         const targets = await Promise.all(eligible.map(async n => ({ node: n, inv: await this.inventory(n, true) })))
         const det = ctx.running ? await this.gpuDetail(g).catch(() => null) : null
-        plan = buildPortableGpuPlan(ctx, targets.filter(t => t.inv.problem || t.inv.devices.some(d => d.kind === 'gpu')), det?.groups ?? null); kind = 'raw'
+        plan = buildPortableGpuPlan(ctx, targets.filter(t => t.inv.problem || t.inv.devices.some(d => d.kind === 'gpu')), det?.groups ?? null); kind = 'device'
         break
       }
       case 'device': plan = buildDeviceGrantPlan(ctx, await this.inventory(g.node, true), input.device ?? ({} as any)); kind = 'device'; break
@@ -346,8 +393,30 @@ export class GuestConfigService {
     }
     protect(plan, kind, g.type)
     if (!q.quorate) plan.errors.unshift(q.why)
+    // Raw lines: read the file over the node login, refuse a pending section, and hold the exact new bytes.
+    let file: Preview['file']
+    const rf = plan.rawFile
+    if (rf && (rf.remove.length || rf.add.length)) {
+      if (g.type !== 'lxc') plan.errors.push('Raw lines are a container feature.')
+      else {
+        const r = await this.d.shell.run(g.node, readScript(g.node, g.vmid), 20_000).catch(() => null)
+        if (!r) plan.errors.push(`Raw lines are written over ${g.node}’s node login, and there is none (or HyperProx is locked). Add one under Settings → Nodes.`)
+        else if (r.code !== 0) plan.errors.push(`The config file could not be read on ${g.node}.`)
+        else {
+          try {
+            const { text, sha } = parseRead(r.output)
+            if (splitConf(text).hasPending) plan.errors.push('The config file has a [pve:pending] section; restart the guest (so it applies) before changing raw lines.')
+            else {
+              const after = rewriteRawLines(text, rf)
+              file = { sha, before: text, after }
+              plan.expectRaw = splitConf(after).rawMain
+            }
+          } catch (e: any) { plan.errors.push(String(e?.message ?? e)) }
+        }
+      }
+    }
     if (ctx.config.lock) plan.errors.push(`The guest is locked (${str(ctx.config.lock)}); Proxmox refuses config changes until that finishes.`)
-    if (kind !== 'restart' && kind !== 'raw' && !plan.ops.length && !plan.errors.length) plan.errors.push('Nothing to change.')
+    if (kind !== 'restart' && !plan.ops.length && !file && !plan.errors.length) plan.errors.push('Nothing to change.')
     const keys = keyInventory(g.type, ctx.config)
     plan.checks.unshift(`${keys.raw.length} raw line(s) and ${keys.unknown.length} unmodelled key(s) are kept as they are and counted again after the write`)
     if (ctx.pendingKeys.length && kind !== 'restart') plan.checks.push(`Already waiting for a restart: ${ctx.pendingKeys.join(', ')}`)
@@ -355,7 +424,7 @@ export class GuestConfigService {
     const p: Preview = {
       id: randomUUID(), owner, guest: { ...g, name: ctx.name, running: ctx.running, haManaged: ctx.haManaged }, input, kind, plan,
       digest: str(ctx.config.digest), before: ctx.config, counts: { raw: keys.raw.length, unknown: keys.unknown.length },
-      pendingBefore: ctx.pendingKeys, quorate: q.quorate, createdAt: now, expiresAt: now + PREVIEW_TTL_MS, used: false,
+      pendingBefore: ctx.pendingKeys, file, quorate: q.quorate, createdAt: now, expiresAt: now + PREVIEW_TTL_MS, used: false,
     }
     this.previews.set(p.id, p)
     return p
@@ -381,9 +450,12 @@ export class GuestConfigService {
   /** One secret value of a guest config (the route needs the master password re-entered). Audited, never the value. */
   async reveal(actor: string, g: GuestId, key: string): Promise<string | null> {
     if (!isSecretKey(key)) throw new GuestConfigRefusal('Only secret keys are revealed here; the rest are shown already.', 'refused')
+    if (g.type === 'qemu' && key === 'cipassword') throw new GuestConfigRefusal('Proxmox never returns a VM’s cloud-init password (its API answers with a mask), so it cannot be shown. It can only be set again.', 'refused')
     const cfg = await this.d.pve.get<PveConfig>(`${this.base(g)}/config`)
     await this.d.audit('guest_config.reveal', `${g.type}/${g.vmid}`, { by: actor, node: g.node, key }).catch(() => {})
-    return cfg?.[key] === undefined ? null : str(cfg[key])
+    const v = cfg?.[key] === undefined ? null : str(cfg[key])
+    if (v !== null && /^\*+$/.test(v)) throw new GuestConfigRefusal('Proxmox returns this value masked, so it cannot be shown.', 'refused')
+    return v
   }
 
   getPreview(owner: string, id: string): Preview | null {
@@ -420,7 +492,34 @@ export class GuestConfigService {
       let digest = p.digest
       const steps: string[] = []
       let failed: string | null = null
-      for (const op of p.plan.ops) {
+      let fileAfter: string | null = null
+      if (p.file) {
+        // Compare and swap: the file must still be the one previewed, checked here and again on the node.
+        const r = await this.d.shell.run(p.guest.node, readScript(p.guest.node, p.guest.vmid), 20_000).catch(() => null)
+        if (!r || r.code !== 0) throw new GuestConfigRefusal('The config file could not be read on the node, so nothing was written.', 'refused')
+        const now = parseRead(r.output)
+        if (now.sha !== p.file.sha) throw new GuestConfigRefusal('The config file changed since the preview, so nothing was written. Review it again.', 'changed')
+        if (splitConf(now.text).hasPending) throw new GuestConfigRefusal('The config file now has a [pve:pending] section, so nothing was written.', 'changed')
+        const q2 = await this.quorum()
+        if (!q2.quorate) throw new GuestConfigRefusal(q2.why, 'not-quorate')
+        const w = await this.d.shell.run(p.guest.node, writeScript(p.guest.node, p.guest.vmid, p.file.sha, p.file.after), 30_000).catch((e: any) => ({ code: -1, output: String(e?.message ?? e) }))
+        if (!w) throw new GuestConfigRefusal('The node login went away, so nothing was written.', 'refused')
+        if (/HPX-CAS-MISMATCH/.test(w.output)) throw new GuestConfigRefusal('The config file changed at the last moment, so nothing was written. Review it again.', 'changed')
+        if (w.code !== 0) failed = `the config file write failed on ${p.guest.node}`
+        else {
+          try {
+            const back = parseRead(w.output)
+            fileAfter = back.text
+            if (back.text !== p.file.after) failed = 'the config file read back is not byte for byte the planned file'
+            else steps.push('raw lines written (whole file, compared and swapped)')
+          } catch (e: any) { failed = String(e?.message ?? e) }
+        }
+        // Proxmox must still parse it, and the API's digest moves on.
+        const parsed = await this.d.pve.get<PveConfig>(`${this.base(p.guest)}/config`).catch(() => null)
+        if (!parsed) failed ??= 'Proxmox could not read the config after the write'
+        digest = str(parsed?.digest)
+      }
+      for (const op of failed ? [] : p.plan.ops) {
         try {
           let res: unknown
           if (op.kind === 'config') {
@@ -441,24 +540,25 @@ export class GuestConfigService {
       const outcome = after ? verifyOutcome(p.guest.type, p.before, after, pending ?? [], p.plan) : null
       const problems = [...(failed ? [`Proxmox refused a step: ${failed}`] : []), ...(outcome?.problems ?? []), ...(after ? [] : ['The config could not be read back after the write'])]
       const ok = !failed && !!outcome?.ok
-      const row = await this.record(p, owner, after, ok, problems, steps)
+      const row = await this.record(p, owner, after, ok, problems, steps, fileAfter)
       const pendingKeys = outcome?.pendingKeys ?? []
       return {
         ok, outcome: outcome ? { ...outcome, problems, ok } : null, pendingKeys,
-        restartOffered: p.guest.running && pendingKeys.length > 0, historyId: row?.id ?? null,
+        restartOffered: p.guest.running && (pendingKeys.length > 0 || !!p.file), historyId: row?.id ?? null,
       }
     } finally { this.applying.delete(id) }
   }
 
-  private async record(p: Preview, owner: string, after: PveConfig | null, ok: boolean, problems: string[], steps: string[]): Promise<HistoryRow | null> {
+  private async record(p: Preview, owner: string, after: PveConfig | null, ok: boolean, problems: string[], steps: string[], fileAfter: string | null = null): Promise<HistoryRow | null> {
     const tag = p.kind === 'gpu-off' ? 'GPU off' : p.kind === 'gpu-on' ? 'GPU on' : p.kind === 'revert' ? 'Revert' : p.kind === 'restart' ? 'Restart' : null
     const resource = `${p.guest.type}/${p.guest.vmid}`
     let row: HistoryRow | null = null
     try {
       row = await this.d.history.add({
         guest: resource, node: p.guest.node, kind: p.kind, tag, actor: owner, previewId: p.id,
-        before: p.before, after, changes: p.plan.changes.map(c => ({ key: c.key, words: c.words })),
-        outcome: ok ? 'ok' : 'failed', problems, meta: p.plan.meta ?? null,
+        before: p.before, after, changes: p.plan.changes.map(c => ({ key: c.key, words: redactText(c.words) })),
+        outcome: ok ? 'ok' : 'failed', problems: problems.map(redactText),
+        meta: p.file ? { ...(p.plan.meta ?? {}), fileBefore: redactConfFile(p.file.before), fileAfter: redactConfFile(fileAfter ?? p.file.after), fileSha: sha256(p.file.before) } : (p.plan.meta ?? null),
       })
     } catch (e: any) { problems.push(`The change was made but its history row could not be stored: ${e?.message ?? e}`) }
     await this.d.audit('guest_config.apply', resource, {
@@ -526,7 +626,7 @@ export class GuestConfigService {
     } else r.problems.push('The config could not be read back after the restart')
     if (p.plan.deviceChecks.length && g.type === 'lxc') {
       const list = p.plan.deviceChecks.map(c => `'${c.path}'`).join(' ')
-      const out = await this.d.shell.run(g.node, `pct exec ${g.vmid} -- sh -c 'for p in "$@"; do if [ -e "$p" ]; then echo "Y $p"; else echo "N $p"; fi; done' sh ${list}`, 20_000).catch(() => null)
+      const out = await this.d.shell.run(g.node, `pct exec ${g.vmid} -- sh -c 'for p in "$@"; do if [ -c "$p" ]; then echo "Y $p"; else echo "N $p"; fi; done' sh ${list}`, 20_000).catch(() => null)
       for (const c of p.plan.deviceChecks) {
         const seen = out ? (out.output.includes(`Y ${c.path}`) ? true : out.output.includes(`N ${c.path}`) ? false : null) : null
         r.devices.push({ path: c.path, expected: c.present, seen })

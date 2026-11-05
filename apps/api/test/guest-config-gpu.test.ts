@@ -194,67 +194,87 @@ test('remove GPU access removes only what HyperProx added', async () => {
   assert.equal(pve.g('lxc', 941).config.dev0, '/dev/dri/card0')
 })
 
-test('GPU access off, then on: the exact entries come back byte-for-byte, through a restart that checks the device', async () => {
+test('GPU access off, then on: only what HyperProx added goes, and comes back byte-for-byte, through restarts that check the device', async () => {
   const { service, pve, G } = igpuSetup(true)
-  pve.g('lxc', 941).config.dev0 = '/dev/dri/renderD128,gid=993,mode=0660'
   pve.g('lxc', 941).config.dev1 = '/dev/net/tun'
+  const gpu = (await service.inventory('node-b')).devices.find(d => d.kind === 'gpu')!
+  const gr = await service.preview(OWNER, G, { kind: 'gpu-grant', grant: { deviceId: gpu.id, renderGid: 993 } })
+  await service.apply(OWNER, gr.id, { name: 'tv' })
+  await service.apply(OWNER, (await service.preview(OWNER, G, { kind: 'restart', after: gr.id })).id)
   const off = await service.preview(OWNER, G, { kind: 'gpu-off' })
   assert.deepEqual((off.plan.ops[0] as any).delete, ['dev0'], 'tun is not a GPU and stays')
-  assert.ok(off.plan.warnings.some(w => /when the container restarts/.test(w)))
-  const r = await service.apply(OWNER, off.id)
+  assert.equal(off.plan.confirmName, true)
+  assert.ok(off.plan.warnings.some(w => /next time the container starts/.test(w)))
+  await assert.rejects(service.apply(OWNER, off.id), (e: any) => e.code === 'confirm')
+  const off2 = await service.preview(OWNER, G, { kind: 'gpu-off' })
+  const r = await service.apply(OWNER, off2.id, { name: 'tv' })
   assert.equal(r.ok, true, JSON.stringify(r.outcome?.problems))
   assert.deepEqual(r.pendingKeys, ['dev0'], 'later: shown as pending')
-  const v = await service.view(G)
-  assert.deepEqual(v.pending.keys, ['dev0'])
-  const rs = await service.preview(OWNER, G, { kind: 'restart', after: off.id })
-  const rr = await service.apply(OWNER, rs.id)
+  assert.deepEqual((await service.view(G)).pending.keys, ['dev0'])
+  const rr = await service.apply(OWNER, (await service.preview(OWNER, G, { kind: 'restart', after: off2.id })).id)
   assert.equal(rr.ok, true, JSON.stringify(rr.restart))
   assert.deepEqual(rr.restart!.devices, [{ path: '/dev/dri/renderD128', expected: false, seen: false }])
   assert.equal((await service.view(G)).gpu.toggle, 'off')
   const h = await service.historyOf(G)
-  assert.ok(h.some(x => x.tag === 'GPU off' && (x.meta as any).gpuOff.removed.dev0 === '/dev/dri/renderD128,gid=993,mode=0660'))
+  assert.ok(h.some(x => x.tag === 'GPU off' && (x.meta as any).gpuOff.removed.dev0 === '/dev/dri/renderD128,gid=993'))
 
-  // Edited in between (memory, and a new dev slot elsewhere): turning back on still works.
-  const e = await service.preview(OWNER, G, { kind: 'edit', edit: { memory: 1024 } })
-  await service.apply(OWNER, e.id)
+  // Edited in between: turning back on still works.
+  await service.apply(OWNER, (await service.preview(OWNER, G, { kind: 'edit', edit: { memory: 1024 } })).id)
   const on = await service.preview(OWNER, G, { kind: 'gpu-on' })
   assert.deepEqual(on.plan.errors, [])
-  assert.deepEqual((on.plan.ops[0] as any).set, { dev0: '/dev/dri/renderD128,gid=993,mode=0660' })
-  assert.equal((await service.apply(OWNER, on.id)).ok, true)
-  const rs2 = await service.preview(OWNER, G, { kind: 'restart', after: on.id })
-  const rr2 = await service.apply(OWNER, rs2.id)
+  assert.deepEqual((on.plan.ops[0] as any).set, { dev0: '/dev/dri/renderD128,gid=993' })
+  assert.equal((await service.apply(OWNER, on.id, { name: 'tv' })).ok, true)
+  const rr2 = await service.apply(OWNER, (await service.preview(OWNER, G, { kind: 'restart', after: on.id })).id)
   assert.equal(rr2.ok, true, JSON.stringify(rr2.restart))
   assert.deepEqual(rr2.restart!.devices, [{ path: '/dev/dri/renderD128', expected: true, seen: true }])
   assert.equal(rr2.restart!.rawSurvived, true)
-  assert.equal(pve.g('lxc', 941).config.dev0, '/dev/dri/renderD128,gid=993,mode=0660')
 })
 
-test('turning back on refuses a conflicting key, naming it', async () => {
+test('GPU off leaves hand-written entries alone unless they are ticked, and lists them', async () => {
   const { service, pve, G } = igpuSetup()
   pve.g('lxc', 941).config.dev0 = '/dev/dri/renderD128,gid=993'
   const off = await service.preview(OWNER, G, { kind: 'gpu-off' })
-  await service.apply(OWNER, off.id)
+  assert.ok(off.plan.errors.some(e => /None of this container’s GPU entries were added by HyperProx/.test(e)))
+  assert.deepEqual(off.plan.options, [{ key: 'dev0', value: '/dev/dri/renderD128,gid=993', label: 'dev0: /dev/dri/renderD128,gid=993' }])
+  const also = await service.preview(OWNER, G, { kind: 'gpu-off', off: { alsoRemove: [{ key: 'dev0', value: '/dev/dri/renderD128,gid=993' }] } })
+  assert.deepEqual(also.plan.errors, [])
+  assert.equal((await service.apply(OWNER, also.id, { name: 'tv' })).ok, true)
   pve.g('lxc', 941).config.dev0 = '/dev/net/tun'
   const on = await service.preview(OWNER, G, { kind: 'gpu-on' })
   assert.ok(on.plan.errors.some(e => /dev0 is now used for \/dev\/net\/tun/.test(e)))
 })
 
-test('raw-only GPU access: off says up front the API cannot remove raw lines, and conversion offers devN', async () => {
+test('raw GPU lines: hand-written ones are listed, never removed by default; ticked ones go through the whole-file writer and come back on', async () => {
   const s = makeService()
   s.shell.probes['node-a'] = FIX('probe-nvidia.txt')
   s.pve.add({ node: 'node-a', type: 'lxc', vmid: 911, status: 'stopped', config: JSON.parse(FIX('ct-nvidia.json')) })
   const G = { node: 'node-a', type: 'lxc' as const, vmid: 911 }
   const off = await s.service.preview(OWNER, G, { kind: 'gpu-off' })
-  assert.ok(off.plan.warnings.some(w => /cannot be removed: Proxmox’s API does not accept lxc/.test(w)))
-  assert.ok(off.plan.errors.some(e => /Convert to devN/.test(e)))
+  assert.equal(off.plan.options!.length, 12)
+  assert.ok(off.plan.errors.length)
+  const pick = off.plan.options!.filter(o => /nvidia-uvm-tools/.test(o.value)).map(o => ({ key: o.key, value: o.value }))
+  const p = await s.service.preview(OWNER, G, { kind: 'gpu-off', off: { alsoRemove: pick } })
+  assert.deepEqual(p.plan.errors, [])
+  assert.ok(p.file)
+  assert.equal((await s.service.apply(OWNER, p.id, { name: 'coder' })).ok, true)
+  assert.equal((s.pve.g('lxc', 911).config.lxc as any[]).length, 11)
+  const on = await s.service.preview(OWNER, G, { kind: 'gpu-on' })
+  assert.deepEqual(on.plan.errors, [])
+  assert.equal((await s.service.apply(OWNER, on.id, { name: 'coder' })).ok, true)
+  assert.equal((s.pve.g('lxc', 911).config.lxc as any[]).length, 12)
   const cv = await s.service.preview(OWNER, G, { kind: 'gpu-convert' })
   assert.deepEqual(cv.plan.errors, [])
-  const set = Object.values((cv.plan.ops[0] as any).set)
-  assert.ok(set.includes('/dev/nvidia0') && set.includes('/dev/nvidia-caps/nvidia-cap2'))
-  assert.ok(cv.plan.warnings.some(w => /remove these by hand on the node/.test(w)))
-  const r = await s.service.apply(OWNER, cv.id, { name: 'coder' })
-  assert.equal(r.ok, true, JSON.stringify(r.outcome?.problems))
-  assert.equal(r.outcome!.rawAfter, 12)
+  assert.ok(Object.values((cv.plan.ops[0] as any).set).includes('/dev/nvidia0'))
+})
+
+test('a group id is an integer from 0 to 65535 and nothing else', async () => {
+  const { service, G } = igpuSetup()
+  const gpu = (await service.inventory('node-b')).devices.find(d => d.kind === 'gpu')!
+  for (const bad of ['0,mode=0777,uid=0', -5.5, 70000, '993'] as any[]) {
+    const p = await service.preview(OWNER, G, { kind: 'gpu-grant', grant: { deviceId: gpu.id, renderGid: bad } })
+    assert.ok(p.plan.errors.some(e => /whole number from 0 to 65535/.test(e)), String(bad))
+    assert.ok(!p.plan.ops.length)
+  }
 })
 
 test('hostpci: the reset warning always shows, a Pascal card needs the extra confirm, and a device in use is refused', async () => {
@@ -329,17 +349,23 @@ test('Portable GPU: every eligible node’s devices as optional lines, majors re
   assert.equal(perNode.length, 3)
 })
 
-test('Portable GPU is previewed with the exact lines and refused plainly: no API writes raw lines, and why devN cannot do it', async () => {
+test('Portable GPU writes optional lines through the whole-file writer, removes devN GPU entries, and says why', async () => {
   const s = makeService()
   s.shell.probes['node-a'] = FIX('probe-nvidia.txt'); s.shell.probes['node-b'] = FIX('probe-igpu.txt'); s.shell.probes['node-c'] = FIX('probe-homelab.txt')
-  s.pve.add({ node: 'node-a', type: 'lxc', vmid: 961, status: 'stopped', ha: 'started', config: smallCt({ hostname: 'media', dev0: '/dev/dri/renderD128,gid=104' }) })
-  const p = await s.service.preview(OWNER, { node: 'node-a', type: 'lxc', vmid: 961 }, { kind: 'gpu-portable' })
-  assert.ok(p.plan.changes.length >= 8)
+  s.pve.add({ node: 'node-b', type: 'lxc', vmid: 961, status: 'stopped', ha: 'started', config: smallCt({ hostname: 'media', dev0: '/dev/dri/renderD128,gid=104' }) })
+  const G = { node: 'node-b', type: 'lxc' as const, vmid: 961 }
+  const p = await s.service.preview(OWNER, G, { kind: 'gpu-portable' })
+  assert.deepEqual(p.plan.errors, [])
+  assert.ok(p.plan.changes.filter(c => c.label === 'Raw line').length >= 8)
   assert.ok(p.plan.warnings.includes(PORTABLE_WHY_RAW))
-  assert.ok(p.plan.warnings.some(w => /dev0/.test(w) && /stop the container starting/.test(w)))
-  assert.ok(p.plan.errors.some(e => /root@pam/.test(e)))
-  await assert.rejects(s.service.apply(OWNER, p.id, { name: 'media' }), (e: any) => e.code === 'refused')
-  assert.equal(s.pve.writes.length, 0)
+  assert.ok(p.plan.warnings.some(w => /0660/.test(w) && /does not change node files/.test(w)), 'group access stated plainly')
+  assert.deepEqual((p.plan.ops[0] as any).delete, ['dev0'])
+  const r = await s.service.apply(OWNER, p.id, { name: 'media' })
+  assert.equal(r.ok, true, JSON.stringify(r.outcome?.problems))
+  const raw = s.pve.g('lxc', 961).config.lxc as Array<[string, string]>
+  assert.ok(raw.some(l => l[1] === '/dev/nvidia0 dev/nvidia0 none bind,optional,create=file'))
+  assert.ok(raw.some(l => l[1] === 'c 226:* rwm'))
+  assert.equal(s.pve.g('lxc', 961).config.dev0, undefined)
   const vm = buildPortableGpuPlan({ type: 'qemu', vmid: 1, node: 'node-a', name: 'x', running: false, config: {}, pendingKeys: [], haManaged: true }, [], null)
   assert.ok(vm.errors.length)
 })
@@ -354,7 +380,7 @@ test('after an HA move the watcher looks inside and names the GPU it now uses, o
   g.node = 'node-b'
   s.shell.inside['971'] = ['/dev/dri/renderD128']
   const orig = s.shell.run.bind(s.shell)
-  s.shell.run = async (node, cmd) => cmd.includes("ls -1 /dev/nvidia0 /dev/dri/renderD*") ? { code: 0, output: (s.shell.inside['971'] ?? []).join('\n') } : orig(node, cmd)
+  s.shell.run = async (node, cmd) => cmd.includes('HPX-LOOKED') ? (s.shell.logins.has(node) ? { code: 0, output: [...(s.shell.inside['971'] ?? []), 'HPX-LOOKED'].join('\n') } : null) : orig(node, cmd)
   let ev = await w.tick()
   assert.equal(ev[0].title, 'coder moved from node-a to node-b and is now using Intel HD Graphics 630')
   g.node = 'node-c'; s.shell.inside['971'] = []
@@ -367,4 +393,48 @@ test('after an HA move the watcher looks inside and names the GPU it now uses, o
   assert.match(ev[0].title, /back on node-a and on its home GPU \(NVIDIA GeForce GTX 1070 Ti\)/)
   assert.equal(sent.length, 3)
   assert.ok(!s.pve.writes.length, 'checks only: nothing written')
+  // No login, or locked: "couldn't check", never "no GPU".
+  g.node = 'node-c'; s.shell.logins.delete('node-c')
+  ev = await w.tick()
+  assert.equal(ev[0].type, 'guest.gpu.unchecked')
+  assert.match(ev[0].title, /couldn't check its GPU \(no node login for node-c\)/)
+  const locked = new GpuMoveWatcher(s.service, async () => {}, () => 0, () => true)
+  assert.match((await locked.check('node-a', 971)).unknown!, /locked/)
+})
+
+test('watcher ticks never overlap', async () => {
+  const s = makeService()
+  let calls = 0
+  ;(s.service as any).haGpuGuests = async () => { calls++; await new Promise(r => setTimeout(r, 20)); return [] }
+  const w = new GpuMoveWatcher(s.service, async () => {})
+  await Promise.all([w.tick(), w.tick(), w.tick()])
+  assert.equal(calls, 1)
+})
+
+test('identical USB devices with different serials go by port, never by an ambiguous vendor:product', async () => {
+  const twins = FIX('probe-homelab.txt').replace('1-4|0bda|2838|1|5|00|Realtek|RTL2838UHIDIR|', '1-4|0bda|2838|1|5|00|Realtek|RTL2838UHIDIR|SER-A').replace('1-5|0bda|2838|1|6|00|Realtek|RTL2838UHIDIR|', '1-5|0bda|2838|1|6|00|Realtek|RTL2838UHIDIR|SER-B')
+  const s = makeService()
+  s.shell.probes['node-c'] = twins
+  s.pve.add({ node: 'node-c', type: 'qemu', vmid: 935, status: 'stopped', config: { name: 'sdr', memory: 1024 } })
+  const inv = await s.service.inventory('node-c')
+  const sdr = inv.devices.filter(d => d.vendorProduct === '0bda:2838')
+  assert.ok(sdr.every(d => d.serial && d.notes.some(n => /same vendor:product/.test(n))))
+  const u = await s.service.preview(OWNER, { node: 'node-c', type: 'qemu', vmid: 935 }, { kind: 'device', device: { deviceId: sdr[0].id } })
+  assert.equal((u.plan.ops[0] as any).set.usb0, `host=${sdr[0].port}`)
+})
+
+test('hostpci acknowledgements cannot be given in the preview', async () => {
+  const s = makeService()
+  s.shell.probes['node-a'] = FIX('probe-nvidia.txt')
+  s.pve.add({ node: 'node-a', type: 'qemu', vmid: 921, status: 'stopped', config: { name: 'gamer', memory: 1024, machine: 'q35' } })
+  const nv = (await s.service.inventory('node-a')).devices.find(d => d.kind === 'gpu')!
+  const p = await s.service.preview(OWNER, { node: 'node-a', type: 'qemu', vmid: 921 }, { kind: 'hostpci', hostpci: { add: { deviceId: nv.id }, ackResetRisk: true, ackDisplayGpu: true } as any })
+  assert.deepEqual(p.plan.extraConfirm.sort(), ['display-gpu', 'reset-risk'])
+})
+
+test('a GPU counts as visible only as a character device: create=file leaves an empty placeholder where an optional one is missing', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = ['service.ts', 'gpu-watch.ts'].map(f => readFileSync(require('node:path').join(__dirname, '..', 'src', 'lib', 'guest-config', f), 'utf8')).join('\n')
+  assert.ok(!/\[ -e "\$p" \]/.test(src) && !/ls -1 \/dev\/nvidia0/.test(src))
+  assert.ok((src.match(/\[ -c "\$p" \]/g) ?? []).length >= 3)
 })
