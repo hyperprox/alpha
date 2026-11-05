@@ -28,6 +28,8 @@ export class FakePve implements GuestPve {
   dropRawOnReboot = false
   /** Called before a PUT is applied: lets a test change the config "concurrently". */
   beforePut?: (g: Guest) => void
+  /** Called after an API write changed a guest's config (the node's file follows it). */
+  onChange?: (g: Guest) => void
   private disk = 10
 
   add(g: Omit<Guest, 'pending' | 'name'> & { pending?: Guest['pending']; name?: string }): Guest {
@@ -108,6 +110,7 @@ export class FakePve implements GuestPve {
       if (g.status === 'running' && pendRe.test(k)) g.pending[k] = { value: v }
       else { g.config[k] = /^\d+$/.test(v) && !/^(description|tags|nameserver|name|hostname)$/.test(k) ? Number(v) : v; delete g.pending[k] }
     }
+    queueMicrotask(() => this.onChange?.(g))
     for (const k of (params.delete ?? '').split(',').filter(Boolean)) {
       if (g.status === 'running' && pendRe.test(k)) { g.pending[k] = { delete: true }; continue }
       const old = g.config[k]
@@ -163,14 +166,21 @@ export class FakeShell implements NodeShell {
     const sec = (this.probes[node] ?? '').split('##chardev')[1]?.split('##end')[0] ?? ''
     return Object.fromEntries(sec.split('\n').filter(l => l.includes('|')).map(l => l.trim().split('|') as [string, string]))
   }
-  constructor(private pve?: FakePve) {}
+  /** Files this fake generated from the config (and so regenerates when an API write changes the config). */
+  private generated = new Set<string>()
+  constructor(private pve?: FakePve) {
+    if (pve) pve.onChange = g => { const v = String(g.vmid); if (this.generated.has(v)) { delete this.files[v]; this.fileOf(v) } }
+  }
   fileOf(vmid: string): string {
     if (this.files[vmid] !== undefined) return this.files[vmid]
     const g = this.pve?.g('lxc', Number(vmid))
     const c = g ? g.config : {}
-    const main = Object.entries(c).filter(([k]) => k !== 'lxc').sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k}: ${v}`)
+    // As Proxmox writes it: the description as '#' comment lines first, then the keys.
+    const desc = (c as any).description === undefined ? [] : String((c as any).description).replace(/\n+$/, '').split('\n').map(l => `#${l}`)
+    const main = [...desc, ...Object.entries(c).filter(([k]) => k !== 'lxc' && k !== 'description').sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k}: ${v}`)]
     const raw = ((c as any).lxc ?? []).map(([k, v]: [string, string]) => `${k}: ${v}`)
     this.files[vmid] = [...main, ...raw].join('\n') + '\n' + (this.tail[vmid] ?? '')
+    this.generated.add(vmid)
     return this.files[vmid]
   }
   async run(node: string, command: string) {
@@ -186,8 +196,13 @@ export class FakeShell implements NodeShell {
       if (sha256(cur) !== expect) return { code: 3, output: `HPX-CAS-MISMATCH ${sha256(cur)}\n` }
       if (pveHasLock(cur)) return { code: 5, output: 'HPX-GUEST-LOCKED\n' }
       if (pveHasPending(cur)) return { code: 7, output: 'HPX-PENDING\n' }
-      for (const p of [...command.matchAll(/^for p in (.*); do$/gm)].flatMap(m => [...m[1].matchAll(/'([^']+)'/g)].map(x => x[1])))
-        if ((this.symlinks[node] ?? []).includes(p)) return { code: 6, output: `HPX-BAD-DEVICE ${p}\n` }
+      // The script's own device re-check, against this node's devices.
+      const ch = this.chars(node)
+      for (const e of [...(/^for e in (.*); do$/m.exec(command)?.[1] ?? '').matchAll(/'([^']+)'/g)].map(x => x[1])) {
+        const [p, x] = e.split('|')
+        const bad = (this.symlinks[node] ?? []).includes(p) || (x === 'absent' ? !!ch[p] : x === 'dir' ? false : ch[p] !== x)
+        if (bad) return { code: 6, output: `HPX-BAD-DEVICE ${p}\n` }
+      }
       const text = Buffer.from(/printf '%s' '([^']*)'/.exec(command)![1], 'base64').toString('utf8')
       this.files[vmid] = text
       // Proxmox re-parses the file (its own grammar, not the writer's): its main-section raw lines are what the API reads.

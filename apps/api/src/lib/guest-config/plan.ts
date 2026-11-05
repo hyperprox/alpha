@@ -263,8 +263,12 @@ export function buildEditPlan(g: GuestCtx, e: StructuredEdit, pathChecks: Record
     else want('startup', e.startup)
   }
   if (e.description !== undefined) {
-    if (typeof e.description !== 'string' || e.description.length > 8192) p.errors.push('The description must be text, at most 8 KB.')
-    else want('description', e.description === '' ? null : e.description)
+    // HyperProx's hidden marker (<!-- hpx-id:… -->) is kept whatever the new text is.
+    const marker = /<!-- hpx-id:[0-9a-f-]{36} -->/.exec(str(cfg.description))?.[0]
+    const text = String(e.description ?? '').replace(/\n?<!-- hpx-id:[0-9a-f-]{36} -->/g, '')
+    if (typeof e.description !== 'string' || text.length > 8192) p.errors.push('The description must be text, at most 8 KB.')
+    else if (marker) want('description', `${text.replace(/\n+$/, '')}\n${marker}`)
+    else want('description', text === '' ? null : text)
   }
   if (e.tags !== undefined) {
     const bad = (e.tags ?? []).filter(t => !TAG.test(t))
@@ -474,7 +478,7 @@ export function allowedFor(kind: PlanKind, type: GuestType, key: string): boolea
 
 /** Refuse a plan that would write a key its kind may not, naming the key. */
 export function protect(p: Plan, kind: PlanKind, type: GuestType): Plan {
-  for (const k of p.touched) if (!allowedFor(kind, type, k)) p.errors.push(`Refused: this change would write ${k}, which ${isRaw(k) ? 'is a raw passthrough key and' : ''} is not editable here.`)
+  for (const k of p.touched) if (!allowedFor(kind, type, k) && !(k === 'description' && (p.meta as any)?.hpxId)) p.errors.push(`Refused: this change would write ${k}, which ${isRaw(k) ? 'is a raw passthrough key and' : ''} is not editable here.`)
   return p
 }
 
@@ -605,6 +609,14 @@ export function buildRevertPlan(g: GuestCtx, target: PveConfig, pathChecks: Reco
       continue
     }
     if (!isEditable(g.type, k)) { notReverted.push(`${k} (not an editable key)`); continue }
+    if (k === 'description') {
+      // The current marker stays: a revert never drops or swaps HyperProx's identity for this guest.
+      const marker = /<!-- hpx-id:[0-9a-f-]{36} -->/.exec(c ?? '')?.[0]
+      const text = (t ?? '').replace(/\n?<!-- hpx-id:[0-9a-f-]{36} -->/g, '').replace(/\n+$/, '')
+      const next = marker ? `${text}\n${marker}` : (text || null)
+      if (next === null) { if (c !== null) del.push(k) } else if (normalise(k, next) !== normalise(k, c ?? '')) set[k] = next
+      continue
+    }
     if (t === null) del.push(k); else set[k] = t
   }
   if (notReverted.length) p.warnings.push(`Not reverted: ${notReverted.join(', ')}.`)

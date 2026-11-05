@@ -169,7 +169,7 @@ test('a stopped container needs its render gid given; NVIDIA gets a devN per hos
   const nv = (await s.service.inventory('node-a')).devices.find(d => d.kind === 'gpu')!
   const q = await s.service.preview(OWNER, { node: 'node-a', type: 'lxc', vmid: 951 }, { kind: 'gpu-grant', grant: { deviceId: nv.id } })
   assert.deepEqual(q.plan.errors, [])
-  assert.deepEqual(Object.values((q.plan.ops[0] as any).set).sort(), ['/dev/nvidia-caps/nvidia-cap1', '/dev/nvidia-caps/nvidia-cap2', '/dev/nvidia-uvm', '/dev/nvidia-uvm-tools', '/dev/nvidia0', '/dev/nvidiactl'])
+  assert.deepEqual(Object.values((q.plan.ops[0] as any).set).filter((v: any) => String(v).startsWith('/dev/')).sort(), ['/dev/nvidia-caps/nvidia-cap1', '/dev/nvidia-caps/nvidia-cap2', '/dev/nvidia-uvm', '/dev/nvidia-uvm-tools', '/dev/nvidia0', '/dev/nvidiactl'])
   assert.ok(q.plan.warnings.some(w => /580\.173\.02/.test(w)))
 })
 
@@ -252,7 +252,7 @@ test('raw GPU lines: hand-written ones are listed, never removed by default; tic
   const off = await s.service.preview(OWNER, G, { kind: 'gpu-off' })
   assert.equal(off.plan.options!.length, 12)
   assert.ok(off.plan.errors.length)
-  const pick = off.plan.options!.filter(o => /nvidia-uvm-tools/.test(o.value)).map(o => ({ key: o.key, value: o.value }))
+  const pick = off.plan.options!.filter(o => o.value === 'c 510:* rwm').map(o => ({ key: o.key, value: o.value }))
   const p = await s.service.preview(OWNER, G, { kind: 'gpu-off', off: { alsoRemove: pick } })
   assert.deepEqual(p.plan.errors, [])
   assert.ok(p.file)

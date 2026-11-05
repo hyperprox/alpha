@@ -68,6 +68,11 @@ export interface HistoryStore {
   get(id: string): Promise<HistoryRow | null>
   getGpu(guest: string): Promise<GpuState>
   setGpu(s: GpuState): Promise<void>
+  /**
+   * Once per guest: state kept under an older key for this VMID (before the description marker: "lxc/123" or
+   * "lxc/123/<16 hex>") moves to `key`, unless `key` already has state. The old row is deleted.
+   */
+  adoptLegacyGpu(type: string, vmid: number, key: string): Promise<boolean>
   /** Read, change and write one guest's GPU state in a single transaction. */
   updateGpu(guest: string, fn: (s: GpuState) => GpuState): Promise<GpuState>
   /** Every guest with GPU state, for the list view (one read, not one per guest). */
@@ -109,6 +114,13 @@ export class MemoryHistoryStore implements HistoryStore {
   gpu = new Map<string, GpuState>()
   async getGpu(guest: string) { return structuredClone(this.gpu.get(guest) ?? emptyGpuState(guest)) }
   async setGpu(st: GpuState) { this.gpu.set(st.guest, structuredClone(st)) }
+  async adoptLegacyGpu(type: string, vmid: number, key: string) {
+    const legacy = [...this.gpu.keys()].filter(k => isLegacyKey(k, type, vmid))
+    if (!legacy.length) return false
+    if (!this.gpu.has(key)) this.gpu.set(key, { ...structuredClone(this.gpu.get(legacy[0])!), guest: key })
+    for (const k of legacy) this.gpu.delete(k)
+    return true
+  }
   async updateGpu(guest: string, fn: (s: GpuState) => GpuState) {
     // No await between read and write: one step on the event loop, so nothing interleaves.
     const next = fn(structuredClone(this.gpu.get(guest) ?? emptyGpuState(guest)))
@@ -161,6 +173,19 @@ export class PrismaHistoryStore implements HistoryStore {
     const v = this.gpuValues(st)
     await (this.db as any).guestGpuState.upsert({ where: { guest: st.guest }, create: { guest: st.guest, ...v }, update: v })
   }
+  async adoptLegacyGpu(type: string, vmid: number, key: string) {
+    return (this.db as any).$transaction(async (tx: any) => {
+      const rows = (await tx.guestGpuState.findMany({ where: { guest: { startsWith: `${type}/${vmid}` } } })) as any[]
+      const legacy = rows.filter(r => isLegacyKey(r.guest, type, vmid))
+      if (!legacy.length) return false
+      if (!rows.some(r => r.guest === key)) {
+        const v = this.gpuValues({ ...this.gpuRow(legacy[0]), guest: key })
+        await tx.guestGpuState.create({ data: { guest: key, ...v } })
+      }
+      await tx.guestGpuState.deleteMany({ where: { guest: { in: legacy.map(r => r.guest) } } })
+      return true
+    }, { isolationLevel: 'Serializable' })
+  }
   async updateGpu(guest: string, fn: (s: GpuState) => GpuState) {
     return (this.db as any).$transaction(async (tx: any) => {
       const cur = await tx.guestGpuState.findUnique({ where: { guest } })
@@ -203,4 +228,9 @@ export function managedRawLines(rows: HistoryRow[]): Array<[string, string]> {
     if (Array.isArray(m)) for (const l of m) if (Array.isArray(l) && l.length === 2 && !out.some(o => o[0] === l[0] && o[1] === l[1])) out.push([String(l[0]), String(l[1])])
   }
   return out
+}
+
+/** A key from before the description marker: "lxc/123" or "lxc/123/<16 hex>". */
+export function isLegacyKey(k: string, type: string, vmid: number): boolean {
+  return k === `${type}/${vmid}` || new RegExp(`^${type}/${vmid}/[0-9a-f]{16}$`).test(k)
 }

@@ -27,10 +27,10 @@ import {
   type GpuGrant, type GpuOffRecord, type GpuOffInput, type RawEdit, type HostpciEdit, type DeviceGrant,
 } from './gpu'
 import { PROBE_SCRIPT, parseProbe, attachUsage, type GuestRef, type NodeInventory } from './devices'
-import { type HistoryStore, type HistoryRow, type GpuState } from './history/store'
+import { type HistoryStore, type HistoryRow, type GpuState, emptyGpuState } from './history/store'
 import { createHmac, randomBytes } from 'node:crypto'
 import { maskConfig, isSecretKey, redactConfFile, redactText, redactValue, REDACTED } from './secrets'
-import { splitConf, rewriteRawLines, readScript, writeScript, parseRead, cleanupScript, rawLineAllowed, rawLineForm, addedSources, verifyScript, parseVerify, DEVICE_DIRS, sha256, type RawAllow } from './rawfile'
+import { splitConf, rewriteRawLines, readScript, writeScript, parseRead, cleanupScript, rawLineAllowed, rawLineForm, addedSources, verifyScript, parseVerify, DEVICE_DIRS, sha256, type RawAllow, type SourceCheck } from './rawfile'
 import { gpuMajors } from './devices'
 import { vpnStatuses, vpnStatusSource, type VpnStatusSource } from './vpn'
 
@@ -107,7 +107,7 @@ export interface Preview {
   /** "Applies on next restart": keys already pending before this change. */
   pendingBefore: string[]
   /** The whole-file write for raw lines: the file and its hash at preview, and the exact bytes to write. */
-  file?: { sha: string; before: string; after: string; sources: string[] }
+  file?: { sha: string; before: string; after: string; sources: SourceCheck[] }
   quorate: boolean
   createdAt: number
   expiresAt: number
@@ -237,10 +237,10 @@ export class GuestConfigService {
     const gpu = detectGpu(g.type, ctx.config, inv)
     const keys = keyInventory(g.type, maskConfig(ctx.config))
     const rows = await this.d.history.list(`${g.type}/${g.vmid}`, 50).catch(() => [] as HistoryRow[])
-    const st = await this.d.history.getGpu(gpuKey(g, ctx.config)).catch(() => null)
+    const st = await this.gpuState(g, ctx.config).catch(() => null)
     return {
       guest: { ...g, name: ctx.name, running: ctx.running, haManaged: ctx.haManaged },
-      config: maskConfig(ctx.config), digest: ctx.config.digest ?? '',
+      config: { ...maskConfig(ctx.config), ...(ctx.config.description !== undefined ? { description: withoutMarker(str(maskConfig(ctx.config).description)) } : {}) }, digest: ctx.config.digest ?? '',
       secretKeys: Object.keys(ctx.config).filter(isSecretKey),
       keys: { modelled: keys.modelled, raw: keys.raw, unknown: keys.unknown, rawCount: keys.raw.length, unknownCount: keys.unknown.length },
       pending: { keys: ctx.pendingKeys, rows: ctx.pending.filter(r => r.pending !== undefined || r.delete).map(r => ({ ...r, value: r.value === undefined ? undefined : redactValue(r.key, str(r.value)), pending: r.pending === undefined ? undefined : redactValue(r.key, str(r.pending)) })) },
@@ -422,6 +422,7 @@ export class GuestConfigService {
       }
       default: throw new GuestConfigRefusal('Unknown change kind.', 'refused')
     }
+    this.ensureMarker(plan, ctx)
     protect(plan, kind, g.type)
     if (!q.quorate) plan.errors.unshift(q.why)
     // Raw lines: read the file over the node login, refuse a pending section, and hold the exact new bytes.
@@ -445,8 +446,7 @@ export class GuestConfigService {
             }
             if (splitConf(text).hasPending) plan.errors.push('The config file has a [pve:pending] section; restart the guest (so it applies) before changing raw lines.')
             else {
-              const sources = addedSources(rf.add)
-              if (rf.add.length) await this.checkAddedRaw(g, rf.add, sources, rawInvs, plan)
+              const sources = rf.add.length ? await this.checkAddedRaw(g, rf.add, addedSources(rf.add), rawInvs, plan) : []
               const after = rewriteRawLines(text, rf)
               file = { sha, before: text, after, sources }
               plan.expectRaw = splitConf(after).rawMain
@@ -483,6 +483,39 @@ export class GuestConfigService {
       if (cfg && detectGpu('lxc', cfg).entries.length) out.push({ vmid: Number(r.vmid), name: str(r.name), node: r.node, status: r.status })
     }
     return out
+  }
+
+  // ── Portable GPU, as HA's failover note sees it ──────────────────────────
+  private portability = new Map<string, { portable: true; perNode: Record<string, string | null> } | { portable: false }>()
+
+  /** What HA's note reads (synchronously): from the last refresh. Unknown guests are "not portable". */
+  portabilityOf(sid: string): { portable: true; perNode: Record<string, string | null> } | { portable: false } {
+    return this.portability.get(sid) ?? { portable: false }
+  }
+
+  /**
+   * Refresh, for every HA-managed container with GPU lines: portable when it carries optional GPU bind lines
+   * (Portable GPU), and per node, the GPU it would bind there (from that node's inventory), or none.
+   */
+  async refreshPortability(): Promise<number> {
+    const guests = await this.haGpuGuests()
+    const nodes = ((await this.d.pve.get<any[]>('/nodes').catch(() => [])) ?? []).filter(n => n.status === 'online').map(n => String(n.node))
+    const invs = new Map<string, NodeInventory>()
+    for (const n of nodes) { const i = await this.inventory(n).catch(() => null); if (i && !i.problem) invs.set(n, i) }
+    const next = new Map<string, any>()
+    for (const g of guests) {
+      const cfg = await this.d.pve.get<PveConfig>(`/nodes/${encodeURIComponent(g.node)}/lxc/${g.vmid}/config`).catch(() => null)
+      if (!cfg) continue
+      const optional = rawLines(cfg).filter(([k, v]) => k === 'lxc.mount.entry' && /(^|,)optional(,|$)/.test(v.trim().split(/\s+/)[3] ?? ''))
+        .map(([, v]) => v.trim().split(/\s+/)[0]).filter(p => /^\/dev\/(dri|nvidia)/.test(p))
+      if (!optional.length) { next.set(`ct:${g.vmid}`, { portable: false }); continue }
+      const perNode: Record<string, string | null> = {}
+      for (const [n, inv] of invs) perNode[n] = inv.devices.find(d => d.kind === 'gpu' && d.paths.some(p => optional.includes(p)))?.product ?? null
+      // Portable means a GPU on more than one node: optional lines for one node's GPU only do not follow the guest.
+      next.set(`ct:${g.vmid}`, Object.values(perNode).filter(Boolean).length > 1 ? { portable: true, perNode } : { portable: false })
+    }
+    this.portability = next
+    return next.size
   }
 
   async historyOf(g: GuestId, limit = 100): Promise<HistoryRow[]> { return this.d.history.list(`${g.type}/${g.vmid}`, limit) }
@@ -533,7 +566,29 @@ export class GuestConfigService {
       const steps: string[] = []
       let failed: string | null = null
       let fileAfter: string | null = null
-      if (p.file) {
+      let ops = p.plan.ops
+      const newMarker: string | null = (p.plan.meta as any)?.hpxId && !markerOf(p.before) ? (p.plan.meta as any).hpxId : null
+      if (newMarker && p.file) {
+        // Nothing is written unless the file is still the one previewed.
+        const rc = await this.d.shell.run(p.guest.node, readScript(p.guest.node, p.guest.vmid), 20_000).catch(() => null)
+        if (!rc || rc.code !== 0) throw new GuestConfigRefusal('The config file could not be read on the node, so nothing was written.', 'refused')
+        if (parseRead(rc.output).sha !== p.file.sha) throw new GuestConfigRefusal('The config file changed since the preview, so nothing was written. Review it again.', 'changed')
+        // The marker goes first, through the API, so the GPU state it keys exists before any raw line changes.
+        try {
+          await this.d.pve.put(`${this.base(p.guest)}/config`, { description: withMarker(str(p.before.description), newMarker), digest })
+        } catch (e: any) { throw new GuestConfigRefusal(`The HyperProx marker could not be written, so nothing was changed: ${e?.message ?? e}`, 'refused') }
+        steps.push('HyperProx marker written to the description')
+        digest = str((await this.d.pve.get<PveConfig>(`${this.base(p.guest)}/config`))?.digest)
+        ops = ops.map(o => (o.kind === 'config' ? { ...o, set: Object.fromEntries(Object.entries(o.set).filter(([k]) => k !== 'description')) } : o))
+          .filter(o => o.kind !== 'config' || Object.keys(o.set).length || o.delete.length)
+        // The file now differs from the preview only in its description lines; anything else is a concurrent change.
+        const r0 = await this.d.shell.run(p.guest.node, readScript(p.guest.node, p.guest.vmid), 20_000).catch(() => null)
+        const now0 = r0 && r0.code === 0 ? parseRead(r0.output) : null
+        const strip = (t: string) => t.split('\n').filter(l => !l.startsWith('#') && !/^description:/.test(l)).join('\n')
+        if (!now0 || strip(now0.text) !== strip(p.file.before)) failed = 'the marker was written, but the config file then differed from the preview beyond its description, so the raw lines were not changed'
+        else p.file = { ...p.file, sha: now0.sha, before: now0.text, after: rewriteRawLines(now0.text, p.plan.rawFile!) }
+      }
+      if (p.file && !failed) {
         // Compare and swap: the file must still be the one previewed, checked here and again on the node.
         const r = await this.d.shell.run(p.guest.node, readScript(p.guest.node, p.guest.vmid), 20_000).catch(() => null)
         if (!r || r.code !== 0) throw new GuestConfigRefusal('The config file could not be read on the node, so nothing was written.', 'refused')
@@ -568,7 +623,10 @@ export class GuestConfigService {
             steps.push('raw lines written (whole file, compared and swapped under the config lock)')
             // GPU off: what was removed from the file is recorded now, before any devN step can fail, so GPU on can
             // always put it back.
-            if (p.kind === 'gpu-off') await this.recordGpuOff(p, null, true).catch(() => {})
+            if (p.kind === 'gpu-off') {
+              try { await this.recordGpuOff(p, null, true) }
+              catch (e: any) { failed = `the raw lines were removed, but what was removed could not be recorded (${e?.message ?? e}); stopped before the devN step so nothing else changes. GPU on cannot restore those lines until this is fixed` }
+            }
           }
         }
         // Proxmox must still parse it, and the API's digest moves on.
@@ -576,7 +634,7 @@ export class GuestConfigService {
         if (!parsed) failed ??= 'Proxmox could not read the config after the write'
         digest = str(parsed?.digest)
       }
-      for (const op of failed ? [] : p.plan.ops) {
+      for (const op of failed ? [] : ops) {
         try {
           let res: unknown
           if (op.kind === 'config') {
@@ -654,13 +712,45 @@ export class GuestConfigService {
     return lines.map(([k, v]) => createHmac('sha256', this.hmacKeyCache!).update(`${k}\u0000${v}`).digest('hex'))
   }
 
-  async gpuState(g: GuestId, cfg: PveConfig): Promise<GpuState> { return this.d.history.getGpu(gpuKey(g, cfg)) }
+  /** A guest's GPU state, found by its marker; state stored under an older key for this VMID is adopted once. */
+  async gpuState(g: GuestId, cfg: PveConfig): Promise<GpuState> {
+    const key = gpuKey(g, cfg)
+    if (!key) return emptyGpuState(`${g.type}/${g.vmid}/-`)
+    await this.d.history.adoptLegacyGpu(g.type, g.vmid, key)
+    return this.d.history.getGpu(key)
+  }
+
+  private stateKey(p: Preview): string {
+    const key = gpuKey(p.guest, p.before, (p.plan.meta as any)?.hpxId ?? markerOf(p.before))
+    if (!key) throw new Error('the guest has no HyperProx marker to keep its GPU state under')
+    return key
+  }
+
+  /**
+   * A change that records GPU state needs the guest's HyperProx marker. When it has none, the same change writes
+   * one into the description (a hidden comment, kept by every edit), through the API like any other key.
+   */
+  private ensureMarker(plan: Plan, ctx: GuestCtx): void {
+    const m = (plan.meta ?? {}) as any
+    if (!(m.gpuManaged || m.gpuManagedRaw || m.gpuOff) || plan.errors.length) return
+    const have = markerOf(ctx.config)
+    if (have) { (plan.meta ??= {}).hpxId = have; return }
+    const id = randomUUID()
+    const desc = withMarker(str(ctx.config.description), id)
+    const op = plan.ops.find(o => o.kind === 'config') as any
+    if (op) op.set.description = desc; else plan.ops.unshift({ kind: 'config', set: { description: desc }, delete: [] })
+    plan.touched.push('description'); plan.expect.push({ key: 'description', value: desc })
+    plan.checks.push('A hidden HyperProx marker is added to the description, so this guest’s GPU state is never mixed up with a later guest that reuses its ID.')
+    ;(plan.meta ??= {}).hpxId = id
+  }
 
   /** Record a GPU off: `partial` when only the raw-line step has landed so far (the devN step is still to come). */
   private async recordGpuOff(p: Preview, rowId: string | null, partial: boolean): Promise<void> {
     const rec = (p.plan.meta as any)?.gpuOff
     if (!rec) return
-    await this.d.history.updateGpu(gpuKey(p.guest, p.before), st => {
+    const key = this.stateKey(p)
+    await this.d.history.adoptLegacyGpu(p.guest.type, p.guest.vmid, key)
+    await this.d.history.updateGpu(key, st => {
       st.off = partial ? { removed: {}, rawRemoved: rec.rawRemoved ?? [], kept: rec.kept ?? [] } : rec
       st.offAt = new Date(this.d.now()); if (rowId) st.offRow = rowId
       return st
@@ -672,7 +762,9 @@ export class GuestConfigService {
     const m = (p.plan.meta ?? {}) as any
     if (!m.gpuManaged && !m.gpuManagedRaw && p.kind !== 'gpu-off' && p.kind !== 'gpu-on') return
     if (p.kind === 'gpu-off') return this.recordGpuOff(p, rowId, false)
-    await this.d.history.updateGpu(gpuKey(p.guest, p.before), st => {
+    const key = this.stateKey(p)
+    await this.d.history.adoptLegacyGpu(p.guest.type, p.guest.vmid, key)
+    await this.d.history.updateGpu(key, st => {
       if (m.gpuManaged) Object.assign(st.dev, m.gpuManaged)
       for (const l of (m.gpuManagedRaw ?? []) as Array<[string, string]>) if (!st.raw.some(r => r[0] === l[0] && r[1] === l[1])) st.raw.push([l[0], l[1]])
       if (p.kind === 'gpu-on') { st.off = null; st.offAt = null; st.offRow = null }
@@ -686,28 +778,35 @@ export class GuestConfigService {
    * realpath is itself, or one of the GPU device directories. A device the node lacks may only be named by an
    * optional entry, and only if another eligible node's inventory has it.
    */
-  private async checkAddedRaw(g: GuestId, add: Array<[string, string]>, sources: string[], invs: NodeInventory[] | null, plan: Plan): Promise<void> {
+  private async checkAddedRaw(g: GuestId, add: Array<[string, string]>, sources: string[], invs: NodeInventory[] | null, plan: Plan): Promise<SourceCheck[]> {
     const list = invs ?? [await this.inventory(g.node).catch(() => null)].filter((x): x is NodeInventory => !!x)
     const allow = allowFrom(list)
     for (const l of add) { const why = rawLineAllowed(l, allow); if (why) plan.errors.push(why) }
-    if (!sources.length || plan.errors.length) return
+    if (!sources.length || plan.errors.length) return []
     const r = await this.d.shell.run(g.node, verifyScript(sources), 20_000).catch(() => null)
-    if (!r) { plan.errors.push(`The devices could not be checked on ${g.node} (no node login).`); return }
+    if (!r) { plan.errors.push(`The devices could not be checked on ${g.node} (no node login).`); return [] }
     const v = parseVerify(r.output)
     const here = list.find(i => i.node === g.node)
+    const out: SourceCheck[] = []
     for (const src of sources) {
       const x = v[src]
       const line = add.find(([k, val]) => k === 'lxc.mount.entry' && val.trim().split(/\s+/)[0] === src)!
       const optional = /(^|,)optional(,|$)/.test(line[1].trim().split(/\s+/)[3] ?? '')
+      const inv = here?.charDevices?.[src]
       if (!x) plan.errors.push(`${src} could not be checked on ${g.node}.`)
       else if (x.kind === 'symlink') plan.errors.push(`${src} is a symlink on ${g.node}; only the device node itself may be bound.`)
       else if (x.kind === 'other') plan.errors.push(`${src} on ${g.node} is not a character device (a block device or a file), so it is refused.`)
       else if (x.kind === 'char' && x.real !== src) plan.errors.push(`${src} resolves to ${x.real} on ${g.node}; only the device node itself may be bound.`)
-      else if (x.kind === 'char' && here?.charDevices && here.charDevices[src] === undefined) plan.errors.push(`${src} is not in ${g.node}’s device inventory, so it is refused.`)
+      else if (x.kind === 'char' && !inv) plan.errors.push(`${src} is not in ${g.node}’s device inventory, so it is refused.`)
+      else if (x.kind === 'char' && (inv!.major !== x.major || inv!.minor !== x.minor)) plan.errors.push(`${src} on ${g.node} is now ${x.major}:${x.minor}, not the ${inv!.major}:${inv!.minor} in its inventory; refresh the devices and try again.`)
+      else if (x.kind === 'char') out.push({ path: src, expect: `${x.major.toString(16)}:${x.minor.toString(16)}` })
       else if (x.kind === 'dir' && (!DEVICE_DIRS.includes(src) || x.real !== src)) plan.errors.push(`${src} is a directory; only ${DEVICE_DIRS.join(' and ')} may be bound.`)
+      else if (x.kind === 'dir') out.push({ path: src, expect: 'dir' })
       else if (x.kind === 'missing' && !optional) plan.errors.push(`${src} does not exist on ${g.node}; only an optional entry may name a device another node has.`)
+      else if (x.kind === 'missing') out.push({ path: src, expect: 'absent' })
     }
-    plan.checks.push(`Every added device was checked on ${g.node}: a character device (or GPU device directory), not a symlink, its own real path`)
+    plan.checks.push(`Every added device was checked on ${g.node}: the same character device (major:minor) as its inventory, or a GPU device directory, not a symlink, its own real path — and is checked again on the node at the moment of the write`)
+    return out
   }
 
   /** Poll a task by UPID until it stops; its exit status is read, a task that never finishes is reported. */
@@ -795,7 +894,7 @@ export class GuestConfigService {
     for (const n of new Set(guests.map(x => x.node as string))) { const hit = this.inv.get(n); invs.set(n, hit ? hit.inv : null) }
     // The GPU toggle state needs the guest's history: an "off" with nothing turned back on since.
     const states = new Map((await this.d.history.listGpu().catch(() => [] as GpuState[])).map(st => [st.guest, st]))
-    const offs = guests.map((x, i) => !!states.get(gpuKey({ type: x.type, vmid: Number(x.vmid) }, configs[i] ?? {}))?.off)
+    const offs = guests.map((x, i) => { const k = gpuKey({ type: x.type, vmid: Number(x.vmid) }, configs[i] ?? {}); return !!(k && states.get(k)?.off) })
     const vpn = await vpnStatuses(guests.map(x => ({ node: x.node, type: x.type, vmid: Number(x.vmid), name: x.name })), this.d.vpn ?? vpnStatusSource())
     return guests.map((x, i) => {
       const cfg = configs[i] ?? {}
@@ -829,26 +928,28 @@ export function ipOf(type: GuestType, cfg: PveConfig): string | null {
   return null
 }
 
+/** HyperProx's own identity marker for a guest, kept as a hidden comment in its description. */
+export const MARKER_RE = /\n?<!-- hpx-id:([0-9a-f-]{36}) -->/
+export function markerOf(cfg: PveConfig): string | null { return MARKER_RE.exec(str(cfg.description))?.[1] ?? null }
+export function withoutMarker(desc: string): string { return desc.replace(MARKER_RE, '') }
+export function withMarker(desc: string, id: string): string { return `${withoutMarker(desc).replace(/\n+$/, '')}\n<!-- hpx-id:${id} -->` }
+
 /**
- * The GPU state key: type, VMID and the guest's creation identity (a container's NIC MACs, a VM's SMBIOS UUID or
- * generation ID), so a reused VMID never inherits another guest's GPU state.
+ * The GPU state key: type, VMID and the HyperProx marker in the guest's description, so a reused VMID (a new
+ * guest, with no marker or a different one) never inherits another guest's GPU state. null: no marker yet.
  */
-export function gpuKey(g: { type: GuestType; vmid: number }, cfg: PveConfig): string {
-  let id = ''
-  if (g.type === 'qemu') id = /uuid=([0-9a-f-]+)/i.exec(str(cfg.smbios1))?.[1] ?? str(cfg.vmgenid) ?? ''
-  else id = Object.keys(cfg).filter(k => /^net\d+$/.test(k)).sort().map(k => /hwaddr=([0-9A-Fa-f:]+)/.exec(str(cfg[k]))?.[1] ?? '').join(',')
-  if (!id) id = str(cfg.rootfs ?? cfg.scsi0 ?? '').split(',')[0]
-  return `${g.type}/${g.vmid}/${sha256(id).slice(0, 16)}`
+export function gpuKey(g: { type: GuestType; vmid: number }, cfg: PveConfig, id: string | null = markerOf(cfg)): string | null {
+  return id ? `${g.type}/${g.vmid}/${id}` : null
 }
 
-/** What an added raw line may name: inventory character devices (not symlinks) and their majors, plus GPU majors. */
+/** What an added raw line may name: inventory character devices (not symlinks) with their numbers, and GPU majors. */
 export function allowFrom(invs: NodeInventory[]): RawAllow {
-  const devices = new Set<string>(), majors = new Set<number>()
+  const devices = new Map<string, { major: number; minor: number }>(), gpu = new Set<number>()
   for (const inv of invs) {
     const chars = inv.charDevices ?? {}
     const listed = new Set([...inv.devices.flatMap(d => d.paths), ...inv.nvidiaNodes])
-    for (const [p, maj] of Object.entries(chars)) if (listed.has(p)) { devices.add(p); majors.add(maj) }
-    if (Object.keys(inv.majors).length) for (const [maj, x] of gpuMajors(inv.majors)) if (!x.assumed) majors.add(maj)
+    for (const [p, n] of Object.entries(chars)) if (listed.has(p)) devices.set(p, n)
+    if (Object.keys(inv.majors).length) for (const [maj, x] of gpuMajors(inv.majors)) if (!x.assumed) gpu.add(maj)
   }
-  return { devices, majors }
+  return { devices, gpuMajors: gpu }
 }
