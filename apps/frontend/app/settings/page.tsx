@@ -43,7 +43,8 @@ const LABEL = {
 
 const CATEGORY_META: Record<string, { label: string; accent: string; providers: Record<string, string> }> = {
   proxmox: { label: 'Proxmox',        accent: 'var(--warn)', providers: { proxmox: 'Proxmox VE' } },
-  proxy:   { label: 'Proxy',          accent: 'var(--accent)', providers: { npm: 'Nginx Proxy Manager', traefik: 'Traefik', caddy: 'Caddy' } },
+  // One NPM login lives here (it is the Proxy page's first instance). Further proxies, of any kind, are added on the Proxy page.
+  proxy:   { label: 'Proxy',          accent: 'var(--accent)', providers: { npm: 'Nginx Proxy Manager' } },
   dns:     { label: 'DNS',            accent: 'var(--accent-2)', providers: { godaddy: 'GoDaddy', cloudflare: 'Cloudflare', namecheap: 'Namecheap' } },
   remote:  { label: 'Remote access',  accent: 'var(--good)', providers: { tailscale: 'Tailscale', netbird: 'NetBird' } },
   system:  { label: 'System',         accent: 'var(--text-muted)', providers: { hyperprox: 'HyperProx' } },
@@ -265,6 +266,10 @@ export default function SettingsPage() {
                 style={{ borderColor: 'var(--border-strong)', color: 'var(--accent)' }}>
             Notifications &rarr;
           </Link>
+          <Link href="/catalogue/settings" className="inline-block rounded-md border px-3 py-1.5 text-sm font-medium"
+                style={{ borderColor: 'var(--border-strong)', color: 'var(--accent)' }}>
+            Container ID rule &rarr;
+          </Link>
         </div>
       </div>
 
@@ -293,6 +298,11 @@ export default function SettingsPage() {
         <div className="text-sm animate-pulse" style={{ color: 'var(--text-dimmer)' }}>Loading credentials...</div>
       ) : (
         <div className="space-y-6 max-w-3xl">
+          {tab === 'proxy' && (
+            <div className="text-sm" style={{ color: 'var(--text-soft)' }}>
+              More proxies (a second NPM, Traefik, Caddy, HAProxy, Pangolin) are added on the <Link href="/proxy" style={{ color: 'var(--accent)' }}>Proxy page</Link>.
+            </div>
+          )}
           {Object.entries(meta.providers).map(([provider, label]) => {
             const providerFields = (fields[tab] ?? []).filter(f => f.provider === provider)
             if (providerFields.length === 0) return null

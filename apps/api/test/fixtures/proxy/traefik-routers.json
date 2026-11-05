@@ -1,0 +1,43 @@
+[
+ {
+  "entryPoints": [
+   "api"
+  ],
+  "middlewares": [
+   "api-auth@file"
+  ],
+  "service": "api@internal",
+  "rule": "PathPrefix(`/api`) || PathPrefix(`/dashboard`)",
+  "priority": 46,
+  "observability": {
+   "accessLogs": true,
+   "tracing": true,
+   "metrics": true
+  },
+  "status": "enabled",
+  "using": [
+   "api"
+  ],
+  "name": "dashboard@file",
+  "provider": "file"
+ },
+ {
+  "entryPoints": [
+   "web"
+  ],
+  "service": "legacy",
+  "rule": "Host(`legacy-traefik.hpx.invalid`)",
+  "priority": 34,
+  "observability": {
+   "accessLogs": true,
+   "tracing": true,
+   "metrics": true
+  },
+  "status": "enabled",
+  "using": [
+   "web"
+  ],
+  "name": "legacy@file",
+  "provider": "file"
+ }
+]

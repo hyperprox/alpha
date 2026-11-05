@@ -104,8 +104,9 @@ export function actingSid(): string | null {
 // ── Local CLI lock ───────────────────────────────────────────────────────────
 // `hyperprox lock` runs on the host and has no vault session. It may lock (and
 // only lock) when it is truly local: the socket peer is loopback, it carries no
-// session token, and there are no X-Forwarded-* headers. The reverse proxy
-// reaches the API over the container bridge, so proxied requests never count.
+// session token, and there are no X-Forwarded-* headers. nginx shares the
+// host network and reaches the API on loopback too, but every nginx location
+// that proxies to the API sets X-Forwarded-For, so proxied requests never count.
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
 

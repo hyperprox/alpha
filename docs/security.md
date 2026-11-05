@@ -59,6 +59,28 @@ Bitwarden-compatible, zero-knowledge vault. Every install runs its own, stock an
   metadata addresses always refused, private and loopback addresses only with the switch and never on
   HyperProx's own service ports, and no redirects followed. Logs, the delivery history and the audit log
   record a channel's id, kind, HTTP status and an error code, never its address, token or a response body.
+- **Monitoring is behind the sign-in too.** Prometheus and Grafana listen on loopback only. nginx serves
+  Grafana at `/grafana/`, and before each request (pages, queries, the live WebSocket) it asks the API
+  (`GET /api/auth/check`) whether the browser holds a valid HyperProx session while HyperProx is
+  unlocked. No session, or locked, is a redirect to sign in; an API token is refused; the API not
+  answering (within 2 s to connect, 5 s to reply) is an error, never a pass. Grafana's own anonymous
+  viewer is therefore reached only by signed-in people. nginx sends Grafana no Cookie and no
+  Authorization header, so HyperProx's session never reaches it, and Grafana's login form, basic auth
+  and plugin admin are switched off: from behind nginx nobody can become more than that anonymous
+  viewer (admin work is `docker exec hyperprox-grafana grafana cli admin ...` on the host). These checks
+  do not reset the auto-lock timer or mark the session as recently active, so a dashboard refreshing
+  itself does not keep HyperProx unlocked.
+- **Every signed-in person can read every metric.** The anonymous viewer behind `/grafana/` is the same
+  for everyone, whatever their HyperProx role, so any signed-in viewer can run any PromQL query
+  through Grafana and see every series Prometheus holds, along with what Grafana shows of Prometheus's
+  read API (targets, scrape configuration with credentials redacted, flags). Prometheus refuses writes
+  through Grafana. nginx refuses Grafana's raw datasource proxy (`/grafana/api/datasources/proxy/`) and
+  its datasource list to everyone; dashboards do not use either. If some people must not see all
+  metrics, do not give them a HyperProx account: per-role Grafana access is not built.
+- **A Grafana WebSocket outlives a sign-out.** The session check runs once per request, and for Grafana
+  Live's WebSocket that is once, when it opens. A socket opened before a sign-out or a lock keeps
+  streaming metrics until the page closes it, or until it carries nothing for 300 seconds (nginx's idle
+  timeout on `/grafana/`). Every new page, query or socket is checked again.
 - **Roles.** They come from the person's membership in the vault's "HyperProx" organization:
 
   | Vault role | HyperProx role | Can |
@@ -92,11 +114,16 @@ in the vault signs in through the Bitwarden CLI instead, which takes 15 to 20 se
 ## From the command line
 
 ```bash
-hyperprox status   # is the vault up? the keyholder? is HyperProx locked or unlocked?
-hyperprox lock     # lock now: wipe memory, end all sessions
+hyperprox status         # is the vault up? the keyholder? is HyperProx locked or unlocked?
+hyperprox lock           # lock now: wipe memory, end all sessions
+hyperprox pve-exporter   # give the PVE exporter its own read-only Proxmox token (needs HyperProx unlocked)
 ```
 
-Both talk to localhost only and are meant to run as root on the HyperProx machine.
+They talk to localhost only and are meant to run as root on the HyperProx machine. `hyperprox
+pve-exporter` asks the API to make the token (only the API holds HyperProx's admin token, in memory),
+using a one-off API token it creates in the database: valid for ten minutes, revoked straight
+afterwards (also on Ctrl-C or SIGTERM), and any left behind by an earlier run killed outright are
+revoked at the start of the next.
 
 ## API tokens
 
@@ -204,6 +231,22 @@ release. Do not assume them.
   which are end-to-end encrypted with keys derived from each user's master password. So the zero-knowledge
   property holds, but someone with that token can lock people out or invite an account of their own. It is
   not reachable from the network by default; treat the file as sensitive (it is mode 0600).
+- **Two monitoring credentials are on disk, outside the vault.** Prometheus and the PVE exporter are
+  containers that read their credentials from files and have no way to ask the vault (the exporter
+  keeps reading Proxmox while HyperProx is locked), so these two cannot be vault items:
+  - `METRICS_TOKEN`, in `.env` and in `config/prometheus/secrets/metrics_token` (0600, owned by
+    Prometheus's user). It is the bearer token for `/api/plugins/metrics`, which serves plug-in metrics
+    and nothing else. The installer generates it; it is never rotated automatically. To rotate it,
+    delete the `METRICS_TOKEN` line from `.env` and the secret file, run `bash bin/hyperprox-config`,
+    then `systemctl restart hyperprox-api` (Prometheus reads the file on every scrape).
+  - The PVE exporter's Proxmox token, in `config/pve-exporter/pve.yml` (0600, owned by the exporter's
+    user). It is a separate token from HyperProx's own, with privilege separation on and only the
+    `PVEAuditor` role on `/`: whoever reads the file can read what Proxmox shows an auditor (nodes,
+    guests and their configuration, storage, usage) and can change nothing. HyperProx checks that with
+    Proxmox, not by the token's name: it reuses the token only while privilege separation is on and its
+    one ACL is PVEAuditor on `/`, and otherwise refuses it as not read-only. To replace it, run
+    `hyperprox pve-exporter --fresh`.
+  Both files are git-ignored. Treat them, like `.env`, as sensitive.
 - **A deploy starts new code with the vault already unlocked.** Because the unlock survives an API
   restart, code that `deploy.sh` ships starts with every unlocked secret, the signing key and the vault
   sessions (refresh tokens included) available to it, without anyone signing in again. Before the
@@ -212,7 +255,8 @@ release. Do not assume them.
 - **While unlocked, root on the machine can read memory.** Decrypted secrets and the signing key live in the
   API process and in the keyholder. Anyone with root on the HyperProx machine during that time can read them (or change the
   running code). Auto-lock and `hyperprox lock` shorten that window; a tamper check to catch changed code is
-  not built yet. While **locked**, there is nothing usable in memory or on disk.
+  not built yet. While **locked**, there is nothing usable in memory or on disk, apart from the two
+  read-only monitoring credentials above.
 - **The master password is the key.** It is entered in your browser and passed to HyperProx's API to sign
   in as you; it is never stored or logged, but it does cross that connection, so the connection should be
   one you trust (see the access-modes note above).

@@ -42,6 +42,7 @@ export interface ProxmoxVM {
 
 // --- Proxy -------------------------------------------------------------------
 
+// Every kind is implemented (apps/api/src/lib/proxy/providers); the API's own types are in lib/proxy/types.ts.
 export type ProxyProvider  = 'npm' | 'traefik' | 'caddy' | 'haproxy' | 'pangolin'
 export type SSLStatus      = 'valid' | 'expiring' | 'expired' | 'none' | 'pending'
 
@@ -54,6 +55,10 @@ export interface ProxyHost {
   sslExpiry?:   string
   enabled:      boolean
   provider:     ProxyProvider
+  /** The proxy instance that owns the host (several instances may share a kind). */
+  instanceId?:  string
+  /** Made outside HyperProx: shown, never rewritten. */
+  readOnly?:    boolean
   containerId?: number
 }
 
