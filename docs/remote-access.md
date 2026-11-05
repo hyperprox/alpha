@@ -1,4 +1,4 @@
-# Remote access
+# VPN (remote access)
 
 HyperProx installs and manages a mesh VPN client, **Tailscale** or **NetBird**, on your Proxmox nodes,
 containers, VMs and the hosts you added by hand in the Terminal. You can then reach them from anywhere
@@ -155,6 +155,131 @@ When the cluster firewall is enabled, the **Firewall…** action on a node shows
 confirm, adds it through the Proxmox API. It never opens corosync (5405–5412/udp), Ceph (3300, 6789,
 6800–7300/tcp) or migration ports. If the cluster firewall is off, nothing blocks the overlay and there is
 nothing to add.
+
+## The VPN page
+
+**VPN** in the sidebar lists every node and guest with a column per provider: state (connected, offline,
+missing, not installed), overlay IP, MagicDNS or NetBird name, client version, last seen and key expiry. A
+key that expires in less than 14 days is flagged.
+
+- **Install** is one click. It uses the defaults from **Settings → Credentials → Remote access**: the
+  default tags (Tailscale) or groups (NetBird), and whether a container or a VM lets the client manage its
+  DNS (*One-click: MagicDNS on containers/VMs*, off unless set to `yes`). A Proxmox node always gets the
+  locked-down node profile. The dialog lists what will happen in a few lines; one confirm (and your master
+  password) starts it. **Advanced…** has the full dialog (tags, userspace mode, existing clients, signing in
+  with your own account).
+- **Settings…** opens the machine's panel. It reads the client's own settings back from the machine and
+  lets you change them, with a preview in words of what each change does on that machine:
+  - **Accept DNS** (MagicDNS / NetBird DNS): on, the client manages the machine's DNS so overlay names
+    resolve; off (the default), `/etc/resolv.conf` is left alone.
+  - **Accept routes** other devices offer.
+  - **Tailscale SSH / NetBird SSH**: people your ACL or policy allows can open a shell over the overlay.
+    For NetBird HyperProx also allows SSH on the peer in the management server.
+  - **Use an exit node** (a Tailscale overlay IP or name, or a NetBird network route id), with **Allow LAN
+    access** on by default so the machine keeps reaching the local network.
+  - **Offer as an exit node** and **subnets to offer**, with the overlap checks below, approved in the
+    tailnet through the Tailscale API (NetBird: network routes).
+  Every change is confirmed from the client's own read-back (`tailscale debug prefs`, filtered so the node
+  keys never leave the machine, or NetBird's config) and put back if the client did not take it. On a
+  Proxmox node all of these are locked off.
+- **Key expiry**: the panel shows the date and can turn expiry off for a server (Tailscale key expiry,
+  NetBird login expiration), or back on.
+- **Tags / groups**: shown and edited through the API. A Tailscale tag must be in your tailnet policy's
+  `tagOwners` for the credential HyperProx uses, or Tailscale refuses it; tagging a device also removes its
+  user ownership.
+- **Waiting for approval**: if your tailnet or NetBird account requires device approval, devices waiting
+  for it are listed with their OS and who added them, and can be approved or removed.
+
+### Signing in with your own account
+
+Instead of a key, **Advanced… → Sign in with my account** starts the client without one. The client prints
+a sign-in link; HyperProx captures it from output it never logs, keeps it in memory only, shows it on the
+machine's panel to admins (after your master password, with a copy button), and sends it to your
+notification channels **marked private** (Settings → Notifications). The link works once and expires after
+about ten minutes; after that, or after HyperProx restarts, it is gone and a **Check** gets a new one. The
+same happens when a key has expired and the client is waiting for a sign-in of its own.
+
+### New devices
+
+Every few minutes HyperProx looks at each provider's device list and sends a notification (event family
+*VPN*) for each device that was not there before, with its name, OS, who added it, and whether it is
+waiting for approval. Devices HyperProx installed itself are not announced. The very first look only
+learns what is there. While HyperProx is locked it does not look.
+
+## API for other pages
+
+Other pages (the guest drill-down, list badges) use `/api/remote/v1`, typed as `VpnStatusSource` in
+`packages/types/src/remote.ts` and implemented in `apps/frontend/lib/vpn.ts`. Machine ids are `node-<name>`,
+`lxc-<vmid>`, `qemu-<vmid>`.
+
+| Call | Who | |
+|---|---|---|
+| `GET /v1/status` | any role | `{ providers, machines: VpnMachineStatus[] }` |
+| `GET /v1/status/:machineId` | any role | one `VpnMachineStatus`, 404 when unknown |
+| `GET /v1/machines/:id/:provider/install-preview` | admin | what a one-click install would do |
+| `POST /v1/machines/:id/:provider/install` `{ confirm: true }` | admin, re-confirm | `202 { job }` |
+| `DELETE /v1/machines/:id/:provider` | admin, re-confirm | uninstall, `202 { job }` |
+| `GET /v1/machines/:id/:provider/settings` | admin | `{ current }`, read back from the client |
+| `POST /v1/machines/:id/:provider/settings/preview` `{ prefs }` | admin | `{ current, desired, changes, refusal }` |
+| `POST /v1/machines/:id/:provider/settings` `{ prefs, confirm: true }` | admin, re-confirm | `202 { job }` |
+| `GET /v1/jobs/:id` | admin | progress; poll until `status` is not `running` |
+
+`VpnMachineStatus.providers[p]` has `state`, `installed`, `ip`, `dnsName`, `version`, `lastSeen`,
+`expiresAt`, `expiryWarning` and `panel` (a link to the machine's panel on the VPN page) for every role;
+admins also get `loginPending`, `pending`, `tags`, `routes`, `exitNode` and `prefs`. A call that needs a
+fresh master password answers `403 { code: 'reconfirm_required' }`.
+
+## WireGuard
+
+WireGuard is the third option, next to Tailscale and NetBird, on the same **VPN** page.
+
+- **Servers** run in a container or VM, never on a Proxmox node. **New server…** installs `wireguard-tools`,
+  makes the server's key inside the machine (`wg genkey`), and brings up `hp-wg0` with a listen port. The
+  key never leaves that machine; wg-quick loads it from its own file, so the interface file HyperProx writes
+  has no `PrivateKey` line. Optionally (off by default) a copy of the server key is also kept in the vault:
+  a rebuilt server then keeps its key and no peer needs changing, but anyone who can reveal secrets in the
+  vault could impersonate the server. A Catalogue recipe (`lib/vpn/wireguard/recipe.ts`) sets up the same
+  server container in one click once the Catalogue wires it in.
+- **Phones and laptops**: **Add phone or laptop…** makes the client's keypair **in your browser**
+  (WebCrypto X25519) and shows the config once, as a QR code and a `.conf` download. The keypair and the
+  config are kept in the vault, one item per peer, so you can show the QR again later (after your master
+  password, audited), for example after a phone reset. If the browser cannot make the key, the server
+  container makes it and it goes straight to the vault. Postgres holds only public keys, addresses and
+  names.
+- **Rotate key** replaces the vault item and the server's peer. The previous key is kept for seven days,
+  marked *rotated*, so **Undo rotation** can put it back; after seven days it is deleted.
+- **Peers** are added, changed and removed live (`wg syncconf`): other peers stay connected.
+- **Connect a machine…** makes a node or guest a client of a HyperProx server or of the router. Its key is
+  made on it and never leaves it; a rebuilt machine gets a new key and the other end is updated
+  automatically. On a Proxmox node: no default route or `/1` split through the tunnel, nothing in
+  AllowedIPs (or in its site-to-site subnets) may overlap a corosync link, a Ceph network or the node's own
+  addresses, and the change goes through the same before/after guard and rollback as the mesh clients.
+
+### The MikroTik router
+
+If the MikroTik plug-in is set up, the VPN page shows the router's WireGuard interfaces and peers
+(handshake, traffic, endpoint) as **Router**, read through the plug-in's own read-only connection. Private
+and preshared keys in RouterOS's answers are dropped.
+
+To add peers, HyperProx needs its **own limited login** on the router, never the admin one. Without it the
+router view is read-only and shows these commands to create it:
+
+```
+/user group add name=hyperprox-wg policy=read,write,api,rest-api comment="HyperProx: WireGuard peers only"
+/user add name=hyperprox-wg group=hyperprox-wg comment="HyperProx: WireGuard peers only" password="<a long random password>"
+```
+
+Then add it under **Settings → Credentials → Remote access → MikroTik WireGuard**. With it, HyperProx can:
+
+- add a phone or laptop to a router WireGuard interface (browser keypair, config in the vault, QR), or
+  connect a node or guest to it (its own key), previewed and read back;
+- remove the peers it created. Every peer it creates carries `comment=hyperprox:<id>`; anything without
+  that mark is never changed or removed;
+- site-to-site: a node or guest peer whose AllowedIPs are its own subnets, with the overlap checks.
+
+HyperProx never changes the router's firewall, addresses or routes on its own. If no input rule lets UDP in
+on an interface's listen port, the page shows the exact command for you to review and run, and offers to
+add that one rule (previewed, marked `hyperprox:wg-<interface>`, at the top of the input chain).
 
 ## Per-machine actions
 

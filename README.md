@@ -331,11 +331,15 @@ DNS-01 through GoDaddy, delivers them into guests or to HyperProx's own nginx, a
 by fingerprint. Configure it in `config/certs.yaml` (copy `config/certs.example.yaml`), start with
 `acme.directory: staging`, and press **Issue**. Admin-only. See [docs/certificates.md](docs/certificates.md).
 
-### Remote access
+### VPN
 
 Installs and manages **Tailscale** or **NetBird** (cloud or self-hosted) on nodes, containers and VMs, so
 you can reach them without opening a port. Add the provider under **Settings → Credentials → Remote
-access** and press **Test**, then pick machines and **Install on selected**. Each install gets its own
+access** and press **Test**, then press **Install** on a machine (one click, with your defaults) or pick
+several and **Install on selected**. Each machine's panel changes DNS, routes, SSH and exit nodes with a
+preview, and new devices and sign-in links arrive as notifications. WireGuard is a third option: servers in a
+container, phones and laptops by QR code (keys made in the browser and kept in the vault), machines as
+clients, and the MikroTik router's WireGuard peers. Each install gets its own
 single-use key, which is revoked when it is done. On a Proxmox node the client never takes over DNS or
 routes; HyperProx checks the default route, resolver and quorum before and after, and undoes the install
 if anything changed. Viewers see status; changes are admin-only. See [docs/remote-access.md](docs/remote-access.md).

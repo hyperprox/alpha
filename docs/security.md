@@ -202,6 +202,29 @@ the rules below ([docs/remote-access.md](remote-access.md)).
   different pin is never replaced from here.
 - **Guest config is changed only through the Proxmox API** (`devN: /dev/net/tun`, with the config digest),
   never by editing or appending to a config file. HyperProx does not restart the container for you.
+- **Sign-in links** (when an owner signs a machine in with their own account, or a key expired) are
+  sensitive: whoever opens one adds a machine to the network. HyperProx captures them from output it does
+  not log, keeps them in memory only for about ten minutes, shows them only to admins after
+  re-confirmation (`Cache-Control: no-store`, audited without the link), and sends them only to
+  notification channels marked **private**, as a sensitive link that is never written to the outbox. After
+  it expires, or after a restart, the notification says the link has expired instead.
+- **Every read of a provider credential is audited** without its value (`remote.credential.read`, at most
+  once a minute per provider). While HyperProx is locked, every VPN action says "HyperProx is locked — sign in
+  to …" and does nothing; the revoke sweep and the new-device poller pause and resume on unlock.
+- **WireGuard keys.** A server's or machine's private key is made on that machine and never leaves it
+  (wg-quick loads it from its own file; no interface file HyperProx writes has a `PrivateKey` line). A
+  phone or laptop client's keypair is made in the browser (or, as a fallback, on the server container, in
+  output HyperProx never logs) and kept with its config as one vault item per peer, revealed again only
+  after re-confirmation, audited. A rotated key is kept seven days, marked rotated, then deleted. A server
+  key goes to the vault only if the owner opts in. Postgres holds public keys only.
+- **The MikroTik router** is written to only with a separate, limited RouterOS login in the vault (group
+  policies read, write, api, rest-api), never the admin login; without it the view is read-only. Only
+  peers marked `comment=hyperprox:<id>` are ever changed or removed. Firewall, addresses and routes are never
+  changed on their own; the one input rule for a listen port is shown as a command and added only on a
+  confirmed request.
+- **Locked means nothing**: while HyperProx is locked no credential is in memory; every VPN and WireGuard
+  action says "HyperProx is locked — sign in to …" and does nothing, and the background work (revoke sweep,
+  new-device poller, rotation sweep) waits for the next unlock.
 - **Audit**: `remote.install`, `remote.update`, `remote.routing`, `remote.uninstall`, `remote.check`,
   `remote.rollback`, `remote.cleanup`, `remote.recovered`, `remote.tun`, `remote.firewall` and
   `remote.manual-key` are written with the user, the machines and the provider.
