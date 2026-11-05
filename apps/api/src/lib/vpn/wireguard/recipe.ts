@@ -25,7 +25,7 @@ export const WIREGUARD_SERVER_RECIPE: CatalogueRecipe = {
   firstLogin: 'Nothing to sign in to: add peers on the VPN page, which shows a QR code for each phone or laptop.',
   notes: [
     'Forward UDP 51820 on your router to this container, or choose another port with WG_PORT.',
-    'Set WG_ADDRESS to the tunnel network for this server (for example 10.13.13.1/24); it must not overlap your LAN or cluster networks.',
+    'Set WG_ADDRESS to the tunnel network for this server (for example 100.64.13.1/24); it must not overlap your LAN or cluster networks.',
     'The container\'s key is made inside it and never leaves it.',
   ],
   firstRun: { kind: 'none' },
@@ -37,7 +37,7 @@ export const WIREGUARD_SERVER_RECIPE: CatalogueRecipe = {
       'set -e',
       'export DEBIAN_FRONTEND=noninteractive',
       'apt-get update -qq && apt-get install -y -qq wireguard-tools iproute2',
-      ': "${WG_ADDRESS:?set WG_ADDRESS, e.g. 10.13.13.1/24}"',
+      ': "${WG_ADDRESS:?set WG_ADDRESS, e.g. 100.64.13.1/24}"',
       'WG_PORT="${WG_PORT:-51820}"',
       'case "$WG_ADDRESS$WG_PORT" in *[!0-9./]*) echo "WG_ADDRESS or WG_PORT is not valid" >&2; exit 2 ;; esac',
       'umask 077 && mkdir -p /etc/wireguard',
