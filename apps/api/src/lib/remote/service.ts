@@ -189,6 +189,7 @@ export function mergePrefs(current: VpnPrefs, change: Partial<VpnPrefs>): VpnPre
 
 const EXPIRY_WARN_MS = 14 * 86400_000
 const LOGIN_URL_TTL_MS = 10 * 60_000
+const LOGIN_POLL_MS = 5_000
 
 const msg = (e: unknown) => String((e as any)?.message ?? e)
 
@@ -751,7 +752,19 @@ export class RemoteAccessService {
           if (undo.plan.kind === 'remove' || undo.plan.kind === 'restore') { undo.plan.nodeKey = status.nodeKey ?? null; undo.plan.address = status.ip; await undo.persist?.() }
           if (!url && !status.connected) throw new Error(`${PROVIDER_LABEL[req.provider]} did not print a sign-in link and is not connected`)
           if (url) await this.captureLogin(m, req.provider, url)
-          return { status, dev: undefined as ProviderDevice | undefined }
+          if (m.kind !== 'node' || status.connected) return { status, dev: undefined as ProviderDevice | undefined }
+          // A node keeps its guard open until the client has joined: the after-check below then sees the node as
+          // it is once signed in, and the locks are confirmed from the client. No join before the link expires:
+          // the client is taken off again.
+          job.steps.forEach(st => { if (st.machineId === m.id) st.detail = 'Waiting for the sign-in (the link expires in about 10 minutes)' })
+          const joined = await this.waitForJoin(job, m, req.provider)
+          this.logins.delete(`${m.id}|${req.provider}`)
+          const { problems } = await this.observeLocks(job, m, req.provider)
+          if (problems.length) throw new Error(`${m.name} joined, but its client does not meet the node locks: ${problems.join('; ')}`)
+          if (undo.plan.kind === 'remove' || undo.plan.kind === 'restore') { undo.plan.nodeKey = joined.nodeKey ?? null; undo.plan.address = joined.ip; await undo.persist?.() }
+          const dev = this.matchStatus(joined, await this.deviceList(req.provider, p, true).catch(() => []))
+          if (dev && (undo.plan.kind === 'remove' || undo.plan.kind === 'restore')) { undo.plan.deviceId = dev.id; await undo.persist?.() }
+          return { status: joined, dev }
         }
         // Due in 15 minutes, so a sweep never revokes it mid-install; the install revokes it the moment `up` ends.
         const { key, pendingId } = await this.mintRecorded(p, req.provider, `HyperProx ${m.id}`, req.tags ?? settings.tags, INSTALL_KEY_GRACE_MS, 'install')
@@ -803,6 +816,18 @@ export class RemoteAccessService {
     return `${status.connected ? 'Connected' : 'Installed, not connected yet'}${where} (${PROVIDER_LABEL[req.provider]} ${status.version ?? '?'}${plan.mode === 'userspace' ? ', userspace networking' : ''})` +
       (plan.existing ? ', replacing the client that was there' : '') +
       (dev ? '' : '. Not found in the provider\'s device list yet.')
+  }
+
+  /** Poll a client until it reports it has joined, or the sign-in link has expired. */
+  private async waitForJoin(job: RemoteJob, m: Machine, provider: ProviderId): Promise<ClientStatus> {
+    const until = this.now() + LOGIN_URL_TTL_MS
+    while (this.now() < until) {
+      await this.sleep(LOGIN_POLL_MS)
+      const st = parseStatus(provider, (await this.exec(job, m, statusScript(provider), { netbird: provider === 'netbird', timeoutMs: 60_000, quiet: 'output withheld: it may contain a sign-in link' })).output)
+      if (st.connected) return st
+    }
+    this.logins.delete(`${m.id}|${provider}`)
+    throw new Error(`nobody signed in before the link expired, so ${PROVIDER_LABEL[provider]} was taken off ${m.name} again`)
   }
 
   /**

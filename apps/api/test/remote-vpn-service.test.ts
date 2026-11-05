@@ -160,6 +160,59 @@ test('sign in with my account: no key is minted, the link is captured, sent only
   assert.equal(await r.svc.revealLogin('lxc-101', 'tailscale', 'a'), null, 'expired and forgotten')
 })
 
+// ── Sign-in on a node: the guard waits for the join ─────────────────────────
+
+const NEEDS = status('', { BackendState: 'NeedsLogin', AuthURL: LOGIN, Self: {} })
+/** A node whose client prints a link, reports NeedsLogin for `waits` polls, then joins with `prefs`. */
+function nodeLogin(o: { waits?: number; joins?: boolean; prefs?: Record<string, unknown>; snapAfter?: string }) {
+  let polls = 0, joined = false, snaps = 0
+  return (_m: Machine, kind: string, script: string): [number, string] | undefined => {
+    if (kind === 'login') return [0, `To authenticate, visit:\n\n\t${LOGIN}\n\n${NEEDS}`]
+    if (kind === 'status') { if (o.joins !== false && ++polls > (o.waits ?? 2)) joined = true; return [0, joined ? status('100.64.0.7') : NEEDS] }
+    if (kind === 'prefs') return [0, prefsDump({ NetfilterMode: 0, ...(o.prefs ?? {}) })]
+    if (kind === 'snapshot' && o.snapAfter && joined && ++snaps >= 1) return [0, SNAP.replace('HP_SNAPSHOT_END', `${o.snapAfter}\nHP_SNAPSHOT_END`)]
+    if (script.includes('HP_REMOVED')) return [0, 'HP_REMOVED']
+    return undefined
+  }
+}
+const clock = () => { let t = Date.parse('2026-11-05T10:00:00Z'); return () => (t += 5_000) }
+
+test('sign-in on a node: the guard holds until the client joins, then checks the node and the locks', async () => {
+  const r = rig({ now: clock(), answer: nodeLogin({ waits: 3 }) })
+  r.prov.devices.push({ id: 'dev-node', nodeKey: 'n-1', name: 'pve-a', addresses: ['100.64.0.7'], online: true, lastSeen: null, version: '1.92.0' })
+  const job = await settle(r.svc, r.svc.startJob({ action: 'install', provider: 'tailscale', machineIds: ['node-pve-a'], auth: 'login' }, 'admin@example.com'))
+  assert.equal(job.status, 'completed', job.error)
+  const k = r.w.kinds()
+  const joinedAt = k.lastIndexOf('status'), prefsAt = k.lastIndexOf('prefs'), lastSnap = k.lastIndexOf('snapshot')
+  assert.ok(k.filter(x => x === 'status').length >= 4, `polled until it joined: ${k.join(' ')}`)
+  assert.ok(prefsAt > k.indexOf('login') && lastSnap > prefsAt && lastSnap > joinedAt - 1, `after-check after the join: ${k.join(' ')}`)
+  assert.equal(await r.svc.revealLogin('node-pve-a', 'tailscale', 'a'), null, 'the link is forgotten once used')
+  assert.doesNotMatch(JSON.stringify(job), /5ecret5ign1n/)
+})
+
+test('sign-in on a node that nobody completes: when the link expires the client is taken off again', async () => {
+  const r = rig({ now: clock(), answer: nodeLogin({ joins: false }) })
+  const job = await settle(r.svc, r.svc.startJob({ action: 'install', provider: 'tailscale', machineIds: ['node-pve-a'], auth: 'login' }, 'a'))
+  assert.equal(job.status, 'failed')
+  assert.match(job.error ?? job.steps[0].detail ?? '', /link expired/)
+  assert.ok(r.w.ran.some(x => x.script.includes('HP_REMOVED')), 'the client was removed')
+})
+
+test('sign-in on a node: joined without the node locks is rolled back', async () => {
+  const r = rig({ now: clock(), answer: nodeLogin({ prefs: { CorpDNS: true } }) })
+  const job = await settle(r.svc, r.svc.startJob({ action: 'install', provider: 'tailscale', machineIds: ['node-pve-a'], auth: 'login' }, 'a'))
+  assert.equal(job.status, 'failed')
+  assert.match(job.error ?? job.steps[0].detail ?? '', /node locks/)
+  assert.ok(r.w.ran.some(x => x.script.includes('HP_REMOVED')))
+})
+
+test('sign-in on a node: a change to the node after the join is rolled back', async () => {
+  const r = rig({ now: clock(), answer: nodeLogin({ snapAfter: 'HP_ROUTE4 0.0.0.0/1 dev tailscale0' }) })
+  const job = await settle(r.svc, r.svc.startJob({ action: 'install', provider: 'tailscale', machineIds: ['node-pve-a'], auth: 'login' }, 'a'))
+  assert.equal(job.status, 'failed')
+  assert.match(job.error ?? job.steps[0].detail ?? '', /Rolled back|rolled back/)
+})
+
 test('a key that expired: a check finds the client waiting with its own link and captures it', async () => {
   const r = rig()
   await installed(r, CT)

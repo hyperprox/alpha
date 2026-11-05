@@ -14,6 +14,7 @@ import Link from 'next/link'
 import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
 import { GhostButton, INPUT, LABEL, Modal, Notice, PrimaryButton } from '@/components/vault/ui'
+import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 
 type Kind = 'discord' | 'slack' | 'teams' | 'ntfy' | 'gotify' | 'telegram' | 'webhook'
 type Severity = 'info' | 'warning' | 'critical'
@@ -172,14 +173,18 @@ function ChannelModal({ editing, meta, onSaved, onClose }: {
       : await apiJson<{ channel: Channel }>('/api/settings/notifications/channels', 'POST', payloadFrom(f, false))
     setBusy(false)
     if (r.ok && r.body?.channel) { onSaved(r.body.channel, !editing); return }
+    // Marking a channel private (sign-in links go there) asks for the master password again.
+    if (r.code === 'reconfirm_required') { setReconfirm(true); return }
     setError(r.error ?? 'Could not save the channel')
   }
+  const [reconfirm, setReconfirm] = useState(false)
 
   const canSave = f.name.trim() && (!needSecret || (f.kind === 'telegram' ? f.botToken.trim() && f.chatId.trim() : f.url.trim())) &&
     (f.allEvents || f.families.length > 0) && !(f.kind === 'gotify' && needSecret && !f.token.trim())
 
   return (
     <Modal title={editing ? `Edit "${editing.name}"` : 'Add a channel'} onClose={onClose}>
+      {reconfirm && <ReconfirmModal onDone={() => { setReconfirm(false); save() }} onClose={() => setReconfirm(false)} />}
       <form onSubmit={e => { e.preventDefault(); save() }} className="space-y-4 max-h-[75vh] overflow-y-auto pr-1">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div><label htmlFor="n-name" style={LABEL}>Name</label>
