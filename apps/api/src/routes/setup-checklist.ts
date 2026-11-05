@@ -13,7 +13,7 @@
 // =============================================================================
 
 import type { FastifyPluginAsync } from 'fastify'
-import { checklistState, startItem, getJob, activeJob, saveNodeLoginForAll, ChecklistRefusal, productionChecklistDeps, type ChecklistDeps, type ItemId } from '../lib/setup-checklist'
+import { confirmHostKey, checklistState, startItem, getJob, activeJob, saveNodeLoginForAll, ChecklistRefusal, productionChecklistDeps, type ChecklistDeps, type ItemId } from '../lib/setup-checklist'
 import { currentContext } from '../lib/auth'
 import { igpuAccess, IgpuRefusal } from '../lib/igpu-access'
 
@@ -42,6 +42,12 @@ export function buildSetupChecklistRoutes(deps?: () => ChecklistDeps): FastifyPl
         const job = await startItem(req.params.item as ItemId, req.body ?? {}, who(), d())
         return reply.send({ success: true, data: job })
       } catch (e) { return fail(reply, e) }
+    })
+
+    // POST /host-keys/confirm { host, port, fingerprint }: the admin compared it on the machine.
+    fastify.post<{ Body: Record<string, unknown> }>('/host-keys/confirm', async (req, reply) => {
+      try { return reply.send({ success: true, data: await confirmHostKey(req.body, who(), d()) }) }
+      catch (e) { return fail(reply, e) }
     })
 
     const igpu = (reply: any, e: any) => e instanceof IgpuRefusal ? reply.status(e.status).send({ success: false, error: e.message }) : fail(reply, e)

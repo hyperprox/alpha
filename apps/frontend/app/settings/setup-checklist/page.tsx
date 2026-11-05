@@ -14,7 +14,7 @@ import { GhostButton, INPUT, LABEL, Notice, PrimaryButton } from '@/components/v
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 
 type State = 'done' | 'partly' | 'not-done' | 'not-applicable'
-interface Row { node: string; state: State; reason: string }
+interface Row { node: string; state: State; reason: string; host?: string; port?: number; fingerprint?: string }
 interface Item { id: string; ask: string; what: string; notes: string[]; state: State; rows: Row[]; needsNodeLogin: boolean; action: string | null; automatic?: boolean }
 interface Job { id: string; item: string; status: 'running' | 'done' | 'failed'; results: Array<{ node?: string; label: string; status: string; reason: string }>; checks: Array<{ node?: string; status: string; reason: string }> }
 interface Data { summary: string; logins: Record<string, boolean>; items: Item[]; running: Job | null }
@@ -103,6 +103,16 @@ export default function SetupChecklistPage() {
     } catch (e: any) { setError(e.message) } finally { setBusy(null) }
   }
 
+  async function confirmKey(r: Row) {
+    setBusy(`key-${r.node}`); setError(null)
+    try {
+      const j = await send('POST', '/api/setup-checklist/host-keys/confirm', { host: r.host, port: r.port, fingerprint: r.fingerprint }, () => confirmKey(r))
+      if (!j) return
+      if (!j.success) throw new Error(j.error)
+      void load()
+    } catch (e: any) { setError(e.message) } finally { setBusy(null) }
+  }
+
   const missingLogin = data ? Object.entries(data.logins).filter(([, v]) => !v).map(([n]) => n) : []
 
   return (
@@ -154,6 +164,7 @@ export default function SetupChecklistPage() {
             {item.rows.length > 0 && (
               <ul className="mt-3 text-sm space-y-1">
                 {item.rows.map(r => <li key={r.node} className="flex gap-2 items-center"><Tag s={r.state} /><span className="font-mono">{r.node}</span><span style={{ color: 'var(--text-muted)' }}>{r.reason}</span>
+                  {item.id === 'host-keys' && r.state === 'not-done' && r.fingerprint && <GhostButton disabled={!!busy} title="Only after comparing it with the fingerprint the machine prints" onClick={() => confirmKey(r)}>Confirm this key</GhostButton>}
                   {item.id === 'igpu-access' && r.state === 'done' && <GhostButton disabled={!!busy} onClick={() => igpu(r.node, 'undo')}>Undo</GhostButton>}
                   {item.id === 'igpu-access' && r.state === 'not-done' && data.logins[r.node] && <GhostButton disabled={!!busy} onClick={() => igpu(r.node, 'apply')}>Open on this node</GhostButton>}
                 </li>)}

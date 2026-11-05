@@ -150,7 +150,8 @@ where the test passed.
   login (or a GoDaddy key) given to it is held in the wizard's memory only. When setup finishes, the wizard
   hands it to the API over loopback (`POST /api/auth/setup-handoff`), which answers only to a request
   from the same machine that did not come through nginx, carrying the setup key, checks the body first,
-  accepts it exactly once (recorded in `data/setup/handed-over`, so a restart does not reopen it), refuses
+  accepts it exactly once (recorded in `data/setup/handed-over`, created exclusively, so a restart does not
+  reopen it; `install.sh` clears it only when it starts setup again and no owner exists yet), refuses
   it when the vault does not answer, and refuses it once the vault has an owner (from then on, logins go in through the Setup checklist). The API holds it in
   memory until the owner's first sign-in, stores it in the vault, then drops it. If HyperProx restarts in
   between, it is gone and the Setup checklist asks again; that is the price of never writing it down.
@@ -161,6 +162,13 @@ where the test passed.
 - **Every use is audited** in the database's audit log: which node, what for, and who; never the value.
   `test/setup-onboarding.test.ts` plants marker values in a node login and a GoDaddy key and proves none
   reaches Postgres, a file, a log, an audit row or an API answer.
+- **Where a pin came from.** Each pin records its source: `terminal` (learned in the Terminal, which
+  shows the key), `confirmed` (an admin compared the fingerprint and pressed confirm: Setup checklist,
+  Remote access, HA), `wizard` or `api` (learned on first use, nobody confirming). Calls that require a pin
+  (Remote access scripts, HA maintenance mode) accept only `terminal` or `confirmed` pins. Settings → Setup
+  checklist shows every node's fingerprint, and every pin that is not confirmed (including pins from before
+  sources were kept, which are left as they are), with a confirm button that needs the master password and
+  only accepts the key the host presents at that moment.
 - **Host keys.** Pinned on first use, then required. The setup wizard pins each node's key the first
   time it connects, refuses any other key for the rest of its run (before it sends a password), shows the
   fingerprints so you can compare them on each node's console, and hands them to the API with the login,

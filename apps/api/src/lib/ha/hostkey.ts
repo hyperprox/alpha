@@ -13,6 +13,7 @@
 import { Client } from 'ssh2'
 import { CREDENTIAL_CATEGORY, credentialId, fingerprintOf } from '../ssh-broker'
 import { getCredential, setCredential } from '../credentials'
+import { recordPin, setPinSource, confirmedPin } from '../hostkey-pins'
 
 const HOSTKEY_PROVIDER = 'hostkey'
 const pinKey = (host: string, port = 22) => credentialId(`${host}:${port}`)
@@ -49,13 +50,23 @@ export async function pinFingerprint(host: string, fingerprint: string, deps: {
 } = {}): Promise<{ pinned: string; already: boolean }> {
   const probe = deps.probe ?? (h => probeFingerprint(h))
   const pinned = deps.pinned ?? (h => pinnedFingerprint(h))
-  const save = deps.save ?? ((h, fp) => setCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, pinKey(h), fp, false))
+  const save = deps.save ?? ((h, fp) => recordPin(h, 22, fp, 'confirmed'))
   if (!/^SHA256:[A-Za-z0-9+/]{43}$/.test(fingerprint)) throw new Error('That is not an SSH SHA256 fingerprint.')
   const cur = await pinned(host)
   if (cur && cur !== fingerprint) throw new Error(`${host} is already pinned to a different key (${cur}). Clear that pin in Terminal settings first if the node was rebuilt.`)
-  if (cur === fingerprint) return { pinned: fingerprint, already: true }
+  if (cur === fingerprint) {
+    // The admin checked this key: a pin learned on first use becomes a confirmed one.
+    if (!deps.save) await setPinSource(host, 22, 'confirmed')
+    return { pinned: fingerprint, already: true }
+  }
   const now = await probe(host)
   if (now !== fingerprint) throw new Error(`${host} now presents ${now}, not the key you checked (${fingerprint}). Nothing was pinned.`)
   await save(host, fingerprint)
   return { pinned: fingerprint, already: false }
+}
+
+/** Pinned to the key the host is pinned to now, and confirmed by an admin (not learned on first use). */
+export async function confirmedFingerprint(host: string, port = 22): Promise<boolean> {
+  const fp = await pinnedFingerprint(host, port)
+  return fp ? confirmedPin(host, port, fp) : false
 }

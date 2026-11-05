@@ -101,6 +101,7 @@ const checklistDeps = (): ChecklistDeps => ({
   testDnsKey: async (k, s) => { if (k !== GD_KEY || s !== GD_SECRET) throw Object.assign(new Error('401'), { response: { status: 401 } }); return 3 },
   setOllamaUrl: async () => {}, syncTargets: async () => ({ added: {} }),
   saveNodeLogin: async (node, cred) => { await saveCredential(`node-${node}`, cred); logins.set(node, cred) },
+  pins: async () => [], presentedKey: async () => 'SHA256:' + 'P'.repeat(43),
 })
 process.env.HPX_CHECKLIST_SETTLE_MS = '0'
 

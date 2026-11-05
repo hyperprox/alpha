@@ -23,6 +23,7 @@ import {
   CREDENTIAL_CATEGORY, CRED_PROVIDER, type TerminalCredential,
 } from './ssh-broker'
 import { getCredential, setCredential } from './credentials'
+import { recordPin, pinSource, isConfirmedSource, type PinSource } from './hostkey-pins'
 
 const HOSTKEY_PROVIDER = 'hostkey'
 
@@ -102,9 +103,21 @@ export async function pinnedHostKey(host: string, port = 22): Promise<string | n
   return getCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, credentialId(`${host}:${port}`))
 }
 
-/** Pin `host:port` to `fingerprint`, in the same place the Terminal pins it. */
-export async function pinHostKey(host: string, port: number, fingerprint: string): Promise<void> {
-  await setCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, credentialId(`${host}:${port}`), fingerprint, false)
+/**
+ * Pin `host:port` to `fingerprint`, in the same place the Terminal pins it, recording where it came from.
+ * Callers that pin a key an admin checked (Remote access) use the default, 'confirmed'.
+ */
+export async function pinHostKey(host: string, port: number, fingerprint: string, source: PinSource = 'confirmed'): Promise<void> {
+  await recordPin(host, port, fingerprint, source)
+}
+
+/** A requirePin host whose pin nobody has confirmed (learned on first use by the API or the wizard). */
+export class HostKeyNotConfirmedError extends Error {
+  constructor(readonly host: string, readonly port: number, readonly fingerprint: string) {
+    super(`${host}:${port} is pinned to ${fingerprint}, but nobody has confirmed that key, so HyperProx will not send it anything. ` +
+      'Confirm it on Settings → Setup checklist (or open it in the Terminal), then try again.')
+    this.name = 'HostKeyNotConfirmedError'
+  }
 }
 
 /**
@@ -113,14 +126,14 @@ export async function pinHostKey(host: string, port: number, fingerprint: string
  */
 export async function checkHostKey(host: string, fingerprint: string, port = 22): Promise<boolean> {
   const pinned = await pinnedHostKey(host, port)
-  if (!pinned) { await pinHostKey(host, port, fingerprint); return true }
+  if (!pinned) { await pinHostKey(host, port, fingerprint, 'api'); return true }
   return pinned === fingerprint
 }
 
 /** Pin a key learned elsewhere (the setup wizard's first connection). An existing, different pin wins. */
-export async function pinHostKeyIfFree(host: string, fingerprint: string, port = 22): Promise<'pinned' | 'same' | 'conflict'> {
+export async function pinHostKeyIfFree(host: string, fingerprint: string, port = 22, source: PinSource = 'wizard'): Promise<'pinned' | 'same' | 'conflict'> {
   const pinned = await pinnedHostKey(host, port)
-  if (!pinned) { await pinHostKey(host, port, fingerprint); return 'pinned' }
+  if (!pinned) { await pinHostKey(host, port, fingerprint, source); return 'pinned' }
   return pinned === fingerprint ? 'same' : 'conflict'
 }
 
@@ -158,6 +171,7 @@ export function execOnNode(opts: ExecOptions): Promise<ExecResult> {
     let settled = false
     let timedOut = false
     let unpinned: string | null = null
+    let unconfirmed: string | null = null
 
     const finish = (r: ExecResult) => {
       if (settled) return
@@ -179,7 +193,7 @@ export function execOnNode(opts: ExecOptions): Promise<ExecResult> {
       finish({ code: -1, output: out, timedOut: true })
     }, timeoutMs)
 
-    client.on('error', e => fail(unpinned ? new HostKeyNotPinnedError(host, opts.port ?? 22, unpinned) : e as Error))
+    client.on('error', e => fail(unpinned ? new HostKeyNotPinnedError(host, opts.port ?? 22, unpinned) : unconfirmed ? new HostKeyNotConfirmedError(host, opts.port ?? 22, unconfirmed) : e as Error))
     client.on('ready', () => {
       client.exec(command, (err, stream) => {
         if (err) return fail(err)
@@ -207,7 +221,9 @@ export function execOnNode(opts: ExecOptions): Promise<ExecResult> {
           .then(async pinned => {
             const d = hostKeyDecision(pinned, fp, !!opts.requirePin)
             if (d === 'reject-unpinned') unpinned = fp
-            if (d === 'accept' && !pinned) await pinHostKey(host, port, fp)
+            // requirePin: the pin must also be one an admin confirmed, not one learned on first use.
+            if (d === 'accept' && opts.requirePin && !isConfirmedSource(await pinSource(host, port))) { unconfirmed = fp; return verified(false) }
+            if (d === 'accept' && !pinned) await pinHostKey(host, port, fp, 'api')
             verified(d === 'accept')
           })
           .catch(() => verified(false))
