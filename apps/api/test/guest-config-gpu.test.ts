@@ -303,3 +303,10 @@ test('serial stick to a container by its by-id path; exclusive while another run
   const x = await s.service.preview(OWNER, { node: 'node-c', type: 'qemu', vmid: 935 }, { kind: 'device', device: { deviceId: unk.id } })
   assert.deepEqual(x.plan.extraConfirm, ['unknown-device'])
 })
+
+test('PCI names drop the vendor’s legal suffixes and keep the product', () => {
+  assert.equal(pciProductName({ name: 'Advanced Micro Devices, Inc. [AMD/ATI] Picasso/Raven 2 [Radeon Vega Series / Radeon Vega Mobile Series]', vendorId: '1002', cls: '0300' } as any), 'AMD Radeon Vega Series / Radeon Vega Mobile Series')
+  assert.equal(pciProductName({ name: 'Advanced Micro Devices, Inc. [AMD] Raven USB 3.1', vendorId: '1022', cls: '0c03' } as any), 'AMD Raven USB 3.1')
+  assert.equal(pciProductName({ name: 'Realtek Semiconductor Co., Ltd. RTL8111/8168/8211/8411 PCI Express Gigabit Ethernet Controller', vendorId: '10ec', cls: '0200' } as any), 'Realtek RTL8111/8168/8211/8411 PCI Express Gigabit Ethernet Controller')
+  assert.equal(pciProductName({ name: 'NVIDIA Corporation GP104 [GeForce GTX 1070 Ti]', vendorId: '10de', cls: '0300' } as any), 'NVIDIA GeForce GTX 1070 Ti')
+})
