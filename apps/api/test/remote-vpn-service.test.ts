@@ -80,14 +80,14 @@ function provider() {
   return { p, devices, calls }
 }
 
-function rig(o: { answer?: Parameters<typeof world>[0]; settings?: Record<string, unknown>; locked?: boolean; now?: () => number } = {}) {
+function rig(o: { answer?: Parameters<typeof world>[0]; settings?: Record<string, unknown>; locked?: boolean; now?: () => number; netbird?: boolean } = {}) {
   const w = world(o.answer)
   const prov = provider()
   const store = new MemoryRemoteStore()
   const published: Array<{ e: any; o: any }> = []
   const svc = new RemoteAccessService({
     store, exec: w.exec,
-    provider: async id => { if (o.locked) throw new Error('HyperProx is locked — sign in to unlock the vault before reading remote/tailscale'); return id === 'tailscale' ? prov.p : null },
+    provider: async id => { if (o.locked) throw new Error('HyperProx is locked — sign in to unlock the vault before reading remote/tailscale'); return id === 'tailscale' || o.netbird ? prov.p : null },
     providerSettings: async () => ({ tags: ['tag:server'], ...(o.settings ?? {}) }),
     settleMs: 0, sleep: async () => undefined, now: o.now,
     publish: async (e, opt) => { published.push({ e, o: opt }) },
@@ -211,6 +211,31 @@ test('sign-in on a node: a change to the node after the join is rolled back', as
   const job = await settle(r.svc, r.svc.startJob({ action: 'install', provider: 'tailscale', machineIds: ['node-pve-a'], auth: 'login' }, 'a'))
   assert.equal(job.status, 'failed')
   assert.match(job.error ?? job.steps[0].detail ?? '', /Rolled back|rolled back/)
+})
+
+test('NetBird: a `netbird up` that asks for a sign-in is captured, sent only as a sign-in link, and the log is dropped after 10 minutes', async () => {
+  const NB_LINK = 'https://login.netbird.io/activate?user_code=MARK-NBLK'
+  let t = Date.parse('2026-11-05T10:00:00Z')
+  let dns = true
+  const flags = () => `HP_NB_CONFIG=/etc/netbird/config.json\nHP_NB_FLAG DisableDNS:${dns}\nHP_NB_FLAG DisableClientRoutes:true\nHP_NB_FLAG ServerSSHAllowed:false`
+  const r = rig({
+    netbird: true, now: () => t,
+    answer: (_m, _kind, script) => {
+      if (script.includes('netbird up')) { dns = /--disable-dns=true/.test(script); return [0, `Please do the SSO login in your browser.\nIf your browser didn't open automatically, use this URL to log in:\n\n${NB_LINK}\n\n${flags()}`] }
+      if (script.includes('HP_NB_CONFIG')) return [0, flags()]
+      return undefined
+    },
+  })
+  await r.store.upsert({ machineId: 'lxc-101', provider: 'netbird', deviceId: 'peer1', nodeKey: null, hostname: 'web', address: '100.92.0.4', mode: 'kernel', version: '0.60.0', routes: [], exitNode: false, routeIds: [], adopted: false, forwardingBefore: null, connected: true, checkedAt: null, lastError: null })
+  const job = await settle(r.svc, r.svc.startJob({ action: 'configure', provider: 'netbird', machineIds: ['lxc-101'], prefs: { acceptDns: true } }, 'admin@example.com'))
+  assert.ok(!job.log.includes('MARK-NBLK'), job.log)
+  assert.doesNotMatch(JSON.stringify(job), /MARK-NBLK/)
+  const sent = r.published.find(p => p.e.sensitiveLink === NB_LINK)
+  assert.ok(sent, 'sent through the sign-in-link flow'); assert.equal(sent!.o.privateOnly, true)
+  assert.equal((await r.svc.revealLogin('lxc-101', 'netbird', 'a'))?.url, NB_LINK)
+  assert.ok(r.svc.getJob(job.id)!.log.length > 100, 'the log is there for now')
+  t += 11 * 60_000
+  assert.match(r.svc.getJob(job.id)!.log, /^\[This log was dropped/)
 })
 
 test('a key that expired: a check finds the client waiting with its own link and captures it', async () => {

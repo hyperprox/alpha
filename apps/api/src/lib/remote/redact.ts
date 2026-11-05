@@ -14,7 +14,26 @@ const KEY_SHAPES = [
   /\b(?:privkey|nlpriv|mkey|nodekey|discokey):[0-9a-f]+/g,   // Tailscale key material
   /https:\/\/login\.tailscale\.com\/a\/[A-Za-z0-9]+/g,    // Tailscale sign-in links
   /(?<="AuthURL"\s*:\s*")[^"]+/g,  // any sign-in link in a status dump
+  ...LINK_SHAPES_ONLY(),
 ]
+
+/**
+ * Sign-in links of other shapes: NetBird's own login host, OAuth device flows, and any SSO link that carries
+ * a code, state or ticket, or points at an authorize, device, activate or login path. Package and API URLs
+ * (pkgs.*, api.*) carry none of these and are left alone.
+ */
+function LINK_SHAPES_ONLY(): RegExp[] {
+  return [
+    /https?:\/\/login\.netbird\.io\/[^\s"'<>]*/g,
+    /https?:\/\/[^\s"'<>]*[?&](?:user_code|device_code|code|code_challenge|state|ticket|session_state|nonce)=[^\s"'<>]*/g,
+    /https?:\/\/[^\s"'<>/]+\/(?:[^\s"'<>]*\/)?(?:activate|device|authorize|oauth2?|sso|saml2?|login|signin|auth)(?:[/?#][^\s"'<>]*)?(?=$|[\s"'<>])/gm,
+  ]
+}
+
+/** True when this text holds anything shaped like a sign-in link. */
+export function holdsSignInLink(s: string): boolean {
+  return [/https:\/\/login\.tailscale\.com\/a\//, /"AuthURL"\s*:\s*"https/, ...LINK_SHAPES_ONLY()].some(re => new RegExp(re.source, re.flags.replace('g', '')).test(s))
+}
 
 /** NetBird setup keys are upper-case UUIDs. Applied only while one is live: ordinary ids look the same. */
 export const NETBIRD_SETUP_KEY = /[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}/g

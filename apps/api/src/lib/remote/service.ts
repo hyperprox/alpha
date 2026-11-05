@@ -33,7 +33,7 @@ import {
   type ExistingChoice, type LockObservation, type VpnPrefs,
 } from './planner'
 import { clusterNetworks, compareSnapshots, onlyFirewall, parseSnapshot, snapshotReady, type CustomSubject, type GuardSubject, type NodeSnapshot } from './guard'
-import { StreamRedactor, redactKnownKeyShapes } from './redact'
+import { StreamRedactor, holdsSignInLink, redactKnownKeyShapes } from './redact'
 import { TAG_RE } from './tailscale'
 import {
   DOWNLOAD_URL, PROVIDER_IDS, PROVIDER_LABEL, isProviderId,
@@ -222,6 +222,8 @@ export function firewallRule(p: ProviderId): Record<string, string> {
 
 export class RemoteAccessService {
   private jobs = new Map<string, RemoteJob>()
+  /** Jobs whose output held a sign-in link, and when their log is dropped. */
+  private linkLogs = new Map<string, number>()
   private active: string | null = null
   private devices = new Map<ProviderId, { at: number; list: ProviderDevice[] }>()
   private revoking = new Set<Promise<unknown>>()
@@ -246,7 +248,7 @@ export class RemoteAccessService {
     this.settleMs = d.settleMs ?? 15_000
   }
 
-  getJob(id: string): RemoteJob | undefined { return this.jobs.get(id) }
+  getJob(id: string): RemoteJob | undefined { this.dropLinkLogs(); return this.jobs.get(id) }
   get activeJobId(): string | null { return this.active }
 
   // ── Start, sweep, close ───────────────────────────────────────────────────
@@ -420,6 +422,7 @@ export class RemoteAccessService {
   // ── Jobs ──────────────────────────────────────────────────────────────────
 
   private prune(): void {
+    this.dropLinkLogs()
     const done = [...this.jobs.values()].filter(j => j.status !== 'running')
     const cutoff = this.now() - JOB_KEEP_MS
     for (const j of done) if (j.finishedAt && Date.parse(j.finishedAt) < cutoff) this.jobs.delete(j.id)
@@ -519,23 +522,52 @@ export class RemoteAccessService {
 
   /** Run a script, its output redacted on the way into the log (across chunk boundaries). */
   private async exec(job: RemoteJob, m: Machine, script: string, o: { secrets?: string[]; netbird?: boolean; timeoutMs?: number; quiet?: string } = {}) {
-    const r = new StreamRedactor(o.secrets ?? [], { netbird: o.netbird })
     // Output that carries a sign-in link is not logged at all, not even redacted.
     if (o.quiet) {
       this.appendRaw(job, `[${o.quiet}]\n`)
       if (m.kind === 'node') script = withJobPid(job.id, script)
       const res = await this.d.exec.run(m, script, { timeoutMs: o.timeoutMs ?? 15 * 60_000 })
+      if (holdsSignInLink(res.output)) this.heldLink(job)
       if (res.timedOut) throw new Error('timed out')
       return res
     }
     // On a node, the script records its pid, so a restart can tell whether it is still running.
     if (m.kind === 'node') script = withJobPid(job.id, script)
+    // `netbird up` may ask for a sign-in instead of connecting. Its output is captured whole, not streamed: a
+    // link in it goes only through the sign-in-link flow, and is cut out by exact value before anything is logged.
+    if (/\bnetbird up\b/.test(script)) {
+      const res = await this.d.exec.run(m, script, { timeoutMs: o.timeoutMs ?? 15 * 60_000 })
+      const url = parseLoginUrl('netbird', res.output)
+      if (url || holdsSignInLink(res.output)) this.heldLink(job)
+      if (url) await this.captureLogin(m, 'netbird', url).catch(() => undefined)
+      const r = new StreamRedactor([...(o.secrets ?? []), ...(url ? [url] : [])], { netbird: true })
+      this.appendRaw(job, r.push(res.output) + r.flush())
+      if (res.timedOut) throw new Error('timed out')
+      return res
+    }
+    const r = new StreamRedactor(o.secrets ?? [], { netbird: o.netbird })
     try {
       const res = await this.d.exec.run(m, script, { timeoutMs: o.timeoutMs ?? 15 * 60_000, onData: c => this.appendRaw(job, r.push(c)) })
+      if (holdsSignInLink(res.output)) this.heldLink(job)
       if (res.timedOut) throw new Error('timed out')
       return res
     } finally {
       this.appendRaw(job, r.flush())
+    }
+  }
+
+  /** This job's output once held a sign-in link: its log is dropped 10 minutes from now, even redacted. */
+  private heldLink(job: RemoteJob) {
+    if (!this.linkLogs.has(job.id)) this.linkLogs.set(job.id, this.now() + LOGIN_URL_TTL_MS)
+  }
+
+  private dropLinkLogs() {
+    const now = this.now()
+    for (const [id, at] of this.linkLogs) {
+      if (now < at) continue
+      const j = this.jobs.get(id)
+      if (j) j.log = '[This log was dropped: it once held a sign-in link]\n'
+      this.linkLogs.delete(id)
     }
   }
 
