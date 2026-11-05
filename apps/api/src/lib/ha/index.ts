@@ -30,7 +30,7 @@ import { livePve } from '../pve-env'
 import { execOnNode, nodeCredential } from '../node-exec'
 import { isUnlocked } from '../vault/state'
 import { redactSecrets } from './redact'
-import { pinnedFingerprint } from './hostkey'
+import { pinnedFingerprint, confirmedFingerprint } from './hostkey'
 import { hostname as osHostname } from 'node:os'
 export { redactSecrets, redactText } from './redact'
 
@@ -66,7 +66,8 @@ export function haPlanner(prisma?: any, override?: Partial<PlannerDeps>): HaPlan
       const r = await execOnNode({ host: await hostFor(node), cred, command, timeoutMs: 30_000 })
       return { code: r.timedOut ? 124 : r.code, output: r.output }
     },
-    hostKeyPinned: async node => Boolean(await pinnedFingerprint(await hostFor(node)).catch(() => null)),
+    // Maintenance mode needs a pin an admin confirmed, not one learned on first use.
+    hostKeyPinned: async node => Boolean(await confirmedFingerprint(await hostFor(node)).catch(() => false)),
     nodeSecrets: async node => {
       const c: any = await nodeCredential(node).catch(() => null)
       return [c?.password, c?.privateKey, c?.passphrase].filter((x: unknown): x is string => typeof x === 'string' && !!x)

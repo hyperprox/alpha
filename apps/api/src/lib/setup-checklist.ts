@@ -26,13 +26,15 @@ import { syncTargets, lastSync } from './targets'
 import { exporterStatus, provisionPveExporter, pveAccessFromEnv } from './pve-exporter'
 import { GoDaddyClient } from './godaddy-client'
 import { ensureGrafanaAdmin } from './grafana-admin'
+import { listPins, pinId, confirmPin, PinConfirmRefusal, type PinSource } from './hostkey-pins'
+import { probeHostKey } from './node-exec'
 
 const run = promisify(execFile)
 
-export type ItemId = 'node-health' | 'power' | 'gpu' | 'igpu-access' | 'charts' | 'proxmox-metrics' | 'dns' | 'ai' | 'targets' | 'old-backups'
+export type ItemId = 'node-health' | 'power' | 'gpu' | 'igpu-access' | 'charts' | 'proxmox-metrics' | 'dns' | 'ai' | 'targets' | 'old-backups' | 'host-keys'
 export type ItemState = 'done' | 'partly' | 'not-done' | 'not-applicable'
 
-export interface NodeRow { node: string; state: ItemState; reason: string }
+export interface NodeRow { node: string; state: ItemState; reason: string; host?: string; port?: number; fingerprint?: string }
 export interface ChecklistItem {
   id: ItemId
   ask: string
@@ -63,6 +65,10 @@ export interface ChecklistDeps {
   setOllamaUrl(url: string): Promise<void>
   syncTargets(): Promise<unknown>
   saveNodeLogin(node: string, cred: TerminalCredential): Promise<void>
+  /** Every host-key pin, with where it came from. */
+  pins(): Promise<Array<{ id: string; fingerprint: string; source: PinSource | null; confirmed: boolean }>>
+  /** The key a host presents now (nothing is sent to it). */
+  presentedKey(host: string, port: number): Promise<string>
 }
 
 export function productionChecklistDeps(): ChecklistDeps {
@@ -100,6 +106,8 @@ export function productionChecklistDeps(): ChecklistDeps {
     async setOllamaUrl(url) { await setCredential('ai', 'ollama', 'url', url, false) },
     syncTargets: () => syncTargets(),
     saveNodeLogin: (node, cred) => saveCredential(`node-${node}`, cred),
+    pins: () => listPins(),
+    presentedKey: (host, port) => probeHostKey(host, port, 5000),
   }
 }
 
@@ -142,7 +150,7 @@ export async function checklistState(deps: ChecklistDeps = productionChecklistDe
   const q = new Map(hardware.QUESTIONS.map(x => [x.id, x]))
   const notes = new Map(hardware.applicableQuestions(nodes).map(x => [x.id, x.notes ?? []]))
   const items: ChecklistItem[] = []
-  const base = (id: Exclude<ItemId, 'targets' | 'old-backups'>) => ({ id, ask: q.get(id)!.ask, what: q.get(id)!.what, notes: notes.get(id) ?? [] })
+  const base = (id: Exclude<ItemId, 'targets' | 'old-backups' | 'host-keys'>) => ({ id, ask: q.get(id)!.ask, what: q.get(id)!.what, notes: notes.get(id) ?? [] })
   const unknown = (n: NodeHardware) => n.source === 'proxmox-api' && !logins[n.node!]
 
   const health: NodeRow[] = nodes.map(n => n.nodeExporter === 'running'
@@ -209,6 +217,9 @@ export async function checklistState(deps: ChecklistDeps = productionChecklistDe
       rows: old.map(f => ({ node: path.basename(f), state: 'not-done' as const, reason: 'plaintext, readable by root' })),
       state: 'not-done', needsNodeLogin: false, action: 'Shred them' })
   }
+
+  // Host keys: a node's login is only sent to the key an admin confirmed (Terminal or here).
+  items.push(await hostKeyItem(deps, nodes.map(n => n.node!), det.addresses))
 
   const ls = lastSync()
   items.push({ id: 'targets', ask: 'Metrics list kept up to date', automatic: true, notes: [],
@@ -339,6 +350,53 @@ async function runItem(job: Job, by: string, deps: ChecklistDeps): Promise<void>
     const r: any = await deps.syncTargets()
     const n = Object.values(r?.added ?? {}).reduce((a: number, x: any) => a + x.length, 0)
     job.results.push({ label: 'Metrics list', status: 'done', reason: n ? `${n} target(s) added` : 'already up to date' })
+  }
+}
+
+// ── Host keys ────────────────────────────────────────────────────────────────
+
+const SOURCE_WORDS: Record<string, string> = {
+  terminal: 'confirmed in the Terminal', confirmed: 'confirmed by an admin', wizard: 'learned by the setup wizard, not confirmed',
+  api: 'learned by HyperProx on first use, not confirmed', none: 'pinned before HyperProx kept track, not confirmed',
+}
+
+async function hostKeyItem(deps: ChecklistDeps, nodes: string[], addrs: Record<string, string>): Promise<ChecklistItem> {
+  const pins = await deps.pins().catch(() => [])
+  const byId = new Map(pins.map(p => [p.id, p]))
+  const rows: NodeRow[] = await Promise.all(nodes.map(async node => {
+    const host = addrs[node] ?? node, port = 22
+    const p = byId.get(pinId(host, port))
+    byId.delete(pinId(host, port))
+    if (p) return { node, host, port, fingerprint: p.fingerprint, state: p.confirmed ? 'done' as const : 'not-done' as const, reason: `${p.fingerprint}: ${SOURCE_WORDS[p.source ?? 'none']}` }
+    const now = await deps.presentedKey(host, port).catch(() => null)
+    return now ? { node, host, port, fingerprint: now, state: 'not-done' as const, reason: `${now}: not pinned yet` }
+      : { node, host, port, state: 'not-done' as const, reason: 'not pinned yet, and it did not answer on port 22' }
+  }))
+  // Any other pin nobody confirmed (a guest or a hand-added host), so none is trusted unseen.
+  for (const p of byId.values()) {
+    if (p.confirmed) continue
+    const m = /^(.*):(\d+)$/.exec(p.id)
+    rows.push({ node: p.id, host: m ? m[1] : p.id, port: m ? Number(m[2]) : 22, fingerprint: p.fingerprint, state: 'not-done', reason: `${p.fingerprint}: ${SOURCE_WORDS[p.source ?? 'none']}` })
+  }
+  return {
+    id: 'host-keys', ask: "Have you checked each node's SSH host key?", notes: [], rows, state: roll(rows), needsNodeLogin: false, action: null,
+    what: 'HyperProx sends a node its login only when the node shows a key you confirmed. Compare each fingerprint with the one the node prints on its console (for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf $f; done) and press confirm.',
+  }
+}
+
+/** Confirm one fingerprint the admin compared on the machine. It must be the key presented right now. */
+export async function confirmHostKey(input: any, by: string, deps: ChecklistDeps = productionChecklistDeps()) {
+  const host = typeof input?.host === 'string' ? input.host.trim() : ''
+  const port = Number(input?.port ?? 22)
+  const fingerprint = typeof input?.fingerprint === 'string' ? input.fingerprint.trim() : ''
+  if (!host || !Number.isInteger(port) || port < 1 || port > 65535) throw new ChecklistRefusal('host and port are required')
+  try {
+    const r = await confirmPin(host, port, fingerprint, deps.presentedKey)
+    await auditCredentialUse('host_key.confirm', `host:${host}:${port}`, { by, fingerprint, result: r })
+    return { host, port, fingerprint, result: r }
+  } catch (e: any) {
+    if (e instanceof PinConfirmRefusal) throw new ChecklistRefusal(e.message, 409)
+    throw new ChecklistRefusal(`Could not read the key ${host}:${port} presents: ${e?.message ?? e}`, 502)
   }
 }
 

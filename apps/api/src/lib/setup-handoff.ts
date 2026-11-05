@@ -10,7 +10,7 @@
 //  them again. That is the price of never writing them down.
 // =============================================================================
 
-import { readFileSync, writeFileSync, renameSync, chmodSync, existsSync, mkdirSync, rmSync } from 'fs'
+import { readFileSync, writeFileSync, renameSync, chmodSync, mkdirSync, rmSync } from 'fs'
 import { dirname, join } from 'path'
 import { saveCredential } from './ssh-broker'
 import { pinHostKeyIfFree } from './node-exec'
@@ -49,9 +49,13 @@ export function acceptHandoff(vault: { reachable: boolean; bootstrapped: boolean
   if (!vault.reachable) throw new HandoffRefused('The vault is not answering, so HyperProx cannot tell whether an owner exists. Try again once it is up.', 503)
   if (vault.bootstrapped) throw new HandoffRefused('The owner account already exists. Add logins and keys on Settings → Setup checklist.')
   const flag = handoffFlagPath()
-  if (existsSync(flag)) throw new HandoffRefused('The setup wizard has already handed over what it held.')
   mkdirSync(dirname(flag), { recursive: true, mode: 0o700 })
-  writeFileSync(flag, `${new Date().toISOString()}\n`, { mode: 0o600 })
+  // Created exclusively: two hand-overs at once cannot both see "not yet" and both be accepted.
+  try { writeFileSync(flag, `${new Date().toISOString()}\n`, { mode: 0o600, flag: 'wx' }) }
+  catch (e: any) {
+    if (e?.code === 'EEXIST') throw new HandoffRefused('The setup wizard has already handed over what it held.')
+    throw e
+  }
 }
 
 /** What a hand-over body holds once validated, or null when it holds nothing usable. Nothing is kept. */

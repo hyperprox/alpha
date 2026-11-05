@@ -1480,7 +1480,11 @@ export class RemoteAccessService {
     if (!/^SHA256:[A-Za-z0-9+/]{43}$/.test(fingerprint)) throw new RemoteInputError('fingerprint must look like SHA256:<43 characters>')
     const pv = await this.hostKeyPreview(machineId)
     if (pv.fingerprint !== fingerprint) throw new RemoteInputError(`${pv.host}:${pv.port} presents ${pv.fingerprint} now, not the key you confirmed; nothing was pinned`)
-    if (pv.pinned === fingerprint) return { pinned: false, message: `${pv.host}:${pv.port} is already pinned to that key.` }
+    if (pv.pinned === fingerprint) {
+      // Confirmed by the admin now, even if it was learned on first use before.
+      await this.d.exec.pinHostKey(pv.host, pv.port, fingerprint)
+      return { pinned: false, message: `${pv.host}:${pv.port} is already pinned to that key; it is now marked as confirmed.` }
+    }
     if (pv.pinned) throw new RemoteInputError(`A different key is pinned for ${pv.host}:${pv.port}. If the machine was rebuilt, clear the old pin in the Terminal first.`)
     await this.d.exec.pinHostKey(pv.host, pv.port, fingerprint)
     await this.d.store.audit('remote.pin-host-key', machineId, { by, host: pv.host, port: pv.port, fingerprint })

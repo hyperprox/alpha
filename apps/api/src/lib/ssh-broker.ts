@@ -113,6 +113,7 @@ export async function listHostKeys(): Promise<Array<{ host: string; updatedAt: D
 
 export async function forgetHostKey(host: string): Promise<void> {
   await deleteCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, credentialId(host))
+  await deleteCredential(CREDENTIAL_CATEGORY, 'hostkey-source', credentialId(host)).catch(() => undefined)
 }
 
 // ---------------------------------------------------------------------------
@@ -208,7 +209,9 @@ export function connect(opts: ConnectOptions): Promise<ConnectResult> {
         getCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, pinKey)
           .then(async pinned => {
             if (!pinned) {
+              // The Terminal shows the key it learned, so this pin counts as confirmed by the person at it.
               await setCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, pinKey, fingerprint, false)
+              await setCredential(CREDENTIAL_CATEGORY, 'hostkey-source', pinKey, 'terminal', false)
               hostKeyLearned = true
               return verified(true)
             }
