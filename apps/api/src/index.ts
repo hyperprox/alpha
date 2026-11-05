@@ -13,6 +13,7 @@ import { dnsRoutes }            from './routes/dns'
 import { wsRoutes }             from './routes/ws'
 import { settingsRoutes }       from './routes/settings'
 import { infrastructureRoutes } from './routes/infrastructure'
+import { guestConfigRoutes }    from './routes/guest-config'
 import { serviceRoutes }         from './routes/services'
 import { networkRoutes }         from './routes/network'
 import { prometheusRoutes } from './routes/prometheus'
@@ -101,6 +102,7 @@ async function main() {
   await server.register(dnsRoutes,            { prefix: '/api/dns' })
   await server.register(settingsRoutes,       { prefix: '/api/settings' })
   await server.register(infrastructureRoutes, { prefix: '/api/infra' })
+  await server.register(guestConfigRoutes,    { prefix: '/api/infra/guest-config' })
   await server.register(serviceRoutes,         { prefix: '/api/services' })
   await server.register(networkRoutes,         { prefix: '/api/network' })
   await server.register(storageRoutes,         { prefix: '/api/storage' })
