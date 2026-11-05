@@ -798,8 +798,9 @@ export class UpdatesRunner {
     // Ceph package — one that arrived after the plan, say — the step refuses. No apt-mark hold: a hold
     // HyperProx placed and failed to lift would block the Ceph phase itself later.
     const sim = await this.exec.nodeExec(node, nodeSimulateCommand(pol.upgrade), undefined, 10 * 60_000)
-    const changes = sim.code === 0 ? parseAptSimulation(sim.output) : null
-    if (!changes) return { status: 'failed', reason: `could not simulate apt-get ${pol.upgrade} on ${node}, so nothing was installed`, output: tail(sim.output) }
+    const parsed = sim.code === 0 ? parseAptSimulation(sim.output) : { changes: null, error: `the command exited ${sim.code}` }
+    if (!parsed.changes) return { status: 'failed', reason: `could not simulate apt-get ${pol.upgrade} on ${node}, so nothing was installed: ${parsed.error}`, output: tail(sim.output) }
+    const changes = parsed.changes
     const ceph = changes.filter(c => isCephPackage(c.name))
     if (ceph.length) {
       const what = ceph.map(c => c.action === 'remove' ? `${c.name} removed` : `${c.name} ${c.from ?? 'new'} → ${c.to}`).join(', ')

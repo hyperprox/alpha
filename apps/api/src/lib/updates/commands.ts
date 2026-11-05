@@ -220,15 +220,21 @@ export function nodeUpgradeCommand(policyUpgrade: 'upgrade' | 'dist-upgrade'): s
  */
 export function nodeSimulateCommand(policyUpgrade: 'upgrade' | 'dist-upgrade'): string {
   const verb = policyUpgrade === 'dist-upgrade' ? 'dist-upgrade' : 'upgrade'
-  return `${APT_ENV}; apt-get -s -q -o Debug::NoLocking=1 ${CONFOLD} ${verb}; echo HP_SIM_END`
+  return `${APT_ENV}; apt-get -s -q -o Debug::NoLocking=1 ${CONFOLD} ${verb} 2>&1; echo "HP_SIM_END $?"`
 }
 
 export interface AptSimChange { name: string; from: string | null; to: string | null; action: 'install' | 'upgrade' | 'remove' }
 
-/** `Inst`/`Remv`/`Purg` lines of `apt-get -s`. Null when the end marker is missing (the simulation did not finish). */
-export function parseAptSimulation(output: string): AptSimChange[] | null {
+/**
+ * `Inst`/`Remv`/`Purg` lines of `apt-get -s`. The shell exits 0 whatever apt did (echo runs last), so apt's own
+ * status is the number after the marker: anything but 0, or no marker at all, is an error quoting apt's E: lines.
+ */
+export function parseAptSimulation(output: string): { changes: AptSimChange[]; error?: undefined } | { changes: null; error: string } {
   const lines = output.split('\n').map(l => l.trim())
-  if (!lines.includes('HP_SIM_END')) return null
+  const marker = lines.map(l => /^HP_SIM_END (\d+)$/.exec(l)).find(Boolean)
+  const errors = lines.filter(l => /^E: /.test(l)).join('; ')
+  if (!marker) return { changes: null, error: `the simulation did not finish${errors ? `: ${errors}` : ''}` }
+  if (marker[1] !== '0') return { changes: null, error: `apt-get exited ${marker[1]}${errors ? `: ${errors}` : ''}` }
   const out: AptSimChange[] = []
   for (const l of lines) {
     let m = /^Inst (\S+)(?: \[([^\]]+)\])? \((\S+)/.exec(l)
@@ -236,7 +242,7 @@ export function parseAptSimulation(output: string): AptSimChange[] | null {
     m = /^(?:Remv|Purg) (\S+)(?: \[([^\]]+)\])?/.exec(l)
     if (m) out.push({ name: m[1].replace(/:.*/, ''), from: m[2] ?? null, to: null, action: 'remove' })
   }
-  return out
+  return { changes: out }
 }
 
 /** Marks the policy-rc.d HyperProx writes, so a copy left by a killed run is recognised and replaced. */
