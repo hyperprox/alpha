@@ -73,13 +73,14 @@ test('an admin\'s page load probes once while stale; Refresh probes again and an
   assert.equal(probes.length, 1, 'fresh: not again')
   const r = await app.inject({ method: 'POST', url: '/api/remote/detect/refresh', headers: { cookie } })
   assert.equal(r.statusCode, 200, r.body)
-  assert.equal(probes.length, 2)
+  assert.equal(probes.length, 1, 'refreshed under a minute ago: the cached results, not a new probe')
+  assert.match(r.json().refreshNote, /^Refreshed \d+ s ago; you can refresh again in \d+ s\.$/)
   assert.equal(r.json().machines[0].cells.tailscale.detectedText, 'Tailscale installed, connected as pve-a.tail0000.ts.net (100.64.0.11)')
   // The viewer now sees the cached state, still without probing.
   const v = await signIn(app, 'viewer@example.com', 'viewer master password')
   const o = await app.inject({ method: 'GET', url: '/api/remote/overview', headers: { cookie: v.cookie } })
   assert.equal(o.json().machines[0].cells.tailscale.state, 'connected')
-  assert.equal(probes.length, 2)
+  assert.equal(probes.length, 1)
 })
 
 test('the /v1 API other pages use says what was found, in words, and the card line instead of "not set up"', async () => {
@@ -92,4 +93,21 @@ test('the /v1 API other pages use says what was found, in words, and the card li
   const all = await app.inject({ method: 'GET', url: '/api/remote/v1/status', headers: { cookie } })
   assert.equal(all.json().providers[0].summary, '1 machine already on a tailnet — add an API key to manage installs and approvals')
   assert.doesNotMatch(all.body, /not set up/i)
+})
+
+test('exclusions: admin only, changing them is re-confirmed, ids only; an excluded guest shows as excluded', async () => {
+  assert.equal(requiredRole('GET', '/api/remote/exclusions'), 'admin')
+  assert.equal(requiredRole('PUT', '/api/remote/exclusions'), 'admin')
+  assert.equal(needsReconfirm('PUT', '/api/remote/exclusions'), true)
+  const v = await signIn(app, 'viewer@example.com', 'viewer master password')
+  assert.equal((await app.inject({ method: 'GET', url: '/api/remote/exclusions', headers: { cookie: v.cookie } })).statusCode, 403)
+  const { cookie } = await signIn(app, 'admin@example.com', 'admin master password')
+  const no = await app.inject({ method: 'PUT', url: '/api/remote/exclusions', headers: { cookie }, payload: { machineIds: ['lxc-150'] } })
+  assert.equal(no.statusCode, 403); assert.equal(no.json().code, 'reconfirm_required')
+  await app.inject({ method: 'POST', url: '/api/auth/reconfirm', headers: { cookie }, payload: { password: 'admin master password' } })
+  const bad = await app.inject({ method: 'PUT', url: '/api/remote/exclusions', headers: { cookie }, payload: { machineIds: ['node-pve-a'] } })
+  assert.equal(bad.statusCode, 400)
+  const ok = await app.inject({ method: 'PUT', url: '/api/remote/exclusions', headers: { cookie }, payload: { machineIds: ['lxc-150'] } })
+  assert.equal(ok.statusCode, 200, ok.body); assert.deepEqual(ok.json().machineIds, ['lxc-150'])
+  assert.deepEqual((await app.inject({ method: 'GET', url: '/api/remote/exclusions', headers: { cookie } })).json().machineIds, ['lxc-150'])
 })

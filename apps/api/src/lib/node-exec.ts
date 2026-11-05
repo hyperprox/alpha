@@ -57,6 +57,8 @@ export interface ExecResult {
   output: string
   /** True when the command was cut off rather than finishing. */
   timedOut: boolean
+  /** True when the output passed the caller's cap and the read was aborted. */
+  truncated?: boolean
 }
 
 export interface ExecOptions {
@@ -79,6 +81,14 @@ export interface ExecOptions {
    * that carries a key (remote access to VMs and hand-added hosts): the admin pins it in the Terminal first.
    */
   requirePin?: boolean
+  /** Stop reading (and end the session) once the output passes this many characters; the result says truncated. */
+  maxOutputBytes?: number
+}
+
+/** Add a chunk to the output, keeping at most `max` characters; `over` once something had to be dropped. */
+export function appendCapped(out: string, chunk: string, max: number): { out: string; over: boolean } {
+  if (out.length + chunk.length <= max) return { out: out + chunk, over: false }
+  return { out: (out + chunk).slice(0, max), over: true }
 }
 
 /** A host with no pinned key, refused because the caller required one. The message names the fingerprint. */
@@ -199,8 +209,13 @@ export function execOnNode(opts: ExecOptions): Promise<ExecResult> {
       client.exec(command, (err, stream) => {
         if (err) return fail(err)
         const take = (d: Buffer) => {
+          if (settled) return
           const s = d.toString()
-          out += s
+          if (opts.maxOutputBytes !== undefined) {
+            const r = appendCapped(out, s, opts.maxOutputBytes)
+            out = r.out
+            if (r.over) { finish({ code: -1, output: out, timedOut: false, truncated: true }); return }
+          } else out += s
           onData?.(s)
         }
         stream.on('data', take)

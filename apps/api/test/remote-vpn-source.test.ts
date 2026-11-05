@@ -62,3 +62,10 @@ test('no API key, but the machines were probed: the slot is available and shows 
   assert.equal(m.get('qemu/102')?.state, 'disconnected')
   assert.match(m.get('qemu/102')?.detail ?? '', /signed out/)
 })
+
+test('an excluded guest reads as excluded, never as a state HyperProx looked up', async () => {
+  const ex = { ...ov, machines: [{ ...ov.machines[0], excluded: true, excludedBy: 'tag', cells: { tailscale: cell('excluded'), netbird: cell('excluded') } }] }
+  const m = await vpnStatuses([{ node: 'pve-a', type: 'lxc', vmid: 101, name: 'web' }], remoteVpnSource({ overview: async () => ex }, () => true))
+  assert.equal(m.get('lxc/101')?.state, 'none')
+  assert.match(m.get('lxc/101')?.detail ?? '', /Excluded.*hyperprox-ignore/)
+})

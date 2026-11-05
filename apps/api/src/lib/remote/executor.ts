@@ -23,7 +23,11 @@ import type { Machine } from './types'
 
 export type { ExecResult }
 
-export interface RunOptions { timeoutMs?: number; onData?: (chunk: string) => void }
+export interface RunOptions {
+  timeoutMs?: number; onData?: (chunk: string) => void
+  /** Abort the read once the output passes this many characters (the result says truncated). */
+  maxOutputBytes?: number
+}
 
 export interface RemoteExecutor {
   /** Nodes, guests (templates left out) and the Terminal's hand-added hosts. */
@@ -103,7 +107,7 @@ export function productionRemoteExecutor(
     if (!c) throw new TransportError(`No login saved for ${hostId} in the Terminal`)
     if (!address) throw new TransportError(`No address known for ${hostId}; connect to it once in the Terminal so HyperProx remembers it`)
     // Fail closed: a host whose key was never pinned in the Terminal is not sent a script that may carry a key.
-    return execOnNode({ host: address, port: c.port || 22, cred: c, command: asRoot(c), input: script, timeoutMs: o.timeoutMs, onData: o.onData, requirePin: true })
+    return execOnNode({ host: address, port: c.port || 22, cred: c, command: asRoot(c), input: script, timeoutMs: o.timeoutMs, onData: o.onData, requirePin: true, maxOutputBytes: o.maxOutputBytes })
   }
 
   return {
@@ -122,6 +126,7 @@ export function productionRemoteExecutor(
         out.push({
           id: `${g.type}-${g.vmid}`, kind: g.type, name: String(g.name ?? g.vmid), node: String(g.node), vmid: Number(g.vmid),
           running: g.status === 'running', ostype: undefined,
+          tags: String(g.tags ?? '').split(/[;,\s]+/).map(t => t.trim().toLowerCase()).filter(Boolean),
         })
       }
       for (const h of manual) out.push({ id: `host-${h.id}`, kind: 'host', name: h.name, running: true, address: h.address })
@@ -136,12 +141,12 @@ export function productionRemoteExecutor(
 
     async run(m, script, o = {}) {
       if (m.kind === 'node') {
-        return execOnNode({ host: await nodeHost(m.node!), cred: await nodeCred(m.node!), command: 'bash -s', input: script, timeoutMs: o.timeoutMs, onData: o.onData, requirePin: true })
+        return execOnNode({ host: await nodeHost(m.node!), cred: await nodeCred(m.node!), command: 'bash -s', input: script, timeoutMs: o.timeoutMs, onData: o.onData, requirePin: true, maxOutputBytes: o.maxOutputBytes })
       }
       if (m.kind === 'lxc') {
         return execOnNode({
           host: await nodeHost(m.node!), cred: await nodeCred(m.node!),
-          command: `pct exec ${Number(m.vmid)} -- bash -s`, input: script, timeoutMs: o.timeoutMs, onData: o.onData, requirePin: true,
+          command: `pct exec ${Number(m.vmid)} -- bash -s`, input: script, timeoutMs: o.timeoutMs, onData: o.onData, requirePin: true, maxOutputBytes: o.maxOutputBytes,
         })
       }
       if (m.kind === 'qemu') {
@@ -150,11 +155,14 @@ export function productionRemoteExecutor(
           const r = await execOnNode({
             host: await nodeHost(m.node!), cred: await nodeCred(m.node!), timeoutMs: (secs + 30) * 1000,
             command: `qm guest exec ${Number(m.vmid)} --timeout ${secs} --pass-stdin 1 -- bash`, input: script, requirePin: true,
+            // The agent answers in JSON (escaped, so up to about twice as long); the decoded output is checked below.
+            ...(o.maxOutputBytes !== undefined ? { maxOutputBytes: o.maxOutputBytes * 2 + 4096 } : {}),
           })
           if (r.code !== 0) return r
           try {
             const j = JSON.parse(r.output)
             const output = `${j['out-data'] ?? ''}${j['err-data'] ?? ''}`
+            if (o.maxOutputBytes !== undefined && output.length > o.maxOutputBytes) return { code: -1, output: output.slice(0, o.maxOutputBytes), timedOut: false, truncated: true }
             o.onData?.(output)
             return { code: j.exited ? Number(j.exitcode ?? 0) : -1, output, timedOut: !j.exited }
           } catch { return { code: -1, output: r.output, timedOut: false } }

@@ -392,6 +392,13 @@ model CatalogueRecord {
   @@index([kind, expiresAt])
 }
 
+// Guests HyperProx must never look inside or touch for VPN work (the VPN page's exclusions). Ids only.
+model VpnExclusion {
+  machineId String   @id          // lxc-<vmid> | qemu-<vmid>
+  addedBy   String
+  createdAt DateTime @default(now())
+}
+
 // Devices the VPN poller has already seen at each provider, so a new one is announced once, restart or not.
 model RemoteAccessKnownDevice {
   provider  String

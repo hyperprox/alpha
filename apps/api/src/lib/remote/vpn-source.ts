@@ -22,6 +22,7 @@ function stateOf(c: RemoteCell): VpnGuestStatus['state'] {
 
 /** The status for one machine row: the primary provider, the others named in `detail`. */
 export function guestStatus(row: RemoteMachineRow): VpnGuestStatus {
+  if (row.excluded) return { state: 'none', detail: `Excluded: HyperProx never looks inside this guest${row.excludedBy === 'tag' ? ' (Proxmox tag hyperprox-ignore)' : ''}.` }
   const on = PROVIDER_IDS.map(p => [p, row.cells[p]] as [ProviderId, RemoteCell]).filter(([, c]) => stateOf(c) !== 'none')
   if (!on.length) return { state: 'none' }
   const rank = (c: RemoteCell) => ({ connected: 0, disconnected: 1, unknown: 2, none: 3, 'not-available': 4 })[stateOf(c)]
