@@ -149,7 +149,7 @@ test('review 5: a VM is tried by score; too few CPUs means a failed start and th
 // --- 6. hardware classes ------------------------------------------------------------------------------
 
 test('review 6: hostpci devices are named by PCI class; a NIC is not a GPU', () => {
-  const pci = { '0000:01:00': '0x030000', '0000:03:00': '0x020000', '0000:04:00': '0x010700' }
+  const pci = { '0000:01:00.0': '0x030000', '0000:03:00.0': '0x020000', '0000:04:00.0': '0x010700' }
   const hw = hardwareOf('qemu', { hostpci0: '0000:01:00,pcie=1', hostpci1: '0000:03:00', hostpci2: '0000:04:00.0', scsi0: 'shared-rbd:x' }, ['shared-rbd'], pci)
   assert.deepEqual(hw.devices.map(d => [d.kind, d.required]), [['gpu', true], ['nic', true], ['hba', true]])
   assert.match(hw.devices[1].what, /network card/)
@@ -320,4 +320,63 @@ test('review 16: pinning stores only the key the node presents now, never over a
   assert.deepEqual(saved, [FP])
   assert.equal(requiredRole('POST', '/api/ha/nodes/node-a/hostkey/check'), 'admin')
   assert.equal(needsReconfirm('POST', '/api/ha/nodes/node-a/hostkey/pin'), true)
+})
+
+// --- re-check round ---------------------------------------------------------------------------------
+
+test('re-check 1: turning on a strict single-node avoid rule gets the confirm and the red note', async () => {
+  const f = threeNodes()
+  f.addResource('ct:901')
+  f.addRule({ rule: 'avoid', type: 'node-affinity', affinity: 'negative', resources: 'ct:901', nodes: 'node-b,node-c', strict: '1', disable: '1' })
+  const { p } = planner(f)
+  const e = await refusal(() => p.preview({ action: 'enable-rule', ruleId: 'avoid' }, ADMIN))
+  assert.equal(e.problems[0]?.code, 'confirm-strict')
+  const plan = await p.preview({ action: 'enable-rule', ruleId: 'avoid', confirmStrict: true } as any, ADMIN)
+  assert.equal(plan.strict, true)
+  assert.match(plan.critical.join('\n'), /in effect a strict home on node-a only/)
+})
+
+test('re-check 1: turning on a keep-apart rule with no room is refused unless confirmed', async () => {
+  const f = threeNodes()
+  f.nodes.find(n => n.node === 'node-c')!.status = 'offline'
+  for (const s of ['ct:901', 'ct:902', 'ct:903']) f.addResource(s)
+  f.addRule({ rule: 'apart', type: 'resource-affinity', affinity: 'negative', resources: 'ct:901,ct:902,ct:903', disable: '1' })
+  const { p } = planner(f)
+  const e = await refusal(() => p.preview({ action: 'enable-rule', ruleId: 'apart' }, ADMIN))
+  assert.equal(e.problems[0]?.code, 'no-room')
+  const plan = await p.preview({ action: 'enable-rule', ruleId: 'apart', confirmNoRoom: true } as any, ADMIN)
+  assert.match(plan.warnings.join('\n'), /one of these guests stays off/)
+})
+
+test('re-check 1: turning off or deleting a strict rule is "no longer strict" and needs the confirm', async () => {
+  const f = threeNodes()
+  f.addResource('ct:901')
+  f.addRule({ rule: 'lock', type: 'node-affinity', resources: 'ct:901', nodes: 'node-a', strict: '1' })
+  const { p } = planner(f)
+  for (const action of ['disable-rule', 'delete-rule'] as const) {
+    const e = await refusal(() => p.preview({ action, ruleId: 'lock' } as any, ADMIN))
+    assert.equal(e.problems[0]?.code, 'confirm-strict', action)
+    const plan = await p.preview({ action, ruleId: 'lock', confirmStrict: true } as any, ADMIN)
+    assert.match(plan.critical.join('\n'), /No longer strict/, action)
+    assert.equal(plan.strict, true)
+  }
+  // A non-strict rule turns off without any confirm.
+  f.rules[0].strict = '0'
+  await p.preview({ action: 'disable-rule', ruleId: 'lock' }, ADMIN)
+})
+
+test('re-check 2: a plain bind mount means "may not start where the path is missing", not a certain failure', async () => {
+  const f = threeNodes()
+  f.addResource('ct:905')
+  const p = predictFailover(await readSnapshot(f), 'ct:905')
+  assert.equal(p.to, 'node-a')
+  assert.match(p.words, /it may not start on node-a if \/mnt\/media is missing there/)
+  assert.doesNotMatch(p.words, /cannot start|error state/)
+})
+
+test('re-check 3: PCI classes are keyed by full address; a whole device is classed by function .0', () => {
+  const pci = { '0000:01:00.0': '0x030000', '0000:01:00.1': '0x040300', '0000:03:00.0': '0x020000' }
+  const hw = hardwareOf('qemu', { hostpci0: '01:00', hostpci1: '0000:01:00.1', hostpci2: '0000:03:00.0' }, [], pci)
+  assert.deepEqual(hw.devices.map(d => d.kind), ['gpu', 'pci', 'nic'])
+  assert.match(hw.devices[1].what, /0000:01:00\.1/)
 })
