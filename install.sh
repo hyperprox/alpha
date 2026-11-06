@@ -10,6 +10,11 @@
 
 set -euo pipefail
 
+# A fresh Debian container has no locale generated, so apt, perl and git print warnings on every call.
+# C.UTF-8 is built into glibc and always exists; use it for everything this installer runs.
+export LANG=C.UTF-8 LC_ALL=C.UTF-8
+unset LANGUAGE
+
 export DEBIAN_FRONTEND=noninteractive
 
 # ── Flags ────────────────────────────────────────────────────────────────────
@@ -437,7 +442,12 @@ clone_repo() {
 
   if [[ -d "${HYPERPROX_DIR}/.git" ]]; then
     warn "Repository already exists at ${HYPERPROX_DIR}"
-    confirm "Pull latest changes?" && git -C "${HYPERPROX_DIR}" pull --quiet && ok "Repository updated" || ok "Skipped"
+    # No question here: an install always wants the current code. Fast-forward only, so local edits are never overwritten.
+    if git -C "${HYPERPROX_DIR}" pull --ff-only --quiet >>"${LOG_FILE}" 2>&1; then
+      ok "Repository updated"
+    else
+      warn "Could not fast-forward ${HYPERPROX_DIR} (local changes?) — installing the code that is there"
+    fi
     return
   fi
 
@@ -466,6 +476,11 @@ build_app() {
 
   step "Building API"
   cd "${HYPERPROX_DIR}/apps/api"
+  # The API's TypeScript needs the generated Prisma client (Prisma.DbNull, typed transactions).
+  # Generating it reads only the schema file — no database needed — so it must happen before the build.
+  info "Generating Prisma client..."
+  run_with_spinner "Generating Prisma client" \
+    npx prisma generate --schema ./prisma/schema.prisma
   info "Compiling TypeScript..."
   run_with_spinner "Building API" pnpm build
   ok "API built"
