@@ -17,6 +17,7 @@
 //    - Keys and PEMs go to the vault, metadata to the database.
 // =============================================================================
 
+import { currentClusterId } from '../clusters/context'
 import { X509Certificate, createPrivateKey } from 'node:crypto'
 import type { PrismaClient } from '@prisma/client'
 import { GoDaddyClient } from '../godaddy-client'
@@ -184,7 +185,8 @@ export class CertsService {
   private jobs = new Set<Promise<unknown>>()
   private deploying = new Set<string>()
   private checking: Promise<void> | null = null
-  private inventoryCache: { at: number; entries: CertsInventoryEntry[] } | null = null
+  /** Kept per cluster context it was built in, so one built while a remote was open is never served for home. */
+  private inventoryCache: { at: number; cluster: string; entries: CertsInventoryEntry[] } | null = null
   private dnsCache = new Map<string, { at: number; dns: CertsManaged['dns'] }>()
   private journalChain: Promise<unknown> = Promise.resolve()
   /** Challenge values this process has presented and not yet cleaned up; a sweep never touches these. */
@@ -369,7 +371,8 @@ export class CertsService {
     const managed = await this.managed(load.policy)
     const probeRecs = await this.deps.store.listProbes()
     const probes = probeRecs.map(probeView)
-    const age = this.inventoryCache ? this.now().getTime() - this.inventoryCache.at : Infinity
+    const cluster = currentClusterId()
+    const age = this.inventoryCache && this.inventoryCache.cluster === cluster ? this.now().getTime() - this.inventoryCache.at : Infinity
     if (refresh || age > INVENTORY_TTL_MS) {
       let entries: CertsInventoryEntry[] = []
       try {
@@ -381,7 +384,7 @@ export class CertsService {
           managed, probes, policy: load.policy, now: this.now(),
         })
       } catch (e) { this.deps.log(`[certs] inventory failed: ${msg(e)}`) }
-      this.inventoryCache = { at: this.now().getTime(), entries }
+      this.inventoryCache = { at: this.now().getTime(), cluster, entries }
     }
     const checked = await this.deps.store.getState<string>('lastCheck')
     return { policy: this.policyStatus(load), inventory: this.inventoryCache!.entries, probes, managed, checkedAt: checked }

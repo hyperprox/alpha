@@ -13,7 +13,7 @@ import type { GoDaddyClient } from '../godaddy-client'
 import { NPMClient, type NPMCertificate } from '../npm-client'
 import { getProviderCredentials } from '../credentials'
 import { inventoryHosts } from '../proxy'
-import { livePve } from '../pve-env'
+import { homePve } from '../pve-env'
 import type { CertsHousekeepingItem, CertsInventoryEntry, CertsProbe, CertsVerdict } from './types'
 import type { KeyType, CertsPolicy } from './policy'
 import type { DnsProvider } from './dns01'
@@ -116,7 +116,8 @@ type NodeCertInfo = { filename: string; issuer: string; notbefore: number; notaf
  * every node fails, the first error is thrown so the page says the source is down.
  */
 async function nodeCertificatesFromPve(): Promise<{ node: string; host: string; certs: NodeCertInfo[] }[]> {
-  const pve = livePve()
+  // Certificates are the home cluster's: its nodes, whatever cluster the request that asked is for.
+  const pve = homePve()
   const rows = await pve.fetchStrict<any[]>('/cluster/status')
   if (!Array.isArray(rows)) throw new Error('Proxmox returned no cluster status')
   const nodes = rows.filter(r => r.type === 'node' && r.online === 1)
