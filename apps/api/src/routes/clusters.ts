@@ -27,7 +27,7 @@ import { checkGuest, power, snapshot, backupNow, backupStorages, taskStatus, des
 import { probeHostKey, execOnNode } from '../lib/node-exec'
 import { confirmPin, PinConfirmRefusal, forgetPin } from '../lib/hostkey-pins'
 import { forgetRemoteGuestConfigService } from './guest-config'
-import { browse, setupSending, previewCopy, startCopy, jobStore, CopyRunner, savePlex, type CopyInput } from '../lib/clusters/files'
+import { browse, setupSending, previewCopy, startCopy, jobStore, CopyRunner, savePlex, deletePlexToken, checkPlexUrl, type CopyInput } from '../lib/clusters/files'
 import { updateCluster as updateClusterRow } from '../lib/clusters/registry'
 import { scanMonitoring, previewMonitoring, applyMonitoring, MonitoringRefusal } from '../lib/clusters/monitoring'
 
@@ -360,10 +360,16 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Params: { id: string }; Body: { url?: string; token?: string } }>('/:id/plex', async (req, reply) => {
     const row = clusterOr404(req.params.id, reply); if (!row) return
     try {
-      await updateClusterRow(row.id, { plexUrl: req.body?.url ? String(req.body.url) : null })
+      const url = req.body?.url ? String(req.body.url).trim() : null
+      if (url) checkPlexUrl(url)
+      const hostOf = (u: string | null) => { try { return u ? new URL(u).host.toLowerCase() : null } catch { return null } }
+      // A token saved for one Plex is never sent to another: a new host drops it, and a new one must be given.
+      const moved = hostOf(row.plexUrl) !== hostOf(url)
+      if (moved) await deletePlexToken(row.id)
+      await updateClusterRow(row.id, { plexUrl: url })
       if (req.body?.token) await savePlex(row.id, String(req.body.token))
-      await auditCredentialUse('cluster.plex.save', `cluster:${row.id}`, { by: who() })
-      return { success: true }
+      await auditCredentialUse('cluster.plex.save', `cluster:${row.id}`, { by: who(), tokenDropped: moved && !req.body?.token })
+      return { success: true, data: { tokenDropped: moved && !req.body?.token } }
     } catch (e) { return fail(reply, e) }
   })
 

@@ -29,6 +29,8 @@ import { saveRemoteNodeLogin, remoteNodeLogins, clusterRow } from '../src/lib/cl
 import { requestContext } from '../src/lib/auth'
 import { needsReconfirm } from '../src/lib/roles'
 import { recordPin, pinnedKey } from '../src/lib/hostkey-pins'
+import { getCredential } from '../src/lib/credentials'
+import { checkPlexUrl } from '../src/lib/clusters/files'
 
 const haveOpenssl = spawnSync('openssl', ['version']).status === 0
 export const seen: string[] = []
@@ -161,4 +163,21 @@ test('2: PATCH takes only name and note; address and node addresses go through t
   assert.deepEqual(await asOwner(() => remoteNodeLogins(REMOTE)), [], 'the login is gone, so it cannot be offered to the new address')
   assert.equal(await asOwner(() => pinnedKey('10.0.0.9', 22)), null, 'and the old pin with it')
   assert.equal(clusterRow(REMOTE)!.nodeAddresses.pve, '203.0.113.5')
+})
+
+// ── 3: the Plex token goes only to the Plex it was saved for ────────────────
+
+test('3: Plex address only through the re-confirmed route; a new host drops the token; public http refused', { skip: !haveOpenssl && 'openssl not installed' }, async () => {
+  await addRemote()
+  assert.equal((await call('PATCH', `/api/clusters/${REMOTE}`, { plexUrl: 'http://203.0.113.7:32400' })).statusCode, 422)
+  await call('POST', '/api/auth/reconfirm', { password: 'owner master password' })
+  assert.equal((await call('POST', `/api/clusters/${REMOTE}/plex`, { url: 'http://10.0.0.5:32400', token: 'abcdefgh12345678' })).statusCode, 200)
+  assert.equal(await asOwner(() => getCredential('cluster-plex', REMOTE, 'token')), 'abcdefgh12345678')
+  const moved = await call('POST', `/api/clusters/${REMOTE}/plex`, { url: 'http://10.0.0.6:32400' })
+  assert.equal(moved.json().data.tokenDropped, true)
+  assert.equal(await asOwner(() => getCredential('cluster-plex', REMOTE, 'token')), null)
+  assert.equal((await call('POST', `/api/clusters/${REMOTE}/plex`, { url: 'http://203.0.113.7:32400' })).statusCode, 422)
+  assert.doesNotThrow(() => checkPlexUrl('https://plex.example:32400'))
+  assert.doesNotThrow(() => checkPlexUrl(`http://${[100, 64, 1, 2].join('.')}:32400`))
+  assert.throws(() => checkPlexUrl('http://plex.example:32400'))
 })

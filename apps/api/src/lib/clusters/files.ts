@@ -498,6 +498,29 @@ export class CopyRunner {
 //  Plex
 // ---------------------------------------------------------------------------
 
+export async function deletePlexToken(clusterId: string): Promise<void> {
+  await deleteCredential('cluster-plex', clusterId, 'token').catch(() => undefined)
+}
+
+/** Private, link-local, loopback or tailnet (the shared CGNAT /10 Tailscale uses) IPv4, or a ULA / link-local / loopback IPv6. */
+export function privateAddress(host: string): boolean {
+  const h = host.replace(/^\[|\]$/g, '').toLowerCase()
+  const v4 = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(h)
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])]
+    return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127)
+  }
+  return h === '::1' || /^f[cd][0-9a-f]{2}:/.test(h) || /^fe80:/.test(h)
+}
+
+/** Plain http only to a private address; anything else must be https (the token travels in a header). */
+export function checkPlexUrl(url: string): void {
+  let u: URL
+  try { u = new URL(url) } catch { throw new ClusterRefusal('The Plex address looks like http://10.0.0.5:32400.') }
+  if (u.protocol === 'http:' && !privateAddress(u.hostname)) throw new ClusterRefusal('Plex over plain http is allowed only to a private address (a LAN, Tailscale or WireGuard IP). Use https for anything else.')
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new ClusterRefusal('The Plex address must start with http:// or https://.')
+}
+
 export async function savePlex(clusterId: string, token: string): Promise<void> {
   if (!/^[A-Za-z0-9_-]{8,64}$/.test(token)) throw new ClusterRefusal('That does not look like a Plex token.')
   await setCredential('cluster-plex', clusterId, 'token', token, true)
@@ -507,6 +530,7 @@ export async function savePlex(clusterId: string, token: string): Promise<void> 
 export async function plexScan(clusterId: string): Promise<string | null> {
   const row = clusterRow(clusterId)
   if (!row?.plexUrl) return 'No Plex is set for that server, so none was asked to scan.'
+  try { checkPlexUrl(row.plexUrl) } catch (e: any) { return `Plex was not asked: ${e.message}` }
   const token = await getCredential('cluster-plex', clusterId, 'token')
   if (!token) return 'No Plex token is saved for that server, so Plex was not asked.'
   const headers = { Accept: 'application/json', 'X-Plex-Token': token }

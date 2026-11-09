@@ -248,7 +248,7 @@ function PlexSection({ c, run, onChanged }: { c: ClusterInfo; run: Run; onChange
   const save = async () => {
     const r = await run(() => apiJson(`/api/clusters/${c.id}/plex`, 'POST', { url: url.trim() || null, token: token.trim() || undefined }), () => void save())
     if (!r) return
-    setState(r.ok ? { kind: 'info', text: 'Saved. The token is in the vault.' } : { kind: 'error', text: (r as any).error ?? 'Not saved' })
+    setState(r.ok ? { kind: 'info', text: (r as any).body?.data?.tokenDropped ? 'Saved. The address moved to another host, so the old token was deleted: give this Plex\'s token too.' : 'Saved. The token is in the vault.' } : { kind: 'error', text: (r as any).error ?? 'Not saved' })
     if (r.ok) { setToken(''); onChanged() }
   }
   return (
