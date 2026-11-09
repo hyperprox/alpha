@@ -5,6 +5,8 @@ import { wsBase } from '@/lib/ws'
 import { alpha } from '@/lib/theme'
 import { pickOllamaModel } from '@/lib/ollama-model'
 import { BoxIcon, SplitIcon, GlobeIcon, HourglassIcon, LockIcon, GearIcon, BoltIcon } from './icons'
+import { CLUSTER_HEADER, apiJson } from '@/lib/api'
+import { ClusterPicker, ClusterChip, ActionCard, type ActionCardData, type ClusterRef } from '@/components/ai/ClusterAssistant'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -431,7 +433,11 @@ export default function AIPage() {
   const [provDraft,   setProvDraft]   = useState<Record<string, Record<string, string>>>({})
   const [provBusy,    setProvBusy]    = useState<string | null>(null)
   const [provResult,  setProvResult]  = useState<Record<string, string>>({})
-  const [messages,    setMessages]    = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([])
+  const [messages,    setMessages]    = useState<Array<{ role: 'user' | 'assistant'; content: string; clusters?: ClusterRef[]; choices?: string[] }>>([])
+  // Which cluster the assistant answers about by default: ?cluster=<id>, else home. A question can still name another.
+  const [clusterList, setClusterList] = useState<ClusterRef[]>([])
+  const [clusterId,   setClusterId]   = useState('home')
+  const [actionCard,  setActionCard]  = useState<ActionCardData | null>(null)
   const [liveJob,     setLiveJob]     = useState<JobProgress | null>(null)
   const chatRef = useRef<HTMLDivElement>(null)
   const wsRef   = useRef<WebSocket | null>(null)
@@ -565,19 +571,32 @@ export default function AIPage() {
     fetchAll()
   }
 
-  const handleWizardSubmit = async () => {
-    if (!prompt.trim() || planning) return
-    const userMsg = prompt.trim()
+  useEffect(() => {
+    void apiJson<{ data: ClusterRef[] }>('/api/clusters').then(r => {
+      if (!r.ok || !Array.isArray(r.body?.data)) return
+      const list = r.body!.data.map(c => ({ id: c.id, name: c.name, kind: c.kind }))
+      setClusterList(list)
+      const wanted = new URLSearchParams(window.location.search).get('cluster')
+      if (wanted && list.some(c => c.id === wanted)) setClusterId(wanted)
+    })
+  }, [])
+
+  const handleWizardSubmit = async (asked?: string) => {
+    const text = (asked ?? prompt).trim()
+    if (!text || planning) return
+    const userMsg = text
     setPrompt('')
     setPlan(null)
     setPlanId(null)
     setPlanErr(null)
+    setActionCard(null)
     setPlanning(true)
     setMessages(m => [...m, { role: 'user', content: userMsg }])
 
     const res  = await fetch('/api/ai/wizard/plan', {
       method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
+      // The cluster picked above; home sends nothing, as before.
+      headers: { 'Content-Type': 'application/json', ...(clusterId !== 'home' ? { [CLUSTER_HEADER]: clusterId } : {}) },
       // The model override only means anything for Ollama, where the dropdown
       // lists what is installed. Cloud models are set once, in Settings.
       body:    JSON.stringify(activeProv === 'ollama'
@@ -587,7 +606,11 @@ export default function AIPage() {
     const data = await res.json()
     setPlanning(false)
 
-    if (data.ok && data.plan) {
+    if (data.ok && data.action) {
+      // An action the server prepared and holds. Nothing has run; the card below confirms it.
+      setActionCard(data.action)
+      setMessages(m => [...m, { role: 'assistant', content: `I prepared this for ${data.action.cluster.name}. Check it below, then confirm.`, clusters: [data.action.cluster] }])
+    } else if (data.ok && data.plan) {
       setPlan(data.plan)
       setPlanFields(data.fields ?? {})
       const ready = !data.blocked && typeof data.planId === 'string'
@@ -601,7 +624,8 @@ export default function AIPage() {
     } else if (data.ok && data.conversational) {
       // Not every prompt is a deployment. Say what came back rather than
       // reporting a failure that did not happen.
-      setMessages(m => [...m, { role: 'assistant', content: data.message }])
+      const about: ClusterRef[] | undefined = Array.isArray(data.clusters) ? data.clusters : data.cluster && data.cluster.kind === 'remote' ? [data.cluster] : undefined
+      setMessages(m => [...m, { role: 'assistant', content: data.message, clusters: about, choices: Array.isArray(data.choices) && data.choices.length ? data.choices : undefined }])
     } else {
       const err = data.error ?? 'Failed to generate plan'
       setPlanErr(err)
@@ -726,17 +750,22 @@ export default function AIPage() {
                   </div>
                 </div>
               )}
+              <ClusterPicker clusters={clusterList} value={clusterId} disabled={planning} onChange={id => { setClusterId(id); setActionCard(null); setPlan(null); setPlanId(null) }} />
               <div ref={chatRef} style={{ minHeight: 200, maxHeight: 360, overflowY: 'auto', marginBottom: '1rem', display: 'flex', flexDirection: 'column', gap: 12 }}>
                 {messages.length === 0 && (
                   <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-dimmer)', fontSize: 14 }}>
                     <div style={{ fontSize: 32, marginBottom: 12 }}>✦</div>
-                    <div className="font-display" style={{ marginBottom: 12, color: 'var(--text-bright)', fontSize: 22, fontWeight: 600 }}>Describe what you want to deploy</div>
+                    <div className="font-display" style={{ marginBottom: 12, color: 'var(--text-bright)', fontSize: 22, fontWeight: 600 }}>Ask about your clusters, or describe what to deploy</div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxWidth: 320, margin: '0 auto' }}>
-                      {[
+                      {(clusterList.some(c => c.kind === 'remote') ? [
+                        '"How is each cluster doing?"',
+                        '"What GPUs does each cluster have?"',
+                        '"Deploy Nextcloud at cloud.mydomain.com"',
+                      ] : [
                         '"Deploy Nextcloud at cloud.mydomain.com"',
                         '"Set up Jellyfin at media.home.net"',
                         '"Install Vaultwarden at vault.yourdomain.com"',
-                      ].map(ex => (
+                      ]).map(ex => (
                         <button key={ex} onClick={() => setPrompt(ex.replace(/"/g, ''))}
                           style={{ padding: '8px 12px', borderRadius: 6, fontSize: 13, cursor: 'pointer', ...mono, background: 'var(--surface)', color: 'var(--text-soft)', border: `1px solid ${BORDER}`, textAlign: 'left', transition: 'border-color .15s' }}
                           onMouseEnter={e => (e.currentTarget as HTMLElement).style.borderColor = ACCENT + '40'}
@@ -747,7 +776,20 @@ export default function AIPage() {
                   </div>
                 )}
                 {messages.map((msg, i) => (
-                  <div key={i} style={{ alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '80%', padding: '10px 14px', borderRadius: 10, fontSize: 15, lineHeight: 1.55, background: msg.role === 'user' ? `${alpha(ACCENT, 8)}` : CARD, color: msg.role === 'user' ? ACCENT : 'var(--text-bright)', border: `1px solid ${msg.role === 'user' ? ACCENT + '30' : BORDER}` }}>{msg.content}</div>
+                  <div key={i} style={{ alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '80%', padding: '10px 14px', borderRadius: 10, fontSize: 15, lineHeight: 1.55, whiteSpace: 'pre-line', background: msg.role === 'user' ? `${alpha(ACCENT, 8)}` : CARD, color: msg.role === 'user' ? ACCENT : 'var(--text-bright)', border: `1px solid ${msg.role === 'user' ? ACCENT + '30' : BORDER}` }}>
+                    {msg.clusters?.length ? (
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>{msg.clusters.map(c => <ClusterChip key={c.id} c={c} />)}</div>
+                    ) : null}
+                    {msg.content}
+                    {msg.choices?.length ? (
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+                        {msg.choices.map(ch => (
+                          <button key={ch} onClick={() => void handleWizardSubmit(ch)} disabled={planning}
+                            style={{ padding: '5px 10px', borderRadius: 6, fontSize: 13, cursor: 'pointer', background: 'var(--ground)', color: 'var(--text)', border: `1px solid ${BORDER}` }}>{ch}</button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
                 ))}
                 {planning && (
                   <div style={{ alignSelf: 'flex-start', padding: '10px 14px', borderRadius: 10, background: CARD, border: `1px solid ${BORDER}`, fontSize: 14, color: 'var(--text-muted)' }}>thinking...</div>
@@ -796,6 +838,11 @@ export default function AIPage() {
                   </div>
                 </div>
               )}
+              {actionCard && (
+                <ActionCard key={actionCard.planId} card={actionCard}
+                  onCancel={() => setActionCard(null)}
+                  onDone={words => { setActionCard(null); setMessages(m => [...m, { role: 'assistant', content: words, clusters: [actionCard.cluster] }]) }} />
+              )}
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                 <span style={{ fontSize: 13, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>Provider:</span>
                 <select value={activeProv} onChange={e => selectProvider(e.target.value as ProviderId)}
@@ -818,11 +865,11 @@ export default function AIPage() {
                 )}
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
-                <input value={prompt} onChange={e => setPrompt(e.target.value)} onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleWizardSubmit()}
-                  placeholder='Deploy Nextcloud at cloud.mydomain.com...'
+                <input value={prompt} onChange={e => setPrompt(e.target.value)} onKeyDown={e => e.key === 'Enter' && !e.shiftKey && void handleWizardSubmit()}
+                  placeholder={clusterId === 'home' ? 'Deploy Nextcloud at cloud.mydomain.com, or ask how each cluster is doing...' : 'How is this server doing? Restart a guest, back one up...'}
                   disabled={!providerReady || planning}
                   style={{ flex: 1, padding: '11px 14px', ...inputStyle, fontSize: 15, opacity: (!providerReady || planning) ? 0.5 : 1 }} />
-                <button onClick={handleWizardSubmit} disabled={!prompt.trim() || !providerReady || planning}
+                <button onClick={() => void handleWizardSubmit()} disabled={!prompt.trim() || !providerReady || planning}
                   style={{ padding: '10px 22px', fontSize: 15, cursor: (!prompt.trim() || !providerReady || planning) ? 'default' : 'pointer', ...primaryBtn, opacity: (!prompt.trim() || !providerReady || planning) ? 0.4 : 1 }}>
                   {planning ? '...' : '→'}
                 </button>
