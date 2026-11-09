@@ -608,9 +608,12 @@ not protected, are in [docs/security.md](docs/security.md).
   the vault, one item per cluster (`hyperprox:proxmox/<id>` and so on): never in `.env`, the database,
   logs, audit entries or API answers. Its API is reached only over a connection that accepts the one
   certificate you confirmed, and the token is not sent until that check passes. Node logins use only
-  host keys you confirmed. The audit log records who did what on which cluster, never a value. Nothing
-  HyperProx runs on any cluster may touch corosync, `pve-cluster` or `/etc/pve`: scripts naming them
-  are refused before they are sent.
+  host keys you confirmed. The audit log records who did what on which cluster, never a value. As a safety
+  net (it is not a sandbox), every script sent to a remote cluster's node is checked first: one naming
+  corosync, `pve-cluster` or `pmxcfs`, or any `/etc/pve` path other than a container's own config file
+  (the config editor) and reading `ceph.conf` (the hardware probe), is refused. A folder that copies may
+  write into can never be a system folder or inside one (`/etc`, `/var`, `/tmp`, `/usr`, `/root` and
+  the like).
 - **API tokens** (`Authorization: Bearer hpx_...`) carry a role of viewer, operator or admin, stop
   working while HyperProx is locked, and can never read secrets, open the terminal or WebSockets, or
   manage tokens. Only a SHA-256 hash is stored.

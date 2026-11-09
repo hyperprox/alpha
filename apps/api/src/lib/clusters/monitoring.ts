@@ -32,12 +32,8 @@ import { targetsDir, redrawGpuRows } from '../targets'
 import { prometheusBase } from '../service-health'
 import { auditCredentialUse } from '../audit'
 
-/** Refuse any script that names the cluster-joining files or services. */
-export function assertSafeScript(script: string): void {
-  if (/corosync|pve-cluster|\/etc\/pve\/(corosync|cluster|priv)|pmxcfs/i.test(script)) {
-    throw new Error('Refused: this script names corosync or pve-cluster, which HyperProx never touches on any cluster.')
-  }
-}
+export { assertSafeScript } from './script-guard'
+import { assertSafeScript } from './script-guard'
 
 const COMMON = () => fs.readFileSync(path.join(hardware.NODE_DIR, 'common.sh'), 'utf8')
 

@@ -117,7 +117,10 @@ export function cleanRoot(raw: unknown): string {
   if (parts.some(p => p === '..' || p === '.')) throw new ClusterRefusal(`"${s}" may not contain . or .. parts.`)
   if (!parts.length) throw new ClusterRefusal('The whole disk (/) cannot be a file root. Pick the media folder itself.')
   const p = '/' + parts.join('/')
-  if (/^\/(etc|proc|sys|dev|boot|root|run|usr|bin|sbin|lib|lib64|var\/lib\/pve-cluster|etc\/pve)(\/|$)/.test(p)) throw new ClusterRefusal(`${p} is a system folder; it cannot be a file root.`)
+  // A system folder, or anything inside one, is never a place copies may write.
+  if (/^\/(etc|proc|sys|dev|boot|root|run|usr|bin|sbin|lib|lib32|lib64|libx32|tmp|lost\+found|snap)(\/|$)/.test(p) ||
+      /^\/var(\/|$)/.test(p))
+    throw new ClusterRefusal(`${p} is a system folder, or inside one; it cannot be a file root.`)
   return p
 }
 

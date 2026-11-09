@@ -4,7 +4,7 @@
 import { test, before } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { utils } from 'ssh2'
@@ -29,10 +29,12 @@ const broker = new FakeBroker()
 broker.addUser('owner@example.com', 'owner master password', 'owner')
 const appP = buildTestApp(broker)
 let sid = ''
-after(async () => { await resetLock(); await (await appP).close() })
+after(async () => { await resetLock(); await (await appP).close(); rmSync(tmp, { recursive: true, force: true }) })
 const asOwner = <T>(fn: () => Promise<T>) => requestContext.run({ sid, email: 'owner@example.com', role: 'owner' }, fn)
 
-const tmp = mkdtempSync(join(tmpdir(), 'hpx-files-'))
+// Not under /tmp: that is a system folder no copy root may be in. node_modules is ignored by git.
+mkdirSync(join(process.cwd(), 'node_modules', '.cache'), { recursive: true })
+const tmp = mkdtempSync(join(process.cwd(), 'node_modules', '.cache', 'hpx-files-'))
 const ROOT = join(tmp, 'media')
 before(async () => {
   const app = await appP

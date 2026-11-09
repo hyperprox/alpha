@@ -315,3 +315,27 @@ test('9: remove deletes sending keys both ways, says what to run where it could 
   assert.deepEqual(JSON.parse(rf(join(targets, 'nodes.json'), 'utf8')), [{ targets: ['10.0.0.1:9100'], labels: { node: 'node1' } }])
   delete process.env.HYPERPROX_TARGETS_DIR; delete process.env.PROMETHEUS_URL
 })
+
+// ── 11: one script guard for every remote node script; no system folder as a copy root ───────
+
+import { assertSafeScript as guard } from '../src/lib/clusters/script-guard'
+import { readScript as cfgRead } from '../src/lib/guest-config/rawfile'
+import { execOnNode as execNode } from '../src/lib/node-exec'
+import { cleanRoot as root } from '../src/lib/clusters/registry'
+import { hardware as hw } from '../src/lib/hardware'
+
+test('11: the guard allows the documented /etc/pve uses and refuses everything else there', async () => {
+  assert.doesNotThrow(() => guard(cfgRead('pve', 100)))
+  assert.doesNotThrow(() => guard(hw.probeScript()))
+  for (const bad of ['cat /etc/pve/storage.cfg', 'echo x > /etc/pve/user.cfg', 'ls /etc/pve', 'systemctl restart corosync', 'systemctl stop pve-cluster', 'pmxcfs -l', 'rm /etc/pve/nodes/pve/qemu-server/100.conf'])
+    assert.throws(() => guard(bad), /Refused/, bad)
+  await addRemote()
+  await assert.rejects(runInCluster(REMOTE, () => execNode({ host: '127.0.0.1', cred: { username: 'root', port: 22, password: 'x' } as any, command: 'bash -s', input: 'cat /etc/pve/priv/authkey.key' })), /Refused/)
+})
+
+test('11: a system folder, or anything inside one, is never a copy root', () => {
+  for (const bad of ['/var', '/var/lib/vz', '/var/spool/x', '/etc/ssh', '/tmp/x', '/usr/share', '/root/media'])
+    assert.throws(() => root(bad), /system folder/, bad)
+  assert.equal(root('/mnt/media'), '/mnt/media')
+  assert.equal(root('/srv/media/TV Shows'), '/srv/media/TV Shows')
+})

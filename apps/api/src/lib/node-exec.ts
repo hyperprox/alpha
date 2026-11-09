@@ -25,6 +25,7 @@ import {
 import { getCredential, setCredential } from './credentials'
 import { recordPin, pinSource, isConfirmedSource, type PinSource } from './hostkey-pins'
 import { currentRemote } from './clusters/context'
+import { assertSafeScript } from './clusters/script-guard'
 import { remoteNodeLoginRaw } from './clusters/registry'
 
 const HOSTKEY_PROVIDER = 'hostkey'
@@ -179,6 +180,10 @@ export function probeHostKey(host: string, port = 22, timeoutMs = 15_000): Promi
  */
 export function execOnNode(opts: ExecOptions): Promise<ExecResult> {
   const { host, cred, command, onData } = opts
+  // Every script for a remote cluster's node passes the one guard (lib/clusters/script-guard.ts).
+  if (currentRemote()) {
+    try { assertSafeScript(`${command}\n${opts.input ?? ''}`) } catch (e) { return Promise.reject(e) }
+  }
   const timeoutMs = opts.timeoutMs ?? 15 * 60_000
 
   return new Promise((resolve, reject) => {
