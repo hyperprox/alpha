@@ -154,7 +154,7 @@ const CLUSTERS_POWER = /^\/api\/clusters\/[^/]+\/guests\/[^/]+\/(lxc|qemu)\/\d+\
 const CLUSTERS_RECONFIRM: Array<[string, RegExp]> = [
   ['POST',   /^\/api\/clusters$/],
   ['DELETE', /^\/api\/clusters\/[^/]+$/],
-  ['POST',   /^\/api\/clusters\/[^/]+\/(certificate|token)$/],
+  ['POST',   /^\/api\/clusters\/[^/]+\/(certificate|token|connection)$/],
   ['POST',   /^\/api\/clusters\/[^/]+\/nodes\/[^/]+\/login$/],
   ['DELETE', /^\/api\/clusters\/[^/]+\/nodes\/[^/]+\/login$/],
   ['POST',   /^\/api\/clusters\/[^/]+\/guests\/[^/]+\/(lxc|qemu)\/\d+\/delete$/],

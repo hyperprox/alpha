@@ -9,6 +9,7 @@ import { pveFromEnv } from '../pve-env'
 import { nodeCredential, execOnNode } from '../node-exec'
 import type { GuestPve, NodeShell } from './service'
 import { nodeAddressInContext } from '../clusters/nodes'
+import { isRemoteContext } from '../clusters/context'
 
 const form = (p: Record<string, string>) => new URLSearchParams(p).toString()
 
@@ -33,7 +34,7 @@ async function nodeAddress(node: string): Promise<string | null> {
  * Read-only probes over the node login, which is read from the vault (credentials registry) and nowhere else.
  * Each use is audited by node and purpose, never with the credential or the command's output.
  */
-export function liveNodeShell(audit?: (action: string, resource: string, details: Record<string, unknown>) => Promise<void>): NodeShell {
+export function liveNodeShell(audit?: (action: string, resource: string, details: Record<string, unknown>) => Promise<void>, exec: typeof execOnNode = execOnNode): NodeShell {
   return {
     async run(node, command, timeoutMs = 30_000) {
       const cred = await nodeCredential(node).catch(() => null)
@@ -47,7 +48,8 @@ export function liveNodeShell(audit?: (action: string, resource: string, details
         : /^pct exec/.test(command) ? 'look inside a container'
         : /if \[ -d '/.test(command) ? 'path check' : 'node command'
       await audit?.('node_login.use', node, { purpose }).catch(() => {})
-      const r = await execOnNode({ host, cred, command: 'bash -s', input: command, timeoutMs })
+      // A remote node's login goes only to a host key the owner confirmed (as in lib/hardware.ts).
+      const r = await exec({ host, cred, command: 'bash -s', input: command, timeoutMs, requirePin: isRemoteContext() })
       return { code: r.code, output: r.output }
     },
   }

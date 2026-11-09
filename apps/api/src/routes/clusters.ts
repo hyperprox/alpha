@@ -25,7 +25,7 @@ import { commandCenter } from '../lib/clusters/overview'
 import { scanCluster } from '../lib/clusters/scan'
 import { checkGuest, power, snapshot, backupNow, backupStorages, taskStatus, destroy, GuestActionRefusal, type PowerAction } from '../lib/clusters/guest-actions'
 import { probeHostKey, execOnNode } from '../lib/node-exec'
-import { confirmPin, PinConfirmRefusal } from '../lib/hostkey-pins'
+import { confirmPin, PinConfirmRefusal, forgetPin } from '../lib/hostkey-pins'
 import { forgetRemoteGuestConfigService } from './guest-config'
 import { browse, setupSending, previewCopy, startCopy, jobStore, CopyRunner, savePlex, type CopyInput } from '../lib/clusters/files'
 import { updateCluster as updateClusterRow } from '../lib/clusters/registry'
@@ -141,14 +141,39 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
     } catch (e) { return fail(reply, e) }
   })
 
+  // Name and note only: nothing here changes where HyperProx connects or what it may write.
   fastify.patch<{ Params: { id: string }; Body: Record<string, any> }>('/:id', async (req, reply) => {
     const row = clusterOr404(req.params.id, reply); if (!row) return
+    const b: Record<string, any> = req.body ?? {}
+    const other = Object.keys(b).filter(k => !['name', 'note'].includes(k) && b[k] !== undefined)
+    if (other.length) return reply.status(422).send({ success: false, error: `Change ${other.join(', ')} through the connection settings (they need your master password), not here.` })
     try {
-      const b: Record<string, any> = req.body ?? {}
-      const c = await updateCluster(row.id, { name: b.name, note: b.note, address: b.address, port: b.port, allowedRoots: b.allowedRoots, nodeAddresses: b.nodeAddresses, plexUrl: b.plexUrl })
+      const c = await updateCluster(row.id, { name: b.name, note: b.note })
+      await auditCredentialUse('cluster.edit', `cluster:${row.id}`, { by: who(), fields: Object.keys(b) })
+      return { success: true, data: c }
+    } catch (e) { return fail(reply, e) }
+  })
+
+  // Where HyperProx connects and what copies may write into. Re-confirmed (lib/roles.ts). A node whose address
+  // changes loses its saved login and host-key pin: the new address is confirmed afresh before a login goes there.
+  fastify.post<{ Params: { id: string }; Body: Record<string, any> }>('/:id/connection', async (req, reply) => {
+    const row = clusterOr404(req.params.id, reply); if (!row) return
+    const b: Record<string, any> = req.body ?? {}
+    try {
+      const before = { ...row.nodeAddresses }
+      const c = await updateCluster(row.id, { address: b.address, port: b.port, allowedRoots: b.allowedRoots, nodeAddresses: b.nodeAddresses })
+      const cleared: string[] = []
+      if (b.nodeAddresses !== undefined) {
+        for (const [node, old] of Object.entries(before)) {
+          if (c.nodeAddresses[node] === old) continue
+          await forgetPin(old, 22).catch(() => undefined)
+          if (row.kind === 'remote') await removeRemoteNodeLogin(row.id, node).catch(() => undefined)
+          cleared.push(node)
+        }
+      }
       forgetRemoteClient(row.id)
-      await auditCredentialUse('cluster.edit', `cluster:${row.id}`, { by: who(), fields: Object.keys(b).filter(k => b[k] !== undefined) })
-      return { success: true, data: c, certNeedsConfirming: c.kind === 'remote' && !c.cert.fingerprint }
+      await auditCredentialUse('cluster.connection.edit', `cluster:${row.id}`, { by: who(), fields: Object.keys(b).filter(k => b[k] !== undefined), cleared })
+      return { success: true, data: c, certNeedsConfirming: c.kind === 'remote' && !c.cert.fingerprint, loginsCleared: cleared }
     } catch (e) { return fail(reply, e) }
   })
 

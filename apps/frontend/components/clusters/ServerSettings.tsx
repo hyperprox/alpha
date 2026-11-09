@@ -46,11 +46,14 @@ export function ServerSettings({ c, onChanged }: { c: ClusterInfo; onChanged: ()
   const [roots, setRoots] = useState(c.allowedRoots.join('\n'))
   const [msg, setMsg] = useState<{ kind: 'info' | 'error'; text: string } | null>(null)
 
-  const save = async (patch: Record<string, unknown>, done: string) => {
+  // Name and note are a plain edit; address, port and folders change where HyperProx connects or writes, so they
+  // go to the re-confirmed connection route.
+  const save = async (patch: Record<string, unknown>, done: string, connection = false) => {
     setMsg(null)
-    const r = await apiJson<{ data: ClusterInfo; certNeedsConfirming?: boolean }>(`/api/clusters/${c.id}`, 'PATCH', patch)
-    if (!r.ok) { setMsg({ kind: 'error', text: r.error ?? 'Not saved' }); return }
-    setMsg({ kind: 'info', text: r.body?.certNeedsConfirming ? `${done} The address changed, so confirm its certificate below before HyperProx sends it anything.` : done })
+    const r = await run(() => apiJson<{ data: ClusterInfo; certNeedsConfirming?: boolean }>(connection ? `/api/clusters/${c.id}/connection` : `/api/clusters/${c.id}`, connection ? 'POST' : 'PATCH', patch), () => void save(patch, done, connection))
+    if (!r) return
+    if (!r.ok) { setMsg({ kind: 'error', text: (r as any).error ?? 'Not saved' }); return }
+    setMsg({ kind: 'info', text: (r as any).body?.certNeedsConfirming ? `${done} The address changed, so confirm its certificate below before HyperProx sends it anything.` : done })
     onChanged()
   }
 
@@ -67,7 +70,7 @@ export function ServerSettings({ c, onChanged }: { c: ClusterInfo; onChanged: ()
           </div>
         )}
         <div><label style={LABEL}>Note</label><input style={INPUT} value={note} maxLength={500} onChange={e => setNote(e.target.value)} /></div>
-        <div><Btn onClick={() => save(remote ? { name, note, address, port: Number(port) } : { name, note }, 'Saved.')}>Save</Btn></div>
+        <div><Btn onClick={async () => { await save({ name, note }, 'Saved.'); if (remote && (address !== c.address || Number(port) !== c.port)) await save({ address, port: Number(port) }, 'Address saved.', true) }}>Save</Btn></div>
       </Section>
 
       {remote && <CertificateSection c={c} onChanged={onChanged} run={run} />}
@@ -78,7 +81,7 @@ export function ServerSettings({ c, onChanged }: { c: ClusterInfo; onChanged: ()
       <Section title="Folders files may be copied into">
         <p className="text-sm" style={{ color: 'var(--text-muted)' }}>One folder per line, for example the media share. A copy to this cluster can only write inside these. System folders are refused.</p>
         <textarea style={{ ...INPUT, height: 110, padding: 10, fontFamily: 'var(--font-mono)' }} value={roots} onChange={e => setRoots(e.target.value)} placeholder="/mnt/media" />
-        <div><Btn onClick={() => save({ allowedRoots: roots.split('\n').map(s => s.trim()).filter(Boolean) }, 'File roots saved.')}>Save folders</Btn></div>
+        <div><Btn onClick={() => save({ allowedRoots: roots.split('\n').map(s => s.trim()).filter(Boolean) }, 'File roots saved.', true)}>Save folders</Btn></div>
       </Section>
 
       {remote && <RemoveSection c={c} run={run} onRemoved={() => router.push('/clusters')} />}
@@ -170,8 +173,11 @@ function NodesSection({ c, onChanged, run }: { c: ClusterInfo; onChanged: () => 
   useEffect(() => { void load() }, [load])
 
   const saveAddrs = async () => {
-    const r = await apiJson(`/api/clusters/${c.id}`, 'PATCH', { nodeAddresses: addrs })
-    setErr(r.ok ? null : r.error ?? 'Not saved'); if (r.ok) { onChanged(); void load() }
+    const r = await run(() => apiJson<{ loginsCleared?: string[] }>(`/api/clusters/${c.id}/connection`, 'POST', { nodeAddresses: addrs }), () => void saveAddrs())
+    if (!r) return
+    const cleared = (r as any).body?.loginsCleared ?? []
+    setErr(r.ok ? (cleared.length ? `Saved. ${cleared.join(', ')} changed address, so its saved login and host key were removed: add the login again and confirm the new host key.` : null) : (r as any).error ?? 'Not saved')
+    if (r.ok) { onChanged(); void load() }
   }
   const readKey = async (node: string) => {
     setLogin({ node, fp: null, user: 'root', pw: '', key: '', matches: false, msg: null })

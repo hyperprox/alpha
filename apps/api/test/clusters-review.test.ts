@@ -23,6 +23,12 @@ import { ProxmoxClient } from '../src/lib/proxmox-client'
 import { unsafeRequestPath } from '../src/lib/roles'
 import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
+import { liveNodeShell } from '../src/lib/guest-config/pve-adapter'
+import { runInCluster } from '../src/lib/clusters/context'
+import { saveRemoteNodeLogin, remoteNodeLogins, clusterRow } from '../src/lib/clusters/registry'
+import { requestContext } from '../src/lib/auth'
+import { needsReconfirm } from '../src/lib/roles'
+import { recordPin, pinnedKey } from '../src/lib/hostkey-pins'
 
 const haveOpenssl = spawnSync('openssl', ['version']).status === 0
 export const seen: string[] = []
@@ -114,4 +120,45 @@ test('4: HA reads and HA state changes are refused for a remote cluster', () => 
   assert.ok(!remoteRouteAllowed('GET', '/api/proxmox/ha'))
   assert.ok(!remoteRouteAllowed('GET', '/api/proxmox/ha/resources'))
   assert.ok(!remoteRouteAllowed('GET', '/api/ha/overview'))
+})
+
+// ── 2: a remote node's login only to a confirmed host key; address changes re-confirmed ─────
+
+const REMOTE = 'c0123456789'
+async function addRemote(nodeAddresses: Record<string, string> = { pve: '10.0.0.9' }) {
+  const store = new MemoryClusterStore()
+  await store.upsert({ id: REMOTE, name: 'Remote server', kind: 'remote', address: '127.0.0.1', port: pvePort, note: '', certFingerprint: 'AA', certConfirmedAt: null, certConfirmedBy: null, nodeAddresses, allowedRoots: [], monitoring: {}, plexUrl: null, createdBy: 'x' })
+  setClusterStore(store); await loadClusters()
+  return store
+}
+const sidOf = () => [...broker.sessions.values()].find(s => (s as any).email === 'owner@example.com')?.sid ?? [...broker.sessions.values()].at(-1)!.sid
+const asOwner = <T>(fn: () => Promise<T>) => requestContext.run({ sid: sidOf(), email: 'owner@example.com', role: 'owner' }, fn)
+
+test('2: the guest-config node shell requires a confirmed pin on a remote, not at home', { skip: !haveOpenssl && 'openssl not installed' }, async () => {
+  await addRemote()
+  await asOwner(() => saveRemoteNodeLogin(REMOTE, 'pve', JSON.stringify({ username: 'root', port: 22, password: 'pw' })))
+  const opts: any[] = []
+  const shell = liveNodeShell(undefined, (async (o: any) => { opts.push(o); return { code: 0, output: '', timedOut: false } }) as any)
+  await asOwner(() => runInCluster(REMOTE, () => shell.run('pve', 'true')))
+  assert.equal(opts[0]?.requirePin, true)
+  assert.equal(opts[0]?.host, '10.0.0.9')
+})
+
+test('2: PATCH takes only name and note; address and node addresses go through the re-confirmed route and clear the login', { skip: !haveOpenssl && 'openssl not installed' }, async () => {
+  await addRemote()
+  await asOwner(async () => {
+    await saveRemoteNodeLogin(REMOTE, 'pve', JSON.stringify({ username: 'root', port: 22, password: 'pw' }))
+    await recordPin('10.0.0.9', 22, 'SHA256:' + 'A'.repeat(43), 'confirmed')
+  })
+  assert.equal((await call('PATCH', `/api/clusters/${REMOTE}`, { nodeAddresses: { pve: '203.0.113.5' } })).statusCode, 422)
+  assert.equal((await call('PATCH', `/api/clusters/${REMOTE}`, { name: 'Renamed' })).statusCode, 200, 'a rename stays free')
+  assert.ok(needsReconfirm('POST', `/api/clusters/${REMOTE}/connection`))
+  assert.equal((await call('POST', `/api/clusters/${REMOTE}/connection`, { nodeAddresses: { pve: '203.0.113.5' } })).json().code, 'reconfirm_required')
+  await call('POST', '/api/auth/reconfirm', { password: 'owner master password' })
+  const r = await call('POST', `/api/clusters/${REMOTE}/connection`, { nodeAddresses: { pve: '203.0.113.5' } })
+  assert.equal(r.statusCode, 200, r.body)
+  assert.deepEqual(r.json().loginsCleared, ['pve'])
+  assert.deepEqual(await asOwner(() => remoteNodeLogins(REMOTE)), [], 'the login is gone, so it cannot be offered to the new address')
+  assert.equal(await asOwner(() => pinnedKey('10.0.0.9', 22)), null, 'and the old pin with it')
+  assert.equal(clusterRow(REMOTE)!.nodeAddresses.pve, '203.0.113.5')
 })
