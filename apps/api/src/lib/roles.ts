@@ -130,8 +130,9 @@ const REMOTE_JOBS = /^\/api\/remote\/(exclusions$|(v1\/)?jobs(\/|$)|machines\/[^
 
 // Clusters (routes/clusters.ts): the list, the Command center and task status are viewer; guest power is operator,
 // as it is on the home pages; everything else is admin, reads included (scans and node lists map machines).
-// Storing or replacing a credential, confirming a certificate or host key, deleting, installing, and starting a
-// file job that can delete (sync, move) also need the master password re-entered.
+// Storing or replacing a credential (a sending key and a Plex token included), confirming a certificate or host
+// key, deleting and installing also need the master password re-entered. Starting a copy does not: a copy adds
+// files and cannot replace or delete any.
 const CLUSTERS = /^\/api\/clusters(\/|$)/
 const CLUSTERS_VIEW = /^\/api\/clusters(\/overview|\/[^/]+\/tasks(\/[^/]+\/[^/]+)?|\/files\/jobs(\/[^/]+)?)?$/
 const CLUSTERS_POWER = /^\/api\/clusters\/[^/]+\/guests\/[^/]+\/(lxc|qemu)\/\d+\/power$/
@@ -143,8 +144,8 @@ const CLUSTERS_RECONFIRM: Array<[string, RegExp]> = [
   ['DELETE', /^\/api\/clusters\/[^/]+\/nodes\/[^/]+\/login$/],
   ['POST',   /^\/api\/clusters\/[^/]+\/guests\/[^/]+\/(lxc|qemu)\/\d+\/delete$/],
   ['POST',   /^\/api\/clusters\/[^/]+\/monitoring\/apply$/],
-  ['POST',   /^\/api\/clusters\/files\/jobs\/destructive$/],
   ['POST',   /^\/api\/clusters\/files\/keys$/],
+  ['POST',   /^\/api\/clusters\/[^/]+\/plex$/],
 ]
 
 /**

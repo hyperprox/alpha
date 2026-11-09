@@ -26,6 +26,8 @@ import { checkGuest, power, snapshot, backupNow, backupStorages, taskStatus, des
 import { probeHostKey, execOnNode } from '../lib/node-exec'
 import { confirmPin, PinConfirmRefusal } from '../lib/hostkey-pins'
 import { forgetRemoteGuestConfigService } from './guest-config'
+import { browse, setupSending, previewCopy, startCopy, jobStore, CopyRunner, savePlex, type CopyInput } from '../lib/clusters/files'
+import { updateCluster as updateClusterRow } from '../lib/clusters/registry'
 import { scanMonitoring, previewMonitoring, applyMonitoring, MonitoringRefusal } from '../lib/clusters/monitoring'
 
 const who = () => currentContext()?.email ?? 'unknown'
@@ -280,6 +282,59 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
       const r = await applyMonitoring(String(req.body?.planId ?? ''), who())
       await auditCredentialUse('cluster.monitoring.apply', `cluster:${row.id}`, { by: who(), ok: r.ok, nodes: r.results.map(x => x.node) })
       return { success: true, data: r }
+    } catch (e) { return fail(reply, e) }
+  })
+
+  // ── Files (Send files) ───────────────────────────────────────────────────
+
+  const copies = new CopyRunner(undefined, undefined, m => fastify.log.warn(m))
+  copies.start()
+  fastify.addHook('onClose', async () => copies.stop())
+
+  fastify.get<{ Params: { id: string }; Querystring: { node?: string; path?: string } }>('/:id/files/browse', async (req, reply) => {
+    const row = clusterOr404(req.params.id, reply); if (!row) return
+    try { return { success: true, data: await browse(row.id, String(req.query.node ?? ''), String(req.query.path ?? '')) } } catch (e) { return fail(reply, e) }
+  })
+
+  fastify.post<{ Body: { src?: string; dst?: string; dstNode?: string; root?: string } }>('/files/keys', async (req, reply) => {
+    const b = req.body ?? {}
+    try { return { success: true, data: await setupSending({ src: String(b.src ?? ''), dst: String(b.dst ?? ''), dstNode: String(b.dstNode ?? ''), root: String(b.root ?? ''), by: who() }) } } catch (e) { return fail(reply, e) }
+  })
+
+  const endpoint = (x: any) => ({ cluster: String(x?.cluster ?? ''), node: String(x?.node ?? ''), path: String(x?.path ?? '') })
+  fastify.post<{ Body: { src?: any; dst?: any; speedKBps?: number; plexScan?: boolean; mode?: string } }>('/files/preview', async (req, reply) => {
+    const b = req.body ?? {}
+    if (b.mode && b.mode !== 'copy') return reply.status(422).send({ success: false, error: 'Only Copy is offered. Sync and Move are coming soon.' })
+    try {
+      const input: CopyInput = { src: endpoint(b.src), dst: endpoint(b.dst), speedKBps: Math.round(Number(b.speedKBps ?? 0)), plexScan: b.plexScan === true }
+      return { success: true, data: await previewCopy(who(), input) }
+    } catch (e) { return fail(reply, e) }
+  })
+
+  fastify.post<{ Body: { previewId?: string } }>('/files/jobs', async (req, reply) => {
+    try { const j = await startCopy(String(req.body?.previewId ?? ''), who()); void copies.tick(); return { success: true, data: j } } catch (e) { return fail(reply, e) }
+  })
+  fastify.get('/files/jobs', async (_req, reply) => {
+    try { return { success: true, data: await jobStore().list() } } catch (e) { return fail(reply, e) }
+  })
+  fastify.get<{ Params: { jobId: string } }>('/files/jobs/:jobId', async (req, reply) => {
+    try { const j = await jobStore().get(req.params.jobId); return j ? { success: true, data: j } : reply.status(404).send({ success: false, error: 'No such job.' }) } catch (e) { return fail(reply, e) }
+  })
+  fastify.post<{ Params: { jobId: string } }>('/files/jobs/:jobId/cancel', async (req, reply) => {
+    try { return { success: true, data: await copies.cancel(req.params.jobId) } } catch (e) { return fail(reply, e) }
+  })
+  fastify.post<{ Params: { jobId: string } }>('/files/jobs/:jobId/resume', async (req, reply) => {
+    try { const j = await copies.resume(req.params.jobId); void copies.tick(); return { success: true, data: j } } catch (e) { return fail(reply, e) }
+  })
+
+  // A Plex on that cluster to ask for a scan after a copy: its address on the row, its token in the vault.
+  fastify.post<{ Params: { id: string }; Body: { url?: string; token?: string } }>('/:id/plex', async (req, reply) => {
+    const row = clusterOr404(req.params.id, reply); if (!row) return
+    try {
+      await updateClusterRow(row.id, { plexUrl: req.body?.url ? String(req.body.url) : null })
+      if (req.body?.token) await savePlex(row.id, String(req.body.token))
+      await auditCredentialUse('cluster.plex.save', `cluster:${row.id}`, { by: who() })
+      return { success: true }
     } catch (e) { return fail(reply, e) }
   })
 

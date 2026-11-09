@@ -72,7 +72,8 @@ export function ServerSettings({ c, onChanged }: { c: ClusterInfo; onChanged: ()
 
       {remote && <CertificateSection c={c} onChanged={onChanged} run={run} />}
       {remote && <TokenSection c={c} run={run} />}
-      {remote && <NodesSection c={c} onChanged={onChanged} run={run} />}
+      <NodesSection c={c} onChanged={onChanged} run={run} />
+      <PlexSection c={c} run={run} onChanged={onChanged} />
 
       <Section title="Folders files may be copied into">
         <p className="text-sm" style={{ color: 'var(--text-muted)' }}>One folder per line, for example the media share. A copy to this cluster can only write inside these. System folders are refused.</p>
@@ -190,10 +191,11 @@ function NodesSection({ c, onChanged, run }: { c: ClusterInfo; onChanged: () => 
   }
 
   return (
-    <Section title="Nodes and logins">
+    <Section title={c.kind === 'remote' ? 'Nodes and logins' : 'Node addresses for file copies'}>
       <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-        The address HyperProx reaches each node on (its private-link address: Tailscale or WireGuard), and an optional root login for the
-        hardware scan, monitoring and file copies. The login is checked against the node's host key, which you confirm, and is kept in the vault.
+        {c.kind === 'remote'
+          ? 'The address HyperProx reaches each node on (its private-link address: Tailscale or WireGuard), and an optional root login for the hardware scan, monitoring and file copies. The login is checked against the node\'s host key, which you confirm, and is kept in the vault.'
+          : 'The private-link address (Tailscale or WireGuard) a remote server reaches each of your nodes on, for files sent to this cluster. Node logins for the home cluster are in Settings, Setup checklist.'}
       </p>
       {err && <Notice kind="error">{err}</Notice>}
       {rows === null ? <BusyNote>Reading nodes…</BusyNote> : rows.map(n => (
@@ -204,10 +206,10 @@ function NodesSection({ c, onChanged, run }: { c: ClusterInfo; onChanged: () => 
             <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{n.login ? 'login saved' : 'no login'}</span>
           </div>
           <input style={INPUT} value={addrs[n.node] ?? ''} placeholder="its private-link address" onChange={e => setAddrs(a => ({ ...a, [n.node]: e.target.value }))} spellCheck={false} />
-          <div className="flex gap-2 flex-wrap">
+          {c.kind === 'remote' && <div className="flex gap-2 flex-wrap">
             {n.address && !n.login && <Btn onClick={() => readKey(n.node)}>Add a login</Btn>}
             {n.login && <Btn onClick={() => removeLogin(n.node)}>Remove login</Btn>}
-          </div>
+          </div>}
           {login?.node === n.node && (
             <div className="flex flex-col gap-2">
               {login.fp === null && !login.msg && <BusyNote>Reading its host key…</BusyNote>}
@@ -229,6 +231,29 @@ function NodesSection({ c, onChanged, run }: { c: ClusterInfo; onChanged: () => 
         </div>
       ))}
       <div><Btn onClick={saveAddrs}>Save node addresses</Btn></div>
+    </Section>
+  )
+}
+
+function PlexSection({ c, run, onChanged }: { c: ClusterInfo; run: Run; onChanged: () => void }) {
+  const [url, setUrl] = useState(c.plexUrl ?? '')
+  const [token, setToken] = useState('')
+  const [state, setState] = useState<{ kind: 'info' | 'error'; text: string } | null>(null)
+  const save = async () => {
+    const r = await run(() => apiJson(`/api/clusters/${c.id}/plex`, 'POST', { url: url.trim() || null, token: token.trim() || undefined }), () => void save())
+    if (!r) return
+    setState(r.ok ? { kind: 'info', text: 'Saved. The token is in the vault.' } : { kind: 'error', text: (r as any).error ?? 'Not saved' })
+    if (r.ok) { setToken(''); onChanged() }
+  }
+  return (
+    <Section title="Plex on this cluster (optional)">
+      <p className="text-sm" style={{ color: 'var(--text-muted)' }}>So a finished copy can ask Plex to scan for the new titles. Its token goes to the vault.</p>
+      <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(14rem,1fr))' }}>
+        <div><label style={LABEL}>Plex address</label><input style={INPUT} value={url} placeholder="http://10.0.0.5:32400" onChange={e => setUrl(e.target.value)} spellCheck={false} /></div>
+        <div><label style={LABEL}>Plex token (leave empty to keep the saved one)</label><input style={INPUT} type="password" autoComplete="off" value={token} onChange={e => setToken(e.target.value)} /></div>
+      </div>
+      <div><Btn onClick={save}>Save Plex</Btn></div>
+      {state && <Notice kind={state.kind}>{state.text}</Notice>}
     </Section>
   )
 }
