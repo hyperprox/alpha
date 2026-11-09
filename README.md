@@ -330,14 +330,20 @@ be stopped and not under HA). Every action is read back from Proxmox afterwards 
 what Proxmox reported. Storage and recent tasks are listed too. High availability, GPU sharing and
 Updates still work on the home cluster only, and are labelled so.
 
-**Edit server** holds its address (a new address must have its certificate confirmed again), the
-token (tested before it replaces the old one), node addresses and node logins, the folders file copies
-may write into, its Plex, and Remove (type its name; HyperProx forgets the server and its secrets and
-shows the two commands that delete the token on the server too).
+**Edit server** holds its name, its address (a new address must have its certificate confirmed
+again), the token (tested before it replaces the old one), node addresses and node logins, the folders
+file copies may write into, its Plex (a Plex token is only ever sent to the address it was saved for;
+plain http only to a private address), and Remove. Changing the address, node addresses or folders asks
+for your master password; a rename does not. Remove (type its name) forgets the server and its secrets,
+takes its sending keys off the nodes they were installed on (or shows the command to run where a node
+cannot be reached), stops Prometheus collecting from it, and shows the two commands that delete the
+token on the server too. Below the admin role, people see only each cluster's name and how it is doing,
+never its addresses.
 
 - **Node logins.** For the full hardware scan, monitoring and file copies, add a root login per node.
   HyperProx shows the node's SSH host key; compare it with `ssh-keygen -lf` on the node and confirm.
-  Only a confirmed host key is used.
+  Only a confirmed host key is used. Changing a node's address removes its saved login, so the new
+  address's host key is confirmed before a login is sent there.
 - **Hardware scan.** With the token alone: GPUs from Proxmox's PCI list and exporters asked over the
   network. With a node login: the full read-only probe, and `vainfo` (if it is installed there) to say
   what the GPU really decodes and encodes. Without vainfo the answer is an estimate, and says so.
@@ -603,7 +609,8 @@ not protected, are in [docs/security.md](docs/security.md).
   admin password, and changes on the Setup checklist ask for the master password again (valid five
   minutes). So do, for remote clusters: adding or removing one, replacing its token, confirming its
   certificate, saving or removing a node login, deleting a guest, installing or removing monitoring,
-  setting up a sending key, and saving a Plex token.
+  changing a server's address, node addresses or copy folders, setting up a sending key, and saving
+  a Plex address or token.
 - **Remote clusters.** Each remote's API token, node logins, sending keys and Plex token live only in
   the vault, one item per cluster (`hyperprox:proxmox/<id>` and so on): never in `.env`, the database,
   logs, audit entries or API answers. Its API is reached only over a connection that accepts the one
