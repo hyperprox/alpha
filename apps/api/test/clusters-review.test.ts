@@ -369,3 +369,18 @@ test('13: low ports other than the Proxmox ones are refused; failures read the s
   assert.equal(overLimit('t:x', 10, 60_000, 2000), true)
   assert.equal(overLimit('t:x', 10, 60_000, 70_000), false, 'and frees up after a minute')
 })
+
+// ── 14: a failing job table is logged once, not every ten seconds ───────────
+
+import { CopyRunner as Runner, setJobStore as setJobs, MemoryJobStore as MemJobs } from '../src/lib/clusters/files'
+
+test('14: the copy runner logs the same failure once', async () => {
+  const logs: string[] = []
+  setJobs({ list: async () => { throw new Error('The table `FileCopyJob` does not exist') } } as any)
+  await asOwner(async () => {
+    const r = new Runner(undefined, undefined, m => logs.push(m))
+    for (let i = 0; i < 5; i++) await r.tick()
+  })
+  assert.equal(logs.length, 1)
+  setJobs(new MemJobs())
+})

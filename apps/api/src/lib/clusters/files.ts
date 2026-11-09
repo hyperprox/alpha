@@ -472,6 +472,7 @@ export async function recheckJob(j: JobRow, runner: NodeRunner): Promise<{ srcRo
 /** One step of the runner: start the oldest queued job when none runs, and follow running ones. */
 export class CopyRunner {
   private busy = false
+  private lastLogged: string | null = null
   private timer: NodeJS.Timeout | null = null
   constructor(private runner: NodeRunner = liveNodeRunner, private plex: (clusterId: string) => Promise<string | null> = plexScan, private log: (m: string) => void = () => {}) {}
 
@@ -488,7 +489,11 @@ export class CopyRunner {
         const next = all.filter(x => x.state === 'queued').sort((a, b) => +a.createdAt - +b.createdAt)[0]
         if (next) await this.launch(next)
       }
-    } catch (e: any) { this.log(`[files] ${e?.message ?? e}`) } finally { this.busy = false }
+    } catch (e: any) {
+      // The same problem every ten seconds (the table not there yet, say) is logged once, until it changes.
+      const m = `[files] ${e?.message ?? e}`
+      if (m !== this.lastLogged) { this.lastLogged = m; this.log(m) }
+    } finally { this.busy = false }
   }
 
   async launch(j: JobRow): Promise<void> {
