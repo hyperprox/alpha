@@ -179,7 +179,8 @@ Built (Command center):
 - Per-cluster credentials in the vault, certificate pinning for each remote's API, confirmed host keys for node logins
 - Guest power, snapshots, back up now, settings and delete on any cluster, each read back
 - Hardware scan per cluster, with vainfo when a node login allows
-- Monitoring install and removal on a remote (node_exporter on the private link only, AMD GPU figures)
+- Monitoring install and removal on a remote (node_exporter on the private link only, AMD GPU figures, Intel GPU figures through node_exporter's textfile folder)
+- Every GPU on every node in the Command center, home and remote, each with its own figures and a plain reason when it has none
 - Send files: copy between or within clusters, node to node, verified (first version)
 
 Not built yet:

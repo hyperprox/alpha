@@ -302,8 +302,15 @@ and LAN dials show it, scaled to your plan speed when you set one in the plug-in
 
 **Command center** shows every cluster HyperProx manages side by side: your home cluster in teal and
 each remote server or cluster in amber. Each panel has nodes online, quorum, guests running, CPU,
-memory and storage bars, a row per GPU (load, video memory, temperature and fan when monitoring
-reports them, plus a plain note on what the card is good for), the last backup, and quick links. One
+memory and storage bars, a row for every GPU on every node, the last backup, and quick links. Each GPU
+row starts with its node ("node2 · HD Graphics 630") and shows its load; under it, one short line:
+video memory (or "shared memory" for built-in graphics, which use the system's memory), temperature,
+fan, clock and power where monitoring reports them, and one line on HEVC, for example "HEVC decode:
+likely yes (estimate)". Tap a row for the full name and the longer explanation. A GPU with no figures
+says why instead: "not monitored · set up monitoring" (a link), "not supported on this GPU", "figures
+stopped arriving" or "exporter not answering". One line under the rows says how many GPUs have measured
+load, and that the HEVC lines are estimates from the model name (the hardware scan can check them with
+vainfo). One
 **Needs attention** list collects problems from every cluster, each tagged with where it came from.
 Once a remote is added, the Dashboard shows the same panels at the top; with none, nothing changes.
 
@@ -346,16 +353,34 @@ never its addresses.
   address's host key is confirmed before a login is sent there.
 - **Hardware scan.** With the token alone: GPUs from Proxmox's PCI list and exporters asked over the
   network. With a node login: the full read-only probe, and `vainfo` (if it is installed there) to say
-  what the GPU really decodes and encodes. Without vainfo the answer is an estimate, and says so.
+  what the GPU really decodes and encodes. Without vainfo the answer is an estimate, and says so. One
+  line under the scan says which it is and what to do to check it (press Full scan, or install the
+  vainfo package on the node).
 - **Monitoring** (step 5). HyperProx scans first, asks yes or no questions, shows every step, and only
   then installs. It installs `prometheus-node-exporter` from the server's own packages (nothing is
   upgraded or removed), listening only on the address HyperProx reaches the node on, and only if that
   address is on a Tailscale or WireGuard interface; the setting is written before the package is
   installed, so it never listens on the home network. For an AMD GPU it switches on the GPU collector.
+  For an Intel GPU (asked separately, and only where the node has python3) it adds `intel-gpu-tools`
+  and a small root service that runs `intel_gpu_top` for each Intel GPU and writes the busy engines
+  (3D, video, blitter, video enhance), clock and power into node_exporter's textfile folder, so
+  node_exporter serves them on the same private address and no new port opens. Root is needed for the
+  GPU's counters; `kernel.perf_event_paranoid` is not changed. apt is asked first and the package is
+  installed only if that adds new packages and nothing else: no upgrade, no removal, no list refresh,
+  and never a kernel, header, firmware, NVIDIA or Proxmox package. HyperProx refuses to send any
+  monitoring script that would upgrade packages, change apt holds or boot kernels, install with dpkg,
+  or name a kernel, header, firmware, NVIDIA or Proxmox package in an install. One sample is taken
+  before the service is turned on: if `intel_gpu_top` does not support the GPU (an older tool on the
+  newer xe driver, for example), nothing is left installed and the Command center says "not supported
+  on this GPU".
   HyperProx's Prometheus then collects from it, and the result is checked from HyperProx's side. If
   HyperProx cannot reach the server, the scan says so and why: this HyperProx machine must be on the
   same tailnet (the VPN page can add Tailscale to it) or have a route. **Remove monitoring** puts
-  everything back. The remote's nodes appear in Grafana under their own names (`node@cluster`).
+  everything back: the Intel service, script and figures go, and the packages HyperProx added are
+  removed only if apt would remove nothing else with them (otherwise they stay, and the answer says
+  why). The remote's nodes appear in Grafana under their own names (`node@cluster`); its Intel GPUs
+  appear in the cluster board's Intel row, which also has a table saying, per Intel GPU, whether the
+  collector is measuring and why not when it is not.
   Proxmox figures in Grafana for a remote (its own PVE exporter) are not built yet; the Command center
   reads them through the token.
 - **Send files.** Copy a file or folder from any cluster to a folder on any cluster, or within one.
