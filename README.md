@@ -560,18 +560,28 @@ more than one, gets a question back listing your clusters.
 
 **Actions on any cluster.** The assistant can prepare: start, stop, shut down, restart, snapshot,
 back up now or delete a guest; install or remove monitoring on a remote; and start a Send files copy.
-It reads the request with code, not the model, and asks for anything missing (which guest, which
-backup storage, which node, which folder), offering the real choices. Preparing only reads (a copy
+It reads the request with code, not the model, and asks for anything missing or not exact (which
+guest, which backup storage, which node, which folder), offering the real choices; it never picks a
+guest whose name only partly matches. Preparing only reads (a copy
 runs its dry run, monitoring scans the nodes); nothing changes until you confirm the card, which names
 the cluster (amber, marked REMOTE, for a remote). The server then runs its own copy of the plan through
 the same code as the Command center's buttons and reads the result back. A plan works only on the
-cluster it was made for: confirmed for another cluster, after that server's connection or certificate
-changed, or after the guest's settings changed, it does nothing. Your role and the master-password
+cluster it was made for: confirmed for another cluster, after that server's address, port, certificate
+or API token changed, or after the guest's settings changed, it does nothing. Your role and the master-password
 check are exactly what the same action needs by hand (deleting a guest and installing or removing
-monitoring ask for the password; deleting also asks for the guest's name, typed), the audit log records
-who did what on which cluster, and while HyperProx is locked it does nothing. Editing a guest's
+monitoring ask for the password; deleting also asks for the guest's name, typed, or its ID for a VM
+with no name), the audit log records who did what on which cluster, including every refusal, and while
+HyperProx is locked it does nothing. Editing a guest's
 settings is not offered by the assistant: use the guest's Settings tab. Using the assistant needs the
 admin role.
+
+**What reaches the AI provider.** For a general question, the short summaries the assistant picks can
+be sent to the AI provider you configured, which may be a cloud service: guest, node and storage names
+of every cluster asked about, backup results, DNS zone and proxy host names, certificate names and
+plug-in summaries. Status, GPU, monitoring, copy and hardware-scan answers are worked out by code, and
+those summaries are not sent. API tokens, passwords, certificate fingerprints, the remote servers' addresses and the
+copy folders HyperProx stores are never sent. A reason Proxmox gives for a failed backup, and what a plug-in
+reports, are passed on as they were written.
 
 ### Catalogue
 
