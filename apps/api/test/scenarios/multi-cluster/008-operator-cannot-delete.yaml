@@ -1,0 +1,8 @@
+id: multi-008-operator-cannot-delete
+prompt: "Delete media-vm on the remote"
+open: home
+role: operator
+expect:
+  kind: answer
+  includes: ["That needs the admin role, and you are signed in as operator, so I did not prepare it."]
+found_by: "multi-cluster seed inventory (a role below admin)"

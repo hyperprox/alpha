@@ -1,0 +1,12 @@
+id: multi-013-delete-needs-typed-name
+prompt: "Delete media-vm on Remote server"
+open: remote
+expect:
+  kind: action
+  action: delete
+  cluster: Remote server
+  needs_reconfirm: true
+  typed_name: media-vm
+  role: admin
+  includes: ["Type its name to confirm"]
+found_by: "multi-cluster seed inventory"

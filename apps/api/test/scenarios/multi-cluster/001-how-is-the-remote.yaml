@@ -1,0 +1,8 @@
+id: multi-001-how-is-the-remote
+prompt: "How is the remote server doing?"
+open: home
+expect:
+  kind: answer
+  includes: ["Answering about Remote server (remote).", "Guests: 1 of 2 running.", "Needs attention: The last backup did not finish cleanly."]
+  excludes: ["Home cluster:"]
+found_by: "multi-cluster seed inventory"

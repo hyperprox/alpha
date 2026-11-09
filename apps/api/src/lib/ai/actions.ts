@@ -104,9 +104,11 @@ export function parseAction(prompt: string): ParsedAction | null {
 export function guestWords(target: string, clusters: ClusterRef[]): string {
   return withoutClusterWords(target, clusters)
     .replace(/\s+(?:to|on|onto|in)\s+storage\s+\S+/ig, ' ')
-    .replace(/\b(right\s+now|now|please|immediately|for\s+me|again)\b/ig, ' ')
-    .replace(/\b(the|my|our|a|an)\b/ig, ' ')
-    .replace(/\b(guest|container|vm|ct|lxc|virtual\s+machine|machine|server)\b/ig, ' ')
+    .replace(/[.,!?]+(\s|$)/g, ' ')
+    .replace(/(^|\s)(right\s+now|now|please|immediately|for\s+me|again)(?=\s|$)/ig, ' ')
+    .replace(/(^|\s)(the|my|our|a|an)(?=\s|$)/ig, ' ')
+    // Whole words only: "media-vm" is a name, not "media" and a type.
+    .replace(/(^|\s)(guest|container|vm|ct|lxc|virtual\s+machine|machine|server)(?=\s|$)/ig, ' ')
     .replace(/[.,!?]+/g, ' ').replace(/\s+/g, ' ').trim()
 }
 
@@ -208,6 +210,13 @@ function card(plan: ActionPlan, id: string, title: string, words: string, steps:
   }
 }
 
+/** The request again, naming cluster `name` instead of "the remote" (or with "on <name>" added). */
+function onCluster(prompt: string, name: string): string {
+  const p = prompt.trim().replace(/[.!?]+$/, '')
+  const swapped = p.replace(/\b(the|my|our|that)\s+remote(\s+(server|cluster))?\b/i, name)
+  return swapped !== p ? swapped : `${p} on ${name}`
+}
+
 const where = (c: ClusterRef) => (c.kind === 'home' ? `${c.name} (home)` : `${c.name} (remote)`)
 
 /** Prepare `a` for the person in `who`. Every read runs in the target cluster's context. */
@@ -216,8 +225,8 @@ export async function prepareAction(prompt: string, a: ParsedAction, who: Who, d
   if (a.kind === 'copy') return prepareCopy(prompt, a, who, d)
 
   const t = resolveTargets(a.where, who.clusters, who.current)
-  if (t.kind === 'ask') return say(t.message, t.choices.map(n => `${prompt.replace(/[.!?]+$/, '')} on ${n}`))
-  if (t.clusters.length !== 1) return say('I act on one cluster at a time. Name the one you mean.', t.clusters.map(c => `${prompt.replace(/[.!?]+$/, '')} on ${c.name}`))
+  if (t.kind === 'ask') return say(t.message, t.choices.map(n => onCluster(prompt, n)))
+  if (t.clusters.length !== 1) return say('I act on one cluster at a time. Name the one you mean.', t.clusters.map(c => onCluster(prompt, c.name)))
   const c = t.clusters[0]
   const row = d.row(c.id)
   if (!row) return say('That cluster was removed. Nothing was prepared.')

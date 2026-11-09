@@ -1,0 +1,8 @@
+id: multi-004-back-up-the-remote-now
+prompt: "Back up the remote now"
+open: home
+expect:
+  kind: answer
+  includes: ["Which guest on Remote server should I back up?"]
+  choices: ["back up plex on Remote server", "back up media-vm on Remote server"]
+found_by: "multi-cluster seed inventory (the backup is per guest: the missing guest is asked for)"

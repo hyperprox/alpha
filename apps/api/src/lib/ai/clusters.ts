@@ -22,9 +22,10 @@ const REMOTE = /\b(the|my|our|that)\s+remote(\s+(server|cluster))?\b|\bremote\s+
 const HOME = /\b(the|my|our)\s+home\s+(server|cluster)\b|\bhome\s+cluster\b|\b(on|in|at|to|for|from)\s+(the\s+)?home(\s+(one|server|cluster))?\s*([.?!,]|$)/i
 // "on the Lab cluster": a name the person used, which must be a real one. Only "cluster": "the plex server" is
 // far more often a guest than a cluster.
-const ON_X = /\b(?:on|in|at|for|to|from)\s+(?:the\s+|my\s+|our\s+)?([A-Za-z0-9][\w.-]*)\s+cluster\b/i
+const ON_X = /\b(?:on|in|at|for|to|from|is|about|of|does)\s+(?:the\s+|my\s+|our\s+)?([A-Za-z0-9][\w.-]*)\s+cluster\b/i
 const NOT_A_NAME = new Set(['this', 'that', 'my', 'the', 'other', 'same', 'home', 'remote', 'each', 'every', 'all', 'one', 'proxmox', 'pve',
-  'a', 'new', 'which', 'what', 'any', 'our', 'your', 'second', 'first', 'both', 'whole', 'entire', 'dns', 'proxy', 'web', 'media', 'file', 'plex'])
+  'a', 'new', 'which', 'what', 'any', 'our', 'your', 'second', 'first', 'both', 'whole', 'entire', 'dns', 'proxy', 'web', 'media', 'file', 'plex',
+  'ceph', 'storage', 'backup', 'kubernetes', 'k8s', 'database', 'db', 'redis', 'docker', 'swarm', 'ha', 'test', 'main', 'primary', 'production', 'prod'])
 
 /** Ask which of these, in plain words, offering each real name. */
 function askWhich(intro: string, clusters: ClusterRef[]): Targets {

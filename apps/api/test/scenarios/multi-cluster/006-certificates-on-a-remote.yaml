@@ -1,0 +1,7 @@
+id: multi-006-certificates-on-a-remote
+prompt: "When do my certificates expire?"
+open: remote
+expect:
+  kind: answer
+  includes: ["Answering about Remote server (remote).", "only available on the home cluster, so I cannot answer that for Remote server."]
+found_by: "multi-cluster seed inventory (home-only feature asked on a remote)"

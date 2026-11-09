@@ -1,0 +1,7 @@
+id: multi-007-unknown-cluster
+prompt: "Restart plex on the Lab cluster"
+open: home
+expect:
+  kind: answer
+  includes: ["I do not know a cluster called \"Lab\". Your clusters are: Home cluster, Remote server."]
+found_by: "multi-cluster seed inventory"

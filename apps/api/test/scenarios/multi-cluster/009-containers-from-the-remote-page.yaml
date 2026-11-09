@@ -1,0 +1,8 @@
+id: multi-009-containers-from-the-remote-page
+prompt: "How many containers do I have?"
+open: remote
+expect:
+  kind: answer
+  includes: ["Answering about Remote server (remote).", "You have 1 container, 1 running and 0 stopped."]
+  excludes: ["2 containers"]
+found_by: "multi-cluster seed inventory (no home data in a remote answer)"

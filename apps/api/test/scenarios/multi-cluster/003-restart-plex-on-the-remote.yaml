@@ -1,0 +1,11 @@
+id: multi-003-restart-plex-on-the-remote
+prompt: "restart plex on the remote"
+open: home
+expect:
+  kind: action
+  action: reboot
+  cluster: Remote server
+  needs_reconfirm: false
+  role: operator
+  includes: ["Restart plex on Remote server", "plex (CT 201 on node1) on Remote server (remote)."]
+found_by: "multi-cluster seed inventory"

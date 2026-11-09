@@ -1,0 +1,7 @@
+id: multi-010-deploy-on-a-remote
+prompt: "Deploy Uptime Kuma"
+open: remote
+expect:
+  kind: answer
+  includes: ["Deploying a service is only available on the home cluster"]
+found_by: "multi-cluster seed inventory"

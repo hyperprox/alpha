@@ -1,0 +1,11 @@
+id: multi-012-install-monitoring
+prompt: "Install monitoring on Remote server"
+open: home
+expect:
+  kind: action
+  action: monitoring-install
+  cluster: Remote server
+  needs_reconfirm: true
+  role: admin
+  includes: ["Install monitoring on Remote server"]
+found_by: "multi-cluster seed inventory"

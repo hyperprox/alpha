@@ -1,0 +1,7 @@
+id: multi-002-gpus-each-cluster
+prompt: "What GPUs does each cluster have?"
+open: remote
+expect:
+  kind: answer
+  includes: ["Answering about 2 clusters: Home cluster, Remote server.", "Home cluster: node1: Arc A380", "load 42% (measured)", "Remote server: node1: Radeon RX 6600", "estimated from the model name"]
+found_by: "multi-cluster seed inventory"

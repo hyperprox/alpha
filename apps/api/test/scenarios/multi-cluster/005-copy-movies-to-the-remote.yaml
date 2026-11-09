@@ -1,0 +1,11 @@
+id: multi-005-copy-movies-to-the-remote
+prompt: "Copy Movies to the remote"
+open: home
+expect:
+  kind: action
+  action: copy
+  cluster: Remote server
+  needs_reconfirm: false
+  role: admin
+  includes: ["Copy Movies from Home cluster to Remote server", "From node1:/srv/media/Movies on Home cluster (home).", "To node1:/srv/media on Remote server (remote)."]
+found_by: "multi-cluster seed inventory"
