@@ -65,7 +65,7 @@ test('the node-side check resolves links: a link out of the root is refused', ()
 test('the destination key can only run rsync, write-only, without deletes, in one folder', () => {
   const kp = utils.generateKeyPairSync('ed25519', { comment: 'x' })
   const line = authorizedLine('/usr/bin/rrsync', '/srv/media', kp.public, 'home:abc')
-  assert.match(line, /^restrict,command="\/usr\/bin\/rrsync -wo -no-del \/srv\/media" ssh-ed25519 \S+ hyperprox-xfer:home:abc$/)
+  assert.match(line, /^restrict,command="\/usr\/bin\/rrsync -wo -no-del '\/srv\/media'" ssh-ed25519 \S+ hyperprox-xfer:home:abc$/)
   assert.throws(() => authorizedLine('/usr/bin/rrsync', '/srv/a"b', kp.public, 't'))
 })
 

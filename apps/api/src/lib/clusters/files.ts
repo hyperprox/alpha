@@ -138,8 +138,10 @@ export function authorizedLine(rrsync: string, root: string, publicKey: string, 
   const pk = publicKey.trim().split(/\s+/).slice(0, 2).join(' ')
   if (!/^ssh-ed25519 [A-Za-z0-9+/=]+$/.test(pk)) throw new Error('Not an ed25519 public key.')
   if (!/^\/[A-Za-z0-9/._-]+$/.test(rrsync)) throw new Error('rrsync path looks wrong.')
-  if (/["\\\n]/.test(root)) throw new ClusterRefusal('That folder name has characters an SSH key restriction cannot hold.')
-  return `restrict,command="${rrsync} -wo -no-del ${root}" ${pk} ${MARK}:${tag}`
+  // sshd runs a forced command through the user's shell, so the folder is single-quoted (a space stays one
+  // argument) and anything that could end the quote or be expanded is refused outright.
+  if (/['"\\`$\n\r]/.test(root)) throw new ClusterRefusal('That folder name contains a quote, backslash, backtick, $ or line break, which a sending key cannot carry safely. Rename the folder or pick another.')
+  return `restrict,command="${rrsync} -wo -no-del '${root}'" ${pk} ${MARK}:${tag}`
 }
 
 /**

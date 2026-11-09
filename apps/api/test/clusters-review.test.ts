@@ -265,3 +265,25 @@ test('6: a normal remove takes away a package HyperProx added, and leaves a runn
   assert.match(resultOf(running.run(monRemove())), /back to how it was/)
   assert.deepEqual(running.state(), { installed: true, enabled: true, active: true })
 })
+
+// ── 7: the forced command keeps a folder with spaces as one argument, and nothing in it runs ────
+
+import { authorizedLine } from '../src/lib/clusters/files'
+import { utils as sshUtils } from 'ssh2'
+
+test('7: a root with spaces reaches rrsync as one argument; quotes, $ and backticks are refused', () => {
+  const kp = sshUtils.generateKeyPairSync('ed25519', { comment: 'x' })
+  const dir = mkdtempSync(join(tmpdir(), 'hpx-rr-'))
+  const rr = join(dir, 'rrsync')
+  wf(rr, '#!/bin/bash\nfor a in "$@"; do printf "[%s]\\n" "$a"; done\n'); chmodSync(rr, 0o755)
+  const line = authorizedLine(rr, '/mnt/media/TV Shows', kp.public, 'home:abc')
+  // What sshd does with a forced command: hand it to the user's shell as one string.
+  const command = /command="([^"]*)"/.exec(line)![1]
+  assert.equal(execFileSync('bash', ['-c', command], { encoding: 'utf8' }), '[-wo]\n[-no-del]\n[/mnt/media/TV Shows]\n')
+  for (const bad of ["/mnt/a'b", '/mnt/$(id)', '/mnt/`id`', '/mnt/a"b', '/mnt/a\\b', '/mnt/a\nb'])
+    assert.throws(() => authorizedLine(rr, bad, kp.public, 't'), /cannot carry safely/, bad)
+  // A ; inside the quotes is only a character.
+  const semi = /command="([^"]*)"/.exec(authorizedLine(rr, '/mnt/a;touch x', kp.public, 't'))![1]
+  assert.equal(execFileSync('bash', ['-c', semi], { encoding: 'utf8', cwd: dir }), '[-wo]\n[-no-del]\n[/mnt/a;touch x]\n')
+  assert.ok(!ex(join(dir, 'x')))
+})
