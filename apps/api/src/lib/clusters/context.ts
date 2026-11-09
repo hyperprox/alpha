@@ -61,6 +61,10 @@ const REMOTE_OK: Array<[string, RegExp]> = [
   // The guest config editor keeps one service (previews, caches, history) per cluster: routes/guest-config.ts.
   ['GET',    new RegExp(`^/api/infra/guest-config/(overview|nodes/${N}/devices|guests/${N}/${T}/\\d+(/(gpu|history))?)$`)],
   ['POST',   new RegExp(`^/api/infra/guest-config/(preview|apply|paths/check|guests/${N}/${T}/\\d+/reveal)$`)],
+  // The assistant (routes/ai.ts): questions read each cluster through runInCluster, actions are prepared in the
+  // target cluster's context and applied only when the request is for the plan's own cluster. Deploying a
+  // service (/wizard/execute) and the provider settings stay home-only.
+  ['POST',   /^\/api\/ai\/(wizard\/plan|actions\/apply)$/],
 ]
 
 export function remoteRouteAllowed(method: string, path: string): boolean {

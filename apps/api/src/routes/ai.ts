@@ -15,12 +15,27 @@ import { executeDeployJob, getJob, type DeployRun, type JobState } from '../lib/
 import { gatherTemplateFacts } from '../lib/ai/facts'
 import { PreparedStore }      from '../lib/ai/prepared'
 import { currentContext, type RequestContext } from '../lib/auth'
+
 import { startLoop, type Extraction, type IntentResult, type LoopDeps } from '../lib/ai/loop'
 import { matchIntent, NO_TASK_ANSWER } from '../lib/ai/intent'
 import { answerQuestion, type AskSource } from '../lib/ai/ask'
 import { coreSources, pluginSources, type CertLite } from '../lib/ai/ask-sources'
 import { PLUGINS }            from '../plugins'
-import { ProxmoxClient }      from '../lib/proxmox-client'
+import { pveFromEnv }         from '../lib/pve-env'
+import { listClusters, clusterRow, HOME_ID } from '../lib/clusters/registry'
+import { runInCluster, currentClusterId } from '../lib/clusters/context'
+import { readPanel, livePromQuery } from '../lib/clusters/overview'
+import { jobStore, previewCopy, startCopy } from '../lib/clusters/files'
+import { scanCluster }        from '../lib/clusters/scan'
+import { previewMonitoring, applyMonitoring } from '../lib/clusters/monitoring'
+import { power, snapshot, backupNow, backupStorages, destroy } from '../lib/clusters/guest-actions'
+import { isReconfirmed }      from '../lib/auth'
+import { auditCredentialUse } from '../lib/audit'
+import type { Role }          from '../lib/roles'
+import { isQuestionPrompt }   from '../lib/ai/intent'
+import { resolveTargets, type ClusterRef } from '../lib/ai/clusters'
+import { perClusterSources, homeOnlySource, answerAcross, type ClusterSourceDeps } from '../lib/ai/cluster-sources'
+import { parseAction, prepareAction, applyAction, type ActionPlan, type PrepareDeps, type ApplyDeps } from '../lib/ai/actions'
 import type { ModelCall }     from '../lib/ai/extract'
 import { runPluginSummary }   from '../lib/plugin-host'
 import { isUnlocked }         from '../lib/vault/state'
@@ -69,6 +84,20 @@ export interface AiRouteDeps {
   sources(facts: TemplateFacts, prisma?: unknown): AskSource[]
   /** The model call for a question. */
   askCall(provider?: ProviderId, model?: string): ModelCall
+  /** Every cluster, home first (lib/clusters/registry.ts). */
+  clusters(): ClusterRef[]
+  /** The cluster this request is for: its X-HyperProx-Cluster header or ?cluster=, as lib/clusters/context.ts resolved it. */
+  currentCluster(): string
+  /** Any cluster's sources, each bound to that cluster. `homeFacts` feeds home's DNS and proxy sources. */
+  clusterSources(c: ClusterRef, homeFacts: TemplateFacts | null, prisma?: unknown): AskSource[]
+  /** Runs fn as a request for cluster `id`. */
+  inCluster<T>(id: string, fn: () => Promise<T>): Promise<T>
+  /** Who is asking, for the role and re-confirmation checks. */
+  session(): { sid: string; role: Role } | undefined
+  /** Actions the assistant prepared, waiting to be applied by id. */
+  actionPlans: PreparedStore<ActionPlan>
+  prepareDeps(): Omit<PrepareDeps, 'prepared'>
+  applyDeps(): Omit<ApplyDeps, 'prepared' | 'owner' | 'ctx' | 'requestCluster'>
 }
 
 /** Built on the first certificate question and kept: its inventory cache is per instance. */
@@ -92,24 +121,92 @@ function defaultDeps(): AiRouteDeps {
     saveModel: model => setCredential('ai', 'ollama', 'model', model, false),
     activeProvider,
     listProviders,
-    sources: (facts, prisma) => {
-      const client = new ProxmoxClient(
-        process.env.PROXMOX_HOST!, Number(process.env.PROXMOX_PORT ?? 8006),
-        `${process.env.PROXMOX_USER}!${process.env.PROXMOX_TOKEN_ID}`, process.env.PROXMOX_TOKEN_SECRET!)
-      const fetchStrict = <T,>(p: string) => client.fetchStrict<T>(p)
-      return [
-        ...coreSources({
-          fetchStrict, facts, unlocked: isUnlocked,
-          certs: async (): Promise<CertLite[]> => {
-            const svc = (certsService ??= productionCertsService(prisma as any, () => {}))
-            return (await svc.overview(false)).inventory.map(e => ({ names: e.names, daysLeft: e.daysLeft, notAfter: e.notAfter, verdict: e.verdict, source: e.source }))
-          },
-        }),
-        ...pluginSources({ plugins: PLUGINS, unlocked: isUnlocked, run: runPluginSummary }),
-      ]
-    },
+    sources: (facts, prisma) => productionClusterSources(homeRef(), facts, prisma),
     askCall: (provider, model) => r => callStructured(r, provider, undefined, model ? { model } : {}),
+    clusters: () => listClusters().map(c => ({ id: c.id, name: c.name, kind: c.kind })),
+    currentCluster: currentClusterId,
+    clusterSources: (c, facts, prisma) => productionClusterSources(c, facts, prisma),
+    inCluster: (id, fn) => runInCluster(id, fn),
+    session: () => { const c = currentContext(); return c ? { sid: c.sid, role: c.role } : undefined },
+    actionPlans: new PreparedStore<ActionPlan>(15 * 60_000),
+    prepareDeps: () => ({
+      inCluster: (id, fn) => runInCluster(id, fn),
+      pve: () => pveFromEnv(),
+      row: clusterRow,
+      unlocked: isUnlocked,
+      backupStorages: node => backupStorages(pveFromEnv(), node),
+      // Every collector the scan finds available, as the Edit server step offers them by default.
+      monitoringPreview: async (id, owner, kind) => {
+        const p = await previewMonitoring(id, owner, kind, { 'server-metrics': true, 'amd-gpu': true, 'intel-gpu': true })
+        return { planId: p.planId, steps: p.steps }
+      },
+      copyPreview: (owner, input) => previewCopy(owner, input),
+      nodes: async () => ((await pveFromEnv().fetchStrict<any[]>('/nodes')) ?? []).filter(n => n?.status === 'online').map(n => String(n.node)),
+      now: () => new Date(),
+    }),
+    applyDeps: () => ({
+      row: clusterRow,
+      unlocked: isUnlocked,
+      reconfirmed: sid => isReconfirmed(sid),
+      inCluster: (id, fn) => runInCluster(id, fn),
+      pve: () => pveFromEnv(),
+      ops: {
+        power: (pve, g, a) => power({ pve }, g, a),
+        snapshot: (pve, g, name) => snapshot({ pve }, g, name),
+        backupNow: (pve, g, storage) => backupNow({ pve }, g, storage),
+        destroy: (pve, g, name) => destroy({ pve }, g, name),
+      },
+      applyMonitoring: (planId, owner, clusterId) => applyMonitoring(planId, owner, undefined, clusterId),
+      startCopy: (previewId, owner) => startCopy(previewId, owner),
+      audit: auditCredentialUse,
+    }),
   }
+}
+
+const homeRef = (): ClusterRef => {
+  const h = listClusters().find(c => c.kind === 'home')
+  return { id: HOME_ID, name: h?.name ?? 'Home cluster', kind: 'home' }
+}
+
+/**
+ * The knowledge sources for one cluster, read through that cluster's own client. Home: the core sources
+ * (cluster, DNS, proxy, certificates, backups), the per-cluster ones (status, GPUs, monitoring, copies,
+ * hardware) and the plug-ins. A remote: the per-cluster ones, and one that says which features are home-only.
+ */
+function productionClusterSources(c: ClusterRef, facts: TemplateFacts | null, prisma?: unknown): AskSource[] {
+  const fetchStrict = <T,>(p: string) => runInCluster(c.id, () => pveFromEnv().fetchStrict<T>(p))
+  const d: ClusterSourceDeps = {
+    inCluster: (id, fn) => runInCluster(id, fn),
+    fetchStrict,
+    panel: ref => runInCluster(ref.id, async () => {
+      const info = listClusters().find(x => x.id === ref.id)
+      if (!info) throw new Error('That cluster was removed.')
+      return readPanel(info, { pve: () => pveFromEnv(), prom: livePromQuery, now: Date.now })
+    }),
+    copies: () => jobStore().list(),
+    scan: id => scanCluster(id, { useLogin: false }),
+    monitoring: id => clusterRow(id)?.monitoring ?? {},
+    nameOf: id => clusterRow(id)?.name ?? 'a removed cluster',
+  }
+  const extra = perClusterSources(c, d)
+  if (c.kind === 'remote') return [...extra, homeOnlySource(c)]
+  return [
+    ...coreSources({
+      fetchStrict, facts: facts ?? EMPTY_FACTS, unlocked: isUnlocked,
+      certs: async (): Promise<CertLite[]> => {
+        const svc = (certsService ??= productionCertsService(prisma as any, () => {}))
+        return (await svc.overview(false)).inventory.map(e => ({ names: e.names, daysLeft: e.daysLeft, notAfter: e.notAfter, verdict: e.verdict, source: e.source }))
+      },
+    }),
+    ...extra.filter(s => s.id !== 'cluster' && s.id !== 'backups'),
+    ...pluginSources({ plugins: PLUGINS, unlocked: isUnlocked, run: runPluginSummary }),
+  ]
+}
+
+/** Home's facts when they could not be gathered: every source they feed reads as unread, never as empty. */
+const EMPTY_FACTS: TemplateFacts = {
+  nodes: [], storages: [], templates: [], downloadable: [], guests: [], nextVmid: 0, zones: [], proxyHosts: [],
+  hasReverseProxy: false, records: {}, partial: ['zones', 'proxy'],
 }
 
 /**
@@ -294,6 +391,47 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
           ? req.body.model.trim() : undefined
         if (model) await deps.saveModel(model)
 
+        // ── Which cluster, and is it an action? ─────────────────────────────────
+        // The open cluster is the request's (header or ?cluster=); the words can name another one or all of them.
+        const clusters = deps.clusters()
+        const currentId = deps.currentCluster()
+        const current = clusters.find(c => c.id === currentId)
+        if (!current) return reply.status(404).send({ ok: false, code: 'unknown_cluster', error: 'No such cluster. It may have been removed.' })
+        const owner = deps.whoami(req)
+        const said = (message: string, extra: Record<string, unknown> = {}) =>
+          reply.send({ ok: true, conversational: true, provider: chosen, message, cluster: current, ...extra })
+
+        // An action on a guest, monitoring or a copy: read by code, prepared and checked by the server, applied
+        // only through /actions/apply. Never through the model, never on the browser's word.
+        const action = parseAction(prompt)
+        if (action) {
+          if (!owner) return reply.status(401).send({ ok: false, error: 'Sign in to do that.' })
+          const r = await prepareAction(prompt, action, { owner, role: deps.session()?.role, current, clusters },
+            { ...deps.prepareDeps(), prepared: deps.actionPlans })
+          if (r.kind === 'card') return reply.send({ ok: true, conversational: false, provider: chosen, action: r.card, cluster: current })
+          return said(r.message, r.choices ? { choices: r.choices } : {})
+        }
+
+        const targets = resolveTargets(prompt, clusters, current)
+        if (targets.kind === 'ask') return said(targets.message, { choices: targets.choices })
+        const onlyHome = current.kind === 'home' && targets.clusters.length === 1 && targets.clusters[0].kind === 'home'
+        if (!onlyHome) {
+          // Deploying a service (proxy, DNS, certificate) is the home cluster's, and only from the home cluster's
+          // assistant: its facts and its run are home's.
+          if (!isQuestionPrompt(prompt) && /\b(deploy|install|set\s*up|spin\s*up|stand\s*up|host|launch|provision)\b/i.test(prompt)) {
+            return said(`Deploying a service is only available on the home cluster for now, from the assistant with Home cluster selected. Nothing was planned.`, { clusters: targets.clusters })
+          }
+          // Home's DNS and proxy sources read home's facts, gathered in home's context whatever this request's is.
+          const homeFacts = targets.clusters.some(c => c.kind === 'home')
+            ? await deps.inCluster(HOME_ID, () => deps.facts()).catch(() => null) : null
+          const message = await answerAcross(prompt, targets.clusters, {
+            sourcesFor: c => deps.clusterSources(c, homeFacts, (fastify as any).prisma),
+            call: deps.askCall(chosen, model), fallback: NO_TASK_ANSWER, clusters,
+            services: wizardRecipes().flatMap(r => [r.id, r.name.toLowerCase()]),
+          })
+          return said(message, { clusters: targets.clusters })
+        }
+
         let facts: TemplateFacts, settings: TemplateSettings
         try {
           [facts, settings] = await Promise.all([deps.facts(), deps.settings()])
@@ -342,7 +480,6 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
 
         // Only a ready, fully checked run is kept, and only for the user who asked. Execute takes this id;
         // nothing the browser shows or sends is run.
-        const owner  = deps.whoami(req)
         const planId = !blocked && owner && run ? deps.prepared.put(owner, structuredClone({ ...run, owner })) : undefined
 
         const name = wizardRecipes().find(r => r.id === fields.service?.value)?.name ?? String(fields.service?.value ?? '')
@@ -431,6 +568,21 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
         message: `Executing ${run.steps.length} steps. Track progress via WebSocket.`,
         steps:   run.steps.length,
       })
+    })
+
+    // POST /api/ai/actions/apply — apply what /wizard/plan prepared as an action, by its id
+    // The request must be for the plan's cluster (the confirm card sends its X-HyperProx-Cluster header);
+    // lib/ai/actions.ts says what else is checked, and in which order.
+    fastify.post<{ Body: Record<string, unknown> }>('/actions/apply', async (req, reply) => {
+      const body = (req.body ?? {}) as Record<string, unknown>
+      for (const k of ['plan', 'action', 'guest', 'cluster', 'clusterId', 'node', 'vmid', 'storage'])
+        if (body[k] !== undefined) return reply.status(400).send({ ok: false, error: 'Apply takes a planId (and, for a delete, the typed name). Anything else sent by the browser is never used.' })
+      const owner = deps.whoami(req)
+      if (!owner) return reply.status(401).send({ ok: false, error: 'Sign in to do that.' })
+      const r = await applyAction(body.planId, { confirmName: body.confirmName }, {
+        ...deps.applyDeps(), prepared: deps.actionPlans, owner, ctx: deps.session(), requestCluster: deps.currentCluster(),
+      })
+      return reply.status(r.status).send(r.body)
     })
 
     // GET /api/ai/wizard/jobs/:jobId — get execution status (REST fallback for WS)

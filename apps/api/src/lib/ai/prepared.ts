@@ -56,6 +56,17 @@ export class PreparedStore<T> {
     return entry
   }
 
+  /**
+   * The entry without taking it, for checks that a person can fix and retry (a re-confirmation, a typed name).
+   * Null on the same terms as take(); a wrong owner sees nothing.
+   */
+  peek(id: string, owner: string): Prepared<T> | null {
+    this.sweep()
+    if (typeof id !== 'string' || !owner) return null
+    const entry = this.entries.get(id)
+    return entry && entry.owner === owner ? entry : null
+  }
+
   private expired(entry: Prepared<T>): boolean {
     return this.now() - entry.createdAt > this.ttlMs
   }

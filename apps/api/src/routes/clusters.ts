@@ -351,7 +351,7 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Params: { id: string }; Body: { planId?: string } }>('/:id/monitoring/apply', async (req, reply) => {
     const row = clusterOr404(req.params.id, reply); if (!row) return
     try {
-      const r = await applyMonitoring(String(req.body?.planId ?? ''), who())
+      const r = await applyMonitoring(String(req.body?.planId ?? ''), who(), undefined, row.id)
       await auditCredentialUse('cluster.monitoring.apply', `cluster:${row.id}`, { by: who(), ok: r.ok, nodes: r.results.map(x => x.node) })
       return { success: true, data: r }
     } catch (e) { return fail(reply, e) }

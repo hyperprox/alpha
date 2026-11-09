@@ -5,7 +5,8 @@
 //  `partial` rather than read as empty, so a check never passes on missing data.
 // =============================================================================
 
-import { ProxmoxClient } from '../proxmox-client'
+import type { ProxmoxClient } from '../proxmox-client'
+import { livePve } from '../pve-env'
 import { NPMClient } from '../npm-client'
 import { GoDaddyClient } from '../godaddy-client'
 import { getProviderCredentials } from '../credentials'
@@ -13,13 +14,10 @@ import { nodeCredential } from '../node-exec'
 import { bridgeInfo, configAddresses, configGpuKind, pciGpus, type BridgeFact } from '../wizard-placement'
 import { distroOf, type Distro } from '../install-script'
 
+// The client of the cluster this request is for (home unless a remote cluster's context is set), resolved at
+// each call: lib/pve-env.ts. A call that cannot build one (locked, not configured) rejects, and is a failed source.
 function pve(): ProxmoxClient {
-  return new ProxmoxClient(
-    process.env.PROXMOX_HOST!,
-    Number(process.env.PROXMOX_PORT ?? 8006),
-    `${process.env.PROXMOX_USER}!${process.env.PROXMOX_TOKEN_ID}`,
-    process.env.PROXMOX_TOKEN_SECRET!,
-  )
+  return livePve()
 }
 
 /**

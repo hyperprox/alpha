@@ -518,9 +518,11 @@ export async function previewMonitoring(clusterId: string, owner: string, kind: 
   return { planId: plan.id, kind, steps: steps.map(s => s.words), nodes: scan.nodes, expiresInMinutes: PLAN_MS / 60_000 }
 }
 
-export async function applyMonitoring(planId: string, owner: string, deps: MonitoringDeps = productionMonitoringDeps()) {
+export async function applyMonitoring(planId: string, owner: string, deps: MonitoringDeps = productionMonitoringDeps(), clusterId?: string) {
   const plan = plans.get(planId)
   if (!plan || plan.owner !== owner) throw new MonitoringRefusal('No such preview. Preview again.')
+  // A preview made for one cluster is never applied through another cluster's route (or the assistant's plan for it).
+  if (clusterId !== undefined && plan.clusterId !== clusterId) throw new MonitoringRefusal('That preview was made for a different server. Preview again on this one.')
   if (plan.used) throw new MonitoringRefusal('That preview was already applied. Preview again.')
   if (Date.now() - plan.createdAt > PLAN_MS) { plans.delete(planId); throw new MonitoringRefusal('That preview is older than ten minutes. Preview again.') }
   plan.used = true
