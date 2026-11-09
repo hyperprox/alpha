@@ -128,9 +128,10 @@ export function buildGuestConfigRoutes(deps: () => GuestConfigRouteDeps): Fastif
         if (req.query.refresh === '1') {
           if (!admin) return reply.status(403).send({ success: false, error: 'Refreshing a node’s devices needs the admin role.' })
           if (!(await d.service.knownNode(req.params.node))) return reply.status(404).send({ success: false, error: 'No such node.' })
-          const last = lastRefresh.get(req.params.node) ?? 0
+          const rkey = `${currentRemote()?.id ?? 'home'}/${req.params.node}`
+          const last = lastRefresh.get(rkey) ?? 0
           if (Date.now() - last < REFRESH_MS) return reply.status(429).send({ success: false, error: 'Refreshed a moment ago; try again in a few seconds.' })
-          lastRefresh.set(req.params.node, Date.now()); refresh = true
+          lastRefresh.set(rkey, Date.now()); refresh = true
         }
         // A viewer is answered from the cache: a viewer's request never logs in to a node.
         const inv = await d.service.inventory(req.params.node, refresh, { cachedOnly: !admin })

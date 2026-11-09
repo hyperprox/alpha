@@ -181,3 +181,22 @@ test('3: Plex address only through the re-confirmed route; a new host drops the 
   assert.doesNotThrow(() => checkPlexUrl(`http://${[100, 64, 1, 2].join('.')}:32400`))
   assert.throws(() => checkPlexUrl('http://plex.example:32400'))
 })
+
+// ── 5: per-cluster caches ───────────────────────────────────────────────────
+
+test('5: the CEPH monitor answer is kept per cluster', async () => {
+  const { resolveCephMonNode, invalidateCephMonNode } = await import('../src/lib/ceph')
+  await addRemote()
+  invalidateCephMonNode(true)
+  const fake = (node: string) => ({
+    getNodes: async () => [{ node, status: 'online' }],
+    getCephMons: async () => [{ name: node, host: node, rank: 0, quorum: 1, state: 'running' }],
+  }) as any
+  delete process.env.CEPH_MON_NODE
+  assert.equal(await resolveCephMonNode(fake('home-node')), 'home-node')
+  assert.equal(await runInCluster(REMOTE, () => resolveCephMonNode(fake('remote-node'))), 'remote-node', 'not the home answer from the cache')
+  assert.equal(await resolveCephMonNode(fake('ignored')), 'home-node', 'home kept its own')
+  process.env.CEPH_MON_NODE = 'home-override'
+  assert.equal(await runInCluster(REMOTE, () => resolveCephMonNode(fake('remote-node'))), 'remote-node', 'CEPH_MON_NODE is a home node name')
+  delete process.env.CEPH_MON_NODE
+})

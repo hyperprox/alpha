@@ -15,6 +15,7 @@
 // =============================================================================
 
 import { ProxmoxClient, CephMon } from './proxmox-client'
+import { currentClusterId, isRemoteContext } from './clusters/context'
 
 export class CephUnavailableError extends Error {
   constructor(message: string) {
@@ -30,17 +31,28 @@ export class CephUnavailableError extends Error {
 const OK_TTL   = 300_000   // 5 minutes
 const FAIL_TTL = 60_000    // 1 minute
 
-let cached:   { node: string; ts: number }    | null = null
-let failed:   { message: string; ts: number } | null = null
-let inflight: Promise<string>                 | null = null
+// One answer per cluster (lib/clusters/context.ts): a remote's monitor must never be used for home, or the
+// other way round, even when their nodes share a name.
+interface MonState { cached: { node: string; ts: number } | null; failed: { message: string; ts: number } | null; inflight: Promise<string> | null }
+const states = new Map<string, MonState>()
+function st(): MonState {
+  const id = currentClusterId()
+  let s = states.get(id)
+  if (!s) { s = { cached: null, failed: null, inflight: null }; states.set(id, s) }
+  return s
+}
 
+/** CEPH_MON_NODE names a home node, so it applies to the home cluster only. */
 function envOverride(): string | null {
+  if (isRemoteContext()) return null
   const v = (process.env.CEPH_MON_NODE ?? '').trim()
   return v.length > 0 ? v : null
 }
 
-export function invalidateCephMonNode(): void {
-  cached = null; failed = null; inflight = null
+/** Forget this cluster's monitor (or every cluster's, with `all`). */
+export function invalidateCephMonNode(all = false): void {
+  if (all) { states.clear(); return }
+  states.delete(currentClusterId())
 }
 
 async function detect(pve: ProxmoxClient, avoid?: string): Promise<string> {
@@ -111,29 +123,30 @@ export async function resolveCephMonNode(pve: ProxmoxClient): Promise<string> {
   const override = envOverride()
   if (override) return override
 
+  const s = st()
   const now = Date.now()
-  if (cached && now - cached.ts < OK_TTL)   return cached.node
-  if (failed && now - failed.ts < FAIL_TTL) throw new CephUnavailableError(failed.message)
+  if (s.cached && now - s.cached.ts < OK_TTL)   return s.cached.node
+  if (s.failed && now - s.failed.ts < FAIL_TTL) throw new CephUnavailableError(s.failed.message)
 
   // /summary fires several CEPH calls inside one allSettled; collapse them so a
   // cold cache does not trigger N simultaneous detections.
-  if (inflight) return inflight
+  if (s.inflight) return s.inflight
 
-  inflight = detect(pve)
-    .then(node => { cached = { node, ts: Date.now() }; failed = null; inflight = null; return node })
+  s.inflight = detect(pve)
+    .then(node => { s.cached = { node, ts: Date.now() }; s.failed = null; s.inflight = null; return node })
     .catch((e: any) => {
-      failed = { message: e.message, ts: Date.now() }
-      cached = null; inflight = null
+      s.failed = { message: e.message, ts: Date.now() }
+      s.cached = null; s.inflight = null
       throw e instanceof CephUnavailableError ? e : new CephUnavailableError(e.message)
     })
 
-  return inflight
+  return s.inflight
 }
 
 async function redetect(pve: ProxmoxClient, avoid: string): Promise<string> {
   invalidateCephMonNode()
   const node = await detect(pve, avoid)
-  cached = { node, ts: Date.now() }
+  st().cached = { node, ts: Date.now() }
   return node
 }
 
