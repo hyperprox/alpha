@@ -387,7 +387,7 @@ if ! grep -q '^hyperprox_intel_gpu_info{.*status="ok"' "$PROM" 2>/dev/null; then
 fi
 ustate="$(hp_write_file "$UNIT" 0644 "[Unit]
 Description=HyperProx Intel GPU figures for node_exporter (intel_gpu_top, no port of its own)
-After=multi-user.target
+After=local-fs.target
 
 [Service]
 # Root: intel_gpu_top reads the GPU's perf counters. kernel.perf_event_paranoid is left as it is.
