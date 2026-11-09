@@ -16,7 +16,7 @@ import { randomBytes } from 'node:crypto'
 import { itemName, setCredentials, deleteProviderCredentials, getCredential, setCredential, deleteCredential, listCredentialKeys, VaultLockedError } from '../credentials'
 import { cachedSecret, isUnlocked } from '../vault/state'
 import { MemoryClusterStore, type ClusterRow, type ClusterStore } from './store'
-import { normaliseFingerprint, isServerAddress } from './tls-pin'
+import { normaliseFingerprint, isServerAddress, allowedApiPort } from './tls-pin'
 
 export const HOME_ID = 'home'
 export const TOKEN_CATEGORY = 'proxmox'
@@ -100,7 +100,7 @@ function cleanName(n: unknown): string {
 }
 function cleanPort(p: unknown): number {
   const n = p === undefined || p === '' || p === null ? 8006 : Number(p)
-  if (!Number.isInteger(n) || n < 1 || n > 65535) throw new ClusterRefusal('The port must be a number from 1 to 65535.')
+  if (!allowedApiPort(n)) throw new ClusterRefusal('The port must be 8006 (Proxmox\'s own), 443, 8443, or a number from 1024 to 65535.')
   return n
 }
 function cleanAddress(a: unknown): string {

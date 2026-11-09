@@ -89,25 +89,36 @@ export function isServerAddress(a: string): boolean {
 }
 
 /**
+ * Ports a Proxmox API may be on: its own 8006, the usual HTTPS ones, or any unprivileged port. A low port that
+ * is some other service (22, 25, 53...) is refused, so these checks cannot be used to poke at one.
+ */
+export function allowedApiPort(port: number): boolean {
+  return Number.isInteger(port) && (port === 443 || port === 8006 || port === 8443 || (port >= 1024 && port <= 65535))
+}
+
+/** One plain message for any failure to connect: refused, timed out or reset all read the same. */
+export const GENERIC_CONNECT_ERROR = 'Could not read a certificate from that address and port. Check the address, the port, and that HyperProx can reach it.'
+
+/**
  * Connect, read the certificate, hang up. Nothing is sent: this is what the owner compares on step 4.
  */
 export function probeCertificate(host: string, port: number, timeoutMs = 10_000): Promise<PresentedCertificate> {
   return new Promise((resolve, reject) => {
-    if (!isServerAddress(host) || !Number.isInteger(port) || port < 1 || port > 65535) return reject(new Error('That is not a server address and port HyperProx can use.'))
+    if (!isServerAddress(host) || !allowedApiPort(port)) return reject(new Error('That is not a server address and port HyperProx can use (the Proxmox port is normally 8006).'))
     const socket = tls.connect({ host, port, servername: net.isIP(host) ? undefined : host, rejectUnauthorized: false })
-    const timer = setTimeout(() => { socket.destroy(); reject(new Error(`${host}:${port} did not answer within ${Math.round(timeoutMs / 1000)} seconds.`)) }, timeoutMs)
+    const timer = setTimeout(() => { socket.destroy(); reject(new Error(GENERIC_CONNECT_ERROR)) }, timeoutMs)
     socket.once('secureConnect', () => {
       clearTimeout(timer)
       const c = socket.getPeerCertificate()
       socket.end()
       const fingerprint = normaliseFingerprint(c?.fingerprint256 ?? '')
-      if (!fingerprint) return reject(new Error(`${host}:${port} did not present a certificate.`))
+      if (!fingerprint) return reject(new Error(GENERIC_CONNECT_ERROR))
       const name = (o: any) => (o ? Object.entries(o).map(([k, v]) => `${k}=${v}`).join(', ') : '')
       resolve({
         fingerprint, subject: name(c.subject), issuer: name(c.issuer), validFrom: c.valid_from, validTo: c.valid_to,
         altNames: String(c.subjectaltname ?? '').split(',').map(s => s.trim().replace(/^(DNS|IP Address):/, '')).filter(Boolean),
       })
     })
-    socket.once('error', e => { clearTimeout(timer); reject(new Error(`Could not reach ${host}:${port}: ${(e as Error).message}`)) })
+    socket.once('error', () => { clearTimeout(timer); reject(new Error(GENERIC_CONNECT_ERROR)) })
   })
 }

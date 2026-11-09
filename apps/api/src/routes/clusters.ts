@@ -19,7 +19,7 @@ import {
   hasRemoteToken, remoteTokenId, saveRemoteNodeLogin, removeRemoteNodeLogin, remoteNodeLogins, ClusterRefusal, validClusterId, validateToken,
 } from '../lib/clusters/registry'
 import { runInCluster } from '../lib/clusters/context'
-import { probeCertificate, normaliseFingerprint, PinnedAgent, isServerAddress, CertificateChangedError } from '../lib/clusters/tls-pin'
+import { probeCertificate, normaliseFingerprint, PinnedAgent, isServerAddress, CertificateChangedError, allowedApiPort } from '../lib/clusters/tls-pin'
 import { ProxmoxClient } from '../lib/proxmox-client'
 import { pveFromEnv, forgetRemoteClient, CertificateNotConfirmedError } from '../lib/pve-env'
 import { commandCenter } from '../lib/clusters/overview'
@@ -35,6 +35,21 @@ import { updateCluster as updateClusterRow } from '../lib/clusters/registry'
 import { scanMonitoring, previewMonitoring, applyMonitoring, MonitoringRefusal } from '../lib/clusters/monitoring'
 
 const who = () => currentContext()?.email ?? 'unknown'
+
+/** At most `max` calls a minute per signed-in session for the routes that open connections on request. */
+const hits = new Map<string, number[]>()
+export function overLimit(key: string, max = 10, windowMs = 60_000, now = Date.now()): boolean {
+  const list = (hits.get(key) ?? []).filter(t => now - t < windowMs)
+  const over = list.length >= max
+  if (!over) list.push(now)
+  hits.set(key, list)
+  return over
+}
+const limited = (route: string, reply: FastifyReply) => {
+  if (!overLimit(`${route}:${currentContext()?.sid ?? 'none'}`)) return false
+  reply.status(429).send({ success: false, error: 'That was asked too often. Wait a minute and try again.' })
+  return true
+}
 
 function fail(reply: FastifyReply, e: any) {
   const msg = e?.message ?? String(e)
@@ -111,7 +126,9 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
 
   // Step 4: what the server presents now, for the owner to compare. Nothing is sent to it.
   fastify.post<{ Body: { address?: string; port?: number } }>('/probe-certificate', async (req, reply) => {
+    if (limited('probe', reply)) return
     const address = String(req.body?.address ?? '').trim(), port = Number(req.body?.port ?? 8006)
+    if (!allowedApiPort(port)) return reply.status(422).send({ success: false, error: 'The port must be 8006 (Proxmox\'s own), 443, 8443, or a number from 1024 to 65535.' })
     if (!isServerAddress(address)) return reply.status(422).send({ success: false, error: 'The address must be a name or an IP address only, with no https:// and no port.' })
     try { return { success: true, data: await probeCertificate(address, port) } } catch (e) { return fail(reply, e) }
   })
@@ -146,6 +163,7 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.post<{ Params: { id: string } }>('/:id/test', async (req, reply) => {
     const row = clusterOr404(req.params.id, reply); if (!row) return
+    if (limited('test', reply)) return
     try {
       return await runInCluster(row.id, async () => {
         const pve = pveFromEnv()
@@ -155,7 +173,11 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
         const nodes = await pve.fetchStrict<any[]>('/nodes').catch(() => [])
         return { success: true, data: { latencyMs, version: version?.version ?? null, nodes: (nodes ?? []).map(n => ({ node: n.node, status: n.status })) } }
       })
-    } catch (e) { return fail(reply, e) }
+    } catch (e: any) {
+      // A changed certificate, a locked vault or a missing token say so; any network failure reads the same.
+      if (e instanceof CertificateChangedError || e instanceof CertificateNotConfirmedError || e?.name === 'VaultLockedError' || e instanceof ClusterRefusal) return fail(reply, e)
+      return reply.status(502).send({ success: false, error: 'Not answering at its address. Check that it is on and that HyperProx can reach it.' })
+    }
   })
 
   // Name and note only: nothing here changes where HyperProx connects or what it may write.

@@ -354,3 +354,18 @@ test('12: a viewer gets id, name and kind only', { skip: !haveOpenssl && 'openss
   const ov = await call('GET', '/api/clusters/overview', undefined, viewer)
   assert.ok(!ov.body.includes('127.0.0.1'), 'no address in a viewer\'s Command center')
 })
+
+// ── 13: probe and test cannot be used to scan ports or tell refused from timed out ────────────
+
+import { overLimit } from '../src/routes/clusters'
+import { GENERIC_CONNECT_ERROR, allowedApiPort } from '../src/lib/clusters/tls-pin'
+
+test('13: low ports other than the Proxmox ones are refused; failures read the same; calls are limited', { skip: !haveOpenssl && 'openssl not installed' }, async () => {
+  assert.ok(!allowedApiPort(22)); assert.ok(!allowedApiPort(25)); assert.ok(allowedApiPort(8006)); assert.ok(allowedApiPort(443)); assert.ok(allowedApiPort(18006))
+  assert.equal((await call('POST', '/api/clusters/probe-certificate', { address: '127.0.0.1', port: 22 })).statusCode, 422)
+  const closed = await call('POST', '/api/clusters/probe-certificate', { address: '127.0.0.1', port: 1 + pvePort === 65536 ? 2000 : 65000 })
+  assert.equal(closed.json().error, GENERIC_CONNECT_ERROR)
+  for (let i = 0; i < 10; i++) assert.equal(overLimit('t:x', 10, 60_000, 1000 + i), false)
+  assert.equal(overLimit('t:x', 10, 60_000, 2000), true)
+  assert.equal(overLimit('t:x', 10, 60_000, 70_000), false, 'and frees up after a minute')
+})
