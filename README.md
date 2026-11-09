@@ -546,6 +546,33 @@ Nginx Proxy Manager (using `LETSENCRYPT_EMAIL` from `.env`, or the NPM account e
 The assistant can install Nextcloud, Jellyfin, Gitea, Uptime Kuma and Homepage. Installing needs a
 node login (see Catalogue); without one, it does everything else and shows the commands to run.
 
+**More than one cluster.** The assistant answers about the cluster picked at the top of its page (the
+home cluster unless you pick a remote, or open the page with `?cluster=<id>`). A question can name
+another cluster ("how is Remote server doing?", "restart plex on the remote") or all of them ("what
+GPUs does each cluster have?"). Each cluster's facts are read through that cluster's own connection and
+labelled with its name, and an answer that is not about the home cluster alone starts with a line
+saying which clusters it is about. For each cluster it knows the nodes, guests, storage, HA and Ceph,
+the last backup run, the GPUs (whether load is measured, and whether the video line was checked with
+vainfo or estimated from the model name), monitoring, Send files copy jobs and the hardware scan. DNS,
+proxy hosts, certificates, plug-ins, updates and deploying a service belong to the home cluster; asked
+about them on a remote, it says so. A cluster name it does not know, or "the remote" when you have
+more than one, gets a question back listing your clusters.
+
+**Actions on any cluster.** The assistant can prepare: start, stop, shut down, restart, snapshot,
+back up now or delete a guest; install or remove monitoring on a remote; and start a Send files copy.
+It reads the request with code, not the model, and asks for anything missing (which guest, which
+backup storage, which node, which folder), offering the real choices. Preparing only reads (a copy
+runs its dry run, monitoring scans the nodes); nothing changes until you confirm the card, which names
+the cluster (amber, marked REMOTE, for a remote). The server then runs its own copy of the plan through
+the same code as the Command center's buttons and reads the result back. A plan works only on the
+cluster it was made for: confirmed for another cluster, after that server's connection or certificate
+changed, or after the guest's settings changed, it does nothing. Your role and the master-password
+check are exactly what the same action needs by hand (deleting a guest and installing or removing
+monitoring ask for the password; deleting also asks for the guest's name, typed), the audit log records
+who did what on which cluster, and while HyperProx is locked it does nothing. Editing a guest's
+settings is not offered by the assistant: use the guest's Settings tab. Using the assistant needs the
+admin role.
+
 ### Catalogue
 
 Installs a service you do not run yet into a new unprivileged container, checks that it answers, and
@@ -635,7 +662,7 @@ not protected, are in [docs/security.md](docs/security.md).
   minutes). So do, for remote clusters: adding or removing one, replacing its token, confirming its
   certificate, saving or removing a node login, deleting a guest, installing or removing monitoring,
   changing a server's address, node addresses or copy folders, setting up a sending key, and saving
-  a Plex address or token.
+  a Plex address or token. The AI assistant asks for it in exactly the same cases.
 - **Remote clusters.** Each remote's API token, node logins, sending keys and Plex token live only in
   the vault, one item per cluster (`hyperprox:proxmox/<id>` and so on): never in `.env`, the database,
   logs, audit entries or API answers. Its API is reached only over a connection that accepts the one

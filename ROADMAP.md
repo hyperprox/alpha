@@ -182,11 +182,13 @@ Built (Command center):
 - Monitoring install and removal on a remote (node_exporter on the private link only, AMD GPU figures, Intel GPU figures through node_exporter's textfile folder)
 - Every GPU on every node in the Command center, home and remote, each with its own figures and a plain reason when it has none
 - Send files: copy between or within clusters, node to node, verified (first version)
+- AI assistant on every cluster: questions about one cluster or all of them, each fact labelled with its cluster; guest power, snapshot, back up now and delete, monitoring and copies prepared on any cluster, each plan bound to its cluster and applied with the same role and re-confirmation as by hand
 
 Not built yet:
 - High availability, GPU sharing and Updates on a remote cluster
 - Proxmox figures in Grafana for a remote (its own PVE exporter)
 - Sync and Move in Send files
+- From the AI assistant: editing a guest's settings, and deploying a service on a remote
 
 ### Cross-Cluster Live Migration
 - Move VMs between different Proxmox VE clusters with zero downtime
