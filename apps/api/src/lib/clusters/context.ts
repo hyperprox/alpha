@@ -56,8 +56,7 @@ const REMOTE_OK: Array<[string, RegExp]> = [
   ['GET',    new RegExp(`^/api/infra/vms/${N}/\\d+/${T}/(config|snapshots)$`)],
   ['POST',   new RegExp(`^/api/infra/vms/${N}/\\d+/${T}/snapshots/[A-Za-z][A-Za-z0-9_-]*/rollback$`)],
   ['DELETE', new RegExp(`^/api/infra/vms/${N}/\\d+/${T}/snapshots/[A-Za-z][A-Za-z0-9_-]*$`)],
-  ['GET',    /^\/api\/proxmox\/(ha|ha\/resources)$/],
-  ['PUT',    /^\/api\/infra\/ha\/(ct|vm):\d+$/],
+  // No HA routes: high availability is home-only for now, so on a remote they answer 409.
   ['GET',    new RegExp(`^/api/infra/(tasks|nodes/${N}/tasks)$`)],
   // The guest config editor keeps one service (previews, caches, history) per cluster: routes/guest-config.ts.
   ['GET',    new RegExp(`^/api/infra/guest-config/(overview|nodes/${N}/devices|guests/${N}/${T}/\\d+(/(gpu|history))?)$`)],

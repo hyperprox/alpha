@@ -106,3 +106,12 @@ test('1: the client encodes each value as one segment and refuses "." and ".."',
   ])
   await assert.rejects(c.vmAction('..', 100, 'lxc', 'stop'), /not a valid Proxmox path part/)
 })
+
+// ── 4: HA is home-only ──────────────────────────────────────────────────────
+
+test('4: HA reads and HA state changes are refused for a remote cluster', () => {
+  assert.ok(!remoteRouteAllowed('PUT', '/api/infra/ha/ct:100'))
+  assert.ok(!remoteRouteAllowed('GET', '/api/proxmox/ha'))
+  assert.ok(!remoteRouteAllowed('GET', '/api/proxmox/ha/resources'))
+  assert.ok(!remoteRouteAllowed('GET', '/api/ha/overview'))
+})
