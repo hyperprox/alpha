@@ -433,7 +433,7 @@ export default function AIPage() {
   const [provDraft,   setProvDraft]   = useState<Record<string, Record<string, string>>>({})
   const [provBusy,    setProvBusy]    = useState<string | null>(null)
   const [provResult,  setProvResult]  = useState<Record<string, string>>({})
-  const [messages,    setMessages]    = useState<Array<{ role: 'user' | 'assistant'; content: string; clusters?: ClusterRef[]; choices?: string[] }>>([])
+  const [messages,    setMessages]    = useState<Array<{ role: 'user' | 'assistant'; content: string; clusters?: ClusterRef[]; choices?: Array<{ label: string; prompt: string; cluster: string }> }>>([])
   // Which cluster the assistant answers about by default: ?cluster=<id>, else home. A question can still name another.
   const [clusterList, setClusterList] = useState<ClusterRef[]>([])
   const [clusterId,   setClusterId]   = useState('home')
@@ -581,7 +581,8 @@ export default function AIPage() {
     })
   }, [])
 
-  const handleWizardSubmit = async (asked?: string) => {
+  // `forCluster`: a choice the assistant offered carries its own cluster, sent for that request whatever the picker says.
+  const handleWizardSubmit = async (asked?: string, forCluster?: string) => {
     const text = (asked ?? prompt).trim()
     if (!text || planning) return
     const userMsg = text
@@ -596,7 +597,7 @@ export default function AIPage() {
     const res  = await fetch('/api/ai/wizard/plan', {
       method:  'POST',
       // The cluster picked above; home sends nothing, as before.
-      headers: { 'Content-Type': 'application/json', ...(clusterId !== 'home' ? { [CLUSTER_HEADER]: clusterId } : {}) },
+      headers: { 'Content-Type': 'application/json', ...((forCluster ?? clusterId) !== 'home' ? { [CLUSTER_HEADER]: forCluster ?? clusterId } : {}) },
       // The model override only means anything for Ollama, where the dropdown
       // lists what is installed. Cloud models are set once, in Settings.
       body:    JSON.stringify(activeProv === 'ollama'
@@ -784,8 +785,8 @@ export default function AIPage() {
                     {msg.choices?.length ? (
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
                         {msg.choices.map(ch => (
-                          <button key={ch} onClick={() => void handleWizardSubmit(ch)} disabled={planning}
-                            style={{ padding: '5px 10px', borderRadius: 6, fontSize: 13, cursor: 'pointer', background: 'var(--ground)', color: 'var(--text)', border: `1px solid ${BORDER}` }}>{ch}</button>
+                          <button key={`${ch.cluster}:${ch.prompt}`} onClick={() => void handleWizardSubmit(ch.prompt, ch.cluster)} disabled={planning}
+                            style={{ padding: '5px 10px', borderRadius: 6, fontSize: 13, cursor: 'pointer', background: 'var(--ground)', color: 'var(--text)', border: `1px solid ${BORDER}` }}>{ch.label}</button>
                         ))}
                       </div>
                     ) : null}
