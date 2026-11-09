@@ -34,9 +34,10 @@ export function scanNote(nodes: ScannedNode[], usedLogin: boolean): string | nul
   if (!gpus.length) return null
   const checked = gpus.filter(x => x.g.checkedWith === 'vainfo').length
   const est = gpus.length - checked
-  const head = !est ? `Video support: checked with vainfo on all ${gpus.length} GPUs.`
-    : !checked ? `Video support: estimated from the model name for all ${gpus.length} GPUs.`
-    : `Video support: checked with vainfo on ${checked} GPUs, estimated from the model name on ${est}.`
+  const pl = (k: number) => `${k} GPU${k === 1 ? '' : 's'}`
+  const head = !est ? `Video support: checked with vainfo on ${pl(gpus.length)}.`
+    : !checked ? `Video support: estimated from the model name for ${pl(gpus.length)}.`
+    : `Video support: checked with vainfo on ${pl(checked)}, estimated from the model name on ${est}.`
   const missing = [...new Set(gpus.filter(x => x.g.checkedWith === 'estimate' && x.n.vainfo === 'not-installed').map(x => x.n.node))]
   const fix = !est ? ''
     : !usedLogin ? ' To check it: press Full scan (it uses the saved node login and runs vainfo, read-only).'

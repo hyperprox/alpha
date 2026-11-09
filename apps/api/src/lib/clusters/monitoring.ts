@@ -364,7 +364,8 @@ grep -qi 0x8086 "$R"/sys/class/drm/card*/device/vendor 2>/dev/null || hp_result 
 hp_has python3 || hp_result skipped "needs python3, which this node does not have; nothing was installed"
 mkdir -p "$HPXD"
 [ -f "$IPRIOR" ] || printf 'tools=%s\\ntextdir=%s\\n' "$(yesno hp_installed intel-gpu-tools)" "$([ -d "$TEXTDIR" ] && echo yes || echo no)" > "$IPRIOR"
-fail() { intel_undo; rm -f "$IPRIOR"; rmdir "$HPXD" 2>/dev/null || true; hp_result failed "$1 (rolled back: nothing of this step is left\${LEFT:+; $LEFT})"; }
+# One line: the result line is the last line, so a reason that spans lines is joined up.
+fail() { intel_undo; rm -f "$IPRIOR"; rmdir "$HPXD" 2>/dev/null || true; hp_result failed "$(printf '%s' "$1" | tr '\n' ' ' | tr -s ' ') (rolled back: nothing of this step is left\${LEFT:+; $LEFT})"; }
 if ! hp_installed intel-gpu-tools; then why="$(hp_install_only intel-gpu-tools)" || fail "$why"; fi
 mkdir -p "$TEXTDIR"
 cstate="$(hp_write_file "$COLLECTOR" 0755 "$(cat <<'HPX_PY'
@@ -375,9 +376,10 @@ HPX_PY
 timeout 40 python3 "$COLLECTOR" --once --interval 2 --dir "$TEXTDIR" >/dev/null 2>&1
 if ! grep -q '^hyperprox_intel_gpu_info{.*status="ok"' "$PROM" 2>/dev/null; then
   why="$(sed -n 's/^hyperprox_intel_gpu_info{.*status="\\([a-z_]*\\)",reason="\\([^"]*\\)".*/\\1: \\2/p' "$PROM" 2>/dev/null | head -1)"
+  drv="$(sed -n 's/^hyperprox_intel_gpu_info{.*driver="\\([^"]*\\)".*/\\1/p' "$PROM" 2>/dev/null | head -1)"
   case "$why" in
     unsupported:*) intel_undo; rm -f "$IPRIOR"; rmdir "$HPXD" 2>/dev/null || true
-      hp_result skipped "not supported on this GPU: \${why#unsupported: } (driver \$(sed -n 's/.*driver="\\([^"]*\\)".*/\\1/p' "$PROM" 2>/dev/null | head -1)\${LEFT:+; $LEFT}); nothing was left installed";;
+      hp_result skipped "not supported on this GPU: \${why#unsupported: } (driver \${drv:-unknown}\${LEFT:+; $LEFT}); nothing was left installed";;
     no_permission:*) fail "\${why#no_permission: }";;
     "") fail "intel_gpu_top gave no sample";;
     *) fail "\${why#*: }";;
