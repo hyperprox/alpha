@@ -109,9 +109,11 @@ export async function destroy(d: ActionDeps, g: { node: string; type: GuestType;
   if (String(confirmName ?? '') !== name) throw new GuestActionRefusal(`Type the guest's name exactly (${name}) to delete it.`, 'confirm')
   const st = await statusOf(d.pve, g)
   if (st.status !== 'stopped') throw new GuestActionRefusal(`${name} is ${st.status}. Stop it first, then delete it.`, 'state')
-  const ha = await d.pve.fetchStrict<any[]>('/cluster/ha/resources').catch(() => [] as any[])
+  // Fail closed: a guest whose HA membership cannot be read is not deleted (HA would bring a managed one back).
+  const ha = await d.pve.fetchStrict<any[]>('/cluster/ha/resources').catch(() => null)
+  if (!Array.isArray(ha)) throw new GuestActionRefusal(`HyperProx could not read the HA list, so it did not delete ${name}. Try again in a moment.`, 'state')
   const sid = `${g.type === 'qemu' ? 'vm' : 'ct'}:${g.vmid}`
-  if ((ha ?? []).some(r => r?.sid === sid)) throw new GuestActionRefusal(`${name} is managed by HA. Take it out of HA first, so HA does not try to bring it back.`, 'state')
+  if (ha.some(r => r?.sid === sid)) throw new GuestActionRefusal(`${name} is managed by HA. Take it out of HA first, so HA does not try to bring it back.`, 'state')
   const upid = await d.pve.fetchStrict<string>(`${base(g)}?purge=1&destroy-unreferenced-disks=1`, 'DELETE')
   if (typeof upid === 'string' && upid.startsWith('UPID:')) await d.pve.waitForTask(g.node, upid, { timeoutMs: d.waitMs ?? 600_000, intervalMs: d.pollMs ?? 2000, sleep: d.sleep })
   const left = await d.pve.fetchStrict<any[]>('/cluster/resources?type=vm')
