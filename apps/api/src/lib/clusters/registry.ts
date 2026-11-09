@@ -98,6 +98,20 @@ function cleanName(n: unknown): string {
   if (!s || s.length > 60) throw new ClusterRefusal('Give it a name of 1 to 60 characters.')
   return s
 }
+// Words the assistant reads as something other than a cluster's name (lib/ai/clusters.ts RESERVED_NAMES).
+const RESERVED = ['home', 'remote', 'all', 'each', 'every', 'both']
+
+/**
+ * A new or changed name must not be one of those words, nor the name of another cluster (case ignored): the
+ * assistant finds clusters by name. A name saved before this rule stays as it is until it is changed.
+ */
+function checkNewName(name: string, selfId: string | null): void {
+  const low = name.toLowerCase()
+  if (RESERVED.includes(low)) throw new ClusterRefusal(`"${name}" cannot be a server's name: the assistant reads it as a word of its own. Pick another name.`)
+  const others = [homeRow(), ...rows.values()].filter(r => r.id !== selfId)
+  if (others.some(r => r.name.trim().toLowerCase() === low)) throw new ClusterRefusal(`Another server is already called ${name}. Pick a different name.`, 'conflict')
+}
+
 function cleanPort(p: unknown): number {
   const n = p === undefined || p === '' || p === null ? 8006 : Number(p)
   if (!allowedApiPort(n)) throw new ClusterRefusal('The port must be 8006 (Proxmox\'s own), 443, 8443, or a number from 1024 to 65535.')
@@ -148,6 +162,7 @@ export async function createRemote(n: NewRemote): Promise<ClusterInfo> {
   if (!fingerprint) throw new ClusterRefusal('That is not a SHA-256 certificate fingerprint.')
   validateToken(n.tokenId, n.tokenSecret)
   const name = cleanName(n.name), address = cleanAddress(n.address), port = cleanPort(n.port)
+  checkNewName(name, null)
   if ([...rows.values()].some(r => r.kind === 'remote' && r.address.toLowerCase() === address.toLowerCase() && r.port === port))
     throw new ClusterRefusal(`${address}:${port} is already added.`, 'conflict')
   let id = newId()
@@ -180,7 +195,10 @@ export async function updateCluster(id: string, patch: ClusterPatch): Promise<Cl
   const prev = clusterRow(id)
   if (!prev) throw new ClusterRefusal('No such cluster.', 'not-found')
   const next: ClusterRow = structuredClone(prev)
-  if (patch.name !== undefined) next.name = cleanName(patch.name)
+  if (patch.name !== undefined) {
+    next.name = cleanName(patch.name)
+    if (next.name !== prev.name) checkNewName(next.name, prev.id)
+  }
   if (patch.note !== undefined) next.note = String(patch.note ?? '').slice(0, 500)
   if (prev.kind === 'remote') {
     if (patch.address !== undefined) next.address = cleanAddress(patch.address)
