@@ -15,6 +15,20 @@ import { getProviderCredentials } from './credentials'
 import { ProxmoxClient } from './proxmox-client'
 import { prometheusBase } from './service-health'
 import { isUnlocked, onUnlock } from './vault/state'
+import { listClusters } from './clusters/registry'
+
+/** GPU vendors whose figures remote clusters send here (monitoring installed by HyperProx), for the dashboard rows. */
+export function remoteGpuVendors(): string[] {
+  return listClusters().some(c => c.kind === 'remote' && Object.values(c.monitoring ?? {}).some(m => m?.amdGpu)) ? ['amd'] : []
+}
+
+/** Redraw the cluster dashboard's GPU rows for home's vendors (from the last sync) plus the remotes'. */
+export function redrawGpuRows(write: (vendors: string[]) => void = v => { dashboard.writeClusterDashboard(process.env.HYPERPROX_DIR || '/opt/hyperprox', v) }): string[] | null {
+  if (!last) return null
+  const vendors = [...new Set([...last.gpuVendors, ...remoteGpuVendors()])]
+  try { write(vendors) } catch { /* the template is missing: an install without the dashboards */ }
+  return vendors
+}
 
 export const TARGET_FILES = ['nodes.json', 'pve.json', 'intel-gpu.json', 'nvidia.json', 'ceph.json'] as const
 
@@ -105,7 +119,8 @@ export async function syncTargets(deps?: TargetSyncDeps): Promise<SyncResult> {
   await d.reload()
   // The dashboard follows the same detection: a GPU row only for a vendor this cluster has.
   const gpuVendors = dashboard.vendorsOf(facts)
-  try { d.dashboard?.(gpuVendors) } catch { /* the template is missing: an install without the dashboards */ }
+  // Rows for a vendor a remote cluster reports too (its nodes appear on the same board under node@cluster).
+  try { d.dashboard?.([...new Set([...gpuVendors, ...remoteGpuVendors()])]) } catch { /* the template is missing: an install without the dashboards */ }
   last = { nodes: names, added, at: new Date().toISOString(), gpuVendors }
   return last
 }

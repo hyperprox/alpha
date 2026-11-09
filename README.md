@@ -298,6 +298,73 @@ power; Ceph capacity and OSDs; HA quorum, fencing and resources; GPU use and VRA
 throughput; and the state of connected services. If a plug-in reports bandwidth (MikroTik does), WAN
 and LAN dials show it, scaled to your plan speed when you set one in the plug-in's settings.
 
+### Command center: more than one cluster
+
+**Command center** shows every cluster HyperProx manages side by side: your home cluster in teal and
+each remote server or cluster in amber. Each panel has nodes online, quorum, guests running, CPU,
+memory and storage bars, a row per GPU (load, video memory, temperature and fan when monitoring
+reports them, plus a plain note on what the card is good for), the last backup, and quick links. One
+**Needs attention** list collects problems from every cluster, each tagged with where it came from.
+Once a remote is added, the Dashboard shows the same panels at the top; with none, nothing changes.
+
+A remote is never joined to your cluster. HyperProx talks to its Proxmox API at any address it can
+reach: a Tailscale name or IP, a WireGuard address, or anything else routable.
+
+**Add a server** (admin) takes five steps:
+
+1. A name and its address.
+2. Three `pveum` commands to paste into that server's Shell: they make a `hyperprox@pve` user with the
+   Administrator role and an API token for it.
+3. Paste the token. It goes straight into the vault when you press Connect.
+4. HyperProx reads the certificate the server presents, without sending it anything, and shows its
+   SHA-256 fingerprint. Compare it with the server's own page (the node, then System, then
+   Certificates) and confirm. From then on HyperProx accepts only that certificate; if it changes,
+   nothing is sent until you compare and confirm the new one.
+5. HyperProx connects, checks the token really has administrator rights, and scans the hardware
+   (read-only). Monitoring is offered on the server's **Edit** page.
+
+**Opening a remote** turns the page amber, with "You are managing" and its name on every part of it.
+There you can start, shut down, stop and restart guests, take snapshots, back up now, edit a guest's
+settings with the same preview-and-check editor as at home, and delete a guest (type its name; it must
+be stopped and not under HA). Every action is read back from Proxmox afterwards and the answer says
+what Proxmox reported. Storage and recent tasks are listed too. High availability, GPU sharing and
+Updates still work on the home cluster only, and are labelled so.
+
+**Edit server** holds its address (a new address must have its certificate confirmed again), the
+token (tested before it replaces the old one), node addresses and node logins, the folders file copies
+may write into, its Plex, and Remove (type its name; HyperProx forgets the server and its secrets and
+shows the two commands that delete the token on the server too).
+
+- **Node logins.** For the full hardware scan, monitoring and file copies, add a root login per node.
+  HyperProx shows the node's SSH host key; compare it with `ssh-keygen -lf` on the node and confirm.
+  Only a confirmed host key is used.
+- **Hardware scan.** With the token alone: GPUs from Proxmox's PCI list and exporters asked over the
+  network. With a node login: the full read-only probe, and `vainfo` (if it is installed there) to say
+  what the GPU really decodes and encodes. Without vainfo the answer is an estimate, and says so.
+- **Monitoring** (step 5). HyperProx scans first, asks yes or no questions, shows every step, and only
+  then installs. It installs `prometheus-node-exporter` from the server's own packages (nothing is
+  upgraded or removed), listening only on the address HyperProx reaches the node on, and only if that
+  address is on a Tailscale or WireGuard interface; the setting is written before the package is
+  installed, so it never listens on the home network. For an AMD GPU it switches on the GPU collector.
+  HyperProx's Prometheus then collects from it, and the result is checked from HyperProx's side. If
+  HyperProx cannot reach the server, the scan says so and why: this HyperProx machine must be on the
+  same tailnet (the VPN page can add Tailscale to it) or have a route. **Remove monitoring** puts
+  everything back. The remote's nodes appear in Grafana under their own names (`node@cluster`).
+  Proxmox figures in Grafana for a remote (its own PVE exporter) are not built yet; the Command center
+  reads them through the token.
+- **Send files.** Copy a file or folder from any cluster to a folder on any cluster, or within one.
+  The preview gives the file count, size, time at your speed limit, and how many files already exist
+  there (they are skipped). The copy then runs in the background: rsync goes straight from a node of
+  one cluster to a node of the other, never through HyperProx. It retries a dropped connection, resumes
+  half-sent files, and checks every copied file by size and checksum afterwards (copying it again on a
+  mismatch). It can ask the destination's Plex to scan when done. Copy never replaces or deletes
+  anything. Both ends must be inside that cluster's allowed folders, checked with links resolved.
+  Before the first copy to a folder, **Set up sending** makes a key for that one destination folder:
+  HyperProx keeps it in the vault, installs it on the destination restricted to rsync in that folder,
+  write-only and unable to delete, and puts it on the source node only while a copy runs. Sync and
+  Move are not built yet. Copying has not yet been tried against real servers: try a small folder
+  first.
+
 ### Infrastructure
 
 Every VM and container in one list: status, node, CPU, memory and disk, address, tags, HA state, and a
@@ -530,7 +597,16 @@ not protected, are in [docs/security.md](docs/security.md).
 - **Re-confirmation.** Revealing a secret, destroying a guest, creating or revoking an API token,
   changing roles, installing from the Catalogue (or removing a failed install), resetting Grafana's
   admin password, and changes on the Setup checklist ask for the master password again (valid five
-  minutes).
+  minutes). So do, for remote clusters: adding or removing one, replacing its token, confirming its
+  certificate, saving or removing a node login, deleting a guest, installing or removing monitoring,
+  setting up a sending key, and saving a Plex token.
+- **Remote clusters.** Each remote's API token, node logins, sending keys and Plex token live only in
+  the vault, one item per cluster (`hyperprox:proxmox/<id>` and so on): never in `.env`, the database,
+  logs, audit entries or API answers. Its API is reached only over a connection that accepts the one
+  certificate you confirmed, and the token is not sent until that check passes. Node logins use only
+  host keys you confirmed. The audit log records who did what on which cluster, never a value. Nothing
+  HyperProx runs on any cluster may touch corosync, `pve-cluster` or `/etc/pve`: scripts naming them
+  are refused before they are sent.
 - **API tokens** (`Authorization: Bearer hpx_...`) carry a role of viewer, operator or admin, stop
   working while HyperProx is locked, and can never read secrets, open the terminal or WebSockets, or
   manage tokens. Only a SHA-256 hash is stored.
@@ -635,7 +711,10 @@ The full roadmap is in [ROADMAP.md](ROADMAP.md), and designs for upcoming work a
 - **Vault phase 2**: temporary users, master password recovery, VPN and internet access modes, a
   tamper check and an audit timeline.
 - **Releases**: versioned builds and `hyperprox update`, `rollback` and `uninstall`.
-- **Later**: multi-cluster management, migration from other hypervisors, LDAP and SSO.
+- **More for remote clusters**: high availability, GPU sharing and Updates on a remote (the Command
+  center and guest management already work), Proxmox figures in Grafana for a remote, and Sync and Move
+  for Send files.
+- **Later**: migration from other hypervisors, LDAP and SSO.
 
 ## How it compares
 

@@ -17,11 +17,18 @@ import { MiniBar, StatusDot, TypeBadge, VpnBadge, GpuBadge } from './GuestList'
 import { gpath, type GuestRow, type GuestView, type HistoryItem } from './types'
 import { HaPanel } from '@/components/ha'
 
-export function GuestDrawer({ row, nodes, canOperate, canAdmin, onClose, onRefresh }: {
+export function GuestDrawer({ row, nodes, canOperate, canAdmin, onClose, onRefresh, remote = false }: {
   row: GuestRow; nodes: Array<{ node: string; status: string }>; canOperate: boolean; canAdmin: boolean
   onClose: () => void; onRefresh: () => void
+  /**
+   * The guest is on a remote cluster (Command center). The console opens the Terminal, which knows home guests
+   * only, and HA and VPN are home features: those tabs are left out rather than pointing at a home guest with
+   * the same ID.
+   */
+  remote?: boolean
 }) {
-  const tabs = GUEST_TABS.filter(t => !t.when || t.when(row, { canOperate, canAdmin }))
+  const REMOTE_HIDDEN = new Set(['console', 'ha', 'vpn'])
+  const tabs = GUEST_TABS.filter(t => (!t.when || t.when(row, { canOperate, canAdmin })) && !(remote && REMOTE_HIDDEN.has(t.id)))
   const [tab, setTab] = useState(tabs[0].id)
   const [view, setView] = useState<GuestView | null>(null)
   const [viewErr, setViewErr] = useState<string | null>(null)

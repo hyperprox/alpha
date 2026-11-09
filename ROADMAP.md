@@ -173,10 +173,19 @@ Born from real operational experience: an offline CIFS/NFS mount silently caused
 Expanding from single-cluster homelab to multi-cluster, multi-hypervisor infrastructure management.
 
 ### Multi-Cluster Management
-- Unlimited clusters from one UI
-- Unified dashboard across all clusters
-- Cross-cluster resource visibility
-- Per-cluster credential management
+Built (Command center):
+- Any number of remote Proxmox servers or clusters beside the home one, over Tailscale, WireGuard or any reachable address
+- Command center: every cluster as a panel (nodes, quorum, guests, CPU, memory, storage, GPU rows, last backup) and one needs-attention list
+- Per-cluster credentials in the vault, certificate pinning for each remote's API, confirmed host keys for node logins
+- Guest power, snapshots, back up now, settings and delete on any cluster, each read back
+- Hardware scan per cluster, with vainfo when a node login allows
+- Monitoring install and removal on a remote (node_exporter on the private link only, AMD GPU figures)
+- Send files: copy between or within clusters, node to node, verified (first version)
+
+Not built yet:
+- High availability, GPU sharing and Updates on a remote cluster
+- Proxmox figures in Grafana for a remote (its own PVE exporter)
+- Sync and Move in Send files
 
 ### Cross-Cluster Live Migration
 - Move VMs between different Proxmox VE clusters with zero downtime
@@ -235,7 +244,7 @@ Expanding from single-cluster homelab to multi-cluster, multi-hypervisor infrast
 | Bundled monitoring | ✅ | ❌ | ❌ | ❌ |
 | Docker install | ✅ | ❌ | ❌ | ✅ |
 | curl \| bash install | ✅ | ✅ | ❌ | ✅ |
-| Multi-cluster | ✅ v2.0 | ✅ | ✅ | ❌ |
+| Multi-cluster | ✅ (Command center; HA and Updates home only) | ✅ | ✅ | ❌ |
 | Cross-cluster migration | ✅ v2.0 | ✅ | ❌ | ❌ |
 | ESXi migration | ✅ v2.0 | ✅ | ❌ | ❌ |
 | XCP-NG support | ✅ v2.0 | ✅ | ❌ | ❌ |

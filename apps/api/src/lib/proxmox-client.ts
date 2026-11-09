@@ -58,7 +58,7 @@ export class ProxmoxClient {
    */
   constructor(host: string, port: number, tokenId: string, tokenSecret: string, opts: { agent?: https.Agent } = {}) {
     // An IPv6 address needs brackets in a URL.
-    const h = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
+    const h = typeof host === 'string' && host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
     this.baseUrl    = `https://${h}:${port}/api2/json`
     this.authHeader = `PVEAPIToken=${tokenId}=${tokenSecret}`
     this.agent      = opts.agent

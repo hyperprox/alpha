@@ -28,7 +28,7 @@ import { clusterRow, setMonitoring } from './registry'
 import type { NodeMonitoring } from './store'
 import { runInCluster, currentRemote } from './context'
 import { remoteNodeLabel } from './overview'
-import { targetsDir } from '../targets'
+import { targetsDir, redrawGpuRows } from '../targets'
 import { prometheusBase } from '../service-health'
 import { auditCredentialUse } from '../audit'
 
@@ -110,6 +110,8 @@ export interface MonitoringDeps {
   reload(): Promise<void>
   up(clusterId: string): Promise<Record<string, number>>
   sleep(ms: number): Promise<void>
+  /** Redraw the Grafana board's GPU rows (an AMD row appears once a remote reports AMD figures). */
+  dashboard?(): void
 }
 
 const hostPort = (h: string, p: number) => (h.includes(':') ? `[${h}]:${p}` : `${h}:${p}`)
@@ -141,6 +143,7 @@ export function productionMonitoringDeps(): MonitoringDeps {
       } catch { return {} }
     },
     sleep: ms => new Promise(r => setTimeout(r, ms)),
+    dashboard: () => { redrawGpuRows() },
   }
 }
 
@@ -332,6 +335,7 @@ export async function applyMonitoring(planId: string, owner: string, deps: Monit
     deps.writeTargets(plan.clusterId, [...keep, ...targets])
     await deps.reload()
     await setMonitoring(plan.clusterId, monitoring)
+    try { deps.dashboard?.() } catch { /* the board is redrawn on the next sync anyway */ }
 
     // Read back from HyperProx's side: the exporter answers here, and Prometheus scrapes it.
     const checks: Array<{ node: string; ok: boolean; words: string }> = []

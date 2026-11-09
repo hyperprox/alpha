@@ -14,7 +14,7 @@ import { currentContext } from '../lib/auth'
 import { auditCredentialUse } from '../lib/audit'
 import {
   listClusters, clusterRow, createRemote, updateCluster, removeCluster, confirmFingerprint, replaceRemoteToken,
-  hasRemoteToken, remoteTokenId, saveRemoteNodeLogin, removeRemoteNodeLogin, remoteNodeLogins, ClusterRefusal, validClusterId,
+  hasRemoteToken, remoteTokenId, saveRemoteNodeLogin, removeRemoteNodeLogin, remoteNodeLogins, ClusterRefusal, validClusterId, validateToken,
 } from '../lib/clusters/registry'
 import { runInCluster } from '../lib/clusters/context'
 import { probeCertificate, normaliseFingerprint, PinnedAgent, isServerAddress, CertificateChangedError } from '../lib/clusters/tls-pin'
@@ -107,6 +107,7 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
       const fp = normaliseFingerprint(String(b.fingerprint ?? ''))
       if (!fp) throw new ClusterRefusal('Confirm the certificate fingerprint first (step 4).')
       if (!isServerAddress(address)) throw new ClusterRefusal('The address must be a name or an IP address only.')
+      validateToken(String(b.tokenId ?? ''), String(b.tokenSecret ?? ''))
       const now = await probeCertificate(address, port)
       if (now.fingerprint !== fp) return reply.status(409).send({ success: false, code: 'cert_changed', error: `The server now presents a different certificate (${now.fingerprint}) from the one you confirmed. Nothing was saved. Compare again.`, presented: now.fingerprint })
       const t = await tryToken(address, port, fp, String(b.tokenId ?? ''), String(b.tokenSecret ?? '')).catch((e: any) => {
@@ -170,6 +171,7 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
     if (row.kind !== 'remote') return reply.status(422).send({ success: false, error: 'The home cluster token is in Settings -> Proxmox.' })
     try {
       if (!row.certFingerprint) throw new CertificateNotConfirmedError(row.name)
+      validateToken(String(req.body?.tokenId ?? ''), String(req.body?.tokenSecret ?? ''))
       const t = await tryToken(row.address, row.port, row.certFingerprint, String(req.body?.tokenId ?? ''), String(req.body?.tokenSecret ?? '')).catch((e: any) => {
         if (/HTTP 401/.test(String(e?.message))) throw new ClusterRefusal('The server refused that token. Nothing was changed.')
         throw e

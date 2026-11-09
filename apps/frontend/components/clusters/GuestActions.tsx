@@ -163,7 +163,7 @@ export function GuestsTab({ clusterId, clusterName, kind }: { clusterId: string;
           {rows && shown.length === 0 && <p className="text-sm py-3" style={{ color: 'var(--text-dimmer)' }}>No guests match.</p>}
         </div>
       )}
-      {open && <GuestDrawer row={open} nodes={nodes} canOperate={canOperate} canAdmin={canAdmin} onClose={() => setOpen(null)} onRefresh={() => { void load() }} />}
+      {open && <GuestDrawer row={open} nodes={nodes} canOperate={canOperate} canAdmin={canAdmin} remote={kind === 'remote'} onClose={() => setOpen(null)} onRefresh={() => { void load() }} />}
     </div>
   )
 }
