@@ -9,7 +9,7 @@ import type { ClusterInfo } from '@/lib/clusters'
 import { Notice, BusyNote } from '@/components/vault/ui'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 
-interface NodeFacts { node: string; address: string | null; listen: string | null; iface: string | null; amd: boolean; packageInstalled: boolean; problem?: string }
+interface NodeFacts { node: string; address: string | null; listen: string | null; iface: string | null; amd: boolean; intel?: boolean; intelDriver?: string | null; python3?: boolean; intelOurs?: boolean; packageInstalled: boolean; problem?: string }
 interface Question { id: string; ask: string; what: string; available: boolean; default: boolean; why?: string }
 
 export function MonitoringSetup({ c, onChanged }: { c: ClusterInfo; onChanged: () => void }) {
@@ -60,7 +60,7 @@ export function MonitoringSetup({ c, onChanged }: { c: ClusterInfo; onChanged: (
         <>
           {scan.nodes.map(n => (
             <p key={n.node} className="text-sm" style={{ color: n.problem ? 'var(--warn-2)' : 'var(--text)' }}>
-              <b>{n.node}</b>: {n.problem ?? `reached on ${n.listen} (${n.iface}, a private link)${n.amd ? '; AMD GPU found' : ''}${n.packageInstalled ? '; node_exporter is already installed' : ''}.`}
+              <b>{n.node}</b>: {n.problem ?? `reached on ${n.listen} (${n.iface}, a private link)${n.amd ? '; AMD GPU found' : ''}${n.intel ? `; Intel GPU found${n.intelDriver ? ` (driver ${n.intelDriver})` : ''}${n.python3 === false ? ', but no python3 for its collector' : ''}${n.intelOurs ? ', its collector is installed' : ''}` : ''}${n.packageInstalled ? '; node_exporter is already installed' : ''}.`}
             </p>
           ))}
           <div className="flex flex-col gap-2">

@@ -15,18 +15,24 @@ export interface ClusterInfo {
   cert: { fingerprint: string | null; confirmedAt: string | null; confirmedBy: string | null }
   nodeAddresses: Record<string, string>
   allowedRoots: string[]
-  monitoring: Record<string, { nodeExporter?: { listen: string }; amdGpu?: unknown }>
+  monitoring: Record<string, { nodeExporter?: { listen: string }; amdGpu?: unknown; intelGpu?: { status: 'measured' | 'unsupported'; reason?: string } }>
   plexUrl: string | null
   token: { saved: boolean | null; id: string | null } | null
 }
 
-export interface GpuRow { node: string; name: string; vendor: string; load: number | null; vramUsed: number | null; vramTotal: number | null; tempC: number | null; fanPct: number | null; capability: string }
+export interface GpuRow {
+  node: string; name: string; shortName: string; vendor: string; kind: 'integrated' | 'dedicated'; pci: string | null
+  load: number | null; vramUsed: number | null; vramTotal: number | null; memory: 'dedicated' | 'shared'
+  tempC: number | null; fanPct: number | null; freqMHz: number | null; powerW: number | null
+  state: 'measured' | 'waiting' | 'stale' | 'unsupported' | 'not-monitored'; stateNote: string | null; setupHref: string | null
+  capability: string; capabilityShort: string; capabilitySource: 'vainfo' | 'estimate'
+}
 export interface Attention { clusterId: string; clusterName: string; kind: 'home' | 'remote'; severity: 'warn' | 'crit' | 'info'; title: string; detail: string }
 export interface ClusterPanel {
   id: string; name: string; kind: 'home' | 'remote'; reachable: boolean; error?: string; latencyMs: number | null
   nodes: { online: number; total: number }; quorum: 'ok' | 'lost' | 'standalone' | 'unknown'
   guests: { running: number; total: number }; cpuPct: number | null; memPct: number | null; storagePct: number | null
-  gpus: GpuRow[]; lastBackup: { at: number; ok: boolean; node: string } | null; attention: Attention[]; monitoring: boolean
+  gpus: GpuRow[]; gpuNote: string | null; lastBackup: { at: number; ok: boolean; node: string } | null; attention: Attention[]; monitoring: boolean
 }
 
 export function useClusters() {

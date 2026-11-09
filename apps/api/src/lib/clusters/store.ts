@@ -10,6 +10,8 @@ export type ClusterKind = 'home' | 'remote'
 export interface NodeMonitoring {
   nodeExporter?: { listen: string; installedByHyperProx: boolean; at: string }
   amdGpu?: { at: string }
+  /** The Intel GPU collector (textfile): figures measured, or intel_gpu_top does not support this GPU. */
+  intelGpu?: { at: string; status: 'measured' | 'unsupported'; reason?: string }
 }
 
 export interface ClusterRow {

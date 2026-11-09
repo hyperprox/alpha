@@ -19,7 +19,8 @@ import { listClusters } from './clusters/registry'
 
 /** GPU vendors whose figures remote clusters send here (monitoring installed by HyperProx), for the dashboard rows. */
 export function remoteGpuVendors(): string[] {
-  return listClusters().some(c => c.kind === 'remote' && Object.values(c.monitoring ?? {}).some(m => m?.amdGpu)) ? ['amd'] : []
+  const mons = listClusters().filter(c => c.kind === 'remote').flatMap(c => Object.values(c.monitoring ?? {}))
+  return [...(mons.some(m => m?.amdGpu) ? ['amd'] : []), ...(mons.some(m => m?.intelGpu?.status === 'measured') ? ['intel'] : [])]
 }
 
 /** Redraw the cluster dashboard's GPU rows for home's vendors (from the last sync) plus the remotes'. */

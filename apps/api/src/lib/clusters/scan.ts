@@ -11,7 +11,7 @@ import { detectCluster, productionHardwareDeps, gpuCapability, parseVainfo, VAIN
 import { runInCluster, currentClusterId } from './context'
 import { auditCredentialUse } from '../audit'
 
-export interface ScannedGpu { name: string; vendor: string; kind: string; capability: string; checkedWith: 'vainfo' | 'estimate'; decode: string[]; encode: string[] }
+export interface ScannedGpu { name: string; vendor: string; kind: string; capability: string; capabilityShort: string; checkedWith: 'vainfo' | 'estimate'; decode: string[]; encode: string[] }
 export interface ScannedNode {
   node: string
   address: string | null
@@ -25,7 +25,27 @@ export interface ScannedNode {
 
 const words = (v: string | null | undefined, unknown = 'unknown') => (v === null || v === undefined ? unknown : v)
 
-export async function scanCluster(clusterId: string, opts: { useLogin: boolean; deps?: HardwareDeps }): Promise<{ nodes: ScannedNode[]; summary: string }> {
+/**
+ * One short, honest line for the whole scan: is what each GPU decodes checked or estimated, and what would make
+ * it checked. Load figures are not part of a scan (they come from monitoring), and the line says where they are.
+ */
+export function scanNote(nodes: ScannedNode[], usedLogin: boolean): string | null {
+  const gpus = nodes.flatMap(n => n.gpus.map(g => ({ g, n })))
+  if (!gpus.length) return null
+  const checked = gpus.filter(x => x.g.checkedWith === 'vainfo').length
+  const est = gpus.length - checked
+  const head = !est ? `Video support: checked with vainfo on all ${gpus.length} GPUs.`
+    : !checked ? `Video support: estimated from the model name for all ${gpus.length} GPUs.`
+    : `Video support: checked with vainfo on ${checked} GPUs, estimated from the model name on ${est}.`
+  const missing = [...new Set(gpus.filter(x => x.g.checkedWith === 'estimate' && x.n.vainfo === 'not-installed').map(x => x.n.node))]
+  const fix = !est ? ''
+    : !usedLogin ? ' To check it: press Full scan (it uses the saved node login and runs vainfo, read-only).'
+    : missing.length ? ` To check the rest: install the vainfo package on ${missing.join(', ')} (HyperProx does not install it), then Full scan.`
+    : ' The rest could not be checked (no node login, or vainfo did not answer).'
+  return `${head}${fix} GPU load is measured by monitoring, not by a scan.`
+}
+
+export async function scanCluster(clusterId: string, opts: { useLogin: boolean; deps?: HardwareDeps }): Promise<{ nodes: ScannedNode[]; summary: string; note: string | null }> {
   return runInCluster(clusterId, async () => {
     const deps = opts.deps ?? productionHardwareDeps()
     const det = await detectCluster(deps, { useLogin: opts.useLogin })
@@ -54,7 +74,7 @@ export async function scanCluster(clusterId: string, opts: { useLogin: boolean; 
           const vendorRe = g.vendor === 'amd' ? /amd|radeon/i : g.vendor === 'intel' ? /intel|iHD|i965/i : /nvidia|nouveau/i
           const match = va.length === 1 ? va[0] : (va.find(v => vendorRe.test(v.driver ?? '')) ?? va[i] ?? null)
           const cap = gpuCapability(g, match)
-          return { name: g.name, vendor: g.vendor, kind: g.kind, capability: cap.summary, checkedWith: cap.source, decode: cap.decode, encode: cap.encode }
+          return { name: g.name, vendor: g.vendor, kind: g.kind, capability: cap.summary, capabilityShort: cap.short, checkedWith: cap.source, decode: cap.decode, encode: cap.encode }
         }),
         nodeExporter: words(n.nodeExporter, 'unknown'),
         amdMetrics: words(n.amdMetrics, 'unknown'),
@@ -63,6 +83,6 @@ export async function scanCluster(clusterId: string, opts: { useLogin: boolean; 
         ...((n as any).error ? { note: (n as any).error } : {}),
       })
     }
-    return { nodes: out, summary: det.summary }
+    return { nodes: out, summary: det.summary, note: scanNote(out, opts.useLogin) }
   })
 }

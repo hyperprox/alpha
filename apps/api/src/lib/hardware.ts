@@ -172,7 +172,22 @@ export function parseVainfo(text: string): { installed: boolean; devices: VaInfo
   return { installed: true, devices }
 }
 
-export interface GpuCapability { summary: string; source: 'vainfo' | 'estimate'; decode: string[]; encode: string[] }
+export interface GpuCapability {
+  summary: string
+  source: 'vainfo' | 'estimate'
+  decode: string[]
+  encode: string[]
+  /** One short line for a phone: "HEVC decode: likely yes (estimate)". The summary is the longer explanation. */
+  short: string
+}
+
+/** The one-line HEVC answer: checked or estimated, said so. */
+export function hevcLine(source: 'vainfo' | 'estimate', decode: string[]): string {
+  const has = decode.some(d => /^HEVC/.test(d))
+  if (source === 'vainfo') return `HEVC decode: ${has ? 'yes' : 'no'} (checked)`
+  if (!decode.length) return 'HEVC decode: unknown (estimate)'
+  return `HEVC decode: likely ${has ? 'yes' : 'no'} (estimate)`
+}
 
 /**
  * Plain words for what a GPU is good for. From vainfo when HyperProx could run it; otherwise an estimate from
@@ -183,10 +198,10 @@ export function gpuCapability(g: shared.Gpu, va?: VaInfo | null): GpuCapability 
   if (va && (va.decode.length || va.encode.length)) {
     const dec = va.decode.length ? `decodes ${va.decode.join(', ')}` : 'decodes nothing VA-API can see'
     const enc = va.encode.length ? `encodes ${va.encode.join(', ')}` : 'does not encode'
-    return { summary: `${brand}: ${dec}; ${enc} (checked with vainfo on that server).`, source: 'vainfo', decode: va.decode, encode: va.encode }
+    return { summary: `${brand}: ${dec}; ${enc} (checked with vainfo on that server).`, source: 'vainfo', decode: va.decode, encode: va.encode, short: hevcLine('vainfo', va.decode) }
   }
   const n = g.name
-  const est = (summary: string, decode: string[], encode: string[]): GpuCapability => ({ summary: `${summary} (an estimate from the model; a saved node login lets HyperProx check with vainfo).`, source: 'estimate', decode, encode })
+  const est = (summary: string, decode: string[], encode: string[]): GpuCapability => ({ summary: `${summary} (an estimate from the model; a saved node login lets HyperProx check with vainfo).`, source: 'estimate', decode, encode, short: hevcLine('estimate', decode) })
   if (g.vendor === 'amd') {
     if (/fury|fiji|nano\b/i.test(n)) return est('AMD, older generation: good for H.264, decodes HEVC, does not encode HEVC', ['H.264', 'HEVC'], ['H.264'])
     if (/\b(R[579] ?\d{3}X?|HD ?[5-8]\d{3})\b|tonga|hawaii|tahiti|pitcairn|bonaire|oland|cape verde|curacao|antigua|grenada/i.test(n))
@@ -199,5 +214,14 @@ export function gpuCapability(g: shared.Gpu, va?: VaInfo | null): GpuCapability 
     if (/\b(GTX ?(9[5-9]0|10\d0|16\d0)|RTX|Quadro P|Tesla P|A\d{3,4})\b/i.test(n)) return est('NVIDIA: H.264 and HEVC, decode and encode', ['H.264', 'HEVC'], ['H.264', 'HEVC'])
     return est('NVIDIA: what it decodes is unknown from the name alone', [], [])
   }
+  // Intel, by generation from the marketing name (Quick Sync). Older first where the patterns overlap.
+  if (/\bArc\b|DG[12]\b|Alchemist|Battlemage|Iris Xe|\bXe\b|UHD Graphics 7\d\d\b|Meteor Lake|Lunar Lake|Arrow Lake/i.test(n))
+    return est('Intel, newer generation (Quick Sync): H.264, HEVC (10-bit too), VP9 and AV1 decode; H.264 and HEVC encode', ['H.264', 'HEVC', 'HEVC 10-bit', 'VP9', 'AV1'], ['H.264', 'HEVC'])
+  if (/\bHD Graphics (P?4\d{3}|5\d{3}|6\d{3})\b|Iris (Pro )?Graphics [56]\d{3}\b|Haswell|Broadwell|Ivy ?Bridge|Sandy ?Bridge|\bHD Graphics( 2500| 4000| 3000| 2000)?$/i.test(n))
+    return est('Intel, older generation (Quick Sync): good for H.264, likely not HEVC', ['H.264', 'MPEG-2'], ['H.264'])
+  if (/\bHD Graphics (P?5[0-3]\d)\b|Iris (Pro )?Graphics 5\d\d\b|Skylake|Apollo Lake/i.test(n))
+    return est('Intel 6th generation (Quick Sync): H.264 and 8-bit HEVC, decode and encode; 10-bit HEVC is not in hardware', ['H.264', 'HEVC'], ['H.264', 'HEVC'])
+  if (/\b(U?HD Graphics (P?6[0-3]\d|60[05]))\b|Iris Plus Graphics 6\d\d\b|Kaby ?Lake|Coffee ?Lake|Comet ?Lake|Whiskey ?Lake|Amber ?Lake|Gemini ?Lake/i.test(n))
+    return est('Intel 7th generation or later (Quick Sync): H.264 and HEVC (10-bit too), decode and encode', ['H.264', 'HEVC', 'HEVC 10-bit', 'VP9'], ['H.264', 'HEVC'])
   return est('Intel built-in graphics (Quick Sync): what it decodes depends on its generation', [], [])
 }

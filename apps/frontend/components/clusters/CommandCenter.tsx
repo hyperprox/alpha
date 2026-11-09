@@ -6,7 +6,8 @@
 import Link from 'next/link'
 import { useCallback, useEffect, useState } from 'react'
 import { apiJson } from '@/lib/api'
-import { type ClusterPanel, type Attention, clusterColor, clusterInk, bytes, ago } from '@/lib/clusters'
+import { type ClusterPanel, type Attention, type GpuRow, clusterColor, clusterInk, ago } from '@/lib/clusters'
+import { gpuRowLabel, gpuRowTitle, gpuRowRight, gpuRowPct, gpuRowDetail, gpuRowAction } from '@/lib/gpu-rows'
 import { Notice } from '@/components/vault/ui'
 
 export function Dot({ kind, size = 9 }: { kind: 'home' | 'remote'; size?: number }) {
@@ -29,6 +30,35 @@ function Bar({ label, pct, kind, right }: { label: string; pct: number | null; k
         <span className="block h-full" style={{ width: `${Math.min(100, Math.max(0, pct ?? 0))}%`, background: clusterColor(kind), opacity: pct === null ? 0 : 1 }} />
       </span>
       <span className="text-right font-mono" style={{ fontVariantNumeric: 'tabular-nums' }}>{right ?? (pct === null ? '—' : `${pct}%`)}</span>
+    </div>
+  )
+}
+
+/**
+ * One GPU: "node · short name" and its load on the first line (the node first, so a cut-off row still says
+ * where it is), the bar, then one short line. A row that is not measured says why, with a link when setting
+ * up monitoring is the fix. Tap the row for the full name and the longer explanation.
+ */
+export function GpuRowView({ g, kind }: { g: GpuRow; kind: 'home' | 'remote' }) {
+  const [open, setOpen] = useState(false)
+  const pct = gpuRowPct(g)
+  const action = gpuRowAction(g)
+  return (
+    <div className="text-xs min-w-0 flex flex-col gap-1" style={{ color: 'var(--text-muted)' }}>
+      <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open} title={gpuRowTitle(g)} className="w-full text-left flex flex-col gap-1 min-w-0">
+        <span className="flex items-baseline gap-2 w-full min-w-0">
+          <span className="truncate min-w-0 flex-1" style={{ color: 'var(--text)' }}>{gpuRowLabel(g)}</span>
+          <span className="font-mono shrink-0" style={{ fontVariantNumeric: 'tabular-nums' }}>{gpuRowRight(g)}</span>
+        </span>
+        <span className="block w-full h-2 rounded overflow-hidden" style={{ background: 'var(--ground-deep)' }}>
+          <span className="block h-full" style={{ width: `${Math.min(100, Math.max(0, pct ?? 0))}%`, background: clusterColor(kind), opacity: pct === null ? 0 : 1 }} />
+        </span>
+        <span className="break-words">{gpuRowDetail(g)} <span aria-hidden style={{ color: 'var(--text-dimmer)' }}>{open ? '▴' : '▾'}</span></span>
+      </button>
+      {action && (action.href
+        ? <Link href={action.href} className="font-semibold self-start" style={{ color: clusterColor(kind) }}>{action.words}</Link>
+        : <span style={{ color: 'var(--warn-2)' }}>{action.words}</span>)}
+      {open && <span className="break-words" style={{ color: 'var(--text-dimmer)' }}>{gpuRowTitle(g)}. {g.capability}</span>}
     </div>
   )
 }
@@ -65,16 +95,12 @@ export function PanelView({ p }: { p: ClusterPanel }) {
         <Bar label="CPU" pct={p.cpuPct} kind={k} />
         <Bar label="Memory" pct={p.memPct} kind={k} />
         <Bar label="Storage" pct={p.storagePct} kind={k} />
-        {p.gpus.map((g, i) => <Bar key={`${g.node}-${i}`} label={g.name.replace(/^.*\[(.+)\].*$/, '$1')} pct={g.load === null ? null : Math.round(g.load)} kind={k} right={g.load === null ? 'no data' : undefined} />)}
       </div>
-      {p.gpus.map((g, i) => (
-        <p key={`m-${g.node}-${i}`} className="text-xs" style={{ color: 'var(--text-muted)' }}>
-          GPU on {g.node}: {g.vramTotal ? `${bytes(g.vramUsed)} / ${bytes(g.vramTotal)} video memory` : 'video memory not reported'}
-          {g.tempC !== null ? ` · ${Math.round(g.tempC)} °C` : ''}{g.fanPct !== null ? ` · fan ${g.fanPct}%` : ''}. {g.capability}
-        </p>
-      ))}
-      {p.gpus.length > 0 && p.gpus.every(g => g.load === null) && (
-        <p className="text-xs" style={{ color: 'var(--text-dimmer)' }}>{p.kind === 'remote' && !p.monitoring ? 'GPU load shows once monitoring is installed (Edit server, step 5).' : 'No GPU figures reported yet.'}</p>
+      {p.gpus.length > 0 && (
+        <div className="flex flex-col gap-2.5">
+          {p.gpus.map((g, i) => <GpuRowView key={`${g.node}-${g.pci ?? i}-${i}`} g={g} kind={k} />)}
+          {p.gpuNote && <p className="text-xs" style={{ color: 'var(--text-dimmer)' }}>{p.gpuNote}</p>}
+        </div>
       )}
       <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
         {p.lastBackup ? `Last backup ${ago(p.lastBackup.at)} · ${p.lastBackup.ok ? 'OK' : 'did not finish cleanly'}` : 'No backup task found'}

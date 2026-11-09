@@ -9,19 +9,19 @@ import { clusterColor } from '@/lib/clusters'
 
 interface ScannedNode {
   node: string; address: string | null; source: 'probe' | 'proxmox-api'
-  gpus: Array<{ name: string; vendor: string; kind: string; capability: string; checkedWith: 'vainfo' | 'estimate' }>
+  gpus: Array<{ name: string; vendor: string; kind: string; capability: string; capabilityShort?: string; checkedWith: 'vainfo' | 'estimate' }>
   nodeExporter: string; amdMetrics: string; vainfo: 'checked' | 'not-installed' | 'no-login' | 'failed'; note?: string
 }
 
 const exporterWords: Record<string, string> = { running: 'running', installed: 'installed, not running', absent: 'not installed', unknown: 'unknown (no node login yet)' }
 
 export function HardwareScan({ clusterId, kind }: { clusterId: string; kind: 'home' | 'remote' }) {
-  const [data, setData] = useState<{ nodes: ScannedNode[]; summary: string } | null>(null)
+  const [data, setData] = useState<{ nodes: ScannedNode[]; summary: string; note?: string | null } | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const scan = useCallback(async (login: boolean) => {
     setBusy(true); setErr(null)
-    const r = await apiJson<{ data: { nodes: ScannedNode[]; summary: string } }>(`/api/clusters/${clusterId}/hardware${login ? '?login=1' : ''}`)
+    const r = await apiJson<{ data: { nodes: ScannedNode[]; summary: string; note?: string | null } }>(`/api/clusters/${clusterId}/hardware${login ? '?login=1' : ''}`)
     setBusy(false)
     if (r.ok) setData(r.body!.data); else setErr(r.error ?? 'The scan did not finish')
   }, [clusterId])
@@ -37,15 +37,18 @@ export function HardwareScan({ clusterId, kind }: { clusterId: string; kind: 'ho
             <span className="text-xs font-mono" style={{ color: 'var(--text-dimmer)' }}>{n.source === 'probe' ? 'checked over its node login' : 'what Proxmox reports (no node login used)'}</span>
           </div>
           {n.gpus.length === 0 ? <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No GPU found.</p> : n.gpus.map((g, i) => (
-            <p key={i} className="text-sm" style={{ color: 'var(--text)' }}>
-              <span style={{ color: clusterColor(kind) }}>✓</span> <b>{g.name}</b> ({g.kind === 'integrated' ? 'built in' : 'a card'}). {g.capability}
-            </p>
+            <details key={i} className="text-sm min-w-0" style={{ color: 'var(--text)' }}>
+              <summary className="cursor-pointer break-words" title={`${n.node}: ${g.name}`}>
+                <span style={{ color: clusterColor(kind) }}>✓</span> <b>{n.node} · {g.name}</b> ({g.kind === 'integrated' ? 'built in' : 'a card'}) · {g.capabilityShort ?? g.capability}
+              </summary>
+              <span className="block text-xs mt-1" style={{ color: 'var(--text-muted)' }}>{g.capability}</span>
+            </details>
           ))}
-          {n.gpus.length > 0 && n.vainfo === 'not-installed' && <p className="text-xs" style={{ color: 'var(--text-muted)' }}>vainfo is not installed on that server, so what the GPU decodes is an estimate. (Install the "vainfo" package there to check it; HyperProx does not install it for you.)</p>}
           <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Server metrics (node_exporter): {exporterWords[n.nodeExporter] ?? n.nodeExporter}. AMD GPU figures: {n.amdMetrics === 'on' ? 'on' : n.amdMetrics === 'off' ? 'off' : 'unknown'}.</p>
           {n.note && <p className="text-xs" style={{ color: 'var(--warn-2)' }}>{n.note}</p>}
         </div>
       ))}
+      {data?.note && <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{data.note}</p>}
       <div className="flex gap-2 flex-wrap">
         <button disabled={busy} onClick={() => scan(false)} className="px-3 rounded-md text-xs border disabled:opacity-40" style={{ height: 32, borderColor: 'var(--border-strong)', color: 'var(--text)' }}>Scan again</button>
         <button disabled={busy} onClick={() => scan(true)} className="px-3 rounded-md text-xs border disabled:opacity-40" style={{ height: 32, borderColor: 'var(--border-strong)', color: 'var(--text)' }} title="Uses a saved node login: read-only, including vainfo">Full scan (uses the node login)</button>

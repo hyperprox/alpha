@@ -188,6 +188,24 @@ function ClusterPanel({ cluster, nodes, vms, ceph, storage, ha, power, stamp }: 
   )
 }
 
+// Every GPU, one row each, "node · name" first so a cut-off row still says where it is. The full name is the
+// row's title. Load figures for each GPU are on the Command center and in Grafana; this says which are watched.
+function GpuList({ rows }: { rows: Array<{ node: string; name: string; reachable: boolean }> }) {
+  if (!rows.length) return null
+  return (
+    <div className="space-y-1.5 mt-3">
+      {rows.map((r, i) => (
+        <div key={`${r.node}-${i}`} className="flex items-center gap-2 text-xs font-mono min-w-0">
+          <span className="truncate min-w-0 flex-1" style={{ color:'var(--text)' }} title={`${r.node}: ${r.name}`}>{r.node} · {r.name.replace(/^(NVIDIA|Intel|AMD)\s+/i, '')}</span>
+          {r.reachable
+            ? <span className="shrink-0 inline-flex items-center gap-1" style={{ color:'var(--good)' }}><CheckIcon size={12}/> monitored</span>
+            : <Link href="/settings/setup-checklist" className="shrink-0 font-semibold" style={{ color:'var(--accent)' }}>not monitored · set up</Link>}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 // GPU panel — dynamic, supports NVIDIA/AMD/Intel iGPU/Arc
 function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: NodeGPUStatus[] }) {
   const allGPUs = (gpuStatus ?? []).filter(n => n.gpus.length > 0)
@@ -254,6 +272,9 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
           <Speedometer value={gpu.power_draw} label="Power" size={92} unit="W" color={powerC}
             max={gpu.power_limit || 250} caption={`limit ${gpu.power_limit}W`}/>
         </div>
+        {/* The card above is the first NVIDIA GPU; every other GPU in the cluster gets a row here. */}
+        <GpuList rows={allGPUs.flatMap(n => n.gpus.map(g => ({ node: n.node, name: g.deviceName, reachable: n.reachable, nv: g.type === 'nvidia' })))
+          .filter((r, i, all) => !(r.nv && all.findIndex(x => x.nv) === i)).map(({ nv: _nv, ...r }) => r)}/>
       </div>
     )
   }
@@ -268,25 +289,22 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
             badge={<span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:`${alpha(color, 8)}`, color, border:`1px solid ${alpha(color, 19)}` }}>ACTIVE</span>}/>
         </div>
         <div className="space-y-2">
-          {allGPUs.filter(n=>n.reachable).map(n => {
-            const gpu0 = n.gpus[0]
-            const gpuColor = gpuTypeColors[gpu0.type] ?? 'var(--violet)'
+          {allGPUs.filter(n=>n.reachable).flatMap(n => n.gpus.map((g, i) => {
+            const gpuColor = gpuTypeColors[g.type] ?? 'var(--violet)'
             return (
-              <div key={n.node} className="flex items-center gap-2 p-2 rounded" style={{ background:'var(--ground-deep)', border:`1px solid ${alpha(gpuColor, 13)}` }}>
-                <span className="text-xs font-mono font-bold" style={{ color:gpuColor }}>{n.node}</span>
-                <span className="text-xs font-mono text-gray-500 flex-1">{gpu0.deviceName}</span>
+              <div key={`${n.node}-${i}`} className="flex items-center gap-2 p-2 rounded min-w-0" style={{ background:'var(--ground-deep)', border:`1px solid ${alpha(gpuColor, 13)}` }}>
+                <span className="text-xs font-mono truncate min-w-0 flex-1" title={`${n.node}: ${g.deviceName}`}><b style={{ color:gpuColor }}>{n.node}</b> <span className="text-gray-500">· {g.deviceName}</span></span>
                 {/* Status is green whatever the vendor: the vendor colour only tints the node name and border. */}
-                <span className="inline-flex items-center gap-1 text-xs font-mono" style={{ color:'var(--good)' }}><CheckIcon size={12}/> active</span>
+                <span className="shrink-0 inline-flex items-center gap-1 text-xs font-mono" style={{ color:'var(--good)' }}><CheckIcon size={12}/> active</span>
               </div>
             )
-          })}
-          {allGPUs.filter(n=>!n.reachable).map(n => (
-            <div key={n.node} className="flex items-center gap-2 p-2 rounded" style={{ background:'var(--ground-deep)', border:'1px solid color-mix(in srgb, var(--warn-2) 13%, transparent)' }}>
-              <span className="text-xs font-mono font-bold" style={{ color:'var(--warn-2)' }}>{n.node}</span>
-              <span className="text-xs font-mono text-gray-500 flex-1">{n.gpus[0]?.deviceName}</span>
-              <span className="inline-flex items-center gap-1 text-xs font-mono" style={{ color:'var(--warn-2)' }}><WarnIcon size={12}/> offline</span>
+          }))}
+          {allGPUs.filter(n=>!n.reachable).flatMap(n => n.gpus.map((g, i) => (
+            <div key={`${n.node}-${i}`} className="flex items-center gap-2 p-2 rounded min-w-0" style={{ background:'var(--ground-deep)', border:'1px solid color-mix(in srgb, var(--warn-2) 13%, transparent)' }}>
+              <span className="text-xs font-mono truncate min-w-0 flex-1" title={`${n.node}: ${g.deviceName}`}><b style={{ color:'var(--warn-2)' }}>{n.node}</b> <span className="text-gray-500">· {g.deviceName}</span></span>
+              <Link href="/settings/setup-checklist" className="shrink-0 text-xs font-mono font-semibold" style={{ color:'var(--warn-2)' }}>not monitored · set up</Link>
             </div>
-          ))}
+          )))}
         </div>
         <div className="text-sm text-gray-600 mt-3">View detailed metrics in Monitoring → Grafana</div>
       </div>

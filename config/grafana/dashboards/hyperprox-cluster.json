@@ -154,22 +154,22 @@
         {
           "datasource": "Prometheus",
           "expr": "igpu_engines_render_3d_0_busy",
-          "legendFormat": "{{node}} Render/3D"
+          "legendFormat": "{{node}} {{pci}} Render/3D"
         },
         {
           "datasource": "Prometheus",
           "expr": "igpu_engines_video_0_busy",
-          "legendFormat": "{{node}} Video"
+          "legendFormat": "{{node}} {{pci}} Video"
         },
         {
           "datasource": "Prometheus",
           "expr": "igpu_engines_blitter_0_busy",
-          "legendFormat": "{{node}} Blitter"
+          "legendFormat": "{{node}} {{pci}} Blitter"
         },
         {
           "datasource": "Prometheus",
           "expr": "igpu_engines_video_enhance_0_busy",
-          "legendFormat": "{{node}} VideoEnhance"
+          "legendFormat": "{{node}} {{pci}} VideoEnhance"
         }
       ],
       "fieldConfig": {
@@ -194,12 +194,12 @@
         {
           "datasource": "Prometheus",
           "expr": "igpu_imc_bandwidth_reads",
-          "legendFormat": "{{node}} Reads"
+          "legendFormat": "{{node}} {{pci}} Reads"
         },
         {
           "datasource": "Prometheus",
           "expr": "igpu_imc_bandwidth_writes",
-          "legendFormat": "{{node}} Writes"
+          "legendFormat": "{{node}} {{pci}} Writes"
         }
       ],
       "fieldConfig": {
@@ -222,12 +222,12 @@
         {
           "datasource": "Prometheus",
           "expr": "igpu_power_gpu",
-          "legendFormat": "{{node}} GPU"
+          "legendFormat": "{{node}} {{pci}} GPU"
         },
         {
           "datasource": "Prometheus",
           "expr": "igpu_power_package",
-          "legendFormat": "{{node}} Package"
+          "legendFormat": "{{node}} {{pci}} Package"
         }
       ],
       "fieldConfig": {
@@ -250,12 +250,12 @@
         {
           "datasource": "Prometheus",
           "expr": "igpu_frequency_actual",
-          "legendFormat": "{{node}} Actual"
+          "legendFormat": "{{node}} {{pci}} Actual"
         },
         {
           "datasource": "Prometheus",
           "expr": "igpu_frequency_requested",
-          "legendFormat": "{{node}} Requested"
+          "legendFormat": "{{node}} {{pci}} Requested"
         }
       ],
       "fieldConfig": {
@@ -272,7 +272,7 @@
       "panels": [],
       "gridPos": {
         "x": 0,
-        "y": 33,
+        "y": 38,
         "w": 24,
         "h": 1
       }
@@ -285,7 +285,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 34
+        "y": 39
       },
       "targets": [
         {
@@ -310,7 +310,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 34
+        "y": 39
       },
       "targets": [
         {
@@ -338,7 +338,7 @@
       "panels": [],
       "gridPos": {
         "x": 0,
-        "y": 42,
+        "y": 47,
         "w": 24,
         "h": 1
       }
@@ -349,7 +349,7 @@
       "title": "NVIDIA GPU — Utilization",
       "gridPos": {
         "x": 0,
-        "y": 43,
+        "y": 48,
         "w": 12,
         "h": 8
       },
@@ -372,7 +372,7 @@
       "title": "NVIDIA GPU — Memory",
       "gridPos": {
         "x": 12,
-        "y": 43,
+        "y": 48,
         "w": 12,
         "h": 8
       },
@@ -400,7 +400,7 @@
       "title": "NVIDIA GPU — Power Draw",
       "gridPos": {
         "x": 0,
-        "y": 51,
+        "y": 56,
         "w": 12,
         "h": 8
       },
@@ -423,7 +423,7 @@
       "title": "NVIDIA GPU — Temperature",
       "gridPos": {
         "x": 12,
-        "y": 51,
+        "y": 56,
         "w": 12,
         "h": 8
       },
@@ -439,6 +439,43 @@
           "unit": "celsius"
         }
       }
+    },
+    {
+      "id": 103,
+      "type": "table",
+      "title": "Intel GPU — Collector status",
+      "description": "One row per Intel GPU that HyperProx's textfile collector watches: ok, or why there are no figures (not supported on this GPU, no permission, intel_gpu_top missing). GPUs read by the older port-8081 exporter are not listed here.",
+      "gridPos": {
+        "x": 0,
+        "y": 33,
+        "w": 24,
+        "h": 5
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "hyperprox_intel_gpu_info",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "{{node}} {{pci}}"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true,
+              "__name__": true,
+              "instance": true,
+              "job": true
+            },
+            "indexByName": {},
+            "renameByName": {}
+          }
+        }
+      ]
     }
   ],
   "templating": {
