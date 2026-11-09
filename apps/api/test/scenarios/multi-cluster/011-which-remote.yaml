@@ -5,5 +5,5 @@ remotes: 2
 expect:
   kind: answer
   includes: ["You have more than one remote cluster."]
-  choices: ["back up plex on Remote server", "back up plex on Office lab"]
+  choices: ["Remote server", "Office lab"]
 found_by: "multi-cluster seed inventory (ambiguous cluster)"

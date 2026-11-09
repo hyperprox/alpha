@@ -20,6 +20,14 @@ import { previewMonitoring, applyMonitoring, clearMonitoringPlans, SCAN_SCRIPT, 
 import type { ClusterPanel } from "../src/lib/clusters/overview"
 import type { ModelCall } from "../src/lib/ai/extract"
 import { setAuditSink } from "../src/lib/audit"
+import { GuestActionRefusal, destroy } from "../src/lib/clusters/guest-actions"
+import { reconfirmFor, applyAction } from "../src/lib/ai/actions"
+import { boundTo } from "../src/lib/ai/cluster-sources"
+import { updateCluster } from "../src/lib/clusters/registry"
+import { previewCopy, startCopy, setCopyKick, kickCopies, setJobStore, MemoryJobStore } from "../src/lib/clusters/files"
+import { CertsService } from "../src/lib/certs/service"
+import { MemoryCertsStore } from "../src/lib/certs/store"
+import { defaultModules } from "../src/lib/certs/modules"
 
 const R = "c0123456789", R2 = "c0123456780"
 const HOME: ClusterRef = { id: HOME_ID, name: "Home cluster", kind: "home" }
@@ -48,10 +56,10 @@ test("targets: an unknown name, several remotes, or no remote is asked about, ne
   const unknown = resolveTargets("how is the Lab cluster doing?", [HOME, REMOTE], HOME)
   assert.equal(unknown.kind, "ask")
   assert.match((unknown as any).message, /I do not know a cluster called "Lab"\. Your clusters are: Home cluster, Remote server/)
-  assert.deepEqual((unknown as any).choices, ["Home cluster", "Remote server"])
+  assert.deepEqual((unknown as any).choices.map((c: ClusterRef) => c.name), ["Home cluster", "Remote server"])
   const two = resolveTargets("restart plex on the remote", [HOME, REMOTE, OTHER], HOME)
   assert.equal(two.kind, "ask")
-  assert.deepEqual((two as any).choices, ["Remote server", "Office lab"])
+  assert.deepEqual((two as any).choices.map((c: ClusterRef) => c.name), ["Remote server", "Office lab"])
   assert.match((resolveTargets("back up the remote now", [HOME], HOME) as any).message, /no remote cluster yet/)
 })
 
@@ -105,7 +113,7 @@ test("actions: role and re-confirmation come from the route the same action has 
 //  A world of two (or three) clusters
 // ---------------------------------------------------------------------------
 
-interface Guest { vmid: number; node: string; type: "lxc" | "qemu"; name: string; status: string; digest: string }
+interface Guest { vmid: number; node: string; type: "lxc" | "qemu"; name: string; status: string; digest: string; /** The config's own name; null: none (an unnamed VM). */ cfgName?: string | null }
 type World = Record<string, { guests: Guest[]; gpu: string; measured: boolean; backupOk: boolean }>
 
 function makeWorld(): World {
@@ -136,7 +144,7 @@ function fakePve(world: World) {
       if (cfg) {
         const g = w.guests.find(x => x.vmid === Number(cfg[3]) && x.node === cfg[1])
         if (!g) throw new Error("HTTP 500: no such guest")
-        return { digest: g.digest, hostname: g.name } as T
+        return (g.cfgName === null ? { digest: g.digest } : { digest: g.digest, [g.type === "lxc" ? "hostname" : "name"]: g.cfgName ?? g.name }) as T
       }
       if (path === "/nodes") return [{ node: "node1", status: "online" }] as T
       if (/\/tasks\?typefilter=vzdump/.test(path)) return [] as T
@@ -180,6 +188,11 @@ let world: World
 const calls: Array<{ cluster: string; op: string; vmid: number; arg?: string }> = []
 const audits: Array<{ action: string; resource: string; details: Record<string, unknown> }> = []
 let copyInput: any = null
+// The connection key each cluster has now (address, port, certificate, token): a test changes one to simulate a new token.
+let conns: Record<string, string> = {}
+let stores = [{ storage: "local" }]
+let powerThrows = false
+let plans: PreparedStore<ActionPlan>
 let monitoringApplied: string | null = null
 
 async function app(remotes: ClusterRef[] = [REMOTE]) {
@@ -204,19 +217,19 @@ async function app(remotes: ClusterRef[] = [REMOTE]) {
     askCall: () => never,
     clusterSources: (c) => c.kind === "remote" ? [...perClusterSources(c, sd), homeOnlySource(c)] : perClusterSources(c, sd),
     intent: async () => ({ template: "none", question: false, answer: "no" }),
-    actionPlans: new PreparedStore<ActionPlan>(),
+    actionPlans: (plans = new PreparedStore<ActionPlan>()),
     prepareDeps: () => ({
-      inCluster: (id, fn) => runInCluster(id, fn), pve: () => pve as any, row: clusterRow, unlocked: () => unlocked,
-      backupStorages: async () => [{ storage: "local" }],
+      inCluster: (id, fn) => runInCluster(id, fn), pve: () => pve as any, row: clusterRow, unlocked: () => unlocked, connection: id => conns[id] ?? `k-${id}`,
+      backupStorages: async () => stores,
       monitoringPreview: async (id) => ({ planId: `mon-${id}`, steps: ["node1: install node_exporter"] }),
       copyPreview: async (_o, input) => { copyInput = input; return { previewId: "pv1", words: "3 file(s), 1 GB." } },
       nodes: async () => ["node1"], now: () => new Date(Date.UTC(2026, 0, 2, 3, 4)),
     }),
     applyDeps: () => ({
-      row: clusterRow, unlocked: () => unlocked, reconfirmed: () => reconfirmed,
+      row: clusterRow, unlocked: () => unlocked, reconfirmed: () => reconfirmed, connection: id => conns[id] ?? `k-${id}`,
       inCluster: (id, fn) => runInCluster(id, fn), pve: () => pve as any,
       ops: {
-        power: async (_p, g, a) => { calls.push({ cluster: currentClusterId(), op: a, vmid: g.vmid }); return { ok: true, words: "read back" } },
+        power: async (_p, g, a) => { if (powerThrows) throw new GuestActionRefusal("plex is locked by a backup.", "state"); calls.push({ cluster: currentClusterId(), op: a, vmid: g.vmid }); return { ok: true, words: "read back" } },
         snapshot: async (_p, g, n) => { calls.push({ cluster: currentClusterId(), op: "snapshot", vmid: g.vmid, arg: n }); return { ok: true, words: "listed" } },
         backupNow: async (_p, g, s) => { calls.push({ cluster: currentClusterId(), op: "backup", vmid: g.vmid, arg: s }); return { upid: "UPID:x", node: g.node } },
         destroy: async (_p, g, n) => { calls.push({ cluster: currentClusterId(), op: "delete", vmid: g.vmid, arg: n }); return { ok: true, words: "gone" } },
@@ -235,7 +248,7 @@ async function app(remotes: ClusterRef[] = [REMOTE]) {
 
 beforeEach(() => {
   unlocked = true; role = "admin"; reconfirmed = false; world = makeWorld()
-  calls.length = 0; audits.length = 0; copyInput = null; monitoringApplied = null
+  calls.length = 0; audits.length = 0; copyInput = null; monitoringApplied = null; conns = {}; stores = [{ storage: "local" }]; powerThrows = false
 })
 afterEach(() => setClusterStore(new MemoryClusterStore()))
 
@@ -291,7 +304,8 @@ test("read: an unknown cluster name or an ambiguous remote is asked about", asyn
   const a = await app([REMOTE, OTHER])
   const u = (await a.plan("How is the Lab cluster doing?")).json()
   assert.match(u.message, /I do not know a cluster called "Lab"/)
-  assert.deepEqual(u.choices, ["Home cluster", "Remote server", "Office lab"])
+  assert.deepEqual(u.choices.map((c: any) => c.label), ["Home cluster", "Remote server", "Office lab"])
+  assert.deepEqual(u.choices.map((c: any) => c.cluster), [HOME_ID, R, R2])
   const amb = (await a.plan("How is the remote doing?")).json()
   assert.match(amb.message, /more than one remote cluster/)
 })
@@ -417,7 +431,8 @@ test("act: back up now, monitoring and a copy go through the same functions, bou
   const a = await app()
   const b = (await a.plan("back up the remote now")).json()
   assert.match(b.message, /Which guest on Remote server should I back up\?/)
-  assert.ok(b.choices.includes("back up plex on Remote server"))
+  // Choices name the guest by ID and carry the cluster: a name the remote chose never becomes the request.
+  assert.deepEqual(b.choices[0], { label: "back up plex (201) on Remote server", prompt: "back up 201", cluster: R })
   const bk = (await a.plan("back up plex on Remote server")).json()
   assert.equal((await a.apply({ planId: bk.action.planId }, R)).statusCode, 200)
   assert.deepEqual(calls.at(-1), { cluster: R, op: "backup", vmid: 201, arg: "local" })
@@ -446,7 +461,7 @@ test("act: ambiguous or unknown guests and clusters are asked about", async () =
   const a = await app([REMOTE, OTHER])
   const which = (await a.plan("restart plex on the remote")).json()
   assert.match(which.message, /more than one remote cluster/)
-  assert.deepEqual(which.choices, ["restart plex on Remote server", "restart plex on Office lab"])
+  assert.deepEqual(which.choices.map((c: any) => [c.prompt, c.cluster]), [["restart plex on Remote server", R], ["restart plex on Office lab", R2]])
   assert.match((await a.plan("restart nosuch on Remote server")).json().message, /could not find a guest called "nosuch" on Remote server/)
   assert.match((await a.plan("start plex on Remote server")).json().message, /already running/)
 })
@@ -507,7 +522,188 @@ for (const file of readdirSync(SCENARIO_DIR).filter(f => /\.ya?ml$/.test(f)).sor
     const text = r.action ? [r.action.title, r.action.words, ...r.action.steps].join("\n") : String(r.message)
     for (const want of e.includes ?? []) assert.ok(text.includes(want), `${s.id}: expected "${want}" in:\n${text}`)
     for (const not of e.excludes ?? []) assert.ok(!text.includes(not), `${s.id}: did not expect "${not}" in:\n${text}`)
-    if (e.choices) assert.deepEqual(r.choices, e.choices)
+    if (e.choices) assert.deepEqual(r.choices.map((c: any) => c.label), e.choices)
     assert.deepEqual(calls, [], "preparing never acts")
   })
 }
+
+// ---------------------------------------------------------------------------
+//  Review fixes: each with its own regression test
+// ---------------------------------------------------------------------------
+
+test("C1: home's sources run in home's context even with a remote open", async () => {
+  const probe = { id: "p", title: "P", blurb: "", aliases: /x/, load: async () => ({ headline: currentClusterId(), lines: [] }) }
+  const [b] = boundTo(HOME_ID, [probe], (id, fn) => runInCluster(id, fn))
+  const store = new MemoryClusterStore()
+  await store.upsert({ id: R, name: "Remote server", kind: "remote", address: "pve1.example", port: 8006, note: "", certFingerprint: "AA", certConfirmedAt: null, certConfirmedBy: null, nodeAddresses: {}, allowedRoots: [], monitoring: {}, plexUrl: null, createdBy: "x" })
+  setClusterStore(store); await loadClusters()
+  assert.equal((await runInCluster(R, () => b.load())).headline, HOME_ID)
+})
+
+test("C1: a certificate inventory built while a remote was open is never served for home", async () => {
+  const store = new MemoryClusterStore()
+  await store.upsert({ id: R, name: "Remote server", kind: "remote", address: "pve1.example", port: 8006, note: "", certFingerprint: "AA", certConfirmedAt: null, certConfirmedBy: null, nodeAddresses: {}, allowedRoots: [], monitoring: {}, plexUrl: null, createdBy: "x" })
+  setClusterStore(store); await loadClusters()
+  const policy = { acme: { directoryUrl: "https://acme.test/directory", staging: false, email: "a@example.com", keyType: "ec256" }, schedule: { check: "15 6 * * *" },
+    alerts: { warnFraction: 0.33, criticalDays: 7, webhookUrl: "" }, certificates: {}, probes: [], targets: {} } as any
+  const svc = new CertsService({
+    store: new MemoryCertsStore(), secrets: {} as any, log: () => undefined, dnsProviders: async () => [],
+    deploy: {} as any,
+    modules: { ...defaultModules, loadCertsPolicy: () => ({ loaded: true, path: "/t.yaml", policy }) as any,
+      buildInventory: (async (d: any) => (await d.nodeCertificates()).map((n: any) => ({ names: [n.node], daysLeft: 30, notAfter: null, verdict: "ok", source: "node" }))) as any },
+    sources: { npmCertificates: async () => [], npmHosts: async () => [], npmCertificateUsers: async () => [], deleteNpmCertificate: async () => undefined, npmLoginIsAdmin: async () => true,
+      // Answers as whichever cluster it is read in, as livePve() did before the fix.
+      nodeCertificates: async () => [{ node: currentClusterId() === R ? "remote-node" : "home-node", host: "h", certs: [] }] } as any,
+  } as any)
+  const fromRemote = await runInCluster(R, () => svc.overview(false))
+  assert.deepEqual(fromRemote.inventory.map(e => e.names[0]), ["remote-node"])
+  const fromHome = await svc.overview(false)
+  assert.deepEqual(fromHome.inventory.map(e => e.names[0]), ["home-node"], "home's inventory is home's")
+})
+
+test("C2: an unnamed VM is confirmed by the name destroy() checks, and a wrong name keeps the plan", async () => {
+  world[R].guests.push({ vmid: 203, node: "node1", type: "qemu", name: "VM 203", status: "stopped", digest: "r203", cfgName: null })
+  const a = await app()
+  const r = (await a.plan("delete 203 on Remote server")).json()
+  assert.equal(r.action.typedName, "203")
+  reconfirmed = true
+  assert.equal((await a.apply({ planId: r.action.planId, confirmName: "VM 203" }, R)).statusCode, 428)
+  const ok = await a.apply({ planId: r.action.planId, confirmName: "203" }, R)
+  assert.equal(ok.statusCode, 200, ok.body)
+  assert.deepEqual(calls, [{ cluster: R, op: "delete", vmid: 203, arg: "203" }])
+})
+
+test("C3: a guest with a bad ID is never planned, and a plan holding one is refused; delete always re-confirms", async () => {
+  world[R].guests.push({ vmid: 100.5, node: "node1", type: "qemu", name: "evil", status: "stopped", digest: "x" })
+  const a = await app()
+  assert.match((await a.plan("delete evil on Remote server")).json().message, /could not find a guest called "evil"/)
+  // Fails closed either way: a delete always asks, and any other action on a bad guest cannot even build its route.
+  assert.equal(reconfirmFor({ kind: "delete", clusterId: R, guest: { node: "node1", type: "qemu", vmid: 100.5, name: "evil" } }), true)
+  assert.throws(() => reconfirmFor({ kind: "reboot", clusterId: R, guest: { node: "node1", type: "qemu", vmid: 100.5, name: "evil" } }))
+  assert.equal(reconfirmFor({ kind: "delete", clusterId: R, guest: { node: "node1", type: "qemu", vmid: 202, name: "m" } }), true)
+  assert.equal(reconfirmFor({ kind: "monitoring-remove", clusterId: R }), true)
+  const id = plans.put("admin@example.com", { kind: "delete", owner: "admin@example.com", clusterId: R, clusterName: "Remote server", clusterKind: "remote",
+    fingerprint: "AA", conn: `k-${R}`, guest: { node: "node1", type: "qemu", vmid: 100.5, name: "evil" }, digest: "x", confirmName: "evil" })
+  reconfirmed = true
+  const bad = await a.apply({ planId: id, confirmName: "evil" }, R)
+  assert.equal(bad.statusCode, 422)
+  assert.deepEqual(calls, [])
+})
+
+test("C4: every refusal and error on apply writes an audit entry with ok:false and its code, never a value", async () => {
+  const a = await app()
+  const codes = async (fn: () => Promise<unknown>) => { const before = audits.length; await fn(); return audits.slice(before).map(x => [x.action, x.details.ok, x.details.code, x.details.via]) }
+  // wrong cluster
+  let p = (await a.plan("restart plex on the remote")).json().action.planId
+  assert.deepEqual(await codes(() => a.apply({ planId: p })), [["cluster.guest.power", false, "wrong_cluster", "assistant"]])
+  // not found (used up)
+  assert.deepEqual(await codes(() => a.apply({ planId: p }, R)), [["assistant.apply", false, "not_found", "assistant"]])
+  // connection changed (a new token)
+  p = (await a.plan("restart plex on the remote")).json().action.planId
+  conns[R] = "new-token"
+  assert.deepEqual(await codes(() => a.apply({ planId: p }, R)), [["cluster.guest.power", false, "cluster_changed", "assistant"]])
+  conns = {}
+  // digest changed
+  p = (await a.plan("restart plex on the remote")).json().action.planId
+  world[R].guests[0].digest = "edited"
+  assert.deepEqual(await codes(() => a.apply({ planId: p }, R)), [["cluster.guest.power", false, "changed", "assistant"]])
+  world[R].guests[0].digest = "r201"
+  // forbidden
+  p = (await a.plan("snapshot plex on the remote")).json().action.planId
+  role = "operator"
+  assert.deepEqual(await codes(() => a.apply({ planId: p }, R)), [["cluster.guest.snapshot", false, "forbidden", "assistant"]])
+  role = "admin"
+  // re-confirm, then typed name
+  p = (await a.plan("delete media-vm on the remote")).json().action.planId
+  assert.deepEqual(await codes(() => a.apply({ planId: p }, R)), [["cluster.guest.delete", false, "reconfirm_required", "assistant"]])
+  reconfirmed = true
+  assert.deepEqual(await codes(() => a.apply({ planId: p, confirmName: "nope" }, R)), [["cluster.guest.delete", false, "confirm", "assistant"]])
+  // an error thrown by the action itself
+  p = (await a.plan("restart plex on the remote")).json().action.planId
+  powerThrows = true
+  const thrown = await a.apply({ planId: p }, R)
+  assert.equal(thrown.statusCode, 422)
+  assert.deepEqual(audits.at(-1)!.details, { by: "admin@example.com", via: "assistant", ok: false, code: "state", action: "reboot", node: "node1", guest: "lxc/201" })
+  // locked
+  unlocked = false
+  assert.deepEqual(await codes(() => a.apply({ planId: p }, R)), [["assistant.apply", false, "locked", "assistant"]])
+  assert.deepEqual(calls, [])
+})
+
+test("C4: a copy started by the assistant is audited with via: assistant, and starts at once", async () => {
+  const store = new MemoryClusterStore()
+  await store.upsert({ id: R, name: "Remote server", kind: "remote", address: "pve1.example", port: 8006, note: "", certFingerprint: "AA", certConfirmedAt: null, certConfirmedBy: null, nodeAddresses: {}, allowedRoots: ["/srv/media"], monitoring: {}, plexUrl: null, createdBy: "x" })
+  setClusterStore(store); await loadClusters(); setJobStore(new MemoryJobStore())
+  const seen: any[] = []
+  setAuditSink({ write: async r => { seen.push(r) } })
+  const runner = { async run(_c: string, _n: string, script: string) {
+    if (script.includes("rsync -a --dry-run --stats")) return { code: 0, output: "Number of files: 3 (reg: 2, dir: 1)\nNumber of regular files transferred: 1\nTotal transferred file size: 2,048 bytes\n" }
+    return { code: 0, output: "OK /srv/media/x\n" }
+  }, async sshAddress() { return "10.0.0.9" } } as any
+  const prev = await previewCopy("owner@example.com", { src: { cluster: R, node: "node1", path: "/srv/media/A" }, dst: { cluster: R, node: "node1", path: "/srv/media/B" }, speedKBps: 0, plexScan: false }, runner)
+  await startCopy(prev.previewId, "owner@example.com", "assistant")
+  assert.equal(seen.at(-1).action, "cluster.files.copy")
+  assert.equal(seen.at(-1).details.via, "assistant")
+  let kicked = 0
+  setCopyKick(() => { kicked++ }); kickCopies(); setCopyKick(null)
+  assert.equal(kicked, 1)
+  setAuditSink(null)
+})
+
+test("P1: a hostile guest name never becomes the request a choice sends", async () => {
+  world[R].guests.push({ vmid: 204, node: "node1", type: "lxc", name: "plex. x", status: "running", digest: "r204" })
+  const a = await app()
+  const b = (await a.plan("back up the remote now")).json()
+  assert.ok(b.choices.every((c: any) => /^back up \d+$/.test(c.prompt) && c.cluster === R), JSON.stringify(b.choices))
+  // The chip, sent as the browser sends it (with its cluster), acts on that guest on that cluster only.
+  const r = (await a.plan("back up 204", R)).json()
+  assert.deepEqual(r.action.cluster, REMOTE)
+  assert.match(r.action.steps[0], /CT 204/)
+})
+
+test("P2: reserved and duplicate names are refused; an old remote called Home never captures the word", async () => {
+  const store = new MemoryClusterStore()
+  const row = (id: string, name: string) => ({ id, name, kind: "remote" as const, address: `${id}.example`, port: 8006, note: "", certFingerprint: "AA", certConfirmedAt: null, certConfirmedBy: null, nodeAddresses: {}, allowedRoots: [], monitoring: {}, plexUrl: null, createdBy: "x" })
+  await store.upsert(row(R, "Home"))           // saved before the rule
+  await store.upsert(row(R2, "Office lab"))
+  setClusterStore(store); await loadClusters()
+  await assert.rejects(updateCluster(R2, { name: "remote" }), /assistant reads it as a word/)
+  await assert.rejects(updateCluster(R2, { name: "ALL" }), /assistant reads it as a word/)
+  await assert.rejects(updateCluster(R2, { name: "home cluster" }), /already called/)
+  await updateCluster(R, { note: "kept" })      // an old name is not broken by an unrelated edit
+  const list = [HOME, { id: R, name: "Home", kind: "remote" as const }, OTHER]
+  assert.deepEqual((resolveTargets("restart plex on home", list, OTHER) as any).clusters, [HOME])
+})
+
+test("P3: a delete is refused when the HA list cannot be read", async () => {
+  let deleted = false
+  const pve = {
+    async fetchStrict(path: string, method?: string) {
+      if (path.endsWith("/config")) return { name: "m" }
+      if (path.endsWith("/status/current")) return { status: "stopped", name: "m" }
+      if (path === "/cluster/ha/resources") throw new Error("HTTP 500")
+      if (method === "DELETE") { deleted = true; return "UPID:x" }
+      return []
+    },
+  } as any
+  await assert.rejects(destroy({ pve }, { node: "node1", type: "qemu", vmid: 202 }, "m"), /could not read the HA list/)
+  assert.equal(deleted, false)
+})
+
+test("P4: a partial guest match or an unnamed storage is asked about, never picked", async () => {
+  world[R].guests = [{ vmid: 205, node: "node1", type: "lxc", name: "plex-old", status: "running", digest: "a" },
+    { vmid: 206, node: "node1", type: "lxc", name: "local-vm", status: "running", digest: "b" }]
+  const a = await app()
+  const stop = (await a.plan("stop plex on Remote server")).json()
+  assert.equal(stop.conversational, true)
+  assert.match(stop.message, /No guest on Remote server is called exactly "plex"/)
+  assert.deepEqual(stop.choices.map((c: any) => c.prompt), ["stop 205"])
+  stores = [{ storage: "local" }, { storage: "pbs" }]
+  const bk = (await a.plan("back up local-vm on Remote server")).json()
+  assert.match(bk.message, /Which storage/)
+  assert.deepEqual(bk.choices.map((c: any) => c.prompt), ["back up 206 to storage local", "back up 206 to storage pbs"])
+  const named = (await a.plan("back up 206 to storage pbs", R)).json()
+  assert.ok(named.action, named.message)
+  assert.match(named.action.words, /backup to pbs/)
+  assert.deepEqual(calls, [])
+})

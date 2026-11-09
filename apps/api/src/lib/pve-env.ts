@@ -14,7 +14,8 @@
 
 import { ProxmoxClient } from './proxmox-client'
 import { currentRemote } from './clusters/context'
-import { remoteToken } from './clusters/registry'
+import { createHash } from 'node:crypto'
+import { remoteToken, clusterRow, HOME_ID } from './clusters/registry'
 import { PinnedAgent } from './clusters/tls-pin'
 
 let cached: { key: string; client: ProxmoxClient } | null = null
@@ -56,6 +57,24 @@ export function remotePve(r: { id: string; name: string; address: string; port: 
 export function pveFromEnv(): ProxmoxClient {
   const r = currentRemote()
   return r ? remotePve(r) : homePve()
+}
+
+/**
+ * A one-way key of how HyperProx reaches a cluster: address, port, confirmed certificate and API token (home: the
+ * PROXMOX_* settings). A plan made under one key is not applied under another. Only the hash is kept; it reveals
+ * nothing of the token. Throws while locked (a remote's token is in the vault).
+ */
+export function connectionKey(id: string): string {
+  const h = createHash('sha256')
+  if (id === HOME_ID) {
+    h.update(['home', process.env.PROXMOX_HOST ?? '', process.env.PROXMOX_PORT ?? '8006', process.env.PROXMOX_USER ?? '', process.env.PROXMOX_TOKEN_ID ?? '', process.env.PROXMOX_TOKEN_SECRET ?? ''].join('\n'))
+  } else {
+    const r = clusterRow(id)
+    if (!r) throw new Error('That cluster was removed.')
+    const t = remoteToken(id)
+    h.update(['remote', r.address, String(r.port), r.certFingerprint ?? '', t.tokenId, t.secret].join('\n'))
+  }
+  return h.digest('hex').slice(0, 32)
 }
 
 /** Forget a remote's client (its token or certificate changed, or it was removed). */

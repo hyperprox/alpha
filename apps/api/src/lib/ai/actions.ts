@@ -23,9 +23,9 @@ import type { Role } from '../roles'
 import { requiredRole, needsReconfirm, hasRole } from '../roles'
 import type { ClusterRow } from '../clusters/store'
 import type { PreparedStore } from './prepared'
-import { resolveTargets, withoutClusterWords, type ClusterRef } from './clusters'
+import { resolveTargets, withoutClusterWords, promptOn, type ClusterRef, type Choice } from './clusters'
 import type { GuestType, PowerAction } from '../clusters/guest-actions'
-import { GuestActionRefusal } from '../clusters/guest-actions'
+import { GuestActionRefusal, checkGuest } from '../clusters/guest-actions'
 
 export type GuestVerb = 'start' | 'stop' | 'shutdown' | 'reboot' | 'snapshot' | 'backup' | 'delete'
 export type ActionKind = GuestVerb | 'copy' | 'monitoring-install' | 'monitoring-remove'
@@ -127,15 +127,19 @@ export interface ActionPlan {
   clusterKind: 'home' | 'remote'
   /** The certificate fingerprint the remote was planned under (null for home). */
   fingerprint: string | null
+  /** A one-way key of the connection (address, port, certificate, API token) the plan was made under. */
+  conn: string
   guest?: GuestRef
   /** Proxmox's config digest of the guest when this was planned. */
   digest?: string
+  /** A delete: the name destroy() checks (the config's hostname or name), typed to confirm. */
+  confirmName?: string
   snapName?: string
   storage?: string
   monitoringPlanId?: string
   copyPreviewId?: string
   /** A copy: the other end, checked the same way. */
-  peer?: { id: string; name: string; fingerprint: string | null }
+  peer?: { id: string; name: string; fingerprint: string | null; conn: string }
 }
 
 export interface ActionCard {
@@ -153,27 +157,47 @@ export interface ActionCard {
   role: Role
 }
 
-/** The route the same action has in the UI: lib/roles.ts decides its role and re-confirmation from it. */
+const LEAF: Record<GuestVerb, string> = { start: 'power', stop: 'power', shutdown: 'power', reboot: 'power', snapshot: 'snapshot', backup: 'backup', delete: 'delete' }
+
+/** The route the same action has in the UI, for lib/roles.ts. The guest is validated first: never a NaN path. */
 export function uiRouteFor(plan: Pick<ActionPlan, 'kind' | 'clusterId' | 'guest'>): string {
   const enc = encodeURIComponent
   if (plan.kind === 'copy') return '/api/clusters/files/jobs'
   if (plan.kind === 'monitoring-install' || plan.kind === 'monitoring-remove') return `/api/clusters/${enc(plan.clusterId)}/monitoring/apply`
-  const g = plan.guest!
-  const leafOf: Record<GuestVerb, string> = { start: 'power', stop: 'power', shutdown: 'power', reboot: 'power', snapshot: 'snapshot', backup: 'backup', delete: 'delete' }
-  return `/api/clusters/${enc(plan.clusterId)}/guests/${enc(g.node)}/${g.type}/${g.vmid}/${leafOf[plan.kind as GuestVerb]}`
+  const g = checkGuest(plan.guest!.node, plan.guest!.type, plan.guest!.vmid)
+  return `/api/clusters/${enc(plan.clusterId)}/guests/${enc(g.node)}/${g.type}/${g.vmid}/${LEAF[plan.kind as GuestVerb]}`
+}
+
+/**
+ * The master password is asked for by the kind of action (never only by matching a built path, which fails open
+ * on a path nobody expected), and also whenever lib/roles.ts would ask for the same route by hand.
+ */
+const RECONFIRM_KINDS: ActionKind[] = ['delete', 'monitoring-install', 'monitoring-remove']
+export function reconfirmFor(plan: Pick<ActionPlan, 'kind' | 'clusterId' | 'guest'>): boolean {
+  return RECONFIRM_KINDS.includes(plan.kind) || needsReconfirm('POST', uiRouteFor(plan))
+}
+
+/** The role, likewise: the higher of the kind's own floor and what the UI route needs. */
+const RANK: Record<Role, number> = { viewer: 0, operator: 1, admin: 2, owner: 3 }
+export function roleFor(plan: Pick<ActionPlan, 'kind' | 'clusterId' | 'guest'>): Role {
+  const floor: Role = plan.kind === 'start' || plan.kind === 'stop' || plan.kind === 'shutdown' || plan.kind === 'reboot' ? 'operator' : 'admin'
+  const route = requiredRole('POST', uiRouteFor(plan)) ?? 'viewer'
+  return RANK[route] > RANK[floor] ? route : floor
 }
 
 export const LOCKED_SAY = 'HyperProx is locked, so I did nothing. Sign in to unlock it, then ask again.'
 
 export type PrepareResult =
   | { kind: 'card'; card: ActionCard }
-  | { kind: 'say'; message: string; choices?: string[] }
+  | { kind: 'say'; message: string; choices?: Choice[] }
 
 export interface PrepareDeps {
   inCluster<T>(id: string, fn: () => Promise<T>): Promise<T>
   /** The client of the cluster the caller runs in (pveFromEnv); only called inside inCluster. */
   pve(): Pick<ProxmoxClient, 'fetchStrict'>
   row(id: string): ClusterRow | null
+  /** A one-way key of the cluster's connection (lib/pve-env.ts connectionKey). */
+  connection(id: string): string
   unlocked(): boolean
   prepared: PreparedStore<ActionPlan>
   backupStorages(node: string): Promise<Array<{ storage: string }>>
@@ -192,32 +216,27 @@ const VERB_WORDS: Record<GuestVerb, [string, string]> = {
 }
 
 const kindWord = (t: GuestType) => (t === 'lxc' ? 'CT' : 'VM')
-const say = (message: string, choices?: string[]): PrepareResult => ({ kind: 'say', message, ...(choices?.length ? { choices } : {}) })
+const say = (message: string, choices?: Choice[]): PrepareResult => ({ kind: 'say', message, ...(choices?.length ? { choices } : {}) })
 
 /** Refuses what the person's role could not do by hand. Null when it is allowed. */
 function roleRefusal(plan: Pick<ActionPlan, 'kind' | 'clusterId' | 'guest'>, role: Role | undefined): string | null {
-  const need = requiredRole('POST', uiRouteFor(plan)) ?? 'viewer'
+  const need = roleFor(plan)
   if (role && hasRole(role, need)) return null
   return `That needs the ${need} role${role ? `, and you are signed in as ${role}` : ''}, so I did not prepare it.`
 }
 
 function card(plan: ActionPlan, id: string, title: string, words: string, steps: string[], from?: ClusterRef): ActionCard {
-  const route = uiRouteFor(plan)
   return {
     planId: id, action: plan.kind, cluster: { id: plan.clusterId, name: plan.clusterName, kind: plan.clusterKind }, ...(from ? { from } : {}),
-    title, words, steps, needsReconfirm: needsReconfirm('POST', route), typedName: plan.kind === 'delete' ? plan.guest!.name : null,
-    role: requiredRole('POST', route) ?? 'viewer',
+    title, words, steps, needsReconfirm: reconfirmFor(plan), typedName: plan.kind === 'delete' ? plan.confirmName ?? null : null,
+    role: roleFor(plan),
   }
 }
 
-/** The request again, naming cluster `name` instead of "the remote" (or with "on <name>" added). */
-function onCluster(prompt: string, name: string): string {
-  const p = prompt.trim().replace(/[.!?]+$/, '')
-  const swapped = p.replace(/\b(the|my|our|that)\s+remote(\s+(server|cluster))?\b/i, name)
-  return swapped !== p ? swapped : `${p} on ${name}`
-}
-
 const where = (c: ClusterRef) => (c.kind === 'home' ? `${c.name} (home)` : `${c.name} (remote)`)
+
+/** A guest's name is the cluster's word: shown in a label only. A choice's request names the guest by its ID. */
+const guestLabel = (g: { name: string; vmid: number }) => (g.name ? `${g.name} (${g.vmid})` : String(g.vmid))
 
 /** Prepare `a` for the person in `who`. Every read runs in the target cluster's context. */
 export async function prepareAction(prompt: string, a: ParsedAction, who: Who, d: PrepareDeps): Promise<PrepareResult> {
@@ -225,12 +244,14 @@ export async function prepareAction(prompt: string, a: ParsedAction, who: Who, d
   if (a.kind === 'copy') return prepareCopy(prompt, a, who, d)
 
   const t = resolveTargets(a.where, who.clusters, who.current)
-  if (t.kind === 'ask') return say(t.message, t.choices.map(n => onCluster(prompt, n)))
-  if (t.clusters.length !== 1) return say('I act on one cluster at a time. Name the one you mean.', t.clusters.map(c => onCluster(prompt, c.name)))
+  if (t.kind === 'ask') return say(t.message, t.choices.map(c => ({ label: c.name, prompt: promptOn(prompt, c.name), cluster: c.id })))
+  if (t.clusters.length !== 1) return say('I act on one cluster at a time. Name the one you mean.', t.clusters.map(c => ({ label: c.name, prompt: promptOn(prompt, c.name), cluster: c.id })))
   const c = t.clusters[0]
   const row = d.row(c.id)
   if (!row) return say('That cluster was removed. Nothing was prepared.')
-  const base = { owner: who.owner, clusterId: c.id, clusterName: c.name, clusterKind: c.kind, fingerprint: row.certFingerprint ?? null }
+  let conn: string
+  try { conn = d.connection(c.id) } catch (e: any) { return say(`I could not prepare that on ${c.name}: ${plainError(e)}`) }
+  const base = { owner: who.owner, clusterId: c.id, clusterName: c.name, clusterKind: c.kind, fingerprint: row.certFingerprint ?? null, conn }
 
   if (a.kind === 'monitoring-install' || a.kind === 'monitoring-remove') {
     if (c.kind === 'home') return say('Monitoring on the home cluster is set up in Settings -> Setup checklist, not by the assistant. Nothing was prepared.')
@@ -246,29 +267,37 @@ export async function prepareAction(prompt: string, a: ParsedAction, who: Who, d
     return { kind: 'card', card: card(plan, id, title, `${title}. This runs on ${c.name}'s nodes over their saved logins, then reads the result back.`, pv.steps) }
   }
 
-  // A guest action.
+  // A guest action. Every guest the cluster lists is validated as a guest reference (node name, type, integer ID)
+  // before it can be named in a plan, a route or a choice; one that is not is left out.
   const verb = a.kind as GuestVerb
+  const vw = VERB_WORDS[verb][0].toLowerCase()
   const words = guestWords(a.target, who.clusters)
   let guests: Array<{ vmid: number; node: string; type: GuestType; name: string; status: string }>
   try {
     guests = await d.inCluster(c.id, async () => ((await d.pve().fetchStrict<any[]>('/cluster/resources?type=vm')) ?? [])
       .filter(r => (r?.type === 'lxc' || r?.type === 'qemu') && Number(r.template ?? 0) !== 1)
-      .map(r => ({ vmid: Number(r.vmid), node: String(r.node), type: r.type as GuestType, name: String(r.name ?? ''), status: String(r.status ?? '') })))
+      .flatMap(r => {
+        try { const g = checkGuest(String(r.node), String(r.type), r.vmid); return [{ ...g, name: String(r.name ?? ''), status: String(r.status ?? '') }] }
+        catch { return [] }
+      }))
   } catch (e: any) { return say(`I could not read the guests on ${c.name}: ${plainError(e)} Nothing was prepared.`) }
 
-  const retry = (g: { name: string; vmid: number }) => `${VERB_WORDS[verb][0].toLowerCase()} ${g.name || g.vmid} on ${c.name}`
+  // Choices name the guest by its ID and carry the cluster, so a name the remote chose can never steer them.
+  const choice = (g: { name: string; vmid: number }): Choice => ({ label: `${vw} ${guestLabel(g)} on ${c.name}`, prompt: `${vw} ${g.vmid}`, cluster: c.id })
   if (!words) {
     const some = guests.slice().sort((x, y) => x.vmid - y.vmid).slice(0, 8)
-    return say(`Which guest on ${c.name} should I ${VERB_WORDS[verb][0].toLowerCase()}? I act on one guest at a time.`, some.map(retry))
+    return say(`Which guest on ${c.name} should I ${vw}? I act on one guest at a time.`, some.map(choice))
   }
   const id = /^\d+$/.test(words) ? Number(words) : null
-  let hits = id !== null ? guests.filter(g => g.vmid === id) : guests.filter(g => g.name.toLowerCase() === words.toLowerCase())
-  if (!hits.length && id === null) {
-    const w = new RegExp(`(^|[^a-z0-9])${words.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^a-z0-9])`)
-    hits = guests.filter(g => w.test(g.name.toLowerCase()))
+  const hits = id !== null ? guests.filter(g => g.vmid === id) : guests.filter(g => g.name.toLowerCase() === words.toLowerCase())
+  if (!hits.length) {
+    // No exact match: a partial one is offered, never acted on.
+    const w = words.toLowerCase()
+    const near = id === null ? guests.filter(g => g.name.toLowerCase().includes(w)) : []
+    if (near.length) return say(`No guest on ${c.name} is called exactly "${words}". Did you mean one of these?`, near.slice(0, 8).map(choice))
+    return say(`I could not find a guest called "${words}" on ${c.name}. Nothing was prepared.`)
   }
-  if (!hits.length) return say(`I could not find a guest called "${words}" on ${c.name}. Nothing was prepared.`)
-  if (hits.length > 1) return say(`More than one guest on ${c.name} matches "${words}". Which one?`, hits.slice(0, 8).map(g => `${VERB_WORDS[verb][0].toLowerCase()} ${g.vmid} on ${c.name}`))
+  if (hits.length > 1) return say(`More than one guest on ${c.name} matches "${words}". Which one?`, hits.slice(0, 8).map(choice))
   const g0 = hits[0]
   const guest: GuestRef = { node: g0.node, type: g0.type, vmid: g0.vmid, name: g0.name || String(g0.vmid) }
   const plan0: ActionPlan = { kind: verb, ...base, guest }
@@ -282,23 +311,27 @@ export async function prepareAction(prompt: string, a: ParsedAction, who: Who, d
   if (verb === 'delete' && g0.status !== 'stopped') return say(`${label} on ${c.name} is ${g0.status}. Stop it first, then ask me to delete it.`)
 
   const extra: Partial<ActionPlan> = {}
-  const steps: string[] = []
   try {
     await d.inCluster(c.id, async () => {
       const cfg = await d.pve().fetchStrict<any>(`/nodes/${encodeURIComponent(guest.node)}/${guest.type}/${guest.vmid}/config`)
       if (!cfg) throw new GuestActionRefusal('No such guest on that node.', 'not-found')
       extra.digest = String(cfg.digest ?? '')
+      // The same value destroy() compares the typed name with.
+      if (verb === 'delete') extra.confirmName = String(cfg.hostname ?? cfg.name ?? guest.vmid)
       if (verb === 'backup') {
         const stores = await d.backupStorages(guest.node)
         if (!stores.length) throw new GuestActionRefusal(`No storage on ${guest.node} takes backups.`)
-        const named = stores.filter(s => new RegExp(`\\b${s.storage.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(a.where))
+        // Only a storage named on purpose ("to storage X", "to X"), compared whole: "local" is not in "local-vm".
+        const asked = [...a.where.matchAll(/\b(?:to|onto|into)\s+(?:storage\s+)?(\S+)|\bstorage\s+(\S+)/gi)].map(m => (m[1] ?? m[2]).replace(/[.,!?]+$/, '').toLowerCase())
+        const named = stores.filter(st => asked.includes(st.storage.toLowerCase()))
         if (named.length === 1) extra.storage = named[0].storage
         else if (stores.length === 1) extra.storage = stores[0].storage
-        else throw Object.assign(new Error('ask'), { ask: stores.map(s => s.storage) })
+        else throw Object.assign(new Error('ask'), { ask: stores.map(st => st.storage) })
       }
     })
   } catch (e: any) {
-    if (Array.isArray(e?.ask)) return say(`Which storage on ${guest.node} should the backup of ${guest.name} go to?`, e.ask.map((s: string) => `back up ${guest.vmid} on ${c.name} to storage ${s}`))
+    if (Array.isArray(e?.ask)) return say(`Which storage on ${guest.node} should the backup of ${guest.name} go to?`,
+      e.ask.map((st: string) => ({ label: `back up ${guestLabel(guest)} to ${st}`, prompt: `back up ${guest.vmid} to storage ${st}`, cluster: c.id })))
     return say(`I could not prepare that on ${c.name}: ${plainError(e)}`)
   }
   if (verb === 'snapshot') {
@@ -317,8 +350,7 @@ export async function prepareAction(prompt: string, a: ParsedAction, who: Who, d
     backup: `A backup to ${extra.storage} starts now; it can take a while, and its task is followed.`,
     delete: 'The guest and its disks are deleted for good. Type its name to confirm; the answer checks it is gone.',
   }
-  steps.push(`${label} on ${where(c)}.`, what[verb])
-  return { kind: 'card', card: card(plan, planId, title, `${title}. ${what[verb]}`, steps) }
+  return { kind: 'card', card: card(plan, planId, title, `${title}. ${what[verb]}`, [`${label} on ${where(c)}.`, what[verb]]) }
 }
 
 async function prepareCopy(prompt: string, a: ParsedAction, who: Who, d: PrepareDeps): Promise<PrepareResult> {
@@ -334,27 +366,30 @@ async function prepareCopy(prompt: string, a: ParsedAction, who: Who, d: Prepare
   const dst = dp.c, src = sp.c
   const dRow = d.row(dst.id), sRow = d.row(src.id)
   if (!dRow || !sRow) return say('That cluster was removed. Nothing was prepared.')
-  const base = { owner: who.owner, clusterId: dst.id, clusterName: dst.name, clusterKind: dst.kind, fingerprint: dRow.certFingerprint ?? null }
-  const plan0: ActionPlan = { kind: 'copy', ...base, peer: { id: src.id, name: src.name, fingerprint: sRow.certFingerprint ?? null } }
+  let dConn: string, sConn: string
+  try { dConn = d.connection(dst.id); sConn = d.connection(src.id) } catch (e: any) { return say(`I could not prepare that copy: ${plainError(e)}`) }
+  const base = { owner: who.owner, clusterId: dst.id, clusterName: dst.name, clusterKind: dst.kind, fingerprint: dRow.certFingerprint ?? null, conn: dConn }
+  const plan0: ActionPlan = { kind: 'copy', ...base, peer: { id: src.id, name: src.name, fingerprint: sRow.certFingerprint ?? null, conn: sConn } }
   const refused = roleRefusal(plan0, who.role)
   if (refused) return say(refused)
 
   const folder = a.target.replace(/\b(the|my|our)\b/ig, ' ').replace(/\b(folders?|directory|files?)\b/ig, ' ').replace(/\s+/g, ' ').trim()
   if (!folder) return say('Which folder should I copy?')
   const again = prompt.replace(/[.!?]+$/, '')
-  // The source path: an absolute one as given, else the folder inside one of the source's allowed folders.
+  // Choices for a copy are sent for the cluster that was open, where the request was first made.
+  const ch = (label: string, p: string): Choice => ({ label, prompt: p, cluster: who.current.id })
   let srcPath: string
   if (folder.startsWith('/')) srcPath = folder
   else {
     if (!sRow.allowedRoots.length) return say(`No folders are allowed for copies on ${src.name} yet. An admin adds them in Command center -> ${src.name} -> Edit server.`)
     const cands = sRow.allowedRoots.map(r => `${r}/${folder}`)
-    if (cands.length > 1) return say(`Which ${folder} on ${src.name}?`, cands.map(p => again.replace(folder, p)))
+    if (cands.length > 1) return say(`Which ${folder} on ${src.name}?`, cands.map(p => ch(p, again.replace(folder, p))))
     srcPath = cands[0]
   }
   let dstPath = a.dstPath
   if (!dstPath) {
     if (!dRow.allowedRoots.length) return say(`No folders are allowed for copies on ${dst.name} yet. An admin adds them in Command center -> ${dst.name} -> Edit server.`)
-    if (dRow.allowedRoots.length > 1) return say(`Into which folder on ${dst.name}?`, dRow.allowedRoots.map(r => `${again} into ${r}`))
+    if (dRow.allowedRoots.length > 1) return say(`Into which folder on ${dst.name}?`, dRow.allowedRoots.map(r => ch(r, `${again} into ${r}`)))
     dstPath = dRow.allowedRoots[0]
   }
   let srcNodes: string[], dstNodes: string[]
@@ -362,10 +397,12 @@ async function prepareCopy(prompt: string, a: ParsedAction, who: Who, d: Prepare
     srcNodes = await d.inCluster(src.id, () => d.nodes())
     dstNodes = await d.inCluster(dst.id, () => d.nodes())
   } catch (e: any) { return say(`I could not read the nodes: ${plainError(e)} Nothing was prepared.`) }
+  const okNode = (n: string) => /^[a-zA-Z0-9][a-zA-Z0-9.-]{0,62}$/.test(n)
+  srcNodes = srcNodes.filter(okNode); dstNodes = dstNodes.filter(okNode)
   const srcNode = a.srcNode ?? (srcNodes.length === 1 ? srcNodes[0] : undefined)
-  if (!srcNode || !srcNodes.includes(srcNode)) return say(`Which node of ${src.name} holds ${folder}?`, srcNodes.map(n => `${again} from node ${n}`))
+  if (!srcNode || !srcNodes.includes(srcNode)) return say(`Which node of ${src.name} holds ${folder}?`, srcNodes.map(n => ch(n, `${again} from node ${n}`)))
   const dstNode = a.dstNode ?? (dstNodes.length === 1 ? dstNodes[0] : undefined)
-  if (!dstNode || !dstNodes.includes(dstNode)) return say(`Which node of ${dst.name} should receive it?`, dstNodes.map(n => `${again} onto node ${n}`))
+  if (!dstNode || !dstNodes.includes(dstNode)) return say(`Which node of ${dst.name} should receive it?`, dstNodes.map(n => ch(n, `${again} onto node ${n}`)))
 
   let pv: { previewId: string; words: string }
   try {
@@ -396,6 +433,7 @@ export interface ApplyDeps {
   /** The cluster this apply request is for (its X-HyperProx-Cluster header; home without one). */
   requestCluster: string
   row(id: string): ClusterRow | null
+  connection(id: string): string
   unlocked(): boolean
   reconfirmed(sid: string): boolean
   inCluster<T>(id: string, fn: () => Promise<T>): Promise<T>
@@ -416,82 +454,129 @@ export interface ApplyAnswer { status: number; body: Record<string, unknown> }
 const refuse = (status: number, code: string, error: string, extra: Record<string, unknown> = {}): ApplyAnswer =>
   ({ status, body: { ok: false, code, error, ...extra } })
 
+/** The audit action for a plan, the same name the UI's route records; "assistant.apply" when there is no plan. */
+function auditName(plan: ActionPlan | null): string {
+  if (!plan) return 'assistant.apply'
+  if (plan.kind === 'copy') return 'cluster.files.copy'
+  if (plan.kind === 'monitoring-install' || plan.kind === 'monitoring-remove') return 'cluster.monitoring.apply'
+  return `cluster.guest.${LEAF[plan.kind as GuestVerb]}`
+}
+
 /**
- * Apply a prepared plan by id. Checked in this order, and nothing is done unless every check passes: unlocked,
- * the plan is this person's, the request is for the plan's cluster, that cluster's connection is unchanged, the
- * role, the master-password re-confirmation, the typed name (delete), then the guest's config digest.
- * A refusal the person can fix (re-confirm, type the name) keeps the plan; every other refusal uses it up.
+ * Apply a prepared plan by id, and audit the outcome whatever it is: every refusal and every error writes one
+ * entry with ok:false and its code (names, ids and codes only, never a value). Success entries are written by
+ * the action itself (applyOnce), the same as the UI's.
  */
 export async function applyAction(planId: unknown, body: { confirmName?: unknown }, d: ApplyDeps): Promise<ApplyAnswer> {
+  const seen: { plan: ActionPlan | null; audited: boolean } = { plan: null, audited: false }
+  let answer: ApplyAnswer = refuse(500, 'failed', 'Something went wrong. Nothing may have been done; check the task list.')
+  try {
+    answer = await applyOnce(planId, body, d, seen)
+    return answer
+  } catch (e: any) {
+    const code = e?.name === 'VaultLockedError' ? 'locked' : e instanceof GuestActionRefusal ? e.code
+      : e?.name === 'CertificateChangedError' ? 'cert_changed' : e?.name === 'CertificateNotConfirmedError' ? 'cert_unconfirmed'
+      : e?.name === 'MonitoringRefusal' || e?.name === 'ClusterRefusal' ? 'refused' : 'failed'
+    const status = code === 'locked' ? 423 : e instanceof GuestActionRefusal ? (e.code === 'not-found' ? 404 : e.code === 'confirm' ? 428 : 422)
+      : code === 'failed' ? 502 : 409
+    answer = refuse(status, code, code === 'locked' ? 'HyperProx is locked. Sign in to unlock it, then try again.' : plainError(e), code === 'locked' ? { locked: true } : {})
+    return answer
+  } finally {
+    if (!seen.audited && answer.body.ok !== true) {
+      const p = seen.plan
+      await d.audit(auditName(p), p ? `cluster:${p.clusterId}` : 'assistant', {
+        by: d.owner, via: 'assistant', ok: false, code: String(answer.body.code ?? 'failed'),
+        ...(p ? { action: p.kind, ...(p.guest ? { node: p.guest.node, guest: `${p.guest.type}/${p.guest.vmid}` } : {}) } : {}),
+        ...(answer.body.code === 'wrong_cluster' ? { requestCluster: d.requestCluster } : {}),
+      }).catch(() => undefined)
+    }
+  }
+}
+
+/**
+ * Checked in this order, and nothing is done unless every check passes: unlocked, the plan is this person's, the
+ * request is for the plan's cluster, that cluster's connection is unchanged, the guest reference is valid, the
+ * role, the master-password re-confirmation, the guest's config digest, the typed name (delete). A refusal the
+ * person can fix (re-confirm, type the name) keeps the plan; every other refusal uses it up. The plan is taken
+ * only when it is about to run.
+ */
+async function applyOnce(planId: unknown, body: { confirmName?: unknown }, d: ApplyDeps, seen: { plan: ActionPlan | null; audited: boolean }): Promise<ApplyAnswer> {
   if (!d.unlocked()) return refuse(423, 'locked', 'HyperProx is locked. Sign in to unlock it, then try again. Nothing was done.', { locked: true })
   if (typeof planId !== 'string' || !planId) return refuse(400, 'invalid', 'planId is required.')
   const held = d.prepared.peek(planId, d.owner)
   if (!held) return refuse(404, 'not_found', 'That plan has expired or was already used. Ask again.')
   const plan = held.payload
+  seen.plan = plan
   const burn = () => d.prepared.take(planId, d.owner)
-  const there = d.row(plan.clusterId)
 
   if (d.requestCluster !== plan.clusterId) {
     burn()
     const other = d.row(d.requestCluster)?.name ?? 'another cluster'
     return refuse(409, 'wrong_cluster', `This was prepared for ${plan.clusterName}, but this request is for ${other}. Nothing was done. Ask again on the cluster you mean.`)
   }
-  if (!there || (there.certFingerprint ?? null) !== plan.fingerprint ||
-      (plan.peer && (d.row(plan.peer.id)?.certFingerprint ?? null) !== plan.peer.fingerprint) || (plan.peer && !d.row(plan.peer.id))) {
-    burn()
-    return refuse(409, 'cluster_changed', `${plan.clusterName}'s connection changed (or it was removed) since this was prepared. Nothing was done. Ask again.`)
+  const same = (id: string, fp: string | null, conn: string) => {
+    const r = d.row(id)
+    if (!r || (r.certFingerprint ?? null) !== fp) return false
+    try { return d.connection(id) === conn } catch { return false }
   }
-  const route = uiRouteFor(plan)
-  const need = requiredRole('POST', route) ?? 'viewer'
+  if (!same(plan.clusterId, plan.fingerprint, plan.conn) || (plan.peer && !same(plan.peer.id, plan.peer.fingerprint, plan.peer.conn))) {
+    burn()
+    return refuse(409, 'cluster_changed', `${plan.clusterName}'s address, certificate or API token changed (or it was removed) since this was prepared. Nothing was done. Ask again.`)
+  }
+  if (plan.guest) {
+    try { checkGuest(plan.guest.node, plan.guest.type, plan.guest.vmid) }
+    catch { burn(); return refuse(422, 'invalid', 'That plan names a guest that is not valid. Nothing was done.') }
+  }
+  const need = roleFor(plan)
   if (!d.ctx || !hasRole(d.ctx.role, need)) {
     burn()
     return refuse(403, 'forbidden', `This needs the ${need} role. Nothing was done.`, { required: need })
   }
-  if (needsReconfirm('POST', route) && !d.reconfirmed(d.ctx.sid)) {
+  if (reconfirmFor(plan) && !d.reconfirmed(d.ctx.sid)) {
     return refuse(403, 'reconfirm_required', 'Re-enter your master password to continue')
   }
-  if (plan.kind === 'delete' && String(body.confirmName ?? '') !== plan.guest!.name) {
-    return refuse(428, 'confirm', `Type the guest's name exactly (${plan.guest!.name}) to delete it.`)
-  }
-  if (!d.prepared.take(planId, d.owner)) return refuse(404, 'not_found', 'That plan has expired or was already used. Ask again.')
 
   const cluster = { id: plan.clusterId, name: plan.clusterName, kind: plan.clusterKind }
   const by = d.owner
-  try {
-    if (plan.kind === 'monitoring-install' || plan.kind === 'monitoring-remove') {
-      const r = await d.applyMonitoring(plan.monitoringPlanId!, d.owner, plan.clusterId)
-      await d.audit('cluster.monitoring.apply', `cluster:${plan.clusterId}`, { by, via: 'assistant', ok: r.ok, nodes: r.results.map(x => x.node) })
-      const words = [...r.results.map(x => `${x.node}: ${x.status}${x.reason ? ` (${x.reason})` : ''}`), ...r.checks.map(c => c.words)].join(' ')
-      return { status: r.ok ? 200 : 502, body: { ok: r.ok, cluster, words: words || 'Done.', ...(r.ok ? {} : { error: words }) } }
-    }
-    if (plan.kind === 'copy') {
-      const j = await d.startCopy(plan.copyPreviewId!, d.owner)
-      return { status: 200, body: { ok: true, cluster, jobId: j.id, words: `The copy is ${j.state}. Its progress is on the Send files page.` } }
-    }
-    const g = plan.guest!
-    const out = await d.inCluster(plan.clusterId, async () => {
-      const pve = d.pve()
-      const cfg = await pve.fetchStrict<any>(`/nodes/${encodeURIComponent(g.node)}/${g.type}/${g.vmid}/config`).catch(() => null)
-      if (!cfg) return { changed: `${g.name} is no longer on ${g.node}.` }
-      if (String(cfg.digest ?? '') !== (plan.digest ?? '')) return { changed: `${g.name}'s settings changed since this was prepared.` }
-      const ref = { node: g.node, type: g.type, vmid: g.vmid }
-      switch (plan.kind) {
-        case 'start': case 'stop': case 'shutdown': case 'reboot': return { r: await d.ops.power(pve, ref, plan.kind) }
-        case 'snapshot': return { r: await d.ops.snapshot(pve, ref, plan.snapName!) }
-        case 'backup': { const t = await d.ops.backupNow(pve, ref, plan.storage!); return { r: { ok: true, words: `The backup of ${g.name} to ${plan.storage} has started; follow it in the task list.`, upid: t.upid } } }
-        case 'delete': return { r: await d.ops.destroy(pve, ref, String(body.confirmName ?? '')) }
-      }
-      return { changed: 'Unknown action.' }
-    }) as { changed?: string; r?: { ok: boolean; words: string; upid?: string } }
-    if (out.changed) return refuse(409, 'changed', `${out.changed} Nothing was done. Ask again.`)
-    const r = out.r!
-    const leaf = { start: 'power', stop: 'power', shutdown: 'power', reboot: 'power', snapshot: 'snapshot', backup: 'backup', delete: 'delete' }[plan.kind as GuestVerb]
-    await d.audit(`cluster.guest.${leaf}`, `cluster:${plan.clusterId}`, { by, via: 'assistant', node: g.node, guest: `${g.type}/${g.vmid}`, ok: r.ok, ...(leaf === 'power' ? { action: plan.kind } : {}) })
-    return { status: r.ok ? 200 : 502, body: { ok: r.ok, cluster, words: r.words, ...(r.upid ? { upid: r.upid, node: g.node } : {}), ...(r.ok ? {} : { error: r.words }) } }
-  } catch (e: any) {
-    if (e?.name === 'VaultLockedError') return refuse(423, 'locked', 'HyperProx is locked. Sign in to unlock it, then try again.', { locked: true })
-    if (e instanceof GuestActionRefusal) return refuse(e.code === 'not-found' ? 404 : e.code === 'confirm' ? 428 : 422, e.code, e.message)
-    const code = e?.name === 'CertificateChangedError' ? 'cert_changed' : e?.name === 'CertificateNotConfirmedError' ? 'cert_unconfirmed' : 'failed'
-    return refuse(code === 'failed' ? 502 : 409, code, plainError(e))
+  if (plan.kind === 'monitoring-install' || plan.kind === 'monitoring-remove') {
+    if (!d.prepared.take(planId, d.owner)) return refuse(404, 'not_found', 'That plan has expired or was already used. Ask again.')
+    const r = await d.applyMonitoring(plan.monitoringPlanId!, d.owner, plan.clusterId)
+    await d.audit('cluster.monitoring.apply', `cluster:${plan.clusterId}`, { by, via: 'assistant', ok: r.ok, nodes: r.results.map(x => x.node) })
+    seen.audited = true
+    const words = [...r.results.map(x => `${x.node}: ${x.status}${x.reason ? ` (${x.reason})` : ''}`), ...r.checks.map(c => c.words)].join(' ')
+    return { status: r.ok ? 200 : 502, body: { ok: r.ok, cluster, words: words || 'Done.', ...(r.ok ? {} : { error: words, code: 'failed' }) } }
   }
+  if (plan.kind === 'copy') {
+    if (!d.prepared.take(planId, d.owner)) return refuse(404, 'not_found', 'That plan has expired or was already used. Ask again.')
+    const j = await d.startCopy(plan.copyPreviewId!, d.owner)
+    seen.audited = true            // startCopy writes cluster.files.copy (with via: assistant)
+    return { status: 200, body: { ok: true, cluster, jobId: j.id, words: `The copy is ${j.state}. Its progress is on the Send files page.` } }
+  }
+
+  // A guest: the config is read again before anything is taken or done.
+  const g = plan.guest!
+  const ref = { node: g.node, type: g.type, vmid: g.vmid }
+  const cfg = await d.inCluster(plan.clusterId, () => d.pve().fetchStrict<any>(`/nodes/${encodeURIComponent(g.node)}/${g.type}/${g.vmid}/config`).catch(() => null))
+  if (!cfg) { burn(); return refuse(409, 'changed', `${g.name} is no longer on ${g.node}. Nothing was done. Ask again.`) }
+  if (String(cfg.digest ?? '') !== (plan.digest ?? '')) { burn(); return refuse(409, 'changed', `${g.name}'s settings changed since this was prepared. Nothing was done. Ask again.`) }
+  if (plan.kind === 'delete') {
+    const live = String(cfg.hostname ?? cfg.name ?? g.vmid)
+    if (String(body.confirmName ?? '') !== live) return refuse(428, 'confirm', `Type the guest's name exactly (${live}) to delete it.`)
+  }
+  if (!d.prepared.take(planId, d.owner)) return refuse(404, 'not_found', 'That plan has expired or was already used. Ask again.')
+
+  const r = await d.inCluster(plan.clusterId, async (): Promise<{ ok: boolean; words: string; upid?: string }> => {
+    const pve = d.pve()
+    switch (plan.kind) {
+      case 'start': case 'stop': case 'shutdown': case 'reboot': return d.ops.power(pve, ref, plan.kind)
+      case 'snapshot': return d.ops.snapshot(pve, ref, plan.snapName!)
+      case 'backup': { const t = await d.ops.backupNow(pve, ref, plan.storage!); return { ok: true, words: `The backup of ${g.name} to ${plan.storage} has started; follow it in the task list.`, upid: t.upid } }
+      case 'delete': return d.ops.destroy(pve, ref, String(body.confirmName ?? ''))
+    }
+    throw new Error('Unknown action.')
+  })
+  const leaf = LEAF[plan.kind as GuestVerb]
+  await d.audit(`cluster.guest.${leaf}`, `cluster:${plan.clusterId}`, { by, via: 'assistant', node: g.node, guest: `${g.type}/${g.vmid}`, ok: r.ok, ...(leaf === 'power' ? { action: plan.kind } : {}) })
+  seen.audited = true
+  return { status: r.ok ? 200 : 502, body: { ok: r.ok, cluster, words: r.words, ...(r.upid ? { upid: r.upid, node: g.node } : {}), ...(r.ok ? {} : { error: r.words, code: 'failed' }) } }
 }

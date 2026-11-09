@@ -21,11 +21,11 @@ import { matchIntent, NO_TASK_ANSWER } from '../lib/ai/intent'
 import { answerQuestion, type AskSource } from '../lib/ai/ask'
 import { coreSources, pluginSources, type CertLite } from '../lib/ai/ask-sources'
 import { PLUGINS }            from '../plugins'
-import { pveFromEnv }         from '../lib/pve-env'
+import { pveFromEnv, connectionKey } from '../lib/pve-env'
 import { listClusters, clusterRow, HOME_ID } from '../lib/clusters/registry'
 import { runInCluster, currentClusterId } from '../lib/clusters/context'
 import { readPanel, livePromQuery } from '../lib/clusters/overview'
-import { jobStore, previewCopy, startCopy } from '../lib/clusters/files'
+import { jobStore, previewCopy, startCopy, kickCopies } from '../lib/clusters/files'
 import { scanCluster }        from '../lib/clusters/scan'
 import { previewMonitoring, applyMonitoring } from '../lib/clusters/monitoring'
 import { power, snapshot, backupNow, backupStorages, destroy } from '../lib/clusters/guest-actions'
@@ -33,8 +33,8 @@ import { isReconfirmed }      from '../lib/auth'
 import { auditCredentialUse } from '../lib/audit'
 import type { Role }          from '../lib/roles'
 import { isQuestionPrompt }   from '../lib/ai/intent'
-import { resolveTargets, type ClusterRef } from '../lib/ai/clusters'
-import { perClusterSources, homeOnlySource, answerAcross, type ClusterSourceDeps } from '../lib/ai/cluster-sources'
+import { resolveTargets, promptOn, type ClusterRef } from '../lib/ai/clusters'
+import { perClusterSources, homeOnlySource, answerAcross, boundTo, type ClusterSourceDeps } from '../lib/ai/cluster-sources'
 import { parseAction, prepareAction, applyAction, type ActionPlan, type PrepareDeps, type ApplyDeps } from '../lib/ai/actions'
 import type { ModelCall }     from '../lib/ai/extract'
 import { runPluginSummary }   from '../lib/plugin-host'
@@ -133,6 +133,7 @@ function defaultDeps(): AiRouteDeps {
       inCluster: (id, fn) => runInCluster(id, fn),
       pve: () => pveFromEnv(),
       row: clusterRow,
+      connection: connectionKey,
       unlocked: isUnlocked,
       backupStorages: node => backupStorages(pveFromEnv(), node),
       // Every collector the scan finds available, as the Edit server step offers them by default.
@@ -146,6 +147,7 @@ function defaultDeps(): AiRouteDeps {
     }),
     applyDeps: () => ({
       row: clusterRow,
+      connection: connectionKey,
       unlocked: isUnlocked,
       reconfirmed: sid => isReconfirmed(sid),
       inCluster: (id, fn) => runInCluster(id, fn),
@@ -157,7 +159,8 @@ function defaultDeps(): AiRouteDeps {
         destroy: (pve, g, name) => destroy({ pve }, g, name),
       },
       applyMonitoring: (planId, owner, clusterId) => applyMonitoring(planId, owner, undefined, clusterId),
-      startCopy: (previewId, owner) => startCopy(previewId, owner),
+      // Started now, not at the runner's next tick.
+      startCopy: async (previewId, owner) => { const j = await startCopy(previewId, owner, 'assistant'); kickCopies(); return j },
       audit: auditCredentialUse,
     }),
   }
@@ -190,16 +193,18 @@ function productionClusterSources(c: ClusterRef, facts: TemplateFacts | null, pr
   }
   const extra = perClusterSources(c, d)
   if (c.kind === 'remote') return [...extra, homeOnlySource(c)]
+  // Home's own sources (cluster, DNS, proxy, certificates, backups, plug-ins) are read in home's context whatever
+  // cluster this request is for: a certificate inventory built while a remote is open must still be home's.
   return [
-    ...coreSources({
+    ...boundTo(HOME_ID, coreSources({
       fetchStrict, facts: facts ?? EMPTY_FACTS, unlocked: isUnlocked,
       certs: async (): Promise<CertLite[]> => {
         const svc = (certsService ??= productionCertsService(prisma as any, () => {}))
         return (await svc.overview(false)).inventory.map(e => ({ names: e.names, daysLeft: e.daysLeft, notAfter: e.notAfter, verdict: e.verdict, source: e.source }))
       },
-    }),
+    }), runInCluster),
     ...extra.filter(s => s.id !== 'cluster' && s.id !== 'backups'),
-    ...pluginSources({ plugins: PLUGINS, unlocked: isUnlocked, run: runPluginSummary }),
+    ...boundTo(HOME_ID, pluginSources({ plugins: PLUGINS, unlocked: isUnlocked, run: runPluginSummary }), runInCluster),
   ]
 }
 
@@ -413,7 +418,7 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
         }
 
         const targets = resolveTargets(prompt, clusters, current)
-        if (targets.kind === 'ask') return said(targets.message, { choices: targets.choices })
+        if (targets.kind === 'ask') return said(targets.message, { choices: targets.choices.map(c => ({ label: c.name, prompt: promptOn(prompt, c.name), cluster: c.id })) })
         const onlyHome = current.kind === 'home' && targets.clusters.length === 1 && targets.clusters[0].kind === 'home'
         if (!onlyHome) {
           // Deploying a service (proxy, DNS, certificate) is the home cluster's, and only from the home cluster's

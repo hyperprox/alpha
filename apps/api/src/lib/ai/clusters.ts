@@ -12,7 +12,20 @@ export interface ClusterRef { id: string; name: string; kind: 'home' | 'remote' 
 
 export type Targets =
   | { kind: 'ok'; clusters: ClusterRef[]; /** The person named a cluster or "all", rather than relying on the open one. */ named: boolean; all: boolean }
-  | { kind: 'ask'; message: string; choices: string[] }
+  | { kind: 'ask'; message: string; choices: ClusterRef[] }
+
+/** A choice offered back: the words shown, the request it sends, and the cluster it is sent for (re-checked by the server). */
+export interface Choice { label: string; prompt: string; cluster: string }
+
+/** Names a cluster may not take: they are words the assistant reads as something else. */
+export const RESERVED_NAMES = ['home', 'remote', 'all', 'each', 'every', 'both']
+
+/** The request again, naming cluster `name` instead of "the remote" (or with "on <name>" added). */
+export function promptOn(prompt: string, name: string): string {
+  const p = prompt.trim().replace(/[.!?]+$/, '')
+  const swapped = p.replace(/\b(the|my|our|that)\s+remote(\s+(server|cluster))?\b/i, name)
+  return swapped !== p ? swapped : `${p} on ${name}`
+}
 
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 const word = (name: string) => new RegExp(`(^|[^A-Za-z0-9])${esc(name.trim())}($|[^A-Za-z0-9])`, 'i')
@@ -29,7 +42,7 @@ const NOT_A_NAME = new Set(['this', 'that', 'my', 'the', 'other', 'same', 'home'
 
 /** Ask which of these, in plain words, offering each real name. */
 function askWhich(intro: string, clusters: ClusterRef[]): Targets {
-  return { kind: 'ask', message: `${intro} Your clusters are: ${clusters.map(c => c.name).join(', ')}. Which one did you mean?`, choices: clusters.map(c => c.name) }
+  return { kind: 'ask', message: `${intro} Your clusters are: ${clusters.map(c => c.name).join(', ')}. Which one did you mean?`, choices: clusters.slice() }
 }
 
 /**
@@ -45,6 +58,8 @@ export function resolveTargets(text: string, clusters: ClusterRef[], current: Cl
   const byLength = clusters.slice().sort((a, b) => b.name.length - a.name.length)
   let rest = text
   for (const c of byLength) {
+    // A remote saved before names like "Home" were refused never captures the word: "home" means the home cluster.
+    if (c.kind === 'remote' && RESERVED_NAMES.includes(c.name.trim().toLowerCase())) continue
     if (!c.name.trim() || !word(c.name).test(rest)) continue
     named.set(c.id, c)
     rest = rest.replace(new RegExp(esc(c.name.trim()), 'ig'), ' ')

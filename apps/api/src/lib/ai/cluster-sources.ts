@@ -147,6 +147,11 @@ function bound(c: ClusterRef, d: ClusterSourceDeps, s: Omit<AskSource, 'load'> &
   return { ...s, load: () => d.inCluster(c.id, () => s.load()) }
 }
 
+/** Sources whose loads all run in cluster `id`'s context, whatever context the caller is in. */
+export function boundTo(id: string, sources: AskSource[], inCluster: <T>(id: string, fn: () => Promise<T>) => Promise<T>): AskSource[] {
+  return sources.map(s => ({ ...s, load: () => inCluster(id, () => s.load()) }))
+}
+
 /** The per-cluster sources (both kinds of cluster). Home adds its home-only sources beside these. */
 export function perClusterSources(c: ClusterRef, d: ClusterSourceDeps): AskSource[] {
   let panelP: Promise<ClusterPanel> | null = null
