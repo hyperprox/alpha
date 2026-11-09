@@ -42,6 +42,10 @@ import { notifyRoutes }           from './routes/notify'
 import { remoteRoutes }           from './routes/remote'
 import { vpnRoutes }              from './routes/vpn'
 import { monitoringRoutes }       from './routes/monitoring'
+import { clusterRoutes }          from './routes/clusters'
+import { installClusterContext }  from './lib/clusters/context'
+import { setClusterStore, loadClusters } from './lib/clusters/registry'
+import { PrismaClusterStore }     from './lib/clusters/store'
 import { prismaPlugin }         from './plugins/prisma'
 import { redisPlugin }          from './plugins/redis'
 import { registerGate }         from './lib/gate'
@@ -85,6 +89,13 @@ async function main() {
   // Proxy instances (lib/proxy): the registry the Proxy page, the wizard and Certificates read through.
   proxyService(server.prisma)
   await registerGate(server)
+  // -- Clusters (Command center) ------------------------------------------------
+  // The registry is read into memory once; a page for a remote cluster names it per request and the rest of
+  // that request runs in its context (lib/clusters/context.ts). After the gate, so locked and signed-out
+  // requests are already answered. With no remote cluster added, nothing here changes any request.
+  setClusterStore(new PrismaClusterStore(server.prisma))
+  await loadClusters().catch(e => server.log.error({ err: e?.message }, '[clusters] could not read the cluster list; only the home cluster is available'))
+  installClusterContext(server)
 
   // -- Catalogue install wizard: previews, jobs and create marks survive a restart -------------
   // A job that was mid-install is marked interrupted, so its half-made container can be cleaned up.
@@ -124,6 +135,7 @@ async function main() {
   await server.register(targetsRoutes, { prefix: '/api/targets' })
   await server.register(setupChecklistRoutes, { prefix: '/api/setup-checklist' })
   await server.register(monitoringRoutes, { prefix: '/api/monitoring' })
+  await server.register(clusterRoutes,    { prefix: '/api/clusters' })
   await server.register(terminalRoutes,           { prefix: '/api/terminal' })
   await server.register(pluginRoutes,          { prefix: '/api/plugins' })
   await server.register(catalogueRoutes,      { prefix: '/api/catalogue' })

@@ -128,6 +128,25 @@ const VPN_PREVIEW = /^\/api\/vpn\/wg\/router\/peers\/preview$/
 // Remote access job output names hosts, packages and addresses: admins only, like Updates.
 const REMOTE_JOBS = /^\/api\/remote\/(exclusions$|(v1\/)?jobs(\/|$)|machines\/[^/]+\/((tailscale|netbird)\/firewall|host-key)$|v1\/machines\/[^/]+\/(tailscale|netbird)\/(install-preview|settings)$)/
 
+// Clusters (routes/clusters.ts): the list, the Command center and task status are viewer; guest power is operator,
+// as it is on the home pages; everything else is admin, reads included (scans and node lists map machines).
+// Storing or replacing a credential, confirming a certificate or host key, deleting, installing, and starting a
+// file job that can delete (sync, move) also need the master password re-entered.
+const CLUSTERS = /^\/api\/clusters(\/|$)/
+const CLUSTERS_VIEW = /^\/api\/clusters(\/overview|\/[^/]+\/tasks(\/[^/]+\/[^/]+)?|\/files\/jobs(\/[^/]+)?)?$/
+const CLUSTERS_POWER = /^\/api\/clusters\/[^/]+\/guests\/[^/]+\/(lxc|qemu)\/\d+\/power$/
+const CLUSTERS_RECONFIRM: Array<[string, RegExp]> = [
+  ['POST',   /^\/api\/clusters$/],
+  ['DELETE', /^\/api\/clusters\/[^/]+$/],
+  ['POST',   /^\/api\/clusters\/[^/]+\/(certificate|token)$/],
+  ['POST',   /^\/api\/clusters\/[^/]+\/nodes\/[^/]+\/login$/],
+  ['DELETE', /^\/api\/clusters\/[^/]+\/nodes\/[^/]+\/login$/],
+  ['POST',   /^\/api\/clusters\/[^/]+\/guests\/[^/]+\/(lxc|qemu)\/\d+\/delete$/],
+  ['POST',   /^\/api\/clusters\/[^/]+\/monitoring\/apply$/],
+  ['POST',   /^\/api\/clusters\/files\/jobs\/destructive$/],
+  ['POST',   /^\/api\/clusters\/files\/keys$/],
+]
+
 /**
  * The role a request needs, or null when it needs no session.
  * `method` is the HTTP method; `path` the URL path (query string is ignored).
@@ -154,6 +173,11 @@ export function requiredRole(method: string, path: string): Role | null {
   if (CATALOGUE_WIZARD.test(p)) return 'admin'
   if (SETUP_CHECKLIST.test(p)) return 'admin'
   if (HA.test(p)) return (m === 'GET' || m === 'HEAD') && HA_READ.test(p) ? 'viewer' : 'admin'
+  if (CLUSTERS.test(p)) {
+    if (m === 'GET' || m === 'HEAD') return CLUSTERS_VIEW.test(p) ? 'viewer' : 'admin'
+    if (m === 'POST' && CLUSTERS_POWER.test(p)) return 'operator'
+    return 'admin'
+  }
 
   if (m === 'GET' || m === 'HEAD') {
     // Interactive shells on guests and nodes.
@@ -191,5 +215,6 @@ export function needsReconfirm(method: string, path: string): boolean {
   if ((m === 'POST' || m === 'DELETE') && TOKENS.test(p)) return true
   for (const [rm, re] of REMOTE_RECONFIRM) if (m === rm && re.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && VPN.test(p) && !VPN_PREVIEW.test(p)) return true
+  for (const [cm, re] of CLUSTERS_RECONFIRM) if (m === cm && re.test(p)) return true
   return false
 }

@@ -8,6 +8,7 @@ import type { PrismaClient } from '@prisma/client'
 import { pveFromEnv } from '../pve-env'
 import { nodeCredential, execOnNode } from '../node-exec'
 import type { GuestPve, NodeShell } from './service'
+import { nodeAddressInContext } from '../clusters/nodes'
 
 const form = (p: Record<string, string>) => new URLSearchParams(p).toString()
 
@@ -21,8 +22,11 @@ export function livePveAdapter(): GuestPve {
 
 /** Node names are not reliably resolvable from a container: ask the cluster for addresses. */
 async function nodeAddress(node: string): Promise<string | null> {
-  const rows = await pveFromEnv().fetchNode<any[]>('/cluster/status').catch(() => [])
-  return (rows ?? []).find((r: any) => r?.type === 'node' && r.name === node)?.ip ?? null
+  // A remote cluster's node is reached on the address saved for it, never the LAN address it reports.
+  return nodeAddressInContext(node, async () => {
+    const rows = await pveFromEnv().fetchNode<any[]>('/cluster/status').catch(() => [])
+    return (rows ?? []).find((r: any) => r?.type === 'node' && r.name === node)?.ip ?? null
+  })
 }
 
 /**

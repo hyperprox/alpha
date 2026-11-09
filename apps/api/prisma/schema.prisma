@@ -480,3 +480,54 @@ model GuestGpuState {
   offRow    String?
   updatedAt DateTime  @updatedAt
 }
+
+// --- Clusters (command center) -------------------------------------------------
+// One row per remote Proxmox server or cluster managed beside the home one, plus an optional row with id
+// "home" that holds only the home cluster's settings (its display name and file roots). The home cluster's
+// connection is unchanged: it is still the Proxmox login in Settings. No secrets here: a remote's API token
+// lives in the vault (hyperprox:proxmox/<id>) and its node logins in hyperprox:cluster-ssh/<id>.
+
+model ManagedCluster {
+  id              String    @id
+  name            String
+  kind            String    @default("remote")   // home | remote
+  address         String    @default("")         // a Tailscale name or IP, a WireGuard address, any reachable host
+  port            Int       @default(8006)
+  note            String    @default("")
+  certFingerprint String?                        // SHA-256 of the API certificate the owner compared and confirmed
+  certConfirmedAt DateTime?
+  certConfirmedBy String?
+  nodeAddresses   Json      @default("{}")       // node name -> address HyperProx reaches it on (SSH, exporters)
+  allowedRoots    String[]  @default([])         // folders file copies may write into
+  monitoring      Json      @default("{}")       // what HyperProx installed there, per node
+  plexUrl         String?                        // a Plex to ask for a library scan after a copy (its token is in the vault)
+  createdBy       String
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+// File copies between (or within) clusters. Data moves node to node; HyperProx only starts and watches it.
+model FileCopyJob {
+  id           String    @id
+  mode         String    @default("copy")        // copy | sync | move
+  srcCluster   String
+  srcNode      String
+  srcPath      String
+  dstCluster   String
+  dstNode      String
+  dstPath      String
+  speedKBps    Int       @default(0)             // 0: no limit
+  plexScan     Boolean   @default(false)
+  state        String    @default("queued")      // queued | running | verifying | done | failed | cancelled | interrupted
+  preview      Json                              // file count, bytes and skips the owner saw before starting
+  progress     Json      @default("{}")
+  error        String?
+  attempts     Int       @default(0)
+  createdBy    String
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  startedAt    DateTime?
+  finishedAt   DateTime?
+
+  @@index([state])
+}

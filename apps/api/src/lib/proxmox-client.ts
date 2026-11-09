@@ -50,10 +50,18 @@ const DEFAULT_TIMEOUT_MS = 20_000
 export class ProxmoxClient {
   private baseUrl:    string
   private authHeader: string
+  private agent?:     https.Agent
 
-  constructor(host: string, port: number, tokenId: string, tokenSecret: string) {
-    this.baseUrl    = `https://${host}:${port}/api2/json`
+  /**
+   * `opts.agent`: how the connection is made. A remote cluster passes a PinnedAgent (lib/clusters/tls-pin.ts),
+   * which accepts only the certificate the owner confirmed. Without one, the home cluster's behaviour is kept.
+   */
+  constructor(host: string, port: number, tokenId: string, tokenSecret: string, opts: { agent?: https.Agent } = {}) {
+    // An IPv6 address needs brackets in a URL.
+    const h = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
+    this.baseUrl    = `https://${h}:${port}/api2/json`
     this.authHeader = `PVEAPIToken=${tokenId}=${tokenSecret}`
+    this.agent      = opts.agent
   }
 
   /**
@@ -84,9 +92,10 @@ export class ProxmoxClient {
       const reject  = (e: Error) => { if (!settled) { settled = true; rejectP(e) } }
       const url  = new URL(`${this.baseUrl}${path}`)
       const opts: https.RequestOptions = {
-        hostname: url.hostname, port: url.port,
+        hostname: url.hostname.replace(/^\[|\]$/g, ''), port: url.port,
         path: url.pathname + url.search, method,
         rejectUnauthorized: false,
+        ...(this.agent ? { agent: this.agent } : {}),
         headers: {
           Authorization: this.authHeader,
           ...(body ? { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) } : {}),

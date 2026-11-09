@@ -24,6 +24,8 @@ import {
 } from './ssh-broker'
 import { getCredential, setCredential } from './credentials'
 import { recordPin, pinSource, isConfirmedSource, type PinSource } from './hostkey-pins'
+import { currentRemote } from './clusters/context'
+import { remoteNodeLoginRaw } from './clusters/registry'
 
 const HOSTKEY_PROVIDER = 'hostkey'
 
@@ -44,9 +46,12 @@ export function nodeCredentialId(node: string): string {
  * keeps having to unpick.
  */
 export async function nodeCredential(node: string): Promise<TerminalCredential | null> {
+  // A remote cluster's node logins are its own (hyperprox:cluster-ssh/<id>): a node there may share a name with
+  // a home node, and must never be sent the home node's login.
+  const remote = currentRemote()
   // Not loadCredential(): that helper falls back to the shared login *inside
   // itself*, which is correct for a guest pane and wrong for a hypervisor.
-  const raw = await getCredential(CREDENTIAL_CATEGORY, CRED_PROVIDER, nodeCredentialId(node))
+  const raw = remote ? await remoteNodeLoginRaw(remote.id, node) : await getCredential(CREDENTIAL_CATEGORY, CRED_PROVIDER, nodeCredentialId(node))
   if (!raw) return null
   try { return JSON.parse(raw) as TerminalCredential }
   catch { throw new Error(`Stored login for node ${node} is not readable JSON`) }

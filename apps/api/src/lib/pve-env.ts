@@ -6,14 +6,30 @@
 //  cached forever) therefore holds an empty token and every call fails quietly, so the Storage page
 //  showed 0 B and power actions could not reach Proxmox. Build from the current values instead; the
 //  client is reused while they stay the same.
+//
+//  Multi-cluster: inside a request (or job) for a remote cluster (lib/clusters/context.ts) the client is that
+//  cluster's: its address, its token from the vault, and a connection that accepts only the certificate the
+//  owner confirmed. Outside one, nothing changes: the home cluster from PROXMOX_*.
 // =============================================================================
 
 import { ProxmoxClient } from './proxmox-client'
+import { currentRemote } from './clusters/context'
+import { remoteToken } from './clusters/registry'
+import { PinnedAgent } from './clusters/tls-pin'
 
 let cached: { key: string; client: ProxmoxClient } | null = null
+const remoteCache = new Map<string, { key: string; client: ProxmoxClient }>()
 
-/** A client for the current PROXMOX_* values. Throws while they are not set (HyperProx locked). */
-export function pveFromEnv(): ProxmoxClient {
+export class CertificateNotConfirmedError extends Error {
+  readonly code = 'cert_unconfirmed'
+  constructor(name: string) {
+    super(`${name}'s certificate has not been confirmed at its current address, so HyperProx will not send it anything. Confirm its fingerprint first (Command center -> ${name} -> Edit).`)
+    this.name = 'CertificateNotConfirmedError'
+  }
+}
+
+/** The home cluster's client, from PROXMOX_*, whatever context this runs in. */
+export function homePve(): ProxmoxClient {
   const host   = process.env.PROXMOX_HOST ?? ''
   const port   = Number(process.env.PROXMOX_PORT ?? 8006)
   const token  = `${process.env.PROXMOX_USER}!${process.env.PROXMOX_TOKEN_ID}`
@@ -24,9 +40,31 @@ export function pveFromEnv(): ProxmoxClient {
   return cached.client
 }
 
+/** A remote cluster's pinned client. Throws while locked, without a token, or without a confirmed certificate. */
+export function remotePve(r: { id: string; name: string; address: string; port: number; certFingerprint: string | null }): ProxmoxClient {
+  if (!r.certFingerprint) throw new CertificateNotConfirmedError(r.name)
+  const t = remoteToken(r.id)
+  const key = `${r.address}|${r.port}|${r.certFingerprint}|${t.tokenId}|${t.secret}`
+  const hit = remoteCache.get(r.id)
+  if (hit?.key === key) return hit.client
+  const client = new ProxmoxClient(r.address, r.port, t.tokenId, t.secret, { agent: new PinnedAgent(r.certFingerprint) })
+  remoteCache.set(r.id, { key, client })
+  return client
+}
+
+/** A client for the cluster this code runs for (home unless a remote cluster's context is set). */
+export function pveFromEnv(): ProxmoxClient {
+  const r = currentRemote()
+  return r ? remotePve(r) : homePve()
+}
+
+/** Forget a remote's client (its token or certificate changed, or it was removed). */
+export function forgetRemoteClient(id: string): void { remoteCache.delete(id) }
+
 /**
  * A stand-in for code written as `const pve = getClient()` at registration time: every property access
- * resolves against pveFromEnv(), so the call sites stay as they are and always use the current token.
+ * resolves against pveFromEnv(), so the call sites stay as they are and always use the current token
+ * (and the current request's cluster).
  */
 export function livePve(): ProxmoxClient {
   return new Proxy({} as ProxmoxClient, {

@@ -9,6 +9,7 @@ import { withCephMon, CephUnavailableError } from '../lib/ceph'
 import { getProviderCredentials } from '../lib/credentials'
 import { pveFromEnv } from '../lib/pve-env'
 import { npmHealth, withTimeout } from '../lib/service-health'
+import { isRemoteContext } from '../lib/clusters/context'
 
 // Not cached here: the token arrives from the vault after start-up and can change (lib/pve-env.ts).
 const getClient = pveFromEnv
@@ -117,7 +118,9 @@ export const proxmoxRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.get('/summary', async (_, r) => {
     try {
-      const npm = await getNPM()
+      // A remote cluster's summary is its Proxmox only: the GPU reader and the proxy are the home cluster's.
+      const remote = isRemoteContext()
+      const npm = remote ? null : await getNPM()
 
       // Get VMs first so GPU consumer lookup can resolve CT names
       const [nodesR, vmsR] = await Promise.allSettled([
@@ -131,7 +134,7 @@ export const proxmoxRoutes: FastifyPluginAsync = async (fastify) => {
         withCephMon(getClient(), n => getClient().getCephOSDs(n)),
         getClient().getHAStatus(),
         getClient().getAllStorage(),
-        getGPUInfo(vmList),
+        remote ? Promise.resolve(null) : getGPUInfo(vmList),
         // A login that never answers must not hold the whole dashboard hostage.
         npm ? withTimeout(npm.getStats(), 6000, 'Nginx Proxy Manager') : Promise.resolve(null),
         getClient().ping(),

@@ -48,12 +48,35 @@ import { GpuMoveWatcher } from '../lib/guest-config/gpu-watch'
 import { publish } from '../lib/notify'
 import { isUnlocked, onLock } from '../lib/vault/state'
 import { setGpuPortability } from '../lib/ha'
+import { ClusterHistoryStore } from '../lib/clusters/history'
+import { notAvailableVpn } from '../lib/guest-config/vpn'
+import { currentRemote } from '../lib/clusters/context'
 
 let shared: GuestConfigService | null = null
 export function guestConfigService(db: PrismaClient): GuestConfigService {
   shared ??= new GuestConfigService({ pve: livePveAdapter(), shell: liveNodeShell(prismaAudit(db)), history: new PrismaHistoryStore(db), audit: prismaAudit(db), hmacKey: vaultHmacKey })
   return shared
 }
+
+/**
+ * A remote cluster's own service: its previews, device caches and node list never mix with another cluster's,
+ * and its history rows are kept under its own prefix (lib/clusters/history.ts). The Proxmox and node adapters
+ * are the same ones: they follow the request's cluster. VPN status is the home cluster's feature, so it says
+ * "not available" here rather than showing home guests' status against the same IDs.
+ */
+const remoteServices = new Map<string, GuestConfigService>()
+export function remoteGuestConfigService(db: PrismaClient, clusterId: string): GuestConfigService {
+  let s = remoteServices.get(clusterId)
+  if (!s) {
+    s = new GuestConfigService({
+      pve: livePveAdapter(), shell: liveNodeShell(prismaAudit(db)), history: new ClusterHistoryStore(new PrismaHistoryStore(db), clusterId),
+      audit: async (action, resource, details) => prismaAudit(db)(action, resource, { ...details, cluster: clusterId }), hmacKey: vaultHmacKey, vpn: notAvailableVpn,
+    })
+    remoteServices.set(clusterId, s)
+  }
+  return s
+}
+export function forgetRemoteGuestConfigService(clusterId: string): void { remoteServices.get(clusterId)?.forgetKeys(); remoteServices.delete(clusterId) }
 
 export interface GuestConfigRouteDeps {
   service: GuestConfigService
@@ -187,7 +210,7 @@ export function buildGuestConfigRoutes(deps: () => GuestConfigRouteDeps): Fastif
 export const guestConfigRoutes: FastifyPluginAsync = async (fastify) => {
   const service = guestConfigService(fastify.prisma)
   // Key material is not held past a lock.
-  onLock(() => service.forgetKeys())
+  onLock(() => { service.forgetKeys(); for (const s of remoteServices.values()) s.forgetKeys() })
   // After an HA move, check that a GPU guest still sees a GPU and say so. Checks only, every minute, and only
   // while unlocked: the node logins it reads with come from the vault.
   const watcher = new GpuMoveWatcher(service, async e => publish({
@@ -215,7 +238,8 @@ export const guestConfigRoutes: FastifyPluginAsync = async (fastify) => {
   timer.unref()
   fastify.addHook('onClose', async () => { clearInterval(timer); setGpuPortability(null) })
   await fastify.register(buildGuestConfigRoutes(() => ({
-    service,
+    // The request's cluster (lib/clusters/context.ts); home unless a remote cluster's page asked.
+    service: (() => { const r = currentRemote(); return r ? remoteGuestConfigService(fastify.prisma, r.id) : service })(),
     whoami: () => ownerOf(currentContext()),
     isAdmin: () => { const c = currentContext(); return !!c && hasRole(c.role, 'admin') },
   })))
