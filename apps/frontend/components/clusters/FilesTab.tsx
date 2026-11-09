@@ -1,7 +1,7 @@
 'use client'
 
 // Send files: pick a file or folder on one cluster, a folder on another (or the same), preview, then copy in
-// the background. Copy is the only mode offered: it adds files and never replaces or deletes any.
+// the background. Copy is the only mode offered: it adds files; HyperProx never replaces or deletes one that was there.
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { apiJson, atLeast } from '@/lib/api'
@@ -132,7 +132,7 @@ export function FilesTab({ clusterId }: { clusterId: string }) {
       {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 rounded-md font-semibold" style={{ background: clusterColor(dk), color: clusterInk(dk) }}>
         <span className="uppercase">Destination: {nameOf(dst.cluster)}</span>
-        <small className="font-medium" style={{ opacity: 0.85 }}>Copy adds files there. Your files stay where they are, and nothing there is replaced or deleted.</small>
+        <small className="font-medium" style={{ opacity: 0.85 }}>Copy adds files there. Your files stay where they are, and HyperProx replaces and deletes nothing that was already there.</small>
       </div>
       <Notice kind="warn">First version: copying has been tested with HyperProx's own checks, not yet against real servers. Try a small folder first.</Notice>
       <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(min(100%,19rem),1fr))' }}>

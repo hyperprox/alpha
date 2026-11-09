@@ -4,8 +4,10 @@
 # directory, starts this, and reads $D/status and $D/log to show progress. Data goes straight from this node
 # to the destination node; HyperProx only watches.
 #
-#   copy   adds what is missing; nothing on the destination is replaced or deleted (--ignore-existing, and the
-#          destination key itself cannot delete: rrsync -no-del).
+#   copy   adds what is missing; a file already on the destination is never replaced (--ignore-existing, which
+#          is this script's choice) and nothing is deleted (the destination key cannot delete: rrsync -no-del).
+#          The key could overwrite inside its folder; only the re-copy of a file THIS job wrote that failed its
+#          check does that.
 #   Every file this job copied is then checked by checksum against the source, and copied again on a mismatch
 #   (twice at most). A dropped connection is retried, and --partial resumes a half-sent file.
 #

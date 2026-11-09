@@ -357,11 +357,15 @@ shows the two commands that delete the token on the server too).
   there (they are skipped). The copy then runs in the background: rsync goes straight from a node of
   one cluster to a node of the other, never through HyperProx. It retries a dropped connection, resumes
   half-sent files, and checks every copied file by size and checksum afterwards (copying it again on a
-  mismatch). It can ask the destination's Plex to scan when done. Copy never replaces or deletes
-  anything. Both ends must be inside that cluster's allowed folders, checked with links resolved.
+  mismatch). It can ask the destination's Plex to scan when done. A copy only adds files: HyperProx
+  never replaces or deletes a file that was already there (the one exception is a file this same copy
+  wrote that failed its check, which is copied again). Both ends must be inside that cluster's allowed
+  folders, checked with links resolved at preview, at start and at resume (and the source again right
+  before rsync runs).
   Before the first copy to a folder, **Set up sending** makes a key for that one destination folder:
-  HyperProx keeps it in the vault, installs it on the destination restricted to rsync in that folder,
-  write-only and unable to delete, and puts it on the source node only while a copy runs. Sync and
+  HyperProx keeps it in the vault, installs it on the destination restricted to rsync in that folder
+  (write-only, and it cannot delete), and puts it on the source node only while a copy runs. The key
+  itself could overwrite files inside its folder; HyperProx's copy never asks it to. Sync and
   Move are not built yet. Copying has not yet been tried against real servers: try a small folder
   first.
 

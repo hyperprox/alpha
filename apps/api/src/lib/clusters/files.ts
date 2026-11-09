@@ -6,7 +6,8 @@
 //
 //  Keys: one ed25519 key per (source cluster, destination cluster, destination node, destination folder),
 //  made by HyperProx and kept in the vault (hyperprox:xfer-key/<src>-<dst>). Its public half is installed on
-//  the destination node restricted to rsync in that one folder, write-only and unable to delete
+//  the destination node restricted to rsync in that one folder, write-only and unable to delete (it could
+//  overwrite inside that folder; HyperProx's copy never replaces an existing file)
 //  (rrsync -wo -no-del). Its private half is on the source node only while a job runs, in a root-only
 //  directory under /run (memory), and is removed when the job ends. The destination's host keys are read over
 //  HyperProx's own pinned connection and checked against the confirmed pin before they are trusted.
@@ -193,7 +194,7 @@ export async function setupSending(o: { src: string; dst: string; dstNode: strin
   const key: SendKey = { private: kp.private, public: kp.public, knownHosts, dstAddress }
   await setCredential(KEY_CATEGORY, pairProvider(o.src, o.dst), pairField(o.dstNode, root), JSON.stringify(key), true)
   await auditCredentialUse('cluster.files.key', `cluster:${o.dst}`, { by: o.by, from: o.src, node: o.dstNode, folder: root })
-  return { words: `${srcRow.name} can now send files to ${root} on ${o.dstNode} (${dstRow.name}). The key there can only write into that folder and cannot delete anything.` }
+  return { words: `${srcRow.name} can now send files to ${root} on ${o.dstNode} (${dstRow.name}). The key there can only write into that folder and cannot delete anything (it could overwrite a file there; HyperProx's copy never does).` }
 }
 
 /** Every sending key that involves cluster `id`, as source or destination. */
@@ -338,7 +339,7 @@ export async function previewCopy(owner: string, input: CopyInput, runner: NodeR
   const sRow = clusterRow(input.src.cluster)!, dRow = clusterRow(input.dst.cluster)!
   const words = `${s.transferred} file(s), ${fmtBytes(s.bytes)}, from ${sRow.name} to ${dRow.name}` +
     (seconds !== null ? `, ${seconds < 60 ? 'under a minute' : `about ${fmtDuration(seconds)}`} at the speed limit` : '') +
-    `. ${Math.max(0, regular - s.transferred)} file(s) already exist there and will be skipped; nothing there is replaced or deleted.`
+    `. ${Math.max(0, regular - s.transferred)} file(s) already exist there and will be skipped; HyperProx replaces and deletes nothing there.`
   const result: PreviewResult = { files: s.transferred, bytes: s.bytes, skipped: Math.max(0, regular - s.transferred), totalFiles: regular, seconds, words }
   const id = randomUUID()
   previews.set(id, { id, owner, at: Date.now(), input: r.input, result })

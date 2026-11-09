@@ -142,7 +142,7 @@ test('a copy needs sending set up first, then previews in words and runs to a ve
   const ok = { ...input, dst: { cluster: 'home', node: 'node1', path: ROOT } }
   const prev = await previewCopy('owner@example.com', ok, fakeRunner(log))
   assert.equal(prev.files, 1); assert.equal(prev.skipped, 1)
-  assert.match(prev.words, /1 file\(s\), 2.0 KB, from Home cluster to Home cluster, under a minute at the speed limit\. 1 file\(s\) already exist there and will be skipped; nothing there is replaced or deleted\./)
+  assert.match(prev.words, /1 file\(s\), 2.0 KB, from Home cluster to Home cluster, under a minute at the speed limit\. 1 file\(s\) already exist there and will be skipped; HyperProx replaces and deletes nothing there\./)
 
   await assert.rejects(startCopy(prev.previewId, 'someone-else@example.com'), /No such preview/)
   const job = await startCopy(prev.previewId, 'owner@example.com')
