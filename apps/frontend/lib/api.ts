@@ -49,14 +49,33 @@ function goToLogin(locked: boolean) {
   window.location.assign('/login' + (qs ? `?${qs}` : ''))
 }
 
+/**
+ * The remote cluster the current page is for, from its URL (/clusters/<id>/...), or null. The cluster follows
+ * the page, never a remembered choice, so leaving a remote cluster's page can never leave later home pages
+ * acting on it.
+ */
+export function pageClusterId(pathname: string): string | null {
+  const m = /^\/clusters\/(c[0-9a-f]{10})(\/|$)/.exec(pathname)
+  return m ? m[1] : null
+}
+
+export const CLUSTER_HEADER = 'X-HyperProx-Cluster'
+
 /** Idempotent. Call once from a client component on mount. */
 export function installAuthInterceptor(): void {
   if (installed || typeof window === 'undefined') return
   installed = true
   const original = window.fetch.bind(window)
   window.fetch = async (input, init) => {
-    const res = await original(input, init)
     const path = requestPath(input)
+    // On a remote cluster's pages every API call is about that cluster (lib/clusters/context.ts on the API).
+    const cluster = pageClusterId(window.location.pathname)
+    if (cluster && path && path.startsWith('/api/') && !path.startsWith('/api/auth/') && !path.startsWith('/api/clusters')) {
+      const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
+      if (!headers.has(CLUSTER_HEADER)) headers.set(CLUSTER_HEADER, cluster)
+      init = { ...(init ?? {}), headers }
+    }
+    const res = await original(input, init)
     if (path && path.startsWith('/api/') && !path.startsWith('/api/auth/')) {
       if (res.status === 423) goToLogin(true)
       else if (res.status === 401) goToLogin(false)

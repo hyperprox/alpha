@@ -26,6 +26,7 @@ import { checkGuest, power, snapshot, backupNow, backupStorages, taskStatus, des
 import { probeHostKey, execOnNode } from '../lib/node-exec'
 import { confirmPin, PinConfirmRefusal } from '../lib/hostkey-pins'
 import { forgetRemoteGuestConfigService } from './guest-config'
+import { scanMonitoring, previewMonitoring, applyMonitoring, MonitoringRefusal } from '../lib/clusters/monitoring'
 
 const who = () => currentContext()?.email ?? 'unknown'
 
@@ -36,6 +37,7 @@ function fail(reply: FastifyReply, e: any) {
   if (e instanceof GuestActionRefusal) return reply.status(e.code === 'not-found' ? 404 : e.code === 'confirm' ? 428 : 422).send({ success: false, code: e.code, error: msg })
   if (e instanceof CertificateChangedError) return reply.status(409).send({ success: false, code: 'cert_changed', error: msg, presented: e.presented })
   if (e instanceof CertificateNotConfirmedError) return reply.status(409).send({ success: false, code: 'cert_unconfirmed', error: msg })
+  if (e instanceof MonitoringRefusal) return reply.status(409).send({ success: false, code: 'monitoring', error: msg })
   if (e instanceof PinConfirmRefusal) return reply.status(409).send({ success: false, code: 'hostkey', error: msg })
   return reply.status(502).send({ success: false, error: msg })
 }
@@ -256,6 +258,29 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get<{ Params: { id: string }; Querystring: { login?: string } }>('/:id/hardware', async (req, reply) => {
     const row = clusterOr404(req.params.id, reply); if (!row) return
     try { return { success: true, data: await scanCluster(row.id, { useLogin: req.query.login === '1' }) } } catch (e) { return fail(reply, e) }
+  })
+
+  // ── Monitoring on a remote server (step 5) ───────────────────────────────
+
+  fastify.get<{ Params: { id: string } }>('/:id/monitoring/scan', async (req, reply) => {
+    const row = clusterOr404(req.params.id, reply); if (!row) return
+    try { return { success: true, data: await scanMonitoring(row.id) } } catch (e) { return fail(reply, e) }
+  })
+
+  fastify.post<{ Params: { id: string }; Body: { kind?: string; answers?: Record<string, boolean> } }>('/:id/monitoring/preview', async (req, reply) => {
+    const row = clusterOr404(req.params.id, reply); if (!row) return
+    const kind = req.body?.kind === 'remove' ? 'remove' : 'install'
+    const answers = Object.fromEntries(Object.entries(req.body?.answers ?? {}).map(([k, v]) => [k, v === true]))
+    try { return { success: true, data: await previewMonitoring(row.id, who(), kind, answers) } } catch (e) { return fail(reply, e) }
+  })
+
+  fastify.post<{ Params: { id: string }; Body: { planId?: string } }>('/:id/monitoring/apply', async (req, reply) => {
+    const row = clusterOr404(req.params.id, reply); if (!row) return
+    try {
+      const r = await applyMonitoring(String(req.body?.planId ?? ''), who())
+      await auditCredentialUse('cluster.monitoring.apply', `cluster:${row.id}`, { by: who(), ok: r.ok, nodes: r.results.map(x => x.node) })
+      return { success: true, data: r }
+    } catch (e) { return fail(reply, e) }
   })
 
   // ── Guest actions (every one read back) ──────────────────────────────────

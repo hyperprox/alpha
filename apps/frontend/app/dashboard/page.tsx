@@ -3,6 +3,7 @@
 
 
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { CommandCenterIfRemotes } from '@/components/clusters/CommandCenter'
 import Link from 'next/link'
 import { formatUptime, pct } from '@/lib/utils'
 import { wsBase } from '@/lib/ws'
@@ -917,6 +918,8 @@ export default function DashboardView() {
       </header>
 
       <main className="p-3 sm:p-8 max-w-7xl mx-auto space-y-6 sm:space-y-8">
+        {/* Every cluster side by side, once a remote server has been added (nothing shows with none). */}
+        <CommandCenterIfRemotes/>
         {/* Row 1 — the three panels that are mostly dials */}
         <div className="grid gap-4 grid-cols-1 xl:grid-cols-[1.25fr_1.25fr_1fr]">
           <ClusterPanel cluster={fast.cluster} nodes={fast.nodes} vms={fast.vms} ceph={slow?.ceph??null} storage={fast.storage} ha={slow?.ha??null} power={clusterPower} stamp={lastSync?.getTime() ?? null}/>

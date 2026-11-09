@@ -73,7 +73,8 @@ export function remoteNodeLabel(clusterId: string, node: string): string { retur
 /** GPU figures by node, from whatever exporters report them. */
 export async function gpuFigures(c: { id: string; kind: string }, prom: PromQuery) {
   const sel = clusterSelector(c)
-  const nodeOf = (m: Record<string, string>) => m.hpx_node || m.node || ''
+  // A remote's series carry node="<node>@<cluster>" (remoteNodeLabel); home's carry the plain node name.
+  const nodeOf = (m: Record<string, string>) => m.node || ''
   const safe = (e: string) => prom(e).catch(() => [])
   const [amdBusy, amdUsed, amdSize, amdTemp, amdPwm, nvUtil, nvUsed, nvTotal, nvTemp, nvFan] = await Promise.all([
     safe(`node_drm_gpu_busy_percent{${sel}}`),

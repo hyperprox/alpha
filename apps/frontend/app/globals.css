@@ -197,3 +197,22 @@ body {
 /* The body ground has to be painted, not inherited: a transparent body shows
    whatever the browser chrome is using and the theme half-applies. */
 html, body { background: var(--ground); font-family: var(--font-body, 'Barlow', system-ui, sans-serif); }
+
+/* ---------------------------------------------------------------------------
+   Command center: a remote cluster is amber everywhere (the home cluster keeps
+   the teal accent), so the two can never be confused.
+--------------------------------------------------------------------------- */
+:root, :root[data-theme="dark"] {
+  --remote:     #f0b64a;
+  --remote-ink: #2b1c00;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --remote:     #9a5b00;
+    --remote-ink: #ffffff;
+  }
+}
+:root[data-theme="light"] {
+  --remote:     #9a5b00;
+  --remote-ink: #ffffff;
+}
