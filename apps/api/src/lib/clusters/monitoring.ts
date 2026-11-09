@@ -52,7 +52,7 @@ if dpkg-query -W -f='\${Status}' prometheus-node-exporter 2>/dev/null | grep -q 
 if systemctl is-active --quiet prometheus-node-exporter 2>/dev/null; then echo "service=active"; else echo "service=inactive"; fi
 echo "listening=$(ss -ltnH 2>/dev/null | awk '$4 ~ /:9100$/ {print $4}' | paste -sd, -)"
 if grep -qi 0x1002 /sys/class/drm/card*/device/vendor 2>/dev/null; then echo "amd=yes"; else echo "amd=no"; fi
-if [ -f /etc/default/prometheus-node-exporter ] && grep -q 'HyperProx' /etc/default/prometheus-node-exporter; then echo "ours=yes"; else echo "ours=no"; fi
+if [ -f /etc/default/prometheus-node-exporter ] && grep -q 'HyperProx' /etc/default/prometheus-node-exporter || [ -f /etc/hyperprox/node-exporter-prior ]; then echo "ours=yes"; else echo "ours=no"; fi
 if [ -f /etc/hyperprox/node-exporter-installed ]; then echo "installed_by_us=yes"; else echo "installed_by_us=no"; fi
 `
 
@@ -175,56 +175,86 @@ export function writeRemoteTargets(clusterId: string, entries: Array<{ node: str
  * Install (or re-point) node_exporter to listen on the private-link address only. The defaults file is written
  * BEFORE the package is installed, and apt keeps it (--force-confold), so the service never starts listening on
  * every interface, not even for a moment.
+ *
+ * The state before HyperProx (package installed? service enabled? running?) is recorded once, in
+ * /etc/hyperprox/node-exporter-prior, so Remove puts exactly that back. Any failure after the defaults file is
+ * written rolls back at once: the file is restored and the service is put back to its recorded state.
+ * Every /etc path is under $R (HPX_SYSROOT, empty on a real node) so the scripts can be tested in a folder.
  */
 export function installScript(opts: { amdGpu: boolean }): string {
   const args = ['--web.listen-address=${LISTEN_HP}', ...(opts.amdGpu ? ['--collector.drm'] : [])].join(' ')
   return `${COMMON()}
+${STATE_FNS}
 LISTEN="$(printf '%s' "\${SSH_CONNECTION:-}" | awk '{print $3}')"
 [ -n "$LISTEN" ] || hp_result failed "could not tell which address HyperProx reached this node on"
 IFACE="$(ip -o addr show 2>/dev/null | awk -v a="$LISTEN" '{split($4,p,"/"); if (p[1]==a) {print $2; exit}}')"
 case "$IFACE" in tailscale*|wg*|ts[0-9]*) ;; *) hp_result failed "$LISTEN is on \${IFACE:-no interface}, not a Tailscale or WireGuard link, so nothing was installed (metrics are only ever offered on a private link)";; esac
 case "$LISTEN" in *:*) LISTEN_HP="[$LISTEN]:9100";; *) LISTEN_HP="$LISTEN:9100";; esac
-mkdir -p /etc/hyperprox
-DEF=/etc/default/prometheus-node-exporter
+mkdir -p "$HPXD"
+record_prior
 if [ -f "$DEF" ] && ! grep -q HyperProx "$DEF" && [ ! -f "$DEF.hyperprox-orig" ]; then cp -p "$DEF" "$DEF.hyperprox-orig"; fi
 state="$(hp_write_file "$DEF" 0644 "# Written by HyperProx: node_exporter listens on the private link only ($IFACE), not the home network.
 # Remove monitoring in HyperProx to undo this.
 ARGS=\\"${args}\\"")" || hp_result failed "could not write $DEF"
+# From here on, a failure puts things back as they were before this run.
+fail() { restore_prior; hp_result failed "$1 (rolled back: node_exporter is as it was before)"; }
 if ! hp_installed prometheus-node-exporter; then
-  why="$(hp_safe_apt_install prometheus-node-exporter)" || hp_result failed "$why"
-  touch /etc/hyperprox/node-exporter-installed
+  why="$(hp_safe_apt_install prometheus-node-exporter)" || fail "$why"
+  touch "$HPXD/node-exporter-installed"
 fi
 systemctl enable prometheus-node-exporter >/dev/null 2>&1
-systemctl restart prometheus-node-exporter >/dev/null 2>&1 || hp_result failed "installed, but the service would not start (journalctl -u prometheus-node-exporter)"
+systemctl restart prometheus-node-exporter >/dev/null 2>&1 || fail "the service would not start (journalctl -u prometheus-node-exporter)"
 ok=""
 for i in 1 2 3 4 5 6 7 8 9 10; do curl -fsS --max-time 3 "http://$LISTEN_HP/metrics" 2>/dev/null | grep -q '^node_exporter_build_info' && { ok=1; break; }; sleep 1; done
-[ -n "$ok" ] || hp_result failed "nothing answers on $LISTEN_HP"
+[ -n "$ok" ] || fail "nothing answers on $LISTEN_HP"
 wide="$(ss -ltnH 2>/dev/null | awk '$4 ~ /:9100$/ {print $4}' | grep -v -F "$LISTEN" || true)"
-[ -z "$wide" ] || hp_result failed "node_exporter also listens on $wide; stop whatever else serves port 9100 and try again"
-${opts.amdGpu ? `curl -fsS --max-time 3 "http://$LISTEN_HP/metrics" | grep -q '^node_drm_gpu_busy_percent' || hp_result failed "listening on $LISTEN_HP only, but no AMD GPU figures appeared (is the amdgpu driver loaded?)"` : ''}
+[ -z "$wide" ] || fail "something also listens on $wide; stop whatever else serves port 9100 and try again"
+${opts.amdGpu ? `curl -fsS --max-time 3 "http://$LISTEN_HP/metrics" | grep -q '^node_drm_gpu_busy_percent' || fail "no AMD GPU figures appeared (is the amdgpu driver loaded?)"` : ''}
 [ "$state" = same ] && hp_result already "already listening on $LISTEN_HP only"
 hp_result done "listening on $LISTEN_HP only${opts.amdGpu ? ', with AMD GPU figures' : ''}"
 `
 }
 
-/** Undo: put the defaults file back, and remove the package only if HyperProx installed it. */
+/** Shell shared by install and remove: where things are, the recorded state before HyperProx, and restoring it. */
+const STATE_FNS = String.raw`HPXD="$R/etc/hyperprox"
+DEF="$R/etc/default/prometheus-node-exporter"
+PRIOR="$HPXD/node-exporter-prior"
+yesno() { if "$@" >/dev/null 2>&1; then echo yes; else echo no; fi; }
+record_prior() {
+  [ -f "$PRIOR" ] && return 0
+  printf 'installed=%s\nenabled=%s\nactive=%s\n' "$(yesno hp_installed prometheus-node-exporter)" \
+    "$(yesno systemctl is-enabled --quiet prometheus-node-exporter)" "$(yesno systemctl is-active --quiet prometheus-node-exporter)" > "$PRIOR"
+}
+prior() { sed -n "s/^$1=//p" "$PRIOR" 2>/dev/null; }
+restore_defaults() {
+  if [ -f "$DEF" ] && grep -q HyperProx "$DEF"; then
+    if [ -f "$DEF.hyperprox-orig" ]; then mv -f "$DEF.hyperprox-orig" "$DEF"; else rm -f "$DEF"; fi
+  fi
+}
+# Put the defaults file and the service back exactly as recorded. A package HyperProx added is left disabled and
+# stopped here; Remove takes it away.
+restore_prior() {
+  restore_defaults
+  hp_installed prometheus-node-exporter || return 0
+  if [ "$(prior installed)" != yes ] || [ "$(prior enabled)" != yes ]; then systemctl disable prometheus-node-exporter >/dev/null 2>&1 || true; else systemctl enable prometheus-node-exporter >/dev/null 2>&1 || true; fi
+  if [ "$(prior installed)" = yes ] && [ "$(prior active)" = yes ]; then systemctl restart prometheus-node-exporter >/dev/null 2>&1 || true; else systemctl stop prometheus-node-exporter >/dev/null 2>&1 || true; fi
+}`
+
+/** Undo: the defaults file and the service back to the recorded state; the package removed only if HyperProx added it. */
 export function removeScript(): string {
   return `${COMMON()}
-DEF=/etc/default/prometheus-node-exporter
-changed=""
-if [ -f "$DEF" ] && grep -q HyperProx "$DEF"; then
-  if [ -f "$DEF.hyperprox-orig" ]; then mv -f "$DEF.hyperprox-orig" "$DEF"; else rm -f "$DEF"; fi
-  changed=1
-fi
-if [ -f /etc/hyperprox/node-exporter-installed ]; then
+${STATE_FNS}
+[ -f "$PRIOR" ] || [ -f "$HPXD/node-exporter-installed" ] || { grep -q HyperProx "$DEF" 2>/dev/null || hp_result already "nothing of HyperProx's was here"; }
+if [ -f "$HPXD/node-exporter-installed" ]; then
   systemctl disable --now prometheus-node-exporter >/dev/null 2>&1 || true
+  restore_defaults
   apt-get -q -y remove prometheus-node-exporter >/dev/null 2>&1 || hp_result failed "could not remove the prometheus-node-exporter package"
-  rm -f /etc/hyperprox/node-exporter-installed
-  rmdir /etc/hyperprox 2>/dev/null || true
+  rm -f "$HPXD/node-exporter-installed" "$PRIOR"; rmdir "$HPXD" 2>/dev/null || true
   hp_result done "removed node_exporter (HyperProx had installed it)"
 fi
-if [ -n "$changed" ]; then systemctl restart prometheus-node-exporter >/dev/null 2>&1 || true; hp_result done "node_exporter is back to how it was before HyperProx"; fi
-hp_result already "nothing of HyperProx's was here"
+restore_prior
+rm -f "$PRIOR"; rmdir "$HPXD" 2>/dev/null || true
+hp_result done "node_exporter is back to how it was before HyperProx"
 `
 }
 

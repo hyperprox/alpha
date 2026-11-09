@@ -200,3 +200,68 @@ test('5: the CEPH monitor answer is kept per cluster', async () => {
   assert.equal(await runInCluster(REMOTE, () => resolveCephMonNode(fake('remote-node'))), 'remote-node', 'CEPH_MON_NODE is a home node name')
   delete process.env.CEPH_MON_NODE
 })
+
+// ── 6: monitoring install and remove put node_exporter back exactly as it was ───────────────
+
+import { installScript as monInstall, removeScript as monRemove } from '../src/lib/clusters/monitoring'
+import { mkdirSync as mkd, writeFileSync as wf, existsSync as ex, readFileSync as rf, chmodSync } from 'node:fs'
+
+/** A pretend node in a folder: stub systemctl, dpkg-query, apt-get, curl, ss and ip that keep their state in files. */
+function fakeNode(o: { installed: boolean; enabled: boolean; active: boolean; wide?: boolean; defaults?: string }) {
+  const root = mkdtempSync(join(tmpdir(), 'hpx-node-'))
+  const st = join(root, 'stub-state'), bin = join(root, 'bin')
+  mkd(st); mkd(bin); mkd(join(root, 'etc', 'default'), { recursive: true })
+  const flag = (n: string, v: boolean) => { if (v) wf(join(st, n), '') }
+  flag('installed', o.installed); flag('enabled', o.enabled); flag('active', o.active)
+  if (o.defaults !== undefined) wf(join(root, 'etc/default/prometheus-node-exporter'), o.defaults)
+  wf(join(st, 'ss'), o.wide ? 'LISTEN 0 4096 0.0.0.0:9100 0.0.0.0:*\n' : '')
+  const S = st
+  const stub = (n: string, body: string) => { wf(join(bin, n), `#!/bin/bash\n${body}\n`); chmodSync(join(bin, n), 0o755) }
+  stub('systemctl', `q=""; [ "$2" = --quiet ] && q=1
+case "$1" in
+  is-enabled) [ -f ${S}/enabled ];; is-active) [ -f ${S}/active ];;
+  enable) touch ${S}/enabled;; disable) rm -f ${S}/enabled; [ "$2" = --now ] && rm -f ${S}/active; true;;
+  restart|start) touch ${S}/active;; stop) rm -f ${S}/active;; *) true;; esac`)
+  stub('dpkg-query', `[ -f ${S}/installed ] && echo 'install ok installed'`)
+  stub('apt-get', `case " $* " in *" -s "*) echo "Inst prometheus-node-exporter (1.0 Debian)";; *" install "*) touch ${S}/installed;; *" remove "*) rm -f ${S}/installed ${S}/enabled ${S}/active;; esac; true`)
+  stub('curl', `[ -f ${S}/active ] && printf 'node_exporter_build_info 1\\nnode_drm_gpu_busy_percent 3\\n'`)
+  stub('ss', `cat ${S}/ss; [ -f ${S}/active ] && echo 'LISTEN 0 4096 10.0.0.7:9100 0.0.0.0:*'; true`)
+  stub('ip', `echo '3: tailscale0    inet 10.0.0.7/32 scope global tailscale0'`)
+  stub('sleep', 'true')
+  const run = (script: string) => execFileSync('bash', ['-c', script], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, HPX_SYSROOT: root, SSH_CONNECTION: '10.0.0.1 5555 10.0.0.7 22' } })
+  const state = () => ({ installed: ex(join(st, 'installed')), enabled: ex(join(st, 'enabled')), active: ex(join(st, 'active')) })
+  const defaults = () => (ex(join(root, 'etc/default/prometheus-node-exporter')) ? rf(join(root, 'etc/default/prometheus-node-exporter'), 'utf8') : null)
+  return { run, state, defaults, setWide: (w: boolean) => wf(join(st, 'ss'), w ? 'LISTEN 0 4096 0.0.0.0:9100 0.0.0.0:*\n' : '') }
+}
+const resultOf = (out: string) => out.trim().split('\n').filter(l => l.startsWith('HPX-RESULT')).pop() ?? ''
+
+test('6: a package that was installed but disabled and stopped is put back disabled and stopped', () => {
+  const n = fakeNode({ installed: true, enabled: false, active: false, defaults: 'ARGS=""\n' })
+  assert.match(resultOf(n.run(monInstall({ amdGpu: false }))), /\tdone\tlistening on 10\.0\.0\.7:9100 only/)
+  assert.deepEqual(n.state(), { installed: true, enabled: true, active: true })
+  assert.match(n.defaults()!, /listen-address=10\.0\.0\.7:9100/)
+  assert.match(resultOf(n.run(monRemove())), /\tdone\t/)
+  assert.deepEqual(n.state(), { installed: true, enabled: false, active: false }, 'not left starting at boot on every interface')
+  assert.equal(n.defaults(), 'ARGS=""\n', 'its own defaults file is back')
+})
+
+test('6: a failure after the package step rolls back at once', () => {
+  const n = fakeNode({ installed: false, enabled: false, active: false, wide: true })
+  const r = resultOf(n.run(monInstall({ amdGpu: false })))
+  assert.match(r, /\tfailed\tsomething also listens on 0\.0\.0\.0:9100.*rolled back/)
+  assert.equal(n.state().enabled, false)
+  assert.equal(n.state().active, false)
+  assert.equal(n.defaults(), null, 'the HyperProx defaults file is gone')
+})
+
+test('6: a normal remove takes away a package HyperProx added, and leaves a running one running', () => {
+  const added = fakeNode({ installed: false, enabled: false, active: false })
+  assert.match(resultOf(added.run(monInstall({ amdGpu: true }))), /\tdone\t.*AMD GPU figures/)
+  assert.match(resultOf(added.run(monRemove())), /removed node_exporter/)
+  assert.deepEqual(added.state(), { installed: false, enabled: false, active: false })
+  const running = fakeNode({ installed: true, enabled: true, active: true })
+  running.setWide(false)
+  assert.match(resultOf(running.run(monInstall({ amdGpu: false }))), /\tdone\t/)
+  assert.match(resultOf(running.run(monRemove())), /back to how it was/)
+  assert.deepEqual(running.state(), { installed: true, enabled: true, active: true })
+})
