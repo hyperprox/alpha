@@ -4,7 +4,7 @@
 import { test, before } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { utils } from 'ssh2'
@@ -156,4 +156,30 @@ test('a copy needs sending set up first, then previews in words and runs to a ve
   assert.equal(done.progress.verified, 1)
   assert.ok(log.some(l => l.includes('CLEANED') || l.includes('kill')), 'the working folder is cleaned up')
   void POLL_SCRIPT
+}))
+
+// Finding 8: both ends are checked again at launch and at resume, and by the run script just before rsync.
+test('8: a source that became a link out of its folder is refused at launch, at resume, and by the run script', () => asOwner(async () => {
+  const { recheckJob, runScript: rs } = await import('../src/lib/clusters/files')
+  setJobStore(new MemoryJobStore())
+  const base = { mode: 'copy', srcCluster: 'home', srcNode: 'node1', dstCluster: 'home', dstNode: 'node1', dstPath: ROOT, speedKBps: 0, plexScan: false, preview: {}, progress: {}, error: null, attempts: 0, createdBy: 'owner@example.com', startedAt: null, finishedAt: null }
+  const job = await jobStore().create({ ...base, id: '00000000-0000-0000-0000-000000000008', srcPath: join(ROOT, 'escape'), state: 'failed' } as any)
+  await assert.rejects(recheckJob(job, fakeRunner([])), /outside the allowed folder/)
+  const runner = new CopyRunner(fakeRunner([]), async () => null)
+  await assert.rejects(runner.resume(job.id), /outside the allowed folder/)
+  assert.equal((await jobStore().get(job.id))!.state, 'failed', 'not re-queued')
+  await jobStore().update(job.id, { state: 'queued' })
+  await runner.launch((await jobStore().get(job.id))!)
+  const after = (await jobStore().get(job.id))!
+  assert.equal(after.state, 'failed')
+  assert.match(after.error ?? '', /outside the allowed folder/)
+
+  // The run script's own check, with no rsync anywhere near: it stops before copying.
+  const D = mkdtempSync(join(tmpdir(), 'hpx-run-'))
+  writeFileSync(join(D, 'run.sh'), rs())
+  writeFileSync(join(D, 'job.env'), `JOB_ID=t\nMODE=copy\nSRC='${join(ROOT, 'escape')}'\nSRC_ROOT='${ROOT}'\nDST_PATH='${ROOT}'\nDST_ROOT='${ROOT}'\nDST_REL=.\nDST_HOST=''\nDST_HOST_URI=''\nBWLIMIT=0\n`)
+  execFileSync('bash', [join(D, 'run.sh')], { env: { ...process.env, PATH: '/usr/bin:/bin' } })
+  const status = readFileSync(join(D, 'status'), 'utf8')
+  assert.match(status, /error the source now leads outside its allowed folder/)
+  assert.match(status, /end failed/)
 }))

@@ -20,6 +20,10 @@ trap 'rm -f "$D/key" "$D/known_hosts"' EXIT
 trap 'st "end cancelled"; rm -f "$D/key" "$D/known_hosts"; exit 0' TERM INT
 
 [ -e "$SRC" ] || { st "error the source $SRC is not there"; finish failed; }
+# The real paths (links resolved) must still be inside their allowed folders, checked here, just before rsync.
+inside() { local r p; r="$(realpath -e -- "$2" 2>/dev/null)" || return 1; p="$(realpath -e -- "$1" 2>/dev/null)" || return 1; case "$p/" in "$r"/*) return 0;; esac; return 1; }
+if [ -n "${SRC_ROOT:-}" ]; then inside "$SRC" "$SRC_ROOT" || { st "error the source now leads outside its allowed folder (through a link?), so nothing was copied"; finish failed; }; fi
+if [ -z "${DST_HOST:-}" ] && [ -n "${DST_ROOT:-}" ]; then inside "$DST_PATH" "$DST_ROOT" || { st "error the destination now leads outside its allowed folder (through a link?), so nothing was copied"; finish failed; }; fi
 case "$MODE" in copy) ;; *) st "error only copy is offered"; finish failed;; esac
 
 RSH=()

@@ -377,8 +377,9 @@ export function runScript(): string { return fs.readFileSync(path.join(__dirname
 const RUN_DIR = (id: string) => `/run/hyperprox-xfer/${id}`
 
 /** Start a job's detached runner on the source node. */
-export async function launchScript(job: JobRow, key: SendKey | null, dstRel: string): Promise<string> {
+export async function launchScript(job: JobRow, key: SendKey | null, dstRel: string, srcRoot = '', dstRoot = ''): Promise<string> {
   const env = [
+    `SRC_ROOT=${q(srcRoot)}`, `DST_ROOT=${q(dstRoot)}`,
     `JOB_ID=${q(job.id)}`, `MODE=${q(job.mode)}`, `SRC=${q(job.srcPath)}`, `DST_PATH=${q(job.dstPath)}`, `DST_REL=${q(dstRel)}`, `BWLIMIT=${Math.max(0, job.speedKBps | 0)}`,
     `DST_HOST=${q(key ? key.dstAddress : '')}`, `DST_HOST_URI=${q(key ? hostUri(key.dstAddress) : '')}`,
   ].join('\n')
@@ -415,6 +416,22 @@ export function parsePoll(out: string): Poll {
   }
 }
 
+/**
+ * Both ends of a job, checked as at preview: inside an allowed folder by name, and by real path (links resolved)
+ * on each node. Throws a ClusterRefusal in plain words.
+ */
+export async function recheckJob(j: JobRow, runner: NodeRunner): Promise<{ srcRoot: string; dstRoot: string }> {
+  const sRow = clusterRow(j.srcCluster), dRow = clusterRow(j.dstCluster)
+  if (!sRow || !dRow) throw new ClusterRefusal('A cluster in this job was removed.')
+  const srcRoot = rootFor(j.srcPath, sRow.allowedRoots)
+  if (!srcRoot) throw new ClusterRefusal(`${j.srcPath} is no longer inside one of ${sRow.name}'s allowed folders.`)
+  const dstRoot = rootFor(j.dstPath, dRow.allowedRoots)
+  if (!dstRoot) throw new ClusterRefusal(`${j.dstPath} is no longer inside one of ${dRow.name}'s allowed folders.`)
+  parseContainment((await runner.run(j.srcCluster, j.srcNode, containmentScript(j.srcPath, srcRoot, false))).output, sRow.name, j.srcPath)
+  parseContainment((await runner.run(j.dstCluster, j.dstNode, containmentScript(j.dstPath, dstRoot, true))).output, dRow.name, j.dstPath)
+  return { srcRoot, dstRoot }
+}
+
 /** One step of the runner: start the oldest queued job when none runs, and follow running ones. */
 export class CopyRunner {
   private busy = false
@@ -439,14 +456,12 @@ export class CopyRunner {
 
   async launch(j: JobRow): Promise<void> {
     try {
-      const dRow = clusterRow(j.dstCluster)
-      if (!dRow || !clusterRow(j.srcCluster)) throw new Error('A cluster in this job was removed.')
-      const dstRoot = rootFor(j.dstPath, dRow.allowedRoots)
-      if (!dstRoot) throw new Error(`${j.dstPath} is no longer inside an allowed folder.`)
+      // Checked again now, not only at preview: folders and links may have changed since.
+      const { srcRoot, dstRoot } = await recheckJob(j, this.runner)
       const sameNode = j.srcCluster === j.dstCluster && j.srcNode === j.dstNode
       const key = sameNode ? null : await sendKey(j.srcCluster, j.dstCluster, j.dstNode, dstRoot)
       if (!sameNode && !key) throw new Error('The sending key is gone; set up sending again.')
-      const out = await this.runner.run(j.srcCluster, j.srcNode, await launchScript(j, key, j.dstPath === dstRoot ? '.' : j.dstPath.slice(dstRoot.length + 1)))
+      const out = await this.runner.run(j.srcCluster, j.srcNode, await launchScript(j, key, j.dstPath === dstRoot ? '.' : j.dstPath.slice(dstRoot.length + 1), srcRoot, sameNode ? dstRoot : ''))
       if (/NO-RSYNC/.test(out.output)) throw new Error(`rsync is not installed on ${j.srcNode}.`)
       if (!/STARTED|ALREADY-RUNNING/.test(out.output)) throw new Error(`The copy did not start on ${j.srcNode}.`)
       await jobs.update(j.id, { state: 'running', startedAt: j.startedAt ?? new Date(), attempts: j.attempts + 1, error: null, progress: { phase: 'copy' } })
@@ -492,6 +507,7 @@ export class CopyRunner {
     const j = await jobs.get(id)
     if (!j) throw new ClusterRefusal('No such job.', 'not-found')
     if (!['failed', 'interrupted', 'cancelled'].includes(j.state)) throw new ClusterRefusal('Only a stopped job can be resumed.')
+    await recheckJob(j, this.runner)
     return jobs.update(id, { state: 'queued', error: null, finishedAt: null })
   }
 }
