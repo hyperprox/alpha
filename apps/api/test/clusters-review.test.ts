@@ -339,3 +339,18 @@ test('11: a system folder, or anything inside one, is never a copy root', () => 
   assert.equal(root('/mnt/media'), '/mnt/media')
   assert.equal(root('/srv/media/TV Shows'), '/srv/media/TV Shows')
 })
+
+// ── 12: below admin, the cluster list says which clusters exist, nothing about reaching them ──────
+
+test('12: a viewer gets id, name and kind only', { skip: !haveOpenssl && 'openssl not installed' }, async () => {
+  await addRemote()
+  const viewer = (await signIn(app, 'viewer@example.com', 'viewer master password')).cookie
+  const r = await call('GET', '/api/clusters', undefined, viewer)
+  assert.equal(r.statusCode, 200)
+  for (const c of r.json().data) assert.deepEqual(Object.keys(c).sort(), ['id', 'kind', 'name'])
+  assert.equal(r.json().commands, undefined)
+  const admin = await call('GET', '/api/clusters')
+  assert.equal(admin.json().data[1].address, '127.0.0.1')
+  const ov = await call('GET', '/api/clusters/overview', undefined, viewer)
+  assert.ok(!ov.body.includes('127.0.0.1'), 'no address in a viewer\'s Command center')
+})

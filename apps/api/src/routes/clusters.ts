@@ -12,6 +12,7 @@
 import type { FastifyPluginAsync, FastifyReply } from 'fastify'
 import { currentContext } from '../lib/auth'
 import { strictParams } from '../lib/route-params'
+import { hasRole } from '../lib/roles'
 import { auditCredentialUse } from '../lib/audit'
 import {
   listClusters, clusterRow, createRemote, updateCluster, removeCluster, confirmFingerprint, replaceRemoteToken,
@@ -82,14 +83,28 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
 
   // ── Reads ─────────────────────────────────────────────────────────────────
 
-  fastify.get('/', async () => ({
-    success: true,
-    data: listClusters().map(c => ({ ...c, token: c.kind === 'remote' ? { saved: hasRemoteToken(c.id), id: remoteTokenId(c.id) } : null })),
-    commands: tokenCommands(),
-  }))
+  // Addresses, folders, Plex, the token id and the certificate are for admins. Everyone else sees which
+  // clusters exist and how they are doing, nothing about how to reach them.
+  const isAdmin = () => { const c = currentContext(); return !!c && hasRole(c.role, 'admin') }
+
+  fastify.get('/', async () => {
+    if (!isAdmin()) return { success: true, data: listClusters().map(c => ({ id: c.id, name: c.name, kind: c.kind })) }
+    return {
+      success: true,
+      data: listClusters().map(c => ({ ...c, token: c.kind === 'remote' ? { saved: hasRemoteToken(c.id), id: remoteTokenId(c.id) } : null })),
+      commands: tokenCommands(),
+    }
+  })
 
   fastify.get('/overview', async (_req, reply) => {
-    try { return { success: true, data: await commandCenter() } } catch (e) { return fail(reply, e) }
+    try {
+      const data = await commandCenter()
+      if (isAdmin()) return { success: true, data }
+      // Connection errors can name addresses and fingerprints: below admin they become plain words.
+      const plain = (t: string) => (/certificate/i.test(t) ? 'Its certificate changed; an admin needs to check it.' : 'Not answering right now.')
+      const scrub = (a: any) => (a.severity === 'crit' && /answer|connect|certificate/i.test(a.title) ? { ...a, detail: plain(`${a.title} ${a.detail}`) } : a)
+      return { success: true, data: { panels: data.panels.map(p => ({ ...p, error: p.error ? plain(p.error) : undefined, attention: p.attention.map(scrub) })), attention: data.attention.map(scrub) } }
+    } catch (e) { return fail(reply, e) }
   })
 
   // ── Adding a server ───────────────────────────────────────────────────────
