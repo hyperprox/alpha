@@ -394,7 +394,12 @@ let jobs: JobStore = new MemoryJobStore()
 export function setJobStore(s: JobStore): void { jobs = s }
 export function jobStore(): JobStore { return jobs }
 
-export async function startCopy(previewId: string, owner: string): Promise<JobRow> {
+/** Lets a copy started outside the clusters routes (the assistant) start now, not at the runner's next tick. */
+let kick: (() => void) | null = null
+export function setCopyKick(fn: (() => void) | null): void { kick = fn }
+export function kickCopies(): void { try { kick?.() } catch { /* the runner's own interval starts it anyway */ } }
+
+export async function startCopy(previewId: string, owner: string, via?: 'assistant'): Promise<JobRow> {
   const p = previews.get(previewId)
   if (!p || p.owner !== owner) throw new ClusterRefusal('No such preview. Preview again.', 'not-found')
   if (Date.now() - p.at > PREVIEW_MS) { previews.delete(previewId); throw new ClusterRefusal('That preview is older than 15 minutes. Preview again.') }
@@ -404,7 +409,7 @@ export async function startCopy(previewId: string, owner: string): Promise<JobRo
     id: randomUUID(), mode: 'copy', srcCluster: i.src.cluster, srcNode: i.src.node, srcPath: i.src.path, dstCluster: i.dst.cluster, dstNode: i.dst.node, dstPath: i.dst.path,
     speedKBps: i.speedKBps, plexScan: i.plexScan, state: 'queued', preview: p.result, progress: {}, error: null, attempts: 0, createdBy: owner, startedAt: null, finishedAt: null,
   })
-  await auditCredentialUse('cluster.files.copy', `cluster:${i.dst.cluster}`, { by: owner, from: i.src.cluster, files: p.result.files })
+  await auditCredentialUse('cluster.files.copy', `cluster:${i.dst.cluster}`, { by: owner, from: i.src.cluster, files: p.result.files, ...(via ? { via, ok: true } : {}) })
   return row
 }
 

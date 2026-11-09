@@ -28,7 +28,7 @@ import { checkGuest, power, snapshot, backupNow, backupStorages, taskStatus, des
 import { probeHostKey, execOnNode } from '../lib/node-exec'
 import { confirmPin, PinConfirmRefusal, forgetPin } from '../lib/hostkey-pins'
 import { forgetRemoteGuestConfigService } from './guest-config'
-import { browse, setupSending, previewCopy, startCopy, jobStore, CopyRunner, savePlex, deletePlexToken, checkPlexUrl, forgetClusterSending, type CopyInput } from '../lib/clusters/files'
+import { browse, setupSending, previewCopy, startCopy, jobStore, CopyRunner, setCopyKick, savePlex, deletePlexToken, checkPlexUrl, forgetClusterSending, type CopyInput } from '../lib/clusters/files'
 import { writeRemoteTargets } from '../lib/clusters/monitoring'
 import { prometheusBase } from '../lib/service-health'
 import { updateCluster as updateClusterRow } from '../lib/clusters/registry'
@@ -361,6 +361,7 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
 
   const copies = new CopyRunner(undefined, undefined, m => fastify.log.warn(m))
   copies.start()
+  setCopyKick(() => { void copies.tick() })
   fastify.addHook('onClose', async () => copies.stop())
 
   fastify.get<{ Params: { id: string }; Querystring: { node?: string; path?: string } }>('/:id/files/browse', async (req, reply) => {
