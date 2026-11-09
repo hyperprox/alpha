@@ -267,11 +267,12 @@ function PlexSection({ c, run, onChanged }: { c: ClusterInfo; run: Run; onChange
 function RemoveSection({ c, run, onRemoved }: { c: ClusterInfo; run: Run; onRemoved: () => void }) {
   const [typed, setTyped] = useState('')
   const [done, setDone] = useState<string[] | null>(null)
+  const [manual, setManual] = useState<Array<{ where: string; command: string }>>([])
   const [err, setErr] = useState<string | null>(null)
   const remove = async () => {
     const r = await run(() => apiJson<{ data: { cleanup: string[] } }>(`/api/clusters/${c.id}`, 'DELETE', { confirmName: typed }), () => void remove())
     if (!r) return
-    if (r.ok) setDone((r as any).body?.data?.cleanup ?? []); else setErr((r as any).error ?? 'Not removed')
+    if (r.ok) { setDone((r as any).body?.data?.cleanup ?? []); setManual((r as any).body?.data?.sendingKeysManual ?? []) } else setErr((r as any).error ?? 'Not removed')
   }
   return (
     <Section title="Remove this server from HyperProx">
@@ -279,11 +280,13 @@ function RemoveSection({ c, run, onRemoved }: { c: ClusterInfo; run: Run; onRemo
         <>
           <Notice kind="info">Removed. Its token and logins are gone from the vault. Nothing on that server was changed. To delete the token there too, run this in its Shell:</Notice>
           <pre className="rounded-lg p-3 overflow-x-auto font-mono text-xs" style={{ background: 'var(--ground-deep)', color: 'var(--text-bright)' }}>{done.join('\n')}</pre>
+          {manual.length > 0 && <Notice kind="warn">HyperProx could not reach these nodes to take its sending keys off them. Run the command shown on each, as root:</Notice>}
+          {manual.map((m, i) => <div key={i} className="text-xs"><b style={{ color: 'var(--text)' }}>{m.where}</b><pre className="rounded p-2 mt-1 overflow-x-auto font-mono" style={{ background: 'var(--ground-deep)', color: 'var(--text-bright)' }}>{m.command}</pre></div>)}
           <div><Btn onClick={onRemoved}>Back to the Command center</Btn></div>
         </>
       ) : (
         <>
-          <p className="text-sm" style={{ color: 'var(--text-muted)' }}>HyperProx forgets it: the row, its token and its logins. Nothing on the server itself changes, and monitoring installed there stays until you remove it first.</p>
+          <p className="text-sm" style={{ color: 'var(--text-muted)' }}>HyperProx forgets it: its token, logins, sending keys (taken off the nodes they were installed on) and its Prometheus targets. Nothing else on the server changes: monitoring installed there stays until you remove it first.</p>
           <div><label style={LABEL}>Type <b style={{ color: 'var(--text-bright)' }}>{c.name}</b> to remove it</label><input style={INPUT} value={typed} onChange={e => setTyped(e.target.value)} autoComplete="off" /></div>
           <div><button disabled={typed !== c.name} onClick={remove} className="px-4 rounded-md text-sm font-semibold disabled:opacity-40" style={{ height: 36, background: 'var(--crit)', color: '#fff' }}>Remove</button></div>
           {err && <Notice kind="error">{err}</Notice>}

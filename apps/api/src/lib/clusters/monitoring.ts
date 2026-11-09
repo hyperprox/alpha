@@ -106,7 +106,7 @@ export interface MonitoringDeps {
   hasLogin(node: string): Promise<boolean>
   reachable(host: string, port: number): Promise<boolean>
   metrics(listen: string): Promise<string | null>
-  writeTargets(clusterId: string, entries: Array<{ node: string; listen: string }>): void
+  writeTargets(clusterId: string, entries: Array<{ node: string; listen: string }>): unknown
   reload(): Promise<void>
   up(clusterId: string): Promise<Record<string, number>>
   sleep(ms: number): Promise<void>
@@ -158,15 +158,19 @@ function currentRow() {
 const NODES_FILE = 'nodes.json'
 
 /** Replace this cluster's entries in nodes.json; every other entry (home's included) is kept exactly. */
-export function writeRemoteTargets(clusterId: string, entries: Array<{ node: string; listen: string }>, dir = targetsDir()): void {
+export function writeRemoteTargets(clusterId: string, entries: Array<{ node: string; listen: string }>, dir = targetsDir()): boolean {
   const p = path.join(dir, NODES_FILE)
   let list: any[] = []
   try { list = fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : [] } catch { list = [] }
-  const kept = (Array.isArray(list) ? list : []).filter(t => t?.labels?.hpx_cluster !== clusterId)
+  const all = Array.isArray(list) ? list : []
+  const kept = all.filter(t => t?.labels?.hpx_cluster !== clusterId)
+  // Nothing of this cluster's there and nothing to add: leave the file alone.
+  if (kept.length === all.length && !entries.length) return false
   const mine = entries.map(e => ({ targets: [hostPort(e.listen, 9100)], labels: { node: remoteNodeLabel(clusterId, e.node), hpx_cluster: clusterId, hpx_node: e.node } }))
   fs.mkdirSync(dir, { recursive: true })
   fs.writeFileSync(`${p}.tmp`, JSON.stringify([...kept, ...mine], null, 2))
   fs.renameSync(`${p}.tmp`, p)
+  return true
 }
 
 // ── Scripts ──────────────────────────────────────────────────────────────────

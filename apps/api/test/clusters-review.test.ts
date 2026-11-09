@@ -287,3 +287,31 @@ test('7: a root with spaces reaches rrsync as one argument; quotes, $ and backti
   assert.equal(execFileSync('bash', ['-c', semi], { encoding: 'utf8', cwd: dir }), '[-wo]\n[-no-del]\n[/mnt/a;touch x]\n')
   assert.ok(!ex(join(dir, 'x')))
 })
+
+// ── 9: removing a cluster removes its standing access ───────────────────────
+
+import { setCredential as setCred } from '../src/lib/credentials'
+import { cachedSecret } from '../src/lib/vault/state'
+
+test('9: remove deletes sending keys both ways, says what to run where it could not reach, and drops its targets', { skip: !haveOpenssl && 'openssl not installed' }, async () => {
+  await addRemote()
+  const targets = mkdtempSync(join(tmpdir(), 'hpx-tg-'))
+  process.env.HYPERPROX_TARGETS_DIR = targets
+  process.env.PROMETHEUS_URL = 'http://127.0.0.1:1'
+  wf(join(targets, 'nodes.json'), JSON.stringify([{ targets: ['10.0.0.1:9100'], labels: { node: 'node1' } }, { targets: ['10.0.0.9:9100'], labels: { node: `pve@${REMOTE}`, hpx_cluster: REMOTE, hpx_node: 'pve' } }]))
+  await asOwner(async () => {
+    await setCred('xfer-key', `home-${REMOTE}`, 'pve~0123456789ab', '{}', true)
+    await setCred('xfer-key', `${REMOTE}-home`, 'node1~ba9876543210', '{}', true)
+  })
+  await call('POST', '/api/auth/reconfirm', { password: 'owner master password' })
+  const r = await call('DELETE', `/api/clusters/${REMOTE}`, { confirmName: 'Remote server' })
+  assert.equal(r.statusCode, 200, r.body)
+  const manual = r.json().data.sendingKeysManual as Array<{ where: string; command: string }>
+  assert.equal(manual.length, 2, 'neither destination is reachable from the test, so both are listed by hand')
+  assert.ok(manual.some(m => m.command === `sed -i '/hyperprox-xfer:home:0123456789ab/d' /root/.ssh/authorized_keys`))
+  assert.ok(manual.some(m => m.command === `sed -i '/hyperprox-xfer:${REMOTE}:ba9876543210/d' /root/.ssh/authorized_keys`))
+  assert.equal(cachedSecret(`hyperprox:xfer-key/home-${REMOTE}`), undefined)
+  assert.equal(cachedSecret(`hyperprox:xfer-key/${REMOTE}-home`), undefined)
+  assert.deepEqual(JSON.parse(rf(join(targets, 'nodes.json'), 'utf8')), [{ targets: ['10.0.0.1:9100'], labels: { node: 'node1' } }])
+  delete process.env.HYPERPROX_TARGETS_DIR; delete process.env.PROMETHEUS_URL
+})

@@ -30,8 +30,8 @@ import { nodeCredential, execOnNode } from '../node-exec'
 import { pveFromEnv } from '../pve-env'
 import { pinnedKey, pinSource, isConfirmedSource } from '../hostkey-pins'
 import { fingerprintOf } from '../ssh-broker'
-import { getCredential, setCredential, deleteCredential } from '../credentials'
-import { isUnlocked } from '../vault/state'
+import { getCredential, setCredential, deleteCredential, deleteProviderCredentials } from '../credentials'
+import { isUnlocked, cachedSecrets } from '../vault/state'
 import { assertSafeScript } from './monitoring'
 import { auditCredentialUse } from '../audit'
 
@@ -194,6 +194,42 @@ export async function setupSending(o: { src: string; dst: string; dstNode: strin
   await setCredential(KEY_CATEGORY, pairProvider(o.src, o.dst), pairField(o.dstNode, root), JSON.stringify(key), true)
   await auditCredentialUse('cluster.files.key', `cluster:${o.dst}`, { by: o.by, from: o.src, node: o.dstNode, folder: root })
   return { words: `${srcRow.name} can now send files to ${root} on ${o.dstNode} (${dstRow.name}). The key there can only write into that folder and cannot delete anything.` }
+}
+
+/** Every sending key that involves cluster `id`, as source or destination. */
+export function sendingKeysOf(id: string): Array<{ provider: string; src: string; dst: string; field: string; dstNode: string; tag: string }> {
+  const out = []
+  for (const item of cachedSecrets()) {
+    const m = /^hyperprox:xfer-key\/([a-z0-9]+)-([a-z0-9]+)$/.exec(item.name)
+    if (!m || (m[1] !== id && m[2] !== id)) continue
+    for (const field of Object.keys(item.fields)) {
+      const f = /^(.+)~([0-9a-f]{12})$/.exec(field)
+      if (f) out.push({ provider: `${m[1]}-${m[2]}`, src: m[1], dst: m[2], field, dstNode: f[1], tag: `${m[1]}:${f[2]}` })
+    }
+  }
+  return out
+}
+
+const dropLineScript = (tag: string) => `[ -f /root/.ssh/authorized_keys ] || exit 0\numask 077\ngrep -v -F ${q(`${MARK}:${tag}`)} /root/.ssh/authorized_keys > /root/.ssh/authorized_keys.hpx-tmp || true\nchmod 600 /root/.ssh/authorized_keys.hpx-tmp\nmv -f /root/.ssh/authorized_keys.hpx-tmp /root/.ssh/authorized_keys\necho DROPPED`
+export const manualDropCommand = (tag: string) => `sed -i '/${MARK}:${tag.replace(/[^a-z0-9:]/g, '')}/d' /root/.ssh/authorized_keys`
+
+/**
+ * Before a cluster is removed: take every sending key it is part of off the destination nodes (best effort) and
+ * out of the vault. What could not be reached is returned with the exact command to run there by hand.
+ */
+export async function forgetClusterSending(id: string, runner: NodeRunner = liveNodeRunner): Promise<{ removed: string[]; manual: Array<{ where: string; command: string }> }> {
+  const removed: string[] = [], manual: Array<{ where: string; command: string }> = []
+  const keys = sendingKeysOf(id)
+  for (const k of keys) {
+    const where = `${clusterRow(k.dst)?.name ?? k.dst} / ${k.dstNode}`
+    try {
+      const r = await runner.run(k.dst, k.dstNode, dropLineScript(k.tag))
+      if (!/DROPPED/.test(r.output)) throw new Error('no answer')
+      removed.push(where)
+    } catch { manual.push({ where, command: manualDropCommand(k.tag) }) }
+  }
+  for (const provider of new Set(keys.map(k => k.provider))) await deleteProviderCredentials(KEY_CATEGORY, provider).catch(() => undefined)
+  return { removed, manual }
 }
 
 export async function removeSending(o: { src: string; dst: string; dstNode: string; root: string }, runner: NodeRunner = liveNodeRunner): Promise<void> {

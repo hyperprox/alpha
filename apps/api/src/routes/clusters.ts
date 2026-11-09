@@ -27,7 +27,9 @@ import { checkGuest, power, snapshot, backupNow, backupStorages, taskStatus, des
 import { probeHostKey, execOnNode } from '../lib/node-exec'
 import { confirmPin, PinConfirmRefusal, forgetPin } from '../lib/hostkey-pins'
 import { forgetRemoteGuestConfigService } from './guest-config'
-import { browse, setupSending, previewCopy, startCopy, jobStore, CopyRunner, savePlex, deletePlexToken, checkPlexUrl, type CopyInput } from '../lib/clusters/files'
+import { browse, setupSending, previewCopy, startCopy, jobStore, CopyRunner, savePlex, deletePlexToken, checkPlexUrl, forgetClusterSending, type CopyInput } from '../lib/clusters/files'
+import { writeRemoteTargets } from '../lib/clusters/monitoring'
+import { prometheusBase } from '../lib/service-health'
 import { updateCluster as updateClusterRow } from '../lib/clusters/registry'
 import { scanMonitoring, previewMonitoring, applyMonitoring, MonitoringRefusal } from '../lib/clusters/monitoring'
 
@@ -219,12 +221,16 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
     if (String(req.body?.confirmName ?? '') !== row.name) return reply.status(428).send({ success: false, code: 'confirm', error: `Type the server's name exactly (${row.name}) to remove it.` })
     try {
       const tokenId = remoteTokenId(row.id)
+      // Standing access first, while its logins still exist: sending keys on destination nodes and in the
+      // vault, and Prometheus collecting from it.
+      const sending = await forgetClusterSending(row.id)
+      if (writeRemoteTargets(row.id, [])) await fetch(`${prometheusBase()}/-/reload`, { method: 'POST' }).catch(() => undefined)
       await removeCluster(row.id)
       forgetRemoteClient(row.id)
       forgetRemoteGuestConfigService(row.id)
       await auditCredentialUse('cluster.remove', `cluster:${row.id}`, { by: who(), name: row.name })
       const [user, token] = (tokenId ?? 'hyperprox@pve!main').split('!')
-      return { success: true, data: { removed: true, cleanup: [`pveum user token remove ${user} ${token}`, `pveum user delete ${user}`] } }
+      return { success: true, data: { removed: true, cleanup: [`pveum user token remove ${user} ${token}`, `pveum user delete ${user}`], sendingKeysRemoved: sending.removed, sendingKeysManual: sending.manual } }
     } catch (e) { return fail(reply, e) }
   })
 
