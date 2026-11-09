@@ -2,6 +2,7 @@
 //  HyperProx — Proxmox Routes (with GPU + NPM + cluster totals)
 // =============================================================================
 
+import { strictParams } from '../lib/route-params'
 import { FastifyPluginAsync } from 'fastify'
 import { getGPUInfo }         from '../lib/gpu'
 import { NPMClient }          from '../lib/npm-client'
@@ -41,6 +42,7 @@ const wrapCeph = async (reply: any, fn: () => Promise<any>) => {
 }
 
 export const proxmoxRoutes: FastifyPluginAsync = async (fastify) => {
+  strictParams(fastify)   // node, vmid, type and snapshot names are checked before any handler (lib/route-params.ts)
 
   fastify.get('/ping',      async (_, r) => wrap(r, () => getClient().ping()))
   fastify.get('/nodes',     async (_, r) => wrap(r, () => getClient().getNodes()))

@@ -11,6 +11,7 @@
 
 import type { FastifyPluginAsync, FastifyReply } from 'fastify'
 import { currentContext } from '../lib/auth'
+import { strictParams } from '../lib/route-params'
 import { auditCredentialUse } from '../lib/audit'
 import {
   listClusters, clusterRow, createRemote, updateCluster, removeCluster, confirmFingerprint, replaceRemoteToken,
@@ -75,6 +76,7 @@ async function tryToken(address: string, port: number, fingerprint: string, toke
 }
 
 export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
+  strictParams(fastify)
 
   // ── Reads ─────────────────────────────────────────────────────────────────
 

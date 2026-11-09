@@ -17,7 +17,7 @@ import jwt from '@fastify/jwt'
 import { isUnlocked, signingKey, touch, onLock } from './vault/state'
 import { VaultSessionError, type Role } from './vault/broker'
 import { bearerApiToken, tokenForbidden, verifyApiToken, apiTokenStore, type ApiTokenRecord } from './api-tokens'
-import { requiredRole, needsReconfirm, hasRole, bypassesLock, normalisePath, SESSION_CHECK } from './roles'
+import { unsafeRequestPath, requiredRole, needsReconfirm, hasRole, bypassesLock, normalisePath, SESSION_CHECK } from './roles'
 import {
   extractToken, getSession, clearSessions, removeSession, requestContext, isReconfirmed, isLocalCliRequest,
   buildAuthCookie, type ActiveSession,
@@ -103,6 +103,8 @@ export async function registerGate(server: FastifyInstance): Promise<void> {
 
   server.addHook('onRequest', async (req: FastifyRequest, reply: FastifyReply) => {
     if (req.method === 'OPTIONS') return
+    // A path that could smuggle a second segment or a query into a Proxmox call is refused outright.
+    if (unsafeRequestPath(req.url)) return reply.status(400).send({ ok: false, code: 'bad_path', error: 'That address contains characters HyperProx does not accept here.' })
 
     const path   = normalisePath(req.url)
     const needed = requiredRole(req.method, path)

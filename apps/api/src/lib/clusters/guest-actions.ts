@@ -15,7 +15,7 @@ export class GuestActionRefusal extends Error {
   constructor(message: string, readonly code: 'invalid' | 'not-found' | 'confirm' | 'state' = 'invalid') { super(message) }
 }
 
-const NODE_RE = /^[a-zA-Z0-9][a-zA-Z0-9.-]{0,62}$/
+import { NODE_RE } from '../route-params'
 export function checkGuest(node: string, type: string, vmid: string | number): { node: string; type: GuestType; vmid: number } {
   const id = Number(vmid)
   if (!NODE_RE.test(node)) throw new GuestActionRefusal('That is not a node name.', 'not-found')

@@ -37,6 +37,21 @@ export function normalisePath(url: string): string {
   return p
 }
 
+/**
+ * A request path that must be refused before any route sees it: on the routes that build Proxmox paths, an
+ * encoded "/", "?", "#" or "\\" (the router decodes them inside one parameter, after the role checks here have seen
+ * one segment), or a "." / ".." segment. Other routes keep their encoded names (a model called "a/b", say).
+ */
+const PVE_ROUTES = /^\/api\/(proxmox|infra|clusters)(\/|$)/
+export function unsafeRequestPath(url: string): boolean {
+  const raw = url.split('?')[0].split('#')[0]
+  let dec = raw
+  try { dec = decodeURI(raw) } catch { return true }
+  if (!PVE_ROUTES.test(dec)) return false
+  if (/%(2f|3f|23|5c|2e)/i.test(raw)) return true
+  return dec.split('/').some(p => p === '.' || p === '..')
+}
+
 // Reachable with no session at all. While locked these still answer.
 const PUBLIC_AUTH = new Set([
   '/api/auth/status',

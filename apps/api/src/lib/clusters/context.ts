@@ -46,19 +46,22 @@ export const CLUSTER_HEADER = 'x-hyperprox-cluster'
 
 // Routes that are correct for a remote cluster: they read and act through pveFromEnv() and nodeCredential() at
 // call time, and keep nothing keyed by node name across clusters. Method and path, after normalisePath.
+const N = '[A-Za-z0-9][A-Za-z0-9.-]*'   // a node name, never "." or ".."
+const T = '(lxc|qemu)'
 const REMOTE_OK: Array<[string, RegExp]> = [
-  ['GET',    /^\/api\/proxmox\/(ping|nodes|resources|storage|vms|summary|ha|ha\/resources|templates|isos|nextid|ceph\/(status|osds|pools))$/],
-  ['GET',    /^\/api\/proxmox\/nodes\/[^/]+(\/tasks)?$/],
-  ['POST',   /^\/api\/proxmox\/vms\/[^/]+\/\d+\/(lxc|qemu)\/(start|stop|shutdown|reboot)$/],
-  ['POST',   /^\/api\/infra\/vms\/[^/]+\/\d+\/(lxc|qemu)\/(start|stop|shutdown|reboot)$/],
-  ['GET',    /^\/api\/infra\/vms\/[^/]+\/\d+\/(lxc|qemu)\/(config|snapshots)$/],
-  ['POST',   /^\/api\/infra\/vms\/[^/]+\/\d+\/(lxc|qemu)\/snapshots\/[^/]+\/rollback$/],
-  ['DELETE', /^\/api\/infra\/vms\/[^/]+\/\d+\/(lxc|qemu)\/snapshots\/[^/]+$/],
-  ['PUT',    /^\/api\/infra\/ha\/[^/]+$/],
-  ['GET',    /^\/api\/infra\/(tasks|nodes\/[^/]+\/tasks)$/],
+  ['GET',    /^\/api\/proxmox\/(ping|nodes|resources|storage|vms|summary|templates|isos|nextid|ceph\/(status|osds|pools))$/],
+  ['GET',    new RegExp(`^/api/proxmox/nodes/${N}(/tasks)?$`)],
+  ['POST',   new RegExp(`^/api/proxmox/vms/${N}/\\d+/${T}/(start|stop|shutdown|reboot)$`)],
+  ['POST',   new RegExp(`^/api/infra/vms/${N}/\\d+/${T}/(start|stop|shutdown|reboot)$`)],
+  ['GET',    new RegExp(`^/api/infra/vms/${N}/\\d+/${T}/(config|snapshots)$`)],
+  ['POST',   new RegExp(`^/api/infra/vms/${N}/\\d+/${T}/snapshots/[A-Za-z][A-Za-z0-9_-]*/rollback$`)],
+  ['DELETE', new RegExp(`^/api/infra/vms/${N}/\\d+/${T}/snapshots/[A-Za-z][A-Za-z0-9_-]*$`)],
+  ['GET',    /^\/api\/proxmox\/(ha|ha\/resources)$/],
+  ['PUT',    /^\/api\/infra\/ha\/(ct|vm):\d+$/],
+  ['GET',    new RegExp(`^/api/infra/(tasks|nodes/${N}/tasks)$`)],
   // The guest config editor keeps one service (previews, caches, history) per cluster: routes/guest-config.ts.
-  ['GET',    /^\/api\/infra\/guest-config\/(overview|nodes\/[^/]+\/devices|guests\/[^/]+\/(lxc|qemu)\/\d+(\/(gpu|history))?)$/],
-  ['POST',   /^\/api\/infra\/guest-config\/(preview|apply|paths\/check|guests\/[^/]+\/(lxc|qemu)\/\d+\/reveal)$/],
+  ['GET',    new RegExp(`^/api/infra/guest-config/(overview|nodes/${N}/devices|guests/${N}/${T}/\\d+(/(gpu|history))?)$`)],
+  ['POST',   new RegExp(`^/api/infra/guest-config/(preview|apply|paths/check|guests/${N}/${T}/\\d+/reveal)$`)],
 ]
 
 export function remoteRouteAllowed(method: string, path: string): boolean {

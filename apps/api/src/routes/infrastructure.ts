@@ -2,6 +2,7 @@
 //  HyperProx — Infrastructure Routes (VM/CT management)
 // =============================================================================
 
+import { strictParams } from '../lib/route-params'
 import { FastifyPluginAsync } from 'fastify'
 import { livePve }            from '../lib/pve-env'
 
@@ -17,6 +18,7 @@ const POWER_ACTIONS: string[] = ['start', 'stop', 'reboot', 'shutdown']
 type SnapParams   = { Params: { node: string; vmid: string; type: 'qemu' | 'lxc'; snapname: string } }
 
 export const infrastructureRoutes: FastifyPluginAsync = async (fastify) => {
+  strictParams(fastify)   // node, vmid, type and snapshot names are checked before any handler (lib/route-params.ts)
   const pve = livePve()   // resolves the current token on every call (see lib/pve-env.ts)
 
   // Power actions. The last segment is a parameter, so anything else (an old `/vnc` call, say) is refused

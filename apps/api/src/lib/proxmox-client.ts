@@ -47,6 +47,23 @@ export interface HAStatus {
 
 const DEFAULT_TIMEOUT_MS = 20_000
 
+/**
+ * One URL path segment from a value (a node, a guest id, a snapshot name, a storage). Encoded, so a "/", "?" or
+ * "#" inside it can never become a second segment or a query, and "." / ".." are refused because the URL parser
+ * would resolve them. Every value put into a Proxmox path goes through this.
+ */
+export function seg(v: string | number): string {
+  const s = String(v ?? '')
+  if (s === '' || s === '.' || s === '..') throw new Error(`Refused: "${s}" is not a valid Proxmox path part.`)
+  return encodeURIComponent(s)
+}
+
+/** The path must not walk up or hide a fragment; checked again on the final string as a second line. */
+export function assertSafeApiPath(path: string): void {
+  const pathPart = path.split('?')[0]
+  if (pathPart.split('/').some(p => p === '.' || p === '..') || /[#\\]/.test(pathPart)) throw new Error(`Refused: unsafe Proxmox path ${pathPart}`)
+}
+
 export class ProxmoxClient {
   private baseUrl:    string
   private authHeader: string
@@ -90,6 +107,7 @@ export class ProxmoxClient {
       let settled = false
       const resolve = (v: { status: number; data: T; message?: string }) => { if (!settled) { settled = true; resolveP(v) } }
       const reject  = (e: Error) => { if (!settled) { settled = true; rejectP(e) } }
+      try { assertSafeApiPath(path) } catch (e) { return reject(e as Error) }
       const url  = new URL(`${this.baseUrl}${path}`)
       const opts: https.RequestOptions = {
         hostname: url.hostname.replace(/^\[|\]$/g, ''), port: url.port,
@@ -137,7 +155,7 @@ export class ProxmoxClient {
   }
 
   async getNodes()                  { return this.fetchNode<PVENode[]>('/nodes') }
-  async getNodeStatus(node: string) { return this.fetchNode<any>(`/nodes/${node}/status`) }
+  async getNodeStatus(node: string) { return this.fetchNode<any>(`/nodes/${seg(node)}/status`) }
 
   /** Read-only: the certificates pveproxy has on this node (the root CA, pve-ssl.pem, and pveproxy-ssl.pem if one is installed). */
   async getNodeCertificates(node: string): Promise<Array<{
@@ -148,16 +166,16 @@ export class ProxmoxClient {
   }
 
   async getClusterResources(type?: string) {
-    return this.fetchNode<any[]>(type ? `/cluster/resources?type=${type}` : '/cluster/resources')
+    return this.fetchNode<any[]>(type ? `/cluster/resources?type=${encodeURIComponent(type)}` : '/cluster/resources')
   }
 
   async getQemuVMs(node: string): Promise<PVEVM[]> {
-    const v = await this.fetchNode<any[]>(`/nodes/${node}/qemu`)
+    const v = await this.fetchNode<any[]>(`/nodes/${seg(node)}/qemu`)
     return v.map(x => ({ ...x, type: 'qemu' as const, node }))
   }
 
   async getLXCs(node: string): Promise<PVEVM[]> {
-    const v = await this.fetchNode<any[]>(`/nodes/${node}/lxc`)
+    const v = await this.fetchNode<any[]>(`/nodes/${seg(node)}/lxc`)
     return v.map(x => ({ ...x, type: 'lxc' as const, node }))
   }
 
@@ -171,37 +189,37 @@ export class ProxmoxClient {
   }
 
   async vmAction(node: string, vmid: number, type: 'qemu' | 'lxc', action: 'start' | 'stop' | 'reboot' | 'shutdown') {
-    return this.fetchNode<string>(`/nodes/${node}/${type}/${vmid}/status/${action}`, 'POST')
+    return this.fetchNode<string>(`/nodes/${seg(node)}/${seg(type)}/${seg(vmid)}/status/${action}`, 'POST')
   }
 
   async getVMConfig(node: string, vmid: number, type: 'qemu' | 'lxc') {
-    return this.fetchNode<any>(`/nodes/${node}/${type}/${vmid}/config`)
+    return this.fetchNode<any>(`/nodes/${seg(node)}/${seg(type)}/${seg(vmid)}/config`)
   }
 
   async getSnapshots(node: string, vmid: number, type: 'qemu' | 'lxc') {
-    return this.fetchNode<any[]>(`/nodes/${node}/${type}/${vmid}/snapshot`)
+    return this.fetchNode<any[]>(`/nodes/${seg(node)}/${seg(type)}/${seg(vmid)}/snapshot`)
   }
 
   async createSnapshot(node: string, vmid: number, type: 'qemu' | 'lxc', name: string, description = '') {
-    return this.fetchNode<string>(`/nodes/${node}/${type}/${vmid}/snapshot`, 'POST',
+    return this.fetchNode<string>(`/nodes/${seg(node)}/${seg(type)}/${seg(vmid)}/snapshot`, 'POST',
       JSON.stringify({ snapname: name, description }))
   }
 
   async deleteSnapshot(node: string, vmid: number, type: 'qemu' | 'lxc', snapname: string) {
-    return this.fetchNode<string>(`/nodes/${node}/${type}/${vmid}/snapshot/${snapname}`, 'DELETE')
+    return this.fetchNode<string>(`/nodes/${seg(node)}/${seg(type)}/${seg(vmid)}/snapshot/${seg(snapname)}`, 'DELETE')
   }
 
   async rollbackSnapshot(node: string, vmid: number, type: 'qemu' | 'lxc', snapname: string) {
-    return this.fetchNode<string>(`/nodes/${node}/${type}/${vmid}/snapshot/${snapname}/rollback`, 'POST')
+    return this.fetchNode<string>(`/nodes/${seg(node)}/${seg(type)}/${seg(vmid)}/snapshot/${seg(snapname)}/rollback`, 'POST')
   }
 
   async migrateVM(node: string, vmid: number, type: 'qemu' | 'lxc', target: string, online = true) {
-    return this.fetchNode<string>(`/nodes/${node}/${type}/${vmid}/migrate`, 'POST',
+    return this.fetchNode<string>(`/nodes/${seg(node)}/${seg(type)}/${seg(vmid)}/migrate`, 'POST',
       JSON.stringify({ target, online: online ? 1 : 0 }))
   }
 
   async getStorage(node: string): Promise<PVEStorage[]> {
-    const s = await this.fetchNode<any[]>(`/nodes/${node}/storage`)
+    const s = await this.fetchNode<any[]>(`/nodes/${seg(node)}/storage`)
     return s.map(x => ({ ...x, node }))
   }
 
@@ -211,7 +229,7 @@ export class ProxmoxClient {
     return r.filter(x => x.status === 'fulfilled').flatMap(x => (x as any).value)
   }
 
-  async getCephStatus(node: string)  { return this.fetchNode<CephStatus>(`/nodes/${node}/ceph/status`) }
+  async getCephStatus(node: string)  { return this.fetchNode<CephStatus>(`/nodes/${seg(node)}/ceph/status`) }
 
   // Cluster-scoped, and per PVE's own schema identical to the node-level alias —
   // so status needs no monitor node at all.
@@ -219,13 +237,13 @@ export class ProxmoxClient {
 
   // The endpoint is 'pool', singular. '/ceph/pools' returns HTTP 501 and has
   // never worked; it only looked fine because fetchNode resolves errors as null.
-  async getCephPools(node: string)   { return this.fetchNode<any[]>(`/nodes/${node}/ceph/pool`) }
+  async getCephPools(node: string)   { return this.fetchNode<any[]>(`/nodes/${seg(node)}/ceph/pool`) }
 
   // Cluster-wide despite the path: any online node returns every monitor.
-  async getCephMons(node: string)    { return this.fetchNode<CephMon[]>(`/nodes/${node}/ceph/mon`) }
+  async getCephMons(node: string)    { return this.fetchNode<CephMon[]>(`/nodes/${seg(node)}/ceph/mon`) }
 
   async getCephOSDs(node: string): Promise<CephOSD[]> {
-    const data = await this.fetchNode<any>(`/nodes/${node}/ceph/osd`)
+    const data = await this.fetchNode<any>(`/nodes/${seg(node)}/ceph/osd`)
     // fetchNode does not check the HTTP status and PVE returns errors as
     // {"data":null}. Without this guard a failed call renders as "0 OSDs" —
     // a lie rather than an error.
@@ -254,7 +272,7 @@ export class ProxmoxClient {
   }
 
   async getNodeTasks(node: string, limit = 20) {
-    return this.fetchNode<any[]>(`/nodes/${node}/tasks?limit=${limit}`)
+    return this.fetchNode<any[]>(`/nodes/${seg(node)}/tasks?limit=${Number(limit) | 0}`)
   }
 
   async getClusterTasks() { return this.fetchNode<any[]>('/cluster/tasks') }
@@ -276,7 +294,7 @@ export class ProxmoxClient {
       const templateStorages = storages.filter((s: any) => s.content?.includes('vztmpl'))
       await Promise.allSettled(templateStorages.map(async (s: any) => {
         try {
-          const content = await this.fetchNode<any[]>(`/nodes/${n.node}/storage/${s.storage}/content?content=vztmpl`)
+          const content = await this.fetchNode<any[]>(`/nodes/${seg(n.node)}/storage/${seg(s.storage)}/content?content=vztmpl`)
           const items = Array.isArray(content) ? content : (content as any).data ?? []
           items.forEach((t: any) => {
             const name = t.volid?.split('/').pop()?.replace(/\.tar\.(gz|zst|xz)$/, '') ?? t.volid
@@ -330,7 +348,7 @@ export class ProxmoxClient {
     // Strict: a refusal (bad rootfs, vmid taken, no such template) must reach the caller as Proxmox's own
     // words. fetchNode resolved it as null, and the wizard then waited ninety seconds for a container
     // that was never going to exist. The answer is the task's UPID; see waitForTask.
-    return this.fetchStrict<string>(`/nodes/${node}/lxc`, 'POST', lxcParams.toString())
+    return this.fetchStrict<string>(`/nodes/${seg(node)}/lxc`, 'POST', lxcParams.toString())
   }
 
   /**
@@ -394,7 +412,7 @@ export class ProxmoxClient {
       agent:   1,
       start:   params.start ? 1 : 0,
     }
-    const vmParams = new URLSearchParams(); Object.entries(body).forEach(([k,v]) => vmParams.append(k, String(v))); return this.fetchNode(`/nodes/${node}/qemu`, 'POST', vmParams.toString())
+    const vmParams = new URLSearchParams(); Object.entries(body).forEach(([k,v]) => vmParams.append(k, String(v))); return this.fetchNode(`/nodes/${seg(node)}/qemu`, 'POST', vmParams.toString())
   }
 
   async getISOs(): Promise<Array<{ node: string; storage: string; volid: string; name: string; size: number }>> {
@@ -405,7 +423,7 @@ export class ProxmoxClient {
       const isoStorages = storages.filter((s: any) => s.content?.includes('iso') && s.active === 1)
       await Promise.allSettled(isoStorages.map(async (s: any) => {
         try {
-          const content = await this.fetchNode<any[]>(`/nodes/${n.node}/storage/${s.storage}/content?content=iso`)
+          const content = await this.fetchNode<any[]>(`/nodes/${seg(n.node)}/storage/${seg(s.storage)}/content?content=iso`)
           const items = Array.isArray(content) ? content : (content as any).data ?? []
           items.forEach((t: any) => {
             const name = t.volid?.split('/').pop() ?? t.volid
@@ -420,7 +438,7 @@ export class ProxmoxClient {
 
   async getDownloadableTemplates(node: string): Promise<any[]> {
     try {
-      const data = await this.fetchNode<any[]>(`/nodes/${node}/aplinfo`)
+      const data = await this.fetchNode<any[]>(`/nodes/${seg(node)}/aplinfo`)
       return Array.isArray(data) ? data : (data as any).data ?? []
     } catch { return [] }
   }
@@ -435,11 +453,11 @@ export class ProxmoxClient {
   }
 
   async deleteLXC(node: string, vmid: number): Promise<any> {
-    return this.fetchNode(`/nodes/${node}/lxc/${vmid}`, 'DELETE')
+    return this.fetchNode(`/nodes/${seg(node)}/lxc/${seg(vmid)}`, 'DELETE')
   }
 
   async deleteVM(node: string, vmid: number): Promise<any> {
-    return this.fetchNode(`/nodes/${node}/qemu/${vmid}`, 'DELETE')
+    return this.fetchNode(`/nodes/${seg(node)}/qemu/${seg(vmid)}`, 'DELETE')
   }
 
   async getVMStorageBreakdown(): Promise<Array<{
