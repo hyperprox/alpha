@@ -63,6 +63,12 @@ export function PolicyStrip({ policy, error, busy, activeJob, onRefresh, onRun, 
         </div>
       </div>
       {error && <Notice tone="crit">{error}</Notice>}
+      {policy?.notes?.length ? (
+        <Notice tone="info">
+          {policy.section !== undefined && <div className="mb-1 font-mono text-xs">{policy.section ? `Policy section: clusters.${policy.section}` : 'No section of its own in the policy file'}</div>}
+          <ul className="list-disc space-y-0.5 pl-5">{policy.notes.map((n, i) => <li key={i}>{n}</li>)}</ul>
+        </Notice>
+      ) : null}
       {policy && !loaded && (
         <Notice tone="warn">
           Runs are disabled until <span className="font-mono">config/updates.yaml</span> exists and validates; a dry run

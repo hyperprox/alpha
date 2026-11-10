@@ -11,7 +11,18 @@ function imageUpdates(g: UpdatesGuest) {
   return (g.dockerImages ?? []).filter(i => i.latest !== null && i.latest !== i.current)
 }
 
-export function GuestsTable({ guests }: { guests: UpdatesGuest[] }) {
+function backupWords(g: UpdatesGuest): string {
+  const b = g.lastBackup
+  if (!b) return 'No backup task found on this cluster.'
+  const when = new Date(b.at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  return b.thisGuest ? `Its last backup: ${when}${b.ok ? '' : ' (did not finish cleanly)'}.` : `Newest backup on this cluster: ${when}${b.ok ? '' : ' (did not finish cleanly)'}; check it includes this guest.`
+}
+
+/**
+ * `acks` / `onAck`: on a remote cluster a guest that cannot be snapshotted is updated only when a person ticks
+ * "update without a snapshot" for it; the tick travels with the run, like an app approval.
+ */
+export function GuestsTable({ guests, acks = [], onAck, ackDisabled }: { guests: UpdatesGuest[]; acks?: string[]; onAck?: (id: string, on: boolean) => void; ackDisabled?: boolean }) {
   const [open, setOpen] = useState<Record<number, boolean>>({})
   const managed = guests.filter(g => g.managed).sort(byNodeThenId)
   const unmanaged = guests.filter(g => !g.managed).sort(byNodeThenId)
@@ -57,6 +68,15 @@ export function GuestsTable({ guests }: { guests: UpdatesGuest[] }) {
               </td>
               <td className="px-4 py-2.5">
                 {g.snapshotCapable ? <Badge tone="good" title="A snapshot is taken before upgrading">snapshot</Badge>
+                  : g.noSnapshotAckId && onAck ? (
+                    <div className="space-y-1">
+                      <Badge tone="warn" title="Bind mounts block snapshots">no snapshot possible</Badge>
+                      <label className="flex items-start gap-1.5 text-xs" style={{ color: 'var(--text-soft)' }}>
+                        <input type="checkbox" disabled={ackDisabled} checked={acks.includes(g.noSnapshotAckId)} onChange={e => onAck(g.noSnapshotAckId!, e.target.checked)} />
+                        <span>Update without a snapshot. {backupWords(g)}</span>
+                      </label>
+                    </div>
+                  )
                   : <Badge tone="muted" title="Bind mounts or storage block snapshots; the run records that and continues">no snapshot</Badge>}
               </td>
             </>

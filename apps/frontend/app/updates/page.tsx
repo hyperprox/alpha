@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
-  UpdatesInventory, UpdatesJob, UpdatesNode, UpdatesPlan, UpdatesPolicyStatus, UpdatesWsPayload, UpdatesScope } from '@hyperprox/types'
+  UpdatesInventory, UpdatesJob, UpdatesNode, UpdatesPlan, UpdatesPolicyStatus, UpdatesWsPayload, UpdatesScope,
+  UpdatesCheckStatus, UpdatesRebootPreview } from '@hyperprox/types'
 import { apiJson, atLeast, type ApiResult } from '@/lib/api'
 import { wsBase } from '@/lib/ws'
 import { useSession } from '@/lib/session'
@@ -14,6 +15,9 @@ import { AppsTable, appRows, offeredApprovals } from '@/components/updates/AppsT
 import { PlanList } from '@/components/updates/PlanList'
 import { JobPanel, type LogLine } from '@/components/updates/JobPanel'
 import { History } from '@/components/updates/History'
+import { ClusterHeader, ClusterTag, CheckPanel, RebootPreviewList, useUpdatesCluster } from '@/components/updates/ClusterBits'
+import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
+import { clusterColor } from '@/lib/clusters'
 
 const ACTIVE = ['running', 'paused', 'awaiting-confirm']
 const LOG_CAP = 500
@@ -25,9 +29,25 @@ function apiError(r: ApiResult, what: string): string {
   return r.error ?? `Could not load ${what}`
 }
 
+// One page for every cluster: /updates is home, /clusters/<id>/updates a remote (same component). The cluster is
+// named on every card, preview and confirmation, and every API call carries it (lib/api.ts).
 export default function UpdatesPage() {
   const { role } = useSession()
   const allowed = atLeast(role, 'admin')
+  const cluster = useUpdatesCluster()
+  const remote = cluster.kind === 'remote'
+  const tag = <ClusterTag c={cluster} />
+  const edge = clusterColor(cluster.kind)
+  const [check, setCheck] = useState<UpdatesCheckStatus | null>(null)
+  const [checkErr, setCheckErr] = useState<string | null>(null)
+  // A change on a remote cluster asks for the master password again; the action is retried once it is given.
+  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
+  const [rebootPv, setRebootPv] = useState<UpdatesRebootPreview | null>(null)
+  const [rebootPvErr, setRebootPvErr] = useState<string | null>(null)
+  const askedAgain = (r: ApiResult, retry: () => void): boolean => {
+    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => retry); return true }
+    return false
+  }
 
   const [policy, setPolicy] = useState<UpdatesPolicyStatus | null>(null)
   const [inv, setInv] = useState<UpdatesInventory | null>(null)
@@ -56,6 +76,11 @@ export default function UpdatesPage() {
   activeRef.current = active
 
   const setErr = (k: keyof typeof errs, v: string | undefined) => setErrs(e => ({ ...e, [k]: v }))
+
+  const loadCheck = useCallback(async () => {
+    const r = await apiJson<UpdatesCheckStatus>('/api/updates/check')
+    if (r.ok && r.body) { setCheck(r.body); setCheckErr(null) } else setCheckErr(apiError(r, 'the daily check'))
+  }, [])
 
   const loadPolicy = useCallback(async () => {
     const r = await apiJson<UpdatesPolicyStatus>('/api/updates/policy')
@@ -109,8 +134,15 @@ export default function UpdatesPage() {
 
   useEffect(() => {
     if (!allowed) return
-    loadPolicy(); loadInventory(false); loadPlan(); loadJobs()
-  }, [allowed, loadPolicy, loadInventory, loadPlan, loadJobs])
+    loadPolicy(); loadInventory(false); loadPlan(); loadJobs(); loadCheck()
+  }, [allowed, loadPolicy, loadInventory, loadPlan, loadJobs, loadCheck])
+
+  // While a check runs, follow it.
+  useEffect(() => {
+    if (!check?.running) return
+    const t = setInterval(loadCheck, 5000)
+    return () => clearInterval(t)
+  }, [check?.running, loadCheck])
 
   useEffect(() => { if (allowed) loadPlan() }, [allowed, approvals, loadPlan])
 
@@ -118,6 +150,7 @@ export default function UpdatesPage() {
   useEffect(() => {
     if (!inv) return
     const offered = offeredApprovals(inv.guests)
+    for (const g of inv.guests) if (g.noSnapshotAckId) offered.add(g.noSnapshotAckId)
     setApprovals(a => (a.every(id => offered.has(id)) ? a : a.filter(id => offered.has(id))))
   }, [inv])
 
@@ -200,6 +233,7 @@ export default function UpdatesPage() {
     const r = await apiJson<{ job: UpdatesJob }>('/api/updates/jobs', 'POST', { mode, scope, approve: approvals })
     setBusy(false)
     if (!r.ok || !r.body?.job) {
+      if (askedAgain(r, () => void start(mode))) return
       if (!adoptConflict(r)) setNotice({ tone: 'crit', text: apiError(r, 'job start') })
       return
     }
@@ -216,33 +250,52 @@ export default function UpdatesPage() {
     setBusy(true); setNotice(null)
     const r = await apiJson<{ job: UpdatesJob }>(`/api/updates/jobs/${encodeURIComponent(active.id)}/${verb}`, 'POST')
     setBusy(false)
-    if (!r.ok || !r.body?.job) { setNotice({ tone: 'crit', text: apiError(r, verb) }); return }
+    if (!r.ok || !r.body?.job) { if (!askedAgain(r, () => void jobAction(verb))) setNotice({ tone: 'crit', text: apiError(r, verb) }); return }
     const job = r.body.job
     if (ACTIVE.includes(job.status)) setActive(a => (a ? { ...job, steps: job.steps?.length ? job.steps : a.steps } : job))
     else loadJob(job.id)
   }
 
-  const doReboot = async () => {
-    const n = reboot
+  const openReboot = async (n: UpdatesNode) => {
+    setReboot(n); setRebootPv(null); setRebootPvErr(null)
+    if (!remote) return
+    const r = await apiJson<UpdatesRebootPreview>(`/api/updates/nodes/${encodeURIComponent(n.node)}/reboot-preview`)
+    if (r.ok && r.body) setRebootPv(r.body); else setRebootPvErr(apiError(r, 'what the reboot takes down'))
+  }
+
+  const doReboot = async (given?: UpdatesNode) => {
+    const n = given ?? reboot
     if (!n) return
     setReboot(null); setBusy(true); setNotice(null)
     const r = await apiJson<{ job: UpdatesJob }>(`/api/updates/nodes/${encodeURIComponent(n.node)}/reboot`, 'POST')
     setBusy(false)
     if (!r.ok || !r.body?.job) {
+      if (askedAgain(r, () => void doReboot(n))) return
       if (!adoptConflict(r)) setNotice({ tone: 'crit', text: apiError(r, 'reboot') })
       return
     }
     setLogs([]); setActive(r.body.job)
   }
 
-  const doRollback = async () => {
-    const target = rollback
+  const doRollback = async (given?: string) => {
+    const target = given ?? rollback
     if (!target || !active) return
     setRollback(null); setBusy(true); setNotice(null)
     const r = await apiJson<{ job: UpdatesJob }>(`/api/updates/jobs/${encodeURIComponent(active.id)}/rollback`, 'POST', { target })
     setBusy(false)
-    if (!r.ok || !r.body?.job) { setNotice({ tone: 'crit', text: apiError(r, 'rollback') }); return }
+    if (!r.ok || !r.body?.job) {
+      if (askedAgain(r, () => void doRollback(target))) return
+      setNotice({ tone: 'crit', text: apiError(r, 'rollback') }); return
+    }
     setActive(a => (a ? { ...r.body!.job, steps: r.body!.job.steps?.length ? r.body!.job.steps : a.steps } : r.body!.job))
+  }
+
+  const checkNow = async () => {
+    setNotice(null)
+    const r = await apiJson<UpdatesCheckStatus>('/api/updates/check', 'POST')
+    if (r.ok && r.body) setCheck(r.body)
+    else if (r.status === 409) loadCheck()
+    else setNotice({ tone: 'crit', text: apiError(r, 'the check') })
   }
 
   const approve = (id: string, on: boolean) => setApprovals(a => (on ? (a.includes(id) ? a : [...a, id]) : a.filter(x => x !== id)))
@@ -276,40 +329,46 @@ export default function UpdatesPage() {
     <div className="min-h-full space-y-5 p-4 sm:p-8" style={{ background: 'var(--ground)' }}>
       <div>
         <p className="font-mono" style={{ fontSize: 11, letterSpacing: '0.14em', color: 'var(--text-dimmer)' }}>MANAGE</p>
-        <h1 className="mt-2 font-display font-bold" style={{ fontSize: 36, lineHeight: 1.1, color: 'var(--text-bright)' }}>Updates</h1>
+        <h1 className="mt-2 flex flex-wrap items-center gap-3 font-display font-bold" style={{ fontSize: 36, lineHeight: 1.1, color: 'var(--text-bright)' }}>Updates {tag}</h1>
         <p className="mt-1 text-sm" style={{ color: 'var(--text-muted)' }}>
-          Pending packages on every node and guest, and the ordered plan to bring them current.
+          Pending packages on every node and guest of {cluster.name}, and the ordered plan to bring them current.
+          {remote && ' The preview is apt\'s own simulation; nothing changes until you confirm, with your master password.'}
           {inv && <span className="font-mono"> Inventory read {fmtTime(inv.refreshedAt)}.</span>}
         </p>
       </div>
+
+      <ClusterHeader c={cluster} />
 
       <PolicyStrip policy={policy} error={errs.policy ?? null} busy={busy} activeJob={jobActive} refreshing={refreshing}
                    onRefresh={refresh} onRun={start} scope={scope} onScope={setScope} />
 
       {notice && <Notice tone={notice.tone}>{notice.text}</Notice>}
 
+      <CheckPanel status={check} error={checkErr} busy={busy} onCheck={checkNow} current={cluster.id} />
+
+      {active && <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-muted)' }}>This job runs on {tag}</div>}
       {active && (
         <JobPanel job={active} logs={logs} busy={busy}
                   onConfirm={() => jobAction('confirm')} onCancel={() => jobAction('cancel')} onResume={() => jobAction('resume')}
                   onRollback={setRollback} />
       )}
 
-      <Panel title="Nodes">
+      <Panel title="Nodes" tag={tag} edge={edge}>
         {errs.inv ? <div className="p-5"><Notice tone="warn">{errs.inv}</Notice></div>
           : !inv ? <Empty>Reading inventory...</Empty>
           : inv.nodes.length === 0 ? <Empty>No nodes reported.</Empty>
-          : <NodesTable nodes={inv.nodes} canReboot={canReboot} rebootWhy={rebootWhy} onReboot={setReboot} />}
+          : <NodesTable nodes={inv.nodes} canReboot={canReboot} rebootWhy={rebootWhy} onReboot={n => void openReboot(n)} />}
       </Panel>
 
-      <Panel title="Guests">
+      <Panel title="Guests" tag={tag} edge={edge}>
         {errs.inv ? <div className="p-5"><Notice tone="warn">{errs.inv}</Notice></div>
           : !inv ? <Empty>Reading inventory...</Empty>
           : inv.guests.length === 0 ? <Empty>No guests reported.</Empty>
-          : <GuestsTable guests={inv.guests} />}
+          : <GuestsTable guests={inv.guests} acks={approvals} onAck={remote ? approve : undefined} ackDisabled={jobActive || busy} />}
       </Panel>
 
       {inv && appRows(inv.guests).length > 0 && (
-        <Panel title="Apps" right={
+        <Panel title="Apps" tag={tag} edge={edge} right={
           <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
             Installed outside apt and docker, found by plug-ins. {approvals.length ? `${approvals.length} approved for the next run.` : 'Manual updates run only when approved.'}
           </span>
@@ -319,7 +378,7 @@ export default function UpdatesPage() {
       )}
 
       {!active && (
-        <Panel title="Plan preview">
+        <Panel title="Plan preview" tag={tag} edge={edge}>
           <div className="p-5">
             {errs.plan ? <Notice tone="warn">{errs.plan}</Notice>
               : !plan ? <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Building plan...</p>
@@ -328,13 +387,14 @@ export default function UpdatesPage() {
         </Panel>
       )}
 
-      <Panel title="History">
+      <Panel title="History" tag={tag}>
         {errs.jobs ? <div className="p-5"><Notice tone="warn">{errs.jobs}</Notice></div>
           : <History jobs={inactiveJobs} detail={detail} expanded={expanded} onToggle={toggleHistory} />}
       </Panel>
 
       {rollback && active && (
-        <ConfirmDialog title={`Roll ${rollback} back?`} onClose={() => setRollback(null)}>
+        <ConfirmDialog title={`Roll ${rollback} back on ${cluster.name}?`} onClose={() => setRollback(null)}>
+          <div>{tag}</div>
           <ul className="list-disc space-y-1.5 pl-5 text-sm" style={{ color: 'var(--text-soft)' }}>
             <li>The guest is rolled back to the snapshot this run took before touching it, and started again.</li>
             <li>Everything this run did to it is undone: apt packages and images as well as the app.</li>
@@ -342,29 +402,38 @@ export default function UpdatesPage() {
             <li>The job stays paused; Resume then carries on with the rest of the run.</li>
           </ul>
           <div className="flex justify-end gap-2">
-            <Btn kind="danger" onClick={doRollback}>Roll back {rollback}</Btn>
+            <Btn kind="danger" onClick={() => void doRollback()}>Roll back {rollback}</Btn>
             <Btn onClick={() => setRollback(null)}>Cancel</Btn>
           </div>
         </ConfirmDialog>
       )}
 
       {reboot && (
-        <ConfirmDialog title={`Reboot ${reboot.node}?`} onClose={() => setReboot(null)}>
+        <ConfirmDialog title={`Reboot ${reboot.node} on ${cluster.name}?`} onClose={() => setReboot(null)}>
+          <div>{tag}</div>
+          {remote ? (
+            rebootPvErr ? <Notice tone="crit">{rebootPvErr}</Notice>
+              : !rebootPv ? <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Reading what this reboot takes down…</p>
+              : <RebootPreviewList pv={rebootPv} />
+          ) : (
           <ul className="list-disc space-y-1.5 pl-5 text-sm" style={{ color: 'var(--text-soft)' }}>
             <li>Ceph <span className="font-mono">noout</span> is set so data does not move while the node is away.</li>
             <li>The node enters HA maintenance and its HA guests move off first.</li>
             <li>The job waits for the node to return, with quorum, all OSDs up and placement groups clean, then clears both.</li>
             <li>Only this node. If it does not return within 15 minutes the job stops and leaves both set for you to clear.</li>
           </ul>
+          )}
           {reboot.isSelf && (
             <Notice tone="warn">HyperProx runs on this node. It will be unavailable until the node is back.</Notice>
           )}
           <div className="flex justify-end gap-2">
-            <Btn kind="danger" onClick={doReboot}>Reboot {reboot.node}</Btn>
+            <Btn kind="danger" onClick={() => void doReboot()} disabled={remote && (!rebootPv || !rebootPv.standalone)}>Reboot {reboot.node}</Btn>
             <Btn onClick={() => setReboot(null)}>Cancel</Btn>
           </div>
         </ConfirmDialog>
       )}
+
+      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
     </div>
   )
 }

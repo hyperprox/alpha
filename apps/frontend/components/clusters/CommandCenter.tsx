@@ -106,16 +106,24 @@ export function PanelView({ p }: { p: ClusterPanel }) {
         {p.lastBackup ? `Last backup ${ago(p.lastBackup.at)} · ${p.lastBackup.ok ? 'OK' : 'did not finish cleanly'}` : 'No backup task found'}
         {k === 'home' && p.quorum !== 'unknown' ? ` · quorum ${quorum}` : ''}
       </p>
+      <p className="text-xs" style={{ color: p.updates?.security ? 'var(--warn-2)' : 'var(--text-muted)' }}>
+        {!p.updates ? 'Updates: not checked yet'
+          : p.updates.result === 'skipped' && !p.updates.available ? `Updates: not checked ${ago(Date.parse(p.updates.checkedAt))} (${p.updates.reason ?? 'skipped'})`
+          : p.updates.available
+            ? `Updates available on ${p.updates.available} machine${p.updates.available === 1 ? '' : 's'} (${p.updates.packages} package${p.updates.packages === 1 ? '' : 's'}${p.updates.security ? `, ${p.updates.security} security` : ''}) · checked ${ago(Date.parse(p.updates.checkedAt))}`
+            : `Up to date · checked ${ago(Date.parse(p.updates.checkedAt))}`}
+      </p>
       <div className="flex gap-2 flex-wrap">
         {k === 'home' ? (
           <>
             <Link href="/infrastructure" className="text-xs font-semibold rounded-md border px-2.5 py-1" style={{ borderColor: 'var(--border-strong)', color: 'var(--text)' }}>Guests</Link>
-            <Link href="/updates" className="text-xs font-semibold rounded-md border px-2.5 py-1" style={{ borderColor: 'var(--border-strong)', color: 'var(--text)' }}>Updates</Link>
+            <Link href="/updates" className="text-xs font-semibold rounded-md border px-2.5 py-1" style={{ borderColor: 'var(--border-strong)', color: 'var(--text)' }}>Updates{p.updates?.available ? ` (${p.updates.available})` : ''}</Link>
             <Link href="/ha" className="text-xs font-semibold rounded-md border px-2.5 py-1" style={{ borderColor: 'var(--border-strong)', color: 'var(--text)' }}>HA</Link>
           </>
         ) : (
           <>
             <Link href={`/clusters/${p.id}?tab=guests`} className="text-xs font-semibold rounded-md border px-2.5 py-1" style={{ borderColor: 'var(--remote)', color: 'var(--remote)' }}>Guests</Link>
+            <Link href={`/clusters/${p.id}/updates`} className="text-xs font-semibold rounded-md border px-2.5 py-1" style={{ borderColor: 'var(--remote)', color: 'var(--remote)' }}>Updates{p.updates?.available ? ` (${p.updates.available})` : ''}</Link>
             <Link href={`/clusters/${p.id}?tab=files`} className="text-xs font-semibold rounded-md border px-2.5 py-1" style={{ borderColor: 'var(--remote)', color: 'var(--remote)' }}>Send files</Link>
             <Link href={`/clusters/${p.id}?tab=settings`} className="text-xs font-semibold rounded-md border px-2.5 py-1" style={{ borderColor: 'var(--remote)', color: 'var(--remote)' }}>Edit server</Link>
           </>

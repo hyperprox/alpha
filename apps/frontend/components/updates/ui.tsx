@@ -32,11 +32,12 @@ export function Badge({ tone, children, title }: { tone: 'accent' | 'good' | 'wa
   )
 }
 
-export function Panel({ title, right, children }: { title: string; right?: React.ReactNode; children: React.ReactNode }) {
+/** `tag`: which cluster the card is about (ClusterTag), shown beside the title. `edge`: that cluster's colour. */
+export function Panel({ title, right, children, tag, edge }: { title: string; right?: React.ReactNode; children: React.ReactNode; tag?: React.ReactNode; edge?: string }) {
   return (
-    <section className="rounded-[10px] border" style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}>
+    <section className="rounded-[10px] border" style={{ background: 'var(--surface)', borderColor: 'var(--border)', ...(edge ? { borderTop: `3px solid ${edge}` } : {}) }}>
       <div className="flex flex-wrap items-center justify-between gap-2 border-b px-5 py-3" style={{ borderColor: 'var(--border)' }}>
-        <h2 className="font-display font-semibold" style={{ fontSize: 20, color: 'var(--text-bright)' }}>{title}</h2>
+        <h2 className="flex flex-wrap items-center gap-2 font-display font-semibold" style={{ fontSize: 20, color: 'var(--text-bright)' }}>{title}{tag}</h2>
         {right}
       </div>
       {children}

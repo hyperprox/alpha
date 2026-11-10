@@ -33,6 +33,8 @@ export interface ClusterPanel {
   nodes: { online: number; total: number }; quorum: 'ok' | 'lost' | 'standalone' | 'unknown'
   guests: { running: number; total: number }; cpuPct: number | null; memPct: number | null; storagePct: number | null
   gpus: GpuRow[]; gpuNote: string | null; lastBackup: { at: number; ok: boolean; node: string } | null; attention: Attention[]; monitoring: boolean
+  /** From the last daily updates check (stored; no machine is read for this). */
+  updates?: { available: number; packages: number; security: number; checkedAt: string; result: 'ok' | 'partial' | 'skipped'; reason?: string } | null
 }
 
 export function useClusters() {

@@ -29,7 +29,7 @@ const TABS = [
 type TabId = typeof TABS[number]['id']
 
 // Pages that work on the home cluster only for now. Shown, so nobody wonders where they went, and labelled.
-const HOME_ONLY = ['High availability', 'GPU sharing', 'Updates']
+const HOME_ONLY = ['High availability', 'GPU sharing']
 
 function StorageTab() {
   const [rows, setRows] = useState<any[] | null>(null)
@@ -124,6 +124,7 @@ export default function ClusterPage() {
             <button key={t.id} onClick={() => setTab(t.id)} className="text-left rounded-md px-2.5 py-1.5"
               style={{ background: current === t.id ? 'var(--surface)' : 'transparent', fontWeight: current === t.id ? 600 : 400, color: current === t.id ? clusterColor(k) : 'var(--text)' }}>{t.label}</button>
           ))}
+          {remote && <Link href={`/clusters/${c.id}/updates`} className="rounded-md px-2.5 py-1.5" style={{ color: 'var(--text)' }}>Updates</Link>}
           {remote && HOME_ONLY.map(l => (
             <span key={l} className="flex items-center justify-between gap-2 px-2.5 py-1.5" style={{ color: 'var(--text-dimmer)' }} title="This page works on the home cluster only for now.">
               {l}<span className="font-mono rounded border px-1" style={{ fontSize: 9.5, borderColor: 'var(--text-dimmer)' }}>HOME ONLY</span>
