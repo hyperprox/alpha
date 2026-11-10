@@ -9,6 +9,7 @@ import { apiJson } from '@/lib/api'
 import { type ClusterPanel, type Attention, type GpuRow, clusterColor, clusterInk, ago } from '@/lib/clusters'
 import { gpuRowLabel, gpuRowTitle, gpuRowRight, gpuRowPct, gpuRowDetail, gpuRowAction } from '@/lib/gpu-rows'
 import { Notice } from '@/components/vault/ui'
+import { SendFilesButton } from './SendFiles'
 
 export function Dot({ kind, size = 9 }: { kind: 'home' | 'remote'; size?: number }) {
   return <span aria-hidden className="inline-block rounded-full shrink-0" style={{ width: size, height: size, background: clusterColor(kind) }} />
@@ -124,7 +125,7 @@ export function PanelView({ p }: { p: ClusterPanel }) {
           <>
             <Link href={`/clusters/${p.id}?tab=guests`} className="text-xs font-semibold rounded-md border px-2.5 py-1" style={{ borderColor: 'var(--remote)', color: 'var(--remote)' }}>Guests</Link>
             <Link href={`/clusters/${p.id}/updates`} className="text-xs font-semibold rounded-md border px-2.5 py-1" style={{ borderColor: 'var(--remote)', color: 'var(--remote)' }}>Updates{p.updates?.available ? ` (${p.updates.available})` : ''}</Link>
-            <Link href={`/clusters/${p.id}?tab=files`} className="text-xs font-semibold rounded-md border px-2.5 py-1" style={{ borderColor: 'var(--remote)', color: 'var(--remote)' }}>Send files</Link>
+            <SendFilesButton clusterId={p.id} clusterName={p.name} compact />
             <Link href={`/clusters/${p.id}?tab=settings`} className="text-xs font-semibold rounded-md border px-2.5 py-1" style={{ borderColor: 'var(--remote)', color: 'var(--remote)' }}>Edit server</Link>
           </>
         )}

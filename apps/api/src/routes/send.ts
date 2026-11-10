@@ -10,7 +10,8 @@
 import type { FastifyPluginAsync, FastifyReply } from 'fastify'
 import { currentContext } from '../lib/auth'
 import { ClusterRefusal, clusterRow, validClusterId } from '../lib/clusters/registry'
-import { discoverSend, browseSend, searchSend, previewSend, setupSend, sendNow, type SendPlan } from '../lib/clusters/send-simple'
+import { discoverSend, browseSend, searchSend, previewSend, setupSend, sendNow, linkSpeed, type SendPlan } from '../lib/clusters/send-simple'
+import { jobStore } from '../lib/clusters/files'
 import { PinConfirmRefusal } from '../lib/hostkey-pins'
 
 const who = () => currentContext()?.email ?? 'unknown'
@@ -34,8 +35,10 @@ function fail(reply: FastifyReply, e: any) {
 }
 
 /** What the page needs from a plan: names, sizes, words. Paths are shown so the owner can see what is meant. */
-export function planView(p: SendPlan) {
+export async function planView(p: SendPlan) {
+  const { speed, measured } = linkSpeed(p.dst, await jobStore().list().catch(() => []))
   return {
+    speed, speedMeasured: measured,
     ready: p.ready, steps: p.steps, problems: p.problems, hostKeys: p.hostKeys, sourceNode: p.sourceNode,
     libraries: p.libraries.map(l => ({ id: l.id, name: l.name, path: l.path, node: l.node, free: l.free, size: l.size, plex: !!l.sectionKey })),
     sources: p.sources.map(s => ({ name: s.name, path: s.path })),
@@ -58,7 +61,7 @@ export const sendRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Params: { id: string }; Body: { fresh?: boolean } }>('/:id/send/discover', async (req, reply) => {
     const row = remoteOr404(req.params.id, reply); if (!row) return
     if (limited('send-discover', reply)) return
-    try { return { success: true, data: planView(await discoverSend(row.id, undefined, { fresh: req.body?.fresh === true })) } } catch (e) { return fail(reply, e) }
+    try { return { success: true, data: await planView(await discoverSend(row.id, undefined, { fresh: req.body?.fresh === true })) } } catch (e) { return fail(reply, e) }
   })
 
   fastify.get<{ Params: { id: string }; Querystring: { path?: string } }>('/:id/send/browse', async (req, reply) => {
@@ -83,7 +86,7 @@ export const sendRoutes: FastifyPluginAsync = async (fastify) => {
     const row = remoteOr404(req.params.id, reply); if (!row) return
     if ((req as any).apiToken) return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'Setting up sending needs a person with the master password, not an API token.' })
     const keys = Array.isArray(req.body?.confirmHostKeys) ? req.body!.confirmHostKeys.map(String).slice(0, 10) : []
-    try { const r = await setupSend(row.id, who(), keys); return { success: true, data: { words: r.words, plan: planView(r.plan) } } } catch (e) { return fail(reply, e) }
+    try { const r = await setupSend(row.id, who(), keys); return { success: true, data: { words: r.words, plan: await planView(r.plan) } } } catch (e) { return fail(reply, e) }
   })
 
   fastify.post<{ Params: { id: string }; Body: { previewId?: string } }>('/:id/send', async (req, reply) => {

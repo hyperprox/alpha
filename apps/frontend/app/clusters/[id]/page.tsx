@@ -16,6 +16,7 @@ import { ServerSettings } from '@/components/clusters/ServerSettings'
 import { HardwareScan } from '@/components/clusters/HardwareScan'
 import { MonitoringSetup } from '@/components/clusters/MonitoringSetup'
 import { FilesTab } from '@/components/clusters/FilesTab'
+import { SendFilesButton } from '@/components/clusters/SendFiles'
 
 const TABS = [
   { id: 'overview', label: 'Overview' },
@@ -111,6 +112,7 @@ export default function ClusterPage() {
         <Link href="/clusters" className="text-sm rounded-md border px-2.5 py-1" style={{ borderColor: 'var(--border-strong)', color: 'var(--text)' }}>‹ Command center</Link>
         <Dot kind={k} /><b className="font-display" style={{ fontSize: 20, color: 'var(--text-bright)' }}>{c.name}</b><KindPill kind={k} />
         {!remote && <Link href="/dashboard" className="ml-auto text-sm" style={{ color: 'var(--accent)' }}>Home dashboard ›</Link>}
+        {remote && <span className="ml-auto"><SendFilesButton clusterId={c.id} clusterName={c.name} /></span>}
       </div>
       {remote && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 sm:px-8 py-2 font-semibold" style={{ background: 'var(--remote)', color: 'var(--remote-ink)' }} role="status">

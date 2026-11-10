@@ -10,6 +10,7 @@ import { useClusters, clusterColor, clusterInk, bytes, type ClusterInfo } from '
 import { INPUT, LABEL, Notice, BusyNote } from '@/components/vault/ui'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { Dot } from './CommandCenter'
+import { SendFilesButton } from './SendFiles'
 
 interface Entry { name: string; dir: boolean; size: number }
 interface Side { cluster: string; node: string; path: string }
@@ -134,6 +135,12 @@ export function FilesTab({ clusterId }: { clusterId: string }) {
         <span className="uppercase">Destination: {nameOf(dst.cluster)}</span>
         <small className="font-medium" style={{ opacity: 0.85 }}>Copy adds files there. Your files stay where they are, and HyperProx replaces and deletes nothing that was already there.</small>
       </div>
+      {dk === 'remote' && (
+        <div className="rounded-lg border p-3 flex flex-wrap items-center gap-3 text-sm" style={{ borderColor: 'var(--remote)', color: 'var(--text)' }}>
+          <span className="flex-1 min-w-[12rem]">The everyday way: press <b>Send files</b>, pick what, pick where. HyperProx finds the libraries and sets itself up. This page is the advanced way, for any folder and node.</span>
+          <SendFilesButton clusterId={dst.cluster} clusterName={nameOf(dst.cluster)} />
+        </div>
+      )}
       <Notice kind="warn">First version: copying has been tested with HyperProx's own checks, not yet against real servers. Try a small folder first.</Notice>
       <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(min(100%,19rem),1fr))' }}>
         <Picker title="From" side={src} setSide={s => { setSrc(s); setPreview(null) }} clusters={clusters} wantDir={false} kindOf={kindOf} />
