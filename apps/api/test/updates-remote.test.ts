@@ -105,7 +105,9 @@ test('apt simulation: security origin flagged; kernel, firmware, Proxmox and rem
   const sum = summariseNodeChanges(sim.changes!)
   assert.deepEqual(sum, { kernel: true, firmware: true, proxmoxVe: true, rebootAfter: true, removals: ['old-tool'] })
   assert.equal(parseGuestPending('libssl3t64/stable-security 3.5.4-1 amd64 [upgradable from: 3.5.1-1]').pending[0].security, true)
-  assert.deepEqual(readBackProblems(sim.changes!.slice(0, 1), parseInstalledVersions('HP_VERSIONS_BEGIN\nopenssl 3.5.1-1 ii \nHP_VERSIONS_END')), ['openssl is at 3.5.1-1, expected 3.5.4-1'])
+  const rb = readBackProblems(sim.changes!.slice(0, 1), parseInstalledVersions('HP_VERSIONS_BEGIN\nopenssl 3.5.1-1 ii \nHP_VERSIONS_END'))
+  assert.deepEqual(rb.map(p => p.detail), ['openssl is at 3.5.1-1, expected 3.5.4-1'])
+  assert.deepEqual(rb.map(p => p.words), ['openssl is not at the expected version'], 'the words carry no version')
 })
 
 test('the remote services check passes the script guard; the home one would be refused there', () => {
@@ -133,7 +135,6 @@ test('remote node: preview is apt\'s dist-upgrade simulation; apply upgrades, re
   assert.equal(n.preview?.kernel, true)
   assert.equal(n.preview?.proxmoxVe, true)
   assert.equal(n.preview?.rebootAfter, true)
-  assert.deepEqual(n.held, ['pve-firmware'])
   assert.equal(n.standalone, true)
   assert.ok(fake.ran(/apt-get -s .* dist-upgrade/), 'the preview is apt\'s own simulation')
   assert.ok(!fake.calls.some(c => c.cmd === 'POST apt/update'), 'reading the preview refreshes nothing')
@@ -144,7 +145,6 @@ test('remote node: preview is apt\'s dist-upgrade simulation; apply upgrades, re
   assert.ok(actions.includes('node-reboot:pve1'))
   assert.ok(!actions.some((a: string) => a.startsWith('ceph:') || a.startsWith('self:')))
   assert.ok(job.plan.warnings.some((w: string) => /new kernel is included.*never does on its own/.test(w)))
-  assert.ok(job.plan.warnings.some((w: string) => /held, not offered.*pve-firmware/.test(w)))
   assert.ok(job.plan.warnings.some((w: string) => /one-node server.*gates are skipped/.test(w)))
   assert.equal(job.plan.cluster.id, REMOTE.id)
   const pre = (await store.getSteps(job.id)).find(s => s.action === 'preflight')!
@@ -177,10 +177,12 @@ test('read-back failures are reported plainly: a package left behind, a hold tha
   await r1.runner.confirm(j1.id); await r1.runner.idle()
   const s1 = (await r1.store.getSteps(j1.id)).find(s => s.action === 'node-upgrade')!
   assert.equal(s1.status, 'failed')
-  assert.match(s1.reason ?? '', /read-back after apt-get dist-upgrade: openssl is not installed \(expected 3\.5\.4-1\)/)
+  assert.match(s1.reason ?? '', /read-back after apt-get dist-upgrade: openssl is not installed$/)
+  assert.doesNotMatch(s1.reason ?? '', /3\.5\.4/, 'no versions in the reason (it reaches the pause, the audit log and notifications)')
+  assert.match(s1.output ?? '', /openssl is not installed \(expected 3\.5\.4-1\)/, 'the detail stays in the step output')
   assert.equal((await r1.store.getJob(j1.id))!.status, 'paused')
 
-  const b = standaloneServer({ guest: { config: { hostname: 'media' } } })
+  const b = standaloneServer({ node: { holds: ['pve-firmware'] }, guest: { config: { hostname: 'media' } } })
   b.dropHoldsOnUpgrade = true
   const r2 = remoteRunner(b, { yaml: `clusters:\n  ${REMOTE.id}:\n    nodes:\n      pve1: { upgrade: dist-upgrade }\n` })
   const j2 = await awaitConfirm(r2.runner, r2.store)
@@ -246,7 +248,8 @@ test('guest that can be snapshotted: snapshot first, then upgrade, then read-bac
   await r2.runner.confirm(j2.id); await r2.runner.idle()
   const s = (await r2.store.getSteps(j2.id)).find(x => x.target === '101' && x.action === 'apt')!
   assert.equal(s.status, 'failed')
-  assert.match(s.reason ?? '', /upgraded, but apt still offers: openssl 3\.0-2 \(snapshot hp-upd-/)
+  assert.match(s.reason ?? '', /upgraded, but apt still offers 1 package: openssl \(snapshot hp-upd-/)
+  assert.match(s.output ?? '', /openssl 3\.0-1 -> 3\.0-2/)
 })
 
 // --- Reboot: separate, explicit, standalone only -----------------------------------------------

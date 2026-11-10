@@ -22,7 +22,8 @@ import type { UpdatesClusterRef, UpdatesPlan, UpdatesRebootPreview, UpdatesRepor
 import type { UpdatesExecutor, GuestListing, LineSink } from './executor'
 import { parseOsdOkToStop, parseCephState, parseOsdFlags, judgeRestoredState, type CephState } from './ceph-safety'
 import { SAFETY_SKIP, osdVerdict, osdNames, monVerdict, annotatePlanSafety, withoutSafetyNote } from './ceph-checks'
-import { type PolicyLoad, type Policy, guestPolicy, nodePolicy } from './policy'
+import { type PolicyLoad, type Policy, guestPolicy, nodePolicy, effectiveUpgrade } from './policy'
+import { shortReason } from '../redact-addresses'
 import { readInventory, findSelfGuest, selfVmidOf, type InventoryResult } from './inventory'
 import { buildPlan, detailKey, DETAIL } from './planner'
 import {
@@ -640,9 +641,9 @@ export class UpdatesRunner {
     if (this.remote) {
       // Read-back: what apt would still upgrade now. Held and kept-back packages are expected to stay.
       const again = await this.exec.guestExec(guest, GUEST_PENDING_SCRIPT, undefined, 120_000).catch((e: any) => ({ code: -1, output: String(e?.message ?? e), timedOut: false }))
-      if (again.code !== 0) return { status: 'failed', reason: `upgraded, but the read-back could not run: ${tail(again.output, 200).trim()}`, output: tail(r.output) }
+      if (again.code !== 0) return { status: 'failed', reason: 'upgraded, but the read-back could not run (see the output)', output: tail(r.output + '\nread-back:\n' + again.output) }
       const left = parseGuestPending(again.output).pending
-      if (left.length) return { status: 'failed', reason: `upgraded, but apt still offers: ${left.map(p => `${p.name} ${p.to}`).join(', ')}${snapshot ? ` (snapshot ${snapshot})` : ''}`, output: tail(r.output) }
+      if (left.length) return { status: 'failed', reason: `upgraded, but apt still offers ${left.length} package${left.length === 1 ? '' : 's'}: ${left.map(p => p.name).join(', ')}${snapshot ? ` (snapshot ${snapshot})` : ''}`, output: tail(r.output + '\nstill offered:\n' + left.map(p => `${p.name} ${p.from ?? ''} -> ${p.to}`).join('\n')) }
       log('read-back: nothing left to upgrade (held and kept-back packages untouched)')
     }
     const wantsReboot = /HP_REBOOT_REQUIRED/.test(r.output)
@@ -880,57 +881,68 @@ export class UpdatesRunner {
   }
 
   private async nodeUpgrade(jobId: string, node: string, policy: Policy, log: LineSink): Promise<Outcome> {
-    // The node's policy, read now, decides upgrade vs dist-upgrade — never the stored plan.
+    // The node's policy, read now, decides upgrade vs dist-upgrade — never the stored plan — and so does what is
+    // on the node: held packages or a pinned kernel mean `upgrade` unless the policy names this node for more.
     const pol = nodePolicy(policy, node)
     const before = await this.nodeFacts(node)
     const pre = await this.combine([Promise.resolve(holdsPinGate(node, before, pol)), Promise.resolve(freeSpaceGate(node, before, policy))])
     if (!pre.ok) return { status: 'failed', reason: `stopped before installing: ${pre.reason}` }
+    const choice = effectiveUpgrade(policy, node, before)
+    const verb = choice.verb
+    if (choice.note) log(choice.note)
+    const said = choice.note ? `${choice.note}\n` : ''
 
     // Ceph moves only in the Ceph phase (one exact version, daemons in order). If the upgrade would touch a
     // Ceph package — one that arrived after the plan, say — the step refuses. No apt-mark hold: a hold
     // HyperProx placed and failed to lift would block the Ceph phase itself later.
-    const sim = await this.exec.nodeExec(node, nodeSimulateCommand(pol.upgrade), undefined, 10 * 60_000)
+    const sim = await this.exec.nodeExec(node, nodeSimulateCommand(verb), undefined, 10 * 60_000)
     const parsed = sim.code === 0 ? parseAptSimulation(sim.output) : { changes: null, error: `the command exited ${sim.code}` }
-    if (!parsed.changes) return { status: 'failed', reason: `could not simulate apt-get ${pol.upgrade} on ${node}, so nothing was installed: ${parsed.error}`, output: tail(sim.output) }
+    if (!parsed.changes) return { status: 'failed', reason: `could not simulate apt-get ${verb} on ${node}, so nothing was installed: ${this.remote ? shortReason(parsed.error) : parsed.error}`, output: tail(sim.output) }
     const changes = parsed.changes
     const ceph = changes.filter(c => isCephPackage(c.name))
     // On a remote cluster there is no Ceph phase. Ceph client libraries on a server that runs no Ceph move with
     // the node like any other package; with Ceph running, the upgrade refuses as it does at home.
     const cephHere = ceph.length > 0 && (!this.remote || await this.ceph(jobId))
     if (cephHere && this.remote) {
-      return { status: 'failed', reason: `refusing: apt-get ${pol.upgrade} on ${node} would also change Ceph packages, and this cluster runs Ceph. HyperProx restarts Ceph daemons in order only on the home cluster; upgrade this node by hand` }
+      return { status: 'failed', reason: `refusing: apt-get ${verb} on ${node} would also change Ceph packages, and this cluster runs Ceph. HyperProx restarts Ceph daemons in order only on the home cluster; upgrade this node by hand` }
     }
     if (cephHere) {
       const what = ceph.map(c => c.action === 'remove' ? `${c.name} removed` : `${c.name} ${c.from ?? 'new'} → ${c.to}`).join(', ')
       return {
         status: 'failed',
-        reason: `refusing: apt-get ${pol.upgrade} on ${node} would also change Ceph packages (${what}). Ceph is upgraded only in the Ceph phase, to one exact version on every node with its daemons restarted in order — start a new run so the plan includes it`,
+        reason: `refusing: apt-get ${verb} on ${node} would also change Ceph packages (${what}). Ceph is upgraded only in the Ceph phase, to one exact version on every node with its daemons restarted in order — start a new run so the plan includes it`,
       }
     }
 
-    const r = await this.exec.nodeExec(node, nodeUpgradeCommand(pol.upgrade), log, 60 * 60_000)
-    if (r.code !== 0) return { status: 'failed', reason: `apt-get ${pol.upgrade} failed`, output: tail(r.output) }
+    const r = await this.exec.nodeExec(node, nodeUpgradeCommand(verb), log, 60 * 60_000)
+    if (r.code !== 0) return { status: 'failed', reason: `apt-get ${verb} failed`, output: tail(said + r.output) }
 
     const svc = await this.exec.nodeExec(node, this.remote ? REMOTE_NODE_SERVICES_COMMAND : NODE_SERVICES_COMMAND, log, 60_000)
     if (svc.code !== 0) return { status: 'failed', reason: 'Proxmox services not all active after the upgrade', output: tail(r.output + '\n' + svc.output) }
 
     const afterFacts = await this.nodeFacts(node)
     const after = holdsPinGate(node, afterFacts, pol)
-    if (!after.ok) return { status: 'failed', reason: `after the upgrade: ${after.reason} — not repaired; a person must look`, output: tail(r.output) }
-    if (!this.remote) return { status: 'ok', output: tail(r.output) }
+    if (!after.ok) return { status: 'failed', reason: `after the upgrade: ${after.reason} — not repaired; a person must look`, output: tail(said + r.output) }
+    if (!this.remote) return { status: 'ok', output: tail(said + r.output) }
 
     // Read-back (remote): every package where apt said it would land, held packages still held, the API answering.
-    const problems: string[] = []
+    // The reason (which reaches the pause, the audit log and notifications) names packages only; versions and
+    // anything an error said go in the step's output.
+    const words: string[] = []
+    const details: string[] = []
     const held = before.holds.filter(h => !afterFacts.holds.includes(h))
-    if (held.length) problems.push(`no longer on hold: ${held.join(', ')} (HyperProx never removes a hold; a person must look)`)
-    if (before.pinned && afterFacts.pinned !== before.pinned) problems.push(`the kernel pin changed from ${before.pinned} to ${afterFacts.pinned ?? 'none'}`)
+    if (held.length) { const w = `no longer on hold: ${held.join(', ')} (HyperProx never removes a hold; a person must look)`; words.push(w); details.push(w) }
+    if (before.pinned && afterFacts.pinned !== before.pinned) {
+      words.push('the kernel pin changed (HyperProx never moves a pin; a person must look)')
+      details.push(`the kernel pin changed from ${before.pinned} to ${afterFacts.pinned ?? 'none'}`)
+    }
     const v = await this.exec.nodeExec(node, installedVersionsCommand(changes.map(c => c.name)), undefined, 60_000)
-    problems.push(...readBackProblems(changes, parseInstalledVersions(v.output)))
-    try { await this.exec.clusterStatus() } catch (e: any) { problems.push(`the Proxmox API did not answer after the upgrade: ${e.message}`) }
+    for (const p of readBackProblems(changes, parseInstalledVersions(v.output))) { words.push(p.words); details.push(p.detail) }
+    try { await this.exec.clusterStatus() } catch (e: any) { words.push('the Proxmox API did not answer after the upgrade'); details.push(`Proxmox API: ${e.message}`) }
     const reboot = this.rebootNeeded(afterFacts) ? ` A reboot is needed (${afterFacts.runningKernel ?? 'unknown'} is running); HyperProx does not reboot this node on its own.` : ''
     if (reboot) this.rebootPending.add(node)
-    if (problems.length) return { status: 'failed', reason: `read-back after apt-get ${pol.upgrade}: ${problems.join('; ')}`, output: tail(r.output) }
-    return { status: 'ok', output: tail(r.output) + `\nread-back: ${changes.length} package${changes.length === 1 ? '' : 's'} at the expected versions; holds and pin unchanged.${reboot}` }
+    if (words.length) return { status: 'failed', reason: shortReason(`read-back after apt-get ${verb}: ${words.join('; ')}`, 400), output: tail(said + r.output + '\nread-back:\n' + details.join('\n')) }
+    return { status: 'ok', output: tail(said + r.output) + `\nread-back: ${changes.length} package${changes.length === 1 ? '' : 's'} at the expected versions; holds and pin unchanged.${reboot}` }
   }
 
   private rebootNeeded(f: NodeFacts): boolean {
@@ -1068,7 +1080,7 @@ export class UpdatesRunner {
     let sent: { code: number; output: string; timedOut: boolean } | null = null
     try { sent = await this.exec.nodeExec(node, NODE_REBOOT_COMMAND, log, 30_000) }
     catch { /* the connection drops as the node goes down */ }
-    if (sent && sent.code > 0 && !sent.timedOut) return { status: 'failed', reason: `${node} refused the reboot (${tail(sent.output, 200).trim()})`, output: sent.output }
+    if (sent && sent.code > 0 && !sent.timedOut) return { status: 'failed', reason: `${node} refused the reboot (see the output)`, output: sent.output }
 
     const deadline = this.exec.now() + this.timing.nodeReturnMs
     await this.exec.sleep(this.timing.rebootSettleMs)
@@ -1085,7 +1097,7 @@ export class UpdatesRunner {
     }
     if (!back) {
       this.rebootPending.add(node)
-      return { status: 'failed', fatal: true, reason: `${node} did not come back within ${Math.round(this.timing.nodeReturnMs / 60_000)} min (${last}). Nothing else was changed; check the server's console.` }
+      return { status: 'failed', fatal: true, reason: `${node} did not come back within ${Math.round(this.timing.nodeReturnMs / 60_000)} min (${shortReason(last)}). Nothing else was changed; check the server's console.`, output: last }
     }
     this.rebootPending.delete(node)
     const facts = await this.nodeFacts(node).catch(() => null)

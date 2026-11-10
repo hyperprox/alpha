@@ -7,6 +7,7 @@
 //  from a remote system can carry both.
 // =============================================================================
 
+import { stripAddresses } from '../redact-addresses'
 import crypto from 'node:crypto'
 import { maxSeverity, severityRank, type NotifyEventInput, type NotifyMessage, type Severity } from './types'
 
@@ -29,7 +30,8 @@ export function scrub(text: string, secrets: string[] = []): string {
     .replace(/\b(bearer|basic)\s+\S+/gi, '$1 [hidden]')
     .replace(/\b(token|key|secret|password|passwd|pwd|apikey|api_key|auth)(\s*[=:]\s*)\S+/gi, '$1$2[hidden]')
     .replace(/[A-Za-z0-9_\-+/=]{32,}/g, '[hidden]')
-  return s
+  // Bare addresses and host:port too: an error text from a node or an API often names one.
+  return stripAddresses(s)
 }
 
 const oneLine = (s: string) => s.replace(/\s+/g, ' ').trim()

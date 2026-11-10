@@ -339,17 +339,28 @@ export function parseInstalledVersions(output: string): Record<string, string> {
   return out
 }
 
+export interface ReadBackProblem {
+  name:   string
+  /** Without versions: for the step's reason, the pause reason, the audit log and notifications. */
+  words:  string
+  /** With versions: for the step's output only. */
+  detail: string
+}
+
 /**
- * Compare what apt said it would do with what dpkg now reports. Plain sentences, one per package that did not
- * land where the simulation said it would.
+ * Compare what apt said it would do with what dpkg now reports: one problem per package that did not land
+ * where the simulation said it would.
  */
-export function readBackProblems(planned: AptSimChange[], installed: Record<string, string>): string[] {
-  const out: string[] = []
+export function readBackProblems(planned: AptSimChange[], installed: Record<string, string>): ReadBackProblem[] {
+  const out: ReadBackProblem[] = []
   for (const c of planned) {
-    if (c.action === 'remove') { if (installed[c.name]) out.push(`${c.name} was to be removed and is still installed (${installed[c.name]})`); continue }
     const now = installed[c.name]
-    if (!now) out.push(`${c.name} is not installed (expected ${c.to})`)
-    else if (now !== c.to) out.push(`${c.name} is at ${now}, expected ${c.to}`)
+    if (c.action === 'remove') {
+      if (now) out.push({ name: c.name, words: `${c.name} was to be removed and is still installed`, detail: `${c.name} was to be removed and is still installed (${now})` })
+      continue
+    }
+    if (!now) out.push({ name: c.name, words: `${c.name} is not installed`, detail: `${c.name} is not installed (expected ${c.to})` })
+    else if (now !== c.to) out.push({ name: c.name, words: `${c.name} is not at the expected version`, detail: `${c.name} is at ${now}, expected ${c.to}` })
   }
   return out
 }
