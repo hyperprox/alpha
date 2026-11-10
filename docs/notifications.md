@@ -75,6 +75,9 @@ manager's admin port 81; add more with `NOTIFY_BLOCKED_PORTS=port,port`), howeve
 bridges) are always refused. Name lookups time out after 5 seconds. Redirects are not followed; at most
 1 KB of an answer is read.
 
+Every message is scrubbed before it is stored or sent: links, bearer tokens, `key=value` secrets, long
+opaque strings, and bare IP addresses (IPv4 and IPv6) and `host:port` are replaced.
+
 ## Links
 
 Set `HYPERPROX_PUBLIC_URL` in `.env` to the address you open HyperProx at. Messages then link to the page
@@ -112,8 +115,8 @@ Event types today: `vault.locked`, `updates.job.finished`, `updates.job.paused`,
 
 `updates.available` comes from the daily updates check (`docs/updates.md`, "The daily check"): one
 message per check that found something new on any cluster, grouped by cluster, security fixes first, with
-counts and kernel or reboot flags only (no versions or addresses). It is a warning, belongs to the Updates
-family, and repeats at most every `check.reminder_days` (default 7) while the same updates stay unapplied.
+counts and kernel or reboot flags only (no versions or addresses). It is a warning when security fixes, a
+kernel or a reboot are involved and info otherwise, belongs to the Updates family, and repeats at most every `check.reminder_days` (default 7) while the same updates stay unapplied.
 Messages about an update run on a remote cluster name it ("Remote server (remote): Updates finished") and
 link to that cluster's Updates page.
 

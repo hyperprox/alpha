@@ -328,7 +328,7 @@ reach: a Tailscale name or IP, a WireGuard address, or anything else routable.
    Certificates) and confirm. From then on HyperProx accepts only that certificate; if it changes,
    nothing is sent until you compare and confirm the new one.
 5. HyperProx connects, checks the token really has administrator rights, and scans the hardware
-   (read-only). Monitoring is offered on the server's **Edit** page.
+   (read-only). Your home cluster (or one of its nodes) cannot be added again as a remote. Monitoring is offered on the server's **Edit** page.
 
 **Opening a remote** turns the page amber, with "You are managing" and its name on every part of it.
 There you can start, shut down, stop and restart guests, take snapshots, back up now, edit a guest's
@@ -546,7 +546,11 @@ same policy file; without one, safe defaults apply.
 package lists and asks apt to simulate; nothing is installed) and sends one message to the channels that
 take Updates events when it finds something new: per cluster, security fixes first, then package counts
 and kernel or reboot flags. The same list is not repeated, except as a weekly reminder. Each Command
-center panel shows the last check's count.
+center panel shows the last check's count. The check stops for an Updates job, gives each cluster at most
+20 minutes, and reads nothing while the policy file is rejected.
+
+A node seen with held packages or a pinned kernel always gets `apt-get upgrade`, never `dist-upgrade`,
+unless its policy names it for `dist-upgrade` by name, on every cluster.
 
 Admin-only. See [docs/updates.md](docs/updates.md).
 

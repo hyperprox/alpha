@@ -120,6 +120,11 @@ the remote and link to its page).
   HyperProx never runs `apt-mark unhold`, `proxmox-boot-tool kernel unpin` or
   `--allow-change-held-packages`, on any cluster. A policy section can set a node to `upgrade` and
   require holds and a pin, exactly as at home.
+- **A node seen with held packages or a pinned kernel gets `apt-get upgrade`** (on every cluster, home
+  included), even when its default is `dist-upgrade`, because `upgrade` never adds or removes a package.
+  The preview, the plan and the step say so in words ("pve1 has held packages (...), so it gets apt-get
+  upgrade, not dist-upgrade"). Only `upgrade: dist-upgrade` set for that node **by name** in its policy
+  overrides this. A node whose holds and pin cannot be read gets `upgrade` too.
 - **Never an automatic reboot.** A node whose upgrade needs a reboot is marked *reboot pending*. The
   **Reboot** button is a separate action: it first shows which running guests will stop (and which of
   them will not start again on their own, because they are not set to start at boot), the running kernel
@@ -132,9 +137,11 @@ the remote and link to its page).
   words ("standalone server: no quorum or HA to check (skipped)"). Every other gate runs.
 - **Everything is read back.** After a node upgrade, every package is checked at the version the
   simulation promised, holds and the kernel pin are checked unchanged, and the Proxmox API must answer;
-  any difference fails the step with a plain sentence ("openssl is at 3.5.1-1, expected 3.5.4-1", "no
-  longer on hold: ..."). After a guest upgrade, apt is asked again what it would still upgrade; anything
-  left (other than held or kept-back packages) fails the guest.
+  any difference fails the step with a plain sentence ("openssl is not at the expected version", "no
+  longer on hold: ..."). The reason, which also reaches the pause message, the audit log and
+  notifications, names packages only; versions and anything an error said (addresses included) are in the
+  step's output. After a guest upgrade, apt is asked again what it would still upgrade; anything left
+  (other than held or kept-back packages) fails the guest.
 - **A guest that cannot be snapshotted** (bind-mounted storage, which is usual for a media container) is
   not updated unless you tick **Update without a snapshot** for it. The tick shows the newest backup
   HyperProx can see on that cluster (from its backup tasks, the same ones the Command center reads), and
@@ -155,10 +162,16 @@ the remote and link to its page).
   Ceph runs on that cluster, the step refuses; on a server without Ceph, the Ceph client libraries Proxmox
   installs move with the node like any other package.
 
-The remote's policy is its own section of the same file; see `clusters.<id or name>` below. A remote
-with no section gets the built-in remote defaults described above, even with no policy file at all. A
-policy file that exists but does not load stops runs on every cluster, since the broken part may be the
-section meant for that remote.
+The remote's policy is its own section of the same file; see `clusters.<id or name>` below. A section
+keyed by the cluster's id wins over one keyed by its name. Renaming a server so that a name-keyed section
+would start applying to it is refused, and the Updates page lists which section applies to each cluster.
+A remote with no section gets the built-in remote defaults described above, even with no policy file at
+all. A policy file that exists but does not load stops runs on every cluster, since the broken part may
+be the section meant for that remote.
+
+Adding the home cluster again as a remote is refused ("This is your home cluster; it is already managed
+as Home"): the same address as the home cluster or one of its nodes, the same certificate, the same
+cluster name, the same set of node names, or a lone node with the home node's name and address.
 
 ## The daily check
 
@@ -172,8 +185,20 @@ one machine at a time with a short pause between machines and between clusters.
 
 A cluster is skipped, and the result says why, when it does not answer, while a backup task is running on
 it, and while an Updates job is active anywhere. A check that falls while HyperProx is locked is skipped
-and logged (the credentials are in the vault). Only one check runs at a time, and a run cannot start while
-a check is reading (wait a minute or two).
+and logged (the credentials are in the vault). Only one check runs at a time.
+
+**The check gives way.** Before every machine it asks again whether an Updates job has started; if one
+has, it stops there and reports the rest as "not checked". Starting a run by hand stops a running check
+at the next machine (the run starts once it has). One cluster gets at most 20 minutes; what was not read
+by then is listed as not checked and the cluster is marked partial. While a check is reading, a scheduled
+run waits for its next time, and Confirm, Resume, Roll back and Reboot answer that the check is running.
+**Check now** is admin-only, cannot be started with an API token, and runs at most once every 15 minutes
+(it runs `apt update` on every node and guest).
+
+**When the policy file is wrong or missing.** A policy file that exists but was rejected turns the check
+off (the Daily check card says why) and a Check now reads nothing: the broken file may be the one that
+excludes a guest. With no policy file at all, the check reads the nodes only; no guest is refreshed or
+looked inside until `config/updates.yaml` exists.
 
 The result is kept in `data/updates-check.json` (names and counts, no secrets) so the **Daily check**
 card on the Updates page and the **Updates** line on each Command center panel show it without reading
@@ -181,16 +206,18 @@ any machine when the page opens. Each cluster shows when it was checked, how man
 how many packages, how many security fixes, and anything that could not be read. Held packages are
 counted as *held or kept back, not offered*, never as updates to apply.
 
-**The message.** When a check finds something **new** since the last message (a package or version not
-reported before), one `updates.available` notification goes to the channels under **Settings →
+**The message.** When a check finds something **new** since the last message (a package on a machine that
+was not reported before; a newer version of a package already reported is not new), one
+`updates.available` notification goes to the channels under **Settings →
 Notifications** that take Updates events. The same list is not sent again; while it stays unapplied, a
 reminder goes at most every `check.reminder_days` (default 7). The message is grouped by cluster, with
 "(home)" or "(remote)" after each name, security fixes first (package names only), then each node and
 guest with its package count and "kernel update" or "reboot needed" where that applies, held packages as
 a count, and clusters that could not be checked. It carries a link to the Updates page when
 `HYPERPROX_PUBLIC_URL` is set. It never contains versions, addresses, tokens or command output, and
-anything in a name that looks like an address is replaced with `[address]`. It is sent as a warning, so
-a channel on the default "warnings and critical" setting receives it.
+anything in a name that looks like an address is replaced with `[address]`. It is a **warning** when
+security fixes, a kernel or a reboot are involved, and **info** otherwise: a channel on the default
+"warnings and critical" setting gets the first kind; set it to "everything" to get every one.
 
 ## Ceph restart and reboot safety
 

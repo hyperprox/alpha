@@ -79,6 +79,9 @@ clusters:
   # A remote with no section gets the built-in remote defaults: nodes apt-get dist-upgrade (what Proxmox
   # recommends; held packages and kernel pins are never touched), never rebooted automatically; guests
   # apt-get upgrade, never rebooted; no Docker pulls, no app updates, no scheduled runs.
+  # Key a section by the cluster's id where you can: it stays attached if the server is renamed, and it wins
+  # over a section keyed by the name. A node seen with held packages or a pinned kernel gets apt-get upgrade
+  # unless the section sets upgrade: dist-upgrade for it BY NAME (the same rule as at home).
   # "Remote server":
   #   nodes:
   #     default: { upgrade: dist-upgrade, reboot: manual }   # reboot: manual is the only choice on a remote

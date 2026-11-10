@@ -63,6 +63,11 @@ export function PolicyStrip({ policy, error, busy, activeJob, onRefresh, onRun, 
         </div>
       </div>
       {error && <Notice tone="crit">{error}</Notice>}
+      {policy?.sections && policy.sections.some(x => x.cluster.kind === 'remote') && (
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          Policy sections: {policy.sections.map(x => `${x.cluster.name} → ${x.cluster.kind === 'home' ? 'top level' : x.section ? `clusters.${x.section}` : 'built-in remote defaults'}`).join(' · ')}
+        </p>
+      )}
       {policy?.notes?.length ? (
         <Notice tone="info">
           {policy.section !== undefined && <div className="mb-1 font-mono text-xs">{policy.section ? `Policy section: clusters.${policy.section}` : 'No section of its own in the policy file'}</div>}
