@@ -126,7 +126,8 @@ export function stripAddresses(s: string): string {
   return s
     .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, '[link]')
     .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b/g, '[address]')
-    .replace(/\b(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{1,4}\b/gi, '[address]')
+    // IPv6: hex groups with colons, holding a "::" or a hex letter (so a time such as 06:30:00 is left alone).
+    .replace(/\b[0-9a-f]{1,4}(?::{1,2}[0-9a-f]{0,4}){2,7}/gi, m => (/::|[a-f]/i.test(m) ? '[address]' : m))
 }
 
 /** Guests worth refreshing lists in: running, not excluded, apt on, and (VMs) Linux with the agent. */
@@ -154,7 +155,7 @@ export const clusterWords = (c: UpdatesClusterRef) => `${safeName(c.name)} (${c.
 
 /** A name from outside HyperProx, made safe for a message: no addresses, no markup, short. */
 export function safeName(s: string): string {
-  return stripAddresses(String(s)).replace(/[`*_~|<>[\]()]/g, '').replace(/\s+/g, ' ').trim().slice(0, 48) || '?'
+  return stripAddresses(String(s).replace(/[`*_~|<>[\]()]/g, '')).replace(/\s+/g, ' ').trim().slice(0, 48) || '?'
 }
 
 function targetWords(t: UpdatesCheckTarget): string {

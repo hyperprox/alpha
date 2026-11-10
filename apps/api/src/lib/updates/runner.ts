@@ -587,6 +587,7 @@ export class UpdatesRunner {
    */
   async rollbackGuest(id: string, target: string, actor?: string): Promise<JobRecord> {
     const job = await this.mustGet(id)
+    this.deps.checkJob?.(job)
     if (job.status !== 'paused') throw new JobStateError(`Job ${id} is ${job.status}; a rollback is offered only while it is paused`)
     const steps = await this.store.getSteps(id)
     const failed = steps.find(s => s.target === target && (s.action === 'app' || s.action === 'app-config') && s.status === 'failed')
