@@ -11,7 +11,9 @@
 import type { UpdatesPkgChange } from './types'
 import { livePve } from '../pve-env'
 import type { ProxmoxClient } from '../proxmox-client'
-import { execOnNode, execInGuest, nodeCredential, vmScriptCommand, type ExecResult } from '../node-exec'
+import { execOnNode, execInGuest, nodeCredential, vmScriptCommand, containerScriptCommand, type ExecResult } from '../node-exec'
+import { runInCluster } from '../clusters/context'
+import { remoteNodeAddress } from '../clusters/nodes'
 import { runPluginMetrics } from '../plugin-host'
 import { plexPlugin } from '../../plugins/plex'
 import { parsePveAptList } from './commands'
@@ -19,7 +21,15 @@ import { parsePveAptList } from './commands'
 export type { ExecResult }
 
 export interface ClusterNode { name: string; online: boolean; ip?: string }
-export interface ClusterStatus { quorate: boolean; nodes: ClusterNode[] }
+export interface ClusterStatus {
+  quorate: boolean
+  nodes: ClusterNode[]
+  /** One node and no cluster at all (a standalone server): there is no quorum or HA to check. */
+  standalone?: boolean
+}
+
+/** A vzdump task as the node's task list shows it. `ok` null: still running. */
+export interface BackupTask { node: string; at: number; ok: boolean | null; vmid: number | null }
 
 export interface HaService { sid: string; node: string; state: string }
 export interface HaStatus { services: HaService[]; maintenanceNodes: string[] }
@@ -58,6 +68,8 @@ export interface UpdatesExecutor {
   nodeAptPending(node: string): Promise<UpdatesPkgChange[]>
   /** Active Plex streams, or null when no Plex source is configured. Throws when the source does not answer. */
   plexStreams(): Promise<number | null>
+  /** Recent vzdump tasks on every online node, newest first. Optional: without it no backup is reported. */
+  backupTasks?(): Promise<BackupTask[]>
 
   // -- actions --------------------------------------------------------------------
   /** `apt update` on a node, through the Proxmox API, waiting for the task. */
@@ -116,19 +128,39 @@ async function waitForTask(pve: ProxmoxClient, node: string, upid: string, timeo
   throw new Error(`task ${upid} did not finish within ${Math.round(timeoutMs / 1000)}s`)
 }
 
-export function productionExecutor(pve: ProxmoxClient = livePve()): UpdatesExecutor {
+export interface ExecutorOptions {
+  /**
+   * A remote cluster: nodes are reached on the address saved for them (never the one the node reports), only
+   * over a login whose host key an admin confirmed (requirePin), and every script passes the script guard
+   * (node-exec does that for any remote context). No Plex wait: the home Plex says nothing about a remote.
+   */
+  remote?: boolean
+}
+
+export function productionExecutor(pve: ProxmoxClient = livePve(), opts: ExecutorOptions = {}): UpdatesExecutor {
   let ips: Record<string, string> = {}
+  const remote = !!opts.remote
 
   async function hostFor(node: string): Promise<string> {
+    if (remote) {
+      const a = remoteNodeAddress(node)
+      if (!a) throw new Error(`No address is saved for node ${node} on this server. Add it under Edit server, Nodes and logins.`)
+      return a
+    }
     if (!ips[node]) await exec.clusterStatus()
     return ips[node] ?? node
   }
 
   async function credFor(node: string) {
     const cred = await nodeCredential(node)
-    if (!cred) throw new Error(`No saved login for node ${node}. Add one in the Terminal before running updates.`)
+    if (!cred) throw new Error(remote
+      ? `No saved login for node ${node} on this server. Add one under Edit server, Nodes and logins.`
+      : `No saved login for node ${node}. Add one in the Terminal before running updates.`)
     return cred
   }
+
+  // Remote only: the pinned login's own port, and a host key an admin confirmed. Home is unchanged.
+  const pin = (cred: { port?: number }) => (remote ? { requirePin: true, port: Number(cred.port) || 22 } : {})
 
   const exec: UpdatesExecutor = {
     async clusterStatus() {
@@ -138,7 +170,8 @@ export function productionExecutor(pve: ProxmoxClient = livePve()): UpdatesExecu
       if (!nodes.length) throw new Error('Proxmox cluster status lists no nodes')
       ips = Object.fromEntries(nodes.filter(n => n.ip).map(n => [n.name, n.ip as string]))
       // A single-node install has no cluster row and is quorate by definition.
-      return { quorate: cluster ? cluster.quorate === 1 : nodes.length === 1, nodes }
+      const standalone = !cluster && nodes.length === 1
+      return standalone ? { quorate: true, nodes, standalone } : { quorate: cluster ? cluster.quorate === 1 : nodes.length === 1, nodes }
     },
 
     async haStatus() {
@@ -197,7 +230,24 @@ export function productionExecutor(pve: ProxmoxClient = livePve()): UpdatesExecu
       return parsePveAptList(mustArray(await pve.fetchStrict<any[]>(`/nodes/${encodeURIComponent(node)}/apt/update`), `pending list for ${node}`))
     },
 
+    async backupTasks() {
+      const s = await exec.clusterStatus()
+      const out: BackupTask[] = []
+      for (const n of s.nodes.filter(x => x.online)) {
+        const rows = await pve.fetchStrict<any[]>(`/nodes/${encodeURIComponent(n.name)}/tasks?typefilter=vzdump&limit=20&source=all`).catch(() => [])
+        for (const t of Array.isArray(rows) ? rows : []) {
+          const at = Number(t.starttime) * 1000
+          if (!Number.isFinite(at)) continue
+          const running = t.status === undefined || t.status === null || t.status === '' || t.status === 'running'
+          const vmid = /^\d{1,9}$/.test(String(t.id ?? '')) ? Number(t.id) : null
+          out.push({ node: n.name, at, ok: running ? null : t.status === 'OK', vmid })
+        }
+      }
+      return out.sort((a, b) => b.at - a.at)
+    },
+
     async plexStreams() {
+      if (remote) return null
       try {
         const rows = await runPluginMetrics(plexPlugin)
         const all = rows.find(r => r.name === 'plex_streams' && r.labels?.decision === 'all')
@@ -216,13 +266,15 @@ export function productionExecutor(pve: ProxmoxClient = livePve()): UpdatesExecu
     },
 
     async nodeExec(node, command, onLine, timeoutMs) {
-      return execOnNode({ host: await hostFor(node), cred: await credFor(node), command, timeoutMs, onData: lineSplitter(onLine) })
+      const cred = await credFor(node)
+      return execOnNode({ host: await hostFor(node), cred, command, timeoutMs, onData: lineSplitter(onLine), ...pin(cred) })
     },
 
     async guestExec(g, script, onLine, timeoutMs) {
       const host = await hostFor(g.node)
       const cred = await credFor(g.node)
       if (g.type === 'lxc') {
+        if (remote) return execOnNode({ host, cred, command: containerScriptCommand(g.vmid), input: script, timeoutMs, onData: lineSplitter(onLine), ...pin(cred) })
         return execInGuest({ host, cred, vmid: g.vmid, script, timeoutMs, onData: lineSplitter(onLine) })
       }
       // VMs through the QEMU guest agent. The script goes on stdin, never on a command line: no quoting layer
@@ -230,7 +282,7 @@ export function productionExecutor(pve: ProxmoxClient = livePve()): UpdatesExecu
       const secs = Math.ceil((timeoutMs ?? 30 * 60_000) / 1000)
       const r = await execOnNode({
         host, cred, timeoutMs: (secs + 30) * 1000,
-        command: vmScriptCommand(g.vmid, secs), input: script,
+        command: vmScriptCommand(g.vmid, secs), input: script, ...pin(cred),
       })
       if (r.code !== 0) return r
       try {
@@ -272,4 +324,30 @@ export function productionExecutor(pve: ProxmoxClient = livePve()): UpdatesExecu
     sleep,
   }
   return exec
+}
+
+const EXECUTOR_METHODS: (keyof UpdatesExecutor)[] = [
+  'clusterStatus', 'haStatus', 'haResources', 'cephPresent', 'cephHealth', 'listGuests', 'guestConfig', 'nodeAptPending',
+  'plexStreams', 'backupTasks', 'nodeAptRefresh', 'nodeExec', 'guestExec', 'snapshot', 'listSnapshots', 'deleteSnapshot',
+  'rollbackSnapshot', 'now', 'sleep',
+]
+
+/**
+ * Every call of `exec` runs as if a request for cluster `id` had arrived: the Proxmox client, node logins and
+ * node addresses it reaches are that cluster's, whatever context the caller (a background job, the scheduler,
+ * the daily check) happens to be in. Time stays the caller's.
+ */
+export function clusterBound(id: string, exec: UpdatesExecutor): UpdatesExecutor {
+  const out: any = {}
+  for (const key of EXECUTOR_METHODS) {
+    const v = (exec as any)[key]
+    if (typeof v !== 'function') continue
+    out[key] = key === 'now' || key === 'sleep' ? v.bind(exec) : (...args: any[]) => runInCluster(id, () => v.apply(exec, args))
+  }
+  return out as UpdatesExecutor
+}
+
+/** The production executor for a remote cluster, bound to it. */
+export function remoteExecutor(id: string): UpdatesExecutor {
+  return clusterBound(id, productionExecutor(livePve(), { remote: true }))
 }

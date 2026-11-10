@@ -18,7 +18,7 @@
 //  executor, so every path here runs in tests against a fake.
 // =============================================================================
 
-import type { UpdatesPlan, UpdatesReport, UpdatesStepAction, UpdatesWsPayload } from './types'
+import type { UpdatesClusterRef, UpdatesPlan, UpdatesRebootPreview, UpdatesReport, UpdatesStepAction, UpdatesWsPayload } from './types'
 import type { UpdatesExecutor, GuestListing, LineSink } from './executor'
 import { parseOsdOkToStop, parseCephState, parseOsdFlags, judgeRestoredState, type CephState } from './ceph-safety'
 import { SAFETY_SKIP, osdVerdict, osdNames, monVerdict, annotatePlanSafety, withoutSafetyNote } from './ceph-checks'
@@ -27,14 +27,15 @@ import { readInventory, findSelfGuest, selfVmidOf, type InventoryResult } from '
 import { buildPlan, detailKey, DETAIL } from './planner'
 import {
   preflight, quorumGate, cephGate, haGate, holdsPinGate, freeSpaceGate, streamGate, judgeCeph, judgeCephSettled,
-  unknownPolicyNodes, type GateResult,
+  unknownPolicyNodes, quorumHaGates, type GateResult,
 } from './gates'
 import {
   GUEST_REFRESH_SCRIPT, GUEST_UPGRADE_SCRIPT, NODE_FACTS_COMMAND, NODE_SERVICES_COMMAND, NODE_REBOOT_COMMAND,
   CEPH_NOOUT_SET, CEPH_NOOUT_UNSET, cephInstallCommand, cephRestartCommand, cephOsdRestartCommand,
   CEPH_STATE_COMMAND, CEPH_OSD_DUMP_COMMAND, cephOsdOkToStopCommand, guestCheckScript, guestDockerScript,
   guestRebootCommand, haMaintenance, haSetState, isCephPackage, kernelPurgeCommand, kernelsToRemove, nodeUpgradeCommand,
-  nodeSimulateCommand, parseAptSimulation,
+  nodeSimulateCommand, parseAptSimulation, REMOTE_NODE_SERVICES_COMMAND, GUEST_PENDING_SCRIPT, parseGuestPending,
+  installedVersionsCommand, parseInstalledVersions, readBackProblems,
   parseNodeFacts, tail, type NodeFacts,
 } from './commands'
 import { handoffNodeOf, handoffTag, readHandoff, selfGuestScript, selfNodeRebootScript, startHandoff } from './handoff'
@@ -92,6 +93,19 @@ export interface RunnerDeps {
   timing?:    Partial<RunnerTiming>
   /** App-update providers. Without it, no app is looked for or planned. */
   apps?:      AppEnv
+  /** The cluster this runner works on. Default: the home cluster. */
+  cluster?:   UpdatesClusterRef
+  /**
+   * A remote cluster: previews come from apt's simulation, no HyperProx self-detection, no Ceph phase, every
+   * upgrade is read back, nodes are never rebooted automatically, and a one-node server skips quorum and HA
+   * (saying so). Home leaves this unset and behaves exactly as before.
+   */
+  remote?:    boolean
+  /**
+   * Throws when a stored job may not be acted on any more: it was planned for another connection to this
+   * cluster (the address, certificate or token changed since). lib/updates/cluster-store.ts provides it.
+   */
+  checkJob?:  (job: JobRecord) => void
 }
 
 type Outcome =
@@ -148,6 +162,14 @@ export class UpdatesRunner {
   /** Resolves when the job currently being driven stops (for tests and shutdown). */
   idle(): Promise<void> { return this.driving }
 
+  private get remote(): boolean { return !!this.deps.remote }
+  get cluster(): UpdatesClusterRef { return this.deps.cluster ?? { id: 'home', name: 'Home cluster', kind: 'home' } }
+
+  /** The plan context every buildPlan here uses. */
+  planContext(inv: InventoryResult, policy: Policy, extra: { scope?: 'all' | 'guests'; approvals?: string[]; appProviders?: string[]; policyNote?: string }) {
+    return { selfVmid: this.selfVmid(inv, policy), remote: this.remote || undefined, ...extra }
+  }
+
   // ===========================================================================
   //  Public operations
   // ===========================================================================
@@ -177,7 +199,7 @@ export class UpdatesRunner {
   }
 
   async confirm(id: string, actor?: string): Promise<JobRecord> {
-    await this.mustGet(id)
+    this.deps.checkJob?.(await this.mustGet(id))
     const load = this.deps.loadPolicy()
     if (!load.loaded) throw new PolicyRequiredError(load.error)
     const next = await this.transition(id, ['awaiting-confirm'], { status: 'running', pauseReason: null })
@@ -189,7 +211,7 @@ export class UpdatesRunner {
   }
 
   async resume(id: string, actor?: string): Promise<JobRecord> {
-    await this.mustGet(id)
+    this.deps.checkJob?.(await this.mustGet(id))
     const load = this.deps.loadPolicy()
     if (!load.loaded) throw new PolicyRequiredError(load.error)
     // Claim the job first: of two Resumes racing, exactly one gets past this line.
@@ -228,6 +250,7 @@ export class UpdatesRunner {
     const load = this.deps.loadPolicy()
     const status = await this.exec.clusterStatus()
     if (!status.nodes.some(n => n.name === node)) throw new JobStateError(`No node named ${node}`)
+    if (this.remote) return this.rebootStandaloneNode(node, status.standalone === true, actor)
     const isSelf = await this.isSelfNode(node, load.policy)
     const step = isSelf
       ? { seq: 1, target: node, action: 'self' as const, detail: `${DETAIL.selfReboot} — requested by hand, through a handoff` }
@@ -243,6 +266,64 @@ export class UpdatesRunner {
     this.drive(job.id, async () => {
       const pre = await this.runStep(job.id, (await this.store.getSteps(job.id))[0], async () => {
         const g = await this.clusterGates(job.id, load.policy)
+        return g.ok ? { status: 'ok', output: g.reason } : { status: 'failed', reason: g.reason }
+      })
+      if (pre.status !== 'ok') return void await this.finish(job.id, 'failed', `Preflight stopped the reboot: ${pre.reason}`)
+      if (this.cancelRequested.has(job.id)) return this.cancelNow(job.id)
+      await this.execute(job.id)
+    })
+    return job
+  }
+
+  /**
+   * What rebooting a remote one-node server takes down, for the confirmation dialog. Read-only. The reboot itself
+   * (rebootNode) is its own job, started only by a person, and checks all of this again when it runs.
+   */
+  async rebootPreview(node: string): Promise<UpdatesRebootPreview> {
+    const status = await this.exec.clusterStatus()
+    if (!status.nodes.some(n => n.name === node)) throw new JobStateError(`No node named ${node}`)
+    const standalone = status.standalone === true
+    const goingDown = await this.runningGuestsOn(node)
+    let facts: NodeFacts | null = null
+    try { facts = await this.nodeFacts(node) } catch { /* reported below */ }
+    const warnings: string[] = []
+    if (!facts) warnings.push(`${node}'s kernels could not be read`)
+    if (this.remote && !standalone) warnings.push(`${node} is part of a cluster: on a remote cluster HyperProx reboots only one-node servers. Reboot it by hand, after moving its guests.`)
+    if (goingDown.length) warnings.push(`${goingDown.length} running guest${goingDown.length === 1 ? '' : 's'} will stop while ${node} restarts${standalone ? ' — there is no other node to move them to' : ''}.`)
+    const notBack = goingDown.filter(g => !g.onboot)
+    if (notBack.length) warnings.push(`Not set to start at boot, so they stay stopped afterwards: ${notBack.map(g => `${g.vmid} (${g.name})`).join(', ')}.`)
+    const boots = facts ? (facts.pinned ?? newestKernel(facts)) : null
+    return {
+      node, cluster: this.cluster, standalone, goingDown,
+      runningKernel: facts?.runningKernel ?? null, bootsKernel: boots,
+      rebootNeeded: facts ? this.rebootNeeded(facts) : false, warnings,
+    }
+  }
+
+  private async runningGuestsOn(node: string): Promise<UpdatesRebootPreview['goingDown']> {
+    const out: UpdatesRebootPreview['goingDown'] = []
+    for (const g of (await this.exec.listGuests()).filter(x => x.node === node && x.running && !x.template).sort((a, b) => a.vmid - b.vmid)) {
+      let onboot = false
+      try { onboot = String((await this.exec.guestConfig(g)).onboot ?? '0') === '1' } catch { /* unknown: treated as not starting */ }
+      out.push({ vmid: g.vmid, type: g.type, name: g.name, onboot })
+    }
+    return out
+  }
+
+  /** A remote reboot: only a one-node server, only by hand, as its own job. */
+  private async rebootStandaloneNode(node: string, standalone: boolean, actor?: string): Promise<JobRecord> {
+    if (!standalone) throw new JobStateError(`${node} is part of a cluster. On a remote cluster HyperProx reboots only one-node servers; reboot ${node} by hand after moving its guests.`)
+    const step = { seq: 1, target: node, action: 'node-reboot' as const, detail: `${DETAIL.rebootStandalone} — requested by hand; its running guests stop until it is back` }
+    const job = await this.store.createJob({ trigger: 'manual', status: 'running', plan: { steps: [step], warnings: [] } })
+    await this.store.audit('updates.node.reboot', job.id, { node, by: actor, cluster: this.cluster.id })
+    await this.store.addSteps(job.id, [
+      { seq: 1, target: 'cluster', action: 'preflight', detail: 'one-node server: no quorum or HA to check; the node answers' },
+      { ...step, seq: 2 },
+    ])
+    await this.emitJob(job)
+    this.drive(job.id, async () => {
+      const pre = await this.runStep(job.id, (await this.store.getSteps(job.id))[0], async () => {
+        const g = await this.combine((await quorumHaGates(this.exec, true)).map(x => Promise.resolve(x)))
         return g.ok ? { status: 'ok', output: g.reason } : { status: 'failed', reason: g.reason }
       })
       if (pre.status !== 'ok') return void await this.finish(job.id, 'failed', `Preflight stopped the reboot: ${pre.reason}`)
@@ -308,7 +389,7 @@ export class UpdatesRunner {
     const box: { inv: InventoryResult | null } = { inv: null }
     const pre = await this.runStep(jobId, preStep, async () => {
       box.inv = await this.inventory(policy)
-      const pf0 = await preflight(this.exec, policy, box.inv.facts, await this.ceph(jobId))
+      const pf0 = await preflight(this.exec, policy, box.inv.facts, await this.ceph(jobId), this.remote)
       const noout = await this.nooutGate(jobId)
       if (!noout.ok && noout.reason === STALE_NOOUT) await this.announceStaleNoout(jobId, 'at the start of an Updates run')
       const pf1 = noout.ok ? pf0 : { ok: false, reason: [pf0.ok ? '' : pf0.reason, noout.reason].filter(Boolean).join('; ') }
@@ -329,7 +410,7 @@ export class UpdatesRunner {
     if (mode === 'dry-run') {
       // A dry run reads what is already known and executes nothing — not even `apt update`.
       const inv = box.inv ?? await this.inventory(policy).catch(() => null)
-      const plan = inv ? await this.withSafety(jobId, buildPlan(inv.inventory, policy, { selfVmid: this.selfVmid(inv, policy), policyNote, scope, ...appPlan })) : { steps: [], warnings: ['Inventory could not be read'] }
+      const plan = inv ? await this.withSafety(jobId, buildPlan(inv.inventory, policy, this.planContext(inv, policy, { policyNote, scope, ...appPlan }))) : { steps: [], warnings: ['Inventory could not be read'] }
       await this.setJob(jobId, { plan })
       const verdict = pre.status === 'ok' ? 'preflight passed' : `preflight would stop the run: ${pre.reason}`
       await this.finish(jobId, 'done', undefined, {
@@ -368,7 +449,7 @@ export class UpdatesRunner {
     if (ref.status !== 'ok') return void await this.finish(jobId, 'failed', `Refreshing package lists failed: ${ref.reason}`)
     if (this.cancelRequested.has(jobId)) return this.cancelNow(jobId)
 
-    const plan = await this.withSafety(jobId, buildPlan(box.inv!.inventory, policy, { selfVmid: this.selfVmid(box.inv!, policy), scope, ...appPlan }))
+    const plan = await this.withSafety(jobId, buildPlan(box.inv!.inventory, policy, this.planContext(box.inv!, policy, { scope, ...appPlan })))
     await this.store.addSteps(jobId, plan.steps.map(s => ({ ...s, seq: s.seq + PRE_STEPS })))
     if (trigger === 'manual') {
       await this.transition(jobId, ['running'], { plan, status: 'awaiting-confirm' })
@@ -396,7 +477,9 @@ export class UpdatesRunner {
     for (let i = 0; i < targets.length; i += policy.batchSize) {
       if (!await this.stillRunning(jobId)) return
       if (this.cancelRequested.has(jobId)) return this.cancelNow(jobId)
-      const gate = await this.combine([quorumGate(this.exec), this.cephGateFor(jobId, policy)])
+      const gate = this.remote
+        ? await this.combine([...(await quorumHaGates(this.exec, true)).map(g => Promise.resolve(g)), this.cephGateFor(jobId, policy)])
+        : await this.combine([quorumGate(this.exec), this.cephGateFor(jobId, policy)])
       if (!gate.ok) return this.pause(jobId, `Gate failed before the next guests: ${gate.reason}`)
       await Promise.all(targets.slice(i, i + policy.batchSize).map(t =>
         this.runGuest(jobId, t, guestSteps.filter(s => s.target === t), guests.get(Number(t)), policy)))
@@ -553,6 +636,14 @@ export class UpdatesRunner {
   private async guestApt(guest: GuestListing, policy: Policy, log: LineSink, snapshot: string | null): Promise<Outcome> {
     const r = await this.exec.guestExec(guest, GUEST_UPGRADE_SCRIPT, log, 60 * 60_000)
     if (r.code !== 0) return { status: 'failed', reason: `apt failed${snapshot ? ` (snapshot ${snapshot})` : ''}`, output: tail(r.output) }
+    if (this.remote) {
+      // Read-back: what apt would still upgrade now. Held and kept-back packages are expected to stay.
+      const again = await this.exec.guestExec(guest, GUEST_PENDING_SCRIPT, undefined, 120_000).catch((e: any) => ({ code: -1, output: String(e?.message ?? e), timedOut: false }))
+      if (again.code !== 0) return { status: 'failed', reason: `upgraded, but the read-back could not run: ${tail(again.output, 200).trim()}`, output: tail(r.output) }
+      const left = parseGuestPending(again.output).pending
+      if (left.length) return { status: 'failed', reason: `upgraded, but apt still offers: ${left.map(p => `${p.name} ${p.to}`).join(', ')}${snapshot ? ` (snapshot ${snapshot})` : ''}`, output: tail(r.output) }
+      log('read-back: nothing left to upgrade (held and kept-back packages untouched)')
+    }
     const wantsReboot = /HP_REBOOT_REQUIRED/.test(r.output)
     if (!(guest.type === 'qemu' && wantsReboot && guestPolicy(policy, guest.vmid).reboot === 'if-required')) {
       return { status: 'ok', output: tail(r.output) + (wantsReboot ? '\n(reboot requested by the guest; policy does not reboot it)' : '') }
@@ -584,7 +675,7 @@ export class UpdatesRunner {
   private async dispatch(jobId: string, step: StepRecord, policy: Policy, log: LineSink): Promise<Outcome> {
     switch (step.action) {
       case 'ceph':           return this.cephStep(jobId, step, policy, log)
-      case 'node-upgrade':   return this.nodeUpgrade(step.target, policy, log)
+      case 'node-upgrade':   return this.nodeUpgrade(jobId, step.target, policy, log)
       case 'node-reboot':    return this.nodeReboot(jobId, step, policy, log)
       case 'kernel-cleanup': return this.kernelCleanup(step.target, log)
       case 'self':           return this.selfStep(jobId, step, policy, log)
@@ -787,7 +878,7 @@ export class UpdatesRunner {
     return parseNodeFacts(r.output)
   }
 
-  private async nodeUpgrade(node: string, policy: Policy, log: LineSink): Promise<Outcome> {
+  private async nodeUpgrade(jobId: string, node: string, policy: Policy, log: LineSink): Promise<Outcome> {
     // The node's policy, read now, decides upgrade vs dist-upgrade — never the stored plan.
     const pol = nodePolicy(policy, node)
     const before = await this.nodeFacts(node)
@@ -802,7 +893,13 @@ export class UpdatesRunner {
     if (!parsed.changes) return { status: 'failed', reason: `could not simulate apt-get ${pol.upgrade} on ${node}, so nothing was installed: ${parsed.error}`, output: tail(sim.output) }
     const changes = parsed.changes
     const ceph = changes.filter(c => isCephPackage(c.name))
-    if (ceph.length) {
+    // On a remote cluster there is no Ceph phase. Ceph client libraries on a server that runs no Ceph move with
+    // the node like any other package; with Ceph running, the upgrade refuses as it does at home.
+    const cephHere = ceph.length > 0 && (!this.remote || await this.ceph(jobId))
+    if (cephHere && this.remote) {
+      return { status: 'failed', reason: `refusing: apt-get ${pol.upgrade} on ${node} would also change Ceph packages, and this cluster runs Ceph. HyperProx restarts Ceph daemons in order only on the home cluster; upgrade this node by hand` }
+    }
+    if (cephHere) {
       const what = ceph.map(c => c.action === 'remove' ? `${c.name} removed` : `${c.name} ${c.from ?? 'new'} → ${c.to}`).join(', ')
       return {
         status: 'failed',
@@ -813,12 +910,26 @@ export class UpdatesRunner {
     const r = await this.exec.nodeExec(node, nodeUpgradeCommand(pol.upgrade), log, 60 * 60_000)
     if (r.code !== 0) return { status: 'failed', reason: `apt-get ${pol.upgrade} failed`, output: tail(r.output) }
 
-    const svc = await this.exec.nodeExec(node, NODE_SERVICES_COMMAND, log, 60_000)
+    const svc = await this.exec.nodeExec(node, this.remote ? REMOTE_NODE_SERVICES_COMMAND : NODE_SERVICES_COMMAND, log, 60_000)
     if (svc.code !== 0) return { status: 'failed', reason: 'Proxmox services not all active after the upgrade', output: tail(r.output + '\n' + svc.output) }
 
-    const after = holdsPinGate(node, await this.nodeFacts(node), pol)
+    const afterFacts = await this.nodeFacts(node)
+    const after = holdsPinGate(node, afterFacts, pol)
     if (!after.ok) return { status: 'failed', reason: `after the upgrade: ${after.reason} — not repaired; a person must look`, output: tail(r.output) }
-    return { status: 'ok', output: tail(r.output) }
+    if (!this.remote) return { status: 'ok', output: tail(r.output) }
+
+    // Read-back (remote): every package where apt said it would land, held packages still held, the API answering.
+    const problems: string[] = []
+    const held = before.holds.filter(h => !afterFacts.holds.includes(h))
+    if (held.length) problems.push(`no longer on hold: ${held.join(', ')} (HyperProx never removes a hold; a person must look)`)
+    if (before.pinned && afterFacts.pinned !== before.pinned) problems.push(`the kernel pin changed from ${before.pinned} to ${afterFacts.pinned ?? 'none'}`)
+    const v = await this.exec.nodeExec(node, installedVersionsCommand(changes.map(c => c.name)), undefined, 60_000)
+    problems.push(...readBackProblems(changes, parseInstalledVersions(v.output)))
+    try { await this.exec.clusterStatus() } catch (e: any) { problems.push(`the Proxmox API did not answer after the upgrade: ${e.message}`) }
+    const reboot = this.rebootNeeded(afterFacts) ? ` A reboot is needed (${afterFacts.runningKernel ?? 'unknown'} is running); HyperProx does not reboot this node on its own.` : ''
+    if (reboot) this.rebootPending.add(node)
+    if (problems.length) return { status: 'failed', reason: `read-back after apt-get ${pol.upgrade}: ${problems.join('; ')}`, output: tail(r.output) }
+    return { status: 'ok', output: tail(r.output) + `\nread-back: ${changes.length} package${changes.length === 1 ? '' : 's'} at the expected versions; holds and pin unchanged.${reboot}` }
   }
 
   private rebootNeeded(f: NodeFacts): boolean {
@@ -851,6 +962,9 @@ export class UpdatesRunner {
       this.rebootPending.add(node)
       return { status: 'skipped', reason: 'reboot: manual — reboot pending' }
     }
+    if (detailKey(step) === DETAIL.rebootStandalone) return this.standaloneReboot(step, log)
+    // A remote node is never rebooted as part of a run, whatever a stored plan says.
+    if (this.remote) { this.rebootPending.add(node); return { status: 'skipped', reason: 'reboot: manual — reboot pending' } }
     const resumed = Boolean(step.startedAt)   // a previous attempt began; flags may be set
     const ceph = await this.ceph(jobId)
     const peer = await this.peerOf(node)
@@ -936,6 +1050,60 @@ export class UpdatesRunner {
       status: 'failed', fatal: true,
       reason: `${node} did not come back within ${Math.round(this.timing.nodeReturnMs / 60_000)} min (${last}). ${ceph ? 'noout and ' : ''}HA maintenance ${ceph ? 'are' : 'is'} LEFT ON so data does not move; clear them by hand once the node is healthy.`,
     }
+  }
+
+  /**
+   * A one-node server, rebooted on a person's request. Nothing to drain and no flags to set: its running guests
+   * stop with it. Waits for a new boot id, then reads back the running kernel and which guests came back.
+   */
+  private async standaloneReboot(step: StepRecord, log: LineSink): Promise<Outcome> {
+    const node = step.target
+    const status = await this.exec.clusterStatus()
+    if (!status.standalone) return { status: 'failed', reason: `${node} is no longer a one-node server; nothing was rebooted` }
+    const before = await this.runningGuestsOn(node)
+    log(before.length ? `running now, will stop: ${before.map(g => `${g.vmid} (${g.name})`).join(', ')}` : 'no guests running')
+    const bootBefore = await this.bootId(node)
+    log(`rebooting ${node}`)
+    let sent: { code: number; output: string; timedOut: boolean } | null = null
+    try { sent = await this.exec.nodeExec(node, NODE_REBOOT_COMMAND, log, 30_000) }
+    catch { /* the connection drops as the node goes down */ }
+    if (sent && sent.code > 0 && !sent.timedOut) return { status: 'failed', reason: `${node} refused the reboot (${tail(sent.output, 200).trim()})`, output: sent.output }
+
+    const deadline = this.exec.now() + this.timing.nodeReturnMs
+    await this.exec.sleep(this.timing.rebootSettleMs)
+    let last = 'not back yet'
+    let back = false
+    while (this.exec.now() < deadline) {
+      try {
+        const s = await this.exec.clusterStatus()
+        if (!s.nodes.find(x => x.name === node)?.online) last = `${node} not online`
+        else if ((await this.bootId(node)) === bootBefore) last = `${node} has the same boot id: it has not rebooted`
+        else { back = true; break }
+      } catch (e: any) { last = e.message }
+      await this.exec.sleep(this.timing.pollMs)
+    }
+    if (!back) {
+      this.rebootPending.add(node)
+      return { status: 'failed', fatal: true, reason: `${node} did not come back within ${Math.round(this.timing.nodeReturnMs / 60_000)} min (${last}). Nothing else was changed; check the server's console.` }
+    }
+    this.rebootPending.delete(node)
+    const facts = await this.nodeFacts(node).catch(() => null)
+    const wanted = before.filter(g => g.onboot)
+    await this.waitFor(async () => {
+      const running = new Set((await this.exec.listGuests()).filter(g => g.running).map(g => g.vmid))
+      return wanted.every(g => running.has(g.vmid))
+    }, this.timing.guestBootMs)
+    const running = new Set((await this.exec.listGuests().catch(() => [])).filter(g => g.running).map(g => g.vmid))
+    const up = before.filter(g => running.has(g.vmid)).map(g => `${g.vmid} (${g.name})`)
+    const missing = wanted.filter(g => !running.has(g.vmid)).map(g => `${g.vmid} (${g.name})`)
+    const stopped = before.filter(g => !g.onboot && !running.has(g.vmid)).map(g => `${g.vmid} (${g.name})`)
+    const words = [
+      `${node} rebooted (new boot id); running kernel ${facts?.runningKernel ?? 'unknown'}.`,
+      up.length ? `Running again: ${up.join(', ')}.` : '',
+      stopped.length ? `Still stopped (not set to start at boot): ${stopped.join(', ')}.` : '',
+    ].filter(Boolean).join(' ')
+    if (missing.length) return { status: 'failed', reason: `${words} Set to start at boot but NOT running: ${missing.join(', ')}.`, output: words }
+    return { status: 'ok', output: words }
   }
 
   private async bootId(node: string): Promise<string> {
@@ -1185,7 +1353,12 @@ export class UpdatesRunner {
   /** One message per run outcome, through the notification bus. Never fails the job. */
   private async announce(e: Omit<NotifyEventInput, 'link' | 'where'>, jobId: string): Promise<void> {
     if (!this.deps.publish) return
-    try { await this.deps.publish({ ...e, link: '/updates', where: 'Updates page', fingerprint: `updates.job:${jobId}` }) }
+    // A remote cluster's messages name it and link to its own Updates page.
+    const c = this.cluster
+    const ev = c.kind === 'remote'
+      ? { ...e, title: `${c.name} (remote): ${e.title}`, plain: [...(e.plain ?? []), c.name], link: `/clusters/${c.id}/updates` }
+      : { ...e, link: '/updates' }
+    try { await this.deps.publish({ ...ev, where: 'Updates page', fingerprint: `updates.job:${jobId}` }) }
     catch (err: any) { this.log(`could not announce the job: ${err?.name ?? 'error'}`) }
   }
 
@@ -1209,7 +1382,8 @@ export class UpdatesRunner {
   }
 
   /** Quorum, Ceph and HA: what must hold before anything that can take a machine down. */
-  private clusterGates(jobId: string, policy: Policy): Promise<GateResult> {
+  private async clusterGates(jobId: string, policy: Policy): Promise<GateResult> {
+    if (this.remote) return this.combine([...await quorumHaGates(this.exec, true), this.cephGateFor(jobId, policy)].map(g => Promise.resolve(g)))
     return this.combine([quorumGate(this.exec), this.cephGateFor(jobId, policy), haGate(this.exec)])
   }
 
@@ -1247,16 +1421,23 @@ export class UpdatesRunner {
   }
 
   private async inventory(policy: Policy): Promise<InventoryResult> {
-    const r = await readInventory(this.exec, policy, { rebootPending: this.rebootPending, hostname: this.deps.hostname, apps: this.deps.apps })
+    const r = await readInventory(this.exec, policy, { rebootPending: this.rebootPending, hostname: this.deps.hostname, apps: this.deps.apps, ...this.inventoryOptions() })
     this.deps.onInventory?.(r)
     return r
   }
 
+  /** How this cluster's inventory is read: home as always; a remote through apt's simulation, with backups. */
+  inventoryOptions(): { noSelf?: boolean; nodePreview?: 'apt-simulation'; backups?: boolean; noSnapshotAck?: boolean; apps?: undefined } {
+    return this.remote ? { noSelf: true, nodePreview: 'apt-simulation', backups: true, noSnapshotAck: true, apps: undefined } : {}
+  }
+
   private selfVmid(inv: InventoryResult, policy: Policy): number | null {
+    if (this.remote) return null
     return selfVmidOf(inv.inventory, policy, this.deps.hostname)
   }
 
   private async isSelfNode(node: string, policy: Policy): Promise<boolean> {
+    if (this.remote) return false
     return findSelfGuest(await this.exec.listGuests(), policy, this.deps.hostname)?.node === node
   }
 

@@ -54,7 +54,7 @@ export interface AppEnv {
 export const updateApprovalId = (vmid: number, provider: string, key: string, version: string) => `app:${vmid}:${provider}:${key}@${version}`
 export const fixApprovalId = (vmid: number, provider: string, key: string, fixId: string) => `fix:${vmid}:${provider}:${key}:${fixId}`
 
-export const APPROVAL_ID = /^(?:app:\d{1,9}:[a-z0-9-]{1,41}:[a-f0-9]{6,64}@[0-9A-Za-z.+-]{1,64}|fix:\d{1,9}:[a-z0-9-]{1,41}:[a-f0-9]{6,64}:[a-f0-9]{6,64})$/
+export const APPROVAL_ID = /^(?:nosnap:\d{1,9}|app:\d{1,9}:[a-z0-9-]{1,41}:[a-f0-9]{6,64}@[0-9A-Za-z.+-]{1,64}|fix:\d{1,9}:[a-z0-9-]{1,41}:[a-f0-9]{6,64}:[a-f0-9]{6,64})$/
 
 // --- The context a provider gets ------------------------------------------------------------
 

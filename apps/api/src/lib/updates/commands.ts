@@ -58,7 +58,9 @@ export const GUEST_PENDING_SCRIPT = [
 export interface GuestPendingResult { noApt: boolean; pending: UpdatesPkgChange[]; keptBack: string[]; rebootRequired: boolean }
 
 // `curl/stable-security 8.14.1-2+deb13u2 amd64 [upgradable from: 8.14.1-2+deb13u1]`
-const APT_LINE = /^([^\s/]+)\/\S+\s+(\S+)\s+\S+(?:\s+\[upgradable from:\s*([^\]]+)\])?/
+const APT_LINE = /^([^\s/]+)\/(\S+)\s+(\S+)\s+\S+(?:\s+\[upgradable from:\s*([^\]]+)\])?/
+/** A suite list such as `stable-security,stable` or an origin such as `Debian-Security:13/stable-security`. */
+const SECURITY_SUITE = /(^|[\s,:/(])[\w.-]*-security\b|Debian-Security|Ubuntu:[\d.]+\/[\w-]+-security/i
 
 export function parseGuestPending(output: string): GuestPendingResult {
   const lines = output.split('\n').map(l => l.trim()).filter(Boolean)
@@ -68,7 +70,11 @@ export function parseGuestPending(output: string): GuestPendingResult {
   for (const l of lines) {
     if (l.startsWith('HP_KEPT ')) { keptBack.push(l.slice(8).trim()); continue }
     const m = APT_LINE.exec(l)
-    if (m) pending.push({ name: m[1], from: m[3]?.trim() ?? null, to: m[2] })
+    if (m) {
+      const p: UpdatesPkgChange = { name: m[1], from: m[4]?.trim() ?? null, to: m[3] }
+      if (SECURITY_SUITE.test(m[2])) p.security = true
+      pending.push(p)
+    }
   }
   return { noApt: false, pending, keptBack, rebootRequired: lines.includes('HP_REBOOT_REQUIRED') }
 }
@@ -225,7 +231,11 @@ export function nodeSimulateCommand(policyUpgrade: 'upgrade' | 'dist-upgrade'): 
   return `${APT_ENV}; apt-get -s -q -o Debug::NoLocking=1 ${CONFOLD} ${verb} 2>&1; echo "HP_SIM_END $?"`
 }
 
-export interface AptSimChange { name: string; from: string | null; to: string | null; action: 'install' | 'upgrade' | 'remove' }
+export interface AptSimChange {
+  name: string; from: string | null; to: string | null; action: 'install' | 'upgrade' | 'remove'
+  /** The new version comes from a -security suite. */
+  security?: boolean
+}
 
 /**
  * `Inst`/`Remv`/`Purg` lines of `apt-get -s`. The shell exits 0 whatever apt did (echo runs last), so apt's own
@@ -239,8 +249,13 @@ export function parseAptSimulation(output: string): { changes: AptSimChange[]; e
   if (marker[1] !== '0') return { changes: null, error: `apt-get exited ${marker[1]}${errors ? `: ${errors}` : ''}` }
   const out: AptSimChange[] = []
   for (const l of lines) {
-    let m = /^Inst (\S+)(?: \[([^\]]+)\])? \((\S+)/.exec(l)
-    if (m) { out.push({ name: m[1].replace(/:.*/, ''), from: m[2] ?? null, to: m[3], action: m[2] ? 'upgrade' : 'install' }); continue }
+    let m = /^Inst (\S+)(?: \[([^\]]+)\])? \((\S+)([^)]*)\)?/.exec(l)
+    if (m) {
+      const c: AptSimChange = { name: m[1].replace(/:.*/, ''), from: m[2] ?? null, to: m[3], action: m[2] ? 'upgrade' : 'install' }
+      if (SECURITY_SUITE.test(m[4] ?? '')) c.security = true
+      out.push(c)
+      continue
+    }
     m = /^(?:Remv|Purg) (\S+)(?: \[([^\]]+)\])?/.exec(l)
     if (m) out.push({ name: m[1].replace(/:.*/, ''), from: m[2] ?? null, to: null, action: 'remove' })
   }
@@ -277,6 +292,67 @@ export function withCephStartGuard(aptLine: string, sbin = '/usr/sbin'): string 
 }
 
 export const NODE_SERVICES_COMMAND = 'systemctl is-active pve-cluster pvedaemon pveproxy pvestatd'
+
+/**
+ * The same check on a remote cluster's node. The script guard (lib/clusters/script-guard.ts) refuses any script
+ * that names the cluster filesystem service, so it is left out here; the Proxmox API answering afterwards (the
+ * read-back) shows it is up, since nothing in the API works without it.
+ */
+export const REMOTE_NODE_SERVICES_COMMAND = 'systemctl is-active pvedaemon pveproxy pvestatd'
+
+// --- What a node upgrade means, from apt's simulation -----------------------------
+
+const NODE_KERNEL = /^(proxmox-kernel-|pve-kernel-|proxmox-default-kernel$|linux-image-)/
+const NODE_FIRMWARE = /^(pve-firmware|proxmox-firmware|firmware-|intel-microcode$|amd64-microcode$)/
+const NODE_PVE_CORE = /^(proxmox-ve|pve-manager|pve-cluster|pve-container|qemu-server|pve-qemu-kvm|proxmox-backup-client|libpve-)/
+
+export interface NodeChangeSummary { kernel: boolean; firmware: boolean; proxmoxVe: boolean; rebootAfter: boolean; removals: string[] }
+
+/** Whether the simulated changes bring a kernel, firmware or core Proxmox package, and so need a reboot after. */
+export function summariseNodeChanges(changes: AptSimChange[]): NodeChangeSummary {
+  const moved = changes.filter(c => c.action !== 'remove')
+  const kernel = moved.some(c => NODE_KERNEL.test(c.name))
+  const firmware = moved.some(c => NODE_FIRMWARE.test(c.name))
+  return {
+    kernel, firmware,
+    proxmoxVe: changes.some(c => NODE_PVE_CORE.test(c.name)),
+    rebootAfter: kernel || firmware,
+    removals: changes.filter(c => c.action === 'remove').map(c => c.name).sort(),
+  }
+}
+
+/** Read-only: the installed version of each package, for the read-back after an upgrade. */
+export function installedVersionsCommand(names: string[]): string {
+  const ok = names.filter(n => /^[a-z0-9][a-z0-9+.-]*$/.test(n))
+  if (!ok.length) return 'echo HP_VERSIONS_BEGIN; echo HP_VERSIONS_END'
+  return `echo HP_VERSIONS_BEGIN; dpkg-query -W -f='\${Package} \${Version} \${db:Status-Abbrev}\n' ${ok.map(shq).join(' ')} 2>/dev/null; echo HP_VERSIONS_END`
+}
+
+/** Package -> installed version (only packages dpkg reports as installed, `ii`). */
+export function parseInstalledVersions(output: string): Record<string, string> {
+  const lines = output.split('\n').map(l => l.trim())
+  const out: Record<string, string> = {}
+  for (const l of between(lines, 'HP_VERSIONS_BEGIN', 'HP_VERSIONS_END')) {
+    const m = /^(\S+) (\S+) ii\s*$/.exec(l)
+    if (m) out[m[1].replace(/:.*/, '')] = m[2]
+  }
+  return out
+}
+
+/**
+ * Compare what apt said it would do with what dpkg now reports. Plain sentences, one per package that did not
+ * land where the simulation said it would.
+ */
+export function readBackProblems(planned: AptSimChange[], installed: Record<string, string>): string[] {
+  const out: string[] = []
+  for (const c of planned) {
+    if (c.action === 'remove') { if (installed[c.name]) out.push(`${c.name} was to be removed and is still installed (${installed[c.name]})`); continue }
+    const now = installed[c.name]
+    if (!now) out.push(`${c.name} is not installed (expected ${c.to})`)
+    else if (now !== c.to) out.push(`${c.name} is at ${now}, expected ${c.to}`)
+  }
+  return out
+}
 
 /** Install exact versions so every node lands on the same Ceph; refuse anything that would remove a package. */
 export function cephInstallCommand(pkgs: { name: string; to: string }[]): string {

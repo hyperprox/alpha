@@ -5,6 +5,7 @@
 //  remote shows as "not answering" on its own panel and never holds up the others. Nothing here writes.
 // =============================================================================
 
+import { checkSummary } from '../updates/check-summary'
 import * as shared from '@hyperprox/hardware'
 import type { ProxmoxClient } from '../proxmox-client'
 import { pveFromEnv } from '../pve-env'
@@ -68,6 +69,19 @@ export interface ClusterPanel {
   attention: Attention[]
   /** Monitoring is installed (a remote) or present (home). */
   monitoring: boolean
+  /** From the last daily updates check (stored; nothing is read from the machines for this). */
+  updates?: PanelUpdates | null
+}
+
+export interface PanelUpdates { available: number; packages: number; security: number; checkedAt: string; result: 'ok' | 'partial' | 'skipped'; reason?: string }
+
+/** The panel's updates line, from the stored check result. */
+export function panelUpdates(id: string): PanelUpdates | null {
+  const c = checkSummary(id)
+  if (!c) return null
+  const out: PanelUpdates = { available: c.available, packages: c.packages, security: c.security, checkedAt: c.at, result: c.result }
+  if (c.reason) out.reason = c.reason
+  return out
 }
 
 export interface Attention { clusterId: string; clusterName: string; kind: 'home' | 'remote'; severity: 'warn' | 'crit' | 'info'; title: string; detail: string }
@@ -352,6 +366,17 @@ export async function commandCenter(deps: Partial<PanelDeps> = {}): Promise<{ pa
       return p
     }
   })))
+  for (const p of panels) {
+    p.updates = panelUpdates(p.id)
+    const u = p.updates
+    if (u && u.available > 0) {
+      p.attention.push({
+        clusterId: p.id, clusterName: p.name, kind: p.kind, severity: u.security ? 'warn' : 'info',
+        title: u.security ? `Security updates on ${u.available} machine${u.available === 1 ? '' : 's'}` : `Updates available on ${u.available} machine${u.available === 1 ? '' : 's'}`,
+        detail: `${u.packages} package${u.packages === 1 ? '' : 's'} at the last check; see the Updates page.`,
+      })
+    }
+  }
   const rank = { crit: 0, warn: 1, info: 2 }
   const attention = panels.flatMap(p => p.attention).sort((a, b) => rank[a.severity] - rank[b.severity])
   return { panels, attention }

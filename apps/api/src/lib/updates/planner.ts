@@ -24,6 +24,7 @@ export const DETAIL = {
   cephRestart:   'restart',
   rebootManual:  'manual',
   rebootAuto:    'auto',
+  rebootStandalone: 'standalone',
   selfGuest:     'guest-apt',
   selfReboot:    'node-reboot',
 } as const
@@ -43,6 +44,12 @@ export interface PlanContext {
   approvals?: Iterable<string>
   /** Ids of the app providers installed, so a policy naming another one is reported. */
   appProviders?: string[]
+  /**
+   * A remote cluster. A guest that cannot be snapshotted is planned only when its `nosnap:<vmid>` approval is
+   * given; Ceph has no phase of its own (daemons are restarted in order only at home); and every node upgrade
+   * says what apt's simulation found (removals, kernel, firmware, held packages).
+   */
+  remote?: boolean
 }
 
 type AppPlanStep = { action: 'app' | 'app-config'; detail: string }
@@ -97,6 +104,15 @@ export function cephTarget(nodes: UpdatesNode[]): { version: string | null; conf
   return list.length === 1 ? { version: list[0], conflict: [] } : { version: null, conflict: list }
 }
 
+/** One sentence about the newest backup HyperProx can see, for a guest updated without a snapshot. */
+function backupWords(g: UpdatesGuest): string {
+  const b = g.lastBackup
+  if (!b) return 'No backup task was found on this cluster.'
+  const when = b.at.slice(0, 16).replace('T', ' ')
+  if (b.thisGuest) return `Its newest backup is from ${when} UTC${b.ok ? '' : ' and did NOT finish cleanly'}.`
+  return `The newest backup task on this cluster is from ${when} UTC${b.ok ? '' : ' and did NOT finish cleanly'}; check that it includes this guest.`
+}
+
 export function buildPlan(inv: UpdatesInventory, policy: Policy, ctx: PlanContext = {}): UpdatesPlan {
   const steps: PlanStep[] = []
   const warnings: string[] = []
@@ -142,7 +158,17 @@ export function buildPlan(inv: UpdatesInventory, policy: Policy, ctx: PlanContex
       if (dockerWork) warnings.push(`${g.vmid} is HyperProx itself: its own images are updated by deploying HyperProx, not by this run`)
       continue
     }
-    add(t, 'snapshot', g.snapshotCapable ? 'before updating' : `${DETAIL.snapshotNone} — bind-mounted storage`)
+    if (ctx.remote && !g.snapshotCapable) {
+      const ack = g.noSnapshotAckId ?? `nosnap:${g.vmid}`
+      const backup = backupWords(g)
+      if (!approvals.has(ack)) {
+        warnings.push(`${g.vmid} (${g.name}) cannot be snapshotted (bind-mounted storage), so it is not planned. ${backup} To update it anyway, approve "update without a snapshot" for it (${ack}).`)
+        continue
+      }
+      usedApprovals.add(ack)
+      add(t, 'snapshot', `${DETAIL.snapshotNone} — bind-mounted storage; updating without a snapshot was approved. ${backup}`)
+    }
+    else add(t, 'snapshot', g.snapshotCapable ? 'before updating' : `${DETAIL.snapshotNone} — bind-mounted storage`)
     if (aptWork) {
       const reboot = g.type === 'qemu' && pol.reboot === 'if-required' ? ', then reboot if the guest asks for one' : ''
       add(t, 'apt', `apt-get upgrade (${g.pending.length} package${g.pending.length === 1 ? '' : 's'})${reboot}`)
@@ -164,6 +190,15 @@ export function buildPlan(inv: UpdatesInventory, policy: Policy, ctx: PlanContex
     else if (n.error) warnings.push(`${n.node}: ${n.error}`)
     if (n.holdsOk === false) warnings.push(`${n.node}: required package holds are missing — the run stops before touching it`)
     if (n.pinOk === false) warnings.push(`${n.node}: the required kernel pin is not in place — the run stops before touching it`)
+    if (ctx.remote) {
+      if (n.held?.length) warnings.push(`${n.node}: held, not offered (never installed or unheld): ${n.held.join(', ')}`)
+      const pv = n.preview
+      if (pv?.removals.length) warnings.push(`${n.node}: apt-get ${pv.verb} would REMOVE ${pv.removals.join(', ')} — read this before confirming`)
+      if (pv?.kernel) warnings.push(`${n.node}: a new kernel is included; it runs only after a reboot, which HyperProx never does on its own here — use Reboot afterwards`)
+      if (pv?.firmware && !pv.kernel) warnings.push(`${n.node}: firmware changes are included; they load only after a reboot`)
+      if (pv?.proxmoxVe) warnings.push(`${n.node}: core Proxmox packages change (Proxmox VE itself)`)
+      if (n.standalone) warnings.push(`${n.node} is a one-node server: there is no quorum or HA to check, so those gates are skipped`)
+    }
   }
 
   const ceph = cephTarget(inv.nodes)
@@ -172,8 +207,12 @@ export function buildPlan(inv: UpdatesInventory, policy: Policy, ctx: PlanContex
     nodePhase = false
   }
 
+  if (ctx.remote && inv.nodes.some(n => n.cephPending)) {
+    warnings.push('Ceph packages are part of a node upgrade here. On a remote cluster HyperProx has no Ceph phase: the node upgrade goes ahead only if Ceph is not running on this cluster (client libraries only), and refuses otherwise.')
+  }
+
   // --- Ceph -------------------------------------------------------------------------
-  if (nodePhase && ceph.version) {
+  if (nodePhase && ceph.version && !ctx.remote) {
     const cephNodes = ordered.filter(n => n.cephPending)
     for (const n of cephNodes) add(n.node, 'ceph', `${DETAIL.cephInstall} ${ceph.version}`)
     for (const d of ['mon', 'mgr', 'osd'] as const) {
@@ -186,9 +225,9 @@ export function buildPlan(inv: UpdatesInventory, policy: Policy, ctx: PlanContex
   if (nodePhase) {
     for (const n of ordered) {
       const pol = nodePolicy(policy, n.node)
-      const nonCeph = n.pending.filter(p => !isCephPackage(p.name))
+      const nonCeph = ctx.remote ? n.pending : n.pending.filter(p => !isCephPackage(p.name))
       if (nonCeph.length) add(n.node, 'node-upgrade', `apt-get ${pol.upgrade} (${nonCeph.length} package${nonCeph.length === 1 ? '' : 's'})`)
-      if (n.kernelPending || n.rebootRequired) {
+      if (n.kernelPending || n.rebootRequired || n.preview?.rebootAfter) {
         if (pol.reboot === 'manual') add(n.node, 'node-reboot', `${DETAIL.rebootManual} — left pending for a person`)
         else if (n.isSelf) selfNodeReboot = n.node
         else add(n.node, 'node-reboot', `${DETAIL.rebootAuto} — if a new kernel or library needs it`)

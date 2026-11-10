@@ -14,7 +14,8 @@ import type { UpdatesExecutor, GuestListing } from './executor'
 import { type Policy, guestPolicy, nodePolicy, nodePolicyView } from './policy'
 import {
   GUEST_PENDING_SCRIPT, NODE_FACTS_COMMAND, guestDockerImagesScript, isCephPackage, isKernelPackage,
-  parseDockerImages, parseGuestPending, parseNodeFacts, type NodeFacts,
+  parseDockerImages, parseGuestPending, parseNodeFacts, nodeSimulateCommand, parseAptSimulation, summariseNodeChanges,
+  type NodeFacts,
 } from './commands'
 import { type AppEnv, readGuestApps } from './apps'
 
@@ -27,7 +28,27 @@ export interface InventoryOptions {
   itemDeadlineMs?: number
   /** App-update providers. Without it, no app is looked for. */
   apps?: AppEnv
+  /** HyperProx's own guest cannot be on this cluster (a remote): nothing is recognised as HyperProx. */
+  noSelf?: boolean
+  /**
+   * Where a node's pending list comes from. `pve-api` (default, home): the list the node's last `apt update`
+   * produced. `apt-simulation` (remote clusters and the daily check): apt's own simulation of the upgrade the
+   * node's policy allows, with removals, kernel, firmware and Proxmox changes, and security fixes marked.
+   */
+  nodePreview?: 'pve-api' | 'apt-simulation'
+  /** Machines read at once: nodes (default all) and guests (default 6). The daily check reads one at a time. */
+  nodeBatch?: number
+  guestBatch?: number
+  /** Awaited between one machine and the next (the daily check's stagger). */
+  gap?: () => Promise<void>
+  /** Mark each guest with the newest backup task on the cluster (remote previews). */
+  backups?: boolean
+  /** A guest that cannot be snapshotted gets an id a person must approve to update it anyway (remote clusters). */
+  noSnapshotAck?: boolean
 }
+
+/** The approval that says "update this guest even though it cannot be snapshotted first". */
+export const noSnapshotAckId = (vmid: number) => `nosnap:${vmid}`
 
 const ITEM_DEADLINE_MS = 4 * 60_000
 
@@ -56,7 +77,7 @@ export function findSelfGuest(guests: GuestListing[], policy: Policy, hostname =
 }
 
 async function readNode(exec: UpdatesExecutor, policy: Policy, node: { name: string; online: boolean },
-                        selfNode: string | null, rebootPending: Set<string>): Promise<{ node: UpdatesNode; facts: NodeFacts | null }> {
+                        selfNode: string | null, rebootPending: Set<string>, simulate = false): Promise<{ node: UpdatesNode; facts: NodeFacts | null }> {
   const pol = nodePolicy(policy, node.name)
   const out: UpdatesNode = {
     node: node.name, online: node.online, pending: [], cephPending: false, kernelPending: false,
@@ -69,17 +90,38 @@ async function readNode(exec: UpdatesExecutor, policy: Policy, node: { name: str
   if (!node.online) { out.error = 'node is offline'; return { node: out, facts: null } }
 
   const errors: string[] = []
-  try {
-    out.pending = await exec.nodeAptPending(node.name)
-    out.cephPending = out.pending.some(p => isCephPackage(p.name))
-    out.kernelPending = out.pending.some(p => isKernelPackage(p.name))
-  } catch (e: any) { errors.push(`pending list: ${e.message}`) }
+  if (simulate) {
+    // apt's own simulation of exactly the upgrade a run would do. Read-only: `apt-get -s`, no lock taken.
+    try {
+      const r = await exec.nodeExec(node.name, nodeSimulateCommand(pol.upgrade), undefined, 10 * 60_000)
+      const parsed = r.code === 0 ? parseAptSimulation(r.output) : { changes: null, error: `the command exited ${r.code}` }
+      if (!parsed.changes) {
+        out.preview = { source: 'apt-simulation', verb: pol.upgrade, removals: [], kernel: false, firmware: false, proxmoxVe: false, rebootAfter: false, error: parsed.error }
+        errors.push(`apt simulation: ${parsed.error}`)
+      } else {
+        out.pending = parsed.changes.filter(c => c.action !== 'remove' && c.to)
+          .map(c => ({ name: c.name, from: c.from, to: c.to as string, ...(c.security ? { security: true } : {}) }))
+          .sort((a, b) => a.name.localeCompare(b.name))
+        const sum = summariseNodeChanges(parsed.changes)
+        out.cephPending = out.pending.some(p => isCephPackage(p.name))
+        out.kernelPending = sum.kernel
+        out.preview = { source: 'apt-simulation', verb: pol.upgrade, removals: sum.removals, kernel: sum.kernel, firmware: sum.firmware, proxmoxVe: sum.proxmoxVe, rebootAfter: sum.rebootAfter }
+      }
+    } catch (e: any) { errors.push(`apt simulation: ${e.message}`) }
+  } else {
+    try {
+      out.pending = await exec.nodeAptPending(node.name)
+      out.cephPending = out.pending.some(p => isCephPackage(p.name))
+      out.kernelPending = out.pending.some(p => isKernelPackage(p.name))
+    } catch (e: any) { errors.push(`pending list: ${e.message}`) }
+  }
 
   let facts: NodeFacts | null = null
   try {
     const r = await exec.nodeExec(node.name, NODE_FACTS_COMMAND, undefined, 60_000)
     facts = parseNodeFacts(r.output)
     out.rebootRequired = facts.rebootRequired
+    if (facts.holds.length) out.held = [...facts.holds].sort()
     if (pol.requireHolds.length) out.holdsOk = pol.requireHolds.every(h => facts!.holds.includes(h))
     if (pol.requirePin) out.pinOk = facts.pinned === pol.requirePin
   } catch (e: any) {
@@ -170,9 +212,12 @@ function unansweredGuest(policy: Policy, g: GuestListing, haSids: Set<string>, e
   }
 }
 
-async function inBatches<T, R>(items: T[], size: number, fn: (t: T) => Promise<R>): Promise<R[]> {
+async function inBatches<T, R>(items: T[], size: number, fn: (t: T) => Promise<R>, gap?: () => Promise<void>): Promise<R[]> {
   const out: R[] = []
-  for (let i = 0; i < items.length; i += size) out.push(...await Promise.all(items.slice(i, i + size).map(fn)))
+  for (let i = 0; i < items.length; i += size) {
+    if (i && gap) await gap()
+    out.push(...await Promise.all(items.slice(i, i + size).map(fn)))
+  }
   return out
 }
 
@@ -183,24 +228,41 @@ export async function readInventory(exec: UpdatesExecutor, policy: Policy, opts:
     exec.haResources(),
   ])
   const guests = listing.filter(g => !g.template)
-  const self = findSelfGuest(guests, policy, opts.hostname)
+  const self = opts.noSelf ? null : findSelfGuest(guests, policy, opts.hostname)
+  const simulate = opts.nodePreview === 'apt-simulation'
   const haSet = new Set(haSids)
 
   const limit = opts.itemDeadlineMs ?? ITEM_DEADLINE_MS
   const lateNote = `no answer within ${Math.round(limit / 1000)} s`
   const pendingSet = opts.rebootPending ?? new Set<string>()
-  const nodeRows = await Promise.all(status.nodes.map(n => withDeadline(
-    readNode(exec, policy, n, self?.node ?? null, pendingSet), limit,
+  const nodeRows = await inBatches(status.nodes, opts.nodeBatch ?? Math.max(1, status.nodes.length), n => withDeadline(
+    readNode(exec, policy, n, self?.node ?? null, pendingSet, simulate), limit,
     () => ({ node: unansweredNode(policy, n, self?.node ?? null, pendingSet, lateNote), facts: null }),
-  )))
+  ), opts.gap)
+  if (status.standalone) for (const r of nodeRows) r.node.standalone = true
+  if (opts.gap && guests.length) await opts.gap()
   const onlineNodes = new Set(status.nodes.filter(n => n.online).map(n => n.name))
-  const guestRows = await inBatches(guests.sort((a, b) => a.vmid - b.vmid), 6, async g => {
+  const guestRows = await inBatches(guests.sort((a, b) => a.vmid - b.vmid), opts.guestBatch ?? 6, async g => {
     if (!onlineNodes.has(g.node)) {
       const row = await readGuest(exec, policy, { ...g, running: false }, haSet, opts.apps)
       return { ...row, error: 'its node is offline' }
     }
     return withDeadline(readGuest(exec, policy, g, haSet, opts.apps), limit, () => unansweredGuest(policy, g, haSet, lateNote))
-  })
+  }, opts.gap)
+
+  if (opts.noSnapshotAck) {
+    for (const g of guestRows) if (g.managed && !g.snapshotCapable) g.noSnapshotAckId = noSnapshotAckId(g.vmid)
+  }
+  if (opts.backups && exec.backupTasks) {
+    const tasks = await exec.backupTasks().catch(() => [])
+    const done = tasks.filter(t => t.ok !== null)
+    const newest = done[0]
+    for (const g of guestRows) {
+      const own = done.find(t => t.vmid === g.vmid)
+      const t = own ?? newest
+      g.lastBackup = t ? { at: new Date(t.at).toISOString(), ok: !!t.ok, thisGuest: !!own } : null
+    }
+  }
 
   return {
     inventory: {

@@ -8,15 +8,22 @@
 //
 //  The work itself is in lib/updates; this file translates HTTP to it. Every
 //  write is audited by the runner.
+//
+//  Every route works for the cluster the request is about (lib/clusters/context.ts): home with no header, a
+//  remote with X-HyperProx-Cluster. Each cluster has its own runner, policy and inventory cache
+//  (lib/updates/service.ts), and its own view of the jobs, so a job planned for one cluster cannot be confirmed,
+//  resumed or rolled back through another. On a remote, everything that changes something (starting a run,
+//  confirming, resuming, rolling back, rebooting) also needs the master password re-entered within the last
+//  five minutes — which an API token can never do.
 // =============================================================================
 
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import type { UpdatesInventory, UpdatesWsPayload } from '../lib/updates/types'
 import { hasRole } from '../lib/roles'
 import { isUnlocked, onLock } from '../lib/vault/state'
-import { loadPolicy as loadPolicyFile, policyStatus, type PolicyLoad } from '../lib/updates/policy'
-import { productionExecutor, type UpdatesExecutor } from '../lib/updates/executor'
-import { readInventory, selfVmidOf } from '../lib/updates/inventory'
+import { isReconfirmed } from '../lib/auth'
+import { loadPolicy as loadPolicyFile, policyStatus, unmatchedSections, type PolicyLoad } from '../lib/updates/policy'
+import { type UpdatesExecutor } from '../lib/updates/executor'
 import { annotatePlanSafety } from '../lib/updates/ceph-checks'
 import { buildPlan } from '../lib/updates/planner'
 import { UpdatesRunner, PolicyRequiredError, JobStateError, type RunnerTiming } from '../lib/updates/runner'
@@ -24,11 +31,29 @@ import { publish, type NotifyEventInput } from '../lib/notify'
 import { UpdatesScheduler } from '../lib/updates/scheduler'
 import { ActiveJobError, PrismaStore, jobView, type UpdatesStore } from '../lib/updates/store'
 import { APPROVAL_ID, productionAppEnv, type AppEnv } from '../lib/updates/apps'
+import { UpdatesServices, type ClusterUpdates } from '../lib/updates/service'
+import { jobCluster } from '../lib/updates/cluster-store'
+import { UpdatesChecker, FileCheckState, type CheckStateStore } from '../lib/updates/check'
+import { setCheckSummarySource } from '../lib/updates/check-summary'
+import { currentClusterId } from '../lib/clusters/context'
+import { HOME_ID, clusterRow, listClusters } from '../lib/clusters/registry'
+import { selfVmidOf } from '../lib/updates/inventory'
 
 export interface UpdatesRouteDeps {
   store?:      UpdatesStore
+  /** Home's executor. */
   exec?:       UpdatesExecutor
+  /** A remote cluster's executor (tests); default the production one bound to that cluster. */
+  remoteExec?: (clusterId: string) => UpdatesExecutor
+  /** The policy file; its top level is home's, `clusters:` holds the remotes'. */
   loadPolicy?: () => PolicyLoad
+  /** Where the daily check keeps its result. Default data/updates-check.json. */
+  checkState?: CheckStateStore
+  /** The daily check's timer (default on, like the scheduler) and its pauses between machines. */
+  check?:      boolean
+  checkGapMs?: number
+  /** How HyperProx reaches a remote now (tests); default lib/pve-env.ts connectionKey. */
+  connection?: (clusterId: string) => string
   hostname?:   string
   timing?:     Partial<RunnerTiming>
   /** Tests turn these off; production wants both. */
@@ -36,8 +61,10 @@ export interface UpdatesRouteDeps {
   recover?:    boolean
   /** App-update providers. Default: the bundled plug-ins' — but only with the production executor. */
   apps?:       AppEnv
-  /** Exposes the runner so tests can wait for a job to settle. */
+  /** Exposes the home runner so tests can wait for a job to settle. */
   onRunner?:   (runner: UpdatesRunner) => void
+  /** Exposes every cluster's service and the checker (tests). */
+  onServices?: (services: UpdatesServices, checker: UpdatesChecker) => void
   /** The notification bus; default the installed one (a no-op until it is installed). */
   publish?:    (e: NotifyEventInput) => Promise<void>
 }
@@ -83,6 +110,13 @@ async function adminOnly(req: FastifyRequest, reply: FastifyReply) {
   }
 }
 
+const RECONFIRM = { ok: false, code: 'reconfirm_required', error: 'Re-enter your master password to change anything on a remote cluster' }
+
+/** On a remote cluster a change needs a fresh re-confirmation; an API token never has one. */
+function remoteNeedsReconfirm(svc: ClusterUpdates, req: FastifyRequest): boolean {
+  return svc.remote && !(req.session?.sid && isReconfirmed(req.session.sid))
+}
+
 function sendError(reply: FastifyReply, e: any) {
   if (e instanceof ActiveJobError) return reply.status(409).send({ error: e.message, runningJobId: e.runningJobId })
   if (e instanceof PolicyRequiredError) return reply.status(400).send({ error: e.message })
@@ -99,58 +133,81 @@ function approvalsFrom(raw: string | undefined): string[] | null {
 export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAsync {
   return async (fastify) => {
     const store  = deps.store ?? new PrismaStore((fastify as any).prisma)
-    const exec   = deps.exec ?? productionExecutor()
     const loadPolicy = deps.loadPolicy ?? (() => loadPolicyFile())
     const apps   = deps.apps ?? (deps.exec ? undefined : productionAppEnv())
     const appProviders = apps?.providers.map(r => r.provider.id)
-    let cached: UpdatesInventory | null = null
-    // The page asks for the inventory and the plan at once; both share one read of the cluster.
-    let reading: Promise<UpdatesInventory> | null = null
 
-    const runner = new UpdatesRunner({
-      store, exec, loadPolicy,
-      emit: broadcast,
-      onInventory: r => { cached = r.inventory },
-      log: msg => fastify.log.info(msg),
-      hostname: deps.hostname,
-      timing: deps.timing,
-      apps,
-      publish: deps.publish ?? publish,
+    const services = new UpdatesServices({
+      store, exec: deps.exec, remoteExec: deps.remoteExec, loadPolicy,
+      hostname: deps.hostname, timing: deps.timing, apps,
+      publish: deps.publish ?? publish, emit: broadcast,
+      log: msg => fastify.log.info(msg), connection: deps.connection,
     })
+    const home = services.get(HOME_ID)
+    const runner = home.runner
     deps.onRunner?.(runner)
+    /** The service for the cluster this request is about. */
+    const svc = () => services.get(currentClusterId())
+
+    const checker = new UpdatesChecker({
+      clusters: () => listClusters().map(c => {
+        const s = services.get(c.id)
+        return { ref: { id: c.id, name: c.name, kind: c.kind }, exec: s.exec, loadPolicy: s.loadPolicy, remote: s.remote }
+      }),
+      loadPolicy, isUnlocked,
+      activeJob: () => store.activeJob(),
+      state: deps.checkState ?? new FileCheckState(),
+      publish: deps.publish ?? publish,
+      log: msg => fastify.log.info(msg),
+      gapMs: deps.checkGapMs, clusterGapMs: deps.checkGapMs,
+    })
+    setCheckSummarySource(id => checker.summary(id))
+    deps.onServices?.(services, checker)
 
     if (deps.recover !== false) {
       // The database needs no vault, so a job interrupted by a restart is paused before anyone can press anything.
       fastify.addHook('onReady', async () => {
         await runner.recoverAfterRestart().catch(e => fastify.log.error(`[updates] restart recovery failed: ${e.message}`))
+        const active = await store.activeJob().catch(() => null)
+        const id = active ? jobCluster(active) : HOME_ID
+        if (active && id !== HOME_ID) {
+          if (clusterRow(id)) await services.get(id).runner.recoverAfterRestart().catch(e => fastify.log.error(`[updates] restart recovery failed: ${e.message}`))
+          else {
+            await store.transitionJob(active.id, ['planned', 'awaiting-confirm', 'running', 'paused'], { status: 'failed', pauseReason: 'Its cluster was removed from HyperProx; nothing more was done', finishedAt: new Date() })
+            await store.releaseLock(active.id)
+          }
+        }
       })
     }
     if (deps.scheduler !== false) {
+      // Scheduled runs are home-only. The daily check covers every cluster, read-only.
       const scheduler = new UpdatesScheduler({ runner, loadPolicy, isUnlocked, log: msg => fastify.log.info(msg) })
       fastify.addHook('onReady', async () => scheduler.start())
       fastify.addHook('onClose', async () => scheduler.stop())
     }
+    if (deps.check ?? deps.scheduler !== false) {
+      fastify.addHook('onReady', async () => checker.start())
+      fastify.addHook('onClose', async () => checker.stop())
+    }
 
     fastify.addHook('preHandler', adminOnly)
 
-    async function inventory(refresh: boolean): Promise<UpdatesInventory> {
-      if (cached && !refresh) return cached
-      // While a job is active the runner keeps the cache current; a page refresh must not
-      // send a second round of reads into guests mid-upgrade.
-      if (cached && await store.activeJob()) return cached
-      if (!reading) {
-        reading = readInventory(exec, loadPolicy().policy, { rebootPending: runner.rebootPending, hostname: deps.hostname, apps })
-          .then(r => { cached = r.inventory; return r.inventory })
-          .finally(() => { reading = null })
+    fastify.get('/policy', async () => {
+      const s = svc()
+      const status = policyStatus(s.loadPolicy())
+      const check = loadPolicy().policy.check
+      const st = checker.status()
+      const out = { ...status, cluster: { ...s.ref }, check: { enabled: check.enabled, cron: check.cron, nextRun: st.nextRun, reminderDays: check.reminderDays } }
+      if (!s.remote) {
+        const loose = unmatchedSections(loadPolicy().policy, listClusters())
+        if (loose.length) out.notes = [...(out.notes ?? []), `The policy names cluster section${loose.length > 1 ? 's' : ''} no cluster matches: ${loose.map(k => `clusters.${k}`).join(', ')}`]
       }
-      return reading
-    }
-
-    fastify.get('/policy', async () => policyStatus(loadPolicy()))
+      return out
+    })
 
     // Read-only, refresh included: it re-reads what nodes and guests already know and never runs `apt update`.
     fastify.get<{ Querystring: { refresh?: string } }>('/inventory', async (req, reply) => {
-      try { return await inventory(req.query.refresh === '1' || req.query.refresh === 'true') }
+      try { return await svc().inventory(req.query.refresh === '1' || req.query.refresh === 'true') }
       catch (e) { return sendError(reply, e) }
     })
 
@@ -159,17 +216,21 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       const approvals = approvalsFrom(req.query.approve)
       if (!approvals) return reply.status(400).send({ error: 'approve must be a comma-separated list of approval ids from the inventory' })
       try {
-        const load = loadPolicy()
-        const inv = await inventory(false)
-        const plan = buildPlan(inv, load.policy, {
-          approvals, appProviders,
+        const s = svc()
+        const load = s.loadPolicy()
+        const inv = await s.inventory(false)
+        const built = buildPlan(inv, load.policy, {
+          approvals, appProviders: s.remote ? undefined : appProviders,
           scope: req.query.scope === 'guests' ? 'guests' : 'all',
-          selfVmid: selfVmidOf(inv, load.policy, deps.hostname),
+          selfVmid: s.remote ? null : selfVmidOf(inv, load.policy, deps.hostname),
+          remote: s.remote || undefined,
           policyNote: load.loaded ? undefined : `${load.error ?? 'No policy file'} — this plan uses the built-in safe defaults.`,
         })
-        // Read-only: what each Ceph restart and node reboot would do, checked again when it runs.
-        if (!plan.steps.some(s => s.action === 'ceph' || s.action === 'node-reboot' || s.action === 'self')) return plan
-        try { return await annotatePlanSafety(exec, plan, await exec.cephPresent()) }
+        const plan = { ...built, cluster: { ...s.ref } }
+        // Read-only: what each Ceph restart and node reboot would do, checked again when it runs. A remote plan
+        // has no Ceph phase and never reboots on its own, so there is nothing to annotate.
+        if (s.remote || !plan.steps.some(x => x.action === 'ceph' || x.action === 'node-reboot' || x.action === 'self')) return plan
+        try { return await annotatePlanSafety(s.exec, plan, await s.exec.cephPresent()) }
         catch (e: any) { return { ...plan, warnings: [...plan.warnings, `Ceph safety not checked: ${e?.message ?? e}`] } }
       } catch (e) { return sendError(reply, e) }
     })
@@ -183,28 +244,34 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       if (!Array.isArray(approve) || approve.length > 200 || !approve.every(a => typeof a === 'string' && APPROVAL_ID.test(a))) {
         return reply.status(400).send({ error: 'approve must be a list of approval ids from the inventory' })
       }
+      const s = svc()
+      if (mode === 'run' && remoteNeedsReconfirm(s, req)) return reply.status(403).send(RECONFIRM)
+      if (checker.running) return reply.status(409).send({ error: 'The updates check is reading every cluster right now; start the run when it has finished (a minute or two).' })
       try {
-        const job = await runner.start(mode, 'manual', req.session?.email, scope, approve as string[])
-        return reply.status(201).send({ job: jobView(job, await store.getSteps(job.id)) })
+        const job = await s.runner.start(mode, 'manual', req.session?.email, scope, approve as string[])
+        return reply.status(201).send({ job: jobView(job, await s.store.getSteps(job.id)) })
       } catch (e) { return sendError(reply, e) }
     })
 
     fastify.get<{ Querystring: { limit?: string } }>('/jobs', async (req) => {
       const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100)
-      return { jobs: (await store.listJobs(limit)).map(j => jobView(j)) }
+      return { jobs: (await svc().store.listJobs(limit)).map(j => jobView(j)) }
     })
 
     fastify.get<{ Params: { id: string } }>('/jobs/:id', async (req, reply) => {
-      const job = await store.getJob(req.params.id)
+      const s = svc()
+      const job = await s.store.getJob(req.params.id)
       if (!job) return reply.status(404).send({ error: `No job ${req.params.id}` })
-      return { job: jobView(job, await store.getSteps(job.id)) }
+      return { job: jobView(job, await s.store.getSteps(job.id)) }
     })
 
     for (const op of ['confirm', 'resume', 'cancel'] as const) {
       fastify.post<{ Params: { id: string } }>(`/jobs/:id/${op}`, async (req, reply) => {
+        const s = svc()
+        if (op !== 'cancel' && remoteNeedsReconfirm(s, req)) return reply.status(403).send(RECONFIRM)
         try {
-          const job = await runner[op](req.params.id, req.session?.email)
-          return { job: jobView(job, await store.getSteps(job.id)) }
+          const job = await s.runner[op](req.params.id, req.session?.email)
+          return { job: jobView(job, await s.store.getSteps(job.id)) }
         } catch (e) { return sendError(reply, e) }
       })
     }
@@ -213,17 +280,36 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
     fastify.post<{ Params: { id: string }; Body: { target?: unknown } }>('/jobs/:id/rollback', async (req, reply) => {
       const target = req.body?.target
       if (typeof target !== 'string' || !/^\d{1,9}$/.test(target)) return reply.status(400).send({ error: 'target must be a guest id' })
+      const s = svc()
+      if (remoteNeedsReconfirm(s, req)) return reply.status(403).send(RECONFIRM)
       try {
-        const job = await runner.rollbackGuest(req.params.id, target, req.session?.email)
-        return reply.status(202).send({ job: jobView(job, await store.getSteps(job.id)) })
+        const job = await s.runner.rollbackGuest(req.params.id, target, req.session?.email)
+        return reply.status(202).send({ job: jobView(job, await s.store.getSteps(job.id)) })
       } catch (e) { return sendError(reply, e) }
     })
 
+    // What a reboot would take down (a remote one-node server's guests), for the confirmation. Read-only.
+    fastify.get<{ Params: { node: string } }>('/nodes/:node/reboot-preview', async (req, reply) => {
+      try { return await svc().runner.rebootPreview(req.params.node) }
+      catch (e) { return sendError(reply, e) }
+    })
+
     fastify.post<{ Params: { node: string } }>('/nodes/:node/reboot', async (req, reply) => {
+      const s = svc()
+      if (remoteNeedsReconfirm(s, req)) return reply.status(403).send(RECONFIRM)
       try {
-        const job = await runner.rebootNode(req.params.node, req.session?.email)
-        return reply.status(202).send({ job: jobView(job, await store.getSteps(job.id)) })
+        const job = await s.runner.rebootNode(req.params.node, req.session?.email)
+        return reply.status(202).send({ job: jobView(job, await s.store.getSteps(job.id)) })
       } catch (e) { return sendError(reply, e) }
+    })
+
+    // The daily check: its last result for every cluster, and "Check now". Read-only on every machine.
+    fastify.get('/check', async () => checker.status())
+    fastify.post('/check', async (req, reply) => {
+      if (checker.running) return reply.status(409).send({ error: 'A check is already running.', status: checker.status() })
+      await store.audit('updates.check.start', 'check', { by: req.session?.email, cluster: currentClusterId() })
+      checker.run('manual').catch(e => fastify.log.error(`[updates] check failed: ${e.message}`))
+      return reply.status(202).send(checker.status())
     })
   }
 }

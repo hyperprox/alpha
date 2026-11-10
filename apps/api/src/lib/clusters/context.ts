@@ -65,6 +65,11 @@ const REMOTE_OK: Array<[string, RegExp]> = [
   // target cluster's context and applied only when the request is for the plan's own cluster. Deploying a
   // service (/wizard/execute) and the provider settings stay home-only.
   ['POST',   /^\/api\/ai\/(wizard\/plan|actions\/apply)$/],
+  // Updates (routes/updates.ts): one service per cluster (lib/updates/service.ts) with its own runner, policy section,
+  // inventory cache and view of the jobs, so a job planned for one cluster is "No job" to every other. Changes on a
+  // remote also need a fresh re-confirmation. The daily check's status covers every cluster.
+  ['GET',    new RegExp(`^/api/updates/(policy|inventory|plan|jobs|jobs/[A-Za-z0-9]{1,64}|check|nodes/${N}/reboot-preview)$`)],
+  ['POST',   new RegExp(`^/api/updates/(jobs|jobs/[A-Za-z0-9]{1,64}/(confirm|resume|cancel|rollback)|nodes/${N}/reboot|check)$`)],
 ]
 
 export function remoteRouteAllowed(method: string, path: string): boolean {

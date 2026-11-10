@@ -150,10 +150,25 @@ export async function streamGate(exec: UpdatesExecutor, policy: Policy): Promise
   }
 }
 
+/** A one-node server has no quorum and no HA. Said in words, so the skipped gates are never silent. */
+export const STANDALONE_GATES = 'standalone server: no quorum or HA to check (skipped), node online'
+
+/** Quorum and HA on a cluster; on a one-node server only that the node answers, and that it is standalone. */
+export async function quorumHaGates(exec: UpdatesExecutor, standalone: boolean): Promise<GateResult[]> {
+  if (!standalone) return [await quorumGate(exec), await haGate(exec)]
+  try {
+    const s = await exec.clusterStatus()
+    if (!s.standalone) return [await quorumGate(exec), await haGate(exec)]   // it has become a cluster: check it as one
+    return s.nodes.every(n => n.online) ? [pass(STANDALONE_GATES)] : [fail(`node offline: ${s.nodes.map(n => n.name).join(', ')}`)]
+  } catch (e: any) { return [fail(`could not read the server's status: ${e.message}`)] }
+}
+
 /** Everything before a run changes anything. All gates run, so the report lists every problem at once. */
-export async function preflight(exec: UpdatesExecutor, policy: Policy, facts: Record<string, NodeFacts | null>, cephPresent: boolean): Promise<GateResult> {
+export async function preflight(exec: UpdatesExecutor, policy: Policy, facts: Record<string, NodeFacts | null>, cephPresent: boolean,
+                                standalone = false): Promise<GateResult> {
+  const [qa, ...rest] = await quorumHaGates(exec, standalone)
   const results: GateResult[] = [
-    await quorumGate(exec), await cephGate(exec, policy, cephPresent), await haGate(exec),
+    qa, await cephGate(exec, policy, cephPresent), ...rest,
     unknownPolicyNodes(policy, Object.keys(facts)),
   ]
   for (const node of Object.keys(facts).sort()) {

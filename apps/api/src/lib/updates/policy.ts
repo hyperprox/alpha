@@ -81,6 +81,35 @@ const fileSchema = z.object({
   }).strict().optional(),
   // Keys are `enabled`, `default` or an app provider id, so the shape is checked by hand below.
   apps: z.record(z.unknown()).optional(),
+  // The daily read-only check for every cluster (lib/updates/check.ts).
+  check: z.object({
+    enabled:       z.boolean().optional(),
+    cron:          cronString.optional(),
+    reminder_days: z.number().int().min(1).max(60).optional(),
+  }).strict().optional(),
+  // One section per remote cluster, keyed by its id or its exact name; checked by hand below.
+  clusters: z.record(z.unknown()).optional(),
+}).strict()
+
+// A remote cluster's section. No schedule (scheduled runs are home-only), no self, no apps, no Plex wait, and a
+// node may only be `reboot: manual`: HyperProx never reboots a remote node on its own.
+const remoteNodeSchema = z.object({
+  upgrade:       z.enum(['upgrade', 'dist-upgrade']).optional(),
+  reboot:        z.literal('manual', { errorMap: () => ({ message: 'a remote node is never rebooted automatically; only manual is allowed' }) }).optional(),
+  order:         z.enum(['first', 'last']).optional(),
+  require_holds: z.array(z.string().min(1)).optional(),
+  require_pin:   z.string().min(1).optional(),
+}).strict()
+
+const remoteSectionSchema = z.object({
+  nodes:  z.record(remoteNodeSchema).optional(),
+  guests: z.record(z.unknown()).optional(),
+  ceph: z.object({
+    accepted_warnings: z.array(z.string().regex(/^[A-Z0-9_]+$/, 'a Ceph health code, e.g. POOL_NO_REDUNDANCY')
+      .refine(c => c !== 'OSDMAP_FLAGS', 'OSDMAP_FLAGS cannot be accepted')).optional(),
+  }).strict().optional(),
+  batch_size:       z.number().int().min(1).max(20).optional(),
+  min_root_free_mb: z.number().int().min(0).optional(),
 }).strict()
 
 // --- Resolved policy -------------------------------------------------------------
@@ -127,7 +156,16 @@ export interface Policy {
   selfVmid?:       number
   webhookUrl?:     string
   apps:            AppsPolicy
+  /** The daily read-only check (top level only; it covers every cluster). */
+  check:           CheckPolicy
+  /** Remote cluster sections as written, by the key used in the file (an id or a name). Home only. */
+  remotes:         Record<string, Policy>
+  /** True for a remote cluster's policy: a remote's own section, or the built-in remote defaults. */
+  remote?:         boolean
 }
+
+export interface CheckPolicy { enabled: boolean; cron: string; reminderDays: number }
+export const DEFAULT_CHECK: CheckPolicy = { enabled: true, cron: '30 6 * * *', reminderDays: 7 }
 
 export const SAFE_NODE_DEFAULT: NodePolicy = { upgrade: 'upgrade', reboot: 'manual', requireHolds: [] }
 export const SAFE_GUEST_DEFAULT: GuestPolicy = { apt: true, docker: 'none', reboot: 'never', composeDirs: [], apps: true }
@@ -146,13 +184,36 @@ export function defaultPolicy(): Policy {
     minRootFreeMb: 1024,
     // Finding apps and reporting them is read-only; applying one needs `auto` or a person's approval.
     apps: { enabled: true, default: 'manual', providers: {} },
+    check: { ...DEFAULT_CHECK },
+    remotes: {},
   }
+}
+
+/**
+ * The built-in policy for a remote cluster with no section of its own: the Proxmox-recommended upgrade for a
+ * Proxmox VE node (`apt-get dist-upgrade`, which never installs or removes a held package and never moves a
+ * kernel pin), never an automatic reboot, guests `apt-get upgrade` and never rebooted, no Docker pulls, no app
+ * updates, no scheduled runs. Nothing from the home cluster's `nodes:` or `guests:` applies to a remote.
+ */
+export function remoteDefaultPolicy(): Policy {
+  const p = defaultPolicy()
+  p.nodeDefault = { upgrade: 'dist-upgrade', reboot: 'manual', requireHolds: [] }
+  p.plexBlocksReboots = false
+  p.apps = { enabled: false, default: 'off', providers: {} }
+  p.remote = true
+  return p
 }
 
 export interface PolicyLoad {
   loaded: boolean
   path:   string
   error?: string
+  /** No policy file at all (as opposed to one that failed to load). */
+  missing?: boolean
+  /** Remote clusters: the section key used, or null for the built-in remote defaults. */
+  section?: string | null
+  /** Plain-language notes about how this cluster's policy was chosen. */
+  notes?:   string[]
   /** Always usable: the file's policy when it loaded, the safe defaults otherwise. */
   policy: Policy
 }
@@ -247,11 +308,63 @@ export function parsePolicy(text: string): Policy {
     if (key === 'default') p.apps.default = m.data
     else p.apps.providers[key] = m.data
   }
+  problems.push(...composeProblems(p, []))
+  if (f.check?.enabled !== undefined) p.check.enabled = f.check.enabled
+  if (f.check?.cron)                  p.check.cron = f.check.cron
+  if (f.check?.reminder_days)         p.check.reminderDays = f.check.reminder_days
+  for (const [key, raw] of Object.entries(f.clusters ?? {})) {
+    if (key === 'home' || key.trim().toLowerCase() === 'home cluster') {
+      problems.push(`clusters.${key}: the home cluster is configured at the top level of this file, not under clusters`)
+      continue
+    }
+    try { p.remotes[key] = parseRemoteSection(raw ?? {}, ['clusters', key]) }
+    catch (e: any) { problems.push(e.message) }
+  }
+  if (problems.length) throw new Error(problems.join('; '))
+  return p
+}
+
+function composeProblems(p: Policy, prefix: string[]): string[] {
+  const out: string[] = []
   for (const [key, g] of Object.entries(p.guests)) {
     if (g.docker === 'auto' && !(g.composeDirs ?? p.guestDefault.composeDirs).length) {
-      problems.push(`guests.${key}.compose_dirs: docker: auto needs at least one compose directory`)
+      out.push(`${[...prefix, 'guests', key, 'compose_dirs'].join('.')}: docker: auto needs at least one compose directory`)
     }
   }
+  return out
+}
+
+/** One remote cluster's section, on top of the built-in remote defaults. Throws with every bad key's path. */
+function parseRemoteSection(raw: unknown, at: string[]): Policy {
+  if (typeof raw !== 'object' || Array.isArray(raw)) throw new Error(`${at.join('.')}: expected a mapping`)
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) if (v === null) delete (raw as Record<string, unknown>)[k]
+  const parsed = remoteSectionSchema.safeParse(raw)
+  if (!parsed.success) throw new Error(describeIssues(parsed.error, at))
+  const f = parsed.data
+  const p = remoteDefaultPolicy()
+  if (f.ceph?.accepted_warnings)        p.acceptedWarnings = f.ceph.accepted_warnings
+  if (f.batch_size)                     p.batchSize = f.batch_size
+  if (f.min_root_free_mb !== undefined) p.minRootFreeMb = f.min_root_free_mb
+  for (const [name, n] of Object.entries(f.nodes ?? {})) {
+    if (name === 'default') p.nodeDefault = { ...p.nodeDefault, ...nodeFrom(n) }
+    else p.nodes[name] = nodeFrom(n)
+  }
+  const problems: string[] = []
+  for (const [key, g0] of Object.entries(f.guests ?? {})) {
+    if (key === 'exclude') {
+      const ex = z.array(z.number().int().positive()).safeParse(g0)
+      if (!ex.success) problems.push(describeIssues(ex.error, [...at, 'guests', 'exclude']))
+      else p.exclude = ex.data
+      continue
+    }
+    if (key !== 'default' && !/^\d+$/.test(key)) { problems.push(`${[...at, 'guests', key].join('.')}: unknown key (expected default, exclude or a VMID)`); continue }
+    const g = guestSchema.safeParse(g0 ?? {})
+    if (!g.success) { problems.push(describeIssues(g.error, [...at, 'guests', key])); continue }
+    // Apps are not looked for on a remote cluster; the key is accepted and has no effect beyond false.
+    if (key === 'default') p.guestDefault = { ...p.guestDefault, ...guestFrom(g.data), apps: false }
+    else p.guests[key] = { ...guestFrom(g.data), apps: false }
+  }
+  problems.push(...composeProblems(p, at))
   if (problems.length) throw new Error(problems.join('; '))
   return p
 }
@@ -262,12 +375,54 @@ export function loadPolicy(path = policyPath()): PolicyLoad {
   try { text = fs.readFileSync(path, 'utf8') }
   catch (e: any) {
     return {
-      loaded: false, path, policy: defaultPolicy(),
+      loaded: false, path, policy: defaultPolicy(), missing: e?.code === 'ENOENT',
       error: e?.code === 'ENOENT' ? 'No policy file — built-in safe defaults apply and runs are refused' : `Cannot read the policy file: ${e.message}`,
     }
   }
   try { return { loaded: true, path, policy: parsePolicy(text) } }
   catch (e: any) { return { loaded: false, path, policy: defaultPolicy(), error: `Policy file rejected: ${e.message}` } }
+}
+
+// --- Which policy a cluster gets -------------------------------------------------------
+
+export interface ClusterRefLike { id: string; name: string; kind: 'home' | 'remote' }
+
+/**
+ * The policy for one cluster, from one read of the file.
+ *
+ *   home    the file's top level, exactly as before (its `nodes:` rules, holds and pins included).
+ *   remote  `clusters.<id>` or `clusters.<exact name>`; with neither, the built-in remote defaults. Never the
+ *           home cluster's `nodes:` or `guests:`, whatever the node names: a remote node called like a home
+ *           node gets nothing from it.
+ *
+ * A file that exists but does not load stops runs everywhere: the section meant for this cluster may be the
+ * broken part. No file at all leaves home on its refused-run defaults; a remote then uses its built-in
+ * defaults, which are written for exactly that case.
+ */
+export function policyForCluster(load: PolicyLoad, c: ClusterRefLike): PolicyLoad {
+  if (c.kind === 'home') return load
+  if (!load.loaded && !load.missing) {
+    return { loaded: false, path: load.path, error: load.error, policy: remoteDefaultPolicy(), section: null }
+  }
+  const remotes = load.loaded ? load.policy.remotes : {}
+  const byId = remotes[c.id] ? c.id : null
+  const byName = Object.keys(remotes).find(k => k === c.name) ?? null
+  if (byId && byName && byId !== byName) {
+    return { loaded: false, path: load.path, policy: remoteDefaultPolicy(), section: null,
+      error: `Policy file rejected: both clusters.${byId} and clusters.${byName} name ${c.name}; keep one` }
+  }
+  const key = byId ?? byName
+  const notes = ['Scheduled runs are home-only: on this cluster a run starts only when you start it.', 'A node here is never rebooted automatically: a reboot is a separate action you confirm.']
+  if (key) return { loaded: true, path: load.path, policy: remotes[key], section: key, notes }
+  return {
+    loaded: true, path: load.path, policy: remoteDefaultPolicy(), section: null,
+    notes: [`No clusters section for ${c.name}: the built-in remote defaults apply (node apt-get dist-upgrade, as Proxmox recommends; held packages and kernel pins are never touched; guests apt-get upgrade; no reboots).`, ...notes],
+  }
+}
+
+/** Section keys that match no cluster HyperProx knows, so a typo is visible on the page. */
+export function unmatchedSections(p: Policy, clusters: ClusterRefLike[]): string[] {
+  return Object.keys(p.remotes).filter(k => !clusters.some(c => c.kind === 'remote' && (c.id === k || c.name === k))).sort()
 }
 
 // --- Questions the rest of the feature asks ------------------------------------------
@@ -326,5 +481,7 @@ export function policyStatus(load: PolicyLoad, now = new Date()): UpdatesPolicyS
     schedule: { enabled, cron: s.cron, nextRun: next, windowHours: s.windowHours },
   }
   if (load.error) out.error = load.error
+  if (load.section !== undefined) out.section = load.section
+  if (load.notes?.length) out.notes = load.notes
   return out
 }

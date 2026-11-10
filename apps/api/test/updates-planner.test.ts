@@ -177,7 +177,7 @@ test('Proxmox apt list (scrubbed fixture shape) parses to name/from/to', () => {
 test('guest apt list output parses; no apt and reboot-required are recognised', () => {
   const r = parseGuestPending('curl/stable-security 8.14.1-2+deb13u2 amd64 [upgradable from: 8.14.1-2+deb13u1]\nlibssl3t64/stable 3.5.4-1 amd64 [upgradable from: 3.5.1-1]\nHP_REBOOT_REQUIRED\n')
   assert.deepEqual(r.pending, [
-    { name: 'curl', from: '8.14.1-2+deb13u1', to: '8.14.1-2+deb13u2' },
+    { name: 'curl', from: '8.14.1-2+deb13u1', to: '8.14.1-2+deb13u2', security: true },
     { name: 'libssl3t64', from: '3.5.1-1', to: '3.5.4-1' },
   ])
   assert.equal(r.rebootRequired, true)
