@@ -20,6 +20,8 @@ export interface SchedulerDeps {
   runner:     Pick<UpdatesRunner, 'start'>
   loadPolicy: () => PolicyLoad
   isUnlocked: () => boolean
+  /** True while the daily check is reading machines: a scheduled run waits for the next time instead. */
+  busy?:      () => boolean
   log?:       (msg: string) => void
   now?:       () => Date
 }
@@ -76,6 +78,10 @@ export class UpdatesScheduler {
     if (!this.deps.isUnlocked()) {
       this.deps.log?.('[updates] scheduled run skipped: HyperProx is locked, so it has no credentials to run with')
       return 'locked'
+    }
+    if (this.deps.busy?.()) {
+      this.deps.log?.('[updates] scheduled run skipped: the daily check is reading machines')
+      return 'busy'
     }
     try {
       await this.deps.runner.start('run', 'schedule')

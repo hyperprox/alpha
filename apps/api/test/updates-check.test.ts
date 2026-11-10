@@ -61,6 +61,7 @@ test('staggered: one machine at a time with a pause between, and between cluster
 
 test('results per cluster: counts, kernel and reboot flags, held reported as held, security first', async () => {
   const { checker, remote } = setup()
+  remote.nodes[0].holds = ['pve-firmware']
   remote.nodes[0].pending.push(pkg('libssl3t64', '3.5.4-1', '3.5.1-1'))
   const st = await checker.run('manual')
   const h = st.clusters.find(c => c.cluster.id === 'home')!

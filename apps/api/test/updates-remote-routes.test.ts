@@ -56,7 +56,7 @@ before(async () => {
     store, exec: home, remoteExec: () => remote,
     loadPolicy: policyLoad('nodes:\n  pve1: { upgrade: upgrade, reboot: manual, require_pin: 7.0.1-1-pve }\n'),
     timing: FAST, scheduler: false, recover: false, check: false, checkState: new MemoryCheckState(), checkGapMs: 0,
-    connection: () => 'conn-1', publish: async () => {},
+    connection: () => 'conn-1', publish: async () => {}, manualCheckGapMs: 15 * 60_000,
     onServices: (s, c) => { services = s; checker = c },
   }), { prefix: '/api/updates' })
   await app.ready()
@@ -181,4 +181,63 @@ test('the check covers both clusters, read-only, and the Command center shows it
   assert.ok(st.lastRun)
   const p = panelUpdates(REMOTE)
   assert.ok(p && p.available >= 1, JSON.stringify(p))
+})
+
+// ── Review fixes 3, 4, 6 and 8, over HTTP ──
+
+/** Pretend a check is reading machines until abort() is called. */
+function fakeRunningCheck(): { aborted: () => string | null } {
+  let resolve!: () => void
+  let reason: string | null = null
+  const p = new Promise<void>(r => { resolve = r })
+  ;(checker as any).current = p
+  const orig = checker.abort.bind(checker)
+  ;(checker as any).abort = (why: string) => { reason = why; orig(why); (checker as any).current = null; (checker as any).abort = orig; resolve() }
+  return { aborted: () => reason }
+}
+
+test('review 3: while a check reads, confirm, resume, rollback and reboot are refused in plain words; cancel is not', async () => {
+  const { cookie } = await signIn(app, 'admin@example.com', 'admin master password')
+  await app.inject({ method: 'POST', url: '/api/auth/reconfirm', headers: { cookie }, payload: { password: 'admin master password' } })
+  fakeRunningCheck()
+  for (const url of ['/api/updates/jobs/abc/confirm', '/api/updates/jobs/abc/resume', '/api/updates/nodes/pve1/reboot']) {
+    const r = await app.inject({ method: 'POST', url, headers: { cookie, ...H } })
+    assert.equal(r.statusCode, 409, url)
+    assert.match(r.json().error, /daily updates check is reading machines/)
+  }
+  const rb = await app.inject({ method: 'POST', url: '/api/updates/jobs/abc/rollback', headers: { cookie, ...H }, payload: { target: '101' } })
+  assert.equal(rb.statusCode, 409)
+  assert.equal((await app.inject({ method: 'POST', url: '/api/updates/jobs/abc/cancel', headers: { cookie, ...H } })).statusCode, 404, 'cancel goes through (no such job)')
+  ;(checker as any).abort('done')
+})
+
+test('review 4: starting a run stops a running check at the next machine instead of waiting it out', async () => {
+  const { cookie } = await signIn(app, 'admin@example.com', 'admin master password')
+  const f = fakeRunningCheck()
+  const r = await app.inject({ method: 'POST', url: '/api/updates/jobs', headers: { cookie }, payload: { mode: 'dry-run' } })
+  assert.equal(r.statusCode, 201, r.body)
+  assert.equal(f.aborted(), 'an Updates run was started')
+  await idle()
+})
+
+test('review 6: Check now refuses API tokens, waits 15 minutes between manual checks, and audits "all clusters"', async () => {
+  const { cookie } = await signIn(app, 'admin@example.com', 'admin master password')
+  const { token } = await createApiToken({ name: 'ci2', role: 'admin' }, 'test', tokens)
+  const t = await app.inject({ method: 'POST', url: '/api/updates/check', headers: { authorization: `Bearer ${token}` } })
+  assert.equal(t.statusCode, 403)
+  assert.match(t.json().error, /API token cannot start the updates check/)
+  await checker.idle()
+  // The earlier test started one manual check already: the next is refused for 15 minutes.
+  const again = await app.inject({ method: 'POST', url: '/api/updates/check', headers: { cookie } })
+  assert.equal(again.statusCode, 429)
+  assert.match(again.json().error, /next one can start in \d+ minutes?/)
+  const a = store.audits.filter(x => x.action === 'updates.check.start').at(-1)!
+  assert.equal((a.details as any).clusters, 'all')
+  assert.equal((a.details as any).cluster, undefined)
+})
+
+test('review 8: the policy answer lists which section applies to each cluster', async () => {
+  const { cookie } = await signIn(app, 'admin@example.com', 'admin master password')
+  const pol = (await app.inject({ method: 'GET', url: '/api/updates/policy', headers: { cookie } })).json()
+  assert.deepEqual(pol.sections.map((x: any) => [x.cluster.id, x.section]), [['home', null], [REMOTE, null]])
 })

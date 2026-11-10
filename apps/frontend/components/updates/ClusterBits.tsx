@@ -73,9 +73,12 @@ export function CheckPanel({ status, error, busy, onCheck, current }: {
         <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
           Read-only: refreshes package lists and asks apt what it would do. {status?.nextRun ? `Next ${fmtTime(status.nextRun)}.` : ''}
         </span>
-        <Btn small onClick={onCheck} disabled={busy || !!status?.running}>{status?.running ? 'Checking…' : 'Check now'}</Btn>
+        <span title={status?.manualAfter && Date.parse(status.manualAfter) > Date.now() ? `Manual checks are at least 15 minutes apart; the next can start ${fmtTime(status.manualAfter)}.` : undefined}>
+          <Btn small onClick={onCheck} disabled={busy || !!status?.running || !!status?.blocked || (!!status?.manualAfter && Date.parse(status.manualAfter) > Date.now())}>{status?.running ? 'Checking…' : 'Check now'}</Btn>
+        </span>
       </div>
     }>
+      {status?.blocked && <div className="px-5 pt-4"><Notice tone="crit">{status.blocked}</Notice></div>}
       {error ? <div className="p-5"><Notice tone="warn">{error}</Notice></div>
         : !status ? <Empty>Reading the last check…</Empty>
         : !status.clusters.length ? <Empty>No check has run yet.</Empty>
@@ -85,7 +88,7 @@ export function CheckPanel({ status, error, busy, onCheck, current }: {
               <li key={r.cluster.id} className="flex flex-wrap items-center gap-2 px-5 py-2.5 text-sm" style={{ background: r.cluster.id === current ? 'var(--ground-inset)' : undefined }}>
                 <ClusterTag c={r.cluster} />
                 {r.security > 0 && <Badge tone="crit">security</Badge>}
-                <span style={{ color: r.result === 'skipped' ? 'var(--warn-2)' : 'var(--text)' }}>{checkLine(r)}</span>
+                <span style={{ color: r.result === 'skipped' ? 'var(--warn-2)' : 'var(--text)' }}>{checkLine(r)}{r.reason && r.result === 'partial' ? ` ${r.reason}.` : ''}{r.note ? ` ${r.note}` : ''}</span>
                 {r.cluster.id !== current && <Link href={updatesHref(r.cluster)} className="ml-auto text-xs font-semibold" style={{ color: clusterColor(r.cluster.kind) }}>Open ›</Link>}
               </li>
             ))}

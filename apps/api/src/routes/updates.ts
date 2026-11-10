@@ -22,7 +22,7 @@ import type { UpdatesInventory, UpdatesWsPayload } from '../lib/updates/types'
 import { hasRole } from '../lib/roles'
 import { isUnlocked, onLock } from '../lib/vault/state'
 import { isReconfirmed } from '../lib/auth'
-import { loadPolicy as loadPolicyFile, policyStatus, unmatchedSections, type PolicyLoad } from '../lib/updates/policy'
+import { loadPolicy as loadPolicyFile, policyStatus, unmatchedSections, sectionKeyFor, renameRefusal, type PolicyLoad } from '../lib/updates/policy'
 import { type UpdatesExecutor } from '../lib/updates/executor'
 import { annotatePlanSafety } from '../lib/updates/ceph-checks'
 import { buildPlan } from '../lib/updates/planner'
@@ -36,7 +36,7 @@ import { jobCluster } from '../lib/updates/cluster-store'
 import { UpdatesChecker, FileCheckState, type CheckStateStore } from '../lib/updates/check'
 import { setCheckSummarySource } from '../lib/updates/check-summary'
 import { currentClusterId } from '../lib/clusters/context'
-import { HOME_ID, clusterRow, listClusters } from '../lib/clusters/registry'
+import { HOME_ID, clusterRow, listClusters, setRenameGuard } from '../lib/clusters/registry'
 import { selfVmidOf } from '../lib/updates/inventory'
 
 export interface UpdatesRouteDeps {
@@ -63,6 +63,8 @@ export interface UpdatesRouteDeps {
   apps?:       AppEnv
   /** Exposes the home runner so tests can wait for a job to settle. */
   onRunner?:   (runner: UpdatesRunner) => void
+  /** Minimum time between manual checks (default 15 min). */
+  manualCheckGapMs?: number
   /** Exposes every cluster's service and the checker (tests). */
   onServices?: (services: UpdatesServices, checker: UpdatesChecker) => void
   /** The notification bus; default the installed one (a no-op until it is installed). */
@@ -117,6 +119,11 @@ function remoteNeedsReconfirm(svc: ClusterUpdates, req: FastifyRequest): boolean
   return svc.remote && !(req.session?.sid && isReconfirmed(req.session.sid))
 }
 
+const CHECK_BUSY = 'The daily updates check is reading machines right now. Try again when it has finished (its card on this page shows it); it never takes longer than a few minutes per cluster.'
+
+/** An API token acts as a session whose id starts with "token:" (lib/gate.ts tokenSession). */
+const isTokenSession = (req: FastifyRequest) => String(req.session?.sid ?? '').startsWith('token:')
+
 function sendError(reply: FastifyReply, e: any) {
   if (e instanceof ActiveJobError) return reply.status(409).send({ error: e.message, runningJobId: e.runningJobId })
   if (e instanceof PolicyRequiredError) return reply.status(400).send({ error: e.message })
@@ -162,6 +169,8 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       gapMs: deps.checkGapMs, clusterGapMs: deps.checkGapMs,
     })
     setCheckSummarySource(id => checker.summary(id))
+    // A rename must not quietly attach a name-keyed policy section written for another server.
+    setRenameGuard((c, newName) => { const l = loadPolicy(); return renameRefusal(l.loaded ? l.policy : null, c, newName) })
     deps.onServices?.(services, checker)
 
     if (deps.recover !== false) {
@@ -181,7 +190,7 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
     }
     if (deps.scheduler !== false) {
       // Scheduled runs are home-only. The daily check covers every cluster, read-only.
-      const scheduler = new UpdatesScheduler({ runner, loadPolicy, isUnlocked, log: msg => fastify.log.info(msg) })
+      const scheduler = new UpdatesScheduler({ runner, loadPolicy, isUnlocked, busy: () => checker.running, log: msg => fastify.log.info(msg) })
       fastify.addHook('onReady', async () => scheduler.start())
       fastify.addHook('onClose', async () => scheduler.stop())
     }
@@ -198,11 +207,13 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       const check = loadPolicy().policy.check
       const st = checker.status()
       const out = { ...status, cluster: { ...s.ref }, check: { enabled: check.enabled, cron: check.cron, nextRun: st.nextRun, reminderDays: check.reminderDays } }
+      const file = loadPolicy()
       if (!s.remote) {
-        const loose = unmatchedSections(loadPolicy().policy, listClusters())
+        const loose = unmatchedSections(file.policy, listClusters())
         if (loose.length) out.notes = [...(out.notes ?? []), `The policy names cluster section${loose.length > 1 ? 's' : ''} no cluster matches: ${loose.map(k => `clusters.${k}`).join(', ')}`]
       }
-      return out
+      // Which section applies to each cluster, so a name-keyed section attaching to the wrong server shows.
+      return { ...out, sections: listClusters().map(c => ({ cluster: { id: c.id, name: c.name, kind: c.kind }, section: sectionKeyFor(file.loaded ? file.policy : null, c) })) }
     })
 
     // Read-only, refresh included: it re-reads what nodes and guests already know and never runs `apt update`.
@@ -246,7 +257,12 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       }
       const s = svc()
       if (mode === 'run' && remoteNeedsReconfirm(s, req)) return reply.status(403).send(RECONFIRM)
-      if (checker.running) return reply.status(409).send({ error: 'The updates check is reading every cluster right now; start the run when it has finished (a minute or two).' })
+      if (checker.running) {
+        // A person's run takes precedence: the check stops at the next machine, keeping what it read.
+        checker.abort('an Updates run was started')
+        await Promise.race([checker.idle(), new Promise(r => setTimeout(r, 60_000).unref?.())])
+        if (checker.running) return reply.status(409).send({ error: 'The daily check is finishing the machine it is reading and stops after it. Try again in a minute.' })
+      }
       try {
         const job = await s.runner.start(mode, 'manual', req.session?.email, scope, approve as string[])
         return reply.status(201).send({ job: jobView(job, await s.store.getSteps(job.id)) })
@@ -269,6 +285,7 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       fastify.post<{ Params: { id: string } }>(`/jobs/:id/${op}`, async (req, reply) => {
         const s = svc()
         if (op !== 'cancel' && remoteNeedsReconfirm(s, req)) return reply.status(403).send(RECONFIRM)
+        if (op !== 'cancel' && checker.running) return reply.status(409).send({ error: CHECK_BUSY })
         try {
           const job = await s.runner[op](req.params.id, req.session?.email)
           return { job: jobView(job, await s.store.getSteps(job.id)) }
@@ -282,6 +299,7 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
       if (typeof target !== 'string' || !/^\d{1,9}$/.test(target)) return reply.status(400).send({ error: 'target must be a guest id' })
       const s = svc()
       if (remoteNeedsReconfirm(s, req)) return reply.status(403).send(RECONFIRM)
+      if (checker.running) return reply.status(409).send({ error: CHECK_BUSY })
       try {
         const job = await s.runner.rollbackGuest(req.params.id, target, req.session?.email)
         return reply.status(202).send({ job: jobView(job, await s.store.getSteps(job.id)) })
@@ -297,6 +315,7 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
     fastify.post<{ Params: { node: string } }>('/nodes/:node/reboot', async (req, reply) => {
       const s = svc()
       if (remoteNeedsReconfirm(s, req)) return reply.status(403).send(RECONFIRM)
+      if (checker.running) return reply.status(409).send({ error: CHECK_BUSY })
       try {
         const job = await s.runner.rebootNode(req.params.node, req.session?.email)
         return reply.status(202).send({ job: jobView(job, await s.store.getSteps(job.id)) })
@@ -304,12 +323,22 @@ export function buildUpdatesRoutes(deps: UpdatesRouteDeps = {}): FastifyPluginAs
     })
 
     // The daily check: its last result for every cluster, and "Check now". Read-only on every machine.
-    fastify.get('/check', async () => checker.status())
+    // Manual checks are at least `manualCheckGapMs` apart: each one runs apt update on every node and guest.
+    const manualGap = deps.manualCheckGapMs ?? 15 * 60_000
+    let lastManual = 0
+    const manualAfter = () => (lastManual ? new Date(lastManual + manualGap).toISOString() : null)
+    fastify.get('/check', async () => ({ ...checker.status(), manualAfter: manualAfter() }))
     fastify.post('/check', async (req, reply) => {
+      if (isTokenSession(req)) return reply.status(403).send({ ok: false, code: 'token_refused', error: 'An API token cannot start the updates check. Sign in to start one.' })
       if (checker.running) return reply.status(409).send({ error: 'A check is already running.', status: checker.status() })
-      await store.audit('updates.check.start', 'check', { by: req.session?.email, cluster: currentClusterId() })
+      const wait = lastManual + manualGap - Date.now()
+      if (lastManual && wait > 0) {
+        return reply.status(429).send({ error: `A check was started less than ${Math.round(manualGap / 60_000)} minutes ago. The next one can start in ${Math.ceil(wait / 60_000)} minute${Math.ceil(wait / 60_000) === 1 ? '' : 's'}.`, manualAfter: manualAfter() })
+      }
+      lastManual = Date.now()
+      await store.audit('updates.check.start', 'check', { by: req.session?.email, clusters: 'all' })
       checker.run('manual').catch(e => fastify.log.error(`[updates] check failed: ${e.message}`))
-      return reply.status(202).send(checker.status())
+      return reply.status(202).send({ ...checker.status(), manualAfter: manualAfter() })
     })
   }
 }

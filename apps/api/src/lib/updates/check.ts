@@ -29,6 +29,7 @@ import { GUEST_REFRESH_SCRIPT } from './commands'
 import { dueMinutes } from './scheduler'
 import { nextRun } from './cron'
 import type { NotifyEventInput } from '../notify/types'
+import { stripAddresses, shortReason } from '../redact-addresses'
 
 // --- Stored state --------------------------------------------------------------------
 
@@ -100,12 +101,15 @@ export function targetsOf(inv: UpdatesInventory): UpdatesCheckTarget[] {
   return out
 }
 
-/** One-way keys of what is offered: target + package + version. Versions never leave the state file. */
+/**
+ * One-way keys of what is offered: cluster + machine + package, without the version. A package that moves from
+ * one pending version to a newer one while it waits is not "new", so it does not send another message.
+ */
 export function findingKeys(clusterId: string, inv: UpdatesInventory): string[] {
   const keys: string[] = []
   const h = (s: string) => createHash('sha256').update(s).digest('hex').slice(0, 24)
-  for (const n of inv.nodes) for (const p of n.pending) keys.push(h(`${clusterId}|node:${n.node}|${p.name}@${p.to}`))
-  for (const g of inv.guests) if (g.managed) for (const p of g.pending) keys.push(h(`${clusterId}|guest:${g.vmid}|${p.name}@${p.to}`))
+  for (const n of inv.nodes) for (const p of n.pending) keys.push(h(`${clusterId}|node:${n.node}|${p.name}`))
+  for (const g of inv.guests) if (g.managed) for (const p of g.pending) keys.push(h(`${clusterId}|guest:${g.vmid}|${p.name}`))
   return [...new Set(keys)].sort()
 }
 
@@ -116,24 +120,13 @@ function unreadOf(inv: UpdatesInventory): string[] {
   ]
 }
 
-/** A reason short enough for the page, without addresses. */
-export function shortReason(s: string): string {
-  return stripAddresses(String(s)).replace(/\s+/g, ' ').trim().slice(0, 140)
-}
-
-/** Remove anything that looks like an address, URL or host:port from text that may reach a channel or page. */
-export function stripAddresses(s: string): string {
-  return s
-    .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, '[link]')
-    .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b/g, '[address]')
-    // IPv6: hex groups with colons, holding a "::" or a hex letter (so a time such as 06:30:00 is left alone).
-    .replace(/\b[0-9a-f]{1,4}(?::{1,2}[0-9a-f]{0,4}){2,7}/gi, m => (/::|[a-f]/i.test(m) ? '[address]' : m))
-}
+export { stripAddresses, shortReason }
 
 /** Guests worth refreshing lists in: running, not excluded, apt on, and (VMs) Linux with the agent. */
-async function refreshGuests(exec: UpdatesExecutor, policy: Policy, gap: () => Promise<void>): Promise<void> {
+async function refreshGuests(exec: UpdatesExecutor, policy: Policy, gap: () => Promise<void>, stop: () => Promise<string | null>): Promise<void> {
   const guests = (await exec.listGuests()).filter(g => g.running && !g.template).sort((a, b) => a.vmid - b.vmid)
   for (const g of guests) {
+    if (await stop()) return
     const pol = guestPolicy(policy, g.vmid)
     if (pol.excluded || !pol.apt) continue
     if (g.type === 'qemu') {
@@ -180,6 +173,7 @@ function skipWords(reason?: string): string {
  * versions, addresses, tokens or command output: names and counts only.
  */
 export function buildMessage(results: UpdatesCheckCluster[], reminder: boolean): Omit<NotifyEventInput, 'fingerprint'> {
+  const urgent = results.some(r => r.targets.some(t => t.packages > 0 && (t.security.length > 0 || t.kernel || t.rebootNeeded)))
   const lines: string[] = []
   const plain: string[] = []
   const withSec = results.flatMap(r => r.targets.filter(t => t.security.length).map(t => ({ r, t })))
@@ -207,9 +201,9 @@ export function buildMessage(results: UpdatesCheckCluster[], reminder: boolean):
   }
   return {
     type: 'updates.available',
-    // A warning, so a channel on the default "warnings and critical" gets it; it is sent only for new findings
-    // (and a weekly reminder), so it stays rare.
-    severity: 'warning',
+    // A warning only when it matters soon: security fixes, or a kernel or reboot. Otherwise info, which a channel
+    // receives when it is set to "everything".
+    severity: urgent ? 'warning' : 'info',
     title: reminder ? 'Updates still waiting (weekly reminder)' : withSec.length ? 'Security updates available' : 'Updates available',
     lines,
     link: '/updates',
@@ -246,6 +240,8 @@ export interface CheckDeps {
   sleep?: (ms: number) => Promise<void>
   /** Longest one cluster may take to answer its status read. */
   reachMs?: number
+  /** Longest one cluster's check may take (default 20 min); the rest is reported "not checked". */
+  clusterCapMs?: number
 }
 
 const sleepReal = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
@@ -254,6 +250,7 @@ export class UpdatesChecker {
   private timer: ReturnType<typeof setInterval> | null = null
   private last: Date
   private current: Promise<UpdatesCheckStatus> | null = null
+  private abortReason: string | null = null
 
   constructor(private deps: CheckDeps) { this.last = this.now() }
 
@@ -261,16 +258,28 @@ export class UpdatesChecker {
   private sleep(ms: number): Promise<void> { return ms > 0 ? (this.deps.sleep ?? sleepReal)(ms) : Promise.resolve() }
   get running(): boolean { return this.current !== null }
 
+  /** Resolves when the running check (if any) has finished. */
+  idle(): Promise<void> { return this.current ? this.current.then(() => undefined, () => undefined) : Promise.resolve() }
+
+  /** Stop the running check at the next machine (an Updates job is starting). What was read is kept. */
+  abort(reason: string): void { if (this.current) this.abortReason = reason }
+
+  /** Why the check is off although enabled: a policy file that exists and was rejected. */
+  private blocked(load: PolicyLoad): string | null {
+    return !load.loaded && !load.missing ? `The policy file was rejected, so the daily check is off until it loads (${load.error ?? 'unknown error'}).` : null
+  }
   status(): UpdatesCheckStatus {
     const s = this.deps.state.load()
-    const pol = this.deps.loadPolicy().policy.check
+    const load = this.deps.loadPolicy()
+    const pol = load.policy.check
+    const blocked = this.blocked(load)
     let next: string | null = null
-    if (pol.enabled) { try { next = nextRun(pol.cron, this.now())?.toISOString() ?? null } catch { next = null } }
+    if (pol.enabled && !blocked) { try { next = nextRun(pol.cron, this.now())?.toISOString() ?? null } catch { next = null } }
     const order = this.deps.clusters().map(c => c.ref.id)
     const clusters = Object.values(s.clusters)
       .filter(c => order.includes(c.cluster.id))
       .sort((a, b) => order.indexOf(a.cluster.id) - order.indexOf(b.cluster.id))
-    return { running: this.running, lastRun: s.lastRun, nextRun: next, clusters, lastNotified: s.notified.at }
+    return { running: this.running, lastRun: s.lastRun, nextRun: next, clusters, lastNotified: s.notified.at, blocked }
   }
 
   /** The stored result for one cluster, for the Command center. No machine is touched. */
@@ -286,8 +295,10 @@ export class UpdatesChecker {
   }
 
   private async runOnce(trigger: 'schedule' | 'manual'): Promise<UpdatesCheckStatus> {
+    this.abortReason = null
     const state = this.deps.state.load()
     const at = this.now().toISOString()
+    const fileMissing = !!this.deps.loadPolicy().missing
     const gap = () => this.sleep(this.deps.gapMs ?? 3000)
     const fresh: UpdatesCheckCluster[] = []
     const handles = this.deps.clusters()
@@ -303,7 +314,7 @@ export class UpdatesChecker {
       try {
         if (!this.deps.isUnlocked()) r = skip('HyperProx is locked, so it has no credentials to read with')
         else if (await this.deps.activeJob()) r = skip('an Updates job is running')
-        else r = await this.checkCluster(h, at, gap, skip, state)
+        else r = await this.checkCluster(h, at, gap, skip, state, fileMissing)
       } catch (e: any) { r = skip(`not reachable: ${shortReason(e?.message ?? String(e))}`) }
       state.clusters[h.ref.id] = r
       fresh.push(r)
@@ -319,8 +330,22 @@ export class UpdatesChecker {
   }
 
   private async checkCluster(h: CheckClusterHandle, at: string, gap: () => Promise<void>,
-                             skip: (reason: string) => UpdatesCheckCluster, state: CheckState): Promise<UpdatesCheckCluster> {
+                             skip: (reason: string) => UpdatesCheckCluster, state: CheckState, fileMissing: boolean): Promise<UpdatesCheckCluster> {
     const exec = h.exec
+    const load = h.loadPolicy()
+    // A file that exists but was rejected: its exclusions and settings are unknown, so nothing is read.
+    if (!load.loaded && !load.missing) return skip('policy file rejected: fix config/updates.yaml first')
+    const started = this.now().getTime()
+    const cap = this.deps.clusterCapMs ?? 20 * 60_000
+    let stopped: string | null = null
+    // Asked before every machine: a job that started, a person's run asking the check to stop, or the time cap.
+    const stop = async (): Promise<string | null> => {
+      if (stopped) return stopped
+      if (this.abortReason) stopped = this.abortReason
+      else if (await this.deps.activeJob()) stopped = 'an Updates job started'
+      else if (this.now().getTime() - started > cap) stopped = `the ${Math.round(cap / 60_000)}-minute limit for one cluster was reached`
+      return stopped
+    }
     const reach = await Promise.race([
       exec.clusterStatus().then(s => ({ s })),
       new Promise<{ s: null }>(res => setTimeout(() => res({ s: null }), this.deps.reachMs ?? 30_000).unref?.()),
@@ -330,27 +355,31 @@ export class UpdatesChecker {
       const running = (await exec.backupTasks().catch(() => [])).some(t => t.ok === null)
       if (running) return skip('a backup is running on it')
     }
-    const load = h.loadPolicy()
     const policy = load.policy
     for (const n of reach.s.nodes.filter(x => x.online)) {
+      if (await stop()) break
       await exec.nodeAptRefresh(n.name).catch(e => this.deps.log?.(`[updates] check: apt update on ${n.name} failed: ${e.message}`))
       await gap()
     }
-    await refreshGuests(exec, policy, gap)
+    // Without a policy file nothing says which guests to leave alone, so no guest is touched or read.
+    if (!fileMissing) await refreshGuests(exec, policy, gap, stop)
     const inv = (await readInventory(exec, policy, {
       nodePreview: 'apt-simulation', nodeBatch: 1, guestBatch: 1, gap,
-      noSelf: h.remote, rebootPending: new Set(),
+      noSelf: h.remote, rebootPending: new Set(), noGuests: fileMissing, stopCheck: stop,
     })).inventory
     const targets = targetsOf(inv)
     const unread = unreadOf(inv)
     const offered = targets.filter(t => t.packages > 0)
     state.keys[h.ref.id] = findingKeys(h.ref.id, inv)
-    return {
-      cluster: { ...h.ref }, at, result: unread.length ? 'partial' : 'ok', lastOkAt: at,
+    const out: UpdatesCheckCluster = {
+      cluster: { ...h.ref }, at, result: unread.length || stopped ? 'partial' : 'ok', lastOkAt: at,
       targets, unread, available: offered.length,
       packages: offered.reduce((a, t) => a + t.packages, 0),
       security: offered.reduce((a, t) => a + t.security.length, 0),
     }
+    if (stopped) out.reason = `stopped early: ${stopped}; the machines not read are listed`
+    if (fileMissing) out.note = 'No policy file: nodes only. Guests are not looked inside until config/updates.yaml exists (it says which to leave alone).'
+    return out
   }
 
   /** New findings since the last message: send. Same findings: nothing, or a reminder once `reminder_days` passed. */
@@ -392,8 +421,11 @@ export class UpdatesChecker {
     const now = this.now()
     const since = this.last
     this.last = now
-    const pol = this.deps.loadPolicy().policy.check
+    const load = this.deps.loadPolicy()
+    const pol = load.policy.check
     if (!pol.enabled) return 'off'
+    const blocked = this.blocked(load)
+    if (blocked) { this.deps.log?.(`[updates] ${blocked}`); return 'off' }
     let due: Date[]
     try { due = dueMinutes(pol.cron, since, now) } catch (e: any) { this.deps.log?.(`[updates] check schedule not understood: ${e.message}`); return 'error' }
     if (!due.length) return 'idle'
