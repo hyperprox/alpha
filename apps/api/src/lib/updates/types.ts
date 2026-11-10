@@ -61,6 +61,8 @@ export type UpdatesNode = {
   preview?:       UpdatesNodePreview
   /** A one-node server with no cluster: no quorum or HA to check. */
   standalone?:    boolean
+  /** Why this node gets `upgrade` although its policy default is `dist-upgrade` (holds or a pinned kernel seen). */
+  upgradeNote?:   string
   error?:         string
 }
 
@@ -205,6 +207,8 @@ export type UpdatesPolicyStatus = {
   notes?:   string[]
   /** The daily read-only check. */
   check?:   { enabled: boolean; cron: string; nextRun: string | null; reminderDays: number }
+  /** Which policy section applies to each cluster (null: home's top level, or a remote's built-in defaults). */
+  sections?: { cluster: UpdatesClusterRef; section: string | null }[]
 }
 
 /** What a node reboot on a one-node server takes down, shown before the reboot is confirmed. */
@@ -244,6 +248,8 @@ export type UpdatesCheckCluster = {
   targets:   UpdatesCheckTarget[]
   /** Machines that could not be read, with a short reason. */
   unread:    string[]
+  /** A plain note about how this cluster was read (no policy file: nodes only). */
+  note?:     string
   available: number             // targets with packages to offer
   packages:  number
   security:  number
@@ -255,6 +261,10 @@ export type UpdatesCheckStatus = {
   nextRun:   string | null
   clusters:  UpdatesCheckCluster[]
   lastNotified: string | null
+  /** Why the check is not running on its schedule (the policy file was rejected), in words. */
+  blocked?:  string | null
+  /** When the next manual check may start (manual checks are at least 15 minutes apart). */
+  manualAfter?: string | null
 }
 
 export type UpdatesWsPayload =

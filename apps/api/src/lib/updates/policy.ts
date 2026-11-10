@@ -404,20 +404,34 @@ export function policyForCluster(load: PolicyLoad, c: ClusterRefLike): PolicyLoa
   if (!load.loaded && !load.missing) {
     return { loaded: false, path: load.path, error: load.error, policy: remoteDefaultPolicy(), section: null }
   }
-  const remotes = load.loaded ? load.policy.remotes : {}
-  const byId = remotes[c.id] ? c.id : null
-  const byName = Object.keys(remotes).find(k => k === c.name) ?? null
-  if (byId && byName && byId !== byName) {
-    return { loaded: false, path: load.path, policy: remoteDefaultPolicy(), section: null,
-      error: `Policy file rejected: both clusters.${byId} and clusters.${byName} name ${c.name}; keep one` }
-  }
-  const key = byId ?? byName
+  const key = sectionKeyFor(load.loaded ? load.policy : null, c)
   const notes = ['Scheduled runs are home-only: on this cluster a run starts only when you start it.', 'A node here is never rebooted automatically: a reboot is a separate action you confirm.']
+  const remotes = load.loaded ? load.policy.remotes : {}
+  if (key && key === c.id && remotes[c.name]) notes.unshift(`clusters.${c.name} is not used: the section keyed by this cluster's id (clusters.${c.id}) applies.`)
+  if (key && key !== c.id) notes.unshift(`The section is keyed by this cluster's name. Keying it by the id (clusters.${c.id}) keeps it attached if the cluster is renamed.`)
   if (key) return { loaded: true, path: load.path, policy: remotes[key], section: key, notes }
   return {
     loaded: true, path: load.path, policy: remoteDefaultPolicy(), section: null,
     notes: [`No clusters section for ${c.name}: the built-in remote defaults apply (node apt-get dist-upgrade, as Proxmox recommends; held packages and kernel pins are never touched; guests apt-get upgrade; no reboots).`, ...notes],
   }
+}
+
+/** The section a remote uses: the one keyed by its id when there is one, else the one keyed by its exact name. */
+export function sectionKeyFor(p: Policy | null, c: ClusterRefLike): string | null {
+  if (!p || c.kind !== 'remote') return null
+  if (p.remotes[c.id]) return c.id
+  return Object.prototype.hasOwnProperty.call(p.remotes, c.name) ? c.name : null
+}
+
+/**
+ * Renaming a remote must not quietly attach a name-keyed section to it (one written for another server, say,
+ * which was renamed or removed). Returns the refusal in words, or null when the rename is fine.
+ */
+export function renameRefusal(p: Policy | null, c: ClusterRefLike, newName: string): string | null {
+  if (!p || c.kind !== 'remote' || newName === c.name) return null
+  if (p.remotes[c.id]) return null   // its own id-keyed section applies whatever its name
+  if (!Object.prototype.hasOwnProperty.call(p.remotes, newName)) return null
+  return `The Updates policy has a section clusters.${newName}, which would then apply to this server. Pick another name, or key that section by this server's id (clusters.${c.id}) in config/updates.yaml first.`
 }
 
 /** Section keys that match no cluster HyperProx knows, so a typo is visible on the page. */
@@ -437,6 +451,24 @@ export function nodePolicy(p: Policy, node: string): NodePolicy {
     upgrade: own.upgrade ?? (guarded ? 'upgrade' : p.nodeDefault.upgrade),
     requireHolds: own.requireHolds ?? p.nodeDefault.requireHolds ?? [],
   }
+}
+
+export interface UpgradeChoice { verb: 'upgrade' | 'dist-upgrade'; note?: string }
+
+/**
+ * The upgrade a node actually gets, from its policy AND what is on it. A node seen to have held packages or a
+ * pinned kernel gets `apt-get upgrade` (which never adds or removes a package), whatever the default says, unless
+ * the policy sets `upgrade: dist-upgrade` for that node BY NAME. Nodes whose holds and pin could not be read get
+ * `upgrade` too. Home and remote alike.
+ */
+export function effectiveUpgrade(p: Policy, node: string, facts: { holds: string[]; pinned: string | null } | null): UpgradeChoice {
+  const pol = nodePolicy(p, node)
+  if (pol.upgrade !== 'dist-upgrade') return { verb: 'upgrade' }
+  if (p.nodes[node]?.upgrade === 'dist-upgrade') return { verb: 'dist-upgrade' }
+  if (!facts) return { verb: 'upgrade', note: `${node}: its package holds and kernel pin could not be read, so it gets apt-get upgrade, not dist-upgrade.` }
+  const why = [facts.holds.length ? `held packages (${facts.holds.join(', ')})` : '', facts.pinned ? `a pinned kernel (${facts.pinned})` : ''].filter(Boolean)
+  if (!why.length) return { verb: 'dist-upgrade' }
+  return { verb: 'upgrade', note: `${node} has ${why.join(' and ')}, so it gets apt-get upgrade, not dist-upgrade. To give it dist-upgrade anyway, set upgrade: dist-upgrade for ${node} by name in the policy.` }
 }
 
 export function nodePolicyView(p: Policy, node: string): UpdatesNodePolicyView {

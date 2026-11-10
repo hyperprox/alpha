@@ -11,7 +11,7 @@
 import os from 'node:os'
 import type { UpdatesGuest, UpdatesInventory, UpdatesNode } from './types'
 import type { UpdatesExecutor, GuestListing } from './executor'
-import { type Policy, guestPolicy, nodePolicy, nodePolicyView } from './policy'
+import { type Policy, guestPolicy, nodePolicy, nodePolicyView, effectiveUpgrade } from './policy'
 import {
   GUEST_PENDING_SCRIPT, NODE_FACTS_COMMAND, guestDockerImagesScript, isCephPackage, isKernelPackage,
   parseDockerImages, parseGuestPending, parseNodeFacts, nodeSimulateCommand, parseAptSimulation, summariseNodeChanges,
@@ -45,6 +45,13 @@ export interface InventoryOptions {
   backups?: boolean
   /** A guest that cannot be snapshotted gets an id a person must approve to update it anyway (remote clusters). */
   noSnapshotAck?: boolean
+  /** Read the nodes only; no guest is looked inside (the daily check without a policy file). */
+  noGuests?: boolean
+  /**
+   * Asked before each machine (the daily check): a reason to stop, or null. Once it gives a reason, that machine
+   * and every one after it are reported "not checked: <reason>" and nothing more is read.
+   */
+  stopCheck?: () => Promise<string | null>
 }
 
 /** The approval that says "update this guest even though it cannot be snapshotted first". */
@@ -90,13 +97,30 @@ async function readNode(exec: UpdatesExecutor, policy: Policy, node: { name: str
   if (!node.online) { out.error = 'node is offline'; return { node: out, facts: null } }
 
   const errors: string[] = []
+  let facts: NodeFacts | null = null
+  let factsRead = false
+  const readFacts = async () => {
+    factsRead = true
+    try {
+      const r = await exec.nodeExec(node.name, NODE_FACTS_COMMAND, undefined, 60_000)
+      facts = parseNodeFacts(r.output)
+    } catch (e: any) {
+      // Unknown is not OK: a node whose holds could not be read must not look safe.
+      errors.push(`node shell: ${e.message}`)
+    }
+  }
   if (simulate) {
+    // The verb comes from the policy AND what is on the node: holds or a pinned kernel mean `upgrade`.
+    await readFacts()
+    const choice = effectiveUpgrade(policy, node.name, facts)
+    out.policy = { ...out.policy, upgrade: choice.verb }
+    if (choice.note) out.upgradeNote = choice.note
     // apt's own simulation of exactly the upgrade a run would do. Read-only: `apt-get -s`, no lock taken.
     try {
-      const r = await exec.nodeExec(node.name, nodeSimulateCommand(pol.upgrade), undefined, 10 * 60_000)
+      const r = await exec.nodeExec(node.name, nodeSimulateCommand(choice.verb), undefined, 10 * 60_000)
       const parsed = r.code === 0 ? parseAptSimulation(r.output) : { changes: null, error: `the command exited ${r.code}` }
       if (!parsed.changes) {
-        out.preview = { source: 'apt-simulation', verb: pol.upgrade, removals: [], kernel: false, firmware: false, proxmoxVe: false, rebootAfter: false, error: parsed.error }
+        out.preview = { source: 'apt-simulation', verb: choice.verb, removals: [], kernel: false, firmware: false, proxmoxVe: false, rebootAfter: false, error: parsed.error }
         errors.push(`apt simulation: ${parsed.error}`)
       } else {
         out.pending = parsed.changes.filter(c => c.action !== 'remove' && c.to)
@@ -105,7 +129,7 @@ async function readNode(exec: UpdatesExecutor, policy: Policy, node: { name: str
         const sum = summariseNodeChanges(parsed.changes)
         out.cephPending = out.pending.some(p => isCephPackage(p.name))
         out.kernelPending = sum.kernel
-        out.preview = { source: 'apt-simulation', verb: pol.upgrade, removals: sum.removals, kernel: sum.kernel, firmware: sum.firmware, proxmoxVe: sum.proxmoxVe, rebootAfter: sum.rebootAfter }
+        out.preview = { source: 'apt-simulation', verb: choice.verb, removals: sum.removals, kernel: sum.kernel, firmware: sum.firmware, proxmoxVe: sum.proxmoxVe, rebootAfter: sum.rebootAfter }
       }
     } catch (e: any) { errors.push(`apt simulation: ${e.message}`) }
   } else {
@@ -116,17 +140,18 @@ async function readNode(exec: UpdatesExecutor, policy: Policy, node: { name: str
     } catch (e: any) { errors.push(`pending list: ${e.message}`) }
   }
 
-  let facts: NodeFacts | null = null
-  try {
-    const r = await exec.nodeExec(node.name, NODE_FACTS_COMMAND, undefined, 60_000)
-    facts = parseNodeFacts(r.output)
-    out.rebootRequired = facts.rebootRequired
-    if (facts.holds.length) out.held = [...facts.holds].sort()
-    if (pol.requireHolds.length) out.holdsOk = pol.requireHolds.every(h => facts!.holds.includes(h))
-    if (pol.requirePin) out.pinOk = facts.pinned === pol.requirePin
-  } catch (e: any) {
-    // Unknown is not OK: a node whose holds could not be read must not look safe.
-    errors.push(`node shell: ${e.message}`)
+  if (!factsRead) await readFacts()
+  const f = facts as NodeFacts | null
+  if (f) {
+    out.rebootRequired = f.rebootRequired
+    if (f.holds.length) out.held = [...f.holds].sort()
+    if (pol.requireHolds.length) out.holdsOk = pol.requireHolds.every(h => f.holds.includes(h))
+    if (pol.requirePin) out.pinOk = f.pinned === pol.requirePin
+  }
+  if (!simulate) {
+    const choice = effectiveUpgrade(policy, node.name, f)
+    out.policy = { ...out.policy, upgrade: choice.verb }
+    if (choice.note) out.upgradeNote = choice.note
   }
   if (errors.length) out.error = errors.join('; ')
   return { node: out, facts }
@@ -227,7 +252,13 @@ export async function readInventory(exec: UpdatesExecutor, policy: Policy, opts:
     exec.listGuests(),
     exec.haResources(),
   ])
-  const guests = listing.filter(g => !g.template)
+  const guests = opts.noGuests ? [] : listing.filter(g => !g.template)
+  let stopped: string | null = null
+  const stop = async (): Promise<string | null> => {
+    if (stopped || !opts.stopCheck) return stopped
+    stopped = await opts.stopCheck()
+    return stopped
+  }
   const self = opts.noSelf ? null : findSelfGuest(guests, policy, opts.hostname)
   const simulate = opts.nodePreview === 'apt-simulation'
   const haSet = new Set(haSids)
@@ -235,14 +266,20 @@ export async function readInventory(exec: UpdatesExecutor, policy: Policy, opts:
   const limit = opts.itemDeadlineMs ?? ITEM_DEADLINE_MS
   const lateNote = `no answer within ${Math.round(limit / 1000)} s`
   const pendingSet = opts.rebootPending ?? new Set<string>()
-  const nodeRows = await inBatches(status.nodes, opts.nodeBatch ?? Math.max(1, status.nodes.length), n => withDeadline(
-    readNode(exec, policy, n, self?.node ?? null, pendingSet, simulate), limit,
-    () => ({ node: unansweredNode(policy, n, self?.node ?? null, pendingSet, lateNote), facts: null }),
-  ), opts.gap)
+  const nodeRows = await inBatches(status.nodes, opts.nodeBatch ?? Math.max(1, status.nodes.length), async n => {
+    const why = await stop()
+    if (why) return { node: unansweredNode(policy, n, self?.node ?? null, pendingSet, `not checked: ${why}`), facts: null }
+    return withDeadline(
+      readNode(exec, policy, n, self?.node ?? null, pendingSet, simulate), limit,
+      () => ({ node: unansweredNode(policy, n, self?.node ?? null, pendingSet, lateNote), facts: null }),
+    )
+  }, opts.gap)
   if (status.standalone) for (const r of nodeRows) r.node.standalone = true
   if (opts.gap && guests.length) await opts.gap()
   const onlineNodes = new Set(status.nodes.filter(n => n.online).map(n => n.name))
   const guestRows = await inBatches(guests.sort((a, b) => a.vmid - b.vmid), opts.guestBatch ?? 6, async g => {
+    const why = await stop()
+    if (why) return unansweredGuest(policy, g, haSet, `not checked: ${why}`)
     if (!onlineNodes.has(g.node)) {
       const row = await readGuest(exec, policy, { ...g, running: false }, haSet, opts.apps)
       return { ...row, error: 'its node is offline' }

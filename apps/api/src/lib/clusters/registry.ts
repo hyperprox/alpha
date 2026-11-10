@@ -156,6 +156,42 @@ export function validateToken(tokenId: string, tokenSecret: string): void {
   if (!SECRET_RE.test(String(tokenSecret ?? '').trim())) throw new ClusterRefusal('The token secret is the long code Proxmox showed once, like xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx.')
 }
 
+export const HOME_DUPLICATE = 'This is your home cluster; it is already managed as Home.'
+
+/** How a cluster identifies itself: its address, certificate, cluster name and nodes (from /cluster/status). */
+export interface ClusterIdentity {
+  addresses:   string[]
+  fingerprint: string | null
+  clusterName: string | null
+  nodes:       { name: string; ip?: string | null }[]
+}
+
+/** Every address the home cluster is reached on that HyperProx knows without asking it. */
+export function homeAddresses(): string[] {
+  const out = [process.env.PROXMOX_HOST ?? '', ...Object.values(homeRow().nodeAddresses)]
+  return [...new Set(out.map(a => a.trim().toLowerCase()).filter(Boolean))]
+}
+
+/**
+ * Whether a server being added is in fact the home cluster (or one of its nodes): the same address, the same
+ * certificate, the same cluster name, the same set of node names on a cluster, or a lone node with the home node's
+ * name AND address. Managing home twice would let a remote's rules (or none) reach the home nodes.
+ */
+export function looksLikeHome(remote: ClusterIdentity, home: ClusterIdentity): boolean {
+  const low = (s: string | null | undefined) => String(s ?? '').trim().toLowerCase()
+  const homeAddrs = new Set([...home.addresses, ...home.nodes.map(n => n.ip ?? '')].map(low).filter(Boolean))
+  if (remote.addresses.some(a => homeAddrs.has(low(a)))) return true
+  if (remote.fingerprint && home.fingerprint && remote.fingerprint === home.fingerprint) return true
+  if (low(remote.clusterName) && low(remote.clusterName) === low(home.clusterName)) return true
+  const names = (c: ClusterIdentity) => c.nodes.map(n => low(n.name)).filter(Boolean).sort().join(',')
+  if (remote.nodes.length > 1 && names(remote) === names(home)) return true
+  if (remote.nodes.length === 1 && home.nodes.length === 1 && names(remote) === names(home)) {
+    const ip = low(remote.nodes[0].ip)
+    if (ip && ip === low(home.nodes[0].ip)) return true
+  }
+  return false
+}
+
 /** Store the token in the vault first, then the row; a vault failure leaves nothing behind. */
 export async function createRemote(n: NewRemote): Promise<ClusterInfo> {
   const fingerprint = normaliseFingerprint(n.fingerprint)
@@ -163,6 +199,7 @@ export async function createRemote(n: NewRemote): Promise<ClusterInfo> {
   validateToken(n.tokenId, n.tokenSecret)
   const name = cleanName(n.name), address = cleanAddress(n.address), port = cleanPort(n.port)
   checkNewName(name, null)
+  if (homeAddresses().includes(address.toLowerCase())) throw new ClusterRefusal(HOME_DUPLICATE, 'conflict')
   if ([...rows.values()].some(r => r.kind === 'remote' && r.address.toLowerCase() === address.toLowerCase() && r.port === port))
     throw new ClusterRefusal(`${address}:${port} is already added.`, 'conflict')
   let id = newId()
@@ -182,6 +219,13 @@ export async function createRemote(n: NewRemote): Promise<ClusterInfo> {
   }
 }
 
+/**
+ * A check other features add on a rename (the Updates policy: a rename must not quietly attach a section written
+ * for another server). Returns the refusal in words, or null.
+ */
+let renameGuard: ((c: { id: string; name: string; kind: 'home' | 'remote' }, newName: string) => string | null) | null = null
+export function setRenameGuard(fn: typeof renameGuard): void { renameGuard = fn }
+
 export interface ClusterPatch {
   name?: string; note?: string; address?: string; port?: number
   allowedRoots?: string[]; nodeAddresses?: Record<string, string>; plexUrl?: string | null
@@ -197,7 +241,11 @@ export async function updateCluster(id: string, patch: ClusterPatch): Promise<Cl
   const next: ClusterRow = structuredClone(prev)
   if (patch.name !== undefined) {
     next.name = cleanName(patch.name)
-    if (next.name !== prev.name) checkNewName(next.name, prev.id)
+    if (next.name !== prev.name) {
+      checkNewName(next.name, prev.id)
+      const no = renameGuard?.({ id: prev.id, name: prev.name, kind: prev.kind }, next.name)
+      if (no) throw new ClusterRefusal(no, 'conflict')
+    }
   }
   if (patch.note !== undefined) next.note = String(patch.note ?? '').slice(0, 500)
   if (prev.kind === 'remote') {

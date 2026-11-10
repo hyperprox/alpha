@@ -190,6 +190,7 @@ export function buildPlan(inv: UpdatesInventory, policy: Policy, ctx: PlanContex
     else if (n.error) warnings.push(`${n.node}: ${n.error}`)
     if (n.holdsOk === false) warnings.push(`${n.node}: required package holds are missing — the run stops before touching it`)
     if (n.pinOk === false) warnings.push(`${n.node}: the required kernel pin is not in place — the run stops before touching it`)
+    if (n.upgradeNote) warnings.push(n.upgradeNote)
     if (ctx.remote) {
       if (n.held?.length) warnings.push(`${n.node}: held, not offered (never installed or unheld): ${n.held.join(', ')}`)
       const pv = n.preview
@@ -225,8 +226,10 @@ export function buildPlan(inv: UpdatesInventory, policy: Policy, ctx: PlanContex
   if (nodePhase) {
     for (const n of ordered) {
       const pol = nodePolicy(policy, n.node)
+      // The verb the inventory settled on from the policy and the node's holds and pin (the runner decides again).
+      const verb = n.policy.upgrade
       const nonCeph = ctx.remote ? n.pending : n.pending.filter(p => !isCephPackage(p.name))
-      if (nonCeph.length) add(n.node, 'node-upgrade', `apt-get ${pol.upgrade} (${nonCeph.length} package${nonCeph.length === 1 ? '' : 's'})`)
+      if (nonCeph.length) add(n.node, 'node-upgrade', `apt-get ${verb} (${nonCeph.length} package${nonCeph.length === 1 ? '' : 's'})`)
       if (n.kernelPending || n.rebootRequired || n.preview?.rebootAfter) {
         if (pol.reboot === 'manual') add(n.node, 'node-reboot', `${DETAIL.rebootManual} — left pending for a person`)
         else if (n.isSelf) selfNodeReboot = n.node

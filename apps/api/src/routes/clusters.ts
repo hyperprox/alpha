@@ -21,7 +21,7 @@ import {
 import { runInCluster } from '../lib/clusters/context'
 import { probeCertificate, normaliseFingerprint, PinnedAgent, isServerAddress, CertificateChangedError, allowedApiPort } from '../lib/clusters/tls-pin'
 import { ProxmoxClient } from '../lib/proxmox-client'
-import { pveFromEnv, forgetRemoteClient, CertificateNotConfirmedError } from '../lib/pve-env'
+import { pveFromEnv, homePve, forgetRemoteClient, CertificateNotConfirmedError } from '../lib/pve-env'
 import { commandCenter } from '../lib/clusters/overview'
 import { scanCluster } from '../lib/clusters/scan'
 import { checkGuest, power, snapshot, backupNow, backupStorages, taskStatus, destroy, GuestActionRefusal, type PowerAction } from '../lib/clusters/guest-actions'
@@ -31,7 +31,7 @@ import { forgetRemoteGuestConfigService } from './guest-config'
 import { browse, setupSending, previewCopy, startCopy, jobStore, CopyRunner, setCopyKick, savePlex, deletePlexToken, checkPlexUrl, forgetClusterSending, type CopyInput } from '../lib/clusters/files'
 import { writeRemoteTargets } from '../lib/clusters/monitoring'
 import { prometheusBase } from '../lib/service-health'
-import { updateCluster as updateClusterRow } from '../lib/clusters/registry'
+import { updateCluster as updateClusterRow, looksLikeHome, homeAddresses, HOME_DUPLICATE, type ClusterIdentity } from '../lib/clusters/registry'
 import { scanMonitoring, previewMonitoring, applyMonitoring, MonitoringRefusal } from '../lib/clusters/monitoring'
 
 const who = () => currentContext()?.email ?? 'unknown'
@@ -90,7 +90,29 @@ async function tryToken(address: string, port: number, fingerprint: string, toke
   const version = await c.fetchStrict<any>('/version', 'GET', undefined, 10_000)
   const perms = await c.fetchStrict<any>('/access/permissions?path=/', 'GET', undefined, 10_000).catch(() => null)
   const nodes = await c.fetchStrict<any[]>('/nodes', 'GET', undefined, 10_000).catch(() => [])
-  return { version: String(version?.version ?? ''), missing: perms ? missingAdminPrivs(perms) : ADMIN_PRIVS, nodes: (nodes ?? []).map(n => String(n.node)) }
+  const status = await c.fetchStrict<any[]>('/cluster/status', 'GET', undefined, 10_000).catch(() => [])
+  return {
+    version: String(version?.version ?? ''), missing: perms ? missingAdminPrivs(perms) : ADMIN_PRIVS, nodes: (nodes ?? []).map(n => String(n.node)),
+    identity: statusIdentity(status),
+  }
+}
+
+/** Cluster name and nodes from a /cluster/status answer. */
+function statusIdentity(rows: unknown): { clusterName: string | null; nodes: { name: string; ip: string | null }[] } {
+  const list = Array.isArray(rows) ? rows : []
+  const cluster = list.find((r: any) => r?.type === 'cluster')
+  return {
+    clusterName: cluster?.name ? String(cluster.name) : null,
+    nodes: list.filter((r: any) => r?.type === 'node').map((r: any) => ({ name: String(r.name), ip: r.ip ? String(r.ip) : null })),
+  }
+}
+
+/** The home cluster's identity, read through its own connection. Parts it cannot read stay empty. */
+async function homeIdentity(): Promise<ClusterIdentity> {
+  const status = await homePve().fetchStrict<any[]>('/cluster/status', 'GET', undefined, 10_000).catch(() => [])
+  const host = process.env.PROXMOX_HOST ?? ''
+  const fp = host ? await probeCertificate(host, Number(process.env.PROXMOX_PORT ?? 8006), 5_000).then(c => c.fingerprint).catch(() => null) : null
+  return { addresses: homeAddresses(), fingerprint: fp, ...statusIdentity(status) }
 }
 
 export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
@@ -150,6 +172,11 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
         if (/HTTP 401/.test(String(e?.message))) throw new ClusterRefusal('The server refused that token. Check the token ID and secret and paste them again. Nothing was saved.')
         throw e
       })
+      // Adding the home cluster again would let a remote's rules (or none) reach the home nodes.
+      const home = await homeIdentity().catch(() => ({ addresses: homeAddresses(), fingerprint: null, clusterName: null, nodes: [] } as ClusterIdentity))
+      if (looksLikeHome({ addresses: [address], fingerprint: fp, ...t.identity }, home)) {
+        return reply.status(409).send({ success: false, code: 'home_cluster', error: `${HOME_DUPLICATE} Nothing was saved.` })
+      }
       if (t.missing.length) throw new ClusterRefusal(`That token works but lacks administrator rights (${t.missing.join(', ')}). Run the step 2 commands as shown, including "--privsep 0", then try again. Nothing was saved.`)
       const c = await createRemote({ name: String(b.name ?? ''), address, port, note: b.note, fingerprint: fp, tokenId: String(b.tokenId ?? ''), tokenSecret: String(b.tokenSecret ?? ''), by: who() })
       // A one-node server is reached on the address it was added with; a cluster's nodes are entered on Edit.

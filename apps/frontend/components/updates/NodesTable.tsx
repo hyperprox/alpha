@@ -59,6 +59,7 @@ export function NodesTable({ nodes, canReboot, rebootWhy, onReboot }: {
                   {!n.online && <span className="ml-2"><Badge tone="crit">offline</Badge></span>}
                   {n.isSelf && <span className="ml-2"><Badge tone="accent" title="HyperProx itself runs on this node">runs HyperProx</Badge></span>}
                   {n.error && <div className="mt-0.5 text-xs" style={{ color: 'var(--crit-soft)' }}>{n.error}</div>}
+                  {n.upgradeNote && <div className="mt-0.5 text-xs" style={{ color: 'var(--warn-2)' }}>{n.upgradeNote}</div>}
                 </td>
                 <td className="px-4 py-2.5">
                   <PendingCell count={n.pending.length} open={!!open[n.node]} onToggle={() => setOpen(o => ({ ...o, [n.node]: !o[n.node] }))} label={n.node} />

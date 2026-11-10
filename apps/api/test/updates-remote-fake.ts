@@ -65,7 +65,7 @@ export function standaloneServer(over: { node?: Partial<FakeNode>; guest?: Parti
   return new RemoteFake({
     nodes: [node('pve1', {
       pending: [pkg('proxmox-kernel-7.0.2-1-pve-signed', '7.0.2-1', null), pkg('pve-manager', '9.2.2', '9.2.1'), pkg('openssl', '3.5.4-1', '3.5.1-1')],
-      holds: ['pve-firmware'], ...over.node,
+      holds: [], ...over.node,
     })],
     guests: [guest(101, 'pve1', { name: 'media', config: { hostname: 'media', onboot: 1, mp0: '/srv/media,mp=/media' }, ...over.guest })],
   })

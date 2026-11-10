@@ -45,7 +45,7 @@ function nodeAnswer(cmd: string, stdin: string): string {
     return ['HP_FREE 9000', 'HP_KERNEL 7.0.1-1-pve', 'HP_HOLDS_BEGIN', 'pve-firmware', 'HP_HOLDS_END', 'HP_PIN_BEGIN', 'HP_PIN_END',
       'HP_KPKG_BEGIN', 'proxmox-kernel-7.0.1-1-pve-signed install ok installed', 'HP_KPKG_END'].join('\n')
   }
-  if (/apt-get -s .* dist-upgrade 2>&1; echo "HP_SIM_END \$\?"$/.test(cmd)) {
+  if (/apt-get -s .* (dist-)?upgrade 2>&1; echo "HP_SIM_END \$\?"$/.test(cmd)) {
     return ['Inst proxmox-kernel-7.0.2-1-pve-signed (7.0.2-1 Proxmox:9/trixie [amd64])', 'Inst pve-manager [9.2.1] (9.2.2 Proxmox:9/trixie [amd64])', 'HP_SIM_END 0'].join('\n')
   }
   if (/apt list --upgradable/.test(stdin)) return 'openssl/stable-security 3.5.4-1 amd64 [upgradable from: 3.5.1-1]'
@@ -129,7 +129,10 @@ test('a confirmed host key: the preview is the remote\'s own simulation, over it
   const n = inv.nodes[0]
   assert.equal(n.error, undefined, n.error)
   assert.equal(n.standalone, true)
-  assert.equal(n.preview?.verb, 'dist-upgrade')
+  // The node is seen to hold a package, so it gets `upgrade` although the remote default is dist-upgrade.
+  assert.equal(n.preview?.verb, 'upgrade')
+  assert.match(n.upgradeNote ?? '', /pve1 has held packages \(pve-firmware\), so it gets apt-get upgrade, not dist-upgrade/)
+  assert.ok(nodeSeen.some(c => /apt-get -s .* upgrade 2>&1/.test(c)) && !nodeSeen.some(c => /apt-get -s .* dist-upgrade/.test(c)))
   assert.equal(n.preview?.kernel, true)
   assert.equal(n.preview?.proxmoxVe, true)
   assert.deepEqual(n.held, ['pve-firmware'])
