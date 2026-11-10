@@ -501,6 +501,7 @@ model ManagedCluster {
   allowedRoots    String[]  @default([])         // folders file copies may write into
   monitoring      Json      @default("{}")       // what HyperProx installed there, per node
   plexUrl         String?                        // a Plex to ask for a library scan after a copy (its token is in the vault)
+  ignoredGuests   String[]  @default([])         // container ids HyperProx never looks inside on this cluster (Send files)
   createdBy       String
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt

@@ -7,5 +7,6 @@ mp1: @NAS@/tv,mp=/media/tv,ro=1
 mp2: @NAS@/music,mp=/media/music,ro=1
 mp3: @NAS@-ro/old,mp=/media/old,ro=1
 mp4: /srv/photos,mp=/data/photos
+mp5: @NAS@/evil,mp=/media/evil,ro=1
 net0: name=eth0,bridge=vmbr0,ip=dhcp
 rootfs: local-lvm:vm-101-disk-0,size=8G

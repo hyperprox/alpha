@@ -37,6 +37,7 @@ export interface ClusterInfo {
   allowedRoots: string[]
   monitoring: ClusterRow['monitoring']
   plexUrl: string | null
+  ignoredGuests: string[]
 }
 
 let store: ClusterStore = new MemoryClusterStore()
@@ -65,6 +66,7 @@ function view(r: ClusterRow): ClusterInfo {
     id: r.id, name: r.name, kind: r.kind, address: r.kind === 'home' ? '' : r.address, port: r.port, note: r.note,
     cert: { fingerprint: r.certFingerprint, confirmedAt: r.certConfirmedAt ? r.certConfirmedAt.toISOString() : null, confirmedBy: r.certConfirmedBy },
     nodeAddresses: { ...r.nodeAddresses }, allowedRoots: [...r.allowedRoots], monitoring: structuredClone(r.monitoring), plexUrl: r.plexUrl,
+    ignoredGuests: [...(r.ignoredGuests ?? [])],
   }
 }
 
@@ -228,7 +230,7 @@ export function setRenameGuard(fn: typeof renameGuard): void { renameGuard = fn 
 
 export interface ClusterPatch {
   name?: string; note?: string; address?: string; port?: number
-  allowedRoots?: string[]; nodeAddresses?: Record<string, string>; plexUrl?: string | null
+  allowedRoots?: string[]; nodeAddresses?: Record<string, string>; plexUrl?: string | null; ignoredGuests?: string[]
 }
 
 /**
@@ -258,6 +260,11 @@ export async function updateCluster(id: string, patch: ClusterPatch): Promise<Cl
   if (patch.allowedRoots !== undefined) {
     if (!Array.isArray(patch.allowedRoots) || patch.allowedRoots.length > 20) throw new ClusterRefusal('Give at most 20 file roots.')
     next.allowedRoots = [...new Set(patch.allowedRoots.map(cleanRoot))]
+  }
+  if (patch.ignoredGuests !== undefined) {
+    const ids = Array.isArray(patch.ignoredGuests) ? patch.ignoredGuests.map(x => String(x).trim()).filter(Boolean) : null
+    if (!ids || ids.length > 200 || ids.some(x => !/^\d{1,9}$/.test(x))) throw new ClusterRefusal('Give container numbers only (such as 101), at most 200.')
+    next.ignoredGuests = [...new Set(ids)].sort((a, b) => Number(a) - Number(b))
   }
   if (patch.nodeAddresses !== undefined) {
     const out: Record<string, string> = {}

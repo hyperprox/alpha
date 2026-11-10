@@ -229,7 +229,7 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
     const b: Record<string, any> = req.body ?? {}
     try {
       const before = { ...row.nodeAddresses }
-      const c = await updateCluster(row.id, { address: b.address, port: b.port, allowedRoots: b.allowedRoots, nodeAddresses: b.nodeAddresses })
+      const c = await updateCluster(row.id, { address: b.address, port: b.port, allowedRoots: b.allowedRoots, nodeAddresses: b.nodeAddresses, ignoredGuests: b.ignoredGuests })
       const cleared: string[] = []
       if (b.nodeAddresses !== undefined) {
         for (const [node, old] of Object.entries(before)) {

@@ -28,6 +28,8 @@ export interface ClusterRow {
   allowedRoots: string[]
   monitoring: Record<string, NodeMonitoring>
   plexUrl: string | null
+  /** Container ids HyperProx never looks inside on this cluster (Send files discovery and Plex scans). */
+  ignoredGuests?: string[]
   createdBy: string
   createdAt: Date
   updatedAt: Date
@@ -58,7 +60,7 @@ function fromDb(r: any): ClusterRow {
     nodeAddresses: (r.nodeAddresses && typeof r.nodeAddresses === 'object') ? r.nodeAddresses : {},
     allowedRoots: Array.isArray(r.allowedRoots) ? r.allowedRoots : [],
     monitoring: (r.monitoring && typeof r.monitoring === 'object') ? r.monitoring : {},
-    plexUrl: r.plexUrl ?? null, createdBy: r.createdBy, createdAt: r.createdAt, updatedAt: r.updatedAt,
+    plexUrl: r.plexUrl ?? null, ignoredGuests: Array.isArray(r.ignoredGuests) ? r.ignoredGuests.map(String) : [], createdBy: r.createdBy, createdAt: r.createdAt, updatedAt: r.updatedAt,
   }
 }
 
