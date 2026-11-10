@@ -65,6 +65,29 @@ apps:
   # meshcentral: auto          # per app, by provider id
   # A config change a provider offers (MeshCentral's allowedOrigin, say) always needs its own approval.
 
+check:
+  # The daily READ-ONLY check of every cluster (home and each remote): refreshes package lists and asks apt
+  # to simulate; installs nothing. Sends one "updates.available" message to the channels that take Updates
+  # events when it finds something new, and a reminder at most every reminder_days while it stays.
+  enabled: true                # default true
+  cron: "30 6 * * *"           # default 06:30 every day, local time
+  reminder_days: 7             # default 7
+
+clusters:
+  # One section per REMOTE cluster, keyed by its id (c + ten hex digits, in its page address) or its exact
+  # name. Nothing above this line applies to a remote, even to a node with the same name as a home node.
+  # A remote with no section gets the built-in remote defaults: nodes apt-get dist-upgrade (what Proxmox
+  # recommends; held packages and kernel pins are never touched), never rebooted automatically; guests
+  # apt-get upgrade, never rebooted; no Docker pulls, no app updates, no scheduled runs.
+  # "Remote server":
+  #   nodes:
+  #     default: { upgrade: dist-upgrade, reboot: manual }   # reboot: manual is the only choice on a remote
+  #     pve1:    { require_holds: [proxmox-default-kernel] }  # holds/pin checked before and after, never repaired
+  #   guests:
+  #     exclude: [105]
+  #   batch_size: 1
+  #   min_root_free_mb: 2048
+
 notify:
   # webhook_url: moved to Settings → Notifications. An existing value becomes a channel at the first
   # Owner sign-in and is not read after that.

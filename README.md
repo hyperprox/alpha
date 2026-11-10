@@ -32,7 +32,7 @@ through its API.
 | Reverse proxy | Nginx Proxy Manager, Traefik, Caddy, HAProxy and Pangolin, several at once in one table; every change previewed, then read back |
 | DNS | GoDaddy records with guided creation, domain expiry, WAN IP mismatch flags and DDNS |
 | Certificates | Inventory of every endpoint's certificate, ACME DNS-01 issuance and renewal, delivery into guests |
-| Updates | Pending packages everywhere, and a gated update run that respects HA and quorum, restarts Ceph one OSD at a time and refuses any restart or reboot that would take data offline |
+| Updates | Pending packages everywhere, on every cluster, and a gated update run that respects HA and quorum, restarts Ceph one OSD at a time and refuses any restart or reboot that would take data offline; a daily read-only check tells you when something new needs updating |
 | Terminal | Browser SSH with persistent tmux sessions, split panes and saved layouts |
 | Catalogue | Guided installs of NPM, Ollama, Tautulli, Nextcloud, Jellyfin, Gitea and more: choose resources, see every node's free capacity with a recommended node, pick the ID and address |
 | AI assistant | Questions about your cluster, and plain-language deploys run end to end after you confirm |
@@ -334,8 +334,9 @@ reach: a Tailscale name or IP, a WireGuard address, or anything else routable.
 There you can start, shut down, stop and restart guests, take snapshots, back up now, edit a guest's
 settings with the same preview-and-check editor as at home, and delete a guest (type its name; it must
 be stopped and not under HA). Every action is read back from Proxmox afterwards and the answer says
-what Proxmox reported. Storage and recent tasks are listed too. High availability, GPU sharing and
-Updates still work on the home cluster only, and are labelled so.
+what Proxmox reported. Storage and recent tasks are listed too. **Updates** works on a remote too (see
+Updates below). High availability and GPU sharing still work on the home cluster only, and are
+labelled so.
 
 **Edit server** holds its name, its address (a new address must have its certificate confirmed
 again), the token (tested before it replaces the old one), node addresses and node logins, the folders
@@ -531,6 +532,22 @@ you get an urgent notification, so Ceph never starts moving data because of it. 
 such as "this node only gets `apt upgrade`" or "check these package holds" go in
 `config/updates.yaml` (copy `config/updates.example.yaml`). Without a policy file you get dry runs only.
 Plug-ins can add app updates for software installed outside apt and Docker; MeshCentral is bundled.
+
+**On a remote server or cluster** (its own Updates page, amber, with its name on every card): the
+preview is apt's own simulation of the node upgrade (`dist-upgrade` by default, as Proxmox recommends),
+showing versions, removals, kernel, firmware and Proxmox VE changes, held packages (never offered) and
+whether a reboot will follow. Applying asks for your master password, and every package is read back
+afterwards. A remote node is never rebooted on its own: **Reboot** is a separate action that first shows
+which guests will stop. A guest that cannot be snapshotted is updated only when you tick "update without
+a snapshot", which shows its newest backup. A remote's rules go in its own `clusters:` section of the
+same policy file; without one, safe defaults apply.
+
+**Daily check.** Once a day, and on **Check now**, HyperProx checks every cluster read-only (it refreshes
+package lists and asks apt to simulate; nothing is installed) and sends one message to the channels that
+take Updates events when it finds something new: per cluster, security fixes first, then package counts
+and kernel or reboot flags. The same list is not repeated, except as a weekly reminder. Each Command
+center panel shows the last check's count.
+
 Admin-only. See [docs/updates.md](docs/updates.md).
 
 ### AI Assistant
@@ -634,7 +651,7 @@ button that opens a pre-filled GitHub issue in your browser.
 - **Secrets**: names of everything in the vault. Owners and admins can reveal a value, send it as an
   expiring one-view link (a Bitwarden Send), or generate and store a new password.
 - **API tokens** for scripts: see [Security model](#security-model).
-- **Notifications**: channels for lock alerts, update runs and certificate changes, with severity
+- **Notifications**: channels for lock alerts, update runs, updates waiting to be applied and certificate changes, with severity
   filters, quiet hours and a test button. See [docs/notifications.md](docs/notifications.md).
 
 ### On a phone
@@ -787,9 +804,9 @@ The full roadmap is in [ROADMAP.md](ROADMAP.md), and designs for upcoming work a
 - **Vault phase 2**: temporary users, master password recovery, VPN and internet access modes, a
   tamper check and an audit timeline.
 - **Releases**: versioned builds and `hyperprox update`, `rollback` and `uninstall`.
-- **More for remote clusters**: high availability, GPU sharing and Updates on a remote (the Command
-  center and guest management already work), Proxmox figures in Grafana for a remote, and Sync and Move
-  for Send files.
+- **More for remote clusters**: high availability and GPU sharing on a remote (the Command center, guest
+  management and Updates already work), Proxmox figures in Grafana for a remote, and Sync and Move for
+  Send files.
 - **Later**: migration from other hypervisors, LDAP and SSO.
 
 ## How it compares

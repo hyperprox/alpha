@@ -207,7 +207,9 @@ export function buildMessage(results: UpdatesCheckCluster[], reminder: boolean):
   }
   return {
     type: 'updates.available',
-    severity: withSec.length ? 'warning' : 'info',
+    // A warning, so a channel on the default "warnings and critical" gets it; it is sent only for new findings
+    // (and a weekly reminder), so it stays rare.
+    severity: 'warning',
     title: reminder ? 'Updates still waiting (weekly reminder)' : withSec.length ? 'Security updates available' : 'Updates available',
     lines,
     link: '/updates',

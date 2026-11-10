@@ -183,9 +183,11 @@ Built (Command center):
 - Every GPU on every node in the Command center, home and remote, each with its own figures and a plain reason when it has none
 - Send files: copy between or within clusters, node to node, verified (first version)
 - AI assistant on every cluster: questions about one cluster or all of them, each fact labelled with its cluster; guest power, snapshot, back up now and delete, monitoring and copies prepared on any cluster, each plan bound to its cluster and applied with the same role and re-confirmation as by hand
+- Updates on a remote cluster: nodes and containers, previewed with apt's own simulation, applied with the master password and read back; a remote node is never rebooted automatically (a separate Reboot shows which guests stop); per-cluster policy sections with safe Proxmox defaults
+- Daily read-only updates check of every cluster, with one notification when something new needs updating and the count on each Command center panel
 
 Not built yet:
-- High availability, GPU sharing and Updates on a remote cluster
+- High availability and GPU sharing on a remote cluster
 - Proxmox figures in Grafana for a remote (its own PVE exporter)
 - Sync and Move in Send files
 - From the AI assistant: editing a guest's settings, and deploying a service on a remote
@@ -247,7 +249,7 @@ Not built yet:
 | Bundled monitoring | ✅ | ❌ | ❌ | ❌ |
 | Docker install | ✅ | ❌ | ❌ | ✅ |
 | curl \| bash install | ✅ | ✅ | ❌ | ✅ |
-| Multi-cluster | ✅ (Command center; HA and Updates home only) | ✅ | ✅ | ❌ |
+| Multi-cluster | ✅ (Command center and Updates; HA home only) | ✅ | ✅ | ❌ |
 | Cross-cluster migration | ✅ v2.0 | ✅ | ❌ | ❌ |
 | ESXi migration | ✅ v2.0 | ✅ | ❌ | ❌ |
 | XCP-NG support | ✅ v2.0 | ✅ | ❌ | ❌ |

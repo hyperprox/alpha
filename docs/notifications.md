@@ -1,7 +1,8 @@
 # Notifications
 
 HyperProx tells you when something needs attention: when it locks itself, when an update run ends or
-pauses, when a certificate changes verdict or stays critical. Messages are short (a title that makes
+pauses, when the daily updates check finds something new to update, when a certificate changes verdict or
+stays critical. Messages are short (a title that makes
 sense on its own, two or three lines, a link), so they read well on a phone, a watch or a voice assistant.
 
 Set them up under **Settings → Notifications**. Admins add, edit, delete and test channels; only an owner
@@ -105,9 +106,16 @@ a signing secret, the request carries `X-HyperProx-Timestamp` (Unix seconds) and
 `X-HyperProx-Signature: sha256=<hex HMAC-SHA256 of timestamp + "." + body>`; reject timestamps older than
 5 minutes. The version changes only for a breaking change.
 
-Event types today: `vault.locked`, `updates.job.finished`, `updates.job.paused`, `certs.verdict.changed`,
+Event types today: `vault.locked`, `updates.job.finished`, `updates.job.paused`, `updates.available`, `certs.verdict.changed`,
 `certs.still.critical`, `notify.channel.failing`, plus `notify.test`, `notify.group`, `notify.digest` and
 `notify.brake` for the messages HyperProx makes itself.
+
+`updates.available` comes from the daily updates check (`docs/updates.md`, "The daily check"): one
+message per check that found something new on any cluster, grouped by cluster, security fixes first, with
+counts and kernel or reboot flags only (no versions or addresses). It is a warning, belongs to the Updates
+family, and repeats at most every `check.reminder_days` (default 7) while the same updates stay unapplied.
+Messages about an update run on a remote cluster name it ("Remote server (remote): Updates finished") and
+link to that cluster's Updates page.
 
 ## Moving from the old settings
 

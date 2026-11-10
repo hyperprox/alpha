@@ -7,6 +7,11 @@ is not right. This page is for the operator: what a run does, the policy file, a
 what happens when something fails. The design behind it is in
 `docs/superpowers/specs/2026-10-06-updates-design.md`.
 
+It works on every cluster HyperProx manages: the home cluster at **Updates**, and each remote server or
+cluster at **Updates** on its own page (`/clusters/<id>/updates`, also linked from its Command center
+panel). How a remote differs is in [Remote clusters](#remote-clusters) below. A read-only
+[daily check](#the-daily-check) looks at every cluster and tells you when something new needs updating.
+
 Everything about Updates is admin-only, reads included: the inventory lists every
 pending package and kernel pin on every host. Live progress goes over its own socket,
 `/ws/updates`, which only admins can open (the general `/ws` channel is viewer-level, and
@@ -81,8 +86,111 @@ Docker image is pulled. (The design's example file uses `dist-upgrade` and
    in the job history, and as one notification (`updates.job.finished`; `updates.job.paused` when a
    run pauses) to the channels under Settings → Notifications that take Updates events.
 
-One job runs at a time, enforced in the database. Asking for another while one is
-running, awaiting confirmation or paused answers `409` with the id of the active job.
+One job runs at a time, enforced in the database, across all clusters: a job on a remote and a job at
+home never run together. Asking for another while one is running, awaiting confirmation or paused
+answers `409` with the id of the active job, and names its cluster when it is another one.
+
+## Remote clusters
+
+A remote server or cluster (added in the Command center) is updated from its own Updates page, which is
+amber, with REMOTE and its name on every card, on the plan and in every confirmation. Every request from
+that page carries the cluster, and HyperProx keeps a separate runner, policy, inventory and job list for
+each cluster, so what you read and what you change are always the same machine. A job planned for one
+cluster does not exist for any other: confirming, resuming, cancelling or rolling it back through another
+cluster answers "No job". A job is also tied to how HyperProx reached the cluster when it was planned
+(its address, certificate and token, kept only as a one-way key); if any of those changed since, the job
+is refused and you start a new one.
+
+**What is the same as at home.** Preflight (free space, required holds and kernel pin, Ceph health when
+Ceph runs there), `apt update`, the plan, a manual run stopping at *awaiting confirmation*, guests first
+with a snapshot where possible, then nodes one at a time, the report and the notifications (which name
+the remote and link to its page).
+
+**What is different, and why.**
+
+- **The preview is apt's own simulation.** For each node the inventory runs `apt-get -s` (simulate:
+  nothing is installed and no lock is taken) for exactly the upgrade a run would do, and shows the
+  packages with their versions, anything that would be **removed**, whether a **kernel**, **firmware**
+  or **core Proxmox VE** package changes, which packages are **held** (shown as held, never offered),
+  and whether a **reboot will be needed** afterwards. Security fixes are marked. Guests are read the same
+  way as at home.
+- **Nodes get `apt-get dist-upgrade` by default.** That is the upgrade Proxmox recommends for a Proxmox VE
+  node (`apt full-upgrade`). apt never installs or removes a held package this way, and a kernel pin
+  (`proxmox-boot-tool kernel pin`) stays: a new kernel is installed but the pinned one keeps booting.
+  HyperProx never runs `apt-mark unhold`, `proxmox-boot-tool kernel unpin` or
+  `--allow-change-held-packages`, on any cluster. A policy section can set a node to `upgrade` and
+  require holds and a pin, exactly as at home.
+- **Never an automatic reboot.** A node whose upgrade needs a reboot is marked *reboot pending*. The
+  **Reboot** button is a separate action: it first shows which running guests will stop (and which of
+  them will not start again on their own, because they are not set to start at boot), the running kernel
+  and the one that will boot, then asks for your master password. On a one-node server there is no other
+  node to move guests to, so they stop until the server is back. HyperProx waits up to 15 minutes for a
+  new boot id, then reports the running kernel and which guests came back; a guest set to start at boot
+  that is not running fails the step. On a remote with more than one node, HyperProx does not reboot nodes
+  (it has no HA support there yet): reboot by hand after moving the guests.
+- **A one-node server has no quorum and no HA.** Those gates are skipped and the preflight says so in
+  words ("standalone server: no quorum or HA to check (skipped)"). Every other gate runs.
+- **Everything is read back.** After a node upgrade, every package is checked at the version the
+  simulation promised, holds and the kernel pin are checked unchanged, and the Proxmox API must answer;
+  any difference fails the step with a plain sentence ("openssl is at 3.5.1-1, expected 3.5.4-1", "no
+  longer on hold: ..."). After a guest upgrade, apt is asked again what it would still upgrade; anything
+  left (other than held or kept-back packages) fails the guest.
+- **A guest that cannot be snapshotted** (bind-mounted storage, which is usual for a media container) is
+  not updated unless you tick **Update without a snapshot** for it. The tick shows the newest backup
+  HyperProx can see on that cluster (from its backup tasks, the same ones the Command center reads), and
+  says whether that backup was of this guest or a job that may include it. The tick travels with the run
+  like an app approval and is written to the audit log.
+- **Master password for every change.** Starting a run, confirming it, resuming, rolling back and
+  rebooting on a remote each need the master password re-entered within the last five minutes. An API
+  token can never do that, so a token cannot change anything on a remote through Updates. A dry run,
+  reading and cancelling do not ask. (At home these actions are admin-only and audited, as before.)
+- **Node logins are the remote's own**, saved under **Edit server, Nodes and logins**, and used only once
+  an admin has confirmed the node's host key. Each node is reached on the address saved for it, never the
+  one the node reports. Every script HyperProx sends passes the remote script guard, which refuses
+  anything naming the cluster filesystem, corosync or `/etc/pve` (the services check after an upgrade
+  therefore leaves `pve-cluster` out, and the Proxmox API answering stands in for it).
+- **Not on a remote:** scheduled runs (a run starts only when you start it), app updates from plug-ins,
+  Docker pulls unless the cluster's section turns them on, the Plex viewer wait (the home Plex knows
+  nothing of a remote's viewers), and the Ceph phase. If a node upgrade would change Ceph packages and
+  Ceph runs on that cluster, the step refuses; on a server without Ceph, the Ceph client libraries Proxmox
+  installs move with the node like any other package.
+
+The remote's policy is its own section of the same file; see `clusters.<id or name>` below. A remote
+with no section gets the built-in remote defaults described above, even with no policy file at all. A
+policy file that exists but does not load stops runs on every cluster, since the broken part may be the
+section meant for that remote.
+
+## The daily check
+
+Once a day (default 06:30, local time) and whenever you press **Check now** on the Updates page,
+HyperProx checks every cluster, home and each remote, for updates. It is **read-only**: it refreshes
+package lists (`apt update`, which installs nothing) on the nodes and in the guests a run would update,
+and asks apt to simulate the upgrade; nothing is installed, removed, held, unheld, snapshotted or
+restarted. It goes through the same path as a run (each cluster's own connection, pinned remote logins,
+the script guard, each cluster's policy, so a home node set to `upgrade` is simulated with `upgrade`),
+one machine at a time with a short pause between machines and between clusters.
+
+A cluster is skipped, and the result says why, when it does not answer, while a backup task is running on
+it, and while an Updates job is active anywhere. A check that falls while HyperProx is locked is skipped
+and logged (the credentials are in the vault). Only one check runs at a time, and a run cannot start while
+a check is reading (wait a minute or two).
+
+The result is kept in `data/updates-check.json` (names and counts, no secrets) so the **Daily check**
+card on the Updates page and the **Updates** line on each Command center panel show it without reading
+any machine when the page opens. Each cluster shows when it was checked, how many machines have updates,
+how many packages, how many security fixes, and anything that could not be read. Held packages are
+counted as *held or kept back, not offered*, never as updates to apply.
+
+**The message.** When a check finds something **new** since the last message (a package or version not
+reported before), one `updates.available` notification goes to the channels under **Settings →
+Notifications** that take Updates events. The same list is not sent again; while it stays unapplied, a
+reminder goes at most every `check.reminder_days` (default 7). The message is grouped by cluster, with
+"(home)" or "(remote)" after each name, security fixes first (package names only), then each node and
+guest with its package count and "kernel update" or "reboot needed" where that applies, held packages as
+a count, and clusters that could not be checked. It carries a link to the Updates page when
+`HYPERPROX_PUBLIC_URL` is set. It never contains versions, addresses, tokens or command output, and
+anything in a name that looks like an address is replaced with `[address]`. It is sent as a warning, so
+a channel on the default "warnings and critical" setting receives it.
 
 ## Ceph restart and reboot safety
 
@@ -177,6 +285,10 @@ from restarting services after a library upgrade.
 | `min_root_free_mb` | `1024` | Preflight minimum free space on each node's `/`. |
 | `self.node_order` | `last` | HyperProx's node goes last. |
 | `self.vmid` | detected | HyperProx's own container. |
+| `check.enabled` | `true` | Run the daily read-only check on every cluster. |
+| `check.cron` | `30 6 * * *` | When, in the same five-field form as `schedule.cron`. |
+| `check.reminder_days` | `7` | While the same updates stay unapplied, remind at most this often. |
+| `clusters.<id or name>` | built-in remote defaults | One remote cluster's own policy, keyed by its id (`c` and ten hex digits, shown in its page address) or its exact name. Takes `nodes`, `guests`, `ceph.accepted_warnings`, `batch_size` and `min_root_free_mb` with the same meaning as above, except that a remote node accepts only `reboot: manual`. No `schedule`, `self`, `quiet`, `apps` or `notify` (unknown keys fail the load). The home cluster is the top level of the file, never a section. Nothing at the top level applies to a remote, whatever its node names. |
 | `notify.webhook_url` | none | **Moved.** Read only until the first Owner sign-in of the notifications release, which turns it into the channel "Updates reports" under Settings → Notifications; ignored after that, removed from the parser in a later release. |
 | `apps.enabled` | `true` | Look for apps that plug-in providers know (read-only). `false`: no app is looked for, listed or updated. |
 | `apps.default` | `manual` | Mode for every app not named below: `manual` (only when approved for a run), `auto` (every run, scheduled ones included) or `off` (listed, never updated). |
@@ -313,8 +425,10 @@ Missed runs are not caught up later.
 
 ## Credentials
 
-Node and guest commands go through the node logins already stored for the Terminal
-(`lib/node-exec.ts`); Updates adds no credential. It does widen what those logins are
+Node and guest commands go through the node logins already stored in the vault: at home the ones the
+Terminal uses, on a remote that server's own logins (**Edit server, Nodes and logins**), used only with a
+host key an admin confirmed (`lib/node-exec.ts`). The Proxmox API is reached with each cluster's own
+token, also in the vault. Updates adds no credential. It does widen what those logins are
 used for, from deploying guests to upgrading hosts, which is why the feature is
 admin-only and audited. The self-handoff reboot relies on Proxmox cluster nodes reaching
 each other as root over SSH, which a standard cluster already does.
