@@ -384,22 +384,54 @@ never its addresses.
   collector is measuring and why not when it is not.
   Proxmox figures in Grafana for a remote (its own PVE exporter) are not built yet; the Command center
   reads them through the token.
-- **Send files.** Copy a file or folder from any cluster to a folder on any cluster, or within one.
-  The preview gives the file count, size, time at your speed limit, and how many files already exist
-  there (they are skipped). The copy then runs in the background: rsync goes straight from a node of
-  one cluster to a node of the other, never through HyperProx. It retries a dropped connection, resumes
-  half-sent files, and checks every copied file by size and checksum afterwards (copying it again on a
-  mismatch). It can ask the destination's Plex to scan when done. A copy only adds files: HyperProx
-  never replaces or deletes a file that was already there (the one exception is a file this same copy
-  wrote that failed its check, which is copied again). Both ends must be inside that cluster's allowed
-  folders, checked with links resolved at preview, at start and at resume (and the source again right
-  before rsync runs).
-  Before the first copy to a folder, **Set up sending** makes a key for that one destination folder:
-  HyperProx keeps it in the vault, installs it on the destination restricted to rsync in that folder
-  (write-only, and it cannot delete), and puts it on the source node only while a copy runs. The key
-  itself could overwrite files inside its folder; HyperProx's copy never asks it to. Sync and
-  Move are not built yet. Copying has not yet been tried against real servers: try a small folder
-  first.
+- **Send files.** One **Send files** button on each remote server's panel in the Command center and at
+  the top of that server's page (admins only). It asks two things, then you press Send:
+  1. **What do you want to send?** Your home library, folder by folder, with sizes. Tick as many
+     folders and files as you like (up to 20 at once), or search by name.
+  2. **Where?** The other server's libraries by name ("Movies", "TV Shows"), with free space and how
+     long the copy should take. HyperProx finds them itself: folders on the other server's node that
+     sit on a writable network or local disk (never its system disk) and that a running container
+     with Plex uses, each named after the Plex library that shows it. When Plex there cannot be asked,
+     the folder's own name is used. Your home library is found the same way on your home nodes, plus
+     any folder you already allowed for copies.
+
+  A preview line follows ("3 items, 14.2 GB, about 32 min; 1 already there and will be skipped").
+  Files whose names are already there are skipped. Times use the speed of the last copies to that
+  server, or 7.5 MB/s until one has finished. A copy that would not fit in the free space is refused.
+
+  **The first time**, Send says what it will set up and asks for your master password once. In that
+  one step HyperProx allows copies from your home library and into those libraries, picks a home node
+  that reaches the other server over a private link (a Tailscale, WireGuard or NetBird address,
+  tested on port 22), and makes one sending key per library. If the other node's identity key was
+  never confirmed, it is shown in the same dialog with the command to check it, and confirming it is
+  part of that step. An API token cannot do this setup.
+
+  After a copy has finished and been checked, Plex on the other server is asked to scan just that
+  folder in that library, and the copy shows "Added to Movies". To do that HyperProx runs a command on
+  that node: it reads the Plex token from Plex's own settings file in its container at that moment
+  and hands it to `curl` inside the container on standard input. The token is not stored in
+  HyperProx, is not part of any command line, and only the answer code comes back. Reading Plex's
+  library names while looking for libraries works the same way, and the token is cut out of anything
+  the node prints. Copies show
+  progress, speed and time left, can be cancelled and resumed, and explain failures in plain words.
+  A finished copy (`files.copy.finished`) and a failed one (`files.copy.failed`) go to notification
+  channels that take job messages.
+
+  How a copy runs: rsync goes straight from a node of one cluster to a node of the other, never
+  through HyperProx. It retries a dropped connection, resumes half-sent files, and checks every copied
+  file by size and checksum afterwards (copying it again on a mismatch). A copy only adds files:
+  HyperProx never replaces or deletes a file that was already there (the one exception is a file this
+  same copy wrote that failed its check, which is copied again). Both ends must be inside that
+  cluster's allowed folders, checked with links resolved at preview, at start and at resume (and the
+  source again right before rsync runs). Each sending key is kept in the vault, installed on the
+  destination restricted to rsync in its one folder (write-only, and it cannot delete), and put on the
+  source node only while a copy runs. The key itself could overwrite files inside its folder;
+  HyperProx's copy never asks it to.
+
+  The **Files** tab on a server's page is the advanced way: any allowed folder on any node of any
+  cluster, a speed limit, the allowed folders and keys set by hand, and a scan of every Plex library
+  through a Plex address and token you save under Edit server (the token goes into the vault). Sync and Move are not built
+  yet. Copying has not yet been tried against real servers: try a small folder first.
 
 ### Infrastructure
 
@@ -692,8 +724,8 @@ not protected, are in [docs/security.md](docs/security.md).
   admin password, and changes on the Setup checklist ask for the master password again (valid five
   minutes). So do, for remote clusters: adding or removing one, replacing its token, confirming its
   certificate, saving or removing a node login, deleting a guest, installing or removing monitoring,
-  changing a server's address, node addresses or copy folders, setting up a sending key, and saving
-  a Plex address or token. The AI assistant asks for it in exactly the same cases.
+  changing a server's address, node addresses or copy folders, setting up a sending key (including
+  the first-time setup of Send files), and saving a Plex address or token. The AI assistant asks for it in exactly the same cases.
 - **Remote clusters.** Each remote's API token, node logins, sending keys and Plex token live only in
   the vault, one item per cluster (`hyperprox:proxmox/<id>` and so on): never in `.env`, the database,
   logs, audit entries or API answers. Its API is reached only over a connection that accepts the one

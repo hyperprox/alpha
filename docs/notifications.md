@@ -28,6 +28,9 @@ Each channel has:
   that all went well).
 - **About**: everything, or chosen families: lock alerts, updates, certificates (the others are for
   later phases).
+  Jobs covers wizard and catalogue jobs and Send files copies: a failed copy (`files.copy.failed`) is a
+  warning; a finished one (`files.copy.finished`) is an ordinary message, sent only to channels set to
+  everything.
 - **Quiet hours**: a window (time zone, optional days) in which messages are held and sent as one summary
   when it ends. Critical messages come through unless you turn that off. Something that fired and cleared
   inside the window is not sent at all.
