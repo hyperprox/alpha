@@ -96,6 +96,7 @@ const deps: SendDeps = {
     await setCredential('xfer-key', pairProvider(o.src, o.dst), pairField(o.dstNode, o.root), JSON.stringify({ private: kp.private, public: kp.public, knownHosts: `${o.dstAddress} ssh-ed25519 AAAA`, dstAddress: o.dstAddress }), true)
   },
   keyFor: sendKey,
+  async excludedCts() { return [] },
 }
 
 const broker = new FakeBroker()
@@ -205,6 +206,19 @@ test('the facts script, run for real against a fake pct: libraries come back, th
   assert.equal(r.trim(), 'PLEX-HTTP 200')
   assert.ok(!readFileSync(join(tmp, 'pct.log'), 'utf8').includes(TOKEN))
   assert.throws(() => plexScanScript('101; rm', '1', null))
+
+  // Guests HyperProx must never look inside: by the exclusion list, by their tag, and none at all when the list is unknown.
+  const entered = () => (readFileSync(join(tmp, 'pct.log'), 'utf8').match(/\[exec\] \[(\d+)\]/g) ?? []).length
+  writeFileSync(join(tmp, 'pct.log'), '')
+  assert.deepEqual(parseFacts('pve', bash(factsScript([], ['101']), env)).plexCts, [])
+  assert.equal(readFileSync(join(tmp, 'pct.log'), 'utf8').includes('[exec] [101]'), false)
+  writeFileSync(join(tmp, 'pct.log'), '')
+  bash(factsScript([], null), env)
+  assert.equal(entered(), 0)
+  writeFileSync(join(tmp, 'pct-config.txt'), 'tags: media;hyperprox-ignore\n' + fx('remote-pct-config.txt').replaceAll('@NAS@', NAS))
+  writeFileSync(join(tmp, 'pct.log'), '')
+  assert.deepEqual(parseFacts('pve', bash(factsScript(), env)).plexCts, [])
+  assert.equal(readFileSync(join(tmp, 'pct.log'), 'utf8').includes('[exec] [101]'), false)
 })
 
 test('discovery of both ends: the home library, the sender that reaches the other node, and what setup would do', () => asOwner(async () => {

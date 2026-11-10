@@ -94,9 +94,14 @@ const PLEX_GET_FN = [
   '}',
 ].join('\n')
 
-/** Everything discovery needs from one node, read-only. `reach` lists addresses to test on port 22 from here. */
-export function factsScript(reach: string[] = []): string {
+/**
+ * Everything discovery needs from one node, read-only. `reach` lists addresses to test on port 22 from here.
+ * `skip` lists containers HyperProx must never look inside (null: the list could not be read, so it enters
+ * none); a container tagged hyperprox-ignore is skipped on the node as well.
+ */
+export function factsScript(reach: string[] = [], skip: string[] | null = []): string {
   const addrs = reach.filter(a => /^[0-9a-fA-F:.]{2,45}$/.test(a))
+  const skipList = skip === null ? null : skip.filter(id => /^\d{1,9}$/.test(id))
   return [
     'set -u', 'export LC_ALL=C', 'echo "HPX-FACTS 1"',
     `while read -r s t f o _; do printf 'MNT\\t%s\\t%s\\t%s\\t%s\\n' "$s" "$t" "$f" "\${o%%,*}"; done < /proc/self/mounts`,
@@ -104,11 +109,15 @@ export function factsScript(reach: string[] = []): string {
     `ip -o addr show 2>/dev/null | awk '{split($4,a,"/"); print "LINK\\t" $2 "\\t" a[1]}'`,
     ...addrs.map(a => `timeout 5 bash -c 'exec 3<>"/dev/tcp/$1/22"' _ ${q(a)} 2>/dev/null && printf 'REACH\\t%s\\n' ${q(a)}`),
     'command -v pct >/dev/null 2>&1 || exit 0',
+    ...(skipList === null ? ['exit 0'] : [`SKIP=" ${skipList.join(' ')} "`]),
     PLEX_TOKEN_FN,
     PLEX_GET_FN,
     `for id in $(pct list 2>/dev/null | awk 'NR>1 && $2=="running" {print $1}'); do`,
     `  case "$id" in ''|*[!0-9]*) continue;; esac`,
-    `  M="$(pct config "$id" 2>/dev/null | grep -E '^mp[0-9]+: ')" || continue`,
+    `  case "$SKIP" in *" $id "*) continue;; esac`,
+    `  C="$(pct config "$id" 2>/dev/null)" || continue`,
+    `  printf '%s\\n' "$C" | grep -qE '^tags:.*hyperprox-ignore' && continue`,
+    `  M="$(printf '%s\\n' "$C" | grep -E '^mp[0-9]+: ')" || continue`,
     `  printf '%s\\n' "$M" | while IFS= read -r l; do printf 'CTMP\\t%s\\t%s\\n' "$id" "$l"; done`,
     '  plex_token "$id"; rc=$?',
     '  [ "$rc" -eq 1 ] && continue',
@@ -244,7 +253,13 @@ export interface SendDeps {
   /** Make and install one sending key (files.ts setupSending). */
   setupKey(o: { src: string; dst: string; dstNode: string; root: string; by: string; dstAddress: string }): Promise<void>
   keyFor(src: string, dst: string, dstNode: string, root: string): Promise<SendKey | null>
+  /** Containers of that cluster HyperProx must never look inside (the remote-access exclusions); null if unknown. */
+  excludedCts(clusterId: string): Promise<string[] | null>
 }
+
+let exclusionSource: (() => Promise<string[]>) | null = null
+/** The remote-access page's "never look inside" list (machine ids such as lxc-101), set by the routes. */
+export function setExclusionSource(fn: (() => Promise<string[]>) | null): void { exclusionSource = fn }
 
 export const liveSendDeps: SendDeps = {
   runner: liveNodeRunner,
@@ -265,6 +280,12 @@ export const liveSendDeps: SendDeps = {
   },
   async setupKey(o) { await setupSending(o) },
   keyFor: sendKey,
+  async excludedCts(clusterId) {
+    // That list names home guests; a remote's containers are kept out by their hyperprox-ignore tag.
+    if (clusterId !== HOME_ID) return []
+    if (!exclusionSource) return null
+    try { return (await exclusionSource()).map(id => /^lxc-(\d+)$/.exec(id)?.[1]).filter((x): x is string => !!x) } catch { return null }
+  },
 }
 
 let active: SendDeps | null = null
@@ -293,8 +314,8 @@ const PLAN_MS = 15 * 60_000
 const plans = new Map<string, SendPlan>()
 export function forgetSendPlans(): void { plans.clear(); held.clear() }
 
-async function factsOf(clusterId: string, node: string, reach: string[], deps: SendDeps): Promise<NodeFacts | null> {
-  try { return parseFacts(node, (await deps.runner.run(clusterId, node, factsScript(reach), 90_000)).output) } catch { return null }
+async function factsOf(clusterId: string, node: string, reach: string[], skip: string[] | null, deps: SendDeps): Promise<NodeFacts | null> {
+  try { return parseFacts(node, (await deps.runner.run(clusterId, node, factsScript(reach, skip), 90_000)).output) } catch { return null }
 }
 
 /** Look at both ends. Read-only: it changes nothing anywhere. */
@@ -307,7 +328,8 @@ export async function discoverSend(dstId: string, deps: SendDeps = sendDeps(), o
   const problems: string[] = []
   const dstNodes = await deps.nodes(dstId).catch(() => [] as string[])
   if (!dstNodes.length) problems.push(`${dRow.name} is not answering, so its libraries could not be read.`)
-  const dstFacts = (await Promise.all(dstNodes.map(n => factsOf(dstId, n, [], deps)))).filter((f): f is NodeFacts => !!f)
+  const dstSkip = await deps.excludedCts(dstId).catch(() => null)
+  const dstFacts = (await Promise.all(dstNodes.map(n => factsOf(dstId, n, [], dstSkip, deps)))).filter((f): f is NodeFacts => !!f)
   if (dstNodes.length && !dstFacts.length) problems.push(`HyperProx has no working login for ${dRow.name}'s node${dstNodes.length > 1 ? 's' : ''} yet. Add one under Edit server, Nodes and logins.`)
   const libraries = dstFacts.flatMap(f => librariesOf(f, true, dstFacts.some(o => o.plexCts.length > 0)))
   for (const f of dstFacts) for (const t of f.plexTrouble) problems.push(`${f.node}: ${t.why}; its folders are shown by their own names.`)
@@ -322,7 +344,8 @@ export async function discoverSend(dstId: string, deps: SendDeps = sendDeps(), o
   const allCandidates = [...new Set(Object.values(candidates).flat())]
 
   const homeNodes = await deps.nodes(HOME_ID).catch(() => [] as string[])
-  const homeFacts = (await Promise.all(homeNodes.map(n => factsOf(HOME_ID, n, allCandidates, deps)))).filter((f): f is NodeFacts => !!f)
+  const homeSkip = await deps.excludedCts(HOME_ID).catch(() => null)
+  const homeFacts = (await Promise.all(homeNodes.map(n => factsOf(HOME_ID, n, allCandidates, homeSkip, deps)))).filter((f): f is NodeFacts => !!f)
   const homeRow = clusterRow(HOME_ID)!
   const sources: Library[] = []
   for (const l of homeFacts.flatMap(f => librariesOf(f, false, homeFacts.some(o => o.plexCts.length > 0)))) if (!sources.some(s => s.path === l.path)) sources.push(l)

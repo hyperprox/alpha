@@ -10,7 +10,8 @@
 import type { FastifyPluginAsync, FastifyReply } from 'fastify'
 import { currentContext } from '../lib/auth'
 import { ClusterRefusal, clusterRow, validClusterId } from '../lib/clusters/registry'
-import { discoverSend, browseSend, searchSend, previewSend, setupSend, sendNow, linkSpeed, type SendPlan } from '../lib/clusters/send-simple'
+import { discoverSend, browseSend, searchSend, previewSend, setupSend, sendNow, linkSpeed, setExclusionSource, type SendPlan } from '../lib/clusters/send-simple'
+import { PrismaRemoteStore } from '../lib/remote/store'
 import { jobStore } from '../lib/clusters/files'
 import { PinConfirmRefusal } from '../lib/hostkey-pins'
 
@@ -46,6 +47,10 @@ export async function planView(p: SendPlan) {
 }
 
 export const sendRoutes: FastifyPluginAsync = async (fastify) => {
+  // Guests listed under Remote access as "never look inside" are not entered while looking for Plex.
+  const prisma = (fastify as any).prisma
+  if (prisma) setExclusionSource(() => new PrismaRemoteStore(prisma).listExclusions())
+
   const remoteOr404 = (id: string, reply: FastifyReply) => {
     const row = validClusterId(id) ? clusterRow(id) : null
     if (!row || row.kind !== 'remote') { reply.status(404).send({ success: false, error: 'No such server.' }); return null }

@@ -412,7 +412,8 @@ never its addresses.
   and hands it to `curl` inside the container on standard input. The token is not stored in
   HyperProx, is not part of any command line, and only the answer code comes back. Reading Plex's
   library names while looking for libraries works the same way, and the token is cut out of anything
-  the node prints. Copies show
+  the node prints. Containers marked "never look inside" under Remote access, or tagged
+  `hyperprox-ignore`, are not entered. Copies show
   progress, speed and time left, can be cancelled and resumed, and explain failures in plain words.
   A finished copy (`files.copy.finished`) and a failed one (`files.copy.failed`) go to notification
   channels that take job messages.
