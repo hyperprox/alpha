@@ -381,8 +381,14 @@ export function forgetSendPlans(): void { plans.clear(); held.clear() }
 /** Plans are kept per signed-in session, so one person's look never answers another's. */
 const planKey = (dst: string) => `${currentContext()?.sid ?? currentContext()?.email ?? 'none'}:${dst}`
 
-async function factsOf(clusterId: string, node: string, reach: string[], skip: string[] | null, deps: SendDeps): Promise<NodeFacts | null> {
-  try { return parseFacts(node, (await deps.runner.run(clusterId, node, factsScript(reach, skip), 90_000)).output) } catch { return null }
+/** Why a node could not be read, kept so the dialog can say the real reason (never a message with addresses). */
+type FactsMiss = 'unconfirmed-key' | 'no-login' | 'other'
+async function factsOf(clusterId: string, node: string, reach: string[], skip: string[] | null, deps: SendDeps, misses?: FactsMiss[]): Promise<NodeFacts | null> {
+  try { return parseFacts(node, (await deps.runner.run(clusterId, node, factsScript(reach, skip), 90_000)).output) } catch (e: any) {
+    const name = String(e?.name ?? ''), msg = String(e?.message ?? '')
+    misses?.push(name === 'HostKeyNotConfirmedError' || name === 'HostKeyNotPinnedError' ? 'unconfirmed-key' : /No node login is saved/.test(msg) ? 'no-login' : 'other')
+    return null
+  }
 }
 
 /** Drop every folder whose real path on `node` is not its written path, or is a system folder. Fails closed. */
@@ -428,7 +434,8 @@ export async function discoverSend(dstId: string, deps: SendDeps = sendDeps(), o
 
   const homeNodes = (await deps.nodes(HOME_ID).catch(() => [] as string[])).slice(0, 32)
   const homeSkip = await deps.excludedCts(HOME_ID).catch(() => null)
-  const homeFacts = (await Promise.all(homeNodes.map(n => factsOf(HOME_ID, n, allCandidates, homeSkip, deps)))).filter((f): f is NodeFacts => !!f)
+  const homeMisses: FactsMiss[] = []
+  const homeFacts = (await Promise.all(homeNodes.map(n => factsOf(HOME_ID, n, allCandidates, homeSkip, deps, homeMisses)))).filter((f): f is NodeFacts => !!f)
   const homeRow = clusterRow(HOME_ID)!
   const found: Library[] = []
   const plexHome = homeFacts.some(f => f.plexCts.length > 0)
@@ -450,7 +457,11 @@ export async function discoverSend(dstId: string, deps: SendDeps = sendDeps(), o
   const checkNode = sourceNode ?? homeFacts[0]?.node
   const sources = checkNode ? await verifyRoots(HOME_ID, checkNode, found, deps) : []
   if (found.length > sources.length) problems.push(`${found.length - sources.length} home folder${found.length - sources.length === 1 ? ' was' : 's were'} left out: ${found.length - sources.length === 1 ? 'it leads' : 'they lead'} somewhere else through a link, or could not be checked.`)
-  if (!homeFacts.length) problems.push('HyperProx has no working login for any home node, so it cannot read your library. Add one in Settings, Setup checklist.')
+  if (!homeFacts.length) problems.push(homeMisses.includes('unconfirmed-key')
+    ? "Your home nodes' identity keys have not been confirmed yet, so HyperProx will not send them anything. Confirm them in Settings, Setup checklist (one master password), then look again."
+    : homeMisses.length && homeMisses.every(m => m === 'no-login')
+      ? 'HyperProx has no login for any home node, so it cannot read your library. Add one in Settings, Setup checklist.'
+      : 'HyperProx could not read any home node just now. Check they are online and their logins work in Settings, Setup checklist.')
   else if (!sources.length) problems.push('No media library was found on your home nodes. Allow a folder under Files, advanced, first.')
 
   const reachable = libraries.filter(l => links[l.node])
