@@ -36,6 +36,7 @@ import { isUnlocked, cachedSecrets } from '../vault/state'
 import { assertSafeScript } from './monitoring'
 import { auditCredentialUse } from '../audit'
 import { publish, type NotifyEventInput } from '../notify'
+import { stripAddresses } from '../redact-addresses'
 
 // ---------------------------------------------------------------------------
 //  Paths
@@ -592,14 +593,8 @@ export function knownJobError(e: string | null): string | null {
 /** For the job list: a known failure in plain words, anything else as it was said. */
 export function plainJobError(e: string | null): string | null { return e ? knownJobError(e) ?? e : e }
 
-/** Addresses, host:port pairs and URLs taken out of text that leaves HyperProx (notifications). */
-export function noAddresses(text: string): string {
-  return String(text ?? '')
-    .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, '[address]')
-    .replace(/\[?\b(?:[0-9a-f]{1,4}:){3,7}[0-9a-f]{1,4}\b\]?|\[?\b(?:[0-9a-f]{1,4}:){1,6}:(?:[0-9a-f]{1,4})?\]?|\[?::(?:[0-9a-f]{1,4})\b\]?/gi, '[address]')
-    .replace(/\b\d{1,3}(\.\d{1,3}){3}(:\d{1,5})?\b/g, '[address]')
-    .replace(/\b([a-z0-9-]+\.)+[a-z]{2,}:\d{1,5}\b/gi, '[address]')
-}
+/** Addresses, host:port pairs and URLs taken out of text that leaves HyperProx (lib/redact-addresses.ts). */
+export function noAddresses(text: string): string { return stripAddresses(text) }
 
 /** The notification for a finished or failed copy: names and fixed words only, never a path, key or address. */
 export function copyEvent(j: JobRow, state: JobState, error: string | null, plexNote: string | null): NotifyEventInput {
