@@ -15,6 +15,7 @@ export interface ClusterInfo {
   cert: { fingerprint: string | null; confirmedAt: string | null; confirmedBy: string | null }
   nodeAddresses: Record<string, string>
   allowedRoots: string[]
+  ignoredGuests?: string[]
   monitoring: Record<string, { nodeExporter?: { listen: string }; amdGpu?: unknown; intelGpu?: { status: 'measured' | 'unsupported'; reason?: string } }>
   plexUrl: string | null
   token: { saved: boolean | null; id: string | null } | null

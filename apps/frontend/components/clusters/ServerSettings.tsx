@@ -44,6 +44,7 @@ export function ServerSettings({ c, onChanged }: { c: ClusterInfo; onChanged: ()
   const [address, setAddress] = useState(c.address)
   const [port, setPort] = useState(String(c.port))
   const [roots, setRoots] = useState(c.allowedRoots.join('\n'))
+  const [ignored, setIgnored] = useState((c.ignoredGuests ?? []).join('\n'))
   const [msg, setMsg] = useState<{ kind: 'info' | 'error'; text: string } | null>(null)
 
   // Name and note are a plain edit; address, port and folders change where HyperProx connects or writes, so they
@@ -83,6 +84,14 @@ export function ServerSettings({ c, onChanged }: { c: ClusterInfo; onChanged: ()
         <textarea style={{ ...INPUT, height: 110, padding: 10, fontFamily: 'var(--font-mono)' }} value={roots} onChange={e => setRoots(e.target.value)} placeholder="/mnt/media" />
         <div><Btn onClick={() => save({ allowedRoots: roots.split('\n').map(s => s.trim()).filter(Boolean) }, 'File roots saved.', true)}>Save folders</Btn></div>
       </Section>
+
+      {remote && (
+        <Section title="Never look inside">
+          <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Send files reads Plex's settings and library list inside this server's running containers that use shared folders. Containers listed here (by number, one per line or separated by commas) are never entered, and neither is any container tagged hyperprox-ignore.</p>
+          <textarea style={{ ...INPUT, height: 70, padding: 10, fontFamily: 'var(--font-mono)' }} value={ignored} onChange={e => setIgnored(e.target.value)} placeholder="101" />
+          <div><Btn onClick={() => save({ ignoredGuests: ignored.split(/[\s,]+/).map(s => s.trim()).filter(Boolean) }, 'Saved.', true)}>Save</Btn></div>
+        </Section>
+      )}
 
       {remote && <RemoveSection c={c} run={run} onRemoved={() => router.push('/clusters')} />}
     </div>

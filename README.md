@@ -392,17 +392,20 @@ never its addresses.
      long the copy should take. HyperProx finds them itself: folders on the other server's node that
      sit on a writable network or local disk (never its system disk) and that a running container
      with Plex uses, each named after the Plex library that shows it. When Plex there cannot be asked,
-     the folder's own name is used. Your home library is found the same way on your home nodes, plus
-     any folder you already allowed for copies.
+     the folder's own name is used, and Proxmox storage folders are never offered. Your home library is
+     found the same way on your home nodes, plus any folder you already allowed for copies. A folder that
+     is really a link to somewhere else, or to a system folder, is left out.
 
   A preview line follows ("3 items, 14.2 GB, about 32 min; 1 already there and will be skipped").
   Files whose names are already there are skipped. Times use the speed of the last copies to that
   server, or 7.5 MB/s until one has finished. A copy that would not fit in the free space is refused.
 
-  **The first time**, Send says what it will set up and asks for your master password once. In that
-  one step HyperProx allows copies from your home library and into those libraries, picks a home node
-  that reaches the other server over a private link (a Tailscale, WireGuard or NetBird address,
-  tested on port 22), and makes one sending key per library. If the other node's identity key was
+  **The first time** for a library, Send says what it will set up, with the real folder paths, and asks
+  for your master password once. In that one step HyperProx allows copies from the home libraries that
+  hold what you picked and into the one library you picked, picks a home node that reaches the other
+  server on port 22 at a private address (its Tailscale, WireGuard or NetBird address first), and makes
+  that library's sending key. The setup is tied to what the preview showed: if anything changed since,
+  it is refused and nothing is changed. If the other node's identity key was
   never confirmed, it is shown in the same dialog with the command to check it, and confirming it is
   part of that step. An API token cannot do this setup.
 
@@ -412,8 +415,9 @@ never its addresses.
   and hands it to `curl` inside the container on standard input. The token is not stored in
   HyperProx, is not part of any command line, and only the answer code comes back. Reading Plex's
   library names while looking for libraries works the same way, and the token is cut out of anything
-  the node prints. Containers marked "never look inside" under Remote access, or tagged
-  `hyperprox-ignore`, are not entered. Copies show
+  the node prints. Containers listed under Edit server, "Never look inside", on the Remote access
+  exclusions, or tagged `hyperprox-ignore`, are not entered (see `docs/security.md` for every command
+  this runs on your nodes). Copies show
   progress, speed and time left, can be cancelled and resumed, and explain failures in plain words.
   A finished copy (`files.copy.finished`) and a failed one (`files.copy.failed`) go to notification
   channels that take job messages.
@@ -725,7 +729,7 @@ not protected, are in [docs/security.md](docs/security.md).
   admin password, and changes on the Setup checklist ask for the master password again (valid five
   minutes). So do, for remote clusters: adding or removing one, replacing its token, confirming its
   certificate, saving or removing a node login, deleting a guest, installing or removing monitoring,
-  changing a server's address, node addresses or copy folders, setting up a sending key (including
+  changing a server's address, node addresses, copy folders or "never look inside" list, setting up a sending key (including
   the first-time setup of Send files), and saving a Plex address or token. The AI assistant asks for it in exactly the same cases.
 - **Remote clusters.** Each remote's API token, node logins, sending keys and Plex token live only in
   the vault, one item per cluster (`hyperprox:proxmox/<id>` and so on): never in `.env`, the database,

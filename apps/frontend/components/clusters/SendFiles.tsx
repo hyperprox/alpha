@@ -14,11 +14,11 @@ import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 interface Lib { id: string; name: string; path: string; node: string; free: number | null; size: number | null; plex: boolean }
 interface HostKey { node: string; fingerprint: string }
 interface Plan {
-  ready: boolean; steps: string[]; problems: string[]; hostKeys: HostKey[]; sourceNode: string | null
+  ready: boolean; problems: string[]; sourceNode: string | null; looksInside: string
   libraries: Lib[]; sources: Array<{ name: string; path: string }>; speed: number; speedMeasured: boolean
 }
 interface Entry { name: string; path: string; dir: boolean; size: number | null }
-interface Preview { previewId: string; words: string; bytes: number; ready: boolean; steps: string[]; hostKeys: HostKey[]; items: Array<{ name: string; already: boolean }> }
+interface Preview { previewId: string; words: string; bytes: number; ready: boolean; steps: string[]; hostKeys: HostKey[]; setupHash: string; items: Array<{ name: string; already: boolean }> }
 export interface CopyJob {
   id: string; srcPath: string; dstCluster: string; dstPath: string; state: string; error: string | null; createdAt: string
   progress: { phase?: string; percent?: number | null; rate?: string | null; eta?: string | null; plex?: string | null; note?: string | null } | null
@@ -57,6 +57,7 @@ export function SendFilesDialog({ clusterId, clusterName, onClose }: { clusterId
   const [busy, setBusy] = useState<string | null>(null)
   const [keysOk, setKeysOk] = useState(false)
   const [reconfirm, setReconfirm] = useState(false)
+  const [sentWords, setSentWords] = useState<string | null>(null)
 
   const look = useCallback(async (fresh = false) => {
     setErr(null); setBusy('look')
@@ -85,15 +86,15 @@ export function SendFilesDialog({ clusterId, clusterName, onClose }: { clusterId
     setErr(null)
     if (!preview.ready) {
       setBusy('setup')
-      const s = await apiJson<{ data: { words: string; plan: Plan } }>(`/api/clusters/${clusterId}/send/setup`, 'POST', { confirmHostKeys: keysOk ? preview.hostKeys.map(h => h.fingerprint) : [] })
+      const s = await apiJson<{ data: { words: string; ready: boolean } }>(`/api/clusters/${clusterId}/send/setup`, 'POST', { previewId: preview.previewId, setupHash: preview.setupHash, confirmHostKeys: keysOk ? preview.hostKeys.map(h => h.fingerprint) : [] })
       if (s.status === 403 && s.code === 'reconfirm_required') { setBusy(null); setReconfirm(true); return }
       if (!s.ok) { setBusy(null); setErr(s.error ?? 'Setting up did not work. Nothing was sent.'); return }
-      setPlan(s.body!.data.plan)
+      setPreview({ ...preview, ready: true })
     }
     setBusy('send')
-    const r = await apiJson(`/api/clusters/${clusterId}/send`, 'POST', { previewId: preview.previewId })
+    const r = await apiJson<{ data: { words: string; notStarted: unknown[] } }>(`/api/clusters/${clusterId}/send`, 'POST', { previewId: preview.previewId })
     setBusy(null)
-    if (r.ok) setStep('sent'); else setErr(r.error ?? 'Not sent.')
+    if (r.ok) { setSentWords(r.body!.data.notStarted.length ? r.body!.data.words : null); setStep('sent') } else setErr(r.error ?? 'Not sent.')
   }, [clusterId, preview, keysOk])
 
   const nothingToSend = !!preview && preview.items.every(i => i.already)
@@ -151,6 +152,7 @@ export function SendFilesDialog({ clusterId, clusterName, onClose }: { clusterId
                           <span className="text-xs" style={{ color: 'var(--text-muted)' }}>To check it, run <code className="font-mono">ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</code> on {h.node} and compare.</span>
                         </div>
                       ))}
+                      {plan && <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{plan.looksInside}</span>}
                       {needKeys && <label className="flex gap-2 items-center"><input type="checkbox" checked={keysOk} onChange={e => setKeysOk(e.target.checked)} /> The key{preview.hostKeys.length > 1 ? 's match' : ' matches'}</label>}
                       <span className="text-xs" style={{ color: 'var(--text-muted)' }}>You will be asked for your master password once.</span>
                     </div>
@@ -162,6 +164,7 @@ export function SendFilesDialog({ clusterId, clusterName, onClose }: { clusterId
 
           {step === 'sent' && (
             <div className="flex flex-col gap-3">
+              {sentWords && <Notice kind="warn">{sentWords}</Notice>}
               <Notice kind="info">Sending. You can close this; it carries on, and you will be told when it is done if notifications are set up.</Notice>
               <SendJobs clusterId={clusterId} />
             </div>

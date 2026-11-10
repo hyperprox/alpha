@@ -327,6 +327,36 @@ the rules below ([docs/remote-access.md](remote-access.md)).
   `remote.rollback`, `remote.cleanup`, `remote.recovered`, `remote.tun`, `remote.firewall` and
   `remote.manual-key` are written with the user, the machines and the provider.
 
+## Send files: what runs on your nodes
+
+Send files (the simple way) runs short, read-only commands on nodes over HyperProx's saved node logins, and
+writes only when you confirm setup with your master password.
+
+- **Looking for libraries** (each time the dialog opens, at most three times a minute): on every online node
+  of both servers it reads the mount table, free space, the node's own addresses, the Proxmox storage list
+  (`pvesh get /storage`), and `pct list` / `pct config` for running containers. On each running container that
+  has shared folders it runs `pct exec <id> -- sh -c` to print Plex's `Preferences.xml` if there is one, and
+  `pct exec <id> -- curl` to Plex on 127.0.0.1 for its library list. Each `pct exec` has 15 seconds and at
+  most 2 MB of output. The Plex token is read into a shell variable on the node, handed to curl on standard
+  input (`-H @-`), cut out of anything printed, and never leaves the node or reaches HyperProx.
+- **Never look inside**: containers listed under Edit server, "Never look inside" (per server), containers on
+  the Remote access exclusions (home), and containers tagged `hyperprox-ignore` are never entered. If the list
+  cannot be read, no container is entered at all. The same check is made again before a scan after a copy.
+- **Folders found** are checked on their node with `realpath -e`: a folder whose real path is not the path
+  written (a link), or is a system folder, is dropped. Without Plex naming exactly that folder, Proxmox storage
+  folders (`/mnt/pve/...` and any storage path) are never offered. Every copy root is also checked with links
+  resolved at preview, at start, at resume and in the run script, and a root that resolves to the whole disk
+  or a system folder is refused there too.
+- **Finding the sender**: from each home node, a TCP connection to port 22 of the other node's private
+  addresses (at most 16; never public, loopback or link-local).
+- **Preview**: `find` in the picked items at home and under the same names in the library there (at most
+  50,000 files per item).
+- **Setup** (re-confirmed; never for an API token; bound to the preview it was shown with): allows the home
+  libraries that hold the picked items and the one picked library, confirms an identity key you ticked, and
+  installs one sending key for that library.
+- **After a copy**: `pct exec <id> -- curl` to that Plex's refresh address for the one copied folder; only the
+  answer code comes back.
+
 ## Not built yet
 
 These are designed ([design](superpowers/specs/2026-10-14-vault-gate-design.md)) but are **not** in this
