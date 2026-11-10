@@ -52,10 +52,20 @@ export function rootFor(p: string, roots: string[]): string | null {
 
 export const q = (s: string) => `'${String(s).replace(/'/g, `'\\''`)}'`
 
+/**
+ * The real paths a root may never be, as a shell `case` pattern: the whole disk and the system folders cleanRoot()
+ * refuses by name. A root that is a link into one of them is refused once the link is resolved.
+ */
+export const SYSTEM_REAL_PATHS = ['/', ...['etc', 'proc', 'sys', 'dev', 'boot', 'root', 'run', 'usr', 'bin', 'sbin', 'lib', 'lib32', 'lib64', 'libx32', 'tmp', 'lost+found', 'snap', 'var'].flatMap(d => [`/${d}`, `/${d}/*`])].join('|')
+
+/** The line containmentScript() ends with. */
+export const CONTAINMENT_LINE = /^(OK|NO-|OUTSIDE|NOT-DIR|SYSTEM-ROOT)/
+
 /** A node-side check: the real path of `p` (it must exist) is the real root or inside it. Prints OK or a reason. */
 export function containmentScript(p: string, root: string, mustBeDir: boolean): string {
   return [
     `R="$(realpath -e -- ${q(root)} 2>/dev/null)" || { echo "NO-ROOT"; exit 0; }`,
+    `case "$R" in ${SYSTEM_REAL_PATHS}) echo "SYSTEM-ROOT"; exit 0;; esac`,
     `P="$(realpath -e -- ${q(p)} 2>/dev/null)" || { echo "NO-PATH"; exit 0; }`,
     `case "$P/" in "$R"/*) ;; *) echo "OUTSIDE $P"; exit 0;; esac`,
     mustBeDir ? `[ -d "$P" ] || { echo "NOT-DIR"; exit 0; }` : '',
@@ -66,6 +76,7 @@ export function containmentScript(p: string, root: string, mustBeDir: boolean): 
 export function parseContainment(out: string, what: string, p: string): string {
   const line = String(out ?? '').trim().split('\n').pop() ?? ''
   if (line.startsWith('OK ')) return line.slice(3)
+  if (line === 'SYSTEM-ROOT') throw new ClusterRefusal(`The allowed folder for ${what} leads to a system folder (through a link), so it is refused.`)
   if (line === 'NO-ROOT') throw new ClusterRefusal(`The allowed folder for ${what} does not exist on that node.`)
   if (line === 'NO-PATH') throw new ClusterRefusal(`${p} does not exist on that node.`)
   if (line === 'NOT-DIR') throw new ClusterRefusal(`${p} is not a folder.`)
@@ -256,7 +267,7 @@ export async function browse(clusterId: string, node: string, p: string, runner:
   const root = rootFor(target, row.allowedRoots)
   if (!root) throw new ClusterRefusal(`${target} is not inside an allowed folder.`)
   const r = await runner.run(clusterId, node, `${containmentScript(target, root, true)}\nP="$(realpath -e -- ${q(target)})"\nfind "$P" -mindepth 1 -maxdepth 1 -not -name '.*' -printf '%y\\t%s\\t%f\\n' 2>/dev/null | head -2000`)
-  parseContainment(r.output.split('\n').find(l => /^(OK|NO-|OUTSIDE|NOT-DIR)/.test(l)) ?? '', row.name, target)
+  parseContainment(r.output.split('\n').find(l => CONTAINMENT_LINE.test(l)) ?? '', row.name, target)
   const entries = r.output.split('\n').map(l => l.split('\t')).filter(x => x.length === 3 && /^[dfl]$/.test(x[0]))
     .map(([t, s, n]) => ({ name: n, dir: t === 'd', size: Number(s) || 0 })).sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name))
   return { path: target, roots: row.allowedRoots, entries }
@@ -568,26 +579,39 @@ export class CopyRunner {
 }
 
 /** rsync's exit codes and the run script's lines, in words the owner can act on. Unknown text is kept as it is. */
-export function plainJobError(e: string | null): string | null {
-  if (!e) return e
+/** rsync's exit codes and the run script's lines, in words the owner can act on; null when not one of those. */
+export function knownJobError(e: string | null): string | null {
+  if (!e) return null
   const code = /rsync (?:stopped with )?code (\d+)/.exec(e)?.[1]
   if (/no space left|disk full|quota exceeded/i.test(e) || code === '11') return 'The destination could not take the files (it may be full). Free some space there, then Resume: files already copied are kept and skipped.'
   if (code && ['10', '12', '30', '35', '255'].includes(code)) return 'The connection to the other server dropped and did not come back after several tries. Check that both ends are on, then Resume: files already copied are kept and skipped.'
   if (code === '23') return 'Some files could not be read here or written there (often a permissions problem on the destination folder). Files that did copy are kept.'
   if (code === '5' || code === '1') return 'The other server refused the copy (its sending key may have been removed). Set up sending again, then Resume.'
-  return e
+  return null
+}
+/** For the job list: a known failure in plain words, anything else as it was said. */
+export function plainJobError(e: string | null): string | null { return e ? knownJobError(e) ?? e : e }
+
+/** Addresses, host:port pairs and URLs taken out of text that leaves HyperProx (notifications). */
+export function noAddresses(text: string): string {
+  return String(text ?? '')
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, '[address]')
+    .replace(/\[?\b(?:[0-9a-f]{1,4}:){3,7}[0-9a-f]{1,4}\b\]?|\[?\b(?:[0-9a-f]{1,4}:){1,6}:(?:[0-9a-f]{1,4})?\]?|\[?::(?:[0-9a-f]{1,4})\b\]?/gi, '[address]')
+    .replace(/\b\d{1,3}(\.\d{1,3}){3}(:\d{1,5})?\b/g, '[address]')
+    .replace(/\b([a-z0-9-]+\.)+[a-z]{2,}:\d{1,5}\b/gi, '[address]')
 }
 
-/** The notification for a finished or failed copy: names and words only, never a path, key or address. */
+/** The notification for a finished or failed copy: names and fixed words only, never a path, key or address. */
 export function copyEvent(j: JobRow, state: JobState, error: string | null, plexNote: string | null): NotifyEventInput {
   const item = String(j.preview?.item ?? j.srcPath.split('/').pop() ?? 'files')
   const where = clusterRow(j.dstCluster)?.name ?? 'the other server'
   const done = state === 'done'
+  const why = knownJobError(error) ?? 'The copy stopped. Open the Command center in HyperProx to see why and to resume it.'
   return {
     type: done ? 'files.copy.finished' : 'files.copy.failed', severity: done ? 'info' : 'warning',
-    title: done ? `Copy finished: ${item} to ${where}` : `Copy stopped: ${item} to ${where}`,
-    lines: done ? [`${j.preview?.files ?? 0} file(s) copied and checked.`, ...(plexNote ? [plexNote] : [])] : [error ?? 'The copy stopped.'],
-    plain: [item, where], link: '/clusters', where: 'Command center', fingerprint: `files.copy:${j.id}`,
+    title: noAddresses(done ? `Copy finished: ${item} to ${where}` : `Copy stopped: ${item} to ${where}`),
+    lines: done ? [`${Number(j.preview?.files) || 0} file(s) copied and checked.`, ...(plexNote ? [noAddresses(plexNote)] : [])] : [why],
+    plain: [item, where].map(noAddresses), link: '/clusters', where: 'Command center', fingerprint: `files.copy:${j.id}`,
   }
 }
 

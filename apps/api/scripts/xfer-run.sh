@@ -21,7 +21,14 @@ finish() { rm -f "$D/key" "$D/known_hosts"; st "end $1"; exit 0; }
 trap 'rm -f "$D/key" "$D/known_hosts"' EXIT
 trap 'st "end cancelled"; rm -f "$D/key" "$D/known_hosts"; exit 0' TERM INT
 
-[ -e "$SRC" ] || { st "error the source $SRC is not there"; finish failed; }
+[ -e "$SRC" ] || { st "error the source is not there any more"; finish failed; }
+# A root that is (or leads through a link to) the whole disk or a system folder is refused before anything runs.
+system_path() { case "$1" in /|/etc|/etc/*|/proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/boot|/boot/*|/root|/root/*|/run|/run/*|/usr|/usr/*|/bin|/bin/*|/sbin|/sbin/*|/lib|/lib/*|/lib32|/lib32/*|/lib64|/lib64/*|/libx32|/libx32/*|/tmp|/tmp/*|/lost+found|/lost+found/*|/snap|/snap/*|/var|/var/*) return 0;; esac; return 1; }
+for r in "${SRC_ROOT:-}" "${DST_ROOT:-}"; do
+  [ -n "$r" ] || continue
+  rr="$(realpath -e -- "$r" 2>/dev/null)" || { st "error an allowed folder is not there any more, so nothing was copied"; finish failed; }
+  system_path "$rr" && { st "error an allowed folder leads to a system folder (through a link?), so nothing was copied"; finish failed; }
+done
 # The real paths (links resolved) must still be inside their allowed folders, checked here, just before rsync.
 inside() { local r p; r="$(realpath -e -- "$2" 2>/dev/null)" || return 1; p="$(realpath -e -- "$1" 2>/dev/null)" || return 1; case "$p/" in "$r"/*) return 0;; esac; return 1; }
 if [ -n "${SRC_ROOT:-}" ]; then inside "$SRC" "$SRC_ROOT" || { st "error the source now leads outside its allowed folder (through a link?), so nothing was copied"; finish failed; }; fi
