@@ -1,0 +1,7 @@
+sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0
+proc /proc proc rw,relatime 0 0
+/dev/mapper/pve-root / ext4 rw,relatime,errors=remount-ro 0 0
+nas.example:/volume1/movies @NAS@/movies nfs4 rw,relatime,vers=4.1,hard 0 0
+nas.example:/volume1/tv @NAS@/tv nfs4 rw,relatime,vers=4.1,hard 0 0
+//nas.example/music @NAS@/music cifs rw,relatime,vers=3.0 0 0
+nas.example:/volume1/old @NAS@-ro/old nfs4 ro,relatime,vers=4.1 0 0

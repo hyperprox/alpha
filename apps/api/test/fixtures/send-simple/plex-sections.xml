@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MediaContainer size="5" allowSync="0" title1="Plex Library">
+<Directory allowSync="1" art="/:/resources/movie-fanart.jpg" key="1" type="movie" title="Movies" agent="tv.plex.agents.movie" scanner="Plex Movie" language="en-US" uuid="aaaa">
+<Location id="1" path="/media/movies" />
+</Directory>
+<Directory allowSync="1" key="2" type="show" title="TV Shows" agent="tv.plex.agents.series" scanner="Plex TV Series" language="en-US" uuid="bbbb">
+<Location id="2" path="/media/tv" />
+</Directory>
+<Directory allowSync="1" key="3" type="artist" title="Music &amp; Concerts" agent="tv.plex.agents.music" scanner="Plex Music" language="en-US" uuid="cccc">
+<Location id="3" path="/media/music" />
+</Directory>
+<Directory allowSync="1" key="4" type="movie" title="Old Films" agent="tv.plex.agents.movie" scanner="Plex Movie" language="en-US" uuid="dddd">
+<Location id="4" path="/media/old" />
+</Directory>
+<Directory allowSync="1" key="5" type="photo" title="Phone Photos" agent="com.plexapp.agents.none" scanner="Plex Photo Scanner" language="xn" uuid="eeee">
+<Location id="5" path="/data/photos" />
+</Directory>
+</MediaContainer>

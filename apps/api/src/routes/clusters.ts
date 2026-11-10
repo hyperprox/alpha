@@ -33,6 +33,8 @@ import { writeRemoteTargets } from '../lib/clusters/monitoring'
 import { prometheusBase } from '../lib/service-health'
 import { updateCluster as updateClusterRow, looksLikeHome, homeAddresses, HOME_DUPLICATE, type ClusterIdentity } from '../lib/clusters/registry'
 import { scanMonitoring, previewMonitoring, applyMonitoring, MonitoringRefusal } from '../lib/clusters/monitoring'
+import { afterCopyScan } from '../lib/clusters/send-simple'
+import { sendRoutes } from './send'
 
 const who = () => currentContext()?.email ?? 'unknown'
 
@@ -386,10 +388,14 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
 
   // ── Files (Send files) ───────────────────────────────────────────────────
 
-  const copies = new CopyRunner(undefined, undefined, m => fastify.log.warn(m))
+  // A copy from the simple flow asks only its own library's Plex to scan (lib/clusters/send-simple.ts).
+  const copies = new CopyRunner(undefined, afterCopyScan, m => fastify.log.warn(m))
   copies.start()
   setCopyKick(() => { void copies.tick() })
   fastify.addHook('onClose', async () => copies.stop())
+
+  // Send files, the simple way: pick what, pick where, Send (routes/send.ts).
+  await fastify.register(sendRoutes)
 
   fastify.get<{ Params: { id: string }; Querystring: { node?: string; path?: string } }>('/:id/files/browse', async (req, reply) => {
     const row = clusterOr404(req.params.id, reply); if (!row) return

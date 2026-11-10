@@ -35,6 +35,7 @@ import { getCredential, setCredential, deleteCredential, deleteProviderCredentia
 import { isUnlocked, cachedSecrets } from '../vault/state'
 import { assertSafeScript } from './monitoring'
 import { auditCredentialUse } from '../audit'
+import { publish, type NotifyEventInput } from '../notify'
 
 // ---------------------------------------------------------------------------
 //  Paths
@@ -149,12 +150,14 @@ export function authorizedLine(rrsync: string, root: string, publicKey: string, 
  * Set up sending from cluster `src` to `dstNode` of cluster `dst`, into `root`. Run once per destination folder.
  * Re-running replaces the key (the old line is removed first).
  */
-export async function setupSending(o: { src: string; dst: string; dstNode: string; root: string; by: string }, runner: NodeRunner = liveNodeRunner): Promise<{ words: string }> {
+export async function setupSending(o: { src: string; dst: string; dstNode: string; root: string; by: string; dstAddress?: string }, runner: NodeRunner = liveNodeRunner): Promise<{ words: string }> {
   const dstRow = clusterRow(o.dst), srcRow = clusterRow(o.src)
   if (!dstRow || !srcRow) throw new ClusterRefusal('No such cluster.', 'not-found')
   const root = rootFor(o.root, dstRow.allowedRoots)
   if (!root || root !== cleanRoot(o.root)) throw new ClusterRefusal(`${o.root} is not one of ${dstRow.name}'s allowed folders. Add it under Edit server -> folders first.`)
-  const dstAddress = runner.linkAddress(o.dst, o.dstNode)
+  // The simple flow passes the private-link address it found the source reaching; otherwise the saved one.
+  if (o.dstAddress !== undefined && !/^(\d{1,3}(\.\d{1,3}){3}|[0-9a-fA-F:]{2,45})$/.test(o.dstAddress)) throw new ClusterRefusal('That private-link address is not an IP address.')
+  const dstAddress = o.dstAddress ?? runner.linkAddress(o.dst, o.dstNode)
   if (!dstAddress) throw new ClusterRefusal(`Save the private-link address that other servers reach ${o.dstNode} on first (Edit server -> Nodes).`)
   const sshAddr = await runner.sshAddress(o.dst, o.dstNode)
   if (!sshAddr) throw new ClusterRefusal(`No address is known for ${o.dstNode}.`)
@@ -399,7 +402,8 @@ let kick: (() => void) | null = null
 export function setCopyKick(fn: (() => void) | null): void { kick = fn }
 export function kickCopies(): void { try { kick?.() } catch { /* the runner's own interval starts it anyway */ } }
 
-export async function startCopy(previewId: string, owner: string, via?: 'assistant'): Promise<JobRow> {
+/** `extra` is kept with the job's preview (the simple flow's library and item name; nothing secret). */
+export async function startCopy(previewId: string, owner: string, via?: 'assistant', extra?: Record<string, unknown>): Promise<JobRow> {
   const p = previews.get(previewId)
   if (!p || p.owner !== owner) throw new ClusterRefusal('No such preview. Preview again.', 'not-found')
   if (Date.now() - p.at > PREVIEW_MS) { previews.delete(previewId); throw new ClusterRefusal('That preview is older than 15 minutes. Preview again.') }
@@ -407,7 +411,7 @@ export async function startCopy(previewId: string, owner: string, via?: 'assista
   const i = p.input
   const row = await jobs.create({
     id: randomUUID(), mode: 'copy', srcCluster: i.src.cluster, srcNode: i.src.node, srcPath: i.src.path, dstCluster: i.dst.cluster, dstNode: i.dst.node, dstPath: i.dst.path,
-    speedKBps: i.speedKBps, plexScan: i.plexScan, state: 'queued', preview: p.result, progress: {}, error: null, attempts: 0, createdBy: owner, startedAt: null, finishedAt: null,
+    speedKBps: i.speedKBps, plexScan: i.plexScan, state: 'queued', preview: extra ? { ...p.result, ...extra } : p.result, progress: {}, error: null, attempts: 0, createdBy: owner, startedAt: null, finishedAt: null,
   })
   await auditCredentialUse('cluster.files.copy', `cluster:${i.dst.cluster}`, { by: owner, from: i.src.cluster, files: p.result.files, ...(via ? { via, ok: true } : {}) })
   return row
@@ -479,7 +483,7 @@ export class CopyRunner {
   private busy = false
   private lastLogged: string | null = null
   private timer: NodeJS.Timeout | null = null
-  constructor(private runner: NodeRunner = liveNodeRunner, private plex: (clusterId: string) => Promise<string | null> = plexScan, private log: (m: string) => void = () => {}) {}
+  constructor(private runner: NodeRunner = liveNodeRunner, private plex: (clusterId: string, job: JobRow) => Promise<string | null> = plexScan, private log: (m: string) => void = () => {}, private notify: (e: NotifyEventInput) => Promise<void> = publish) {}
 
   start(everyMs = 10_000): void { if (!this.timer) { this.timer = setInterval(() => { void this.tick() }, everyMs); this.timer.unref?.() } }
   stop(): void { if (this.timer) clearInterval(this.timer); this.timer = null }
@@ -513,7 +517,9 @@ export class CopyRunner {
       if (!/STARTED|ALREADY-RUNNING/.test(out.output)) throw new Error(`The copy did not start on ${j.srcNode}.`)
       await jobs.update(j.id, { state: 'running', startedAt: j.startedAt ?? new Date(), attempts: j.attempts + 1, error: null, progress: { phase: 'copy' } })
     } catch (e: any) {
-      await jobs.update(j.id, { state: 'failed', error: e?.message ?? String(e), finishedAt: new Date() })
+      const error = plainJobError(e?.message ?? String(e))
+      await jobs.update(j.id, { state: 'failed', error, finishedAt: new Date() })
+      await this.notify(copyEvent(j, 'failed', error, null)).catch(() => undefined)
     }
   }
 
@@ -533,9 +539,11 @@ export class CopyRunner {
     if (end || !p.alive) {
       const state: JobState = end === 'done' ? 'done' : end === 'cancelled' ? 'cancelled' : 'failed'
       let plexNote: string | null = null
-      if (state === 'done' && j.plexScan) plexNote = await this.plex(j.dstCluster).catch((e: any) => `Plex was not asked to scan: ${e?.message ?? e}`)
-      await jobs.update(j.id, { state, progress: { ...progress, percent: state === 'done' ? 100 : progress.percent, plex: plexNote }, error: state === 'done' ? null : err ?? (end ? null : 'The copy stopped without saying why.'), finishedAt: new Date() })
+      if (state === 'done' && j.plexScan) plexNote = await this.plex(j.dstCluster, j).catch((e: any) => `Plex was not asked to scan: ${e?.message ?? e}`)
+      const error = state === 'done' ? null : plainJobError(err ?? (end ? null : 'The copy stopped without saying why.'))
+      await jobs.update(j.id, { state, progress: { ...progress, percent: state === 'done' ? 100 : progress.percent, plex: plexNote }, error, finishedAt: new Date() })
       await this.runner.run(j.srcCluster, j.srcNode, CLEAN_SCRIPT(j.id)).catch(() => undefined)
+      if (state !== 'cancelled') await this.notify(copyEvent(j, state, error, plexNote)).catch(() => undefined)
       return
     }
     await jobs.update(j.id, { progress })
@@ -556,6 +564,30 @@ export class CopyRunner {
     if (!['failed', 'interrupted', 'cancelled'].includes(j.state)) throw new ClusterRefusal('Only a stopped job can be resumed.')
     await recheckJob(j, this.runner)
     return jobs.update(id, { state: 'queued', error: null, finishedAt: null })
+  }
+}
+
+/** rsync's exit codes and the run script's lines, in words the owner can act on. Unknown text is kept as it is. */
+export function plainJobError(e: string | null): string | null {
+  if (!e) return e
+  const code = /rsync (?:stopped with )?code (\d+)/.exec(e)?.[1]
+  if (/no space left|disk full|quota exceeded/i.test(e) || code === '11') return 'The destination could not take the files (it may be full). Free some space there, then Resume: files already copied are kept and skipped.'
+  if (code && ['10', '12', '30', '35', '255'].includes(code)) return 'The connection to the other server dropped and did not come back after several tries. Check that both ends are on, then Resume: files already copied are kept and skipped.'
+  if (code === '23') return 'Some files could not be read here or written there (often a permissions problem on the destination folder). Files that did copy are kept.'
+  if (code === '5' || code === '1') return 'The other server refused the copy (its sending key may have been removed). Set up sending again, then Resume.'
+  return e
+}
+
+/** The notification for a finished or failed copy: names and words only, never a path, key or address. */
+export function copyEvent(j: JobRow, state: JobState, error: string | null, plexNote: string | null): NotifyEventInput {
+  const item = String(j.preview?.item ?? j.srcPath.split('/').pop() ?? 'files')
+  const where = clusterRow(j.dstCluster)?.name ?? 'the other server'
+  const done = state === 'done'
+  return {
+    type: done ? 'files.copy.finished' : 'files.copy.failed', severity: done ? 'info' : 'warning',
+    title: done ? `Copy finished: ${item} to ${where}` : `Copy stopped: ${item} to ${where}`,
+    lines: done ? [`${j.preview?.files ?? 0} file(s) copied and checked.`, ...(plexNote ? [plexNote] : [])] : [error ?? 'The copy stopped.'],
+    plain: [item, where], link: '/clusters', where: 'Command center', fingerprint: `files.copy:${j.id}`,
   }
 }
 

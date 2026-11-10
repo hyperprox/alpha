@@ -161,6 +161,8 @@ const CLUSTERS_RECONFIRM: Array<[string, RegExp]> = [
   ['POST',   /^\/api\/clusters\/[^/]+\/monitoring\/apply$/],
   ['POST',   /^\/api\/clusters\/files\/keys$/],
   ['POST',   /^\/api\/clusters\/[^/]+\/plex$/],
+  // Send files, simple flow: first-time setup sets allowed folders and makes sending keys in one step.
+  ['POST',   /^\/api\/clusters\/[^/]+\/send\/setup$/],
 ]
 
 /**

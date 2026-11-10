@@ -28,12 +28,12 @@ export const isSeverity = (v: unknown): v is Severity => typeof v === 'string' &
 export const isKind = (v: unknown): v is ChannelKind => typeof v === 'string' && (CHANNEL_KINDS as readonly string[]).includes(v)
 export const isFamily = (v: unknown): v is Family => typeof v === 'string' && (FAMILIES as readonly string[]).includes(v)
 
-/** `wizard.job.finished` → jobs. Unknown prefixes have no family (only "all events" channels get them). */
+/** `wizard.job.finished` and `files.copy.failed` → jobs. Unknown prefixes have no family (only "all events" channels get them). */
 export function familyOf(type: string): Family | null {
   const head = type.split('.')[0]
   switch (head) {
     case 'vault': case 'updates': case 'certs': case 'vpn': return head
-    case 'wizard': case 'catalogue': return 'jobs'
+    case 'wizard': case 'catalogue': case 'files': return 'jobs'
     case 'backup': return 'backups'
     case 'alert': return 'resources'
     default: return null
