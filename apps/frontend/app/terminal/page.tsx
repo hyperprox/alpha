@@ -445,7 +445,7 @@ export default function TerminalPage() {
                     </span>
                   </button>
                   <button onClick={() => closeSession(sess.key)} title="Close this pane"
-                    className="flex h-5 w-5 items-center justify-center rounded opacity-0 transition-opacity hover:bg-white/10 group-hover:opacity-100"
+                    className="flex h-5 w-5 items-center justify-center rounded opacity-0 transition-opacity hover:bg-hover group-hover:opacity-100"
                     style={{ color: 'var(--text-dim)' }}>
                     <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={2}>
                       <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
@@ -458,7 +458,7 @@ export default function TerminalPage() {
           <button
             onClick={() => setPalette(true)}
             title="Open a terminal   (Ctrl/⌘ K)"
-            className="flex flex-shrink-0 items-center gap-1.5 px-3 transition-colors hover:bg-white/5"
+            className="flex flex-shrink-0 items-center gap-1.5 px-3 transition-colors hover:bg-hover"
             style={{ color: 'var(--text-dim)' }}>
             <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.8}>
               <path d="M8 3v10M3 8h10" strokeLinecap="round" />
@@ -502,7 +502,7 @@ export default function TerminalPage() {
                   <div className="relative">
                     <button onClick={() => listTmux(active)}
                       title="Sessions already running on this host. Opening one attaches it in its own pane, so tmux is never nested."
-                      className="rounded-md border px-3 py-1.5 text-[13px] transition-colors hover:bg-white/5"
+                      className="rounded-md border px-3 py-1.5 text-[13px] transition-colors hover:bg-hover"
                       style={{ borderColor: 'var(--border-strong)', color: 'var(--text)' }}>
                       Sessions
                     </button>
@@ -516,7 +516,7 @@ export default function TerminalPage() {
                         )}
                         {tmuxMenu.items.length > 1 && (
                           <button onClick={() => attachAllTmux(active, tmuxMenu.items)}
-                            className="mb-1 w-full rounded-md border px-2 py-1.5 text-left text-[13px] transition-colors hover:bg-white/5"
+                            className="mb-1 w-full rounded-md border px-2 py-1.5 text-left text-[13px] transition-colors hover:bg-hover"
                             style={{ borderColor: 'var(--border-strong)', color: ACCENT }}>
                             Open all {tmuxMenu.items.length} {tmuxMenu.items.length > 2 ? 'in a grid' : 'side by side'}
                           </button>
@@ -526,7 +526,7 @@ export default function TerminalPage() {
                           const open = sessions.some(x => x.host.id === active.host.id && x.tmux === t.name)
                           return (
                             <button key={t.name} onClick={() => attachTmux(active, t.name)} disabled={here}
-                              className="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left transition-colors hover:bg-white/5 disabled:cursor-default disabled:hover:bg-transparent">
+                              className="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left transition-colors hover:bg-hover disabled:cursor-default disabled:hover:bg-transparent">
                               <span className="font-mono text-[12px]" style={{ color: here ? 'var(--text-dim)' : 'var(--text)' }}>
                                 {t.name}{here ? ' · this pane' : open ? ' · open' : ''}
                               </span>
@@ -552,17 +552,17 @@ export default function TerminalPage() {
                 )}
                 <button onClick={() => forgetHostKey(active)}
                   title="Clear the pinned host key — do this only when the guest was genuinely rebuilt"
-                  className="rounded-md border px-3 py-1.5 text-[13px] transition-colors hover:bg-white/5"
+                  className="rounded-md border px-3 py-1.5 text-[13px] transition-colors hover:bg-hover"
                   style={{ borderColor: 'var(--border-strong)', color: 'var(--text)' }}>
                   Clear host key
                 </button>
                 <button onClick={() => forgetCredential(active.host)}
-                  className="rounded-md border px-3 py-1.5 text-[13px] transition-colors hover:bg-white/5"
+                  className="rounded-md border px-3 py-1.5 text-[13px] transition-colors hover:bg-hover"
                   style={{ borderColor: 'var(--border-strong)', color: 'var(--text)' }}>
                   Forget login
                 </button>
                 <button onClick={() => setCredentialFor(active.host)}
-                  className="rounded-md border px-3 py-1.5 text-[13px] transition-colors hover:bg-white/5"
+                  className="rounded-md border px-3 py-1.5 text-[13px] transition-colors hover:bg-hover"
                   style={{ borderColor: 'var(--border-strong)', color: 'var(--text)' }}>
                   Change login
                 </button>
@@ -591,7 +591,7 @@ export default function TerminalPage() {
             <div className="hidden rounded border md:flex" style={{ borderColor: 'var(--border-strong)' }}>
               {(['tabs', 'cols', 'rows', 'grid'] as ViewMode[]).map(m => (
                 <button key={m} onClick={() => setView(m)} title={VIEW_LABEL[m]}
-                  className="flex h-7 w-7 items-center justify-center transition-colors first:rounded-l last:rounded-r hover:bg-white/5"
+                  className="flex h-7 w-7 items-center justify-center transition-colors first:rounded-l last:rounded-r hover:bg-hover"
                   style={view === m ? { background: 'color-mix(in srgb, var(--accent) 8%, transparent)', color: ACCENT } : { color: 'var(--text-dim)' }}>
                   <ViewIcon mode={m} />
                 </button>
@@ -600,7 +600,7 @@ export default function TerminalPage() {
 
             <div className="relative">
               <button onClick={() => setLayoutMenu(v => !v)}
-                className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-[13px] transition-colors hover:bg-white/5"
+                className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-[13px] transition-colors hover:bg-hover"
                 style={{ borderColor: 'var(--border-strong)', color: 'var(--text)' }}>
                 Layouts
                 <svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={2}>
@@ -628,7 +628,7 @@ export default function TerminalPage() {
                           </span>
                         </button>
                         <button onClick={() => deleteLayout(l.name)} title={`Delete "${l.name}"`}
-                          className="mr-2 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded opacity-0 transition-opacity hover:bg-white/10 group-hover:opacity-100"
+                          className="mr-2 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded opacity-0 transition-opacity hover:bg-hover group-hover:opacity-100"
                           style={{ color: 'var(--text-dim)' }}>
                           <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={2}>
                             <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
@@ -639,7 +639,7 @@ export default function TerminalPage() {
                     <button
                       onClick={() => { setLayoutMenu(false); setSavingLayout(true) }}
                       disabled={!sessions.length}
-                      className="w-full border-t px-3 py-2 text-left text-[13px] transition-colors hover:bg-white/5 disabled:opacity-40"
+                      className="w-full border-t px-3 py-2 text-left text-[13px] transition-colors hover:bg-hover disabled:opacity-40"
                       style={{ borderColor: 'var(--border)', color: ACCENT }}>
                       Save current arrangement…
                     </button>
@@ -695,7 +695,7 @@ export default function TerminalPage() {
                     {sess.host.name}
                   </span>
                   <button onClick={e => { e.stopPropagation(); closeSession(sess.key) }} title="Close this pane"
-                    className="ml-auto flex h-4 w-4 items-center justify-center rounded hover:bg-white/10"
+                    className="ml-auto flex h-4 w-4 items-center justify-center rounded hover:bg-hover"
                     style={{ color: 'var(--text-dimmer)' }}>
                     <svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={2}>
                       <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />

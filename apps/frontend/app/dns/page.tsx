@@ -795,7 +795,7 @@ export default function DNSPage() {
                           }}>{rec.type}</span>
                         </td>
                         <td className="px-4 py-2.5">
-                          <span className="text-white">{rec.name}</span>
+                          <span style={{ color: "var(--text-bright)" }}>{rec.name}</span>
                           <span className="text-gray-600">.{activeDomain}</span>
                         </td>
                         <td className="px-4 py-2.5">

@@ -174,7 +174,7 @@ export function HostPalette({
                         <button
                           onClick={() => onRemove(host)}
                           title={`Remove ${host.name}`}
-                          className="mr-1 hidden h-5 w-5 flex-shrink-0 items-center justify-center rounded group-hover:flex hover:bg-white/10"
+                          className="mr-1 hidden h-5 w-5 flex-shrink-0 items-center justify-center rounded group-hover:flex hover:bg-hover"
                           style={{ color: 'var(--text-dim)' }}
                         >
                           <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.8}>
@@ -200,7 +200,7 @@ export function HostPalette({
           <span className="font-mono text-[11px]" style={{ color: 'var(--text-dimmest)' }}>↑↓ move · ↵ open · esc close</span>
           <button
             onClick={() => { onClose(); onAddManual() }}
-            className="ml-auto rounded-md border px-3 py-1.5 text-[13px] transition-colors hover:bg-white/5"
+            className="ml-auto rounded-md border px-3 py-1.5 text-[13px] transition-colors hover:bg-hover"
             style={{ borderColor: 'var(--border-strong)', color: 'var(--text)' }}
           >
             + Add a host by hand

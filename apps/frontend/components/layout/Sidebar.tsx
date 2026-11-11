@@ -1,388 +1,114 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+// =============================================================================
+//  HyperProx — the side rail
+//
+//  Grouped navigation with the vault at its foot. On a wide screen it can fold
+//  to icons; under 900 px it becomes a fixed bar with a menu button, and the
+//  same rail slides in as a drawer, so there is one navigation to keep right.
+// =============================================================================
+
+import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { ThemeToggle } from './ThemeToggle'
 import { SessionBadge } from './SessionBadge'
 import { versionLabel } from './version'
+import { NAV, isActive } from './nav'
+import { useSession } from '@/lib/session'
+import s from './shell.module.css'
 
-// ---------------------------------------------------------------------------
-//  Nav items
-// ---------------------------------------------------------------------------
-
-const NAV = [
-  {
-    section: null,
-    items: [
-      { href: '/clusters',       label: 'Command center', icon: () => <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5}><rect x="1.8" y="2.5" width="5.4" height="11" rx="1" /><rect x="8.8" y="2.5" width="5.4" height="11" rx="1" /><path d="M3.4 5.5h2.2M10.4 5.5h2.2" strokeLinecap="round" /></svg> },
-      { href: '/dashboard',      label: 'Dashboard',      icon: DashboardIcon },
-      { href: '/infrastructure', label: 'Infrastructure', icon: InfraIcon },
-      { href: '/ha',             label: 'High availability', icon: () => <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5}><path d="M8 1.8l5 2v4c0 3-2.2 5.3-5 6.4-2.8-1.1-5-3.4-5-6.4v-4l5-2z" strokeLinejoin="round" /><path d="M5.6 8.2l1.7 1.7 3.2-3.4" strokeLinecap="round" strokeLinejoin="round" /></svg> },
-      { href: '/updates',        label: 'Updates',        icon: () => <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5}><path d="M8 11.5V2.5M4.5 6L8 2.5 11.5 6M2.5 10v2.5a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V10" strokeLinecap="round" strokeLinejoin="round" /></svg> },
-    ],
-  },
-  {
-    section: 'WORKSPACE',
-    items: [
-      { href: '/terminal', label: 'Terminal',         icon: TerminalIcon     },
-    ],
-  },
-  {
-    section: 'MANAGE',
-    items: [
-      { href: '/proxy',    label: 'Proxy',        icon: ProxyIcon    },
-      { href: '/dns',      label: 'DNS',          icon: DNSIcon      },
-      { href: '/certificates', label: 'Certificates', icon: CertIcon   },
-      { href: '/vpn', label: 'VPN', icon: () => <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5}><circle cx="3.5" cy="8" r="1.8" /><circle cx="12.5" cy="3.5" r="1.8" /><circle cx="12.5" cy="12.5" r="1.8" /><path d="M5.1 7.2l5.8-2.9M5.1 8.8l5.8 2.9" strokeLinecap="round" /></svg> },
-      { href: '/storage',     label: 'Storage',      icon: StorageIcon     },
-      { href: '/monitoring',   label: 'Monitoring',   icon: MonitoringIcon  },
-    ],
-  },
-  {
-    section: 'INTELLIGENCE',
-    items: [
-      { href: '/ai',       label: 'AI Assistant', icon: AIIcon       },
-    ],
-  },
-  {
-    section: 'EXTEND',
-    items: [
-      { href: '/plugins', label: 'Plug-ins',    icon: PluginIcon   },
-      { href: '/catalogue', label: 'Catalogue', icon: CatalogueIcon },
-    ],
-  },
-  {
-    section: 'SYSTEM',
-    items: [
-      { href: '/settings', label: 'Settings',     icon: SettingsIcon },
-    ],
-  },
-]
-
-// ---------------------------------------------------------------------------
-//  Sidebar
-// ---------------------------------------------------------------------------
+const COLLAPSE_KEY = 'hyperprox-rail'
 
 export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const pathname = usePathname()
+  const { status, email } = useSession()
+  const menuBtn = useRef<HTMLButtonElement>(null)
+  const railRef = useRef<HTMLElement>(null)
+
+  useEffect(() => {
+    try { setCollapsed(localStorage.getItem(COLLAPSE_KEY) === '1') } catch { /* private mode */ }
+  }, [])
+  const setFold = (v: boolean) => {
+    setCollapsed(v)
+    try { localStorage.setItem(COLLAPSE_KEY, v ? '1' : '0') } catch { /* private mode */ }
+  }
 
   // Navigating is the end of the drawer's job. Leaving it open over the page
   // someone just chose is the classic mobile-nav annoyance.
   useEffect(() => { setDrawerOpen(false) }, [pathname])
 
-  // A 220px rail is more than half a phone screen, so below md the same markup
-  // becomes an off-canvas drawer rather than a second, narrower layout to keep
-  // in step with this one.
+  // An open drawer: Escape closes it and focus goes into it, then back to the menu button.
+  useEffect(() => {
+    if (!drawerOpen) return
+    const back = menuBtn.current
+    railRef.current?.querySelector<HTMLElement>('a, button')?.focus()
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setDrawerOpen(false) }
+    window.addEventListener('keydown', onKey)
+    return () => { window.removeEventListener('keydown', onKey); back?.focus() }
+  }, [drawerOpen])
+
+  const vaultState = status && !status.locked && status.user ? 'unlocked' : 'checking'
+
   return (
     <>
-      <header
-        className="hp-mobile-bar fixed inset-x-0 top-0 z-40 flex items-center gap-3 border-b px-4 md:hidden"
-        style={{ background: 'var(--ground-deep)', borderColor: 'var(--border)' }}
-      >
-        <button
-          onClick={() => setDrawerOpen(true)}
-          aria-label="Open navigation"
-          className="flex h-9 w-9 items-center justify-center rounded transition-colors hover:bg-white/5"
-          style={{ color: 'var(--text-muted)' }}
-        >
-          <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.6}>
-            <path d="M2 4h12M2 8h12M2 12h12" strokeLinecap="round" />
-          </svg>
+      <header className={s.phoneBar}>
+        <Link href="/dashboard" className={s.logo} aria-label="HyperProx dashboard">HYPER<i>PROX</i></Link>
+        <button ref={menuBtn} className={s.iconBtn} onClick={() => setDrawerOpen(true)} aria-label="Open navigation" aria-expanded={drawerOpen} aria-controls="hp-rail">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden><path d="M4 7h16M4 12h16M4 17h16" /></svg>
         </button>
-        <span className="font-display font-bold" style={{ fontSize: 20, letterSpacing: '0.12em', color: 'var(--text-bright)' }}>
-          HYPER<span style={{ color: 'var(--accent)' }}>PROX</span>
-        </span>
-        <div className="ml-auto min-w-0"><SessionBadge compact /></div>
       </header>
 
-      {drawerOpen && (
-        <div
-          onClick={() => setDrawerOpen(false)}
-          className="fixed inset-0 z-40 md:hidden"
-          style={{ background: 'rgba(3,6,12,0.7)' }}
-        />
-      )}
+      {drawerOpen && <button className={s.veil} aria-label="Close navigation" tabIndex={-1} onClick={() => setDrawerOpen(false)} />}
 
-    <aside
-      className={`hp-drawer fixed inset-y-0 left-0 z-50 flex flex-col border-r transition-transform duration-300 ease-in-out md:static md:z-auto md:translate-x-0 md:transition-all flex-shrink-0 ${
-        drawerOpen ? 'translate-x-0' : '-translate-x-full'
-      }`}
-      style={{
-        width:       collapsed ? 56 : 236,
-        background:  'var(--ground-deep)',
-        borderColor: 'var(--border)',
-      }}
-    >
-      {/* Logo */}
-      <div
-        className="flex items-center border-b px-3 flex-shrink-0"
-        style={{ height: 56, borderColor: 'var(--border)' }}
-      >
-        {collapsed ? (
-          <div
-            className="w-8 h-8 rounded flex items-center justify-center font-display font-bold text-sm cursor-pointer"
-            style={{ background: 'color-mix(in srgb, var(--accent) 8%, transparent)', color: 'var(--accent)', border: '1px solid color-mix(in srgb, var(--accent) 19%, transparent)' }}
-            onClick={() => setCollapsed(false)}
-          >
-            HP
-          </div>
-        ) : (
-          <div className="flex items-center justify-between w-full">
-            <span className="font-display font-bold" style={{ fontSize: 24, letterSpacing: '0.12em', color: 'var(--text-bright)' }}>
-              HYPER<span style={{ color: 'var(--accent)' }}>PROX</span>
-            </span>
-            <button
-              onClick={() => setCollapsed(true)}
-              className="hidden p-1 rounded transition-colors hover:bg-white/5 md:block"
-              style={{ color: 'var(--text-dimmer)' }}
-            >
-              <CollapseIcon />
+      <aside id="hp-rail" ref={railRef} className={`${s.rail} ${collapsed ? s.railCollapsed : ''} ${drawerOpen ? s.railOpen : ''}`} aria-label="Sidebar">
+        <div className={s.logoRow}>
+          {collapsed
+            ? <Link href="/dashboard" className={s.logoMark} aria-label="HyperProx dashboard">HP</Link>
+            : <Link href="/dashboard" className={s.logo}>HYPER<i>PROX</i><small>CONTROL PLANE</small></Link>}
+          <button className={`${s.ghostBtn} ${s.collapseBtn}`} onClick={() => setFold(!collapsed)}
+            aria-label={collapsed ? 'Expand the side menu' : 'Fold the side menu to icons'} title={collapsed ? 'Expand' : 'Fold to icons'}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden>
+              <path d={collapsed ? 'M9 5l7 7-7 7' : 'M15 5l-7 7 7 7'} />
+            </svg>
+          </button>
+          {drawerOpen && (
+            <button className={s.ghostBtn} onClick={() => setDrawerOpen(false)} aria-label="Close navigation">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden><path d="M6 6l12 12M18 6 6 18" /></svg>
             </button>
-            <button
-              onClick={() => setDrawerOpen(false)}
-              aria-label="Close navigation"
-              className="p-1 rounded transition-colors hover:bg-white/5 md:hidden"
-              style={{ color: 'var(--text-dimmer)' }}
-            >
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.8}>
-                <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
-              </svg>
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Nav */}
-      <nav className="flex-1 overflow-y-auto py-3 space-y-1">
-        {NAV.map((group, gi) => (
-          <div key={gi} className={gi > 0 ? 'mt-4' : ''}>
-            {group.section && !collapsed && (
-              <div
-                className="px-4 pb-1 font-mono"
-                style={{ color: 'var(--text-dimmer)', fontSize: 10.5, letterSpacing: '0.14em' }}
-              >
-                {group.section}
-              </div>
-            )}
-            {group.section && collapsed && <div className="my-2 mx-3 border-t" style={{ borderColor: 'var(--border)' }} />}
-
-            {group.items.map(item => {
-              const active = pathname === item.href || (item.href !== '/dashboard' && pathname.startsWith(item.href))
-              return (
-                <Link key={item.href} href={item.href}>
-                  <div
-                    className="flex items-center gap-3 mx-2 rounded-md transition-all duration-150 cursor-pointer group"
-                    style={{
-                      padding:    collapsed ? '8px 10px' : '8px 10px',
-                      background: active ? 'color-mix(in srgb, var(--accent) 7%, transparent)' : 'transparent',
-                      border:     `1px solid ${active ? 'color-mix(in srgb, var(--accent) 15%, transparent)' : 'transparent'}`,
-                      color:      active ? 'var(--accent)' : 'var(--text-soft)',
-                    }}
-                    onMouseEnter={e => { if (!active) (e.currentTarget as HTMLElement).style.color = 'var(--text-bright)' }}
-                    onMouseLeave={e => { if (!active) (e.currentTarget as HTMLElement).style.color = 'var(--text-soft)' }}
-                  >
-                    <div className="flex-shrink-0 w-4 h-4" style={{ color: active ? 'var(--accent)' : 'inherit' }}>
-                      <item.icon />
-                    </div>
-                    {!collapsed && (
-                      <span className="truncate" style={{ fontSize: 15, fontWeight: active ? 600 : 500, color: active ? 'var(--accent)' : 'inherit' }}>
-                        {item.label}
-                      </span>
-                    )}
-                    {active && !collapsed && (
-                      <div className="ml-auto w-1 h-4 rounded-full" style={{ background: 'var(--accent)', boxShadow: '0 0 6px var(--accent)' }} />
-                    )}
-                  </div>
-                </Link>
-              )
-            })}
-          </div>
-        ))}
-      </nav>
-
-      {/* Signed-in user: email, role, Lock now */}
-      {!collapsed && (
-        <div className="border-t px-4 py-3 flex-shrink-0" style={{ borderColor: 'var(--border)' }}>
-          <SessionBadge />
+          )}
         </div>
-      )}
 
-      {/* Footer */}
-      <div
-        className="flex items-center border-t px-3 flex-shrink-0"
-        style={{ height: 44, borderColor: 'var(--border)' }}
-      >
-        {collapsed ? (
-          <div className="flex flex-col items-center gap-1">
-            <button
-              onClick={() => setCollapsed(false)}
-              className="w-8 h-8 flex items-center justify-center rounded transition-colors hover:bg-white/5"
-              style={{ color: 'var(--text-faint)' }}
-            >
-              <ExpandIcon />
-            </button>
-            <ThemeToggle collapsed />
-          </div>
-        ) : (
-          <div className="flex items-center gap-2 w-full">
-            <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: 'var(--good)', boxShadow: '0 0 4px var(--good)' }} />
-            <div className="min-w-0 leading-tight">
-              <div className="text-xs font-mono truncate" style={{ color: 'var(--text-dimmer)' }}>{process.env.NEXT_PUBLIC_CLUSTER_NAME ?? 'My Cluster'}</div>
-              <div className="font-mono truncate" style={{ fontSize: 11, color: 'var(--text-dim)' }} title="HyperProx version and build commit">{versionLabel()}</div>
+        <nav className={s.nav} aria-label="Main">
+          {NAV.map((group, gi) => (
+            <div key={gi} className={s.nav} role="group" aria-label={group.section ?? 'Overview'}>
+              {group.section && (collapsed ? <div className={s.navRule} aria-hidden /> : <div className={s.navHead} aria-hidden>{group.section}</div>)}
+              {group.items.map(item => {
+                const on = isActive(pathname, item.href)
+                return (
+                  <Link key={item.href} href={item.href} className={s.navLink} aria-current={on ? 'page' : undefined} title={collapsed ? item.label : undefined}>
+                    {item.icon}<span>{item.label}</span>
+                  </Link>
+                )
+              })}
             </div>
-            <div className="ml-auto"><ThemeToggle collapsed={false} /></div>
+          ))}
+        </nav>
+
+        <div className={s.vault} aria-live="polite">
+          <div className={s.vaultHead}>
+            <i className={s.vaultDot} data-state={vaultState} aria-hidden />
+            {collapsed
+              ? <span className={s.srOnly}>{vaultState === 'unlocked' ? 'Vault unlocked' : 'Checking the vault'}</span>
+              : <div style={{ minWidth: 0 }}>
+                  <b>{vaultState === 'unlocked' ? 'Vault unlocked' : 'Checking the vault…'}</b>
+                  <div className={s.vaultMeta} title="HyperProx version and build commit">{versionLabel()}</div>
+                </div>}
           </div>
-        )}
-      </div>
-    </aside>
+          {!collapsed && email && <SessionBadge />}
+        </div>
+      </aside>
     </>
-  )
-}
-
-// ---------------------------------------------------------------------------
-//  Icons — inline SVGs, 16x16
-// ---------------------------------------------------------------------------
-
-
-function TerminalIcon() {
-  return (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5}>
-      <rect x="1" y="2.5" width="14" height="11" rx="1.5" />
-      <path d="M4 6.5l2 1.75-2 1.75" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M8.5 10.75h3.5" strokeLinecap="round" />
-    </svg>
-  )
-}
-
-function CatalogueIcon(p: any) {
-  return (
-    <svg {...p} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5}>
-      <path d="M2 5.5L8 2.5l6 3v5L8 13.5l-6-3v-5z" strokeLinejoin="round" />
-      <path d="M2 5.5L8 8.5l6-3M8 8.5v5" strokeLinejoin="round" />
-    </svg>
-  )
-}
-
-function PluginIcon() {
-  return (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5}>
-      <path d="M6 1.5v3M10 1.5v3" strokeLinecap="round" />
-      <rect x="3.5" y="4.5" width="9" height="5" rx="1" />
-      <path d="M8 9.5v3a2 2 0 0 0 2 2h1" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-
-function InfraIcon() {
-  return (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5}>
-      <rect x="1" y="10" width="4" height="5" rx="0.5" />
-      <rect x="6" y="7" width="4" height="8" rx="0.5" />
-      <rect x="11" y="4" width="4" height="11" rx="0.5" />
-      <path d="M1 8l2-3 3 2 3-4 3-2" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-
-function DashboardIcon() {
-  return (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5}>
-      <rect x="1" y="1" width="6" height="6" rx="1" />
-      <rect x="9" y="1" width="6" height="6" rx="1" />
-      <rect x="1" y="9" width="6" height="6" rx="1" />
-      <rect x="9" y="9" width="6" height="6" rx="1" />
-    </svg>
-  )
-}
-
-function ProxyIcon() {
-  return (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5}>
-      <circle cx="3" cy="8" r="2" />
-      <circle cx="13" cy="8" r="2" />
-      <path d="M5 8h6" />
-      <path d="M8 3v2M8 11v2" />
-    </svg>
-  )
-}
-
-function DNSIcon() {
-  return (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5}>
-      <circle cx="8" cy="8" r="6.5" />
-      <path d="M8 1.5c-2 2-3 4-3 6.5s1 4.5 3 6.5" />
-      <path d="M8 1.5c2 2 3 4 3 6.5s-1 4.5-3 6.5" />
-      <path d="M1.5 8h13" />
-      <path d="M2 5h12M2 11h12" />
-    </svg>
-  )
-}
-
-function CertIcon() {
-  return (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5}>
-      <rect x="1.5" y="2" width="13" height="9" rx="1.2" />
-      <path d="M4.5 5h7M4.5 7.5h4" strokeLinecap="round" />
-      <circle cx="11" cy="11.5" r="2" />
-      <path d="M9.9 13.2L9.5 15l1.5-.8 1.5.8-.4-1.8" strokeLinejoin="round" strokeLinecap="round" />
-    </svg>
-  )
-}
-
-function StorageIcon() {
-  return (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5}>
-      <ellipse cx="8" cy="4" rx="6" ry="2" />
-      <path d="M2 4v4c0 1.1 2.7 2 6 2s6-.9 6-2V4" />
-      <path d="M2 8v4c0 1.1 2.7 2 6 2s6-.9 6-2V8" />
-    </svg>
-  )
-}
-
-function AIIcon() {
-  return (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5}>
-      <path d="M8 2a3 3 0 0 1 3 3v1h1a2 2 0 0 1 0 4h-1v1a3 3 0 0 1-6 0v-1H4a2 2 0 0 1 0-4h1V5a3 3 0 0 1 3-3z" />
-      <circle cx="6.5" cy="7" r=".5" fill="currentColor" />
-      <circle cx="9.5" cy="7" r=".5" fill="currentColor" />
-    </svg>
-  )
-}
-
-function SettingsIcon() {
-  return (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5}>
-      <circle cx="8" cy="8" r="2.5" />
-      <path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M3.05 12.95l1.41-1.41M11.54 4.46l1.41-1.41" />
-    </svg>
-  )
-}
-
-function MonitoringIcon() {
-  return (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5}>
-      <polyline points="1,11 4,7 7,9 10,4 13,6" strokeLinecap="round" strokeLinejoin="round"/>
-      <path d="M1 14h14" strokeLinecap="round"/>
-      <circle cx="13" cy="6" r="1.5" fill="currentColor" stroke="none"/>
-    </svg>
-  )
-}
-
-function CollapseIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth={1.5}>
-      <path d="M9 2L4 7l5 5" />
-    </svg>
-  )
-}
-
-function ExpandIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth={1.5}>
-      <path d="M5 2l5 5-5 5" />
-    </svg>
   )
 }

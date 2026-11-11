@@ -95,7 +95,7 @@ function DataTable({ table, storageKey, force }: {
         <button
           onClick={() => setOpen(!open)}
           aria-expanded={open}
-          className="flex items-center gap-2 text-left transition-colors hover:text-white">
+          className="flex items-center gap-2 text-left transition-colors hover:text-[var(--text-bright)]">
           <span aria-hidden className="font-mono text-[10px] transition-transform"
             style={{ color: 'var(--text-dim)', display: 'inline-block',
                      transform: open ? 'rotate(90deg)' : 'none' }}>▶</span>
@@ -146,7 +146,7 @@ function DataTable({ table, storageKey, force }: {
             </thead>
             <tbody>
               {rows.map((r, i) => (
-                <tr key={i} className="transition-colors hover:bg-white/[0.03]">
+                <tr key={i} className="transition-colors hover:bg-hover">
                   {table.columns.map(c => {
                     const v = String(r[c.key] ?? '—')
                     return (
@@ -291,7 +291,7 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
       {tableCount > 1 && (
         <button
           onClick={() => { setForce(f => (f === 'open' ? 'closed' : 'open')); setTimeout(() => setForce(null), 0) }}
-          className="h-10 self-start rounded-md border px-4 text-sm transition-colors hover:bg-white/5"
+          className="h-10 self-start rounded-md border px-4 text-sm transition-colors hover:bg-hover"
           style={{ borderColor: 'var(--border-strong)', color: 'var(--text)', background: 'transparent' }}>
           Expand / collapse all
         </button>
@@ -315,7 +315,7 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
             {everySeconds > 0 && (
               <button onClick={() => setLive(!live)} aria-pressed={live}
                 title={live ? `Refreshing every ${everySeconds}s — click to pause` : 'Auto-refresh is off'}
-                className="flex h-10 items-center gap-2 rounded-md border px-4 font-mono text-xs uppercase tracking-[0.1em] transition-colors hover:bg-white/5"
+                className="flex h-10 items-center gap-2 rounded-md border px-4 font-mono text-xs uppercase tracking-[0.1em] transition-colors hover:bg-hover"
                 style={{ borderColor: live ? 'color-mix(in srgb, var(--accent) 40%, transparent)' : 'var(--border-strong)',
                          color: live ? 'var(--accent)' : 'var(--text)', background: 'transparent' }}>
                 <span aria-hidden className={live ? 'animate-pulse' : ''} style={{ width: 8, height: 8, borderRadius: 999, display: 'inline-block',

@@ -173,7 +173,7 @@ function SettingsDialog({ plugin, onSave, onClose }: {
 
         <div className="flex justify-end gap-2 border-t px-6 py-4" style={{ borderColor: BORDER }}>
           <button type="button" onClick={onClose}
-            className="h-10 rounded-md border px-5 text-sm transition-colors hover:bg-white/5"
+            className="h-10 rounded-md border px-5 text-sm transition-colors hover:bg-hover"
             style={{ borderColor: 'var(--border-strong)', color: 'var(--text)', background: 'transparent' }}>Cancel</button>
           <button type="submit"
             className="h-10 rounded-md px-5 text-sm font-semibold transition-opacity hover:opacity-85"
@@ -434,14 +434,14 @@ export default function PluginsPage() {
                   <div className="ml-auto flex items-center gap-2">
                     {p.configured && p.hasDetail && (
                       <Link href={`/plugins/${p.id}`}
-                        className="inline-flex h-9 items-center rounded-md border px-4 text-sm transition-colors hover:bg-white/5"
+                        className="inline-flex h-9 items-center rounded-md border px-4 text-sm transition-colors hover:bg-hover"
                         style={{ borderColor: ACCENT, color: ACCENT, background: 'transparent' }}>
                         Open in full
                       </Link>
                     )}
                     {p.configured && (
                       <button onClick={() => readOne(p.id)} disabled={busy[p.id]}
-                        className="h-9 rounded-md border px-4 text-sm transition-colors hover:bg-white/5 disabled:opacity-40"
+                        className="h-9 rounded-md border px-4 text-sm transition-colors hover:bg-hover disabled:opacity-40"
                         style={{ borderColor: 'var(--border-strong)', color: 'var(--text)', background: 'transparent' }}>
                         Refresh
                       </button>
@@ -489,7 +489,7 @@ export default function PluginsPage() {
                   <p className="mb-4 text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>{i.would}</p>
                   <div className="mt-auto flex items-center gap-2">
                     <a href={requestUrl(repo, i)} target="_blank" rel="noreferrer"
-                      className="inline-flex h-9 items-center rounded-md border px-4 text-sm transition-colors hover:bg-white/5"
+                      className="inline-flex h-9 items-center rounded-md border px-4 text-sm transition-colors hover:bg-hover"
                       style={{ borderColor: 'var(--border-strong)', color: 'var(--text)' }}>
                       Request this
                     </a>

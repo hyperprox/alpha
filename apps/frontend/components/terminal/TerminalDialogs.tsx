@@ -55,7 +55,7 @@ function Shell({ title, subtitle, submitLabel = 'Save', onSubmit, onClose, child
           <button
             type="button"
             onClick={onClose}
-            className="h-10 rounded-md border px-5 text-[14px] transition-colors hover:bg-white/5"
+            className="h-10 rounded-md border px-5 text-[14px] transition-colors hover:bg-hover"
             style={{ borderColor: 'var(--border-strong)', color: 'var(--text)' }}
           >
             Cancel
