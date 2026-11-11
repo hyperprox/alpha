@@ -371,17 +371,27 @@ test('script guard: reading the cluster record is allowed; writing it, or anythi
   assert.throws(() => assertSafeScript('cat -- /etc/pve/priv/known_hosts; cp x /etc/pve/nodes/a/ssh_known_hosts'))
 })
 
+test('review N3: a record-reading script may hold nothing but the reads, its markers and true (no cat shadowing)', () => {
+  const ok = 'cat -- /etc/pve/priv/known_hosts 2>/dev/null'
+  for (const bad of [`alias cat=evil`, `cat() { echo forged; }`, `PATH=/tmp/x:$PATH`, `enable -n cat`, `echo forged`, `echo "@@hpx own"`, `source /tmp/x`])
+    assert.throws(() => assertSafeScript(`${bad}\n${ok}`), undefined, bad)
+  assert.doesNotThrow(() => assertSafeScript(clusterRecordScript(['node1', 'node-2.lan'])))
+  assert.doesNotThrow(() => assertSafeScript('cat -- /etc/pve/priv/known_hosts 2>/dev/\\\nnull'), 'joined, it is the exact read')
+})
+
 test('review 6: record reads are allowed only as exact whole lines, never glued by a continuation or a pipe', () => {
   const ok = 'cat -- /etc/pve/priv/known_hosts 2>/dev/null'
-  assert.doesNotThrow(() => assertSafeScript(`echo a\n  ${ok}\ntrue`))
+  assert.doesNotThrow(() => assertSafeScript(`echo "@@hpx priv"\n  ${ok}\ntrue`))
   for (const bad of [
     'cat -- /etc/pve/priv/known_hosts',                                  // not the exact form
     `echo x | ${ok}`, `x & ${ok}`, `( ${ok} )`, `y=$(${ok})`, `y=\`${ok}\``, // part of a longer command
     `${ok} > /tmp/x`, `${ok}; rm -f /etc/pve/priv/known_hosts`,
     `tee \\\n${ok}`,                                                     // a continuation glues it to tee
-    `echo hi \\\ntrue\n${ok}`,                                           // any continuation in a reading script
+    `echo hi \\\ntrue\n${ok}`,                                           // joined as bash reads it: "echo hi true" is not allowed
   ]) assert.throws(() => assertSafeScript(bad), undefined, bad)
-  // Scripts that do not read the record keep their continuations (the monitoring install uses them).
+  // Scripts that do not read the record keep their continuations (the monitoring install uses them); they are
+  // checked joined, as bash reads them.
+  assert.throws(() => assertSafeScript('echo /etc/p\\\nve/priv/authkey.key'), undefined, 'a path split over a continuation is still seen')
   assert.doesNotThrow(() => assertSafeScript('apt-get -s install x \\\n  >/dev/null'))
 })
 
