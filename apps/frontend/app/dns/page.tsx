@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { alpha } from '@/lib/theme'
+import { Details, GlowBars, HudHeader, Page, Panel, Pill, styles, type StatChip } from '@/components/visual/kit'
 import { GlobeIcon, SplitIcon, MailIcon, CheckCircleIcon, WrenchIcon, LockIcon } from '@/components/dns/icons'
 
 // ---------------------------------------------------------------------------
@@ -247,7 +248,7 @@ function RecordModal({ record, domain, onClose, onSave, wanIp }: {
   // -------------------------------------------------------------------------
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(4px)' }}>
+      style={{ background: 'var(--scrim)', backdropFilter: 'blur(4px)' }}>
       <div className="w-full max-w-lg rounded-xl border overflow-hidden"
         style={{ background: 'var(--surface-raised)', borderColor: 'color-mix(in srgb, var(--accent) 15%, transparent)', boxShadow: '0 0 40px color-mix(in srgb, var(--accent) 3%, transparent)' }}>
 
@@ -510,7 +511,7 @@ function DeleteModal({ record, domain, onClose, onDelete }: {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(4px)' }}>
+      style={{ background: 'var(--scrim)', backdropFilter: 'blur(4px)' }}>
       <div className="w-full max-w-sm rounded-xl border p-6"
         style={{ background: 'var(--surface-raised)', borderColor: 'color-mix(in srgb, var(--crit-2) 15%, transparent)' }}>
         <h2 className="font-display mb-2" style={{ color: 'var(--crit-2)', fontSize: 22, fontWeight: 600 }}>Delete Record</h2>
@@ -543,35 +544,38 @@ function DomainCard({ domain, selected, recordCount, onSelect }: {
   onSelect:    () => void
 }) {
   const days = daysUntilExpiry(domain.expires)
-  const expiryColor = days === null ? 'var(--text-dimmer)' : days < 30 ? 'var(--crit-2)' : days < 90 ? 'var(--warn-2)' : 'var(--good)'
+  const expiryColor = days === null ? 'var(--text-dim)' : days < 30 ? 'var(--crit)' : days < 90 ? 'var(--warn)' : 'var(--good)'
+  const active = domain.status === 'ACTIVE'
 
   return (
-    <button onClick={onSelect}
-      className="p-4 rounded-lg border text-left transition-all w-full"      style={{
-        background:   selected ? 'color-mix(in srgb, var(--accent) 7%, transparent)' : 'var(--surface)',
-        borderColor:  selected ? 'color-mix(in srgb, var(--accent) 35%, transparent)' : 'var(--border-soft)',
-        boxShadow:    selected ? '0 0 12px color-mix(in srgb, var(--accent) 3%, transparent)' : 'none',
+    <button onClick={onSelect} aria-pressed={selected}
+      className="p-4 rounded-lg border text-left transition-all w-full"
+      style={{
+        background:   selected ? alpha('var(--accent)', 10) : 'var(--ground-deep)',
+        borderColor:  selected ? alpha('var(--accent)', 55) : 'var(--border-soft)',
+        boxShadow:    selected ? `0 0 14px ${alpha('var(--accent)', 18)}` : 'none',
       }}>
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full" style={{
-            background:  domain.status === 'ACTIVE' ? 'var(--good)' : 'var(--crit-2)',
-            boxShadow:   domain.status === 'ACTIVE' ? '0 0 5px var(--good)' : 'none',
+      <div className="flex items-center justify-between mb-2 gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="w-2 h-2 rounded-full flex-shrink-0" aria-hidden style={{
+            background:  active ? 'var(--good)' : 'var(--crit)',
+            boxShadow:   active ? `0 0 5px ${alpha('var(--good)', 80)}` : 'none',
           }}/>
-          <span className="font-mono text-sm font-semibold" style={{ color: selected ? 'var(--accent)' : 'var(--text-bright)' }}>
+          <span className="font-mono text-sm font-semibold" style={{ color: selected ? 'var(--accent)' : 'var(--text-bright)', overflowWrap: 'anywhere' }}>
             {domain.domain}
           </span>
         </div>
-        {domain.locked && <span className="flex text-gray-600" title="Locked"><LockIcon size={13} /></span>}
+        {domain.locked && <span className="flex" style={{ color: 'var(--text-muted)' }} title="Locked"><LockIcon size={13} /><span className="sr-only">Locked</span></span>}
       </div>
-      <div className="flex items-center gap-3 text-xs">
-        <span style={{ color: 'var(--text-dim)' }}>{recordCount} records</span>
+      <div className="flex items-center gap-3 text-xs flex-wrap">
+        <span style={{ color: 'var(--text-muted)' }}>{active ? 'active' : domain.status.toLowerCase()}</span>
+        <span style={{ color: 'var(--text-muted)' }}>{recordCount} records</span>
         {days !== null && (
           <span style={{ color: expiryColor }}>
-            {days > 0 ? `expires ${days}d` : 'EXPIRED'}
+            {days > 0 ? `expires in ${days}d` : 'EXPIRED'}
           </span>
         )}
-        {domain.renewAuto && <span style={{ color: 'var(--good)', fontSize: 9 }}>AUTO-RENEW</span>}
+        {domain.renewAuto && <span style={{ color: 'var(--good)', fontSize: 10 }}>AUTO-RENEW</span>}
       </div>
     </button>
   )
@@ -666,179 +670,183 @@ export default function DNSPage() {
   const types = [...new Set(records.map(r => r.type))].sort()
 
   if (loading) return (
-    <div className="min-h-full flex items-center justify-center" style={{ background: 'var(--ground)' }}>
-      <div className="text-sm animate-pulse" style={{ color: 'var(--text-dim)' }}>loading DNS...</div>
-    </div>
+    <Page>
+      <Panel title="DNS"><p className={`${styles.empty} animate-pulse`} role="status">loading DNS...</p></Panel>
+    </Page>
   )
 
   if (error) return (
-    <div className="min-h-full flex items-center justify-center" style={{ background: 'var(--ground)' }}>
-      <div className="text-center">
-        <div className="font-display mb-1" style={{ color: 'var(--crit)', fontSize: 22, fontWeight: 600 }}>Failed to connect to GoDaddy</div>
-        <div className="font-mono text-xs" style={{ color: 'var(--text-dim)' }}>{error}</div>
-        <div className="text-sm mt-2" style={{ color: 'var(--text-dimmer)' }}>Check Settings → DNS → GoDaddy</div>
-      </div>
-    </div>
+    <Page>
+      <Panel title="DNS">
+        <div role="alert">
+          <div className="font-display" style={{ color: 'var(--crit)', fontSize: 22, fontWeight: 600 }}>Failed to connect to GoDaddy</div>
+          <div className="font-mono text-xs" style={{ color: 'var(--text-muted)' }}>{error}</div>
+          <div className="text-sm mt-2" style={{ color: 'var(--text-dim)' }}>Check Settings → DNS → GoDaddy</div>
+        </div>
+      </Panel>
+    </Page>
   )
 
+  // Chips: how much DNS there is, and the soonest domain expiry (the one date that can hurt).
+  const soonest = domains
+    .map(d => ({ d, days: daysUntilExpiry(d.expires) }))
+    .filter((x): x is { d: Domain; days: number } => x.days !== null)
+    .sort((a, b) => a.days - b.days)[0]
+  const chips: StatChip[] = [
+    { label: 'domains', value: domains.length },
+    { label: 'records here', value: records.length },
+  ]
+  if (wanIP) chips.push({ label: 'WAN address', value: wanIP })
+  if (soonest) chips.push({ label: 'next expiry', value: soonest.days > 0 ? `${soonest.days}d` : 'expired', tone: soonest.days < 30 ? 'crit' : soonest.days < 90 ? 'warn' : 'good' })
+
+  const aRecords = records.filter(r => r.type === 'A')
+  const offWan = wanIP ? aRecords.filter(r => r.data !== wanIP).length : 0
+
+  // How many records of each type this domain has: the shape of the zone at a glance.
+  const typeBars = types.map(tp => ({
+    key: tp, label: tp, value: records.filter(r => r.type === tp).length,
+    text: String(records.filter(r => r.type === tp).length),
+  }))
+
   return (
-    <div className="min-h-full p-4 sm:p-8 lg:p-10" style={{ background: 'var(--ground)' }}>
+    <Page>
+      <HudHeader
+        eyebrow="GoDaddy"
+        title={activeDomain ? `${activeDomain}: ${records.length} record${records.length === 1 ? '' : 's'}` : `${domains.length} domain${domains.length === 1 ? '' : 's'}`}
+        icon="router"
+        level={2}
+        chips={chips}
+        label="DNS overview"
+        actions={activeDomain ? (
+          <>
+            <button onClick={runDDNS} disabled={ddnsRunning} className={`${styles.btn} ${styles.btnWarn}`}>
+              {ddnsRunning ? '↻ Updating...' : '↻ DDNS Update'}
+            </button>
+            <button onClick={() => setEditRecord(null)} className={`${styles.btn} ${styles.btnPri}`}>+ New Record</button>
+          </>
+        ) : undefined}
+      >
+        {lastSync && <span className="text-xs" style={{ color: 'var(--text-muted)' }}>synced {lastSync.toLocaleTimeString()}</span>}
+      </HudHeader>
 
-      {/* Header */}
-      <div className="flex items-end justify-between mb-8 flex-wrap gap-4">
-        <div>
-          <div className="font-mono uppercase mb-2" style={{ fontSize: 11, letterSpacing: '0.14em', color: 'var(--accent)' }}>GoDaddy</div>
-          <h1 className="font-display" style={{ fontSize: 36, fontWeight: 700, color: 'var(--text-bright)', lineHeight: 1.15 }}>DNS Manager</h1>
-        </div>
-        <div className="flex items-center gap-3">
-          {wanIP && (
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-xs" style={{ background: 'var(--ground-deep)', border: '1px solid var(--border-strong)' }}>
-              <span style={{ color: 'var(--text-dim)' }}>WAN</span>
-              <span className="font-mono" style={{ color: 'var(--accent)' }}>{wanIP}</span>
-            </div>
-          )}
-          {lastSync && <span className="text-xs" style={{ color: 'var(--text-dim)' }}>synced {lastSync.toLocaleTimeString()}</span>}
-        </div>
-      </div>
+      {ddnsResult && (
+        <div className={styles.callout} role="status" style={{ color: 'var(--good)' }}>✓ {ddnsResult}</div>
+      )}
 
-      <div className="flex flex-col gap-5 lg:flex-row">
-
-        {/* Domain list */}
-        <div className="w-full flex-shrink-0 space-y-2 lg:w-64">
-          <div className="font-mono uppercase mb-3" style={{ fontSize: 11, letterSpacing: '0.14em', color: 'var(--text-dim)' }}>
-            Domains ({domains.length})
-          </div>
+      <Panel title="Domains" sub={`${domains.length} at the provider`}>
+        <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 15rem), 1fr))' }}>
           {domains.map(d => (
             <DomainCard key={d.domain} domain={d} selected={activeDomain === d.domain}
               recordCount={recordCounts[d.domain] ?? 0}
               onSelect={() => setActiveDomain(d.domain)}/>
           ))}
         </div>
+      </Panel>
 
-        {/* Records panel */}
-        <div className="flex-1 min-w-0">
-          {activeDomain && (
-            <>
-              {/* Domain toolbar */}
-              <div className="flex items-center gap-3 mb-4 flex-wrap">
-                <div className="flex gap-1">
-                  <button key="all" onClick={() => setTypeFilter('all')}
-                    className="text-xs font-mono px-2.5 py-1.5 rounded-md" style={{
-                      background: typeFilter === 'all' ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'transparent',
-                      color:      typeFilter === 'all' ? 'var(--accent)'   : 'var(--text-dim)',
-                      border:     `1px solid ${typeFilter === 'all' ? 'var(--accent)' : 'var(--border-strong)'}`,
-                    }}>All</button>
-                  {types.map(t => (
-                    <button key={t} onClick={() => setTypeFilter(t)}
-                      className="text-xs font-mono px-2.5 py-1.5 rounded" style={{
-                        background: typeFilter === t ? `${alpha(TYPE_COLORS[t], 8)}` : 'transparent',
-                        color:      typeFilter === t ? TYPE_COLORS[t]        : 'var(--text-dim)',
-                        border:     `1px solid ${typeFilter === t ? TYPE_COLORS[t]+'30' : 'var(--text-faint)'}`,
-                      }}>{t}</button>
-                  ))}
-                </div>
-
-                <input type="text" placeholder="Search name or value..." value={search}
-                  onChange={e => setSearch(e.target.value)}
-                  className="text-sm px-3 rounded-md outline-none w-48 focus:border-[var(--accent)]"
-                  style={{ height: 36, background: 'var(--ground-deep)', border: '1px solid var(--border-strong)', color: 'var(--text-bright)', caretColor: 'var(--accent)' }}/>
-
-                <span className="text-xs" style={{ color: 'var(--text-dim)' }}>{filtered.length} records</span>
-
-                <div className="ml-auto flex gap-2">
-                  {/* DDNS button */}
-                  <button onClick={runDDNS} disabled={ddnsRunning}
-                    className="text-sm px-4 rounded-md transition-all flex items-center gap-1.5"
-                    style={{ height: 36, background: 'transparent', color: 'var(--warn)', border: '1px solid var(--warn)', opacity: ddnsRunning ? 0.5 : 1 }}>
-                    {ddnsRunning ? '↻ Updating...' : '↻ DDNS Update'}
-                  </button>
-                  {/* New record */}
-                  <button onClick={() => setEditRecord(null)}
-                    className="text-sm px-4 rounded-md transition-all flex items-center gap-1.5"
-                    style={{ height: 36, background: 'var(--accent)', color: 'var(--accent-ink)', fontWeight: 600, border: 'none' }}>
-                    + New Record
-                  </button>
-                </div>
+      {activeDomain && (
+        <Panel title="Shape of this zone" sub={activeDomain}>
+          {recLoading ? <p className={`${styles.empty} animate-pulse`}>Loading records...</p>
+            : records.length === 0 ? <p className={styles.empty}>No records in this domain.</p>
+            : (
+              <div className="flex flex-col gap-4">
+                <GlowBars items={typeBars} label="Records by type" />
+                {wanIP && aRecords.length > 0 && (
+                  <div className={styles.row}>
+                    <Pill tone="good">{aRecords.length - offWan} A records point at the WAN address</Pill>
+                    {offWan > 0 && <Pill tone="warn" title="A records whose value is not the current WAN address">{offWan} point elsewhere</Pill>}
+                  </div>
+                )}
               </div>
+            )}
+        </Panel>
+      )}
 
-              {/* DDNS result */}
-              {ddnsResult && (
-                <div className="mb-3 px-3 py-2 rounded text-sm" style={{ background: 'color-mix(in srgb, var(--good) 6%, transparent)', color: 'var(--good)', border: '1px solid color-mix(in srgb, var(--good) 19%, transparent)' }}>
-                  ✓ {ddnsResult}
-                </div>
-              )}
+      {activeDomain && (
+        <Details summary="Records" sub="exact rows: filter, edit, delete" open>
+          {/* Domain toolbar */}
+          <div className="flex items-center gap-3 mb-4 flex-wrap">
+            <div className="flex gap-1 flex-wrap" role="group" aria-label="Filter by record type">
+              <button key="all" onClick={() => setTypeFilter('all')} aria-pressed={typeFilter === 'all'}
+                className="text-xs font-mono px-2.5 py-1.5 rounded-md" style={{
+                  background: typeFilter === 'all' ? alpha('var(--accent)', 12) : 'transparent',
+                  color:      typeFilter === 'all' ? 'var(--accent)'   : 'var(--text-muted)',
+                  border:     `1px solid ${typeFilter === 'all' ? 'var(--accent)' : 'var(--border-strong)'}`,
+                }}>All</button>
+              {types.map(t => (
+                <button key={t} onClick={() => setTypeFilter(t)} aria-pressed={typeFilter === t}
+                  className="text-xs font-mono px-2.5 py-1.5 rounded" style={{
+                    background: typeFilter === t ? alpha(TYPE_COLORS[t], 10) : 'transparent',
+                    color:      typeFilter === t ? TYPE_COLORS[t]        : 'var(--text-muted)',
+                    border:     `1px solid ${typeFilter === t ? alpha(TYPE_COLORS[t], 40) : 'var(--border)'}`,
+                  }}>{t}</button>
+              ))}
+            </div>
 
-              {/* Records table */}
-              <div className="rounded-lg border overflow-hidden" style={{ borderColor: 'var(--border-soft)', background: 'var(--surface)' }}>
-                <div className="hp-table-scroll overflow-x-auto"><table className="w-full text-xs font-mono">
-                  <thead>
-                    <tr style={{ background: 'var(--ground-deep)', borderBottom: '1px solid var(--border-soft)' }}>
-                      {['TYPE', 'NAME', 'VALUE', 'TTL', ''].map(h => (
-                        <th key={h} className="px-4 py-3 text-left font-normal uppercase" style={{ color: 'var(--text-dim)', letterSpacing: '0.14em', fontSize: 11 }}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {recLoading ? (
-                      <tr><td colSpan={5} className="px-4 py-6 text-center text-gray-600 animate-pulse">Loading records...</td></tr>
-                    ) : filtered.map((rec, i) => (
-                      <tr key={`${rec.type}-${rec.name}-${i}`}
-                        style={{ borderBottom: '1px solid var(--surface-raised)', background: i % 2 === 0 ? 'var(--ground)' : 'var(--surface-raised)' }}
-                        onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface)'}
-                        onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = i % 2 === 0 ? 'var(--ground)' : 'var(--surface-raised)'}
-                      >
-                        <td className="px-4 py-2.5">
-                          <span className="px-1.5 py-0.5 rounded font-mono" style={{
-                            fontSize: 9, background: `${TYPE_COLORS[rec.type] ?? 'var(--text-dimmer)'}15`,
-                            color: TYPE_COLORS[rec.type] ?? 'var(--text-dimmer)',
-                            border: `1px solid ${TYPE_COLORS[rec.type] ?? 'var(--text-dimmer)'}30`,
-                          }}>{rec.type}</span>
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <span style={{ color: "var(--text-bright)" }}>{rec.name}</span>
-                          <span className="text-gray-600">.{activeDomain}</span>
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <span className="text-gray-300 truncate block max-w-xs" title={rec.data}>
-                            {rec.data.length > 50 ? rec.data.slice(0, 50) + '…' : rec.data}
-                          </span>
-                          {/* Highlight if matches WAN IP */}
-                          {rec.type === 'A' && rec.data === wanIP && (
-                            <span className="text-xs" style={{ color: 'var(--good)', fontSize: 9 }}>✓ WAN</span>
-                          )}
-                          {rec.type === 'A' && wanIP && rec.data !== wanIP && (
-                            <span className="text-xs" style={{ color: 'var(--warn-2)', fontSize: 9 }}>≠ WAN ({wanIP})</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-2.5 text-gray-600">
-                          {rec.ttl >= 86400 ? `${rec.ttl / 86400}d` :
-                           rec.ttl >= 3600  ? `${rec.ttl / 3600}h`  :
-                           rec.ttl >= 60    ? `${rec.ttl / 60}m`    : `${rec.ttl}s`}
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <div className="flex gap-1">
-                            <button onClick={() => setEditRecord(rec)}
-                              className="px-3 py-1 rounded-md text-sm"
-                              style={{ background: 'transparent', color: 'var(--accent)', border: '1px solid var(--accent)' }}>Edit</button>
-                            <button onClick={() => setDeleteRecord(rec)}
-                              className="px-2 py-1 rounded-md text-sm transition-all"
-                              style={{ background: 'transparent', color: 'var(--text-dimmer)', border: '1px solid transparent' }}
-                              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--crit-2)'; (e.currentTarget as HTMLElement).style.borderColor = 'color-mix(in srgb, var(--crit-2) 19%, transparent)' }}
-                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = 'var(--text-dimmer)'; (e.currentTarget as HTMLElement).style.borderColor = 'transparent' }}>✕</button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                    {!recLoading && filtered.length === 0 && (
-                      <tr><td colSpan={5} className="px-4 py-6 text-center text-gray-600">No records match filter</td></tr>
-                    )}
-                  </tbody>
-                </table></div>
-              </div>
-            </>
-          )}
-        </div>
-      </div>
+            <input type="text" placeholder="Search name or value..." aria-label="Search records by name or value" value={search}
+              onChange={e => setSearch(e.target.value)}
+              className={styles.input} style={{ maxWidth: 240 }}/>
+
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{filtered.length} records</span>
+          </div>
+
+          <div className={styles.tableWrap}>
+            <table className={styles.table}>
+              <thead>
+                <tr>
+                  {['TYPE', 'NAME', 'VALUE', 'TTL', 'ACTIONS'].map(h => <th key={h} scope="col">{h}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {recLoading ? (
+                  <tr><td colSpan={5} className="text-center animate-pulse">Loading records...</td></tr>
+                ) : filtered.map((rec, i) => (
+                  <tr key={`${rec.type}-${rec.name}-${i}`}>
+                    <td>
+                      <span className="px-1.5 py-0.5 rounded font-mono" style={{
+                        fontSize: 10, background: alpha(TYPE_COLORS[rec.type] ?? 'var(--text-dim)', 12),
+                        color: TYPE_COLORS[rec.type] ?? 'var(--text-dim)',
+                        border: `1px solid ${alpha(TYPE_COLORS[rec.type] ?? 'var(--text-dim)', 35)}`,
+                      }}>{rec.type}</span>
+                    </td>
+                    <td className="font-mono">
+                      <span style={{ color: 'var(--text-bright)' }}>{rec.name}</span>
+                      <span style={{ color: 'var(--text-dim)' }}>.{activeDomain}</span>
+                    </td>
+                    <td className="font-mono">
+                      <span className="truncate block max-w-xs" title={rec.data}>
+                        {rec.data.length > 50 ? rec.data.slice(0, 50) + '…' : rec.data}
+                      </span>
+                      {/* Highlight if matches WAN IP */}
+                      {rec.type === 'A' && rec.data === wanIP && (
+                        <span style={{ color: 'var(--good)', fontSize: 10 }}>✓ WAN</span>
+                      )}
+                      {rec.type === 'A' && wanIP && rec.data !== wanIP && (
+                        <span style={{ color: 'var(--warn)', fontSize: 10 }}>≠ WAN ({wanIP})</span>
+                      )}
+                    </td>
+                    <td className="font-mono" style={{ color: 'var(--text-muted)' }}>
+                      {rec.ttl >= 86400 ? `${rec.ttl / 86400}d` :
+                       rec.ttl >= 3600  ? `${rec.ttl / 3600}h`  :
+                       rec.ttl >= 60    ? `${rec.ttl / 60}m`    : `${rec.ttl}s`}
+                    </td>
+                    <td>
+                      <div className="flex gap-1">
+                        <button onClick={() => setEditRecord(rec)} className={styles.btn} style={{ minHeight: 32, padding: '4px 12px', color: 'var(--accent)' }}
+                          aria-label={`Edit ${rec.type} record ${rec.name}`}>Edit</button>
+                        <button onClick={() => setDeleteRecord(rec)} className={styles.btn} style={{ minHeight: 32, padding: '4px 10px', color: 'var(--crit)' }}
+                          aria-label={`Delete ${rec.type} record ${rec.name}`}>✕</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {!recLoading && filtered.length === 0 && (
+                  <tr><td colSpan={5} className="text-center" style={{ color: 'var(--text-muted)' }}>No records match filter</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Details>
+      )}
 
       {/* Modals */}
       {editRecord !== undefined && activeDomain && (
@@ -851,6 +859,6 @@ export default function DNSPage() {
           onClose={() => setDeleteRecord(null)}
           onDelete={() => loadRecords(activeDomain)}/>
       )}
-    </div>
+    </Page>
   )
 }

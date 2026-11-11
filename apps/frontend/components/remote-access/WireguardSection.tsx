@@ -8,7 +8,9 @@ import QRCode from 'qrcode'
 import type { RemoteMachineRow } from '@hyperprox/types'
 import { apiJson, type ApiResult } from '@/lib/api'
 import { browserKeypair } from '@/lib/wg-keys'
-import { Badge, Btn, ConfirmDialog, Notice, Panel, fmtTime } from '@/components/updates/ui'
+import { Badge, Btn, ConfirmDialog, Notice, fmtTime } from '@/components/updates/ui'
+import { Panel } from './panel'
+import { StatusDots, type DotState } from '@/components/visual/kit'
 
 type Send = <T>(path: string, method: string, body?: unknown) => Promise<ApiResult<T> | null>
 
@@ -69,7 +71,7 @@ export function WireguardSection({ machines, send, notice }: { machines: RemoteM
 
   return (
     <Panel title="WireGuard" right={<div className="flex gap-2"><Btn small onClick={() => setForm('server')}>New server…</Btn><Btn small onClick={() => setForm('connect')}>Connect a machine…</Btn></div>}>
-      <div className="space-y-4 px-5 py-4">
+      <div className="space-y-4">
         {!servers.length && <p className="text-sm" style={{ color: 'var(--text-dim)' }}>No WireGuard server yet. A server runs in a container or VM; its key is made there and never leaves it.</p>}
         {servers.map(s => (
           <div key={s.id} className="rounded-md border" style={{ borderColor: 'var(--border)' }}>
@@ -79,6 +81,17 @@ export function WireguardSection({ machines, send, notice }: { machines: RemoteM
               {s.keyBackedUp && <Badge tone="muted" title="The server key also has a copy in the vault">key in vault</Badge>}
               <span className="ml-auto"><Btn small kind="primary" onClick={() => setForm({ device: s.id })}>Add phone or laptop…</Btn></span>
             </div>
+            {peers.some(p => p.serverId === s.id) && (
+              <div className="px-3 py-2">
+                {/* A peer is working when it shook hands in the last five minutes, warning when it did once but not lately, off when never. */}
+                <StatusDots label={`Peers of ${nameOf(s.machineId)}`} items={peers.filter(p => p.serverId === s.id).map(p => {
+                  const hs = live[s.id]?.find(x => x.publicKey === p.publicKey)?.latestHandshake
+                  const age = hs ? Date.now() - new Date(hs).getTime() : NaN
+                  const state: DotState = !hs ? 'off' : Number.isFinite(age) && age < 5 * 60_000 ? 'ok' : 'warn'
+                  return { label: p.name, state }
+                })} />
+              </div>
+            )}
             <ul className="divide-y text-sm" style={{ borderColor: 'var(--border-dim)' }}>
               {peers.filter(p => p.serverId === s.id).map(p => {
                 const l = live[s.id]?.find(x => x.publicKey === p.publicKey)

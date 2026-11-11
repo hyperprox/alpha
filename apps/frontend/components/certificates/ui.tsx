@@ -5,7 +5,12 @@ import { Badge } from '@/components/updates/ui'
 
 // The Updates page keeps its small primitives in its own folder; they are re-exported here so
 // this feature has one import path and a later move of them touches one file.
-export { Badge, Btn, ConfirmDialog, Empty, Notice, Panel, TH, THEAD_STYLE, Chevron } from '@/components/updates/ui'
+export { Badge, Btn, ConfirmDialog, Notice, TH, THEAD_STYLE, Chevron } from '@/components/updates/ui'
+
+/** An empty-state line. The page's panel already pads, so it adds none. */
+export function Empty({ children }: { children: React.ReactNode }) {
+  return <p className="text-sm" style={{ color: 'var(--text-muted)', margin: 0 }}>{children}</p>
+}
 
 type Tone = 'accent' | 'good' | 'warn' | 'crit' | 'muted'
 

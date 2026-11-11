@@ -12,6 +12,7 @@ import { useEffect, useState, useCallback, useMemo } from 'react'
 import { alpha } from '@/lib/theme'
 import { atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
+import { Details, HudHeader, Page, Panel, Pill, styles, type PillTone, type StatChip } from '@/components/visual/kit'
 
 // ---------------------------------------------------------------------------
 //  Types (the API's shapes, apps/api/src/lib/proxy/types.ts)
@@ -87,7 +88,7 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: 
   return (
     <label className="flex items-center gap-2 cursor-pointer select-none">
       <div onClick={() => onChange(!checked)} className="relative rounded-full transition-colors duration-200"
-        style={{ width: 32, height: 18, background: checked ? 'var(--accent)' : 'var(--text-faint)', border: `1px solid ${checked ? 'var(--accent)' : 'var(--text-dimmer)'}` }}>
+        style={{ width: 32, height: 18, background: checked ? 'var(--accent)' : 'var(--text-faint)', border: `1px solid ${checked ? 'var(--accent)' : 'var(--text-dim)'}` }}>
         <div className="absolute top-0.5 rounded-full transition-all duration-200" style={{ width: 14, height: 14, background: 'var(--surface)', left: checked ? 14 : 2 }} />
       </div>
       <span style={{ fontSize: 14, color: checked ? 'var(--text-bright)' : 'var(--text-soft)' }}>{label}</span>
@@ -97,7 +98,7 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: 
 
 function Modal({ title, eyebrow, onClose, children, wide }: { title: string; eyebrow?: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.6)' }} onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'var(--scrim)' }} onClick={onClose}>
       <div className="rounded-lg border w-full overflow-y-auto" onClick={e => e.stopPropagation()}
         style={{ maxWidth: wide ? 720 : 560, maxHeight: '90vh', background: 'var(--surface)', borderColor: 'var(--border-strong)' }}>
         <div className="flex items-start justify-between p-5 border-b" style={{ borderColor: 'var(--border-soft)' }}>
@@ -422,17 +423,14 @@ function InstancesPanel({ instances, kinds, admin, onChanged }: { instances: Ins
   }
 
   return (
-    <div className="rounded-lg border p-4 mb-6" style={{ background: 'var(--surface)', borderColor: 'var(--border-soft)' }}>
-      <div className="flex items-center justify-between mb-3">
-        <div className="font-mono uppercase" style={{ fontSize: 11, letterSpacing: '0.14em', color: 'var(--text-dim)' }}>Proxies ({instances.length})</div>
-        {admin && <button onClick={() => setAdding(true)} className="text-sm px-3 py-1 rounded-md" style={{ color: 'var(--accent)', border: '1px solid var(--accent)' }}>+ Add proxy</button>}
-      </div>
-      {instances.length === 0 && <div className="text-sm" style={{ color: 'var(--text-soft)' }}>No proxy is connected yet. Add one, or set the NPM login in Settings → Proxy.</div>}
+    <Panel title="Proxies" sub={`${instances.length} connected`}
+      actions={admin ? <button onClick={() => setAdding(true)} className={styles.btn} style={{ minHeight: 32, padding: '4px 12px', color: 'var(--accent)' }}>+ Add proxy</button> : undefined}>
+      {instances.length === 0 && <div className={styles.empty}>No proxy is connected yet. Add one, or set the NPM login in Settings → Proxy.</div>}
       <div className="grid gap-2">
         {instances.map(i => {
           const h = health[i.id]
           return (
-            <div key={i.id} className="rounded-md p-3" style={{ border: '1px solid var(--border-soft)' }}>
+            <div key={i.id} className="rounded-md p-3" style={{ border: '1px solid var(--border-soft)', background: 'var(--ground-deep)' }}>
               <div className="flex items-center gap-2 flex-wrap">
                 <Badge label={KIND_SHORT[i.kind]} color={KIND_COLOR[i.kind]} />
                 <span className="font-display" style={{ fontSize: 17, fontWeight: 600, color: 'var(--text-bright)' }}>{i.name}</span>
@@ -454,7 +452,7 @@ function InstancesPanel({ instances, kinds, admin, onChanged }: { instances: Ins
       </div>
       {error && <div className="text-sm mt-2" style={{ color: 'var(--crit-2)' }}>{error}</div>}
       {adding && <InstanceForm kinds={kinds} onClose={() => setAdding(false)} onSaved={onChanged} />}
-    </div>
+    </Panel>
   )
 }
 
@@ -464,16 +462,16 @@ function InstancesPanel({ instances, kinds, admin, onChanged }: { instances: Ins
 
 function HostRow({ h, admin, onEdit, onAction }: { h: HostView; admin: boolean; onEdit: (h: HostView) => void; onAction: (h: HostView, a: 'enable' | 'disable' | 'delete') => void }) {
   const days = daysLeft(h.tls.expiresAt)
-  const tlsCol = h.tls.kind === 'none' ? 'var(--text-dimmer)' : days !== null && days < 0 ? 'var(--crit-2)' : days !== null && days < 30 ? 'var(--warn-2)' : 'var(--good)'
+  const tlsCol = h.tls.kind === 'none' ? 'var(--text-dim)' : days !== null && days < 0 ? 'var(--crit-2)' : days !== null && days < 30 ? 'var(--warn-2)' : 'var(--good)'
   const tlsLabel = h.tls.kind === 'none' ? 'No TLS' : h.tls.kind === 'auto' ? 'Auto TLS' : 'Certificate'
-  const dot = !h.enabled ? 'var(--text-dimmer)' : h.online === false ? 'var(--warn-2)' : 'var(--good)'
+  const dot = !h.enabled ? 'var(--text-dim)' : h.online === false ? 'var(--warn-2)' : 'var(--good)'
   return (
     <tr style={{ borderBottom: '1px solid var(--border-soft)' }}>
-      <td className="px-4 py-3 w-6"><div className="w-2 h-2 rounded-full" style={{ background: dot }} title={h.enabled ? (h.online === false ? 'Enabled, not answering' : 'Enabled') : 'Disabled'} /></td>
+      <td className="px-4 py-3 w-6"><div className="w-2 h-2 rounded-full" style={{ background: dot }} title={h.enabled ? (h.online === false ? 'Enabled, not answering' : 'Enabled') : 'Disabled'} /><span className="sr-only">{h.enabled ? (h.online === false ? 'Enabled, not answering' : 'Enabled') : 'Disabled'}</span></td>
       <td className="px-4 py-3">
         <div className="font-mono text-sm" style={{ color: 'var(--text-bright)' }}>{h.domains[0] ?? <span style={{ color: 'var(--text-dim)' }}>(no Host rule)</span>}</div>
         {h.domains.length > 1 && <div className="text-xs" style={{ color: 'var(--text-dim)' }} title={h.domains.join(', ')}>+{h.domains.length - 1} more</div>}
-        {h.detail && h.kind !== 'npm' && <div className="text-xs font-mono truncate" style={{ color: 'var(--text-dimmer)', maxWidth: 360 }} title={h.detail}>{h.detail}</div>}
+        {h.detail && h.kind !== 'npm' && <div className="text-xs font-mono truncate" style={{ color: 'var(--text-dim)', maxWidth: 360 }} title={h.detail}>{h.detail}</div>}
       </td>
       <td className="px-4 py-3">
         <div className="flex items-center gap-2"><Badge label={KIND_SHORT[h.kind]} color={KIND_COLOR[h.kind]} /><span className="text-sm" style={{ color: 'var(--text)' }}>{h.instanceName}</span></div>
@@ -482,7 +480,7 @@ function HostRow({ h, admin, onEdit, onAction }: { h: HostView; admin: boolean; 
       <td className="px-4 py-3">
         <div className="flex items-center gap-2">
           <Badge label={tlsLabel} color={tlsCol} />
-          {days !== null && <span className="text-xs font-mono" style={{ color: days < 14 ? 'var(--crit-2)' : 'var(--text-dimmer)' }}>{days}d</span>}
+          {days !== null && <span className="text-xs font-mono" style={{ color: days < 14 ? 'var(--crit-2)' : 'var(--text-dim)' }}>{days}d</span>}
         </div>
       </td>
       <td className="px-4 py-3">
@@ -492,11 +490,41 @@ function HostRow({ h, admin, onEdit, onAction }: { h: HostView; admin: boolean; 
               <button onClick={() => onEdit(h)} className="px-3 py-1 rounded-md text-sm" style={{ color: 'var(--accent)', border: '1px solid var(--accent)' }}>Edit</button>
               <button onClick={() => onAction(h, h.enabled ? 'disable' : 'enable')} className="px-3 py-1 rounded-md text-sm"
                 style={{ color: h.enabled ? 'var(--crit)' : 'var(--good)', border: `1px solid ${h.enabled ? 'var(--crit)' : 'var(--good)'}` }}>{h.enabled ? 'Off' : 'On'}</button>
-              <button onClick={() => onAction(h, 'delete')} className="px-2 py-1 rounded-md text-sm" style={{ color: 'var(--text-dimmer)' }} aria-label="Delete">✕</button>
+              <button onClick={() => onAction(h, 'delete')} className="px-2 py-1 rounded-md text-sm" style={{ color: 'var(--text-dim)' }} aria-label="Delete">✕</button>
             </div>
           ) : null}
       </td>
     </tr>
+  )
+}
+
+/** A host as a tile: its domain, a state pill and an SSL pill (both in words), and the flow domain → proxy → upstream. */
+function HostTile({ h }: { h: HostView }) {
+  const days = daysLeft(h.tls.expiresAt)
+  const state: { text: string; tone: PillTone | undefined } = !h.enabled ? { text: 'disabled', tone: undefined }
+    : h.online === false ? { text: 'not answering', tone: 'warn' } : { text: 'live', tone: 'good' }
+  const tls: { text: string; tone: PillTone | undefined } = h.tls.kind === 'none' ? { text: 'no TLS', tone: undefined }
+    : days !== null && days < 0 ? { text: 'cert expired', tone: 'bad' }
+    : days !== null && days < 30 ? { text: `TLS ${days}d left`, tone: 'warn' }
+    : { text: h.tls.kind === 'auto' ? 'auto TLS' : 'TLS ok', tone: 'good' }
+  const upstream = h.forwardHost ? `${h.forwardHost}:${h.forwardPort}` : null
+  return (
+    <li className="rounded-lg p-3" style={{ background: 'var(--ground-deep)', border: '1px solid var(--border-soft)', minWidth: 0, opacity: h.enabled ? 1 : 0.7 }}>
+      <div className="font-mono text-sm" style={{ color: 'var(--text-bright)', overflowWrap: 'anywhere' }}>
+        {h.domains[0] ?? <span style={{ color: 'var(--text-dim)' }}>(no Host rule)</span>}
+        {h.domains.length > 1 && <span className="text-xs" style={{ color: 'var(--text-dim)' }} title={h.domains.join(', ')}> +{h.domains.length - 1}</span>}
+      </div>
+      <div className="flex gap-1.5 flex-wrap mt-2">
+        <Pill tone={state.tone}>{state.text}</Pill>
+        <Pill tone={tls.tone}>{tls.text}</Pill>
+        {h.readOnly && <Pill title={h.readOnlyReason ?? 'Made outside HyperProx; never rewritten'}>read-only</Pill>}
+      </div>
+      <div className="flex items-center gap-1.5 flex-wrap mt-2 font-mono text-xs" style={{ color: 'var(--text-soft)' }} aria-label={`Flow: domain to ${h.instanceName} to ${upstream ?? 'no upstream'}`}>
+        <span>domain</span><span aria-hidden style={{ color: 'var(--accent)' }}>→</span>
+        <span title={KIND_SHORT[h.kind]}>{h.instanceName}</span><span aria-hidden style={{ color: 'var(--accent)' }}>→</span>
+        <span style={{ overflowWrap: 'anywhere' }}>{upstream ? `${h.forwardScheme}://${upstream}` : 'no upstream'}</span>
+      </div>
+    </li>
   )
 }
 
@@ -563,85 +591,101 @@ export default function ProxyPage() {
   const writable = instances
 
   if (loading) return (
-    <div className="min-h-full flex items-center justify-center" style={{ background: 'var(--ground)' }}>
-      <div className="text-sm animate-pulse" style={{ color: 'var(--text-dim)' }}>loading proxy hosts...</div>
-    </div>
+    <Page>
+      <Panel title="Proxy"><p className={`${styles.empty} animate-pulse`} role="status">loading proxy hosts...</p></Panel>
+    </Page>
   )
 
-  return (
-    <div className="min-h-full p-4 sm:p-8 lg:p-10" style={{ background: 'var(--ground)' }}>
-      <div className="flex items-end justify-between mb-8 flex-wrap gap-4">
-        <div>
-          <div className="font-mono uppercase mb-2" style={{ fontSize: 11, letterSpacing: '0.14em', color: 'var(--accent)' }}>Reverse proxies</div>
-          <h1 className="font-display" style={{ fontSize: 36, fontWeight: 700, color: 'var(--text-bright)', lineHeight: 1.15 }}>Proxy Manager</h1>
-        </div>
-        <div className="flex items-center gap-3">
-          {lastSync && <span className="text-xs" style={{ color: 'var(--text-dim)' }}>synced {lastSync.toLocaleTimeString()}</span>}
-          {admin && writable.length > 0 && (
-            <button onClick={() => setEditing(null)} className="flex items-center gap-2 px-4 rounded-md text-sm" style={{ height: 40, background: 'var(--accent)', color: 'var(--accent-ink)', fontWeight: 600 }}>
-              <span style={{ fontSize: 14 }}>+</span> New Host
-            </button>
-          )}
-        </div>
-      </div>
+  const offline = hosts.filter(h => h.enabled && h.online === false).length
+  const expiring = hosts.filter(h => { const d = daysLeft(h.tls.expiresAt); return d !== null && d < 30 }).length
+  const chips: StatChip[] = [
+    { label: 'hosts', value: counts.total },
+    { label: 'enabled', value: counts.enabled, tone: 'good' },
+    { label: 'with TLS', value: counts.tls },
+    { label: 'certs expiring in 30 days', value: expiring, tone: expiring ? 'warn' : undefined },
+  ]
+  const title = failing.length ? `${failing.length} prox${failing.length === 1 ? 'y is' : 'ies are'} not answering`
+    : offline ? `${offline} host${offline === 1 ? ' is' : 's are'} not answering`
+    : `${counts.enabled} of ${counts.total} hosts are live`
 
-      {error && <div className="text-sm mb-4" style={{ color: 'var(--crit-2)' }}>{error}</div>}
+  const TILE_LIMIT = 24
+  const tiles = shown.slice(0, TILE_LIMIT)
+
+  return (
+    <Page>
+      <HudHeader
+        eyebrow="Reverse proxies"
+        title={title}
+        icon="router"
+        level={2}
+        chips={chips}
+        label="Proxy overview"
+        actions={<>
+          {lastSync && <span className="text-xs" style={{ color: 'var(--text-muted)' }}>synced {lastSync.toLocaleTimeString()}</span>}
+          {admin && writable.length > 0 && (
+            <button onClick={() => setEditing(null)} className={`${styles.btn} ${styles.btnPri}`}>+ New Host</button>
+          )}
+        </>}
+      />
+
+      {error && <div className={styles.callout} role="alert" style={{ color: 'var(--crit)' }}>{error}</div>}
       {failing.map((f, i) => (
-        <div key={i} className="text-sm mb-2 rounded-md p-3" style={{ color: 'var(--warn-2)', background: alpha('var(--warn-2)', 8), border: `1px solid ${alpha('var(--warn-2)', 19)}` }}>
+        <div key={i} className={styles.callout} role="alert" style={{ color: 'var(--warn)' }}>
           {f.instanceName} is not answering: {f.error}. Its hosts are not shown.
         </div>
       ))}
 
       <InstancesPanel instances={instances} kinds={kinds} admin={admin} onChanged={load} />
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-        {([['Hosts', counts.total, 'var(--text-muted)'], ['Enabled', counts.enabled, 'var(--good)'], ['TLS', counts.tls, 'var(--accent)'], ['Read-only', counts.readOnly, 'var(--text-dimmer)']] as const).map(([l, v, c]) => (
-          <div key={l} className="rounded-lg border p-4" style={{ background: 'var(--surface)', borderColor: 'var(--border-soft)' }}>
-            <div className="font-display" style={{ color: c, fontSize: 28, fontWeight: 700 }}>{v}</div>
-            <div className="font-mono uppercase" style={{ color: 'var(--text-dim)', fontSize: 11, letterSpacing: '0.14em' }}>{l}</div>
+      <Panel title="Hosts" sub={`${shown.length} shown`}>
+        <div className="flex items-center gap-3 mb-4 flex-wrap">
+          <select value={only} onChange={e => setOnly(e.target.value)} aria-label="Show hosts from one proxy" className={styles.input} style={{ width: 'auto' }}>
+            <option value="all">All proxies</option>
+            {instances.map(i => <option key={i.id} value={i.id}>{i.name} ({KIND_SHORT[i.kind]})</option>)}
+          </select>
+          <div className="flex gap-1 flex-wrap" role="group" aria-label="Filter hosts">
+            {(['all', 'enabled', 'disabled', 'read-only', 'expiring'] as const).map(f => (
+              <button key={f} onClick={() => setFilter(f)} aria-pressed={filter === f} className="text-sm px-3 py-1.5 rounded-md capitalize" style={{
+                background: filter === f ? alpha('var(--accent)', 12) : 'transparent',
+                color: filter === f ? 'var(--accent)' : 'var(--text-muted)', border: `1px solid ${filter === f ? 'var(--accent)' : 'var(--border-strong)'}`,
+              }}>{f}</button>
+            ))}
           </div>
-        ))}
-      </div>
-
-      <div className="flex items-center gap-3 mb-4 flex-wrap">
-        <select value={only} onChange={e => setOnly(e.target.value)} style={{ ...INPUT, width: 'auto', minHeight: 36 }}>
-          <option value="all">All proxies</option>
-          {instances.map(i => <option key={i.id} value={i.id}>{i.name} ({KIND_SHORT[i.kind]})</option>)}
-        </select>
-        <div className="flex gap-1 flex-wrap">
-          {(['all', 'enabled', 'disabled', 'read-only', 'expiring'] as const).map(f => (
-            <button key={f} onClick={() => setFilter(f)} className="text-sm px-3 py-1.5 rounded-md capitalize" style={{
-              background: filter === f ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'transparent',
-              color: filter === f ? 'var(--accent)' : 'var(--text-dim)', border: `1px solid ${filter === f ? 'var(--accent)' : 'var(--border-strong)'}`,
-            }}>{f}</button>
-          ))}
+          <input type="text" placeholder="Search domain, host or proxy..." aria-label="Search hosts" value={search} onChange={e => setSearch(e.target.value)}
+            className={`${styles.input} sm:ml-auto sm:w-64`} style={{ width: undefined }} />
         </div>
-        <input type="text" placeholder="Search domain, host or proxy..." value={search} onChange={e => setSearch(e.target.value)}
-          className="sm:ml-auto text-sm px-3 rounded-md outline-none w-full sm:w-64"
-          style={{ height: 36, background: 'var(--ground-deep)', border: '1px solid var(--border-strong)', color: 'var(--text-bright)' }} />
-        <span className="text-xs" style={{ color: 'var(--text-dim)' }}>{shown.length} hosts</span>
-      </div>
-      {actionError && <div className="text-sm mb-3" style={{ color: 'var(--crit-2)' }}>{actionError}</div>}
+        {actionError && <div className="text-sm mb-3" role="alert" style={{ color: 'var(--crit)' }}>{actionError}</div>}
 
-      <div className="rounded-lg border overflow-hidden" style={{ borderColor: 'var(--border-soft)', background: 'var(--surface)' }}>
-        <div className="hp-table-scroll overflow-x-auto"><table className="w-full">
-          <thead>
-            <tr style={{ background: 'var(--ground-deep)', borderBottom: '1px solid var(--border-soft)' }}>
-              <th className="px-4 py-3 w-6" />
-              {['Domain', 'Proxy', 'Target', 'TLS', ''].map((h, i) => (
-                <th key={i} className="px-4 py-3 text-left font-mono font-normal uppercase" style={{ color: 'var(--text-dim)', fontSize: 11, letterSpacing: '0.14em' }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {shown.map(h => <HostRow key={`${h.instanceId}/${h.id}`} h={h} admin={admin} onEdit={setEditing} onAction={act} />)}
-            {shown.length === 0 && <tr><td colSpan={6} className="px-4 py-8 text-center text-sm" style={{ color: 'var(--text-dim)' }}>No hosts match the current filter</td></tr>}
-          </tbody>
-        </table></div>
-      </div>
+        {shown.length === 0 ? <p className={styles.empty}>No hosts match the current filter</p> : (
+          <ul className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 17rem), 1fr))', listStyle: 'none', padding: 0, margin: 0 }} aria-label="Proxy hosts">
+            {tiles.map(h => <HostTile key={`${h.instanceId}/${h.id}`} h={h} />)}
+          </ul>
+        )}
+        {shown.length > TILE_LIMIT && (
+          <p className={styles.empty} style={{ marginTop: 12 }}>Showing the first {TILE_LIMIT} of {shown.length}. The table below lists every host.</p>
+        )}
+      </Panel>
+
+      <Details summary="Host table" sub="every host, with edit, on/off and delete" open={false}>
+        <div className={styles.tableWrap}>
+          <table className={styles.table}>
+            <thead>
+              <tr>
+                <th scope="col"><span className="sr-only">State</span></th>
+                {['Domain', 'Proxy', 'Target', 'TLS'].map(h => <th key={h} scope="col">{h}</th>)}
+                <th scope="col"><span className="sr-only">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map(h => <HostRow key={`${h.instanceId}/${h.id}`} h={h} admin={admin} onEdit={setEditing} onAction={act} />)}
+              {shown.length === 0 && <tr><td colSpan={6} className="text-center" style={{ color: 'var(--text-muted)' }}>No hosts match the current filter</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </Details>
 
       {editing !== undefined && <HostForm host={editing} instances={writable} onClose={() => setEditing(undefined)} onPlan={p => { setEditing(undefined); setPlan(p) }} />}
       {plan && <PlanDialog plan={plan} onClose={() => setPlan(null)} onDone={load} />}
-    </div>
+    </Page>
   )
 }
