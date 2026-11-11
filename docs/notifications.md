@@ -2,7 +2,7 @@
 
 HyperProx tells you when something needs attention: when it locks itself, when an update run ends or
 pauses, when the daily updates check finds something new to update, when a certificate changes verdict or
-stays critical. Messages are short (a title that makes
+stays critical, when a Prometheus alert starts or clears. Messages are short (a title that makes
 sense on its own, two or three lines, a link), so they read well on a phone, a watch or a voice assistant.
 
 Set them up under **Settings → Notifications**. Admins add, edit, delete and test channels; only an owner
@@ -26,8 +26,11 @@ Each channel has:
 
 - **Send me**: critical only, warnings and critical (the default), or everything (including reports
   that all went well).
-- **About**: everything, or chosen families: lock alerts, updates, certificates, Home Assistant security
-  actions (the others are for later phases).
+- **About**: everything, or chosen families: lock alerts, updates, certificates, cluster health, Home
+  Assistant security actions (the others are for later phases).
+  Cluster health is Prometheus's alerts (`alert.firing`, `alert.resolved`): one message when an alert
+  starts, one when it clears, and one if Prometheus stops answering for 5 minutes. See
+  [Storage and Monitoring](../README.md#storage-and-monitoring) for the rules and the not-forwarded list.
   Jobs covers wizard and catalogue jobs and Send files copies: a failed copy (`files.copy.failed`) is a
   warning; a finished one (`files.copy.finished`) is an ordinary message, sent only to channels set to
   everything.
