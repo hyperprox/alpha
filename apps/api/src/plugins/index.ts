@@ -14,6 +14,7 @@ import { homeAssistantPlugin } from './home-assistant'
 import { meshcentralPlugin } from './meshcentral'
 import { mikrotikPlugin } from './mikrotik'
 import { plexPlugin }     from './plex'
+import { qnapPlugin }     from './qnap'
 import { unmanicPlugin }  from './unmanic'
 
 export const PLUGINS: Plugin[] = [
@@ -23,6 +24,7 @@ export const PLUGINS: Plugin[] = [
   unmanicPlugin,
   mikrotikPlugin,
   meshcentralPlugin,
+  qnapPlugin,
 ]
 
 export function findPlugin(id: string): Plugin | undefined {

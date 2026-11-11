@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<QDocRoot version="1.0">
+<authPassed><![CDATA[1]]></authPassed><model><modelName><![CDATA[TS-431P]]></modelName><internalModelName><![CDATA[TS-431P]]></internalModelName><platform><![CDATA[TS-NASARM_64]]></platform><displayModelName><![CDATA[TS-431P]]></displayModelName><storage_v2>1</storage_v2>
+</model>
+<firmware><version><![CDATA[5.2.1]]></version><number><![CDATA[2930]]></number><build><![CDATA[20241001]]></build><patch><![CDATA[0]]></patch></firmware>
+<hostname><![CDATA[NAS-HOME]]></hostname>
+<func><name><![CDATA[S_MENU_40]]></name><ownContent><sysHealth><status><![CDATA[warning]]></status></sysHealth></ownContent></func>
+</QDocRoot>
