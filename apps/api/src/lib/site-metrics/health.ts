@@ -11,6 +11,7 @@ import { findRecipe, healthProblem } from '../catalogue'
 import { probeEndpoint } from '../certs/probe'
 import type { SiteRecord } from '../sites'
 import type { HealthState } from './store'
+import { ownHeaders } from '../own-user-agent'
 
 export const CERT_EVERY_MS = 6 * 60 * 60_000
 
@@ -21,7 +22,8 @@ export interface HealthDeps {
 }
 
 export const realHealthDeps = (): HealthDeps => ({
-  fetch: url => fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(8000) })
+  // Says it is HyperProx, so the site's own metrics leave the check out.
+  fetch: url => fetch(url, { headers: ownHeaders('site-check'), redirect: 'manual', signal: AbortSignal.timeout(8000) })
     .then(async r => ({ status: r.status, body: (await r.text().catch(() => '')).slice(0, 200_000) })).catch(() => null),
   tls: async host => {
     const r = await probeEndpoint({ host, port: 443, starttls: 'none' }).catch((e: any) => ({ ok: false, error: e?.message } as any))

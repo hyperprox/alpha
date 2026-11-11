@@ -9,6 +9,7 @@
 // =============================================================================
 
 import type { FastifyPluginAsync } from 'fastify'
+import { ownHeaders } from '../lib/own-user-agent'
 import { currentContext } from '../lib/auth'
 import { ownerOf } from './ai'
 import { itemName } from '../lib/credentials'
@@ -46,7 +47,7 @@ export async function realRun(site: SiteRecord, script: string) {
  * whatever answers on its name) must not be able to point HyperProx's request at another address.
  */
 export function siteProbe(url: string): Promise<{ status: number; body: string } | null> {
-  return fetch(url, { signal: AbortSignal.timeout(6000), redirect: 'manual' })
+  return fetch(url, { headers: ownHeaders('site-probe'), signal: AbortSignal.timeout(6000), redirect: 'manual' })
     .then(async r => ({ status: r.status, body: r.status >= 300 && r.status < 400 ? '' : (await r.text().catch(() => '')).slice(0, 200_000) }))
     .catch(() => null)
 }

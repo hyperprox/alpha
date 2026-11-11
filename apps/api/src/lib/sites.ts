@@ -25,6 +25,7 @@ import { proxyService, proxyPlanner } from './proxy'
 import type { HostSpec } from './proxy/types'
 import { wizardStore } from './catalogue-store'
 import { findRecipe, healthProblem, type CatalogueRecipe } from './catalogue'
+import { ownHeaders } from './own-user-agent'
 export { WP_LOGIN_MU_PLUGIN } from './catalogue'
 
 // ── What publishing needs, so tests can stand in for every outside call ──────
@@ -118,7 +119,7 @@ export const realPublishDeps = (): PublishDeps => ({
   wanIp: async () => (await GoDaddyClient.getWanIP()).ip,
   resolve4: publicResolve4,
   letsEncryptEmail: () => process.env.LETSENCRYPT_EMAIL ?? process.env.NPM_EMAIL ?? '',
-  fetchPublic: url => fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(8000) })
+  fetchPublic: url => fetch(url, { headers: ownHeaders('publish-check'), redirect: 'manual', signal: AbortSignal.timeout(8000) })
     .then(async r => ({ status: r.status, body: (await r.text().catch(() => '')).slice(0, 200_000) })).catch(() => null),
   wait: ms => new Promise(r => setTimeout(r, ms)),
 })

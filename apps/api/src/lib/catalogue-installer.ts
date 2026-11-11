@@ -8,6 +8,7 @@
 // =============================================================================
 
 import { ProxmoxClient } from './proxmox-client'
+import { ownHeaders } from './own-user-agent'
 import { execInGuest, nodeCredential } from './node-exec'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { findRecipe, checkOptions, healthProblem, type CatalogueRecipe } from './catalogue'
@@ -109,7 +110,7 @@ const realDeps = (): InstallDeps => ({
   client:     pve(),
   credential: node => nodeCredential(node),
   exec:       o => execInGuest(o),
-  probe:      url => fetch(url, { signal: AbortSignal.timeout(4000) })
+  probe:      url => fetch(url, { headers: ownHeaders('install-check'), signal: AbortSignal.timeout(4000) })
     .then(async r => ({ status: r.status, body: (await r.text().catch(() => '')).slice(0, 200_000) })).catch(() => null),
   wait:       sleep,
   // A read works whenever the vault is unlocked; the save at the install step also needs a session.

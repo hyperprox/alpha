@@ -36,6 +36,7 @@ import { addressesInConfig } from '../lib/guest-names'
 import { listHostAddresses } from '../lib/terminal-hosts'
 import { liveAddresses } from '../lib/wizard-placement'
 import { proxyService } from '../lib/proxy'
+import { ownHeaders } from '../lib/own-user-agent'
 
 export interface SiteMetricsRouteDeps {
   store: MetricsStore
@@ -93,7 +94,7 @@ const realDiscovery = (): SiteMetricsRouteDeps['discovery'] => ({
   nodes: async () => ((await homePve().fetchNode<any[]>('/cluster/status').catch(() => [])) ?? [])
     .filter((r: any) => r.type === 'node').map((r: any) => ({ name: String(r.name), ip: r.ip ? String(r.ip) : undefined })),
   head: async url => {
-    const r = await fetch(url, { method: 'HEAD', redirect: 'manual', signal: AbortSignal.timeout(5000) }).catch(() => null)
+    const r = await fetch(url, { method: 'HEAD', headers: ownHeaders('site-discovery'), redirect: 'manual', signal: AbortSignal.timeout(5000) }).catch(() => null)
     return r ? r.status < 500 : false
   },
 })
