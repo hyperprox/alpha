@@ -4,6 +4,25 @@
 
 export type DNSRecordType = 'A' | 'AAAA' | 'CNAME' | 'TXT' | 'MX' | 'SRV' | 'NS' | 'CAA'
 
+// ---------------------------------------------------------------------------
+//  Every domain and record type that goes into a GoDaddy URL is checked first.
+//  Unchecked, '../..' in a type or domain walked the request to other GoDaddy
+//  endpoints (the full domain object with its transfer code, the account).
+// ---------------------------------------------------------------------------
+const RECORD_TYPES = new Set<string>(['A', 'AAAA', 'CNAME', 'TXT', 'MX', 'SRV', 'NS', 'CAA'])
+const DOMAIN_RE = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i
+export class DNSInputError extends Error { statusCode = 400 }
+export function checkedDomain(domain: unknown): string {
+  const d = String(domain ?? '').trim()
+  if (!DOMAIN_RE.test(d)) throw new DNSInputError('That is not a domain name.')
+  return encodeURIComponent(d.toLowerCase())
+}
+export function checkedType(type: unknown): string {
+  const t = String(type ?? '').trim().toUpperCase()
+  if (!RECORD_TYPES.has(t)) throw new DNSInputError('Unknown DNS record type.')
+  return t
+}
+
 export interface DNSRecord {
   type:   DNSRecordType
   name:   string
@@ -85,7 +104,7 @@ export class GoDaddyClient {
   }
 
   async getDomain(domain: string): Promise<Domain> {
-    return this.req<Domain>('GET', `/domains/${domain}`)
+    return this.req<Domain>('GET', `/domains/${checkedDomain(domain)}`)
   }
 
   // ---------------------------------------------------------------------------
@@ -94,22 +113,22 @@ export class GoDaddyClient {
 
   async getRecords(domain: string, type?: DNSRecordType): Promise<DNSRecord[]> {
     const path = type
-      ? `/domains/${domain}/records/${type}`
-      : `/domains/${domain}/records`
+      ? `/domains/${checkedDomain(domain)}/records/${checkedType(type)}`
+      : `/domains/${checkedDomain(domain)}/records`
     return this.req<DNSRecord[]>('GET', path)
   }
 
   /** The records of one name and type only, rather than the whole zone's. */
   async getRecordsByName(domain: string, type: DNSRecordType, name: string): Promise<DNSRecord[]> {
-    return this.req<DNSRecord[]>('GET', `/domains/${domain}/records/${type}/${encodeURIComponent(name)}`)
+    return this.req<DNSRecord[]>('GET', `/domains/${checkedDomain(domain)}/records/${checkedType(type)}/${encodeURIComponent(name)}`)
   }
 
   async createRecord(domain: string, record: DNSRecord): Promise<void> {
-    await this.req('PATCH', `/domains/${domain}/records`, [record])
+    await this.req('PATCH', `/domains/${checkedDomain(domain)}/records`, [record])
   }
 
   async updateRecord(domain: string, type: DNSRecordType, name: string, record: Partial<DNSRecord>): Promise<void> {
-    await this.req('PUT', `/domains/${domain}/records/${type}/${encodeURIComponent(name)}`, [record])
+    await this.req('PUT', `/domains/${checkedDomain(domain)}/records/${checkedType(type)}/${encodeURIComponent(name)}`, [record])
   }
 
   /**
@@ -120,11 +139,11 @@ export class GoDaddyClient {
     records: { data: string; ttl: number; priority?: number }[]): Promise<void> {
     // An empty PUT is not a delete on every API version; say so rather than guess.
     if (!records.length) throw new Error('replaceRecords needs at least one record; use deleteRecord to remove a name')
-    await this.req('PUT', `/domains/${domain}/records/${type}/${encodeURIComponent(name)}`, records)
+    await this.req('PUT', `/domains/${checkedDomain(domain)}/records/${checkedType(type)}/${encodeURIComponent(name)}`, records)
   }
 
   async deleteRecord(domain: string, type: DNSRecordType, name: string): Promise<void> {
-    await this.req('DELETE', `/domains/${domain}/records/${type}/${encodeURIComponent(name)}`)
+    await this.req('DELETE', `/domains/${checkedDomain(domain)}/records/${checkedType(type)}/${encodeURIComponent(name)}`)
   }
 
   // ---------------------------------------------------------------------------

@@ -16,7 +16,7 @@ async function getGoDaddy(): Promise<GoDaddyClient> {
 
 const wrap = async (reply: any, fn: () => Promise<any>) => {
   try   { return { success: true, data: await fn() } }
-  catch (e: any) { return reply.status(500).send({ success: false, error: e.message }) }
+  catch (e: any) { return reply.status(e?.statusCode === 400 ? 400 : 500).send({ success: false, error: e.message }) }
 }
 
 /**
@@ -26,6 +26,14 @@ const wrap = async (reply: any, fn: () => Promise<any>) => {
  */
 export const DOMAIN_FIELDS = ['domain', 'domainId', 'status', 'createdAt', 'expires', 'renewAuto', 'renewable',
   'renewDeadline', 'locked', 'privacy', 'nameServers', 'expirationProtected', 'transferProtected', 'holdRegistrar'] as const
+/** The fields of a DNS record a browser gets; anything else GoDaddy sends is dropped. */
+export function publicRecord(r: any): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  if (!r || typeof r !== 'object') return out
+  for (const k of ['type', 'name', 'data', 'ttl', 'priority', 'port', 'weight', 'service', 'protocol']) if (k in r) out[k] = r[k]
+  return out
+}
+
 export function publicDomain(d: any): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   if (!d || typeof d !== 'object') return out
@@ -46,10 +54,10 @@ export const dnsRoutes: FastifyPluginAsync = async (fastify) => {
   // GET /api/dns/domains/:domain/records
   fastify.get<{ Params: { domain: string }; Querystring: { type?: string } }>(
     '/domains/:domain/records', async (req, r) =>
-      wrap(r, async () => (await getGoDaddy()).getRecords(
+      wrap(r, async () => ((await (await getGoDaddy()).getRecords(
         req.params.domain,
-        req.query.type as DNSRecordType | undefined
-      ))
+        (req.query.type ? req.query.type : undefined) as DNSRecordType | undefined
+      )) ?? []).map(publicRecord))
   )
 
   // POST /api/dns/domains/:domain/records
