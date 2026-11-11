@@ -107,7 +107,7 @@ export async function fakeHA(token: string, states: HAState[], areas: { area: st
   f.server.on('secureConnection', (t: any) => { f.sni.push(String(t.servername ?? '')) })
   f.server.on('upgrade', (req, socket) => {
     if (req.url !== '/api/websocket') return socket.destroy()
-    const accept = crypto.createHash('sha1').update(req.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC11B65').digest('base64')
+    const accept = crypto.createHash('sha1').update(req.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64')
     socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`)
     const send = (o: unknown) => socket.write(wsFrame(JSON.stringify(o)))
     send({ type: 'auth_required', ha_version: '2026.11.0' })

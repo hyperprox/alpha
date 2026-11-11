@@ -218,6 +218,13 @@ function encodeFrame(text: string): Buffer {
   return Buffer.concat([head, mask, body])
 }
 
+/** RFC 6455's fixed GUID: the server proves it understood the handshake by hashing the key with it. */
+export const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
+/** The Sec-WebSocket-Accept a correct server sends for this key (RFC 6455 section 4.2.2). */
+export function wsAccept(key: string): string {
+  return crypto.createHash('sha1').update(key + WS_GUID).digest('base64')
+}
+
 /** One WebSocket exchange, with one wall-clock deadline for all of it and at most MAX_ANSWER_BYTES buffered. */
 export function wsExchange(url: URL, token: string, base: https.RequestOptions, commands: Array<Record<string, unknown>>, timeoutMs: number): Promise<any[]> {
   const secure = url.protocol === 'https:'
@@ -241,7 +248,7 @@ export function wsExchange(url: URL, token: string, base: https.RequestOptions, 
     req.on('response', res => { res.resume(); finish(new HAUnreachableError(`Home Assistant refused the WebSocket (HTTP ${res.statusCode}).`)) })
     req.on('upgrade', (res, socket, head) => {
       sock = socket
-      const expect = crypto.createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC11B65').digest('base64')
+      const expect = wsAccept(key)
       if (res.headers['sec-websocket-accept'] !== expect) return finish(new HAUnreachableError('Home Assistant answered the WebSocket oddly.'))
       // Incoming bytes are kept as a list and joined only when a whole frame is there; together with the
       // pieces of a fragmented message they never exceed MAX_ANSWER_BYTES.
