@@ -173,8 +173,8 @@ export async function setupSending(o: { src: string; dst: string; dstNode: strin
   if (!dstAddress) throw new ClusterRefusal(`Save the private-link address that other servers reach ${o.dstNode} on first (Edit server -> Nodes).`)
   const sshAddr = await runner.sshAddress(o.dst, o.dstNode)
   if (!sshAddr) throw new ClusterRefusal(`No address is known for ${o.dstNode}.`)
-  const pin = await pinnedKey(sshAddr, 22)
-  if (!pin || !isConfirmedSource(await pinSource(sshAddr, 22))) throw new ClusterRefusal(`${o.dstNode}'s host key is not confirmed yet. Confirm it first.`)
+  const [pin, pinSrc] = await runInCluster(o.dst, () => Promise.all([pinnedKey(sshAddr, 22), pinSource(sshAddr, 22)]))
+  if (!pin || !isConfirmedSource(pinSrc)) throw new ClusterRefusal(`${o.dstNode}'s host key is not confirmed yet. Confirm it first.`)
 
   const { utils } = require('ssh2') as typeof import('ssh2')
   const tag = `${o.src}:${sha8(root)}`

@@ -85,16 +85,20 @@ export function linkDevice(address: string, status: TailnetStatus | null, links:
   return null
 }
 
-/** Each node's address: its tailnet address when the tailnet has it, else what the server's cluster status says. */
+/**
+ * Each node's address. The node that answered gets the address the owner typed. The other nodes' addresses in the
+ * server's cluster status are its internal cluster-network addresses, which HyperProx may not be able to reach and
+ * which can collide with addresses at home, so they are never filled in from there (lib/hostkey-verify.ts adds
+ * tailnet ones it can vouch for; the rest the owner enters on the Edit page).
+ */
 export function nodeAddresses(identity: TokenCheck['identity'], nodes: string[], address: string, status: TailnetStatus | null): Record<string, string> {
   const out: Record<string, string> = {}
+  const local = identity.local ?? (nodes.length === 1 ? nodes[0] : null)
   for (const n of nodes) {
     const peer = status?.running ? status.peers.find(p => !p.sharee && p.online && [p.hostName.toLowerCase(), p.dnsName.replace(/\.$/, '').split('.')[0].toLowerCase()].includes(n.toLowerCase())) : null
     const ts = peer?.ips.find(ip => isTailnetAddress(ip) && !ip.includes(':'))
-    const ip = identity.nodes.find(x => x.name === n)?.ip ?? null
-    if (ts) out[n] = ts
-    else if (nodes.length === 1) out[n] = address
-    else if (ip) out[n] = ip
+    if (n === local) out[n] = address
+    else if (ts) out[n] = ts
   }
   return out
 }

@@ -26,7 +26,7 @@ import { syncTargets, lastSync } from './targets'
 import { exporterStatus, provisionPveExporter, pveAccessFromEnv } from './pve-exporter'
 import { GoDaddyClient } from './godaddy-client'
 import { ensureGrafanaAdmin } from './grafana-admin'
-import { listPins, pinId, confirmPin, PinConfirmRefusal, pinnedKey, pinSource, isConfirmedSource, evidenceWords, type PinRow } from './hostkey-pins'
+import { listPins, pinId, confirmPin, PinConfirmRefusal, pinnedKey, pinSource, isConfirmedSource, evidenceWords, isRemotePinId, type PinRow } from './hostkey-pins'
 import { probeHostKey } from './node-exec'
 import { verifyNodes, productionVerifyDeps, type NodeVerdict, type VerifyDeps } from './hostkey-verify'
 
@@ -375,7 +375,8 @@ const VERDICT_STATUS: Record<NodeVerdict['state'], string> = { verified: 'done',
 const pinWords = (p: PinRow) => p.source === 'verified' ? evidenceWords(p.evidence ?? null) : `${p.fingerprint}: ${SOURCE_WORDS[p.source ?? 'none']}`
 
 async function hostKeyItem(deps: ChecklistDeps, nodes: string[], addrs: Record<string, string>): Promise<ChecklistItem> {
-  const pins = await deps.pins().catch(() => [])
+  // A remote server's pins are scoped to it and shown on its own Edit page, not here.
+  const pins = (await deps.pins().catch(() => [])).filter(p => !isRemotePinId(p.id))
   const byId = new Map(pins.map(p => [p.id, p]))
   const rows: NodeRow[] = await Promise.all(nodes.map(async node => {
     const host = addrs[node] ?? node, port = 22
@@ -409,7 +410,7 @@ async function hostKeyItem(deps: ChecklistDeps, nodes: string[], addrs: Record<s
 export async function verifyHomeHostKeys(by: string, o: { onlyIfNeeded?: boolean; hardware?: HardwareDeps; verify?: VerifyDeps } = {}): Promise<NodeVerdict[]> {
   // Cheap first: with no pin left unverified there is nothing to do, and Proxmox is not asked anything. (A node
   // HyperProx has never connected to has no pin; its first connection pins it and schedules this run.)
-  if (o.onlyIfNeeded && !(await listPins().catch(() => [])).some(p => !p.confirmed)) return []
+  if (o.onlyIfNeeded && !(await listPins().catch(() => [])).some(p => !p.confirmed && !isRemotePinId(p.id))) return []
   const hw = o.hardware ?? productionHardwareDeps()
   const [names, addrs] = await Promise.all([hw.nodes(), hw.addresses()])
   if (o.onlyIfNeeded) {

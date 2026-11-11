@@ -21,6 +21,8 @@
 // =============================================================================
 
 import { getCredential, setCredential, deleteCredential, listCredentialKeys } from './credentials'
+import { currentRemote } from './clusters/context'
+import { homeAddresses } from './clusters/registry'
 
 const CATEGORY = 'deck'
 const PIN = 'hostkey'
@@ -54,17 +56,55 @@ export function evidenceWords(e: PinEvidence | null): string {
   }
 }
 
-/** Same id the Terminal and node-exec use for host:port. */
-export function pinId(host: string, port = 22): string {
-  return `${host}:${port}`.replace(/[^a-zA-Z0-9._:-]/g, '_').slice(0, 120)
+/** The cluster whose pins apply here: null at home, the remote's id while working for a remote server. */
+export function pinScope(): string | null { return currentRemote()?.id ?? null }
+
+/**
+ * The vault id of the pin for host:port. At home it is `host:port`, the same id the Terminal uses. For a remote
+ * server it starts with that cluster's id (`c0123456789:host:port`), so a remote node whose address happens to be
+ * a home node's address (two private networks both using 10.0.0.x, say) never inherits the home node's pin, and
+ * the other way round.
+ */
+export function pinId(host: string, port = 22, scope: string | null = pinScope()): string {
+  return (scope ? `${scope}:${host}:${port}` : `${host}:${port}`).replace(/[^a-zA-Z0-9._:-]/g, '_').slice(0, 120)
+}
+
+/** A pin id that belongs to a remote server (shown on that server's pages, not on the home checklist). */
+export function isRemotePinId(id: string): boolean { return /^c[0-9a-f]{10}:/.test(id) }
+
+/**
+ * Pins kept before remote pins were scoped sat at the plain `host:port` id. The first time a remote's node is looked
+ * up, its old pin moves to the scoped id, but only when the address is one of that remote's node addresses and not
+ * one of the home addresses HyperProx knows: an address both could be is left for a fresh verification.
+ */
+async function migrateLegacy(host: string, port: number): Promise<boolean> {
+  const r = currentRemote()
+  if (!r) return false
+  const low = host.toLowerCase()
+  if (!Object.values(r.nodeAddresses).map(a => a.toLowerCase()).includes(low)) return false
+  if (homeAddresses().includes(low)) return false
+  const legacy = pinId(host, port, null), id = pinId(host, port)
+  const fp = await getCredential(CATEGORY, PIN, legacy)
+  if (!fp) return false
+  const [src, ev] = await Promise.all([getCredential(CATEGORY, SOURCE, legacy), getCredential(CATEGORY, EVIDENCE, legacy).catch(() => null)])
+  await setCredential(CATEGORY, PIN, id, fp, false)
+  if (src) await setCredential(CATEGORY, SOURCE, id, src, false)
+  if (ev) await setCredential(CATEGORY, EVIDENCE, id, ev, false)
+  await deleteCredential(CATEGORY, PIN, legacy)
+  await deleteCredential(CATEGORY, SOURCE, legacy).catch(() => undefined)
+  await deleteCredential(CATEGORY, EVIDENCE, legacy).catch(() => undefined)
+  return true
 }
 
 export async function pinnedKey(host: string, port = 22): Promise<string | null> {
-  return getCredential(CATEGORY, PIN, pinId(host, port))
+  const v = await getCredential(CATEGORY, PIN, pinId(host, port))
+  if (v !== null && v !== undefined) return v
+  return (await migrateLegacy(host, port)) ? getCredential(CATEGORY, PIN, pinId(host, port)) : null
 }
 
 export async function pinSource(host: string, port = 22): Promise<PinSource | null> {
-  const s = await getCredential(CATEGORY, SOURCE, pinId(host, port))
+  let s = await getCredential(CATEGORY, SOURCE, pinId(host, port))
+  if (!s && await migrateLegacy(host, port)) s = await getCredential(CATEGORY, SOURCE, pinId(host, port))
   return SOURCES.includes(s as PinSource) ? (s as PinSource) : null
 }
 
@@ -87,10 +127,11 @@ export async function confirmedPin(host: string, port: number, fingerprint: stri
   return pin === fingerprint && isConfirmedSource(src)
 }
 
-export async function forgetPin(host: string, port = 22): Promise<void> {
-  await deleteCredential(CATEGORY, PIN, pinId(host, port))
-  await deleteCredential(CATEGORY, SOURCE, pinId(host, port)).catch(() => undefined)
-  await deleteCredential(CATEGORY, EVIDENCE, pinId(host, port)).catch(() => undefined)
+export async function forgetPin(host: string, port = 22, scope: string | null = pinScope()): Promise<void> {
+  if (scope === pinScope()) await migrateLegacy(host, port).catch(() => false)   // an old unscoped copy of a remote's pin goes too
+  await deleteCredential(CATEGORY, PIN, pinId(host, port, scope))
+  await deleteCredential(CATEGORY, SOURCE, pinId(host, port, scope)).catch(() => undefined)
+  await deleteCredential(CATEGORY, EVIDENCE, pinId(host, port, scope)).catch(() => undefined)
 }
 
 export async function pinEvidence(host: string, port = 22): Promise<PinEvidence | null> {

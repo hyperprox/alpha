@@ -272,7 +272,10 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
       if (b.nodeAddresses !== undefined) {
         for (const [node, old] of Object.entries(before)) {
           if (c.nodeAddresses[node] === old) continue
-          await forgetPin(old, 22).catch(() => undefined)
+          // A remote's pin is scoped to it; an old unscoped copy (from before scoping) goes too, unless that address is
+          // also a home address, whose pin is home's.
+          await forgetPin(old, 22, row.kind === 'remote' ? row.id : null).catch(() => undefined)
+          if (row.kind === 'remote' && !homeAddresses().includes(old.toLowerCase())) await forgetPin(old, 22, null).catch(() => undefined)
           if (row.kind === 'remote') await removeRemoteNodeLogin(row.id, node).catch(() => undefined)
           cleared.push(node)
         }
@@ -431,11 +434,12 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       // A key HyperProx verified (or someone confirmed) needs no fingerprint. Otherwise the owner checked this one on
       // the machine, and it must be what the node presents now.
-      const [pin, src] = await Promise.all([pinnedKey(addr, 22), pinSource(addr, 22)])
+      // This remote's pins (scoped to it), and the test login, run as that server.
+      const [pin, src] = await runInCluster(row.id, () => Promise.all([pinnedKey(addr, 22), pinSource(addr, 22)]))
       const trustedNow = !!pin && isConfirmedSource(src) && (!b.fingerprint || b.fingerprint === pin)
-      if (!trustedNow) await confirmPin(addr, 22, String(b.fingerprint ?? ''), (h, p) => probeHostKey(h, p))
+      if (!trustedNow) await runInCluster(row.id, () => confirmPin(addr, 22, String(b.fingerprint ?? ''), (h, p) => probeHostKey(h, p)))
       const cred = { username, port: 22, ...(b.privateKey ? { privateKey: String(b.privateKey), ...(b.passphrase ? { passphrase: String(b.passphrase) } : {}) } : { password: String(b.password) }) }
-      const r = await execOnNode({ host: addr, cred, command: 'true', requirePin: true, timeoutMs: 20_000 })
+      const r = await runInCluster(row.id, () => execOnNode({ host: addr, cred, command: 'true', requirePin: true, timeoutMs: 20_000 }))
       if (r.code !== 0) throw new ClusterRefusal('The login was accepted but a test command failed. Nothing was saved.')
       await saveRemoteNodeLogin(row.id, node, JSON.stringify(cred))
       await auditCredentialUse('cluster.node_login.save', `cluster:${row.id}`, { by: who(), node })

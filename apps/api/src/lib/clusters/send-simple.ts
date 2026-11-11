@@ -335,13 +335,14 @@ export const liveSendDeps: SendDeps = {
   async hostKey(clusterId, node) {
     const address = await liveNodeRunner.sshAddress(clusterId, node)
     if (!address) return { address: null, pinned: null, confirmed: false }
-    const [pinned, src] = await Promise.all([pinnedKey(address, 22), pinSource(address, 22)])
+    // Pins for a remote server's nodes are kept under that server (lib/hostkey-pins.ts pinId).
+    const [pinned, src] = await runInCluster(clusterId, () => Promise.all([pinnedKey(address, 22), pinSource(address, 22)]))
     return { address, pinned, confirmed: !!pinned && isConfirmedSource(src) }
   },
   async confirmHostKey(clusterId, node, fingerprint) {
     const address = await liveNodeRunner.sshAddress(clusterId, node)
     if (!address) throw new ClusterRefusal(`No address is known for ${node}.`)
-    await confirmPin(address, 22, fingerprint, (h, p) => probeHostKey(h, p))
+    await runInCluster(clusterId, () => confirmPin(address, 22, fingerprint, (h, p) => probeHostKey(h, p)))
   },
   async setupKey(o) { await setupSending(o) },
   keyFor: sendKey,

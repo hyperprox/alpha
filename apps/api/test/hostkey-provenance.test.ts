@@ -10,7 +10,10 @@ import { FakeBroker } from './fakes/fake-broker'
 import { buildTestApp, resetLock, signIn } from './fakes/app'
 import { requestContext } from '../src/lib/auth'
 import { execOnNode, probeHostKey, HostKeyNotConfirmedError, pinHostKeyIfFree } from '../src/lib/node-exec'
-import { listPins, pinSource, setPinSource, recordPin, pinId, recordVerified, pinEvidence, PinVerifyRefusal } from '../src/lib/hostkey-pins'
+import { listPins, pinSource, setPinSource, recordPin, pinId, recordVerified, pinEvidence, PinVerifyRefusal, pinnedKey } from '../src/lib/hostkey-pins'
+import { setClusterStore, loadClusters, createRemote, updateCluster, resetClustersForTests } from '../src/lib/clusters/registry'
+import { MemoryClusterStore } from '../src/lib/clusters/store'
+import { runInCluster } from '../src/lib/clusters/context'
 import { confirmHostKey, checklistState } from '../src/lib/setup-checklist'
 import { confirmedFingerprint } from '../src/lib/ha/hostkey'
 import { needsReconfirm } from '../src/lib/roles'
@@ -192,4 +195,28 @@ test('a pin HyperProx verified (with its evidence) satisfies requirePin; a diffe
       assert.equal((await listPins()).find(x => x.id === pinId('127.0.0.1', p2))!.fingerprint, fp, 'the pin is unchanged')
     })
   } finally { srv.close() }
+})
+
+test('review 4: a remote server\'s pins are scoped to it; an old pin moves to it only when the address is unambiguous', async () => {
+  const saved = process.env.PROXMOX_HOST
+  process.env.PROXMOX_HOST = '10.0.0.51'
+  try {
+    await asOwner(async () => {
+      setClusterStore(new MemoryClusterStore()); await loadClusters()
+      const c = await createRemote({ name: 'Remote server', address: '10.0.0.50', port: 8006, fingerprint: 'AB'.repeat(32), tokenId: 'hyperprox@pve!main', tokenSecret: 'abcdef01-2345-6789-abcd-ef0123456789', by: 'owner@example.com' })
+      await updateCluster(c.id, { nodeAddresses: { node1: '10.0.0.51', node2: '10.0.0.52' } })
+      const homeFp = 'SHA256:' + 'H'.repeat(43), oldFp = 'SHA256:' + 'L'.repeat(43)
+      await recordPin('10.0.0.51', 22, homeFp, 'confirmed')   // a home node on the same address as the remote's node1
+      await recordPin('10.0.0.52', 22, oldFp, 'confirmed')    // a remote pin kept before pins were scoped
+      await runInCluster(c.id, async () => {
+        assert.equal(await pinnedKey('10.0.0.51', 22), null, 'the home pin is never inherited by the remote')
+        assert.equal(await pinnedKey('10.0.0.52', 22), oldFp, 'the old remote pin moved under the remote')
+        assert.equal(await pinSource('10.0.0.52', 22), 'confirmed', 'with its source')
+        assert.equal(pinId('10.0.0.52', 22), `${c.id}:10.0.0.52:22`)
+      })
+      assert.equal(await pinnedKey('10.0.0.51', 22), homeFp, 'home keeps its own pin')
+      assert.equal(await pinnedKey('10.0.0.52', 22), null, 'the old unscoped copy is gone')
+      assert.ok(!(await listPins()).some(p => p.id === pinId('10.0.0.52', 22, null)))
+    })
+  } finally { process.env.PROXMOX_HOST = saved; resetClustersForTests() }
 })

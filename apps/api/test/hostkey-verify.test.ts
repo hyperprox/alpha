@@ -429,4 +429,6 @@ test('node addresses: tailnet first, then the cluster status, and a one-node ser
   const id = { clusterName: null, nodes: [{ name: 'node1', ip: '10.0.0.21' }, { name: 'node2', ip: '10.0.0.22' }], local: 'node1' }
   assert.deepEqual(nodeAddresses(id, ['node1', 'node2'], '10.0.0.21', ts([{ hostName: 'node2', ips: ['100.64.0.12', 'fd7a:115c:a1e0::12'] }])), { node1: '10.0.0.21', node2: '100.64.0.12' })
   assert.deepEqual(nodeAddresses({ clusterName: null, nodes: [{ name: 'pve', ip: null }], local: 'pve' }, ['pve'], 'pve1.example', null), { pve: 'pve1.example' })
+  // review 4: the other nodes' cluster-network addresses are never filled in.
+  assert.deepEqual(nodeAddresses(id, ['node1', 'node2'], '10.0.0.21', null), { node1: '10.0.0.21' })
 })

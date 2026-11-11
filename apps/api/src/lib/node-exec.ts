@@ -23,13 +23,12 @@ import {
   CREDENTIAL_CATEGORY, CRED_PROVIDER, type TerminalCredential,
 } from './ssh-broker'
 import { getCredential, setCredential } from './credentials'
-import { recordPin, pinSource, isConfirmedSource, type PinSource } from './hostkey-pins'
+import { recordPin, pinSource, pinnedKey, isConfirmedSource, type PinSource } from './hostkey-pins'
 import { currentRemote } from './clusters/context'
 import { assertSafeScript } from './clusters/script-guard'
 import { remoteNodeLoginRaw } from './clusters/registry'
 import { scheduleHomeVerify } from './hostkey-verify'
 
-const HOSTKEY_PROVIDER = 'hostkey'
 
 /** Credential id for a node, distinct from any guest that shares its name. */
 export function nodeCredentialId(node: string): string {
@@ -116,9 +115,9 @@ export function hostKeyDecision(pinned: string | null | undefined, fingerprint: 
   return requirePin ? 'reject-unpinned' : 'accept'
 }
 
-/** The pin the Terminal and every exec path share for `host:port`, or null. */
+/** The pin the Terminal and every exec path share for `host:port` (scoped to the remote server when working for one), or null. */
 export async function pinnedHostKey(host: string, port = 22): Promise<string | null> {
-  return getCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, credentialId(`${host}:${port}`))
+  return pinnedKey(host, port)
 }
 
 /**
@@ -249,7 +248,7 @@ export function execOnNode(opts: ExecOptions): Promise<ExecResult> {
       hostVerifier: (key: Buffer, verified: (ok: boolean) => void) => {
         const fp = fingerprintOf(key)
         const port = opts.port ?? 22
-        getCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, credentialId(`${host}:${port}`))
+        pinnedKey(host, port)
           .then(async pinned => {
             const d = hostKeyDecision(pinned, fp, !!opts.requirePin)
             if (d === 'reject-unpinned') unpinned = fp
