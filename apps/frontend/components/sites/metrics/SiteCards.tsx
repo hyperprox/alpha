@@ -11,7 +11,7 @@ import s from './metrics.module.css'
 export function SiteSparkRow({ site }: { site: SiteSummary }) {
   return (
     <div className={s.siteRow}>
-      <div><strong>{fmtCount(site.visitorsToday)}</strong><br /><small>visitors today</small></div>
+      <div><strong>{fmtCount(site.visitorsToday)}</strong><br /><small>people today</small></div>
       <SparkLine data={site.spark} label={`${site.name}: people per hour, last 24 hours`} />
     </div>
   )

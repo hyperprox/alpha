@@ -4,15 +4,17 @@
 //  HyperProx — a site's Metrics tab
 //
 //  HUD (uptime ring and five chips), traffic (people and bots), top pages and
-//  referrers, devices and browsers, responses and broken links, the container,
-//  and for WordPress what WP-CLI reports. Everything here comes from counts
-//  the API keeps: no log line or address reaches this page. A viewer sees
-//  totals only; pages, referrers, 404s and WordPress need operator.
+//  referrers, devices and browsers, responses and broken links, the Security
+//  card (scanner probes), the container, and for WordPress what WP-CLI
+//  reports. Everything here comes from counts the API keeps: no log line or
+//  address reaches this page. A viewer sees totals only; pages, referrers,
+//  404s, probe paths and WordPress need operator. "People" are visitors whose
+//  browser behaved like a browser; the unconfirmed and bots are shown apart.
 // =============================================================================
 
 import { bytes as fmtBytes, duration } from '@/components/visual/kit'
-import { Bars, Gauge, StackBar, StatusRows, TrafficChart, UptimeRing } from './charts'
-import { KIND_WORD, fmtCount, fmtMs, fmtPct, type Range, type SiteDetail } from './types'
+import { Bars, Gauge, StackBar, StatusIcon, StatusRows, TrafficChart, UptimeRing } from './charts'
+import { KIND_WORD, PROBE_WORD, fmtCount, fmtMs, fmtPct, type Range, type Security, type SiteDetail } from './types'
 import s from './metrics.module.css'
 
 const RANGE_SUB: Record<Range, string> = { '24h': 'LAST 24 HOURS · PER HOUR', '7d': 'LAST 7 DAYS · PER DAY', '30d': 'LAST 30 DAYS · PER DAY' }
@@ -25,6 +27,42 @@ function whenFor(range: Range) {
     if (range === '7d') return d.toLocaleDateString(undefined, { weekday: 'short', timeZone: 'UTC' })
     return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' })
   }
+}
+
+/** Scanner probes in the range: refused is good news; anything answered is said loudly, with the path for operators. */
+function SecurityCard({ sec, own, range }: { sec: Security; own: number; range: Range }) {
+  const exposed = sec.exposedCount > 0
+  const refusedAll = sec.kinds.every(k => k.refused + k.errors === k.requests)
+  const tone = exposed ? 'crit' : refusedAll ? 'good' : 'info'
+  return (
+    <section className={`${s.panel} ${exposed ? s.secBad : ''}`} aria-labelledby="sm-security">
+      <h3 id="sm-security">Security <small>SCANNER PROBES · {RANGE_SHORT[range]}</small></h3>
+      <p className={s.secHead} role={exposed ? 'alert' : undefined}>
+        <StatusIcon tone={tone} />
+        <span>{sec.total === 0 ? 'No scanner probes in this range.'
+          : exposed ? `${sec.exposedCount} probe${sec.exposedCount === 1 ? ' was' : 's were'} answered with a file: possibly given away. Check ${sec.exposed?.length ? 'the paths below' : 'with an operator'} now.`
+          : refusedAll ? `${fmtCount(sec.total)} probe${sec.total === 1 ? '' : 's'}, all refused.` : `${fmtCount(sec.total)} probes, none answered with a file.`}</span>
+      </p>
+      {exposed && sec.exposed && sec.exposed.length > 0 && (
+        <ul className={s.list} aria-label="Probe paths the site answered">{sec.exposed.map(n => <li key={n.key} className={s.secPath}><span title={n.key}>{n.key}</span><em>{n.value}× answered</em></li>)}</ul>
+      )}
+      {sec.kinds.length > 0 && (
+        <ul className={s.secKinds} aria-label="Probes by kind">
+          {sec.kinds.map(k => (
+            <li key={k.kind}>
+              <b>{fmtCount(k.requests)}</b> for {PROBE_WORD[k.kind] ?? k.kind}
+              <span>{k.refused === k.requests ? `, all refused${k.kind === 'secrets' ? ' (404)' : ''}` : `: ${[
+                k.refused ? `${k.refused} refused` : '', k.answered ? `${k.answered} answered` : '', k.moved ? `${k.moved} redirected` : '', k.errors ? `${k.errors} server errors` : '',
+              ].filter(Boolean).join(', ')}`}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {sec.catchAllCount > 0 && <p className={s.note}>{sec.catchAllCount} answered with the home page itself (a catch-all), so nothing was given away.</p>}
+      <p className={s.secFoot}>Scanners try every public address. These are counted as bots, never as visitors or broken links. Addresses are never kept.
+        {own > 0 && <> HyperProx checks: {fmtCount(own)}, left out of every figure.</>}</p>
+    </section>
+  )
 }
 
 export function SiteMetrics({ d, range }: { d: SiteDetail; range: Range }) {
@@ -43,7 +81,10 @@ export function SiteMetrics({ d, range }: { d: SiteDetail; range: Range }) {
         <div className={s.hudR}>
           <h2><small>{(KIND_WORD[sum.kind] ?? sum.kind).toUpperCase()}{where} · {healthy}</small>Visitors and health</h2>
           <dl className={s.chips}>
-            <div className={s.chip}><dt>visitors today</dt><dd>{fmtCount(sum.visitorsToday)}{trend !== null && <em className={trend >= 0 ? s.up : s.down}>{trend >= 0 ? '+' : ''}{trend}%<span className="sr-only"> against the same hours yesterday</span></em>}</dd></div>
+            <div className={s.chip} title="Visitors whose browser opened a page and loaded its images, styles or scripts">
+              <dt>people today</dt><dd>{fmtCount(sum.visitorsToday)}{trend !== null && <em className={trend >= 0 ? s.up : s.down}>{trend >= 0 ? '+' : ''}{trend}%<span className="sr-only"> against the same hours yesterday</span></em>}</dd>
+              <small className={s.chipSub}>{fmtCount(sum.unconfirmedToday ?? 0)} unconfirmed · {fmtCount(sum.botsToday ?? 0)} bots</small>
+            </div>
             <div className={s.chip}><dt>page views · {RANGE_SHORT[range]}</dt><dd>{fmtCount(d.hud.pageViews)}</dd></div>
             <div className={s.chip}><dt>error rate</dt><dd>{fmtPct(d.hud.errorRatePct)}</dd></div>
             <div className={s.chip} title={d.hud.hasRequestTime ? undefined : 'The log has no request time yet'}><dt>p95 response</dt><dd>{fmtMs(d.hud.p95Ms)}</dd></div>
@@ -51,6 +92,17 @@ export function SiteMetrics({ d, range }: { d: SiteDetail; range: Range }) {
           </dl>
         </div>
       </section>
+
+      {(sum.countedBeforeFix || (d.hud.beforeFix ?? 0) > 0) && (
+        <p className={s.beforeFix}>
+          {sum.countedBeforeFix ? 'Part of today was ' : `${d.hud.beforeFix} ${range === '24h' ? 'hour' : 'day'}${d.hud.beforeFix === 1 ? ' was' : 's were'} `}
+          counted before the accuracy fix, when every visitor that was not a known bot counted as a person and HyperProx&apos;s own checks were counted too.
+          Those figures are higher than they would be now and are not compared with newer ones.
+        </p>
+      )}
+      {sum.scannerBurst && (
+        <p className={s.note} role="status"><b>Scanner burst.</b> {sum.scannerBurst.detail}</p>
+      )}
 
       <section className={s.panel} aria-labelledby="sm-traffic">
         <h3 id="sm-traffic">Traffic <small>{RANGE_SUB[range]} · REQUESTS</small>
@@ -86,10 +138,12 @@ export function SiteMetrics({ d, range }: { d: SiteDetail; range: Range }) {
             <h3 style={{ marginTop: 18 }}>Broken links <small>MOST-HIT 404s · PEOPLE ONLY</small></h3>
             {d.notFound.length ? (
               <ul className={s.list} aria-label="Most-hit missing pages">{d.notFound.map(n => <li key={n.key}><span title={n.key}>{n.key}</span><em>{n.value}</em></li>)}</ul>
-            ) : <p className={s.note}>No broken links found by people. Scanners asking for files that never existed are left out.</p>}
+            ) : <p className={s.note}>No broken links found by people. Scanners asking for files that never existed are on the Security card instead.</p>}
           </>)}
         </section>
       </div>
+
+      {d.security && <SecurityCard sec={d.security} own={d.hud.own ?? 0} range={range} />}
 
       <section className={s.panel} aria-label="Container">
         <h3>Container <small>{d.where ? `CT ${d.where.vmid} · ` : ''}NOW</small></h3>

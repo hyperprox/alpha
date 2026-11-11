@@ -29,7 +29,7 @@ export function SitesOverview({ sites }: { sites: SiteSummary[] }) {
     <>
       <Panel title="All sites" sub="today, from each site's access log and public check">
         <Tiles label="All sites today" items={[
-          { label: 'visitors today', value: fmtCount(t.visitorsToday) },
+          { label: 'people today', value: fmtCount(t.visitorsToday) },
           { label: 'page views', value: fmtCount(t.pageViewsToday) },
           { label: 'up', value: t.up, tone: t.up ? 'good' : undefined },
           { label: 'down', value: t.down, tone: t.down ? 'crit' : undefined },
@@ -41,7 +41,7 @@ export function SitesOverview({ sites }: { sites: SiteSummary[] }) {
       <Panel title="Each site" sub="open one for its Metrics tab">
         <div className={s.tw}>
           <table className={s.ovt}>
-            <thead><tr><th scope="col">Site</th><th scope="col">State</th><th scope="col">Visitors today</th><th scope="col">Last 24 h</th><th scope="col">Errors</th><th scope="col">p95</th><th scope="col">Cert</th></tr></thead>
+            <thead><tr><th scope="col">Site</th><th scope="col">State</th><th scope="col">People today</th><th scope="col">Last 24 h</th><th scope="col">Errors</th><th scope="col">p95</th><th scope="col">Cert</th></tr></thead>
             <tbody>
               {sites.map(x => (
                 <tr key={x.id}>

@@ -7,8 +7,23 @@ export interface SiteAlert { kind: string; since: number; detail: string }
 export interface SiteSummary {
   id: string; name: string; kind: string; adopted: boolean; domain: string | null; url: string | null
   up: boolean | null; latencyMs: number | null; checkedAt: number | null
+  /** People today: visitors whose browser behaved like one (opened a page and loaded its images, styles or scripts). */
   visitorsToday: number; trendPct: number | null; pageViewsToday: number; spark: number[]
   errorRatePct: number | null; p95Ms: number | null; certDays: number | null; alerts: SiteAlert[]
+  /** Opened a page but never loaded anything else; distinct bots; HyperProx's own requests. */
+  unconfirmedToday?: number; botsToday?: number; ownToday?: number
+  /** Today was partly counted before the accuracy fix. */
+  countedBeforeFix?: boolean
+  /** Bots and scanners bursting in the last hour: a note, never an alert. */
+  scannerBurst?: { since: number; detail: string } | null
+}
+
+export type ProbeKind = 'secrets' | 'admin' | 'php' | 'api' | 'other'
+export interface Security {
+  total: number
+  kinds: Array<{ kind: ProbeKind; requests: number; refused: number; answered: number; moved: number; errors: number }>
+  exposedCount: number; exposed?: KeyValue[]
+  catchAllCount: number; catchAll?: KeyValue[]
 }
 
 export interface KeyValue { key: string; value: number; pct?: number }
@@ -32,8 +47,12 @@ export interface ContainerView {
 export interface SiteDetail {
   summary: SiteSummary
   range: Range
-  hud: { visitors: number; pageViews: number; requests: number; errorRatePct: number | null; p95Ms: number | null; p50Ms: number | null; bytes: number; uptimePct: number | null; hasRequestTime: boolean }
-  series: Array<{ at: number; people: number; bots: number; visitors: number }>
+  hud: {
+    visitors: number; pageViews: number; requests: number; errorRatePct: number | null; p95Ms: number | null; p50Ms: number | null; bytes: number; uptimePct: number | null; hasRequestTime: boolean
+    unconfirmed?: number; botVisitors?: number; unconfirmedPageViews?: number; own?: number; beforeFix?: number
+  }
+  series: Array<{ at: number; people: number; bots: number; visitors: number; unconfirmed?: number; before?: boolean }>
+  security?: Security
   status: { s2xx: number; s3xx: number; s4xx: number; s5xx: number }
   devices: KeyValue[]; browsers: KeyValue[]; os: KeyValue[]
   pages?: KeyValue[]; referrers?: KeyValue[]; notFound?: KeyValue[]
@@ -44,6 +63,10 @@ export interface SiteDetail {
   health: { up: boolean | null; status: number | null; latencyMs: number | null; problem: string | null; certDays: number | null; certIssuer: string | null; certError: string | null }
   container: ContainerView | null
   canAdmin: boolean
+}
+
+export const PROBE_WORD: Record<ProbeKind, string> = {
+  secrets: 'secret files', admin: 'admin panels', php: 'PHP files', api: 'APIs this site does not have', other: 'other scanner paths',
 }
 
 export const ALERT_WORD: Record<string, string> = { down: 'Down', errors: 'Server errors', cert: 'Certificate', spike: 'Traffic spike' }

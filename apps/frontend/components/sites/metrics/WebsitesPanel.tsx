@@ -36,13 +36,13 @@ export function WebsitesPanel() {
   }, [])
   if (!sites || !sites.length) return null
   return (
-    <Panel title="Websites" sub="public check · visitors today · errors · p95 · certificate" href="/sites" linkLabel="Sites">
+    <Panel title="Websites" sub="public check · people today · errors · p95 · certificate" href="/sites" linkLabel="Sites">
       <div className={s.sites}>
         {sites.map(x => (
           <Link key={x.id} href={`/sites/${encodeURIComponent(x.id)}`} className={s.site}>
             <div className={s.siteHead}><b>{x.domain ?? x.name}</b><UpState up={x.up} /></div>
             <div className={s.siteRow}>
-              <div><strong>{fmtCount(x.visitorsToday)}</strong><br /><small>visitors today</small></div>
+              <div><strong>{fmtCount(x.visitorsToday)}</strong><br /><small>people today</small></div>
               <SparkLine data={x.spark} label={`${x.name}: people per hour, last 24 hours`} />
             </div>
             <dl className={s.facts} style={{ marginTop: 4, gridTemplateColumns: 'repeat(4, minmax(0, 1fr))' }}>
