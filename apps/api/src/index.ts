@@ -75,7 +75,9 @@ const server = Fastify(serverOptions({
 
 async function main() {
   await server.register(helmet, { contentSecurityPolicy: false })
-  await server.register(cors,   { origin: true })
+  // No cross-origin access at all: the app is served from the same origin as the API (nginx), so no
+  // Access-Control-* header is ever sent and another site's page cannot read an answer.
+  await server.register(cors,   { origin: false })
   await server.register(rateLimit, { max: 200, timeWindow: '1 minute' })
   await server.register(websocket)
   await server.register(prismaPlugin)

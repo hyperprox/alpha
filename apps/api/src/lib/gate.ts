@@ -79,6 +79,43 @@ function routePath(req: FastifyRequest): string | null {
 }
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
+
+/**
+ * The host the browser asked for. nginx and Next's rewrite proxy, both on this machine, pass it on as
+ * X-Forwarded-Host (nginx replaces whatever the client sent); from anywhere else only Host counts.
+ */
+function requestHost(req: FastifyRequest): string {
+  const h = req.headers as Record<string, any>
+  const fwd = typeof h['x-forwarded-host'] === 'string' ? h['x-forwarded-host'].split(',')[0].trim() : ''
+  if (fwd && LOOPBACK.has(req.socket?.remoteAddress ?? '')) return fwd.toLowerCase()
+  return String(h.host ?? '').toLowerCase()
+}
+
+/**
+ * True when a state-changing request or a WebSocket upgrade comes from another site: its Origin is not this
+ * host (or, with no Origin, Sec-Fetch-Site says cross-site). The session cookie is SameSite=Lax, which a
+ * same-site page (another service on a sibling name) or an old browser does not stop; this does. A request
+ * with neither header (curl, scripts, the CLI) carries no browser's ambient cookie and is let through.
+ * When the proxy dropped the port from Host, a same-hostname Origin on any port is accepted.
+ */
+export function crossOriginRequest(req: FastifyRequest): boolean {
+  const h = req.headers as Record<string, any>
+  const upgrade = String(h.upgrade ?? '').toLowerCase() === 'websocket'
+  if (SAFE_METHODS.has(req.method) && !upgrade) return false
+  const host = requestHost(req)
+  const origin = typeof h.origin === 'string' ? h.origin.trim() : ''
+  if (origin) {
+    if (origin === 'null' || !host) return true
+    let o: URL
+    try { o = new URL(origin) } catch { return true }
+    const oh = o.host.toLowerCase()
+    if (oh === host) return false
+    return host.includes(':') || o.hostname.toLowerCase() !== host
+  }
+  const site = typeof h['sec-fetch-site'] === 'string' ? h['sec-fetch-site'].toLowerCase() : ''
+  return site !== '' && site !== 'same-origin' && site !== 'none'
+}
 
 /**
  * Register @fastify/jwt (keyed to the unlock state) and the gate hooks.
@@ -105,6 +142,8 @@ export async function registerGate(server: FastifyInstance): Promise<void> {
     if (req.method === 'OPTIONS') return
     // A path that could smuggle a second segment or a query into a Proxmox call is refused outright.
     if (unsafeRequestPath(req.url)) return reply.status(400).send({ ok: false, code: 'bad_path', error: 'That address contains characters HyperProx does not accept here.' })
+    // Another site's page driving a signed-in browser (a form post, a fetch, a WebSocket): refused, locked or not.
+    if (crossOriginRequest(req)) return reply.status(403).send({ ok: false, code: 'cross_origin', error: 'This request came from another site, so HyperProx refused it.' })
 
     const path   = normalisePath(req.url)
     const needed = requiredRole(req.method, path)

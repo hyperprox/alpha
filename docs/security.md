@@ -96,6 +96,11 @@ Bitwarden-compatible, zero-knowledge vault. Every install runs its own, stock an
   them an operator (put them in the group "HyperProx operators"), or as **User** for a viewer (group
   "HyperProx viewers"). Owner and Admin memberships are full. The owner's two-factor code is enforced at
   every sign-in.
+- **Cross-site requests.** The session cookie is `SameSite=Lax`, and on top of that the API refuses (403
+  `cross_origin`) any state-changing request or WebSocket upgrade whose `Origin` is not the host the browser
+  asked for (nginx passes it on as `X-Forwarded-Host`, which the API believes only from loopback), or that has
+  no `Origin` and a `Sec-Fetch-Site` other than `same-origin`. Scripts and the host CLI send neither header and
+  are not affected. The API sends no CORS headers at all, so another site's page cannot read an answer.
 - **Sign-in limits.** Sign-in, owner creation and re-confirmation allow 10 attempts a minute per client address,
   and an account allows 20 failed sign-ins (10 wrong master passwords at re-confirmation) in 15 minutes from
   any number of addresses. The API believes `X-Forwarded-For` only from nginx on the same machine, so the
