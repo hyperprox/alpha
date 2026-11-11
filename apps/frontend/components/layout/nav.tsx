@@ -52,6 +52,13 @@ export const NAV: NavGroup[] = [
     ],
   },
   {
+    // Websites have their own section: the sites, the New website wizard, adopting one already running, and metrics.
+    section: 'Web',
+    items: [
+      { href: '/sites', label: 'Websites', keywords: 'sites wordpress static new website add existing metrics visitors', icon: I('M3 12a9 9 0 1 0 18 0 9 9 0 0 0-18 0zM3 12h18M12 3c2.5 2.7 3.8 5.7 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-5.7-3.8-9S9.5 5.7 12 3z') },
+    ],
+  },
+  {
     section: 'Apps',
     items: [
       { href: '/plugins', label: 'Plug-ins', keywords: 'integrations', icon: I('M12 2 2 7l10 5 10-5zM2 17l10 5 10-5M2 12l10 5 10-5') },
@@ -89,6 +96,7 @@ export function pageMeta(pathname: string): { crumb: string; title: string } {
   if (/^\/clusters\/[^/]+\/updates$/.test(pathname)) return { crumb: 'Command center', title: 'Updates' }
   if (/^\/clusters\/[^/]+$/.test(pathname)) return { crumb: 'Command center', title: 'Cluster' }
   if (/^\/plugins\/[^/]+$/.test(pathname)) return { crumb: 'Plug-ins', title: 'Plug-in' }
+  if (/^\/sites\/[^/]+$/.test(pathname)) return { crumb: 'Websites', title: 'Site metrics' }
   for (const g of NAV) {
     for (const it of g.items) {
       if (isActive(pathname, it.href)) return { crumb: g.section ?? 'Overview', title: it.label }

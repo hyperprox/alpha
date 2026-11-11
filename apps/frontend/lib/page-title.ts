@@ -37,5 +37,6 @@ export function resolvePageMeta(base: PageMeta, pathname: string, names?: Record
   const plugin = pluginIdOf(pathname)
   if (plugin) return { crumb: 'Plug-ins', crumbHref: '/plugins', title: names?.[plugin] || PLUGIN_NAMES[plugin] || humanise(plugin) }
   if (/^\/clusters\/[^/]+(\/updates)?$/.test(pathname) && pathname !== '/clusters/add') return { ...base, crumbHref: '/clusters' }
+  if (/^\/sites\/[^/]+$/.test(pathname)) return { ...base, crumbHref: '/sites' }
   return base
 }

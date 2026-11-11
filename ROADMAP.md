@@ -107,18 +107,24 @@ if something changed since the preview, and is read back afterwards.
 
 ### Apps & Plug-ins
 
-- **Catalogue** (`lib/catalogue.ts`): twelve recipes (Nginx Proxy Manager, Ollama, Tautulli, Nextcloud,
-  Jellyfin, Vaultwarden, Gitea, Uptime Kuma, Homepage, Grafana, Static site, WordPress). A wizard picks
-  resources, recommends a node from live capacity, sets ID, hostname and address, and shows the exact
-  plan. A failed install can remove only the container it made.
-- **Sites** (`lib/sites.ts`): a New website wizard for a static site or WordPress that also makes the DNS
-  record, proxy host and certificate and checks the public address, with a clean-up of only what a failed
-  run made; then open, one-time WordPress admin sign-in, reveal password, pull now and health.
+- **Catalogue** (`lib/catalogue.ts`): twelve recipes; the Catalogue page lists ten (Nginx Proxy Manager,
+  Ollama, Tautulli, Nextcloud, Jellyfin, Vaultwarden, Gitea, Uptime Kuma, Homepage, Grafana), and the two
+  website recipes (Static site, WordPress) are used by the Websites section. A wizard picks resources,
+  recommends a node from live capacity, sets ID, hostname and address, and shows the exact plan. A failed
+  install can remove only the container it made. An app already running on the cluster is found by a
+  read-only probe of each proxy target and web-serving container (`lib/catalogue-detect.ts`) and shown
+  with where it runs; Install becomes Install another, which asks first.
+- **Websites** (`/sites`, `lib/sites.ts`): its own section in the rail, with Sites, New website, Add existing
+  and Metrics tabs. New website is a wizard for a static site or WordPress that also makes the DNS record,
+  proxy host and certificate and checks the public address, with a clean-up of only what a failed run made;
+  then open, one-time WordPress admin sign-in, reveal password, pull now and health.
 - **Site metrics** (`lib/site-metrics`): privacy-friendly analytics read from each site's own nginx access log
   every 5 minutes (no scripts, no cookies, addresses never stored; visitors counted with a salted hash whose
   key changes daily), the public check and certificate days, container gauges, a read-only WordPress check,
   alerts (down, server errors, certificate, traffic spike), a Websites panel on Monitoring, Prometheus gauges
-  and a Grafana dashboard. **Add an existing site** adopts a hand-built container read-only, with an optional,
+  and a Grafana dashboard. **Add existing** lists the websites HyperProx finds (proxy hosts matched to their
+  guests, and containers serving on 80/443), with each one's access log, log format and kind read from inside
+  the container (`lib/site-metrics/discovery.ts`), and adopts the one picked read-only, with an optional,
   previewed and re-confirmed change to its nginx log format for response times.
 - **AI assistant** (`lib/ai`): answers questions about one cluster or all of them, with each fact labelled
   by cluster. Plain-language deploys of Nextcloud, Jellyfin, Gitea, Uptime Kuma and Homepage run end to
@@ -153,7 +159,7 @@ if something changed since the preview, and is read back afterwards.
   GPUNotResponding, GPUHot, CPUHot, FanStuckAtMax, MonitoringTargetDown.
 - **Alerts are forwarded** (`lib/alerts/forwarder.ts`): one message when an alert starts, one when it clears,
   and one warning if Prometheus stops answering.
-- **Websites** (`lib/site-metrics`): every site on the Sites page is checked every 5 minutes, with its traffic,
+- **Websites** (`lib/site-metrics`): every site in the Websites section is checked every 5 minutes, with its traffic,
   errors, p95 and certificate on the Monitoring page and in Grafana, and its alerts in the same feed.
 - **Notifications** (`lib/notify`): Discord, Slack, Teams, ntfy, Gotify, Telegram and generic webhooks, with
   severity filters, quiet hours and a test button.

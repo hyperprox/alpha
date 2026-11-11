@@ -89,8 +89,8 @@ node screenshots.mjs --all http://127.0.0.1:3100 /tmp/hyperprox-shots
 | Certificates | Inventory of every endpoint's certificate, ACME DNS-01 issuance and renewal, delivery into guests |
 | Updates | Pending packages everywhere, on every cluster, and a gated update run that respects HA and quorum, restarts Ceph one OSD at a time and refuses any restart or reboot that would take data offline; a daily read-only check tells you when something new needs updating |
 | Terminal | Browser SSH with persistent tmux sessions, split panes and saved layouts |
-| Catalogue | Guided installs of NPM, Ollama, Tautulli, Nextcloud, Jellyfin, Gitea, a static site, WordPress and more: choose resources, see every node's free capacity with a recommended node, pick the ID and address |
-| Sites | A New website wizard (static site or WordPress) from a domain your DNS provider lists to a live HTTPS site: container, DNS record, proxy host, certificate and a check of the public address; then open it, sign in to WordPress with a one-time link, reveal its password, pull it again, check its health |
+| Catalogue | Guided installs of NPM, Ollama, Tautulli, Nextcloud, Jellyfin, Gitea and more: choose resources, see every node's free capacity with a recommended node, pick the ID and address; an app already running on your cluster shows where |
+| Websites | Its own section: a New website wizard (static site or WordPress) from a domain your DNS provider lists to a live HTTPS site (container, DNS record, proxy host, certificate and a check of the public address), Add existing for the sites HyperProx finds already running, and privacy-friendly metrics from each site's own access log; then open it, sign in to WordPress with a one-time link, reveal its password, pull it again, check its health |
 | AI assistant | Questions about your cluster, and plain-language deploys run end to end after you confirm |
 | Plug-ins | Arr Stack, Unmanic, MikroTik, Plex, Home Assistant and MeshCentral, with no access to credentials; Home Assistant also controls devices, in more than one house |
 | Notifications | Discord, Slack, Teams, ntfy, Gotify, Telegram and generic webhooks |
@@ -365,7 +365,7 @@ an existing install gets it on its next `deploy.sh`. It is never rotated.
 
 A rail on the left groups the pages: Dashboard and Command center first, then **Cluster**
 (Infrastructure, Storage, Monitoring, Updates, High availability), **Network** (Certificates, DNS,
-Proxy, VPN & remote access), **Apps** (Plug-ins, Catalogue, Deck, AI assistant) and **System**
+Proxy, VPN & remote access), **Web** (Websites), **Apps** (Plug-ins, Catalogue, Deck, AI assistant) and **System**
 (Settings). Its foot shows the vault state, who is signed in with their role, and **Lock now** for
 owners and admins. On a wide screen the rail folds to icons; under 900 px it becomes a bar with a menu
 button that opens the same rail as a drawer. The top bar names the page, shows a live dot (whether your
@@ -804,7 +804,7 @@ and for WordPress the admin email), then plans it with the New website wizard's 
 checked against your DNS provider and proxy, the node, storage, bridge and ID are the wizard's
 recommendation, and the plan is held for you for 10 minutes. The assistant installs nothing: **Review in
 New website** opens that plan in the wizard, and Install there asks for your master password, as it does by
-hand. "Pull docs.example.com now" prepares the Sites page's Pull now for a static site (admin), and "run a
+hand. "Pull docs.example.com now" prepares the Websites section's Pull now for a static site (admin), and "run a
 quick SMART test on disk 3 of nas1" prepares the QNAP page's quick SMART test (operator); each is a confirm
 card, and an API token can never apply one. Restarting or shutting down a NAS, signing in to WordPress admin
 and switching Home Assistant devices (security ones above all) are not offered: asked, the assistant says
@@ -843,7 +843,29 @@ reports, are passed on as they were written.
 
 Installs a service you do not run yet into a new unprivileged container, checks that it answers, and
 connects it to HyperProx: Nginx Proxy Manager, Ollama, Tautulli, Nextcloud, Jellyfin, Vaultwarden,
-Gitea, Uptime Kuma, Homepage, Grafana, and two web hosting recipes:
+Gitea, Uptime Kuma, Homepage and Grafana. Websites are not listed here: they have their own section,
+[Websites](#websites), and a banner on the Catalogue page links to it.
+
+**Already running?** For admins, the Catalogue page looks for each app on your cluster before offering it.
+It asks the places HyperProx already knows serve the web (every enabled proxy host's forward target, and
+running containers listening on port 80 or 443, the same list as [Add an existing site](#add-an-existing-site))
+one read-only question per app: Nextcloud's `/status.php`, Jellyfin's `/System/Info/Public`, Gitea's
+`/api/v1/version`, Vaultwarden's `/api/config` (or `/alive`), Grafana's `/api/health`, Uptime Kuma's
+`/api/entry-page`, Homepage's start page, Ollama's `/api/tags`, Tautulli's sign-in page and Nginx Proxy
+Manager's `/api/`. Each is a plain GET with no login, no cookies and no redirects followed, a 3-second
+timeout and at most 64 KiB read; a proxy target is asked with the public name as its Host header, as the
+proxy would, and an internal certificate is not checked. A recipe found this way says **Running on** the
+guest and its public name (with the version when the app shows one) and offers **Open**; **Install another…**
+then asks before it starts the wizard. The answer is kept five minutes (**Look again** asks now). A recipe whose
+integration already has an address (Settings) still counts as **configured**, as before.
+
+### Websites
+
+Websites have their own section in the rail (**Web → Websites**, at `/sites`), with four tabs: **Sites**
+(each site with its kind, address, container, today's visitors and a 24-hour sparkline), **New website**,
+**Add existing** and **Metrics** (every site at once: visitors and page views today, how many are up and
+down, the worst error rate, certificates with under 14 days left, alerts firing, and a row per site that
+opens its own Metrics tab). A site's own page is `/sites/<id>`. The two recipes behind New website:
 
 - **Static site**: nginx serving `/var/www/site`, optionally pulled from a public https git repository (a
   branch and a folder in it), with `site-pull` to pull now and an optional timer every N minutes. Security
@@ -855,12 +877,12 @@ Gitea, Uptime Kuma, Homepage, Grafana, and two web hosting recipes:
   `/wp-login.php` must show the login form, which needs PHP and the database.
 
 Both log in nginx's combined format plus the request time and the proxy's `X-Forwarded-For`
-(`log_format hyperprox_metrics`), which is what the Sites page's **Metrics** tab reads (see below). Monitoring
+(`log_format hyperprox_metrics`), which is what a site's **Metrics** tab reads (see below). Monitoring
 with alerts is therefore automatic for both. Not automatic yet: a backup job, a place under the update policy
 and a plug-in panel. Ghost is not offered: it supports only MySQL 8 in production, which Debian 13 does not ship,
 and its installer takes the database password as a command-line flag.
 
-Every install is a short wizard:
+Every Catalogue install is a short wizard:
 
 1. **The app**: what it is, what it needs, and its first login.
 2. **Resources**: cores, memory, swap and disk, filled in from the app's recommended size, with a warning
@@ -879,9 +901,9 @@ top of the Catalogue page. It is tested before it is stored, kept in the vault, 
 the Terminal's shared guest login. An SSH key is better than a password. If an install fails, the
 wizard offers to remove only the container it made. See [docs/catalogue-wizard.md](docs/catalogue-wizard.md).
 
-### Sites
+#### New website
 
-**New website** (on the Sites page) is the same wizard with a public name: pick the kind, then a domain
+**New website** (a tab of Websites) is the Catalogue's install wizard with a public name: pick the kind, then a domain
 your DNS provider lists and a name in it (or the domain itself), and the proxy. HyperProx refuses a name
 that already has an A, AAAA or CNAME record and shows the exact record it will create. Placement, ID and
 address come from the same rules as the Catalogue, with small, medium and large sizes. The review shows the
@@ -901,7 +923,7 @@ the vault), **Pull now** for a static site, **Health** for the container and the
 Every 5 minutes HyperProx reads the new lines of each site's nginx access log and turns them into counts.
 Nothing is added to the site: no JavaScript, no tracking pixel, no cookies, and nothing is sent to anyone
 else. The reading is one fixed, read-only script run in the container through the same `pct exec` path as
-the rest of the Sites page, given only a checked log path (absolute, under `/var/log`, no `..`) and a
+the rest of the Websites section, given only a checked log path (absolute, under `/var/log`, no `..`) and a
 position. It remembers the file's inode and offset, so it carries on where it stopped, follows logrotate
 (the rest of `access.log.1`, then the new file) and starts again when a log is cut in place.
 
@@ -944,18 +966,36 @@ requests by class, bot requests, p95, certificate days), labelled by site name o
 
 #### Add an existing site
 
-For a website you built by hand in a container. On the Sites page, **Add an existing site**: pick the
-container (it must be running, and not already a site), its public address, its access log
-(`/var/log/nginx/access.log` unless you say otherwise) and its kind: static, WordPress (with its folder,
-`/var/www/wordpress` unless you say otherwise) or other. **Check** looks inside without changing anything:
-the log exists and can be read, the format of its last lines, whether nginx and WP-CLI are there, and
-whether every request seems to come from the proxy with no `X-Forwarded-For` (then visitors cannot be told
-apart). **Add site** asks for your master password and records it like a site HyperProx made, but HyperProx
-only reads from it: there is no Pull now or admin sign-in for it, and **Forget site** (master password
-again) removes only HyperProx's record and numbers.
+For a website you built by hand in a container. The **Add existing** tab of Websites (admins only) opens on
+a list of the websites HyperProx found, built without changing anything:
 
-A hand-built nginx usually logs in the combined format, with no response times. The site's **Alerts** tab
-then offers **Preview the change**: HyperProx reads nginx's configuration and shows the exact lines it would
+- every enabled host on every proxy instance, with its names, matched to the guest it forwards to by that
+  guest's own network config (or, for a guest without a fixed address, the address it reports while
+  running). Hosts that forward to the same guest and port are one site. A host that forwards to a node, a
+  VM or an address that is not a guest is listed but cannot be added: only a container can;
+- running containers that listen on port 80 or 443 with no proxy host, looked at for up to 25 seconds in
+  all (the list says when time ran out; **Refresh** looks again);
+- for each container, one read-only script: the listening ports, which of nginx, Apache or Caddy is
+  installed, the lines of `nginx -T` (or Apache's site files) that place a site and its log, and whether
+  a `wp-config.php` sits in a site's root. From those HyperProx picks the access log of the server block
+  whose `server_name` matches the site (else the one it inherits, else nginx's default), reads whether its
+  format has the request time and `X-Forwarded-For`, and calls the site **WordPress** (a `wp-config.php` in
+  its root), **Static** (nginx serving a plain root) or **Other**. Only paths and yes/no facts leave the
+  script's answer: no configuration text, header or log line is returned or kept.
+
+Each tile shows the name, the guest, the kind, whether the public address answers, and **Already added**
+for a site HyperProx knows. Picking one fills in the container, address, log and kind, shown read-only
+with **Edit** to change them, and runs **Check**: the log exists and can be read, the format of its last
+lines, whether nginx and WP-CLI are there, and whether every request seems to come from the proxy with no
+`X-Forwarded-For` (then visitors cannot be told apart). **Enter manually** gives the empty form instead.
+The list is kept a minute. **Add site** asks for your master password and records it like a site
+HyperProx made, but HyperProx only reads from it: there is no Pull now or admin sign-in for it, and
+**Forget site** (master password again) removes only HyperProx's record and numbers. When the log has no
+request time (or, behind a proxy, no `X-Forwarded-For`), the next screen offers that logging change
+straight away.
+
+A hand-built nginx usually logs in the combined format, with no response times. That offer (**Show the
+logging change**) and the site's **Alerts** tab later (**Preview the change**) open the same preview: HyperProx reads nginx's configuration and shows the exact lines it would
 change: a plain `access_log <log>;` becomes `access_log <log> hyperprox_metrics;`, and one `include` line after
 `http {` brings in a new file with the format. A line with its own options or format is left alone and listed.
 **Make this change** asks for your master password, refuses if any file changed since the preview, backs each
