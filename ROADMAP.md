@@ -347,7 +347,7 @@ Bug reports, feature requests, and pull requests welcome via [GitHub Issues](htt
 ## License
 
 [AGPL v3](LICENSE) — free for personal and open-source use.  
-Commercial licensing for MSPs and enterprise deployments — coming in v2.0.
+Commercial licensing for MSPs and enterprise deployments is an idea for later (see above).
 
 ---
 

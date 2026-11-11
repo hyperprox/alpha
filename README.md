@@ -25,7 +25,7 @@ through its API.
 
 | Area | What you get |
 |---|---|
-| Proxmox | Every VM and container with power actions, snapshots, migration, HA state and console; create guests from any template or ISO on any node |
+| Proxmox | Every VM and container with power actions, snapshots, migration, HA state and an SSH console; create guests from any template or ISO on any node |
 | Dashboard | Real-time nodes, Ceph, HA and quorum, GPU, network, bandwidth and per-node power |
 | Monitoring | Bundled Prometheus and Grafana with HyperProx dashboards and alert rules |
 | Storage | Every storage on every node, Ceph health, OSDs and pools, and per-guest disks |
