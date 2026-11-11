@@ -176,52 +176,81 @@ where the test passed.
   Calls that require a pin (Remote access scripts, HA maintenance mode, file copies, logins on a remote
   server) accept only the first three. A pin from before sources were kept has no source and does not count.
 - **How a key is verified without you.** A `verified` pin stores its evidence next to it in the vault
-  (`hyperprox:deck/hostkey-evidence`: node names, a tailnet device id or an interface name, nothing secret).
-  There are three kinds, all in `apps/api/src/lib/hostkey-verify.ts`:
-  - *Cluster record.* A Proxmox cluster keeps every node's SSH host key in its own replicated files
-    (`/etc/pve/nodes/<node>/ssh_known_hosts`, and the older `/etc/pve/priv/known_hosts`). HyperProx reads
-    them through every node it can sign in to, each in its own SSH session. Every copy must agree, and a
-    node's key counts only when at least two other nodes, themselves verified in the same pass, show it.
-    An attacker would have to answer for every node at once to fake that, so it needs three nodes or more.
-    When the record holds only another kind of key for a node (RSA, say, while the node offers ed25519
-    first), HyperProx signs in asking for that kind only, so the node must prove it holds the recorded key,
-    and reads the node's own key files over that session.
-  - *Private link.* The address is a Tailscale address and the HyperProx machine's own `tailscaled` says
-    it is an online device in your tailnet (not one shared in from another) whose name is the Proxmox
-    node's name; or it is a WireGuard peer on an interface HyperProx set up and that is up on this machine,
-    and the peer is that node. The tunnel already proves which device answers, so the first key seen over
-    it is accepted.
-  - *Trusted session.* The key is read from the machine over a session to it that is already confirmed or
-    verified (the same node reached by another address).
+  (`hyperprox:deck/hostkey-evidence`: node names, a tailnet device id and owner, or an interface name; nothing
+  secret). Verification always starts from an *anchor*, something trusted before the check began, never from
+  nodes vouching for each other. The code is `apps/api/src/lib/hostkey-verify.ts`.
+  - *Setup-local (the anchor).* A Proxmox cluster keeps every node's SSH host key in its own replicated files
+    (`/etc/pve/nodes/<node>/ssh_known_hosts`, and the older `/etc/pve/priv/known_hosts`). When HyperProx is
+    installed with `bootstrap.sh`, which runs as root on a node, it reads those files and that node's own
+    `/etc/ssh/ssh_host_*_key.pub` right there and hands them to the API through the same one-time setup
+    hand-over the node login uses (loopback only, setup key, accepted once, before any owner exists). They are
+    kept as the anchor (`hyperprox:deck/hostkey-anchor`) when the owner first signs in. If HyperProx was
+    installed some other way, the Setup checklist (or a server's Edit page) shows one command to run on any
+    node; you paste what it prints. It prints public keys only, and they are compared for equality: nothing in
+    it is trusted beyond being what that node's own files say.
+  - *Cluster record, growth.* Once at least one node is trusted (confirmed by you, or verified from an
+    anchor), more nodes are verified from the same record read through trusted nodes only: two trusted nodes
+    that agree, or one plus proof that the new node holds the recorded key. A node verified in a check only
+    vouches for others in the next round of it, never in the same one.
+  - *Proof of a key.* When the key a node offers first is of a type the trusted record does not hold (the
+    record often keeps only RSA), HyperProx connects asking for the recorded type only, so the node must sign
+    the SSH handshake with the recorded key. With the same type no login is sent at all; to read the node's
+    own key files a login is sent only after that signature checked out.
+  - *Tailscale.* The address itself (the one you typed, or one the server's own cluster status reports;
+    never a name) is a Tailscale IP, and `tailscale whois` on the HyperProx machine says it is an online
+    device in your tailnet owned by the same user HyperProx's machine is signed in as: not shared in from
+    another tailnet, and not tagged (a tagged device is owned by a tag policy, not by you). The connection
+    goes to exactly that IP, and the device id and owner are recorded.
+  - *WireGuard.* A peer address on an interface HyperProx set up, up on this machine, whose peer is that node.
+  - *Trusted session.* The key is read from the machine over a session to it that is already trusted (the
+    same node reached by another address).
 
-  A plain network address with nothing to cross-check it against is never verified this way; it stays
-  learned, and the Setup checklist offers the manual compare for it.
-- **When it happens.** For home nodes: after each owner sign-in (only if some pin is not yet verified or
+  With no anchor and no private link there is no evidence: the pin stays learned and the Setup checklist
+  offers the manual compare (or the one-line command).
+- **No login to an untrusted host.** While HyperProx gathers evidence it signs in only to nodes that were
+  trusted before the check began, and to a node that has just signed its SSH handshake with an anchored or
+  recorded key. A learned key never gets a login from this code.
+- **Remote servers' pins are their own.** A remote server's pins are kept under that server's id, so a remote
+  node whose address happens to equal a home node's (two private networks both using 10.0.0.x) never inherits
+  the home node's pin. Adding a server never fills in the other nodes' cluster-network addresses.
+- **Adding a server.** Before any token is sent, the private link must vouch for exactly the address you
+  typed and the server's certificate must be for the device the link names; after the token, the server's own
+  API must name itself as a node that certificate is for. The add form shows, before your one master
+  password, "Connecting to <device> owned by <owner>" and what monitoring would install; Connect carries a
+  hash of that, and if anything changed in between nothing is done. Monitoring is applied only with the exact
+  script that was shown. The add runs as a background job; asking again for the same server joins it, and
+  after a stop part way picks up the saved server instead of failing as a duplicate.
+- **When it happens.** For home nodes: after each owner sign-in (only if some home pin is not yet verified or
   confirmed), about twenty seconds after HyperProx first learns a home node's key, and when you press
-  **Verify automatically** on the Setup checklist. The two background runs need the vault unlocked, which only
-  an owner's sign-in does, and act as that sign-in (or the most recent one); a key learned during a request made
-  with an API token does not start one (the next sign-in or the checklist covers it). For a remote
-  server: while it is added, and from **Verify keys** on its Edit page. Both of those ask for the master
-  password, so an API token cannot start them, and the code refuses a token's session as well.
+  **Verify automatically** on the Setup checklist. The two background runs are HyperProx's own (the audit
+  log names the trigger, such as `system: owner sign-in`); they need the vault unlocked, which a sign-in does,
+  and write through that session. A key learned during a request made with an API token does not start one.
+  For a remote server: while it is added, and from **Verify keys** on its Edit page. Both ask for the master
+  password, so an API token cannot start them, and the code refuses a token's session as well. Checks run one
+  at a time.
 - **What never changes.** A key that differs from its pin is refused, here as everywhere: verification only
-  ever turns a learned pin into a verified one, or pins a host that had none. Any mismatch in a pass (the
-  record differs between nodes, the record contradicts the key a node presents, a tailnet name is not the
-  node's, a pin changed) blocks the whole pass, so nothing is accepted, writes `host_key.verify.blocked` to
-  the audit log and sends a critical notification. Each key that is verified writes `host_key.verify` with
-  who, the node, the fingerprint and the kind of evidence. Every script used (a read of the record files,
-  `cat` only, and a read of the node's public key files) passes the same script guard as remote scripts,
-  for home nodes too.
-- **What still needs a person, and why.** A server with fewer than three nodes reached over a plain network
-  address has nothing to check its key against, so you compare it once by hand. So does a key whose other
-  nodes could not be read (offline, or no login). On a remote server a password is never sent to a node
-  whose key is not yet verified, so reading the record there needs a private-key login, or the nodes'
-  Tailscale or WireGuard addresses; with a password and plain addresses you compare by hand. Guests and
-  hand-added hosts have no cluster record and are confirmed by hand. A key that changed (a rebuilt node) is
-  cleared in the Terminal first, then verified again with the same evidence.
+  ever turns a learned pin into a verified one, or pins a host that had none. Any mismatch in a check (trusted
+  copies of the record that disagree, a record or anchor that contradicts the key a node presents, a node that
+  cannot prove the recorded key, a pin that changed) blocks the whole check, writes `host_key.verify.blocked` to
+  the audit log and sends a critical notification that says to check the key on the node's own console before
+  anything else. Each key that is verified writes `host_key.verify` with who, the node, the fingerprint and the
+  kind of evidence; saving an anchor writes `host_key.anchor.save`. Every script used passes the same script
+  guard as remote scripts, for home nodes too: the record files may be read only as whole lines of exactly
+  `cat -- <path> 2>/dev/null`, in a script that continues no line onto the next.
+- **What this cannot protect against.** Root on any one node of a cluster can rewrite the shared record
+  (`/etc/pve` is the cluster's own replicated filesystem), but root there already controls the whole cluster.
+  A Tailscale address can be reused: if a device is removed from your tailnet and its IP is later given to
+  another device you own, that device's key would be accepted for the old address on first use; a key already
+  pinned for that address is still refused if it changes.
+- **What still needs a person, and why.** Without an install from a node and without a private link, nothing
+  is trusted yet, so you run the one-line command once (or compare one fingerprint). A remote server reached
+  over a plain address needs the same command run on one of its nodes (Edit page), or its certificate compared
+  once. Guests and hand-added hosts have no cluster record and are confirmed by hand. A key that changed (a
+  rebuilt node) is cleared in the Terminal first, then verified again from the anchor or trusted nodes.
 - **Host keys.** Pinned on first use, then required. The setup wizard pins each node's key the first
   time it connects, refuses any other key for the rest of its run (before it sends a password), and hands
-  the keys to the API with the login, which pins them in the vault and verifies them right after the owner
-  signs in. After that, and for any node first reached later, the API does the same as the Deck terminal:
+  the keys to the API with the login, which pins them in the vault and verifies them (against the installer's
+  anchor, when there is one) right after the owner signs in. After that, and for any node first reached later, the API does the same as the Deck terminal:
   the first key is pinned (and then verified as above), and a key that changes is always refused.
 - **What it can do.** It is a root login to your hypervisors. The installer's node scripts only add
   packages (apt is asked first and an install that would upgrade or remove anything is refused), never

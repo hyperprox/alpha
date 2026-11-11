@@ -100,7 +100,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       void flushHeldSecrets(owner).then(
         r => { if (r.stored.length || r.failed.length) req.log.info({ stored: r.stored, failed: r.failed }, '[setup] held secrets stored in the vault') },
         e => req.log.error({ err: e?.message }, '[setup] could not store the held secrets'))
-        .then(() => requestContext.run(owner, async () => { await migrationSettled(); return verifyHomeHostKeys(`HyperProx, after ${vs.email} signed in`, { onlyIfNeeded: true }) }))
+        .then(() => requestContext.run(owner, async () => { await migrationSettled(); return verifyHomeHostKeys(`system: owner sign-in (vault session of ${vs.email})`, { onlyIfNeeded: true }) }))
         .then(v => { if (v?.length) req.log.info({ verified: v.filter(x => x.state === 'verified').length, other: v.filter(x => x.state !== 'verified' && x.state !== 'already').length }, '[hostkeys] home nodes checked after sign-in') },
           e => req.log.warn({ err: e?.message }, '[hostkeys] could not verify the home nodes after sign-in'))
     }

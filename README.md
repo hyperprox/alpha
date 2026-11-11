@@ -258,11 +258,14 @@ node joins. There is nothing to ask.
 **Changing an answer later.** Open **Settings → Setup checklist**. It shows each question, whether it is
 done on each node right now, and a button to do it. Work on your nodes needs a login for them: you enter
 it once, HyperProx tests it on every node and keeps it in the vault. Each node's identity (SSH host) key is
-shown there too, as **verified automatically** with how: HyperProx checks each key itself against your
-cluster's own record of its nodes' keys, read through two other nodes, or over Tailscale or WireGuard. It does
-this after you sign in and whenever it meets a new node, and **Verify automatically** runs it on demand. There is
-nothing to press when a key shows verified. Only a key it found no evidence for (a cluster of one or two nodes on a
-plain network, say) offers **Compare by hand and confirm**. VPN installs on a node and maintenance mode only run
+shown there too, as **verified automatically** with how. When you install with `bootstrap.sh` on a node, it reads
+your cluster's own record of its nodes' keys right there, and HyperProx checks every key against it after you
+first sign in; nodes added later are checked against the same record read through nodes already verified. Nodes
+reached over Tailscale or WireGuard are checked by the tunnel instead. It does this after you sign in and whenever
+it meets a new node, and **Verify automatically** runs it on demand. There is nothing to press when a key shows
+verified. If HyperProx was not installed from a node, the checklist shows one command to run on any node: paste
+what it prints (public keys only) and it does the rest. Only a key it found no evidence for offers **Compare by
+hand and confirm**. VPN installs on a node and maintenance mode only run
 against a node whose key is verified or confirmed. How this works, and what it cannot check, is in
 [docs/security.md](docs/security.md).
 
@@ -326,29 +329,38 @@ reach: a Tailscale name or IP, a WireGuard address, or anything else routable.
 
 **Add a server** (admin) is one form and one master password:
 
-1. A name and its address (its Tailscale IP or a WireGuard address lets HyperProx verify it by itself).
+1. A name and its address (its Tailscale IP, owned by your own tailnet account, or a WireGuard address lets
+   HyperProx verify it by itself). HyperProx looks at that address straight away, and before you press Connect
+   the form says "Connecting to <device> owned by <owner>" and lists what monitoring would install.
 2. Three `pveum` commands to paste into that server's Shell: they make a `hyperprox@pve` user with the
    Administrator role and an API token for it.
 3. Paste the token. It goes straight into the vault when you press Connect.
 4. Optionally, the login for its nodes (usually root), and two ticks, on by default: install monitoring,
    and check Send files.
 
-Then **Connect** does the rest:
+Then **Connect** (your master password, once) does the rest, in the background while the page waits:
 
-- **The certificate.** Over a Tailscale address that your own tailnet says is an online device, or a WireGuard
-  peer on a link HyperProx set up, the tunnel proves which device answers, so HyperProx accepts the certificate
-  it presents once the server's API names itself after that device. On any other address it has nothing to check
-  the certificate against, so nothing is saved: it shows the SHA-256 fingerprint and says so in one sentence,
-  and you compare it once with the server's own page (the node, then System, then Certificates). From then on
-  HyperProx accepts only that certificate; one that changes is never accepted by itself.
+- **The certificate.** When the address is a Tailscale IP that `tailscale whois` says is an online device owned
+  by the same account as the HyperProx machine (not shared in, not tagged), or a WireGuard peer on a link
+  HyperProx set up, the tunnel to exactly that address proves which device answers. HyperProx then accepts the
+  certificate if it is for that device, and, after the token, if the server's own API names itself as a node the
+  certificate is for. On any other address it has nothing to check the certificate against, so nothing is saved:
+  it shows the SHA-256 fingerprint and says so in one sentence, and you compare it once with the server's own
+  page (the node, then System, then Certificates). From then on HyperProx accepts only that certificate; one
+  that changes is never accepted by itself. If anything you were shown changed before Connect, nothing is done.
 - **The token.** HyperProx checks it really has administrator rights. Your home cluster (or one of its nodes)
   cannot be added again as a remote.
-- **The nodes.** Their addresses come from the server's own cluster status, with each node's Tailscale address
-  preferred when your tailnet has it. With a login given, every node's SSH host key is verified (over the private
-  link, or against the cluster's own record of its keys, read through two other nodes), and the login is tested
-  and saved only for nodes whose key is verified. A password is never sent to a node whose key is not verified.
-- **Monitoring and Send files**, if ticked: with a node login saved, monitoring is installed as on the Edit page (node_exporter only,
-  nothing upgraded or removed), and Send files is checked and its answer shown.
+- **The nodes.** The node that answered gets the address you typed. Another node gets an address only when the
+  server's own cluster status reports a Tailscale IP for it that your account owns; its internal cluster
+  addresses are never filled in (enter the rest on the Edit page). With a login given, every node's SSH host key
+  is verified (over the private link, or against the cluster's record read through nodes already verified), and
+  the login is tested and saved only for nodes whose key is verified. No login is sent to a node whose key is not
+  verified. For a server reached over plain addresses, run the one-line command its Edit page shows on one of its
+  nodes and paste the output; that is what its keys are checked against.
+- **Monitoring and Send files**, if ticked: with a node login saved, monitoring installs exactly what the form
+  showed (node_exporter only, nothing upgraded or removed), and Send files is checked and its answer shown.
+- Pressing Connect again for the same server while it works joins the same run; after a stop part way it picks
+  up where it stopped.
 - Then the hardware scan (read-only). Anything left (a node with no evidence for its key, say) is on the
   server's **Edit** page.
 
@@ -372,8 +384,9 @@ never its addresses.
 
 - **Node logins.** For the full hardware scan, monitoring and file copies, give the nodes' root login once
   and press **Verify keys**: HyperProx verifies each node's SSH host key by itself and saves the login for each
-  node whose key is verified. Only for a node it found no evidence for does it show the key to compare with
-  `ssh-keygen -lf` on the node. Only a verified or confirmed host key is used. Changing a node's address removes
+  node whose key is verified. When it has nothing trusted to check against yet, it shows one command to run on
+  any of that server's nodes; paste the output and press Verify keys again. Only for a node it still found no
+  evidence for does it show the key to compare with `ssh-keygen -lf` on the node. Only a verified or confirmed host key is used. Changing a node's address removes
   its saved login and pin, so the new address's key is verified before a login is sent there.
 - **Hardware scan.** With the token alone: GPUs from Proxmox's PCI list and exporters asked over the
   network. With a node login: the full read-only probe, and `vainfo` (if it is installed there) to say
