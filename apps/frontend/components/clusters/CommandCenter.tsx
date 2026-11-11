@@ -6,7 +6,7 @@
 import Link from 'next/link'
 import { useCallback, useEffect, useState } from 'react'
 import { apiJson } from '@/lib/api'
-import { type ClusterPanel, type Attention, type GpuRow, clusterColor, clusterInk, ago } from '@/lib/clusters'
+import { type ClusterPanel, type Attention, type GpuRow, type NetworkStorage, bytes, networkLabel, clusterColor, clusterInk, ago } from '@/lib/clusters'
 import { gpuRowLabel, gpuRowTitle, gpuRowRight, gpuRowPct, gpuRowDetail, gpuRowAction } from '@/lib/gpu-rows'
 import { Notice } from '@/components/vault/ui'
 import { SendFilesButton } from './SendFiles'
@@ -32,6 +32,23 @@ function Bar({ label, pct, kind, right }: { label: string; pct: number | null; k
         <span className="block h-full" style={{ width: `${Math.min(100, Math.max(0, pct ?? 0))}%`, background: clusterColor(kind), opacity: pct === null ? 0 : 1 }} />
       </span>
       <span className="text-right font-mono" style={{ fontVariantNumeric: 'tabular-nums' }}>{right ?? (pct === null ? '—' : `${pct}%`)}</span>
+    </div>
+  )
+}
+
+/** One NAS server: its name and percent, the bar, then how many shares and used / total. */
+export function NetworkRow({ n, kind }: { n: NetworkStorage; kind: 'home' | 'remote' }) {
+  const label = networkLabel(n.server, n.names)
+  return (
+    <div className="text-xs min-w-0 flex flex-col gap-1" style={{ color: 'var(--text-muted)' }}>
+      <span className="flex items-baseline gap-2 w-full min-w-0">
+        <span className="truncate min-w-0 flex-1" style={{ color: 'var(--text)' }} title={label}>{label}</span>
+        <span className="font-mono shrink-0" style={{ fontVariantNumeric: 'tabular-nums' }}>{n.pct}%</span>
+      </span>
+      <span className="block w-full h-2 rounded overflow-hidden" style={{ background: 'var(--ground-deep)' }}>
+        <span className="block h-full" style={{ width: `${Math.min(100, Math.max(0, n.pct))}%`, background: clusterColor(kind) }} />
+      </span>
+      <span className="break-words">{n.names.length ? `${n.server} · ` : ''}{n.shares} share{n.shares === 1 ? '' : 's'}{n.volumes > 1 ? ` · ${n.volumes} volumes` : ''} · {bytes(n.usedBytes)} / {bytes(n.totalBytes)}</span>
     </div>
   )
 }
@@ -97,6 +114,7 @@ export function PanelView({ p, houses = [] }: { p: ClusterPanel; houses?: Instan
         <Bar label="CPU" pct={p.cpuPct} kind={k} />
         <Bar label="Memory" pct={p.memPct} kind={k} />
         <Bar label="Storage" pct={p.storagePct} kind={k} />
+        {(p.networkStorage ?? []).map(n => <NetworkRow key={n.server} n={n} kind={k} />)}
       </div>
       {p.gpus.length > 0 && (
         <div className="flex flex-col gap-2.5">

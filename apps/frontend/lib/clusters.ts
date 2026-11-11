@@ -29,10 +29,12 @@ export interface GpuRow {
   capability: string; capabilityShort: string; capabilitySource: 'vainfo' | 'estimate'
 }
 export interface Attention { clusterId: string; clusterName: string; kind: 'home' | 'remote'; severity: 'warn' | 'crit' | 'info'; title: string; detail: string }
+export interface NetworkStorage { server: string; shares: number; volumes: number; names: string[]; usedBytes: number; totalBytes: number; pct: number }
 export interface ClusterPanel {
   id: string; name: string; kind: 'home' | 'remote'; reachable: boolean; error?: string; latencyMs: number | null
   nodes: { online: number; total: number }; quorum: 'ok' | 'lost' | 'standalone' | 'unknown'
   guests: { running: number; total: number }; cpuPct: number | null; memPct: number | null; storagePct: number | null
+  networkStorage?: NetworkStorage[]
   gpus: GpuRow[]; gpuNote: string | null; lastBackup: { at: number; ok: boolean; node: string } | null; attention: Attention[]; monitoring: boolean
   /** From the last daily updates check (stored; no machine is read for this). */
   updates?: { available: number; packages: number; security: number; checkedAt: string; result: 'ok' | 'partial' | 'skipped'; reason?: string } | null
@@ -60,6 +62,12 @@ export function bytes(n: number | null | undefined): string {
   let i = 0, v = n
   while (v >= 1024 && i < u.length - 1) { v /= 1024; i++ }
   return `${v >= 10 || i === 0 ? Math.round(v) : v.toFixed(1)} ${u[i]}`
+}
+
+/** The row's name: the Proxmox storage ids when there are any ("nas-media · iso-share"); else "NAS 10.0.0.5" for an address, or the server's own name. */
+export function networkLabel(server: string, names: string[] = []): string {
+  if (names.length) return names.join(' · ')
+  return /^[\d.]+$/.test(server) || server.includes(':') ? `NAS ${server}` : server
 }
 
 export function ago(ms: number): string {

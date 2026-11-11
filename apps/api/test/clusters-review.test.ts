@@ -205,7 +205,7 @@ test('5: the CEPH monitor answer is kept per cluster', async () => {
 
 // ── 6: monitoring install and remove put node_exporter back exactly as it was ───────────────
 
-import { installScript as monInstall, removeScript as monRemove } from '../src/lib/clusters/monitoring'
+import { installScript as monInstall, removeScript as monRemove, nodeExporterArgs } from '../src/lib/clusters/monitoring'
 import { mkdirSync as mkd, writeFileSync as wf, existsSync as ex, readFileSync as rf, chmodSync } from 'node:fs'
 
 /** A pretend node in a folder: stub systemctl, dpkg-query, apt-get, curl, ss and ip that keep their state in files. */
@@ -245,6 +245,21 @@ test('6: a package that was installed but disabled and stopped is put back disab
   assert.match(resultOf(n.run(monRemove())), /\tdone\t/)
   assert.deepEqual(n.state(), { installed: true, enabled: false, active: false }, 'not left starting at boot on every interface')
   assert.equal(n.defaults(), 'ARGS=""\n', 'its own defaults file is back')
+})
+
+test('6: the node_exporter ARGS keep /mnt and /media visible, keep the other args, and applying twice changes nothing', () => {
+  const flag = '--collector.filesystem.mount-points-exclude=^/(dev|proc|run|sys|var/lib/docker/.+|var/lib/containers/storage/.+)($|/)'
+  const n = fakeNode({ installed: true, enabled: true, active: true, defaults: 'ARGS="--collector.disable-defaults"\n' })
+  assert.match(resultOf(n.run(monInstall({ amdGpu: true, intelGpu: true }))), /\tdone\t/)
+  const first = n.defaults()!
+  const line = first.split('\n').find(l => l.startsWith('ARGS='))!
+  assert.ok(line.includes(flag), 'the exclude list without /mnt and /media is in ARGS')
+  assert.equal(line.split('mount-points-exclude').length, 2, 'exactly once')
+  assert.ok(!/\|mnt\||\|media\|/.test(line), 'neither /mnt nor /media is excluded')
+  assert.match(line, /--web\.listen-address=10\.0\.0\.7:9100 --collector\.drm --collector\.textfile\.directory=\/var\/lib\/prometheus\/node-exporter /)
+  assert.match(resultOf(n.run(monInstall({ amdGpu: true, intelGpu: true }))), /\talready\t/, 'the second run finds nothing to change')
+  assert.equal(n.defaults(), first)
+  assert.equal(nodeExporterArgs({ amdGpu: false }), '--web.listen-address=${LISTEN_HP} ' + flag)
 })
 
 test('6: a failure after the package step rolls back at once', () => {
