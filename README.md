@@ -708,12 +708,16 @@ really says now; if it did not change (an offline plug, a slow lock), the card s
 **Security devices** are, always: locks, alarm panels, sirens, and covers that Home Assistant calls a
 garage, gate or door. By default, until you move them to **everyday** in Settings: any other cover except
 blinds, curtains, shades, shutters, awnings and dampers; scenes, scripts and buttons (they can run
-anything); and switches whose name mentions a door, gate, lock, alarm, opener or entry. Plus anything you
-mark **protected** (or a whole kind, such as climate). They carry a lock icon and need all of these: the
+anything); switches and toggles, except plug sockets (outlets). Anything whose name sounds like a door,
+gate, lock or alarm (in English or the common European languages) always is, everyday or not. Plus
+anything you mark **protected** (or a whole kind, such as climate). An everyday mark is tied to the device
+as it was when you marked it: rename it or change its class in Home Assistant and it needs the confirm
+step again. They carry a lock icon and need all of these: the
 admin role, your master password entered in the last 5 minutes, and a confirm step that names the device
 and the house ("Unlock Front door at Second home") where you type the device's name. API tokens can never
 use them. Everything else needs the operator role (you can raise that to admin per house). Viewers see
-security devices listed but not their state. Each action, refused ones included, is recorded in the audit
+security devices listed but not their state, and their health view leaves out security devices,
+automation times and the error log. Each action, refused ones included, is recorded in the audit
 log with who did it, the house, the device, the action and the result; a security action (or a refused
 one, at most once every 10 minutes per house) can also send a notification (the Home Assistant family).
 
@@ -730,7 +734,10 @@ your master password). The token is kept in the vault and never shown again. An 
 on your own network, Tailscale or WireGuard; anything else needs `https://`, and HyperProx never sends a
 token to this machine itself. Certificates are checked; for Home Assistant's own self-signed one, use
 **Read certificate** and **Pin this certificate** in Settings. Changing a house's address to another host
-or port needs its token again. The plug-in card's settings no longer take the address or token. Link the house to a
+or port needs its token again. The plug-in card's settings no longer take the address or token.
+**After upgrading:** if your first house was set up before this change and uses a self-signed certificate,
+a public `http://` address or a `.local` name that does not resolve from the HyperProx machine, its card and
+controls stop until you pin its certificate or give it a LAN, Tailscale or `https://` address in Settings. Link the house to a
 remote server and it also appears on that server's page (a **Home Assistant** tab, in amber) and in
 the Command center. The Home Assistant you had already set up is the first house, called "Home", with
 nothing to redo.
