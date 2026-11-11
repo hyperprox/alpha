@@ -29,7 +29,7 @@ Many people run HyperProx next to one of these, not instead of it.
 | Reverse proxy | ✅ Nginx Proxy Manager | — | — | — | — | — | ✅ | ✅ | ✅ | — | — | — |
 | DNS records | ✅ GoDaddy | — | — | — | — | — | — | — | — | — | — | — |
 | Certificates | ✅ issue, deploy, watch | ◐ own cert | ◐ own UI cert | — | ◐ expiry warnings | — | ✅ | ✅ | ✅ | — | — | — |
-| Monitoring and alerts | ✅ Prometheus + Grafana; Discord, Slack, Teams, ntfy, Gotify, Telegram, webhook | ◐ metrics; alerts planned | ✅ | ✅ | ✅ | — | ✅ | ✅ | ? | ◐ status only | ◐ status only | ◐ metrics only |
+| Monitoring and alerts | ✅ Prometheus + Grafana, per-site traffic from access logs; Discord, Slack, Teams, ntfy, Gotify, Telegram, webhook | ◐ metrics; alerts planned | ✅ | ✅ | ✅ | — | ✅ | ✅ | ? | ◐ status only | ◐ status only | ◐ metrics only |
 | Updates for hosts and guests | ✅ incl. pinned kernels | ✅ hosts | ◐ rolling host updates | ✅ | ◐ alerts | ◐ per script | ◐ OS checks | ? | ◐ per app | — | — | ◐ own host |
 | Backups (PBS) | ◐ last backup per cluster | ✅ PBS remotes | ✅ | ◐ host config | ✅ visibility + alerts | — | ◐ to S3 | ◐ to S3 | ◐ per app | ◐ widget | ? | — |
 | Secrets vault | ✅ zero-knowledge Vaultwarden | — | — | — | — | — | — | — | — | — | — | — |

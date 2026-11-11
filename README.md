@@ -805,8 +805,10 @@ Gitea, Uptime Kuma, Homepage, Grafana, and two web hosting recipes:
   core releases update themselves, the salts are generated and XML-RPC is blocked. Health check:
   `/wp-login.php` must show the login form, which needs PHP and the database.
 
-Not automatic yet for either: a backup job, monitoring with alerts, a place under the update policy and a
-plug-in panel. Ghost is not offered: it supports only MySQL 8 in production, which Debian 13 does not ship,
+Both log in nginx's combined format plus the request time and the proxy's `X-Forwarded-For`
+(`log_format hyperprox_metrics`), which is what the Sites page's **Metrics** tab reads (see below). Monitoring
+with alerts is therefore automatic for both. Not automatic yet: a backup job, a place under the update policy
+and a plug-in panel. Ghost is not offered: it supports only MySQL 8 in production, which Debian 13 does not ship,
 and its installer takes the database password as a command-line flag.
 
 Every install is a short wizard:
@@ -842,7 +844,74 @@ points where the run set it). The certificate is left on the proxy.
 
 Each site then has **Open site**, **Open WordPress admin** (a sign-in link that works once, for 60 seconds,
 POSTed so no access log keeps it; admin only, master password again, audited), **Reveal password** (through
-the vault), **Pull now** for a static site, and **Health** for the container and the public address.
+the vault), **Pull now** for a static site, **Health** for the container and the public address, and
+**Metrics**. Each card also shows today's visitors and a sparkline of the last 24 hours.
+
+#### Metrics: privacy-friendly analytics from the site's own log
+
+Every 5 minutes HyperProx reads the new lines of each site's nginx access log and turns them into counts.
+Nothing is added to the site: no JavaScript, no tracking pixel, no cookies, and nothing is sent to anyone
+else. The reading is one fixed, read-only script run in the container through the same `pct exec` path as
+the rest of the Sites page, given only a checked log path (absolute, under `/var/log`, no `..`) and a
+position. It remembers the file's inode and offset, so it carries on where it stopped, follows logrotate
+(the rest of `access.log.1`, then the new file) and starts again when a log is cut in place.
+
+**What is counted, per hour:** requests; page views (a successful GET of a page, not CSS, images or
+scripts); unique visitors; responses by class (2xx, 3xx, 4xx, 5xx); bytes served; the top pages (paths
+only, the query string is dropped); the top referring sites (the host name only, not the page, and not the
+site itself); the missing pages people asked for most (scanners' probes left out); browser, operating system and kind of device (from a small
+built-in User-Agent reader); people and bots apart (known crawlers, monitors, scanners and HTTP libraries,
+missing or too-short User-Agents, and anyone asking for a scanner's path such as `/.env`, for
+`robots.txt`, or for a `.php` page on a static site); and the median and 95th-percentile response time when the log has `$request_time`.
+
+**How visitors are counted without being known:** each request's address and User-Agent are hashed
+(SHA-256) together with the site and a random key made for that day. People are counted once a day by that
+hash. The key is deleted after two days, with the hashes, and nobody, HyperProx included, can then tell
+whose hash it was; the same person on two days, or on two of your sites, cannot be linked. **Addresses are
+never stored**, and no log line, address or salt is ever sent to the browser. Behind a proxy, the address
+comes from the last public entry of `X-Forwarded-For`, believed only when the request came from a private
+address (the proxy), so a visitor cannot choose it.
+
+**Kept for:** hourly counts 30 days, daily counts 13 months. Days are UTC days.
+
+**Also on the Metrics tab:** an uptime ring from HyperProx's own check of the public address every 5
+minutes (with its latency), the certificate's days left (read from the public name every 6 hours), the
+container's CPU, memory and disk now and its network over the last week (from Proxmox), and for WordPress,
+read once an hour through WP-CLI with plug-ins and themes not loaded: the WordPress and PHP versions,
+whether PHP-FPM runs, what has an update waiting, and the last PHP errors from the logs with addresses,
+e-mail addresses and the site's folders taken out. HyperProx never updates WordPress from here.
+
+**Who sees what:** every signed-in role can open the Metrics tab. A viewer sees totals only; operators and
+up also see pages, referrers, missing pages, WordPress and which container it is. Changing anything is admin.
+
+**Alerts** go through **Settings → Notifications** (the *resources* family, beside Prometheus's alerts), one
+message when a problem starts and one when it clears: the site is **down** (2 failed checks in a row), **server
+errors** above 5% of the requests in the hour so far, or the last hour while this one is quiet (from 20 requests), the **certificate** has under 14 days left,
+and a **traffic spike** of 10 times the usual hour (the week before, from 100 requests). Each limit can be
+changed or turned off per site on its **Alerts** tab. The Monitoring page shows a **Websites** panel and the
+site alerts in its feed. Prometheus scrapes `hyperprox_site_*` gauges (up, check latency, visitors, page views,
+requests by class, bot requests, p95, certificate days), labelled by site name only, through the existing
+`/api/plugins/metrics` endpoint and its token, and Grafana has a **Websites** dashboard.
+
+#### Add an existing site
+
+For a website you built by hand in a container. On the Sites page, **Add an existing site**: pick the
+container (it must be running, and not already a site), its public address, its access log
+(`/var/log/nginx/access.log` unless you say otherwise) and its kind: static, WordPress (with its folder,
+`/var/www/wordpress` unless you say otherwise) or other. **Check** looks inside without changing anything:
+the log exists and can be read, the format of its last lines, whether nginx and WP-CLI are there, and
+whether every request seems to come from the proxy with no `X-Forwarded-For` (then visitors cannot be told
+apart). **Add site** asks for your master password and records it like a site HyperProx made, but HyperProx
+only reads from it: there is no Pull now or admin sign-in for it, and **Forget site** (master password
+again) removes only HyperProx's record and numbers.
+
+A hand-built nginx usually logs in the combined format, with no response times. The site's **Alerts** tab
+then offers **Preview the change**: HyperProx reads nginx's configuration and shows the exact lines it would
+change: a plain `access_log <log>;` becomes `access_log <log> hyperprox_metrics;`, and one `include` line after
+`http {` brings in a new file with the format. A line with its own options or format is left alone and listed.
+**Make this change** asks for your master password, refuses if any file changed since the preview, backs each
+file up beside itself (`.hyperprox-bak-<time>`), runs `nginx -t`, and reloads nginx only if the test passes;
+otherwise every file is put back. Nothing in a site is ever changed without this.
 
 ### Plug-ins
 

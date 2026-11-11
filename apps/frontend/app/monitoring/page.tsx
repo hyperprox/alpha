@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { PluginCards } from '@/components/plugins/PluginCards'
+import { WebsitesPanel, fetchSiteAlerts, siteAlertAsMonitoringAlert } from '@/components/sites/metrics/WebsitesPanel'
 import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
 import { Page, Panel, HudHeader, Feed, NodeTile, NodeTiles, GlowBars, Pill, Spark, styles, type StatChip, type FeedTone } from '@/components/visual/kit'
@@ -34,6 +35,7 @@ const GRAFANA = process.env.NEXT_PUBLIC_GRAFANA_URL || '/grafana'
 const DASHBOARDS = [
   { uid: 'hyperprox-cluster', title: 'Cluster Overview', orgId: 1, vars: '' },
   { uid: 'hyperprox-plugins', title: 'Plug-ins',         orgId: 1, vars: '' },
+  { uid: 'hyperprox-websites', title: 'Websites',        orgId: 1, vars: '' },
 ]
 
 // ---------------------------------------------------------------------------
@@ -125,15 +127,17 @@ export default function MonitoringPage() {
   // -------------------------------------------------------------------------
   const fetchData = useCallback(async () => {
     try {
-      const [alertsRes, nodesRes] = await Promise.all([
+      const [alertsRes, nodesRes, siteAlerts] = await Promise.all([
         fetch('/api/prometheus/alerts'),
         fetch('/api/prometheus/nodes'),
+        fetchSiteAlerts().catch(() => []),
       ])
 
       const alertsJson = await alertsRes.json()
       const nodesJson  = await nodesRes.json()
 
-      if (alertsJson.success) setAlerts(alertsJson.data)
+      // Website alerts (lib/site-metrics) sit beside Prometheus's in the same feed.
+      if (alertsJson.success || siteAlerts.length) setAlerts([...(alertsJson.success ? alertsJson.data : []), ...siteAlerts.map(siteAlertAsMonitoringAlert)])
       if (nodesJson.success) {
         const nodeStats: NodeStat[] = nodesJson.data
         // Fetch network for each node
@@ -253,6 +257,8 @@ export default function MonitoringPage() {
           )}
 
           <PluginCards heading="" />
+
+          <WebsitesPanel />
 
           {firing.length > 0 && (
             <Panel title="Active alerts" sub={`${firing.length} firing`}>

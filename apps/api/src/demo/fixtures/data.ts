@@ -48,6 +48,8 @@ export const GUESTS: DemoGuest[] = [
   g(204, 'gitea',          'lxc',  'pve-b', 'running', 2, 2,  16,  0.01, 0.29, 0.25, { app: 'Gitea' }),
   g(205, 'wireguard',      'lxc',  'pve-b', 'running', 1, 1,  4,   0.01, 0.12, 0.18, { ha: 'prefer', app: 'WireGuard', tags: ['network'] }),
   g(206, 'grafana-lab',    'lxc',  'pve-b', 'stopped', 2, 2,  8,   0,    0,    0.22, { app: 'Grafana' }),
+  g(207, 'www',            'lxc',  'pve-b', 'running', 1, 1,  4,   0.03, 0.18, 0.21, { app: 'Static site', tags: ['web'] }),
+  g(208, 'blog',           'lxc',  'pve-b', 'running', 2, 2,  10,  0.11, 0.46, 0.38, { app: 'WordPress', tags: ['web'] }),
   g(301, 'plex',           'lxc',  'pve-c', 'running', 6, 8,  64,  0.18, 0.41, 0.52, { ha: 'prefer', gpu: true, app: 'Plex Media Server', tags: ['media'] }),
   g(302, 'arr-stack',      'lxc',  'pve-c', 'running', 4, 6,  32,  0.09, 0.57, 0.61, { ha: 'prefer', app: 'Sonarr, Radarr, Prowlarr, qBittorrent', tags: ['media'] }),
   g(303, 'unmanic',        'lxc',  'pve-c', 'running', 8, 8,  32,  0.46, 0.38, 0.29, { gpu: true, app: 'Unmanic', tags: ['media'] }),

@@ -532,3 +532,99 @@ model FileCopyJob {
 
   @@index([state])
 }
+
+// --- Site metrics (lib/site-metrics) --------------------------------------------
+// Privacy-first analytics from each site's own nginx access log, plus the health checks HyperProx makes.
+// No address, User-Agent string or query string is ever stored: rows are counts and short top lists.
+// Visitor hashes and the day salts that make them are deleted after two days. Hourly rows are kept
+// 30 days, daily rows 13 months (lib/site-metrics/store.ts).
+
+model SiteMetricHour {
+  siteId       String
+  hour         DateTime             // start of the hour, UTC
+  requests     Int      @default(0)
+  human        Int      @default(0)
+  bots         Int      @default(0)
+  pageViews    Int      @default(0)
+  botPageViews Int      @default(0)
+  visitors     Int      @default(0)
+  s2xx         Int      @default(0)
+  s3xx         Int      @default(0)
+  s4xx         Int      @default(0)
+  s5xx         Int      @default(0)
+  bytes        BigInt   @default(0)
+  timed        Int      @default(0)
+  rtHist       Json     @default("[]")
+  pages        Json     @default("{}")
+  referrers    Json     @default("{}")
+  notFound     Json     @default("{}")
+  browsers     Json     @default("{}")
+  os           Json     @default("{}")
+  devices      Json     @default("{}")
+  checks       Int      @default(0)
+  checksOk     Int      @default(0)
+  latencyMs    Int      @default(0)
+
+  @@id([siteId, hour])
+  @@index([hour])
+}
+
+model SiteMetricDay {
+  siteId       String
+  day          DateTime             // 00:00 UTC
+  requests     Int      @default(0)
+  human        Int      @default(0)
+  bots         Int      @default(0)
+  pageViews    Int      @default(0)
+  botPageViews Int      @default(0)
+  visitors     Int      @default(0)
+  s2xx         Int      @default(0)
+  s3xx         Int      @default(0)
+  s4xx         Int      @default(0)
+  s5xx         Int      @default(0)
+  bytes        BigInt   @default(0)
+  timed        Int      @default(0)
+  rtHist       Json     @default("[]")
+  pages        Json     @default("{}")
+  referrers    Json     @default("{}")
+  notFound     Json     @default("{}")
+  browsers     Json     @default("{}")
+  os           Json     @default("{}")
+  devices      Json     @default("{}")
+  checks       Int      @default(0)
+  checksOk     Int      @default(0)
+  latencyMs    Int      @default(0)
+
+  @@id([siteId, day])
+  @@index([day])
+}
+
+// A salted hash per visitor per hour, for today and yesterday only.
+model SiteVisitor {
+  siteId String
+  hour   DateTime
+  hash   String
+
+  @@id([siteId, hour, hash])
+  @@index([hour])
+}
+
+// One random salt per UTC day, deleted with the hashes it made.
+model SiteMetricSalt {
+  day       String   @id            // YYYY-MM-DD
+  salt      String
+  createdAt DateTime @default(now())
+}
+
+// Per site: which log is read and how far, its health, alert settings and the cached WordPress check.
+model SiteMetricState {
+  siteId    String   @id
+  logPath   String
+  kind      String   @default("other")   // static | wordpress | other
+  adopted   Boolean  @default(false)
+  enabled   Boolean  @default(true)
+  inode     String   @default("")
+  offset    BigInt   @default(0)
+  data      Json     @default("{}")
+  updatedAt DateTime @updatedAt
+}
