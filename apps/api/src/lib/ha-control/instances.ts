@@ -125,7 +125,7 @@ export interface InstanceInput {
 }
 
 export class InstanceStore {
-  constructor(private io: CredentialIO, private clusterExists: (id: string) => boolean = () => true) {}
+  constructor(private io: CredentialIO, private clusterExists: (id: string) => boolean = () => false) {}
 
   /** Every instance. Instance #1 is synthesised from the plug-in's own settings until the list is first saved. */
   async list(): Promise<InstanceMeta[]> {
