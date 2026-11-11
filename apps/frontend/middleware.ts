@@ -10,11 +10,13 @@ export function middleware(req: NextRequest) {
   if (pathname === '/login') return NextResponse.next()
   if (req.cookies.get('hyperprox_token')) return NextResponse.next()
 
-  // A relative redirect: the browser resolves it against the address it used. Behind nginx the Next server
-  // only knows its own loopback address, and a host taken from a request header (X-Forwarded-Host, Host) is
-  // whatever a client reaching port 3000 directly chose to send, so no host is put in the answer at all.
-  const target = `/login?${new URLSearchParams({ next: pathname }).toString()}`
-  return new NextResponse(null, { status: 307, headers: { Location: target } })
+  // Next's middleware turns a Location header into a URL without a base, so a relative redirect fails every
+  // signed-out page with "Invalid URL". The address is built from the request as Next sees it: the Next server
+  // listens on loopback only, and nginx sets the forwarded host itself (it never passes a client's value).
+  const url = req.nextUrl.clone()
+  url.pathname = '/login'
+  url.search = `?${new URLSearchParams({ next: pathname }).toString()}`
+  return NextResponse.redirect(url, 307)
 }
 
 export const config = {
