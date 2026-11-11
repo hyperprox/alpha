@@ -1087,11 +1087,32 @@ The full roadmap is in [ROADMAP.md](ROADMAP.md), and designs for upcoming work a
 
 ## How it compares
 
-The Proxmox VE web interface manages the hypervisor itself, and Proxmox Datacenter Manager adds a
-view across several clusters. HyperProx works on one cluster and covers the layer around it: proxy
-hosts, DNS, certificates for your services, monitoring, updates, SSH and the apps you run. It talks to
-Proxmox through the same API and does not replace either; you will still open the Proxmox interface
-for tasks HyperProx does not cover yet, such as editing guest hardware.
+HyperProx looks after the layer around your Proxmox clusters: apps, proxy, DNS, certificates, alerts, updates
+and the services you run, all behind a vault. Most other tools cover one slice of that, and many people run
+HyperProx next to one of them.
+
+| | HyperProx | Proxmox Datacenter Manager | PegaProx | Pulse | Helper-Scripts | Coolify / Dokploy | Homepage / Homarr |
+|---|---|---|---|---|---|---|---|
+| Several Proxmox clusters | ✅ view and control | ✅ | ✅ | ◐ view only | — | — | ◐ widgets |
+| Guests: create, power, migrate | ✅ within a cluster | ◐ no create yet | ✅ incl. cross-cluster | — | ◐ create | — | — |
+| Installs apps | ✅ catalogue + AI wizard | — | ◐ templates | — | ✅ 700+ | ✅ hundreds | — |
+| Proxy, DNS and certificates | ✅ all three | ◐ own cert | ◐ own cert | — | — | ◐ proxy + certs | — |
+| Alerts to your channels | ✅ | ◐ planned | ✅ | ✅ | — | ✅ | — |
+| Updates for hosts and guests | ✅ | ◐ hosts | ◐ hosts | ◐ alerts | ◐ per app | ◐ | — |
+| Secrets in a vault | ✅ | — | — | — | — | — | — |
+| App control panels | ✅ HA, Plex, Arr, QNAP… | — | ◐ | — | — | — | ✅ read-only widgets |
+| VPN / remote access | ✅ WireGuard, Tailscale | — | — | — | ◐ add-on | — | — |
+
+✅ yes · ◐ partly · — no. Checked 2026-11-11 against each project's own docs.
+
+**What others do better:** Proxmox Datacenter Manager is the official tool, with enterprise support,
+live migration between clusters and LDAP/OIDC sign-in. PegaProx adds load balancing and VMware/XCP-ng
+import. Pulse has the widest monitoring coverage. Coolify and Dokploy deploy straight from git. HyperProx
+does not yet support LDAP/OIDC, email notifications, DNS providers other than GoDaddy, or moving guests
+between clusters.
+
+The full table, with ProxMenux, Runtipi and Cockpit, and a source link for every cell, is in
+[docs/comparison.md](docs/comparison.md).
 
 ## Contributing and licence
 
