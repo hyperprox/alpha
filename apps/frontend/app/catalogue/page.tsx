@@ -4,7 +4,11 @@
 //  HyperProx — the service catalogue
 //
 //  Everything else in HyperProx assumes you already run the thing it talks to.
-//  This is the page for when you do not.
+//  This is the page for when you do not. An app HyperProx finds already
+//  running (GET /api/catalogue/detected: a read-only probe of every proxy
+//  target and web-serving container) shows where, and Install becomes
+//  "Install another", which asks first. Websites are not listed here: they
+//  have their own section (/sites).
 // =============================================================================
 
 import { useCallback, useEffect, useState } from 'react'
@@ -22,6 +26,11 @@ const CARD   = 'var(--surface)'
 interface Recipe extends WizardRecipe {
   installedAt: string | null
 }
+/** Where an app already runs (lib/catalogue-detect.ts). */
+interface Running {
+  guest: { vmid: number; name: string; node: string; type: 'lxc' | 'qemu' } | null
+  target: string; publicUrl: string | null; domains: string[]; version: string | null
+}
 interface NodeLogin { node: string; address: string | null; hasLogin: boolean }
 interface Step { id: string; label: string; status: string; detail?: string }
 interface Job {
@@ -37,6 +46,9 @@ const CATEGORY_LABEL: Record<string, string> = {
   proxy: 'Reverse proxy', ai: 'AI', media: 'Media', monitoring: 'Monitoring', apps: 'Apps', web: 'Web hosting',
 }
 const categoryLabel = (r: { category: string; categoryLabel?: string }) => r.categoryLabel ?? CATEGORY_LABEL[r.category] ?? r.category
+
+/** "CT 425 nextcloud · cloud.example.com", or the address when it is not a guest. */
+const where = (x: Running) => [x.guest ? `${x.guest.type === 'lxc' ? 'CT' : 'VM'} ${x.guest.vmid} ${x.guest.name}` : x.target, x.domains.find(d => !d.includes('*'))].filter(Boolean).join(' · ')
 
 const STATUS_COLOR: Record<string, string> = {
   pending: 'var(--text-dimmer)', running: 'var(--warn)', done: 'var(--good)', failed: 'var(--crit)', skipped: 'var(--text-dim)',
@@ -62,6 +74,15 @@ export default function CataloguePage() {
   const [secret,   setSecret]   = useState('')
   const [useKey,   setUseKey]   = useState(false)
   const [saving,   setSaving]   = useState(false)
+  const [running,  setRunning]  = useState<Record<string, Running[]> | null>(null)
+  const [detectState, setDetectState] = useState<'loading' | 'ready' | 'unavailable'>('loading')
+
+  const detect = useCallback(async (refresh = false) => {
+    setDetectState('loading')
+    const r = await apiJson<{ data: { apps: Record<string, Running[]> } }>(`/api/catalogue/detected${refresh ? '?refresh=1' : ''}`)
+    if (r.ok && r.body) { setRunning(r.body.data.apps); setDetectState('ready') } else setDetectState('unavailable')
+  }, [])
+  useEffect(() => { void detect() }, [detect])
 
   const load = useCallback(async () => {
     void apiJson<{ data: { jobs: typeof leftovers } }>('/api/catalogue/wizard/jobs').then(r => { if (r.ok) setLeftovers(r.body?.data.jobs ?? []) })
@@ -91,7 +112,11 @@ export default function CataloguePage() {
   }, [job, load])
 
   // Every install goes through the wizard: nothing is placed or numbered without being shown first.
-  const install = (r: Recipe) => setWizard(r)
+  const install = (r: Recipe) => {
+    const here = running?.[r.id] ?? []
+    if (here.length && !window.confirm(`${r.name} is already running on ${here.map(where).join(', ')}. Install another copy anyway?`)) return
+    setWizard(r)
+  }
 
   // A failed install may leave a half-made container. Only the one this install created is offered,
   // and the server checks the container's mark before it removes anything.
@@ -132,7 +157,7 @@ export default function CataloguePage() {
   )
 
   const loginCount = nodes.filter(n => n.hasLogin).length
-  const configured = recipes.filter(r => r.installedAt).length
+  const configured = recipes.filter(r => r.installedAt || (running?.[r.id]?.length ?? 0) > 0).length
   const unfinished = leftovers.filter(l => l.jobId !== job?.jobId)
   const categories = [...new Set(recipes.map(r => r.category))]
   const shown = category === 'all' ? recipes : recipes.filter(r => r.category === category)
@@ -144,12 +169,12 @@ export default function CataloguePage() {
         title="Install what you do not run yet"
         chips={[
           { label: 'Services', value: recipes.length },
-          { label: 'Configured', value: configured, tone: configured ? 'good' : undefined },
+          { label: 'Already here', value: configured, tone: configured ? 'good' : undefined },
           { label: 'Node logins', value: `${loginCount}/${nodes.length}`, tone: canInstall ? 'good' : 'warn' },
           ...(unfinished.length ? [{ label: 'Unfinished', value: unfinished.length, tone: 'warn' as const }] : []),
         ]}
         actions={<div className={styles.row} style={{ gap: 8, flexWrap: 'wrap' }}>
-          <Link href="/sites" className={styles.btn} style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}>Sites · New website →</Link>
+          <button type="button" className={styles.btn} onClick={() => void detect(true)} disabled={detectState === 'loading'}>{detectState === 'loading' ? 'Looking for running apps…' : 'Look again'}</button>
           <Link href="/catalogue/settings" className={styles.btn} style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}>Container ID rule →</Link>
         </div>}>
         <p style={{ margin: 0, maxWidth: 680, fontSize: 15, lineHeight: 1.6, color: 'var(--text-soft)' }}>
@@ -326,6 +351,10 @@ export default function CataloguePage() {
       )}
 
       {/* ── Recipes ─────────────────────────────────────────────────────────── */}
+      <Link href="/sites" className={styles.callout} style={{ display: 'flex', alignItems: 'center', gap: 12, textDecoration: 'none', marginBottom: 12 }}>
+        <span style={{ flex: 1 }}><b>Websites</b> have their own section: a new static site or WordPress, adding one you already run, and their metrics.</span>
+        <span aria-hidden style={{ color: ACCENT }}>→</span>
+      </Link>
       {categories.length > 1 && (
         <div role="group" aria-label="Filter by category" className={styles.row} style={{ flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
           {['all', ...categories].map(c => (
@@ -337,13 +366,13 @@ export default function CataloguePage() {
         </div>
       )}
       <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill,minmax(min(330px,100%),1fr))' }}>
-        {shown.map(r => (
-          <div key={r.id} className={styles.card} style={{ display: 'flex', flexDirection: 'column', borderColor: r.installedAt ? alpha('var(--good)', 40) : undefined }}>
+        {shown.map(r => { const here = running?.[r.id] ?? []; const isHere = here.length > 0 || !!r.installedAt; return (
+          <div key={r.id} className={styles.card} style={{ display: 'flex', flexDirection: 'column', borderColor: isHere ? alpha('var(--good)', 40) : undefined }}>
             <div className={styles.row} style={{ marginBottom: 8, flexWrap: 'wrap' }}>
               <h2 className="font-display" style={{ margin: 0, fontSize: 20, fontWeight: 600, lineHeight: 1.15, color: 'var(--text-bright)' }}>{r.name}</h2>
               <span className={styles.tag}>{categoryLabel(r)}</span>
               <span style={{ marginLeft: 'auto' }}>
-                <Pill tone={r.installedAt ? 'good' : undefined}>{r.installedAt ? 'configured' : 'not installed'}</Pill>
+                <Pill tone={isHere ? 'good' : undefined}>{here.length ? 'running' : r.installedAt ? 'configured' : detectState === 'loading' ? 'looking…' : 'not found'}</Pill>
               </span>
             </div>
             <p style={{ margin: '0 0 14px', fontSize: 14, lineHeight: 1.6, color: 'var(--text-muted)' }}>{r.summary}</p>
@@ -373,11 +402,26 @@ export default function CataloguePage() {
               </p>
             )}
 
+            {here.length > 0 && (
+              <ul style={{ margin: '0 0 12px', padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 6 }} aria-label={`Where ${r.name} runs`}>
+                {here.map(x => (
+                  <li key={`${x.target}|${x.publicUrl}`} className={styles.row} style={{ gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 13, color: 'var(--text-soft)', overflowWrap: 'anywhere', flex: 1, minWidth: 0 }}>
+                      Running on {where(x)}{x.version ? ` · ${x.version}` : ''}
+                    </span>
+                    {(x.publicUrl ?? (x.target ? `http://${x.target}` : null)) && (
+                      <a className={styles.btn} href={x.publicUrl ?? `http://${x.target}`} target="_blank" rel="noreferrer" style={{ minHeight: 32, padding: '4px 10px', textDecoration: 'none' }}>Open</a>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+
             <div className={styles.row} style={{ marginTop: 'auto' }}>
               <button onClick={() => install(r)} disabled={!canInstall || job?.status === 'running'}
-                className={`${styles.btn} ${r.installedAt ? '' : styles.btnPri}`}
-                style={r.installedAt ? { color: ACCENT, borderColor: ACCENT } : undefined}>
-                {r.installedAt ? 'Install another…' : 'Install…'}
+                className={`${styles.btn} ${isHere ? '' : styles.btnPri}`}
+                style={isHere ? { color: ACCENT, borderColor: ACCENT } : undefined}>
+                {isHere ? 'Install another…' : 'Install…'}
               </button>
               {r.installedAt && (
                 <span className="font-mono truncate" style={{ fontSize: 11, color: 'var(--text-dim)' }}>{r.installedAt}</span>
@@ -387,7 +431,7 @@ export default function CataloguePage() {
               )}
             </div>
           </div>
-        ))}
+        ) })}
       </div>
     </Page>
   )

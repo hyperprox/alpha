@@ -22,6 +22,9 @@ import { saveCredential, removeCredential } from '../lib/ssh-broker'
 import { getProviderCredentials } from '../lib/credentials'
 import { getSettings } from '../lib/plugin-host'
 import { ProxmoxClient } from '../lib/proxmox-client'
+import { DetectionCache, type DetectResult, type FingerprintList } from '../lib/catalogue-detect'
+import { sharedCandidateCache } from './site-metrics'
+import { hasRole, type Role } from '../lib/roles'
 
 function pve(): ProxmoxClient {
   return new ProxmoxClient(
@@ -61,13 +64,34 @@ export interface CatalogueRouteDeps {
   job(id: string): InstallJob | undefined
   /** Stand-ins for what the wizard reaches (Proxmox, node logins, ping, the rule store). */
   wizard: Partial<WizardDeps>
+  /** Where each catalogue app is already running (lib/catalogue-detect.ts), cached five minutes. */
+  detected(refresh: boolean): Promise<DetectResult>
 }
+
+/**
+ * The fingerprints the catalogue asks for, in an order where a generic page (Homepage's "/") comes after the
+ * apps with an API of their own. Website recipes are not listed here: they live in the Websites section, whose
+ * "Add an existing site" finds running WordPress and static sites by looking inside the container.
+ */
+export function catalogueFingerprints(): FingerprintList {
+  const generic = new Set(['homepage'])
+  const list = CATALOGUE.filter(r => r.category !== 'web' && r.detect?.length).map(r => [r.id, r.detect!] as [string, NonNullable<typeof r.detect>])
+  return [...list.filter(([id]) => !generic.has(id)), ...list.filter(([id]) => generic.has(id))]
+}
+
+let detection: DetectionCache | null = null
+const realDetected = (refresh: boolean) =>
+  (detection ??= new DetectionCache(r => sharedCandidateCache().get(r), undefined, undefined, catalogueFingerprints(), {})).result(refresh)
+
+/** The catalogue's own list: every recipe except websites, which have their own section (/sites). */
+export const isCatalogueListed = (r: { category: string }) => r.category !== 'web'
 
 export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}): FastifyPluginAsync {
   const deps: CatalogueRouteDeps = {
     whoami: () => ownerOf(currentContext()),
     job: getInstallJob,
     wizard: {},
+    detected: realDetected,
     ...overrides,
   }
   return async (fastify) => {
@@ -86,7 +110,7 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
       hasLogin: Boolean(await nodeCredential(n.node).catch(() => null)),
     })))
 
-    const recipes = await Promise.all(CATALOGUE.map(async r => ({
+    const view = (r: typeof CATALOGUE[number]) => alreadySatisfied(r.id).then(installedAt => ({
       id: r.id, name: r.name, summary: r.summary, category: r.category, categoryLabel: CATEGORY_LABELS[r.category],
       port: r.port, needsDocker: r.needsDocker, defaults: r.defaults, minimum: r.minimum,
       needsGpu: Boolean(r.needsGpu), firstRunKind: r.firstRun.kind, healthPath: r.healthPath,
@@ -96,18 +120,37 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
       sizes: r.sizes ?? null,
       // A recipe whose integration already has an address is not offered as a
       // fix for a problem the user does not have.
-      installedAt: await alreadySatisfied(r.id),
-    })))
+      installedAt,
+      detectable: Boolean(r.detect?.length),
+    }))
+    const [recipes, websites] = await Promise.all([
+      Promise.all(CATALOGUE.filter(isCatalogueListed).map(view)),
+      // The website recipes, for the Websites section's New website wizard (not listed in the catalogue).
+      Promise.all(CATALOGUE.filter(r => !isCatalogueListed(r)).map(view)),
+    ])
 
     return reply.send({
       success: true,
       data: {
         recipes,
+        websites,
         nodes: logins,
         // Everything here runs through pct exec, so this is the gate.
         canInstall: logins.some(l => l.hasLogin),
       },
     })
+  })
+
+  // GET /detected — where each catalogue app is already running (admin: it names guests and addresses)
+  fastify.get<{ Querystring: { refresh?: string } }>('/detected', async (req, reply) => {
+    const role = (req.session?.role ?? 'viewer') as Role
+    if (!hasRole(role, 'admin')) return reply.status(403).send({ ok: false, code: 'forbidden', error: 'This needs the admin role', required: 'admin' })
+    try {
+      const r = await deps.detected(req.query.refresh === '1')
+      return reply.send({ success: true, data: r })
+    } catch (e: any) {
+      return reply.status(502).send({ success: false, error: `Could not look for running apps: ${e?.message ?? e}` })
+    }
   })
 
   // There is no one-call install route. Every install goes through the wizard: preview, then apply.

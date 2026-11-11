@@ -18,6 +18,7 @@
 //  tell you its default credentials has handed you a locked box.
 // =============================================================================
 
+import { DETECT, type Fingerprint } from './catalogue-detect'
 import { LOG_FORMAT_LINE } from './site-metrics/log-format'
 import type { Distro } from './install-script'
 
@@ -109,6 +110,11 @@ export interface CatalogueRecipe {
    * the container's address and port (what the health check sends) and, when published, the domain.
    */
   allowedHostsEnv?: string
+  /**
+   * How to tell this app is already running somewhere (lib/catalogue-detect.ts): read-only GETs of a path only
+   * it answers that way. Without one (or a kind site discovery reads), the catalogue cannot see an install.
+   */
+  detect?:     Fingerprint[]
 }
 
 // ── Web hosting scripts ─────────────────────────────────────────────────────
@@ -480,6 +486,7 @@ export const CATALOGUE: CatalogueRecipe[] = [
   // ── Reverse proxy ───────────────────────────────────────────────────────
   {
     id: 'nginx-proxy-manager',
+    detect: DETECT['nginx-proxy-manager'],
     name: 'Nginx Proxy Manager',
     summary: 'A reverse proxy with a web UI and Let’s Encrypt built in. HyperProx drives it for proxy hosts and certificates.',
     category: 'proxy',
@@ -514,6 +521,7 @@ export const CATALOGUE: CatalogueRecipe[] = [
   // ── Local AI ────────────────────────────────────────────────────────────
   {
     id: 'ollama',
+    detect: DETECT['ollama'],
     name: 'Ollama',
     summary: 'Runs open models locally. Gives the deployment wizard a provider that costs nothing and sends nothing off the box.',
     category: 'ai',
@@ -553,6 +561,7 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
   // ── Plex history ────────────────────────────────────────────────────────
   {
     id: 'tautulli',
+    detect: DETECT['tautulli'],
     name: 'Tautulli',
     summary: 'Watch history and statistics for Plex. The Plex plug-in reads it for who watched what, and when.',
     category: 'media',
@@ -588,6 +597,7 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
   // ── Apps the AI wizard can install ──────────────────────────────────────
   {
     id: 'nextcloud',
+    detect: DETECT['nextcloud'],
     name: 'Nextcloud',
     summary: 'Files, calendar and contacts you host yourself.',
     category: 'apps',
@@ -608,6 +618,7 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
   },
   {
     id: 'jellyfin',
+    detect: DETECT['jellyfin'],
     name: 'Jellyfin',
     summary: 'A media server for your own films and shows.',
     category: 'media',
@@ -629,6 +640,7 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
   },
   {
     id: 'vaultwarden',
+    detect: DETECT['vaultwarden'],
     name: 'Vaultwarden',
     summary: 'A Bitwarden-compatible password server.',
     category: 'apps',
@@ -658,6 +670,7 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
   },
   {
     id: 'gitea',
+    detect: DETECT['gitea'],
     name: 'Gitea',
     summary: 'A lightweight Git service with a web UI.',
     category: 'apps',
@@ -678,6 +691,7 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
   },
   {
     id: 'uptime-kuma',
+    detect: DETECT['uptime-kuma'],
     name: 'Uptime Kuma',
     summary: 'Watches your services and tells you when one goes down.',
     category: 'monitoring',
@@ -698,6 +712,7 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
   },
   {
     id: 'homepage',
+    detect: DETECT['homepage'],
     name: 'Homepage',
     summary: 'A start page that links to everything you run.',
     category: 'apps',
@@ -723,6 +738,7 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
   },
   {
     id: 'grafana',
+    detect: DETECT['grafana'],
     name: 'Grafana',
     summary: 'Dashboards for metrics and logs.',
     category: 'monitoring',
@@ -788,6 +804,7 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
   },
   {
     id: 'wordpress',
+    detect: DETECT['wordpress'],
     name: 'WordPress',
     summary: 'A website or blog: WordPress on nginx and PHP-FPM, with its own MariaDB database, WP-CLI and an optional Redis object cache.',
     category: 'web',

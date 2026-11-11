@@ -89,6 +89,20 @@ const catalogue = () => ({
     recipe('homepage', 'Homepage', 'apps', 'A start page that links to everything you run.', 3000, 1, 512, 8, { firstRunKind: 'none' }),
     recipe('grafana', 'Grafana', 'monitoring', 'Dashboards for metrics and logs.', 3000, 1, 1024, 8, { firstRunKind: 'env-admin' }),
   ],
+  // The website recipes, for the Websites section's New website tab (the catalogue does not list them).
+  websites: [
+    recipe('static-site', 'Static site', 'web', 'A static website served by nginx, pulled from a Git repository.', 80, 1, 512, 4, { needsDocker: false, firstRunKind: 'none' }),
+    recipe('wordpress', 'WordPress', 'web', 'WordPress on nginx, PHP-FPM and MariaDB.', 80, 1, 1024, 10, { needsDocker: false, firstRunKind: 'none' }),
+  ],
+})
+
+/** Where catalogue apps already run on the invented cluster (GET /api/catalogue/detected). */
+const detected = () => ({
+  apps: {
+    nextcloud: [{ guest: { vmid: 215, name: 'files', node: 'pve-a', type: 'lxc', status: 'running' }, target: '10.0.2.25:80', publicUrl: `https://files.${DOMAIN}`, domains: [`files.${DOMAIN}`], version: '30.0.2', via: 'probe' }],
+    gitea: [{ guest: { vmid: 204, name: 'gitea', node: 'pve-b', type: 'lxc', status: 'running' }, target: '10.0.2.14:3000', publicUrl: `https://git.${DOMAIN}`, domains: [`git.${DOMAIN}`], version: '1.22.3', via: 'probe' }],
+  },
+  builtAt: Date.now(), probed: 6, errors: [],
 })
 
 // -- AI --------------------------------------------------------------------------------------------
@@ -189,6 +203,7 @@ export const APPS: FixtureRoute[] = [
   { path: '/api/updates/jobs/:id', get: p => ({ job: jobs().find(j => j.id === p.id) ?? jobs()[0] }) },
   { path: '/api/updates/nodes/:node/reboot-preview', get: p => ({ node: p.node, guests: [], moves: [], ok: true }) },
   { path: '/api/catalogue', get: () => ok(catalogue()) },
+  { path: '/api/catalogue/detected', get: () => ok(detected()) },
   { path: '/api/catalogue/wizard/jobs', get: () => ok({ jobs: [] }) },
   { path: '/api/catalogue/wizard/settings', get: () => ok({ vmidRule: { kind: 'node-prefix' } }) },
   { path: '/api/catalogue/jobs/:jobId', get: () => ok({ state: 'done' }) },
