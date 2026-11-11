@@ -195,10 +195,22 @@ export function writeRemoteTargets(clusterId: string, entries: Array<{ node: str
  * written rolls back at once: the file is restored and the service is put back to its recorded state.
  * Every /etc path is under $R (HPX_SYSROOT, empty on a real node) so the scripts can be tested in a folder.
  */
-export function installScript(opts: { amdGpu: boolean; intelGpu?: boolean }): string {
+/**
+ * Debian's package hides every mount under /mnt and /media from the filesystem collector, which also hides a NAS
+ * mounted there. This replaces its default with the same list minus those two, so network storage is reported.
+ * It is part of the ARGS line HyperProx writes whole each time, so applying monitoring again is the same file.
+ */
+export const MOUNT_POINTS_EXCLUDE = '--collector.filesystem.mount-points-exclude=^/(dev|proc|run|sys|var/lib/docker/.+|var/lib/containers/storage/.+)($|/)'
+
+/** The ARGS value (no quotes) for the defaults file; ${LISTEN_HP} is left for the shell to fill in. */
+export function nodeExporterArgs(opts: { amdGpu: boolean; intelGpu?: boolean }): string {
   // The Intel collector writes into node_exporter's textfile folder; the flag names it outright rather than
   // relying on the package's built-in default.
-  const args = ['--web.listen-address=${LISTEN_HP}', ...(opts.amdGpu ? ['--collector.drm'] : []), ...(opts.intelGpu ? [`--collector.textfile.directory=${TEXTFILE_DIR}`] : [])].join(' ')
+  return ['--web.listen-address=${LISTEN_HP}', ...(opts.amdGpu ? ['--collector.drm'] : []), ...(opts.intelGpu ? [`--collector.textfile.directory=${TEXTFILE_DIR}`] : []), MOUNT_POINTS_EXCLUDE].join(' ')
+}
+
+export function installScript(opts: { amdGpu: boolean; intelGpu?: boolean }): string {
+  const args = nodeExporterArgs(opts)
   return `${COMMON()}
 ${STATE_FNS}
 LISTEN="$(printf '%s' "\${SSH_CONNECTION:-}" | awk '{print $3}')"

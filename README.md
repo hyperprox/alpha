@@ -313,7 +313,7 @@ and LAN dials show it, scaled to your plan speed when you set one in the plug-in
 
 **Command center** shows every cluster HyperProx manages side by side: your home cluster in teal and
 each remote server or cluster in amber. Each panel has nodes online, quorum, guests running, CPU,
-memory and storage bars, a row for every GPU on every node, the last backup, and quick links. Each GPU
+memory and storage bars (with one more bar for each NAS mounted on the nodes over NFS, CIFS or SSHFS that Proxmox does not list as a storage, showing how many shares it has and how full it is, which needs monitoring installed on that server), a row for every GPU on every node, the last backup, and quick links. Each GPU
 row starts with its node ("node2 · HD Graphics 630") and shows its load; under it, one short line:
 video memory (or "shared memory" for built-in graphics, which use the system's memory), temperature,
 fan, clock and power where monitoring reports them, and one line on HEVC, for example "HEVC decode:

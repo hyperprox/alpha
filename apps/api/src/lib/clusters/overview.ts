@@ -62,6 +62,8 @@ export interface ClusterPanel {
   cpuPct: number | null
   memPct: number | null
   storagePct: number | null
+  /** Network storage (NAS) mounted on the nodes that is not a Proxmox storage, one entry per server. */
+  networkStorage: NetworkStorage[]
   gpus: GpuRow[]
   /** One honest line about the GPU figures: what is measured, what is estimated, and how to improve it. */
   gpuNote: string | null
@@ -71,6 +73,63 @@ export interface ClusterPanel {
   monitoring: boolean
   /** From the last daily updates check (stored; nothing is read from the machines for this). */
   updates?: PanelUpdates | null
+}
+
+export interface NetworkStorage { server: string; shares: number; usedBytes: number; totalBytes: number; pct: number }
+
+export interface FsRow { metric: Record<string, string>; value: number }
+
+/** The Prometheus matcher for network filesystem types. */
+export const NETWORK_FSTYPES = 'nfs4?|cifs|smb3|fuse.sshfs'
+
+/** The server of a network mount's device: "host:/export" (NFS, sshfs), "//host/share" (CIFS), "[::1]:/export". Null when it is neither. */
+export function networkServer(device: string): string | null {
+  const d = String(device ?? '').trim()
+  let m = /^(?:\\\\|\/\/)(?:[^@/\\]*@)?(\[[^\]]+\]|[^/\\]+)[/\\]/.exec(d)
+  if (!m) m = /^(?:[^@/:]*@)?(\[[^\]]+\]|[^/:\[\]]+):/.exec(d)
+  const host = m?.[1]?.replace(/^\[|\]$/g, '')
+  return host ? host.toLowerCase() : null
+}
+
+/**
+ * Network storage from the filesystem collector's size and available series. One entry per server. Within a server
+ * each distinct (size, available) pair is one volume and counts once, because several exports of one NAS volume
+ * report the same figures; "shares" is the number of distinct exports. Mounts under /mnt/pve/ are Proxmox's own
+ * storages, which the Storage bar already covers, so they are left out.
+ */
+export function groupNetworkStorage(size: FsRow[], avail: FsRow[]): NetworkStorage[] {
+  const key = (m: Record<string, string>) => `${m.node ?? ''}\u0000${m.instance ?? ''}\u0000${m.device ?? ''}\u0000${m.mountpoint ?? ''}`
+  const free = new Map(avail.map(r => [key(r.metric), r.value]))
+  const servers = new Map<string, { shares: Set<string>; volumes: Map<string, { total: number; used: number }> }>()
+  for (const r of size) {
+    const m = r.metric
+    const server = networkServer(m.device ?? '')
+    const mp = m.mountpoint ?? ''
+    if (!server || /^\/mnt\/pve(\/|$)/.test(mp) || !(r.value > 0)) continue
+    const a = free.get(key(m))
+    if (a === undefined) continue
+    const s = servers.get(server) ?? { shares: new Set<string>(), volumes: new Map() }
+    s.shares.add(m.device)
+    s.volumes.set(`${r.value}:${a}`, { total: r.value, used: Math.max(0, r.value - a) })
+    servers.set(server, s)
+  }
+  return [...servers].map(([server, s]) => {
+    let usedBytes = 0, totalBytes = 0
+    for (const v of s.volumes.values()) { usedBytes += v.used; totalBytes += v.total }
+    return { server, shares: s.shares.size, usedBytes, totalBytes, pct: pct(usedBytes, totalBytes) ?? 0 }
+  }).sort((a, b) => a.server.localeCompare(b.server))
+}
+
+/** One cluster's network storage, read from Prometheus and limited to that cluster's nodes (by their series labels). */
+export async function readNetworkStorage(c: { id: string; kind: string }, nodeLabels: string[], prom: PromQuery): Promise<NetworkStorage[]> {
+  const sel = `${clusterSelector(c)},fstype=~"${NETWORK_FSTYPES}"`
+  const [size, avail] = await Promise.all([
+    prom(`node_filesystem_size_bytes{${sel}}`).catch(() => []),
+    prom(`node_filesystem_avail_bytes{${sel}}`).catch(() => []),
+  ])
+  const mine = new Set(nodeLabels)
+  const ours = (rows: FsRow[]) => (mine.size ? rows.filter(r => !r.metric.node || mine.has(r.metric.node)) : rows)
+  return groupNetworkStorage(ours(size), ours(avail))
 }
 
 export interface PanelUpdates { available: number; packages: number; security: number; checkedAt: string; result: 'ok' | 'partial' | 'skipped'; reason?: string }
@@ -219,7 +278,7 @@ export interface PanelDeps { pve(): ProxmoxClient; prom: PromQuery; now(): numbe
 export async function readPanel(c: ClusterInfo, deps: PanelDeps): Promise<ClusterPanel> {
   const base: ClusterPanel = {
     id: c.id, name: c.name, kind: c.kind, reachable: false, latencyMs: null, nodes: { online: 0, total: 0 }, quorum: 'unknown',
-    guests: { running: 0, total: 0 }, cpuPct: null, memPct: null, storagePct: null, gpus: [], gpuNote: null, lastBackup: null, attention: [],
+    guests: { running: 0, total: 0 }, cpuPct: null, memPct: null, storagePct: null, networkStorage: [], gpus: [], gpuNote: null, lastBackup: null, attention: [],
     monitoring: c.kind === 'home' || Object.values(c.monitoring ?? {}).some(m => m?.nodeExporter),
   }
   const att = (severity: Attention['severity'], title: string, detail: string) => base.attention.push({ clusterId: c.id, clusterName: c.name, kind: c.kind, severity, title, detail })
@@ -275,6 +334,13 @@ export async function readPanel(c: ClusterInfo, deps: PanelDeps): Promise<Cluste
     if ((p ?? 0) >= 90) att('warn', `Storage ${s.storage} is ${p}% full`, Number(s.shared) === 1 ? 'Shared storage.' : `On ${s.node}.`)
   }
   base.storagePct = pct(sUsed, sTotal)
+
+  // Network storage (a NAS mounted on a node) that Proxmox itself does not list as a storage.
+  const onlineNodes = nodes.filter(n => n.status === 'online').map(n => String(n.node))
+  base.networkStorage = await readNetworkStorage(c, onlineNodes.map(n => (c.kind === 'remote' ? remoteNodeLabel(c.id, n) : n)), deps.prom).catch(() => [])
+  for (const n of base.networkStorage) {
+    if (n.pct >= 90) att('warn', `Network storage ${n.server} is ${n.pct}% full`, `${n.shares} share${n.shares === 1 ? '' : 's'} on this NAS.`)
+  }
 
   // GPUs: what Proxmox's PCI list says is there, every one of them, with figures where monitoring reports them.
   const online = nodes.filter(n => n.status === 'online').map(n => String(n.node))
@@ -361,7 +427,7 @@ export async function commandCenter(deps: Partial<PanelDeps> = {}): Promise<{ pa
     const d: PanelDeps = { pve: deps.pve ?? (() => pveFromEnv()), prom: deps.prom ?? livePromQuery, now: deps.now ?? Date.now }
     try { return await timed(() => readPanel(c, d), 20_000, c.name) }
     catch (e: any) {
-      const p: ClusterPanel = { id: c.id, name: c.name, kind: c.kind, reachable: false, error: e?.message ?? String(e), latencyMs: null, nodes: { online: 0, total: 0 }, quorum: 'unknown', guests: { running: 0, total: 0 }, cpuPct: null, memPct: null, storagePct: null, gpus: [], gpuNote: null, lastBackup: null, attention: [], monitoring: false }
+      const p: ClusterPanel = { id: c.id, name: c.name, kind: c.kind, reachable: false, error: e?.message ?? String(e), latencyMs: null, nodes: { online: 0, total: 0 }, quorum: 'unknown', guests: { running: 0, total: 0 }, cpuPct: null, memPct: null, storagePct: null, networkStorage: [], gpus: [], gpuNote: null, lastBackup: null, attention: [], monitoring: false }
       p.attention.push({ clusterId: c.id, clusterName: c.name, kind: c.kind, severity: 'crit', title: 'Not answering', detail: p.error! })
       return p
     }
