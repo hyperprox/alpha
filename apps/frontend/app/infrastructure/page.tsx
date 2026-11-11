@@ -6,7 +6,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
-import { alpha } from '@/lib/theme'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { Notice } from '@/components/vault/ui'
 import { GuestTable } from '@/components/guest-config/GuestList'
@@ -15,6 +14,7 @@ import { DevicesPanel } from '@/components/guest-config/DevicesPanel'
 import { CreateGuestModal } from '@/components/guest-config/CreateGuest'
 import { API, type GuestRow } from '@/components/guest-config/types'
 import { useHaBadges } from '@/components/ha'
+import { Page, Panel, HudHeader, NodeTile, NodeTiles, Pill, styles, type StatChip } from '@/components/visual/kit'
 
 interface PVENode { node: string; status: string; maxcpu: number; maxmem: number; cpu?: number; mem?: number }
 
@@ -23,10 +23,7 @@ type TypeFilter = 'all' | 'lxc' | 'qemu'
 
 function Chip({ active, onClick, children, title }: { active: boolean; onClick: () => void; children: React.ReactNode; title?: string }) {
   return (
-    <button onClick={onClick} title={title} className="text-sm px-3 rounded-md whitespace-nowrap" style={{
-      height: 34, background: active ? 'color-mix(in srgb, var(--accent) 10%, transparent)' : 'transparent',
-      color: active ? 'var(--accent)' : 'var(--text-dim)', border: `1px solid ${active ? 'color-mix(in srgb, var(--accent) 35%, transparent)' : 'var(--border-dim)'}`,
-    }}>{children}</button>
+    <button onClick={onClick} title={title} aria-pressed={active} className={`${styles.btn} ${active ? styles.btnPri : ''} whitespace-nowrap`} style={{ minHeight: 34, padding: '4px 12px' }}>{children}</button>
   )
 }
 
@@ -101,88 +98,94 @@ export default function InfrastructurePage() {
   const running = rows.filter(r => r.status === 'running').length
   const sortedNodes = [...nodes].sort((a, b) => a.node.localeCompare(b.node))
 
+  const liveRows = rows.filter(r => !r.template)
+  const stopped = liveRows.length - running
+  const onlineNodes = nodes.filter(n => n.status === 'online').length
+  const gpuGuests = liveRows.filter(r => r.gpu.vendors.length > 0).length
+  const chips: StatChip[] = [
+    { label: 'running', value: running, tone: 'good' },
+    { label: 'stopped', value: stopped, tone: stopped ? undefined : 'dim' },
+    { label: 'nodes online', value: `${onlineNodes}/${nodes.length}`, tone: nodes.length && onlineNodes === nodes.length ? 'good' : 'crit' },
+    { label: 'GPU guests', value: gpuGuests, tone: 'violet' },
+  ]
+  const title = loading ? 'Reading the guests…' : `${running} of ${liveRows.length} guests running`
+
   return (
-    <div className="min-h-full px-4 py-5 sm:p-8" style={{ background: 'var(--ground)' }}>
+    <Page>
       {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
       {create && <CreateGuestModal type={create} nodes={nodes} onClose={() => { setCreate(null); void fetchData() }} />}
 
-      <div className="flex items-end justify-between flex-wrap gap-4 mb-6">
-        <div>
-          <div className="font-mono uppercase" style={{ fontSize: 12, letterSpacing: '0.14em', color: 'var(--accent)' }}>Compute</div>
-          <h1 className="font-display font-bold mt-1" style={{ fontSize: 36, lineHeight: 1.1, color: 'var(--text-bright)' }}>Infrastructure</h1>
-          <p className="text-sm mt-1" style={{ color: 'var(--text-dimmer)' }}>{running} running of {rows.filter(r => !r.template).length}{lastSync ? ` · synced ${lastSync.toLocaleTimeString()}` : ''}</p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <div className="flex rounded-md border overflow-hidden" style={{ borderColor: 'var(--border-strong)' }}>
-            {(['guests', 'devices'] as const).map(v => (
-              <button key={v} onClick={() => setView(v)} className="px-4 text-sm" style={{ height: 38, background: view === v ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'transparent', color: view === v ? 'var(--accent)' : 'var(--text-dim)' }}>{v === 'guests' ? 'Guests' : 'Devices'}</button>
-            ))}
-          </div>
-          {canAdmin && <button onClick={() => setCreate('lxc')} className="px-4 rounded-md text-sm font-semibold" style={{ height: 38, background: 'var(--accent)', color: 'var(--accent-ink)' }}>+ LXC</button>}
-          {canAdmin && <button onClick={() => setCreate('qemu')} className="px-4 rounded-md text-sm font-semibold" style={{ height: 38, border: '1px solid var(--violet)', color: 'var(--violet)' }}>+ VM</button>}
-        </div>
-      </div>
+      <HudHeader level={2} label="Compute status" eyebrow="Compute" title={title} chips={chips}
+        ring={{ value: liveRows.length ? running / liveRows.length : 0, text: `${running}/${liveRows.length}`, label: 'guests running' }}
+        actions={
+          <>
+            <div className={styles.row} role="group" aria-label="View">
+              {(['guests', 'devices'] as const).map(v => (
+                <button key={v} onClick={() => setView(v)} aria-pressed={view === v} className={`${styles.btn} ${view === v ? styles.btnPri : ''}`}>{v === 'guests' ? 'Guests' : 'Devices'}</button>
+              ))}
+            </div>
+            {canAdmin && <button onClick={() => setCreate('lxc')} className={`${styles.btn} ${styles.btnPri}`}>+ LXC</button>}
+            {canAdmin && <button onClick={() => setCreate('qemu')} className={styles.btn} style={{ borderColor: 'var(--violet)', color: 'var(--violet)' }}>+ VM</button>}
+          </>
+        }>
+        {lastSync && <p style={{ margin: 0, color: 'var(--text-soft)', fontSize: 14 }}>synced {lastSync.toLocaleTimeString()}</p>}
+      </HudHeader>
 
       {/* nodes: tap to filter */}
-      <div className="flex gap-2 overflow-x-auto pb-1 mb-5 -mx-4 px-4 sm:mx-0 sm:px-0 sm:grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))' }}>
-        {sortedNodes.map(n => {
-          const nr = rows.filter(r => r.node === n.node && !r.template)
-          const on = nr.filter(r => r.status === 'running').length
-          const gpu = nr.some(r => r.gpu.vendors.length)
-          const active = node === n.node
-          const memPct = n.maxmem && n.mem ? Math.round(n.mem / n.maxmem * 100) : null
-          return (
-            <button key={n.node} onClick={() => setNode(active ? 'all' : n.node)} className="shrink-0 min-w-[150px] rounded-lg border p-3 text-left"
-              style={{ background: active ? alpha('var(--accent)', 8) : 'var(--surface)', borderColor: active ? alpha('var(--accent)', 35) : 'var(--border-dim)' }}>
-              <div className="flex items-center gap-2">
-                <span className="w-1.5 h-1.5 rounded-full" style={{ background: n.status === 'online' ? 'var(--good)' : 'var(--crit-2)' }} />
-                <span className="font-display font-semibold" style={{ fontSize: 17, color: 'var(--text-bright)' }}>{n.node}</span>
-                {gpu && <span className="font-mono rounded px-1" style={{ fontSize: 9, color: 'var(--violet)', border: '1px solid color-mix(in srgb, var(--violet) 35%, transparent)' }}>GPU</span>}
-              </div>
-              <div className="flex gap-2 text-xs font-mono mt-1" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                <span style={{ color: 'var(--good)' }}>{on} on</span><span style={{ color: 'var(--text-dimmer)' }}>{nr.length - on} off</span>
-                {memPct !== null && <span style={{ color: 'var(--text-dimmer)' }}>RAM {memPct}%</span>}
-                {n.node in nodePower && <span className="ml-auto" style={{ color: nodePower[n.node] === null ? 'var(--text-dimmer)' : 'var(--warn)' }}
-                  title="CPU package plus any discrete GPU. Drives, fans and PSU losses are not measured.">{nodePower[n.node] === null ? '— W' : `${Math.round(nodePower[n.node]!)} W`}</span>}
-              </div>
-            </button>
-          )
-        })}
-      </div>
+      <Panel title="Nodes" sub="CPU · memory · tap to filter the list">
+        <NodeTiles label="Nodes">
+          {sortedNodes.map(n => {
+            const nr = liveRows.filter(r => r.node === n.node)
+            const on = nr.filter(r => r.status === 'running').length
+            const gpu = nr.some(r => r.gpu.vendors.length)
+            const active = node === n.node
+            const off = n.status !== 'online'
+            return (
+              <NodeTile key={n.node} name={n.node} state={off ? 'off' : 'ok'} cpu={Math.round((n.cpu ?? 0) * 100)} mem={n.maxmem && n.mem ? Math.round(n.mem / n.maxmem * 100) : 0}
+                sub={off ? 'offline' : `${on} on · ${nr.length - on} off`}>
+                <div className="flex flex-wrap justify-center gap-1.5">
+                  {gpu && <Pill tone="violet">GPU</Pill>}
+                  {n.node in nodePower && <Pill tone={nodePower[n.node] === null ? undefined : 'warn'} title="CPU package plus any discrete GPU. Drives, fans and PSU losses are not measured.">{nodePower[n.node] === null ? '— W' : `${Math.round(nodePower[n.node]!)} W`}</Pill>}
+                </div>
+                <button onClick={() => setNode(active ? 'all' : n.node)} aria-pressed={active} className={`${styles.btn} ${active ? styles.btnPri : ''}`} style={{ minHeight: 32, padding: '2px 10px', fontSize: 12 }}>
+                  {active ? 'Showing only this node' : 'Show only this node'}
+                </button>
+              </NodeTile>
+            )
+          })}
+        </NodeTiles>
+      </Panel>
 
       {view === 'devices' ? <DevicesPanel nodes={sortedNodes.map(n => n.node)} /> : (
-        <>
+        <Panel title="Guests" sub={`${filtered.length} shown`}>
           <div className="flex flex-wrap items-center gap-2 mb-4">
             <input type="search" placeholder="Search name, ID, IP or tag" value={search} onChange={e => setSearch(e.target.value)} aria-label="Search guests"
-              className="text-sm px-3 rounded-md outline-none w-full sm:w-64 order-first" style={{ height: 38, background: 'var(--ground-deep)', border: '1px solid var(--border-strong)', color: 'var(--text-bright)' }} />
-            <div className="flex gap-1.5 overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0 w-[calc(100%+2rem)] sm:w-auto">
+              className={`${styles.input} order-first sm:w-64`} />
+            <div className="flex gap-1.5 flex-wrap">
               {(['all', 'running', 'stopped'] as const).map(s => <Chip key={s} active={status === s} onClick={() => setStatus(s)}>{s === 'all' ? 'All' : s === 'running' ? 'Running' : 'Stopped'}</Chip>)}
-              <span className="w-px shrink-0" style={{ background: 'var(--border-dim)' }} />
-              {(['all', 'lxc', 'qemu'] as const).map(t => <Chip key={t} active={type === t} onClick={() => setType(t)}>{t === 'all' ? 'Any type' : t === 'lxc' ? 'Containers' : 'VMs'}</Chip>)}
-              <span className="w-px shrink-0" style={{ background: 'var(--border-dim)' }} />
+              {(['all', 'lxc', 'qemu'] as const).map(ty => <Chip key={ty} active={type === ty} onClick={() => setType(ty)}>{ty === 'all' ? 'Any type' : ty === 'lxc' ? 'Containers' : 'VMs'}</Chip>)}
               <Chip active={onlyGpu} onClick={() => setOnlyGpu(x => !x)}>GPU</Chip>
               <Chip active={onlyHa} onClick={() => setOnlyHa(x => !x)}>HA</Chip>
               <Chip active={group} onClick={toggleGroup} title="Group the list by node">By node</Chip>
             </div>
-            <span className="text-sm sm:ml-auto" style={{ color: 'var(--text-dimmer)' }}>{filtered.length} shown</span>
           </div>
           {msg && <div className="mb-3"><Notice kind="info">{msg}</Notice></div>}
           {err && <div className="mb-3"><Notice kind="error">{err}</Notice></div>}
-          {loading ? <div className="text-sm animate-pulse" style={{ color: 'var(--text-dimmer)' }}>Loading infrastructure…</div> : (
+          {loading ? <p className={styles.empty} role="status">Loading infrastructure…</p> : (
             <div className="space-y-6">
               {groups.map(gr => (
                 <section key={gr.node ?? 'all'} className="space-y-2">
-                  {gr.node && <h2 className="font-display font-semibold" style={{ fontSize: 18, color: 'var(--text-bright)' }}>{gr.node} <span className="font-mono text-xs" style={{ color: 'var(--text-dimmer)' }}>{gr.rows.length}</span></h2>}
+                  {gr.node && <h3 className="font-display font-semibold" style={{ fontSize: 16, color: 'var(--text-bright)' }}>{gr.node} <span className="font-mono text-xs" style={{ color: 'var(--text-muted)' }}>{gr.rows.length}</span></h3>}
                   <GuestTable rows={gr.rows} canOperate={canOperate} canAdmin={canAdmin} onOpen={r => setSelected({ type: r.type, vmid: r.vmid })} onPower={power} onRefresh={() => { void fetchData(); void haBadges.reload() }} ha={haBadges.get} />
                 </section>
               ))}
-              {filtered.length === 0 && <p className="text-sm" style={{ color: 'var(--text-dimmer)' }}>No guests match.</p>}
+              {filtered.length === 0 && <p className={styles.empty}>No guests match.</p>}
             </div>
           )}
-        </>
+        </Panel>
       )}
 
       {sel && <GuestDrawer row={sel} nodes={nodes} canOperate={canOperate} canAdmin={canAdmin} onClose={() => setSelected(null)} onRefresh={fetchData} />}
-    </div>
+    </Page>
   )
 }

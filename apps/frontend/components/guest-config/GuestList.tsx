@@ -7,6 +7,7 @@ import { useState } from 'react'
 import { formatBytes, formatUptime } from '@/lib/utils'
 import { PreviewDialog } from './PreviewDialog'
 import { VENDOR_LABEL, type GuestRow, type VpnStatus } from './types'
+import { styles } from '@/components/visual/kit'
 import { HaBadge, sidOf, type HaBadgeInfo } from '@/components/ha'
 
 export const STATUS_COLOR: Record<string, string> = { running: 'var(--good)', stopped: 'var(--text-dimmer)', paused: 'var(--warn-2)', suspended: 'var(--violet-2)' }
@@ -24,7 +25,7 @@ export function TypeBadge({ type }: { type: 'lxc' | 'qemu' }) {
 export function MiniBar({ pct, muted }: { pct: number; muted?: boolean }) {
   const p = Math.max(0, Math.min(100, pct || 0))
   const c = muted ? 'var(--text-muted)' : p > 90 ? 'var(--crit-2)' : p > 75 ? 'var(--warn-2)' : 'var(--accent)'
-  return <div className="h-1 rounded-full overflow-hidden w-full" style={{ background: 'var(--text-faint)' }}><div className="h-full rounded-full" style={{ width: `${p}%`, background: c, transition: 'width .4s' }} /></div>
+  return <div className="h-1 rounded-full overflow-hidden w-full" style={{ background: 'var(--track)' }}><div className="h-full rounded-full" style={{ width: `${p}%`, background: c, transition: 'width .4s' }} /></div>
 }
 
 export function GpuBadge({ row }: { row: GuestRow }) {
@@ -99,34 +100,33 @@ export function GuestTable({ rows, canOperate, canAdmin, onOpen, onPower, onRefr
   return (
     <>
       {/* wide screens */}
-      <div className="hidden md:block rounded-lg border overflow-hidden" style={{ borderColor: 'var(--border-dim)' }}>
-        <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
+      <div className={`hidden md:block ${styles.tableWrap}`}>
+        <table className={styles.table}>
           <thead>
-            <tr className="font-mono uppercase text-left" style={{ fontSize: 10, letterSpacing: '0.12em', color: 'var(--text-dimmer)', background: 'var(--surface)' }}>
-              <th className="px-3 py-2 font-normal">Guest</th><th className="px-2 py-2 font-normal">Node</th>
-              <th className="px-2 py-2 font-normal w-24">CPU</th><th className="px-2 py-2 font-normal w-28">RAM</th><th className="px-2 py-2 font-normal w-24">Disk</th>
-              <th className="px-2 py-2 font-normal">Uptime</th><th className="px-2 py-2 font-normal">IP</th><th className="px-2 py-2 font-normal">Tags</th><th className="px-2 py-2 font-normal">HA</th><th className="px-2 py-2" />
+            <tr>
+              <th>Guest</th><th>Node</th><th>CPU</th><th>RAM</th><th>Disk</th>
+              <th>Uptime</th><th>IP</th><th>Tags</th><th>HA</th><th><span className="sr-only">Actions</span></th>
             </tr>
           </thead>
           <tbody>
             {rows.map(r => {
               const running = r.status === 'running'
               return (
-                <tr key={`${r.type}${r.vmid}`} onClick={() => onOpen(r)} className="cursor-pointer border-t hover:brightness-110" style={{ borderColor: 'var(--border-dim)', background: 'var(--surface)' }}>
-                  <td className="px-3 py-2">
-                    <div className="flex items-center gap-2 min-w-0"><StatusDot status={r.status} /><TypeBadge type={r.type} />
+                <tr key={`${r.type}${r.vmid}`} onClick={() => onOpen(r)} className="cursor-pointer">
+                  <td>
+                    <div className="flex items-center gap-2 min-w-0"><StatusDot status={r.status} /><span className="font-mono text-[10px] uppercase" style={{ color: STATUS_COLOR[r.status] ?? 'var(--text-muted)' }}>{r.status}</span><TypeBadge type={r.type} />
                       <span className="font-medium truncate" style={{ color: 'var(--text-bright)', maxWidth: 220 }}>{r.name}</span>
                       <span className="font-mono text-xs" style={{ color: 'var(--text-dimmer)' }}>#{r.vmid}</span></div>
                   </td>
-                  <td className="px-2 py-2 font-mono text-xs" style={{ color: 'var(--text-dim)' }}>{r.node}</td>
-                  <td className="px-2 py-2"><div className="font-mono text-[11px]" style={{ color: 'var(--text-muted)' }}>{running ? `${Math.round(r.cpu * 100)}%` : '—'} <span style={{ color: 'var(--text-faint)' }}>/{r.maxcpu}c</span></div>{running && <MiniBar pct={r.cpu * 100} />}</td>
-                  <td className="px-2 py-2"><div className="font-mono text-[11px]" style={{ color: 'var(--text-muted)' }}>{running ? formatBytes(r.mem, 0) : '—'} <span style={{ color: 'var(--text-faint)' }}>/{formatBytes(r.maxmem, 0)}</span></div>{running && <MiniBar pct={pct(r.mem, r.maxmem)} muted={r.type === 'qemu'} />}</td>
-                  <td className="px-2 py-2"><div className="font-mono text-[11px]" style={{ color: 'var(--text-muted)' }}>{formatBytes(r.maxdisk, 0)}</div>{r.disk > 0 && <MiniBar pct={pct(r.disk, r.maxdisk)} />}</td>
-                  <td className="px-2 py-2 font-mono text-[11px]" style={{ color: 'var(--text-dimmer)' }}>{r.uptime ? formatUptime(r.uptime) : '—'}</td>
-                  <td className="px-2 py-2 font-mono text-[11px]" style={{ color: 'var(--text-muted)' }}>{r.ip ?? '—'}</td>
-                  <td className="px-2 py-2"><Tags row={r} /></td>
-                  <td className="px-2 py-2"><HaCell row={r} ha={ha} /></td>
-                  <td className="px-2 py-2"><RowMenu row={r} canOperate={canOperate} canAdmin={canAdmin} onPower={onPower} onOpen={() => onOpen(r)} onRefresh={onRefresh} /></td>
+                  <td className="font-mono text-xs" style={{ color: 'var(--text-dim)' }}>{r.node}</td>
+                  <td><div className="font-mono text-[11px]" style={{ color: 'var(--text-muted)' }}>{running ? `${Math.round(r.cpu * 100)}%` : '—'} <span style={{ color: 'var(--text-faint)' }}>/{r.maxcpu}c</span></div>{running && <MiniBar pct={r.cpu * 100} />}</td>
+                  <td><div className="font-mono text-[11px]" style={{ color: 'var(--text-muted)' }}>{running ? formatBytes(r.mem, 0) : '—'} <span style={{ color: 'var(--text-faint)' }}>/{formatBytes(r.maxmem, 0)}</span></div>{running && <MiniBar pct={pct(r.mem, r.maxmem)} muted={r.type === 'qemu'} />}</td>
+                  <td><div className="font-mono text-[11px]" style={{ color: 'var(--text-muted)' }}>{formatBytes(r.maxdisk, 0)}</div>{r.disk > 0 && <MiniBar pct={pct(r.disk, r.maxdisk)} />}</td>
+                  <td className="font-mono text-[11px]" style={{ color: 'var(--text-dimmer)' }}>{r.uptime ? formatUptime(r.uptime) : '—'}</td>
+                  <td className="font-mono text-[11px]" style={{ color: 'var(--text-muted)' }}>{r.ip ?? '—'}</td>
+                  <td><Tags row={r} /></td>
+                  <td><HaCell row={r} ha={ha} /></td>
+                  <td><RowMenu row={r} canOperate={canOperate} canAdmin={canAdmin} onPower={onPower} onOpen={() => onOpen(r)} onRefresh={onRefresh} /></td>
                 </tr>
               )
             })}
@@ -139,9 +139,9 @@ export function GuestTable({ rows, canOperate, canAdmin, onOpen, onPower, onRefr
         {rows.map(r => {
           const running = r.status === 'running'
           return (
-            <div key={`${r.type}${r.vmid}`} onClick={() => onOpen(r)} className="rounded-lg border p-3 space-y-2" style={{ borderColor: 'var(--border-dim)', background: 'var(--surface)' }}>
+            <div key={`${r.type}${r.vmid}`} onClick={() => onOpen(r)} className="rounded-lg border p-3 space-y-2" style={{ borderColor: 'var(--border)', background: 'var(--ground-deep)' }}>
               <div className="flex items-center gap-2 min-w-0">
-                <StatusDot status={r.status} /><TypeBadge type={r.type} />
+                <StatusDot status={r.status} /><span className="font-mono text-[10px] uppercase" style={{ color: STATUS_COLOR[r.status] ?? 'var(--text-muted)' }}>{r.status}</span><TypeBadge type={r.type} />
                 <span className="font-medium truncate flex-1" style={{ color: 'var(--text-bright)' }}>{r.name}</span>
                 <RowMenu row={r} canOperate={canOperate} canAdmin={canAdmin} onPower={onPower} onOpen={() => onOpen(r)} onRefresh={onRefresh} />
               </div>

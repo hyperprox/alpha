@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { PluginCards } from '@/components/plugins/PluginCards'
 import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
+import { Page, Panel, HudHeader, Feed, NodeTile, NodeTiles, GlowBars, Pill, Spark, styles, type StatChip, type FeedTone } from '@/components/visual/kit'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -36,53 +37,20 @@ const DASHBOARDS = [
 ]
 
 // ---------------------------------------------------------------------------
-// Severity helpers
+// Helpers
 // ---------------------------------------------------------------------------
-function severityColor(s: string) {
-  if (s === 'critical') return 'var(--crit)'
-  if (s === 'warning')  return 'var(--warn)'
-  return 'var(--accent)'
-}
+const feedTone = (s: string): FeedTone => (s === 'critical' ? 'bad' : s === 'warning' ? 'warn' : 'ok')
+const pillTone = (s: string) => (s === 'critical' ? 'bad' as const : s === 'warning' ? 'warn' as const : 'accent' as const)
+const speed = (kbs: number) => (kbs >= 1024 ? `${(kbs / 1024).toFixed(1)} MB/s` : `${kbs.toFixed(1)} KB/s`)
 
-function severityBg(s: string) {
-  if (s === 'critical') return 'color-mix(in srgb, var(--crit) 8%, transparent)'
-  if (s === 'warning')  return 'color-mix(in srgb, var(--warn) 8%, transparent)'
-  return 'color-mix(in srgb, var(--accent) 8%, transparent)'
-}
-
-// ---------------------------------------------------------------------------
-// Sparkline
-// ---------------------------------------------------------------------------
-function Sparkline({ values, color }: { values: number[]; color: string }) {
-  if (!values.length) return <div style={{ height: 32, background: 'var(--border)', borderRadius: 4 }} />
-  const max = Math.max(...values, 1)
-  const min = Math.min(...values)
-  const range = max - min || 1
-  const w = 120, h = 32, pad = 2
-  const pts = values.map((v, i) => {
-    const x = pad + (i / (values.length - 1)) * (w - pad * 2)
-    const y = h - pad - ((v - min) / range) * (h - pad * 2)
-    return `${x},${y}`
-  }).join(' ')
-
-
+function AlertFeed({ list, label }: { list: Alert[]; label: string }) {
   return (
-    <svg width={w} height={h} style={{ display: 'block' }}>
-      <polyline points={pts} fill="none" stroke={color} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Gauge bar
-// ---------------------------------------------------------------------------
-function Bar({ value, color }: { value: number; color: string }) {
-  const pct = Math.min(100, Math.max(0, value || 0))
-  const c = pct > 90 ? 'var(--crit)' : pct > 70 ? 'var(--warn)' : color
-  return (
-    <div style={{ position: 'relative', height: 4, background: 'var(--border)', borderRadius: 2, overflow: 'hidden' }}>
-      <div style={{ position: 'absolute', left: 0, top: 0, height: '100%', width: `${pct}%`, background: c, borderRadius: 2, transition: 'width 0.5s' }} />
-    </div>
+    <Feed label={label} items={list.map((a, i) => ({
+      key: `${a.name}-${a.node}-${i}`, tone: feedTone(a.severity),
+      title: <>{a.name} <Pill tone={pillTone(a.severity)}>{a.severity}</Pill> <Pill>{a.state}</Pill></>,
+      detail: a.summary || a.description,
+      meta: [a.node && `Node: ${a.node}`, a.firedAt && `Since: ${new Date(a.firedAt).toLocaleString()}`].filter(Boolean).join(' · ') || undefined,
+    }))} />
   )
 }
 
@@ -128,14 +96,13 @@ function PveExporterPanel() {
       ? `The PVE exporter signs in as ${st.tokenId}, which is not read-only: ${(st.reasons ?? []).join('; ')}.`
       : `The PVE exporter signs in as ${st.tokenId}; Proxmox could not be asked whether it is read-only (${st.checkError ?? 'unknown'}).`
   return (
-    <div style={{ marginBottom: 16, padding: '12px 16px', borderRadius: 8, border: '1px solid var(--border-soft)', background: 'var(--surface-notice)', display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-      <div style={{ flex: '1 1 320px', fontSize: 14, color: msg ? (msg.ok ? 'var(--good)' : 'var(--crit)') : 'var(--text-soft)' }}>
+    <div className={styles.callout} role="status" style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+      <div style={{ flex: '1 1 320px', color: msg ? (msg.ok ? 'var(--good)' : 'var(--crit)') : 'var(--text-soft)' }}>
         {msg ? msg.text : why}
         {!msg && !atLeast(role, 'admin') && ' An admin can set up a read-only token here.'}
       </div>
       {atLeast(role, 'admin') && !(msg && msg.ok) && (
-        <button onClick={setup} disabled={busy}
-          style={{ padding: '6px 14px', borderRadius: 6, border: '1px solid color-mix(in srgb, var(--accent) 35%, transparent)', background: 'color-mix(in srgb, var(--accent) 10%, transparent)', color: 'var(--accent)', fontSize: 14, fontWeight: 600, cursor: busy ? 'wait' : 'pointer' }}>
+        <button onClick={setup} disabled={busy} className={`${styles.btn} ${styles.btnPri}`}>
           {busy ? 'Setting up…' : fresh ? 'Make a fresh read-only token' : 'Set up Proxmox metrics'}
         </button>
       )}
@@ -143,9 +110,6 @@ function PveExporterPanel() {
   )
 }
 
-// ---------------------------------------------------------------------------
-// Main page
-// ---------------------------------------------------------------------------
 export default function MonitoringPage() {
   const [tab, setTab]           = useState<'overview' | 'grafana' | 'alerts'>('overview')
   const [grafanaDash, setGrafanaDash] = useState(DASHBOARDS[0].uid)
@@ -234,246 +198,120 @@ export default function MonitoringPage() {
   // -------------------------------------------------------------------------
   // Render
   // -------------------------------------------------------------------------
+  const sortedNodes = [...nodes].sort((a, b) => a.node.localeCompare(b.node))
+  const firing = alerts.filter(a => a.state === 'firing')
+  const chips: StatChip[] = [
+    { label: 'critical', value: criticalAlerts.length, tone: criticalAlerts.length ? 'crit' : 'dim' },
+    { label: 'warnings', value: warningAlerts.length, tone: warningAlerts.length ? 'warn' : 'dim' },
+    { label: 'nodes reporting', value: nodes.length, tone: 'accent' },
+  ]
+  const title = loading ? 'Reading the metrics…' : criticalAlerts.length ? `${criticalAlerts.length} critical alert${criticalAlerts.length === 1 ? '' : 's'} firing`
+    : warningAlerts.length ? `${warningAlerts.length} warning${warningAlerts.length === 1 ? '' : 's'} firing` : firingCount ? `${firingCount} alert${firingCount === 1 ? '' : 's'} firing` : 'All clear'
+  const tabs = ['overview', 'grafana', 'alerts'] as const
+
   return (
-    <div style={{ padding: 32, minHeight: '100vh', background: 'var(--ground)' }}>
+    <Page>
+      <HudHeader level={2} label="Monitoring status" eyebrow="Prometheus + Grafana"
+        title={title} chips={chips}
+        icon="alarm">
+        <p style={{ margin: 0, color: 'var(--text-soft)', fontSize: 14 }}>{lastUpdate ? `Updated ${lastUpdate.toLocaleTimeString()}` : 'Loading...'}</p>
+      </HudHeader>
 
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 32 }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--accent)' }}>
-            Prometheus + Grafana
-          </div>
-          <div style={{ fontFamily: 'var(--font-display)', fontSize: 36, lineHeight: 1.1, fontWeight: 700, color: 'var(--text-bright)' }}>
-            Monitoring
-          </div>
-          <div style={{ fontSize: 15, color: 'var(--text-soft)', maxWidth: 680 }}>
-            {lastUpdate ? `Updated ${lastUpdate.toLocaleTimeString()}` : 'Loading...'}
-          </div>
-        </div>
-
-        {/* Alert badges */}
-        <div style={{ display: 'flex', gap: 8 }}>
-          {criticalAlerts.length > 0 && (
-            <div style={{ padding: '6px 14px', borderRadius: 6, background: 'color-mix(in srgb, var(--crit) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--crit) 25%, transparent)', color: 'var(--crit)', fontSize: 14, fontWeight: 600 }}>
-              {criticalAlerts.length} Critical
-            </div>
-          )}
-          {warningAlerts.length > 0 && (
-            <div style={{ padding: '6px 14px', borderRadius: 6, background: 'color-mix(in srgb, var(--warn) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--warn) 25%, transparent)', color: 'var(--warn)', fontSize: 14, fontWeight: 600 }}>
-              {warningAlerts.length} Warning
-            </div>
-          )}
-          {firingCount === 0 && !loading && (
-            <div style={{ padding: '6px 14px', borderRadius: 6, background: 'color-mix(in srgb, var(--good) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--good) 25%, transparent)', color: 'var(--good)', fontSize: 14, fontWeight: 600 }}>
-              ✓ All Clear
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Tabs */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 32, borderBottom: '1px solid var(--border)', paddingBottom: 0 }}>
-        {(['overview', 'grafana', 'alerts'] as const).map(t => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            style={{
-              background: 'none', border: 'none',
-              borderBottom: tab === t ? '2px solid var(--accent)' : '2px solid transparent',
-              color: tab === t ? 'var(--accent)' : 'var(--text-dim)',
-              padding: '8px 16px', cursor: 'pointer',
-              fontFamily: 'var(--font-display)', fontWeight: 600,
-              fontSize: 17, letterSpacing: '0.05em', textTransform: 'uppercase',
-              marginBottom: -1,
-            }}
-          >
-            {t}{t === 'alerts' && firingCount > 0 ? ` (${firingCount})` : ''}
+      <div className={styles.row} role="group" aria-label="Monitoring view">
+        {tabs.map(t => (
+          <button key={t} onClick={() => setTab(t)} aria-pressed={tab === t} className={`${styles.btn} ${tab === t ? styles.btnPri : ''}`}>
+            {t === 'overview' ? 'Overview' : t === 'grafana' ? 'Grafana' : 'Alerts'}{t === 'alerts' && firingCount > 0 ? ` (${firingCount})` : ''}
           </button>
         ))}
       </div>
 
-      {/* ------------------------------------------------------------------ */}
-      {/* TAB: OVERVIEW                                                        */}
-      {/* ------------------------------------------------------------------ */}
       {tab === 'overview' && (
-        <div>
-          {/* Node stat cards */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 16, marginBottom: 24 }}>
-            {nodes.sort((a, b) => a.node.localeCompare(b.node)).map(n => (
-              <div key={n.node} style={{ background: 'var(--surface)', border: '1px solid var(--border-soft)', borderRadius: 10, padding: 20 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                  <div style={{ fontFamily: 'var(--font-display)', fontWeight: 600, fontSize: 20, color: 'var(--text-bright)', letterSpacing: '0.04em' }}>
-                    {n.node.toUpperCase()}
-                  </div>
-                  <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: 'var(--good)', border: '1px solid color-mix(in srgb, var(--good) 19%, transparent)', padding: '2px 6px', borderRadius: 3 }}>
-                    ONLINE
-                  </div>
-                </div>
-
-                {/* Sparkline */}
-                <div style={{ marginBottom: 12 }}>
-                  <Sparkline values={history[n.node] || []} color="var(--accent)" />
-                  <div style={{ fontSize: 10, color: 'var(--text-dimmer)', marginTop: 2 }}>CPU — 1hr</div>
-                </div>
-
-                {/* Stat bars */}
-                {[
-                  { label: 'CPU',    value: n.cpu,    color: 'var(--accent)' },
-                  { label: 'MEMORY', value: n.memory, color: 'var(--violet)' },
-                  { label: 'DISK',   value: n.disk,   color: 'var(--warn)' },
-                ].map(s => (
-                  <div key={s.label} style={{ marginBottom: 8 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-                      <span style={{ fontSize: 10, color: 'var(--text-dimmer)' }}>{s.label}</span>
-                      <span style={{ fontSize: 10, color: s.color }}>{(s.value || 0).toFixed(1)}%</span>
+        <>
+          <Panel title="Nodes" sub="CPU · memory · disk · last hour">
+            {sortedNodes.length === 0 ? <p className={styles.empty}>{loading ? 'Loading…' : 'No node metrics yet.'}</p> : (
+              <NodeTiles label="Node metrics">
+                {sortedNodes.map(n => (
+                  <NodeTile key={n.node} name={n.node} cpu={n.cpu || 0} mem={n.memory || 0} sub={`disk ${(n.disk || 0).toFixed(1)}% · load ${(n.load || 0).toFixed(2)}`}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'center' }}>
+                      <Spark data={history[n.node] || []} max={100} />
+                      <span className="font-mono" style={{ fontSize: 10, color: 'var(--text-muted)' }}>CPU, last hour</span>
+                      <span className="font-mono" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                        <span style={{ color: 'var(--good)' }}>↓ {speed(n.rxKBs || 0)}</span> · <span style={{ color: 'var(--warn)' }}>↑ {speed(n.txKBs || 0)}</span>
+                      </span>
                     </div>
-                    <Bar value={s.value} color={s.color} />
-                  </div>
+                  </NodeTile>
                 ))}
+              </NodeTiles>
+            )}
+          </Panel>
 
-                {/* Load */}
-                <div style={{ marginTop: 8, fontSize: 10, color: 'var(--text-dimmer)' }}>
-                  LOAD <span style={{ color: 'var(--text-bright)' }}>{(n.load || 0).toFixed(2)}</span>
-                </div>
-                {/* Network */}
-                <div style={{ marginTop: 6, display: 'flex', gap: 12, fontSize: 10, color: 'var(--text-dimmer)' }}>
-                  <span>↓ <span style={{ color: 'var(--good)' }}>{((n.rxKBs||0) >= 1024 ? ((n.rxKBs||0)/1024).toFixed(1)+' MB/s' : (n.rxKBs||0).toFixed(1)+' KB/s')}</span></span>
-                  <span>↑ <span style={{ color: 'var(--warn)' }}>{((n.txKBs||0) >= 1024 ? ((n.txKBs||0)/1024).toFixed(1)+' MB/s' : (n.txKBs||0).toFixed(1)+' KB/s')}</span></span>
-                </div>
-              </div>
-            ))}
-          </div>
+          {sortedNodes.length > 0 && (
+            <Panel title="Disk" sub="used per node">
+              <GlowBars label="Disk used per node" max={100} hiAt={70}
+                items={sortedNodes.map(n => ({ key: n.node, label: n.node, value: n.disk || 0, text: `${(n.disk || 0).toFixed(1)}%` }))} />
+            </Panel>
+          )}
 
-          <div style={{ marginBottom: 24 }}><PluginCards heading="" /></div>
+          <PluginCards heading="" />
 
-          {/* Recent alerts preview */}
-          {alerts.length > 0 && (
-            <div style={{ background: 'var(--surface)', border: '1px solid var(--border-soft)', borderRadius: 10, padding: 20 }}>
-              <div style={{ fontFamily: 'var(--font-display)', fontWeight: 600, fontSize: 20, color: 'var(--text-bright)', marginBottom: 12 }}>
-                Active alerts
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {alerts.filter(a => a.state === 'firing').slice(0, 5).map((a, i) => (
-                  <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: 10, borderRadius: 6, background: severityBg(a.severity), border: `1px solid ${severityColor(a.severity)}30` }}>
-                    <div style={{ width: 8, height: 8, borderRadius: '50%', background: severityColor(a.severity), flexShrink: 0, marginTop: 3, boxShadow: `0 0 6px ${severityColor(a.severity)}` }} />
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 14, color: 'var(--text-bright)', fontWeight: 600 }}>{a.name}</div>
-                      <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2 }}>{a.summary || a.description}</div>
-                      {a.node && <div style={{ fontSize: 10, color: 'var(--text-dimmer)', marginTop: 2 }}>Node: {a.node}</div>}
-                    </div>
-                    <div style={{ fontSize: 10, color: severityColor(a.severity), flexShrink: 0, padding: '2px 6px', border: `1px solid ${severityColor(a.severity)}40`, borderRadius: 3 }}>
-                      {a.severity.toUpperCase()}
-                    </div>
-                  </div>
-                ))}
-              </div>
-              {alerts.filter(a => a.state === 'firing').length > 5 && (
-                <button onClick={() => setTab('alerts')} style={{ marginTop: 8, background: 'none', border: 'none', color: 'var(--accent)', fontSize: 13, cursor: 'pointer' }}>
-                  View all {alerts.filter(a => a.state === 'firing').length} alerts →
+          {firing.length > 0 && (
+            <Panel title="Active alerts" sub={`${firing.length} firing`}>
+              <AlertFeed list={firing.slice(0, 5)} label="Active alerts" />
+              {firing.length > 5 && (
+                <button onClick={() => setTab('alerts')} className={`${styles.btn} ${styles.btnGhost}`} style={{ marginTop: 10 }}>
+                  View all {firing.length} alerts →
                 </button>
               )}
-            </div>
+            </Panel>
           )}
 
-          {alerts.filter(a => a.state === 'firing').length === 0 && !loading && (
-            <div style={{ textAlign: 'center', padding: 32, color: 'var(--text-dimmer)', fontSize: 12 }}>
-              <div style={{ fontSize: 24, marginBottom: 8 }}>✓</div>
-              No active alerts — cluster is healthy
-            </div>
+          {firing.length === 0 && !loading && (
+            <Panel title="Alerts"><p className={styles.empty}>No active alerts — cluster is healthy</p></Panel>
           )}
-        </div>
+        </>
       )}
 
-      {/* ------------------------------------------------------------------ */}
-      {/* TAB: GRAFANA                                                         */}
-      {/* ------------------------------------------------------------------ */}
-      {tab === 'grafana' && (<>
-        <PveExporterPanel />
-        <div>
-          {/* Dashboard selector */}
-          <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-            {DASHBOARDS.map(d => (
-              <button
-                key={d.uid}
-                onClick={() => setGrafanaDash(d.uid)}
-                style={{
-                  padding: '8px 16px', borderRadius: 6, cursor: 'pointer',
-                  background: grafanaDash === d.uid ? 'color-mix(in srgb, var(--accent) 8%, transparent)' : 'transparent',
-                  border: `1px solid ${grafanaDash === d.uid ? 'color-mix(in srgb, var(--accent) 25%, transparent)' : 'var(--border-soft)'}`,
-                  color: grafanaDash === d.uid ? 'var(--accent)' : 'var(--text-dim)',
-                  fontSize: 14,
-                }}
-              >
-                {d.title}
-              </button>
-            ))}
-            <a
-              href={`${GRAFANA}/dashboards`}
-              target="_blank"
-              rel="noreferrer"
-              style={{ marginLeft: 'auto', padding: '8px 16px', borderRadius: 6, border: '1px solid var(--border-strong)', color: 'var(--text)', fontSize: 14, textDecoration: 'none' }}
-            >
-              Open Grafana ↗
-            </a>
-          </div>
-
-          {/* Grafana embed */}
-          <div style={{ borderRadius: 8, overflow: 'hidden', border: '1px solid var(--border-soft)', height: 'calc(100vh - 220px)' }}>
-            <iframe
-              key={grafanaDash}
-              src={`${GRAFANA}/d/${grafanaDash}?orgId=1&refresh=30s&kiosk&theme=dark&${DASHBOARDS.find(d=>d.uid===grafanaDash)?.vars||''}`}
-              width="100%"
-              height="100%"
-              frameBorder="0"
-              style={{ display: 'block', background: 'var(--ground)' }}
-            />
-          </div>
-        </div>
-      </>)}
-
-      {/* ------------------------------------------------------------------ */}
-      {/* TAB: ALERTS                                                          */}
-      {/* ------------------------------------------------------------------ */}
-      {tab === 'alerts' && (
-        <div>
-          {alerts.length === 0 && !loading && (
-            <div style={{ textAlign: 'center', padding: 48, color: 'var(--text-dimmer)', fontSize: 12 }}>
-              <div style={{ fontSize: 32, marginBottom: 8 }}>✓</div>
-              No alerts — all systems healthy
+      {tab === 'grafana' && (
+        <>
+          <PveExporterPanel />
+          <Panel title="Grafana" sub="live dashboards"
+            actions={<a href={`${GRAFANA}/dashboards`} target="_blank" rel="noreferrer" className={styles.btn}>Open Grafana ↗</a>}>
+            <div className={styles.row} role="group" aria-label="Dashboard" style={{ marginBottom: 12 }}>
+              {DASHBOARDS.map(d => (
+                <button key={d.uid} onClick={() => setGrafanaDash(d.uid)} aria-pressed={grafanaDash === d.uid} className={`${styles.btn} ${grafanaDash === d.uid ? styles.btnPri : ''}`}>
+                  {d.title}
+                </button>
+              ))}
             </div>
-          )}
+            <div style={{ borderRadius: 10, overflow: 'hidden', border: '1px solid var(--border)', height: 'calc(100vh - 260px)', minHeight: 360 }}>
+              <iframe
+                key={grafanaDash}
+                title={DASHBOARDS.find(d => d.uid === grafanaDash)?.title ?? 'Grafana dashboard'}
+                src={`${GRAFANA}/d/${grafanaDash}?orgId=1&refresh=30s&kiosk&theme=dark&${DASHBOARDS.find(d=>d.uid===grafanaDash)?.vars||''}`}
+                width="100%"
+                height="100%"
+                frameBorder="0"
+                style={{ display: 'block', background: 'var(--ground)' }}
+              />
+            </div>
+          </Panel>
+        </>
+      )}
 
+      {tab === 'alerts' && (
+        <>
+          {alerts.length === 0 && !loading && <Panel title="Alerts"><p className={styles.empty}>No alerts — all systems healthy</p></Panel>}
           {['critical', 'warning', 'info'].map(sev => {
             const sevAlerts = alerts.filter(a => a.severity === sev)
             if (!sevAlerts.length) return null
             return (
-              <div key={sev} style={{ marginBottom: 24 }}>
-                <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: severityColor(sev), letterSpacing: '0.14em', marginBottom: 12 }}>
-                  {sev.toUpperCase()} — {sevAlerts.length} alert{sevAlerts.length !== 1 ? 's' : ''}
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {sevAlerts.map((a, i) => (
-                    <div key={i} style={{ background: 'var(--surface)', border: `1px solid ${severityColor(a.severity)}30`, borderLeft: `3px solid ${severityColor(a.severity)}`, borderRadius: 10, padding: 20 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
-                        <div style={{ fontSize: 20, color: 'var(--text-bright)', fontFamily: 'var(--font-display)', fontWeight: 600 }}>{a.name}</div>
-                        <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, padding: '2px 8px', borderRadius: 3, background: severityBg(a.severity), color: severityColor(a.severity), border: `1px solid ${severityColor(a.severity)}40`, flexShrink: 0 }}>
-                          {a.state.toUpperCase()}
-                        </div>
-                      </div>
-                      {a.summary && <div style={{ fontSize: 14, color: 'var(--text-soft)', marginBottom: 6 }}>{a.summary}</div>}
-                      {a.description && <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 6 }}>{a.description}</div>}
-                      <div style={{ display: 'flex', gap: 16, fontSize: 12, color: 'var(--text-dimmer)' }}>
-                        {a.node && <span>Node: <span style={{ color: 'var(--text-muted)' }}>{a.node}</span></span>}
-                        {a.firedAt && <span>Since: <span style={{ color: 'var(--text-muted)' }}>{new Date(a.firedAt).toLocaleString()}</span></span>}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              <Panel key={sev} title={sev === 'critical' ? 'Critical' : sev === 'warning' ? 'Warning' : 'Info'} sub={`${sevAlerts.length} alert${sevAlerts.length !== 1 ? 's' : ''}`}>
+                <AlertFeed list={sevAlerts} label={`${sev} alerts`} />
+              </Panel>
             )
           })}
-        </div>
+        </>
       )}
-    </div>
+    </Page>
   )
 }
