@@ -25,7 +25,7 @@ export interface FakeOptions {
 export const TOKEN_A = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.token-for-house-a'
 export const TOKEN_B = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.token-for-house-b'
 
-export interface FakeHA { server: http.Server | https.Server; url: string; token: string; states: Map<string, HAState>; calls: string[]; seenAuth: Set<string>; isAdmin: boolean; up: boolean; statesReads: number }
+export interface FakeHA { server: http.Server | https.Server; url: string; token: string; states: Map<string, HAState>; calls: string[]; seenAuth: Set<string>; isAdmin: boolean; up: boolean; statesReads: number; errorLog: string; sni: string[] }
 
 export function st(entity_id: string, state: string, attributes: Record<string, any> = {}): HAState {
   return { entity_id, state, attributes: { friendly_name: attributes.friendly_name ?? entity_id, ...attributes }, last_changed: '2026-01-01T00:00:00Z', last_updated: '2026-01-01T00:00:00Z' }
@@ -54,7 +54,7 @@ function readFrames(buf: Buffer): { msgs: string[]; rest: Buffer } {
 }
 
 export async function fakeHA(token: string, states: HAState[], areas: { area: string; entities: string[] }[] = [], opts: FakeOptions = {}): Promise<FakeHA> {
-  const f: FakeHA = { server: null as any, url: '', token, states: new Map(states.map(s => [s.entity_id, s])), calls: [], seenAuth: new Set(), isAdmin: false, up: true, statesReads: 0 }
+  const f: FakeHA = { server: null as any, url: '', token, states: new Map(states.map(s => [s.entity_id, s])), calls: [], seenAuth: new Set(), isAdmin: false, up: true, statesReads: 0, errorLog: '', sni: [] }
   let tick = 0
   const touch = (s: HAState) => { s.last_updated = new Date(Date.UTC(2026, 0, 2, 0, 0, ++tick)).toISOString() }
   const handler = (req: http.IncomingMessage, res: http.ServerResponse) => {
@@ -79,7 +79,7 @@ export async function fakeHA(token: string, states: HAState[], areas: { area: st
         return res.end(JSON.stringify(s))
       }
       if (req.method === 'GET' && url === '/api/config') return res.end(JSON.stringify({ version: '2026.11.0', location_name: 'Test house', components: [] }))
-      if (req.method === 'GET' && url === '/api/error_log') { res.setHeader('content-type', 'text/plain'); return res.end('') }
+      if (req.method === 'GET' && url === '/api/error_log') { res.setHeader('content-type', 'text/plain'); return res.end(f.errorLog) }
       const m = /^\/api\/services\/([a-z_]+)\/([a-z_]+)$/.exec(url)
       if (req.method === 'POST' && m) {
         f.calls.push(`${m[1]}.${m[2]} ${body}`)
@@ -104,6 +104,7 @@ export async function fakeHA(token: string, states: HAState[], areas: { area: st
     })
   }
   f.server = opts.tls ? https.createServer({ key: opts.tls.key, cert: opts.tls.cert }, handler) : http.createServer(handler)
+  f.server.on('secureConnection', (t: any) => { f.sni.push(String(t.servername ?? '')) })
   f.server.on('upgrade', (req, socket) => {
     if (req.url !== '/api/websocket') return socket.destroy()
     const accept = crypto.createHash('sha1').update(req.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC11B65').digest('base64')
@@ -147,12 +148,14 @@ export function memIO(seed: Record<string, string> = {}): CredentialIO & { data:
 
 export const HOUSE_A = () => [
   st('light.kitchen', 'off', { friendly_name: 'Kitchen', supported_color_modes: ['color_temp'], min_color_temp_kelvin: 2200, max_color_temp_kelvin: 6500 }),
-  st('switch.stuck', 'off', { friendly_name: 'Stuck plug' }),
+  st('switch.stuck', 'off', { friendly_name: 'Stuck plug', device_class: 'outlet' }),
+  st('scene.goodnight', '2026-01-01T00:00:00Z', { friendly_name: 'Goodnight' }),
+  st('button.doorbell_test', 'unknown', { friendly_name: 'Doorbell test' }),
   st('lock.front_door', 'locked', { friendly_name: 'Front door' }),
   st('cover.garage', 'closed', { friendly_name: 'Garage', device_class: 'garage' }),
   st('cover.blind', 'closed', { friendly_name: 'Blind', device_class: 'blind', current_position: 0 }),
   st('climate.lounge', 'heat', { friendly_name: 'Lounge', hvac_modes: ['off', 'heat'], min_temp: 7, max_temp: 30, temperature: 20 }),
   st('sensor.temp', '21', { friendly_name: 'Temperature', unit_of_measurement: '°C' }),
-  st('switch.gone', 'unavailable', { friendly_name: 'Gone plug' }),
+  st('switch.gone', 'unavailable', { friendly_name: 'Gone plug', device_class: 'outlet' }),
 ]
 

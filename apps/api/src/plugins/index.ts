@@ -7,6 +7,8 @@
 // =============================================================================
 
 import type { Plugin } from '../lib/plugin-host'
+// The Home Assistant plug-in's only transport (its token never goes through the generic broker).
+import '../lib/ha-control/broker'
 import { arrstackPlugin } from './arrstack'
 import { homeAssistantPlugin } from './home-assistant'
 import { meshcentralPlugin } from './meshcentral'

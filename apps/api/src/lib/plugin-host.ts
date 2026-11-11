@@ -95,6 +95,20 @@ export interface PluginManifest {
   refreshSeconds?: number
   /** Declared when the device also takes an interactive login. */
   consoleAccess?: PluginConsole
+  /**
+   * The broker must never send this plug-in's credential itself: a core module registers the only transport
+   * (setPluginTransport), which applies that device's own address checks and certificate pin. With none
+   * registered, every call fails closed. Its address and credential settings cannot be saved through
+   * saveSettings either; the core module owns them.
+   */
+  coreTransport?: boolean
+}
+
+/** A core module's checked transport for a coreTransport plug-in. Read-only GETs are all a plug-in gets. */
+export type PluginTransport = (method: 'GET' | 'POST', path: string, timeoutMs?: number) => Promise<any>
+const transports = new Map<string, PluginTransport>()
+export function setPluginTransport(pluginId: string, t: PluginTransport | null): void {
+  if (t) transports.set(pluginId, t); else transports.delete(pluginId)
 }
 
 export interface PluginContext {
@@ -458,6 +472,11 @@ export async function saveSettings(
   manifest: PluginManifest,
   values: Record<string, string>,
 ): Promise<void> {
+  if (manifest.coreTransport) {
+    const owned = [manifest.baseUrlSetting, ...authSecrets(manifest.auth)]
+    const hit = owned.filter(k => values[k] !== undefined && values[k] !== '')
+    if (hit.length) throw new PluginSettingsError(`${manifest.name}'s ${hit.join(' and ')} are set on its own page, not here.`)
+  }
   const problem = settingsChangeProblem(manifest, await getSettings(manifest.id), values)
   if (problem) throw new PluginSettingsError(problem)
   for (const setting of manifest.settings) {
@@ -528,6 +547,11 @@ class BrokerContext implements PluginContext {
     body?: Record<string, unknown>,
     timeoutMs?: number,
   ): Promise<any> {
+    if (this.manifest.coreTransport) {
+      const t = transports.get(this.manifest.id)
+      if (!t) throw new Error(`${this.manifest.name} is not connected yet.`)
+      return t(method, path, timeoutMs)
+    }
     const base = (this.settings[this.endpoint.baseUrlSetting] ?? '').replace(/\/+$/, '')
     if (!base) throw new Error(`${this.manifest.name}: no address configured for ${this.endpoint.label}`)
 

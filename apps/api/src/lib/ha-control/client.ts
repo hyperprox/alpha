@@ -26,6 +26,9 @@ export interface HAConnection {
   fingerprint?: string | null
 }
 
+/** What the read-only plug-in may GET through the checked client. */
+export const PLUGIN_READS = new Set(['/api/', '/api/states', '/api/config', '/api/error_log'])
+
 /** The most HyperProx reads from one answer or one WebSocket exchange. */
 export const MAX_ANSWER_BYTES = 16 * 1024 * 1024
 
@@ -132,6 +135,13 @@ export class HttpHAClient implements HAClient {
     if (r.status >= 400) throw new HAUnreachableError(`Home Assistant answered HTTP ${r.status}.`)
     if (!r.text) return null
     try { return JSON.parse(r.text) } catch { return r.text }
+  }
+
+  /** The read-only plug-in's reads, and nothing else (lib/ha-control/broker.ts). JSON, or text for the log. */
+  async pluginRead(path: string, timeoutMs?: number): Promise<any> {
+    const p = path.split('?')[0]
+    if (!PLUGIN_READS.has(p)) throw new HAUnreachableError('That is not something the Home Assistant plug-in may read.')
+    return this.json('GET', p, undefined, Math.min(timeoutMs ?? this.timeoutMs, 30_000))
   }
 
   async states(): Promise<HAState[]> {

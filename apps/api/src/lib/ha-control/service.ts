@@ -24,7 +24,8 @@
 
 import {
   ActionRefusal, CONTROLLABLE, ENTITY_ID, actionPhrase, buildServiceCall, confirmPhrase, confirmTemplate, controlsFor,
-  displayState, domainOf, nameOf, readBackMatches, tierOf, typedMatches, type Control, type HAState, type Tier,
+  displayState, domainOf, everydayRefusal, markFor, markHolds, nameOf, readBackMatches, tierOf, typedMatches,
+  type Control, type EverydayMark, type HAState, type Tier,
 } from './catalog'
 import { HAUnreachableError, HttpHAClient, type HAClient, type HAConnection, type HARegistry } from './client'
 import type { InstanceMeta, InstanceStore } from './instances'
@@ -82,12 +83,25 @@ export interface ServiceDeps {
   sleep?:    (ms: number) => Promise<void>
   /** Read-back: how many times, and how far apart. */
   readBack?: { tries: number; everyMs: number }
-  limits?:   { normalPerMinute: number; securityPerMinute: number; devicesPerMinute: number }
+  limits?:   Partial<Limits>
   /** How long one house's device list is served from memory, so several open pages cost one read. */
   devicesCacheMs?: number
 }
 
 const REFUSAL_NOTIFY_MS = 10 * 60_000
+
+export interface Limits {
+  normalPerMinute: number
+  securityPerMinute: number
+  devicesPerMinute: number
+  /** Health and status reads, per session. */
+  readsPerMinute: number
+  /** Every action attempt, refused or not, per session: each one reads the house. */
+  attemptsPerMinute: number
+  /** Certificate probes, per session. */
+  probesPerMinute: number
+}
+const READ_CACHE_MS = 10_000
 
 export class HAControlService {
   private devicesCache = new Map<string, { at: number; states: HAState[] }>()
@@ -95,7 +109,9 @@ export class HAControlService {
   private hits = new Map<string, number[]>()
   private hitCalls = 0
   private refusalNotified = new Map<string, number>()
-  private d: Required<Omit<ServiceDeps, 'publish' | 'cluster'>> & Pick<ServiceDeps, 'publish' | 'cluster'>
+  private healthCache = new Map<string, { at: number; states: HAState[]; config: any; log: string }>()
+  private statusCache = new Map<string, { at: number; value: any }>()
+  private d: Required<Omit<ServiceDeps, 'publish' | 'cluster' | 'limits'>> & Pick<ServiceDeps, 'publish' | 'cluster'> & { limits: Limits }
 
   constructor(deps: ServiceDeps) {
     this.d = {
@@ -105,7 +121,7 @@ export class HAControlService {
       readBack: { tries: 6, everyMs: 500 },
       devicesCacheMs: 2_000,
       ...deps,
-      limits: { normalPerMinute: 30, securityPerMinute: 5, devicesPerMinute: 40, ...(deps.limits ?? {}) },
+      limits: { normalPerMinute: 30, securityPerMinute: 5, devicesPerMinute: 40, readsPerMinute: 30, attemptsPerMinute: 60, probesPerMinute: 10, ...(deps.limits ?? {}) },
     }
   }
 
@@ -133,8 +149,23 @@ export class HAControlService {
     return m.clusterId && this.d.cluster ? this.d.cluster(m.clusterId) : null
   }
 
-  async status(id: string, clusterScope: string | null = null) {
+  /** A per-session limit any route can apply (certificate probes, for one). */
+  limit(actor: Actor, bucket: keyof Limits, message = 'Too many requests; wait a moment.'): void {
+    this.rate(actor, bucket, this.d.limits[bucket], message)
+  }
+
+  /** Status, read at most every 10 seconds per house and limited per session. */
+  async status(id: string, clusterScope: string | null = null, actor?: Actor) {
     const m = await this.instance(id, clusterScope)
+    if (actor) this.limit(actor, 'readsPerMinute')
+    const hit = this.statusCache.get(m.id)
+    if (hit && this.d.now() - hit.at < READ_CACHE_MS) return hit.value
+    const value = await this.readStatus(m)
+    this.statusCache.set(m.id, { at: this.d.now(), value })
+    return value
+  }
+
+  private async readStatus(m: InstanceMeta) {
     let ha: HAClient
     try { ha = await this.client(m) } catch (e: any) { return { reachable: false, error: e.message, version: null, location: null, user: null } }
     try {
@@ -152,11 +183,47 @@ export class HAControlService {
     }
   }
 
-  async health(id: string, warn = 20, clusterScope: string | null = null): Promise<PluginDetail> {
+  /**
+   * The health view. Read at most every 10 seconds per house and limited per session. A viewer's view leaves out
+   * the house's security devices, automation times and the error log.
+   */
+  async health(id: string, warn = 20, clusterScope: string | null = null, opts: { viewer?: boolean; actor?: Actor } = {}): Promise<PluginDetail> {
     const m = await this.instance(id, clusterScope)
-    const ha = await this.client(m)
-    const [states, config, log] = await Promise.all([ha.states(), ha.config().catch(() => ({})), ha.errorLog()])
-    return buildHealthDetail(states, config, log, warn)
+    if (opts.actor) this.limit(opts.actor, 'readsPerMinute')
+    let hit = this.healthCache.get(m.id)
+    if (!hit || this.d.now() - hit.at >= READ_CACHE_MS) {
+      const ha = await this.client(m)
+      const [states, config, log] = await Promise.all([ha.states(), ha.config().catch(() => ({})), ha.errorLog()])
+      hit = { at: this.d.now(), states, config, log }
+      this.healthCache.set(m.id, hit)
+    }
+    return buildHealthDetail(hit.states, hit.config, hit.log, warn,
+      opts.viewer ? { viewer: { hide: s => tierOf(s as HAState, m.policy) === 'security' } } : {})
+  }
+
+  /**
+   * Everyday marks for these entity ids, recorded from what Home Assistant says each one is now. An id already
+   * marked keeps its original mark (so a mark that no longer holds is not quietly renewed by an unrelated save);
+   * a new id must exist and must not be an always-security device.
+   */
+  async everydayMarks(id: string, ids: unknown, prev: EverydayMark[]): Promise<EverydayMark[]> {
+    if (!Array.isArray(ids) || ids.length > 500 || ids.some(e => typeof e !== 'string' || !ENTITY_ID.test(e))) {
+      throw new ActionRefusal('bad_input', 'Everyday devices must be a list of entity ids.')
+    }
+    const m = await this.instance(id, null)
+    const out: EverydayMark[] = []
+    let ha: HAClient | null = null
+    for (const e of [...new Set(ids as string[])]) {
+      const kept = prev.find(p => p.entity_id === e)
+      if (kept) { out.push(kept); continue }
+      ha = ha ?? await this.client(m)
+      const s = await ha.state(e)
+      if (!s) throw new ActionRefusal('bad_input', `${m.name} has no entity ${e}, so it cannot be marked everyday.`)
+      const why = everydayRefusal(s)
+      if (why) throw new ActionRefusal('bad_input', why)
+      out.push(markFor(s))
+    }
+    return out
   }
 
   // --- Devices ---------------------------------------------------------------------------------
@@ -216,7 +283,9 @@ export class HAControlService {
     const ids = new Set(states.map(s => s.entity_id))
     const warnings = opts.viewer ? [] : [
       ...m.policy.protected.filter(e => !ids.has(e)).map(e => `Protected device ${e} no longer exists in ${m.name}; it may have been renamed. Protect its new id in Settings.`),
-      ...m.policy.everyday.filter(e => !ids.has(e)).map(e => `Everyday device ${e} no longer exists in ${m.name}; remove it from Settings.`),
+      ...m.policy.everyday.filter(e => !ids.has(e.entity_id)).map(e => `Everyday device ${e.entity_id} no longer exists in ${m.name}; remove it from Settings.`),
+      ...m.policy.everyday.filter(e => ids.has(e.entity_id) && !markHolds(e, states.find(s => s.entity_id === e.entity_id)!)).map(e =>
+        `${e.entity_id} changed in Home Assistant (its name, kind or class) since it was marked everyday, so it needs the confirm step again. Remove it from the everyday list and add it back if that is still right.`),
     ]
     return { areas, warnings, areaSource: reg ? 'registry' : 'none', fetchedAt: new Date(hit.at).toISOString() }
   }
@@ -285,6 +354,8 @@ export class HAControlService {
     if (!ENTITY_ID.test(entityId)) return refuse(new ActionRefusal('bad_entity', 'That is not an entity id.'))
     if (!CONTROLLABLE.has(domainOf(entityId))) return refuse(new ActionRefusal('domain_not_allowed', `HyperProx does not control ${domainOf(entityId)} entities.`))
 
+    // Every attempt reads the house, so every attempt counts, refused or not.
+    try { this.limit(actor, 'attemptsPerMinute', 'Too many attempts in a minute; wait a moment.') } catch (e: any) { return refuse(e) }
     let ha: HAClient
     try { ha = await this.client(m) } catch (e: any) { return refuse(e) }
     // Read fresh: the tier depends on attributes (a cover's class, a switch's name) that a cache could hold stale.
@@ -294,6 +365,11 @@ export class HAControlService {
     }
     if (!before) return refuse(new ActionRefusal('unknown_entity', `${m.name} has no entity ${entityId}.`, 404))
     const tier = tierOf(before, m.policy)
+    // Counted before any role, route or phrase check, so repeated tries at a lock (an operator's included) are limited.
+    try {
+      this.rate(actor, tier, tier === 'security' ? this.d.limits.securityPerMinute : this.d.limits.normalPerMinute,
+        `That is the most ${tier === 'security' ? 'security actions' : 'actions'} allowed in a minute. Wait a moment and try again.`)
+    } catch (e: any) { return refuse(e, tier) }
 
     // Who may do this, on which route.
     if (tier === 'security') {
@@ -304,11 +380,6 @@ export class HAControlService {
       if (secure) return refuse(new ActionRefusal('not_security', `${nameOf(before)} is an everyday control; use the normal route.`, 409), tier)
       if (!hasRole(actor.role, m.policy.normalRole)) return refuse(new ActionRefusal('forbidden', `Controls on ${m.name} need the ${m.policy.normalRole} role.`, 403), tier)
     }
-    // Before any phrase comparison, so the confirm step cannot be guessed at speed.
-    try {
-      this.rate(actor, tier, tier === 'security' ? this.d.limits.securityPerMinute : this.d.limits.normalPerMinute,
-        `That is the most ${tier === 'security' ? 'security actions' : 'actions'} allowed in a minute. Wait a moment and try again.`)
-    } catch (e: any) { return refuse(e, tier) }
 
     let call
     try { call = buildServiceCall(before, action, req.value) } catch (e: any) { return refuse(e, tier) }

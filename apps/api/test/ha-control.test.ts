@@ -38,6 +38,7 @@ before(async () => {
 })
 after(() => { A.server.close(); B.server.close() })
 
+let clock = 1_000_000
 async function twoHouses() {
   const io = memIO({ 'plugin/home-assistant/url': A.url, 'plugin/home-assistant/token': TOKEN_A })
   const store = new InstanceStore(io, id => id === 'c0123456789', openResolver)
@@ -47,7 +48,7 @@ async function twoHouses() {
     store, clientFor: testClient, audit: async (action, resource, details) => { audits.push({ action, resource, details }) },
     publish: async e => { published.push(e) },
     cluster: id => id === 'c0123456789' ? { id, name: 'Remote server', kind: 'remote' } : null,
-    sleep: async () => {}, readBack: { tries: 3, everyMs: 0 },
+    sleep: async () => {}, readBack: { tries: 3, everyMs: 0 }, now: () => clock,
   })
   return { io, store, svc, b: b.id }
 }
@@ -102,9 +103,9 @@ test('tiers: locks, alarms, sirens, garage/gate/door covers and protected device
   assert.equal(tierOf(st('siren.x', 'off'), p), 'security')
   for (const dc of ['garage', 'gate', 'door']) assert.equal(tierOf(st('cover.x', 'closed', { device_class: dc }), p), 'security')
   assert.equal(tierOf(st('cover.x', 'closed', { device_class: 'blind' }), p), 'normal')
-  assert.equal(tierOf(st('switch.heater', 'off'), p), 'normal')
-  assert.equal(tierOf(st('switch.heater', 'off'), { ...p, protected: ['switch.heater'] }), 'security')
-  assert.equal(tierOf(st('switch.any', 'off'), { ...p, securityDomains: ['switch'] }), 'security')
+  assert.equal(tierOf(st('switch.heater', 'off', { device_class: 'outlet' }), p), 'normal')
+  assert.equal(tierOf(st('switch.heater', 'off', { device_class: 'outlet' }), { ...p, protected: ['switch.heater'] }), 'security')
+  assert.equal(tierOf(st('light.any', 'off'), { ...p, securityDomains: ['light'] }), 'security')
   assert.equal(confirmPhrase(st('lock.f', 'locked', { friendly_name: 'Front door' }), 'unlock', undefined, 'Second home'), 'Unlock Front door at Second home')
 })
 
@@ -283,9 +284,11 @@ test('unreachable: a plain reason, no address and no token in it', async () => {
   await assert.rejects(svc.act(DEFAULT_ID, { entityId: 'light.kitchen', action: 'turn_on' }, operator, false), (e: any) => e.code === 'unreachable' && !e.message.includes(TOKEN_A))
   await assert.rejects(svc.devices(DEFAULT_ID), (e: any) => e.name === 'HAUnreachableError')
   A.up = true
+  clock += 11_000   // status is cached for 10 seconds per house
   const ok = await svc.status(DEFAULT_ID)
   assert.deepEqual({ reachable: ok.reachable, version: ok.version, user: ok.user }, { reachable: true, version: '2026.11.0', user: { name: 'hyperprox', isAdmin: false, isOwner: false } })
   A.isAdmin = true
+  clock += 11_000
   assert.equal((await svc.status(DEFAULT_ID)).user!.isAdmin, true, 'an admin-user token is detected')
   // A wrong token is refused by name, not with the token in the message.
   const bad = new HttpHAClient({ url: A.url, token: 'wrongwrongwrongwrongwrong', insecureTLS: false }, 10_000, openResolver)

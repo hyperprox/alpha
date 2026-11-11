@@ -7,6 +7,7 @@ import { PLUGINS, findPlugin } from '../plugins'
 import { PLUGIN_IDEAS, repoSlug } from '../lib/plugin-wishlist'
 import { ProxmoxClient }        from '../lib/proxmox-client'
 import { discoverServices }     from '../lib/discovery'
+import { homeAssistantDetail }  from './ha-control'
 import {
   describeSettings, getSettings, missingSettings, runPlugin, runPluginDetail,
   runPluginMetrics, renderExposition, saveSettings,
@@ -171,6 +172,11 @@ export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get<{ Params: { id: string } }>('/:id/detail', async (req, reply) => {
     const plugin = findPlugin(req.params.id)
     if (!plugin) return reply.status(404).send({ success: false, error: 'No such plug-in' })
+    // Home Assistant's detail is house #1's Health view, with its viewer rules (no security devices, no log).
+    if (plugin.manifest.id === 'home-assistant') {
+      try { return { success: true, data: { ok: true, ...(await homeAssistantDetail(req)) } } }
+      catch (e: any) { return { success: true, data: { ok: false, error: e.message } } }
+    }
     try {
       return { success: true, data: { ok: true, ...(await runPluginDetail(plugin)) } }
     } catch (e: any) {

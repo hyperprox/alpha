@@ -21,7 +21,7 @@
 // =============================================================================
 
 import crypto from 'node:crypto'
-import { DEFAULT_POLICY, ENTITY_ID, type TierPolicy } from './catalog'
+import { DEFAULT_POLICY, ENTITY_ID, type EverydayMark, type TierPolicy } from './catalog'
 import { resolveHATarget, type TargetResolver } from './target'
 import { normaliseFingerprint } from '../clusters/tls-pin'
 
@@ -101,15 +101,41 @@ export function cleanPolicy(v: any, prev: TierPolicy = DEFAULT_POLICY): TierPoli
     for (const e of x) if (typeof e !== 'string' || !/^[a-z_]{1,40}$/.test(e)) throw new InstanceInputError(`"${String(e).slice(0, 40)}" is not a domain.`)
     return [...new Set(x as string[])]
   }
+  // Everyday marks are made by the service from the entity as Home Assistant reports it (markFor), never typed.
+  const marks = (x: unknown): EverydayMark[] => {
+    if (!Array.isArray(x) || x.length > 500) throw new InstanceInputError('Everyday devices must be a list.')
+    const out: EverydayMark[] = []
+    for (const m of x as any[]) {
+      if (!m || typeof m !== 'object' || typeof m.entity_id !== 'string' || !ENTITY_ID.test(m.entity_id) || typeof m.domain !== 'string'
+        || m.domain !== m.entity_id.split('.')[0] || !(m.device_class === null || typeof m.device_class === 'string') || typeof m.friendly_name !== 'string') {
+        throw new InstanceInputError('Everyday devices are recorded by HyperProx from Home Assistant; send their entity ids.')
+      }
+      if (!out.some(o => o.entity_id === m.entity_id)) {
+        out.push({ entity_id: m.entity_id, domain: m.domain, device_class: m.device_class === null ? null : String(m.device_class).slice(0, 40), friendly_name: String(m.friendly_name).slice(0, 120) })
+      }
+    }
+    return out
+  }
   const role = v.normalRole ?? prev.normalRole
   if (role !== 'operator' && role !== 'admin') throw new InstanceInputError('Everyday controls are for operators or admins.')
   return {
     protected:       v.protected !== undefined ? ids(v.protected, 'Protected devices') : prev.protected,
-    everyday:        v.everyday !== undefined ? ids(v.everyday, 'Everyday devices') : prev.everyday ?? [],
+    everyday:        v.everyday !== undefined ? marks(v.everyday) : prev.everyday ?? [],
     securityDomains: v.securityDomains !== undefined ? domains(v.securityDomains) : prev.securityDomains,
     normalRole:      role,
     notifySecurity:  v.notifySecurity === undefined ? prev.notifySecurity : v.notifySecurity === true,
   }
+}
+
+/**
+ * A stored policy that does not parse fails safe: everyday marks are dropped (more confirm steps, never fewer),
+ * and if even that fails, everyday controls become admin-only and the valid protected ids are kept.
+ */
+function storedPolicy(p: any): TierPolicy {
+  try { return cleanPolicy(p ?? {}) } catch { /* fall through */ }
+  try { return cleanPolicy({ ...(p ?? {}), everyday: [] }) } catch { /* fall through */ }
+  const prot = Array.isArray(p?.protected) ? p.protected.filter((e: unknown) => typeof e === 'string' && ENTITY_ID.test(e)) : []
+  return { ...DEFAULT_POLICY, protected: prot, normalRole: 'admin' }
 }
 
 function parseIndex(raw: string | null): InstanceMeta[] | null {
@@ -122,7 +148,7 @@ function parseIndex(raw: string | null): InstanceMeta[] | null {
       clusterId: typeof x.clusterId === 'string' ? x.clusterId : null,
       insecureTLS: x.insecureTLS === true,
       fingerprint: typeof x.fingerprint === 'string' ? normaliseFingerprint(x.fingerprint) : null,
-      policy: (() => { try { return cleanPolicy(x.policy ?? {}) } catch { return { ...DEFAULT_POLICY } } })(),
+      policy: storedPolicy(x.policy),
     }))
   } catch { return null }
 }

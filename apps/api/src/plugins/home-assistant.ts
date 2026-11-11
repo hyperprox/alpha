@@ -19,7 +19,7 @@
 
 import type { Plugin, PluginContext, PluginTileData, PluginDetail, PluginMetric } from '../lib/plugin-host'
 
-interface HAState {
+export interface HAState {
   entity_id:    string
   state:        string
   attributes:   Record<string, any>
@@ -54,8 +54,19 @@ function since(iso?: string): string {
 }
 
 /** The health view (unavailable devices, batteries, updates), for this plug-in and for every other instance. */
-export function buildHealthDetail(states: unknown, config: any, log: unknown, warn: number): PluginDetail {
-  const list: HAState[] = Array.isArray(states) ? states : []
+export interface HealthOptions {
+  /**
+   * A viewer's view: entities this says to hide (the house's security devices) are left out entirely, automation
+   * times are not shown (when they last ran says when the house is empty) and the error log, which names
+   * devices' addresses and hostnames, is not read out.
+   */
+  viewer?: { hide: (s: HAState) => boolean }
+}
+
+export function buildHealthDetail(states: unknown, config: any, log: unknown, warn: number, opts: HealthOptions = {}): PluginDetail {
+  const all: HAState[] = Array.isArray(states) ? states : []
+  const list = opts.viewer ? all.filter(s => !opts.viewer!.hide(s)) : all
+  if (opts.viewer) log = ''
 
   const dead    = list.filter(s => DEAD.has(s.state))
   const lowBatt = list
@@ -160,7 +171,7 @@ export function buildHealthDetail(states: unknown, config: any, log: unknown, wa
           .map(s => ({
             name: nameOf(s),
             state: s.state === 'on' ? 'yes' : 'no',
-            triggered: since(s.attributes?.last_triggered),
+            triggered: opts.viewer ? '—' : since(s.attributes?.last_triggered),
           })),
       },
       {
@@ -189,7 +200,7 @@ export function buildHealthDetail(states: unknown, config: any, log: unknown, wa
       },
       {
         title: 'Recent problems in the log',
-        empty: 'Nothing in the log looks like an error.',
+        empty: opts.viewer ? 'The log is shown to operators and above.' : 'Nothing in the log looks like an error.',
         columns: [{ key: 'line', label: 'Line' }],
         rows: logLines.map(line => ({ line: line.trim().slice(0, 300) })),
       },
@@ -205,7 +216,9 @@ export const homeAssistantPlugin: Plugin = {
     kind: 'device',
     icon: '🏠',
     baseUrlSetting: 'url',
-    insecureTLS: true,
+    // The token never goes through the generic broker: lib/ha-control/broker.ts is the only transport, with the
+    // house's address checks, certificate check or pin, no redirects and a deadline per request.
+    coreTransport: true,
     // The token is a bearer credential; the broker adds the prefix so the
     // stored value stays the bare token a user copies out of Home Assistant.
     auth: { kind: 'header', header: 'Authorization', fromSetting: 'token', prefix: 'Bearer ' },

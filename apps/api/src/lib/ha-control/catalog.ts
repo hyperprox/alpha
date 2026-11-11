@@ -166,8 +166,46 @@ export const SECURITY_COVER_CLASSES = new Set(['garage', 'gate', 'door'])
 export const EVERYDAY_COVER_CLASSES = new Set(['blind', 'curtain', 'shade', 'shutter', 'awning', 'damper'])
 /** Run anything Home Assistant was told to run: security until the owner says otherwise. */
 export const RUNNABLE_DOMAINS = new Set(['script', 'scene', 'button'])
-/** A switch whose id or name says it drives one of these is security until the owner says otherwise. */
-export const SECURITY_WORDS = /garage|gate|door|lock|alarm|arm|disarm|unlock|siren|opener|entry/i
+/** Domains whose id and name are searched for the words below. */
+export const KEYWORD_DOMAINS = new Set(['switch', 'input_boolean', 'cover', 'script', 'scene', 'button'])
+/**
+ * Words that mean a door, a gate, a lock or an alarm, in English and the common European languages, after
+ * folding (NFKC, accents removed, lower case). Long words match inside a longer one ("Garagentor"); short words
+ * only as a whole word, so "motor" is not "tor" and "warm" is not "arm". A match is always security.
+ */
+export const SECURITY_SUBSTRINGS = ['garage', 'garaje', 'alarm', 'siren', 'opener', 'unlock', 'disarm', 'portail', 'puerta',
+  'porton', 'cancello', 'serrure', 'cerradura', 'schloss', 'lucchetto']
+export const SECURITY_WORDS = new Set(['arm', 'door', 'gate', 'lock', 'entry', 'porte', 'tur', 'tor', 'deur', 'poort', 'slot'])
+
+export function fold(text: string): string {
+  return String(text ?? '').normalize('NFKC').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
+}
+
+/** True when the entity's id or name says it drives a door, a gate, a lock or an alarm. */
+export function soundsLikeSecurity(s: HAState): boolean {
+  for (const text of [s.entity_id.split('.').slice(1).join('.'), nameOf(s)]) {
+    const f = fold(text)
+    if (SECURITY_SUBSTRINGS.some(w => f.includes(w))) return true
+    if (f.split(/[^a-z0-9]+/).some(t => SECURITY_WORDS.has(t))) return true
+  }
+  return false
+}
+
+/**
+ * An owner's "everyday" mark, bound to what the entity was when it was marked. If any of these change (a new
+ * name, a new device class, an id reused for something else) the mark no longer applies.
+ */
+export interface EverydayMark { entity_id: string; domain: string; device_class: string | null; friendly_name: string }
+
+export function markFor(s: HAState): EverydayMark {
+  const dc = s.attributes?.device_class
+  return { entity_id: s.entity_id, domain: domainOf(s.entity_id), device_class: typeof dc === 'string' ? dc : null, friendly_name: nameOf(s) }
+}
+
+export function markHolds(m: EverydayMark, s: HAState): boolean {
+  const now = markFor(s)
+  return m.entity_id === now.entity_id && m.domain === now.domain && m.device_class === now.device_class && m.friendly_name === now.friendly_name
+}
 
 export interface TierPolicy {
   /** Entity ids the owner marked protected: security tier whatever their domain. */
@@ -175,10 +213,11 @@ export interface TierPolicy {
   /** Extra domains promoted to the security tier on this instance. */
   securityDomains: string[]
   /**
-   * Entity ids the owner moved to everyday (a scene, a script, a "Door lamp" switch). Never applies to the
-   * always-security kinds above, and protected wins over it. Changing it is admin, re-confirmed and audited.
+   * Devices the owner moved to everyday. Never applies to the always-security kinds below, protected wins over
+   * it, and a mark is void once the entity's name, class or kind changes. Changing it is admin, re-confirmed
+   * and audited.
    */
-  everyday:        string[]
+  everyday:        EverydayMark[]
   /** The least role that may use normal controls. */
   normalRole:      'operator' | 'admin'
   /** Send `ha.security.action` to notification channels after a security action. */
@@ -195,19 +234,26 @@ export const nameOf = (s: HAState) => {
   return typeof n === 'string' && n.trim() ? n.trim().slice(0, 120) : s.entity_id
 }
 
-/** Security whatever the house's settings: locks, alarms, sirens, garage/gate/door covers. */
+/**
+ * Security whatever the house's settings: locks, alarms, sirens, garage/gate/door covers, and any switch,
+ * cover, script, scene or button whose id or name sounds like a door, a gate, a lock or an alarm.
+ */
 export function alwaysSecurity(s: HAState): boolean {
   const d = domainOf(s.entity_id)
   const dc = String(s.attributes?.device_class ?? '')
   return SECURITY_DOMAINS.has(d) || dc === 'siren' || (d === 'cover' && SECURITY_COVER_CLASSES.has(dc))
+    || (KEYWORD_DOMAINS.has(d) && soundsLikeSecurity(s))
 }
 
 /** Security by default, but an owner may move it to everyday. */
 function securityByDefault(s: HAState): boolean {
   const d = domainOf(s.entity_id)
-  if (d === 'cover') return !EVERYDAY_COVER_CLASSES.has(String(s.attributes?.device_class ?? ''))
+  const dc = String(s.attributes?.device_class ?? '')
+  if (d === 'cover') return !EVERYDAY_COVER_CLASSES.has(dc)
   if (RUNNABLE_DOMAINS.has(d)) return true
-  if (d === 'switch' || d === 'input_boolean') return SECURITY_WORDS.test(s.entity_id) || SECURITY_WORDS.test(nameOf(s))
+  // A switch can be wired to anything; only a plug socket is everyday without the owner saying so.
+  if (d === 'switch') return dc !== 'outlet'
+  if (d === 'input_boolean') return true
   return false
 }
 
@@ -215,8 +261,14 @@ export function tierOf(s: HAState, policy: TierPolicy): Tier {
   if (alwaysSecurity(s)) return 'security'
   if (policy.protected.includes(s.entity_id)) return 'security'
   if (policy.securityDomains.includes(domainOf(s.entity_id))) return 'security'
-  if (securityByDefault(s) && !policy.everyday.includes(s.entity_id)) return 'security'
+  if (securityByDefault(s) && !policy.everyday.some(m => markHolds(m, s))) return 'security'
   return 'normal'
+}
+
+/** Whether an entity can be marked everyday at all (and why not). */
+export function everydayRefusal(s: HAState): string | null {
+  if (alwaysSecurity(s)) return `${nameOf(s)} (${s.entity_id}) is always a security device and cannot be made everyday.`
+  return null
 }
 
 /** The controls offered for an entity, from what its own attributes say it supports. */

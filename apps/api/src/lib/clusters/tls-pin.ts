@@ -49,7 +49,8 @@ export class PinnedAgent extends https.Agent {
     const host = options.host ?? options.hostname
     const port = Number(options.port)
     const socket = tls.connect({
-      host, port, servername: net.isIP(host) ? undefined : host,
+      // A caller that connects to a resolved address passes the name it resolved as the TLS name (SNI).
+      host, port, servername: options.servername || (net.isIP(host) ? undefined : host),
       // The chain is self-signed by design; the fingerprint below is the check.
       rejectUnauthorized: false,
       timeout: options.timeout,
@@ -102,10 +103,11 @@ export const GENERIC_CONNECT_ERROR = 'Could not read a certificate from that add
 /**
  * Connect, read the certificate, hang up. Nothing is sent: this is what the owner compares on step 4.
  */
-export function probeCertificate(host: string, port: number, timeoutMs = 10_000): Promise<PresentedCertificate> {
+export function probeCertificate(host: string, port: number, timeoutMs = 10_000, servername?: string): Promise<PresentedCertificate> {
   return new Promise((resolve, reject) => {
     if (!isServerAddress(host) || !allowedApiPort(port)) return reject(new Error('That is not a server address and port HyperProx can use (the Proxmox port is normally 8006).'))
-    const socket = tls.connect({ host, port, servername: net.isIP(host) ? undefined : host, rejectUnauthorized: false })
+    const sni = servername && !net.isIP(servername) && isServerAddress(servername) ? servername : net.isIP(host) ? undefined : host
+    const socket = tls.connect({ host, port, servername: sni, rejectUnauthorized: false })
     const timer = setTimeout(() => { socket.destroy(); reject(new Error(GENERIC_CONNECT_ERROR)) }, timeoutMs)
     socket.once('secureConnect', () => {
       clearTimeout(timer)

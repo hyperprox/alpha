@@ -242,7 +242,8 @@ async function waitAddress(d: InstallDeps, node: string, vmid: number): Promise<
 //  Wiring the result back into whatever was waiting for it
 // ---------------------------------------------------------------------------
 
-async function wireUp(recipe: CatalogueRecipe, url: string): Promise<string> {
+/** Exported for tests. */
+export async function wireUp(recipe: CatalogueRecipe, url: string): Promise<string> {
   if (!recipe.satisfies) return 'Nothing to configure — this one stands alone.'
 
   const { kind, id, setting } = recipe.satisfies
@@ -256,8 +257,12 @@ async function wireUp(recipe: CatalogueRecipe, url: string): Promise<string> {
 
   const plugin = PLUGINS.find(p => p.manifest.id === id)
   if (!plugin) return `Installed, but no ${id} plug-in is present to configure.`
+  // Only the non-secret settings go back in: passing a stored secret back would make every save look like it
+  // re-entered the credential, which is exactly what settingsChangeProblem refuses to assume.
   const existing = await getSettings(id).catch(() => ({} as Record<string, string>))
-  await saveSettings(plugin.manifest, { ...existing, [setting]: url })
+  const secrets = new Set(plugin.manifest.settings.filter(x => x.type === 'secret').map(x => x.key))
+  const plain = Object.fromEntries(Object.entries(existing).filter(([k]) => !secrets.has(k)))
+  await saveSettings(plugin.manifest, { ...plain, [setting]: url })
   return `Set ${id}.${setting}. Open the plug-in to finish anything it still needs.`
 }
 

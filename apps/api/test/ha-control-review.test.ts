@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { X509Certificate } from 'node:crypto'
 import Fastify, { type FastifyInstance } from 'fastify'
-import { tierOf, DEFAULT_POLICY, confirmTemplate } from '../src/lib/ha-control/catalog'
+import { tierOf, DEFAULT_POLICY, confirmTemplate, markFor } from '../src/lib/ha-control/catalog'
 import { InstanceStore, DEFAULT_ID } from '../src/lib/ha-control/instances'
 import { HAControlService, type Actor } from '../src/lib/ha-control/service'
 import { HttpHAClient } from '../src/lib/ha-control/client'
@@ -60,14 +60,14 @@ test('finding 2: covers are everyday only for blinds and the like; missing or ot
 
 test('finding 2: scripts, scenes and buttons are security unless the owner marks them everyday', () => {
   const p = DEFAULT_POLICY
-  for (const id of ['script.open_everything', 'scene.goodnight', 'button.gate_open']) {
+  for (const id of ['script.movie_time', 'scene.goodnight', 'button.restart_tv']) {
     assert.equal(tierOf(st(id, 'off'), p), 'security', id)
-    assert.equal(tierOf(st(id, 'off'), { ...p, everyday: [id] }), 'normal', `${id} demoted`)
+    assert.equal(tierOf(st(id, 'off'), { ...p, everyday: [markFor(st(id, 'off'))] }), 'normal', `${id} demoted`)
   }
   // Protected wins over everyday; the always-security kinds cannot be demoted at all.
-  assert.equal(tierOf(st('scene.x', 'off'), { ...p, everyday: ['scene.x'], protected: ['scene.x'] }), 'security')
-  for (const s of [st('lock.f', 'locked'), st('cover.g', 'closed', { device_class: 'garage' }), st('siren.s', 'off'), st('alarm_control_panel.a', 'disarmed')]) {
-    assert.equal(tierOf(s, { ...p, everyday: [s.entity_id] }), 'security', s.entity_id)
+  assert.equal(tierOf(st('scene.x', 'off'), { ...p, everyday: [markFor(st('scene.x', 'off'))], protected: ['scene.x'] }), 'security')
+  for (const s of [st('lock.f', 'locked'), st('cover.g', 'closed', { device_class: 'garage' }), st('siren.s', 'off'), st('alarm_control_panel.a', 'disarmed'), st('button.gate_open', 'x')]) {
+    assert.equal(tierOf(s, { ...p, everyday: [markFor(s)] }), 'security', s.entity_id)
   }
 })
 
@@ -77,9 +77,11 @@ test('finding 2: a switch that sounds like a door, lock or alarm is security; a 
     ['switch.r2', 'Gate'], ['switch.r3', 'Entry buzzer'], ['switch.r4', 'Unlock side'], ['switch.r5', 'Siren']]) {
     assert.equal(tierOf(st(id, 'off', { friendly_name: name }), p), 'security', `${id} ${name}`)
   }
-  assert.equal(tierOf(st('switch.kettle', 'off', { friendly_name: 'Kettle' }), p), 'normal')
-  assert.equal(tierOf(st('switch.bell', 'off', { friendly_name: 'Bell', device_class: 'siren' }), { ...p, everyday: ['switch.bell'] }), 'security')
-  assert.equal(tierOf(st('switch.relay_1', 'off', { friendly_name: 'Door lamp' }), { ...p, everyday: ['switch.relay_1'] }), 'normal', 'owner may demote a false match')
+  assert.equal(tierOf(st('switch.kettle', 'off', { friendly_name: 'Kettle', device_class: 'outlet' }), p), 'normal')
+  const bell = st('switch.bell', 'off', { friendly_name: 'Bell', device_class: 'siren' })
+  assert.equal(tierOf(bell, { ...p, everyday: [markFor(bell)] }), 'security')
+  const lamp = st('switch.relay_1', 'off', { friendly_name: 'Door lamp' })
+  assert.equal(tierOf(lamp, { ...p, everyday: [markFor(lamp)] }), 'security', 'a keyword match is always security, everyday or not')
 })
 
 test('finding 2: the tier is decided from the state read at action time, not from the list on screen', async () => {
@@ -95,7 +97,7 @@ test('finding 2: the tier is decided from the state read at action time, not fro
 
 test('finding 2: devices() warns when a protected or everyday id no longer exists (renamed)', async () => {
   const { svc, store } = house()
-  await store.update(DEFAULT_ID, { policy: { protected: ['switch.old_heater'], everyday: ['scene.gone'] } })
+  await store.update(DEFAULT_ID, { policy: { protected: ['switch.old_heater'], everyday: [markFor(st('scene.gone', 'x'))] } })
   const d = await svc.devices(DEFAULT_ID)
   assert.equal(d.warnings.length, 2)
   assert.match(d.warnings[0], /switch\.old_heater.*renamed/)
@@ -297,7 +299,7 @@ test('findings 7 and 8 through the gate: viewer redaction, gate refusals audited
     assert.equal(put.statusCode, 200, put.body)
     const demote = audits.find(a => a.action === 'ha.instance.demote')
     assert.ok(!demote, 'demotions go to the production audit (auditCredentialUse), checked below')
-    assert.deepEqual((await store.get(DEFAULT_ID))!.policy.everyday, ['scene.goodnight'])
+    assert.deepEqual((await store.get(DEFAULT_ID))!.policy.everyday, [{ entity_id: 'scene.goodnight', domain: 'scene', device_class: null, friendly_name: 'Goodnight' }])
   } finally {
     setHAControlService(null); setApiTokenStore(null); A.isAdmin = false
     if (isUnlocked()) await lock('manual')
