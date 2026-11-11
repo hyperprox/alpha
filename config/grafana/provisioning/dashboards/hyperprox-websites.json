@@ -1,0 +1,304 @@
+{
+  "uid": "hyperprox-websites",
+  "title": "HyperProx — Websites",
+  "description": "The sites on the Sites page: up, check latency, visitors, responses, p95 and certificate days, from /api/plugins/metrics.",
+  "tags": [
+    "hyperprox",
+    "websites"
+  ],
+  "timezone": "browser",
+  "refresh": "1m",
+  "schemaVersion": 38,
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "Websites",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 3
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Each site HyperProx made or adopted, from its own nginx access log and HyperProx's public check every 5 minutes. Labelled by site name only: no addresses or paths reach Prometheus. Counts are for the current UTC day and start again at midnight UTC."
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Up",
+      "gridPos": {
+        "x": 0,
+        "y": 3,
+        "w": 8,
+        "h": 5
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "hyperprox_site_up",
+          "legendFormat": "{{site}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "DOWN",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "UP",
+                  "color": "green"
+                }
+              }
+            }
+          ],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Certificate days left",
+      "gridPos": {
+        "x": 8,
+        "y": 3,
+        "w": 8,
+        "h": 5
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "hyperprox_site_cert_days_left",
+          "legendFormat": "{{site}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "d",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 7
+              },
+              {
+                "color": "green",
+                "value": 14
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Visitors today",
+      "gridPos": {
+        "x": 16,
+        "y": 3,
+        "w": 8,
+        "h": 5
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "hyperprox_site_visitors_total",
+          "legendFormat": "{{site}}"
+        }
+      ],
+      "options": {
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Public check latency",
+      "description": "",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "hyperprox_site_check_latency_seconds",
+          "legendFormat": "{{site}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "p95 response time (today)",
+      "description": "From nginx's $request_time. Empty for a site whose log format does not record it.",
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "hyperprox_site_p95_seconds",
+          "legendFormat": "{{site}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Server errors today (5xx share)",
+      "description": "",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "sum by(site) (hyperprox_site_requests_total{class=\"5xx\"}) / clamp_min(sum by(site) (hyperprox_site_requests_total), 1)",
+          "legendFormat": "{{site}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Requests today by class",
+      "description": "",
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "sum by(site, class) (hyperprox_site_requests_total)",
+          "legendFormat": "{{site}} {{class}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        }
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Page views and bot requests today",
+      "description": "",
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "hyperprox_site_page_views_total",
+          "legendFormat": "{{site}} page views"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "hyperprox_site_bot_requests_total",
+          "legendFormat": "{{site}} bots"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        }
+      }
+    }
+  ]
+}

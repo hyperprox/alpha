@@ -36,6 +36,7 @@ export const CURATED = new Set([
   'infrastructure-desktop-light', 'storage-desktop-dark', 'certificates-desktop-dark', 'updates-desktop-dark',
   'plugin-home-assistant-desktop-dark', 'plugin-home-assistant-rooms-phone-light', 'plugin-router-desktop-dark',
   'plugin-plex-phone-dark', 'plugin-qnap-desktop-dark', 'plugin-qnap-phone-light',
+  'sites-desktop-dark', 'site-metrics-desktop-dark', 'site-metrics-phone-light',
 ])
 const wanted = (name, size, theme) => ALL || CURATED.has(`${name}-${size}-${theme}`)
 
@@ -63,6 +64,9 @@ export const PAGES = [
   ['plugin-meshcentral', '/plugins/meshcentral'],
   ['plugin-qnap', '/plugins/qnap'],
   ['catalogue', '/catalogue'],
+  ['sites', '/sites'],
+  ['site-metrics', '/sites/demo-docs'],
+  ['site-metrics-wordpress', '/sites/demo-blog'],
   ['settings', '/settings'],
 ]
 const SIZES = [['desktop', { width: 1440, height: 900 }, false], ['phone', { width: 390, height: 844 }, true]]
