@@ -170,13 +170,24 @@ export class NPMClient {
   }
 
   async requestCertificate(data: { domain_names: string[]; provider: string; nice_name: string; letsencrypt_email?: string }): Promise<NPMCertificate> {
-    return this.req('POST', '/nginx/certificates', {
-      domain_names: data.domain_names,
-      provider:     data.provider,
-      nice_name:    data.nice_name,
-      // The address Let's Encrypt is told, and the agreement NPM requires before it asks.
-      ...(data.letsencrypt_email ? { meta: { letsencrypt_email: data.letsencrypt_email, letsencrypt_agree: true, dns_challenge: false } } : {}),
-    })
+    const base = { domain_names: data.domain_names, provider: data.provider, nice_name: data.nice_name }
+    // NPM before 2.13 wants the Let's Encrypt address and agreement on each request. Newer NPM takes the
+    // address from the account and refuses those fields ("data/meta must NOT have additional properties").
+    // A refused request creates nothing, so the newer shape is tried only after that exact refusal.
+    const attempts: Array<Record<string, unknown>> = [
+      ...(data.letsencrypt_email ? [{ ...base, meta: { letsencrypt_email: data.letsencrypt_email, letsencrypt_agree: true, dns_challenge: false } }] : []),
+      { ...base, meta: { dns_challenge: false } },
+      base,
+    ]
+    let last: unknown
+    for (const body of attempts) {
+      try { return await this.req('POST', '/nginx/certificates', body) }
+      catch (e: any) {
+        last = e
+        if (!/additional properties/i.test(String(e?.message ?? ''))) throw e
+      }
+    }
+    throw last
   }
 
   async getProxyHosts(): Promise<NPMProxyHost[]> {
