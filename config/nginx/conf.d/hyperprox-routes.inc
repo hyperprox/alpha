@@ -126,7 +126,14 @@ location = /grafana/api/datasources {
     return 403;
 }
 
+# The app's pages may be framed only by the app itself (no clickjacking from another site), are never sniffed as
+# another type, and send no full address to other sites. Grafana's own location above keeps its headers, so the
+# Monitoring page can still embed it (same origin).
 location / {
+    add_header         Content-Security-Policy "frame-ancestors 'self'" always;
+    add_header         X-Frame-Options         SAMEORIGIN always;
+    add_header         X-Content-Type-Options  nosniff always;
+    add_header         Referrer-Policy         strict-origin-when-cross-origin always;
     proxy_pass         http://frontend;
     proxy_http_version 1.1;
     proxy_set_header   Upgrade           $http_upgrade;
