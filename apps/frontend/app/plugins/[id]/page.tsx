@@ -303,8 +303,8 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
   )
 
   return (
-    <div className="min-h-full overflow-x-hidden" style={{ background: 'var(--ground)' }}>
-      <div className={`${vs.page} px-4 py-4 sm:px-8 sm:py-6`} style={{ maxWidth: '80rem', margin: '0 auto' }}>
+    <div className="overflow-x-hidden">
+      <div className={vs.page}>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <Link href="/plugins" className="font-mono text-[11px] uppercase tracking-[0.14em] transition-opacity hover:opacity-80"
             style={{ color: 'var(--accent)' }}>← plug-ins</Link>
@@ -333,7 +333,7 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
 
         <PluginSwitcher current={params.id} />
 
-        <HudHeader eyebrow={`Plug-in${detail?.ok ? ' · live data' : ''}`} title={name} icon={PLUGIN_ICON[params.id] ?? 'plugin'} chips={chips} label={`${name} overview`} />
+        <HudHeader level={2} eyebrow={`Plug-in${detail?.ok ? ' · live data' : ''}`} title={name} icon={PLUGIN_ICON[params.id] ?? 'plugin'} chips={chips} label={`${name} overview`} />
 
         {loading && !detail && <p className="text-sm" role="status" style={{ color: 'var(--text-dimmer)' }}>reading…</p>}
 

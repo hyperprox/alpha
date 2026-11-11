@@ -11,6 +11,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
+import { Page, HudHeader, Panel, styles } from '@/components/visual/kit'
 
 interface PluginSetting {
   key: string; label: string; type: 'text' | 'secret' | 'url'
@@ -37,7 +38,6 @@ interface TileData {
 
 const ACCENT = 'var(--accent)'
 const BORDER = 'var(--border)'
-const PANEL  = 'var(--surface)'
 
 // Semantic colour, kept separate from the accent so "healthy" never reads as
 // "selected" and vice versa.
@@ -61,7 +61,7 @@ function Preview({ data, loading }: { data?: TileData; loading: boolean }) {
   if (loading) {
     return (
       <div className="flex h-[132px] items-center justify-center rounded border font-mono text-[11px]"
-        style={{ borderColor: BORDER, background: 'var(--ground)', color: 'var(--text-dimmer)' }}>
+        style={{ borderColor: BORDER, background: 'var(--ground-deep)', color: 'var(--text-dimmer)' }}>
         reading…
       </div>
     )
@@ -79,7 +79,7 @@ function Preview({ data, loading }: { data?: TileData; loading: boolean }) {
   if (!data.ok) {
     return (
       <div className="flex h-[132px] flex-col justify-center gap-1.5 rounded border px-3.5"
-        style={{ borderColor: 'color-mix(in srgb, var(--crit) 33%, transparent)', background: 'var(--ground)' }}>
+        style={{ borderColor: 'color-mix(in srgb, var(--crit) 33%, transparent)', background: 'var(--ground-deep)' }}>
         <span className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: TONE.bad }}>
           not reporting
         </span>
@@ -133,11 +133,11 @@ function SettingsDialog({ plugin, onSave, onClose }: {
   )
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-6" style={{ background: 'rgba(4,7,12,0.78)' }}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-6" style={{ background: 'var(--scrim)', backdropFilter: 'blur(4px)' }}>
       <form
         onSubmit={e => { e.preventDefault(); onSave(values) }}
-        className="w-full max-w-md rounded-lg border shadow-2xl"
-        style={{ background: PANEL, borderColor: 'var(--border-soft)' }}
+        className="w-full max-w-md rounded-xl border"
+        style={{ background: 'linear-gradient(135deg, var(--surface), var(--surface-hi))', borderColor: 'var(--border-strong)', boxShadow: 'var(--shadow)' }}
       >
         <div className="flex items-center gap-3 border-b px-6 py-4" style={{ borderColor: BORDER }}>
           <span className="flex h-8 w-8 items-center justify-center rounded border text-base"
@@ -161,8 +161,7 @@ function SettingsDialog({ plugin, onSave, onClose }: {
                 required={s.required && !(s.type === 'secret' && s.isSet)}
                 placeholder={s.type === 'secret' && s.isSet ? '•••••••• — leave blank to keep' : ''}
                 autoComplete="off"
-                className="h-10 w-full rounded-md border px-3 text-[14px] outline-none transition-colors focus:border-cyan"
-                style={{ background: 'var(--ground-deep)', borderColor: 'var(--border-strong)', color: 'var(--text-bright)' }}
+                className={styles.input}
               />
               {s.hint && (
                 <p className="mt-1.5 text-[12.5px] leading-relaxed" style={{ color: 'var(--text-dimmer)' }}>{s.hint}</p>
@@ -173,11 +172,9 @@ function SettingsDialog({ plugin, onSave, onClose }: {
 
         <div className="flex justify-end gap-2 border-t px-6 py-4" style={{ borderColor: BORDER }}>
           <button type="button" onClick={onClose}
-            className="h-10 rounded-md border px-5 text-sm transition-colors hover:bg-hover"
-            style={{ borderColor: 'var(--border-strong)', color: 'var(--text)', background: 'transparent' }}>Cancel</button>
+            className={styles.btn}>Cancel</button>
           <button type="submit"
-            className="h-10 rounded-md px-5 text-sm font-semibold transition-opacity hover:opacity-85"
-            style={{ background: ACCENT, color: 'var(--accent-ink)', border: 'none' }}>Save and test</button>
+            className={`${styles.btn} ${styles.btnPri}`}>Save and test</button>
         </div>
       </form>
     </div>
@@ -301,6 +298,8 @@ export default function PluginsPage() {
     }
   }
 
+  const configuredCount = plugins.filter(p => p.configured).length
+
   const save = async (values: Record<string, string>) => {
     const p = editing!
     setEditing(null)
@@ -315,55 +314,40 @@ export default function PluginsPage() {
   }
 
   return (
-    <div className="flex h-full flex-col" style={{ background: 'var(--ground)' }}>
-      <header className="flex flex-shrink-0 flex-wrap items-end gap-x-4 gap-y-3 border-b px-4 py-5 sm:px-8 sm:py-6"
-        style={{ borderColor: BORDER, background: 'var(--surface-raised)' }}>
-        <div className="flex flex-col gap-2">
-          <p className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: ACCENT }}>
-            {loading ? 'loading…' : `${plugins.filter(p => p.configured).length} of ${plugins.length} configured`}
-          </p>
-          <h1 className="font-display text-[34px] font-bold leading-none" style={{ color: 'var(--text-bright)' }}>Plug-ins</h1>
-        </div>
-        <button
-          onClick={scan}
-          disabled={scanning}
-          className="ml-auto h-10 rounded-md border px-5 text-sm font-semibold transition-opacity hover:opacity-85 disabled:opacity-40"
-          style={{ background: 'transparent', color: ACCENT, borderColor: ACCENT }}
-        >
-          {scanning ? 'Scanning…' : 'Scan for services'}
-        </button>
-      </header>
-
-      {notice && (
-        <div className="flex flex-shrink-0 items-center gap-3 border-b px-4 py-2.5 text-sm sm:px-8"
-          style={{ borderColor: BORDER, background: 'var(--surface-notice)', color: 'var(--text-soft)' }}>
-          <span className="flex-1">{notice}</span>
-          <button onClick={() => setNotice(null)} style={{ color: 'var(--text-dim)' }}>dismiss</button>
-        </div>
-      )}
-
-      <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-8 sm:py-8">
-        <p className="mb-8 max-w-[680px] text-[15px] leading-relaxed" style={{ color: 'var(--text-soft)' }}>
+    <Page>
+      <HudHeader level={2} icon="plugin" eyebrow={loading ? 'loading…' : `${configuredCount} of ${plugins.length} configured`} label="Plug-ins overview"
+        title="Plug-ins read your devices"
+        chips={[
+          { label: 'Plug-ins', value: plugins.length },
+          { label: 'Configured', value: configuredCount, tone: configuredCount ? 'good' : 'dim' },
+          { label: 'Need setup', value: plugins.length - configuredCount, tone: plugins.length - configuredCount ? 'warn' : 'dim' },
+        ]}
+        actions={
+          <button onClick={scan} disabled={scanning} className={styles.btn}>
+            {scanning ? 'Scanning…' : 'Scan for services'}
+          </button>
+        }>
+        <p style={{ margin: 0, maxWidth: 680, fontSize: 15, lineHeight: 1.6, color: 'var(--text-soft)' }}>
           Plug-ins never see a credential. They declare what they need, and HyperProx makes the
           call on their behalf — so a plug-in can read its own device and nothing else.
         </p>
+      </HudHeader>
+
+      {notice && (
+        <div className={styles.callout} role="status" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span style={{ flex: 1 }}>{notice}</span>
+          <button onClick={() => setNotice(null)} className={`${styles.btn} ${styles.btnGhost}`}>dismiss</button>
+        </div>
+      )}
 
         {findings && findings.length > 0 && (
-          <section className="mb-8 rounded-lg border" style={{ background: PANEL, borderColor: 'color-mix(in srgb, var(--accent) 35%, transparent)' }}>
-            <header className="flex items-center gap-3 border-b px-5 py-3.5" style={{ borderColor: BORDER }}>
-              <h2 className="font-display text-[20px] font-semibold" style={{ color: 'var(--text-bright)' }}>
-                Found on your cluster
-              </h2>
-              <span className="font-mono text-[11px]" style={{ color: 'var(--text-dimmer)' }}>{findings.length}</span>
-              <button onClick={() => setFindings(null)} className="ml-auto text-sm" style={{ color: 'var(--text-dim)' }}>
-                dismiss
-              </button>
-            </header>
+          <Panel title="Found on your cluster" sub={`${findings.length}`}
+            actions={<button onClick={() => setFindings(null)} className={`${styles.btn} ${styles.btnGhost}`}>dismiss</button>}>
             <div className="flex flex-col">
               {findings.map((f, i) => (
-                <div key={i} className="flex items-center gap-3 border-b px-5 py-3 last:border-b-0" style={{ borderColor: 'var(--surface-notice)' }}>
+                <div key={i} className="flex items-center gap-3 border-b py-3 last:border-b-0" style={{ borderColor: 'var(--border-dim)' }}>
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-baseline gap-2">
+                    <div className="flex flex-wrap items-baseline gap-2">
                       <span className="text-[15px] font-semibold" style={{ color: 'var(--text-bright)' }}>{f.label}</span>
                       <span className="font-mono text-xs" style={{ color: 'var(--text-dim)' }}>{f.address}</span>
                     </div>
@@ -374,17 +358,13 @@ export default function PluginsPage() {
                       )}
                     </div>
                   </div>
-                  <button
-                    onClick={() => applyFinding(f)}
-                    className="h-9 rounded-md px-4 text-sm font-semibold transition-opacity hover:opacity-85"
-                    style={{ background: ACCENT, color: 'var(--accent-ink)', border: 'none' }}
-                  >
+                  <button onClick={() => applyFinding(f)} className={`${styles.btn} ${styles.btnPri}`}>
                     Use this
                   </button>
                 </div>
               ))}
             </div>
-          </section>
+          </Panel>
         )}
 
         <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 340px), 1fr))' }}>
@@ -392,22 +372,18 @@ export default function PluginsPage() {
             const d    = data[p.id]
             const tone = !p.configured ? 'idle' : d && !d.ok ? 'bad' : d ? (d.tone ?? 'good') : 'idle'
             return (
-              <article key={p.id} className="relative overflow-hidden rounded-lg border"
-                style={{ background: PANEL, borderColor: 'var(--border-soft)' }}>
+              <article key={p.id} className={styles.card} style={{ padding: 0 }}>
                 {/* Severity stripe — state readable before any text is parsed. */}
                 <span className="absolute left-0 top-0 h-full w-[2px]" style={{ background: TONE[tone] }} />
 
                 <div className="flex items-start gap-3 px-5 pb-4 pt-5">
                   <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-md border text-lg"
-                    style={{ borderColor: 'var(--border-strong)', background: 'var(--ground)' }}>{p.icon}</span>
+                    style={{ borderColor: 'var(--border-strong)', background: 'var(--ground-deep)' }}>{p.icon}</span>
 
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <h2 className="truncate font-display text-[20px] font-semibold leading-tight" style={{ color: 'var(--text-bright)' }}>{p.name}</h2>
-                      <span className="flex-shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider"
-                        style={{ background: 'color-mix(in srgb, var(--accent) 6%, transparent)', color: 'var(--text-dim)', border: '1px solid var(--border-strong)' }}>
-                        {p.kind}
-                      </span>
+                      <span className={styles.tag}>{p.kind}</span>
                     </div>
                     <p className="mt-1 text-sm leading-snug" style={{ color: 'var(--text-muted)' }}>{p.description}</p>
                   </div>
@@ -425,7 +401,7 @@ export default function PluginsPage() {
 
                 <div className="mt-4 flex flex-wrap items-center gap-2 border-t px-5 py-3.5" style={{ borderColor: BORDER }}>
                   <span className="font-mono text-[11px]" style={{ color: TONE[tone] }}>
-                    {!p.configured
+                    <span aria-hidden>● </span>{!p.configured
                       ? `needs ${p.missing.join(' and ')}`
                       : d && !d.ok ? 'unreachable'
                       : d ? 'connected' : 'idle'}
@@ -434,21 +410,18 @@ export default function PluginsPage() {
                   <div className="ml-auto flex items-center gap-2">
                     {p.configured && p.hasDetail && (
                       <Link href={`/plugins/${p.id}`}
-                        className="inline-flex h-9 items-center rounded-md border px-4 text-sm transition-colors hover:bg-hover"
-                        style={{ borderColor: ACCENT, color: ACCENT, background: 'transparent' }}>
+                        className={styles.btn} style={{ display: 'inline-flex', alignItems: 'center', textDecoration: 'none', color: ACCENT, borderColor: ACCENT }}>
                         Open in full
                       </Link>
                     )}
                     {p.configured && (
                       <button onClick={() => readOne(p.id)} disabled={busy[p.id]}
-                        className="h-9 rounded-md border px-4 text-sm transition-colors hover:bg-hover disabled:opacity-40"
-                        style={{ borderColor: 'var(--border-strong)', color: 'var(--text)', background: 'transparent' }}>
+                        className={styles.btn}>
                         Refresh
                       </button>
                     )}
                     <button onClick={() => setEditing(p)}
-                      className="h-9 rounded-md px-5 text-sm font-semibold transition-opacity hover:opacity-85"
-                      style={{ background: ACCENT, color: 'var(--accent-ink)', border: 'none' }}>
+                      className={`${styles.btn} ${styles.btnPri}`}>
                       {p.configured ? 'Settings' : 'Set up'}
                     </button>
                   </div>
@@ -460,37 +433,31 @@ export default function PluginsPage() {
 
         {/* ── Not built yet ──────────────────────────────────────────────── */}
         {ideas.length > 0 && (
-          <section className="mt-12">
-            <div className="mb-2 flex flex-wrap items-center gap-3">
-              <h2 className="font-display text-[22px] font-semibold" style={{ color: 'var(--text-bright)' }}>
-                Not built yet
-              </h2>
-              <a href={requestUrl(repo)} target="_blank" rel="noreferrer"
-                className="ml-auto inline-flex h-9 items-center rounded-md border px-4 text-sm font-semibold transition-opacity hover:opacity-85"
-                style={{ background: 'transparent', color: ACCENT, borderColor: ACCENT }}>
+          <Panel title="Not built yet" sub={`${ideas.length} ideas`}
+            actions={
+              <a href={requestUrl(repo)} target="_blank" rel="noreferrer" className={styles.btn}
+                style={{ display: 'inline-flex', alignItems: 'center', textDecoration: 'none', color: ACCENT, borderColor: ACCENT }}>
                 Suggest something else →
               </a>
-            </div>
-            <p className="mb-5 text-[15px] leading-relaxed" style={{ color: 'var(--text-soft)', maxWidth: 680 }}>
+            }>
+            <p className="mb-5 text-[15px] leading-relaxed" style={{ color: 'var(--text-soft)', maxWidth: 680, margin: '0 0 16px' }}>
               Ideas, not promises — nothing here is scheduled. Asking is what moves one up. The button
               opens a pre-filled issue on GitHub in your browser; HyperProx holds no token and posts
               nothing on your behalf.
             </p>
 
-            <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill,minmax(300px,1fr))' }}>
+            <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill,minmax(min(100%,300px),1fr))' }}>
               {ideas.map(i => (
                 <article key={i.slug} className="flex flex-col rounded-lg border p-5"
-                  style={{ background: PANEL, borderColor: 'var(--border-soft)' }}>
-                  <div className="mb-2 flex items-center gap-2">
-                    <span className="font-display text-[20px] font-semibold leading-tight" style={{ color: 'var(--text-bright)' }}>{i.name}</span>
-                    <span className="rounded px-1.5 font-mono text-[10px]"
-                      style={{ background: 'color-mix(in srgb, var(--text-faint) 50%, transparent)', color: 'var(--text-dim)' }}>{i.category}</span>
+                  style={{ background: 'var(--ground-deep)', borderColor: 'var(--border-soft)' }}>
+                  <div className="mb-2 flex flex-wrap items-center gap-2">
+                    <h3 className="font-display text-[20px] font-semibold leading-tight" style={{ color: 'var(--text-bright)', margin: 0 }}>{i.name}</h3>
+                    <span className={styles.tag}>{i.category}</span>
                   </div>
                   <p className="mb-4 text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>{i.would}</p>
                   <div className="mt-auto flex items-center gap-2">
-                    <a href={requestUrl(repo, i)} target="_blank" rel="noreferrer"
-                      className="inline-flex h-9 items-center rounded-md border px-4 text-sm transition-colors hover:bg-hover"
-                      style={{ borderColor: 'var(--border-strong)', color: 'var(--text)' }}>
+                    <a href={requestUrl(repo, i)} target="_blank" rel="noreferrer" className={styles.btn}
+                      style={{ display: 'inline-flex', alignItems: 'center', textDecoration: 'none' }}>
                       Request this
                     </a>
                     {i.api && (
@@ -500,11 +467,10 @@ export default function PluginsPage() {
                 </article>
               ))}
             </div>
-          </section>
+          </Panel>
         )}
-      </div>
 
       {editing && <SettingsDialog plugin={editing} onSave={save} onClose={() => setEditing(null)} />}
-    </div>
+    </Page>
   )
 }

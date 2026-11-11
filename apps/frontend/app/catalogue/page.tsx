@@ -13,6 +13,7 @@ import { alpha } from '@/lib/theme'
 import { apiJson } from '@/lib/api'
 import { InstallWizard, type WizardRecipe } from '@/components/catalogue/InstallWizard'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
+import { Page, HudHeader, Panel, Pill, Tiles, FlowPipeline, styles } from '@/components/visual/kit'
 
 const ACCENT = 'var(--accent)'
 const BORDER = 'var(--border)'
@@ -120,185 +121,165 @@ export default function CataloguePage() {
   }
 
   if (loading) return (
-    <div className="p-8 text-sm" style={{ color: 'var(--text-dim)' }}>loading the catalogue…</div>
+    <Page><p className={styles.empty}>loading the catalogue…</p></Page>
   )
 
+  const loginCount = nodes.filter(n => n.hasLogin).length
+  const configured = recipes.filter(r => r.installedAt).length
+  const unfinished = leftovers.filter(l => l.jobId !== job?.jobId)
+  const field = styles.field
+
   return (
-    <div className="min-h-full p-4 sm:p-8" style={{ background: 'var(--ground)' }}>
-      <div className="mb-8 flex flex-col gap-2">
-        <p className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: ACCENT }}>
-          Catalogue
-        </p>
-        <h1 className="font-display text-[34px] font-bold leading-none" style={{ color: 'var(--text-bright)' }}>
-          Service Catalogue
-        </h1>
-        <p className="max-w-[680px] text-[15px] leading-relaxed" style={{ color: 'var(--text-soft)' }}>
+    <Page>
+      <HudHeader level={2} eyebrow="Catalogue" icon="plugin" label="Catalogue overview"
+        title="Install what you do not run yet"
+        chips={[
+          { label: 'Services', value: recipes.length },
+          { label: 'Configured', value: configured, tone: configured ? 'good' : undefined },
+          { label: 'Node logins', value: `${loginCount}/${nodes.length}`, tone: canInstall ? 'good' : 'warn' },
+          ...(unfinished.length ? [{ label: 'Unfinished', value: unfinished.length, tone: 'warn' as const }] : []),
+        ]}
+        actions={<Link href="/catalogue/settings" className={styles.btn} style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}>Container ID rule →</Link>}>
+        <p style={{ margin: 0, maxWidth: 680, fontSize: 15, lineHeight: 1.6, color: 'var(--text-soft)' }}>
           HyperProx talks to things you already run. This is for the ones you do not. Each install walks you through
           its size, the node it goes on, its ID and its network, and shows the exact plan before anything is created.
         </p>
-        <Link href="/catalogue/settings" className="text-sm hover:underline w-fit" style={{ color: 'var(--accent)' }}>
-          Container ID rule →
-        </Link>
-      </div>
+      </HudHeader>
 
       {notice && (
-        <div className="mb-6 flex items-center gap-3 rounded-lg border px-4 py-2.5 text-sm"
-          style={{ borderColor: BORDER, background: 'var(--surface-notice)', color: 'var(--text-soft)' }}>
-          <span className="flex-1">{notice}</span>
-          <button onClick={() => setNotice(null)} style={{ color: 'var(--text-dim)' }}>dismiss</button>
+        <div className={styles.callout} role="status" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span style={{ flex: 1 }}>{notice}</span>
+          <button onClick={() => setNotice(null)} className={`${styles.btn} ${styles.btnGhost}`}>dismiss</button>
         </div>
       )}
 
       {/* ── Node logins. Nothing installs without one, so it leads. ────────── */}
-      <div className="rounded-lg border p-6 mb-8"
-        style={{ background: CARD, borderColor: canInstall ? 'var(--border-soft)' : 'color-mix(in srgb, var(--warn) 35%, transparent)' }}>
-        <div className="flex items-center gap-2.5 mb-2">
-          <div className="w-2 h-2 rounded-full" style={{ background: canInstall ? 'var(--good)' : 'var(--warn)' }} />
-          <span className="font-display text-[20px] font-semibold"
-            style={{ color: 'var(--text-bright)' }}>
-            Node logins
-          </span>
-        </div>
-        <p className="text-sm leading-relaxed mb-5 max-w-[680px]" style={{ color: 'var(--text-muted)' }}>
-          Installs run with <span className="font-mono text-[13px]" style={{ color: ACCENT }}>pct exec</span> from the node, not by SSH into the
+      <Panel title="Node logins" sub={canInstall ? 'ready to install' : 'needed before any install'}
+        actions={<Pill tone={canInstall ? 'good' : 'warn'}>{canInstall ? 'logged in' : 'needs a node login'}</Pill>}>
+        <p style={{ margin: '0 0 14px', fontSize: 14, lineHeight: 1.6, color: 'var(--text-muted)', maxWidth: 680 }}>
+          Installs run with <span className="font-mono" style={{ fontSize: 13, color: ACCENT }}>pct exec</span> from the node, not by SSH into the
           container — a container a minute old has no login, may have no sshd, and may not have an address yet.
           So HyperProx needs one login per node. It is tested before it is stored, and it is not shared with
           the Terminal&rsquo;s guest login.
         </p>
 
-        <div className="flex flex-wrap gap-2 mb-5">
+        <ul className={styles.dots} style={{ marginBottom: 16 }} aria-label="Node logins">
           {nodes.map(n => (
-            <div key={n.node} className="flex items-center gap-2 rounded-md border px-3 py-2"
-              style={{ borderColor: n.hasLogin ? 'color-mix(in srgb, var(--good) 19%, transparent)' : BORDER, background: 'var(--ground-inset)' }}>
-              <div className="w-1.5 h-1.5 rounded-full" style={{ background: n.hasLogin ? 'var(--good)' : 'var(--text-dimmer)' }} />
-              <span className="font-mono text-[12px]" style={{ color: n.hasLogin ? 'var(--text)' : 'var(--text-dim)' }}>{n.node}</span>
-              <span className="font-mono text-[10px]" style={{ color: 'var(--text-dimmest)' }}>{n.address ?? '—'}</span>
+            <li key={n.node} className={styles.dot} data-state={n.hasLogin ? 'ok' : 'off'} style={{ textDecoration: 'none' }}>
+              <i aria-hidden />
+              <span>{n.node}</span>
+              <span style={{ color: 'var(--text-dimmer)' }}>{n.address ?? '—'}</span>
+              <span className={styles.srOnly}>{n.hasLogin ? 'login stored' : 'no login'}</span>
               {n.hasLogin && (
-                <button onClick={() => forget(n.node)} className="text-xs hover:underline"
-                  style={{ color: 'var(--text-dim)' }}>forget</button>
+                <button onClick={() => forget(n.node)} className="hover:underline"
+                  style={{ color: 'var(--text-muted)', fontSize: 12, background: 'none', border: 0, cursor: 'pointer' }}>forget</button>
               )}
-            </div>
+            </li>
           ))}
-        </div>
+        </ul>
 
-        <div className="flex flex-wrap items-end gap-2">
-          <label className="flex flex-col gap-1">
-            <span className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: 'var(--text-dim)' }}>Node</span>
-            <select value={formNode} onChange={e => setFormNode(e.target.value)}
-              className="h-10 rounded-md border px-3 text-sm outline-none focus:border-cyan"
-              style={{ background: 'var(--ground-deep)', borderColor: 'var(--border-strong)', color: 'var(--text-bright)' }}>
+        <div className={styles.row} style={{ alignItems: 'flex-end' }}>
+          <label className={field} style={{ minWidth: 120 }}>
+            <span>Node</span>
+            <select value={formNode} onChange={e => setFormNode(e.target.value)} className={styles.input}>
               {nodes.map(n => <option key={n.node} value={n.node}>{n.node}</option>)}
             </select>
           </label>
-          <label className="flex flex-col gap-1">
-            <span className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: 'var(--text-dim)' }}>User</span>
-            <input value={user} onChange={e => setUser(e.target.value)}
-              className="h-10 rounded-md border px-3 font-mono text-[13px] outline-none w-32 focus:border-cyan"
-              style={{ background: 'var(--ground-deep)', borderColor: 'var(--border-strong)', color: 'var(--text-bright)' }} />
+          <label className={field} style={{ width: 130 }}>
+            <span>User</span>
+            <input value={user} onChange={e => setUser(e.target.value)} className={styles.input} style={{ fontFamily: 'var(--font-mono)' }} />
           </label>
-          <label className="flex flex-1 flex-col gap-1 min-w-[220px]">
-            <span className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: 'var(--text-dim)' }}>
-              {useKey ? 'Private key' : 'Password'}
-            </span>
+          <label className={field} style={{ flex: 1, minWidth: 220 }}>
+            <span>{useKey ? 'Private key' : 'Password'}</span>
             {useKey ? (
               <textarea value={secret} onChange={e => setSecret(e.target.value)} rows={3}
                 placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
-                className="rounded-md border px-3 py-2 font-mono text-[12px] outline-none focus:border-cyan"
-                style={{ background: 'var(--ground-deep)', borderColor: 'var(--border-strong)', color: 'var(--text-bright)' }} />
+                className={styles.input} style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }} />
             ) : (
-              <input type="password" value={secret} onChange={e => setSecret(e.target.value)}
-                className="h-10 rounded-md border px-3 text-sm outline-none focus:border-cyan"
-                style={{ background: 'var(--ground-deep)', borderColor: 'var(--border-strong)', color: 'var(--text-bright)' }} />
+              <input type="password" value={secret} onChange={e => setSecret(e.target.value)} className={styles.input} />
             )}
           </label>
-          <button onClick={() => { setUseKey(v => !v); setSecret('') }}
-            className="h-10 rounded-md border px-4 text-sm"
-            style={{ borderColor: 'var(--border-strong)', color: 'var(--text)', background: 'transparent' }}>
+          <button onClick={() => { setUseKey(v => !v); setSecret('') }} className={styles.btn}>
             {useKey ? 'use a password' : 'use a key'}
           </button>
-          <button onClick={saveLogin} disabled={saving || !secret}
-            className="h-10 rounded-md px-5 text-sm font-semibold"
-            style={{ background: ACCENT, color: 'var(--accent-ink)', border: 'none',
-                     opacity: (saving || !secret) ? 0.4 : 1 }}>
+          <button onClick={saveLogin} disabled={saving || !secret} className={`${styles.btn} ${styles.btnPri}`}>
             {saving ? 'verifying…' : 'Verify and save'}
           </button>
         </div>
-        <p className="text-[13px] mt-3" style={{ color: 'var(--text-dimmer)' }}>
+        <p style={{ margin: '12px 0 0', fontSize: 13, color: 'var(--text-dimmer)' }}>
           A key is safer than the root password: it can be revoked on the node without changing anything else.
         </p>
-      </div>
+      </Panel>
 
       {/* ── Live install ────────────────────────────────────────────────────── */}
       {job && (
-        <div className="rounded-lg border p-6 mb-8" style={{ background: CARD, borderColor: `${alpha(ACCENT, 35)}` }}>
-          <div className="flex items-center justify-between mb-4">
-            <span className="font-display text-[20px] font-semibold" style={{ color: 'var(--text-bright)' }}>
-              Installing {recipes.find(r => r.id === job.recipeId)?.name ?? job.recipeId}
-            </span>
-            {job.status !== 'running' && (
-              <button onClick={() => setJob(null)} className="text-sm" style={{ color: 'var(--text-dim)' }}>close</button>
-            )}
+        <Panel title={`Installing ${recipes.find(r => r.id === job.recipeId)?.name ?? job.recipeId}`}
+          sub={job.status}
+          actions={job.status !== 'running' ? <button onClick={() => setJob(null)} className={`${styles.btn} ${styles.btnGhost}`}>close</button> : undefined}>
+          <div style={{ marginBottom: 14 }}>
+            <FlowPipeline label="Install steps" stages={job.steps.map((s, i) => ({
+              key: s.id,
+              label: s.label,
+              value: s.status === 'done' ? '✓' : s.status === 'failed' ? '!' : i + 1,
+              sub: s.detail,
+              state: s.status === 'done' ? 'done' : s.status === 'failed' ? 'bad' : s.status === 'running' ? 'warn' : 'ok',
+              status: s.status,
+            }))} />
           </div>
-          <div className="flex flex-col gap-1.5 mb-3">
+          <ul className={styles.feed} style={{ marginBottom: 12 }} aria-label="Install step detail">
             {job.steps.map(s => (
-              <div key={s.id} className="flex items-center gap-2.5">
-                <div className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                  style={{ background: STATUS_COLOR[s.status] ?? 'var(--text-dimmer)' }} />
-                <span className="text-sm" style={{ color: s.status === 'pending' ? 'var(--text-dim)' : 'var(--text)' }}>
-                  {s.label}
+              <li key={s.id} data-tone={s.status === 'done' ? 'ok' : s.status === 'failed' ? 'bad' : s.status === 'running' ? 'warn' : 'off'}>
+                <span style={{ color: s.status === 'pending' ? 'var(--text-dim)' : 'var(--text)' }}>
+                  {s.label} <small style={{ display: 'inline', color: STATUS_COLOR[s.status] ?? 'var(--text-dimmer)' }}>{s.status}</small>
+                  {s.detail && <small>{s.detail}</small>}
                 </span>
-                {s.detail && <span className="font-mono text-[11px]" style={{ color: 'var(--text-dim)' }}>· {s.detail}</span>}
-              </div>
+              </li>
             ))}
-          </div>
+          </ul>
           {job.error && (
-            <div className="rounded-md px-3 py-2 text-sm mb-3"
-              style={{ background: 'color-mix(in srgb, var(--crit) 6%, transparent)', color: 'var(--crit-soft)', border: '1px solid color-mix(in srgb, var(--crit) 19%, transparent)' }}>
+            <div className={styles.callout} role="alert"
+              style={{ marginBottom: 12, borderStyle: 'solid', borderColor: alpha('var(--crit)', 45), background: alpha('var(--crit)', 8), color: 'var(--crit-soft)' }}>
               {job.error}
             </div>
           )}
           {job.url && job.status === 'completed' && (
             <a href={job.url} target="_blank" rel="noreferrer"
-              className="inline-flex h-10 items-center rounded-md px-5 text-sm font-semibold mb-3"
-              style={{ background: 'var(--accent)', color: 'var(--accent-ink)', border: 'none' }}>
+              className={`${styles.btn} ${styles.btnPri}`}
+              style={{ display: 'inline-flex', alignItems: 'center', textDecoration: 'none', marginBottom: 12 }}>
               Open {job.url} →
             </a>
           )}
           {job.adminCredential && job.status === 'completed' && (
-            <div className="rounded-md px-3 py-3 mb-3"
-              style={{ background: 'var(--ground-deep)', border: `1px solid ${BORDER}` }}>
-              <div className="text-sm mb-2" style={{ color: 'var(--text)' }}>
+            <div className={styles.callout} style={{ marginBottom: 12 }}>
+              <div style={{ marginBottom: 8, color: 'var(--text)' }}>
                 Admin sign-in for this install. Shown once; <strong>Saved in the vault</strong>.
               </div>
-              <div className="flex items-center gap-3 flex-wrap">
-                <span className="font-mono text-[12px]" style={{ color: 'var(--text-muted)' }}>{job.adminCredential.user}</span>
-                <code className="font-mono text-[12px] select-all" style={{ color: 'var(--text-bright)' }}>{job.adminCredential.password}</code>
+              <div className={styles.row} style={{ gap: 12 }}>
+                <span className="font-mono" style={{ fontSize: 12, color: 'var(--text-muted)' }}>{job.adminCredential.user}</span>
+                <code className="font-mono select-all" style={{ fontSize: 12, color: 'var(--text-bright)', overflowWrap: 'anywhere' }}>{job.adminCredential.password}</code>
                 <button
                   onClick={() => { void navigator.clipboard?.writeText(job.adminCredential!.password).catch(() => {}) }}
-                  className="h-8 rounded-md px-3 text-sm"
-                  style={{ border: `1px solid ${BORDER}`, color: 'var(--text)' }}>
+                  className={styles.btn}>
                   Copy password
                 </button>
               </div>
             </div>
           )}
           {(job.status === 'failed' || job.status === 'interrupted') && job.created && !job.removed && (
-            <div className="flex flex-wrap items-center gap-3 mb-3">
-              <button onClick={() => void cleanup(job)} disabled={cleaning}
-                className="h-10 rounded-md border px-4 text-sm font-semibold"
-                style={{ borderColor: 'color-mix(in srgb, var(--crit) 45%, transparent)', color: 'var(--crit-soft)', background: 'transparent', opacity: cleaning ? 0.5 : 1 }}>
+            <div className={styles.row} style={{ gap: 12, marginBottom: 12 }}>
+              <button onClick={() => void cleanup(job)} disabled={cleaning} className={`${styles.btn} ${styles.btnDanger}`}>
                 {cleaning ? 'removing…' : `Remove the half-made CT ${job.vmid}`}
               </button>
-              <span className="text-[13px]" style={{ color: 'var(--text-dim)' }}>Only the container this install created; nothing else is touched.</span>
+              <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>Only the container this install created; nothing else is touched.</span>
             </div>
           )}
           {job.log && (
-            <pre className="rounded p-3 font-mono text-[10px] leading-relaxed overflow-auto"
-              style={{ background: 'var(--ground-deep)', border: `1px solid ${BORDER}`, color: 'var(--text-muted)', maxHeight: 260 }}>
+            <pre className="font-mono overflow-auto"
+              style={{ margin: 0, borderRadius: 8, padding: 12, fontSize: 10, lineHeight: 1.6, background: 'var(--ground-deep)', border: `1px solid ${BORDER}`, color: 'var(--text-muted)', maxHeight: 260 }}>
               {job.log.slice(-6000)}
             </pre>
           )}
-        </div>
+        </Panel>
       )}
 
       {wizard && (
@@ -310,90 +291,82 @@ export default function CataloguePage() {
       )}
 
       {/* ── Unfinished installs, kept across restarts ─────────────────────── */}
-      {leftovers.filter(l => l.jobId !== job?.jobId).length > 0 && (
-        <div className="rounded-lg border p-5 mb-8" style={{ background: CARD, borderColor: 'color-mix(in srgb, var(--warn) 35%, transparent)' }}>
-          <p className="font-display text-[20px] font-semibold mb-1" style={{ color: 'var(--text-bright)' }}>Unfinished installs</p>
-          <p className="text-[13px] mb-3" style={{ color: 'var(--text-muted)' }}>
+      {unfinished.length > 0 && (
+        <Panel title="Unfinished installs" sub={`${unfinished.length} left behind`}>
+          <p style={{ margin: '0 0 12px', fontSize: 13, color: 'var(--text-muted)' }}>
             These failed, or were cut off when HyperProx restarted, and may have left a container. Removing one deletes only the
             container that install created; HyperProx checks its mark first.
           </p>
-          <div className="flex flex-col gap-2">
-            {leftovers.filter(l => l.jobId !== job?.jobId).map(l => (
-              <div key={l.jobId} className="flex flex-wrap items-center gap-3">
-                <span className="font-mono text-[12px]" style={{ color: 'var(--text)' }}>CT {l.vmid} · {l.node}</span>
-                <span className="text-[13px]" style={{ color: 'var(--text-dim)' }}>
-                  {recipes.find(r => r.id === l.recipeId)?.name ?? l.recipeId} · {l.status === 'interrupted' ? 'interrupted by a restart' : 'failed'}
-                </span>
-                <button onClick={() => void cleanup(l)} disabled={cleaning} className="h-9 rounded-md border px-3 text-sm"
-                  style={{ borderColor: 'color-mix(in srgb, var(--crit) 45%, transparent)', color: 'var(--crit-soft)', background: 'transparent' }}>
+          <ul className={styles.guests} aria-label="Unfinished installs">
+            {unfinished.map(l => (
+              <li key={l.jobId} className={styles.guest} style={{ gridTemplateColumns: 'minmax(0,1fr) auto' }}>
+                <div>
+                  <b>CT {l.vmid} · {l.node}</b>
+                  <small>{recipes.find(r => r.id === l.recipeId)?.name ?? l.recipeId} · {l.status === 'interrupted' ? 'interrupted by a restart' : 'failed'}</small>
+                </div>
+                <button onClick={() => void cleanup(l)} disabled={cleaning} className={`${styles.btn} ${styles.btnDanger}`}>
                   Remove CT {l.vmid}
                 </button>
-              </div>
+              </li>
             ))}
-          </div>
-        </div>
+          </ul>
+        </Panel>
       )}
 
       {/* ── Recipes ─────────────────────────────────────────────────────────── */}
       <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill,minmax(min(330px,100%),1fr))' }}>
         {recipes.map(r => (
-          <div key={r.id} className="rounded-lg border p-6 flex flex-col"
-            style={{ background: CARD, borderColor: r.installedAt ? 'color-mix(in srgb, var(--good) 30%, transparent)' : 'var(--border-soft)' }}>
-            <div className="flex items-center gap-2 mb-2">
-              <span className="font-display text-[20px] font-semibold leading-tight" style={{ color: 'var(--text-bright)' }}>{r.name}</span>
-              <span className="font-mono text-[10px] px-1.5 py-0.5 rounded"
-                style={{ background: 'color-mix(in srgb, var(--text-faint) 50%, transparent)', color: 'var(--text-muted)' }}>{r.category}</span>
-              {r.installedAt && (
-                <span className="font-mono text-[10px] px-1.5 py-0.5 rounded ml-auto"
-                  style={{ background: 'color-mix(in srgb, var(--good) 8%, transparent)', color: 'var(--good)' }}>configured</span>
-              )}
+          <div key={r.id} className={styles.card} style={{ display: 'flex', flexDirection: 'column', borderColor: r.installedAt ? alpha('var(--good)', 40) : undefined }}>
+            <div className={styles.row} style={{ marginBottom: 8, flexWrap: 'wrap' }}>
+              <h2 className="font-display" style={{ margin: 0, fontSize: 20, fontWeight: 600, lineHeight: 1.15, color: 'var(--text-bright)' }}>{r.name}</h2>
+              <span className={styles.tag}>{r.category}</span>
+              <span style={{ marginLeft: 'auto' }}>
+                <Pill tone={r.installedAt ? 'good' : undefined}>{r.installedAt ? 'configured' : 'not installed'}</Pill>
+              </span>
             </div>
-            <p className="text-sm leading-relaxed mb-4" style={{ color: 'var(--text-muted)' }}>{r.summary}</p>
+            <p style={{ margin: '0 0 14px', fontSize: 14, lineHeight: 1.6, color: 'var(--text-muted)' }}>{r.summary}</p>
 
-            <div className="flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] mb-4" style={{ color: 'var(--text-dim)' }}>
-              <span>{r.defaults.cores} cores</span>
-              {/* recommended size; the wizard warns below the minimum */}
-              <span>{r.defaults.memoryMb} MB</span>
-              <span>{r.defaults.diskGb} GB</span>
-              <span>port {r.port}</span>
-              {r.needsDocker && <span style={{ color: 'var(--violet)' }}>docker</span>}
+            <div style={{ marginBottom: 14 }}>
+              <Tiles label={`${r.name} size`} items={[
+                { label: 'cores', value: r.defaults.cores },
+                /* recommended size; the wizard warns below the minimum */
+                { label: 'MB RAM', value: r.defaults.memoryMb },
+                { label: 'GB disk', value: r.defaults.diskGb },
+                { label: 'port', value: r.port },
+              ]} />
+              {r.needsDocker && <div style={{ marginTop: 8 }}><Pill tone="violet">docker</Pill></div>}
             </div>
 
             {r.notes.length > 0 && (
-              <ul className="mb-4 flex flex-col gap-1">
+              <ul style={{ margin: '0 0 14px', padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 4 }}>
                 {r.notes.map((n, i) => (
-                  <li key={i} className="text-[13px] leading-relaxed" style={{ color: 'var(--text-dim)' }}>· {n}</li>
+                  <li key={i} style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--text-dim)' }}>· {n}</li>
                 ))}
               </ul>
             )}
             {r.firstLogin && (
-              <p className="text-[13px] mb-4 rounded-md px-3 py-2"
-                style={{ background: 'color-mix(in srgb, var(--warn) 10%, transparent)', color: 'var(--warn-2)', border: '1px solid color-mix(in srgb, var(--warn) 35%, transparent)' }}>
+              <p className={styles.callout}
+                style={{ margin: '0 0 14px', borderStyle: 'solid', background: alpha('var(--warn)', 10), color: 'var(--warn-2)', borderColor: alpha('var(--warn)', 35) }}>
                 First login — {r.firstLogin}
               </p>
             )}
 
-            <div className="mt-auto flex items-center gap-2">
+            <div className={styles.row} style={{ marginTop: 'auto' }}>
               <button onClick={() => install(r)} disabled={!canInstall || job?.status === 'running'}
-                className={r.installedAt ? 'h-10 rounded-md border px-5 text-sm font-semibold' : 'h-10 rounded-md px-5 text-sm font-semibold'}
-                style={{
-                  background: r.installedAt ? 'transparent' : ACCENT,
-                  color: r.installedAt ? ACCENT : 'var(--accent-ink)',
-                  border: r.installedAt ? `1px solid ${ACCENT}` : 'none',
-                  opacity: (!canInstall || job?.status === 'running') ? 0.35 : 1,
-                }}>
+                className={`${styles.btn} ${r.installedAt ? '' : styles.btnPri}`}
+                style={r.installedAt ? { color: ACCENT, borderColor: ACCENT } : undefined}>
                 {r.installedAt ? 'Install another…' : 'Install…'}
               </button>
               {r.installedAt && (
-                <span className="font-mono text-[11px] truncate" style={{ color: 'var(--text-dim)' }}>{r.installedAt}</span>
+                <span className="font-mono truncate" style={{ fontSize: 11, color: 'var(--text-dim)' }}>{r.installedAt}</span>
               )}
               {!canInstall && (
-                <span className="text-[13px]" style={{ color: 'var(--warn)' }}>needs a node login</span>
+                <span style={{ fontSize: 13, color: 'var(--warn)' }}>needs a node login</span>
               )}
             </div>
           </div>
         ))}
       </div>
-    </div>
+    </Page>
   )
 }

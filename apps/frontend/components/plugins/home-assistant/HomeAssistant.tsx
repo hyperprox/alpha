@@ -567,15 +567,12 @@ export function HomeAssistantPage() {
   const admin = atLeast(role, 'admin')
 
   return (
-    <div className="min-h-full overflow-x-hidden" style={{ background: 'var(--ground)' }}>
-      <header className="flex flex-wrap items-center gap-3 border-b px-4 py-4 sm:px-8" style={{ borderColor: 'var(--border)', background: 'var(--surface-raised)' }}>
-        <div className="flex flex-col gap-1">
-          <Link href="/plugins" className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: 'var(--accent)' }}>← plug-ins</Link>
-          <h1 className="font-display text-[30px] font-bold leading-none" style={{ color: 'var(--text-bright)' }}>🏠 Home Assistant</h1>
-        </div>
+    <div className="overflow-x-hidden">
+      <div className="flex flex-wrap items-center gap-3 pb-4">
+        <Link href="/plugins" className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: 'var(--accent)' }}>← plug-ins</Link>
         {admin && <span className="ml-auto"><PrimaryButton type="button" onClick={() => setAdding(true)}>Add a house</PrimaryButton></span>}
-      </header>
-      <div className="px-4 py-4 sm:px-8 flex flex-col gap-4 min-w-0">
+      </div>
+      <div className="flex flex-col gap-4 min-w-0">
         <PluginSwitcher current="home-assistant" />
         {error && <Notice kind="error">{error}</Notice>}
         {!list && !error && <BusyNote>Reading…</BusyNote>}

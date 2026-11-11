@@ -6,6 +6,7 @@ import { alpha } from '@/lib/theme'
 import { pickOllamaModel } from '@/lib/ollama-model'
 import { BoxIcon, SplitIcon, GlobeIcon, HourglassIcon, LockIcon, GearIcon, BoltIcon } from './icons'
 import { CLUSTER_HEADER, apiJson } from '@/lib/api'
+import { Page, HudHeader, Panel, Tiles, styles } from '@/components/visual/kit'
 import { ClusterPicker, ClusterChip, ActionCard, type ActionCardData, type ClusterRef } from '@/components/ai/ClusterAssistant'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -114,7 +115,6 @@ interface JobProgress {
 // ── Style constants ───────────────────────────────────────────────────────────
 
 const ACCENT = 'var(--violet)'
-const BG     = 'var(--ground)'
 const CARD   = 'var(--surface)'
 const BORDER = 'var(--border-strong)'
 
@@ -204,7 +204,7 @@ function ModelCard({
   return (
     <div style={{
       background:   CARD,
-      border:       `1px solid ${model.recommended ? ACCENT + '50' : BORDER}`,
+      border:       `1px solid ${model.recommended ? alpha(ACCENT, 31) : BORDER}`,
       borderRadius: 10,
       padding:      '1.25rem',
       position:     'relative',
@@ -330,7 +330,7 @@ function ExecutionView({ job, onDone }: { job: JobProgress; onDone: () => void }
           return (
             <div key={step.id} style={{
               background:   CARD,
-              border:       `1px solid ${step.status === 'running' ? sc + '50' : BORDER}`,
+              border:       `1px solid ${step.status === 'running' ? alpha(sc, 31) : BORDER}`,
               borderRadius: 10,
               padding:      '1rem 1.25rem',
               transition:   'border-color 0.2s',
@@ -678,34 +678,23 @@ export default function AIPage() {
   }
 
   if (loading) return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: BG }}>
-      <div style={{ fontSize: 14, color: 'var(--text-dimmer)' }}>initializing ai...</div>
-    </div>
+    <Page><p className={styles.empty}>initializing ai...</p></Page>
   )
 
   return (
-    <div style={{ minHeight: '100vh', padding: '2rem 2.5rem', background: BG }}>
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '2rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div>
-            <div style={{ fontSize: 12, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--accent)', marginBottom: 8, ...mono }}>
-              {providerReady
-                ? `${activeInfo?.name ?? 'provider'} · ${activeInfo?.model ?? ''}`
-                : `${activeInfo?.name ?? 'no provider'} not ready — configure it in Settings`}
-            </div>
-            <h1 className="font-display" style={{ fontSize: 36, fontWeight: 700, color: 'var(--text-bright)', lineHeight: 1.1 }}>
-              AI Assistant
-            </h1>
-          </div>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <div style={{ width: 8, height: 8, borderRadius: '50%', background: providerReady ? 'var(--good)' : 'var(--crit)', boxShadow: providerReady ? '0 0 6px var(--good)' : 'none' }} />
-          <span style={{ fontSize: 12, letterSpacing: '0.1em', color: providerReady ? 'var(--good)' : 'var(--crit)', ...mono }}>
-            {providerReady ? 'READY' : 'NOT READY'}
-          </span>
-        </div>
-      </div>
+    <Page>
+      {/* Header: the provider's state as a HUD, in words as well as colour */}
+      <HudHeader level={2} icon="plugin" label="AI assistant status"
+        eyebrow={providerReady
+          ? `${activeInfo?.name ?? 'provider'} · ${activeInfo?.model ?? ''}`
+          : `${activeInfo?.name ?? 'no provider'} not ready — configure it in Settings`}
+        title={providerReady ? 'Ready to plan' : 'Not ready'}
+        chips={[
+          { label: 'Status', value: providerReady ? 'READY' : 'NOT READY', tone: providerReady ? 'good' : 'crit' },
+          { label: 'Provider', value: activeInfo?.name ?? 'none' },
+          { label: 'Model', value: activeInfo?.model || '—' },
+          { label: 'Local model', value: status?.connected ? 'connected' : 'not connected', tone: status?.connected ? 'good' : 'dim' },
+        ]} />
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 4, marginBottom: '1.5rem', borderBottom: `1px solid ${BORDER}` }}>
@@ -731,7 +720,7 @@ export default function AIPage() {
               onDone={() => setLiveJob(null)}
             />
           ) : (
-            <div style={{ maxWidth: 760, margin: '0 auto' }}>
+            <Panel title="Assistant" sub={providerReady ? 'ask or deploy' : 'not ready'}>
               {!providerReady && (
                 <div style={{ background: `${alpha(ACCENT, 6)}`, border: `1px solid ${alpha(ACCENT, 15)}`, borderRadius: 10, padding: '1rem', marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: 12 }}>
                   <span style={{ display: 'flex', color: ACCENT }}><BoltIcon size={20} /></span>
@@ -769,7 +758,7 @@ export default function AIPage() {
                       ]).map(ex => (
                         <button key={ex} onClick={() => setPrompt(ex.replace(/"/g, ''))}
                           style={{ padding: '8px 12px', borderRadius: 6, fontSize: 13, cursor: 'pointer', ...mono, background: 'var(--surface)', color: 'var(--text-soft)', border: `1px solid ${BORDER}`, textAlign: 'left', transition: 'border-color .15s' }}
-                          onMouseEnter={e => (e.currentTarget as HTMLElement).style.borderColor = ACCENT + '40'}
+                          onMouseEnter={e => (e.currentTarget as HTMLElement).style.borderColor = alpha(ACCENT, 25)}
                           onMouseLeave={e => (e.currentTarget as HTMLElement).style.borderColor = BORDER}
                         >{ex}</button>
                       ))}
@@ -777,7 +766,7 @@ export default function AIPage() {
                   </div>
                 )}
                 {messages.map((msg, i) => (
-                  <div key={i} style={{ alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '80%', padding: '10px 14px', borderRadius: 10, fontSize: 15, lineHeight: 1.55, whiteSpace: 'pre-line', background: msg.role === 'user' ? `${alpha(ACCENT, 8)}` : CARD, color: msg.role === 'user' ? ACCENT : 'var(--text-bright)', border: `1px solid ${msg.role === 'user' ? ACCENT + '30' : BORDER}` }}>
+                  <div key={i} style={{ alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '80%', padding: '10px 14px', borderRadius: 10, fontSize: 15, lineHeight: 1.55, whiteSpace: 'pre-line', background: msg.role === 'user' ? `${alpha(ACCENT, 8)}` : CARD, color: msg.role === 'user' ? ACCENT : 'var(--text-bright)', border: `1px solid ${msg.role === 'user' ? alpha(ACCENT, 19) : BORDER}` }}>
                     {msg.clusters?.length ? (
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>{msg.clusters.map(c => <ClusterChip key={c.id} c={c} />)}</div>
                     ) : null}
@@ -875,18 +864,20 @@ export default function AIPage() {
                   {planning ? '...' : '→'}
                 </button>
               </div>
-            </div>
+            </Panel>
           )}
         </>
       )}
       {tab === 'models' && (
         <div>
           {catalog?.hardware && (
-            <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 10, padding: '1.25rem 1.5rem', marginBottom: '2rem', display: 'flex', gap: '2rem' }}>
-              <div><div style={{ fontSize: 10, color: 'var(--text-dim)', ...mono, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>Cluster RAM</div><div style={{ fontSize: 20, fontWeight: 700, color: 'var(--text-bright)', ...mono }}>{catalog.hardware.totalRamGB.toFixed(0)}GB</div></div>
-              <div><div style={{ fontSize: 10, color: 'var(--text-dim)', ...mono, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>GPU VRAM</div><div style={{ fontSize: 20, fontWeight: 700, color: catalog.hardware.maxVramGB > 0 ? ACCENT : 'var(--text-dimmer)', ...mono }}>{catalog.hardware.maxVramGB > 0 ? `${catalog.hardware.maxVramGB.toFixed(0)}GB` : 'none'}</div></div>
-              <div><div style={{ fontSize: 10, color: 'var(--text-dim)', ...mono, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>CPU Cores</div><div style={{ fontSize: 20, fontWeight: 700, color: 'var(--text-bright)', ...mono }}>{catalog.hardware.totalCores}</div></div>
-              <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center' }}><div style={{ fontSize: 14, color: 'var(--text-soft)', maxWidth: 260 }}>Models marked <span style={{ color: ACCENT }}><BoltIcon size={12} /> recommended</span> are best for your hardware.</div></div>
+            <div style={{ marginBottom: '1.5rem' }}>
+              <Tiles label="Cluster hardware" items={[
+                { label: 'Cluster RAM', value: `${catalog.hardware.totalRamGB.toFixed(0)}GB` },
+                { label: 'GPU VRAM', value: catalog.hardware.maxVramGB > 0 ? `${catalog.hardware.maxVramGB.toFixed(0)}GB` : 'none', tone: catalog.hardware.maxVramGB > 0 ? 'violet' : 'dim' },
+                { label: 'CPU Cores', value: catalog.hardware.totalCores },
+              ]} />
+              <p style={{ margin: '10px 0 0', fontSize: 14, color: 'var(--text-soft)' }}>Models marked <span style={{ color: ACCENT }}><BoltIcon size={12} /> recommended</span> are best for your hardware.</p>
             </div>
           )}
           <SectionHeader title="Model Library" subtitle="Download and manage AI models. Recommended models are highlighted for your hardware." />
@@ -913,7 +904,7 @@ export default function AIPage() {
             )
             const result = provResult[p.id]
             return (
-              <div key={p.id} style={{ background: CARD, border: `1px solid ${p.id === activeProv ? ACCENT + '40' : BORDER}`, borderRadius: 10, padding: '1.5rem', marginBottom: '1rem' }}>
+              <div key={p.id} style={{ background: CARD, border: `1px solid ${p.id === activeProv ? alpha(ACCENT, 25) : BORDER}`, borderRadius: 10, padding: '1.5rem', marginBottom: '1rem' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                   <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-bright)' }}>{p.name}</div>
                   <span style={badge(p.configured ? 'var(--good)' : 'var(--text-dimmer)')}>{p.configured ? 'configured' : 'no key'}</span>
@@ -954,7 +945,7 @@ export default function AIPage() {
                 style={{ height: 40, padding: '0 16px', fontSize: 14, fontWeight: 600, cursor: detecting ? 'default' : 'pointer', background: 'transparent', color: 'var(--accent)', border: '1px solid var(--accent)', borderRadius: 6, opacity: detecting ? 0.6 : 1 }}>
                 {detecting ? '⟳ scanning cluster...' : '⟳ auto-detect'}
               </button>
-              {detected.length > 0 && (<div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>{detected.map(d => (<button key={d.url} onClick={() => setOllamaUrl(d.url)} style={{ padding: '6px 10px', borderRadius: 6, fontSize: 11, cursor: 'pointer', textAlign: 'left', ...mono, background: ollamaUrl === d.url ? `${alpha(ACCENT, 8)}` : 'var(--surface-raised)', color: ollamaUrl === d.url ? ACCENT : 'var(--text-muted)', border: `1px solid ${ollamaUrl === d.url ? ACCENT + '30' : BORDER}` }}>✓ {d.name} — {d.url}</button>))}</div>)}
+              {detected.length > 0 && (<div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>{detected.map(d => (<button key={d.url} onClick={() => setOllamaUrl(d.url)} style={{ padding: '6px 10px', borderRadius: 6, fontSize: 11, cursor: 'pointer', textAlign: 'left', ...mono, background: ollamaUrl === d.url ? `${alpha(ACCENT, 8)}` : 'var(--surface-raised)', color: ollamaUrl === d.url ? ACCENT : 'var(--text-muted)', border: `1px solid ${ollamaUrl === d.url ? alpha(ACCENT, 19) : BORDER}` }}>✓ {d.name} — {d.url}</button>))}</div>)}
               {!detecting && detected.length === 0 && (<span style={{ marginLeft: 10, fontSize: 13, color: 'var(--text-dimmer)' }}>or enter manually below</span>)}
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
@@ -984,6 +975,6 @@ export default function AIPage() {
           </div>
         </div>
       )}
-    </div>
+    </Page>
   )
 }
