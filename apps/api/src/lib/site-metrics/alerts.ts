@@ -9,7 +9,9 @@
 //              (at least 20 requests, so one failure on a quiet site is not news)
 //    cert      the certificate has fewer than `certDays` days left
 //    spike     the last hour had `spikeFactor` times the usual hourly requests
-//              (the average of the 7 days before it, and at least 100 requests)
+//              from people (the average of the 7 days before it, and at least
+//              100 requests); bots and scanners never make a spike. When they
+//              burst instead, scannerBurst() says so for the Metrics tab only.
 //  Settings are per site (Metrics tab → Alerts), with the defaults in store.ts.
 // =============================================================================
 
@@ -29,8 +31,10 @@ export interface AlertInputs {
   recent: Agg | null
   /** The last complete hour: for the spike. */
   lastHour: Agg | null
-  /** Average requests per hour over the 7 days before the last hour, or null without enough history. */
+  /** Average requests per hour from people over the 7 days before the last hour, or null without enough history. */
   usualPerHour: number | null
+  /** The same for bots, for the scanner-burst note. */
+  usualBotsPerHour?: number | null
   now: number
 }
 
@@ -49,10 +53,18 @@ export function evaluate(st: SiteState, i: AlertInputs): Partial<Record<AlertKin
   const h = i.lastHour
   const days = certDaysLeft(st.health, i.now)
   if (days !== null && a.certDays > 0 && days < a.certDays) out.cert = days < 0 ? 'The certificate has expired.' : `The certificate expires in ${days} day${days === 1 ? '' : 's'}.`
-  if (h && a.spikeFactor > 0 && i.usualPerHour !== null && h.requests >= MIN_REQUESTS_FOR_SPIKE && h.requests > a.spikeFactor * Math.max(1, i.usualPerHour)) {
-    out.spike = `${h.requests} requests in the last hour, ${Math.round(h.requests / Math.max(1, i.usualPerHour))}× the usual ${Math.round(i.usualPerHour)}.`
+  if (h && a.spikeFactor > 0 && i.usualPerHour !== null && h.human >= MIN_REQUESTS_FOR_SPIKE && h.human > a.spikeFactor * Math.max(1, i.usualPerHour)) {
+    out.spike = `${h.human} requests from people in the last hour, ${Math.round(h.human / Math.max(1, i.usualPerHour))}× the usual ${Math.round(i.usualPerHour)}.`
   }
   return out
+}
+
+/** A burst of bots and scanners in the last hour, by the spike's own setting, or null. Shown, never announced. */
+export function scannerBurst(st: SiteState, i: AlertInputs): string | null {
+  const h = i.lastHour, a = st.alerts, usual = i.usualBotsPerHour ?? null
+  if (!a.enabled || !h || a.spikeFactor <= 0 || usual === null) return null
+  if (h.bots < MIN_REQUESTS_FOR_SPIKE || h.bots <= a.spikeFactor * Math.max(1, usual)) return null
+  return `${h.bots} requests from bots and scanners in the last hour, ${Math.round(h.bots / Math.max(1, usual))}× their usual ${Math.round(usual)}. People's traffic was not part of it, so no alert was sent.`
 }
 
 const TITLES: Record<AlertKind, [string, string]> = {

@@ -43,6 +43,7 @@ function summary(s: DemoSite) {
     visitorsToday: t.visitors, trendPct: y.visitors ? Math.round(((t.visitors - y.visitors) / y.visitors) * 100) : null,
     pageViewsToday: Math.round(t.people * 0.45), spark, errorRatePct: s.err, p95Ms: s.p95, certDays: s.certDays,
     alerts: s.certDays < 14 ? [{ kind: 'cert', since: now - 3 * HOUR, detail: `The certificate expires in ${s.certDays} days.` }] : [],
+    unconfirmedToday: Math.round(t.visitors * 0.3), botsToday: Math.round(t.bots / 6), ownToday: 288, countedBeforeFix: false, scannerBurst: null,
   }
 }
 
@@ -79,8 +80,14 @@ function detail(s: DemoSite, range: string) {
   return {
     summary: summary(s), range: r,
     hud: { visitors: series.reduce((x, p) => x + p.visitors, 0), pageViews: Math.round(people * 0.45), requests, errorRatePct: s.err,
-      p95Ms: s.p95, p50Ms: Math.round(s.p95 / 4), bytes: requests * (s.kind === 'wordpress' ? 48_000 : 61_000), uptimePct: s.kind === 'wordpress' ? 99.8 : 100, hasRequestTime: true },
+      p95Ms: s.p95, p50Ms: Math.round(s.p95 / 4), bytes: requests * (s.kind === 'wordpress' ? 48_000 : 61_000), uptimePct: s.kind === 'wordpress' ? 99.8 : 100, hasRequestTime: true,
+      unconfirmed: Math.round(series.reduce((x, p) => x + p.visitors, 0) * 0.3), botVisitors: Math.round(bots / 6), unconfirmedPageViews: Math.round(people * 0.1), own: 288, beforeFix: 0 },
     series, status: { s2xx: requests - s5 - s4 - s3, s3xx: s3, s4xx: s4, s5xx: s5 },
+    // Invented probes, all refused: what any public address gets.
+    security: { total: Math.round(bots * 0.2) + 6, exposedCount: 0, exposed: [], catchAllCount: 0, catchAll: [], kinds: [
+      { kind: 'secrets', requests: Math.round(bots * 0.12) + 4, refused: Math.round(bots * 0.12) + 4, answered: 0, moved: 0, errors: 0 },
+      { kind: s.kind === 'wordpress' ? 'php' : 'admin', requests: Math.round(bots * 0.08) + 2, refused: Math.round(bots * 0.08) + 2, answered: 0, moved: 0, errors: 0 },
+    ] },
     devices: s.kind === 'wordpress' ? [{ key: 'mobile', value: 52, pct: 52 }, { key: 'desktop', value: 44, pct: 44 }, { key: 'tablet', value: 4, pct: 4 }]
       : [{ key: 'desktop', value: 61, pct: 61 }, { key: 'mobile', value: 35, pct: 35 }, { key: 'tablet', value: 4, pct: 4 }],
     browsers: [['Chrome', 52], ['Firefox', 21], ['Safari', 19], ['Edge', 8]].map(([key, pct]) => ({ key, value: pct, pct })),

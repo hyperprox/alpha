@@ -6,7 +6,8 @@
 //       by hour, hash visitors with the day's salt, and move the cursor only
 //       once the counts are saved;
 //    2. check the public address and, every six hours, its certificate;
-//    3. compare with the alert settings and announce what changed;
+//    3. compare with the alert settings and announce what changed (a burst of
+//       bots is noted on the Metrics tab, never announced);
 //    4. for a WordPress site, refresh the WP-CLI read once an hour.
 //  The log pull and WP-CLI need the node logins in the vault, so they wait
 //  while HyperProx is locked; the public check does not.
@@ -19,12 +20,13 @@ import { isUnlocked } from '../vault/state'
 import { publish as busPublish } from '../notify'
 import type { NotifyEventInput } from '../notify/types'
 import { listSites, type SiteRecord } from '../sites'
-import { aggregateLines, bump, dayKey, emptyAgg, hourStart, sumAggs, type Agg } from './aggregate'
+import { aggregateLines, dayKey, emptyAgg, hourStart, mergeAgg, sumAggs, RULES, type Agg, type HourBatch } from './aggregate'
+import { mergeVisit, settle, type VisitorHour } from './people'
 import { parseLogLine, splitLines, type LogLine } from './log-parser'
 import { parseReadOutput, readLogScript, READ_CHUNK } from './read-script'
 import { makeSalt, saltDayAllowed, visitorHash } from './visitors'
 import { checkSite, realHealthDeps, publicHost, type HealthDeps } from './health'
-import { announce, evaluate } from './alerts'
+import { announce, evaluate, scannerBurst } from './alerts'
 import { parseWordPressOutput, wordpressScript, WP_CACHE_MS } from './wordpress'
 import { metricsStore, DEFAULT_ALERTS, emptyHealth, type MetricsStore, type SiteKind, type SiteState } from './store'
 import { DEFAULT_ACCESS_LOG, DEFAULT_ERROR_LOG, DEFAULT_WP_PATH } from './paths'
@@ -59,7 +61,7 @@ export function defaultState(site: SiteRecord): SiteState {
   return {
     siteId: site.id, logPath: DEFAULT_ACCESS_LOG, errorLog: DEFAULT_ERROR_LOG, wpPath: kind === 'wordpress' ? DEFAULT_WP_PATH : null,
     kind, adopted: isAdopted(site), enabled: true, inode: '', offset: 0, format: null, lastReadAt: null, lastError: null,
-    gaps: 0, malformed: 0, health: emptyHealth(), alerts: { ...DEFAULT_ALERTS }, alertState: {}, wordpress: null,
+    gaps: 0, malformed: 0, health: emptyHealth(), alerts: { ...DEFAULT_ALERTS }, alertState: {}, scannerBurst: null, homeSizes: [], wordpress: null,
   }
 }
 
@@ -98,18 +100,61 @@ export async function countLines(site: SiteRecord, st: SiteState, raw: string[],
   }
   const host = publicHost(site)
   const res = aggregateLines(parsed, {
-    ownHosts: host ? [host] : [], kind: st.kind,
+    ownHosts: host ? [host] : [], kind: st.kind, homeSizes: st.homeSizes,
     visitorHash: (day, client, ua) => { const s = salts.get(day); return s ? visitorHash(s, site.id, client, ua) : null },
   })
-  for (const [h, hb] of res.hours) {
-    const hour = new Date(h)
-    const fresh = new Set(await d.store.addVisitors(site.id, hour, [...hb.visitors.keys()]))
-    for (const [hash, c] of hb.visitors) if (fresh.has(hash)) { bump(hb.agg.browsers, c.browser); bump(hb.agg.os, c.os); bump(hb.agg.devices, c.device) }
-    await d.store.merge(site.id, hour, hb.agg)
-    await d.store.recountVisitors(site.id, hour)
+  st.homeSizes = res.homeSizes
+  const byDay = new Map<string, number[]>()
+  for (const h of res.hours.keys()) { const k = dayKey(new Date(h)); byDay.set(k, [...(byDay.get(k) ?? []), h]) }
+  for (const [day, hours] of byDay) {
+    // A day whose salt is gone has no visitor rows to meet: count it from this batch alone.
+    if (!salts.get(day)) { for (const h of hours) await d.store.merge(site.id, new Date(h), res.hours.get(h)!.agg); continue }
+    await countDay(site.id, day, hours, res.hours, d.store)
   }
   const fmt = Object.entries(res.formats).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
   return { counted: parsed.length, malformed, format: fmt }
+}
+
+/**
+ * One day's part of a batch, against the visitor rows kept for that day: each visitor's hours are merged and
+ * settled again (a page view in an earlier read meets its images in this one; a scanner's path in this read makes
+ * it a bot for the whole hour), the rows that changed are saved, and every hour touched is recounted.
+ */
+async function countDay(siteId: string, day: string, hours: number[], batch: Map<number, HourBatch>, store: MetricsStore): Promise<void> {
+  const from = new Date(`${day}T00:00:00Z`), to = new Date(from.getTime() + 86_400_000)
+  const hashes = [...new Set(hours.flatMap(h => [...batch.get(h)!.hashed]))]
+  const ledger = new Map<string, Map<number, VisitorHour>>()
+  for (const r of await store.visitorRows(siteId, from, to, hashes)) {
+    if (!r.data) continue   // kept from before the browser check: not used
+    let m = ledger.get(r.hash)
+    if (!m) { m = new Map(); ledger.set(r.hash, m) }
+    m.set(r.hour.getTime(), r.data)
+  }
+  const touched = new Map<string, Set<number>>()
+  for (const h of hours) {
+    for (const [hash, v] of batch.get(h)!.visits) {
+      if (!batch.get(h)!.hashed.has(hash)) continue
+      let m = ledger.get(hash)
+      if (!m) { m = new Map(); ledger.set(hash, m) }
+      m.set(h, mergeVisit(m.get(h) ?? null, v))
+      touched.set(hash, (touched.get(hash) ?? new Set()).add(h))
+    }
+  }
+  const lists = new Map<number, Agg>()
+  const recount = new Set<number>(hours)
+  const save: Array<{ hour: Date; hash: string; data: VisitorHour }> = []
+  for (const [hash, t] of touched) {
+    const m = ledger.get(hash)!
+    const s = settle(m)
+    for (const [h, l] of s.lists) lists.set(h, mergeAgg(lists.get(h) ?? emptyAgg(), { ...emptyAgg(), ...l }))
+    for (const h of new Set([...t, ...s.changed])) { save.push({ hour: new Date(h), hash, data: m.get(h)! }); recount.add(h) }
+  }
+  for (const h of new Set([...hours, ...lists.keys()])) {
+    const add = mergeAgg(hours.includes(h) ? batch.get(h)!.base : emptyAgg(), lists.get(h) ?? emptyAgg())
+    await store.merge(siteId, new Date(h), add)
+  }
+  await store.putVisitorRows(siteId, save)
+  for (const h of recount) await store.recountVisitors(siteId, new Date(h))
 }
 
 /** Pull and count new log lines. Moves the cursor in `st`; throws when the read itself failed. */
@@ -163,18 +208,23 @@ export async function refreshWordPress(site: SiteRecord, st: SiteState, d: Pick<
   if (r.code !== 0 && !st.wordpress.problem) st.wordpress.problem = `The check exited ${r.code}.`
 }
 
-/** The rows the alerts look at: the hour in progress, the last complete hour, and the usual hour before it. */
+/**
+ * The rows the alerts look at: the hour in progress, the last complete hour, and the usual hour before it. The
+ * usual hour is people's requests (and, apart, bots'), from hours counted with the browser check only: older
+ * hours counted scanners as people, and a scanner's burst must not look like visitors arriving.
+ */
 export async function alertInputs(store: MetricsStore, siteId: string, now: Date) {
   const cur = hourStart(now).getTime()
   const rows = await store.hours(siteId, new Date(cur - 8 * 24 * HOUR), new Date(cur + HOUR))
   const at = (t: number) => rows.find(r => r.at.getTime() === t)?.agg ?? null
   const current = at(cur), last = at(cur - HOUR)
-  const before = rows.filter(r => r.at.getTime() < cur - HOUR && r.at.getTime() >= cur - 8 * 24 * HOUR)
+  const before = rows.filter(r => r.at.getTime() < cur - HOUR && r.at.getTime() >= cur - 8 * 24 * HOUR && (r.agg.rules ?? 1) >= RULES)
   // At least a day of history, or there is no "usual" to compare with.
   const span = before.length ? (cur - HOUR - before[0].at.getTime()) / HOUR : 0
-  const usual = span >= 24 ? before.reduce((s, r) => s + r.agg.requests, 0) / span : null
+  const usual = span >= 24 ? before.reduce((s, r) => s + r.agg.human, 0) / span : null
+  const usualBots = span >= 24 ? before.reduce((s, r) => s + r.agg.bots, 0) / span : null
   const recent = current && current.requests >= 20 ? current : last
-  return { recent, lastHour: last, usualPerHour: usual, now: now.getTime() }
+  return { recent, lastHour: last, usualPerHour: usual, usualBotsPerHour: usualBots, now: now.getTime() }
 }
 
 /** Everything for one site, once. Errors are recorded on the site, never thrown. */
@@ -192,7 +242,11 @@ export async function collectSite(site: SiteRecord, d: CollectorDeps): Promise<S
   const add: Agg = { ...emptyAgg(), checks: 1, checksOk: h.ok ? 1 : 0, latencyMs: h.latencyMs }
   await d.store.merge(site.id, hourStart(d.now()), add)
   const now = d.now()
-  st.alertState = await announce(site, st, evaluate(st, await alertInputs(d.store, site.id, now)), e => d.publish(e), now.getTime())
+  const inputs = await alertInputs(d.store, site.id, now)
+  st.alertState = await announce(site, st, evaluate(st, inputs), e => d.publish(e), now.getTime())
+  // Shown on the Metrics tab, never sent: bots arriving in a burst is what a public site is for them.
+  const burst = scannerBurst(st, inputs)
+  st.scannerBurst = burst ? { since: st.scannerBurst?.since ?? now.getTime(), detail: burst } : null
   await d.store.putState(st)
   return st
 }

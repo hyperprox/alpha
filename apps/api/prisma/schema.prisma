@@ -561,6 +561,16 @@ model SiteMetricHour {
   browsers     Json     @default("{}")
   os           Json     @default("{}")
   devices      Json     @default("{}")
+  // Counted with the browser check (2) or before it (1): see apps/api/src/lib/site-metrics/people.ts.
+  rules                Int  @default(1)
+  unconfirmedReq       Int  @default(0)
+  unconfirmedPageViews Int  @default(0)
+  unconfirmed          Int  @default(0)
+  botVisitors          Int  @default(0)
+  own                  Int  @default(0)   // HyperProx's own requests
+  probes               Json @default("{}")
+  exposed              Json @default("{}")
+  catchAll             Json @default("{}")
   checks       Int      @default(0)
   checksOk     Int      @default(0)
   latencyMs    Int      @default(0)
@@ -591,6 +601,16 @@ model SiteMetricDay {
   browsers     Json     @default("{}")
   os           Json     @default("{}")
   devices      Json     @default("{}")
+  // Counted with the browser check (2) or before it (1): see apps/api/src/lib/site-metrics/people.ts.
+  rules                Int  @default(1)
+  unconfirmedReq       Int  @default(0)
+  unconfirmedPageViews Int  @default(0)
+  unconfirmed          Int  @default(0)
+  botVisitors          Int  @default(0)
+  own                  Int  @default(0)   // HyperProx's own requests
+  probes               Json @default("{}")
+  exposed              Json @default("{}")
+  catchAll             Json @default("{}")
   checks       Int      @default(0)
   checksOk     Int      @default(0)
   latencyMs    Int      @default(0)
@@ -599,11 +619,12 @@ model SiteMetricDay {
   @@index([day])
 }
 
-// A salted hash per visitor per hour, for today and yesterday only.
+// A salted hash per visitor per hour, with that hour's counts, for today and yesterday only.
 model SiteVisitor {
   siteId String
   hour   DateTime
   hash   String
+  data   Json     @default("{}")   // that visitor's hour: counts and times, never an address (people.ts)
 
   @@id([siteId, hour, hash])
   @@index([hour])

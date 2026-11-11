@@ -5,11 +5,13 @@
 //  SiteMetricSalt, SiteMetricState), memory in tests. Retention:
 //    hourly rows   30 days
 //    daily rows    13 months (400 days)
-//    visitor hashes and day salts   2 days (today and yesterday), then deleted
+//    visitor hashes, with each one's hour of counts (people.ts),
+//    and day salts                    2 days (today and yesterday), then deleted
 // =============================================================================
 
 import type { PrismaClient } from '@prisma/client'
-import { emptyAgg, mergeAgg, TOP_DAY, TOP_HOUR, type Agg } from './aggregate'
+import { emptyAgg, mergeAgg, withDerived, TOP_DAY, TOP_HOUR, type Agg } from './aggregate'
+import { asVisit, deriveDayVisitors, deriveHour, DERIVED_KEYS, type VisitorHour } from './people'
 import type { WpInfo } from './wordpress'
 import { SALT_KEEP_DAYS } from './visitors'
 
@@ -64,6 +66,10 @@ export interface SiteState {
   health: HealthState
   alerts: AlertConfig
   alertState: Record<string, { since: number; detail: string }>
+  /** Bots and scanners bursting in the last hour: shown on the Metrics tab, never announced. */
+  scannerBurst: { since: number; detail: string } | null
+  /** Sizes the home page was sent with lately: a scanner's path answered with the same is a catch-all, not a leak. */
+  homeSizes: number[]
   wordpress: WpInfo | null
 }
 
@@ -73,9 +79,11 @@ export interface MetricsStore {
   listStates(): Promise<SiteState[]>
   /** Add to an hour and its day. */
   merge(siteId: string, hour: Date, agg: Agg): Promise<void>
-  /** Record visitor hashes for an hour; returns the ones not seen in that hour before. */
-  addVisitors(siteId: string, hour: Date, hashes: string[]): Promise<string[]>
-  /** Recount distinct visitors for an hour and its day from the hashes still held. */
+  /** Visitor rows kept for hours in [from, to), only for `hashes` when given. A row from before the browser check has data null. */
+  visitorRows(siteId: string, from: Date, to: Date, hashes?: string[]): Promise<Array<{ hour: Date; hash: string; data: VisitorHour | null }>>
+  /** Write visitor rows (insert or replace). */
+  putVisitorRows(siteId: string, rows: Array<{ hour: Date; hash: string; data: VisitorHour }>): Promise<void>
+  /** Recount an hour's people, unconfirmed visitors and bots from its visitor rows, then its day's. */
   recountVisitors(siteId: string, hour: Date): Promise<void>
   hours(siteId: string, from: Date, to: Date): Promise<Array<{ at: Date; agg: Agg }>>
   days(siteId: string, from: Date, to: Date): Promise<Array<{ at: Date; agg: Agg }>>
@@ -94,7 +102,7 @@ export class MemoryMetricsStore implements MetricsStore {
   states = new Map<string, SiteState>()
   hourRows = new Map<string, Agg>()
   dayRows = new Map<string, Agg>()
-  visitorRows = new Map<string, Set<string>>()   // site|hourMs -> hashes
+  visitorMap = new Map<string, Map<string, VisitorHour | null>>()   // site|hourMs -> hash -> data
   salts = new Map<string, string>()
   private k = (s: string, d: Date) => `${s}|${d.getTime()}`
 
@@ -106,26 +114,37 @@ export class MemoryMetricsStore implements MetricsStore {
     this.hourRows.set(hk, mergeAgg(this.hourRows.get(hk) ?? emptyAgg(), agg, TOP_HOUR))
     this.dayRows.set(dk, mergeAgg(this.dayRows.get(dk) ?? emptyAgg(), agg, TOP_DAY))
   }
-  async addVisitors(siteId: string, hour: Date, hashes: string[]) {
-    const k = this.k(siteId, hour)
-    const set = this.visitorRows.get(k) ?? new Set<string>()
-    const fresh = hashes.filter(h => !set.has(h))
-    for (const h of fresh) set.add(h)
-    this.visitorRows.set(k, set)
-    return fresh
+  async visitorRows(siteId: string, from: Date, to: Date, hashes?: string[]) {
+    const want = hashes ? new Set(hashes) : null
+    const out: Array<{ hour: Date; hash: string; data: VisitorHour | null }> = []
+    for (const [k, m] of this.visitorMap) {
+      const [s, t] = k.split('|')
+      if (s !== siteId || Number(t) < from.getTime() || Number(t) >= to.getTime()) continue
+      for (const [hash, data] of m) if (!want || want.has(hash)) out.push({ hour: new Date(Number(t)), hash, data: data ? structuredClone(data) : null })
+    }
+    return out
+  }
+  async putVisitorRows(siteId: string, rows: Array<{ hour: Date; hash: string; data: VisitorHour }>) {
+    for (const r of rows) {
+      const k = this.k(siteId, r.hour)
+      const m = this.visitorMap.get(k) ?? new Map<string, VisitorHour | null>()
+      m.set(r.hash, structuredClone(r.data))
+      this.visitorMap.set(k, m)
+    }
   }
   async recountVisitors(siteId: string, hour: Date) {
     const hk = this.k(siteId, hour)
     const h = this.hourRows.get(hk)
-    if (h) h.visitors = this.visitorRows.get(hk)?.size ?? h.visitors
-    const day = dayOf(hour).getTime()
-    const all = new Set<string>()
-    for (const [k, v] of this.visitorRows) {
-      const [s, t] = k.split('|')
-      if (s === siteId && Number(t) >= day && Number(t) < day + DAY) for (const x of v) all.add(x)
-    }
-    const d = this.dayRows.get(this.k(siteId, new Date(day)))
-    if (d) d.visitors = Math.max(d.visitors, all.size)
+    const rows = [...(this.visitorMap.get(hk)?.values() ?? [])].filter((r): r is VisitorHour => Boolean(r))
+    if (h) this.hourRows.set(hk, withDerived(h, deriveHour(rows)))
+    const day = dayOf(hour)
+    const d = this.dayRows.get(this.k(siteId, day))
+    if (!d) return
+    const sums: Record<string, number> = {}
+    for (const r of await this.hours(siteId, day, new Date(day.getTime() + DAY))) for (const k of DERIVED_KEYS) sums[k] = (sums[k] ?? 0) + r.agg[k]
+    const byHash = new Map<string, VisitorHour[]>()
+    for (const r of await this.visitorRows(siteId, day, new Date(day.getTime() + DAY))) if (r.data) byHash.set(r.hash, [...(byHash.get(r.hash) ?? []), r.data])
+    this.dayRows.set(this.k(siteId, day), withDerived(d, { ...sums, ...deriveDayVisitors(byHash.values()) }))
   }
   private range(rows: Map<string, Agg>, siteId: string, from: Date, to: Date) {
     const out: Array<{ at: Date; agg: Agg }> = []
@@ -150,24 +169,27 @@ export class MemoryMetricsStore implements MetricsStore {
     const vCut = dayOf(now).getTime() - (SALT_KEEP_DAYS - 1) * DAY
     for (const k of [...this.hourRows.keys()]) if (Number(k.split('|')[1]) < hCut) { this.hourRows.delete(k); r.hours++ }
     for (const k of [...this.dayRows.keys()]) if (Number(k.split('|')[1]) < dCut) { this.dayRows.delete(k); r.days++ }
-    for (const k of [...this.visitorRows.keys()]) if (Number(k.split('|')[1]) < vCut) { r.visitors += this.visitorRows.get(k)!.size; this.visitorRows.delete(k) }
+    for (const k of [...this.visitorMap.keys()]) if (Number(k.split('|')[1]) < vCut) { r.visitors += this.visitorMap.get(k)!.size; this.visitorMap.delete(k) }
     for (const k of [...this.salts.keys()]) if (Date.parse(`${k}T00:00:00Z`) < vCut) { this.salts.delete(k); r.salts++ }
     return r
   }
   async deleteSite(siteId: string) {
     this.states.delete(siteId)
-    for (const m of [this.hourRows, this.dayRows, this.visitorRows] as Array<Map<string, unknown>>) for (const k of [...m.keys()]) if (k.startsWith(`${siteId}|`)) m.delete(k)
+    for (const m of [this.hourRows, this.dayRows, this.visitorMap] as Array<Map<string, unknown>>) for (const k of [...m.keys()]) if (k.startsWith(`${siteId}|`)) m.delete(k)
   }
 }
 
 // ── Postgres ───────────────────────────────────────────────────────────────
 
-const COUNTERS = ['requests', 'human', 'bots', 'pageViews', 'botPageViews', 'visitors', 's2xx', 's3xx', 's4xx', 's5xx', 'timed', 'checks', 'checksOk', 'latencyMs'] as const
-const MAPS = ['pages', 'referrers', 'notFound', 'browsers', 'os', 'devices'] as const
+const COUNTERS = ['requests', 'human', 'unconfirmedReq', 'bots', 'pageViews', 'unconfirmedPageViews', 'botPageViews', 'visitors', 'unconfirmed',
+  'botVisitors', 'own', 's2xx', 's3xx', 's4xx', 's5xx', 'timed', 'checks', 'checksOk', 'latencyMs'] as const
+const MAPS = ['pages', 'referrers', 'notFound', 'browsers', 'os', 'devices', 'probes', 'exposed', 'catchAll'] as const
 
 function rowToAgg(r: any): Agg {
   const a = emptyAgg()
   for (const k of COUNTERS) a[k] = Number(r[k] ?? 0)
+  // A row written before the column existed is 1: counted under the old rules.
+  a.rules = Number(r.rules ?? 1)
   a.bytes = Number(r.bytes ?? 0)
   a.rtHist = Array.isArray(r.rtHist) && r.rtHist.length === a.rtHist.length ? r.rtHist.map(Number) : a.rtHist
   for (const k of MAPS) a[k] = r[k] && typeof r[k] === 'object' ? r[k] : {}
@@ -176,6 +198,7 @@ function rowToAgg(r: any): Agg {
 function aggToRow(a: Agg): Record<string, unknown> {
   const r: Record<string, unknown> = {}
   for (const k of COUNTERS) r[k] = Math.round(a[k])
+  r.rules = a.rules
   r.bytes = BigInt(Math.round(a.bytes))
   r.rtHist = a.rtHist
   for (const k of MAPS) r[k] = a[k]
@@ -190,7 +213,7 @@ function stateFromRow(r: any): SiteState {
     errorLog: d.errorLog ?? '/var/log/nginx/error.log', wpPath: d.wpPath ?? null, format: d.format ?? null,
     lastReadAt: d.lastReadAt ?? null, lastError: d.lastError ?? null, gaps: d.gaps ?? 0, malformed: d.malformed ?? 0,
     health: { ...emptyHealthFallback(), ...(d.health ?? {}) }, alerts: { ...DEFAULT_ALERTS, ...(d.alerts ?? {}) },
-    alertState: d.alertState ?? {}, wordpress: d.wordpress ?? null,
+    alertState: d.alertState ?? {}, scannerBurst: d.scannerBurst ?? null, homeSizes: Array.isArray(d.homeSizes) ? d.homeSizes : [], wordpress: d.wordpress ?? null,
   }
 }
 const emptyHealthFallback = emptyHealth
@@ -220,21 +243,49 @@ export class PrismaMetricsStore implements MetricsStore {
       await tx.siteMetricDay.upsert({ where: { siteId_day: { siteId, day } }, create: { siteId, day, ...nd }, update: nd })
     })
   }
-  async addVisitors(siteId: string, hour: Date, hashes: string[]) {
-    if (!hashes.length) return []
-    const have = new Set<string>((await this.p.siteVisitor.findMany({ where: { siteId, hour, hash: { in: hashes } }, select: { hash: true } })).map((r: any) => r.hash))
-    const fresh = hashes.filter(h => !have.has(h))
-    if (fresh.length) await this.p.siteVisitor.createMany({ data: fresh.map(hash => ({ siteId, hour, hash })), skipDuplicates: true })
-    return fresh
+  async visitorRows(siteId: string, from: Date, to: Date, hashes?: string[]) {
+    const out: Array<{ hour: Date; hash: string; data: VisitorHour | null }> = []
+    const chunks = hashes ? Array.from({ length: Math.ceil(hashes.length / 1000) }, (_, i) => hashes.slice(i * 1000, i * 1000 + 1000)) : [null]
+    for (const c of chunks) {
+      if (c && !c.length) continue
+      const rows = await this.p.siteVisitor.findMany({ where: { siteId, hour: { gte: from, lt: to }, ...(c ? { hash: { in: c } } : {}) }, select: { hour: true, hash: true, data: true } })
+      for (const r of rows) out.push({ hour: r.hour as Date, hash: r.hash as string, data: asVisit(r.data) })
+    }
+    return out
+  }
+  async putVisitorRows(siteId: string, rows: Array<{ hour: Date; hash: string; data: VisitorHour }>) {
+    for (let i = 0; i < rows.length; i += 200) {
+      await this.db.$transaction(rows.slice(i, i + 200).map(r => this.p.siteVisitor.upsert({
+        where: { siteId_hour_hash: { siteId, hour: r.hour, hash: r.hash } },
+        create: { siteId, hour: r.hour, hash: r.hash, data: r.data as any }, update: { data: r.data as any },
+      })))
+    }
   }
   async recountVisitors(siteId: string, hour: Date) {
-    const n = await this.p.siteVisitor.count({ where: { siteId, hour } })
-    await this.p.siteMetricHour.updateMany({ where: { siteId, hour }, data: { visitors: n } })
-    const day = dayOf(hour)
-    const rows: Array<{ n: bigint }> = await this.db.$queryRaw`SELECT COUNT(DISTINCT "hash") AS n FROM "SiteVisitor" WHERE "siteId" = ${siteId} AND "hour" >= ${day} AND "hour" < ${new Date(day.getTime() + DAY)}`
-    const dn = Number(rows[0]?.n ?? 0)
-    // Never lower a day's count: once yesterday's hashes are deleted it must keep what it had.
-    await this.p.siteMetricDay.updateMany({ where: { siteId, day, visitors: { lt: dn } }, data: { visitors: dn } })
+    const rows = await this.p.siteVisitor.findMany({ where: { siteId, hour }, select: { data: true } })
+    const d = deriveHour(rows.map((r: any) => asVisit(r.data)).filter((r: VisitorHour | null): r is VisitorHour => Boolean(r)))
+    await this.p.siteMetricHour.updateMany({ where: { siteId, hour }, data: d })
+    const day = dayOf(hour), next = new Date(day.getTime() + DAY)
+    const sums: Array<Record<string, bigint | number | null>> = await this.db.$queryRaw`
+      SELECT SUM("human") AS "human", SUM("unconfirmedReq") AS "unconfirmedReq", SUM("bots") AS "bots", SUM("pageViews") AS "pageViews",
+             SUM("unconfirmedPageViews") AS "unconfirmedPageViews", SUM("botPageViews") AS "botPageViews"
+      FROM "SiteMetricHour" WHERE "siteId" = ${siteId} AND "hour" >= ${day} AND "hour" < ${next}`
+    // Distinct over the day: a person in any hour is a person; else unconfirmed if they opened a page; else a bot.
+    const distinct: Array<Record<string, bigint | number | null>> = await this.db.$queryRaw`
+      SELECT COUNT(*) FILTER (WHERE p) AS "visitors", COUNT(*) FILTER (WHERE NOT p AND u) AS "unconfirmed",
+             COUNT(*) FILTER (WHERE NOT p AND NOT u AND b) AS "botVisitors"
+      FROM (SELECT "hash",
+              bool_or(COALESCE(("data"->>'person')::boolean, false)) AS p,
+              bool_or(NOT COALESCE(("data"->>'bot')::boolean, false) AND COALESCE(("data"->>'pv')::int, 0) + COALESCE(("data"->>'rv')::int, 0) > 0) AS u,
+              bool_or(COALESCE(("data"->>'bot')::boolean, false)) AS b
+            FROM "SiteVisitor" WHERE "siteId" = ${siteId} AND "hour" >= ${day} AND "hour" < ${next} AND ("data"->>'v') IS NOT NULL
+            GROUP BY "hash") t`
+    const num = (v: unknown) => Number(v ?? 0)
+    const s = sums[0] ?? {}, x = distinct[0] ?? {}
+    const data: Record<string, number> = {}
+    for (const k of ['human', 'unconfirmedReq', 'bots', 'pageViews', 'unconfirmedPageViews', 'botPageViews']) data[k] = num(s[k])
+    for (const k of ['visitors', 'unconfirmed', 'botVisitors']) data[k] = num(x[k])
+    await this.p.siteMetricDay.updateMany({ where: { siteId, day }, data })
   }
   async hours(siteId: string, from: Date, to: Date) {
     return (await this.p.siteMetricHour.findMany({ where: { siteId, hour: { gte: from, lt: to } }, orderBy: { hour: 'asc' } }))

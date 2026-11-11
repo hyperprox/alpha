@@ -11,14 +11,18 @@ import { join } from 'node:path'
 import Fastify from 'fastify'
 
 import { parseLogLine, parseNginxTime, clientAddress, isPrivateAddress, splitLines } from '../src/lib/site-metrics/log-parser'
-import { classifyUa, isBotUa, isProbePath } from '../src/lib/site-metrics/user-agent'
-import { aggregateLines, emptyAgg, mergeAgg, percentileMs, referrerHost, isPageView, trimTop, RT_BOUNDS } from '../src/lib/site-metrics/aggregate'
+import { classifyUa, isBotUa, isOwnUa, isProbePath, isSpoofedUa, probeKind } from '../src/lib/site-metrics/user-agent'
+import { aggregateLines, emptyAgg, mergeAgg, percentileMs, referrerHost, isPageView, isAssetLoad, isRevisit, trimTop, RT_BOUNDS, RULES } from '../src/lib/site-metrics/aggregate'
+import { behavesLikeBrowser, newVisit } from '../src/lib/site-metrics/people'
+import { ownUserAgent } from '../src/lib/own-user-agent'
+import { realHealthDeps } from '../src/lib/site-metrics/health'
+import { createServer } from 'node:http'
 import { visitorHash, saltDayAllowed, makeSalt } from '../src/lib/site-metrics/visitors'
 import { safeLogPath, safeWordPressPath, safeNginxConfPath, shq } from '../src/lib/site-metrics/paths'
 import { readLogScript, parseReadOutput } from '../src/lib/site-metrics/read-script'
 import { MemoryMetricsStore, DEFAULT_ALERTS, emptyHealth } from '../src/lib/site-metrics/store'
-import { collectSite, defaultState, kindOf, pullLog, type CollectorDeps } from '../src/lib/site-metrics/collector'
-import { evaluate, announce } from '../src/lib/site-metrics/alerts'
+import { alertInputs, collectSite, countLines, defaultState, kindOf, pullLog, type CollectorDeps } from '../src/lib/site-metrics/collector'
+import { evaluate, announce, scannerBurst } from '../src/lib/site-metrics/alerts'
 import { inspectScript, parseInspect, planLogFormat, applyScript, parseApply, FORMAT_NAME, INCLUDE_FILE } from '../src/lib/site-metrics/log-format'
 import { parseWordPressOutput, sanitizeErrorLine, wordpressScript } from '../src/lib/site-metrics/wordpress'
 import { summary, detail, exposition } from '../src/lib/site-metrics/view'
@@ -100,42 +104,86 @@ test('bots: known names, libraries, empty and too-short User-Agents, and scanner
   for (const p of ['/', '/about', '/.well-known/acme-challenge/x', '/img/a.png']) assert.ok(!isProbePath(p), p)
 })
 
+test('bots: security crawlers, HTTP clients and the fake User-Agents scanners copy; Chrome on Android is not one', () => {
+  for (const ua of ['AgentTrustBot/1.0 (id=000000000000; +https://agenttru.st/crawler)', 'AgentDataBot/1.0 (+https://agentdata.run/bot)',
+    'node', 'node-fetch/1.0', 'Go-http-client/2.0', 'python-requests/2.32.3', 'curl/8.14.1', 'Mozilla/5.0 (compatible; Databot)',
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1',
+    'Mozilla/5.0 (iPad; CPU OS 9_1 like Mac OS X) AppleWebKit/601.1.46 (KHTML, like Gecko) Version/9.0 Mobile/13B143 Safari/601.1',
+    'Mozilla/5.062334851 Mozilla/5.0 (Windows NT 6.3; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/68.0.3440.106 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 11.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/33.0.1750.152 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'http://example.com/wp-admin/install.php?step=1']) assert.ok(isBotUa(ua), ua)
+  const ANDROID_REDUCED = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Mobile Safari/537.36'
+  assert.ok(!isBotUa(ANDROID_REDUCED) && !isSpoofedUa(ANDROID_REDUCED), 'every current Chrome on Android says "Android 10; K"')
+  assert.ok(!isSpoofedUa(CHROME) && !isSpoofedUa(IPHONE))
+  // HyperProx's own, and only when it starts the User-Agent.
+  assert.ok(isOwnUa('HyperProx-catalogue-detect') && isOwnUa(ownUserAgent('site-check')) && isOwnUa('HyperProx'))
+  assert.ok(!isOwnUa(`${CHROME} HyperProx`) && !isOwnUa('HyperProxy/1.0'))
+})
+
+test('probes: kinds, and the guesses that depend on what the site is', () => {
+  assert.equal(probeKind('/.env', 'static'), 'secrets'); assert.equal(probeKind('/.git/config'), 'secrets'); assert.equal(probeKind('/.vscode/sftp.json'), 'secrets')
+  assert.equal(probeKind('/backup.sql'), 'secrets'); assert.equal(probeKind('/@vite/env'), 'secrets')
+  assert.equal(probeKind('/info.php', 'wordpress'), 'php'); assert.equal(probeKind('/vendor/phpunit/src/x.php'), 'php')
+  assert.equal(probeKind('/phpmyadmin/'), 'admin'); assert.equal(probeKind('/actuator/env'), 'admin'); assert.equal(probeKind('/cgi-bin/luci'), 'admin')
+  assert.equal(probeKind('/___proxy_subdomain_whm/login'), 'admin'); assert.equal(probeKind('/trace.axd'), 'other')
+  // On a static site: WordPress, PHP, an API and an admin page are probes; elsewhere they may be the site.
+  assert.equal(probeKind('/wp-admin/', 'static', 404), 'admin'); assert.equal(probeKind('/wp-login.php', 'wordpress', 200), null)
+  assert.equal(probeKind('/index.php', 'static', 200), 'php', 'a static site has no PHP, whatever a catch-all answered')
+  assert.equal(probeKind('/api/session', 'static', 404), 'api'); assert.equal(probeKind('/api/session', 'static', 200), null, 'it has an /api/ after all')
+  assert.equal(probeKind('/api/session', 'other', 404), null); assert.equal(probeKind('/admin/', 'static', 404), 'admin')
+  assert.equal(probeKind('/config.json', 'static', 404), 'secrets'); assert.equal(probeKind('/config.json', 'static', 200), null, 'an app\'s own settings file')
+  for (const p of ['/', '/about', '/img/a.png', '/.well-known/acme-challenge/x', '/.well-known/agent.json', '/docs/v2/install']) assert.equal(probeKind(p, 'static', 404), null, p)
+  assert.equal(probeKind('/.well-known/security.txt'), 'other')
+  assert.ok(isAssetLoad({ method: 'GET', status: 304, path: '/app.css' }), 'a 304 is a cached copy being used')
+  assert.ok(!isAssetLoad({ method: 'GET', status: 200, path: '/favicon.ico' }), 'bots fetch favicons too')
+  assert.ok(!isAssetLoad({ method: 'GET', status: 404, path: '/a.png' }))
+  assert.ok(isRevisit({ method: 'GET', status: 304, path: '/' }) && !isRevisit({ method: 'GET', status: 304, path: '/a.js' }))
+})
+
 // ── aggregation ──────────────────────────────────────────────────────────
 
 const noHash = { visitorHash: (_d: string, c: string, u: string) => `${c}|${u}` }
 
-test('aggregation: page views, assets, statuses, referrers (host only, not the site itself), 404s and bots', () => {
+test('aggregation: people behave like browsers; page views, assets, statuses, referrers, broken links and bots', () => {
   const lines = [
     combined('198.51.100.1', '/', 200, CHROME, 'https://www.search.example/q?secret=1'),
     combined('198.51.100.1', '/style.css'),
     combined('198.51.100.1', '/about', 200, CHROME, 'https://www.example.com/'),
+    combined('198.51.100.1', '/old-page', 404),
     combined('198.51.100.2', '/missing', 404, IPHONE),
     combined('198.51.100.2', '/', 304, IPHONE),
     combined('198.51.100.3', '/', 500),
+    combined('198.51.100.4', '/', 200, IPHONE),
     combined('203.0.113.9', '/.env', 404, CHROME),
     combined('203.0.113.9', '/', 200, CHROME),
     combined('203.0.113.10', '/', 200, 'curl/8.0'),
   ].map(l => parseLogLine(l)!)
   const r = aggregateLines(lines, { ...noHash, ownHosts: ['www.example.com'], kind: 'static' })
   assert.equal(r.hours.size, 1)
-  const hb = [...r.hours.values()][0], a = hb.agg
-  assert.equal(a.requests, 9); assert.equal(a.bots, 3, 'the .env prober and curl are bots, and all the prober\'s requests are')
-  assert.equal(a.human, 6)
-  assert.equal(a.pageViews, 2, '/ and /about; not CSS, 304 or 500')
+  const a = [...r.hours.values()][0].agg
+  assert.equal(a.requests, 11); assert.equal(a.bots, 3, 'the .env prober and curl are bots, and all the prober\'s requests are')
+  assert.equal(a.human, 4, 'only the visitor who opened pages and fetched their stylesheet')
+  assert.equal(a.unconfirmedReq, 4, 'a page view without assets, a 304 with no earlier page, a 500')
+  assert.equal(a.visitors, 1); assert.equal(a.unconfirmed, 2, 'opened a page, never loaded anything else'); assert.equal(a.botVisitors, 2)
+  assert.equal(a.pageViews, 2, '/ and /about by the person; not CSS, the unconfirmed or the bots')
+  assert.equal(a.unconfirmedPageViews, 2)
   assert.deepEqual(a.pages, { '/': 1, '/about': 1 })
   assert.deepEqual(a.referrers, { 'search.example': 1 })
-  assert.deepEqual(a.notFound, { '/missing': 1 }, 'scanner 404s are not broken links')
-  assert.deepEqual([a.s2xx, a.s3xx, a.s4xx, a.s5xx], [5, 1, 2, 1])
-  assert.equal(a.bytes, 9 * 512)
-  assert.equal(hb.visitors.size, 3, 'people only')
+  assert.deepEqual(a.notFound, { '/old-page': 1 }, 'broken links are people\'s 404s only')
+  assert.deepEqual(a.probes, { secrets: 1, 'secrets:refused': 1 })
+  assert.deepEqual([a.s2xx, a.s3xx, a.s4xx, a.s5xx], [6, 1, 3, 1])
+  assert.equal(a.bytes, 11 * 512)
+  assert.deepEqual(a.browsers, { Chrome: 1 }, 'devices and browsers are people\'s')
+  assert.equal(a.rules, RULES)
   assert.equal(JSON.stringify(a).includes('198.51.100'), false, 'no address in the counts')
 })
 
 test('aggregation: robots.txt and .php on a static site mark a visitor as a bot; WordPress .php is a page', () => {
   const lines = [combined('198.51.100.1', '/robots.txt'), combined('198.51.100.1', '/'), combined('198.51.100.2', '/index.php')].map(l => parseLogLine(l)!)
   assert.equal([...aggregateLines(lines, { ...noHash, kind: 'static' }).hours.values()][0].agg.bots, 3)
-  const wp = [...aggregateLines([parseLogLine(combined('198.51.100.2', '/index.php'))!], { ...noHash, kind: 'wordpress' }).hours.values()][0].agg
-  assert.equal(wp.pageViews, 1)
+  const wp = [...aggregateLines([combined('198.51.100.2', '/index.php'), combined('198.51.100.2', '/wp-content/themes/t/style.css')].map(l => parseLogLine(l)!), { ...noHash, kind: 'wordpress' }).hours.values()][0].agg
+  assert.equal(wp.pageViews, 1); assert.equal(wp.bots, 0)
   assert.ok(isPageView({ method: 'GET', status: 200, path: '/blog/post/' }))
   assert.ok(!isPageView({ method: 'POST', status: 200, path: '/' }))
   assert.ok(!isPageView({ method: 'GET', status: 200, path: '/wp-json/wp/v2/posts' }))
@@ -143,7 +191,7 @@ test('aggregation: robots.txt and .php on a static site mark a visitor as a bot;
 
 test('aggregation: lines split across hours, request-time percentiles, merges add up', () => {
   const lines = [extended('198.51.100.1', '/', '0.004'), extended('198.51.100.1', '/', '0.040'), extended('198.51.100.1', '/', '0.300'),
-    extended('198.51.100.1', '/', '2.000'), combined('198.51.100.1', '/', 200, CHROME, '-', '[11/Nov/2026:11:00:01 +0000]')].map(l => parseLogLine(l)!)
+    extended('198.51.100.1', '/', '2.000'), combined('198.51.100.1', '/logo.png'), combined('198.51.100.1', '/', 200, CHROME, '-', '[11/Nov/2026:11:00:01 +0000]')].map(l => parseLogLine(l)!)
   const r = aggregateLines(lines, noHash)
   assert.equal(r.hours.size, 2)
   const a = r.hours.get(Date.parse('2026-11-11T10:00:00Z'))!.agg
@@ -154,7 +202,8 @@ test('aggregation: lines split across hours, request-time percentiles, merges ad
   const p50 = percentileMs(a.rtHist, 0.5)!
   assert.ok(p50 > 25 && p50 <= 50, String(p50))
   const m = mergeAgg(a, a)
-  assert.equal(m.requests, 8); assert.equal(m.rtHist.reduce((x, y) => x + y, 0), 8); assert.equal(m.pages['/'], 8)
+  assert.equal(m.requests, 10); assert.equal(m.rtHist.reduce((x, y) => x + y, 0), 8); assert.equal(m.pages['/'], 8)
+  assert.equal(r.hours.get(Date.parse('2026-11-11T11:00:00Z'))!.agg.visitors, 1, 'confirmed at 10:00, still a person at 11:00 the same day')
   assert.equal(r.hours.get(Date.parse('2026-11-11T11:00:00Z'))!.agg.timed, 0, 'a combined line has no time')
   assert.equal(a.rtHist.length, RT_BOUNDS.length + 1)
 })
@@ -187,9 +236,9 @@ test('retention: hours 30 days, days 13 months, visitor hashes and salts two day
   const now = new Date('2026-11-11T12:00:00Z')
   const at = (days: number) => new Date(now.getTime() - days * 86_400_000)
   for (const d of [0, 29, 31, 399, 401]) await st.merge('s', new Date(Math.floor(at(d).getTime() / 3_600_000) * 3_600_000), { ...emptyAgg(), requests: 1 })
-  await st.addVisitors('s', new Date('2026-11-11T10:00:00Z'), ['a'])
-  await st.addVisitors('s', new Date('2026-11-10T10:00:00Z'), ['b'])
-  await st.addVisitors('s', new Date('2026-11-09T10:00:00Z'), ['c'])
+  const v = newVisit({ browser: 'Chrome', os: 'Windows', device: 'desktop' })
+  await st.putVisitorRows('s', [{ hour: new Date('2026-11-11T10:00:00Z'), hash: 'a', data: v }, { hour: new Date('2026-11-10T10:00:00Z'), hash: 'b', data: v },
+    { hour: new Date('2026-11-09T10:00:00Z'), hash: 'c', data: v }])
   for (const d of ['2026-11-11', '2026-11-10', '2026-11-09']) await st.salt(d, () => makeSalt())
   const r = await st.prune(now)
   assert.equal(r.hours, 3, '31, 399 and 401 days old: hourly rows past 30 days')
@@ -263,9 +312,10 @@ test('read script: reads from the cursor, keeps an unfinished line, follows logr
     assert.equal(await pullLog(SITE, st, d), 1)
     assert.equal(st.gaps, 1)
     const day = (await store.days('s1', new Date('2026-11-11T00:00:00Z'), new Date('2026-11-12T00:00:00Z')))[0].agg
-    assert.deepEqual(Object.keys(day.pages).sort(), ['/five', '/four', '/one', '/seven', '/six', '/thr', '/two'])
-    assert.equal(day.pageViews, 7)
-    assert.equal(day.visitors, 1)
+    // Every line read once: seven page views, from one visitor who never fetched an asset, so not confirmed as a person.
+    assert.equal(day.requests, 7)
+    assert.equal(day.unconfirmedPageViews, 7); assert.equal(day.pageViews, 0)
+    assert.equal(day.unconfirmed, 1); assert.equal(day.visitors, 0)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -300,7 +350,7 @@ test('alerts: down, 5xx rate, certificate and spike fire once and resolve once',
   const st = defaultState(SITE)
   const now = Date.parse('2026-11-11T10:30:00Z')
   st.health = { ...emptyHealth(), failsInRow: 2, lastProblem: 'did not answer', cert: { checkedAt: now, notAfter: now + 3 * 86_400_000, issuer: null, trusted: true, error: null } }
-  const busy = { ...emptyAgg(), requests: 1200, s5xx: 120 }
+  const busy = { ...emptyAgg(), requests: 1200, human: 1200, s5xx: 120 }
   const fired = evaluate(st, { recent: busy, lastHour: busy, usualPerHour: 50, now })
   assert.deepEqual(Object.keys(fired).sort(), ['cert', 'down', 'errors', 'spike'])
   assert.match(fired.errors!, /10\.0%/)
@@ -511,6 +561,151 @@ test('views: summary trend, uptime and the Prometheus text carry the site name o
   assert.equal(exposition([{ name: 'a"b\\c', s, today: emptyAgg() }]).includes('site="a\\"b\\\\c"'), true)
 })
 
+// ── people, HyperProx's own requests, probes ─────────────────────────────
+
+const at = (hhmmss: string) => `[11/Nov/2026:${hhmmss} +0000]`
+
+test('people: HyperProx\'s own requests are counted only as such, never as people, bots, 404s or statuses', () => {
+  const lines = [
+    combined('10.0.0.51', '/api/health', 404, 'HyperProx-catalogue-detect'), combined('10.0.0.51', '/status.php', 404, 'HyperProx-catalogue-detect'),
+    combined('10.0.0.51', '/', 200, ownUserAgent('site-check')),
+    // HyperProx never asks for secrets: a scanner borrowing its name is a scanner.
+    combined('203.0.113.7', '/.env', 404, 'HyperProx-catalogue-detect'),
+  ].map(l => parseLogLine(l)!)
+  const a = [...aggregateLines(lines, { ...noHash, kind: 'static' }).hours.values()][0].agg
+  assert.equal(a.own, 3)
+  assert.equal(a.requests, 1); assert.equal(a.bots, 1); assert.equal(a.s4xx, 1); assert.equal(a.s2xx, 0)
+  assert.deepEqual(a.notFound, {}); assert.deepEqual(a.probes, { secrets: 1, 'secrets:refused': 1 })
+})
+
+test('people: an asset within two minutes confirms a page view; later, never, or only a favicon does not', () => {
+  const run = (...l: string[]) => [...aggregateLines(l.map(x => parseLogLine(x)!), { ...noHash, kind: 'static' }).hours.values()][0].agg
+  assert.equal(run(combined('198.51.100.1', '/', 200, CHROME, '-', at('10:00:00')), combined('198.51.100.1', '/a.png', 200, CHROME, '-', at('10:01:59'))).visitors, 1)
+  assert.equal(run(combined('198.51.100.1', '/', 200, CHROME, '-', at('10:00:00')), combined('198.51.100.1', '/a.png', 200, CHROME, '-', at('10:02:01'))).visitors, 0, 'too late')
+  assert.equal(run(combined('198.51.100.1', '/', 200, CHROME, '-', at('10:00:00')), combined('198.51.100.1', '/favicon.ico', 200, CHROME, '-', at('10:00:01'))).visitors, 0)
+  assert.equal(run(combined('198.51.100.1', '/a.png', 200, CHROME, '-', at('10:00:00'))).visitors, 0, 'assets alone are not a visit')
+  // HTTP/2 and caching: the stylesheet answered 304 still shows a browser drawing the page.
+  const cached = run(combined('198.51.100.1', '/', 200, CHROME, '-', at('10:00:00')), combined('198.51.100.1', '/app.css', 304, CHROME, '-', at('10:00:00')))
+  assert.equal(cached.visitors, 1); assert.equal(cached.pageViews, 1)
+  // A revisit answered 304 counts once the visitor has loaded a page that day; on its own it does not.
+  const back = run(combined('198.51.100.1', '/', 200, CHROME, '-', at('09:00:00')), combined('198.51.100.1', '/', 304, CHROME, '-', at('10:30:00')))
+  assert.equal(back.visitors, 1)
+  assert.equal(run(combined('198.51.100.1', '/', 304, CHROME, '-', at('10:30:00'))).visitors, 0)
+  assert.ok(behavesLikeBrowser([{ ...newVisit({ browser: 'Chrome', os: 'Windows', device: 'desktop' }), pageAt: [1000], assetAt: [1000 + 120_000] }]))
+  // A bot that loads images like a browser is still a bot: the lists apply first.
+  const gpt = 'Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; GPTBot/1.4; +https://openai.com/gptbot)'
+  const b = run(combined('198.51.100.9', '/', 200, gpt, '-', at('10:00:00')), combined('198.51.100.9', '/a.png', 200, gpt, '-', at('10:00:02')))
+  assert.equal(b.visitors, 0); assert.equal(b.botVisitors, 1); assert.equal(b.bots, 2)
+})
+
+test('people: a scanner\'s path makes the visitor a bot for the whole batch, browser-like requests and all', () => {
+  const lines = [combined('198.51.100.5', '/', 200, CHROME, '-', at('10:00:00')), combined('198.51.100.5', '/a.png', 200, CHROME, '-', at('10:00:01')),
+    combined('198.51.100.5', '/.git/config', 404, CHROME, '-', at('10:00:02'))].map(l => parseLogLine(l)!)
+  const a = [...aggregateLines(lines, { ...noHash, kind: 'static' }).hours.values()][0].agg
+  assert.equal(a.visitors, 0); assert.equal(a.bots, 3); assert.equal(a.botPageViews, 1)
+})
+
+/** Count one read the way the collector does, into `store`. */
+async function read(store: MemoryMetricsStore, lines: string[], now = new Date('2026-11-11T10:30:00Z')) {
+  const st = defaultState(SITE)
+  await countLines(SITE, st, lines, { ...localDeps(store, '/nonexistent', now) })
+}
+const hourOf = async (store: MemoryMetricsStore, iso: string) => (await store.hours('s1', new Date(iso), new Date(Date.parse(iso) + 3_600_000)))[0]?.agg
+const dayOf = async (store: MemoryMetricsStore) => (await store.days('s1', new Date('2026-11-11T00:00:00Z'), new Date('2026-11-12T00:00:00Z')))[0]?.agg
+
+test('collector: a page view in one read and its images in the next still make a person, and the lists follow', async () => {
+  const store = new MemoryMetricsStore()
+  await read(store, [combined('198.51.100.1', '/guide', 200, CHROME, 'https://news.example.org/x', at('10:04:59'))])
+  let h = (await hourOf(store, '2026-11-11T10:00:00Z'))!
+  assert.equal(h.visitors, 0); assert.equal(h.unconfirmed, 1); assert.deepEqual(h.pages, {}, 'not listed until confirmed')
+  await read(store, [combined('198.51.100.1', '/guide.css', 200, CHROME, '-', at('10:05:01')), combined('198.51.100.1', '/nope', 404, CHROME, '-', at('10:05:02'))])
+  h = (await hourOf(store, '2026-11-11T10:00:00Z'))!
+  assert.equal(h.visitors, 1); assert.equal(h.unconfirmed, 0); assert.equal(h.human, 3); assert.equal(h.pageViews, 1)
+  assert.deepEqual(h.pages, { '/guide': 1 }); assert.deepEqual(h.referrers, { 'news.example.org': 1 }); assert.deepEqual(h.notFound, { '/nope': 1 })
+  assert.deepEqual(h.browsers, { Chrome: 1 })
+  const d = (await dayOf(store))!
+  assert.equal(d.visitors, 1); assert.equal(d.human, 3); assert.deepEqual(d.pages, { '/guide': 1 })
+  // A third read of the same person adds to the lists without counting them twice.
+  await read(store, [combined('198.51.100.1', '/more', 200, CHROME, '-', at('10:20:00'))])
+  h = (await hourOf(store, '2026-11-11T10:00:00Z'))!
+  assert.equal(h.visitors, 1); assert.deepEqual(h.pages, { '/guide': 1, '/more': 1 }); assert.deepEqual(h.browsers, { Chrome: 1 })
+  assert.equal(JSON.stringify([...store.visitorMap.values()].map(m => [...m.values()])).includes('198.51.100'), false, 'no address kept')
+})
+
+test('collector: a probe in a later read turns the visitor into a bot for that hour, earlier requests included', async () => {
+  const store = new MemoryMetricsStore()
+  await read(store, [combined('198.51.100.2', '/', 200, CHROME, '-', at('10:00:00')), combined('198.51.100.2', '/a.png', 200, CHROME, '-', at('10:00:01'))])
+  assert.equal((await hourOf(store, '2026-11-11T10:00:00Z'))!.visitors, 1)
+  await read(store, [combined('198.51.100.2', '/.env', 404, CHROME, '-', at('10:06:00'))])
+  const h = (await hourOf(store, '2026-11-11T10:00:00Z'))!
+  assert.equal(h.visitors, 0); assert.equal(h.botVisitors, 1); assert.equal(h.bots, 3); assert.equal(h.human, 0)
+  assert.equal((await dayOf(store))!.visitors, 0)
+})
+
+test('collector: rows from before the fix stay marked, and the alerts ignore them for "usual"', async () => {
+  const store = new MemoryMetricsStore()
+  await store.merge('s1', new Date('2026-11-11T09:00:00Z'), { ...emptyAgg(), rules: 1, requests: 50, human: 50, visitors: 29 })
+  await read(store, [combined('198.51.100.1', '/', 200, CHROME, '-', at('09:30:00'))])
+  assert.equal((await hourOf(store, '2026-11-11T09:00:00Z'))!.rules, 1, 'a row with any part counted the old way stays old')
+  await read(store, [combined('198.51.100.1', '/', 200, CHROME, '-', at('10:10:00'))])
+  assert.equal((await hourOf(store, '2026-11-11T10:00:00Z'))!.rules, RULES)
+  assert.equal((await dayOf(store))!.rules, 1)
+  for (let i = 30; i >= 2; i--) await store.merge('s1', new Date(Date.parse('2026-11-11T10:00:00Z') - i * 3_600_000), { ...emptyAgg(), rules: 1, requests: 500, human: 500, bots: 5 })
+  assert.equal((await alertInputs(store, 's1', new Date('2026-11-11T10:30:00Z'))).usualPerHour, null, 'old hours are not a "usual"')
+  const st = defaultState(SITE)
+  const s = await summary(SITE, st, store, new Date('2026-11-11T10:30:00Z'))
+  assert.equal(s.countedBeforeFix, true); assert.equal(s.trendPct, null, 'no trend across the two ways of counting')
+})
+
+test('alerts: a spike is people\'s traffic; a burst of scanners is a note, never an alert', () => {
+  const st = defaultState(SITE)
+  const now = Date.parse('2026-11-11T10:30:00Z')
+  const scanners = { ...emptyAgg(), requests: 900, bots: 880, human: 20 }
+  const i = { recent: scanners, lastHour: scanners, usualPerHour: 10, usualBotsPerHour: 20, now }
+  assert.equal(evaluate(st, i).spike, undefined)
+  assert.match(scannerBurst(st, i)!, /880 requests from bots and scanners.*44×/)
+  const people = { ...emptyAgg(), requests: 500, human: 480, bots: 20 }
+  assert.match(evaluate(st, { ...i, recent: people, lastHour: people }).spike!, /480 requests from people/)
+  assert.equal(scannerBurst(st, { ...i, recent: people, lastHour: people }), null)
+  assert.equal(scannerBurst(st, { ...i, usualBotsPerHour: null }), null, 'no history, no "usual" to burst past')
+})
+
+test('security: probes by kind, a 2xx answer flagged as a possible exposure unless it was the home page; paths for operators only', async () => {
+  const lines = [
+    combined('203.0.113.1', '/', 200), combined('203.0.113.9', '/.env', 404, 'curl/8.0'), combined('203.0.113.9', '/.git/config', 403, 'curl/8.0'),
+    `203.0.113.9 - - ${T} "GET /.env.bak HTTP/1.1" 200 77 "-" "curl/8.0"`, combined('203.0.113.9', '/wp-login.php', 200, 'curl/8.0'),
+    combined('203.0.113.9', '/api/v1', 404, 'curl/8.0'),
+  ].map(l => parseLogLine(l)!)
+  const a = [...aggregateLines(lines, { ...noHash, kind: 'static' }).hours.values()][0].agg
+  assert.equal(a.probes.secrets, 3); assert.equal(a.probes['secrets:refused'], 2); assert.equal(a.probes['secrets:ok'], 1)
+  assert.equal(a.probes.admin, 1); assert.equal(a.probes.api, 1)
+  assert.deepEqual(a.exposed, { '/.env.bak': 1 }, 'a different answer from the home page')
+  assert.deepEqual(a.catchAll, { '/wp-login.php': 1 }, 'the home page again: a catch-all, nothing given away')
+  const later = [...aggregateLines([parseLogLine(combined('203.0.113.9', '/wp-login.php', 200, 'curl/8.0'))!], { ...noHash, kind: 'static', homeSizes: [512] }).hours.values()][0].agg
+  assert.deepEqual(later.catchAll, { '/wp-login.php': 1 }, 'the home page\'s size is remembered from earlier reads'); assert.deepEqual(later.exposed, {})
+  const store = new MemoryMetricsStore()
+  await store.merge('s1', new Date('2026-11-11T10:00:00Z'), a)
+  const now = new Date('2026-11-11T10:30:00Z')
+  const viewer = await detail(SITE, null, store, now, '24h', false)
+  assert.equal(viewer.security.total, 5); assert.equal(viewer.security.exposedCount, 1); assert.equal(viewer.security.exposed, undefined)
+  assert.deepEqual(viewer.security.kinds.find(k => k.kind === 'secrets'), { kind: 'secrets', requests: 3, refused: 2, answered: 1, moved: 0, errors: 0 })
+  const op = await detail(SITE, null, store, now, '24h', true)
+  assert.deepEqual(op.security.exposed, [{ key: '/.env.bak', value: 1 }])
+  assert.equal(JSON.stringify(op).includes('203.0.113'), false, 'never an address')
+})
+
+test('own User-Agent: the public check says it is HyperProx', async () => {
+  let seen = ''
+  const srv = createServer((req, res) => { seen = String(req.headers['user-agent']); res.end('ok') })
+  await new Promise<void>(r => srv.listen(0, '127.0.0.1', () => r()))
+  try {
+    const port = (srv.address() as any).port
+    const r = await realHealthDeps().fetch(`http://127.0.0.1:${port}/`)
+    assert.equal(r?.status, 200)
+    assert.equal(seen, ownUserAgent('site-check')); assert.ok(isOwnUa(seen))
+  } finally { srv.close() }
+})
+
 // ── a real log, sanitised ────────────────────────────────────────────────
 
 test('fixture: a sanitised access log from a hand-built static site behind a proxy parses completely', () => {
@@ -525,9 +720,41 @@ test('fixture: a sanitised access log from a hand-built static site behind a pro
   const a = [...r.hours.values()].reduce((x, h) => mergeAgg(x, h.agg), emptyAgg())
   assert.equal(a.requests, 170)
   assert.ok(a.bots > a.human, `bots ${a.bots} vs people ${a.human}`)
-  assert.ok(a.human > 0)
   assert.equal(a.s4xx, 85)
   assert.ok(!Object.keys(a.notFound).some(p => /\.env|\.git/.test(p)), 'scanner probes are not broken links')
   assert.deepEqual(a.referrers, {}, 'referrers from the site itself are not counted')
-  assert.ok(a.pageViews > 0)
+  assert.ok(a.probes.secrets > 0 && !a.probes['secrets:ok'], 'secret files asked for, none given')
+})
+
+test('fixture: a site\'s launch day, read the way the collector reads it, finds the two real people', async () => {
+  // 252 lines from a static site's first three hours in public (combined, then the hyperprox_metrics format):
+  // the proxy in front is 10.0.0.x, visitors' own addresses (from X-Forwarded-For, at the end) are 203.0.113.x,
+  // the domain is example.com and scanner ids are zeroed. Before the accuracy fix this log gave 29 visitors and
+  // 59 requests from "people". Two of its visitors opened the page and loaded its images in a real browser.
+  const raw = readFileSync(join(__dirname, 'fixtures', 'site-metrics', 'launch-day-access.log'), 'utf8').split('\n').filter(Boolean)
+  assert.equal(raw.length, 252)
+  assert.ok(raw.every(l => parseLogLine(l)), 'every line parses')
+  const store = new MemoryMetricsStore()
+  const st = defaultState(SITE)
+  // Five-minute reads, as the collector makes them.
+  const reads = new Map<number, string[]>()
+  for (const l of raw) { const k = Math.floor(parseLogLine(l)!.time.getTime() / 300_000); reads.set(k, [...(reads.get(k) ?? []), l]) }
+  for (const k of [...reads.keys()].sort((x, y) => x - y)) await countLines(SITE, st, reads.get(k)!, { ...localDeps(store, '/nonexistent', new Date((k + 1) * 300_000)) })
+  const d = (await dayOf(store))!
+  assert.equal(d.own, 33, 'HyperProx\'s own catalogue detection, counted only as that')
+  assert.equal(d.requests, 219)
+  assert.equal(d.visitors, 2, 'people')
+  assert.equal(d.unconfirmed, 14)
+  assert.equal(d.botVisitors, 24)
+  assert.equal(d.human, 20); assert.equal(d.bots, 176); assert.equal(d.unconfirmedReq, 23)
+  assert.equal(d.pageViews, 4)
+  assert.deepEqual(d.notFound, { '/favicon.ico': 3 }, 'the one broken link people hit')
+  const probes = Object.entries(d.probes).filter(([k]) => !k.includes(':')).reduce((x, [, v]) => x + v, 0)
+  assert.equal(probes, 65)
+  assert.equal(d.probes.secrets, 24); assert.equal(d.probes['secrets:refused'], 24)
+  assert.deepEqual(d.exposed, {}, 'nothing a scanner asked for was given')
+  // The same log read in one go gives the same answer.
+  const one = [...aggregateLines(raw.map(l => parseLogLine(l)!), { visitorHash: (_d, c, u) => `${c}|${u}`, ownHosts: ['example.com'], kind: 'static' }).hours.values()]
+    .reduce((x, h) => mergeAgg(x, h.agg), emptyAgg())
+  assert.deepEqual([one.human, one.bots, one.unconfirmedReq, one.own], [d.human, d.bots, d.unconfirmedReq, d.own])
 })
