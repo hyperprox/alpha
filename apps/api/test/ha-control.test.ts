@@ -19,6 +19,7 @@ import { familyOf } from '../src/lib/notify/types'
 import { registerGate } from '../src/lib/gate'
 import { authRoutes } from '../src/routes/auth'
 import { haControlRoutes, setHAControlService } from '../src/routes/ha-control'
+import { pluginRoutes } from '../src/routes/plugins'
 import { setBroker } from '../src/lib/vault/broker'
 import { lock, isUnlocked } from '../src/lib/vault/state'
 import { setCredentialTable } from '../src/lib/credentials'
@@ -445,6 +446,8 @@ test('through the gate: operator acts, a lock needs re-confirmation, an API toke
   const app: FastifyInstance = Fastify({ logger: false })
   await registerGate(app)
   await app.register(authRoutes, { prefix: '/api/auth' })
+  // Registered beside the generic plug-in routes, as index.ts does: neither shadows the other.
+  await app.register(pluginRoutes, { prefix: '/api/plugins' })
   await app.register(haControlRoutes, { prefix: '/api/plugins/home-assistant' })
   await app.ready()
   try {
@@ -484,6 +487,9 @@ test('through the gate: operator acts, a lock needs re-confirmation, an API toke
     const noConfirm = await call('POST', '/instances/default/secure-actions', { cookie: ownerCookie }, { ...lockBody, action: 'lock', confirm: undefined })
     assert.equal(noConfirm.statusCode, 409)
     assert.equal(noConfirm.json().confirm, 'Lock Front door at Home')
+
+    const wishlist = await app.inject({ method: 'GET', url: '/api/plugins/wishlist', headers: { cookie: opCookie } })
+    assert.equal(wishlist.statusCode, 200, 'the generic plug-in routes still answer')
 
     // Adding an instance is re-confirmed for the operator too (and refused by role first).
     assert.equal((await call('POST', '/instances', { cookie: opCookie }, { name: 'X', url: B.url, token: TOKEN_B })).statusCode, 403)
