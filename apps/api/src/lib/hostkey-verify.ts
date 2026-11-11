@@ -577,19 +577,24 @@ async function oneRound(input: VerifyInput, deps: VerifyDeps): Promise<{ verdict
   /**
    * The node must sign its handshake with one of `keys` (from an anchor or a trusted reader). Then: the presented key
    * is one of them, or (another type) the node's own key files, read over a session signed with one of them, list it.
-   * Returns the method, 'no-login' when a login would be needed and there is none, or throws a mismatch.
+   * Returns the method, 'none' when it cannot be proved here (a login would be needed and there is none, or the key
+   * type is one HyperProx cannot ask for, such as DSA or a security-key type: no evidence, not a mismatch), or throws
+   * a mismatch.
    */
-  const proveAgainst = async (n: NodeInput, p: PresentedKey, keys: RecordedKey[]): Promise<'presented' | 'own-files' | 'no-login'> => {
+  const proveAgainst = async (n: NodeInput, p: PresentedKey, keys: RecordedKey[]): Promise<'presented' | 'own-files' | 'none'> => {
     const fps = new Set(keys.map(k => k.fingerprint))
     if (fps.has(p.fingerprint)) {
-      const k = await deps.prove(n.address, port(n), algorithmsFor([p.type]), x => fps.has(x.fingerprint))
+      const algs = algorithmsFor([p.type])
+      if (!algs.length) return 'none'
+      const k = await deps.prove(n.address, port(n), algs, x => fps.has(x.fingerprint))
       if (k.fingerprint !== p.fingerprint) throw new Error(`it signed with ${k.fingerprint}, not the ${p.fingerprint} it presents`)
       return 'presented'
     }
     if (keys.some(k => k.type === p.type)) throw new Error(`it presents ${p.fingerprint}, but the trusted record holds a different ${p.type} key for it`)
-    if (!n.cred) return 'no-login'
+    const algs = algorithmsFor(keys.map(k => k.type))
+    if (!n.cred || !algs.length) return 'none'
     // The login goes only to a host that has just signed the handshake with a trusted key.
-    const res = await deps.session({ host: n.address, port: port(n), cred: n.cred, script: OWN_KEYS_SCRIPT, algorithms: algorithmsFor(keys.map(k => k.type)), accept: x => fps.has(x.fingerprint) })
+    const res = await deps.session({ host: n.address, port: port(n), cred: n.cred, script: OWN_KEYS_SCRIPT, algorithms: algs, accept: x => fps.has(x.fingerprint) })
     if (!ownKeyFingerprints(res.output).some(k => k.fingerprint === p.fingerprint)) throw new Error(`signed in with the trusted key, it does not list the ${p.fingerprint} it presents`)
     return 'own-files'
   }
@@ -609,7 +614,7 @@ async function oneRound(input: VerifyInput, deps: VerifyDeps): Promise<{ verdict
     try {
       if (a.keys.some(k => k.fingerprint === p.fingerprint)) { candidates.set(n.name, { fp: p.fingerprint, evidence: { kind: 'setup-local', node: n.name, source: a.source, method: 'presented-key' } }); continue }
       const how = await proveAgainst(n, p, a.keys)
-      if (how !== 'no-login') candidates.set(n.name, { fp: p.fingerprint, evidence: { kind: 'setup-local', node: n.name, source: a.source, method: 'proof' } })
+      if (how !== 'none') candidates.set(n.name, { fp: p.fingerprint, evidence: { kind: 'setup-local', node: n.name, source: a.source, method: 'proof' } })
     } catch (e) { mismatch(n, p, e) }
   }
 
@@ -667,7 +672,7 @@ async function oneRound(input: VerifyInput, deps: VerifyDeps): Promise<{ verdict
           continue
         }
         const how = await proveAgainst(n, p, rec)
-        if (how !== 'no-login') candidates.set(n.name, { fp: p.fingerprint, evidence: { kind: 'cluster-record', cluster: input.cluster, readers: others, method: how === 'presented' ? 'one-reader-proof' : 'record-key-session' } })
+        if (how !== 'none') candidates.set(n.name, { fp: p.fingerprint, evidence: { kind: 'cluster-record', cluster: input.cluster, readers: others, method: how === 'presented' ? 'one-reader-proof' : 'record-key-session' } })
       } catch (e) { mismatch(n, p, e) }
     }
   }

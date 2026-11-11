@@ -581,3 +581,14 @@ test('review N2: WireGuard evidence only for a home node HyperProx made the peer
   const named = world(hosts, {}, { wg: [{ ...link, machine: 'lxc-105' }] })
   assert.equal((await asOwner(() => verifyNodes({ cluster: 'Home cluster', scope: 'home', nodes: node, by: 'x' }, named.deps)))[0].state, 'blocked', 'a peer named like the node but made for something else')
 })
+
+test('review N5: an anchor or record of a type HyperProx cannot ask for (DSA) is no evidence, not a mismatch', async () => {
+  const c = cluster()
+  // node2 offers ed25519; the anchor holds only a DSA key, which ssh2 cannot be asked to sign with.
+  const dss: K = { type: 'ssh-dss', line: 'ssh-dss AAAA', fp: 'SHA256:' + 'D'.repeat(43) }
+  const w = world(c.hosts, {}, { anchors: { node2: c.anchor('node2', [dss]) } })
+  const v = await run(c, w)
+  assert.equal(v[1].state, 'no-evidence')
+  assert.equal(w.alerts.length, 0)
+  assert.equal(w.sessions.length + w.proofs.length, 0, 'nothing was asked of the node')
+})
