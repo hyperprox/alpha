@@ -127,9 +127,10 @@ export function getJob(jobId: string): JobState | undefined {
 
 // ── Broadcast hook ────────────────────────────────────────────────────────────
 
-let _broadcast: ((type: string, payload: any) => void) | null = null
+let _broadcast: ((type: string, payload: any, owner: string) => void) | null = null
 
-export function setWizardBroadcast(fn: (type: string, payload: any) => void) {
+/** `owner` is the email of the person who started the job: progress goes to their sockets only. */
+export function setWizardBroadcast(fn: (type: string, payload: any, owner: string) => void) {
   _broadcast = fn
 }
 
@@ -145,7 +146,7 @@ function emit(jobId: string) {
     lxcVmid:    job.lxcVmid,
     lxcNode:    job.lxcNode,
     lxcIp:      job.lxcIp,
-  })
+  }, job.run.owner)
 }
 
 // ── Client helpers ────────────────────────────────────────────────────────────
