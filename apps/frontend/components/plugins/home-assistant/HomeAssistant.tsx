@@ -23,9 +23,9 @@ import { BusyNote, GhostButton, INPUT, LABEL, Modal, Notice, PrimaryButton } fro
 
 const API = '/api/plugins/home-assistant'
 
-export interface Policy { protected: string[]; securityDomains: string[]; normalRole: 'operator' | 'admin'; notifySecurity: boolean }
+export interface Policy { protected: string[]; securityDomains: string[]; everyday: string[]; normalRole: 'operator' | 'admin'; notifySecurity: boolean }
 export interface Instance {
-  id: string; name: string; clusterId: string | null; insecureTLS: boolean; policy: Policy
+  id: string; name: string; clusterId: string | null; insecureTLS: boolean; fingerprint?: string | null; policy: Policy
   url?: string; hasToken?: boolean
   cluster: { id: string; name: string; kind: 'home' | 'remote' } | null; remote: boolean
 }
@@ -37,7 +37,7 @@ interface Device {
   entityId: string; name: string; domain: string; tier: 'normal' | 'security'; unavailable: boolean
   state: string; unit?: string; deviceClass?: string; controls: Control[]
 }
-interface DevicesData { areas: Array<{ name: string; devices: Device[] }>; areaSource?: string; unreachable?: boolean; error?: string }
+interface DevicesData { areas: Array<{ name: string; devices: Device[] }>; warnings?: string[]; areaSource?: string; unreachable?: boolean; error?: string }
 interface Status { reachable: boolean; error: string | null; version: string | null; location: string | null; user: { name: string; isAdmin: boolean; isOwner: boolean } | null }
 
 const colour = (i: Instance) => (i.remote ? 'var(--remote)' : 'var(--accent)')
@@ -162,7 +162,8 @@ export function DevicesView({ inst }: { inst: Instance }) {
   const [busy, setBusy] = useState<string | null>(null)
   const [notes, setNotes] = useState<Record<string, { text: string; ok: boolean }>>({})
   const [filter, setFilter] = useState('')
-  const [confirm, setConfirm] = useState<null | { phrase: string; run: () => void }>(null)
+  const [confirm, setConfirm] = useState<null | { phrase: string; name: string; run: (typed: string) => void }>(null)
+  const [typed, setTyped] = useState('')
   const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const inFlight = useRef(false)
 
@@ -183,13 +184,13 @@ export function DevicesView({ inst }: { inst: Instance }) {
 
   const patch = (entityId: string, state: string) => setData(d => d && ({ ...d, areas: d.areas.map(a => ({ ...a, devices: a.devices.map(x => x.entityId === entityId ? { ...x, state } : x) })) }))
 
-  const send = useCallback(async (d: Device, c: Control, value: number | string | undefined, phrase?: string) => {
+  const send = useCallback(async (d: Device, c: Control, value: number | string | undefined, phrase?: string, typedName?: string) => {
     const secure = d.tier === 'security'
     setBusy(d.entityId)
     const before = d.state
     if (OPTIMISTIC[c.action]) patch(d.entityId, OPTIMISTIC[c.action])
     const r = await apiJson<{ data: { changed: boolean; message: string; after: { state: string } | null } }>(
-      `${API}/instances/${inst.id}/${secure ? 'secure-actions' : 'actions'}`, 'POST', { entityId: d.entityId, action: c.action, value, confirm: phrase })
+      `${API}/instances/${inst.id}/${secure ? 'secure-actions' : 'actions'}`, 'POST', { entityId: d.entityId, action: c.action, value, confirm: phrase, typed: typedName })
     setBusy(null)
     if (r.ok) {
       const res = r.body!.data
@@ -199,17 +200,18 @@ export function DevicesView({ inst }: { inst: Instance }) {
       return
     }
     patch(d.entityId, before)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void send(d, c, value, phrase)); return }
-    const asked = (r.body as { confirm?: unknown } | null)?.confirm
-    if (r.status === 409 && r.code === 'confirm_required' && typeof asked === 'string') {
-      const p = asked
-      setConfirm({ phrase: p, run: () => void send(d, c, value, p) }); return
-    }
+    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void send(d, c, value, phrase, typedName)); return }
     setNotes(n => ({ ...n, [d.entityId]: { text: r.error ?? 'That did not work.', ok: false } }))
   }, [inst.id, load])
 
   const ask: Ask = useCallback(async (d, c, value) => {
-    if (d.tier === 'security' && c.confirm) { setConfirm({ phrase: c.confirm, run: () => void send(d, c, value, c.confirm) }); return }
+    // The phrase names the device, the house and (for a slider or a list) the value; the person also types the
+    // device's name. The server builds the same phrase from the checked value and compares both.
+    if (d.tier === 'security' && c.confirm) {
+      const phrase = c.confirm.replace('{value}', value === undefined ? '' : String(value))
+      setTyped('')
+      setConfirm({ phrase, name: d.name, run: t => void send(d, c, value, phrase, t) }); return
+    }
     await send(d, c, value)
   }, [send])
 
@@ -227,6 +229,7 @@ export function DevicesView({ inst }: { inst: Instance }) {
       {data && !data.unreachable && (
         <>
           <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="Find a device or room" aria-label="Find a device or room" style={INPUT} />
+          {(data.warnings ?? []).map(w => <Notice key={w} kind="warn">{w}</Notice>)}
           {data.areaSource === 'none' && <small style={{ color: 'var(--text-dimmer)' }}>Home Assistant did not share its rooms with this token, so devices are not grouped.</small>}
           {areas.length === 0 && <p className="text-sm" style={{ color: 'var(--text-muted)' }}>{filter ? 'Nothing matches.' : 'No devices HyperProx can control.'}</p>}
           {areas.map(a => (
@@ -247,9 +250,12 @@ export function DevicesView({ inst }: { inst: Instance }) {
           <div className="flex flex-col gap-4">
             <p className="flex items-center gap-2 text-base font-semibold" style={{ color: 'var(--warn-2)' }}><LockIcon size={18} />{confirm.phrase}</p>
             <p className="text-sm" style={{ color: 'var(--text-soft)' }}>This acts on a real device{inst.remote ? `, in ${inst.name}` : ''}. It is recorded with your name{inst.policy.notifySecurity ? ' and sent to your notification channels' : ''}.</p>
+            <label><span style={LABEL}>Type the device's name to confirm: <b>{confirm.name}</b></span>
+              <input style={INPUT} autoFocus autoComplete="off" value={typed} onChange={e => setTyped(e.target.value)} aria-label="Device name" /></label>
             <div className="flex gap-2 justify-end">
               <GhostButton type="button" onClick={() => setConfirm(null)}>Cancel</GhostButton>
-              <PrimaryButton type="button" style={{ background: 'var(--warn)' }} onClick={() => { const f = confirm.run; setConfirm(null); f() }}>{confirm.phrase.split(' at ')[0]}</PrimaryButton>
+              <PrimaryButton type="button" style={{ background: 'var(--warn)' }} disabled={typed.trim().toLowerCase() !== confirm.name.toLowerCase()}
+                onClick={() => { const f = confirm.run; setConfirm(null); f(typed) }}>{confirm.phrase.split(' at ')[0]}</PrimaryButton>
             </div>
           </div>
         </Modal>
@@ -304,11 +310,18 @@ function InstanceForm({ inst, onSaved, onCancel }: { inst: Instance | null; onSa
     name: inst?.name ?? '', url: inst?.url ?? '', token: '', clusterId: inst?.clusterId ?? '', insecureTLS: inst?.insecureTLS ?? false,
     normalRole: inst?.policy.normalRole ?? 'operator', notifySecurity: inst?.policy.notifySecurity ?? true,
     protectedText: (inst?.policy.protected ?? []).join('\n'), domainsText: (inst?.policy.securityDomains ?? []).join(', '),
+    everydayText: (inst?.policy.everyday ?? []).join('\n'), fingerprint: inst?.fingerprint ?? '',
   })
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const set = (k: keyof typeof f, v: any) => setF(x => ({ ...x, [k]: v }))
+  const [probe, setProbe] = useState<null | { fingerprint: string; subject: string; validTo: string }>(null)
+  const readCert = async () => {
+    setErr(null)
+    const r = await apiJson<{ data: { fingerprint: string; subject: string; validTo: string } }>(`${API}/instances/probe-certificate`, 'POST', { url: f.url })
+    if (r.ok) setProbe(r.body!.data); else setErr(r.error ?? 'Could not read the certificate')
+  }
 
   const save = async () => {
     setBusy(true); setErr(null)
@@ -317,8 +330,9 @@ function InstanceForm({ inst, onSaved, onCancel }: { inst: Instance | null; onSa
       policy: {
         normalRole: f.normalRole, notifySecurity: f.notifySecurity,
         protected: f.protectedText.split(/[\s,]+/).filter(Boolean), securityDomains: f.domainsText.split(/[\s,]+/).filter(Boolean),
+        everyday: f.everydayText.split(/[\s,]+/).filter(Boolean),
       },
-      ...(inst?.id === 'default' ? {} : { insecureTLS: f.insecureTLS }),
+      insecureTLS: f.insecureTLS, fingerprint: f.fingerprint || null,
     }
     if (f.token || !inst) body.token = f.token
     const r = await apiJson(inst ? `${API}/instances/${inst.id}` : `${API}/instances`, inst ? 'PUT' : 'POST', body)
@@ -352,16 +366,32 @@ function InstanceForm({ inst, onSaved, onCancel }: { inst: Instance | null; onSa
         </select>
         <small style={{ color: 'var(--text-dimmer)' }}>Linked to a remote server, this house shows on that server's page and in the Command center, in amber.</small>
       </label>
-      {inst?.id !== 'default' && (
-        <label className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-soft)' }}>
-          <input type="checkbox" checked={f.insecureTLS} onChange={e => set('insecureTLS', e.target.checked)} /> Accept a self-signed certificate
-        </label>
+      {inst && f.url !== (inst.url ?? '') && <small style={{ color: 'var(--warn-2)' }}>A new address needs the token again: enter it above in the same save.</small>}
+      {f.url.startsWith('https:') && (
+        <div className="flex flex-col gap-2 rounded-md border p-3" style={{ borderColor: 'var(--border-strong)' }}>
+          <span className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Certificate</span>
+          <small style={{ color: 'var(--text-muted)' }}>
+            A normal certificate is checked as usual. For Home Assistant's own self-signed one, read it here, compare the fingerprint with the one
+            your browser shows for that address, and pin it: only that certificate is then accepted.
+          </small>
+          {f.fingerprint ? <small className="font-mono break-all" style={{ color: 'var(--good)' }}>Pinned: {f.fingerprint}</small> : null}
+          {probe && <small className="font-mono break-all" style={{ color: 'var(--text-soft)' }}>Presented: {probe.fingerprint} ({probe.subject}, valid to {probe.validTo})</small>}
+          <div className="flex flex-wrap gap-2">
+            <GhostButton type="button" onClick={() => void readCert()}>Read certificate</GhostButton>
+            {probe && probe.fingerprint !== f.fingerprint && <GhostButton type="button" onClick={() => set('fingerprint', probe.fingerprint)}>Pin this certificate</GhostButton>}
+            {f.fingerprint && <GhostButton type="button" onClick={() => set('fingerprint', '')}>Remove the pin</GhostButton>}
+          </div>
+          <label className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-soft)' }}>
+            <input type="checkbox" checked={f.insecureTLS} onChange={e => set('insecureTLS', e.target.checked)} /> Accept any certificate (not recommended; pin it instead)
+          </label>
+        </div>
       )}
       <fieldset className="flex flex-col gap-2 rounded-md border p-3" style={{ borderColor: 'var(--border-strong)' }}>
         <legend className="px-1 text-sm font-semibold" style={{ color: 'var(--text)' }}>Safety</legend>
         <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-          Locks, alarm panels, sirens and garage, gate and door covers are always security devices: admins only, with the master password and a confirm step.
-          Add more below; the built-in ones cannot be taken away. API tokens can never use security controls.
+          Locks, alarm panels, sirens and garage, gate and door covers are always security devices: admins only, with the master password, a confirm
+          step and the device's name typed. So are, until you say otherwise, covers other than blinds, curtains, shades, shutters, awnings and dampers;
+          scenes, scripts and buttons; and switches whose name mentions a door, gate, lock, alarm, opener or entry. API tokens can never use security controls.
         </p>
         <label><span style={LABEL}>Everyday controls are for</span>
           <select style={INPUT} value={f.normalRole} onChange={e => set('normalRole', e.target.value)}>
@@ -369,6 +399,9 @@ function InstanceForm({ inst, onSaved, onCancel }: { inst: Instance | null; onSa
           </select></label>
         <label><span style={LABEL}>Protected devices (entity ids, one per line)</span>
           <textarea style={{ ...INPUT, height: 90, padding: 8 }} value={f.protectedText} onChange={e => set('protectedText', e.target.value)} placeholder="switch.water_heater" /></label>
+        <label><span style={LABEL}>Everyday devices (entity ids, one per line): scenes, scripts, buttons, or a switch HyperProx took for a door or lock</span>
+          <textarea style={{ ...INPUT, height: 70, padding: 8 }} value={f.everydayText} onChange={e => set('everydayText', e.target.value)} placeholder="scene.movie_night" />
+          <small style={{ color: 'var(--text-dimmer)' }}>These lose the confirm step. Locks, alarms, sirens and garage, gate and door covers can never be made everyday. Each change is recorded.</small></label>
         <label><span style={LABEL}>Whole kinds to protect too (e.g. climate, cover)</span>
           <input style={INPUT} value={f.domainsText} onChange={e => set('domainsText', e.target.value)} /></label>
         <label className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-soft)' }}>
