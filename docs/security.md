@@ -96,12 +96,14 @@ Bitwarden-compatible, zero-knowledge vault. Every install runs its own, stock an
   them an operator (put them in the group "HyperProx operators"), or as **User** for a viewer (group
   "HyperProx viewers"). Owner and Admin memberships are full. The owner's two-factor code is enforced at
   every sign-in.
-- **Re-confirmation.** Revealing a secret, destroying a guest, changing roles, resetting Grafana's admin
-  password, and every change on the Setup checklist (saving a node login, running an item on your nodes,
-  shredding old backups, opening or closing built-in graphics) ask for the master password again (valid
-  for five minutes).
+- **Re-confirmation.** Revealing or Sending a secret, destroying a guest, changing roles, resetting Grafana's
+  admin password, saving or testing a connection under Settings (Proxmox, proxy, DNS, AI, remote access), and
+  every change on the Setup checklist (saving a node login, running an item on your nodes, shredding old
+  backups, opening or closing built-in graphics) ask for the master password again (valid for five minutes).
+  Changing where a connection's secret is sent (its host, port or URL) also needs that secret entered again in
+  the same save, so a moved address never inherits the old secret.
 - **Secrets page** (Settings, Secrets): names only. Owners and admins can reveal a value (with
-  re-confirmation), **Send** it to a person as an expiring, view-limited, encrypted link (a Bitwarden Send,
+  re-confirmation), **Send** it (also re-confirmed) to a person as an expiring, view-limited, encrypted link (a Bitwarden Send,
   24 hours and one view by default), or **generate** a strong password that is saved straight to the vault.
 - **Existing installs migrate.** On the first owner unlock, credentials from the old encrypted table and
   `.env` are written to the vault and read back; only then are the old rows deleted and the keys blanked
@@ -337,8 +339,9 @@ Send it as `Authorization: Bearer hpx_...`. It is shown once; HyperProx stores o
   in, out or lock, or make, list or revoke tokens (HTTP 403 `token_forbidden`). Anything that asks for the
   master password again (destroying a guest, revealing a secret, changing roles) answers 403
   `reconfirm_required`: a token has no master password.
-- **Saving to the vault** (for example, changing a provider credential in Settings) is done through the most
-  recently active signed-in session. With nobody signed in, such a write fails as locked.
+- **It never writes to the vault.** A token does not borrow a signed-in person's vault session, so anything that
+  would store a credential, a setting or a host-key pin during a token request (or in work it starts) is refused
+  with 403 `token_forbidden`. Reads, from the unlock cache, work as before.
 - **Audit.** Creating and revoking a token, and every request with a token that changes something, are
   written to the audit log with the token's name. The token itself is never logged.
 - **Revoking** takes effect at once from Settings; from `hyperprox token revoke`, within 10 seconds. A revoked

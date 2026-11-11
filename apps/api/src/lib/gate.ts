@@ -62,8 +62,8 @@ async function authenticate(req: FastifyRequest): Promise<ActiveSession | null> 
 
 /**
  * The session an API token acts as. Same shape as a sign-in's, but its sid is never in the
- * session map: isReconfirmed() is always false for it, and actingSid() falls back to the most
- * recently active signed-in session for vault writes.
+ * session map: isReconfirmed() is always false for it, and actingSid() gives it no vault session
+ * at all, so it cannot write to the vault (TokenVaultWriteError, 403).
  */
 export function tokenSession(row: ApiTokenRecord): ActiveSession {
   return {
@@ -172,6 +172,7 @@ export async function registerGate(server: FastifyInstance): Promise<void> {
       }
       return reply.status(401).send({ ok: false, code: 'session_expired', error: 'Your vault session has ended — sign in again' })
     }
+    if ((err as Error)?.name === 'TokenVaultWriteError') return reply.status(403).send({ ok: false, code: 'token_forbidden', error: (err as Error).message })
     if ((err as Error)?.name === 'VaultLockedError') return reply.status(423).send({ ok: false, locked: true })
     if ((err as Error)?.name === 'KeyholderLockError') {
       // Never { locked: true }: the keyholder may still hold the unlocked state.

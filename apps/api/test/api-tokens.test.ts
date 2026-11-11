@@ -202,30 +202,28 @@ test('a cookie carrying an hpx_ value is not accepted', async () => {
   assert.equal(store.lookups, 0)
 })
 
-test('vault writes during a token request use the most recent signed-in session', async () => {
+test('a token never borrows a signed-in person\'s vault session: its vault writes are refused (403), nothing written', async () => {
   const app = await appP
   await unlockAs(VIEWER, VIEWER_PW)
   await unlockAs(ADMIN, ADMIN_PW)
   const adminSid = allSessions().find(s => s.email === ADMIN)!.sid
   const t = await token('admin')
-  const res = await app.inject({ method: 'PUT', url: '/api/test/probe', headers: bearer(t), payload: { value: 'key-from-token' } })
-  assert.equal(res.statusCode, 200, res.body)
-  assert.equal(broker.callsTo('upsertSecret').at(-1)!.args[0], adminSid)
-  assert.equal(broker.items.get('hyperprox:dns/godaddy')!.fields.api_key, 'key-from-token')
-  // The token's own context sid is never a session.
-  requestContext.run({ sid: 'token:x', email: 'token:t', role: 'admin' }, () => assert.equal(actingSid(), adminSid))
-})
-
-test('no signed-in session left: a vault write from a token fails as locked (423), nothing written', async () => {
-  const app = await appP
-  await unlockAs()
-  const t = await token('admin')
-  for (const s of allSessions()) removeSession(s.sid)
-  assert.equal(isUnlocked(), true)
   const before = broker.callsTo('upsertSecret').length
-  const res = await app.inject({ method: 'PUT', url: '/api/test/probe', headers: bearer(t), payload: { value: 'nope' } })
-  assert.equal(res.statusCode, 423)
+  const res = await app.inject({ method: 'PUT', url: '/api/test/probe', headers: bearer(t), payload: { value: 'key-from-token' } })
+  assert.equal(res.statusCode, 403, res.body)
+  assert.equal(res.json().code, 'token_forbidden')
   assert.equal(broker.callsTo('upsertSecret').length, before)
+  assert.equal(broker.items.get('hyperprox:dns/godaddy')!.fields.api_key, 'key-1')
+  // Reads still work, from the unlock cache.
+  const read = await app.inject({ method: 'GET', url: '/api/test/probe', headers: bearer(t) })
+  assert.equal(read.statusCode, 200, read.body)
+  // The token's own context, and anything it starts, has no vault session; a person's request still has theirs.
+  requestContext.run({ sid: 'token:x', email: 'token:t', role: 'admin' }, () => assert.equal(actingSid(), null))
+  requestContext.run({ sid: adminSid, email: ADMIN, role: 'admin' }, () => assert.equal(actingSid(), adminSid))
+  // A person's write still goes through.
+  const cookie = await unlockAs(ADMIN, ADMIN_PW)
+  const ok = await app.inject({ method: 'PUT', url: '/api/test/probe', headers: { cookie }, payload: { value: 'key-from-person' } })
+  assert.equal(ok.statusCode, 200, ok.body)
 })
 
 test('audit: every mutating token request, with the token name; reads are not logged; never the token', async () => {

@@ -18,7 +18,7 @@ import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from '
 import { decrypt, mask } from './crypto'
 import { getBroker, type SecretItem } from './vault/broker'
 import { isUnlocked, cachedSecret, putCachedSecret, removeCachedSecret, onLock, onUnlock } from './vault/state'
-import { actingSid } from './auth'
+import { actingSid, isTokenContext } from './auth'
 
 export interface CredentialDef {
   category: string
@@ -151,8 +151,17 @@ function requireUnlocked(what?: string): void {
   if (!isUnlocked()) throw new VaultLockedError(what)
 }
 
+/** A vault write attempted for an API token's request. Tokens never write to the vault (lib/auth.ts actingSid). */
+export class TokenVaultWriteError extends Error {
+  constructor() {
+    super('API tokens cannot change what HyperProx keeps in its vault. Sign in and make this change as a person.')
+    this.name = 'TokenVaultWriteError'
+  }
+}
+
 function requireSid(): string {
   requireUnlocked()
+  if (isTokenContext()) throw new TokenVaultWriteError()
   const sid = actingSid()
   if (!sid) throw new VaultLockedError('credentials (no signed-in session to write with)')
   return sid

@@ -1,11 +1,12 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import Link from 'next/link'
 import { atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
 import { HudHeader, Icon, Page, Panel, Pill, styles as ks, type StatChip } from '@/components/visual/kit'
 import ss from './settings.module.css'
+import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 
 // ---------------------------------------------------------------------------
 //  Types
@@ -60,7 +61,7 @@ function ProviderSection({
   providerLabel: string
   accent:        string
   fields:        CredentialField[]
-  onSave:        (category: string, provider: string, values: Record<string, string>) => Promise<void>
+  onSave:        (category: string, provider: string, values: Record<string, string>) => Promise<TestResult>
   onTest:        (category: string, provider: string) => Promise<TestResult>
 }) {
   const [values,   setValues]   = useState<Record<string, string>>(() =>
@@ -80,8 +81,10 @@ function ProviderSection({
     const payload = Object.fromEntries(
       Object.entries(values).filter(([, v]) => v.trim() !== '')
     )
-    await onSave(category, provider, payload)
+    const r = await onSave(category, provider, payload)
     setSaving(false)
+    if (!r.success) { setResult(r); return }
+    setResult(null)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
@@ -192,19 +195,39 @@ export default function SettingsPage() {
     if (want && want in CATEGORY_META) setTab(want as any)
   }, [fetchCategory])
 
-  const handleSave = async (category: string, provider: string, values: Record<string, string>) => {
-    await fetch(`/api/settings/${category}/${provider}`, {
-      method:  'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify(values),
-    })
-    fetchCategory(category)
+  // Saving or testing a connection sends a stored secret somewhere, so the API asks for the master password
+  // again (403 reconfirm_required). Ask once, then repeat the request.
+  const [confirming, setConfirming] = useState(false)
+  const confirmWaiter = useRef<((ok: boolean) => void) | null>(null)
+  const askReconfirm = () => new Promise<boolean>(resolve => { confirmWaiter.current = resolve; setConfirming(true) })
+  const endReconfirm = (ok: boolean) => { setConfirming(false); confirmWaiter.current?.(ok); confirmWaiter.current = null }
+  const withReconfirm = async (call: () => Promise<Response>): Promise<{ res: Response; json: any }> => {
+    let res = await call()
+    let json = await res.json().catch(() => ({}))
+    if (res.status === 403 && json?.code === 'reconfirm_required' && await askReconfirm()) {
+      res = await call()
+      json = await res.json().catch(() => ({}))
+    }
+    return { res, json }
+  }
+
+  const handleSave = async (category: string, provider: string, values: Record<string, string>): Promise<TestResult> => {
+    try {
+      const { json } = await withReconfirm(() => fetch(`/api/settings/${category}/${provider}`, {
+        method:  'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(values),
+      }))
+      if (json?.success) fetchCategory(category)
+      return { success: !!json?.success, error: json?.error ?? 'Could not save' }
+    } catch (e: any) {
+      return { success: false, error: e.message }
+    }
   }
 
   const handleTest = async (category: string, provider: string): Promise<TestResult> => {
     try {
-      const res  = await fetch(`/api/settings/test/${category}/${provider}`, { method: 'POST' })
-      const json = await res.json()
+      const { json } = await withReconfirm(() => fetch(`/api/settings/test/${category}/${provider}`, { method: 'POST' }))
       return { success: json.success, message: json.data?.message, error: json.error ?? json.data?.error ?? 'Test failed' }
     } catch (e: any) {
       return { success: false, error: e.message }
@@ -247,6 +270,7 @@ export default function SettingsPage() {
 
   return (
     <Page>
+      {confirming && <ReconfirmModal onClose={() => endReconfirm(false)} onDone={() => endReconfirm(true)} />}
       <HudHeader level={2} label="Settings overview" icon="lock"
         eyebrow={[vaultWord, 'Credentials'].join(' · ')}
         title={loading ? 'Reading your settings…' : `${setCount} of ${providers.length} connections have their logins saved`}
