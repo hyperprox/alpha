@@ -418,10 +418,48 @@ export async function getSettings(pluginId: string): Promise<Record<string, stri
   return out
 }
 
+export class PluginSettingsError extends Error {
+  constructor(message: string) { super(message); this.name = 'PluginSettingsError' }
+}
+
+/** The credential settings an endpoint's auth sends. */
+function authSecrets(auth: PluginAuth): string[] {
+  if (auth.kind === 'header' || auth.kind === 'query') return [auth.fromSetting]
+  if (auth.kind === 'basic') return [auth.userSetting, auth.passSetting]
+  return []
+}
+
+const originOf = (v: string) => { try { const u = new URL(v); return `${u.protocol}//${u.host}`.toLowerCase() } catch { return v.trim().toLowerCase() } }
+
+/**
+ * Why this save must be refused, or null. A stored credential goes only to the address it was entered for: when
+ * an endpoint's address moves to another host or port, every credential that endpoint sends must be entered
+ * again in the same save, rather than carried over to the new address.
+ */
+export function settingsChangeProblem(manifest: PluginManifest, stored: Record<string, string>, values: Record<string, string>): string | null {
+  const endpoints = [{ baseUrlSetting: manifest.baseUrlSetting, auth: manifest.auth, label: manifest.name }, ...(manifest.endpoints ?? [])]
+  for (const e of endpoints) {
+    const next = values[e.baseUrlSetting]
+    const prev = stored[e.baseUrlSetting]
+    if (next === undefined || !prev || originOf(next) === originOf(prev)) continue
+    const missing = authSecrets(e.auth).filter(k => {
+      const def = manifest.settings.find(x => x.key === k)
+      return def?.type === 'secret' && !(values[k] ?? '').trim()
+    })
+    if (missing.length) {
+      const labels = missing.map(k => manifest.settings.find(x => x.key === k)?.label ?? k)
+      return `${e.label}'s address now points somewhere else, so enter ${labels.join(' and ')} again in the same save.`
+    }
+  }
+  return null
+}
+
 export async function saveSettings(
   manifest: PluginManifest,
   values: Record<string, string>,
 ): Promise<void> {
+  const problem = settingsChangeProblem(manifest, await getSettings(manifest.id), values)
+  if (problem) throw new PluginSettingsError(problem)
   for (const setting of manifest.settings) {
     const v = values[setting.key]
     // An empty secret means "leave what is already stored" — otherwise every

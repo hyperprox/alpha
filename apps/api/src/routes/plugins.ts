@@ -11,7 +11,7 @@ import {
   describeSettings, getSettings, missingSettings, runPlugin, runPluginDetail,
   runPluginMetrics, renderExposition, saveSettings,
   type PluginMetric,
-  runPluginRescueScan, runPluginRescueRun,
+  runPluginRescueScan, runPluginRescueRun, PluginSettingsError,
 } from '../lib/plugin-host'
 
 export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
@@ -148,11 +148,18 @@ export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
     async (req, reply) => {
       const plugin = findPlugin(req.params.id)
       if (!plugin) return reply.status(404).send({ success: false, error: 'No such plug-in' })
+      // Home Assistant's address and token belong to its houses, which check where an address may point
+      // and need the token again when it moves: /api/plugins/home-assistant/instances.
+      const body = req.body ?? {}
+      if (plugin.manifest.id === 'home-assistant' && ['url', 'token'].some(k => body[k] !== undefined && body[k] !== '')) {
+        return reply.status(400).send({ success: false, code: 'use_instances', error: 'Set the Home Assistant address and token on the Home Assistant page (Settings for that house), not here.' })
+      }
       try {
-        await saveSettings(plugin.manifest, req.body ?? {})
+        await saveSettings(plugin.manifest, body)
         fastify.log.info({ plugin: plugin.manifest.id }, '[plugin] settings saved')
         return { success: true }
       } catch (e: any) {
+        if (e instanceof PluginSettingsError) return reply.status(400).send({ success: false, code: 'credential_required', error: e.message })
         return reply.status(500).send({ success: false, error: e.message })
       }
     },

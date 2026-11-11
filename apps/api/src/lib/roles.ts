@@ -117,7 +117,10 @@ const HA_RECONFIRM = /^\/api\/ha\/(plans\/[^/]+\/apply|nodes\/[^/]+\/hostkey\/pi
 // garage doors, protected devices) and every change to an instance are admin and re-confirmed, which keeps API
 // tokens off them too.
 const HA_CONTROL_ACT = /^\/api\/plugins\/home-assistant\/instances\/[^/]+\/actions$/
-const HA_CONTROL_RECONFIRM = /^\/api\/plugins\/home-assistant\/instances(\/[^/]+(\/secure-actions)?)?$/
+const HA_CONTROL_RECONFIRM = /^\/api\/plugins\/home-assistant\/instances(\/(?!probe-certificate$)[^/]+(\/secure-actions)?)?$/
+// A plug-in's settings hold the address its stored credential is sent to: changing them is re-confirmed (which
+// also keeps API tokens out).
+const PLUGIN_SETTINGS = /^\/api\/plugins\/[^/]+\/settings$/
 // Role management (no routes yet; reserved so they are owner-only from day one).
 const ROLE_MGMT = /^\/api\/(auth\/)?roles(\/|$)/
 // Remote access: what opens a tunnel into the cluster, routes through a machine, removes a device or shows
@@ -236,6 +239,7 @@ export function needsReconfirm(method: string, path: string): boolean {
   if (m === 'POST' && GUEST_CONFIG_APPLY.test(p)) return true
   if (m === 'POST' && HA_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && HA_CONTROL_RECONFIRM.test(p)) return true
+  if (m === 'PUT' && PLUGIN_SETTINGS.test(p)) return true
   // Creating or revoking an API token.
   if ((m === 'POST' || m === 'DELETE') && TOKENS.test(p)) return true
   for (const [rm, re] of REMOTE_RECONFIRM) if (m === rm && re.test(p)) return true
