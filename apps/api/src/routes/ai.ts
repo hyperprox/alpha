@@ -17,7 +17,7 @@ import { PreparedStore }      from '../lib/ai/prepared'
 import { currentContext, type RequestContext } from '../lib/auth'
 
 import { startLoop, type Extraction, type IntentResult, type LoopDeps } from '../lib/ai/loop'
-import { matchIntent, NO_TASK_ANSWER } from '../lib/ai/intent'
+import { matchIntent, NO_TASK_ANSWER, confidentDeploy } from '../lib/ai/intent'
 import { answerQuestion, type AskSource } from '../lib/ai/ask'
 import { coreSources, pluginSources, type CertLite } from '../lib/ai/ask-sources'
 import { PLUGINS }            from '../plugins'
@@ -554,7 +554,9 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
         // A new website: the template asks for what is missing, then the New website wizard's code plans it and holds
         // the plan for the person to review and install in the wizard. A reply to its question carries on the draft.
         const draft = owner ? deps.websiteDrafts.get(owner) : null
-        if (isWebsiteRequest(prompt) || (draft && !parseAction(prompt) && !isQuestionPrompt(prompt) && !/\?\s*$/.test(prompt))) {
+        // A deploy request while a question is open is a new request, not the answer: the draft is dropped.
+        if (draft && owner && confidentDeploy(prompt)) deps.websiteDrafts.drop(owner)
+        if (isWebsiteRequest(prompt) || (draft && !confidentDeploy(prompt) && !parseAction(prompt) && !isQuestionPrompt(prompt) && !/\?\s*$/.test(prompt))) {
           if (!owner) return reply.status(401).send({ ok: false, error: 'Sign in to do that.' })
           if (current.kind !== 'home') return said(`Making a website is only available on the home cluster, from the assistant with ${home.name} selected. Nothing was planned.`)
           const r = await websiteTurn(prompt, { owner, role: sess?.role, token: isTokenSid(sess?.sid), unlocked: deps.prepareDeps().unlocked() }, deps.websiteDrafts, deps.websiteDeps())

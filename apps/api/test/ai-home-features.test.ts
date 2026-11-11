@@ -384,6 +384,10 @@ test("the ask-for-missing loop: kind, then name, then title, then email; a wrong
   assert.deepEqual(input.options, { WP_TITLE: "Family Recipes", WP_ADMIN_USER: "cook", WP_ADMIN_EMAIL: "cook@example.com", WP_URL: "https://blog.example.com" })
   assert.deepEqual(input.publish, { zone: "example.com", name: "blog", instanceId: "npm1" })
   assert.match(r.website.steps.join(" "), /Install there asks for your master password/)
+  // A deploy request while a question is open is a new request: the draft is dropped, not fed "deploy gitea".
+  await a.plan("make me a website")
+  assert.equal((await a.plan("Deploy Gitea at git.example.com")).json().message, "INTENT-FALLBACK")
+  assert.match((await a.plan("WordPress")).json().message ?? "", /^(?!What name)/, "the draft is gone")
   // Cancel
   await a.plan("make me a website")
   assert.equal((await a.plan("never mind")).json().message, "Cancelled. Nothing was planned.")
@@ -397,6 +401,7 @@ test("website request words: what comes here and what does not", () => {
   assert.deepEqual(extractWebsite('Create a WordPress site "My Blog" at blog.example.com for me@example.com'), { kind: "wordpress", adminEmail: "me@example.com", domain: "blog.example.com", title: "My Blog" })
   assert.deepEqual(extractWebsite("a static site, LAN only"), { kind: "static-site", domain: "lan" })
   assert.equal(nextQuestion({ kind: "static-site", domain: "lan", title: "x" }, { domains: null }), null, "a static LAN site needs no email")
+  assert.equal(extractWebsite("Create a website called Grandma's Kitchen at food.example.com").title, "Grandma's Kitchen")
   assert.equal(adminUserFrom("Admin@example.com"), "site-admin")
   assert.equal(adminUserFrom("j.doe+x@example.com"), "j.doex")
 })

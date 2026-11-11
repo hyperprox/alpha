@@ -41,7 +41,8 @@ export interface WebsiteDraft { fields: WebsiteFields; asking: WebsiteField | nu
 const EMAIL = /\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\b/
 const HOST = /\b((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63})\b/i
 const LAN = /\b(lan only|lan|local only|not published|no domain|don'?t publish|do not publish|on my network only|internal only|private)\b/i
-const TITLE_QUOTED = /["“']([^"”']{1,100})["”']/
+// Double quotes only: an apostrophe ("Grandma's Kitchen") is part of a title, not a quote around one.
+const TITLE_QUOTED = /["“]([^"”]{1,100})["”]/
 const TITLE_CALLED = /\b(?:called|titled|named|title)\s*:?\s+(.+?)(?=\s+(?:at|on|with|and|for|using|under)\b|[,.;!?]|$)/i
 const CONTROL = /[\u0000-\u001f\u007f]/
 
@@ -91,7 +92,7 @@ export function extractWebsite(text: string, asking: WebsiteField | null = null)
   const quoted = TITLE_QUOTED.exec(t)?.[1] ?? TITLE_CALLED.exec(withoutEmail)?.[1]
   if (quoted && !CONTROL.test(quoted)) out.title = quoted.trim().slice(0, 100)
   if (asking === 'title' && !out.title) {
-    const whole = t.replace(/^["“']|["”']$/g, '').trim()
+    const whole = t.replace(/^["“]|["”]$/g, '').trim()
     if (whole && whole.length <= 100 && !CONTROL.test(whole)) out.title = whole
   }
   if (asking === 'kind' && !out.kind && /\b(static|plain)\b/i.test(t)) out.kind = 'static-site'
