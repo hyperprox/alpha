@@ -114,6 +114,9 @@ export default function SetupChecklistPage() {
   }
 
   const missingLogin = data ? Object.entries(data.logins).filter(([, v]) => !v).map(([n]) => n) : []
+  // Host keys: the manual compare is offered only for a key Verify automatically found no evidence for, and for a
+  // pin that is not a home node (a guest or a hand-added host), which has no cluster record to check against.
+  const noEvidence = new Set(job?.item === 'host-keys' && job.status !== 'running' ? job.results.filter(x => x.status === 'skipped' && x.node).map(x => x.node!) : [])
 
   return (
     <div className="min-h-full p-4 sm:p-8" style={{ background: 'var(--ground)' }}>
@@ -164,7 +167,7 @@ export default function SetupChecklistPage() {
             {item.rows.length > 0 && (
               <ul className="mt-3 text-sm space-y-1">
                 {item.rows.map(r => <li key={r.node} className="flex gap-2 items-center"><Tag s={r.state} /><span className="font-mono">{r.node}</span><span style={{ color: 'var(--text-muted)' }}>{r.reason}</span>
-                  {item.id === 'host-keys' && r.state === 'not-done' && r.fingerprint && <GhostButton disabled={!!busy} title="Only after comparing it with the fingerprint the machine prints" onClick={() => confirmKey(r)}>Confirm this key</GhostButton>}
+                  {item.id === 'host-keys' && r.state === 'not-done' && r.fingerprint && (noEvidence.has(r.node) || r.node.includes(':')) && <GhostButton disabled={!!busy} title="HyperProx found no evidence for this key. Compare it with the fingerprint the machine prints (for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf $f; done), then confirm." onClick={() => confirmKey(r)}>Compare by hand and confirm</GhostButton>}
                   {item.id === 'igpu-access' && r.state === 'done' && <GhostButton disabled={!!busy} onClick={() => igpu(r.node, 'undo')}>Undo</GhostButton>}
                   {item.id === 'igpu-access' && r.state === 'not-done' && data.logins[r.node] && <GhostButton disabled={!!busy} onClick={() => igpu(r.node, 'apply')}>Open on this node</GhostButton>}
                 </li>)}

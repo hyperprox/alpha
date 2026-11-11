@@ -103,16 +103,25 @@ type Run = <T>(fn: () => Promise<{ ok: boolean; status: number; code?: string } 
 function CertificateSection({ c, onChanged, run }: { c: ClusterInfo; onChanged: () => void; run: Run }) {
   const [state, setState] = useState<{ kind: 'info' | 'error'; text: string } | null>(null)
   const [presented, setPresented] = useState<string | null>(null)
+  const [why, setWhy] = useState<string | null>(null)
   const [matches, setMatches] = useState(false)
   const [busy, setBusy] = useState(false)
+  // No certificate at this address yet: HyperProx verifies it itself over a private link; only when it cannot does it
+  // show the fingerprint to compare, with the reason.
+  const verify = async () => {
+    setBusy(true); setState(null)
+    const r = await run(() => apiJson<{ data: ClusterInfo }>(`/api/clusters/${c.id}/certificate`, 'POST', {}), () => void verify())
+    setBusy(false)
+    if (!r) return
+    if (r.ok) { setState({ kind: 'info', text: 'Verified automatically. HyperProx accepts only this certificate from now on.' }); onChanged(); return }
+    const b = (r as any).body ?? {}
+    if (r.code === 'cert_manual' && b.certificate?.fingerprint) { setPresented(b.certificate.fingerprint); setWhy((r as any).error ?? null); return }
+    setState({ kind: 'error', text: (r as any).error ?? 'Not verified' })
+    if (r.code === 'cert_changed') setPresented(b.presented ?? null)
+  }
   const check = async () => {
     setBusy(true); setState(null)
-    if (!c.cert.fingerprint) {
-      const r = await apiJson<{ data: { fingerprint: string } }>('/api/clusters/probe-certificate', 'POST', { address: c.address, port: c.port })
-      setBusy(false)
-      if (r.ok) setPresented(r.body!.data.fingerprint); else setState({ kind: 'error', text: r.error ?? 'Could not read it' })
-      return
-    }
+    if (!c.cert.fingerprint) { setBusy(false); return verify() }
     const r = await apiJson<{ data: { latencyMs: number; version: string } }>(`/api/clusters/${c.id}/test`, 'POST')
     setBusy(false)
     if (r.ok) setState({ kind: 'info', text: `Connected: Proxmox ${r.body!.data.version}, answered in ${r.body!.data.latencyMs} ms with the confirmed certificate.` })
@@ -127,13 +136,14 @@ function CertificateSection({ c, onChanged, run }: { c: ClusterInfo; onChanged: 
   return (
     <Section title="Certificate">
       {c.cert.fingerprint ? (
-        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Confirmed{c.cert.confirmedBy ? ` by ${c.cert.confirmedBy}` : ''}{c.cert.confirmedAt ? ` on ${new Date(c.cert.confirmedAt).toLocaleString()}` : ''}:<br /><span className="font-mono break-all" style={{ color: 'var(--remote)' }}>{c.cert.fingerprint}</span></p>
-      ) : <Notice kind="warn">Not confirmed at this address. HyperProx sends this server nothing until you confirm its certificate.</Notice>}
-      <div><Btn disabled={busy} onClick={check}>{c.cert.fingerprint ? 'Test the connection' : 'Read its certificate'}</Btn></div>
+        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>{c.cert.verified ? `Verified automatically (${c.cert.verified})` : `Confirmed${c.cert.confirmedBy ? ` by ${c.cert.confirmedBy}` : ''}`}{c.cert.confirmedAt ? ` on ${new Date(c.cert.confirmedAt).toLocaleString()}` : ''}:<br /><span className="font-mono break-all" style={{ color: 'var(--remote)' }}>{c.cert.fingerprint}</span></p>
+      ) : <Notice kind="warn">Not verified at this address yet. HyperProx sends this server nothing until its certificate is verified.</Notice>}
+      <div><Btn disabled={busy} onClick={check}>{c.cert.fingerprint ? 'Test the connection' : 'Verify automatically'}</Btn></div>
       {busy && <BusyNote>Checking…</BusyNote>}
       {state && <Notice kind={state.kind}>{state.text}</Notice>}
       {presented && (
         <div className="flex flex-col gap-2">
+          {why && <p className="text-sm" style={{ color: 'var(--text-muted)' }}>{why}</p>}
           <p className="text-sm" style={{ color: 'var(--text)' }}>It presents:</p>
           <div className="font-mono text-sm break-all" style={{ color: 'var(--remote)' }}>{presented}</div>
           <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Compare it with that server's own page (the node, then System, then Certificates). If you did not renew its certificate, do not confirm: something else may be answering at that address.</p>
@@ -175,6 +185,18 @@ function NodesSection({ c, onChanged, run }: { c: ClusterInfo; onChanged: () => 
   const [err, setErr] = useState<string | null>(null)
   const [addrs, setAddrs] = useState<Record<string, string>>(c.nodeAddresses)
   const [login, setLogin] = useState<{ node: string; fp: string | null; user: string; pw: string; key: string; matches: boolean; msg: string | null } | null>(null)
+  const [once, setOnce] = useState({ user: 'root', pw: '', key: '' })
+  const [checked, setChecked] = useState<Array<{ node: string; state: string; how: string; login: string | null }> | null>(null)
+  const [verifying, setVerifying] = useState(false)
+  // One action: verify every node's host key with evidence, and save the login (if given) where a key is verified.
+  const verifyKeys = async () => {
+    setVerifying(true); setErr(null)
+    const login = once.pw || once.key.trim() ? { username: once.user, ...(once.key.trim() ? { privateKey: once.key } : { password: once.pw }) } : undefined
+    const r = await run(() => apiJson<{ data: { nodes: Array<{ node: string; state: string; how: string; login: string | null }> } }>(`/api/clusters/${c.id}/verify-keys`, 'POST', { login }), () => void verifyKeys())
+    setVerifying(false)
+    if (!r) return
+    if (r.ok) { setChecked((r as any).body.data.nodes); setOnce(o => ({ ...o, pw: '', key: '' })); void load() } else setErr((r as any).error ?? 'Could not verify')
+  }
   const load = useCallback(async () => {
     const r = await apiJson<{ data: NodeRow[] }>(`/api/clusters/${c.id}/nodes`)
     if (r.ok) { setRows(r.body!.data); setErr(null) } else setErr(r.error ?? 'Could not list the nodes')
@@ -185,7 +207,7 @@ function NodesSection({ c, onChanged, run }: { c: ClusterInfo; onChanged: () => 
     const r = await run(() => apiJson<{ loginsCleared?: string[] }>(`/api/clusters/${c.id}/connection`, 'POST', { nodeAddresses: addrs }), () => void saveAddrs())
     if (!r) return
     const cleared = (r as any).body?.loginsCleared ?? []
-    setErr(r.ok ? (cleared.length ? `Saved. ${cleared.join(', ')} changed address, so its saved login and host key were removed: add the login again and confirm the new host key.` : null) : (r as any).error ?? 'Not saved')
+    setErr(r.ok ? (cleared.length ? `Saved. ${cleared.join(', ')} changed address, so its saved login and host key were removed: press Verify keys (with the login) to set it up again.` : null) : (r as any).error ?? 'Not saved')
     if (r.ok) { onChanged(); void load() }
   }
   const readKey = async (node: string) => {
@@ -209,10 +231,22 @@ function NodesSection({ c, onChanged, run }: { c: ClusterInfo; onChanged: () => 
     <Section title={c.kind === 'remote' ? 'Nodes and logins' : 'Node addresses for file copies'}>
       <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
         {c.kind === 'remote'
-          ? 'The address HyperProx reaches each node on (its private-link address: Tailscale or WireGuard), and an optional root login for the hardware scan, monitoring and file copies. The login is checked against the node\'s host key, which you confirm, and is kept in the vault.'
+          ? 'The address HyperProx reaches each node on (its private-link address: Tailscale or WireGuard), and a root login for the hardware scan, monitoring and file copies, kept in the vault. HyperProx verifies each node\'s host key by itself and sends the login only to a node whose key is verified.'
           : 'The private-link address (Tailscale or WireGuard) a remote server reaches each of your nodes on, for files sent to this cluster. Node logins for the home cluster are in Settings, Setup checklist.'}
       </p>
       {err && <Notice kind="error">{err}</Notice>}
+      {c.kind === 'remote' && (
+        <div className="flex flex-col gap-2">
+          <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(12rem,1fr))' }}>
+            <div><label style={LABEL}>Node login (optional; saved where a key is verified)</label><input style={INPUT} value={once.user} onChange={e => setOnce({ ...once, user: e.target.value })} /></div>
+            <div><label style={LABEL}>Password</label><input style={INPUT} type="password" autoComplete="off" value={once.pw} onChange={e => setOnce({ ...once, pw: e.target.value })} /></div>
+          </div>
+          <details><summary className="text-sm cursor-pointer" style={{ color: 'var(--text-muted)' }}>Use a private key instead</summary>
+            <textarea style={{ ...INPUT, height: 80, padding: 8, fontFamily: 'var(--font-mono)', fontSize: 12 }} value={once.key} onChange={e => setOnce({ ...once, key: e.target.value })} /></details>
+          <div><Btn solid disabled={verifying} onClick={verifyKeys}>{verifying ? 'Verifying…' : 'Verify keys'}</Btn></div>
+          {checked && <ul className="text-sm">{checked.map(x => <li key={x.node}><b>{x.node}</b>: {x.state === 'verified' || x.state === 'already' ? 'verified' : x.state === 'blocked' ? 'refused' : 'not verified'}{x.login === 'saved' ? ', login saved' : ''}. <span style={{ color: 'var(--text-muted)' }}>{x.how}</span></li>)}</ul>}
+        </div>
+      )}
       {rows === null ? <BusyNote>Reading nodes…</BusyNote> : rows.map(n => (
         <div key={n.node} className="rounded-lg border p-3 flex flex-col gap-2" style={{ borderColor: 'var(--border-dim)', background: 'var(--ground-deep)' }}>
           <div className="flex gap-2 items-center flex-wrap">
@@ -222,7 +256,7 @@ function NodesSection({ c, onChanged, run }: { c: ClusterInfo; onChanged: () => 
           </div>
           <input style={INPUT} value={addrs[n.node] ?? ''} placeholder="its private-link address" onChange={e => setAddrs(a => ({ ...a, [n.node]: e.target.value }))} spellCheck={false} />
           {c.kind === 'remote' && <div className="flex gap-2 flex-wrap">
-            {n.address && !n.login && <Btn onClick={() => readKey(n.node)}>Add a login</Btn>}
+            {n.address && !n.login && checked?.some(x => x.node === n.node && x.state === 'no-evidence') && <Btn onClick={() => readKey(n.node)}>Compare its key by hand</Btn>}
             {n.login && <Btn onClick={() => removeLogin(n.node)}>Remove login</Btn>}
           </div>}
           {login?.node === n.node && (
@@ -230,7 +264,7 @@ function NodesSection({ c, onChanged, run }: { c: ClusterInfo; onChanged: () => 
               {login.fp === null && !login.msg && <BusyNote>Reading its host key…</BusyNote>}
               {login.fp && <>
                 <p className="text-sm" style={{ color: 'var(--text)' }}>Its host key: <span className="font-mono break-all" style={{ color: 'var(--remote)' }}>{login.fp}</span></p>
-                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Compare it with the output of this command in that node's Shell:</p>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>HyperProx found no evidence to verify this node's key by itself, so compare it once with the output of this command in that node's Shell:</p>
                 <div className="flex gap-2 items-center flex-wrap"><code className="font-mono text-xs" style={{ color: 'var(--text-bright)' }}>for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf "$f"; done</code><CopyButton text={'for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf "$f"; done'} /></div>
                 <label className="flex gap-2 items-start text-sm" style={{ color: 'var(--text)' }}><input type="checkbox" className="mt-1" checked={login.matches} onChange={e => setLogin({ ...login, matches: e.target.checked })} /><span>One of those lines shows this exact fingerprint.</span></label>
                 <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(12rem,1fr))' }}>

@@ -12,7 +12,7 @@ export interface ClusterInfo {
   address: string
   port: number
   note: string
-  cert: { fingerprint: string | null; confirmedAt: string | null; confirmedBy: string | null }
+  cert: { fingerprint: string | null; confirmedAt: string | null; confirmedBy: string | null; verified?: string | null }
   nodeAddresses: Record<string, string>
   allowedRoots: string[]
   ignoredGuests?: string[]
