@@ -28,7 +28,8 @@ import { GoDaddyClient } from './godaddy-client'
 import { ensureGrafanaAdmin } from './grafana-admin'
 import { listPins, pinId, confirmPin, PinConfirmRefusal, pinnedKey, pinSource, isConfirmedSource, evidenceWords, isRemotePinId, type PinRow } from './hostkey-pins'
 import { probeHostKey } from './node-exec'
-import { verifyNodes, productionVerifyDeps, saveAnchors, ANCHOR_COMMAND, VerifyRefusal, type NodeVerdict, type VerifyDeps } from './hostkey-verify'
+import { verifyNodes, productionVerifyDeps, saveAnchors, ANCHOR_COMMAND, VerifyRefusal, AnchorReplaceRefusal, type NodeVerdict, type VerifyDeps } from './hostkey-verify'
+import { publish } from './notify'
 
 const run = promisify(execFile)
 
@@ -402,7 +403,9 @@ async function hostKeyItem(deps: ChecklistDeps, nodes: string[], addrs: Record<s
     what: 'HyperProx sends a node its login only when the node shows a key that is verified or confirmed. It verifies them by itself, ' +
       "against your cluster's own record of each node's key, read on a node when HyperProx was installed from one, and then through nodes " +
       'already verified, or over Tailscale or WireGuard. It does this after you sign in and whenever it meets a new node; there is nothing ' +
-      'to press when they show verified. If HyperProx was not installed from a node, run the command below on any node once and paste what it prints.',
+      "to press when they show verified. If HyperProx was not installed from a node, run the command below once on any node's own " +
+      "console (its screen, IPMI or iKVM, or an SSH session whose key you already verified; not this HyperProx's Terminal on a key " +
+      'that is not verified yet) and paste what it prints.',
     ...(state === 'done' || state === 'not-applicable' ? {} : { command: ANCHOR_COMMAND }),
   }
 }
@@ -433,17 +436,27 @@ export async function verifyHomeHostKeys(by: string, o: { onlyIfNeeded?: boolean
  * The output of ANCHOR_COMMAND, run by the admin on one of their nodes and pasted here: kept as the home cluster's
  * anchor (public keys only), then verified against as usual. Re-confirmed like every change here.
  */
-export async function saveHostKeyAnchor(input: any, by: string): Promise<{ nodes: string[] }> {
+export async function saveHostKeyAnchor(input: any, by: string, o: { replaceInstaller?: boolean } = {}): Promise<{ nodes: string[]; replaced: string[] }> {
   const output = typeof input?.output === 'string' ? input.output : ''
   if (!output.trim()) throw new ChecklistRefusal('Paste what the command printed.')
   try {
-    const nodes = await saveAnchors('home', output, 'pasted')
-    await auditCredentialUse('host_key.anchor.save', 'cluster:home', { by, source: 'pasted', nodes })
-    return { nodes }
+    const r = await saveAnchors('home', output, 'pasted', o)
+    await auditCredentialUse('host_key.anchor.save', 'cluster:home', { by, source: 'pasted', nodes: r.nodes })
+    if (r.replaced.length) await anchorReplaced('Home cluster', 'cluster:home', by, r.replaced)
+    return r
   } catch (e: any) {
     if (e instanceof VerifyRefusal) throw new ChecklistRefusal(e.message, 422)
+    if (e instanceof AnchorReplaceRefusal) throw Object.assign(new ChecklistRefusal(e.message, 409), { code: 'anchor_installer' })
     throw e
   }
+}
+
+/** A pasted anchor replaced different keys: audited, and an alert goes out (it may be a rebuild, or not). */
+export async function anchorReplaced(cluster: string, resource: string, by: string, nodes: string[]): Promise<void> {
+  await auditCredentialUse('host_key.anchor.replace', resource, { by, nodes })
+  await publish({ type: 'hostkey.anchor', severity: 'warning', title: `${cluster}: the host keys HyperProx checks against were replaced`,
+    lines: [`By ${by}, for ${nodes.join(', ')}. If you did not just paste a node's output yourself, check the keys on each node's own console.`],
+    where: 'Setup checklist', link: '/settings/setup-checklist', fingerprint: `hostkey-anchor:${resource}` }).catch(() => undefined)
 }
 
 /** Confirm one fingerprint the admin compared on the machine. It must be the key presented right now. */

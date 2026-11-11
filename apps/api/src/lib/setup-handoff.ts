@@ -151,7 +151,7 @@ export async function flushHeldSecrets(as: RequestContext): Promise<{ stored: st
     // wizard pinned below can be verified against it right after this sign-in.
     if (held.hostRecord) {
       try {
-        const n = await saveAnchors('home', held.hostRecord, 'installer')
+        const { nodes: n } = await saveAnchors('home', held.hostRecord, 'installer')
         await auditCredentialUse('host_key.anchor.save', 'cluster:home', { by: as.email, source: 'installer', nodes: n })
         stored.push(`host-key record for ${n.length} node${n.length === 1 ? '' : 's'}`)
         delete held.hostRecord

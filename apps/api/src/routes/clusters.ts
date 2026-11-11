@@ -31,6 +31,7 @@ import { verifyNodes, productionVerifyDeps, VerifyRefusal, saveAnchors, ANCHOR_C
 import { addServer, linkDevice, inspectAddress, certNames, scriptHash, startAddJob, addJob, IdentityMismatch, MANUAL_CERT_WHY, type AddServerDeps, type AddServerResult } from '../lib/clusters/add-server'
 import { discoverSend, sendDeps } from '../lib/clusters/send-simple'
 import { remoteToken } from '../lib/clusters/registry'
+import { anchorReplaced } from '../lib/setup-checklist'
 import { forgetRemoteGuestConfigService } from './guest-config'
 import { browse, setupSending, previewCopy, startCopy, jobStore, CopyRunner, setCopyKick, savePlex, deletePlexToken, checkPlexUrl, forgetClusterSending, type CopyInput } from '../lib/clusters/files'
 import { writeRemoteTargets } from '../lib/clusters/monitoring'
@@ -444,7 +445,8 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
         : null
       if (typeof req.body?.record === 'string' && req.body.record.trim()) {
         const anchored = await saveAnchors(row.id, req.body.record, 'pasted')
-        await auditCredentialUse('host_key.anchor.save', `cluster:${row.id}`, { by: who(), source: 'pasted', nodes: anchored })
+        await auditCredentialUse('host_key.anchor.save', `cluster:${row.id}`, { by: who(), source: 'pasted', nodes: anchored.nodes })
+        if (anchored.replaced.length) await anchorReplaced(row.name, `cluster:${row.id}`, who(), anchored.replaced)
       }
       const out = await runInCluster(row.id, async () => {
         const names = ((await pveFromEnv().fetchStrict<any[]>('/nodes').catch(() => [])) ?? []).map(n => String(n.node))

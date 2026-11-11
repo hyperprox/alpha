@@ -14,6 +14,11 @@ import { listPins, pinSource, setPinSource, recordPin, pinId, recordVerified, pi
 import { setClusterStore, loadClusters, createRemote, updateCluster, resetClustersForTests } from '../src/lib/clusters/registry'
 import { MemoryClusterStore } from '../src/lib/clusters/store'
 import { runInCluster } from '../src/lib/clusters/context'
+import { saveHostKeyAnchor } from '../src/lib/setup-checklist'
+import { getAnchor } from '../src/lib/hostkey-pins'
+import { saveAnchors } from '../src/lib/hostkey-verify'
+import { setAuditSink } from '../src/lib/audit'
+import { addSession, markReconfirmed, reconfirmedWithin, dropReconfirm, isReconfirmed } from '../src/lib/auth'
 import { confirmHostKey, checklistState } from '../src/lib/setup-checklist'
 import { confirmedFingerprint } from '../src/lib/ha/hostkey'
 import { needsReconfirm } from '../src/lib/roles'
@@ -247,4 +252,34 @@ test('review 1: the installer\'s host record rides the one-time hand-over and be
   const a = await asOwner(() => getAnchor('home', 'node-a'))
   assert.equal(a?.source, 'installer')
   assert.equal(a?.keys.length, 1)
+})
+
+test('review N4: a pasted anchor never silently replaces the installer\'s; replacing needs a second, fresh re-confirmation, and is audited', async () => {
+  const audits: any[] = []
+  setAuditSink({ async write(r: any) { audits.push(r) } })
+  const mod: any = await import('ssh2')
+  const { utils } = mod.default ?? mod
+  const pub = () => String(utils.generateKeyPairSync('ed25519').public).trim().split(/\s+/).slice(0, 2).join(' ')
+  const out = (k: string) => Buffer.from(['@@hpx local node-a', '@@hpx node node-a', `node-a ${k}`, '@@hpx priv', '@@hpx own', `${k} root@node-a`, '@@hpx end'].join('\n')).toString('base64')
+  try {
+    await asOwner(async () => {
+      await saveAnchors('home', out(pub()), 'installer')
+      assert.equal((await getAnchor('home', 'node-a'))?.source, 'installer')
+      await assert.rejects(saveHostKeyAnchor({ output: out(pub()) }, 'owner@example.com'), (e: any) => e?.code === 'anchor_installer')
+      assert.equal((await getAnchor('home', 'node-a'))?.source, 'installer', 'unchanged')
+      const r = await saveHostKeyAnchor({ output: out(pub()) }, 'owner@example.com', { replaceInstaller: true })
+      assert.deepEqual(r.replaced, ['node-a'])
+      assert.equal((await getAnchor('home', 'node-a'))?.source, 'pasted')
+      assert.ok(audits.some(a => a.action === 'host_key.anchor.replace' && a.details.by === 'owner@example.com'))
+    })
+  } finally { setAuditSink(null) }
+  // The second re-confirmation: only a password entered in the last minute counts, and it can be asked again.
+  addSession({ sid: 'n4-sess', email: 'owner@example.com', role: 'owner', userId: 'u' })
+  markReconfirmed('n4-sess', Date.now() - 120_000)
+  assert.equal(isReconfirmed('n4-sess'), true)
+  assert.equal(reconfirmedWithin('n4-sess', 60_000), false)
+  markReconfirmed('n4-sess')
+  assert.equal(reconfirmedWithin('n4-sess', 60_000), true)
+  dropReconfirm('n4-sess')
+  assert.equal(isReconfirmed('n4-sess'), false)
 })

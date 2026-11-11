@@ -186,18 +186,36 @@ export const ANCHOR_COMMAND = `{ echo "${MARK} local $(basename "$(readlink -f /
 
 export interface AnchorSet { local: string; nodes: Record<string, RecordedKey[]> }
 
-/** Keep what ANCHOR_COMMAND printed as each node's anchor in `scope` ("home" or a remote's id). Returns the nodes. */
-export async function saveAnchors(scope: string, output: string, source: AnchorSource): Promise<string[]> {
+/** Pasting would replace anchors the installer read on the node itself; that needs a separate, fresh confirmation. */
+export class AnchorReplaceRefusal extends Error {
+  constructor(readonly nodes: string[]) {
+    super(`This would replace the host keys the installer read on ${nodes.join(', ')} itself. If those nodes were rebuilt on purpose, confirm the replacement (HyperProx asks for your master password again); otherwise do not: someone may be answering for them.`)
+    this.name = 'AnchorReplaceRefusal'
+  }
+}
+
+/**
+ * Keep what ANCHOR_COMMAND printed as each node's anchor in `scope` ("home" or a remote's id). An installer anchor is
+ * replaced by a pasted one only with `replaceInstaller` (the caller asked again for the master password). Returns the
+ * nodes saved, and those whose earlier anchor held different keys (the caller audits and alerts those).
+ */
+export async function saveAnchors(scope: string, output: string, source: AnchorSource, o: { replaceInstaller?: boolean } = {}): Promise<{ nodes: string[]; replaced: string[] }> {
   const set = parseAnchorOutput(output)
   if (!set) throw new VerifyRefusal('That is not the whole output of the command (it starts and ends with @@hpx lines, or is one long base64 line). Copy all of it and paste it again.')
   const at = new Date().toISOString()
-  const done: string[] = []
-  for (const [node, keys] of Object.entries(set.nodes)) {
-    if (!keys.length) continue
-    await saveAnchor(scope, node, { keys, source, at })
-    done.push(node)
+  const entries = Object.entries(set.nodes).filter(([, keys]) => keys.length)
+  const replaced: string[] = [], installer: string[] = []
+  for (const [node, keys] of entries) {
+    const prev = await getAnchor(scope, node)
+    if (!prev) continue
+    const a = prev.keys.map(k => k.fingerprint).sort().join(','), b = keys.map(k => k.fingerprint).sort().join(',')
+    if (a === b) continue
+    replaced.push(node)
+    if (prev.source === 'installer' && source !== 'installer') installer.push(node)
   }
-  return done
+  if (installer.length && !o.replaceInstaller) throw new AnchorReplaceRefusal(installer)
+  for (const [node, keys] of entries) await saveAnchor(scope, node, { keys, source, at })
+  return { nodes: entries.map(([n]) => n), replaced }
 }
 
 /**

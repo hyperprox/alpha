@@ -105,11 +105,16 @@ export default function SetupChecklistPage() {
   }
 
   // The one-line command's output from one of the nodes: kept as what keys are checked against, then verified.
-  async function saveAnchor(item: Item) {
+  async function saveAnchor(item: Item, replaceInstaller = false) {
     setBusy('anchor'); setError(null)
     try {
-      const j = await send('POST', '/api/setup-checklist/host-keys/anchor', { output: anchorOut }, () => saveAnchor(item))
+      const j = await send('POST', '/api/setup-checklist/host-keys/anchor', { output: anchorOut, replaceInstaller }, () => saveAnchor(item, replaceInstaller))
       if (!j) return
+      // It would replace keys the installer read on the node itself: only on a second, explicit confirmation.
+      if (j.code === 'anchor_installer') {
+        if (window.confirm(`${j.error}\n\nReplace them?`)) return saveAnchor(item, true)
+        return
+      }
       if (!j.success) throw new Error(j.error)
       setAnchorOut('')
       await run(item)
@@ -188,7 +193,7 @@ export default function SetupChecklistPage() {
             )}
             {item.id === 'host-keys' && item.command && (
               <div className="mt-3 text-sm flex flex-col gap-2">
-                <div style={{ color: 'var(--text-muted)' }}>Not installed from a node? Run this once in any node's Shell, and paste what it prints (public keys only):</div>
+                <div style={{ color: 'var(--text-muted)' }}>Not installed from a node? Run this once on any node's own console (its screen, IPMI or iKVM, or an SSH session whose key you already checked; not HyperProx's Terminal on a key that is not verified yet), and paste what it prints (public keys only):</div>
                 <pre className="rounded p-2 overflow-x-auto font-mono text-xs" style={{ background: 'var(--ground-deep)', color: 'var(--text-bright)' }}>{item.command}</pre>
                 <textarea style={{ ...INPUT, height: 70, fontFamily: 'var(--font-mono, monospace)' }} value={anchorOut} onChange={e => setAnchorOut(e.target.value)} placeholder="Paste the output here" />
                 <div><PrimaryButton disabled={!anchorOut.trim() || !!busy} onClick={() => saveAnchor(item)}>{busy === 'anchor' ? 'Verifying…' : 'Use it and verify'}</PrimaryButton></div>

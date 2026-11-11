@@ -247,7 +247,7 @@ function NodesSection({ c, onChanged, run }: { c: ClusterInfo; onChanged: () => 
             <textarea style={{ ...INPUT, height: 80, padding: 8, fontFamily: 'var(--font-mono)', fontSize: 12 }} value={once.key} onChange={e => setOnce({ ...once, key: e.target.value })} /></details>
           <div><Btn solid disabled={verifying} onClick={verifyKeys}>{verifying ? 'Verifying…' : 'Verify keys'}</Btn></div>
           {command && <div className="flex flex-col gap-2 text-sm">
-            <span style={{ color: 'var(--text-muted)' }}>HyperProx had nothing trusted to check some keys against. Run this once in any of that server's node Shells and paste what it prints (public keys only), then Verify keys again:</span>
+            <span style={{ color: 'var(--text-muted)' }}>HyperProx had nothing trusted to check some keys against. Run this once on one of that server's nodes, at its own console (its screen, IPMI or iKVM, or an SSH session whose key you already checked; not HyperProx's Terminal on a key that is not verified yet), paste what it prints (public keys only), then Verify keys again:</span>
             <pre className="rounded p-2 overflow-x-auto font-mono text-xs" style={{ background: 'var(--ground-deep)', color: 'var(--text-bright)' }}>{command}</pre>
             <textarea style={{ ...INPUT, height: 70, padding: 8, fontFamily: 'var(--font-mono)', fontSize: 12 }} value={record} onChange={e => setRecord(e.target.value)} placeholder="Paste the output here" />
           </div>}

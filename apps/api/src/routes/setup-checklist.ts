@@ -14,7 +14,7 @@
 
 import type { FastifyPluginAsync } from 'fastify'
 import { confirmHostKey, saveHostKeyAnchor, checklistState, startItem, getJob, activeJob, saveNodeLoginForAll, ChecklistRefusal, productionChecklistDeps, type ChecklistDeps, type ItemId } from '../lib/setup-checklist'
-import { currentContext } from '../lib/auth'
+import { currentContext, reconfirmedWithin, dropReconfirm } from '../lib/auth'
 import { igpuAccess, IgpuRefusal } from '../lib/igpu-access'
 
 export function buildSetupChecklistRoutes(deps?: () => ChecklistDeps): FastifyPluginAsync {
@@ -45,9 +45,20 @@ export function buildSetupChecklistRoutes(deps?: () => ChecklistDeps): FastifyPl
     })
 
     // POST /host-keys/anchor { output }: what the one-line command printed on one of the admin's nodes.
+    // Replacing keys the installer read on a node itself needs `replaceInstaller: true` AND a fresh master password
+    // (entered in the last minute): a second re-confirmation on top of the one every change here needs.
     fastify.post<{ Body: Record<string, unknown> }>('/host-keys/anchor', async (req, reply) => {
-      try { return reply.send({ success: true, data: await saveHostKeyAnchor(req.body, who()) }) }
-      catch (e) { return fail(reply, e) }
+      const sid = currentContext()?.sid ?? ''
+      const replaceInstaller = req.body?.replaceInstaller === true
+      if (replaceInstaller && !reconfirmedWithin(sid, 60_000)) {
+        dropReconfirm(sid)
+        return reply.status(403).send({ ok: false, code: 'reconfirm_required', error: 'Replacing the keys the installer read needs your master password once more.' })
+      }
+      try { return reply.send({ success: true, data: await saveHostKeyAnchor(req.body, who(), { replaceInstaller }) }) }
+      catch (e: any) {
+        if (e?.code === 'anchor_installer') return reply.status(409).send({ success: false, code: 'anchor_installer', error: e.message })
+        return fail(reply, e)
+      }
     })
 
     // POST /host-keys/confirm { host, port, fingerprint }: the admin compared it on the machine.
