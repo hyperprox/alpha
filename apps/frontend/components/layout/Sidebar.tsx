@@ -15,6 +15,7 @@ import { SessionBadge } from './SessionBadge'
 import { versionLabel } from './version'
 import { NAV, isActive } from './nav'
 import { useSession } from '@/lib/session'
+import { DemoBadge } from './TopBar'
 import s from './shell.module.css'
 
 const COLLAPSE_KEY = 'hyperprox-rail'
@@ -55,6 +56,7 @@ export function Sidebar() {
     <>
       <header className={s.phoneBar}>
         <Link href="/dashboard" className={s.logo} aria-label="HyperProx dashboard">HYPER<i>PROX</i></Link>
+        {status?.demo && <DemoBadge />}
         <button ref={menuBtn} className={s.iconBtn} onClick={() => setDrawerOpen(true)} aria-label="Open navigation" aria-expanded={drawerOpen} aria-controls="hp-rail">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden><path d="M4 7h16M4 12h16M4 17h16" /></svg>
         </button>

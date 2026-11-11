@@ -90,6 +90,8 @@
 .live[data-state="connecting"] { color: var(--text-muted); }
 .live[data-state="connecting"] i { background: var(--text-dimmer); box-shadow: none; }
 @keyframes shPulse { 50% { opacity: .35; } }
+.demo { display: inline-flex; align-items: center; font: 600 .68rem var(--font-mono); letter-spacing: .14em; text-transform: uppercase;
+  color: var(--warn); border: 1px solid var(--warn); border-radius: 6px; padding: 2px 8px; }
 .search { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); background: var(--surface); border-radius: 10px;
   padding: 0 12px; min-height: 40px; color: var(--text-muted); font: 500 .85rem var(--font-body); min-width: 13rem; cursor: pointer; }
 .search:hover { border-color: var(--border-strong); color: var(--text-soft); }

@@ -21,6 +21,60 @@ zero-knowledge vault.
 It runs in a single container on your cluster, installs with one command, and talks to Proxmox
 through its API.
 
+## Screenshots
+
+<table>
+  <tr>
+    <td><a href="docs/screenshots/dashboard-desktop-dark.png"><img src="docs/screenshots/dashboard-desktop-dark.png" alt="Dashboard" /></a></td>
+    <td><a href="docs/screenshots/command-center-desktop-dark.png"><img src="docs/screenshots/command-center-desktop-dark.png" alt="Command center with a home cluster and a remote server" /></a></td>
+  </tr>
+  <tr>
+    <td><a href="docs/screenshots/infrastructure-desktop-light.png"><img src="docs/screenshots/infrastructure-desktop-light.png" alt="Infrastructure, light theme" /></a></td>
+    <td><a href="docs/screenshots/storage-desktop-dark.png"><img src="docs/screenshots/storage-desktop-dark.png" alt="Storage with Ceph and a NAS" /></a></td>
+  </tr>
+  <tr>
+    <td><a href="docs/screenshots/plugin-home-assistant-desktop-dark.png"><img src="docs/screenshots/plugin-home-assistant-desktop-dark.png" alt="Home Assistant plug-in" /></a></td>
+    <td><a href="docs/screenshots/plugin-router-desktop-dark.png"><img src="docs/screenshots/plugin-router-desktop-dark.png" alt="Router plug-in" /></a></td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/screenshots/dashboard-phone-dark.png" alt="Dashboard on a phone" width="190" />
+  <img src="docs/screenshots/plugin-home-assistant-rooms-phone-light.png" alt="Home Assistant rooms on a phone, light theme" width="190" />
+  <img src="docs/screenshots/plugin-plex-phone-dark.png" alt="Plex plug-in on a phone" width="190" />
+</p>
+
+The main pages, at desktop and phone size, in the dark and the light theme, are in
+[docs/screenshots](docs/screenshots). They are taken from the demo below, so every name, address
+and number in them is invented.
+
+## Try the demo
+
+The demo runs the real frontend against a stand-in API that answers every page from invented data: a
+three-node cluster called `homelab`, a remote "Family Server", and the plug-ins with rooms, devices,
+streams and downloads. The vault shows as unlocked, and anything that would change, reveal, send or
+open something (a save, a power action, a secret, Send files, a terminal) is refused by the API with
+"This is a demo".
+
+```bash
+git clone https://github.com/hyperprox/alpha.git hyperprox && cd hyperprox
+pnpm install
+pnpm demo        # first run builds the frontend, then open http://127.0.0.1:3100
+```
+
+Sign in with anything. The demo is a separate entrypoint (`apps/api/src/demo`): it never loads a
+`.env`, a database, the vault or a credential store, it refuses to start if the environment holds a
+real install's settings or if it would take the real ports (3000, 3002), and it keeps its own data
+directory. Every page shows a **DEMO** badge.
+
+To retake the screenshots, start the demo, then copy `scripts/screenshots.mjs` into a folder where
+Playwright is installed (`npm i playwright && npx playwright install chromium`) and run it there. It
+refuses any address that does not answer as the demo.
+
+```bash
+node screenshots.mjs http://127.0.0.1:3100 /path/to/hyperprox/docs/screenshots
+```
+
 ## Highlights
 
 | Area | What you get |

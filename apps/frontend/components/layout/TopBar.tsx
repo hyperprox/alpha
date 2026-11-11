@@ -30,10 +30,16 @@ function useLive(): 'live' | 'offline' | 'connecting' {
   return status ? 'live' : 'connecting'
 }
 
+/** Shown on every page while the demo API answers: the data is invented and nothing can be changed. */
+export function DemoBadge() {
+  return <span className={s.demo} title="Demo: invented data, and every change is refused">Demo</span>
+}
+
 export function TopBar({ full = false }: { full?: boolean }) {
   const pathname = usePathname()
   const { crumb, title } = pageMeta(pathname)
   const live = useLive()
+  const { status } = useSession()
   const [finder, setFinder] = useState(false)
 
   // "/" opens the finder from anywhere that is not a text box (a terminal's input counts as one).
@@ -56,6 +62,7 @@ export function TopBar({ full = false }: { full?: boolean }) {
         <h1 className={s.title}>{title}</h1>
       </div>
       <div className={s.tools}>
+        {status?.demo && <DemoBadge />}
         <span className={s.live} data-state={live} role="status">
           <i aria-hidden />{live === 'live' ? 'Live' : live === 'offline' ? 'Offline' : 'Connecting'}
         </span>
