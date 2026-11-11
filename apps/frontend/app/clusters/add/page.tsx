@@ -55,20 +55,36 @@ export default function AddServerPage() {
   const [monitoring, setMonitoring] = useState(true)
   const [sending, setSending] = useState(true)
   const [setup, setSetup] = useState<Setup | null>(null)
+  const [preview, setPreview] = useState<{ certificate: Cert; connectingTo: { device: string; owner: string | null } | null; why: string | null; monitoring: string[]; hash: string } | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const [added, setAdded] = useState<{ id: string; name: string; nodes: string[]; version: string } | null>(null)
 
   // A different address or port means a different certificate: any manual compare starts again.
-  useEffect(() => { setCert(null); setWhy(null); setMatches(false) }, [address, port])
+  useEffect(() => { setCert(null); setWhy(null); setMatches(false); setPreview(null) }, [address, port])
+
+  // Before the password: what is at that address and what would be installed, shown in the same form. Reads only:
+  // no token, no login. Connect sends back its hash, so nothing different from what is shown here can be done.
+  useEffect(() => {
+    const a = address.trim()
+    if (!a || !/^\d+$/.test(port)) return
+    const t = setTimeout(async () => {
+      const r = await apiJson<{ data: { certificate: Cert; connectingTo: { device: string; owner: string | null } | null; why: string | null; monitoring: string[]; hash: string } }>('/api/clusters/add-preview', 'POST', { address: a, port: Number(port) })
+      if (!r.ok) return
+      const d = r.body!.data
+      setPreview(d)
+      if (!d.connectingTo) { setCert(d.certificate); setWhy(d.why) }
+    }, 700)
+    return () => clearTimeout(t)
+  }, [address, port])
 
   const connect = async () => {
     setBusy('connect'); setErr(null)
     const login = nodePw || nodeKey.trim() ? { username: nodeUser.trim(), ...(nodeKey.trim() ? { privateKey: nodeKey } : { password: nodePw }) } : undefined
     const r = await apiJson<{ data: { cluster: { id: string; name: string }; nodes: string[]; version: string; setup: Setup } }>('/api/clusters', 'POST', {
       name: name.trim(), address: address.trim(), port: Number(port), note, tokenId: tokenId.trim(), tokenSecret: secret.trim(),
-      ...(cert && matches ? { fingerprint: cert.fingerprint } : {}), login, monitoring, sending,
+      ...(cert && matches ? { fingerprint: cert.fingerprint } : {}), login, monitoring, sending, previewHash: preview?.hash,
     })
     setBusy(null)
     if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void connect()); return }
@@ -87,7 +103,7 @@ export default function AddServerPage() {
 
   if (!atLeast(role, 'admin')) return <div className="p-8"><Notice kind="warn">Adding a server needs the admin role.</Notice></div>
 
-  const ready = name.trim() && address.trim() && /^\d+$/.test(port) && tokenId.trim() && secret.trim() && (!cert || matches)
+  const ready = name.trim() && address.trim() && /^\d+$/.test(port) && tokenId.trim() && secret.trim() && preview && (!cert || matches)
 
   return (
     <div className="min-h-full px-4 py-5 sm:p-8" style={{ background: 'var(--ground)' }}>
@@ -158,7 +174,7 @@ export default function AddServerPage() {
               </div>
               <details><summary className="text-sm cursor-pointer" style={{ color: 'var(--text-muted)' }}>Use a private key instead</summary>
                 <textarea style={{ ...INPUT, height: 90, padding: 8, fontFamily: 'var(--font-mono)', fontSize: 12 }} value={nodeKey} onChange={e => setNodeKey(e.target.value)} /></details>
-              <label className="flex gap-2 items-start text-sm" style={{ color: 'var(--text)' }}><input type="checkbox" className="mt-1" checked={monitoring} onChange={e => setMonitoring(e.target.checked)} /><span>Install monitoring on its nodes (node_exporter only; nothing is upgraded or removed)</span></label>
+              <label className="flex gap-2 items-start text-sm" style={{ color: 'var(--text)' }}><input type="checkbox" className="mt-1" checked={monitoring} onChange={e => setMonitoring(e.target.checked)} /><span>Install monitoring on its nodes{preview ? `: ${preview.monitoring.join(' ')}` : ' (node_exporter only; nothing is upgraded or removed)'}</span></label>
               <label className="flex gap-2 items-start text-sm" style={{ color: 'var(--text)' }}><input type="checkbox" className="mt-1" checked={sending} onChange={e => setSending(e.target.checked)} /><span>Check that Send files can reach it</span></label>
               {cert && (
                 <div className="flex flex-col gap-2 rounded-lg border p-3" style={{ borderColor: 'var(--warn)' }}>
@@ -172,6 +188,7 @@ export default function AddServerPage() {
                   </label>
                 </div>
               )}
+              {preview?.connectingTo && <p className="text-sm font-semibold" style={{ color: 'var(--good)' }}>Connecting to {preview.connectingTo.device}{preview.connectingTo.owner ? ` owned by ${preview.connectingTo.owner}` : ''}.</p>}
               {err && <Notice kind="error">{err}</Notice>}
               <div><button disabled={!ready || busy !== null} onClick={connect} className="px-5 rounded-md text-sm font-bold disabled:opacity-40" style={{ height: 40, background: 'var(--accent)', color: 'var(--accent-ink)' }}>{busy === 'connect' ? 'Connecting and setting up…' : 'Connect'}</button></div>
               {busy === 'connect' && <BusyNote>Checking the certificate, the token and each node. This can take a minute.</BusyNote>}

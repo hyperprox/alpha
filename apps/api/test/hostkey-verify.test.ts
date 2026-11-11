@@ -12,7 +12,7 @@ import {
 import { assertSafeScript } from '../src/lib/clusters/script-guard'
 import { evidenceWords, type PinEvidence, type PinSource, type Anchor } from '../src/lib/hostkey-pins'
 import { needsReconfirm } from '../src/lib/roles'
-import { addServer, MANUAL_CERT_WHY, type AddServerDeps } from '../src/lib/clusters/add-server'
+import { addServer, inspectAddress, monitoringPreview, MANUAL_CERT_WHY, IdentityMismatch, type AddServerDeps } from '../src/lib/clusters/add-server'
 import { createHmac, randomBytes } from 'node:crypto'
 import { utils } from 'ssh2'
 
@@ -389,7 +389,7 @@ test('review 6: record reads are allowed only as exact whole lines, never glued 
 //  Add a server, bundled
 // ---------------------------------------------------------------------------
 
-function addDeps(o: { tailnet?: TailnetStatus | null; whois?: Record<string, TailnetWhois>; local?: string | null; nodes?: string[]; ips?: string[]; verdict?: 'verified' | 'no-evidence' } = {}) {
+function addDeps(o: { tailnet?: TailnetStatus | null; whois?: Record<string, TailnetWhois>; local?: string | null; nodes?: string[]; ips?: string[]; verdict?: 'verified' | 'no-evidence'; certNames?: string[] } = {}) {
   const nodes = o.nodes ?? ['node1', 'node2', 'node3']
   const calls: string[] = []
   const created: any[] = []
@@ -397,7 +397,7 @@ function addDeps(o: { tailnet?: TailnetStatus | null; whois?: Record<string, Tai
   const audits: Array<{ action: string; details: any }> = []
   const alerts: string[] = []
   const deps: AddServerDeps = {
-    async probeCertificate() { calls.push('probe'); return { fingerprint: 'AB:'.repeat(31) + 'AB', subject: 'CN=node1.example', issuer: 'CN=x', validFrom: '', validTo: '', altNames: ['node1', 'node1.example', '100.64.0.11'] } },
+    async probeCertificate() { calls.push('probe'); return { fingerprint: 'AB:'.repeat(31) + 'AB', subject: `CN=${(o.certNames ?? ['node1'])[0]}.example`, issuer: 'CN=x', validFrom: '', validTo: '', altNames: [...(o.certNames ?? ['node1']), '100.64.0.11'] } },
     async tryToken() { calls.push('token'); return { version: '9.1', missing: [], nodes, identity: { clusterName: 'remote', nodes: nodes.map((n, i) => ({ name: n, ip: o.ips?.[i] ?? `10.0.0.${21 + i}` })), local: o.local === undefined ? nodes[0] : o.local } } },
     async homeIdentity() { return { addresses: ['10.0.0.1'], fingerprint: null, clusterName: 'home', nodes: [{ name: 'pve' }] } },
     async tailnet() { return o.tailnet ?? null },
@@ -408,7 +408,7 @@ function addDeps(o: { tailnet?: TailnetStatus | null; whois?: Record<string, Tai
     async verifyNodes(_id, input) { calls.push(`verify:${input.nodes.map(n => n.address).join(',')}`); return input.nodes.map(n => ({ node: n.name, host: n.address, port: 22, state: o.verdict ?? 'verified', why: o.verdict === 'no-evidence' ? 'no evidence' : 'verified automatically: x' })) },
     async testLogin() { calls.push('test-login'); return true },
     async saveLogin(_id, node) { savedLogins.push(node) },
-    async monitoring() { calls.push('monitoring'); return 'Monitoring installed.' },
+    async monitoring(_id, _by, hash) { calls.push(`monitoring:${hash}`); return 'Monitoring installed.' },
     async sending() { calls.push('sending'); return 'Send files is ready.' },
     async audit(action, _r, details) { audits.push({ action, details }) },
     async alert(title) { alerts.push(title) },
@@ -421,15 +421,18 @@ const base = { name: 'Remote server', address: '100.64.0.11', port: 8006, tokenI
 
 test('add a server over the tailnet: the typed IP is vouched for; other nodes only by tailnet IPs their own status reports', async () => {
   const d = addDeps({ tailnet: tsNodes, whois: owned, ips: ['100.64.0.11', '100.64.0.12', '10.0.0.23'] })
-  const r = await asOwner(() => addServer({ ...base, login: { username: 'root', password: PW } }, d.deps))
+  const shown = await inspectAddress(base.address, base.port, d.deps)
+  d.calls.length = 0
+  const r = await asOwner(() => addServer({ ...base, previewHash: shown.hash, login: { username: 'root', password: PW } }, d.deps))
   assert.equal(r.kind, 'added')
   if (r.kind !== 'added') return
-  assert.match(String(d.created[0].verified), /this exact address, the device node1 owned by owner@example.com/)
+  assert.match(String(d.created[0].verified), /this exact address, the device node1 owned by owner@example.com; its certificate is for node1, which its own API confirms/)
   assert.ok(d.calls.includes('addresses:{"node1":"100.64.0.11","node2":"100.64.0.12"}'), 'node3 reports only a cluster-network address: left empty')
   assert.ok(d.calls.includes('verify:100.64.0.11,100.64.0.12'))
   assert.deepEqual(d.savedLogins, ['node1', 'node2'])
   assert.ok(d.calls.indexOf('test-login') > d.calls.findIndex(c => c.startsWith('verify:')), 'the login is tested only after the keys are verified')
-  assert.ok(d.calls.includes('monitoring') && d.calls.includes('sending'))
+  assert.ok(d.calls.includes(`monitoring:${monitoringPreview().hash}`), 'review 5: monitoring is applied only with the script that was shown')
+  assert.ok(d.calls.includes('sending'))
   assert.ok(d.audits.some(a => a.action === 'cluster.add' && a.details.certificate === 'verified automatically'))
   assert.ok(!JSON.stringify(d.audits).includes(PW) && !JSON.stringify(d.audits).includes(base.tokenSecret), 'no secret in the audit log')
 })
@@ -451,7 +454,7 @@ test('add a server: no login saved where a key could not be verified; ticks off 
   assert.deepEqual(d.savedLogins, [])
   assert.ok(!d.calls.includes('test-login'), 'the login was never sent')
   assert.equal(r.setup.monitoring, null)
-  assert.ok(!d.calls.includes('monitoring') && !d.calls.includes('sending'))
+  assert.ok(!d.calls.some(c => c.startsWith('monitoring')) && !d.calls.includes('sending'))
 })
 
 test('add a server on a plain LAN address: nothing is saved, and the manual compare is explained in one sentence', async () => {
@@ -466,4 +469,41 @@ test('add a server on a plain LAN address: nothing is saved, and the manual comp
   assert.equal(r2.kind, 'added')
   assert.equal(d2.created[0].verified, null)
   assert.ok(d2.calls.includes('addresses:{"node1":"10.0.0.21"}'), 'review 4: the other nodes\' cluster addresses are not filled in')
+})
+
+test('review 3: before any token is sent, the certificate must be for the tailnet device at that address', async () => {
+  const d = addDeps({ tailnet: tsNodes, whois: owned, certNames: ['elsewhere'] })
+  const shown = await inspectAddress(base.address, base.port, d.deps)
+  assert.equal(shown.link, null)
+  assert.match(String(shown.why), /certificate at that address is for elsewhere, not for the device node1/)
+  d.calls.length = 0
+  const r = await asOwner(() => addServer(base, d.deps))
+  assert.equal(r.kind, 'manual-certificate')
+  assert.deepEqual(d.calls, ['probe'], 'the token was never sent')
+})
+
+test('review 3: the add dialog learns who it connects to before the password; a server whose API name is not in its certificate is refused', async () => {
+  const d = addDeps({ tailnet: tsNodes, whois: owned })
+  const shown = await inspectAddress(base.address, base.port, d.deps)
+  assert.deepEqual({ device: shown.link?.device, owner: shown.link?.owner }, { device: 'node1', owner: 'owner@example.com' })
+  const bad = addDeps({ tailnet: tsNodes, whois: owned, local: 'other-node' })
+  await assert.rejects(asOwner(() => addServer(base, bad.deps)), IdentityMismatch)
+  assert.equal(bad.created.length, 0)
+  assert.equal(bad.alerts.length, 1)
+  assert.ok(bad.audits.some(a => a.action === 'cluster.add.blocked'))
+})
+
+test('review 5: the add applies only what was previewed; anything changed since is refused, and no preview means no monitoring', async () => {
+  const d = addDeps({ tailnet: tsNodes, whois: owned })
+  const shown = await inspectAddress(base.address, base.port, d.deps)
+  assert.match(shown.monitoring.steps[0], /prometheus-node-exporter/)
+  // The tailnet device changed owner between the preview and Connect.
+  d.calls.length = 0
+  const moved = addDeps({ tailnet: tsNodes, whois: { '100.64.0.11': who({ owner: 'new@example.com', nodeId: 'nOther' }) } })
+  await assert.rejects(asOwner(() => addServer({ ...base, previewHash: shown.hash }, moved.deps)), /changed since you looked/)
+  assert.ok(!moved.calls.includes('token'))
+  const noPreview = addDeps({ tailnet: tsNodes, whois: owned })
+  const r = await asOwner(() => addServer({ ...base, login: { username: 'root', password: PW } }, noPreview.deps))
+  assert.ok(r.kind === 'added' && /only after its preview is shown/.test(String(r.setup.monitoring)))
+  assert.ok(!noPreview.calls.some(c => c.startsWith('monitoring')))
 })

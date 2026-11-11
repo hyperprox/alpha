@@ -20,7 +20,10 @@
 //  alert goes out. Steps 4 and 5 never undo the add: they report what they did and what is left.
 // =============================================================================
 
+import { createHash } from 'node:crypto'
+import net from 'node:net'
 import type { TerminalCredential } from '../ssh-broker'
+import { installScript } from './monitoring'
 import type { PresentedCertificate } from './tls-pin'
 import { ClusterRefusal, looksLikeHome, HOME_DUPLICATE, type ClusterIdentity, type ClusterInfo, type NewRemote } from './registry'
 import { isTailnetAddress, tailnetIdentity, refuseTokenContext, type TailnetStatus, type TailnetWhois, type WgLink, type NodeVerdict, type VerifyInput } from '../hostkey-verify'
@@ -40,6 +43,8 @@ export interface AddServerInput {
   login?: { username: string; password?: string; privateKey?: string; passphrase?: string } | null
   monitoring?: boolean
   sending?: boolean
+  /** The hash of the preview the owner saw (lib/clusters/add-server.ts inspectAddress): what is done must match it. */
+  previewHash?: string | null
   by: string
 }
 
@@ -56,7 +61,8 @@ export interface AddServerDeps {
   /** A test command over a session that requires the verified pin. */
   testLogin(clusterId: string, host: string, cred: TerminalCredential): Promise<boolean>
   saveLogin(clusterId: string, node: string, cred: TerminalCredential): Promise<void>
-  monitoring(clusterId: string, by: string): Promise<string>
+  /** Install monitoring, only the steps whose script hashes to `scriptHash` (what the owner was shown). */
+  monitoring(clusterId: string, by: string, scriptHash: string): Promise<string>
   sending(clusterId: string): Promise<string>
   audit(action: string, resource: string, details: Record<string, unknown>): Promise<void>
   alert(title: string, lines: string[]): Promise<void>
@@ -104,6 +110,56 @@ export async function nodeAddresses(identity: TokenCheck['identity'], nodes: str
   return out
 }
 
+/** The names a certificate is for: its common name and DNS alt names, first label, lower case. IPs are left out. */
+export function certNames(c: PresentedCertificate): string[] {
+  const cn = /(?:^|,\s*)CN=([^,]+)/.exec(c.subject)?.[1] ?? ''
+  return [...new Set([cn, ...c.altNames].map(x => x.trim()).filter(x => x && !net.isIP(x)).map(x => x.toLowerCase().split('.')[0]))]
+}
+
+/**
+ * What monitoring on a new server would do, shown before the master password and bound by the script's hash: only
+ * node_exporter, with no GPU extras, on each node whose key HyperProx verifies.
+ */
+export function monitoringPreview(): { steps: string[]; hash: string } {
+  return {
+    steps: ["On each of that server's nodes whose key HyperProx verifies: install prometheus-node-exporter from that server's own packages " +
+      '(nothing is upgraded or removed), listening on port 9100 of the Tailscale or WireGuard address HyperProx reaches it on, and only there. ' +
+      "Then HyperProx's Prometheus collects from it."],
+    hash: scriptHash(installScript({ amdGpu: false, intelGpu: false })),
+  }
+}
+export const scriptHash = (script: string) => createHash('sha256').update(script).digest('hex')
+
+export interface AddressInspection {
+  certificate: PresentedCertificate
+  /** The private link that vouches for exactly this address, and what its certificate says, or null. */
+  link: { device: string; owner: string | null; how: string } | null
+  /** Why HyperProx cannot verify the certificate by itself (one plain sentence), or null when it can. */
+  why: string | null
+  monitoring: { steps: string[]; hash: string }
+  /** Binds what is done to what was shown: certificate, device, owner and monitoring. */
+  hash: string
+}
+
+/**
+ * Read-only look at an address, before any token or password is involved: the certificate it presents, and whether
+ * the private link vouches for exactly that address AND the certificate is for the device the link names. This is
+ * what the add dialog shows ("Connecting to <device> owned by <owner>") above the one password.
+ */
+export async function inspectAddress(address: string, port: number, deps: Pick<AddServerDeps, 'probeCertificate' | 'tailnet' | 'whois' | 'wireguard'>): Promise<AddressInspection> {
+  const certificate = await deps.probeCertificate(address, port)
+  const [status, links, who] = await Promise.all([deps.tailnet().catch(() => null), deps.wireguard().catch(() => [] as WgLink[]), deps.whois(address).catch(() => null)])
+  let link = linkDevice(address, status, links, who)
+  let why: string | null = link ? null : MANUAL_CERT_WHY
+  if (link && !certNames(certificate).includes(link.device.toLowerCase())) {
+    why = `The certificate at that address is for ${certNames(certificate).join(', ') || 'no name'}, not for the device ${link.device} your tailnet has there, so HyperProx cannot vouch for it by itself; compare the fingerprint below with the one on that server's own Proxmox page (the node, then System, then Certificates) once.`
+    link = null
+  }
+  const monitoring = monitoringPreview()
+  const hash = createHash('sha256').update(JSON.stringify([certificate.fingerprint, link?.device ?? null, link?.owner ?? null, monitoring.hash])).digest('hex')
+  return { certificate, link, why, monitoring, hash }
+}
+
 function credOf(l: AddServerInput['login']): TerminalCredential | null {
   if (!l) return null
   const username = String(l.username ?? 'root').trim()
@@ -118,16 +174,19 @@ export async function addServer(input: AddServerInput, deps: AddServerDeps): Pro
   const { address, port } = input
   const cred = credOf(input.login)
 
-  // 1. The certificate: verified over a private link, or compared by hand.
-  const presented = await deps.probeCertificate(address, port)
-  let fp: string, verified: string | null = null, device: { device: string; owner: string | null; how: string } | null = null
+  // 1. The certificate, checked BEFORE the token goes anywhere: the private link must vouch for exactly this address
+  //    and the certificate must be for the device it names; otherwise the owner compares it by hand. What is found
+  //    must be what the owner was shown (the preview's hash).
+  const seen = await inspectAddress(address, port, deps)
+  const presented = seen.certificate
+  if (input.previewHash && input.previewHash !== seen.hash) throw new ClusterRefusal('What HyperProx finds at that address changed since you looked (its certificate, its tailnet device, or what monitoring would install). Nothing was saved. Look again.', 'conflict')
+  let fp: string, verified: string | null = null
+  const device = input.fingerprint ? null : seen.link
   if (input.fingerprint) {
     if (presented.fingerprint !== input.fingerprint) throw Object.assign(new ClusterRefusal(`The server now presents a different certificate (${presented.fingerprint}) from the one you confirmed. Nothing was saved. Compare again.`, 'conflict'), { presented: presented.fingerprint })
     fp = presented.fingerprint
   } else {
-    const [status, links, who] = await Promise.all([deps.tailnet().catch(() => null), deps.wireguard().catch(() => [] as WgLink[]), deps.whois(address).catch(() => null)])
-    device = linkDevice(address, status, links, who)
-    if (!device) return { kind: 'manual-certificate', certificate: presented, why: MANUAL_CERT_WHY }
+    if (!device) return { kind: 'manual-certificate', certificate: presented, why: seen.why ?? MANUAL_CERT_WHY }
     fp = presented.fingerprint
   }
 
@@ -136,7 +195,17 @@ export async function addServer(input: AddServerInput, deps: AddServerDeps): Pro
     if (/HTTP 401/.test(String(e?.message))) throw new ClusterRefusal('The server refused that token. Check the token ID and secret and paste them again. Nothing was saved.')
     throw e
   })
-  if (device) verified = device.how
+  if (device) {
+    // The server's own API must name itself as a node the certificate is for.
+    const local = t.identity.local ?? (t.nodes.length === 1 ? t.nodes[0] : null)
+    if (!local || !certNames(presented).includes(local.toLowerCase())) {
+      const why = `The server at ${address} says it is ${local ?? 'an unnamed node'}, but its certificate is for ${certNames(presented).join(', ') || 'no name'}. Nothing was saved.`
+      await deps.audit('cluster.add.blocked', `address:${address}`, { by: input.by, reason: 'the API node name is not in the certificate', device: device.device, node: local ?? '' })
+      await deps.alert('A server being added did not match its own certificate', [why])
+      throw new IdentityMismatch(why)
+    }
+    verified = `${device.how}; its certificate is for ${device.device}, which its own API confirms`
+  }
   const home = await deps.homeIdentity().catch(() => ({ addresses: [], fingerprint: null, clusterName: null, nodes: [] } as ClusterIdentity))
   if (looksLikeHome({ addresses: [address], fingerprint: fp, clusterName: t.identity.clusterName, nodes: t.identity.nodes }, home)) {
     throw new ClusterRefusal(`${HOME_DUPLICATE} Nothing was saved.`, 'conflict')
@@ -174,7 +243,8 @@ export async function addServer(input: AddServerInput, deps: AddServerDeps): Pro
 
   // 5. Optional chores. A failure here is reported, never fatal: the server is added.
   const monitoring = input.monitoring === false ? null
-    : saved ? await deps.monitoring(c.id, input.by).catch((e: any) => `Monitoring was not installed: ${e?.message ?? e}`)
+    : !input.previewHash ? 'Monitoring was not installed: it is installed here only after its preview is shown. The Edit page offers it.'
+    : saved ? await deps.monitoring(c.id, input.by, seen.monitoring.hash).catch((e: any) => `Monitoring was not installed: ${e?.message ?? e}`)
     : 'Monitoring needs a node login saved for at least one node; it is offered on the Edit page once one is.'
   const sending = input.sending === false ? null : await deps.sending(c.id).catch((e: any) => `Send files could not be checked: ${e?.message ?? e}`)
 

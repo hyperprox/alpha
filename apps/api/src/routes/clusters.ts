@@ -28,7 +28,7 @@ import { checkGuest, power, snapshot, backupNow, backupStorages, taskStatus, des
 import { probeHostKey, execOnNode, nodeCredential } from '../lib/node-exec'
 import { confirmPin, PinConfirmRefusal, forgetPin, pinnedKey, pinSource, isConfirmedSource, PinVerifyRefusal } from '../lib/hostkey-pins'
 import { verifyNodes, productionVerifyDeps, VerifyRefusal, saveAnchors, ANCHOR_COMMAND } from '../lib/hostkey-verify'
-import { addServer, linkDevice, IdentityMismatch, MANUAL_CERT_WHY, type AddServerDeps } from '../lib/clusters/add-server'
+import { addServer, linkDevice, inspectAddress, certNames, scriptHash, IdentityMismatch, MANUAL_CERT_WHY, type AddServerDeps } from '../lib/clusters/add-server'
 import { discoverSend, sendDeps } from '../lib/clusters/send-simple'
 import { remoteToken } from '../lib/clusters/registry'
 import { forgetRemoteGuestConfigService } from './guest-config'
@@ -36,7 +36,7 @@ import { browse, setupSending, previewCopy, startCopy, jobStore, CopyRunner, set
 import { writeRemoteTargets } from '../lib/clusters/monitoring'
 import { prometheusBase } from '../lib/service-health'
 import { updateCluster as updateClusterRow, looksLikeHome, homeAddresses, HOME_DUPLICATE, type ClusterIdentity } from '../lib/clusters/registry'
-import { scanMonitoring, previewMonitoring, applyMonitoring, MonitoringRefusal } from '../lib/clusters/monitoring'
+import { scanMonitoring, previewMonitoring, applyMonitoring, planSteps, MonitoringRefusal } from '../lib/clusters/monitoring'
 import { afterCopyScan } from '../lib/clusters/send-simple'
 import { sendRoutes } from './send'
 
@@ -132,8 +132,11 @@ function addServerDeps(log: (m: string) => void): AddServerDeps {
     verifyNodes: (id, input) => runInCluster(id, () => verifyNodes(input, v)),
     testLogin: (id, host, cred) => runInCluster(id, async () => (await execOnNode({ host, cred, command: 'true', requirePin: true, timeoutMs: 20_000 })).code === 0),
     saveLogin: (id, node, cred) => saveRemoteNodeLogin(id, node, JSON.stringify(cred)),
-    async monitoring(id, by) {
+    async monitoring(id, by, shown) {
       const p = await previewMonitoring(id, by, 'install', { 'server-metrics': true })
+      // Only what the owner was shown before the password: node_exporter, with that exact script, nothing else.
+      const plan = planSteps(p.planId)
+      if (!plan.length || plan.some(s => s.what !== 'node-exporter' || scriptHash(s.script) !== shown)) return 'Monitoring was not installed: what it would run is not what you were shown. The Edit page shows it again.'
       const r = await applyMonitoring(p.planId, by, undefined, id)
       await auditCredentialUse('cluster.monitoring.apply', `cluster:${id}`, { by, ok: r.ok, nodes: r.results.map(x => x.node), source: 'add server' })
       const failed = r.results.filter(x => x.status === 'failed').map(x => x.node)
@@ -199,11 +202,24 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
     try { return { success: true, data: await probeCertificate(address, port) } } catch (e) { return fail(reply, e) }
   })
 
+  // Before the password: what is at that address (certificate, the private-link device and its owner) and what
+  // monitoring would install. Reads only; no token, no login. The add then refuses if any of it changed (its hash).
+  fastify.post<{ Body: { address?: string; port?: number } }>('/add-preview', async (req, reply) => {
+    if (limited('probe', reply)) return
+    const address = String(req.body?.address ?? '').trim(), port = Number(req.body?.port ?? 8006)
+    if (!allowedApiPort(port)) return reply.status(422).send({ success: false, error: 'The port must be 8006 (Proxmox\'s own), 443, 8443, or a number from 1024 to 65535.' })
+    if (!isServerAddress(address)) return reply.status(422).send({ success: false, error: 'The address must be a name or an IP address only, with no https:// and no port.' })
+    try {
+      const i = await inspectAddress(address, port, addServerDeps(m => fastify.log.warn(m)))
+      return { success: true, data: { certificate: i.certificate, connectingTo: i.link ? { device: i.link.device, owner: i.link.owner } : null, why: i.why, monitoring: i.monitoring.steps, hash: i.hash } }
+    } catch (e) { return fail(reply, e) }
+  })
+
   // Adding a server, in one step under the one master-password re-confirmation (lib/roles.ts): the certificate
   // (verified over a private link, or the fingerprint the owner compared when that is not possible), the token, the
   // node addresses, and with a node login, host keys verified and the login saved, then monitoring and Send files.
   // Nothing is stored until the certificate and the token have both passed (vault first, then the row).
-  fastify.post<{ Body: { name?: string; address?: string; port?: number; note?: string; tokenId?: string; tokenSecret?: string; fingerprint?: string; login?: any; monitoring?: boolean; sending?: boolean } }>('/', async (req, reply) => {
+  fastify.post<{ Body: { name?: string; address?: string; port?: number; note?: string; tokenId?: string; tokenSecret?: string; fingerprint?: string; login?: any; monitoring?: boolean; sending?: boolean; previewHash?: string } }>('/', async (req, reply) => {
     const b = req.body ?? {}
     try {
       if ((req as any).apiToken) return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'Adding a server needs a person with the master password, not an API token.' })
@@ -216,7 +232,7 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
       const login = b.login && typeof b.login === 'object' && (b.login.password || b.login.privateKey) ? b.login : null
       const r = await addServer({
         name: String(b.name ?? ''), address, port, note: b.note, tokenId: String(b.tokenId ?? ''), tokenSecret: String(b.tokenSecret ?? ''),
-        fingerprint: fp, login, monitoring: b.monitoring !== false, sending: b.sending !== false, by: who(),
+        fingerprint: fp, login, monitoring: b.monitoring !== false, sending: b.sending !== false, previewHash: typeof b.previewHash === 'string' ? b.previewHash : null, by: who(),
       }, addServerDeps(m => fastify.log.warn(m)))
       if (r.kind === 'manual-certificate') return reply.status(409).send({ success: false, code: 'cert_manual', error: r.why, certificate: r.certificate })
       return { success: true, data: { cluster: r.cluster, version: r.version, nodes: r.nodes, setup: r.setup } }
@@ -300,9 +316,21 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
         const now = await probeCertificate(row.address, row.port)
         if (row.certFingerprint && row.certFingerprint !== now.fingerprint) return reply.status(409).send({ success: false, code: 'cert_changed', error: `The server presents ${now.fingerprint}, not the certificate you confirmed. A changed certificate is never accepted automatically: compare the new one on its Proxmox page and confirm it.`, presented: now.fingerprint })
         const v = productionVerifyDeps()
+        // Identity first, before the token is sent: the link vouches for exactly this address, and the certificate is
+        // for the device it names. Then the server's own API must name itself as a node the certificate is for.
         const device = linkDevice(row.address, await v.tailnet().catch(() => null), await v.wireguard().catch(() => []), await v.whois(row.address).catch(() => null))
-        if (!device) return reply.status(409).send({ success: false, code: 'cert_manual', error: MANUAL_CERT_WHY, certificate: now })
-        const how = device.how
+        const names = certNames(now)
+        if (!device || !names.includes(device.device.toLowerCase())) return reply.status(409).send({ success: false, code: 'cert_manual', error: MANUAL_CERT_WHY, certificate: now })
+        const tok = remoteToken(row.id)
+        const t = await tryToken(row.address, row.port, now.fingerprint, tok.tokenId, tok.secret)
+        const local = t.identity.local ?? (t.nodes.length === 1 ? t.nodes[0] : null)
+        if (!local || !names.includes(local.toLowerCase())) {
+          const why = `The server at ${row.address} says it is ${local ?? 'an unnamed node'}, but its certificate is for ${names.join(', ') || 'no name'}. Nothing was changed.`
+          await auditCredentialUse('cluster.certificate.blocked', `cluster:${row.id}`, { by: who(), device: device.device, node: local ?? '' })
+          await v.alert(`${row.name}: the certificate check failed`, [why])
+          return reply.status(409).send({ success: false, code: 'identity_mismatch', error: why })
+        }
+        const how = `${device.how}; its certificate is for ${device.device}, which its own API confirms`
         const c = await confirmFingerprint(row.id, now.fingerprint, who(), how)
         forgetRemoteClient(row.id)
         await auditCredentialUse('cluster.certificate.verify', `cluster:${row.id}`, { by: who(), how })
