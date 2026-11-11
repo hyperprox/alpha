@@ -114,6 +114,12 @@ if something changed since the preview, and is read back afterwards.
 - **Sites** (`lib/sites.ts`): a New website wizard for a static site or WordPress that also makes the DNS
   record, proxy host and certificate and checks the public address, with a clean-up of only what a failed
   run made; then open, one-time WordPress admin sign-in, reveal password, pull now and health.
+- **Site metrics** (`lib/site-metrics`): privacy-friendly analytics read from each site's own nginx access log
+  every 5 minutes (no scripts, no cookies, addresses never stored; visitors counted with a salted hash whose
+  key changes daily), the public check and certificate days, container gauges, a read-only WordPress check,
+  alerts (down, server errors, certificate, traffic spike), a Websites panel on Monitoring, Prometheus gauges
+  and a Grafana dashboard. **Add an existing site** adopts a hand-built container read-only, with an optional,
+  previewed and re-confirmed change to its nginx log format for response times.
 - **AI assistant** (`lib/ai`): answers questions about one cluster or all of them, with each fact labelled
   by cluster. Plain-language deploys of Nextcloud, Jellyfin, Gitea, Uptime Kuma and Homepage run end to
   end on the home cluster: container, service, proxy host, DNS record and certificate. A static site (its
@@ -141,6 +147,8 @@ if something changed since the preview, and is read back afterwards.
   GPUNotResponding, GPUHot, CPUHot, FanStuckAtMax, MonitoringTargetDown.
 - **Alerts are forwarded** (`lib/alerts/forwarder.ts`): one message when an alert starts, one when it clears,
   and one warning if Prometheus stops answering.
+- **Websites** (`lib/site-metrics`): every site on the Sites page is checked every 5 minutes, with its traffic,
+  errors, p95 and certificate on the Monitoring page and in Grafana, and its alerts in the same feed.
 - **Notifications** (`lib/notify`): Discord, Slack, Teams, ntfy, Gotify, Telegram and generic webhooks, with
   severity filters, quiet hours and a test button.
 
@@ -281,8 +289,9 @@ session.** Today consoles, templates, Ceph maintenance and backups still send yo
    place under the update policy; and a plug-in panel. The catalogue checks each point and says which are
    missing. Today the catalogue makes the container, installs the app, checks that it answers, and fills in
    the HyperProx setting that was waiting for it; for websites (New website) it also makes the address,
-   proxy host and certificate, and keeps generated logins in the vault. Backups, alerts, the update policy
-   and a plug-in panel are not automatic for any recipe yet. Ghost as a website kind waits on a supported
+   proxy host and certificate, keeps generated logins in the vault, and gives the site monitoring with alerts
+   (its Metrics tab). Backups, the update policy and a plug-in panel are not automatic for any recipe yet, and
+   monitoring with alerts is not automatic for the other recipes. Ghost as a website kind waits on a supported
    database for Debian 13.
 2. **MeshCentral remote desktop**: a catalogue recipe that installs MeshCentral, an adopt flow for an
    existing install, and its devices and remote desktop on the plug-in page.
