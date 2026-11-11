@@ -1,0 +1,41 @@
+/* =============================================================================
+   The vault sign-in, as a HUD: corner brackets, a scan line and the vault core
+   (a turning halo around a lock) over the app's grid ground. Every colour is a
+   theme token; the motion stops under prefers-reduced-motion.
+   ============================================================================= */
+
+.stage { position: relative; display: flex; min-height: 100vh; min-height: 100dvh; align-items: center; justify-content: center; padding: 56px 16px 32px;
+  background: radial-gradient(60rem 30rem at 50% 30%, var(--accent-wash), transparent 70%); }
+.theme { position: absolute; top: max(14px, env(safe-area-inset-top, 0px)); right: max(16px, env(safe-area-inset-right, 0px)); }
+
+.card { position: relative; overflow: hidden; width: 100%; max-width: 24.5rem; display: flex; flex-direction: column; gap: 18px;
+  padding: 26px 22px 24px; border-radius: 16px; border: 1px solid var(--border);
+  background: linear-gradient(160deg, var(--surface), var(--surface-hi)); box-shadow: var(--shadow); }
+@media (min-width: 480px) { .card { padding: 30px 30px 28px; } }
+.card::before, .card::after { content: ""; position: absolute; width: 20px; height: 20px; border: 2px solid var(--accent); opacity: .75; pointer-events: none; }
+.card::before { top: 9px; left: 9px; border-right: 0; border-bottom: 0; }
+.card::after { bottom: 9px; right: 9px; border-left: 0; border-top: 0; }
+.scan { position: absolute; inset: 0; height: 40%; pointer-events: none;
+  background: linear-gradient(180deg, transparent, var(--accent-wash), transparent); animation: lgScan 7s linear infinite; }
+@keyframes lgScan { from { transform: translateY(-100%); } to { transform: translateY(250%); } }
+
+.head { position: relative; display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; }
+.core { position: relative; width: 96px; height: 96px; color: var(--accent); }
+.core svg { position: absolute; inset: 0; width: 96px; height: 96px; }
+.spin { transform-origin: 48px 48px; animation: lgSpin 18s linear infinite; }
+@keyframes lgSpin { to { transform: rotate(360deg); } }
+.lock { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+.lock svg { position: static; width: 30px; height: 30px; filter: drop-shadow(0 0 8px var(--accent-glow)); }
+.eyebrow { font: 500 .7rem var(--font-mono); letter-spacing: .16em; text-transform: uppercase; color: var(--warn); }
+.logo { margin: 0; font: 700 2.3rem/1 var(--font-display); letter-spacing: .12em; color: var(--text-bright); }
+.logo span { color: var(--accent); }
+.sub { margin: 0; font: 700 1.15rem var(--font-display); letter-spacing: .1em; text-transform: uppercase; color: var(--text-soft); }
+.lead { margin: 0; font-size: .88rem; color: var(--text-soft); }
+
+.body { position: relative; display: flex; flex-direction: column; gap: 16px; }
+.stack { position: relative; width: 100%; max-width: 24.5rem; display: flex; flex-direction: column; gap: 14px; }
+.waiting { text-align: center; font: 500 .75rem var(--font-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--text-muted); }
+
+@media (prefers-reduced-motion: reduce) {
+  .scan, .spin { animation: none; }
+}
