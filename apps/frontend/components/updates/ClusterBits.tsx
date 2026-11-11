@@ -37,7 +37,7 @@ export function ClusterHeader({ c }: { c: ReturnType<typeof useUpdatesCluster> }
   return (
     <div className="space-y-2">
       {c.kind === 'remote' && (
-        <div className="rounded-md px-4 py-2 font-semibold" role="status" style={{ background: 'var(--remote)', color: 'var(--remote-ink)' }}>
+        <div className="rounded-[10px] px-4 py-2 font-semibold" role="status" style={{ background: 'var(--remote)', color: 'var(--remote-ink)', boxShadow: '0 0 18px -6px var(--remote)' }}>
           <span className="uppercase" style={{ letterSpacing: '0.04em' }}>Updating: {c.name}</span>{' '}
           <small className="font-medium" style={{ opacity: 0.85 }}>Everything on this page happens on that server, not on your home cluster.</small>
         </div>
@@ -78,14 +78,14 @@ export function CheckPanel({ status, error, busy, onCheck, current }: {
         </span>
       </div>
     }>
-      {status?.blocked && <div className="px-5 pt-4"><Notice tone="crit">{status.blocked}</Notice></div>}
-      {error ? <div className="p-5"><Notice tone="warn">{error}</Notice></div>
+      {status?.blocked && <div className="pb-3"><Notice tone="crit">{status.blocked}</Notice></div>}
+      {error ? <div><Notice tone="warn">{error}</Notice></div>
         : !status ? <Empty>Reading the last check…</Empty>
         : !status.clusters.length ? <Empty>No check has run yet.</Empty>
         : (
-          <ul className="divide-y" style={{ borderColor: 'var(--border-dim)' }}>
+          <ul className="grid gap-2">
             {status.clusters.map(r => (
-              <li key={r.cluster.id} className="flex flex-wrap items-center gap-2 px-5 py-2.5 text-sm" style={{ background: r.cluster.id === current ? 'var(--ground-inset)' : undefined }}>
+              <li key={r.cluster.id} className="flex flex-wrap items-center gap-2 rounded-[10px] border px-3 py-2.5 text-sm" style={{ background: r.cluster.id === current ? 'var(--ground-inset)' : 'transparent', borderColor: 'var(--hx-line)' }}>
                 <ClusterTag c={r.cluster} />
                 {r.security > 0 && <Badge tone="crit">security</Badge>}
                 <span style={{ color: r.result === 'skipped' ? 'var(--warn-2)' : 'var(--text)' }}>{checkLine(r)}{r.reason && r.result === 'partial' ? ` ${r.reason}.` : ''}{r.note ? ` ${r.note}` : ''}</span>
@@ -94,7 +94,7 @@ export function CheckPanel({ status, error, busy, onCheck, current }: {
             ))}
           </ul>
         )}
-      {status?.lastNotified && <p className="px-5 pb-3 text-xs" style={{ color: 'var(--text-dimmer)' }}>Last message to the Updates channels {ago(Date.parse(status.lastNotified))}.</p>}
+      {status?.lastNotified && <p className="mt-3 text-xs" style={{ color: 'var(--text-dimmer)' }}>Last message to the Updates channels {ago(Date.parse(status.lastNotified))}.</p>}
     </Panel>
   )
 }

@@ -8,7 +8,7 @@ import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
-import { useClusters, clusterColor, bytes, ago, type ClusterPanel } from '@/lib/clusters'
+import { useClusters, bytes, ago, type ClusterPanel } from '@/lib/clusters'
 import { Notice, BusyNote } from '@/components/vault/ui'
 import { Dot, KindPill, PanelView, AttentionFeed } from '@/components/clusters/CommandCenter'
 import { GuestsTab } from '@/components/clusters/GuestActions'
@@ -17,6 +17,7 @@ import { HardwareScan } from '@/components/clusters/HardwareScan'
 import { MonitoringSetup } from '@/components/clusters/MonitoringSetup'
 import { FilesTab } from '@/components/clusters/FilesTab'
 import { SendFilesButton } from '@/components/clusters/SendFiles'
+import { Page, HudHeader, styles } from '@/components/visual/kit'
 import { ClusterHomeTab, useInstances } from '@/components/plugins/home-assistant/HomeAssistant'
 
 const TABS = [
@@ -41,10 +42,10 @@ function StorageTab() {
   if (err) return <Notice kind="error">{err}</Notice>
   if (!rows) return <BusyNote>Reading storage…</BusyNote>
   return (
-    <div className="overflow-x-auto"><table className="w-full text-sm" style={{ minWidth: '34rem' }}>
-      <thead><tr className="text-left font-mono uppercase" style={{ fontSize: 11, letterSpacing: '0.08em', color: 'var(--text-muted)' }}><th className="py-2 pr-3">Storage</th><th className="py-2 pr-3">Node</th><th className="py-2 pr-3">Type</th><th className="py-2 pr-3">Used</th><th className="py-2">Free</th></tr></thead>
+    <div className={styles.tableWrap}><table className={styles.table} style={{ minWidth: '34rem' }}>
+      <thead><tr><th>Storage</th><th>Node</th><th>Type</th><th>Used</th><th>Free</th></tr></thead>
       <tbody>{rows.sort((a, b) => `${a.node}${a.storage}`.localeCompare(`${b.node}${b.storage}`)).map((s, i) => (
-        <tr key={i} className="border-t" style={{ borderColor: 'var(--border-dim)' }}>
+        <tr key={i}>
           <td className="py-2 pr-3" style={{ color: 'var(--text-bright)' }}>{s.storage}{Number(s.shared) === 1 && <span className="ml-1 text-xs" style={{ color: 'var(--text-dimmer)' }}>shared</span>}</td>
           <td className="py-2 pr-3" style={{ color: 'var(--text-dim)' }}>{s.node}</td>
           <td className="py-2 pr-3 font-mono text-xs" style={{ color: 'var(--text-dim)' }}>{s.type}</td>
@@ -66,10 +67,10 @@ function TasksTab({ clusterId }: { clusterId: string }) {
   if (err) return <Notice kind="error">{err}</Notice>
   if (!rows) return <BusyNote>Reading tasks…</BusyNote>
   return (
-    <div className="overflow-x-auto"><table className="w-full text-sm" style={{ minWidth: '34rem' }}>
-      <thead><tr className="text-left font-mono uppercase" style={{ fontSize: 11, letterSpacing: '0.08em', color: 'var(--text-muted)' }}><th className="py-2 pr-3">When</th><th className="py-2 pr-3">What</th><th className="py-2 pr-3">Node</th><th className="py-2 pr-3">By</th><th className="py-2">Result</th></tr></thead>
+    <div className={styles.tableWrap}><table className={styles.table} style={{ minWidth: '34rem' }}>
+      <thead><tr><th>When</th><th>What</th><th>Node</th><th>By</th><th>Result</th></tr></thead>
       <tbody>{rows.map(t => (
-        <tr key={t.upid} className="border-t" style={{ borderColor: 'var(--border-dim)' }}>
+        <tr key={t.upid}>
           <td className="py-2 pr-3 text-xs" style={{ color: 'var(--text-dim)' }}>{ago(t.starttime * 1000)}</td>
           <td className="py-2 pr-3" style={{ color: t.type === 'vzdump' ? 'var(--text-bright)' : 'var(--text)' }}>{t.type === 'vzdump' ? 'Backup' : t.type}{t.id ? ` ${t.id}` : ''}</td>
           <td className="py-2 pr-3" style={{ color: 'var(--text-dim)' }}>{t.node}</td>
@@ -100,9 +101,9 @@ export default function ClusterPage() {
   }, [id])
   useEffect(() => { if (tab === 'overview') { void loadPanel(); const t = setInterval(loadPanel, 30_000); return () => clearInterval(t) } }, [tab, loadPanel])
 
-  if (error) return <div className="p-8"><Notice kind="error">{error}</Notice></div>
-  if (!clusters) return <div className="p-8"><BusyNote>Reading clusters…</BusyNote></div>
-  if (!c) return <div className="p-8 flex flex-col gap-3"><Notice kind="warn">No such cluster. It may have been removed.</Notice><Link href="/clusters" style={{ color: 'var(--accent)' }}>‹ Command center</Link></div>
+  if (error) return <Page><Notice kind="error">{error}</Notice></Page>
+  if (!clusters) return <Page><BusyNote>Reading clusters…</BusyNote></Page>
+  if (!c) return <Page><Notice kind="warn">No such cluster. It may have been removed.</Notice><Link href="/clusters" style={{ color: 'var(--accent)' }}>‹ Command center</Link></Page>
 
   const k = c.kind
   const remote = k === 'remote'
@@ -112,24 +113,27 @@ export default function ClusterPage() {
   const current = tabs.find(t => t.id === tab) ? tab : tabs[0].id
 
   return (
-    <div className="min-h-full" style={{ background: 'var(--ground)' }}>
-      <div className="flex items-center gap-3 flex-wrap px-4 sm:px-8 py-3 border-b" style={{ background: 'var(--surface-raised)', borderColor: 'var(--border)' }}>
-        <Link href="/clusters" className="text-sm rounded-md border px-2.5 py-1" style={{ borderColor: 'var(--border-strong)', color: 'var(--text)' }}>‹ Command center</Link>
-        <Dot kind={k} /><b className="font-display" style={{ fontSize: 20, color: 'var(--text-bright)' }}>{c.name}</b><KindPill kind={k} />
-        {!remote && <Link href="/dashboard" className="ml-auto text-sm" style={{ color: 'var(--accent)' }}>Home dashboard ›</Link>}
-        {remote && <span className="ml-auto"><SendFilesButton clusterId={c.id} clusterName={c.name} /></span>}
-      </div>
-      {remote && (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 sm:px-8 py-2 font-semibold" style={{ background: 'var(--remote)', color: 'var(--remote-ink)' }} role="status">
-          <span className="uppercase" style={{ letterSpacing: '0.04em' }}>You are managing: {c.name}</span>
-          <small className="font-medium" style={{ opacity: 0.85 }}>Anything you do here happens on that machine, not on your home cluster.</small>
-        </div>
-      )}
+    <Page remote={remote}>
+      <HudHeader level={2} eyebrow={remote ? 'Remote server' : 'Home cluster'} title={c.name} icon="router" label={`${c.name} overview`}
+        chips={[{ label: 'Kind', value: remote ? 'Remote' : 'Home', tone: remote ? 'warm' : 'accent' }]}
+        actions={<>
+          <Link href="/clusters" className={`${styles.btn} ${styles.btnGhost} inline-flex items-center`}>‹ Command center</Link>
+          {!remote && <Link href="/dashboard" className={`${styles.btn} ${styles.btnGhost} inline-flex items-center`}>Home dashboard ›</Link>}
+          {remote && <SendFilesButton clusterId={c.id} clusterName={c.name} />}
+        </>}>
+        <span className="flex items-center gap-2"><Dot kind={k} /><KindPill kind={k} /></span>
+        {remote && (
+          <p className="text-sm font-semibold" role="status" style={{ color: 'var(--remote)' }}>
+            <span className="uppercase" style={{ letterSpacing: '0.04em' }}>You are managing: {c.name}.</span>{' '}
+            <span className="font-medium" style={{ color: 'var(--text-soft)' }}>Anything you do here happens on that machine, not on your home cluster.</span>
+          </p>
+        )}
+      </HudHeader>
       <div className="grid md:grid-cols-[13rem_minmax(0,1fr)] min-w-0">
-        <nav className="flex md:flex-col flex-wrap gap-1 p-3 border-b md:border-b-0 md:border-r text-sm" style={{ borderColor: 'var(--border)' }} aria-label={`${c.name} sections`}>
+        <nav className="flex md:flex-col flex-wrap gap-1 p-3 border-b md:border-b-0 md:border-r text-sm" style={{ borderColor: 'var(--hx-line)' }} aria-label={`${c.name} sections`}>
           {tabs.map(t => (
             <button key={t.id} onClick={() => setTab(t.id)} className="text-left rounded-md px-2.5 py-1.5"
-              style={{ background: current === t.id ? 'var(--surface)' : 'transparent', fontWeight: current === t.id ? 600 : 400, color: current === t.id ? clusterColor(k) : 'var(--text)' }}>{t.label}</button>
+              style={{ background: current === t.id ? 'var(--accent-wash)' : 'transparent', fontWeight: current === t.id ? 600 : 400, color: current === t.id ? 'var(--hx-accent)' : 'var(--text)' }}>{t.label}</button>
           ))}
           {remote && <Link href={`/clusters/${c.id}/updates`} className="rounded-md px-2.5 py-1.5" style={{ color: 'var(--text)' }}>Updates</Link>}
           {remote && HOME_ONLY.map(l => (
@@ -138,7 +142,7 @@ export default function ClusterPage() {
             </span>
           ))}
         </nav>
-        <main className="p-4 sm:p-6 flex flex-col gap-4 min-w-0">
+        <main className="p-3 sm:p-4 flex flex-col gap-4 min-w-0">
           {current === 'overview' && (panel ? <><PanelView p={panel} /><AttentionFeed items={panel.attention} /></> : <BusyNote>Reading {c.name}…</BusyNote>)}
           {current === 'guests' && <GuestsTab clusterId={c.id} clusterName={c.name} kind={k} />}
           {current === 'storage' && <StorageTab />}
@@ -153,13 +157,13 @@ export default function ClusterPage() {
             </>
           ) : <Notice kind="warn">Editing a server needs the admin role.</Notice>)}
           {remote && (
-            <div className="rounded-lg border border-dashed p-3 text-sm" style={{ borderColor: 'var(--border-strong)', color: 'var(--text-muted)' }}>
+            <div className={styles.callout} style={{ color: 'var(--text-muted)' }}>
               <b style={{ color: 'var(--text)' }}>Full control. </b>Starting, stopping, snapshots, backups, settings and deleting all work here. Every change names {c.name},
               is checked afterwards, and deleting asks you to type the name. Only the files that join a cluster together (corosync) stay hands-off.
             </div>
           )}
         </main>
       </div>
-    </div>
+    </Page>
   )
 }

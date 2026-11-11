@@ -16,11 +16,9 @@ import { HaPanel } from '@/components/ha/HaPanel'
 import { RuleEditor } from '@/components/ha/RuleEditor'
 import { RefusalNote, useHaChange, type Refusal } from '@/components/ha/PreviewDialog'
 import { Btn, Dialog, Note, Section, Tag } from '@/components/ha/ui'
+import { Page, HudHeader, styles } from '@/components/visual/kit'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import type { HaRule, Overview } from '@/components/ha/types'
-
-const TH = 'px-3 py-2 text-left font-mono font-normal'
-const THS: React.CSSProperties = { color: 'var(--text-dimmer)', fontSize: 11, letterSpacing: '0.1em', borderBottom: '1px solid var(--border)' }
 
 export default function HaPage() {
   const { role } = useSession()
@@ -63,12 +61,19 @@ export default function HaPage() {
   const guestsForRules = ov?.protected.map(p => ({ sid: p.sid, name: p.name })) ?? []
 
   return (
-    <div className="mx-auto max-w-6xl space-y-4 px-4 py-6 sm:px-6">
-      <header className="space-y-1">
-        <p className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: 'var(--accent)' }}>Cluster</p>
-        <h1 className="font-display text-[34px] font-bold leading-tight" style={{ color: 'var(--text-bright)' }}>High availability</h1>
-        <p className="text-[15px]" style={{ color: 'var(--text-soft)' }}>Which guests come back on their own when a node fails, where they go, and whether they ever come home.</p>
-      </header>
+    <Page>
+      <HudHeader level={2} eyebrow="Cluster · high availability"
+        title={!ov ? 'Reading HA' : !ov.cluster.quorate ? 'Quorum lost: HA cannot act' : ov.counts.homeless || ov.counts.hardware ? 'HA needs a look' : 'HA is watching your guests'}
+        label="High availability overview"
+        ring={ov ? { value: ov.counts.protected + ov.counts.unprotected ? ov.counts.protected / (ov.counts.protected + ov.counts.unprotected) : 0, text: String(ov.counts.protected), label: 'guests protected' } : { value: 0, text: '…', label: 'guests protected' }}
+        chips={ov ? [
+          { label: 'Protected', value: ov.counts.protected, tone: 'good' },
+          { label: 'Not protected', value: ov.counts.unprotected, tone: ov.counts.unprotected ? 'warn' : 'dim' },
+          { label: 'No home', value: ov.counts.homeless, tone: ov.counts.homeless ? 'warn' : 'dim' },
+          { label: 'Hardware at risk', value: ov.counts.hardware, tone: ov.counts.hardware ? 'warn' : 'dim' },
+        ] : undefined}>
+        <p className="text-sm" style={{ color: 'var(--text-soft)' }}>Which guests come back on their own when a node fails, where they go, and whether they ever come home.</p>
+      </HudHeader>
 
       {error && <Note tone="warn">{error}</Note>}
       {!ov && !error && <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Reading HA…</p>}
@@ -84,7 +89,7 @@ export default function HaPage() {
               <ul className="space-y-0.5 text-sm" style={{ color: 'var(--text-muted)' }}>{ov.cluster.detail.map((d, i) => <li key={i}>{d}</li>)}</ul>
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                 {ov.nodes.map(n => (
-                  <div key={n.node} className="rounded-md border px-3 py-2" style={{ borderColor: 'var(--border)', background: 'var(--ground-inset)' }}>
+                  <div key={n.node} className="rounded-[10px] border px-3 py-2" style={{ borderColor: n.online && !n.maintenance ? 'var(--hx-line)' : 'var(--warn)', background: 'var(--ground-deep)' }}>
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-display text-[17px] font-semibold" style={{ color: 'var(--text-bright)' }}>{n.node}</span>
                       {!n.online ? <Tag tone="crit">offline</Tag> : n.maintenance ? <Tag tone="warn">maintenance</Tag> : <Tag tone="good">online</Tag>}
@@ -99,21 +104,9 @@ export default function HaPage() {
                   </div>
                 ))}
               </div>
-              <p className="text-xs" style={{ color: 'var(--text-dim)' }}>Maintenance mode: HA moves the node's HA guests away first and starts nothing there. Guests HA does not manage stay put. Turn it off when you are done.</p>
+              <p className="text-xs" style={{ color: 'var(--text-dim)' }}>Maintenance mode: HA moves the node&apos;s HA guests away first and starts nothing there. Guests HA does not manage stay put. Turn it off when you are done.</p>
             </div>
           </Section>
-
-          <div className="grid gap-2 sm:grid-cols-4">
-            {[
-              ['Protected', ov.counts.protected, 'good'], ['Not protected', ov.counts.unprotected, 'muted'],
-              ['No home', ov.counts.homeless, ov.counts.homeless ? 'warn' : 'muted'], ['Hardware at risk', ov.counts.hardware, ov.counts.hardware ? 'warn' : 'muted'],
-            ].map(([l, v, t]) => (
-              <div key={l as string} className="rounded-[10px] border px-4 py-3" style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}>
-                <p className="font-mono text-[11px] uppercase tracking-[0.12em]" style={{ color: 'var(--text-dimmer)' }}>{l}</p>
-                <p className="font-display text-[30px] font-bold" style={{ color: `var(--${t === 'muted' ? 'text-soft' : t})` }}>{v as number}</p>
-              </div>
-            ))}
-          </div>
 
           {(ov.homeless.length > 0 || ov.hardware.length > 0 || ov.headroom.some(h => h.level !== 'ok')) && (
             <Section title="Needs attention">
@@ -124,7 +117,7 @@ export default function HaPage() {
                 {ov.homeless.filter(h => !ov.hardware.some(x => x.sid === h.sid)).map(h => (
                   <Note key={`hl-${h.sid}`} tone="info">{h.words} <button type="button" className="underline" style={{ color: 'var(--accent)' }} onClick={() => open(h.sid, h.name)}>Give it a home</button></Note>
                 ))}
-                {ov.headroom.filter(h => h.level !== 'ok').map(h => <Note key={`hr-${h.rule}`} tone={h.level === 'tight' ? 'info' : 'warn'}>Rule "{h.rule}": {h.words}</Note>)}
+                {ov.headroom.filter(h => h.level !== 'ok').map(h => <Note key={`hr-${h.rule}`} tone={h.level === 'tight' ? 'info' : 'warn'}>Rule &quot;{h.rule}&quot;: {h.words}</Note>)}
               </div>
             </Section>
           )}
@@ -138,9 +131,9 @@ export default function HaPage() {
           )}
 
           <Section title="Protected guests">
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead><tr style={THS}><th className={TH}>GUEST</th><th className={TH}>ON</th><th className={TH}>STATE</th><th className={TH}>HOME</th><th className={TH}>IF ITS NODE FAILS</th></tr></thead>
+            <div className={styles.tableWrap}>
+              <table className={styles.table}>
+                <thead><tr><th>GUEST</th><th>ON</th><th>STATE</th><th>HOME</th><th>IF ITS NODE FAILS</th></tr></thead>
                 <tbody>
                   {ov.protected.map(p => (
                     <tr key={p.sid} className="cursor-pointer" style={{ borderBottom: '1px solid var(--border-dim)' }} onClick={() => open(p.sid, p.name)}>
@@ -176,7 +169,7 @@ export default function HaPage() {
           <Section title="Rules" right={admin ? <Btn small kind="primary" onClick={() => setEditor({ rule: null })}>New rule</Btn> : undefined}>
             <div className="space-y-2">
               {ov.rules.map(({ rule, words, problems }) => (
-                <div key={rule.id} className="rounded-md border px-3 py-2" style={{ borderColor: problems.length ? 'var(--warn)' : 'var(--border)', background: 'var(--ground-inset)' }}>
+                <div key={rule.id} className="rounded-[10px] border px-3 py-2" style={{ borderColor: problems.length ? 'var(--warn)' : 'var(--hx-line)', background: 'var(--ground-deep)' }}>
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-mono text-sm" style={{ color: 'var(--text-bright)' }}>{rule.id}</span>
                     <Tag tone={rule.type === 'node-affinity' ? 'accent' : 'violet'}>{rule.type === 'node-affinity' ? 'where it runs' : rule.affinity === 'negative' ? 'keep apart' : 'keep together'}</Tag>
@@ -213,7 +206,7 @@ export default function HaPage() {
       )}
       {pin && (
         <Dialog title={`SSH host key of ${pin.node}`} onClose={() => setPin(null)}>
-          <p className="text-sm" style={{ color: 'var(--text-soft)' }}>Maintenance mode runs over {pin.node}'s login, so HyperProx first makes sure it is talking to {pin.node} and nothing else. Nothing is sent to the node to read its key.</p>
+          <p className="text-sm" style={{ color: 'var(--text-soft)' }}>Maintenance mode runs over {pin.node}&apos;s login, so HyperProx first makes sure it is talking to {pin.node} and nothing else. Nothing is sent to the node to read its key.</p>
           {pin.busy && <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Asking the node…</p>}
           {pin.presented && <pre className="overflow-x-auto rounded-md border p-3 font-mono text-xs" style={{ background: 'var(--ground-inset)', borderColor: 'var(--border)', color: 'var(--text-bright)' }}>{pin.presented}</pre>}
           {pin.words && <Note tone={pin.pinned && pin.pinned !== pin.presented ? 'crit' : 'info'}>{pin.words}</Note>}
@@ -226,6 +219,6 @@ export default function HaPage() {
       )}
       {pinReconfirm && <ReconfirmModal onClose={() => setPinReconfirm(false)} onDone={() => { setPinReconfirm(false); void pinKey() }} />}
       {change.dialog}
-    </div>
+    </Page>
   )
 }

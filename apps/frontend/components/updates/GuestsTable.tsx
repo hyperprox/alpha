@@ -1,5 +1,6 @@
 'use client'
 
+import { styles } from '@/components/visual/kit'
 import { Fragment, useState } from 'react'
 import type { UpdatesGuest } from '@hyperprox/types'
 import { Badge, TH, THEAD_STYLE, REASONS } from './ui'
@@ -107,8 +108,8 @@ export function GuestsTable({ guests, acks = [], onAck, ackDisabled }: { guests:
   }
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
+    <div className={styles.tableWrap}>
+      <table className={styles.table}>
         <thead>
           <tr style={THEAD_STYLE}>
             <th scope="col" className={TH}>ID</th>

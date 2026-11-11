@@ -119,8 +119,8 @@ export function HaPanel({ type, vmid, onChanged, hidePreflight }: HaPanelProps) 
           <Section title="Home node">
             <div className="space-y-3">
               <p className="text-sm" style={{ color: 'var(--text-soft)' }}>{g.home.words}</p>
-              {g.home.avoid.length > 0 && <Note tone="info">Its rule "{g.home.rule?.id}" says where it must not run. Picking a home here replaces that rule.</Note>}
-              {g.home.sharedWith.length > 0 && <Note tone="info">It shares the home rule "{g.home.rule?.id}" with {g.home.sharedWith.map(label).join(', ')}. A change here gives it its own rule and leaves theirs alone.</Note>}
+              {g.home.avoid.length > 0 && <Note tone="info">Its rule &quot;{g.home.rule?.id}&quot; says where it must not run. Picking a home here replaces that rule.</Note>}
+              {g.home.sharedWith.length > 0 && <Note tone="info">It shares the home rule &quot;{g.home.rule?.id}&quot; with {g.home.sharedWith.map(label).join(', ')}. A change here gives it its own rule and leaves theirs alone.</Note>}
               {admin ? (
                 <>
                   <HomePicker value={home} nodes={g.nodes} mustBeEqual={inAffinity} onChange={setHome} />
@@ -172,7 +172,7 @@ export function HaPanel({ type, vmid, onChanged, hidePreflight }: HaPanelProps) 
                   <input type="number" min={0} max={10} value={res.maxRelocate} disabled={!admin} style={{ ...SELECT, width: 72 }} onChange={e => setRes({ ...res, maxRelocate: Number(e.target.value) })} /></label>
                 <label className="flex items-center gap-2"><input type="checkbox" checked={res.failback} disabled={!admin} onChange={e => setRes({ ...res, failback: e.target.checked })} />Return home automatically when its home node is back (failback)</label>
                 <label className="flex items-center gap-2"><input type="checkbox" checked={res.autoRebalance} disabled={!admin} onChange={e => setRes({ ...res, autoRebalance: e.target.checked })} />HA may move it to balance load between nodes</label>
-                {g.home.rule && <p className="font-mono text-xs" style={{ color: 'var(--text-soft)' }}>Home rule "{g.home.rule.id}": {(g.home.rule.nodes ?? []).map(n => `${n.node}:${n.priority}`).join(',')} · strict={g.home.rule.strict ? 1 : 0}{g.home.rule.disabled ? ' · disabled' : ''}</p>}
+                {g.home.rule && <p className="font-mono text-xs" style={{ color: 'var(--text-soft)' }}>Home rule &quot;{g.home.rule.id}&quot;: {(g.home.rule.nodes ?? []).map(n => `${n.node}:${n.priority}`).join(',')} · strict={g.home.rule.strict ? 1 : 0}{g.home.rule.disabled ? ' · disabled' : ''}</p>}
                 {g.resource?.group && <p className="text-xs" style={{ color: 'var(--text-dim)' }}>Legacy HA group: {g.resource.group} (ignored by Proxmox 9; its home rule is what counts).</p>}
                 {admin && <div className="flex justify-end"><Btn kind="primary" disabled={change.busy} onClick={() => ask({ action: 'update-resource', sid: g.sid, ...res })}>Preview</Btn></div>}
               </div>
@@ -193,7 +193,7 @@ export function HaPanel({ type, vmid, onChanged, hidePreflight }: HaPanelProps) 
           <Note tone="crit">
             If {home.tiers.flat().join(' and ')} {home.tiers.flat().length > 1 ? 'are all' : 'is'} down, this guest does not start anywhere — it stays off until one of them is back. HA will not move it to a healthy node.
           </Note>
-          <p className="text-sm" style={{ color: 'var(--text-soft)' }}>Choose this only when the guest is useless on any other node (it needs that node's GPU, disks or USB device). Otherwise pick "Prefer a node, but run anywhere if needed".</p>
+          <p className="text-sm" style={{ color: 'var(--text-soft)' }}>Choose this only when the guest is useless on any other node (it needs that node&apos;s GPU, disks or USB device). Otherwise pick &quot;Prefer a node, but run anywhere if needed&quot;.</p>
           <div className="flex justify-end gap-2">
             <Btn onClick={() => setStrictAsk(false)}>Cancel</Btn>
             <Btn kind="danger" onClick={() => { setStrictAsk(false); void saveHome(true) }}>Yes, only these nodes</Btn>

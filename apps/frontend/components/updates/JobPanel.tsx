@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { UpdatesJob, UpdatesStep } from '@hyperprox/types'
 import { ACTION_LABEL, Badge, Btn, Notice, Panel, StepIcon, fmtTime } from './ui'
 import { PlanList } from './PlanList'
+import { FlowPipeline, type FlowStage } from '@/components/visual/kit'
 
 export type LogLine = { stepId: string; line: string }
 
@@ -66,6 +67,20 @@ function LogTail({ lines, steps }: { lines: LogLine[]; steps: UpdatesStep[] }) {
   )
 }
 
+/** The run as a flow: one stage per kind of step, in the order they first appear, with how many are finished. */
+function stepStages(steps: UpdatesStep[]): FlowStage[] {
+  const order: string[] = []
+  for (const s of steps) if (!order.includes(s.action)) order.push(s.action)
+  return order.map(a => {
+    const mine = steps.filter(s => s.action === a)
+    const finished = mine.filter(s => s.status === 'ok' || s.status === 'skipped').length
+    const failed = mine.some(s => s.status === 'failed')
+    const running = mine.some(s => s.status === 'running')
+    const state: FlowStage['state'] = failed ? 'bad' : finished === mine.length ? 'done' : running ? 'warn' : 'ok'
+    return { key: a, label: ACTION_LABEL[a] ?? a, value: `${finished}/${mine.length}`, state, status: failed ? 'failed' : finished === mine.length ? 'finished' : running ? 'running' : 'waiting' }
+  })
+}
+
 export function JobPanel({ job, logs, busy, onConfirm, onCancel, onResume, onRollback }: {
   job: UpdatesJob
   logs: LogLine[]
@@ -88,7 +103,7 @@ export function JobPanel({ job, logs, busy, onConfirm, onCancel, onResume, onRol
         </div>
       }
     >
-      <div className="space-y-4 p-5">
+      <div className="space-y-4">
         {job.status === 'paused' && (
           <Notice tone="warn">
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -108,6 +123,7 @@ export function JobPanel({ job, logs, busy, onConfirm, onCancel, onResume, onRol
           </>
         ) : (
           <>
+            {job.steps.length > 0 && <FlowPipeline stages={stepStages(job.steps)} label="Progress of this run by kind of step" />}
             {job.steps.length > 0
               ? <StepList steps={job.steps} onRollback={job.status === 'paused' && !busy ? onRollback : undefined} />
               : <PlanList plan={job.plan} />}

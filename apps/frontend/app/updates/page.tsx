@@ -16,6 +16,7 @@ import { PlanList } from '@/components/updates/PlanList'
 import { JobPanel, type LogLine } from '@/components/updates/JobPanel'
 import { History } from '@/components/updates/History'
 import { ClusterHeader, ClusterTag, CheckPanel, RebootPreviewList, useUpdatesCluster } from '@/components/updates/ClusterBits'
+import { Page, HudHeader, Tiles, GlowBars, type Tone } from '@/components/visual/kit'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { clusterColor } from '@/lib/clusters'
 
@@ -28,6 +29,9 @@ function apiError(r: ApiResult, what: string): string {
   if (r.status === 403) return 'Updates is limited to admins.'
   return r.error ?? `Could not load ${what}`
 }
+
+// Whether any of a guest's docker images has a newer one waiting.
+const imageNewer = (g: UpdatesInventory['guests'][number]) => (g.dockerImages ?? []).some(i => i.latest !== null && i.latest !== i.current)
 
 // One page for every cluster: /updates is home, /clusters/<id>/updates a remote (same component). The cluster is
 // named on every card, preview and confirmation, and every API call carries it (lib/api.ts).
@@ -310,13 +314,12 @@ export default function UpdatesPage() {
 
   if (role && !allowed) {
     return (
-      <div className="min-h-full p-4 sm:p-8" style={{ background: 'var(--ground)' }}>
-        <h1 className="font-display font-bold" style={{ fontSize: 36, lineHeight: 1.1, color: 'var(--text-bright)' }}>Updates</h1>
-        <p className="mt-4 max-w-xl rounded-md border px-3 py-2 text-sm"
+      <Page>
+        <p className="max-w-xl rounded-md border px-3 py-2 text-sm"
            style={{ background: 'var(--surface-notice)', borderColor: 'var(--border-soft)', color: 'var(--text)' }}>
           Your role can&apos;t view updates. Ask an owner or admin.
         </p>
-      </div>
+      </Page>
     )
   }
 
@@ -325,17 +328,33 @@ export default function UpdatesPage() {
   const rebootWhy = !policy?.loaded ? 'Reboots are disabled until the policy file loads.' : jobActive ? 'A job is already active.' : undefined
   const inactiveJobs = jobs.filter(j => !(active && j.id === active.id))
 
+  // The overview numbers: how many machines have something pending. Read from the inventory, nothing new fetched.
+  const nodesWith = inv ? inv.nodes.filter(n => n.pending.length > 0) : []
+  const guestsWith = inv ? inv.guests.filter(g => g.managed && (g.pending.length > 0 || imageNewer(g))) : []
+  const appsWith = inv ? appRows(inv.guests).filter(r => !!r.a.latest && !!r.a.approvalId) : []
+  const managedGuests = inv ? inv.guests.filter(g => g.managed).length : 0
+  const total = inv ? inv.nodes.length + managedGuests : 0
+  const behind = nodesWith.length + guestsWith.length
+  const security = inv ? inv.nodes.filter(n => n.pending.some(p => p.security)).length + inv.guests.filter(g => g.pending.some(p => p.security)).length + appsWith.filter(r => r.a.isSecurity).length : 0
+  const level: Tone = security ? 'crit' : behind || appsWith.length ? 'warn' : 'good'
+  const verdict = !inv ? 'Reading the inventory' : security ? 'Security updates waiting' : behind || appsWith.length ? 'Updates are waiting' : 'Everything is current'
+
   return (
-    <div className="min-h-full space-y-5 p-4 sm:p-8" style={{ background: 'var(--ground)' }}>
-      <div>
-        <p className="font-mono" style={{ fontSize: 11, letterSpacing: '0.14em', color: 'var(--text-dimmer)' }}>MANAGE</p>
-        <h1 className="mt-2 flex flex-wrap items-center gap-3 font-display font-bold" style={{ fontSize: 36, lineHeight: 1.1, color: 'var(--text-bright)' }}>Updates {tag}</h1>
-        <p className="mt-1 text-sm" style={{ color: 'var(--text-muted)' }}>
+    <Page remote={remote}>
+      <HudHeader level={2} eyebrow={`Manage · ${cluster.name}`} title={<>{verdict} {tag}</>} label="Updates overview"
+        ring={{ value: total ? (total - behind) / total : 0, text: inv ? `${behind}` : '…', label: 'machines with updates pending' }}
+        chips={[
+          { label: 'Nodes with updates', value: inv ? `${nodesWith.length}/${inv.nodes.length}` : '…', tone: nodesWith.length ? 'warn' : 'good' },
+          { label: 'Guests with updates', value: inv ? `${guestsWith.length}/${managedGuests}` : '…', tone: guestsWith.length ? 'warn' : 'good' },
+          { label: 'Apps with updates', value: inv ? appsWith.length : '…', tone: appsWith.length ? 'warn' : 'good' },
+          { label: 'Machines with security updates', value: inv ? security : '…', tone: level === 'crit' ? 'crit' : 'good' },
+        ]}>
+        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
           Pending packages on every node and guest of {cluster.name}, and the ordered plan to bring them current.
           {remote && ' The preview is apt\'s own simulation; nothing changes until you confirm, with your master password.'}
           {inv && <span className="font-mono"> Inventory read {fmtTime(inv.refreshedAt)}.</span>}
         </p>
-      </div>
+      </HudHeader>
 
       <ClusterHeader c={cluster} />
 
@@ -354,14 +373,30 @@ export default function UpdatesPage() {
       )}
 
       <Panel title="Nodes" tag={tag} edge={edge}>
-        {errs.inv ? <div className="p-5"><Notice tone="warn">{errs.inv}</Notice></div>
+        {inv && inv.nodes.length > 0 && (
+          <div className="mb-3">
+            <Tiles label="Pending packages per node" items={inv.nodes.map(n => ({
+              label: `${n.node}${n.online ? '' : ' (offline)'}${n.rebootRequired ? ' · reboot required' : ''}`,
+              value: n.pending.length, tone: !n.online ? 'crit' : n.pending.some(p => p.security) ? 'crit' : n.pending.length ? 'warn' : 'good',
+              title: `${n.pending.length} pending package${n.pending.length === 1 ? '' : 's'}`,
+            }))} />
+          </div>
+        )}
+        {errs.inv ? <Notice tone="warn">{errs.inv}</Notice>
           : !inv ? <Empty>Reading inventory...</Empty>
           : inv.nodes.length === 0 ? <Empty>No nodes reported.</Empty>
           : <NodesTable nodes={inv.nodes} canReboot={canReboot} rebootWhy={rebootWhy} onReboot={n => void openReboot(n)} />}
       </Panel>
 
       <Panel title="Guests" tag={tag} edge={edge}>
-        {errs.inv ? <div className="p-5"><Notice tone="warn">{errs.inv}</Notice></div>
+        {guestsWith.length > 0 && (
+          <div className="mb-3">
+            <GlowBars label="Pending packages per guest, most first" warm
+              items={[...guestsWith].sort((x, y) => y.pending.length - x.pending.length).slice(0, 8)
+                .map(g => ({ label: `${g.vmid} ${g.name}`, value: g.pending.length, text: String(g.pending.length), key: String(g.vmid) }))} />
+          </div>
+        )}
+        {errs.inv ? <Notice tone="warn">{errs.inv}</Notice>
           : !inv ? <Empty>Reading inventory...</Empty>
           : inv.guests.length === 0 ? <Empty>No guests reported.</Empty>
           : <GuestsTable guests={inv.guests} acks={approvals} onAck={remote ? approve : undefined} ackDisabled={jobActive || busy} />}
@@ -379,7 +414,7 @@ export default function UpdatesPage() {
 
       {!active && (
         <Panel title="Plan preview" tag={tag} edge={edge}>
-          <div className="p-5">
+          <div>
             {errs.plan ? <Notice tone="warn">{errs.plan}</Notice>
               : !plan ? <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Building plan...</p>
               : <PlanList plan={plan} />}
@@ -388,7 +423,7 @@ export default function UpdatesPage() {
       )}
 
       <Panel title="History" tag={tag}>
-        {errs.jobs ? <div className="p-5"><Notice tone="warn">{errs.jobs}</Notice></div>
+        {errs.jobs ? <Notice tone="warn">{errs.jobs}</Notice>
           : <History jobs={inactiveJobs} detail={detail} expanded={expanded} onToggle={toggleHistory} />}
       </Panel>
 
@@ -434,6 +469,6 @@ export default function UpdatesPage() {
       )}
 
       {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
-    </div>
+    </Page>
   )
 }

@@ -2,6 +2,7 @@
 
 // The hardware scan for one cluster, in plain words. Read-only: nothing is installed or changed.
 
+import { Pill, styles } from '@/components/visual/kit'
 import { useCallback, useEffect, useState } from 'react'
 import { apiJson } from '@/lib/api'
 import { Notice, BusyNote } from '@/components/vault/ui'
@@ -31,10 +32,10 @@ export function HardwareScan({ clusterId, kind }: { clusterId: string; kind: 'ho
       {busy && <BusyNote>Scanning…</BusyNote>}
       {err && <Notice kind="error">{err}</Notice>}
       {data && data.nodes.map(n => (
-        <div key={n.node} className="rounded-lg border p-3 flex flex-col gap-1.5" style={{ borderColor: 'var(--border-dim)', background: 'var(--ground-deep)' }}>
+        <div key={n.node} className="rounded-[10px] border p-3 flex flex-col gap-1.5" style={{ borderColor: 'var(--hx-line)', background: 'var(--ground-deep)' }}>
           <div className="flex gap-2 items-center flex-wrap">
             <b className="font-display" style={{ fontSize: 17, color: 'var(--text-bright)' }}>{n.node}</b>
-            <span className="text-xs font-mono" style={{ color: 'var(--text-dimmer)' }}>{n.source === 'probe' ? 'checked over its node login' : 'what Proxmox reports (no node login used)'}</span>
+            <Pill tone={n.source === 'probe' ? 'good' : undefined}>{n.source === 'probe' ? 'node login' : 'proxmox api'}</Pill> <span className="text-xs font-mono" style={{ color: 'var(--text-dimmer)' }}>{n.source === 'probe' ? 'checked over its node login' : 'what Proxmox reports (no node login used)'}</span>
           </div>
           {n.gpus.length === 0 ? <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No GPU found.</p> : n.gpus.map((g, i) => (
             <details key={i} className="text-sm min-w-0" style={{ color: 'var(--text)' }}>
@@ -50,8 +51,8 @@ export function HardwareScan({ clusterId, kind }: { clusterId: string; kind: 'ho
       ))}
       {data?.note && <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{data.note}</p>}
       <div className="flex gap-2 flex-wrap">
-        <button disabled={busy} onClick={() => scan(false)} className="px-3 rounded-md text-xs border disabled:opacity-40" style={{ height: 32, borderColor: 'var(--border-strong)', color: 'var(--text)' }}>Scan again</button>
-        <button disabled={busy} onClick={() => scan(true)} className="px-3 rounded-md text-xs border disabled:opacity-40" style={{ height: 32, borderColor: 'var(--border-strong)', color: 'var(--text)' }} title="Uses a saved node login: read-only, including vainfo">Full scan (uses the node login)</button>
+        <button disabled={busy} onClick={() => scan(false)} className={`${styles.btn} ${styles.btnGhost}`}>Scan again</button>
+        <button disabled={busy} onClick={() => scan(true)} className={`${styles.btn} ${styles.btnGhost}`} title="Uses a saved node login: read-only, including vainfo">Full scan (uses the node login)</button>
       </div>
     </div>
   )

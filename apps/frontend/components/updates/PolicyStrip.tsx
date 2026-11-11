@@ -1,6 +1,7 @@
 'use client'
 
 import type { UpdatesPolicyStatus, UpdatesScope } from '@hyperprox/types'
+import { styles } from '@/components/visual/kit'
 import { Badge, Btn, Icon, Notice, fmtTime } from './ui'
 
 export function PolicyStrip({ policy, error, busy, activeJob, onRefresh, onRun, refreshing, scope, onScope }: {
@@ -20,7 +21,7 @@ export function PolicyStrip({ policy, error, busy, activeJob, onRefresh, onRun, 
   const dryWhy = activeJob ? 'A job is already active.' : undefined
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-3 rounded-[10px] border px-5 py-3" style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}>
+      <div className={`${styles.panel} flex flex-wrap items-center gap-x-4 gap-y-3`}>
         <div className="flex flex-wrap items-center gap-2">
           {policy ? (
             <>
@@ -39,7 +40,7 @@ export function PolicyStrip({ policy, error, busy, activeJob, onRefresh, onRun, 
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           {/* What Dry run, Run and the plan below cover. Guests only leaves every node and Ceph alone. */}
-          <div role="radiogroup" aria-label="What a run covers" className="flex overflow-hidden rounded-md border" style={{ borderColor: 'var(--border)' }}>
+          <div role="radiogroup" aria-label="What a run covers" className="flex overflow-hidden rounded-[9px] border" style={{ borderColor: 'var(--hx-line-hi)' }}>
             {([['all', 'Everything'], ['guests', 'Guests only']] as const).map(([v, label]) => (
               <button key={v} type="button" role="radio" aria-checked={scope === v} disabled={activeJob}
                       onClick={() => onScope(v)}

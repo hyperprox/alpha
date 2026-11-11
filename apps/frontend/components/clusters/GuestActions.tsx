@@ -3,6 +3,7 @@
 // Guests on any cluster: each action is shown first (naming the cluster), then applied, then read back from
 // Proxmox, and the answer says what Proxmox reported. Delete asks for the guest's name, typed exactly.
 
+import { Tiles, styles } from '@/components/visual/kit'
 import { useCallback, useEffect, useState } from 'react'
 import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
@@ -94,7 +95,7 @@ function ActionDialog({ g, act, clusterId, clusterName, kind, onClose, onDone }:
       {result && <Notice kind={result.ok ? 'info' : 'error'}>{result.text}</Notice>}
       {task && <BusyNote>Backing up… (you can close this; the backup carries on)</BusyNote>}
       <div className="flex gap-2 items-center flex-wrap">
-        {!result?.ok && <button disabled={!canApply} onClick={apply} className="px-4 rounded-md text-sm font-semibold disabled:opacity-40" style={{ height: 38, background: act.kind === 'delete' ? 'var(--crit)' : clusterColor(kind), color: act.kind === 'delete' ? '#fff' : clusterInk(kind) }}>{busy ? 'Working…' : act.kind === 'delete' ? 'Delete' : 'Apply'}</button>}
+        {!result?.ok && <button disabled={!canApply} onClick={apply} className="px-4 rounded-md text-sm font-semibold disabled:opacity-40" style={{ height: 38, background: act.kind === 'delete' ? 'var(--crit)' : clusterColor(kind), color: act.kind === 'delete' ? 'var(--accent-ink)' : clusterInk(kind) }}>{busy ? 'Working…' : act.kind === 'delete' ? 'Delete' : 'Apply'}</button>}
         <button onClick={onClose} className="px-4 rounded-md text-sm border" style={{ height: 38, borderColor: 'var(--border-strong)', color: 'var(--text-soft)' }}>{result?.ok ? 'Close' : 'Cancel'}</button>
         {!result && <span className="text-xs" style={{ color: 'var(--text-dimmer)' }}>After applying, HyperProx reads the result back from Proxmox.</span>}
       </div>
@@ -127,16 +128,22 @@ export function GuestsTab({ clusterId, clusterName, kind }: { clusterId: string;
       <input type="search" placeholder="Search name or ID" value={q} onChange={e => setQ(e.target.value)} className="text-sm px-3 rounded-md outline-none w-full sm:w-64" style={{ height: 36, background: 'var(--ground-deep)', border: '1px solid var(--border-strong)', color: 'var(--text-bright)' }} />
       {err && <Notice kind="error">{err}</Notice>}
       {rows === null && !err ? <BusyNote>Reading guests…</BusyNote> : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm" style={{ minWidth: '40rem' }}>
-            <thead><tr className="text-left font-mono uppercase" style={{ fontSize: 11, letterSpacing: '0.08em', color: 'var(--text-muted)' }}>
-              <th className="py-2 pr-3">Guest</th><th className="py-2 pr-3">Name</th><th className="py-2 pr-3">Node</th><th className="py-2 pr-3">State</th><th className="py-2 pr-3">Memory</th><th className="py-2">Actions</th>
+        <>
+        <Tiles label="Guests on this server" items={[
+          { label: 'Guests', value: (rows ?? []).length },
+          { label: 'Running', value: (rows ?? []).filter(g => g.status === 'running').length, tone: 'good' },
+          { label: 'Stopped', value: (rows ?? []).filter(g => g.status !== 'running').length, tone: 'dim' },
+        ]} />
+        <div className={styles.tableWrap}>
+          <table className={styles.table} style={{ minWidth: '40rem' }}>
+            <thead><tr>
+              <th>Guest</th><th>Name</th><th>Node</th><th>State</th><th>Memory</th><th>Actions</th>
             </tr></thead>
             <tbody>
               {shown.map(g => {
                 const running = g.status === 'running'
                 return (
-                  <tr key={`${g.type}${g.vmid}`} className="border-t" style={{ borderColor: 'var(--border-dim)' }}>
+                  <tr key={`${g.type}${g.vmid}`}>
                     <td className="py-2 pr-3 font-mono" style={{ color: 'var(--text-dim)' }}>{g.type === 'lxc' ? 'CT' : 'VM'} {g.vmid}</td>
                     <td className="py-2 pr-3" style={{ color: 'var(--text-bright)' }}>{g.name}{g.ha.managed && <span className="ml-1 font-mono text-[10px]" style={{ color: 'var(--violet)' }}>HA</span>}</td>
                     <td className="py-2 pr-3" style={{ color: 'var(--text-dim)' }}>{g.node}</td>
@@ -162,6 +169,7 @@ export function GuestsTab({ clusterId, clusterName, kind }: { clusterId: string;
           </table>
           {rows && shown.length === 0 && <p className="text-sm py-3" style={{ color: 'var(--text-dimmer)' }}>No guests match.</p>}
         </div>
+        </>
       )}
       {open && <GuestDrawer row={open} nodes={nodes} canOperate={canOperate} canAdmin={canAdmin} remote={kind === 'remote'} onClose={() => setOpen(null)} onRefresh={() => { void load() }} />}
     </div>

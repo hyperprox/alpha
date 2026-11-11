@@ -5,6 +5,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { apiJson } from '@/lib/api'
+import { FlowPipeline } from '@/components/visual/kit'
 import { Btn, Note, Tag } from './ui'
 import type { Preflight } from './types'
 
@@ -27,10 +28,19 @@ export function MigrationPreflight({ type, vmid }: { type: 'lxc' | 'qemu'; vmid:
         <Btn small onClick={load} disabled={busy}>Check again</Btn>
       </div>
       {error && <Note tone="warn">{error}</Note>}
+      {data && data.rows.length > 0 && (
+        <FlowPipeline label="Where this guest can move, node by node"
+          stages={data.rows.map(r => ({
+            key: r.node, label: r.node,
+            value: r.current ? 'HERE' : r.allowed ? 'YES' : 'NO',
+            state: r.current ? 'done' : r.allowed ? 'ok' : 'bad',
+            status: r.current ? 'it runs here now' : r.allowed ? 'it can move here' : 'it cannot move here',
+          }))} />
+      )}
       {data && (
         <div className="grid gap-2 sm:grid-cols-2">
           {data.rows.map(r => (
-            <div key={r.node} className="rounded-md border px-3 py-2" style={{ borderColor: 'var(--border)', background: 'var(--ground-inset)' }}>
+            <div key={r.node} className="rounded-[10px] border px-3 py-2" style={{ borderColor: 'var(--hx-line)', background: 'var(--ground-deep)' }}>
               <div className="flex items-center justify-between gap-2">
                 <span className="font-display text-[17px] font-semibold" style={{ color: 'var(--text-bright)' }}>{r.node}</span>
                 {r.current ? <Tag tone="accent">here now</Tag> : r.allowed ? <Tag tone="good">yes</Tag> : <Tag tone="crit">no</Tag>}

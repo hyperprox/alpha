@@ -1,5 +1,6 @@
 'use client'
 
+import { styles } from '@/components/visual/kit'
 import { Fragment, useState } from 'react'
 import type { UpdatesNode, UpdatesPkgChange } from '@hyperprox/types'
 import { Badge, Btn, Chevron, Icon, TH, THEAD_STYLE } from './ui'
@@ -37,8 +38,8 @@ export function NodesTable({ nodes, canReboot, rebootWhy, onReboot }: {
 }) {
   const [open, setOpen] = useState<Record<string, boolean>>({})
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
+    <div className={styles.tableWrap}>
+      <table className={styles.table}>
         <thead>
           <tr style={THEAD_STYLE}>
             <th scope="col" className={TH}>NODE</th>
