@@ -7,6 +7,7 @@ import { apiJson, type AuthStatus } from '@/lib/api'
 import { alpha } from '@/lib/theme'
 import { BusyNote, GhostButton, INPUT, LABEL, Notice, PrimaryButton, passwordStrength } from '@/components/vault/ui'
 import { ThemeToggle } from '@/components/layout/ThemeToggle'
+import { DemoBadge } from '@/components/layout/TopBar'
 import s from './login.module.css'
 
 /**
@@ -130,10 +131,10 @@ function goNext(raw: string | null) {
   window.location.assign(safeNext(raw))
 }
 
-function SignIn({ next, initialEmail = '', notice }: { next: string | null; initialEmail?: string; notice?: string }) {
-  const [email, setEmail] = useState(initialEmail)
-  const [password, setPassword] = useState('')
-  const [code, setCode] = useState('')
+function SignIn({ next, initialEmail = '', notice, demo = false }: { next: string | null; initialEmail?: string; notice?: string; demo?: boolean }) {
+  const [email, setEmail] = useState(demo ? 'alex@example.com' : initialEmail)
+  const [password, setPassword] = useState(demo ? 'demo-password' : '')
+  const [code, setCode] = useState(demo ? '123456' : '')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
@@ -148,6 +149,7 @@ function SignIn({ next, initialEmail = '', notice }: { next: string | null; init
   return (
     <Card eyebrow="Secure sign-in" subtitle="Sign in" onSubmit={submit}>
       {notice && <Notice kind="info">{notice}</Notice>}
+      {demo && <Notice kind="info">This is a demo with invented data. Any email, password and 6-digit code signs you in, and nothing can be changed.</Notice>}
       <Field id="email" label="Email" type="email" autoFocus={!initialEmail} autoComplete="username" value={email} onChange={e => setEmail(e.target.value)} />
       <Field id="password" label="Master password" type="password" autoFocus={!!initialEmail} autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} />
       <Field id="code" label="2FA code" inputMode="numeric" autoComplete="one-time-code" maxLength={6} placeholder="123456"
@@ -278,6 +280,7 @@ function LoginForm() {
 
   return (
     <div className={s.stack}>
+      {status?.demo && <div className="flex justify-center"><DemoBadge /></div>}
       {params.get('locked') && (
         <Notice kind="warn">{lockedNotice(params.get('reason'))}</Notice>
       )}
@@ -286,7 +289,7 @@ function LoginForm() {
       )}
       {failed && <Notice kind="error">Could not reach the API.</Notice>}
       {status && (status.bootstrapped || prefill !== null
-        ? <SignIn next={next} initialEmail={prefill ?? ''} notice={prefill !== null ? 'Your owner account is created. Sign in with your next 2FA code to finish.' : undefined} />
+        ? <SignIn next={next} demo={!!status.demo} initialEmail={prefill ?? ''} notice={prefill !== null ? 'Your owner account is created. Sign in with your next 2FA code to finish.' : undefined} />
         : <Bootstrap next={next} onSignInRequired={setPrefill} />)}
       {!status && !failed && <div className={`${s.waiting} animate-pulse`} role="status">Checking the vault...</div>}
     </div>

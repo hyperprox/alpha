@@ -26,6 +26,9 @@ const version = readVersion(path.join(__dirname, '../../package.json'))
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: 'standalone',
+  // The demo (scripts/demo.sh) builds into its own folder and talks to its own API port; a normal build
+  // leaves both unset and gets .next and 3002, as before.
+  distDir: process.env.HYPERPROX_NEXT_DIST || '.next',
   env: {
     NEXT_PUBLIC_APP_VERSION: version,
     NEXT_PUBLIC_GIT_SHA:     gitSha(),
@@ -36,7 +39,7 @@ const nextConfig = {
     return [
       {
         source: '/api/:path*',
-        destination: `http://${process.env.API_HOST || 'localhost'}:3002/api/:path*`,
+        destination: `http://${process.env.API_HOST || 'localhost'}:${process.env.HYPERPROX_API_PORT || '3002'}/api/:path*`,
       },
     ]
   },

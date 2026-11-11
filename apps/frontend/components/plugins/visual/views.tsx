@@ -284,7 +284,7 @@ export function RouterView({ v }: { v: RouterVisual }) {
           internet={{ name: 'Internet' }}
           wans={v.wans.map(w => ({ key: w.name, name: w.name, sub: `↓ ${mbps(w.downBps)} ↑ ${mbps(w.upBps)} Mbps`, active: w.downBps + w.upBps > 0 }))}
           core={{ name: v.router.name, lines: [`↓ ${mbps(v.total.downBps)} · ↑ ${mbps(v.total.upBps)} Mbps`, `CPU ${h.cpuPct}%${h.tempC !== null ? ` · ${h.tempC}°C` : ''}`] }}
-          subnets={v.subnets.slice(0, 4).map(n => ({ key: n.net, name: n.net, sub: `${n.devices} devices${n.uplink ? ` · ${n.uplink}` : ''}`, active: n.downBps + n.upBps > 0 }))} />
+          subnets={v.subnets.slice(0, 4).map(n => ({ key: n.net, name: n.net, sub: `${n.devices} devices${n.uplink ? ` · via ${n.uplink}` : ''}`, active: n.downBps + n.upBps > 0 }))} />
         {v.subnets.length > 4 && <p className={s.note} style={{ color: 'var(--text-muted)' }}>{v.subnets.length - 4} more subnets are in Details.</p>}
       </Panel>
       <Cols>

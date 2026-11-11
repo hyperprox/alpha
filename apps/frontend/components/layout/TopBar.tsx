@@ -11,6 +11,8 @@ import { useSession } from '@/lib/session'
 import { ThemeToggle } from './ThemeToggle'
 import { Finder } from './Finder'
 import { pageMeta } from './nav'
+import Link from 'next/link'
+import { pluginIdOf, resolvePageMeta } from '@/lib/page-title'
 import s from './shell.module.css'
 
 const CLUSTER = process.env.NEXT_PUBLIC_CLUSTER_NAME ?? ''
@@ -30,10 +32,34 @@ function useLive(): 'live' | 'offline' | 'connecting' {
   return status ? 'live' : 'connecting'
 }
 
+/** Shown on every page while the demo API answers: the data is invented and nothing can be changed. */
+export function DemoBadge() {
+  return <span className={s.demo} title="Demo: invented data, and every change is refused">Demo</span>
+}
+
+// The plug-in list, read once per page load and only on a plug-in page, for the page's title.
+let pluginNames: Record<string, string> | null = null
+function usePluginNames(pathname: string): Record<string, string> | null {
+  const [names, setNames] = useState(pluginNames)
+  const want = pluginIdOf(pathname) !== null
+  useEffect(() => {
+    if (!want || pluginNames) return
+    let alive = true
+    fetch('/api/plugins').then(r => r.json()).then(j => {
+      if (!j?.success || !Array.isArray(j.data)) return
+      pluginNames = Object.fromEntries(j.data.map((p: { id: string; name: string }) => [p.id, p.name]))
+      if (alive) setNames(pluginNames)
+    }).catch(() => { /* the built-in names stand in */ })
+    return () => { alive = false }
+  }, [want])
+  return names
+}
+
 export function TopBar({ full = false }: { full?: boolean }) {
   const pathname = usePathname()
-  const { crumb, title } = pageMeta(pathname)
+  const { crumb, title, crumbHref } = resolvePageMeta(pageMeta(pathname), pathname, usePluginNames(pathname))
   const live = useLive()
+  const { status } = useSession()
   const [finder, setFinder] = useState(false)
 
   // "/" opens the finder from anywhere that is not a text box (a terminal's input counts as one).
@@ -52,10 +78,13 @@ export function TopBar({ full = false }: { full?: boolean }) {
   return (
     <div className={`${s.top} ${full ? s.topFull : ''}`}>
       <div className={s.titleBlock}>
-        <span className={s.crumb}>{crumb}{CLUSTER ? ` · ${CLUSTER}` : ''}</span>
+        {crumbHref
+          ? <Link href={crumbHref} className={s.crumb}>← {crumb}</Link>
+          : <span className={s.crumb}>{crumb}{CLUSTER ? ` · ${CLUSTER}` : ''}</span>}
         <h1 className={s.title}>{title}</h1>
       </div>
       <div className={s.tools}>
+        {status?.demo && <DemoBadge />}
         <span className={s.live} data-state={live} role="status">
           <i aria-hidden />{live === 'live' ? 'Live' : live === 'offline' ? 'Offline' : 'Connecting'}
         </span>

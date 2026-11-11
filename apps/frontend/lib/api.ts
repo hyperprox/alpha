@@ -18,6 +18,8 @@ export interface AuthStatus {
   bootstrapped: boolean
   reachable:    boolean
   user?:        { email: string; role: Role }
+  /** Only the demo API (apps/api/src/demo) sends this: invented data, every change refused. */
+  demo?:        boolean
 }
 
 const ROLE_RANK: Record<Role, number> = { viewer: 0, operator: 1, admin: 2, owner: 3 }

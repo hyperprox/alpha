@@ -10,7 +10,6 @@
 // =============================================================================
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import Link from 'next/link'
 import type { PluginVisual } from '@hyperprox/types'
 import { HomeAssistantPage } from '@/components/plugins/home-assistant/HomeAssistant'
 import { QnapPage } from '@/components/plugins/qnap/QnapPage'
@@ -307,8 +306,6 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
     <div className="overflow-x-hidden">
       <div className={vs.page}>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-          <Link href="/plugins" className="font-mono text-[11px] uppercase tracking-[0.14em] transition-opacity hover:opacity-80"
-            style={{ color: 'var(--accent)' }}>← plug-ins</Link>
           <div className="ml-auto flex flex-wrap items-center gap-2">
             {fetchedAt && <span className="font-mono text-[10px] tabular-nums" style={{ color: 'var(--text-dimmer)' }}>{agoLabel(fetchedAt)}</span>}
             {/* Only offered where the plug-in declared a rate. A device that never

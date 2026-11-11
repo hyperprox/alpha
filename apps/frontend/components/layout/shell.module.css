@@ -90,6 +90,8 @@
 .live[data-state="connecting"] { color: var(--text-muted); }
 .live[data-state="connecting"] i { background: var(--text-dimmer); box-shadow: none; }
 @keyframes shPulse { 50% { opacity: .35; } }
+.demo { display: inline-flex; align-items: center; font: 600 .68rem var(--font-mono); letter-spacing: .14em; text-transform: uppercase;
+  color: var(--warn); border: 1px solid var(--warn); border-radius: 6px; padding: 2px 8px; }
 .search { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); background: var(--surface); border-radius: 10px;
   padding: 0 12px; min-height: 40px; color: var(--text-muted); font: 500 .85rem var(--font-body); min-width: 13rem; cursor: pointer; }
 .search:hover { border-color: var(--border-strong); color: var(--text-soft); }
@@ -126,13 +128,20 @@
   .collapseBtn { display: none; }
   .top { position: static; background: transparent; }
   .search { display: none; }
+  /* The phone bar already carries the badge. */
+  .tools .demo { display: none; }
 }
 
 @media (max-width: 560px) {
-  .tools { margin-left: 0; width: 100%; }
-  .seg { margin-left: auto; }
+  /* One row: crumb and title on the left, the live dot and theme switch on the right, so the page starts higher. */
+  .top { flex-wrap: nowrap; align-items: center; padding-top: 10px; padding-bottom: 6px; }
+  .titleBlock { flex: 1 1 auto; }
+  .tools { margin-left: auto; flex-wrap: nowrap; gap: 6px; }
+  .live { font-size: 0; gap: 0; }
+  .seg button { min-height: 34px; padding: 0 9px; }
   .seg button span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-  .title { font-size: 1.6rem; }
+  .title { font-size: 1.35rem; }
+  .crumb { margin-bottom: 2px; }
 }
 
 /* ── finder ── */
