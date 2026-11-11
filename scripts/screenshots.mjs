@@ -65,6 +65,8 @@ export const PAGES = [
   ['plugin-qnap', '/plugins/qnap'],
   ['catalogue', '/catalogue'],
   ['sites', '/sites'],
+  ['sites-add-existing', '/sites?tab=existing'],
+  ['sites-metrics', '/sites?tab=metrics'],
   ['site-metrics', '/sites/demo-docs'],
   ['site-metrics-wordpress', '/sites/demo-blog'],
   ['settings', '/settings'],

@@ -105,6 +105,8 @@ const PROXY_READ = /^\/api\/proxy\/(kinds|instances|hosts|certificates|stats|ins
 // method, reads included: it maps every node, guest and address. Apply and clean-up create or destroy a
 // container, so both also need the master password re-entered.
 const CATALOGUE_WIZARD = /^\/api\/catalogue\/wizard(\/|$)/
+// Where each catalogue app already runs (routes/catalogue.ts /detected): it names guests and addresses, so admin.
+const CATALOGUE_DETECTED = /^\/api\/catalogue\/detected$/
 // Settings → Setup checklist: maps every node and runs installs on them as root. Admin for reads too.
 const SETUP_CHECKLIST = /^\/api\/setup-checklist(\/|$)/
 // Websites the catalogue made (routes/sites.ts): admin for reads too (they name nodes, addresses and vault items).
@@ -225,6 +227,7 @@ export function requiredRole(method: string, path: string): Role | null {
   if (TOKENS.test(p)) return 'admin'
   if (PROXY.test(p)) return (m === 'GET' || m === 'HEAD') && PROXY_READ.test(p) ? 'viewer' : 'admin'
   if (CATALOGUE_WIZARD.test(p)) return 'admin'
+  if (CATALOGUE_DETECTED.test(p)) return 'admin'
   if (SITES.test(p)) return 'admin'
   if (SITE_METRICS_ADMIN_READ.test(p)) return 'admin'
   if (SETUP_CHECKLIST.test(p)) return 'admin'

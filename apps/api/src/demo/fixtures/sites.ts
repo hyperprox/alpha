@@ -110,4 +110,34 @@ export const SITE_ROUTES: FixtureRoute[] = [
   { path: '/api/site-metrics/alerts', get: () => ok({ alerts: DEMO_SITES.flatMap(s => summary(s).alerts.map(a => ({ siteId: s.id, site: s.domain, ...a }))) }) },
   { path: '/api/site-metrics/sites/:id', get: (p, q) => { const s = DEMO_SITES.find(x => x.id === p.id); return s ? ok(detail(s, q.range ?? '7d')) : { success: false, error: 'No such site' } } },
   { path: '/api/site-metrics/adopt/guests', get: () => ok({ guests: [{ vmid: 204, name: 'gitea', node: 'pve-b', status: 'running', type: 'lxc' }], defaults: { logPath: '/var/log/nginx/access.log', wpPath: '/var/www/wordpress' } }) },
+  { path: '/api/site-metrics/adopt/candidates', get: () => ok(demoCandidates()) },
 ]
+
+/** "Add existing" in the demo: what discovery would list on an invented cluster (lib/site-metrics/discovery.ts). */
+function demoCandidates() {
+  const npm = (host: string, port: number) => ({ instances: [{ instanceName: 'Nginx Proxy Manager', kind: 'npm' }], tls: true, forward: { scheme: 'http', host, port } })
+  const base = { source: 'proxy', notAGuest: null, wpPath: null, alreadyASite: false, alreadyAdopted: false, siteId: null, up: true, whyNot: null, notes: [] as string[] }
+  return {
+    candidates: [
+      { ...base, id: 'demo-c1', domains: [`shop.${DOMAIN}`], url: `https://shop.${DOMAIN}`, proxy: npm('10.0.2.21', 80),
+        guest: { vmid: 211, name: 'shop', node: 'pve-a', type: 'lxc', status: 'running' }, server: 'nginx', kind: 'wordpress', wpPath: '/var/www/shop',
+        logPath: '/var/log/nginx/shop.access.log', logFormat: { name: 'combined', requestTime: false, forwardedFor: false }, adoptable: true,
+        notes: ['The log has no visitor address (X-Forwarded-For) and no request time; HyperProx offers the logging change after adding the site.'] },
+      { ...base, id: 'demo-c2', domains: [`docs.${DOMAIN}`], url: `https://docs.${DOMAIN}`, proxy: npm('10.0.2.22', 80),
+        guest: { vmid: 212, name: 'docs', node: 'pve-b', type: 'lxc', status: 'running' }, server: 'nginx', kind: 'static',
+        logPath: '/var/log/nginx/access.log', logFormat: { name: 'hyperprox_metrics', requestTime: true, forwardedFor: true }, adoptable: true },
+      { ...base, id: 'demo-c3', domains: [`www.${DOMAIN}`], url: `https://www.${DOMAIN}`, proxy: npm('10.0.2.17', 80),
+        guest: { vmid: 207, name: 'project-site', node: 'pve-b', type: 'lxc', status: 'running' }, server: 'nginx', kind: 'static',
+        logPath: '/var/log/nginx/access.log', logFormat: { name: 'hyperprox_metrics', requestTime: true, forwardedFor: true },
+        alreadyASite: true, siteId: 'demo-docs', adoptable: false, whyNot: 'Already a site HyperProx made.' },
+      { ...base, id: 'demo-c4', domains: [`files.${DOMAIN}`], url: `https://files.${DOMAIN}`, proxy: npm('10.0.2.25', 80),
+        guest: { vmid: 215, name: 'files', node: 'pve-a', type: 'lxc', status: 'running' }, server: null, kind: 'other', logPath: null, logFormat: null, adoptable: false,
+        whyNot: 'No access log HyperProx can read was found; enter it by hand.', notes: ['No nginx, Apache or Caddy was found in this container.'] },
+      { ...base, id: 'demo-c5', domains: [`nas.${DOMAIN}`], url: `https://nas.${DOMAIN}`, proxy: npm('10.0.3.20', 8080), guest: null,
+        notAGuest: 'an address that is not a guest', server: null, kind: null, logPath: null, logFormat: null, adoptable: false,
+        whyNot: 'It forwards to an address that is not a guest; only a container can be added.' },
+    ],
+    errors: [], listenerScan: { state: 'done', looked: 6, of: 6 }, builtAt: Date.now(),
+    defaults: { logPath: '/var/log/nginx/access.log', wpPath: '/var/www/wordpress' },
+  }
+}
