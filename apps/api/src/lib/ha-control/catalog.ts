@@ -245,6 +245,65 @@ export function alwaysSecurity(s: HAState): boolean {
     || (KEYWORD_DOMAINS.has(d) && soundsLikeSecurity(s))
 }
 
+/**
+ * What Home Assistant's device and entity registries say about an entity's hardware. Read-only, from the
+ * registry the service already reads; absent when the registry is not shared (then nothing is inferred).
+ */
+export interface RegistryHint {
+  manufacturer?: string | null
+  model?:        string | null
+  /** The integration, e.g. "tplink". */
+  platform?:     string | null
+  /** The name the integration gave the entity, before any rename. */
+  originalName?: string | null
+}
+
+/** TP-Link plug and power-strip model families: KP*, EP*, HS1xx (HS103, HS105, HS110...), HS300. Not HS2xx/KS* wall switches. */
+const TPLINK_PLUG_MODEL = /^\s*(KP\d|EP\d|HS1\d\d|HS300)/i
+const PLUG_WORDS = /plug|outlet|strip/
+
+/**
+ * A switch that is a plug socket by its hardware, for integrations that give the entity no "outlet" device
+ * class (TP-Link Kasa, for one): a TP-Link plug or strip model, or a registry model or original name that says
+ * plug, outlet or strip.
+ */
+export function isPlugDevice(h: RegistryHint | null | undefined): boolean {
+  if (!h) return false
+  const maker = fold(h.manufacturer ?? '')
+  const tplink = /tp-?link/.test(maker) || fold(h.platform ?? '') === 'tplink'
+  if (tplink && TPLINK_PLUG_MODEL.test(h.model ?? '')) return true
+  return PLUG_WORDS.test(fold(h.model ?? '')) || PLUG_WORDS.test(fold(h.originalName ?? ''))
+}
+
+/** A switch HA got from a TP-Link device: the tplink integration, or TP-Link as the device's maker. */
+export function isTplink(h: RegistryHint | null | undefined): boolean {
+  if (!h) return false
+  return fold(h.platform ?? '') === 'tplink' || /tp-?link/.test(fold(h.manufacturer ?? ''))
+}
+
+/**
+ * Integrations for routers, access points and firewalls. Their switches and buttons reboot the network, open
+ * guest Wi-Fi or toggle ports, so they are always the security tier: nothing (a TP-Link maker, a light-sounding
+ * name, an everyday mark) moves them out.
+ */
+export const NETWORK_PLATFORMS = new Set(['asuswrt', 'asusrouter', 'mikrotik', 'unifi', 'tplink_omada', 'tplink_deco', 'tplink_router',
+  'deco', 'omada', 'netgear', 'fritz', 'openwrt', 'luci', 'ubus', 'keenetic_ndms2', 'opnsense', 'pfsense', 'synology_srm', 'upnp',
+  'eero', 'google_wifi', 'nmap_tracker', 'ruckus_unleashed', 'aruba', 'cisco_ios', 'unifi_direct', 'vodafone_station', 'sfr_box', 'freebox'])
+/** TP-Link network gear by model, for when it arrives through another path: Omada (EAP, ER, SG, OC), Deco, Archer, TL-. */
+const TPLINK_NETWORK_MODEL = /^\s*(EAP|ER\d|SG\d|OC\d|DECO|ARCHER|TL-)/i
+
+export function isNetworkGear(h: RegistryHint | null | undefined): boolean {
+  if (!h) return false
+  if (NETWORK_PLATFORMS.has(fold(h.platform ?? ''))) return true
+  return isTplink(h) && TPLINK_NETWORK_MODEL.test(h.model ?? '')
+}
+
+/** A plug socket: the "outlet" device class, or a switch whose registry entry says it is a plug. */
+export function isOutlet(s: HAState, hint?: RegistryHint | null): boolean {
+  if (domainOf(s.entity_id) !== 'switch') return false
+  return String(s.attributes?.device_class ?? '') === 'outlet' || isPlugDevice(hint)
+}
+
 /** Words that mark a switch as a light (whole words, after folding). */
 export const LIGHT_WORDS = new Set(['light', 'lights', 'lamp', 'lamps'])
 
@@ -260,23 +319,30 @@ export function isLightSwitch(s: HAState): boolean {
 }
 
 /** Security by default, but an owner may move it to everyday. */
-function securityByDefault(s: HAState): boolean {
+function securityByDefault(s: HAState, hint?: RegistryHint | null): boolean {
   const d = domainOf(s.entity_id)
   const dc = String(s.attributes?.device_class ?? '')
   if (d === 'cover') return !EVERYDAY_COVER_CLASSES.has(dc)
   if (RUNNABLE_DOMAINS.has(d)) return true
   // A switch can be wired to anything; only a plug socket, or a switch named as a light, is everyday without the
   // owner saying so.
-  if (d === 'switch') return dc !== 'outlet' && !isLightSwitch(s)
+  // Every TP-Link switch (plugs, strips and wall switches alike) is everyday: the owner's decision.
+  if (d === 'switch') return !isOutlet(s, hint) && !isLightSwitch(s) && !isTplink(hint)
   if (d === 'input_boolean') return true
   return false
 }
 
-export function tierOf(s: HAState, policy: TierPolicy): Tier {
+/**
+ * The tier. `hint` is the entity's registry entry (see RegistryHint): it moves a plug socket or any TP-Link switch
+ * to everyday, and keeps network gear (routers, access points) security whatever else is said. It never moves
+ * anything out of the always-security kinds, protected devices or promoted domains.
+ */
+export function tierOf(s: HAState, policy: TierPolicy, hint?: RegistryHint | null): Tier {
   if (alwaysSecurity(s)) return 'security'
+  if (isNetworkGear(hint)) return 'security'
   if (policy.protected.includes(s.entity_id)) return 'security'
   if (policy.securityDomains.includes(domainOf(s.entity_id))) return 'security'
-  if (securityByDefault(s) && !policy.everyday.some(m => markHolds(m, s))) return 'security'
+  if (securityByDefault(s, hint) && !policy.everyday.some(m => markHolds(m, s))) return 'security'
   return 'normal'
 }
 
@@ -399,11 +465,11 @@ export type DeviceKind = 'light' | 'switch' | 'outlet' | 'fan' | 'climate' | 'me
   | 'siren' | 'scene' | 'script' | 'button' | 'vacuum'
 
 /** What a device is, for its tile and icon. A wall switch named as a light is a light. */
-export function kindOf(s: HAState): DeviceKind {
+export function kindOf(s: HAState, hint?: RegistryHint | null): DeviceKind {
   const d = domainOf(s.entity_id)
   switch (d) {
     case 'light': return 'light'
-    case 'switch': return isLightSwitch(s) ? 'light' : String(s.attributes?.device_class ?? '') === 'outlet' ? 'outlet' : 'switch'
+    case 'switch': return isNetworkGear(hint) ? 'switch' : isLightSwitch(s) ? 'light' : isOutlet(s, hint) ? 'outlet' : 'switch'
     case 'input_boolean': return 'switch'
     case 'fan': return 'fan'
     case 'climate': return 'climate'
@@ -425,13 +491,15 @@ export function kindOf(s: HAState): DeviceKind {
  * wall switches expose their status light as a second switch). Left out of the device list by default.
  */
 export function ledCompanions(states: HAState[]): Set<string> {
+  // Whitespace is normalised first: "Fireplace  LED" (two spaces) is still the "Fireplace" switch's LED.
+  const norm = (s: HAState) => fold(nameOf(s)).replace(/\s+/g, ' ').trim()
   const base = new Set(states
     .filter(s => ['switch', 'light'].includes(domainOf(s.entity_id)))
-    .map(s => fold(nameOf(s)).trim()))
+    .map(norm))
   const out = new Set<string>()
   for (const s of states) {
     if (domainOf(s.entity_id) !== 'switch') continue
-    const m = /^(.*\S)\s+led$/.exec(fold(nameOf(s)).trim())
+    const m = /^(.*\S) led$/.exec(norm(s))
     if (m && base.has(m[1])) out.add(s.entity_id)
   }
   return out

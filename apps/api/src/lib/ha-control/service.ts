@@ -25,7 +25,7 @@
 import {
   ActionRefusal, CONTROLLABLE, ENTITY_ID, actionPhrase, buildServiceCall, confirmPhrase, confirmTemplate, controlsFor,
   displayState, domainOf, everydayRefusal, inferRoom, kindOf, ledCompanions, markFor, markHolds, nameOf, readBackMatches,
-  tierOf, typedMatches, type Control, type DeviceKind, type EverydayMark, type HAState, type Tier,
+  tierOf, typedMatches, type Control, type DeviceKind, type RegistryHint, type EverydayMark, type HAState, type Tier,
 } from './catalog'
 import { HAUnreachableError, HttpHAClient, type HAClient, type HAConnection, type HARegistry } from './client'
 import type { InstanceMeta, InstanceStore } from './instances'
@@ -93,6 +93,15 @@ export interface ServiceDeps {
 }
 
 const REFUSAL_NOTIFY_MS = 10 * 60_000
+
+/** An entity's registry entry and its device's maker and model, for telling a plug socket from a wall switch. */
+export function registryHint(reg: HARegistry | null, entityId: string): RegistryHint | null {
+  if (!reg) return null
+  const e = reg.entities.find(x => x.entity_id === entityId)
+  if (!e) return null
+  const d = e.device_id ? reg.devices.find(x => x.id === e.device_id) : undefined
+  return { manufacturer: d?.manufacturer ?? null, model: d?.model ?? null, platform: e.platform ?? null, originalName: e.original_name ?? null }
+}
 /** Groups that sort after the named rooms. */
 const LAST = new Set(['No area', 'Other'])
 
@@ -260,6 +269,7 @@ export class HAControlService {
 
     const areaName = new Map(reg?.areas.map(a => [a.area_id, a.name]) ?? [])
     const deviceArea = new Map(reg?.devices.map(d => [d.id, d.area_id]) ?? [])
+    const deviceById = new Map(reg?.devices.map(d => [d.id, d]) ?? [])
     const entityReg = new Map(reg?.entities.map(e => [e.entity_id, e]) ?? [])
 
     // Indicator-LED companion switches are left out: they are the status light of another switch, not a device.
@@ -274,13 +284,15 @@ export class HAControlService {
       const areaId = er?.area_id ?? (er?.device_id ? deviceArea.get(er.device_id) ?? null : null)
       // Home Assistant's own areas when it shares them; otherwise a room worked out from the device's name.
       const area = reg ? ((areaId && areaName.get(areaId)) || 'No area') : (inferRoom(nameOf(s)) ?? 'Other')
-      const tier = tierOf(s, m.policy)
+      const dev = er?.device_id ? deviceById.get(er.device_id) : undefined
+      const hint: RegistryHint | null = er ? { manufacturer: dev?.manufacturer ?? null, model: dev?.model ?? null, platform: er.platform ?? null, originalName: er.original_name ?? null } : null
+      const tier = tierOf(s, m.policy, hint)
       const unavailable = s.state === 'unavailable' || (s.state === 'unknown' && !['scene', 'script', 'button'].includes(domain))
       const hide = opts.viewer && tier === 'security'
       const controls = hide ? [] : controlsFor(s).map(c => tier === 'security' ? { ...c, confirm: confirmTemplate(s, c.action, m.name) } : c)
       const shown = displayState(s)
       const row: DeviceRow = {
-        entityId: s.entity_id, name: nameOf(s), domain, kind: kindOf(s), tier, unavailable,
+        entityId: s.entity_id, name: nameOf(s), domain, kind: kindOf(s, hint), tier, unavailable,
         ...(hide ? { state: 'hidden', ...(shown.deviceClass ? { deviceClass: shown.deviceClass } : {}) } : shown), controls,
       }
       groups.set(area, [...(groups.get(area) ?? []), row])
@@ -376,7 +388,8 @@ export class HAControlService {
       return refuse(new ActionRefusal('unreachable', e instanceof HAUnreachableError ? e.message : `${m.name} could not be read.`, 502))
     }
     if (!before) return refuse(new ActionRefusal('unknown_entity', `${m.name} has no entity ${entityId}.`, 404))
-    const tier = tierOf(before, m.policy)
+    // The registry (cached a minute) only tells a plug socket from a wall switch; an unreadable one changes nothing.
+    const tier = tierOf(before, m.policy, registryHint(await this.registry(m, ha), entityId))
     // Counted before any role, route or phrase check, so repeated tries at a lock (an operator's included) are limited.
     try {
       this.rate(actor, tier, tier === 'security' ? this.d.limits.securityPerMinute : this.d.limits.normalPerMinute,
