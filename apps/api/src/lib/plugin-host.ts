@@ -13,6 +13,7 @@
 // =============================================================================
 
 import { getCredential, setCredential, listCredentialKeys } from './credentials'
+import type { PluginVisual } from './plugin-visual-types'
 
 export const PLUGIN_CATEGORY = 'plugin'
 
@@ -406,6 +407,11 @@ export interface PluginDetail {
    */
   stats?:  Array<{ label: string; value: string; hint?: string; tone?: 'good' | 'warn' | 'bad' }>
   tables:  PluginTable[]
+  /**
+   * The same reading as typed numbers, for the page's gauges and maps, so nothing parses a display string back
+   * into a figure. Optional: a page without it shows the tables.
+   */
+  visual?: PluginVisual
 }
 
 export interface PluginTileData {

@@ -8,14 +8,15 @@
 // =============================================================================
 
 import type { Plugin, PluginContext, PluginTileData, PluginDetail, PluginMetric } from '../lib/plugin-host'
+import type { UnmanicVisual } from '../lib/plugin-visual-types'
 
 const NODES = ['default', 'node2', 'node3'] as const
 
-interface NodeState {
+export interface NodeState {
   key: string; label: string
   busy: number; idle: number; paused: number
   pending: number
-  current: Array<{ worker: string; file: string }>
+  current: Array<{ worker: string; file: string; progress?: number | null; elapsedSec?: number | null }>
   error?: string
 }
 
@@ -32,7 +33,14 @@ async function readNode(ctx: PluginContext, key: string, label: string): Promise
       else {
         state.busy++
         if (worker.current_file) {
-          state.current.push({ worker: worker.name ?? worker.id, file: worker.current_file })
+          // Unmanic reports the running encoder's progress under `subprocess` (percent as a string).
+          const pct = Number(worker.subprocess?.percent)
+          const elapsed = Number(worker.subprocess?.elapsed)
+          state.current.push({
+            worker: worker.name ?? worker.id, file: worker.current_file,
+            progress: Number.isFinite(pct) && worker.subprocess?.percent !== '' ? Math.max(0, Math.min(100, pct)) : null,
+            elapsedSec: Number.isFinite(elapsed) && elapsed > 0 ? elapsed : null,
+          })
         }
       }
     }
@@ -58,6 +66,33 @@ async function readAll(ctx: PluginContext): Promise<NodeState[]> {
   }
   const out = await Promise.all(NODES.map(k => readNode(ctx, k, labels[k])))
   return out.filter((x): x is NodeState => x !== null)
+}
+
+/** A file's name without its folders: the page shows what is encoding, not where the library lives. */
+export function baseName(p: unknown): string {
+  return String(p ?? '').split(/[\\/]/).filter(Boolean).pop()?.slice(0, 200) ?? ''
+}
+
+/** The Unmanic page's numbers: one reactor per worker node. Pure, so it is tested without Unmanic. */
+export function buildUnmanicVisual(nodes: NodeState[]): UnmanicVisual {
+  const workers = nodes.map(n => ({
+    name: n.label, up: !n.error,
+    busy: n.busy, idle: n.idle, paused: n.paused, slots: n.busy + n.idle + n.paused, pending: n.pending,
+    encoding: n.current.map(c => ({
+      worker: String(c.worker ?? '').slice(0, 60), file: baseName(c.file),
+      progress: c.progress ?? null, elapsedSec: c.elapsedSec ?? null,
+    })),
+  }))
+  const up = workers.filter(w => w.up)
+  return {
+    kind: 'unmanic',
+    workers,
+    totals: {
+      busy: up.reduce((t, w) => t + w.busy, 0), idle: up.reduce((t, w) => t + w.idle, 0),
+      paused: up.reduce((t, w) => t + w.paused, 0), pending: up.reduce((t, w) => t + w.pending, 0),
+      slots: up.reduce((t, w) => t + w.slots, 0),
+    },
+  }
 }
 
 export const unmanicPlugin: Plugin = {
@@ -115,6 +150,7 @@ export const unmanicPlugin: Plugin = {
   async detail(ctx: PluginContext): Promise<PluginDetail> {
     const nodes = await readAll(ctx)
     return {
+      visual: buildUnmanicVisual(nodes),
       stats: [
         { label: 'Encoding', value: String(nodes.reduce((t, n) => t + n.busy, 0)) },
         { label: 'Idle',     value: String(nodes.reduce((t, n) => t + n.idle, 0)) },

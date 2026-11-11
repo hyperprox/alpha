@@ -17,6 +17,7 @@
 import type {
   Plugin, PluginContext, PluginTileData, PluginDetail,
   PluginMetric, PluginStuckImport } from '../lib/plugin-host'
+import type { ArrDownloadState, ArrVisual } from '../lib/plugin-visual-types'
 
 type Tone = 'good' | 'warn' | 'bad'
 const EPISODE = /[Ss]\d{1,2}[Ee]\d{1,2}|\b\d{1,2}x\d{2}\b/
@@ -96,6 +97,115 @@ async function readAll(ctx: PluginContext) {
   }
 }
 
+
+/** qBittorrent's state, in the five words the page draws. */
+export function downloadState(state: unknown): ArrDownloadState {
+  const s = String(state ?? '')
+  if (['downloading', 'forcedDL', 'metaDL', 'forcedMetaDL'].includes(s)) return 'downloading'
+  if (s === 'stalledDL') return 'stalled'
+  if (['uploading', 'forcedUP', 'stalledUP'].includes(s)) return 'seeding'
+  if (['queuedDL', 'queuedUP'].includes(s)) return 'queued'
+  if (['checkingDL', 'checkingUP', 'checkingResumeData', 'moving', 'allocating'].includes(s)) return 'checking'
+  if (/^(paused|stopped)(DL|UP)$/.test(s)) return 'paused'
+  return 'other'
+}
+
+/**
+ * Indexer names Sonarr or Radarr say are failing, from their health messages ("Indexers unavailable due to
+ * failures for more than 6 hours: Alpha (Prowlarr), Beta (Prowlarr)").
+ */
+export function failingFromHealth(health: Array<{ message?: unknown }>): Set<string> {
+  const out = new Set<string>()
+  for (const h of health) {
+    const m = /indexers? .*unavailable.*?:\s*(.+)$/i.exec(String(h.message ?? ''))
+    if (!m) continue
+    for (const part of m[1].split(',')) {
+      const name = part.replace(/\s*\([^)]*\)\s*$/, '').trim().toLowerCase()
+      if (name) out.add(name)
+    }
+  }
+  return out
+}
+
+const num = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
+
+/**
+ * The Arr Stack page's numbers. `indexerStatus` is Prowlarr's /api/v1/indexerstatus: an indexer listed there
+ * with disabledTill in the future is failing. Pure, so it is tested without the services.
+ */
+export function buildArrVisual(input: {
+  arrs: Array<{ label: string; queue: any[]; total: number; health: any[]; error?: string }>
+  indexers: any[] | null; indexerStatus?: any[] | null; transfer: any; torrents: any[] | null; now?: number
+}): ArrVisual {
+  const now = input.now ?? Date.now()
+  const tor = input.torrents ?? []
+  const states = tor.map(t => downloadState(t.state))
+  const count = (k: ArrDownloadState) => states.filter(x => x === k).length
+
+  const allHealth = input.arrs.flatMap(a => a.health.map(h => ({ service: a.label, h })))
+  const failingNames = failingFromHealth(allHealth.map(x => x.h))
+  const failingIds = new Set((input.indexerStatus ?? [])
+    .filter(x => x && x.disabledTill && Date.parse(String(x.disabledTill)) > now)
+    .map(x => Number(x.indexerId)))
+  const indexers = (input.indexers ?? []).map((i: any) => ({
+    name: String(i.name ?? '—').slice(0, 60),
+    state: (!i.enable ? 'off' : failingIds.has(Number(i.id)) || failingNames.has(String(i.name ?? '').toLowerCase()) ? 'failing' : 'ok') as 'ok' | 'failing' | 'off',
+  })).sort((a, b) => ['failing', 'ok', 'off'].indexOf(a.state) - ['failing', 'ok', 'off'].indexOf(b.state) || a.name.localeCompare(b.name))
+
+  // One alert per download, not per episode: a blocked season pack is one thing to fix.
+  const blocked = new Map<string, ArrVisual['blocked'][number]>()
+  for (const a of input.arrs) {
+    for (const i of importBlocked(a.queue)) {
+      const key = `${a.label}:${i.downloadId || i.id}`
+      if (blocked.has(key)) continue
+      blocked.set(key, {
+        service: a.label, title: String(titleOf(i)).slice(0, 200),
+        reason: String(i.statusMessages?.[0]?.messages?.[0] || i.errorMessage || 'Import blocked').slice(0, 240),
+        downloadId: i.downloadId ? String(i.downloadId) : null,
+      })
+    }
+  }
+
+  const order: ArrDownloadState[] = ['stalled', 'downloading', 'checking', 'queued', 'seeding', 'paused', 'other']
+  const downloads = tor
+    .map((t: any, idx: number) => ({ t, state: states[idx] }))
+    .filter(x => ['downloading', 'stalled', 'seeding', 'checking', 'queued'].includes(x.state))
+    .sort((a, b) => order.indexOf(a.state) - order.indexOf(b.state) || num(b.t.dlspeed) - num(a.t.dlspeed))
+    .slice(0, 24)
+    .map(({ t, state }) => {
+      const eta = num(t.eta)
+      return {
+        name: String(t.name ?? '—').slice(0, 200),
+        progress: Math.max(0, Math.min(100, Math.round(num(t.progress) * 1000) / 10)),
+        sizeBytes: num(t.size), downBps: num(t.dlspeed), upBps: num(t.upspeed),
+        etaSec: eta > 0 && eta < 8_640_000 ? eta : null,
+        state, category: t.category ? String(t.category).slice(0, 40) : null,
+      }
+    })
+
+  return {
+    kind: 'arrstack',
+    pipeline: {
+      indexersOn: indexers.filter(i => i.state !== 'off').length,
+      indexersTotal: indexers.length,
+      indexersFailing: indexers.filter(i => i.state === 'failing').length,
+      queued: input.arrs.reduce((t, a) => t + a.total, 0),
+      downloading: count('downloading'), stalled: count('stalled'), seeding: count('seeding'),
+      importBlocked: blocked.size,
+      downBps: input.transfer ? num(input.transfer.dl_info_speed) : null,
+      upBps: input.transfer ? num(input.transfer.up_info_speed) : null,
+    },
+    blocked: [...blocked.values()],
+    downloads,
+    indexers,
+    health: allHealth.map(({ service, h }) => ({
+      service,
+      level: (['error', 'warning'].includes(String(h.type)) ? String(h.type) : 'notice') as 'error' | 'warning' | 'notice',
+      message: String(h.message ?? '').slice(0, 300),
+    })),
+    services: input.arrs.map(a => ({ name: a.label, up: !a.error })),
+  }
+}
 
 // ---------------------------------------------------------------------------
 //  Rescuing imports that cannot resolve themselves
@@ -283,7 +393,11 @@ export const arrstackPlugin: Plugin = {
   },
 
   async detail(ctx: PluginContext): Promise<PluginDetail> {
-    const { arrs, indexers, transfer, torrents } = await readAll(ctx)
+    const [{ arrs, indexers, transfer, torrents }, indexerStatus] = await Promise.all([
+      readAll(ctx),
+      // Which indexers Prowlarr has backed off from. Read-only; a missing answer only loses the red dots.
+      ctx.has('prowlarr') ? ctx.from('prowlarr').get('/api/v1/indexerstatus').catch(() => null) : null,
+    ])
     const pct = (i: any) => {
       const total = Number(i.size ?? 0), left = Number(i.sizeleft ?? 0)
       return total ? `${(((total - left) / total) * 100).toFixed(0)}%` : '—'
@@ -292,6 +406,7 @@ export const arrstackPlugin: Plugin = {
     const now = Date.now() / 1000
 
     return {
+      visual: buildArrVisual({ arrs, indexers, indexerStatus: Array.isArray(indexerStatus) ? indexerStatus : null, transfer, torrents }),
       stats: [
         { label: 'In queue', value: String(arrs.reduce((t, a) => t + a.total, 0)) },
         { label: 'Blocked imports', value: String(arrs.reduce((t, a) => t + importBlocked(a.queue).length, 0)),

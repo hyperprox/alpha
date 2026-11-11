@@ -11,6 +11,7 @@
 // =============================================================================
 
 import type { Plugin, PluginContext, PluginTileData, PluginDetail, PluginMetric, PluginLink } from '../lib/plugin-host'
+import type { RouterVisual } from '../lib/plugin-visual-types'
 
 type Row = { label: string; value: string; tone?: 'good' | 'warn' | 'bad' }
 
@@ -293,6 +294,88 @@ async function perDevice(ctx: PluginContext, names: Map<string, string>): Promis
     by.set(src, row)
   }
   return [...by.values()].sort((a, b) => (b.down + b.up) - (a.down + a.up))
+}
+
+const numOr = (v: unknown, fallback: number | null = 0): number | null => {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN
+  return Number.isFinite(n) ? n : fallback
+}
+
+/** A log line's weight, from its RouterOS topics. */
+export function logLevel(topics: unknown): 'error' | 'warning' | 'info' {
+  const t = String(topics ?? '').toLowerCase()
+  return /\b(error|critical)\b/.test(t) ? 'error' : /\bwarning\b/.test(t) ? 'warning' : 'info'
+}
+
+/**
+ * The router page's numbers, from what detail() already read. `guestNames` is HyperProx's own map of cluster
+ * guest addresses to guest names (lib/guest-names.ts); a name the router holds (a lease or an ARP comment) wins
+ * over it. Pure, so it is tested without a router.
+ */
+export function buildRouterVisual(input: {
+  resource: any; identity: any; board: any; health: any[]
+  wanRates: Array<{ iface: string; rx: number; tx: number }>
+  subnets: Array<{ net: string; uplink: string; devices: number; down: number; up: number }>
+  traffic: Array<{ ip: string; name: string; down: number; up: number; bytes: number }>
+  nat: any[]; log: any[]
+  routerNames: Map<string, string>
+  guestNames: Map<string, string>
+}): RouterVisual {
+  const { resource, identity, board, health } = input
+  const sensor = (...names: string[]) => names.map(n => health.find(h => h?.name === n)?.value).find(v => v !== undefined)
+  const memTotal = numOr(resource['total-memory']) as number
+  const memFree = numOr(resource['free-memory']) as number
+  const nameFor = (ip: string, routerName?: string | null): { name: string | null; source: 'router' | 'cluster' | 'none' } => {
+    if (routerName && routerName !== '—') return { name: routerName, source: 'router' }
+    const g = input.guestNames.get(ip)
+    return g ? { name: g, source: 'cluster' } : { name: null, source: 'none' }
+  }
+  const forwards = input.nat
+    .filter(n => n?.action === 'dst-nat')
+    .map(n => {
+      const to = String(n['to-addresses'] ?? '')
+      const toPort = n['to-ports'] ? `:${n['to-ports']}` : ''
+      return {
+        name: String(n.comment || `${n.protocol ?? 'any'} ${n['dst-port'] ?? ''}`.trim()).slice(0, 80),
+        proto: String(n.protocol ?? 'any').slice(0, 10),
+        port: String(n['dst-port'] ?? 'any').slice(0, 40),
+        to: to ? `${to}${toPort}` : '—',
+        toName: to ? (input.guestNames.get(to) ?? input.routerNames.get(to) ?? null) : null,
+        active: n.disabled !== 'true',
+        bytes: numOr(n.bytes) as number,
+      }
+    })
+    .sort((a, b) => Number(b.active) - Number(a.active) || b.bytes - a.bytes)
+  return {
+    kind: 'mikrotik',
+    router: {
+      name: String(identity?.name ?? board?.model ?? 'RouterOS').slice(0, 60),
+      model: String(board?.model ?? resource['board-name'] ?? '').slice(0, 60),
+      version: String(resource.version ?? '').replace(/\s*\(stable\)/, '').slice(0, 40),
+      uptime: humaniseUptime(String(resource.uptime ?? '')),
+    },
+    wans: input.wanRates.map(w => ({ name: w.iface, downBps: w.rx, upBps: w.tx })),
+    total: { downBps: input.wanRates.reduce((t, w) => t + w.rx, 0), upBps: input.wanRates.reduce((t, w) => t + w.tx, 0) },
+    health: {
+      cpuPct: numOr(resource['cpu-load']) as number,
+      cpuCores: numOr(resource['cpu-count'], null),
+      memPct: memTotal ? Math.round(((memTotal - memFree) / memTotal) * 100) : 0,
+      tempC: numOr(sensor('cpu-temperature', 'temperature', 'board-temperature1'), null) || null,
+      voltage: numOr(sensor('jack-voltage', 'poe-in-voltage', 'voltage', 'psu1-voltage'), null) || null,
+    },
+    subnets: input.subnets.map(sn => ({
+      net: sn.net, uplink: sn.uplink && sn.uplink !== '—' ? sn.uplink : null, devices: sn.devices, downBps: sn.down, upBps: sn.up,
+    })),
+    talkers: input.traffic
+      .filter(t => t.down + t.up > 0)
+      .slice(0, 10)
+      .map(t => ({ ip: t.ip, downBps: t.down, upBps: t.up, ...nameFor(t.ip, t.name) })),
+    forwards: forwards.slice(0, 24),
+    forwardsActive: forwards.filter(f => f.active).length,
+    log: [...input.log].reverse().slice(0, 30).map(l => ({
+      time: String(l.time ?? '').slice(0, 40), message: String(l.message ?? '').trim().slice(0, 300), level: logLevel(l.topics),
+    })),
+  }
 }
 
 export const mikrotikPlugin: Plugin = {
@@ -717,7 +800,17 @@ export const mikrotikPlugin: Plugin = {
     const logRows = [...log].reverse()
     const recent  = [...logRows.filter(interesting).slice(0, 15), ...logRows.filter(l => !interesting(l)).slice(0, 25)]
 
+    // HyperProx's own knowledge of which cluster guest has which address, to name what the router cannot.
+    const guestNames = await import('../lib/guest-names')
+      .then(m => m.clusterGuestNames())
+      .catch(() => new Map<string, string>())
+    const visual = buildRouterVisual({
+      resource, identity, board, health, wanRates: perWanRates, subnets, traffic, nat, log,
+      routerNames: namesByIp, guestNames,
+    })
+
     return {
+      visual,
       stats,
       tables: [
         {
