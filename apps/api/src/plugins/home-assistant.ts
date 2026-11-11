@@ -7,9 +7,12 @@
 //  the second question: what is unavailable, what is out of battery, what is
 //  waiting to update, and what has actually been happening.
 //
-//  Read-only by intent, and here that is not a nicety. Every write against this
-//  API actuates something physical — a lock, a heater, a door. The REST API
-//  exposes /api/services and this plug-in deliberately never calls it.
+//  The plug-in itself stays read-only: every write against this API actuates
+//  something physical — a lock, a heater, a door — and a plug-in never holds a
+//  credential. Controlling devices is HyperProx's own job (lib/ha-control): an
+//  allow-list of actions, safety tiers, a read-back and an audit row for each
+//  tap, across several Home Assistant instances. This file's settings are
+//  instance #1 there.
 //
 //  One long-lived access token, made in Home Assistant under your profile.
 // =============================================================================
@@ -50,6 +53,150 @@ function since(iso?: string): string {
   return `${d}d ago`
 }
 
+/** The health view (unavailable devices, batteries, updates), for this plug-in and for every other instance. */
+export function buildHealthDetail(states: unknown, config: any, log: unknown, warn: number): PluginDetail {
+  const list: HAState[] = Array.isArray(states) ? states : []
+
+  const dead    = list.filter(s => DEAD.has(s.state))
+  const lowBatt = list
+    .map(s => ({ s, b: batteryLevel(s) }))
+    .filter(x => x.b !== null && x.b < warn)
+    .sort((a, b) => (a.b ?? 0) - (b.b ?? 0))
+  const updates = list.filter(s => s.entity_id.startsWith('update.') && s.state === 'on')
+  const autos   = list.filter(s => s.entity_id.startsWith('automation.'))
+  const onNow   = list.filter(s => /^(light|switch|fan)\./.test(s.entity_id) && s.state === 'on')
+
+  const byDomain = new Map<string, { total: number; dead: number }>()
+  for (const s of list) {
+    const d = domainOf(s.entity_id)
+    const row = byDomain.get(d) ?? { total: 0, dead: 0 }
+    row.total += 1
+    if (DEAD.has(s.state)) row.dead += 1
+    byDomain.set(d, row)
+  }
+
+  // Only the lines that look like a problem, newest last as the log has them.
+  const logLines = String(log ?? '')
+    .split('\n')
+    .filter(l => /ERROR|WARNING|Traceback|Timeout|failed/i.test(l))
+    .slice(-25)
+
+  const attention = [
+    ...updates.map(s => ({
+      what: nameOf(s), kind: 'update waiting',
+      detail: `${s.attributes?.installed_version ?? '?'} → ${s.attributes?.latest_version ?? '?'}`,
+    })),
+    ...lowBatt.map(x => ({ what: nameOf(x.s), kind: 'battery', detail: `${x.b}%` })),
+    ...dead.slice(0, 40).map(s => ({ what: nameOf(s), kind: s.state, detail: since(s.last_changed) })),
+  ]
+
+  return {
+    stats: [
+      { label: 'Home',        value: String(config?.location_name ?? 'Home Assistant') },
+      { label: 'Version',     value: String(config?.version ?? '—') },
+      { label: 'Entities',    value: String(list.length) },
+      { label: 'Integrations', value: String((config?.components ?? []).length) },
+      { label: 'Unavailable', value: String(dead.length),
+        tone: dead.length ? 'bad' : 'good' },
+      { label: 'Low battery', value: String(lowBatt.length),
+        tone: lowBatt.length ? 'warn' : 'good' },
+      { label: 'Updates',     value: String(updates.length),
+        tone: updates.length ? 'warn' : 'good' },
+      { label: 'Automations', value: `${autos.filter(a => a.state === 'on').length} of ${autos.length} on` },
+    ],
+    tables: [
+      {
+        title: `Needs you (${attention.length})`,
+        empty: 'Nothing is unavailable, flat, or waiting to update.',
+        columns: [
+          { key: 'what',   label: 'Entity' },
+          { key: 'kind',   label: 'Why' },
+          { key: 'detail', label: 'Detail' },
+        ],
+        rows: attention,
+      },
+      {
+        title: 'Batteries',
+        empty: 'No entities report a battery level.',
+        columns: [
+          { key: 'name',  label: 'Entity' },
+          { key: 'level', label: 'Level', align: 'right' },
+          { key: 'seen',  label: 'Last changed', align: 'right' },
+        ],
+        rows: list
+          .map(s => ({ s, b: batteryLevel(s) }))
+          .filter(x => x.b !== null)
+          .sort((a, b) => (a.b ?? 0) - (b.b ?? 0))
+          .map(x => ({ name: nameOf(x.s), level: `${x.b}%`, seen: since(x.s.last_changed) })),
+      },
+      {
+        title: 'Unavailable',
+        empty: 'Everything is responding.',
+        columns: [
+          { key: 'name',   label: 'Entity' },
+          { key: 'id',     label: 'Entity id' },
+          { key: 'state',  label: 'State' },
+          { key: 'since',  label: 'Since', align: 'right' },
+        ],
+        // Longest-dead first: a device that dropped out months ago is a
+        // different problem from one that dropped out during breakfast.
+        rows: dead
+          .slice()
+          .sort((a, b) => new Date(a.last_changed).getTime() - new Date(b.last_changed).getTime())
+          .map(s => ({ name: nameOf(s), id: s.entity_id, state: s.state, since: since(s.last_changed) })),
+      },
+      {
+        title: 'Automations',
+        empty: 'No automations.',
+        columns: [
+          { key: 'name',      label: 'Automation' },
+          { key: 'state',     label: 'Enabled' },
+          { key: 'triggered', label: 'Last triggered', align: 'right' },
+        ],
+        rows: autos
+          .slice()
+          .sort((a, b) => (a.state === 'on' ? 0 : 1) - (b.state === 'on' ? 0 : 1)
+                       || nameOf(a).localeCompare(nameOf(b)))
+          .map(s => ({
+            name: nameOf(s),
+            state: s.state === 'on' ? 'yes' : 'no',
+            triggered: since(s.attributes?.last_triggered),
+          })),
+      },
+      {
+        title: `On now (${onNow.length})`,
+        empty: 'Nothing is on.',
+        columns: [
+          { key: 'name',   label: 'Entity' },
+          { key: 'domain', label: 'Kind' },
+          { key: 'since',  label: 'On since', align: 'right' },
+        ],
+        rows: onNow.map(s => ({
+          name: nameOf(s), domain: domainOf(s.entity_id), since: since(s.last_changed),
+        })),
+      },
+      {
+        title: 'Entities by domain',
+        empty: 'No entities.',
+        columns: [
+          { key: 'domain', label: 'Domain' },
+          { key: 'total',  label: 'Entities',    align: 'right' },
+          { key: 'dead',   label: 'Unavailable', align: 'right' },
+        ],
+        rows: [...byDomain.entries()]
+          .sort((a, b) => b[1].total - a[1].total)
+          .map(([domain, v]) => ({ domain, total: v.total, dead: v.dead || '—' })),
+      },
+      {
+        title: 'Recent problems in the log',
+        empty: 'Nothing in the log looks like an error.',
+        columns: [{ key: 'line', label: 'Line' }],
+        rows: logLines.map(line => ({ line: line.trim().slice(0, 300) })),
+      },
+    ],
+  }
+}
+
 export const homeAssistantPlugin: Plugin = {
   manifest: {
     id:   'home-assistant',
@@ -66,7 +213,7 @@ export const homeAssistantPlugin: Plugin = {
       { key: 'url',   label: 'Home Assistant URL', type: 'url',    required: true,
         hint: 'http://homeassistant.local:8123 — the same address you open in a browser.' },
       { key: 'token', label: 'Long-lived token',   type: 'secret', required: true,
-        hint: 'Profile → Security → Long-lived access tokens → Create token. This plug-in only reads.' },
+        hint: 'Best made as a dedicated, non-admin Home Assistant user for HyperProx: sign in as that user, then Profile → Security → Long-lived access tokens → Create token. Kept in the vault.' },
       { key: 'battery_warn', label: 'Battery warning level (%)', type: 'text', required: false,
         hint: 'Below this counts as low. Default 20.' },
     ],
@@ -109,147 +256,7 @@ export const homeAssistantPlugin: Plugin = {
       // The error log is plain text, not JSON, and can be megabytes.
       opt(ctx.get('/api/error_log', { timeoutMs: 15_000 }), '' as any),
     ])
-    const list: HAState[] = Array.isArray(states) ? states : []
-    const warn = Number(ctx.option('battery_warn') ?? 20) || 20
-
-    const dead    = list.filter(s => DEAD.has(s.state))
-    const lowBatt = list
-      .map(s => ({ s, b: batteryLevel(s) }))
-      .filter(x => x.b !== null && x.b < warn)
-      .sort((a, b) => (a.b ?? 0) - (b.b ?? 0))
-    const updates = list.filter(s => s.entity_id.startsWith('update.') && s.state === 'on')
-    const autos   = list.filter(s => s.entity_id.startsWith('automation.'))
-    const onNow   = list.filter(s => /^(light|switch|fan)\./.test(s.entity_id) && s.state === 'on')
-
-    const byDomain = new Map<string, { total: number; dead: number }>()
-    for (const s of list) {
-      const d = domainOf(s.entity_id)
-      const row = byDomain.get(d) ?? { total: 0, dead: 0 }
-      row.total += 1
-      if (DEAD.has(s.state)) row.dead += 1
-      byDomain.set(d, row)
-    }
-
-    // Only the lines that look like a problem, newest last as the log has them.
-    const logLines = String(log ?? '')
-      .split('\n')
-      .filter(l => /ERROR|WARNING|Traceback|Timeout|failed/i.test(l))
-      .slice(-25)
-
-    const attention = [
-      ...updates.map(s => ({
-        what: nameOf(s), kind: 'update waiting',
-        detail: `${s.attributes?.installed_version ?? '?'} → ${s.attributes?.latest_version ?? '?'}`,
-      })),
-      ...lowBatt.map(x => ({ what: nameOf(x.s), kind: 'battery', detail: `${x.b}%` })),
-      ...dead.slice(0, 40).map(s => ({ what: nameOf(s), kind: s.state, detail: since(s.last_changed) })),
-    ]
-
-    return {
-      stats: [
-        { label: 'Home',        value: String(config?.location_name ?? 'Home Assistant') },
-        { label: 'Version',     value: String(config?.version ?? '—') },
-        { label: 'Entities',    value: String(list.length) },
-        { label: 'Integrations', value: String((config?.components ?? []).length) },
-        { label: 'Unavailable', value: String(dead.length),
-          tone: dead.length ? 'bad' : 'good' },
-        { label: 'Low battery', value: String(lowBatt.length),
-          tone: lowBatt.length ? 'warn' : 'good' },
-        { label: 'Updates',     value: String(updates.length),
-          tone: updates.length ? 'warn' : 'good' },
-        { label: 'Automations', value: `${autos.filter(a => a.state === 'on').length} of ${autos.length} on` },
-      ],
-      tables: [
-        {
-          title: `Needs you (${attention.length})`,
-          empty: 'Nothing is unavailable, flat, or waiting to update.',
-          columns: [
-            { key: 'what',   label: 'Entity' },
-            { key: 'kind',   label: 'Why' },
-            { key: 'detail', label: 'Detail' },
-          ],
-          rows: attention,
-        },
-        {
-          title: 'Batteries',
-          empty: 'No entities report a battery level.',
-          columns: [
-            { key: 'name',  label: 'Entity' },
-            { key: 'level', label: 'Level', align: 'right' },
-            { key: 'seen',  label: 'Last changed', align: 'right' },
-          ],
-          rows: list
-            .map(s => ({ s, b: batteryLevel(s) }))
-            .filter(x => x.b !== null)
-            .sort((a, b) => (a.b ?? 0) - (b.b ?? 0))
-            .map(x => ({ name: nameOf(x.s), level: `${x.b}%`, seen: since(x.s.last_changed) })),
-        },
-        {
-          title: 'Unavailable',
-          empty: 'Everything is responding.',
-          columns: [
-            { key: 'name',   label: 'Entity' },
-            { key: 'id',     label: 'Entity id' },
-            { key: 'state',  label: 'State' },
-            { key: 'since',  label: 'Since', align: 'right' },
-          ],
-          // Longest-dead first: a device that dropped out months ago is a
-          // different problem from one that dropped out during breakfast.
-          rows: dead
-            .slice()
-            .sort((a, b) => new Date(a.last_changed).getTime() - new Date(b.last_changed).getTime())
-            .map(s => ({ name: nameOf(s), id: s.entity_id, state: s.state, since: since(s.last_changed) })),
-        },
-        {
-          title: 'Automations',
-          empty: 'No automations.',
-          columns: [
-            { key: 'name',      label: 'Automation' },
-            { key: 'state',     label: 'Enabled' },
-            { key: 'triggered', label: 'Last triggered', align: 'right' },
-          ],
-          rows: autos
-            .slice()
-            .sort((a, b) => (a.state === 'on' ? 0 : 1) - (b.state === 'on' ? 0 : 1)
-                         || nameOf(a).localeCompare(nameOf(b)))
-            .map(s => ({
-              name: nameOf(s),
-              state: s.state === 'on' ? 'yes' : 'no',
-              triggered: since(s.attributes?.last_triggered),
-            })),
-        },
-        {
-          title: `On now (${onNow.length})`,
-          empty: 'Nothing is on.',
-          columns: [
-            { key: 'name',   label: 'Entity' },
-            { key: 'domain', label: 'Kind' },
-            { key: 'since',  label: 'On since', align: 'right' },
-          ],
-          rows: onNow.map(s => ({
-            name: nameOf(s), domain: domainOf(s.entity_id), since: since(s.last_changed),
-          })),
-        },
-        {
-          title: 'Entities by domain',
-          empty: 'No entities.',
-          columns: [
-            { key: 'domain', label: 'Domain' },
-            { key: 'total',  label: 'Entities',    align: 'right' },
-            { key: 'dead',   label: 'Unavailable', align: 'right' },
-          ],
-          rows: [...byDomain.entries()]
-            .sort((a, b) => b[1].total - a[1].total)
-            .map(([domain, v]) => ({ domain, total: v.total, dead: v.dead || '—' })),
-        },
-        {
-          title: 'Recent problems in the log',
-          empty: 'Nothing in the log looks like an error.',
-          columns: [{ key: 'line', label: 'Line' }],
-          rows: logLines.map(line => ({ line: line.trim().slice(0, 300) })),
-        },
-      ],
-    }
+    return buildHealthDetail(states, config, log, Number(ctx.option('battery_warn') ?? 20) || 20)
   },
 
   async summary(ctx: PluginContext) {

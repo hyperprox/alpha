@@ -113,6 +113,11 @@ const GUEST_CONFIG_APPLY = /^\/api\/infra\/guest-config\/(apply|guests\/[^/]+\/[
 const HA = /^\/api\/ha(\/|$)/
 const HA_READ = /^\/api\/ha\/(overview|badges|guests\/(lxc|qemu)\/\d+(\/preflight)?)$/
 const HA_RECONFIRM = /^\/api\/ha\/(plans\/[^/]+\/apply|nodes\/[^/]+\/hostkey\/pin)$/
+// Home Assistant control (routes/ha-control.ts). Everyday controls are operator; security controls (locks, alarms,
+// garage doors, protected devices) and every change to an instance are admin and re-confirmed, which keeps API
+// tokens off them too.
+const HA_CONTROL_ACT = /^\/api\/plugins\/home-assistant\/instances\/[^/]+\/actions$/
+const HA_CONTROL_RECONFIRM = /^\/api\/plugins\/home-assistant\/instances(\/[^/]+(\/secure-actions)?)?$/
 // Role management (no routes yet; reserved so they are owner-only from day one).
 const ROLE_MGMT = /^\/api\/(auth\/)?roles(\/|$)/
 // Remote access: what opens a tunnel into the cluster, routes through a machine, removes a device or shows
@@ -210,6 +215,7 @@ export function requiredRole(method: string, path: string): Role | null {
   }
 
   if (m === 'POST' && POWER.test(p)) return 'operator'
+  if (m === 'POST' && HA_CONTROL_ACT.test(p)) return 'operator'
   for (const [tm, re] of TERMINAL_OPERATOR) if (m === tm && re.test(p)) return 'operator'
 
   return 'admin'
@@ -229,6 +235,7 @@ export function needsReconfirm(method: string, path: string): boolean {
   if (m === 'POST' && CATALOGUE_RECONFIRM.test(p)) return true
   if (m === 'POST' && GUEST_CONFIG_APPLY.test(p)) return true
   if (m === 'POST' && HA_RECONFIRM.test(p)) return true
+  if (m !== 'GET' && m !== 'HEAD' && HA_CONTROL_RECONFIRM.test(p)) return true
   // Creating or revoking an API token.
   if ((m === 'POST' || m === 'DELETE') && TOKENS.test(p)) return true
   for (const [rm, re] of REMOTE_RECONFIRM) if (m === rm && re.test(p)) return true

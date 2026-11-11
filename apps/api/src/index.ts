@@ -31,6 +31,7 @@ import { apiTokenRoutes }         from './routes/api-tokens'
 import { secretsRoutes }          from './routes/secrets'
 import { terminalRoutes }             from './routes/terminal'
 import { pluginRoutes }           from './routes/plugins'
+import { haControlRoutes }      from './routes/ha-control'
 import { catalogueRoutes } from './routes/catalogue'
 import { setWizardStore, PrismaWizardStore } from './lib/catalogue-store'
 import { restoreWizardState } from './lib/catalogue-installer'
@@ -140,6 +141,7 @@ async function main() {
   await server.register(clusterRoutes,    { prefix: '/api/clusters' })
   await server.register(terminalRoutes,           { prefix: '/api/terminal' })
   await server.register(pluginRoutes,          { prefix: '/api/plugins' })
+  await server.register(haControlRoutes,       { prefix: '/api/plugins/home-assistant' })
   await server.register(catalogueRoutes,      { prefix: '/api/catalogue' })
   await server.register(updatesRoutes,        { prefix: '/api/updates' })
   await server.register(updatesWsRoutes,      { prefix: '/ws/updates' })

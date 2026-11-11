@@ -70,6 +70,10 @@ const REMOTE_OK: Array<[string, RegExp]> = [
   // remote also need a fresh re-confirmation. The daily check's status covers every cluster.
   ['GET',    new RegExp(`^/api/updates/(policy|inventory|plan|jobs|jobs/[A-Za-z0-9]{1,64}|check|nodes/${N}/reboot-preview)$`)],
   ['POST',   new RegExp(`^/api/updates/(jobs|jobs/[A-Za-z0-9]{1,64}/(confirm|resume|cancel|rollback)|nodes/${N}/reboot|check)$`)],
+  // Home Assistant control (routes/ha-control.ts) names its instance in the path and, on a remote cluster's page,
+  // reaches only the instances linked to that cluster.
+  ['GET',    /^\/api\/plugins\/home-assistant\/instances(\/h[0-9a-f]{8}\/(status|health|devices)|\/default\/(status|health|devices))?$/],
+  ['POST',   /^\/api\/plugins\/home-assistant\/instances\/(h[0-9a-f]{8}|default)\/(actions|secure-actions)$/],
 ]
 
 export function remoteRouteAllowed(method: string, path: string): boolean {

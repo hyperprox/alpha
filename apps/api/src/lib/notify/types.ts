@@ -12,7 +12,7 @@ export type ChannelKind = typeof CHANNEL_KINDS[number]
 export const SEVERITIES = ['info', 'warning', 'critical'] as const
 export type Severity = typeof SEVERITIES[number]
 
-export const FAMILIES = ['vault', 'updates', 'certs', 'jobs', 'backups', 'resources', 'vpn'] as const
+export const FAMILIES = ['vault', 'updates', 'certs', 'jobs', 'backups', 'resources', 'vpn', 'home'] as const
 export type Family = typeof FAMILIES[number]
 
 /** Kinds people run on their own network: only these may use a private address. */
@@ -36,6 +36,7 @@ export function familyOf(type: string): Family | null {
     case 'wizard': case 'catalogue': case 'files': return 'jobs'
     case 'backup': return 'backups'
     case 'alert': return 'resources'
+    case 'ha': return 'home'
     default: return null
   }
 }

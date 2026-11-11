@@ -18,7 +18,7 @@ import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 
 type Kind = 'discord' | 'slack' | 'teams' | 'ntfy' | 'gotify' | 'telegram' | 'webhook'
 type Severity = 'info' | 'warning' | 'critical'
-type Family = 'vault' | 'updates' | 'certs' | 'jobs' | 'backups' | 'resources'
+type Family = 'vault' | 'updates' | 'certs' | 'jobs' | 'backups' | 'resources' | 'home'
 interface QuietHours { start: string; end: string; tz?: string; days?: number[]; criticalBreaksThrough: boolean }
 interface LastResult { ok: boolean; status?: number; code?: string; at: string; text: string }
 
@@ -43,6 +43,7 @@ const KINDS: Record<Kind, { label: string; help: string; urlHint?: string; selfH
 
 const FAMILY_LABEL: Record<Family, string> = {
   vault: 'Lock alerts', updates: 'Updates', certs: 'Certificates', jobs: 'Jobs (wizard, catalogue, file copies)', backups: 'Backups', resources: 'Cluster health',
+  home: 'Home Assistant security actions',
 }
 const SEVERITY_LABEL: Record<Severity, string> = { info: 'Everything', warning: 'Warnings and critical', critical: 'Critical only' }
 const DAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
