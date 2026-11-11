@@ -144,7 +144,7 @@ export interface ActionPlan {
 
 export interface ActionCard {
   planId: string
-  action: ActionKind
+  action: ActionKind | 'site-pull' | 'qnap-smart'
   cluster: ClusterRef
   /** A copy's source cluster, when it is not the destination. */
   from?: ClusterRef
