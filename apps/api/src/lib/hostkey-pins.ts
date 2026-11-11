@@ -114,6 +114,9 @@ async function migrateLegacy(host: string, port: number): Promise<boolean> {
   const fp = await getCredential(CATEGORY, PIN, legacy)
   if (!fp) return false
   const [src, ev] = await Promise.all([getCredential(CATEGORY, SOURCE, legacy), getCredential(CATEGORY, EVIDENCE, legacy).catch(() => null)])
+  // A pin someone confirmed or HyperProx verified at home is a home machine's: it is never lent to a remote server,
+  // where it would let that server's scripts and logins go to whatever answers with the home key.
+  if (CONFIRMED.includes(src as PinSource)) return false
   await setCredential(CATEGORY, PIN, id, fp, false)
   if (src) await setCredential(CATEGORY, SOURCE, id, src, false)
   if (ev) await setCredential(CATEGORY, EVIDENCE, id, ev, false)

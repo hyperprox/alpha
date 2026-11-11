@@ -254,7 +254,10 @@ where the test passed.
 - **Remote servers' pins are their own.** A remote server's pins are kept under that server's id, so a remote
   node whose address happens to equal a home node's (two private networks both using 10.0.0.x) never inherits
   the home node's pin. A pin kept before this was copied (never moved) to the remote the first time it was
-  needed, so a home machine on the same address keeps its own. Adding a server never fills in the other nodes' cluster-network addresses.
+  needed, so a home machine on the same address keeps its own; a pin someone confirmed or HyperProx verified at
+  home is never copied. A remote node's address may not be a home address at all: the home Proxmox address, a
+  home node's, or the host of any home host-key pin (which covers addresses such as a home node's tailnet IP) is
+  refused when a server is added or its nodes are edited. Adding a server never fills in the other nodes' cluster-network addresses.
 - **Adding a server.** Before any token is sent, the private link must vouch for exactly the address you
   typed and the server's certificate must be for the device the link names; after the token, the server's own
   API must name itself as a node that certificate is for. The add form shows, before your one master

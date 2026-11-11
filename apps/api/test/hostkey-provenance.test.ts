@@ -234,31 +234,34 @@ test('a pin HyperProx verified (with its evidence) satisfies requirePin; a diffe
   } finally { srv.close() }
 })
 
-test('review 4: a remote server\'s pins are scoped to it; an old pin moves to it only when the address is unambiguous', async () => {
+test('review 4: a remote server\'s pins are scoped to it; a home address or a confirmed home pin is never a remote node\'s', async () => {
   const saved = process.env.PROXMOX_HOST
   process.env.PROXMOX_HOST = '10.0.0.51'
   try {
     await asOwner(async () => {
       setClusterStore(new MemoryClusterStore()); await loadClusters()
       const c = await createRemote({ name: 'Remote server', address: '10.0.0.50', port: 8006, fingerprint: 'AB'.repeat(32), tokenId: 'hyperprox@pve!main', tokenSecret: 'abcdef01-2345-6789-abcd-ef0123456789', by: 'owner@example.com' })
-      await updateCluster(c.id, { nodeAddresses: { node1: '10.0.0.51', node2: '10.0.0.52' } })
-      const homeFp = 'SHA256:' + 'H'.repeat(43), oldFp = 'SHA256:' + 'L'.repeat(43)
-      await recordPin('10.0.0.51', 22, homeFp, 'confirmed')   // a home node on the same address as the remote's node1
-      await recordPin('10.0.0.52', 22, oldFp, 'confirmed')    // a remote pin kept before pins were scoped
+      // The home Proxmox address, and the host of any home pin, are refused as a remote node's address.
+      await assert.rejects(updateCluster(c.id, { nodeAddresses: { node1: '10.0.0.51' } }), /home machines/)
+      await recordPin('10.0.0.60', 22, 'SHA256:' + 'P'.repeat(43), 'confirmed')
+      await assert.rejects(updateCluster(c.id, { nodeAddresses: { node1: '10.0.0.60' } }), /home machines/)
+      // Addresses saved while nothing at home used them (as on an install from before this check).
+      await updateCluster(c.id, { nodeAddresses: { node2: '10.0.0.52', node3: '10.0.0.53' } })
+      const confirmedFp = 'SHA256:' + 'H'.repeat(43), learnedFp = 'SHA256:' + 'L'.repeat(43)
+      await recordPin('10.0.0.52', 22, confirmedFp, 'confirmed')   // a home machine's confirmed pin on the same address
+      await recordPin('10.0.0.53', 22, learnedFp, 'api')          // an unconfirmed pin kept before pins were scoped
       await runInCluster(c.id, async () => {
-        assert.equal(await pinnedKey('10.0.0.51', 22), null, 'the home pin is never inherited by the remote')
-        assert.equal(await pinnedKey('10.0.0.52', 22), oldFp, 'the old remote pin was copied under the remote')
-        assert.equal(await pinSource('10.0.0.52', 22), 'confirmed', 'with its source')
-        assert.equal(pinId('10.0.0.52', 22), `${c.id}:10.0.0.52:22`)
+        assert.equal(await pinnedKey('10.0.0.52', 22), null, 'a confirmed home pin is never copied to a remote')
+        assert.equal(await pinnedKey('10.0.0.53', 22), learnedFp, 'an old unconfirmed pin is still copied under the remote')
+        assert.equal(await pinSource('10.0.0.53', 22), 'api', 'with its source, so it still needs verifying there')
+        assert.equal(pinId('10.0.0.53', 22), `${c.id}:10.0.0.53:22`)
       })
-      assert.equal(await pinnedKey('10.0.0.51', 22), homeFp, 'home keeps its own pin')
-      // review LOW: the home copy stays (a home guest may use the same address), and it is never copied again.
-      assert.equal(await pinnedKey('10.0.0.52', 22), oldFp, 'the home copy is left in place')
+      assert.equal(await pinnedKey('10.0.0.52', 22), confirmedFp, 'home keeps its own pin')
       await runInCluster(c.id, async () => {
-        await forgetPin('10.0.0.52', 22)
-        assert.equal(await pinnedKey('10.0.0.52', 22), null, 'forgotten for the remote, and not copied back from home')
+        await forgetPin('10.0.0.53', 22)
+        assert.equal(await pinnedKey('10.0.0.53', 22), null, 'forgotten for the remote, and not copied back from home')
       })
-      assert.equal(await pinnedKey('10.0.0.52', 22), oldFp, 'home still has its pin')
+      assert.equal(await pinnedKey('10.0.0.53', 22), learnedFp, 'home still has its pin')
     })
   } finally { process.env.PROXMOX_HOST = saved; resetClustersForTests() }
 })

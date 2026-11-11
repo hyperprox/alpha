@@ -25,7 +25,7 @@ import net from 'node:net'
 import type { TerminalCredential } from '../ssh-broker'
 import { installScript } from './monitoring'
 import type { PresentedCertificate } from './tls-pin'
-import { ClusterRefusal, looksLikeHome, HOME_DUPLICATE, type ClusterIdentity, type ClusterInfo, type NewRemote } from './registry'
+import { ClusterRefusal, looksLikeHome, HOME_DUPLICATE, homeAddressSet, homeAddressAmong, type ClusterIdentity, type ClusterInfo, type NewRemote } from './registry'
 import { isTailnetAddress, tailnetIdentity, refuseTokenContext, TAILSCALE_DEV, type TailnetStatus, type TailnetWhois, type NodeVerdict, type VerifyInput } from '../hostkey-verify'
 
 export interface TokenCheck {
@@ -217,6 +217,7 @@ export async function addServer(input: AddServerInput, deps: AddServerDeps): Pro
   if (looksLikeHome({ addresses: [address], fingerprint: fp, clusterName: t.identity.clusterName, nodes: t.identity.nodes }, home)) {
     throw new ClusterRefusal(`${HOME_DUPLICATE} Nothing was saved.`, 'conflict')
   }
+  if (await homeAddressAmong([address])) throw new ClusterRefusal(`${HOME_DUPLICATE} (${address} is an address HyperProx already uses for a home machine.) Nothing was saved.`, 'conflict')
   if (t.missing.length) throw new ClusterRefusal(`That token works but lacks administrator rights (${t.missing.join(', ')}). Run the step 2 commands as shown, including "--privsep 0", then try again. Nothing was saved.`)
 
   // A retry of an add that stopped part way: the same name at the same address and certificate is picked up where it
@@ -230,7 +231,11 @@ export async function addServer(input: AddServerInput, deps: AddServerDeps): Pro
 
   // 3. Where each node is.
   const status = await deps.tailnet().catch(() => null)
-  const addrs = await nodeAddresses(t.identity, t.nodes, address, status, ip => deps.whois(ip), ip => deps.route(ip))
+  const found = await nodeAddresses(t.identity, t.nodes, address, status, ip => deps.whois(ip), ip => deps.route(ip))
+  // A node address that is a home machine's is dropped (registry.ts refuses to save one): that node is listed below
+  // as having no address, to be added by hand under Edit server.
+  const homeSet = await homeAddressSet()
+  const addrs = Object.fromEntries(Object.entries(found).filter(([, a]) => !homeSet.has(a.trim().toLowerCase())))
   const cluster = Object.keys(addrs).length ? await deps.setNodeAddresses(c.id, addrs) : c
 
   // 4. Host keys, then the login, only where the key is verified.

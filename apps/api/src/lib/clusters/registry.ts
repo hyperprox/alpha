@@ -187,6 +187,29 @@ export function homeAddresses(): string[] {
 }
 
 /**
+ * Every address a home machine is known by: homeAddresses(), plus the host of every home-scope SSH host-key pin
+ * (hyperprox:deck/hostkey ids without a remote cluster's prefix), which covers the home nodes' tailnet and other
+ * addresses HyperProx has connected to. A remote server's node is never allowed one of these: its pins and logins
+ * are its own, and pointing one at a home node would send that server's scripts and logins to the home node.
+ */
+export async function homeAddressSet(): Promise<Set<string>> {
+  const out = new Set(homeAddresses())
+  const pins = await listCredentialKeys('deck', 'hostkey').catch(() => [] as Array<{ key: string }>)
+  for (const { key } of pins) {
+    if (/^c[0-9a-f]{10}:/.test(key)) continue
+    const host = key.replace(/:\d+$/, '').toLowerCase()
+    if (host) out.add(host)
+  }
+  return out
+}
+
+/** The first of these addresses that is a home address, or null. */
+export async function homeAddressAmong(addresses: string[]): Promise<string | null> {
+  const home = await homeAddressSet()
+  return addresses.map(a => String(a ?? '').trim().toLowerCase()).find(a => a && home.has(a)) ?? null
+}
+
+/**
  * Whether a server being added is in fact the home cluster (or one of its nodes): the same address, the same
  * certificate, the same cluster name, the same set of node names on a cluster, or a lone node with the home node's
  * name AND address. Managing home twice would let a remote's rules (or none) reach the home nodes.
@@ -284,6 +307,10 @@ export async function updateCluster(id: string, patch: ClusterPatch): Promise<Cl
       if (!/^[a-zA-Z0-9][a-zA-Z0-9.-]{0,62}$/.test(node)) throw new ClusterRefusal(`"${node}" is not a node name.`)
       if (addr === '' || addr === null) continue
       out[node] = cleanAddress(addr)
+    }
+    if (prev.kind === 'remote') {
+      const clash = await homeAddressAmong(Object.values(out))
+      if (clash) throw new ClusterRefusal(`${clash} is an address of one of your home machines, so it cannot be a node of ${prev.name}. Nothing was saved.`, 'conflict')
     }
     next.nodeAddresses = out
   }
