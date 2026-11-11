@@ -587,11 +587,38 @@ admin-only. See [docs/remote-access.md](docs/remote-access.md).
 
 **Storage** shows every storage on every node, including shared NFS and CIFS, Ceph health, OSDs (with
 latency) and pools, and the disks of each guest. **Monitoring** shows node health, active Prometheus
-alerts (node down, CPU, memory, disk, Ceph and GPU rules) and the embedded Grafana dashboards. If the
+alerts (node down, CPU, memory, disk, Ceph, GPU and hardware rules) and the embedded Grafana dashboards. If the
 PVE exporter has no read-only token yet (an install from before this release), an admin can make one
 from the Grafana tab with **Set up Proxmox metrics**, or with `hyperprox pve-exporter`.
 Prometheus keeps 90 days or 40 GB, whichever comes first (`PROMETHEUS_RETENTION` and
 `PROMETHEUS_RETENTION_SIZE` in `.env`).
+
+**Alerts reach you as notifications.** Once a minute HyperProx asks Prometheus which alerts are firing.
+When one starts, your notification channels get one message (the **Cluster health** family): what is
+wrong in plain words, on which server (with the cluster's name for a server in another cluster), and
+since when. When it clears, one more message says so. Nothing is repeated while an alert lasts, and a
+restart of HyperProx does not send again what it already sent. If Prometheus does not answer for 5
+minutes you get one "Monitoring is down" warning, and one message when it answers again (an install
+without Prometheus never gets this one). This works while HyperProx is locked; channels whose secret
+is in the vault get their messages after the next sign-in, as usual.
+
+Alerts named in `ALERTS_NOT_FORWARDED` in `.env` (comma-separated) stay on the Monitoring page and are
+never sent. If it is not set, that is `CephHealthWarning`, because a Ceph cluster can stay in
+HEALTH_WARN on purpose (a pool kept at one copy, for example). Set it empty to send everything.
+
+The hardware rules read each server's sensors through node_exporter:
+
+| Alert | When | Severity |
+|---|---|---|
+| GPUNotResponding | an AMD or nouveau graphics card reads above 150 °C for 1 minute: no card runs that hot, so it has hung | critical |
+| GPUHot | an AMD graphics card above 90 °C for 5 minutes | warning |
+| CPUHot | a processor above 90 °C for 5 minutes | warning |
+| FanStuckAtMax | a fan at full speed for 15 minutes | warning |
+| MonitoringTargetDown | Prometheus cannot read a source (Proxmox, Ceph, GPU exporters) for 5 minutes; a node that stops answering is NodeDown | warning |
+
+Intel's GPU exporter reports no temperature; a built-in Intel GPU shares the processor's sensor, so
+CPUHot covers it. The plug-in metrics source is left out of MonitoringTargetDown: HyperProx refuses it
+while locked, so it would alert on every lock.
 
 ### Updates
 
@@ -790,7 +817,7 @@ nothing to redo.
 - **Secrets**: names of everything in the vault. Owners and admins can reveal a value, send it as an
   expiring one-view link (a Bitwarden Send), or generate and store a new password.
 - **API tokens** for scripts: see [Security model](#security-model).
-- **Notifications**: channels for lock alerts, update runs, updates waiting to be applied, certificate changes and Home Assistant security actions, with severity
+- **Notifications**: channels for lock alerts, update runs, updates waiting to be applied, certificate changes, Prometheus alerts and Home Assistant security actions, with severity
   filters, quiet hours and a test button. See [docs/notifications.md](docs/notifications.md).
 
 ### On a phone

@@ -61,6 +61,7 @@ import { productionNotifyService } from './lib/notify/service'
 import { migrationSettled } from './lib/credentials'
 import { loadPolicy as loadUpdatesPolicy } from './lib/updates/policy'
 import { loadCertsPolicy } from './lib/certs/policy'
+import { productionAlertForwarder } from './lib/alerts/forwarder'
 
 const server = Fastify({
   logger: {
@@ -170,6 +171,12 @@ async function main() {
   // start-up lock alert below, then starts working the outbox.
   await notify.start()
   await alerts.startupCheck()
+
+  // Prometheus alerts become notifications (lib/alerts/forwarder.ts): once when one fires, once when it clears,
+  // and a warning if Prometheus stops answering. Needs no vault secret, so it runs while locked too.
+  const alertForwarder = productionAlertForwarder(m => server.log.info(m))
+  alertForwarder.start()
+  server.addHook('onClose', async () => alertForwarder.stop())
 
   // Prometheus's node, GPU and Ceph lists keep themselves current: on unlock, then whenever a node joins.
   const stopTargets = watchTargets({ log: m => server.log.info(m) })
