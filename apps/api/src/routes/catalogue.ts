@@ -103,7 +103,7 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
       pve().getNodes().catch(() => [] as any[]),
     ])
 
-    const online = (nodes as any[]).filter(n => n.status === 'online')
+    const online = ((nodes as any[] | null) ?? []).filter(n => n?.status === 'online')
     const logins = await Promise.all(online.map(async (n: any) => ({
       node: n.node,
       address: addrs[n.node] ?? null,
