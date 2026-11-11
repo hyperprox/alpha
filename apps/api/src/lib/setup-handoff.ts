@@ -14,6 +14,7 @@ import { readFileSync, writeFileSync, renameSync, chmodSync, mkdirSync, rmSync }
 import { dirname, join } from 'path'
 import { saveCredential } from './ssh-broker'
 import { pinHostKeyIfFree } from './node-exec'
+import { parseAnchorOutput, saveAnchors } from './hostkey-verify'
 import { setCredentials } from './credentials'
 import { requestContext, type RequestContext } from './auth'
 import { auditCredentialUse } from './audit'
@@ -31,6 +32,12 @@ export interface HeldNodeLogin {
 export interface HeldSecrets {
   nodeLogin?: HeldNodeLogin
   godaddy?: { key: string; secret: string }
+  /**
+   * The cluster's record of its nodes' SSH host keys and the install node's own key files, read ON that node by
+   * bootstrap.sh (ANCHOR_COMMAND's output, base64). Public keys, not a secret; it rides the same one-time hand-over
+   * so only the installer can supply it, and becomes the home cluster's host-key anchor (lib/hostkey-verify.ts).
+   */
+  hostRecord?: string
 }
 
 let held: HeldSecrets = {}
@@ -65,7 +72,7 @@ export function validateHandoff(body: unknown): HeldSecrets | null {
   try {
     holdSetupSecrets(body)
     const v = held
-    return v.nodeLogin || v.godaddy ? v : null
+    return v.nodeLogin || v.godaddy || v.hostRecord ? v : null
   } finally { held = saved }
 }
 
@@ -93,11 +100,13 @@ export function holdSetupSecrets(body: unknown): ReturnType<typeof heldSummary> 
   }
   const gd = b.godaddy
   if (gd && str(gd.key, 256) && str(gd.secret, 256)) held.godaddy = { key: gd.key, secret: gd.secret }
+  const hr = str(b.hostRecord, 1_000_000)
+  if (hr && /^[A-Za-z0-9+/=]+$/.test(hr) && parseAnchorOutput(hr)) held.hostRecord = hr
   return heldSummary()
 }
 
-export function heldSummary(): { nodeLogin: { nodes: string[] } | null; godaddy: boolean } {
-  return { nodeLogin: held.nodeLogin ? { nodes: [...held.nodeLogin.nodes] } : null, godaddy: Boolean(held.godaddy) }
+export function heldSummary(): { nodeLogin: { nodes: string[] } | null; godaddy: boolean; hostRecord?: true } {
+  return { nodeLogin: held.nodeLogin ? { nodes: [...held.nodeLogin.nodes] } : null, godaddy: Boolean(held.godaddy), ...(held.hostRecord ? { hostRecord: true as const } : {}) }
 }
 
 /** Tests: forget what is held, and the hand-over flag. */
@@ -107,6 +116,7 @@ export function clearHeldSecrets(): void { held = {}; rmSync(handoffFlagPath(), 
 export function holdValidated(v: HeldSecrets): ReturnType<typeof heldSummary> {
   if (v.nodeLogin) held.nodeLogin = v.nodeLogin
   if (v.godaddy) held.godaddy = v.godaddy
+  if (v.hostRecord) held.hostRecord = v.hostRecord
   return heldSummary()
 }
 
@@ -135,8 +145,18 @@ export function markSetupDone(envPath = process.env.ENV_FILE_PATH || '/opt/hyper
  */
 export async function flushHeldSecrets(as: RequestContext): Promise<{ stored: string[]; failed: string[] }> {
   const stored: string[] = [], failed: string[] = []
-  if (!held.nodeLogin && !held.godaddy) return { stored, failed }
+  if (!held.nodeLogin && !held.godaddy && !held.hostRecord) return { stored, failed }
   await requestContext.run(as, async () => {
+    // The installer's reading of the cluster record: the home cluster's anchor. Saved first, so the host keys the
+    // wizard pinned below can be verified against it right after this sign-in.
+    if (held.hostRecord) {
+      try {
+        const n = await saveAnchors('home', held.hostRecord, 'installer')
+        await auditCredentialUse('host_key.anchor.save', 'cluster:home', { by: as.email, source: 'installer', nodes: n })
+        stored.push(`host-key record for ${n.length} node${n.length === 1 ? '' : 's'}`)
+        delete held.hostRecord
+      } catch { failed.push('host-key record') }
+    }
     const nl = held.nodeLogin
     if (nl) {
       let ok = true

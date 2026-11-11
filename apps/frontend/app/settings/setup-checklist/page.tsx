@@ -15,7 +15,7 @@ import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 
 type State = 'done' | 'partly' | 'not-done' | 'not-applicable'
 interface Row { node: string; state: State; reason: string; host?: string; port?: number; fingerprint?: string }
-interface Item { id: string; ask: string; what: string; notes: string[]; state: State; rows: Row[]; needsNodeLogin: boolean; action: string | null; automatic?: boolean }
+interface Item { id: string; ask: string; what: string; notes: string[]; state: State; rows: Row[]; needsNodeLogin: boolean; action: string | null; automatic?: boolean; command?: string }
 interface Job { id: string; item: string; status: 'running' | 'done' | 'failed'; results: Array<{ node?: string; label: string; status: string; reason: string }>; checks: Array<{ node?: string; status: string; reason: string }> }
 interface Data { summary: string; logins: Record<string, boolean>; items: Item[]; running: Job | null }
 
@@ -37,6 +37,7 @@ export default function SetupChecklistPage() {
   const [login, setLogin] = useState({ username: 'root', password: '', privateKey: '' })
   const [loginRows, setLoginRows] = useState<Array<{ node: string; ok: boolean; reason: string }> | null>(null)
   const [dns, setDns] = useState({ key: '', secret: '' })
+  const [anchorOut, setAnchorOut] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
   // Every change here asks for the master password again; the request is retried once it is confirmed.
   const [confirm, setConfirm] = useState<null | (() => void)>(null)
@@ -100,6 +101,18 @@ export default function SetupChecklistPage() {
       if (!j.success) throw new Error(j.error)
       if (j.data.status === 'failed') setError(`${node}: ${j.data.reason}`)
       void load()
+    } catch (e: any) { setError(e.message) } finally { setBusy(null) }
+  }
+
+  // The one-line command's output from one of the nodes: kept as what keys are checked against, then verified.
+  async function saveAnchor(item: Item) {
+    setBusy('anchor'); setError(null)
+    try {
+      const j = await send('POST', '/api/setup-checklist/host-keys/anchor', { output: anchorOut }, () => saveAnchor(item))
+      if (!j) return
+      if (!j.success) throw new Error(j.error)
+      setAnchorOut('')
+      await run(item)
     } catch (e: any) { setError(e.message) } finally { setBusy(null) }
   }
 
@@ -172,6 +185,14 @@ export default function SetupChecklistPage() {
                   {item.id === 'igpu-access' && r.state === 'not-done' && data.logins[r.node] && <GhostButton disabled={!!busy} onClick={() => igpu(r.node, 'apply')}>Open on this node</GhostButton>}
                 </li>)}
               </ul>
+            )}
+            {item.id === 'host-keys' && item.command && (
+              <div className="mt-3 text-sm flex flex-col gap-2">
+                <div style={{ color: 'var(--text-muted)' }}>Not installed from a node? Run this once in any node's Shell, and paste what it prints (public keys only):</div>
+                <pre className="rounded p-2 overflow-x-auto font-mono text-xs" style={{ background: 'var(--ground-deep)', color: 'var(--text-bright)' }}>{item.command}</pre>
+                <textarea style={{ ...INPUT, height: 70, fontFamily: 'var(--font-mono, monospace)' }} value={anchorOut} onChange={e => setAnchorOut(e.target.value)} placeholder="Paste the output here" />
+                <div><PrimaryButton disabled={!anchorOut.trim() || !!busy} onClick={() => saveAnchor(item)}>{busy === 'anchor' ? 'Verifying…' : 'Use it and verify'}</PrimaryButton></div>
+              </div>
             )}
             {item.id === 'dns' && (
               <div className="grid gap-3 sm:grid-cols-2 mt-3">

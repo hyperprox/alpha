@@ -2,35 +2,35 @@
 //  HyperProx — verifying SSH host keys without asking anyone to compare fingerprints
 //
 //  A pin learned on first use (lib/hostkey-pins.ts) proves nothing: whoever answered first was believed. This
-//  module turns such a pin into a `verified` one, but only with evidence an attacker cannot easily fake, and it
-//  records which evidence it used:
+//  module turns such a pin into a `verified` one, but only from an ANCHOR, something trusted before the pass began,
+//  and it records which:
 //
-//    cluster-record   A Proxmox cluster keeps every node's SSH host key in its own replicated record
-//                     (/etc/pve/nodes/<node>/ssh_known_hosts, and the older /etc/pve/priv/known_hosts). HyperProx
-//                     reads that record through every node it has a login for, each in its own SSH session. Every
-//                     copy must agree, and a node's key counts only when at least two OTHER nodes, themselves
-//                     verified in the same pass, showed it. To fake it, an attacker would have to sit in front of
-//                     every node at once. Needs three nodes or more.
-//                     When the cluster records only a different kind of key (say RSA, while the node offers
-//                     ed25519 first), HyperProx signs in using the recorded key only, which the node must prove
-//                     it holds, and reads the node's own key files over that session.
+//    setup-local      The cluster's record of its nodes' keys (/etc/pve/nodes/<node>/ssh_known_hosts, the older
+//                     /etc/pve/priv/known_hosts) and that node's own key files, read ON a node: by bootstrap.sh,
+//                     which runs there as root, and handed to the API through the one-time setup hand-over; or by
+//                     a one-line command the owner runs on any node and pastes back (ANCHOR_COMMAND). A presented
+//                     key equal to the anchored one is verified; when the anchor holds only another kind of key,
+//                     the node must prove in the SSH handshake that it holds the anchored key first.
+//    cluster-record   Growth: the same record, read through nodes that were ALREADY trusted (confirmed, or verified
+//                     from an anchor) before this pass started. Two trusted readers that agree are enough; with one,
+//                     the node must also prove it holds the recorded key. A node verified in a pass never vouches
+//                     in that same pass; the next pass may use it.
 //    tailnet          The address is a Tailscale address, and the local tailscaled says it belongs to an online
-//                     device in this tailnet whose name is the Proxmox node's name. The tunnel itself is
-//                     authenticated, so the first key seen over it is the machine's.
-//    wireguard        The same for a WireGuard peer address on an interface HyperProx itself set up on this
-//                     machine, when the peer is that node.
-//    trusted-session  The key is read from the machine over a session to it that is already confirmed or
-//                     verified (the same node by another address).
+//                     device in this tailnet. The tunnel itself is authenticated.
+//    wireguard        A WireGuard peer address on an interface HyperProx itself set up on this machine, when the
+//                     peer is that node.
+//    trusted-session  The key is read over a session to the same machine by another, already trusted address.
 //
-//  Never on a plain LAN address with nothing to cross-check: that stays learned, and the Setup checklist can still
-//  confirm it by hand. A key that differs from its pin is never accepted here, and any mismatch (a record that
-//  disagrees between nodes, a presented key the record contradicts, a tailnet name that is not the node's) blocks
-//  the whole pass, is written to the audit log and raises an alert.
+//  With no anchor there is no evidence: the pin stays learned and the Setup checklist offers the manual compare.
+//  No login is ever sent to a host whose key is not trusted: readers are trusted nodes only, and a node asked to
+//  prove a key gets a login only after its SSH handshake was signed with a key from an anchor or a trusted reader.
+//  A key that differs from its pin is never accepted, and any mismatch blocks the whole pass, is audited and
+//  raises an alert. Passes run one at a time.
 //
 //  Every script sent to a node, home or remote, passes the script guard (lib/clusters/script-guard.ts) first. An API
 //  token cannot start a pass: the routes that do are re-confirmed with the master password, and the entry points
-//  below refuse a token's session as well. The one background run is for HOME nodes, after an owner sign-in or when
-//  HyperProx first learns a home node's key while a person is signed in.
+//  below refuse a token's session as well. The background runs are for HOME nodes, after an owner sign-in or when
+//  HyperProx first learns a home node's key.
 // =============================================================================
 
 import { createHmac } from 'node:crypto'
@@ -39,7 +39,7 @@ import os from 'node:os'
 import { Client, type ConnectConfig } from 'ssh2'
 import { assertSafeScript } from './clusters/script-guard'
 import { fingerprintOf, type TerminalCredential } from './ssh-broker'
-import { pinnedKey, pinSource, isConfirmedSource, recordVerified, evidenceWords, PinVerifyRefusal, type PinEvidence, type PinSource } from './hostkey-pins'
+import { pinnedKey, pinSource, isConfirmedSource, recordVerified, evidenceWords, PinVerifyRefusal, getAnchor, saveAnchor, type Anchor, type AnchorSource, type PinEvidence, type PinSource } from './hostkey-pins'
 import { auditCredentialUse } from './audit'
 import { publish } from './notify'
 import { currentContext, requestContext } from './auth'
@@ -176,6 +176,53 @@ export function algorithmsFor(types: string[]): string[] {
   return [...new Set(out)]
 }
 
+/**
+ * The one line the owner runs on any node of a cluster (and bootstrap.sh runs on the node it installs from): that
+ * node's name, the cluster's record of every node's key, and the node's own public key files, as one base64 line.
+ * Public keys only; nothing secret.
+ */
+export const ANCHOR_COMMAND = `{ echo "${MARK} local $(basename "$(readlink -f /etc/pve/local)")"; for f in /etc/pve/nodes/*/ssh_known_hosts; do [ -f "$f" ] && echo "${MARK} node $(basename "$(dirname "$f")")" && cat -- "$f"; done; echo "${MARK} priv"; cat /etc/pve/priv/known_hosts 2>/dev/null; echo "${MARK} own"; cat /etc/ssh/ssh_host_*_key.pub; echo "${MARK} end"; } | base64 -w0; echo`
+
+export interface AnchorSet { local: string; nodes: Record<string, RecordedKey[]> }
+
+/** Keep what ANCHOR_COMMAND printed as each node's anchor in `scope` ("home" or a remote's id). Returns the nodes. */
+export async function saveAnchors(scope: string, output: string, source: AnchorSource): Promise<string[]> {
+  const set = parseAnchorOutput(output)
+  if (!set) throw new VerifyRefusal('That is not the whole output of the command (it starts and ends with @@hpx lines, or is one long base64 line). Copy all of it and paste it again.')
+  const at = new Date().toISOString()
+  const done: string[] = []
+  for (const [node, keys] of Object.entries(set.nodes)) {
+    if (!keys.length) continue
+    await saveAnchor(scope, node, { keys, source, at })
+    done.push(node)
+  }
+  return done
+}
+
+/**
+ * What ANCHOR_COMMAND printed (base64, or the plain text), as each node's anchored keys: for the node it ran on, its
+ * own key files (every type); for the others, the cluster record. Null when it is not that command's whole output.
+ */
+export function parseAnchorOutput(raw: string): AnchorSet | null {
+  let text = String(raw ?? '').trim()
+  if (!text.startsWith(MARK) && /^[A-Za-z0-9+/=\s]+$/.test(text)) text = Buffer.from(text.replace(/\s+/g, ''), 'base64').toString('utf8')
+  if (text.length > 1_000_000) return null
+  const lines = text.split('\n')
+  const localLine = lines.find(l => l.startsWith(`${MARK} local `))
+  const local = localLine?.slice(MARK.length + 7).trim() ?? ''
+  if (!NODE_RE.test(local)) return null
+  const names = [...new Set(lines.filter(l => l.startsWith(`${MARK} node `)).map(l => l.slice(MARK.length + 6).trim()).filter(n => NODE_RE.test(n)))]
+  if (!names.includes(local)) names.push(local)
+  const ownStart = lines.findIndex(l => l === `${MARK} own`), end = lines.findIndex(l => l === `${MARK} end`)
+  if (ownStart < 0 || end < ownStart) return null
+  const view = recordView(lines.filter((l, i) => !(i > ownStart && i < end) && l !== `${MARK} own` && !l.startsWith(`${MARK} local `)).join('\n'), names)
+  if (!view) return null
+  const own = ownKeyFingerprints(lines.slice(ownStart + 1, end).join('\n'))
+  if (!own.length) return null
+  view[local] = own.sort((a, b) => a.fingerprint.localeCompare(b.fingerprint))
+  return { local, nodes: view }
+}
+
 // ---------------------------------------------------------------------------
 //  Private links: Tailscale and WireGuard
 // ---------------------------------------------------------------------------
@@ -245,7 +292,7 @@ export function linkIdentity(address: string, node: string, status: TailnetStatu
 }
 
 // ---------------------------------------------------------------------------
-//  SSH: probe and a read-only session
+//  SSH: probe, proof of a key, and a read-only session
 // ---------------------------------------------------------------------------
 
 export interface PresentedKey { fingerprint: string; type: string }
@@ -266,9 +313,15 @@ export class SessionKeyRefused extends Error {
 
 export interface VerifyDeps {
   probe(host: string, port: number): Promise<PresentedKey>
+  /**
+   * Make the host sign an SSH handshake with a key of one of these algorithms, and accept only a key `accept` allows.
+   * No login is sent: the connection ends once the handshake (and its signature) has checked out.
+   */
+  prove(host: string, port: number, algorithms: string[], accept: (k: PresentedKey) => boolean): Promise<PresentedKey>
   session(o: SessionOpts): Promise<SessionResult>
   pin(host: string, port: number): Promise<{ fingerprint: string | null; source: PinSource | null }>
   record(host: string, port: number, fingerprint: string, evidence: PinEvidence): Promise<'pinned' | 'verified' | 'already'>
+  anchor(scope: string, node: string): Promise<Anchor | null>
   tailnet(): Promise<TailnetStatus | null>
   wireguard(): Promise<WgLink[]>
   audit(action: string, resource: string, details: Record<string, unknown>): Promise<void>
@@ -287,6 +340,26 @@ function probeKey(host: string, port: number, timeoutMs = 10_000): Promise<Prese
       c.connect({ host, port, username: 'hyperprox-probe', readyTimeout: timeoutMs,
         hostVerifier: (key: Buffer) => { got = keyOf(key); setImmediate(() => done()); return false } } as ConnectConfig)
     } catch (e: any) { done(e) }
+  })
+}
+
+/** The handshake must complete (ssh2 checks the host's signature over it) with an accepted key. No login is offered. */
+export function proveKey(host: string, port: number, algorithms: string[], accept: (k: PresentedKey) => boolean, timeoutMs = 15_000): Promise<PresentedKey> {
+  return new Promise((resolve, reject) => {
+    const c = new Client()
+    let presented: PresentedKey | null = null, refused = false, settled = false
+    const end = (fn: () => void) => { if (settled) return; settled = true; clearTimeout(timer); try { c.end() } catch { /* gone */ } fn() }
+    const timer = setTimeout(() => end(() => reject(new Error('timed out'))), timeoutMs)
+    c.on('handshake', () => { if (presented && !refused) end(() => resolve(presented!)) })
+    c.on('error', e => end(() => reject(refused && presented ? new SessionKeyRefused(presented) : e)))
+    try {
+      c.connect({
+        host, port, username: 'hyperprox-probe', readyTimeout: timeoutMs, algorithms: { serverHostKey: algorithms as any },
+        hostVerifier: (key: Buffer) => { presented = keyOf(key); refused = !accept(presented); return !refused },
+        // Never authenticate: the handshake is the proof.
+        authHandler: (_m: unknown, _p: unknown, cb: (next: false) => void) => cb(false),
+      } as any)
+    } catch (e: any) { end(() => reject(e)) }
   })
 }
 
@@ -346,9 +419,11 @@ async function wireguardLinks(): Promise<WgLink[]> {
 export function productionVerifyDeps(): VerifyDeps {
   return {
     probe: (h, p) => probeKey(h, p),
+    prove: (h, p, algs, accept) => proveKey(h, p, algs, accept),
     session: o => runSession(o),
     async pin(h, p) { const [fingerprint, source] = await Promise.all([pinnedKey(h, p), pinSource(h, p)]); return { fingerprint, source } },
     record: (h, p, fp, ev) => recordVerified(h, p, fp, ev),
+    anchor: (scope, node) => getAnchor(scope, node),
     tailnet: () => tailscaleStatus(),
     wireguard: () => wireguardLinks(),
     audit: (a, r, d) => auditCredentialUse(a, r, d),
@@ -380,6 +455,8 @@ export interface NodeVerdict {
 export interface VerifyInput {
   /** A name for the cluster, for evidence and alerts ("Home cluster", or the remote's name). */
   cluster: string
+  /** Where its anchors are kept: "home", or the remote's cluster id. */
+  anchorScope?: string
   scope: 'home' | 'remote'
   nodes: NodeInput[]
   by: string
@@ -392,28 +469,49 @@ export function refuseTokenContext(): void {
   if (String(currentContext()?.sid ?? '').startsWith('token:')) throw new VerifyRefusal('An API token cannot verify or change host keys. Sign in and use the Setup checklist.')
 }
 
-/**
- * Whether a login may be sent to a host whose key is not yet trusted, to read the cluster record through it.
- * At home the node logins already go to learned keys (that is how HyperProx works there). On a remote server a
- * password is never sent to an unverified machine; a private key may be, since signing in with one gives a
- * machine-in-the-middle nothing it could use.
- */
-function mayReadThrough(scope: 'home' | 'remote', cred: TerminalCredential, trusted: boolean): boolean {
-  if (trusted || scope === 'home') return true
-  return !!cred.privateKey && !cred.password
-}
-
 const same = (a: RecordedKey[], b: RecordedKey[]) => a.length === b.length && a.every((k, i) => k.fingerprint === b[i].fingerprint && k.type === b[i].type)
 
-export async function verifyNodes(input: VerifyInput, deps: VerifyDeps = productionVerifyDeps()): Promise<NodeVerdict[]> {
-  refuseTokenContext()
+const CHANGED_ADVICE = "If you did not rebuild or reinstall that node, treat it as an attack: check the key on the node's own console (for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf $f; done) before anything else. If you did, clear its old pin in the Terminal, then verify again."
+
+// One pass at a time: two passes for the same nodes must not race each other's pins.
+let chain: Promise<unknown> = Promise.resolve()
+
+/**
+ * Verify these nodes' keys. Runs in rounds: each round trusts only what was trusted when it started, so a node
+ * verified in a round can vouch for others only in the next one. Stops at the first mismatch, or when a round adds
+ * nothing.
+ */
+export function verifyNodes(input: VerifyInput, deps: VerifyDeps = productionVerifyDeps()): Promise<NodeVerdict[]> {
+  try { refuseTokenContext() } catch (e) { return Promise.reject(e) }
+  const run = chain.then(() => verifyRounds(input, deps))
+  chain = run.catch(() => undefined)
+  return run
+}
+
+async function verifyRounds(input: VerifyInput, deps: VerifyDeps): Promise<NodeVerdict[]> {
+  const verified = new Map<string, NodeVerdict>()
+  let last: NodeVerdict[] = []
+  for (let round = 0; round < 4; round++) {
+    const r = await oneRound(input, deps)
+    last = r.verdicts
+    for (const v of r.verdicts) if (v.state === 'verified') verified.set(v.node, v)
+    // Another round only helps when this one verified something AND something is still without evidence.
+    if (r.blocked || !r.verdicts.some(v => v.state === 'verified') || !r.verdicts.some(v => v.state === 'no-evidence')) break
+  }
+  // A node verified in an earlier round shows as verified, with its evidence, not merely "already".
+  return last.map(v => (v.state === 'already' && verified.has(v.node) ? verified.get(v.node)! : v))
+}
+
+async function oneRound(input: VerifyInput, deps: VerifyDeps): Promise<{ verdicts: NodeVerdict[]; blocked: boolean }> {
   const nodes = input.nodes.filter(n => NODE_RE.test(n.name) && n.address)
+  const scope = input.anchorScope ?? (input.scope === 'home' ? 'home' : input.cluster)
   const port = (n: NodeInput) => n.port ?? 22
   const v = new Map<string, NodeVerdict>()
   const problems: string[] = []
   const block = (n: NodeInput, why: string, fp?: string) => { v.set(n.name, { node: n.name, host: n.address, port: port(n), state: 'blocked', why, fingerprint: fp }); problems.push(`${n.name}: ${why}`) }
 
-  // 1. What each node presents now, and what is pinned for it.
+  // 1. What each node presents now, and which nodes were trusted BEFORE this round. Only those may be read
+  //    through or vouch, and only those are ever sent a login while evidence is gathered.
   const presented = new Map<string, PresentedKey>()
   const trusted = new Set<string>()
   for (const n of nodes) {
@@ -427,97 +525,108 @@ export async function verifyNodes(input: VerifyInput, deps: VerifyDeps = product
       v.set(n.name, { node: n.name, host: n.address, port: port(n), state: 'already', fingerprint: p.fingerprint, why: pin.source === 'verified' ? 'already verified' : 'already confirmed' })
     }
   }
-
+  const open = (n: NodeInput) => presented.has(n.name) && !v.has(n.name) && !candidates.has(n.name)
   const candidates = new Map<string, { fp: string; evidence: PinEvidence }>()
 
-  // 2. Private links: the tunnel vouches for the machine.
+  /**
+   * The node must sign its handshake with one of `keys` (from an anchor or a trusted reader). Then: the presented key
+   * is one of them, or (another type) the node's own key files, read over a session signed with one of them, list it.
+   * Returns the method, 'no-login' when a login would be needed and there is none, or throws a mismatch.
+   */
+  const proveAgainst = async (n: NodeInput, p: PresentedKey, keys: RecordedKey[]): Promise<'presented' | 'own-files' | 'no-login'> => {
+    const fps = new Set(keys.map(k => k.fingerprint))
+    if (fps.has(p.fingerprint)) {
+      const k = await deps.prove(n.address, port(n), algorithmsFor([p.type]), x => fps.has(x.fingerprint))
+      if (k.fingerprint !== p.fingerprint) throw new Error(`it signed with ${k.fingerprint}, not the ${p.fingerprint} it presents`)
+      return 'presented'
+    }
+    if (keys.some(k => k.type === p.type)) throw new Error(`it presents ${p.fingerprint}, but the trusted record holds a different ${p.type} key for it`)
+    if (!n.cred) return 'no-login'
+    // The login goes only to a host that has just signed the handshake with a trusted key.
+    const res = await deps.session({ host: n.address, port: port(n), cred: n.cred, script: OWN_KEYS_SCRIPT, algorithms: algorithmsFor(keys.map(k => k.type)), accept: x => fps.has(x.fingerprint) })
+    if (!ownKeyFingerprints(res.output).some(k => k.fingerprint === p.fingerprint)) throw new Error(`signed in with the trusted key, it does not list the ${p.fingerprint} it presents`)
+    return 'own-files'
+  }
+  const mismatch = (n: NodeInput, p: PresentedKey, e: any) => block(n, e instanceof SessionKeyRefused ? `asked for its trusted key, it presented ${e.presented.fingerprint}` : String(e?.message ?? e), p.fingerprint)
+
+  // 2. Anchors: the record read on a node (installer or pasted command).
+  for (const n of nodes) {
+    const p = presented.get(n.name)
+    if (!p || v.get(n.name)?.state === 'blocked') continue
+    const a = await deps.anchor(scope, n.name).catch(() => null)
+    if (!a?.keys.length) continue
+    if (trusted.has(n.name)) {
+      // A trusted key the anchor contradicts is still a mismatch worth stopping for.
+      if (!a.keys.some(k => k.fingerprint === p.fingerprint) && a.keys.some(k => k.type === p.type)) block(n, `the anchored record holds a different ${p.type} key than the trusted one it presents`, p.fingerprint)
+      continue
+    }
+    try {
+      if (a.keys.some(k => k.fingerprint === p.fingerprint)) { candidates.set(n.name, { fp: p.fingerprint, evidence: { kind: 'setup-local', node: n.name, source: a.source, method: 'presented-key' } }); continue }
+      const how = await proveAgainst(n, p, a.keys)
+      if (how !== 'no-login') candidates.set(n.name, { fp: p.fingerprint, evidence: { kind: 'setup-local', node: n.name, source: a.source, method: 'proof' } })
+    } catch (e) { mismatch(n, p, e) }
+  }
+
+  // 3. Private links: the tunnel vouches for the machine.
   const [status, links] = await Promise.all([
     nodes.some(n => isTailnetAddress(n.address)) ? deps.tailnet().catch(() => null) : Promise.resolve(null),
     deps.wireguard().catch(() => [] as WgLink[]),
   ])
   for (const n of nodes) {
-    const p = presented.get(n.name)
-    if (!p || v.has(n.name)) continue
+    if (!open(n)) continue
     const id = linkIdentity(n.address, n.name, status, links)
-    if (id.ok) candidates.set(n.name, { fp: p.fingerprint, evidence: id.evidence })
-    else if (id.block) block(n, id.why, p.fingerprint)
+    if (id.ok) candidates.set(n.name, { fp: presented.get(n.name)!.fingerprint, evidence: id.evidence })
+    else if (id.block) block(n, id.why, presented.get(n.name)!.fingerprint)
   }
 
-  // 3. The cluster's own record, read through every node HyperProx can sign in to.
-  if (nodes.length >= 3) {
+  // 4. Growth: the record read through nodes trusted before this round, with their logins (sent only to them).
+  const readers = nodes.filter(r => trusted.has(r.name) && r.cred)
+  if (readers.length && nodes.some(n => open(n))) {
     const names = nodes.map(n => n.name)
     const views = new Map<string, RecordView>()
-    for (const r of nodes) {
-      const p = presented.get(r.name)
-      if (!r.cred || !p || v.get(r.name)?.state === 'blocked') continue
-      const pin = await deps.pin(r.address, port(r))
-      if (!mayReadThrough(input.scope, r.cred, trusted.has(r.name) || candidates.has(r.name))) continue
+    for (const r of readers) {
+      const p = presented.get(r.name)!
       try {
-        const res = await deps.session({
-          host: r.address, port: port(r), cred: r.cred, script: clusterRecordScript(names),
-          // The key it showed a moment ago (and its pin, if any): anything else is someone else.
-          accept: k => k.fingerprint === p.fingerprint && (!pin.fingerprint || pin.fingerprint === k.fingerprint),
-        })
+        const res = await deps.session({ host: r.address, port: port(r), cred: r.cred!, script: clusterRecordScript(names), accept: k => k.fingerprint === p.fingerprint })
         const view = recordView(res.output, names)
         if (view) views.set(r.name, view)
       } catch (e) {
-        if (e instanceof SessionKeyRefused) block(r, `it presented ${e.presented.fingerprint} when HyperProx signed in, not the ${p.fingerprint} it showed a moment before`, e.presented.fingerprint)
+        if (e instanceof SessionKeyRefused) block(r, `it presented ${e.presented.fingerprint} when HyperProx signed in, not its trusted ${p.fingerprint}`, e.presented.fingerprint)
       }
     }
-    // Every copy must say the same thing about every node.
-    const readers = [...views.keys()]
-    for (let i = 1; i < readers.length; i++) {
-      const a = views.get(readers[0])!, b = views.get(readers[i])!
+    const rs = [...views.keys()]
+    for (let i = 1; i < rs.length; i++) {
+      const a = views.get(rs[0])!, b = views.get(rs[i])!
       const differs = names.filter(n => !same(a[n] ?? [], b[n] ?? []))
-      if (differs.length) problems.push(`the cluster record read through ${readers[0]} and through ${readers[i]} disagree about ${differs.join(', ')}`)
+      if (differs.length) problems.push(`the cluster record read through ${rs[0]} and through ${rs[i]} disagree about ${differs.join(', ')}`)
     }
-    const agreed = problems.length === 0 && readers.length >= 2 ? views.get(readers[0])! : null
-    if (agreed) {
-      const sessionVerified = new Set<string>()
-      for (const n of nodes) {
-        const p = presented.get(n.name)
-        if (!p || v.get(n.name)?.state === 'blocked') continue
-        const others = readers.filter(r => r !== n.name)
-        const rec = agreed[n.name] ?? []
-        if (!rec.length) continue
-        if (rec.some(k => k.fingerprint === p.fingerprint)) {
-          if (others.length >= 2 && !candidates.has(n.name) && !trusted.has(n.name)) candidates.set(n.name, { fp: p.fingerprint, evidence: { kind: 'cluster-record', cluster: input.cluster, readers: others, method: 'presented-key' } })
+    const agreed = problems.length === 0 && rs.length ? views.get(rs[0])! : null
+    if (agreed) for (const n of nodes) {
+      const p = presented.get(n.name)
+      const rec = agreed[n.name] ?? []
+      if (!p || !rec.length || v.get(n.name)?.state === 'blocked') continue
+      // A trusted node the record contradicts: stop.
+      if (trusted.has(n.name)) {
+        if (!rec.some(k => k.fingerprint === p.fingerprint) && rec.some(k => k.type === p.type)) block(n, `the cluster record holds a different ${p.type} key than the trusted one it presents`, p.fingerprint)
+        continue
+      }
+      if (!open(n)) continue
+      const others = rs.filter(r => r !== n.name)
+      try {
+        if (others.length >= 2 && rec.some(k => k.fingerprint === p.fingerprint)) {
+          candidates.set(n.name, { fp: p.fingerprint, evidence: { kind: 'cluster-record', cluster: input.cluster, readers: others, method: 'two-readers' } })
           continue
         }
-        if (rec.some(k => k.type === p.type)) { block(n, `it presents ${p.fingerprint}, but the cluster records a different ${p.type} key for it`, p.fingerprint); continue }
-        // The record holds another kind of key: sign in with that kind only, and read the node's own key files.
-        if (!n.cred || others.length < 2 || trusted.has(n.name) || candidates.has(n.name)) continue
-        try {
-          const res = await deps.session({
-            host: n.address, port: port(n), cred: n.cred, script: OWN_KEYS_SCRIPT, algorithms: algorithmsFor(rec.map(k => k.type)),
-            accept: k => rec.some(x => x.fingerprint === k.fingerprint),
-          })
-          if (ownKeyFingerprints(res.output).some(k => k.fingerprint === p.fingerprint)) {
-            candidates.set(n.name, { fp: p.fingerprint, evidence: { kind: 'cluster-record', cluster: input.cluster, readers: others, method: 'record-key-session' } })
-            sessionVerified.add(n.name)
-          } else block(n, `signed in with the key the cluster records for it, it does not list the ${p.fingerprint} it presents`, p.fingerprint)
-        } catch (e) {
-          if (e instanceof SessionKeyRefused) block(n, `asked for the ${rec.map(k => k.type).join('/')} key the cluster records, it presented ${e.presented.fingerprint}`, e.presented.fingerprint)
-        }
-      }
-      // A reader only vouches for others when it is itself verified in this pass (or already trusted).
-      let changed = true
-      while (changed) {
-        changed = false
-        for (const [name, c] of candidates) {
-          if (c.evidence.kind !== 'cluster-record') continue
-          const vouch = c.evidence.readers.filter(r => trusted.has(r) || (candidates.has(r) && r !== name))
-          if (vouch.length < 2) { candidates.delete(name); changed = true }
-          else if (vouch.length !== c.evidence.readers.length) c.evidence = { ...c.evidence, readers: vouch }
-        }
-      }
+        const how = await proveAgainst(n, p, rec)
+        if (how !== 'no-login') candidates.set(n.name, { fp: p.fingerprint, evidence: { kind: 'cluster-record', cluster: input.cluster, readers: others, method: how === 'presented' ? 'one-reader-proof' : 'record-key-session' } })
+      } catch (e) { mismatch(n, p, e) }
     }
   }
 
-  // 4. The same machine by another address, already trusted: read its key files there.
+  // 5. The same machine by another address, already trusted: read its key files there.
   for (const n of nodes) {
     const p = presented.get(n.name)
-    if (!p || !n.cred || v.has(n.name) || candidates.has(n.name)) continue
+    if (!p || !n.cred || !open(n)) continue
     for (const alt of n.alsoKnownAs ?? []) {
       if (!alt || alt === n.address) continue
       const pin = await deps.pin(alt, port(n))
@@ -529,22 +638,22 @@ export async function verifyNodes(input: VerifyInput, deps: VerifyDeps = product
     }
   }
 
-  // 5. Any mismatch anywhere: nothing is recorded, and someone is told.
+  // 6. Any mismatch anywhere: nothing is recorded, and someone is told.
   if (problems.length) {
     for (const n of nodes) {
       if (v.get(n.name)?.state === 'blocked' || v.get(n.name)?.state === 'already') continue
       v.set(n.name, { node: n.name, host: n.address, port: port(n), state: 'blocked', fingerprint: presented.get(n.name)?.fingerprint, why: 'not verified: a mismatch was found in this cluster, so nothing was accepted' })
     }
     await deps.audit('host_key.verify.blocked', `cluster:${input.cluster}`, { by: input.by, scope: input.scope, problems })
-    await deps.alert(`Host key check failed on ${input.cluster}`, [...problems, 'HyperProx accepted no key. If a node was rebuilt on purpose, clear its old pin in the Terminal, then verify again.'])
-    return nodes.map(n => v.get(n.name)!)
+    await deps.alert(`Host key check failed on ${input.cluster}`, [...problems, `HyperProx accepted no key. ${CHANGED_ADVICE}`])
+    return { verdicts: nodes.map(n => v.get(n.name)!), blocked: true }
   }
 
   for (const n of nodes) {
     if (v.has(n.name)) continue
     const c = candidates.get(n.name)
     if (!c) {
-      v.set(n.name, { node: n.name, host: n.address, port: port(n), state: 'no-evidence', fingerprint: presented.get(n.name)?.fingerprint, why: noEvidenceWords(nodes.length, n) })
+      v.set(n.name, { node: n.name, host: n.address, port: port(n), state: 'no-evidence', fingerprint: presented.get(n.name)?.fingerprint, why: noEvidenceWords(trusted.size > 0, n) })
       continue
     }
     try {
@@ -557,17 +666,17 @@ export async function verifyNodes(input: VerifyInput, deps: VerifyDeps = product
       v.set(n.name, { node: n.name, host: n.address, port: port(n), state: 'blocked', fingerprint: c.fp, why })
       if (e instanceof PinVerifyRefusal) {
         await deps.audit('host_key.verify.blocked', `host:${n.address}:${port(n)}`, { by: input.by, scope: input.scope, node: n.name, problems: [why] })
-        await deps.alert(`Host key check failed on ${input.cluster}`, [`${n.name}: ${why}`])
+        await deps.alert(`Host key check failed on ${input.cluster}`, [`${n.name}: ${why}`, CHANGED_ADVICE])
       }
     }
   }
-  return nodes.map(n => v.get(n.name)!)
+  return { verdicts: nodes.map(n => v.get(n.name)!), blocked: false }
 }
 
-function noEvidenceWords(count: number, n: NodeInput): string {
-  if (count < 3) return "HyperProx could not verify it on its own: a server with fewer than three nodes cannot vouch for itself, and this address is not on a private link (Tailscale or WireGuard). Compare the fingerprint by hand once."
-  if (!n.cred) return 'HyperProx could not verify it on its own: it needs a node login to read the cluster record, and this address is not on a private link.'
-  return 'HyperProx could not verify it on its own: not enough other nodes could be read to cross-check it. Compare the fingerprint by hand once, or try again when they are all online.'
+function noEvidenceWords(anyTrusted: boolean, n: NodeInput): string {
+  if (!anyTrusted) return "HyperProx has nothing trusted to check this key against yet: no node of this cluster is verified, and this address is not on a private link (Tailscale or WireGuard). Run the one-line command shown on the Setup checklist on any node and paste what it prints, or compare the fingerprint by hand once."
+  if (!n.cred) return 'HyperProx could not verify it on its own: the trusted nodes do not record a key it can check, and proving the key needs a node login.'
+  return 'HyperProx could not verify it on its own: the trusted nodes do not record a key for it. Compare the fingerprint by hand once, or try again when they are all online.'
 }
 
 // ---------------------------------------------------------------------------
@@ -583,7 +692,8 @@ export function setHomeVerifier(fn: typeof homeRunner): void { homeRunner = fn }
 
 /**
  * Called when HyperProx first learns a home node's key. Runs one home pass a little later (several new keys at
- * once make one pass). Never for a token's request: the next sign-in or the Setup checklist covers those.
+ * once make one pass). Never for a token's request: the next sign-in or the Setup checklist covers those. The pass
+ * acts as the signed-in session it was learned in (vault writes need one) and is audited as HyperProx's own.
  */
 export function scheduleHomeVerify(delayMs = 20_000): boolean {
   if (!homeRunner || String(currentContext()?.sid ?? '').startsWith('token:')) return false
@@ -592,7 +702,7 @@ export function scheduleHomeVerify(delayMs = 20_000): boolean {
   homeTimer = setTimeout(() => {
     homeTimer = null
     homeRunning = true
-    const go = () => homeRunner!('HyperProx (automatic, home nodes)')
+    const go = () => homeRunner!(`system: a new home node key was learned${ctx?.email ? ` (vault session of ${ctx.email})` : ''}`)
     void Promise.resolve().then(() => (ctx ? requestContext.run(ctx, go) : go()))
       .catch(() => undefined).finally(() => { homeRunning = false })
   }, delayMs)

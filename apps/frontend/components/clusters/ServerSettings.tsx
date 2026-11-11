@@ -186,16 +186,18 @@ function NodesSection({ c, onChanged, run }: { c: ClusterInfo; onChanged: () => 
   const [addrs, setAddrs] = useState<Record<string, string>>(c.nodeAddresses)
   const [login, setLogin] = useState<{ node: string; fp: string | null; user: string; pw: string; key: string; matches: boolean; msg: string | null } | null>(null)
   const [once, setOnce] = useState({ user: 'root', pw: '', key: '' })
+  const [record, setRecord] = useState('')
+  const [command, setCommand] = useState<string | null>(null)
   const [checked, setChecked] = useState<Array<{ node: string; state: string; how: string; login: string | null }> | null>(null)
   const [verifying, setVerifying] = useState(false)
   // One action: verify every node's host key with evidence, and save the login (if given) where a key is verified.
   const verifyKeys = async () => {
     setVerifying(true); setErr(null)
     const login = once.pw || once.key.trim() ? { username: once.user, ...(once.key.trim() ? { privateKey: once.key } : { password: once.pw }) } : undefined
-    const r = await run(() => apiJson<{ data: { nodes: Array<{ node: string; state: string; how: string; login: string | null }> } }>(`/api/clusters/${c.id}/verify-keys`, 'POST', { login }), () => void verifyKeys())
+    const r = await run(() => apiJson<{ data: { nodes: Array<{ node: string; state: string; how: string; login: string | null }>; command: string | null } }>(`/api/clusters/${c.id}/verify-keys`, 'POST', { login, ...(record.trim() ? { record } : {}) }), () => void verifyKeys())
     setVerifying(false)
     if (!r) return
-    if (r.ok) { setChecked((r as any).body.data.nodes); setOnce(o => ({ ...o, pw: '', key: '' })); void load() } else setErr((r as any).error ?? 'Could not verify')
+    if (r.ok) { setChecked((r as any).body.data.nodes); setCommand((r as any).body.data.command ?? null); setRecord(''); setOnce(o => ({ ...o, pw: '', key: '' })); void load() } else setErr((r as any).error ?? 'Could not verify')
   }
   const load = useCallback(async () => {
     const r = await apiJson<{ data: NodeRow[] }>(`/api/clusters/${c.id}/nodes`)
@@ -244,6 +246,11 @@ function NodesSection({ c, onChanged, run }: { c: ClusterInfo; onChanged: () => 
           <details><summary className="text-sm cursor-pointer" style={{ color: 'var(--text-muted)' }}>Use a private key instead</summary>
             <textarea style={{ ...INPUT, height: 80, padding: 8, fontFamily: 'var(--font-mono)', fontSize: 12 }} value={once.key} onChange={e => setOnce({ ...once, key: e.target.value })} /></details>
           <div><Btn solid disabled={verifying} onClick={verifyKeys}>{verifying ? 'Verifying…' : 'Verify keys'}</Btn></div>
+          {command && <div className="flex flex-col gap-2 text-sm">
+            <span style={{ color: 'var(--text-muted)' }}>HyperProx had nothing trusted to check some keys against. Run this once in any of that server's node Shells and paste what it prints (public keys only), then Verify keys again:</span>
+            <pre className="rounded p-2 overflow-x-auto font-mono text-xs" style={{ background: 'var(--ground-deep)', color: 'var(--text-bright)' }}>{command}</pre>
+            <textarea style={{ ...INPUT, height: 70, padding: 8, fontFamily: 'var(--font-mono)', fontSize: 12 }} value={record} onChange={e => setRecord(e.target.value)} placeholder="Paste the output here" />
+          </div>}
           {checked && <ul className="text-sm">{checked.map(x => <li key={x.node}><b>{x.node}</b>: {x.state === 'verified' || x.state === 'already' ? 'verified' : x.state === 'blocked' ? 'refused' : 'not verified'}{x.login === 'saved' ? ', login saved' : ''}. <span style={{ color: 'var(--text-muted)' }}>{x.how}</span></li>)}</ul>}
         </div>
       )}

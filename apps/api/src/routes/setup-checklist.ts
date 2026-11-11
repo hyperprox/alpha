@@ -13,7 +13,7 @@
 // =============================================================================
 
 import type { FastifyPluginAsync } from 'fastify'
-import { confirmHostKey, checklistState, startItem, getJob, activeJob, saveNodeLoginForAll, ChecklistRefusal, productionChecklistDeps, type ChecklistDeps, type ItemId } from '../lib/setup-checklist'
+import { confirmHostKey, saveHostKeyAnchor, checklistState, startItem, getJob, activeJob, saveNodeLoginForAll, ChecklistRefusal, productionChecklistDeps, type ChecklistDeps, type ItemId } from '../lib/setup-checklist'
 import { currentContext } from '../lib/auth'
 import { igpuAccess, IgpuRefusal } from '../lib/igpu-access'
 
@@ -42,6 +42,12 @@ export function buildSetupChecklistRoutes(deps?: () => ChecklistDeps): FastifyPl
         const job = await startItem(req.params.item as ItemId, req.body ?? {}, who(), d())
         return reply.send({ success: true, data: job })
       } catch (e) { return fail(reply, e) }
+    })
+
+    // POST /host-keys/anchor { output }: what the one-line command printed on one of the admin's nodes.
+    fastify.post<{ Body: Record<string, unknown> }>('/host-keys/anchor', async (req, reply) => {
+      try { return reply.send({ success: true, data: await saveHostKeyAnchor(req.body, who()) }) }
+      catch (e) { return fail(reply, e) }
     })
 
     // POST /host-keys/confirm { host, port, fingerprint }: the admin compared it on the machine.

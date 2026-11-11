@@ -759,7 +759,7 @@ function stepProviders(){
       + '<div class="field"><label>Password</label><input id="nl-pass" type="password" autocomplete="off"></div></div>'
       + '<details class="adv"><summary>Use a private key instead</summary><div class="field"><label>Private key</label><textarea id="nl-key" rows="4" style="width:100%;background:#0d1624;color:var(--text);border:1px solid var(--border);border-radius:8px;font-family:IBM Plex Mono,monospace;font-size:12px"></textarea></div></details>'
       + (S.loginRows ? checkRows(S.loginRows.map(r => ({ label: 'Login', node: r.node, status: r.ok ? 'ok' : 'failed', reason: r.reason + (r.fingerprint ? ' · host key ' + r.fingerprint : '') }))) : '')
-      + (S.loginRows && S.loginRows.some(r => r.fingerprint) ? '<div class="hint" style="margin-top:6px">HyperProx accepts only these keys from now on. When you first sign in, it checks each one by itself against the record your cluster keeps of every node key (or over Tailscale or WireGuard); Settings, Setup checklist shows the result. Only a key it finds no evidence for is left for you to compare.</div>' : '')
+      + (S.loginRows && S.loginRows.some(r => r.fingerprint) ? '<div class="hint" style="margin-top:6px">HyperProx accepts only these keys from now on. When you first sign in, it checks each one by itself against the record your cluster keeps of every node key, read on a node when HyperProx was installed from one (or over Tailscale or WireGuard); Settings, Setup checklist shows the result. If you did not install from a node, that page shows one command to run on any node: paste what it prints, and nothing is left to compare by hand.</div>' : '')
       + '</div>'
   }
   if (S.apply) {
@@ -1086,9 +1086,10 @@ async function finishSetup(answers) {
     await new Promise(r => setTimeout(r, 1000))
   }
   const held = onboard.heldSummary()
-  if (held.nodeLogin || held.godaddy) {
-    const h = await onboard.handOff(API_PORT, setupSecret())
-    const what = [held.nodeLogin ? 'the node login' : '', held.godaddy ? 'the GoDaddy key' : ''].filter(Boolean).join(' and ')
+  const hostRecord = ((onboard.bootstrapAnswers(HPX_DIR) || {}).hostRecord) || null
+  if (held.nodeLogin || held.godaddy || hostRecord) {
+    const h = await onboard.handOff(API_PORT, setupSecret(), typeof hostRecord === 'string' ? hostRecord : null)
+    const what = [held.nodeLogin ? 'the node login' : '', held.godaddy ? 'the GoDaddy key' : '', hostRecord ? 'your nodes\' host-key record' : ''].filter(Boolean).join(' and ')
     add('Your keys', h.ok ? 'done' : 'failed', h.ok ? `${what}: held by HyperProx until you create the owner account, then kept in the vault`
       : `${what} could not be handed over (${h.error}); add them under Settings → Setup checklist`)
   }

@@ -27,7 +27,7 @@ import { scanCluster } from '../lib/clusters/scan'
 import { checkGuest, power, snapshot, backupNow, backupStorages, taskStatus, destroy, GuestActionRefusal, type PowerAction } from '../lib/clusters/guest-actions'
 import { probeHostKey, execOnNode, nodeCredential } from '../lib/node-exec'
 import { confirmPin, PinConfirmRefusal, forgetPin, pinnedKey, pinSource, isConfirmedSource, PinVerifyRefusal } from '../lib/hostkey-pins'
-import { verifyNodes, productionVerifyDeps, VerifyRefusal } from '../lib/hostkey-verify'
+import { verifyNodes, productionVerifyDeps, VerifyRefusal, saveAnchors, ANCHOR_COMMAND } from '../lib/hostkey-verify'
 import { addServer, linkDevice, IdentityMismatch, MANUAL_CERT_WHY, type AddServerDeps } from '../lib/clusters/add-server'
 import { discoverSend, sendDeps } from '../lib/clusters/send-simple'
 import { remoteToken } from '../lib/clusters/registry'
@@ -382,7 +382,8 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
 
   // Verify every node's host key with evidence (lib/hostkey-verify.ts), with the saved logins (or one given here,
   // which is saved for each node whose key is verified). Re-confirmed (lib/roles.ts).
-  fastify.post<{ Params: { id: string }; Body: { login?: any } }>('/:id/verify-keys', async (req, reply) => {
+  // `record`: what the one-line command (ANCHOR_COMMAND) printed on one of that server's nodes, kept as its anchor first.
+  fastify.post<{ Params: { id: string }; Body: { login?: any; record?: string } }>('/:id/verify-keys', async (req, reply) => {
     const row = clusterOr404(req.params.id, reply); if (!row) return
     if (row.kind !== 'remote') return reply.status(422).send({ success: false, error: 'Home node keys are verified on Settings -> Setup checklist.' })
     if ((req as any).apiToken) return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'An API token cannot verify or change host keys.' })
@@ -392,10 +393,14 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
       const given = l && typeof l === 'object' && (l.password || l.privateKey) && /^[a-z_][a-z0-9_-]{0,31}$/.test(String(l.username ?? 'root').trim())
         ? { username: String(l.username ?? 'root').trim(), port: 22, ...(l.privateKey ? { privateKey: String(l.privateKey), ...(l.passphrase ? { passphrase: String(l.passphrase) } : {}) } : { password: String(l.password) }) } as any
         : null
+      if (typeof req.body?.record === 'string' && req.body.record.trim()) {
+        const anchored = await saveAnchors(row.id, req.body.record, 'pasted')
+        await auditCredentialUse('host_key.anchor.save', `cluster:${row.id}`, { by: who(), source: 'pasted', nodes: anchored })
+      }
       const out = await runInCluster(row.id, async () => {
         const names = ((await pveFromEnv().fetchStrict<any[]>('/nodes').catch(() => [])) ?? []).map(n => String(n.node))
         const nodes = await Promise.all(names.filter(n => row.nodeAddresses[n]).map(async n => ({ name: n, address: row.nodeAddresses[n], cred: given ?? await nodeCredential(n).catch(() => null) })))
-        const verdicts = await verifyNodes({ cluster: row.name, scope: 'remote', nodes, by: who() })
+        const verdicts = await verifyNodes({ cluster: row.name, anchorScope: row.id, scope: 'remote', nodes, by: who() })
         const saved: string[] = []
         if (given) for (const v of verdicts) {
           if (v.state !== 'verified' && v.state !== 'already') continue
@@ -405,7 +410,8 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
           await auditCredentialUse('cluster.node_login.save', `cluster:${row.id}`, { by: who(), node: v.node, source: 'verify keys' })
           saved.push(v.node)
         }
-        return { nodes: verdicts.map(v => ({ node: v.node, state: v.state, how: v.why, login: saved.includes(v.node) ? 'saved' : null })), missingAddress: names.filter(n => !row.nodeAddresses[n]) }
+        return { nodes: verdicts.map(v => ({ node: v.node, state: v.state, how: v.why, login: saved.includes(v.node) ? 'saved' : null })), missingAddress: names.filter(n => !row.nodeAddresses[n]),
+          command: verdicts.some(v => v.state === 'no-evidence') ? ANCHOR_COMMAND : null }
       })
       return { success: true, data: out }
     } catch (e) { return fail(reply, e) }

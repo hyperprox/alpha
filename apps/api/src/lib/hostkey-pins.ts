@@ -8,9 +8,9 @@
 //                   Terminal does not ask yet, so nothing writes it today)
 //    confirmed      an admin checked the fingerprint and pressed confirm (Setup checklist, Remote access, HA)
 //    verified       HyperProx checked it itself against evidence an attacker cannot easily fake, and recorded
-//                   which (hyperprox:deck/hostkey-evidence): the cluster's own record of the node's key read
-//                   through two other nodes, the private link's identity (Tailscale, WireGuard), or a session
-//                   already proven to be that machine. See lib/hostkey-verify.ts.
+//                   which (hyperprox:deck/hostkey-evidence): the cluster's record of its keys read on a node
+//                   (an anchor), that record read through nodes already trusted, the private link's identity
+//                   (Tailscale, WireGuard), or a session already proven to be that machine. See lib/hostkey-verify.ts.
 //    terminal-auto  the Terminal learned it on first connection; it was shown, but nobody accepted it
 //    wizard         the setup wizard saw it on first connection (on screen, not confirmed)
 //    api            HyperProx's own node runner learned it on first use, with nobody looking
@@ -34,26 +34,50 @@ const SOURCES: PinSource[] = ['terminal', 'confirmed', 'verified', 'terminal-aut
 
 /** What a `verified` pin was verified with. Public facts only: node names, a tailnet device id, an interface. */
 export type PinEvidence =
-  | { kind: 'cluster-record'; cluster: string; readers: string[]; method: 'presented-key' | 'record-key-session' }
+  | { kind: 'setup-local'; node: string; source: AnchorSource; method: 'presented-key' | 'proof' }
+  | { kind: 'cluster-record'; cluster: string; readers: string[]; method: 'two-readers' | 'one-reader-proof' | 'record-key-session' }
   | { kind: 'tailnet'; nodeId: string; hostname: string }
   | { kind: 'wireguard'; iface: string; peer: string }
   | { kind: 'trusted-session'; via: string }
 
-const EVIDENCE_KINDS = ['cluster-record', 'tailnet', 'wireguard', 'trusted-session']
+const EVIDENCE_KINDS = ['setup-local', 'cluster-record', 'tailnet', 'wireguard', 'trusted-session']
 function parseEvidence(raw: string | null): PinEvidence | null {
   if (!raw) return null
   try { const e = JSON.parse(raw); return e && EVIDENCE_KINDS.includes(e.kind) ? e as PinEvidence : null } catch { return null }
 }
 
+const ANCHOR_WORDS: Record<AnchorSource, string> = { installer: 'read on the node itself by the installer', pasted: 'read on a node by the command you ran there' }
+
 /** The evidence in plain words, for the Setup checklist and the audit log. */
 export function evidenceWords(e: PinEvidence | null): string {
   if (!e) return 'verified automatically'
   switch (e.kind) {
-    case 'cluster-record': return `verified automatically: it matches the key the cluster itself records for this node, read through ${e.readers.join(' and ')}${e.method === 'record-key-session' ? ' (checked over a session signed with that recorded key)' : ''}`
+    case 'setup-local': return `verified automatically: it is the key the cluster records for ${e.node}, ${ANCHOR_WORDS[e.source] ?? 'read on a node'}${e.method === 'proof' ? ' (the node proved it holds that key)' : ''}`
+    case 'cluster-record': return `verified automatically: the cluster's record of this node's key, read through ${e.readers.join(' and ')} (already trusted), matches${e.method === 'one-reader-proof' || e.method === 'record-key-session' ? ', and the node proved it holds that key' : ''}`
     case 'tailnet': return `verified automatically: reached over your tailnet, where this address is the online device ${e.hostname}`
     case 'wireguard': return `verified automatically: reached over HyperProx's own WireGuard link ${e.iface} (peer ${e.peer})`
     case 'trusted-session': return `verified automatically: read from the machine itself over a session already proven to be it (${e.via})`
   }
+}
+
+// ── Anchors ──────────────────────────────────────────────────────────────────
+//  What HyperProx first trusts a cluster's keys from, before any of its own checks: the cluster's record of its
+//  nodes' keys (and the node's own key files) read ON a node, by the installer running there as root or by the
+//  command the owner runs there and pastes back. Public keys only. Kept per cluster and node name in
+//  hyperprox:deck/hostkey-anchor (`home:<node>`, or `<cluster id>:<node>`).
+
+const ANCHOR = 'hostkey-anchor'
+export type AnchorSource = 'installer' | 'pasted'
+export interface Anchor { keys: Array<{ type: string; fingerprint: string }>; source: AnchorSource; at: string }
+const anchorId = (scope: string, node: string) => `${scope}:${node}`.replace(/[^a-zA-Z0-9._:-]/g, '_').slice(0, 120)
+
+export async function saveAnchor(scope: string, node: string, a: Anchor): Promise<void> {
+  await setCredential(CATEGORY, ANCHOR, anchorId(scope, node), JSON.stringify(a), false)
+}
+export async function getAnchor(scope: string, node: string): Promise<Anchor | null> {
+  const raw = await getCredential(CATEGORY, ANCHOR, anchorId(scope, node)).catch(() => null)
+  if (!raw) return null
+  try { const a = JSON.parse(raw); return Array.isArray(a?.keys) ? a as Anchor : null } catch { return null }
 }
 
 /** The cluster whose pins apply here: null at home, the remote's id while working for a remote server. */

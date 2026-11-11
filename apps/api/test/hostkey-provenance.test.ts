@@ -220,3 +220,31 @@ test('review 4: a remote server\'s pins are scoped to it; an old pin moves to it
     })
   } finally { process.env.PROXMOX_HOST = saved; resetClustersForTests() }
 })
+
+test('review 1: proving a key needs the host to sign the handshake with it, and sends no login at all', async () => {
+  const { proveKey, algorithmsFor } = await import('../src/lib/hostkey-verify')
+  const fp = await probeHostKey('127.0.0.1', port)
+  const tried = authTried
+  const k = await proveKey('127.0.0.1', port, algorithmsFor(['ssh-ed25519']), x => x.fingerprint === fp)
+  assert.equal(k.fingerprint, fp)
+  await assert.rejects(proveKey('127.0.0.1', port, algorithmsFor(['ssh-ed25519']), () => false), (e: any) => e?.name === 'SessionKeyRefused')
+  assert.equal(authTried, tried, 'no authentication was attempted')
+})
+
+test('review 1: the installer\'s host record rides the one-time hand-over and becomes the home anchor at the owner\'s sign-in', async () => {
+  const { holdValidated, validateHandoff, flushHeldSecrets } = await import('../src/lib/setup-handoff')
+  const { getAnchor } = await import('../src/lib/hostkey-pins')
+  const mod: any = await import('ssh2')
+  const { utils } = mod.default ?? mod
+  const pub = String(utils.generateKeyPairSync('ed25519').public).trim().split(/\s+/).slice(0, 2).join(' ')
+  const text = ['@@hpx local node-a', '@@hpx node node-a', `node-a ${pub}`, '@@hpx priv', '@@hpx own', `${pub} root@node-a`, '@@hpx end'].join('\n')
+  const v = validateHandoff({ hostRecord: Buffer.from(text).toString('base64') })
+  assert.ok(v?.hostRecord, 'accepted on its own')
+  assert.equal(validateHandoff({ hostRecord: 'not the command output' }), null, 'anything else is dropped')
+  holdValidated(v!)
+  const r = await flushHeldSecrets({ sid, email: 'owner@example.com', role: 'owner' })
+  assert.ok(r.stored.some(x => /host-key record/.test(x)))
+  const a = await asOwner(() => getAnchor('home', 'node-a'))
+  assert.equal(a?.source, 'installer')
+  assert.equal(a?.keys.length, 1)
+})

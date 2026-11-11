@@ -28,7 +28,7 @@ import { GoDaddyClient } from './godaddy-client'
 import { ensureGrafanaAdmin } from './grafana-admin'
 import { listPins, pinId, confirmPin, PinConfirmRefusal, pinnedKey, pinSource, isConfirmedSource, evidenceWords, isRemotePinId, type PinRow } from './hostkey-pins'
 import { probeHostKey } from './node-exec'
-import { verifyNodes, productionVerifyDeps, type NodeVerdict, type VerifyDeps } from './hostkey-verify'
+import { verifyNodes, productionVerifyDeps, saveAnchors, ANCHOR_COMMAND, VerifyRefusal, type NodeVerdict, type VerifyDeps } from './hostkey-verify'
 
 const run = promisify(execFile)
 
@@ -48,6 +48,8 @@ export interface ChecklistItem {
   /** What pressing the button would do, in words; null when there is nothing to do. */
   action: string | null
   automatic?: boolean
+  /** Host keys: the one-line command to run on any node when HyperProx has nothing trusted to check against. */
+  command?: string
 }
 
 export interface ChecklistDeps {
@@ -398,8 +400,10 @@ async function hostKeyItem(deps: ChecklistDeps, nodes: string[], addrs: Record<s
     id: 'host-keys', ask: "Are your nodes' SSH host keys verified?", notes: [], rows, state, needsNodeLogin: false,
     action: state === 'done' || state === 'not-applicable' ? null : 'Verify automatically',
     what: 'HyperProx sends a node its login only when the node shows a key that is verified or confirmed. It verifies them by itself, ' +
-      "against the cluster's own record of each node's key (read through two other nodes) or over Tailscale or WireGuard, after you sign in " +
-      'and whenever it meets a new node. There is nothing to press when they show verified. A key it found no evidence for can still be compared by hand.',
+      "against your cluster's own record of each node's key, read on a node when HyperProx was installed from one, and then through nodes " +
+      'already verified, or over Tailscale or WireGuard. It does this after you sign in and whenever it meets a new node; there is nothing ' +
+      'to press when they show verified. If HyperProx was not installed from a node, run the command below on any node once and paste what it prints.',
+    ...(state === 'done' || state === 'not-applicable' ? {} : { command: ANCHOR_COMMAND }),
   }
 }
 
@@ -422,7 +426,24 @@ export async function verifyHomeHostKeys(by: string, o: { onlyIfNeeded?: boolean
     if (!open.some(Boolean)) return []
   }
   const nodes = await Promise.all(names.map(async n => ({ name: n, address: addrs[n] ?? n, cred: await hw.login(n), alsoKnownAs: addrs[n] && addrs[n] !== n ? [n] : [] })))
-  return verifyNodes({ cluster: 'Home cluster', scope: 'home', nodes, by }, o.verify ?? productionVerifyDeps())
+  return verifyNodes({ cluster: 'Home cluster', anchorScope: 'home', scope: 'home', nodes, by }, o.verify ?? productionVerifyDeps())
+}
+
+/**
+ * The output of ANCHOR_COMMAND, run by the admin on one of their nodes and pasted here: kept as the home cluster's
+ * anchor (public keys only), then verified against as usual. Re-confirmed like every change here.
+ */
+export async function saveHostKeyAnchor(input: any, by: string): Promise<{ nodes: string[] }> {
+  const output = typeof input?.output === 'string' ? input.output : ''
+  if (!output.trim()) throw new ChecklistRefusal('Paste what the command printed.')
+  try {
+    const nodes = await saveAnchors('home', output, 'pasted')
+    await auditCredentialUse('host_key.anchor.save', 'cluster:home', { by, source: 'pasted', nodes })
+    return { nodes }
+  } catch (e: any) {
+    if (e instanceof VerifyRefusal) throw new ChecklistRefusal(e.message, 422)
+    throw e
+  }
 }
 
 /** Confirm one fingerprint the admin compared on the machine. It must be the key presented right now. */

@@ -164,7 +164,7 @@ export async function addServer(input: AddServerInput, deps: AddServerDeps): Pro
   const nodes: NodeSetup[] = []
   let saved = 0
   if (cred) {
-    const verdicts = await deps.verifyNodes(c.id, { cluster: c.name, scope: 'remote', by: input.by, nodes: Object.entries(addrs).map(([name, a]) => ({ name, address: a, cred })) })
+    const verdicts = await deps.verifyNodes(c.id, { cluster: c.name, anchorScope: c.id, scope: 'remote', by: input.by, nodes: Object.entries(addrs).map(([name, a]) => ({ name, address: a, cred })) })
     for (const n of t.nodes) {
       const v = verdicts.find(x => x.node === n)
       if (!v || !addrs[n]) { nodes.push({ node: n, address: addrs[n] ?? '', key: 'skipped', how: 'no address found for it; add one under Edit server', login: 'not-saved' }); continue }
