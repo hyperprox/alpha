@@ -6,21 +6,28 @@
 //  pve-cluster or pmxcfs, and any /etc/pve path except the HyperProx documents: a container's own config
 //  file (the guest config editor's write, and its temp files), reading ceph.conf (the hardware probe), and
 //  reading the cluster's record of its nodes' SSH host keys (host-key verification). That last one is allowed
-//  only as `cat -- <path>`: a read, never a write.
+//  only as a whole line of exactly `cat -- <path> 2>/dev/null`: a read, never a write, and never part of a
+//  longer command. A script that reads the record may not continue any command over a line break (a backslash
+//  at the end of a line), so no line can be glued to a record read. (Other HyperProx scripts, the monitoring
+//  install and the hardware probe, use such continuations, so they are not refused for it.)
 // =============================================================================
 
 const ALLOWED_PVE = [
   /\/etc\/pve\/nodes\/[A-Za-z0-9.-]+\/lxc\/\d+\.conf(\.tmp\.hpx\.[A-Za-z0-9_.*$]*)?/g,
   /\/etc\/pve\/ceph\.conf/g,
-  // At the start of a command only (a line, or after ; && ||), so `tee cat -- <path>` is not mistaken for a read.
-  /(^|;|&&|\|\|)[ \t]*cat -- \/etc\/pve\/(priv\/known_hosts|nodes\/[A-Za-z0-9.-]+\/ssh_known_hosts)(?=[ \t]|;|$)/gm,
 ]
+
+// The record reads, as whole lines only (leading spaces allowed). Nothing before or after on that line.
+const RECORD_READ_LINE = /^[ \t]*cat -- \/etc\/pve\/(priv\/known_hosts|nodes\/[A-Za-z0-9.-]+\/ssh_known_hosts) 2>\/dev\/null[ \t]*$/
 
 export function assertSafeScript(script: string): void {
   if (/corosync|pve-cluster|pmxcfs/i.test(script)) {
     throw new Error('Refused: this script names corosync or pve-cluster, which HyperProx never touches on any cluster.')
   }
-  let rest = script
+  const lines = script.split('\n')
+  const reads = lines.some(l => RECORD_READ_LINE.test(l))
+  if (reads && /\\\r?\n/.test(script)) throw new Error('Refused: a script that reads the host-key record may not continue a command over a line break (a backslash at the end of a line).')
+  let rest = lines.filter(l => !RECORD_READ_LINE.test(l)).join('\n')
   for (const re of ALLOWED_PVE) rest = rest.replace(re, '')
   if (/\/etc\/pve\b/.test(rest)) throw new Error('Refused: this script names a path under /etc/pve that HyperProx does not write on a remote cluster.')
 }

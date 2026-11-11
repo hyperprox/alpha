@@ -328,6 +328,20 @@ test('script guard: reading the cluster record is allowed; writing it, or anythi
   assert.throws(() => assertSafeScript('cat -- /etc/pve/priv/known_hosts; cp x /etc/pve/nodes/a/ssh_known_hosts'))
 })
 
+test('review 6: record reads are allowed only as exact whole lines, never glued by a continuation or a pipe', () => {
+  const ok = 'cat -- /etc/pve/priv/known_hosts 2>/dev/null'
+  assert.doesNotThrow(() => assertSafeScript(`echo a\n  ${ok}\ntrue`))
+  for (const bad of [
+    'cat -- /etc/pve/priv/known_hosts',                                  // not the exact form
+    `echo x | ${ok}`, `x & ${ok}`, `( ${ok} )`, `y=$(${ok})`, `y=\`${ok}\``, // part of a longer command
+    `${ok} > /tmp/x`, `${ok}; rm -f /etc/pve/priv/known_hosts`,
+    `tee \\\n${ok}`,                                                     // a continuation glues it to tee
+    `echo hi \\\ntrue\n${ok}`,                                           // any continuation in a reading script
+  ]) assert.throws(() => assertSafeScript(bad), undefined, bad)
+  // Scripts that do not read the record keep their continuations (the monitoring install uses them).
+  assert.doesNotThrow(() => assertSafeScript('apt-get -s install x \\\n  >/dev/null'))
+})
+
 // ---------------------------------------------------------------------------
 //  Add a server, bundled
 // ---------------------------------------------------------------------------
