@@ -12,7 +12,7 @@ import {
 import { assertSafeScript } from '../src/lib/clusters/script-guard'
 import { evidenceWords, type PinEvidence, type PinSource, type Anchor } from '../src/lib/hostkey-pins'
 import { needsReconfirm } from '../src/lib/roles'
-import { addServer, inspectAddress, monitoringPreview, MANUAL_CERT_WHY, IdentityMismatch, type AddServerDeps } from '../src/lib/clusters/add-server'
+import { addServer, inspectAddress, monitoringPreview, startAddJob, addJob, MANUAL_CERT_WHY, IdentityMismatch, type AddServerDeps } from '../src/lib/clusters/add-server'
 import { createHmac, randomBytes } from 'node:crypto'
 import { utils } from 'ssh2'
 
@@ -403,6 +403,8 @@ function addDeps(o: { tailnet?: TailnetStatus | null; whois?: Record<string, Tai
     async tailnet() { return o.tailnet ?? null },
     async whois(ip) { return o.whois?.[ip] ?? null },
     async wireguard() { return [] },
+    findRemote: () => null,
+    async replaceToken() { calls.push('replace-token') },
     async createRemote(n) { calls.push('create'); const c = { id: 'c0123456789', name: n.name, kind: 'remote', cert: { verified: n.verified ?? null } } as any; created.push(n); return c },
     async setNodeAddresses(_id, m) { calls.push(`addresses:${JSON.stringify(m)}`); return { id: 'c0123456789', name: 'Remote server', nodeAddresses: m } as any },
     async verifyNodes(_id, input) { calls.push(`verify:${input.nodes.map(n => n.address).join(',')}`); return input.nodes.map(n => ({ node: n.name, host: n.address, port: 22, state: o.verdict ?? 'verified', why: o.verdict === 'no-evidence' ? 'no evidence' : 'verified automatically: x' })) },
@@ -506,4 +508,28 @@ test('review 5: the add applies only what was previewed; anything changed since 
   const r = await asOwner(() => addServer({ ...base, login: { username: 'root', password: PW } }, noPreview.deps))
   assert.ok(r.kind === 'added' && /only after its preview is shown/.test(String(r.setup.monitoring)))
   assert.ok(!noPreview.calls.some(c => c.startsWith('monitoring')))
+})
+
+test('review 7: a second request for the same add while it runs joins the same job, and only its owner sees it', async () => {
+  let release!: () => void
+  const gate = new Promise<void>(r => { release = r })
+  let runs = 0
+  const run = async () => { runs++; await gate; return { kind: 'manual-certificate', certificate: {} as any, why: 'x' } as any }
+  const answer = (r: any) => ({ status: r ? 409 : 500, body: {} })
+  const a = startAddJob('owner:s1', base as any, run, answer), b = startAddJob('owner:s1', base as any, run, answer)
+  assert.equal(a.id, b.id)
+  assert.equal(runs, 1)
+  assert.equal(addJob('someone:s2', a.id), null)
+  release(); await new Promise(r => setTimeout(r, 10))
+  assert.equal(addJob('owner:s1', a.id)!.status, 'failed')
+  assert.equal(startAddJob('owner:s1', base as any, run, answer).id === a.id, false, 'a finished add can be retried')
+})
+
+test('review 7: a retry of an add that stopped part way resumes the saved server instead of refusing it', async () => {
+  const d = addDeps({ tailnet: tsNodes, whois: owned })
+  d.deps.findRemote = () => ({ id: 'c0123456789', name: 'remote server', cert: { fingerprint: 'AB:'.repeat(31) + 'AB' } } as any)
+  const r = await asOwner(() => addServer(base, d.deps))
+  assert.equal(r.kind, 'added')
+  assert.ok(d.calls.includes('replace-token') && !d.calls.includes('create'))
+  assert.ok(d.audits.some(a => a.action === 'cluster.add.resume'))
 })

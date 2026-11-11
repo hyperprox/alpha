@@ -10,7 +10,7 @@
 // =============================================================================
 
 import type { FastifyPluginAsync, FastifyReply } from 'fastify'
-import { currentContext } from '../lib/auth'
+import { currentContext, requestContext } from '../lib/auth'
 import { strictParams } from '../lib/route-params'
 import { hasRole } from '../lib/roles'
 import { auditCredentialUse } from '../lib/audit'
@@ -28,7 +28,7 @@ import { checkGuest, power, snapshot, backupNow, backupStorages, taskStatus, des
 import { probeHostKey, execOnNode, nodeCredential } from '../lib/node-exec'
 import { confirmPin, PinConfirmRefusal, forgetPin, pinnedKey, pinSource, isConfirmedSource, PinVerifyRefusal } from '../lib/hostkey-pins'
 import { verifyNodes, productionVerifyDeps, VerifyRefusal, saveAnchors, ANCHOR_COMMAND } from '../lib/hostkey-verify'
-import { addServer, linkDevice, inspectAddress, certNames, scriptHash, IdentityMismatch, MANUAL_CERT_WHY, type AddServerDeps } from '../lib/clusters/add-server'
+import { addServer, linkDevice, inspectAddress, certNames, scriptHash, startAddJob, addJob, IdentityMismatch, MANUAL_CERT_WHY, type AddServerDeps, type AddServerResult } from '../lib/clusters/add-server'
 import { discoverSend, sendDeps } from '../lib/clusters/send-simple'
 import { remoteToken } from '../lib/clusters/registry'
 import { forgetRemoteGuestConfigService } from './guest-config'
@@ -55,6 +55,14 @@ const limited = (route: string, reply: FastifyReply) => {
   if (!overLimit(`${route}:${currentContext()?.sid ?? 'none'}`)) return false
   reply.status(429).send({ success: false, error: 'That was asked too often. Wait a minute and try again.' })
   return true
+}
+
+/** A failure as the status and body the page gets: shared by the routes and the add job. */
+function failure(e: any): { status: number; body: Record<string, unknown> } {
+  let out: { status: number; body: Record<string, unknown> } | null = null
+  const fake: any = { status(s: number) { return { send(b: any) { out = { status: s, body: b }; return out } } } }
+  fail(fake, e)
+  return out!
 }
 
 function fail(reply: FastifyReply, e: any) {
@@ -117,6 +125,15 @@ function statusIdentity(rows: unknown): { clusterName: string | null; nodes: { n
   }
 }
 
+/** What an add's outcome reads as on the page (the status and body the request used to answer with). */
+function addAnswer(r: AddServerResult | null, e: any): { status: number; body: Record<string, unknown> } {
+  if (r?.kind === 'manual-certificate') return { status: 409, body: { success: false, code: 'cert_manual', error: r.why, certificate: r.certificate } }
+  if (r) return { status: 200, body: { success: true, data: { cluster: r.cluster, version: r.version, nodes: r.nodes, setup: r.setup } } }
+  if (e instanceof ClusterRefusal && e.code === 'conflict' && (e as any).presented) return { status: 409, body: { success: false, code: 'cert_changed', error: e.message, presented: (e as any).presented } }
+  if (e instanceof ClusterRefusal && /^This is your home cluster/.test(e.message)) return { status: 409, body: { success: false, code: 'home_cluster', error: e.message } }
+  return failure(e)
+}
+
 /** The live wiring for the one-step add (lib/clusters/add-server.ts). */
 function addServerDeps(log: (m: string) => void): AddServerDeps {
   const v = productionVerifyDeps()
@@ -128,6 +145,8 @@ function addServerDeps(log: (m: string) => void): AddServerDeps {
     whois: ip => v.whois(ip),
     wireguard: () => v.wireguard(),
     createRemote: n => createRemote(n),
+    findRemote: (address, port) => listClusters().find(c => c.kind === 'remote' && c.address.toLowerCase() === address.toLowerCase() && c.port === port) ?? null,
+    replaceToken: (id, tokenId, secret) => replaceRemoteToken(id, tokenId, secret),
     setNodeAddresses: (id, m) => updateCluster(id, { nodeAddresses: m }),
     verifyNodes: (id, input) => runInCluster(id, () => verifyNodes(input, v)),
     testLogin: (id, host, cred) => runInCluster(id, async () => (await execOnNode({ host, cred, command: 'true', requirePin: true, timeoutMs: 20_000 })).code === 0),
@@ -230,17 +249,24 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
       const fp = b.fingerprint ? normaliseFingerprint(String(b.fingerprint)) : null
       if (b.fingerprint && !fp) throw new ClusterRefusal('That is not a SHA-256 certificate fingerprint.')
       const login = b.login && typeof b.login === 'object' && (b.login.password || b.login.privateKey) ? b.login : null
-      const r = await addServer({
+      const input = {
         name: String(b.name ?? ''), address, port, note: b.note, tokenId: String(b.tokenId ?? ''), tokenSecret: String(b.tokenSecret ?? ''),
         fingerprint: fp, login, monitoring: b.monitoring !== false, sending: b.sending !== false, previewHash: typeof b.previewHash === 'string' ? b.previewHash : null, by: who(),
-      }, addServerDeps(m => fastify.log.warn(m)))
-      if (r.kind === 'manual-certificate') return reply.status(409).send({ success: false, code: 'cert_manual', error: r.why, certificate: r.certificate })
-      return { success: true, data: { cluster: r.cluster, version: r.version, nodes: r.nodes, setup: r.setup } }
-    } catch (e: any) {
-      if (e instanceof ClusterRefusal && e.code === 'conflict' && (e as any).presented) return reply.status(409).send({ success: false, code: 'cert_changed', error: e.message, presented: (e as any).presented })
-      if (e instanceof ClusterRefusal && /^This is your home cluster/.test(e.message)) return reply.status(409).send({ success: false, code: 'home_cluster', error: e.message })
-      return fail(reply, e)
-    }
+      }
+      // The work (certificate, token, keys, logins, monitoring) can take minutes: it runs as a job, as this signed-in
+      // person (whose vault session it needs), and the page polls GET /add-jobs/:id for the answer.
+      const ctx = currentContext()!
+      const deps = addServerDeps(m => fastify.log.warn(m))
+      const job = startAddJob(`${ctx.email}:${ctx.sid}`, input, () => requestContext.run(ctx, () => addServer(input, deps)), addAnswer)
+      return reply.status(202).send({ success: true, data: { jobId: job.id, status: job.status } })
+    } catch (e: any) { return fail(reply, e) }
+  })
+
+  fastify.get<{ Params: { jobId: string } }>('/add-jobs/:jobId', async (req, reply) => {
+    const ctx = currentContext()
+    const j = ctx ? addJob(`${ctx.email}:${ctx.sid}`, req.params.jobId) : null
+    if (!j) return reply.status(404).send({ success: false, error: 'No such job.' })
+    return { success: true, data: j }
   })
 
   // ── One cluster ───────────────────────────────────────────────────────────

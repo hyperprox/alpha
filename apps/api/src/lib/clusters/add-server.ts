@@ -56,6 +56,9 @@ export interface AddServerDeps {
   whois(ip: string): Promise<TailnetWhois | null>
   wireguard(): Promise<WgLink[]>
   createRemote(n: NewRemote): Promise<ClusterInfo>
+  /** The remote already saved at this address and port, if any (a retry of an add that stopped part way). */
+  findRemote(address: string, port: number): ClusterInfo | null
+  replaceToken(id: string, tokenId: string, secret: string): Promise<void>
   setNodeAddresses(id: string, addresses: Record<string, string>): Promise<ClusterInfo>
   verifyNodes(clusterId: string, input: VerifyInput): Promise<NodeVerdict[]>
   /** A test command over a session that requires the verified pin. */
@@ -212,8 +215,14 @@ export async function addServer(input: AddServerInput, deps: AddServerDeps): Pro
   }
   if (t.missing.length) throw new ClusterRefusal(`That token works but lacks administrator rights (${t.missing.join(', ')}). Run the step 2 commands as shown, including "--privsep 0", then try again. Nothing was saved.`)
 
-  const c = await deps.createRemote({ name: input.name, address, port, note: input.note, fingerprint: fp, verified, tokenId: input.tokenId, tokenSecret: input.tokenSecret, by: input.by })
-  await deps.audit('cluster.add', `cluster:${c.id}`, { by: input.by, name: c.name, nodes: t.nodes.length, version: t.version, certificate: verified ? 'verified automatically' : 'compared by the owner', how: verified ?? 'fingerprint compared by hand' })
+  // A retry of an add that stopped part way: the same name at the same address and certificate is picked up where it
+  // stopped (its token replaced with this one), instead of being refused as a duplicate.
+  const prior = deps.findRemote(address, port)
+  const resume = !!prior && prior.name.trim().toLowerCase() === input.name.trim().toLowerCase() && prior.cert.fingerprint === fp
+  if (resume) await deps.replaceToken(prior!.id, input.tokenId, input.tokenSecret)
+  const c = resume ? prior! : await deps.createRemote({ name: input.name, address, port, note: input.note, fingerprint: fp, verified, tokenId: input.tokenId, tokenSecret: input.tokenSecret, by: input.by })
+  if (resume) await deps.audit('cluster.add.resume', `cluster:${c.id}`, { by: input.by, name: c.name })
+  else await deps.audit('cluster.add', `cluster:${c.id}`, { by: input.by, name: c.name, nodes: t.nodes.length, version: t.version, certificate: verified ? 'verified automatically' : 'compared by the owner', how: verified ?? 'fingerprint compared by hand' })
 
   // 3. Where each node is.
   const status = await deps.tailnet().catch(() => null)
@@ -253,3 +262,46 @@ export async function addServer(input: AddServerInput, deps: AddServerDeps): Pro
     setup: { certificate: verified ? `Certificate verified automatically: ${verified}.` : 'Certificate confirmed by you.', nodes, monitoring, sending },
   }
 }
+
+// ---------------------------------------------------------------------------
+//  The add as a background job: the request returns at once, the page polls
+// ---------------------------------------------------------------------------
+
+export interface AddJob {
+  id: string
+  status: 'running' | 'done' | 'failed'
+  startedAt: string
+  finishedAt?: string
+  /** What the request would have answered: an HTTP status and its body. */
+  answer?: { status: number; body: Record<string, unknown> }
+}
+interface HeldJob extends AddJob { owner: string; key: string }
+
+const addJobs = new Map<string, HeldJob>()
+const JOB_MS = 30 * 60_000
+
+/**
+ * Start (or rejoin) an add. The same owner asking again for the same server while it runs gets the same job, so a
+ * double click or a reload never adds twice; once it has finished, asking again runs it again (a retry resumes).
+ * `answer` turns the outcome into what the page shows.
+ */
+export function startAddJob(owner: string, input: AddServerInput, run: () => Promise<AddServerResult>, answer: (r: AddServerResult | null, e: unknown) => { status: number; body: Record<string, unknown> }): AddJob {
+  for (const [id, j] of addJobs) if (Date.now() - Date.parse(j.startedAt) > JOB_MS) addJobs.delete(id)
+  const key = createHash('sha256').update(JSON.stringify([input.name.trim().toLowerCase(), input.address.toLowerCase(), input.port, input.tokenId])).digest('hex')
+  const same = [...addJobs.values()].find(j => j.owner === owner && j.key === key && j.status === 'running')
+  if (same) return view(same)
+  const job: HeldJob = { id: createHash('sha256').update(`${key}:${Date.now()}:${Math.random()}`).digest('hex').slice(0, 24), status: 'running', startedAt: new Date().toISOString(), owner, key }
+  addJobs.set(job.id, job)
+  void run().then(r => { job.answer = answer(r, null); job.status = job.answer.status < 300 ? 'done' : 'failed' },
+    e => { job.answer = answer(null, e); job.status = 'failed' })
+    .finally(() => { job.finishedAt = new Date().toISOString() })
+  return view(job)
+}
+
+/** A job, only for the owner who started it. */
+export function addJob(owner: string, id: string): AddJob | null {
+  const j = addJobs.get(id)
+  return j && j.owner === owner ? view(j) : null
+}
+const view = (j: HeldJob): AddJob => ({ id: j.id, status: j.status, startedAt: j.startedAt, finishedAt: j.finishedAt, answer: j.answer })
+export function forgetAddJobs(): void { addJobs.clear() }

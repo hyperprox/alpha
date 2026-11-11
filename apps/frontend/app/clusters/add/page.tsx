@@ -79,24 +79,35 @@ export default function AddServerPage() {
     return () => clearTimeout(t)
   }, [address, port])
 
+  // Connect starts the add as a job (one master password); the page polls until it answers. Pressing Connect again
+  // for the same server while it runs joins the same job, and after a stop part way it picks up where it stopped.
   const connect = async () => {
     setBusy('connect'); setErr(null)
     const login = nodePw || nodeKey.trim() ? { username: nodeUser.trim(), ...(nodeKey.trim() ? { privateKey: nodeKey } : { password: nodePw }) } : undefined
-    const r = await apiJson<{ data: { cluster: { id: string; name: string }; nodes: string[]; version: string; setup: Setup } }>('/api/clusters', 'POST', {
+    const start = await apiJson<{ data: { jobId: string } }>('/api/clusters', 'POST', {
       name: name.trim(), address: address.trim(), port: Number(port), note, tokenId: tokenId.trim(), tokenSecret: secret.trim(),
       ...(cert && matches ? { fingerprint: cert.fingerprint } : {}), login, monitoring, sending, previewHash: preview?.hash,
     })
+    if (start.status === 403 && start.code === 'reconfirm_required') { setBusy(null); setReconfirm(() => () => void connect()); return }
+    if (!start.ok) { setBusy(null); setErr(start.error ?? 'Could not add the server'); return }
+    let answer: { status: number; body: any } | null = null
+    for (let i = 0; i < 600 && !answer; i++) {
+      await new Promise(r => setTimeout(r, 1500))
+      const j = await apiJson<{ data: { status: string; answer?: { status: number; body: any } } }>(`/api/clusters/add-jobs/${start.body!.data.jobId}`)
+      if (j.ok && j.body!.data.status !== 'running') answer = j.body!.data.answer ?? null
+    }
     setBusy(null)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void connect()); return }
-    if (!r.ok) {
+    if (!answer) { setErr('Adding is taking very long. Look at the Command center in a minute; pressing Connect again picks up where it stopped.'); return }
+    const b = answer.body ?? {}
+    if (answer.status >= 300) {
       // No evidence for the certificate: show it, say why in one sentence, and let the owner compare it once.
-      if (r.code === 'cert_manual' && (r.body as any)?.certificate) { setCert((r.body as any).certificate); setWhy(r.error ?? null); setMatches(false); return }
-      setErr(r.error ?? 'Could not add the server')
-      if (r.code === 'cert_changed') { setCert(null); setMatches(false) }
+      if (b.code === 'cert_manual' && b.certificate) { setCert(b.certificate); setWhy(b.error ?? null); setMatches(false); return }
+      setErr(b.error ?? 'Could not add the server')
+      if (b.code === 'cert_changed') { setCert(null); setMatches(false) }
       return
     }
     setSecret(''); setNodePw(''); setNodeKey('')
-    const d = r.body!.data
+    const d = b.data
     setSetup(d.setup ?? null)
     setAdded({ id: d.cluster.id, name: d.cluster.name, nodes: d.nodes, version: d.version })
   }
