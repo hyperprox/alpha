@@ -11,7 +11,7 @@
 //  prefers-reduced-motion.
 // =============================================================================
 
-import { useEffect, useId, useState, type ReactNode } from 'react'
+import { useEffect, useId, useState, type ReactNode, type SVGProps } from 'react'
 import Link from 'next/link'
 import s from './visual.module.css'
 
@@ -531,6 +531,19 @@ interface TopoProps { id: string; reduced: boolean; internet: { name: string; su
 
 const cut = (t: string, n: number) => (t.length > n ? t.slice(0, n - 1) + '…' : t)
 
+/** Roughly how wide a line is in the SVG's own units: mono glyphs are about 0.62 em, the condensed display face about 0.56. */
+export const textWidth = (t: string, size: number, em = 0.62) => t.length * size * em
+
+/**
+ * SVG text that stays inside its box. A line that would run wider than `maxW` is squeezed to fit (textLength)
+ * instead of spilling over the border; a line that fits is drawn as it is. Works at every width because it is
+ * measured in the SVG's own units, which scale with the drawing.
+ */
+function FitText({ maxW, size, em, children, ...rest }: { maxW: number; size: number; em?: number; children: string } & SVGProps<SVGTextElement>) {
+  const squeeze = textWidth(children, size, em) > maxW
+  return <text {...rest} {...(squeeze ? { textLength: maxW, lengthAdjust: 'spacingAndGlyphs' as const } : {})}>{children}</text>
+}
+
 function Packet({ path, color, dur, begin, reverse, reduced }: { path: string; color: string; dur: number; begin?: number; reverse?: boolean; reduced: boolean }) {
   if (reduced) return null
   return (
@@ -554,30 +567,30 @@ function TopoWide({ id, reduced, internet, wans, core, subnets }: TopoProps) {
       {internet.sub && <text x="60" y={cy + 12} textAnchor="middle" className={s.topoText}>{cut(internet.sub, 12)}</text>}
       {wans.map((w, i) => {
         const y = wy[i]; const color = linkColor(i)
-        const d = `M94 ${cy + (y - cy) * 0.25} C150 ${y} 200 ${y} 262 ${cy + (y - cy) * 0.3}`
+        const d = `M94 ${cy + (y - cy) * 0.25} C150 ${y} 200 ${y} 254 ${cy + (y - cy) * 0.3}`
         return (
           <g key={w.key}>
             <path id={`${id}w${i}`} d={d} className={`${s.topoLink} ${w.active ? '' : s.topoLinkIdle}`} stroke={color} />
             <text x="178" y={y - 8} textAnchor="middle" className={s.topoText} style={{ fill: color }}>{cut(w.name, 18)}</text>
-            {w.sub && <text x="178" y={y + 16} textAnchor="middle" className={s.topoText}>{cut(w.sub, 22)}</text>}
+            {w.sub && <FitText maxW={150} size={10} x="178" y={y + 16} textAnchor="middle" className={s.topoText}>{cut(w.sub, 30)}</FitText>}
             {w.active && <><Packet path={d} color={color} dur={1.6 + i * 0.6} reduced={reduced} /><Packet path={d} color={color} dur={1.6 + i * 0.6} begin={0.8} reverse reduced={reduced} /></>}
           </g>
         )
       })}
-      <rect x="262" y={cy - 37} width="116" height="74" rx="12" className={s.topoCore} />
-      <rect x="262" y={cy - 37} width="116" height="74" rx="12" className={s.topoGlow} />
-      <text x="320" y={cy - 11} textAnchor="middle" className={s.topoName} style={{ fontSize: 16 }}>{cut(core.name.toUpperCase(), 13)}</text>
-      {core.lines.slice(0, 2).map((l, i) => <text key={i} x="320" y={cy + 7 + i * 16} textAnchor="middle" className={s.topoText}>{cut(l, 22)}</text>)}
+      <rect x="254" y={cy - 37} width="132" height="74" rx="12" className={s.topoCore} />
+      <rect x="254" y={cy - 37} width="132" height="74" rx="12" className={s.topoGlow} />
+      <FitText maxW={116} size={16} em={0.56} x="320" y={cy - 11} textAnchor="middle" className={s.topoName} style={{ fontSize: 16 }}>{cut(core.name.toUpperCase(), 18)}</FitText>
+      {core.lines.slice(0, 2).map((l, i) => <FitText key={i} maxW={116} size={10} x="320" y={cy + 7 + i * 16} textAnchor="middle" className={s.topoText}>{cut(l, 30)}</FitText>)}
       {subnets.map((n, i) => {
         const y = sy[i]; const color = linkColor(i)
-        const d = `M378 ${cy + (y - cy) * 0.3} C430 ${cy + (y - cy) * 0.3} 450 ${y} 500 ${y}`
+        const d = `M386 ${cy + (y - cy) * 0.3} C434 ${cy + (y - cy) * 0.3} 452 ${y} 500 ${y}`
         return (
           <g key={n.key}>
             <path d={d} className={`${s.topoLink} ${n.active ? '' : s.topoLinkIdle}`} stroke={color} />
             {n.active && <Packet path={d} color={color} dur={1.3 + i * 0.7} reduced={reduced} />}
             <rect x="500" y={y - 26} width="132" height="52" rx="10" className={s.topoNode} style={{ stroke: color }} />
-            <text x="566" y={y - 6} textAnchor="middle" className={s.topoName}>{cut(n.name, 16)}</text>
-            {n.sub && <text x="566" y={y + 10} textAnchor="middle" className={s.topoText}>{cut(n.sub, 22)}</text>}
+            <FitText maxW={118} size={14} em={0.56} x="566" y={y - 6} textAnchor="middle" className={s.topoName}>{cut(n.name, 22)}</FitText>
+            {n.sub && <FitText maxW={118} size={10} x="566" y={y + 10} textAnchor="middle" className={s.topoText}>{cut(n.sub, 30)}</FitText>}
           </g>
         )
       })}
@@ -602,15 +615,15 @@ function TopoTall({ id, reduced, internet, wans, core, subnets }: TopoProps) {
           <g key={w.key}>
             <path id={`${id}w${i}`} d={d} className={`${s.topoLink} ${w.active ? '' : s.topoLinkIdle}`} stroke={color} />
             <text x={x} y="126" textAnchor="middle" className={s.topoText} style={{ fill: color, paintOrder: 'stroke', stroke: 'var(--hx-panel)', strokeWidth: 4 }}>{cut(w.name, 14)}</text>
-            {w.sub && <text x={x} y="140" textAnchor="middle" className={s.topoText} style={{ paintOrder: 'stroke', stroke: 'var(--hx-panel)', strokeWidth: 4 }}>{cut(w.sub, 16)}</text>}
+            {w.sub && <FitText maxW={110} size={10} x={x} y="140" textAnchor="middle" className={s.topoText} style={{ paintOrder: 'stroke', stroke: 'var(--hx-panel)', strokeWidth: 4 }}>{cut(w.sub, 24)}</FitText>}
             {w.active && <Packet path={d} color={color} dur={1.8 + i * 0.6} reduced={reduced} />}
           </g>
         )
       })}
       <rect x={W / 2 - 75} y="180" width="150" height="64" rx="12" className={s.topoCore} />
       <rect x={W / 2 - 75} y="180" width="150" height="64" rx="12" className={s.topoGlow} />
-      <text x={W / 2} y="204" textAnchor="middle" className={s.topoName} style={{ fontSize: 15 }}>{cut(core.name.toUpperCase(), 16)}</text>
-      {core.lines.slice(0, 2).map((l, i) => <text key={i} x={W / 2} y={220 + i * 14} textAnchor="middle" className={s.topoText}>{cut(l, 26)}</text>)}
+      <FitText maxW={136} size={15} em={0.56} x={W / 2} y="204" textAnchor="middle" className={s.topoName} style={{ fontSize: 15 }}>{cut(core.name.toUpperCase(), 20)}</FitText>
+      {core.lines.slice(0, 2).map((l, i) => <FitText key={i} maxW={136} size={10} x={W / 2} y={220 + i * 14} textAnchor="middle" className={s.topoText}>{cut(l, 30)}</FitText>)}
       {subnets.map((n, i) => {
         const x = sx[i]; const color = linkColor(i)
         const d = `M${W / 2} 244 C${W / 2} 280 ${x} 290 ${x} 330`
@@ -619,8 +632,8 @@ function TopoTall({ id, reduced, internet, wans, core, subnets }: TopoProps) {
             <path d={d} className={`${s.topoLink} ${n.active ? '' : s.topoLinkIdle}`} stroke={color} />
             {n.active && <Packet path={d} color={color} dur={1.4 + i * 0.6} reduced={reduced} />}
             <rect x={x - colW / 2} y="330" width={colW} height="56" rx="10" className={s.topoNode} style={{ stroke: color }} />
-            <text x={x} y="352" textAnchor="middle" className={s.topoName} style={{ fontSize: 12 }}>{cut(n.name, Math.floor(colW / 8))}</text>
-            {n.sub && <text x={x} y="370" textAnchor="middle" className={s.topoText}>{cut(n.sub, Math.floor(colW / 6.2))}</text>}
+            <FitText maxW={colW - 12} size={12} em={0.56} x={x} y="352" textAnchor="middle" className={s.topoName} style={{ fontSize: 12 }}>{cut(n.name, Math.floor(colW / 6))}</FitText>
+            {n.sub && <FitText maxW={colW - 12} size={10} x={x} y="370" textAnchor="middle" className={s.topoText}>{cut(n.sub, Math.floor(colW / 4.5))}</FitText>}
           </g>
         )
       })}

@@ -13,7 +13,6 @@
 //  An instance linked to a remote cluster is amber everywhere, home is teal.
 // =============================================================================
 
-import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
@@ -568,10 +567,11 @@ export function HomeAssistantPage() {
 
   return (
     <div className="overflow-x-hidden">
-      <div className="flex flex-wrap items-center gap-3 pb-4">
-        <Link href="/plugins" className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: 'var(--accent)' }}>← plug-ins</Link>
-        {admin && <span className="ml-auto"><PrimaryButton type="button" onClick={() => setAdding(true)}>Add a house</PrimaryButton></span>}
-      </div>
+      {admin && (
+        <div className="flex flex-wrap items-center gap-3 pb-4">
+          <span className="ml-auto"><PrimaryButton type="button" onClick={() => setAdding(true)}>Add a house</PrimaryButton></span>
+        </div>
+      )}
       <div className="flex flex-col gap-4 min-w-0">
         <PluginSwitcher current="home-assistant" />
         {error && <Notice kind="error">{error}</Notice>}

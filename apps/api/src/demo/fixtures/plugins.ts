@@ -1,6 +1,7 @@
 // Demo fixtures: plug-ins (Home Assistant with rooms and devices, Plex, Arr Stack, Unmanic, Router, MeshCentral).
 import type { FixtureRoute } from './types'
 import { iso, HOUR, MIN, DAY, wobble, GiB, PEOPLE, DOMAIN, REMOTE } from './data'
+import { QNAP_PLUGIN, QNAP_TILE } from './qnap'
 
 const ok = (data: unknown) => ({ success: true, data })
 const mbps = (bps: number) => `${(bps / 1e6).toFixed(1)} Mbps`
@@ -31,6 +32,7 @@ const PLUGINS = [
   { id: 'meshcentral', name: 'MeshCentral', icon: '🖧', kind: 'device', baseUrlSetting: 'public_url',
     description: 'Finds MeshCentral installed with npm in any guest and keeps it updated from the Updates page: release notes, security flag and a real sign-in check through the public URL.',
     auth: { kind: 'none' }, settings: [s('public_url', 'Public URL', 'text', false, `https://mesh.${DOMAIN}`)] },
+  QNAP_PLUGIN,
 ].map(p => ({ ...p, hasDetail: true, configured: true, missing: [] as string[] }))
 
 // -- Home Assistant -------------------------------------------------------------------------------
@@ -194,9 +196,10 @@ const DATA: Record<string, unknown> = {
   arrstack: { ok: true, headline: '3 in queue', tone: 'warn', rows: [{ label: 'Downloading', value: '1' }, { label: 'Stalled', value: '1 download', tone: 'warn' }, { label: 'Indexers', value: '6 of 7', tone: 'warn' }] },
   unmanic: { ok: true, headline: '3 encoding · 20 queued', tone: 'good', rows: [{ label: 'pve-c', value: '2 encoding · 14 queued' }, { label: 'pve-b', value: '1 encoding · 6 queued' }] },
   mikrotik: { ok: true, headline: '↓ 48 ↑ 8 Mbps · 53 devices', tone: 'good', rows: [{ label: 'Internet', value: '↓ 48.0 · ↑ 8.0 Mbps', tone: 'good' }, { label: 'CPU', value: '4%' }, { label: 'Devices', value: '53 awake' }] },
+  qnap: QNAP_TILE,
   meshcentral: { ok: true, headline: 'Up to date', tone: 'good', rows: [{ label: 'Public URL', value: `mesh.${DOMAIN}` }, { label: 'Version', value: '1.1.53' }] },
 }
-const DETAIL: Record<string, () => unknown> = { 'home-assistant': haHealth, plex: plexDetail, arrstack: arrDetail, unmanic: unmanicDetail, mikrotik: routerDetail, meshcentral: meshDetail }
+const DETAIL: Record<string, () => unknown> = { qnap: () => ({ ok: true, stats: QNAP_TILE.rows, tables: [] }), 'home-assistant': haHealth, plex: plexDetail, arrstack: arrDetail, unmanic: unmanicDetail, mikrotik: routerDetail, meshcentral: meshDetail }
 
 export const PLUGIN_ROUTES: FixtureRoute[] = [
   { path: '/api/plugins', get: () => ok(PLUGINS) },

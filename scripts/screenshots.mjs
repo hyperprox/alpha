@@ -13,7 +13,9 @@
 //    node scripts/screenshots.mjs [demo URL] [output folder]
 //    node scripts/screenshots.mjs http://127.0.0.1:3100 docs/screenshots
 //
-//  ONLY=dashboard,storage limits it to some pages; SIZE=desktop and THEME=dark to one
+//  By default it takes only the curated set the README and website use (CURATED below), which is what
+//  docs/screenshots holds; --all takes every page in every size and theme (about 90 files, for review,
+//  not for committing). ONLY=dashboard,storage limits it to some pages; SIZE=desktop and THEME=dark to one
 //  size or theme. REPORT=/tmp/shots.json also writes each page's visible text and any
 //  API read the demo did not answer, so a reviewer can search the text for anything
 //  that should not be there.
@@ -22,8 +24,20 @@ import { chromium } from 'playwright'
 import fs from 'node:fs'
 import path from 'node:path'
 
-const BASE = (process.argv[2] || process.env.DEMO_URL || 'http://127.0.0.1:3100').replace(/\/$/, '')
-const OUT = path.resolve(process.argv[3] || 'docs/screenshots')
+const ALL = process.argv.includes('--all')
+const args = process.argv.slice(2).filter(a => a !== '--all')
+const BASE = (args[0] || process.env.DEMO_URL || 'http://127.0.0.1:3100').replace(/\/$/, '')
+const OUT = path.resolve(args[1] || 'docs/screenshots')
+
+/** What docs/screenshots holds: the README gallery and a few more for the website. */
+export const CURATED = new Set([
+  'dashboard-desktop-dark', 'dashboard-desktop-light', 'dashboard-phone-dark',
+  'command-center-desktop-dark', 'command-center-desktop-light',
+  'infrastructure-desktop-light', 'storage-desktop-dark', 'certificates-desktop-dark', 'updates-desktop-dark',
+  'plugin-home-assistant-desktop-dark', 'plugin-home-assistant-rooms-phone-light', 'plugin-router-desktop-dark',
+  'plugin-plex-phone-dark', 'plugin-qnap-desktop-dark', 'plugin-qnap-phone-light',
+])
+const wanted = (name, size, theme) => ALL || CURATED.has(`${name}-${size}-${theme}`)
 
 export const PAGES = [
   ['login', '/login'],
@@ -47,6 +61,7 @@ export const PAGES = [
   ['plugin-unmanic', '/plugins/unmanic'],
   ['plugin-router', '/plugins/mikrotik'],
   ['plugin-meshcentral', '/plugins/meshcentral'],
+  ['plugin-qnap', '/plugins/qnap'],
   ['catalogue', '/catalogue'],
   ['settings', '/settings'],
 ]
@@ -70,35 +85,41 @@ async function main() {
   const report = {}
   for (const [sizeName, viewport, mobile] of sizes) {
     for (const theme of themes) {
-      const ctx = await browser.newContext({ viewport, deviceScaleFactor: mobile ? 2 : 1, isMobile: mobile, hasTouch: mobile, colorScheme: theme, reducedMotion: 'reduce' })
+      if (!pages.some(([name]) => wanted(name, sizeName, theme))) continue
+      const ctx = await browser.newContext({ viewport, deviceScaleFactor: 1, isMobile: mobile, hasTouch: mobile, colorScheme: theme, reducedMotion: 'reduce' })
       await ctx.addInitScript(t => { try { localStorage.setItem('hyperprox-theme', t) } catch {} }, theme)
-      // Sign in the way a visitor would: the demo accepts anything.
-      const login = await ctx.newPage()
-      await login.goto(`${BASE}/login`, { waitUntil: 'networkidle' })
-      for (const [name, url, opts = {}] of pages) {
-        const page = name === 'login' ? login : await ctx.newPage()
-        const missed = []
-        page.on('response', r => { const u = new URL(r.url()); if (u.pathname.startsWith('/api/') && r.status() === 404) missed.push(u.pathname) })
-        if (name !== 'login') {
-          await page.goto(BASE + url, { waitUntil: 'networkidle', timeout: 60_000 }).catch(() => {})
-          await page.waitForTimeout(2500)
-          // Scroll the page body to a heading, for a shot of what sits below the first screen.
-          if (opts.scrollTo) {
-            await page.evaluate(t => {
-              const hits = [...document.querySelectorAll('#main *')].filter(e => e.children.length === 0 && e.textContent.trim().toLowerCase() === t)
-              hits.at(-1)?.scrollIntoView({ block: 'start' })
-            }, opts.scrollTo.toLowerCase())
-            await page.waitForTimeout(600)
-          }
-        } else await page.waitForTimeout(800)
+      const shoot = async (page, name, url, missed) => {
         const file = `${name}-${sizeName}-${theme}.png`
         await page.screenshot({ path: path.join(OUT, file), animations: 'disabled' })
         report[file] = { url, text: (await page.innerText('body').catch(() => '')).slice(0, 20000), missed: [...new Set(missed)] }
         console.log(file, missed.length ? `(not answered: ${[...new Set(missed)].join(', ')})` : '')
-        if (name === 'login') {
-          await page.click('button[type=submit]')
-          await page.waitForURL(u => !u.pathname.startsWith('/login'), { timeout: 30_000 })
-        } else await page.close()
+      }
+      // Sign in the way a visitor would (the demo accepts anything), photographing the sign-in page on the way.
+      const login = await ctx.newPage()
+      await login.goto(`${BASE}/login`, { waitUntil: 'networkidle' })
+      await login.waitForTimeout(800)
+      if (pages.some(([name]) => name === 'login') && wanted('login', sizeName, theme)) await shoot(login, 'login', '/login', [])
+      await login.click('button[type=submit]')
+      await login.waitForURL(u => !u.pathname.startsWith('/login'), { timeout: 30_000 })
+      await login.close()
+      for (const [name, url, opts = {}] of pages) {
+        if (name === 'login' || !wanted(name, sizeName, theme)) continue
+        const page = await ctx.newPage()
+        const missed = []
+        page.on('response', r => { const u = new URL(r.url()); if (u.pathname.startsWith('/api/') && r.status() === 404) missed.push(u.pathname) })
+        await page.goto(BASE + url, { waitUntil: 'networkidle', timeout: 60_000 }).catch(() => {})
+        await page.waitForTimeout(2500)
+        // Scroll the page body to a heading, for a shot of what sits below the first screen.
+        if (opts.scrollTo) {
+          await page.evaluate(t => {
+            const hits = [...document.querySelectorAll('#main *')].filter(e => e.children.length === 0 && e.textContent.trim().toLowerCase() === t)
+            hits.at(-1)?.scrollIntoView({ block: 'start' })
+            document.getElementById('main')?.scrollBy(0, -110)   // clear of the top bar
+          }, opts.scrollTo.toLowerCase())
+          await page.waitForTimeout(600)
+        }
+        await shoot(page, name, url, missed)
+        await page.close()
       }
       await ctx.close()
     }

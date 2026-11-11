@@ -44,9 +44,8 @@ through its API.
   <img src="docs/screenshots/plugin-plex-phone-dark.png" alt="Plex plug-in on a phone" width="190" />
 </p>
 
-The main pages, at desktop and phone size, in the dark and the light theme, are in
-[docs/screenshots](docs/screenshots). They are taken from the demo below, so every name, address
-and number in them is invented.
+A few more are in [docs/screenshots](docs/screenshots), including the QNAP plug-in. They are taken from
+the demo below, so every name, address and number in them is invented.
 
 ## Try the demo
 
@@ -69,10 +68,12 @@ directory. Every page shows a **DEMO** badge.
 
 To retake the screenshots, start the demo, then copy `scripts/screenshots.mjs` into a folder where
 Playwright is installed (`npm i playwright && npx playwright install chromium`) and run it there. It
-refuses any address that does not answer as the demo.
+refuses any address that does not answer as the demo. By default it takes only the set kept in
+`docs/screenshots`; `--all` takes every main page at desktop and phone size, dark and light, for review.
 
 ```bash
 node screenshots.mjs http://127.0.0.1:3100 /path/to/hyperprox/docs/screenshots
+node screenshots.mjs --all http://127.0.0.1:3100 /tmp/hyperprox-shots
 ```
 
 ## Highlights

@@ -13,7 +13,6 @@
 //  the NAS's name typed). Nothing here deletes data.
 // =============================================================================
 
-import Link from 'next/link'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
@@ -370,13 +369,11 @@ export function QnapPage() {
 
   return (
     <div className="min-h-full overflow-x-hidden" style={{ background: 'var(--ground)' }}>
-      <header className="flex flex-wrap items-center gap-3 border-b px-4 py-4 sm:px-8" style={{ borderColor: 'var(--border)', background: 'var(--surface-raised)' }}>
-        <div className="flex flex-col gap-1">
-          <Link href="/plugins" className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: 'var(--accent)' }}>← plug-ins</Link>
-          <h1 className="font-display text-[30px] font-bold leading-none" style={{ color: 'var(--text-bright)' }}>QNAP</h1>
+      {admin && (
+        <div className="flex flex-wrap items-center gap-3 px-4 pb-2 sm:px-8">
+          <span className="ml-auto"><PrimaryButton type="button" onClick={() => setAdding(true)}>Add a NAS</PrimaryButton></span>
         </div>
-        {admin && <span className="ml-auto"><PrimaryButton type="button" onClick={() => setAdding(true)}>Add a NAS</PrimaryButton></span>}
-      </header>
+      )}
       <div className="flex min-w-0 flex-col gap-4 px-4 py-4 sm:px-8">
         <PluginSwitcher current="qnap" />
         {error && <Notice kind="error">{error}</Notice>}
