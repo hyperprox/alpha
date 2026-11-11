@@ -1,5 +1,10 @@
 groups:
 
+  # Every rule carries two annotations for notifications (lib/alerts/forwarder.ts):
+  #   title  - a short headline; the forwarder adds "on <server>" after it.
+  #   plain  - one sentence in plain English for someone reading it on a phone.
+  # summary and description are what the Monitoring page shows.
+
   - name: node
     rules:
 
@@ -11,6 +16,8 @@ groups:
         annotations:
           summary: "Node {{ $labels.node }} is down"
           description: "node_exporter on {{ $labels.instance }} has been unreachable for more than 1 minute."
+          title: "Server not reporting"
+          plain: "HyperProx cannot read this server. It is off, or its monitoring (node_exporter) has stopped."
 
       - alert: NodeHighCPU
         expr: 100 - (avg by(instance, node) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 90
@@ -20,6 +27,8 @@ groups:
         annotations:
           summary: "High CPU on {{ $labels.node }}"
           description: "CPU on {{ $labels.node }} has been above 90% for 5 minutes (current: {{ $value | printf \"%.1f\" }}%)."
+          title: "Processor very busy"
+          plain: "The processor has been more than 90% busy for 5 minutes (now {{ $value | printf \"%.0f\" }}%)."
 
       - alert: NodeHighMemory
         expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 90
@@ -29,6 +38,8 @@ groups:
         annotations:
           summary: "High memory on {{ $labels.node }}"
           description: "Memory on {{ $labels.node }} is above 90% (current: {{ $value | printf \"%.1f\" }}%)."
+          title: "Memory nearly full"
+          plain: "More than 90% of the memory has been in use for 5 minutes (now {{ $value | printf \"%.0f\" }}%)."
 
       - alert: NodeDiskLow
         expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 10
@@ -38,6 +49,8 @@ groups:
         annotations:
           summary: "Low disk on {{ $labels.node }}"
           description: "Root disk on {{ $labels.node }} has less than 10% free."
+          title: "System disk nearly full"
+          plain: "The system disk has less than 10% free ({{ $value | printf \"%.0f\" }}% left)."
 
       - alert: NodeDiskCritical
         expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 5
@@ -47,6 +60,8 @@ groups:
         annotations:
           summary: "Critical disk on {{ $labels.node }}"
           description: "Root disk on {{ $labels.node }} has less than 5% free."
+          title: "System disk almost full"
+          plain: "The system disk has less than 5% free ({{ $value | printf \"%.0f\" }}% left). Things will start failing soon."
 
   - name: ceph
     rules:
@@ -58,6 +73,8 @@ groups:
           severity: critical
         annotations:
           summary: "CEPH cluster is in ERROR state"
+          title: "Ceph storage in error"
+          plain: "Ceph reports HEALTH_ERR. Some data may be unavailable; check the Storage page."
 
       - alert: CephHealthWarning
         expr: ceph_health_status == 1
@@ -66,6 +83,8 @@ groups:
           severity: warning
         annotations:
           summary: "CEPH cluster is in WARNING state"
+          title: "Ceph storage warning"
+          plain: "Ceph reports HEALTH_WARN; check the Storage page for the reason."
 
       - alert: CephOSDDown
         expr: ceph_osd_up == 0
@@ -74,6 +93,8 @@ groups:
           severity: critical
         annotations:
           summary: "CEPH OSD {{ $labels.ceph_daemon }} is down"
+          title: "Ceph disk down"
+          plain: "Ceph disk {{ $labels.ceph_daemon }} has stopped."
 
       # ceph_pool_percent_used is Ceph's own figure and is correct for every
       # replication size. NOTE it is a RATIO (0-1) despite the name, so it
@@ -88,10 +109,14 @@ groups:
           severity: warning
         annotations:
           summary: "CEPH pool {{ $labels.pool_id }} is {{ $value | printf \"%.1f\" }}% full"
+          title: "Ceph pool nearly full"
+          plain: "Ceph pool {{ $labels.pool_id }} is {{ $value | printf \"%.0f\" }}% full."
 
   - name: gpu
     rules:
 
+      # NVIDIA only. The Intel GPU exporter (job intel-gpu) reports busy time, clocks and power but no
+      # temperature: a built-in Intel GPU shares the processor's sensor, so CPUHot covers it.
       - alert: GPUHighTemperature
         expr: nvidia_smi_temperature_gpu > 85
         for: 5m
@@ -100,6 +125,8 @@ groups:
         annotations:
           summary: "GPU temperature high on {{ $labels.node }}"
           description: "GPU on {{ $labels.node }} is {{ $value }}°C."
+          title: "Graphics card hot"
+          plain: "The NVIDIA graphics card has been above 85 °C for 5 minutes (now {{ $value | printf \"%.0f\" }} °C)."
 
       - alert: GPUMemoryAlmostFull
         expr: (nvidia_smi_memory_used_bytes / nvidia_smi_memory_total_bytes) * 100 > 95
@@ -108,3 +135,96 @@ groups:
           severity: warning
         annotations:
           summary: "GPU VRAM nearly full on {{ $labels.node }}"
+          title: "Graphics memory nearly full"
+          plain: "The graphics card's memory has been more than 95% used for 5 minutes."
+
+  # From node_exporter's hwmon metrics. A chip is a path-like id (0000:00:03_1_0000:0a:00_0), so each rule
+  # joins node_hwmon_chip_names to pick chips by driver name (amdgpu, k10temp, ...) instead.
+  - name: hardware
+    rules:
+
+      # No graphics card runs at 150 °C. A reading above that (amdgpu shows 511 °C) means the driver
+      # cannot talk to the card any more: it has hung, and usually needs the server restarted.
+      - alert: GPUNotResponding
+        expr: |
+          max by (instance, node, hpx_cluster, hpx_node, chip, chip_name) (
+            node_hwmon_temp_celsius
+            * on (instance, chip) group_left (chip_name)
+            node_hwmon_chip_names{chip_name=~"amdgpu|radeon|nouveau"}
+          ) > 150
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "GPU on {{ $labels.node }} is not responding ({{ $labels.chip_name }} reads {{ $value }}°C)"
+          description: "The {{ $labels.chip_name }} card on {{ $labels.node }} reads an impossible temperature, so it has hung."
+          title: "Graphics card not responding"
+          plain: "The graphics card reads an impossible {{ $value | printf \"%.0f\" }} °C, so it has hung. A server restart usually fixes it."
+
+      # temp1 is the card's edge sensor; junction and memory sensors run hotter by design. Readings above
+      # 150 are GPUNotResponding, not this.
+      - alert: GPUHot
+        expr: |
+          max by (instance, node, hpx_cluster, hpx_node, chip) (
+            node_hwmon_temp_celsius{sensor="temp1"}
+            * on (instance, chip) group_left (chip_name)
+            node_hwmon_chip_names{chip_name="amdgpu"}
+          ) > 90 <= 150
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "AMD GPU temperature high on {{ $labels.node }}"
+          description: "The AMD graphics card on {{ $labels.node }} is {{ $value }}°C."
+          title: "Graphics card hot"
+          plain: "The graphics card has been above 90 °C for 5 minutes (now {{ $value | printf \"%.0f\" }} °C). Check its fans and airflow."
+
+      # Some AMD processors (Threadripper and older Ryzen) report Tctl with a fixed offset of up to 27 °C
+      # above the real temperature, and Tdie beside it. Where a chip has a Tdie, its Tctl is left out.
+      - alert: CPUHot
+        expr: |
+          max by (instance, node, hpx_cluster, hpx_node, chip) (
+            (
+              node_hwmon_temp_celsius
+              * on (instance, chip) group_left (chip_name)
+              node_hwmon_chip_names{chip_name=~"k10temp|coretemp"}
+            )
+            unless on (instance, chip, sensor)
+            (node_hwmon_sensor_label{label="Tctl"} and on (instance, chip) node_hwmon_sensor_label{label="Tdie"})
+          ) > 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CPU temperature high on {{ $labels.node }}"
+          description: "The processor on {{ $labels.node }} is {{ $value }}°C."
+          title: "Processor hot"
+          plain: "The processor has been above 90 °C for 5 minutes (now {{ $value | printf \"%.0f\" }} °C). Check its fans and airflow."
+
+      # A fan whose control is switched off (pwm_enable 0) always runs at full speed by design and is left out.
+      - alert: FanStuckAtMax
+        expr: |
+          node_hwmon_pwm >= 255
+          unless on (instance, chip, sensor) (node_hwmon_pwm_enable == 0)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Fan at full speed on {{ $labels.node }}"
+          description: "Fan control {{ $labels.chip }}/{{ $labels.sensor }} on {{ $labels.node }} has been at maximum for 15 minutes."
+          title: "Fan stuck at full speed"
+          plain: "A fan has run at full speed for 15 minutes: something is hot, or a sensor or GPU has hung."
+
+      # NodeDown already covers job="node". hyperprox-plugins is left out because HyperProx answers its scrape
+      # with 423 while it is locked, so it is down every time HyperProx locks itself and up again after the
+      # next sign-in: an alert for that would arrive with every lock.
+      - alert: MonitoringTargetDown
+        expr: up{job!~"node|hyperprox-plugins"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.job }} target {{ $labels.instance }} is down"
+          description: "Prometheus has not been able to scrape {{ $labels.job }} on {{ $labels.instance }} for 5 minutes."
+          title: "Monitoring cannot collect {{ $labels.job }} data"
+          plain: "Prometheus cannot read the {{ $labels.job }} metrics, so their charts and alerts are blind."

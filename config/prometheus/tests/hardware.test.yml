@@ -1,0 +1,129 @@
+# Unit tests for the hardware alert rules. Run from the HyperProx folder:
+#   docker exec hyperprox-prometheus mkdir -p /tmp/hw/rules /tmp/hw/tests
+#   docker cp config/prometheus/rules/cluster.yml hyperprox-prometheus:/tmp/hw/rules/cluster.yml
+#   docker cp config/prometheus/tests/hardware.test.yml hyperprox-prometheus:/tmp/hw/tests/hardware.test.yml
+#   docker exec hyperprox-prometheus promtool test rules /tmp/hw/tests/hardware.test.yml
+# (This folder is not under rules/, so Prometheus never loads it as rules.)
+rule_files:
+  - ../rules/cluster.yml
+
+evaluation_interval: 1m
+
+tests:
+  # A hung AMD card: its edge sensor jumps to 511 °C and its fan is pinned at 255.
+  - interval: 1m
+    input_series:
+      - series: 'node_hwmon_chip_names{instance="a:9100",job="node",node="srv@c0123456789",hpx_cluster="c0123456789",hpx_node="srv",chip="0000:00:03_1_0000:0a:00_0",chip_name="amdgpu"}'
+        values: '1x30'
+      - series: 'node_hwmon_temp_celsius{instance="a:9100",job="node",node="srv@c0123456789",hpx_cluster="c0123456789",hpx_node="srv",chip="0000:00:03_1_0000:0a:00_0",sensor="temp1"}'
+        values: '50 50 511x28'
+      - series: 'node_hwmon_pwm{instance="a:9100",job="node",node="srv@c0123456789",hpx_cluster="c0123456789",hpx_node="srv",chip="0000:00:03_1_0000:0a:00_0",sensor="pwm1"}'
+        values: '51 51 255x28'
+      - series: 'node_hwmon_pwm_enable{instance="a:9100",job="node",node="srv@c0123456789",hpx_cluster="c0123456789",hpx_node="srv",chip="0000:00:03_1_0000:0a:00_0",sensor="pwm1"}'
+        values: '2x30'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: GPUNotResponding
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: GPUNotResponding
+        exp_alerts:
+          - exp_labels: { severity: critical, instance: "a:9100", node: "srv@c0123456789", hpx_cluster: c0123456789, hpx_node: srv, chip: "0000:00:03_1_0000:0a:00_0", chip_name: amdgpu }
+            exp_annotations:
+              summary: "GPU on srv@c0123456789 is not responding (amdgpu reads 511°C)"
+              description: "The amdgpu card on srv@c0123456789 reads an impossible temperature, so it has hung."
+              title: "Graphics card not responding"
+              plain: "The graphics card reads an impossible 511 °C, so it has hung. A server restart usually fixes it."
+      # 511 is "not responding", never also "hot".
+      - eval_time: 20m
+        alertname: GPUHot
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: FanStuckAtMax
+        exp_alerts: []
+      - eval_time: 18m
+        alertname: FanStuckAtMax
+        exp_alerts:
+          - exp_labels: { severity: warning, instance: "a:9100", job: node, node: "srv@c0123456789", hpx_cluster: c0123456789, hpx_node: srv, chip: "0000:00:03_1_0000:0a:00_0", sensor: pwm1 }
+            exp_annotations:
+              summary: "Fan at full speed on srv@c0123456789"
+              description: "Fan control 0000:00:03_1_0000:0a:00_0/pwm1 on srv@c0123456789 has been at maximum for 15 minutes."
+              title: "Fan stuck at full speed"
+              plain: "A fan has run at full speed for 15 minutes: something is hot, or a sensor or GPU has hung."
+
+  # A hot but working AMD card, a hot processor whose Tctl carries an offset, and a fan with control switched off.
+  - interval: 1m
+    input_series:
+      - series: 'node_hwmon_chip_names{instance="b:9100",job="node",node="n1",chip="gpu0",chip_name="amdgpu"}'
+        values: '1x20'
+      - series: 'node_hwmon_temp_celsius{instance="b:9100",job="node",node="n1",chip="gpu0",sensor="temp1"}'
+        values: '95x20'
+      - series: 'node_hwmon_chip_names{instance="b:9100",job="node",node="n1",chip="cpu0",chip_name="k10temp"}'
+        values: '1x20'
+      - series: 'node_hwmon_sensor_label{instance="b:9100",job="node",node="n1",chip="cpu0",sensor="temp1",label="Tctl"}'
+        values: '1x20'
+      - series: 'node_hwmon_sensor_label{instance="b:9100",job="node",node="n1",chip="cpu0",sensor="temp2",label="Tdie"}'
+        values: '1x20'
+      - series: 'node_hwmon_temp_celsius{instance="b:9100",job="node",node="n1",chip="cpu0",sensor="temp1"}'
+        values: '97x20'
+      - series: 'node_hwmon_temp_celsius{instance="b:9100",job="node",node="n1",chip="cpu0",sensor="temp2"}'
+        values: '70x10 93x10'
+      - series: 'node_hwmon_pwm{instance="b:9100",job="node",node="n1",chip="fan0",sensor="pwm1"}'
+        values: '255x20'
+      - series: 'node_hwmon_pwm_enable{instance="b:9100",job="node",node="n1",chip="fan0",sensor="pwm1"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: GPUHot
+        exp_alerts:
+          - exp_labels: { severity: warning, instance: "b:9100", node: n1, chip: gpu0 }
+            exp_annotations:
+              summary: "AMD GPU temperature high on n1"
+              description: "The AMD graphics card on n1 is 95°C."
+              title: "Graphics card hot"
+              plain: "The graphics card has been above 90 °C for 5 minutes (now 95 °C). Check its fans and airflow."
+      # Tctl reads 97 the whole time but has a Tdie beside it, so only Tdie counts: 70, then 93 from minute 11.
+      - eval_time: 10m
+        alertname: CPUHot
+        exp_alerts: []
+      - eval_time: 17m
+        alertname: CPUHot
+        exp_alerts:
+          - exp_labels: { severity: warning, instance: "b:9100", node: n1, chip: cpu0 }
+            exp_annotations:
+              summary: "CPU temperature high on n1"
+              description: "The processor on n1 is 93°C."
+              title: "Processor hot"
+              plain: "The processor has been above 90 °C for 5 minutes (now 93 °C). Check its fans and airflow."
+      - eval_time: 19m
+        alertname: FanStuckAtMax
+        exp_alerts: []
+
+  # A target down: an exporter yes, a node no (NodeDown has it), the plug-in scrape no (it is down while locked).
+  - interval: 1m
+    input_series:
+      - series: 'up{job="pve",instance="x",node="n1"}'
+        values: '0x10'
+      - series: 'up{job="node",instance="y",node="n2"}'
+        values: '0x10'
+      - series: 'up{job="hyperprox-plugins",instance="z"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: MonitoringTargetDown
+        exp_alerts:
+          - exp_labels: { severity: warning, job: pve, instance: x, node: n1 }
+            exp_annotations:
+              summary: "pve target x is down"
+              description: "Prometheus has not been able to scrape pve on x for 5 minutes."
+              title: "Monitoring cannot collect pve data"
+              plain: "Prometheus cannot read the pve metrics, so their charts and alerts are blind."
+      - eval_time: 7m
+        alertname: NodeDown
+        exp_alerts:
+          - exp_labels: { severity: critical, job: node, instance: y, node: n2 }
+            exp_annotations:
+              summary: "Node n2 is down"
+              description: "node_exporter on y has been unreachable for more than 1 minute."
+              title: "Server not reporting"
+              plain: "HyperProx cannot read this server. It is off, or its monitoring (node_exporter) has stopped."

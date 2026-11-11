@@ -123,6 +123,12 @@ if [[ ",$(grep -m1 '^COMPOSE_PROFILES=' .env | cut -d= -f2- | tr -d "\"' "),"  =
    || docker ps -a --format '{{.Names}}' | grep -qxE 'hyperprox-(prometheus|grafana)'; then
   echo "→ Applying the monitoring containers' settings..."
   docker compose up -d --no-deps prometheus grafana
+  # A container left alone keeps the alert rules it read at start: ask it to read config/prometheus/rules again.
+  if curl -fsS -m 10 -X POST http://127.0.0.1:9090/-/reload >/dev/null 2>&1; then
+    echo "→ Prometheus re-read its alert rules"
+  else
+    echo "! Prometheus did not re-read its alert rules (not running yet?); they apply at its next restart" >&2
+  fi
 fi
 
 sleep 3
