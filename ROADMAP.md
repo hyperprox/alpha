@@ -107,13 +107,17 @@ if something changed since the preview, and is read back afterwards.
 
 ### Apps & Plug-ins
 
-- **Catalogue** (`lib/catalogue.ts`): ten recipes (Nginx Proxy Manager, Ollama, Tautulli, Nextcloud,
-  Jellyfin, Vaultwarden, Gitea, Uptime Kuma, Homepage, Grafana). A wizard picks resources, recommends a
-  node from live capacity, sets ID, hostname and address, and shows the exact plan. A failed install can
-  remove only the container it made.
+- **Catalogue** (`lib/catalogue.ts`): twelve recipes (Nginx Proxy Manager, Ollama, Tautulli, Nextcloud,
+  Jellyfin, Vaultwarden, Gitea, Uptime Kuma, Homepage, Grafana, Static site, WordPress). A wizard picks
+  resources, recommends a node from live capacity, sets ID, hostname and address, and shows the exact
+  plan. A failed install can remove only the container it made.
+- **Sites** (`lib/sites.ts`): a New website wizard for a static site or WordPress that also makes the DNS
+  record, proxy host and certificate and checks the public address, with a clean-up of only what a failed
+  run made; then open, one-time WordPress admin sign-in, reveal password, pull now and health.
 - **AI assistant** (`lib/ai`): answers questions about one cluster or all of them, with each fact labelled
   by cluster. Plain-language deploys of Nextcloud, Jellyfin, Gitea, Uptime Kuma and Homepage run end to
-  end on the home cluster: container, service, proxy host, DNS record and certificate. On any cluster it can
+  end on the home cluster: container, service, proxy host, DNS record and certificate. A static site (its
+  starter page) is offered to it too and goes through the same steps. On any cluster it can
   prepare guest power, snapshot, back up now, delete, monitoring and copies; nothing runs until you confirm,
   with the same role and password checks as by hand. Providers: Anthropic, OpenAI-compatible, Ollama.
 - **Plug-ins** (`apps/api/src/plugins`): Arr Stack, Unmanic, MikroTik, Plex activity (through Tautulli),
@@ -276,7 +280,10 @@ session.** Today consoles, templates, Ceph maintenance and backups still send yo
    an address, a proxy host and a certificate; its login in the vault; a backup; monitoring with alerts; a
    place under the update policy; and a plug-in panel. The catalogue checks each point and says which are
    missing. Today the catalogue makes the container, installs the app, checks that it answers, and fills in
-   the HyperProx setting that was waiting for it.
+   the HyperProx setting that was waiting for it; for websites (New website) it also makes the address,
+   proxy host and certificate, and keeps generated logins in the vault. Backups, alerts, the update policy
+   and a plug-in panel are not automatic for any recipe yet. Ghost as a website kind waits on a supported
+   database for Debian 13.
 2. **MeshCentral remote desktop**: a catalogue recipe that installs MeshCentral, an adopt flow for an
    existing install, and its devices and remote desktop on the plug-in page.
 3. **A Proxmox Backup Server plug-in** with datastore use, job history and retention, and **automatic

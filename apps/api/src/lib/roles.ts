@@ -103,6 +103,10 @@ const PROXY_READ = /^\/api\/proxy\/(kinds|instances|hosts|certificates|stats|ins
 const CATALOGUE_WIZARD = /^\/api\/catalogue\/wizard(\/|$)/
 // Settings → Setup checklist: maps every node and runs installs on them as root. Admin for reads too.
 const SETUP_CHECKLIST = /^\/api\/setup-checklist(\/|$)/
+// Websites the catalogue made (routes/sites.ts): admin for reads too (they name nodes, addresses and vault items).
+// The one-time WordPress admin sign-in is a login, so it also needs the master password re-entered.
+const SITES = /^\/api\/sites(\/|$)/
+const SITES_RECONFIRM = /^\/api\/sites\/[^/]+\/admin-login$/
 const CATALOGUE_RECONFIRM = /^\/api\/catalogue\/wizard\/(apply|jobs\/[^/]+\/cleanup)$/
 // Guest config editor (routes/guest-config.ts): reads are viewer like any GET, previews admin by the default
 // rule, and applying a preview writes a cluster-replicated guest config, so it also needs the master password.
@@ -203,6 +207,7 @@ export function requiredRole(method: string, path: string): Role | null {
   if (TOKENS.test(p)) return 'admin'
   if (PROXY.test(p)) return (m === 'GET' || m === 'HEAD') && PROXY_READ.test(p) ? 'viewer' : 'admin'
   if (CATALOGUE_WIZARD.test(p)) return 'admin'
+  if (SITES.test(p)) return 'admin'
   if (SETUP_CHECKLIST.test(p)) return 'admin'
   if (HA.test(p)) return (m === 'GET' || m === 'HEAD') && HA_READ.test(p) ? 'viewer' : 'admin'
   if (CLUSTERS.test(p)) {
@@ -243,6 +248,7 @@ export function needsReconfirm(method: string, path: string): boolean {
   if (m === 'POST' && p === '/api/monitoring/grafana-admin/reset') return true
   if (m !== 'GET' && m !== 'HEAD' && ROLE_MGMT.test(p)) return true
   if (m === 'POST' && CATALOGUE_RECONFIRM.test(p)) return true
+  if (m === 'POST' && SITES_RECONFIRM.test(p)) return true
   if (m === 'POST' && GUEST_CONFIG_APPLY.test(p)) return true
   if (m === 'POST' && HA_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && HA_CONTROL_RECONFIRM.test(p)) return true

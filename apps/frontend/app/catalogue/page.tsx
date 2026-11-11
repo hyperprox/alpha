@@ -32,6 +32,12 @@ interface Job {
   adminCredential?: { user: string; password: string; savedInVault: boolean }
 }
 
+/** Category names, matching the API's labels; the API's own label wins when it sends one. */
+const CATEGORY_LABEL: Record<string, string> = {
+  proxy: 'Reverse proxy', ai: 'AI', media: 'Media', monitoring: 'Monitoring', apps: 'Apps', web: 'Web hosting',
+}
+const categoryLabel = (r: { category: string; categoryLabel?: string }) => r.categoryLabel ?? CATEGORY_LABEL[r.category] ?? r.category
+
 const STATUS_COLOR: Record<string, string> = {
   pending: 'var(--text-dimmer)', running: 'var(--warn)', done: 'var(--good)', failed: 'var(--crit)', skipped: 'var(--text-dim)',
 }
@@ -44,6 +50,7 @@ export default function CataloguePage() {
   const [job,     setJob]     = useState<Job | null>(null)
   const [notice,  setNotice]  = useState<string | null>(null)
   const [wizard,  setWizard]  = useState<Recipe | null>(null)
+  const [category, setCategory] = useState<string>('all')
   const [cleaning, setCleaning] = useState(false)
   const [reconfirmCleanup, setReconfirmCleanup] = useState<{ jobId: string; vmid?: number; node?: string } | null>(null)
   // Installs that failed or were cut off by a restart and left a container behind, from earlier sessions too.
@@ -127,6 +134,8 @@ export default function CataloguePage() {
   const loginCount = nodes.filter(n => n.hasLogin).length
   const configured = recipes.filter(r => r.installedAt).length
   const unfinished = leftovers.filter(l => l.jobId !== job?.jobId)
+  const categories = [...new Set(recipes.map(r => r.category))]
+  const shown = category === 'all' ? recipes : recipes.filter(r => r.category === category)
   const field = styles.field
 
   return (
@@ -139,7 +148,10 @@ export default function CataloguePage() {
           { label: 'Node logins', value: `${loginCount}/${nodes.length}`, tone: canInstall ? 'good' : 'warn' },
           ...(unfinished.length ? [{ label: 'Unfinished', value: unfinished.length, tone: 'warn' as const }] : []),
         ]}
-        actions={<Link href="/catalogue/settings" className={styles.btn} style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}>Container ID rule →</Link>}>
+        actions={<div className={styles.row} style={{ gap: 8, flexWrap: 'wrap' }}>
+          <Link href="/sites" className={styles.btn} style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}>Sites · New website →</Link>
+          <Link href="/catalogue/settings" className={styles.btn} style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}>Container ID rule →</Link>
+        </div>}>
         <p style={{ margin: 0, maxWidth: 680, fontSize: 15, lineHeight: 1.6, color: 'var(--text-soft)' }}>
           HyperProx talks to things you already run. This is for the ones you do not. Each install walks you through
           its size, the node it goes on, its ID and its network, and shows the exact plan before anything is created.
@@ -314,12 +326,22 @@ export default function CataloguePage() {
       )}
 
       {/* ── Recipes ─────────────────────────────────────────────────────────── */}
+      {categories.length > 1 && (
+        <div role="group" aria-label="Filter by category" className={styles.row} style={{ flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+          {['all', ...categories].map(c => (
+            <button key={c} type="button" onClick={() => setCategory(c)} aria-pressed={category === c}
+              className={`${styles.btn} ${category === c ? styles.btnPri : ''}`} style={{ minHeight: 34, padding: '4px 12px' }}>
+              {c === 'all' ? `All (${recipes.length})` : `${categoryLabel({ category: c, categoryLabel: recipes.find(r => r.category === c)?.categoryLabel })} (${recipes.filter(r => r.category === c).length})`}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill,minmax(min(330px,100%),1fr))' }}>
-        {recipes.map(r => (
+        {shown.map(r => (
           <div key={r.id} className={styles.card} style={{ display: 'flex', flexDirection: 'column', borderColor: r.installedAt ? alpha('var(--good)', 40) : undefined }}>
             <div className={styles.row} style={{ marginBottom: 8, flexWrap: 'wrap' }}>
               <h2 className="font-display" style={{ margin: 0, fontSize: 20, fontWeight: 600, lineHeight: 1.15, color: 'var(--text-bright)' }}>{r.name}</h2>
-              <span className={styles.tag}>{r.category}</span>
+              <span className={styles.tag}>{categoryLabel(r)}</span>
               <span style={{ marginLeft: 'auto' }}>
                 <Pill tone={r.installedAt ? 'good' : undefined}>{r.installedAt ? 'configured' : 'not installed'}</Pill>
               </span>

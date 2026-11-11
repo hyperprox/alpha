@@ -1,7 +1,7 @@
 // =============================================================================
 //  HyperProx — what the install wizard keeps across an API restart
 //
-//  Previews, install jobs and the "this ID is being created" marks. One small
+//  Previews, install jobs, the "this ID is being created" marks and the websites made. One small
 //  table, one row per thing, the thing itself as JSON. A restart used to drop
 //  all three, which left a container that was mid-install with nobody able to
 //  clean it up. Production uses Prisma; tests use the in-memory store.
@@ -9,7 +9,7 @@
 
 import type { PrismaClient } from '@prisma/client'
 
-export type WizardKind = 'preview' | 'job' | 'creating'
+export type WizardKind = 'preview' | 'job' | 'creating' | 'site'
 
 export interface WizardRecord {
   id:        string

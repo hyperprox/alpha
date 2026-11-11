@@ -49,16 +49,26 @@ export function installScript(r: CatalogueRecipe, distro: Distro, env: Record<st
   for (const k of Object.keys(env)) if (!ENV_KEY.test(k)) throw new Error(`Invalid environment variable name "${k}"`)
   const lines: string[] = ['set -e', 'export DEBIAN_FRONTEND=noninteractive']
 
-  if (r.install.kind === 'script') {
-    for (const [k, v] of Object.entries(env)) lines.push(`export ${k}=${sq(v)}`)
-    lines.push(r.install.script.replace(/^\s*set -e\s*\n/, '').replace(/^\s*export DEBIAN_FRONTEND=noninteractive\s*\n/, '').trim())
-    return lines.join('\n')
+  // An env-admin recipe must be given its admin password (and any other generated secret); starting
+  // without one would leave the service on a vendor default that everyone knows.
+  if (r.firstRun.kind === 'env-admin') {
+    for (const k of [r.firstRun.passwordEnv, ...(r.firstRun.secrets ?? []).map(s => s.env)]) {
+      if (!env[k]) throw new Error(`${r.name} needs ${k} so it does not start with a default or empty password.`)
+    }
   }
 
-  // An env-admin recipe must be given its admin password; starting without one would leave the
-  // service on a vendor default that everyone knows.
-  if (r.firstRun.kind === 'env-admin' && !env[r.firstRun.passwordEnv]) {
-    throw new Error(`${r.name} needs ${r.firstRun.passwordEnv} so it does not start with a default admin password.`)
+  if (r.install.kind === 'script') {
+    // Values go in the script, which travels on standard input to a file only root can read; they are
+    // never on a command line. Unset options are exported empty, so the script sees every key.
+    const all: Record<string, string> = {}
+    for (const o of r.options ?? []) all[o.key] = o.default ?? ''
+    Object.assign(all, env)
+    for (const [k, v] of Object.entries(all)) {
+      if (!ENV_KEY.test(k)) throw new Error(`Invalid environment variable name "${k}"`)
+      lines.push(`export ${k}=${sq(v)}`)
+    }
+    lines.push(r.install.script.replace(/^\s*set -e\s*\n/, '').replace(/^\s*export DEBIAN_FRONTEND=noninteractive\s*\n/, '').trim())
+    return lines.join('\n')
   }
   // Without its allow-list the service refuses every request, its own health check included.
   if (r.allowedHostsEnv && !env[r.allowedHostsEnv]) {
