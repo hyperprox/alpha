@@ -27,7 +27,7 @@ import { scanCluster } from '../lib/clusters/scan'
 import { checkGuest, power, snapshot, backupNow, backupStorages, taskStatus, destroy, GuestActionRefusal, type PowerAction } from '../lib/clusters/guest-actions'
 import { probeHostKey, execOnNode, nodeCredential } from '../lib/node-exec'
 import { confirmPin, PinConfirmRefusal, forgetPin, pinnedKey, pinSource, isConfirmedSource, PinVerifyRefusal } from '../lib/hostkey-pins'
-import { verifyNodes, productionVerifyDeps, VerifyRefusal, saveAnchors, ANCHOR_COMMAND } from '../lib/hostkey-verify'
+import { verifyNodes, productionVerifyDeps, VerifyRefusal, saveAnchors, ANCHOR_COMMAND, TAILSCALE_DEV } from '../lib/hostkey-verify'
 import { addServer, linkDevice, inspectAddress, certNames, scriptHash, startAddJob, addJob, IdentityMismatch, MANUAL_CERT_WHY, type AddServerDeps, type AddServerResult } from '../lib/clusters/add-server'
 import { discoverSend, sendDeps } from '../lib/clusters/send-simple'
 import { remoteToken } from '../lib/clusters/registry'
@@ -143,7 +143,7 @@ function addServerDeps(log: (m: string) => void): AddServerDeps {
     homeIdentity: () => homeIdentity(),
     tailnet: () => v.tailnet(),
     whois: ip => v.whois(ip),
-    wireguard: () => v.wireguard(),
+    route: ip => v.route(ip),
     createRemote: n => createRemote(n),
     findRemote: (address, port) => listClusters().find(c => c.kind === 'remote' && c.address.toLowerCase() === address.toLowerCase() && c.port === port) ?? null,
     replaceToken: (id, tokenId, secret) => replaceRemoteToken(id, tokenId, secret),
@@ -339,14 +339,18 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       if (!req.body?.fingerprint) {
         if ((req as any).apiToken) return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'An API token cannot confirm a certificate.' })
+        const v = productionVerifyDeps()
+        // The route into the tunnel is read before the certificate, after it, and again before the token goes.
+        const routes = [await v.route(row.address).catch(() => null)]
         const now = await probeCertificate(row.address, row.port)
         if (row.certFingerprint && row.certFingerprint !== now.fingerprint) return reply.status(409).send({ success: false, code: 'cert_changed', error: `The server presents ${now.fingerprint}, not the certificate you confirmed. A changed certificate is never accepted automatically: compare the new one on its Proxmox page and confirm it.`, presented: now.fingerprint })
-        const v = productionVerifyDeps()
         // Identity first, before the token is sent: the link vouches for exactly this address, and the certificate is
         // for the device it names. Then the server's own API must name itself as a node the certificate is for.
-        const device = linkDevice(row.address, await v.tailnet().catch(() => null), await v.wireguard().catch(() => []), await v.whois(row.address).catch(() => null))
+        routes.push(await v.route(row.address).catch(() => null))
+        const device = linkDevice(row.address, await v.tailnet().catch(() => null), await v.whois(row.address).catch(() => null), routes)
         const names = certNames(now)
         if (!device || !names.includes(device.device.toLowerCase())) return reply.status(409).send({ success: false, code: 'cert_manual', error: MANUAL_CERT_WHY, certificate: now })
+        if (!TAILSCALE_DEV.test(String(await v.route(row.address).catch(() => null)))) return reply.status(409).send({ success: false, code: 'cert_manual', error: MANUAL_CERT_WHY, certificate: now })
         const tok = remoteToken(row.id)
         const t = await tryToken(row.address, row.port, now.fingerprint, tok.tokenId, tok.secret)
         const local = t.identity.local ?? (t.nodes.length === 1 ? t.nodes[0] : null)

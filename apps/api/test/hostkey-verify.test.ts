@@ -7,7 +7,7 @@ import { fingerprintOf } from '../src/lib/ssh-broker'
 import {
   verifyNodes, parseKnownHosts, namesHost, recordView, clusterRecordScript, OWN_KEYS_SCRIPT, tailnetIdentity, wireguardIdentity,
   isTailnetAddress, parseTailscaleStatus, SessionKeyRefused, VerifyRefusal, algorithmsFor, parseAnchorOutput, ANCHOR_COMMAND,
-  parseWhois, type VerifyDeps, type PresentedKey, type TailnetStatus, type TailnetWhois, type SessionOpts,
+  parseWhois, type WgLink, type VerifyDeps, type PresentedKey, type TailnetStatus, type TailnetWhois, type SessionOpts,
 } from '../src/lib/hostkey-verify'
 import { assertSafeScript } from '../src/lib/clusters/script-guard'
 import { evidenceWords, type PinEvidence, type PinSource, type Anchor } from '../src/lib/hostkey-pins'
@@ -34,7 +34,7 @@ interface FakeHost {
   down?: boolean
 }
 
-function world(hosts: Record<string, FakeHost>, pins: Record<string, { fingerprint: string; source: PinSource }> = {}, o: { tailnet?: TailnetStatus | null; anchors?: Record<string, Anchor> } = {}) {
+function world(hosts: Record<string, FakeHost>, pins: Record<string, { fingerprint: string; source: PinSource }> = {}, o: { tailnet?: TailnetStatus | null; anchors?: Record<string, Anchor>; routeDev?: string | null; wg?: WgLink[] } = {}) {
   const recorded: Array<{ host: string; fp: string; evidence: PinEvidence }> = []
   const sessions: Array<{ host: string; script: string; cred: any; algorithms?: string[]; key: string }> = []
   const proofs: Array<{ host: string; key: string }> = []
@@ -79,7 +79,8 @@ function world(hosts: Record<string, FakeHost>, pins: Record<string, { fingerpri
     async anchor(_scope, node) { return o.anchors?.[node] ?? null },
     async tailnet() { return o.tailnet ?? null },
     async whois() { return null },
-    async wireguard() { return [] },
+    async route(ip) { return o.routeDev === undefined ? 'tailscale0' : o.routeDev },
+    async wireguard() { return o.wg ?? [] },
     async audit(action, resource, details) { audits.push({ action, resource, details }) },
     async alert(title, lines) { alerts.push({ title, lines }) },
   }
@@ -275,24 +276,25 @@ test('anchor command output: parsed from base64, the install node keeps every ow
 //  Tailnet identity
 // ---------------------------------------------------------------------------
 
-const ts = (peers: Partial<TailnetStatus['peers'][number]>[], running = true, selfUser: string | null = 'u1'): TailnetStatus =>
-  ({ running, selfUser, peers: peers.map((p, i) => ({ id: `n${i}`, ips: [], online: true, sharee: false, ...p })) })
+const ts = (peers: Partial<TailnetStatus['peers'][number]>[], running = true, selfUser: string | null = 'u1', tun = true): TailnetStatus =>
+  ({ running, selfUser, tun, peers: peers.map((p, i) => ({ id: `n${i}`, ips: [], online: true, sharee: false, ...p })) })
 const who = (o: Partial<TailnetWhois> = {}): TailnetWhois => ({ nodeId: 'nStable1', user: 'u1', owner: 'owner@example.com', device: 'node1', tags: [], ...o })
 
 test('review 2: tailnet identity is the exact IP and its owner, never a name', () => {
   const status = ts([{ ips: ['100.64.0.11'] }, { ips: ['100.64.0.13'], online: false }, { ips: ['100.64.0.14'], sharee: true }])
-  const ok = tailnetIdentity('100.64.0.11', status, who())
+  const R = ['tailscale0', 'tailscale0']
+  const ok = tailnetIdentity('100.64.0.11', status, who(), R)
   assert.ok(ok.ok && ok.evidence.kind === 'tailnet')
   assert.deepEqual(ok.ok && ok.evidence, { kind: 'tailnet', nodeId: 'nStable1', owner: 'owner@example.com', device: 'node1' })
-  assert.ok(!tailnetIdentity('100.64.0.11', status, who({ user: 'u2', owner: 'someone@else.example' })).ok, 'owned by another user')
-  assert.ok(!tailnetIdentity('100.64.0.11', status, who({ tags: ['tag:server'] })).ok, 'a tagged device is not owned by this account')
-  assert.ok(!tailnetIdentity('100.64.0.13', status, who()).ok, 'offline')
-  assert.ok(!tailnetIdentity('100.64.0.14', status, who()).ok, 'shared in from another tailnet')
-  assert.ok(!tailnetIdentity('100.64.0.99', status, who()).ok, 'not in the tailnet')
-  assert.ok(!tailnetIdentity('100.64.0.11', status, null).ok, 'no whois answer')
-  assert.ok(!tailnetIdentity('node1.example-tailnet.ts.net', status, who()).ok, 'a name is never used')
-  assert.ok(!tailnetIdentity('10.0.0.11', status, who()).ok, 'a LAN address is never vouched for')
-  assert.ok(!tailnetIdentity('100.64.0.11', ts([{ ips: ['100.64.0.11'] }], false), who()).ok, 'Tailscale not running')
+  assert.ok(!tailnetIdentity('100.64.0.11', status, who({ user: 'u2', owner: 'someone@else.example' }), R).ok, 'owned by another user')
+  assert.ok(!tailnetIdentity('100.64.0.11', status, who({ tags: ['tag:server'] }), R).ok, 'a tagged device is not owned by this account')
+  assert.ok(!tailnetIdentity('100.64.0.13', status, who(), R).ok, 'offline')
+  assert.ok(!tailnetIdentity('100.64.0.14', status, who(), R).ok, 'shared in from another tailnet')
+  assert.ok(!tailnetIdentity('100.64.0.99', status, who(), R).ok, 'not in the tailnet')
+  assert.ok(!tailnetIdentity('100.64.0.11', status, null, R).ok, 'no whois answer')
+  assert.ok(!tailnetIdentity('node1.example-tailnet.ts.net', status, who(), R).ok, 'a name is never used')
+  assert.ok(!tailnetIdentity('10.0.0.11', status, who(), R).ok, 'a LAN address is never vouched for')
+  assert.ok(!tailnetIdentity('100.64.0.11', ts([{ ips: ['100.64.0.11'] }], false), who(), R).ok, 'Tailscale not running')
   assert.ok(isTailnetAddress('100.100.1.2') && !isTailnetAddress('100.128.0.1') && isTailnetAddress('fd7a:115c:a1e0::1'))
   const parsed = parseTailscaleStatus(JSON.stringify({ BackendState: 'Running', Self: { UserID: 42 }, Peer: { k: { ID: 'x', HostName: 'node1', TailscaleIPs: ['100.64.0.11'], Online: true } } }))
   assert.equal(parsed!.selfUser, '42')
@@ -300,6 +302,14 @@ test('review 2: tailnet identity is the exact IP and its owner, never a name', (
   const w = parseWhois(JSON.stringify({ Node: { ID: 7, StableID: 'nS', Name: 'node1.t.ts.net.', User: 42, Tags: [] }, UserProfile: { LoginName: 'a@b.example' } }))
   assert.deepEqual(w, { nodeId: 'nS', user: '42', owner: 'a@b.example', device: 'node1', tags: [] })
   assert.ok(wireguardIdentity('10.9.0.2', 'node1', [{ address: '10.9.0.2', iface: 'hp-wg0', peer: 'node1', machine: 'node-node1', up: true }]).ok)
+  // review N2: a peer merely NAMED like the node is not that node.
+  assert.ok(!wireguardIdentity('10.9.0.2', 'node1', [{ address: '10.9.0.2', iface: 'hp-wg0', peer: 'node1', machine: 'lxc-105', up: true }]).ok)
+  // review N1: userspace networking, or a route that does not go into the tunnel, is no evidence.
+  assert.ok(!tailnetIdentity('100.64.0.11', ts([{ ips: ['100.64.0.11'] }], true, 'u1', false), who(), R).ok, 'tailscaled in userspace networking')
+  assert.ok(!tailnetIdentity('100.64.0.11', status, who(), ['tailscale0', 'eth0']).ok, 'the route left the tunnel between checks')
+  assert.ok(!tailnetIdentity('100.64.0.11', status, who(), ['eth0']).ok, 'default route')
+  assert.ok(!tailnetIdentity('100.64.0.11', status, who(), []).ok, 'no route read')
+  assert.equal(parseTailscaleStatus(JSON.stringify({ BackendState: 'Running', TUN: false, Self: { UserID: 1 }, Peer: {} }))!.tun, false)
   assert.ok(!wireguardIdentity('10.9.0.2', 'node1', [{ address: '10.9.0.2', iface: 'hp-wg0', peer: 'node1', machine: 'node-node1', up: false }]).ok, 'only a link up on this machine')
 })
 
@@ -399,7 +409,7 @@ test('review 6: record reads are allowed only as exact whole lines, never glued 
 //  Add a server, bundled
 // ---------------------------------------------------------------------------
 
-function addDeps(o: { tailnet?: TailnetStatus | null; whois?: Record<string, TailnetWhois>; local?: string | null; nodes?: string[]; ips?: string[]; verdict?: 'verified' | 'no-evidence'; certNames?: string[] } = {}) {
+function addDeps(o: { tailnet?: TailnetStatus | null; whois?: Record<string, TailnetWhois>; local?: string | null; nodes?: string[]; ips?: string[]; verdict?: 'verified' | 'no-evidence'; certNames?: string[]; routeDev?: string | null } = {}) {
   const nodes = o.nodes ?? ['node1', 'node2', 'node3']
   const calls: string[] = []
   const created: any[] = []
@@ -412,7 +422,7 @@ function addDeps(o: { tailnet?: TailnetStatus | null; whois?: Record<string, Tai
     async homeIdentity() { return { addresses: ['10.0.0.1'], fingerprint: null, clusterName: 'home', nodes: [{ name: 'pve' }] } },
     async tailnet() { return o.tailnet ?? null },
     async whois(ip) { return o.whois?.[ip] ?? null },
-    async wireguard() { return [] },
+    async route() { return o.routeDev === undefined ? 'tailscale0' : o.routeDev },
     findRemote: () => null,
     async replaceToken() { calls.push('replace-token') },
     async createRemote(n) { calls.push('create'); const c = { id: 'c0123456789', name: n.name, kind: 'remote', cert: { verified: n.verified ?? null } } as any; created.push(n); return c },
@@ -542,4 +552,32 @@ test('review 7: a retry of an add that stopped part way resumes the saved server
   assert.equal(r.kind, 'added')
   assert.ok(d.calls.includes('replace-token') && !d.calls.includes('create'))
   assert.ok(d.audits.some(a => a.action === 'cluster.add.resume'))
+})
+
+test('review N1: a tailnet address the kernel does not route into the tunnel is no evidence, in a pass and when adding', async () => {
+  const k = key()
+  const node = [{ name: 'node1', address: '100.64.0.11', cred: pwCred }]
+  const w = world({ '100.64.0.11': { keys: [k] } }, {}, { tailnet: ts([{ ips: ['100.64.0.11'] }]), routeDev: 'eth0' })
+  w.deps.whois = async () => who()
+  const v = await asOwner(() => verifyNodes({ cluster: 'Remote server', scope: 'remote', nodes: node, by: 'x' }, w.deps))
+  assert.equal(v[0].state, 'no-evidence')
+  const d = addDeps({ tailnet: tsNodes, whois: owned, routeDev: 'eth0' })
+  const r = await asOwner(() => addServer(base, d.deps))
+  assert.equal(r.kind, 'manual-certificate')
+  assert.deepEqual(d.calls, ['probe'], 'no token sent')
+  const d2 = addDeps({ tailnet: ts([{ ips: ['100.64.0.11'] }], true, 'u1', false), whois: owned })
+  assert.equal((await asOwner(() => addServer(base, d2.deps))).kind, 'manual-certificate', 'userspace networking')
+})
+
+test('review N2: WireGuard evidence only for a home node HyperProx made the peer for; never for a remote', async () => {
+  const k = key()
+  const hosts = { '10.9.0.2': { keys: [k] } }
+  const link = { address: '10.9.0.2', iface: 'hp-wg0', peer: 'node1', machine: 'node-node1', up: true }
+  const node = [{ name: 'node1', address: '10.9.0.2', cred: pwCred }]
+  const home = world(hosts, {}, { wg: [link] })
+  assert.equal((await asOwner(() => verifyNodes({ cluster: 'Home cluster', scope: 'home', nodes: node, by: 'x' }, home.deps)))[0].state, 'verified')
+  const remote = world(hosts, {}, { wg: [link] })
+  assert.equal((await asOwner(() => verifyNodes({ cluster: 'Remote server', scope: 'remote', nodes: node, by: 'x' }, remote.deps)))[0].state, 'no-evidence')
+  const named = world(hosts, {}, { wg: [{ ...link, machine: 'lxc-105' }] })
+  assert.equal((await asOwner(() => verifyNodes({ cluster: 'Home cluster', scope: 'home', nodes: node, by: 'x' }, named.deps)))[0].state, 'blocked', 'a peer named like the node but made for something else')
 })

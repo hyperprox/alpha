@@ -18,8 +18,8 @@
 //    tailnet          The address itself is a Tailscale IP (never chosen by name), and the local tailscaled says
 //                     (whois) it is an online device in this tailnet owned by the same user HyperProx is signed in
 //                     as, not shared in and not tagged. The tunnel to that exact IP is authenticated.
-//    wireguard        A WireGuard peer address on an interface HyperProx itself set up on this machine, when the
-//                     peer is that node.
+//    wireguard        Home nodes only: a WireGuard peer address on an interface HyperProx itself set up on this
+//                     machine, when HyperProx made that peer for exactly that node (machine node-<node>).
 //    trusted-session  The key is read over a session to the same machine by another, already trusted address.
 //
 //  With no anchor there is no evidence: the pin stays learned and the Setup checklist offers the manual compare.
@@ -236,8 +236,12 @@ export function isTailnetAddress(a: string): boolean {
 }
 
 export interface TailnetPeer { id: string; ips: string[]; online: boolean; sharee: boolean }
-/** `selfUser`: the tailnet user the HyperProx machine itself is logged in as. */
-export interface TailnetStatus { running: boolean; selfUser: string | null; peers: TailnetPeer[] }
+/**
+ * `selfUser`: the tailnet user the HyperProx machine itself is logged in as. `tun`: tailscaled runs with a kernel
+ * interface. In userspace networking (no /dev/net/tun) whois and status still answer, but this machine's own TCP to a
+ * 100.x address leaves by the default route, unprotected, so nothing seen over it counts.
+ */
+export interface TailnetStatus { running: boolean; selfUser: string | null; tun: boolean; peers: TailnetPeer[] }
 
 /** `tailscale status --json`, reduced to what identity needs. Device names are deliberately not kept. */
 export function parseTailscaleStatus(raw: unknown): TailnetStatus | null {
@@ -247,7 +251,7 @@ export function parseTailscaleStatus(raw: unknown): TailnetStatus | null {
     id: String(p?.ID ?? ''), ips: Array.isArray(p?.TailscaleIPs) ? p.TailscaleIPs.map(String) : [], online: p?.Online === true, sharee: p?.ShareeNode === true,
   }))
   const selfUser = j.Self?.UserID !== undefined && j.Self?.UserID !== null ? String(j.Self.UserID) : null
-  return { running: j.BackendState === 'Running', selfUser, peers }
+  return { running: j.BackendState === 'Running', selfUser, tun: j.TUN === true, peers }
 }
 
 /** `tailscale whois --json <ip>`: who owns the device at that address. */
@@ -274,9 +278,17 @@ export type IdentityResult =
  * in from another), owned by the same tailnet user the HyperProx machine is logged in as, and not a tagged device
  * (a tag means someone else's policy owns it). The connection is then made to this IP and nothing else.
  */
-export function tailnetIdentity(address: string, status: TailnetStatus | null, whois: TailnetWhois | null): IdentityResult {
+export const TAILSCALE_DEV = /^tailscale\d+$/
+
+/**
+ * `routes`: the interface `ip route get <address>` names, each time it was asked (before and after the connection).
+ * Every one must be the tailscale interface: the kernel really sends this traffic into the tunnel.
+ */
+export function tailnetIdentity(address: string, status: TailnetStatus | null, whois: TailnetWhois | null, routes: Array<string | null> = []): IdentityResult {
   if (!isTailnetAddress(address)) return { ok: false, block: false, why: 'not a tailnet address' }
   if (!status || !status.running || !status.selfUser) return { ok: false, block: false, why: 'Tailscale is not running on the HyperProx machine' }
+  if (!status.tun) return { ok: false, block: false, why: 'Tailscale runs in userspace networking on the HyperProx machine, so its own connections do not go through the tunnel' }
+  if (!routes.length || routes.some(r => !r || !TAILSCALE_DEV.test(r))) return { ok: false, block: false, why: 'this machine does not route that address through its Tailscale interface' }
   const peer = status.peers.find(p => p.ips.includes(address))
   if (!peer || peer.sharee) return { ok: false, block: false, why: 'that address is not a device in your tailnet' }
   if (!peer.online) return { ok: false, block: false, why: 'that tailnet device is offline' }
@@ -286,19 +298,21 @@ export function tailnetIdentity(address: string, status: TailnetStatus | null, w
   return { ok: true, device: whois.device, owner: whois.owner, evidence: { kind: 'tailnet', nodeId: whois.nodeId, owner: whois.owner, device: whois.device } }
 }
 
-/** WireGuard identity: a peer address on an interface HyperProx set up, up on this machine, and the peer is `node`. */
+/**
+ * WireGuard identity, for HOME nodes only: a peer address on an interface HyperProx set up, up on this machine, whose
+ * peer HyperProx itself made for exactly that node (machine `node-<node>`). A peer's name proves nothing.
+ */
 export function wireguardIdentity(address: string, node: string, links: WgLink[]): IdentityResult {
   const l = links.find(x => x.address === address && x.up)
   if (!l) return { ok: false, block: false, why: 'not a WireGuard peer on a HyperProx link' }
-  const want = node.toLowerCase()
-  if (l.machine !== `node-${node}` && l.peer.toLowerCase() !== want) return { ok: false, block: true, why: `the WireGuard peer at that address is ${l.peer}, not ${node}` }
+  if (l.machine !== `node-${node}`) return { ok: false, block: true, why: `the WireGuard peer at that address was set up for ${l.machine ?? 'another device'}, not for ${node}` }
   return { ok: true, device: l.peer, owner: null, evidence: { kind: 'wireguard', iface: l.iface, peer: l.peer } }
 }
 
-export function linkIdentity(address: string, node: string, status: TailnetStatus | null, links: WgLink[], whois: TailnetWhois | null): IdentityResult {
+export function linkIdentity(address: string, node: string, status: TailnetStatus | null, links: WgLink[], whois: TailnetWhois | null, routes: Array<string | null> = []): IdentityResult {
   const wg = wireguardIdentity(address, node, links)
   if (wg.ok || wg.block) return wg
-  return tailnetIdentity(address, status, whois)
+  return tailnetIdentity(address, status, whois, routes)
 }
 
 // ---------------------------------------------------------------------------
@@ -334,6 +348,8 @@ export interface VerifyDeps {
   anchor(scope: string, node: string): Promise<Anchor | null>
   tailnet(): Promise<TailnetStatus | null>
   whois(ip: string): Promise<TailnetWhois | null>
+  /** The interface the kernel would send traffic to `ip` out of (`ip route get`), or null. */
+  route(ip: string): Promise<string | null>
   wireguard(): Promise<WgLink[]>
   audit(action: string, resource: string, details: Record<string, unknown>): Promise<void>
   alert(title: string, lines: string[]): Promise<void>
@@ -415,6 +431,13 @@ async function tailscaleWhois(ip: string): Promise<TailnetWhois | null> {
   })
 }
 
+export function routeDev(ip: string): Promise<string | null> {
+  if (!/^[0-9a-fA-F.:]{2,45}$/.test(ip)) return Promise.resolve(null)
+  return new Promise(resolve => {
+    execFile('ip', ['-o', 'route', 'get', ip], { timeout: 3000 }, (err, stdout) => resolve(err ? null : /\bdev (\S+)/.exec(String(stdout))?.[1] ?? null))
+  })
+}
+
 async function wireguardLinks(): Promise<WgLink[]> {
   try {
     const { PrismaClient } = await import('@prisma/client')
@@ -444,6 +467,7 @@ export function productionVerifyDeps(): VerifyDeps {
     anchor: (scope, node) => getAnchor(scope, node),
     tailnet: () => tailscaleStatus(),
     whois: ip => tailscaleWhois(ip),
+    route: ip => routeDev(ip),
     wireguard: () => wireguardLinks(),
     audit: (a, r, d) => auditCredentialUse(a, r, d),
     async alert(title, lines) {
@@ -533,7 +557,10 @@ async function oneRound(input: VerifyInput, deps: VerifyDeps): Promise<{ verdict
   //    through or vouch, and only those are ever sent a login while evidence is gathered.
   const presented = new Map<string, PresentedKey>()
   const trusted = new Set<string>()
+  // A tailnet address's route is read right before its key is read, and again when the evidence is weighed.
+  const routes = new Map<string, Array<string | null>>()
   for (const n of nodes) {
+    if (isTailnetAddress(n.address)) routes.set(n.name, [await deps.route(n.address).catch(() => null)])
     const p = await deps.probe(n.address, port(n)).catch(() => null)
     if (!p) { v.set(n.name, { node: n.name, host: n.address, port: port(n), state: 'no-evidence', why: 'it did not answer on its SSH port' }); continue }
     presented.set(n.name, p)
@@ -589,12 +616,14 @@ async function oneRound(input: VerifyInput, deps: VerifyDeps): Promise<{ verdict
   // 3. Private links: the tunnel vouches for the machine.
   const [status, links] = await Promise.all([
     nodes.some(n => isTailnetAddress(n.address)) ? deps.tailnet().catch(() => null) : Promise.resolve(null),
-    deps.wireguard().catch(() => [] as WgLink[]),
+    // WireGuard evidence is for home nodes only: a remote server's node is never "ours" on a HyperProx link.
+    input.scope === 'home' ? deps.wireguard().catch(() => [] as WgLink[]) : Promise.resolve([] as WgLink[]),
   ])
   for (const n of nodes) {
     if (!open(n)) continue
     const who = isTailnetAddress(n.address) ? await deps.whois(n.address).catch(() => null) : null
-    const id = linkIdentity(n.address, n.name, status, links, who)
+    const rs = isTailnetAddress(n.address) ? [...(routes.get(n.name) ?? []), await deps.route(n.address).catch(() => null)] : []
+    const id = linkIdentity(n.address, n.name, status, links, who, rs)
     if (id.ok) candidates.set(n.name, { fp: presented.get(n.name)!.fingerprint, evidence: id.evidence })
     else if (id.block) block(n, id.why, presented.get(n.name)!.fingerprint)
   }
