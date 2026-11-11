@@ -65,6 +65,8 @@ import { loadCertsPolicy } from './lib/certs/policy'
 import { productionAlertForwarder } from './lib/alerts/forwarder'
 
 const server = Fastify({
+  // Never split a path at ';' (Fastify 4's default): the gate's role checks must see the route the router serves.
+  useSemicolonDelimiter: false,
   logger: {
     level: process.env.LOG_LEVEL ?? 'info',
     transport: process.env.NODE_ENV !== 'production'

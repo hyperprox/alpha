@@ -47,6 +47,10 @@ export function unsafeRequestPath(url: string): boolean {
   const raw = url.split('?')[0].split('#')[0]
   let dec = raw
   try { dec = decodeURI(raw) } catch { return true }
+  // A ';' (raw or encoded) anywhere in the path is refused for every route. Fastify's router used to treat
+  // '/api/secrets/reveal;x' as '/api/secrets/reveal' while the role and re-confirm checks saw the whole
+  // string and missed it, so the checks and the router could disagree about which route was asked for.
+  if (dec.includes(';') || /%3b/i.test(raw)) return true
   if (!PVE_ROUTES.test(dec)) return false
   if (/%(2f|3f|23|5c|2e)/i.test(raw)) return true
   return dec.split('/').some(p => p === '.' || p === '..')
