@@ -112,6 +112,9 @@ interface JobProgress {
   lxcIp?:     string
 }
 
+/** A website plan the server holds (catalogue-installer preview): only its id and words reach the page. */
+interface WebsiteCardData { previewId: string; title: string; steps: string[]; checks: string[]; warnings: string[]; link: string; expiresAt: number }
+
 // ── Style constants ───────────────────────────────────────────────────────────
 
 const ACCENT = 'var(--violet)'
@@ -260,6 +263,30 @@ function ModelCard({
         <div style={{ fontSize: 10, color: 'var(--text-dimmer)', ...mono }}>
           VRAM: <span style={{ color: model.fits_gpu ? 'var(--good)' : 'var(--text-muted)' }}>{model.vramGB}GB</span>
         </div>
+      </div>
+    </div>
+  )
+}
+
+// ── A website plan, opened in the New website wizard ─────────────────────────
+
+function WebsiteCard({ card, onCancel }: { card: WebsiteCardData; onCancel: () => void }) {
+  return (
+    <div style={{ background: 'linear-gradient(135deg, var(--surface), var(--surface-hi))', border: '1px solid var(--accent)', borderRadius: 12, padding: '1.25rem', marginBottom: '1rem', boxShadow: 'var(--shadow)' }}>
+      <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 6 }}>planned with the New website wizard · held for 10 minutes · nothing made yet</div>
+      <div className="font-display" style={{ fontSize: 20, fontWeight: 600, color: 'var(--text-bright)', marginBottom: 4 }}>{card.title}</div>
+      <ul style={{ margin: '6px 0 10px 18px', padding: 0, fontSize: 14, color: 'var(--text-soft)', lineHeight: 1.5 }}>
+        {card.steps.map((s, i) => <li key={i}>{s}</li>)}
+      </ul>
+      {card.checks.length > 0 && (
+        <ul style={{ margin: '0 0 10px', padding: 0, listStyle: 'none', fontSize: 13, color: 'var(--text-muted)' }}>
+          {card.checks.map((c, i) => <li key={i}>✓ {c}</li>)}
+        </ul>
+      )}
+      {card.warnings.length > 0 && <p style={{ fontSize: 13, color: 'var(--warn)', margin: '0 0 10px' }}>{card.warnings.join(' ')}</p>}
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+        <button onClick={onCancel} style={{ padding: '9px 16px', fontSize: 14, cursor: 'pointer', ...secondaryBtn }}>Not now</button>
+        <a href={card.link} style={{ padding: '9px 18px', fontSize: 14, textDecoration: 'none', ...primaryBtn }}>Review in New website →</a>
       </div>
     </div>
   )
@@ -438,6 +465,8 @@ export default function AIPage() {
   const [clusterList, setClusterList] = useState<ClusterRef[]>([])
   const [clusterId,   setClusterId]   = useState('home')
   const [actionCard,  setActionCard]  = useState<ActionCardData | null>(null)
+  // A new website the assistant planned with the New website wizard's code: reviewed and installed in the wizard.
+  const [websiteCard, setWebsiteCard] = useState<WebsiteCardData | null>(null)
   const [liveJob,     setLiveJob]     = useState<JobProgress | null>(null)
   const chatRef = useRef<HTMLDivElement>(null)
   const wsRef   = useRef<WebSocket | null>(null)
@@ -591,6 +620,7 @@ export default function AIPage() {
     setPlanId(null)
     setPlanErr(null)
     setActionCard(null)
+    setWebsiteCard(null)
     setPlanning(true)
     setMessages(m => [...m, { role: 'user', content: userMsg }])
 
@@ -607,7 +637,10 @@ export default function AIPage() {
     const data = await res.json()
     setPlanning(false)
 
-    if (data.ok && data.action) {
+    if (data.ok && data.website) {
+      setWebsiteCard(data.website)
+      setMessages(m => [...m, { role: 'assistant', content: 'I planned this website with the New website wizard. Nothing is made yet: open it in the wizard to review it and install.' }])
+    } else if (data.ok && data.action) {
       // An action the server prepared and holds. Nothing has run; the card below confirms it.
       setActionCard(data.action)
       setMessages(m => [...m, { role: 'assistant', content: `I prepared this for ${data.action.cluster.name}. Check it below, then confirm.`, clusters: [data.action.cluster] }])
@@ -745,17 +778,16 @@ export default function AIPage() {
                 {messages.length === 0 && (
                   <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-dimmer)', fontSize: 14 }}>
                     <div style={{ fontSize: 32, marginBottom: 12 }}>✦</div>
-                    <div className="font-display" style={{ marginBottom: 12, color: 'var(--text-bright)', fontSize: 22, fontWeight: 600 }}>Ask about your clusters, or describe what to deploy</div>
+                    <div className="font-display" style={{ marginBottom: 12, color: 'var(--text-bright)', fontSize: 22, fontWeight: 600 }}>Ask about your clusters, NAS, house and websites, or describe what to deploy</div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxWidth: 320, margin: '0 auto' }}>
-                      {(clusterList.some(c => c.kind === 'remote') ? [
-                        '"How is each cluster doing?"',
-                        '"What GPUs does each cluster have?"',
-                        '"Deploy Nextcloud at cloud.mydomain.com"',
-                      ] : [
-                        '"Deploy Nextcloud at cloud.mydomain.com"',
-                        '"Set up Jellyfin at media.home.net"',
-                        '"Install Vaultwarden at vault.yourdomain.com"',
-                      ]).map(ex => (
+                      {[
+                        ...(clusterList.some(c => c.kind === 'remote') ? ['"How is each cluster doing?"'] : ['"Deploy Nextcloud at cloud.mydomain.com"']),
+                        '"Is my NAS healthy?"',
+                        '"What alerts are firing?"',
+                        '"Which lights are on in the living room?"',
+                        '"Is my website up?"',
+                        '"Create a WordPress website at blog.mydomain.com"',
+                      ].map(ex => (
                         <button key={ex} onClick={() => setPrompt(ex.replace(/"/g, ''))}
                           style={{ padding: '8px 12px', borderRadius: 6, fontSize: 13, cursor: 'pointer', ...mono, background: 'var(--surface)', color: 'var(--text-soft)', border: `1px solid ${BORDER}`, textAlign: 'left', transition: 'border-color .15s' }}
                           onMouseEnter={e => (e.currentTarget as HTMLElement).style.borderColor = alpha(ACCENT, 25)}
@@ -828,6 +860,7 @@ export default function AIPage() {
                   </div>
                 </div>
               )}
+              {websiteCard && <WebsiteCard card={websiteCard} onCancel={() => setWebsiteCard(null)} />}
               {actionCard && (
                 <ActionCard key={actionCard.planId} card={actionCard}
                   onCancel={() => setActionCard(null)}

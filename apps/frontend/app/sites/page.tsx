@@ -28,6 +28,12 @@ export default function SitesPage() {
   const [recipes, setRecipes] = useState<SiteRecipe[]>([])
   const [loading, setLoading] = useState(true)
   const [wizard, setWizard] = useState(false)
+  // /sites?preview=<id>: a plan the AI assistant made with the wizard's own code, opened at its review step.
+  const [previewId, setPreviewId] = useState<string | null>(null)
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get('preview')
+    if (id && /^[A-Za-z0-9-]{8,64}$/.test(id)) { setPreviewId(id); setWizard(true) }
+  }, [])
   const [note, setNote] = useState<Record<string, string>>({})
   const [revealed, setRevealed] = useState<Record<string, Record<string, string>>>({})
   const [pending, setPending] = useState<Pending>(null)
@@ -138,7 +144,7 @@ export default function SitesPage() {
         })}
       </div>
 
-      {wizard && <NewSiteWizard recipes={recipes} onClose={() => setWizard(false)} onDone={() => { setWizard(false); void load() }} />}
+      {wizard && <NewSiteWizard recipes={recipes} previewId={previewId} onClose={() => { setWizard(false); setPreviewId(null) }} onDone={() => { setWizard(false); setPreviewId(null); void load() }} />}
       {pending && (
         <ReconfirmModal onClose={() => setPending(null)} onDone={() => {
           const p = pending; setPending(null)
