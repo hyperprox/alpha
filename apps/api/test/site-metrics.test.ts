@@ -345,6 +345,11 @@ test('log_format: the plan changes only plain lines for this log, defines the fo
   assert.match(s, /sha256sum -- '\/etc\/nginx\/nginx\.conf'/)
   assert.match(s, /nginx -t/); assert.match(s, /systemctl reload nginx/); assert.ok(!/restart/.test(s), 'reload, never restart')
   assert.match(s, /restore;/)
+  // Found on a test container: Debian's mawk reads "--" as a file name, so awk gets none.
+  assert.ok(!/awk [^\n]*' -- /.test(s), 'no "--" for awk')
+  // Any failure after the include file is written removes it again.
+  assert.match(s, /restore\(\) \{[^\n]*\[ "\$MADE" = 1 \] && rm -f \/etc\/nginx\/hyperprox-metrics-log\.conf/)
+  assert.ok(s.indexOf('MADE=1') < s.indexOf("cat > /etc/nginx/hyperprox-metrics-log.conf"), 'marked as made before it is written')
   // A tampered plan cannot inject.
   assert.throws(() => applyScript({ ...plan, edits: [{ ...plan.edits[0], after: 'access_log /var/log/x hyperprox_metrics; include /tmp/evil;' }] }), /Refused/)
   assert.throws(() => applyScript({ ...plan, hashes: { '/etc/passwd': 'a'.repeat(64) } }), /Refused/)

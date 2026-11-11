@@ -161,13 +161,16 @@ export function applyScript(plan: LogFormatPlan): string {
   ]
   for (const f of files) out.push(`[ "$(sha256sum -- ${shq(f)} | cut -d" " -f1)" = ${shq(plan.hashes[f])} ] || fail "changed ${f}"`)
   for (const f of files) out.push(`cp -p -- ${shq(f)} ${shq(f)}.hyperprox-bak-$TS || fail "backup ${f}"; BACKUPS="$BACKUPS ${f}"; echo "HPXF1 backup ${f}.hyperprox-bak-$TS"`)
-  out.push('restore() { for F in $BACKUPS; do cat -- "$F.hyperprox-bak-$TS" > "$F"; done; }')
-  out.push('edit() { awk -v n="$2" -v r="$3" \'NR==n{print r; next} {print}\' -- "$1" > "$1.hyperprox-new" && cat -- "$1.hyperprox-new" > "$1" && rm -f -- "$1.hyperprox-new"; }')
-  out.push('insert() { awk -v n="$2" -v r="$3" \'{print} NR==n{print r}\' -- "$1" > "$1.hyperprox-new" && cat -- "$1.hyperprox-new" > "$1" && rm -f -- "$1.hyperprox-new"; }')
+  // Put every file back, and remove the include file if this run made it. Every failure after a backup ends here.
+  out.push('MADE=0')
+  out.push(`restore() { for F in $BACKUPS; do cat -- "$F.hyperprox-bak-$TS" > "$F"; rm -f -- "$F.hyperprox-new"; done; [ "$MADE" = 1 ] && rm -f ${INCLUDE_FILE}; }`)
+  // No "--" for awk: Debian's mawk takes it as a file name. The paths were checked and never start with "-".
+  out.push('edit() { awk -v n="$2" -v r="$3" \'NR==n{print r; next} {print}\' "$1" > "$1.hyperprox-new" && cat -- "$1.hyperprox-new" > "$1" && rm -f -- "$1.hyperprox-new"; }')
+  out.push('insert() { awk -v n="$2" -v r="$3" \'{print} NR==n{print r}\' "$1" > "$1.hyperprox-new" && cat -- "$1.hyperprox-new" > "$1" && rm -f -- "$1.hyperprox-new"; }')
   if (plan.includeFile) {
     out.push(`[ -e ${INCLUDE_FILE} ] && fail "exists ${INCLUDE_FILE}"`)
-    out.push(`umask 022; cat > ${INCLUDE_FILE} <<'HPXF_EOF'`, plan.includeFile.content.replace(/\n$/, ''), 'HPXF_EOF', 'MADE=1')
-  } else out.push('MADE=0')
+    out.push('MADE=1', `umask 022; cat > ${INCLUDE_FILE} <<'HPXF_EOF' || { restore; fail "write ${INCLUDE_FILE}"; }`, plan.includeFile.content.replace(/\n$/, ''), 'HPXF_EOF')
+  }
   for (const e of plan.edits) out.push(`edit ${shq(e.file)} ${e.line} ${shq(e.after)} || { restore; fail "edit ${e.file}"; }`)
   if (plan.insert) out.push(`insert ${shq(plan.insert.file)} ${plan.insert.afterLine} ${shq(plan.insert.text)} || { restore; fail "insert ${plan.insert.file}"; }`)
   out.push(
@@ -176,7 +179,7 @@ export function applyScript(plan: LogFormatPlan): string {
     '  if systemctl reload nginx 2>/dev/null || nginx -s reload; then echo "HPXF1 ok"; else echo "HPXF1 reloadfailed"; fi',
     'else',
     '  echo "HPXF1 testfailed"; tail -n 5 /tmp/hyperprox-nginx-t.$$ | cut -c1-300; rm -f /tmp/hyperprox-nginx-t.$$',
-    `  restore; [ "$MADE" = 1 ] && rm -f ${INCLUDE_FILE}`,
+    '  restore',
     '  echo "HPXF1 restored"; exit 4',
     'fi',
   )
