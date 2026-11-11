@@ -36,6 +36,29 @@ function setupKeyMatches(given: unknown): boolean {
   return timingSafeEqual(createHash('sha256').update(given).digest(), createHash('sha256').update(want).digest())
 }
 
+/**
+ * Creating the owner is a claim on the whole install, and the routes that do it are public (there is nobody to
+ * sign in as yet). So until an owner exists they answer only to the setup key: the one the installer printed in
+ * the setup link, still in .env until the owner's first sign-in removes it (markSetupDone). Null when the key
+ * matches; otherwise the reply to send. Anyone who can read .env is root on this machine already.
+ */
+function setupKeyRefusal(reply: FastifyReply, given: unknown) {
+  if (!currentSetupKey()) {
+    return reply.status(403).send({
+      ok: false, code: 'setup_key_missing',
+      error: 'This install has no setup key, so the owner account cannot be created from the browser. On the HyperProx host run: ' +
+        'echo "SETUP_SECRET=$(openssl rand -hex 32)" >> /opt/hyperprox/.env  then enter that value as the setup key.',
+    })
+  }
+  if (!setupKeyMatches(given)) {
+    return reply.status(401).send({
+      ok: false, code: 'setup_key_required',
+      error: 'Enter the setup key. It is in the setup link the installer printed (after k=), or on the host: grep SETUP_SECRET /opt/hyperprox/.env',
+    })
+  }
+  return null
+}
+
 const LIMIT = { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }
 const MIN_MASTER_PASSWORD = 12
 
@@ -174,6 +197,8 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     const s = await vaultStatus()
     if (!s.reachable) return reply.status(503).send({ ok: false, error: 'The built-in vault is not reachable' })
     if (s.bootstrapped) return reply.status(409).send({ ok: false, error: 'The owner account already exists — sign in instead' })
+    const refused = setupKeyRefusal(reply, req.headers['x-setup-key'])
+    if (refused) return refused
 
     try {
       const { otpauthUri } = await getBroker().bootstrapOwner(email, password)
@@ -190,6 +215,13 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     const code = str(req.body?.code).replace(/\s+/g, '')
     if (!email || !password || !/^\d{6}$/.test(code)) {
       return reply.status(400).send({ ok: false, error: 'email, password and a 6-digit code are required' })
+    }
+    // The same setup key as the first step. While the key is still in .env the owner has never signed in, so it is
+    // always asked for; with no key, only an install whose vault has no owner yet is refused (an owner that exists
+    // goes on to the usual "sign in instead" answer below).
+    if (currentSetupKey() || !(await vaultStatus()).bootstrapped) {
+      const refused = setupKeyRefusal(reply, req.headers['x-setup-key'])
+      if (refused) return refused
     }
 
     // The broker signs the Owner in itself (the vault will not accept the same TOTP step twice).

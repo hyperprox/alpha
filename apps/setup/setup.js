@@ -786,10 +786,11 @@ function stepDone(){
     \${S.finish ? '<div style="text-align:left;margin-bottom:1rem">' + checkRows(S.finish.checklist) + '</div>' : ''}
     <div class="card-desc" style="margin-bottom:1rem">One step left: <strong>create the owner vault account</strong>. Open HyperProx and you will land on the sign-in page, which offers to create it. Choose an email and a master password, then scan the QR code with an authenticator app.</div>
     <div class="card-desc" style="margin-bottom:1.5rem">Two-factor authentication is required for the owner. The master password unlocks HyperProx and is never stored, so keep it safe: this release has no password recovery.</div>
+    <div class="card-desc" style="margin-bottom:1rem">The button below carries your setup key to the sign-in page. Opened another way, the page asks for it: it is the part of the setup link after <code>k=</code>.</div>
     <div class="link-row"><span style="color:var(--muted)">Create owner</span><span class="link-url">\${APP}/login</span></div>
     <div class="link-row"><span style="color:var(--muted)">Grafana</span><span class="link-url">\${location.port === '3001' ? 'https://' + ip : APP}/grafana/ (after you sign in)</span></div>
     <div style="margin-top:1.5rem">
-      <a href="\${APP}/login" style="display:block">
+      <a href="\${APP}/login#k=\${encodeURIComponent(SETUP_KEY)}" style="display:block">
         <button class="btn btn-primary" style="width:100%;font-size:16px">Create the owner account →</button>
       </a>
     </div>
@@ -1093,8 +1094,8 @@ async function finishSetup(answers) {
     add('Your keys', h.ok ? 'done' : 'failed', h.ok ? `${what}: held by HyperProx until you create the owner account, then kept in the vault`
       : `${what} could not be handed over (${h.error}); add them under Settings → Setup checklist`)
   }
-  // The setup key has done its job. It is not kept: re-running install.sh makes a new one if ever needed.
-  removeEnv(['SETUP_SECRET'])
+  // The setup key stays in .env until the owner account exists: HyperProx's /login asks for it before it lets
+  // anyone create the owner (the routes that do are public). The owner's first sign-in removes it.
   finish.status = list.some(r => r.status === 'failed') ? 'done-with-problems' : 'done'
   setTimeout(() => { console.log('[setup] Complete. Shutting down setup service.'); process.exit(0) }, Number(process.env.HPX_SETUP_EXIT_MS || 30_000)).unref()
 }

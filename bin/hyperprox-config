@@ -21,8 +21,8 @@
 #   Dashboard        config/grafana/provisioning/dashboards/hyperprox-cluster.json is drawn from the template
 #                    with a GPU row only for the vendors found (packages/hardware/dashboard.js); the set is
 #                    kept in config/grafana/gpu-vendors.json, which target sync updates.
-#   Fewer keys on disk  .env keeps only what HyperProx needs before it is unlocked. Once setup is done
-#                    (SETUP_COMPLETE=true, or the vault already has an owner),
+#   Fewer keys on disk  .env keeps only what HyperProx needs before it is unlocked. Once the vault has an
+#                    owner (SETUP_COMPLETE=true alone is not enough: /login needs the key to create the owner),
 #                    SETUP_SECRET is removed (re-running install.sh makes a new one if setup ever has to run
 #                    again). A GRAFANA_ADMIN_PASSWORD the first owner sign-in blanked (it moved to the vault)
 #                    is removed, as is NEXT_PUBLIC_GPU_NODES (GPUs are detected now).
@@ -199,19 +199,17 @@ cfg_drop() {
   chmod --reference="$file" "$tmp" 2>/dev/null || chmod 600 "$tmp"
   mv -f "$tmp" "$file"
 }
-# Setup is done when .env says so, or when the vault already has an owner (an install made before setup
-# recorded SETUP_COMPLETE can have an owner and no such line). The API says which; HPX_API_STATUS_URL
-# overrides where it is asked, for the tests.
-setup_done() {
-  [[ "$(cfg_get SETUP_COMPLETE)" == true ]] && return 0
+# The vault has an owner. SETUP_COMPLETE=true alone is not enough to drop the setup key: the wizard records it
+# before the owner exists, and /login needs the key to create the owner.
+owner_exists() {
   local port url
   port="$(cfg_get API_PORT)"; url="${HPX_API_STATUS_URL:-http://127.0.0.1:${port:-3002}/api/auth/status}"
   curl -fsS --max-time 3 "$url" 2>/dev/null | grep -q '"bootstrapped"[[:space:]]*:[[:space:]]*true'
 }
 fewer_keys_on_disk() {
-  if cfg_has SETUP_SECRET && setup_done; then
+  if cfg_has SETUP_SECRET && owner_exists; then
     cfg_drop SETUP_SECRET
-    log "SETUP_SECRET: removed (setup is done; re-running install.sh makes a new one if it is ever needed)"
+    log "SETUP_SECRET: removed (the owner account exists; re-running install.sh makes a new one if it is ever needed)"
   fi
   if cfg_has GRAFANA_ADMIN_PASSWORD && [[ -z "$(cfg_get GRAFANA_ADMIN_PASSWORD)" ]]; then
     cfg_drop GRAFANA_ADMIN_PASSWORD
