@@ -558,7 +558,10 @@ export async function applyMonitoring(planId: string, owner: string, deps: Monit
       results.push({ node: s.node, status: r.status, reason: r.reason })
       const at = new Date().toISOString()
       if (plan.kind === 'install' && s.what === 'node-exporter') {
-        const listen = (r.status === 'done' || r.status === 'already') ? /listening on \[?([0-9a-fA-F:.]+)\]?:9100/.exec(r.reason)?.[1] : undefined
+        // Prometheus scrapes the address HyperProx saved for the node, not the one the node's own output names: a
+        // node (or anything answering as it) must not be able to point the scraper at another machine.
+        const reported = (r.status === 'done' || r.status === 'already') ? /listening on \[?([0-9a-fA-F:.]+)\]?:9100/.exec(r.reason)?.[1] : undefined
+        const listen = reported ? s.address : undefined
         if (listen) { targets.push({ node: s.node, listen }); monitoring[s.node] = { nodeExporter: { listen, installedByHyperProx: true, at }, ...(s.amd ? { amdGpu: { at } } : {}) } }
         else failedNodes.add(s.node)
       }
