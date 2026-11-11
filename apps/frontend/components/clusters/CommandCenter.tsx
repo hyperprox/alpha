@@ -38,7 +38,7 @@ function Bar({ label, pct, kind, right }: { label: string; pct: number | null; k
 
 /** One NAS server: its name and percent, the bar, then how many shares and used / total. */
 export function NetworkRow({ n, kind }: { n: NetworkStorage; kind: 'home' | 'remote' }) {
-  const label = networkLabel(n.server)
+  const label = networkLabel(n.server, n.names)
   return (
     <div className="text-xs min-w-0 flex flex-col gap-1" style={{ color: 'var(--text-muted)' }}>
       <span className="flex items-baseline gap-2 w-full min-w-0">
@@ -48,7 +48,7 @@ export function NetworkRow({ n, kind }: { n: NetworkStorage; kind: 'home' | 'rem
       <span className="block w-full h-2 rounded overflow-hidden" style={{ background: 'var(--ground-deep)' }}>
         <span className="block h-full" style={{ width: `${Math.min(100, Math.max(0, n.pct))}%`, background: clusterColor(kind) }} />
       </span>
-      <span className="break-words">{n.shares} share{n.shares === 1 ? '' : 's'} · {bytes(n.usedBytes)} / {bytes(n.totalBytes)}</span>
+      <span className="break-words">{n.names.length ? `${n.server} · ` : ''}{n.shares} share{n.shares === 1 ? '' : 's'}{n.volumes > 1 ? ` · ${n.volumes} volumes` : ''} · {bytes(n.usedBytes)} / {bytes(n.totalBytes)}</span>
     </div>
   )
 }

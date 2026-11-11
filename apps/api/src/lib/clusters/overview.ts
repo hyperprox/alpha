@@ -75,7 +75,21 @@ export interface ClusterPanel {
   updates?: PanelUpdates | null
 }
 
-export interface NetworkStorage { server: string; shares: number; usedBytes: number; totalBytes: number; pct: number }
+export interface NetworkStorage {
+  server: string
+  /** Distinct exports/shares on this server (a Proxmox storage and a mount of the same export count once). */
+  shares: number
+  /** Distinct volumes on this server; shares of one volume count once. */
+  volumes: number
+  /** Proxmox storage ids on this server, when there are any (the row's name); empty for a mount Proxmox does not list. */
+  names: string[]
+  usedBytes: number
+  totalBytes: number
+  pct: number
+}
+
+/** A Proxmox storage of type nfs or cifs, with its size figures from /cluster/resources. */
+export interface PveNas { server: string; id: string; share: string; total: number; used: number }
 
 export interface FsRow { metric: Record<string, string>; value: number }
 
@@ -91,16 +105,55 @@ export function networkServer(device: string): string | null {
   return host ? host.toLowerCase() : null
 }
 
+/** Two figures are the same volume when the totals and the used amounts agree within half a percent of the total. */
+function sameVolume(a: { total: number; used: number }, b: { total: number; used: number }): boolean {
+  const t = Math.max(a.total, b.total) * 0.005
+  return Math.abs(a.total - b.total) <= t && Math.abs(a.used - b.used) <= t
+}
+
+/** The export key a mount device and a Proxmox storage share: "host:/export" for NFS, "//host/share" for CIFS. */
+const shareKey = (server: string, kind: 'nfs' | 'cifs', what: string) => (kind === 'nfs' ? `${server}:/${what.replace(/^\/+/, '')}` : `//${server}/${what.replace(/^\/+/, '')}`)
+
+/** Proxmox nfs/cifs storages: config (/storage) joined with sizes (/cluster/resources?type=storage). Inactive or sizeless ones are skipped. */
+export function pveNetworkStorages(config: any[], resources: any[]): PveNas[] {
+  const out: PveNas[] = []
+  const seen = new Set<string>()
+  for (const cfg of Array.isArray(config) ? config : []) {
+    const kind = cfg?.type === 'nfs' ? 'nfs' : cfg?.type === 'cifs' ? 'cifs' : null
+    const server = String(cfg?.server ?? '').trim().toLowerCase()
+    const what = String(kind === 'nfs' ? cfg?.export ?? '' : cfg?.share ?? '')
+    if (!kind || !server || !what || Number(cfg?.disable ?? 0) === 1) continue
+    const r = (Array.isArray(resources) ? resources : []).find(x => x?.storage === cfg.storage && x?.status === 'available' && x?.maxdisk > 0)
+    if (!r || seen.has(String(cfg.storage))) continue
+    seen.add(String(cfg.storage))
+    out.push({ server, id: String(cfg.storage), share: shareKey(server, kind, what), total: Number(r.maxdisk), used: Number(r.disk ?? 0) })
+  }
+  return out
+}
+
 /**
- * Network storage from the filesystem collector's size and available series. One entry per server. Within a server
- * each distinct (size, available) pair is one volume and counts once, because several exports of one NAS volume
- * report the same figures; "shares" is the number of distinct exports. Mounts under /mnt/pve/ are Proxmox's own
- * storages, which the Storage bar already covers, so they are left out.
+ * Network storage: Proxmox nfs/cifs storages plus the filesystem collector's network mounts. One entry per server.
+ * Within a server each distinct volume counts once: shares of one NAS volume report the same size and used
+ * figures, and so does a Proxmox storage and a mount of that same volume. "shares" is the number of distinct
+ * exports. Mounts under /mnt/pve are Proxmox's own and come in through the storage list, not through the mounts.
  */
-export function groupNetworkStorage(size: FsRow[], avail: FsRow[]): NetworkStorage[] {
+export function groupNetworkStorage(size: FsRow[], avail: FsRow[], pve: PveNas[] = []): NetworkStorage[] {
   const key = (m: Record<string, string>) => `${m.node ?? ''}\u0000${m.instance ?? ''}\u0000${m.device ?? ''}\u0000${m.mountpoint ?? ''}`
   const free = new Map(avail.map(r => [key(r.metric), r.value]))
-  const servers = new Map<string, { shares: Set<string>; volumes: Map<string, { total: number; used: number }> }>()
+  const servers = new Map<string, { shares: Set<string>; names: string[]; volumes: Array<{ total: number; used: number }> }>()
+  const entry = (server: string) => {
+    const e = servers.get(server) ?? { shares: new Set<string>(), names: [], volumes: [] }
+    servers.set(server, e)
+    return e
+  }
+  const add = (e: ReturnType<typeof entry>, v: { total: number; used: number }) => { if (!e.volumes.some(x => sameVolume(x, v))) e.volumes.push(v) }
+  for (const p of pve) {
+    if (!(p.total > 0)) continue
+    const e = entry(p.server)
+    e.shares.add(p.share)
+    if (!e.names.includes(p.id)) e.names.push(p.id)
+    add(e, { total: p.total, used: Math.max(0, p.used) })
+  }
   for (const r of size) {
     const m = r.metric
     const server = networkServer(m.device ?? '')
@@ -108,20 +161,19 @@ export function groupNetworkStorage(size: FsRow[], avail: FsRow[]): NetworkStora
     if (!server || /^\/mnt\/pve(\/|$)/.test(mp) || !(r.value > 0)) continue
     const a = free.get(key(m))
     if (a === undefined) continue
-    const s = servers.get(server) ?? { shares: new Set<string>(), volumes: new Map() }
-    s.shares.add(m.device)
-    s.volumes.set(`${r.value}:${a}`, { total: r.value, used: Math.max(0, r.value - a) })
-    servers.set(server, s)
+    const e = entry(server)
+    e.shares.add(m.device)
+    add(e, { total: r.value, used: Math.max(0, r.value - a) })
   }
-  return [...servers].map(([server, s]) => {
+  return [...servers].map(([server, e]) => {
     let usedBytes = 0, totalBytes = 0
-    for (const v of s.volumes.values()) { usedBytes += v.used; totalBytes += v.total }
-    return { server, shares: s.shares.size, usedBytes, totalBytes, pct: pct(usedBytes, totalBytes) ?? 0 }
+    for (const v of e.volumes) { usedBytes += v.used; totalBytes += v.total }
+    return { server, shares: e.shares.size, volumes: e.volumes.length, names: e.names, usedBytes, totalBytes, pct: pct(usedBytes, totalBytes) ?? 0 }
   }).sort((a, b) => a.server.localeCompare(b.server))
 }
 
 /** One cluster's network storage, read from Prometheus and limited to that cluster's nodes (by their series labels). */
-export async function readNetworkStorage(c: { id: string; kind: string }, nodeLabels: string[], prom: PromQuery): Promise<NetworkStorage[]> {
+export async function readNetworkStorage(c: { id: string; kind: string }, nodeLabels: string[], prom: PromQuery, pve: PveNas[] = []): Promise<NetworkStorage[]> {
   const sel = `${clusterSelector(c)},fstype=~"${NETWORK_FSTYPES}"`
   const [size, avail] = await Promise.all([
     prom(`node_filesystem_size_bytes{${sel}}`).catch(() => []),
@@ -129,7 +181,7 @@ export async function readNetworkStorage(c: { id: string; kind: string }, nodeLa
   ])
   const mine = new Set(nodeLabels)
   const ours = (rows: FsRow[]) => (mine.size ? rows.filter(r => !r.metric.node || mine.has(r.metric.node)) : rows)
-  return groupNetworkStorage(ours(size), ours(avail))
+  return groupNetworkStorage(ours(size), ours(avail), pve)
 }
 
 export interface PanelUpdates { available: number; packages: number; security: number; checkedAt: string; result: 'ok' | 'partial' | 'skipped'; reason?: string }
@@ -337,9 +389,11 @@ export async function readPanel(c: ClusterInfo, deps: PanelDeps): Promise<Cluste
 
   // Network storage (a NAS mounted on a node) that Proxmox itself does not list as a storage.
   const onlineNodes = nodes.filter(n => n.status === 'online').map(n => String(n.node))
-  base.networkStorage = await readNetworkStorage(c, onlineNodes.map(n => (c.kind === 'remote' ? remoteNodeLabel(c.id, n) : n)), deps.prom).catch(() => [])
+  const storCfg = await pve.fetchStrict<any[]>('/storage').catch(() => [] as any[])
+  const pveNas = pveNetworkStorages(storCfg ?? [], storR.status === 'fulfilled' ? storR.value ?? [] : [])
+  base.networkStorage = await readNetworkStorage(c, onlineNodes.map(n => (c.kind === 'remote' ? remoteNodeLabel(c.id, n) : n)), deps.prom, pveNas).catch(() => [])
   for (const n of base.networkStorage) {
-    if (n.pct >= 90) att('warn', `Network storage ${n.server} is ${n.pct}% full`, `${n.shares} share${n.shares === 1 ? '' : 's'} on this NAS.`)
+    if (n.pct >= 90) att('warn', `Network storage ${n.names.length ? n.names.join(' · ') : n.server} is ${n.pct}% full`, `${n.server}: ${n.shares} share${n.shares === 1 ? '' : 's'} on this NAS.`)
   }
 
   // GPUs: what Proxmox's PCI list says is there, every one of them, with figures where monitoring reports them.
