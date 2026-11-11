@@ -19,15 +19,29 @@ const wrap = async (reply: any, fn: () => Promise<any>) => {
   catch (e: any) { return reply.status(500).send({ success: false, error: e.message }) }
 }
 
+/**
+ * The fields of a registrar domain HyperProx may send to a browser. GoDaddy's domain answer also holds the
+ * transfer authorization code (anyone with it can move the domain away) and the registrant's name, address,
+ * email and phone. Those never leave the API: only the listed fields are copied.
+ */
+export const DOMAIN_FIELDS = ['domain', 'domainId', 'status', 'createdAt', 'expires', 'renewAuto', 'renewable',
+  'renewDeadline', 'locked', 'privacy', 'nameServers', 'expirationProtected', 'transferProtected', 'holdRegistrar'] as const
+export function publicDomain(d: any): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  if (!d || typeof d !== 'object') return out
+  for (const k of DOMAIN_FIELDS) if (k in d) out[k] = d[k]
+  return out
+}
+
 export const dnsRoutes: FastifyPluginAsync = async (fastify) => {
 
   // GET /api/dns/domains
   fastify.get('/domains', async (_, r) =>
-    wrap(r, async () => (await getGoDaddy()).getDomains()))
+    wrap(r, async () => ((await getGoDaddy()).getDomains() as Promise<any[]>).then(list => (list ?? []).map(publicDomain))))
 
   // GET /api/dns/domains/:domain
   fastify.get<{ Params: { domain: string } }>('/domains/:domain', async (req, r) =>
-    wrap(r, async () => (await getGoDaddy()).getDomain(req.params.domain)))
+    wrap(r, async () => publicDomain(await (await getGoDaddy()).getDomain(req.params.domain))))
 
   // GET /api/dns/domains/:domain/records
   fastify.get<{ Params: { domain: string }; Querystring: { type?: string } }>(
