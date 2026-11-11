@@ -263,8 +263,9 @@ your cluster's own record of its nodes' keys right there, and HyperProx checks e
 first sign in; nodes added later are checked against the same record read through nodes already verified. Nodes
 reached over Tailscale or WireGuard are checked by the tunnel instead. It does this after you sign in and whenever
 it meets a new node, and **Verify automatically** runs it on demand. There is nothing to press when a key shows
-verified. If HyperProx was not installed from a node, the checklist shows one command to run on any node: paste
-what it prints (public keys only) and it does the rest. Only a key it found no evidence for offers **Compare by
+verified. If HyperProx was not installed from a node, the checklist shows one command to run on any node's own
+console (its screen, IPMI or iKVM, or an SSH session you already trust): paste what it prints (public keys only)
+and it does the rest. Only a key it found no evidence for offers **Compare by
 hand and confirm**. VPN installs on a node and maintenance mode only run
 against a node whose key is verified or confirmed. How this works, and what it cannot check, is in
 [docs/security.md](docs/security.md).
@@ -330,7 +331,8 @@ reach: a Tailscale name or IP, a WireGuard address, or anything else routable.
 **Add a server** (admin) is one form and one master password:
 
 1. A name and its address (its Tailscale IP, owned by your own tailnet account, or a WireGuard address lets
-   HyperProx verify it by itself). HyperProx looks at that address straight away, and before you press Connect
+   HyperProx verify it by itself, when the HyperProx machine runs Tailscale with its normal kernel interface).
+   HyperProx looks at that address straight away, and before you press Connect
    the form says "Connecting to <device> owned by <owner>" and lists what monitoring would install.
 2. Three `pveum` commands to paste into that server's Shell: they make a `hyperprox@pve` user with the
    Administrator role and an API token for it.
