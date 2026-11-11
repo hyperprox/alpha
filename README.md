@@ -25,7 +25,7 @@ through its API.
 
 | Area | What you get |
 |---|---|
-| Proxmox | Every VM and container with power actions, snapshots, migration, HA state and console; create guests from any template or ISO on any node |
+| Proxmox | Every VM and container with power actions, snapshots, migration, HA state and an SSH console; create guests from any template or ISO on any node |
 | Dashboard | Real-time nodes, Ceph, HA and quorum, GPU, network, bandwidth and per-node power |
 | Monitoring | Bundled Prometheus and Grafana with HyperProx dashboards and alert rules |
 | Storage | Every storage on every node, Ceph health, OSDs and pools, and per-guest disks |
@@ -1069,21 +1069,21 @@ single `docker-compose.yml`; `COMPOSE_PROFILES` in `.env` picks the optional par
 
 ## Roadmap
 
-The full roadmap is in [ROADMAP.md](ROADMAP.md), and designs for upcoming work are in
-[docs/superpowers/specs/](docs/superpowers/specs/). Not built yet:
+[ROADMAP.md](ROADMAP.md) lists what is built, what is partly built and what comes next. Designs for
+upcoming work are in [docs/superpowers/specs/](docs/superpowers/specs/).
 
-- **Consoles**: noVNC and container text consoles as Terminal panes, for guests SSH cannot reach.
-- **Ceph operations**: version-skew view, guided rolling restarts and slow-op history (restart and
-  reboot safety in Updates is built).
-- **More DNS providers**: Cloudflare, Namecheap, Route 53 and Porkbun.
-- **Smart suggestions**, network-mount health and Proxmox Backup Server monitoring.
-- **Vault phase 2**: temporary users, master password recovery, VPN and internet access modes, a
-  tamper check and an audit timeline.
-- **Releases**: versioned builds and `hyperprox update`, `rollback` and `uninstall`.
-- **More for remote clusters**: high availability and GPU sharing on a remote (the Command center, guest
-  management and Updates already work), Proxmox figures in Grafana for a remote, and Sync and Move for
-  Send files.
-- **Later**: migration from other hypervisors, LDAP and SSO.
+- **Partly built**: network-mount health (NAS usage is shown; per-mount status and named alerts are not),
+  Ceph measurement (restart safety in Updates is built; version-skew view, rolling restarts and slow-op
+  history are not), remote clusters (no high availability, GPU sharing, or Sync and Move in Send files
+  there yet), Home Assistant (no locks that need a code), and the audit log (recorded, with no page to
+  read it).
+- **Next**: the six-point standard for every catalogue install (address, proxy and certificate; login in
+  the vault; backed up; monitored; under update policy; plug-in panel), MeshCentral remote desktop,
+  a Proxmox Backup Server plug-in with automatic restore tests, catalogue packs, noVNC and container text
+  consoles, Ceph operations, versioned releases with `hyperprox update`, demo mode and screenshots, the
+  hyperprox.dev website, and more DNS providers, email notifications and LDAP/OIDC sign-in.
+- **Later, as ideas**: live migration between clusters, ESXi import, XCP-ng, bare-metal install, CVE
+  scanning and hardening, and a commercial tier.
 
 ## How it compares
 

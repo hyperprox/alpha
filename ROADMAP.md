@@ -6,268 +6,335 @@
 
 ---
 
-## Current State (v0.1.0-alpha)
+This file says what HyperProx does today, what is partly built, and what comes next. Everything under
+**Where it is today** is in the code on `main`. The version in the repository is `0.2.0-alpha`, and there
+are no published releases yet.
 
-### Shipped & Working
-- Full VM/CT management with live metrics and power actions
-- Nginx Proxy Manager full CRUD (27 real hosts running in production)
-- GoDaddy DNS full CRUD — all record types, DDNS, stale IP detection, domain expiry tracking
-- Bundled Prometheus + Grafana — zero manual setup, auto-configured on install
-- Real-time WebSocket dashboard — 5 nodes, GPU panel, CEPH, HA, network activity
-- Monitoring page — node health cards, active alerts, Grafana embed
-- Storage page — CEPH pool health, OSD status, VM/CT disk breakdown
-- AES-256-GCM encrypted credential store
-- One-shot installer + first-run setup wizard
-- Intent-driven DNS record creation wizard
-- AI deployment wizard (basic — Ollama-powered, plan + confirm flow)
-- LXC container creation — template picker, node resource limits, dynamic storage with free space
-- VM creation — ISO auto-detection across all nodes, network config, storage picker
-- CT/VM deletion with confirmation guard
-- CT template + ISO auto-detection across all nodes and storage pools
-- Home Assistant control: several houses, a Devices view by room, security devices behind admin, the master password and a named confirm step, read-back and audit for every action
+For how HyperProx compares with other tools, with a source for every cell, see
+[docs/comparison.md](docs/comparison.md).
 
-### Home Assistant, next
-- Locks and alarm panels that need a code
-- Live state over Home Assistant's WebSocket instead of polling every few seconds
-- Control from the AI assistant (read-only today, on purpose)
+## Why it is built this way
+
+Each part of HyperProx was written after hitting the problem on a live cluster, not from reading the
+Proxmox feature list. The recurring shape: **the platform reports success while the thing it exists to do
+is broken.** A guest runs without its GPU. An HA rule is satisfied by leaving a service on the wrong node. A
+daemon is "outdated" with no sign that restarting it takes data offline.
+
+HyperProx earns its place by showing the consequence before the action, and by checking the outcome rather
+than the component's own status line. That is why almost every change in it is a preview first, is refused
+if something changed since the preview, and is read back afterwards.
 
 ---
 
-## v1.0 — Parity: Stop Going Back to the Proxmox UI
+## Where it is today
 
-**The test for this section: an operator can run a normal week without opening the Proxmox web UI or an SSH session.** Today they cannot — editing a mount point, adding an HA rule, or answering "why is this OSD flagged" all require leaving HyperProx.
+### Clusters
 
-Parity is not the goal on its own. Every item below exists because the Proxmox UI either hides the thing that bites you, or shows it without the context that makes it actionable. Where HyperProx only matches the stock UI, it has added nothing.
+- **Home cluster** through the Proxmox API. First-run setup signs in once, creates HyperProx's own API
+  token and a read-only one for the metrics exporter, and never stores the password.
+- **Command center**: any number of remote Proxmox servers or clusters beside the home one, reached over
+  Tailscale, WireGuard or any routable address. A remote is never joined to your cluster.
+- Each cluster is a panel: nodes, quorum, guests, CPU, memory, storage, a row for each NAS, a row for every
+  GPU, the last backup, and one **Needs attention** list across all clusters.
+- On a remote: start, stop, shut down, restart, snapshot, back up now, edit settings and delete guests,
+  each read back from Proxmox.
+- **Adding a server** checks its certificate and node host keys by itself over a private link (Tailscale
+  or WireGuard), or asks you to compare a fingerprint once. Its token and logins live in the vault.
+- **Hardware scan** per cluster, with `vainfo` where a node login allows it.
+- **Monitoring on a remote**: node_exporter on the private link only, plus AMD and Intel GPU figures.
+  Removal puts everything back.
+- **Send files**: copy folders between or within clusters, node to node with rsync, add-only, every file
+  checked by size and checksum. Plex on the other side is asked to rescan. This is a first version and has
+  not yet been tried against real servers.
 
-### Guest Config Editing
-Edit what today needs `pct set`, `qm set`, or a text editor on a corosync-backed filesystem. A guest's config is the single most dangerous file an operator touches: it is replicated cluster-wide on write, with no undo.
+### Guests & HA
 
-- Structured editor for cores, memory, swap, boot order, nameserver, onboot, description
-- **Mount point editor** — add, remove, resize, and edit bind mounts and volume mounts
-- **`shared=1` awareness, with verification.** Marking a bind mount shared is what allows a guest to migrate at all; without it the guest can fail *over* but can never come *home*, because recovery onto a surviving node needs no migration while the return trip does. HyperProx must offer the flag **and prove the claim** — check the path is really present on every node before writing it. A path that exists on one node and is marked shared will start the guest somewhere with an empty directory where its data should be.
-- **Pending-change visibility.** Some edits land in a `[pve:pending]` block and do nothing until the guest restarts. The stock UI is quiet about this. HyperProx should show a clear "applies on next restart" state, list exactly which keys are pending, and offer the restart.
-- **Raw `lxc.*` / `args:` protection.** Passthrough lines — GPU cgroups, device bind entries — are not represented in any form UI, and a careless rewrite silently drops them. The guest then starts fine and the hardware is simply gone. HyperProx must round-trip unknown keys untouched, show them read-only, count them before and after every write, and refuse a save that would lose one.
-- Config diff before save, and a one-click revert to the previous version
-- Per-guest config history, so "what changed and when" is answerable
+- Every VM and container in one list with power actions, snapshots and migration within a cluster.
+- Create a container from any template or a VM from any ISO on any node. Delete asks for the master
+  password.
+- **Guest config editor** (`lib/guest-config`): cores, memory, swap, start-up order, tags, DNS, network
+  cards, disks and mount points. Each change is previewed, refused if the guest changed meanwhile, and
+  read back.
+  - `shared=1` on a bind mount is offered only after HyperProx has checked the path exists on every node.
+  - Changes that land in `[pve:pending]` say "applies on next restart", list the keys, and offer the
+    restart.
+  - Raw `lxc.*` device lines are written only with extra checks. Unknown and raw keys are counted before
+    and after every write, so a save cannot silently drop one.
+  - History of every change, one-click revert, and passwords and keys masked in the history.
+- **GPUs and devices**: give a container a GPU, switch its GPU access off and on, and **Portable GPU** so a
+  container picks up whichever node's GPU it lands on. Each node lists its GPUs, USB, serial and PCI devices
+  and who uses them.
+- **GPU watch**: after an HA move, HyperProx checks that a GPU container still has its GPU and says so
+  through your notification channels.
+- **High availability** (`lib/ha`), in plain words:
+  - Protect a guest, give it a home ("prefer this node" or "only this node"; the strict choice is red and
+    needs a second confirmation), and keep guests apart or together.
+  - Proxmox's rule conflicts (a weighted node-affinity rule with a resource-affinity rule) are caught
+    before Proxmox refuses them.
+  - Keep-apart rules show their headroom: how many nodes are left once the guests are placed.
+  - Guests with no home, guests not protected, and guests that need one node's hardware are listed.
+  - Where each guest would go if its node failed, and a grid of which nodes it can migrate to and why not.
+  - Maintenance mode for a node.
+  - Every change is previewed, refused without quorum or if HA changed since the preview, and needs the
+    master password.
 
-### HA Management
-The stock HA UI lets you write a rule and discover its consequences later. This should surface the consequence first.
+### Storage & Ceph
 
-- CRUD for HA resources: state, group, max_restart, max_relocate
-- **Rule editor for both rule types** — node affinity (which nodes) and resource affinity (keep together / keep apart)
-- **Explain the rule types' interaction, because Proxmox enforces it silently.** A resource that sits in a node-affinity rule with *weighted priorities* cannot join a resource-affinity rule at all; the API rejects it with a validation error most operators meet only after designing the rule. HyperProx should detect that up front and offer the fix (flatten the priorities) rather than surfacing a 400.
-- **Strict vs non-strict, in words.** Strict means "nowhere else, ever" — including *not starting at all* when the preferred node is down. Non-strict means "prefer here, run anywhere". Picking wrong turns a preference into an outage. Label them by consequence, not by flag name.
-- **Anti-affinity headroom warning.** N guests kept apart across N eligible nodes leaves zero slack: lose one node and one guest has nowhere legal to start. Compute eligible nodes per rule and warn before saving.
-- **The "no rule at all" gap.** A guest with no node affinity that fails over never returns — it runs wherever it landed, indefinitely. This is invisible until it matters, and it is how a GPU workload ends up on a node with no GPU, reporting perfectly healthy. Flag HA guests with no home, and offer to give them one.
-- **Migration preflight, per target node.** Proxmox already computes this (`/nodes/{node}/{type}/{id}/migrate` returns allowed and not-allowed nodes with causes). Show it as a grid: for each node, can this guest move there, and if not, exactly why — local bind mount, blocking HA rule, missing storage, insufficient memory.
-- Guests that are HA-managed vs not, side by side. Anything not managed simply stays down after a node failure, and that set is worth seeing on one screen.
+- **Storage**: every storage on every node, including NFS and CIFS, Ceph health, OSDs with latency, pools,
+  and each guest's disks.
+- **NAS rows** on Command center panels: Proxmox NFS and CIFS storages, plus network mounts Proxmox does not
+  list (read through node_exporter), grouped per NAS server with shared volumes counted once.
+- **Ceph safety in Updates**: before restarting an OSD or rebooting a node, HyperProx asks Ceph whether it
+  is safe to stop and checks every pool's copies. A step that would take data offline (for example a pool
+  with one copy on that node) is skipped and says what would have gone offline. OSDs restart one at a time
+  with `noout` set. Ceph packages are levelled to one version across nodes, and a node update never pulls
+  Ceph forward by itself.
 
-### Console — when SSH cannot reach
-The Deck reaches every guest over SSH, which is exactly the path that is missing when you need a console most: a Windows VM, an appliance with no shell, a guest whose network is broken, a VM stuck at boot or in its BIOS. Today that means opening the Proxmox UI. A console pane removes the last reason to.
+### Network
 
-- **noVNC as a Deck pane type**, beside SSH panes — same tabs, splits, grids and saved layouts. Proxmox already provides the console (`/nodes/{node}/{type}/{vmid}/vncproxy` + `vncwebsocket`); HyperProx already requests the ticket.
-- **The stream is relayed through the HyperProx API**, never browser-to-Proxmox: the browser never sees a Proxmox ticket or token, and the console works wherever HyperProx is reachable, not only where the Proxmox UI is.
-- **termproxy for containers** — the text console via xterm.js, the same terminal the Deck already uses — so a container with no SSH daemon or no network still gets a shell.
-- **Offered automatically when SSH fails**: a pane that cannot connect says why and offers "Open console" instead of a dead tab.
-- Console essentials: send Ctrl-Alt-Del, paste as typed keystrokes (BIOS and login prompts have no clipboard), scale to pane, and fullscreen.
+- **Reverse proxy** (`lib/proxy/providers`): Nginx Proxy Manager, Traefik, Caddy, HAProxy and Pangolin,
+  several at once in one table. Each proxy is one you run or one HyperProx installed. Every change is
+  previewed and read back; hosts other tools made are read-only.
+- **DNS**: GoDaddy only. Records, guided creation, domain expiry, A records that differ from your WAN IP
+  flagged, and DDNS.
+- **Certificates** (`lib/certs`): probes every endpoint like a client, issues and renews over ACME DNS-01
+  through GoDaddy, delivers into guests or HyperProx's own nginx, and checks each delivery by fingerprint.
+- **VPN and remote access**: installs and manages Tailscale and NetBird on nodes, containers and VMs, and
+  adopts clients it did not install. WireGuard servers in a container, phones and laptops by QR code, and
+  WireGuard peers on a MikroTik router.
+- **The Deck**: SSH in the browser to every guest and to hosts you add, with tmux sessions that survive
+  closing the tab, tabs, splits, grids, saved layouts and pinned host keys.
 
-### Templates & Cloning
-- Convert a guest to a template; clone full or linked
-- Template catalogue with description, source guest, and creation date
-- **Provisioning profiles** — a named bundle of cores/memory/storage/network/features applied at create time, so "a standard Docker LXC here" stops being a checklist someone remembers
-- Cloud-init editor for VMs: user, SSH keys, IP config
-- Bulk clone with a naming pattern and sequential addressing
+### Apps & Plug-ins
 
-### Ceph: Measurement, Not Just Status
-The stock Ceph panel answers "is it green". The questions that actually cost time are "what changed", "what is slow", and "what is unsafe to touch".
+- **Catalogue** (`lib/catalogue.ts`): ten recipes (Nginx Proxy Manager, Ollama, Tautulli, Nextcloud,
+  Jellyfin, Vaultwarden, Gitea, Uptime Kuma, Homepage, Grafana). A wizard picks resources, recommends a
+  node from live capacity, sets ID, hostname and address, and shows the exact plan. A failed install can
+  remove only the container it made.
+- **AI assistant** (`lib/ai`): answers questions about one cluster or all of them, with each fact labelled
+  by cluster. Plain-language deploys of Nextcloud, Jellyfin, Gitea, Uptime Kuma and Homepage run end to
+  end on the home cluster: container, service, proxy host, DNS record and certificate. On any cluster it can
+  prepare guest power, snapshot, back up now, delete, monitoring and copies; nothing runs until you confirm,
+  with the same role and password checks as by hand. Providers: Anthropic, OpenAI-compatible, Ollama.
+- **Plug-ins** (`apps/api/src/plugins`): Arr Stack, Unmanic, MikroTik, Plex activity (through Tautulli),
+  Home Assistant, QNAP and MeshCentral. Each has a visual page that follows the theme, with the old tables
+  under **Details**. Plug-ins never read a credential: HyperProx makes their HTTP calls. **Scan for
+  services** finds known apps on running guests.
+- **Home Assistant control** (`lib/ha-control`): more than one house, devices as tiles by room, read-back
+  after every action, and an audit entry for each. Locks, alarm panels, sirens and other security devices
+  need the admin role, the master password and a confirm step where you type the device name.
+- **QNAP** (`lib/qnap`): each NAS's bays with SMART, volumes, shares, temperatures, fans and firmware; quick
+  SMART test; restart and shut down behind the confirm step; alerts; and a NAS on a remote cluster's LAN read
+  through one of that cluster's nodes.
 
-- **Outdated daemon detection, done properly.** A daemon is outdated when the *installed package version on its node* is newer than the *running daemon version* — the gap a package upgrade opens and a restart closes. Show it per daemon (mon / mgr / osd / mds), grouped by node, with the two versions side by side.
-- **Version skew across nodes**, called out loudly. Upgrading one node's packages and not the others leaves a split-version cluster that reports healthy and is not a state to sit in. This is easy to reach by accident with a routine `apt upgrade` on a single node.
-- **Restart-safety gating — the one that matters most.** Restarting an OSD in a pool with `size=1` makes that OSD's data *unavailable*, with no replica to serve it. The UI must know a pool's replica count and refuse to present a casual "restart" button for OSDs backing it, or at minimum state plainly what goes offline and for how long. Same for any OSD whose loss would drop a PG below `min_size`.
-- **Cluster-wide package upgrade, as one operation.** Upgrading Ceph on a single node is the easiest way to split a healthy cluster's versions, and it happens by accident: a routine `apt upgrade` on one host pulls its Ceph packages forward while the others stay put. Nothing breaks, health stays green, and the cluster is now running one version with another installed underneath it. HyperProx should treat "upgrade Ceph" as a cluster-level action that levels every node in one pass, never a per-node one.
-  - Show installed vs available vs running, per node, before anything is touched
-  - `--only-upgrade` against the Ceph package set explicitly; never a blanket dist-upgrade, which drags unrelated packages into a storage maintenance window
-  - **Packages first, restarts second, as separate gated steps.** Installing binaries restarts nothing and is safe at any hour; it also makes an unplanned daemon restart land on a consistent version instead of a split one. Only the rolling restart needs a window.
-  - Watch node root filesystems during the install. On a small root, the downloaded archives alone can push a monitor under its free-space threshold and raise a fresh health warning mid-upgrade — clean the package cache as part of the flow.
-- Guided rolling restart: correct order (mon → mgr → osd → mds), one daemon at a time, `noout` set and cleared automatically, health gate between each step, abort on degradation
-  - Ordered by blast radius where a pool has no replicas: smallest OSD first, so the first restart is the cheapest lesson, and never two large ones in a row
-  - State what goes offline before each step, in gigabytes and percent of the pool, not just "restarting osd.N"
-- **Slow-op surfacing with history.** "2 OSDs experiencing slow operations" is where the stock UI stops. Which OSDs, since when, on which device, and is it getting worse — that is what identifies a dying disk.
-- **Per-OSD benchmarking** — `ceph tell osd.N bench`, stored over time, so a slow OSD is visible as a trend against its peers rather than a number with nothing to compare to
-- Pool-level detail: replica count, PG count and whether autoscale agrees, per-pool IOPS and throughput, capacity trend with a projected full date
-- Device health: SMART, power-on hours, unsafe shutdown count, reallocated sectors — surfaced next to the OSD it backs, because "which physical disk is osd.N" is a question the stock UI makes you answer yourself
-- Single-failure-domain warnings: all OSDs of a pool on one node, or a `size=1` pool at all, stated as an accepted risk with its blast radius rather than a recurring health warning to be ignored
+### Monitoring & Alerts
 
-### Why This Matters
-Each of the above was written after hitting it on a live cluster, not from reading the Proxmox feature list. The recurring shape: **the platform reports success while the thing it exists to do is broken.** A guest runs without its GPU. An HA rule is satisfied by leaving a service on the wrong node. A pipeline is red for a reason unrelated to the code. A daemon is "outdated" with no indication that restarting it takes data offline.
+- Bundled Prometheus and Grafana with HyperProx dashboards, a plug-ins dashboard, and the node list kept up
+  to date by itself.
+- The installer and **Settings → Setup checklist** ask plain questions and do the node work: node_exporter,
+  CPU power counters, GPU exporters, and built-in graphics for containers. They only add packages.
+- Alert rules for nodes, CPU, memory, disk, Ceph, GPUs and hardware (`config/prometheus/rules/cluster.yml`):
+  GPUNotResponding, GPUHot, CPUHot, FanStuckAtMax, MonitoringTargetDown.
+- **Alerts are forwarded** (`lib/alerts/forwarder.ts`): one message when an alert starts, one when it clears,
+  and one warning if Prometheus stops answering.
+- **Notifications** (`lib/notify`): Discord, Slack, Teams, ntfy, Gotify, Telegram and generic webhooks, with
+  severity filters, quiet hours and a test button.
 
-HyperProx earns its place by showing the consequence before the action, and by checking the outcome rather than the component's own status line.
+### Updates
 
----
+- Pending packages and kernel pins on every node and guest, on every cluster (`lib/updates`).
+- A full update round: preflight checks, guests in batches with a snapshot first, Ceph levelled, then nodes
+  one at a time with HA maintenance mode and `noout` around a reboot. It stops at the first failure.
+- A policy file (`config/updates.yaml`) with per-cluster sections. Without it you get dry runs only. A node
+  with held packages or a pinned kernel gets `apt-get upgrade`, never `dist-upgrade`, unless the policy
+  names it.
+- On a remote: apt's own simulation as the preview, the master password to apply, every package read back,
+  and no automatic reboot.
+- A daily read-only check of every cluster, with one notification when something new needs updating.
+- **App updates** for software outside apt and Docker, contributed by plug-ins. MeshCentral (npm installs)
+  is bundled.
 
-## v1.0 — The Glue Layer
+### Security & Vault
 
-The complete single-cluster operational platform. Everything a homelab or small business operator needs to run Proxmox in production without SSH spelunking.
+- A built-in Vaultwarden is the only sign-in: email, master password and two-factor code. The API does not
+  start without it.
+- Locked after a reboot, auto-lock after idle time, secrets in memory only, and a small keyholder so a
+  deploy does not lock you out.
+- Four roles from the vault's organization: owner, admin, operator, viewer.
+- The master password is asked again for dangerous actions (destroying a guest, revealing a secret,
+  catalogue installs, remote cluster changes, and more).
+- API tokens with a role, stored as a hash, that stop working while locked and can never read secrets.
+- Secrets page: reveal, send as a one-view link, or generate and store a password.
+- Node host keys and remote certificates are verified automatically where HyperProx has evidence, and
+  compared by hand only where it has none.
+- Actions are written to an audit log.
+- Only nginx listens on the network; everything else is bound to loopback.
 
-### Smart Suggestion Engine
-Cross-system awareness that surfaces actionable recommendations without acting automatically. User confirms every action.
-- New NPM proxy host detected → suggest creating matching DNS record
-- WAN IP change detected → flag all stale A records, offer one-click bulk update
-- SSL cert expiring within 30 days → suggest renewal
-- New node joined cluster → suggest deploying node_exporter
-- Container stopped unexpectedly → surface in dashboard with last-known state
+### Interface
 
-### AI Deployment Wizard
-Type a natural language command, HyperProx plans and executes the full deployment flow.
-1. Creates LXC in Proxmox with appropriate resources
-2. Configures NPM proxy host
-3. Creates DNS A record
-4. Polls for propagation
-5. Requests Let's Encrypt SSL cert
-6. Returns live URL
-
-Preview & Diff stage shows the full action plan before anything executes. User confirms or aborts.
-
-### Network Storage Health ⭐ NEW
-Born from real operational experience: an offline CIFS/NFS mount silently caused 10-second node_exporter scrape timeouts, triggering false NodeDown alerts with no obvious cause. HyperProx should surface this immediately.
-
-- Poll CIFS/NFS/NFS4 mount status across all nodes via Proxmox API
-- Storage page — dedicated **Network Mounts** section alongside CEPH and local disks
-  - Mount point, remote host, protocol, node, status (Online / Unreachable / Degraded)
-  - Last seen online timestamp for unreachable mounts
-- Active alerts — named alerts: *"NAS-Storage (CIFS) unreachable on node1"* not just *"NodeDown"*
-- Root cause correlation — when a node's Prometheus scrape is slow or failing, check for offline mounts on that node and surface as the likely cause
-- AI assistant awareness — *"node1's node_exporter is slow because a network mount is unreachable. Would you like me to unmount it temporarily to restore monitoring?"*
-- Alert auto-resolution when mount comes back online
-
-### Multi-Provider DNS
-- GoDaddy — full support (shipped)
-- Cloudflare — v1.0
-- Namecheap — v1.0
-- Route 53, Porkbun — v1.0
-- Domain-centric model — per-domain provider assignment, not per-account
-
-### Multi-Instance Proxy
-- NPM — full support (shipped)
-- Traefik — v1.0
-- Caddy — v1.0
-- HAProxy — v1.0
-- Pangolin — v1.0
-- Bring Your Own vs HyperProx Managed model
-- Multiple providers simultaneously from one interface
-
-### Infrastructure
-- Proxmox rolling updates — CEPH-aware, per-node sequencing, reboot detection
-- HyperProx self-update — GitHub releases API, one-click update from UI
-- PBS backup monitoring — datastore usage, job history, retention policies
-- Unified SSL cert expiry view across all proxy instances
-
-### Setup & Onboarding
-- Setup wizard — first-run auto-detection of existing services (shipped)
-- Bring Your Own vs HyperProx Managed — install NPM, Grafana, Ollama from UI
-
-### GitOps Export
-- Point-in-time YAML export of entire HyperProx configuration
-- Passphrase-encrypted credentials (PBKDF2 + AES-256-GCM)
-- Restore via setup wizard on fresh instance — full recovery in under a minute
-- Schema versioned for forward compatibility
-
----
-
-## v2.0 — The Platform
-
-Expanding from single-cluster homelab to multi-cluster, multi-hypervisor infrastructure management.
-
-### Multi-Cluster Management
-Built (Command center):
-- Any number of remote Proxmox servers or clusters beside the home one, over Tailscale, WireGuard or any reachable address
-- Command center: every cluster as a panel (nodes, quorum, guests, CPU, memory, storage, GPU rows, last backup) and one needs-attention list
-- Per-cluster credentials in the vault, certificate pinning for each remote's API, confirmed host keys for node logins
-- Guest power, snapshots, back up now, settings and delete on any cluster, each read back
-- Hardware scan per cluster, with vainfo when a node login allows
-- Monitoring install and removal on a remote (node_exporter on the private link only, AMD GPU figures, Intel GPU figures through node_exporter's textfile folder)
-- Every GPU on every node in the Command center, home and remote, each with its own figures and a plain reason when it has none
-- Send files: copy between or within clusters, node to node, verified (first version)
-- AI assistant on every cluster: questions about one cluster or all of them, each fact labelled with its cluster; guest power, snapshot, back up now and delete, monitoring and copies prepared on any cluster, each plan bound to its cluster and applied with the same role and re-confirmation as by hand
-- Updates on a remote cluster: nodes and containers, previewed with apt's own simulation, applied with the master password and read back; a remote node is never rebooted automatically (a separate Reboot shows which guests stop); per-cluster policy sections with safe Proxmox defaults
-- Daily read-only updates check of every cluster, with one notification when something new needs updating and the count on each Command center panel
-
-Not built yet:
-- High availability and GPU sharing on a remote cluster
-- Proxmox figures in Grafana for a remote (its own PVE exporter)
-- Sync and Move in Send files
-- From the AI assistant: editing a guest's settings, and deploying a service on a remote
-
-### Cross-Cluster Live Migration
-- Move VMs between different Proxmox VE clusters with zero downtime
-- Automatic resource verification before migration
-- Migration progress tracking and rollback support
-
-### ESXi Live Migration
-- Import VMware ESXi workloads directly into Proxmox VE
-- Live migration support — no downtime
-- Automatic disk format conversion, network mapping wizard
-- **Strategic note:** Broadcom's VMware acquisition has driven mass exodus from VMware. This targets organizations actively migrating off VMware right now.
-
-### XCP-NG Support
-- Manage Xen/XCP-NG infrastructure alongside Proxmox VE from the same UI
-- Full pool and VM lifecycle management for Xen workloads
-
-### Bare Metal Lifecycle
-- Proxmox bare metal installer — custom ISO/PXE with HyperProx baked in
-- Post-install bootstrap wizard — networking, storage, cluster formation
-- Node expansion — add new nodes to existing cluster from the dashboard
-- Proxmox major version upgrade wizard
-
-### VPN Management
-- WireGuard — peer CRUD, config generation, key rotation, QR code export
-- Tailscale — node mesh visibility, ACL management (API-driven)
-- Pangolin — zero-port-forward tunnel + proxy + DNS native integration
-- Bring Your Own vs HyperProx Managed model (consistent with proxy/DNS)
-
-### Security
-- CVE Scanner — detect known vulnerabilities across nodes and VMs
-- PVE Hardening — automated one-click security hardening for Proxmox hosts
-- Audit trails — full log of all actions taken through HyperProx
-
-### Access Control
-- Role-based access control (RBAC) — granular permissions at cluster, node, and VM level
-- LDAP / Active Directory integration
-- OIDC / SSO support (Microsoft Entra ID, Google, etc.)
-
-### Commercial Licensing Tier
-- Community tier remains AGPL v3 — free forever
-- Commercial tier for MSPs and enterprise deployments
-- Multi-cluster management, RBAC, SSO, white-labeling, priority support
+- A redesigned interface with a grouped side rail, a **Find anything** box, and Auto, Light and Dark themes.
+- A real-time dashboard: nodes, storage, Ceph, HA and quorum, GPUs, network, bandwidth and power.
+- Works on a phone and installs as an app.
 
 ---
 
-## Competitive Position
+## In progress / partly built
 
-| Feature | HyperProx | PegaProx | PDM | Coolify/Dokploy |
-|---|---|---|---|---|
-| Proxy management | ✅ | ❌ | ❌ | Partial |
-| DNS management | ✅ | ❌ | ❌ | ❌ |
-| SSL lifecycle | ✅ | ❌ | ❌ | Partial |
-| Network storage health | ✅ v1.0 | ❌ | ❌ | ❌ |
-| Smart suggestion engine | ✅ v1.0 | ❌ | ❌ | ❌ |
-| AI deployment wizard | ✅ v1.0 | ❌ | ❌ | ❌ |
-| Bundled monitoring | ✅ | ❌ | ❌ | ❌ |
-| Docker install | ✅ | ❌ | ❌ | ✅ |
-| curl \| bash install | ✅ | ✅ | ❌ | ✅ |
-| Multi-cluster | ✅ (Command center and Updates; HA home only) | ✅ | ✅ | ❌ |
-| Cross-cluster migration | ✅ v2.0 | ✅ | ❌ | ❌ |
-| ESXi migration | ✅ v2.0 | ✅ | ❌ | ❌ |
-| XCP-NG support | ✅ v2.0 | ✅ | ❌ | ❌ |
-| VPN management | ✅ v2.0 | ❌ | ❌ | ❌ |
-| RBAC | ✅ v2.0 | ✅ | ✅ | Partial |
-| CVE scanner | ✅ v2.0 | ✅ | ❌ | ❌ |
-| PVE hardening | ✅ v2.0 | ✅ | ❌ | ❌ |
-| Bare metal installer | ✅ v2.0 | ❌ | ✅ | ❌ |
-| Load balancing (DRS) | ❌ | ✅ | ❌ | ❌ |
-| Free & open source | ✅ AGPL v3 | ✅ AGPL v3 | ✅ AGPL v3 | ✅ |
+### Network storage health
 
-**HyperProx owns the application delivery layer. No competitor connects proxy + DNS + SSL + AI + network storage health in a single platform.**
+Born from an offline CIFS/NFS mount that silently caused 10-second node_exporter scrape timeouts and false
+NodeDown alerts with no obvious cause.
+
+**Built:** the Storage page lists NFS and CIFS storages on every node, and the Command center shows each NAS
+with how full it is, including mounts Proxmox does not list.
+
+**Not built:**
+- A per-node mount status (online, unreachable, degraded) with a "last seen online" time.
+- Named alerts ("NAS-Storage (CIFS) unreachable on node1"), not just NodeDown, cleared when the mount
+  returns.
+- Root-cause correlation: when a node's scrape is slow or failing, check that node for offline mounts and
+  show it as the likely cause.
+- AI assistant awareness of the same.
+
+### Ceph: measurement, not just status
+
+The stock Ceph panel answers "is it green". The questions that cost time are "what changed", "what is slow",
+and "what is unsafe to touch".
+
+**Built:** restart and reboot safety inside Updates (see above), Ceph packages levelled across nodes in an
+update round, and OSD latency on the Storage page.
+
+**Not built:**
+- **Outdated daemon detection, done properly.** A daemon is outdated when the installed package on its node
+  is newer than the running daemon. Show it per daemon, grouped by node, with both versions side by side.
+- **A version-skew view**, called out loudly. A split-version cluster reports healthy and is not a state to
+  sit in.
+- **"Upgrade Ceph" as its own cluster-level action**, outside a full update round: installed, available and
+  running versions per node first; `--only-upgrade` on the Ceph packages; packages first and restarts
+  second as separate gated steps; and the package cache cleaned so a small root filesystem does not push a
+  monitor under its free-space threshold mid-upgrade.
+- **A guided rolling restart on its own**: mon, mgr, osd, mds in order, one daemon at a time, `noout` set
+  and cleared, a health gate between steps. Where a pool has no replicas, smallest OSD first, and each step
+  says what goes offline in gigabytes and percent of the pool.
+- **Slow-op history**: which OSDs, since when, on which device, and whether it is getting worse.
+- **Per-OSD benchmarks** stored over time, so a slow OSD shows as a trend against its peers.
+- **Pool detail**: PG count and whether autoscale agrees, per-pool IOPS and throughput, and a projected full
+  date.
+- **Device health** (SMART, power-on hours, unsafe shutdowns, reallocated sectors) next to the OSD it
+  backs.
+- **Single-failure-domain statements**: all of a pool's OSDs on one node, or a `size=1` pool, shown once as
+  an accepted risk with its blast radius instead of a health warning people learn to ignore.
+
+### More on remote clusters
+
+**Built:** see Clusters above. **Not built:** high availability and GPU sharing on a remote (labelled "home
+cluster only" in the interface), Proxmox figures in Grafana for a remote (its own PVE exporter), Sync and
+Move in Send files, and editing guest settings or deploying a service from the AI assistant.
+
+### Home Assistant
+
+**Built:** see Apps & Plug-ins above. **Not built:** locks and alarm panels that need a code, live state over
+Home Assistant's WebSocket instead of refreshing every few seconds, and control from the AI assistant (it can
+read the first house today, on purpose nothing more).
+
+### MeshCentral
+
+**Built:** the plug-in finds MeshCentral npm installs in guests and updates them through Updates.
+**Not built:** it holds no MeshCentral login, so it shows no devices and offers no remote desktop.
+
+### Backups
+
+**Built:** the last backup per cluster on the Command center, back up now on any cluster, and the assistant
+answers questions about backup runs. **Not built:** anything that reads Proxmox Backup Server itself.
+
+### Audit and access control
+
+**Built:** actions are written to an audit log, and four roles apply to everything. **Not built:** a page to
+read the audit log, a timeline that joins it with the vault's event log, roles scoped to a cluster, node or
+guest, and temporary users.
+
+### Smart suggestions
+
+**Built, as separate pieces:** A records that differ from the WAN IP are flagged with a one-click DDNS
+update, a certificate whose check turns bad (or good again) is notified, Prometheus's node list follows nodes joining, and the
+Needs attention list collects problems. **Not built:** one engine that connects these, such as "a new proxy
+host has no DNS record, create one?". Every suggestion would still need you to confirm it.
+
+### Console
+
+**Built:** a guest's **Console** tab opens an SSH pane in the Deck. **Not built:** a real console for guests
+SSH cannot reach (see Next).
+
+---
+
+## Next
+
+The test for this list: **an operator can run a normal week without opening the Proxmox web UI or an SSH
+session.** Today consoles, templates, Ceph maintenance and backups still send you there. In rough order:
+
+1. **The six-point standard for every catalogue install.** An app is not installed until it has:
+   an address, a proxy host and a certificate; its login in the vault; a backup; monitoring with alerts; a
+   place under the update policy; and a plug-in panel. The catalogue checks each point and says which are
+   missing. Today the catalogue makes the container, installs the app, checks that it answers, and fills in
+   the HyperProx setting that was waiting for it.
+2. **MeshCentral remote desktop**: a catalogue recipe that installs MeshCentral, an adopt flow for an
+   existing install, and its devices and remote desktop on the plug-in page.
+3. **A Proxmox Backup Server plug-in** with datastore use, job history and retention, and **automatic
+   restore tests**: restore a recent backup to a throwaway guest on a schedule, check it starts and holds
+   data, then remove it. A backup nobody has restored is not known to work.
+4. **Catalogue packs**: one install for a set of apps that belong together, each meeting the six-point
+   standard. Planned packs: family server, network, media automation, and home security with Frigate.
+5. **Consoles: when SSH cannot reach.** The Deck reaches every guest over SSH, which is the path that is
+   missing when you need a console most: a Windows VM, an appliance with no shell, a guest whose network is
+   broken, a VM stuck at boot.
+   - noVNC as a Deck pane type, beside SSH panes, with the same tabs, splits and layouts. Proxmox provides
+     the console (`vncproxy` and `vncwebsocket`).
+   - The stream relayed through the HyperProx API, never browser to Proxmox, so the browser never sees a
+     Proxmox ticket and the console works wherever HyperProx is reachable.
+   - termproxy for containers, through the same xterm.js terminal, so a container with no SSH or no network
+     still gets a shell.
+   - Offered automatically when an SSH pane cannot connect.
+   - Send Ctrl-Alt-Del, paste as typed keystrokes, scale to pane, fullscreen.
+6. **Ceph operations**: the unbuilt part of "Ceph: measurement, not just status" above.
+7. **Releases and self-update**: versioned, checksum-verified builds instead of installing whatever `main`
+   is, and `hyperprox update`, `rollback` and `uninstall`. Today you update with `git pull` and `deploy.sh`.
+   The design is in [docs/superpowers/specs/2026-10-06-installer-design.md](docs/superpowers/specs/2026-10-06-installer-design.md).
+8. **Demo mode and screenshots**: run HyperProx against made-up data so people can try it without a
+   cluster, and real screenshots in the README.
+9. **The hyperprox.dev website.**
+10. **More integrations**:
+    - DNS providers beyond GoDaddy: Cloudflare, Namecheap, Route 53, Porkbun, with a provider chosen per
+      domain. (The credential form already has Cloudflare fields; there is no Cloudflare client.)
+    - Email notifications.
+    - LDAP / Active Directory and OIDC / SSO sign-in.
+
+Also not built, and wanted:
+
+- **Templates and cloning**: convert a guest to a template, full or linked clones, bulk clones with a
+  naming pattern and sequential addresses, a cloud-init editor for VMs, and provisioning profiles (a named
+  bundle of cores, memory, storage, network and features) so "a standard Docker container here" stops being
+  a checklist someone remembers.
+- **Configuration export**: a point-in-time export of HyperProx's configuration, with secrets encrypted by a
+  passphrase, that a fresh install can restore.
+- **The rest of the vault design**: temporary users, owner recovery, and the audit timeline
+  ([docs/superpowers/specs/2026-10-14-vault-gate-design.md](docs/superpowers/specs/2026-10-14-vault-gate-design.md)).
+- The remote-cluster, Home Assistant and network-storage remainders listed under In progress.
+
+---
+
+## Later
+
+Ideas, not plans. None of these has code today.
+
+- **Cross-cluster live migration**: move guests between Proxmox clusters, with resource checks first,
+  progress, and rollback.
+- **ESXi import**: bring VMware workloads into Proxmox, with disk conversion and network mapping, for people
+  leaving VMware.
+- **XCP-ng**: manage Xen pools and VMs beside Proxmox.
+- **Bare metal**: a Proxmox installer with HyperProx included, post-install bootstrap, adding nodes from the
+  dashboard, and a major-version upgrade wizard.
+- **Security scanning**: known CVEs across nodes and guests, and guided Proxmox host hardening.
+- **A commercial tier** for MSPs and larger deployments. The community edition stays AGPL v3.
 
 ---
 
@@ -280,7 +347,7 @@ Bug reports, feature requests, and pull requests welcome via [GitHub Issues](htt
 ## License
 
 [AGPL v3](LICENSE) — free for personal and open-source use.  
-Commercial licensing for MSPs and enterprise deployments — coming in v2.0.
+Commercial licensing for MSPs and enterprise deployments is an idea for later (see above).
 
 ---
 
