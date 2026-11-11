@@ -18,6 +18,7 @@ import {
 } from '../lib/terminal-hosts'
 import { PLUGINS }    from '../plugins'
 import { getSettings } from '../lib/plugin-host'
+import { ipFromLxcNet, isNodeLoginId, resolveTerminalTarget, terminalIdProblem, terminalTargetDeps } from '../lib/terminal-targets'
 
 
 export interface TerminalHost {
@@ -35,16 +36,6 @@ export interface TerminalHost {
   /** False for an appliance CLI, where probing for tmux wastes a round trip. */
   tmux?:   boolean
   hint?:   string
-}
-
-/** Pull an IPv4 out of an LXC netN line: name=eth0,...,ip=10.0.0.11/24,... */
-function ipFromLxcNet(config: Record<string, any>): string | null {
-  for (const [k, v] of Object.entries(config)) {
-    if (!/^net\d+$/.test(k) || typeof v !== 'string') continue
-    const m = v.match(/(?:^|,)ip=([0-9.]+)(?:\/\d+)?/)
-    if (m && m[1] !== '0.0.0.0') return m[1]
-  }
-  return null
 }
 
 export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
@@ -110,7 +101,8 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
         status: 'running',
         ip:     m.address,
         port:   m.port,
-        hasCredential: credIds.has(credentialId(m.id)) || shared,
+        // The shared login is for cluster guests only (lib/ssh-broker.ts loadCredential).
+        hasCredential: credIds.has(credentialId(m.id)),
         source: 'manual',
       }))
 
@@ -135,7 +127,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
             status: 'running',
             ip:     addresses[id] ?? new URL(base).hostname,
             port:   console_.defaultPort,
-            hasCredential: credIds.has(credentialId(id)) || shared,
+            hasCredential: credIds.has(credentialId(id)),
             source: 'plugin',
             tmux:   console_.tmux !== false,
             hint:   console_.hint,
@@ -154,7 +146,8 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
   // are never returned by any route.
   fastify.get('/credentials', async (_req, reply) => {
     try {
-      const creds = await listCredentials()
+      // Node logins live in the same store; they are not the Terminal's, so they are not listed here.
+      const creds = (await listCredentials()).filter(c => !isNodeLoginId(c.id))
       return {
         success: true,
         data: {
@@ -177,6 +170,9 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
         '[terminal] credential save requested',
       )
 
+      // Never a node's login (Settings → Setup checklist keeps those) or the shared one under its own name.
+      const refused = terminalIdProblem(req.params.id)
+      if (refused) return reply.status(isNodeLoginId(req.params.id) ? 403 : 400).send({ success: false, error: refused })
       if (!username?.trim()) {
         return reply.status(400).send({ success: false, error: 'A username is required' })
       }
@@ -203,6 +199,8 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
   )
 
   fastify.delete<{ Params: { id: string } }>('/credentials/:id', async (req, reply) => {
+    const refused = terminalIdProblem(req.params.id)
+    if (refused) return reply.status(isNodeLoginId(req.params.id) ? 403 : 400).send({ success: false, error: refused })
     try {
       await removeCredential(req.params.id)
       return { success: true }
@@ -250,14 +248,17 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Params: { id: string }; Body: { host: string; port?: number } }>(
     '/hosts/:id/enable-persistence',
     async (req, reply) => {
-      const host = (req.body?.host ?? '').trim()
-      const port = Number(req.body?.port) || 22
-      if (!host) return reply.status(400).send({ success: false, error: 'No host address given' })
+      // The body's host and port are ignored: the login goes only where the id says (lib/terminal-targets.ts).
+      const refused = terminalIdProblem(req.params.id)
+      if (refused) return reply.status(isNodeLoginId(req.params.id) ? 403 : 400).send({ success: false, error: refused })
 
       let cred
       try { cred = await loadCredential(req.params.id) }
       catch (e: any) { return reply.status(500).send({ success: false, error: e.message }) }
-      if (!cred) return reply.status(400).send({ success: false, error: `No saved login for ${host}.` })
+      if (!cred) return reply.status(400).send({ success: false, error: `No saved login for ${req.params.id}.` })
+      let host: string, port: number
+      try { ({ host, port } = await resolveTerminalTarget(req.params.id, cred.port, terminalTargetDeps())) }
+      catch (e: any) { return reply.status(400).send({ success: false, error: e.message }) }
 
       // Covers Debian/Ubuntu, Alpine, RHEL family and Arch. Anything else is
       // reported rather than guessed at.
@@ -307,14 +308,17 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Params: { id: string }; Body: { host: string; port?: number } }>(
     '/hosts/:id/tmux-sessions',
     async (req, reply) => {
-      const host = (req.body?.host ?? '').trim()
-      const port = Number(req.body?.port) || 22
-      if (!host) return reply.status(400).send({ success: false, error: 'No host address given' })
+      // The body's host and port are ignored: the login goes only where the id says (lib/terminal-targets.ts).
+      const refused = terminalIdProblem(req.params.id)
+      if (refused) return reply.status(isNodeLoginId(req.params.id) ? 403 : 400).send({ success: false, error: refused })
 
       let cred
       try { cred = await loadCredential(req.params.id) }
       catch (e: any) { return reply.status(500).send({ success: false, error: e.message }) }
-      if (!cred) return reply.status(400).send({ success: false, error: `No saved login for ${host}.` })
+      if (!cred) return reply.status(400).send({ success: false, error: `No saved login for ${req.params.id}.` })
+      let host: string, port: number
+      try { ({ host, port } = await resolveTerminalTarget(req.params.id, cred.port, terminalTargetDeps())) }
+      catch (e: any) { return reply.status(400).send({ success: false, error: e.message }) }
 
       // `tmux ls` exits non-zero when no server is running; that is an empty
       // list, not an error.

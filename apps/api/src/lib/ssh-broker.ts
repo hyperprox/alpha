@@ -82,12 +82,26 @@ export async function listCredentials(): Promise<Array<{ id: string; updatedAt: 
   return rows.map(r => ({ id: r.key, updatedAt: r.updatedAt }))
 }
 
+/** Thrown for an id the Terminal must never use: a node login (node-<name>) or the shared login itself. */
+export class CredentialIdRefused extends Error {
+  constructor(message: string) { super(message); this.name = 'CredentialIdRefused' }
+}
+
 /**
- * Resolve the credential for a host: its own first, then the shared one.
+ * Resolve the credential for a host: its own first, then (for a cluster guest only) the shared one.
  * Returns null when neither exists, so the caller can prompt.
+ *
+ * Node logins share this store (hyperprox:deck/ssh, `node-<name>`) but are never returned here: they are
+ * HyperProx's root logins to the hypervisors (lib/node-exec.ts nodeCredential reads them), and an operator who
+ * may open a guest pane must not be able to open one with a node's login. The shared login is for the shelf
+ * of guests it was saved for, not for a hand-added host or a plug-in's device.
  */
 export async function loadCredential(id: string): Promise<TerminalCredential | null> {
-  for (const candidate of [credentialId(id), SHARED_CREDENTIAL_ID]) {
+  const key = credentialId(id)
+  if (key.toLowerCase().startsWith('node-')) throw new CredentialIdRefused('Node logins are not available in the Terminal.')
+  if (key === SHARED_CREDENTIAL_ID) throw new CredentialIdRefused('The shared login is used only through a guest\'s own id.')
+  const candidates = /^(lxc|qemu)-\d{1,9}$/.test(key) ? [key, SHARED_CREDENTIAL_ID] : [key]
+  for (const candidate of candidates) {
     const raw = await getCredential(CREDENTIAL_CATEGORY, CRED_PROVIDER, candidate)
     if (raw) {
       try { return JSON.parse(raw) as TerminalCredential }
@@ -260,8 +274,9 @@ export function runCommand(
     const client = new Client()
     let out = ''
     let settled = false
+    let refusal: Error | null = null
 
-    const fail = (e: Error) => { if (!settled) { settled = true; try { client.end() } catch {} ; reject(e) } }
+    const fail = (e: Error) => { if (!settled) { settled = true; try { client.end() } catch {} ; reject(refusal ?? e) } }
 
     client.on('error', e => fail(e as Error))
     client.on('ready', () => {
@@ -279,11 +294,16 @@ export function runCommand(
 
     const config: ConnectConfig = {
       host, port, username: cred.username, readyTimeout: 15_000,
-      // The host key is already pinned by the session path; reuse that pin.
+      // The host key must already be pinned (a Terminal pane pins it on first connect, and shows it). A host
+      // with no pin is refused before any login is sent: this runs a command as that login, unattended.
       hostVerifier: (key: Buffer, verified: (ok: boolean) => void) => {
         const fp = fingerprintOf(key)
         getCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, credentialId(`${host}:${port}`))
-          .then(pinned => verified(!pinned || pinned === fp))
+          .then(pinned => {
+            if (!pinned) refusal = new Error(`${host}:${port} has no pinned host key yet (it presents ${fp}). Open it in a Terminal pane first, check the key it shows, then try again.`)
+            else if (pinned !== fp) refusal = new Error(`Host key for ${host}:${port} has changed (pinned ${pinned}, offered ${fp}). Refusing to connect.`)
+            verified(!!pinned && pinned === fp)
+          })
           .catch(() => verified(false))
       },
     }

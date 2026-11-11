@@ -607,9 +607,16 @@ Applying a change asks for your master password again.
 ### Terminal (the Deck)
 
 SSH in the browser to every guest (addresses come from Proxmox) and to hosts you add by hand, such as
-a router or a NAS. One shared login can cover every host that has none of its own. Sessions run in
-tmux on the target, so they survive closing the tab; a host without tmux gets a plain shell and an
-offer to install it. The **Sessions** menu opens a host's existing tmux sessions in their own panes.
+a router or a NAS. One shared login can cover every cluster guest that has none of its own (not hand-added
+hosts or plug-in devices). Sessions run in tmux on the target, so they survive closing the tab; a host
+without tmux gets a plain shell and an offer to install it. The **Sessions** menu opens a host's existing
+tmux sessions in their own panes. Installing tmux and listing sessions run only on a host whose key is
+already pinned (open it in a pane first).
+
+HyperProx decides where a saved login is sent: the address comes from Proxmox, the address saved with the
+login, the hand-added host or the plug-in's settings, never from the browser. Node logins (the root logins
+HyperProx keeps for its own node work) are not Terminal logins: no pane can open one, and the Terminal
+cannot list, replace or remove them (Settings → Setup checklist manages them).
 
 Open hosts from the palette (**+** or **Ctrl+K** on Windows and Linux, **Cmd+K** on macOS). Panes can
 be tabs, columns, rows or a grid, and layouts can be saved by name. Host keys are pinned on first

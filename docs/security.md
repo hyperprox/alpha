@@ -146,6 +146,12 @@ where the test passed.
 - **Where it lives.** In the vault, in the `hyperprox:deck/ssh` item, one hidden field per node. Never in
   `.env`, a file, Postgres, a log or the browser: the page sends it once and gets back only which nodes
   accepted it.
+- **Not a Terminal login.** The Terminal's saved logins live in the same item, but no Terminal route or socket
+  reads, lists, replaces or removes a `node-<name>` field (403), so an operator who may open guest panes can
+  never open one with a node's root login. The Terminal works out where any login is sent from the pane's id
+  (the guest's Proxmox config or the address saved with it, the hand-added host, the plug-in's settings) and
+  ignores the address the browser sends. Its shared login applies to cluster guests only, and its one-off
+  commands (install tmux, list sessions) refuse a host whose key is not pinned before sending the login.
 - **Before the vault exists.** The setup wizard runs before anyone has created the owner account. A node
   login (or a GoDaddy key) given to it is held in the wizard's memory only. When setup finishes, the wizard
   hands it to the API over loopback (`POST /api/auth/setup-handoff`), which answers only to a request
