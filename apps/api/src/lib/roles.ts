@@ -118,6 +118,10 @@ const HA_RECONFIRM = /^\/api\/ha\/(plans\/[^/]+\/apply|nodes\/[^/]+\/hostkey\/pi
 // tokens off them too.
 const HA_CONTROL_ACT = /^\/api\/plugins\/home-assistant\/instances\/[^/]+\/actions$/
 const HA_CONTROL_RECONFIRM = /^\/api\/plugins\/home-assistant\/instances(\/(?!probe-certificate$)[^/]+(\/secure-actions)?)?$/
+// QNAP (routes/qnap.ts). A quick SMART test is operator; restart, shut down and every change to a NAS (it stores a
+// login) are admin and re-confirmed, which keeps API tokens off them too.
+const QNAP_ACT = /^\/api\/plugins\/qnap\/instances\/[^/]+\/actions$/
+const QNAP_RECONFIRM = /^\/api\/plugins\/qnap\/instances(\/(?!probe-certificate$)[^/]+(\/secure-actions)?)?$/
 // A plug-in's settings hold the address its stored credential is sent to: changing them is re-confirmed (which
 // also keeps API tokens out).
 const PLUGIN_SETTINGS = /^\/api\/plugins\/[^/]+\/settings$/
@@ -221,6 +225,7 @@ export function requiredRole(method: string, path: string): Role | null {
 
   if (m === 'POST' && POWER.test(p)) return 'operator'
   if (m === 'POST' && HA_CONTROL_ACT.test(p)) return 'operator'
+  if (m === 'POST' && QNAP_ACT.test(p)) return 'operator'
   for (const [tm, re] of TERMINAL_OPERATOR) if (m === tm && re.test(p)) return 'operator'
 
   return 'admin'
@@ -241,6 +246,7 @@ export function needsReconfirm(method: string, path: string): boolean {
   if (m === 'POST' && GUEST_CONFIG_APPLY.test(p)) return true
   if (m === 'POST' && HA_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && HA_CONTROL_RECONFIRM.test(p)) return true
+  if (m !== 'GET' && m !== 'HEAD' && QNAP_RECONFIRM.test(p)) return true
   if (m === 'PUT' && PLUGIN_SETTINGS.test(p)) return true
   // Creating or revoking an API token.
   if ((m === 'POST' || m === 'DELETE') && TOKENS.test(p)) return true

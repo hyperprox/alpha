@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<QDocRoot version="1.0">
+<authPassed><![CDATA[1]]></authPassed><model><modelName><![CDATA[TS-431P]]></modelName><internalModelName><![CDATA[TS-431P]]></internalModelName><platform><![CDATA[TS-NASARM_64]]></platform><displayModelName><![CDATA[TS-431P]]></displayModelName><storage_v2>1</storage_v2>
+</model>
+<firmware><version><![CDATA[5.2.1]]></version><number><![CDATA[2930]]></number><build><![CDATA[20241001]]></build><patch><![CDATA[0]]></patch></firmware>
+<hostname><![CDATA[NAS-HOME]]></hostname>
+<func><name><![CDATA[S_MENU_40]]></name><ownContent><root>
+<cpu_usage><![CDATA[12.5 %]]></cpu_usage><total_memory><![CDATA[3946.1]]></total_memory><free_memory><![CDATA[1203.4]]></free_memory>
+<nic_cnt><![CDATA[2]]></nic_cnt>
+<rx_packet1><![CDATA[90210]]></rx_packet1><tx_packet1><![CDATA[80420]]></tx_packet1><err_packet1><![CDATA[0]]></err_packet1><eth_status1><![CDATA[1]]></eth_status1><eth_max_speed1><![CDATA[1000]]></eth_max_speed1><eth_ip1><![CDATA[10.20.30.50]]></eth_ip1><eth_mask1><![CDATA[255.255.255.0]]></eth_mask1><eth_mac1><![CDATA[00:00:5E:00:53:02]]></eth_mac1><eth_usage1><![CDATA[DHCP]]></eth_usage1><dname1><![CDATA[Adapter 1]]></dname1>
+<rx_packet2><![CDATA[0]]></rx_packet2><tx_packet2><![CDATA[0]]></tx_packet2><err_packet2><![CDATA[0]]></err_packet2><eth_status2><![CDATA[0]]></eth_status2><eth_max_speed2><![CDATA[10000]]></eth_max_speed2><eth_ip2><![CDATA[]]></eth_ip2><eth_mac2><![CDATA[00:00:5E:00:53:03]]></eth_mac2><eth_usage2><![CDATA[DHCP]]></eth_usage2><dname2><![CDATA[Adapter 2]]></dname2>
+<uptime_day><![CDATA[3]]></uptime_day><uptime_hour><![CDATA[2]]></uptime_hour><uptime_min><![CDATA[1]]></uptime_min><uptime_sec><![CDATA[0]]></uptime_sec>
+<disk_num><![CDATA[4]]></disk_num>
+<disk_installed1><![CDATA[1]]></disk_installed1><tempc1><![CDATA[36]]></tempc1>
+<disk_installed2><![CDATA[1]]></disk_installed2><tempc2><![CDATA[38]]></tempc2>
+<disk_installed3><![CDATA[1]]></disk_installed3><tempc3><![CDATA[41]]></tempc3>
+<disk_installed4><![CDATA[1]]></disk_installed4><tempc4><![CDATA[57]]></tempc4>
+<HDTempWarnT><![CDATA[55]]></HDTempWarnT><HDTempErrT><![CDATA[60]]></HDTempErrT><SSDTempWarnT><![CDATA[70]]></SSDTempWarnT>
+<sys_tempc><![CDATA[45]]></sys_tempc><cpu_tempc><![CDATA[61]]></cpu_tempc><SysTempWarnT><![CDATA[57]]></SysTempWarnT><SysTempErrT><![CDATA[70]]></SysTempErrT>
+<sysfan_count><![CDATA[1]]></sysfan_count><sysfan1><![CDATA[1120]]></sysfan1><sysfan_stat1><![CDATA[0]]></sysfan_stat1>
+<serial_number><![CDATA[Q000Y00000]]></serial_number><server_name><![CDATA[NAS-HOME]]></server_name>
+</root></ownContent></func>
+</QDocRoot>

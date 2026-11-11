@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<QDocRoot version="1.0">
+<authPassed><![CDATA[1]]></authPassed><model><modelName><![CDATA[TS-119P II]]></modelName><internalModelName><![CDATA[TS-119]]></internalModelName><platform><![CDATA[TS-NASARM]]></platform><customModelName><![CDATA[]]></customModelName><displayModelName><![CDATA[TS-119P II]]></displayModelName><storage_v2>0</storage_v2>
+</model>
+<firmware><version><![CDATA[4.3.3]]></version><number><![CDATA[2784]]></number><build><![CDATA[20240619]]></build><patch><![CDATA[0]]></patch><buildTime><![CDATA[2024/06/19]]></buildTime></firmware>
+<rfs_bits><![CDATA[32]]></rfs_bits><specVersion><![CDATA[1.0]]></specVersion><hostname><![CDATA[NAS-HOST]]></hostname><DemoSiteSuppurt><![CDATA[no]]></DemoSiteSuppurt><customLogo><customFrontLogo><![CDATA[]]></customFrontLogo><customLoginLogo><![CDATA[]]></customLoginLogo></customLogo>
+<volumeList><volume><is_default_volume><![CDATA[1]]></is_default_volume><volumeStat><![CDATA[single]]></volumeStat><Progress><![CDATA[-1]]></Progress><volumeDisks><![CDATA[ 1 ]]></volumeDisks><volumeStatus><![CDATA[0]]></volumeStatus><volumeMngStatus><![CDATA[0]]></volumeMngStatus><volumeValue><![CDATA[1]]></volumeValue><freeSize><![CDATA[1367]]></freeSize><fstype><![CDATA[104]]></fstype></volume>
+</volumeList>
+<volumeUseList><volumeUse><volumeValue><![CDATA[1]]></volumeValue><total_size><![CDATA[2951926665216]]></total_size><free_size><![CDATA[1471603503104]]></free_size><folder_element><sharename><![CDATA[Multimedia]]></sharename><used_size><![CDATA[2273280]]></used_size></folder_element>
+<folder_element><sharename><![CDATA[Download]]></sharename><used_size><![CDATA[4096]]></used_size></folder_element>
+<folder_element><sharename><![CDATA[Web]]></sharename><used_size><![CDATA[8192]]></used_size></folder_element>
+<folder_element><sharename><![CDATA[Public]]></sharename><used_size><![CDATA[1615421440]]></used_size></folder_element>
+<folder_element><sharename><![CDATA[homes]]></sharename><used_size><![CDATA[40960]]></used_size></folder_element>
+<folder_element><sharename><![CDATA[Movies]]></sharename><used_size><![CDATA[724224774144]]></used_size></folder_element>
+<folder_element><sharename><![CDATA[TV Shows]]></sharename><used_size><![CDATA[711904952320]]></used_size></folder_element>
+<folder_element><sharename><![CDATA[Programs]]></sharename><used_size><![CDATA[1252581376]]></used_size></folder_element>
+<folder_element><sharename><![CDATA[music]]></sharename><used_size><![CDATA[36612853760]]></used_size></folder_element>
+<folder_element><sharename><![CDATA[Data Backups]]></sharename><used_size><![CDATA[1125937152]]></used_size></folder_element>
+<folder_element><sharename><![CDATA[misc]]></sharename><used_size><![CDATA[4096]]></used_size></folder_element>
+<folder_element><sharename><![CDATA[System Reserved]]></sharename><used_size><![CDATA[1168912384]]></used_size><type><![CDATA[system]]></type></folder_element>
+<others_size><![CDATA[1476738850816]]></others_size><found_quota><![CDATA[0]]></found_quota></volumeUse>
+</volumeUseList>
+</QDocRoot>

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<QDocRoot version="1.0">
+<authPassed><![CDATA[1]]></authPassed><model><modelName><![CDATA[TS-119P II]]></modelName><internalModelName><![CDATA[TS-119]]></internalModelName><platform><![CDATA[TS-NASARM]]></platform><customModelName><![CDATA[]]></customModelName><displayModelName><![CDATA[TS-119P II]]></displayModelName><storage_v2>0</storage_v2>
+</model>
+<firmware><version><![CDATA[4.3.3]]></version><number><![CDATA[2784]]></number><build><![CDATA[20240619]]></build><patch><![CDATA[0]]></patch><buildTime><![CDATA[2024/06/19]]></buildTime></firmware>
+<rfs_bits><![CDATA[32]]></rfs_bits><specVersion><![CDATA[1.0]]></specVersion><hostname><![CDATA[NAS-HOST]]></hostname><DemoSiteSuppurt><![CDATA[no]]></DemoSiteSuppurt><customLogo><customFrontLogo><![CDATA[]]></customFrontLogo><customLoginLogo><![CDATA[]]></customLoginLogo></customLogo>
+<func><name><![CDATA[S_MENU_9]]></name><ownContent><fileMD5><![CDATA[null]]></fileMD5><Result><![CDATA[0]]></Result><uptimeSec><![CDATA[4164574]]></uptimeSec><rebootSuggest><![CDATA[1]]></rebootSuggest><countryCode><code><![CDATA[000000]]></code><abbr><![CDATA[GLB]]></abbr><name><![CDATA[Global]]></name></countryCode>
+<update_lock><![CDATA[0]]></update_lock><liveUpdate><enableLiveUpdate><![CDATA[1]]></enableLiveUpdate></liveUpdate>
+<agreeimprove><![CDATA[-1]]></agreeimprove><agree_beta><![CDATA[-1]]></agree_beta><agree_downgrade><![CDATA[0]]></agree_downgrade><liveUpdateStatus><![CDATA[done]]></liveUpdateStatus><new_feature_url><![CDATA[https://www.qnap.com/qts/]]></new_feature_url><newVersion><![CDATA[none]]></newVersion><updateCheckTime><![CDATA[2026/11/10 16:17:07]]></updateCheckTime><dateformatindex><![CDATA[1]]></dateformatindex><timeformat><![CDATA[24]]></timeformat><updateFinishTime><![CDATA[2024/08/12 21:30:32]]></updateFinishTime><doReboot><![CDATA[0]]></doReboot><update_remind_time><![CDATA[0]]></update_remind_time><mcu><mcu_version><![CDATA[--]]></mcu_version><mcu_need_update><![CDATA[0]]></mcu_need_update></mcu>
+</ownContent>
+</func>
+<sleepSupport><![CDATA[0]]></sleepSupport></QDocRoot>

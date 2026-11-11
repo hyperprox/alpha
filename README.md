@@ -741,6 +741,7 @@ wizard offers to remove only the container it made. See [docs/catalogue-wizard.m
 | MikroTik | A live map of internet, uplinks, router and subnets; CPU, memory, temperature and input-voltage rings; top talkers; port forwards; the log with errors highlighted. Also the per-device and per-interface tables, firewall, WireGuard and neighbours; feeds the bandwidth dials and offers an SSH console |
 | Plex activity | What is streaming now (progress, direct or transcode), internet and local bandwidth gauges, who watches most, what is watched most, and recent history, read through Tautulli |
 | Home Assistant | Your house as tiles by room, with quick actions, a light dial and a climate dial; plus unavailable entities, low batteries, pending updates and log errors, for each of your Home Assistant instances (see below) |
+| QNAP | Each NAS's drive bays with SMART health and temperature, volume rings, shares, temperature and load gauges, fans and firmware, with a quick SMART test, and restart and shut down behind the confirm step, for each of your NAS, a remote one included (see below) |
 | MeshCentral | Finds npm installs in guests and adds them to Updates. Its page says what it would need to show your devices; it holds no MeshCentral login, so it shows none |
 
 Each plug-in page opens with a summary header and a bar to jump between plug-ins (each with a health
@@ -829,6 +830,75 @@ controls stop until you pin its certificate or give it a LAN, Tailscale or `http
 remote server and it also appears on that server's page (a **Home Assistant** tab, in amber) and in
 the Command center. The Home Assistant you had already set up is the first house, called "Home", with
 nothing to redo.
+
+#### QNAP NAS
+
+Open **Plug-ins, QNAP** and press **Add a NAS** (admins; the master password is asked again, because a
+login is being stored). Each NAS you add gets its own tab. Its page opens with a header ring for how
+full it is and four readings: health, used of total, temperature and uptime. Under it:
+
+- **Drive bays**: one tile per disk with its bay, model, size, temperature and SMART word. The tile
+  glows green, amber or red with the disk's health (and says it in words). Tap one for its serial,
+  firmware and last self-test, and (operators and above) **Quick SMART test**.
+- **Volumes**: a ring per volume (used of size, status, which disks), and the storage pools on firmware
+  that has them.
+- **Temperature and load**: system and CPU temperature, CPU load and memory as gauges, and the fans
+  with their speed.
+- **Firmware**: the version, whether the NAS knows of a newer one, and when the NAS last checked.
+  HyperProx does not install firmware; do that on the NAS.
+- **Network** (each port, its link speed, address and current traffic) and **Shares** (each shared
+  folder with the space QTS counted for it).
+- **Power** (admins): **Restart NAS** and **Shut down NAS**. Each needs the master password re-entered
+  and the NAS's name typed. API tokens can never use them. Every attempt is in the audit log, and a
+  notification goes to your channels after each one.
+- **Details**: the same readings as plain tables.
+
+Nothing on the page deletes data. A NAS that cannot be read says why, and the page tries again every
+minute. Viewers see no serial numbers, host name, addresses or MAC addresses.
+
+**The login.** HyperProx signs in the way the QNAP web page does (`authLogin.cgi`), reads, and signs out
+again, every time. Give it a user of its own, not `admin` and not yours: a long unique password, 2-step
+verification off for that user (HyperProx cannot answer it), and **No access** on every shared folder.
+QTS lets only administrators read some details (SMART, firmware) and restart or shut down, so add the
+user to the administrators group only if you want those; the page names any part the NAS would not
+answer. If the NAS ever refuses the login, HyperProx stops asking (the page and the alerts both) until
+you save the login again or HyperProx restarts, so it never locks the account by retrying.
+
+**Addresses** follow the same rules as Home Assistant's: `http://` only to a private address (your
+LAN, Tailscale, WireGuard), checked when saved and on every use, never loopback, link-local or a
+metadata address. For `https://` with the NAS's own self-signed certificate, **Read certificate**,
+compare it with what your browser shows, and pin it.
+
+**A NAS beside a remote cluster.** Link it to that cluster under **Beside which server** and it turns
+amber. If its address is a private LAN address on that cluster's side (one HyperProx has no route to),
+HyperProx asks through the cluster: it opens one SSH session to a node of that cluster with the node
+login it already has (the same pinned, confirmed host key file copies and updates use), runs curl
+there, and gets only the answers back. A reading is two such sessions (sign in, then the reads and the
+sign-out). Nothing is installed on the server, nothing keeps running and no port is opened. The script
+goes in on stdin, and curl reads the address, the session id and the password from stdin too, so none
+of them shows in the server's process list. Through a cluster, the address must be the NAS's IP
+address (not a name), and certificate pins are not available (curl there cannot check one); use
+`http://` on the LAN, which the SSH session encrypts. **How to reach it** can force either way, and
+**Through which node** picks the node (the first one otherwise). Each use of the node login is audited
+(reads at most once per node every 10 minutes).
+
+**Alerts.** Every 5 minutes, while HyperProx is unlocked, each NAS with alerts on is read. You get one
+message (family *resources*) when a disk's SMART health turns warning or bad, a volume or pool is
+degraded or failed, a volume passes 90% full, a disk passes its warning temperature (the NAS's own,
+your setting for that NAS, or 55 °C), the system passes its warning temperature (60 °C if the NAS
+gives none) or the CPU 85 °C, or a fan stops; and one more when it clears. A temperature clears 3 °C
+under where it fired, a full volume under 88%. A NAS that cannot be read keeps what it had: not
+reading a disk is not the disk getting better.
+
+**Firmware.** Tested against QTS 4.3 on an ARM model (`storage_v2` off: no pools, no fans, no CPU
+sensor), where every read answered: `manaRequest.cgi?subfunc=sysinfo` (model, firmware, uptime, CPU,
+memory, temperatures, ports), `sysHealth`, `chartReq.cgi?chart_func=disk_usage` (volumes and share
+sizes), `qsmart.cgi?func=all_hd_data` (disks and SMART), `sysRequest.cgi?subfunc=firm_update`,
+`QSM40bandwidth` and the File Station share list. QTS 5 is read with the same calls plus the pool list
+(`disk_manage.cgi?store=poolInfo`); its answers are parsed from their documented shape and have not
+been checked against a QTS 5 NAS yet. The quick SMART test, restart and shut down calls have not been
+run against either firmware; when a NAS does not accept one, the page says so instead of claiming it
+worked.
 
 ### Settings
 

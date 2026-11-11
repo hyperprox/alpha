@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<QDocRoot version="1.0">
+<authPassed><![CDATA[1]]></authPassed><model><modelName><![CDATA[TS-119P II]]></modelName><internalModelName><![CDATA[TS-119]]></internalModelName><platform><![CDATA[TS-NASARM]]></platform><customModelName><![CDATA[]]></customModelName><displayModelName><![CDATA[TS-119P II]]></displayModelName><storage_v2>0</storage_v2>
+</model>
+<firmware><version><![CDATA[4.3.3]]></version><number><![CDATA[2784]]></number><build><![CDATA[20240619]]></build><patch><![CDATA[0]]></patch><buildTime><![CDATA[2024/06/19]]></buildTime></firmware>
+<rfs_bits><![CDATA[32]]></rfs_bits><specVersion><![CDATA[1.0]]></specVersion><hostname><![CDATA[NAS-HOST]]></hostname><DemoSiteSuppurt><![CDATA[no]]></DemoSiteSuppurt><customLogo><customFrontLogo><![CDATA[]]></customFrontLogo><customLoginLogo><![CDATA[]]></customLoginLogo></customLogo>
+<func><name><![CDATA[S_MENU_40]]></name><ownContent><root><timezone><![CDATA[(GMT+00:00) Greenwich Mean Time]]></timezone><cpu_usage><![CDATA[3.4 %]]></cpu_usage><total_memory><![CDATA[503.3]]></total_memory><free_memory><![CDATA[350.7]]></free_memory><nic_cnt><![CDATA[1]]></nic_cnt><rx_packet1>106758026</rx_packet1>
+<tx_packet1>1050025937</tx_packet1>
+<err_packet1>0</err_packet1>
+<eth_status1>1</eth_status1>
+<eth_max_speed1>1000</eth_max_speed1>
+<eth_ip1>10.20.30.40</eth_ip1>
+<eth_mask1>255.255.255.0</eth_mask1>
+<eth_mac1>00:00:5E:00:53:01</eth_mac1>
+<eth_usage1>STATIC</eth_usage1>
+<ipv6Enable><![CDATA[0]]></ipv6Enable><dnsInfo><DNS_LIST><![CDATA[ 192.0.2.53
+]]></DNS_LIST><DNS_LIST><![CDATA[ 192.0.2.54
+]]></DNS_LIST></dnsInfo>
+<WirelessSupport><![CDATA[1]]></WirelessSupport><Error><![CDATA[1]]></Error><ThunderboltSupport><![CDATA[0]]></ThunderboltSupport><uptime_day><![CDATA[48]]></uptime_day><uptime_hour><![CDATA[4]]></uptime_hour><uptime_min><![CDATA[49]]></uptime_min><uptime_sec><![CDATA[32]]></uptime_sec><disk_num>1</disk_num>
+<disk_installed1>1</disk_installed1>
+<tempc1>34</tempc1>
+<tempf1>93</tempf1>
+<HDTempWarnT><![CDATA[55]]></HDTempWarnT><HDTempErrT><![CDATA[60]]></HDTempErrT><SSDTempWarnT><![CDATA[70]]></SSDTempWarnT><SSDTempErrT><![CDATA[70]]></SSDTempErrT><sys_tempc>38</sys_tempc>
+<sys_tempf>100</sys_tempf>
+<SysTempWarnT><![CDATA[57]]></SysTempWarnT><SysTempErrT><![CDATA[70]]></SysTempErrT><sysfan_count>0</sysfan_count>
+<serial_number>Q000X00000</serial_number>
+<server_name><![CDATA[NAS-HOST]]></server_name><codepage><![CDATA[437]]></codepage></root>
+</ownContent>
+</func>
+</QDocRoot>

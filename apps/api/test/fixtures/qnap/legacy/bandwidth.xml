@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<QDocRoot version="1.0">
+<authPassed><![CDATA[1]]></authPassed><model><modelName><![CDATA[TS-119P II]]></modelName><internalModelName><![CDATA[TS-119]]></internalModelName><platform><![CDATA[TS-NASARM]]></platform><customModelName><![CDATA[]]></customModelName><displayModelName><![CDATA[TS-119P II]]></displayModelName><storage_v2>0</storage_v2>
+</model>
+<firmware><version><![CDATA[4.3.3]]></version><number><![CDATA[2784]]></number><build><![CDATA[20240619]]></build><patch><![CDATA[0]]></patch><buildTime><![CDATA[2024/06/19]]></buildTime></firmware>
+<rfs_bits><![CDATA[32]]></rfs_bits><specVersion><![CDATA[1.0]]></specVersion><hostname><![CDATA[NAS-HOST]]></hostname><DemoSiteSuppurt><![CDATA[no]]></DemoSiteSuppurt><customLogo><customFrontLogo><![CDATA[]]></customFrontLogo><customLoginLogo><![CDATA[]]></customLoginLogo></customLogo>
+<bandwidth_info><df_gateway><![CDATA[eth0]]></df_gateway><item><id><![CDATA[eth0]]></id><name><![CDATA[LAN 1]]></name><rx><![CDATA[7416]]></rx><tx><![CDATA[7678]]></tx></item>
+</bandwidth_info>
+</QDocRoot>
