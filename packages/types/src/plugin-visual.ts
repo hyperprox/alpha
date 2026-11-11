@@ -95,7 +95,8 @@ export interface MeshVisual {
   publicUrl: string | null
   /** What is needed before devices can be shown, in plain words. */
   needs:     string[]
-  devices?:  Array<{ name: string; os: string | null; online: boolean }>
+  /** One tile per device once connected. `id` is MeshCentral's node id, for the remote-desktop action to come. */
+  devices?:  Array<{ id: string; name: string; os: string | null; online: boolean; group: string | null }>
 }
 
 export type PluginVisual = PlexVisual | ArrVisual | UnmanicVisual | RouterVisual | MeshVisual

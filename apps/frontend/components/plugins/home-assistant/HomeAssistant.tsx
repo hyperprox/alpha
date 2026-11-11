@@ -20,6 +20,10 @@ import { useSession } from '@/lib/session'
 import { useClusters } from '@/lib/clusters'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { BusyNote, GhostButton, INPUT, LABEL, Modal, Notice, PrimaryButton } from '@/components/vault/ui'
+import { HudHeader, Icon, styles as vs } from '@/components/visual/kit'
+import { PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
+import pv from '@/components/plugins/visual/pages.module.css'
+import { ClimateCard, LightSheet, Sheet, Tile, ctl, isOn, kindOf } from './HomeVisual'
 
 const API = '/api/plugins/home-assistant'
 
@@ -36,10 +40,10 @@ interface Control {
   min?: number; max?: number; step?: number; unit?: string; value?: number | string | null; options?: string[]; confirm?: string
 }
 interface Device {
-  entityId: string; name: string; domain: string; tier: 'normal' | 'security'; unavailable: boolean
-  state: string; unit?: string; deviceClass?: string; controls: Control[]
+  entityId: string; name: string; domain: string; kind?: string; tier: 'normal' | 'security'; unavailable: boolean
+  state: string; unit?: string; deviceClass?: string; current?: number; controls: Control[]
 }
-interface DevicesData { areas: Array<{ name: string; devices: Device[] }>; warnings?: string[]; areaSource?: string; unreachable?: boolean; error?: string }
+interface DevicesData { areas: Array<{ name: string; devices: Device[] }>; warnings?: string[]; areaSource?: string; hiddenLed?: number; unreachable?: boolean; error?: string }
 interface Status { reachable: boolean; error: string | null; version: string | null; location: string | null; user: { name: string; isAdmin: boolean; isOwner: boolean } | null }
 
 const colour = (i: Instance) => (i.remote ? 'var(--remote)' : 'var(--accent)')
@@ -158,12 +162,27 @@ function DeviceCard({ d, inst, canNormal, canSecurity, ask, busy, note }: {
 
 const OPTIMISTIC: Record<string, string> = { turn_on: 'on', turn_off: 'off', lock: 'locking', unlock: 'unlocking', open: 'opening', close: 'closing', play: 'playing', pause: 'paused' }
 
+/** What one tap on a tile does: toggle it, play or pause it, lock or unlock it, run it. Null: open its controls. */
+function primaryControl(d: Device): Control | null {
+  const k = kindOf(d)
+  if (['light', 'switch', 'outlet', 'fan', 'siren'].includes(k)) return ctl(d, isOn(d) ? 'turn_off' : 'turn_on') ?? null
+  if (k === 'media') return ctl(d, d.state === 'playing' ? 'pause' : 'play') ?? null
+  if (k === 'lock') return ctl(d, d.state === 'locked' ? 'unlock' : 'lock') ?? null
+  if (k === 'scene' || k === 'script') return ctl(d, 'run') ?? null
+  if (k === 'button') return ctl(d, 'press') ?? null
+  return null
+}
+
 export function DevicesView({ inst }: { inst: Instance }) {
   const { role } = useSession()
   const [data, setData] = useState<DevicesData | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  const [bulk, setBulk] = useState<string | null>(null)
   const [notes, setNotes] = useState<Record<string, { text: string; ok: boolean }>>({})
+  const [last, setLast] = useState<{ text: string; ok: boolean } | null>(null)
   const [filter, setFilter] = useState('')
+  const [room, setRoom] = useState('All')
+  const [sheet, setSheet] = useState<null | { id: string; kind: 'light' | 'controls' }>(null)
   const [confirm, setConfirm] = useState<null | { phrase: string; name: string; run: (typed: string) => void }>(null)
   const [typed, setTyped] = useState('')
   const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
@@ -180,13 +199,14 @@ export function DevicesView({ inst }: { inst: Instance }) {
   // Live state: every 5 seconds while the tab is visible and nothing is being changed.
   useEffect(() => {
     void load()
-    const t = setInterval(() => { if (!document.hidden && !busy) void load() }, 5000)
+    const t = setInterval(() => { if (!document.hidden && !busy && !bulk) void load() }, 5000)
     return () => clearInterval(t)
-  }, [load, busy])
+  }, [load, busy, bulk])
 
   const patch = (entityId: string, state: string) => setData(d => d && ({ ...d, areas: d.areas.map(a => ({ ...a, devices: a.devices.map(x => x.entityId === entityId ? { ...x, state } : x) })) }))
 
-  const send = useCallback(async (d: Device, c: Control, value: number | string | undefined, phrase?: string, typedName?: string) => {
+  /** One action through the house's action route. Resolves true when Home Assistant accepted it. */
+  const send = useCallback(async (d: Device, c: Control, value: number | string | undefined, phrase?: string, typedName?: string, quiet = false): Promise<boolean> => {
     const secure = d.tier === 'security'
     setBusy(d.entityId)
     const before = d.state
@@ -197,13 +217,18 @@ export function DevicesView({ inst }: { inst: Instance }) {
     if (r.ok) {
       const res = r.body!.data
       patch(d.entityId, res.after?.state ?? before)
-      setNotes(n => ({ ...n, [d.entityId]: { text: res.message, ok: res.changed } }))
-      void load()
-      return
+      const note = { text: res.message, ok: res.changed }
+      setNotes(n => ({ ...n, [d.entityId]: note }))
+      if (!quiet) setLast(note)
+      if (!quiet) void load()
+      return true
     }
     patch(d.entityId, before)
-    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void send(d, c, value, phrase, typedName)); return }
-    setNotes(n => ({ ...n, [d.entityId]: { text: r.error ?? 'That did not work.', ok: false } }))
+    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void send(d, c, value, phrase, typedName)); return false }
+    const note = { text: `${d.name}: ${r.error ?? 'That did not work.'}`, ok: false }
+    setNotes(n => ({ ...n, [d.entityId]: note }))
+    setLast(note)
+    return false
   }, [inst.id, load])
 
   const ask: Ask = useCallback(async (d, c, value) => {
@@ -212,47 +237,152 @@ export function DevicesView({ inst }: { inst: Instance }) {
     if (d.tier === 'security' && c.confirm) {
       const phrase = c.confirm.replace('{value}', value === undefined ? '' : String(value))
       setTyped('')
+      setSheet(null)
       setConfirm({ phrase, name: d.name, run: t => void send(d, c, value, phrase, t) }); return
     }
     await send(d, c, value)
   }, [send])
 
+  const canNormal = atLeast(role, inst.policy.normalRole)
+  const canSecurity = atLeast(role, 'admin')
+  const allowedFor = (d: Device) => d.tier === 'security' ? canSecurity : canNormal
+  const whyNot = (d: Device) => d.tier === 'security' ? 'Security device: admins only, with the master password.' : `Controls need the ${inst.policy.normalRole} role.`
+
+  const all = useMemo(() => (data?.areas ?? []).flatMap(a => a.devices.map(d => ({ d, area: a.name }))), [data])
   const areas = useMemo(() => {
     const q = filter.trim().toLowerCase()
     if (!data) return []
-    return data.areas.map(a => ({ ...a, devices: q ? a.devices.filter(d => `${a.name} ${d.name} ${d.entityId}`.toLowerCase().includes(q)) : a.devices })).filter(a => a.devices.length)
-  }, [data, filter])
+    return data.areas
+      .filter(a => room === 'All' || a.name === room)
+      .map(a => ({ ...a, devices: a.devices.filter(d => !d.unavailable && (!q || `${a.name} ${d.name} ${d.entityId}`.toLowerCase().includes(q))) }))
+      .filter(a => a.devices.length)
+  }, [data, filter, room])
+  const offline = all.filter(x => x.d.unavailable)
+  const online = all.length - offline.length
+  const lightsOn = all.filter(x => kindOf(x.d) === 'light' && isOn(x.d))
+  const playing = all.filter(x => kindOf(x.d) === 'media' && x.d.state === 'playing')
+  const climate = all.find(x => kindOf(x.d) === 'climate' && !x.d.unavailable)
+  const target = climate ? ctl(climate.d, 'target_temperature')?.value : undefined
+
+  /**
+   * A quick action is several ordinary actions, one after another, each through the same route with its own tier
+   * check and audit row. Security-tier devices are left out: each of those needs its own confirm step.
+   */
+  const runAll = async (label: string, list: Array<{ d: Device; c: Control }>, skipped: number) => {
+    setBulk(label)
+    let ok = 0
+    for (const { d, c } of list) if (await send(d, c, undefined, undefined, undefined, true)) ok++
+    setBulk(null)
+    setLast({ ok: ok === list.length, text: `${label}: ${ok} of ${list.length} done.${skipped ? ` ${skipped} security device${skipped === 1 ? ' was' : 's were'} left alone; open each to confirm.` : ''}` })
+    void load()
+  }
+  const quick = (want: (d: Device) => boolean, action: string) => {
+    const hits = all.map(x => x.d).filter(d => !d.unavailable && want(d) && ctl(d, action))
+    return { list: hits.filter(d => d.tier === 'normal').map(d => ({ d, c: ctl(d, action)! })), skipped: hits.filter(d => d.tier === 'security').length }
+  }
+  const lightsOff = quick(d => kindOf(d) === 'light' && isOn(d), 'turn_off')
+  const pauseAudio = quick(d => kindOf(d) === 'media' && d.state === 'playing', 'pause')
+
+  const press = (d: Device) => {
+    if (!allowedFor(d)) { setSheet({ id: d.entityId, kind: 'controls' }); return }
+    const c = primaryControl(d)
+    if (c) void ask(d, c)
+    else setSheet({ id: d.entityId, kind: 'controls' })
+  }
+  const open = sheet ? all.find(x => x.d.entityId === sheet.id) : undefined
+  const roomNames = (data?.areas ?? []).map(a => a.name)
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className={`${vs.page} ${inst.remote ? vs.remote : ''}`}>
       <InstanceBand i={inst} />
       {!data && <BusyNote>Reading {inst.name}…</BusyNote>}
       {data?.unreachable && <Notice kind="error">{data.error ?? `${inst.name} is not answering.`} The page keeps trying every few seconds.</Notice>}
       {data && !data.unreachable && (
         <>
+          <HudHeader level={2} label={`${inst.name} overview`} eyebrow={`${inst.remote ? 'Remote' : 'Home'} · Home Assistant · live 5 s`} title={inst.name}
+            ring={{ value: all.length ? online / all.length : 0, text: `${online}/${all.length}`, label: 'devices online' }}
+            chips={[
+              { label: 'lights on', value: lightsOn.length, tone: lightsOn.length ? 'warm' : 'dim' },
+              { label: 'playing', value: playing.length, tone: playing.length ? 'accent' : 'dim' },
+              { label: 'A/C target', value: typeof target === 'number' ? `${target}°` : '—', tone: 'violet' },
+              { label: 'offline', value: offline.length, tone: offline.length ? 'crit' : 'dim' },
+            ]} />
+
+          {canNormal && (
+            <div className={pv.actions} role="group" aria-label="Quick actions">
+              <button type="button" className={pv.action} disabled={!!bulk || !lightsOff.list.length} onClick={() => void runAll('All lights off', lightsOff.list, lightsOff.skipped)}>
+                <Icon name="power" />{bulk === 'All lights off' ? 'Turning off…' : `All lights off${lightsOff.list.length ? ` (${lightsOff.list.length})` : ''}`}
+              </button>
+              <button type="button" className={pv.action} disabled={!!bulk || !pauseAudio.list.length} onClick={() => void runAll('Pause all audio', pauseAudio.list, pauseAudio.skipped)}>
+                <Icon name="mute" />{bulk === 'Pause all audio' ? 'Pausing…' : `Pause all audio${pauseAudio.list.length ? ` (${pauseAudio.list.length})` : ''}`}
+              </button>
+            </div>
+          )}
+          {last && <p className={pv.toast} role="status" style={{ color: last.ok ? 'var(--good)' : 'var(--warn-2)' }}>{last.text}</p>}
+
+          {roomNames.length > 1 && (
+            <div className={pv.rooms} role="group" aria-label="Rooms">
+              {['All', ...roomNames].map(r => (
+                <button key={r} type="button" className={pv.roomChip} aria-pressed={room === r} onClick={() => setRoom(r)}>
+                  {r}<i>{r === 'All' ? online : (data.areas.find(a => a.name === r)?.devices.filter(d => !d.unavailable).length ?? 0)}</i>
+                </button>
+              ))}
+            </div>
+          )}
           <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="Find a device or room" aria-label="Find a device or room" style={INPUT} />
           {(data.warnings ?? []).map(w => <Notice key={w} kind="warn">{w}</Notice>)}
-          {data.areaSource === 'none' && <small style={{ color: 'var(--text-dimmer)' }}>Home Assistant did not share its rooms with this token, so devices are not grouped.</small>}
-          {areas.length === 0 && <p className="text-sm" style={{ color: 'var(--text-muted)' }}>{filter ? 'Nothing matches.' : 'No devices HyperProx can control.'}</p>}
-          {areas.map(a => (
-            <section key={a.name} className="flex flex-col gap-2">
-              <h3 className="font-display font-semibold uppercase" style={{ fontSize: 15, letterSpacing: '0.06em', color: 'var(--text-dim)' }}>{a.name}</h3>
-              <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill,minmax(min(100%,17rem),1fr))' }}>
-                {a.devices.map(d => (
-                  <DeviceCard key={d.entityId} d={d} inst={inst} busy={busy === d.entityId} note={notes[d.entityId]} ask={ask}
-                    canNormal={atLeast(role, inst.policy.normalRole)} canSecurity={atLeast(role, 'admin')} />
-                ))}
-              </div>
-            </section>
-          ))}
+          {data.areaSource === 'none' && <small style={{ color: 'var(--text-dimmer)' }}>Home Assistant did not share its rooms with this token, so rooms are worked out from device names. Rooms set in Home Assistant take over when it shares them.</small>}
+          {!!data.hiddenLed && <small style={{ color: 'var(--text-dimmer)' }}>{data.hiddenLed} indicator-light switch{data.hiddenLed === 1 ? ' is' : 'es are'} hidden (a switch&apos;s own status LED).</small>}
+          {areas.length === 0 && <p className="text-sm" style={{ color: 'var(--text-muted)' }}>{filter ? 'Nothing matches.' : offline.length ? 'Every device here is offline.' : 'No devices HyperProx can control.'}</p>}
+
+          {areas.map(a => {
+            const active = a.devices.filter(isOn).length
+            return (
+              <section key={a.name} className={pv.room} aria-label={a.name}>
+                <div className={pv.roomHead}><h2>{a.name}</h2><small>{active ? `${active} ACTIVE` : 'ALL QUIET'}</small><span aria-hidden /></div>
+                <div className={pv.grid}>
+                  {a.devices.map(d => kindOf(d) === 'climate' && (ctl(d, 'target_temperature') || ctl(d, 'hvac_mode')) ? (
+                    <ClimateCard key={d.entityId} d={d} allowed={allowedFor(d)} busy={busy === d.entityId} why={whyNot(d)} onSet={(c, v) => void ask(d, c, v)} />
+                  ) : (
+                    <Tile key={d.entityId} d={d} busy={busy === d.entityId}
+                      pressLabel={!allowedFor(d) ? 'Shows why it cannot be controlled.' : primaryControl(d) ? `Tap to ${primaryControl(d)!.label.toLowerCase()}.` : 'Tap for its controls.'}
+                      onPress={() => press(d)}
+                      onMore={d.controls.length > 0 && (kindOf(d) === 'light' ? !!(ctl(d, 'brightness') || ctl(d, 'color_temp')) : d.controls.some(c => c.kind !== 'button') || d.controls.length > 2)
+                        ? () => setSheet({ id: d.entityId, kind: kindOf(d) === 'light' && d.tier === 'normal' ? 'light' : 'controls' }) : undefined}
+                      moreLabel={kindOf(d) === 'light' ? `Brightness and warmth for ${d.name}` : `All controls for ${d.name}`} />
+                  ))}
+                </div>
+              </section>
+            )
+          })}
+
+          {offline.length > 0 && (
+            <details className={pv.offline}>
+              <summary><span>Offline devices</span><em>{offline.length} NOT ANSWERING</em></summary>
+              <ul>{offline.map(x => <li key={x.d.entityId}>{x.d.name}</li>)}</ul>
+            </details>
+          )}
         </>
+      )}
+      {open && sheet?.kind === 'light' && (
+        <LightSheet d={open.d} room={open.area} allowed={allowedFor(open.d)} busy={busy === open.d.entityId} note={notes[open.d.entityId]} why={whyNot(open.d)}
+          onClose={() => setSheet(null)} onSet={(c, v) => void ask(open.d, c, v)}
+          onToggle={() => { const c = ctl(open.d, isOn(open.d) ? 'turn_off' : 'turn_on'); if (c) void ask(open.d, c) }} />
+      )}
+      {open && sheet?.kind === 'controls' && (
+        <Sheet title={open.d.name} sub={`${open.area}${open.d.tier === 'security' ? ' · security device' : ''}`} onClose={() => setSheet(null)}>
+          <div className={pv.controls}>
+            <DeviceCard d={open.d} inst={inst} busy={busy === open.d.entityId} note={notes[open.d.entityId]} ask={ask} canNormal={canNormal} canSecurity={canSecurity} />
+          </div>
+          <div className={vs.sheetRow}><button type="button" className={vs.btn} onClick={() => setSheet(null)}>Close</button></div>
+        </Sheet>
       )}
       {confirm && (
         <Modal title="Confirm a security action" onClose={() => setConfirm(null)}>
           <div className="flex flex-col gap-4">
             <p className="flex items-center gap-2 text-base font-semibold" style={{ color: 'var(--warn-2)' }}><LockIcon size={18} />{confirm.phrase}</p>
             <p className="text-sm" style={{ color: 'var(--text-soft)' }}>This acts on a real device{inst.remote ? `, in ${inst.name}` : ''}. It is recorded with your name{inst.policy.notifySecurity ? ' and sent to your notification channels' : ''}.</p>
-            <label><span style={LABEL}>Type the device's name to confirm: <b>{confirm.name}</b></span>
+            <label><span style={LABEL}>Type the device&apos;s name to confirm: <b>{confirm.name}</b></span>
               <input style={INPUT} autoFocus autoComplete="off" value={typed} onChange={e => setTyped(e.target.value)} aria-label="Device name" /></label>
             <div className="flex gap-2 justify-end">
               <GhostButton type="button" onClick={() => setConfirm(null)}>Cancel</GhostButton>
@@ -366,14 +496,14 @@ function InstanceForm({ inst, onSaved, onCancel }: { inst: Instance | null; onSa
           <option value="">Not linked (home)</option>
           {(clusters ?? []).map(c => <option key={c.id} value={c.id}>{c.name}{c.kind === 'remote' ? ' (remote)' : ''}</option>)}
         </select>
-        <small style={{ color: 'var(--text-dimmer)' }}>Linked to a remote server, this house shows on that server's page and in the Command center, in amber.</small>
+        <small style={{ color: 'var(--text-dimmer)' }}>Linked to a remote server, this house shows on that server&apos;s page and in the Command center, in amber.</small>
       </label>
       {inst && f.url !== (inst.url ?? '') && <small style={{ color: 'var(--warn-2)' }}>A new address needs the token again: enter it above in the same save.</small>}
       {f.url.startsWith('https:') && (
         <div className="flex flex-col gap-2 rounded-md border p-3" style={{ borderColor: 'var(--border-strong)' }}>
           <span className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Certificate</span>
           <small style={{ color: 'var(--text-muted)' }}>
-            A normal certificate is checked as usual. For Home Assistant's own self-signed one, read it here, compare the fingerprint with the one
+            A normal certificate is checked as usual. For Home Assistant&apos;s own self-signed one, read it here, compare the fingerprint with the one
             your browser shows for that address, and pin it: only that certificate is then accepted.
           </small>
           {f.fingerprint ? <small className="font-mono break-all" style={{ color: 'var(--good)' }}>Pinned: {f.fingerprint}</small> : null}
@@ -392,9 +522,12 @@ function InstanceForm({ inst, onSaved, onCancel }: { inst: Instance | null; onSa
         <legend className="px-1 text-sm font-semibold" style={{ color: 'var(--text)' }}>Safety</legend>
         <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
           Locks, alarm panels, sirens and garage, gate and door covers are always security devices: admins only, with the master password, a confirm
-          step and the device's name typed. So are, until you say otherwise, covers other than blinds, curtains, shades, shutters, awnings and dampers;
-          scenes, scripts and buttons; and switches and toggles, except plug sockets (outlets). Anything whose name sounds like a door, gate, lock or
-          alarm, in English or the common European languages, is always a security device. API tokens can never use security controls.
+          step and the device&apos;s name typed. So are, until you say otherwise, covers other than blinds, curtains, shades, shutters, awnings and dampers;
+          scenes, scripts and buttons; and switches and toggles, except plug sockets (outlets, including plugs Home Assistant&apos;s device list names as
+          plugs, outlets or strips), switches named as a light or lamp, and every TP-Link switch. Switches and buttons of routers, access points and
+          firewalls are always security devices. (Plugs, TP-Link and network gear are recognised from Home Assistant&apos;s device list, when it
+          shares it with this token.) Anything whose name sounds like a door, gate, lock or alarm, in English or the common European
+          languages, is always a security device. API tokens can never use security controls.
         </p>
         <label><span style={LABEL}>Everyday controls are for</span>
           <select style={INPUT} value={f.normalRole} onChange={e => set('normalRole', e.target.value)}>
@@ -434,7 +567,7 @@ export function HomeAssistantPage() {
   const admin = atLeast(role, 'admin')
 
   return (
-    <div className="min-h-full" style={{ background: 'var(--ground)' }}>
+    <div className="min-h-full overflow-x-hidden" style={{ background: 'var(--ground)' }}>
       <header className="flex flex-wrap items-center gap-3 border-b px-4 py-4 sm:px-8" style={{ borderColor: 'var(--border)', background: 'var(--surface-raised)' }}>
         <div className="flex flex-col gap-1">
           <Link href="/plugins" className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: 'var(--accent)' }}>← plug-ins</Link>
@@ -442,7 +575,8 @@ export function HomeAssistantPage() {
         </div>
         {admin && <span className="ml-auto"><PrimaryButton type="button" onClick={() => setAdding(true)}>Add a house</PrimaryButton></span>}
       </header>
-      <div className="px-4 py-4 sm:px-8 flex flex-col gap-4">
+      <div className="px-4 py-4 sm:px-8 flex flex-col gap-4 min-w-0">
+        <PluginSwitcher current="home-assistant" />
         {error && <Notice kind="error">{error}</Notice>}
         {!list && !error && <BusyNote>Reading…</BusyNote>}
         {adding && <InstanceForm inst={null} onCancel={() => setAdding(false)} onSaved={() => { setAdding(false); void reload() }} />}
