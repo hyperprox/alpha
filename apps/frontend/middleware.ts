@@ -10,13 +10,16 @@ export function middleware(req: NextRequest) {
   if (pathname === '/login') return NextResponse.next()
   if (req.cookies.get('hyperprox_token')) return NextResponse.next()
 
-  // Next's middleware turns a Location header into a URL without a base, so a relative redirect fails every
-  // signed-out page with "Invalid URL". The address is built from the request as Next sees it: the Next server
-  // listens on loopback only, and nginx sets the forwarded host itself (it never passes a client's value).
-  const url = req.nextUrl.clone()
-  url.pathname = '/login'
-  url.search = `?${new URLSearchParams({ next: pathname }).toString()}`
-  return NextResponse.redirect(url, 307)
+  // Next's middleware needs an absolute Location ("Invalid URL" otherwise), and req.nextUrl names the Next
+  // server's own loopback address. The browser's host comes from X-Forwarded-Host, which nginx always sets to
+  // the Host the browser itself sent ($http_host); the Next server listens on loopback only. A malformed value
+  // falls back to the request's own host. Whatever a client puts there only redirects that same client.
+  const fwd = (req.headers.get('x-forwarded-host') ?? '').split(',')[0].trim()
+  const host = /^[a-z0-9.-]+(:\d{1,5})?$|^\[[0-9a-f:.]+\](:\d{1,5})?$/i.test(fwd) ? fwd : req.nextUrl.host
+  const proto = req.headers.get('x-forwarded-proto') === 'http' ? 'http' : 'https'
+  const target = new URL(`${proto}://${host}/login`)
+  target.searchParams.set('next', pathname)
+  return NextResponse.redirect(target, 307)
 }
 
 export const config = {
