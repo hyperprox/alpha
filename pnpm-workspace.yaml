@@ -8,3 +8,9 @@ allowBuilds:
   msgpackr-extract: false
   prisma: true
   unrs-resolver: false
+# Security fixes for transitive dependencies (pre-beta review): proxy-addr GHSA-jqcg-44mw-7w3h (IPv4-mapped
+# IPv6 trust), and @fastify/jwt 8's fast-jwt 4 (several JWT validation advisories, fixed in 6.3.x; @fastify/jwt 9+
+# needs Fastify 5).
+overrides:
+  proxy-addr: ^2.0.8
+  '@fastify/jwt>fast-jwt': ^6.3.6

@@ -172,12 +172,21 @@ test('SMTP STARTTLS: multi-line greeting and EHLO, then TLS', async () => {
   assert.equal(r.namesMatch, true)
 })
 
-test('SMTP that refuses STARTTLS fails with the server\'s words', async () => {
+test('SMTP that refuses STARTTLS fails with its reply code, never its whole banner', async () => {
   const port = await starttlsServer('220 ready\r\n', [['EHLO', '250 ok\r\n'], ['STARTTLS', '454 TLS not available\r\n']])
   const r = await probeEndpoint({ host: '127.0.0.1', port, starttls: 'smtp' }, 5000)
   assert.equal(r.ok, false)
-  assert.match(r.error!, /STARTTLS with "454 TLS not available"/)
+  assert.match(r.error!, /STARTTLS with 454$/)
+  assert.doesNotMatch(r.error!, /not available/)
   assert.equal(verdictFor(r, ctx).verdict, 'error')
+})
+
+test('a banner from another service is not echoed back (only its first word, printable)', async () => {
+  const port = await starttlsServer('SSH-2.0-OpenSSH_9.6 secret-build-info\r\n', [])
+  const r = await probeEndpoint({ host: '127.0.0.1', port, starttls: 'smtp' }, 5000)
+  assert.equal(r.ok, false)
+  assert.match(r.error!, /answered the connection with SSH-2.0-Open/)
+  assert.doesNotMatch(r.error!, /secret-build-info/)
 })
 
 test('IMAP STARTTLS, with untagged lines before the tagged answer', async () => {

@@ -9,8 +9,11 @@
 
 import { FastifyPluginAsync } from 'fastify'
 import { connect, loadCredential } from '../lib/ssh-broker'
+import { resolveTerminalTarget, terminalIdProblem, terminalTargetDeps } from '../lib/terminal-targets'
+import { trackSocket } from '../lib/session-sockets'
 
 interface TermQuery {
+  /** Ignored: the address is worked out on the server from the id (lib/terminal-targets.ts). */
   host?:  string
   port?:  string
   /** '0' for a device with no shell to run tmux in — an appliance CLI. */
@@ -30,9 +33,7 @@ type OutFrame =
 export const terminalWsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get<{ Querystring: TermQuery }>('/term', { websocket: true }, async (socket, req) => {
     const q     = req.query
-    const host  = (q.host ?? '').trim()
     const id    = (q.id   ?? '').trim()
-    const port  = Number(q.port) || 22
     const cols  = Math.min(Math.max(Number(q.cols) || 80, 20), 500)
     const rows  = Math.min(Math.max(Number(q.rows) || 24, 5),  200)
 
@@ -46,10 +47,13 @@ export const terminalWsRoutes: FastifyPluginAsync = async (fastify) => {
       socket.close()
     }
 
-    if (!host) return bail('No host was given for this pane.')
+    // A shell outlives nothing: signing out, a lock or the session ending closes it (and the SSH session with it).
+    if (!req.session) return bail('Sign in again.')
+    trackSocket(req.session, socket as any, 'terminal')
     if (!id)   return bail('No host id was given for this pane.')
-
-    send({ t: 'status', state: 'connecting', detail: `${host}:${port}` })
+    // A node's root login shares the credential store with the Terminal's logins; no pane may open one.
+    const refused = terminalIdProblem(id)
+    if (refused) return bail(refused)
 
     let cred
     try {
@@ -57,12 +61,19 @@ export const terminalWsRoutes: FastifyPluginAsync = async (fastify) => {
     } catch (e: any) {
       return bail(e.message)
     }
-    if (!cred) return bail(`No saved login for ${host}. Add one and reconnect.`)
+    if (!cred) return bail(`No saved login for ${id}. Add one and reconnect.`)
+
+    // Where the login goes is HyperProx's to decide, never the browser's: the address the client sent is ignored.
+    let target
+    try { target = await resolveTerminalTarget(id, cred.port, terminalTargetDeps()) }
+    catch (e: any) { return bail(e.message) }
+    const { host, port } = target
+    send({ t: 'status', state: 'connecting', detail: `${host}:${port}` })
 
     const started = Date.now()
     let result
     try {
-      result = await connect({ host, port, cred, cols, rows, session: q.session, useTmux: q.tmux !== '0' })
+      result = await connect({ host, port, cred, cols, rows, session: q.session, useTmux: target.tmux && q.tmux !== '0' })
     } catch (e: any) {
       fastify.log.warn({ host, port, user: cred.username, err: e.message }, '[terminal] connect failed')
       return bail(e.message)

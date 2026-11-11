@@ -302,9 +302,32 @@ export function loginScript(p: ProviderId, flags: string[]): string {
     : [`timeout 25 netbird up --no-browser ${f} 2>&1 || true`, statusScript(p)].join('\n')
 }
 
-/** The sign-in URL a client printed, or null. https only, and only one. */
-export function parseLoginUrl(p: ProviderId, output: string): string | null {
-  const ok = (u: string | undefined | null) => (u && /^https:\/\/[^\s"'<>]{4,2000}$/.test(u) ? u : null)
+/**
+ * Hosts a sign-in link may point at: Tailscale's own login, NetBird Cloud, and the configured management server
+ * (with its parent domain, where a self-hosted identity provider usually sits). A link to anywhere else is not a
+ * sign-in link, whatever the client printed: it is never shown to anyone.
+ */
+export function loginHostAllowed(p: ProviderId, host: string, managementUrl?: string): boolean {
+  const h = host.toLowerCase()
+  if (p === 'tailscale' && h === 'login.tailscale.com') return true
+  if (p === 'netbird' && (h === 'netbird.io' || h.endsWith('.netbird.io'))) return true
+  if (managementUrl) {
+    let m = ''
+    try { m = new URL(managementUrl).hostname.toLowerCase() } catch { return false }
+    if (!m) return false
+    if (h === m) return true
+    const parent = m.split('.').slice(1).join('.')
+    if (parent.includes('.') && (h === parent || h.endsWith(`.${parent}`))) return true
+  }
+  return false
+}
+
+/** The sign-in URL a client printed, or null. https only, only one, and only to a sign-in host (loginHostAllowed). */
+export function parseLoginUrl(p: ProviderId, output: string, managementUrl?: string): string | null {
+  const ok = (u: string | undefined | null) => {
+    if (!u || !/^https:\/\/[^\s"'<>]{4,2000}$/.test(u)) return null
+    try { return loginHostAllowed(p, new URL(u).hostname, managementUrl) ? u : null } catch { return null }
+  }
   if (p === 'tailscale') {
     const st = /HP_STATUS_BEGIN\n([\s\S]*?)\nHP_STATUS_END/.exec(output)
     if (st) { try { const u = ok(JSON.parse(st[1].trim() || '{}').AuthURL); if (u) return u } catch { /* fall through */ } }

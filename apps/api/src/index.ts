@@ -4,6 +4,7 @@ import cors       from '@fastify/cors'
 import helmet     from '@fastify/helmet'
 import rateLimit  from '@fastify/rate-limit'
 import websocket  from '@fastify/websocket'
+import { serverOptions } from './lib/server-options'
 
 import { healthRoute }          from './routes/health'
 import { proxmoxRoutes }        from './routes/proxmox'
@@ -65,20 +66,18 @@ import { loadPolicy as loadUpdatesPolicy } from './lib/updates/policy'
 import { loadCertsPolicy } from './lib/certs/policy'
 import { productionAlertForwarder } from './lib/alerts/forwarder'
 
-const server = Fastify({
-  // Never split a path at ';' (Fastify 4's default): the gate's role checks must see the route the router serves.
-  useSemicolonDelimiter: false,
-  logger: {
-    level: process.env.LOG_LEVEL ?? 'info',
-    transport: process.env.NODE_ENV !== 'production'
-      ? { target: 'pino-pretty', options: { colorize: true } }
-      : undefined,
-  },
-})
+const server = Fastify(serverOptions({
+  level: process.env.LOG_LEVEL ?? 'info',
+  transport: process.env.NODE_ENV !== 'production'
+    ? { target: 'pino-pretty', options: { colorize: true } }
+    : undefined,
+}))
 
 async function main() {
   await server.register(helmet, { contentSecurityPolicy: false })
-  await server.register(cors,   { origin: true })
+  // No cross-origin access at all: the app is served from the same origin as the API (nginx), so no
+  // Access-Control-* header is ever sent and another site's page cannot read an answer.
+  await server.register(cors,   { origin: false })
   await server.register(rateLimit, { max: 200, timeWindow: '1 minute' })
   await server.register(websocket)
   await server.register(prismaPlugin)

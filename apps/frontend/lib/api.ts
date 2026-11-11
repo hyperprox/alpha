@@ -104,11 +104,12 @@ export interface ApiResult<T = any> {
 }
 
 /** JSON request that never throws: network failure becomes status 0. */
-export async function apiJson<T = any>(path: string, method = 'GET', payload?: unknown): Promise<ApiResult<T>> {
+export async function apiJson<T = any>(path: string, method = 'GET', payload?: unknown, extraHeaders?: Record<string, string>): Promise<ApiResult<T>> {
   try {
+    const headers = { ...(payload === undefined ? {} : { 'Content-Type': 'application/json' }), ...(extraHeaders ?? {}) }
     const res = await fetch(path, {
       method,
-      headers: payload === undefined ? undefined : { 'Content-Type': 'application/json' },
+      headers: Object.keys(headers).length ? headers : undefined,
       body:    payload === undefined ? undefined : JSON.stringify(payload),
     })
     const body = await res.json().catch(() => null)

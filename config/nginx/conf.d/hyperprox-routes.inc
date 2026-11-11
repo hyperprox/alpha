@@ -1,4 +1,8 @@
 # Routes shared by the :443 server and the :80 server's non-redirected requests (see hyperprox.conf).
+#
+# Every upstream is told the host the browser asked for, port included, as X-Forwarded-Host. nginx sets it
+# itself (replacing anything the client sent); the API compares a request's Origin with it to refuse
+# cross-site requests, so it must always come from here.
 # The .inc suffix keeps nginx.conf's `include conf.d/*.conf` from loading this a second time on its own.
 
 location = /nginx-health {
@@ -17,6 +21,7 @@ location /setup {
     proxy_set_header   X-Real-IP         $remote_addr;
     proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
     proxy_set_header   X-Forwarded-Proto $hpx_proto;
+    proxy_set_header   X-Forwarded-Host  $http_host;
 }
 
 location /api/setup/ {
@@ -27,6 +32,7 @@ location /api/setup/ {
     proxy_set_header   X-Real-IP         $remote_addr;
     proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
     proxy_set_header   X-Forwarded-Proto $hpx_proto;
+    proxy_set_header   X-Forwarded-Host  $http_host;
     proxy_read_timeout 60s;   # the service scan allows itself 20 s
 }
 
@@ -38,6 +44,7 @@ location /api {
     proxy_set_header   X-Real-IP         $remote_addr;
     proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
     proxy_set_header   X-Forwarded-Proto $hpx_proto;
+    proxy_set_header   X-Forwarded-Host  $http_host;
     proxy_read_timeout 180s;  # vault sign-in plus first migration can take ~30 s
 }
 
@@ -51,6 +58,7 @@ location /ws {
     proxy_set_header    X-Real-IP         $remote_addr;
     proxy_set_header    X-Forwarded-For   $proxy_add_x_forwarded_for;
     proxy_set_header    X-Forwarded-Proto $hpx_proto;
+    proxy_set_header    X-Forwarded-Host  $http_host;
     proxy_read_timeout  3600s;
     proxy_send_timeout  3600s;
 }
@@ -75,6 +83,7 @@ location = /_hpx/session {
     proxy_set_header        X-Real-IP         $remote_addr;
     proxy_set_header        X-Forwarded-For   $proxy_add_x_forwarded_for;
     proxy_set_header        X-Forwarded-Proto $hpx_proto;
+    proxy_set_header        X-Forwarded-Host  $http_host;
     proxy_set_header        X-Original-URI    $request_uri;
 }
 
@@ -104,6 +113,7 @@ location /grafana/ {
     proxy_set_header   X-Real-IP         $remote_addr;
     proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
     proxy_set_header   X-Forwarded-Proto $hpx_proto;
+    proxy_set_header   X-Forwarded-Host  $http_host;
     proxy_read_timeout 300s;
 }
 
@@ -116,7 +126,14 @@ location = /grafana/api/datasources {
     return 403;
 }
 
+# The app's pages may be framed only by the app itself (no clickjacking from another site), are never sniffed as
+# another type, and send no full address to other sites. Grafana's own location above keeps its headers, so the
+# Monitoring page can still embed it (same origin).
 location / {
+    add_header         Content-Security-Policy "frame-ancestors 'self'" always;
+    add_header         X-Frame-Options         SAMEORIGIN always;
+    add_header         X-Content-Type-Options  nosniff always;
+    add_header         Referrer-Policy         strict-origin-when-cross-origin always;
     proxy_pass         http://frontend;
     proxy_http_version 1.1;
     proxy_set_header   Upgrade           $http_upgrade;
@@ -125,4 +142,5 @@ location / {
     proxy_set_header   X-Real-IP         $remote_addr;
     proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
     proxy_set_header   X-Forwarded-Proto $hpx_proto;
+    proxy_set_header   X-Forwarded-Host  $http_host;
 }

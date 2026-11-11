@@ -592,6 +592,14 @@ class BrokerContext implements PluginContext {
   }
 }
 
+/** A plug-in's device answered with a redirect, which the broker never follows (it would carry the credential). */
+export class PluginRedirectError extends Error {
+  constructor(readonly status: number) {
+    super(`The device answered with a redirect (HTTP ${status}). HyperProx does not follow redirects for a plug-in, so its login is only ever sent to the address in its settings: set that address to the one the device redirects to.`)
+    this.name = 'PluginRedirectError'
+  }
+}
+
 /**
  * One request, with a timeout, and an escape hatch for self-signed TLS.
  *
@@ -600,7 +608,7 @@ class BrokerContext implements PluginContext {
  * would disable verification for the whole process, including the Proxmox and
  * NPM clients.
  */
-function fetchWithTimeout(
+export function fetchWithTimeout(
   url: string,
   headers: Record<string, string>,
   insecure?: boolean,
@@ -612,16 +620,24 @@ function fetchWithTimeout(
 ): Promise<{ ok: boolean; status: number; text: () => Promise<string> }> {
   const payload = body ? JSON.stringify(body) : undefined
 
+  // Never followed: a redirect would carry the plug-in's credential (its headers) to wherever the device, or
+  // anyone answering in its place, points. The address in its settings is the only place the credential goes.
   if (!insecure || !url.startsWith('https:')) {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
-    return fetch(url, { method, headers, body: payload, signal: controller.signal })
+    return fetch(url, { method, headers, body: payload, signal: controller.signal, redirect: 'manual' })
+      .then(res => {
+        if (res.status >= 300 && res.status < 400) throw new PluginRedirectError(res.status)
+        return res
+      })
       .finally(() => clearTimeout(timer)) as any
   }
 
   return new Promise((resolve, reject) => {
     import('node:https').then(https => {
       const req = https.request(url, { method, headers, rejectUnauthorized: false, timeout: timeoutMs }, res => {
+        const code = res.statusCode ?? 500
+        if (code >= 300 && code < 400) { res.resume(); return reject(new PluginRedirectError(code)) }
         let body = ''
         res.setEncoding('utf8')
         res.on('data', c => { body += c })

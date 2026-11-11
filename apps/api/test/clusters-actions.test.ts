@@ -196,8 +196,9 @@ test('monitoring: preview is server-held, applied once by its owner, and read ba
   const r = await applyMonitoring(prev.planId, 'owner@example.com', deps)
   assert.equal(r.ok, true)
   assert.deepEqual(ran, ['install+amd'])
-  assert.deepEqual(written, [{ node: 'pve', listen: '10.0.0.7' }])
-  assert.equal((await store.list())[0].monitoring.pve.nodeExporter?.listen, '10.0.0.7')
+  // Scraped at the address HyperProx saved for the node, not the one the node's output names.
+  assert.deepEqual(written, [{ node: 'pve', listen: 'pve1.example' }])
+  assert.equal((await store.list())[0].monitoring.pve.nodeExporter?.listen, 'pve1.example')
   await assert.rejects(applyMonitoring(prev.planId, 'owner@example.com', deps), /already applied/)
   setClusterStore(new MemoryClusterStore())
 })

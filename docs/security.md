@@ -81,6 +81,10 @@ Bitwarden-compatible, zero-knowledge vault. Every install runs its own, stock an
   Live's WebSocket that is once, when it opens. A socket opened before a sign-out or a lock keeps
   streaming metrics until the page closes it, or until it carries nothing for 300 seconds (nginx's idle
   timeout on `/grafana/`). Every new page, query or socket is checked again.
+- **HyperProx's own WebSockets do not.** The live-status feed, a terminal and the update log are each tied
+  to the session that opened them: signing out, a lock, or the vault ending that session closes them (close
+  code 4401), and a terminal's SSH session goes with it. A deploy job's progress is sent only to the sockets
+  of the person who started it.
 - **Roles.** They come from the person's membership in the vault's "HyperProx" organization:
 
   | Vault role | HyperProx role | Can |
@@ -96,12 +100,23 @@ Bitwarden-compatible, zero-knowledge vault. Every install runs its own, stock an
   them an operator (put them in the group "HyperProx operators"), or as **User** for a viewer (group
   "HyperProx viewers"). Owner and Admin memberships are full. The owner's two-factor code is enforced at
   every sign-in.
-- **Re-confirmation.** Revealing a secret, destroying a guest, changing roles, resetting Grafana's admin
-  password, and every change on the Setup checklist (saving a node login, running an item on your nodes,
-  shredding old backups, opening or closing built-in graphics) ask for the master password again (valid
-  for five minutes).
+- **Cross-site requests.** The session cookie is `SameSite=Lax`, and on top of that the API refuses (403
+  `cross_origin`) any state-changing request or WebSocket upgrade whose `Origin` is not the host the browser
+  asked for (nginx passes it on as `X-Forwarded-Host`, which the API believes only from loopback), or that has
+  no `Origin` and a `Sec-Fetch-Site` other than `same-origin`. Scripts and the host CLI send neither header and
+  are not affected. The API sends no CORS headers at all, so another site's page cannot read an answer.
+- **Sign-in limits.** Sign-in, owner creation and re-confirmation allow 10 attempts a minute per client address,
+  and an account allows 20 failed sign-ins (10 wrong master passwords at re-confirmation) in 15 minutes from
+  any number of addresses. The API believes `X-Forwarded-For` only from nginx on the same machine, so the
+  address is the browser's: one client running out of attempts does not lock anyone else out.
+- **Re-confirmation.** Revealing or Sending a secret, destroying a guest, changing roles, resetting Grafana's
+  admin password, saving or testing a connection under Settings (Proxmox, proxy, DNS, AI, remote access), and
+  every change on the Setup checklist (saving a node login, running an item on your nodes, shredding old
+  backups, opening or closing built-in graphics) ask for the master password again (valid for five minutes).
+  Changing where a connection's secret is sent (its host, port or URL) also needs that secret entered again in
+  the same save, so a moved address never inherits the old secret.
 - **Secrets page** (Settings, Secrets): names only. Owners and admins can reveal a value (with
-  re-confirmation), **Send** it to a person as an expiring, view-limited, encrypted link (a Bitwarden Send,
+  re-confirmation), **Send** it (also re-confirmed) to a person as an expiring, view-limited, encrypted link (a Bitwarden Send,
   24 hours and one view by default), or **generate** a strong password that is saved straight to the vault.
 - **Existing installs migrate.** On the first owner unlock, credentials from the old encrypted table and
   `.env` are written to the vault and read back; only then are the old rows deleted and the keys blanked
@@ -132,9 +147,20 @@ Three more keys are there only for a while, and then removed:
 
 | Key | How long |
 |---|---|
-| `SETUP_SECRET` | Until setup finishes. The wizard removes it as it finishes, and so does the owner's first sign-in. Setup counts as finished when `.env` says so or when the vault already has an owner, so `bin/hyperprox-config` (on the next `deploy.sh`) also removes it from an older install that never recorded `SETUP_COMPLETE`, and never adds it back. Re-running `install.sh` makes a new one only if setup has not finished. |
+| `SETUP_SECRET` | Until the owner account exists. Creating the owner (`POST /api/auth/bootstrap` and `/bootstrap/confirm`, public because nobody can sign in yet) needs it in `X-Setup-Key` while the vault has no owner, so whoever reaches `/login` first cannot claim the install. The wizard keeps it when it finishes and its last button carries it to `/login` (in the URL fragment, which is never sent to a server); the owner's first sign-in removes it. `bin/hyperprox-config` (on the next `deploy.sh`) also removes it once the vault has an owner, and never adds it back. Re-running `install.sh` makes a new one only if setup has not finished. |
 | `GRAFANA_ADMIN_PASSWORD` | Grafana reads it only when it first sets up its database. The first owner sign-in moves it to the vault item `hyperprox:system/grafana` and blanks it; `bin/hyperprox-config` then removes the empty line. Grafana recreated without it keeps its admin password (`scripts/test-grafana-admin-absent.sh` proves it against the pinned image). A Grafana that starts on a new database without it would otherwise keep its default admin/admin, so on every owner or admin sign-in, and after the charts are started, HyperProx sets Grafana's admin password to the vault's (making and storing one first if the vault has none). Its login form and basic auth are off, so the password is only for `grafana cli` work: reveal it on the Secrets page, or press reset (`POST /api/monitoring/grafana-admin/reset`), which writes a new one to the vault, reads it back, then sets it in Grafana over stdin; if Grafana refuses it, the vault is put back. |
 | `PROXMOX_TOKEN_SECRET` (and the rest of the Proxmox connection) | Until the first owner sign-in. Setup runs before the vault exists, so the access key HyperProx makes for itself waits here; the first sign-in writes it to the vault, reads it back, and only then blanks it. No copy is kept. |
+
+## The home Proxmox API's certificate
+
+HyperProx never talks to your Proxmox API without checking its certificate (lib/home-tls.ts). A certificate that
+verifies normally (a public CA, the right name, such as a Let's Encrypt one) is accepted and recorded. A
+self-signed one is pinned the first time HyperProx connects (an install that predates this pins its current
+certificate on the first connection after the update), and from then on only that certificate is accepted: a
+different one is refused before anything, the API token included, is sent, with both fingerprints in the error.
+The pins are in `data/home-tls-pins.json` in the install folder (root only). If you replace the certificate on
+purpose, check the new fingerprint on the node (Node, System, Certificates), remove that address's entry from
+the file, and the next connection pins the new one.
 
 ## The node login
 
@@ -146,6 +172,12 @@ where the test passed.
 - **Where it lives.** In the vault, in the `hyperprox:deck/ssh` item, one hidden field per node. Never in
   `.env`, a file, Postgres, a log or the browser: the page sends it once and gets back only which nodes
   accepted it.
+- **Not a Terminal login.** The Terminal's saved logins live in the same item, but no Terminal route or socket
+  reads, lists, replaces or removes a `node-<name>` field (403), so an operator who may open guest panes can
+  never open one with a node's root login. The Terminal works out where any login is sent from the pane's id
+  (the guest's Proxmox config or the address saved with it, the hand-added host, the plug-in's settings) and
+  ignores the address the browser sends. Its shared login applies to cluster guests only, and its one-off
+  commands (install tmux, list sessions) refuse a host whose key is not pinned before sending the login.
 - **Before the vault exists.** The setup wizard runs before anyone has created the owner account. A node
   login (or a GoDaddy key) given to it is held in the wizard's memory only. When setup finishes, the wizard
   hands it to the API over loopback (`POST /api/auth/setup-handoff`), which answers only to a request
@@ -222,7 +254,10 @@ where the test passed.
 - **Remote servers' pins are their own.** A remote server's pins are kept under that server's id, so a remote
   node whose address happens to equal a home node's (two private networks both using 10.0.0.x) never inherits
   the home node's pin. A pin kept before this was copied (never moved) to the remote the first time it was
-  needed, so a home machine on the same address keeps its own. Adding a server never fills in the other nodes' cluster-network addresses.
+  needed, so a home machine on the same address keeps its own; a pin someone confirmed or HyperProx verified at
+  home is never copied. A remote node's address may not be a home address at all: the home Proxmox address, a
+  home node's, or the host of any home host-key pin (which covers addresses such as a home node's tailnet IP) is
+  refused when a server is added or its nodes are edited. Adding a server never fills in the other nodes' cluster-network addresses.
 - **Adding a server.** Before any token is sent, the private link must vouch for exactly the address you
   typed and the server's certificate must be for the device the link names; after the token, the server's own
   API must name itself as a node that certificate is for. The add form shows, before your one master
@@ -258,11 +293,14 @@ where the test passed.
   over a plain address needs the same command run on one of its nodes (Edit page), or its certificate compared
   once. Guests and hand-added hosts have no cluster record and are confirmed by hand. A key that changed (a
   rebuilt node) is cleared in the Terminal first, then verified again from the anchor or trusted nodes.
-- **Host keys.** Pinned on first use, then required. The setup wizard pins each node's key the first
-  time it connects, refuses any other key for the rest of its run (before it sends a password), and hands
-  the keys to the API with the login, which pins them in the vault and verifies them (against the installer's
-  anchor, when there is one) right after the owner signs in. After that, and for any node first reached later, the API does the same as the Deck terminal:
-  the first key is pinned (and then verified as above), and a key that changes is always refused.
+- **Host keys.** Verified, then required; never trusted on first use. The setup wizard pins each node's key
+  the first time it connects, refuses any other key for the rest of its run (before it sends a password), and
+  hands the keys to the API with the login, which pins them in the vault and verifies them (against the
+  installer's anchor, when there is one) right after the owner signs in. HyperProx sends a node login only to a
+  node whose pin is verified or confirmed: before connecting to a node that has none, it runs the same
+  evidence-based check, and if that finds no evidence the connection is refused before any login is sent (verify
+  or confirm it on Settings, Setup checklist). A key that changes is always refused. The GPU reader uses the same
+  pinned runner, and Updates connects to the address Proxmox records for a node, never to its name.
 - **What it can do.** It is a root login to your hypervisors. The installer's node scripts only add
   packages (apt is asked first and an install that would upgrade or remove anything is refused), never
   touch kernels, drivers or apt holds, and run one node at a time.
@@ -331,8 +369,9 @@ Send it as `Authorization: Bearer hpx_...`. It is shown once; HyperProx stores o
   in, out or lock, or make, list or revoke tokens (HTTP 403 `token_forbidden`). Anything that asks for the
   master password again (destroying a guest, revealing a secret, changing roles) answers 403
   `reconfirm_required`: a token has no master password.
-- **Saving to the vault** (for example, changing a provider credential in Settings) is done through the most
-  recently active signed-in session. With nobody signed in, such a write fails as locked.
+- **It never writes to the vault.** A token does not borrow a signed-in person's vault session, so anything that
+  would store a credential, a setting or a host-key pin during a token request (or in work it starts) is refused
+  with 403 `token_forbidden`. Reads, from the unlock cache, work as before.
 - **Audit.** Creating and revoking a token, and every request with a token that changes something, are
   written to the audit log with the token's name. The token itself is never logged.
 - **Revoking** takes effect at once from Settings; from `hyperprox token revoke`, within 10 seconds. A revoked

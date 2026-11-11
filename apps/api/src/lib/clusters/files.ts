@@ -194,7 +194,8 @@ export async function setupSending(o: { src: string; dst: string; dstNode: strin
   parseContainment(out, dstRow.name, root)
   const keys = hostKeyLines(out)
   if (!keys.some(k => k.fingerprint === pin)) throw new ClusterRefusal(`${o.dstNode}'s host keys do not include the confirmed one, so they are not trusted. Nothing was installed.`)
-  const knownHosts = keys.map(k => `${dstAddress} ${k.type} ${k.key}`).join('\n') + '\n'
+  // Only the confirmed key: the others the node printed are its own say-so, and rsync must accept nothing else.
+  const knownHosts = keys.filter(k => k.fingerprint === pin).map(k => `${dstAddress} ${k.type} ${k.key}`).join('\n') + '\n'
 
   const line = authorizedLine(rrsync, root, kp.public, tag)
   const install = await runner.run(o.dst, o.dstNode, [

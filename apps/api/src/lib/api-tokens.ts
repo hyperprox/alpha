@@ -10,9 +10,10 @@
 //    - it carries a role and the role matrix applies unchanged;
 //    - it can never re-confirm, so destroy / reveal / role changes stay out of
 //      reach, and the routes in tokenForbidden() refuse it outright.
-//  Vault writes made during a token request go through actingSid()'s fallback:
-//  the most recently active signed-in session. The request context of a token
-//  carries a sid that is never in the session map, so that fallback applies.
+//  A token never writes to the vault: actingSid() gives a token's request (and
+//  any work it starts) no vault session, so it cannot borrow a signed-in
+//  person's. Such a write is refused as 403 token_forbidden; reads, from the
+//  unlock cache, still work.
 //
 //  Created and revoked from Settings → API tokens (admin, re-confirmed) or by
 //  root on the host with `hyperprox token ...` (cli/api-token.ts).

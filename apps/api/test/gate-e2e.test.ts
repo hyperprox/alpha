@@ -33,11 +33,12 @@ import { vaultRequest } from '../src/lib/vault/http'
 import { encrypt } from '../src/lib/crypto'
 import { setCredentialTable, migrationSettled } from '../src/lib/credentials'
 import { allSessions } from '../src/lib/auth'
-import { buildTestApp } from './fakes/app'
+import { buildTestApp, useSetupKey } from './fakes/app'
 
 const OWNER = 'owner@example.com'
 const PW = 'correct horse battery staple 42'
 let totpSecret = ''
+let SETUP_KEY = ''
 let lastStep = 0
 
 async function nextCode(): Promise<string> {
@@ -87,6 +88,7 @@ before(async () => {
   if (!ready) throw new Error('vault did not become ready')
 
   app = await buildTestApp()          // real broker
+  SETUP_KEY = useSetupKey()
   await state.lock('restart')         // as index.ts does at boot
 })
 
@@ -117,14 +119,14 @@ describe('vault gate end to end (real Vaultwarden over TLS)', { timeout: 900_000
   })
 
   it('bootstrap + confirm with a computed TOTP code → owner session, unlocked', async () => {
-    const b = await timed('bootstrap', () => app.inject({ method: 'POST', url: '/api/auth/bootstrap', payload: { email: OWNER, password: PW } }))
+    const b = await timed('bootstrap', () => app.inject({ method: 'POST', url: '/api/auth/bootstrap', headers: { 'x-setup-key': SETUP_KEY }, payload: { email: OWNER, password: PW } }))
     assert.equal(b.statusCode, 200, b.body)
     const uri: string = b.json().otpauthUri
     totpSecret = new URL(uri).searchParams.get('secret')!
     assert.match(totpSecret, /^[A-Z2-7]{32}$/)
 
     const code = await nextCode()
-    const cf = await timed('bootstrap/confirm', () => app.inject({ method: 'POST', url: '/api/auth/bootstrap/confirm', payload: { email: OWNER, password: PW, code } }))
+    const cf = await timed('bootstrap/confirm', () => app.inject({ method: 'POST', url: '/api/auth/bootstrap/confirm', headers: { 'x-setup-key': SETUP_KEY }, payload: { email: OWNER, password: PW, code } }))
     lastStep = c.totpStep() + 1   // the broker used up to the next step for its own login
     assert.equal(cf.statusCode, 200, cf.body)
     assert.deepEqual(cf.json().user, { email: OWNER, role: 'owner' })

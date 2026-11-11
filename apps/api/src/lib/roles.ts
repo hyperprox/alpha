@@ -133,6 +133,11 @@ const QNAP_RECONFIRM = /^\/api\/plugins\/qnap\/instances(\/(?!probe-certificate$
 // A plug-in's settings hold the address its stored credential is sent to: changing them is re-confirmed (which
 // also keeps API tokens out).
 const PLUGIN_SETTINGS = /^\/api\/plugins\/[^/]+\/settings$/
+// Settings → connections (routes/settings.ts): saving a provider's login or address, and testing one (which sends
+// the stored secret to the stored address). Re-confirmed, which also keeps API tokens out. Notification channels
+// live under /api/settings/notifications and keep their own rules.
+const SETTINGS_SAVE = /^\/api\/settings\/(?!(notifications|test)\/)[^/]+\/[^/]+$/
+const SETTINGS_TEST = /^\/api\/settings\/test\/[^/]+\/[^/]+$/
 // Role management (no routes yet; reserved so they are owner-only from day one).
 const ROLE_MGMT = /^\/api\/(auth\/)?roles(\/|$)/
 // Remote access: what opens a tunnel into the cluster, routes through a machine, removes a device or shows
@@ -223,6 +228,13 @@ export function requiredRole(method: string, path: string): Role | null {
   if (m === 'GET' || m === 'HEAD') {
     // Interactive shells on guests and nodes.
     if (p === '/ws/terminal' || p.startsWith('/ws/terminal/')) return 'operator'
+    // Plug-in probes that reach out on the network (a discovery scan of every guest, a downloader's stuck-import
+    // scan): admin, though they are reads.
+    if (p === '/api/plugins/discover' || /^\/api\/plugins\/[^/]+\/stuck$/.test(p)) return 'admin'
+    // A guest's whole Proxmox config (routes/infrastructure.ts; masked, but it still maps disks, networks and mounts).
+    if (/^\/api\/infra\/vms\/[^/]+\/[^/]+\/[^/]+\/config$/.test(p)) return 'admin'
+    // The vault's item list: every secret's name and field names, the person's own included. Admin, like the rest of /api/secrets.
+    if (p === '/api/secrets' || p.startsWith('/api/secrets/')) return 'admin'
     // Provider settings echo stored values (some unmasked, e.g. API key ids).
     if (p === '/api/settings' || p.startsWith('/api/settings/')) return 'admin'
     // Certificates: the inventory maps every endpoint, and the history names keys and targets.
@@ -246,6 +258,8 @@ export function needsReconfirm(method: string, path: string): boolean {
   const p = normalisePath(path)
   if (m === 'DELETE' && DESTROY.test(p)) return true
   if (m === 'POST' && p === '/api/secrets/reveal') return true
+  // A Send hands the value out too (as an expiring link), so it is re-confirmed like reveal.
+  if (m === 'POST' && p === '/api/secrets/send') return true
   // Setup checklist changes: storing a node login, and anything that runs as root on your nodes or shreds files.
   if (m !== 'GET' && m !== 'HEAD' && SETUP_CHECKLIST.test(p)) return true
   // A new Grafana admin password goes straight into the vault, but it is still a credential being replaced.
@@ -258,6 +272,8 @@ export function needsReconfirm(method: string, path: string): boolean {
   if (m !== 'GET' && m !== 'HEAD' && HA_CONTROL_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && QNAP_RECONFIRM.test(p)) return true
   if (m === 'PUT' && PLUGIN_SETTINGS.test(p)) return true
+  if (m === 'PUT' && SETTINGS_SAVE.test(p)) return true
+  if (m === 'POST' && SETTINGS_TEST.test(p)) return true
   // Creating or revoking an API token.
   if ((m === 'POST' || m === 'DELETE') && TOKENS.test(p)) return true
   for (const [rm, re] of REMOTE_RECONFIRM) if (m === rm && re.test(p)) return true

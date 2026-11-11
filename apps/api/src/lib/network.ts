@@ -2,6 +2,7 @@
 //  HyperProx — Network Stats Service
 //  Per-node netin/netout from Proxmox RRD + CEPH I/O from ceph status
 // =============================================================================
+import { homeTlsAgent } from './home-tls'
 
 import https from 'https'
 
@@ -36,7 +37,8 @@ function proxmoxFetch<T>(host: string, port: number, token: string, path: string
     const opts: https.RequestOptions = {
       hostname: url.hostname, port: url.port,
       path: url.pathname + url.search, method: 'GET',
-      rejectUnauthorized: false,
+      // The home cluster's certificate rule (lib/home-tls.ts), checked before the token is sent.
+      agent: homeTlsAgent(),
       headers: { Authorization: `PVEAPIToken=${token}` },
     }
     const req = https.request(opts, (res) => {

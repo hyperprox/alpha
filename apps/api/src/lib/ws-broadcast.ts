@@ -12,6 +12,7 @@ import { isUnlocked }      from './vault/state'
 import { getGPUInfo }      from './gpu'
 import { withCephMon } from './ceph'
 import { NPMClient }       from './npm-client'
+import { openSockets }     from './session-sockets'
 
 let fastInterval: ReturnType<typeof setInterval> | null = null
 let slowInterval: ReturnType<typeof setInterval> | null = null
@@ -22,14 +23,16 @@ function getNPM(): NPMClient | null {
   return new NPMClient(process.env.NPM_URL, process.env.NPM_EMAIL!, process.env.NPM_PASSWORD!)
 }
 
-function broadcast(server: FastifyInstance, type: string, payload: any) {
+/**
+ * To the live-status sockets (/ws) only: not terminals or update logs, which share the WebSocket server. With
+ * `owner`, only that person's sockets: a job's progress names guests, addresses and steps, so it goes to the
+ * person who started it, not to every viewer.
+ */
+export function broadcast(_server: FastifyInstance | null, type: string, payload: any, owner?: string) {
   const msg = JSON.stringify({ type, payload, ts: Date.now() })
-  // @ts-ignore
-  const wss = server.websocketServer
-  if (!wss) return
-  wss.clients.forEach((client: any) => {
-    if (client.readyState === 1) client.send(msg)
-  })
+  for (const client of openSockets('live', owner)) {
+    try { client.send(msg) } catch { /* closing */ }
+  }
 }
 
 export function startBroadcast(server: FastifyInstance) {
@@ -105,7 +108,8 @@ export function startBroadcast(server: FastifyInstance) {
   }, 15000)
 
   server.log.info('[ws] Broadcast service started (fast: 2s, slow: 15s)')
-  setWizardBroadcast((type, payload) => broadcast(server, type, payload))
+  // A deploy job's progress goes to the person who started it, nobody else; with no owner, to nobody.
+  setWizardBroadcast((type, payload, owner) => { if (owner) broadcast(server, type, payload, owner) })
 }
 
 export function stopBroadcast() {

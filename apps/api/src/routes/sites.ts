@@ -41,6 +41,16 @@ async function realRun(site: SiteRecord, script: string) {
   return { code: r.code, output: r.output }
 }
 
+/**
+ * A health read of one of the site's addresses. A redirect is reported as its status, never followed: a site (or
+ * whatever answers on its name) must not be able to point HyperProx's request at another address.
+ */
+export function siteProbe(url: string): Promise<{ status: number; body: string } | null> {
+  return fetch(url, { signal: AbortSignal.timeout(6000), redirect: 'manual' })
+    .then(async r => ({ status: r.status, body: r.status >= 300 && r.status < 400 ? '' : (await r.text().catch(() => '')).slice(0, 200_000) }))
+    .catch(() => null)
+}
+
 /** What the page shows for a site. Never a secret: the vault item is named, and revealed through the vault. */
 function view(s: SiteRecord) {
   return {
@@ -57,8 +67,7 @@ export function buildSiteRoutes(over: Partial<SiteRouteDeps> = {}): FastifyPlugi
     whoami: () => ownerOf(currentContext()),
     publish: realPublishDeps(),
     run: realRun,
-    probe: url => fetch(url, { signal: AbortSignal.timeout(6000) })
-      .then(async r => ({ status: r.status, body: (await r.text().catch(() => '')).slice(0, 200_000) })).catch(() => null),
+    probe: siteProbe,
     audit: auditCredentialUse,
     now: Date.now,
     ...over,

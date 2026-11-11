@@ -16,7 +16,6 @@ import { setBroker } from '../src/lib/vault/broker'
 import { lock, isUnlocked } from '../src/lib/vault/state'
 import { setCredentialTable, getProviderCredentials, setCredentials } from '../src/lib/credentials'
 import { saveCredential } from '../src/lib/ssh-broker'
-import { checkHostKey } from '../src/lib/node-exec'
 import { requestContext } from '../src/lib/auth'
 import { ensureGrafanaAdmin, resetGrafanaAdmin } from '../src/lib/grafana-admin'
 import { setAuditSink } from '../src/lib/audit'
@@ -254,18 +253,6 @@ test('hand-over: held in memory, then stored in the vault at the owner\'s sign-i
   const env = readFileSync(ENV, 'utf8')
   assert.match(env, /^SETUP_COMPLETE=true$/m)
   assert.doesNotMatch(env, /^SETUP_SECRET=/m)
-})
-
-test('the node runner pins a host key on first use and refuses a changed one', async () => {
-  const cookie = await ownerCookie(); void cookie
-  const sid = [...broker.sessions.values()].filter(x => x.email === 'owner@example.com').at(-1)!.sid
-  await requestContext.run({ sid, email: 'owner@example.com', role: 'owner' }, async () => {
-    const fp1 = 'SHA256:' + 'D'.repeat(43), fp2 = 'SHA256:' + 'E'.repeat(43)
-    assert.equal(await checkHostKey('10.9.9.9', fp1), true, 'first use: learned')
-    assert.equal(await checkHostKey('10.9.9.9', fp1), true, 'same key again: accepted')
-    assert.equal(await checkHostKey('10.9.9.9', fp2), false, 'a changed key: always refused')
-    assert.equal(await checkHostKey('10.0.0.1', 'SHA256:' + 'Z'.repeat(43)), false, 'the wizard\'s pin holds too')
-  })
 })
 
 // ── The checklist ────────────────────────────────────────────────────────────────────────────────────

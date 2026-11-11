@@ -5,6 +5,10 @@
 import { strictParams } from '../lib/route-params'
 import { FastifyPluginAsync } from 'fastify'
 import { livePve }            from '../lib/pve-env'
+import { maskConfig }         from '../lib/guest-config/secrets'
+
+/** The Proxmox tag that keeps HyperProx out of a guest (lib/remote/service.ts IGNORE_TAG). */
+const IGNORE_TAG = 'hyperprox-ignore'
 
 
 const wrap = async (reply: any, fn: () => Promise<any>) => {
@@ -29,11 +33,19 @@ export const infrastructureRoutes: FastifyPluginAsync = async (fastify) => {
     return wrap(r, () => pve.vmAction(node, Number(vmid), type, action))
   })
 
-  // VM config, read-only. There is deliberately no console-ticket route (the browser must never hold a
-  // Proxmox ticket) and no raw config write (it forwarded any body, `delete=` keys included).
+  // VM config, read-only, admin (lib/roles.ts). There is deliberately no console-ticket route (the browser must
+  // never hold a Proxmox ticket) and no raw config write (it forwarded any body, `delete=` keys included).
+  // Masked as the guest config editor masks it: passwords, keys, cloud-init secrets and the like are reported
+  // as set or not set, never sent. A guest tagged hyperprox-ignore is one HyperProx does not look inside, so
+  // only its tags come back.
   fastify.get<VMParams>('/vms/:node/:vmid/:type/config', async (req, r) => {
     const { node, vmid, type } = req.params
-    return wrap(r, () => pve.getVMConfig(node, Number(vmid), type))
+    return wrap(r, async () => {
+      const cfg = (await pve.getVMConfig(node, Number(vmid), type)) as Record<string, any>
+      const tags = String(cfg?.tags ?? '').split(/[;,\s]+/).filter(Boolean)
+      if (tags.includes(IGNORE_TAG)) return { tags: cfg.tags, ignored: true }
+      return maskConfig(cfg as any)
+    })
   })
 
   // Snapshots

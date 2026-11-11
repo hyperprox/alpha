@@ -20,6 +20,7 @@ import { migrationSettled } from '../lib/credentials'
 import { requestContext } from '../lib/auth'
 import { verifyHomeHostKeys } from '../lib/setup-checklist'
 import { validateHandoff, holdValidated, flushHeldSecrets, acceptHandoff, HandoffRefused, markSetupDone } from '../lib/setup-handoff'
+import { signInLimiter, reconfirmLimiter } from '../lib/auth-limits'
 import { readFileSync } from 'fs'
 import { createHash, timingSafeEqual } from 'crypto'
 
@@ -36,7 +37,40 @@ function setupKeyMatches(given: unknown): boolean {
   return timingSafeEqual(createHash('sha256').update(given).digest(), createHash('sha256').update(want).digest())
 }
 
+/**
+ * Creating the owner is a claim on the whole install, and the routes that do it are public (there is nobody to
+ * sign in as yet). So until an owner exists they answer only to the setup key: the one the installer printed in
+ * the setup link, still in .env until the owner's first sign-in removes it (markSetupDone). Null when the key
+ * matches; otherwise the reply to send. Anyone who can read .env is root on this machine already.
+ */
+function setupKeyRefusal(reply: FastifyReply, given: unknown) {
+  if (!currentSetupKey()) {
+    return reply.status(403).send({
+      ok: false, code: 'setup_key_missing',
+      error: 'This install has no setup key, so the owner account cannot be created from the browser. On the HyperProx host run: ' +
+        'echo "SETUP_SECRET=$(openssl rand -hex 32)" >> /opt/hyperprox/.env  then enter that value as the setup key.',
+    })
+  }
+  if (!setupKeyMatches(given)) {
+    return reply.status(401).send({
+      ok: false, code: 'setup_key_required',
+      error: 'Enter the setup key. It is in the setup link the installer printed (after k=), or on the host: grep SETUP_SECRET /opt/hyperprox/.env',
+    })
+  }
+  return null
+}
+
+// Per client address (req.ip is the browser's, lib/server-options.ts); the per-account limits are lib/auth-limits.ts.
 const LIMIT = { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }
+
+function tooMany(reply: FastifyReply, retryAfter: number) {
+  reply.header('Retry-After', String(retryAfter))
+  return reply.status(429).send({ ok: false, code: 'too_many_attempts', error: `Too many failed attempts for this account. Try again in ${Math.ceil(retryAfter / 60)} minute${retryAfter > 60 ? 's' : ''}.` })
+}
+/** A wrong password or 2FA code: what the per-account limit counts. A missing code is not a guess. */
+function isGuessFailure(e: unknown): boolean {
+  return e instanceof VaultAuthError && (e.code === 'bad_credentials' || e.code === 'totp_invalid')
+}
 const MIN_MASTER_PASSWORD = 12
 
 function str(v: unknown): string {
@@ -174,6 +208,8 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     const s = await vaultStatus()
     if (!s.reachable) return reply.status(503).send({ ok: false, error: 'The built-in vault is not reachable' })
     if (s.bootstrapped) return reply.status(409).send({ ok: false, error: 'The owner account already exists — sign in instead' })
+    const refused = setupKeyRefusal(reply, req.headers['x-setup-key'])
+    if (refused) return refused
 
     try {
       const { otpauthUri } = await getBroker().bootstrapOwner(email, password)
@@ -190,6 +226,13 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     const code = str(req.body?.code).replace(/\s+/g, '')
     if (!email || !password || !/^\d{6}$/.test(code)) {
       return reply.status(400).send({ ok: false, error: 'email, password and a 6-digit code are required' })
+    }
+    // The same setup key as the first step. While the key is still in .env the owner has never signed in, so it is
+    // always asked for; with no key, only an install whose vault has no owner yet is refused (an owner that exists
+    // goes on to the usual "sign in instead" answer below).
+    if (currentSetupKey() || !(await vaultStatus()).bootstrapped) {
+      const refused = setupKeyRefusal(reply, req.headers['x-setup-key'])
+      if (refused) return refused
     }
 
     // The broker signs the Owner in itself (the vault will not accept the same TOTP step twice).
@@ -216,13 +259,17 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     const password = str(req.body?.password)
     const code = str(req.body?.code).replace(/\s+/g, '')
     if (!email || !password) return reply.status(400).send({ ok: false, error: 'email and password are required' })
+    const wait = signInLimiter.retryAfter(email)
+    if (wait) return tooMany(reply, wait)
 
     let vs: VaultSession
     try {
       vs = await getBroker().signIn(email, password, code)
     } catch (e) {
+      if (isGuessFailure(e)) signInLimiter.fail(email)
       return authErrorReply(reply, e)
     }
+    signInLimiter.clear(email)
     return startSession(req, reply, vs)
   })
 
@@ -260,6 +307,8 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     if (!s) return reply.status(401).send({ ok: false, error: 'Authentication required' })
     const password = str(req.body?.password)
     if (!password) return reply.status(400).send({ ok: false, error: 'password is required' })
+    const wait = reconfirmLimiter.retryAfter(s.email)
+    if (wait) return tooMany(reply, wait)
 
     let ok = false
     try {
@@ -268,7 +317,8 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       if (e instanceof VaultSessionError) throw e   // → 401 session_expired (gate error handler)
       ok = false
     }
-    if (!ok) return reply.status(401).send({ ok: false, error: 'Master password is incorrect' })
+    if (!ok) { reconfirmLimiter.fail(s.email); return reply.status(401).send({ ok: false, error: 'Master password is incorrect' }) }
+    reconfirmLimiter.clear(s.email)
 
     const until = markReconfirmed(s.sid)
     return { ok: true, until: new Date(until).toISOString() }

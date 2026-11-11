@@ -12,6 +12,9 @@ import { lock, isUnlocked } from '../../src/lib/vault/state'
 import { getCredential, setCredential } from '../../src/lib/credentials'
 import { setCredentialTable } from '../../src/lib/credentials'
 import { GOOD_CODE } from './fake-broker'
+import { mkdtempSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 
 export { GOOD_CODE }
 
@@ -54,6 +57,18 @@ export async function buildTestApp(broker?: VaultBroker): Promise<FastifyInstanc
 
   await app.ready()
   return app
+}
+
+/**
+ * Give the install a setup key, as the installer does (.env SETUP_SECRET), and return it. The owner-claim routes
+ * (/api/auth/bootstrap and /bootstrap/confirm) answer only to it until an owner exists.
+ */
+export function useSetupKey(key = 'test-setup-key-' + Math.random().toString(36).slice(2)): string {
+  const dir = mkdtempSync(join(tmpdir(), 'hpx-setupkey-'))
+  const envPath = join(dir, '.env')
+  writeFileSync(envPath, `SETUP_SECRET=${key}\nSETUP_COMPLETE=true\n`, { mode: 0o600 })
+  process.env.ENV_FILE_PATH = envPath
+  return key
 }
 
 export async function resetLock(): Promise<void> {

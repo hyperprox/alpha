@@ -113,7 +113,8 @@ curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/bootstrap.sh |
 ```
 
 When it finishes, open the setup link it prints (`https://<container-ip>/setup?k=<setup key>`), finish
-the wizard, then create the owner account at `https://<container-ip>/login`.
+the wizard, then create the owner account at `https://<container-ip>/login` (the wizard's last button takes
+the setup key with it; the owner account cannot be created without it).
 
 ## Installation
 
@@ -193,7 +194,7 @@ holds only the start-up keys HyperProx's own services need before anyone signs i
 passwords, the vault's admin key, Grafana's encryption key and the key Prometheus uses to read plug-in
 metrics.
 
-Two more keys are there only for a short while. The setup key is removed when setup finishes. Grafana's
+Two more keys are there only for a short while. The setup key is removed when you create the owner account. Grafana's
 first admin password moves into the vault when you create the owner account. Until then there is no
 vault to hold anything, so the access key HyperProx makes for itself in Proxmox waits in `.env` and also
 moves into the vault at that first sign-in. Anything you type during setup, such as a node login or a DNS
@@ -250,8 +251,8 @@ header to the `:443` server in `config/nginx/conf.d/hyperprox.conf`.
 
 The installer prints a wizard link with a setup key: `https://<container-ip>/setup?k=<key>`. Keep it
 private. If you lose it before setup is done, run `grep SETUP_SECRET /opt/hyperprox/.env` on the
-HyperProx machine. The key is removed once setup finishes. The wizard saves its progress, so reloading it
-resumes at the step you reached.
+HyperProx machine. The same key is needed to create the owner account, so it stays until the owner's first
+sign-in removes it. The wizard saves its progress, so reloading it resumes at the step you reached.
 
 1. **Connect your Proxmox.** Sign in with your Proxmox web login (two-factor codes are supported).
    HyperProx uses it once to create its own API token, `hyperprox-<hostname>-<install id>`, and a
@@ -272,8 +273,10 @@ resumes at the step you reached.
    in Prometheus that each answer worked, restarts HyperProx, and exits for good. It ends with a list of
    what was done, skipped or failed, and why.
 
-Then open `https://<container-ip>/login` and **create the owner account**: an email, a master password
-and an authenticator app (two-factor is required for the owner). HyperProx has no password of its own;
+Then open `https://<container-ip>/login` and **create the owner account**: the setup key (filled in when you
+come from the wizard's last button), an email, a master password and an authenticator app (two-factor is
+required for the owner). Without the setup key nobody can claim the owner account, even someone who reaches
+the sign-in page first. HyperProx has no password of its own;
 you sign in with this vault account from now on.
 
 > There is no recovery for a lost owner master password or two-factor device. Store both safely.
@@ -604,9 +607,16 @@ Applying a change asks for your master password again.
 ### Terminal (the Deck)
 
 SSH in the browser to every guest (addresses come from Proxmox) and to hosts you add by hand, such as
-a router or a NAS. One shared login can cover every host that has none of its own. Sessions run in
-tmux on the target, so they survive closing the tab; a host without tmux gets a plain shell and an
-offer to install it. The **Sessions** menu opens a host's existing tmux sessions in their own panes.
+a router or a NAS. One shared login can cover every cluster guest that has none of its own (not hand-added
+hosts or plug-in devices). Sessions run in tmux on the target, so they survive closing the tab; a host
+without tmux gets a plain shell and an offer to install it. The **Sessions** menu opens a host's existing
+tmux sessions in their own panes. Installing tmux and listing sessions run only on a host whose key is
+already pinned (open it in a pane first).
+
+HyperProx decides where a saved login is sent: the address comes from Proxmox, the address saved with the
+login, the hand-added host or the plug-in's settings, never from the browser. Node logins (the root logins
+HyperProx keeps for its own node work) are not Terminal logins: no pane can open one, and the Terminal
+cannot list, replace or remove them (Settings → Setup checklist manages them).
 
 Open hosts from the palette (**+** or **Ctrl+K** on Windows and Linux, **Cmd+K** on macOS). Panes can
 be tabs, columns, rows or a grid, and layouts can be saved by name. Host keys are pinned on first
@@ -1143,7 +1153,8 @@ single `docker-compose.yml`; `COMPOSE_PROFILES` in `.env` picks the optional par
 | Install fails with an overlay error | The container must be privileged with `nesting=1` and `keyctl=1`: `pct set <ctid> --features keyctl=1,nesting=1`, set **Unprivileged** to No, and reboot it. |
 | Every page says HyperProx is locked | Expected after a reboot or idle timeout. Sign in at `/login`. `hyperprox status` shows the vault and keyholder state. |
 | HyperProx will not start | The API waits for the vault. Check `docker logs hyperprox-vault` and `journalctl -u hyperprox-api -n 50`. |
-| The setup page says a key is required | Use the link with `?k=`. While setup is unfinished, get the key with `grep SETUP_SECRET /opt/hyperprox/.env`. Once setup is done there is no key and no setup page: sign in at `/login`. |
+| The setup page says a key is required | Use the link with `?k=`. Until the owner account exists, get the key with `grep SETUP_SECRET /opt/hyperprox/.env`. Once the owner has signed in there is no key and no setup page: sign in at `/login`. |
+| Creating the owner says "This install has no setup key" | Add one on the HyperProx machine: `echo "SETUP_SECRET=$(openssl rand -hex 32)" >> /opt/hyperprox/.env`, then enter that value as the setup key on `/login`. |
 | HA shows `n/a` | The Proxmox token needs `Sys.Audit` on `/` to read HA status. |
 | A node shows `no meter` | Open **Settings → Setup checklist**: it shows, per node, whether health and power monitoring are on and why not. Some CPUs and all VMs have no power counters. |
 | Monitoring has no node data | **Settings → Setup checklist → Check now** updates Prometheus's list of nodes. Check there that health monitoring is done on each node. |

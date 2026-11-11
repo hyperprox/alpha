@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import QRCode from 'qrcode'
 import { apiJson, type AuthStatus } from '@/lib/api'
+import { safeNext } from '@/lib/safe-next'
 import { alpha } from '@/lib/theme'
 import { BusyNote, GhostButton, INPUT, LABEL, Notice, PrimaryButton, passwordStrength } from '@/components/vault/ui'
 import { ThemeToggle } from '@/components/layout/ThemeToggle'
@@ -11,17 +12,20 @@ import { DemoBadge } from '@/components/layout/TopBar'
 import s from './login.module.css'
 
 /**
- * Where to go after signing in — a path on this origin, or `/`.
- *
- * `next` arrives in the query string, so it is whatever the caller put there. With a hard
- * navigation an absolute URL would be an open redirect: `/login?next=https://elsewhere.example`
- * would take a freshly-authenticated operator off-site on a page they trust. Anything that is not
- * a single-slash-rooted path is discarded rather than sanitised — `//host` is protocol-relative
- * and reads as a path only until a browser resolves it.
+ * The setup key the setup wizard's last page hands over (/login#k=...), or the one this tab already has. It is
+ * taken out of the address bar at once and kept for this tab only, as the wizard keeps it.
  */
-function safeNext(raw: string | null): string {
-  if (!raw || !raw.startsWith('/') || raw.startsWith('//') || raw.startsWith('/login')) return '/'
-  return raw
+function initialSetupKey(): string {
+  if (typeof window === 'undefined') return ''
+  const m = /(?:^#|&)k=([^&]+)/.exec(window.location.hash)
+  let k = ''
+  if (m) {
+    try { k = decodeURIComponent(m[1]) } catch { k = '' }
+    try { sessionStorage.setItem('hpx-setup-key', k) } catch { /* private mode */ }
+    history.replaceState(null, '', window.location.pathname + window.location.search)
+  }
+  if (!k) { try { k = sessionStorage.getItem('hpx-setup-key') ?? '' } catch { k = '' } }
+  return k
 }
 
 const MIN_PASSWORD = 12
@@ -45,6 +49,8 @@ function authError(r: { status: number; code?: string; error?: string }, fallbac
     case 'not_member':      return 'This vault account is not a member of the HyperProx organization.'
     case 'unauthenticated': return 'Your session has ended. Sign in again.'
     case 'locked_out':      return 'Too many failed attempts. Wait a few minutes and try again.'
+    case 'setup_key_required': return 'The setup key is missing or wrong. It is the part of the setup link after k=, or on the host: grep SETUP_SECRET /opt/hyperprox/.env'
+    case 'setup_key_missing':  return r.error ?? 'This install has no setup key.'
     case 'keyholder_unavailable': return 'The keyholder service is not running, so HyperProx cannot unlock. On the host: systemctl start hyperprox-keyholder'
   }
   if (r.status === 0) return 'Could not reach the API.'
@@ -164,6 +170,9 @@ function SignIn({ next, initialEmail = '', notice, demo = false }: { next: strin
 }
 
 function Bootstrap({ next, onSignInRequired }: { next: string | null; onSignInRequired: (email: string) => void }) {
+  const [setupKey, setSetupKey] = useState('')
+  useEffect(() => { setSetupKey(initialSetupKey()) }, [])
+  const keyHeader = () => ({ 'X-Setup-Key': setupKey.trim() })
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [again, setAgain] = useState('')
@@ -174,7 +183,7 @@ function Bootstrap({ next, onSignInRequired }: { next: string | null; onSignInRe
   const [busy, setBusy] = useState(false)
 
   const mismatch = again.length > 0 && again !== password
-  const valid = email.includes('@') && password.length >= MIN_PASSWORD && password === again
+  const valid = email.includes('@') && password.length >= MIN_PASSWORD && password === again && setupKey.trim().length > 0
 
   useEffect(() => {
     if (!uri) return
@@ -188,7 +197,7 @@ function Bootstrap({ next, onSignInRequired }: { next: string | null; onSignInRe
   async function create(e: React.FormEvent) {
     e.preventDefault()
     setBusy(true); setError('')
-    const r = await apiJson<{ otpauthUri: string }>('/api/auth/bootstrap', 'POST', { email: email.trim(), password })
+    const r = await apiJson<{ otpauthUri: string }>('/api/auth/bootstrap', 'POST', { email: email.trim(), password }, keyHeader())
     if (!r.ok || !r.body?.otpauthUri) { setError(authError(r, 'Could not create the owner account')); setBusy(false); return }
     setUri(r.body.otpauthUri); setBusy(false)
   }
@@ -196,7 +205,7 @@ function Bootstrap({ next, onSignInRequired }: { next: string | null; onSignInRe
   async function confirm(e: React.FormEvent) {
     e.preventDefault()
     setBusy(true); setError('')
-    const r = await apiJson('/api/auth/bootstrap/confirm', 'POST', { email: email.trim(), password, code: code.trim() })
+    const r = await apiJson('/api/auth/bootstrap/confirm', 'POST', { email: email.trim(), password, code: code.trim() }, keyHeader())
     // HyperProx restarted between the two steps and the account already exists: go to the sign-in form.
     if (!r.ok && r.code === 'sign_in') { onSignInRequired(email.trim()); return }
     if (!r.ok && r.code === 'restart_setup') { setUri(null); setCode(''); setError('Setup was interrupted. Start again.'); setBusy(false); return }
@@ -209,6 +218,12 @@ function Bootstrap({ next, onSignInRequired }: { next: string | null; onSignInRe
   if (!uri) {
     return (
       <Card eyebrow="First-time setup" subtitle="Create the owner account" onSubmit={create}>
+        <div>
+          <Field id="setup-key" label="Setup key" type="password" autoComplete="off" spellCheck={false} value={setupKey} onChange={e => setSetupKey(e.target.value)} />
+          <div className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
+            {setupKey ? 'Filled in from the setup wizard.' : 'The part of the setup link after k=, or on the host: grep SETUP_SECRET /opt/hyperprox/.env'}
+          </div>
+        </div>
         <Field id="email" label="Email" type="email" autoFocus autoComplete="username" value={email} onChange={e => setEmail(e.target.value)} />
         <div>
           <Field id="password" label="Master password" type="password" autoComplete="new-password" value={password} onChange={e => setPassword(e.target.value)} />

@@ -5,7 +5,8 @@
 //  with every guest already listed. Nothing here ever returns a secret.
 // =============================================================================
 
-import { FastifyPluginAsync } from 'fastify'
+import type { FastifyPluginAsync, FastifyRequest } from 'fastify'
+import { hasRole } from '../lib/roles'
 import { livePve }            from '../lib/pve-env'
 import {
   SHARED_CREDENTIAL_ID, credentialId, listCredentials, saveCredential,
@@ -18,6 +19,7 @@ import {
 } from '../lib/terminal-hosts'
 import { PLUGINS }    from '../plugins'
 import { getSettings } from '../lib/plugin-host'
+import { ipFromLxcNet, isNodeLoginId, resolveTerminalTarget, terminalIdProblem, terminalTargetDeps } from '../lib/terminal-targets'
 
 
 export interface TerminalHost {
@@ -37,14 +39,10 @@ export interface TerminalHost {
   hint?:   string
 }
 
-/** Pull an IPv4 out of an LXC netN line: name=eth0,...,ip=10.0.0.11/24,... */
-function ipFromLxcNet(config: Record<string, any>): string | null {
-  for (const [k, v] of Object.entries(config)) {
-    if (!/^net\d+$/.test(k) || typeof v !== 'string') continue
-    const m = v.match(/(?:^|,)ip=([0-9.]+)(?:\/\d+)?/)
-    if (m && m[1] !== '0.0.0.0') return m[1]
-  }
-  return null
+const LAYOUT_OWNED = 'u:'
+/** The stored-name prefix for the signed-in person's layouts. */
+function layoutPrefix(req: FastifyRequest): string {
+  return `${LAYOUT_OWNED}${String(req.session?.email ?? '').toLowerCase()}:`
 }
 
 export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
@@ -110,7 +108,8 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
         status: 'running',
         ip:     m.address,
         port:   m.port,
-        hasCredential: credIds.has(credentialId(m.id)) || shared,
+        // The shared login is for cluster guests only (lib/ssh-broker.ts loadCredential).
+        hasCredential: credIds.has(credentialId(m.id)),
         source: 'manual',
       }))
 
@@ -135,7 +134,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
             status: 'running',
             ip:     addresses[id] ?? new URL(base).hostname,
             port:   console_.defaultPort,
-            hasCredential: credIds.has(credentialId(id)) || shared,
+            hasCredential: credIds.has(credentialId(id)),
             source: 'plugin',
             tmux:   console_.tmux !== false,
             hint:   console_.hint,
@@ -154,7 +153,8 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
   // are never returned by any route.
   fastify.get('/credentials', async (_req, reply) => {
     try {
-      const creds = await listCredentials()
+      // Node logins live in the same store; they are not the Terminal's, so they are not listed here.
+      const creds = (await listCredentials()).filter(c => !isNodeLoginId(c.id))
       return {
         success: true,
         data: {
@@ -177,6 +177,9 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
         '[terminal] credential save requested',
       )
 
+      // Never a node's login (Settings → Setup checklist keeps those) or the shared one under its own name.
+      const refused = terminalIdProblem(req.params.id)
+      if (refused) return reply.status(isNodeLoginId(req.params.id) ? 403 : 400).send({ success: false, error: refused })
       if (!username?.trim()) {
         return reply.status(400).send({ success: false, error: 'A username is required' })
       }
@@ -203,6 +206,8 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
   )
 
   fastify.delete<{ Params: { id: string } }>('/credentials/:id', async (req, reply) => {
+    const refused = terminalIdProblem(req.params.id)
+    if (refused) return reply.status(isNodeLoginId(req.params.id) ? 403 : 400).send({ success: false, error: refused })
     try {
       await removeCredential(req.params.id)
       return { success: true }
@@ -250,14 +255,17 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Params: { id: string }; Body: { host: string; port?: number } }>(
     '/hosts/:id/enable-persistence',
     async (req, reply) => {
-      const host = (req.body?.host ?? '').trim()
-      const port = Number(req.body?.port) || 22
-      if (!host) return reply.status(400).send({ success: false, error: 'No host address given' })
+      // The body's host and port are ignored: the login goes only where the id says (lib/terminal-targets.ts).
+      const refused = terminalIdProblem(req.params.id)
+      if (refused) return reply.status(isNodeLoginId(req.params.id) ? 403 : 400).send({ success: false, error: refused })
 
       let cred
       try { cred = await loadCredential(req.params.id) }
       catch (e: any) { return reply.status(500).send({ success: false, error: e.message }) }
-      if (!cred) return reply.status(400).send({ success: false, error: `No saved login for ${host}.` })
+      if (!cred) return reply.status(400).send({ success: false, error: `No saved login for ${req.params.id}.` })
+      let host: string, port: number
+      try { ({ host, port } = await resolveTerminalTarget(req.params.id, cred.port, terminalTargetDeps())) }
+      catch (e: any) { return reply.status(400).send({ success: false, error: e.message }) }
 
       // Covers Debian/Ubuntu, Alpine, RHEL family and Arch. Anything else is
       // reported rather than guessed at.
@@ -307,14 +315,17 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Params: { id: string }; Body: { host: string; port?: number } }>(
     '/hosts/:id/tmux-sessions',
     async (req, reply) => {
-      const host = (req.body?.host ?? '').trim()
-      const port = Number(req.body?.port) || 22
-      if (!host) return reply.status(400).send({ success: false, error: 'No host address given' })
+      // The body's host and port are ignored: the login goes only where the id says (lib/terminal-targets.ts).
+      const refused = terminalIdProblem(req.params.id)
+      if (refused) return reply.status(isNodeLoginId(req.params.id) ? 403 : 400).send({ success: false, error: refused })
 
       let cred
       try { cred = await loadCredential(req.params.id) }
       catch (e: any) { return reply.status(500).send({ success: false, error: e.message }) }
-      if (!cred) return reply.status(400).send({ success: false, error: `No saved login for ${host}.` })
+      if (!cred) return reply.status(400).send({ success: false, error: `No saved login for ${req.params.id}.` })
+      let host: string, port: number
+      try { ({ host, port } = await resolveTerminalTarget(req.params.id, cred.port, terminalTargetDeps())) }
+      catch (e: any) { return reply.status(400).send({ success: false, error: e.message }) }
 
       // `tmux ls` exits non-zero when no server is running; that is an empty
       // list, not an error.
@@ -344,10 +355,19 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
   // A layout is a named set of panes plus how they are arranged. Stored server
   // side rather than in the browser so the same arrangement is there from any
   // machine — the whole point is not rebuilding it each morning.
-  fastify.get('/layouts', async (_req, reply) => {
+  // Each person's layouts are their own: stored under "u:<email>:<name>". Layouts saved before that (no owner) are
+  // shown to admins only. A layout names hosts and addresses, so nobody reads or replaces another person's.
+  fastify.get('/layouts', async (req, reply) => {
     try {
+      const mine = layoutPrefix(req)
+      const admin = hasRole(req.session?.role ?? 'viewer', 'admin')
       const rows = await fastify.prisma.terminalLayout.findMany({ orderBy: { name: 'asc' } })
-      return { success: true, data: rows }
+      const data = rows.flatMap((r: any) => {
+        if (r.name.startsWith(mine)) return [{ ...r, name: r.name.slice(mine.length) }]
+        if (admin && !r.name.startsWith(LAYOUT_OWNED)) return [{ ...r, shared: true }]
+        return []
+      })
+      return { success: true, data }
     } catch (e: any) {
       return reply.status(500).send({ success: false, error: e.message })
     }
@@ -367,13 +387,14 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
       try {
         // Saving under an existing name replaces it — that is what "save" means
         // once you have the arrangement you want on screen.
+        const key = layoutPrefix(req) + name
         const row = await fastify.prisma.terminalLayout.upsert({
-          where:  { name },
+          where:  { name: key },
           update: { view, panes: panes as any },
-          create: { name, view, panes: panes as any },
+          create: { name: key, view, panes: panes as any },
         })
         fastify.log.info({ name, panes: panes.length, view }, '[terminal] layout saved')
-        return { success: true, data: row }
+        return { success: true, data: { ...row, name } }
       } catch (e: any) {
         return reply.status(500).send({ success: false, error: e.message })
       }
@@ -382,7 +403,11 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.delete<{ Params: { name: string } }>('/layouts/:name', async (req, reply) => {
     try {
-      await fastify.prisma.terminalLayout.deleteMany({ where: { name: req.params.name } })
+      const own = layoutPrefix(req) + req.params.name
+      const admin = hasRole(req.session?.role ?? 'viewer', 'admin')
+      // Your own layout, or (admins) one saved before layouts had owners. Never another person's.
+      const names = admin && !req.params.name.startsWith(LAYOUT_OWNED) ? [own, req.params.name] : [own]
+      await fastify.prisma.terminalLayout.deleteMany({ where: { name: { in: names } } })
       return { success: true }
     } catch (e: any) {
       return reply.status(500).send({ success: false, error: e.message })

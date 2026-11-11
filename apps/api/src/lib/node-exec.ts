@@ -27,7 +27,7 @@ import { recordPin, pinSource, pinnedKey, isConfirmedSource, type PinSource } fr
 import { currentRemote } from './clusters/context'
 import { assertSafeScript } from './clusters/script-guard'
 import { remoteNodeLoginRaw } from './clusters/registry'
-import { scheduleHomeVerify } from './hostkey-verify'
+import { verifyHomeNow } from './hostkey-verify'
 
 
 /** Credential id for a node, distinct from any guest that shares its name. */
@@ -83,8 +83,10 @@ export interface ExecOptions {
   /** SSH port; 22 unless the login says otherwise (a hand-added host). */
   port?:     number
   /**
-   * Refuse a host whose key has never been pinned, instead of trusting it. For targets reached with a script
-   * that carries a key (remote access to VMs and hand-added hosts): the admin pins it in the Terminal first.
+   * Kept for the callers that state it; every call now behaves this way. A host whose key is not pinned, or whose
+   * pin nobody confirmed or verified, is refused before the login is sent. For a home node HyperProx first runs
+   * the evidence-based check (lib/hostkey-verify.ts) once, so a node it can verify works without anyone confirming
+   * by hand; there is no trust on first use any more.
    */
   requirePin?: boolean
   /** Stop reading (and end the session) once the output passes this many characters; the result says truncated. */
@@ -137,21 +139,6 @@ export class HostKeyNotConfirmedError extends Error {
   }
 }
 
-/**
- * Trust on first use, as the Deck does: with no pin yet, the key seen is pinned; after that only that key is
- * accepted. A changed key is always refused; clearing the pin is a deliberate act (the Terminal).
- */
-export async function checkHostKey(host: string, fingerprint: string, port = 22): Promise<boolean> {
-  const pinned = await pinnedHostKey(host, port)
-  if (!pinned) { await pinHostKey(host, port, fingerprint, 'api'); learnedHomeKey(); return true }
-  return pinned === fingerprint
-}
-
-/** A home node's key was just learned on first use: verify it (and any others) in the background, soon. */
-function learnedHomeKey(): void {
-  if (!currentRemote()) scheduleHomeVerify()
-}
-
 /** Pin a key learned elsewhere (the setup wizard's first connection). An existing, different pin wins. */
 export async function pinHostKeyIfFree(host: string, fingerprint: string, port = 22, source: PinSource = 'wizard'): Promise<'pinned' | 'same' | 'conflict'> {
   const pinned = await pinnedHostKey(host, port)
@@ -183,12 +170,20 @@ export function probeHostKey(host: string, port = 22, timeoutMs = 15_000): Promi
  * turn a log into a smear. Without one, `DEBIAN_FRONTEND=noninteractive` behaves
  * and the output is readable.
  */
-export function execOnNode(opts: ExecOptions): Promise<ExecResult> {
-  const { host, cred, command, onData } = opts
+export async function execOnNode(opts: ExecOptions): Promise<ExecResult> {
   // Every script for a remote cluster's node passes the one guard (lib/clusters/script-guard.ts).
-  if (currentRemote()) {
-    try { assertSafeScript(`${command}\n${opts.input ?? ''}`) } catch (e) { return Promise.reject(e) }
+  if (currentRemote()) assertSafeScript(`${opts.command}\n${opts.input ?? ''}`)
+  else {
+    // A home node with no confirmed or verified pin: verify with evidence first (not trust on first use).
+    const port = opts.port ?? 22
+    const [pin, src] = await Promise.all([pinnedKey(opts.host, port).catch(() => null), pinSource(opts.host, port).catch(() => null)])
+    if (!pin || !isConfirmedSource(src)) await verifyHomeNow().catch(() => undefined)
   }
+  return execPinned(opts)
+}
+
+function execPinned(opts: ExecOptions): Promise<ExecResult> {
+  const { host, cred, command, onData } = opts
   const timeoutMs = opts.timeoutMs ?? 15 * 60_000
 
   return new Promise((resolve, reject) => {
@@ -244,17 +239,16 @@ export function execOnNode(opts: ExecOptions): Promise<ExecResult> {
       host, port: opts.port ?? 22, username: cred.username,
       readyTimeout: 15_000, keepaliveInterval: 20_000,
       // Same pin the Terminal uses. A node whose key changed is refused here for exactly the reason it is
-      // refused there. An unpinned key is pinned on first use, unless the caller requires a pin already.
+      // refused there; an unpinned or unconfirmed one is refused too (execOnNode verified what it could first).
       hostVerifier: (key: Buffer, verified: (ok: boolean) => void) => {
         const fp = fingerprintOf(key)
         const port = opts.port ?? 22
         pinnedKey(host, port)
           .then(async pinned => {
-            const d = hostKeyDecision(pinned, fp, !!opts.requirePin)
+            const d = hostKeyDecision(pinned, fp, true)
             if (d === 'reject-unpinned') unpinned = fp
-            // requirePin: the pin must also be one an admin confirmed or HyperProx verified, not one learned on first use.
-            if (d === 'accept' && opts.requirePin && !isConfirmedSource(await pinSource(host, port))) { unconfirmed = fp; return verified(false) }
-            if (d === 'accept' && !pinned) { await pinHostKey(host, port, fp, 'api'); learnedHomeKey() }
+            // The pin must also be one an admin confirmed or HyperProx verified, not one learned on first use.
+            if (d === 'accept' && !isConfirmedSource(await pinSource(host, port))) { unconfirmed = fp; return verified(false) }
             verified(d === 'accept')
           })
           .catch(() => verified(false))

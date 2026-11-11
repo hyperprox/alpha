@@ -25,6 +25,13 @@ export interface ActiveSession {
 
 const sessions = new Map<string, ActiveSession>()
 
+// Told when a session ends (its sid), or when every session does (null): lib/session-sockets.ts closes their sockets.
+const endListeners: Array<(sid: string | null) => void> = []
+export function onSessionEnd(fn: (sid: string | null) => void): void { endListeners.push(fn) }
+function ended(sid: string | null): void {
+  for (const fn of endListeners) { try { fn(sid) } catch { /* a listener must not stop the others */ } }
+}
+
 export function addSession(s: { sid: string; email: string; role: Role; userId: string }): ActiveSession {
   const session: ActiveSession = { ...s, reconfirmedUntil: 0, lastSeen: Date.now() }
   sessions.set(s.sid, session)
@@ -38,10 +45,12 @@ export function getSession(sid: string): ActiveSession | undefined {
 
 export function removeSession(sid: string): void {
   if (sessions.delete(sid)) snapshotChanged()
+  ended(sid)
 }
 
 export function clearSessions(): void {
   sessions.clear()
+  ended(null)
 }
 
 export function allSessions(): ActiveSession[] {
@@ -101,12 +110,22 @@ export function currentContext(): RequestContext | undefined {
   return requestContext.getStore()
 }
 
+/** The request context of an API token (gate.ts tokenSession): its sid is never a signed-in session. */
+export function isTokenContext(ctx: RequestContext | undefined = requestContext.getStore()): boolean {
+  return !!ctx && ctx.sid.startsWith('token:')
+}
+
 /**
  * The vault session to act as: the request's own, else the most recently active
  * signed-in session (for work that outlives its request, e.g. a background job).
+ *
+ * Never for an API token, nor for work a token's request started: a token must not borrow a person's vault
+ * session to write with (and so put a credential, a setting or a pin in the vault under their name). Its vault
+ * writes fail as TokenVaultWriteError; its reads, from the unlock cache, are unaffected.
  */
 export function actingSid(): string | null {
   const ctx = requestContext.getStore()
+  if (isTokenContext(ctx)) return null
   if (ctx && sessions.has(ctx.sid)) return ctx.sid
   let best: ActiveSession | null = null
   for (const s of sessions.values()) if (!best || s.lastSeen > best.lastSeen) best = s

@@ -183,7 +183,8 @@ test('finish: targets from what was found, the API gets the held secrets, the se
   assert.deepEqual(handoff.nodeLogin.nodes, ['node-a', 'node-b'])
   assert.deepEqual(handoff.godaddy, { key: 'gd-key', secret: GD_SECRET })
   const env = readFileSync(envFile, 'utf8')
-  assert.doesNotMatch(env, /^SETUP_SECRET=/m, 'the setup key is gone once setup is done')
+  // Kept until the owner exists: /login asks for it before anyone may create the owner (the owner's first sign-in removes it).
+  assert.match(env, new RegExp(`^SETUP_SECRET=${KEY}$`, 'm'), 'the setup key stays until the owner account exists')
   assert.match(env, /^SETUP_COMPLETE=true$/m)
   assert.match(env, /^COMPOSE_PROFILES=ai$/m)
   assert.match(readFileSync(runLog, 'utf8'), /docker compose up -d --remove-orphans[\s\S]*systemctl restart hyperprox-api hyperprox-frontend/)

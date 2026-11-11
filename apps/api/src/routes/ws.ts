@@ -1,10 +1,14 @@
 import { FastifyPluginAsync } from 'fastify'
 import { startBroadcast }     from '../lib/ws-broadcast'
+import { trackSocket }        from '../lib/session-sockets'
 
 let started = false
 
 export const wsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get('/', { websocket: true }, (socket, req) => {
+    // The gate let only a signed-in viewer (or above) this far; the socket ends when that session does.
+    if (!req.session) { socket.close(); return }
+    trackSocket(req.session, socket as any, 'live')
     // Start broadcast loop once on first connection
     if (!started) {
       startBroadcast(fastify)

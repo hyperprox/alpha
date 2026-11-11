@@ -10,6 +10,47 @@ import {
   CREDENTIAL_DEFS,
 } from '../lib/credentials'
 
+/**
+ * Where each provider's stored secret is sent, and which secret that is. Moving the address must not carry the
+ * secret along to the new place: the same rule as a plug-in's settings (lib/plugin-host.ts settingsChangeProblem).
+ */
+const SECRET_DESTINATIONS: Record<string, { address: string[]; secrets: string[]; name: string }> = {
+  'proxmox/proxmox': { address: ['host', 'port'],   secrets: ['token_secret'], name: 'Proxmox' },
+  'proxy/npm':       { address: ['url'],            secrets: ['password'],     name: 'Nginx Proxy Manager' },
+  'ai/openai':       { address: ['base_url'],       secrets: ['api_key'],      name: 'OpenAI' },
+  'remote/netbird':  { address: ['management_url'], secrets: ['api_token'],    name: 'NetBird' },
+}
+
+/** Compare addresses the way a request sees them: a URL by its origin, anything else as typed (trimmed, any case). */
+function sameAddress(a: string, b: string): boolean {
+  const norm = (v: string) => {
+    const t = v.trim()
+    try { if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t)) return new URL(t).origin.toLowerCase() } catch { /* as typed */ }
+    return t.toLowerCase()
+  }
+  return norm(a) === norm(b)
+}
+
+/**
+ * Null when the save may go ahead; otherwise why not. An address that changes from a stored one needs the secret
+ * it is paired with in the same save, so a changed address never inherits the old secret. A first address (none
+ * stored) needs nothing: there is no secret yet to send anywhere.
+ */
+export function settingsSaveProblem(category: string, provider: string, stored: Record<string, string>, updates: Record<string, unknown>): string | null {
+  const d = SECRET_DESTINATIONS[`${category}/${provider}`]
+  if (!d) return null
+  const moved = d.address.some(k => {
+    const next = updates[k]
+    const prev = stored[k]
+    return typeof next === 'string' && !!prev && !sameAddress(next, prev)
+  })
+  if (!moved) return null
+  const missing = d.secrets.filter(k => typeof updates[k] !== 'string' || !(updates[k] as string).trim())
+  if (!missing.length) return null
+  const labels = missing.map(k => CREDENTIAL_DEFS.find(x => x.category === category && x.provider === provider && x.key === k)?.label ?? k)
+  return `${d.name}'s address now points somewhere else, so enter the ${labels.join(' and ')} again in the same save.`
+}
+
 const wrap = async (reply: any, fn: () => Promise<any>) => {
   try   { return { success: true, data: await fn() } }
   catch (e: any) { return reply.status(500).send({ success: false, error: e.message }) }
@@ -40,6 +81,19 @@ export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
   }>('/:category/:provider', async (req, r) => {
     const { category, provider } = req.params
     const updates = req.body
+    if (!updates || typeof updates !== 'object' || Array.isArray(updates)) {
+      return r.status(400).send({ success: false, error: 'Send the settings as an object of field: value' })
+    }
+    if (Object.values(updates).some(v => typeof v !== 'string')) {
+      return r.status(400).send({ success: false, error: 'Every setting must be text' })
+    }
+    // What is stored now, the .env copy included for a value not moved into the vault yet.
+    const stored = await getProviderCredentials(category, provider)
+    for (const d of CREDENTIAL_DEFS) {
+      if (d.category === category && d.provider === provider && d.envKey && !stored[d.key] && process.env[d.envKey]) stored[d.key] = process.env[d.envKey]!
+    }
+    const problem = settingsSaveProblem(category, provider, stored, updates)
+    if (problem) return r.status(400).send({ success: false, code: 'secret_required', error: problem })
 
     await Promise.all(
       Object.entries(updates).map(([key, value]) => {

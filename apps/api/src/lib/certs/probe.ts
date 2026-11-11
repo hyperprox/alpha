@@ -59,9 +59,18 @@ const EHLO_NAME = 'hyperprox.invalid'
  */
 type Step = { send?: string; judge: (line: string) => 'more' | 'ok' | string }
 
+/**
+ * What a server's unexpected answer is shown as: its reply code or first word only, printable ASCII, never the
+ * whole line. A probe can be aimed at any host and port, so its banner (which may be anything, a different
+ * protocol's greeting included) is not echoed back to the person who aimed it.
+ */
+export function brief(line: string): string {
+  return /^[\x21-\x7e]{1,12}/.exec(String(line ?? ''))?.[0] ?? 'nothing readable'
+}
+
 function smtpReply(code: string, what: string) {
   return (line: string) => {
-    if (!line.startsWith(code)) return `the SMTP server answered ${what} with "${line.slice(0, 120)}"`
+    if (!line.startsWith(code)) return `the SMTP server answered ${what} with ${brief(line)}`
     return line.charAt(3) === '-' ? 'more' : 'ok'
   }
 }
@@ -73,13 +82,13 @@ const DIALOGUES: Record<Exclude<CertsStartTls, 'none'>, Step[]> = {
     { send: 'STARTTLS\r\n', judge: smtpReply('220', 'STARTTLS') },
   ],
   imap: [
-    { judge: l => l.startsWith('* OK') ? 'ok' : `the IMAP server greeted with "${l.slice(0, 120)}"` },
+    { judge: l => l.startsWith('* OK') ? 'ok' : `the IMAP server greeted with ${brief(l)}` },
     // Untagged lines (a capability list, say) may come before the tagged answer.
-    { send: 'a1 STARTTLS\r\n', judge: l => l.startsWith('* ') ? 'more' : /^a1 OK/i.test(l) ? 'ok' : `the IMAP server answered STARTTLS with "${l.slice(0, 120)}"` },
+    { send: 'a1 STARTTLS\r\n', judge: l => l.startsWith('* ') ? 'more' : /^a1 OK/i.test(l) ? 'ok' : `the IMAP server answered STARTTLS with ${brief(l)}` },
   ],
   pop3: [
-    { judge: l => l.startsWith('+OK') ? 'ok' : `the POP3 server greeted with "${l.slice(0, 120)}"` },
-    { send: 'STLS\r\n', judge: l => l.startsWith('+OK') ? 'ok' : `the POP3 server answered STLS with "${l.slice(0, 120)}"` },
+    { judge: l => l.startsWith('+OK') ? 'ok' : `the POP3 server greeted with ${brief(l)}` },
+    { send: 'STLS\r\n', judge: l => l.startsWith('+OK') ? 'ok' : `the POP3 server answered STLS with ${brief(l)}` },
   ],
 }
 

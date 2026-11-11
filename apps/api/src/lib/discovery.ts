@@ -78,15 +78,18 @@ export interface Finding {
 }
 
 /** One probe against one address. Never throws; a miss is just a miss. */
-async function probeOne(host: string, probe: Probe): Promise<boolean> {
+export async function probeOne(host: string, probe: Probe): Promise<boolean> {
   const scheme = probe.scheme ?? 'http'
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 2500)
   try {
     const res = await fetch(`${scheme}://${host}:${probe.port}${probe.path}`, {
       signal: controller.signal,
-      redirect: 'follow',
+      // Not followed: a probe answers on the address it was sent to, or it is a miss. A redirect could point the
+      // scan at any address, inside the network or out.
+      redirect: 'manual',
     })
+    if (res.status >= 300 && res.status < 400) return false
     const body = (await res.text()).slice(0, 4000)
     return probe.match(res.status, body)
   } catch {
