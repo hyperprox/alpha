@@ -365,14 +365,19 @@ class CliVaultBroker implements VaultBroker {
 
   /**
    * The owner holds every key: 2FA is mandatory for them, even if it was later
-   * removed from the vault side (e.g. through the admin panel). Unknown (no admin
-   * token, admin API down) counts as yes, as it always has.
+   * removed from the vault side (e.g. through the admin panel). Fails closed: when the vault's admin API cannot
+   * answer, or does not know the account, the owner is not signed in. Only an install with no admin token at all
+   * (one that predates it) cannot check, and is let through with a warning, as before.
    */
   private async ownerHasTwoFactor(email: string): Promise<boolean> {
     const admin = this.admin()
-    if (!admin) return true
-    const u = await admin.userByEmail(email).catch(() => null)
-    return !(u && !u.twoFactorEnabled)
+    if (!admin) { log.warn('[vault] VAULT_ADMIN_TOKEN is not set, so the owner\'s two-step login cannot be checked'); return true }
+    let u: { twoFactorEnabled?: boolean } | null
+    try { u = await admin.userByEmail(email) } catch (e: any) {
+      log.warn(`[vault] could not check the owner's two-step login (${e?.message ?? e}); refusing the sign-in`)
+      return false
+    }
+    return !!u && u.twoFactorEnabled === true
   }
 
   private async cliSignIn(email: string, masterPassword: string, totp: string): Promise<CliSession> {

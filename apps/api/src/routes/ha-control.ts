@@ -69,11 +69,15 @@ function fail(reply: FastifyReply, e: any) {
 /** Below operator, a house is its name, its link and its role setting: no address, no protected lists, no pin. */
 const isViewer = (req: FastifyRequest) => !hasRole(req.session?.role ?? 'viewer', 'operator')
 
-function view(m: InstanceMeta & { url?: string; hasToken?: boolean }, viewer = false) {
+/** Below admin, a house's address and certificate pin are not shown (operators control it through HyperProx). */
+const belowAdmin = (req: FastifyRequest) => !hasRole(req.session?.role ?? 'viewer', 'admin')
+
+function view(m: InstanceMeta & { url?: string; hasToken?: boolean }, viewer = false, hideAddress = viewer) {
   const c = svc().clusterOf(m)
   const out = { ...m, cluster: c, remote: c?.kind === 'remote' }
-  if (!viewer) return out
   const { url: _u, fingerprint: _f, ...rest } = out
+  const shown = hideAddress ? rest : out
+  if (!viewer) return shown
   return { ...rest, policy: { ...m.policy, protected: [], securityDomains: [], everyday: [] } }
 }
 
@@ -128,7 +132,7 @@ export const haControlRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       const sc = scope()
       const rows = (await store().views()).filter(v => !sc || v.clusterId === sc)
-      return { success: true, data: rows.map(r => view(r, isViewer(req))) }
+      return { success: true, data: rows.map(r => view(r, isViewer(req), belowAdmin(req))) }
     } catch (e) { return fail(reply, e) }
   })
 

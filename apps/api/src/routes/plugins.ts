@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from 'node:crypto'
 // =============================================================================
 //  HyperProx — Plug-in routes
 // =============================================================================
@@ -15,6 +16,11 @@ import {
   runPluginRescueScan, runPluginRescueRun, PluginSettingsError,
 } from '../lib/plugin-host'
 
+export function metricsTokenMatches(offered: string, expected: string): boolean {
+  if (!offered || !expected) return false
+  return timingSafeEqual(createHash('sha256').update(offered).digest(), createHash('sha256').update(expected).digest())
+}
+
 export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
 
   // Prometheus scrape target. Sits outside the session cookie because a scraper
@@ -28,7 +34,8 @@ export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
         .send('# METRICS_TOKEN is not set in .env, so this endpoint is disabled.\n')
     }
     const offered = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '')
-    if (offered !== expected) return reply.status(401).type('text/plain').send('# unauthorised\n')
+    // Compared as SHA-256 digests in constant time: equal lengths, and no timing hint about how much matched.
+    if (!metricsTokenMatches(offered, expected)) return reply.status(401).type('text/plain').send('# unauthorised\n')
 
     const samples: Array<{ plugin: string; metric: PluginMetric }> = []
     const up: Record<string, boolean> = {}

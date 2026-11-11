@@ -228,6 +228,9 @@ export function requiredRole(method: string, path: string): Role | null {
   if (m === 'GET' || m === 'HEAD') {
     // Interactive shells on guests and nodes.
     if (p === '/ws/terminal' || p.startsWith('/ws/terminal/')) return 'operator'
+    // Plug-in probes that reach out on the network (a discovery scan of every guest, a downloader's stuck-import
+    // scan): admin, though they are reads.
+    if (p === '/api/plugins/discover' || /^\/api\/plugins\/[^/]+\/stuck$/.test(p)) return 'admin'
     // A guest's whole Proxmox config (routes/infrastructure.ts; masked, but it still maps disks, networks and mounts).
     if (/^\/api\/infra\/vms\/[^/]+\/[^/]+\/[^/]+\/config$/.test(p)) return 'admin'
     // The vault's item list: every secret's name and field names, the person's own included. Admin, like the rest of /api/secrets.

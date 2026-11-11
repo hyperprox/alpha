@@ -5,7 +5,8 @@
 //  with every guest already listed. Nothing here ever returns a secret.
 // =============================================================================
 
-import { FastifyPluginAsync } from 'fastify'
+import type { FastifyPluginAsync, FastifyRequest } from 'fastify'
+import { hasRole } from '../lib/roles'
 import { livePve }            from '../lib/pve-env'
 import {
   SHARED_CREDENTIAL_ID, credentialId, listCredentials, saveCredential,
@@ -36,6 +37,12 @@ export interface TerminalHost {
   /** False for an appliance CLI, where probing for tmux wastes a round trip. */
   tmux?:   boolean
   hint?:   string
+}
+
+const LAYOUT_OWNED = 'u:'
+/** The stored-name prefix for the signed-in person's layouts. */
+function layoutPrefix(req: FastifyRequest): string {
+  return `${LAYOUT_OWNED}${String(req.session?.email ?? '').toLowerCase()}:`
 }
 
 export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
@@ -348,10 +355,19 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
   // A layout is a named set of panes plus how they are arranged. Stored server
   // side rather than in the browser so the same arrangement is there from any
   // machine — the whole point is not rebuilding it each morning.
-  fastify.get('/layouts', async (_req, reply) => {
+  // Each person's layouts are their own: stored under "u:<email>:<name>". Layouts saved before that (no owner) are
+  // shown to admins only. A layout names hosts and addresses, so nobody reads or replaces another person's.
+  fastify.get('/layouts', async (req, reply) => {
     try {
+      const mine = layoutPrefix(req)
+      const admin = hasRole(req.session?.role ?? 'viewer', 'admin')
       const rows = await fastify.prisma.terminalLayout.findMany({ orderBy: { name: 'asc' } })
-      return { success: true, data: rows }
+      const data = rows.flatMap((r: any) => {
+        if (r.name.startsWith(mine)) return [{ ...r, name: r.name.slice(mine.length) }]
+        if (admin && !r.name.startsWith(LAYOUT_OWNED)) return [{ ...r, shared: true }]
+        return []
+      })
+      return { success: true, data }
     } catch (e: any) {
       return reply.status(500).send({ success: false, error: e.message })
     }
@@ -371,13 +387,14 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
       try {
         // Saving under an existing name replaces it — that is what "save" means
         // once you have the arrangement you want on screen.
+        const key = layoutPrefix(req) + name
         const row = await fastify.prisma.terminalLayout.upsert({
-          where:  { name },
+          where:  { name: key },
           update: { view, panes: panes as any },
-          create: { name, view, panes: panes as any },
+          create: { name: key, view, panes: panes as any },
         })
         fastify.log.info({ name, panes: panes.length, view }, '[terminal] layout saved')
-        return { success: true, data: row }
+        return { success: true, data: { ...row, name } }
       } catch (e: any) {
         return reply.status(500).send({ success: false, error: e.message })
       }
@@ -386,7 +403,11 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.delete<{ Params: { name: string } }>('/layouts/:name', async (req, reply) => {
     try {
-      await fastify.prisma.terminalLayout.deleteMany({ where: { name: req.params.name } })
+      const own = layoutPrefix(req) + req.params.name
+      const admin = hasRole(req.session?.role ?? 'viewer', 'admin')
+      // Your own layout, or (admins) one saved before layouts had owners. Never another person's.
+      const names = admin && !req.params.name.startsWith(LAYOUT_OWNED) ? [own, req.params.name] : [own]
+      await fastify.prisma.terminalLayout.deleteMany({ where: { name: { in: names } } })
       return { success: true }
     } catch (e: any) {
       return reply.status(500).send({ success: false, error: e.message })

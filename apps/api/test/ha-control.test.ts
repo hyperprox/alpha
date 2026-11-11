@@ -341,6 +341,10 @@ test('through the gate: operator acts, a lock needs re-confirmation, an API toke
     const list = await call('GET', '/instances', { cookie: opCookie })
     assert.equal(list.statusCode, 200)
     assert.equal(list.body.includes(TOKEN_A) || list.body.includes(TOKEN_B), false, 'no token in any answer')
+    // Below admin, a house's address and certificate pin are not shown; an owner sees them.
+    assert.equal(list.json().data.some((h: any) => 'url' in h || 'fingerprint' in h), false, 'operators see no house address')
+    const ownerList = await call('GET', '/instances', { cookie: ownerCookie })
+    assert.ok(ownerList.json().data.some((h: any) => typeof h.url === 'string'), 'admins and owners do')
 
     const r = await call('POST', '/instances/default/actions', { cookie: opCookie }, { entityId: 'light.kitchen', action: 'turn_on' })
     assert.equal(r.statusCode, 200, r.body)
