@@ -111,7 +111,7 @@ export function SendFilesDialog({ clusterId, clusterName, onClose }: { clusterId
           <button onClick={onClose} aria-label="Close" style={{ color: 'var(--text-dimmer)', fontSize: 18, minWidth: 32, minHeight: 32 }}>✕</button>
         </div>
         <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-4 min-w-0">
-          {!plan && busy === 'look' && <BusyNote>Looking at both servers' libraries. The first time takes a few seconds.</BusyNote>}
+          {!plan && busy === 'look' && <BusyNote>Looking at both servers&apos; libraries. The first time takes a few seconds.</BusyNote>}
           {plan?.problems.map((p, i) => <Notice key={i} kind="warn">{p}</Notice>)}
           {err && <Notice kind="error">{err}</Notice>}
 
@@ -147,7 +147,7 @@ export function SendFilesDialog({ clusterId, clusterName, onClose }: { clusterId
                       <ul className="list-disc pl-5 flex flex-col gap-1">{preview.steps.map((s, i) => <li key={i}>{s}</li>)}</ul>
                       {preview.hostKeys.map(h => (
                         <div key={h.node} className="rounded-md border p-2 flex flex-col gap-1" style={{ borderColor: 'var(--border-strong)' }}>
-                          <span>{h.node}'s identity key is</span>
+                          <span>{h.node}&apos;s identity key is</span>
                           <code className="font-mono text-xs break-all" style={{ color: 'var(--text-bright)' }}>{h.fingerprint}</code>
                           <span className="text-xs" style={{ color: 'var(--text-muted)' }}>To check it, run <code className="font-mono">ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</code> on {h.node} and compare.</span>
                         </div>
@@ -243,7 +243,7 @@ function WhatStep({ clusterId, plan, picked, setPicked }: { clusterId: string; p
               <span className="truncate">{rootName(path)?.name}{path !== rootName(path)?.path ? ` / ${path.slice((rootName(path)?.path.length ?? 0) + 1)}` : ''}</span>
             </div>
           )}
-          {results && <div className="px-2 py-1.5 border-b text-xs" style={{ borderColor: 'var(--border-dim)', color: 'var(--text-dim)' }}>{results.length} found for "{query}" <button className="underline ml-2" onClick={() => { setResults(null); setQuery('') }}>Clear</button></div>}
+          {results && <div className="px-2 py-1.5 border-b text-xs" style={{ borderColor: 'var(--border-dim)', color: 'var(--text-dim)' }}>{results.length} found for &quot;{query}&quot; <button className="underline ml-2" onClick={() => { setResults(null); setQuery('') }}>Clear</button></div>}
           {list.length === 0 && <p className="text-sm p-3" style={{ color: 'var(--text-muted)' }}>{results ? 'Nothing found.' : 'Empty.'}</p>}
           <ul className="max-h-[50vh] overflow-y-auto">
             {list.map(e => (

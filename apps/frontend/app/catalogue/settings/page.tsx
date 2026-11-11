@@ -11,7 +11,9 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { apiJson } from '@/lib/api'
-import { INPUT, LABEL, Notice, PrimaryButton } from '@/components/vault/ui'
+import { Notice } from '@/components/vault/ui'
+import { Page, HudHeader, Panel, Pill, styles } from '@/components/visual/kit'
+import { alpha } from '@/lib/theme'
 
 type Rule = { kind: 'next-free' } | { kind: 'pattern'; pattern: string }
 
@@ -51,8 +53,9 @@ export default function CatalogueSettings() {
   }
 
   const option = (kind: Rule['kind'], title: string, body: string) => (
-    <label className="flex gap-3 rounded-lg border p-4 cursor-pointer"
-      style={{ borderColor: rule.kind === kind ? 'var(--accent)' : 'var(--border-soft)', background: 'var(--ground-inset)' }}>
+    <label className="flex gap-3 cursor-pointer"
+      style={{ borderRadius: 12, padding: 14, border: `1px solid ${rule.kind === kind ? 'var(--accent)' : 'var(--border-soft)'}`,
+               background: rule.kind === kind ? alpha('var(--accent)', 8) : 'var(--ground-deep)' }}>
       <input type="radio" name="rule" checked={rule.kind === kind}
         onChange={() => setRule(kind === 'pattern' ? { kind, pattern } : { kind })} className="mt-1" />
       <span>
@@ -63,62 +66,64 @@ export default function CatalogueSettings() {
   )
 
   return (
-    <div className="min-h-full p-4 sm:p-8" style={{ background: 'var(--ground)' }}>
-      <div className="mb-6 flex flex-col gap-2 max-w-[720px]">
-        <Link href="/catalogue" className="font-mono text-[11px] uppercase tracking-[0.14em] hover:underline" style={{ color: 'var(--accent)' }}>
-          ← Catalogue
-        </Link>
-        <h1 className="font-display text-[34px] font-bold leading-none" style={{ color: 'var(--text-bright)' }}>Container ID rule</h1>
-        <p className="text-[15px] leading-relaxed" style={{ color: 'var(--text-soft)' }}>
+    <Page>
+      <HudHeader level={2} eyebrow="Catalogue" icon="plugin" label="Container ID rule"
+        title={rule.kind === 'pattern' ? 'IDs follow a pattern' : 'IDs use the next free number'}
+        chips={[{ label: 'Rule', value: rule.kind === 'pattern' ? 'Pattern' : 'Next free', tone: 'accent' }]}
+        actions={<Link href="/catalogue" className={styles.btn} style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}>← Catalogue</Link>}>
+        <p style={{ margin: 0, maxWidth: 680, fontSize: 15, lineHeight: 1.6, color: 'var(--text-soft)' }}>
           How the install wizard suggests a container ID. You can always type a different one; it is checked against
           every container and VM before anything is created.
         </p>
-      </div>
-      {!loaded ? <p className="text-sm" style={{ color: 'var(--text-dim)' }}>loading…</p> : (
-        <div className="space-y-3 max-w-[720px]">
-          {option('next-free', 'Next free', 'The lowest ID no container or VM has. The default.')}
-          {option('pattern', 'Pattern', 'Build the ID from the node and the address. Picking the IP and node fills in the ID, and typing an ID fills in the node and IP.')}
+      </HudHeader>
+      {!loaded ? <p className={styles.empty}>loading…</p> : (
+        <div className="space-y-3 w-full" style={{ maxWidth: 760 }}>
+          <Panel title="Rule" sub="how the wizard picks an ID" actions={<Pill tone="accent">{rule.kind === 'pattern' ? 'pattern' : 'next free'}</Pill>}>
+            <div className="space-y-3">
+              {option('next-free', 'Next free', 'The lowest ID no container or VM has. The default.')}
+              {option('pattern', 'Pattern', 'Build the ID from the node and the address. Picking the IP and node fills in the ID, and typing an ID fills in the node and IP.')}
+            </div>
+          </Panel>
           {rule.kind === 'pattern' && (
-            <div className="rounded-lg border p-4 space-y-3" style={{ borderColor: 'var(--border-soft)', background: 'var(--surface)' }}>
-              <label className="block">
-                <span style={LABEL}>Pattern</span>
-                <input value={pattern} onChange={e => setPattern(e.target.value.trim())} style={{ ...INPUT, fontFamily: 'var(--font-mono)' }}
+            <Panel title="Pattern">
+              <label className={styles.field}>
+                <span>Pattern</span>
+                <input value={pattern} onChange={e => setPattern(e.target.value.trim())} className={styles.input} style={{ fontFamily: 'var(--font-mono)' }}
                   autoCapitalize="none" spellCheck={false} />
               </label>
-              <ul className="text-[13px] space-y-0.5" style={{ color: 'var(--text-muted)' }}>
+              <ul className="text-[13px] space-y-0.5" style={{ color: 'var(--text-muted)', margin: '12px 0', padding: 0, listStyle: 'none' }}>
                 <li><code className="font-mono" style={{ color: 'var(--accent)' }}>{'{node_digit}'}</code> the number at the end of the node name (node-3 → 3)</li>
                 <li><code className="font-mono" style={{ color: 'var(--accent)' }}>{'{ip_last2}'}</code> the last two digits of the address (….242 → 42, ….5 → 05)</li>
                 <li><code className="font-mono" style={{ color: 'var(--accent)' }}>{'{ip_last3}'}</code> the whole last number, three digits (….5 → 005)</li>
                 <li>Anything else must be digits.</li>
               </ul>
-              <p className="text-[13px]" style={{ color: 'var(--text-dim)' }}>
+              <p className="text-[13px]" style={{ color: 'var(--text-dim)', margin: 0 }}>
                 Example: node-7 and 192.0.2.242 give <span className="font-mono" style={{ color: 'var(--text-bright)' }}>{example(pattern, 'node-7', '192.0.2.242')}</span>.
                 If the ID it gives is taken, the wizard says so.
               </p>
-            </div>
+            </Panel>
           )}
-          <div className="rounded-lg border p-4" style={{ borderColor: 'var(--border-soft)', background: 'var(--surface)' }}>
-            <p className="font-display text-[18px] font-semibold mb-1" style={{ color: 'var(--text-bright)' }}>What the address check can and can&rsquo;t prove</p>
+          <Panel title="What the address check can and can't prove">
             <p className="text-sm mb-2" style={{ color: 'var(--text-muted)' }}>
               When you pick a fixed IP, the wizard refuses it if it finds any of these:
             </p>
-            <ul className="text-[13px] space-y-0.5 mb-2" style={{ color: 'var(--text-muted)' }}>
+            <ul className="text-[13px] space-y-0.5 mb-2" style={{ color: 'var(--text-muted)', padding: 0, listStyle: 'none' }}>
               <li>· the address is written in a container or VM config in this cluster;</li>
               <li>· a running container reports it, or a running VM reports it through its guest agent;</li>
               <li>· it is the address of one of the nodes;</li>
               <li>· something answers a ping to it, sent from the node you chose.</li>
             </ul>
-            <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+            <p className="text-sm" style={{ color: 'var(--text-muted)', margin: 0 }}>
               It cannot prove the address is free. A device outside the cluster that blocks ping, a machine that is
               switched off, a VM without a guest agent, or an address your router has handed out by DHCP will not be
               seen. Keep fixed addresses out of your router&rsquo;s DHCP range. The review screen says which checks ran,
               and when ping could not be sent.
             </p>
-          </div>
+          </Panel>
           {msg && <Notice kind={msg.kind}>{msg.text}</Notice>}
-          <PrimaryButton onClick={() => void save()} disabled={saving}>{saving ? 'Saving…' : 'Save'}</PrimaryButton>
+          <button onClick={() => void save()} disabled={saving} className={`${styles.btn} ${styles.btnPri}`}>{saving ? 'Saving…' : 'Save'}</button>
         </div>
       )}
-    </div>
+    </Page>
   )
 }

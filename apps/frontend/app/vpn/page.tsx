@@ -8,7 +8,9 @@ import { useSession } from '@/lib/session'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { MachinePanel, OneClickDialog, PendingDevices } from '@/components/remote-access/vpn-panel'
 import { WireguardSection } from '@/components/remote-access/WireguardSection'
-import { Badge, Btn, Empty, Notice, Panel, fmtTime } from '@/components/updates/ui'
+import { Badge, Btn, Notice, fmtTime } from '@/components/updates/ui'
+import { Empty, Panel } from '@/components/remote-access/panel'
+import { GlowBars, HudHeader, Page, Panel as KitPanel, Pill, type PillTone, type StatChip } from '@/components/visual/kit'
 import {
   FirewallDialog, HostKeyDialog, InstallDialog, JobPanel, MachinesTable, ManualKeyDialog, PROVIDERS, PROVIDER_LABEL, RoutingDialog, UninstallDialog, type CellAction,
 } from '@/components/remote-access/parts'
@@ -152,39 +154,74 @@ export default function VpnPage() {
     ? job.steps.filter(s => s.status === 'failed' && /\/dev\/net\/tun/.test(s.detail ?? '')).map(s => rows.find(r => r.id === s.machineId)).filter((r): r is RemoteMachineRow => !!r && r.kind === 'lxc')
     : []
 
+  // Per provider, how the machines stand: the picture the HUD and the tunnels panel are drawn from.
+  const tally = (p: RemoteProviderId) => {
+    const states = rows.map(r => r.cells[p].state)
+    return {
+      connected: states.filter(s => s === 'connected').length,
+      offline: states.filter(s => s === 'offline' || s === 'signed-out' || s === 'missing').length,
+      installed: rows.filter(r => r.cells[p].managed && r.cells[p].state !== 'not-installed').length,
+    }
+  }
+  const tallies = ov ? ov.providers.map(p => ({ p, ...tally(p.id) })) : []
+  const connectedTotal = tallies.reduce((n, x) => n + x.connected, 0)
+  const troubled = tallies.reduce((n, x) => n + x.offline, 0) + (ov?.providers.filter(p => p.error).length ?? 0)
+  const chips: StatChip[] = ov ? [
+    { label: 'machines', value: rows.length },
+    { label: 'tunnels connected', value: connectedTotal, tone: connectedTotal ? 'good' : undefined },
+    { label: 'offline or signed out', value: troubled, tone: troubled ? 'warn' : undefined },
+    { label: 'waiting for approval', value: ov.pendingDevices.length, tone: ov.pendingDevices.length ? 'warn' : undefined },
+  ] : []
+  const title = !ov ? (err ? 'VPN unavailable' : 'Reading VPN status')
+    : troubled ? `${troubled} tunnel${troubled === 1 ? ' is' : 's are'} down or signed out`
+    : connectedTotal ? `${connectedTotal} tunnel${connectedTotal === 1 ? ' is' : 's are'} connected`
+    : 'No tunnels connected yet'
+
   return (
-    <div className="min-h-full space-y-6 p-4 sm:p-8" style={{ background: 'var(--ground)' }}>
-      <div>
-        <div className="font-mono uppercase" style={{ fontSize: 12, letterSpacing: '0.14em', color: 'var(--accent)' }}>Manage</div>
-        <h1 className="mt-2 font-display font-bold" style={{ fontSize: 36, lineHeight: 1.1, color: 'var(--text-bright)' }}>VPN</h1>
-        <p className="mt-3 max-w-3xl text-sm" style={{ color: 'var(--text-soft)' }}>
+    <Page>
+      <HudHeader eyebrow="Manage" title={title} icon="mesh" level={2} chips={chips} label="VPN overview">
+        <p className="text-sm" style={{ color: 'var(--text-soft)', margin: 0, maxWidth: '60ch' }}>
           Reach your nodes and guests from anywhere through Tailscale or NetBird, without opening a port.
           HyperProx installs the client from the official repository, signs it in with a key made for that one install,
           and keeps a Proxmox node&apos;s DNS and routing exactly as they were.
         </p>
-      </div>
+      </HudHeader>
 
       {err && <Notice tone="crit">{err}</Notice>}
       {notice && <Notice tone={notice.tone}>{notice.text}</Notice>}
 
       {ov && (
-        <div className="flex flex-wrap gap-3">
-          {ov.providers.map(p => (
-            <div key={p.id} className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm" style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}>
-              <span className="font-semibold" style={{ color: 'var(--text-bright)' }}>{p.label}</span>
-              {p.configured
-                ? (p.error ? <Badge tone="crit" title={p.error}>error</Badge> : <Badge tone="good">{p.devices} device{p.devices === 1 ? '' : 's'}</Badge>)
-                : <span className="text-xs" style={{ color: 'var(--text-soft)' }}>{p.summary}</span>}
-              {admin && <Link href="/settings?tab=remote" className="text-xs underline" style={{ color: 'var(--accent)' }}>{p.configured ? 'Settings' : 'Add an API key'}</Link>}
-              {p.error && <span className="text-xs" style={{ color: 'var(--crit-soft)' }}>{p.error}</span>}
+        <KitPanel title="Providers" sub={ov.detection.running ? 'checking every machine…' : ov.detection.checkedAt ? `checked ${fmtTime(ov.detection.checkedAt)}` : 'machines not checked yet'}
+          actions={admin ? <Btn small disabled={refreshing || ov.detection.running} onClick={refresh} title="Look at every running node and guest now (read-only)">Refresh</Btn> : undefined}>
+          <ul className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 18rem), 1fr))', listStyle: 'none', padding: 0, margin: 0 }} aria-label="VPN providers">
+            {tallies.map(({ p, connected, offline, installed }) => {
+              const state: { text: string; tone: PillTone | undefined } = !p.configured ? { text: 'not set up', tone: undefined }
+                : p.error ? { text: 'error', tone: 'bad' } : { text: 'ready', tone: 'good' }
+              return (
+                <li key={p.id} className="rounded-lg p-3" style={{ background: 'var(--ground-deep)', border: '1px solid var(--border-soft)', minWidth: 0 }}>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-display font-semibold" style={{ color: 'var(--text-bright)', fontSize: 18 }}>{p.label}</span>
+                    <Pill tone={state.tone}>{state.text}</Pill>
+                    {p.configured && !p.error && <Pill tone="accent">{p.devices} device{p.devices === 1 ? '' : 's'}</Pill>}
+                  </div>
+                  {p.configured && !p.error ? (
+                    <div className="mt-2 text-xs font-mono" style={{ color: 'var(--text-soft)' }}>
+                      {connected} connected · {offline} offline or signed out · {installed} installed by HyperProx
+                    </div>
+                  ) : <div className="mt-2 text-xs" style={{ color: 'var(--text-soft)' }}>{p.summary}</div>}
+                  {p.error && <div className="mt-1 text-xs" style={{ color: 'var(--crit)' }}>{p.error}</div>}
+                  {admin && <Link href="/settings?tab=remote" className="mt-2 inline-block text-xs underline" style={{ color: 'var(--accent)' }}>{p.configured ? 'Settings' : 'Add an API key'}</Link>}
+                </li>
+              )
+            })}
+          </ul>
+          {rows.length > 0 && tallies.some(x => x.p.configured && !x.p.error) && (
+            <div style={{ marginTop: 14 }}>
+              <GlowBars label="Machines connected through each provider" max={rows.length}
+                items={tallies.filter(x => x.p.configured && !x.p.error).map(x => ({ key: x.p.id, label: x.p.label, value: x.connected, text: `${x.connected} of ${rows.length}` }))} />
             </div>
-          ))}
-          <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-dim)' }}>
-            {ov.detection.running ? 'Checking every machine…'
-              : ov.detection.checkedAt ? `Checked on the machines ${fmtTime(ov.detection.checkedAt)}` : 'Machines not checked yet'}
-            {admin && <Btn small disabled={refreshing || ov.detection.running} onClick={refresh} title="Look at every running node and guest now (read-only)">Refresh</Btn>}
-          </div>
-        </div>
+          )}
+        </KitPanel>
       )}
 
       {ov && ov.attention.some(a => a.interrupted) && (
@@ -238,7 +275,7 @@ export default function VpnPage() {
                          configured={Object.fromEntries((ov?.providers ?? []).map(p => [p.id, p.configured]))}
                          onSelect={(ids, on) => setSelected(s => { const n = new Set(s); ids.forEach(i => (on ? n.add(i) : n.delete(i))); return n })} />
         )}
-        {!admin && ov && <p className="px-5 pb-4 text-xs" style={{ color: 'var(--text-dim)' }}>Installing and changing remote access is for admins. You can see status.</p>}
+        {!admin && ov && <p className="pt-3 text-xs" style={{ color: 'var(--text-dim)' }}>Installing and changing remote access is for admins. You can see status.</p>}
       </Panel>
 
       {admin && ov && <WireguardSection machines={ov.machines} send={send} notice={(tone, text) => setNotice({ tone, text })} />}
@@ -300,7 +337,7 @@ export default function VpnPage() {
           onNotice={(tone, text) => { setNotice({ tone, text }); load() }} />
       )}
       {confirm && <ReconfirmModal onDone={() => confirm()} onClose={() => setConfirm(null)} />}
-    </div>
+    </Page>
   )
 }
 
@@ -325,7 +362,7 @@ function Exclusions({ rows, send, onSaved }: {
   const count = rows.filter(r => r.excluded).length
   return (
     <Panel title="Never look inside these guests" right={<span className="text-xs" style={{ color: 'var(--text-dim)' }}>{count ? `${count} excluded` : 'none excluded'}</span>}>
-      <div className="space-y-3 p-4 text-sm" style={{ color: 'var(--text-soft)' }}>
+      <div className="space-y-3 text-sm" style={{ color: 'var(--text-soft)' }}>
         <p>HyperProx never checks, installs on, adopts or changes a guest listed here, for any VPN. Tagging a guest <code className="font-mono">hyperprox-ignore</code> in Proxmox does the same.</p>
         {!open ? <Btn small onClick={() => setOpen(true)}>Choose guests…</Btn> : !ids ? <p>Loading…</p> : (
           <>

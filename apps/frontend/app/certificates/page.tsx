@@ -4,7 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CertsEvent, CertsHousekeepingItem, CertsManaged, CertsOverview, CertsProbe } from '@hyperprox/types'
 import { apiJson, atLeast, type ApiResult } from '@/lib/api'
 import { useSession } from '@/lib/session'
-import { Btn, ConfirmDialog, Notice, Panel } from '@/components/certificates/ui'
+import { Btn, ConfirmDialog, Notice, fmtDateTime, fmtDays } from '@/components/certificates/ui'
+import { Details, GlowBars, HudHeader, Page, Panel, StatusDots, styles, type DotState, type StatChip } from '@/components/visual/kit'
 import { PolicyStrip } from '@/components/certificates/PolicyStrip'
 import { Inventory } from '@/components/certificates/Inventory'
 import { ManagedList, neverIssued } from '@/components/certificates/Managed'
@@ -146,56 +147,118 @@ export default function CertificatesPage() {
 
   if (role && !allowed) {
     return (
-      <div className="min-h-full p-4 sm:p-8" style={{ background: 'var(--ground)' }}>
-        <h1 className="font-display font-bold" style={{ fontSize: 36, lineHeight: 1.1, color: 'var(--text-bright)' }}>Certificates</h1>
-        <p className="mt-4 max-w-xl rounded-md border px-3 py-2 text-sm"
-           style={{ background: 'var(--surface-notice)', borderColor: 'var(--border-soft)', color: 'var(--text)' }}>
-          Your role can&apos;t view certificates. Ask an owner or admin.
-        </p>
-      </div>
+      <Page>
+        <Panel title="Certificates">
+          <p className={styles.empty} style={{ margin: 0, color: 'var(--text)' }}>Your role can&apos;t view certificates. Ask an owner or admin.</p>
+        </Panel>
+      </Page>
     )
   }
 
   const labels = ov?.managed.map(m => m.label) ?? []
 
-  return (
-    <div className="min-h-full space-y-5 p-4 sm:p-8" style={{ background: 'var(--ground)' }}>
-      <div>
-        <p className="font-mono" style={{ fontSize: 11, letterSpacing: '0.14em', color: 'var(--text-dimmer)' }}>MANAGE</p>
-        <h1 className="mt-2 font-display font-bold" style={{ fontSize: 36, lineHeight: 1.1, color: 'var(--text-bright)' }}>Certificates</h1>
-        <p className="mt-1 text-sm" style={{ color: 'var(--text-muted)' }}>
-          Every certificate this network serves, what is actually served at each endpoint, and the ones HyperProx issues and renews itself.
-        </p>
-      </div>
+  // The HUD counts: what HyperProx issues itself, what is close to expiry, and what is failing right now.
+  const inventory = ov?.inventory ?? []
+  const expiring = inventory.filter(e => e.daysLeft !== null && e.daysLeft <= 14).length
+  const failing = inventory.filter(e => e.verdict === 'critical' || e.verdict === 'error').length
+    + (ov?.managed.filter(m => m.status === 'failed').length ?? 0)
+  const problems = inventory.filter(e => e.verdict !== 'ok').length
+  const chips: StatChip[] = ov ? [
+    { label: 'managed', value: ov.managed.length },
+    { label: 'expiring in 14 days', value: expiring, tone: expiring ? 'warn' : undefined },
+    { label: 'failing', value: failing, tone: failing ? 'crit' : 'good' },
+    { label: 'certificates seen', value: inventory.length },
+  ] : []
+  const title = !ov ? (ovErr ? 'Certificates unavailable' : 'Reading certificates')
+    : failing ? `${failing} certificate${failing === 1 ? ' is' : 's are'} failing`
+    : problems ? `${problems} certificate${problems === 1 ? ' needs' : 's need'} a look`
+    : 'Every certificate is healthy'
 
-      <PolicyStrip policy={ov?.policy ?? null} error={ovErr} checkedAt={ov?.checkedAt ?? null} refreshing={refreshing} onCheck={checkNow} />
+  // Expiry as glow bars: a bar fills as a certificate uses up its lifetime, so a full bar is the one nearest
+  // to expiry. The text always says the days left, and a week or less counts as full whatever the lifetime.
+  const expiry = [...inventory]
+    .filter(e => e.daysLeft !== null)
+    .sort((a, b) => (a.daysLeft ?? 0) - (b.daysLeft ?? 0))
+    .slice(0, 12)
+    .map(e => {
+      const used = e.lifetimeDays ? 100 - Math.max(0, Math.min(1, (e.daysLeft ?? 0) / e.lifetimeDays)) * 100 : 50
+      return {
+        key: e.id,
+        label: e.names[0] ?? '(no names)',
+        value: (e.daysLeft ?? 0) <= 7 ? 100 : used,
+        text: (e.daysLeft ?? 0) < 0 ? fmtDays(e.daysLeft) : `${fmtDays(e.daysLeft)} left`,
+        title: e.names.join(', '),
+      }
+    })
+
+  const probeDots = (ov?.probes ?? []).map(p => ({
+    label: `${p.host}:${p.port}`,
+    state: (p.verdict === 'ok' ? 'ok' : p.verdict === 'warn' ? 'warn' : p.verdict === 'unknown' ? 'off' : 'bad') as DotState,
+  }))
+
+  const feed = events.slice(0, 8).map(e => ({
+    key: String(e.id),
+    title: e.label ?? e.kind,
+    detail: e.ok ? e.kind : e.detail,
+    meta: fmtDateTime(e.at),
+    tone: (e.ok ? 'ok' : 'bad') as 'ok' | 'bad',
+  }))
+
+  return (
+    <Page>
+      <HudHeader
+        eyebrow="Manage"
+        title={title}
+        icon="lock"
+        level={2}
+        chips={chips}
+        label="Certificate overview"
+      >
+        <PolicyStrip policy={ov?.policy ?? null} error={ovErr} checkedAt={ov?.checkedAt ?? null} refreshing={refreshing} onCheck={checkNow} />
+      </HudHeader>
+
+      <p className={styles.empty}>
+        Every certificate this network serves, what is actually served at each endpoint, and the ones HyperProx issues and renews itself.
+      </p>
 
       {notice && <Notice tone={notice.tone}>{notice.text}</Notice>}
 
-      <Panel title="Inventory">
-        {!ov ? <p className="px-5 py-6 text-sm" style={{ color: 'var(--text-muted)' }}>{ovErr ? 'Inventory unavailable.' : 'Reading certificates...'}</p>
-          : <Inventory entries={ov.inventory} />}
+      <Panel title="Expiry" sub="days left, nearest first">
+        {!ov ? <p className={styles.empty}>{ovErr ? 'Expiry unavailable.' : 'Reading certificates...'}</p>
+          : expiry.length === 0 ? <p className={styles.empty}>No expiry dates known yet.</p>
+          : <GlowBars items={expiry} max={100} hiAt={90} label="Share of each certificate lifetime already used" />}
       </Panel>
 
       <Panel title="Managed by HyperProx">
-        {!ov ? <p className="px-5 py-6 text-sm" style={{ color: 'var(--text-muted)' }}>{ovErr ? 'Unavailable.' : 'Reading...'}</p>
+        {!ov ? <p className={styles.empty}>{ovErr ? 'Unavailable.' : 'Reading...'}</p>
           : <ManagedList items={ov.managed} busy={busy} onIssue={onIssue} onDeploy={m => managedAction(m, 'deploy')} />}
       </Panel>
 
-      <Panel title="Endpoints">
-        {!ov ? <p className="px-5 py-6 text-sm" style={{ color: 'var(--text-muted)' }}>{ovErr ? 'Unavailable.' : 'Reading...'}</p>
-          : <Probes probes={ov.probes} checking={checking} onCheck={checkOne} />}
+      <Panel title="Endpoints" sub="what each one serves right now">
+        {!ov ? <p className={styles.empty}>{ovErr ? 'Unavailable.' : 'Reading...'}</p>
+          : probeDots.length === 0 ? <p className={styles.empty}>No endpoints are being probed yet.</p>
+          : <StatusDots items={probeDots} label="Endpoint certificate checks" />}
       </Panel>
 
       <Panel title="Housekeeping">
-        {hkErr ? <div className="p-5"><Notice tone="warn">{hkErr}</Notice></div>
-          : !hk ? <p className="px-5 py-6 text-sm" style={{ color: 'var(--text-muted)' }}>Reading...</p>
+        {hkErr ? <Notice tone="warn">{hkErr}</Notice>
+          : !hk ? <p className={styles.empty}>Reading...</p>
           : <HousekeepingList items={hk} busy={busy} onApply={setApplying} />}
       </Panel>
 
       <Panel title="Events">
-        <EventsList events={events} labels={labels} label={evLabel} onLabel={setEvLabel} error={evErr} />
+        <EventsList events={events} labels={labels} label={evLabel} onLabel={setEvLabel} error={evErr} feed={feed} />
       </Panel>
+
+      <Details summary="Inventory" sub="every certificate, with filters">
+        {!ov ? <p className={styles.empty}>{ovErr ? 'Inventory unavailable.' : 'Reading certificates...'}</p>
+          : <Inventory entries={ov.inventory} />}
+      </Details>
+
+      <Details summary="Endpoint table" sub="issuer, expiry, trust, and a check button per endpoint">
+        {!ov ? <p className={styles.empty}>{ovErr ? 'Unavailable.' : 'Reading...'}</p>
+          : <Probes probes={ov.probes} checking={checking} onCheck={checkOne} />}
+      </Details>
 
       {firstIssue && (
         <ConfirmDialog title={`Issue ${firstIssue.label}?`} onClose={() => setFirstIssue(null)}>
@@ -225,6 +288,6 @@ export default function CertificatesPage() {
           </div>
         </ConfirmDialog>
       )}
-    </div>
+    </Page>
   )
 }

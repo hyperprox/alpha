@@ -12,6 +12,7 @@
 // =============================================================================
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { styles } from '@/components/visual/kit'
 
 const ACCENT = 'var(--accent)'
 
@@ -99,7 +100,8 @@ export function HostPalette({
     >
       <div
         className="flex w-full max-w-lg flex-col overflow-hidden rounded-xl border shadow-2xl"
-        style={{ background: 'var(--surface-raised)', borderColor: 'var(--border-strong)', maxHeight: '70vh' }}
+        style={{ background: 'linear-gradient(135deg, var(--surface), var(--surface-hi))', borderColor: 'var(--border-strong)', maxHeight: '70vh',
+                 boxShadow: `var(--shadow), 0 0 40px -18px ${ACCENT}` }}
         onKeyDown={onKeyDown}
       >
         <div className="flex items-center gap-3 border-b px-4" style={{ height: 52, borderColor: 'var(--border-dim)' }}>
@@ -122,7 +124,7 @@ export function HostPalette({
         <div ref={listRef} className="flex-1 overflow-y-auto px-2 py-2">
           {groups.map(([group, list]) => (
             <div key={group} className="mb-2">
-              <div className="px-2 pb-1 pt-1 font-mono text-[10px] uppercase tracking-[0.18em]" style={{ color: 'var(--text-faint)' }}>
+              <div className="px-2 pb-1 pt-1 font-mono text-[10px] uppercase tracking-[0.18em]" style={{ color: 'var(--text-muted)' }}>
                 {group}
               </div>
               <div className="flex flex-col gap-px">
@@ -138,7 +140,8 @@ export function HostPalette({
                       data-idx={here}
                       onMouseEnter={() => setCursor(here)}
                       className="group flex items-center rounded"
-                      style={{ background: onCursor ? 'color-mix(in srgb, var(--accent) 7%, transparent)' : 'transparent' }}
+                      style={{ background: onCursor ? 'color-mix(in srgb, var(--accent) 10%, transparent)' : 'transparent',
+                               boxShadow: onCursor ? `inset 2px 0 0 ${ACCENT}` : 'none' }}
                     >
                       <button
                         onClick={() => { onOpen(host); onClose() }}
@@ -147,6 +150,7 @@ export function HostPalette({
                       >
                         <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full"
                           style={{ background: running ? 'var(--good)' : 'var(--text-dimmer)', boxShadow: running ? '0 0 5px var(--good)' : 'none' }} />
+                        <span className="sr-only">{running ? 'running' : 'stopped'}</span>
                         <span className="flex-1 truncate text-[14px]"
                           style={{ color: onCursor || activeHostId === host.id ? ACCENT : running ? 'var(--text)' : 'var(--text-dim)' }}>
                           {host.name}
@@ -174,7 +178,7 @@ export function HostPalette({
                         <button
                           onClick={() => onRemove(host)}
                           title={`Remove ${host.name}`}
-                          className="mr-1 hidden h-5 w-5 flex-shrink-0 items-center justify-center rounded group-hover:flex hover:bg-white/10"
+                          className="mr-1 hidden h-5 w-5 flex-shrink-0 items-center justify-center rounded group-hover:flex hover:bg-hover"
                           style={{ color: 'var(--text-dim)' }}
                         >
                           <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.8}>
@@ -200,8 +204,7 @@ export function HostPalette({
           <span className="font-mono text-[11px]" style={{ color: 'var(--text-dimmest)' }}>↑↓ move · ↵ open · esc close</span>
           <button
             onClick={() => { onClose(); onAddManual() }}
-            className="ml-auto rounded-md border px-3 py-1.5 text-[13px] transition-colors hover:bg-white/5"
-            style={{ borderColor: 'var(--border-strong)', color: 'var(--text)' }}
+            className={`ml-auto ${styles.btn}`}
           >
             + Add a host by hand
           </button>

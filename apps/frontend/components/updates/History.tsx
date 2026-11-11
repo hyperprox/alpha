@@ -1,5 +1,6 @@
 'use client'
 
+import { styles } from '@/components/visual/kit'
 import { Fragment, useState } from 'react'
 import type { UpdatesJob } from '@hyperprox/types'
 import { Badge, Chevron, Empty, TH, THEAD_STYLE, fmtTime } from './ui'
@@ -31,8 +32,8 @@ export function History({ jobs, detail, expanded, onToggle }: {
   const [showSteps, setShowSteps] = useState(false)
   if (!jobs.length) return <Empty>No runs yet.</Empty>
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
+    <div className={styles.tableWrap}>
+      <table className={styles.table}>
         <thead>
           <tr style={THEAD_STYLE}>
             <th scope="col" className={TH}><span className="sr-only">Expand</span></th>

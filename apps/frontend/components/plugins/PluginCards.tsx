@@ -14,7 +14,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { alpha } from '@/lib/theme'
-import { Icon, styles as vs } from '@/components/visual/kit'
+import { Icon, Panel, PluginStrip, PluginTile, styles as vs } from '@/components/visual/kit'
 import { PLUGIN_ICON } from './visual/plugin-kit'
 
 interface Card {
@@ -27,7 +27,11 @@ interface Card {
 
 const TONE = { good: 'var(--good)', warn: 'var(--warn)', bad: 'var(--crit)' } as const
 
-export function PluginCards({ heading = 'Plug-ins', rowLimit = 4 }: { heading?: string; rowLimit?: number }) {
+/**
+ * `variant="strip"` is the dashboard's compact form: a panel of small tiles, each a name, a health dot and the
+ * headline, linking to the plug-in's page. The default is the full cards with their rows.
+ */
+export function PluginCards({ heading = 'Plug-ins', rowLimit = 4, variant = 'cards' }: { heading?: string; rowLimit?: number; variant?: 'cards' | 'strip' }) {
   const [cards, setCards] = useState<Card[]>([])
 
   useEffect(() => {
@@ -68,6 +72,19 @@ export function PluginCards({ heading = 'Plug-ins', rowLimit = 4 }: { heading?: 
   }, [])
 
   if (!cards.length) return null
+
+  if (variant === 'strip') {
+    return (
+      <Panel title={heading || 'Plug-ins'} href="/plugins" linkLabel="All">
+        <PluginStrip label="Plug-in health">
+          {cards.map(p => (
+            <PluginTile key={p.id} name={p.name} icon={PLUGIN_ICON[p.id] ?? 'plugin'} href={p.hasDetail ? `/plugins/${p.id}` : undefined}
+              health={p.error ? 'bad' : p.tone ?? 'good'} sub={p.error ? 'unreachable' : p.headline} />
+          ))}
+        </PluginStrip>
+      </Panel>
+    )
+  }
 
   return (
     <section>

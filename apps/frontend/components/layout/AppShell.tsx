@@ -2,19 +2,35 @@
 
 import { usePathname } from 'next/navigation'
 import { Sidebar } from './Sidebar'
+import { TopBar } from './TopBar'
 import { SessionProvider } from '@/lib/session'
+import s from './shell.module.css'
+
+/** Pages that fill the whole window (the Deck's terminals) get the frame without the page padding or scroll. */
+const FULL = ['/terminal']
 
 /** The sign-in page stands alone: no navigation to a vault that is locked. */
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const bare = pathname === '/login'
+  const full = FULL.some(p => pathname === p || pathname.startsWith(p + '/'))
+  if (bare) {
+    return (
+      <SessionProvider>
+        <main className="flex-1 overflow-y-auto">{children}</main>
+      </SessionProvider>
+    )
+  }
   return (
     <SessionProvider>
-      {!bare && <Sidebar />}
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <main className={`${bare ? '' : 'hp-mobile-offset '}flex-1 overflow-y-auto`}>
-          {children}
-        </main>
+      <div className={s.app}>
+        <Sidebar />
+        <div className={s.col}>
+          <main id="main" className={`${s.main} ${full ? s.mainFull : ''}`}>
+            <TopBar full={full} />
+            <div className={`${s.content} ${full ? s.contentFull : ''}`}>{children}</div>
+          </main>
+        </div>
       </div>
     </SessionProvider>
   )

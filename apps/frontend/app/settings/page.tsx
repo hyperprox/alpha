@@ -2,9 +2,10 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
-import { alpha } from '@/lib/theme'
 import { atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
+import { HudHeader, Icon, Page, Panel, Pill, styles as ks, type StatChip } from '@/components/visual/kit'
+import ss from './settings.module.css'
 
 // ---------------------------------------------------------------------------
 //  Types
@@ -29,18 +30,6 @@ interface TestResult {
 //  Helpers
 // ---------------------------------------------------------------------------
 
-const INPUT = {
-  background: 'var(--ground-deep)', border: '1px solid var(--border-strong)',
-  color: 'var(--text-bright)', borderRadius: 6, padding: '0 12px', height: 42,
-  fontFamily: 'inherit', fontSize: 14,
-  outline: 'none', width: '100%',
-} as React.CSSProperties
-
-const LABEL = {
-  display: 'block', fontSize: 13, fontFamily: 'inherit',
-  color: 'var(--text-muted)', marginBottom: 6,
-}
-
 const CATEGORY_META: Record<string, { label: string; accent: string; providers: Record<string, string> }> = {
   proxmox: { label: 'Proxmox',        accent: 'var(--warn)', providers: { proxmox: 'Proxmox VE' } },
   // One NPM login lives here (it is the Proxy page's first instance). Further proxies, of any kind, are added on the Proxy page.
@@ -49,6 +38,15 @@ const CATEGORY_META: Record<string, { label: string; accent: string; providers: 
   remote:  { label: 'Remote access',  accent: 'var(--good)', providers: { tailscale: 'Tailscale', netbird: 'NetBird', 'routeros-write': 'MikroTik WireGuard (write, limited group)' } },
   system:  { label: 'System',         accent: 'var(--text-muted)', providers: { hyperprox: 'HyperProx' } },
 }
+
+// The other settings pages, as tiles on this one.
+const AREAS: Array<{ href: string; label: string; icon: string; sub: string }> = [
+  { href: '/settings/setup-checklist', label: 'Setup checklist', icon: 'check',  sub: "The installer's questions, for anything you skipped." },
+  { href: '/settings/secrets',         label: 'Secrets',         icon: 'lock',   sub: 'What the vault holds. Revealing one may ask for your master password again.' },
+  { href: '/settings/api-tokens',      label: 'API tokens',      icon: 'plug',   sub: 'Bearer tokens for scripts and agents.' },
+  { href: '/settings/notifications',   label: 'Notifications',   icon: 'alarm',  sub: 'Where HyperProx tells you something needs attention.' },
+  { href: '/catalogue/settings',       label: 'Container ID rule', icon: 'plugin', sub: 'How new guests are numbered.' },
+]
 
 // ---------------------------------------------------------------------------
 //  Credential section for one provider
@@ -100,44 +98,20 @@ function ProviderSection({
   const allSet = category === 'remote' ? providerFields.some(f => f.masked && f.isSet) : providerFields.every(f => f.isSet)
 
   return (
-    <div className="rounded-lg border p-6" style={{
-      background: 'var(--surface)', borderColor: allSet ? `${alpha(accent, 15)}` : 'var(--border-soft)',
-    }}>
-      {/* Provider header */}
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <div className="w-1.5 h-1.5 rounded-full" style={{
-            background: allSet ? accent : 'var(--text-dimmer)',
-            boxShadow:  allSet ? `0 0 5px ${accent}` : 'none',
-          }} />
-          <span className="font-display text-xl font-semibold" style={{ color: allSet ? 'var(--text-bright)' : 'var(--text-muted)' }}>
-            {providerLabel}
-          </span>
-          {allSet && (
-            <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{
-              background: `${alpha(accent, 8)}`, color: accent, border: `1px solid ${alpha(accent, 19)}`, fontSize: 9,
-            }}>CONFIGURED</span>
-          )}
-        </div>
-        <div className="flex gap-2">
-          <button onClick={handleTest} disabled={testing}
-            className="text-sm font-medium px-4 rounded-md transition-all"
-            style={{
-              height:     38,
-              background: 'transparent',
-              color:      testing ? 'var(--text-muted)' : 'var(--text)',
-              border:     '1px solid var(--border-strong)',
-            }}>
+    <section className={ss.item} aria-label={providerLabel}>
+      {/* Provider header: a lit dot and "Configured" once every secret it needs is saved */}
+      <div className={ss.itemHead} style={{ flexWrap: 'wrap' }}>
+        <i className={ks.hdot} data-tone={allSet ? 'good' : 'unknown'} aria-hidden
+           style={allSet ? { background: accent, boxShadow: `0 0 6px ${accent}` } : undefined} />
+        <h3 className="font-display" style={{ margin: 0, fontSize: 18, fontWeight: 700, letterSpacing: '0.06em', color: allSet ? 'var(--text-bright)' : 'var(--text-muted)' }}>
+          {providerLabel}
+        </h3>
+        {allSet ? <Pill tone="good">Configured</Pill> : <span className={ks.srOnly}>not configured</span>}
+        <div className={ss.acts} style={{ marginLeft: 'auto', marginTop: 0, paddingTop: 0 }}>
+          <button type="button" onClick={handleTest} disabled={testing} className={`${ks.btn} ${ks.btnGhost}`}>
             {testing ? 'Testing...' : 'Test'}
           </button>
-          <button onClick={handleSave} disabled={saving}
-            className="text-sm font-semibold px-5 rounded-md transition-all"
-            style={{
-              height:     38,
-              background: saving ? 'var(--text-dimmer)' : 'var(--accent)',
-              color:      saving ? 'var(--text-muted)' : 'var(--accent-ink)',
-              border:     'none',
-            }}>
+          <button type="button" onClick={handleSave} disabled={saving} className={`${ks.btn} ${ks.btnPri}`}>
             {saved ? '✓ Saved' : saving ? 'Saving...' : 'Save'}
           </button>
         </div>
@@ -145,45 +119,52 @@ function ProviderSection({
 
       {/* Test result */}
       {result && (
-        <div className="mb-4 px-3 py-2 rounded text-sm" style={{
-          background: result.success ? 'color-mix(in srgb, var(--good) 6%, transparent)' : 'color-mix(in srgb, var(--crit-2) 6%, transparent)',
+        <p role="status" className="px-3 py-2 text-sm" style={{
+          margin: 0, borderRadius: 9,
+          background: result.success ? 'color-mix(in srgb, var(--good) 8%, transparent)' : 'color-mix(in srgb, var(--crit) 8%, transparent)',
           color:      result.success ? 'var(--good)' : 'var(--crit-soft)',
-          border:     `1px solid ${result.success ? 'color-mix(in srgb, var(--good) 19%, transparent)' : 'color-mix(in srgb, var(--crit-2) 19%, transparent)'}`,
+          border:     `1px solid ${result.success ? 'color-mix(in srgb, var(--good) 30%, transparent)' : 'color-mix(in srgb, var(--crit) 30%, transparent)'}`,
         }}>
           {result.success ? `✓ ${result.message ?? 'Connection successful'}` : `✗ ${result.error}`}
-        </div>
+        </p>
       )}
 
       {/* Fields */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        {providerFields.map(field => (
-          <div key={field.key}>
-            <label style={LABEL}>
-              {field.label}
-              {field.isSet && <span style={{ color: 'var(--good)', marginLeft: 6 }}>✓</span>}
-            </label>
-            <div className="relative">
-              <input
-                type={field.masked && !revealed[field.key] ? 'password' : 'text'}
-                style={INPUT}
-                value={values[field.key]}
-                placeholder={field.isSet ? (field.masked ? '••••••••' : field.value) : `Enter ${field.label.toLowerCase()}...`}
-                onChange={e => setValues(v => ({ ...v, [field.key]: e.target.value }))}
-              />
-              {field.masked && (
-                <button
-                  onClick={() => setRevealed(r => ({ ...r, [field.key]: !r[field.key] }))}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-mono"
-                  style={{ color: 'var(--text-dimmer)' }}
-                >
-                  {revealed[field.key] ? 'hide' : 'show'}
-                </button>
-              )}
+      <div className={ss.fields}>
+        {providerFields.map(field => {
+          const id = `cred-${category}-${provider}-${field.key}`
+          return (
+            <div key={field.key} className={ks.field}>
+              <label htmlFor={id} className="font-mono" style={{ fontSize: 11, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>
+                {field.label}
+                {field.isSet && <span style={{ color: 'var(--good)', marginLeft: 6 }}>✓<span className={ks.srOnly}> saved</span></span>}
+              </label>
+              <div className="relative">
+                <input
+                  id={id}
+                  type={field.masked && !revealed[field.key] ? 'password' : 'text'}
+                  className={ks.input}
+                  style={field.masked ? { paddingRight: 64 } : undefined}
+                  value={values[field.key]}
+                  placeholder={field.isSet ? (field.masked ? '••••••••' : field.value) : `Enter ${field.label.toLowerCase()}...`}
+                  onChange={e => setValues(v => ({ ...v, [field.key]: e.target.value }))}
+                />
+                {field.masked && (
+                  <button
+                    type="button"
+                    onClick={() => setRevealed(r => ({ ...r, [field.key]: !r[field.key] }))}
+                    className={ss.reveal}
+                    aria-label={`${revealed[field.key] ? 'Hide' : 'Show'} ${field.label}`}
+                  >
+                    {revealed[field.key] ? 'hide' : 'show'}
+                  </button>
+                )}
+              </div>
             </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
-    </div>
+    </section>
   )
 }
 
@@ -195,7 +176,7 @@ export default function SettingsPage() {
   const [tab,    setTab]    = useState<'proxmox' | 'proxy' | 'dns' | 'remote' | 'system'>('proxmox')
   const [fields, setFields] = useState<Record<string, CredentialField[]>>({})
   const [loading, setLoading] = useState(true)
-  const { role } = useSession()
+  const { role, status } = useSession()
 
   const fetchCategory = useCallback(async (category: string) => {
     const res  = await fetch(`/api/settings/${category}`)
@@ -234,97 +215,108 @@ export default function SettingsPage() {
 
   if (role && !atLeast(role, 'admin')) {
     return (
-      <div className="min-h-full p-4 sm:p-8" style={{ background: 'var(--ground)' }}>
-        <h1 className="font-display font-bold" style={{ fontSize: 36, lineHeight: 1.1, color: 'var(--text-bright)' }}>Settings</h1>
-        <p className="mt-4 max-w-xl rounded-md border px-3 py-2 text-sm"
-           style={{ background: 'var(--surface-notice)', borderColor: 'var(--border-soft)', color: 'var(--text)' }}>
-          Your role can&apos;t view settings. Ask an owner or admin if you need a change.
-        </p>
-      </div>
+      <Page>
+        <Panel title="Settings">
+          <p className={ks.callout} style={{ margin: 0 }}>
+            Your role can&apos;t view settings. Ask an owner or admin if you need a change.
+          </p>
+        </Panel>
+      </Page>
     )
   }
 
-  return (
-    <div className="min-h-full p-4 sm:p-8" style={{ background: 'var(--ground)' }}>
+  // The HUD's reading, from the credentials already loaded: how many providers have their logins saved.
+  // "Set" uses the same rule as each provider's own "Configured" badge.
+  const providers = (Object.keys(CATEGORY_META) as Array<keyof typeof CATEGORY_META>).flatMap(cat =>
+    Object.keys(CATEGORY_META[cat].providers).map(provider => {
+      const pf = (fields[cat] ?? []).filter(f => f.provider === provider)
+      const set = pf.length > 0 && (cat === 'remote' ? pf.some(f => f.masked && f.isSet) : pf.every(f => f.isSet))
+      return { cat, provider, shown: pf.length > 0, set }
+    })).filter(p => p.shown)
+  const setCount = providers.filter(p => p.set).length
+  const catsDone = (Object.keys(CATEGORY_META)).filter(cat => {
+    const cf = fields[cat] ?? []
+    return cf.length > 0 && cf.every(f => f.isSet)
+  }).length
+  const vaultWord = status ? (status.locked ? 'Vault locked' : 'Vault unlocked') : 'Vault'
+  const chips: StatChip[] = [
+    { label: 'logins set', value: loading ? '…' : `${setCount}/${providers.length}`, tone: !loading && providers.length > 0 && setCount === providers.length ? 'good' : 'accent' },
+    { label: 'areas complete', value: loading ? '…' : `${catsDone}/${Object.keys(CATEGORY_META).length}` },
+    { label: 'your role', value: role ?? '…', tone: 'violet' },
+  ]
 
-      {/* Header */}
-      <div className="mb-8">
-        <div className="font-mono uppercase" style={{ fontSize: 12, letterSpacing: '0.14em', color: 'var(--accent)' }}>Credentials</div>
-        <h1 className="font-display font-bold mt-2" style={{ fontSize: 36, lineHeight: 1.1, color: 'var(--text-bright)' }}>
-          Settings
-        </h1>
-        <div className="mt-3 flex flex-wrap gap-2">
-          <Link href="/settings/setup-checklist" className="inline-block rounded-md border px-3 py-1.5 text-sm font-medium"
-                style={{ borderColor: 'var(--border-strong)', color: 'var(--accent)' }}>
+  return (
+    <Page>
+      <HudHeader level={2} label="Settings overview" icon="lock"
+        eyebrow={[vaultWord, 'Credentials'].join(' · ')}
+        title={loading ? 'Reading your settings…' : `${setCount} of ${providers.length} connections have their logins saved`}
+        chips={chips}
+        actions={
+          <Link href="/settings/setup-checklist" className={`${ks.btn} ${ks.btnPri}`} style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}>
             Setup checklist &rarr;
           </Link>
-          <Link href="/settings/secrets" className="inline-block rounded-md border px-3 py-1.5 text-sm font-medium"
-                style={{ borderColor: 'var(--border-strong)', color: 'var(--accent)' }}>
-            Secrets &rarr;
-          </Link>
-          <Link href="/settings/api-tokens" className="inline-block rounded-md border px-3 py-1.5 text-sm font-medium"
-                style={{ borderColor: 'var(--border-strong)', color: 'var(--accent)' }}>
-            API tokens &rarr;
-          </Link>
-          <Link href="/settings/notifications" className="inline-block rounded-md border px-3 py-1.5 text-sm font-medium"
-                style={{ borderColor: 'var(--border-strong)', color: 'var(--accent)' }}>
-            Notifications &rarr;
-          </Link>
-          <Link href="/catalogue/settings" className="inline-block rounded-md border px-3 py-1.5 text-sm font-medium"
-                style={{ borderColor: 'var(--border-strong)', color: 'var(--accent)' }}>
-            Container ID rule &rarr;
-          </Link>
-        </div>
-      </div>
+        }
+      />
 
-      {/* Category tabs */}
-      <div className="flex gap-1 mb-6 border-b" style={{ borderColor: 'var(--border-dim)' }}>
-        {(Object.keys(CATEGORY_META) as Array<keyof typeof CATEGORY_META>).map(cat => {
-          const m = CATEGORY_META[cat]
-          const catFields = fields[cat] ?? []
-          const allSet = catFields.length > 0 && catFields.every(f => f.isSet)
-          return (
-            <button key={cat} onClick={() => setTab(cat as any)}
-              className="px-5 py-3 text-sm font-medium transition-colors flex items-center gap-2"
-              style={{
-                borderBottom: tab === cat ? `2px solid ${m.accent}` : '2px solid transparent',
-                color:        tab === cat ? m.accent : 'var(--text-dim)',
-                background:   'transparent',
-              }}>
-              {m.label}
-              {allSet && <div className="w-1.5 h-1.5 rounded-full" style={{ background: m.accent }} />}
-            </button>
-          )
-        })}
-      </div>
+      {/* Section tiles: every other settings page, one tap away */}
+      <Panel title="Settings areas" sub="everything else lives here">
+        <ul className={ss.areas}>
+          {AREAS.map(a => (
+            <li key={a.href}>
+              <Link href={a.href} className={ss.area}>
+                <span><Icon name={a.icon} />{a.label}<i aria-hidden>&rarr;</i></span>
+                <small>{a.sub}</small>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      </Panel>
 
-      {loading ? (
-        <div className="text-sm animate-pulse" style={{ color: 'var(--text-dimmer)' }}>Loading credentials...</div>
-      ) : (
-        <div className="space-y-6 max-w-3xl">
-          {tab === 'proxy' && (
-            <div className="text-sm" style={{ color: 'var(--text-soft)' }}>
-              More proxies (a second NPM, Traefik, Caddy, HAProxy, Pangolin) are added on the <Link href="/proxy" style={{ color: 'var(--accent)' }}>Proxy page</Link>.
-            </div>
-          )}
-          {Object.entries(meta.providers).map(([provider, label]) => {
-            const providerFields = (fields[tab] ?? []).filter(f => f.provider === provider)
-            if (providerFields.length === 0) return null
+      <Panel title="Connections" sub="the logins HyperProx uses">
+        {/* Category tabs */}
+        <div className={ss.tabs} role="group" aria-label="Credential category">
+          {(Object.keys(CATEGORY_META) as Array<keyof typeof CATEGORY_META>).map(cat => {
+            const m = CATEGORY_META[cat]
+            const catFields = fields[cat] ?? []
+            const allSet = catFields.length > 0 && catFields.every(f => f.isSet)
             return (
-              <ProviderSection
-                key={provider}
-                category={tab}
-                provider={provider}
-                providerLabel={label}
-                accent={meta.accent}
-                fields={providerFields}
-                onSave={handleSave}
-                onTest={handleTest}
-              />
+              <button key={cat} type="button" onClick={() => setTab(cat as any)} aria-pressed={tab === cat} className={ss.tab}
+                style={tab === cat ? { color: m.accent, borderColor: `color-mix(in srgb, ${m.accent} 45%, transparent)` } : undefined}>
+                {m.label}
+                {allSet && <><i className={ks.hdot} aria-hidden style={{ background: m.accent, boxShadow: 'none' }} /><span className={ks.srOnly}>, all set</span></>}
+              </button>
             )
           })}
         </div>
-      )}
-    </div>
+
+        {loading ? (
+          <p className={`${ks.empty} animate-pulse`} style={{ marginTop: 14 }}>Loading credentials...</p>
+        ) : (
+          <div className="flex flex-col gap-3" style={{ marginTop: 14 }}>
+            {tab === 'proxy' && (
+              <p className={ks.callout} style={{ margin: 0 }}>
+                More proxies (a second NPM, Traefik, Caddy, HAProxy, Pangolin) are added on the <Link href="/proxy" style={{ color: 'var(--accent)' }}>Proxy page</Link>.
+              </p>
+            )}
+            {Object.entries(meta.providers).map(([provider, label]) => {
+              const providerFields = (fields[tab] ?? []).filter(f => f.provider === provider)
+              if (providerFields.length === 0) return null
+              return (
+                <ProviderSection
+                  key={provider}
+                  category={tab}
+                  provider={provider}
+                  providerLabel={label}
+                  accent={meta.accent}
+                  fields={providerFields}
+                  onSave={handleSave}
+                  onTest={handleTest}
+                />
+              )
+            })}
+          </div>
+        )}
+      </Panel>
+    </Page>
   )
 }

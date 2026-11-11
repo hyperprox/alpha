@@ -11,6 +11,7 @@ import { gpuRowLabel, gpuRowTitle, gpuRowRight, gpuRowPct, gpuRowDetail, gpuRowA
 import { Notice } from '@/components/vault/ui'
 import { SendFilesButton } from './SendFiles'
 import { useLinkedHouses, type Instance } from '@/components/plugins/home-assistant/HomeAssistant'
+import { styles as vs } from '@/components/visual/kit'
 
 export function Dot({ kind, size = 9 }: { kind: 'home' | 'remote'; size?: number }) {
   return <span aria-hidden className="inline-block rounded-full shrink-0" style={{ width: size, height: size, background: clusterColor(kind) }} />
@@ -84,9 +85,9 @@ export function GpuRowView({ g, kind }: { g: GpuRow; kind: 'home' | 'remote' }) 
 
 function Card({ value, label }: { value: string; label: string }) {
   return (
-    <div className="rounded-lg border px-3 py-2" style={{ background: 'var(--surface)', borderColor: 'var(--border-dim)' }}>
-      <b className="block font-display font-bold" style={{ fontSize: 22, lineHeight: 1.1, color: 'var(--text-bright)' }}>{value}</b>
-      <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{label}</span>
+    <div className={vs.tile}>
+      <b>{value}</b>
+      <span>{label}</span>
     </div>
   )
 }
@@ -97,15 +98,15 @@ export function PanelView({ p, houses = [] }: { p: ClusterPanel; houses?: Instan
   const k = p.kind
   const quorum = p.quorum === 'ok' ? 'OK' : p.quorum === 'standalone' ? 'single' : p.quorum === 'lost' ? 'LOST' : '—'
   return (
-    <div className="rounded-xl border p-4 flex flex-col gap-3 min-w-0" style={{ background: 'var(--surface-raised)', borderColor: 'var(--border)', borderTop: `3px solid ${clusterColor(k)}` }}>
-      <div className="flex items-center gap-2 flex-wrap">
+    <div className={`${vs.panel} ${k === 'remote' ? vs.remote : ''} flex flex-col gap-3`} style={{ borderTop: `3px solid ${clusterColor(k)}` }}>
+      <div className="flex items-center gap-2 flex-wrap min-w-0">
         <Dot kind={k} />
-        <h2 className="font-display font-bold uppercase truncate" style={{ fontSize: 19, letterSpacing: '0.04em', color: 'var(--text-bright)' }}>{p.name}</h2>
+        <h2 className={`${vs.panelTitle} truncate min-w-0`} style={{ margin: 0, color: 'var(--text-bright)' }}>{p.name}</h2>
         <KindPill kind={k} />
-        <Link href={openHref(p)} className="ml-auto text-sm font-semibold" style={{ color: clusterColor(k) }}>Open ›</Link>
+        <Link href={openHref(p)} className={vs.panelLink} style={{ color: clusterColor(k) }}>Open <span aria-hidden>→</span></Link>
       </div>
       {!p.reachable && <Notice kind="error">{p.error ?? 'Not answering.'}</Notice>}
-      <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(7.5rem,1fr))' }}>
+      <div className={vs.tiles} style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(min(100%,7.5rem),1fr))' }}>
         <Card value={`${p.nodes.online} / ${p.nodes.total}`} label={p.nodes.total === 1 ? 'node online' : 'nodes online'} />
         {k === 'remote' ? <Card value={p.latencyMs === null ? '—' : `${p.latencyMs} ms`} label="to answer" /> : <Card value={quorum} label="quorum" />}
         <Card value={String(p.guests.running)} label={p.guests.running === 1 ? 'guest running' : 'guests running'} />
@@ -143,16 +144,16 @@ export function PanelView({ p, houses = [] }: { p: ClusterPanel; houses?: Instan
       <div className="flex gap-2 flex-wrap">
         {k === 'home' ? (
           <>
-            <Link href="/infrastructure" className="text-xs font-semibold rounded-md border px-2.5 py-1" style={{ borderColor: 'var(--border-strong)', color: 'var(--text)' }}>Guests</Link>
-            <Link href="/updates" className="text-xs font-semibold rounded-md border px-2.5 py-1" style={{ borderColor: 'var(--border-strong)', color: 'var(--text)' }}>Updates{p.updates?.available ? ` (${p.updates.available})` : ''}</Link>
-            <Link href="/ha" className="text-xs font-semibold rounded-md border px-2.5 py-1" style={{ borderColor: 'var(--border-strong)', color: 'var(--text)' }}>HA</Link>
+            <Link href="/infrastructure" className={vs.btn} style={{ minHeight: 34, padding: '5px 11px', fontSize: 12, textDecoration: 'none' }}>Guests</Link>
+            <Link href="/updates" className={vs.btn} style={{ minHeight: 34, padding: '5px 11px', fontSize: 12, textDecoration: 'none' }}>Updates{p.updates?.available ? ` (${p.updates.available})` : ''}</Link>
+            <Link href="/ha" className={vs.btn} style={{ minHeight: 34, padding: '5px 11px', fontSize: 12, textDecoration: 'none' }}>HA</Link>
           </>
         ) : (
           <>
-            <Link href={`/clusters/${p.id}?tab=guests`} className="text-xs font-semibold rounded-md border px-2.5 py-1" style={{ borderColor: 'var(--remote)', color: 'var(--remote)' }}>Guests</Link>
-            <Link href={`/clusters/${p.id}/updates`} className="text-xs font-semibold rounded-md border px-2.5 py-1" style={{ borderColor: 'var(--remote)', color: 'var(--remote)' }}>Updates{p.updates?.available ? ` (${p.updates.available})` : ''}</Link>
+            <Link href={`/clusters/${p.id}?tab=guests`} className={vs.btn} style={{ minHeight: 34, padding: '5px 11px', fontSize: 12, textDecoration: 'none', borderColor: 'var(--remote)', color: 'var(--remote)' }}>Guests</Link>
+            <Link href={`/clusters/${p.id}/updates`} className={vs.btn} style={{ minHeight: 34, padding: '5px 11px', fontSize: 12, textDecoration: 'none', borderColor: 'var(--remote)', color: 'var(--remote)' }}>Updates{p.updates?.available ? ` (${p.updates.available})` : ''}</Link>
             <SendFilesButton clusterId={p.id} clusterName={p.name} compact />
-            <Link href={`/clusters/${p.id}?tab=settings`} className="text-xs font-semibold rounded-md border px-2.5 py-1" style={{ borderColor: 'var(--remote)', color: 'var(--remote)' }}>Edit server</Link>
+            <Link href={`/clusters/${p.id}?tab=settings`} className={vs.btn} style={{ minHeight: 34, padding: '5px 11px', fontSize: 12, textDecoration: 'none', borderColor: 'var(--remote)', color: 'var(--remote)' }}>Edit server</Link>
           </>
         )}
       </div>
@@ -162,22 +163,22 @@ export function PanelView({ p, houses = [] }: { p: ClusterPanel; houses?: Instan
 
 export function AttentionFeed({ items }: { items: Attention[] }) {
   return (
-    <div className="rounded-xl border p-4" style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}>
-      <h2 className="font-display font-bold uppercase mb-2" style={{ fontSize: 17, letterSpacing: '0.04em', color: 'var(--text-bright)' }}>Needs attention, all clusters</h2>
-      {items.length === 0 ? <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Nothing needs attention right now.</p> : (
-        <ul className="flex flex-col gap-2">
+    <section className={vs.panel} aria-label="Needs attention, all clusters">
+      <h2 className={vs.panelTitle}>Needs attention <small>all clusters</small></h2>
+      {items.length === 0 ? <p className={vs.empty}>Nothing needs attention right now.</p> : (
+        <ul className="flex flex-col gap-2.5">
           {items.map((a, i) => (
             <li key={i} className="flex gap-2.5 items-start">
               <span className="mt-1.5"><Dot kind={a.kind} /></span>
               <div className="min-w-0">
-                <b className="text-sm" style={{ color: a.severity === 'crit' ? 'var(--crit-soft)' : 'var(--text-bright)' }}>{a.title}</b>
+                <b className="text-sm" style={{ color: a.severity === 'crit' ? 'var(--crit)' : 'var(--text-bright)' }}>{a.severity === 'crit' && <span className={vs.srOnly}>Critical: </span>}{a.title}</b>
                 <small className="block text-xs" style={{ color: 'var(--text-muted)' }}>{a.clusterName} · {a.detail}</small>
               </div>
             </li>
           ))}
         </ul>
       )}
-    </div>
+    </section>
   )
 }
 
@@ -218,7 +219,7 @@ export function CommandCenterIfRemotes() {
   if (!remotes) return null
   return (
     <section className="flex flex-col gap-3">
-      <div className="flex items-center gap-3"><h2 className="font-display font-semibold" style={{ fontSize: 22, color: 'var(--text-bright)' }}>All clusters</h2><Link href="/clusters" className="text-sm" style={{ color: 'var(--accent)' }}>Command center ›</Link></div>
+      <h2 className={vs.panelTitle} style={{ margin: 0 }}>All clusters <Link href="/clusters" className={vs.panelLink}>Command center <span aria-hidden>→</span></Link></h2>
       <CommandCenter />
     </section>
   )

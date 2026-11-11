@@ -15,6 +15,9 @@ import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
 import { GhostButton, INPUT, LABEL, Modal, Notice, PrimaryButton } from '@/components/vault/ui'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
+import { Details, Feed, HudHeader, Page, Panel, Pill, styles as ks, type FeedTone, type PillTone, type StatChip } from '@/components/visual/kit'
+import ss from '../settings.module.css'
+import { exact, inWords } from '../when'
 
 type Kind = 'discord' | 'slack' | 'teams' | 'ntfy' | 'gotify' | 'telegram' | 'webhook'
 type Severity = 'info' | 'warning' | 'critical'
@@ -77,11 +80,25 @@ function quietText(q: QuietHours | null) {
   return `Quiet ${q.start}–${q.end}${days}${q.criticalBreaksThrough ? ' (critical still comes through)' : ''}`
 }
 
-function Tag({ children, colour = 'var(--text-muted)' }: { children: React.ReactNode; colour?: string }) {
-  return (
-    <span className="rounded border px-1.5 text-[10px] uppercase font-mono whitespace-nowrap"
-          style={{ borderColor: colour, color: colour, letterSpacing: '0.1em' }}>{children}</span>
-  )
+function Tag({ children, tone }: { children: React.ReactNode; tone?: PillTone }) {
+  return <Pill tone={tone}>{children}</Pill>
+}
+
+// A channel's health, as the dot on its tile and the word beside it (the word is what carries it).
+type ChannelHealth = 'good' | 'warn' | 'bad' | 'unknown'
+function channelHealth(c: Channel): { tone: ChannelHealth; word: string } {
+  if (c.failingSince) return { tone: 'bad', word: 'Failing' }
+  if (!c.enabled) return { tone: 'unknown', word: 'Paused' }
+  if (!c.lastResult) return { tone: 'unknown', word: 'Not tested yet' }
+  return c.lastResult.ok ? { tone: 'good', word: 'Working' } : { tone: 'warn', word: 'Last send failed' }
+}
+
+/** A delivery's tone for the feed dot; its text (always shown) says the same in words. */
+function deliveryTone(status: string): FeedTone {
+  if (status === 'sent') return 'ok'
+  if (status === 'failed') return 'bad'
+  if (status.startsWith('held') || status === 'dropped') return 'off'
+  return 'warn'
 }
 
 function Toggle({ id, checked, onChange, label, disabled }: { id: string; checked: boolean; onChange: (v: boolean) => void; label: React.ReactNode; disabled?: boolean }) {
@@ -323,7 +340,7 @@ function DeleteModal({ c, onConfirm, onClose }: { c: Channel; onConfirm: () => v
         </p>
         <div className="flex gap-2 justify-end">
           <GhostButton type="button" onClick={onClose}>Cancel</GhostButton>
-          <PrimaryButton onClick={onConfirm} style={{ background: 'var(--crit)', color: 'var(--text-bright)' }}>Delete</PrimaryButton>
+          <PrimaryButton onClick={onConfirm} style={{ background: 'var(--crit)', color: 'var(--accent-ink)' }}>Delete</PrimaryButton>
         </div>
       </div>
     </Modal>
@@ -379,111 +396,130 @@ export default function NotificationsPage() {
 
   const nameOf = (id: string) => channels?.find(c => c.id === id)?.name ?? 'Former channel'
 
+  const list = channels ?? []
+  const failing = list.filter(c => c.failingSince).length
+  const on = list.filter(c => c.enabled).length
+  const locked = list.filter(c => c.usableWhileLocked).length
+  const chips: StatChip[] = [
+    { label: 'channels', value: channels ? list.length : '…', tone: 'accent' },
+    { label: 'on', value: channels ? on : '…', tone: channels && on ? 'good' : undefined },
+    { label: 'failing', value: channels ? failing : '…', tone: failing ? 'crit' : undefined },
+    { label: 'work while locked', value: channels ? locked : '…', tone: channels && list.length > 0 && !locked ? 'warn' : undefined },
+  ]
+  const title = channels === null ? 'Loading channels...'
+    : list.length === 0 ? 'No channels yet'
+    : failing ? `${failing} channel${failing === 1 ? '' : 's'} failing`
+    : `${on} of ${list.length} channel${list.length === 1 ? '' : 's'} on`
+
   return (
-    <div className="min-h-full p-4 sm:p-8" style={{ background: 'var(--ground)' }}>
-      <div className="mb-8">
-        <Link href="/settings" className="font-mono uppercase" style={{ fontSize: 12, letterSpacing: '0.14em', color: 'var(--accent)' }}>← Settings</Link>
-        <div className="flex flex-wrap items-end justify-between gap-3 mt-2">
-          <h1 className="font-display font-bold" style={{ fontSize: 36, lineHeight: 1.1, color: 'var(--text-bright)' }}>Notifications</h1>
-          {canUse && <PrimaryButton onClick={() => setEditing('new')}>Add a channel</PrimaryButton>}
-        </div>
-        <p className="mt-2 text-sm max-w-3xl" style={{ color: 'var(--text-soft)' }}>
+    <Page>
+      <HudHeader level={2} label="Notifications overview" icon="alarm"
+        eyebrow={<><Link href="/settings" style={{ color: 'inherit' }}>&larr; Settings</Link> · Notifications</>}
+        title={title} chips={chips}
+        actions={canUse && <PrimaryButton onClick={() => setEditing('new')}>Add a channel</PrimaryButton>}>
+        <p className="text-sm max-w-3xl" style={{ margin: 0, color: 'var(--text-soft)' }}>
           Where HyperProx tells you that something needs attention: when it locks itself, when an update run ends, when a certificate
           is about to expire. Messages are short, so they read well on a phone or a watch. Each channel decides how serious a message must
           be, what it is about, and when to stay quiet.
         </p>
-      </div>
+      </HudHeader>
 
-      <div className="max-w-5xl space-y-4">
-        {toast && <Notice kind={toast.kind === 'error' ? 'error' : 'info'}>{toast.text}</Notice>}
-        {error && <Notice kind="error">{error}</Notice>}
-        {!meta.publicUrlSet && canUse && (
-          <Notice kind="info">Messages say which page to open instead of linking to it. Set HYPERPROX_PUBLIC_URL to the address you open HyperProx at for one-tap links.</Notice>
-        )}
-        {justMade && (
-          <Notice kind="info">
-            Saved "{justMade.name}". <button className="underline" onClick={() => test(justMade)} disabled={testing === justMade.id}>Send a test message now</button> to check it arrives.
-          </Notice>
-        )}
+      {toast && <Notice kind={toast.kind === 'error' ? 'error' : 'info'}>{toast.text}</Notice>}
+      {error && <Notice kind="error">{error}</Notice>}
+      {!meta.publicUrlSet && canUse && (
+        <Notice kind="info">Messages say which page to open instead of linking to it. Set HYPERPROX_PUBLIC_URL to the address you open HyperProx at for one-tap links.</Notice>
+      )}
+      {justMade && (
+        <Notice kind="info">
+          Saved &quot;{justMade.name}&quot;. <button className="underline" onClick={() => test(justMade)} disabled={testing === justMade.id}>Send a test message now</button> to check it arrives.
+        </Notice>
+      )}
 
+      <Panel title="Channels" sub="where alerts go">
         {channels === null ? (
-          <div className="text-sm animate-pulse" style={{ color: 'var(--text-dimmer)' }}>Loading channels...</div>
+          <p className={`${ks.empty} animate-pulse`}>Loading channels...</p>
         ) : channels.length === 0 && !error ? (
           <Notice kind="info">No channels yet, so HyperProx tells nobody when something goes wrong. Add one: ntfy is the simplest way to get alerts on a phone.</Notice>
         ) : (
-          <div className="space-y-3">
-            {channels.map(c => (
-              <div key={c.id} className="rounded-lg border p-4" style={{ borderColor: c.failingSince ? 'var(--crit)' : 'var(--border-soft)', background: 'var(--surface)', opacity: c.enabled ? 1 : 0.7 }}>
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-medium" style={{ color: 'var(--text-bright)' }}>{c.name}</span>
-                      <Tag>{KINDS[c.kind]?.label ?? c.kind}</Tag>
-                      {!c.enabled && <Tag>Paused</Tag>}
-                      {c.usableWhileLocked && <Tag colour="var(--accent)">Works while locked</Tag>}
-                      {c.lanOverride && <Tag colour="var(--warn)">Self-hosted</Tag>}
-                      {c.private && <Tag colour="var(--good)">Private</Tag>}
-                      {c.failingSince && <Tag colour="var(--crit-soft)">Failing since {fmt(c.failingSince)}</Tag>}
-                    </div>
-                    <div className="mt-1 text-xs break-all" style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
-                      {c.secretReadable ? c.mask : 'Saved in the vault'}
-                    </div>
-                    <div className="mt-2 text-sm" style={{ color: 'var(--text-soft)' }}>
-                      {SEVERITY_LABEL[c.minSeverity]} · {eventsText(c.eventFilter)}{quietText(c.quietHours) ? ` · ${quietText(c.quietHours)}` : ''}
-                    </div>
-                    <div className="mt-1 text-xs" style={{ color: c.lastResult && !c.lastResult.ok ? 'var(--crit-soft)' : 'var(--text-muted)' }}>
-                      {c.lastResult ? `Last: ${c.lastResult.text}, ${fmt(c.lastResult.at)}` : 'Nothing sent yet'}
-                    </div>
+          <ul className={ss.items} aria-label="Notification channels">
+            {channels.map(c => {
+              const h = channelHealth(c)
+              return (
+                <li key={c.id} className={ss.item} data-tone={c.failingSince ? 'bad' : undefined} data-dim={c.enabled ? undefined : 'true'}>
+                  <div className={ss.itemHead}>
+                    <i className={ks.hdot} data-tone={h.tone} aria-hidden />
+                    <span className="font-display" style={{ fontWeight: 700, fontSize: 16, letterSpacing: '0.04em', color: 'var(--text-bright)', overflowWrap: 'anywhere', minWidth: 0 }}>{c.name}</span>
+                    <span className="font-mono" style={{ marginLeft: 'auto', fontSize: 11, color: h.tone === 'bad' ? 'var(--crit)' : h.tone === 'warn' ? 'var(--warn)' : h.tone === 'good' ? 'var(--good)' : 'var(--text-muted)', whiteSpace: 'nowrap' }}>{h.word}</span>
                   </div>
+                  <div className={ss.pills}>
+                    <Tag>{KINDS[c.kind]?.label ?? c.kind}</Tag>
+                    {!c.enabled && <Tag>Paused</Tag>}
+                    {c.usableWhileLocked && <Tag tone="accent">Works while locked</Tag>}
+                    {c.lanOverride && <Tag tone="warn">Self-hosted</Tag>}
+                    {c.private && <Tag tone="good">Private</Tag>}
+                    {c.failingSince && <Tag tone="bad">Failing since {fmt(c.failingSince)}</Tag>}
+                  </div>
+                  <p className={ss.meta}>{c.secretReadable ? c.mask : 'Saved in the vault'}</p>
+                  <p className={ss.said}>
+                    {SEVERITY_LABEL[c.minSeverity]} · {eventsText(c.eventFilter)}{quietText(c.quietHours) ? ` · ${quietText(c.quietHours)}` : ''}
+                  </p>
+                  <p className={ss.meta} style={{ color: c.lastResult && !c.lastResult.ok ? 'var(--crit-soft)' : undefined }} title={exact(c.lastResult?.at)}>
+                    {c.lastResult ? `Last: ${c.lastResult.text}, ${inWords(c.lastResult.at) ?? fmt(c.lastResult.at)}` : 'Nothing sent yet'}
+                  </p>
                   {canUse && (
-                    <div className="flex gap-2">
-                      <button onClick={() => test(c)} disabled={testing === c.id || !c.secretReadable} className="rounded border px-3 text-xs font-medium disabled:opacity-40"
-                              style={{ height: 30, borderColor: 'var(--border-strong)', color: 'var(--accent)' }}>{testing === c.id ? 'Sending...' : 'Send test'}</button>
-                      <button onClick={() => setEditing(c)} className="rounded border px-3 text-xs font-medium"
-                              style={{ height: 30, borderColor: 'var(--border-strong)', color: 'var(--text-soft)' }}>Edit</button>
-                      <button onClick={() => setDeleting(c)} className="rounded border px-3 text-xs font-medium"
-                              style={{ height: 30, borderColor: 'var(--border-strong)', color: 'var(--crit-soft)' }}>Delete</button>
+                    <div className={ss.acts}>
+                      <button type="button" onClick={() => test(c)} disabled={testing === c.id || !c.secretReadable} className={ss.mini} data-tone="accent"
+                              aria-label={`Send a test to ${c.name}`}>{testing === c.id ? 'Sending...' : 'Send test'}</button>
+                      <button type="button" onClick={() => setEditing(c)} className={ss.mini} aria-label={`Edit ${c.name}`}>Edit</button>
+                      <button type="button" onClick={() => setDeleting(c)} className={ss.mini} data-tone="bad" aria-label={`Delete ${c.name}`}>Delete</button>
                     </div>
                   )}
-                </div>
-              </div>
-            ))}
-          </div>
+                </li>
+              )
+            })}
+          </ul>
         )}
+        {role && !canUse && <div style={{ marginTop: 12 }}><Notice kind="info">Only owners and admins can manage notifications.</Notice></div>}
+        <p className="text-xs" style={{ margin: '12px 0 0', color: 'var(--text-muted)' }}>
+          A channel that keeps failing is reported on the other channels. At most six messages go to one channel in ten minutes; past that,
+          one &quot;many alerts at once&quot; message, and the rest is here in HyperProx.
+        </p>
+      </Panel>
 
-        {deliveries.length > 0 && (
-          <div>
-            <h2 className="font-display font-bold mt-6 mb-2" style={{ fontSize: 20, color: 'var(--text-bright)' }}>Recent messages</h2>
-            <div className="hp-table-scroll overflow-x-auto rounded-lg border" style={{ borderColor: 'var(--border-soft)', background: 'var(--surface)' }}>
-              <table className="w-full text-sm">
+      {deliveries.length > 0 && (
+        <>
+          <Panel title="Recent messages" sub={`last ${deliveries.length}`}>
+            <Feed label="Recent messages" items={deliveries.map(d => ({
+              key: d.id, tone: deliveryTone(d.status), title: d.title, detail: <span style={{ color: d.status === 'failed' ? 'var(--crit-soft)' : undefined }}>· {d.text}</span>,
+              meta: `${nameOf(d.channelId)} · ${inWords(d.createdAt) ?? fmt(d.createdAt)}`,
+            }))} />
+          </Panel>
+          <Details summary="Details" sub="recent messages, exact times">
+            <div className={ks.tableWrap}>
+              <table className={ks.table}>
                 <thead>
-                  <tr className="text-left" style={{ color: 'var(--text-muted)', borderBottom: '1px solid var(--border-dim)' }}>
-                    <th className="px-4 py-2 font-medium">When</th>
-                    <th className="px-4 py-2 font-medium">Channel</th>
-                    <th className="px-4 py-2 font-medium">Message</th>
-                    <th className="px-4 py-2 font-medium">Result</th>
+                  <tr>
+                    <th>When</th>
+                    <th>Channel</th>
+                    <th>Message</th>
+                    <th>Result</th>
                   </tr>
                 </thead>
                 <tbody>
                   {deliveries.map(d => (
-                    <tr key={d.id} style={{ borderBottom: '1px solid var(--border-dim)' }}>
-                      <td className="px-4 py-2 whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>{fmt(d.createdAt)}</td>
-                      <td className="px-4 py-2" style={{ color: 'var(--text-soft)' }}>{nameOf(d.channelId)}</td>
-                      <td className="px-4 py-2" style={{ color: 'var(--text-bright)' }}>{d.title}</td>
-                      <td className="px-4 py-2" style={{ color: d.status === 'failed' ? 'var(--crit-soft)' : 'var(--text-soft)' }}>{d.text}</td>
+                    <tr key={d.id}>
+                      <td className="whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>{fmt(d.createdAt)}</td>
+                      <td style={{ color: 'var(--text-soft)' }}>{nameOf(d.channelId)}</td>
+                      <td style={{ color: 'var(--text-bright)' }}>{d.title}</td>
+                      <td style={{ color: d.status === 'failed' ? 'var(--crit-soft)' : 'var(--text-soft)' }}>{d.text}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-          </div>
-        )}
-        {role && !canUse && <Notice kind="info">Only owners and admins can manage notifications.</Notice>}
-        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-          A channel that keeps failing is reported on the other channels. At most six messages go to one channel in ten minutes; past that,
-          one "many alerts at once" message, and the rest is here in HyperProx.
-        </p>
-      </div>
+          </Details>
+        </>
+      )}
 
       {editing && (
         <ChannelModal
@@ -494,6 +530,6 @@ export default function NotificationsPage() {
         />
       )}
       {deleting && <DeleteModal c={deleting} onClose={() => setDeleting(null)} onConfirm={() => remove(deleting)} />}
-    </div>
+    </Page>
   )
 }

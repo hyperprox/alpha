@@ -10,7 +10,10 @@ import { wsBase } from '@/lib/ws'
 import { PluginCards } from '@/components/plugins/PluginCards'
 import { Speedometer, Sparkline, StreamChart, Meter, useHistory, zoneColor, ACCENT, GOOD, WARN, CRIT } from '@/components/dashboard/Viz'
 import { alpha } from '@/lib/theme'
-import { CheckIcon, WarnIcon, ArrowRightIcon } from '@/components/dashboard/Icons'
+import { CheckIcon, WarnIcon } from '@/components/dashboard/Icons'
+import {
+  HudHeader, Panel as KitPanel, Cols, NodeTiles, NodeTile, GlowBars, GuestRows, Feed, Pill, styles as vs, type StatChip, type FeedTone,
+} from '@/components/visual/kit'
 import {
   formatBinary as formatBytes, formatBinaryPair, summarizeStorage, summarizeHA, powerStatus, serviceState,
   type ServiceState,
@@ -57,16 +60,17 @@ interface NodeGPUStatus {
 interface FastData { nodes: PVENode[]; vms: PVEVM[]; gpu: GPUInfoFull|null; cluster: ClusterTotals; network?: NetworkData; gpuStatus?: NodeGPUStatus[]; storage?: any[]; clusterName?: string|null }
 interface SlowData { ceph: CephStatus|null; osds: CephOSD[]; ha: HAEntry[]; services: { npm: ServiceInfo; grafana?: ServiceInfo; prometheus?: ServiceInfo } }
 
-// One title treatment for every card: a status dot in the card's colour, the name in
-// the bright text colour. The name itself never takes the accent, so a card titled in
-// green or red is never mistaken for a card reporting green or red.
-function CardTitle({ title, accent = ACCENT, badge }: { title: string; accent?: string; badge?: React.ReactNode }) {
+// One title treatment for every card: the kit's uppercase condensed heading, led by a status dot in the
+// card's colour. The name itself never takes the colour, so a card titled in green or red is never mistaken for
+// a card reporting green or red; the badge beside it says the state in words.
+function CardTitle({ title, accent = ACCENT, badge, right }: { title: string; accent?: string; badge?: React.ReactNode; right?: React.ReactNode }) {
   return (
-    <div className="flex items-center gap-2 min-w-0">
-      <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background:accent, boxShadow:`0 0 8px ${accent}` }}/>
-      <span className="font-display font-semibold text-xl truncate" style={{ color:'var(--text-bright)' }}>{title}</span>
+    <h2 className={vs.panelTitle} style={{ alignItems: 'center' }}>
+      <span aria-hidden className="w-2 h-2 rounded-full flex-shrink-0" style={{ background:accent, boxShadow:`0 0 8px ${alpha(accent, 60)}` }}/>
+      <span className="truncate min-w-0">{title}</span>
       {badge}
-    </div>
+      {right && <span className={vs.panelActs} style={{ fontFamily:'var(--font-mono)', fontSize:12 }}>{right}</span>}
+    </h2>
   )
 }
 
@@ -76,14 +80,10 @@ function Panel({ title, accent = ACCENT, right, children, className = '' }: {
   title: string; accent?: string; right?: React.ReactNode; children: React.ReactNode; className?: string
 }) {
   return (
-    <div className={`rounded-lg border p-5 sm:p-6 ${className}`}
-      style={{ background:'var(--surface)', borderColor:'var(--border-soft)' }}>
-      <div className="flex items-center justify-between mb-4">
-        <CardTitle title={title} accent={accent}/>
-        {right}
-      </div>
+    <section className={`${vs.panel} ${className}`} aria-label={title}>
+      <CardTitle title={title} accent={accent} right={right}/>
       {children}
-    </div>
+    </section>
   )
 }
 
@@ -129,8 +129,8 @@ function ClusterPanel({ cluster, nodes, vms, ceph, storage, ha, power, stamp }: 
   }
 
   return (
-    <Panel title="Cluster Overview"
-      right={<span className="text-xs font-mono text-gray-500">{online}/{nodes.length} nodes online</span>}>
+    <Panel title="Capacity"
+      right={<Link href="/infrastructure" className={vs.panelLink}>{online}/{nodes.length} nodes · Infrastructure <span aria-hidden>→</span></Link>}>
 
       <div className="flex flex-wrap justify-around items-start gap-y-3 mb-4">
         <Speedometer value={cluster.cpu_pct} label="CPU" size={118}
@@ -180,10 +180,6 @@ function ClusterPanel({ cluster, nodes, vms, ceph, storage, ha, power, stamp }: 
         </div>
       )}
 
-      <Link href="/infrastructure" className="flex items-center justify-center gap-2 mt-4 py-2 rounded-md text-sm font-medium transition-colors hover:bg-[color-mix(in_srgb,var(--accent)_10%,transparent)]"
-        style={{color:'var(--accent)',border:'1px solid var(--accent)',background:'transparent'}}>
-        View Infrastructure <ArrowRightIcon size={14}/>
-      </Link>
     </Panel>
   )
 }
@@ -216,9 +212,10 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
 
   // No GPUs detected at all
   if (allGPUs.length === 0) return (
-    <div className="rounded-lg border p-5 flex items-center justify-center" style={{ background:'var(--surface)', borderColor:'var(--text-faint)', minHeight:160 }}>
-      <span className="text-sm text-gray-600">No GPU detected</span>
-    </div>
+    <section className={vs.panel} aria-label="GPU">
+      <CardTitle title="GPU" accent="var(--text-dimmer)"/>
+      <p className={vs.empty}>No GPU detected</p>
+    </section>
   )
 
   // NVIDIA with full telemetry — show detailed panel
@@ -230,7 +227,7 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
     const consumers = gpu.consumers ?? []
     const unaccounted = gpu.vram_used - consumers.reduce((s, c) => s + c.vram_mb, 0)
     return (
-      <div className="rounded-lg border p-5" style={{ background:'var(--surface)', borderColor:`${alpha(accent, 19)}` }}>
+      <section className={vs.panel}>
         <div className="flex items-center justify-between mb-4">
           <CardTitle title="GPU" accent={accent}/>
           <span className="text-xs font-mono text-gray-500 truncate ml-2" style={{ maxWidth:140 }}>{gpu.name.replace('NVIDIA ','')}</span>
@@ -275,7 +272,7 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
         {/* The card above is the first NVIDIA GPU; every other GPU in the cluster gets a row here. */}
         <GpuList rows={allGPUs.flatMap(n => n.gpus.map(g => ({ node: n.node, name: g.deviceName, reachable: n.reachable, nv: g.type === 'nvidia' })))
           .filter((r, i, all) => !(r.nv && all.findIndex(x => x.nv) === i)).map(({ nv: _nv, ...r }) => r)}/>
-      </div>
+      </section>
     )
   }
 
@@ -283,7 +280,7 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
   if (anyReachable) {
     const color = 'var(--good)'
     return (
-      <div className="rounded-lg border p-4" style={{ background:'var(--surface)', borderColor:`${alpha(color, 19)}` }}>
+      <section className={vs.panel}>
         <div className="mb-3">
           <CardTitle title="GPU" accent={color}
             badge={<span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:`${alpha(color, 8)}`, color, border:`1px solid ${alpha(color, 19)}` }}>ACTIVE</span>}/>
@@ -307,7 +304,7 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
           )))}
         </div>
         <div className="text-sm text-gray-600 mt-3">View detailed metrics in Monitoring → Grafana</div>
-      </div>
+      </section>
     )
   }
 
@@ -315,7 +312,7 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
   const uniqueSteps = allGPUs[0]?.install?.steps ?? []
   const allSameSteps = allGPUs.every(n => JSON.stringify(n.install?.steps) === JSON.stringify(uniqueSteps))
   return (
-    <div className="rounded-lg border p-4" style={{ background:'var(--surface)', borderColor:'color-mix(in srgb, var(--warn-2) 19%, transparent)' }}>
+    <section className={vs.panel}>
       <div className="mb-3">
         <CardTitle title="GPU" accent="var(--warn-2)" badge={<>
           {allGPUs.every(n => !n.reachable) && <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background:'color-mix(in srgb, var(--warn-2) 8%, transparent)', color:'var(--warn-2)', border:'1px solid color-mix(in srgb, var(--warn-2) 19%, transparent)' }}>EXPORTER NOT INSTALLED</span>}
@@ -360,7 +357,7 @@ function GPUPanel({ gpu, gpuStatus }: { gpu: GPUInfoFull | null; gpuStatus?: Nod
           ))}
         </div>
       )}
-    </div>
+    </section>
   )
 }
 
@@ -580,87 +577,6 @@ function BandwidthPanel({ data, stamp }: { data: BandwidthData | null; stamp: nu
   )
 }
 
-// Node card
-function NodeCard({ node, vms, gpuInfo, power, powerTotal }: { node:PVENode; vms:PVEVM[]; gpuInfo?: NodeGPUStatus; power?: NodePower; powerTotal?: number }) {
-  const cpuPct=Math.round(node.cpu*100), memPct=pct(node.mem,node.maxmem), diskPct=pct(node.disk,node.maxdisk)
-  const nodeVMs=vms.filter(v=>v.node===node.node), running=nodeVMs.filter(v=>v.status==='running').length
-  const hasGpu = gpuInfo && gpuInfo.gpus.length > 0
-  const gpuType = gpuInfo?.gpus[0]?.type ?? null
-  const gpuAccentMap: Record<string, string> = { 'nvidia': 'var(--good)', 'amd': 'var(--violet-2)', 'intel-igpu': 'var(--accent-2)', 'intel-arc': 'var(--accent)' }
-  const accent = gpuType ? (gpuAccentMap[gpuType] ?? 'var(--violet)') : 'var(--accent)'
-  return (
-    <div className="rounded-lg border p-4 flex flex-col gap-4" style={{background:'var(--surface)',borderColor:`${alpha(accent, 19)}`}}>
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <CardTitle title={node.node} accent={accent}/>
-          {hasGpu && (
-            <span className="text-xs px-1.5 py-0.5 rounded font-mono" style={{background:`${alpha(accent, 13)}`,color:accent,border:`1px solid ${alpha(accent, 25)}`,fontSize:11}}
-              title={gpuInfo?.reachable ? gpuInfo.gpus[0].deviceName : `${gpuInfo?.install?.title ?? 'GPU detected'} — metrics not available`}>
-              {gpuType === 'nvidia' ? 'NVIDIA' : gpuType === 'amd' ? 'AMD' : gpuType === 'intel-arc' ? 'ARC' : 'iGPU'}
-              {!gpuInfo?.reachable && <WarnIcon size={10} className="inline-block ml-1 align-[-1px]"/>}
-            </span>
-          )}
-        </div>
-        <span className="text-xs font-mono text-gray-500">{formatUptime(node.uptime)}</span>
-      </div>
-      <div className="flex flex-wrap justify-around items-start gap-y-2">
-        <Speedometer value={cpuPct}  label="CPU"  size={76} color={accent} caption={`${node.maxcpu} cores`}/>
-        <Speedometer value={memPct}  label="MEM"  size={76} caption={formatBytes(node.maxmem)}/>
-        <Speedometer value={diskPct} label="DISK" size={76} caption={formatBytes(node.maxdisk)}/>
-      </div>
-{/* Power. A node has no rated maximum worth gauging against, so the bar
-          is its share of what the cluster is drawing — a denominator that is
-          measured rather than invented. */}
-      {power && (
-        <div className="rounded-lg px-2.5 py-2" style={{ background:'var(--ground-inset)', border:'1px solid var(--border-dim)' }}>
-          {power.total === null ? (
-            <div title="No RAPL on this CPU, and no exporter reporting a package figure. Nothing here is measuring watts.">
-              <div className="flex items-baseline justify-between">
-                <span className="font-mono uppercase tracking-widest text-gray-600" style={{ fontSize:9 }}>Power</span>
-                <span className="font-mono text-gray-700" style={{ fontSize:12 }}>no meter</span>
-              </div>
-              <div className="font-mono text-gray-700 mt-1" style={{ fontSize:9 }}>nothing on this node reports watts</div>
-            </div>
-          ) : (
-            <>
-              <div className="flex items-baseline justify-between mb-1.5">
-                <span className="font-mono uppercase tracking-widest text-gray-600" style={{ fontSize:9 }}>Power</span>
-                <span className="font-mono font-bold" style={{ fontSize:15, color:'var(--warn)', fontVariantNumeric:'tabular-nums' }}>
-                  {power.total.toFixed(1)}<span style={{ fontSize:10, color:'color-mix(in srgb, var(--warn) 56%, transparent)' }}> W</span>
-                </span>
-              </div>
-              {powerTotal ? (
-                <div className="flex items-center gap-2 mb-1.5">
-                  <div className="h-1 flex-1 rounded-full overflow-hidden" style={{ background:'var(--border-strong)' }}>
-                    <div className="h-full rounded-full"
-                      style={{ width:`${Math.min((power.total / powerTotal) * 100, 100)}%`,
-                               background:'var(--warn)', boxShadow:'0 0 8px color-mix(in srgb, var(--warn) 38%, transparent)',
-                               transition:'width .6s cubic-bezier(.22,1,.36,1)' }}/>
-                  </div>
-                  <span className="font-mono" style={{ fontSize:9, color:'var(--text-dim)', fontVariantNumeric:'tabular-nums' }}>
-                    {Math.round((power.total / powerTotal) * 100)}% of cluster
-                  </span>
-                </div>
-              ) : null}
-              <div className="font-mono" style={{ fontSize:9, color:'var(--text-dim)' }}>
-                {power.gpu
-                  ? `cpu ${power.cpu?.toFixed(1)} · gpu ${power.gpu.toFixed(1)} W`
-                  : `cpu package · ${power.source}`}
-              </div>
-            </>
-          )}
-        </div>
-      )}
-
-      <div className="flex gap-2 pt-1 border-t items-center" style={{borderColor:'var(--border-dim)'}}>
-        <span className="text-xs font-mono" style={{color:accent}}>▶ {running} running</span>
-        <span className="text-xs font-mono text-gray-600">■ {nodeVMs.length-running} stopped</span>
-        <span className="text-xs font-mono text-gray-600 ml-auto">{nodeVMs.length} total</span>
-      </div>
-    </div>
-  )
-}
-
 // CEPH compact
 function CephPanel({ ceph, osds }: { ceph:CephStatus|null; osds:CephOSD[] }) {
   if (!ceph) return null
@@ -670,7 +586,7 @@ function CephPanel({ ceph, osds }: { ceph:CephStatus|null; osds:CephOSD[] }) {
   const checks=Object.entries(ceph.health.checks ?? {})
   const byHost=osds.reduce((a,o)=>{if(!a[o.host])a[o.host]=[];a[o.host].push(o);return a},{} as Record<string,CephOSD[]>)
   return (
-    <div className="rounded-lg border p-5" style={{background:'var(--surface)',borderColor:`${alpha(hc, 19)}`}}>
+    <section className={vs.panel}>
       <div className="flex items-center justify-between mb-4">
         <CardTitle title="Ceph" accent={hc}
           badge={<span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{background:`${alpha(hc, 8)}`,color:hc,border:`1px solid ${alpha(hc, 19)}`}}>{ceph.health.status}</span>}/>
@@ -720,7 +636,7 @@ function CephPanel({ ceph, osds }: { ceph:CephStatus|null; osds:CephOSD[] }) {
           </div>
         ))}
       </div>
-    </div>
+    </section>
   )
 }
 
@@ -736,16 +652,16 @@ function HAPanel({ ha: haIn }: { ha:HAEntry[]|null }) {
   // No data is not a failed cluster. Showing QUORUM FAIL / FENCING OFF here would be
   // inventing a fault from an empty answer.
   if (ha.length===0) return (
-    <div className="rounded-lg border p-5" style={{background:'var(--surface)',borderColor:'var(--border-soft)'}}>
+    <section className={vs.panel}>
       <div className="mb-3"><CardTitle title="High Availability" accent="var(--text-dimmer)"/></div>
       <div className="text-sm" style={{color:'var(--text-soft)'}}>No HA data came back from Proxmox.</div>
       <div className="font-mono mt-1" style={{fontSize:12,color:'var(--text-dim)',lineHeight:1.4}}>
         Reading HA status needs the Sys.Audit privilege on / for the API token. Grant it (for example the PVEAuditor role on /) and this panel fills in.
       </div>
-    </div>
+    </section>
   )
   return (
-    <div className="rounded-lg border p-5" style={{background:'var(--surface)',borderColor:'color-mix(in srgb, var(--accent) 13%, transparent)'}}>
+    <section className={vs.panel}>
       <div className="flex items-center justify-between mb-4">
         <CardTitle title="High Availability" accent={allStarted?'var(--good)':'var(--warn-2)'}/>
         <span className="text-xs font-mono" style={{color:allStarted?'var(--good)':'var(--warn-2)'}}>
@@ -777,7 +693,7 @@ function HAPanel({ ha: haIn }: { ha:HAEntry[]|null }) {
           return <span key={svc.id} className="font-mono px-1.5 py-0.5 rounded" style={{fontSize:11,background:ok?'color-mix(in srgb, var(--good) 6%, transparent)':'color-mix(in srgb, var(--crit-2) 6%, transparent)',color:ok?'var(--good-soft)':'var(--crit-soft)',border:`1px solid ${ok?'color-mix(in srgb, var(--good) 19%, transparent)':'color-mix(in srgb, var(--crit-2) 19%, transparent)'}`}}>{svc.sid}</span>
         })}
       </div>
-    </div>
+    </section>
   )
 }
 
@@ -902,8 +818,8 @@ export default function DashboardView() {
   }, [fetchInitial])
 
   if (!fast) return (
-    <div className="min-h-full flex items-center justify-center" style={{background:'var(--ground)'}}>
-      <div className="text-sm text-gray-500 animate-pulse">connecting to your cluster...</div>
+    <div className="min-h-[50vh] flex items-center justify-center">
+      <div className="text-sm text-gray-500 animate-pulse" role="status">connecting to your cluster...</div>
     </div>
   )
 
@@ -911,66 +827,244 @@ export default function DashboardView() {
   const sorted = [...fast.nodes].sort((a,b)=>{const ag=fast.gpuStatus?.find(g=>g.node===a.node)?.gpus.length??0;const bg=fast.gpuStatus?.find(g=>g.node===b.node)?.gpus.length??0;return bg-ag||a.node.localeCompare(b.node)})
 
   return (
-    <div className="min-h-full" style={{background:'var(--ground)'}}>
-      {/* Header */}
-      <header className="flex flex-wrap items-center justify-between gap-y-2 px-3 sm:px-8 py-4 sm:py-6 border-b" style={{borderColor:'var(--border-dim)',background:'var(--ground)'}}>
-        {/* The wordmark lives in the sidebar; this is the page's own title. */}
-        <div className="flex flex-col" style={{gap:4}}>
-          <h1 className="font-display font-bold" style={{fontSize:36, lineHeight:1.1, color:'var(--text-bright)'}}>Dashboard</h1>
-          {clusterLabel && <span className="font-mono" style={{fontSize:13, color:'var(--text-dim)'}}>{clusterLabel}</span>}
+    <div className={vs.page}>
+      <ClusterHud fast={fast} slow={slow} clusterLabel={clusterLabel} lastSync={lastSync} power={clusterPower}/>
+
+      {/* Every cluster side by side, once a remote server has been added (nothing shows with none). */}
+      <CommandCenterIfRemotes/>
+
+      <KitPanel title="Nodes" sub="CPU · memory" href="/infrastructure" linkLabel="Infrastructure">
+        <NodeTiles label="Nodes">
+          {sorted.map(node => <NodeTileFor key={node.node} node={node} vms={fast.vms} gpuInfo={fast.gpuStatus?.find(g=>g.node===node.node)}
+            power={clusterPower?.nodes.find(p=>p.node===node.node)} powerTotal={clusterPower?.total}/>)}
+        </NodeTiles>
+      </KitPanel>
+
+      <Cols>
+        <StoragePanel storage={fast.storage}/>
+        <BusiestGuests vms={fast.vms} stamp={lastSync?.getTime() ?? null}/>
+      </Cols>
+
+      <Cols>
+        <HappeningPanel fast={fast} slow={slow}/>
+        <PluginCards variant="strip"/>
+      </Cols>
+
+      {/* The dials, the GPU and the services this install talks to */}
+      <div className="grid gap-4 grid-cols-1 xl:grid-cols-[1.25fr_1.25fr_1fr]">
+        <ClusterPanel cluster={fast.cluster} nodes={fast.nodes} vms={fast.vms} ceph={slow?.ceph??null} storage={fast.storage} ha={slow?.ha??null} power={clusterPower} stamp={lastSync?.getTime() ?? null}/>
+        <GPUPanel gpu={fast.gpu} gpuStatus={fast.gpuStatus}/>
+        {slow && <ServicesPanel services={slow.services}/>}
+      </div>
+
+      {/* The link meters, then the cluster's own traffic, full width because a time series needs time on it */}
+      <BandwidthPanel data={bandwidth} stamp={bandwidth?.at ?? null}/>
+      <NetworkPanel network={fast.network??null} stamp={lastSync?.getTime() ?? null}/>
+
+      {slow && (
+        <div className="grid gap-4 lg:grid-cols-2">
+          <CephPanel ceph={slow.ceph} osds={slow.osds}/>
+          <HAPanel   ha={slow.ha}/>
         </div>
-        <div className="flex items-center gap-3">
-          {[
-            {label:'NODES',  value:`${fast.nodes.filter(n=>n.status==='online').length}/${fast.nodes.length}`, color:'var(--accent)'},
-            {label:'RUNNING',value:String(fast.vms.filter(v=>v.status==='running').length),                    color:'var(--good)'},
-            {label:'VMs+CTs',value:String(fast.vms.length),                                                    color:'var(--text-dimmer)'},
-          ].map(({label,value,color})=>(
-            <div key={label} className="flex items-center gap-1.5 px-2 py-1 rounded text-xs font-mono" style={{background:`${alpha(color, 6)}`,border:`1px solid ${alpha(color, 19)}`}}>
-              <span style={{color}}>{value}</span>
-              <span className="text-gray-600">{label}</span>
-            </div>
-          ))}
-          {lastSync&&<span className="text-xs font-mono text-gray-700 hidden md:block" style={{fontVariantNumeric:'tabular-nums'}}>{lastSync.toLocaleTimeString()}</span>}
-          <div className="w-2 h-2 rounded-full animate-pulse" style={{background:'var(--accent)',boxShadow:'0 0 6px var(--accent)'}}/>
-        </div>
-      </header>
-
-      <main className="p-3 sm:p-8 max-w-7xl mx-auto space-y-6 sm:space-y-8">
-        {/* Every cluster side by side, once a remote server has been added (nothing shows with none). */}
-        <CommandCenterIfRemotes/>
-        {/* Row 1 — the three panels that are mostly dials */}
-        <div className="grid gap-4 grid-cols-1 xl:grid-cols-[1.25fr_1.25fr_1fr]">
-          <ClusterPanel cluster={fast.cluster} nodes={fast.nodes} vms={fast.vms} ceph={slow?.ceph??null} storage={fast.storage} ha={slow?.ha??null} power={clusterPower} stamp={lastSync?.getTime() ?? null}/>
-          <GPUPanel gpu={fast.gpu} gpuStatus={fast.gpuStatus}/>
-          {slow && <ServicesPanel services={slow.services}/>}
-        </div>
-
-        {/* Row 2 — the link meters, then the cluster's own traffic */}
-        <BandwidthPanel data={bandwidth} stamp={bandwidth?.at ?? null}/>
-
-        {/* Row 3 — throughput, full width, because a time series needs time on it */}
-        <NetworkPanel network={fast.network??null} stamp={lastSync?.getTime() ?? null}/>
-
-        {/* Row 4 — nodes */}
-        <section>
-          <h2 className="font-display font-semibold mb-4" style={{ fontSize:22, color:'var(--text-bright)' }}>Cluster Nodes</h2>
-          <div className="grid gap-4" style={{gridTemplateColumns:'repeat(auto-fill,minmax(min(100%,250px),1fr))'}}>
-            {sorted.map(node=><NodeCard key={node.node} node={node} vms={fast.vms} gpuInfo={fast.gpuStatus?.find(g=>g.node===node.node)} power={clusterPower?.nodes.find(p=>p.node===node.node)} powerTotal={clusterPower?.total}/>)}
-          </div>
-        </section>
-
-        {/* Row 3 — plug-ins */}
-        <PluginCards />
-
-        {/* Row 3 — CEPH + HA */}
-        {slow && (
-          <div className="grid gap-4 lg:grid-cols-2">
-            <CephPanel ceph={slow.ceph} osds={slow.osds}/>
-            <HAPanel   ha={slow.ha}/>
-          </div>
-        )}
-      </main>
+      )}
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+//  The HUD: guests running on the outer ring, memory on the inner, the verdict
+//  in words, and the five numbers people look for first.
+// ---------------------------------------------------------------------------
+
+function ClusterHud({ fast, slow, clusterLabel, lastSync, power }: { fast: FastData; slow: SlowData | null; clusterLabel: string; lastSync: Date | null; power: ClusterPower | null }) {
+  const running = fast.vms.filter(v => v.status === 'running').length
+  const online  = fast.nodes.filter(n => n.status === 'online').length
+  const stor    = summarizeStorage(fast.storage)
+  const ha      = Array.isArray(slow?.ha) ? slow!.ha : []
+  const quorum  = ha.find(h => h.type === 'quorum')
+  const haSum   = summarizeHA(slow?.ha ?? null)
+  const cephSt  = slow?.ceph?.health.status
+  const powerUi = powerStatus(power)
+
+  const problems = [
+    online < fast.nodes.length && `${fast.nodes.length - online} node${fast.nodes.length - online === 1 ? '' : 's'} offline`,
+    quorum && !quorum.quorate && 'no quorum',
+    cephSt === 'HEALTH_ERR' && 'Ceph error',
+    haSum.state === 'ok' && haSum.started < haSum.services && `${haSum.services - haSum.started} HA guest${haSum.services - haSum.started === 1 ? '' : 's'} not started`,
+  ].filter(Boolean) as string[]
+  const warned = cephSt === 'HEALTH_WARN'
+  const title = problems.length ? `${problems.length} thing${problems.length === 1 ? '' : 's'} need${problems.length === 1 ? 's' : ''} attention`
+    : warned ? 'Running · Ceph has warnings' : 'All systems normal'
+
+  const verdict = quorum
+    ? { text: quorum.quorate ? 'Quorum OK' : 'No quorum', tone: quorum.quorate ? 'good' as const : 'bad' as const }
+    : { text: `${online}/${fast.nodes.length} online`, tone: online === fast.nodes.length ? 'good' as const : 'warn' as const }
+
+  const chips: StatChip[] = [
+    { label: 'nodes online', value: `${online}/${fast.nodes.length}`, tone: online === fast.nodes.length ? 'good' : 'crit' },
+    { label: 'cluster CPU', value: `${Math.round(fast.cluster.cpu_pct)}%`, tone: 'accent' },
+    { label: 'memory', value: `${Math.round(fast.cluster.mem_pct)}%`, tone: 'violet' },
+    { label: stor.total > 0 ? 'storage used' : 'disk used', value: `${stor.total > 0 ? stor.pct : Math.round(fast.cluster.disk_pct)}%`, tone: (stor.total > 0 ? stor.pct : fast.cluster.disk_pct) >= 85 ? 'warn' : undefined },
+    powerUi.show && power
+      ? { label: power.silent.length ? `power ${power.reporting}/${power.of}` : 'power draw', value: `${power.total}W`, tone: power.silent.length ? 'warn' : undefined }
+      : { label: 'HA guests', value: haSum.state === 'ok' ? `${haSum.started}/${haSum.services}` : 'n/a', tone: haSum.state === 'ok' && haSum.started === haSum.services ? 'good' : undefined },
+  ]
+
+  const eyebrow = [clusterLabel, cephSt && `Ceph ${cephSt}`, lastSync && `synced ${lastSync.toLocaleTimeString()}`].filter(Boolean).join(' · ')
+
+  return (
+    <HudHeader level={2} label="Cluster status" eyebrow={eyebrow || 'Your cluster'} title={title} chips={chips}
+      core={{
+        outer: { value: fast.vms.length ? running / fast.vms.length : 0, label: 'guests running' },
+        inner: { value: (fast.cluster.mem_pct || 0) / 100, label: 'memory' },
+        text: `${running}/${fast.vms.length}`, caption: 'guests running', verdict,
+      }}>
+      {problems.length > 0 && <p className="font-mono" style={{ margin: 0, fontSize: 12, color: 'var(--crit)' }}>{problems.join(' · ')}</p>}
+    </HudHeader>
+  )
+}
+
+// ---------------------------------------------------------------------------
+//  A node as a tile: CPU and memory rings, then the rest of what its old card
+//  carried — disk, uptime, GPU, power and its guests — in words.
+// ---------------------------------------------------------------------------
+
+function NodeTileFor({ node, vms, gpuInfo, power, powerTotal }: { node:PVENode; vms:PVEVM[]; gpuInfo?: NodeGPUStatus; power?: NodePower; powerTotal?: number }) {
+  const off = node.status !== 'online'
+  const cpuPct = Math.round(node.cpu*100), memPct = pct(node.mem,node.maxmem), diskPct = pct(node.disk,node.maxdisk)
+  const nodeVMs = vms.filter(v=>v.node===node.node), running = nodeVMs.filter(v=>v.status==='running').length
+  const gpuType = gpuInfo?.gpus[0]?.type ?? null
+  const gpuWord = gpuType === 'nvidia' ? 'NVIDIA' : gpuType === 'amd' ? 'AMD' : gpuType === 'intel-arc' ? 'ARC' : gpuType ? 'iGPU' : null
+  return (
+    <NodeTile name={node.node} state={off ? 'off' : 'ok'} cpu={cpuPct} mem={memPct}
+      sub={off ? 'offline' : `${node.maxcpu} threads · disk ${diskPct}% · up ${formatUptime(node.uptime)}`}>
+      <div className="flex flex-wrap justify-center gap-1.5">
+        {gpuWord && (
+          <Pill tone={gpuInfo?.reachable ? 'violet' : 'warn'} title={gpuInfo?.reachable ? gpuInfo.gpus[0].deviceName : `${gpuInfo?.install?.title ?? 'GPU detected'} — metrics not available`}>
+            {gpuWord}{!gpuInfo?.reachable && <> · not monitored</>}
+          </Pill>
+        )}
+        {power && (power.total === null
+          ? <Pill title="No RAPL on this CPU, and no exporter reporting a package figure. Nothing here is measuring watts.">no power meter</Pill>
+          : <Pill tone="warn" title={power.gpu ? `cpu ${power.cpu?.toFixed(1)} · gpu ${power.gpu.toFixed(1)} W` : `cpu package · ${power.source}`}>
+              {power.total.toFixed(1)} W{powerTotal ? ` · ${Math.round((power.total / powerTotal) * 100)}% of cluster` : ''}
+            </Pill>)}
+      </div>
+      <div className="font-mono" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+        <span style={{ color: 'var(--good)' }}>▶ {running} running</span> · ■ {nodeVMs.length - running} stopped
+      </div>
+    </NodeTile>
+  )
+}
+
+// ---------------------------------------------------------------------------
+//  Storage as glow bars: each storage Proxmox lists, a shared one once and a
+//  node-local one per node, with its percentage in text.
+// ---------------------------------------------------------------------------
+
+function StoragePanel({ storage }: { storage?: any[] }) {
+  const seen = new Set<string>()
+  const rows: Array<{ key: string; label: string; value: number; text: string; title: string }> = []
+  for (const st of Array.isArray(storage) ? storage : []) {
+    if (!st || typeof st.storage !== 'string' || st.active === 0 || st.enabled === 0 || !(Number(st.total) > 0)) continue
+    const key = st.shared ? `shared:${st.storage}` : `${st.node ?? ''}:${st.storage}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    const p = pct(Number(st.used) || 0, Number(st.total))
+    rows.push({ key, label: st.shared ? st.storage : `${st.storage} (${st.node})`, value: p, text: `${p}%`,
+      title: `${st.storage}${st.shared ? '' : ` on ${st.node}`}: ${formatBinaryPair(Number(st.used) || 0, Number(st.total))}` })
+  }
+  rows.sort((a, b) => b.value - a.value)
+  return (
+    <KitPanel title="Storage" sub="used" href="/storage" linkLabel="Storage">
+      {rows.length ? <GlowBars label="Storage used" items={rows} max={100} hiAt={70}/> : <p className={vs.empty}>No storage reported yet.</p>}
+    </KitPanel>
+  )
+}
+
+// ---------------------------------------------------------------------------
+//  The busiest running guests, each with a sparkline of its recent CPU.
+// ---------------------------------------------------------------------------
+
+function BusiestGuests({ vms, stamp }: { vms: PVEVM[]; stamp: number | null }) {
+  const hist = useRef<Map<number, number[]>>(new Map())
+  const [, tick] = useState(0)
+  const latest = useRef(vms); latest.current = vms
+  useEffect(() => {
+    if (stamp == null) return
+    const m = hist.current
+    for (const v of latest.current) {
+      if (v.status !== 'running') continue
+      const h = m.get(v.vmid) ?? []
+      h.push((v.cpu || 0) * 100)
+      m.set(v.vmid, h.slice(-12))
+    }
+    tick(t => t + 1)
+  }, [stamp])
+  const top = vms.filter(v => v.status === 'running').sort((a, b) => (b.cpu || 0) - (a.cpu || 0)).slice(0, 6)
+  return (
+    <KitPanel title="Busiest guests" sub="now" href="/infrastructure" linkLabel="All guests">
+      {top.length ? (
+        <GuestRows label="Busiest guests" items={top.map(v => ({
+          key: String(v.vmid), kind: v.type === 'lxc' ? 'CT' : 'VM', name: v.name || `${v.type} ${v.vmid}`,
+          meta: `${v.node} · ${((v.cpu || 0) * 100).toFixed(1)}% cpu · ${formatBytes(v.mem || 0)}`,
+          spark: hist.current.get(v.vmid) ?? [(v.cpu || 0) * 100], sparkMax: 10,
+        }))}/>
+      ) : <p className={vs.empty}>No guest is running.</p>}
+    </KitPanel>
+  )
+}
+
+// ---------------------------------------------------------------------------
+//  What's happening: firing alerts, then anything the cluster state itself
+//  says is off. It is a reading of now, not a history.
+// ---------------------------------------------------------------------------
+
+interface FiringAlert { name: string; severity: string; state: string; node: string; summary: string; description: string; firedAt?: string }
+
+function HappeningPanel({ fast, slow }: { fast: FastData; slow: SlowData | null }) {
+  const [alerts, setAlerts] = useState<FiringAlert[] | null>(null)
+  useEffect(() => {
+    let alive = true
+    const load = async () => {
+      try { const j = await (await fetch('/api/prometheus/alerts')).json(); if (alive) setAlerts(j?.success ? j.data : []) }
+      catch { if (alive) setAlerts([]) }
+    }
+    load()
+    const id = setInterval(load, 60_000)
+    return () => { alive = false; clearInterval(id) }
+  }, [])
+
+  const items: Array<{ key: string; title: React.ReactNode; detail?: React.ReactNode; meta?: React.ReactNode; tone: FeedTone }> = []
+  for (const n of fast.nodes) if (n.status !== 'online') items.push({ key: `node-${n.node}`, title: `${n.node} is offline`, tone: 'bad', meta: 'node' })
+  for (const a of alerts ?? []) {
+    if (a.state !== 'firing') continue
+    items.push({
+      key: `alert-${a.name}-${a.node}-${a.firedAt ?? ''}`, title: a.summary || a.name, detail: a.description || undefined,
+      tone: a.severity === 'critical' ? 'bad' : 'warn',
+      meta: [a.node, a.severity, a.firedAt && `since ${new Date(a.firedAt).toLocaleString()}`].filter(Boolean).join(' · '),
+    })
+  }
+  for (const [key] of Object.entries(slow?.ceph?.health.checks ?? {})) {
+    items.push({ key: `ceph-${key}`, title: `Ceph: ${key}`, detail: key === 'POOL_NO_REDUNDANCY' ? '(intentional)' : undefined,
+      tone: key === 'POOL_NO_REDUNDANCY' ? 'off' : slow?.ceph?.health.status === 'HEALTH_ERR' ? 'bad' : 'warn', meta: 'storage' })
+  }
+  for (const h of Array.isArray(slow?.ha) ? slow!.ha : []) {
+    if (h.type === 'service' && h.crm_state && h.crm_state !== 'started') items.push({ key: `ha-${h.id}`, title: `${h.sid ?? h.id} is ${h.crm_state}`, tone: 'warn', meta: 'high availability' })
+  }
+  if (slow) {
+    for (const [k, name] of [['npm', 'Nginx Proxy Manager'], ['grafana', 'Grafana'], ['prometheus', 'Prometheus']] as const) {
+      const info = slow.services[k]
+      if (info && serviceState(info) === 'unreachable') items.push({ key: `svc-${k}`, title: `${name} is unreachable`, detail: info.message, tone: 'bad', meta: 'service' })
+    }
+  }
+  if (!items.length) items.push({ key: 'calm', title: alerts === null ? 'Checking…' : 'Nothing needs attention', detail: alerts === null ? undefined : 'No alert is firing and every node is online.', tone: alerts === null ? 'off' : 'ok' })
+
+  return (
+    <KitPanel title="What's happening" sub="now" href="/monitoring" linkLabel="Monitoring">
+      <Feed label="What is happening now" items={items.slice(0, 8)}/>
+      {items.length > 8 && <p className={vs.empty} style={{ marginTop: 10, fontSize: 13 }}>and {items.length - 8} more on the Monitoring page.</p>}
+    </KitPanel>
   )
 }
 
@@ -997,7 +1091,7 @@ function ServicesPanel({ services }: { services: SlowData['services'] }) {
     { key:'prometheus', name:'Prometheus', accent:'var(--crit)', info: services.prometheus, details:[] },
   ]
   return (
-    <div className="rounded-lg border p-5" style={{background:'var(--surface)',borderColor:'var(--border-soft)'}}>
+    <section className={vs.panel}>
       <div className="mb-4"><CardTitle title="Connected Services"/></div>
       <div className="space-y-2">
         {rows.map(({key,name,accent,info,details})=>{
@@ -1026,6 +1120,6 @@ function ServicesPanel({ services }: { services: SlowData['services'] }) {
           </div>
         )})}
       </div>
-    </div>
+    </section>
   )
 }

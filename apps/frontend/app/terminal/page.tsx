@@ -14,6 +14,7 @@ import { TerminalPane, type PaneState } from '@/components/terminal/TerminalPane
 import { AddHostDialog, ConnectDialog, SaveLayoutDialog, type CredentialDraft } from '@/components/terminal/TerminalDialogs'
 import { HostPalette } from '@/components/terminal/HostPalette'
 import { alpha } from '@/lib/theme'
+import { styles } from '@/components/visual/kit'
 
 interface TerminalHost {
   id: string; name: string; vmid: number; node: string
@@ -423,10 +424,7 @@ export default function TerminalPage() {
             from — the left-hand host column it replaces was a second menu
             stacked against the app's own. */}
         <div className="flex flex-shrink-0 items-stretch overflow-x-auto border-b"
-          style={{ borderColor: BORDER, background: 'var(--ground-deep)', height: 37 }}>
-          <div className="flex flex-shrink-0 items-center gap-2 border-r px-3" style={{ borderColor: BORDER }}>
-            <h1 className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: 'var(--accent)' }}>Terminal</h1>
-          </div>
+          style={{ borderColor: 'var(--border-strong)', background: 'linear-gradient(180deg, var(--surface-hi), var(--ground-deep))', height: 40 }}>
           {sessions.map(sess => {
               const isActive = sess.key === activeKey
               const st = STATE_STYLE[sess.state]
@@ -436,16 +434,17 @@ export default function TerminalPage() {
                   style={{
                     borderColor: BORDER,
                     background:  isActive ? 'var(--surface)' : 'transparent',
-                    boxShadow:   isActive ? `inset 0 -2px 0 ${ACCENT}` : 'none',
+                    boxShadow:   isActive ? `inset 0 -2px 0 ${ACCENT}, 0 0 14px -6px ${ACCENT}` : 'none',
                   }}>
                   <button onClick={() => setActiveKey(sess.key)} className="flex items-center gap-2 py-2">
                     <span className="h-1.5 w-1.5 rounded-full" style={{ background: st.dot }} />
+                    <span className="sr-only">{st.label}</span>
                     <span className="font-mono text-[12px]" style={{ color: isActive ? ACCENT : 'var(--text-muted)' }}>
                       {sess.host.name}
                     </span>
                   </button>
                   <button onClick={() => closeSession(sess.key)} title="Close this pane"
-                    className="flex h-5 w-5 items-center justify-center rounded opacity-0 transition-opacity hover:bg-white/10 group-hover:opacity-100"
+                    className="flex h-5 w-5 items-center justify-center rounded opacity-0 transition-opacity hover:bg-hover group-hover:opacity-100"
                     style={{ color: 'var(--text-dim)' }}>
                     <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={2}>
                       <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
@@ -458,7 +457,7 @@ export default function TerminalPage() {
           <button
             onClick={() => setPalette(true)}
             title="Open a terminal   (Ctrl/⌘ K)"
-            className="flex flex-shrink-0 items-center gap-1.5 px-3 transition-colors hover:bg-white/5"
+            className="flex flex-shrink-0 items-center gap-1.5 px-3 transition-colors hover:bg-hover"
             style={{ color: 'var(--text-dim)' }}>
             <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.8}>
               <path d="M8 3v10M3 8h10" strokeLinecap="round" />
@@ -473,7 +472,7 @@ export default function TerminalPage() {
 
         {/* Header for the active pane */}
         <header className="flex flex-shrink-0 flex-wrap items-center gap-2 border-b px-3 py-1.5 sm:gap-3 sm:px-4"
-          style={{ minHeight: 52, borderColor: BORDER, background: 'var(--surface-raised)' }}>
+          style={{ minHeight: 52, borderColor: 'var(--border-strong)', background: 'linear-gradient(135deg, var(--surface), var(--surface-hi))' }}>
           {active && s ? (
             <>
               <div className="min-w-0">
@@ -502,8 +501,7 @@ export default function TerminalPage() {
                   <div className="relative">
                     <button onClick={() => listTmux(active)}
                       title="Sessions already running on this host. Opening one attaches it in its own pane, so tmux is never nested."
-                      className="rounded-md border px-3 py-1.5 text-[13px] transition-colors hover:bg-white/5"
-                      style={{ borderColor: 'var(--border-strong)', color: 'var(--text)' }}>
+                      className={styles.btn}>
                       Sessions
                     </button>
                     {tmuxMenu?.key === active.key && (
@@ -516,7 +514,7 @@ export default function TerminalPage() {
                         )}
                         {tmuxMenu.items.length > 1 && (
                           <button onClick={() => attachAllTmux(active, tmuxMenu.items)}
-                            className="mb-1 w-full rounded-md border px-2 py-1.5 text-left text-[13px] transition-colors hover:bg-white/5"
+                            className="mb-1 w-full rounded-md border px-2 py-1.5 text-left text-[13px] transition-colors hover:bg-hover"
                             style={{ borderColor: 'var(--border-strong)', color: ACCENT }}>
                             Open all {tmuxMenu.items.length} {tmuxMenu.items.length > 2 ? 'in a grid' : 'side by side'}
                           </button>
@@ -526,7 +524,7 @@ export default function TerminalPage() {
                           const open = sessions.some(x => x.host.id === active.host.id && x.tmux === t.name)
                           return (
                             <button key={t.name} onClick={() => attachTmux(active, t.name)} disabled={here}
-                              className="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left transition-colors hover:bg-white/5 disabled:cursor-default disabled:hover:bg-transparent">
+                              className="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left transition-colors hover:bg-hover disabled:cursor-default disabled:hover:bg-transparent">
                               <span className="font-mono text-[12px]" style={{ color: here ? 'var(--text-dim)' : 'var(--text)' }}>
                                 {t.name}{here ? ' · this pane' : open ? ' · open' : ''}
                               </span>
@@ -552,23 +550,19 @@ export default function TerminalPage() {
                 )}
                 <button onClick={() => forgetHostKey(active)}
                   title="Clear the pinned host key — do this only when the guest was genuinely rebuilt"
-                  className="rounded-md border px-3 py-1.5 text-[13px] transition-colors hover:bg-white/5"
-                  style={{ borderColor: 'var(--border-strong)', color: 'var(--text)' }}>
+                  className={styles.btn}>
                   Clear host key
                 </button>
                 <button onClick={() => forgetCredential(active.host)}
-                  className="rounded-md border px-3 py-1.5 text-[13px] transition-colors hover:bg-white/5"
-                  style={{ borderColor: 'var(--border-strong)', color: 'var(--text)' }}>
+                  className={styles.btn}>
                   Forget login
                 </button>
                 <button onClick={() => setCredentialFor(active.host)}
-                  className="rounded-md border px-3 py-1.5 text-[13px] transition-colors hover:bg-white/5"
-                  style={{ borderColor: 'var(--border-strong)', color: 'var(--text)' }}>
+                  className={styles.btn}>
                   Change login
                 </button>
                 <button onClick={() => patch(active.key, { attempt: active.attempt + 1, attach: null })}
-                  className="rounded-md px-4 py-1.5 text-[13px] font-semibold transition-opacity hover:opacity-85"
-                  style={{ background: ACCENT, color: 'var(--accent-ink)' }}>
+                  className={`${styles.btn} ${styles.btnPri}`}>
                   Reconnect
                 </button>
               </div>
@@ -591,7 +585,7 @@ export default function TerminalPage() {
             <div className="hidden rounded border md:flex" style={{ borderColor: 'var(--border-strong)' }}>
               {(['tabs', 'cols', 'rows', 'grid'] as ViewMode[]).map(m => (
                 <button key={m} onClick={() => setView(m)} title={VIEW_LABEL[m]}
-                  className="flex h-7 w-7 items-center justify-center transition-colors first:rounded-l last:rounded-r hover:bg-white/5"
+                  className="flex h-7 w-7 items-center justify-center transition-colors first:rounded-l last:rounded-r hover:bg-hover"
                   style={view === m ? { background: 'color-mix(in srgb, var(--accent) 8%, transparent)', color: ACCENT } : { color: 'var(--text-dim)' }}>
                   <ViewIcon mode={m} />
                 </button>
@@ -600,8 +594,7 @@ export default function TerminalPage() {
 
             <div className="relative">
               <button onClick={() => setLayoutMenu(v => !v)}
-                className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-[13px] transition-colors hover:bg-white/5"
-                style={{ borderColor: 'var(--border-strong)', color: 'var(--text)' }}>
+                className={styles.btn} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 Layouts
                 <svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={2}>
                   <path d="M3 6l5 5 5-5" strokeLinecap="round" strokeLinejoin="round" />
@@ -628,7 +621,7 @@ export default function TerminalPage() {
                           </span>
                         </button>
                         <button onClick={() => deleteLayout(l.name)} title={`Delete "${l.name}"`}
-                          className="mr-2 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded opacity-0 transition-opacity hover:bg-white/10 group-hover:opacity-100"
+                          className="mr-2 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded opacity-0 transition-opacity hover:bg-hover group-hover:opacity-100"
                           style={{ color: 'var(--text-dim)' }}>
                           <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={2}>
                             <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
@@ -639,7 +632,7 @@ export default function TerminalPage() {
                     <button
                       onClick={() => { setLayoutMenu(false); setSavingLayout(true) }}
                       disabled={!sessions.length}
-                      className="w-full border-t px-3 py-2 text-left text-[13px] transition-colors hover:bg-white/5 disabled:opacity-40"
+                      className="w-full border-t px-3 py-2 text-left text-[13px] transition-colors hover:bg-hover disabled:opacity-40"
                       style={{ borderColor: 'var(--border)', color: ACCENT }}>
                       Save current arrangement…
                     </button>
@@ -695,7 +688,7 @@ export default function TerminalPage() {
                     {sess.host.name}
                   </span>
                   <button onClick={e => { e.stopPropagation(); closeSession(sess.key) }} title="Close this pane"
-                    className="ml-auto flex h-4 w-4 items-center justify-center rounded hover:bg-white/10"
+                    className="ml-auto flex h-4 w-4 items-center justify-center rounded hover:bg-hover"
                     style={{ color: 'var(--text-dimmer)' }}>
                     <svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={2}>
                       <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
@@ -719,14 +712,14 @@ export default function TerminalPage() {
           {!sessions.length && (
             <div className="absolute inset-0 flex items-center justify-center">
               <div className="max-w-sm px-6 text-center">
-                <div className="mx-auto mb-5 flex h-12 w-12 items-center justify-center rounded-lg border"
-                  style={{ borderColor: 'var(--border-strong)', color: 'var(--text-faint)' }}>
+                <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-xl border"
+                  style={{ borderColor: alpha(ACCENT, 45), color: ACCENT, background: alpha(ACCENT, 8), boxShadow: `0 0 24px -8px ${ACCENT}` }}>
                   <svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.4}>
                     <rect x="1" y="2.5" width="14" height="11" rx="1.5" />
                     <path d="M4 6.5l2 1.75-2 1.75M8 10.5h4" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
                 </div>
-                <p className="font-display text-[22px] font-semibold" style={{ color: 'var(--text-bright)' }}>
+                <p className="font-display text-[22px] font-bold uppercase" style={{ color: 'var(--text-bright)', letterSpacing: '.06em' }}>
                   Every guest on the cluster is one keystroke away.
                 </p>
                 <p className="mt-2 text-[15px] leading-relaxed" style={{ color: 'var(--text-soft)' }}>
@@ -735,8 +728,7 @@ export default function TerminalPage() {
                 </p>
                 <button
                   onClick={() => setPalette(true)}
-                  className="mt-5 h-10 rounded-md px-6 text-[14px] font-semibold transition-opacity hover:opacity-85"
-                  style={{ background: ACCENT, color: 'var(--accent-ink)' }}>
+                  className={`${styles.btn} ${styles.btnPri} mt-5`}>
                   Open a terminal
                 </button>
                 <p className="mt-3 font-mono text-[11px]" style={{ color: 'var(--text-dimmest)' }}>or press Ctrl / ⌘ K</p>

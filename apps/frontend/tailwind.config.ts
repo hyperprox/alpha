@@ -9,11 +9,16 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // HyperProx brand
-        cyan:  { DEFAULT: '#2fd6e8', 500: '#2fd6e8' },
-        prox:  { DEFAULT: '#2fd6e8' },
-        // Dark backgrounds
-        base:  { DEFAULT: '#0a111c', 900: '#0a111c', 800: '#0d1624', 700: '#0f1b2b' },
+        // Every colour resolves through the theme tokens in globals.css, so a utility class follows the theme
+        // like everything else. The greys are the text ladder, dimmest to brightest.
+        cyan:  { DEFAULT: 'var(--accent)', 500: 'var(--accent)' },
+        prox:  { DEFAULT: 'var(--accent)' },
+        base:  { DEFAULT: 'var(--ground)', 900: 'var(--ground)', 800: 'var(--ground-deep)', 700: 'var(--surface)' },
+        gray:  {
+          300: 'var(--text)', 400: 'var(--text-soft)', 500: 'var(--text-muted)',
+          600: 'var(--text-dim)', 700: 'var(--text-dimmer)', 800: 'var(--text-dimmest)',
+        },
+        hover: 'var(--hover)',
       },
       // The install-wizard look: 6 px on controls, 10 px on cards.
       borderRadius: { DEFAULT: '6px', sm: '4px', md: '6px', lg: '10px', xl: '12px' },

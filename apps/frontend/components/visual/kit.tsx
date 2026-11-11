@@ -12,6 +12,7 @@
 // =============================================================================
 
 import { useEffect, useId, useState, type ReactNode } from 'react'
+import Link from 'next/link'
 import s from './visual.module.css'
 
 export { s as styles }
@@ -159,9 +160,11 @@ export function SemiGauge({ value, max, label, unit, color = 'var(--hx-accent)' 
 export interface StatChip { label: string; value: ReactNode; tone?: Tone }
 
 /** The header every plug-in page opens with: brackets, a scan line, a ring or an icon, the title and its chips. */
-export function HudHeader({ eyebrow, title, icon, ring, chips, actions, label, level = 1 }: {
+export function HudHeader({ eyebrow, title, icon, ring, core, chips, actions, label, level = 1, children }: {
   eyebrow?: ReactNode; title: ReactNode; icon?: string; ring?: { value: number; text: ReactNode; label: string }
-  chips?: StatChip[]; actions?: ReactNode; label?: string
+  /** Concentric rings instead of one: the dashboard's cluster core. */
+  core?: CoreProps
+  chips?: StatChip[]; actions?: ReactNode; label?: string; children?: ReactNode
   /** The heading level: 1 when the HUD heads the page, 2 under a page that already has its own title. */
   level?: 1 | 2
 }) {
@@ -169,7 +172,8 @@ export function HudHeader({ eyebrow, title, icon, ring, chips, actions, label, l
   return (
     <section className={s.hud} aria-label={label ?? 'Overview'}>
       <div className={s.scan} aria-hidden />
-      {ring ? <RingGauge value={ring.value} text={ring.text} label={ring.label} size={150} stroke={6} spin big />
+      {core ? <HudCore {...core} />
+        : ring ? <RingGauge value={ring.value} text={ring.text} label={ring.label} size={150} stroke={6} spin big />
         : <div className={s.hudIcon}><Icon name={icon ?? 'plugin'} size={44} /></div>}
       <div className={s.hudRight}>
         <H className={s.hudTitle}>{eyebrow && <small className={s.hudEyebrow}>{eyebrow}</small>}{title}</H>
@@ -183,19 +187,228 @@ export function HudHeader({ eyebrow, title, icon, ring, chips, actions, label, l
             ))}
           </dl>
         )}
+        {children}
         {actions && <div className={s.hudActions}>{actions}</div>}
       </div>
     </section>
   )
 }
 
-export function Panel({ title, sub, children, wide, label }: { title?: ReactNode; sub?: ReactNode; children: ReactNode; wide?: boolean; label?: string }) {
+export interface CoreProps {
+  /** The outer, thicker ring (0..1) and what it measures. */
+  outer: { value: number; label: string; color?: string }
+  /** The inner ring, if there is a second measure. */
+  inner?: { value: number; label: string; color?: string }
+  text: ReactNode
+  caption: string
+  /** A one-word verdict under the caption, with its tone. */
+  verdict?: { text: string; tone?: 'good' | 'warn' | 'bad' }
+}
+
+/** The HUD's core: a slowly turning dashed halo, an outer ring and an inner ring, and the reading in the middle. */
+export function HudCore({ outer, inner, text, caption, verdict }: CoreProps) {
+  const C1 = 2 * Math.PI * 68, C2 = 2 * Math.PI * 55
+  const oc = outer.color ?? 'var(--hx-accent)', ic = inner?.color ?? 'var(--hx-violet)'
+  const said = [`${outer.label} ${Math.round(clamp01(outer.value) * 100)}%`, inner && `${inner.label} ${Math.round(clamp01(inner.value) * 100)}%`, verdict?.text]
+    .filter(Boolean).join(', ')
   return (
-    <section className={`${s.panel} ${wide ? s.panelWide : ''}`} aria-label={label}>
-      {title && <h2 className={s.panelTitle}>{title}{sub && <small>{sub}</small>}</h2>}
+    <div className={s.core} role="img" aria-label={`${typeof text === 'string' ? text + ' ' : ''}${caption}. ${said}`}>
+      <svg viewBox="0 0 170 170" aria-hidden>
+        <circle cx="85" cy="85" r="80" fill="none" stroke="var(--hx-line)" strokeWidth="1" />
+        <g className={s.coreSpin}><circle cx="85" cy="85" r="80" fill="none" stroke={oc} strokeWidth="1.5" strokeDasharray="4 10" opacity=".6" /></g>
+        <circle cx="85" cy="85" r="68" fill="none" stroke="var(--track)" strokeWidth="7" />
+        <circle cx="85" cy="85" r="68" fill="none" stroke={oc} strokeWidth="7" strokeLinecap="round" transform="rotate(-90 85 85)"
+          strokeDasharray={`${C1 * clamp01(outer.value)} ${C1}`} className={s.arc}
+          style={{ filter: `drop-shadow(0 0 6px color-mix(in srgb, ${oc} var(--glow), transparent))` }} />
+        {inner && <>
+          <circle cx="85" cy="85" r="55" fill="none" stroke="var(--track)" strokeWidth="5" />
+          <circle cx="85" cy="85" r="55" fill="none" stroke={ic} strokeWidth="5" strokeLinecap="round" transform="rotate(-90 85 85)"
+            strokeDasharray={`${C2 * clamp01(inner.value)} ${C2}`} className={s.arc} />
+        </>}
+      </svg>
+      <div className={s.coreMid} aria-hidden>
+        <b>{text}</b><span>{caption}</span>
+        {verdict && <em data-tone={verdict.tone ?? 'good'}>{verdict.text}</em>}
+      </div>
+    </div>
+  )
+}
+
+/** The page wrapper: the kit's spacing and working colours. `remote` turns the page accent amber. */
+export function Page({ children, remote, className }: { children: ReactNode; remote?: boolean; className?: string }) {
+  return <div className={`${s.page} ${remote ? s.remote : ''} ${className ?? ''}`}>{children}</div>
+}
+
+/**
+ * A panel: an uppercase condensed heading, an optional quiet sub-line, and on the right either a "LABEL →" link
+ * to the page that has more, or a few actions.
+ */
+export function Panel({ title, sub, children, wide, label, href, linkLabel, actions, level = 2, className, id }: {
+  title?: ReactNode; sub?: ReactNode; children: ReactNode; wide?: boolean; label?: string
+  href?: string; linkLabel?: string; actions?: ReactNode; level?: 2 | 3; className?: string; id?: string
+}) {
+  const H = level === 2 ? 'h2' : 'h3'
+  return (
+    <section id={id} className={`${s.panel} ${wide ? s.panelWide : ''} ${className ?? ''}`} aria-label={label}>
+      {title && (
+        <H className={s.panelTitle}>
+          {title}{sub && <small>{sub}</small>}
+          {href && <Link href={href} className={s.panelLink}>{linkLabel ?? 'More'} <span aria-hidden>→</span></Link>}
+          {actions && <span className={s.panelActs}>{actions}</span>}
+        </H>
+      )}
       {children}
     </section>
   )
+}
+
+/** The exact rows, folded away under a "Details" heading at the bottom of a visual page. */
+export function Details({ children, summary = 'Details', sub, open }: { children: ReactNode; summary?: ReactNode; sub?: ReactNode; open?: boolean }) {
+  return (
+    <details className={`${s.panel} ${s.details}`} open={open}>
+      <summary>{summary}{sub && <small>{sub}</small>}</summary>
+      <div className={s.detailsBody}>{children}</div>
+    </details>
+  )
+}
+
+/** Small stat tiles: a big number and what it counts. */
+export function Tiles({ items, label }: { items: Array<{ label: string; value: ReactNode; tone?: Tone; title?: string }>; label?: string }) {
+  return (
+    <dl className={s.tiles} aria-label={label}>
+      {items.map(t => (
+        <div key={t.label} className={s.tile} title={t.title}>
+          <dt className={s.srOnly}>{t.label}</dt>
+          <dd style={{ margin: 0 }}><b className={toneClass(t.tone)}>{t.value}</b><span aria-hidden>{t.label}</span></dd>
+        </div>
+      ))}
+    </dl>
+  )
+}
+
+export type PillTone = 'good' | 'warn' | 'bad' | 'accent' | 'violet'
+
+/** A small rounded label. Its words carry the meaning; the tone only repeats it. */
+export function Pill({ children, tone, title }: { children: ReactNode; tone?: PillTone; title?: string }) {
+  return <span className={s.pill} data-tone={tone} title={title}>{children}</span>
+}
+
+// ── node tiles ───────────────────────────────────────────────────────────────
+
+/** Two rings in one: CPU outside in the accent, memory inside in violet. Values are 0..100. */
+export function DualRing({ cpu, mem, size = 92 }: { cpu: number; mem: number; size?: number }) {
+  const a = 2 * Math.PI * 40, b = 2 * Math.PI * 32
+  const c = Math.max(0, Math.min(100, Number(cpu) || 0)), m = Math.max(0, Math.min(100, Number(mem) || 0))
+  return (
+    <div className={s.duo} style={{ width: size, height: size }} role="img" aria-label={`CPU ${Math.round(c)}%, memory ${Math.round(m)}%`}>
+      <svg viewBox="0 0 92 92" style={{ width: size, height: size }} aria-hidden>
+        <circle cx="46" cy="46" r="40" fill="none" stroke="var(--track)" strokeWidth="6" />
+        <circle cx="46" cy="46" r="40" fill="none" stroke="var(--hx-accent)" strokeWidth="6" strokeLinecap="round" className={s.arc}
+          strokeDasharray={`${(a * Math.max(c, 1)) / 100} 999`} style={{ filter: 'drop-shadow(0 0 4px color-mix(in srgb, var(--hx-accent) var(--glow), transparent))' }} />
+        <circle cx="46" cy="46" r="32" fill="none" stroke="var(--track)" strokeWidth="5" />
+        <circle cx="46" cy="46" r="32" fill="none" stroke="var(--hx-violet)" strokeWidth="5" strokeLinecap="round" className={s.arc}
+          strokeDasharray={`${(b * m) / 100} 999`} />
+      </svg>
+      <div aria-hidden><b>{Math.round(c)}%</b><span>CPU</span></div>
+    </div>
+  )
+}
+
+/**
+ * A node as a tile: dual rings, the name, a sub-line and the legend in words. `state` dims an offline node and
+ * reddens a failing one; the words in `sub` say which.
+ */
+export function NodeTile({ name, sub, cpu, mem, state = 'ok', remote, href, children }: {
+  name: string; sub?: ReactNode; cpu: number; mem: number; state?: 'ok' | 'off' | 'bad'; remote?: boolean; href?: string; children?: ReactNode
+}) {
+  const body = (
+    <>
+      {state === 'off'
+        ? <div className={s.duo} aria-hidden><div><b>—</b><span>offline</span></div></div>
+        : <DualRing cpu={cpu} mem={mem} />}
+      <h3>{name}</h3>
+      {sub && <small>{sub}</small>}
+      {state !== 'off' && (
+        <div className={s.leg}>
+          <span><i style={{ background: 'var(--hx-accent)' }} aria-hidden />cpu {Math.round(cpu)}%</span>
+          <span><i style={{ background: 'var(--hx-violet)' }} aria-hidden />mem {Math.round(mem)}%</span>
+        </div>
+      )}
+      {children && <div className={s.nodeExtra}>{children}</div>}
+    </>
+  )
+  return (
+    <li style={{ listStyle: 'none', minWidth: 0 }}>
+      {href
+        ? <Link href={href} className={s.nodeTile} data-state={state} data-remote={remote ? 'true' : undefined}>{body}</Link>
+        : <div className={s.nodeTile} data-state={state} data-remote={remote ? 'true' : undefined}>{body}</div>}
+    </li>
+  )
+}
+
+export function NodeTiles({ children, label }: { children: ReactNode; label: string }) {
+  return <ul className={s.nodes} aria-label={label}>{children}</ul>
+}
+
+// ── guests, feed, plug-in tiles ──────────────────────────────────────────────
+
+/** A row of thin bars: where a number has been. Decorative; the row it sits in says the number. */
+export function Spark({ data, max }: { data: number[]; max?: number }) {
+  const top = Math.max(max ?? 0, ...data, 1)
+  return (
+    <span className={s.spark} aria-hidden>
+      {data.slice(-12).map((v, i) => <i key={i} style={{ height: `${Math.max(2, Math.round((v / top) * 18))}px` }} />)}
+    </span>
+  )
+}
+
+export function GuestRows({ items, label }: { items: Array<{ key: string; kind: string; name: string; meta: ReactNode; spark?: number[]; sparkMax?: number; href?: string }>; label: string }) {
+  return (
+    <ul className={s.guests} aria-label={label}>
+      {items.map(g => (
+        <li key={g.key} className={s.guest}>
+          <i>{g.kind}</i>
+          <div style={{ minWidth: 0 }}>{g.href ? <Link href={g.href} style={{ color: 'inherit', textDecoration: 'none' }}><b>{g.name}</b></Link> : <b>{g.name}</b>}<small>{g.meta}</small></div>
+          {g.spark ? <Spark data={g.spark} max={g.sparkMax} /> : <span />}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+export type FeedTone = 'ok' | 'warn' | 'bad' | 'off'
+const FEED_WORD: Record<FeedTone, string> = { ok: 'fine', warn: 'worth a look', bad: 'problem', off: 'inactive' }
+
+/** "What happened": a dot, a line in bold, the rest, and when and where in small type. */
+export function Feed({ items, label }: { items: Array<{ key: string; title: ReactNode; detail?: ReactNode; meta?: ReactNode; tone?: FeedTone }>; label: string }) {
+  return (
+    <ul className={s.feed} aria-label={label}>
+      {items.map(it => (
+        <li key={it.key} data-tone={it.tone ?? 'ok'}>
+          <span><span className={s.srOnly}>{FEED_WORD[it.tone ?? 'ok']}: </span><b>{it.title}</b>{it.detail && <> {it.detail}</>}{it.meta && <small>{it.meta}</small>}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+const HEALTH_WORD = { good: 'healthy', warn: 'needs a look', bad: 'not working', unknown: 'not checked yet' } as const
+export type Health = keyof typeof HEALTH_WORD
+
+/** A plug-in (or any service) as a small tile with a health dot; the health is in words as well. */
+export function PluginTile({ name, icon, health, sub, href }: { name: string; icon: string; health: Health; sub?: ReactNode; href?: string }) {
+  const body = (
+    <>
+      <div><Icon name={icon} /><span>{name}</span><i className={s.hdot} data-tone={health} aria-hidden title={HEALTH_WORD[health]} /></div>
+      <span className={s.srOnly}>{HEALTH_WORD[health]}</span>
+      {sub && <small>{sub}</small>}
+    </>
+  )
+  return <li style={{ listStyle: 'none', minWidth: 0 }}>{href ? <Link href={href} className={s.ptile}>{body}</Link> : <div className={s.ptile}>{body}</div>}</li>
+}
+
+export function PluginStrip({ children, label }: { children: ReactNode; label: string }) {
+  return <ul className={s.pstrip} aria-label={label}>{children}</ul>
 }
 
 export function Cols({ children }: { children: ReactNode }) {
@@ -205,14 +418,21 @@ export function Cols({ children }: { children: ReactNode }) {
 // ── bars ─────────────────────────────────────────────────────────────────────
 
 /** Horizontal glowing bars. Each row says its value in text; the bar is the picture of it. */
-export function GlowBars({ items, warm, label }: { items: Array<{ key?: string; label: string; value: number; text: string }>; warm?: boolean; label: string }) {
-  const max = Math.max(...items.map(i => i.value), 1)
+export function GlowBars({ items, warm, label, max: fixedMax, hiAt }: {
+  items: Array<{ key?: string; label: string; value: number; text: string; title?: string }>; warm?: boolean; label: string
+  /** A fixed full scale (100 for percentages); without it the longest bar is full. */
+  max?: number
+  /** At or above this value a bar turns amber-to-red (its text says the number either way). */
+  hiAt?: number
+}) {
+  const max = fixedMax ?? Math.max(...items.map(i => i.value), 1)
   return (
     <ul className={`${s.bars} ${warm ? s.barWarm : ''}`} aria-label={label}>
       {items.map((it, i) => (
         <li key={it.key ?? `${it.label}-${i}`} className={s.bar}>
-          <span title={it.label}>{it.label}</span>
-          <span className={s.barTrack} aria-hidden><i className={s.barFill} style={{ width: `${(it.value / max) * 100}%`, animationDelay: `${i * 60}ms` }} /></span>
+          <span title={it.title ?? it.label}>{it.label}</span>
+          <span className={s.barTrack} aria-hidden><i className={s.barFill} data-hi={hiAt !== undefined && it.value >= hiAt ? 'true' : undefined}
+            style={{ width: `${Math.max(0, Math.min(100, (it.value / max) * 100))}%`, animationDelay: `${i * 60}ms` }} /></span>
           <em>{it.text}</em>
         </li>
       ))}

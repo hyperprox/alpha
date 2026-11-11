@@ -11,6 +11,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { apiJson } from '@/lib/api'
+import { alpha } from '@/lib/theme'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { GhostButton, INPUT, LABEL, Notice, PrimaryButton } from '@/components/vault/ui'
 
@@ -269,24 +270,30 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
       style={{ background: 'var(--scrim)', backdropFilter: 'blur(4px)' }}>
       <div role="dialog" aria-modal="true" aria-label={`Install ${recipe.name}`}
         className="flex w-full max-w-4xl flex-col sm:rounded-xl border overflow-hidden"
-        style={{ background: 'var(--surface-raised)', borderColor: 'var(--border-soft)', maxHeight: '100dvh' }}>
+        style={{ background: 'var(--surface-raised)', borderColor: 'var(--border-strong)', maxHeight: '100dvh', boxShadow: 'var(--shadow)' }}>
 
-        {/* Header and step strip */}
-        <div className="flex items-start justify-between gap-3 border-b px-4 sm:px-6 py-4" style={{ borderColor: 'var(--border-soft)' }}>
+        {/* Header and step strip: corner brackets and a glowing current step, like the HUD headers */}
+        <div className="flex items-start justify-between gap-3 border-b px-4 sm:px-6 py-4"
+          style={{ borderColor: 'var(--border-soft)', background: 'linear-gradient(135deg, var(--surface), var(--surface-hi))' }}>
           <div className="min-w-0">
             <p className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: 'var(--accent)' }}>
               Install · step {step + 1} of {STEPS.length}
             </p>
-            <h2 className="font-display text-[26px] font-bold leading-tight truncate" style={{ color: 'var(--text-bright)' }}>{recipe.name}</h2>
+            <h2 className="font-display text-[26px] font-bold uppercase leading-tight truncate" style={{ color: 'var(--text-bright)', letterSpacing: '.04em' }}>{recipe.name}</h2>
           </div>
-          <button onClick={onClose} aria-label="Close" className="text-lg px-2" style={{ color: 'var(--text-dimmer)' }}>✕</button>
+          <button onClick={onClose} aria-label="Close" className="text-lg px-2" style={{ color: 'var(--text-muted)' }}>✕</button>
         </div>
         <ol className="flex gap-1 overflow-x-auto px-4 sm:px-6 pt-3" aria-label="Steps">
           {STEPS.map((s, i) => (
-            <li key={s} className="flex-1 min-w-[64px]">
-              <div className="h-1 rounded-full" style={{ background: i <= step ? 'var(--accent)' : 'var(--border-strong)' }} />
-              <span className="mt-1 block font-mono text-[10px] uppercase tracking-[0.08em] truncate"
-                style={{ color: i === step ? 'var(--text-bright)' : 'var(--text-dim)' }}>{s}</span>
+            <li key={s} className="flex-1 min-w-[64px]" aria-current={i === step ? 'step' : undefined}>
+              <div className="h-1 rounded-full" style={{ background: i <= step ? 'var(--accent)' : 'var(--border-strong)',
+                boxShadow: i === step ? `0 0 10px ${alpha('var(--accent)', 60)}` : undefined }} />
+              <span className="mt-1 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em]"
+                style={{ color: i === step ? 'var(--text-bright)' : 'var(--text-dim)' }}>
+                <span aria-hidden style={{ color: i < step ? 'var(--good)' : i === step ? 'var(--accent)' : 'var(--text-dimmer)' }}>{i < step ? '✓' : i + 1}</span>
+                <span className="truncate">{s}</span>
+                <span className="sr-only">{i < step ? ' (done)' : i === step ? ' (current)' : ''}</span>
+              </span>
             </li>
           ))}
         </ol>

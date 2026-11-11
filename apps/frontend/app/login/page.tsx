@@ -6,6 +6,8 @@ import QRCode from 'qrcode'
 import { apiJson, type AuthStatus } from '@/lib/api'
 import { alpha } from '@/lib/theme'
 import { BusyNote, GhostButton, INPUT, LABEL, Notice, PrimaryButton, passwordStrength } from '@/components/vault/ui'
+import { ThemeToggle } from '@/components/layout/ThemeToggle'
+import s from './login.module.css'
 
 /**
  * Where to go after signing in — a path on this origin, or `/`.
@@ -51,30 +53,42 @@ function authError(r: { status: number; code?: string; error?: string }, fallbac
   return r.error ?? fallback
 }
 
+/** The vault core: a turning dashed halo, a ring, and the lock at the centre. Decorative. */
+function VaultCore() {
+  return (
+    <div className={s.core} aria-hidden>
+      <svg viewBox="0 0 96 96">
+        <circle cx="48" cy="48" r="45" fill="none" stroke="var(--border)" strokeWidth="1" />
+        <g className={s.spin}><circle cx="48" cy="48" r="45" fill="none" stroke="currentColor" strokeWidth="1.5" strokeDasharray="4 10" opacity=".7" /></g>
+        <circle cx="48" cy="48" r="36" fill="none" stroke="var(--track)" strokeWidth="5" />
+        <circle cx="48" cy="48" r="36" fill="none" stroke="currentColor" strokeWidth="5" strokeLinecap="round" strokeDasharray="170 400"
+          transform="rotate(-90 48 48)" style={{ filter: 'drop-shadow(0 0 6px var(--accent-glow))' }} />
+      </svg>
+      <div className={s.lock}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="5" y="11" width="14" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /><path d="M12 15v2" />
+        </svg>
+      </div>
+    </div>
+  )
+}
+
 function Card({ eyebrow, subtitle, children, onSubmit }: {
   eyebrow: string; subtitle: string; children: React.ReactNode; onSubmit: (e: React.FormEvent) => void
 }) {
   return (
-    <form
-      onSubmit={onSubmit}
-      className="w-full max-w-sm space-y-5 rounded-lg border p-6 sm:p-8"
-      style={{
-        background: 'var(--surface)',
-        borderColor: 'var(--border-soft)',
-        boxShadow: '0 24px 60px color-mix(in srgb, var(--ground-deep) 80%, transparent)',
-      }}
-    >
-      <div className="space-y-2 text-center">
-        <div className="font-mono uppercase" style={{ fontSize: 11, letterSpacing: '0.14em', color: 'var(--warn-2)' }}>{eyebrow}</div>
-        <h1 className="font-display" style={{ fontSize: 36, fontWeight: 700, letterSpacing: '0.12em', color: 'var(--text-bright)', lineHeight: 1.1 }}>
-          HYPER<span style={{ color: 'var(--accent)' }}>PROX</span>
-        </h1>
-        <p className="font-display" style={{ fontSize: 20, fontWeight: 600, color: 'var(--text-bright)' }}>{subtitle}</p>
-        <p className="text-sm" style={{ color: 'var(--text-soft)' }}>
+    <form onSubmit={onSubmit} className={s.card} aria-label={subtitle}>
+      <div className={s.scan} aria-hidden />
+      <div className={s.head}>
+        <VaultCore />
+        <div className={s.eyebrow}>{eyebrow}</div>
+        <h1 className={s.logo}>HYPER<span>PROX</span></h1>
+        <p className={s.sub}>{subtitle}</p>
+        <p className={s.lead}>
           Your vault master password unlocks HyperProx. It is never stored.
         </p>
       </div>
-      {children}
+      <div className={s.body}>{children}</div>
     </form>
   )
 }
@@ -263,7 +277,7 @@ function LoginForm() {
   }, [next])
 
   return (
-    <div className="w-full max-w-sm space-y-4">
+    <div className={s.stack}>
       {params.get('locked') && (
         <Notice kind="warn">{lockedNotice(params.get('reason'))}</Notice>
       )}
@@ -274,14 +288,16 @@ function LoginForm() {
       {status && (status.bootstrapped || prefill !== null
         ? <SignIn next={next} initialEmail={prefill ?? ''} notice={prefill !== null ? 'Your owner account is created. Sign in with your next 2FA code to finish.' : undefined} />
         : <Bootstrap next={next} onSignInRequired={setPrefill} />)}
-      {!status && !failed && <div className="text-center text-sm animate-pulse" style={{ color: 'var(--text-dimmer)' }}>Checking the vault...</div>}
+      {!status && !failed && <div className={`${s.waiting} animate-pulse`} role="status">Checking the vault...</div>}
     </div>
   )
 }
 
 export default function LoginPage() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-[var(--ground)] px-4 py-8">
+    <div className={s.stage}>
+      {/* The sign-in page has no top bar, so the theme switch sits here. */}
+      <div className={s.theme}><ThemeToggle /></div>
       {/* useSearchParams() forces client rendering; without this boundary the
           production build fails to prerender this route. */}
       <Suspense fallback={null}>

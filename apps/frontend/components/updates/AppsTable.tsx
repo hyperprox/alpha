@@ -1,5 +1,6 @@
 'use client'
 
+import { styles } from '@/components/visual/kit'
 import { Fragment, useState } from 'react'
 import type { UpdatesApp, UpdatesGuest } from '@hyperprox/types'
 import { Badge, Chevron, Notice, TH, THEAD_STYLE } from './ui'
@@ -48,8 +49,8 @@ export function AppsTable({ guests, approvals, onApprove, disabled }: {
   const has = (id: string) => approvals.includes(id)
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
+    <div className={styles.tableWrap}>
+      <table className={styles.table}>
         <thead>
           <tr style={THEAD_STYLE}>
             <th scope="col" className={TH}>GUEST</th>

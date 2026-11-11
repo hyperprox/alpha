@@ -8,7 +8,7 @@ type Filter = 'all' | 'problems' | CertsInventoryEntry['source']
 
 /** Share of the lifetime still left: green above a third, amber to a tenth, red below. */
 function barColour(e: CertsInventoryEntry): string {
-  if (e.daysLeft === null) return 'var(--text-dimmer)'
+  if (e.daysLeft === null) return 'var(--text-dim)'
   if (e.daysLeft <= 7) return 'var(--crit-2)'
   const f = e.lifetimeDays ? e.daysLeft / e.lifetimeDays : 1
   return f > 0.33 ? 'var(--good)' : f > 0.1 ? 'var(--warn)' : 'var(--crit-2)'
@@ -19,7 +19,7 @@ function DaysBar({ e }: { e: CertsInventoryEntry }) {
   return (
     <div className="min-w-[96px]">
       <div className="font-mono text-xs" style={{ color: 'var(--text-bright)' }}>{fmtDays(e.daysLeft)}</div>
-      <div className="mt-1 h-1.5 w-24 overflow-hidden rounded-full" style={{ background: 'var(--ground-inset)' }}
+      <div className="mt-1 h-1.5 w-24 overflow-hidden rounded-full" style={{ background: 'var(--ground-deep)' }}
            title={e.lifetimeDays ? `${fmtDays(e.daysLeft)} of ${e.lifetimeDays} days left, expires ${fmtDate(e.notAfter)}` : `expires ${fmtDate(e.notAfter)}`}>
         <div className="h-full rounded-full" style={{ width: `${f * 100}%`, background: barColour(e) }} />
       </div>
@@ -50,7 +50,7 @@ export function Inventory({ entries }: { entries: CertsInventoryEntry[] }) {
 
   return (
     <div>
-      <div role="group" aria-label="Filter certificates" className="flex flex-wrap gap-2 px-5 py-3">
+      <div role="group" aria-label="Filter certificates" className="flex flex-wrap gap-2 pb-3">
         {chips.map(c => (
           <button key={c.v} type="button" aria-pressed={filter === c.v} onClick={() => setFilter(c.v)}
                   className="rounded-md border px-2.5 py-1 font-mono text-xs transition-colors"

@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { formatBytes } from '@/lib/utils'
 import { alpha } from '@/lib/theme'
+import { Page, Panel, HudHeader, Details, Tiles, Pill, GlowBars, styles, type StatChip } from '@/components/visual/kit'
 
 // ---------------------------------------------------------------------------
 //  Types
@@ -61,25 +62,9 @@ interface Overview {
   warnings:    string[]
 }
 
-interface VMDisk { key: string; storage: string; size: number; sizeStr: string }
-interface VMStorageItem {
-  vmid: number; name: string; type: 'qemu'|'lxc'; node: string; status: string
-  disks: VMDisk[]; totalAllocated: number; diskUsed: number
-}
-
 // ---------------------------------------------------------------------------
 //  Helpers
 // ---------------------------------------------------------------------------
-
-const TYPE_COLORS: Record<string, string> = {
-  rbd:     'var(--violet)',
-  cephfs:  'var(--accent)',
-  pbs:     'var(--warn)',
-  lvmthin: 'var(--good)',
-  dir:     'var(--text-muted)',
-  btrfs:   'var(--accent-2)',
-  zfspool: 'var(--violet-2)',
-}
 
 const TYPE_LABELS: Record<string, string> = {
   rbd:     'CEPH RBD',
@@ -95,148 +80,99 @@ function pct(used: number, total: number) {
   return total > 0 ? Math.round((used / total) * 100) : 0
 }
 
-function UsageBar({ used, total, color }: { used: number; total: number; color: string }) {
-  const p = pct(used, total)
-  const c = p > 90 ? 'var(--crit-2)' : p > 80 ? 'var(--warn-2)' : color
-  return (
-    <div>
-      <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--text-faint)' }}>
-        <div className="h-full rounded-full transition-all duration-700" style={{ width: `${p}%`, background: c }}/>
-      </div>
-      <div className="flex justify-between text-xs font-mono mt-0.5">
-        <span style={{ color: c }}>{p}%</span>
-        <span style={{ color: 'var(--text-dimmer)' }}>{formatBytes(used)} / {formatBytes(total)}</span>
-      </div>
-    </div>
-  )
-}
+const fmtPct = (p: number) => `${p}%`
 
 // ---------------------------------------------------------------------------
-//  Storage card
+//  Volumes: one glow bar each, the exact numbers in Details
 // ---------------------------------------------------------------------------
 
-function StorageCard({ s }: { s: StorageItem }) {
-  const color   = TYPE_COLORS[s.plugintype] ?? 'var(--text-muted)'
-  const label   = TYPE_LABELS[s.plugintype] ?? s.plugintype
-  const usedPct = pct(s.used, s.total)
-  const isWarn  = usedPct > 85
-  const isCrit  = usedPct > 90
-
-  const contents = s.content?.split(',') ?? []
-
+function Volumes({ storage }: { storage: StorageItem[] }) {
+  const rows = [...storage].sort((a, b) => pct(b.used, b.total) - pct(a.used, a.total)).map(s => {
+    const p = pct(s.used, s.total)
+    return { key: s.storage, label: s.storage, value: p, text: fmtPct(p), title: `${s.storage}: ${formatBytes(s.used)} of ${formatBytes(s.total)}` }
+  })
   return (
-    <div className="rounded-lg border p-5" style={{
-      background:  'var(--surface)',
-      borderColor: isCrit ? 'color-mix(in srgb, var(--crit-2) 19%, transparent)' : isWarn ? 'color-mix(in srgb, var(--warn-2) 19%, transparent)' : `${alpha(color, 15)}`,
-      boxShadow:   isCrit ? '0 0 12px color-mix(in srgb, var(--crit-2) 3%, transparent)' : isWarn ? '0 0 12px color-mix(in srgb, var(--warn-2) 3%, transparent)' : 'none',
-    }}>
-      {/* Header */}
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full" style={{
-            background: (s.active === 1 || s.status === 'available') ? 'var(--good)' : 'var(--crit-2)',
-            boxShadow:  (s.active === 1 || s.status === 'available') ? '0 0 5px var(--good)' : '0 0 5px var(--crit-2)',
-          }}/>
-          <span className="font-display text-lg font-semibold" style={{ color: 'var(--text-bright)' }}>{s.storage}</span>
-          {isWarn && <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background: 'color-mix(in srgb, var(--crit-2) 8%, transparent)', color: 'var(--crit-2)', border: '1px solid color-mix(in srgb, var(--crit-2) 19%, transparent)', fontSize: 9 }}>
-            {isCrit ? 'CRITICAL' : 'WARNING'}
-          </span>}
+    <>
+      <Panel title="Volumes" sub={`${storage.length} storages · used`}>
+        {rows.length ? <GlowBars label="Storage used" items={rows} max={100} hiAt={80} /> : <p className={styles.empty}>No storage reported yet.</p>}
+      </Panel>
+      <Details summary="Volume details" sub="exact sizes, kind and content types">
+        <div className={styles.tableWrap}>
+          <table className={styles.table}>
+            <thead><tr><th>Storage</th><th>Kind</th><th>State</th><th>Used</th><th>Free</th><th>Total</th><th>Use</th><th>Content</th></tr></thead>
+            <tbody>
+              {storage.map(s => {
+                const p = pct(s.used, s.total)
+                const up = s.active === 1 || s.status === 'available'
+                return (
+                  <tr key={s.storage}>
+                    <td style={{ color: 'var(--text-bright)', fontWeight: 600 }}>{s.storage}{s.shared === 1 && <> <Pill tone="accent">shared</Pill></>}{(s.nodeCount ?? 0) > 1 && !s.shared && <> <Pill>{s.nodeCount} nodes</Pill></>}</td>
+                    <td>{TYPE_LABELS[s.plugintype] ?? s.plugintype}</td>
+                    <td><Pill tone={up ? 'good' : 'bad'}>{up ? 'active' : 'inactive'}</Pill></td>
+                    <td>{formatBytes(s.used)}</td><td>{formatBytes(s.avail)}</td><td>{formatBytes(s.total)}</td>
+                    <td><Pill tone={p > 90 ? 'bad' : p > 85 ? 'warn' : undefined}>{p}%{p > 90 ? ' critical' : p > 85 ? ' warning' : ''}</Pill></td>
+                    <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{(s.content?.split(',') ?? []).map(c => c.trim()).join(' · ')}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
         </div>
-        <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{
-          background: `${alpha(color, 8)}`, color, border: `1px solid ${alpha(color, 19)}`, fontSize: 9,
-        }}>{label}</span>
-      </div>
-
-      {/* Usage bar */}
-      <UsageBar used={s.used} total={s.total} color={color}/>
-
-      {/* Stats */}
-      <div className="grid grid-cols-3 gap-2 mt-3">
-        {[
-          { label: 'USED',  value: formatBytes(s.used)   },
-          { label: 'FREE',  value: formatBytes(s.avail)  },
-          { label: 'TOTAL', value: formatBytes(s.total)},
-        ].map(({ label, value }) => (
-          <div key={label} className="text-center">
-            <div className="text-xs" style={{ color: 'var(--text-dimmer)' }}>{label}</div>
-            <div className="text-sm font-mono" style={{ color: 'var(--text-bright)' }}>{value}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* Content types */}
-      <div className="flex flex-wrap gap-1 mt-3 pt-2 border-t" style={{ borderColor: 'var(--border-dim)' }}>
-        {contents.map(c => (
-          <span key={c} className="text-xs font-mono px-1.5 py-0.5 rounded" style={{
-            background: 'color-mix(in srgb, var(--text-bright) 3%, transparent)', color: 'var(--text-dim)', border: '1px solid var(--text-faint)', fontSize: 9,
-          }}>{c.trim()}</span>
-        ))}
-        {(s.nodeCount ?? 0) > 1 && !s.shared && (
-          <span key="nodes" className="text-xs font-mono px-1.5 py-0.5 rounded" style={{
-            background: 'color-mix(in srgb, var(--text-bright) 3%, transparent)', color: 'var(--text-dimmer)', border: '1px solid var(--text-faint)', fontSize: 9,
-          }}>{s.nodeCount} nodes</span>
-        )}
-        {s.shared === 1 && (
-          <span className="text-xs font-mono px-1.5 py-0.5 rounded ml-auto" style={{
-            background: 'color-mix(in srgb, var(--accent) 3%, transparent)', color: 'color-mix(in srgb, var(--accent) 38%, transparent)', border: '1px solid color-mix(in srgb, var(--accent) 13%, transparent)', fontSize: 9,
-          }}>SHARED</span>
-        )}
-      </div>
-    </div>
+      </Details>
+    </>
   )
 }
 
 // ---------------------------------------------------------------------------
-//  CEPH pools table
+//  Ceph pools: glow bars, the exact table in Details
 // ---------------------------------------------------------------------------
 
-function CephPoolsTable({ pools }: { pools: CephPool[] | null }) {
-  const visible = (pools ?? []).filter(p => !p.pool_name.startsWith('.'))
-
+function CephPools({ pools, ceph }: { pools: CephPool[]; ceph: CephStatus | null }) {
+  const visible = pools.filter(p => !p.pool_name.startsWith('.'))
   return (
-    <div className="rounded-lg border overflow-hidden" style={{ borderColor: 'var(--border)' }}>
-      <div className="hp-table-scroll overflow-x-auto"><table className="w-full text-xs font-mono">
-        <thead>
-          <tr style={{ background: 'var(--ground-deep)', borderBottom: '1px solid var(--border)' }}>
-            {['Pool', 'Type', 'Size', 'PGs', 'Used', 'Usage', 'Crush Rule'].map(h => (
-              <th key={h} className="px-4 py-2.5 text-left uppercase font-medium" style={{ color: 'var(--text-dimmer)', letterSpacing: '0.1em' }}>{h}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {visible.map((pool, i) => {
-            const p   = Math.round(pool.percent_used * 100)
-            const col = p > 85 ? 'var(--crit-2)' : p > 70 ? 'var(--warn-2)' : 'var(--accent)'
-            return (
-              <tr key={pool.pool} style={{ borderBottom: '1px solid var(--surface-raised)', background: i % 2 === 0 ? 'var(--ground)' : 'var(--surface-raised)' }}>
-                <td className="px-4 py-2.5 font-semibold" style={{ color: 'var(--text-bright)' }}>{pool.pool_name}</td>
-                <td className="px-4 py-2.5 text-gray-400">{pool.type}</td>
-                <td className="px-4 py-2.5">
-                  <span style={{ color: 'var(--text-bright)' }}>{pool.size}</span>
-                  <span style={{ color: 'var(--text-dimmer)' }}>/{pool.min_size} min</span>
-                </td>
-                <td className="px-4 py-2.5 text-gray-400">{pool.pg_num}</td>
-                <td className="px-4 py-2.5" style={{ color: col }}>{formatBytes(pool.bytes_used)}</td>
-                <td className="px-4 py-2.5" style={{ minWidth: 120 }}>
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--text-faint)' }}>
-                      <div className="h-full rounded-full" style={{ width: `${p}%`, background: col }}/>
-                    </div>
-                    <span style={{ color: col, minWidth: 32 }}>{p}%</span>
-                  </div>
-                </td>
-                <td className="px-4 py-2.5 text-gray-600">{pool.crush_rule_name}</td>
-              </tr>
-            )
-          })}
-        </tbody>
-      </table></div>
-    </div>
+    <>
+      {ceph && (
+        <Tiles label="Ceph" items={[
+          { label: 'Health', value: ceph.health.status, tone: ceph.health.status === 'HEALTH_OK' ? 'good' : 'warn' },
+          { label: 'OSDs up', value: `${ceph.osdmap.num_up_osds}/${ceph.osdmap.num_osds}`, tone: ceph.osdmap.num_up_osds === ceph.osdmap.num_osds ? 'good' : 'crit' },
+          { label: 'PGs', value: String(ceph.pgmap?.num_pgs ?? '—') },
+        ]} />
+      )}
+      <Panel title="Pools" sub={`${visible.length} · used`}>
+        {visible.length ? (
+          <GlowBars label="Pool usage" max={100} hiAt={70}
+            items={visible.map(p => { const v = Math.round(p.percent_used * 100); return { key: p.pool, label: p.pool_name, value: v, text: `${v}% · ${formatBytes(p.bytes_used)}`, title: `${p.pool_name}: size ${p.size}/${p.min_size} min` } })} />
+        ) : <p className={styles.empty}>No pools reported.</p>}
+      </Panel>
+      <Details summary="Pool details" sub="size, placement groups and rule">
+        <div className={styles.tableWrap}>
+          <table className={styles.table}>
+            <thead><tr><th>Pool</th><th>Type</th><th>Size</th><th>PGs</th><th>Used</th><th>Usage</th><th>Crush rule</th></tr></thead>
+            <tbody>
+              {visible.map(pool => {
+                const p = Math.round(pool.percent_used * 100)
+                return (
+                  <tr key={pool.pool}>
+                    <td style={{ color: 'var(--text-bright)', fontWeight: 600 }}>{pool.pool_name}</td>
+                    <td>{pool.type}</td>
+                    <td>{pool.size}<span style={{ color: 'var(--text-muted)' }}>/{pool.min_size} min</span></td>
+                    <td>{pool.pg_num}</td>
+                    <td>{formatBytes(pool.bytes_used)}</td>
+                    <td><Pill tone={p > 85 ? 'bad' : p > 70 ? 'warn' : undefined}>{p}%{p > 85 ? ' critical' : p > 70 ? ' high' : ''}</Pill></td>
+                    <td>{pool.crush_rule_name}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </Details>
+    </>
   )
 }
 
 // ---------------------------------------------------------------------------
-//  OSD map
+//  OSD map: a tile per OSD, state in words, grouped by host
 // ---------------------------------------------------------------------------
 
 function OSDMap({ osds }: { osds: CephOSD[] | null }) {
@@ -245,80 +181,45 @@ function OSDMap({ osds }: { osds: CephOSD[] | null }) {
     acc[o.host].push(o)
     return acc
   }, {} as Record<string, CephOSD[]>)
+  const entries = Object.entries(byHost).sort(([a], [b]) => a.localeCompare(b))
+  if (!entries.length) return <Panel title="OSDs"><p className={styles.empty}>No OSDs reported.</p></Panel>
 
   return (
-    <div className="space-y-4">
-      {Object.entries(byHost).sort(([a], [b]) => a.localeCompare(b)).map(([host, hostOsds]) => (
-        <div key={host}>
-          <div className="text-xs font-mono mb-2 uppercase" style={{ color: 'var(--text-dimmer)', letterSpacing: '0.14em' }}>{host}</div>
-          <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))' }}>
+    <>
+      {entries.map(([host, hostOsds]) => (
+        <Panel key={host} title={host} sub={`${hostOsds.length} OSD${hostOsds.length === 1 ? '' : 's'}`}>
+          <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 170px), 1fr))' }}>
             {hostOsds.map(osd => {
-              const p   = Math.round(osd.percent_used)
-              const col = osd.status !== 'up' ? 'var(--crit-2)' : p > 85 ? 'var(--crit-2)' : p > 70 ? 'var(--warn-2)' : 'var(--good)'
+              const p = Math.round(osd.percent_used)
+              const down = osd.status !== 'up'
+              const col = down || p > 85 ? 'var(--crit)' : p > 70 ? 'var(--warn)' : 'var(--good)'
+              const word = down ? 'down' : p > 85 ? 'nearly full' : p > 70 ? 'filling' : 'healthy'
               return (
-                <div key={osd.id} className="p-3 rounded-lg border" style={{
-                  background:  `${alpha(col, 3)}`,
-                  borderColor: `${alpha(col, 19)}`,
-                }}>
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2">
-                      <div className="w-1.5 h-1.5 rounded-full" style={{ background: col, boxShadow: `0 0 4px ${col}` }}/>
-                      <span className="text-xs font-mono font-semibold" style={{ color: col }}>{osd.name}</span>
-                    </div>
-                    <span className="font-mono text-gray-600" style={{ fontSize: 9 }}>{osd.device_class}</span>
+                <li key={osd.id} style={{ padding: 12, borderRadius: 10, border: `1px solid ${alpha(col, 30)}`, background: alpha(col, 6), minWidth: 0 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 600, color: 'var(--text-bright)' }}>
+                      <i aria-hidden style={{ width: 8, height: 8, borderRadius: '50%', background: col, boxShadow: `0 0 6px ${col}` }} />{osd.name}
+                    </span>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)' }}>{osd.device_class}</span>
                   </div>
-                  <div className="h-1.5 rounded-full overflow-hidden mb-1" style={{ background: 'var(--text-faint)' }}>
-                    <div className="h-full rounded-full" style={{ width: `${p}%`, background: col }}/>
+                  <div style={{ height: 6, borderRadius: 3, overflow: 'hidden', background: 'var(--track)', marginBottom: 6 }} aria-hidden>
+                    <div style={{ height: '100%', width: `${Math.max(0, Math.min(100, p))}%`, background: col, borderRadius: 3 }} />
                   </div>
-                  <div className="flex justify-between text-xs font-mono">
-                    <span style={{ color: col }}>{p}%</span>
-                    <span className="text-gray-600">{formatBytes(osd.bytes_used)}</span>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
+                    <span style={{ color: col }}>{p}% · {word}</span>
+                    <span style={{ color: 'var(--text-muted)' }}>{formatBytes(osd.bytes_used)}</span>
                   </div>
-                  <div className="grid grid-cols-2 gap-1 mt-2 text-xs font-mono">
-                    <div>
-                      <span className="text-gray-700">LAT </span>
-                      <span style={{ color: osd.apply_latency_ms > 20 ? 'var(--warn-2)' : 'var(--text-dim)' }}>
-                        {osd.apply_latency_ms}ms
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-gray-700">PGS </span>
-                      <span className="text-gray-500">{osd.pgs}</span>
-                    </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)' }}>
+                    <span>lat <span style={{ color: osd.apply_latency_ms > 20 ? 'var(--warn)' : 'var(--text-soft)' }}>{osd.apply_latency_ms}ms{osd.apply_latency_ms > 20 ? ' slow' : ''}</span></span>
+                    <span>pgs <span style={{ color: 'var(--text-soft)' }}>{osd.pgs}</span></span>
                   </div>
-                </div>
+                </li>
               )
             })}
-          </div>
-        </div>
+          </ul>
+        </Panel>
       ))}
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-//  Summary bar
-// ---------------------------------------------------------------------------
-
-function SummaryBar({ storage }: { storage: StorageItem[] }) {
-  const totalRaw  = storage.reduce((s, x) => s + (x.total ?? 0), 0)
-  const usedRaw   = storage.reduce((s, x) => s + (x.used ?? 0), 0)
-  const overallPct = pct(usedRaw, totalRaw)
-
-  return (
-    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-      {[
-        { label: 'Total Capacity', value: formatBytes(totalRaw),        color: 'var(--text-muted)' },
-        { label: 'Used',           value: formatBytes(usedRaw),          color: 'var(--accent)' },
-        { label: 'Available',      value: formatBytes(totalRaw - usedRaw), color: 'var(--good)' },
-        { label: 'Overall',        value: `${overallPct}%`,              color: overallPct > 80 ? 'var(--crit-2)' : 'var(--warn)' },
-      ].map(({ label, value, color }) => (
-        <div key={label} className="rounded-lg border p-5" style={{ background: 'var(--surface)', borderColor: `${alpha(color, 15)}` }}>
-          <div className="font-display text-2xl font-bold" style={{ color }}>{value}</div>
-          <div className="text-sm mt-0.5" style={{ color: 'var(--text-dimmer)' }}>{label}</div>
-        </div>
-      ))}
-    </div>
+    </>
   )
 }
 
@@ -357,250 +258,89 @@ export default function StoragePage() {
   }, [tab])
 
   if (loading) return (
-    <div className="min-h-full flex items-center justify-center" style={{ background: 'var(--ground)' }}>
-      <div className="text-sm animate-pulse" style={{ color: 'var(--text-dimmer)' }}>loading storage...</div>
-    </div>
+    <Page><p className={styles.empty} role="status">Loading storage…</p></Page>
   )
 
   if (error || !overview) return (
-    <div className="min-h-full flex items-center justify-center" style={{ background: 'var(--ground)' }}>
-      <div className="text-sm" style={{ color: 'var(--crit)' }}>{error ?? 'No data'}</div>
-    </div>
+    <Page><div className={styles.callout} role="alert" style={{ color: 'var(--crit)' }}>{error ?? 'No data'}</div></Page>
   )
 
+  const totalRaw = overview.storage.reduce((s, x) => s + (x.total ?? 0), 0)
+  const usedRaw  = overview.storage.reduce((s, x) => s + (x.used ?? 0), 0)
+  const overallPct = pct(usedRaw, totalRaw)
+  const cephOk = overview.ceph?.health.status === 'HEALTH_OK'
+  const chips: StatChip[] = [
+    { label: 'capacity', value: formatBytes(totalRaw) },
+    { label: 'used', value: formatBytes(usedRaw), tone: 'accent' },
+    { label: 'available', value: formatBytes(totalRaw - usedRaw), tone: 'good' },
+    ...(overview.ceph ? [{ label: 'Ceph', value: overview.ceph.health.status.replace('HEALTH_', ''), tone: cephOk ? 'good' as const : 'warn' as const }] : []),
+  ]
+  const title = overallPct > 90 ? 'Storage is nearly full' : overallPct > 80 ? 'Storage is filling up' : 'Storage has room'
+  const poolCount = (overview.pools ?? []).filter(p => !p.pool_name.startsWith('.')).length
+  const tabs = [
+    { key: 'volumes',    label: `Volumes (${overview.storage.length})` },
+    { key: 'ceph-pools', label: `Ceph pools (${poolCount})` },
+    { key: 'osds',       label: `OSDs (${overview.osds?.length ?? 0})` },
+    { key: 'vms',        label: 'VM disks' },
+  ] as const
+
   return (
-    <div className="min-h-full p-4 sm:p-8" style={{ background: 'var(--ground)' }}>
+    <Page>
+      <HudHeader level={2} label="Storage status" eyebrow="Ceph and volumes" title={title} chips={chips}
+        ring={{ value: overallPct / 100, text: `${overallPct}%`, label: 'used' }}>
+        {lastSync && <p style={{ margin: 0, color: 'var(--text-soft)', fontSize: 14 }}>synced {lastSync.toLocaleTimeString()}</p>}
+      </HudHeader>
 
-      {/* Header */}
-      <div className="flex items-end justify-between flex-wrap gap-4 mb-8">
-        <div>
-          <div className="font-mono uppercase" style={{ fontSize: 12, letterSpacing: '0.14em', color: 'var(--accent)' }}>Ceph and volumes</div>
-          <h1 className="font-display font-bold mt-2" style={{ fontSize: 36, lineHeight: 1.1, color: 'var(--text-bright)' }}>Storage</h1>
-        </div>
-        {lastSync && <span className="text-sm" style={{ color: 'var(--text-dimmer)' }}>synced {lastSync.toLocaleTimeString()}</span>}
-      </div>
-
-      {/* Warnings */}
-      {(overview.warnings?.length??0) > 0 && (
-        <div className="mb-5 space-y-1">
-          {(overview.warnings??[]).map((w, i) => (
-            <div key={i} className="flex items-center gap-2 px-3 py-2 rounded text-sm" style={{
-              background: 'color-mix(in srgb, var(--crit-2) 6%, transparent)', color: 'var(--crit-soft)', border: '1px solid color-mix(in srgb, var(--crit-2) 19%, transparent)',
-            }}>
-              <span>⚠</span><span>{w}</span>
+      {(overview.warnings?.length ?? 0) > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {(overview.warnings ?? []).map((w, i) => (
+            <div key={i} className={styles.callout} role="alert" style={{ borderStyle: 'solid', borderColor: alpha('var(--crit)', 40), color: 'var(--crit)' }}>
+              <span aria-hidden>⚠ </span><span>Warning: {w}</span>
             </div>
           ))}
         </div>
       )}
 
-      {/* Summary bar */}
-      <SummaryBar storage={overview.storage}/>
-
-      {/* Tabs */}
-      <div className="flex gap-1 mb-5 border-b" style={{ borderColor: 'var(--border-dim)' }}>
-        {([
-          { key: 'volumes',    label: `Volumes (${overview.storage.length})` },
-          { key: 'ceph-pools', label: `CEPH Pools (${(overview.pools??[]).filter(p => !p.pool_name.startsWith('.')).length})` },
-          { key: 'osds',       label: `OSDs (${(overview.osds?.length??0)})` },
-          { key: 'vms',        label: 'VM Disks' },
-        ] as const).map(({ key, label }) => (
-          <button key={key} onClick={() => setTab(key)}
-            className="px-5 py-3 text-sm font-medium transition-colors"
-            style={{
-              borderBottom: tab === key ? '2px solid var(--violet-2)' : '2px solid transparent',
-              color:        tab === key ? 'var(--violet-2)' : 'var(--text-dim)',
-              background:   'transparent',
-            }}>{label}</button>
+      <div className={styles.row} role="group" aria-label="Storage view">
+        {tabs.map(({ key, label }) => (
+          <button key={key} onClick={() => setTab(key)} aria-pressed={tab === key} className={`${styles.btn} ${tab === key ? styles.btnPri : ''}`}>{label}</button>
         ))}
       </div>
 
-      {/* VOLUMES */}
-      {tab === 'volumes' && (
-        <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
-          {(overview.storage??[]).map(s => <StorageCard key={s.storage} s={s}/>)}
-        </div>
-      )}
+      {tab === 'volumes' && <Volumes storage={overview.storage ?? []} />}
+      {tab === 'ceph-pools' && <CephPools pools={overview.pools ?? []} ceph={overview.ceph} />}
+      {tab === 'osds' && <OSDMap osds={overview.osds ?? []} />}
 
-      {/* CEPH POOLS */}
-      {tab === 'ceph-pools' && (
-        <div className="space-y-4">
-          {overview.ceph && (
-            <div className="grid grid-cols-3 gap-3 mb-4">
-              {[
-                { label: 'Health',  value: overview.ceph.health.status, color: overview.ceph.health.status === 'HEALTH_OK' ? 'var(--good)' : 'var(--warn-2)' },
-                { label: 'OSDs',    value: `${overview.ceph.osdmap.num_up_osds}/${overview.ceph.osdmap.num_osds} up`, color: 'var(--good)' },
-                { label: 'PGs',     value: String(overview.ceph.pgmap?.num_pgs ?? '—'), color: 'var(--text-muted)' },
-              ].map(({ label, value, color }) => (
-                <div key={label} className="p-3 rounded-lg border text-center" style={{ background: 'var(--surface)', borderColor: `${alpha(color, 15)}` }}>
-                  <div className="font-mono text-sm font-bold" style={{ color }}>{value}</div>
-                  <div className="text-xs mt-0.5" style={{ color: 'var(--text-dimmer)' }}>{label}</div>
-                </div>
-              ))}
-            </div>
-          )}
-          <CephPoolsTable pools={overview.pools ?? []}/>
-        </div>
-      )}
-
-      {/* OSDs */}
-      {tab === 'osds' && <OSDMap osds={overview.osds ?? []}/>}
-
-      {/* VM Disks */}
       {tab === 'vms' && (
-        vmLoading ? (
-          <div className="text-sm animate-pulse py-8 text-center" style={{ color: 'var(--text-dimmer)' }}>Loading...</div>
-        ) : (
-          <div className="rounded-lg border overflow-hidden" style={{borderColor:'var(--border)'}}>
-            <div className="flex items-center justify-between px-4 py-2 border-b text-sm" style={{background:'var(--ground-deep)',borderColor:'var(--border)',color:'var(--text-dimmer)'}}>
-              <span>{vmBreakdown.length} VMs &amp; Containers</span>
-              <span style={{color:'var(--violet-2)'}}>Total allocated: {formatBytes(vmBreakdown.reduce((s:number,v:any)=>s+(v.totalAllocated??0),0))}</span>
-            </div>
-            <div className="hp-table-scroll overflow-x-auto"><table className="w-full text-xs font-mono">
-              <thead>
-                <tr style={{background:'var(--ground-deep)',borderBottom:'1px solid var(--border)'}}>
-                  {['ID','Name','Type','Node','Status','Storage','Allocated','Used'].map(h=>(
-                    <th key={h} className="px-4 py-2.5 text-left uppercase font-medium" style={{ color: 'var(--text-dimmer)', letterSpacing: '0.1em' }}>{h}</th>
+        vmLoading ? <p className={styles.empty} role="status">Loading…</p> : (
+          <Panel title="VM disks" sub={`${vmBreakdown.length} VMs & containers · total allocated ${formatBytes(vmBreakdown.reduce((s: number, v: any) => s + (v.totalAllocated ?? 0), 0))}`}>
+            <div className={styles.tableWrap}>
+              <table className={styles.table}>
+                <thead><tr>{['ID', 'Name', 'Type', 'Node', 'Status', 'Storage', 'Allocated', 'Used'].map(h => <th key={h}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {vmBreakdown.map((vm: any) => (
+                    <tr key={`${vm.node}-${vm.vmid}`}>
+                      <td>{vm.vmid}</td>
+                      <td style={{ color: 'var(--text-bright)', fontWeight: 600 }}>{vm.name}</td>
+                      <td><Pill tone={vm.type === 'lxc' ? 'accent' : 'violet'}>{vm.type.toUpperCase()}</Pill></td>
+                      <td>{vm.node}</td>
+                      <td><Pill tone={vm.status === 'running' ? 'good' : undefined}>{vm.status === 'running' ? '●' : '■'} {vm.status}</Pill></td>
+                      <td>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                          {(vm.disks ?? []).map((d: any, di: number) => <Pill key={di} tone="violet">{d.storage} {d.sizeStr}</Pill>)}
+                          {(!vm.disks || vm.disks.length === 0) && <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                        </div>
+                      </td>
+                      <td style={{ color: (vm.totalAllocated ?? 0) > 100 * 1024 * 1024 * 1024 ? 'var(--warn)' : 'var(--text-bright)' }}>{formatBytes(vm.totalAllocated ?? 0)}</td>
+                      <td>{vm.diskUsed > 0 ? formatBytes(vm.diskUsed) : '—'}</td>
+                    </tr>
                   ))}
-                </tr>
-              </thead>
-              <tbody>
-                {vmBreakdown.map((vm:any,i:number)=>(
-                  <tr key={`${vm.node}-${vm.vmid}`} style={{borderBottom:'1px solid var(--surface-raised)',background:i%2===0?'var(--ground)':'var(--surface-raised)'}}
-                    onMouseEnter={e=>(e.currentTarget as HTMLElement).style.background='var(--surface)'}
-                    onMouseLeave={e=>(e.currentTarget as HTMLElement).style.background=i%2===0?'var(--ground)':'var(--surface-raised)'}>
-                    <td className="px-4 py-2.5 text-gray-500">{vm.vmid}</td>
-                    <td className="px-4 py-2.5 font-semibold" style={{ color: 'var(--text-bright)' }}>{vm.name}</td>
-                    <td className="px-4 py-2.5"><span style={{color:vm.type==='lxc'?'var(--accent)':'var(--violet)'}}>{vm.type.toUpperCase()}</span></td>
-                    <td className="px-4 py-2.5 text-gray-400">{vm.node}</td>
-                    <td className="px-4 py-2.5"><span style={{color:vm.status==='running'?'var(--good)':'var(--text-dimmer)'}}>{vm.status==='running'?'●':'■'} {vm.status}</span></td>
-                    <td className="px-4 py-2.5">
-                      <div className="flex flex-wrap gap-1">
-                        {((vm.disks)??[]).map((d:any,di:number)=>(
-                          <span key={di} className="px-1.5 py-0.5 rounded" style={{fontSize:9,background:'color-mix(in srgb, var(--violet) 8%, transparent)',color:'var(--violet)',border:'1px solid color-mix(in srgb, var(--violet) 19%, transparent)'}}>
-                            {d.storage} <span style={{color:'var(--text-dim)'}}>{d.sizeStr}</span>
-                          </span>
-                        ))}
-                        {(!vm.disks||vm.disks.length===0)&&<span className="text-gray-700">—</span>}
-                      </div>
-                    </td>
-                    <td className="px-4 py-2.5"><span style={{color:(vm.totalAllocated??0)>100*1024*1024*1024?'var(--warn-2)':'var(--text-bright)'}}>{formatBytes(vm.totalAllocated??0)}</span></td>
-                    <td className="px-4 py-2.5 text-gray-400">{vm.diskUsed>0?formatBytes(vm.diskUsed):'—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table></div>
-          </div>
+                </tbody>
+              </table>
+            </div>
+          </Panel>
         )
       )}
-
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-//  VM Storage Breakdown component
-// ---------------------------------------------------------------------------
-
-function VMStorageBreakdown({ items, storageColors }: {
-  items: VMStorageItem[]
-  storageColors: Record<string, string>
-}) {
-  const [sortBy,      setSortBy]      = useState<'size'|'name'|'node'>('size')
-  const [filterNode,  setFilterNode]  = useState('all')
-  const [filterStore, setFilterStore] = useState('all')
-  const [search,      setSearch]      = useState('')
-
-  const nodes    = [...new Set(items.map(v => v.node))].sort()
-  const storages = [...new Set(items.flatMap(v => v.disks.map(d => d.storage)))].sort()
-
-  const filtered = items
-    .filter(v => filterNode  === 'all' || v.node === filterNode)
-    .filter(v => filterStore === 'all' || v.disks.some(d => d.storage === filterStore))
-    .filter(v => !search || v.name.toLowerCase().includes(search.toLowerCase()) || String(v.vmid).includes(search))
-    .sort((a, b) => {
-      if (sortBy === 'size') return b.totalAllocated - a.totalAllocated
-      if (sortBy === 'name') return a.name.localeCompare(b.name)
-      return a.node.localeCompare(b.node)
-    })
-
-  const totalAllocated = filtered.reduce((s, v) => s + v.totalAllocated, 0)
-
-  const SEL = { background:'var(--ground-deep)', border:'1px solid var(--border-strong)', color:'var(--text-bright)', borderRadius:6, padding:'0 12px', height:40, fontFamily:'inherit', fontSize:14, outline:'none' } as React.CSSProperties
-
-  return (
-    <div>
-      <div className="flex items-center gap-3 mb-4 flex-wrap">
-        <select style={SEL} value={filterNode} onChange={e=>setFilterNode(e.target.value)}>
-          <option value="all">All nodes</option>
-          {nodes.map(n=><option key={n} value={n}>{n}</option>)}
-        </select>
-        <select style={SEL} value={filterStore} onChange={e=>setFilterStore(e.target.value)}>
-          <option value="all">All storage</option>
-          {storages.map(s=><option key={s} value={s}>{s}</option>)}
-        </select>
-        <select style={SEL} value={sortBy} onChange={e=>setSortBy(e.target.value as any)}>
-          <option value="size">Sort: Size</option>
-          <option value="name">Sort: Name</option>
-          <option value="node">Sort: Node</option>
-        </select>
-        <input type="text" placeholder="Search..." value={search} onChange={e=>setSearch(e.target.value)}
-          style={{...SEL, width:160, caretColor:'var(--violet-2)'}}/>
-        <div className="ml-auto flex items-center gap-3 text-xs font-mono">
-          <span style={{ color: 'var(--text-dimmer)' }}>{filtered.length} VMs/CTs</span>
-          <span style={{color:'var(--violet-2)'}}>Total allocated: {formatBytes(totalAllocated)}</span>
-        </div>
-      </div>
-
-      <div className="rounded-lg border overflow-hidden" style={{borderColor:'var(--border)'}}>
-        <div className="hp-table-scroll overflow-x-auto"><table className="w-full text-xs font-mono">
-          <thead>
-            <tr style={{background:'var(--ground-deep)',borderBottom:'1px solid var(--border)'}}>
-              {['ID','Name','Type','Node','Status','Storage Pools','Allocated'].map(h=>(
-                <th key={h} className="px-4 py-2.5 text-left uppercase font-medium" style={{ color: 'var(--text-dimmer)', letterSpacing: '0.1em' }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((vm,i)=>(
-              <tr key={`${vm.node}-${vm.vmid}`}
-                style={{borderBottom:'1px solid var(--surface-raised)',background:i%2===0?'var(--ground)':'var(--surface-raised)'}}
-                onMouseEnter={e=>(e.currentTarget as HTMLElement).style.background='var(--surface)'}
-                onMouseLeave={e=>(e.currentTarget as HTMLElement).style.background=i%2===0?'var(--ground)':'var(--surface-raised)'}
-              >
-                <td className="px-4 py-2.5 text-gray-500">{vm.vmid}</td>
-                <td className="px-4 py-2.5 font-semibold" style={{ color: 'var(--text-bright)' }}>{vm.name}</td>
-                <td className="px-4 py-2.5"><span style={{color:vm.type==='lxc'?'var(--accent)':'var(--violet)'}}>{vm.type.toUpperCase()}</span></td>
-                <td className="px-4 py-2.5 text-gray-400">{vm.node}</td>
-                <td className="px-4 py-2.5">
-                  <span style={{color:vm.status==='running'?'var(--good)':'var(--text-dimmer)'}}>
-                    {vm.status==='running'?'●':'■'} {vm.status}
-                  </span>
-                </td>
-                <td className="px-4 py-2.5">
-                  <div className="flex flex-wrap gap-1">
-                    {vm.disks.map(d=>{
-                      const color = storageColors[d.storage]??'var(--text-muted)'
-                      return (
-                        <span key={d.key} title={`${d.key}: ${d.storage} ${d.sizeStr}`}
-                          className="px-1.5 py-0.5 rounded"
-                          style={{fontSize:9,background:`${alpha(color, 8)}`,color,border:`1px solid ${alpha(color, 19)}`}}>
-                          {d.storage} <span style={{color:'var(--text-dim)'}}>{d.sizeStr}</span>
-                        </span>
-                      )
-                    })}
-                    {vm.disks.length===0&&<span className="text-gray-700">—</span>}
-                  </div>
-                </td>
-                <td className="px-4 py-2.5">
-                  <span style={{color:vm.totalAllocated>100*1024*1024*1024?'var(--warn-2)':'var(--text-bright)'}}>
-                    {formatBytes(vm.totalAllocated)}
-                  </span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table></div>
-      </div>
-    </div>
+    </Page>
   )
 }

@@ -2,44 +2,13 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --cyan:       #2fd6e8;
-  --violet:     #7c3aed;
-  --base-900:   #0a111c;
-  --base-800:   #0d1624;
-  --base-700:   #0f1b2b;
-  --base-600:   #1f2937;
-}
 
-body {
-  background-color: var(--base-900);
-}
 
 /* Scrollbar */
 ::-webkit-scrollbar       { width: 4px; height: 4px; }
-::-webkit-scrollbar-track { background: var(--base-800); }
-::-webkit-scrollbar-thumb { background: var(--base-600); border-radius: 2px; }
-::-webkit-scrollbar-thumb:hover { background: var(--cyan); }
-
-/* ---------------------------------------------------------------------------
-   Mobile shell
-
-   The bar has to grow by the safe-area inset rather than pad inside a fixed
-   height — padding a fixed box squashes its contents into the remaining space,
-   which on a notched phone means the menu button climbs under the camera.
-   The main region's offset is derived from the same expression so the two
-   cannot drift apart.
---------------------------------------------------------------------------- */
-@media (max-width: 767px) {
-  .hp-mobile-bar {
-    height: calc(56px + env(safe-area-inset-top, 0px));
-    padding-top: env(safe-area-inset-top, 0px);
-  }
-  .hp-mobile-offset { padding-top: calc(56px + env(safe-area-inset-top, 0px)); }
-
-  /* A drawer sitting over the page should not let the page behind it scroll. */
-  .hp-drawer { padding-bottom: env(safe-area-inset-bottom, 0px); }
-}
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent); }
 
 /* Horizontal scrollers get momentum on touch, and keep their scrollbar out of
    the way on desktop. */
@@ -48,61 +17,62 @@ body {
 /* ---------------------------------------------------------------------------
    Theme tokens
 
-   Every colour in the app resolves through these. The dark values are exactly
-   what was hardcoded before, so dark mode is unchanged by construction rather
-   than by inspection.
+   Every colour in the app resolves through these. Dark is the home look: navy,
+   teal and glow. Light is a designed "daylight console", not an inversion: a
+   pale blue-grey ground, white panels, a deeper teal, and soft shadows where
+   dark has glows.
 
    Three states, not two. An explicit choice stamps data-theme on <html>; the
    default setting stamps nothing, and then only prefers-color-scheme separates
    them. The dark block is therefore written twice — once as the base, once
    under an explicit stamp — so a toggle wins in both directions.
 
-   Alpha is composed with color-mix() rather than by appending hex digits. The
-   old code wrote `#00e5ff15` and `${accent}25`, which cannot survive becoming
-   a variable: `var(--accent)15` is not a colour.
+   Alpha is composed with color-mix() rather than by appending hex digits:
+   `var(--accent)15` is not a colour.
 --------------------------------------------------------------------------- */
 
 :root,
 :root[data-theme="dark"] {
   color-scheme: dark;
 
-  --font-display:   'Barlow Condensed', sans-serif;
+  --font-display:   'Barlow Condensed', 'Arial Narrow', sans-serif;
   --font-body:      'Barlow', system-ui, sans-serif;
   --font-mono:      'IBM Plex Mono', ui-monospace, monospace;
 
   --ground:         #0a111c;  /* page */
-  --ground-deep:    #0d1624;  /* sidebar, deepest insets */
-  --ground-inset:   #0b1320;  /* a panel within a card */
-  --surface:        #0f1b2b;  /* card */
+  --ground-deep:    #0d1624;  /* rail, deepest insets, tiles inside a panel */
+  --ground-inset:   #0b1422;  /* a panel within a card */
+  --surface:        #101b2a;  /* panel */
   --surface-raised: #0d1624;  /* header bars */
+  --surface-hi:     #14233a;  /* the lit end of a HUD gradient */
   --surface-notice: #102033;  /* notice strips */
 
-  --border:         #1a2636;
-  --border-dim:     #16202e;
-  --border-strong:  #2b3b50;
+  --border:         #1e3048;
+  --border-dim:     #172538;
+  --border-strong:  #2a4566;
   --border-soft:    #22344a;
 
   /* Dimmest to brightest. The names say how loud, not what colour. */
   --text-faint:     #243044;
-  --text-dimmest:   #33445a;
-  --text-dimmer:    #4a5a6e;
-  --text-dim:       #5b6b80;
-  --text-muted:     #6b7c92;
-  --text-soft:      #9fb0c4;
-  --text:           #c9d4e2;
-  --text-bright:    #f1f5fa;
+  --text-dimmest:   #3a4c61;
+  --text-dimmer:    #56697c;
+  --text-dim:       #6b7f93;
+  --text-muted:     #7f93a6;
+  --text-soft:      #b9c8d6;
+  --text:           #d3dee9;
+  --text-bright:    #e6eef5;
 
   --accent:         #2fd6e8;
   --accent-2:       #5fe3f0;
-  --accent-ink:     #04121a;  /* text on a solid accent fill */
-  --good:           #4ade80;
+  --accent-ink:     #03242b;  /* text on a solid accent fill */
+  --good:           #5fd6a0;
   --good-soft:      #bff5d0;
-  --warn:           #f5a524;
-  --warn-2:         #f6c86a;
-  --crit:           #f05252;
-  --crit-2:         #ff6b6b;
+  --warn:           #f0b64a;
+  --warn-2:         #ffc76b;
+  --crit:           #ff6b7a;
+  --crit-2:         #ff8591;
   --crit-soft:      #fca5a5;
-  --violet:         #a78bfa;
+  --violet:         #9d8cff;
   --violet-2:       #818cf8;
 
   --scrim:          rgba(3, 6, 12, 0.72);
@@ -112,6 +82,23 @@ body {
   --glow:           55%;
   --tint:           14%;
   --track:          var(--border);
+
+  /* The frame: a panel's lift (a glow on navy, a shadow on white), the faint grid on the ground, the accent's
+     halo and wash, and the hover fill for a quiet button. */
+  --shadow:         0 0 22px -8px rgba(47, 214, 232, 0.35);
+  --grid:           rgba(47, 214, 232, 0.035);
+  --accent-glow:    rgba(47, 214, 232, 0.35);
+  --accent-wash:    rgba(47, 214, 232, 0.08);
+  --hover:          rgba(255, 255, 255, 0.05);
+
+  /* The visual kit's working names, so a kit piece works anywhere, not only inside its page wrapper. */
+  --hx-accent: var(--accent);
+  --hx-warm: var(--warn-2);
+  --hx-violet: var(--violet);
+  --hx-panel: var(--surface);
+  --hx-deep: var(--ground-deep);
+  --hx-line: var(--border);
+  --hx-line-hi: var(--border-strong);
 }
 
 /* The un-stamped default follows the operating system. */
@@ -119,47 +106,54 @@ body {
   :root:not([data-theme="dark"]) {
     color-scheme: light;
 
-    --ground:         #f4f7fb;
-    --ground-deep:    #eaeff7;
-    --ground-inset:   #f0f4fa;
+    --ground:         #eaf0f5;
+    --ground-deep:    #f4f8fb;
+    --ground-inset:   #f0f5f9;
     --surface:        #ffffff;
     --surface-raised: #ffffff;
-    --surface-notice: #eef4fd;
+    --surface-hi:     #f7fbfd;
+    --surface-notice: #eef6fa;
 
-    --border:         #dbe3ee;
-    --border-dim:     #e7edf5;
-    --border-strong:  #c3d0e0;
-    --border-soft:    #cdd9e6;
+    --border:         #d3dee8;
+    --border-dim:     #e2eaf1;
+    --border-strong:  #b4c6d6;
+    --border-soft:    #c9d7e3;
 
-    --text-faint:     #b6c2d1;
-    --text-dimmest:   #a6b3c4;
-    --text-dimmer:    #8996a8;
-    --text-dim:       #6b7a8d;
-    --text-muted:     #566375;
-    --text-soft:      #41506380;
-    --text:           #26313f;
-    --text-bright:    #0f1722;
+    --text-faint:     #bccad7;
+    --text-dimmest:   #a3b3c2;
+    --text-dimmer:    #8497a8;
+    --text-dim:       #687d91;
+    --text-muted:     #5a7186;
+    --text-soft:      #2b4157;
+    --text:           #1b2e42;
+    --text-bright:    #0b1a2a;
 
-    /* The brand cyan is unreadable on white — 1.4:1 against #fff. Same hue,
-       taken down to something that passes on a light ground. */
-    --accent:         #0b7285;
-    --accent-2:       #0e8ea0;
+    /* The brand cyan is unreadable on white — 1.4:1 against #fff. Same hue, a deeper teal that still passes
+       as text on the pale ground. */
+    --accent:         #087c8b;
+    --accent-2:       #0a8fa0;
     --accent-ink:     #ffffff;
-    --good:           #15803d;
-    --good-soft:      #166534;
-    --warn:           #b45309;
-    --warn-2:         #a16207;
-    --crit:           #dc2626;
-    --crit-2:         #b91c1c;
-    --crit-soft:      #991b1b;
-    --violet:         #6d28d9;
+    --good:           #117a51;
+    --good-soft:      #0f5e3f;
+    --warn:           #9a6200;
+    --warn-2:         #b06f00;
+    --crit:           #c8283b;
+    --crit-2:         #b01f31;
+    --crit-soft:      #8f1a28;
+    --violet:         #5b45d6;
     --violet-2:       #4f46e5;
 
-    --scrim:          rgba(15, 23, 42, 0.38);
+    --scrim:          rgba(11, 26, 42, 0.38);
 
     --glow:           22%;
     --tint:           9%;
-    --track:          var(--border-strong);
+    --track:          #dfe8f0;
+
+    --shadow:         0 1px 2px rgba(11, 26, 42, 0.06), 0 8px 24px -12px rgba(11, 26, 42, 0.18);
+    --grid:           rgba(11, 26, 42, 0.045);
+    --accent-glow:    rgba(10, 143, 160, 0.28);
+    --accent-wash:    rgba(10, 143, 160, 0.07);
+    --hover:          rgba(11, 26, 42, 0.05);
   }
 }
 
@@ -167,50 +161,73 @@ body {
 :root[data-theme="light"] {
   color-scheme: light;
 
-  --ground:         #f4f7fb;
-  --ground-deep:    #eaeff7;
-  --ground-inset:   #f0f4fa;
+  --ground:         #eaf0f5;
+  --ground-deep:    #f4f8fb;
+  --ground-inset:   #f0f5f9;
   --surface:        #ffffff;
   --surface-raised: #ffffff;
-  --surface-notice: #eef4fd;
+  --surface-hi:     #f7fbfd;
+  --surface-notice: #eef6fa;
 
-  --border:         #dbe3ee;
-  --border-dim:     #e7edf5;
-  --border-strong:  #c3d0e0;
-  --border-soft:    #cdd9e6;
+  --border:         #d3dee8;
+  --border-dim:     #e2eaf1;
+  --border-strong:  #b4c6d6;
+  --border-soft:    #c9d7e3;
 
-  --text-faint:     #b6c2d1;
-  --text-dimmest:   #a6b3c4;
-  --text-dimmer:    #8996a8;
-  --text-dim:       #6b7a8d;
-  --text-muted:     #566375;
-  --text-soft:      #415063;
-  --text:           #26313f;
-  --text-bright:    #0f1722;
+  --text-faint:     #bccad7;
+  --text-dimmest:   #a3b3c2;
+  --text-dimmer:    #8497a8;
+  --text-dim:       #687d91;
+  --text-muted:     #5a7186;
+  --text-soft:      #2b4157;
+  --text:           #1b2e42;
+  --text-bright:    #0b1a2a;
 
-  --accent:         #0b7285;
-  --accent-2:       #0e8ea0;
+  /* The brand cyan is unreadable on white — 1.4:1 against #fff. Same hue, a deeper teal that still passes
+     as text on the pale ground. */
+  --accent:         #087c8b;
+  --accent-2:       #0a8fa0;
   --accent-ink:     #ffffff;
-  --good:           #15803d;
-  --good-soft:      #166534;
-  --warn:           #b45309;
-  --warn-2:         #a16207;
-  --crit:           #dc2626;
-  --crit-2:         #b91c1c;
-  --crit-soft:      #991b1b;
-  --violet:         #6d28d9;
+  --good:           #117a51;
+  --good-soft:      #0f5e3f;
+  --warn:           #9a6200;
+  --warn-2:         #b06f00;
+  --crit:           #c8283b;
+  --crit-2:         #b01f31;
+  --crit-soft:      #8f1a28;
+  --violet:         #5b45d6;
   --violet-2:       #4f46e5;
 
-  --scrim:          rgba(15, 23, 42, 0.38);
+  --scrim:          rgba(11, 26, 42, 0.38);
 
   --glow:           22%;
   --tint:           9%;
-  --track:          var(--border-strong);
+  --track:          #dfe8f0;
+
+  --shadow:         0 1px 2px rgba(11, 26, 42, 0.06), 0 8px 24px -12px rgba(11, 26, 42, 0.18);
+  --grid:           rgba(11, 26, 42, 0.045);
+  --accent-glow:    rgba(10, 143, 160, 0.28);
+  --accent-wash:    rgba(10, 143, 160, 0.07);
+  --hover:          rgba(11, 26, 42, 0.05);
 }
 
 /* The body ground has to be painted, not inherited: a transparent body shows
    whatever the browser chrome is using and the theme half-applies. */
 html, body { background: var(--ground); font-family: var(--font-body, 'Barlow', system-ui, sans-serif); }
+body {
+  background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+/* One focus ring for everything a keyboard can reach, visible on navy and on white. */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; scroll-behavior: auto !important; }
+}
 
 /* ---------------------------------------------------------------------------
    Command center: a remote cluster is amber everywhere (the home cluster keeps
@@ -222,11 +239,11 @@ html, body { background: var(--ground); font-family: var(--font-body, 'Barlow', 
 }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
-    --remote:     #9a5b00;
+    --remote:     #9a6200;
     --remote-ink: #ffffff;
   }
 }
 :root[data-theme="light"] {
-  --remote:     #9a5b00;
+  --remote:     #9a6200;
   --remote-ink: #ffffff;
 }

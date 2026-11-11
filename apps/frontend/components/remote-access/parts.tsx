@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { RemoteCell, RemoteFirewallPreview, RemoteHostKey, RemoteJob, RemoteMachineRow, RemoteManualKey, RemoteProviderId } from '@hyperprox/types'
-import { Badge, Btn, ConfirmDialog, Notice, Panel, StepIcon, TH, THEAD_STYLE, fmtTime } from '@/components/updates/ui'
+import { Badge, Btn, ConfirmDialog, Notice, StepIcon, TH, THEAD_STYLE, fmtTime } from '@/components/updates/ui'
+import { Panel } from './panel'
 
 // Pieces of the Remote access page. Built from the Updates primitives so the page looks like the rest of
 // HyperProx.
@@ -177,7 +178,7 @@ export function JobPanel({ job, onClose }: { job: RemoteJob; onClose: () => void
         {job.status !== 'running' && <Btn small onClick={onClose}>Close</Btn>}
       </div>
     }>
-      <div className="space-y-3 px-5 py-4">
+      <div className="space-y-3">
         {job.error && <Notice tone="crit">{job.error}</Notice>}
         <ol className="divide-y rounded-md border" style={{ borderColor: 'var(--border)' }}>
           {job.steps.map(s => (
@@ -193,7 +194,7 @@ export function JobPanel({ job, onClose }: { job: RemoteJob; onClose: () => void
         <pre ref={el} tabIndex={0} aria-label="Live log"
              onScroll={e => { const t = e.currentTarget; pinned.current = t.scrollHeight - t.scrollTop - t.clientHeight < 24 }}
              className="h-56 overflow-auto rounded-md border px-3 py-2 font-mono text-xs"
-             style={{ background: 'var(--ground-inset)', borderColor: 'var(--border)', color: 'var(--text)' }}>
+             style={{ background: 'var(--ground-deep)', borderColor: 'var(--border)', color: 'var(--text)' }}>
           {job.log || 'Waiting for output…'}
         </pre>
       </div>
@@ -343,7 +344,7 @@ export function ManualKeyDialog({ row, provider, result, error, onRequest, onClo
       {result ? (
         <div className="space-y-2">
           <Notice tone="warn">Shown once. It is single use and short-lived; HyperProx keeps no copy.</Notice>
-          <code className="block break-all rounded-md border px-3 py-2 font-mono text-xs" style={{ background: 'var(--ground-inset)', borderColor: 'var(--border)', color: 'var(--text-bright)' }}>
+          <code className="block break-all rounded-md border px-3 py-2 font-mono text-xs" style={{ background: 'var(--ground-deep)', borderColor: 'var(--border)', color: 'var(--text-bright)' }}>
             {result.secret}
           </code>
           <p className="text-xs" style={{ color: 'var(--text-dim)' }}>{result.note}</p>
@@ -371,7 +372,7 @@ export function FirewallDialog({ row, provider, preview, error, onCancel, onConf
       {!preview && !error && <p className="text-sm" style={{ color: 'var(--text-dim)' }}>Reading the firewall…</p>}
       {preview && (
         <>
-          <code className="block rounded-md border px-3 py-2 font-mono text-xs" style={{ background: 'var(--ground-inset)', borderColor: 'var(--border)', color: 'var(--text-bright)' }}>
+          <code className="block rounded-md border px-3 py-2 font-mono text-xs" style={{ background: 'var(--ground-deep)', borderColor: 'var(--border)', color: 'var(--text-bright)' }}>
             IN ACCEPT -i {preview.rule.iface} -source {preview.rule.source} -p {preview.rule.proto} -dport {preview.rule.dport}
           </code>
           <Notice tone={preview.clusterEnabled && !preview.exists ? 'info' : 'warn'}>{preview.message}</Notice>
@@ -400,7 +401,7 @@ export function HostKeyDialog({ row, info, error, onCancel, onConfirm }: {
       {info && (
         <>
           <div className="text-sm" style={{ color: 'var(--text-muted)' }}>{info.host}:{info.port}</div>
-          <code className="block break-all rounded-md border px-3 py-2 font-mono text-xs" style={{ background: 'var(--ground-inset)', borderColor: 'var(--border)', color: 'var(--text-bright)' }}>
+          <code className="block break-all rounded-md border px-3 py-2 font-mono text-xs" style={{ background: 'var(--ground-deep)', borderColor: 'var(--border)', color: 'var(--text-bright)' }}>
             {info.fingerprint}
           </code>
           {info.pinned && info.pinned !== info.fingerprint && (

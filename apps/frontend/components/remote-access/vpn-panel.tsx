@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react'
 import type { RemoteCell, RemoteMachineRow, RemoteOverview, RemoteProviderId, VpnInstallPreview, VpnPrefs, VpnSettingsPreview } from '@hyperprox/types'
 import { apiJson, type ApiResult } from '@/lib/api'
-import { Badge, Btn, ConfirmDialog, Notice, Panel, fmtTime } from '@/components/updates/ui'
+import { Badge, Btn, ConfirmDialog, Notice, fmtTime } from '@/components/updates/ui'
+import { Panel } from './panel'
 import { PROVIDER_LABEL } from './parts'
 
 // The VPN page's per-machine pieces: one-click install, the machine panel (settings read back from the
@@ -174,7 +175,7 @@ export function PendingDevices({ ov, send, onDone }: { ov: RemoteOverview; send:
     <Panel title="Waiting for approval">
       <ul className="divide-y" style={{ borderColor: 'var(--border-dim)' }}>
         {ov.pendingDevices.map(d => (
-          <li key={`${d.provider}:${d.id}`} className="flex flex-wrap items-center gap-3 px-5 py-2 text-sm">
+          <li key={`${d.provider}:${d.id}`} className="flex flex-wrap items-center gap-3 py-2 text-sm">
             <span className="font-semibold" style={{ color: 'var(--text-bright)' }}>{d.name}</span>
             <Badge tone="muted">{PROVIDER_LABEL[d.provider]}</Badge>
             <span style={{ color: 'var(--text-soft)' }}>{[d.os, d.user && `added by ${d.user}`, d.createdAt && fmtTime(d.createdAt)].filter(Boolean).join(' · ')}</span>

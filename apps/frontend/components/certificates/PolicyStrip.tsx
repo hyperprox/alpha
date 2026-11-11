@@ -1,7 +1,8 @@
 'use client'
 
 import type { CertsPolicyStatus } from '@hyperprox/types'
-import { Badge, Btn, Icon, Notice, StagingBadge, fmtDateTime } from './ui'
+import { Badge, Icon, Notice, StagingBadge, fmtDateTime } from './ui'
+import { styles } from '@/components/visual/kit'
 
 export function PolicyStrip({ policy, error, checkedAt, refreshing, onCheck }: {
   policy: CertsPolicyStatus | null
@@ -12,7 +13,7 @@ export function PolicyStrip({ policy, error, checkedAt, refreshing, onCheck }: {
 }) {
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-3 rounded-[10px] border px-5 py-3" style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
         <div className="flex flex-wrap items-center gap-2">
           {policy ? (
             <>
@@ -28,14 +29,14 @@ export function PolicyStrip({ policy, error, checkedAt, refreshing, onCheck }: {
                   <span title={policy.schedule.cron}>next check {fmtDateTime(policy.schedule.nextRun)}</span>
                 </span>
               )}
-              {checkedAt && <span className="font-mono text-xs" style={{ color: 'var(--text-dimmer)' }}>last probed {fmtDateTime(checkedAt)}</span>}
+              {checkedAt && <span className="font-mono text-xs" style={{ color: 'var(--text-dim)' }}>last probed {fmtDateTime(checkedAt)}</span>}
             </>
           ) : (
             <span className="text-sm" style={{ color: 'var(--text-muted)' }}>{error ? 'Policy status unavailable' : 'Reading policy...'}</span>
           )}
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          <Btn onClick={onCheck} disabled={refreshing}><Icon name="refresh" />{refreshing ? 'Checking...' : 'Check now'}</Btn>
+          <button type="button" className={`${styles.btn} ${styles.btnPri}`} onClick={onCheck} disabled={refreshing}><Icon name="refresh" />{refreshing ? 'Checking...' : 'Check now'}</button>
         </div>
       </div>
       {error && <Notice tone="crit">{error}</Notice>}

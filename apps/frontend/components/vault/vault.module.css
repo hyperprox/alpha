@@ -1,0 +1,44 @@
+/* =============================================================================
+   HyperProx — the vault dialogs' frame
+   The same corner bracket and condensed heading the HUD panels use, so a
+   master-password prompt looks like part of the app and not a browser popup.
+   Tokens only: light mode comes from the theme, not from an inversion here.
+   ============================================================================= */
+
+.dialog {
+  position: relative; width: 100%; max-width: 28rem; max-height: 92vh; overflow-y: auto;
+  background: var(--surface-raised); border: 1px solid var(--border-soft); border-radius: 14px;
+  padding: 20px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 16px;
+}
+.dialog::before {
+  content: ""; position: absolute; top: 8px; left: 8px; width: 12px; height: 12px;
+  border: 2px solid var(--accent); border-right: 0; border-bottom: 0; opacity: .6; pointer-events: none;
+}
+.head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.title {
+  margin: 0; font: 700 1.15rem/1.2 var(--font-display); letter-spacing: .1em; text-transform: uppercase;
+  color: var(--text-bright); overflow-wrap: anywhere;
+}
+.close {
+  flex: 0 0 auto; width: 36px; height: 36px; border-radius: 9px; border: 1px solid var(--border-soft);
+  background: transparent; color: var(--text-muted); font-size: 15px; cursor: pointer;
+}
+.close:hover { color: var(--text-bright); border-color: var(--border-strong); }
+
+.btn {
+  border-radius: 9px; padding: 0 16px; font: 600 .86rem var(--font-body); cursor: pointer;
+  transition: border-color .15s, filter .15s;
+}
+.btn:disabled { opacity: .4; cursor: default; }
+.pri { border: 1px solid transparent; box-shadow: 0 0 16px -8px color-mix(in srgb, var(--accent) var(--glow), transparent); }
+.pri:hover:not(:disabled) { filter: brightness(1.08); }
+.ghost { border: 1px solid var(--border-strong); }
+.ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--text-bright); }
+
+.copy {
+  border-radius: 8px; border: 1px solid var(--border-strong); background: var(--ground-deep);
+  padding: 0 12px; font: 500 .72rem var(--font-mono); letter-spacing: .06em; text-transform: uppercase; cursor: pointer; flex: 0 0 auto;
+}
+.copy:hover { border-color: var(--accent); }
+
+.notice { margin: 0; border-radius: 10px; border: 1px solid; border-left-width: 3px; padding: 9px 12px; font-size: .875rem; line-height: 1.5; }

@@ -10,7 +10,7 @@ interface ComingSoonProps {
 
 export function ComingSoon({ title, description, features, accent }: ComingSoonProps) {
   return (
-    <div className="min-h-full p-6 sm:p-10 flex flex-col" style={{ background: 'var(--ground)' }}>
+    <div className="flex flex-col">
       {/* Page header */}
       <div className="mb-8" style={{ maxWidth: 680 }}>
         <div className="font-mono uppercase mb-2" style={{ fontSize: 11, letterSpacing: '0.14em', color: 'var(--accent)' }}>
@@ -29,7 +29,7 @@ export function ComingSoon({ title, description, features, accent }: ComingSoonP
           style={{ background: 'var(--surface)', borderColor: 'var(--border-soft)', padding: 24, borderLeft: `3px solid ${accent}` }}
         >
           <div className="font-display mb-4" style={{ fontSize: 20, fontWeight: 600, color: 'var(--text-bright)' }}>
-            What's being built
+            What&apos;s being built
           </div>
           <ul className="space-y-3">
             {features.map((f, i) => (

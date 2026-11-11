@@ -3,6 +3,7 @@
 // Edit a server: name and address, its certificate, its token, node addresses and logins, file roots, and
 // removing it. Credentials go to the vault and are never shown back.
 
+import { styles } from '@/components/visual/kit'
 import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useState } from 'react'
 import { apiJson } from '@/lib/api'
@@ -12,15 +13,15 @@ import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="rounded-xl border p-4 flex flex-col gap-3" style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}>
-      <h2 className="font-display font-bold uppercase" style={{ fontSize: 17, letterSpacing: '0.04em', color: 'var(--text-bright)' }}>{title}</h2>
+    <section className={`${styles.panel} flex flex-col gap-3`}>
+      <h2 className={styles.panelTitle} style={{ margin: 0 }}>{title}</h2>
       {children}
     </section>
   )
 }
 const Btn = (p: React.ButtonHTMLAttributes<HTMLButtonElement> & { solid?: boolean }) => {
   const { solid, ...rest } = p
-  return <button {...rest} className="px-4 rounded-md text-sm font-semibold disabled:opacity-40 border" style={{ height: 36, ...(solid ? { background: 'var(--remote)', color: 'var(--remote-ink)', borderColor: 'var(--remote)' } : { borderColor: 'var(--border-strong)', color: 'var(--text)' }) }} />
+  return <button {...rest} className={`${styles.btn} ${solid ? styles.btnPri : styles.btnGhost}`} />
 }
 
 /** Run a call that may need the master password: the modal opens and the call is retried after. */
@@ -87,7 +88,7 @@ export function ServerSettings({ c, onChanged }: { c: ClusterInfo; onChanged: ()
 
       {remote && (
         <Section title="Never look inside">
-          <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Send files reads Plex's settings and library list inside this server's running containers that use shared folders. Containers listed here (by number, one per line or separated by commas) are never entered, and neither is any container tagged hyperprox-ignore.</p>
+          <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Send files reads Plex&apos;s settings and library list inside this server&apos;s running containers that use shared folders. Containers listed here (by number, one per line or separated by commas) are never entered, and neither is any container tagged hyperprox-ignore.</p>
           <textarea style={{ ...INPUT, height: 70, padding: 10, fontFamily: 'var(--font-mono)' }} value={ignored} onChange={e => setIgnored(e.target.value)} placeholder="101" />
           <div><Btn onClick={() => save({ ignoredGuests: ignored.split(/[\s,]+/).map(s => s.trim()).filter(Boolean) }, 'Saved.', true)}>Save</Btn></div>
         </Section>
@@ -146,7 +147,7 @@ function CertificateSection({ c, onChanged, run }: { c: ClusterInfo; onChanged: 
           {why && <p className="text-sm" style={{ color: 'var(--text-muted)' }}>{why}</p>}
           <p className="text-sm" style={{ color: 'var(--text)' }}>It presents:</p>
           <div className="font-mono text-sm break-all" style={{ color: 'var(--remote)' }}>{presented}</div>
-          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Compare it with that server's own page (the node, then System, then Certificates). If you did not renew its certificate, do not confirm: something else may be answering at that address.</p>
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Compare it with that server&apos;s own page (the node, then System, then Certificates). If you did not renew its certificate, do not confirm: something else may be answering at that address.</p>
           <label className="flex gap-2 items-start text-sm" style={{ color: 'var(--text)' }}><input type="checkbox" className="mt-1" checked={matches} onChange={e => setMatches(e.target.checked)} /><span>I compared it and it matches.</span></label>
           <div><Btn solid disabled={!matches} onClick={confirm}>Confirm this certificate</Btn></div>
         </div>
@@ -247,7 +248,7 @@ function NodesSection({ c, onChanged, run }: { c: ClusterInfo; onChanged: () => 
             <textarea style={{ ...INPUT, height: 80, padding: 8, fontFamily: 'var(--font-mono)', fontSize: 12 }} value={once.key} onChange={e => setOnce({ ...once, key: e.target.value })} /></details>
           <div><Btn solid disabled={verifying} onClick={verifyKeys}>{verifying ? 'Verifying…' : 'Verify keys'}</Btn></div>
           {command && <div className="flex flex-col gap-2 text-sm">
-            <span style={{ color: 'var(--text-muted)' }}>HyperProx had nothing trusted to check some keys against. Run this once on one of that server's nodes, at its own console (its screen, IPMI or iKVM, or an SSH session whose key you already checked; not HyperProx's Terminal on a key that is not verified yet), paste what it prints (public keys only), then Verify keys again:</span>
+            <span style={{ color: 'var(--text-muted)' }}>HyperProx had nothing trusted to check some keys against. Run this once on one of that server&apos;s nodes, at its own console (its screen, IPMI or iKVM, or an SSH session whose key you already checked; not HyperProx&apos;s Terminal on a key that is not verified yet), paste what it prints (public keys only), then Verify keys again:</span>
             <pre className="rounded p-2 overflow-x-auto font-mono text-xs" style={{ background: 'var(--ground-deep)', color: 'var(--text-bright)' }}>{command}</pre>
             <textarea style={{ ...INPUT, height: 70, padding: 8, fontFamily: 'var(--font-mono)', fontSize: 12 }} value={record} onChange={e => setRecord(e.target.value)} placeholder="Paste the output here" />
           </div>}
@@ -255,7 +256,7 @@ function NodesSection({ c, onChanged, run }: { c: ClusterInfo; onChanged: () => 
         </div>
       )}
       {rows === null ? <BusyNote>Reading nodes…</BusyNote> : rows.map(n => (
-        <div key={n.node} className="rounded-lg border p-3 flex flex-col gap-2" style={{ borderColor: 'var(--border-dim)', background: 'var(--ground-deep)' }}>
+        <div key={n.node} className="rounded-lg border p-3 flex flex-col gap-2" style={{ borderColor: 'var(--hx-line)', background: 'var(--ground-deep)' }}>
           <div className="flex gap-2 items-center flex-wrap">
             <b className="font-display" style={{ fontSize: 16, color: 'var(--text-bright)' }}>{n.node}</b>
             <span className="text-xs" style={{ color: n.status === 'online' ? 'var(--good)' : 'var(--crit-soft)' }}>{n.status}</span>
@@ -271,8 +272,8 @@ function NodesSection({ c, onChanged, run }: { c: ClusterInfo; onChanged: () => 
               {login.fp === null && !login.msg && <BusyNote>Reading its host key…</BusyNote>}
               {login.fp && <>
                 <p className="text-sm" style={{ color: 'var(--text)' }}>Its host key: <span className="font-mono break-all" style={{ color: 'var(--remote)' }}>{login.fp}</span></p>
-                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>HyperProx found no evidence to verify this node's key by itself, so compare it once with the output of this command in that node's Shell:</p>
-                <div className="flex gap-2 items-center flex-wrap"><code className="font-mono text-xs" style={{ color: 'var(--text-bright)' }}>for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf "$f"; done</code><CopyButton text={'for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf "$f"; done'} /></div>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>HyperProx found no evidence to verify this node&apos;s key by itself, so compare it once with the output of this command in that node&apos;s Shell:</p>
+                <div className="flex gap-2 items-center flex-wrap"><code className="font-mono text-xs" style={{ color: 'var(--text-bright)' }}>for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf &quot;$f&quot;; done</code><CopyButton text={'for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf "$f"; done'} /></div>
                 <label className="flex gap-2 items-start text-sm" style={{ color: 'var(--text)' }}><input type="checkbox" className="mt-1" checked={login.matches} onChange={e => setLogin({ ...login, matches: e.target.checked })} /><span>One of those lines shows this exact fingerprint.</span></label>
                 <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(12rem,1fr))' }}>
                   <div><label style={LABEL}>User</label><input style={INPUT} value={login.user} onChange={e => setLogin({ ...login, user: e.target.value })} /></div>
@@ -338,7 +339,7 @@ function RemoveSection({ c, run, onRemoved }: { c: ClusterInfo; run: Run; onRemo
         <>
           <p className="text-sm" style={{ color: 'var(--text-muted)' }}>HyperProx forgets it: its token, logins, sending keys (taken off the nodes they were installed on) and its Prometheus targets. Nothing else on the server changes: monitoring installed there stays until you remove it first.</p>
           <div><label style={LABEL}>Type <b style={{ color: 'var(--text-bright)' }}>{c.name}</b> to remove it</label><input style={INPUT} value={typed} onChange={e => setTyped(e.target.value)} autoComplete="off" /></div>
-          <div><button disabled={typed !== c.name} onClick={remove} className="px-4 rounded-md text-sm font-semibold disabled:opacity-40" style={{ height: 36, background: 'var(--crit)', color: '#fff' }}>Remove</button></div>
+          <div><button disabled={typed !== c.name} onClick={remove} className={`${styles.btn} ${styles.btnDanger}`}>Remove</button></div>
           {err && <Notice kind="error">{err}</Notice>}
         </>
       )}

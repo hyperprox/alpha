@@ -3,6 +3,7 @@
 // Step 5: monitoring on a remote server. Scan first, plain yes/no questions, a preview of every step, apply,
 // then the read-back. "Remove monitoring" undoes what HyperProx did.
 
+import { styles } from '@/components/visual/kit'
 import { useCallback, useEffect, useState } from 'react'
 import { apiJson } from '@/lib/api'
 import type { ClusterInfo } from '@/lib/clusters'
@@ -49,10 +50,10 @@ export function MonitoringSetup({ c, onChanged }: { c: ClusterInfo; onChanged: (
   }
 
   return (
-    <section className="rounded-xl border p-4 flex flex-col gap-3" style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}>
+    <section className={`${styles.panel} flex flex-col gap-3`}>
       {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
       <span className="font-mono font-bold" style={{ fontSize: 12, color: 'var(--accent)' }}>STEP 5</span>
-      <h2 className="font-display font-bold uppercase" style={{ fontSize: 17, letterSpacing: '0.04em', color: 'var(--text-bright)' }}>Monitoring on {c.name}</h2>
+      <h2 className={styles.panelTitle} style={{ margin: 0 }}>Monitoring on {c.name}</h2>
       <p className="text-sm" style={{ color: 'var(--text-muted)' }}>HyperProx looks at the server first and asks plain questions. Nothing installs until you press Apply. It uses the saved, confirmed node login, and every step is checked afterwards.</p>
       {busy === 'scan' && <BusyNote>Looking at the server…</BusyNote>}
       {err && <Notice kind="error">{err}</Notice>}
@@ -72,17 +73,17 @@ export function MonitoringSetup({ c, onChanged }: { c: ClusterInfo; onChanged: (
             ))}
           </div>
           <div className="flex gap-2 flex-wrap">
-            <button disabled={busy !== null} onClick={() => doPreview('install')} className="px-4 rounded-md text-sm font-semibold disabled:opacity-40" style={{ height: 36, background: 'var(--accent)', color: 'var(--accent-ink)' }}>Preview install</button>
-            {installed && <button disabled={busy !== null} onClick={() => doPreview('remove')} className="px-4 rounded-md text-sm border disabled:opacity-40" style={{ height: 36, borderColor: 'var(--border-strong)', color: 'var(--text)' }}>Remove monitoring</button>}
-            <button disabled={busy !== null} onClick={doScan} className="px-4 rounded-md text-sm border disabled:opacity-40" style={{ height: 36, borderColor: 'var(--border-strong)', color: 'var(--text)' }}>Scan again</button>
+            <button disabled={busy !== null} onClick={() => doPreview('install')} className={`${styles.btn} ${styles.btnPri}`}>Preview install</button>
+            {installed && <button disabled={busy !== null} onClick={() => doPreview('remove')} className={`${styles.btn} ${styles.btnGhost}`}>Remove monitoring</button>}
+            <button disabled={busy !== null} onClick={doScan} className={`${styles.btn} ${styles.btnGhost}`}>Scan again</button>
           </div>
         </>
       )}
       {preview && (
-        <div className="rounded-lg border p-3 flex flex-col gap-2" style={{ borderColor: 'var(--remote)', background: 'var(--ground-deep)' }}>
+        <div className="rounded-[10px] border p-3 flex flex-col gap-2" style={{ borderColor: 'var(--remote)', background: 'var(--ground-deep)' }}>
           <h3 className="font-display font-semibold" style={{ fontSize: 16, color: 'var(--text-bright)' }}>Preview: {preview.kind === 'remove' ? 'remove monitoring' : 'install monitoring'} on {c.name}</h3>
           <ul className="list-disc pl-5 text-sm" style={{ color: 'var(--text)' }}>{preview.steps.map((s, i) => <li key={i}>{s}</li>)}</ul>
-          <div className="flex gap-2"><button disabled={busy !== null} onClick={apply} className="px-4 rounded-md text-sm font-semibold disabled:opacity-40" style={{ height: 36, background: 'var(--remote)', color: 'var(--remote-ink)' }}>{busy === 'apply' ? 'Applying…' : 'Apply'}</button><button onClick={() => setPreview(null)} className="px-4 rounded-md text-sm border" style={{ height: 36, borderColor: 'var(--border-strong)', color: 'var(--text-soft)' }}>Cancel</button></div>
+          <div className="flex gap-2"><button disabled={busy !== null} onClick={apply} className={`${styles.btn} ${styles.btnPri}`}>{busy === 'apply' ? 'Applying…' : 'Apply'}</button><button onClick={() => setPreview(null)} className={`${styles.btn} ${styles.btnGhost}`}>Cancel</button></div>
         </div>
       )}
       {result && (

@@ -11,6 +11,7 @@
 import { useState } from 'react'
 import { CLUSTER_HEADER, type ApiResult } from '@/lib/api'
 import { clusterColor, clusterInk } from '@/lib/clusters'
+import { styles } from '@/components/visual/kit'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 
 export interface ClusterRef { id: string; name: string; kind: 'home' | 'remote' }
@@ -51,12 +52,12 @@ export function ClusterPicker({ clusters, value, onChange, disabled }: { cluster
       <ClusterChip c={current} size="md" />
       {clusters.length > 1 && (
         <select aria-label="Cluster" value={current.id} disabled={disabled} onChange={e => onChange(e.target.value)}
-          style={{ marginLeft: 'auto', padding: '6px 10px', fontSize: 13, borderRadius: 6, background: 'var(--ground)', color: 'var(--text)', border: '1px solid var(--border-strong)' }}>
+          style={{ marginLeft: 'auto', padding: '6px 10px', fontSize: 13, borderRadius: 6, background: 'var(--ground-deep)', color: 'var(--text)', border: '1px solid var(--border-strong)' }}>
           {clusters.map(c => <option key={c.id} value={c.id}>{c.kind === 'remote' ? `${c.name} (remote)` : `${c.name} (home)`}</option>)}
         </select>
       )}
       <span style={{ flexBasis: '100%', fontSize: 12, color: 'var(--text-dim)' }}>
-        Name another cluster in your question ("on {clusters.find(c => c.kind === 'remote')?.name ?? 'Remote server'}", "each cluster") to ask about it instead.
+        Name another cluster in your question (&quot;on {clusters.find(c => c.kind === 'remote')?.name ?? 'Remote server'}&quot;, &quot;each cluster&quot;) to ask about it instead.
       </span>
     </div>
   )
@@ -93,7 +94,7 @@ export function ActionCard({ card, onDone, onCancel }: { card: ActionCardData; o
   }
 
   return (
-    <div style={{ background: 'var(--surface)', border: `1px solid ${colour}`, borderRadius: 10, padding: '1.25rem', marginBottom: '1rem' }}>
+    <div style={{ background: 'linear-gradient(135deg, var(--surface), var(--surface-hi))', border: `1px solid ${colour}`, borderRadius: 12, padding: '1.25rem', marginBottom: '1rem', boxShadow: 'var(--shadow)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
         <ClusterChip c={card.cluster} size="md" />
         {card.from && card.from.id !== card.cluster.id && <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>from <ClusterChip c={card.from} /></span>}
@@ -113,7 +114,7 @@ export function ActionCard({ card, onDone, onCancel }: { card: ActionCardData; o
       )}
       {error && <div style={{ fontSize: 13, color: 'var(--crit)', marginBottom: 8 }}>{error}</div>}
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-        <button onClick={onCancel} disabled={busy} style={{ padding: '9px 16px', fontSize: 14, cursor: 'pointer', background: 'transparent', color: 'var(--text)', border: '1px solid var(--border-strong)', borderRadius: 6 }}>Cancel</button>
+        <button onClick={onCancel} disabled={busy} className={styles.btn}>Cancel</button>
         <button onClick={apply} disabled={busy || !ready}
           style={{ padding: '9px 18px', fontSize: 14, fontWeight: 600, cursor: busy || !ready ? 'default' : 'pointer', background: card.typedName ? 'var(--crit)' : colour,
             color: card.typedName ? 'var(--text-bright)' : clusterInk(card.cluster.kind), border: 'none', borderRadius: 6, opacity: busy || !ready ? 0.5 : 1 }}>

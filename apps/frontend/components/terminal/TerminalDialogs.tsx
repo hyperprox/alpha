@@ -10,8 +10,9 @@
 // =============================================================================
 
 import { useState } from 'react'
+import { styles } from '@/components/visual/kit'
 
-const PANEL  = { background: 'var(--surface)', borderColor: 'var(--border)' }
+const PANEL  = { background: 'linear-gradient(135deg, var(--surface), var(--surface-hi))', borderColor: 'var(--border-strong)', boxShadow: 'var(--shadow), 0 0 40px -18px var(--accent)' }
 const FIELD  = { background: 'var(--ground-deep)', borderColor: 'var(--border-strong)', color: 'var(--text-bright)' }
 const ACCENT = 'var(--accent)'
 
@@ -45,7 +46,7 @@ function Shell({ title, subtitle, submitLabel = 'Save', onSubmit, onClose, child
     <div className="fixed inset-0 z-50 flex items-center justify-center p-6" style={{ background: 'color-mix(in srgb, var(--ground-deep) 80%, transparent)' }}>
       <form onSubmit={onSubmit} className="w-full max-w-md rounded-lg border shadow-2xl" style={PANEL}>
         <div className="border-b px-6 py-5" style={{ borderColor: 'var(--border)' }}>
-          <h2 className="font-display text-[22px] font-semibold" style={{ color: 'var(--text-bright)' }}>{title}</h2>
+          <h2 className="font-display text-[22px] font-bold uppercase" style={{ color: 'var(--text-bright)', letterSpacing: '.06em' }}>{title}</h2>
           <p className="mt-1 text-[14px]" style={{ color: 'var(--text-soft)' }}>{subtitle}</p>
         </div>
 
@@ -55,15 +56,13 @@ function Shell({ title, subtitle, submitLabel = 'Save', onSubmit, onClose, child
           <button
             type="button"
             onClick={onClose}
-            className="h-10 rounded-md border px-5 text-[14px] transition-colors hover:bg-white/5"
-            style={{ borderColor: 'var(--border-strong)', color: 'var(--text)' }}
+            className={styles.btn}
           >
             Cancel
           </button>
           <button
             type="submit"
-            className="h-10 rounded-md px-6 text-[14px] font-semibold transition-opacity hover:opacity-85"
-            style={{ background: ACCENT, color: 'var(--accent-ink)' }}
+            className={`${styles.btn} ${styles.btnPri}`}
           >
             {submitLabel}
           </button>
@@ -137,7 +136,7 @@ export function ConnectDialog({ hostName, hostAddress, hasShared, onSave, onClos
           {(['password', 'key'] as const).map(m => (
             <button key={m} type="button" onClick={() => setMode(m)}
               className="flex-1 rounded py-1.5 font-mono text-[11px] uppercase tracking-[0.12em] transition-colors"
-              style={mode === m ? { background: 'color-mix(in srgb, var(--accent) 8%, transparent)', color: ACCENT } : { color: 'var(--text-dim)' }}
+              style={mode === m ? { background: 'color-mix(in srgb, var(--accent) 12%, transparent)', color: ACCENT } : { color: 'var(--text-dim)' }}
             >
               {m === 'password' ? 'Password' : 'Private key'}
             </button>
@@ -169,7 +168,7 @@ export function ConnectDialog({ hostName, hostAddress, hasShared, onSave, onClos
 
         <label className="flex cursor-pointer items-start gap-2.5 rounded border px-3 py-2.5" style={{ borderColor: 'var(--border-strong)' }}>
           <input type="checkbox" checked={alsoShared} onChange={e => setAlsoShared(e.target.checked)}
-            className="mt-0.5 h-3.5 w-3.5 accent-cyan" />
+            className="mt-0.5 h-3.5 w-3.5 accent-[var(--accent)]" />
           <span className="text-[14px] leading-snug" style={{ color: 'var(--text-soft)' }}>
             Also use this for every host that has none of its own
             <span className="mt-0.5 block text-[13px]" style={{ color: alsoShared && hasShared ? 'var(--warn)' : 'var(--text-dim)' }}>

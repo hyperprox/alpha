@@ -5,51 +5,37 @@
 // mounted by another page without reaching into another feature's components.
 
 import { useEffect } from 'react'
+import { Panel as KitPanel, Pill, styles } from '@/components/visual/kit'
 
 export const mix = (c: string, pct: number) => `color-mix(in srgb, ${c} ${pct}%, transparent)`
 
 export function Btn({ kind = 'ghost', small, ...p }: React.ButtonHTMLAttributes<HTMLButtonElement> & { kind?: 'primary' | 'ghost' | 'danger'; small?: boolean }) {
-  const style: React.CSSProperties =
-    kind === 'primary' ? { background: 'var(--accent)', color: 'var(--accent-ink)', border: '1px solid var(--accent)', fontWeight: 600 }
-    : kind === 'danger' ? { background: 'transparent', color: 'var(--crit-soft)', border: `1px solid ${mix('var(--crit)', 55)}` }
-    : { background: 'transparent', color: 'var(--text-soft)', border: '1px solid var(--border-strong)' }
+  const k = kind === 'primary' ? styles.btnPri : kind === 'danger' ? styles.btnDanger : styles.btnGhost
   return (
     <button type="button" {...p}
-      className={`inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-3 transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${p.className ?? ''}`}
-      style={{ height: small ? 28 : 36, fontSize: small ? 12.5 : 14, ...style, ...p.style }} />
+      className={`${styles.btn} ${k} inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${p.className ?? ''}`}
+      style={small ? { minHeight: 30, padding: '4px 10px', fontSize: 12.5, ...p.style } : p.style} />
   )
 }
 
 export type Tone = 'accent' | 'good' | 'warn' | 'crit' | 'muted' | 'violet'
-const TONE: Record<Tone, string> = { accent: 'var(--accent)', good: 'var(--good)', warn: 'var(--warn)', crit: 'var(--crit)', muted: 'var(--text-muted)', violet: 'var(--violet)' }
 
+// A tag says its meaning in its words; the pill's tone only repeats it.
 export function Tag({ tone, children, title }: { tone: Tone; children: React.ReactNode; title?: string }) {
-  const c = TONE[tone]
-  return (
-    <span title={title} className="inline-flex items-center whitespace-nowrap rounded px-1.5 py-0.5 font-mono"
-      style={{ fontSize: 11, color: c, background: mix(c, 10), border: `1px solid ${mix(c, 30)}` }}>{children}</span>
-  )
+  return <Pill tone={tone === 'crit' ? 'bad' : tone === 'muted' ? undefined : tone} title={title}>{children}</Pill>
 }
 
 export function Note({ tone, children }: { tone: 'warn' | 'crit' | 'info' | 'good'; children: React.ReactNode }) {
   const c = tone === 'crit' ? 'var(--crit)' : tone === 'warn' ? 'var(--warn)' : tone === 'good' ? 'var(--good)' : 'var(--accent)'
   const t = tone === 'crit' ? 'var(--crit-soft)' : tone === 'warn' ? 'var(--warn-2, var(--warn))' : 'var(--text)'
   return (
-    <div role={tone === 'crit' ? 'alert' : 'status'} className="rounded-md border px-3 py-2 text-sm leading-relaxed"
-      style={{ background: mix(c, 10), borderColor: mix(c, 35), color: t }}>{children}</div>
+    <div role={tone === 'crit' ? 'alert' : 'status'} className={styles.callout}
+      style={{ background: mix(c, 10), borderColor: mix(c, 45), borderStyle: 'solid', color: t }}>{children}</div>
   )
 }
 
 export function Section({ title, right, children, id }: { title: string; right?: React.ReactNode; children: React.ReactNode; id?: string }) {
-  return (
-    <section id={id} className="rounded-[10px] border" style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}>
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 sm:px-5 py-3" style={{ borderColor: 'var(--border)' }}>
-        <h2 className="font-display font-semibold" style={{ fontSize: 20, color: 'var(--text-bright)' }}>{title}</h2>
-        {right}
-      </div>
-      <div className="px-4 sm:px-5 py-4">{children}</div>
-    </section>
-  )
+  return <KitPanel id={id} title={title} actions={right}>{children}</KitPanel>
 }
 
 export function Label({ children }: { children: React.ReactNode }) {

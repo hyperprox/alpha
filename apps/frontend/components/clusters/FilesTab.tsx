@@ -3,6 +3,7 @@
 // Send files: pick a file or folder on one cluster, a folder on another (or the same), preview, then copy in
 // the background. Copy is the only mode offered: it adds files; HyperProx never replaces or deletes one that was there.
 
+import { styles } from '@/components/visual/kit'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
@@ -41,8 +42,8 @@ function Picker({ title, side, setSide, clusters, wantDir, kindOf }: { title: st
   const k = kindOf(side.cluster)
   const up = cwd && c && !c.allowedRoots.includes(cwd) ? cwd.replace(/\/[^/]+$/, '') : null
   return (
-    <div className="rounded-xl border p-4 flex flex-col gap-3 min-w-0" style={{ background: 'var(--surface)', borderColor: 'var(--border)', borderTop: `3px solid ${clusterColor(k)}` }}>
-      <div className="flex items-center gap-2"><Dot kind={k} /><h2 className="font-display font-bold uppercase" style={{ fontSize: 17, color: 'var(--text-bright)' }}>{title}</h2></div>
+    <div className={`${styles.panel} flex flex-col gap-3 min-w-0`} style={{ borderTop: `3px solid ${clusterColor(k)}` }}>
+      <div className="flex items-center gap-2"><Dot kind={k} /><h2 className={styles.panelTitle} style={{ margin: 0 }}>{title}</h2></div>
       <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(9rem,1fr))' }}>
         <div><label style={LABEL}>Cluster</label><select style={INPUT} value={side.cluster} onChange={e => setSide({ cluster: e.target.value, node: '', path: '' })}>{clusters.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}</select></div>
         <div><label style={LABEL}>Node</label><select style={INPUT} value={side.node} onChange={e => setSide({ ...side, node: e.target.value, path: '' })}>{nodes.map(n => <option key={n} value={n}>{n}</option>)}</select></div>
@@ -141,12 +142,12 @@ export function FilesTab({ clusterId }: { clusterId: string }) {
           <SendFilesButton clusterId={dst.cluster} clusterName={nameOf(dst.cluster)} />
         </div>
       )}
-      <Notice kind="warn">First version: copying has been tested with HyperProx's own checks, not yet against real servers. Try a small folder first.</Notice>
+      <Notice kind="warn">First version: copying has been tested with HyperProx&apos;s own checks, not yet against real servers. Try a small folder first.</Notice>
       <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(min(100%,19rem),1fr))' }}>
         <Picker title="From" side={src} setSide={s => { setSrc(s); setPreview(null) }} clusters={clusters} wantDir={false} kindOf={kindOf} />
         <Picker title="To" side={dst} setSide={s => { setDst(s); setPreview(null) }} clusters={clusters} wantDir kindOf={kindOf} />
       </div>
-      <div className="rounded-xl border p-4 flex flex-col gap-3" style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}>
+      <div className={`${styles.panel} flex flex-col gap-3`}>
         <div className="flex gap-2 items-center flex-wrap">
           <span className="rounded-md px-3 py-1 text-sm font-semibold" style={{ background: clusterColor(dk), color: clusterInk(dk) }}>Copy</span>
           <button onClick={() => setMore(m => !m)} className="rounded-md px-3 py-1 text-sm border border-dashed" style={{ borderColor: 'var(--border-strong)', color: 'var(--text-muted)' }}>More options {more ? '▴' : '▾'}</button>
@@ -155,7 +156,7 @@ export function FilesTab({ clusterId }: { clusterId: string }) {
         <p className="text-sm" style={{ color: 'var(--text)' }}>✓ Keeps the same folder names, so Plex finds them without renaming. ✓ Checks every copied file afterwards (size and checksum must match, or it is copied again).</p>
         <label className="flex gap-2 items-center text-sm" style={{ color: dstC?.plexUrl ? 'var(--text)' : 'var(--text-dimmer)' }}>
           <input type="checkbox" disabled={!dstC?.plexUrl} checked={plex && !!dstC?.plexUrl} onChange={e => setPlex(e.target.checked)} />
-          Ask {nameOf(dst.cluster)}'s Plex to scan when done{!dstC?.plexUrl ? ' (set its Plex under Edit server first)' : ''}
+          Ask {nameOf(dst.cluster)}&apos;s Plex to scan when done{!dstC?.plexUrl ? ' (set its Plex under Edit server first)' : ''}
         </label>
         <div style={{ maxWidth: 260 }}><label style={LABEL}>Speed limit, MB/s (0 for none)</label><input style={INPUT} value={speedMB} inputMode="decimal" onChange={e => setSpeedMB(e.target.value.replace(/[^\d.]/g, '').slice(0, 7))} /></div>
         {err && <Notice kind={err.setup ? 'warn' : 'error'}>{err.text}</Notice>}
@@ -169,8 +170,8 @@ export function FilesTab({ clusterId }: { clusterId: string }) {
           </div>
         )}
       </div>
-      <div className="rounded-xl border p-4 flex flex-col gap-2" style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}>
-        <h2 className="font-display font-bold uppercase" style={{ fontSize: 17, color: 'var(--text-bright)' }}>Transfers</h2>
+      <div className={`${styles.panel} flex flex-col gap-2`}>
+        <h2 className={styles.panelTitle} style={{ margin: 0 }}>Transfers</h2>
         {jobs.length === 0 && <p className="text-sm" style={{ color: 'var(--text-muted)' }}>None yet.</p>}
         {jobs.map(j => {
           const k = kindOf(j.dstCluster)

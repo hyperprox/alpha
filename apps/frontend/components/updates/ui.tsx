@@ -3,65 +3,52 @@
 import { useEffect, useRef } from 'react'
 import { alpha } from '@/lib/theme'
 import type { UpdatesStepStatus } from '@hyperprox/types'
+import { Panel as KitPanel, Pill, styles } from '@/components/visual/kit'
 
 // Small primitives for the Updates page. The vault's button/modal live in another feature's
 // folder, so the few this page needs are kept here rather than reaching across.
 
 export function Btn({ kind = 'ghost', small, ...p }: React.ButtonHTMLAttributes<HTMLButtonElement> & { kind?: 'primary' | 'ghost' | 'danger'; small?: boolean }) {
-  const style: React.CSSProperties =
-    kind === 'primary' ? { background: 'var(--accent)', color: 'var(--accent-ink)', border: '1px solid var(--accent)', fontWeight: 600 }
-    : kind === 'danger' ? { background: 'transparent', color: 'var(--crit-2)', border: '1px solid ' + alpha('var(--crit-2)', 45) }
-    : { background: 'transparent', color: 'var(--text-soft)', border: '1px solid var(--border-strong)' }
+  const k = kind === 'primary' ? styles.btnPri : kind === 'danger' ? styles.btnDanger : styles.btnGhost
   return (
     <button
       type="button"
       {...p}
-      className={`inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-3 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${p.className ?? ''}`}
-      style={{ height: small ? 28 : 36, fontSize: small ? 12.5 : 14, ...style, ...p.style }}
+      className={`${styles.btn} ${k} inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${p.className ?? ''}`}
+      style={small ? { minHeight: 30, padding: '4px 10px', fontSize: 12.5, ...p.style } : p.style}
     />
   )
 }
 
 export function Badge({ tone, children, title }: { tone: 'accent' | 'good' | 'warn' | 'crit' | 'muted' | 'violet'; children: React.ReactNode; title?: string }) {
-  const c = { accent: 'var(--accent)', good: 'var(--good)', warn: 'var(--warn)', crit: 'var(--crit-2)', muted: 'var(--text-muted)', violet: 'var(--violet)' }[tone]
-  return (
-    <span title={title} className="inline-flex items-center whitespace-nowrap rounded px-1.5 py-0.5 font-mono"
-          style={{ fontSize: 11, color: c, background: alpha(c, 10), border: `1px solid ${alpha(c, 30)}` }}>
-      {children}
-    </span>
-  )
+  const t = tone === 'crit' ? 'bad' : tone === 'muted' ? undefined : tone
+  return <Pill tone={t} title={title}>{children}</Pill>
 }
 
-/** `tag`: which cluster the card is about (ClusterTag), shown beside the title. `edge`: that cluster's colour. */
-export function Panel({ title, right, children, tag, edge }: { title: string; right?: React.ReactNode; children: React.ReactNode; tag?: React.ReactNode; edge?: string }) {
-  return (
-    <section className="rounded-[10px] border" style={{ background: 'var(--surface)', borderColor: 'var(--border)', ...(edge ? { borderTop: `3px solid ${edge}` } : {}) }}>
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b px-5 py-3" style={{ borderColor: 'var(--border)' }}>
-        <h2 className="flex flex-wrap items-center gap-2 font-display font-semibold" style={{ fontSize: 20, color: 'var(--text-bright)' }}>{title}{tag}</h2>
-        {right}
-      </div>
-      {children}
-    </section>
-  )
+/** `tag`: which cluster the card is about (ClusterTag), shown beside the title. `edge` is kept for callers; the tag now says it. */
+export function Panel({ title, right, children, tag }: { title: string; right?: React.ReactNode; children: React.ReactNode; tag?: React.ReactNode; edge?: string }) {
+  return <KitPanel title={<>{title}{tag && <> {tag}</>}</>} actions={right}>{children}</KitPanel>
 }
 
 export function Notice({ tone, children }: { tone: 'warn' | 'crit' | 'info'; children: React.ReactNode }) {
   const c = tone === 'crit' ? 'var(--crit)' : tone === 'warn' ? 'var(--warn)' : 'var(--accent)'
   const t = tone === 'crit' ? 'var(--crit-soft)' : tone === 'warn' ? 'var(--warn-2)' : 'var(--text)'
   return (
-    <div role={tone === 'crit' ? 'alert' : 'status'} className="rounded-md border px-3 py-2 text-sm"
-         style={{ background: alpha(c, 10), borderColor: alpha(c, 35), color: t }}>
+    <div role={tone === 'crit' ? 'alert' : 'status'} className={styles.callout}
+         style={{ background: alpha(c, 10), borderColor: alpha(c, 45), color: t, borderStyle: 'solid' }}>
       {children}
     </div>
   )
 }
 
 export function Empty({ children }: { children: React.ReactNode }) {
-  return <p className="px-5 py-6 text-sm" style={{ color: 'var(--text-muted)' }}>{children}</p>
+  return <p className={styles.empty}>{children}</p>
 }
 
+// Header cells for the tables that are not yet inside the kit's table (certificates, remote access). The kit's
+// own table styles its headers itself, so there these add nothing it does not already have.
 export const TH = 'px-4 py-2 text-left font-mono font-normal'
-export const THEAD_STYLE: React.CSSProperties = { color: 'var(--text-dimmer)', fontSize: 11, letterSpacing: '0.1em', borderBottom: '1px solid var(--border)' }
+export const THEAD_STYLE: React.CSSProperties = { color: 'var(--text-muted)', fontSize: 11, letterSpacing: '0.1em', borderBottom: '1px solid var(--border)' }
 
 export function Chevron({ open }: { open: boolean }) {
   return (

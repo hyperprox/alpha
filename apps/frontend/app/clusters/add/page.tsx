@@ -14,13 +14,14 @@ import { useSession } from '@/lib/session'
 import { useClusters } from '@/lib/clusters'
 import { INPUT, LABEL, Notice, CopyButton, BusyNote } from '@/components/vault/ui'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
+import { Page, HudHeader, styles } from '@/components/visual/kit'
 import { HardwareScan } from '@/components/clusters/HardwareScan'
 
 function Step({ n, title, children }: { n: number; title: string; children: React.ReactNode }) {
   return (
-    <section className="rounded-xl border p-4 flex flex-col gap-3 min-w-0" style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}>
+    <section className={`${styles.panel} flex flex-col gap-3 min-w-0`}>
       <span className="font-mono font-bold" style={{ fontSize: 12, color: 'var(--accent)' }}>STEP {n}</span>
-      <h2 className="font-display font-bold uppercase" style={{ fontSize: 19, letterSpacing: '0.04em', color: 'var(--text-bright)' }}>{title}</h2>
+      <h2 className={styles.panelTitle} style={{ margin: 0 }}>{title}</h2>
       {children}
     </section>
   )
@@ -112,24 +113,26 @@ export default function AddServerPage() {
     setAdded({ id: d.cluster.id, name: d.cluster.name, nodes: d.nodes, version: d.version })
   }
 
-  if (!atLeast(role, 'admin')) return <div className="p-8"><Notice kind="warn">Adding a server needs the admin role.</Notice></div>
+  if (!atLeast(role, 'admin')) return <Page><Notice kind="warn">Adding a server needs the admin role.</Notice></Page>
 
   const ready = name.trim() && address.trim() && /^\d+$/.test(port) && tokenId.trim() && secret.trim() && preview && (!cert || matches)
 
   return (
-    <div className="min-h-full px-4 py-5 sm:p-8" style={{ background: 'var(--ground)' }}>
+    <Page>
       {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
-      <div className="max-w-3xl mx-auto flex flex-col gap-4">
-        <Link href="/clusters" className="text-sm" style={{ color: 'var(--text-muted)' }}>‹ Command center</Link>
-        <h1 className="font-display font-bold" style={{ fontSize: 34, lineHeight: 1.1, color: 'var(--text-bright)' }}>Add a server</h1>
-        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+      <HudHeader level={2} eyebrow="Command center · new server" title="Add a server" icon="router" label="Add a server"
+        chips={[{ label: 'Step', value: added ? 'Done' : ready ? 'Connect' : 'Fill in', tone: added ? 'good' : 'accent' }]}
+        actions={<Link href="/clusters" className={`${styles.btn} ${styles.btnGhost} inline-flex items-center`}>‹ Command center</Link>}>
+        <p className="text-sm" style={{ color: 'var(--text-soft)' }}>
           A standalone Proxmox server or a whole cluster, managed from here beside your home cluster. It is never joined to your cluster.
           The key goes straight into the vault and never touches a file.
         </p>
+      </HudHeader>
+      <div className="max-w-3xl w-full flex flex-col gap-4">
 
         {added ? (
-          <section className="rounded-xl border p-4 flex flex-col gap-3" style={{ background: 'var(--surface)', borderColor: 'var(--remote)', borderTopWidth: 3 }}>
-            <h2 className="font-display font-bold uppercase" style={{ fontSize: 19, color: 'var(--text-bright)' }}>{added.name} is connected</h2>
+          <section className={`${styles.panel} ${styles.remote} flex flex-col gap-3`} style={{ borderColor: 'var(--remote)', borderTopWidth: 3 }}>
+            <h2 className={styles.panelTitle} style={{ margin: 0 }}>{added.name} is connected</h2>
             <p className="text-sm" style={{ color: 'var(--text)' }}>Proxmox {added.version}, {added.nodes.length} {added.nodes.length === 1 ? 'node' : 'nodes'} ({added.nodes.join(', ')}). The token is in the vault and the certificate is pinned.</p>
             {setup && (
               <ul className="text-sm flex flex-col gap-1" style={{ color: 'var(--text)' }}>
@@ -142,11 +145,11 @@ export default function AddServerPage() {
             <h3 className="font-display font-semibold" style={{ fontSize: 17, color: 'var(--text-bright)' }}>What HyperProx can see on it</h3>
             <HardwareScan clusterId={added.id} kind="remote" />
             <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-              Anything left (a node whose key had no evidence, monitoring without a login) is on the server's Edit page.
+              Anything left (a node whose key had no evidence, monitoring without a login) is on the server&apos;s Edit page.
             </p>
             <div className="flex gap-2 flex-wrap">
-              <button onClick={() => router.push(`/clusters/${added.id}?tab=settings`)} className="px-4 rounded-md text-sm font-semibold" style={{ height: 38, background: 'var(--remote)', color: 'var(--remote-ink)' }}>Edit page</button>
-              <button onClick={() => router.push(`/clusters/${added.id}`)} className="px-4 rounded-md text-sm border" style={{ height: 38, borderColor: 'var(--remote)', color: 'var(--remote)' }}>Open {added.name}</button>
+              <button onClick={() => router.push(`/clusters/${added.id}?tab=settings`)} className={`${styles.btn} ${styles.btnPri}`}>Edit page</button>
+              <button onClick={() => router.push(`/clusters/${added.id}`)} className={`${styles.btn} ${styles.btnGhost}`} style={{ borderColor: 'var(--remote)', color: 'var(--remote)' }}>Open {added.name}</button>
             </div>
           </section>
         ) : (
@@ -162,7 +165,7 @@ export default function AddServerPage() {
 
             <Step n={2} title="Make an admin key on that server">
               <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-                Paste these into that server's Shell (in its own Proxmox page: the node, then Shell). The key has full administrator rights,
+                Paste these into that server&apos;s Shell (in its own Proxmox page: the node, then Shell). The key has full administrator rights,
                 the same as you have at home. The last command prints the secret once: copy it for step 3.
               </p>
               <Code lines={commands.length ? commands : ['pveum user add hyperprox@pve --comment "HyperProx"', 'pveum aclmod / -user hyperprox@pve -role Administrator', 'pveum user token add hyperprox@pve main --privsep 0']} />
@@ -170,13 +173,13 @@ export default function AddServerPage() {
 
             <Step n={3} title="Paste the key">
               <div><label style={LABEL}>Token ID</label><input style={INPUT} value={tokenId} onChange={e => setTokenId(e.target.value)} autoCapitalize="none" spellCheck={false} /></div>
-              <div><label style={LABEL}>Token secret (the "value" line)</label><input style={INPUT} type="password" autoComplete="off" value={secret} onChange={e => setSecret(e.target.value)} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" /></div>
+              <div><label style={LABEL}>Token secret (the &quot;value&quot; line)</label><input style={INPUT} type="password" autoComplete="off" value={secret} onChange={e => setSecret(e.target.value)} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" /></div>
               <p className="text-sm font-semibold" style={{ color: 'var(--good)' }}>Saved to the vault when you press Connect. Not in a file, not in the database, not in the logs.</p>
             </Step>
 
             <Step n={4} title="Sign in to its nodes, once (optional)">
               <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-                The login you use for SSH on that server's nodes, usually root. HyperProx checks each node's identity by itself and sends the login only to a node it has verified, then keeps it in the vault.
+                The login you use for SSH on that server&apos;s nodes, usually root. HyperProx checks each node&apos;s identity by itself and sends the login only to a node it has verified, then keeps it in the vault.
                 Leave it empty to add the server without node work.
               </p>
               <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(12rem,1fr))' }}>
@@ -188,7 +191,7 @@ export default function AddServerPage() {
               <label className="flex gap-2 items-start text-sm" style={{ color: 'var(--text)' }}><input type="checkbox" className="mt-1" checked={monitoring} onChange={e => setMonitoring(e.target.checked)} /><span>Install monitoring on its nodes{preview ? `: ${preview.monitoring.join(' ')}` : ' (node_exporter only; nothing is upgraded or removed)'}</span></label>
               <label className="flex gap-2 items-start text-sm" style={{ color: 'var(--text)' }}><input type="checkbox" className="mt-1" checked={sending} onChange={e => setSending(e.target.checked)} /><span>Check that Send files can reach it</span></label>
               {cert && (
-                <div className="flex flex-col gap-2 rounded-lg border p-3" style={{ borderColor: 'var(--warn)' }}>
+                <div className="flex flex-col gap-2 rounded-[10px] border p-3" style={{ borderColor: 'var(--warn)' }}>
                   {why && <p className="text-sm" style={{ color: 'var(--text)' }}>{why}</p>}
                   <div className="font-mono text-sm break-all" style={{ color: 'var(--remote)' }}>{cert.fingerprint}</div>
                   <p className="text-xs" style={{ color: 'var(--text-muted)' }}>For {cert.altNames.join(', ') || cert.subject} · issued by {cert.issuer} · valid until {cert.validTo}. In its Shell:</p>
@@ -201,12 +204,12 @@ export default function AddServerPage() {
               )}
               {preview?.connectingTo && <p className="text-sm font-semibold" style={{ color: 'var(--good)' }}>Connecting to {preview.connectingTo.device}{preview.connectingTo.owner ? ` owned by ${preview.connectingTo.owner}` : ''}.</p>}
               {err && <Notice kind="error">{err}</Notice>}
-              <div><button disabled={!ready || busy !== null} onClick={connect} className="px-5 rounded-md text-sm font-bold disabled:opacity-40" style={{ height: 40, background: 'var(--accent)', color: 'var(--accent-ink)' }}>{busy === 'connect' ? 'Connecting and setting up…' : 'Connect'}</button></div>
+              <div><button disabled={!ready || busy !== null} onClick={connect} className={`${styles.btn} ${styles.btnPri}`}>{busy === 'connect' ? 'Connecting and setting up…' : 'Connect'}</button></div>
               {busy === 'connect' && <BusyNote>Checking the certificate, the token and each node. This can take a minute.</BusyNote>}
             </Step>
           </>
         )}
       </div>
-    </div>
+    </Page>
   )
 }

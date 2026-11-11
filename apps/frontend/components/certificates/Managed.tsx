@@ -1,6 +1,7 @@
 'use client'
 
 import type { CertsManaged } from '@hyperprox/types'
+import { ProgressBar } from '@/components/visual/kit'
 import { Badge, Btn, Empty, Icon, Notice, StagingBadge, VerdictBadge, fmtDate, fmtDateTime } from './ui'
 
 const STATUS_TONE: Record<CertsManaged['status'], 'accent' | 'good' | 'warn' | 'crit' | 'muted'> = {
@@ -13,7 +14,7 @@ export const neverIssued = (m: CertsManaged) => !m.notAfter
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <dt className="font-mono" style={{ fontSize: 11, letterSpacing: '0.1em', color: 'var(--text-dimmer)' }}>{label}</dt>
+      <dt className="font-mono" style={{ fontSize: 11, letterSpacing: '0.1em', color: 'var(--text-dim)' }}>{label}</dt>
       <dd className="mt-0.5 text-sm" style={{ color: 'var(--text)' }}>{children}</dd>
     </div>
   )
@@ -25,7 +26,7 @@ function Card({ m, busy, onIssue, onDeploy }: { m: CertsManaged; busy: boolean; 
   const unmanaged = m.dns.filter(d => !d.zone)
   const lock = busy || renewing
   return (
-    <div className="space-y-4 rounded-[10px] border p-5" style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}>
+    <div className="space-y-4 rounded-[10px] border p-4" style={{ background: 'var(--ground-deep)', borderColor: 'var(--border)' }}>
       <div className="flex flex-wrap items-center gap-2">
         <h3 className="font-display font-semibold" style={{ fontSize: 20, color: 'var(--text-bright)' }}>{m.label}</h3>
         <Badge tone={STATUS_TONE[m.status]}>{renewing ? 'renewing...' : m.status}</Badge>
@@ -44,7 +45,7 @@ function Card({ m, busy, onIssue, onDeploy }: { m: CertsManaged; busy: boolean; 
       {m.lastError && <Notice tone="crit">Last attempt failed: <span className="font-mono text-xs">{m.lastError}</span></Notice>}
 
       <div>
-        <h4 className="mb-1 font-mono" style={{ fontSize: 11, letterSpacing: '0.1em', color: 'var(--text-dimmer)' }}>NAMES AND DNS ZONES</h4>
+        <h4 className="mb-1 font-mono" style={{ fontSize: 11, letterSpacing: '0.1em', color: 'var(--text-dim)' }}>NAMES AND DNS ZONES</h4>
         <ul className="space-y-1 text-sm">
           {m.dns.length === 0 && m.names.map(n => <li key={n} className="font-mono text-xs" style={{ color: 'var(--text-bright)' }}>{n}</li>)}
           {m.dns.map(d => (
@@ -66,6 +67,20 @@ function Card({ m, busy, onIssue, onDeploy }: { m: CertsManaged; busy: boolean; 
         )}
       </div>
 
+      {m.notAfter && m.notBefore && (() => {
+        const total = new Date(m.notAfter).getTime() - new Date(m.notBefore).getTime()
+        const used = total > 0 ? ((Date.now() - new Date(m.notBefore).getTime()) / total) * 100 : null
+        const days = Math.round((new Date(m.notAfter).getTime() - Date.now()) / 86_400_000)
+        return (
+          <div>
+            <div className="mb-1 font-mono text-xs" style={{ color: days <= 7 ? 'var(--crit)' : days <= 21 ? 'var(--warn)' : 'var(--text-soft)' }}>
+              {days < 0 ? `expired ${Math.abs(days)} days ago` : `${days} days left`} (expires {fmtDate(m.notAfter)})
+            </div>
+            <ProgressBar value={used === null ? null : Math.max(0, Math.min(100, used))} variant={days <= 7 ? 'stall' : 'normal'} label={`${m.label} lifetime used`} />
+          </div>
+        )
+      })()}
+
       <dl className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Field label="ISSUER">{m.issuer ?? '—'}</Field>
         <Field label="VALID">{m.notAfter ? `${fmtDate(m.notBefore)} to ${fmtDate(m.notAfter)}` : '—'}</Field>
@@ -76,7 +91,7 @@ function Card({ m, busy, onIssue, onDeploy }: { m: CertsManaged; busy: boolean; 
       </dl>
 
       <div>
-        <h4 className="mb-1 font-mono" style={{ fontSize: 11, letterSpacing: '0.1em', color: 'var(--text-dimmer)' }}>TARGETS</h4>
+        <h4 className="mb-1 font-mono" style={{ fontSize: 11, letterSpacing: '0.1em', color: 'var(--text-dim)' }}>TARGETS</h4>
         {m.targets.length === 0 ? <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No deploy targets. The certificate is issued and kept, not delivered.</p> : (
           <ul className="space-y-1.5">
             {m.targets.map(t => (
@@ -101,5 +116,5 @@ export function ManagedList({ items, busy, onIssue, onDeploy }: {
   items: CertsManaged[]; busy: boolean; onIssue: (m: CertsManaged) => void; onDeploy: (m: CertsManaged) => void
 }) {
   if (!items.length) return <Empty>No managed certificates. Define them under <span className="font-mono">certificates:</span> in <span className="font-mono">config/certs.yaml</span>.</Empty>
-  return <div className="space-y-4 p-5">{items.map(m => <Card key={m.label} m={m} busy={busy} onIssue={onIssue} onDeploy={onDeploy} />)}</div>
+  return <div className="space-y-4">{items.map(m => <Card key={m.label} m={m} busy={busy} onIssue={onIssue} onDeploy={onDeploy} />)}</div>
 }
