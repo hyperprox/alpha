@@ -23,7 +23,9 @@ import { BusyNote, GhostButton, INPUT, LABEL, Modal, Notice, PrimaryButton } fro
 
 const API = '/api/plugins/home-assistant'
 
-export interface Policy { protected: string[]; securityDomains: string[]; everyday: string[]; normalRole: 'operator' | 'admin'; notifySecurity: boolean }
+/** An everyday mark, recorded by HyperProx from what Home Assistant said the device was when it was marked. */
+export interface EverydayMark { entity_id: string; domain: string; device_class: string | null; friendly_name: string }
+export interface Policy { protected: string[]; securityDomains: string[]; everyday: EverydayMark[]; normalRole: 'operator' | 'admin'; notifySecurity: boolean }
 export interface Instance {
   id: string; name: string; clusterId: string | null; insecureTLS: boolean; fingerprint?: string | null; policy: Policy
   url?: string; hasToken?: boolean
@@ -310,7 +312,7 @@ function InstanceForm({ inst, onSaved, onCancel }: { inst: Instance | null; onSa
     name: inst?.name ?? '', url: inst?.url ?? '', token: '', clusterId: inst?.clusterId ?? '', insecureTLS: inst?.insecureTLS ?? false,
     normalRole: inst?.policy.normalRole ?? 'operator', notifySecurity: inst?.policy.notifySecurity ?? true,
     protectedText: (inst?.policy.protected ?? []).join('\n'), domainsText: (inst?.policy.securityDomains ?? []).join(', '),
-    everydayText: (inst?.policy.everyday ?? []).join('\n'), fingerprint: inst?.fingerprint ?? '',
+    everydayText: (inst?.policy.everyday ?? []).map(e => e.entity_id).join('\n'), fingerprint: inst?.fingerprint ?? '',
   })
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -391,7 +393,8 @@ function InstanceForm({ inst, onSaved, onCancel }: { inst: Instance | null; onSa
         <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
           Locks, alarm panels, sirens and garage, gate and door covers are always security devices: admins only, with the master password, a confirm
           step and the device's name typed. So are, until you say otherwise, covers other than blinds, curtains, shades, shutters, awnings and dampers;
-          scenes, scripts and buttons; and switches whose name mentions a door, gate, lock, alarm, opener or entry. API tokens can never use security controls.
+          scenes, scripts and buttons; and switches and toggles, except plug sockets (outlets). Anything whose name sounds like a door, gate, lock or
+          alarm, in English or the common European languages, is always a security device. API tokens can never use security controls.
         </p>
         <label><span style={LABEL}>Everyday controls are for</span>
           <select style={INPUT} value={f.normalRole} onChange={e => set('normalRole', e.target.value)}>
@@ -401,7 +404,7 @@ function InstanceForm({ inst, onSaved, onCancel }: { inst: Instance | null; onSa
           <textarea style={{ ...INPUT, height: 90, padding: 8 }} value={f.protectedText} onChange={e => set('protectedText', e.target.value)} placeholder="switch.water_heater" /></label>
         <label><span style={LABEL}>Everyday devices (entity ids, one per line): scenes, scripts, buttons, or a switch HyperProx took for a door or lock</span>
           <textarea style={{ ...INPUT, height: 70, padding: 8 }} value={f.everydayText} onChange={e => set('everydayText', e.target.value)} placeholder="scene.movie_night" />
-          <small style={{ color: 'var(--text-dimmer)' }}>These lose the confirm step. Locks, alarms, sirens and garage, gate and door covers can never be made everyday. Each change is recorded.</small></label>
+          <small style={{ color: 'var(--text-dimmer)' }}>These lose the confirm step. HyperProx records each one as Home Assistant describes it now; if its name or class changes later, it needs the confirm step again. Locks, alarms, sirens, garage, gate and door covers, and anything whose name sounds like a door, gate, lock or alarm can never be made everyday. Each change is recorded.</small></label>
         <label><span style={LABEL}>Whole kinds to protect too (e.g. climate, cover)</span>
           <input style={INPUT} value={f.domainsText} onChange={e => set('domainsText', e.target.value)} /></label>
         <label className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-soft)' }}>
