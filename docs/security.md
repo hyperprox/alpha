@@ -151,6 +151,17 @@ Three more keys are there only for a while, and then removed:
 | `GRAFANA_ADMIN_PASSWORD` | Grafana reads it only when it first sets up its database. The first owner sign-in moves it to the vault item `hyperprox:system/grafana` and blanks it; `bin/hyperprox-config` then removes the empty line. Grafana recreated without it keeps its admin password (`scripts/test-grafana-admin-absent.sh` proves it against the pinned image). A Grafana that starts on a new database without it would otherwise keep its default admin/admin, so on every owner or admin sign-in, and after the charts are started, HyperProx sets Grafana's admin password to the vault's (making and storing one first if the vault has none). Its login form and basic auth are off, so the password is only for `grafana cli` work: reveal it on the Secrets page, or press reset (`POST /api/monitoring/grafana-admin/reset`), which writes a new one to the vault, reads it back, then sets it in Grafana over stdin; if Grafana refuses it, the vault is put back. |
 | `PROXMOX_TOKEN_SECRET` (and the rest of the Proxmox connection) | Until the first owner sign-in. Setup runs before the vault exists, so the access key HyperProx makes for itself waits here; the first sign-in writes it to the vault, reads it back, and only then blanks it. No copy is kept. |
 
+## The home Proxmox API's certificate
+
+HyperProx never talks to your Proxmox API without checking its certificate (lib/home-tls.ts). A certificate that
+verifies normally (a public CA, the right name, such as a Let's Encrypt one) is accepted and recorded. A
+self-signed one is pinned the first time HyperProx connects (an install that predates this pins its current
+certificate on the first connection after the update), and from then on only that certificate is accepted: a
+different one is refused before anything, the API token included, is sent, with both fingerprints in the error.
+The pins are in `data/home-tls-pins.json` in the install folder (root only). If you replace the certificate on
+purpose, check the new fingerprint on the node (Node, System, Certificates), remove that address's entry from
+the file, and the next connection pins the new one.
+
 ## The node login
 
 Setting things up on your nodes (Settings → Setup checklist, the setup wizard, Catalogue installs, the

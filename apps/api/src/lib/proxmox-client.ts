@@ -3,6 +3,7 @@
 // =============================================================================
 
 import https from 'https'
+import { homeTlsAgent } from './home-tls'
 
 export interface PVENode {
   node: string; status: string; cpu: number; maxcpu: number
@@ -67,18 +68,19 @@ export function assertSafeApiPath(path: string): void {
 export class ProxmoxClient {
   private baseUrl:    string
   private authHeader: string
-  private agent?:     https.Agent
+  private agent:      https.Agent
 
   /**
    * `opts.agent`: how the connection is made. A remote cluster passes a PinnedAgent (lib/clusters/tls-pin.ts),
-   * which accepts only the certificate the owner confirmed. Without one, the home cluster's behaviour is kept.
+   * which accepts only the certificate the owner confirmed. Without one, the home cluster's: a certificate that
+   * verifies normally, or the one pinned for that address (on first use if none is yet; lib/home-tls.ts).
    */
   constructor(host: string, port: number, tokenId: string, tokenSecret: string, opts: { agent?: https.Agent } = {}) {
     // An IPv6 address needs brackets in a URL.
     const h = typeof host === 'string' && host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
     this.baseUrl    = `https://${h}:${port}/api2/json`
     this.authHeader = `PVEAPIToken=${tokenId}=${tokenSecret}`
-    this.agent      = opts.agent
+    this.agent      = opts.agent ?? homeTlsAgent()
   }
 
   /**
@@ -112,8 +114,8 @@ export class ProxmoxClient {
       const opts: https.RequestOptions = {
         hostname: url.hostname.replace(/^\[|\]$/g, ''), port: url.port,
         path: url.pathname + url.search, method,
-        rejectUnauthorized: false,
-        ...(this.agent ? { agent: this.agent } : {}),
+        // Never an unverified connection: the agent checks the certificate before the request is written.
+        agent: this.agent,
         headers: {
           Authorization: this.authHeader,
           ...(body ? { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) } : {}),
