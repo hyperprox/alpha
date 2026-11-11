@@ -85,19 +85,26 @@ function SendModal({ name, fieldNames, onClose }: { name: string; fieldNames?: s
   const [choices, setChoices] = useState<string[]>(fieldNames && fieldNames.length > 1 ? fieldNames : [])
   const [field, setField] = useState('')
   const [link, setLink] = useState<{ url: string; expiresAt?: string } | null>(null)
+  // A Send hands a secret's value out, so the API asks for the master password again, as reveal does.
+  const [confirming, setConfirming] = useState(false)
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault()
+  async function submit(e?: React.FormEvent) {
+    e?.preventDefault()
     setBusy(true); setError('')
     const payload: Record<string, unknown> = { name, hours: Number(hours) || 24, maxViews: Number(maxViews) || 1 }
     if (password) payload.password = password
     if (field) payload.field = field
     const r = await apiJson<{ url: string; expiresAt?: string; fields?: string[] }>('/api/secrets/send', 'POST', payload)
     setBusy(false)
+    if (r.status === 403 && r.code === 'reconfirm_required') { setConfirming(true); return }
     // Several fields and none chosen: the API lists them; ask which one to send.
     if (r.status === 400 && Array.isArray(r.body?.fields)) { setChoices(r.body!.fields!.map(String)); setError('Choose which field to send.'); return }
     if (!r.ok || !r.body?.url) { setError(r.error ?? 'Could not create the Send'); return }
     setLink(r.body)
+  }
+
+  if (confirming) {
+    return <ReconfirmModal onClose={() => setConfirming(false)} onDone={() => { setConfirming(false); void submit() }} />
   }
 
   return (

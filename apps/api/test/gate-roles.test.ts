@@ -18,7 +18,7 @@ test('requiredRole: viewer reads, operator power/terminal, admin the rest, owner
     ['GET',    '/api/proxmox/resources',                  'viewer'],
     ['GET',    '/api/proxmox/summary?x=1',                'viewer'],
     ['GET',    '/ws',                                     'viewer'],
-    ['GET',    '/api/secrets',                            'viewer'],
+    ['GET',    '/api/secrets',                            'admin'],
     ['GET',    '/ws/terminal/term?id=a',                  'operator'],
     ['GET',    '/api/settings/proxmox',                   'admin'],
     ['POST',   '/api/infra/vms/n1/100/lxc/start',         'operator'],
@@ -53,7 +53,7 @@ test('needsReconfirm: destroy, reveal, role changes only', () => {
   assert.equal(needsReconfirm('PUT', '/api/roles/x'), true)
   assert.equal(needsReconfirm('POST', '/api/infra/vms/n1/100/lxc/stop'), false)
   assert.equal(needsReconfirm('GET', '/api/secrets'), false)
-  assert.equal(needsReconfirm('POST', '/api/secrets/send'), false)
+  assert.equal(needsReconfirm('POST', '/api/secrets/send'), true)
 })
 
 test('hasRole ordering', () => {
@@ -124,13 +124,14 @@ test('re-confirmation is per session', async () => {
   assert.equal(d.json().code, 'reconfirm_required')
 })
 
-test('secrets: viewer lists names, cannot reveal; admin reveals after re-confirm; send and generate', async () => {
+test('secrets: viewer cannot list or reveal; admin lists, reveals and sends only after re-confirm; generate', async () => {
   const app = await appP
   broker.items.set('router-admin', { id: 'r1', name: 'router-admin', fields: { password: 's3cret-value' } })
   const o = await signIn(app, 'owner@example.com', 'owner master password')
 
   const v = await signIn(app, 'viewer@example.com', 'viewer master password')
-  const list = await app.inject({ method: 'GET', url: '/api/secrets', headers: { cookie: v.cookie } })
+  assert.equal((await app.inject({ method: 'GET', url: '/api/secrets', headers: { cookie: v.cookie } })).statusCode, 403)
+  const list = await app.inject({ method: 'GET', url: '/api/secrets', headers: { cookie: o.cookie } })
   assert.equal(list.statusCode, 200)
   assert.ok(!list.body.includes('s3cret-value'))
   assert.deepEqual(list.json().data.find((i: any) => i.name === 'router-admin').fields, ['password'])
@@ -138,6 +139,11 @@ test('secrets: viewer lists names, cannot reveal; admin reveals after re-confirm
 
   const need = await app.inject({ method: 'POST', url: '/api/secrets/reveal', headers: { cookie: o.cookie }, payload: { name: 'router-admin' } })
   assert.equal(need.json().code, 'reconfirm_required')
+  const sends = broker.callsTo('createSend').length
+  const needSend = await app.inject({ method: 'POST', url: '/api/secrets/send', headers: { cookie: o.cookie }, payload: { name: 'router-admin' } })
+  assert.equal(needSend.statusCode, 403)
+  assert.equal(needSend.json().code, 'reconfirm_required')
+  assert.equal(broker.callsTo('createSend').length, sends, 'no Send was made before the master password')
   await app.inject({ method: 'POST', url: '/api/auth/reconfirm', headers: { cookie: o.cookie }, payload: { password: 'owner master password' } })
   const rev = await app.inject({ method: 'POST', url: '/api/secrets/reveal', headers: { cookie: o.cookie }, payload: { name: 'router-admin' } })
   assert.equal(rev.statusCode, 200)
