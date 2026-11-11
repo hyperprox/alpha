@@ -927,13 +927,35 @@ the rest of the Websites section, given only a checked log path (absolute, under
 position. It remembers the file's inode and offset, so it carries on where it stopped, follows logrotate
 (the rest of `access.log.1`, then the new file) and starts again when a log is cut in place.
 
-**What is counted, per hour:** requests; page views (a successful GET of a page, not CSS, images or
-scripts); unique visitors; responses by class (2xx, 3xx, 4xx, 5xx); bytes served; the top pages (paths
-only, the query string is dropped); the top referring sites (the host name only, not the page, and not the
-site itself); the missing pages people asked for most (scanners' probes left out); browser, operating system and kind of device (from a small
-built-in User-Agent reader); people and bots apart (known crawlers, monitors, scanners and HTTP libraries,
-missing or too-short User-Agents, and anyone asking for a scanner's path such as `/.env`, for
-`robots.txt`, or for a `.php` page on a static site); and the median and 95th-percentile response time when the log has `$request_time`.
+**What is counted, per hour:** requests; people, unconfirmed visitors and bots, each apart (see below); page
+views by people (opening a page, not CSS, images or scripts); responses by class (2xx, 3xx, 4xx, 5xx); bytes
+served; the top pages (paths only, the query string is dropped); the top referring sites (the host name only,
+not the page, and not the site itself); broken links, the missing pages people asked for; browser, operating
+system and kind of device of people (from a small built-in User-Agent reader); scanner probes by kind; and
+the median and 95th-percentile response time when the log has `$request_time`.
+
+**What counts as a person:** someone whose browser behaved like a browser. A visitor is a person when they
+opened a page and, within two minutes, their browser fetched something the page needs from the site: an
+image, a stylesheet, a script or a font (an answer of "not modified", from the browser's cache, counts too).
+Someone who comes back to a page they loaded earlier that day and gets "not modified" also counts. Once
+confirmed, they count as a person for the rest of the UTC day. Visitors who open pages but never fetch
+anything else are shown apart as **unconfirmed**: most of them are scripts and scanners that pretend to be
+a browser, though a person with images turned off would land here too. **Bots** are known by name
+(crawlers, AI crawlers, uptime and certificate monitors, security scanners such as LeakIX, and HTTP tools
+such as curl, python-requests, Node and Go clients), by a User-Agent no real browser sends (missing, too
+short, years out of date, or one of the fakes scanners copy from each other; Chrome on Android's "Android
+10; K" is real and is not one of them), and by behaviour: asking for `robots.txt`, a request that is not
+HTTP, or a scanner's path makes the visitor a bot for that whole hour, page views and images included.
+
+**HyperProx's own requests are never counted.** Its checks and detection say `HyperProx-…` in the
+User-Agent, and the Metrics tab only shows how many there were ("HyperProx checks").
+
+**Scanner probes** are requests for things a website should not have or this one does not: secret files
+(`.env`, `.git`, keys, backups), admin panels and consoles (`/phpmyadmin`, `/actuator`, WordPress's admin on
+a site that is not WordPress), PHP files (`info.php`, and every `.php` on a static site), and APIs on a
+static site. They are counted by kind on the **Security** card, not as broken links. If the site answered
+one with anything other than a refusal, the card turns red and names the path (operators and up), because
+that could be a file given away; an answer that is just the home page again (a catch-all) is shown apart.
 
 **How visitors are counted without being known:** each request's address and User-Agent are hashed
 (SHA-256) together with the site and a random key made for that day. People are counted once a day by that
@@ -943,7 +965,10 @@ never stored**, and no log line, address or salt is ever sent to the browser. Be
 comes from the last public entry of `X-Forwarded-For`, believed only when the request came from a private
 address (the proxy), so a visitor cannot choose it.
 
-**Kept for:** hourly counts 30 days, daily counts 13 months. Days are UTC days.
+**Kept for:** hourly counts 30 days, daily counts 13 months. Days are UTC days. Counts made before this way
+of telling people apart (when everyone who was not a known bot counted as a person, and HyperProx's own checks
+were counted too) are kept as they were and marked on the Metrics tab as **counted before the accuracy fix**;
+they are not compared with newer ones for the trend or the traffic-spike alert.
 
 **Also on the Metrics tab:** an uptime ring from HyperProx's own check of the public address every 5
 minutes (with its latency), the certificate's days left (read from the public name every 6 hours), the
@@ -953,15 +978,17 @@ whether PHP-FPM runs, what has an update waiting, and the last PHP errors from t
 e-mail addresses and the site's folders taken out. HyperProx never updates WordPress from here.
 
 **Who sees what:** every signed-in role can open the Metrics tab. A viewer sees totals only; operators and
-up also see pages, referrers, missing pages, WordPress and which container it is. Changing anything is admin.
+up also see pages, referrers, missing pages, the paths of scanner probes, WordPress and which container it is. Changing anything is admin.
 
 **Alerts** go through **Settings → Notifications** (the *resources* family, beside Prometheus's alerts), one
 message when a problem starts and one when it clears: the site is **down** (2 failed checks in a row), **server
 errors** above 5% of the requests in the hour so far, or the last hour while this one is quiet (from 20 requests), the **certificate** has under 14 days left,
-and a **traffic spike** of 10 times the usual hour (the week before, from 100 requests). Each limit can be
+and a **traffic spike** of 10 times the usual hour of people's requests (the week before, from 100 requests).
+Bots and scanners never make a traffic spike: when they burst instead, the Metrics tab shows a **scanner burst**
+note, and nothing is sent. Each limit can be
 changed or turned off per site on its **Alerts** tab. The Monitoring page shows a **Websites** panel and the
-site alerts in its feed. Prometheus scrapes `hyperprox_site_*` gauges (up, check latency, visitors, page views,
-requests by class, bot requests, p95, certificate days), labelled by site name only, through the existing
+site alerts in its feed. Prometheus scrapes `hyperprox_site_*` gauges (up, check latency, people, unconfirmed visitors,
+page views, requests by class, bot requests, scanner probes and probes answered, p95, certificate days), labelled by site name only, through the existing
 `/api/plugins/metrics` endpoint and its token, and Grafana has a **Websites** dashboard.
 
 #### Add an existing site
