@@ -68,6 +68,18 @@ before(async () => {
 after(async () => { server?.close(); if (isUnlocked()) await lock('manual'); await app?.close() })
 
 const call = (method: string, url: string, payload?: unknown, headers: Record<string, string> = {}) => app.inject({ method: method as any, url, headers: { cookie, ...headers }, payload: payload as any })
+/** Adding runs as a job (review 7): start it, then poll until it answers, and read that answer like a response. */
+async function add(body: unknown) {
+  const start = await call('POST', '/api/clusters', body)
+  if (start.statusCode !== 202) return { statusCode: start.statusCode, json: () => start.json(), body: start.body }
+  const id = start.json().data.jobId
+  for (let i = 0; i < 200; i++) {
+    const j = (await call('GET', `/api/clusters/add-jobs/${id}`)).json().data
+    if (j.status !== 'running') return { statusCode: j.answer.status, json: () => j.answer.body, body: JSON.stringify(j.answer.body) }
+    await new Promise(r => setTimeout(r, 50))
+  }
+  throw new Error('the add job never finished')
+}
 
 test('add a server: re-confirmed, pinned, admin-checked, and the secret never comes back', { skip: !haveOpenssl && 'openssl not installed' }, async () => {
   const fp = (await call('POST', '/api/clusters/probe-certificate', { address: '127.0.0.1', port })).json().data.fingerprint
@@ -77,18 +89,25 @@ test('add a server: re-confirmed, pinned, admin-checked, and the secret never co
   assert.equal((await call('POST', '/api/clusters', body)).json().code, 'reconfirm_required')
   await call('POST', '/api/auth/reconfirm', { password: 'owner master password' })
 
-  const wrongFp = await call('POST', '/api/clusters', { ...body, fingerprint: 'AB'.repeat(32) })
+  const wrongFp = await add({ ...body, fingerprint: 'AB'.repeat(32) })
   assert.equal(wrongFp.statusCode, 409)
   assert.ok(!seen.some(s => s.includes('/version')), 'a different certificate gets nothing sent to it')
 
   admin = false
-  const weak = await call('POST', '/api/clusters', body)
+  const weak = await add(body)
   assert.equal(weak.statusCode, 422)
   assert.match(weak.json().error, /lacks administrator rights/)
   admin = true
   assert.equal((await call('GET', '/api/clusters')).json().data.length, 1, 'nothing was saved')
 
-  const ok = await call('POST', '/api/clusters', body)
+  const ok = await add(body)
+  // review 7: asking again for the same server resumes it (same name, address and certificate), it is not a duplicate.
+  const again = await add(body)
+  assert.equal(again.statusCode, 200, again.body)
+  assert.equal(again.json().data.cluster.id, ok.json().data.cluster.id)
+  assert.equal((await call('GET', '/api/clusters')).json().data.length, 2, 'still one remote')
+  const other = await add({ ...body, name: 'Another name' })
+  assert.equal(other.statusCode, 409, 'the same address under another name is still refused')
   assert.equal(ok.statusCode, 200, ok.body)
   const id = ok.json().data.cluster.id
   assert.deepEqual(ok.json().data.cluster.nodeAddresses, { pve: '127.0.0.1' }, 'a one-node server is reached on its own address')
@@ -111,4 +130,9 @@ test('add a server: re-confirmed, pinned, admin-checked, and the secret never co
   const gone = await call('DELETE', `/api/clusters/${id}`, { confirmName: 'Remote server' })
   assert.equal(gone.statusCode, 200)
   assert.deepEqual(gone.json().data.cleanup, ['pveum user token remove hyperprox@pve main', 'pveum user delete hyperprox@pve'])
+})
+
+test('review 7: an add job is visible only to the session that started it', async () => {
+  const r = await call('GET', '/api/clusters/add-jobs/0123456789abcdef01234567')
+  assert.equal(r.statusCode, 404)
 })

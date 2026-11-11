@@ -48,6 +48,8 @@ import { installClusterContext }  from './lib/clusters/context'
 import { setClusterStore, loadClusters } from './lib/clusters/registry'
 import { PrismaClusterStore }     from './lib/clusters/store'
 import { setJobStore, PrismaJobStore } from './lib/clusters/files'
+import { setHomeVerifier }      from './lib/hostkey-verify'
+import { verifyHomeHostKeys }   from './lib/setup-checklist'
 import { prismaPlugin }         from './plugins/prisma'
 import { redisPlugin }          from './plugins/redis'
 import { registerGate }         from './lib/gate'
@@ -99,6 +101,8 @@ async function main() {
   await loadClusters().catch(e => server.log.error({ err: e?.message }, '[clusters] could not read the cluster list; only the home cluster is available'))
   installClusterContext(server)
   setJobStore(new PrismaJobStore(server.prisma))
+  // A home node's key learned on first use is verified in the background soon after (lib/hostkey-verify.ts).
+  setHomeVerifier(by => verifyHomeHostKeys(by, { onlyIfNeeded: true }))
 
   // -- Catalogue install wizard: previews, jobs and create marks survive a restart -------------
   // A job that was mid-install is marked interrupted, so its half-made container can be cleaned up.

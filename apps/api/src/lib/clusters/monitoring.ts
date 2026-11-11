@@ -594,3 +594,8 @@ export function intelOutcome(r: { status: string; reason: string }): { status: '
 
 /** Test seam. */
 export function clearMonitoringPlans(): void { plans.clear() }
+
+/** The steps of a preview, by id (what it would run), so a caller can check them against what was shown. */
+export function planSteps(planId: string): Array<{ node: string; what: string; script: string }> {
+  return (plans.get(planId)?.steps ?? []).map(s => ({ node: s.node, what: s.what, script: s.script }))
+}

@@ -573,9 +573,15 @@ pct exec "$CTID" -- bash -c "
   set_kv INSTALL_OLLAMA '$([ "$A_AI" = yes ] && echo true || echo false)'
 " && ok "Charts: ${A_CHARTS} · local AI: ${A_AI}"
 
+# The cluster's own record of every node's SSH host key, and this node's own key files, read HERE, as root on a
+# node: public keys only. HyperProx takes it as the anchor for verifying its nodes' keys by itself, so nobody has to
+# compare fingerprints (lib/hostkey-verify.ts; the same output as the command it shows for installs made elsewhere).
+_hostrec="$( { echo "@@hpx local $(basename "$(readlink -f /etc/pve/local)")"; for f in /etc/pve/nodes/*/ssh_known_hosts; do [ -f "$f" ] && echo "@@hpx node $(basename "$(dirname "$f")")" && cat -- "$f"; done; echo "@@hpx priv"; cat /etc/pve/priv/known_hosts 2>/dev/null; echo "@@hpx own"; cat /etc/ssh/ssh_host_*_key.pub; echo "@@hpx end"; } 2>/dev/null | base64 -w0 || true)"
+
 _answers="$(mktemp)"; chmod 600 "$_answers"
 {
-  printf '{"source":"bootstrap","answers":{"node-health":%s,"power":%s,"gpu":%s,"charts":%s,"proxmox-metrics":%s,"dns":%s,"ai":%s,"igpu-access":%s},"results":[' \
+  printf '{"source":"bootstrap","hostRecord":"%s","answers":{' "$_hostrec"
+  printf '"node-health":%s,"power":%s,"gpu":%s,"charts":%s,"proxmox-metrics":%s,"dns":%s,"ai":%s,"igpu-access":%s},"results":[' \
     "$([ "$A_NODE_HEALTH" = yes ] && echo true || echo false)" "$([ "$A_POWER" = yes ] && echo true || echo false)" \
     "$([ "$A_GPU" = yes ] && echo true || echo false)" "$([ "$A_CHARTS" = yes ] && echo true || echo false)" \
     "$([ "$A_PVE_METRICS" = yes ] && echo true || echo false)" "$([ "$A_DNS" = yes ] && echo true || echo false)" \

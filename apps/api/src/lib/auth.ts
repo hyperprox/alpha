@@ -56,6 +56,18 @@ export function markReconfirmed(sid: string, now = Date.now()): number {
   return s.reconfirmedUntil
 }
 
+/** Whether the session re-entered the master password within the last `ms` (a second, fresh re-confirmation). */
+export function reconfirmedWithin(sid: string, ms: number, now = Date.now()): boolean {
+  const s = sessions.get(sid)
+  return !!s && s.reconfirmedUntil > now && s.reconfirmedUntil - RECONFIRM_SECONDS * 1000 > now - ms
+}
+
+/** End the session's re-confirmation, so the next re-confirmed request asks for the master password again. */
+export function dropReconfirm(sid: string): void {
+  const s = sessions.get(sid)
+  if (s) { s.reconfirmedUntil = 0; snapshotChanged() }
+}
+
 export function isReconfirmed(sid: string, now = Date.now()): boolean {
   const s = sessions.get(sid)
   return !!s && s.reconfirmedUntil > now

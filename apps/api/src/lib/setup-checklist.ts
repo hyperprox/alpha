@@ -26,8 +26,10 @@ import { syncTargets, lastSync } from './targets'
 import { exporterStatus, provisionPveExporter, pveAccessFromEnv } from './pve-exporter'
 import { GoDaddyClient } from './godaddy-client'
 import { ensureGrafanaAdmin } from './grafana-admin'
-import { listPins, pinId, confirmPin, PinConfirmRefusal, type PinSource } from './hostkey-pins'
+import { listPins, pinId, confirmPin, PinConfirmRefusal, pinnedKey, pinSource, isConfirmedSource, evidenceWords, isRemotePinId, type PinRow } from './hostkey-pins'
 import { probeHostKey } from './node-exec'
+import { verifyNodes, productionVerifyDeps, saveAnchors, ANCHOR_COMMAND, VerifyRefusal, AnchorReplaceRefusal, type NodeVerdict, type VerifyDeps } from './hostkey-verify'
+import { publish } from './notify'
 
 const run = promisify(execFile)
 
@@ -47,6 +49,8 @@ export interface ChecklistItem {
   /** What pressing the button would do, in words; null when there is nothing to do. */
   action: string | null
   automatic?: boolean
+  /** Host keys: the one-line command to run on any node when HyperProx has nothing trusted to check against. */
+  command?: string
 }
 
 export interface ChecklistDeps {
@@ -66,9 +70,11 @@ export interface ChecklistDeps {
   syncTargets(): Promise<unknown>
   saveNodeLogin(node: string, cred: TerminalCredential): Promise<void>
   /** Every host-key pin, with where it came from. */
-  pins(): Promise<Array<{ id: string; fingerprint: string; source: PinSource | null; confirmed: boolean }>>
+  pins(): Promise<PinRow[]>
   /** The key a host presents now (nothing is sent to it). */
   presentedKey(host: string, port: number): Promise<string>
+  /** Verify the home nodes' host keys with evidence, no comparing by hand (lib/hostkey-verify.ts). */
+  verifyHostKeys?(by: string): Promise<NodeVerdict[]>
 }
 
 export function productionChecklistDeps(): ChecklistDeps {
@@ -108,6 +114,7 @@ export function productionChecklistDeps(): ChecklistDeps {
     saveNodeLogin: (node, cred) => saveCredential(`node-${node}`, cred),
     pins: () => listPins(),
     presentedKey: (host, port) => probeHostKey(host, port, 5000),
+    verifyHostKeys: by => verifyHomeHostKeys(by),
   }
 }
 
@@ -255,7 +262,7 @@ export class ChecklistRefusal extends Error {
 /** Starts one item. One at a time: node changes never overlap. Returns at once; poll getJob(). */
 export async function startItem(id: ItemId, body: any, by: string, deps: ChecklistDeps = productionChecklistDeps()): Promise<Job> {
   if (active) throw new ChecklistRefusal(`"${active.item}" is still running. Wait for it to finish.`, 409)
-  if (!['node-health', 'power', 'gpu', 'igpu-access', 'charts', 'proxmox-metrics', 'dns', 'ai', 'targets', 'old-backups'].includes(id)) throw new ChecklistRefusal('No such item', 404)
+  if (!['node-health', 'power', 'gpu', 'igpu-access', 'charts', 'proxmox-metrics', 'dns', 'ai', 'targets', 'old-backups', 'host-keys'].includes(id)) throw new ChecklistRefusal('No such item', 404)
   // The DNS key is checked before the job exists, so a wrong key is an answer, not a failed job.
   if (id === 'dns') {
     const key = typeof body?.key === 'string' ? body.key.trim() : ''
@@ -283,6 +290,12 @@ export async function startItem(id: ItemId, body: any, by: string, deps: Checkli
 
 async function runItem(job: Job, by: string, deps: ChecklistDeps): Promise<void> {
   const id = job.item
+  if (id === 'host-keys') {
+    const verdicts = await (deps.verifyHostKeys ?? verifyHomeHostKeys)(by)
+    if (!verdicts.length) job.results.push({ label: 'Host keys', status: 'already', reason: 'every node is already verified or confirmed' })
+    for (const r of verdicts) job.results.push({ node: r.node, label: 'Host key', status: VERDICT_STATUS[r.state], reason: r.why })
+    return
+  }
   if (id === 'node-health' || id === 'power' || id === 'gpu' || id === 'igpu-access') {
     const det = await detectCluster(deps.hardware)
     const plan = hardware.planNodeWork({ [id]: true }, det.nodes)
@@ -356,18 +369,23 @@ async function runItem(job: Job, by: string, deps: ChecklistDeps): Promise<void>
 // ── Host keys ────────────────────────────────────────────────────────────────
 
 const SOURCE_WORDS: Record<string, string> = {
-  terminal: 'confirmed in the Terminal', confirmed: 'confirmed by an admin', wizard: 'learned by the setup wizard, not confirmed',
-  api: 'learned by HyperProx on first use, not confirmed', 'terminal-auto': 'learned when it was opened in the Terminal, not confirmed', none: 'pinned before HyperProx kept track, not confirmed',
+  terminal: 'confirmed in the Terminal', confirmed: 'confirmed by an admin', verified: 'verified automatically',
+  wizard: 'learned by the setup wizard, not verified yet', api: 'learned by HyperProx on first use, not verified yet',
+  'terminal-auto': 'learned when it was opened in the Terminal, not verified yet', none: 'pinned before HyperProx kept track, not verified yet',
 }
+const VERDICT_STATUS: Record<NodeVerdict['state'], string> = { verified: 'done', already: 'already', 'no-evidence': 'skipped', blocked: 'failed' }
+
+const pinWords = (p: PinRow) => p.source === 'verified' ? evidenceWords(p.evidence ?? null) : `${p.fingerprint}: ${SOURCE_WORDS[p.source ?? 'none']}`
 
 async function hostKeyItem(deps: ChecklistDeps, nodes: string[], addrs: Record<string, string>): Promise<ChecklistItem> {
-  const pins = await deps.pins().catch(() => [])
+  // A remote server's pins are scoped to it and shown on its own Edit page, not here.
+  const pins = (await deps.pins().catch(() => [])).filter(p => !isRemotePinId(p.id))
   const byId = new Map(pins.map(p => [p.id, p]))
   const rows: NodeRow[] = await Promise.all(nodes.map(async node => {
     const host = addrs[node] ?? node, port = 22
     const p = byId.get(pinId(host, port))
     byId.delete(pinId(host, port))
-    if (p) return { node, host, port, fingerprint: p.fingerprint, state: p.confirmed ? 'done' as const : 'not-done' as const, reason: `${p.fingerprint}: ${SOURCE_WORDS[p.source ?? 'none']}` }
+    if (p) return { node, host, port, fingerprint: p.fingerprint, state: p.confirmed ? 'done' as const : 'not-done' as const, reason: pinWords(p) }
     const now = await deps.presentedKey(host, port).catch(() => null)
     return now ? { node, host, port, fingerprint: now, state: 'not-done' as const, reason: `${now}: not pinned yet` }
       : { node, host, port, state: 'not-done' as const, reason: 'not pinned yet, and it did not answer on port 22' }
@@ -376,12 +394,69 @@ async function hostKeyItem(deps: ChecklistDeps, nodes: string[], addrs: Record<s
   for (const p of byId.values()) {
     if (p.confirmed) continue
     const m = /^(.*):(\d+)$/.exec(p.id)
-    rows.push({ node: p.id, host: m ? m[1] : p.id, port: m ? Number(m[2]) : 22, fingerprint: p.fingerprint, state: 'not-done', reason: `${p.fingerprint}: ${SOURCE_WORDS[p.source ?? 'none']}` })
+    rows.push({ node: p.id, host: m ? m[1] : p.id, port: m ? Number(m[2]) : 22, fingerprint: p.fingerprint, state: 'not-done', reason: pinWords(p) })
   }
+  const state = roll(rows)
   return {
-    id: 'host-keys', ask: "Have you checked each node's SSH host key?", notes: [], rows, state: roll(rows), needsNodeLogin: false, action: null,
-    what: 'HyperProx sends a node its login only when the node shows a key you confirmed. Compare each fingerprint with the one the node prints on its console (for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf $f; done) and press confirm.',
+    id: 'host-keys', ask: "Are your nodes' SSH host keys verified?", notes: [], rows, state, needsNodeLogin: false,
+    action: state === 'done' || state === 'not-applicable' ? null : 'Verify automatically',
+    what: 'HyperProx sends a node its login only when the node shows a key that is verified or confirmed. It verifies them by itself, ' +
+      "against your cluster's own record of each node's key, read on a node when HyperProx was installed from one, and then through nodes " +
+      'already verified, or over Tailscale or WireGuard. It does this after you sign in and whenever it meets a new node; there is nothing ' +
+      "to press when they show verified. If HyperProx was not installed from a node, run the command below once on any node's own " +
+      "console (its screen, IPMI or iKVM, or an SSH session whose key you already verified; not this HyperProx's Terminal on a key " +
+      'that is not verified yet) and paste what it prints.',
+    ...(state === 'done' || state === 'not-applicable' ? {} : { command: ANCHOR_COMMAND }),
   }
+}
+
+/**
+ * Verify the home nodes' keys (lib/hostkey-verify.ts), with their saved logins. `onlyIfNeeded`: do nothing when every
+ * node is already verified or confirmed (the run after each owner sign-in).
+ */
+export async function verifyHomeHostKeys(by: string, o: { onlyIfNeeded?: boolean; hardware?: HardwareDeps; verify?: VerifyDeps } = {}): Promise<NodeVerdict[]> {
+  // Cheap first: with no pin left unverified there is nothing to do, and Proxmox is not asked anything. (A node
+  // HyperProx has never connected to has no pin; its first connection pins it and schedules this run.)
+  if (o.onlyIfNeeded && !(await listPins().catch(() => [])).some(p => !p.confirmed && !isRemotePinId(p.id))) return []
+  const hw = o.hardware ?? productionHardwareDeps()
+  const [names, addrs] = await Promise.all([hw.nodes(), hw.addresses()])
+  if (o.onlyIfNeeded) {
+    const open = await Promise.all(names.map(async n => {
+      const host = addrs[n] ?? n
+      const [pin, src] = await Promise.all([pinnedKey(host, 22), pinSource(host, 22)])
+      return !pin || !isConfirmedSource(src)
+    }))
+    if (!open.some(Boolean)) return []
+  }
+  const nodes = await Promise.all(names.map(async n => ({ name: n, address: addrs[n] ?? n, cred: await hw.login(n), alsoKnownAs: addrs[n] && addrs[n] !== n ? [n] : [] })))
+  return verifyNodes({ cluster: 'Home cluster', anchorScope: 'home', scope: 'home', nodes, by }, o.verify ?? productionVerifyDeps())
+}
+
+/**
+ * The output of ANCHOR_COMMAND, run by the admin on one of their nodes and pasted here: kept as the home cluster's
+ * anchor (public keys only), then verified against as usual. Re-confirmed like every change here.
+ */
+export async function saveHostKeyAnchor(input: any, by: string, o: { replaceInstaller?: boolean } = {}): Promise<{ nodes: string[]; replaced: string[] }> {
+  const output = typeof input?.output === 'string' ? input.output : ''
+  if (!output.trim()) throw new ChecklistRefusal('Paste what the command printed.')
+  try {
+    const r = await saveAnchors('home', output, 'pasted', o)
+    await auditCredentialUse('host_key.anchor.save', 'cluster:home', { by, source: 'pasted', nodes: r.nodes })
+    if (r.replaced.length) await anchorReplaced('Home cluster', 'cluster:home', by, r.replaced)
+    return r
+  } catch (e: any) {
+    if (e instanceof VerifyRefusal) throw new ChecklistRefusal(e.message, 422)
+    if (e instanceof AnchorReplaceRefusal) throw Object.assign(new ChecklistRefusal(e.message, 409), { code: 'anchor_installer' })
+    throw e
+  }
+}
+
+/** A pasted anchor replaced different keys: audited, and an alert goes out (it may be a rebuild, or not). */
+export async function anchorReplaced(cluster: string, resource: string, by: string, nodes: string[]): Promise<void> {
+  await auditCredentialUse('host_key.anchor.replace', resource, { by, nodes })
+  await publish({ type: 'hostkey.anchor', severity: 'warning', title: `${cluster}: the host keys HyperProx checks against were replaced`,
+    lines: [`By ${by}, for ${nodes.join(', ')}. If you did not just paste a node's output yourself, check the keys on each node's own console.`],
+    where: 'Setup checklist', link: '/settings/setup-checklist', fingerprint: `hostkey-anchor:${resource}` }).catch(() => undefined)
 }
 
 /** Confirm one fingerprint the admin compared on the machine. It must be the key presented right now. */

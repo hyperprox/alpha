@@ -241,11 +241,16 @@ function promQuery(base = 'http://127.0.0.1:9090') {
   }
 }
 
-/** Give the API what is held, over loopback with the setup key, then forget it here. */
-function handOff(apiPort, setupKey) {
+/**
+ * Give the API what is held, over loopback with the setup key, then forget it here. `hostRecord` is what bootstrap.sh
+ * read on the node it ran on (the cluster's record of its nodes' host keys; public keys only): it rides the same
+ * one-time hand-over and becomes the anchor HyperProx verifies its nodes' keys against.
+ */
+function handOff(apiPort, setupKey, hostRecord = null) {
   const body = JSON.stringify({
     ...(held.nodeLogin ? { nodeLogin: held.nodeLogin } : {}),
     ...(held.godaddy ? { godaddy: held.godaddy } : {}),
+    ...(hostRecord ? { hostRecord } : {}),
   })
   if (body === '{}') return Promise.resolve({ ok: true, held: { nodeLogin: null, godaddy: false } })
   return new Promise(resolve => {

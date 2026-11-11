@@ -15,7 +15,7 @@ import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 
 type State = 'done' | 'partly' | 'not-done' | 'not-applicable'
 interface Row { node: string; state: State; reason: string; host?: string; port?: number; fingerprint?: string }
-interface Item { id: string; ask: string; what: string; notes: string[]; state: State; rows: Row[]; needsNodeLogin: boolean; action: string | null; automatic?: boolean }
+interface Item { id: string; ask: string; what: string; notes: string[]; state: State; rows: Row[]; needsNodeLogin: boolean; action: string | null; automatic?: boolean; command?: string }
 interface Job { id: string; item: string; status: 'running' | 'done' | 'failed'; results: Array<{ node?: string; label: string; status: string; reason: string }>; checks: Array<{ node?: string; status: string; reason: string }> }
 interface Data { summary: string; logins: Record<string, boolean>; items: Item[]; running: Job | null }
 
@@ -37,6 +37,7 @@ export default function SetupChecklistPage() {
   const [login, setLogin] = useState({ username: 'root', password: '', privateKey: '' })
   const [loginRows, setLoginRows] = useState<Array<{ node: string; ok: boolean; reason: string }> | null>(null)
   const [dns, setDns] = useState({ key: '', secret: '' })
+  const [anchorOut, setAnchorOut] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
   // Every change here asks for the master password again; the request is retried once it is confirmed.
   const [confirm, setConfirm] = useState<null | (() => void)>(null)
@@ -103,6 +104,23 @@ export default function SetupChecklistPage() {
     } catch (e: any) { setError(e.message) } finally { setBusy(null) }
   }
 
+  // The one-line command's output from one of the nodes: kept as what keys are checked against, then verified.
+  async function saveAnchor(item: Item, replaceInstaller = false) {
+    setBusy('anchor'); setError(null)
+    try {
+      const j = await send('POST', '/api/setup-checklist/host-keys/anchor', { output: anchorOut, replaceInstaller }, () => saveAnchor(item, replaceInstaller))
+      if (!j) return
+      // It would replace keys the installer read on the node itself: only on a second, explicit confirmation.
+      if (j.code === 'anchor_installer') {
+        if (window.confirm(`${j.error}\n\nReplace them?`)) return saveAnchor(item, true)
+        return
+      }
+      if (!j.success) throw new Error(j.error)
+      setAnchorOut('')
+      await run(item)
+    } catch (e: any) { setError(e.message) } finally { setBusy(null) }
+  }
+
   async function confirmKey(r: Row) {
     setBusy(`key-${r.node}`); setError(null)
     try {
@@ -114,6 +132,9 @@ export default function SetupChecklistPage() {
   }
 
   const missingLogin = data ? Object.entries(data.logins).filter(([, v]) => !v).map(([n]) => n) : []
+  // Host keys: the manual compare is offered only for a key Verify automatically found no evidence for, and for a
+  // pin that is not a home node (a guest or a hand-added host), which has no cluster record to check against.
+  const noEvidence = new Set(job?.item === 'host-keys' && job.status !== 'running' ? job.results.filter(x => x.status === 'skipped' && x.node).map(x => x.node!) : [])
 
   return (
     <div className="min-h-full p-4 sm:p-8" style={{ background: 'var(--ground)' }}>
@@ -164,11 +185,19 @@ export default function SetupChecklistPage() {
             {item.rows.length > 0 && (
               <ul className="mt-3 text-sm space-y-1">
                 {item.rows.map(r => <li key={r.node} className="flex gap-2 items-center"><Tag s={r.state} /><span className="font-mono">{r.node}</span><span style={{ color: 'var(--text-muted)' }}>{r.reason}</span>
-                  {item.id === 'host-keys' && r.state === 'not-done' && r.fingerprint && <GhostButton disabled={!!busy} title="Only after comparing it with the fingerprint the machine prints" onClick={() => confirmKey(r)}>Confirm this key</GhostButton>}
+                  {item.id === 'host-keys' && r.state === 'not-done' && r.fingerprint && (noEvidence.has(r.node) || r.node.includes(':')) && <GhostButton disabled={!!busy} title="HyperProx found no evidence for this key. Compare it with the fingerprint the machine prints (for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf $f; done), then confirm." onClick={() => confirmKey(r)}>Compare by hand and confirm</GhostButton>}
                   {item.id === 'igpu-access' && r.state === 'done' && <GhostButton disabled={!!busy} onClick={() => igpu(r.node, 'undo')}>Undo</GhostButton>}
                   {item.id === 'igpu-access' && r.state === 'not-done' && data.logins[r.node] && <GhostButton disabled={!!busy} onClick={() => igpu(r.node, 'apply')}>Open on this node</GhostButton>}
                 </li>)}
               </ul>
+            )}
+            {item.id === 'host-keys' && item.command && (
+              <div className="mt-3 text-sm flex flex-col gap-2">
+                <div style={{ color: 'var(--text-muted)' }}>Not installed from a node? Run this once on any node's own console (its screen, IPMI or iKVM, or an SSH session whose key you already checked; not HyperProx's Terminal on a key that is not verified yet), and paste what it prints (public keys only):</div>
+                <pre className="rounded p-2 overflow-x-auto font-mono text-xs" style={{ background: 'var(--ground-deep)', color: 'var(--text-bright)' }}>{item.command}</pre>
+                <textarea style={{ ...INPUT, height: 70, fontFamily: 'var(--font-mono, monospace)' }} value={anchorOut} onChange={e => setAnchorOut(e.target.value)} placeholder="Paste the output here" />
+                <div><PrimaryButton disabled={!anchorOut.trim() || !!busy} onClick={() => saveAnchor(item)}>{busy === 'anchor' ? 'Verifying…' : 'Use it and verify'}</PrimaryButton></div>
+              </div>
             )}
             {item.id === 'dns' && (
               <div className="grid gap-3 sm:grid-cols-2 mt-3">

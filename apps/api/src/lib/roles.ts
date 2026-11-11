@@ -153,8 +153,8 @@ const REMOTE_JOBS = /^\/api\/remote\/(exclusions$|(v1\/)?jobs(\/|$)|machines\/[^
 
 // Clusters (routes/clusters.ts): the list, the Command center and task status are viewer; guest power is operator,
 // as it is on the home pages; everything else is admin, reads included (scans and node lists map machines).
-// Storing or replacing a credential (a sending key and a Plex token included), confirming a certificate or host
-// key, deleting and installing also need the master password re-entered. Starting a copy does not: HyperProx's
+// Storing or replacing a credential (a sending key and a Plex token included), confirming or verifying a certificate
+// or host key, deleting and installing also need the master password re-entered. Starting a copy does not: HyperProx's
 // copy only adds files (it never replaces or deletes one that was there).
 const CLUSTERS = /^\/api\/clusters(\/|$)/
 const CLUSTERS_VIEW = /^\/api\/clusters(\/overview|\/[^/]+\/tasks(\/[^/]+\/[^/]+)?|\/files\/jobs(\/[^/]+)?)?$/
@@ -164,6 +164,8 @@ const CLUSTERS_RECONFIRM: Array<[string, RegExp]> = [
   ['DELETE', /^\/api\/clusters\/[^/]+$/],
   ['POST',   /^\/api\/clusters\/[^/]+\/(certificate|token|connection)$/],
   ['POST',   /^\/api\/clusters\/[^/]+\/nodes\/[^/]+\/login$/],
+  // Verifying host keys changes pins (and may save a node login): a person with the master password only.
+  ['POST',   /^\/api\/clusters\/[^/]+\/verify-keys$/],
   ['DELETE', /^\/api\/clusters\/[^/]+\/nodes\/[^/]+\/login$/],
   ['POST',   /^\/api\/clusters\/[^/]+\/guests\/[^/]+\/(lxc|qemu)\/\d+\/delete$/],
   ['POST',   /^\/api\/clusters\/[^/]+\/monitoring\/apply$/],

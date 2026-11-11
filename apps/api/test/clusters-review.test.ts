@@ -150,7 +150,8 @@ test('2: PATCH takes only name and note; address and node addresses go through t
   await addRemote()
   await asOwner(async () => {
     await saveRemoteNodeLogin(REMOTE, 'pve', JSON.stringify({ username: 'root', port: 22, password: 'pw' }))
-    await recordPin('10.0.0.9', 22, 'SHA256:' + 'A'.repeat(43), 'confirmed')
+    await runInCluster(REMOTE, () => recordPin('10.0.0.9', 22, 'SHA256:' + 'A'.repeat(43), 'confirmed'))
+    await recordPin('10.0.0.9', 22, 'SHA256:' + 'B'.repeat(43), 'confirmed')   // a home machine on the same address
   })
   assert.equal((await call('PATCH', `/api/clusters/${REMOTE}`, { nodeAddresses: { pve: '203.0.113.5' } })).statusCode, 422)
   assert.equal((await call('PATCH', `/api/clusters/${REMOTE}`, { name: 'Renamed' })).statusCode, 200, 'a rename stays free')
@@ -161,7 +162,8 @@ test('2: PATCH takes only name and note; address and node addresses go through t
   assert.equal(r.statusCode, 200, r.body)
   assert.deepEqual(r.json().loginsCleared, ['pve'])
   assert.deepEqual(await asOwner(() => remoteNodeLogins(REMOTE)), [], 'the login is gone, so it cannot be offered to the new address')
-  assert.equal(await asOwner(() => pinnedKey('10.0.0.9', 22)), null, 'and the old pin with it')
+  assert.equal(await asOwner(() => runInCluster(REMOTE, () => pinnedKey('10.0.0.9', 22))), null, 'and the old pin with it')
+  assert.equal(await asOwner(() => pinnedKey('10.0.0.9', 22)), 'SHA256:' + 'B'.repeat(43), 'a home pin on the same address is not touched')
   assert.equal(clusterRow(REMOTE)!.nodeAddresses.pve, '203.0.113.5')
 })
 

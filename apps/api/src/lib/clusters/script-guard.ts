@@ -3,8 +3,12 @@
 //
 //  A safety net, not a sandbox: HyperProx's own scripts are fixed text, and this catches a mistake in one of
 //  them (or a value that slipped into one) before it reaches a node. It refuses any script naming corosync,
-//  pve-cluster or pmxcfs, and any /etc/pve path except the two HyperProx documents: a container's own config
-//  file (the guest config editor's write, and its temp files) and reading ceph.conf (the hardware probe).
+//  pve-cluster or pmxcfs, and any /etc/pve path except the HyperProx documents: a container's own config
+//  file (the guest config editor's write, and its temp files), reading ceph.conf (the hardware probe), and
+//  reading the cluster's record of its nodes' SSH host keys (host-key verification). That last one is allowed
+//  only as a whole line of exactly `cat -- <path> 2>/dev/null`, in a script made of nothing but those reads, its
+//  `echo "@@hpx ..."` markers and `true`: a read, never a write, and no other line that could redefine `cat`.
+//  Every check runs on the script as bash reads it, with backslash-newline continuations joined.
 // =============================================================================
 
 const ALLOWED_PVE = [
@@ -12,11 +16,26 @@ const ALLOWED_PVE = [
   /\/etc\/pve\/ceph\.conf/g,
 ]
 
+// The record reads, as whole lines only (leading spaces allowed). Nothing before or after on that line.
+const RECORD_READ_LINE = /^[ \t]*cat -- \/etc\/pve\/(priv\/known_hosts|nodes\/[A-Za-z0-9.-]+\/ssh_known_hosts) 2>\/dev\/null[ \t]*$/
+// The only other lines a record-reading script may have: the section markers HyperProx writes, and `true`.
+const RECORD_SCRIPT_LINE = /^[ \t]*(echo "@@hpx (priv|end|node [A-Za-z0-9.-]+)"|true)[ \t]*$/
+
 export function assertSafeScript(script: string): void {
-  if (/corosync|pve-cluster|pmxcfs/i.test(script)) {
+  // Checked as bash reads it: a backslash at the end of a line joins it to the next, so the checks see the join.
+  const joined = String(script).replace(/\\\r?\n/g, '')
+  if (/corosync|pve-cluster|pmxcfs/i.test(joined)) {
     throw new Error('Refused: this script names corosync or pve-cluster, which HyperProx never touches on any cluster.')
   }
-  let rest = script
+  const lines = joined.split('\n')
+  if (lines.some(l => RECORD_READ_LINE.test(l))) {
+    // A script that reads the record is HyperProx's fixed reading script and nothing else, so no line of it can
+    // redefine `cat` (an alias, a function, PATH) or do anything besides read.
+    const other = lines.find(l => l.trim() && !RECORD_READ_LINE.test(l) && !RECORD_SCRIPT_LINE.test(l))
+    if (other !== undefined) throw new Error('Refused: a script that reads the host-key record may contain only those reads and its own markers.')
+    return
+  }
+  let rest = joined
   for (const re of ALLOWED_PVE) rest = rest.replace(re, '')
   if (/\/etc\/pve\b/.test(rest)) throw new Error('Refused: this script names a path under /etc/pve that HyperProx does not write on a remote cluster.')
 }
