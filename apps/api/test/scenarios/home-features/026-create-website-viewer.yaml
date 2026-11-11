@@ -1,0 +1,7 @@
+id: home-026-a-viewer-cannot-plan-a-website
+prompt: "Create a WordPress website at blog.example.com"
+role: viewer
+expect:
+  kind: answer
+  includes: ["Making a website needs the admin role, and you are signed in as viewer"]
+found_by: "2026-11-11 AI update: the wizard's own role"

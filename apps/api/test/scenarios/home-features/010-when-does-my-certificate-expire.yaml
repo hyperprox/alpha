@@ -1,0 +1,6 @@
+id: home-010-when-does-my-certificate-expire
+prompt: "When does my certificate expire?"
+expect:
+  kind: answer
+  includes: ["docs.example.com in 12 days"]
+found_by: "2026-11-11 AI update"

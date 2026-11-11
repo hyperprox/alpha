@@ -1,0 +1,9 @@
+id: home-021-smart-test-card
+prompt: "Run a quick SMART test on disk 3 of nas1"
+expect:
+  kind: action
+  action: qnap-smart
+  role: operator
+  needs_reconfirm: false
+  includes: ["Quick SMART test on disk 3 of nas1"]
+found_by: "2026-11-11 AI update"

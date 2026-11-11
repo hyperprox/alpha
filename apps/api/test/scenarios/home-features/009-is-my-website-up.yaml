@@ -1,0 +1,6 @@
+id: home-009-is-my-website-up
+prompt: "Is my website up?"
+expect:
+  kind: answer
+  includes: ["blog is up: https://blog.example.com answers.", "docs is not answering at https://docs.example.com: it answered 502."]
+found_by: "2026-11-11 AI update"

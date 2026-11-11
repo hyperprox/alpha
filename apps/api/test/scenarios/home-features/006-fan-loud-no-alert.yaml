@@ -1,0 +1,6 @@
+id: home-006-fan-loud-on-a-quiet-node
+prompt: "Why is the fan so loud on node1?"
+expect:
+  kind: answer
+  includes: ["No fan, temperature or graphics card alert is firing on node1"]
+found_by: "2026-11-11 AI update: no alert is not a guess"

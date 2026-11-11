@@ -1,0 +1,7 @@
+id: home-024-create-a-website-asks-for-what-is-missing
+prompt: "Make a static website"
+then: ["docs.example.com"]
+expect:
+  kind: answer
+  includes: ["What is the site's title?"]
+found_by: "2026-11-11 AI update: the ask-for-missing loop carries the draft between turns"

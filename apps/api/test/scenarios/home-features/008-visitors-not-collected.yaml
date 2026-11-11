@@ -1,0 +1,7 @@
+id: home-008-visitors-not-collected
+prompt: "How many visitors did blog.example.com get today?"
+metrics: none
+expect:
+  kind: answer
+  includes: ["Visitor figures are not collected yet"]
+found_by: "2026-11-11 AI update: before the site-metrics module lands, it says so instead of zero"

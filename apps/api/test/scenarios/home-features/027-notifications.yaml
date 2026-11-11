@@ -1,0 +1,6 @@
+id: home-027-notification-channels
+prompt: "Which notification channels do I have?"
+expect:
+  kind: answer
+  includes: ["Ops (discord): on; receives warning and above", "last delivery failed (http_404)"]
+found_by: "2026-11-11 AI update: never a URL or a chat id"

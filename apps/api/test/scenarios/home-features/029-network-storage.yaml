@@ -1,0 +1,6 @@
+id: home-029-network-storage
+prompt: "How full is the NFS network storage?"
+expect:
+  kind: answer
+  includes: ["qnap-media: 2 shares on 1 volume, 75% used"]
+found_by: "2026-11-11 AI update: named by its Proxmox storage, never its server"

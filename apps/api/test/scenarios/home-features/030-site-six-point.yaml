@@ -1,0 +1,6 @@
+id: home-030-six-point-standard-of-a-site
+prompt: "What does the six-point standard cover for docs.example.com?"
+expect:
+  kind: answer
+  includes: ["docs has a public address, proxy host and certificate", "not automatic yet: a backup job, monitoring with alerts"]
+found_by: "2026-11-11 AI update"

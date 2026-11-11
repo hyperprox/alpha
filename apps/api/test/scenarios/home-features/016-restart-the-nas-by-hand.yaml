@@ -1,0 +1,7 @@
+id: home-016-restart-the-nas-is-by-hand
+prompt: "Restart nas1"
+expect:
+  kind: answer
+  includes: ["Restarting or shutting down a NAS is done by hand"]
+  excludes: ["could not find a guest"]
+found_by: "2026-11-11 AI update: a NAS name is never read as a guest"

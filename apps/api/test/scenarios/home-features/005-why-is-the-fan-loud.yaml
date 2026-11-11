@@ -1,0 +1,6 @@
+id: home-005-why-is-the-fan-loud
+prompt: "Why is the fan loud on node2?"
+expect:
+  kind: answer
+  includes: ["Fan stuck at full speed on node2: A fan has run at full speed", "Processor hot on node2"]
+found_by: "2026-11-11 AI update: hardware alerts explain a loud fan"

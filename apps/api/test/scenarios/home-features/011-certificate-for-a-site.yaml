@@ -1,0 +1,6 @@
+id: home-011-certificate-for-a-named-site
+prompt: "When does the certificate for blog.example.com expire?"
+expect:
+  kind: answer
+  includes: ["blog.example.com expires in 40 days (2026-12-21)"]
+found_by: "2026-11-11 AI update: a named certificate gets its own date"

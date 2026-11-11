@@ -1,0 +1,6 @@
+id: home-001-is-my-nas-healthy
+prompt: "Is my NAS healthy?"
+expect:
+  kind: answer
+  includes: ["nas1 has a problem: Disk 3 (ST4000VN): SMART says Abnormal", "backup-nas (beside Remote server) is healthy"]
+found_by: "2026-11-11 AI update: the most common NAS question, answered by code"

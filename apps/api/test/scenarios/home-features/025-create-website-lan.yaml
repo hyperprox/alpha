@@ -1,0 +1,6 @@
+id: home-025-create-a-lan-only-static-site
+prompt: 'Create a static website "Notes", LAN only'
+expect:
+  kind: website
+  includes: ["New website: Static site at LAN only", "Static site \"Notes\" at your network only"]
+found_by: "2026-11-11 AI update"

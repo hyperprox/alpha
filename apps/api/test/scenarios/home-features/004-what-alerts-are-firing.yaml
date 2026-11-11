@@ -1,0 +1,7 @@
+id: home-004-what-alerts-are-firing
+prompt: "What alerts are firing?"
+expect:
+  kind: answer
+  includes: ["3 alerts firing", "Fan stuck at full speed on node2", "Processor hot on node2", "pve target [address] is down"]
+  excludes: ["High CPU"]
+found_by: "2026-11-11 AI update: pending alerts are not called firing; an alert without a plain line has its address taken out"
