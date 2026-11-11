@@ -1,0 +1,97 @@
+/* =============================================================================
+   HyperProx — Settings pages, page-local pieces
+   Section tiles, the credential category switcher, item tiles (tokens,
+   secrets, channels) and the setup checklist's numbered steps. Tokens only,
+   so light mode is the theme's, and colour always repeats a word that is
+   also on screen.
+   ============================================================================= */
+
+/* ── section tiles: a link to each settings area ── */
+.areas { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 13rem), 1fr)); gap: 10px; margin: 0; padding: 0; list-style: none; }
+.area {
+  display: flex; flex-direction: column; gap: 6px; min-height: 100%; text-decoration: none;
+  border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; background: var(--ground-deep);
+  transition: border-color .15s, box-shadow .15s;
+}
+.area:hover { border-color: var(--accent); box-shadow: 0 0 16px -8px color-mix(in srgb, var(--accent) var(--glow), transparent); }
+.area > span { display: flex; align-items: center; gap: 8px; font: 700 .9rem var(--font-display); letter-spacing: .1em; text-transform: uppercase; color: var(--text-bright); }
+.area > span svg { color: var(--accent); flex: 0 0 auto; }
+.area > span i { margin-left: auto; font-style: normal; color: var(--accent); font-family: var(--font-mono); }
+.area small { color: var(--text-muted); font-size: .8rem; line-height: 1.4; }
+
+/* ── credential categories ── */
+.tabs { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; min-width: 0; }
+.tabs::-webkit-scrollbar { display: none; }
+.tab {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 8px 13px; border-radius: 9px;
+  border: 1px solid transparent; background: transparent; color: var(--text-muted); cursor: pointer;
+  font: 600 .8rem var(--font-display); letter-spacing: .1em; text-transform: uppercase;
+}
+.tab:hover { color: var(--text-bright); }
+.tab[aria-pressed="true"] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: var(--accent-wash); }
+
+/* ── form grid inside a panel ── */
+.fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); gap: 12px; }
+.reveal {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%); min-height: 30px; padding: 0 8px; border-radius: 7px;
+  border: 0; background: transparent; color: var(--text-muted); font: 500 .7rem var(--font-mono); text-transform: uppercase; letter-spacing: .08em; cursor: pointer;
+}
+.reveal:hover { color: var(--accent); }
+
+/* ── item tiles: one token, secret or channel each ── */
+.items { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 19rem), 1fr)); gap: 10px; margin: 0; padding: 0; list-style: none; }
+.item {
+  position: relative; display: flex; flex-direction: column; gap: 8px; min-width: 0;
+  border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; background: var(--ground-deep);
+}
+.item[data-tone="bad"] { border-color: color-mix(in srgb, var(--crit) 55%, transparent); }
+.item[data-dim="true"] { opacity: .72; }
+.itemHead { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.itemName { font: 600 .92rem var(--font-mono); color: var(--text-bright); overflow-wrap: anywhere; min-width: 0; }
+.itemHead .pills { margin-left: auto; }
+.pills { display: flex; flex-wrap: wrap; gap: 5px; }
+.meta { margin: 0; font: 500 .72rem/1.5 var(--font-mono); color: var(--text-muted); overflow-wrap: anywhere; }
+.said { margin: 0; font-size: .86rem; color: var(--text-soft); line-height: 1.45; }
+.acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; padding-top: 2px; }
+.mini {
+  min-height: 34px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--border-strong); background: transparent;
+  font: 600 .78rem var(--font-body); color: var(--text-soft); cursor: pointer;
+}
+.mini:hover:not(:disabled) { border-color: var(--accent); }
+.mini:disabled { opacity: .4; cursor: default; }
+.mini[data-tone="accent"] { color: var(--accent); }
+.mini[data-tone="bad"] { color: var(--crit); }
+
+/* A value shown once (a new token, a revealed secret, a Send link). */
+.code {
+  flex: 1 1 auto; min-width: 0; display: block; overflow-wrap: anywhere; word-break: break-all; border-radius: 9px; padding: 9px 12px;
+  border: 1px solid var(--border-strong); background: var(--ground-deep); color: var(--text-bright); font: 500 .85rem var(--font-mono);
+}
+
+/* ── setup checklist: numbered steps on one wire ── */
+.steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; counter-reset: step; }
+.step { position: relative; padding-left: 46px; min-width: 0; counter-increment: step; }
+.step::before {
+  content: counter(step); position: absolute; left: 0; top: 14px; width: 32px; height: 32px; border-radius: 50%;
+  display: grid; place-items: center; font: 700 .9rem var(--font-display); color: var(--text-muted);
+  background: var(--ground-deep); border: 2px solid var(--border-strong); z-index: 1;
+}
+.step:not(:last-child)::after {
+  content: ""; position: absolute; left: 15px; top: 46px; bottom: -12px; width: 2px; background: var(--border);
+}
+.step[data-state="done"]::before { color: var(--good); border-color: var(--good); box-shadow: 0 0 14px -4px color-mix(in srgb, var(--good) var(--glow), transparent); }
+.step[data-state="partly"]::before { color: var(--warn); border-color: var(--warn); }
+.step[data-state="not-applicable"]::before { border-style: dashed; color: var(--text-dim); }
+.step[data-state="done"]:not(:last-child)::after { background: color-mix(in srgb, var(--good) 45%, var(--border)); }
+.stepBody { display: flex; flex-direction: column; gap: 10px; }
+.stepHead { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.stepHead h3 { margin: 0; font: 700 1rem/1.3 var(--font-display); letter-spacing: .06em; color: var(--text-bright); }
+.lines { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: .86rem; color: var(--text-soft); }
+.lines li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
+.pre { margin: 0; border-radius: 9px; padding: 9px 12px; overflow-x: auto; background: var(--ground-deep); border: 1px solid var(--border); color: var(--text-bright); font: 500 .75rem var(--font-mono); }
+
+@media (max-width: 560px) {
+  .step { padding-left: 38px; }
+  .step::before { width: 28px; height: 28px; font-size: .8rem; }
+  .step:not(:last-child)::after { left: 13px; top: 42px; }
+}

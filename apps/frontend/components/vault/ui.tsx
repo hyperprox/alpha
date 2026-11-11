@@ -1,21 +1,29 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import v from './vault.module.css'
+
+// The shared vault controls: inputs, buttons, notices and the dialog frame used by every master-password,
+// token and secret flow. Restyled to the HUD look; their props and behaviour are relied on across the app.
+// No `outline: none` on the inputs: the global :focus-visible ring is how a keyboard user sees where they are.
 
 export const INPUT = {
   background: 'var(--ground-deep)', border: '1px solid var(--border-strong)',
-  color: 'var(--text-bright)', borderRadius: 6, padding: '0 12px', height: 42,
-  fontFamily: 'inherit', fontSize: 14, outline: 'none', width: '100%',
+  color: 'var(--text-bright)', borderRadius: 9, padding: '0 12px', height: 42,
+  fontFamily: 'inherit', fontSize: 14, width: '100%',
 } as React.CSSProperties
 
-export const LABEL = { display: 'block', fontSize: 13, color: 'var(--text-muted)', marginBottom: 6 } as React.CSSProperties
+export const LABEL = {
+  display: 'block', fontSize: 11, fontFamily: 'var(--font-mono)', letterSpacing: '0.12em', textTransform: 'uppercase',
+  color: 'var(--text-muted)', marginBottom: 6,
+} as React.CSSProperties
 
 export function PrimaryButton(p: React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
     <button
       {...p}
-      className={`rounded-md px-4 disabled:opacity-40 ${p.className ?? ''}`}
-      style={{ height: 42, background: 'var(--accent)', color: 'var(--accent-ink)', fontWeight: 600, border: 'none', ...p.style }}
+      className={`${v.btn} ${v.pri} ${p.className ?? ''}`}
+      style={{ height: 42, background: 'var(--accent)', color: 'var(--accent-ink)', ...p.style }}
     />
   )
 }
@@ -24,8 +32,8 @@ export function GhostButton(p: React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
     <button
       {...p}
-      className={`rounded-md border px-4 disabled:opacity-40 ${p.className ?? ''}`}
-      style={{ height: 42, background: 'transparent', color: 'var(--text-soft)', borderColor: 'var(--border-strong)', ...p.style }}
+      className={`${v.btn} ${v.ghost} ${p.className ?? ''}`}
+      style={{ height: 42, background: 'transparent', color: 'var(--text-soft)', ...p.style }}
     />
   )
 }
@@ -36,7 +44,7 @@ export function Notice({ kind, children }: { kind: 'error' | 'warn' | 'info'; ch
   return (
     <p
       role={kind === 'error' ? 'alert' : 'status'}
-      className="rounded-md border px-3 py-2 text-sm"
+      className={v.notice}
       style={{
         background: `color-mix(in srgb, ${c} 10%, transparent)`,
         borderColor: `color-mix(in srgb, ${c} 35%, transparent)`,
@@ -51,7 +59,7 @@ export function Notice({ kind, children }: { kind: 'error' | 'warn' | 'info'; ch
 /** Shown beside a busy button: the vault is slow, and silence reads as a hang. */
 export function BusyNote({ children }: { children: React.ReactNode }) {
   return (
-    <p className="text-xs animate-pulse" role="status" style={{ color: 'var(--text-muted)' }}>{children}</p>
+    <p className="text-xs font-mono animate-pulse" role="status" style={{ margin: 0, color: 'var(--text-muted)' }}>{children}</p>
   )
 }
 
@@ -64,12 +72,10 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4" style={{ background: 'var(--scrim)', backdropFilter: 'blur(4px)' }}
          onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
-      <div role="dialog" aria-modal="true" aria-label={title}
-           className="w-full max-w-md rounded-xl border p-6 space-y-4"
-           style={{ background: 'var(--surface-raised)', borderColor: 'var(--border-soft)' }}>
-        <div className="flex items-center justify-between">
-          <h2 className="font-display font-semibold" style={{ fontSize: 22, color: 'var(--text-bright)' }}>{title}</h2>
-          <button onClick={onClose} aria-label="Close" style={{ color: 'var(--text-dimmer)', fontSize: 18 }}>✕</button>
+      <div role="dialog" aria-modal="true" aria-label={title} className={v.dialog}>
+        <div className={v.head}>
+          <h2 className={v.title}>{title}</h2>
+          <button type="button" onClick={onClose} aria-label="Close" className={v.close}>✕</button>
         </div>
         {children}
       </div>
@@ -94,8 +100,8 @@ export function CopyButton({ text, label = 'Copy' }: { text: string; label?: str
     setTimeout(() => setDone(false), 1500)
   }
   return (
-    <button type="button" onClick={copy} className="rounded border px-3 text-xs font-medium"
-            style={{ height: 30, borderColor: 'var(--border-strong)', color: done ? 'var(--good)' : 'var(--text-soft)' }}>
+    <button type="button" onClick={copy} className={v.copy}
+            style={{ height: 32, color: done ? 'var(--good)' : 'var(--text-soft)', borderColor: done ? 'var(--good)' : undefined }}>
       {done ? 'Copied' : label}
     </button>
   )

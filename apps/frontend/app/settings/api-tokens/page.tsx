@@ -15,6 +15,9 @@ import { apiJson, atLeast, type Role } from '@/lib/api'
 import { useSession } from '@/lib/session'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { CopyButton, GhostButton, INPUT, LABEL, Modal, Notice, PrimaryButton } from '@/components/vault/ui'
+import { Details, HudHeader, Page, Panel, Pill, styles as ks, type PillTone, type StatChip } from '@/components/visual/kit'
+import ss from '../settings.module.css'
+import { exact, inWords } from '../when'
 
 interface TokenRow {
   id:         string
@@ -37,17 +40,23 @@ function fmtDate(s: string | null) {
   return isNaN(d.getTime()) ? s : d.toLocaleString()
 }
 
-const STATE_COLOUR: Record<TokenRow['state'], string> = {
-  active: 'var(--good)', expired: 'var(--warn)', revoked: 'var(--text-muted)',
-}
+// The state is the pill's word; the tone only repeats it.
+const STATE_TONE: Record<TokenRow['state'], PillTone | undefined> = { active: 'good', expired: 'warn', revoked: undefined }
 
 function StateTag({ state }: { state: TokenRow['state'] }) {
-  return (
-    <span className="rounded border px-1.5 text-[10px] uppercase font-mono"
-          style={{ borderColor: STATE_COLOUR[state], color: STATE_COLOUR[state], letterSpacing: '0.1em' }}>
-      {state}
-    </span>
-  )
+  return <Pill tone={STATE_TONE[state]}>{state}</Pill>
+}
+
+/** Last used, in words: what a tile says at a glance. */
+function lastUsedWords(r: TokenRow) {
+  return r.lastUsedAt ? `last used ${inWords(r.lastUsedAt) ?? fmtDate(r.lastUsedAt)}` : 'never used'
+}
+
+function expiryWords(r: TokenRow) {
+  if (r.state === 'revoked') return `revoked ${inWords(r.revokedAt) ?? fmtDate(r.revokedAt)}`
+  if (!r.expiresAt) return 'never expires'
+  const w = inWords(r.expiresAt) ?? fmtDate(r.expiresAt)
+  return r.state === 'expired' ? `expired ${w}` : `expires ${w}`
 }
 
 // ---------------------------------------------------------------------------
@@ -115,8 +124,7 @@ function ShowOnceModal({ token, row, onClose }: { token: string; row: TokenRow; 
       <div className="space-y-3">
         <Notice kind="warn">Copy it now. You will not see this token again — HyperProx keeps only a hash of it.</Notice>
         <div className="flex items-center gap-2">
-          <code className="flex-1 min-w-0 break-all rounded-md border px-3 py-2 text-sm select-all"
-                style={{ fontFamily: 'var(--font-mono)', background: 'var(--ground-deep)', borderColor: 'var(--border-strong)', color: 'var(--text-bright)' }}>
+          <code className={`${ss.code} select-all`}>
             {token}
           </code>
           <CopyButton text={token} />
@@ -140,7 +148,7 @@ function RevokeModal({ row, onConfirm, onClose }: { row: TokenRow; onConfirm: ()
         </p>
         <div className="flex gap-2 justify-end">
           <GhostButton type="button" onClick={onClose}>Cancel</GhostButton>
-          <PrimaryButton onClick={onConfirm} style={{ background: 'var(--crit)', color: 'var(--text-bright)' }}>Revoke</PrimaryButton>
+          <PrimaryButton onClick={onConfirm} style={{ background: 'var(--crit)', color: 'var(--accent-ink)' }}>Revoke</PrimaryButton>
         </div>
       </div>
     </Modal>
@@ -179,58 +187,98 @@ export default function ApiTokensPage() {
     setRevoking(null); flash(r.error ?? 'Could not revoke')
   }
 
+  const counts = { active: 0, expired: 0, revoked: 0 }
+  for (const r of rows ?? []) counts[r.state] = (counts[r.state] ?? 0) + 1
+  const lastUse = (rows ?? []).map(r => r.lastUsedAt).filter((x): x is string => !!x)
+    .sort((x, y) => new Date(y).getTime() - new Date(x).getTime())[0] ?? null
+  const chips: StatChip[] = [
+    { label: 'active', value: rows ? counts.active : '…', tone: counts.active ? 'good' : undefined },
+    { label: 'expired', value: rows ? counts.expired : '…', tone: counts.expired ? 'warn' : undefined },
+    { label: 'revoked', value: rows ? counts.revoked : '…' },
+    { label: 'last use, any token', value: rows ? (inWords(lastUse) ?? 'never') : '…' },
+  ]
+
   return (
-    <div className="min-h-full p-4 sm:p-8" style={{ background: 'var(--ground)' }}>
-      <div className="mb-8">
-        <Link href="/settings" className="font-mono uppercase" style={{ fontSize: 12, letterSpacing: '0.14em', color: 'var(--accent)' }}>← Settings</Link>
-        <div className="flex flex-wrap items-end justify-between gap-3 mt-2">
-          <h1 className="font-display font-bold" style={{ fontSize: 36, lineHeight: 1.1, color: 'var(--text-bright)' }}>API tokens</h1>
-          {canUse && <PrimaryButton onClick={() => setCreating(true)}>New token</PrimaryButton>}
-        </div>
-        <p className="mt-2 text-sm max-w-3xl" style={{ color: 'var(--text-soft)' }}>
+    <Page>
+      <HudHeader level={2} label="API tokens overview" icon="plug" eyebrow={<><Link href="/settings" style={{ color: 'inherit' }}>&larr; Settings</Link> · API tokens</>}
+        title={rows === null ? 'Loading API tokens...' : `${counts.active} active token${counts.active === 1 ? '' : 's'}`}
+        chips={chips}
+        actions={canUse && <PrimaryButton onClick={() => setCreating(true)}>New token</PrimaryButton>}>
+        <p className="text-sm max-w-3xl" style={{ margin: 0, color: 'var(--text-soft)' }}>
           For scripts and agents that call the HyperProx API. A token works only while HyperProx is unlocked, and never
           reaches secrets, terminals, or anything that needs your master password again. Creating or revoking one asks for it.
         </p>
-      </div>
+      </HudHeader>
 
-      <div className="max-w-5xl space-y-4">
-        {toast && <Notice kind="info">{toast}</Notice>}
-        {error && <Notice kind="error">{error}</Notice>}
+      {toast && <Notice kind="info">{toast}</Notice>}
+      {error && <Notice kind="error">{error}</Notice>}
+
+      <Panel title="Tokens" sub={rows ? `${rows.length} made` : undefined}>
         {rows === null ? (
-          <div className="text-sm animate-pulse" style={{ color: 'var(--text-dimmer)' }}>Loading API tokens...</div>
+          <p className={`${ks.empty} animate-pulse`}>Loading API tokens...</p>
         ) : rows.length === 0 && !error ? (
           <Notice kind="info">No API tokens yet.</Notice>
-        ) : rows.length > 0 && (
-          <div className="hp-table-scroll overflow-x-auto rounded-lg border" style={{ borderColor: 'var(--border-soft)', background: 'var(--surface)' }}>
-            <table className="w-full text-sm">
+        ) : rows.length > 0 ? (
+          <ul className={ss.items} aria-label="API tokens">
+            {rows.map(r => (
+              <li key={r.id} className={ss.item} data-dim={r.state !== 'active' ? 'true' : undefined}>
+                <div className={ss.itemHead}>
+                  <span className={ss.itemName}>{r.name}</span>
+                  <span className={ss.pills}><StateTag state={r.state} /><Pill tone="violet">{r.role}</Pill></span>
+                </div>
+                <p className={ss.said}>
+                  <span title={exact(r.lastUsedAt) ?? 'Not used yet'}>{lastUsedWords(r)}</span>
+                  {' · '}
+                  <span title={r.state === 'revoked' ? exact(r.revokedAt) : exact(r.expiresAt) ?? 'No expiry'}>{expiryWords(r)}</span>
+                </p>
+                <p className={ss.meta} title={exact(r.createdAt)}>by {r.createdBy} · made {inWords(r.createdAt) ?? fmtDate(r.createdAt)}</p>
+                {canUse && r.state !== 'revoked' && (
+                  <div className={ss.acts}>
+                    <button type="button" onClick={() => setRevoking(r)} className={ss.mini} data-tone="bad"
+                            aria-label={`Revoke ${r.name}`}>Revoke</button>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {role && !canUse && <div style={{ marginTop: 12 }}><Notice kind="info">Only owners and admins can manage API tokens.</Notice></div>}
+        <p className="text-xs" style={{ margin: '12px 0 0', color: 'var(--text-muted)' }}>
+          On the HyperProx machine, root can also run <code style={{ fontFamily: 'var(--font-mono)' }}>hyperprox token create|list|revoke</code>.
+        </p>
+      </Panel>
+
+      {rows && rows.length > 0 && (
+        <Details summary="Details" sub="every token, exact times">
+          <div className={ks.tableWrap}>
+            <table className={ks.table}>
               <thead>
-                <tr className="text-left" style={{ color: 'var(--text-muted)', borderBottom: '1px solid var(--border-dim)' }}>
-                  <th className="px-4 py-3 font-medium">Name</th>
-                  <th className="px-4 py-3 font-medium">Role</th>
-                  <th className="px-4 py-3 font-medium">Created</th>
-                  <th className="px-4 py-3 font-medium">Last used</th>
-                  <th className="px-4 py-3 font-medium">Expires</th>
-                  {canUse && <th className="px-4 py-3" />}
+                <tr>
+                  <th>Name</th>
+                  <th>Role</th>
+                  <th>Created</th>
+                  <th>Last used</th>
+                  <th>Expires</th>
+                  {canUse && <th><span className={ks.srOnly}>Actions</span></th>}
                 </tr>
               </thead>
               <tbody>
                 {rows.map(r => (
-                  <tr key={r.id} style={{ borderBottom: '1px solid var(--border-dim)', opacity: r.state === 'active' ? 1 : 0.65 }}>
-                    <td className="px-4 py-3 break-all" style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-bright)' }}>
+                  <tr key={r.id} style={{ opacity: r.state === 'active' ? 1 : 0.65 }}>
+                    <td className="break-all" style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-bright)' }}>
                       {r.name} <span className="ml-1"><StateTag state={r.state} /></span>
-                      <div className="text-xs mt-0.5" style={{ fontFamily: 'inherit', color: 'var(--text-muted)' }}>by {r.createdBy}</div>
+                      <div className="text-xs mt-0.5" style={{ fontFamily: 'var(--font-body)', color: 'var(--text-muted)' }}>by {r.createdBy}</div>
                     </td>
-                    <td className="px-4 py-3" style={{ color: 'var(--text-soft)' }}>{r.role}</td>
-                    <td className="px-4 py-3 whitespace-nowrap" style={{ color: 'var(--text-soft)' }}>{fmtDate(r.createdAt)}</td>
-                    <td className="px-4 py-3 whitespace-nowrap" style={{ color: 'var(--text-soft)' }}>{fmtDate(r.lastUsedAt)}</td>
-                    <td className="px-4 py-3 whitespace-nowrap" style={{ color: 'var(--text-soft)' }}>
+                    <td style={{ color: 'var(--text-soft)' }}>{r.role}</td>
+                    <td className="whitespace-nowrap" style={{ color: 'var(--text-soft)' }}>{fmtDate(r.createdAt)}</td>
+                    <td className="whitespace-nowrap" style={{ color: 'var(--text-soft)' }}>{fmtDate(r.lastUsedAt)}</td>
+                    <td className="whitespace-nowrap" style={{ color: 'var(--text-soft)' }}>
                       {r.state === 'revoked' ? `revoked ${fmtDate(r.revokedAt)}` : r.expiresAt ? fmtDate(r.expiresAt) : 'never'}
                     </td>
                     {canUse && (
-                      <td className="px-4 py-3 text-right">
+                      <td className="text-right">
                         {r.state !== 'revoked' && (
-                          <button onClick={() => setRevoking(r)} className="rounded border px-3 text-xs font-medium"
-                                  style={{ height: 30, borderColor: 'var(--border-strong)', color: 'var(--crit-soft)' }}>Revoke</button>
+                          <button type="button" onClick={() => setRevoking(r)} className={ss.mini} data-tone="bad">Revoke</button>
                         )}
                       </td>
                     )}
@@ -239,12 +287,8 @@ export default function ApiTokensPage() {
               </tbody>
             </table>
           </div>
-        )}
-        {role && !canUse && <Notice kind="info">Only owners and admins can manage API tokens.</Notice>}
-        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-          On the HyperProx machine, root can also run <code style={{ fontFamily: 'var(--font-mono)' }}>hyperprox token create|list|revoke</code>.
-        </p>
-      </div>
+        </Details>
+      )}
 
       {creating && (
         <CreateModal
@@ -262,6 +306,6 @@ export default function ApiTokensPage() {
           onDone={() => { const t = askConfirm.then; setAskConfirm(null); t() }}
         />
       )}
-    </div>
+    </Page>
   )
 }
