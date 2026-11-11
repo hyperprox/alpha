@@ -759,7 +759,7 @@ function stepProviders(){
       + '<div class="field"><label>Password</label><input id="nl-pass" type="password" autocomplete="off"></div></div>'
       + '<details class="adv"><summary>Use a private key instead</summary><div class="field"><label>Private key</label><textarea id="nl-key" rows="4" style="width:100%;background:#0d1624;color:var(--text);border:1px solid var(--border);border-radius:8px;font-family:IBM Plex Mono,monospace;font-size:12px"></textarea></div></details>'
       + (S.loginRows ? checkRows(S.loginRows.map(r => ({ label: 'Login', node: r.node, status: r.ok ? 'ok' : 'failed', reason: r.reason + (r.fingerprint ? ' · host key ' + r.fingerprint : '') }))) : '')
-      + (S.loginRows && S.loginRows.some(r => r.fingerprint) ? '<div class="hint" style="margin-top:6px">HyperProx accepts only these keys from now on. When you first sign in, it checks each one against your cluster\'s own record of its nodes\' keys (or over Tailscale or WireGuard) by itself; Settings, Setup checklist shows the result. Only a key it finds no evidence for is left for you to compare.</div>' : '')
+      + (S.loginRows && S.loginRows.some(r => r.fingerprint) ? '<div class="hint" style="margin-top:6px">HyperProx accepts only these keys from now on. When you first sign in, it checks each one by itself against the record your cluster keeps of every node key (or over Tailscale or WireGuard); Settings, Setup checklist shows the result. Only a key it finds no evidence for is left for you to compare.</div>' : '')
       + '</div>'
   }
   if (S.apply) {
