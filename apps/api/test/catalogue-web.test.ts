@@ -18,7 +18,7 @@ import { FakePve, deps, INPUT, settled } from "./fakes/catalogue-pve"
 
 // ── Recipes ─────────────────────────────────────────────────────────────────
 
-test("web recipes: a web category with a label, real health paths, and the six-point gaps said out loud", () => {
+test("web recipes: a web category with a label, real health paths, and the gaps said out loud", () => {
   const web = CATALOGUE.filter(r => r.category === "web").map(r => r.id)
   assert.deepEqual(web, ["static-site", "wordpress"])
   assert.equal(CATEGORY_LABELS.web, "Web hosting")
@@ -29,7 +29,7 @@ test("web recipes: a web category with a label, real health paths, and the six-p
   for (const r of [s, w]) {
     assert.equal(r.port, 80)
     assert.ok(r.firstLogin, r.id)
-    assert.ok(r.notes!.some(n => /^Not automatic yet: a backup job, monitoring with alerts, a place under the update policy and a plug-in panel/.test(n)), r.id)
+    assert.ok(r.notes!.some(n => /^Not automatic yet: a backup job, a place under the update policy and a plug-in panel\..*Monitoring is automatic/.test(n)), r.id)
   }
   // Static has no login and no first-run page, so the AI assistant may publish it; WordPress's generated
   // admin password cannot be handed back by the assistant, so it is not offered there.

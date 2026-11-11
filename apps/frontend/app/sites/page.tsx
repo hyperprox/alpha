@@ -15,6 +15,11 @@ import { apiJson } from '@/lib/api'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { Page, HudHeader, Panel, Pill, Tiles, styles } from '@/components/visual/kit'
 import { NewSiteWizard, type SiteRecipe } from '@/components/sites/NewSiteWizard'
+// Site metrics: each card's visitors today and sparkline, and adopting a site HyperProx did not make.
+import { SiteSparkRow } from '@/components/sites/metrics/SiteCards'
+import { AdoptSiteDialog } from '@/components/sites/metrics/AdminTools'
+import type { SiteSummary } from '@/components/sites/metrics/types'
+const ADOPTED_LABEL: Record<string, string> = { 'adopted-static': 'Static (adopted)', 'adopted-wordpress': 'WordPress (adopted)', 'adopted-other': 'Adopted' }
 
 interface Site {
   id: string; recipeId: string; name: string; vmid: number; node: string; ip: string | null
@@ -32,12 +37,16 @@ export default function SitesPage() {
   const [revealed, setRevealed] = useState<Record<string, Record<string, string>>>({})
   const [pending, setPending] = useState<Pending>(null)
   const [busy, setBusy] = useState('')
+  const [metrics, setMetrics] = useState<Record<string, SiteSummary>>({})
+  const [adopt, setAdopt] = useState(false)
 
   const load = useCallback(async () => {
     const [s, c] = await Promise.all([apiJson<{ data: { sites: Site[] } }>('/api/sites'), apiJson<{ data: { recipes: SiteRecipe[] } }>('/api/catalogue')])
     if (s.ok && s.body) setSites(s.body.data.sites)
     if (c.ok && c.body) setRecipes(c.body.data.recipes.filter(r => r.category === 'web'))
     setLoading(false)
+    const m = await apiJson<{ data: { sites: SiteSummary[] } }>('/api/site-metrics/sites')
+    if (m.ok && m.body) setMetrics(Object.fromEntries(m.body.data.sites.map(x => [x.id, x])))
   }, [])
   useEffect(() => { void load() }, [load])
 
@@ -87,6 +96,7 @@ export default function SitesPage() {
         chips={[{ label: 'sites', value: sites.length }, { label: 'published', value: sites.filter(s => s.url).length }]}
         actions={<div className={styles.row} style={{ gap: 8 }}>
           <Link href="/catalogue" className={styles.btn} style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}>Catalogue</Link>
+          <button type="button" className={styles.btn} onClick={() => setAdopt(true)}>Add an existing site</button>
           <button type="button" className={`${styles.btn} ${styles.btnPri}`} onClick={() => setWizard(true)} disabled={!recipes.length}>New website</button>
         </div>} />
 
@@ -107,15 +117,17 @@ export default function SitesPage() {
             <div key={s.id} className={styles.card} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <div className={styles.row} style={{ flexWrap: 'wrap' }}>
                 <h2 className="font-display" style={{ margin: 0, fontSize: 20, fontWeight: 600, color: 'var(--text-bright)' }}>{s.name}</h2>
-                <span className={styles.tag}>{r?.name ?? s.recipeId}</span>
+                <span className={styles.tag}>{r?.name ?? ADOPTED_LABEL[s.recipeId] ?? s.recipeId}</span>
                 <span style={{ marginLeft: 'auto' }}><Pill tone={s.url ? 'good' : 'accent'}>{s.url ? 'published' : 'local only'}</Pill></span>
               </div>
+              {metrics[s.id] && <SiteSparkRow site={metrics[s.id]} />}
               <Tiles label={`${s.name} facts`} items={[{ label: 'CT', value: s.vmid }, { label: 'node', value: s.node }, { label: 'address', value: s.ip ?? '—' }]} />
               <div className={styles.row} style={{ flexWrap: 'wrap', gap: 8 }}>
                 {(s.url ?? s.localUrl) && <a className={`${styles.btn} ${styles.btnPri}`} href={s.url ?? s.localUrl!} target="_blank" rel="noreferrer">Open site</a>}
                 {s.recipeId === 'wordpress' && <button type="button" className={styles.btn} onClick={() => void openAdmin(s)}>Open WordPress admin</button>}
                 {s.vaultItem && <button type="button" className={styles.btn} onClick={() => void reveal(s)}>Reveal password</button>}
                 {s.recipeId === 'static-site' && <button type="button" className={styles.btn} disabled={busy === s.id + 'p'} onClick={() => void pull(s)}>{busy === s.id + 'p' ? 'Pulling…' : 'Pull now'}</button>}
+                <Link href={`/sites/${encodeURIComponent(s.id)}`} className={styles.btn} style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}>Metrics</Link>
                 <button type="button" className={styles.btn} disabled={busy === s.id + 'h'} onClick={() => void health(s)}>{busy === s.id + 'h' ? 'Checking…' : 'Health'}</button>
               </div>
               {shown && (
@@ -131,13 +143,14 @@ export default function SitesPage() {
               )}
               {note[s.id] && <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)', whiteSpace: 'pre-wrap' }}>{note[s.id]}</p>}
               <p style={{ margin: 0, fontSize: 12, color: 'var(--text-dim)' }}>
-                Not automatic yet: a backup job, monitoring with alerts, a place under the update policy and a plug-in panel.
+                Not automatic yet: a backup job, a place under the update policy and a plug-in panel. Metrics and alerts are on the Metrics tab.
               </p>
             </div>
           )
         })}
       </div>
 
+      {adopt && <AdoptSiteDialog onClose={() => setAdopt(false)} onDone={() => { setAdopt(false); void load() }} />}
       {wizard && <NewSiteWizard recipes={recipes} onClose={() => setWizard(false)} onDone={() => { setWizard(false); void load() }} />}
       {pending && (
         <ReconfirmModal onClose={() => setPending(null)} onDone={() => {

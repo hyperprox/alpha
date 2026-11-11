@@ -89,6 +89,10 @@
   --grid:           rgba(47, 214, 232, 0.035);
   --accent-glow:    rgba(47, 214, 232, 0.35);
   --accent-wash:    rgba(47, 214, 232, 0.08);
+  /* Chart series only (never text or status): checked for colour-blind separation and contrast. */
+  --chart-1:        #14a6bd;
+  --chart-2:        #8c78f2;
+  --chart-3:        #b87c16;
   --hover:          rgba(255, 255, 255, 0.05);
 
   /* The visual kit's working names, so a kit piece works anywhere, not only inside its page wrapper. */
@@ -153,6 +157,10 @@
     --grid:           rgba(11, 26, 42, 0.045);
     --accent-glow:    rgba(10, 143, 160, 0.28);
     --accent-wash:    rgba(10, 143, 160, 0.07);
+    /* Chart series only (never text or status): checked for colour-blind separation and contrast. */
+    --chart-1:        #0089a8;
+    --chart-2:        #5b45d6;
+    --chart-3:        #a86400;
     --hover:          rgba(11, 26, 42, 0.05);
   }
 }
@@ -208,6 +216,10 @@
   --grid:           rgba(11, 26, 42, 0.045);
   --accent-glow:    rgba(10, 143, 160, 0.28);
   --accent-wash:    rgba(10, 143, 160, 0.07);
+  /* Chart series only (never text or status): checked for colour-blind separation and contrast. */
+  --chart-1:        #0089a8;
+  --chart-2:        #5b45d6;
+  --chart-3:        #a86400;
   --hover:          rgba(11, 26, 42, 0.05);
 }
 

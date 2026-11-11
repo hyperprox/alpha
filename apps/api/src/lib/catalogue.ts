@@ -474,7 +474,7 @@ systemctl reload-or-restart nginx
 echo "nginx and PHP $PHPV are serving WordPress on port 80."`
 
 /** Said in each web recipe, so nothing implies more than the catalogue does today. */
-const NOT_AUTOMATIC = 'Not automatic yet: a backup job, monitoring with alerts, a place under the update policy and a plug-in panel. Set the backup up in Proxmox for now.'
+const NOT_AUTOMATIC = 'Not automatic yet: a backup job, a place under the update policy and a plug-in panel. Set the backup up in Proxmox for now. Monitoring is automatic: the site\'s Metrics tab reads its access log and checks its public address every 5 minutes, with alerts.'
 
 export const CATALOGUE: CatalogueRecipe[] = [
   // ── Reverse proxy ───────────────────────────────────────────────────────
