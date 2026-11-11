@@ -118,10 +118,49 @@
 .dialog > div { width: min(100%, 40rem); max-height: 92vh; overflow-y: auto; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 12px; }
 .dialog h2 { margin: 0; font: 700 1.3rem var(--font-display); letter-spacing: .06em; text-transform: uppercase; color: var(--text-bright); }
 
+/* "Add an existing site": the websites HyperProx found, as tiles. */
+.listHead { font: 600 .7rem var(--font-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--text-muted); }
+.cands { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 16rem), 1fr)); gap: 10px; }
+.cands > div { display: flex; min-width: 0; }
+.cand { flex: 1; display: flex; flex-direction: column; gap: 7px; min-width: 0; text-align: left; font: inherit; color: var(--text); text-decoration: none;
+  border: 1px solid var(--border); border-radius: 12px; padding: 12px; background: var(--surface-hi); cursor: pointer; min-height: 48px; }
+.cand:hover:not(:disabled) { border-color: var(--accent); }
+.cand:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cand:disabled { cursor: default; opacity: .62; }
+.more { font: 500 .66rem var(--font-mono); color: var(--text-muted); margin-left: 4px; letter-spacing: .04em; }
+.chips2 { display: flex; flex-wrap: wrap; gap: 5px; }
+.gchip { font: 500 .66rem var(--font-mono); letter-spacing: .04em; color: var(--text-soft); border: 1px solid var(--border-strong); border-radius: 999px; padding: 2px 8px;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gchip[data-tone='off'] { color: var(--text-muted); border-style: dashed; }
+.path { font: 500 .7rem var(--font-mono); color: var(--text-muted); overflow-wrap: anywhere; }
+.added { display: inline-flex; align-items: center; gap: 5px; font: 600 .66rem var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--good); }
+.added svg { width: 12px; height: 12px; }
+.linkBtn { border: 0; background: none; padding: 8px 0; min-height: 40px; font: 500 .82rem var(--font-body); color: var(--accent); text-decoration: underline; cursor: pointer; }
+.linkBtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sum { display: grid; gap: 8px; margin: 0; }
+.sum > div { display: grid; grid-template-columns: 8.5rem minmax(0, 1fr); gap: 10px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+.sum dt { font: 500 .62rem var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--text-muted); padding-top: 2px; }
+.sum dd { margin: 0; font: 500 .84rem var(--font-mono); color: var(--text-bright); overflow-wrap: anywhere; }
+
+/* The adopt picker shown in place, as the Websites section's Add existing tab. */
+.inline > div { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 12px; box-shadow: var(--shadow); }
+.inline h2 { margin: 0; font: 700 1.3rem var(--font-display); letter-spacing: .06em; text-transform: uppercase; color: var(--text-bright); }
+
+/* The Websites section's Metrics tab: one row per site. */
+.ovt { width: 100%; border-collapse: collapse; font-size: .84rem; color: var(--text-soft); }
+.ovt th, .ovt td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+.ovt thead th { font: 500 .6rem var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--text-muted); }
+.ovt tbody th { font-weight: 600; }
+.ovt a { color: var(--text-bright); }
+.ovt a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ovspark { min-width: 7rem; }
+.ovspark svg { display: block; width: 100%; height: 26px; }
+
 @media (max-width: 640px) {
   .hud { grid-template-columns: 1fr; justify-items: center; text-align: center; }
   .chips { grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
   .tools { margin-left: 0; }
+  .sum > div { grid-template-columns: 1fr; gap: 2px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .track u { animation: none; }

@@ -7,6 +7,7 @@
 //    GET /alerts              site alerts that are firing now, for the Monitoring feed
 //  Admin (roles.ts default for writes; the adopt reads are admin in roles.ts too):
 //    GET  /adopt/guests                   containers that could be adopted
+//    GET  /adopt/candidates?refresh=1     websites HyperProx found (proxy hosts, listening containers), read-only
 //    POST /adopt/check                    what HyperProx would read from one (read-only, in the guest)
 //    POST /adopt                          record it (master password re-entered)
 //    DELETE /adopt/:id                    forget an adopted site and its numbers (re-entered)
@@ -30,6 +31,11 @@ import { defaultState, isAdopted, realCollectorDeps, refreshWordPress, type Coll
 import { inspectScript, parseInspect, planLogFormat, planId, applyScript, parseApply, type LogFormatPlan } from '../lib/site-metrics/log-format'
 import { safeLogPath, safeWordPressPath, shq, DEFAULT_ACCESS_LOG, DEFAULT_WP_PATH } from '../lib/site-metrics/paths'
 import { parseLogLine, isPrivateAddress } from '../lib/site-metrics/log-parser'
+import { discover, mapLimit, CandidateCache, type DiscoveryDeps, type GuestInfo } from '../lib/site-metrics/discovery'
+import { addressesInConfig } from '../lib/guest-names'
+import { listHostAddresses } from '../lib/terminal-hosts'
+import { liveAddresses } from '../lib/wizard-placement'
+import { proxyService } from '../lib/proxy'
 
 export interface SiteMetricsRouteDeps {
   store: MetricsStore
@@ -45,7 +51,52 @@ export interface SiteMetricsRouteDeps {
   guestIp(node: string, vmid: number): Promise<string | null>
   audit(action: string, resource: string, details?: Record<string, unknown>): Promise<void>
   now(): Date
+  /** What "Add an existing site" lists: proxy hosts, guests and the look inside each container. */
+  discovery: Omit<DiscoveryDeps, 'sites' | 'inspect' | 'now'>
 }
+
+/** The home cluster's guests with the addresses their configs state (and remembered Terminal addresses). */
+async function clusterGuests(): Promise<GuestInfo[]> {
+  const pve = homePve()
+  const rows = ((await pve.getClusterResources('vm')) as any[])
+    .filter(r => (r.type === 'lxc' || r.type === 'qemu') && !r.template).slice(0, 400)
+  const remembered = await listHostAddresses().catch(() => ({} as Record<string, string>))
+  const out: GuestInfo[] = []
+  await mapLimit(rows, 8, async r => {
+    const type = r.type as 'lxc' | 'qemu', vmid = Number(r.vmid)
+    const config = await pve.getVMConfig(String(r.node), vmid, type).catch(() => null) as Record<string, unknown> | null
+    const addresses = addressesInConfig(config)
+    const rem = remembered[`${type}-${vmid}`]
+    if (rem && /^\d{1,3}(\.\d{1,3}){3}$/.test(rem) && !addresses.includes(rem)) addresses.push(rem)
+    out.push({ vmid, name: String(r.name ?? vmid), node: String(r.node), type, status: String(r.status), addresses,
+      agent: type === 'qemu' && /^(1|enabled=1)/.test(String(config?.agent ?? '')) })
+  })
+  return out
+}
+
+const realDiscovery = (): SiteMetricsRouteDeps['discovery'] => ({
+  hosts: async () => {
+    const r = await proxyService().allHosts()
+    return { hosts: r.hosts, errors: r.errors.map(e => ({ instanceName: e.instanceName, error: e.error })) }
+  },
+  guests: clusterGuests,
+  liveAddresses: async guests => {
+    const pve = homePve()
+    const out = new Map<number, string[]>()
+    await mapLimit(guests.filter(g => g.type === 'lxc' || g.agent), 8, async g => {
+      const path = g.type === 'lxc' ? `/nodes/${encodeURIComponent(g.node)}/lxc/${g.vmid}/interfaces` : `/nodes/${encodeURIComponent(g.node)}/qemu/${g.vmid}/agent/network-get-interfaces`
+      const answer = await pve.fetchStrict<unknown>(path, 'GET', undefined, 5000).catch(() => null)
+      if (answer != null) out.set(g.vmid, liveAddresses(answer))
+    })
+    return out
+  },
+  nodes: async () => ((await homePve().fetchNode<any[]>('/cluster/status').catch(() => [])) ?? [])
+    .filter((r: any) => r.type === 'node').map((r: any) => ({ name: String(r.name), ip: r.ip ? String(r.ip) : undefined })),
+  head: async url => {
+    const r = await fetch(url, { method: 'HEAD', redirect: 'manual', signal: AbortSignal.timeout(5000) }).catch(() => null)
+    return r ? r.status < 500 : false
+  },
+})
 
 const realDeps = (): SiteMetricsRouteDeps => ({
   store: metricsStore(),
@@ -64,6 +115,7 @@ const realDeps = (): SiteMetricsRouteDeps => ({
   },
   audit: auditCredentialUse,
   now: () => new Date(),
+  discovery: realDiscovery(),
 })
 
 const roleOf = (req: FastifyRequest): Role => (req.session?.role ?? 'viewer') as Role
@@ -143,11 +195,31 @@ export function parseAdoptProbe(out: string) {
   }
 }
 
+/** The discovery behind "Add an existing site", over one set of route deps. */
+function candidateCache(d: SiteMetricsRouteDeps): CandidateCache {
+  return new CandidateCache(() => discover({
+    ...d.discovery,
+    sites: async () => (await d.sites()).map(s => ({ id: s.id, vmid: s.vmid, domain: s.domain, recipeId: s.recipeId })),
+    inspect: async (g, script) => {
+      const fake: SiteRecord = { id: 'discover', recipeId: 'adopted-other', name: g.name, vmid: g.vmid, node: g.node, jobId: 'adopted', owner: '', createdAt: 0 }
+      return (await d.run(fake, script, 1024 * 1024)).output
+    },
+    now: () => d.now().getTime(),
+  }), () => d.now().getTime())
+}
+
+let shared: CandidateCache | null = null
+/** The production candidate list, shared by the adopt picker and the catalogue's "already running" detection. */
+export function sharedCandidateCache(): CandidateCache {
+  return (shared ??= candidateCache(realDeps()))
+}
+
 export function buildSiteMetricsRoutes(over: Partial<SiteMetricsRouteDeps> = {}): FastifyPluginAsync {
   const d: SiteMetricsRouteDeps = { ...realDeps(), ...over }
   const plans = new Map<string, { siteId: string; plan: LogFormatPlan; expires: number; by: string }>()
   const stateFor = async (s: SiteRecord): Promise<SiteState> => (await d.store.getState(s.id)) ?? defaultState(s)
   const who = (req: FastifyRequest) => req.session?.email ?? 'unknown'
+  const candidateList = Object.keys(over).length ? candidateCache(d) : sharedCandidateCache()
 
   return async (fastify) => {
     fastify.get('/sites', async (_req, reply) => {
@@ -222,6 +294,20 @@ export function buildSiteMetricsRoutes(over: Partial<SiteMetricsRouteDeps> = {})
       const taken = new Set((await d.sites()).map(s => s.vmid))
       const guests = (await d.guests()).filter(g => !taken.has(g.vmid)).sort((a, b) => a.vmid - b.vmid)
       return reply.send({ success: true, data: { guests, defaults: { logPath: DEFAULT_ACCESS_LOG, wpPath: DEFAULT_WP_PATH } } })
+    })
+
+    fastify.get<{ Querystring: { refresh?: string } }>('/adopt/candidates', async (req, reply) => {
+      if (!need(req, reply, 'admin')) return
+      const r = await candidateList.get(req.query.refresh === '1')
+      // A site added since the list was built shows as added without waiting for the next build.
+      const sites = await d.sites()
+      const candidates = r.candidates.map(c => {
+        const s = (c.guest ? sites.find(x => x.vmid === c.guest!.vmid) : undefined) ?? sites.find(x => !!x.domain && c.domains.includes(x.domain.toLowerCase()))
+        if (!s || c.siteId === s.id) return c
+        const adopted = isAdopted(s)
+        return { ...c, alreadyASite: true, alreadyAdopted: adopted, siteId: s.id, adoptable: false, whyNot: adopted ? 'Already added.' : 'Already a site HyperProx made.' }
+      })
+      return reply.send({ success: true, data: { ...r, candidates, defaults: { logPath: DEFAULT_ACCESS_LOG, wpPath: DEFAULT_WP_PATH } } })
     })
 
     const probe = async (raw: any) => {

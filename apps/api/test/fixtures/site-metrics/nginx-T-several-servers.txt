@@ -1,0 +1,78 @@
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+# configuration file /etc/nginx/nginx.conf:
+user www-data;
+worker_processes auto;
+events {
+	worker_connections 768;
+}
+
+http {
+	sendfile on;
+	include /etc/nginx/mime.types;
+	# access_log /var/log/nginx/commented-out.log;
+	log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+	                '$status $body_bytes_sent "$http_referer" '
+	                '"$http_user_agent" "$http_x_forwarded_for"';
+	log_format timed escape=json '{"t":"$time_local","rt":$request_time,"xff":"$http_x_forwarded_for"}';
+	access_log /var/log/nginx/access.log;
+	error_log /var/log/nginx/error.log;
+	include /etc/nginx/conf.d/*.conf;
+	include /etc/nginx/sites-enabled/*;
+}
+
+# configuration file /etc/nginx/mime.types:
+types {
+    text/html                             html htm shtml;
+    text/css                              css;
+}
+
+# configuration file /etc/nginx/sites-enabled/blog:
+server {
+    listen 80;
+    server_name blog.example.com www.blog.example.com;
+    root /var/www/blog;
+    index index.php;
+    access_log /var/log/nginx/blog.access.log main;
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php8.2-fpm.sock;
+    }
+    location /private/ { auth_basic "Staff"; auth_basic_user_file /etc/nginx/.htpasswd; }
+}
+
+# configuration file /etc/nginx/sites-enabled/docs:
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name docs.example.com _;
+    root /var/www/docs;
+    location / { try_files $uri $uri/ =404; }
+}
+
+# configuration file /etc/nginx/sites-enabled/app:
+server {
+    listen 8080;
+    server_name app.example.com;
+    access_log /var/log/nginx/app.log timed;
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Authorization "Bearer not-a-real-token-0000";
+    }
+}
+
+# configuration file /etc/nginx/sites-enabled/quiet:
+server {
+    listen 80;
+    server_name quiet.example.com;
+    access_log off;
+    root /srv/quiet;
+}
+
+# configuration file /etc/nginx/sites-enabled/wild:
+server {
+    listen 80;
+    server_name *.shop.example.com;
+    root "/var/www/shop";
+    access_log /var/log/nginx/$host.log;
+}
