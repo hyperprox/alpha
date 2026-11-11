@@ -316,10 +316,8 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
       if (b.nodeAddresses !== undefined) {
         for (const [node, old] of Object.entries(before)) {
           if (c.nodeAddresses[node] === old) continue
-          // A remote's pin is scoped to it; an old unscoped copy (from before scoping) goes too, unless that address is
-          // also a home address, whose pin is home's.
+          // A remote's pin is scoped to it. An unscoped pin on the same address is left alone: it may be a home machine's.
           await forgetPin(old, 22, row.kind === 'remote' ? row.id : null).catch(() => undefined)
-          if (row.kind === 'remote' && !homeAddresses().includes(old.toLowerCase())) await forgetPin(old, 22, null).catch(() => undefined)
           if (row.kind === 'remote') await removeRemoteNodeLogin(row.id, node).catch(() => undefined)
           cleared.push(node)
         }

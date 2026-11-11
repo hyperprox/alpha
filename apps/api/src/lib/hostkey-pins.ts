@@ -28,6 +28,7 @@ const CATEGORY = 'deck'
 const PIN = 'hostkey'
 const SOURCE = 'hostkey-source'
 const EVIDENCE = 'hostkey-evidence'
+const MIGRATED = 'hostkey-migrated'
 export type PinSource = 'terminal' | 'confirmed' | 'verified' | 'terminal-auto' | 'wizard' | 'api'
 const CONFIRMED: PinSource[] = ['terminal', 'confirmed', 'verified']
 const SOURCES: PinSource[] = ['terminal', 'confirmed', 'verified', 'terminal-auto', 'wizard', 'api']
@@ -98,8 +99,9 @@ export function isRemotePinId(id: string): boolean { return /^c[0-9a-f]{10}:/.te
 
 /**
  * Pins kept before remote pins were scoped sat at the plain `host:port` id. The first time a remote's node is looked
- * up, its old pin moves to the scoped id, but only when the address is one of that remote's node addresses and not
- * one of the home addresses HyperProx knows: an address both could be is left for a fresh verification.
+ * up, its old pin is COPIED to the scoped id, once, when the address is one of that remote's node addresses and not
+ * one of the home addresses HyperProx knows. The plain one is left where it is: it may just as well be a home guest's
+ * pin on the same address, which must stay at home. A marker keeps it from being copied again after it is cleared.
  */
 async function migrateLegacy(host: string, port: number): Promise<boolean> {
   const r = currentRemote()
@@ -108,15 +110,15 @@ async function migrateLegacy(host: string, port: number): Promise<boolean> {
   if (!Object.values(r.nodeAddresses).map(a => a.toLowerCase()).includes(low)) return false
   if (homeAddresses().includes(low)) return false
   const legacy = pinId(host, port, null), id = pinId(host, port)
+  if (await getCredential(CATEGORY, MIGRATED, id).catch(() => null)) return false
   const fp = await getCredential(CATEGORY, PIN, legacy)
   if (!fp) return false
   const [src, ev] = await Promise.all([getCredential(CATEGORY, SOURCE, legacy), getCredential(CATEGORY, EVIDENCE, legacy).catch(() => null)])
   await setCredential(CATEGORY, PIN, id, fp, false)
   if (src) await setCredential(CATEGORY, SOURCE, id, src, false)
   if (ev) await setCredential(CATEGORY, EVIDENCE, id, ev, false)
-  await deleteCredential(CATEGORY, PIN, legacy)
-  await deleteCredential(CATEGORY, SOURCE, legacy).catch(() => undefined)
-  await deleteCredential(CATEGORY, EVIDENCE, legacy).catch(() => undefined)
+  await setCredential(CATEGORY, MIGRATED, id, new Date().toISOString(), false)
+  console.warn(`[hostkeys] copied the pin for ${host}:${port} to ${r.name}'s own pins; the home copy was left in place, in case a home machine uses that address too`)
   return true
 }
 
@@ -152,7 +154,7 @@ export async function confirmedPin(host: string, port: number, fingerprint: stri
 }
 
 export async function forgetPin(host: string, port = 22, scope: string | null = pinScope()): Promise<void> {
-  if (scope === pinScope()) await migrateLegacy(host, port).catch(() => false)   // an old unscoped copy of a remote's pin goes too
+  if (scope === pinScope()) await migrateLegacy(host, port).catch(() => false)   // copied first, so the marker keeps it from coming back
   await deleteCredential(CATEGORY, PIN, pinId(host, port, scope))
   await deleteCredential(CATEGORY, SOURCE, pinId(host, port, scope)).catch(() => undefined)
   await deleteCredential(CATEGORY, EVIDENCE, pinId(host, port, scope)).catch(() => undefined)

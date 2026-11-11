@@ -10,7 +10,7 @@ import { FakeBroker } from './fakes/fake-broker'
 import { buildTestApp, resetLock, signIn } from './fakes/app'
 import { requestContext } from '../src/lib/auth'
 import { execOnNode, probeHostKey, HostKeyNotConfirmedError, pinHostKeyIfFree } from '../src/lib/node-exec'
-import { listPins, pinSource, setPinSource, recordPin, pinId, recordVerified, pinEvidence, PinVerifyRefusal, pinnedKey } from '../src/lib/hostkey-pins'
+import { listPins, pinSource, setPinSource, recordPin, pinId, recordVerified, pinEvidence, PinVerifyRefusal, pinnedKey, forgetPin } from '../src/lib/hostkey-pins'
 import { setClusterStore, loadClusters, createRemote, updateCluster, resetClustersForTests } from '../src/lib/clusters/registry'
 import { MemoryClusterStore } from '../src/lib/clusters/store'
 import { runInCluster } from '../src/lib/clusters/context'
@@ -215,13 +215,18 @@ test('review 4: a remote server\'s pins are scoped to it; an old pin moves to it
       await recordPin('10.0.0.52', 22, oldFp, 'confirmed')    // a remote pin kept before pins were scoped
       await runInCluster(c.id, async () => {
         assert.equal(await pinnedKey('10.0.0.51', 22), null, 'the home pin is never inherited by the remote')
-        assert.equal(await pinnedKey('10.0.0.52', 22), oldFp, 'the old remote pin moved under the remote')
+        assert.equal(await pinnedKey('10.0.0.52', 22), oldFp, 'the old remote pin was copied under the remote')
         assert.equal(await pinSource('10.0.0.52', 22), 'confirmed', 'with its source')
         assert.equal(pinId('10.0.0.52', 22), `${c.id}:10.0.0.52:22`)
       })
       assert.equal(await pinnedKey('10.0.0.51', 22), homeFp, 'home keeps its own pin')
-      assert.equal(await pinnedKey('10.0.0.52', 22), null, 'the old unscoped copy is gone')
-      assert.ok(!(await listPins()).some(p => p.id === pinId('10.0.0.52', 22, null)))
+      // review LOW: the home copy stays (a home guest may use the same address), and it is never copied again.
+      assert.equal(await pinnedKey('10.0.0.52', 22), oldFp, 'the home copy is left in place')
+      await runInCluster(c.id, async () => {
+        await forgetPin('10.0.0.52', 22)
+        assert.equal(await pinnedKey('10.0.0.52', 22), null, 'forgotten for the remote, and not copied back from home')
+      })
+      assert.equal(await pinnedKey('10.0.0.52', 22), oldFp, 'home still has its pin')
     })
   } finally { process.env.PROXMOX_HOST = saved; resetClustersForTests() }
 })
