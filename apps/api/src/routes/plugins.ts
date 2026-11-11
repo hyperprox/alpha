@@ -14,6 +14,7 @@ import {
   type PluginMetric,
   runPluginRescueScan, runPluginRescueRun, PluginSettingsError,
 } from '../lib/plugin-host'
+import { siteMetricsExposition } from '../lib/site-metrics'
 
 export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
 
@@ -46,7 +47,8 @@ export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
       }
     }))
 
-    return reply.type('text/plain; version=0.0.4').send(renderExposition(samples, up))
+    // Websites (lib/site-metrics): up, visitors, requests, p95 and certificate days, labelled by site name only.
+    return reply.type('text/plain; version=0.0.4').send(renderExposition(samples, up) + await siteMetricsExposition())
   })
 
 

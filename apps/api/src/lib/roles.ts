@@ -111,6 +111,15 @@ const SETUP_CHECKLIST = /^\/api\/setup-checklist(\/|$)/
 // The one-time WordPress admin sign-in is a login, so it also needs the master password re-entered.
 const SITES = /^\/api\/sites(\/|$)/
 const SITES_RECONFIRM = /^\/api\/sites\/[^/]+\/admin-login$/
+// Site metrics (routes/site-metrics.ts). Reads are viewer here and trimmed by the route (totals only below
+// operator); the adopt reads map containers, so they are admin. Adopting or forgetting a site and changing its
+// nginx log format also need the master password re-entered.
+const SITE_METRICS_ADMIN_READ = /^\/api\/site-metrics\/adopt(\/|$)/
+const SITE_METRICS_RECONFIRM: Array<[string, RegExp]> = [
+  ['POST',   /^\/api\/site-metrics\/adopt$/],
+  ['DELETE', /^\/api\/site-metrics\/adopt\/[^/]+$/],
+  ['POST',   /^\/api\/site-metrics\/sites\/[^/]+\/log-format\/apply$/],
+]
 const CATALOGUE_RECONFIRM = /^\/api\/catalogue\/wizard\/(apply|jobs\/[^/]+\/cleanup)$/
 // Guest config editor (routes/guest-config.ts): reads are viewer like any GET, previews admin by the default
 // rule, and applying a preview writes a cluster-replicated guest config, so it also needs the master password.
@@ -212,6 +221,7 @@ export function requiredRole(method: string, path: string): Role | null {
   if (PROXY.test(p)) return (m === 'GET' || m === 'HEAD') && PROXY_READ.test(p) ? 'viewer' : 'admin'
   if (CATALOGUE_WIZARD.test(p)) return 'admin'
   if (SITES.test(p)) return 'admin'
+  if (SITE_METRICS_ADMIN_READ.test(p)) return 'admin'
   if (SETUP_CHECKLIST.test(p)) return 'admin'
   if (HA.test(p)) return (m === 'GET' || m === 'HEAD') && HA_READ.test(p) ? 'viewer' : 'admin'
   if (CLUSTERS.test(p)) {
@@ -253,6 +263,7 @@ export function needsReconfirm(method: string, path: string): boolean {
   if (m !== 'GET' && m !== 'HEAD' && ROLE_MGMT.test(p)) return true
   if (m === 'POST' && CATALOGUE_RECONFIRM.test(p)) return true
   if (m === 'POST' && SITES_RECONFIRM.test(p)) return true
+  for (const [sm, re] of SITE_METRICS_RECONFIRM) if (m === sm && re.test(p)) return true
   if (m === 'POST' && GUEST_CONFIG_APPLY.test(p)) return true
   if (m === 'POST' && HA_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && HA_CONTROL_RECONFIRM.test(p)) return true

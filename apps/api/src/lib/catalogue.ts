@@ -18,6 +18,7 @@
 //  tell you its default credentials has handed you a locked box.
 // =============================================================================
 
+import { LOG_FORMAT_LINE } from './site-metrics/log-format'
 import type { Distro } from './install-script'
 
 /** What a person does the first time they open the service. */
@@ -135,6 +136,16 @@ const GZIP = String.raw`  gzip on;
 /** Asset types that get the long cache; HTML is never among them, so a pull shows at once. */
 const ASSET_EXT = String.raw`css|js|mjs|map|woff2?|ttf|otf|eot|svg|png|jpe?g|gif|webp|avif|ico|mp4|webm|pdf`
 
+/**
+ * The access log format both web recipes use (lib/site-metrics/log-format.ts): nginx's combined format plus the
+ * request time and the proxy's X-Forwarded-For, so the Metrics tab has response times and can tell visitors apart
+ * behind the proxy. conf.d is included before sites-enabled, so the format exists before the site uses it.
+ */
+const METRICS_LOG_FORMAT = String.raw`cat > /etc/nginx/conf.d/hyperprox-metrics-log.conf <<'NGINX'
+# HyperProx site metrics: combined + $request_time + X-Forwarded-For.
+` + LOG_FORMAT_LINE + String.raw`
+NGINX`
+
 export const STATIC_SITE_SCRIPT = String.raw`# The installer runs scripts under umask 077; nginx's workers must be able to read what is written here.
 umask 022
 apt-get update -qq
@@ -230,6 +241,7 @@ elif [ -z "$(ls -A /var/www/site)" ]; then
     '</body></html>' > /var/www/site/index.html
 fi
 
+` + METRICS_LOG_FORMAT + String.raw`
 cat > /etc/nginx/snippets/site-headers.conf <<'NGINX'
 ` + SECURITY_HEADERS + String.raw`
 NGINX
@@ -243,6 +255,7 @@ server {
   index index.html index.htm;
   charset utf-8;
   server_tokens off;
+  access_log /var/log/nginx/access.log hyperprox_metrics;
   include snippets/site-headers.conf;
 ` + GZIP + String.raw`
 
@@ -419,6 +432,7 @@ cat > $WP_DIR/wp-content/mu-plugins/hyperprox-login.php <<'PHP'
 ` + WP_LOGIN_MU_PLUGIN + String.raw`PHP
 chown -R www-data:www-data $WP_DIR/wp-content/mu-plugins
 
+` + METRICS_LOG_FORMAT + String.raw`
 cat > /etc/nginx/snippets/site-headers.conf <<'NGINX'
 ` + SECURITY_HEADERS + String.raw`
 NGINX
@@ -431,6 +445,7 @@ server {
   index index.php;
   client_max_body_size 64m;
   server_tokens off;
+  access_log /var/log/nginx/access.log hyperprox_metrics;
   include snippets/site-headers.conf;
 ` + GZIP + String.raw`
 

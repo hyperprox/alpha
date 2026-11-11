@@ -35,6 +35,8 @@ import { haControlRoutes }      from './routes/ha-control'
 import { qnapRoutes }           from './routes/qnap'
 import { catalogueRoutes } from './routes/catalogue'
 import { siteRoutes } from './routes/sites'
+// Site metrics (lib/site-metrics): routes under /api/site-metrics and the five-minute collector.
+import { registerSiteMetrics } from './lib/site-metrics'
 import { setWizardStore, PrismaWizardStore } from './lib/catalogue-store'
 import { restoreWizardState } from './lib/catalogue-installer'
 import { terminalWsRoutes }           from './routes/terminal-ws'
@@ -154,6 +156,7 @@ async function main() {
   await server.register(qnapRoutes,            { prefix: '/api/plugins/qnap' })
   await server.register(catalogueRoutes,      { prefix: '/api/catalogue' })
   await server.register(siteRoutes,           { prefix: '/api/sites' })
+  await registerSiteMetrics(server)
   await server.register(updatesRoutes,        { prefix: '/api/updates' })
   await server.register(updatesWsRoutes,      { prefix: '/ws/updates' })
   await server.register(certsRoutes,          { prefix: '/api/certs' })
