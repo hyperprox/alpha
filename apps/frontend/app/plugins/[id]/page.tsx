@@ -4,13 +4,18 @@
 //  HyperProx — one plug-in, in full
 //
 //  The gallery card answers "is anything happening". This answers "show me
-//  everything": every device, every session, the history — as real tables you
-//  can filter, not a four-row summary.
+//  everything": a HUD, then the plug-in's own visual page (gauges, bars, a
+//  pipeline, a network map) drawn from its typed `visual` numbers, then every
+//  table in full, filterable, folded into Details at the bottom.
 // =============================================================================
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
+import type { PluginVisual } from '@hyperprox/types'
 import { HomeAssistantPage } from '@/components/plugins/home-assistant/HomeAssistant'
+import { HudHeader, styles as vs, type StatChip } from '@/components/visual/kit'
+import { DetailsSection, PLUGIN_ICON, PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
+import { ArrView, MeshView, PlexView, RouterView, UnmanicView, arrChips, plexChips, routerChips, unmanicChips, type Stuck } from '@/components/plugins/visual/views'
 
 interface Column { key: string; label: string; align?: 'left' | 'right' }
 interface Table  { title: string; columns: Column[]; rows: Array<Record<string, any>>; empty?: string; total?: number }
@@ -18,6 +23,8 @@ interface Detail {
   ok: boolean; error?: string
   stats?: Array<{ label: string; value: string; hint?: string; tone?: 'good' | 'warn' | 'bad' }>
   tables?: Table[]
+  /** The same reading as typed numbers, for the visuals. Absent from an older API: the page shows the tables. */
+  visual?: PluginVisual
 }
 
 function agoLabel(at: number | null): string {
@@ -164,10 +171,6 @@ function DataTable({ table, storageKey, force }: {
   )
 }
 
-interface Stuck {
-  id: string; title: string; series: string; path: string
-  reason: string; files: number; mappable: number; unmappable: string[]
-}
 
 function PluginDetailPage({ params }: { params: { id: string } }) {
   const [stuck, setStuck] = useState<Stuck[]>([])
@@ -175,7 +178,6 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
   const [rescueNote, setRescueNote] = useState<string | null>(null)
   const [detail, setDetail] = useState<Detail | null>(null)
   const [name,   setName]   = useState(params.id)
-  const [icon,   setIcon]   = useState('')
   const [loading, setLoading] = useState(true)
   const [everySeconds, setEverySeconds] = useState(0)
   const [live, setLive] = useRemembered(`hp.live.${params.id}`, true)
@@ -201,7 +203,7 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
         fetch(`/api/plugins/${params.id}/detail`).then(r => r.json()),
       ])
       const m = meta?.data?.find((p: any) => p.id === params.id)
-      if (m) { setName(m.name); setIcon(m.icon); setEverySeconds(Number(m.refreshSeconds ?? 0)) }
+      if (m) { setName(m.name); setEverySeconds(Number(m.refreshSeconds ?? 0)) }
       setDetail(d.success ? d.data : { ok: false, error: d.error })
       setFetchedAt(Date.now())
     } catch (e: any) {
@@ -264,81 +266,98 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
     setTimeout(() => { load(); loadStuck() }, 4000)
   }
 
+  const v = detail?.ok ? detail.visual : undefined
+  const unmatchedStuck = v?.kind === 'arrstack' ? stuck.filter(x => !v.blocked.some(b => b.downloadId === x.id)) : stuck
+  const chips: StatChip[] = !detail?.ok ? [] : v?.kind === 'plex' ? plexChips(v) : v?.kind === 'arrstack' ? arrChips(v)
+    : v?.kind === 'unmanic' ? unmanicChips(v) : v?.kind === 'mikrotik' ? routerChips(v)
+    : (detail.stats ?? []).slice(0, 4).map(x => ({ label: x.label, value: x.value, tone: x.tone === 'bad' ? 'crit' as const : x.tone === 'warn' ? 'warn' as const : undefined }))
+
+  const statsGrid = !!detail?.stats?.length && (
+    <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 168px), 1fr))', gridAutoRows: '1fr' }}>
+      {detail.stats.map(x => (
+        <div key={x.label} className="flex flex-col rounded-lg border px-5 py-4" style={{ background: 'var(--surface)', borderColor: 'var(--border-soft)' }}>
+          <p className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: 'var(--text-dim)' }}>{x.label}</p>
+          <p className="mt-1 font-display font-semibold tabular-nums leading-none"
+            style={{ color: x.tone ? TONE[x.tone] : 'var(--text-bright)', fontSize: x.value.length > 14 ? 16 : x.value.length > 10 ? 19 : 22, overflowWrap: 'anywhere' }}>
+            {x.value}
+          </p>
+          {x.hint && <p className="mt-auto pt-2 text-[13px] leading-snug" style={{ color: 'var(--text-dimmer)' }}>{x.hint}</p>}
+        </div>
+      ))}
+    </div>
+  )
+  const tables = (
+    <div className="flex flex-col gap-6">
+      {tableCount > 1 && (
+        <button
+          onClick={() => { setForce(f => (f === 'open' ? 'closed' : 'open')); setTimeout(() => setForce(null), 0) }}
+          className="h-10 self-start rounded-md border px-4 text-sm transition-colors hover:bg-white/5"
+          style={{ borderColor: 'var(--border-strong)', color: 'var(--text)', background: 'transparent' }}>
+          Expand / collapse all
+        </button>
+      )}
+      {(detail?.tables ?? []).map(t => (
+        <DataTable key={t.title} table={t} force={force} storageKey={`hp.open.${params.id}.${t.title}`} />
+      ))}
+    </div>
+  )
+
   return (
-    <div className="flex h-full flex-col" style={{ background: 'var(--ground)' }}>
-      <header className="flex flex-shrink-0 flex-wrap items-center gap-x-4 gap-y-3 border-b px-4 py-5 sm:px-8 sm:py-6"
-        style={{ borderColor: BORDER, background: 'var(--surface-raised)' }}>
-        <div className="flex flex-col gap-2">
+    <div className="min-h-full overflow-x-hidden" style={{ background: 'var(--ground)' }}>
+      <div className={`${vs.page} px-4 py-4 sm:px-8 sm:py-6`} style={{ maxWidth: '80rem', margin: '0 auto' }}>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <Link href="/plugins" className="font-mono text-[11px] uppercase tracking-[0.14em] transition-opacity hover:opacity-80"
             style={{ color: 'var(--accent)' }}>← plug-ins</Link>
-          <div className="flex items-center gap-3">
-            <span className="text-2xl">{icon}</span>
-            <h1 className="font-display text-[34px] font-bold leading-none" style={{ color: 'var(--text-bright)' }}>{name}</h1>
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            {fetchedAt && <span className="font-mono text-[10px] tabular-nums" style={{ color: 'var(--text-dimmer)' }}>{agoLabel(fetchedAt)}</span>}
+            {/* Only offered where the plug-in declared a rate. A device that never
+                asked to be polled does not get a switch that implies it could be. */}
+            {everySeconds > 0 && (
+              <button onClick={() => setLive(!live)} aria-pressed={live}
+                title={live ? `Refreshing every ${everySeconds}s — click to pause` : 'Auto-refresh is off'}
+                className="flex h-10 items-center gap-2 rounded-md border px-4 font-mono text-xs uppercase tracking-[0.1em] transition-colors hover:bg-white/5"
+                style={{ borderColor: live ? 'color-mix(in srgb, var(--accent) 40%, transparent)' : 'var(--border-strong)',
+                         color: live ? 'var(--accent)' : 'var(--text)', background: 'transparent' }}>
+                <span aria-hidden className={live ? 'animate-pulse' : ''} style={{ width: 8, height: 8, borderRadius: 999, display: 'inline-block',
+                  background: live ? 'var(--accent)' : 'var(--text-dimmer)', boxShadow: live ? '0 0 10px var(--accent)' : 'none' }} />
+                {live ? `live · ${everySeconds} s` : 'paused'}
+              </button>
+            )}
+            <button onClick={() => load()} disabled={loading}
+              className="h-10 rounded-md px-5 text-sm font-semibold transition-opacity hover:opacity-85 disabled:opacity-40"
+              style={{ background: 'var(--accent)', color: 'var(--accent-ink)', border: 'none' }}>
+              {loading ? 'reading…' : 'Refresh'}
+            </button>
           </div>
         </div>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          {tableCount > 1 && (
-            <button
-              onClick={() => { setForce(f => (f === 'open' ? 'closed' : 'open')); setTimeout(() => setForce(null), 0) }}
-              className="h-10 rounded-md border px-4 text-sm transition-colors hover:bg-white/5"
-              style={{ borderColor: 'var(--border-strong)', color: 'var(--text)', background: 'transparent' }}>
-              Expand / collapse all
-            </button>
-          )}
-          {fetchedAt && (
-            <span className="font-mono text-[10px] tabular-nums" style={{ color: 'var(--text-dimmer)' }}>
-              {agoLabel(fetchedAt)}
-            </span>
-          )}
-          {/* Only offered where the plug-in declared a rate. A device that never
-              asked to be polled does not get a switch that implies it could be. */}
-          {everySeconds > 0 && (
-            <button onClick={() => setLive(!live)}
-              title={live ? `Refreshing every ${everySeconds}s — click to pause` : 'Auto-refresh is off'}
-              className="flex h-10 items-center gap-2 rounded-md border px-4 text-sm transition-colors hover:bg-white/5"
-              style={{ borderColor: live ? 'color-mix(in srgb, var(--good) 35%, transparent)' : 'var(--border-strong)',
-                       color: live ? 'var(--good)' : 'var(--text)', background: 'transparent' }}>
-              <span aria-hidden style={{
-                width: 6, height: 6, borderRadius: 999,
-                background: live ? 'var(--good)' : 'var(--text-dimmer)',
-                display: 'inline-block',
-              }} />
-              {live ? `live · ${everySeconds}s` : 'paused'}
-            </button>
-          )}
-          <button onClick={() => load()} disabled={loading}
-            className="h-10 rounded-md px-5 text-sm font-semibold transition-opacity hover:opacity-85 disabled:opacity-40"
-            style={{ background: 'var(--accent)', color: 'var(--accent-ink)', border: 'none' }}>
-            {loading ? 'reading…' : 'Refresh'}
-          </button>
-        </div>
-      </header>
 
-      <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-8 sm:py-8">
-        {loading && !detail && (
-          <p className="text-sm" style={{ color: 'var(--text-dimmer)' }}>reading…</p>
-        )}
+        <PluginSwitcher current={params.id} />
+
+        <HudHeader eyebrow={`Plug-in${detail?.ok ? ' · live data' : ''}`} title={name} icon={PLUGIN_ICON[params.id] ?? 'plugin'} chips={chips} label={`${name} overview`} />
+
+        {loading && !detail && <p className="text-sm" role="status" style={{ color: 'var(--text-dimmer)' }}>reading…</p>}
 
         {detail && !detail.ok && (
-          <div className="rounded-lg border px-5 py-4" style={{ borderColor: 'color-mix(in srgb, var(--crit) 33%, transparent)', background: 'var(--surface)' }}>
-            <p className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: TONE.bad }}>
-              not reporting
-            </p>
+          <div className="rounded-lg border px-5 py-4" role="alert" style={{ borderColor: 'color-mix(in srgb, var(--crit) 33%, transparent)', background: 'var(--surface)' }}>
+            <p className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: TONE.bad }}>not reporting</p>
             <p className="mt-1.5 text-sm" style={{ color: 'var(--text-soft)' }}>{detail.error}</p>
           </div>
         )}
 
         {detail?.ok && (
           <>
-            {/* Downloads that are complete and cannot be filed. Above the
-                tables, because nothing else on this page is waiting on a person. */}
-            {stuck.length > 0 && (
-              <section className="mb-8 rounded-lg border p-5"
+            {v?.kind === 'plex' && <PlexView v={v} />}
+            {v?.kind === 'arrstack' && <ArrView v={v} stuck={stuck} rescuing={rescuing} onRescue={rescue} rescueNote={rescueNote} />}
+            {v?.kind === 'unmanic' && <UnmanicView v={v} />}
+            {v?.kind === 'mikrotik' && <RouterView v={v} />}
+            {v?.kind === 'meshcentral' && <MeshView v={v} />}
+
+            {/* Downloads that are complete and cannot be filed, when the page has no alert card for them. */}
+            {unmatchedStuck.length > 0 && (
+              <section className="rounded-lg border p-5"
                 style={{ background: 'var(--surface)', borderColor: 'color-mix(in srgb, var(--warn) 35%, transparent)' }}>
                 <div className="mb-2 flex items-baseline gap-2">
-                  <span className="font-display text-[20px] font-semibold" style={{ color: 'var(--warn-2)' }}>
-                    Stuck imports ({stuck.length})
-                  </span>
+                  <h2 className="font-display text-[20px] font-semibold" style={{ color: 'var(--warn-2)' }}>Stuck imports ({unmatchedStuck.length})</h2>
                 </div>
                 <p className="mb-4 text-sm leading-relaxed" style={{ color: 'var(--text-muted)', maxWidth: 680 }}>
                   These downloaded correctly. The library cannot read a season and episode out of the
@@ -346,39 +365,27 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
                   name and imports against the matching episode — files it cannot read are left alone
                   rather than filed somewhere plausible.
                 </p>
-                {rescueNote && (
-                  <div className="mb-3 rounded-md px-3 py-2 text-sm"
-                    style={{ background: 'color-mix(in srgb, var(--accent) 10%, transparent)', color: 'var(--accent)' }}>
-                    {rescueNote}
-                  </div>
+                {rescueNote && !v && (
+                  <div className="mb-3 rounded-md px-3 py-2 text-sm" role="status"
+                    style={{ background: 'color-mix(in srgb, var(--accent) 10%, transparent)', color: 'var(--accent)' }}>{rescueNote}</div>
                 )}
                 <div className="flex flex-col gap-2">
-                  {stuck.map(s => (
-                    <div key={s.id} className="rounded-lg p-3" style={{ background: 'var(--ground-inset)', border: '1px solid var(--border)' }}>
+                  {unmatchedStuck.map(x => (
+                    <div key={x.id} className="rounded-lg p-3" style={{ background: 'var(--ground-inset)', border: '1px solid var(--border)' }}>
                       <div className="flex flex-wrap items-baseline gap-x-2">
-                        <span className="text-[15px] font-semibold" style={{ color: 'var(--text-bright)' }}>{s.series}</span>
-                        <span className="text-[13px]" style={{ color: 'var(--text-dim)' }}>{s.reason}</span>
+                        <span className="text-[15px] font-semibold" style={{ color: 'var(--text-bright)' }}>{x.series}</span>
+                        <span className="text-[13px]" style={{ color: 'var(--text-dim)' }}>{x.reason}</span>
                       </div>
-                      <div className="mt-0.5 truncate font-mono text-[11px]" style={{ color: 'var(--text-dimmer)' }}>{s.title}</div>
+                      <div className="mt-0.5 truncate font-mono text-[11px]" style={{ color: 'var(--text-dimmer)' }}>{x.title}</div>
                       <div className="mt-2 flex flex-wrap items-center gap-2">
-                        <span className="font-mono text-xs" style={{ color: s.mappable ? 'var(--good)' : 'var(--crit)' }}>
-                          {s.mappable} of {s.files} mappable
-                        </span>
-                        {s.unmappable.length > 0 && (
-                          <span className="text-[13px]" title={s.unmappable.join('\n')} style={{ color: 'var(--warn)' }}>
-                            {s.unmappable.length} unreadable — hover to see
-                          </span>
+                        <span className="font-mono text-xs" style={{ color: x.mappable ? 'var(--good)' : 'var(--crit)' }}>{x.mappable} of {x.files} mappable</span>
+                        {x.unmappable.length > 0 && (
+                          <span className="text-[13px]" title={x.unmappable.join('\n')} style={{ color: 'var(--warn)' }}>{x.unmappable.length} unreadable — hover to see</span>
                         )}
-                        <button
-                          onClick={() => rescue(s)}
-                          disabled={!s.mappable || rescuing === s.id}
+                        <button onClick={() => rescue(x)} disabled={!x.mappable || rescuing === x.id}
                           className="ml-auto h-9 rounded-md px-4 text-sm font-semibold"
-                          style={{
-                            background: 'var(--accent)',
-                            color: 'var(--accent-ink)', border: 'none',
-                            opacity: (!s.mappable || rescuing === s.id) ? 0.4 : 1,
-                          }}>
-                          {rescuing === s.id ? 'importing…' : 'Map by filename'}
+                          style={{ background: 'var(--accent)', color: 'var(--accent-ink)', border: 'none', opacity: (!x.mappable || rescuing === x.id) ? 0.4 : 1 }}>
+                          {rescuing === x.id ? 'importing…' : 'Map by filename'}
                         </button>
                       </div>
                     </div>
@@ -387,42 +394,10 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
               </section>
             )}
 
-            {/* gridAutoRows 1fr is what stops the row going ragged: without it a
-                single card whose value wraps sets its own height and every card
-                beside it stretches to match, which is how twelve tidy figures
-                turn into a block of uneven boxes. Cards get a floor of 168px so
-                a label like "Known devices" stays on one line, and the value
-                steps down a size when the string is long rather than wrapping. */}
-            {!!detail.stats?.length && (
-              <div className="mb-8 grid gap-4"
-                style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(168px, 1fr))', gridAutoRows: '1fr' }}>
-                {detail.stats.map(s => (
-                  <div key={s.label} className="flex flex-col rounded-lg border px-5 py-4"
-                    style={{ background: 'var(--surface)', borderColor: 'var(--border-soft)' }}>
-                    <p className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: 'var(--text-dim)' }}>
-                      {s.label}
-                    </p>
-                    <p className="mt-1 font-display font-semibold tabular-nums leading-none"
-                      style={{ color: s.tone ? TONE[s.tone] : 'var(--text-bright)',
-                               fontSize: s.value.length > 14 ? 16 : s.value.length > 10 ? 19 : 22 }}>
-                      {s.value}
-                    </p>
-                    {s.hint && (
-                      <p className="mt-auto pt-2 text-[13px] leading-snug" style={{ color: 'var(--text-dimmer)' }}>
-                        {s.hint}
-                      </p>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div className="flex flex-col gap-6">
-              {(detail.tables ?? []).map(t => (
-                <DataTable key={t.title} table={t} force={force}
-                  storageKey={`hp.open.${params.id}.${t.title}`} />
-              ))}
-            </div>
+            {/* A plug-in that sends no visual still gets its figures and tables in full, as before. */}
+            {v ? (tableCount > 0 || !!detail.stats?.length) && (
+              <DetailsSection count={tableCount}>{statsGrid}{tables}</DetailsSection>
+            ) : (<>{statsGrid}{tables}</>)}
           </>
         )}
       </div>

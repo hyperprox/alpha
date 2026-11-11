@@ -39,8 +39,10 @@ export class HAUnreachableError extends Error {
 export interface HAUser { name: string; isAdmin: boolean; isOwner: boolean }
 export interface HARegistry {
   areas:    Array<{ area_id: string; name: string }>
-  devices:  Array<{ id: string; area_id: string | null }>
-  entities: Array<{ entity_id: string; area_id: string | null; device_id: string | null; hidden?: boolean }>
+  /** manufacturer and model only: what a plug socket is told apart by. */
+  devices:  Array<{ id: string; area_id: string | null; manufacturer?: string | null; model?: string | null }>
+  /** platform is the integration (e.g. "tplink"); original_name is the name the integration gave it. */
+  entities: Array<{ entity_id: string; area_id: string | null; device_id: string | null; hidden?: boolean; platform?: string | null; original_name?: string | null }>
 }
 
 /** The calls the service layer makes. An interface so tests can count what reached which instance. */
@@ -169,12 +171,17 @@ export class HttpHAClient implements HAClient {
       { type: 'config/entity_registry/list' },
     ])
     const arr = (v: any) => Array.isArray(v) ? v : []
+    const short = (v: unknown) => typeof v === 'string' ? v.slice(0, 80) : null
     return {
       areas:    arr(areas).filter((a: any) => typeof a?.area_id === 'string').map((a: any) => ({ area_id: a.area_id, name: String(a.name ?? a.area_id).slice(0, 80) })),
-      devices:  arr(devices).filter((d: any) => typeof d?.id === 'string').map((d: any) => ({ id: d.id, area_id: typeof d.area_id === 'string' ? d.area_id : null })),
+      devices:  arr(devices).filter((d: any) => typeof d?.id === 'string').map((d: any) => ({
+        id: d.id, area_id: typeof d.area_id === 'string' ? d.area_id : null,
+        manufacturer: short(d.manufacturer), model: short(d.model),
+      })),
       entities: arr(entities).filter((e: any) => typeof e?.entity_id === 'string').map((e: any) => ({
         entity_id: e.entity_id, area_id: typeof e.area_id === 'string' ? e.area_id : null,
         device_id: typeof e.device_id === 'string' ? e.device_id : null, hidden: !!e.hidden_by,
+        platform: short(e.platform), original_name: short(e.original_name),
       })),
     }
   }

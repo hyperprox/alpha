@@ -14,6 +14,8 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { alpha } from '@/lib/theme'
+import { Icon, styles as vs } from '@/components/visual/kit'
+import { PLUGIN_ICON } from './visual/plugin-kit'
 
 interface Card {
   id: string; name: string; icon: string; hasDetail: boolean
@@ -73,21 +75,24 @@ export function PluginCards({ heading = 'Plug-ins', rowLimit = 4 }: { heading?: 
         {heading}
       </h2>
 
-      <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
+      <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 300px), 1fr))' }}>
         {cards.map(p => {
           const tone = p.error ? TONE.bad : TONE[p.tone ?? 'good']
           const body = (
             <>
               <div className="mb-3 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm">{p.icon}</span>
-                  <span className="font-display text-[20px] font-semibold" style={{ color: 'var(--text-bright)' }}>
+                <div className="flex min-w-0 items-center gap-2">
+                  <span style={{ color: 'var(--accent)', display: 'flex' }}>
+                    {PLUGIN_ICON[p.id] ? <Icon name={PLUGIN_ICON[p.id]} size={18} /> : <span className="text-sm">{p.icon}</span>}
+                  </span>
+                  <span className="truncate font-display text-[20px] font-semibold uppercase" style={{ color: 'var(--text-bright)', letterSpacing: '0.06em' }}>
                     {p.name}
                   </span>
                 </div>
-                <span className="rounded px-1.5 py-0.5 font-mono text-[10px] tracking-wider"
+                <span className="flex items-center gap-1.5 rounded px-1.5 py-0.5 font-mono text-[10px] tracking-wider"
                   style={{ color: tone, border: `1px solid ${alpha(tone, 19)}` }}>
-                  {p.error ? 'UNREACHABLE' : 'LIVE'}
+                  <i className={vs.hdot} data-tone={p.error ? 'bad' : p.tone ?? 'good'} aria-hidden />
+                  {p.error ? 'UNREACHABLE' : p.tone === 'bad' ? 'NEEDS YOU' : p.tone === 'warn' ? 'CHECK' : 'LIVE'}
                 </span>
               </div>
 
@@ -118,11 +123,9 @@ export function PluginCards({ heading = 'Plug-ins', rowLimit = 4 }: { heading?: 
             </>
           )
 
-          const style = { background: 'var(--surface)', border: '1px solid var(--border-soft)', borderRadius: 10, padding: 20, minWidth: 0, overflow: 'hidden' } as const
-
           return p.hasDetail
-            ? <Link key={p.id} href={`/plugins/${p.id}`} className="block transition-colors hover:bg-white/[0.02]" style={style}>{body}</Link>
-            : <div key={p.id} style={style}>{body}</div>
+            ? <Link key={p.id} href={`/plugins/${p.id}`} className={`${vs.card} transition-colors`}>{body}</Link>
+            : <div key={p.id} className={vs.card}>{body}</div>
         })}
       </div>
     </section>

@@ -127,3 +127,6 @@ export * from './certs'
 
 // Remote access feature
 export * from './remote'
+
+// Plug-in pages: the numbers behind the visuals
+export * from './plugin-visual'

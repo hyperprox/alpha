@@ -24,8 +24,8 @@
 
 import {
   ActionRefusal, CONTROLLABLE, ENTITY_ID, actionPhrase, buildServiceCall, confirmPhrase, confirmTemplate, controlsFor,
-  displayState, domainOf, everydayRefusal, markFor, markHolds, nameOf, readBackMatches, tierOf, typedMatches,
-  type Control, type EverydayMark, type HAState, type Tier,
+  displayState, domainOf, everydayRefusal, inferRoom, kindOf, ledCompanions, markFor, markHolds, nameOf, readBackMatches,
+  tierOf, typedMatches, type Control, type DeviceKind, type RegistryHint, type EverydayMark, type HAState, type Tier,
 } from './catalog'
 import { HAUnreachableError, HttpHAClient, type HAClient, type HAConnection, type HARegistry } from './client'
 import type { InstanceMeta, InstanceStore } from './instances'
@@ -59,12 +59,16 @@ export interface DeviceRow {
   entityId:    string
   name:        string
   domain:      string
+  /** How to draw it: a wall switch named as a light is a light. */
+  kind:        DeviceKind
   tier:        Tier
   unavailable: boolean
   /** Hidden ("hidden") from viewers on security devices. */
   state:       string
   unit?:       string
   deviceClass?: string
+  /** A thermostat's room reading. */
+  current?:    number
   /** On security devices, `confirm` is the phrase to type-check, with "{value}" where a slider or list value goes. */
   controls:    Array<Control & { confirm?: string }>
 }
@@ -89,6 +93,17 @@ export interface ServiceDeps {
 }
 
 const REFUSAL_NOTIFY_MS = 10 * 60_000
+
+/** An entity's registry entry and its device's maker and model, for telling a plug socket from a wall switch. */
+export function registryHint(reg: HARegistry | null, entityId: string): RegistryHint | null {
+  if (!reg) return null
+  const e = reg.entities.find(x => x.entity_id === entityId)
+  if (!e) return null
+  const d = e.device_id ? reg.devices.find(x => x.id === e.device_id) : undefined
+  return { manufacturer: d?.manufacturer ?? null, model: d?.model ?? null, platform: e.platform ?? null, originalName: e.original_name ?? null }
+}
+/** Groups that sort after the named rooms. */
+const LAST = new Set(['No area', 'Other'])
 
 export interface Limits {
   normalPerMinute: number
@@ -254,29 +269,36 @@ export class HAControlService {
 
     const areaName = new Map(reg?.areas.map(a => [a.area_id, a.name]) ?? [])
     const deviceArea = new Map(reg?.devices.map(d => [d.id, d.area_id]) ?? [])
+    const deviceById = new Map(reg?.devices.map(d => [d.id, d]) ?? [])
     const entityReg = new Map(reg?.entities.map(e => [e.entity_id, e]) ?? [])
 
+    // Indicator-LED companion switches are left out: they are the status light of another switch, not a device.
+    const leds = ledCompanions(states)
     const groups = new Map<string, DeviceRow[]>()
     for (const s of states) {
       const domain = domainOf(s.entity_id)
       if (!CONTROLLABLE.has(domain) || !ENTITY_ID.test(s.entity_id)) continue
+      if (leds.has(s.entity_id)) continue
       const er = entityReg.get(s.entity_id)
       if (er?.hidden) continue
       const areaId = er?.area_id ?? (er?.device_id ? deviceArea.get(er.device_id) ?? null : null)
-      const area = (areaId && areaName.get(areaId)) || 'No area'
-      const tier = tierOf(s, m.policy)
+      // Home Assistant's own areas when it shares them; otherwise a room worked out from the device's name.
+      const area = reg ? ((areaId && areaName.get(areaId)) || 'No area') : (inferRoom(nameOf(s)) ?? 'Other')
+      const dev = er?.device_id ? deviceById.get(er.device_id) : undefined
+      const hint: RegistryHint | null = er ? { manufacturer: dev?.manufacturer ?? null, model: dev?.model ?? null, platform: er.platform ?? null, originalName: er.original_name ?? null } : null
+      const tier = tierOf(s, m.policy, hint)
       const unavailable = s.state === 'unavailable' || (s.state === 'unknown' && !['scene', 'script', 'button'].includes(domain))
       const hide = opts.viewer && tier === 'security'
       const controls = hide ? [] : controlsFor(s).map(c => tier === 'security' ? { ...c, confirm: confirmTemplate(s, c.action, m.name) } : c)
       const shown = displayState(s)
       const row: DeviceRow = {
-        entityId: s.entity_id, name: nameOf(s), domain, tier, unavailable,
+        entityId: s.entity_id, name: nameOf(s), domain, kind: kindOf(s, hint), tier, unavailable,
         ...(hide ? { state: 'hidden', ...(shown.deviceClass ? { deviceClass: shown.deviceClass } : {}) } : shown), controls,
       }
       groups.set(area, [...(groups.get(area) ?? []), row])
     }
     const areas = [...groups.entries()]
-      .sort((a, b) => (a[0] === 'No area' ? 1 : 0) - (b[0] === 'No area' ? 1 : 0) || a[0].localeCompare(b[0]))
+      .sort((a, b) => (LAST.has(a[0]) ? 1 : 0) - (LAST.has(b[0]) ? 1 : 0) || a[0].localeCompare(b[0]))
       .map(([name, devices]) => ({ name, devices: devices.sort((x, y) => x.name.localeCompare(y.name)) }))
 
     // A protected device that was renamed in Home Assistant silently stops being protected: say so.
@@ -287,7 +309,9 @@ export class HAControlService {
       ...m.policy.everyday.filter(e => ids.has(e.entity_id) && !markHolds(e, states.find(s => s.entity_id === e.entity_id)!)).map(e =>
         `${e.entity_id} changed in Home Assistant (its name, kind or class) since it was marked everyday, so it needs the confirm step again. Remove it from the everyday list and add it back if that is still right.`),
     ]
-    return { areas, warnings, areaSource: reg ? 'registry' : 'none', fetchedAt: new Date(hit.at).toISOString() }
+    return {
+      areas, warnings, areaSource: reg ? 'registry' : 'none', hiddenLed: leds.size, fetchedAt: new Date(hit.at).toISOString(),
+    }
   }
 
   // --- Actions ---------------------------------------------------------------------------------
@@ -364,7 +388,8 @@ export class HAControlService {
       return refuse(new ActionRefusal('unreachable', e instanceof HAUnreachableError ? e.message : `${m.name} could not be read.`, 502))
     }
     if (!before) return refuse(new ActionRefusal('unknown_entity', `${m.name} has no entity ${entityId}.`, 404))
-    const tier = tierOf(before, m.policy)
+    // The registry (cached a minute) only tells a plug socket from a wall switch; an unreadable one changes nothing.
+    const tier = tierOf(before, m.policy, registryHint(await this.registry(m, ha), entityId))
     // Counted before any role, route or phrase check, so repeated tries at a lock (an operator's included) are limited.
     try {
       this.rate(actor, tier, tier === 'security' ? this.d.limits.securityPerMinute : this.d.limits.normalPerMinute,

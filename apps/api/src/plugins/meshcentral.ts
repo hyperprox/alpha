@@ -26,8 +26,10 @@
 
 import { createHash } from 'node:crypto'
 import type {
-  AppContext, AppFix, AppInstall, AppIssue, AppRelease, AppStepResult, AppUpdateProvider, Plugin, PluginContext, PluginTileData,
+  AppContext, AppFix, AppInstall, AppIssue, AppRelease, AppStepResult, AppUpdateProvider, Plugin, PluginContext, PluginDetail,
+  PluginTileData,
 } from '../lib/plugin-host'
+import type { MeshVisual } from '../lib/plugin-visual-types'
 import {
   type NpmInstall, describeNpmInstall, detectNpmInstalls, installKey, npmApply, npmFactsScript, npmRelease, npmUpdateBlocker,
   parseNpmFacts, waitForSteadyService,
@@ -476,6 +478,24 @@ export const meshcentralProvider: AppUpdateProvider = {
 
 // --- The plug-in --------------------------------------------------------------------
 
+/**
+ * The MeshCentral page. This plug-in keeps MeshCentral updated; it holds no MeshCentral login, so it cannot read
+ * the device list and says what that would take instead of showing anything made up. The public URL is a setting,
+ * not a secret.
+ */
+export function buildMeshVisual(publicUrl: string | undefined): MeshVisual {
+  const url = parseUrls(publicUrl)[0]
+  return {
+    kind: 'meshcentral',
+    connected: false,
+    publicUrl: url ? url.origin : null,
+    needs: [
+      'A MeshCentral login for HyperProx: a dedicated user with view-only rights to the device groups you want to see.',
+      'A plug-in setting to hold it in the vault. This plug-in has none yet, so it only watches MeshCentral for updates.',
+    ],
+  }
+}
+
 export const meshcentralPlugin: Plugin = {
   manifest: {
     id:   'meshcentral',
@@ -502,6 +522,18 @@ export const meshcentralPlugin: Plugin = {
         { label: 'Public URL', value: url || 'from proxy hosts' },
         { label: 'Updates', value: 'on the Updates page' },
       ],
+    }
+  },
+
+  async detail(ctx: PluginContext): Promise<PluginDetail> {
+    const url = ctx.option('public_url')
+    return {
+      visual: buildMeshVisual(url),
+      stats: [
+        { label: 'Public URL', value: url || 'from proxy hosts' },
+        { label: 'Updates', value: 'on the Updates page' },
+      ],
+      tables: [],
     }
   },
 

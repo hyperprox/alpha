@@ -736,12 +736,20 @@ wizard offers to remove only the container it made. See [docs/catalogue-wizard.m
 
 | Plug-in | What it shows |
 |---|---|
-| Arr Stack | Sonarr, Radarr, Prowlarr and qBittorrent together: what needs a person, the queue, stalled downloads, indexer health |
-| Unmanic | Transcode workers on every node, the queue and failures |
-| MikroTik | The router's health, per-device and per-interface throughput, firewall, WireGuard, neighbours and log; feeds the bandwidth dials and offers an SSH console |
-| Plex activity | Current streams, transcodes and bandwidth, and history, read through Tautulli |
-| Home Assistant | Unavailable entities, low batteries, pending updates, automations and log errors, and a Devices view to control lights, switches, climate, covers, locks and more, for each of your Home Assistant instances (see below) |
-| MeshCentral | Finds npm installs in guests and adds them to Updates |
+| Arr Stack | Sonarr, Radarr, Prowlarr and qBittorrent as one pipeline (search, grabbed, downloading, import, library) with live counts; imports that need a person as alert cards; download progress; indexer status dots and health warnings |
+| Unmanic | One ring per worker with its slots, a caught-up (or stalled) banner, and what is encoding now with its progress |
+| MikroTik | A live map of internet, uplinks, router and subnets; CPU, memory, temperature and input-voltage rings; top talkers; port forwards; the log with errors highlighted. Also the per-device and per-interface tables, firewall, WireGuard and neighbours; feeds the bandwidth dials and offers an SSH console |
+| Plex activity | What is streaming now (progress, direct or transcode), internet and local bandwidth gauges, who watches most, what is watched most, and recent history, read through Tautulli |
+| Home Assistant | Your house as tiles by room, with quick actions, a light dial and a climate dial; plus unavailable entities, low batteries, pending updates and log errors, for each of your Home Assistant instances (see below) |
+| MeshCentral | Finds npm installs in guests and adds them to Updates. Its page says what it would need to show your devices; it holds no MeshCentral login, so it shows none |
+
+Each plug-in page opens with a summary header and a bar to jump between plug-ins (each with a health
+dot), then the plug-in's own picture of what is happening. Every table it has always had is still there,
+folded into **Details** at the bottom, filterable. The pages follow your light or dark theme, work on a
+phone, and stop animating when your system asks for reduced motion. Names on the router page come from
+the router (DHCP leases, ARP comments) and, where it has none, from HyperProx's own list of which cluster
+guest has which address. On the Arr Stack page, an import blocked because the filenames carry no season
+and episode offers **Map by filename**, the same rescue as before.
 
 **Scan for services** finds qBittorrent, Sonarr, Radarr, Prowlarr, Unmanic and Tautulli on running
 guests and offers to configure them; nothing is saved until you press **Use this**, and API keys are
@@ -752,8 +760,16 @@ button that opens a pre-filled GitHub issue in your browser.
 #### Controlling Home Assistant devices
 
 Open **Plug-ins, Home Assistant**. Each house you add (your own, a second home) gets its own tab with
-**Devices**, **Health** and **Settings**. The Devices view lists what HyperProx can control, grouped by
-the rooms (areas) set in Home Assistant, with big one-tap controls that work on a phone:
+**Devices**, **Health** and **Settings**. The Devices view shows what HyperProx can control as tiles,
+grouped by the rooms (areas) set in Home Assistant. When Home Assistant does not share its rooms with
+the token, rooms are worked out from device names (kitchen, living room, a person's room such as
+"Alex Fan", and so on), with everything else under **Other**; rooms set in Home Assistant always win.
+A header counts devices online, lights on, things playing and the climate target. Tap a tile to switch
+it, play or pause it, or (for a security device) start its confirm step; **⋯** opens a light's
+brightness ring and warmth slider, or any device's full controls. **All lights off** and **Pause all
+audio** send the same per-device actions one by one, and leave security devices for you to confirm one
+at a time. Offline devices are listed at the bottom. A switch named like another switch plus " LED"
+(the status light some smart switches add) is hidden.
 
 | Kind | Controls |
 |---|---|
@@ -774,8 +790,14 @@ really says now; if it did not change (an offline plug, a slow lock), the card s
 **Security devices** are, always: locks, alarm panels, sirens, and covers that Home Assistant calls a
 garage, gate or door. By default, until you move them to **everyday** in Settings: any other cover except
 blinds, curtains, shades, shutters, awnings and dampers; scenes, scripts and buttons (they can run
-anything); switches and toggles, except plug sockets (outlets). Anything whose name sounds like a door,
-gate, lock or alarm (in English or the common European languages) always is, everyday or not. Plus
+anything); switches and toggles, except plug sockets (outlets), switches whose name says light, lights or
+lamp, and every switch from a TP-Link device. A plug socket is a switch Home Assistant marks as an outlet,
+or whose device entry names a plug, outlet or strip (a TP-Link plug or power strip, say); TP-Link,
+plugs and the router rule below are read from Home Assistant's device list, so they apply when it shares
+that list with the token. Switches and buttons of routers, access points and firewalls (such as the
+ASUS, MikroTik, UniFi, Omada and Deco integrations) always are, whatever their name or an everyday mark
+says. Anything whose name sounds like a door, gate, lock or alarm (in English or the common European
+languages) always is, everyday or not. Plus
 anything you mark **protected** (or a whole kind, such as climate). An everyday mark is tied to the device
 as it was when you marked it: rename it or change its class in Home Assistant and it needs the confirm
 step again. They carry a lock icon and need all of these: the

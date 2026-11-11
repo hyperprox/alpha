@@ -8,6 +8,7 @@
 // =============================================================================
 
 import type { Plugin, PluginContext, PluginTileData, PluginDetail, PluginMetric } from '../lib/plugin-host'
+import type { PlexVisual } from '../lib/plugin-visual-types'
 
 function mbps(kbps: number): string {
   if (!kbps) return '0 Mbps'
@@ -23,6 +24,65 @@ function hours(seconds: number): string {
 /** Tautulli's `after` filter wants YYYY-MM-DD. */
 function daysAgo(n: number): string {
   return new Date(Date.now() - n * 86400_000).toISOString().slice(0, 10)
+}
+
+const n0 = (v: unknown): number => {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN
+  return Number.isFinite(n) ? n : 0
+}
+const str = (v: unknown, fallback = '—', max = 160): string =>
+  (typeof v === 'string' && v.trim() ? v.trim() : typeof v === 'number' ? String(v) : fallback).slice(0, max)
+
+/**
+ * The Plex page's numbers, from Tautulli's own answers: get_activity's data, get_history's rows and
+ * get_home_stats' blocks. Pure, so it is tested without a Tautulli.
+ */
+export function buildPlexVisual(activity: any, history: unknown, home: unknown): PlexVisual {
+  const a = activity ?? {}
+  const sessions: any[] = Array.isArray(a.sessions) ? a.sessions : []
+  const stats: any[] = Array.isArray(home) ? home : []
+  const rowsOf = (id: string): any[] => stats.find(x => x?.stat_id === id)?.rows ?? []
+  const episode = (s: any) => s.media_type === 'episode'
+  return {
+    kind: 'plex',
+    sessions: sessions.slice(0, 12).map(s => ({
+      title:     str(episode(s) ? (s.grandparent_title || s.full_title) : (s.title || s.full_title), 'Something'),
+      episode:   episode(s) && s.title ? str(s.title) : null,
+      number:    episode(s) && n0(s.media_index) ? `S${n0(s.parent_media_index)} · E${n0(s.media_index)}` : null,
+      year:      n0(s.year) || null,
+      mediaType: str(s.media_type, 'unknown', 20),
+      user:      str(s.friendly_name || s.user, 'someone', 60),
+      player:    str(s.player || s.product, '—', 60),
+      quality:   str(s.quality_profile, '—', 40),
+      mode:      str(s.transcode_decision, 'direct play', 20),
+      state:     str(s.state, 'playing', 20),
+      progress:  Math.max(0, Math.min(100, n0(s.progress_percent))),
+    })),
+    counts: {
+      streams:    n0(a.stream_count ?? sessions.length),
+      transcodes: n0(a.stream_count_transcode),
+      direct:     n0(a.stream_count_direct_play),
+    },
+    bandwidth: {
+      totalMbps: Math.round(n0(a.total_bandwidth) / 100) / 10,
+      lanMbps:   Math.round(n0(a.lan_bandwidth) / 100) / 10,
+      wanMbps:   Math.round(n0(a.wan_bandwidth) / 100) / 10,
+    },
+    topWatchers: rowsOf('top_users').slice(0, 10).map(r => ({
+      user: str(r.friendly_name ?? r.user, '—', 60), minutes: Math.round(n0(r.total_duration) / 60), plays: n0(r.total_plays),
+    })),
+    topTitles: [...rowsOf('top_tv'), ...rowsOf('top_movies')]
+      .sort((x, y) => n0(y.total_plays) - n0(x.total_plays))
+      .slice(0, 10)
+      .map(r => ({ title: str(r.title), plays: n0(r.total_plays), minutes: Math.round(n0(r.total_duration) / 60) })),
+    recent: (Array.isArray(history) ? history : []).slice(0, 12).map((h: any) => ({
+      at:      n0(h.date ?? h.started) ? n0(h.date ?? h.started) * 1000 : null,
+      user:    str(h.friendly_name || h.user, '—', 60),
+      title:   str(h.full_title || h.title),
+      player:  str(h.player, '—', 60),
+      minutes: Math.round(n0(h.duration ?? h.play_duration) / 60),
+    })),
+  }
 }
 
 export const plexPlugin: Plugin = {
@@ -167,6 +227,7 @@ export const plexPlugin: Plugin = {
       .map((r: any) => ({ title: r.title ?? '—', plays: r.total_plays ?? 0, time: mins(r.total_duration) }))
 
     return {
+      visual: buildPlexVisual(data, historyRows, stats),
       stats: [
         { label: 'Watching now',  value: String(data.stream_count ?? 0) },
         { label: 'Transcoding',   value: String(data.stream_count_transcode ?? 0),
