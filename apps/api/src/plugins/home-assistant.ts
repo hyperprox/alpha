@@ -259,6 +259,9 @@ export const homeAssistantPlugin: Plugin = {
     return buildHealthDetail(states, config, log, Number(ctx.option('battery_warn') ?? 20) || 20)
   },
 
+  // The AI assistant reads this (first house only) and nothing else of Home Assistant. It is deliberately given
+  // no control: actions go through lib/ha-control with a person's role, re-confirmation and confirm step, and an
+  // assistant that could turn a sentence into "unlock the front door" would sit outside all three.
   async summary(ctx: PluginContext) {
     const states: HAState[] = await ctx.get('/api/states', { timeoutMs: 15_000 })
     const list = Array.isArray(states) ? states : []

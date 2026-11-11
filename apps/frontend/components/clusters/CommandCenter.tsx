@@ -10,6 +10,7 @@ import { type ClusterPanel, type Attention, type GpuRow, clusterColor, clusterIn
 import { gpuRowLabel, gpuRowTitle, gpuRowRight, gpuRowPct, gpuRowDetail, gpuRowAction } from '@/lib/gpu-rows'
 import { Notice } from '@/components/vault/ui'
 import { SendFilesButton } from './SendFiles'
+import { useLinkedHouses, type Instance } from '@/components/plugins/home-assistant/HomeAssistant'
 
 export function Dot({ kind, size = 9 }: { kind: 'home' | 'remote'; size?: number }) {
   return <span aria-hidden className="inline-block rounded-full shrink-0" style={{ width: size, height: size, background: clusterColor(kind) }} />
@@ -75,7 +76,7 @@ function Card({ value, label }: { value: string; label: string }) {
 
 const openHref = (p: { id: string; kind: string }) => (p.kind === 'home' ? '/dashboard' : `/clusters/${p.id}`)
 
-export function PanelView({ p }: { p: ClusterPanel }) {
+export function PanelView({ p, houses = [] }: { p: ClusterPanel; houses?: Instance[] }) {
   const k = p.kind
   const quorum = p.quorum === 'ok' ? 'OK' : p.quorum === 'standalone' ? 'single' : p.quorum === 'lost' ? 'LOST' : '—'
   return (
@@ -114,6 +115,13 @@ export function PanelView({ p }: { p: ClusterPanel }) {
             ? `Updates available on ${p.updates.available} machine${p.updates.available === 1 ? '' : 's'} (${p.updates.packages} package${p.updates.packages === 1 ? '' : 's'}${p.updates.security ? `, ${p.updates.security} security` : ''}) · checked ${ago(Date.parse(p.updates.checkedAt))}`
             : `Up to date · checked ${ago(Date.parse(p.updates.checkedAt))}`}
       </p>
+      {houses.length > 0 && (
+        <p className="text-xs flex flex-wrap gap-x-2" style={{ color: 'var(--text-muted)' }}>
+          Home Assistant:{houses.map(h => (
+            <Link key={h.id} href={k === 'remote' ? `/clusters/${p.id}?tab=home` : '/plugins/home-assistant'} className="font-semibold" style={{ color: clusterColor(k) }}>{h.name} ›</Link>
+          ))}
+        </p>
+      )}
       <div className="flex gap-2 flex-wrap">
         {k === 'home' ? (
           <>
@@ -169,12 +177,13 @@ export function useCommandCenter(everyMs = 30_000) {
 /** The panels and the feed, as one block (the Command center page, and the dashboard when remotes exist). */
 export function CommandCenter() {
   const { data, error } = useCommandCenter()
+  const housesFor = useLinkedHouses()
   if (error) return <Notice kind="error">{error}</Notice>
   if (!data) return <p className="text-sm animate-pulse" style={{ color: 'var(--text-muted)' }}>Reading every cluster…</p>
   return (
     <div className="flex flex-col gap-4">
       <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(min(100%,19rem),1fr))' }}>
-        {data.panels.map(p => <PanelView key={p.id} p={p} />)}
+        {data.panels.map(p => <PanelView key={p.id} p={p} houses={housesFor(p.id, p.kind)} />)}
       </div>
       <AttentionFeed items={data.attention} />
     </div>

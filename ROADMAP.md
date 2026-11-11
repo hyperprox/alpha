@@ -24,6 +24,12 @@
 - VM creation — ISO auto-detection across all nodes, network config, storage picker
 - CT/VM deletion with confirmation guard
 - CT template + ISO auto-detection across all nodes and storage pools
+- Home Assistant control: several houses, a Devices view by room, security devices behind admin, the master password and a named confirm step, read-back and audit for every action
+
+### Home Assistant, next
+- Locks and alarm panels that need a code
+- Live state over Home Assistant's WebSocket instead of polling every few seconds
+- Control from the AI assistant (read-only today, on purpose)
 
 ---
 

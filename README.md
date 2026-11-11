@@ -36,7 +36,7 @@ through its API.
 | Terminal | Browser SSH with persistent tmux sessions, split panes and saved layouts |
 | Catalogue | Guided installs of NPM, Ollama, Tautulli, Nextcloud, Jellyfin, Gitea and more: choose resources, see every node's free capacity with a recommended node, pick the ID and address |
 | AI assistant | Questions about your cluster, and plain-language deploys run end to end after you confirm |
-| Plug-ins | Arr Stack, Unmanic, MikroTik, Plex, Home Assistant and MeshCentral, with no access to credentials |
+| Plug-ins | Arr Stack, Unmanic, MikroTik, Plex, Home Assistant and MeshCentral, with no access to credentials; Home Assistant also controls devices, in more than one house |
 | Notifications | Discord, Slack, Teams, ntfy, Gotify, Telegram and generic webhooks |
 | Security | Built-in Vaultwarden sign-in with 2FA, secrets in memory only, auto-lock, roles and API tokens |
 
@@ -674,7 +674,7 @@ wizard offers to remove only the container it made. See [docs/catalogue-wizard.m
 | Unmanic | Transcode workers on every node, the queue and failures |
 | MikroTik | The router's health, per-device and per-interface throughput, firewall, WireGuard, neighbours and log; feeds the bandwidth dials and offers an SSH console |
 | Plex activity | Current streams, transcodes and bandwidth, and history, read through Tautulli |
-| Home Assistant | Unavailable entities, low batteries, pending updates, automations and log errors (read-only) |
+| Home Assistant | Unavailable entities, low batteries, pending updates, automations and log errors, and a Devices view to control lights, switches, climate, covers, locks and more, for each of your Home Assistant instances (see below) |
 | MeshCentral | Finds npm installs in guests and adds them to Updates |
 
 **Scan for services** finds qBittorrent, Sonarr, Radarr, Prowlarr, Unmanic and Tautulli on running
@@ -682,6 +682,50 @@ guests and offers to configure them; nothing is saved until you press **Use this
 never guessed. A plug-in declares the settings it needs and HyperProx makes its HTTP calls for it, so
 the plug-in never reads a credential. The page also lists plug-ins that do not exist yet, each with a
 button that opens a pre-filled GitHub issue in your browser.
+
+#### Controlling Home Assistant devices
+
+Open **Plug-ins, Home Assistant**. Each house you add (your own, a second home) gets its own tab with
+**Devices**, **Health** and **Settings**. The Devices view lists what HyperProx can control, grouped by
+the rooms (areas) set in Home Assistant, with big one-tap controls that work on a phone:
+
+| Kind | Controls |
+|---|---|
+| Lights | on, off, brightness, colour temperature |
+| Switches and input booleans | on, off |
+| Fans | on, off, speed |
+| Covers (blinds, shutters) | open, close, stop, position |
+| Climate | target temperature, mode |
+| Media players | play, pause, volume |
+| Scenes and scripts | run |
+| Buttons | press |
+| Vacuums | start, return to dock |
+| Locks, alarm panels, sirens | lock and unlock; arm (home or away) and disarm; on and off |
+
+The page refreshes every few seconds. After each tap HyperProx reads the device back and shows what it
+really says now; if it did not change (an offline plug, a slow lock), the card says so in plain words.
+
+**Security devices** are locks, alarm panels, sirens, covers that Home Assistant calls a garage, gate or
+door, and anything you mark **protected** in Settings (you can also protect a whole kind, such as climate).
+They carry a lock icon and need all of these: the admin role, your master password entered in the last
+5 minutes, and a confirm step that names the device and the house ("Unlock Front door at Second home").
+API tokens can never use them. Everything else needs the operator role (you can raise that to admin per
+house). Each action is recorded in the audit log with who did it, the house, the device, the action and
+the result, and a security action can also send a notification (the Home Assistant family).
+
+HyperProx only sends the actions in the table above, each to one Home Assistant service, with values
+checked against the device's own limits. It never passes a request straight through to Home Assistant.
+An alarm panel or lock that needs a code is not supported yet. The AI assistant can read the first
+house's state but cannot control anything.
+
+**Adding a house.** In Home Assistant, make a dedicated user for HyperProx with administrator turned
+off, sign in as it, and create a long-lived access token under Profile, Security. A token has every
+right its user has, so do not use your own admin account; HyperProx warns you on the Home Assistant
+page when a token belongs to an admin. Paste the address and token in **Add a house** (admin, asks for
+your master password). The token is kept in the vault and never shown again. Link the house to a
+remote server and it also appears on that server's page (a **Home Assistant** tab, in amber) and in
+the Command center. The Home Assistant you had already set up is the first house, called "Home", with
+nothing to redo.
 
 ### Settings
 
@@ -692,7 +736,7 @@ button that opens a pre-filled GitHub issue in your browser.
 - **Secrets**: names of everything in the vault. Owners and admins can reveal a value, send it as an
   expiring one-view link (a Bitwarden Send), or generate and store a new password.
 - **API tokens** for scripts: see [Security model](#security-model).
-- **Notifications**: channels for lock alerts, update runs, updates waiting to be applied and certificate changes, with severity
+- **Notifications**: channels for lock alerts, update runs, updates waiting to be applied, certificate changes and Home Assistant security actions, with severity
   filters, quiet hours and a test button. See [docs/notifications.md](docs/notifications.md).
 
 ### On a phone

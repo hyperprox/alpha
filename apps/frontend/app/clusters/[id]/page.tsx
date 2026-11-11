@@ -17,6 +17,7 @@ import { HardwareScan } from '@/components/clusters/HardwareScan'
 import { MonitoringSetup } from '@/components/clusters/MonitoringSetup'
 import { FilesTab } from '@/components/clusters/FilesTab'
 import { SendFilesButton } from '@/components/clusters/SendFiles'
+import { ClusterHomeTab, useInstances } from '@/components/plugins/home-assistant/HomeAssistant'
 
 const TABS = [
   { id: 'overview', label: 'Overview' },
@@ -25,6 +26,7 @@ const TABS = [
   { id: 'tasks', label: 'Tasks and backups' },
   { id: 'hardware', label: 'Hardware' },
   { id: 'files', label: 'Files' },
+  { id: 'home', label: 'Home Assistant' },
   { id: 'settings', label: 'Edit server' },
 ] as const
 type TabId = typeof TABS[number]['id']
@@ -89,6 +91,7 @@ export default function ClusterPage() {
   const c = useMemo(() => clusters?.find(x => x.id === id) ?? null, [clusters, id])
   const tab = (TABS.find(t => t.id === search?.get('tab'))?.id ?? 'overview') as TabId
   const [panel, setPanel] = useState<ClusterPanel | null>(null)
+  const houses = useInstances().list
   const setTab = (t: TabId) => router.replace(`/clusters/${id}${t === 'overview' ? '' : `?tab=${t}`}`)
 
   const loadPanel = useCallback(async () => {
@@ -103,7 +106,9 @@ export default function ClusterPage() {
 
   const k = c.kind
   const remote = k === 'remote'
-  const tabs = remote ? TABS : TABS.filter(t => ['hardware', 'files', 'settings'].includes(t.id))
+  // The Home Assistant tab shows only when a house is linked to this server (home: or not linked at all).
+  const hasHouse = (houses ?? []).some(i => i.clusterId === c.id || (!remote && !i.clusterId))
+  const tabs = (remote ? TABS : TABS.filter(t => ['hardware', 'files', 'home', 'settings'].includes(t.id))).filter(t => t.id !== 'home' || hasHouse)
   const current = tabs.find(t => t.id === tab) ? tab : tabs[0].id
 
   return (
@@ -140,6 +145,7 @@ export default function ClusterPage() {
           {current === 'tasks' && <TasksTab clusterId={c.id} />}
           {current === 'hardware' && (atLeast(role, 'admin') ? <HardwareScan clusterId={c.id} kind={k} /> : <Notice kind="warn">The hardware scan needs the admin role.</Notice>)}
           {current === 'files' && <FilesTab clusterId={c.id} />}
+          {current === 'home' && <ClusterHomeTab clusterId={c.id} kind={k} />}
           {current === 'settings' && (atLeast(role, 'admin') ? (
             <>
               <ServerSettings c={c} onChanged={() => { void reload() }} />

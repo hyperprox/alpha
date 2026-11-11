@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
+import { HomeAssistantPage } from '@/components/plugins/home-assistant/HomeAssistant'
 
 interface Column { key: string; label: string; align?: 'left' | 'right' }
 interface Table  { title: string; columns: Column[]; rows: Array<Record<string, any>>; empty?: string; total?: number }
@@ -168,7 +169,7 @@ interface Stuck {
   reason: string; files: number; mappable: number; unmappable: string[]
 }
 
-export default function PluginDetailPage({ params }: { params: { id: string } }) {
+function PluginDetailPage({ params }: { params: { id: string } }) {
   const [stuck, setStuck] = useState<Stuck[]>([])
   const [rescuing, setRescuing] = useState<string | null>(null)
   const [rescueNote, setRescueNote] = useState<string | null>(null)
@@ -427,4 +428,9 @@ export default function PluginDetailPage({ params }: { params: { id: string } })
       </div>
     </div>
   )
+}
+
+/** Home Assistant has its own page: several houses, each with Devices (controls), health and settings. */
+export default function PluginPage({ params }: { params: { id: string } }) {
+  return params.id === 'home-assistant' ? <HomeAssistantPage /> : <PluginDetailPage params={params} />
 }

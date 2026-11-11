@@ -251,6 +251,47 @@ Send it as `Authorization: Bearer hpx_...`. It is shown once; HyperProx stores o
 - **Revoking** takes effect at once from Settings; from `hyperprox token revoke`, within 10 seconds. A revoked
   token keeps its name, so pick a new name for its replacement. A bad, revoked or expired token gets 401.
 
+## Home Assistant control
+
+The Home Assistant plug-in can switch real things: lights and heating, but also locks, alarm panels and
+garage doors. So control is not done by the plug-in (a plug-in never holds a credential and never writes);
+HyperProx does it, with these rules:
+
+- **An allow-list, not a passthrough.** Each control is one row in `apps/api/src/lib/ha-control/catalog.ts`:
+  a kind of device, an action, the one Home Assistant service it calls, and the values it may send, each
+  checked against a range or a list taken from the device itself (a thermostat's own minimum and maximum, its
+  own list of modes). No route accepts a service name, and there is no way to send an arbitrary request to
+  Home Assistant through HyperProx.
+- **The device must exist.** The entity is checked against that house's current entity list, read at most
+  ten seconds earlier, and must be of a kind HyperProx controls and not unavailable.
+- **Two tiers.** Everyday controls (`POST .../instances/<id>/actions`) need the operator role, or admin if
+  the house is set that way. Security controls (`POST .../instances/<id>/secure-actions`) cover locks, alarm
+  panels, sirens, covers whose device class is garage, gate or door, and anything marked protected. They need
+  the admin role, the master password re-entered within 5 minutes, and a confirm phrase naming the device and
+  the house, which the server checks word for word. Each tier has exactly one route: the everyday route
+  refuses a security device and the secure route refuses everything else. A house's settings can add
+  protected devices and kinds; they cannot remove the built-in ones.
+- **API tokens** can use everyday controls when the token's role allows it. They can never use a security
+  control: the secure route needs a re-confirmation, which a token cannot give, and the service refuses a
+  token there by name as well.
+- **Rate limit.** 30 everyday and 5 security actions a minute per signed-in session (or token), answered 429
+  beyond that.
+- **One house at a time.** Each request names its house, and the connection is built from that house's own
+  address and token, so an action for one house cannot reach another or carry its token. On a remote
+  server's page, only the houses linked to that server answer.
+- **Audit.** Every action, refused ones included, writes a row: who, through a session or which API token,
+  the house, the entity, the action, the tier and the result (done, unconfirmed, failed or the refusal
+  reason), and for a call that went through, the state before and after. Never the token. A security action can also send the
+  `ha.security.action` notification.
+- **Tokens.** Each house's long-lived token is a vault item (`hyperprox:plugin/home-assistant` for the first
+  house, `hyperprox:plugin/home-assistant.<id>` for the others). It is never returned to the browser, never
+  logged, and kept out of error messages. Adding or changing a house is admin and asks for the master password.
+- **What a token can do.** A Home Assistant long-lived token carries every right of the user that made it,
+  whatever HyperProx limits itself to. Make a dedicated Home Assistant user with administrator off and use its
+  token. HyperProx asks Home Assistant which user a token belongs to and warns when it is an administrator.
+- **Not covered.** Locks and alarm panels that need a code are not supported. The AI assistant has no
+  control over Home Assistant: it can read the first house's state only.
+
 ## Remote access
 
 Installing a VPN client opens a way into the machine from outside your network, so this feature is held to
