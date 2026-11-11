@@ -1,0 +1,6 @@
+id: home-014-front-door-admin
+prompt: "Is the front door locked?"
+expect:
+  kind: answer
+  includes: ["Front door (Home · Hall): unlocked."]
+found_by: "2026-11-11 AI update: security devices as their state word only"

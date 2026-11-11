@@ -125,7 +125,13 @@ if something changed since the preview, and is read back afterwards.
   end on the home cluster: container, service, proxy host, DNS record and certificate. A static site (its
   starter page) is offered to it too and goes through the same steps. On any cluster it can
   prepare guest power, snapshot, back up now, delete, monitoring and copies; nothing runs until you confirm,
-  with the same role and password checks as by hand. Providers: Anthropic, OpenAI-compatible, Ollama.
+  with the same role and password checks as by hand. It also reads every QNAP NAS, network storage, the
+  alerts Prometheus has firing, notification channels, every Home Assistant house by room, the websites
+  HyperProx made, and the plug-in pages' figures, and answers the common questions about them by code. It
+  plans a new website through the New website wizard's own code (reviewed and installed in the wizard),
+  and prepares a static site's pull now and a NAS disk's quick SMART test. Visitor figures wait for the
+  site-metrics module: until it is added the assistant says they are not collected. Providers: Anthropic,
+  OpenAI-compatible, Ollama.
 - **Plug-ins** (`apps/api/src/plugins`): Arr Stack, Unmanic, MikroTik, Plex activity (through Tautulli),
   Home Assistant, QNAP and MeshCentral. Each has a visual page that follows the theme, with the old tables
   under **Details**. Plug-ins never read a credential: HyperProx makes their HTTP calls. **Scan for
@@ -206,7 +212,7 @@ with how full it is, including mounts Proxmox does not list.
   returns.
 - Root-cause correlation: when a node's scrape is slow or failing, check that node for offline mounts and
   show it as the likely cause.
-- AI assistant awareness of the same.
+- AI assistant awareness of the same (today it reads the usage the Command center shows, not mount status).
 
 ### Ceph: measurement, not just status
 
@@ -246,8 +252,8 @@ Move in Send files, and editing guest settings or deploying a service from the A
 ### Home Assistant
 
 **Built:** see Apps & Plug-ins above. **Not built:** locks and alarm panels that need a code, live state over
-Home Assistant's WebSocket instead of refreshing every few seconds, and control from the AI assistant (it can
-read the first house today, on purpose nothing more).
+Home Assistant's WebSocket instead of refreshing every few seconds, and control from the AI assistant (it reads
+every house, room by room, and on purpose switches nothing).
 
 ### MeshCentral
 

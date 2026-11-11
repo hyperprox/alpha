@@ -1,0 +1,6 @@
+id: home-019-pull-a-wordpress-site
+prompt: "Pull blog now"
+expect:
+  kind: answer
+  includes: ["blog is a WordPress site. Only a static site is pulled from git."]
+found_by: "2026-11-11 AI update"

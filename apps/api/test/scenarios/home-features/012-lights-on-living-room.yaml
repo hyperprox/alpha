@@ -1,0 +1,7 @@
+id: home-012-lights-on-in-the-living-room
+prompt: "Which lights are on in the living room?"
+expect:
+  kind: answer
+  includes: ["Home · Living room: Ceiling light, Reading lamp are on."]
+  excludes: ["Floor lamp", "Kitchen light"]
+found_by: "2026-11-11 AI update: a wall switch named as a light counts as a light; several houses are labelled"

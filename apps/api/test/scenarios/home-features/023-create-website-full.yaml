@@ -1,0 +1,6 @@
+id: home-023-create-a-website-in-one-go
+prompt: 'Create a WordPress website called "Family Recipes" at blog.example.com, admin cook@example.com'
+expect:
+  kind: website
+  includes: ["New website: WordPress at blog.example.com", "Container 160 (blog) on node2", "WordPress admin cook (cook@example.com)", "Install there asks for your master password"]
+found_by: "2026-11-11 AI update: every field in the first message, no question asked"

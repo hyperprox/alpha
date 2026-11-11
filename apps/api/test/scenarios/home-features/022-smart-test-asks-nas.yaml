@@ -1,0 +1,7 @@
+id: home-022-smart-test-asks-which-nas
+prompt: "Run a SMART test on disk 1"
+expect:
+  kind: answer
+  includes: ["Which NAS should run the SMART test on disk 1?"]
+  choices: ["nas1", "backup-nas"]
+found_by: "2026-11-11 AI update"

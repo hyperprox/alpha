@@ -7,6 +7,10 @@
 //  runs, the site basics, the whole plan, then the run. It is the catalogue
 //  wizard underneath: the server reads the cluster, checks the name against the
 //  DNS provider and the proxy, holds the plan, and Install sends only its id.
+//
+//  With `previewId` (a plan the AI assistant made through the same preview
+//  route's code), the wizard opens on that held plan at Review, with every
+//  earlier step filled in from it; Install still asks for the master password.
 // =============================================================================
 
 import { useEffect, useMemo, useState } from 'react'
@@ -60,7 +64,7 @@ function Field({ label, hint, children }: { label: string; hint?: React.ReactNod
 const Bad = ({ items }: { items: string[] }) => items.length ? <ul className="space-y-1">{items.map((p, i) => <li key={i} className="text-sm" style={{ color: 'var(--crit-soft)' }}>· {p}</li>)}</ul> : null
 const Good = ({ items }: { items: string[] }) => items.length ? <ul className="space-y-0.5">{items.map((c, i) => <li key={i} className="text-[13px]" style={{ color: 'var(--text-muted)' }}>✓ {c}</li>)}</ul> : null
 
-export function NewSiteWizard({ recipes, onClose, onDone }: { recipes: SiteRecipe[]; onClose: () => void; onDone: () => void }) {
+export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes: SiteRecipe[]; onClose: () => void; onDone: () => void; previewId?: string | null }) {
   const [step, setStep] = useState(0)
   const [recipe, setRecipe] = useState<SiteRecipe | null>(null)
 
@@ -235,6 +239,27 @@ export function NewSiteWizard({ recipes, onClose, onDone }: { recipes: SiteRecip
     setCleanupNote(r.ok ? r.body!.data.detail : r.error ?? 'Clean-up failed.')
     if (r.ok) setJob({ ...job, removed: true })
   }
+
+  // A held plan from the assistant: read it back (it is this person's, or the server says there is none) and open Review.
+  const [loadedPreview, setLoadedPreview] = useState(false)
+  useEffect(() => {
+    if (!previewId || loadedPreview || !recipes.length) return
+    setLoadedPreview(true)
+    void apiJson<{ data: Preview & { used?: boolean } }>(`/api/catalogue/wizard/preview/${encodeURIComponent(previewId)}`).then(r => {
+      if (!r.ok || !r.body) { setError(r.error ?? 'That plan has expired. Make it again, here or with the assistant.'); return }
+      const pv = r.body.data, pl = pv.plan
+      const rc = recipes.find(x => x.id === pl.recipeId)
+      if (!rc || pv.used) { setError(pv.used ? 'That plan was already installed.' : 'That plan is not for a website.'); return }
+      setRecipe(rc); setOpts(Object.fromEntries(Object.entries(pl.options ?? {}).map(([k, v]) => [k, String(v)])))
+      setCores(pl.cores); setMemoryMb(pl.memoryMb); setDiskGb(pl.diskGb)
+      setNode(pl.node); setStorage(pl.storage); setVmid(pl.vmid); setHostname(pl.hostname); setBridge(pl.bridge)
+      if (pl.ip && pl.ip !== 'dhcp') { setMode('static'); setIp(pl.ip); if (pl.gateway) setGateway(pl.gateway) }
+      if (pl.publish) { setLanOnly(false); setZone(pl.publish.zone); setApex(pl.publish.name === '@'); setSub(pl.publish.name === '@' ? '' : pl.publish.name); setProxy(pl.publish.instanceId) }
+      else setLanOnly(true)
+      setPreview({ previewId: pv.previewId, plan: pl, checks: pv.checks, warnings: pv.warnings })
+      setStep(4)
+    })
+  }, [previewId, loadedPreview, recipes])
 
   const go = (to: number) => { setError(''); setProblems([]); if (to === 4) void makePreview(); setStep(to) }
   const field = styles.field

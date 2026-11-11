@@ -1,0 +1,6 @@
+id: home-002-which-disk-is-failing
+prompt: "Which disk is failing?"
+expect:
+  kind: answer
+  includes: ["nas1: disk 3 (ST4000VN) SMART says Abnormal, serial S3RIAL-XYZ", "backup-nas (beside Remote server): no disk reports a SMART problem"]
+found_by: "2026-11-11 AI update"

@@ -765,6 +765,52 @@ proxy hosts, certificates, plug-ins, updates and deploying a service belong to t
 about them on a remote, it says so. A cluster name it does not know, or "the remote" when you have
 more than one, gets a question back listing your clusters.
 
+**What else it reads.** Each source is read-only and labelled with the NAS, house or site it is about:
+
+- **QNAP**: each NAS's health, disks with SMART and their last test, volumes and how full they are,
+  temperatures and fans, firmware and whether an update is available, and the alerts the QNAP plug-in
+  raises. A NAS beside a remote cluster is labelled with that cluster. A disk's serial number is given only
+  for a disk with a SMART warning; host names, addresses and MACs never.
+- **Network storage** on every cluster: each NFS or CIFS server the nodes mount, named by its Proxmox storage
+  ids (never its address), with shares, volumes and how full it is.
+- **Alerts**: what Prometheus has firing and pending now, in each rule's plain words, including the hardware
+  ones (graphics card not responding, graphics card or processor hot, fan stuck at full speed), and whether
+  each was sent to notifications or is on the not-forwarded list. When Prometheus does not answer, it says so.
+- **Notifications** (admins only): each channel, on or off, what it receives (severity and kinds of event),
+  quiet hours, whether it is private, and its last delivery result as a code. Never a URL, chat id or token.
+- **Home Assistant**: every house, its devices by room and their state. Locks, alarm panels, garage doors and
+  other security devices are given as their state word only (locked, unlocked, armed, disarmed, open,
+  closed).
+- **Websites** (admins only): each site HyperProx made, its kind, public address, container and node, whether
+  the public address and the container answer, its certificate's expiry, and what the six-point standard
+  covers for it today and what is not automatic yet.
+- **Site metrics**: visitors, page views, error rate, p95 response time, top pages and referrers, and uptime
+  per site, for today, this week or this month. Nothing collects these yet, so the assistant says the figures
+  are not collected; the source plugs into the site-metrics module when it is added.
+- **Plug-in pages**: for Plex, the Arr Stack, Unmanic, MikroTik and MeshCentral, the figures their pages
+  show (now playing, the download pipeline, encoding workers, the router's traffic), in words.
+
+Using the assistant needs the admin role, and its sources also follow each page's own viewer rules (no
+serial numbers or security device states for a viewer, and notification channels, websites and
+certificates for admins only), so an answer never shows more than the same page would.
+
+Common questions about these are answered by code: "is my NAS healthy", "which disk is failing", "what
+alerts are firing", "why is the fan loud on node2", "is my website up", "when does my certificate expire",
+"which lights are on in the living room", "how many visitors did blog.example.com get this week".
+
+**New website, pull now, SMART test.** "Create a WordPress website at blog.example.com" asks for whatever
+is missing, one question at a time (static site or WordPress, the public name or LAN only, the site title,
+and for WordPress the admin email), then plans it with the New website wizard's own code: the name is
+checked against your DNS provider and proxy, the node, storage, bridge and ID are the wizard's
+recommendation, and the plan is held for you for 10 minutes. The assistant installs nothing: **Review in
+New website** opens that plan in the wizard, and Install there asks for your master password, as it does by
+hand. "Pull docs.example.com now" prepares the Sites page's Pull now for a static site (admin), and "run a
+quick SMART test on disk 3 of nas1" prepares the QNAP page's quick SMART test (operator); each is a confirm
+card, and an API token can never apply one. Restarting or shutting down a NAS, signing in to WordPress admin
+and switching Home Assistant devices (security ones above all) are not offered: asked, the assistant says
+they are done by hand, on their own pages. A request with a deploy verb and "static site" ("deploy a static
+site at docs.example.com") still goes through the deploy planner above.
+
 **Actions on any cluster.** The assistant can prepare: start, stop, shut down, restart, snapshot,
 back up now or delete a guest; install or remove monitoring on a remote; and start a Send files copy.
 It reads the request with code, not the model, and asks for anything missing or not exact (which
@@ -785,7 +831,10 @@ admin role.
 **What reaches the AI provider.** For a general question, the short summaries the assistant picks can
 be sent to the AI provider you configured, which may be a cloud service: guest, node and storage names
 of every cluster asked about, backup results, DNS zone and proxy host names, certificate names and
-plug-in summaries. Status, GPU, monitoring, copy and hardware-scan answers are worked out by code, and
+plug-in summaries, and for the sources above: NAS models, disk models and states (with a failing disk's
+serial number for operators and above), alert titles and their plain lines, notification channel names and
+results, Home Assistant room and device names with their states, website names and public addresses, and
+site figures. Status, GPU, monitoring, copy and hardware-scan answers are worked out by code, and
 those summaries are not sent. API tokens, passwords, certificate fingerprints, the remote servers' addresses and the
 copy folders HyperProx stores are never sent. A reason Proxmox gives for a failed backup, and what a plug-in
 reports, are passed on as they were written.

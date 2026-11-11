@@ -17,7 +17,7 @@ import { PreparedStore }      from '../lib/ai/prepared'
 import { currentContext, type RequestContext } from '../lib/auth'
 
 import { startLoop, type Extraction, type IntentResult, type LoopDeps } from '../lib/ai/loop'
-import { matchIntent, NO_TASK_ANSWER } from '../lib/ai/intent'
+import { matchIntent, NO_TASK_ANSWER, confidentDeploy } from '../lib/ai/intent'
 import { answerQuestion, type AskSource } from '../lib/ai/ask'
 import { coreSources, pluginSources, type CertLite } from '../lib/ai/ask-sources'
 import { PLUGINS }            from '../plugins'
@@ -46,6 +46,21 @@ import { deployService, toDeployFields, type DeployFields } from '../lib/ai/temp
 import type { Fields, TaskTemplate, TemplateFacts, TemplateSettings } from '../lib/ai/templates/types'
 import { wizardRecipes }      from '../lib/catalogue'
 import { zoneFor }            from '../lib/dns-zones'
+import { qnapSource, alertsSource, notifySource, housesSource, sitesSource, siteMetricsSource, toChannelLite, type NasEntry, type HouseRead, type SiteLite } from '../lib/ai/home-sources'
+import { NOT_COLLECTED, type SiteMetricsSource } from '../lib/ai/site-metrics'
+import { parseHomeAction, prepareHomeAction, applyHomeAction, isTokenSid, type HomePlan, type HomePrepareDeps, type HomeApplyDeps, type HomeSite, type HomeNas } from '../lib/ai/home-actions'
+import { isWebsiteRequest, websiteTurn, asChoices, WebsiteDrafts, type WebsitePlanDeps } from '../lib/ai/templates/website'
+import { qnapService } from '../lib/qnap'
+import { fetchPrometheusAlerts, FileForwarderState, notForwardedFromEnv } from '../lib/alerts/forwarder'
+import { getNotifyService } from '../lib/notify'
+import { getCluster } from '../lib/clusters/registry'
+import { productionHAControl } from './ha-control'
+import { listSites, getSite, siteHealth, realPublishDeps } from '../lib/sites'
+import { realRun } from './sites'
+import { findRecipe } from '../lib/catalogue'
+import { wizardView, placementFor, nextIdOf, previewInstall } from '../lib/catalogue-installer'
+import { runPluginDetail } from '../lib/plugin-host'
+import type { HAControlService } from '../lib/ha-control/service'
 import {
   callStructured, listProviders, activeProvider, setActiveProvider,
   type ProviderId, type ProviderInfo,
@@ -93,12 +108,55 @@ export interface AiRouteDeps {
   /** Runs fn as a request for cluster `id`. */
   inCluster<T>(id: string, fn: () => Promise<T>): Promise<T>
   /** Who is asking, for the role and re-confirmation checks. */
-  session(): { sid: string; role: Role } | undefined
+  session(): { sid: string; role: Role; email?: string } | undefined
   /** Actions the assistant prepared, waiting to be applied by id. */
   actionPlans: PreparedStore<ActionPlan>
   prepareDeps(): Omit<PrepareDeps, 'prepared'>
   applyDeps(): Omit<ApplyDeps, 'prepared' | 'owner' | 'ctx' | 'requestCluster'>
+  /** Pull a static site, run a SMART test: prepared here, applied through /actions/apply. */
+  homePlans: PreparedStore<HomePlan>
+  /** The NAS and site names a request can name, so "restart nas1" is the NAS and never a guest. */
+  homeNames(): Promise<{ nas: string[]; sites: string[] }>
+  homePrepareDeps(): Omit<HomePrepareDeps, 'prepared'>
+  homeApplyDeps(): Omit<HomeApplyDeps, 'prepared' | 'owner' | 'ctx' | 'requestCluster' | 'homeId'>
+  /** The create-a-website template: its drafts (one per person) and the wizard's planning code. */
+  websiteDrafts: WebsiteDrafts
+  websiteDeps(): WebsitePlanDeps
 }
+
+// ── What is attached to home, read for the assistant ─────────────────────────
+
+let haService: HAControlService | undefined
+const ha = () => (haService ??= productionHAControl())
+const beside = (clusterId: string | null) => { const c = clusterId ? getCluster(clusterId) : null; return c && c.kind === 'remote' ? c.name : null }
+
+async function nasEntries(): Promise<NasEntry[]> {
+  const svc = qnapService()
+  const list = await svc.instances.list()
+  return Promise.all(list.map(async m => {
+    try { return { id: m.id, name: m.name, beside: beside(m.clusterId), diskTempWarnC: m.diskTempWarnC, reading: await svc.reading(m.id), error: null } }
+    catch (e: any) { return { id: m.id, name: m.name, beside: beside(m.clusterId), diskTempWarnC: m.diskTempWarnC, reading: null, error: String(e?.message ?? 'no answer').slice(0, 160) } }
+  }))
+}
+
+async function houses(viewer: boolean): Promise<HouseRead[]> {
+  const svc = ha()
+  return Promise.all((await svc.instances.list()).map(async m => {
+    try { const d = await svc.devices(m.id, null, { viewer }); return { name: m.name, beside: beside(m.clusterId), areas: d.areas, error: null } }
+    catch (e: any) { return { name: m.name, beside: beside(m.clusterId), areas: null, error: String(e?.message ?? 'no answer').slice(0, 160) } }
+  }))
+}
+
+async function siteLites(): Promise<SiteLite[]> {
+  return (await listSites()).map(s => ({ id: s.id, name: s.name, kind: s.recipeId, kindName: findRecipe(s.recipeId)?.name ?? s.recipeId,
+    domain: s.domain ?? null, url: s.url ?? null, vmid: s.vmid, node: s.node, hasVault: !!s.vault }))
+}
+
+const probe = (url: string) => fetch(url, { signal: AbortSignal.timeout(6000) })
+  .then(async r => ({ status: r.status, body: (await r.text().catch(() => '')).slice(0, 200_000) })).catch(() => null)
+
+/** Where site metrics come from. TODO(site-metrics): an adapter over lib/site-metrics once it is on main. */
+const siteMetrics: SiteMetricsSource = NOT_COLLECTED
 
 /** Built on the first certificate question and kept: its inventory cache is per instance. */
 let certsService: ReturnType<typeof productionCertsService> | undefined
@@ -127,7 +185,7 @@ function defaultDeps(): AiRouteDeps {
     currentCluster: currentClusterId,
     clusterSources: (c, facts, prisma) => productionClusterSources(c, facts, prisma),
     inCluster: (id, fn) => runInCluster(id, fn),
-    session: () => { const c = currentContext(); return c ? { sid: c.sid, role: c.role } : undefined },
+    session: () => { const c = currentContext(); return c ? { sid: c.sid, role: c.role, email: c.email } : undefined },
     actionPlans: new PreparedStore<ActionPlan>(15 * 60_000),
     prepareDeps: () => ({
       inCluster: (id, fn) => runInCluster(id, fn),
@@ -163,6 +221,47 @@ function defaultDeps(): AiRouteDeps {
       startCopy: async (previewId, owner) => { const j = await startCopy(previewId, owner, 'assistant'); kickCopies(); return j },
       audit: auditCredentialUse,
     }),
+    homePlans: new PreparedStore<HomePlan>(15 * 60_000),
+    homeNames: async () => {
+      const [nas, sites] = await Promise.all([qnapService().instances.list().catch(() => []), listSites().catch(() => [])])
+      return { nas: nas.map(n => n.name), sites: sites.flatMap(s => [s.name, s.domain ?? ''].filter(Boolean)) }
+    },
+    homePrepareDeps: () => ({
+      unlocked: isUnlocked,
+      sites: async (): Promise<HomeSite[]> => (await listSites()).map(s => ({ id: s.id, name: s.name, recipeId: s.recipeId, domain: s.domain ?? null })),
+      nas: async (): Promise<HomeNas[]> => (await nasEntries()).map(n => ({ id: n.id, name: n.name, disks: n.reading ? n.reading.disks.filter(x => x.model || x.sizeBytes).map(x => ({ bay: x.bay, model: x.model })) : null })),
+    }),
+    homeApplyDeps: () => ({
+      unlocked: isUnlocked,
+      reconfirmed: sid => isReconfirmed(sid),
+      site: async id => { const s = await getSite(id); return s ? { id: s.id, name: s.name, recipeId: s.recipeId, domain: s.domain ?? null } : undefined },
+      // The same script the Sites page's Pull now runs (routes/sites.ts).
+      pull: async id => { const s = await getSite(id); if (!s) throw new Error('No such site.'); return realRun(s, 'set -e\n/usr/local/bin/site-pull') },
+      smart: (nasId, bay, actor) => qnapService().act(nasId, { action: 'smart_test', bay }, { ...actor, token: null }, false),
+      audit: auditCredentialUse,
+    }),
+    websiteDrafts: new WebsiteDrafts(),
+    websiteDeps: () => ({
+      recipe: id => findRecipe(id),
+      domains: async () => {
+        const dns = await realPublishDeps().dns().catch(() => null)
+        if (!dns) return null
+        return ((await dns.getDomains().catch(() => [])) ?? []).filter(x => !x.status || /active/i.test(x.status)).map(x => String(x.domain).toLowerCase())
+      },
+      proxies: () => realPublishDeps().proxy.instances(),
+      // The wizard's Placement step: its recommended node and storage, a bridge with a gateway, the next free ID.
+      place: async (recipe, need) => {
+        const { view } = await wizardView()
+        const placed = placementFor(recipe, need, view)
+        const rec = placed.recommendation
+        if (!rec) return { error: `No node can take it: ${placed.nodes.map(n => `${n.node} (${n.verdict.why[0] ?? 'not usable'})`).join(', ') || 'no node is online'}.` }
+        const node = view.nodes.find(n => n.node === rec.node)
+        const bridge = node?.bridges.find(b => b.gateway) ?? node?.bridges[0]
+        if (!bridge) return { error: `${rec.node} has no network bridge.` }
+        return { node: rec.node, storage: rec.storage, bridge: bridge.iface, vmid: nextIdOf(view), reason: rec.reason }
+      },
+      preview: (input, owner) => previewInstall(input, owner),
+    }),
   }
 }
 
@@ -193,18 +292,47 @@ function productionClusterSources(c: ClusterRef, facts: TemplateFacts | null, pr
   }
   const extra = perClusterSources(c, d)
   if (c.kind === 'remote') return [...extra, homeOnlySource(c)]
+  const role = currentContext()?.role
+  const certs = async (): Promise<CertLite[]> => {
+    const svc = (certsService ??= productionCertsService(prisma as any, () => {}))
+    return (await svc.overview(false)).inventory.map(e => ({ names: e.names, daysLeft: e.daysLeft, notAfter: e.notAfter, verdict: e.verdict, source: e.source }))
+  }
+  // What is attached to HyperProx itself: every NAS, the alerts, notification channels, every house, the websites.
+  // Before the per-cluster sources, so "is my NAS healthy" is the NAS and not the cluster's network storage.
+  const attached: AskSource[] = [
+    qnapSource({ list: nasEntries, role, unlocked: isUnlocked }),
+    alertsSource({ fetch: () => fetchPrometheusAlerts(), state: () => new FileForwarderState().load(), notForwarded: () => notForwardedFromEnv(), clusterName: id => getCluster(id)?.name ?? null }),
+    notifySource({ role, channels: async () => {
+      const svc = getNotifyService()
+      if (!svc) return null
+      // Only the fields a person may read about a channel: never its mask, chat id, URL or token.
+      return (await svc.listChannels()).map(toChannelLite)
+    } }),
+    housesSource({ houses, role, unlocked: isUnlocked }),
+    sitesSource({
+      role, sites: siteLites,
+      health: async id => {
+        const s = await getSite(id)
+        if (!s) return { container: null, public: null }
+        const checks = await siteHealth(s, probe)
+        const pub = s.url ? checks.find(x => x.url.startsWith(s.url!)) : undefined
+        const ct = s.localUrl ? checks.find(x => x.url.startsWith(s.localUrl!)) : undefined
+        return { container: ct ? ct.ok : null, public: pub ? { ok: pub.ok, detail: pub.detail } : null }
+      },
+      certs: async () => (isUnlocked() ? certs() : null),
+    }),
+    siteMetricsSource({ metrics: siteMetrics, sites: siteLites, role }),
+  ]
   // Home's own sources (cluster, DNS, proxy, certificates, backups, plug-ins) are read in home's context whatever
   // cluster this request is for: a certificate inventory built while a remote is open must still be home's.
   return [
     ...boundTo(HOME_ID, coreSources({
-      fetchStrict, facts: facts ?? EMPTY_FACTS, unlocked: isUnlocked,
-      certs: async (): Promise<CertLite[]> => {
-        const svc = (certsService ??= productionCertsService(prisma as any, () => {}))
-        return (await svc.overview(false)).inventory.map(e => ({ names: e.names, daysLeft: e.daysLeft, notAfter: e.notAfter, verdict: e.verdict, source: e.source }))
-      },
+      fetchStrict, facts: facts ?? EMPTY_FACTS, unlocked: isUnlocked, role,
+      certs,
     }), runInCluster),
+    ...boundTo(HOME_ID, attached, runInCluster),
     ...extra.filter(s => s.id !== 'cluster' && s.id !== 'backups'),
-    ...boundTo(HOME_ID, pluginSources({ plugins: PLUGINS, unlocked: isUnlocked, run: runPluginSummary }), runInCluster),
+    ...boundTo(HOME_ID, pluginSources({ plugins: PLUGINS, unlocked: isUnlocked, run: runPluginSummary, detail: runPluginDetail, skip: ['qnap'] }), runInCluster),
   ]
 }
 
@@ -406,6 +534,36 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
         const said = (message: string, extra: Record<string, unknown> = {}) =>
           reply.send({ ok: true, conversational: true, provider: chosen, message, cluster: current, ...extra })
 
+        const sess = deps.session()
+        const home: ClusterRef = clusters.find(c => c.kind === 'home') ?? { id: HOME_ID, name: 'Home cluster', kind: 'home' }
+
+        // Pull a static site, run a SMART test, and what is done by hand (a NAS restart, WordPress sign-in, Home
+        // Assistant devices): read before guest actions, so "restart nas1" is never read as a guest called nas1.
+        const homeish = /\b(smart|nas|qnap|pull|sync|refresh|redeploy|update|sign|log|wordpress|wp|restart|reboot|shut|power|halt|turn|switch|set|open|close|lock|unlock|arm|disarm|dim|toggle)\b/i.test(prompt)
+        const names = homeish ? await deps.homeNames().catch(() => ({ nas: [], sites: [] })) : { nas: [], sites: [] }
+        const homeAction = homeish ? parseHomeAction(prompt, names) : null
+        if (homeAction) {
+          if (homeAction.kind !== 'by-hand' && current.kind !== 'home') return said(`That is done on the home cluster's assistant. Pick ${home.name} at the top and ask again. Nothing was prepared.`)
+          if (homeAction.kind !== 'by-hand' && !owner) return reply.status(401).send({ ok: false, error: 'Sign in to do that.' })
+          const r = await prepareHomeAction(prompt, homeAction, { owner, role: sess?.role, token: isTokenSid(sess?.sid), home },
+            { ...deps.homePrepareDeps(), prepared: deps.homePlans })
+          if (r.kind === 'card') return reply.send({ ok: true, conversational: false, provider: chosen, action: r.card, cluster: home })
+          return said(r.message, r.choices ? { choices: r.choices } : {})
+        }
+
+        // A new website: the template asks for what is missing, then the New website wizard's code plans it and holds
+        // the plan for the person to review and install in the wizard. A reply to its question carries on the draft.
+        const draft = owner ? deps.websiteDrafts.get(owner) : null
+        // A deploy request while a question is open is a new request, not the answer: the draft is dropped.
+        if (draft && owner && confidentDeploy(prompt)) deps.websiteDrafts.drop(owner)
+        if (isWebsiteRequest(prompt) || (draft && !confidentDeploy(prompt) && !parseAction(prompt) && !isQuestionPrompt(prompt) && !/\?\s*$/.test(prompt))) {
+          if (!owner) return reply.status(401).send({ ok: false, error: 'Sign in to do that.' })
+          if (current.kind !== 'home') return said(`Making a website is only available on the home cluster, from the assistant with ${home.name} selected. Nothing was planned.`)
+          const r = await websiteTurn(prompt, { owner, role: sess?.role, token: isTokenSid(sess?.sid), unlocked: deps.prepareDeps().unlocked() }, deps.websiteDrafts, deps.websiteDeps())
+          if (r.kind === 'card') return reply.send({ ok: true, conversational: false, provider: chosen, website: r.card, cluster: home })
+          return said(r.message, r.choices?.length ? { choices: asChoices(r.choices, home.id) } : {})
+        }
+
         // An action on a guest, monitoring or a copy: read by code, prepared and checked by the server, applied
         // only through /actions/apply. Never through the model, never on the browser's word.
         const action = parseAction(prompt)
@@ -584,6 +742,11 @@ export function buildAiRoutes(overrides: Partial<AiRouteDeps> = {}): FastifyPlug
         if (body[k] !== undefined) return reply.status(400).send({ ok: false, error: 'Apply takes a planId (and, for a delete, the typed name). Anything else sent by the browser is never used.' })
       const owner = deps.whoami(req)
       if (!owner) return reply.status(401).send({ ok: false, error: 'Sign in to do that.' })
+      // A plan for something attached to home (a site pull, a SMART test) is applied by its own module.
+      if (typeof body.planId === 'string' && deps.homePlans.peek(body.planId, owner)) {
+        const h = await applyHomeAction(body.planId, { ...deps.homeApplyDeps(), prepared: deps.homePlans, owner, ctx: deps.session(), requestCluster: deps.currentCluster(), homeId: HOME_ID })
+        return reply.status(h.status).send(h.body)
+      }
       const r = await applyAction(body.planId, { confirmName: body.confirmName }, {
         ...deps.applyDeps(), prepared: deps.actionPlans, owner, ctx: deps.session(), requestCluster: deps.currentCluster(),
       })

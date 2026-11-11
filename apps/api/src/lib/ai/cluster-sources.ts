@@ -111,6 +111,23 @@ export function monitoringSummary(c: ClusterRef, rec: Record<string, NodeMonitor
 }
 
 // ---------------------------------------------------------------------------
+//  Network storage (a NAS mounted on the nodes)
+// ---------------------------------------------------------------------------
+
+const size = (b: number) => (b >= 1024 ** 4 ? `${(b / 1024 ** 4).toFixed(1)} TB` : `${Math.round(b / 1024 ** 3)} GB`)
+
+/** The Command center's network storage in words. A row is named by its Proxmox storage ids, never its server address. */
+export function networkStorageSummary(c: ClusterRef, p: ClusterPanel): SourceSummary {
+  if (!p.reachable) return { headline: `${c.name} network storage: cannot be read.`, lines: [], unread: [`${c.name}'s network storage`] }
+  const rows = p.networkStorage ?? []
+  if (!rows.length) return { headline: `${c.name}: no network storage.`, lines: [`No NFS or CIFS storage is mounted on ${c.name}'s online nodes.`], data: p }
+  const lines = rows.map((n, i) => `${n.names.length ? n.names.join(', ') : rows.length > 1 ? `NAS mount ${i + 1} (not a Proxmox storage)` : 'A NAS mount (not a Proxmox storage)'}: ` +
+    `${plural(n.shares, 'share')} on ${plural(n.volumes, 'volume')}, ${n.pct}% used (${size(n.usedBytes)} of ${size(n.totalBytes)}).`)
+  const full = rows.filter(n => n.pct >= 90).length
+  return { headline: `${c.name}: ${plural(rows.length, 'network storage server')}${full ? `, ${full} over 90% full` : ''}.`, lines, data: p }
+}
+
+// ---------------------------------------------------------------------------
 //  Copy jobs (Send files)
 // ---------------------------------------------------------------------------
 
@@ -186,6 +203,12 @@ export function perClusterSources(c: ClusterRef, d: ClusterSourceDeps): AskSourc
       id: 'monitoring', title: 'Monitoring', blurb: 'what is monitored',
       aliases: /\b(monitor\w*|node.?exporter|prometheus|grafana|metrics)\b/,
       load: async () => monitoringSummary(c, d.monitoring(c.id), c.kind === 'home' ? await panel().catch(() => null) : null),
+      answer: exact,
+    }),
+    bound(c, d, {
+      id: 'network-storage', title: 'Network storage', blurb: 'NFS and CIFS storage mounted on the nodes, and how full it is',
+      aliases: /\b(network storage|nas|nfs|cifs|smb|mounts?|mounted|shares?)\b/,
+      load: async () => networkStorageSummary(c, await panel()),
       answer: exact,
     }),
     bound(c, d, {

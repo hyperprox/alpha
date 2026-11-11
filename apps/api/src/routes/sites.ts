@@ -30,7 +30,7 @@ export interface SiteRouteDeps {
   now(): number
 }
 
-async function realRun(site: SiteRecord, script: string) {
+export async function realRun(site: SiteRecord, script: string) {
   const cred = await nodeCredential(site.node).catch(() => null)
   if (!cred) throw new Error(`No node login is stored for ${site.node}.`)
   const pve = new ProxmoxClient(process.env.PROXMOX_HOST!, Number(process.env.PROXMOX_PORT ?? 8006),

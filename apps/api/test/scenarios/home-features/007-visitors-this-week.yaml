@@ -1,0 +1,6 @@
+id: home-007-visitors-this-week
+prompt: "How many visitors did blog.example.com get this week?"
+expect:
+  kind: answer
+  includes: ["blog.example.com had 900 visitors and 2500 page views this week"]
+found_by: "2026-11-11 AI update: site metrics through the adapter, with a fake"

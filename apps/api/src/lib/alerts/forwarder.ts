@@ -187,7 +187,7 @@ export function duration(ms: number): string {
  * so a rule's wording lives next to the rule, and the headline gets "on <place>" after it. An alert without
  * them falls back to its summary and description, with the raw node label swapped for the place.
  */
-function wording(a: PromAlert, place: string): { title: string; plain: string } {
+export function wording(a: PromAlert, place: string): { title: string; plain: string } {
   const ann = a.annotations ?? {}
   const swap = (s: string) => (a.labels.node ? s.split(a.labels.node).join(place) : s).trim()
   const head = ann.title?.trim() || (ann.summary ? swap(ann.summary) : '') || humanise(a.labels.alertname ?? 'Alert')

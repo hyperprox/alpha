@@ -9,8 +9,10 @@
 import type { AskSource, SourceSummary } from './ask'
 import { LOCKED_NOTE } from './ask'
 import type { TemplateFacts } from './templates/types'
-import type { Plugin } from '../plugin-host'
+import type { Plugin, PluginDetail } from '../plugin-host'
+import { visualLines } from './visual-lines'
 import { APP_VERSION } from '../version'
+import { hasRole, type Role } from '../roles'
 
 // ---------------------------------------------------------------------------
 //  Cluster (Proxmox, HA, storage, Ceph)
@@ -267,10 +269,19 @@ export function certSummary(certs: CertLite[]): SourceSummary {
 }
 
 export function certAnswer(prompt: string, s: SourceSummary): string | null {
-  const d = s.data as { soon: CertLite[]; certs: CertLite[] }
+  const d = s.data as { soon: CertLite[]; certs: CertLite[]; adminOnly?: boolean }
+  if (d?.adminOnly) return ADMIN_ONLY_CERTS
   const p = prompt.toLowerCase()
   if (!/\b(expir\w*|renew\w*|soon|valid|how long)\b/.test(p)) return null
-  if (!d.soon.length) return 'No certificate expires within the next 30 days.'
+  // A certificate named in the question: its own date.
+  const named = d.certs.filter(c => c.daysLeft !== null && c.names.some(n => n && p.includes(n.toLowerCase())))
+  if (named.length) return named.slice(0, 4).map(c => `${c.names[0]} expires in ${c.daysLeft} days (${(c.notAfter ?? '').slice(0, 10)}).`).join(' ')
+  if (!d.soon.length) {
+    // "When does my certificate expire": the next one, so the answer is a date and not only "not soon".
+    const next = d.certs.filter(c => c.daysLeft !== null).sort((a, b) => a.daysLeft! - b.daysLeft!)[0]
+    return 'No certificate expires within the next 30 days.' +
+      (next && /\bwhen\b/.test(p) ? ` The next is ${next.names[0] ?? next.source} in ${next.daysLeft} days (${(next.notAfter ?? '').slice(0, 10)}).` : '')
+  }
   return `${plural(d.soon.length, 'certificate')} expire${d.soon.length === 1 ? 's' : ''} within 30 days: ` +
     d.soon.slice(0, 8).map(c => `${c.names[0] ?? c.source} in ${c.daysLeft} days`).join(', ') + '.'
 }
@@ -285,7 +296,11 @@ export interface CoreDeps {
   certs(): Promise<CertLite[]>
   unlocked(): boolean
   now?: number
+  /** Who is asking. Given and below admin: certificates are not read (the Certificates page is admin only). */
+  role?: Role
 }
+
+export const ADMIN_ONLY_CERTS = 'The Certificates page is admin only, so I show certificates to admins only.'
 
 export function coreSources(d: CoreDeps): AskSource[] {
   const fp = d.facts.partial
@@ -320,7 +335,8 @@ export function coreSources(d: CoreDeps): AskSource[] {
     {
       id: 'certs', title: 'Certificates', blurb: 'expiry and renewal',
       aliases: /\b(certs?|certificates?|ssl|tls|https|expir\w*|renew\w*|let'?s ?encrypt)\b/,
-      load: async () => d.unlocked() ? certSummary(await d.certs()) : { headline: 'Certificates: locked.', lines: [], locked: true },
+      load: async () => d.role && !hasRole(d.role, 'admin') ? { headline: 'Certificates: admins only.', lines: [ADMIN_ONLY_CERTS], data: { certs: [], soon: [], adminOnly: true } }
+        : d.unlocked() ? certSummary(await d.certs()) : { headline: 'Certificates: locked.', lines: [], locked: true },
       answer: certAnswer,
     },
     {
@@ -341,11 +357,15 @@ export interface PluginDeps {
   unlocked(): boolean
   /** Runs a plug-in's summary hook with its brokered, read-only context. */
   run(p: Plugin): Promise<{ title: string; lines: string[] }>
+  /** Runs its detail hook the same way: a plug-in with no summary is read from its page's `visual` reading. */
+  detail?(p: Plugin): Promise<PluginDetail>
+  /** Plug-in ids that have a source of their own (QNAP: lib/ai/home-sources.ts), so they are not read twice. */
+  skip?: string[]
 }
 
 /** One source per plug-in. A plug-in without a `summary` hook is listed but has nothing to read. */
 export function pluginSources(d: PluginDeps): AskSource[] {
-  return d.plugins.map(p => {
+  return d.plugins.filter(p => !(d.skip ?? []).includes(p.manifest.id)).map(p => {
     const m = p.manifest
     const word = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').trim()
     const names = [...new Set([word(m.id), word(m.name), ...word(m.name).split(/\s+/).filter(w => w.length > 3)])].filter(Boolean)
@@ -360,8 +380,16 @@ export function pluginSources(d: PluginDeps): AskSource[] {
       id: `plugin:${m.id}`, title: m.name, blurb: shorten(m.description.split(/[.;]/)[0], 60),
       aliases: new RegExp(`\\b(${alias})\\b`, 'i'), matchLines: true,
       load: async (): Promise<SourceSummary> => {
-        if (!p.summary) return { headline: `${m.name}: connected, nothing to summarise.`, lines: [], unread: [`${m.name} (it offers no summary)`], noSummary: true }
+        const nothing = { headline: `${m.name}: connected, nothing to summarise.`, lines: [], unread: [`${m.name} (it offers no summary)`], noSummary: true }
+        if (!p.summary && !(p.detail && d.detail)) return nothing
         if (!d.unlocked()) return { headline: `${m.name}: locked.`, lines: [], locked: true }
+        if (!p.summary) {
+          // The page's own figures (Plex now playing, the arr pipeline, Unmanic, the router), said by code.
+          const v = (await d.detail!(p)).visual
+          if (!v) return nothing
+          const lines = visualLines(v).slice(0, 40).map(l => shorten(l, 200))
+          return { headline: shorten(`${m.name}: ${lines[0] ?? 'nothing to report'}`, 80), lines }
+        }
         const r = await d.run(p)
         // The plug-in's own first line is its headline ("12 entities, 1 unavailable"); the catalogue description never is.
         return { headline: shorten(`${r.title}: ${r.lines[0] ?? 'nothing to report'}`, 80), lines: r.lines.slice(0, 40).map(l => shorten(l, 160)) }

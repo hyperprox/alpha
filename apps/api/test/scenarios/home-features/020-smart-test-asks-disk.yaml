@@ -1,0 +1,7 @@
+id: home-020-smart-test-asks-which-disk
+prompt: "Run a quick SMART test on nas1"
+expect:
+  kind: answer
+  includes: ["Which disk of nas1?"]
+  choices: ["disk 1 (WD Red 4TB)", "disk 3 (ST4000VN)"]
+found_by: "2026-11-11 AI update: ask for what is missing, with the real choices"
