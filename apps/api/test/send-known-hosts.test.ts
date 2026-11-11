@@ -40,7 +40,7 @@ test('only the confirmed key goes into known_hosts', async () => {
     const goodFp = fingerprintOf(Buffer.from(pub(good), 'base64'))
     await runInCluster(b.id, () => recordPin('198.51.100.21', 22, goodFp, 'confirmed'))
     const runner: any = {
-      linkAddress: () => '100.64.0.21',
+      linkAddress: () => '198.18.0.21',
       sshAddress: async () => '198.51.100.21',
       run: async (_c: string, _n: string, script: string) => script.includes('RRSYNC')
         ? { code: 0, output: `RRSYNC /usr/bin/rrsync\n${other}\n${good}\nOK /srv/media` }
@@ -48,7 +48,7 @@ test('only the confirmed key goes into known_hosts', async () => {
     }
     await setupSending({ src: a.id, dst: b.id, dstNode: 'dn', root: '/srv/media', by: 'owner@example.com' }, runner)
     const key = JSON.parse((await getCredential('xfer-key', pairProvider(a.id, b.id), pairField('dn', '/srv/media')))!)
-    assert.equal(key.knownHosts, `100.64.0.21 ssh-ed25519 ${pub(good)}\n`)
+    assert.equal(key.knownHosts, `198.18.0.21 ssh-ed25519 ${pub(good)}\n`)
     assert.equal(key.knownHosts.includes(pub(other)), false)
   })
 })
