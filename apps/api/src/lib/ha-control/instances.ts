@@ -22,6 +22,8 @@
 
 import crypto from 'node:crypto'
 import { DEFAULT_POLICY, ENTITY_ID, type TierPolicy } from './catalog'
+import { resolveHATarget, type TargetResolver } from './target'
+import { normaliseFingerprint } from '../clusters/tls-pin'
 
 export const PLUGIN_ID = 'home-assistant'
 export const CATEGORY = 'plugin'
@@ -34,7 +36,10 @@ export interface InstanceMeta {
   name:        string
   /** The HyperProx cluster this house sits beside (its panel shows the Devices view), or null. */
   clusterId:   string | null
+  /** Accept any certificate. Off by default; pinning (below) is the better answer for a self-signed one. */
   insecureTLS: boolean
+  /** A pinned certificate (SHA-256, "AB:CD:..."): only it is accepted. Cleared when the host or port changes. */
+  fingerprint: string | null
   policy:      TierPolicy
 }
 
@@ -100,6 +105,7 @@ export function cleanPolicy(v: any, prev: TierPolicy = DEFAULT_POLICY): TierPoli
   if (role !== 'operator' && role !== 'admin') throw new InstanceInputError('Everyday controls are for operators or admins.')
   return {
     protected:       v.protected !== undefined ? ids(v.protected, 'Protected devices') : prev.protected,
+    everyday:        v.everyday !== undefined ? ids(v.everyday, 'Everyday devices') : prev.everyday ?? [],
     securityDomains: v.securityDomains !== undefined ? domains(v.securityDomains) : prev.securityDomains,
     normalRole:      role,
     notifySecurity:  v.notifySecurity === undefined ? prev.notifySecurity : v.notifySecurity === true,
@@ -114,25 +120,57 @@ function parseIndex(raw: string | null): InstanceMeta[] | null {
     return v.filter(x => x && typeof x.id === 'string' && validInstanceId(x.id) && typeof x.name === 'string').map(x => ({
       id: x.id, name: String(x.name).slice(0, 40),
       clusterId: typeof x.clusterId === 'string' ? x.clusterId : null,
-      insecureTLS: x.id === DEFAULT_ID ? true : x.insecureTLS === true,
+      insecureTLS: x.insecureTLS === true,
+      fingerprint: typeof x.fingerprint === 'string' ? normaliseFingerprint(x.fingerprint) : null,
       policy: (() => { try { return cleanPolicy(x.policy ?? {}) } catch { return { ...DEFAULT_POLICY } } })(),
     }))
   } catch { return null }
 }
 
 export interface InstanceInput {
-  name?: unknown; url?: unknown; token?: unknown; clusterId?: unknown; insecureTLS?: unknown; policy?: unknown
+  name?: unknown; url?: unknown; token?: unknown; clusterId?: unknown; insecureTLS?: unknown; fingerprint?: unknown; policy?: unknown
 }
 
+function cleanFingerprint(v: unknown, prev: string | null): string | null {
+  if (v === undefined) return prev
+  if (v === null || v === '') return null
+  const f = typeof v === 'string' ? normaliseFingerprint(v) : null
+  if (!f) throw new InstanceInputError('A pinned certificate is a SHA-256 fingerprint (64 hex characters).')
+  return f
+}
+
+/** Host and port, the part of an address a token is bound to. */
+const endpointOf = (url: string) => { const u = new URL(url); return `${u.protocol}//${u.host}`.toLowerCase() }
+
 export class InstanceStore {
-  constructor(private io: CredentialIO, private clusterExists: (id: string) => boolean = () => false) {}
+  private chain: Promise<unknown> = Promise.resolve()
+
+  constructor(
+    private io: CredentialIO,
+    private clusterExists: (id: string) => boolean = () => false,
+    /** Checks where an address may point (lib/ha-control/target.ts). Tests aim it at loopback. */
+    private checkTarget: TargetResolver = resolveHATarget,
+  ) {}
+
+  /** Changes to the list run one at a time: two saves at once would otherwise both read, then one would lose. */
+  private serial<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.chain.then(fn, fn)
+    this.chain = run.catch(() => {})
+    return run
+  }
+
+  private async checkedUrl(v: unknown): Promise<string> {
+    const url = cleanUrl(v)
+    try { await this.checkTarget(new URL(url)) } catch (e: any) { throw new InstanceInputError(e?.message ?? 'That address is not allowed.') }
+    return url
+  }
 
   /** Every instance. Instance #1 is synthesised from the plug-in's own settings until the list is first saved. */
   async list(): Promise<InstanceMeta[]> {
     const saved = parseIndex(await this.io.get(CATEGORY, PLUGIN_ID, INDEX_KEY))
     const list = saved ?? []
     if (!list.some(i => i.id === DEFAULT_ID) && await this.io.get(CATEGORY, PLUGIN_ID, 'url')) {
-      list.unshift({ id: DEFAULT_ID, name: 'Home', clusterId: null, insecureTLS: true, policy: { ...DEFAULT_POLICY } })
+      list.unshift({ id: DEFAULT_ID, name: 'Home', clusterId: null, insecureTLS: false, fingerprint: null, policy: { ...DEFAULT_POLICY } })
     }
     return list
   }
@@ -152,14 +190,14 @@ export class InstanceStore {
   }
 
   /** The address and token, for the connection only. Never returned by a route. */
-  async connection(id: string): Promise<{ url: string; token: string; insecureTLS: boolean } | null> {
+  async connection(id: string): Promise<{ url: string; token: string; insecureTLS: boolean; fingerprint: string | null } | null> {
     const m = await this.get(id)
     if (!m) return null
     const p = providerFor(id)
     const url = await this.io.get(CATEGORY, p, 'url')
     const token = await this.io.get(CATEGORY, p, 'token')
     if (!url || !token) return null
-    return { url, token, insecureTLS: m.insecureTLS }
+    return { url, token, insecureTLS: m.insecureTLS, fingerprint: m.fingerprint }
   }
 
   private async saveIndex(list: InstanceMeta[]): Promise<void> {
@@ -174,50 +212,64 @@ export class InstanceStore {
   }
 
   async create(input: InstanceInput): Promise<InstanceMeta> {
-    const list = await this.list()
-    if (list.length >= 20) throw new InstanceInputError('HyperProx holds up to 20 Home Assistant instances.')
-    const name = cleanName(input.name)
-    if (list.some(i => i.name.toLowerCase() === name.toLowerCase())) throw new InstanceInputError('Another instance already has that name.', 409)
-    const url = cleanUrl(input.url)
-    const token = cleanToken(input.token)
-    // The first instance is the plug-in's own settings, so the card and the health page keep working from it.
-    const id = list.some(i => i.id === DEFAULT_ID) ? `h${crypto.randomBytes(4).toString('hex')}` : DEFAULT_ID
-    const meta: InstanceMeta = {
-      id, name, clusterId: this.cluster(input.clusterId, null),
-      insecureTLS: id === DEFAULT_ID ? true : input.insecureTLS === true,
-      policy: cleanPolicy(input.policy),
-    }
-    const p = providerFor(id)
-    await this.io.set(CATEGORY, p, 'url', url, false)
-    await this.io.set(CATEGORY, p, 'token', token, true)
-    await this.saveIndex([...list, meta])
-    return meta
+    return this.serial(async () => {
+      const list = await this.list()
+      if (list.length >= 20) throw new InstanceInputError('HyperProx holds up to 20 Home Assistant instances.')
+      const name = cleanName(input.name)
+      if (list.some(i => i.name.toLowerCase() === name.toLowerCase())) throw new InstanceInputError('Another instance already has that name.', 409)
+      const url = await this.checkedUrl(input.url)
+      const token = cleanToken(input.token)
+      // The first instance is the plug-in's own settings, so the card and the health page keep working from it.
+      const id = list.some(i => i.id === DEFAULT_ID) ? `h${crypto.randomBytes(4).toString('hex')}` : DEFAULT_ID
+      const meta: InstanceMeta = {
+        id, name, clusterId: this.cluster(input.clusterId, null),
+        insecureTLS: input.insecureTLS === true,
+        fingerprint: cleanFingerprint(input.fingerprint, null),
+        policy: cleanPolicy(input.policy),
+      }
+      const p = providerFor(id)
+      await this.io.set(CATEGORY, p, 'url', url, false)
+      await this.io.set(CATEGORY, p, 'token', token, true)
+      await this.saveIndex([...list, meta])
+      return meta
+    })
   }
 
   async update(id: string, input: InstanceInput): Promise<InstanceMeta> {
-    const list = await this.list()
-    const prev = list.find(i => i.id === id)
-    if (!prev) throw new InstanceInputError('No such Home Assistant instance.', 404)
-    const name = input.name === undefined ? prev.name : cleanName(input.name)
-    if (list.some(i => i.id !== id && i.name.toLowerCase() === name.toLowerCase())) throw new InstanceInputError('Another instance already has that name.', 409)
-    const next: InstanceMeta = {
-      id, name, clusterId: this.cluster(input.clusterId, prev.clusterId),
-      insecureTLS: id === DEFAULT_ID ? true : input.insecureTLS === undefined ? prev.insecureTLS : input.insecureTLS === true,
-      policy: cleanPolicy(input.policy, prev.policy),
-    }
-    const p = providerFor(id)
-    if (input.url !== undefined) await this.io.set(CATEGORY, p, 'url', cleanUrl(input.url), false)
-    // An empty token means "keep the one stored", as every masked form in HyperProx does.
-    if (input.token !== undefined && input.token !== '') await this.io.set(CATEGORY, p, 'token', cleanToken(input.token), true)
-    await this.saveIndex(list.map(i => i.id === id ? next : i))
-    return next
+    return this.serial(async () => {
+      const list = await this.list()
+      const prev = list.find(i => i.id === id)
+      if (!prev) throw new InstanceInputError('No such Home Assistant instance.', 404)
+      const name = input.name === undefined ? prev.name : cleanName(input.name)
+      if (list.some(i => i.id !== id && i.name.toLowerCase() === name.toLowerCase())) throw new InstanceInputError('Another instance already has that name.', 409)
+      const p = providerFor(id)
+      const oldUrl = await this.io.get(CATEGORY, p, 'url')
+      const url = input.url === undefined ? null : await this.checkedUrl(input.url)
+      const moved = url !== null && (!oldUrl || endpointOf(url) !== endpointOf(oldUrl))
+      const newToken = input.token === undefined || input.token === '' ? null : cleanToken(input.token)
+      // A token goes only to the address it was entered for: a new host or port needs the token again.
+      if (moved && !newToken) throw new InstanceInputError('The address now points somewhere else, so enter the token again in the same save.')
+      const next: InstanceMeta = {
+        id, name, clusterId: this.cluster(input.clusterId, prev.clusterId),
+        insecureTLS: input.insecureTLS === undefined ? prev.insecureTLS : input.insecureTLS === true,
+        // A pin belongs to one host and port.
+        fingerprint: cleanFingerprint(input.fingerprint, moved ? null : prev.fingerprint),
+        policy: cleanPolicy(input.policy, prev.policy),
+      }
+      if (url !== null) await this.io.set(CATEGORY, p, 'url', url, false)
+      if (newToken) await this.io.set(CATEGORY, p, 'token', newToken, true)
+      await this.saveIndex(list.map(i => i.id === id ? next : i))
+      return next
+    })
   }
 
   async remove(id: string): Promise<void> {
-    const list = await this.list()
-    if (!list.some(i => i.id === id)) throw new InstanceInputError('No such Home Assistant instance.', 404)
-    if (id === DEFAULT_ID) throw new InstanceInputError('The first instance is the plug-in\'s own settings: clear them on the plug-in card instead.', 409)
-    await this.io.remove(CATEGORY, providerFor(id))
-    await this.saveIndex(list.filter(i => i.id !== id))
+    return this.serial(async () => {
+      const list = await this.list()
+      if (!list.some(i => i.id === id)) throw new InstanceInputError('No such Home Assistant instance.', 404)
+      if (id === DEFAULT_ID) throw new InstanceInputError('The first instance is the plug-in\'s own settings and cannot be removed here.', 409)
+      await this.io.remove(CATEGORY, providerFor(id))
+      await this.saveIndex(list.filter(i => i.id !== id))
+    })
   }
 }

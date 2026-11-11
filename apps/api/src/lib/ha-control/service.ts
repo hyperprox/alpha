@@ -3,24 +3,28 @@
 //
 //  What a tap on a control goes through, in order:
 //    1. the instance exists, and (on a cluster's page) belongs to that cluster;
-//    2. the person may act: everyday controls need the instance's role (operator
+//    2. the entity is read FRESH from that house (never from a cache): it must
+//       exist, be of a kind HyperProx controls, and its tier is decided from the
+//       state and attributes it has right now;
+//    3. the person may act: everyday controls need the instance's role (operator
 //       by default); the security tier needs admin, a person (never an API
 //       token), the master password re-entered (the gate checks that on the
-//       secure route), and the confirm phrase naming the device and the house;
-//    3. the rate limit for this session;
-//    4. the entity is in the instance's CURRENT entity list, in a domain HyperProx
-//       controls, and not unavailable;
+//       secure route);
+//    4. the rate limit for this session (before any phrase is compared);
 //    5. the allow-list turns (domain, action, value) into one service call with
 //       its value checked against the entity's own range or list;
-//    6. the call, then a read-back of the real state, said plainly when the
+//    6. for the security tier: the confirm phrase, built from the checked value,
+//       and the device's name typed by the person, both compared here;
+//    7. the call, then a read-back of the real state, said plainly when the
 //       device did not change;
-//    7. an audit row (who, instance, entity, action, result — never the token),
-//       and for the security tier an optional notification.
+//    8. an audit row for every outcome, refusals included (who, instance,
+//       entity, action, result — never the token), and for the security tier an
+//       optional notification (refusals too, at most one per house per 10 min).
 // =============================================================================
 
 import {
-  ActionRefusal, CONTROLLABLE, ENTITY_ID, actionPhrase, buildServiceCall, confirmPhrase, controlsFor, displayState,
-  domainOf, nameOf, readBackMatches, tierOf, type Control, type HAState, type Tier,
+  ActionRefusal, CONTROLLABLE, ENTITY_ID, actionPhrase, buildServiceCall, confirmPhrase, confirmTemplate, controlsFor,
+  displayState, domainOf, nameOf, readBackMatches, tierOf, typedMatches, type Control, type HAState, type Tier,
 } from './catalog'
 import { HAUnreachableError, HttpHAClient, type HAClient, type HAConnection, type HARegistry } from './client'
 import type { InstanceMeta, InstanceStore } from './instances'
@@ -36,7 +40,7 @@ export interface Actor {
   token: string | null
 }
 
-export interface ActionRequest { entityId?: unknown; action?: unknown; value?: unknown; confirm?: unknown }
+export interface ActionRequest { entityId?: unknown; action?: unknown; value?: unknown; confirm?: unknown; typed?: unknown }
 
 export interface ActionResult {
   ok:        boolean
@@ -56,31 +60,41 @@ export interface DeviceRow {
   domain:      string
   tier:        Tier
   unavailable: boolean
+  /** Hidden ("hidden") from viewers on security devices. */
   state:       string
   unit?:       string
   deviceClass?: string
+  /** On security devices, `confirm` is the phrase to type-check, with "{value}" where a slider or list value goes. */
   controls:    Array<Control & { confirm?: string }>
 }
 
 export interface ClusterRef { id: string; name: string; kind: 'home' | 'remote' }
 
+export type PublishFn = (e: { type: string; severity: 'info' | 'warning' | 'critical'; title: string; lines?: string[]; plain?: string[]; link?: string; where?: string; fingerprint?: string }) => Promise<void>
+
 export interface ServiceDeps {
   store:     InstanceStore
   clientFor?: (c: HAConnection) => HAClient
   audit:     (action: string, resource: string, details: Record<string, unknown>) => Promise<void>
-  publish?:  (e: { type: string; severity: 'info' | 'warning' | 'critical'; title: string; lines?: string[]; plain?: string[]; link?: string; where?: string; fingerprint?: string }) => Promise<void>
+  publish?:  PublishFn
   cluster?:  (id: string) => ClusterRef | null
   now?:      () => number
   sleep?:    (ms: number) => Promise<void>
   /** Read-back: how many times, and how far apart. */
   readBack?: { tries: number; everyMs: number }
-  limits?:   { normalPerMinute: number; securityPerMinute: number }
+  limits?:   { normalPerMinute: number; securityPerMinute: number; devicesPerMinute: number }
+  /** How long one house's device list is served from memory, so several open pages cost one read. */
+  devicesCacheMs?: number
 }
 
+const REFUSAL_NOTIFY_MS = 10 * 60_000
+
 export class HAControlService {
-  private statesCache = new Map<string, { at: number; states: HAState[] }>()
+  private devicesCache = new Map<string, { at: number; states: HAState[] }>()
   private registryCache = new Map<string, { at: number; reg: HARegistry | null }>()
   private hits = new Map<string, number[]>()
+  private hitCalls = 0
+  private refusalNotified = new Map<string, number>()
   private d: Required<Omit<ServiceDeps, 'publish' | 'cluster'>> & Pick<ServiceDeps, 'publish' | 'cluster'>
 
   constructor(deps: ServiceDeps) {
@@ -89,8 +103,9 @@ export class HAControlService {
       now: () => Date.now(),
       sleep: ms => new Promise(r => setTimeout(r, ms)),
       readBack: { tries: 6, everyMs: 500 },
-      limits: { normalPerMinute: 30, securityPerMinute: 5 },
+      devicesCacheMs: 2_000,
       ...deps,
+      limits: { normalPerMinute: 30, securityPerMinute: 5, devicesPerMinute: 40, ...(deps.limits ?? {}) },
     }
   }
 
@@ -141,7 +156,6 @@ export class HAControlService {
     const m = await this.instance(id, clusterScope)
     const ha = await this.client(m)
     const [states, config, log] = await Promise.all([ha.states(), ha.config().catch(() => ({})), ha.errorLog()])
-    this.statesCache.set(m.id, { at: this.d.now(), states })
     return buildHealthDetail(states, config, log, warn)
   }
 
@@ -155,11 +169,20 @@ export class HAControlService {
     return reg
   }
 
-  async devices(id: string, clusterScope: string | null = null) {
+  /**
+   * The Devices view. `viewer` hides the live state and controls of security devices. `actor` rate-limits
+   * polling per session; one house's list is read at most once per devicesCacheMs however many pages are open.
+   */
+  async devices(id: string, clusterScope: string | null = null, opts: { viewer?: boolean; actor?: Actor } = {}) {
     const m = await this.instance(id, clusterScope)
+    if (opts.actor) this.rate(opts.actor, 'devices', this.d.limits.devicesPerMinute, 'Too many refreshes; wait a moment.')
     const ha = await this.client(m)
-    const states = await ha.states()
-    this.statesCache.set(m.id, { at: this.d.now(), states })
+    let hit = this.devicesCache.get(m.id)
+    if (!hit || this.d.now() - hit.at >= this.d.devicesCacheMs) {
+      hit = { at: this.d.now(), states: await ha.states() }
+      this.devicesCache.set(m.id, hit)
+    }
+    const states = hit.states
     const reg = await this.registry(m, ha)
 
     const areaName = new Map(reg?.areas.map(a => [a.area_id, a.name]) ?? [])
@@ -175,41 +198,67 @@ export class HAControlService {
       const areaId = er?.area_id ?? (er?.device_id ? deviceArea.get(er.device_id) ?? null : null)
       const area = (areaId && areaName.get(areaId)) || 'No area'
       const tier = tierOf(s, m.policy)
-      const unavailable = s.state === 'unavailable' || s.state === 'unknown' && !['scene', 'script', 'button'].includes(domain)
-      const controls = controlsFor(s).map(c => tier === 'security'
-        ? { ...c, confirm: c.kind === 'button' ? confirmPhrase(s, c.action, undefined, m.name) : undefined }
-        : c)
-      const row: DeviceRow = { entityId: s.entity_id, name: nameOf(s), domain, tier, unavailable, ...displayState(s), controls }
+      const unavailable = s.state === 'unavailable' || (s.state === 'unknown' && !['scene', 'script', 'button'].includes(domain))
+      const hide = opts.viewer && tier === 'security'
+      const controls = hide ? [] : controlsFor(s).map(c => tier === 'security' ? { ...c, confirm: confirmTemplate(s, c.action, m.name) } : c)
+      const shown = displayState(s)
+      const row: DeviceRow = {
+        entityId: s.entity_id, name: nameOf(s), domain, tier, unavailable,
+        ...(hide ? { state: 'hidden', ...(shown.deviceClass ? { deviceClass: shown.deviceClass } : {}) } : shown), controls,
+      }
       groups.set(area, [...(groups.get(area) ?? []), row])
     }
     const areas = [...groups.entries()]
       .sort((a, b) => (a[0] === 'No area' ? 1 : 0) - (b[0] === 'No area' ? 1 : 0) || a[0].localeCompare(b[0]))
       .map(([name, devices]) => ({ name, devices: devices.sort((x, y) => x.name.localeCompare(y.name)) }))
-    return { areas, areaSource: reg ? 'registry' : 'none', fetchedAt: new Date(this.d.now()).toISOString() }
+
+    // A protected device that was renamed in Home Assistant silently stops being protected: say so.
+    const ids = new Set(states.map(s => s.entity_id))
+    const warnings = opts.viewer ? [] : [
+      ...m.policy.protected.filter(e => !ids.has(e)).map(e => `Protected device ${e} no longer exists in ${m.name}; it may have been renamed. Protect its new id in Settings.`),
+      ...m.policy.everyday.filter(e => !ids.has(e)).map(e => `Everyday device ${e} no longer exists in ${m.name}; remove it from Settings.`),
+    ]
+    return { areas, warnings, areaSource: reg ? 'registry' : 'none', fetchedAt: new Date(hit.at).toISOString() }
   }
 
   // --- Actions ---------------------------------------------------------------------------------
 
-  private rate(actor: Actor, tier: Tier): void {
-    const key = `${actor.sid}:${tier}`
+  /** Sliding one-minute window per session and bucket. Old sessions are pruned as the map grows. */
+  private rate(actor: Actor, bucket: string, max: number, message: string): void {
+    const key = `${actor.sid}:${bucket}`
     const now = this.d.now()
+    if (++this.hitCalls % 100 === 0 || this.hits.size > 1000) {
+      for (const [k, v] of this.hits) if (!v.some(t => now - t < 60_000)) this.hits.delete(k)
+    }
     const recent = (this.hits.get(key) ?? []).filter(t => now - t < 60_000)
-    const max = tier === 'security' ? this.d.limits.securityPerMinute : this.d.limits.normalPerMinute
     if (recent.length >= max) {
       this.hits.set(key, recent)
-      throw new ActionRefusal('rate_limited', `That is ${max} ${tier === 'security' ? 'security actions' : 'actions'} in a minute. Wait a moment and try again.`, 429)
+      throw new ActionRefusal('rate_limited', message, 429)
     }
     recent.push(now)
     this.hits.set(key, recent)
   }
 
-  /** Fresh state list for the check, never older than ten seconds. */
-  private async currentStates(m: InstanceMeta, ha: HAClient): Promise<HAState[]> {
-    const hit = this.statesCache.get(m.id)
-    if (hit && this.d.now() - hit.at < 10_000) return hit.states
-    const states = await ha.states()
-    this.statesCache.set(m.id, { at: this.d.now(), states })
-    return states
+  /** Audit a refusal that happened before the house was known (or that the gate made). */
+  async auditRefusal(instanceId: string, actor: Actor | null, req: ActionRequest, code: string): Promise<void> {
+    await this.d.audit('ha.action', `home-assistant:${String(instanceId).replace(/[^a-z0-9]/gi, '').slice(0, 20)}`, {
+      by: actor?.email ?? 'anonymous', via: actor?.token ? `api:${actor.token}` : actor ? 'session' : 'none',
+      entity: typeof req.entityId === 'string' ? req.entityId.slice(0, 160) : '', action: typeof req.action === 'string' ? req.action.slice(0, 40) : '',
+      tier: 'unknown', result: `refused:${code}`,
+    })
+  }
+
+  private async notifyRefusal(m: InstanceMeta, actor: Actor, entity: string, code: string): Promise<void> {
+    if (!m.policy.notifySecurity || !this.d.publish) return
+    const now = this.d.now()
+    if (now - (this.refusalNotified.get(m.id) ?? -Infinity) < REFUSAL_NOTIFY_MS) return
+    this.refusalNotified.set(m.id, now)
+    await this.d.publish({
+      type: 'ha.security.refused', severity: 'warning',
+      title: `A security action at ${m.name} was refused`,
+      lines: [`${entity} (${code}), by ${actor.token ? `API token ${actor.token}` : actor.email}.`, 'Further refusals at this house are not sent for 10 minutes; all of them are in the audit log.'],
+      plain: [m.name, entity], link: '/plugins/home-assistant', where: 'Home Assistant plug-in',
+    }).catch(() => {})
   }
 
   /**
@@ -217,12 +266,19 @@ export class HAControlService {
    * the secure route refuses everything else, so each tier has exactly one way in.
    */
   async act(id: string, req: ActionRequest, actor: Actor, secure: boolean, clusterScope: string | null = null): Promise<ActionResult> {
-    const m = await this.instance(id, clusterScope)
+    let m: InstanceMeta
+    try { m = await this.instance(id, clusterScope) } catch (e: any) {
+      await this.auditRefusal(id, actor, req, e?.code ?? 'error')
+      throw e
+    }
     const entityId = typeof req.entityId === 'string' ? req.entityId : ''
     const action = typeof req.action === 'string' ? req.action.slice(0, 40) : ''
     const auditBase = { by: actor.email, via: actor.token ? `api:${actor.token}` : 'session', instance: m.name, instanceId: m.id, entity: entityId.slice(0, 160), action }
     const refuse = async (e: ActionRefusal, tier?: Tier): Promise<never> => {
       await this.d.audit('ha.action', `home-assistant:${m.id}`, { ...auditBase, tier: tier ?? 'unknown', result: `refused:${e.code}` })
+      if ((tier === 'security' || secure) && ['forbidden', 'token_forbidden', 'confirm_required', 'rate_limited'].includes(e.code)) {
+        await this.notifyRefusal(m, actor, entityId.slice(0, 160), e.code)
+      }
       throw e
     }
 
@@ -231,11 +287,11 @@ export class HAControlService {
 
     let ha: HAClient
     try { ha = await this.client(m) } catch (e: any) { return refuse(e) }
-    let states: HAState[]
-    try { states = await this.currentStates(m, ha) } catch (e: any) {
+    // Read fresh: the tier depends on attributes (a cover's class, a switch's name) that a cache could hold stale.
+    let before: HAState | null
+    try { before = await ha.state(entityId) } catch (e: any) {
       return refuse(new ActionRefusal('unreachable', e instanceof HAUnreachableError ? e.message : `${m.name} could not be read.`, 502))
     }
-    const before = states.find(s => s.entity_id === entityId)
     if (!before) return refuse(new ActionRefusal('unknown_entity', `${m.name} has no entity ${entityId}.`, 404))
     const tier = tierOf(before, m.policy)
 
@@ -248,23 +304,30 @@ export class HAControlService {
       if (secure) return refuse(new ActionRefusal('not_security', `${nameOf(before)} is an everyday control; use the normal route.`, 409), tier)
       if (!hasRole(actor.role, m.policy.normalRole)) return refuse(new ActionRefusal('forbidden', `Controls on ${m.name} need the ${m.policy.normalRole} role.`, 403), tier)
     }
+    // Before any phrase comparison, so the confirm step cannot be guessed at speed.
+    try {
+      this.rate(actor, tier, tier === 'security' ? this.d.limits.securityPerMinute : this.d.limits.normalPerMinute,
+        `That is the most ${tier === 'security' ? 'security actions' : 'actions'} allowed in a minute. Wait a moment and try again.`)
+    } catch (e: any) { return refuse(e, tier) }
 
     let call
     try { call = buildServiceCall(before, action, req.value) } catch (e: any) { return refuse(e, tier) }
     if (before.state === 'unavailable') return refuse(new ActionRefusal('unavailable', `${nameOf(before)} is unavailable in Home Assistant right now.`, 409), tier)
 
     if (tier === 'security') {
-      const phrase = confirmPhrase(before, action, req.value, m.name)
-      if (req.confirm !== phrase) return refuse(new ActionRefusal('confirm_required', `Confirm first: "${phrase}".`, 409, { confirm: phrase }), tier)
+      // Both checks, and neither answer says what the phrase should have been.
+      if (req.confirm !== confirmPhrase(before, action, call.shown, m.name) || !typedMatches(before, req.typed)) {
+        return refuse(new ActionRefusal('confirm_required', 'Confirm the action and type the device\'s name exactly as shown.', 409), tier)
+      }
     }
-    try { this.rate(actor, tier) } catch (e: any) { return refuse(e, tier) }
+    const { shown, ...serviceCall } = call
 
-    try { await ha.callService(call) } catch (e: any) {
+    try { await ha.callService(serviceCall) } catch (e: any) {
       const msg = e instanceof HAUnreachableError ? e.message : 'Home Assistant did not accept the command.'
       await this.d.audit('ha.action', `home-assistant:${m.id}`, { ...auditBase, tier, result: 'failed', reason: msg })
       throw new ActionRefusal('call_failed', msg, 502)
     }
-    this.statesCache.delete(m.id)
+    this.devicesCache.delete(m.id)
 
     // Read back the real state.
     let after: HAState | null = null
@@ -274,7 +337,7 @@ export class HAControlService {
       after = await ha.state(entityId).catch(() => null)
       if (after && readBackMatches(before, after, action, req.value)) { changed = true; break }
     }
-    const what = actionPhrase(before, action, req.value)
+    const what = actionPhrase(before, action, shown)
     const message = changed
       ? `${what}: done. ${nameOf(before)} now reads "${after!.state}".`
       : after
@@ -283,7 +346,7 @@ export class HAControlService {
 
     await this.d.audit('ha.action', `home-assistant:${m.id}`, {
       ...auditBase, tier, result: changed ? 'done' : 'unconfirmed',
-      value: typeof req.value === 'number' || typeof req.value === 'string' ? String(req.value).slice(0, 40) : null,
+      value: shown === undefined ? null : String(shown).slice(0, 40),
       stateBefore: before.state.slice(0, 40), stateAfter: after?.state?.slice(0, 40) ?? null,
     })
 

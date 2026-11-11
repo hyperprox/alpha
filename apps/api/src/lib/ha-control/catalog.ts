@@ -31,6 +31,8 @@ export interface ServiceCall {
   domain:  string
   service: string
   data:    Record<string, unknown>
+  /** The value as checked and rounded, as a person should see it in a confirm phrase. */
+  shown?:  number | string
 }
 
 interface ActionSpec {
@@ -151,23 +153,39 @@ export const CATALOG: Record<string, Record<string, ActionSpec>> = {
 /** Domains HyperProx can control at all. Anything else is shown nowhere and refused everywhere. */
 export const CONTROLLABLE = new Set(Object.keys(CATALOG))
 
-/** Always the security tier. A per-instance policy can add to these; it can never take one away. */
+/**
+ * The security tier is the default for anything that can open, arm, disarm or unlock something. Everyday is the
+ * exception and has to be earned: a cover only with a device class that cannot let a person in, a switch only
+ * when nothing in its id or name says it drives a door, a lock or an alarm.
+ */
+/** Always the security tier, whatever a house's settings say. */
 export const SECURITY_DOMAINS = new Set(['lock', 'alarm_control_panel', 'siren'])
-/** Covers that let a person into a building. */
+/** Covers that let a person into a building: always the security tier. */
 export const SECURITY_COVER_CLASSES = new Set(['garage', 'gate', 'door'])
+/** The only covers that are everyday by default. Any other class, or none, is security. */
+export const EVERYDAY_COVER_CLASSES = new Set(['blind', 'curtain', 'shade', 'shutter', 'awning', 'damper'])
+/** Run anything Home Assistant was told to run: security until the owner says otherwise. */
+export const RUNNABLE_DOMAINS = new Set(['script', 'scene', 'button'])
+/** A switch whose id or name says it drives one of these is security until the owner says otherwise. */
+export const SECURITY_WORDS = /garage|gate|door|lock|alarm|arm|disarm|unlock|siren|opener|entry/i
 
 export interface TierPolicy {
   /** Entity ids the owner marked protected: security tier whatever their domain. */
   protected:       string[]
   /** Extra domains promoted to the security tier on this instance. */
   securityDomains: string[]
+  /**
+   * Entity ids the owner moved to everyday (a scene, a script, a "Door lamp" switch). Never applies to the
+   * always-security kinds above, and protected wins over it. Changing it is admin, re-confirmed and audited.
+   */
+  everyday:        string[]
   /** The least role that may use normal controls. */
   normalRole:      'operator' | 'admin'
   /** Send `ha.security.action` to notification channels after a security action. */
   notifySecurity:  boolean
 }
 
-export const DEFAULT_POLICY: TierPolicy = { protected: [], securityDomains: [], normalRole: 'operator', notifySecurity: true }
+export const DEFAULT_POLICY: TierPolicy = { protected: [], securityDomains: [], everyday: [], normalRole: 'operator', notifySecurity: true }
 
 export const ENTITY_ID = /^[a-z_][a-z0-9_]{0,63}\.[a-z0-9_]{1,128}$/
 
@@ -177,12 +195,27 @@ export const nameOf = (s: HAState) => {
   return typeof n === 'string' && n.trim() ? n.trim().slice(0, 120) : s.entity_id
 }
 
-export function tierOf(s: HAState, policy: TierPolicy): Tier {
+/** Security whatever the house's settings: locks, alarms, sirens, garage/gate/door covers. */
+export function alwaysSecurity(s: HAState): boolean {
   const d = domainOf(s.entity_id)
-  if (SECURITY_DOMAINS.has(d)) return 'security'
-  if (d === 'cover' && SECURITY_COVER_CLASSES.has(String(s.attributes?.device_class ?? ''))) return 'security'
-  if (policy.securityDomains.includes(d)) return 'security'
+  const dc = String(s.attributes?.device_class ?? '')
+  return SECURITY_DOMAINS.has(d) || dc === 'siren' || (d === 'cover' && SECURITY_COVER_CLASSES.has(dc))
+}
+
+/** Security by default, but an owner may move it to everyday. */
+function securityByDefault(s: HAState): boolean {
+  const d = domainOf(s.entity_id)
+  if (d === 'cover') return !EVERYDAY_COVER_CLASSES.has(String(s.attributes?.device_class ?? ''))
+  if (RUNNABLE_DOMAINS.has(d)) return true
+  if (d === 'switch' || d === 'input_boolean') return SECURITY_WORDS.test(s.entity_id) || SECURITY_WORDS.test(nameOf(s))
+  return false
+}
+
+export function tierOf(s: HAState, policy: TierPolicy): Tier {
+  if (alwaysSecurity(s)) return 'security'
   if (policy.protected.includes(s.entity_id)) return 'security'
+  if (policy.securityDomains.includes(domainOf(s.entity_id))) return 'security'
+  if (securityByDefault(s) && !policy.everyday.includes(s.entity_id)) return 'security'
   return 'normal'
 }
 
@@ -231,12 +264,14 @@ export function buildServiceCall(s: HAState, action: string, value: unknown): Se
     if (n < min || n > max) throw new ActionRefusal('bad_value', `${a.param.label} must be between ${min} and ${max}${a.param.unit}.`)
     const rounded = a.param.step >= 1 ? Math.round(n) : Math.round(n / a.param.step) * a.param.step
     data[a.param.field] = a.param.scale ? a.param.scale(rounded) : rounded
+    return { domain, service: a.service, data, shown: rounded }
   } else if (a.param?.kind === 'select') {
     const options = a.param.options(s)
     if (typeof value !== 'string' || !options.includes(value)) {
       throw new ActionRefusal('bad_value', `${a.param.label} must be one of: ${options.join(', ') || 'nothing this device offers'}.`)
     }
     data[a.param.field] = value
+    return { domain, service: a.service, data, shown: value }
   } else if (value !== undefined && value !== null && value !== '') {
     throw new ActionRefusal('bad_value', `${a.label} takes no value.`)
   }
@@ -259,9 +294,22 @@ export function actionPhrase(s: HAState, action: string, value: unknown): string
   return a.label
 }
 
-/** What a security action's confirm step must say, word for word: "Unlock Front door at Second home". */
-export function confirmPhrase(s: HAState, action: string, value: unknown, instanceName: string): string {
-  return `${actionPhrase(s, action, value)} ${nameOf(s)} at ${instanceName}`
+/**
+ * What a security action's confirm step must say, word for word: "Unlock Front door at Second home". `shown` is the
+ * value buildServiceCall checked and rounded, never the raw request value.
+ */
+export function confirmPhrase(s: HAState, action: string, shown: unknown, instanceName: string): string {
+  return `${actionPhrase(s, action, shown)} ${nameOf(s)} at ${instanceName}`
+}
+
+/** The phrase with "{value}" where a slider or list value goes, for the browser to fill in. */
+export function confirmTemplate(s: HAState, action: string, instanceName: string): string {
+  return confirmPhrase(s, action, '{value}', instanceName)
+}
+
+/** The typed check: the person types the device's name. Case and surrounding spaces do not matter. */
+export function typedMatches(s: HAState, typed: unknown): boolean {
+  return typeof typed === 'string' && typed.trim().toLowerCase() === nameOf(s).toLowerCase()
 }
 
 /** The few attributes the Devices view needs. Never the whole attribute bag: some integrations put tokens there. */

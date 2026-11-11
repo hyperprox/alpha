@@ -3,14 +3,11 @@
 // Assistants on loopback (REST and WebSocket); nothing real is contacted.
 import { test, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
-import http from 'node:http'
-import crypto from 'node:crypto'
-import type { AddressInfo } from 'node:net'
 import Fastify, { type FastifyInstance } from 'fastify'
 import {
   buildServiceCall, controlsFor, tierOf, confirmPhrase, ActionRefusal, DEFAULT_POLICY, type HAState,
 } from '../src/lib/ha-control/catalog'
-import { InstanceStore, DEFAULT_ID, type CredentialIO } from '../src/lib/ha-control/instances'
+import { InstanceStore, DEFAULT_ID } from '../src/lib/ha-control/instances'
 import { HAControlService, type Actor } from '../src/lib/ha-control/service'
 import { HttpHAClient } from '../src/lib/ha-control/client'
 import { requiredRole, needsReconfirm } from '../src/lib/roles'
@@ -27,129 +24,7 @@ import { MemoryApiTokenStore, setApiTokenStore, createApiToken } from '../src/li
 import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
 
-// ── A pretend Home Assistant ─────────────────────────────────────────────────
-
-const TOKEN_A = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.token-for-house-a'
-const TOKEN_B = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.token-for-house-b'
-
-interface FakeHA { server: http.Server; url: string; token: string; states: Map<string, HAState>; calls: string[]; seenAuth: Set<string>; isAdmin: boolean; up: boolean }
-
-function st(entity_id: string, state: string, attributes: Record<string, any> = {}): HAState {
-  return { entity_id, state, attributes: { friendly_name: attributes.friendly_name ?? entity_id, ...attributes }, last_changed: '2026-01-01T00:00:00Z', last_updated: '2026-01-01T00:00:00Z' }
-}
-
-function wsFrame(text: string): Buffer {
-  const d = Buffer.from(text)
-  const head = d.length < 126 ? Buffer.from([0x81, d.length])
-    : d.length < 65536 ? Buffer.from([0x81, 126, d.length >> 8, d.length & 0xff])
-    : (() => { const b = Buffer.alloc(10); b[0] = 0x81; b[1] = 127; b.writeBigUInt64BE(BigInt(d.length), 2); return b })()
-  return Buffer.concat([head, d])
-}
-
-function readFrames(buf: Buffer): { msgs: string[]; rest: Buffer } {
-  const msgs: string[] = []
-  for (;;) {
-    if (buf.length < 2) break
-    let len = buf[1] & 0x7f, off = 2
-    if (len === 126) { len = buf.readUInt16BE(2); off = 4 } else if (len === 127) { len = Number(buf.readBigUInt64BE(2)); off = 10 }
-    const mask = buf.subarray(off, off + 4); off += 4
-    if (buf.length < off + len) break
-    msgs.push(Buffer.from(buf.subarray(off, off + len).map((b, i) => b ^ mask[i % 4])).toString())
-    buf = buf.subarray(off + len)
-  }
-  return { msgs, rest: buf }
-}
-
-async function fakeHA(token: string, states: HAState[], areas: { area: string; entities: string[] }[] = []): Promise<FakeHA> {
-  const f: FakeHA = { server: null as any, url: '', token, states: new Map(states.map(s => [s.entity_id, s])), calls: [], seenAuth: new Set(), isAdmin: false, up: true }
-  let tick = 0
-  const touch = (s: HAState) => { s.last_updated = new Date(Date.UTC(2026, 0, 2, 0, 0, ++tick)).toISOString() }
-  f.server = http.createServer((req, res) => {
-    f.seenAuth.add(String(req.headers.authorization))
-    if (!f.up) { req.socket.destroy(); return }
-    res.setHeader('content-type', 'application/json')
-    if (req.headers.authorization !== `Bearer ${token}`) { res.statusCode = 401; return res.end('{"message":"401: Unauthorized"}') }
-    let body = ''
-    req.on('data', c => { body += c })
-    req.on('end', () => {
-      const url = req.url ?? ''
-      if (req.method === 'GET' && url === '/api/states') return res.end(JSON.stringify([...f.states.values()]))
-      if (req.method === 'GET' && url.startsWith('/api/states/')) {
-        const s = f.states.get(decodeURIComponent(url.slice('/api/states/'.length)))
-        if (!s) { res.statusCode = 404; return res.end('{}') }
-        return res.end(JSON.stringify(s))
-      }
-      if (req.method === 'GET' && url === '/api/config') return res.end(JSON.stringify({ version: '2026.11.0', location_name: 'Test house', components: [] }))
-      if (req.method === 'GET' && url === '/api/error_log') { res.setHeader('content-type', 'text/plain'); return res.end('') }
-      const m = /^\/api\/services\/([a-z_]+)\/([a-z_]+)$/.exec(url)
-      if (req.method === 'POST' && m) {
-        f.calls.push(`${m[1]}.${m[2]} ${body}`)
-        const data = JSON.parse(body || '{}')
-        const s = f.states.get(data.entity_id)
-        if (s && s.entity_id !== 'switch.stuck') {
-          const svc = m[2]
-          if (svc === 'turn_on') { s.state = s.entity_id.startsWith('scene.') || s.entity_id.startsWith('script.') ? s.state : 'on'; if (data.brightness_pct !== undefined) { s.attributes.brightness = Math.round(data.brightness_pct * 2.55); if (data.brightness_pct === 0) s.state = 'off' } }
-          if (svc === 'turn_off') s.state = 'off'
-          if (svc === 'lock') s.state = 'locked'
-          if (svc === 'unlock') s.state = 'unlocked'
-          if (svc === 'open_cover') s.state = 'open'
-          if (svc === 'close_cover') s.state = 'closed'
-          if (svc === 'set_temperature') s.attributes.temperature = data.temperature
-          if (svc === 'set_hvac_mode') s.state = data.hvac_mode
-          touch(s)
-        }
-        return res.end('[]')
-      }
-      res.statusCode = 404; res.end('{}')
-    })
-  })
-  f.server.on('upgrade', (req, socket) => {
-    if (req.url !== '/api/websocket') return socket.destroy()
-    const accept = crypto.createHash('sha1').update(req.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC11B65').digest('base64')
-    socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`)
-    const send = (o: unknown) => socket.write(wsFrame(JSON.stringify(o)))
-    send({ type: 'auth_required', ha_version: '2026.11.0' })
-    let buf = Buffer.alloc(0)
-    socket.on('data', (d: Buffer) => {
-      const r = readFrames(Buffer.concat([buf, d])); buf = r.rest
-      for (const t of r.msgs) {
-        const m = JSON.parse(t)
-        if (m.type === 'auth') { send(m.access_token === token ? { type: 'auth_ok' } : { type: 'auth_invalid' }); continue }
-        const result = m.type === 'config/area_registry/list' ? areas.map((a, i) => ({ area_id: `a${i}`, name: a.area }))
-          : m.type === 'config/device_registry/list' ? []
-          : m.type === 'config/entity_registry/list' ? areas.flatMap((a, i) => a.entities.map(e => ({ entity_id: e, area_id: `a${i}`, device_id: null })))
-          : m.type === 'auth/current_user' ? { id: 'u1', name: 'hyperprox', is_owner: false, is_admin: f.isAdmin }
-          : null
-        send({ id: m.id, type: 'result', success: result !== null, result })
-      }
-    })
-    socket.on('error', () => {})
-  })
-  await new Promise<void>(r => f.server.listen(0, '127.0.0.1', r))
-  f.url = `http://127.0.0.1:${(f.server.address() as AddressInfo).port}`
-  return f
-}
-
-function memIO(seed: Record<string, string> = {}): CredentialIO & { data: Map<string, string> } {
-  const data = new Map(Object.entries(seed))
-  return {
-    data,
-    async get(c, p, k) { return data.get(`${c}/${p}/${k}`) ?? null },
-    async set(c, p, k, v) { data.set(`${c}/${p}/${k}`, v) },
-    async remove(c, p) { for (const k of [...data.keys()]) if (k.startsWith(`${c}/${p}/`)) data.delete(k) },
-  }
-}
-
-const HOUSE_A = () => [
-  st('light.kitchen', 'off', { friendly_name: 'Kitchen', supported_color_modes: ['color_temp'], min_color_temp_kelvin: 2200, max_color_temp_kelvin: 6500 }),
-  st('switch.stuck', 'off', { friendly_name: 'Stuck plug' }),
-  st('lock.front_door', 'locked', { friendly_name: 'Front door' }),
-  st('cover.garage', 'closed', { friendly_name: 'Garage', device_class: 'garage' }),
-  st('cover.blind', 'closed', { friendly_name: 'Blind', device_class: 'blind', current_position: 0 }),
-  st('climate.lounge', 'heat', { friendly_name: 'Lounge', hvac_modes: ['off', 'heat'], min_temp: 7, max_temp: 30, temperature: 20 }),
-  st('sensor.temp', '21', { friendly_name: 'Temperature', unit_of_measurement: '°C' }),
-  st('switch.gone', 'unavailable', { friendly_name: 'Gone plug' }),
-]
+import { TOKEN_A, TOKEN_B, st, fakeHA, memIO, HOUSE_A, openResolver, testClient, type FakeHA } from './ha-control-fake'
 
 let A: FakeHA, B: FakeHA
 const audits: Array<{ action: string; resource: string; details: Record<string, unknown> }> = []
@@ -165,11 +40,11 @@ after(() => { A.server.close(); B.server.close() })
 
 async function twoHouses() {
   const io = memIO({ 'plugin/home-assistant/url': A.url, 'plugin/home-assistant/token': TOKEN_A })
-  const store = new InstanceStore(io, id => id === 'c0123456789')
+  const store = new InstanceStore(io, id => id === 'c0123456789', openResolver)
   const b = await store.create({ name: 'Second home', url: B.url, token: TOKEN_B, clusterId: 'c0123456789' })
   audits.length = 0; published.length = 0
   const svc = new HAControlService({
-    store, audit: async (action, resource, details) => { audits.push({ action, resource, details }) },
+    store, clientFor: testClient, audit: async (action, resource, details) => { audits.push({ action, resource, details }) },
     publish: async e => { published.push(e) },
     cluster: id => id === 'c0123456789' ? { id, name: 'Remote server', kind: 'remote' } : null,
     sleep: async () => {}, readBack: { tries: 3, everyMs: 0 },
@@ -201,7 +76,7 @@ test('allow-list: each action maps to exactly one service, values checked agains
   const climate = st('climate.l', 'heat', { hvac_modes: ['off', 'heat'], min_temp: 7, max_temp: 30, temperature: 20 })
   assert.deepEqual(buildServiceCall(climate, 'target_temperature', 21.5).data, { entity_id: 'climate.l', temperature: 21.5 })
   assert.throws(() => buildServiceCall(climate, 'target_temperature', 31), (e: any) => e.code === 'bad_value')
-  assert.deepEqual(buildServiceCall(climate, 'hvac_mode', 'off'), { domain: 'climate', service: 'set_hvac_mode', data: { entity_id: 'climate.l', hvac_mode: 'off' } })
+  assert.deepEqual(buildServiceCall(climate, 'hvac_mode', 'off'), { domain: 'climate', service: 'set_hvac_mode', data: { entity_id: 'climate.l', hvac_mode: 'off' }, shown: 'off' })
   assert.throws(() => buildServiceCall(climate, 'hvac_mode', 'cool'), (e: any) => e.code === 'bad_value')
 
   const media = st('media_player.tv', 'playing', { volume_level: 0.3 })
@@ -238,11 +113,11 @@ test('tiers: locks, alarms, sirens, garage/gate/door covers and protected device
 test('migration: the existing single configuration is instance #1, read in place, nothing written', async () => {
   const io = memIO({ 'plugin/home-assistant/url': 'http://ha.local:8123', 'plugin/home-assistant/token': TOKEN_A, 'plugin/home-assistant/battery_warn': '15' })
   const before = new Map(io.data)
-  const store = new InstanceStore(io)
+  const store = new InstanceStore(io, undefined, openResolver)
   const list = await store.list()
   assert.equal(list.length, 1)
-  assert.deepEqual({ id: list[0].id, name: list[0].name, clusterId: list[0].clusterId, insecureTLS: list[0].insecureTLS }, { id: DEFAULT_ID, name: 'Home', clusterId: null, insecureTLS: true })
-  assert.deepEqual((await store.connection(DEFAULT_ID)), { url: 'http://ha.local:8123', token: TOKEN_A, insecureTLS: true })
+  assert.deepEqual({ id: list[0].id, name: list[0].name, clusterId: list[0].clusterId, insecureTLS: list[0].insecureTLS }, { id: DEFAULT_ID, name: 'Home', clusterId: null, insecureTLS: false })
+  assert.deepEqual((await store.connection(DEFAULT_ID)), { url: 'http://ha.local:8123', token: TOKEN_A, insecureTLS: false, fingerprint: null })
   const views = await store.views()
   assert.equal(views[0].hasToken, true)
   assert.equal(JSON.stringify(views).includes(TOKEN_A), false)
@@ -250,7 +125,7 @@ test('migration: the existing single configuration is instance #1, read in place
 
   // Not configured: no instance. The first one created becomes the plug-in's own settings.
   const empty = memIO()
-  const s2 = new InstanceStore(empty, id => id === 'c0123456789')
+  const s2 = new InstanceStore(empty, id => id === 'c0123456789', openResolver)
   assert.deepEqual(await s2.list(), [])
   const first = await s2.create({ name: 'Home', url: 'http://ha.local:8123', token: TOKEN_A })
   assert.equal(first.id, DEFAULT_ID)
@@ -323,18 +198,21 @@ test('security tier: admin, a person, the secure route and the exact confirm phr
   const { svc } = await twoHouses()
   const req = { entityId: 'lock.front_door', action: 'unlock' }
   await assert.rejects(svc.act(DEFAULT_ID, req, owner, false), (e: any) => e.code === 'security_action' && e.status === 409)
-  await assert.rejects(svc.act(DEFAULT_ID, { ...req, confirm: 'Unlock Front door at Home' }, operator, true), (e: any) => e.code === 'forbidden')
-  await assert.rejects(svc.act(DEFAULT_ID, { ...req, confirm: 'Unlock Front door at Home' }, { ...owner, token: 'automation' }, true), (e: any) => e.code === 'token_forbidden')
-  await assert.rejects(svc.act(DEFAULT_ID, { ...req, confirm: 'yes' }, owner, true), (e: any) => e.code === 'confirm_required' && e.extra.confirm === 'Unlock Front door at Home')
+  const ok = { confirm: 'Unlock Front door at Home', typed: 'front door' }
+  await assert.rejects(svc.act(DEFAULT_ID, { ...req, ...ok }, operator, true), (e: any) => e.code === 'forbidden')
+  await assert.rejects(svc.act(DEFAULT_ID, { ...req, ...ok }, { ...owner, token: 'automation' }, true), (e: any) => e.code === 'token_forbidden')
+  await assert.rejects(svc.act(DEFAULT_ID, { ...req, confirm: 'yes', typed: 'Front door' }, owner, true), (e: any) => e.code === 'confirm_required' && !('confirm' in e.extra))
   await assert.rejects(svc.act(DEFAULT_ID, { entityId: 'light.kitchen', action: 'turn_on' }, owner, true), (e: any) => e.code === 'not_security')
   assert.deepEqual(A.calls, [], 'nothing reached the house')
 
-  const r = await svc.act(DEFAULT_ID, { ...req, confirm: 'Unlock Front door at Home' }, owner, true)
+  const r = await svc.act(DEFAULT_ID, { ...req, ...ok }, owner, true)
   assert.equal(r.changed, true)
   assert.equal(r.tier, 'security')
-  assert.equal(published.length, 1)
-  assert.equal(published[0].type, 'ha.security.action')
-  assert.equal(published[0].title, 'Unlock Front door at Home')
+  const done = published.filter(e => e.type === 'ha.security.action')
+  assert.equal(done.length, 1)
+  assert.equal(done[0].title, 'Unlock Front door at Home')
+  // The refusals before it sent one warning, not one per refusal.
+  assert.equal(published.filter(e => e.type === 'ha.security.refused').length, 1)
   assert.equal(familyOf('ha.security.action'), 'home')
 
   // A garage door is security too, and an owner-protected switch.
@@ -354,12 +232,12 @@ test('API tokens: everyday controls only when the token role allows; the instanc
 
 test('rate limit: per session, security tighter than everyday', async () => {
   const io = memIO({ 'plugin/home-assistant/url': A.url, 'plugin/home-assistant/token': TOKEN_A })
-  const svc = new HAControlService({ store: new InstanceStore(io), audit: async () => {}, sleep: async () => {}, readBack: { tries: 1, everyMs: 0 }, limits: { normalPerMinute: 3, securityPerMinute: 1 } })
+  const svc = new HAControlService({ store: new InstanceStore(io, undefined, openResolver), clientFor: testClient, audit: async () => {}, sleep: async () => {}, readBack: { tries: 1, everyMs: 0 }, limits: { normalPerMinute: 3, securityPerMinute: 1, devicesPerMinute: 40 } })
   for (let i = 0; i < 3; i++) await svc.act(DEFAULT_ID, { entityId: 'light.kitchen', action: i % 2 ? 'turn_off' : 'turn_on' }, operator, false)
   await assert.rejects(svc.act(DEFAULT_ID, { entityId: 'light.kitchen', action: 'turn_on' }, operator, false), (e: any) => e.code === 'rate_limited' && e.status === 429)
   // Another session is not held up by this one.
   await svc.act(DEFAULT_ID, { entityId: 'light.kitchen', action: 'turn_on' }, { ...operator, sid: 's-other' }, false)
-  const lockReq = { entityId: 'lock.front_door', action: 'unlock', confirm: 'Unlock Front door at Home' }
+  const lockReq = { entityId: 'lock.front_door', action: 'unlock', confirm: 'Unlock Front door at Home', typed: 'Front door' }
   await svc.act(DEFAULT_ID, lockReq, owner, true)
   await assert.rejects(svc.act(DEFAULT_ID, { ...lockReq, action: 'lock', confirm: 'Lock Front door at Home' }, owner, true), (e: any) => e.code === 'rate_limited')
 })
@@ -387,7 +265,7 @@ test('isolation: an action for one house never reaches the other, and never carr
   assert.equal(B.states.get('light.kitchen')!.state, 'on')
   assert.equal(A.states.get('light.kitchen')!.state, 'off')
   // B's entity list decides what B accepts: house A's lock does not exist there.
-  await assert.rejects(svc.act(b, { entityId: 'lock.front_door', action: 'unlock', confirm: 'Unlock Front door at Second home' }, owner, true), (e: any) => e.code === 'unknown_entity')
+  await assert.rejects(svc.act(b, { entityId: 'lock.front_door', action: 'unlock', confirm: 'Unlock Front door at Second home', typed: 'Front door' }, owner, true), (e: any) => e.code === 'unknown_entity')
   assert.equal(A.seenAuth.has(`Bearer ${TOKEN_B}`), false)
   assert.equal(B.seenAuth.has(`Bearer ${TOKEN_A}`), false)
   // On a remote cluster's page, only that cluster's houses answer.
@@ -410,7 +288,7 @@ test('unreachable: a plain reason, no address and no token in it', async () => {
   A.isAdmin = true
   assert.equal((await svc.status(DEFAULT_ID)).user!.isAdmin, true, 'an admin-user token is detected')
   // A wrong token is refused by name, not with the token in the message.
-  const bad = new HttpHAClient({ url: A.url, token: 'wrongwrongwrongwrongwrong', insecureTLS: false })
+  const bad = new HttpHAClient({ url: A.url, token: 'wrongwrongwrongwrongwrong', insecureTLS: false }, 10_000, openResolver)
   await assert.rejects(bad.states(), (e: any) => /refused the token/.test(e.message) && !e.message.includes('wrongwrong'))
 })
 
@@ -465,7 +343,7 @@ test('through the gate: operator acts, a lock needs re-confirmation, an API toke
     assert.equal(r.statusCode, 200, r.body)
     assert.equal(r.json().data.changed, true)
 
-    const lockBody = { entityId: 'lock.front_door', action: 'unlock', confirm: 'Unlock Front door at Home' }
+    const lockBody = { entityId: 'lock.front_door', action: 'unlock', confirm: 'Unlock Front door at Home', typed: 'Front door' }
     assert.equal((await call('POST', '/instances/default/secure-actions', { cookie: opCookie }, lockBody)).statusCode, 403)
     const needs = await call('POST', '/instances/default/secure-actions', { cookie: ownerCookie }, lockBody)
     assert.equal(needs.json().code, 'reconfirm_required')
@@ -486,7 +364,7 @@ test('through the gate: operator acts, a lock needs re-confirmation, an API toke
     assert.equal(ok.json().data.after.state, 'unlocked')
     const noConfirm = await call('POST', '/instances/default/secure-actions', { cookie: ownerCookie }, { ...lockBody, action: 'lock', confirm: undefined })
     assert.equal(noConfirm.statusCode, 409)
-    assert.equal(noConfirm.json().confirm, 'Lock Front door at Home')
+    assert.equal(noConfirm.json().confirm, undefined, 'the answer never says what the phrase should be')
 
     const wishlist = await app.inject({ method: 'GET', url: '/api/plugins/wishlist', headers: { cookie: opCookie } })
     assert.equal(wishlist.statusCode, 200, 'the generic plug-in routes still answer')

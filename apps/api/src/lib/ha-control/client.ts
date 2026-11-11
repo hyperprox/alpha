@@ -15,9 +15,19 @@
 import http from 'node:http'
 import https from 'node:https'
 import crypto from 'node:crypto'
+import net from 'node:net'
 import type { HAState, ServiceCall } from './catalog'
+import { HATargetError, resolveHATarget, type TargetResolver } from './target'
+import { PinnedAgent, CertificateChangedError } from '../clusters/tls-pin'
 
-export interface HAConnection { url: string; token: string; insecureTLS: boolean }
+export interface HAConnection {
+  url: string; token: string; insecureTLS: boolean
+  /** A pinned certificate (SHA-256): only that certificate is accepted, before the token is sent. */
+  fingerprint?: string | null
+}
+
+/** The most HyperProx reads from one answer or one WebSocket exchange. */
+export const MAX_ANSWER_BYTES = 16 * 1024 * 1024
 
 export class HAUnreachableError extends Error {
   constructor(message: string) { super(message); this.name = 'HAUnreachableError' }
@@ -43,40 +53,72 @@ export interface HAClient {
 
 /** Strip anything address- or token-shaped out of an error before it is shown. */
 function plainError(e: any, what: string): HAUnreachableError {
+  if (e instanceof HATargetError) return new HAUnreachableError(`Home Assistant address refused: ${e.message}`)
+  if (e instanceof CertificateChangedError) return new HAUnreachableError('Home Assistant presented a different certificate from the one you pinned, so HyperProx sent it nothing. Pin the new one in Settings if it was renewed on purpose.')
   const code = e?.code ?? e?.cause?.code
   const why = code === 'ECONNREFUSED' ? 'connection refused'
     : code === 'ENOTFOUND' || code === 'EAI_AGAIN' ? 'the address does not resolve'
     : code === 'ETIMEDOUT' || /timed out|abort/i.test(String(e?.message)) ? 'it did not answer in time'
     : code === 'EHOSTUNREACH' || code === 'ENETUNREACH' ? 'no route to it'
-    : /certificate|self.signed|CERT_/i.test(String(e?.message ?? code)) ? 'its certificate is not trusted (turn on "Accept a self-signed certificate" if that is expected)'
+    : /too large|too much/i.test(String(e?.message)) ? 'its answer was too large'
+    : /certificate|self.signed|CERT_/i.test(String(e?.message ?? code)) ? 'its certificate is not trusted (pin it in Settings, or accept a self-signed certificate)'
     : 'it could not be reached'
   return new HAUnreachableError(`Home Assistant ${what}: ${why}.`)
 }
 
+/** Request options that go to the checked address, keeping the Host header and the TLS name. */
+async function connectOptions(u: URL, c: HAConnection, resolve: TargetResolver): Promise<https.RequestOptions> {
+  const address = await resolve(u)
+  const opts: https.RequestOptions = {
+    host: address, port: u.port || (u.protocol === 'https:' ? 443 : 80), path: u.pathname + u.search,
+    headers: { Host: u.host },
+  }
+  if (u.protocol === 'https:') {
+    if (!net.isIP(u.hostname.replace(/^\[|\]$/g, ''))) opts.servername = u.hostname
+    if (c.fingerprint) opts.agent = new PinnedAgent(c.fingerprint)
+    else opts.rejectUnauthorized = !c.insecureTLS
+  }
+  return opts
+}
+
 export class HttpHAClient implements HAClient {
   private base: URL
-  constructor(private c: HAConnection, private timeoutMs = 10_000) {
+  constructor(private c: HAConnection, private timeoutMs = 10_000, private resolve: TargetResolver = resolveHATarget) {
     this.base = new URL(c.url.replace(/\/+$/, '') + '/')
     if (!['http:', 'https:'].includes(this.base.protocol)) throw new HAUnreachableError('The Home Assistant address must start with http:// or https://.')
   }
 
-  private request(method: 'GET' | 'POST', path: string, body?: unknown, timeoutMs = this.timeoutMs): Promise<{ status: number; text: string }> {
+  /** One request, with a wall-clock deadline for the whole of it (connect, headers and body). */
+  private async request(method: 'GET' | 'POST', path: string, body?: unknown, timeoutMs = this.timeoutMs): Promise<{ status: number; text: string }> {
     const url = new URL(path.replace(/^\//, ''), this.base)
     const payload = body === undefined ? undefined : JSON.stringify(body)
     const mod = url.protocol === 'https:' ? https : http
+    const base = await connectOptions(url, this.c, this.resolve)
     return new Promise((resolve, reject) => {
-      const req = mod.request(url, {
-        method, timeout: timeoutMs,
-        headers: { Authorization: `Bearer ${this.c.token}`, Accept: 'application/json', ...(payload ? { 'Content-Type': 'application/json' } : {}) },
-        ...(url.protocol === 'https:' ? { rejectUnauthorized: !this.c.insecureTLS } : {}),
+      let settled = false
+      const done = (err: Error | null, v?: { status: number; text: string }) => {
+        if (settled) return
+        settled = true
+        clearTimeout(deadline)
+        err ? reject(err) : resolve(v!)
+      }
+      const req = mod.request({
+        ...base, method, timeout: timeoutMs,
+        headers: { ...(base.headers as Record<string, string>), Authorization: `Bearer ${this.c.token}`, Accept: 'application/json', ...(payload ? { 'Content-Type': 'application/json' } : {}) },
       }, res => {
-        let text = ''
-        res.setEncoding('utf8')
-        res.on('data', ch => { text += ch; if (text.length > 32 * 1024 * 1024) req.destroy(new Error('answer too large')) })
-        res.on('end', () => resolve({ status: res.statusCode ?? 500, text }))
+        const chunks: Buffer[] = []
+        let size = 0
+        res.on('data', (ch: Buffer) => {
+          size += ch.length
+          if (size > MAX_ANSWER_BYTES) { req.destroy(new Error('answer too large')); return }
+          chunks.push(ch)
+        })
+        res.on('end', () => done(null, { status: res.statusCode ?? 500, text: Buffer.concat(chunks).toString('utf8') }))
+        res.on('error', e => done(e))
       })
+      const deadline = setTimeout(() => req.destroy(new Error('timed out')), timeoutMs)
       req.on('timeout', () => req.destroy(new Error('timed out')))
-      req.on('error', reject)
+      req.on('error', e => done(e))
       if (payload) req.write(payload)
       req.end()
     })
@@ -135,7 +177,8 @@ export class HttpHAClient implements HAClient {
   /** Open the WebSocket, authenticate, send each command, collect each result, close. */
   private ws(commands: Array<Record<string, unknown>>): Promise<any[]> {
     const url = new URL('api/websocket', this.base)
-    return wsExchange(url, this.c.token, this.c.insecureTLS, commands, this.timeoutMs)
+    return connectOptions(url, this.c, this.resolve)
+      .then(opts => wsExchange(url, this.c.token, opts, commands, this.timeoutMs))
       .catch(e => { throw e instanceof HAUnreachableError ? e : plainError(e, 'did not answer on its WebSocket') })
   }
 }
@@ -158,7 +201,8 @@ function encodeFrame(text: string): Buffer {
   return Buffer.concat([head, mask, body])
 }
 
-export function wsExchange(url: URL, token: string, insecureTLS: boolean, commands: Array<Record<string, unknown>>, timeoutMs: number): Promise<any[]> {
+/** One WebSocket exchange, with one wall-clock deadline for all of it and at most MAX_ANSWER_BYTES buffered. */
+export function wsExchange(url: URL, token: string, base: https.RequestOptions, commands: Array<Record<string, unknown>>, timeoutMs: number): Promise<any[]> {
   const secure = url.protocol === 'https:'
   const key = crypto.randomBytes(16).toString('base64')
   return new Promise((resolve, reject) => {
@@ -171,10 +215,10 @@ export function wsExchange(url: URL, token: string, insecureTLS: boolean, comman
       err ? reject(err) : resolve(value!)
     }
     const timer = setTimeout(() => finish(new HAUnreachableError('Home Assistant did not answer on its WebSocket in time.')), timeoutMs)
-    let sock: import('node:net').Socket | null = null
-    const req = (secure ? https : http).request(url, {
-      headers: { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Key': key, 'Sec-WebSocket-Version': '13' },
-      ...(secure ? { rejectUnauthorized: !insecureTLS } : {}),
+    let sock: net.Socket | null = null
+    const req = (secure ? https : http).request({
+      ...base,
+      headers: { ...(base.headers as Record<string, string>), Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Key': key, 'Sec-WebSocket-Version': '13' },
     })
     req.on('error', e => finish(e))
     req.on('response', res => { res.resume(); finish(new HAUnreachableError(`Home Assistant refused the WebSocket (HTTP ${res.statusCode}).`)) })
@@ -182,8 +226,15 @@ export function wsExchange(url: URL, token: string, insecureTLS: boolean, comman
       sock = socket
       const expect = crypto.createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC11B65').digest('base64')
       if (res.headers['sec-websocket-accept'] !== expect) return finish(new HAUnreachableError('Home Assistant answered the WebSocket oddly.'))
-      let buf: Buffer = head && head.length ? Buffer.from(head) : Buffer.alloc(0)
+      // Incoming bytes are kept as a list and joined only when a whole frame is there; together with the
+      // pieces of a fragmented message they never exceed MAX_ANSWER_BYTES.
+      let pending: Buffer[] = head && head.length ? [Buffer.from(head)] : []
+      let pendingBytes = pending.reduce((n, b) => n + b.length, 0)
       let partial: Buffer[] = []
+      let partialBytes = 0
+      // Bytes the next frame needs before parsing is worth a join: a 10 MB registry arriving in 64 KB pieces is
+      // joined once, not once per piece.
+      let need = 2
       const results: any[] = new Array(commands.length)
       let got = 0
       const send = (o: unknown) => socket.write(encodeFrame(JSON.stringify(o)))
@@ -199,19 +250,22 @@ export function wsExchange(url: URL, token: string, insecureTLS: boolean, comman
         }
       }
       const parse = () => {
+        if (pendingBytes < need) return
+        let buf = pending.length === 1 ? pending[0] : Buffer.concat(pending)
+        const keep = (n: number) => { pending = buf.length ? [buf] : []; pendingBytes = buf.length; need = n }
         for (;;) {
-          if (buf.length < 2) return
+          if (buf.length < 2) return keep(2)
           const fin = (buf[0] & 0x80) !== 0
           const op = buf[0] & 0x0f
           const masked = (buf[1] & 0x80) !== 0
           let len = buf[1] & 0x7f
           let off = 2
-          if (len === 126) { if (buf.length < 4) return; len = buf.readUInt16BE(2); off = 4 }
-          else if (len === 127) { if (buf.length < 10) return; len = Number(buf.readBigUInt64BE(2)); off = 10 }
-          if (len > 64 * 1024 * 1024) return finish(new HAUnreachableError('Home Assistant sent too much.'))
+          if (len === 126) { if (buf.length < 4) return keep(4); len = buf.readUInt16BE(2); off = 4 }
+          else if (len === 127) { if (buf.length < 10) return keep(10); len = Number(buf.readBigUInt64BE(2)); off = 10 }
+          if (len + partialBytes > MAX_ANSWER_BYTES) return finish(new HAUnreachableError('Home Assistant sent too much.'))
           const mOff = off
           if (masked) off += 4
-          if (buf.length < off + len) return
+          if (buf.length < off + len) return keep(off + len)
           let payload = buf.subarray(off, off + len)
           if (masked) { const mk = buf.subarray(mOff, mOff + 4); payload = Buffer.from(payload.map((b, i) => b ^ mk[i % 4])) }
           buf = buf.subarray(off + len)
@@ -219,11 +273,18 @@ export function wsExchange(url: URL, token: string, insecureTLS: boolean, comman
           if (op === 0x9) { continue }      // ping: Home Assistant does not require a pong within one short exchange
           if (op === 0x1 || op === 0x0) {
             partial.push(Buffer.from(payload))
-            if (fin) { const t = Buffer.concat(partial).toString('utf8'); partial = []; onMessage(t) }
+            partialBytes += payload.length
+            if (fin) { const t = Buffer.concat(partial).toString('utf8'); partial = []; partialBytes = 0; onMessage(t) }
+            if (done) return
           }
         }
       }
-      socket.on('data', (d: Buffer) => { buf = Buffer.concat([buf, d]); parse() })
+      socket.on('data', (d: Buffer) => {
+        pendingBytes += d.length
+        if (pendingBytes + partialBytes > MAX_ANSWER_BYTES + 16) return finish(new HAUnreachableError('Home Assistant sent too much.'))
+        pending.push(d)
+        parse()
+      })
       socket.on('error', e => finish(e))
       socket.on('close', () => finish(new HAUnreachableError('Home Assistant closed the WebSocket.')))
       parse()
