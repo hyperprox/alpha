@@ -302,12 +302,29 @@ an existing install gets it on its next `deploy.sh`. It is never rotated.
 
 ## Using HyperProx
 
+### Finding your way around
+
+A rail on the left groups the pages: Dashboard and Command center first, then **Cluster**
+(Infrastructure, Storage, Monitoring, Updates, High availability), **Network** (Certificates, DNS,
+Proxy, VPN & remote access), **Apps** (Plug-ins, Catalogue, Deck, AI assistant) and **System**
+(Settings). Its foot shows the vault state, who is signed in with their role, and **Lock now** for
+owners and admins. On a wide screen the rail folds to icons; under 900 px it becomes a bar with a menu
+button that opens the same rail as a drawer. The top bar names the page, shows a live dot (whether your
+browser can reach HyperProx), a **Find anything** box (press **/**) that jumps to any page by name or
+topic, and the theme switch: Auto (follow your system), Light or Dark.
+
 ### Dashboard
 
-Cluster overview with speedometer dials and trend lines: per-node CPU, memory, disk, temperature and
-power; Ceph capacity and OSDs; HA quorum, fencing and resources; GPU use and VRAM; network
-throughput; and the state of connected services. If a plug-in reports bandwidth (MikroTik does), WAN
-and LAN dials show it, scaled to your plan speed when you set one in the plug-in's settings.
+A status header opens the page: guests running on the outer ring and memory on the inner, a verdict in
+words (quorum, or nodes online when HA status cannot be read), and the numbers people look for first
+(nodes online, CPU, memory, storage, and power or HA). Below it, each node as a tile with CPU and memory
+rings plus its disk, uptime, GPU, power and guests; each Proxmox storage as a bar; the busiest guests
+with a trace of their recent CPU; what is happening now (firing alerts, offline nodes, Ceph checks, HA
+guests not started, services not answering); and your plug-ins with a health dot each. Further down
+are the capacity dials and trend lines, GPU use and VRAM, connected services, bandwidth, network
+throughput, Ceph capacity and OSDs, and HA quorum, fencing and resources. If a plug-in reports
+bandwidth (MikroTik does), WAN and LAN dials show it, scaled to your plan speed when you set one in the
+plug-in's settings.
 
 ### Command center: more than one cluster
 
@@ -528,7 +545,7 @@ Every change is previewed first, including what would move straight away. It is 
 has lost quorum or the HA setup changed since the preview, and it goes through Proxmox's own HA tools.
 Applying a change asks for your master password again.
 
-### Terminal
+### Terminal (the Deck)
 
 SSH in the browser to every guest (addresses come from Proxmox) and to hosts you add by hand, such as
 a router or a NAS. One shared login can cover every host that has none of its own. Sessions run in
