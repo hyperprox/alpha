@@ -10,7 +10,7 @@ import { FakeBroker } from './fakes/fake-broker'
 import { buildTestApp, resetLock, signIn } from './fakes/app'
 import { requestContext } from '../src/lib/auth'
 import { execOnNode, probeHostKey, HostKeyNotConfirmedError, pinHostKeyIfFree } from '../src/lib/node-exec'
-import { listPins, pinSource, setPinSource, recordPin, pinId } from '../src/lib/hostkey-pins'
+import { listPins, pinSource, setPinSource, recordPin, pinId, recordVerified, pinEvidence, PinVerifyRefusal } from '../src/lib/hostkey-pins'
 import { confirmHostKey, checklistState } from '../src/lib/setup-checklist'
 import { confirmedFingerprint } from '../src/lib/ha/hostkey'
 import { needsReconfirm } from '../src/lib/roles'
@@ -163,4 +163,33 @@ test('a first Terminal connection to an unknown host pins its key, but that does
 test('pinHostKey has no default source: the type requires one', () => {
   const src = readFileSync(join(__dirname, '..', 'src', 'lib', 'node-exec.ts'), 'utf8')
   assert.match(src, /export async function pinHostKey\(host: string, port: number, fingerprint: string, source: PinSource\)/)
+})
+
+test('a pin HyperProx verified (with its evidence) satisfies requirePin; a different pin is never replaced by it', async () => {
+  const mod: any = await import('ssh2')
+  const { Server, utils } = mod.default ?? mod
+  const kp = utils.generateKeyPairSync('ed25519')
+  const srv = new Server({ hostKeys: [kp.private] }, (client: any) => {
+    client.on('authentication', (ctx: any) => { ctx.method === 'password' && ctx.password === PW ? ctx.accept() : ctx.reject() })
+    client.on('ready', () => client.on('session', (accept: any) => accept().on('exec', (acc: any) => { const s = acc(); s.write('ran\n'); s.exit(0); s.end() })))
+    client.on('error', () => undefined)
+  })
+  await new Promise<void>(r => srv.listen(0, '127.0.0.1', r))
+  const p2 = srv.address().port
+  try {
+    await asOwner(async () => {
+      const fp = await probeHostKey('127.0.0.1', p2)
+      await recordPin('127.0.0.1', p2, fp, 'api')
+      await assert.rejects(execOnNode({ host: '127.0.0.1', port: p2, cred, command: 'true', requirePin: true }), HostKeyNotConfirmedError)
+      const ev = { kind: 'tailnet', nodeId: 'nTEST', hostname: 'node1' } as const
+      assert.equal(await recordVerified('127.0.0.1', p2, fp, ev), 'verified')
+      assert.equal(await pinSource('127.0.0.1', p2), 'verified')
+      assert.deepEqual(await pinEvidence('127.0.0.1', p2), ev)
+      const row = (await listPins()).find(x => x.id === pinId('127.0.0.1', p2))!
+      assert.equal(row.confirmed, true)
+      assert.equal((await execOnNode({ host: '127.0.0.1', port: p2, cred, command: 'true', requirePin: true })).code, 0)
+      await assert.rejects(recordVerified('127.0.0.1', p2, 'SHA256:' + 'Q'.repeat(43), ev), PinVerifyRefusal)
+      assert.equal((await listPins()).find(x => x.id === pinId('127.0.0.1', p2))!.fingerprint, fp, 'the pin is unchanged')
+    })
+  } finally { srv.close() }
 })
