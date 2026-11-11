@@ -18,6 +18,7 @@ import { getNotifyService } from '../lib/notify'
 import { ensureGrafanaAdmin } from '../lib/grafana-admin'
 import { migrationSettled } from '../lib/credentials'
 import { requestContext } from '../lib/auth'
+import { verifyHomeHostKeys } from '../lib/setup-checklist'
 import { validateHandoff, holdValidated, flushHeldSecrets, acceptHandoff, HandoffRefused, markSetupDone } from '../lib/setup-handoff'
 import { readFileSync } from 'fs'
 import { createHash, timingSafeEqual } from 'crypto'
@@ -93,9 +94,15 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       // An owner exists, so setup is done: record it and drop the setup key from .env.
       try { if (markSetupDone()) req.log.info('[setup] owner exists: setup recorded as done, setup key removed') } catch { /* .env not writable */ }
       // What the setup wizard held in memory for want of a vault (a node login, a DNS key) goes in now.
-      void flushHeldSecrets({ sid: vs.sid, email: vs.email, role: vs.role }).then(
+      // Then the home nodes' host keys are verified with evidence (no fingerprints to compare), as this owner, whose
+      // sign-in unlocked the vault. Nothing happens when every node is already verified or confirmed.
+      const owner = { sid: vs.sid, email: vs.email, role: vs.role }
+      void flushHeldSecrets(owner).then(
         r => { if (r.stored.length || r.failed.length) req.log.info({ stored: r.stored, failed: r.failed }, '[setup] held secrets stored in the vault') },
         e => req.log.error({ err: e?.message }, '[setup] could not store the held secrets'))
+        .then(() => requestContext.run(owner, async () => { await migrationSettled(); return verifyHomeHostKeys(`HyperProx, after ${vs.email} signed in`, { onlyIfNeeded: true }) }))
+        .then(v => { if (v?.length) req.log.info({ verified: v.filter(x => x.state === 'verified').length, other: v.filter(x => x.state !== 'verified' && x.state !== 'already').length }, '[hostkeys] home nodes checked after sign-in') },
+          e => req.log.warn({ err: e?.message }, '[hostkeys] could not verify the home nodes after sign-in'))
     }
     if (wasLocked) hydrateEnvFromVault()
 

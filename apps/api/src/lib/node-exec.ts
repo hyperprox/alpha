@@ -27,6 +27,7 @@ import { recordPin, pinSource, isConfirmedSource, type PinSource } from './hostk
 import { currentRemote } from './clusters/context'
 import { assertSafeScript } from './clusters/script-guard'
 import { remoteNodeLoginRaw } from './clusters/registry'
+import { scheduleHomeVerify } from './hostkey-verify'
 
 const HOSTKEY_PROVIDER = 'hostkey'
 
@@ -101,8 +102,8 @@ export function appendCapped(out: string, chunk: string, max: number): { out: st
 export class HostKeyNotPinnedError extends Error {
   constructor(readonly host: string, readonly port: number, readonly fingerprint: string) {
     super(`${host}:${port} has no pinned host key, so HyperProx will not send it anything. Its key is ${fingerprint}. ` +
-      'Check that fingerprint against the machine and confirm it (Remote access, or Settings → Setup checklist); ' +
-      'opening it in the Terminal alone does not confirm it. Then try again.')
+      'Press Verify automatically on Settings → Setup checklist (or Verify keys on the server\'s Edit page); if HyperProx finds ' +
+      'no evidence for it, compare that fingerprint with the machine and confirm it there. Opening it in the Terminal does not confirm it.')
     this.name = 'HostKeyNotPinnedError'
   }
 }
@@ -131,8 +132,8 @@ export async function pinHostKey(host: string, port: number, fingerprint: string
 /** A requirePin host whose pin nobody has confirmed (learned on first use by the API or the wizard). */
 export class HostKeyNotConfirmedError extends Error {
   constructor(readonly host: string, readonly port: number, readonly fingerprint: string) {
-    super(`${host}:${port} is pinned to ${fingerprint}, but nobody has confirmed that key, so HyperProx will not send it anything. ` +
-      'Confirm it on Settings → Setup checklist (opening it in the Terminal does not confirm it), then try again.')
+    super(`${host}:${port} is pinned to ${fingerprint}, but that key is not verified or confirmed yet, so HyperProx will not send it anything. ` +
+      'Press Verify automatically on Settings → Setup checklist (opening it in the Terminal does not confirm it), then try again.')
     this.name = 'HostKeyNotConfirmedError'
   }
 }
@@ -143,8 +144,13 @@ export class HostKeyNotConfirmedError extends Error {
  */
 export async function checkHostKey(host: string, fingerprint: string, port = 22): Promise<boolean> {
   const pinned = await pinnedHostKey(host, port)
-  if (!pinned) { await pinHostKey(host, port, fingerprint, 'api'); return true }
+  if (!pinned) { await pinHostKey(host, port, fingerprint, 'api'); learnedHomeKey(); return true }
   return pinned === fingerprint
+}
+
+/** A home node's key was just learned on first use: verify it (and any others) in the background, soon. */
+function learnedHomeKey(): void {
+  if (!currentRemote()) scheduleHomeVerify()
 }
 
 /** Pin a key learned elsewhere (the setup wizard's first connection). An existing, different pin wins. */
@@ -247,9 +253,9 @@ export function execOnNode(opts: ExecOptions): Promise<ExecResult> {
           .then(async pinned => {
             const d = hostKeyDecision(pinned, fp, !!opts.requirePin)
             if (d === 'reject-unpinned') unpinned = fp
-            // requirePin: the pin must also be one an admin confirmed, not one learned on first use.
+            // requirePin: the pin must also be one an admin confirmed or HyperProx verified, not one learned on first use.
             if (d === 'accept' && opts.requirePin && !isConfirmedSource(await pinSource(host, port))) { unconfirmed = fp; return verified(false) }
-            if (d === 'accept' && !pinned) await pinHostKey(host, port, fp, 'api')
+            if (d === 'accept' && !pinned) { await pinHostKey(host, port, fp, 'api'); learnedHomeKey() }
             verified(d === 'accept')
           })
           .catch(() => verified(false))

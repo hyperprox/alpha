@@ -3,13 +3,17 @@
 //
 //  A safety net, not a sandbox: HyperProx's own scripts are fixed text, and this catches a mistake in one of
 //  them (or a value that slipped into one) before it reaches a node. It refuses any script naming corosync,
-//  pve-cluster or pmxcfs, and any /etc/pve path except the two HyperProx documents: a container's own config
-//  file (the guest config editor's write, and its temp files) and reading ceph.conf (the hardware probe).
+//  pve-cluster or pmxcfs, and any /etc/pve path except the HyperProx documents: a container's own config
+//  file (the guest config editor's write, and its temp files), reading ceph.conf (the hardware probe), and
+//  reading the cluster's record of its nodes' SSH host keys (host-key verification). That last one is allowed
+//  only as `cat -- <path>`: a read, never a write.
 // =============================================================================
 
 const ALLOWED_PVE = [
   /\/etc\/pve\/nodes\/[A-Za-z0-9.-]+\/lxc\/\d+\.conf(\.tmp\.hpx\.[A-Za-z0-9_.*$]*)?/g,
   /\/etc\/pve\/ceph\.conf/g,
+  // At the start of a command only (a line, or after ; && ||), so `tee cat -- <path>` is not mistaken for a read.
+  /(^|;|&&|\|\|)[ \t]*cat -- \/etc\/pve\/(priv\/known_hosts|nodes\/[A-Za-z0-9.-]+\/ssh_known_hosts)(?=[ \t]|;|$)/gm,
 ]
 
 export function assertSafeScript(script: string): void {
