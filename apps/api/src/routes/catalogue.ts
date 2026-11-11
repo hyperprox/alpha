@@ -8,7 +8,7 @@
 // =============================================================================
 
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify'
-import { CATALOGUE, findRecipe } from '../lib/catalogue'
+import { CATALOGUE, CATEGORY_LABELS, findRecipe } from '../lib/catalogue'
 import {
   getInstallJob, readAdminCredential, previewInstall, applyPreview, removeFailedInstall, getPreview, cleanupCandidates,
   wizardView, identityView, placementFor, nextIdOf, checkIdentity, readVmidRule, saveVmidRule, WizardRefusal,
@@ -87,11 +87,13 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
     })))
 
     const recipes = await Promise.all(CATALOGUE.map(async r => ({
-      id: r.id, name: r.name, summary: r.summary, category: r.category,
+      id: r.id, name: r.name, summary: r.summary, category: r.category, categoryLabel: CATEGORY_LABELS[r.category],
       port: r.port, needsDocker: r.needsDocker, defaults: r.defaults, minimum: r.minimum,
       needsGpu: Boolean(r.needsGpu), firstRunKind: r.firstRun.kind, healthPath: r.healthPath,
       firstLogin: r.firstLogin ?? null, notes: r.notes ?? [],
       satisfies: r.satisfies ?? null,
+      options: r.options ?? [],
+      sizes: r.sizes ?? null,
       // A recipe whose integration already has an address is not offered as a
       // fix for a problem the user does not have.
       installedAt: await alreadySatisfied(r.id),
@@ -188,6 +190,11 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
       // The unknowns the person ticked for, as keys; anything else is dropped.
       ...(Array.isArray(b.addressAck) ? { addressAck: [...new Set((b.addressAck as unknown[])
         .filter((k): k is string => typeof k === 'string' && /^(live:\d{1,9}|cluster-status)$/.test(k)))].slice(0, 500) } : {}),
+      // Checked against the recipe's own options in the preview; keys it does not have are dropped there.
+      ...(b.options && typeof b.options === 'object' && !Array.isArray(b.options) ? { options: b.options } : {}),
+      // A website's public name: zone, name and proxy, checked into the exact DNS record and proxy host by the preview.
+      ...(b.publish && typeof b.publish === 'object' && !Array.isArray(b.publish)
+        ? { publish: { zone: String(b.publish.zone ?? ''), name: String(b.publish.name ?? ''), instanceId: String(b.publish.instanceId ?? '') } } : {}),
     }
     if (!findRecipe(input.recipeId)) return reply.status(404).send({ success: false, error: 'No such recipe' })
     try {

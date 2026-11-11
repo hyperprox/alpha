@@ -89,7 +89,8 @@ node screenshots.mjs --all http://127.0.0.1:3100 /tmp/hyperprox-shots
 | Certificates | Inventory of every endpoint's certificate, ACME DNS-01 issuance and renewal, delivery into guests |
 | Updates | Pending packages everywhere, on every cluster, and a gated update run that respects HA and quorum, restarts Ceph one OSD at a time and refuses any restart or reboot that would take data offline; a daily read-only check tells you when something new needs updating |
 | Terminal | Browser SSH with persistent tmux sessions, split panes and saved layouts |
-| Catalogue | Guided installs of NPM, Ollama, Tautulli, Nextcloud, Jellyfin, Gitea and more: choose resources, see every node's free capacity with a recommended node, pick the ID and address |
+| Catalogue | Guided installs of NPM, Ollama, Tautulli, Nextcloud, Jellyfin, Gitea, a static site, WordPress and more: choose resources, see every node's free capacity with a recommended node, pick the ID and address |
+| Sites | A New website wizard (static site or WordPress) from a domain your DNS provider lists to a live HTTPS site: container, DNS record, proxy host, certificate and a check of the public address; then open it, sign in to WordPress with a one-time link, reveal its password, pull it again, check its health |
 | AI assistant | Questions about your cluster, and plain-language deploys run end to end after you confirm |
 | Plug-ins | Arr Stack, Unmanic, MikroTik, Plex, Home Assistant and MeshCentral, with no access to credentials; Home Assistant also controls devices, in more than one house |
 | Notifications | Discord, Slack, Teams, ntfy, Gotify, Telegram and generic webhooks |
@@ -783,7 +784,20 @@ reports, are passed on as they were written.
 
 Installs a service you do not run yet into a new unprivileged container, checks that it answers, and
 connects it to HyperProx: Nginx Proxy Manager, Ollama, Tautulli, Nextcloud, Jellyfin, Vaultwarden,
-Gitea, Uptime Kuma, Homepage and Grafana.
+Gitea, Uptime Kuma, Homepage, Grafana, and two web hosting recipes:
+
+- **Static site**: nginx serving `/var/www/site`, optionally pulled from a public https git repository (a
+  branch and a folder in it), with `site-pull` to pull now and an optional timer every N minutes. Security
+  headers, gzip, 30-day caching for assets and none for HTML. Health check: `/`.
+- **WordPress**: nginx, PHP-FPM, MariaDB in the same container, WP-CLI and an optional Redis object cache,
+  installed with your site title and admin user. The admin and database passwords are generated and saved
+  in the vault before anything installs; they never appear on a command line. File editing is off, minor
+  core releases update themselves, the salts are generated and XML-RPC is blocked. Health check:
+  `/wp-login.php` must show the login form, which needs PHP and the database.
+
+Not automatic yet for either: a backup job, monitoring with alerts, a place under the update policy and a
+plug-in panel. Ghost is not offered: it supports only MySQL 8 in production, which Debian 13 does not ship,
+and its installer takes the database password as a command-line flag.
 
 Every install is a short wizard:
 
@@ -803,6 +817,22 @@ Installs run with `pct exec` from the node, so they need one **node login** per 
 top of the Catalogue page. It is tested before it is stored, kept in the vault, and never borrowed from
 the Terminal's shared guest login. An SSH key is better than a password. If an install fails, the
 wizard offers to remove only the container it made. See [docs/catalogue-wizard.md](docs/catalogue-wizard.md).
+
+### Sites
+
+**New website** (on the Sites page) is the same wizard with a public name: pick the kind, then a domain
+your DNS provider lists and a name in it (or the domain itself), and the proxy. HyperProx refuses a name
+that already has an A, AAAA or CNAME record and shows the exact record it will create. Placement, ID and
+address come from the same rules as the Catalogue, with small, medium and large sizes. The review shows the
+container, the DNS record, the proxy host, the certificate and the vault item; Install asks for your master
+password. The run creates the container, installs the site, creates the proxy host and the record, waits
+for the name to resolve, gets the certificate and checks the public `https://` address. If it fails, the
+clean-up removes only what that run made: the container, the proxy host and the record (only while it still
+points where the run set it). The certificate is left on the proxy.
+
+Each site then has **Open site**, **Open WordPress admin** (a sign-in link that works once, for 60 seconds,
+POSTed so no access log keeps it; admin only, master password again, audited), **Reveal password** (through
+the vault), **Pull now** for a static site, and **Health** for the container and the public address.
 
 ### Plug-ins
 

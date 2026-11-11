@@ -10,7 +10,7 @@
 import { ProxmoxClient } from './proxmox-client'
 import { execInGuest, nodeCredential } from './node-exec'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { findRecipe, type CatalogueRecipe } from './catalogue'
+import { findRecipe, checkOptions, healthProblem, type CatalogueRecipe } from './catalogue'
 import { installScript, distroOf, hostEnv, type Distro } from './install-script'
 import {
   pickTemplate, pickDownloadable, scoreNodes, recommend, rootStorages, excludedRootStorages, configGpuKind, pciGpus, ROOTFS_EXCLUDED,
@@ -26,6 +26,10 @@ import { setCredential, setCredentials, getProviderCredentials, vaultWritable, d
 import { saveSettings, getSettings } from './plugin-host'
 import { PLUGINS } from '../plugins'
 import { wizardStore } from './catalogue-store'
+import {
+  planPublish, runPublish, cleanupPublish, recordSite, realPublishDeps, PUBLISH_STEPS,
+  type PublishDeps, type PublishPlan, type PublishLedger, type PublishInput,
+} from './sites'
 
 export type Phase = 'pending' | 'running' | 'done' | 'failed' | 'skipped'
 
@@ -68,6 +72,12 @@ export interface InstallJob {
   removed?: boolean
   /** The vault item holding the generated admin login, and whether this job created it (not merged into one). */
   vaultItem?: { category: string; provider: string; createdByJob: boolean }
+  /** The public name this install publishes, as planned. */
+  publish?: PublishPlan
+  /** What publishing made so far: proxy host, DNS record, certificate. Clean-up removes only these. */
+  ledger?: PublishLedger
+  /** The Sites entry a finished web install made. */
+  siteId?: string
 }
 
 const JOBS = new Map<string, InstallJob>()
@@ -80,7 +90,8 @@ export interface InstallDeps {
   client:      CreatePVE & Pick<ProxmoxClient, 'getClusterResources'>
   credential:  (node: string) => Promise<any>
   exec:        (o: { host: string; cred: any; vmid: number; script: string; timeoutMs: number; onData: (c: string) => void }) => Promise<ExecResult>
-  probe:       (url: string) => Promise<number | null>
+  /** The status at url, or the status and the page (a recipe with healthBody needs the page); null if nothing answered. */
+  probe:       (url: string) => Promise<number | { status: number; body: string } | null>
   wait:        (ms: number) => Promise<unknown>
   /** Can the vault be written now (unlocked, with a signed-in session)? Asked before anything is created. */
   vaultOpen:   () => Promise<boolean>
@@ -90,19 +101,23 @@ export interface InstallDeps {
   readSecrets: (category: string, provider: string) => Promise<Record<string, string>>
   /** Delete a whole vault item. */
   deleteSecrets: (category: string, provider: string) => Promise<void>
+  /** DNS, proxy, certificate and the public check, for a plan that publishes. */
+  publish:     PublishDeps
 }
 
 const realDeps = (): InstallDeps => ({
   client:     pve(),
   credential: node => nodeCredential(node),
   exec:       o => execInGuest(o),
-  probe:      url => fetch(url, { signal: AbortSignal.timeout(4000) }).then(r => r.status).catch(() => null),
+  probe:      url => fetch(url, { signal: AbortSignal.timeout(4000) })
+    .then(async r => ({ status: r.status, body: (await r.text().catch(() => '')).slice(0, 200_000) })).catch(() => null),
   wait:       sleep,
   // A read works whenever the vault is unlocked; the save at the install step also needs a session.
   vaultOpen:   async () => vaultWritable(),
   saveSecrets: (c, p, v) => setCredentials(c, p, v),
   readSecrets: (c, p) => getProviderCredentials(c, p),
   deleteSecrets: (c, p) => deleteProviderCredentials(c, p),
+  publish: realPublishDeps(),
 })
 
 /** How long after an install the generated admin login is still served to the page. */
@@ -285,12 +300,13 @@ async function preflight(d: InstallDeps, intoVmid: number): Promise<{ node: stri
   return { node: g.node, vmid: Number(g.vmid) }
 }
 
-const STEPS = (recipe: CatalogueRecipe, first: string): InstallStep[] => [
+const STEPS = (recipe: CatalogueRecipe, first: string, publish?: PublishPlan): InstallStep[] => [
   { id: 'container', label: first, status: 'pending' },
   { id: 'network',   label: 'Wait for an address',   status: 'pending' },
   { id: 'install',   label: `Install ${recipe.name}`, status: 'pending' },
   { id: 'verify',    label: 'Check it answers',       status: 'pending' },
   { id: 'wire',      label: 'Configure the integration', status: 'pending' },
+  ...(publish ? PUBLISH_STEPS.map(s => ({ id: s.id, label: s.label, status: 'pending' as Phase })) : []),
 ]
 
 /** Install a recipe into a container that already exists. */
@@ -300,6 +316,8 @@ export async function startInstall(opts: {
   intoVmid?: number
   /** ownerOf() the request; the job is readable by this owner only. */
   owner?: string
+  /** The recipe's options, checked here like the wizard checks them. */
+  options?: Record<string, unknown>
 }, over: Partial<InstallDeps> = {}): Promise<InstallJob> {
   const deps: InstallDeps = { ...realDeps(), ...over }
   const recipe = findRecipe(opts.recipeId)
@@ -313,6 +331,8 @@ export async function startInstall(opts: {
   if (recipe.firstRun.kind === 'env-admin' && !await deps.vaultOpen()) {
     throw new Error(`${recipe.name} gets a generated admin password, which is saved in the vault, and the vault is locked. Sign in to unlock it and try again.`)
   }
+  const opt = checkOptions(recipe, opts.options)
+  if (opt.errors.length) throw new Error(opt.errors.join(' '))
   const target = await preflight(deps, opts.intoVmid)
   const job = newJob(recipe, opts.owner ?? '', `Use CT ${opts.intoVmid}`)
   void persistJob(job).catch(() => {})
@@ -324,14 +344,14 @@ export async function startInstall(opts: {
       throw new Error(`CT ${target.vmid} is ${cfg?.ostype ? `"${cfg.ostype}"` : 'of unknown type'}, which is neither Debian nor Ubuntu; HyperProx installs only on those.`)
     }
     return { distro }
-  })
+  }, () => {}, { options: opt.values })
   return job
 }
 
-function newJob(recipe: CatalogueRecipe, owner: string, first: string): InstallJob {
+function newJob(recipe: CatalogueRecipe, owner: string, first: string, publish?: PublishPlan): InstallJob {
   const job: InstallJob = {
     jobId: randomUUID(), owner, recipeId: recipe.id, status: 'running', log: '', startedAt: Date.now(),
-    steps: STEPS(recipe, first),
+    steps: STEPS(recipe, first, publish), ...(publish ? { publish, ledger: {} } : {}),
   }
   JOBS.set(job.jobId, job)
   return job
@@ -345,7 +365,9 @@ async function runJob(
   job: InstallJob, recipe: CatalogueRecipe, deps: InstallDeps,
   container: () => Promise<{ distro: Distro; ip?: string }>,
   onSettled: () => Promise<void> | void = () => {},
+  ctx: { options?: Record<string, string>; publish?: PublishPlan } = {},
 ): Promise<void> {
+  const options = ctx.options ?? {}
   try {
     // 1. A container to put it in.
     const s1 = step(job, 'container')
@@ -374,20 +396,29 @@ async function runJob(
     // A recipe that takes its admin login from the environment gets a generated one. It travels in
     // the script and the job result only; it is not logged, and the output tail below is the
     // script's own output, which never echoes it.
-    const admin = recipe.firstRun.kind === 'env-admin'
-      ? { user: recipe.firstRun.user, password: randomBytes(18).toString('base64url') } : undefined
+    const fr = recipe.firstRun
+    const admin = fr.kind === 'env-admin'
+      ? { user: (fr.userOption && options[fr.userOption]) || fr.user, password: randomBytes(18).toString('base64url') } : undefined
+    // More generated secrets (a database password, say): into the script and the vault, never onto the page.
+    const extra = fr.kind === 'env-admin'
+      ? (fr.secrets ?? []).map(x => ({ ...x, value: randomBytes(24).toString('base64url') })) : []
     // Before the vault write: a container with no address fails here, leaving nothing saved.
-    const env: Record<string, string> = { ...hostEnv(recipe, { ip: job.ip }) }
-    if (recipe.firstRun.kind === 'env-admin' && admin) {
-      env[recipe.firstRun.passwordEnv] = admin.password
-      if (recipe.firstRun.userEnv) env[recipe.firstRun.userEnv] = admin.user
+    // Options first, so nothing the installer sets can be replaced by one.
+    const env: Record<string, string> = { ...options, ...hostEnv(recipe, { ip: job.ip }) }
+    if (fr.kind === 'env-admin' && admin) {
+      env[fr.passwordEnv] = admin.password
+      if (fr.userEnv) env[fr.userEnv] = admin.user
+      for (const x of extra) env[x.env] = x.value
       // Saved before the install runs: a password that exists only in a script that already ran
       // is a lockout. If the vault write fails, nothing is installed. Whether the item already existed is
       // recorded first, so a clean-up deletes only an item this job made.
       const provider = `${recipe.id}-${job.vmid}`
       const before = await deps.readSecrets('apps', provider).catch(() => null)
       const createdByJob = before !== null && Object.keys(before).length === 0
-      await deps.saveSecrets('apps', provider, { admin_user: admin.user, admin_password: admin.password })
+      await deps.saveSecrets('apps', provider, {
+        admin_user: admin.user, admin_password: admin.password,
+        ...Object.fromEntries(extra.map(x => [x.vaultKey, x.value])),
+      })
       job.vaultItem = { category: 'apps', provider, createdByJob }
       await persistJob(job).catch(() => {})
     }
@@ -404,14 +435,17 @@ async function runJob(
     const s4 = step(job, 'verify')
     const url = job.ip ? `http://${job.ip}:${recipe.port}` : ''
     if (url) {
-      let ok = false
+      let ok = false, why = 'did not answer'
       for (let i = 0; i < 10 && !ok; i++) {
         await deps.wait(3000)
-        const status = await deps.probe(url + recipe.healthPath)
-        ok = status !== null && recipe.expectStatus.includes(status)
+        const r = await deps.probe(url + recipe.healthPath)
+        const problem = r === null ? healthProblem(recipe, null)
+          : typeof r === 'number' ? healthProblem(recipe, r) : healthProblem(recipe, r.status, r.body)
+        ok = problem === null
+        if (problem) why = problem
       }
       s4.status = ok ? 'done' : 'failed'
-      s4.detail = ok ? `${url} is answering` : `${url} did not answer yet — it may still be starting`
+      s4.detail = ok ? `${url}${recipe.healthPath} is answering` : `${url}${recipe.healthPath} ${why} — it may still be starting`
       job.url = url
     } else {
       s4.status = 'skipped'
@@ -423,7 +457,27 @@ async function runJob(
     s5.detail = url ? await wireUp(recipe, url) : 'no address, so nothing was configured'
     s5.status = url ? 'done' : 'skipped'
 
+    // 6. Publishing: only a service that answers on its own address gets a public name.
+    if (ctx.publish) {
+      if (s4.status !== 'done' || !job.ip) throw new Error(`${recipe.name} did not answer on its own address, so it was not published.`)
+      job.ledger ??= {}
+      job.url = await runPublish(ctx.publish, recipe, job.ip, job.owner, job.ledger,
+        { step: id => step(job, id), save: () => { void persistJob(job).catch(() => {}) } }, deps.publish)
+    }
+
     if (admin) job.adminCredential = { user: admin.user, vault: { category: 'apps', provider: `${recipe.id}-${job.vmid}`, key: 'admin_password' }, issuedAt: Date.now() }
+    if (recipe.category === 'web' && job.vmid && job.node) {
+      job.siteId = job.jobId
+      await recordSite({
+        id: job.jobId, recipeId: recipe.id, name: ctx.publish?.domain ?? `${recipe.name} on CT ${job.vmid}`,
+        vmid: job.vmid, node: job.node, ip: job.ip,
+        ...(ctx.publish ? { domain: ctx.publish.domain, url: `https://${ctx.publish.domain}` } : {}),
+        ...(url ? { localUrl: url } : {}),
+        ...(job.vaultItem ? { vault: { category: job.vaultItem.category, provider: job.vaultItem.provider } } : {}),
+        ...(admin ? { adminUser: admin.user } : {}),
+        jobId: job.jobId, owner: job.owner, createdAt: Date.now(),
+      }).catch(e => { job.storeError = `The site was installed but could not be listed under Sites: ${e.message}` })
+    }
     job.status = 'completed'
   } catch (e: any) {
     job.status = 'failed'
@@ -516,10 +570,18 @@ export interface InstallPlan {
    * covers only what it lists; anything more unknown at apply is refused and asked again.
    */
   addressAck?: string[]
+  /** The recipe's options, checked and with defaults filled in. Not secrets: those are generated at install. */
+  options?: Record<string, string>
+  /** The public name, DNS record, proxy host and certificate this install makes, exactly as checked. */
+  publish?: PublishPlan
   unprivileged: true
 }
 
-export type WizardInput = Omit<InstallPlan, 'template' | 'downloadTemplate' | 'unprivileged'>
+export type WizardInput = Omit<InstallPlan, 'template' | 'downloadTemplate' | 'unprivileged' | 'publish' | 'options'> & {
+  options?: Record<string, unknown>
+  /** Publish it: the zone, the name in it and the proxy. Checked into a PublishPlan by the preview. */
+  publish?: PublishInput
+}
 
 export interface Preview {
   id:        string
@@ -986,6 +1048,7 @@ export function checkPlan(
       if (!a.problems.length) checks.push(...addressChecks(c.ip, input.node, view, live, pinged))
     }
   }
+  if (recipe.options?.length) errors.push(...checkOptions(recipe, input.options).errors)
   if (input.dns && !DNS_LIST.test(input.dns)) errors.push(`"${input.dns}" is not a list of IPv4 DNS servers.`)
   else if (input.dns && input.dns.split(/[\s,]+/).some(d => !parseCidr(`${d}/32`))) errors.push(`"${input.dns}" holds an address that is not IPv4.`)
 
@@ -1036,6 +1099,15 @@ export async function previewInstall(
   }
   const { view, live, pinged } = await freshRead(input, deps)
   const r = checkPlan(input, recipe, view, live, pinged)
+  let publish: PublishPlan | undefined
+  if (input.publish) {
+    if (recipe.category !== 'web') r.errors.push(`${recipe.name} is not published by the wizard; only websites are.`)
+    else {
+      const pp = await planPublish(input.publish, deps.publish)
+      r.errors.push(...pp.errors); r.warnings.push(...pp.warnings); r.checks.push(...pp.checks)
+      publish = pp.plan
+    }
+  }
   if (r.errors.length) return r
   const t = await resolveTemplate(deps.client, input.node, view)
   if ('error' in t) return { ...r, errors: [t.error] }
@@ -1051,6 +1123,8 @@ export async function previewInstall(
       ...(input.ip !== 'dhcp' && input.gateway ? { gateway: input.gateway } : {}),
       ...(input.dns ? { dns: input.dns.trim().split(/[\s,]+/).join(' ') } : {}),
       ...(input.ip !== 'dhcp' && input.addressAck?.length ? { addressAck: [...input.addressAck].sort() } : {}),
+      ...(recipe.options?.length ? { options: checkOptions(recipe, input.options).values } : {}),
+      ...(publish ? { publish } : {}),
       template: t.template, ...(t.download ? { downloadTemplate: true } : {}), unprivileged: true,
     },
   }
@@ -1098,13 +1172,19 @@ export async function applyPreview(id: string, owner: string, over: Partial<Wiza
     const { view, live, pinged } = await freshRead(plan, deps)
     const r = checkPlan(plan, recipe, view, live, pinged)
     if (recipe.firstRun.kind === 'env-admin' && !await deps.vaultOpen()) r.errors.push('The vault is locked, so the generated admin password could not be kept.')
+    if (plan.publish) {
+      // The name is checked again: a record or a proxy change since the preview refuses the apply.
+      const again = await planPublish({ zone: plan.publish.zone, name: plan.publish.name, instanceId: plan.publish.instanceId }, deps.publish)
+      r.errors.push(...again.errors)
+      if (again.plan && again.plan.record.data !== plan.publish.record.data) r.errors.push(`The public address changed from ${plan.publish.record.data} to ${again.plan.record.data} since the preview.`)
+    }
     if (r.errors.length) {
       throw new WizardRefusal('The cluster changed since the preview, so nothing was created.', 'changed', r.errors)
     }
     if (CREATING.has(plan.vmid)) throw new WizardRefusal('Another install is creating that ID now.', 'changed', [`ID ${plan.vmid} is being created.`])
     CREATING.add(plan.vmid)
 
-    const job = newJob(recipe, owner, `Create CT ${plan.vmid} (${plan.hostname}) on ${plan.node}`)
+    const job = newJob(recipe, owner, `Create CT ${plan.vmid} (${plan.hostname}) on ${plan.node}`, plan.publish)
     job.vmid = plan.vmid; job.node = plan.node
     const markId = `creating:${plan.vmid}`
     // The job row first, then the mark, then the create. After a restart the mark says this job may have
@@ -1128,7 +1208,7 @@ export async function applyPreview(id: string, owner: string, over: Partial<Wiza
       // container showed up must still be refused.
       CREATING.delete(plan.vmid)
       await store.delete(markId).catch(() => {})
-    })
+    }, { options: plan.options ?? {}, publish: plan.publish })
     return job
   } finally {
     APPLYING.delete(id)
@@ -1202,7 +1282,7 @@ export async function removeFailedInstall(jobId: string, owner: string, over: Pa
   const here = (listed ?? []).find((r: any) => Number(r?.vmid) === job.vmid)
   if (!here) {
     job.removed = true
-    const msg = `CT ${job.vmid} no longer exists, so there was nothing to remove.${await removeVaultItem(job, deps)}`
+    const msg = `CT ${job.vmid} no longer exists, so there was nothing to remove.${await removePublished(job, deps)}${await removeVaultItem(job, deps)}`
     await persistJob(job).catch(() => {})
     return msg
   }
@@ -1219,6 +1299,9 @@ export async function removeFailedInstall(jobId: string, owner: string, over: Pa
   if (ha.some((h: any) => h?.sid === `ct:${job.vmid}`)) {
     throw new WizardRefusal(`CT ${job.vmid} is managed by HA now; remove it from HA first.`, 'changed')
   }
+  // What publishing made goes first, while the container it points at still exists to be named.
+  const published = await removePublished(job, deps)
+  await persistJob(job).catch(() => {})
   const st = await deps.client.fetchStrict<any>(`${base}/status/current`)
   if (st?.status === 'running') {
     await deps.client.waitForTask(job.node, await deps.client.fetchStrict<string>(`${base}/status/stop`, 'POST'), { timeoutMs: 2 * 60_000 })
@@ -1230,9 +1313,16 @@ export async function removeFailedInstall(jobId: string, owner: string, over: Pa
   const left = await deps.client.fetchStrict<any[]>('/cluster/resources?type=vm')
   if ((left ?? []).some((r: any) => Number(r?.vmid) === job.vmid)) throw new Error(`CT ${job.vmid} is still listed after the removal.`)
   job.removed = true
-  const msg = `CT ${job.vmid} was removed from ${job.node}.${await removeVaultItem(job, deps)}`
+  const msg = `CT ${job.vmid} was removed from ${job.node}.${published}${await removeVaultItem(job, deps)}`
   await persistJob(job).catch(() => {})
   return msg
+}
+
+/** Remove the proxy host and DNS record this job's ledger says it made. Returns sentences to append. */
+async function removePublished(job: InstallJob, deps: WizardDeps): Promise<string> {
+  if (!job.ledger) return ''
+  const lines = await cleanupPublish(job.ledger, job.owner, deps.publish).catch((e: any) => [`Publishing clean-up failed: ${e.message}`])
+  return lines.length ? ' ' + lines.join(' ') : ''
 }
 
 /** Delete the generated-login vault item, only when this job created it. Returns a sentence to append. */

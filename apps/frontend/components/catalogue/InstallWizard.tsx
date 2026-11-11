@@ -22,6 +22,15 @@ export interface WizardRecipe {
   needsGpu?: boolean
   firstLogin: string | null; firstRunKind?: string; notes: string[]
   satisfies: { kind: string; id: string; setting: string } | null
+  categoryLabel?: string
+  /** Settings asked for before the install; the server checks each against its kind. */
+  options?: RecipeOption[]
+}
+
+export interface RecipeOption {
+  key: string; label: string; hint?: string; placeholder?: string
+  kind: 'text' | 'url' | 'email' | 'username' | 'gitref' | 'path' | 'number' | 'boolean'
+  required?: boolean; default?: string; min?: number; max?: number; maxLength?: number
 }
 
 interface Storage { storage: string; type: string; shared: boolean; freeGb: number; totalGb?: number; content: string[] }
@@ -48,7 +57,7 @@ interface Identity {
 }
 interface PreviewData {
   previewId: string; checks: string[]; warnings: string[]; expiresAt: number
-  plan: Record<string, string | number | boolean>
+  plan: Record<string, string | number | boolean | Record<string, string>>
 }
 
 const STEPS = ['App', 'Size', 'Where', 'Name & network', 'Review'] as const
@@ -89,6 +98,11 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
   onStarted: (job: { jobId: string; steps: any[] }) => void
 }) {
   const [step, setStep] = useState(0)
+
+  // Step 1: the recipe's own settings, if it has any (a site title, a git repository).
+  const options = recipe.options ?? []
+  const [opts, setOpts] = useState<Record<string, string>>(() => Object.fromEntries(options.map(o => [o.key, o.default ?? ''])))
+  const missing = options.filter(o => o.required && !String(opts[o.key] ?? '').trim())
 
   // Step 2: size, pre-filled from the recipe's recommended values.
   const [cores, setCores] = useState(recipe.defaults.cores)
@@ -218,6 +232,7 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
   const swapMax = Math.min(Math.max(0, memoryMb) * 2, 8192)
 
   const canNext = (() => {
+    if (step === 0) return missing.length === 0
     if (step === 1) return cores >= 1 && memoryMb >= 64 && diskGb >= 1 && swapMb >= 0 && swapMb <= swapMax
     if (step === 2) return Boolean(selected?.verdict.eligible && storage)
     if (step === 3) {
@@ -236,6 +251,7 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
       recipeId: recipe.id, node, vmid, hostname, cores, memoryMb, swapMb, diskGb, storage, bridge,
       ip: mode === 'dhcp' ? 'dhcp' : ip, ...(mode === 'static' && gateway ? { gateway } : {}), ...(dns ? { dns } : {}),
       ...(mode === 'static' && ackedKeys?.length ? { addressAck: ackedKeys } : {}),
+      ...(options.length ? { options: opts } : {}),
     })
     setBusy(false)
     if (!r.ok) { setError(r.error ?? 'The plan could not be checked.'); setProblems((r.body as any)?.problems ?? []); setWarnings((r.body as any)?.warnings ?? []); return }
@@ -325,6 +341,28 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
                   </p>
                 </div>
               </div>
+              {options.length > 0 && (
+                <div className="rounded-lg border p-4 space-y-3" style={{ borderColor: 'var(--border-soft)', background: 'var(--ground-inset)' }}>
+                  <p className="font-display text-[17px] font-semibold" style={{ color: 'var(--text-bright)' }}>Settings</p>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    {options.map(o => o.kind === 'boolean' ? (
+                      <label key={o.key} className="flex items-start gap-2 text-sm min-w-0" style={{ color: 'var(--text)' }}>
+                        <input type="checkbox" checked={opts[o.key] === '1'} onChange={e => setOpts(v => ({ ...v, [o.key]: e.target.checked ? '1' : '0' }))} />
+                        <span>{o.label}{o.hint && <span className="block text-[12px]" style={{ color: 'var(--text-dim)' }}>{o.hint}</span>}</span>
+                      </label>
+                    ) : (
+                      <Field key={o.key} label={`${o.label}${o.required ? ' *' : ''}`} hint={o.hint}>
+                        <input value={opts[o.key] ?? ''} onChange={e => setOpts(v => ({ ...v, [o.key]: e.target.value }))}
+                          type={o.kind === 'number' ? 'number' : o.kind === 'email' ? 'email' : o.kind === 'url' ? 'url' : 'text'}
+                          min={o.min} max={o.max} maxLength={o.maxLength} placeholder={o.placeholder}
+                          inputMode={o.kind === 'number' ? 'numeric' : undefined}
+                          autoCapitalize="none" spellCheck={o.kind === 'text'} style={INPUT} required={o.required} />
+                      </Field>
+                    ))}
+                  </div>
+                  {missing.length > 0 && <p className="text-[12px]" style={{ color: 'var(--text-dim)' }}>Fill in {missing.map(o => o.label).join(', ')} to go on.</p>}
+                </div>
+              )}
               {recipe.notes.length > 0 && (
                 <ul className="space-y-1">
                   {recipe.notes.map((n, i) => <li key={i} className="text-[13px]" style={{ color: 'var(--text-dim)' }}>· {n}</li>)}
@@ -602,6 +640,10 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
                       ['Address', preview.plan.ip === 'dhcp' ? 'DHCP' : `${preview.plan.ip}${preview.plan.gateway ? `, gateway ${preview.plan.gateway}` : ''}`],
                       ['DNS', preview.plan.dns || 'the node’s'], ['Template', String(preview.plan.template).split('/').pop()],
                       ['Privileges', 'unprivileged, nesting only'], ['Starts at boot', 'yes'],
+                      ...options.map(o => {
+                        const v = (preview.plan.options as unknown as Record<string, string> | undefined)?.[o.key] ?? ''
+                        return [o.label, o.kind === 'boolean' ? (v === '1' ? 'yes' : 'no') : (v || '—')] as [string, any]
+                      }),
                     ] as Array<[string, any]>).map(([k, v]) => (
                       <div key={k} className="contents">
                         <dt className="text-[13px]" style={{ color: 'var(--text-dim)' }}>{k}</dt>

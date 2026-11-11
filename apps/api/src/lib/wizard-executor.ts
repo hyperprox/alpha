@@ -26,7 +26,7 @@ import type { HostPatch, HostSpec } from './proxy/types'
 import { GoDaddyClient }  from './godaddy-client'
 import { getCredential }  from './credentials'
 import { execInGuest, nodeCredential } from './node-exec'
-import { wizardRecipes, type CatalogueRecipe } from './catalogue'
+import { wizardRecipes, healthProblem, type CatalogueRecipe } from './catalogue'
 import { installScript, manualCommands, distroOf, hostEnv } from './install-script'
 import { assertVmidFree, bridgeInfo, findIpUser, parseCidr } from './wizard-placement'
 import { zoneFor } from './dns-zones'
@@ -390,8 +390,10 @@ export async function stepHealthCheck(
     if (i) await wait(5000)
     try {
       const res = await fetchImpl(url, { redirect: 'manual', signal: AbortSignal.timeout(5000) })
-      if (recipe.expectStatus.includes(res.status)) return `${url} answered ${res.status}`
-      last = `${url} answered ${res.status}, expected ${want}`
+      const body = recipe.healthBody ? await res.text().catch(() => undefined) : undefined
+      const problem = healthProblem(recipe, res.status, body)
+      if (!problem) return `${url} answered ${res.status}`
+      last = recipe.expectStatus.includes(res.status) ? `${url} ${problem}` : `${url} answered ${res.status}, expected ${want}`
     } catch (e: any) {
       last = `${url} did not answer: ${e?.cause?.message ?? e?.message ?? e}`
     }

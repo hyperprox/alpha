@@ -39,18 +39,19 @@ test("matchRecipe normalises, suggests, and never matches prototype keys", () =>
 test("every wizard recipe has a health path, an expected status and a first-run kind", () => {
   const w = wizardRecipes()
   assert.deepEqual(w.map(r => r.id).sort(),
-    ["gitea", "homepage", "jellyfin", "nextcloud", "uptime-kuma"])
+    ["gitea", "homepage", "jellyfin", "nextcloud", "static-site", "uptime-kuma"])
   for (const r of w) {
     assert.ok(r.healthPath.startsWith("/"), r.id)
     assert.ok(r.expectStatus.length > 0, r.id)
     assert.ok(["none", "setup-url", "env-admin"].includes(r.firstRun.kind), r.id)
-    assert.equal(r.install.kind, "compose", r.id)
+    // Compose, or a script recipe with no Docker (the static site is nginx on the container itself).
+    assert.ok(r.install.kind === "compose" || !r.needsDocker, r.id)
   }
   assert.deepEqual(findRecipe("uptime-kuma")!.expectStatus, [200, 302])
-  for (const id of ["nginx-proxy-manager", "ollama", "tautulli", "grafana", "vaultwarden"]) assert.equal(findRecipe(id)!.wizard, false)
+  for (const id of ["nginx-proxy-manager", "ollama", "tautulli", "grafana", "vaultwarden", "wordpress"]) assert.equal(findRecipe(id)!.wizard, false)
   // The wizard cannot hand a generated admin secret back yet, so no wizard recipe needs one.
   for (const r of w) assert.notEqual(r.firstRun.kind, "env-admin", r.id)
-  assert.equal(CATALOGUE.length, 10)
+  assert.equal(CATALOGUE.length, 12)
 })
 
 test("env values reach the script quoted, in a private .env, and bad names are refused", () => {
