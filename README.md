@@ -705,13 +705,17 @@ the rooms (areas) set in Home Assistant, with big one-tap controls that work on 
 The page refreshes every few seconds. After each tap HyperProx reads the device back and shows what it
 really says now; if it did not change (an offline plug, a slow lock), the card says so in plain words.
 
-**Security devices** are locks, alarm panels, sirens, covers that Home Assistant calls a garage, gate or
-door, and anything you mark **protected** in Settings (you can also protect a whole kind, such as climate).
-They carry a lock icon and need all of these: the admin role, your master password entered in the last
-5 minutes, and a confirm step that names the device and the house ("Unlock Front door at Second home").
-API tokens can never use them. Everything else needs the operator role (you can raise that to admin per
-house). Each action is recorded in the audit log with who did it, the house, the device, the action and
-the result, and a security action can also send a notification (the Home Assistant family).
+**Security devices** are, always: locks, alarm panels, sirens, and covers that Home Assistant calls a
+garage, gate or door. By default, until you move them to **everyday** in Settings: any other cover except
+blinds, curtains, shades, shutters, awnings and dampers; scenes, scripts and buttons (they can run
+anything); and switches whose name mentions a door, gate, lock, alarm, opener or entry. Plus anything you
+mark **protected** (or a whole kind, such as climate). They carry a lock icon and need all of these: the
+admin role, your master password entered in the last 5 minutes, and a confirm step that names the device
+and the house ("Unlock Front door at Second home") where you type the device's name. API tokens can never
+use them. Everything else needs the operator role (you can raise that to admin per house). Viewers see
+security devices listed but not their state. Each action, refused ones included, is recorded in the audit
+log with who did it, the house, the device, the action and the result; a security action (or a refused
+one, at most once every 10 minutes per house) can also send a notification (the Home Assistant family).
 
 HyperProx only sends the actions in the table above, each to one Home Assistant service, with values
 checked against the device's own limits. It never passes a request straight through to Home Assistant.
@@ -722,7 +726,11 @@ house's state but cannot control anything.
 off, sign in as it, and create a long-lived access token under Profile, Security. A token has every
 right its user has, so do not use your own admin account; HyperProx warns you on the Home Assistant
 page when a token belongs to an admin. Paste the address and token in **Add a house** (admin, asks for
-your master password). The token is kept in the vault and never shown again. Link the house to a
+your master password). The token is kept in the vault and never shown again. An `http://` address must be
+on your own network, Tailscale or WireGuard; anything else needs `https://`, and HyperProx never sends a
+token to this machine itself. Certificates are checked; for Home Assistant's own self-signed one, use
+**Read certificate** and **Pin this certificate** in Settings. Changing a house's address to another host
+or port needs its token again. The plug-in card's settings no longer take the address or token. Link the house to a
 remote server and it also appears on that server's page (a **Home Assistant** tab, in amber) and in
 the Command center. The Home Assistant you had already set up is the first house, called "Home", with
 nothing to redo.

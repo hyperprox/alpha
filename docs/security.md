@@ -262,30 +262,59 @@ HyperProx does it, with these rules:
   checked against a range or a list taken from the device itself (a thermostat's own minimum and maximum, its
   own list of modes). No route accepts a service name, and there is no way to send an arbitrary request to
   Home Assistant through HyperProx.
-- **The device must exist.** The entity is checked against that house's current entity list, read at most
-  ten seconds earlier, and must be of a kind HyperProx controls and not unavailable.
-- **Two tiers.** Everyday controls (`POST .../instances/<id>/actions`) need the operator role, or admin if
-  the house is set that way. Security controls (`POST .../instances/<id>/secure-actions`) cover locks, alarm
-  panels, sirens, covers whose device class is garage, gate or door, and anything marked protected. They need
-  the admin role, the master password re-entered within 5 minutes, and a confirm phrase naming the device and
-  the house, which the server checks word for word. Each tier has exactly one route: the everyday route
-  refuses a security device and the secure route refuses everything else. A house's settings can add
-  protected devices and kinds; they cannot remove the built-in ones.
+- **The device must exist.** The entity is read from that house at the moment of the action (never from a
+  cache), must be of a kind HyperProx controls, and must not be unavailable. Its tier is decided from what it
+  says then, so a device reclassified in Home Assistant a second ago is treated as it is now.
+- **Two tiers, security by default.** Everyday controls (`POST .../instances/<id>/actions`) need the operator
+  role, or admin if the house is set that way. Security controls (`POST .../instances/<id>/secure-actions`)
+  need the admin role, the master password re-entered within 5 minutes, a confirm phrase naming the action
+  (with the value as checked and rounded), the device and the house, and the device's name typed by the
+  person; the server compares both and its refusal never says what the phrase should have been. Each tier has
+  exactly one route: the everyday route refuses a security device and the secure route refuses everything else.
+  - Always security: locks, alarm panels, sirens, anything whose device class is siren, and covers whose class
+    is garage, gate or door.
+  - Security until a house moves the device to everyday: covers of any other class or none (only blind,
+    curtain, shade, shutter, awning and damper are everyday), scripts, scenes and buttons, and switches or
+    input booleans whose id or name contains garage, gate, door, lock, alarm, arm, disarm, unlock, siren,
+    opener or entry.
+  - A house's settings can promote devices and whole kinds freely. Moving a device to everyday is admin,
+    re-confirmed, and written to the audit log as its own row naming each entity. Protected wins over
+    everyday. The Devices view warns when a protected or everyday id no longer exists (a renamed device).
 - **API tokens** can use everyday controls when the token's role allows it. They can never use a security
   control: the secure route needs a re-confirmation, which a token cannot give, and the service refuses a
   token there by name as well.
-- **Rate limit.** 30 everyday and 5 security actions a minute per signed-in session (or token), answered 429
-  beyond that.
+- **Rate limit.** 30 everyday and 5 security actions a minute per signed-in session (or token), counted before
+  any confirm phrase is compared, answered 429 beyond that. Refreshing the Devices view is limited to 40 a
+  minute per session, and one house's list is read at most every 2 seconds however many pages are open.
 - **One house at a time.** Each request names its house, and the connection is built from that house's own
   address and token, so an action for one house cannot reach another or carry its token. On a remote
   server's page, only the houses linked to that server answer.
-- **Audit.** Every action, refused ones included, writes a row: who, through a session or which API token,
-  the house, the entity, the action, the tier and the result (done, unconfirmed, failed or the refusal
-  reason), and for a call that went through, the state before and after. Never the token. A security action can also send the
-  `ha.security.action` notification.
+- **Audit.** Every action, refused ones included (an unknown house, the wrong cluster, and the gate's own
+  refusals for role, re-confirmation or lock), writes a row: who, through a session or which API token, the
+  house, the entity, the action, the tier and the result (done, unconfirmed, failed or the refusal reason), and
+  for a call that went through, the state before and after. Never the token. A gate refusal is recorded before
+  the request body is read, so it names the house but not the entity. A security action can send the
+  `ha.security.action` notification, and a refused one `ha.security.refused`, at most once per house every
+  10 minutes.
+- **Where an address may point.** A house's address is checked when it is saved and every time it is used,
+  against every address its name resolves to then, and the request goes to the checked address (Host and TLS
+  name unchanged), so a name that later resolves elsewhere gets nowhere. Loopback, link-local (cloud metadata
+  included), multicast, HyperProx's own container networks and its own service ports on this machine are
+  refused; `http://` is allowed only to a private address (RFC 1918, the CGNAT range Tailscale uses, IPv6 ULA).
+  Certificates are verified for every house by default. A self-signed one can be pinned by its SHA-256
+  fingerprint, read through `POST .../instances/probe-certificate` (admin): only that certificate is then
+  accepted, and the token is not sent until the handshake has matched. Changing the host or port drops the pin
+  and needs the token again in the same save.
+- **Bounded reads.** Each request to Home Assistant has a wall-clock deadline for the whole of it, and at most
+  16 MB of any answer (WebSocket messages included) is read.
+- **Viewers** see houses by name and devices by name, but not house addresses, pins, protected or everyday
+  lists, whether the token is a Home Assistant admin, or the state and controls of security devices.
 - **Tokens.** Each house's long-lived token is a vault item (`hyperprox:plugin/home-assistant` for the first
   house, `hyperprox:plugin/home-assistant.<id>` for the others). It is never returned to the browser, never
   logged, and kept out of error messages. Adding or changing a house is admin and asks for the master password.
+  The generic plug-in settings route (`PUT /api/plugins/<id>/settings`) no longer accepts Home Assistant's
+  address or token. For every plug-in it is now admin and re-confirmed (so API tokens cannot use it), and an
+  address moved to another host or port must be given its credential again in the same save.
 - **What a token can do.** A Home Assistant long-lived token carries every right of the user that made it,
   whatever HyperProx limits itself to. Make a dedicated Home Assistant user with administrator off and use its
   token. HyperProx asks Home Assistant which user a token belongs to and warns when it is an administrator.

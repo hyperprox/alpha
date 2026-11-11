@@ -113,14 +113,16 @@ a signing secret, the request carries `X-HyperProx-Timestamp` (Unix seconds) and
 5 minutes. The version changes only for a breaking change.
 
 Event types today: `vault.locked`, `updates.job.finished`, `updates.job.paused`, `updates.available`, `certs.verdict.changed`,
-`certs.still.critical`, `notify.channel.failing`, `ha.security.action`, plus `notify.test`, `notify.group`, `notify.digest` and
+`certs.still.critical`, `notify.channel.failing`, `ha.security.action`, `ha.security.refused`, plus `notify.test`, `notify.group`, `notify.digest` and
 `notify.brake` for the messages HyperProx makes itself.
 
 `ha.security.action` is a warning sent after someone uses a security control (a lock, an alarm panel, a
 siren, a garage, gate or door cover, or a device marked protected) on a Home Assistant house, when that
 house has "Notify my channels after every security action" on (the default). It names the action, the
 device, the house and who did it, and whether the device confirmed the change. It belongs to the Home
-Assistant family.
+Assistant family. `ha.security.refused` (warning, same switch, same family) says a security action at a house
+was refused (role, API token, confirm step or rate limit), at most once per house every 10 minutes; every
+refusal is in the audit log.
 
 `updates.available` comes from the daily updates check (`docs/updates.md`, "The daily check"): one
 message per check that found something new on any cluster, grouped by cluster, security fixes first, with
