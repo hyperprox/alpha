@@ -168,3 +168,22 @@ test('one-off commands: refused for an unpinned key before any login is sent, an
   const node = await app.inject({ method: 'POST', url: '/api/terminal/hosts/node-a/tmux-sessions', headers: { cookie: op.cookie }, payload: { host: '127.0.0.1', port: sshPort } })
   assert.equal(node.statusCode, 403, node.body)
 })
+
+test('the remote-access executor still gets Terminal logins: shared for a VM, its own for a hand-added host, never a node\'s', async () => {
+  const { productionRemoteExecutor } = await import('../src/lib/remote/executor')
+  const sent: Array<{ host: string; user: string }> = []
+  const ssh: any = async (o: any) => { sent.push({ host: o.host, user: o.cred.username }); return { code: 0, output: '', timedOut: false } }
+  const pve: any = { fetchStrict: async () => { throw new Error('no agent') } }
+  const ex = productionRemoteExecutor(pve, {
+    ssh, loadCredential, nodeCredential: async () => null,
+    listManualHosts: async () => [], listHostAddresses: async () => ({ 'qemu-202': '192.0.2.202' }),
+  } as any)
+  await asOwner(async () => {
+    await ex.run({ id: 'qemu-202', kind: 'qemu', name: 'vm', node: 'node-a', vmid: 202, running: true } as any, 'true')
+    await ex.run({ id: 'host-ssh-box', kind: 'host', name: 'box', running: true, address: '127.0.0.1' } as any, 'true')
+    // A hand-added host with no login of its own no longer borrows the shared guest login.
+    await assert.rejects(ex.run({ id: 'host-ssh-other', kind: 'host', name: 'other', running: true, address: '192.0.2.9' } as any, 'true'), /No login saved/)
+  })
+  assert.deepEqual(sent, [{ host: '192.0.2.202', user: 'guest' }, { host: '127.0.0.1', user: 'admin' }])
+  assert.equal(sent.some(s => s.user === 'root'), false, 'the node login was never used')
+})
