@@ -32,7 +32,7 @@ export interface ClusterInfo {
   address: string
   port: number
   note: string
-  cert: { fingerprint: string | null; confirmedAt: string | null; confirmedBy: string | null }
+  cert: { fingerprint: string | null; confirmedAt: string | null; confirmedBy: string | null; verified: string | null }
   nodeAddresses: Record<string, string>
   allowedRoots: string[]
   monitoring: ClusterRow['monitoring']
@@ -64,10 +64,21 @@ const homeDefaults = (): ClusterRow => ({
 function view(r: ClusterRow): ClusterInfo {
   return {
     id: r.id, name: r.name, kind: r.kind, address: r.kind === 'home' ? '' : r.address, port: r.port, note: r.note,
-    cert: { fingerprint: r.certFingerprint, confirmedAt: r.certConfirmedAt ? r.certConfirmedAt.toISOString() : null, confirmedBy: r.certConfirmedBy },
+    cert: { fingerprint: r.certFingerprint, confirmedAt: r.certConfirmedAt ? r.certConfirmedAt.toISOString() : null, confirmedBy: r.certConfirmedBy, verified: certVerifiedWords(r.certConfirmedBy) },
     nodeAddresses: { ...r.nodeAddresses }, allowedRoots: [...r.allowedRoots], monitoring: structuredClone(r.monitoring), plexUrl: r.plexUrl,
     ignoredGuests: [...(r.ignoredGuests ?? [])],
   }
+}
+
+const VERIFIED_MARK = ' (verified automatically: '
+/** Who confirmed a certificate, and how, as one string on the row: "owner@x (verified automatically: <how>)". */
+export function certConfirmedByWords(by: string, verified?: string | null): string {
+  return verified ? `${by}${VERIFIED_MARK}${verified.replace(/[()]/g, '')})` : by
+}
+/** The "how" of a certificate HyperProx verified itself, or null when the owner compared it. */
+export function certVerifiedWords(confirmedBy: string | null): string | null {
+  const i = (confirmedBy ?? '').indexOf(VERIFIED_MARK)
+  return i < 0 ? null : confirmedBy!.slice(i + VERIFIED_MARK.length).replace(/\)$/, '')
 }
 
 export function homeRow(): ClusterRow { return rows.get(HOME_ID) ?? homeDefaults() }
@@ -144,8 +155,9 @@ function newId(): string { return 'c' + randomBytes(5).toString('hex') }
 
 export interface NewRemote {
   name: string; address: string; port?: number; note?: string
-  /** The fingerprint the owner compared and confirmed. */
+  /** The fingerprint the owner compared and confirmed, or HyperProx verified (then `verified` says how). */
   fingerprint: string
+  verified?: string | null
   tokenId: string; tokenSecret: string
   by: string
 }
@@ -210,7 +222,7 @@ export async function createRemote(n: NewRemote): Promise<ClusterInfo> {
   try {
     const row = await store.upsert({
       id, name, kind: 'remote', address, port, note: String(n.note ?? '').slice(0, 500),
-      certFingerprint: fingerprint, certConfirmedAt: new Date(), certConfirmedBy: n.by,
+      certFingerprint: fingerprint, certConfirmedAt: new Date(), certConfirmedBy: certConfirmedByWords(n.by, n.verified),
       nodeAddresses: {}, allowedRoots: [], monitoring: {}, plexUrl: null, createdBy: n.by,
     })
     rows.set(id, row)
@@ -285,13 +297,13 @@ export async function updateCluster(id: string, patch: ClusterPatch): Promise<Cl
   return view(saved)
 }
 
-/** Record that the owner compared and confirmed this fingerprint for the cluster's current address. */
-export async function confirmFingerprint(id: string, fingerprint: string, by: string): Promise<ClusterInfo> {
+/** Record that the owner compared and confirmed (or HyperProx verified) this fingerprint for the cluster's current address. */
+export async function confirmFingerprint(id: string, fingerprint: string, by: string, verified?: string | null): Promise<ClusterInfo> {
   const prev = clusterRow(id)
   if (!prev || prev.kind !== 'remote') throw new ClusterRefusal('No such remote cluster.', 'not-found')
   const fp = normaliseFingerprint(fingerprint)
   if (!fp) throw new ClusterRefusal('That is not a SHA-256 certificate fingerprint.')
-  const saved = await store.upsert({ ...prev, certFingerprint: fp, certConfirmedAt: new Date(), certConfirmedBy: by })
+  const saved = await store.upsert({ ...prev, certFingerprint: fp, certConfirmedAt: new Date(), certConfirmedBy: certConfirmedByWords(by, verified) })
   rows.set(id, saved)
   return view(saved)
 }

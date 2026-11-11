@@ -25,8 +25,12 @@ import { pveFromEnv, homePve, forgetRemoteClient, CertificateNotConfirmedError }
 import { commandCenter } from '../lib/clusters/overview'
 import { scanCluster } from '../lib/clusters/scan'
 import { checkGuest, power, snapshot, backupNow, backupStorages, taskStatus, destroy, GuestActionRefusal, type PowerAction } from '../lib/clusters/guest-actions'
-import { probeHostKey, execOnNode } from '../lib/node-exec'
-import { confirmPin, PinConfirmRefusal, forgetPin } from '../lib/hostkey-pins'
+import { probeHostKey, execOnNode, nodeCredential } from '../lib/node-exec'
+import { confirmPin, PinConfirmRefusal, forgetPin, pinnedKey, pinSource, isConfirmedSource, PinVerifyRefusal } from '../lib/hostkey-pins'
+import { verifyNodes, productionVerifyDeps, VerifyRefusal } from '../lib/hostkey-verify'
+import { addServer, linkDevice, IdentityMismatch, MANUAL_CERT_WHY, type AddServerDeps } from '../lib/clusters/add-server'
+import { discoverSend, sendDeps } from '../lib/clusters/send-simple'
+import { remoteToken } from '../lib/clusters/registry'
 import { forgetRemoteGuestConfigService } from './guest-config'
 import { browse, setupSending, previewCopy, startCopy, jobStore, CopyRunner, setCopyKick, savePlex, deletePlexToken, checkPlexUrl, forgetClusterSending, type CopyInput } from '../lib/clusters/files'
 import { writeRemoteTargets } from '../lib/clusters/monitoring'
@@ -61,7 +65,9 @@ function fail(reply: FastifyReply, e: any) {
   if (e instanceof CertificateChangedError) return reply.status(409).send({ success: false, code: 'cert_changed', error: msg, presented: e.presented })
   if (e instanceof CertificateNotConfirmedError) return reply.status(409).send({ success: false, code: 'cert_unconfirmed', error: msg })
   if (e instanceof MonitoringRefusal) return reply.status(409).send({ success: false, code: 'monitoring', error: msg })
-  if (e instanceof PinConfirmRefusal) return reply.status(409).send({ success: false, code: 'hostkey', error: msg })
+  if (e instanceof PinConfirmRefusal || e instanceof PinVerifyRefusal) return reply.status(409).send({ success: false, code: 'hostkey', error: msg })
+  if (e instanceof IdentityMismatch) return reply.status(409).send({ success: false, code: 'identity_mismatch', error: msg })
+  if (e instanceof VerifyRefusal) return reply.status(403).send({ success: false, code: 'token_forbidden', error: msg })
   return reply.status(502).send({ success: false, error: msg })
 }
 
@@ -99,13 +105,48 @@ async function tryToken(address: string, port: number, fingerprint: string, toke
   }
 }
 
-/** Cluster name and nodes from a /cluster/status answer. */
-function statusIdentity(rows: unknown): { clusterName: string | null; nodes: { name: string; ip: string | null }[] } {
+/** Cluster name, nodes, and the node that answered (`local`), from a /cluster/status answer. */
+function statusIdentity(rows: unknown): { clusterName: string | null; nodes: { name: string; ip: string | null }[]; local: string | null } {
   const list = Array.isArray(rows) ? rows : []
   const cluster = list.find((r: any) => r?.type === 'cluster')
+  const local = list.find((r: any) => r?.type === 'node' && Number(r?.local) === 1)
   return {
     clusterName: cluster?.name ? String(cluster.name) : null,
     nodes: list.filter((r: any) => r?.type === 'node').map((r: any) => ({ name: String(r.name), ip: r.ip ? String(r.ip) : null })),
+    local: local?.name ? String(local.name) : null,
+  }
+}
+
+/** The live wiring for the one-step add (lib/clusters/add-server.ts). */
+function addServerDeps(log: (m: string) => void): AddServerDeps {
+  const v = productionVerifyDeps()
+  return {
+    probeCertificate: (a, p) => probeCertificate(a, p),
+    tryToken: (a, p, fp, id, secret) => tryToken(a, p, fp, id, secret),
+    homeIdentity: () => homeIdentity(),
+    tailnet: () => v.tailnet(),
+    wireguard: () => v.wireguard(),
+    createRemote: n => createRemote(n),
+    setNodeAddresses: (id, m) => updateCluster(id, { nodeAddresses: m }),
+    verifyNodes: (id, input) => runInCluster(id, () => verifyNodes(input, v)),
+    testLogin: (id, host, cred) => runInCluster(id, async () => (await execOnNode({ host, cred, command: 'true', requirePin: true, timeoutMs: 20_000 })).code === 0),
+    saveLogin: (id, node, cred) => saveRemoteNodeLogin(id, node, JSON.stringify(cred)),
+    async monitoring(id, by) {
+      const p = await previewMonitoring(id, by, 'install', { 'server-metrics': true })
+      const r = await applyMonitoring(p.planId, by, undefined, id)
+      await auditCredentialUse('cluster.monitoring.apply', `cluster:${id}`, { by, ok: r.ok, nodes: r.results.map(x => x.node), source: 'add server' })
+      const failed = r.results.filter(x => x.status === 'failed').map(x => x.node)
+      return r.ok ? `Monitoring installed on ${r.results.map(x => x.node).filter(Boolean).join(', ')}, and Prometheus is collecting from it.`
+        : failed.length ? `Monitoring did not install on ${failed.join(', ')}; the Edit page shows why and can try again.`
+        : 'Monitoring is installed; Prometheus has not collected from it yet (it scrapes every 15 seconds).'
+    },
+    async sending(id) {
+      const plan = await discoverSend(id, sendDeps(), { fresh: true })
+      if (plan.problems.length) return `Send files is not ready yet: ${plan.problems.join(' ')}`
+      return `Send files is ready: HyperProx can send from ${plan.sourceNode} to ${plan.libraries.length} ${plan.libraries.length === 1 ? 'library' : 'libraries'} there. Pick what to send in Send files.`
+    },
+    audit: (a, r, d) => auditCredentialUse(a, r, d),
+    async alert(title, lines) { log(`${title}: ${lines.join(' ')}`); await v.alert(title, lines) },
   }
 }
 
@@ -157,35 +198,32 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
     try { return { success: true, data: await probeCertificate(address, port) } } catch (e) { return fail(reply, e) }
   })
 
-  // Steps 3 and 4 together: the confirmed fingerprint and the token. The certificate must still be the one the
-  // owner confirmed, the token must work over that pinned connection and have administrator rights; only then is
-  // anything stored (vault first, then the row).
-  fastify.post<{ Body: { name?: string; address?: string; port?: number; note?: string; tokenId?: string; tokenSecret?: string; fingerprint?: string } }>('/', async (req, reply) => {
+  // Adding a server, in one step under the one master-password re-confirmation (lib/roles.ts): the certificate
+  // (verified over a private link, or the fingerprint the owner compared when that is not possible), the token, the
+  // node addresses, and with a node login, host keys verified and the login saved, then monitoring and Send files.
+  // Nothing is stored until the certificate and the token have both passed (vault first, then the row).
+  fastify.post<{ Body: { name?: string; address?: string; port?: number; note?: string; tokenId?: string; tokenSecret?: string; fingerprint?: string; login?: any; monitoring?: boolean; sending?: boolean } }>('/', async (req, reply) => {
     const b = req.body ?? {}
     try {
+      if ((req as any).apiToken) return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'Adding a server needs a person with the master password, not an API token.' })
       const address = String(b.address ?? '').trim(), port = Number(b.port ?? 8006)
-      const fp = normaliseFingerprint(String(b.fingerprint ?? ''))
-      if (!fp) throw new ClusterRefusal('Confirm the certificate fingerprint first (step 4).')
       if (!isServerAddress(address)) throw new ClusterRefusal('The address must be a name or an IP address only.')
+      if (!allowedApiPort(port)) throw new ClusterRefusal('The port must be 8006 (Proxmox\'s own), 443, 8443, or a number from 1024 to 65535.')
       validateToken(String(b.tokenId ?? ''), String(b.tokenSecret ?? ''))
-      const now = await probeCertificate(address, port)
-      if (now.fingerprint !== fp) return reply.status(409).send({ success: false, code: 'cert_changed', error: `The server now presents a different certificate (${now.fingerprint}) from the one you confirmed. Nothing was saved. Compare again.`, presented: now.fingerprint })
-      const t = await tryToken(address, port, fp, String(b.tokenId ?? ''), String(b.tokenSecret ?? '')).catch((e: any) => {
-        if (/HTTP 401/.test(String(e?.message))) throw new ClusterRefusal('The server refused that token. Check the token ID and secret and paste them again. Nothing was saved.')
-        throw e
-      })
-      // Adding the home cluster again would let a remote's rules (or none) reach the home nodes.
-      const home = await homeIdentity().catch(() => ({ addresses: homeAddresses(), fingerprint: null, clusterName: null, nodes: [] } as ClusterIdentity))
-      if (looksLikeHome({ addresses: [address], fingerprint: fp, ...t.identity }, home)) {
-        return reply.status(409).send({ success: false, code: 'home_cluster', error: `${HOME_DUPLICATE} Nothing was saved.` })
-      }
-      if (t.missing.length) throw new ClusterRefusal(`That token works but lacks administrator rights (${t.missing.join(', ')}). Run the step 2 commands as shown, including "--privsep 0", then try again. Nothing was saved.`)
-      const c = await createRemote({ name: String(b.name ?? ''), address, port, note: b.note, fingerprint: fp, tokenId: String(b.tokenId ?? ''), tokenSecret: String(b.tokenSecret ?? ''), by: who() })
-      // A one-node server is reached on the address it was added with; a cluster's nodes are entered on Edit.
-      const saved = t.nodes.length === 1 ? await updateCluster(c.id, { nodeAddresses: { [t.nodes[0]]: address } }) : c
-      await auditCredentialUse('cluster.add', `cluster:${c.id}`, { by: who(), name: c.name, nodes: t.nodes.length, version: t.version })
-      return { success: true, data: { cluster: saved, version: t.version, nodes: t.nodes } }
-    } catch (e) { return fail(reply, e) }
+      const fp = b.fingerprint ? normaliseFingerprint(String(b.fingerprint)) : null
+      if (b.fingerprint && !fp) throw new ClusterRefusal('That is not a SHA-256 certificate fingerprint.')
+      const login = b.login && typeof b.login === 'object' && (b.login.password || b.login.privateKey) ? b.login : null
+      const r = await addServer({
+        name: String(b.name ?? ''), address, port, note: b.note, tokenId: String(b.tokenId ?? ''), tokenSecret: String(b.tokenSecret ?? ''),
+        fingerprint: fp, login, monitoring: b.monitoring !== false, sending: b.sending !== false, by: who(),
+      }, addServerDeps(m => fastify.log.warn(m)))
+      if (r.kind === 'manual-certificate') return reply.status(409).send({ success: false, code: 'cert_manual', error: r.why, certificate: r.certificate })
+      return { success: true, data: { cluster: r.cluster, version: r.version, nodes: r.nodes, setup: r.setup } }
+    } catch (e: any) {
+      if (e instanceof ClusterRefusal && e.code === 'conflict' && (e as any).presented) return reply.status(409).send({ success: false, code: 'cert_changed', error: e.message, presented: (e as any).presented })
+      if (e instanceof ClusterRefusal && /^This is your home cluster/.test(e.message)) return reply.status(409).send({ success: false, code: 'home_cluster', error: e.message })
+      return fail(reply, e)
+    }
   })
 
   // ── One cluster ───────────────────────────────────────────────────────────
@@ -245,11 +283,37 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
     } catch (e) { return fail(reply, e) }
   })
 
-  // Re-confirm a renewed certificate. The fingerprint must be the one presented right now.
+  // Confirm the certificate at the server's (new) address. With no fingerprint given HyperProx verifies it itself over
+  // a private link, as when adding; that is never done for a certificate that CHANGED from the one pinned (that is
+  // refused, and only a fingerprint the owner compared replaces it). Otherwise the fingerprint must be the one
+  // presented right now.
   fastify.post<{ Params: { id: string }; Body: { fingerprint?: string } }>('/:id/certificate', async (req, reply) => {
     const row = clusterOr404(req.params.id, reply); if (!row) return
     if (row.kind !== 'remote') return reply.status(422).send({ success: false, error: 'The home cluster has no certificate to confirm here.' })
     try {
+      if (!req.body?.fingerprint) {
+        if ((req as any).apiToken) return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'An API token cannot confirm a certificate.' })
+        const now = await probeCertificate(row.address, row.port)
+        if (row.certFingerprint && row.certFingerprint !== now.fingerprint) return reply.status(409).send({ success: false, code: 'cert_changed', error: `The server presents ${now.fingerprint}, not the certificate you confirmed. A changed certificate is never accepted automatically: compare the new one on its Proxmox page and confirm it.`, presented: now.fingerprint })
+        const v = productionVerifyDeps()
+        const device = linkDevice(row.address, await v.tailnet().catch(() => null), await v.wireguard().catch(() => []))
+        if (!device) return reply.status(409).send({ success: false, code: 'cert_manual', error: MANUAL_CERT_WHY, certificate: now })
+        const tok = remoteToken(row.id)
+        const t = await tryToken(row.address, row.port, now.fingerprint, tok.tokenId, tok.secret)
+        const local = t.identity.local ?? (t.nodes.length === 1 ? t.nodes[0] : null)
+        if (!local) return reply.status(409).send({ success: false, code: 'cert_manual', error: MANUAL_CERT_WHY, certificate: now })
+        if (local.toLowerCase() !== device.hostname.toLowerCase()) {
+          const why = `The device at ${row.address} is called ${device.hostname}, but the Proxmox server there says it is ${local}. Nothing was changed.`
+          await auditCredentialUse('cluster.certificate.blocked', `cluster:${row.id}`, { by: who(), device: device.hostname, node: local })
+          await v.alert(`${row.name}: the certificate check failed`, [why])
+          return reply.status(409).send({ success: false, code: 'identity_mismatch', error: why })
+        }
+        const how = `${device.how}, and named ${local} by its own API`
+        const c = await confirmFingerprint(row.id, now.fingerprint, who(), how)
+        forgetRemoteClient(row.id)
+        await auditCredentialUse('cluster.certificate.verify', `cluster:${row.id}`, { by: who(), how })
+        return { success: true, data: c }
+      }
       const fp = normaliseFingerprint(String(req.body?.fingerprint ?? ''))
       if (!fp) throw new ClusterRefusal('That is not a SHA-256 certificate fingerprint.')
       const now = await probeCertificate(row.address, row.port)
@@ -313,7 +377,39 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
     } catch (e) { return fail(reply, e) }
   })
 
-  // The host key a node presents, for the owner to compare with `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` there.
+  // Verify every node's host key with evidence (lib/hostkey-verify.ts), with the saved logins (or one given here,
+  // which is saved for each node whose key is verified). Re-confirmed (lib/roles.ts).
+  fastify.post<{ Params: { id: string }; Body: { login?: any } }>('/:id/verify-keys', async (req, reply) => {
+    const row = clusterOr404(req.params.id, reply); if (!row) return
+    if (row.kind !== 'remote') return reply.status(422).send({ success: false, error: 'Home node keys are verified on Settings -> Setup checklist.' })
+    if ((req as any).apiToken) return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'An API token cannot verify or change host keys.' })
+    if (limited('verify', reply)) return
+    try {
+      const l = req.body?.login
+      const given = l && typeof l === 'object' && (l.password || l.privateKey) && /^[a-z_][a-z0-9_-]{0,31}$/.test(String(l.username ?? 'root').trim())
+        ? { username: String(l.username ?? 'root').trim(), port: 22, ...(l.privateKey ? { privateKey: String(l.privateKey), ...(l.passphrase ? { passphrase: String(l.passphrase) } : {}) } : { password: String(l.password) }) } as any
+        : null
+      const out = await runInCluster(row.id, async () => {
+        const names = ((await pveFromEnv().fetchStrict<any[]>('/nodes').catch(() => [])) ?? []).map(n => String(n.node))
+        const nodes = await Promise.all(names.filter(n => row.nodeAddresses[n]).map(async n => ({ name: n, address: row.nodeAddresses[n], cred: given ?? await nodeCredential(n).catch(() => null) })))
+        const verdicts = await verifyNodes({ cluster: row.name, scope: 'remote', nodes, by: who() })
+        const saved: string[] = []
+        if (given) for (const v of verdicts) {
+          if (v.state !== 'verified' && v.state !== 'already') continue
+          const r = await execOnNode({ host: v.host, cred: given, command: 'true', requirePin: true, timeoutMs: 20_000 }).catch(() => null)
+          if (r?.code !== 0) continue
+          await saveRemoteNodeLogin(row.id, v.node, JSON.stringify(given))
+          await auditCredentialUse('cluster.node_login.save', `cluster:${row.id}`, { by: who(), node: v.node, source: 'verify keys' })
+          saved.push(v.node)
+        }
+        return { nodes: verdicts.map(v => ({ node: v.node, state: v.state, how: v.why, login: saved.includes(v.node) ? 'saved' : null })), missingAddress: names.filter(n => !row.nodeAddresses[n]) }
+      })
+      return { success: true, data: out }
+    } catch (e) { return fail(reply, e) }
+  })
+
+  // The host key a node presents, for the owner to compare with `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` there,
+  // when HyperProx found no evidence to verify it by itself.
   fastify.post<{ Params: { id: string; node: string } }>('/:id/nodes/:node/hostkey', async (req, reply) => {
     const row = clusterOr404(req.params.id, reply); if (!row) return
     if (row.kind !== 'remote') return reply.status(422).send({ success: false, error: 'Home node logins are in Settings -> Setup checklist.' })
@@ -333,8 +429,11 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
     if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(username)) return reply.status(422).send({ success: false, error: 'That is not a user name.' })
     if (!b.password && !b.privateKey) return reply.status(422).send({ success: false, error: 'Give a password or a private key.' })
     try {
-      // The owner checked this fingerprint on the machine; it must be what the node presents now.
-      await confirmPin(addr, 22, String(b.fingerprint ?? ''), (h, p) => probeHostKey(h, p))
+      // A key HyperProx verified (or someone confirmed) needs no fingerprint. Otherwise the owner checked this one on
+      // the machine, and it must be what the node presents now.
+      const [pin, src] = await Promise.all([pinnedKey(addr, 22), pinSource(addr, 22)])
+      const trustedNow = !!pin && isConfirmedSource(src) && (!b.fingerprint || b.fingerprint === pin)
+      if (!trustedNow) await confirmPin(addr, 22, String(b.fingerprint ?? ''), (h, p) => probeHostKey(h, p))
       const cred = { username, port: 22, ...(b.privateKey ? { privateKey: String(b.privateKey), ...(b.passphrase ? { passphrase: String(b.passphrase) } : {}) } : { password: String(b.password) }) }
       const r = await execOnNode({ host: addr, cred, command: 'true', requirePin: true, timeoutMs: 20_000 })
       if (r.code !== 0) throw new ClusterRefusal('The login was accepted but a test command failed. Nothing was saved.')
