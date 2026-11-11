@@ -470,7 +470,11 @@ export async function discoverSend(dstId: string, deps: SendDeps = sendDeps(), o
   if (sourceNode) libraries = reachable
 
   const plan: SendPlan = { at: Date.now(), dst: dstId, libraries, sources, sourceNode, links, privateLink, problems }
-  plans.set(planKey(dstId), plan)
+  // Only a usable result is reused: one that cannot send (no sender, no library on either end) is looked at again
+  // next time, so fixing it (confirming a key, starting a node) shows at once instead of after the cache runs out.
+  const usable = !!sourceNode && libraries.length > 0 && sources.length > 0
+  if (usable) plans.set(planKey(dstId), plan)
+  else plans.delete(planKey(dstId))
   return plan
 }
 
