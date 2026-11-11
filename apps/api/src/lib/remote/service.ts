@@ -690,6 +690,12 @@ export class RemoteAccessService {
     }
   }
 
+  /** The sign-in link in a client's output, only when it points at that provider's (or the configured) sign-in host. */
+  private async loginUrl(provider: ProviderId, output: string): Promise<string | null> {
+    const settings: any = await this.d.providerSettings(provider).catch(() => null)
+    return parseLoginUrl(provider, output, settings?.managementUrl)
+  }
+
   /** Run a script, its output redacted on the way into the log (across chunk boundaries). */
   private async exec(job: RemoteJob, m: Machine, script: string, o: { secrets?: string[]; netbird?: boolean; timeoutMs?: number; quiet?: string } = {}) {
     // Output that carries a sign-in link is not logged at all, not even redacted.
@@ -707,7 +713,7 @@ export class RemoteAccessService {
     // link in it goes only through the sign-in-link flow, and is cut out by exact value before anything is logged.
     if (/\bnetbird up\b/.test(script)) {
       const res = await this.d.exec.run(m, script, { timeoutMs: o.timeoutMs ?? 15 * 60_000 })
-      const url = parseLoginUrl('netbird', res.output)
+      const url = await this.loginUrl('netbird', res.output)
       if (url || holdsSignInLink(res.output)) this.heldLink(job)
       if (url) await this.captureLogin(m, 'netbird', url).catch(() => undefined)
       const r = new StreamRedactor([...(o.secrets ?? []), ...(url ? [url] : [])], { netbird: true })
@@ -952,7 +958,7 @@ export class RemoteAccessService {
           // No key at all: the client asks for a sign-in, and the link it prints is kept in memory only.
           const up = await this.exec(job, m, loginScript(req.provider, flags), { netbird: nb, timeoutMs: 2 * 60_000, quiet: 'output withheld: it contains a sign-in link' })
           const status = parseStatus(req.provider, up.output)
-          const url = parseLoginUrl(req.provider, up.output)
+          const url = await this.loginUrl(req.provider, up.output)
           if (undo.plan.kind === 'remove' || undo.plan.kind === 'restore') { undo.plan.nodeKey = status.nodeKey ?? null; undo.plan.address = status.ip; await undo.persist?.() }
           if (!url && !status.connected) throw new Error(`${PROVIDER_LABEL[req.provider]} did not print a sign-in link and is not connected`)
           if (url) await this.captureLogin(m, req.provider, url)
@@ -1129,7 +1135,7 @@ export class RemoteAccessService {
     if (st.connected) this.logins.delete(`${m.id}|${provider}`)
     if (st.needsLogin) {
       // The key expired, or the client was signed out: it is waiting with a sign-in link of its own.
-      const url = parseLoginUrl(provider, r.output)
+      const url = await this.loginUrl(provider, r.output)
       if (url) await this.captureLogin(m, provider, url)
       return `${PROVIDER_LABEL[provider]} needs a sign-in on ${m.name}${url ? ': the link is on the VPN panel and was sent to private channels. It expires in about 10 minutes.' : '.'}`
     }

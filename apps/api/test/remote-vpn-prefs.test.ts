@@ -99,7 +99,14 @@ test('sign in with my account: no key anywhere, and the login URL is captured fr
   assert.equal(st.needsLogin, true)
   assert.equal(JSON.stringify(st).includes('1a2b3c4d5e6f'), false, 'the status object never carries the URL')
   const nb = 'Please do the SSO login in your browser.\nIf your browser didn\'t open automatically, use this URL to log in:\n\nhttps://idp.example.com/device?user_code=ABCD-EFGH\n'
-  assert.equal(parseLoginUrl('netbird', nb), 'https://idp.example.com/device?user_code=ABCD-EFGH')
+  // A self-hosted NetBird's identity provider sits beside its management server; with none configured, not allowed.
+  assert.equal(parseLoginUrl('netbird', nb, 'https://netbird.example.com'), 'https://idp.example.com/device?user_code=ABCD-EFGH')
+  assert.equal(parseLoginUrl('netbird', nb), null)
+  assert.equal(parseLoginUrl('netbird', 'log in: https://login.netbird.io/activate?user_code=X'), 'https://login.netbird.io/activate?user_code=X')
+  // A link to anywhere else is not a sign-in link, whatever the client printed.
+  assert.equal(parseLoginUrl('tailscale', 'To authenticate, visit:\n\thttps://evil.example/a/123\n'), null)
+  assert.equal(parseLoginUrl('tailscale', 'HP_STATUS_BEGIN\n{"AuthURL":"https://login.tailscale.com.evil.example/a/1"}\nHP_STATUS_END'), null)
+  assert.equal(parseLoginUrl('netbird', 'SSO: https://evil.example/x', 'https://netbird.example.com'), null)
   assert.match(loginScript('netbird', ['--disable-dns=true']), /netbird up --no-browser/)
   assert.equal(parseLoginUrl('tailscale', 'Success.'), null)
 })
