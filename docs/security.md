@@ -96,6 +96,10 @@ Bitwarden-compatible, zero-knowledge vault. Every install runs its own, stock an
   them an operator (put them in the group "HyperProx operators"), or as **User** for a viewer (group
   "HyperProx viewers"). Owner and Admin memberships are full. The owner's two-factor code is enforced at
   every sign-in.
+- **Sign-in limits.** Sign-in, owner creation and re-confirmation allow 10 attempts a minute per client address,
+  and an account allows 20 failed sign-ins (10 wrong master passwords at re-confirmation) in 15 minutes from
+  any number of addresses. The API believes `X-Forwarded-For` only from nginx on the same machine, so the
+  address is the browser's: one client running out of attempts does not lock anyone else out.
 - **Re-confirmation.** Revealing or Sending a secret, destroying a guest, changing roles, resetting Grafana's
   admin password, saving or testing a connection under Settings (Proxmox, proxy, DNS, AI, remote access), and
   every change on the Setup checklist (saving a node login, running an item on your nodes, shredding old

@@ -20,6 +20,7 @@ import { migrationSettled } from '../lib/credentials'
 import { requestContext } from '../lib/auth'
 import { verifyHomeHostKeys } from '../lib/setup-checklist'
 import { validateHandoff, holdValidated, flushHeldSecrets, acceptHandoff, HandoffRefused, markSetupDone } from '../lib/setup-handoff'
+import { signInLimiter, reconfirmLimiter } from '../lib/auth-limits'
 import { readFileSync } from 'fs'
 import { createHash, timingSafeEqual } from 'crypto'
 
@@ -59,7 +60,17 @@ function setupKeyRefusal(reply: FastifyReply, given: unknown) {
   return null
 }
 
+// Per client address (req.ip is the browser's, lib/server-options.ts); the per-account limits are lib/auth-limits.ts.
 const LIMIT = { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }
+
+function tooMany(reply: FastifyReply, retryAfter: number) {
+  reply.header('Retry-After', String(retryAfter))
+  return reply.status(429).send({ ok: false, code: 'too_many_attempts', error: `Too many failed attempts for this account. Try again in ${Math.ceil(retryAfter / 60)} minute${retryAfter > 60 ? 's' : ''}.` })
+}
+/** A wrong password or 2FA code: what the per-account limit counts. A missing code is not a guess. */
+function isGuessFailure(e: unknown): boolean {
+  return e instanceof VaultAuthError && (e.code === 'bad_credentials' || e.code === 'totp_invalid')
+}
 const MIN_MASTER_PASSWORD = 12
 
 function str(v: unknown): string {
@@ -248,13 +259,17 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     const password = str(req.body?.password)
     const code = str(req.body?.code).replace(/\s+/g, '')
     if (!email || !password) return reply.status(400).send({ ok: false, error: 'email and password are required' })
+    const wait = signInLimiter.retryAfter(email)
+    if (wait) return tooMany(reply, wait)
 
     let vs: VaultSession
     try {
       vs = await getBroker().signIn(email, password, code)
     } catch (e) {
+      if (isGuessFailure(e)) signInLimiter.fail(email)
       return authErrorReply(reply, e)
     }
+    signInLimiter.clear(email)
     return startSession(req, reply, vs)
   })
 
@@ -292,6 +307,8 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     if (!s) return reply.status(401).send({ ok: false, error: 'Authentication required' })
     const password = str(req.body?.password)
     if (!password) return reply.status(400).send({ ok: false, error: 'password is required' })
+    const wait = reconfirmLimiter.retryAfter(s.email)
+    if (wait) return tooMany(reply, wait)
 
     let ok = false
     try {
@@ -300,7 +317,8 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       if (e instanceof VaultSessionError) throw e   // → 401 session_expired (gate error handler)
       ok = false
     }
-    if (!ok) return reply.status(401).send({ ok: false, error: 'Master password is incorrect' })
+    if (!ok) { reconfirmLimiter.fail(s.email); return reply.status(401).send({ ok: false, error: 'Master password is incorrect' }) }
+    reconfirmLimiter.clear(s.email)
 
     const until = markReconfirmed(s.sid)
     return { ok: true, until: new Date(until).toISOString() }
