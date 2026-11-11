@@ -245,14 +245,29 @@ export function alwaysSecurity(s: HAState): boolean {
     || (KEYWORD_DOMAINS.has(d) && soundsLikeSecurity(s))
 }
 
+/** Words that mark a switch as a light (whole words, after folding). */
+export const LIGHT_WORDS = new Set(['light', 'lights', 'lamp', 'lamps'])
+
+/**
+ * A wall switch that drives a light: a `switch` whose name says "light", "lights" or "lamp". It is everyday and
+ * shown as a light. A security word anywhere in its id or name still wins ("Garage light" stays security).
+ */
+export function isLightSwitch(s: HAState): boolean {
+  if (domainOf(s.entity_id) !== 'switch') return false
+  if (String(s.attributes?.device_class ?? '') === 'outlet') return false
+  if (!fold(nameOf(s)).split(/[^a-z0-9]+/).some(t => LIGHT_WORDS.has(t))) return false
+  return !soundsLikeSecurity(s)
+}
+
 /** Security by default, but an owner may move it to everyday. */
 function securityByDefault(s: HAState): boolean {
   const d = domainOf(s.entity_id)
   const dc = String(s.attributes?.device_class ?? '')
   if (d === 'cover') return !EVERYDAY_COVER_CLASSES.has(dc)
   if (RUNNABLE_DOMAINS.has(d)) return true
-  // A switch can be wired to anything; only a plug socket is everyday without the owner saying so.
-  if (d === 'switch') return dc !== 'outlet'
+  // A switch can be wired to anything; only a plug socket, or a switch named as a light, is everyday without the
+  // owner saying so.
+  if (d === 'switch') return dc !== 'outlet' && !isLightSwitch(s)
   if (d === 'input_boolean') return true
   return false
 }
@@ -365,12 +380,102 @@ export function typedMatches(s: HAState, typed: unknown): boolean {
 }
 
 /** The few attributes the Devices view needs. Never the whole attribute bag: some integrations put tokens there. */
-export function displayState(s: HAState): { state: string; unit?: string; deviceClass?: string } {
+export function displayState(s: HAState): { state: string; unit?: string; deviceClass?: string; current?: number } {
   const unit = s.attributes?.unit_of_measurement
   const dc = s.attributes?.device_class
+  // A thermostat's room reading, for the climate dial. A number, or nothing.
+  const current = domainOf(s.entity_id) === 'climate' ? num(s.attributes?.current_temperature) : null
   return {
     state: String(s.state).slice(0, 64),
     ...(typeof unit === 'string' ? { unit: unit.slice(0, 16) } : {}),
     ...(typeof dc === 'string' ? { deviceClass: dc.slice(0, 32) } : {}),
+    ...(current !== null ? { current } : {}),
   }
+}
+
+// --- How a device is drawn ----------------------------------------------------------------------
+
+export type DeviceKind = 'light' | 'switch' | 'outlet' | 'fan' | 'climate' | 'media' | 'cover' | 'lock' | 'alarm'
+  | 'siren' | 'scene' | 'script' | 'button' | 'vacuum'
+
+/** What a device is, for its tile and icon. A wall switch named as a light is a light. */
+export function kindOf(s: HAState): DeviceKind {
+  const d = domainOf(s.entity_id)
+  switch (d) {
+    case 'light': return 'light'
+    case 'switch': return isLightSwitch(s) ? 'light' : String(s.attributes?.device_class ?? '') === 'outlet' ? 'outlet' : 'switch'
+    case 'input_boolean': return 'switch'
+    case 'fan': return 'fan'
+    case 'climate': return 'climate'
+    case 'media_player': return 'media'
+    case 'cover': return 'cover'
+    case 'lock': return 'lock'
+    case 'alarm_control_panel': return 'alarm'
+    case 'siren': return 'siren'
+    case 'scene': return 'scene'
+    case 'script': return 'script'
+    case 'button': return 'button'
+    case 'vacuum': return 'vacuum'
+    default: return 'switch'
+  }
+}
+
+/**
+ * Indicator-LED companions: a switch named exactly like another switch or light plus " LED" (smart dimmers and
+ * wall switches expose their status light as a second switch). Left out of the device list by default.
+ */
+export function ledCompanions(states: HAState[]): Set<string> {
+  const base = new Set(states
+    .filter(s => ['switch', 'light'].includes(domainOf(s.entity_id)))
+    .map(s => fold(nameOf(s)).trim()))
+  const out = new Set<string>()
+  for (const s of states) {
+    if (domainOf(s.entity_id) !== 'switch') continue
+    const m = /^(.*\S)\s+led$/.exec(fold(nameOf(s)).trim())
+    if (m && base.has(m[1])) out.add(s.entity_id)
+  }
+  return out
+}
+
+/** Room words, most specific first. Each pattern runs on the folded name. */
+const ROOM_WORDS: Array<[RegExp, string]> = [
+  [/\bliving\s*room\b/, 'Living Room'],
+  [/\bfamily\s*room\b/, 'Family Room'],
+  [/\bkitchen\b/, 'Kitchen'],
+  [/\bdinn?ing\b/, 'Dining Room'],
+  [/\bbed\s*rooms?\b/, 'Bedroom'],
+  [/\bbath\s*rooms?\b/, 'Bathroom'],
+  [/\bbasement\b/, 'Basement'],
+  [/\blaundry\b/, 'Laundry'],
+  [/\bhall(?:way)?s?\b/, 'Hallway'],
+  [/\bstair(?:s|case|way)?\b/, 'Stairs'],
+  [/\boffice\b/, 'Office'],
+  [/\bgarage\b/, 'Garage'],
+  [/\b(?:outside|outdoors?|porch|patio|(?:back|front)?yard)\b/, 'Outside'],
+]
+
+/** First words that are a kind of fan or a place, never a person: "Ceiling Fan" is not somebody's room. */
+const NOT_A_PERSON = new Set(['ceiling', 'box', 'exhaust', 'bath', 'attic', 'floor', 'desk', 'tower', 'standing', 'pedestal',
+  'window', 'portable', 'table', 'wall', 'main', 'big', 'small', 'front', 'back', 'upstairs', 'downstairs', 'guest',
+  'master', 'spare', 'kids', 'baby', 'nursery', 'computer', 'game', 'games', 'play', 'tv', 'media', 'sun', 'utility',
+  'mud', 'rec', 'boiler', 'furnace', 'server', 'the', 'my', 'our', 'new', 'old', 'smart', 'air', 'fan', 'room'])
+
+/**
+ * The room a device's name points at, for a house whose Home Assistant does not share its areas. Room words
+ * first ("Kitchen Fan Light" is the kitchen), then a named room ("Guest Room Lamp"), then a person's room
+ * ("Alex's Room speaker", "Alex Fan"). Null when the name says nothing; the caller files it under "Other".
+ */
+export function inferRoom(name: string): string | null {
+  const raw = String(name ?? '').normalize('NFKC').replace(/[’`]/g, "'").trim()
+  const f = fold(raw)
+  for (const [rx, room] of ROOM_WORDS) if (rx.test(f)) return room
+  const words = raw.split(/\s+/)
+  const first = words[0] ?? ''
+  const cap = (w: string) => w.charAt(0).toUpperCase() + w.slice(1)
+  const poss = /^([\p{L}][\p{L}-]{0,23})'s$/u.exec(first)
+  if (poss && !NOT_A_PERSON.has(fold(poss[1]))) return `${cap(poss[1])}'s Room`
+  const second = fold(words[1] ?? '')
+  if (words.length >= 2 && second === 'room' && /^[\p{L}]{2,24}$/u.test(first)) return `${cap(first)} Room`
+  if (words.length >= 2 && second === 'fan' && /^[\p{L}]{2,24}$/u.test(first) && !NOT_A_PERSON.has(fold(first))) return `${cap(first)}'s Room`
+  return null
 }
