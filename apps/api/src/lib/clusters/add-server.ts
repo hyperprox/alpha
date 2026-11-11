@@ -4,12 +4,14 @@
 //  The owner gives a name, an address, the token made on that server, and the master password once (the route is
 //  re-confirmed: lib/roles.ts). Everything else happens here, in that one request:
 //
-//    1. The API certificate. Over a Tailscale address (or a WireGuard peer on a link HyperProx set up) the tunnel
-//       already proves which device answers, so the certificate it presents is accepted as verified once the
-//       server's API says it is the node that device is named after. On any other address there is no second
-//       channel to check it against: nothing is saved and the owner compares the fingerprint once, by hand.
+//    1. The API certificate. When the address the owner typed is a Tailscale IP that tailscaled says is an online
+//       device owned by this tailnet's own account (or a WireGuard peer on a link HyperProx set up), the tunnel to
+//       exactly that IP proves which device answers, so the certificate it presents is accepted as verified. On any
+//       other address there is no second channel to check it against: nothing is saved and the owner compares the
+//       fingerprint once, by hand.
 //    2. The token: it must work over the pinned connection and have administrator rights (as before).
-//    3. Node addresses: from the server's own cluster status, preferring each node's tailnet address.
+//    3. Node addresses: the typed address for the node that answered; another node's only when its cluster status
+//       address is a tailnet IP owned by this tailnet's account. Never by name, never a cluster-network address.
 //    4. With a node login given: every node's SSH host key is verified (lib/hostkey-verify.ts), and the login is
 //       tested and saved only for nodes whose key is verified. A node without evidence keeps the manual compare.
 //    5. Optional, on by default: monitoring installed (its usual preview, then apply), and Send files checked.
@@ -21,7 +23,7 @@
 import type { TerminalCredential } from '../ssh-broker'
 import type { PresentedCertificate } from './tls-pin'
 import { ClusterRefusal, looksLikeHome, HOME_DUPLICATE, type ClusterIdentity, type ClusterInfo, type NewRemote } from './registry'
-import { isTailnetAddress, tailnetPeer, refuseTokenContext, type TailnetStatus, type WgLink, type NodeVerdict, type VerifyInput } from '../hostkey-verify'
+import { isTailnetAddress, tailnetIdentity, refuseTokenContext, type TailnetStatus, type TailnetWhois, type WgLink, type NodeVerdict, type VerifyInput } from '../hostkey-verify'
 
 export interface TokenCheck {
   version: string
@@ -46,6 +48,7 @@ export interface AddServerDeps {
   tryToken(address: string, port: number, fingerprint: string, tokenId: string, secret: string): Promise<TokenCheck>
   homeIdentity(): Promise<ClusterIdentity>
   tailnet(): Promise<TailnetStatus | null>
+  whois(ip: string): Promise<TailnetWhois | null>
   wireguard(): Promise<WgLink[]>
   createRemote(n: NewRemote): Promise<ClusterInfo>
   setNodeAddresses(id: string, addresses: Record<string, string>): Promise<ClusterInfo>
@@ -73,32 +76,30 @@ export type AddServerResult =
 /** One plain sentence for the fallback, shown above the fingerprint. */
 export const MANUAL_CERT_WHY = "HyperProx could not check this server's certificate on its own, because this address is not a Tailscale or WireGuard address it can vouch for; compare the fingerprint below with the one on that server's own Proxmox page (the node, then System, then Certificates) once, and HyperProx will refuse it if it ever changes."
 
-/** Which tunnel vouches for the device at `address`, before anything is sent to it. Null: none does. */
-export function linkDevice(address: string, status: TailnetStatus | null, links: WgLink[]): { hostname: string; how: string } | null {
+/**
+ * Which tunnel vouches for the device at exactly `address` (the address the owner typed, never one looked up by a
+ * name), before anything is sent to it. Null: none does.
+ */
+export function linkDevice(address: string, status: TailnetStatus | null, links: WgLink[], whois: TailnetWhois | null): { device: string; owner: string | null; how: string } | null {
   const wg = links.find(l => l.address === address && l.up)
-  if (wg) return { hostname: wg.peer, how: `reached over HyperProx's own WireGuard link ${wg.iface}, where this address is the peer ${wg.peer}` }
-  const t = tailnetPeer(address, status)
-  if ('peer' in t) {
-    const name = t.peer.hostName || t.peer.dnsName.replace(/\.$/, '').split('.')[0]
-    return { hostname: name, how: `reached over your tailnet, where this address is the online device ${name}` }
-  }
+  if (wg) return { device: wg.peer, owner: null, how: `reached over HyperProx's own WireGuard link ${wg.iface}, where this address is the peer ${wg.peer}` }
+  const t = tailnetIdentity(address, status, whois)
+  if (t.ok) return { device: t.device, owner: t.owner, how: `reached over your tailnet at this exact address, the device ${t.device} owned by ${t.owner}` }
   return null
 }
 
 /**
- * Each node's address. The node that answered gets the address the owner typed. The other nodes' addresses in the
- * server's cluster status are its internal cluster-network addresses, which HyperProx may not be able to reach and
- * which can collide with addresses at home, so they are never filled in from there (lib/hostkey-verify.ts adds
- * tailnet ones it can vouch for; the rest the owner enters on the Edit page).
+ * Each node's address. The node that answered gets the address the owner typed. Another node gets the address the
+ * server's own cluster status reports only when that is a tailnet IP HyperProx can vouch for (whois: owned by this
+ * tailnet's own account); its cluster-network addresses are never filled in. The owner enters the rest on Edit.
  */
-export function nodeAddresses(identity: TokenCheck['identity'], nodes: string[], address: string, status: TailnetStatus | null): Record<string, string> {
+export async function nodeAddresses(identity: TokenCheck['identity'], nodes: string[], address: string, status: TailnetStatus | null, whois: (ip: string) => Promise<TailnetWhois | null>): Promise<Record<string, string>> {
   const out: Record<string, string> = {}
   const local = identity.local ?? (nodes.length === 1 ? nodes[0] : null)
   for (const n of nodes) {
-    const peer = status?.running ? status.peers.find(p => !p.sharee && p.online && [p.hostName.toLowerCase(), p.dnsName.replace(/\.$/, '').split('.')[0].toLowerCase()].includes(n.toLowerCase())) : null
-    const ts = peer?.ips.find(ip => isTailnetAddress(ip) && !ip.includes(':'))
-    if (n === local) out[n] = address
-    else if (ts) out[n] = ts
+    if (n === local) { out[n] = address; continue }
+    const ip = identity.nodes.find(x => x.name === n)?.ip ?? null
+    if (ip && isTailnetAddress(ip) && tailnetIdentity(ip, status, await whois(ip).catch(() => null)).ok) out[n] = ip
   }
   return out
 }
@@ -119,13 +120,13 @@ export async function addServer(input: AddServerInput, deps: AddServerDeps): Pro
 
   // 1. The certificate: verified over a private link, or compared by hand.
   const presented = await deps.probeCertificate(address, port)
-  let fp: string, verified: string | null = null, device: { hostname: string; how: string } | null = null
+  let fp: string, verified: string | null = null, device: { device: string; owner: string | null; how: string } | null = null
   if (input.fingerprint) {
     if (presented.fingerprint !== input.fingerprint) throw Object.assign(new ClusterRefusal(`The server now presents a different certificate (${presented.fingerprint}) from the one you confirmed. Nothing was saved. Compare again.`, 'conflict'), { presented: presented.fingerprint })
     fp = presented.fingerprint
   } else {
-    const [status, links] = await Promise.all([deps.tailnet().catch(() => null), deps.wireguard().catch(() => [] as WgLink[])])
-    device = linkDevice(address, status, links)
+    const [status, links, who] = await Promise.all([deps.tailnet().catch(() => null), deps.wireguard().catch(() => [] as WgLink[]), deps.whois(address).catch(() => null)])
+    device = linkDevice(address, status, links, who)
     if (!device) return { kind: 'manual-certificate', certificate: presented, why: MANUAL_CERT_WHY }
     fp = presented.fingerprint
   }
@@ -135,17 +136,7 @@ export async function addServer(input: AddServerInput, deps: AddServerDeps): Pro
     if (/HTTP 401/.test(String(e?.message))) throw new ClusterRefusal('The server refused that token. Check the token ID and secret and paste them again. Nothing was saved.')
     throw e
   })
-  if (device) {
-    const local = t.identity.local ?? (t.nodes.length === 1 ? t.nodes[0] : null)
-    if (!local) return { kind: 'manual-certificate', certificate: presented, why: MANUAL_CERT_WHY }
-    if (local.toLowerCase() !== device.hostname.toLowerCase()) {
-      const why = `The device at ${address} is called ${device.hostname}, but the Proxmox server there says it is ${local}. Nothing was saved.`
-      await deps.audit('cluster.add.blocked', `address:${address}`, { by: input.by, reason: 'link identity does not match the node name', device: device.hostname, node: local })
-      await deps.alert('A server being added did not match its tailnet identity', [why])
-      throw new IdentityMismatch(why)
-    }
-    verified = `${device.how}, and named ${local} by its own API`
-  }
+  if (device) verified = device.how
   const home = await deps.homeIdentity().catch(() => ({ addresses: [], fingerprint: null, clusterName: null, nodes: [] } as ClusterIdentity))
   if (looksLikeHome({ addresses: [address], fingerprint: fp, clusterName: t.identity.clusterName, nodes: t.identity.nodes }, home)) {
     throw new ClusterRefusal(`${HOME_DUPLICATE} Nothing was saved.`, 'conflict')
@@ -157,7 +148,7 @@ export async function addServer(input: AddServerInput, deps: AddServerDeps): Pro
 
   // 3. Where each node is.
   const status = await deps.tailnet().catch(() => null)
-  const addrs = nodeAddresses(t.identity, t.nodes, address, status)
+  const addrs = await nodeAddresses(t.identity, t.nodes, address, status, ip => deps.whois(ip))
   const cluster = Object.keys(addrs).length ? await deps.setNodeAddresses(c.id, addrs) : c
 
   // 4. Host keys, then the login, only where the key is verified.

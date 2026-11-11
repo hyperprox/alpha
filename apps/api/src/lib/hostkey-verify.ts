@@ -15,8 +15,9 @@
 //                     from an anchor) before this pass started. Two trusted readers that agree are enough; with one,
 //                     the node must also prove it holds the recorded key. A node verified in a pass never vouches
 //                     in that same pass; the next pass may use it.
-//    tailnet          The address is a Tailscale address, and the local tailscaled says it belongs to an online
-//                     device in this tailnet. The tunnel itself is authenticated.
+//    tailnet          The address itself is a Tailscale IP (never chosen by name), and the local tailscaled says
+//                     (whois) it is an online device in this tailnet owned by the same user HyperProx is signed in
+//                     as, not shared in and not tagged. The tunnel to that exact IP is authenticated.
 //    wireguard        A WireGuard peer address on an interface HyperProx itself set up on this machine, when the
 //                     peer is that node.
 //    trusted-session  The key is read over a session to the same machine by another, already trusted address.
@@ -234,46 +235,55 @@ export function isTailnetAddress(a: string): boolean {
   return s.startsWith('fd7a:115c:a1e0:')
 }
 
-export interface TailnetPeer { id: string; hostName: string; dnsName: string; ips: string[]; online: boolean; sharee: boolean }
-export interface TailnetStatus { running: boolean; peers: TailnetPeer[] }
+export interface TailnetPeer { id: string; ips: string[]; online: boolean; sharee: boolean }
+/** `selfUser`: the tailnet user the HyperProx machine itself is logged in as. */
+export interface TailnetStatus { running: boolean; selfUser: string | null; peers: TailnetPeer[] }
 
-/** `tailscale status --json`, reduced to what identity needs. */
+/** `tailscale status --json`, reduced to what identity needs. Device names are deliberately not kept. */
 export function parseTailscaleStatus(raw: unknown): TailnetStatus | null {
   const j: any = typeof raw === 'string' ? (() => { try { return JSON.parse(raw) } catch { return null } })() : raw
   if (!j || typeof j !== 'object') return null
   const peers: TailnetPeer[] = Object.values(j.Peer ?? {}).map((p: any) => ({
-    id: String(p?.ID ?? ''), hostName: String(p?.HostName ?? ''), dnsName: String(p?.DNSName ?? ''),
-    ips: Array.isArray(p?.TailscaleIPs) ? p.TailscaleIPs.map(String) : [], online: p?.Online === true, sharee: p?.ShareeNode === true,
+    id: String(p?.ID ?? ''), ips: Array.isArray(p?.TailscaleIPs) ? p.TailscaleIPs.map(String) : [], online: p?.Online === true, sharee: p?.ShareeNode === true,
   }))
-  return { running: j.BackendState === 'Running', peers }
+  const selfUser = j.Self?.UserID !== undefined && j.Self?.UserID !== null ? String(j.Self.UserID) : null
+  return { running: j.BackendState === 'Running', selfUser, peers }
+}
+
+/** `tailscale whois --json <ip>`: who owns the device at that address. */
+export interface TailnetWhois { nodeId: string; user: string; owner: string; device: string; tags: string[] }
+export function parseWhois(raw: unknown): TailnetWhois | null {
+  const j: any = typeof raw === 'string' ? (() => { try { return JSON.parse(raw) } catch { return null } })() : raw
+  if (!j?.Node) return null
+  const n = j.Node
+  return {
+    nodeId: String(n.StableID ?? n.ID ?? ''), user: n.User !== undefined && n.User !== null ? String(n.User) : '',
+    owner: String(j.UserProfile?.LoginName ?? ''), device: String(n.ComputedName ?? n.Name ?? '').replace(/\.$/, '').split('.')[0],
+    tags: Array.isArray(n.Tags) ? n.Tags.map(String) : [],
+  }
 }
 
 export interface WgLink { address: string; iface: string; peer: string; machine: string | null; up: boolean }
 
 export type IdentityResult =
-  | { ok: true; evidence: PinEvidence; hostname: string }
+  | { ok: true; evidence: PinEvidence; device: string; owner: string | null }
   | { ok: false; block: boolean; why: string }
 
-const label = (dns: string) => dns.replace(/\.$/, '').split('.')[0]?.toLowerCase() ?? ''
-
-/** The tailnet device at `address`, when it is one HyperProx may believe: in this tailnet (not shared in) and online. */
-export function tailnetPeer(address: string, status: TailnetStatus | null): { peer: TailnetPeer } | { why: string; block: boolean } {
-  if (!isTailnetAddress(address)) return { why: 'not a tailnet address', block: false }
-  if (!status || !status.running) return { why: 'Tailscale is not running on the HyperProx machine', block: false }
+/**
+ * Tailnet identity of EXACTLY this address: a tailnet IP (never a name), an online device in this tailnet (not shared
+ * in from another), owned by the same tailnet user the HyperProx machine is logged in as, and not a tagged device
+ * (a tag means someone else's policy owns it). The connection is then made to this IP and nothing else.
+ */
+export function tailnetIdentity(address: string, status: TailnetStatus | null, whois: TailnetWhois | null): IdentityResult {
+  if (!isTailnetAddress(address)) return { ok: false, block: false, why: 'not a tailnet address' }
+  if (!status || !status.running || !status.selfUser) return { ok: false, block: false, why: 'Tailscale is not running on the HyperProx machine' }
   const peer = status.peers.find(p => p.ips.includes(address))
-  if (!peer || peer.sharee) return { why: 'that address is not a device in your tailnet', block: false }
-  if (!peer.online) return { why: 'that tailnet device is offline', block: false }
-  return { peer }
-}
-
-/** Tailnet identity: the device at `address` is online in this tailnet and is called `node`. A different name blocks. */
-export function tailnetIdentity(address: string, node: string, status: TailnetStatus | null): IdentityResult {
-  const r = tailnetPeer(address, status)
-  if (!('peer' in r)) return { ok: false, block: r.block, why: r.why }
-  const want = node.toLowerCase()
-  const names = [r.peer.hostName.toLowerCase(), label(r.peer.dnsName)]
-  if (!names.includes(want)) return { ok: false, block: true, why: `the tailnet device at that address is ${r.peer.hostName || label(r.peer.dnsName)}, not ${node}` }
-  return { ok: true, hostname: r.peer.hostName || label(r.peer.dnsName), evidence: { kind: 'tailnet', nodeId: r.peer.id, hostname: r.peer.hostName || label(r.peer.dnsName) } }
+  if (!peer || peer.sharee) return { ok: false, block: false, why: 'that address is not a device in your tailnet' }
+  if (!peer.online) return { ok: false, block: false, why: 'that tailnet device is offline' }
+  if (!whois || !whois.nodeId) return { ok: false, block: false, why: 'Tailscale could not say who owns that address' }
+  if (whois.tags.length) return { ok: false, block: false, why: `that device is tagged (${whois.tags.join(', ')}), so it is not owned by your own account` }
+  if (whois.user !== status.selfUser) return { ok: false, block: false, why: `that device belongs to ${whois.owner || 'another user'}, not to the account HyperProx is signed in to Tailscale with` }
+  return { ok: true, device: whois.device, owner: whois.owner, evidence: { kind: 'tailnet', nodeId: whois.nodeId, owner: whois.owner, device: whois.device } }
 }
 
 /** WireGuard identity: a peer address on an interface HyperProx set up, up on this machine, and the peer is `node`. */
@@ -282,13 +292,13 @@ export function wireguardIdentity(address: string, node: string, links: WgLink[]
   if (!l) return { ok: false, block: false, why: 'not a WireGuard peer on a HyperProx link' }
   const want = node.toLowerCase()
   if (l.machine !== `node-${node}` && l.peer.toLowerCase() !== want) return { ok: false, block: true, why: `the WireGuard peer at that address is ${l.peer}, not ${node}` }
-  return { ok: true, hostname: l.peer, evidence: { kind: 'wireguard', iface: l.iface, peer: l.peer } }
+  return { ok: true, device: l.peer, owner: null, evidence: { kind: 'wireguard', iface: l.iface, peer: l.peer } }
 }
 
-export function linkIdentity(address: string, node: string, status: TailnetStatus | null, links: WgLink[]): IdentityResult {
+export function linkIdentity(address: string, node: string, status: TailnetStatus | null, links: WgLink[], whois: TailnetWhois | null): IdentityResult {
   const wg = wireguardIdentity(address, node, links)
   if (wg.ok || wg.block) return wg
-  return tailnetIdentity(address, node, status)
+  return tailnetIdentity(address, status, whois)
 }
 
 // ---------------------------------------------------------------------------
@@ -323,6 +333,7 @@ export interface VerifyDeps {
   record(host: string, port: number, fingerprint: string, evidence: PinEvidence): Promise<'pinned' | 'verified' | 'already'>
   anchor(scope: string, node: string): Promise<Anchor | null>
   tailnet(): Promise<TailnetStatus | null>
+  whois(ip: string): Promise<TailnetWhois | null>
   wireguard(): Promise<WgLink[]>
   audit(action: string, resource: string, details: Record<string, unknown>): Promise<void>
   alert(title: string, lines: string[]): Promise<void>
@@ -397,6 +408,13 @@ async function tailscaleStatus(): Promise<TailnetStatus | null> {
   })
 }
 
+async function tailscaleWhois(ip: string): Promise<TailnetWhois | null> {
+  if (!isTailnetAddress(ip)) return null
+  return new Promise(resolve => {
+    execFile('tailscale', ['whois', '--json', ip], { timeout: 5000, maxBuffer: 1024 * 1024 }, (err, stdout) => resolve(err ? null : parseWhois(stdout)))
+  })
+}
+
 async function wireguardLinks(): Promise<WgLink[]> {
   try {
     const { PrismaClient } = await import('@prisma/client')
@@ -425,6 +443,7 @@ export function productionVerifyDeps(): VerifyDeps {
     record: (h, p, fp, ev) => recordVerified(h, p, fp, ev),
     anchor: (scope, node) => getAnchor(scope, node),
     tailnet: () => tailscaleStatus(),
+    whois: ip => tailscaleWhois(ip),
     wireguard: () => wireguardLinks(),
     audit: (a, r, d) => auditCredentialUse(a, r, d),
     async alert(title, lines) {
@@ -574,7 +593,8 @@ async function oneRound(input: VerifyInput, deps: VerifyDeps): Promise<{ verdict
   ])
   for (const n of nodes) {
     if (!open(n)) continue
-    const id = linkIdentity(n.address, n.name, status, links)
+    const who = isTailnetAddress(n.address) ? await deps.whois(n.address).catch(() => null) : null
+    const id = linkIdentity(n.address, n.name, status, links, who)
     if (id.ok) candidates.set(n.name, { fp: presented.get(n.name)!.fingerprint, evidence: id.evidence })
     else if (id.block) block(n, id.why, presented.get(n.name)!.fingerprint)
   }

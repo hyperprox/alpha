@@ -36,7 +36,7 @@ const SOURCES: PinSource[] = ['terminal', 'confirmed', 'verified', 'terminal-aut
 export type PinEvidence =
   | { kind: 'setup-local'; node: string; source: AnchorSource; method: 'presented-key' | 'proof' }
   | { kind: 'cluster-record'; cluster: string; readers: string[]; method: 'two-readers' | 'one-reader-proof' | 'record-key-session' }
-  | { kind: 'tailnet'; nodeId: string; hostname: string }
+  | { kind: 'tailnet'; nodeId: string; owner: string; device: string }
   | { kind: 'wireguard'; iface: string; peer: string }
   | { kind: 'trusted-session'; via: string }
 
@@ -54,7 +54,7 @@ export function evidenceWords(e: PinEvidence | null): string {
   switch (e.kind) {
     case 'setup-local': return `verified automatically: it is the key the cluster records for ${e.node}, ${ANCHOR_WORDS[e.source] ?? 'read on a node'}${e.method === 'proof' ? ' (the node proved it holds that key)' : ''}`
     case 'cluster-record': return `verified automatically: the cluster's record of this node's key, read through ${e.readers.join(' and ')} (already trusted), matches${e.method === 'one-reader-proof' || e.method === 'record-key-session' ? ', and the node proved it holds that key' : ''}`
-    case 'tailnet': return `verified automatically: reached over your tailnet, where this address is the online device ${e.hostname}`
+    case 'tailnet': return `verified automatically: reached over your tailnet at this exact address, which is the device ${e.device} owned by ${e.owner}`
     case 'wireguard': return `verified automatically: reached over HyperProx's own WireGuard link ${e.iface} (peer ${e.peer})`
     case 'trusted-session': return `verified automatically: read from the machine itself over a session already proven to be it (${e.via})`
   }

@@ -125,6 +125,7 @@ function addServerDeps(log: (m: string) => void): AddServerDeps {
     tryToken: (a, p, fp, id, secret) => tryToken(a, p, fp, id, secret),
     homeIdentity: () => homeIdentity(),
     tailnet: () => v.tailnet(),
+    whois: ip => v.whois(ip),
     wireguard: () => v.wireguard(),
     createRemote: n => createRemote(n),
     setNodeAddresses: (id, m) => updateCluster(id, { nodeAddresses: m }),
@@ -299,19 +300,9 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
         const now = await probeCertificate(row.address, row.port)
         if (row.certFingerprint && row.certFingerprint !== now.fingerprint) return reply.status(409).send({ success: false, code: 'cert_changed', error: `The server presents ${now.fingerprint}, not the certificate you confirmed. A changed certificate is never accepted automatically: compare the new one on its Proxmox page and confirm it.`, presented: now.fingerprint })
         const v = productionVerifyDeps()
-        const device = linkDevice(row.address, await v.tailnet().catch(() => null), await v.wireguard().catch(() => []))
+        const device = linkDevice(row.address, await v.tailnet().catch(() => null), await v.wireguard().catch(() => []), await v.whois(row.address).catch(() => null))
         if (!device) return reply.status(409).send({ success: false, code: 'cert_manual', error: MANUAL_CERT_WHY, certificate: now })
-        const tok = remoteToken(row.id)
-        const t = await tryToken(row.address, row.port, now.fingerprint, tok.tokenId, tok.secret)
-        const local = t.identity.local ?? (t.nodes.length === 1 ? t.nodes[0] : null)
-        if (!local) return reply.status(409).send({ success: false, code: 'cert_manual', error: MANUAL_CERT_WHY, certificate: now })
-        if (local.toLowerCase() !== device.hostname.toLowerCase()) {
-          const why = `The device at ${row.address} is called ${device.hostname}, but the Proxmox server there says it is ${local}. Nothing was changed.`
-          await auditCredentialUse('cluster.certificate.blocked', `cluster:${row.id}`, { by: who(), device: device.hostname, node: local })
-          await v.alert(`${row.name}: the certificate check failed`, [why])
-          return reply.status(409).send({ success: false, code: 'identity_mismatch', error: why })
-        }
-        const how = `${device.how}, and named ${local} by its own API`
+        const how = device.how
         const c = await confirmFingerprint(row.id, now.fingerprint, who(), how)
         forgetRemoteClient(row.id)
         await auditCredentialUse('cluster.certificate.verify', `cluster:${row.id}`, { by: who(), how })
