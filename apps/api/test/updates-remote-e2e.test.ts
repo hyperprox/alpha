@@ -2,6 +2,7 @@
 // and a pretend node (loopback SSH): the preview is read from the remote's own API with its own token, over the
 // node login saved for that server, at the address saved for that node — and only once an admin has confirmed
 // the node's host key. Every command the node receives passes the script guard. Nothing is installed.
+import { runInCluster } from '../src/lib/clusters/context'
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import https from 'node:https'
@@ -122,7 +123,8 @@ test('an unconfirmed host key: the node is never logged in to, and the preview s
 
 test('a confirmed host key: the preview is the remote\'s own simulation, over its saved login and address', { skip: !haveOpenssl && 'openssl not installed' }, async () => {
   const fp = await probeHostKey('127.0.0.1', sshPort)
-  await asOwner(() => recordPin('127.0.0.1', sshPort, fp, 'confirmed'))
+  // Confirmed for the remote itself: a home pin on the same address is never lent to a remote.
+  await asOwner(() => runInCluster(REMOTE, () => recordPin('127.0.0.1', sshPort, fp, 'confirmed')))
   apiSeen.length = 0
   const inv = await services().get(REMOTE).inventory(true)
   assert.deepEqual(inv.cluster, { id: REMOTE, name: 'Remote server', kind: 'remote' })
