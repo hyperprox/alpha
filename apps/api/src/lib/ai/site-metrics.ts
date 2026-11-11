@@ -6,11 +6,8 @@
 //  month. The assistant answers "how many visitors did <site> get today" from
 //  these figures alone, with no model call.
 //
-//  TODO(site-metrics): the metrics module (lib/site-metrics, branch
-//  feat/site-metrics) was not on main when this was written. When it lands,
-//  replace NOT_COLLECTED in routes/ai.ts with an adapter over it: map its
-//  per-site figures onto SiteMetrics below and nothing else in lib/ai changes.
-//  test/ai-home-features.test.ts drives this through a fake already.
+//  routes/ai.ts adapts lib/site-metrics onto SiteMetrics below; tests drive it
+//  through a fake (test/ai-home-features.test.ts).
 // =============================================================================
 
 export type MetricsRange = 'today' | 'week' | 'month'

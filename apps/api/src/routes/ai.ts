@@ -8,6 +8,8 @@
 //  the server's copy, derived and validated again against fresh facts first.
 // =============================================================================
 
+import { detail as metricsDetail } from '../lib/site-metrics/view'
+import { metricsStore } from '../lib/site-metrics/store'
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify'
 import { randomUUID }         from 'crypto'
 import { setCredential }      from '../lib/credentials'
@@ -47,7 +49,7 @@ import type { Fields, TaskTemplate, TemplateFacts, TemplateSettings } from '../l
 import { wizardRecipes }      from '../lib/catalogue'
 import { zoneFor }            from '../lib/dns-zones'
 import { qnapSource, alertsSource, notifySource, housesSource, sitesSource, siteMetricsSource, toChannelLite, type NasEntry, type HouseRead, type SiteLite } from '../lib/ai/home-sources'
-import { NOT_COLLECTED, type SiteMetricsSource } from '../lib/ai/site-metrics'
+import { type SiteMetricsSource } from '../lib/ai/site-metrics'
 import { parseHomeAction, prepareHomeAction, applyHomeAction, isTokenSid, type HomePlan, type HomePrepareDeps, type HomeApplyDeps, type HomeSite, type HomeNas } from '../lib/ai/home-actions'
 import { isWebsiteRequest, websiteTurn, asChoices, WebsiteDrafts, type WebsitePlanDeps } from '../lib/ai/templates/website'
 import { qnapService } from '../lib/qnap'
@@ -155,8 +157,31 @@ async function siteLites(): Promise<SiteLite[]> {
 const probe = (url: string) => fetch(url, { signal: AbortSignal.timeout(6000) })
   .then(async r => ({ status: r.status, body: (await r.text().catch(() => '')).slice(0, 200_000) })).catch(() => null)
 
-/** Where site metrics come from. TODO(site-metrics): an adapter over lib/site-metrics once it is on main. */
-const siteMetrics: SiteMetricsSource = NOT_COLLECTED
+/**
+ * Where site metrics come from: lib/site-metrics, read through its own view code so the assistant's figures are
+ * the Metrics tab's. "today" is the site's UTC day as the tab shows it; week and month are its 7d and 30d ranges.
+ * The AI routes are admin only, so the full view (pages, referrers) is read.
+ */
+const siteMetrics: SiteMetricsSource = {
+  available: () => true,
+  async siteMetrics(siteId, range) {
+    const site = await getSite(siteId)
+    if (!site) return null
+    const store = metricsStore()
+    const st = await store.getState(siteId)
+    const d = await metricsDetail(site, st, store, new Date(), range === 'today' ? '24h' : range === 'week' ? '7d' : '30d', true)
+    return {
+      range,
+      visitors:  range === 'today' ? d.summary.visitorsToday : d.hud.visitors,
+      pageViews: range === 'today' ? d.summary.pageViewsToday : d.hud.pageViews,
+      errorRate: d.hud.errorRatePct === null ? null : d.hud.errorRatePct / 100,
+      p95Ms:     d.hud.p95Ms,
+      topPages:     (d.pages ?? []).slice(0, 5).map(x => ({ path: x.key, views: x.value })),
+      topReferrers: (d.referrers ?? []).slice(0, 5).map(x => ({ source: x.key, visits: x.value })),
+      uptimePct: d.hud.uptimePct,
+    }
+  },
+}
 
 /** Built on the first certificate question and kept: its inventory cache is per instance. */
 let certsService: ReturnType<typeof productionCertsService> | undefined
