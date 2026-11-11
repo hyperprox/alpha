@@ -9,14 +9,14 @@ import { join } from 'node:path'
 import { FakeBroker } from './fakes/fake-broker'
 import { buildTestApp, resetLock, signIn } from './fakes/app'
 import { requestContext } from '../src/lib/auth'
-import { execOnNode, probeHostKey, HostKeyNotConfirmedError, pinHostKeyIfFree } from '../src/lib/node-exec'
+import { execOnNode, probeHostKey, HostKeyNotConfirmedError, HostKeyNotPinnedError, pinHostKeyIfFree } from '../src/lib/node-exec'
 import { listPins, pinSource, setPinSource, recordPin, pinId, recordVerified, pinEvidence, PinVerifyRefusal, pinnedKey, forgetPin } from '../src/lib/hostkey-pins'
 import { setClusterStore, loadClusters, createRemote, updateCluster, resetClustersForTests } from '../src/lib/clusters/registry'
 import { MemoryClusterStore } from '../src/lib/clusters/store'
 import { runInCluster } from '../src/lib/clusters/context'
 import { saveHostKeyAnchor } from '../src/lib/setup-checklist'
 import { getAnchor } from '../src/lib/hostkey-pins'
-import { saveAnchors } from '../src/lib/hostkey-verify'
+import { saveAnchors, setHomeVerifier } from '../src/lib/hostkey-verify'
 import { setAuditSink } from '../src/lib/audit'
 import { addSession, markReconfirmed, reconfirmedWithin, dropReconfirm, isReconfirmed } from '../src/lib/auth'
 import { confirmHostKey, checklistState } from '../src/lib/setup-checklist'
@@ -53,24 +53,56 @@ after(async () => { server?.close(); await resetLock(); await (await appP).close
 const asOwner = <T>(fn: () => Promise<T>) => requestContext.run({ sid, email: 'owner@example.com', role: 'owner' }, fn)
 const cred = { username: 'root', password: PW } as any
 
-test('the node runner pins on first use and records it as learned by the API, not confirmed', async () => {
-  await asOwner(async () => {
-    const r = await execOnNode({ host: '127.0.0.1', port, cred, command: 'true' })
-    assert.equal(r.code, 0)
-    assert.equal(await pinSource('127.0.0.1', port), 'api')
-    const p = (await listPins()).find(x => x.id === pinId('127.0.0.1', port))!
-    assert.equal(p.confirmed, false)
-  })
+test('no trust on first use: an unpinned home node is verified first, and refused before any login when it cannot be', async () => {
+  let verifierRuns = 0
+  setHomeVerifier(async () => { verifierRuns++; return [] })
+  try {
+    await asOwner(async () => {
+      const tried = authTried
+      await assert.rejects(execOnNode({ host: '127.0.0.1', port, cred, command: 'true' }), (e: any) => e instanceof HostKeyNotPinnedError)
+      assert.equal(verifierRuns, 1, 'HyperProx tried the evidence-based check first')
+      assert.equal(authTried, tried, 'no authentication was attempted')
+      assert.equal(await pinnedKey('127.0.0.1', port), null, 'nothing was pinned on first use')
+    })
+  } finally { setHomeVerifier(null) }
 })
 
-test('requirePin refuses a pin learned on first use, before any login is sent', async () => {
+test('a pin learned on first use (the wizard\'s, the API\'s) is refused before any login is sent', async () => {
   await asOwner(async () => {
+    const fp = await probeHostKey('127.0.0.1', port)
+    await recordPin('127.0.0.1', port, fp, 'wizard')
     const tried = authTried
-    await assert.rejects(execOnNode({ host: '127.0.0.1', port, cred, command: 'true', requirePin: true }),
+    await assert.rejects(execOnNode({ host: '127.0.0.1', port, cred, command: 'true' }),
       (e: any) => e instanceof HostKeyNotConfirmedError && /Setup checklist/.test(e.message))
+    await assert.rejects(execOnNode({ host: '127.0.0.1', port, cred, command: 'true', requirePin: true }), HostKeyNotConfirmedError)
     assert.equal(authTried, tried, 'no authentication was attempted')
     assert.equal(await confirmedFingerprint('127.0.0.1', port), false, 'HA maintenance mode does not accept it either')
   })
+})
+
+test('a node the evidence-based check verifies is used without anyone confirming it by hand', async () => {
+  const mod: any = await import('ssh2')
+  const { Server, utils } = mod.default ?? mod
+  const kp = utils.generateKeyPairSync('ed25519')
+  const srv = new Server({ hostKeys: [kp.private] }, (client: any) => {
+    client.on('authentication', (ctx: any) => ctx.method === 'password' && ctx.password === PW ? ctx.accept() : ctx.reject())
+    client.on('ready', () => client.on('session', (accept: any) => accept().on('exec', (acc: any) => { const s = acc(); s.write('ran\n'); s.exit(0); s.end() })))
+    client.on('error', () => undefined)
+  })
+  await new Promise<void>(r => srv.listen(0, '127.0.0.1', r))
+  const p2 = srv.address().port
+  setHomeVerifier(async () => {
+    const fp = await probeHostKey('127.0.0.1', p2)
+    await recordVerified('127.0.0.1', p2, fp, { kind: 'trusted-session', via: 'test' })
+    return []
+  })
+  try {
+    await asOwner(async () => {
+      const r = await execOnNode({ host: '127.0.0.1', port: p2, cred, command: 'true' })
+      assert.equal(r.code, 0)
+      assert.equal(await pinSource('127.0.0.1', p2), 'verified')
+    })
+  } finally { setHomeVerifier(null); srv.close() }
 })
 
 test('confirming the fingerprint (it must be the key shown now) makes requirePin accept it', async () => {

@@ -762,6 +762,23 @@ let homeRunning = false
 /** Set at start-up: what a background home pass runs (lib/setup-checklist.ts verifyHomeHostKeys). */
 export function setHomeVerifier(fn: typeof homeRunner): void { homeRunner = fn }
 
+let homeNow: Promise<void> | null = null
+/**
+ * Run the home pass now and wait for it (lib/node-exec.ts calls this before it will send a login to a home node
+ * whose key is not verified or confirmed yet). Concurrent callers share one pass. Nothing for a token's request
+ * (its vault writes are refused) or before start-up has set the runner.
+ */
+export function verifyHomeNow(): Promise<void> {
+  if (!homeRunner || String(currentContext()?.sid ?? '').startsWith('token:')) return Promise.resolve()
+  if (!homeNow) {
+    homeNow = Promise.resolve()
+      .then(() => homeRunner!('system: a home node key was needed before a login could be sent'))
+      .then(() => undefined, () => undefined)
+      .finally(() => { homeNow = null })
+  }
+  return homeNow
+}
+
 /**
  * Called when HyperProx first learns a home node's key. Runs one home pass a little later (several new keys at
  * once make one pass). Never for a token's request: the next sign-in or the Setup checklist covers those. The pass

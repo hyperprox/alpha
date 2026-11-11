@@ -137,6 +137,16 @@ export interface ExecutorOptions {
   remote?: boolean
 }
 
+/**
+ * The address Proxmox records for a home node, never its name: a name would be looked up in DNS, and the host-key
+ * pin is kept by address, so a lookup answered by someone else must not decide where the login goes.
+ */
+export function homeNodeAddress(ips: Record<string, string>, node: string): string {
+  const ip = ips[node]
+  if (!ip) throw new Error(`Proxmox lists no address for node ${node}, so HyperProx will not connect to it by name.`)
+  return ip
+}
+
 export function productionExecutor(pve: ProxmoxClient = livePve(), opts: ExecutorOptions = {}): UpdatesExecutor {
   let ips: Record<string, string> = {}
   const remote = !!opts.remote
@@ -148,7 +158,7 @@ export function productionExecutor(pve: ProxmoxClient = livePve(), opts: Executo
       return a
     }
     if (!ips[node]) await exec.clusterStatus()
-    return ips[node] ?? node
+    return homeNodeAddress(ips, node)
   }
 
   async function credFor(node: string) {

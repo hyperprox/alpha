@@ -290,11 +290,14 @@ where the test passed.
   over a plain address needs the same command run on one of its nodes (Edit page), or its certificate compared
   once. Guests and hand-added hosts have no cluster record and are confirmed by hand. A key that changed (a
   rebuilt node) is cleared in the Terminal first, then verified again from the anchor or trusted nodes.
-- **Host keys.** Pinned on first use, then required. The setup wizard pins each node's key the first
-  time it connects, refuses any other key for the rest of its run (before it sends a password), and hands
-  the keys to the API with the login, which pins them in the vault and verifies them (against the installer's
-  anchor, when there is one) right after the owner signs in. After that, and for any node first reached later, the API does the same as the Deck terminal:
-  the first key is pinned (and then verified as above), and a key that changes is always refused.
+- **Host keys.** Verified, then required; never trusted on first use. The setup wizard pins each node's key
+  the first time it connects, refuses any other key for the rest of its run (before it sends a password), and
+  hands the keys to the API with the login, which pins them in the vault and verifies them (against the
+  installer's anchor, when there is one) right after the owner signs in. HyperProx sends a node login only to a
+  node whose pin is verified or confirmed: before connecting to a node that has none, it runs the same
+  evidence-based check, and if that finds no evidence the connection is refused before any login is sent (verify
+  or confirm it on Settings, Setup checklist). A key that changes is always refused. The GPU reader uses the same
+  pinned runner, and Updates connects to the address Proxmox records for a node, never to its name.
 - **What it can do.** It is a root login to your hypervisors. The installer's node scripts only add
   packages (apt is asked first and an install that would upgrade or remove anything is refused), never
   touch kernels, drivers or apt holds, and run one node at a time.
