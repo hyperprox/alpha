@@ -21,6 +21,7 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import type { UpdatesInventory, UpdatesWsPayload } from '../lib/updates/types'
 import { hasRole } from '../lib/roles'
 import { isUnlocked, onLock } from '../lib/vault/state'
+import { trackSocket } from '../lib/session-sockets'
 import { isReconfirmed } from '../lib/auth'
 import { loadPolicy as loadPolicyFile, policyStatus, unmatchedSections, sectionKeyFor, renameRefusal, type PolicyLoad } from '../lib/updates/policy'
 import { type UpdatesExecutor } from '../lib/updates/executor'
@@ -98,6 +99,8 @@ export const updatesWsRoutes: FastifyPluginAsync = async (fastify) => {
     }
     subscribers.add(socket)
     socket.on('close', () => subscribers.delete(socket))
+    // Sign-out or the session ending closes it too, not only a lock (lib/session-sockets.ts).
+    trackSocket(s, socket, 'updates')
   })
 }
 

@@ -25,6 +25,13 @@ export interface ActiveSession {
 
 const sessions = new Map<string, ActiveSession>()
 
+// Told when a session ends (its sid), or when every session does (null): lib/session-sockets.ts closes their sockets.
+const endListeners: Array<(sid: string | null) => void> = []
+export function onSessionEnd(fn: (sid: string | null) => void): void { endListeners.push(fn) }
+function ended(sid: string | null): void {
+  for (const fn of endListeners) { try { fn(sid) } catch { /* a listener must not stop the others */ } }
+}
+
 export function addSession(s: { sid: string; email: string; role: Role; userId: string }): ActiveSession {
   const session: ActiveSession = { ...s, reconfirmedUntil: 0, lastSeen: Date.now() }
   sessions.set(s.sid, session)
@@ -38,10 +45,12 @@ export function getSession(sid: string): ActiveSession | undefined {
 
 export function removeSession(sid: string): void {
   if (sessions.delete(sid)) snapshotChanged()
+  ended(sid)
 }
 
 export function clearSessions(): void {
   sessions.clear()
+  ended(null)
 }
 
 export function allSessions(): ActiveSession[] {

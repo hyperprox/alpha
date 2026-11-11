@@ -81,6 +81,10 @@ Bitwarden-compatible, zero-knowledge vault. Every install runs its own, stock an
   Live's WebSocket that is once, when it opens. A socket opened before a sign-out or a lock keeps
   streaming metrics until the page closes it, or until it carries nothing for 300 seconds (nginx's idle
   timeout on `/grafana/`). Every new page, query or socket is checked again.
+- **HyperProx's own WebSockets do not.** The live-status feed, a terminal and the update log are each tied
+  to the session that opened them: signing out, a lock, or the vault ending that session closes them (close
+  code 4401), and a terminal's SSH session goes with it. A deploy job's progress is sent only to the sockets
+  of the person who started it.
 - **Roles.** They come from the person's membership in the vault's "HyperProx" organization:
 
   | Vault role | HyperProx role | Can |

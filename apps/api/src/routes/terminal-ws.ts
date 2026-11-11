@@ -10,6 +10,7 @@
 import { FastifyPluginAsync } from 'fastify'
 import { connect, loadCredential } from '../lib/ssh-broker'
 import { resolveTerminalTarget, terminalIdProblem, terminalTargetDeps } from '../lib/terminal-targets'
+import { trackSocket } from '../lib/session-sockets'
 
 interface TermQuery {
   /** Ignored: the address is worked out on the server from the id (lib/terminal-targets.ts). */
@@ -46,6 +47,9 @@ export const terminalWsRoutes: FastifyPluginAsync = async (fastify) => {
       socket.close()
     }
 
+    // A shell outlives nothing: signing out, a lock or the session ending closes it (and the SSH session with it).
+    if (!req.session) return bail('Sign in again.')
+    trackSocket(req.session, socket as any, 'terminal')
     if (!id)   return bail('No host id was given for this pane.')
     // A node's root login shares the credential store with the Terminal's logins; no pane may open one.
     const refused = terminalIdProblem(id)
