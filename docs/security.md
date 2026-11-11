@@ -162,20 +162,67 @@ where the test passed.
 - **Every use is audited** in the database's audit log: which node, what for, and who; never the value.
   `test/setup-onboarding.test.ts` plants marker values in a node login and a GoDaddy key and proves none
   reaches Postgres, a file, a log, an audit row or an API answer.
-- **Where a pin came from.** Each pin records its source: `confirmed` (an admin compared the fingerprint
-  and pressed confirm: Setup checklist, Remote access, HA), or one of the first-use sources nobody
-  confirmed: `terminal-auto` (learned when the host was first opened in the Terminal; the key is shown,
-  but nobody accepted it), `wizard` or `api`. Calls that require a pin (Remote access scripts, HA
-  maintenance mode) accept only confirmed pins (`terminal`, a person accepting the fingerprint in the
-  Terminal, is reserved for when the Terminal asks). Settings → Setup
-  checklist shows every node's fingerprint, and every pin that is not confirmed (including pins from before
-  sources were kept, which are left as they are), with a confirm button that needs the master password and
-  only accepts the key the host presents at that moment.
+- **Where a pin came from.** Each pin records its source:
+
+  | Source | How it got there | Counts as confirmed |
+  |---|---|---|
+  | `verified` | HyperProx checked it itself, with evidence (below), and recorded which | yes |
+  | `confirmed` | An admin compared the fingerprint and pressed confirm (Setup checklist, Remote access, HA, a node login on Edit server) | yes |
+  | `terminal` | A person accepted the fingerprint in the Terminal (reserved; the Terminal does not ask yet) | yes |
+  | `terminal-auto` | Learned when the host was first opened in the Terminal; shown, but nobody accepted it | no |
+  | `wizard` | Learned by the setup wizard on its first connection | no |
+  | `api` | Learned by HyperProx's own node runner on first use | no |
+
+  Calls that require a pin (Remote access scripts, HA maintenance mode, file copies, logins on a remote
+  server) accept only the first three. A pin from before sources were kept has no source and does not count.
+- **How a key is verified without you.** A `verified` pin stores its evidence next to it in the vault
+  (`hyperprox:deck/hostkey-evidence`: node names, a tailnet device id or an interface name, nothing secret).
+  There are three kinds, all in `apps/api/src/lib/hostkey-verify.ts`:
+  - *Cluster record.* A Proxmox cluster keeps every node's SSH host key in its own replicated files
+    (`/etc/pve/nodes/<node>/ssh_known_hosts`, and the older `/etc/pve/priv/known_hosts`). HyperProx reads
+    them through every node it can sign in to, each in its own SSH session. Every copy must agree, and a
+    node's key counts only when at least two other nodes, themselves verified in the same pass, show it.
+    An attacker would have to answer for every node at once to fake that, so it needs three nodes or more.
+    When the record holds only another kind of key for a node (RSA, say, while the node offers ed25519
+    first), HyperProx signs in asking for that kind only, so the node must prove it holds the recorded key,
+    and reads the node's own key files over that session.
+  - *Private link.* The address is a Tailscale address and the HyperProx machine's own `tailscaled` says
+    it is an online device in your tailnet (not one shared in from another) whose name is the Proxmox
+    node's name; or it is a WireGuard peer on an interface HyperProx set up and that is up on this machine,
+    and the peer is that node. The tunnel already proves which device answers, so the first key seen over
+    it is accepted.
+  - *Trusted session.* The key is read from the machine over a session to it that is already confirmed or
+    verified (the same node reached by another address).
+
+  A plain network address with nothing to cross-check it against is never verified this way; it stays
+  learned, and the Setup checklist offers the manual compare for it.
+- **When it happens.** For home nodes: after each owner sign-in (only if some pin is not yet verified or
+  confirmed), about twenty seconds after HyperProx first learns a home node's key, and when you press
+  **Verify automatically** on the Setup checklist. The two background runs need the vault unlocked, which only
+  an owner's sign-in does, and act as that sign-in (or the most recent one); a key learned during a request made
+  with an API token does not start one (the next sign-in or the checklist covers it). For a remote
+  server: while it is added, and from **Verify keys** on its Edit page. Both of those ask for the master
+  password, so an API token cannot start them, and the code refuses a token's session as well.
+- **What never changes.** A key that differs from its pin is refused, here as everywhere: verification only
+  ever turns a learned pin into a verified one, or pins a host that had none. Any mismatch in a pass (the
+  record differs between nodes, the record contradicts the key a node presents, a tailnet name is not the
+  node's, a pin changed) blocks the whole pass, so nothing is accepted, writes `host_key.verify.blocked` to
+  the audit log and sends a critical notification. Each key that is verified writes `host_key.verify` with
+  who, the node, the fingerprint and the kind of evidence. Every script used (a read of the record files,
+  `cat` only, and a read of the node's public key files) passes the same script guard as remote scripts,
+  for home nodes too.
+- **What still needs a person, and why.** A server with fewer than three nodes reached over a plain network
+  address has nothing to check its key against, so you compare it once by hand. So does a key whose other
+  nodes could not be read (offline, or no login). On a remote server a password is never sent to a node
+  whose key is not yet verified, so reading the record there needs a private-key login, or the nodes'
+  Tailscale or WireGuard addresses; with a password and plain addresses you compare by hand. Guests and
+  hand-added hosts have no cluster record and are confirmed by hand. A key that changed (a rebuilt node) is
+  cleared in the Terminal first, then verified again with the same evidence.
 - **Host keys.** Pinned on first use, then required. The setup wizard pins each node's key the first
-  time it connects, refuses any other key for the rest of its run (before it sends a password), shows the
-  fingerprints so you can compare them on each node's console, and hands them to the API with the login,
-  which pins them in the vault. After that, and for any node first reached later, the API does the same as
-  the Deck terminal: the first key is pinned, a key that changes is always refused.
+  time it connects, refuses any other key for the rest of its run (before it sends a password), and hands
+  the keys to the API with the login, which pins them in the vault and verifies them right after the owner
+  signs in. After that, and for any node first reached later, the API does the same as the Deck terminal:
+  the first key is pinned (and then verified as above), and a key that changes is always refused.
 - **What it can do.** It is a root login to your hypervisors. The installer's node scripts only add
   packages (apt is asked first and an install that would upgrade or remove anything is refused), never
   touch kernels, drivers or apt holds, and run one node at a time.

@@ -257,7 +257,14 @@ node joins. There is nothing to ask.
 
 **Changing an answer later.** Open **Settings → Setup checklist**. It shows each question, whether it is
 done on each node right now, and a button to do it. Work on your nodes needs a login for them: you enter
-it once, HyperProx tests it on every node and keeps it in the vault. Each node's identity key is shown there too: compare it with the node's own console and press **Confirm this key**. VPN installs on a node and maintenance mode only run against a node whose key you have confirmed.
+it once, HyperProx tests it on every node and keeps it in the vault. Each node's identity (SSH host) key is
+shown there too, as **verified automatically** with how: HyperProx checks each key itself against your
+cluster's own record of its nodes' keys, read through two other nodes, or over Tailscale or WireGuard. It does
+this after you sign in and whenever it meets a new node, and **Verify automatically** runs it on demand. There is
+nothing to press when a key shows verified. Only a key it found no evidence for (a cluster of one or two nodes on a
+plain network, say) offers **Compare by hand and confirm**. VPN installs on a node and maintenance mode only run
+against a node whose key is verified or confirmed. How this works, and what it cannot check, is in
+[docs/security.md](docs/security.md).
 
 **What the node work changes.** It only adds packages and never upgrades or removes one. It does not touch
 kernels, drivers or apt holds, so a node that pins its kernel for a GPU driver is safe. It runs one node at
@@ -317,18 +324,33 @@ Once a remote is added, the Dashboard shows the same panels at the top; with non
 A remote is never joined to your cluster. HyperProx talks to its Proxmox API at any address it can
 reach: a Tailscale name or IP, a WireGuard address, or anything else routable.
 
-**Add a server** (admin) takes five steps:
+**Add a server** (admin) is one form and one master password:
 
-1. A name and its address.
+1. A name and its address (its Tailscale IP or a WireGuard address lets HyperProx verify it by itself).
 2. Three `pveum` commands to paste into that server's Shell: they make a `hyperprox@pve` user with the
    Administrator role and an API token for it.
 3. Paste the token. It goes straight into the vault when you press Connect.
-4. HyperProx reads the certificate the server presents, without sending it anything, and shows its
-   SHA-256 fingerprint. Compare it with the server's own page (the node, then System, then
-   Certificates) and confirm. From then on HyperProx accepts only that certificate; if it changes,
-   nothing is sent until you compare and confirm the new one.
-5. HyperProx connects, checks the token really has administrator rights, and scans the hardware
-   (read-only). Your home cluster (or one of its nodes) cannot be added again as a remote. Monitoring is offered on the server's **Edit** page.
+4. Optionally, the login for its nodes (usually root), and two ticks, on by default: install monitoring,
+   and check Send files.
+
+Then **Connect** does the rest:
+
+- **The certificate.** Over a Tailscale address that your own tailnet says is an online device, or a WireGuard
+  peer on a link HyperProx set up, the tunnel proves which device answers, so HyperProx accepts the certificate
+  it presents once the server's API names itself after that device. On any other address it has nothing to check
+  the certificate against, so nothing is saved: it shows the SHA-256 fingerprint and says so in one sentence,
+  and you compare it once with the server's own page (the node, then System, then Certificates). From then on
+  HyperProx accepts only that certificate; one that changes is never accepted by itself.
+- **The token.** HyperProx checks it really has administrator rights. Your home cluster (or one of its nodes)
+  cannot be added again as a remote.
+- **The nodes.** Their addresses come from the server's own cluster status, with each node's Tailscale address
+  preferred when your tailnet has it. With a login given, every node's SSH host key is verified (over the private
+  link, or against the cluster's own record of its keys, read through two other nodes), and the login is tested
+  and saved only for nodes whose key is verified. A password is never sent to a node whose key is not verified.
+- **Monitoring and Send files**, if ticked: with a node login saved, monitoring is installed as on the Edit page (node_exporter only,
+  nothing upgraded or removed), and Send files is checked and its answer shown.
+- Then the hardware scan (read-only). Anything left (a node with no evidence for its key, say) is on the
+  server's **Edit** page.
 
 **Opening a remote** turns the page amber, with "You are managing" and its name on every part of it.
 There you can start, shut down, stop and restart guests, take snapshots, back up now, edit a guest's
@@ -338,8 +360,8 @@ what Proxmox reported. Storage and recent tasks are listed too. **Updates** work
 Updates below). High availability and GPU sharing still work on the home cluster only, and are
 labelled so.
 
-**Edit server** holds its name, its address (a new address must have its certificate confirmed
-again), the token (tested before it replaces the old one), node addresses and node logins, the folders
+**Edit server** holds its name, its address (a new address has its certificate verified again: by itself
+over a private link, otherwise you compare it), the token (tested before it replaces the old one), node addresses and node logins, the folders
 file copies may write into, its Plex (a Plex token is only ever sent to the address it was saved for;
 plain http only to a private address), and Remove. Changing the address, node addresses or folders asks
 for your master password; a rename does not. Remove (type its name) forgets the server and its secrets,
@@ -348,17 +370,19 @@ cannot be reached), stops Prometheus collecting from it, and shows the two comma
 token on the server too. Below the admin role, people see only each cluster's name and how it is doing,
 never its addresses.
 
-- **Node logins.** For the full hardware scan, monitoring and file copies, add a root login per node.
-  HyperProx shows the node's SSH host key; compare it with `ssh-keygen -lf` on the node and confirm.
-  Only a confirmed host key is used. Changing a node's address removes its saved login, so the new
-  address's host key is confirmed before a login is sent there.
+- **Node logins.** For the full hardware scan, monitoring and file copies, give the nodes' root login once
+  and press **Verify keys**: HyperProx verifies each node's SSH host key by itself and saves the login for each
+  node whose key is verified. Only for a node it found no evidence for does it show the key to compare with
+  `ssh-keygen -lf` on the node. Only a verified or confirmed host key is used. Changing a node's address removes
+  its saved login and pin, so the new address's key is verified before a login is sent there.
 - **Hardware scan.** With the token alone: GPUs from Proxmox's PCI list and exporters asked over the
   network. With a node login: the full read-only probe, and `vainfo` (if it is installed there) to say
   what the GPU really decodes and encodes. Without vainfo the answer is an estimate, and says so. One
   line under the scan says which it is and what to do to check it (press Full scan, or install the
   vainfo package on the node).
-- **Monitoring** (step 5). HyperProx scans first, asks yes or no questions, shows every step, and only
-  then installs. It installs `prometheus-node-exporter` from the server's own packages (nothing is
+- **Monitoring** (the Edit page). HyperProx scans first, asks yes or no questions, shows every step, and only
+  then installs. Ticked on Add a server, it installs the same node_exporter step with no GPU extras, without
+  asking (you ticked it), and the result lists what it did. It installs `prometheus-node-exporter` from the server's own packages (nothing is
   upgraded or removed), listening only on the address HyperProx reaches the node on, and only if that
   address is on a Tailscale or WireGuard interface; the setting is written before the package is
   installed, so it never listens on the home network. For an AMD GPU it switches on the GPU collector.
@@ -727,18 +751,19 @@ not protected, are in [docs/security.md](docs/security.md).
 - **Re-confirmation.** Revealing a secret, destroying a guest, creating or revoking an API token,
   changing roles, installing from the Catalogue (or removing a failed install), resetting Grafana's
   admin password, and changes on the Setup checklist ask for the master password again (valid five
-  minutes). So do, for remote clusters: adding or removing one, replacing its token, confirming its
-  certificate, saving or removing a node login, deleting a guest, installing or removing monitoring,
+  minutes). So do, for remote clusters: adding or removing one, replacing its token, confirming or verifying its
+  certificate, verifying its node keys, saving or removing a node login, deleting a guest, installing or removing monitoring,
   changing a server's address, node addresses, copy folders or "never look inside" list, setting up a sending key (including
   the first-time setup of Send files), and saving a Plex address or token. The AI assistant asks for it in exactly the same cases.
 - **Remote clusters.** Each remote's API token, node logins, sending keys and Plex token live only in
   the vault, one item per cluster (`hyperprox:proxmox/<id>` and so on): never in `.env`, the database,
   logs, audit entries or API answers. Its API is reached only over a connection that accepts the one
-  certificate you confirmed, and the token is not sent until that check passes. Node logins use only
-  host keys you confirmed. The audit log records who did what on which cluster, never a value. As a safety
+  certificate you confirmed (or HyperProx verified over a private link), and the token is not sent until that
+  check passes. Node logins go only to host keys that are verified or confirmed. The audit log records who did what on which cluster, never a value. As a safety
   net (it is not a sandbox), every script sent to a remote cluster's node is checked first: one naming
   corosync, `pve-cluster` or `pmxcfs`, or any `/etc/pve` path other than a container's own config file
-  (the config editor) and reading `ceph.conf` (the hardware probe), is refused. A folder that copies may
+  (the config editor), reading `ceph.conf` (the hardware probe) and reading the cluster's record of its nodes'
+  SSH host keys with `cat` (host-key verification, which also runs it for home nodes), is refused. A folder that copies may
   write into can never be a system folder or inside one (`/etc`, `/var`, `/tmp`, `/usr`, `/root` and
   the like).
 - **API tokens** (`Authorization: Bearer hpx_...`) carry a role of viewer, operator or admin, stop
