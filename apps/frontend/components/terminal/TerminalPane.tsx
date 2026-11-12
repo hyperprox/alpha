@@ -8,9 +8,10 @@
 //  socket and leaves the work running.
 // =============================================================================
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import '@xterm/xterm/css/xterm.css'
 import { wsBase } from '@/lib/ws'
+import type { HostKeyChange } from './HostKeyPanel'
 
 export type PaneState = 'idle' | 'connecting' | 'ready' | 'closed' | 'error'
 
@@ -28,6 +29,10 @@ export interface TerminalPaneProps {
   attempt:  number
   onState:  (s: PaneState, detail?: string) => void
   onAttach: (info: { persistent: boolean; session?: string; hostKeyLearned?: boolean; fingerprint?: string }) => void
+  /** The host offered a key that differs from the pinned one: the page checks it with Proxmox. */
+  onHostKey?: (change: HostKeyChange) => void
+  /** Drawn over the pane instead of the error box (the host key panel). */
+  overlay?: ReactNode
 }
 
 const FONT_STACK = '"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace'
@@ -64,7 +69,7 @@ async function fontReady(): Promise<void> {
   } catch { /* a font that never loads must not block the terminal */ }
 }
 
-export function TerminalPane({ host, hostId, port, session, tmux = true, attempt, onState, onAttach }: TerminalPaneProps) {
+export function TerminalPane({ host, hostId, port, session, tmux = true, attempt, onState, onAttach, onHostKey, overlay }: TerminalPaneProps) {
   const mountRef = useRef<HTMLDivElement>(null)
   const [fatal, setFatal] = useState<string | null>(null)
 
@@ -72,6 +77,7 @@ export function TerminalPane({ host, hostId, port, session, tmux = true, attempt
   // on every parent render, and a re-run here would tear down a live session.
   const onStateRef  = useRef(onState);  onStateRef.current  = onState
   const onAttachRef = useRef(onAttach); onAttachRef.current = onAttach
+  const onHostKeyRef = useRef(onHostKey); onHostKeyRef.current = onHostKey
 
   useEffect(() => {
     if (!mountRef.current) return
@@ -147,6 +153,8 @@ export function TerminalPane({ host, hostId, port, session, tmux = true, attempt
           } else if (frame.state === 'closed') {
             onStateRef.current('closed', frame.detail)
           }
+        } else if (frame.t === 'hostkey') {
+          onHostKeyRef.current?.({ host: frame.host, port: frame.port, pinned: frame.pinned, offered: frame.offered, offeredType: frame.offeredType })
         } else if (frame.t === 'error') {
           setFatal(frame.m)
           onStateRef.current('error', frame.m)
@@ -210,7 +218,8 @@ export function TerminalPane({ host, hostId, port, session, tmux = true, attempt
       <div className="absolute inset-0 px-3 py-2">
         <div ref={mountRef} className="h-full w-full" />
       </div>
-      {fatal && (
+      {overlay}
+      {fatal && !overlay && (
         <div
           className="absolute left-4 right-4 bottom-4 rounded-md border px-3 py-2 text-[13px] whitespace-pre-wrap"
           style={{ background: 'var(--ground)', borderColor: 'var(--crit)', color: 'var(--crit-soft)' }}

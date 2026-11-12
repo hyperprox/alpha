@@ -375,7 +375,8 @@ export interface VerifyDeps {
 
 const keyOf = (key: Buffer): PresentedKey => ({ fingerprint: fingerprintOf(key), type: blobType(key) ?? 'unknown' })
 
-function probeKey(host: string, port: number, timeoutMs = 10_000): Promise<PresentedKey> {
+/** The key host:port presents, read without sending any login. */
+export function probeKey(host: string, port: number, timeoutMs = 10_000): Promise<PresentedKey> {
   return new Promise((resolve, reject) => {
     const c = new Client()
     let got: PresentedKey | null = null

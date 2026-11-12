@@ -187,3 +187,17 @@ test('the remote-access executor still gets Terminal logins: shared for a VM, it
   assert.deepEqual(sent, [{ host: '192.0.2.202', user: 'guest' }, { host: '127.0.0.1', user: 'admin' }])
   assert.equal(sent.some(s => s.user === 'root'), false, 'the node login was never used')
 })
+
+test('a changed host key is refused, and the socket tells the pane both keys so it can check with Proxmox', async () => {
+  const wrong = 'SHA256:' + 'A'.repeat(43)
+  await asOwner(() => setCredential('deck', 'hostkey', `127.0.0.1:${sshPort}`, wrong, false))
+  const tried = authTried
+  const op = await signIn(app, 'op@example.com', 'operator master password')
+  const { frames, closed } = openWs('/ws/terminal/term?id=ssh-box&tmux=0', op.cookie)
+  await closed
+  const hk = frames.find(f => f.t === 'hostkey')
+  assert.deepEqual(hk, { t: 'hostkey', host: '127.0.0.1', port: sshPort, pinned: wrong, offered: hostFp, offeredType: 'ssh-ed25519' }, JSON.stringify(frames))
+  assert.ok(frames.some(f => f.t === 'error' && /has changed/.test(f.m)))
+  assert.equal(authTried, tried, 'no login went to the host')
+  await asOwner(async () => assert.equal(await getCredential('deck', 'hostkey', `127.0.0.1:${sshPort}`), wrong, 'the pin is unchanged'))
+})
