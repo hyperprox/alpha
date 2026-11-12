@@ -75,18 +75,25 @@ export async function readEpisodeInfo(get: Get, rows: any[], now: number, cache:
   return out
 }
 
-/** Radarr: movie id → what is on disk. The queue rows (read with includeMovie) say whether the film has a file and which. */
+/**
+ * Radarr: movie id → what is on disk. Queue rows read with includeMovie carry `movie.movieFileId` (0 = no file) and no
+ * `hasFile`. A film counts as having a file only when that id is positive AND /moviefile returned it: a failed lookup
+ * vouches for nothing.
+ */
 export async function readMovieInfo(get: Get, rows: any[], now: number, cache: FileCache = sharedFileCache): Promise<Map<number, FileInfo>> {
   const out = new Map<number, FileInfo>()
   try {
-    const movies = new Map<number, { has: boolean; fid: number | null; emb: string | null }>()
+    const movies = new Map<number, { fid: number | null; emb: string | null }>()
     for (const r of rows) {
       const id = posInt(r?.movieId ?? r?.movie?.id); if (id === null || movies.has(id)) continue
-      movies.set(id, { has: !!r?.movie?.hasFile, fid: posInt(r?.movie?.movieFileId ?? r?.movie?.movieFile?.id), emb: qname(r?.movie?.movieFile) })
+      movies.set(id, { fid: posInt(r?.movie?.movieFileId ?? r?.movie?.movieFile?.id), emb: qname(r?.movie?.movieFile) })
     }
-    const fileIds = [...new Set([...movies.values()].map(m => (m.has ? m.fid : null)).filter((n): n is number => n !== null))].slice(0, MAX_IDS)
+    const fileIds = [...new Set([...movies.values()].map(m => m.fid).filter((n): n is number => n !== null))].slice(0, MAX_IDS)
     const q = fileIds.length ? await fileQualities(get, '/api/v3/moviefile', 'movieFileIds', fileIds, 'mf', cache, now) : new Map<number, string | null>()
-    for (const [id, m] of movies) out.set(id, { hasFile: m.has, quality: m.has ? ((m.fid !== null ? q.get(m.fid) : null) ?? m.emb) : null, season: null, number: null })
+    for (const [id, m] of movies) {
+      const has = m.fid !== null && q.has(m.fid)
+      out.set(id, { hasFile: has, quality: has ? (q.get(m.fid as number) ?? m.emb) : null, season: null, number: null })
+    }
   } catch { out.clear() }
   return out
 }

@@ -43,20 +43,25 @@ const qbitClient = async (): Promise<CoreEndpointClient | null> => {
 
 const READ_DEADLINE_MS = 45_000
 const STALE_MS = 60_000
+/** The episode and file lookups for "Why this download" get this long, on top of the queue read. */
+const LOOKUP_BUDGET_MS = 10_000
 
 const msg = (e: any) => {
   if (e?.name === 'AbortError' || e?.name === 'TimeoutError' || /abort/i.test(String(e?.message ?? ''))) return 'timed out'
   return String(e?.message ?? e).slice(0, 160)
 }
 
-export async function readQueue(deps: { sonarr: CoreEndpointClient | null; radarr: CoreEndpointClient | null; now: number }): Promise<QueueData> {
+export async function readQueue(deps: { sonarr: CoreEndpointClient | null; radarr: CoreEndpointClient | null; now: number; lookupMs?: number }): Promise<QueueData> {
   const one = async (c: CoreEndpointClient | null, kind: 'sonarr' | 'radarr') => {
     if (!c) return { rows: null, info: undefined, configured: false, error: undefined as string | undefined }
     try {
       const get = (p: string, t?: number) => c.get(p, t)
       const rows = await readAllQueue(get, kind)
       // What is on disk for what was queued, for "Why this download": batched, inside this one shared reading.
-      const info = await (kind === 'sonarr' ? readEpisodeInfo(get, rows, deps.now) : readMovieInfo(get, rows, deps.now))
+      // Its own budget: if the lookups run long they are dropped and the queue is still returned, without the lines.
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const budget = new Promise<undefined>(res => { timer = setTimeout(() => res(undefined), deps.lookupMs ?? LOOKUP_BUDGET_MS) })
+      const info = await Promise.race([kind === 'sonarr' ? readEpisodeInfo(get, rows, deps.now) : readMovieInfo(get, rows, deps.now), budget]).finally(() => clearTimeout(timer))
       return { rows, info, configured: true, error: undefined as string | undefined }
     }
     catch (e) { return { rows: null, info: undefined, configured: true, error: msg(e) } }

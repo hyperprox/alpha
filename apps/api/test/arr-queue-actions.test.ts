@@ -329,6 +329,17 @@ test('clear done: an incomplete pack (episodes it covers still have no file) is 
   assert.equal(fb.log.deletes.length, 0)
 })
 
+test('clear done: a single clear of a download that is no longer done (the page was stale) removes nothing', async () => {
+  const gone = doneRows('STALE', { statusMessages: [{ title: 'x', messages: ['Episode file already imported at 2026-05-01', 'No files found are eligible for import'] }] })
+  const fa = fakeArr([...gone])
+  await refusal(runAction(mkDeps(fa.client), req({ action: 'clear-done', downloadIds: ['d:STALE'] }), 'a@example.com'), 'nothing_to_do')
+  assert.equal(fa.log.deletes.length, 0)
+  const lost = doneRows('LOST')
+  const fb = fakeArr([...lost], new Set([lost[0].episodeId]))
+  await refusal(runAction(mkDeps(fb.client), req({ action: 'clear-done', downloadIds: ['d:LOST'] }), 'a@example.com'), 'nothing_to_do')
+  assert.equal(fb.log.deletes.length, 0, 'an episode that has no file now keeps it in the queue')
+})
+
 // ── audit ────────────────────────────────────────────────────────────────────
 
 test('audit: written before the run; if it cannot be written nothing is changed; a preview changes and records nothing', async () => {

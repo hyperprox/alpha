@@ -222,7 +222,7 @@ export function DownloadActions({ instance, d }: { instance: Instance; d: ActDow
     return (
       <>
         <div className={c.actRow}>
-          <button type="button" className={c.actGo} disabled={busy} onClick={() => a.start(k, { title: 'Clear from queue', reqs: [{ action: 'remove', instance, downloadId: d.id, blocklist: false }], destructive: true, done: true })}>Clear from queue</button>
+          <button type="button" className={c.actGo} disabled={busy} onClick={() => a.start(k, { title: 'Clear from queue', reqs: [{ action: 'clear-done', instance, downloadIds: [d.id] }], destructive: true, done: true })}>Clear from queue</button>
         </div>
         <ActionBox k={k} />
       </>
@@ -287,14 +287,16 @@ export function ClearDone({ items }: { items: Array<{ instance: Instance; id: st
   if (!a?.canAct || !items.length) return null
   const k = 'done:all'
   const busy = ['asking', 'running', 'confirm'].includes(a.flows[k]?.phase ?? '')
-  const reqs: ActReq[] = (['sonarr', 'radarr'] as const)
+  const groups = (['sonarr', 'radarr'] as const)
     .map(i => ({ i, ids: items.filter(x => x.instance === i).map(x => x.id).slice(0, 50) }))
     .filter(x => x.ids.length)
-    .map(x => ({ action: 'clear-done' as const, instance: x.i, downloadIds: x.ids }))
+  const reqs: ActReq[] = groups.map(x => ({ action: 'clear-done' as const, instance: x.i, downloadIds: x.ids }))
+  // The count on the button is what will be sent: at most 50 per instance.
+  const sending = groups.reduce((t, x) => t + x.ids.length, 0)
   return (
     <>
       <div className={c.actRow}>
-        <button type="button" className={c.actBtn} disabled={busy} onClick={() => a.start(k, { title: 'Clear all done', reqs, destructive: true, done: true })}>Clear all done ({items.length})</button>
+        <button type="button" className={c.actBtn} disabled={busy} onClick={() => a.start(k, { title: 'Clear all done', reqs, destructive: true, done: true })}>Clear all done ({sending})</button>
       </div>
       <ActionBox k={k} />
     </>

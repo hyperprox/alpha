@@ -517,7 +517,8 @@ test('lookup: a failing lookup yields nothing and never throws; Radarr reads onl
   assert.equal((await readEpisodeInfo(boom, [{ episodeId: 1 }], 0, new FileCache())).size, 0)
   const calls: string[] = []
   const get = async (p: string) => { calls.push(p); return [{ id: 77, quality: { quality: { name: 'Bluray-1080p' } } }] }
-  const info = await readMovieInfo(get, [{ movieId: 5, movie: { id: 5, hasFile: true, movieFileId: 77 } }, { movieId: 6, movie: { id: 6, hasFile: false } }], 0, new FileCache())
+  // The real Radarr shape (includeMovie=true): movieFileId, 0 for none, and no hasFile key.
+  const info = await readMovieInfo(get, [{ movieId: 5, movie: { id: 5, movieFileId: 77 } }, { movieId: 6, movie: { id: 6, movieFileId: 0 } }], 0, new FileCache())
   assert.deepEqual(calls, ['/api/v3/moviefile?movieFileIds=77'])
   assert.equal(info.get(5)!.quality, 'Bluray-1080p')
   assert.equal(info.get(6)!.hasFile, false)
@@ -562,4 +563,52 @@ test('done needs the files: the same messages with every episode filed are done;
   assert.equal(isDone(rows, partial), false)
   const [show] = groupSonarr(rows, NOW)
   assert.equal(show.seasons[0].downloads[0].problem, 'blocked', 'without a lookup it stays an ordinary blocked import')
+})
+
+// ── Radarr, in the real row shape (movieFileId, no hasFile) ──────────────────────────────────────────────────────
+
+const radarrRow = (over: any = {}) => ({
+  id: 9, movieId: 5, movie: { id: 5, title: 'Example Movie', year: 2020, movieFileId: 77 }, title: 'Example.Movie.2020.2160p', size: 8 * GB, sizeleft: 8 * GB,
+  status: 'downloading', trackedDownloadStatus: 'ok', trackedDownloadState: 'downloading', downloadId: 'M9', protocol: 'torrent', statusMessages: [],
+  quality: { quality: { name: 'Bluray-2160p' } }, ...over,
+})
+const filesGet = (calls: string[], name = 'WEBDL-1080p') => async (p: string) => { calls.push(p); return p.startsWith('/api/v3/moviefile?') ? [{ id: 77, quality: { quality: { name } } }] : [] }
+
+test('radarr: a film with a file (movieFileId set) upgrades; with movieFileId 0 it is missing; a failed lookup vouches for nothing', async () => {
+  const calls: string[] = []
+  const rows = [radarrRow(), radarrRow({ id: 10, movieId: 6, movie: { id: 6, title: 'Other Movie', movieFileId: 0 }, downloadId: 'M10' })]
+  const info = await readMovieInfo(filesGet(calls), rows, 0, new FileCache())
+  assert.deepEqual(calls, ['/api/v3/moviefile?movieFileIds=77'])
+  const movies = groupRadarr(rows, NOW, info)
+  assert.equal(movies.find(m => m.title === 'Example Movie')!.why, 'Upgrades 1080p WEB-DL → 2160p Bluray.')
+  assert.equal(movies.find(m => m.title === 'Other Movie')!.why, 'Missing film: this will fill it.')
+  const none = await readMovieInfo(async () => { throw new Error('HTTP 500') }, rows, 0, new FileCache())
+  assert.equal(none.size, 0)
+  const empty = await readMovieInfo(async () => [], [radarrRow()], 0, new FileCache())
+  assert.equal(empty.get(5)!.hasFile, false, 'an id /moviefile did not return is not a file')
+})
+
+test('radarr: a finished blocked film whose file exists is done; without the file it is not', async () => {
+  const msgs = { statusMessages: [{ title: 'Example.Movie.2020', messages: ['Movie file already imported at 2026-05-01', 'Not an upgrade for existing movie file(s). Existing quality: Bluray-2160p.'] }] }
+  const row = radarrRow({ sizeleft: 0, status: 'completed', trackedDownloadStatus: 'warning', trackedDownloadState: 'importBlocked', quality: { quality: { name: 'WEBDL-1080p' } }, ...msgs })
+  const info = await readMovieInfo(filesGet([], 'Bluray-2160p'), [row], 0, new FileCache())
+  const [mv] = groupRadarr([row], NOW, info)
+  assert.equal(mv.done, true)
+  assert.equal(mv.why, 'Kept your better copy (2160p Bluray); nothing left to import.')
+  const noFile = await readMovieInfo(filesGet([]), [{ ...row, movie: { ...row.movie, movieFileId: 0 } }], 0, new FileCache())
+  assert.equal(groupRadarr([row], NOW, noFile)[0].done, false)
+})
+
+// ── the lookups have their own budget ────────────────────────────────────────────────────────────────────────────
+
+test('route: lookups that run out of time are dropped and the queue is still returned', async () => {
+  const { readQueue } = await import('../src/routes/arr-queue')
+  const rows = pack(3, { downloadId: 'SLOW' })
+  const client = { async get(p: string) { if (p.startsWith('/api/v3/queue?')) return { totalRecords: rows.length, records: rows }; return new Promise(() => {}) } } as any
+  const t0 = Date.now()
+  const data = await readQueue({ sonarr: client, radarr: null, now: NOW, lookupMs: 40 })
+  assert.ok(Date.now() - t0 < 2000)
+  assert.equal(data.summary.downloads, 1)
+  assert.equal(data.services.sonarr.ok, true)
+  assert.equal(data.shows[0].seasons[0].downloads[0].why, null)
 })
