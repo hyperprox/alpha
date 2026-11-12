@@ -17,7 +17,7 @@ import jwt from '@fastify/jwt'
 import { isUnlocked, signingKey, touch, onLock } from './vault/state'
 import { VaultSessionError, type Role } from './vault/broker'
 import { bearerApiToken, tokenForbidden, verifyApiToken, apiTokenStore, type ApiTokenRecord } from './api-tokens'
-import { unsafeRequestPath, requiredRole, needsReconfirm, hasRole, bypassesLock, normalisePath, SESSION_CHECK } from './roles'
+import { unsafeRequestPath, requiredRole, needsReconfirm, hasRole, bypassesLock, normalisePath, pluginSettingsSave, SESSION_CHECK } from './roles'
 import {
   extractToken, getSession, clearSessions, removeSession, requestContext, isReconfirmed, isLocalCliRequest,
   buildAuthCookie, type ActiveSession,
@@ -31,6 +31,11 @@ declare module 'fastify' {
     session?: ActiveSession
     /** Set when the request authenticated with an API token rather than a sign-in. */
     apiToken?: { id: string; name: string }
+    /**
+     * Set only for an API token's plug-in settings save when an owner gave that token the permission to do it
+     * without a re-confirmation: which plug-in, and who granted it. routes/plugins.ts audits the save.
+     */
+    tokenPluginSettings?: { pluginId: string; grantedBy: string }
   }
 }
 
@@ -170,6 +175,13 @@ export async function registerGate(server: FastifyInstance): Promise<void> {
       session = tokenSession(row)
       req.session = session
       req.apiToken = { id: row.id, name: row.name }
+      // The owner-granted plug-in settings permission: the raw path and the matched route must both be a plug-in
+      // settings save, for the same plug-in. Anything else is an ordinary token request.
+      if (row.pluginSettingsWithoutReconfirm === true && row.pluginSettingsGrantedBy) {
+        const pluginId = pluginSettingsSave(req.method, path)
+        const routeOk = route === null || route === '/api/plugins/:id/settings'
+        if (pluginId && routeOk) req.tokenPluginSettings = { pluginId, grantedBy: row.pluginSettingsGrantedBy }
+      }
       // No touch(): automation must not keep HyperProx unlocked. Only people reset the idle timer.
     } else {
       session = await authenticate(req)
@@ -195,7 +207,8 @@ export async function registerGate(server: FastifyInstance): Promise<void> {
     if (!hasRole(session.role, needed)) {
       return reply.status(403).send({ ok: false, code: 'forbidden', error: `This needs the ${needed} role`, required: needed, role: session.role })
     }
-    if (needsReconfirm(req.method, path) && !isReconfirmed(session.sid)) {
+    // A token with the plug-in settings permission skips only that one rule; every other rule still applies.
+    if (needsReconfirm(req.method, path, { exceptPluginSettings: !!req.tokenPluginSettings }) && !isReconfirmed(session.sid)) {
       return reply.status(403).send({ ok: false, code: 'reconfirm_required', error: 'Re-enter your master password to continue' })
     }
   })
@@ -242,6 +255,7 @@ export async function registerGate(server: FastifyInstance): Promise<void> {
   server.addHook('onRequest', (req, _reply, done) => {
     const s = req.session
     if (!s) return done()
-    requestContext.run({ sid: s.sid, email: s.email, role: s.role }, done)
+    const g = req.apiToken ? req.tokenPluginSettings : undefined
+    requestContext.run({ sid: s.sid, email: s.email, role: s.role, ...(g ? { pluginSettings: { ...g } } : {}) }, done)
   })
 }

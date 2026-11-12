@@ -1379,6 +1379,16 @@ not protected, are in [docs/security.md](docs/security.md).
 - **API tokens** (`Authorization: Bearer hpx_...`) carry a role of viewer, operator or admin, stop
   working while HyperProx is locked, and can never read secrets, open the terminal or WebSockets, or
   manage tokens. Only a SHA-256 hash is stored.
+- **Plug-in settings without the master password (opt-in, off by default).** An owner can let one admin token
+  save plug-in settings, so a script can connect a plug-in such as Plex for you. Turn it on in Settings → API tokens
+  (it asks for your master password), or as root on the HyperProx machine with
+  `hyperprox token plugin-settings <name> on|off`. Anyone holding that token can then change plug-in addresses and
+  their keys or passwords. Nothing else changes: it still cannot read a saved secret back, use Secrets or Send,
+  manage users, roles or tokens, change cluster logins, or delete or remove anything. The save is written with the
+  signed-in session of the owner who allowed it (any signed-in owner, if root allowed it), so it works only while
+  that owner is signed in. Every save is in the audit log with the
+  token's name (setting names only, never values). Turning it off takes effect on the next request (from the
+  command line, within 10 seconds).
 
 From the HyperProx machine, as root:
 
@@ -1388,6 +1398,7 @@ hyperprox lock                                     # lock now: wipe memory, end 
 hyperprox token create ci --role admin --expires-days 90
 hyperprox token list
 hyperprox token revoke ci
+hyperprox token plugin-settings ci on               # let token "ci" save plug-in settings (off to stop)
 hyperprox pve-exporter                             # give the PVE exporter its read-only token (unlocked)
 hyperprox pve-exporter --fresh                     # replace one that is not read-only
 ```

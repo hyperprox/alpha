@@ -15,6 +15,15 @@
 //  person's. Such a write is refused as 403 token_forbidden; reads, from the
 //  unlock cache, still work.
 //
+//  One opt-in exception, off by default: an owner may let one admin token save
+//  plug-in settings (PUT /api/plugins/:id/settings) without a re-confirmation
+//  (pluginSettingsWithoutReconfirm). That request's vault write, to that one
+//  plug-in's item only, is made with the granting owner's signed-in session.
+//  Every such save is audited (plugin.settings.save). Nothing else changes: every
+//  other re-confirmed action, every other vault write, Secrets, Send, tokens,
+//  users and roles stay out of reach. Only an owner, re-confirmed, can switch it
+//  on or off (routes/api-tokens.ts); a token can never reach that route.
+//
 //  Created and revoked from Settings → API tokens (admin, re-confirmed) or by
 //  root on the host with `hyperprox token ...` (cli/api-token.ts).
 // =============================================================================
@@ -50,6 +59,11 @@ export interface ApiTokenRecord {
   lastUsedAt: Date | null
   expiresAt:  Date | null
   revokedAt:  Date | null
+  /** Owner-granted: may save plug-in settings without a re-confirmation. Default false. */
+  pluginSettingsWithoutReconfirm: boolean
+  /** The owner who granted it (their signed-in session writes the vault item). */
+  pluginSettingsGrantedBy: string | null
+  pluginSettingsGrantedAt: Date | null
 }
 
 /** What the API and the CLI show: everything but the hash. */
@@ -64,6 +78,9 @@ export interface ApiTokenView {
   revokedAt:  string | null
   /** active | expired | revoked */
   state:      'active' | 'expired' | 'revoked'
+  pluginSettingsWithoutReconfirm: boolean
+  pluginSettingsGrantedBy: string | null
+  pluginSettingsGrantedAt: string | null
 }
 
 export class ApiTokenInputError extends Error {
@@ -142,6 +159,8 @@ export interface ApiTokenStore {
   create(t: NewApiToken): Promise<ApiTokenRecord>
   revoke(id: string, at: Date): Promise<ApiTokenRecord>
   touch(id: string, at: Date): Promise<void>
+  /** Switch the plug-in settings permission on (with the granting owner) or off. */
+  setPluginSettings(id: string, enabled: boolean, by: string, at: Date): Promise<ApiTokenRecord>
   audit(action: string, resource: string, details?: Record<string, unknown>): Promise<void>
 }
 
@@ -162,6 +181,11 @@ export class PrismaApiTokenStore implements ApiTokenStore {
   }
   revoke(id: string, at: Date) { return this.db.apiToken.update({ where: { id }, data: { revokedAt: at } }) }
   async touch(id: string, at: Date) { await this.db.apiToken.update({ where: { id }, data: { lastUsedAt: at } }) }
+  setPluginSettings(id: string, enabled: boolean, by: string, at: Date) {
+    return this.db.apiToken.update({ where: { id }, data: enabled
+      ? { pluginSettingsWithoutReconfirm: true, pluginSettingsGrantedBy: by, pluginSettingsGrantedAt: at }
+      : { pluginSettingsWithoutReconfirm: false, pluginSettingsGrantedBy: null, pluginSettingsGrantedAt: null } })
+  }
   async audit(action: string, resource: string, details?: Record<string, unknown>) {
     await this.db.auditLog.create({ data: { action, resource, details: (details ?? undefined) as any } })
   }
@@ -183,7 +207,10 @@ export class MemoryApiTokenStore implements ApiTokenStore {
   async list() { return [...this.rows].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()) }
   async create(t: NewApiToken) {
     if (this.rows.some(r => r.name === t.name)) throw new ApiTokenInputError(`A token named "${t.name}" already exists (revoked tokens keep their name)`)
-    const row: ApiTokenRecord = { id: `tok${++this.n}`, ...t, createdAt: new Date(), lastUsedAt: null, revokedAt: null }
+    const row: ApiTokenRecord = {
+      id: `tok${++this.n}`, ...t, createdAt: new Date(), lastUsedAt: null, revokedAt: null,
+      pluginSettingsWithoutReconfirm: false, pluginSettingsGrantedBy: null, pluginSettingsGrantedAt: null,
+    }
     this.rows.push(row)
     return row
   }
@@ -194,6 +221,14 @@ export class MemoryApiTokenStore implements ApiTokenStore {
     return r
   }
   async touch(id: string, at: Date) { const r = this.rows.find(x => x.id === id); if (r) r.lastUsedAt = at }
+  async setPluginSettings(id: string, enabled: boolean, by: string, at: Date) {
+    const r = this.rows.find(x => x.id === id)
+    if (!r) throw new ApiTokenNotFoundError(id)
+    r.pluginSettingsWithoutReconfirm = enabled
+    r.pluginSettingsGrantedBy = enabled ? by : null
+    r.pluginSettingsGrantedAt = enabled ? at : null
+    return r
+  }
   async audit(action: string, resource: string, details?: Record<string, unknown>) { this.audits.push({ action, resource, details }) }
 }
 
@@ -226,6 +261,9 @@ export function tokenView(r: ApiTokenRecord, now = Date.now()): ApiTokenView {
     id: r.id, name: r.name, role: r.role, createdBy: r.createdBy,
     createdAt: r.createdAt.toISOString(), lastUsedAt: iso(r.lastUsedAt), expiresAt: iso(r.expiresAt), revokedAt: iso(r.revokedAt),
     state: tokenState(r, now),
+    pluginSettingsWithoutReconfirm: r.pluginSettingsWithoutReconfirm === true,
+    pluginSettingsGrantedBy: r.pluginSettingsWithoutReconfirm ? r.pluginSettingsGrantedBy ?? null : null,
+    pluginSettingsGrantedAt: r.pluginSettingsWithoutReconfirm ? iso(r.pluginSettingsGrantedAt ?? null) : null,
   }
 }
 
@@ -268,6 +306,30 @@ export async function revokeApiToken(idOrName: string, by: string, s: ApiTokenSt
   if (row.revokedAt) return row
   const out = await s.revoke(row.id, new Date())
   await s.audit('api_token.revoke', row.name, { id: row.id, by })
+  return out
+}
+
+/**
+ * Switch a token's plug-in settings permission on or off. The caller has already checked that `by` is a
+ * signed-in owner who re-confirmed (routes/api-tokens.ts), or root on the host (cli/api-token.ts, by "host-cli"). Only an active admin token can have it switched on: a token
+ * below admin could not save settings anyway. The change reaches the gate on the next request.
+ */
+export async function setTokenPluginSettings(
+  id: string, enabled: boolean, by: string, s: ApiTokenStore = apiTokenStore(), now = Date.now(),
+  /** The host CLI's own audit entry (cli/api-token.ts); the browser route keeps the default. */
+  audit?: { action: string; details: Record<string, unknown> },
+): Promise<ApiTokenRecord> {
+  const row = await s.findById(id)
+  if (!row) throw new ApiTokenNotFoundError(`"${id}"`)
+  if (enabled) {
+    if (tokenState(row, now) !== 'active') throw new ApiTokenInputError(`Token "${row.name}" is ${tokenState(row, now)}`)
+    if (row.role !== 'admin') throw new ApiTokenInputError(`Token "${row.name}" has the ${row.role} role; saving plug-in settings needs an admin token`)
+  }
+  forgetToken(row.id)
+  const out = await s.setPluginSettings(row.id, enabled, by, new Date(now))
+  forgetToken(row.id)
+  if (audit) await s.audit(audit.action, row.name, { id: row.id, ...audit.details })
+  else await s.audit(enabled ? 'api_token.plugin_settings.grant' : 'api_token.plugin_settings.remove', row.name, { id: row.id, by })
   return out
 }
 

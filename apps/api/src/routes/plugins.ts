@@ -16,6 +16,7 @@ import {
   runPluginRescueScan, runPluginRescueRun, PluginSettingsError,
 } from '../lib/plugin-host'
 import { siteMetricsExposition } from '../lib/site-metrics'
+import { apiTokenStore } from '../lib/api-tokens'
 
 export function metricsTokenMatches(offered: string, expected: string): boolean {
   if (!offered || !expected) return false
@@ -164,12 +165,27 @@ export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
       if (plugin.manifest.id === 'home-assistant' && ['url', 'token'].some(k => body[k] !== undefined && body[k] !== '')) {
         return reply.status(400).send({ success: false, code: 'use_instances', error: 'Set the Home Assistant address and token on the Home Assistant page (Settings for that house), not here.' })
       }
+      // An API token an owner let save plug-in settings without the master password (lib/gate.ts): the save is
+      // audited first, and refused if the audit entry cannot be written. Setting names only, never a value.
+      const grant = req.apiToken && req.tokenPluginSettings?.pluginId === plugin.manifest.id ? req.tokenPluginSettings : undefined
+      if (req.apiToken && grant) {
+        const keys = plugin.manifest.settings.map(s => s.key).filter(k => typeof body[k] === 'string' && body[k] !== '')
+        try {
+          await apiTokenStore().audit('plugin.settings.save', plugin.manifest.id, {
+            via: `token ${req.apiToken.name}, without reconfirm`, tokenId: req.apiToken.id, grantedBy: grant.grantedBy, keys,
+          })
+        } catch (e: any) {
+          fastify.log.warn({ plugin: plugin.manifest.id, err: e?.message }, '[plugin] settings save refused: audit write failed')
+          return reply.status(503).send({ success: false, code: 'audit_unavailable', error: 'The audit log could not be written, so this save was not made.' })
+        }
+      }
       try {
         await saveSettings(plugin.manifest, body)
-        fastify.log.info({ plugin: plugin.manifest.id }, '[plugin] settings saved')
+        fastify.log.info({ plugin: plugin.manifest.id, ...(grant ? { via: `token ${req.apiToken!.name}, without reconfirm` } : {}) }, '[plugin] settings saved')
         return { success: true }
       } catch (e: any) {
         if (e instanceof PluginSettingsError) return reply.status(400).send({ success: false, code: 'credential_required', error: e.message })
+        if (e?.name === 'TokenVaultWriteError') return reply.status(403).send({ success: false, code: 'token_forbidden', error: e.message })
         return reply.status(500).send({ success: false, error: e.message })
       }
     },

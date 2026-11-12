@@ -149,6 +149,20 @@ const PLEX_CLEAROUT_RECONFIRM = /^\/api\/plugins\/plex\/(clearout|library)\/remo
 // A plug-in's settings hold the address its stored credential is sent to: changing them is re-confirmed (which
 // also keeps API tokens out).
 const PLUGIN_SETTINGS = /^\/api\/plugins\/[^/]+\/settings$/
+const PLUGIN_SETTINGS_ID = /^\/api\/plugins\/([^/]+)\/settings$/
+
+/**
+ * The plug-in whose settings this request saves (PUT /api/plugins/:id/settings), or null. This is the one
+ * re-confirmed action an owner can let an API token do without the master password (the token's
+ * pluginSettingsWithoutReconfirm permission, lib/api-tokens.ts). Nothing else matches.
+ */
+export function pluginSettingsSave(method: string, path: string): string | null {
+  if (method.toUpperCase() !== 'PUT') return null
+  const hit = PLUGIN_SETTINGS_ID.exec(normalisePath(path))
+  return hit ? hit[1] : null
+}
+// The owner-only switch on one API token (routes/api-tokens.ts).
+const TOKEN_PLUGIN_SETTINGS = /^\/api\/auth\/tokens\/[^/]+\/plugin-settings$/
 // Settings → connections (routes/settings.ts): saving a provider's login or address, and testing one (which sends
 // the stored secret to the stored address). Re-confirmed, which also keeps API tokens out. Notification channels
 // live under /api/settings/notifications and keep their own rules.
@@ -228,6 +242,8 @@ export function requiredRole(method: string, path: string): Role | null {
   if (p === '/api/auth/reconfirm') return 'viewer'
   if (p === SESSION_CHECK) return 'viewer'
   if (p === '/api/auth/lock') return 'admin'
+  // Letting a token save plug-in settings without the master password: an owner's call.
+  if (TOKEN_PLUGIN_SETTINGS.test(p)) return 'owner'
   // API tokens: listing them is admin too (names, roles, who made them).
   if (TOKENS.test(p)) return 'admin'
   if (PROXY.test(p)) return (m === 'GET' || m === 'HEAD') && PROXY_READ.test(p) ? 'viewer' : 'admin'
@@ -271,8 +287,12 @@ export function requiredRole(method: string, path: string): Role | null {
   return 'admin'
 }
 
-/** Requests that need the master password re-entered within the last 5 minutes. */
-export function needsReconfirm(method: string, path: string): boolean {
+/**
+ * Requests that need the master password re-entered within the last 5 minutes.
+ * `opts.exceptPluginSettings` (the gate, for an API token an owner gave the plug-in settings permission) drops
+ * only the plug-in settings rule; every other rule still applies to the same request.
+ */
+export function needsReconfirm(method: string, path: string, opts: { exceptPluginSettings?: boolean } = {}): boolean {
   const m = method.toUpperCase()
   const p = normalisePath(path)
   if (m === 'DELETE' && DESTROY.test(p)) return true
@@ -291,12 +311,12 @@ export function needsReconfirm(method: string, path: string): boolean {
   if (m === 'POST' && HA_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && HA_CONTROL_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && QNAP_RECONFIRM.test(p)) return true
-  if (m === 'PUT' && PLUGIN_SETTINGS.test(p)) return true
+  if (m === 'PUT' && PLUGIN_SETTINGS.test(p) && !opts.exceptPluginSettings) return true
   if (m === 'POST' && PLEX_CLEAROUT_RECONFIRM.test(p)) return true
   if (m === 'PUT' && SETTINGS_SAVE.test(p)) return true
   if (m === 'POST' && SETTINGS_TEST.test(p)) return true
-  // Creating or revoking an API token.
-  if ((m === 'POST' || m === 'DELETE') && TOKENS.test(p)) return true
+  // Creating or revoking an API token, or changing what one may do.
+  if ((m === 'POST' || m === 'DELETE' || m === 'PUT') && TOKENS.test(p)) return true
   for (const [rm, re] of REMOTE_RECONFIRM) if (m === rm && re.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && VPN.test(p) && !VPN_PREVIEW.test(p)) return true
   for (const [cm, re] of CLUSTERS_RECONFIRM) if (m === cm && re.test(p)) return true
