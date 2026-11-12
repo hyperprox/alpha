@@ -26,6 +26,7 @@ import { AsusRefusal, confirmPhrase, viewerAction, type Actor } from '../lib/asu
 import { AsusLoginError } from '../lib/asus/client'
 import { AsusUnreachableError } from '../lib/asus/transport'
 import { findAsusRouters } from '../lib/asus/detect'
+import { addressLike } from '../lib/asus/parse'
 
 declare module 'fastify' {
   interface FastifyRequest { asusHandled?: boolean }
@@ -57,7 +58,9 @@ function view(m: AsusMeta & Partial<Pick<AsusView, 'url' | 'username' | 'hasPass
   const out = { ...m, held: svc().blockedReason(m.id), phrase: confirmPhrase(m.name), lastAction: actionFor(m.id, viewer) }
   if (!viewer) return out
   const { url: _u, username: _n, fingerprint: _f, ...rest } = out
-  return rest
+  // A name is fine for a viewer, unless it is really an address.
+  const name = addressLike(m.name) ? 'ASUS router' : m.name
+  return { ...rest, name, deviceName: m.deviceName && addressLike(m.deviceName) ? null : m.deviceName, phrase: confirmPhrase(name) }
 }
 
 type P = { Params: { iid: string } }
@@ -124,7 +127,10 @@ export const asusRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get<P & { Querystring: { fresh?: string } }>('/instances/:iid/reading', async (req, reply) => {
     try {
       const r = await svc().reading(req.params.iid, { actor: actor(req), fresh: req.query.fresh === '1' })
-      return { success: true, data: { ok: true, reading: isViewer(req) ? viewerReading(r) : r, lastAction: actionFor(req.params.iid, isViewer(req)) } }
+      // The name may have just changed to the unit's own (it is read on the 5-minute cycle): send it with the reading.
+      const m = await svc().instances.get(req.params.iid)
+      const named = m ? { name: view(m, isViewer(req)).name, phrase: view(m, isViewer(req)).phrase } : {}
+      return { success: true, data: { ok: true, ...named, reading: isViewer(req) ? viewerReading(r) : r, lastAction: actionFor(req.params.iid, isViewer(req)) } }
     } catch (e: any) {
       if (e instanceof AsusRefusal && (e.status === 404 || e.status === 429)) return fail(reply, e)
       const known = e instanceof AsusRefusal || e instanceof AsusUnreachableError || e instanceof AsusLoginError

@@ -80,6 +80,8 @@ export interface AsusMode {
 
 export interface AsusReading {
   fetchedAt: string
+  /** The unit's own name (AiMesh location, else host name), or null when it has none worth showing. */
+  unitName:  string | null
   mode:      AsusMode
   /** Not a router: where its LAN connects upstream. The gateway address is for operators and up. */
   uplink:    { gateway: string | null } | null
@@ -115,11 +117,13 @@ export interface AsusReading {
 export const WL_KEYS = ['ssid', 'nband', 'radio', 'chanspec', 'bw'] as const
 export const FIRMWARE_KEYS = ['productid', 'odmpid', 'firmver', 'buildno', 'extendno', '3rd-party', 'webs_state_flag', 'webs_state_info'] as const
 export const MODE_KEYS = ['sw_mode', 're_mode', 'cfg_master', 'wlc_psta', 'lan_gateway'] as const
+/** The unit's own name: its AiMesh location (set in the ASUS app), then its host names. */
+export const NAME_KEYS = ['cfg_alias', 'computer_name', 'lan_hostname'] as const
 export const nv = (k: string) => `nvram_get(${k})`
 
 /** The values that change only when someone reconfigures the unit: read every few minutes, not every reading. */
 export function staticHooks(units: number): string[] {
-  return [...FIRMWARE_KEYS, ...MODE_KEYS, 'wl_ifnames', ...Array.from({ length: units }, (_, u) => WL_KEYS.map(k => `wl${u}_${k}`)).flat()].map(nv)
+  return [...FIRMWARE_KEYS, ...MODE_KEYS, ...NAME_KEYS, 'wl_ifnames', ...Array.from({ length: units }, (_, u) => WL_KEYS.map(k => `wl${u}_${k}`)).flat()].map(nv)
 }
 /** What a reading needs fresh every time. get_wan_unit only means something on a router. */
 export const dynamicHooks = (router: boolean) => ['uptime()', 'cpu_usage(appobj)', 'memory_usage(appobj)', 'netdev(appobj)', ...(router ? ['get_wan_unit()'] : [])]
@@ -374,9 +378,10 @@ const fwOf = (v: unknown) => { const s = str(v, 40); return s ? s.replace(/-g[0-
  * get_cfg_clientlist(): one object per unit (level 0 is the main unit), and get_allclientlist(): per unit MAC,
  * per band ("2G", "5G", "6G", "6G_4", "wired_mac"), the clients on it. Pure; an empty or missing list is no mesh.
  */
-export function parseMesh(nodesRaw: unknown, clientsRaw: unknown, instanceId: string): { nodes: MeshNode[]; byMac: Map<string, string>; main: string | null } {
+export function parseMesh(nodesRaw: unknown, clientsRaw: unknown, instanceId: string): { nodes: MeshNode[]; byMac: Map<string, string>; main: string | null; mainAlias: string | null } {
   const byMac = new Map<string, string>()
-  if (!Array.isArray(nodesRaw) || !nodesRaw.length) return { nodes: [], byMac, main: null }
+  let mainAlias: string | null = null
+  if (!Array.isArray(nodesRaw) || !nodesRaw.length) return { nodes: [], byMac, main: null, mainAlias }
   const per = clientsRaw && typeof clientsRaw === 'object' ? clientsRaw as Record<string, any> : {}
   const nodes: MeshNode[] = []
   for (const n of nodesRaw.slice(0, 32)) {
@@ -390,6 +395,7 @@ export function parseMesh(nodesRaw: unknown, clientsRaw: unknown, instanceId: st
     const bucket = per[mac] ?? per[mac.toLowerCase()] ?? {}
     const clients = Object.values(bucket && typeof bucket === 'object' ? bucket : {}).reduce((t: number, v: any) => t + (Array.isArray(v) ? v.length : v && typeof v === 'object' ? Object.keys(v).length : 0), 0)
     const name = str(n.alias, 40) ?? str(n.ui_model_name, 40) ?? 'AiMesh node'
+    if (main) mainAlias = str(n.alias, 40)
     const ip = str(n.ip, 45)
     nodes.push({
       key: deviceKey(instanceId, mac), name,
@@ -403,7 +409,21 @@ export function parseMesh(nodesRaw: unknown, clientsRaw: unknown, instanceId: st
     byMac.set(mac, name)
   }
   nodes.sort((a, b) => Number(b.main) - Number(a.main) || a.name.localeCompare(b.name))
-  return { nodes, byMac, main: nodes.find(x => x.main)?.name ?? null }
+  return { nodes, byMac, main: nodes.find(x => x.main)?.name ?? null, mainAlias }
+}
+
+/**
+ * The unit's own name, in order: its AiMesh location (cfg_alias, or its own entry in the mesh list), then
+ * computer_name, then lan_hostname. A name that is only the model, or looks like an address, is no name.
+ */
+export function unitNameOf(n: Record<string, unknown>, meshMain: string | null, model: string | null): string | null {
+  for (const v of [n.cfg_alias, meshMain, n.computer_name, n.lan_hostname]) {
+    const s = str(v, 40)
+    if (!s || addressLike(s)) continue
+    if (model && s.toLowerCase() === model.toLowerCase()) continue
+    return s
+  }
+  return null
 }
 
 // ── counters and rates ───────────────────────────────────────────────────────
@@ -532,6 +552,7 @@ export function buildReading(raw: RawAnswers, o: { instanceId: string; prev: Cou
   const base = { wan, cpuPct: rates.cpuPct, mem, update, mode }
   return {
     fetchedAt: (o.now ?? new Date()).toISOString(),
+    unitName: unitNameOf(n, mesh.mainAlias, str(n.productid, 40)),
     mode, uplink,
     model, firmware, update,
     uptimeSec: uptimeSeconds(sys?.uptime),

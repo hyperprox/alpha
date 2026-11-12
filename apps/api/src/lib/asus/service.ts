@@ -29,7 +29,7 @@ import { hasRole, type Role } from '../roles'
 import { probeCertificate } from '../clusters/tls-pin'
 import { AsusClient, AsusLoginError } from './client'
 import { endpointOf, type AsusInstanceStore, type AsusInput, type AsusMeta, type Prepared } from './instances'
-import { FIRMWARE_KEYS, HOOKS, buildReading, dynamicHooks, firmwareOf, hookKey, looseJson, loosePairs, modeOf, nv, radioCount, sampleOf, staticHooks, type AsusReading, type CounterSample } from './parse'
+import { FIRMWARE_KEYS, NAME_KEYS, unitNameOf, HOOKS, buildReading, dynamicHooks, firmwareOf, hookKey, looseJson, loosePairs, modeOf, nv, radioCount, sampleOf, staticHooks, type AsusReading, type CounterSample } from './parse'
 import { DIAGNOSTIC_HOOKS, MAX_TOTAL_CHARS, MacMasker, redactAnswer } from './diagnostics'
 import { DirectTransport, AsusUnreachableError, type AsusTransport } from './transport'
 import { portOf, resolveAsusTarget } from './target'
@@ -259,7 +259,8 @@ export class AsusService {
         return r.values
       }
       let st = this.statics.get(id)
-      if (!st || this.d.now() - st.at > STATIC_MS) {
+      const slowCycle = !st || this.d.now() - st.at > STATIC_MS
+      if (!st || slowCycle) {
         // The radio count first (wl_ifnames), so a one-hook firmware is not asked about radios it does not have.
         const base = await read(staticHooks(0))
         if (base.productid === undefined && base.firmver === undefined && base.sw_mode === undefined) {
@@ -298,6 +299,8 @@ export class AsusService {
       if (reading.model !== meta.model || reading.firmware.version !== meta.firmware) {
         await this.d.store.noteFound(id, { model: reading.model, firmware: reading.firmware.version }).catch(() => {})
       }
+      // The unit's own name follows the unit (unless a person typed one), on the same 5-minute cycle as its settings.
+      if (slowCycle) await this.d.store.adoptDeviceName(id, reading.unitName).catch(() => null)
       return reading
     } catch (e) { return this.hold(id, e) }
   }
@@ -322,7 +325,7 @@ export class AsusService {
    * password in the same save). An existing router never gets "whatever it presents now": a changed
    * certificate is pinned through probeCertificate(), shown to a person and confirmed by its fingerprint.
    */
-  private async setUp(p: Prepared): Promise<{ fingerprint: string | null; pinnedNow: boolean; model: string | null; firmware: string | null }> {
+  private async setUp(p: Prepared): Promise<{ fingerprint: string | null; pinnedNow: boolean; model: string | null; firmware: string | null; deviceName?: string | null }> {
     let fingerprint = p.fingerprint, pinnedNow = false
     if (p.moved && p.url.startsWith('https:') && !fingerprint && !p.insecureTLS) {
       try { fingerprint = (await (this.d.probe ?? liveProbe)(p.url)).fingerprint; pinnedNow = true }
@@ -331,11 +334,12 @@ export class AsusService {
     if (!p.password) return { fingerprint, pinnedNow, model: null, firmware: null }
     const client = new AsusClient(this.transport(p.url, { insecureTLS: p.insecureTLS, fingerprint }), { username: p.username, password: p.password }, { now: this.d.now })
     try {
-      const sys = (await readHooks(client, FIRMWARE_KEYS.map(nv), undefined)).values
+      const sys = (await readHooks(client, [...FIRMWARE_KEYS, ...NAME_KEYS].map(nv), undefined)).values
       if (sys.productid === undefined && sys.firmver === undefined) throw new AsusRefusal('not_asus', 'The router signed HyperProx in, but did not answer with its status.', 400)
       const fw = firmwareOf(sys)
       const model = (typeof sys.odmpid === 'string' && sys.odmpid.trim()) || (typeof sys.productid === 'string' && sys.productid.trim()) || null
-      return { fingerprint, pinnedNow, model: model ? model.slice(0, 40) : null, firmware: fw.version }
+      const m40 = model ? model.slice(0, 40) : null
+      return { fingerprint, pinnedNow, model: m40, firmware: fw.version, deviceName: unitNameOf(sys, null, typeof sys.productid === 'string' ? sys.productid : null) }
     } catch (e: any) {
       if (e instanceof AsusRefusal) throw e
       if (e instanceof AsusLoginError) throw new AsusRefusal(`login_${e.kind}`, `${e.message} Nothing was saved.`, 400)

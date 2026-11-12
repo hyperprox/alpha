@@ -34,6 +34,20 @@ export interface AsusMeta {
   /** What setup read from the router itself, so the list can say it without a login. */
   model:       string | null
   firmware:    string | null
+  /**
+   * Where `name` came from. `user`: typed by a person, and never changed by HyperProx. `device`: the unit's own
+   * name (its AiMesh location or host name), kept in step with the unit. `model`: no better name was known yet.
+   */
+  nameSource:  'user' | 'device' | 'model'
+  /** The unit's own name, as last read from it. */
+  deviceName:  string | null
+}
+
+/** A name HyperProx made from the model ("ET-X", "ET-X 2", "ASUS router"), which a device name may replace. */
+export function looksModelMade(name: string, model: string | null): boolean {
+  const n = name.trim().toLowerCase()
+  const bases = ['asus router', ...(model ? [model.toLowerCase()] : [])]
+  return bases.some(b => n === b || new RegExp(`^${b.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\d{1,2}$`).test(n))
 }
 
 export interface AsusView extends AsusMeta { url: string; username: string; hasPassword: boolean }
@@ -103,6 +117,10 @@ function parseIndex(raw: string | null): AsusMeta[] {
       insecureTLS: x.insecureTLS === true,
       fingerprint: typeof x.fingerprint === 'string' ? normaliseFingerprint(x.fingerprint) : null,
       model: short(x.model, 40), firmware: short(x.firmware, 40),
+      // Instances from before names were read: a name equal to the model (or "model 2") was HyperProx's, not a person's.
+      nameSource: x.nameSource === 'user' || x.nameSource === 'device' || x.nameSource === 'model' ? x.nameSource
+        : looksModelMade(String(x.name), short(x.model, 40)) ? 'model' : 'user',
+      deviceName: short(x.deviceName, 40),
     }))
   } catch { return [] }
 }
@@ -199,17 +217,19 @@ export class AsusInstanceStore {
     throw new AsusInputError('Another router already has that name.', 409)
   }
 
-  /** Write a new router. `name` blank: the model setup found, or "ASUS router". */
-  async create(p: Prepared, name: unknown, found: { model: string | null; firmware: string | null }): Promise<AsusMeta> {
+  /** Write a new router. `name` blank: the unit's own name, else the model setup found, else "ASUS router". */
+  async create(p: Prepared, name: unknown, found: { model: string | null; firmware: string | null; deviceName?: string | null }): Promise<AsusMeta> {
     return this.serial(async () => {
       const list = await this.list()
       if (list.length >= MAX_INSTANCES) throw new AsusInputError(`HyperProx holds up to ${MAX_INSTANCES} routers.`)
       const explicit = typeof name === 'string' && name.trim() !== ''
-      const base = explicit ? cleanName(name) : (found.model ?? 'ASUS router')
+      const own = short(found.deviceName ?? null, 40)
+      const base = explicit ? cleanName(name) : (own ?? found.model ?? 'ASUS router')
       if (explicit && list.some(i => i.name.toLowerCase() === base.toLowerCase())) throw new AsusInputError('Another router already has that name.', 409)
       const meta: AsusMeta = {
-        id: `a${crypto.randomBytes(4).toString('hex')}`, name: this.uniqueName(list, base, null),
+        id: `a${crypto.randomBytes(4).toString('hex')}`, name: explicit ? base : this.deviceLabel(list, base, short(found.model, 40), null),
         insecureTLS: p.insecureTLS, fingerprint: p.fingerprint, model: short(found.model, 40), firmware: short(found.firmware, 40),
+        nameSource: explicit ? 'user' : own ? 'device' : 'model', deviceName: own,
       }
       const prov = providerFor(meta.id)
       await this.io.set(CATEGORY, prov, 'url', p.url, false)
@@ -225,16 +245,58 @@ export class AsusInstanceStore {
       const list = await this.list()
       const prev = list.find(i => i.id === id)
       if (!prev) throw new AsusInputError('No such router.', 404)
-      const nm = name === undefined ? prev.name : cleanName(name)
-      if (list.some(i => i.id !== id && i.name.toLowerCase() === nm.toLowerCase())) throw new AsusInputError('Another router already has that name.', 409)
+      // A typed name is the person's. A blank one hands naming back to the unit (its own name, else its model).
+      const model = found ? short(found.model, 40) : prev.model
+      const cleared = typeof name === 'string' && name.trim() === ''
+      const typed = name !== undefined && !cleared ? cleanName(name) : null
+      if (typed && list.some(i => i.id !== id && i.name.toLowerCase() === typed.toLowerCase())) throw new AsusInputError('Another router already has that name.', 409)
+      const own = prev.deviceName
+      const nm = typed ?? (cleared ? this.deviceLabel(list, own ?? model ?? 'ASUS router', model, id) : prev.name)
       const next: AsusMeta = {
         id, name: nm, insecureTLS: p.insecureTLS, fingerprint: p.fingerprint,
-        model: found ? short(found.model, 40) : prev.model, firmware: found ? short(found.firmware, 40) : prev.firmware,
+        model, firmware: found ? short(found.firmware, 40) : prev.firmware,
+        nameSource: typed ? (typed === prev.name ? prev.nameSource : 'user') : cleared ? (own ? 'device' : 'model') : prev.nameSource,
+        deviceName: own,
       }
       const prov = providerFor(id)
       await this.io.set(CATEGORY, prov, 'url', p.url, false)
       await this.io.set(CATEGORY, prov, 'username', p.username, false)
       if (p.password) await this.io.set(CATEGORY, prov, 'password', p.password, true)
+      await this.io.set(CATEGORY, PLUGIN_ID, INDEX_KEY, JSON.stringify(list.map(i => i.id === id ? next : i)), false)
+      return next
+    })
+  }
+
+  /**
+   * A name for a unit that is not taken by another router: its own name, then "Living Room (ET-X)" when another
+   * router already has it (two units of one mesh, say), then a number.
+   */
+  private deviceLabel(list: AsusMeta[], base: string, model: string | null, except: string | null): string {
+    const taken = (n: string) => list.some(i => i.id !== except && i.name.toLowerCase() === n.toLowerCase())
+    if (!taken(base)) return base.slice(0, 40)
+    const withModel = model && !base.toLowerCase().includes(model.toLowerCase()) ? `${base.slice(0, 40 - model.length - 3)} (${model})` : base
+    return this.uniqueName(list, withModel.slice(0, 40), except)
+  }
+
+  /**
+   * The unit's own name, read on the 5-minute settings cycle. A name a person typed is never touched; any other
+   * follows the unit, so renaming it in the ASUS app renames it here.
+   */
+  async adoptDeviceName(id: string, deviceName: string | null): Promise<AsusMeta | null> {
+    return this.serial(async () => {
+      const list = await this.list()
+      const prev = list.find(i => i.id === id)
+      if (!prev) return null
+      const own = short(deviceName, 40)
+      if (prev.nameSource === 'user' || !own) {
+        if (own === prev.deviceName) return prev
+        const next = { ...prev, deviceName: own ?? prev.deviceName }
+        await this.io.set(CATEGORY, PLUGIN_ID, INDEX_KEY, JSON.stringify(list.map(i => i.id === id ? next : i)), false)
+        return next
+      }
+      const current = prev.nameSource === 'device' && prev.deviceName === own ? prev.name : this.deviceLabel(list, own, prev.model, id)
+      if (current === prev.name && prev.nameSource === 'device' && prev.deviceName === own) return prev
+      const next: AsusMeta = { ...prev, name: current, nameSource: 'device', deviceName: own }
       await this.io.set(CATEGORY, PLUGIN_ID, INDEX_KEY, JSON.stringify(list.map(i => i.id === id ? next : i)), false)
       return next
     })

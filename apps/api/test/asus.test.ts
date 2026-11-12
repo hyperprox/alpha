@@ -829,7 +829,7 @@ test('real firmware, access point mode: no WAN, no alarm, radios and clients rea
 })
 
 test('mesh parsing: backhaul from re_path bits, wired, offline, and nothing for an empty list', () => {
-  assert.deepEqual(parseMesh([], {}, 'a'), { nodes: [], byMac: new Map(), main: null })
+  assert.deepEqual(parseMesh([], {}, 'a'), { nodes: [], byMac: new Map(), main: null, mainAlias: null })
   assert.deepEqual(parseMesh(undefined, undefined, 'a').nodes, [])
   const nodes = parseMesh([
     { alias: 'Hub', mac: '00:00:5E:00:53:01', level: '0', re_path: '0', online: '1', ui_model_name: 'XX-MESH9', fwver: '3.0.0.4.388_1-gabc', newfwver: '' },
@@ -840,4 +840,101 @@ test('mesh parsing: backhaul from re_path bits, wired, offline, and nothing for 
   assert.deepEqual(nodes.map(n => [n.name, n.main, n.backhaul, n.rssi, n.online, n.clients, n.update]), [
     ['Hub', true, null, null, true, 3, null], ['Den', false, 'wired', null, true, 2, null], ['Loft', false, '6 GHz', -70, false, 0, '3.0.0.4.388_2'],
   ])
+})
+
+// ── the units' own names ─────────────────────────────────────────────────────
+
+import { unitNameOf } from '../src/lib/asus/parse'
+import { looksModelMade } from '../src/lib/asus/instances'
+
+test('unit name precedence: AiMesh location, then its mesh entry, then host names; never the model or an address', () => {
+  assert.equal(unitNameOf({ cfg_alias: 'Living Room', computer_name: 'host-a', lan_hostname: 'host-b' }, 'Mesh alias', 'XX-MESH9'), 'Living Room')
+  assert.equal(unitNameOf({ cfg_alias: '', computer_name: 'host-a' }, 'Mesh alias', 'XX-MESH9'), 'Mesh alias')
+  assert.equal(unitNameOf({ computer_name: 'host-a', lan_hostname: 'host-b' }, null, 'XX-MESH9'), 'host-a')
+  assert.equal(unitNameOf({ lan_hostname: 'host-b' }, null, 'XX-MESH9'), 'host-b')
+  assert.equal(unitNameOf({ cfg_alias: 'xx-mesh9', computer_name: 'XX-MESH9' }, null, 'XX-MESH9'), null, 'only the model is no name')
+  assert.equal(unitNameOf({ cfg_alias: '00:00:5E:00:53:01', computer_name: '10.9.8.5', lan_hostname: 'Hall' }, null, 'XX-MESH9'), 'Hall', 'addresses are skipped')
+  assert.equal(unitNameOf({ cfg_alias: 'Den\u0001' }, null, null), 'Den')
+})
+
+test('names HyperProx made from the model are recognised; a typed name is not', () => {
+  assert.ok(looksModelMade('XX-MESH9', 'XX-MESH9'))
+  assert.ok(looksModelMade('XX-MESH9 2', 'XX-MESH9'))
+  assert.ok(looksModelMade('ASUS router', null))
+  assert.ok(!looksModelMade('Office', 'XX-MESH9'))
+  assert.ok(!looksModelMade('XX-MESH9 upstairs', 'XX-MESH9'))
+})
+
+test('precedence and the auto-rename: user-set > unit name > model; model-named instances follow the unit; duplicates told apart', async () => {
+  const io = memoryIO()
+  const store = new AsusInstanceStore(io, async () => '10.9.8.2')
+  const prep = () => store.prepare(null, { url: 'http://10.9.8.2', username: 'admin', password: 'pw' })
+  // Instances from before names were read: no nameSource, named after their model.
+  const a = await store.create(await prep(), undefined, { model: 'XX-MESH9', firmware: null })
+  const b = await store.create(await prep(), undefined, { model: 'XX-MESH9', firmware: null })
+  const c = await store.create(await prep(), 'Garage', { model: 'XX-MESH9', firmware: null })
+  const raw = JSON.parse((await io.get('plugin', 'asus', 'instances'))!)
+  for (const x of raw) delete x.nameSource
+  await io.set('plugin', 'asus', 'instances', JSON.stringify(raw), false)
+  const legacy = await store.list()
+  assert.deepEqual(legacy.map(x => [x.name, x.nameSource]), [['XX-MESH9', 'model'], ['XX-MESH9 2', 'model'], ['Garage', 'user']])
+
+  assert.equal((await store.adoptDeviceName(a.id, 'Living Room'))!.name, 'Living Room')
+  // A second unit reporting the same name (two instances of one mesh): told apart by its model.
+  const b2 = (await store.adoptDeviceName(b.id, 'Living Room'))!
+  assert.equal(b2.name, 'Living Room (XX-MESH9)')
+  assert.equal(b2.nameSource, 'device')
+  // A typed name is never touched, though the unit's own name is remembered.
+  const c2 = (await store.adoptDeviceName(c.id, 'Workshop'))!
+  assert.deepEqual([c2.name, c2.nameSource, c2.deviceName], ['Garage', 'user', 'Workshop'])
+  // Renaming the unit in the ASUS app renames it here; no name at all keeps the last one.
+  assert.equal((await store.adoptDeviceName(a.id, 'Lounge'))!.name, 'Lounge')
+  assert.equal((await store.adoptDeviceName(a.id, null))!.name, 'Lounge')
+  // Clearing a typed name hands naming back to the unit; typing one takes it back.
+  const cleared = await store.update(c.id, await store.prepare(c.id, {}), '', null)
+  assert.deepEqual([cleared.name, cleared.nameSource], ['Workshop', 'device'])
+  const typed = await store.update(c.id, await store.prepare(c.id, {}), 'Shed', null)
+  assert.deepEqual([typed.name, typed.nameSource], ['Shed', 'user'])
+  assert.equal((await store.adoptDeviceName(c.id, 'Workshop'))!.name, 'Shed')
+})
+
+test('end to end: setup names a new router after the unit; a model-named one switches on the slow cycle; the reboot phrase follows', async () => {
+  const { svc, store, url, fake, tick } = await setup({ alias: 'Living Room', meshList: false })
+  const { meta } = await svc.add({ url, username: 'admin', password: 'correct horse' }, admin)
+  assert.deepEqual([meta.name, meta.nameSource, meta.deviceName], ['Living Room', 'device', 'Living Room'])
+
+  // An instance from before: named after its model. The first reading (a slow cycle) adopts the unit's name.
+  const old = await store.create(await store.prepare(null, { url, username: 'admin', password: 'correct horse' }), undefined, { model: 'RT-XX9000', firmware: null })
+  assert.deepEqual([old.name, old.nameSource], ['RT-XX9000', 'model'])
+  // Same name as the first router: told apart by model, then the unit is renamed in the app before the slow cycle.
+  fake.st.alias = 'Den'
+  await svc.reading(old.id)
+  const now = (await store.get(old.id))!
+  assert.equal(now.name, 'Den')
+  assert.equal(confirmPhrase(now.name), 'Reboot Den')
+  await assert.rejects(svc.act(old.id, { action: 'reboot', confirm: 'Reboot RT-XX9000', typed: 'RT-XX9000' }, admin), (e: any) => e.code === 'confirm_required', 'the old phrase no longer works')
+  await svc.act(old.id, { action: 'reboot', confirm: 'Reboot Den', typed: 'den' }, admin)
+  await svc.readBacks.get(old.id)
+  // Within the 5-minute cycle the name is not re-read; after it, a rename in the app arrives.
+  fake.st.alias = 'Study'
+  tick(60_000); await svc.reading(old.id, { fresh: true })
+  assert.equal((await store.get(old.id))!.name, 'Den')
+  tick(5 * 60_000); await svc.reading(old.id, { fresh: true })
+  assert.equal((await store.get(old.id))!.name, 'Study')
+  // The AI summary and the card carry the unit's name, quoted.
+  setAsusService(svc)
+  try {
+    const ctx = { get: async () => allReadings() } as unknown as PluginContext
+    const sum = await asusPlugin.summary!(ctx)
+    assert.ok(sum.lines.some(l => l.startsWith('"Study"')))
+  } finally { setAsusService(null) }
+})
+
+test('a unit name that looks like an address is never adopted, and viewers never see one', async () => {
+  const { svc, store, url } = await setup({ alias: '00:00:5E:00:53:77', hostname: '10.9.8.77' })
+  const { meta } = await svc.add({ url, username: 'admin', password: 'correct horse' }, admin)
+  assert.deepEqual([meta.name, meta.nameSource], ['RT-XX9000', 'model'])
+  await svc.reading(meta.id)
+  assert.equal((await store.get(meta.id))!.name, 'RT-XX9000')
+  assert.equal((await svc.reading(meta.id)).unitName, null)
 })
