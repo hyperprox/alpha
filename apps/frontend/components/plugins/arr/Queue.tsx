@@ -138,7 +138,7 @@ function ShowCard({ show, open, onToggle, isOpen, toggleKey }: {
     <li className={c.group} data-problem={show.problem ?? undefined}>
       <button type="button" className={c.groupHead} aria-expanded={open} onClick={onToggle}>
         <Chevron open={open} />
-        <RingGauge value={show.progress / 100} size={44} stroke={5} color={tone} text={`${Math.round(show.progress)}`} label={`${show.title} progress`} />
+        <RingGauge value={show.progress / 100} size={44} stroke={5} color={tone} text={`${Math.round(show.progress)}%`} label={`${show.title} progress`} compact />
         <span className={c.groupTitle}>
           <b>{show.title}</b>
           <small>{plural(show.seasons.length, 'season')} · {plural(show.downloads, 'download')} · {plural(show.episodes, 'episode')}</small>

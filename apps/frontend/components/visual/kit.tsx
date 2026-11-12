@@ -114,8 +114,10 @@ export function Icon({ name, size = 16, className, label }: { name: string; size
  * A ring gauge. `value` is 0..1; `sweep` below 1 opens the ring at the bottom (a dial). `text` is what the centre
  * says and `label` names it, both read out together.
  */
-export function RingGauge({ value, size = 84, stroke = 6, color = 'var(--hx-accent)', text, label, sweep = 1, spin = false, big = false }: {
+export function RingGauge({ value, size = 84, stroke = 6, color = 'var(--hx-accent)', text, label, sweep = 1, spin = false, big = false, compact = false }: {
   value: number; size?: number; stroke?: number; color?: string; text: ReactNode; label: string; sweep?: number; spin?: boolean; big?: boolean
+  /** Small rings: show only the value, sized to fit; the label stays in the accessible name. */
+  compact?: boolean
 }) {
   const r = (size - stroke) / 2 - (spin ? 6 : 0)
   const c = 2 * Math.PI * r
@@ -136,7 +138,9 @@ export function RingGauge({ value, size = 84, stroke = 6, color = 'var(--hx-acce
             style={{ filter: `drop-shadow(0 0 5px color-mix(in srgb, ${color} var(--glow), transparent))` }} />
         </g>
       </svg>
-      <div className={s.ringMid} aria-hidden><b>{text}</b><span>{label}</span></div>
+      <div className={s.ringMid} aria-hidden>{compact
+        ? <b style={{ fontSize: Math.max(10, Math.round(size * 0.27)), lineHeight: 1 }}>{text}</b>
+        : <><b>{text}</b><span>{label}</span></>}</div>
     </div>
   )
 }
