@@ -34,7 +34,11 @@ export interface EpisodeView {
   ratingKey: string; season: number; episode: number; title: string
   sizeBytes: number | null; quality: string; plays: number; viewers: number; lastPlayed: number | null
   /** Watched by anyone: a play in the history, or any account's watched mark. */
-  watched: boolean; inProgress: boolean; nextUpFor: string[]; versions: PlexVersion[]
+  watched: boolean; inProgress: boolean; versions: PlexVersion[]
+  /** Who it is next up for, by name: operators and above only (the route takes it out for a viewer). */
+  nextUpFor?: string[]
+  /** How many people it is next up for: what a viewer gets. */
+  nextUpCount: number
   /** Accounts that watched it, and of those how many only by a watched mark. */
   watchers: number; marked: number
   /** Who, by name: operators and above only (the route takes it out for a viewer). */
@@ -134,7 +138,7 @@ export class LibraryService {
         sizeBytes: l?.fileSize ?? e.sizeBytes, quality: l?.quality ? `${l.quality}${e.versions[0] ? ` · ${e.versions[0].label.split(' · ').pop()}` : ''}` : e.quality,
         plays: p?.plays ?? 0, viewers: p?.viewers.size ?? 0, lastPlayed: w.lastPlayed,
         watchers: w.watchers, marked: w.marked, watchedBy: watcherNames(w.who, g.names),
-        watched: w.watched, inProgress: e.inProgress || w.inProgress, nextUpFor: next.get(e.ratingKey) ?? [],
+        watched: w.watched, inProgress: e.inProgress || w.inProgress, nextUpFor: next.get(e.ratingKey) ?? [], nextUpCount: next.get(e.ratingKey)?.length ?? 0,
         versions: e.versions, via: m.managed ? 'sonarr' : 'plex',
         // A show Sonarr manages: an episode it cannot confirm is refused, never handed to Plex.
         refused: refuse ?? (m.managed ? (l?.fileId ? null : refusedEps.get(e.ratingKey) ?? 'Sonarr has no file for it, so it is left alone.') : null),
@@ -327,7 +331,7 @@ function sharedWarning(g: Gathered, m: ItemMeta): string[] {
 export function warningsFor(views: EpisodeView[]): string[] {
   const out: string[] = []
   for (const v of views) {
-    if (v.nextUpFor.length) out.push(`S${v.season}E${v.episode} is next up for ${v.nextUpFor.join(', ')}.`)
+    if (v.nextUpFor?.length) out.push(`S${v.season}E${v.episode} is next up for ${v.nextUpFor.join(', ')}.`)
     if (v.inProgress) out.push(`S${v.season}E${v.episode} is partly watched.`)
   }
   return out.slice(0, 20)

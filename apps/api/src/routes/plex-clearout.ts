@@ -44,10 +44,10 @@ import type { NotifyEventInput } from '../lib/notify/types'
 import { publish } from '../lib/notify'
 import { isUnlocked, onLock } from '../lib/vault/state'
 
-/** Names of who watched what are for operators and up: a viewer gets the counts only. */
-export function forRole<T extends { watchedBy?: unknown }>(rows: T[], role: string | undefined): T[] {
+/** Names of who watched what, or whose next episode it is, are for operators and up: a viewer gets the counts only. */
+export function forRole<T extends { watchedBy?: unknown; nextUpFor?: unknown }>(rows: T[], role: string | undefined): T[] {
   if (hasRole((role ?? 'viewer') as any, 'operator')) return rows
-  return rows.map(r => { const { watchedBy: _w, ...rest } = r; return rest as T })
+  return rows.map(r => { const { watchedBy: _w, nextUpFor: _n, ...rest } = r; return rest as T })
 }
 
 let shared: ClearoutService | null = null

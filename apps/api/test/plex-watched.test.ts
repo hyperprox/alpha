@@ -149,16 +149,18 @@ test('shared_servers: one account per user, each with its own token; the owner a
   const xml = `<?xml version="1.0"?><MediaContainer size="3">
     <SharedServer id="9" username="friend &amp; co" userID="22" accessToken="${FRIEND_TOKEN}" owned="1"><Section key="1"/></SharedServer>
     <SharedServer id="10" username="" name="kid" userID="23" accessToken="${BROKEN_TOKEN}"></SharedServer>
+    <SharedServer id="13" username="" email="someone@example.com" userID="25" accessToken="other-token-9"></SharedServer>
     <SharedServer id="11" username="nobody" userID="24" accessToken=""></SharedServer>
     <SharedServer id="12" username="self" userID="1" accessToken="x"></SharedServer>
   </MediaContainer>`
-  assert.deepEqual(parseSharedServers(xml).map(a => [a.account, a.name]), [[22, 'friend & co'], [23, 'kid']])
+  assert.deepEqual(parseSharedServers(xml).map(a => [a.account, a.name]), [[22, 'friend & co'], [23, 'kid'], [25, 'account 25']], 'never the e-mail address')
 })
 
 // ── the background reading ──────────────────────────────────────────────────
 
 /** A Plex with an owner, a friend who watched a film and an episode, and a managed user whose token fails. */
-function fakePlex(o: { plexTv?: 'ok' | 'refused' | 'down'; gate?: Promise<void> } = {}) {
+/** `ctl.hold`: plex.tv answers only once this resolves (set it again to hold the next reading). */
+function fakePlex(o: { plexTv?: 'ok' | 'refused' | 'down'; ctl?: { hold: Promise<void> | null } } = {}) {
   const calls = { textAt: 0, getAs: 0, seen: [] as string[] }
   const films = [
     { ratingKey: '1', title: 'Paper Moons', year: 2015, addedAt: s(NOW - 400 * DAY), Guid: [{ id: 'tmdb://111' }], viewCount: 1, lastViewedAt: s(NOW - 30 * DAY) },
@@ -194,7 +196,7 @@ function fakePlex(o: { plexTv?: 'ok' | 'refused' | 'down'; gate?: Promise<void> 
     },
     async textAt(origin, p) {
       calls.textAt++
-      if (o.gate) await o.gate
+      if (o.ctl?.hold) await o.ctl.hold
       assert.equal(origin, 'https://plex.tv')
       assert.equal(p, `/api/servers/${MACHINE}/shared_servers`)
       if (o.plexTv === 'refused') throw new Error('plex.tv returned HTTP 401')
@@ -214,10 +216,9 @@ const service = (plex: CoreEndpointClient, now = () => NOW) =>
 
 test("a shared account's watched marks count once read; until then nothing is removed from Clear-out", async () => {
   let open!: () => void
-  const { plex } = fakePlex({ gate: new Promise<void>(r => { open = r }) })
+  const { plex } = fakePlex({ ctl: { hold: new Promise<void>(r => { open = r }) } })
   const svc = service(plex)
   const first = await svc.report()
-  await new Promise(r => setImmediate(r))
   // Before the reading is in: the owner's own mark already counts (from the library reading itself).
   assert.ok(!first.report.rows.some(r => r.title === 'Paper Moons'), "the owner's mark, with no history, is not never watched")
   assert.equal(svc.watchers.pending(), true)
@@ -247,7 +248,53 @@ test('plex.tv refusing the token: only the owner counts, and the page says how t
   assert.deepEqual(report.rows.map(r => r.title).sort(), ['Glass Orchard', 'Harbour Lights', 'Old Lantern'])
   assert.equal(report.watchState.accounts, 1)
   assert.match(report.watchState.note!, /Sign in with Plex/)
+  assert.equal(report.watchState.ownerOnly, true)
   assert.equal(svc.watchers.heldTokens, 0)
+  const p = await svc.preview(['movie:2'], 'sid')
+  assert.equal(p.items.length, 1, 'removal is not blocked for ever')
+  assert.match(p.notice!, /Shared users' watched marks couldn't be read; only yours are counted/)
+})
+
+test('after a lock and unlock nothing is removed until a new reading has finished, even from a cached list', async () => {
+  const ctl: { hold: Promise<void> | null } = { hold: null }
+  const { plex } = fakePlex({ ctl })
+  let now = NOW
+  const svc = service(plex, () => now)
+  await svc.report()
+  await svc.watchers.kick(plex).done
+  const ok = await svc.preview(['movie:2'], 'sid')
+  assert.equal(ok.items.length, 1)
+  assert.equal(ok.notice, undefined, 'every account was read: no notice')
+
+  let open!: () => void
+  ctl.hold = new Promise<void>(r => { open = r })
+  svc.dropWatchers()                         // locked
+  now += 30_000                              // unlocked; the library reading is still cached
+  const blocked = await svc.preview(['movie:2'], 'sid')
+  assert.equal(blocked.items.length, 0, 'fails closed straight after the unlock')
+  assert.match(blocked.skipped[0].reason, /Still reading who has watched what/)
+  open()
+  await svc.watchers.kick(plex).done
+  assert.equal((await svc.preview(['movie:2'], 'sid')).items.length, 1)
+})
+
+test('a lock mid-reading stops every further request with the dropped tokens', async () => {
+  const ctl: { hold: Promise<void> | null } = { hold: null }
+  const { plex, calls } = fakePlex({ ctl })
+  const w = new PlexWatchers(() => NOW)
+  let release!: () => void
+  const gate = new Promise<void>(r => { release = r })
+  let first = true
+  const slow: CoreEndpointClient = { ...plex, async getAs(p, t, ms) { if (first) { first = false; await gate } return plex.getAs!(p, t, ms) } }
+  const run = w.kick(slow)
+  while (calls.textAt === 0 || first) await new Promise(r => setImmediate(r))
+  w.drop()
+  const before = calls.getAs
+  release()
+  await run.done
+  assert.equal(calls.getAs - before, 1, 'only the request already in flight; no next page, library or account')
+  assert.equal(w.heldTokens, 0)
+  assert.equal(w.views().size, 0)
 })
 
 test('a client without plex.tv access is owner-only straight away, and never blocks removal', async () => {
@@ -255,7 +302,6 @@ test('a client without plex.tv access is owner-only straight away, and never blo
   const { getAs: _a, textAt: _t, ...bare } = plex
   const svc = service(bare as CoreEndpointClient)
   const { report } = await svc.report()
-  await new Promise(r => setImmediate(r))
   assert.equal(svc.watchers.pending(), false)
   assert.equal((await svc.preview(['movie:2'], 'sid')).items.length, 1)
   assert.equal(report.rows.some(r => r.title === 'Paper Moons'), false)
@@ -348,6 +394,9 @@ test('per-account tokens are never in a response or a log; a viewer sees counts,
   assert.equal(ep(vShow, '502').watchers, 1)
   assert.equal(ep(opShow, '503').watched, false)
   assert.deepEqual(ep(opShow, '503').nextUpFor, ['friend'], 'next up from the marks')
+  assert.equal(ep(vShow, '503').nextUpFor, undefined, 'a viewer gets no names for next up')
+  assert.equal(ep(vShow, '503').nextUpCount, 1, '…only how many')
+  assert.ok(!bodies.slice(3).some(b => b.includes('"friend"')), 'no name anywhere in what a viewer gets')
 })
 
 test('locking HyperProx drops the tokens the marks were read with', async () => {

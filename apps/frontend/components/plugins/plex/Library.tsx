@@ -35,7 +35,7 @@ interface ListData { rows: Row[]; sections: Array<{ key: string; title: string; 
 interface Version { mediaId: string; label: string; sizeBytes: number | null; files: string[] }
 interface Episode {
   ratingKey: string; season: number; episode: number; title: string; sizeBytes: number | null; quality: string
-  plays: number; viewers: number; lastPlayed: number | null; watched: boolean; inProgress: boolean; nextUpFor: string[]; versions: Version[]; via: 'sonarr' | 'plex'
+  plays: number; viewers: number; lastPlayed: number | null; watched: boolean; inProgress: boolean; nextUpFor?: string[]; nextUpCount: number; versions: Version[]; via: 'sonarr' | 'plex'
   watchers: number; marked: number; watchedBy?: Array<{ name: string; how: 'played' | 'marked' }>
   refused: string | null
 }
@@ -200,7 +200,7 @@ export function PlexLibrary() {
                                 {e.watched ? <Pill tone="good">watched</Pill> : <Pill>not watched</Pill>}
                                 {e.marked > 0 && <Pill title={MARKED_TIP}>marked watched</Pill>}
                                 {e.inProgress && <Pill tone="warn">partly watched</Pill>}
-                                {e.nextUpFor.length > 0 && <Pill tone="warn" title="Watched the episode before it in the last 14 days">next up for {e.nextUpFor.join(', ')}</Pill>}
+                                {e.nextUpCount > 0 && <Pill tone="warn" title="Watched the episode before it in the last 14 days">next up for {e.nextUpFor?.length ? e.nextUpFor.join(', ') : `${e.nextUpCount} ${e.nextUpCount === 1 ? 'person' : 'people'}`}</Pill>}
                                 <span className={c.size}>{size(e.sizeBytes)}</span>
                               </div>
                               {e.refused && <div className={c.meta} style={{ color: 'var(--warn)' }}>Cannot be removed: {e.refused}</div>}

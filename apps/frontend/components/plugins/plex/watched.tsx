@@ -41,7 +41,7 @@ export function watchStateText(st: WatchState | undefined | null): string {
   if (st.reading) {
     return `Reading who has watched what${st.total ? `: ${st.done} of ${st.total} accounts so far` : ''}. The lists update when it is done${st.at ? '' : ', and nothing can be removed from Clear-out until then'}.`
   }
-  if (st.ownerOnly) return 'Only the server owner’s watched marks are counted, as well as the play history.'
+  if (st.ownerOnly) return st.note ?? 'Only the server owner’s watched marks are counted, as well as the play history.'
   const base = `Watched marks from ${st.accounts} ${st.accounts === 1 ? 'account' : 'accounts'} count as well as the play history, so something marked as watched is not “never watched”.`
   return st.note ? `${base} ${st.note}` : base
 }

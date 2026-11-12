@@ -20,7 +20,7 @@ export interface PlanItem {
   id: string; title: string; via: Via; files: Array<{ path: string; sizeBytes: number | null }>; sizeBytes: number
   note: string; warnings: string[]; keptBy: string | null; blocked: string | null
 }
-export interface Plan { id: string; items: PlanItem[]; totalBytes: number; skipped: Array<{ id: string; reason: string }> }
+export interface Plan { id: string; items: PlanItem[]; totalBytes: number; skipped: Array<{ id: string; reason: string }>; notice?: string }
 export interface ItemResult { id: string; title: string; via: Via; removed: boolean; message: string; sizeBytes: number }
 
 export const VIA_WORD: Record<Via, string> = { sonarr: 'via Sonarr', radarr: 'via Radarr', plex: 'via Plex' }
@@ -42,6 +42,7 @@ export function RemovalModal({ plan, results, busy, error, extra, onRemove, onCl
             These files are deleted from disk. This cannot be undone. Plex is asked to look at the folders again
             afterwards so they leave Plex straight away.
           </p>
+          {plan.notice && <Notice kind="warn">{plan.notice}</Notice>}
           {extra}
           <ul className={c.plist} aria-label="What will be removed" style={{ maxHeight: '50vh' }}>
             {plan.items.map(i => (

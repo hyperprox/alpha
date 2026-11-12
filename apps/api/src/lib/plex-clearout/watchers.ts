@@ -100,7 +100,8 @@ export function parseSharedServers(xml: string): SharedAccount[] {
     const account = n0(a.userID)
     const token = (a.accessToken ?? '').trim()
     if (!account || account === OWNER_ACCOUNT || !token || /[\s<>"]/.test(token)) continue
-    out.set(account, { account, name: (a.username || a.name || a.email || `account ${account}`).slice(0, 60), token })
+    // Never the e-mail address: a name, or "account N".
+    out.set(account, { account, name: (a.username || a.name || `account ${account}`).slice(0, 60), token })
   }
   return [...out.values()]
 }
@@ -118,7 +119,10 @@ export interface WatchersStatus {
   at:        number | null
   /** Why other accounts are not counted, or what went wrong, in plain words; null when all is well. */
   note:      string | null
-  /** Plex cannot list other accounts at all (no plex.tv access): the owner's marks are all there is. */
+  /**
+   * Only the owner's marks are counted: this client cannot reach plex.tv at all, or plex.tv refused the token, or
+   * could not be reached on the last reading.
+   */
   ownerOnly: boolean
 }
 
@@ -149,8 +153,11 @@ export class PlexWatchers {
   views(): ViewMap { return this.#views }
   /** Names plex.tv gave for the shared accounts, for when the server's own /accounts has none. */
   names(): Map<number, string> { return new Map(this.#names) }
-  /** A first reading is under way and nothing is known yet about other accounts. */
-  pending(): boolean { return this.#status.reading && this.#status.at === null }
+  /**
+   * Nothing is known yet about other accounts: no reading has finished since start-up or the last lock, and other
+   * accounts can be read at all. Fails closed: true until a reading has really finished.
+   */
+  pending(): boolean { return this.#status.at === null && !this.#status.ownerOnly }
 
   /**
    * Start a reading unless one ran in the last ten minutes or is running. Returns at once; `done` resolves when
@@ -169,7 +176,10 @@ export class PlexWatchers {
     this.#status = { ...this.#status, reading: true, done: 0, total: 0 }
     this.version++
     const run = this.#read(plex, gen).catch(() => {
-      if (gen === this.#gen) this.#status = { ...this.#status, note: NO_PLEX_TV }
+      if (gen === this.#gen) {
+        this.#tokens = new Map(); this.#views = new Map(); this.#episodes.clear()
+        this.#status = { ...this.#status, accounts: 1, shared: 0, ownerOnly: true, note: NO_PLEX_TV }
+      }
     }).finally(() => {
       if (gen === this.#gen) { this.#status = { ...this.#status, reading: false, at: this.now() }; this.version++ }
       if (this.#running === run) this.#running = null
@@ -188,7 +198,7 @@ export class PlexWatchers {
       // 401/403: the stored token is not the owner's plex.tv account token. Anything else: plex.tv not reachable.
       const refused = /HTTP 40[13]\b/.test(String(e?.message ?? ''))
       this.#tokens = new Map(); this.#views = new Map(); this.#episodes.clear()
-      this.#status = { ...this.#status, accounts: 1, shared: 0, note: refused ? NOT_ACCOUNT_TOKEN : NO_PLEX_TV }
+      this.#status = { ...this.#status, accounts: 1, shared: 0, ownerOnly: true, note: refused ? NOT_ACCOUNT_TOKEN : NO_PLEX_TV }
       return
     }
     const shared = parseSharedServers(xml)
@@ -197,7 +207,7 @@ export class PlexWatchers {
       .filter((s: any) => (s?.type === 'movie' || s?.type === 'show') && /^\d+$/.test(String(s?.key)))
       .map((s: any) => ({ key: String(s.key), type: s.type === 'movie' ? 1 : 2 }))
     if (gen !== this.#gen) return
-    this.#status = { ...this.#status, shared: shared.length, total: shared.length, done: 0 }
+    this.#status = { ...this.#status, shared: shared.length, total: shared.length, done: 0, ownerOnly: false }
 
     const views: ViewMap = new Map()
     const tokens = new Map<number, string>()
@@ -211,6 +221,8 @@ export class PlexWatchers {
         for (const s of sections) {
           try {
             for (let start = 0; start < 200_000; start += PAGE) {
+              // Locked mid-reading: not one more request with this token.
+              if (gen !== this.#gen) return
               const body = (await plex.getAs!(`/library/sections/${s.key}/all?type=${s.type}&X-Plex-Container-Start=${start}&X-Plex-Container-Size=${PAGE}`, a.token, SLOW))?.MediaContainer ?? {}
               const rows: any[] = Array.isArray(body.Metadata) ? body.Metadata : []
               addViews(views, rows, a.account)
@@ -248,6 +260,7 @@ export class PlexWatchers {
     const list = [...this.#tokens.entries()]
     const worker = async () => {
       for (let e = list.shift(); e; e = list.shift()) {
+        if (gen !== this.#gen) return
         try { addViews(views, (await plex.getAs!(`/library/metadata/${showKey}/allLeaves`, e[1], SLOW))?.MediaContainer?.Metadata ?? [], e[0]) } catch { /* skipped */ }
       }
     }

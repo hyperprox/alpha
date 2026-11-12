@@ -1369,8 +1369,8 @@ Clear-out also counts what Plex itself has as watched, for every account on the 
   their own key for this server, when asked with the owner's Plex account token (what **Sign in with Plex**
   saves). HyperProx then reads each person's watched marks with their own key. Those keys are kept in
   memory only: never saved, logged or shown, and forgotten when HyperProx locks. If plex.tv does not accept
-  the token in the settings as the owner's account token, only the owner's marks count, and the page says
-  so.
+  the token in the settings as the owner's account token, only the owner's marks count. The page says so,
+  and so does every Clear-out removal preview.
 - This reading takes a while on a big server (each person times each library), so it runs in the
   background, at most every 10 minutes, and the page shows its progress. Until the first one is done,
   nothing can be removed from Clear-out.
@@ -1395,7 +1395,9 @@ any episode of a show, or has a last-watched date for it.
   "Night Desk" keeps every Night Desk show. Case and punctuation do not matter: "K*O*B*A" and "KOBA" are the
   same, and "Bench & Gavel" keeps "Bench & Gavel: NSU". A name of three letters or fewer must match the whole
   title, so "OR" never keeps "Oriel Lane". A name that starts with "The" keeps only titles that start with it
-  too, so "The Spire" keeps "The Spire" and not "Spire in the Mist". A kept folder keeps everything under it.
+  too, so "The Spire" keeps "The Spire" and not "Spire in the Mist" (before, the "The" was ignored, so a name
+  written as "The X" also kept titles starting with just "X"; write "X" to keep both). A kept folder keeps
+  everything under it.
   Kept items are left off the lists entirely and counted in **Kept off this list**. Change the rules in the
   plug-in's settings. Leave a setting blank for the default, or write "none" to turn that rule off.
 - In a library that is mostly films, most films are watched once. So the Movies tab says what share of

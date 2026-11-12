@@ -372,8 +372,11 @@ export class ClearoutService {
     if (!Array.isArray(ids) || ids.length === 0) throw new ClearoutRefusal('Tick at least one item first.')
     if (ids.length > MAX_ITEMS) throw new ClearoutRefusal(`At most ${MAX_ITEMS} items at a time.`)
     const want = [...new Set(ids.map(String))]
+    // Start the reading of everyone's watched marks now (a no-op inside its ten minutes), before anything is checked,
+    // so a fresh start or an unlock is never mistaken for "already read".
+    this.watchers.kick(await this.d.plex().catch(() => null))
     const g = await this.report()
-    // The lists are history-only until the first reading of everyone's watched marks is in: nothing goes before it.
+    // The lists are history-only until a reading of everyone's watched marks has finished: nothing goes before it.
     if (this.watchers.pending()) {
       const st = this.watchers.status()
       return this.previews.put(owner, [], want.map(id => ({ id, reason: `Still reading who has watched what${st.total ? ` (${st.done} of ${st.total} accounts)` : ''}. Try again in a minute.` })), 'clearout')
@@ -391,7 +394,11 @@ export class ClearoutService {
       if ('skip' in it) { skipped.push({ id, reason: it.skip }); continue }
       items.push(it)
     }
-    return this.previews.put(owner, items, skipped, 'clearout')
+    const plan = this.previews.put(owner, items, skipped, 'clearout')
+    // Only the owner's marks: a shared user's watched title may be on this list. Said in the preview, not hidden.
+    return this.watchers.status().ownerOnly
+      ? { ...plan, notice: "Shared users' watched marks couldn't be read; only yours are counted. Something a friend has watched may be on this list." }
+      : plan
   }
 
   /** Remove what a preview listed, then read each one back. */
