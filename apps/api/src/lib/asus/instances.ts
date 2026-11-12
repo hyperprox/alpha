@@ -41,13 +41,26 @@ export interface AsusMeta {
   nameSource:  'user' | 'device' | 'model'
   /** The unit's own name, as last read from it. */
   deviceName:  string | null
+  /**
+   * True only when a person typed the name in HyperProx. Instances from before this field existed have null, and
+   * have their nameSource decided again (looksModelMade against every model id the unit reports) the next time
+   * the unit's own name is read.
+   */
+  nameTyped:   boolean | null
 }
 
-/** A name HyperProx made from the model ("ET-X", "ET-X 2", "ASUS router"), which a device name may replace. */
-export function looksModelMade(name: string, model: string | null): boolean {
-  const n = name.trim().toLowerCase()
-  const bases = ['asus router', ...(model ? [model.toLowerCase()] : [])]
-  return bases.some(b => n === b || new RegExp(`^${b.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\d{1,2}$`).test(n))
+const flat = (v: string) => v.toLowerCase().replace(/[^a-z0-9]/g, '')
+
+/**
+ * A name HyperProx made from a model id ("ET-X", "ET-X 2", "et_x", "ASUS router"), which the unit's own name may
+ * replace. Compared ignoring case and punctuation, with an optional " N" suffix, against every id given: the
+ * firmware reports several (productid, odmpid, model, the mesh list's model_name and ui_model_name) and an
+ * instance may have been named after any of them.
+ */
+export function looksModelMade(name: string, ids: Array<string | null | undefined>): boolean {
+  const base = flat(name.trim().replace(/\s+\d{1,2}$/, ''))
+  if (!base) return false
+  return ['asus router', ...ids].some(id => !!id && flat(id) === base)
 }
 
 export interface AsusView extends AsusMeta { url: string; username: string; hasPassword: boolean }
@@ -56,7 +69,14 @@ export interface CredentialIO {
   get(category: string, provider: string, key: string): Promise<string | null>
   set(category: string, provider: string, key: string, value: string, masked: boolean): Promise<void>
   remove(category: string, provider: string): Promise<void>
+  /**
+   * Whether a write can happen now. A vault write needs a signed-in person: a reading made for an API token,
+   * the AI page or the card cannot write, so what it learns (the unit's own name) is held in memory until one can.
+   */
+  writable?(): boolean
 }
+
+type Learned = Pick<AsusMeta, 'name' | 'nameSource' | 'deviceName' | 'nameTyped' | 'model' | 'firmware'>
 
 export class AsusInputError extends Error {
   constructor(message: string, public status = 400) { super(message); this.name = 'AsusInputError' }
@@ -118,9 +138,11 @@ function parseIndex(raw: string | null): AsusMeta[] {
       fingerprint: typeof x.fingerprint === 'string' ? normaliseFingerprint(x.fingerprint) : null,
       model: short(x.model, 40), firmware: short(x.firmware, 40),
       // Instances from before names were read: a name equal to the model (or "model 2") was HyperProx's, not a person's.
-      nameSource: x.nameSource === 'user' || x.nameSource === 'device' || x.nameSource === 'model' ? x.nameSource
-        : looksModelMade(String(x.name), short(x.model, 40)) ? 'model' : 'user',
+      nameSource: x.nameTyped === true ? 'user'
+        : x.nameSource === 'device' || x.nameSource === 'model' ? x.nameSource
+        : looksModelMade(String(x.name), [short(x.model, 40)]) ? 'model' : 'user',
       deviceName: short(x.deviceName, 40),
+      nameTyped: x.nameTyped === true ? true : x.nameTyped === false ? false : null,
     }))
   } catch { return [] }
 }
@@ -149,7 +171,39 @@ export class AsusInstanceStore {
     return run
   }
 
-  async list(): Promise<AsusMeta[]> { return parseIndex(await this.io.get(CATEGORY, PLUGIN_ID, INDEX_KEY)) }
+  /** What readings learned that is not in the vault yet, by router. Shown at once; written when a write can be. */
+  private pending = new Map<string, Learned>()
+
+  private async stored(): Promise<AsusMeta[]> { return parseIndex(await this.io.get(CATEGORY, PLUGIN_ID, INDEX_KEY)) }
+
+  async list(): Promise<AsusMeta[]> {
+    const list = await this.stored()
+    return this.pending.size ? list.map(m => (this.pending.has(m.id) ? { ...m, ...this.pending.get(m.id)! } : m)) : list
+  }
+
+  /** Every write of the index goes through here: it carries any pending learned values with it. */
+  private async writeIndex(list: AsusMeta[]): Promise<void> {
+    await this.io.set(CATEGORY, PLUGIN_ID, INDEX_KEY, JSON.stringify(list), false)
+    for (const m of list) this.pending.delete(m.id)
+  }
+
+  /** Keep what a reading learned: in the vault when it can be written now, otherwise in memory until it can. */
+  private async learn(list: AsusMeta[], id: string, next: AsusMeta): Promise<AsusMeta> {
+    const { name, nameSource, deviceName, nameTyped, model, firmware } = next
+    this.pending.set(id, { name, nameSource, deviceName, nameTyped, model, firmware })
+    if (this.io.writable && !this.io.writable()) return next
+    try { await this.writeIndex(list.map(i => (i.id === id ? next : i))) } catch { /* kept in memory; written later */ }
+    return next
+  }
+
+  /** Write what readings learned, if anything is waiting and a write can happen now. */
+  async flushPending(): Promise<void> {
+    if (!this.pending.size || (this.io.writable && !this.io.writable())) return
+    return this.serial(async () => {
+      if (!this.pending.size) return
+      try { await this.writeIndex(await this.list()) } catch { /* try again later */ }
+    })
+  }
 
   async get(id: string): Promise<AsusMeta | null> {
     if (!validInstanceId(id)) return null
@@ -229,13 +283,13 @@ export class AsusInstanceStore {
       const meta: AsusMeta = {
         id: `a${crypto.randomBytes(4).toString('hex')}`, name: explicit ? base : this.deviceLabel(list, base, short(found.model, 40), null),
         insecureTLS: p.insecureTLS, fingerprint: p.fingerprint, model: short(found.model, 40), firmware: short(found.firmware, 40),
-        nameSource: explicit ? 'user' : own ? 'device' : 'model', deviceName: own,
+        nameSource: explicit ? 'user' : own ? 'device' : 'model', deviceName: own, nameTyped: explicit,
       }
       const prov = providerFor(meta.id)
       await this.io.set(CATEGORY, prov, 'url', p.url, false)
       await this.io.set(CATEGORY, prov, 'username', p.username, false)
       await this.io.set(CATEGORY, prov, 'password', p.password!, true)
-      await this.io.set(CATEGORY, PLUGIN_ID, INDEX_KEY, JSON.stringify([...list, meta]), false)
+      await this.writeIndex([...list, meta])
       return meta
     })
   }
@@ -257,12 +311,13 @@ export class AsusInstanceStore {
         model, firmware: found ? short(found.firmware, 40) : prev.firmware,
         nameSource: typed ? (typed === prev.name ? prev.nameSource : 'user') : cleared ? (own ? 'device' : 'model') : prev.nameSource,
         deviceName: own,
+        nameTyped: typed ? (typed === prev.name ? prev.nameTyped : true) : cleared ? false : prev.nameTyped,
       }
       const prov = providerFor(id)
       await this.io.set(CATEGORY, prov, 'url', p.url, false)
       await this.io.set(CATEGORY, prov, 'username', p.username, false)
       if (p.password) await this.io.set(CATEGORY, prov, 'password', p.password, true)
-      await this.io.set(CATEGORY, PLUGIN_ID, INDEX_KEY, JSON.stringify(list.map(i => i.id === id ? next : i)), false)
+      await this.writeIndex(list.map(i => i.id === id ? next : i))
       return next
     })
   }
@@ -282,23 +337,24 @@ export class AsusInstanceStore {
    * The unit's own name, read on the 5-minute settings cycle. A name a person typed is never touched; any other
    * follows the unit, so renaming it in the ASUS app renames it here.
    */
-  async adoptDeviceName(id: string, deviceName: string | null): Promise<AsusMeta | null> {
+  async adoptDeviceName(id: string, deviceName: string | null, modelIds: Array<string | null | undefined> = []): Promise<AsusMeta | null> {
     return this.serial(async () => {
       const list = await this.list()
       const prev = list.find(i => i.id === id)
       if (!prev) return null
       const own = short(deviceName, 40)
-      if (prev.nameSource === 'user' || !own) {
-        if (own === prev.deviceName) return prev
-        const next = { ...prev, deviceName: own ?? prev.deviceName }
-        await this.io.set(CATEGORY, PLUGIN_ID, INDEX_KEY, JSON.stringify(list.map(i => i.id === id ? next : i)), false)
-        return next
+      // A name a person typed stays. One HyperProx made from any of the unit's model ids does not.
+      const typed = prev.nameTyped === true || (prev.nameTyped === null && prev.nameSource === 'user' && !looksModelMade(prev.name, [prev.model, ...modelIds]))
+      if (typed || !own) {
+        const next: AsusMeta = typed
+          ? { ...prev, nameSource: 'user', nameTyped: true, deviceName: own ?? prev.deviceName }
+          : { ...prev, nameSource: prev.nameSource === 'user' ? 'model' : prev.nameSource, nameTyped: false }
+        if (next.deviceName === prev.deviceName && next.nameTyped === prev.nameTyped && next.nameSource === prev.nameSource) return prev
+        return this.learn(list, id, next)
       }
-      const current = prev.nameSource === 'device' && prev.deviceName === own ? prev.name : this.deviceLabel(list, own, prev.model, id)
-      if (current === prev.name && prev.nameSource === 'device' && prev.deviceName === own) return prev
-      const next: AsusMeta = { ...prev, name: current, nameSource: 'device', deviceName: own }
-      await this.io.set(CATEGORY, PLUGIN_ID, INDEX_KEY, JSON.stringify(list.map(i => i.id === id ? next : i)), false)
-      return next
+      const name = prev.nameSource === 'device' && prev.deviceName === own ? prev.name : this.deviceLabel(list, own, prev.model, id)
+      if (name === prev.name && prev.nameSource === 'device' && prev.deviceName === own && prev.nameTyped === false) return prev
+      return this.learn(list, id, { ...prev, name, nameSource: 'device', deviceName: own, nameTyped: false })
     })
   }
 
@@ -310,7 +366,7 @@ export class AsusInstanceStore {
       if (!prev) return
       const model = short(found.model, 40) ?? prev.model, firmware = short(found.firmware, 40) ?? prev.firmware
       if (model === prev.model && firmware === prev.firmware) return
-      await this.io.set(CATEGORY, PLUGIN_ID, INDEX_KEY, JSON.stringify(list.map(i => i.id === id ? { ...i, model, firmware } : i)), false)
+      await this.learn(list, id, { ...prev, model, firmware })
     })
   }
 
@@ -319,7 +375,7 @@ export class AsusInstanceStore {
       const list = await this.list()
       if (!list.some(i => i.id === id)) throw new AsusInputError('No such router.', 404)
       await this.io.remove(CATEGORY, providerFor(id))
-      await this.io.set(CATEGORY, PLUGIN_ID, INDEX_KEY, JSON.stringify(list.filter(i => i.id !== id)), false)
+      await this.writeIndex(list.filter(i => i.id !== id)); this.pending.delete(id)
     })
   }
 }

@@ -29,7 +29,7 @@ import { hasRole, type Role } from '../roles'
 import { probeCertificate } from '../clusters/tls-pin'
 import { AsusClient, AsusLoginError } from './client'
 import { endpointOf, type AsusInstanceStore, type AsusInput, type AsusMeta, type Prepared } from './instances'
-import { FIRMWARE_KEYS, NAME_KEYS, unitNameOf, HOOKS, buildReading, dynamicHooks, firmwareOf, hookKey, looseJson, loosePairs, modeOf, nv, radioCount, sampleOf, staticHooks, type AsusReading, type CounterSample } from './parse'
+import { FIRMWARE_KEYS, NAME_KEYS, unitNameOf, modelIdsOf, ownMacsOf, parseMesh, HOOKS, buildReading, dynamicHooks, firmwareOf, hookKey, looseJson, loosePairs, modeOf, nv, radioCount, sampleOf, staticHooks, type AsusReading, type CounterSample } from './parse'
 import { DIAGNOSTIC_HOOKS, MAX_TOTAL_CHARS, MacMasker, redactAnswer } from './diagnostics'
 import { DirectTransport, AsusUnreachableError, type AsusTransport } from './transport'
 import { portOf, resolveAsusTarget } from './target'
@@ -136,6 +136,8 @@ export class AsusService {
   private multi = new Map<string, boolean>()
   /** Per router: the slow-changing values (firmware, mode, radio settings), and whether it leads a mesh. */
   private statics = new Map<string, { at: number; values: Record<string, any>; mesh: boolean | null }>()
+  /** Every AiMesh location any router's mesh list reports, by unit MAC: a name for a unit that has none of its own. */
+  private meshAliases = new Map<string, string>()
   private clients = new Map<string, { sig: string; client: AsusClient }>()
   private samples = new Map<string, CounterSample>()
   private actions = new Map<string, ActionState>()
@@ -236,6 +238,8 @@ export class AsusService {
   async reading(id: string, o: { actor?: Actor; fresh?: boolean } = {}): Promise<AsusReading> {
     await this.meta(id)
     if (o.actor) this.limit(o.actor, 'readsPerMinute')
+    // Anything a reading learned while no vault write was possible (an API token, the card) is written now if it can be.
+    await this.d.store.flushPending().catch(() => {})
     const held = this.blockedReason(id)
     if (held) throw new AsusRefusal('login_held', held, 409)
     const hit = this.cache.get(id)
@@ -300,7 +304,13 @@ export class AsusService {
         await this.d.store.noteFound(id, { model: reading.model, firmware: reading.firmware.version }).catch(() => {})
       }
       // The unit's own name follows the unit (unless a person typed one), on the same 5-minute cycle as its settings.
-      if (slowCycle) await this.d.store.adoptDeviceName(id, reading.unitName).catch(() => null)
+      // A unit with no name of its own takes the one its mesh main gives it, matched by MAC across routers.
+      const mp = parseMesh(looseJson(meshNodes)?.get_cfg_clientlist, null, id)
+      for (const [mac, alias] of mp.aliasByMac) this.meshAliases.set(mac, alias)
+      if (slowCycle) {
+        const own = reading.unitName ?? ownMacsOf(sys).map(m => this.meshAliases.get(m)).find(Boolean) ?? null
+        await this.d.store.adoptDeviceName(id, own, modelIdsOf(sys, mp.mainModels)).catch(() => null)
+      }
       return reading
     } catch (e) { return this.hold(id, e) }
   }
