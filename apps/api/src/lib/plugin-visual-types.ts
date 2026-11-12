@@ -106,7 +106,7 @@ export interface RouterVisual {
   talkers: Array<{ name: string | null; ip: string; downBps: number; upBps: number; source: 'router' | 'cluster' | 'none' }>
   forwards: Array<{ name: string; proto: string; port: string; to: string; toName: string | null; active: boolean; bytes: number }>
   forwardsActive: number
-  log:     Array<{ time: string; message: string; level: 'error' | 'warning' | 'info' }>
+  log:     Array<{ time: string; message: string; level: 'error' | 'warning' | 'info'; /** RouterOS topics, e.g. "system,error". */ topic?: string }>
 }
 
 export interface MeshVisual {

@@ -167,15 +167,15 @@ function routerDetail() {
   const wan = { downBps: Math.round(wobble(48e6, 18e6, 'rw')), upBps: Math.round(wobble(8e6, 3e6, 'ru')) }
   const talkers = [['plex', '10.0.3.11', 31e6, 1.2e6, 'cluster'], ['Living Room TV', '10.0.10.42', 12e6, 0.3e6, 'router'], ['arr-stack', '10.0.3.12', 6e6, 0.9e6, 'cluster'], ['iPad', '10.0.10.57', 3.1e6, 0.2e6, 'router'], ['nextcloud', '10.0.2.12', 0.8e6, 2.4e6, 'cluster']]
     .map(([name, ip, d, u, source]) => ({ name, ip, downBps: d, upBps: u, source }))
-  const forwards = [['WireGuard', 'udp', '51820', '10.0.2.15:51820', 'wireguard'], ['Reverse proxy HTTPS', 'tcp', '443', '10.0.1.11:443', 'proxy'], ['Reverse proxy HTTP', 'tcp', '80', '10.0.1.11:80', 'proxy'], ['Minecraft', 'tcp', '25565', '10.0.3.15:25565', 'minecraft']]
-    .map(([name, proto, port, to, toName], i) => ({ name, proto, port, to, toName, active: true, bytes: Math.round((4 - i) * 3.1 * GiB) }))
+  const forwards = [['WireGuard', 'udp', '51820', '10.0.2.15:51820', 'wireguard'], ['Reverse proxy HTTPS', 'tcp', '443', '10.0.1.11:443', 'proxy'], ['Reverse proxy HTTP', 'tcp', '80', '10.0.1.11:80', 'proxy'], ['Minecraft', 'tcp', '25565', '10.0.3.15:25565', 'minecraft'], ['Nextcloud Talk signalling', 'tcp', '8443', '10.0.2.12:8443', 'nextcloud'], ['Remote management agent relay', 'tcp', '4433', '10.0.2.20:4433', 'meshcentral'], ['HTTPS to reverse proxy (secondary host)', 'tcp', '8444', '10.0.1.11:8444', 'proxy']]
+    .map(([name, proto, port, to, toName], i) => ({ name, proto, port, to, toName, active: true, bytes: Math.round(Math.max(0.4, 4 - i * 0.5) * 3.1 * GiB) }))
   return {
     ok: true,
     visual: { kind: 'mikrotik', router: { name: 'core-router', model: 'hEX S', version: '7.20.4', uptime: '3w 1d' },
-      wans: [{ name: 'WAN', ...wan }], total: wan, health: { cpuPct: 4, cpuCores: 4, memPct: 23, tempC: 41, voltage: 24.1 },
+      wans: [{ name: 'WAN1-Primary', ...wan }, { name: 'WAN2-Home', downBps: Math.round(wan.downBps / 600), upBps: Math.round(wan.upBps / 90) }], total: wan, health: { cpuPct: 4, cpuCores: 4, memPct: 23, tempC: 41, voltage: 24.1 },
       subnets: [{ net: '10.0.0.0/16', uplink: 'WAN', devices: 31, downBps: wan.downBps * 0.7, upBps: wan.upBps * 0.6 }, { net: '10.0.10.0/24', uplink: 'WAN', devices: 22, downBps: wan.downBps * 0.3, upBps: wan.upBps * 0.4 }],
-      talkers, forwards, forwardsActive: 4,
-      log: [{ time: iso(4 * MIN).slice(0, 19).replace('T', ' '), message: 'wireguard: peer sam-phone handshake', level: 'info' }, { time: iso(22 * MIN).slice(0, 19).replace('T', ' '), message: 'dhcp: assigned 10.0.10.57 to iPad', level: 'info' }] },
+      talkers, forwards, forwardsActive: 7,
+      log: ([['system,error,critical', 'login failure for user admin from a remote address via ssh', 'error'], ['dhcp,info', 'dhcp-lan assigned 10.0.10.57 to AA:BB:CC:DD:EE:01', 'info'], ['wireguard,debug', 'peer sam-phone handshake completed', 'info'], ['interface,warning', 'ether1 link down, auto-negotiation failed, retrying with a forced speed of 1G full duplex', 'warning'], ['system,error', 'could not reach ntp server pool.example.org: timeout after 5 seconds, falling back to the secondary server', 'error'], ['firewall,info', 'input: in:ether1 out:(unknown 0), proto TCP (SYN), from a remote host to the router on port 22', 'info']] as const).flatMap((r, i) => [0, 1, 2, 3, 4].map(k => ({ time: iso((i * 5 + k + 1) * 3 * MIN).slice(0, 19).replace('T', ' '), topic: r[0], message: r[1], level: r[2] }))), },
     stats: [{ label: 'Router', value: 'core-router' }, { label: 'Model', value: 'hEX S' }, { label: 'RouterOS', value: '7.20.4' }, { label: 'Uptime', value: '3w 1d' },
       { label: 'Download', value: mbps(wan.downBps) }, { label: 'Upload', value: mbps(wan.upBps) }, { label: 'CPU', value: '4% of 4 cores', tone: 'good' }, { label: 'Devices', value: '53 awake', hint: '31 on 10.0.0.0/16 · 22 on 10.0.10.0/24' }],
     tables: [

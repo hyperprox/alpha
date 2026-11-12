@@ -95,6 +95,7 @@ const PATHS: Record<string, string> = {
   vacuum: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z',
   warn: 'M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z',
   check: 'M4 12l5 5L20 6',
+  error: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 8v5M12 16h.01',
   plugin: 'M9 3h6v4h4v6h-4v4H9v-4H5V7h4z',
 }
 
@@ -569,12 +570,18 @@ function TopoWide({ id, reduced, internet, wans, core, subnets }: TopoProps) {
       {internet.sub && <text x="60" y={cy + 12} textAnchor="middle" className={s.topoText}>{cut(internet.sub, 12)}</text>}
       {wans.map((w, i) => {
         const y = wy[i]; const color = linkColor(i)
-        const d = `M94 ${cy + (y - cy) * 0.25} C150 ${y} 200 ${y} 254 ${cy + (y - cy) * 0.3}`
+        const y0 = cy + (y - cy) * 0.25, y1 = cy + (y - cy) * 0.3
+        const d = `M94 ${y0} C150 ${y} 200 ${y} 254 ${y1}`
+        // The curve's own height at its middle (t = .5). The labels sit clear of it: above an upper uplink, below a lower one.
+        const ym = (y0 + 6 * y + y1) / 8
+        const above = y <= cy
+        const ny = above ? ym - 24 : ym + 22, sy2 = above ? ym - 11 : ym + 35
+        const plate = { paintOrder: 'stroke' as const, stroke: 'var(--hx-panel)', strokeWidth: 4 }
         return (
           <g key={w.key}>
             <path id={`${id}w${i}`} d={d} className={`${s.topoLink} ${w.active ? '' : s.topoLinkIdle}`} stroke={color} />
-            <text x="178" y={y - 8} textAnchor="middle" className={s.topoText} style={{ fill: color }}>{cut(w.name, 18)}</text>
-            {w.sub && <FitText maxW={150} size={10} x="178" y={y + 16} textAnchor="middle" className={s.topoText}>{cut(w.sub, 30)}</FitText>}
+            <text x="178" y={ny} textAnchor="middle" className={s.topoText} style={{ fill: color, ...plate }}>{cut(w.name, 18)}</text>
+            {w.sub && <FitText maxW={150} size={10} x="178" y={sy2} textAnchor="middle" className={s.topoText} style={plate}>{cut(w.sub, 30)}</FitText>}
             {w.active && <><Packet path={d} color={color} dur={1.6 + i * 0.6} reduced={reduced} /><Packet path={d} color={color} dur={1.6 + i * 0.6} begin={0.8} reverse reduced={reduced} /></>}
           </g>
         )
@@ -603,8 +610,11 @@ function TopoWide({ id, reduced, internet, wans, core, subnets }: TopoProps) {
 function TopoTall({ id, reduced, internet, wans, core, subnets }: TopoProps) {
   const W = 360
   const xs = (n: number) => Array.from({ length: n }, (_, i) => (n === 1 ? W / 2 : 50 + (i * (W - 100)) / (n - 1)))
-  const wx = xs(wans.length), sx = xs(subnets.length)
+  const wx = xs(wans.length)
   const colW = Math.min(150, (W - 20) / Math.max(subnets.length, 1) - 8)
+  // Keep every subnet box inside the drawing: centres run from half a box in from each edge.
+  const sm = colW / 2 + 8
+  const sx = Array.from({ length: subnets.length }, (_, i) => (subnets.length === 1 ? W / 2 : sm + (i * (W - 2 * sm)) / (subnets.length - 1)))
   return (
     <svg className={`${s.topo} ${s.topoTall}`} viewBox={`0 0 ${W} 420`} aria-hidden>
       <circle cx={W / 2} cy="40" r="30" className={s.topoNode} />
@@ -612,12 +622,15 @@ function TopoTall({ id, reduced, internet, wans, core, subnets }: TopoProps) {
       {internet.sub && <text x={W / 2} y="52" textAnchor="middle" className={s.topoText}>{cut(internet.sub, 11)}</text>}
       {wans.map((w, i) => {
         const x = wx[i]; const color = linkColor(i)
+        const anchor = x > W / 2 ? 'end' as const : 'start' as const
+        const lx = anchor === 'end' ? x - 28 : x + 28
         const d = `M${W / 2} 70 C${W / 2} 100 ${x} 110 ${x} 130 C${x} 150 ${W / 2} 160 ${W / 2} 180`
         return (
           <g key={w.key}>
             <path id={`${id}w${i}`} d={d} className={`${s.topoLink} ${w.active ? '' : s.topoLinkIdle}`} stroke={color} />
-            <text x={x} y="126" textAnchor="middle" className={s.topoText} style={{ fill: color, paintOrder: 'stroke', stroke: 'var(--hx-panel)', strokeWidth: 4 }}>{cut(w.name, 14)}</text>
-            {w.sub && <FitText maxW={110} size={10} x={x} y="140" textAnchor="middle" className={s.topoText} style={{ paintOrder: 'stroke', stroke: 'var(--hx-panel)', strokeWidth: 4 }}>{cut(w.sub, 24)}</FitText>}
+            {/* Beside the curve, in the open space between the uplinks, never on it and never past the edge. */}
+            <text x={lx} y="126" textAnchor={anchor} className={s.topoText} style={{ fill: color, paintOrder: 'stroke', stroke: 'var(--hx-panel)', strokeWidth: 4 }}>{cut(w.name, 14)}</text>
+            {w.sub && <FitText maxW={100} size={10} x={lx} y="140" textAnchor={anchor} className={s.topoText} style={{ paintOrder: 'stroke', stroke: 'var(--hx-panel)', strokeWidth: 4 }}>{cut(w.sub, 24)}</FitText>}
             {w.active && <Packet path={d} color={color} dur={1.8 + i * 0.6} reduced={reduced} />}
           </g>
         )
