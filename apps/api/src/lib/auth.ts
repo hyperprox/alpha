@@ -108,7 +108,7 @@ export interface RequestContext {
    * Set by the gate only for an API token's PUT /api/plugins/:id/settings when an owner gave that token the
    * plug-in settings permission: which plug-in, and which owner granted it.
    */
-  pluginSettings?: { pluginId: string; grantedBy: string }
+  pluginSettings?: { pluginId: string; grantedBy: string; instances?: boolean }
 }
 
 export const requestContext = new AsyncLocalStorage<RequestContext>()
@@ -147,14 +147,19 @@ const HOST_CLI = 'host-cli'
 /**
  * The vault session an API token's plug-in settings save writes with, or null. Only when the gate marked this
  * request as a granted plug-in settings save (RequestContext.pluginSettings), only for that plug-in's own item
- * (`plugin/<id>`), and only with a signed-in owner session of the owner who granted it (granted by root from the
+ * (`plugin/<id>`, plus `plugin/<id>.<instance>` for an instance add or change), and only with a signed-in owner session of the owner who granted it (granted by root from the
  * host CLI, "host-cli": the most recently active signed-in owner). Every other token write gets null and stays refused.
  */
 export function grantedPluginSettingsSid(category: string, provider: string): string | null {
   const ctx = requestContext.getStore()
   const g = ctx?.pluginSettings
   if (!ctx || !isTokenContext(ctx) || !g) return null
-  if (category !== PLUGIN_SETTINGS_CATEGORY || provider !== g.pluginId) return null
+  if (category !== PLUGIN_SETTINGS_CATEGORY) return null
+  // A settings save writes only `plugin/<id>`. An instance add or change also writes that instance's own item,
+  // `plugin/<id>.<instance>`, and nothing deeper (so never PBS's backup-management token, `pbs.<instance>.manage`).
+  const rest = provider.startsWith(`${g.pluginId}.`) ? provider.slice(g.pluginId.length + 1) : null
+  const ownInstance = g.instances === true && rest !== null && /^[A-Za-z0-9_-]+$/.test(rest)
+  if (provider !== g.pluginId && !ownInstance) return null
   let best: ActiveSession | null = null
   for (const s of sessions.values()) {
     if (s.role !== 'owner' || (g.grantedBy !== HOST_CLI && s.email !== g.grantedBy)) continue

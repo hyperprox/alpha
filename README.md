@@ -1579,7 +1579,9 @@ not protected, are in [docs/security.md](docs/security.md).
   save plug-in settings, so a script can connect a plug-in such as Plex for you. Turn it on in Settings → API tokens
   (it asks for your master password), or as root on the HyperProx machine with
   `hyperprox token plugin-settings <name> on|off`. Anyone holding that token can then change plug-in addresses and
-  their keys or passwords. Nothing else changes: it still cannot read a saved secret back, use Secrets or Send,
+  their keys or passwords. It also covers adding or changing a Proxmox Backup Server (by its token, not by signing in),
+  a Home Assistant house or a QNAP, including reading the certificate to confirm; not a house's security settings,
+  backup management, verify, actions, or removing a server, house or NAS. Nothing else changes: it still cannot read a saved secret back, use Secrets or Send,
   manage users, roles or tokens, change cluster logins, or delete or remove anything. The save is written with the
   signed-in session of the owner who allowed it (any signed-in owner, if root allowed it), so it works only while
   that owner is signed in. Every save is in the audit log with the

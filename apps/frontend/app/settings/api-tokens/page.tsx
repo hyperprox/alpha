@@ -157,7 +157,8 @@ function PluginSettingsModal({ row, onConfirm, onClose }: { row: TokenRow; onCon
               passwords), without your master password.
             </Notice>
             <p className="text-sm" style={{ color: 'var(--text-soft)' }}>
-              Only plug-in settings. It still cannot read a saved secret back, reach Secrets or Send, manage users,
+              Only plug-in settings, and adding or changing a backup server (by its token), a Home Assistant house or a
+              QNAP. It still cannot read a saved secret back, reach Secrets or Send, manage users,
               roles or tokens, change cluster logins, or delete anything. Each save is written with your signed-in
               session and recorded in the audit log under this token&apos;s name. You can turn it off at any time.
             </p>

@@ -74,7 +74,8 @@ export const pbsRoutes: FastifyPluginAsync = async (fastify) => {
   // The certificate an address presents, for the admin to compare and confirm BEFORE a token or password is sent
   // (as for a remote cluster or a Home Assistant). Admin; never an API token; rate-limited; nothing else is sent.
   fastify.post<{ Body: { url?: unknown } }>('/instances/probe-certificate', async (req, reply) => {
-    if (req.apiToken) return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'API tokens cannot read certificates.' })
+    // A token only with the owner-granted plug-in settings permission (lib/gate.ts), to confirm a fingerprint before adding.
+    if (req.apiToken && req.tokenPluginSettings?.kind !== 'probe') return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'API tokens cannot read certificates.' })
     try {
       const p = await svc().presented(cleanUrl(req.body?.url), actor(req))
       return { success: true, data: { fingerprint: p.fingerprint, caVerified: p.caVerified, subject: p.subject ?? null, issuer: p.issuer ?? null, validTo: p.validTo ?? null } }

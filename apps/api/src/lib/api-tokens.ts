@@ -16,9 +16,11 @@
 //  unlock cache, still work.
 //
 //  One opt-in exception, off by default: an owner may let one admin token save
-//  plug-in settings (PUT /api/plugins/:id/settings) without a re-confirmation
-//  (pluginSettingsWithoutReconfirm). That request's vault write, to that one
-//  plug-in's item only, is made with the granting owner's signed-in session.
+//  plug-in settings (PUT /api/plugins/:id/settings), and add or change a PBS,
+//  Home Assistant or QNAP instance, without a re-confirmation
+//  (pluginSettingsWithoutReconfirm; the exact allowlist is lib/roles.ts
+//  tokenPluginScope). That request's vault writes, to that plug-in's own items
+//  only, are made with the granting owner's signed-in session.
 //  Every such save is audited (plugin.settings.save). Nothing else changes: every
 //  other re-confirmed action, every other vault write, Secrets, Send, tokens,
 //  users and roles stay out of reach. Only an owner, re-confirmed, can switch it

@@ -10,11 +10,14 @@ import { authRoutes } from '../src/routes/auth'
 import { secretsRoutes } from '../src/routes/secrets'
 import { apiTokenRoutes } from '../src/routes/api-tokens'
 import { pluginRoutes } from '../src/routes/plugins'
+import { haControlRoutes } from '../src/routes/ha-control'
+import { qnapRoutes } from '../src/routes/qnap'
+import { pbsRoutes } from '../src/routes/pbs'
 import { setBroker } from '../src/lib/vault/broker'
 import { lock, isUnlocked } from '../src/lib/vault/state'
 import { setCredentialTable, setCredential } from '../src/lib/credentials'
 import { allSessions, removeSession, requestContext } from '../src/lib/auth'
-import { needsReconfirm, pluginSettingsSave, requiredRole } from '../src/lib/roles'
+import { needsReconfirm, tokenPluginScope, requiredRole } from '../src/lib/roles'
 import {
   MemoryApiTokenStore, setApiTokenStore, createApiToken, revokeApiToken, setTokenPluginSettings, verifyApiToken,
 } from '../src/lib/api-tokens'
@@ -46,8 +49,10 @@ async function build(): Promise<FastifyInstance> {
     f.post('/clearout/remove', ok)
     f.post('/library/remove', ok)
   }, { prefix: '/api/plugins/plex' })
-  await app.register(async f => { f.put('/instances/:id', ok) }, { prefix: '/api/plugins/home-assistant' })
-  await app.register(async f => { f.put('/instances/:id', ok) }, { prefix: '/api/plugins/qnap' })
+  // The real instance routes, at their real prefixes (index.ts).
+  await app.register(haControlRoutes, { prefix: '/api/plugins/home-assistant' })
+  await app.register(qnapRoutes,      { prefix: '/api/plugins/qnap' })
+  await app.register(pbsRoutes,       { prefix: '/api/plugins/pbs' })
   await app.register(async f => {
     f.post('/:id/token', ok)
     f.post('/:id/plex', ok)
@@ -105,20 +110,37 @@ async function savePlex(t: string, payload: Record<string, string> = NEW_PLEX) {
 // --- Pure rules ------------------------------------------------------------------------------
 
 test('roles: only PUT /api/plugins/:id/settings is the plug-in settings save, and only its rule can be skipped', () => {
-  assert.equal(pluginSettingsSave('PUT', '/api/plugins/plex/settings'), 'plex')
-  assert.equal(pluginSettingsSave('PUT', '/api/plugins/plex/settings/'), 'plex')
-  for (const [m, p] of [['POST', '/api/plugins/plex/settings'], ['PUT', '/api/plugins/plex/settings/x'], ['PUT', '/api/plugins/home-assistant/instances/1'],
-    ['PUT', '/api/settings/dns/godaddy'], ['PUT', '/api/plugins/a/b/settings']]) assert.equal(pluginSettingsSave(m, p), null, `${m} ${p}`)
+  assert.deepEqual(tokenPluginScope('PUT', '/api/plugins/plex/settings'), { pluginId: 'plex', kind: 'settings' })
+  assert.deepEqual(tokenPluginScope('PUT', '/api/plugins/plex/settings/'), { pluginId: 'plex', kind: 'settings' })
+  for (const id of ['pbs', 'home-assistant', 'qnap']) {
+    assert.deepEqual(tokenPluginScope('POST', `/api/plugins/${id}/instances`), { pluginId: id, kind: 'instances' })
+    assert.deepEqual(tokenPluginScope('PUT', `/api/plugins/${id}/instances/x1`), { pluginId: id, kind: 'instances' })
+    assert.deepEqual(tokenPluginScope('POST', `/api/plugins/${id}/instances/probe-certificate`), { pluginId: id, kind: 'probe' })
+  }
+  for (const [m, p] of [['POST', '/api/plugins/plex/settings'], ['PUT', '/api/plugins/plex/settings/x'],
+    ['PUT', '/api/settings/dns/godaddy'], ['PUT', '/api/plugins/a/b/settings'],
+    ['POST', '/api/plugins/pbs/instances/signin'], ['PUT', '/api/plugins/pbs/instances/signin'], ['PUT', '/api/plugins/pbs/instances/probe-certificate'],
+    ['PUT', '/api/plugins/pbs/instances/p1/manage'], ['POST', '/api/plugins/pbs/instances/p1/manage/preview'], ['POST', '/api/plugins/pbs/instances/p1/manage/apply'],
+    ['POST', '/api/plugins/pbs/instances/p1/manage/gc'], ['POST', '/api/plugins/pbs/instances/p1/actions/verify'], ['POST', '/api/plugins/pbs/instances/p1/forget'],
+    ['DELETE', '/api/plugins/pbs/instances/p1'], ['DELETE', '/api/plugins/home-assistant/instances/h1'], ['DELETE', '/api/plugins/qnap/instances/q1'],
+    ['POST', '/api/plugins/home-assistant/instances/h1/actions'], ['POST', '/api/plugins/home-assistant/instances/h1/secure-actions'],
+    ['POST', '/api/plugins/qnap/instances/q1/actions'], ['POST', '/api/plugins/qnap/instances/q1/secure-actions'],
+    ['POST', '/api/plugins/mikrotik/instances'], ['PUT', '/api/plugins/plex/instances/1'], ['POST', '/api/plugins/pbs/instances/x/y'],
+  ]) assert.equal(tokenPluginScope(m, p), null, `${m} ${p}`)
   assert.equal(needsReconfirm('PUT', '/api/plugins/plex/settings'), true, 'still re-confirmed for everyone by default')
-  assert.equal(needsReconfirm('PUT', '/api/plugins/plex/settings', { exceptPluginSettings: true }), false)
+  assert.equal(needsReconfirm('PUT', '/api/plugins/plex/settings', { tokenPluginScope: true }), false)
   for (const [m, p] of [
     ['DELETE', '/api/proxmox/nodes/n1/lxc/100'], ['POST', '/api/secrets/reveal'], ['POST', '/api/secrets/send'],
-    ['POST', '/api/plugins/plex/clearout/remove'], ['POST', '/api/plugins/plex/library/remove'], ['PUT', '/api/plugins/home-assistant/instances/1'],
-    ['PUT', '/api/plugins/qnap/instances/1'], ['PUT', '/api/settings/dns/godaddy'], ['POST', '/api/settings/test/dns/godaddy'],
+    ['POST', '/api/plugins/plex/clearout/remove'], ['POST', '/api/plugins/plex/library/remove'],
+    ['PUT', '/api/settings/dns/godaddy'], ['POST', '/api/settings/test/dns/godaddy'],
+    ['POST', '/api/plugins/pbs/instances/signin'], ['PUT', '/api/plugins/pbs/instances/p1/manage'], ['POST', '/api/plugins/pbs/instances/p1/manage/apply'],
+    ['POST', '/api/plugins/pbs/instances/p1/manage/gc'], ['POST', '/api/plugins/pbs/instances/p1/actions/verify'], ['POST', '/api/plugins/pbs/instances/p1/forget'],
+    ['DELETE', '/api/plugins/pbs/instances/p1'], ['DELETE', '/api/plugins/home-assistant/instances/h1'], ['DELETE', '/api/plugins/qnap/instances/q1'],
+    ['POST', '/api/plugins/home-assistant/instances/h1/secure-actions'], ['POST', '/api/plugins/qnap/instances/q1/secure-actions'],
     ['POST', '/api/clusters/c1/token'], ['POST', '/api/clusters/c1/plex'], ['POST', '/api/clusters/c1/guests/n1/lxc/100/delete'],
     ['POST', '/api/auth/tokens'], ['DELETE', '/api/auth/tokens/x'], ['PUT', '/api/auth/tokens/x/plugin-settings'],
     ['POST', '/api/roles'], ['POST', '/api/setup-checklist/x'],
-  ]) assert.equal(needsReconfirm(m, p, { exceptPluginSettings: true }), true, `${m} ${p}`)
+  ]) assert.equal(needsReconfirm(m, p, { tokenPluginScope: true }), true, `${m} ${p}`)
   assert.equal(requiredRole('PUT', '/api/auth/tokens/x/plugin-settings'), 'owner')
   assert.equal(requiredRole('PUT', '/api/plugins/plex/settings'), 'admin')
 })
@@ -274,7 +296,15 @@ test('on: every excluded category is still refused for that token', async () => 
     ['DELETE', '/api/proxmox/nodes/n1/lxc/100', 'reconfirm_required'],
     ['POST', '/api/clusters/c1/guests/n1/lxc/100/delete', 'reconfirm_required'],
     ['POST', '/api/plugins/plex/clearout/remove', 'reconfirm_required'], ['POST', '/api/plugins/plex/library/remove', 'reconfirm_required'],
-    ['PUT', '/api/plugins/home-assistant/instances/1', 'reconfirm_required'], ['PUT', '/api/plugins/qnap/instances/1', 'reconfirm_required'],
+    // PBS add-by-sign-in, manage, verify, forget; every instance delete; HA and QNAP secure actions.
+    ['POST', '/api/plugins/pbs/instances/signin', 'reconfirm_required'],
+    ['PUT', '/api/plugins/pbs/instances/p1/manage', 'reconfirm_required'], ['POST', '/api/plugins/pbs/instances/p1/manage/preview', 'reconfirm_required'],
+    ['POST', '/api/plugins/pbs/instances/p1/manage/apply', 'reconfirm_required'], ['POST', '/api/plugins/pbs/instances/p1/manage/gc', 'reconfirm_required'],
+    ['POST', '/api/plugins/pbs/instances/p1/actions/verify', 'reconfirm_required'], ['POST', '/api/plugins/pbs/instances/p1/forget', 'reconfirm_required'],
+    ['DELETE', '/api/plugins/pbs/instances/p1', 'reconfirm_required'], ['DELETE', '/api/plugins/home-assistant/instances/h1', 'reconfirm_required'],
+    ['DELETE', '/api/plugins/qnap/instances/q1', 'reconfirm_required'],
+    ['POST', '/api/plugins/home-assistant/instances/h1/secure-actions', 'reconfirm_required'],
+    ['POST', '/api/plugins/qnap/instances/q1/secure-actions', 'reconfirm_required'],
   ]
   for (const [method, url, code] of cases) {
     const res = await app.inject({ method: method as any, url, headers: bearer(t), payload: method === 'GET' ? undefined : { value: 'from-token', name: 'x', enabled: true } })
@@ -396,4 +426,101 @@ test('cli grant: the save is written with a signed-in owner\'s session', async (
   assert.equal(res.statusCode, 200, res.body)
   assert.ok(broker.callsTo('upsertSecret').slice(before).every(w => ownerSids.includes(w.args[0] as string)))
   assert.equal(store.audits.filter(a => a.action === 'plugin.settings.save')[0].details!.via, 'token ci, without reconfirm')
+})
+
+// --- Plug-in instances (PBS, Home Assistant, QNAP) ------------------------------------------------
+
+test('instances: without the permission, add, change and the certificate probe stay refused for a token', async () => {
+  await signedIn()
+  const t = await adminToken()
+  const app = await appP
+  for (const id of ['pbs', 'home-assistant', 'qnap']) {
+    for (const [method, url] of [['POST', `/api/plugins/${id}/instances`], ['PUT', `/api/plugins/${id}/instances/x1`]] as const) {
+      const r = await app.inject({ method, url, headers: bearer(t), payload: {} })
+      assert.equal(r.statusCode, 403, `${method} ${url}`)
+      assert.equal(r.json().code, 'reconfirm_required', `${method} ${url}`)
+    }
+    const probe = await app.inject({ method: 'POST', url: `/api/plugins/${id}/instances/probe-certificate`, headers: bearer(t), payload: { url: 'not a url' } })
+    assert.equal(probe.statusCode, 403, id)
+    assert.equal(probe.json().code, 'token_forbidden', id)
+  }
+})
+
+test('instances: with the permission, add, change and the probe each reach their handler (and are audited)', async () => {
+  await signedIn()
+  const t = await grantedToken()
+  const app = await appP
+  store.audits.length = 0
+  for (const id of ['pbs', 'home-assistant', 'qnap']) {
+    // Bad input on purpose: the handler's own validation answers (400), so the gate and the token check let it in.
+    const add = await app.inject({ method: 'POST', url: `/api/plugins/${id}/instances`, headers: bearer(t), payload: { name: '' } })
+    assert.notEqual(add.statusCode, 403, `${id} add: ${add.body}`)
+    assert.ok(add.statusCode === 400 || add.statusCode === 404 || add.statusCode === 409, `${id} add: ${add.statusCode} ${add.body}`)
+    const put = await app.inject({ method: 'PUT', url: `/api/plugins/${id}/instances/nosuch`, headers: bearer(t), payload: { name: 'x' } })
+    assert.notEqual(put.statusCode, 403, `${id} change: ${put.body}`)
+    const probe = await app.inject({ method: 'POST', url: `/api/plugins/${id}/instances/probe-certificate`, headers: bearer(t), payload: { url: 'not a url' } })
+    assert.equal(probe.statusCode, 400, `${id} probe: ${probe.body}`)
+    assert.equal(probe.json().code, 'bad_input')
+  }
+  const saves = store.audits.filter(a => a.action === 'plugin.settings.save')
+  assert.deepEqual(saves.map(a => [a.resource, a.details!.action]), [
+    ['pbs', 'POST /api/plugins/pbs/instances'], ['pbs', 'PUT /api/plugins/pbs/instances/:iid'],
+    ['home-assistant', 'POST /api/plugins/home-assistant/instances'], ['home-assistant', 'PUT /api/plugins/home-assistant/instances/:iid'],
+    ['qnap', 'POST /api/plugins/qnap/instances'], ['qnap', 'PUT /api/plugins/qnap/instances/:iid'],
+  ])
+  for (const a of saves) assert.equal(a.details!.via, 'token automation, without reconfirm')
+})
+
+test('instances: a Home Assistant house can be connected end to end; its security policy cannot be changed by a token', async () => {
+  await signedIn()
+  const t = await grantedToken()
+  const app = await appP
+  const secret = 'ha-long-lived-token-' + 'x'.repeat(40)
+  const before = broker.callsTo('upsertSecret').length
+  const add = await app.inject({ method: 'POST', url: '/api/plugins/home-assistant/instances', headers: bearer(t),
+    payload: { name: 'Test house', url: 'http://10.9.8.7:8123', token: secret } })
+  assert.equal(add.statusCode, 201, add.body)
+  assert.equal(add.body.includes(secret), false, 'the token is never sent back')
+  const writes = broker.callsTo('upsertSecret').slice(before)
+  assert.ok(writes.length >= 1)
+  for (const w of writes) assert.match(w.args[1] as string, /^hyperprox:plugin\/home-assistant(\.[A-Za-z0-9_-]+)?$/)
+  assert.equal(JSON.stringify(store.audits).includes(secret), false, 'never a value in the audit log')
+  const id = add.json().data.id
+  const rename = await app.inject({ method: 'PUT', url: `/api/plugins/home-assistant/instances/${id}`, headers: bearer(t), payload: { name: 'Renamed house' } })
+  assert.equal(rename.statusCode, 200, rename.body)
+  for (const [method, url] of [['POST', '/api/plugins/home-assistant/instances'], ['PUT', `/api/plugins/home-assistant/instances/${id}`]] as const) {
+    const r = await app.inject({ method, url, headers: bearer(t), payload: { name: 'Other', url: 'http://10.9.8.6:8123', token: secret, policy: { normalRole: 'operator' } } })
+    assert.equal(r.statusCode, 403, `${method} ${url}: ${r.body}`)
+    assert.equal(r.json().code, 'token_forbidden')
+  }
+})
+
+test('instances: vault writes stay on the plug-in\'s own items (never PBS\'s management token, never another plug-in)', async () => {
+  await signedIn()
+  const base = { sid: 'token:tok1', email: 'token:automation', role: 'admin' as const }
+  const pbsCtx = { ...base, pluginSettings: { pluginId: 'pbs', grantedBy: OWNER, instances: true } }
+  await requestContext.run(pbsCtx, async () => {
+    await setCredential('plugin', 'pbs', 'instances', '[]')
+    await setCredential('plugin', 'pbs.p1234', 'url', 'https://10.9.8.5:8007')
+    await assert.rejects(setCredential('plugin', 'pbs.p1234.manage', 'token_secret', 'x'), { name: 'TokenVaultWriteError' })
+    await assert.rejects(setCredential('plugin', 'qnap.q1', 'password', 'x'), { name: 'TokenVaultWriteError' })
+    await assert.rejects(setCredential('plugin', 'pbsx', 'url', 'x'), { name: 'TokenVaultWriteError' })
+    await assert.rejects(setCredential('proxmox', 'pbs', 'url', 'x'), { name: 'TokenVaultWriteError' })
+  })
+  // A settings save (not an instance change) reaches only the plug-in's own item.
+  await requestContext.run({ ...base, pluginSettings: { pluginId: 'pbs', grantedBy: OWNER } }, async () => {
+    await assert.rejects(setCredential('plugin', 'pbs.p1234', 'url', 'x'), { name: 'TokenVaultWriteError' })
+  })
+  assert.equal(broker.items.has('hyperprox:plugin/pbs.p1234.manage'), false)
+})
+
+test('instances: a matched route outside the allowlist is never granted, whatever the raw path says', async () => {
+  await signedIn()
+  const t = await grantedToken()
+  const app = await appP
+  // PBS add-by-sign-in carries a PBS admin password: refused by the gate, and by the service if it ever got there.
+  const r = await app.inject({ method: 'POST', url: '/api/plugins/pbs/instances/signin', headers: bearer(t), payload: { url: 'https://10.9.8.5:8007', user: 'root', password: 'pw' } })
+  assert.equal(r.statusCode, 403)
+  assert.equal(r.json().code, 'reconfirm_required')
+  assert.equal(store.audits.some(a => a.action === 'plugin.settings.save'), false)
 })

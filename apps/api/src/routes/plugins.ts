@@ -167,7 +167,7 @@ export const pluginRoutes: FastifyPluginAsync = async (fastify) => {
       }
       // An API token an owner let save plug-in settings without the master password (lib/gate.ts): the save is
       // audited first, and refused if the audit entry cannot be written. Setting names only, never a value.
-      const grant = req.apiToken && req.tokenPluginSettings?.pluginId === plugin.manifest.id ? req.tokenPluginSettings : undefined
+      const grant = req.apiToken && req.tokenPluginSettings?.kind === 'settings' && req.tokenPluginSettings.pluginId === plugin.manifest.id ? req.tokenPluginSettings : undefined
       if (req.apiToken && grant) {
         const keys = plugin.manifest.settings.map(s => s.key).filter(k => typeof body[k] === 'string' && body[k] !== '')
         try {

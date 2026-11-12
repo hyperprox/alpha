@@ -137,6 +137,9 @@ export const haControlRoutes: FastifyPluginAsync = async (fastify) => {
   })
 
   fastify.post<{ Body: Record<string, unknown> }>('/instances', async (req, reply) => {
+      // Through the owner-granted plug-in settings permission a token may connect a house (address, token,
+      // certificate, name), never change which devices count as security controls or who may use them.
+      if (req.apiToken && (req.body as any)?.policy !== undefined) return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'API tokens cannot change which Home Assistant devices are security controls. A person changes that.' })
     try {
       const b = { ...(req.body ?? {}) } as Record<string, any>
       const everydayIds = b.policy?.everyday
@@ -153,6 +156,9 @@ export const haControlRoutes: FastifyPluginAsync = async (fastify) => {
   })
 
   fastify.put<P & { Body: Record<string, unknown> }>('/instances/:iid', async (req, reply) => {
+      // Through the owner-granted plug-in settings permission a token may connect a house (address, token,
+      // certificate, name), never change which devices count as security controls or who may use them.
+      if (req.apiToken && (req.body as any)?.policy !== undefined) return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'API tokens cannot change which Home Assistant devices are security controls. A person changes that.' })
     try {
       const b = { ...(req.body ?? {}) } as Record<string, any>
       const prev = await store().get(req.params.iid)
@@ -193,7 +199,8 @@ export const haControlRoutes: FastifyPluginAsync = async (fastify) => {
   // The certificate a house presents, for pinning (admin; checked against the same address rules first).
   fastify.post<{ Body: { url?: unknown } }>('/instances/probe-certificate', async (req, reply) => {
     // It makes HyperProx connect somewhere: people only, and not quickly.
-    if (req.apiToken) return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'API tokens cannot probe certificates.' })
+    // A token only with the owner-granted plug-in settings permission (lib/gate.ts), to confirm a fingerprint before adding.
+    if (req.apiToken && req.tokenPluginSettings?.kind !== 'probe') return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'API tokens cannot probe certificates.' })
     try { svc().limit(actor(req), 'probesPerMinute', 'Too many certificate reads; wait a moment.') } catch (e) { return fail(reply, e) }
     try {
       const u = new URL(String(req.body?.url ?? ''))
