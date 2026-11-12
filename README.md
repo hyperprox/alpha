@@ -93,7 +93,7 @@ node screenshots.mjs --all http://127.0.0.1:3100 /tmp/hyperprox-shots
 | Updates | Pending packages everywhere, on every cluster, and a gated update run that respects HA and quorum, restarts Ceph one OSD at a time and refuses any restart or reboot that would take data offline; a daily read-only check tells you when something new needs updating |
 | Terminal | Browser SSH with persistent tmux sessions, split panes and saved layouts |
 | Catalogue | Guided installs of NPM, Ollama, Tautulli, Nextcloud, Jellyfin, Gitea, Proxmox Backup Server and more: choose resources, see every node's free capacity with a recommended node, pick the ID and address; an app already running on your cluster shows where. The **Arr Stack** recipe installs Sonarr, Radarr and the apps you pick, wired together, with the logins in the vault |
-| Websites | Its own section: a New website wizard (static site or WordPress) from a domain your DNS provider lists to a live HTTPS site (container, DNS record, proxy host, certificate and a check of the public address), Add existing for the sites HyperProx finds already running, and privacy-friendly metrics from each site's own access log (people counted apart from bots and scanners, with a Security card for probes; LiteSpeed and CyberPanel sites are read-only); then open it, sign in to WordPress with a one-time link, reveal its password, pull it again, check its health |
+| Websites | Its own section: a New website wizard (static site, WordPress or Ghost) from a domain your DNS provider lists to a live HTTPS site (container, DNS record, proxy host, certificate and a check of the public address), Add existing for the sites HyperProx finds already running, and privacy-friendly metrics from each site's own access log (people counted apart from bots and scanners, with a Security card for probes; LiteSpeed and CyberPanel sites are read-only); then open it, sign in to WordPress with a one-time link or open Ghost's admin, reveal its password, pull it again, check its health |
 | AI assistant | Questions about your cluster, and plain-language deploys run end to end after you confirm |
 | Plug-ins | Arr Stack, Unmanic, MikroTik, ASUS routers, Plex, Proxmox Backup Server, Home Assistant, QNAP and MeshCentral, with no access to credentials; Home Assistant also controls devices, in more than one house |
 | Plex | Works from Plex alone (Tautulli is optional), added with **Sign in with Plex** and a short code; live updates and covers; **Clear-out** lists what nobody watches, with keep rules; **Library** removes shows, seasons, episodes and films through Sonarr, Radarr or Plex, behind a preview and the master password; a message when something new is added |
@@ -884,8 +884,8 @@ alerts are firing", "why is the fan loud on node2", "is my website up", "when do
 "which lights are on in the living room", "how many visitors did blog.example.com get this week".
 
 **New website, pull now, SMART test.** "Create a WordPress website at blog.example.com" asks for whatever
-is missing, one question at a time (static site or WordPress, the public name or LAN only, the site title,
-and for WordPress the admin email), then plans it with the New website wizard's own code: the name is
+is missing, one question at a time (static site, WordPress or Ghost, the public name or LAN only, the site title,
+for WordPress the admin email, and for Ghost the owner's email and name; Ghost's mail is set in the wizard), then plans it with the New website wizard's own code: the name is
 checked against your DNS provider and proxy, the node, storage, bridge and ID are the wizard's
 recommendation, and the plan is held for you for 10 minutes. The assistant installs nothing: **Review in
 New website** opens that plan in the wizard, and Install there asks for your master password, as it does by
@@ -1151,7 +1151,7 @@ Websites have their own section in the rail (**Web → Websites**, at `/sites`),
 (each site with its kind, address, container, today's visitors and a 24-hour sparkline), **New website**,
 **Add existing** and **Metrics** (every site at once: visitors and page views today, how many are up and
 down, the worst error rate, certificates with under 14 days left, alerts firing, and a row per site that
-opens its own Metrics tab). A site's own page is `/sites/<id>`. The two recipes behind New website:
+opens its own Metrics tab). A site's own page is `/sites/<id>`. The three recipes behind New website:
 
 - **Static site**: nginx serving `/var/www/site`, optionally pulled from a public https git repository (a
   branch and a folder in it), with `site-pull` to pull now and an optional timer every N minutes. Security
@@ -1161,12 +1161,35 @@ opens its own Metrics tab). A site's own page is `/sites/<id>`. The two recipes 
   in the vault before anything installs; they never appear on a command line. File editing is off, minor
   core releases update themselves, the salts are generated and XML-RPC is blocked. Health check:
   `/wp-login.php` must show the login form, which needs PHP and the database.
+- **Ghost**: a blog and newsletter. The official `ghost` Docker image with MySQL 8 beside it, in Compose
+  (`/opt/ghost`), both pinned to one release by tag and digest (Ghost 6.77.0, MySQL 8.4.13; an upgrade is a
+  changed tag and digest, then `docker compose up -d`). Docker is used because Ghost supports only MySQL 8 in production, which Debian 13
+  does not ship, and Ghost-CLI expects Ubuntu, a non-root user and prompts. Ghost listens on `127.0.0.1` only;
+  until HyperProx has made the owner and read it back, the container's nginx serves only a 503 holding page and
+  does not reach Ghost at all. Only then is the Ghost site turned on in nginx (checked with `nginx -t` and read
+  back over port 80), and from then on nginx refuses every write to Ghost's setup endpoint in any form (any case,
+  any API version, with or without a trailing slash), so nobody on the network can ever claim the site. Its `url` is the public `https://` name when the site is
+  published, or the container's own address when it is on your network only. The wizard asks for the site
+  title, an optional description and the owner's name and email; the owner password and both database
+  passwords are generated and saved in the vault before anything installs. The database passwords are files
+  only root can open, read by Ghost and MySQL as Docker secrets (never in a settings file or on a command
+  line). After the install HyperProx finishes Ghost's first run itself, over the container's loopback: it
+  creates the owner through Ghost's setup API (with the title and description) and reads it back, opens the site
+  in nginx and reads that back (the site answers; `POST` and `PUT` to every form of the setup endpoint get 403), signs in
+  once to make a "HyperProx" integration whose Admin API key goes into the same vault item (read back by
+  fetching the title with it), and ends that session. If any step fails, Ghost and nginx are stopped and the
+  job says why. **Mail** is optional: give an SMTP server (and its user and password, which goes straight into
+  the vault, never into the plan) for staff invites, password resets, member sign-up and sign-in links and
+  newsletters, and Ghost's new-device sign-in codes are turned on after setup. Without SMTP none of that mail
+  is sent, sign-in codes stay off (so the owner cannot be locked out by a code that never arrives), and the
+  owner signs in with the password from the vault. Health check: `/ghost/api/admin/site/` must answer
+  Ghost's JSON with its version. Sizes: small 1 core, 1.5 GB, 8 GB; medium 2 cores, 2 GB, 10 GB; large 4
+  cores, 4 GB, 30 GB.
 
-Both log in nginx's combined format plus the request time and the proxy's `X-Forwarded-For`
+All three log in nginx's combined format plus the request time and the proxy's `X-Forwarded-For`
 (`log_format hyperprox_metrics`), which is what a site's **Metrics** tab reads (see below). Monitoring
-with alerts is therefore automatic for both. Not automatic yet: a backup job, a place under the update policy
-and a plug-in panel. Ghost is not offered: it supports only MySQL 8 in production, which Debian 13 does not ship,
-and its installer takes the database password as a command-line flag.
+with alerts is therefore automatic for all three. Not automatic yet: a backup job, a place under the update policy
+and a plug-in panel.
 
 Every Catalogue install is a short wizard:
 
@@ -1200,9 +1223,12 @@ clean-up removes only what that run made: the container, the proxy host and the 
 points where the run set it). The certificate is left on the proxy.
 
 Each site then has **Open site**, **Open WordPress admin** (a sign-in link that works once, for 60 seconds,
-POSTed so no access log keeps it; admin only, master password again, audited), **Reveal password** (through
+POSTed so no access log keeps it; admin only, master password again, audited), **Open Ghost admin** (its
+`/ghost/` page; sign in with the owner email and the password from the vault), **Reveal password** (through
 the vault), **Pull now** for a static site, **Health** for the container and the public address, and
-**Metrics**. Each card also shows today's visitors and a sparkline of the last 24 hours.
+**Metrics**. Each card also shows today's visitors and a sparkline of the last 24 hours. A Ghost site's card
+also shows its Ghost version, published posts and members, read with the Admin API key from the vault (the
+key never reaches the browser; kept for five minutes, **Refresh** reads again).
 
 #### Metrics: privacy-friendly analytics from the site's own log
 
@@ -1303,7 +1329,7 @@ a list of the websites HyperProx found, built without changing anything:
   its log, and whether a `wp-config.php` (or any `.php` file) sits in a site's root. From those HyperProx picks the access log of the server block
   whose `server_name` matches the site (else the one it inherits, else nginx's default), reads whether its
   format has the request time and `X-Forwarded-For`, and calls the site **WordPress** (a `wp-config.php` in
-  its root), **Static** (nginx serving a plain root) or **Other**. Only paths and yes/no facts leave the
+  its root), **Static** (nginx serving a plain root), **Ghost** (nginx proxying to a Ghost: a running `ghost` image or a Ghost-CLI install; added as Ghost, with metrics like any other site) or **Other**. Only paths and yes/no facts leave the
   script's answer: no configuration text, header or log line is returned or kept.
 
 **LiteSpeed and CyberPanel** sites are supported read-only, and HyperProx offers no changes for them. Discovery

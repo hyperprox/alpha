@@ -20,7 +20,7 @@ import { FakePve, deps, INPUT, settled } from "./fakes/catalogue-pve"
 
 test("web recipes: a web category with a label, real health paths, and the gaps said out loud", () => {
   const web = CATALOGUE.filter(r => r.category === "web").map(r => r.id)
-  assert.deepEqual(web, ["static-site", "wordpress"])
+  assert.deepEqual(web, ["static-site", "wordpress", "ghost"])
   assert.equal(CATEGORY_LABELS.web, "Web hosting")
   for (const r of CATALOGUE) assert.ok(CATEGORY_LABELS[r.category], r.id)
   const s = findRecipe("static-site")!, w = findRecipe("wordpress")!

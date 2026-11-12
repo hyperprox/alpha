@@ -23,6 +23,7 @@ import { ARR_RECIPE } from './arr/recipe'
 import { LOG_FORMAT_LINE } from './site-metrics/log-format'
 import type { Distro } from './install-script'
 import { PBS_OPTIONS, PBS_SCRIPT, NOT_OFFSITE, checkPbsOptions, RECIPE_ID as PBS_RECIPE_ID } from './pbs/catalogue'
+import { GHOST_OPTIONS, GHOST_SCRIPT, GHOST_RECIPE_ID, GHOST_VERSION, MYSQL_VERSION, checkGhostOptions } from './ghost/recipe'
 
 /** What a person does the first time they open the service. */
 export type FirstRun =
@@ -124,9 +125,10 @@ export interface CatalogueRecipe {
   detect?:     Fingerprint[]
   /**
    * A recipe with its own guided setup after the install, in place of the generic health check and wiring
-   * (lib/pbs/catalogue.ts for Proxmox Backup Server: datastore location, tokens, plug-in, optional storage).
+   * (lib/pbs/catalogue.ts for Proxmox Backup Server: datastore location, tokens, plug-in, optional storage). Ghost's
+   * (lib/ghost/setup.ts: the owner, the title, an Admin API key and mail) runs before the generic check and publish.
    */
-  setup?:      'pbs'
+  setup?:      'pbs' | 'ghost'
   /** Checks across the recipe's options, after each one passed its own kind. */
   checkOptions?: (values: Record<string, string>) => string[]
 }
@@ -893,6 +895,41 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
         hint: 'Keeps database answers in memory, so pages build faster.' },
     ],
     install: { kind: 'script', script: WORDPRESS_SCRIPT },
+  },
+  {
+    id: GHOST_RECIPE_ID,
+    detect: DETECT[GHOST_RECIPE_ID],
+    name: 'Ghost',
+    summary: 'A blog and newsletter: Ghost with its own MySQL 8, in Docker, behind the site’s nginx. The owner account and site title are set for you.',
+    category: 'web',
+    port: 80,
+    // Ghost's public site endpoint answers JSON with its version only once Ghost and its database are up.
+    healthPath: '/ghost/api/admin/site/',
+    expectStatus: [200],
+    healthBody: { contains: ['"site":', '"version":'] },
+    needsDocker: true,
+    defaults: { cores: 2, memoryMb: 2048, diskGb: 10, swapMb: 512 },
+    minimum: { cores: 1, memoryMb: 1536, diskGb: 8 },
+    firstRun: {
+      kind: 'env-admin', passwordEnv: 'GHOST_ADMIN_PASSWORD', user: 'owner', userOption: 'GHOST_OWNER_EMAIL',
+      secrets: [{ env: 'GHOST_DB_PASSWORD', vaultKey: 'db_password' }, { env: 'GHOST_DB_ROOT_PASSWORD', vaultKey: 'db_root_password' }],
+    },
+    // Not offered to the AI assistant, for the same reason as WordPress: it cannot hand the generated password back.
+    wizard: false,
+    firstLogin: 'Sign in at /ghost with the owner email you gave. Its password is generated, kept in the vault and shown once after the install; the database passwords and HyperProx’s Admin API key are in the same vault item.',
+    notes: [
+      `Pinned by tag and digest: Ghost ${GHOST_VERSION} and MySQL ${MYSQL_VERSION}, in /opt/ghost/docker-compose.yml. An upgrade is a changed tag and digest, then \`docker compose up -d\`.`,
+      'Ghost listens on 127.0.0.1 only; the container’s nginx shows only a holding page until HyperProx has made the owner over the container’s loopback, then serves Ghost on port 80 and refuses every write to its setup endpoint for good.',
+      'Its url is the public https:// address when it is published, or the container’s own address on your network only.',
+      'Mail is optional. Without an SMTP server Ghost cannot send staff invites, password resets, member sign-in links or newsletters.',
+      'The database passwords are files only root can open, read by Ghost and MySQL as Docker secrets; never in a settings file or on a command line.',
+      NOT_AUTOMATIC,
+    ],
+    sizes: { small: { cores: 1, memoryMb: 1536, diskGb: 8 }, medium: { cores: 2, memoryMb: 2048, diskGb: 10 }, large: { cores: 4, memoryMb: 4096, diskGb: 30 } },
+    options: GHOST_OPTIONS,
+    checkOptions: checkGhostOptions,
+    setup: 'ghost',
+    install: { kind: 'script', script: GHOST_SCRIPT },
   },
 ]
 

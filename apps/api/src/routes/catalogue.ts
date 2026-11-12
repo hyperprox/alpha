@@ -280,6 +280,8 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
       ...(b.arrNames && typeof b.arrNames === 'object' && !Array.isArray(b.arrNames) && b.arrNames.names && typeof b.arrNames.names === 'object'
         ? { arrNames: { zone: String(b.arrNames.zone ?? ''), instanceId: String(b.arrNames.instanceId ?? ''),
             names: Object.fromEntries(Object.entries(b.arrNames.names as Record<string, unknown>).filter(([k, v]) => /^[a-z]{3,16}$/.test(k) && typeof v === 'string').slice(0, 12)) as Record<string, string> } } : {}),
+      // Ghost's SMTP password: straight to the vault by the preview, never kept in the plan.
+      ...(typeof b.ghostSmtpPassword === 'string' && b.ghostSmtpPassword ? { ghostSmtpPassword: b.ghostSmtpPassword } : {}),
     }
     if (!findRecipe(input.recipeId)) return reply.status(404).send({ success: false, error: 'No such recipe' })
     try {

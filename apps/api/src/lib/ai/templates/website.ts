@@ -1,9 +1,9 @@
 // =============================================================================
 //  HyperProx — the "create a website" template
 //
-//  Four fields, read from the person's words by code: the kind (a static site or
-//  WordPress), the public name (or LAN only), the site title and, for WordPress,
-//  the admin email. A field that is missing or does not fit is asked for, one
+//  Up to five fields, read from the person's words by code: the kind (a static
+//  site, WordPress or Ghost), the public name (or LAN only), the site title, for
+//  WordPress and Ghost the admin (owner) email, and for Ghost the owner's name. A field that is missing or does not fit is asked for, one
 //  question at a time, and the answer is read against that question (a draft per
 //  person, held on the server for 15 minutes). No model is asked to fill a field.
 //
@@ -24,7 +24,7 @@ import type { Role } from '../../roles'
 import { requiredRole, hasRole } from '../../roles'
 import type { Choice } from '../clusters'
 
-export type WebsiteKind = 'static-site' | 'wordpress'
+export type WebsiteKind = 'static-site' | 'wordpress' | 'ghost'
 
 export interface WebsiteFields {
   kind?: WebsiteKind
@@ -32,6 +32,8 @@ export interface WebsiteFields {
   domain?: string
   title?: string
   adminEmail?: string
+  /** Ghost's owner account shows a name. */
+  ownerName?: string
 }
 
 export type WebsiteField = keyof WebsiteFields
@@ -46,7 +48,7 @@ const TITLE_QUOTED = /["“]([^"”]{1,100})["”]/
 const TITLE_CALLED = /\b(?:called|titled|named|title)\s*:?\s+(.+?)(?=\s+(?:at|on|with|and|for|using|under)\b|[,.;!?]|$)/i
 const CONTROL = /[\u0000-\u001f\u007f]/
 
-const WEB_WORD = /\b(websites?|web\s*sites?|wordpress|wp|blog|static\s+(web)?site|landing\s+page|site)\b/i
+const WEB_WORD = /\b(websites?|web\s*sites?|wordpress|wp|ghost|blog|newsletter|static\s+(web)?site|landing\s+page|site)\b/i
 const MAKE_VERB = /\b(create|make|build|set\s*up|start|launch|new|host|publish|spin\s*up|add|want|need|like|get|install|deploy|give\s+me)\b/i
 
 /**
@@ -59,6 +61,7 @@ export function isWebsiteRequest(prompt: string): boolean {
   if (/^\s*(what|how|why|which|is|are|does|do|when|where|who)\b/.test(p) && !/\b(can|could)\s+(i|you|we)\b/.test(p)) return false
   if (/\b(pull|metrics|visitors?|health|certificate|expire|sign\s*in|log\s*in|wp-admin)\b/.test(p) || /\b(is|are)\b.*\b(up|down)\b/.test(p)) return false
   if (/\b(wordpress|wp)\b/.test(p)) return true
+  if (/\bghost\b/.test(p) && /\b(blog|site|website|newsletter|ghost)\b/.test(p)) return true
   if (/^\s*(please\s+)?(deploy|install)\b/.test(p) && /\bstatic\s+site\b/.test(p) && !/\bwebsite\b/.test(p)) return false
   return /\b(websites?|web\s*sites?|blog|landing\s+page)\b/.test(p) || /\b(create|make|build|new|set\s*up|start|launch|host)\b.*\bsite\b/.test(p)
 }
@@ -68,6 +71,7 @@ export const isCancel = (prompt: string) => /^\s*(cancel|stop|never\s*mind|forge
 function kindIn(text: string): WebsiteKind | undefined {
   const p = text.toLowerCase()
   if (/\b(wordpress|wp)\b/.test(p)) return 'wordpress'
+  if (/\bghost\b/.test(p)) return 'ghost'
   if (/\b(static|plain\s+html|html|landing\s+page|git)\b/.test(p)) return 'static-site'
   return undefined
 }
@@ -96,6 +100,10 @@ export function extractWebsite(text: string, asking: WebsiteField | null = null)
     if (whole && whole.length <= 100 && !CONTROL.test(whole)) out.title = whole
   }
   if (asking === 'kind' && !out.kind && /\b(static|plain)\b/i.test(t)) out.kind = 'static-site'
+  if (asking === 'ownerName') {
+    const whole = withoutEmail.replace(/^["“]|["”]$/g, '').trim()
+    if (whole && whole.length <= 100 && !CONTROL.test(whole) && !/[<>]/.test(whole)) out.ownerName = whole
+  }
   return out
 }
 
@@ -109,10 +117,10 @@ export interface Question { field: WebsiteField; question: string; choices: stri
 
 /** The first missing or unusable field, as a question with its real choices; null when every field is known. */
 export function nextQuestion(f: WebsiteFields, ctx: { domains: string[] | null }): Question | null {
-  if (!f.kind) return { field: 'kind', question: 'What kind of website: a static site (plain HTML, optionally pulled from git) or WordPress?', choices: ['A static site', 'WordPress'] }
+  if (!f.kind) return { field: 'kind', question: 'What kind of website: a static site (plain HTML, optionally pulled from git), WordPress, or Ghost (a blog and newsletter)?', choices: ['A static site', 'WordPress', 'Ghost'] }
   if (!f.domain) {
     if (!ctx.domains || !ctx.domains.length) return { field: 'domain', question: 'No DNS provider is set up, so the site can only be reached on your network. Say "LAN only" to go on, or add a DNS provider in Settings first.', choices: ['LAN only'] }
-    const sub = f.kind === 'wordpress' ? 'blog' : 'www'
+    const sub = f.kind === 'wordpress' || f.kind === 'ghost' ? 'blog' : 'www'
     return { field: 'domain', question: `What name should it answer on? It must be under one of your domains: ${ctx.domains.join(', ')}. Or say "LAN only".`, choices: [...ctx.domains.slice(0, 4).map(z => `${sub}.${z}`), 'LAN only'] }
   }
   if (f.domain !== 'lan') {
@@ -124,6 +132,8 @@ export function nextQuestion(f: WebsiteFields, ctx: { domains: string[] | null }
   }
   if (!f.title) return { field: 'title', question: 'What is the site\'s title?', choices: [] }
   if (f.kind === 'wordpress' && !f.adminEmail) return { field: 'adminEmail', question: 'Which email address should the WordPress admin account use?', choices: [] }
+  if (f.kind === 'ghost' && !f.adminEmail) return { field: 'adminEmail', question: 'Which email address should the Ghost owner sign in with?', choices: [] }
+  if (f.kind === 'ghost' && !f.ownerName) return { field: 'ownerName', question: 'What name should the Ghost owner account show?', choices: [] }
   return null
 }
 
@@ -187,7 +197,9 @@ export async function planWebsite(f: Required<Pick<WebsiteFields, 'kind' | 'doma
   const hostname = ((publish ? f.domain.split('.')[0] : '') || recipe.id).replace(/[^a-z0-9-]/g, '-').slice(0, 63)
   const options: Record<string, string> = f.kind === 'wordpress'
     ? { WP_TITLE: f.title, WP_ADMIN_USER: adminUserFrom(f.adminEmail!), WP_ADMIN_EMAIL: f.adminEmail!, ...(publish ? { WP_URL: `https://${f.domain}` } : {}) }
-    : { SITE_TITLE: f.title }
+    // Ghost's url is set by the install from the published name; mail (SMTP) is added in the wizard, never here.
+    : f.kind === 'ghost' ? { GHOST_TITLE: f.title, GHOST_OWNER_EMAIL: f.adminEmail!, GHOST_OWNER_NAME: f.ownerName! }
+      : { SITE_TITLE: f.title }
   const input: WizardInput = {
     recipeId: recipe.id, node: placed.node, vmid: placed.vmid, hostname,
     cores: size.cores, memoryMb: size.memoryMb, swapMb: Math.min(512, size.memoryMb), diskGb: size.diskGb,
@@ -202,6 +214,7 @@ export async function planWebsite(f: Required<Pick<WebsiteFields, 'kind' | 'doma
     `Container ${pv.plan.vmid} (${pv.plan.hostname}) on ${pv.plan.node}, ${pv.plan.cores} core${pv.plan.cores === 1 ? '' : 's'}, ${pv.plan.memoryMb} MB, ${pv.plan.diskGb} GB on ${pv.plan.storage}, DHCP. ${placed.reason}`,
     ...(pv.plan.publish ? [`DNS ${pv.plan.publish.record.type} ${pv.plan.publish.record.name} in ${pv.plan.publish.zone}, a proxy host on ${pv.plan.publish.instanceName} and its certificate.`] : []),
     ...(f.kind === 'wordpress' ? [`WordPress admin ${options.WP_ADMIN_USER} (${f.adminEmail}); its password is generated into the vault. Change the user name in the wizard if you want another.`] : []),
+    ...(f.kind === 'ghost' ? [`Ghost owner ${f.ownerName} (${f.adminEmail}); the password is generated into the vault and HyperProx makes the owner itself. No mail server is set: add SMTP in the wizard for invites and member sign-in links.`] : []),
     'Open it in the New website wizard to review every step. Install there asks for your master password.',
   ]
   return { kind: 'card', card: { previewId: pv.id, title: `New website: ${recipe.name} at ${publish ? f.domain : 'LAN only'}`, steps, checks: pv.checks, warnings: pv.warnings, link: `/sites?preview=${encodeURIComponent(pv.id)}`, expiresAt: pv.expiresAt } }

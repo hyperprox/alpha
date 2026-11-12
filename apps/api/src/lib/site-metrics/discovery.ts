@@ -92,6 +92,9 @@ if [ -x "$LSW/bin/openlitespeed" ] || [ -x "$LSW/bin/lshttpd" ] || [ -x "$LSW/bi
   done
   for P in "$LSW"/lsphp*/bin/php; do [ -x "$P" ] && echo "HPXD1 lsphp $P"; done
 fi
+# Ghost: a Ghost-CLI site (its .ghost-cli file) or a running container from the ghost image. Names only.
+for G in /var/www/*/.ghost-cli /var/lib/ghost/.ghost-cli /opt/*/.ghost-cli; do [ -f "$G" ] && { echo "HPXD1 ghost cli"; break; }; done 2>/dev/null
+command -v docker >/dev/null 2>&1 && docker ps --format '{{.Image}}' 2>/dev/null | grep -q -E '(^|/)ghost(:|@|$)' && echo "HPXD1 ghost docker"
 set -f
 for R in $(printf '%s\n' $ROOTS | sort -u | head -n 50); do
   case "$R" in /*) ;; *) continue ;; esac
@@ -120,6 +123,8 @@ export interface DiscoverOutput {
   lsphp?: string[]
   /** Roots with a .php file at their top. */
   phpRoots?: string[]
+  /** Ghost runs here (Ghost-CLI's marker file, or a container from the ghost image). */
+  ghost?: boolean
 }
 
 const B64 = /^[A-Za-z0-9+/=]*$/
@@ -151,6 +156,7 @@ export function parseDiscover(out: string): DiscoverOutput {
     if (m) { if (B64.test(m[1])) r.nginx = parseNginxConfig(Buffer.from(m[1], 'base64').toString('utf8')); continue }
     m = /^HPXD1 apache (\/etc\/(?:apache2|httpd)) ?(\S*)$/.exec(l)
     if (m) { if (B64.test(m[2])) r.apache = parseApacheConfig(Buffer.from(m[2], 'base64').toString('utf8'), m[1] === '/etc/httpd' ? 'httpd' : 'apache2'); continue }
+    if (l === 'HPXD1 ghost cli' || l === 'HPXD1 ghost docker') { r.ghost = true; continue }
     m = /^HPXD1 wp (\S+)$/.exec(l)
     if (m && SAFE_PATH.test(m[1]) && !r.wpRoots.includes(m[1])) r.wpRoots.push(m[1])
   }
@@ -590,6 +596,8 @@ export interface Inspection {
   visitorsApproximate: boolean
   /** The proxy's forward port is one this container listens on (null when there is no proxy). */
   forwardPortOpen: boolean | null
+  /** The app behind a proxied server block, when one is known (Ghost). Its metrics kind stays 'other'. */
+  app?: 'ghost'
   notes: string[]
 }
 
@@ -617,6 +625,7 @@ export function inspectFor(out: DiscoverOutput, host: string | null, port: numbe
     r.logPath = log.logPath; r.logFormat = log.format
     if (log.note) notes.push(log.note)
     if (!wordpressAt(hit.server.root)) r.kind = hit.server.php || hit.server.proxied ? 'other' : 'static'
+    if (r.kind === 'other' && hit.server.proxied && out.ghost) r.app = 'ghost'
   } else if (out.litespeed) {
     r.server = 'litespeed'
     const hit = matchLsVhost(out.litespeed, host, port)
@@ -753,6 +762,8 @@ export interface Candidate {
   notAGuest: string | null
   server: Inspection['server']
   kind: SiteKind | null
+  /** The app it runs, when known: Ghost. */
+  app: 'ghost' | null
   logPath: string | null
   logFormat: LogChoice['format']
   wpPath: string | null
@@ -821,7 +832,7 @@ export function buildCandidates(targets: Target[], inspected: Map<number, Inspec
         proxy: t.forward ? { instances: t.proxies, tls: t.tls, forward: t.forward } : null,
         guest: g ? { vmid: g.vmid, name: g.name, node: g.node, type: g.type, status: g.status } : null,
         notAGuest: g ? null : (t.notGuest ?? 'an address that is not a guest'),
-        server: grp.ins?.server ?? null, kind: grp.ins?.kind ?? null,
+        server: grp.ins?.server ?? null, kind: grp.ins?.kind ?? null, app: grp.ins?.app ?? null,
         logPath: grp.ins?.logPath ?? null, logFormat: grp.ins?.logFormat ?? null, wpPath: grp.ins?.wpPath ?? null,
         errorLog: grp.ins?.errorLog ?? null, phpBin: grp.ins?.phpBin ?? null, visitorsApproximate: grp.ins?.visitorsApproximate ?? false,
         alreadyASite: !!site, alreadyAdopted: !!site?.recipeId.startsWith('adopted-'), siteId: site?.id ?? null,

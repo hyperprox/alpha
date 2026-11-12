@@ -124,6 +124,8 @@ export interface Candidate {
   notAGuest: string | null
   server: 'nginx' | 'apache' | 'caddy' | 'litespeed' | null
   kind: 'static' | 'wordpress' | 'other' | null
+  /** The app it runs, when discovery named one. */
+  app?: 'ghost' | null
   logPath: string | null
   logFormat: { name: string; requestTime: boolean | null; forwardedFor: boolean | null } | null
   wpPath: string | null
@@ -174,7 +176,7 @@ function CandidateTile({ c, onPick }: { c: Candidate; onPick: (c: Candidate) => 
     <>
       <div className={s.siteHead}>
         <b title={c.domains.join(', ')}>{title}{more && <small className={s.more}>{more}</small>}</b>
-        {c.kind && <span className={s.kind}>{KIND_LABEL[c.kind] ?? c.kind}</span>}
+        {c.kind && <span className={s.kind}>{c.app === 'ghost' ? 'Ghost' : KIND_LABEL[c.kind] ?? c.kind}</span>}
         <UpState up={c.up} />
       </div>
       <div className={s.chips2}>
@@ -232,6 +234,8 @@ export function AdoptSiteDialog({ onClose, onDone, inline = false }: { onClose: 
   const body = (f = form) => ({
     ...f, vmid: Number(f.vmid), wpPath: f.kind === 'wordpress' ? f.wpPath : undefined,
     errorLog: f.errorLog || undefined, phpBin: f.kind === 'wordpress' && f.phpBin ? f.phpBin : undefined,
+    // A Ghost that discovery named keeps its label (its metrics are an "other" site's).
+    app: picked?.app === 'ghost' && f.kind === 'other' ? 'ghost' : undefined,
   })
   const runCheck = async (f = form) => {
     setBusy(true); setMsg('')
@@ -320,7 +324,7 @@ export function AdoptSiteDialog({ onClose, onDone, inline = false }: { onClose: 
               <dl className={s.sum}>
                 <div><dt>Container</dt><dd>CT {form.vmid}{picked.guest ? ` · ${picked.guest.name} · ${picked.guest.node}` : ''}</dd></div>
                 <div><dt>Public address</dt><dd>{form.url || '—'}</dd></div>
-                <div><dt>Kind</dt><dd>{KIND_LABEL[form.kind] ?? form.kind}{picked.server ? ` · ${serverLabel(picked.server)}` : ''}</dd></div>
+                <div><dt>Kind</dt><dd>{picked?.app === 'ghost' && form.kind === 'other' ? 'Ghost' : KIND_LABEL[form.kind] ?? form.kind}{picked.server ? ` · ${serverLabel(picked.server)}` : ''}</dd></div>
                 <div><dt>Access log</dt><dd>{form.logPath}{picked.logFormat ? ` (${picked.logFormat.name})` : ''}{sharedLog(form.logPath) ? ' · shared: includes every site on this server' : ''}</dd></div>
                 {form.kind === 'wordpress' && <div><dt>WordPress folder</dt><dd>{form.wpPath}</dd></div>}
                 {form.kind === 'wordpress' && form.phpBin && <div><dt>PHP for WP-CLI</dt><dd>{form.phpBin}</dd></div>}

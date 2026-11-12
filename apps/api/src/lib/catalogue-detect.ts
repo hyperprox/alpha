@@ -101,6 +101,25 @@ export const DETECT: Record<string, Fingerprint[]> = {
     match: a => (a.status === 200 && a.body.includes('id="loginform"') && !a.body.includes('<?php')
       ? { version: /wp-includes\/[^"']*\?ver=(\d+\.\d+(?:\.\d+)?)/.exec(a.body)?.[1] ?? null } : null),
   }],
+  // Ghost's public site endpoint (its JSON carries the version and the site's url), else the generator tag its
+  // themes put on every page. Behind its own nginx a Ghost may answer the first only with the right scheme.
+  ghost: [
+    {
+      path: '/ghost/api/admin/site/',
+      match: a => {
+        const j = json(a)?.site
+        return j && typeof j.url === 'string' && typeof j.version === 'string' && VERSIONISH.test(j.version) ? { version: str(j.version) } : null
+      },
+    },
+    {
+      path: '/',
+      match: a => {
+        if (a.status !== 200) return null
+        const m = /<meta name="generator" content="Ghost (\d+\.\d+(?:\.\d+)?)"/.exec(a.body)
+        return m ? { version: m[1] } : null
+      },
+    },
+  ],
 }
 
 /** Recipes that are found by what site discovery saw inside the container rather than by a probe. */
