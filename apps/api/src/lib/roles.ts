@@ -350,6 +350,8 @@ export function needsReconfirm(method: string, path: string, opts: { tokenPlugin
   if (m === 'POST' && p === '/api/monitoring/grafana-admin/reset') return true
   if (m !== 'GET' && m !== 'HEAD' && ROLE_MGMT.test(p)) return true
   if (m === 'POST' && CATALOGUE_RECONFIRM.test(p)) return true
+  // Naming & addresses decides which network every new guest lands on: saving it is re-confirmed.
+  if (m === 'PUT' && p === '/api/catalogue/wizard/naming') return true
   if (m === 'POST' && SITES_RECONFIRM.test(p)) return true
   for (const [sm, re] of SITE_METRICS_RECONFIRM) if (m === sm && re.test(p)) return true
   if (m === 'POST' && GUEST_CONFIG_APPLY.test(p)) return true

@@ -16,6 +16,8 @@ import { ArrPicker, type ArrNames, type ArrVpn } from './ArrPicker'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { GhostButton, INPUT, LABEL, Notice, PrimaryButton } from '@/components/vault/ui'
 import { PbsLocation } from './PbsLocation'
+import { ModalFrame } from '@/components/layout/ModalFrame'
+import { ConfirmOverride, NamingCallout, confirmNeeded, useProposal, type NamingSettingsView, type Proposal } from './NamingProposal'
 
 export interface WizardRecipe {
   id: string; name: string; summary: string; category: string; port: number; needsDocker: boolean
@@ -47,6 +49,8 @@ interface NodeRow {
 interface Placement {
   nodes: NodeRow[]; recommendation: { node: string; reason: string; storage: string } | null
   partial: string[]; rule: { kind: 'next-free' } | { kind: 'pattern'; pattern: string }; nextVmid: number
+  /** Settings → Naming & addresses (null when none are saved) and how many guests already follow node + address. */
+  naming?: { settings: NamingSettingsView | null; detection: Proposal['detection'] }
 }
 interface Identity {
   suggestedVmid: number
@@ -153,6 +157,11 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
   // The tick is given for exactly the unknowns shown when it was ticked; a different set needs a new tick.
   const [ackedKeys, setAckedKeys] = useState<string[] | null>(null)
   const lastEdit = useRef<'vmid' | 'ip' | 'node' | null>(null)
+  const [vlan, setVlan] = useState<number | ''>('')
+  // The server's pick fills the identity in until the person changes the ID or the address themselves.
+  const [touchedNet, setTouchedNet] = useState(false)
+  const [namingConfirm, setNamingConfirm] = useState('')
+  const { proposal, loading: proposing, error: proposeError, refresh: repropose } = useProposal(node, step === 3)
 
   // Step 5: the held plan.
   const [preview, setPreview] = useState<PreviewData | null>(null)
@@ -234,6 +243,21 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
 
   // A changed address is a new address: its tick and its ping no longer apply.
   useEffect(() => { setAckedKeys(null); setPingResult(null) }, [ip, mode, node])
+  useEffect(() => { setNamingConfirm('') }, [ip, mode])
+
+  const applyProposal = useCallback((p: Proposal) => {
+    lastEdit.current = null
+    setVmid(p.vmid)
+    if (p.bridge) setBridge(p.bridge)
+    if (p.ip === 'dhcp') setMode('dhcp')
+    else { setMode('static'); setIp(p.ip); setGateway(p.gateway ?? '') }
+    setDns(p.dns.join(' '))
+    setVlan(p.vlan ?? '')
+  }, [])
+  useEffect(() => { if (proposal && !touchedNet) applyProposal(proposal) }, [proposal, touchedNet, applyProposal])
+  const savedNaming = placement?.naming?.settings ?? null
+  const overrideNeed = confirmNeeded(savedNaming, mode, ip)
+  const overrideOk = !overrideNeed || namingConfirm.trim().toUpperCase() === overrideNeed.word.toUpperCase()
 
   /** Ask once, on request: does anything answer a ping on this address, from the chosen node? */
   const checkAddress = async () => {
@@ -261,6 +285,7 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
       if (identity?.vmid && !identity.vmid.free) return false
       if (mode === 'static' && (!ip || (identity?.ip?.problems.length ?? 0) > 0)) return false
       if (unknowns.length && !addressAck) return false
+      if (!overrideOk) return false
       return true
     }
     return true
@@ -272,6 +297,8 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
       recipeId: recipe.id, node, vmid, hostname, cores, memoryMb, swapMb, diskGb, storage, bridge,
       ip: mode === 'dhcp' ? 'dhcp' : ip, ...(mode === 'static' && gateway ? { gateway } : {}), ...(dns ? { dns } : {}),
       ...(mode === 'static' && ackedKeys?.length ? { addressAck: ackedKeys } : {}),
+      ...(vlan !== '' ? { vlan } : {}),
+      ...(overrideNeed ? { namingConfirm } : {}),
       ...(options.length ? { options: opts } : {}),
       // The VPN login goes to the vault at the preview, never into the plan; names only when some are given.
       ...(isArr ? {
@@ -308,12 +335,9 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
   }
 
   return (
-    <div className="fixed inset-0 z-40 flex items-stretch sm:items-center justify-center sm:p-6"
-      style={{ background: 'var(--scrim)', backdropFilter: 'blur(4px)' }}>
-      <div role="dialog" aria-modal="true" aria-label={`Install ${recipe.name}`}
-        className="flex w-full max-w-4xl flex-col sm:rounded-xl border overflow-hidden"
-        style={{ background: 'var(--surface-raised)', borderColor: 'var(--border-strong)', maxHeight: '100dvh', boxShadow: 'var(--shadow)' }}>
-
+    <ModalFrame label={`Install ${recipe.name}`} escape={false}
+      after={reconfirm && <ReconfirmModal onClose={() => setReconfirm(false)} onDone={() => { setReconfirm(false); void apply() }} />}
+      header={<>
         {/* Header and step strip: corner brackets and a glowing current step, like the HUD headers */}
         <div className="flex items-start justify-between gap-3 border-b px-4 sm:px-6 py-4"
           style={{ borderColor: 'var(--border-soft)', background: 'linear-gradient(135deg, var(--surface), var(--surface-hi))' }}>
@@ -339,8 +363,15 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
             </li>
           ))}
         </ol>
-
-        <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-5 space-y-4">
+      </>}
+      footer={<>
+        <GhostButton onClick={() => (step === 0 ? onClose() : go(step - 1))} disabled={busy}>{step === 0 ? 'Cancel' : 'Back'}</GhostButton>
+        {step < 4 && <PrimaryButton onClick={() => go(step + 1)} disabled={!canNext || (step === 2 && placing)}>Next</PrimaryButton>}
+        {step === 4 && !preview && !busy && <PrimaryButton onClick={() => void makePreview()}>Check again</PrimaryButton>}
+        {step === 4 && preview && (
+          <PrimaryButton onClick={() => void apply()} disabled={busy}>{busy ? 'Starting…' : `Install ${recipe.name}`}</PrimaryButton>
+        )}
+      </>}>
           {/* ── 1. The app ─────────────────────────────────────────────── */}
           {step === 0 && (
             <div className="space-y-4">
@@ -547,6 +578,8 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
           {/* ── 4. Name and network ────────────────────────────────────── */}
           {step === 3 && (
             <div className="space-y-4">
+              <NamingCallout proposal={proposal} loading={proposing} error={proposeError} applied={!touchedNet}
+                onUse={() => { setTouchedNet(false); if (proposal) applyProposal(proposal) }} onRefresh={() => { setTouchedNet(false); void repropose() }} />
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field label="Container ID" hint={
                   identity?.vmid && !identity.vmid.free ? <span style={{ color: 'var(--crit-soft)' }}>{identity.vmid.problem}</span>
@@ -557,7 +590,7 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
                       : `The next free ID is ${identity?.suggestedVmid ?? placement?.nextVmid ?? '…'}.`
                 }>
                   <div className="flex gap-2">
-                    <input type="number" value={vmid} onChange={e => { lastEdit.current = 'vmid'; setVmid(e.target.value === '' ? '' : Number(e.target.value)) }}
+                    <input type="number" value={vmid} onChange={e => { lastEdit.current = 'vmid'; setTouchedNet(true); setVmid(e.target.value === '' ? '' : Number(e.target.value)) }}
                       style={INPUT} inputMode="numeric" aria-invalid={identity?.vmid ? !identity.vmid.free : undefined} />
                     {identity && identity.suggestedVmid !== vmid && (
                       <GhostButton type="button" onClick={() => setVmid(identity.suggestedVmid)} style={{ whiteSpace: 'nowrap' }}>Use {identity.suggestedVmid}</GhostButton>
@@ -575,7 +608,7 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
                 <Field label="Address">
                   <div className="flex rounded-md border overflow-hidden" style={{ borderColor: 'var(--border-strong)', height: 42 }}>
                     {(['dhcp', 'static'] as const).map(m => (
-                      <button key={m} type="button" onClick={() => { setMode(m); lastEdit.current = 'ip' }} className="flex-1 text-sm"
+                      <button key={m} type="button" onClick={() => { setMode(m); setTouchedNet(true); lastEdit.current = 'ip' }} className="flex-1 text-sm"
                         aria-pressed={mode === m}
                         style={{ background: mode === m ? 'var(--accent)' : 'transparent', color: mode === m ? 'var(--accent-ink)' : 'var(--text-soft)' }}>
                         {m === 'dhcp' ? 'Automatic (DHCP)' : 'Fixed (static)'}
@@ -592,11 +625,11 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
                         : 'Nothing in the cluster uses it. Press Check address to ping it.')
                         : bridgeInfo?.prefix ? `For example ${(bridgeInfo.gateway ?? '192.0.2.1').replace(/\.\d+$/, '.50')}/${bridgeInfo.prefix}` : 'Like 192.0.2.50/24'
                   }>
-                    <input value={ip} onChange={e => { lastEdit.current = 'ip'; setIp(e.target.value.trim()) }} placeholder="192.0.2.50/24"
+                    <input value={ip} onChange={e => { lastEdit.current = 'ip'; setTouchedNet(true); setIp(e.target.value.trim()) }} placeholder="192.0.2.50/24"
                       style={INPUT} inputMode="decimal" autoCapitalize="none" spellCheck={false} />
                   </Field>
                   <Field label="Gateway">
-                    <input value={gateway} onChange={e => setGateway(e.target.value.trim())} style={INPUT} inputMode="decimal" />
+                    <input value={gateway} onChange={e => { setTouchedNet(true); setGateway(e.target.value.trim()) }} style={INPUT} inputMode="decimal" />
                   </Field>
                   <Field label="DNS servers" hint="Optional. Blank uses the node's.">
                     <input value={dns} onChange={e => setDns(e.target.value)} placeholder="192.0.2.53" style={INPUT} inputMode="decimal" />
@@ -608,6 +641,14 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
                   <input value={dns} onChange={e => setDns(e.target.value)} placeholder="192.0.2.53" style={INPUT} inputMode="decimal" />
                 </Field>
               )}
+              <Field label="VLAN tag" hint="Optional. Only on a VLAN-aware bridge; blank for none.">
+                <input type="number" min={1} max={4094} value={vlan} onChange={e => setVlan(e.target.value === '' ? '' : Number(e.target.value))}
+                  style={{ ...INPUT, maxWidth: 160 }} inputMode="numeric" />
+              </Field>
+              {mode === 'dhcp' && !overrideNeed && (
+                <Notice kind="warn">DHCP: the address comes from whichever DHCP server answers, and a bridge can carry more than one network. A fixed address keeps the guest where you expect it.</Notice>
+              )}
+              {overrideNeed && <ConfirmOverride need={overrideNeed} value={namingConfirm} onChange={setNamingConfirm} inputStyle={INPUT} />}
               {identity?.reverse?.nodes && identity.reverse.nodes.length > 1 && (
                 <div className="rounded-lg border p-3 space-y-2" style={{ borderColor: 'color-mix(in srgb, var(--warn) 35%, transparent)' }}>
                   <p className="text-sm" style={{ color: 'var(--warn-2)' }}>
@@ -670,7 +711,9 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
                       ['Node', preview.plan.node], ['Container ID', preview.plan.vmid], ['Hostname', preview.plan.hostname],
                       ['Cores', preview.plan.cores], ['RAM', `${preview.plan.memoryMb} MB`], ['Swap', `${preview.plan.swapMb} MB`],
                       ['Disk', `${preview.plan.diskGb} GB on ${preview.plan.storage}`], ['Bridge', preview.plan.bridge],
-                      ['Address', preview.plan.ip === 'dhcp' ? 'DHCP' : `${preview.plan.ip}${preview.plan.gateway ? `, gateway ${preview.plan.gateway}` : ''}`],
+                      ['Address', preview.plan.ip === 'dhcp' ? 'DHCP: no fixed address (see the warning below)' : `${preview.plan.ip}${preview.plan.gateway ? `, gateway ${preview.plan.gateway}` : ''}`],
+                      ...(preview.plan.vlan ? [['VLAN', preview.plan.vlan] as [string, any]] : []),
+                      ...(proposal && proposal.ip !== 'dhcp' && proposal.vmid === preview.plan.vmid && proposal.ip === preview.plan.ip ? [['Numbering', proposal.label] as [string, any]] : []),
                       ['DNS', preview.plan.dns || 'the node’s'], ['Template', String(preview.plan.template).split('/').pop()],
                       ['Privileges', isArr ? 'unprivileged, nesting and keyctl' : 'unprivileged, nesting only'], ['Starts at boot', 'yes'],
                       ...(isArr ? arrReview(preview.plan.options as unknown as Record<string, string> | undefined, recipe.options ?? []) : []),
@@ -696,20 +739,7 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
               {warnings.length > 0 && <Notice kind="warn">{warnings.join(' ')}</Notice>}
             </div>
           )}
-        </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-between gap-2 border-t px-4 sm:px-6 py-3" style={{ borderColor: 'var(--border-soft)' }}>
-          <GhostButton onClick={() => (step === 0 ? onClose() : go(step - 1))} disabled={busy}>{step === 0 ? 'Cancel' : 'Back'}</GhostButton>
-          {step < 4 && <PrimaryButton onClick={() => go(step + 1)} disabled={!canNext || (step === 2 && placing)}>Next</PrimaryButton>}
-          {step === 4 && !preview && !busy && <PrimaryButton onClick={() => void makePreview()}>Check again</PrimaryButton>}
-          {step === 4 && preview && (
-            <PrimaryButton onClick={() => void apply()} disabled={busy}>{busy ? 'Starting…' : `Install ${recipe.name}`}</PrimaryButton>
-          )}
-        </div>
-      </div>
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(false)} onDone={() => { setReconfirm(false); void apply() }} />}
-    </div>
+    </ModalFrame>
   )
 }
 

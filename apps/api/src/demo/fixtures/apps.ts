@@ -206,6 +206,7 @@ export const APPS: FixtureRoute[] = [
   { path: '/api/catalogue/detected', get: () => ok(detected()) },
   { path: '/api/catalogue/wizard/jobs', get: () => ok({ jobs: [] }) },
   { path: '/api/catalogue/wizard/settings', get: () => ok({ vmidRule: { kind: 'node-prefix' } }) },
+  { path: '/api/catalogue/wizard/naming', get: () => ok({ settings: null }) },
   { path: '/api/catalogue/jobs/:jobId', get: () => ok({ state: 'done' }) },
   { path: '/api/ai/status', get: () => aiStatus() },
   { path: '/api/ai/catalog', get: () => aiCatalog() },

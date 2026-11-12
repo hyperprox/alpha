@@ -9,7 +9,7 @@
 
 import type { PrismaClient } from '@prisma/client'
 
-export type WizardKind = 'preview' | 'job' | 'creating' | 'site'
+export type WizardKind = 'preview' | 'job' | 'creating' | 'site' | 'setting'
 
 export interface WizardRecord {
   id:        string

@@ -108,7 +108,7 @@ export function ConfirmDialog({ title, onClose, children }: { title: string; onC
     <div className="fixed inset-0 z-50 flex items-end justify-center p-4 sm:items-center" style={{ background: 'var(--scrim)', backdropFilter: 'blur(4px)' }}
          onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
       <div ref={box} role="dialog" aria-modal="true" aria-label={title}
-           className="w-full max-w-md space-y-4 rounded-xl border p-6"
+           className="w-full max-w-md space-y-4 rounded-xl border p-6 max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain"
            style={{ background: 'var(--surface-raised)', borderColor: 'var(--border-soft)' }}>
         <h2 className="font-display font-semibold" style={{ fontSize: 22, color: 'var(--text-bright)' }}>{title}</h2>
         {children}

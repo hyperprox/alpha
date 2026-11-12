@@ -76,8 +76,8 @@ export function PreviewDialog({ guest, change, title, onClose, onApplied }: {
          onMouseDown={e => { if (e.target === e.currentTarget && !busy) onClose() }}>
       {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
       <div role="dialog" aria-modal="true" aria-label={title}
-           className="w-full sm:max-w-2xl rounded-t-xl sm:rounded-xl border flex flex-col" style={{ background: 'var(--surface-raised)', borderColor: 'var(--border-soft)', maxHeight: '92vh' }}>
-        <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: 'var(--border-dim)' }}>
+           className="w-full sm:max-w-2xl rounded-t-xl sm:rounded-xl border flex flex-col overflow-hidden max-h-[100dvh] sm:max-h-[calc(100dvh-2rem)]" style={{ background: 'var(--surface-raised)', borderColor: 'var(--border-soft)' }}>
+        <div className="flex shrink-0 items-center justify-between px-5 py-4 border-b" style={{ borderColor: 'var(--border-dim)' }}>
           <div className="min-w-0">
             <div className="font-mono uppercase" style={{ fontSize: 11, letterSpacing: '0.14em', color: 'var(--accent)' }}>Preview · {guest.type === 'lxc' ? 'CT' : 'VM'} {guest.vmid}</div>
             <h2 className="font-display font-semibold truncate" style={{ fontSize: 22, color: 'var(--text-bright)' }}>{title}</h2>
@@ -85,7 +85,7 @@ export function PreviewDialog({ guest, change, title, onClose, onApplied }: {
           <button onClick={onClose} aria-label="Close" disabled={busy} style={{ color: 'var(--text-dimmer)', fontSize: 18 }}>✕</button>
         </div>
 
-        <div className="px-5 py-4 overflow-y-auto space-y-4">
+        <div className="min-h-0 flex-1 px-5 py-4 overflow-y-auto overscroll-contain space-y-4">
           {busy && !pv && <BusyNote>Reading the guest and checking the plan against the cluster…</BusyNote>}
           {err && <Notice kind="error">{err}</Notice>}
 
@@ -172,7 +172,7 @@ export function PreviewDialog({ guest, change, title, onClose, onApplied }: {
           {restart.result?.restart && <RestartPanel r={restart.result.restart} />}
         </div>
 
-        <div className="flex justify-end gap-2 px-5 py-3 border-t" style={{ borderColor: 'var(--border-dim)' }}>
+        <div className="hx-modal-foot flex shrink-0 justify-end gap-2 px-5 pt-3 border-t" style={{ borderColor: 'var(--border-dim)' }}>
           <GhostButton onClick={onClose} disabled={busy}>{result ? 'Close' : 'Cancel'}</GhostButton>
           {pv && !result && pv.kind !== 'restart' && <PrimaryButton disabled={!ready || busy} onClick={() => void applyId(pv.previewId, setResult)}>{busy ? 'Saving…' : 'Save'}</PrimaryButton>}
           {pv && !result && pv.kind === 'restart' && <PrimaryButton disabled={!ready || busy} onClick={() => void applyId(pv.previewId, setResult)}>{busy ? 'Restarting…' : 'Restart'}</PrimaryButton>}

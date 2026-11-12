@@ -81,6 +81,7 @@ export const EXTRA_PAGES: Array<{ href: string; label: string; section: string; 
   { href: '/catalogue/settings', label: 'Container ID rule', section: 'Catalogue', keywords: 'vmid numbering' },
   { href: '/settings/setup-checklist', label: 'Setup checklist', section: 'Settings', keywords: 'gpu exporter monitoring' },
   { href: '/settings/api-tokens', label: 'API tokens', section: 'Settings', keywords: 'keys automation' },
+  { href: '/settings/naming', label: 'Naming & addresses', section: 'Settings', keywords: 'vmid ip range subnet dhcp vlan numbering convention' },
   { href: '/settings/notifications', label: 'Notifications', section: 'Settings', keywords: 'alerts email discord' },
   { href: '/settings/secrets', label: 'Secrets', section: 'Settings', keywords: 'vault passwords credentials' },
 ]

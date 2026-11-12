@@ -72,6 +72,8 @@ export default function CatalogueSettings() {
         chips={[{ label: 'Rule', value: rule.kind === 'pattern' ? 'Pattern' : 'Next free', tone: 'accent' }]}
         actions={<Link href="/catalogue" className={styles.btn} style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}>← Catalogue</Link>}>
         <p style={{ margin: 0, maxWidth: 680, fontSize: 15, lineHeight: 1.6, color: 'var(--text-soft)' }}>
+          The ID and address rules now live in <Link href="/settings/naming" style={{ color: 'var(--accent)' }}>Settings → Naming &amp; addresses</Link>;
+          once those are saved they win, and this older pattern is only used to fill the other half of an ID you type.
           How the install wizard suggests a container ID. You can always type a different one; it is checked against
           every container and VM before anything is created.
         </p>

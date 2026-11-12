@@ -200,7 +200,7 @@
 
 /* ── sheet ── */
 .veil { position: fixed; inset: 0; background: var(--scrim); backdrop-filter: blur(6px); display: flex; align-items: flex-end; justify-content: center; z-index: 40; }
-.sheet { width: min(100%, 30rem); max-height: 92vh; overflow-y: auto; background: linear-gradient(180deg, var(--surface-notice), var(--hx-panel)); border: 1px solid var(--hx-line-hi); border-bottom: 0;
+.sheet { width: min(100%, 30rem); max-height: calc(100vh - 16px); max-height: calc(100dvh - 16px); overflow-y: auto; overscroll-behavior: contain; background: linear-gradient(180deg, var(--surface-notice), var(--hx-panel)); border: 1px solid var(--hx-line-hi); border-bottom: 0;
   border-radius: 18px 18px 0 0; padding: 20px 20px calc(24px + env(safe-area-inset-bottom, 0px)); display: flex; flex-direction: column; gap: 16px; align-items: center; animation: hxUp .25s ease-out; }
 @keyframes hxUp { from { transform: translateY(40px); opacity: 0; } }
 .sheet h3 { margin: 0; font: 700 1.4rem var(--font-display); letter-spacing: .06em; text-transform: uppercase; text-align: center; color: var(--text-bright); overflow-wrap: anywhere; }

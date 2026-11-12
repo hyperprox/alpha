@@ -138,7 +138,13 @@ export function adminUserFrom(email: string): string {
 // ---------------------------------------------------------------------------
 
 export interface ProxyOption { id: string; name: string; kind: string; status?: string; certificates: 'request' | 'provider' | 'none' }
-export interface Placed { node: string; storage: string; bridge: string; vmid: number; reason: string }
+export interface Placed {
+  node: string; storage: string; bridge: string; vmid: number; reason: string
+  /** From the naming settings (or the numbering the guests follow): a fixed address, or 'dhcp' when none could be picked. */
+  ip?: string; gateway?: string; dns?: string[]; vlan?: number
+  /** "CT 3xx ↔ 192.0.2.2xx (your numbering)", shown in the plan. */
+  numbering?: string
+}
 
 export interface WebsitePlanDeps {
   recipe(id: WebsiteKind): CatalogueRecipe | undefined
@@ -191,7 +197,11 @@ export async function planWebsite(f: Required<Pick<WebsiteFields, 'kind' | 'doma
   const input: WizardInput = {
     recipeId: recipe.id, node: placed.node, vmid: placed.vmid, hostname,
     cores: size.cores, memoryMb: size.memoryMb, swapMb: Math.min(512, size.memoryMb), diskGb: size.diskGb,
-    storage: placed.storage, bridge: placed.bridge, ip: 'dhcp', options, ...(pub ? { publish: pub } : {}),
+    storage: placed.storage, bridge: placed.bridge, ip: placed.ip ?? 'dhcp',
+    ...(placed.ip && placed.ip !== 'dhcp' && placed.gateway ? { gateway: placed.gateway } : {}),
+    ...(placed.ip && placed.ip !== 'dhcp' && placed.dns?.length ? { dns: placed.dns.join(' ') } : {}),
+    ...(placed.vlan ? { vlan: placed.vlan } : {}),
+    options, ...(pub ? { publish: pub } : {}),
   }
   const r = await d.preview(input, owner)
   if (!r.preview) return { kind: 'say', message: `The New website wizard refused this plan: ${r.errors.join(' ')} Nothing was planned.` }
@@ -199,7 +209,7 @@ export async function planWebsite(f: Required<Pick<WebsiteFields, 'kind' | 'doma
   const where = publish ? `https://${f.domain}` : 'your network only'
   const steps = [
     `${recipe.name} "${f.title}" at ${where}.`,
-    `Container ${pv.plan.vmid} (${pv.plan.hostname}) on ${pv.plan.node}, ${pv.plan.cores} core${pv.plan.cores === 1 ? '' : 's'}, ${pv.plan.memoryMb} MB, ${pv.plan.diskGb} GB on ${pv.plan.storage}, DHCP. ${placed.reason}`,
+    `Container ${pv.plan.vmid} (${pv.plan.hostname}) on ${pv.plan.node}, ${pv.plan.cores} core${pv.plan.cores === 1 ? '' : 's'}, ${pv.plan.memoryMb} MB, ${pv.plan.diskGb} GB on ${pv.plan.storage}, ${pv.plan.ip === 'dhcp' ? 'DHCP (no fixed address could be picked; the wizard can set one)' : `${String(pv.plan.ip).split('/')[0]}${placed.numbering ? `, ${placed.numbering}` : ''}`}. ${placed.reason}`,
     ...(pv.plan.publish ? [`DNS ${pv.plan.publish.record.type} ${pv.plan.publish.record.name} in ${pv.plan.publish.zone}, a proxy host on ${pv.plan.publish.instanceName} and its certificate.`] : []),
     ...(f.kind === 'wordpress' ? [`WordPress admin ${options.WP_ADMIN_USER} (${f.adminEmail}); its password is generated into the vault. Change the user name in the wizard if you want another.`] : []),
     'Open it in the New website wizard to review every step. Install there asks for your master password.',

@@ -202,9 +202,12 @@ function ChannelModal({ editing, meta, onSaved, onClose }: {
     (f.allEvents || f.families.length > 0) && !(f.kind === 'gotify' && needSecret && !f.token.trim())
 
   return (
-    <Modal title={editing ? `Edit "${editing.name}"` : 'Add a channel'} onClose={onClose}>
+    <Modal title={editing ? `Edit "${editing.name}"` : 'Add a channel'} onClose={onClose} footer={<>
+      <GhostButton type="button" onClick={onClose}>Cancel</GhostButton>
+      <PrimaryButton type="submit" form="notify-channel-form" disabled={busy || !canSave}>{busy ? 'Saving...' : 'Save'}</PrimaryButton>
+    </>}>
       {reconfirm && <ReconfirmModal onDone={() => { setReconfirm(false); save() }} onClose={() => setReconfirm(false)} />}
-      <form onSubmit={e => { e.preventDefault(); save() }} className="space-y-4 max-h-[75vh] overflow-y-auto pr-1">
+      <form id="notify-channel-form" onSubmit={e => { e.preventDefault(); save() }} className="space-y-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div><label htmlFor="n-name" style={LABEL}>Name</label>
             <input id="n-name" autoFocus value={f.name} onChange={e => set('name', e.target.value)} placeholder="e.g. My phone" maxLength={60} style={INPUT} /></div>
@@ -322,10 +325,6 @@ function ChannelModal({ editing, meta, onSaved, onClose }: {
         <Toggle id="n-enabled" checked={f.enabled} onChange={v => set('enabled', v)} label="On (untick to pause this channel)" />
 
         {error && <Notice kind="error">{error}</Notice>}
-        <div className="flex gap-2 justify-end">
-          <GhostButton type="button" onClick={onClose}>Cancel</GhostButton>
-          <PrimaryButton type="submit" disabled={busy || !canSave}>{busy ? 'Saving...' : 'Save'}</PrimaryButton>
-        </div>
       </form>
     </Modal>
   )

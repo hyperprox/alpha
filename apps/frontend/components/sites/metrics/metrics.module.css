@@ -115,7 +115,7 @@
 .diff ins { color: var(--good); text-decoration: none; display: block; }
 .form { display: grid; gap: 12px; }
 .dialog { position: fixed; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center; padding: 16px; background: var(--scrim); backdrop-filter: blur(4px); }
-.dialog > div { width: min(100%, 40rem); max-height: 92vh; overflow-y: auto; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+.dialog > div { width: min(100%, 40rem); max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); overflow-y: auto; overscroll-behavior: contain; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 12px; }
 .dialog h2 { margin: 0; font: 700 1.3rem var(--font-display); letter-spacing: .06em; text-transform: uppercase; color: var(--text-bright); }
 
 /* "Add an existing site": the websites HyperProx found, as tiles. */

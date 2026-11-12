@@ -46,7 +46,8 @@ const AREAS: Array<{ href: string; label: string; icon: string; sub: string }> =
   { href: '/settings/secrets',         label: 'Secrets',         icon: 'lock',   sub: 'What the vault holds. Revealing one may ask for your master password again.' },
   { href: '/settings/api-tokens',      label: 'API tokens',      icon: 'plug',   sub: 'Bearer tokens for scripts and agents.' },
   { href: '/settings/notifications',   label: 'Notifications',   icon: 'alarm',  sub: 'Where HyperProx tells you something needs attention.' },
-  { href: '/catalogue/settings',       label: 'Container ID rule', icon: 'plugin', sub: 'How new guests are numbered.' },
+  { href: '/settings/naming',          label: 'Naming & addresses', icon: 'network', sub: 'The network, address range, ID scheme and DHCP policy for new guests.' },
+  { href: '/catalogue/settings',       label: 'Container ID rule', icon: 'plugin', sub: 'The older ID pattern, used only when Naming & addresses is not saved.' },
 ]
 
 // ---------------------------------------------------------------------------

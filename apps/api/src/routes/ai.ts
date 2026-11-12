@@ -64,7 +64,7 @@ import { productionHAControl } from './ha-control'
 import { listSites, getSite, siteHealth, realPublishDeps } from '../lib/sites'
 import { realRun } from './sites'
 import { findRecipe } from '../lib/catalogue'
-import { wizardView, placementFor, nextIdOf, previewInstall } from '../lib/catalogue-installer'
+import { wizardView, placementFor, previewInstall, proposeFor, readLiveAddresses, notePartial } from '../lib/catalogue-installer'
 import { runPluginDetail } from '../lib/plugin-host'
 import type { HAControlService } from '../lib/ha-control/service'
 import {
@@ -280,14 +280,21 @@ function defaultDeps(): AiRouteDeps {
       proxies: () => realPublishDeps().proxy.instances(),
       // The wizard's Placement step: its recommended node and storage, a bridge with a gateway, the next free ID.
       place: async (recipe, need) => {
-        const { view } = await wizardView()
+        const { view, deps } = await wizardView()
         const placed = placementFor(recipe, need, view)
         const rec = placed.recommendation
         if (!rec) return { error: `No node can take it: ${placed.nodes.map(n => `${n.node} (${n.verdict.why[0] ?? 'not usable'})`).join(', ') || 'no node is online'}.` }
         const node = view.nodes.find(n => n.node === rec.node)
         const bridge = node?.bridges.find(b => b.gateway) ?? node?.bridges[0]
         if (!bridge) return { error: `${rec.node} has no network bridge.` }
-        return { node: rec.node, storage: rec.storage, bridge: bridge.iface, vmid: nextIdOf(view), reason: rec.reason }
+        // The same ID and address the wizard's Placement step offers: the naming settings, or the numbering the
+        // guests already follow, each candidate pinged from the node. DHCP only when nothing can be picked.
+        const live = await readLiveAddresses(deps.client, view.guests)
+        notePartial(view, live)
+        const p = await proposeFor(rec.node, view, live, await deps.readNaming(), deps.ping)
+        if (p.ip === 'dhcp') return { node: rec.node, storage: rec.storage, bridge: bridge.iface, vmid: p.vmid, reason: rec.reason, ip: 'dhcp' }
+        return { node: rec.node, storage: rec.storage, bridge: p.bridge || bridge.iface, vmid: p.vmid, reason: rec.reason,
+          ip: p.ip, gateway: p.gateway, dns: p.dns, vlan: p.vlan, numbering: p.label }
       },
       preview: (input, owner) => previewInstall(input, owner),
     }),

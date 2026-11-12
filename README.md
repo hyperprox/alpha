@@ -787,7 +787,10 @@ service, adds the proxy host and DNS record, waits for DNS and requests the cert
 Nginx Proxy Manager (using `LETSENCRYPT_EMAIL` from `.env`, or the NPM account email).
 
 The assistant can install Nextcloud, Jellyfin, Gitea, Uptime Kuma and Homepage. Installing needs a
-node login (see Catalogue); without one, it does everything else and shows the commands to run.
+node login (see Catalogue); without one, it does everything else and shows the commands to run. When
+[Naming & addresses](#naming--addresses) is saved, a deploy you give no address gets the next free ID and
+address from it; DHCP when it says never, or an address outside the range, is refused with the address that
+fits (the wizards are where you can confirm an exception).
 
 **More than one cluster.** The assistant answers about the cluster picked at the top of its page (the
 home cluster unless you pick a remote, or open the page with `?cluster=<id>`). A question can name
@@ -844,8 +847,9 @@ alerts are firing", "why is the fan loud on node2", "is my website up", "when do
 **New website, pull now, SMART test.** "Create a WordPress website at blog.example.com" asks for whatever
 is missing, one question at a time (static site or WordPress, the public name or LAN only, the site title,
 and for WordPress the admin email), then plans it with the New website wizard's own code: the name is
-checked against your DNS provider and proxy, the node, storage, bridge and ID are the wizard's
-recommendation, and the plan is held for you for 10 minutes. The assistant installs nothing: **Review in
+checked against your DNS provider and proxy, the node, storage, bridge, ID and fixed address are the wizard's
+recommendation (from [Naming & addresses](#naming--addresses), each address pinged from the node first), and
+the plan is held for you for 10 minutes. The assistant installs nothing: **Review in
 New website** opens that plan in the wizard, and Install there asks for your master password, as it does by
 hand. "Pull docs.example.com now" prepares the Websites section's Pull now for a static site (admin), and "run a
 quick SMART test on disk 3 of nas1" prepares the QNAP page's quick SMART test (operator); each is a confirm
@@ -1135,10 +1139,22 @@ Every Catalogue install is a short wizard:
    and free space on each storage that can hold a container. HyperProx recommends a node and says why
    (for example, most memory left after the install, on shared storage, keeping the GPU node free). You
    can pick any node it has not ruled out; ruled-out nodes say why.
-4. **Identity and network**: the container ID (the next free one, or your own rule, such as an ID made
-   from the node number and the address), hostname, bridge, and DHCP or a static address. A static
-   address is checked against your guests; if something could not be checked, you are asked to confirm.
-5. **Review**: the exact plan. Installing it asks for your master password again.
+4. **Identity and network**: HyperProx fills in the container ID and a fixed address and says where they
+   came from, for example "CT 3xx ↔ 192.0.2.2xx (your numbering)". They come from
+   [Settings → Naming & addresses](#naming--addresses) when it is saved; otherwise from the numbering your
+   guests already follow, if most of them do; otherwise from a free address at the top of the node's own
+   network. Each candidate address is in no guest config (stopped guests included), no running guest
+   reports it, it is not a node's address or the gateway, and nothing answers a ping or ARP from the node.
+   You can change the ID, hostname, bridge, address, DNS and VLAN tag. DHCP is used only when no address
+   can be picked safely, and then with a warning, since a bridge can carry more than one network. An
+   address outside your range, or DHCP when your settings say never, needs you to type it to confirm,
+   and is written to the audit log at install. If something about an address could not be checked, you
+   are asked to confirm that too. The Arr Stack and Proxmox Backup Server use this same step.
+5. **Review**: the exact plan, with the address it will have (never a silent DHCP: a DHCP plan says so
+   and carries the warning). Installing it asks for your master password again.
+
+The wizard's frame always fits the screen: the step strip and the Back / Install buttons stay in view and
+only the middle scrolls, and on a phone it is a full-screen sheet.
 
 Installs run with `pct exec` from the node, so they need one **node login** per node, entered at the
 top of the Catalogue page. It is tested before it is stored, kept in the vault, and never borrowed from
@@ -1150,7 +1166,9 @@ wizard offers to remove only the container it made. See [docs/catalogue-wizard.m
 **New website** (a tab of Websites) is the Catalogue's install wizard with a public name: pick the kind, then a domain
 your DNS provider lists and a name in it (or the domain itself), and the proxy. HyperProx refuses a name
 that already has an A, AAAA or CNAME record and shows the exact record it will create. Placement, ID and
-address come from the same rules as the Catalogue, with small, medium and large sizes. The review shows the
+address come from the same rules as the Catalogue ([Naming & addresses](#naming--addresses), the numbering your
+guests follow, or the node's own network, with the same typed confirmation to go outside them), with small,
+medium and large sizes. The review shows the
 container, the DNS record, the proxy host, the certificate and the vault item; Install asks for your master
 password. The run creates the container, installs the site, creates the proxy host and the record, waits
 for the name to resolve, gets the certificate and checks the public `https://` address. If it fails, the
@@ -1832,6 +1850,35 @@ why.
 - **API tokens** for scripts: see [Security model](#security-model).
 - **Notifications**: channels for lock alerts, update runs, updates waiting to be applied, certificate changes, Prometheus alerts and Home Assistant security actions, with severity
   filters, quiet hours and a test button. See [docs/notifications.md](docs/notifications.md).
+- **Naming & addresses**: see below.
+
+#### Naming & addresses
+
+Where new guests go on your network and how they are numbered, so a new guest never lands on a network
+nobody meant. Every wizard that creates a guest reads it: the Catalogue (the Arr Stack and Proxmox Backup
+Server included), New website, and the AI assistant's deploys and website plans.
+
+- **Guest network**: the subnet (for example `192.0.2.0/24`), the range HyperProx may hand out (for
+  example `.200` to `.254`; keep it out of your router's DHCP pool), the gateway, DNS servers, the bridge
+  and an optional VLAN tag. The range and the gateway must be inside the subnet.
+- **ID scheme**: **Free ID** (Proxmox's next free ID), or **Node + address**: the ID is the node's index
+  followed by the last two digits of the address, so index 3 and `.242` give 342. The node index is filled in
+  from the number each node's name ends in, and you can change it; two nodes cannot share an index. With this
+  scheme the range must sit inside one block of a hundred (like `.200` to `.254`), or two addresses would give
+  the same ID.
+- **DHCP**: **Never** (the default), **Allowed with a warning**, or **Allowed**.
+- **Fill in from my guests** reads the guests you already have and fills the form in from the numbering
+  most of them follow, with how many do ("12 of 14 guests already follow this"). Nothing is saved until you
+  press Save.
+
+The wizards pick the next address in the range whose ID (by the scheme) is free across the cluster, which no
+guest config has (stopped guests too), which no running guest reports, which is not a node's address or the
+gateway, and which nothing answers by ping or ARP from the node. You can still choose another ID or address:
+an ID off the scheme is a warning; an address outside the range, or DHCP under **Never**, needs you to type
+the address (or `DHCP`) to confirm, and the install writes it to the audit log. Saving the settings is for
+admins and asks for your master password again. With nothing saved, the wizards follow your guests'
+numbering when most of them follow node + address, else a free address at the top of the node's own
+network, and use DHCP only when nothing can be picked, with a warning.
 
 ### On a phone
 

@@ -127,7 +127,7 @@ export function CreateGuestModal({ type, nodes, onClose }: { type: 'lxc' | 'qemu
       {/* Create Modal */}
       {showCreate && (
         <div className="fixed inset-0 z-50 flex items-center justify-center" style={{background:'var(--scrim)',padding:'16px'}}>
-          <div className="rounded-xl border p-6" style={{background:'var(--surface)',borderColor:'var(--border-soft)',maxHeight:'90vh',overflowY:'auto',width:'100%',maxWidth:'480px'}}>
+          <div className="rounded-xl border p-6" style={{background:'var(--surface)',borderColor:'var(--border-soft)',maxHeight:'calc(100dvh - 32px)',overflowY:'auto',overscrollBehavior:'contain',width:'100%',maxWidth:'480px'}}>
             <div className="flex items-center justify-between mb-5">
               <div className="flex items-center gap-3">
                 <div className="w-1 h-5 rounded-full" style={{background: createType==='lxc'?'var(--accent)':'var(--violet)'}}/>

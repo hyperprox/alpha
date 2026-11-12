@@ -12,6 +12,7 @@ import { CATALOGUE, CATEGORY_LABELS, findRecipe } from '../lib/catalogue'
 import {
   getInstallJob, readAdminCredential, previewInstall, applyPreview, removeFailedInstall, getPreview, cleanupCandidates,
   wizardView, identityView, placementFor, nextIdOf, checkIdentity, readVmidRule, saveVmidRule, WizardRefusal, finishSeerr, seerrWaiting,
+  readNamingSettings, saveNamingSettings, detectFromView, proposeFor, readLiveAddresses, notePartial,
   type InstallJob, type WizardDeps, type WizardInput,
 } from '../lib/catalogue-installer'
 import { parseCidr } from '../lib/wizard-placement'
@@ -221,9 +222,12 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
         const { view, deps: d } = await wizardView(deps.wizard)
         const rule = await d.readRule()
         const placed = placementFor(recipe, need, view)
+        const saved = await d.readNaming()
+        const detection = detectFromView(view)
         return reply.send({ success: true, data: {
           need, ...placed, partial: view.partial, rule,
           nextVmid: nextIdOf(view),
+          naming: { settings: saved, detection: { verdict: detection.verdict, matching: detection.matching, considered: detection.considered, total: detection.total } },
         } })
       } catch (e) { return refusal(reply, e) }
     })
@@ -246,6 +250,43 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
       } catch (e) { return refusal(reply, e) }
     })
 
+  // POST /wizard/propose — the ID and address to offer on a node: from the naming settings, the numbering the
+  // guests already follow, or the node's own subnet; DHCP only when nothing can be picked, and then with a warning.
+  // Candidates are pinged (and ARP looked at) from the node, so this is a button press, not an as-you-type call.
+  fastify.post<{ Body: { node?: string } }>('/wizard/propose', async (req, reply) => {
+    const node = String(req.body?.node ?? '')
+    if (!/^[A-Za-z0-9][A-Za-z0-9.-]{0,62}$/.test(node)) return reply.status(400).send({ success: false, error: 'node is required' })
+    try {
+      const { view, deps: d } = await wizardView(deps.wizard)
+      if (!view.nodes.some(n => n.node === node)) return reply.status(404).send({ success: false, error: `${node} is not a node in this cluster.` })
+      const live = await readLiveAddresses(d.client, view.guests)
+      notePartial(view, live)
+      const data = await proposeFor(node, view, live, await d.readNaming(), d.ping)
+      return reply.send({ success: true, data })
+    } catch (e) { return refusal(reply, e) }
+  })
+
+  // GET/PUT /wizard/naming — Settings → Naming & addresses. Saving needs the master password again (roles.ts).
+  fastify.get('/wizard/naming', async (_req, reply) => {
+    try { return reply.send({ success: true, data: { settings: await readNamingSettings(deps.wizard) } }) }
+    catch (e) { return refusal(reply, e) }
+  })
+  fastify.put<{ Body: { settings?: unknown } }>('/wizard/naming', async (req, reply) => {
+    try {
+      const r = await saveNamingSettings(req.body?.settings, deps.whoami(req), deps.wizard)
+      if (!r.settings) return reply.status(400).send({ success: false, error: 'The settings cannot be saved as they are.', problems: r.errors })
+      return reply.send({ success: true, data: { settings: r.settings } })
+    } catch (e) { return refusal(reply, e) }
+  })
+  // POST /wizard/naming/detect — fill the settings from the guests the cluster has, with how many already follow it.
+  fastify.post('/wizard/naming/detect', async (_req, reply) => {
+    try {
+      const { view } = await wizardView(deps.wizard)
+      const d = detectFromView(view)
+      return reply.send({ success: true, data: { ...d, nodes: view.nodes.map(n => ({ node: n.node, address: n.address ?? null, bridges: n.bridges })) } })
+    } catch (e) { return refusal(reply, e) }
+  })
+
   // GET/PUT /wizard/settings — the container ID rule
   fastify.get('/wizard/settings', async (_req, reply) => {
     try { return reply.send({ success: true, data: { vmidRule: await readVmidRule(deps.wizard) } }) }
@@ -267,6 +308,9 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
       cores: num(b.cores) as number, memoryMb: num(b.memoryMb) as number, swapMb: num(b.swapMb) ?? 0, diskGb: num(b.diskGb) as number,
       storage: String(b.storage ?? ''), bridge: String(b.bridge ?? ''), ip: String(b.ip ?? 'dhcp').trim() || 'dhcp',
       ...(b.gateway ? { gateway: String(b.gateway).trim() } : {}), ...(b.dns ? { dns: String(b.dns).trim() } : {}),
+      ...(b.vlan !== undefined && b.vlan !== null && b.vlan !== '' ? { vlan: Number(b.vlan) } : {}),
+      // What the person typed to go against the naming settings (DHCP, or an address outside the range).
+      ...(typeof b.namingConfirm === 'string' && b.namingConfirm.trim() ? { namingConfirm: b.namingConfirm.trim().slice(0, 64) } : {}),
       // The unknowns the person ticked for, as keys; anything else is dropped.
       ...(Array.isArray(b.addressAck) ? { addressAck: [...new Set((b.addressAck as unknown[])
         .filter((k): k is string => typeof k === 'string' && /^(live:\d{1,9}|cluster-status)$/.test(k)))].slice(0, 500) } : {}),
