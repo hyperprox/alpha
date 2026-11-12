@@ -9,12 +9,14 @@
 //    proxy      its proxy host, and on NPM its certificate when nothing else uses it
 //    container  the container (only for a site HyperProx installed; off by default)
 //    backups    a dead ID left in a backup job after the container went
+//    vault      the site's vault item (its generated logins and keys)
 //
 //  Ownership is what the install recorded when it published (the site's ledger,
 //  or its install job's): a thing in that ledger, unchanged, is ticked by
-//  default; anything else starts unticked with a note saying why. An adopted
-//  site is only ever "stop tracking" unless DNS or the proxy host is ticked with
-//  the site's name typed out; its container is never offered.
+//  default; anything else starts unticked with a note saying why, and can only
+//  be ticked with the site's name typed out. An adopted site is only ever "stop
+//  tracking" unless DNS or the proxy host is ticked that way; its container is
+//  never offered. Deleting a container always needs its hostname typed.
 //
 //  The run goes item by item, each audited before (fail closed) and after, each
 //  re-read just before its write and read back afterwards. Something already
@@ -32,7 +34,7 @@ import {
 
 export const DELETE_PREVIEW_TTL_MS = 10 * 60_000
 
-export type ItemKind = 'record' | 'dns' | 'proxy' | 'cert' | 'container' | 'backups'
+export type ItemKind = 'record' | 'dns' | 'proxy' | 'cert' | 'container' | 'backups' | 'vault'
 export type ItemState = 'present' | 'gone' | 'unknown' | 'mismatch'
 
 export interface DeleteItem {
@@ -52,6 +54,8 @@ export interface DeleteItem {
   typed?: string
   /** The item that must be ticked with this one (a certificate goes with its host). */
   requires?: string
+  /** Ticking that item ticks this one too, and unticking it unticks this (the vault item follows the container). */
+  tickWith?: string
   /** Shown in red. */
   danger?: string
   notes: string[]
@@ -65,6 +69,7 @@ type Target =
   | { kind: 'cert'; instanceId: string; certId: string; hostId: string }
   | { kind: 'container'; node: string; vmid: number; hostname: string }
   | { kind: 'backups'; vmid: number; jobs: string[] }
+  | { kind: 'vault'; category: string; provider: string }
 
 export interface DeletePreview {
   id: string
@@ -112,6 +117,13 @@ export interface SiteDeleteDeps {
   hostname(site: SiteRecord): Promise<string | null>
   /** The mark an install writes into its container's description. */
   installMark(jobId: string): string
+  /** The site's vault item: whether the install created it (false: it existed before), or null when unknown. */
+  vaultCreatedByInstall(site: SiteRecord): Promise<boolean | null>
+  /** The item's key names (never values); [] when it is empty or missing. Throws while the vault is locked. */
+  vaultKeys(category: string, provider: string): Promise<string[]>
+  deleteVault(category: string, provider: string): Promise<void>
+  /** The vault's display name for an item. */
+  vaultName(category: string, provider: string): string
   site(id: string): Promise<SiteRecord | undefined>
   forget(id: string): Promise<void>
   deleteMetrics(id: string): Promise<void>
@@ -153,6 +165,7 @@ export async function buildDeletePreview(site: SiteRecord, d: SiteDeleteDeps): P
   } else notes.push('The site has no public name, so there is no DNS record or proxy host to remove.')
 
   if (!adopted) await containerItems(site, d, items, targets)
+  if (!adopted && site.vault) await vaultItem(site, site.vault, d, items, targets)
   else notes.push(`The container (CT ${site.vmid}) is never offered for an adopted site: HyperProx did not make it.`)
   return { items, targets, notes }
 }
@@ -175,11 +188,11 @@ async function dnsItem(site: SiteRecord, domain: string, adopted: boolean, ledge
   const mine = ledger?.dnsRecord && lc(ledger.dnsRecord.zone) === z.zone && lc(ledger.dnsRecord.name) === z.name ? ledger.dnsRecord : null
   const owned = adopted ? false : mine ? (a.length === 1 && a[0] === mine.data) : null
   if (adopted) n.unshift('HyperProx did not make this record. Type the site\'s name to remove it anyway.')
-  else if (owned === null) n.unshift('HyperProx has no record of making this, so it is not ticked. Tick it only if you know it is this site\'s.')
-  else if (!owned) n.unshift(`HyperProx made it pointing at ${mine!.data}; it now holds ${a.join(', ')}, so it is not ticked.`)
+  else if (owned === null) n.unshift('HyperProx has no record of making this, so it is not ticked. Type the site\'s name to remove it, only if you know it is this site\'s.')
+  else if (!owned) n.unshift(`HyperProx made it pointing at ${mine!.data}; it now holds ${a.join(', ')}, so it is not ticked. Type the site's name to remove it anyway.`)
   if (a.length > 1) n.push(`All ${a.length} A records for ${domain} would be removed.`)
   items.push({ ...base, state: 'present', offered: true, owned, defaultOn: owned === true, detail: `A ${z.name} in ${z.zone} → ${a.join(', ')}`,
-    ...(adopted ? { typed: domain } : {}), notes: n })
+    ...(owned !== true ? { typed: domain } : {}), notes: n })
   targets.set('dns', { kind: 'dns', zone: z.zone, name: z.name, data: a })
 }
 
@@ -201,13 +214,13 @@ async function proxyItems(site: SiteRecord, domain: string, adopted: boolean, le
     const others = h.domains.filter(x => lc(x) !== domain)
     const n: string[] = []
     if (adopted) n.push('HyperProx did not make this host. Type the site\'s name to remove it anyway.')
-    else if (owned === null) n.push('HyperProx has no record of making this host, so it is not ticked.')
-    else if (!owned) n.push('HyperProx made a different host for this site, so this one is not ticked.')
+    else if (owned === null) n.push('HyperProx has no record of making this host, so it is not ticked. Type the site\'s name to remove it anyway.')
+    else if (!owned) n.push('HyperProx made a different host for this site, so this one is not ticked. Type the site\'s name to remove it anyway.')
     if (others.length) n.push(`It also serves ${others.join(', ')}; removing it takes those off the proxy too, so it is not ticked.`)
     const offered = !h.readOnly
     if (h.readOnly) n.push(h.readOnlyReason ?? 'This proxy host is read-only to HyperProx.')
     items.push({ key, kind: 'proxy', label: 'Its proxy host', detail: `${h.domains.join(', ')} on ${h.instanceName}`, state: 'present',
-      offered, owned, defaultOn: offered && owned === true && !others.length, ...(adopted ? { typed: domain } : {}), notes: n })
+      offered, owned, defaultOn: offered && owned === true && !others.length, ...(owned !== true ? { typed: domain } : {}), notes: n })
     if (offered) targets.set(key, { kind: 'proxy', instanceId: h.instanceId, hostId: h.id, domains: h.domains })
 
     if (!h.certificateId) continue
@@ -221,7 +234,7 @@ async function proxyItems(site: SiteRecord, domain: string, adopted: boolean, le
     const cmine = ledger?.certificate
     const cowned = adopted ? false : cmine ? (cmine.instanceId === h.instanceId && String(cmine.id) === h.certificateId) : null
     items.push({ ...cbase, state: 'present', offered: offered, owned: cowned, defaultOn: offered && cowned === true && !others.length,
-      ...(adopted ? { typed: domain } : {}),
+      ...(cowned !== true ? { typed: domain } : {}),
       notes: [
         'Nothing else on the proxy uses it. It goes only together with its host.',
         ...(cowned === null && !adopted ? ['HyperProx has no record of requesting it, so it is not ticked.'] : []),
@@ -302,8 +315,30 @@ async function containerItems(site: SiteRecord, d: SiteDeleteDeps, items: Delete
   notes.push(jobs.length ? `It is taken out of backup job(s) ${jobs.join(', ')} afterwards (a job that lists only it is deleted).` : 'No backup job lists it.')
   notes.push('A backup-server NAS mount HyperProx made on its node for it is removed too.')
   items.push({ ...base, detail: `CT ${site.vmid} (${c.hostname}) on ${c.node}`, state: 'present', offered: true, owned: true,
-    danger: 'Deletes the container and its disk, permanently.', notes })
+    danger: 'Deletes the container and its disk, permanently.', typed: c.hostname, notes })
   targets.set('container', { kind: 'container', node: c.node, vmid: site.vmid, hostname: c.hostname })
+}
+
+/** The site's vault item: ticked with the container, or already when the container is gone. */
+async function vaultItem(site: SiteRecord, v: { category: string; provider: string }, d: SiteDeleteDeps, items: DeleteItem[], targets: Map<string, Target>) {
+  const name = d.vaultName(v.category, v.provider)
+  const base = { key: 'vault', kind: 'vault' as const, label: 'Its vault item', detail: name }
+  const made = await d.vaultCreatedByInstall(site).catch(() => null)
+  if (made === false) { items.push({ ...base, state: 'present', offered: false, defaultOn: false, owned: false, notes: ['It existed before this site was installed, so it is kept.'] }); return }
+  let keys: string[]
+  try { keys = await d.vaultKeys(v.category, v.provider) } catch (e: any) {
+    items.push({ ...base, state: 'unknown', offered: false, defaultOn: false, owned: made, notes: [`The vault could not be read (${e.message}).`] }); return
+  }
+  if (!keys.length) { items.push({ ...base, state: 'gone', offered: false, defaultOn: false, owned: made, notes: ['Already gone.'] }); return }
+  const container = items.find(i => i.key === 'container')
+  const gone = container?.state === 'gone'
+  items.push({ ...base, detail: `${name}: ${keys.join(', ')}`, state: 'present', offered: true, owned: made, defaultOn: gone,
+    ...(container?.offered ? { tickWith: 'container' } : {}),
+    notes: [
+      gone ? 'The container is gone, so these logins open nothing any more.' : 'The logins and keys the install generated for this site. Ticked when its container is deleted too; kept otherwise, so the site can still be signed in to.',
+      ...(made === null ? ['HyperProx has no record of whether the install created it.'] : []),
+    ] })
+  targets.set('vault', { kind: 'vault', category: v.category, provider: v.provider })
 }
 
 // ── Previews: single use, per person, per site, ten minutes ─────────────────
@@ -343,13 +378,15 @@ export function checkChoice(p: DeletePreview, raw: { items?: unknown; confirm?: 
     const it = p.items.find(i => i.key === k)
     if (!it) throw new SiteDeleteRefusal(`"${k}" is not in the preview.`)
     if (!it.offered) throw new SiteDeleteRefusal(`${it.label} cannot be removed: ${it.notes[0] ?? it.state}.`)
-    if (it.typed && lc(confirm[k]) !== lc(it.typed)) throw new SiteDeleteRefusal(`Type ${it.typed} to remove ${it.label.toLowerCase()}: HyperProx did not make it.`, 400, 'typed_confirm')
+    if (it.typed && lc(confirm[k]) !== lc(it.typed)) {
+      throw new SiteDeleteRefusal(it.kind === 'container' ? `Type the container's hostname (${it.typed}) to delete it.` : `Type ${it.typed} to remove ${it.label.toLowerCase()}: HyperProx has no record of making it.`, 400, 'typed_confirm')
+    }
     if (it.requires && !keys.has(it.requires)) throw new SiteDeleteRefusal(`${it.label} goes only together with its proxy host.`)
   }
   return keys
 }
 
-const ORDER: ItemKind[] = ['proxy', 'cert', 'dns', 'container', 'backups', 'record']
+const ORDER: ItemKind[] = ['proxy', 'cert', 'dns', 'container', 'backups', 'vault', 'record']
 const running = new Set<string>()
 
 /**
@@ -364,6 +401,11 @@ export async function runDelete(site: SiteRecord, held: Held, keys: Set<string>,
     const results: ItemResult[] = []
     const chosen = [...keys].map(k => held.preview.items.find(i => i.key === k)!).sort((a, b) => ORDER.indexOf(a.kind) - ORDER.indexOf(b.kind))
     for (const it of chosen) {
+      // The logins go only once the container they open is gone: a container that stayed keeps them.
+      if (it.kind === 'vault' && results.some(r => r.kind === 'container' && r.outcome === 'failed')) {
+        results.push({ key: 'vault', kind: 'vault', outcome: 'kept', words: 'The vault item was kept because the container was not deleted, so its logins still open it.' })
+        continue
+      }
       if (it.kind === 'record') {
         const failed = results.filter(r => r.outcome === 'failed')
         if (failed.length) {
@@ -444,6 +486,13 @@ async function doItem(site: SiteRecord, it: DeleteItem, t: Target, by: string, d
       const out = await removeFromBackupJobs(d.guest.pve, t.vmid)
       if (!out.jobs.length) return r('already-gone', `No backup job lists ${t.vmid} any more.`)
       return r(out.ok ? 'removed' : 'failed', out.words)
+    }
+    case 'vault': {
+      const before = await d.vaultKeys(t.category, t.provider)
+      if (!before.length) return r('already-gone', 'The vault item is already gone.')
+      await d.deleteVault(t.category, t.provider)
+      const left = await d.vaultKeys(t.category, t.provider)
+      return left.length ? r('failed', `The vault item still holds ${left.join(', ')} after the delete.`) : r('removed', `Removed the vault item ${d.vaultName(t.category, t.provider)} (${before.join(', ')}; read back).`)
     }
     case 'record': {
       if (!(await d.site(site.id))) return r('already-gone', 'The site record is already gone.')

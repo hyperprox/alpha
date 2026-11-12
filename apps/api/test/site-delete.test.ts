@@ -22,6 +22,8 @@ import {
   buildDeletePreview, checkChoice, runDelete, DeletePreviewStore, DELETE_PREVIEW_TTL_MS, SiteDeleteRefusal, type SiteDeleteDeps, type ProxyHostInfo,
 } from '../src/lib/site-delete'
 import { removeFromBackupJobs, destroyOwned } from '../src/lib/clusters/guest-actions'
+import { homeNodeRunner, pbsMountCleanup } from '../src/lib/pbs/setup-deps'
+import { clusterContext, isRemoteContext } from '../src/lib/clusters/context'
 import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
 
@@ -87,6 +89,8 @@ function world() {
   const audits: Array<{ action: string; details?: any }> = []
   const auditFail = { start: false }
   const pbs: number[] = []
+  const vault = new Map<string, Record<string, string>>()
+  const vaultState = { made: true as boolean | null, locked: false }
   const deps: SiteDeleteDeps = {
     dns: async () => dns,
     proxy: {
@@ -101,6 +105,10 @@ function world() {
     ledger: async s => s.published ?? null,
     hostname: async s => s.hostname ?? null,
     installMark: MARK,
+    vaultCreatedByInstall: async () => vaultState.made,
+    vaultKeys: async (c, p) => { if (vaultState.locked) throw new Error('HyperProx is locked'); const f = vault.get(`${c}/${p}`) ?? {}; return Object.keys(f).filter(k => f[k]).sort() },
+    deleteVault: async (c, p) => { vault.set(`${c}/${p}`, {}) },
+    vaultName: (c, p) => `hyperprox/${c}/${p}`,
     site: getSite,
     forget: forgetSite,
     deleteMetrics: id => metrics.deleteSite(id),
@@ -112,7 +120,7 @@ function world() {
     now: () => Date.now(),
   }
   return {
-    deps, guests, ha, calls, fail, zone, dnsCalls, dnsFail, metrics, audits, auditFail, pbs, proxyCalls, others,
+    deps, guests, ha, calls, fail, zone, dnsCalls, dnsFail, metrics, audits, auditFail, pbs, proxyCalls, others, vault, vaultState,
     get jobs() { return jobs }, set jobs(v) { jobs = v },
     get hosts() { return hosts }, set hosts(v) { hosts = v },
     get certs() { return certs }, set certs(v) { certs = v },
@@ -206,6 +214,10 @@ test('ownership: no ledger means off with a note; a changed record or another ho
     assert.equal(item(b, k).owned, null, k); assert.equal(item(b, k).defaultOn, false, k); assert.equal(item(b, k).offered, true, k)
   }
   assert.match(item(b, 'dns').notes[0], /no record of making this/)
+  for (const k of ['dns', 'proxy:npm:41', 'cert:npm:77']) assert.equal(item(b, k).typed, 'tester.example.net', `${k}: not known to be ours, so typed`)
+  const pv = new DeletePreviewStore(() => 0).put('sid', noLedger, b)
+  assert.throws(() => checkChoice(pv, { items: ['dns'] }), (e: any) => e.code === 'typed_confirm', 'a recipe site too')
+  assert.ok(checkChoice(pv, { items: ['dns'], confirm: { dns: 'tester.example.net' } }).has('dns'))
 
   w.zone[0].data = '198.51.100.1'
   w.hosts[0].id = '99'
@@ -214,6 +226,10 @@ test('ownership: no ledger means off with a note; a changed record or another ho
   assert.match(item(b, 'dns').notes[0], /made it pointing at 203.0.113.9; it now holds 198.51.100.1/)
   assert.equal(item(b, 'proxy:npm:99').owned, false)
   assert.equal(item(b, 'proxy:npm:99').defaultOn, false)
+  assert.equal(item(b, 'dns').typed, 'tester.example.net', 'changed since HyperProx made it: typed')
+  assert.equal(item(b, 'proxy:npm:99').typed, 'tester.example.net')
+  const owned = await buildDeletePreview(recipeSite(), (() => { const x = world(); published(x); return x.deps })())
+  for (const k of ['dns', 'proxy:npm:41', 'cert:npm:77']) assert.equal(item(owned, k).typed, undefined, `${k}: HyperProx made it, no typing`)
 })
 
 test('a host that also serves other names is not ticked; a certificate another host uses is kept', async () => {
@@ -268,7 +284,8 @@ test('everything ticked: removed in order, each audited before and after and rea
   const b = await buildDeletePreview(s, w.deps)
   const p = new DeletePreviewStore(() => 0)
   const held = p.take(p.put('sid', s, b).id, 'sid', s.id)
-  const keys = checkChoice(held.preview, { items: ['dns', 'proxy:npm:41', 'cert:npm:77', 'container'] })
+  assert.throws(() => checkChoice(held.preview, { items: ['container'] }), /Type the container's hostname \(tester\)/)
+  const keys = checkChoice(held.preview, { items: ['dns', 'proxy:npm:41', 'cert:npm:77', 'container'], confirm: { container: 'tester' } })
   const out = await runDelete(s, held, keys, 'admin@example.com', w.deps)
   assert.deepEqual(out.results.map(r => [r.key, r.outcome]), [
     ['proxy:npm:41', 'removed'], ['cert:npm:77', 'removed'], ['dns', 'removed'], ['container', 'removed'], ['record', 'removed'],
@@ -378,7 +395,7 @@ test('a container renamed between preview and delete is left alone', async () =>
   const p = new DeletePreviewStore(() => 0)
   const held = p.take(p.put('sid', s, await buildDeletePreview(s, w.deps)).id, 'sid', s.id)
   w.guests.get(4201)!.hostname = 'renamed'
-  const out = await runDelete(s, held, checkChoice(held.preview, { items: ['container'] }), 'admin@example.com', w.deps)
+  const out = await runDelete(s, held, checkChoice(held.preview, { items: ['container'], confirm: { container: 'tester' } }), 'admin@example.com', w.deps)
   assert.equal(out.results[0].outcome, 'failed')
   assert.match(out.results[0].words, /called "renamed"/)
   assert.ok(w.guests.has(4201))
@@ -520,4 +537,71 @@ test('a partial failure answers 207 with each item, and keeps the record', async
   assert.equal(r.statusCode, 207)
   assert.deepEqual(r.json().data.results.map((x: any) => [x.key, x.outcome]), [['dns', 'failed'], ['record', 'kept']])
   assert.ok(await getSite('job-1'))
+})
+
+// ── The vault item ───────────────────────────────────────────────────────────
+
+const withVault = (over: Partial<SiteRecord> = {}) => recipeSite({ vault: { category: 'apps', provider: 'ghost-4201' }, ...over })
+
+test('vault item: offered, follows the container (unticked while it stays), ticked when the container is gone', async () => {
+  const w = world(); published(w)
+  w.vault.set('apps/ghost-4201', { admin_password: 'x', db_password: 'y', admin_api_key: 'z' })
+  let b = await buildDeletePreview(withVault(), w.deps)
+  const v = item(b, 'vault')
+  assert.deepEqual([v.offered, v.defaultOn, v.tickWith, v.owned], [true, false, 'container', true])
+  assert.equal(v.detail, 'hyperprox/apps/ghost-4201: admin_api_key, admin_password, db_password', 'key names only')
+  assert.doesNotMatch(JSON.stringify(b.items), /"x"|"y"|"z"/, 'never a value')
+
+  w.guests.clear()
+  b = await buildDeletePreview(withVault(), w.deps)
+  assert.deepEqual([item(b, 'vault').offered, item(b, 'vault').defaultOn, item(b, 'vault').tickWith], [true, true, undefined])
+
+  w.vaultState.made = false
+  b = await buildDeletePreview(withVault(), w.deps)
+  assert.equal(item(b, 'vault').offered, false)
+  assert.match(item(b, 'vault').notes[0], /existed before/)
+
+  w.vaultState.made = true; w.vaultState.locked = true
+  b = await buildDeletePreview(withVault(), w.deps)
+  assert.equal(item(b, 'vault').state, 'unknown')
+  assert.equal(item(await buildDeletePreview(recipeSite(), w.deps), 'vault'), undefined, 'no vault on record: no item')
+})
+
+test('vault item: removed after the container, audited and read back; kept when the container did not go', async () => {
+  const w = world(); published(w)
+  w.vault.set('apps/ghost-4201', { admin_password: 'x' })
+  const s = withVault(); await recordSite(s)
+  const p = new DeletePreviewStore(() => 0)
+  let held = p.take(p.put('sid', s, await buildDeletePreview(s, w.deps)).id, 'sid', s.id)
+  w.fail.destroy = true
+  let out = await runDelete(s, held, checkChoice(held.preview, { items: ['container', 'vault'], confirm: { container: 'tester' } }), 'admin@example.com', w.deps)
+  assert.deepEqual(out.results.map(r => [r.key, r.outcome]), [['container', 'failed'], ['vault', 'kept'], ['record', 'kept']])
+  assert.deepEqual(w.vault.get('apps/ghost-4201'), { admin_password: 'x' }, 'the logins stay with a container that stayed')
+
+  w.fail.destroy = false
+  held = p.take(p.put('sid', s, await buildDeletePreview(s, w.deps)).id, 'sid', s.id)
+  out = await runDelete(s, held, checkChoice(held.preview, { items: ['container', 'vault'], confirm: { container: 'tester' } }), 'admin@example.com', w.deps)
+  assert.deepEqual(out.results.map(r => [r.key, r.outcome]), [['container', 'removed'], ['vault', 'removed'], ['record', 'removed']])
+  assert.match(out.results[1].words, /admin_password; read back/)
+  assert.deepEqual(w.vault.get('apps/ghost-4201'), {})
+  assert.ok(w.audits.some(a => a.action === 'site.delete.item.result' && a.details.item === 'vault' && a.details.outcome === 'removed'))
+  assert.doesNotMatch(JSON.stringify(w.audits), /"x"/, 'no secret in the audit')
+})
+
+// ── The PBS mount hook: home cluster only ────────────────────────────────────
+
+test('the PBS mount hook with a remote cluster selected: the home node, the home login, a pinned key only', async () => {
+  const sent: Array<{ host: string; requirePin?: boolean; remote: boolean }> = []
+  const credAsked: boolean[] = []
+  const home = { fetchStrict: async (p: string) => { assert.equal(p, '/cluster/status'); return [{ type: 'node', name: 'node-a', ip: '192.0.2.10' }] } }
+  const run = homeNodeRunner({
+    pve: home as any,
+    cred: async () => { credAsked.push(isRemoteContext()); return { username: 'root', password: 'home-secret' } as any },
+    exec: async (o: any) => { sent.push({ host: o.host, requirePin: o.requirePin, remote: isRemoteContext() }); return { code: 0, output: '@@pbs nomount', timedOut: false } as any },
+  })
+  // A remote cluster is selected; it is not in the registry, so anything that asked pveFromEnv() would throw.
+  const words = await clusterContext.run({ id: 'remote-x', kind: 'remote' }, () => pbsMountCleanup({ node: 'node-a', vmid: 4201 }, run))
+  assert.equal(words, '')
+  assert.deepEqual(credAsked, [false], 'the login is read as the home cluster')
+  assert.deepEqual(sent, [{ host: '192.0.2.10', requirePin: true, remote: false }], 'sent to the home node only, pinned')
 })

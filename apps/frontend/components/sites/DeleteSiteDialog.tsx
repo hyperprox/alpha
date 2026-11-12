@@ -7,7 +7,9 @@
 //  delete/preview), one checkbox per thing, ticked the way HyperProx's own
 //  records say: what it made is ticked, what it cannot vouch for is not. The
 //  site record is always on. An adopted site is "stop tracking" unless its DNS
-//  or proxy host is ticked with its name typed out. The delete itself needs
+//  or proxy host is ticked with its name typed out; so is anything HyperProx
+//  has no record of making, and a container needs its hostname typed. The
+//  vault item follows the container's checkbox. The delete itself needs
 //  the master password; after it, each item says what happened, and if any
 //  did not go, "Preview again" retries only what is left.
 // =============================================================================
@@ -22,7 +24,7 @@ interface Item {
   key: string; kind: string; label: string; detail: string
   state: 'present' | 'gone' | 'unknown' | 'mismatch'
   offered: boolean; locked?: boolean; defaultOn: boolean; owned: boolean | null
-  typed?: string; requires?: string; danger?: string; notes: string[]
+  typed?: string; requires?: string; tickWith?: string; danger?: string; notes: string[]
 }
 interface Preview { id: string; siteName: string; adopted: boolean; items: Item[]; notes: string[]; expiresAt: number }
 interface Result { key: string; kind: string; outcome: 'removed' | 'already-gone' | 'failed' | 'kept'; words: string }
@@ -55,6 +57,8 @@ export function DeleteSiteDialog({ siteId, onClose, onDone }: { siteId: string; 
     const n = { ...o, [it.key]: v }
     // A certificate goes only with its host: unticking the host unticks it.
     if (!v) for (const x of p?.items ?? []) if (x.requires === it.key) n[x.key] = false
+    // The vault item follows its container: its logins go when the container goes, and stay when it stays.
+    for (const x of p?.items ?? []) if (x.tickWith === it.key && x.offered) n[x.key] = v
     return n
   })
   const chosen = (p?.items ?? []).filter(i => i.offered && on[i.key])
@@ -107,7 +111,7 @@ export function DeleteSiteDialog({ siteId, onClose, onDone }: { siteId: string; 
                     </span>
                   </label>
                   {it.typed && on[it.key] && (
-                    <input type="text" placeholder={`Type ${it.typed} to remove it`} aria-label={`Type ${it.typed} to confirm`} value={typed[it.key] ?? ''}
+                    <input type="text" placeholder={it.kind === 'container' ? `Type the hostname ${it.typed} to delete it` : `Type ${it.typed} to remove it`} aria-label={`Type ${it.typed} to confirm`} value={typed[it.key] ?? ''}
                       onChange={e => setTyped(t => ({ ...t, [it.key]: e.target.value }))} className="font-mono"
                       style={{ ...INPUT, marginTop: 8, height: 36, fontSize: 13, border: '1px solid var(--crit)' }} />
                   )}

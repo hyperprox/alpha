@@ -13,6 +13,8 @@ import { setCredentials } from '../credentials'
 import { pbsService, probePbs } from './index'
 import { PbsTransport } from './transport'
 import { unmountScript } from './nfs'
+import { clusterContext } from '../clusters/context'
+import { HOME_ID } from '../clusters/registry'
 import type { SetupDeps } from './catalogue'
 
 /** Run a script on a node (stdin, never the command line) over its saved login. */
@@ -25,6 +27,28 @@ export async function pbsSetupNodeRunner(node: string, script: string, timeoutMs
   if (!host) throw new Error(`Could not find an address for node ${node}.`)
   const r = await execOnNode({ host, cred, command: 'bash -s', input: script, timeoutMs })
   return { code: r.code, output: r.output }
+}
+
+/**
+ * A node runner that finds the node through the client it is given (not the selected cluster), and runs inside the
+ * home cluster's context, so the home node logins are read and only a pinned host key is accepted. With a remote
+ * cluster selected and a remote node that shares a home node's name, the home login never goes to the remote node.
+ */
+export function homeNodeRunner(d: {
+  pve: Pick<ProxmoxClient, 'fetchStrict'>
+  cred?: typeof nodeCredential
+  exec?: typeof execOnNode
+}): (node: string, script: string, timeoutMs: number) => Promise<{ code: number; output: string }> {
+  const cred = d.cred ?? nodeCredential, exec = d.exec ?? execOnNode
+  return (node, script, timeoutMs) => clusterContext.run({ id: HOME_ID, kind: 'home' }, async () => {
+    const login = await cred(node)
+    if (!login) throw new Error(`No SSH login is saved for node ${node}.`)
+    const status = await d.pve.fetchStrict<any[]>('/cluster/status')
+    const host = (Array.isArray(status) ? status : []).find((r: any) => r?.type === 'node' && r.name === node)?.ip
+    if (!host) throw new Error(`Could not find an address for node ${node}.`)
+    const r = await exec({ host, cred: login, command: 'bash -s', input: script, timeoutMs, requirePin: true })
+    return { code: r.code, output: r.output }
+  })
 }
 
 /**

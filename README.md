@@ -1372,16 +1372,24 @@ and changes nothing until you confirm:
 
 - **The site record**, with its metrics history and the collector's state. Always included.
 - **Its DNS record**, at whichever provider serves the zone. Ticked only when HyperProx recorded making it
-  when it published the site, and it still points where HyperProx pointed it. Otherwise it starts unticked
-  and says why. Other records with the same name (a TXT, say) are listed and left alone.
+  when it published the site, and it still points where HyperProx pointed it. Otherwise it starts unticked,
+  says why, and can only be ticked with the site's name typed out. Other records with the same name (a TXT,
+  say) are listed and left alone.
 - **Its proxy host**, and on Nginx Proxy Manager **its certificate** when no other proxy host, redirection,
-  404 host or stream uses it. The same rule decides what is ticked. A host that also serves other names
+  404 host or stream uses it. The same rules decide what is ticked and what needs the name typed. A host that also serves other names
   starts unticked. The certificate goes together with its host, or on its own once the host is already gone.
 - **Its container**, only for a site HyperProx installed, and never ticked for you: it deletes the container and
-  its disk, permanently. HyperProx refuses if the container's hostname or its install mark no longer match
-  the site. It takes the container out of HA, stops it, deletes it with `purge` (never older disks that happen
+  its disk, permanently, and you type the container's hostname to confirm. HyperProx refuses if the container's
+  hostname or its install mark no longer match the site. It takes the container out of HA, stops it, deletes it with `purge` (never older disks that happen
   to carry its ID), takes its ID out of every backup job (a job that listed only it is deleted, so no dead ID
-  fails the job on every node), and removes a backup-server NAS mount it made for it.
+  fails the job on every node), and removes a backup-server NAS mount it made for it. That clean-up finds the
+  node on your home cluster and signs in with its saved login only to a pinned host key, whichever cluster
+  the page is showing.
+- **Its vault item**: the logins the install generated (the admin and database passwords, and for Ghost its
+  Admin API key and mail password).
+  Ticked when the container is being deleted too (it follows the container's checkbox) or is already gone,
+  unticked otherwise. An item that existed before the install is kept. If the container does not go, the
+  vault item is kept as well.
 
 Something already gone shows as **already gone** and is skipped, never an error. A site whose container was
 deleted outside HyperProx shows **Container gone** on its card; deleting it removes what is left, plus its ID

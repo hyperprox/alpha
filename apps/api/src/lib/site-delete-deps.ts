@@ -9,13 +9,14 @@
 
 import { homePve } from './pve-env'
 import type { ProxmoxClient } from './proxmox-client'
-import { pbsMountCleanup } from './pbs/setup-deps'
+import { pbsMountCleanup, homeNodeRunner } from './pbs/setup-deps'
 import { proxyService } from './proxy'
 import type { NpmProvider } from './proxy/providers/npm'
 import type { ProxyHostView } from './proxy/types'
 import { wizardStore } from './catalogue-store'
 import { installMark } from './catalogue-installer'
 import { auditOrThrow } from './audit'
+import { getProviderCredentials, deleteProviderCredentials, itemName } from './credentials'
 import { getSite, forgetSite, realPublishDeps, type PublishLedger, type SiteRecord } from './sites'
 import { metricsStore } from './site-metrics/store'
 import type { ProxyHostInfo, SiteDeleteDeps } from './site-delete'
@@ -89,7 +90,8 @@ export function realSiteDeleteDeps(): SiteDeleteDeps {
         fetchStrict: (path: string, method?: string, body?: string, timeoutMs?: number) => homePve().fetchStrict(path, method, body, timeoutMs),
         waitForTask: (node: string, upid: string, opts?: Parameters<ProxmoxClient['waitForTask']>[2]) => homePve().waitForTask(node, upid, opts),
       } as unknown as ProxmoxClient,
-      afterDestroy: pbsMountCleanup,
+      // The NAS mount clean-up finds the node on the home cluster, with the home login and a pinned key only.
+      afterDestroy: g => pbsMountCleanup(g, homeNodeRunner({ pve: homePve() })),
     },
     async ledger(site) {
       if (site.published) return site.published
@@ -107,6 +109,16 @@ export function realSiteDeleteDeps(): SiteDeleteDeps {
       return null
     },
     installMark,
+    async vaultCreatedByInstall(site) {
+      const v = (await jobRow(site))?.vaultItem
+      return v && typeof v.createdByJob === 'boolean' ? v.createdByJob : null
+    },
+    vaultKeys: async (category, provider) => {
+      const f = await getProviderCredentials(category, provider)
+      return Object.keys(f).filter(k => f[k]).sort()
+    },
+    deleteVault: (category, provider) => deleteProviderCredentials(category, provider),
+    vaultName: itemName,
     site: getSite,
     forget: forgetSite,
     deleteMetrics: id => metricsStore().deleteSite(id),
