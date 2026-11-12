@@ -15,6 +15,7 @@ import { classifyUa, isBotUa, isOwnUa, isProbePath, isSpoofedUa, probeKind } fro
 import { aggregateLines, emptyAgg, mergeAgg, percentileMs, referrerHost, isPageView, isAssetLoad, isRevisit, trimTop, RT_BOUNDS, RULES } from '../src/lib/site-metrics/aggregate'
 import { behavesLikeBrowser, newVisit } from '../src/lib/site-metrics/people'
 import { ownUserAgent } from '../src/lib/own-user-agent'
+import { plainAddress, envAddresses } from '../src/lib/site-metrics/own-addresses'
 import { ownRequestPaths } from '../src/lib/site-metrics/own-paths'
 import { realHealthDeps } from '../src/lib/site-metrics/health'
 import { createServer } from 'node:http'
@@ -277,6 +278,8 @@ function bashRun(script: string) {
 function localDeps(store: MemoryMetricsStore, logFile: string, now = new Date('2026-11-11T10:30:00Z')): CollectorDeps {
   return {
     sites: async () => [SITE], store, unlocked: () => true, now: () => now, log: () => {},
+    // HyperProx's own address in the fixtures: its catalogue detection comes from 10.0.0.51.
+    ownAddresses: async () => new Set(['10.0.0.51']),
     publish: async () => {},
     health: { fetch: async () => ({ status: 200, body: 'ok' }), tls: async () => ({ notAfter: null, issuer: null, trusted: null, error: null }), now: () => now.getTime() },
     // The script is generated for /var/log/test/access.log; the test swaps that one quoted value for the temp file.
@@ -566,6 +569,8 @@ test('views: summary trend, uptime and the Prometheus text carry the site name o
 
 const at = (hhmmss: string) => `[11/Nov/2026:${hhmmss} +0000]`
 
+const US = new Set(['10.0.0.51'])
+
 test('people: HyperProx\'s own requests are counted only as such, never as people, bots, 404s or statuses', () => {
   const lines = [
     combined('10.0.0.51', '/api/health', 404, 'HyperProx-catalogue-detect'), combined('10.0.0.51', '/status.php', 404, 'HyperProx-catalogue-detect'),
@@ -574,14 +579,34 @@ test('people: HyperProx\'s own requests are counted only as such, never as peopl
     combined('203.0.113.7', '/.env', 404, 'HyperProx-catalogue-detect'), combined('203.0.113.7', '/phpmyadmin/', 404, ownUserAgent('site-check')),
     combined('203.0.113.7', '/info.php', 404, 'HyperProx-x/1'), combined('203.0.113.7', '/api/secret', 404, 'HyperProx-x/1'),
   ].map(l => parseLogLine(l)!)
-  const a = [...aggregateLines(lines, { ...noHash, kind: 'static', ownPaths: ownRequestPaths() }).hours.values()][0].agg
+  const a = [...aggregateLines(lines, { ...noHash, kind: 'static', ownPaths: ownRequestPaths(), ownAddresses: US }).hours.values()][0].agg
   assert.equal(a.own, 3)
   assert.equal(a.requests, 4); assert.equal(a.bots, 4); assert.equal(a.s4xx, 4); assert.equal(a.s2xx, 0)
   assert.deepEqual(a.notFound, {})
   assert.deepEqual(a.probes, { secrets: 1, 'secrets:refused': 1, admin: 1, 'admin:refused': 1, php: 1, 'php:refused': 1, api: 1, 'api:refused': 1 })
   // Without the list of HyperProx's own paths, its detection on a static site would look like probes.
-  const bare = [...aggregateLines(lines.slice(0, 2), { ...noHash, kind: 'static' }).hours.values()][0].agg
+  const bare = [...aggregateLines(lines.slice(0, 2), { ...noHash, kind: 'static', ownAddresses: US }).hours.values()][0].agg
   assert.equal(bare.own, 0)
+  // Without HyperProx's own addresses, its name alone is believed for nothing.
+  const noAddr = [...aggregateLines(lines.slice(0, 3), { ...noHash, kind: 'static', ownPaths: ownRequestPaths() }).hours.values()][0].agg
+  assert.equal(noAddr.own, 0)
+})
+
+test('people: HyperProx\'s name from another address is a scanner borrowing it, on its own paths too', () => {
+  const lines = [
+    combined('10.0.0.51', '/login', 302, 'HyperProx-catalogue-detect'),
+    combined('203.0.113.9', '/login', 404, 'HyperProx-catalogue-detect'),
+    combined('203.0.113.9', '/status.php', 404, 'HyperProx-catalogue-detect'),
+    combined('203.0.113.9', '/', 200, ownUserAgent('site-check')),
+  ].map(l => parseLogLine(l)!)
+  const a = [...aggregateLines(lines, { ...noHash, kind: 'static', ownPaths: ownRequestPaths(), ownAddresses: US }).hours.values()][0].agg
+  assert.equal(a.own, 1, 'only the line from HyperProx\'s own address')
+  assert.equal(a.requests, 3)
+  assert.equal(a.probes.admin, 1, 'the spoofed /login is counted as an admin probe')
+  assert.equal(a.bots, 3)
+  // ::ffff:-mapped addresses and the WAN address are matched as plain addresses.
+  assert.equal(plainAddress('::FFFF:10.0.0.51'), '10.0.0.51')
+  assert.deepEqual(envAddresses('203.0.113.4, 2001:db8::1 nope;value'), ['203.0.113.4', '2001:db8::1'])
 })
 
 test('own paths: everything HyperProx asks sites for is listed, never a secret, and only three app logins look like admin', () => {
@@ -785,7 +810,7 @@ test('fixture: a site\'s launch day, read the way the collector reads it, finds 
   assert.equal(d.probes.secrets, 24); assert.equal(d.probes['secrets:refused'], 24)
   assert.deepEqual(d.exposed, {}, 'nothing a scanner asked for was given')
   // The same log read in one go gives the same answer.
-  const one = [...aggregateLines(raw.map(l => parseLogLine(l)!), { visitorHash: (_d, c, u) => `${c}|${u}`, ownHosts: ['example.com'], kind: 'static', ownPaths: ownRequestPaths() }).hours.values()]
+  const one = [...aggregateLines(raw.map(l => parseLogLine(l)!), { visitorHash: (_d, c, u) => `${c}|${u}`, ownHosts: ['example.com'], kind: 'static', ownPaths: ownRequestPaths(), ownAddresses: new Set(['10.0.0.51']) }).hours.values()]
     .reduce((x, h) => mergeAgg(x, h.agg), emptyAgg())
   assert.deepEqual([one.human, one.bots, one.unconfirmedReq, one.own], [d.human, d.bots, d.unconfirmedReq, d.own])
 })

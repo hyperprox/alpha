@@ -67,6 +67,10 @@ export default function CataloguePage() {
   const [category, setCategory] = useState<string>('all')
   const [cleaning, setCleaning] = useState(false)
   const [reconfirmCleanup, setReconfirmCleanup] = useState<{ jobId: string; vmid?: number; node?: string } | null>(null)
+  // Arr Stacks whose Seerr waits for a Plex server, and the one being finished.
+  const [seerrJobs, setSeerrJobs] = useState<Array<{ jobId: string; vmid?: number; node?: string; ip?: string }>>([])
+  const [finishing, setFinishing] = useState<string | null>(null)
+  const [reconfirmSeerr, setReconfirmSeerr] = useState<string | null>(null)
   // Installs that failed or were cut off by a restart and left a container behind, from earlier sessions too.
   const [leftovers, setLeftovers] = useState<Array<{ jobId: string; recipeId: string; status: string; vmid?: number; node?: string; error?: string }>>([])
 
@@ -88,6 +92,7 @@ export default function CataloguePage() {
 
   const load = useCallback(async () => {
     void apiJson<{ data: { jobs: typeof leftovers } }>('/api/catalogue/wizard/jobs').then(r => { if (r.ok) setLeftovers(r.body?.data.jobs ?? []) })
+    void apiJson<{ data: { jobs: typeof seerrJobs } }>('/api/catalogue/wizard/arr/seerr').then(r => { if (r.ok) setSeerrJobs(r.body?.data.jobs ?? []) })
     const res = await fetch('/api/catalogue').then(r => r.json()).catch(() => null)
     if (res?.success) {
       setRecipes(res.data.recipes)
@@ -133,6 +138,18 @@ export default function CataloguePage() {
     setNotice(r.body!.data.detail)
     if (job?.jobId === target.jobId) setJob({ ...job, removed: true })
     setLeftovers(l => l.filter(x => x.jobId !== target.jobId))
+  }
+
+  // Seerr was left unstarted until it can be claimed: with Plex connected, start it and connect it now.
+  const finishSeerr = async (jobId: string) => {
+    setFinishing(jobId); setNotice(null)
+    const r = await apiJson<{ data: { detail: string } }>(`/api/catalogue/wizard/jobs/${jobId}/finish-seerr`, 'POST')
+    setFinishing(null)
+    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirmSeerr(jobId); return }
+    if (!r.ok) return setNotice(r.error ?? 'Seerr could not be finished.')
+    setNotice(`Seerr is connected. ${r.body!.data.detail}`)
+    setSeerrJobs(l => l.filter(x => x.jobId !== jobId))
+    if (job?.jobId === jobId) setJob({ ...job, steps: job.steps.map(st => st.id === 'arr-seerr' ? { ...st, status: 'done', detail: r.body!.data.detail } : st) })
   }
 
   const saveLogin = async () => {
@@ -337,6 +354,31 @@ export default function CataloguePage() {
       )}
       {reconfirmCleanup && (
         <ReconfirmModal onClose={() => setReconfirmCleanup(null)} onDone={() => { const t = reconfirmCleanup; setReconfirmCleanup(null); void cleanup(t, true) }} />
+      )}
+
+      {reconfirmSeerr && (
+        <ReconfirmModal onClose={() => setReconfirmSeerr(null)} onDone={() => { const t = reconfirmSeerr; setReconfirmSeerr(null); void finishSeerr(t) }} />
+      )}
+
+      {/* ── Arr Stacks whose Seerr waits for Plex ───────────────────────────── */}
+      {seerrJobs.length > 0 && (
+        <Panel title="Seerr is waiting" sub={`${seerrJobs.length} Arr Stack${seerrJobs.length > 1 ? 's' : ''}`}>
+          <p style={{ margin: '0 0 12px', fontSize: 13, color: 'var(--text-muted)' }}>
+            Seerr was installed but not started, because a Seerr nobody has signed in to belongs to whoever opens it first.
+            Connect Plex in HyperProx (the Plex plug-in&rsquo;s server and token), then press Finish Seerr: it starts Seerr,
+            signs it in with that Plex account and connects it to Sonarr and Radarr.
+          </p>
+          <ul className={styles.guests} aria-label="Seerr waiting">
+            {seerrJobs.map(l => (
+              <li key={l.jobId} className={styles.guest} style={{ gridTemplateColumns: 'minmax(0,1fr) auto' }}>
+                <div><b>CT {l.vmid} · {l.node}</b><small>Arr Stack{l.ip ? ` at ${l.ip}` : ''}</small></div>
+                <button onClick={() => void finishSeerr(l.jobId)} disabled={finishing !== null} className={`${styles.btn} ${styles.btnPri}`}>
+                  {finishing === l.jobId ? 'finishing…' : 'Finish Seerr'}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </Panel>
       )}
 
       {/* ── Unfinished installs, kept across restarts ─────────────────────── */}

@@ -51,7 +51,8 @@ function block(id: ArrAppId, s: Selection, layoutMounts: string[]): string[] {
   if (vols.length) out.push('    volumes:', ...vols.map(v => `      - ${v}`))
   if (id === 'qbittorrent' && s.vpn) {
     out.push('    network_mode: "service:gluetun"', '    depends_on:', '      gluetun:', '        condition: service_healthy')
-  } else {
+  } else if (!a.internal) {
+    // FlareSolverr is internal: only Prowlarr uses it, over the Docker network, so it gets no port at all.
     const ports = [`${a.hostPort}:${a.port}`, ...(id === 'qbittorrent' ? ['6881:6881', '6881:6881/udp'] : [])]
     out.push('    ports:', ...ports.map(p => `      - ${q(p)}`))
   }
@@ -151,16 +152,18 @@ chown -R $ARR_PUID:$ARR_PGID config
 
 printf '%s' "$ARR_COMPOSE_B64" | base64 -d > docker-compose.yml
 umask 077
+# Every value single-quoted, so Compose takes it literally ($ stays $); a ' inside is written as \' .
+envq() { printf "%s='%s'\n" "$1" "$(printf '%s' "$2" | sed "s/'/\\\\'/g")"; }
 {
-  printf 'TZ=%s\n' "$(cat /etc/timezone 2>/dev/null || echo Etc/UTC)"
+  envq TZ "$(cat /etc/timezone 2>/dev/null || echo Etc/UTC)"
   if [ "$ARR_VPN" = 1 ]; then
-    printf 'LAN_SUBNET=%s\n' "$(ip -4 -o route show dev eth0 scope link | awk '{print $1}' | head -n1)"
-    printf 'VPN_SERVICE_PROVIDER=%s\n' "$ARR_VPN_PROVIDER"
-    [ -n "$ARR_VPN_COUNTRIES" ] && printf 'SERVER_COUNTRIES=%s\n' "$ARR_VPN_COUNTRIES"
-    [ -n "$VPN_WIREGUARD_PRIVATE_KEY" ] && printf 'WIREGUARD_PRIVATE_KEY=%s\n' "$VPN_WIREGUARD_PRIVATE_KEY"
-    [ -n "$VPN_WIREGUARD_ADDRESSES" ] && printf 'WIREGUARD_ADDRESSES=%s\n' "$VPN_WIREGUARD_ADDRESSES"
-    [ -n "$VPN_OPENVPN_USER" ] && printf 'OPENVPN_USER=%s\n' "$VPN_OPENVPN_USER"
-    [ -n "$VPN_OPENVPN_PASSWORD" ] && printf 'OPENVPN_PASSWORD=%s\n' "$VPN_OPENVPN_PASSWORD"
+    envq LAN_SUBNET "$(ip -4 -o route show dev eth0 scope link | awk '{print $1}' | head -n1)"
+    envq VPN_SERVICE_PROVIDER "$ARR_VPN_PROVIDER"
+    [ -n "$ARR_VPN_COUNTRIES" ] && envq SERVER_COUNTRIES "$ARR_VPN_COUNTRIES"
+    [ -n "$VPN_WIREGUARD_PRIVATE_KEY" ] && envq WIREGUARD_PRIVATE_KEY "$VPN_WIREGUARD_PRIVATE_KEY"
+    [ -n "$VPN_WIREGUARD_ADDRESSES" ] && envq WIREGUARD_ADDRESSES "$VPN_WIREGUARD_ADDRESSES"
+    [ -n "$VPN_OPENVPN_USER" ] && envq OPENVPN_USER "$VPN_OPENVPN_USER"
+    [ -n "$VPN_OPENVPN_PASSWORD" ] && envq OPENVPN_PASSWORD "$VPN_OPENVPN_PASSWORD"
   fi
   # A false test above must not end the group with a failure (set -e).
   :
@@ -168,7 +171,14 @@ umask 077
 umask 022
 unset VPN_WIREGUARD_PRIVATE_KEY VPN_OPENVPN_PASSWORD
 
-docker compose pull --quiet
+# One image at a time, each retried: registries turn away a burst of parallel pulls ("toomanyrequests").
+for s in $(docker compose config --services); do
+  n=0
+  until docker compose pull --quiet "$s"; do
+    n=$((n + 1)); [ "$n" -ge 5 ] && { echo "Could not download the image for $s." >&2; exit 6; }
+    sleep $((n * 15))
+  done
+done
 docker compose up -d $ARR_START
 echo "The Arr Stack is starting: $ARR_START."`
 

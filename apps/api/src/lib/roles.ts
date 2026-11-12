@@ -122,7 +122,7 @@ const SITE_METRICS_RECONFIRM: Array<[string, RegExp]> = [
   ['DELETE', /^\/api\/site-metrics\/adopt\/[^/]+$/],
   ['POST',   /^\/api\/site-metrics\/sites\/[^/]+\/log-format\/apply$/],
 ]
-const CATALOGUE_RECONFIRM = /^\/api\/catalogue\/wizard\/(apply|jobs\/[^/]+\/cleanup)$/
+const CATALOGUE_RECONFIRM = /^\/api\/catalogue\/wizard\/(apply|jobs\/[^/]+\/(cleanup|finish-seerr))$/
 // Guest config editor (routes/guest-config.ts): reads are viewer like any GET, previews admin by the default
 // rule, and applying a preview writes a cluster-replicated guest config, so it also needs the master password.
 const GUEST_CONFIG_APPLY = /^\/api\/infra\/guest-config\/(apply|guests\/[^/]+\/[^/]+\/[^/]+\/reveal)$/

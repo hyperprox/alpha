@@ -77,6 +77,9 @@ export function setupSteps(s: Selection): Array<{ id: string; label: string }> {
   ]
 }
 
+/** Seerr is left unstarted until it can be claimed: a Seerr nobody has signed in to belongs to whoever opens it first. */
+export const SEERR_WAITING = 'Seerr is installed but not started: HyperProx knows no Plex server to sign it in with, and a Seerr nobody has signed in to belongs to whoever opens it first. Connect Plex in HyperProx, then press "Finish Seerr".'
+
 /** v3 for Sonarr and Radarr, v1 for Prowlarr and Lidarr. */
 const API: Partial<Record<ArrAppId, string>> = { sonarr: '/api/v3', radarr: '/api/v3', prowlarr: '/api/v1', lidarr: '/api/v1' }
 const SERVARR: ArrAppId[] = ['sonarr', 'radarr', 'prowlarr', 'lidarr']
@@ -125,7 +128,8 @@ export async function runArrSetup(input: ArrSetupInput, step: (id: string) => St
   const http = d.http
   const servarr = (id: ArrAppId, path: string, o: Partial<HttpRequest> = {}) =>
     http({ method: 'GET', ...o, url: `${hostUrl(ip, id)}${API[id]}${path}`, headers: { 'X-Api-Key': keys[id]!, ...(o.headers ?? {}) } })
-  const ok = (a: HttpAnswer, what: string) => { if (a.status < 200 || a.status >= 300) fail(`${what} answered ${a.status}${a.body ? `: ${a.body.slice(0, 160)}` : ''}`); return parse(a) }
+  // Only the status reaches the job and its steps: an app's error page can echo a key or a password back.
+  const ok = (a: HttpAnswer, what: string) => { if (a.status < 200 || a.status >= 300) fail(`${what} answered ${a.status}${a.status === 400 ? ' (the app refused the settings)' : a.status === 401 || a.status === 403 ? ' (it refused the key or sign-in)' : ''}.`); return parse(a) }
 
   // ── 1. Everything answers ────────────────────────────────────────────────
   let st = step('arr-start')
@@ -134,6 +138,12 @@ export async function runArrSetup(input: ArrSetupInput, step: (id: string) => St
     if (i) await d.wait(5000)
     for (const id of [...waiting]) {
       const a = appById(id)!
+      if (a.internal) {
+        // No port outside Docker: asked on its address inside the Compose network, from the container.
+        const c = await d.sh(internalHealthScript(id), 30_000).catch(() => null)
+        if (c && a.healthOk.map(String).includes(markers(c.output, 'code')[id] ?? '')) waiting.delete(id)
+        continue
+      }
       const r = await http({ method: 'GET', url: `${hostUrl(ip, id)}${a.health}`, timeoutMs: 4000 }).catch(() => null)
       if (r && a.healthOk.includes(r.status)) waiting.delete(id)
     }
@@ -175,8 +185,9 @@ export async function runArrSetup(input: ArrSetupInput, step: (id: string) => St
   for (const id of wantKeys) {
     const r = SERVARR.includes(id) ? await servarr(id, '/system/status')
       : id === 'bazarr' ? await http({ method: 'GET', url: `${hostUrl(ip, id)}/api/system/status`, headers: { 'X-API-KEY': keys[id]! } })
-        : await http({ method: 'GET', url: `${hostUrl(ip, id)}/api?mode=version&output=json&apikey=${encodeURIComponent(keys[id]!)}` })
-    if (r.status !== 200) fail(`${appById(id)!.name}'s API key did not open its API (${r.status}).`)
+        : await http({ method: 'POST', url: `${hostUrl(ip, id)}/api`, form: { mode: 'queue', limit: '1', output: 'json', apikey: keys[id]! } })
+    // SABnzbd answers a wrong key with 200 and an error in the body.
+    if (r.status !== 200 || (id === 'sabnzbd' && /api key/i.test(r.body))) fail(`${appById(id)!.name}'s API key did not open its API (${r.status}).`)
   }
   const vaultKeys = Object.fromEntries(wantKeys.map(id => [`${id}_api_key`, keys[id]!]))
   if (wantKeys.length) {
@@ -206,7 +217,9 @@ export async function runArrSetup(input: ArrSetupInput, step: (id: string) => St
       form: { 'settings-auth-type': 'form', 'settings-auth-username': user, 'settings-auth-password': pw } }), 'Saving Bazarr\'s sign-in')
     const back = ok(await http({ method: 'GET', url: `${hostUrl(ip, 'bazarr')}/api/system/settings`, headers: { 'X-API-KEY': keys.bazarr! } }), 'Bazarr\'s settings')
     if (back?.auth?.type !== 'form' || back?.auth?.username !== user) fail('Bazarr did not keep its sign-in settings.')
-    await provedClosed('bazarr', `${hostUrl(ip, 'bazarr')}/api/system/status`, d, () => d.sh('docker restart bazarr >/dev/null', 120_000))
+    // Bazarr's API always wants its key, so a refused API call proves nothing. Its page is the test: signed out, the
+    // page it serves must not carry the API key (with sign-in off it hands the key to anyone who opens it).
+    await provedClosed('bazarr', `${hostUrl(ip, 'bazarr')}/`, d, () => d.sh('docker restart bazarr >/dev/null', 120_000), keys.bazarr)
     secured.push('Bazarr')
   }
   // qBittorrent and SABnzbd get theirs in their own steps, Seerr through its media server, FlareSolverr has none.
@@ -277,7 +290,8 @@ export async function runArrSetup(input: ArrSetupInput, step: (id: string) => St
   if (has(s, 'sabnzbd')) {
     st = step('arr-sab')
     const base = `${hostUrl(ip, 'sabnzbd')}/api`
-    const sab = (q: Record<string, string>) => http({ method: 'GET', url: `${base}?${new URLSearchParams({ ...q, apikey: keys.sabnzbd!, output: 'json' })}` })
+    // By POST: the key and the new password never sit in a URL, which logs keep.
+    const sab = (q: Record<string, string>) => http({ method: 'POST', url: base, form: { ...q, apikey: keys.sabnzbd!, output: 'json' } })
     const misc = ok(await sab({ mode: 'get_config', section: 'misc' }), 'SABnzbd\'s settings')?.config?.misc ?? {}
     // The other apps call it "sabnzbd" inside the Docker network; SABnzbd refuses names it does not know.
     const allow = [...new Set([...String(misc.host_whitelist ?? '').split(',').map((x: string) => x.trim()).filter(Boolean), 'sabnzbd'])].join(',')
@@ -386,7 +400,7 @@ export async function runArrSetup(input: ArrSetupInput, step: (id: string) => St
       flare = ' FlareSolverr is set up for indexers tagged "flaresolverr": add that tag to an indexer that shows a browser check.'
     }
     st.status = 'done'
-    st.detail = `${arrs.map(id => appById(id)!.name).join(', ')} get every indexer you add to Prowlarr.${flare}`
+    st.detail = `${arrs.map(id => appById(id)!.name).join(', ')} ${arrs.length > 1 ? 'get' : 'gets'} every indexer you add to Prowlarr.${flare}`
     notes.push('Add your indexers in Prowlarr: it shares each one with the others by itself.')
   }
 
@@ -416,7 +430,7 @@ export async function runArrSetup(input: ArrSetupInput, step: (id: string) => St
     const ms = await d.mediaServer().catch(() => null)
     if (!ms) {
       st.status = 'skipped'
-      st.detail = 'No Plex server with a token is set in HyperProx\'s Plex plug-in, so Seerr was installed but not started: a Seerr nobody has signed in to belongs to whoever opens it first. Add your Plex server to the Plex plug-in, then start it with "docker compose up -d seerr" in /opt/arr.'
+      st.detail = SEERR_WAITING
       notes.push(st.detail)
     } else {
       st.detail = await connectSeerr(ip, s, keys, ms, d)
@@ -450,10 +464,11 @@ export async function runArrSetup(input: ArrSetupInput, step: (id: string) => St
  * Prove an app turns a stranger away: no key and no cookie must get a 401, a 403 or a redirect to its login page.
  * Some apps apply a new sign-in method only after a restart; one restart is allowed, then it must hold.
  */
-async function provedClosed(id: ArrAppId, url: string, d: ArrSetupDeps, restart: () => Promise<unknown>): Promise<void> {
+async function provedClosed(id: ArrAppId, url: string, d: ArrSetupDeps, restart: () => Promise<unknown>, pageMustNotHold?: string): Promise<void> {
   const closed = async () => {
     const r = await d.http({ method: 'GET', url, timeoutMs: 5000 }).catch(() => null)
     if (!r) return null
+    if (pageMustNotHold) return r.status === 200 ? !r.body.includes(pageMustNotHold) : r.status === 401 || r.status === 403 || (r.status >= 300 && r.status < 400)
     if (r.status === 401 || r.status === 403) return true
     if (r.status >= 300 && r.status < 400) return /login/i.test(r.headers.location ?? '')
     return false
@@ -470,7 +485,7 @@ async function provedClosed(id: ArrAppId, url: string, d: ArrSetupDeps, restart:
 }
 
 /** Seerr: its admin is the Plex account, then Plex, Sonarr and Radarr. Returns the step's detail. */
-async function connectSeerr(ip: string, s: Selection, keys: Partial<Record<ArrAppId, string>>, ms: { url: string; token: string },
+export async function connectSeerr(ip: string, s: Selection, keys: Partial<Record<ArrAppId, string>>, ms: { url: string; token: string },
   d: ArrSetupDeps): Promise<string> {
   const base = hostUrl(ip, 'seerr')
   const start = await d.sh(`cd ${ARR_DIR} && docker compose up -d seerr >/dev/null && echo "@@up seerr yes"\n`, 180_000)
@@ -512,6 +527,15 @@ async function connectSeerr(ip: string, s: Selection, keys: Partial<Record<ArrAp
   const pub = ok(await d.http({ method: 'GET', url: `${base}/api/v1/settings/public` }), 'Seerr\'s public settings')
   if (pub?.initialized !== true) fail('Seerr did not finish its setup.')
   return `Signed in with your Plex account (its owner), reading Plex at ${pu.host}, sending requests to ${linked.join(' and ')}.`
+}
+
+/** Asks an internal app (no port outside Docker) on its Compose-network address, from the container. */
+export function internalHealthScript(id: ArrAppId): string {
+  const a = appById(id)!
+  return [
+    `IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ${id} 2>/dev/null)`,
+    `printf '@@code ${id} %s\n' "$( [ -n "$IP" ] && curl -s -o /dev/null -w '%{http_code}' "http://$IP:${a.port}${a.health}" || echo 000)"`,
+  ].join('\n') + '\n'
 }
 
 /** The apps a person opens: everything but FlareSolverr, which has no page. */

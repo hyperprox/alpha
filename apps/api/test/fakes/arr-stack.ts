@@ -17,6 +17,11 @@ export class FakeStack {
   /** Device ids for /data/media, /data/torrents and /data/usenet, as `stat -c %d` gives them. */
   devs: Record<string, string> = { media: "51", torrents: "51", usenet: "51" }
   restarts: string[] = []
+  /** `docker compose stop` calls, and whether they work. */
+  stops: string[] = []
+  stopFails = false
+  /** Every URL asked for, to prove no secret travels in one. */
+  urls: string[] = []
   servarr: Record<string, Servarr> = {}
   qbit = { password: "TEMPpw12", user: "admin", prefs: {} as any, cats: {} as Record<string, any> }
   sab = { misc: { host_whitelist: "abc123", username: "", complete_dir: "" } as any, cats: [] as any[] }
@@ -30,6 +35,9 @@ export class FakeStack {
 
   http = async (r: HttpRequest): Promise<HttpAnswer> => {
     const u = new URL(r.url)
+    this.urls.push(r.url)
+    // A form posted to SABnzbd's /api reads like its query string.
+    if (r.form && u.pathname === "/api") for (const [k, v] of Object.entries(r.form)) u.searchParams.set(k, v)
     const app = PORTS[Number(u.port)]
     const path = u.pathname + u.search
     this.log.push(`${r.method} ${app} ${u.pathname}`)
@@ -99,6 +107,7 @@ export class FakeStack {
       const m = u.searchParams.get("mode")
       if (m === "version") return j(200, { version: "5.1.3" })
       if (!key) return j(200, { status: false, error: "API Key Required" })
+      if (m === "queue") return j(200, { queue: { slots: [] } })
       if (m === "get_config" && u.searchParams.get("section") === "misc") return j(200, { config: { misc: this.sab.misc } })
       if (m === "get_config" && u.searchParams.get("section") === "categories") return j(200, { config: { categories: this.sab.cats } })
       if (m === "set_config" && u.searchParams.get("section") === "misc") { this.sab.misc[u.searchParams.get("keyword")!] = u.searchParams.get("value"); return j(200, { status: true }) }
@@ -106,7 +115,8 @@ export class FakeStack {
       return j(404, {})
     }
     if (app === "bazarr") {
-      if (u.pathname === "/") return { status: 200, headers: {}, body: "<title>Bazarr</title>" }
+      // Signed out, Bazarr's page carries its API key only while sign-in is off.
+      if (u.pathname === "/") return { status: 200, headers: {}, body: `<title>Bazarr</title><script>window.Bazarr={"apiKey":"${this.bazarr.auth.type === "form" && !this.stayOpen.has(app) ? "" : KEY(app)}"}</script>` }
       if (!key) return j(401, {})
       if (u.pathname === "/api/system/status") return j(200, { data: { bazarr_version: "1.6.2" } })
       if (u.pathname === "/api/system/settings" && r.method === "GET") return j(200, { general: this.bazarr.general, sonarr: this.bazarr.sonarr, radarr: this.bazarr.radarr, auth: this.bazarr.auth })
@@ -132,6 +142,8 @@ export class FakeStack {
       const out = ["sonarr", "radarr", "prowlarr", "lidarr", "bazarr", "sabnzbd"].filter(a => script.includes(`/${a}/`)).map(a => `@@key ${a} ${KEY(a)}`)
       return { code: 0, output: out.join("\n") + "\n" }
     }
+    if (script.includes("printf '@@code flaresolverr")) return { code: 0, output: "@@code flaresolverr 200\n" }
+    if (script.includes("docker compose stop")) { this.stops.push(script); return { code: 0, output: this.stopFails ? "" : "@@stopped apps\n" } }
     if (script.includes("temporary password")) return { code: 0, output: `@@tmp pw ${this.qbit.password}\n` }
     if (script.includes("curl -s -o /dev/null") && script.includes("printf '@@code qbit")) return { code: 0, output: "@@code qbit 403\n" }
     const m = /docker restart (\w+)/.exec(script)

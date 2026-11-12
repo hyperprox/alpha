@@ -23,6 +23,7 @@ import { listSites, type SiteRecord } from '../sites'
 import { aggregateLines, dayKey, emptyAgg, hourStart, mergeAgg, sumAggs, RULES, type Agg, type HourBatch } from './aggregate'
 import { mergeVisit, settle, type VisitorHour } from './people'
 import { ownRequestPaths } from './own-paths'
+import { ownAddresses } from './own-addresses'
 import { isPrivateAddress, parseLogLine, splitLines, type LogLine } from './log-parser'
 import { parseReadOutput, readLogScript, READ_CHUNK } from './read-script'
 import { makeSalt, saltDayAllowed, visitorHash } from './visitors'
@@ -47,6 +48,8 @@ export interface CollectorDeps {
   unlocked(): boolean
   now(): Date
   log(m: string): void
+  /** Where HyperProx's own requests come from (own-addresses.ts); none known means none counted as its own. */
+  ownAddresses?: () => Promise<Set<string>>
 }
 
 /** What kind of site a record is, from the recipe that made it or the kind chosen when it was adopted. */
@@ -78,6 +81,7 @@ async function realRun(site: SiteRecord, script: string, maxBytes: number) {
 }
 
 export const realCollectorDeps = (log: (m: string) => void = () => {}): CollectorDeps => ({
+  ownAddresses: () => ownAddresses(),
   sites: listSites,
   run: realRun,
   health: realHealthDeps(),
@@ -104,6 +108,7 @@ export async function countLines(site: SiteRecord, st: SiteState, raw: string[],
   const host = publicHost(site)
   const res = aggregateLines(parsed, {
     ownHosts: host ? [host] : [], kind: st.kind, homeSizes: st.homeSizes, ownPaths: ownRequestPaths(),
+    ownAddresses: await d.ownAddresses?.().catch(() => new Set<string>()) ?? new Set<string>(),
     visitorHash: (day, client, ua) => { const s = salts.get(day); return s ? visitorHash(s, site.id, client, ua) : null },
   })
   st.homeSizes = res.homeSizes

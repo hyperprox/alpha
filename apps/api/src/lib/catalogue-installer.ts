@@ -21,7 +21,7 @@ import {
 } from './wizard-placement'
 import { archOfKernel, archOfTemplate } from './ai/facts'
 import {
-  arrPreview, arrPrepare, arrInstallEnv, arrRunSetup, arrJobSteps, arrCleanup, realHttp, localAddressTo,
+  arrPreview, arrPrepare, arrInstallEnv, arrRunSetup, arrJobSteps, arrCleanup, arrFinishSeerr, realHttp, localAddressTo,
   type ArrDeps, type ArrPublishInput, type ArrPublishPlan,
 } from './arr/catalogue'
 import { execOnNode } from './node-exec'
@@ -76,6 +76,8 @@ export interface InstallJob {
   arrHostMount?: { node: string; vmid: number }
   /** What an Arr Stack's public names made, per app. Clean-up removes only these. */
   arrLedgers?: Record<string, PublishLedger>
+  /** An Arr Stack whose Seerr waits for a Plex server: "Finish Seerr" connects it later. */
+  arrSeerrWaiting?: boolean
   /** What was set on an Arr Stack's container over the node login (keyctl, tun, the library), in words. */
   arrPrepared?: string
   /** An Arr Stack's apps and their addresses, for the finished page. */
@@ -493,9 +495,15 @@ async function runJob(
       }, id => step(job, id), {
         arr: deps.arr, wait: deps.wait, publish: deps.publish, saveSecrets: deps.saveSecrets, readSecrets: deps.readSecrets,
         sh: (script, timeoutMs) => deps.exec({ host: nodeIp, cred, vmid: job.vmid!, script, timeoutMs, onData: () => {} }),
+        stopContainer: async () => {
+          const base = `/nodes/${encodeURIComponent(job.node!)}/lxc/${job.vmid}`
+          await deps.client.waitForTask(job.node!, await deps.client.fetchStrict<string>(`${base}/status/stop`, 'POST'), { timeoutMs: 2 * 60_000 })
+          return (await deps.client.fetchStrict<any>(`${base}/status/current`))?.status === 'stopped'
+        },
       })
       job.url = out.url
       job.arrApps = out.apps
+      if (job.steps.find(x => x.id === 'arr-seerr')?.status === 'skipped') job.arrSeerrWaiting = true
       job.adminCredential = { user: admin.user, vault: { category: job.vaultItem.category, provider: job.vaultItem.provider, key: 'admin_password' }, issuedAt: Date.now() }
       job.status = 'completed'
       return
@@ -1175,7 +1183,7 @@ export async function previewInstall(
   const r = checkPlan(input, recipe, view, live, pinged)
   // The Arr Stack: its apps, its library (looked at from the node), its VPN login (to the vault) and public names.
   const arr = recipe.stack === 'arr' && !r.errors.length ? await arrPreview({
-    node: input.node, owner, storage: input.storage, diskGb: input.diskGb, values: checkOptions(recipe, input.options).values,
+    node: input.node, vmid: input.vmid, owner, storage: input.storage, diskGb: input.diskGb, values: checkOptions(recipe, input.options).values,
     vpnSecrets: input.arrVpn, publish: input.arrNames,
     storageFreeGb: view.storages.find(x => x.node === input.node && x.storage === input.storage)?.freeGb,
   }, deps, () => randomBytes(6).toString('hex')) : null
@@ -1547,4 +1555,37 @@ function realArrDeps(): ArrDeps {
       return p.plex_url && p.plex_token ? { kind: 'plex' as const, url: p.plex_url, token: p.plex_token } : null
     },
   }
+}
+
+/** The caller's finished Arr Stacks whose Seerr waits for a Plex server. */
+export function seerrWaiting(owner: string): InstallJob[] {
+  if (!owner) return []
+  return [...JOBS.values()].filter(j => j.owner === owner && j.status === 'completed' && j.arrSeerrWaiting && !j.removed)
+}
+
+/**
+ * "Finish Seerr": start this stack's Seerr, sign it in with the Plex account the Plex plug-in knows, and connect it
+ * to Sonarr and Radarr, at once. Only the job's owner, only a finished Arr Stack whose Seerr is still waiting.
+ */
+export async function finishSeerr(jobId: string, owner: string, over: Partial<WizardDeps> = {}): Promise<string> {
+  const deps = wizardDeps(over)
+  const job = JOBS.get(jobId)
+  if (!job || !owner || job.owner !== owner) throw new WizardRefusal('No such install job.', 'not-found')
+  if (job.status !== 'completed' || !job.arrSeerrWaiting) throw new WizardRefusal('This install has no Seerr waiting to be finished.', 'changed')
+  if (!job.ip || !job.vmid || !job.node || !job.vaultItem) throw new WizardRefusal('This install has no address or vault item to finish Seerr with.', 'changed')
+  // Still the container this job made: a reused ID is never touched.
+  const cfg = await deps.client.fetchStrict<Record<string, unknown>>(`/nodes/${encodeURIComponent(job.node)}/lxc/${job.vmid}/config`).catch(() => null)
+  if (!String(cfg?.description ?? '').includes(installMark(job.jobId))) throw new WizardRefusal(`CT ${job.vmid} no longer carries this install's mark.`, 'changed')
+  const cred = await deps.credential(job.node)
+  if (!cred) throw new Error(`No node login is stored for ${job.node}.`)
+  const host = await nodeAddress(deps.client, job.node)
+  const detail = await arrFinishSeerr({ ip: job.ip, vault: { category: job.vaultItem.category, provider: job.vaultItem.provider } }, {
+    arr: deps.arr, wait: deps.wait, readSecrets: deps.readSecrets, saveSecrets: deps.saveSecrets,
+    sh: (script, timeoutMs) => deps.exec({ host, cred, vmid: job.vmid!, script, timeoutMs, onData: () => {} }),
+  })
+  const st = job.steps.find(x => x.id === 'arr-seerr')
+  if (st) { st.status = 'done'; st.detail = detail }
+  job.arrSeerrWaiting = false
+  await persistJob(job).catch(() => {})
+  return detail
 }

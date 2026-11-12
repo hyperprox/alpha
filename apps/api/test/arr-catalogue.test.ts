@@ -2,6 +2,10 @@
 // layout and NFS mount, the setup chores with their read-backs, and the install wizard end to end on a fake cluster.
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { execFileSync, spawnSync } from "node:child_process"
+import { mkdtempSync, writeFileSync, readFileSync, symlinkSync, mkdirSync, statSync, rmSync, chmodSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import yaml from "js-yaml"
 import { CATALOGUE, findRecipe, checkOptions } from "../src/lib/catalogue"
 import { installScript } from "../src/lib/install-script"
@@ -10,10 +14,11 @@ import { APPS, DEFAULT_SELECTION, selectionOf, selectionProblems, totals, type S
 import { composeFile, dataDirs, scriptEnv, startServices, vpnEnv } from "../src/lib/arr/compose"
 import {
   NFS_OPTIONS, nfsOptions, cleanNfsSource, cleanHostPath, fstabLine, layoutOf, sameFilesystem, mountpointSpec, prepareScript,
-  unmountScript, probeScript, parseProbe, judgeProbe, configProblems, SMB_REFUSAL,
+  unmountScript, probeScript, parseProbe, judgeProbe, configProblems, SMB_REFUSAL, fstabEditScript, hostPathRefusal,
 } from "../src/lib/arr/storage"
 import { runArrSetup, setupSteps, keysScript, markers, type ArrSetupDeps } from "../src/lib/arr/setup"
-import { checkArrOptions, checkVpnSecrets, arrJobSteps, arrPreview, pendingVpnItem, type ArrDeps } from "../src/lib/arr/catalogue"
+import { checkArrOptions, checkVpnSecrets, arrJobSteps, arrPreview, arrRunSetup, pendingVpnItem, redact, PENDING_INDEX, type ArrDeps } from "../src/lib/arr/catalogue"
+import { ARR_SCRIPT } from "../src/lib/arr/compose"
 import { previewInstall, applyPreview, removeFailedInstall } from "../src/lib/catalogue-installer"
 import { FakeStack } from "./fakes/arr-stack"
 import { FakePve, deps, INPUT, settled } from "./fakes/catalogue-pve"
@@ -132,6 +137,7 @@ test("compose: the default selection, every app on /data with one PUID/PGID and 
   }
   assert.ok(c.services.sonarr.volumes.includes("/data:/data"))
   assert.ok(!c.services.prowlarr.volumes.includes("/data:/data"), "Prowlarr never touches files")
+  assert.equal(parse(sel(["prowlarr", "flaresolverr"])).services.flaresolverr.ports, undefined, "FlareSolverr is reached only inside Docker")
   assert.deepEqual(c.services.qbittorrent.ports, ["8080:8080", "6881:6881", "6881:6881/udp"])
   assert.ok(!c.services.gluetun)
   assert.ok(!composeFile(sel(["sonarr", "prowlarr"]), { downloads: "together" }).match(/PASSWORD|PRIVATE_KEY/))
@@ -210,8 +216,9 @@ test("storage: the mountpoint, the prepare script and its read-back", () => {
   assert.equal(mountpointSpec(local, 905, "pool"), "/mnt/media,mp=/data/media,backup=0", "local downloads: only the library is mounted")
   const p = prepareScript({ vmid: 905, layout: nfs, storage: "pool", tun: true })
   assert.match(p, /pct set "\$V" --features nesting=1,keyctl=1 -mp0 '\/mnt\/hyperprox-arr\/905,mp=\/data,backup=0' --dev0 \/dev\/net\/tun/)
-  assert.match(p, /grep -vF "\$K" \/etc\/fstab > \/etc\/fstab.hpx-arr.tmp/)
-  assert.doesNotMatch(p, />> \/etc\/fstab$/m, "fstab is written whole, never appended in place")
+  assert.match(p, /grep -v -- "\$K" "\$FS" > "\$T"/)
+  assert.match(p, /mv -f "\$T" "\$FS"/)
+  assert.doesNotMatch(p, />> \/etc\/fstab$/m, "fstab is renamed into place, never appended in place")
   assert.ok(p.indexOf("mount \"$M\"") < p.indexOf("pct set"), "mounted before it is handed in")
   assert.doesNotMatch(prepareScript({ vmid: 905, layout: disk, storage: "pool", tun: false }), /fstab|dev0/)
   assert.match(unmountScript(905), /umount -l "\$M"/)
@@ -397,12 +404,20 @@ test("wizard: preview checks the apps and library, keeps the VPN login in the va
     options: { ARR_VPN: "1", ARR_VPN_PROVIDER: "protonvpn", ARR_MEDIA: "nfs", ARR_NFS_HOST: "10.0.0.20", ARR_NFS_EXPORT: "/media" },
     arrVpn: { wireguard_private_key: key, wireguard_addresses: "10.2.0.2/32" },
   }
-  const r = await previewInstall(input as any, "a@example.com", d)
+  // A pending login from a preview nobody applied, long lapsed, is swept by the next preview.
+  vault[`apps/${PENDING_INDEX.provider}`] = { refs: JSON.stringify({ "00000000-0000-4000-8000-000000000000": 1 }) }
+  vault["apps/arr-vpn-pending-00000000-0000-4000-8000-000000000000"] = { wireguard_private_key: "old" }
+  const r = await previewInstall({ ...input, options: { ...input.options, ARR_VPN_REF: "00000000-0000-4000-8000-000000000000" } } as any, "a@example.com", d)
   assert.deepEqual(r.errors, [])
   const plan = r.preview!.plan
+  assert.equal(vault["apps/arr-vpn-pending-00000000-0000-4000-8000-000000000000"], undefined, "a lapsed pending login is deleted")
+  assert.notEqual(plan.options!.ARR_VPN_REF, "00000000-0000-4000-8000-000000000000", "a request cannot name the pending item")
   assert.match(plan.options!.ARR_ADMIN_USER, /^media-[0-9a-f]{6}$/, "a sign-in name is made up, never admin")
   assert.doesNotMatch(JSON.stringify(plan), new RegExp(key), "the VPN key is never in the plan")
-  assert.equal(vault[`apps/${pendingVpnItem("a@example.com").provider}`].wireguard_private_key, key)
+  const ref = plan.options!.ARR_VPN_REF
+  assert.match(ref, /^[0-9a-f-]{36}$/, "the VPN login is kept per preview")
+  assert.equal(vault[`apps/${pendingVpnItem(ref).provider}`].wireguard_private_key, key)
+  assert.ok(JSON.parse(vault[`apps/${PENDING_INDEX.provider}`].refs)[ref] > Date.now())
   assert.ok(r.checks.some(c => /reachable over NFS/.test(c)))
   assert.ok(r.checks.some(c => /keyctl/.test(c)))
   assert.ok(calls.some(c => c.includes("mount -t nfs -o ro")), "the NAS was looked at from the node")
@@ -419,7 +434,8 @@ test("wizard: preview checks the apps and library, keeps the VPN login in the va
   // The install script carried the compose file and the VPN key (from the vault), which then moved to the stack's item.
   const install = scripts.find(s => s.includes("ARR_COMPOSE_B64"))!
   assert.ok(install.includes(`export VPN_WIREGUARD_PRIVATE_KEY='${key}'`))
-  assert.equal(vault[`apps/${pendingVpnItem("a@example.com").provider}`], undefined, "the preview's copy is gone")
+  assert.equal(vault[`apps/${pendingVpnItem(ref).provider}`], undefined, "the preview's copy is gone")
+  assert.equal(JSON.parse(vault[`apps/${PENDING_INDEX.provider}`].refs)[ref], undefined)
   const item = vault["apps/arr-stack-905"]
   assert.equal(item.vpn_wireguard_private_key, key)
   assert.equal(item.admin_user, plan.options!.ARR_ADMIN_USER)
@@ -456,7 +472,8 @@ test("wizard: a failed Arr Stack's clean-up also undoes its NAS mount", async ()
   const job = await applyPreview(r.preview!.id, "a@example.com", d)
   const done = await settled(job.jobId)
   assert.equal(done.status, "failed")
-  assert.match(done.error!, /Sonarr still answers without signing in/)
+  assert.match(done.error!, /Sonarr still answers without signing in\. Every app was stopped, so nothing is left running half set up/)
+  assert.equal(f.stops.length, 1, "docker compose stop ran before the job was marked failed")
   assert.equal(done.steps.find(s => s.id === "arr-auth")!.status, "failed")
   const msg = await removeFailedInstall(job.jobId, "a@example.com", d)
   assert.match(msg, /CT 906 was removed/)
@@ -478,4 +495,123 @@ test("wizard: download clients are never published, and two apps cannot share a 
   const two = await arrPreview({ node: "node-a", owner: "a", storage: "pool", diskGb: 20, values: values(),
     publish: { zone: "example.com", instanceId: "npm", names: { sonarr: "media", radarr: "media" } } }, { publish: pub, saveSecrets: async () => {} }, () => "abc123")
   assert.match(two.errors.join(), /media is given to two apps/)
+})
+
+// ── Review fixes: fstab, node folders, failure, secrets, .env ───────────────
+
+const bash = (script: string, env: Record<string, string> = {}) => spawnSync("bash", ["-c", script], { encoding: "utf8", env: { ...process.env, ...env } })
+
+test("fstab: only this container's line changes, 101 never touches 1010, and the file is renamed into place with its mode", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hpx-arr-fstab-"))
+  try {
+    const fs = join(dir, "fstab")
+    writeFileSync(fs, "UUID=x / ext4 defaults 0 1\nnas:/a /mnt/hyperprox-arr/1010 nfs rw 0 0 # hyperprox-arr 1010\nnas:/old /mnt/hyperprox-arr/101 nfs rw 0 0 # hyperprox-arr 101\n")
+    chmodSync(fs, 0o640)
+    const line = fstabLine(cleanNfsSource("nas", "/new"), 101)
+    assert.equal(bash(fstabEditScript(101, line, fs)).status, 0)
+    assert.equal(readFileSync(fs, "utf8"), `UUID=x / ext4 defaults 0 1\nnas:/a /mnt/hyperprox-arr/1010 nfs rw 0 0 # hyperprox-arr 1010\n${line}\n`)
+    assert.equal(statSync(fs).mode & 0o777, 0o640, "the mode is kept")
+    // Again: replaced, never doubled.
+    bash(fstabEditScript(101, line, fs))
+    assert.equal(readFileSync(fs, "utf8").split("\n").filter(l => l.endsWith("# hyperprox-arr 101")).length, 1)
+    // Removal (as unmount does) leaves 1010 alone.
+    assert.equal(bash(fstabEditScript(101, null, fs)).status, 0)
+    assert.equal(readFileSync(fs, "utf8"), "UUID=x / ext4 defaults 0 1\nnas:/a /mnt/hyperprox-arr/1010 nfs rw 0 0 # hyperprox-arr 1010\n")
+    assert.match(unmountScript(1010, fs), /# hyperprox-arr 1010\$/)
+    // An unreadable fstab (grep exit 2) stops it and changes nothing.
+    const r = bash(fstabEditScript(101, line, join(dir, "missing")))
+    assert.equal(r.status, 4); assert.match(r.stdout, /@@arr fstabfail/)
+    assert.deepEqual(execFileSync("ls", ["-A", dir], { encoding: "utf8" }).trim().split("\n"), ["fstab"], "no temp file left behind")
+    assert.throws(() => fstabEditScript(101, fstabLine(cleanNfsSource("nas", "/x"), 1010), fs), /not this container/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test("node folders: refused by what they resolve to, symlinks included", () => {
+  for (const p of ["/", "/etc", "/etc/pve", "/root", "/root/.ssh", "/var", "/var/lib/ceph", "/var/lib/vz/images", "/var/lib/pve-cluster",
+    "/usr/local", "/lib64", "/libx32", "/opt/media", "/tmp/x", "/run/media", "/boot/efi", "/mnt/hyperprox-arr/1010", "/mnt/hyperprox-pbs/200"]) {
+    assert.ok(hostPathRefusal(p, 101), p)
+  }
+  for (const p of ["/mnt/media", "/srv/media", "/data", "/media/usb", "/mnt/hyperprox-arr/101"]) assert.equal(hostPathRefusal(p, 101), null, p)
+  assert.throws(() => cleanHostPath("/root/.ssh"), /system folder/)
+  const dir = mkdtempSync(join(tmpdir(), "hpx-arr-path-"))
+  try {
+    for (const [name, to] of [["etc", "/etc"], ["home-of-root", "/root"], ["var", "/var"]]) {
+      symlinkSync(to, join(dir, name))
+      // Built directly: the wizard's own check already refuses anything typed under /tmp, where scratch folders live.
+      const l = { media: "path" as const, downloads: "together" as const, hostPath: join(dir, name) }
+      // The preview's look from the node: resolved, then refused there and here.
+      const pr = parseProbe(bash(probeScript(l, 101)).stdout)
+      assert.equal(pr.refused, to, name)
+      assert.match(judgeProbe(pr, l, 101).errors.join(), new RegExp(`is ${to} on the node`), name)
+      // The prepare script resolves again and refuses before it stops or changes anything (pct here is a stand-in).
+      const bin = join(dir, "bin"); mkdirSync(bin, { recursive: true })
+      writeFileSync(join(bin, "pct"), `#!/bin/sh\necho "pct $*" >> ${join(dir, "pct.log")}\n`); chmodSync(join(bin, "pct"), 0o755)
+      const run = bash(prepareScript({ vmid: 101, layout: l, storage: "pool", tun: false }), { PATH: `${bin}:${process.env.PATH}` })
+      assert.equal(run.status, 5, name); assert.match(run.stdout, new RegExp(`@@arr refused ${to}$`, "m"))
+      assert.throws(() => readFileSync(join(dir, "pct.log")), "pct was never called")
+    }
+    // Scratch folders live under /tmp, which is itself refused, so a real folder that resolves is shown this way:
+    // the pct line takes the resolved path R, never the path as typed.
+    const l = layoutOf(values({ ARR_MEDIA: "path", ARR_HOST_PATH: "/mnt/link-to-media" })).layout!
+    const set = prepareScript({ vmid: 101, layout: l, storage: "pool", tun: false }).split("\n").find(x => x.startsWith("pct set"))!
+    assert.equal(bash(`pct() { echo "pct $*"; }; V=101; R=/srv/media; ${set}`).stdout.trim(), "pct set 101 --features nesting=1,keyctl=1 -mp0 /srv/media,mp=/data,backup=0")
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test("failure: any failed setup stops the apps first, says so, and keeps secrets out of the message", async () => {
+  const f = new FakeStack()
+  f.ignoreAuth.add("sonarr")
+  const vault: Record<string, string> = {}
+  const d = {
+    arr: () => ({ http: f.http, nodeRun: async () => ({ code: 0, output: "" }), pluginSettings: async () => ({}), savePluginSettings: async () => {},
+      localAddressTo: async () => null, mediaServer: async () => null }),
+    sh: f.sh, wait: async () => {}, publish: {} as any,
+    saveSecrets: async (_c: string, _p: string, v: Record<string, string>) => { Object.assign(vault, v) },
+    readSecrets: async () => ({ ...vault }),
+  }
+  const o = { ip: "192.0.2.60", owner: "a", options: values(), admin: { user: "media-x", password: "pw-generated-123" }, vault: { category: "apps", provider: "arr-stack-905" },
+    recipe: recipe(), ledgers: {}, save: () => {} }
+  await assert.rejects(arrRunSetup(o, () => ({ status: "running" }), d), /did not keep its sign-in settings\. Every app was stopped/)
+  assert.equal(f.stops.length, 1)
+  // When Compose cannot stop them, the whole container is stopped.
+  const f2 = new FakeStack(); f2.ignoreAuth.add("sonarr"); f2.stopFails = true
+  let ctStopped = false
+  await assert.rejects(arrRunSetup(o, () => ({ status: "running" }), { ...d, arr: () => ({ ...d.arr(), http: f2.http }), sh: f2.sh, stopContainer: async () => (ctStopped = true) }), /the whole container was stopped/)
+  assert.equal(ctStopped, true)
+  assert.equal(redact("got pw-generated-123 and KEYKEYKEY back", ["pw-generated-123", "KEYKEYKEY", "x"]), "got [hidden] and [hidden] back")
+})
+
+test("secrets: SABnzbd's key and password never travel in a URL; Bazarr's page is checked for its key", async () => {
+  const f = new FakeStack()
+  await runArrSetup({ ip: "192.0.2.60", selection: sel(["sonarr", "prowlarr", "sabnzbd", "bazarr"]), admin: { user: "media-x", password: "pw-generated-123" }, vault: { category: "apps", provider: "p" } },
+    () => ({ status: "running" }), setupDeps(f))
+  assert.ok(!f.urls.some(u => u.includes("pw-generated-123") || u.includes(f.key("sabnzbd"))), f.urls.filter(u => u.includes("8085")).join(" "))
+  // Bazarr left handing out its key on its page fails the check.
+  const g = new FakeStack(); g.stayOpen.add("bazarr")
+  await assert.rejects(runArrSetup({ ip: "192.0.2.60", selection: sel(["sonarr", "prowlarr", "bazarr"]), admin: { user: "media-x", password: "pw-generated-123" }, vault: { category: "apps", provider: "p" } },
+    () => ({ status: "running" }), setupDeps(g)), /Bazarr still answers without signing in/)
+})
+
+test("setup: an app's error page never reaches the job: only its status", async () => {
+  const f = new FakeStack()
+  const http = async (r: any) => (r.url.includes("/config/host") && r.method === "PUT" ? { status: 400, headers: {}, body: `{"error":"bad","apiKey":"${f.key("sonarr")}"}` } : f.http(r))
+  await assert.rejects(runArrSetup(INPUT_S(sel(["sonarr", "prowlarr"])), stepper().step, setupDeps(f, { http })), (e: Error) => {
+    assert.match(e.message, /Saving Sonarr's sign-in answered 400 \(the app refused the settings\)\.$/)
+    assert.ok(!e.message.includes(f.key("sonarr")))
+    return true
+  })
+})
+
+test(".env: every value single-quoted, so a $ or a quote in a VPN password reaches Compose as typed", () => {
+  const fn = /envq\(\) \{.*\}/.exec(ARR_SCRIPT)![0]
+  const out = bash(`${fn}\nenvq OPENVPN_PASSWORD "$PW"`, { PW: `a$HOME'b"c\\d` }).stdout
+  assert.equal(out, `OPENVPN_PASSWORD='a$HOME\\'b"c\\d'\n`)
+})
+
+test("wizard: Seerr waiting is never told to be started by hand", async () => {
+  const f = new FakeStack()
+  const st = stepper()
+  await runArrSetup(INPUT_S(sel(["sonarr", "prowlarr", "seerr"])), st.step, setupDeps(f))
+  assert.match(st.steps["arr-seerr"].detail!, /Connect Plex in HyperProx, then press "Finish Seerr"/)
+  assert.doesNotMatch(st.steps["arr-seerr"].detail!, /docker compose up/)
 })

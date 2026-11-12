@@ -89,19 +89,72 @@ export function fstabLine(src: { source: string }, vmid: number): string {
   return `${src.source} ${hostMountPoint(vmid)} nfs ${NFS_OPTIONS} 0 0 ${marker(vmid)}`
 }
 
+/** The anchored grep pattern for this container's fstab line: " # hyperprox-arr 101" at the end, so 101 never matches 1010. */
+export const markerPattern = (vmid: number) => ` ${marker(vmid)}$`
+
+/**
+ * Replace (or remove, with no line) this container's fstab line, atomically, as the PBS recipe does: every other
+ * line is copied to a temporary file next to fstab (same filesystem, same mode), the new line added, and the file
+ * renamed over fstab. grep exit 2 or more (fstab unreadable) stops it and changes nothing; exit 1 only means no
+ * other line was left. `fstab` is a parameter so the tests can run this on a scratch file.
+ */
+export function fstabEditScript(vmid: number, line: string | null, fstab = '/etc/fstab'): string {
+  if (!Number.isInteger(vmid) || vmid < 100 || vmid > 999_999_999) throw new StorageInputError('Bad container id.')
+  if (!/^\/[A-Za-z0-9._/-]+$/.test(fstab)) throw new StorageInputError('Bad fstab path.')
+  if (line !== null && (/[\r\n]/.test(line) || !line.endsWith(` ${marker(vmid)}`))) throw new StorageInputError('Refused: not this container\'s fstab line.')
+  return [
+    `FS=${sq(fstab)}; K=${sq(markerPattern(vmid))}`,
+    'T=$(mktemp "${FS%/*}/.fstab.hpx-arr.XXXXXX") || { echo "@@arr fstabfail"; exit 4; }',
+    'chmod --reference="$FS" "$T" 2>/dev/null || chmod 0644 "$T"',
+    'rc=0; grep -v -- "$K" "$FS" > "$T" || rc=$?',
+    'if [ "$rc" -ge 2 ]; then rm -f "$T"; echo "@@arr fstabfail"; exit 4; fi',
+    ...(line !== null ? [`printf '%s\\n' ${sq(line)} >> "$T" || { rm -f "$T"; echo "@@arr fstabfail"; exit 4; }`] : []),
+    'mv -f "$T" "$FS" || { rm -f "$T"; echo "@@arr fstabfail"; exit 4; }',
+  ].join('\n')
+}
+
 // ── A folder on the node ───────────────────────────────────────────────────
 
-/** System folders a library must never be put in. */
-const SYSTEM = ['/', '/bin', '/boot', '/dev', '/etc', '/lib', '/lib64', '/proc', '/root', '/run', '/sbin', '/sys', '/usr', '/var', '/var/lib', '/var/lib/vz', '/tmp']
+/**
+ * Folders a library must never be in, or under: the system, Proxmox's own state, and another container's mount.
+ * Checked against the path as the node resolves it (realpath -e), so a symlink to /etc is refused like /etc.
+ * The /lib* rule refuses /lib, /lib32, /lib64, /libx32 (and, harmlessly, anything else starting /lib).
+ */
+export const REFUSED_PREFIXES = ['/etc', '/root', '/boot', '/dev', '/proc', '/sys', '/run', '/var', '/usr', '/bin', '/sbin', '/tmp', '/opt',
+  '/var/lib/vz', '/var/lib/ceph', '/var/lib/pve-cluster']
+
+/** Why this (resolved) node path cannot hold a library, or null. `vmid`: the container's own NAS mount is allowed. */
+export function hostPathRefusal(p: string, vmid?: number): string | null {
+  const own = vmid ? hostMountPoint(vmid) : null
+  const under = (x: string) => p === x || p.startsWith(`${x}/`)
+  if (own && under(own)) return null
+  if (p === '/' || !p.startsWith('/')) return `${p || 'That'} is not a folder a library can go in.`
+  if (REFUSED_PREFIXES.some(under) || /^\/lib[^/]*(\/|$)/.test(p)) return `${p} is a system folder. Pick the folder that holds (or will hold) your media.`
+  if (/^\/mnt\/hyperprox-[^/]*(\/|$)/.test(p)) return `${p} is a mount HyperProx made for another container.`
+  return null
+}
+
+/** The same rule in the node's shell, as `case` patterns, so it is checked again where the path is resolved. */
+function refusalCase(vmid: number): string {
+  const own = hostMountPoint(vmid)
+  // Literal parts quoted, the glob star left bare: '/etc' | '/etc/'* | '/lib'* ...
+  const pats = ["'/'", ...REFUSED_PREFIXES.flatMap(x => [sq(x), `${sq(`${x}/`)}*`]), `${sq('/lib')}*`, `${sq('/mnt/hyperprox-')}*`]
+  return [
+    'case "$R" in',
+    `  ${sq(own)}|${sq(`${own}/`)}*) ;;`,
+    `  ${pats.join('|')}) echo "@@arr refused $R"; exit 5 ;;`,
+    'esac',
+    'case "$R" in *[!A-Za-z0-9._+@/-]*) echo "@@arr refused $R"; exit 5 ;; esac',
+  ].join('\n')
+}
 
 export function cleanHostPath(raw: unknown): string {
   const p = typeof raw === 'string' ? raw.trim().replace(/\/+$/, '') : ''
   if (!/^\/[A-Za-z0-9._+@-]+(?:\/[A-Za-z0-9._+@-]+)*$/.test(p) || p.split('/').some(s => s === '..' || s === '.')) {
     throw new StorageInputError('The folder is a full path on the node, such as /mnt/media, with no "..".')
   }
-  if (SYSTEM.includes(p) || p.startsWith('/etc/') || p.startsWith('/proc/') || p.startsWith('/sys/') || p.startsWith('/dev/') || p.startsWith('/boot/') || p.startsWith('/usr/')) {
-    throw new StorageInputError(`${p} is a system folder. Pick the folder that holds (or will hold) your media.`)
-  }
+  const bad = hostPathRefusal(p)
+  if (bad) throw new StorageInputError(bad)
   return p
 }
 
@@ -147,13 +200,13 @@ export function sameFilesystem(l: Pick<Layout, 'downloads'>): { same: boolean; w
 export const LAYOUT_LINE = 'Downloads and the library share one /data folder, so a finished download moves into the library instantly, with no second copy.'
 
 /** The container's mountpoint for the library: a new volume, or a bind of the node's folder. Not in vzdump. */
-export function mountpointSpec(l: Layout, vmid: number, storage: string): string {
+export function mountpointSpec(l: Layout, vmid: number, storage: string, resolved?: string): string {
   const mp = mountTarget(l)
   if (l.media === 'disk') {
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(storage)) throw new StorageInputError('Not a storage name.')
     return `${storage}:${l.mediaGb},mp=${mp},backup=0`
   }
-  const src = l.media === 'nfs' ? hostMountPoint(vmid) : l.hostPath!
+  const src = l.media === 'nfs' ? hostMountPoint(vmid) : resolved ?? l.hostPath!
   if (/[,=]/.test(src)) throw new StorageInputError('The folder cannot have a comma or "=" in its path.')
   return `${src},mp=${mp},backup=0`
 }
@@ -168,39 +221,45 @@ const safe = (v: string) => { if (!/^[A-Za-z0-9.:/_+@,= -]+$/.test(v)) throw new
  * folder and unmounted again; a folder is checked to exist and be a folder. Nothing is written. Markers carry the
  * answers back.
  */
-export function probeScript(l: Layout): string {
+export function probeScript(l: Layout, vmid = 100): string {
   if (l.media === 'nfs') {
     return [
       'set -u',
       `S=${sq(safe(l.nfs!.source))}`,
       'command -v mount.nfs >/dev/null 2>&1 || { echo "@@arr nonfs"; exit 0; }',
-      'T=$(mktemp -d /tmp/hpx-arr-probe.XXXXXX)',
-      'if timeout 20 mount -t nfs -o ro,vers=3,soft,timeo=50,retrans=1 "$S" "$T" 2>/tmp/hpx-arr-probe.err; then',
+      'T=$(mktemp -d /tmp/hpx-arr-probe.XXXXXX); E=$(mktemp /tmp/hpx-arr-probe-err.XXXXXX)',
+      'if timeout 20 mount -t nfs -o ro,vers=3,soft,timeo=50,retrans=1 "$S" "$T" 2>"$E"; then',
       '  echo "@@arr reachable"',
       '  df -B1 --output=avail,size "$T" | tail -1 | awk \'{print "@@arr space " $1 " " $2}\'',
       '  umount "$T" || umount -l "$T"',
       'else',
-      '  echo "@@arr mountfail $(head -c 200 /tmp/hpx-arr-probe.err | tr \'\\n\' \' \')"',
+      '  echo "@@arr mountfail $(head -c 200 "$E" | tr \'\\n\' \' \')"',
       'fi',
-      'rmdir "$T" 2>/dev/null; rm -f /tmp/hpx-arr-probe.err',
+      'rmdir "$T" 2>/dev/null; rm -f "$E"',
     ].join('\n') + '\n'
   }
   if (l.media === 'path') {
     return [
       'set -u',
       `P=${sq(safe(l.hostPath!))}`,
-      'if [ -d "$P" ]; then',
-      '  echo "@@arr reachable"',
-      '  stat -c "@@arr owner %u:%g" "$P"',
-      '  df -B1 --output=avail,size "$P" | tail -1 | awk \'{print "@@arr space " $1 " " $2}\'',
-      '  df --output=fstype "$P" | tail -1 | awk \'{print "@@arr fstype " $1}\'',
-      'else echo "@@arr missing"; fi',
+      // Resolved as the node sees it: a symlink to /etc is /etc.
+      'R=$(realpath -e -- "$P" 2>/dev/null) && [ -d "$R" ] || { echo "@@arr missing"; exit 0; }',
+      refusalCase(vmid).replace(/exit 5/g, 'exit 0'),
+      'echo "@@arr resolved $R"',
+      'echo "@@arr reachable"',
+      'stat -c "@@arr owner %u:%g" "$R"',
+      'df -B1 --output=avail,size "$R" | tail -1 | awk \'{print "@@arr space " $1 " " $2}\'',
+      'df --output=fstype "$R" | tail -1 | awk \'{print "@@arr fstype " $1}\'',
     ].join('\n') + '\n'
   }
   return 'echo "@@arr reachable"\n'
 }
 
-export interface Probe { reachable: boolean; noNfsClient: boolean; missing: boolean; error: string | null; availGb: number | null; owner: string | null; fstype: string | null }
+export interface Probe {
+  reachable: boolean; noNfsClient: boolean; missing: boolean; error: string | null; availGb: number | null; owner: string | null; fstype: string | null
+  /** A node folder as the node resolves it, and the resolved path the node itself refused. */
+  resolved: string | null; refused: string | null
+}
 
 export function parseProbe(out: string): Probe {
   const lines = String(out ?? '').split('\n').map(l => l.trim())
@@ -213,6 +272,8 @@ export function parseProbe(out: string): Probe {
     availGb: space ? Math.floor(Number(space[1]) / 1024 ** 3) : null,
     owner: lines.map(l => /^@@arr owner (\d+:\d+)/.exec(l)?.[1]).find(Boolean) ?? null,
     fstype: lines.map(l => /^@@arr fstype (\S+)/.exec(l)?.[1]).find(Boolean) ?? null,
+    resolved: lines.map(l => /^@@arr resolved (\/\S*)$/.exec(l)?.[1]).find(Boolean) ?? null,
+    refused: lines.map(l => /^@@arr refused (.*)$/.exec(l)?.[1]).find(Boolean) ?? null,
   }
 }
 
@@ -220,7 +281,7 @@ export function parseProbe(out: string): Probe {
 export const HOST_UID = 100000 + PUID
 export const UID_NOTE = `Every app writes as uid ${PUID} inside the container, which is uid ${HOST_UID} (group ${100000 + PGID}) on the node and on a NAS. That user must be able to create folders and files there.`
 
-export function judgeProbe(p: Probe, l: Layout): { errors: string[]; warnings: string[]; checks: string[] } {
+export function judgeProbe(p: Probe, l: Layout, vmid?: number): { errors: string[]; warnings: string[]; checks: string[] } {
   const errors: string[] = [], warnings: string[] = [], checks: string[] = []
   if (l.media === 'nfs') {
     if (p.noNfsClient) errors.push('The chosen node has no NFS client (mount.nfs). Install nfs-common on it, or pick another node.')
@@ -230,7 +291,10 @@ export function judgeProbe(p: Probe, l: Layout): { errors: string[]; warnings: s
       warnings.push(`The NAS is mounted on this node only, so the container cannot be moved to another node while it uses it. ${UID_NOTE}`)
     }
   } else if (l.media === 'path') {
-    if (p.missing || !p.reachable) errors.push(`${l.hostPath} is not a folder on the chosen node.`)
+    const bad = p.refused !== null ? (hostPathRefusal(p.refused, vmid) ?? `${p.refused} cannot be used.`) : p.resolved ? hostPathRefusal(p.resolved, vmid) : null
+    const res = p.refused ?? p.resolved
+    if (bad) errors.push(res && res !== l.hostPath ? `${l.hostPath} is ${res} on the node. ${bad}` : bad)
+    else if (p.missing || !p.reachable || !p.resolved) errors.push(`${l.hostPath} is not a folder on the chosen node.`)
     else {
       checks.push(`${l.hostPath} is a folder on the node${p.fstype ? ` (${p.fstype})` : ''}${p.availGb !== null ? `, with ${p.availGb} GB free` : ''}.`)
       warnings.push(`${l.hostPath} exists only on this node, so the container cannot be moved to another node. ${UID_NOTE}${p.owner && p.owner !== `${HOST_UID}:${100000 + PGID}` ? ` It is owned by ${p.owner} now.` : ''}`)
@@ -249,25 +313,38 @@ export function prepareScript(o: { vmid: number; layout: Layout; storage: string
   const { vmid, layout } = o
   if (!Number.isInteger(vmid) || vmid < 100) throw new StorageInputError('Bad container id.')
   const lines = ['set -eu', `V=${vmid}`]
-  lines.push('if pct status "$V" | grep -q running; then pct stop "$V"; fi')
+  const stop = 'if pct status "$V" | grep -q running; then pct stop "$V"; fi'
+  if (layout.media !== 'path') lines.push(stop)
   if (layout.media === 'nfs') {
     const mp = hostMountPoint(vmid)
     // The marker has a '#', which `safe` refuses on purpose; it is fixed text, so only the rest is checked.
     const line = `${safe(`${layout.nfs!.source} ${mp} nfs ${NFS_OPTIONS} 0 0`)} ${marker(vmid)}`
     if (line !== fstabLine(layout.nfs!, vmid)) throw new StorageInputError('The fstab line did not build as expected.')
     lines.push(
-      `M=${sq(safe(mp))}; L=${sq(line)}; K=${sq(marker(vmid))}`,
+      `M=${sq(safe(mp))}`,
       'mkdir -p "$M"',
-      // Once only: a line already marked for this container is replaced, never doubled. Written whole, never appended in place.
-      'grep -vF "$K" /etc/fstab > /etc/fstab.hpx-arr.tmp || true',
-      'printf "%s\\n" "$L" >> /etc/fstab.hpx-arr.tmp',
-      'cat /etc/fstab.hpx-arr.tmp > /etc/fstab && rm -f /etc/fstab.hpx-arr.tmp',
+      // Once only: a line already marked for this container is replaced, never doubled; fstab is renamed into place.
+      'set +e',
+      fstabEditScript(vmid, line),
+      'set -e',
       'mountpoint -q "$M" || mount "$M"',
       'mountpoint -q "$M" || { echo "@@arr mountfail"; exit 3; }',
       'echo "@@arr mounted"',
     )
   }
-  const set = [`--features nesting=1,keyctl=1`, `-mp0 ${sq(safe(mountpointSpec(layout, vmid, o.storage)))}`]
+  let mp0 = sq(safe(mountpointSpec(layout, vmid, o.storage)))
+  if (layout.media === 'path') {
+    // Resolved again here, at the moment it is handed in, and refused again by the same rule; mp0 gets the resolved path.
+    lines.push(
+      `P=${sq(safe(layout.hostPath!))}`,
+      'R=$(realpath -e -- "$P" 2>/dev/null) && [ -d "$R" ] || { echo "@@arr missing"; exit 5; }',
+      refusalCase(vmid),
+      'echo "@@arr resolved $R"',
+      stop,
+    )
+    mp0 = `"$R"${sq(`,mp=${mountTarget(layout)},backup=0`)}`
+  }
+  const set = [`--features nesting=1,keyctl=1`, `-mp0 ${mp0}`]
   if (o.tun) set.push('--dev0 /dev/net/tun')
   lines.push(`pct set "$V" ${set.join(' ')}`)
   lines.push('pct start "$V"', 'echo "@@arr prepared"')
@@ -275,21 +352,21 @@ export function prepareScript(o: { vmid: number; layout: Layout; storage: string
 }
 
 /** The reversal for a NAS mount: the mount off the node, its fstab line and folder gone. The NAS is not touched. */
-export function unmountScript(vmid: number): string {
+export function unmountScript(vmid: number, fstab = '/etc/fstab'): string {
   if (!Number.isInteger(vmid) || vmid < 100) throw new StorageInputError('Bad container id.')
   const mp = hostMountPoint(vmid)
   return [
     'set -u',
-    `M=${sq(safe(mp))}; K=${sq(marker(vmid))}`,
+    `M=${sq(safe(mp))}`,
     'if mountpoint -q "$M"; then umount "$M" 2>/dev/null || umount -l "$M"; fi',
-    'grep -vF "$K" /etc/fstab > /etc/fstab.hpx-arr.tmp && cat /etc/fstab.hpx-arr.tmp > /etc/fstab; rm -f /etc/fstab.hpx-arr.tmp',
+    fstabEditScript(vmid, null, fstab),
     'rmdir "$M" 2>/dev/null || true',
     'echo "@@arr unmounted"',
   ].join('\n') + '\n'
 }
 
 /** What the container's config must say after prepareScript, as read back through the API. */
-export function configProblems(cfg: Record<string, unknown> | null, o: { layout: Layout; storage: string; vmid: number; tun: boolean }): string[] {
+export function configProblems(cfg: Record<string, unknown> | null, o: { layout: Layout; storage: string; vmid: number; tun: boolean; resolved?: string }): string[] {
   const out: string[] = []
   const features = String(cfg?.features ?? '')
   if (!/(^|,)nesting=1(,|$)/.test(features) || !/(^|,)keyctl=1(,|$)/.test(features)) out.push(`features read back as "${features || 'none'}", not nesting=1,keyctl=1.`)
@@ -297,7 +374,7 @@ export function configProblems(cfg: Record<string, unknown> | null, o: { layout:
   const target = `mp=${mountTarget(o.layout)}`
   if (!mp0.split(',').includes(target)) out.push(`mp0 read back as "${mp0 || 'nothing'}", not mounted at ${mountTarget(o.layout)}.`)
   else if (o.layout.media === 'disk' && !mp0.startsWith(`${o.storage}:`)) out.push(`mp0 is not on ${o.storage}.`)
-  else if (o.layout.media !== 'disk' && mp0.split(',')[0] !== (o.layout.media === 'nfs' ? hostMountPoint(o.vmid) : o.layout.hostPath)) out.push(`mp0 read back as "${mp0}".`)
+  else if (o.layout.media !== 'disk' && mp0.split(',')[0] !== (o.layout.media === 'nfs' ? hostMountPoint(o.vmid) : o.resolved ?? o.layout.hostPath)) out.push(`mp0 read back as "${mp0}".`)
   if (o.tun && !Object.entries(cfg ?? {}).some(([k, v]) => /^dev\d+$/.test(k) && String(v).split(',')[0] === '/dev/net/tun')) out.push('The VPN\'s /dev/net/tun device did not read back.')
   return out
 }

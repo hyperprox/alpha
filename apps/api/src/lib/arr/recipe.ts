@@ -29,6 +29,8 @@ export const ARR_OPTIONS: RecipeOption[] = [
   { key: 'ARR_HOST_PATH', label: 'Folder on the node', kind: 'text', maxLength: 300 },
   { key: 'ARR_DOWNLOADS', label: 'Downloads', kind: 'text', default: 'together', maxLength: 10 },
   { key: 'ARR_DOWNLOAD_GB', label: 'Room for downloads (GB)', kind: 'number', default: '100', min: 10, max: 100_000 },
+  // Set by the preview only (a request's own value is dropped): the vault item holding this plan's VPN login.
+  { key: 'ARR_VPN_REF', label: 'VPN login reference', kind: 'text', maxLength: 40 },
   { key: 'ARR_ADMIN_USER', label: 'Sign-in name', kind: 'username', maxLength: 32,
     hint: 'One sign-in for every app. Blank makes one up; the password is always generated.' },
 ]

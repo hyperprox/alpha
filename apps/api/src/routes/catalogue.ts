@@ -11,7 +11,7 @@ import type { FastifyPluginAsync, FastifyRequest } from 'fastify'
 import { CATALOGUE, CATEGORY_LABELS, findRecipe } from '../lib/catalogue'
 import {
   getInstallJob, readAdminCredential, previewInstall, applyPreview, removeFailedInstall, getPreview, cleanupCandidates,
-  wizardView, identityView, placementFor, nextIdOf, checkIdentity, readVmidRule, saveVmidRule, WizardRefusal,
+  wizardView, identityView, placementFor, nextIdOf, checkIdentity, readVmidRule, saveVmidRule, WizardRefusal, finishSeerr, seerrWaiting,
   type InstallJob, type WizardDeps, type WizardInput,
 } from '../lib/catalogue-installer'
 import { parseCidr } from '../lib/wizard-placement'
@@ -327,6 +327,20 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
       pluginConfigured: Boolean(arr.sonarr_url),
       nas,
     } })
+  })
+
+  // GET /wizard/arr/seerr — the caller's Arr Stacks whose Seerr waits for a Plex server
+  fastify.get('/wizard/arr/seerr', async (req, reply) => {
+    const jobs = seerrWaiting(deps.whoami(req)).map(j => ({ jobId: j.jobId, vmid: j.vmid, node: j.node, ip: j.ip, startedAt: j.startedAt }))
+    return reply.send({ success: true, data: { jobs } })
+  })
+
+  // POST /wizard/jobs/:jobId/finish-seerr — start that Seerr and connect it now (admin, master password re-entered)
+  fastify.post<{ Params: { jobId: string } }>('/wizard/jobs/:jobId/finish-seerr', async (req, reply) => {
+    try {
+      const detail = await finishSeerr(req.params.jobId, deps.whoami(req), deps.wizard)
+      return reply.send({ success: true, data: { detail } })
+    } catch (e) { return refusal(reply, e) }
   })
 
   // GET /wizard/jobs — the caller's failed or interrupted installs that left a container to clean up

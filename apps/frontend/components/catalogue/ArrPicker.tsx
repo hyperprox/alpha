@@ -15,7 +15,7 @@ import { apiJson } from '@/lib/api'
 import { alpha } from '@/lib/theme'
 import { INPUT, LABEL, Notice } from '@/components/vault/ui'
 
-interface AppFact { id: string; name: string; blurb: string; option: string; default: boolean; image: string; port: number; cost: Cost; private: boolean }
+interface AppFact { id: string; name: string; blurb: string; option: string; default: boolean; image: string; port: number; cost: Cost; private: boolean; internal: boolean }
 interface Cost { cores: number; memoryMb: number; diskGb: number }
 interface Facts {
   apps: AppFact[]; vpnProviders: Array<{ id: string; name: string; portForwarding: boolean }>
@@ -183,9 +183,9 @@ export function ArrPicker({ opts, setOpts, vpn, setVpn, names, setNames, onState
                       {a.blurb}{locked ? ' Sonarr, Radarr and Lidarr find releases through it, so it stays on.' : ''}
                       {a.id === 'seerr' && checked && (facts.mediaServer
                         ? ` It signs in with the Plex server HyperProx knows.`
-                        : ' HyperProx knows no Plex server with a token yet, so Seerr is installed but left stopped until you add one to the Plex plug-in (a Seerr nobody has signed in to belongs to whoever opens it first).')}
+                        : ' HyperProx knows no Plex server with a token yet, so Seerr is installed but not started (a Seerr nobody has signed in to belongs to whoever opens it first). Connect Plex in HyperProx, then press Finish Seerr on the Catalogue page.')}
                     </span>
-                    <span className={`${MONO} block mt-1`} style={{ color: 'var(--text-dimmer)' }}>port {a.port}</span>
+                    <span className={`${MONO} block mt-1`} style={{ color: 'var(--text-dimmer)' }}>{a.internal ? 'no port: only Prowlarr reaches it, inside the container' : `port ${a.port}`}</span>
                   </span>
                 </label>
                 {/* The VPN lives under qBittorrent: it covers that app only. */}

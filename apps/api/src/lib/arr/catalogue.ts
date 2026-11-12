@@ -14,7 +14,7 @@
 //  Clean-up undoes the NAS mount and the public names this install made.
 // =============================================================================
 
-import { createHash } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import type { CatalogueRecipe } from '../catalogue'
 import type { PublishDeps, PublishLedger, PublishPlan } from '../sites'
 import { planPublish, runPublish, cleanupPublish } from '../sites'
@@ -22,8 +22,8 @@ import {
   APPS, BASE_COST, VPN_COST, VPN_PROVIDERS, appById, has, selectionOf, selectionProblems, totals, type ArrAppId, type Selection,
 } from './components'
 import { scriptEnv, vpnEnv, type VpnSettings } from './compose'
-import { configProblems, judgeProbe, layoutOf, parseProbe, prepareScript, probeScript, sameFilesystem, unmountScript, type Layout, LAYOUT_LINE } from './storage'
-import { runArrSetup, setupSteps, type ArrSetupDeps, type Http, type StepRef } from './setup'
+import { configProblems, hostPathRefusal, judgeProbe, layoutOf, parseProbe, prepareScript, probeScript, sameFilesystem, unmountScript, type Layout, LAYOUT_LINE } from './storage'
+import { connectSeerr, runArrSetup, setupSteps, type ArrSetupDeps, type Http, type StepRef } from './setup'
 
 export { ARR_RECIPE_ID, ARR_OPTIONS, ARR_RECIPE } from './recipe'
 export { realHttp, localAddressTo } from './net'
@@ -91,18 +91,45 @@ export function checkVpnSecrets(type: 'wireguard' | 'openvpn', raw: unknown): { 
   return errors.length ? { errors } : { secrets: { openvpn_user: user, openvpn_password: pw }, errors }
 }
 
-/** Where a preview keeps the VPN's login until the install reads it: one vault item per person, replaced each time. */
-export const pendingVpnItem = (owner: string) => ({ category: 'apps', provider: `arr-vpn-pending-${createHash('sha256').update(owner).digest('hex').slice(0, 16)}` })
+/** Where a preview keeps the VPN's login until its install reads it: one vault item per preview. */
+export const pendingVpnItem = (ref: string) => {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(ref)) throw new Error('No VPN login is planned for this install. Check the plan again.')
+  return { category: 'apps', provider: `arr-vpn-pending-${ref}` }
+}
+/** The list of pending VPN items and when each lapses, so a preview nobody applied does not leave its login behind. */
+export const PENDING_INDEX = { category: 'apps', provider: 'arr-vpn-pending', key: 'refs' }
+/** A pending login outlives its preview (10 minutes) by a margin, then the next preview deletes it. */
+export const PENDING_TTL_MS = 30 * 60_000
+
+interface VaultRW {
+  saveSecrets(c: string, p: string, v: Record<string, string>): Promise<void>
+  readSecrets?(c: string, p: string): Promise<Record<string, string>>
+  deleteSecrets?(c: string, p: string): Promise<void>
+}
+const readIndex = async (d: VaultRW): Promise<Record<string, number>> => {
+  try { const v = JSON.parse((await d.readSecrets?.(PENDING_INDEX.category, PENDING_INDEX.provider))?.[PENDING_INDEX.key] ?? '{}'); return v && typeof v === 'object' ? v : {} } catch { return {} }
+}
+/** Drop lapsed pending logins (and `also`), add `add`; the index is rewritten whole. */
+export async function updatePendingIndex(d: VaultRW, now: number, o: { add?: string; remove?: string } = {}): Promise<void> {
+  const idx = await readIndex(d)
+  for (const [ref, at] of Object.entries(idx)) {
+    if (ref === o.remove || !(Number(at) > now)) {
+      await d.deleteSecrets?.(PENDING_INDEX.category, `arr-vpn-pending-${ref}`).catch(() => {})
+      delete idx[ref]
+    }
+  }
+  if (o.add) idx[o.add] = now + PENDING_TTL_MS
+  await d.saveSecrets(PENDING_INDEX.category, PENDING_INDEX.provider, { [PENDING_INDEX.key]: JSON.stringify(idx) })
+}
 
 /** A sign-in name when the person leaves it blank: not "admin", which is the first name anyone tries. */
 export const makeUserName = (rand: () => string) => `media-${rand().replace(/[^a-z0-9]/g, '').slice(0, 6) || 'admin'}`
 
 // ── Preview ─────────────────────────────────────────────────────────────────
 
-export interface ArrPreviewDeps {
+export interface ArrPreviewDeps extends VaultRW {
   arr?: () => ArrDeps
   publish: PublishDeps
-  saveSecrets(category: string, provider: string, values: Record<string, string>): Promise<void>
 }
 
 /**
@@ -111,12 +138,13 @@ export interface ArrPreviewDeps {
  * keeps the VPN login in the vault, and plans public names. Writes nothing else.
  */
 export async function arrPreview(input: {
-  node: string; owner: string; storage: string; values: Record<string, string>; diskGb: number
+  node: string; vmid: number; owner: string; storage: string; values: Record<string, string>; diskGb: number
   vpnSecrets?: unknown; publish?: unknown; storageFreeGb?: number
 }, d: ArrPreviewDeps, rand: () => string): Promise<{ errors: string[]; warnings: string[]; checks: string[]; options: Record<string, string>; publish?: ArrPublishPlan[] }> {
   const c = checkArrOptions(input.values)
   const errors = [...c.errors], warnings = [...c.warnings], checks: string[] = []
-  const options = { ...input.values }
+  // Only this preview names a pending VPN item: one sent in the request is never used.
+  const options: Record<string, string> = { ...input.values, ARR_VPN_REF: '' }
   if (!options.ARR_ADMIN_USER) options.ARR_ADMIN_USER = makeUserName(rand)
   if (errors.length || !c.layout) return { errors, warnings, checks, options }
   const s = c.selection, l = c.layout
@@ -135,9 +163,9 @@ export async function arrPreview(input: {
     const arr = d.arr?.()
     if (!arr) errors.push('HyperProx cannot reach the node to look at the library.')
     else {
-      const r = await arr.nodeRun(input.node, probeScript(l), 45_000).catch((e: any) => ({ code: -1, output: '', error: e?.message }))
+      const r = await arr.nodeRun(input.node, probeScript(l, input.vmid), 45_000).catch((e: any) => ({ code: -1, output: '', error: e?.message }))
       if (r.code === -1) errors.push(`HyperProx could not run a check on ${input.node}.`)
-      else { const j = judgeProbe(parseProbe(r.output), l); errors.push(...j.errors); warnings.push(...j.warnings); checks.push(...j.checks) }
+      else { const j = judgeProbe(parseProbe(r.output), l, input.vmid); errors.push(...j.errors); warnings.push(...j.warnings); checks.push(...j.checks) }
     }
   }
   if (sameFilesystem(l).same) checks.push(LAYOUT_LINE)
@@ -148,8 +176,11 @@ export async function arrPreview(input: {
     const v = checkVpnSecrets(c.vpn.type, input.vpnSecrets)
     errors.push(...v.errors)
     if (!v.errors.length && !errors.length) {
-      const item = pendingVpnItem(input.owner)
+      const ref = randomUUID()
+      const item = pendingVpnItem(ref)
       await d.saveSecrets(item.category, item.provider, { ...v.secrets, type: c.vpn.type } as Record<string, string>)
+      await updatePendingIndex(d, Date.now(), { add: ref })
+      options.ARR_VPN_REF = ref
       checks.push(`The ${VPN_PROVIDERS.find(p => p.id === c.vpn!.provider)!.name} login is in the vault; the install reads it from there.`)
       if (c.vpn.portForwarding) checks.push('Port forwarding is on: each port the VPN hands out is given to qBittorrent.')
     }
@@ -210,12 +241,21 @@ export async function arrPrepare(plan: { node: string; vmid: number; storage: st
   if (c.layout.media === 'nfs') await onMount()
   const o = { vmid: plan.vmid, layout: c.layout, storage: plan.storage, tun: c.selection.vpn }
   const r = await arr.nodeRun(plan.node, prepareScript(o), 5 * 60_000)
-  if (c.layout.media === 'nfs' && !/@@arr mounted/.test(r.output)) throw new Error(`${c.layout.nfs!.source} could not be mounted on ${plan.node}.`)
-  if (r.code !== 0 || !/@@arr prepared/.test(r.output)) throw new Error(`The container could not be given its library and keyctl on ${plan.node} (exit ${r.code}).`)
+  if (/@@arr refused /.test(r.output) && c.layout.media === 'path') { /* reported below with the resolved path */ }
+  else if (c.layout.media === 'nfs' && !/@@arr mounted/.test(r.output)) throw new Error(`${c.layout.nfs!.source} could not be mounted on ${plan.node}.`)
+  if (!/@@arr refused /.test(r.output) && (r.code !== 0 || !/@@arr prepared/.test(r.output))) throw new Error(`The container could not be given its library and keyctl on ${plan.node} (exit ${r.code}).`)
+  // A node folder is resolved again on the node at this moment (realpath -e) and refused again there; checked here too.
+  const resolved = c.layout.media === 'path' ? parseProbe(r.output).resolved ?? undefined : undefined
+  const refused = parseProbe(r.output).refused
+  if (refused !== null) throw new Error(`${c.layout.hostPath} is ${refused} on ${plan.node}, which cannot hold a library. Nothing was handed to the container.`)
+  if (c.layout.media === 'path') {
+    const why = resolved ? hostPathRefusal(resolved, plan.vmid) : 'it did not resolve on the node.'
+    if (why) throw new Error(`${c.layout.hostPath} cannot be used: ${why}`)
+  }
   const cfg = await d.client.fetchStrict<Record<string, unknown>>(`/nodes/${encodeURIComponent(plan.node)}/lxc/${plan.vmid}/config`)
-  const bad = configProblems(cfg, o)
+  const bad = configProblems(cfg, { ...o, resolved })
   if (bad.length) throw new Error(`CT ${plan.vmid}'s settings did not read back: ${bad.join(' ')}`)
-  const where = c.layout.media === 'disk' ? `a new ${c.layout.mediaGb} GB disk on ${plan.storage}` : c.layout.media === 'nfs' ? `${c.layout.nfs!.source} (mounted on ${plan.node})` : c.layout.hostPath
+  const where = c.layout.media === 'disk' ? `a new ${c.layout.mediaGb} GB disk on ${plan.storage}` : c.layout.media === 'nfs' ? `${c.layout.nfs!.source} (mounted on ${plan.node})` : resolved
   return `nesting and keyctl on${o.tun ? ', /dev/net/tun for the VPN' : ''}; library on ${where} at ${c.layout.downloads === 'local' ? '/data/media' : '/data'}`
 }
 
@@ -229,7 +269,7 @@ export async function arrInstallEnv(o: { owner: string; options: Record<string, 
   if (!c.layout || c.errors.length) throw new Error(`The Arr Stack's settings are not usable: ${c.errors.join(' ')}`)
   const env = scriptEnv(c.selection, c.layout, c.vpn)
   if (!c.selection.vpn) return env
-  const pending = pendingVpnItem(o.owner)
+  const pending = pendingVpnItem(o.options.ARR_VPN_REF ?? '')
   const v = await d.readSecrets(pending.category, pending.provider).catch(() => ({} as Record<string, string>))
   if (!v.wireguard_private_key && !v.openvpn_user) throw new Error('The VPN login is no longer in the vault. Check the plan again and re-enter it.')
   if (o.vault) {
@@ -237,6 +277,7 @@ export async function arrInstallEnv(o: { owner: string; options: Record<string, 
     await d.saveSecrets(o.vault.category, o.vault.provider, { ...keep, vpn_provider: c.vpn!.provider })
   }
   await d.deleteSecrets(pending.category, pending.provider).catch(() => {})
+  await updatePendingIndex(d, Date.now(), { remove: o.options.ARR_VPN_REF }).catch(() => {})
   return { ...env, ...vpnEnv(v) }
 }
 
@@ -248,7 +289,37 @@ export async function arrRunSetup(o: {
 }, step: (id: string) => StepRef, d: {
   arr?: () => ArrDeps; sh: ArrSetupDeps['sh']; wait(ms: number): Promise<unknown>; publish: PublishDeps
   saveSecrets: ArrSetupDeps['saveSecrets']; readSecrets: ArrSetupDeps['readSecrets']
+  /** Stop the whole container, when Compose cannot stop the apps. */
+  stopContainer?: () => Promise<boolean>
 }): Promise<{ url: string; apps: Array<{ id: ArrAppId; name: string; url: string }>; notes: string[] }> {
+  try {
+    return await setupAndPublish(o, step, d)
+  } catch (e: any) {
+    // A half set up stack may have an app with no sign-in yet: nothing is left running when setup fails.
+    const secrets = [o.admin.password, ...Object.values(await d.readSecrets(o.vault.category, o.vault.provider).catch(() => ({} as Record<string, string>)))]
+    const msg = redact(String(e?.message ?? e), secrets)
+    const stopped = await stopApps(d.sh, d.stopContainer)
+    throw new Error(`${msg} ${stopped === 'apps' ? 'Every app was stopped, so nothing is left running half set up; clean up the install or run it again.'
+      : stopped === 'container' ? 'The apps could not be stopped one by one, so the whole container was stopped; clean up the install or run it again.'
+        : 'The apps could not be stopped: stop the container yourself before anyone reaches it.'}`)
+  }
+}
+
+/** Replace every known secret in a message, longest first, so nothing generated reaches the job or its steps. */
+export function redact(msg: string, secrets: Array<string | undefined>): string {
+  let out = msg
+  for (const v of [...new Set(secrets.filter((x): x is string => typeof x === 'string' && x.length >= 6))].sort((a, b) => b.length - a.length)) out = out.split(v).join('[hidden]')
+  return out
+}
+
+/** `docker compose stop` in the container, then the container itself if that fails. */
+export async function stopApps(sh: ArrSetupDeps['sh'], stopContainer?: () => Promise<boolean>): Promise<'apps' | 'container' | null> {
+  const r = await sh('cd /opt/arr && docker compose stop >/dev/null 2>&1 && echo "@@stopped apps"\n', 180_000).catch(() => null)
+  if (r && /@@stopped apps/.test(r.output)) return 'apps'
+  return (await stopContainer?.().catch(() => false)) ? 'container' : null
+}
+
+async function setupAndPublish(o: Parameters<typeof arrRunSetup>[0], step: (id: string) => StepRef, d: Parameters<typeof arrRunSetup>[2]) {
   const c = checkArrOptions(o.options)
   const arr = d.arr?.()
   if (!arr) throw new Error('The Arr Stack\'s setup is not available here.')
@@ -293,10 +364,39 @@ export async function arrCleanup(job: { owner: string; node?: string; vmid?: num
 /** The apps' public facts, for the wizard's picker. */
 export function pickerFacts() {
   return {
-    apps: APPS.map(a => ({ id: a.id, name: a.name, blurb: a.blurb, option: a.option, default: a.default, image: a.image, port: a.hostPort, cost: a.cost, private: Boolean(a.private) })),
+    apps: APPS.map(a => ({ id: a.id, name: a.name, blurb: a.blurb, option: a.option, default: a.default, image: a.image, port: a.hostPort, cost: a.cost, private: Boolean(a.private), internal: Boolean(a.internal) })),
     vpnProviders: VPN_PROVIDERS,
     base: BASE_COST, vpnCost: VPN_COST,
     layoutLine: LAYOUT_LINE,
     splitWarning: sameFilesystem({ downloads: 'local' }).warning!,
+  }
+}
+
+/**
+ * "Finish Seerr", after the install: Seerr was left unstarted because no Plex server was known. With one now in the
+ * Plex plug-in, start it, sign it in with that Plex account and connect it, all at once. The keys come from the vault.
+ */
+export async function arrFinishSeerr(o: { ip: string; vault: { category: string; provider: string } }, d: {
+  arr?: () => ArrDeps; sh: ArrSetupDeps['sh']; wait(ms: number): Promise<unknown>
+  readSecrets: ArrSetupDeps['readSecrets']; saveSecrets: ArrSetupDeps['saveSecrets']
+}): Promise<string> {
+  const arr = d.arr?.()
+  if (!arr) throw new Error('HyperProx cannot reach this Arr Stack.')
+  const ms = await arr.mediaServer().catch(() => null)
+  if (!ms) throw new Error('HyperProx still knows no Plex server with a token. Add your Plex server and token to the Plex plug-in first.')
+  const v = await d.readSecrets(o.vault.category, o.vault.provider)
+  const keys: Partial<Record<ArrAppId, string>> = {}
+  for (const id of ['sonarr', 'radarr'] as const) if (v[`${id}_api_key`]) keys[id] = v[`${id}_api_key`]
+  if (!keys.sonarr && !keys.radarr) throw new Error('This stack\'s Sonarr and Radarr keys are not in the vault.')
+  const sel: Selection = { apps: [...(keys.sonarr ? ['sonarr' as const] : []), ...(keys.radarr ? ['radarr' as const] : []), 'seerr'], vpn: false }
+  const secrets = [...Object.values(v), ms.token]
+  try {
+    const detail = await connectSeerr(o.ip, sel, keys, ms, { ...arr, sh: d.sh, wait: d.wait, saveSecrets: d.saveSecrets, readSecrets: d.readSecrets })
+    await d.saveSecrets(o.vault.category, o.vault.provider, { seerr_api_key: keys.seerr! })
+    return detail
+  } catch (e: any) {
+    // Never leave a started, unclaimed Seerr behind.
+    await d.sh('cd /opt/arr && docker compose stop seerr >/dev/null 2>&1; true\n', 120_000).catch(() => null)
+    throw new Error(`${redact(String(e?.message ?? e), secrets)} Seerr was stopped again.`)
   }
 }

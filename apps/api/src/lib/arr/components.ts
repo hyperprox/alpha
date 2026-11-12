@@ -36,6 +36,8 @@ export interface ArrApp {
   healthOk: number[]
   /** Not offered for a public name: a download client is never put on the internet. */
   private?: boolean
+  /** Reached only inside the Docker network: no port on the container's address (`hostPort` is unused). */
+  internal?: boolean
 }
 
 /** One user and group for every app, so every file in /data has the same owner and hardlinks just work. */
@@ -44,32 +46,32 @@ export const PGID = 1000
 
 export const APPS: readonly ArrApp[] = [
   { id: 'sonarr', name: 'Sonarr', blurb: 'Finds and downloads TV shows, and files each episode where your media server looks.',
-    option: 'ARR_SONARR', default: true, image: 'lscr.io/linuxserver/sonarr:4.0.20.3014-ls4', port: 8989, hostPort: 8989,
+    option: 'ARR_SONARR', default: true, image: 'ghcr.io/linuxserver/sonarr:4.0.20.3014-ls4', port: 8989, hostPort: 8989,
     cost: { cores: 0.5, memoryMb: 512, diskGb: 2 }, health: '/ping', healthOk: [200] },
   { id: 'radarr', name: 'Radarr', blurb: 'The same for films.',
-    option: 'ARR_RADARR', default: true, image: 'lscr.io/linuxserver/radarr:6.4.4.10685-ls326', port: 7878, hostPort: 7878,
+    option: 'ARR_RADARR', default: true, image: 'ghcr.io/linuxserver/radarr:6.4.4.10685-ls326', port: 7878, hostPort: 7878,
     cost: { cores: 0.5, memoryMb: 512, diskGb: 2 }, health: '/ping', healthOk: [200] },
   { id: 'prowlarr', name: 'Prowlarr', blurb: 'Keeps your list of indexers (the sites that list releases) in one place and shares it with the others.',
-    option: 'ARR_PROWLARR', default: true, image: 'lscr.io/linuxserver/prowlarr:2.7.0.5723-ls168', port: 9696, hostPort: 9696,
+    option: 'ARR_PROWLARR', default: true, image: 'ghcr.io/linuxserver/prowlarr:2.7.0.5723-ls168', port: 9696, hostPort: 9696,
     cost: { cores: 0.25, memoryMb: 256, diskGb: 1 }, health: '/ping', healthOk: [200] },
   { id: 'qbittorrent', name: 'qBittorrent', blurb: 'Downloads torrents.',
-    option: 'ARR_QBITTORRENT', default: true, image: 'lscr.io/linuxserver/qbittorrent:5.3.0_v2.1.2-ls487', port: 8080, hostPort: 8080,
+    option: 'ARR_QBITTORRENT', default: true, image: 'ghcr.io/linuxserver/qbittorrent:5.3.0_v2.1.2-ls487', port: 8080, hostPort: 8080,
     cost: { cores: 1, memoryMb: 512, diskGb: 1 }, health: '/api/v2/app/version', healthOk: [200, 403], private: true },
   { id: 'sabnzbd', name: 'SABnzbd', blurb: 'Downloads from Usenet, if you have a Usenet provider.',
-    option: 'ARR_SABNZBD', default: false, image: 'lscr.io/linuxserver/sabnzbd:5.1.3-ls280', port: 8080, hostPort: 8085,
+    option: 'ARR_SABNZBD', default: false, image: 'ghcr.io/linuxserver/sabnzbd:5.1.3-ls280', port: 8080, hostPort: 8085,
     cost: { cores: 1, memoryMb: 512, diskGb: 1 }, health: '/api?mode=version&output=json', healthOk: [200], private: true },
   { id: 'bazarr', name: 'Bazarr', blurb: 'Fetches subtitles for what Sonarr and Radarr download.',
-    option: 'ARR_BAZARR', default: false, image: 'lscr.io/linuxserver/bazarr:v1.6.2-ls372', port: 6767, hostPort: 6767,
+    option: 'ARR_BAZARR', default: false, image: 'ghcr.io/linuxserver/bazarr:v1.6.2-ls372', port: 6767, hostPort: 6767,
     cost: { cores: 0.25, memoryMb: 384, diskGb: 1 }, health: '/', healthOk: [200] },
   { id: 'lidarr', name: 'Lidarr', blurb: 'Finds and downloads music.',
-    option: 'ARR_LIDARR', default: false, image: 'lscr.io/linuxserver/lidarr:3.1.6.5079-ls48', port: 8686, hostPort: 8686,
+    option: 'ARR_LIDARR', default: false, image: 'ghcr.io/linuxserver/lidarr:3.1.6.5079-ls48', port: 8686, hostPort: 8686,
     cost: { cores: 0.5, memoryMb: 512, diskGb: 2 }, health: '/ping', healthOk: [200] },
   { id: 'seerr', name: 'Seerr', blurb: 'A page where family and friends ask for films and shows. It follows on from Overseerr and Jellyseerr.',
     option: 'ARR_SEERR', default: false, image: 'ghcr.io/seerr-team/seerr:v3.5.1', port: 5055, hostPort: 5055,
     cost: { cores: 0.25, memoryMb: 384, diskGb: 1 }, health: '/api/v1/status', healthOk: [200] },
   { id: 'flaresolverr', name: 'FlareSolverr', blurb: 'Gets Prowlarr past the "checking your browser" page some indexers show.',
     option: 'ARR_FLARESOLVERR', default: false, image: 'ghcr.io/flaresolverr/flaresolverr:v3.5.2', port: 8191, hostPort: 8191,
-    cost: { cores: 0.5, memoryMb: 512, diskGb: 1 }, health: '/', healthOk: [200], private: true },
+    cost: { cores: 0.5, memoryMb: 512, diskGb: 1 }, health: '/', healthOk: [200], private: true, internal: true },
 ]
 
 export const GLUETUN_IMAGE = 'qmcgaw/gluetun:v3.41.3'

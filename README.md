@@ -894,9 +894,11 @@ one of these rules again, whatever sends the request.
 **A VPN for qBittorrent (optional).** Under qBittorrent you can send it through a VPN, using Gluetun. qBittorrent
 then shares Gluetun's network, so if the tunnel drops it has no network at all. The VPN covers qBittorrent only.
 Pick your provider from the list, then WireGuard (the private key, and the address if your provider gives one) or
-OpenVPN (its user name and password). The login goes into the vault when the plan is checked. It is never kept in
-the plan or written into the compose file. At install it moves to the stack's own vault item and into
-`/opt/arr/.env` inside the container (readable by root only), where Docker Compose reads it. Good torrent speeds need
+OpenVPN (its user name and password). The login goes into the vault when the plan is checked, in an item of its own for that plan. It is never kept
+in the plan or written into the compose file. A plan nobody installs has its login deleted by the next plan with a
+VPN that is checked half an hour or more later. At install it moves to the stack's own vault item and into
+`/opt/arr/.env` inside the container (readable by root only), where Docker Compose reads it. Every value there
+is in single quotes, so a `$` or a quote in a password reaches the VPN exactly as typed. Good torrent speeds need
 port forwarding, so other people can connect to you. For Proton VPN, Private Internet Access, PrivateVPN and Perfect
 Privacy, HyperProx turns it on and tells qBittorrent each new port. Other providers get a warning that many torrents
 will be slow.
@@ -907,7 +909,10 @@ device or a folder from the node, so HyperProx then does that over the node's sa
 container, gives it keyctl (Docker wants it), the `/dev/net/tun` device when the VPN is on, and the library, then
 starts it again and reads its settings back. Every image is pinned to one release, never `latest`, and every app
 runs as the same user and group (1000:1000), so all the files in the library have one owner. Gluetun is the one
-exception: it runs as root because it changes the network.
+exception: it runs as root because it changes the network. All the images except Gluetun's (Docker Hub) come
+straight from GitHub's registry (`ghcr.io`). They are downloaded one at a time and retried, because registries
+turn away a burst of downloads at once. FlareSolverr
+gets no port on the container's address at all: only Prowlarr uses it, inside Docker.
 
 **Where the files go.** Everything lives under one `/data` folder, laid out the way the TRaSH guides suggest:
 `/data/torrents`, `/data/usenet` and `/data/media/{tv,movies,music}`. Downloads and the library share one
@@ -916,10 +921,17 @@ filesystem, so a finished download moves into the library instantly, with no sec
 - **A new disk** on the storage you pick for the container. It is left out of Proxmox backups, because media is
   too big to back up every night.
 - **A NAS, over NFS.** The export is mounted on the container's node only (never on every node) with
-  `rw,vers=3,hard,timeo=600,retrans=2,_netdev,nofail`, then passed into the container. The fstab line is marked
-  `# hyperprox-arr <id>` so it can be removed again. An SMB/Windows share is refused: turn on NFS for that share.
+  `rw,vers=3,hard,timeo=600,retrans=2,_netdev,nofail`, then passed into the container. The fstab line ends with
+  `# hyperprox-arr <id>`, so it can be removed again and container 101 never touches 1010's line. fstab is
+  rewritten to a temporary file beside it (keeping its mode) and renamed into place; if fstab cannot be read,
+  nothing is changed. An SMB/Windows share is refused: turn on NFS for that share.
   NFS storages your cluster already mounts are offered as one-click choices.
-- **A folder that already exists on the node,** such as `/mnt/media`. System folders such as `/etc` are refused.
+- **A folder that already exists on the node,** such as `/mnt/media`. The node resolves it first (following
+  symlinks), and what it resolves to is checked: the root folder and anything under `/etc`, `/root`, `/boot`,
+  `/dev`, `/proc`, `/sys`, `/run`, `/var` (so also `/var/lib/vz`, `/var/lib/ceph`, `/var/lib/pve-cluster`),
+  `/usr`, `/bin`, `/sbin`, `/lib*`, `/tmp` or `/opt` is refused, as is another container's `/mnt/hyperprox-…`
+  mount. This is checked when the plan is checked and again on the node just before the folder is handed in, and
+  the container gets the resolved path, not a symlink.
 
 For a NAS or a folder, the check before anything is made looks at it from the node (a read-only test mount for a
 NAS). The apps write as uid 1000 inside the container, which is uid 101000 on the node and the NAS, so that user
@@ -939,13 +951,15 @@ when the read-back agrees. The steps:
 4. Turns on sign-in everywhere, with one user name for every app (made up as `media-` plus six letters and digits,
    unless you choose one) and a generated password. Sonarr, Radarr, Prowlarr and Lidarr get forms sign-in, required
    for every address; Bazarr gets form sign-in. Each app is then asked something with no key and no cookie, and must
-   turn the request away. One restart is allowed for an app that needs it; if it is still open, the install fails.
+   turn the request away. Bazarr's API always wants its key, so for Bazarr the test is its page instead: with sign-in
+   off it hands its API key to anyone who opens it, and signed out it must not. One restart is allowed for an app that needs it; if it is still open, the install fails.
 5. qBittorrent: reads the one-time password it prints in its log on first start and replaces it, saves downloads to
    `/data/torrents`, adds the categories `tv`, `movies` and `music`, and binds it to the VPN when there is one.
    Only HyperProx's own address may read it without the password (so the Arr Stack plug-in can show downloads);
    a request from anywhere else is checked to be turned away.
 6. SABnzbd: turns on sign-in, saves downloads to `/data/usenet`, adds the same categories, and lets the other apps
-   call it by its name inside Docker.
+   call it by its name inside Docker. Its key and the new password are sent in the body of the request, never in
+   an address, which logs keep.
 7. Adds the library folders: `/data/media/tv` to Sonarr, `/data/media/movies` to Radarr, `/data/media/music` to Lidarr.
 8. Adds qBittorrent and SABnzbd to each of those apps with its category. Each app tests the connection before it
    saves it, and it is tested again after.
@@ -954,11 +968,18 @@ when the read-back agrees. The steps:
 10. Connects Bazarr to Sonarr and Radarr.
 11. Seerr: only when the Plex plug-in has a Plex server address and token. Then Seerr starts, signs in with that Plex
     account (which becomes its owner), turns on the Plex libraries, adds Sonarr and Radarr, and finishes its own
-    setup. Without one, Seerr is installed but not started. A Seerr nobody has signed in to belongs to whoever opens
-    it first. Add your Plex server to the Plex plug-in, then run `docker compose up -d seerr` in `/opt/arr`.
+    setup. Without one, Seerr is installed but not started, because a Seerr nobody has signed in to belongs to
+    whoever opens it first. Connect Plex in HyperProx (the Plex plug-in's server and token), then press
+    **Finish Seerr** on the Catalogue page. That does the same start and sign-in at once, and needs an admin and
+    the master password again. If it fails, Seerr is stopped again.
 12. Points HyperProx's Arr Stack plug-in at the new Sonarr, Radarr, Prowlarr and qBittorrent. If the plug-in
     already reads a stack, it is left as it is. The Plex plug-in has no Arr setting of its own: where it reaches
     Sonarr or Radarr, it does so through the Arr Stack plug-in, so it follows this step.
+
+**If setup fails at any step,** every app is stopped (`docker compose stop`, or the whole container when that does
+not work) before the install is marked failed, and the message says so: a half set up app may have no sign-in
+yet. The message carries only what failed and the app's answer code, never the page the app sent back, and any
+password, key or VPN login is blanked out of it.
 
 The finished page shows the sign-in once and a button for each app. The password, the API keys and the VPN login
 stay in the vault.
@@ -1136,9 +1157,13 @@ short, years out of date, or one of the fakes scanners copy from each other; Chr
 HTTP, or a scanner's path makes the visitor a bot for that whole hour, page views and images included.
 
 **HyperProx's own requests are never counted.** Its checks and detection say `HyperProx-…` in the
-User-Agent, and the Metrics tab only shows how many there were ("HyperProx checks"). That name is believed
-only for ordinary requests and the few paths HyperProx itself asks for; anyone using it to ask for a secret
-file, an admin panel or anything else a scanner wants is counted as a scanner.
+User-Agent, and the Metrics tab only shows how many there were ("HyperProx checks"). The name is public, so it
+is believed only when the request also comes from one of HyperProx's own addresses: its own network interfaces,
+the public address its requests to a site's public name leave from (read from the DNS provider's WAN lookup and
+kept an hour), and any listed in `HYPERPROX_OWN_ADDRESSES` (comma-separated; for a HyperProx behind NAT, such as
+in Docker, whose sites see the host's address). Even then it is believed only for ordinary requests and the few
+paths HyperProx itself asks for. A request with HyperProx's name from any other address, or asking for a secret
+file, an admin panel or anything else a scanner wants, is counted as a scanner.
 
 **Scanner probes** are requests for things a website should not have or this one does not: secret files
 (`.env`, `.git`, keys, backups), admin panels and consoles (`/phpmyadmin`, `/actuator`, WordPress's admin on

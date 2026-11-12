@@ -12,6 +12,7 @@
 
 import type { LogLine } from './log-parser'
 import { classifyUa, isOwnUa, probeKind } from './user-agent'
+import { plainAddress } from './own-addresses'
 import { DERIVED_KEYS, deriveHour, mergeVisit, newVisit, pend, pushTime, settle, type VisitorHour } from './people'
 
 /**
@@ -198,6 +199,11 @@ export interface BatchOptions {
   homeSizes?: number[]
   /** Paths HyperProx itself asks for (own-paths.ts): a HyperProx User-Agent is believed for these and for ordinary requests only. */
   ownPaths?: Set<string>
+  /**
+   * The addresses HyperProx's own requests come from (own-addresses.ts). The name alone is never believed: a line
+   * is HyperProx's own only when it also comes from one of these. Without the list, nothing is HyperProx's own.
+   */
+  ownAddresses?: Set<string>
 }
 
 export interface HourBatch {
@@ -243,7 +249,8 @@ export function aggregateLines(lines: LogLine[], o: BatchOptions): BatchResult {
     const probe = probeKind(l.path, o.kind ?? 'other', l.status)
     // HyperProx's name is believed only for what HyperProx asks for: an ordinary request or one of its own paths.
     // Anything else (a secret file, an admin panel) is a scanner borrowing the name.
-    const own = isOwnUa(l.ua) && (probe === null || (o.ownPaths?.has(l.path) ?? false))
+    const fromUs = Boolean(o.ownAddresses?.has(plainAddress(l.client)) || o.ownAddresses?.has(plainAddress(l.remote)))
+    const own = isOwnUa(l.ua) && fromUs && (probe === null || (o.ownPaths?.has(l.path) ?? false))
     if (!own && (ua.bot || probe || l.path === '/robots.txt' || !l.method)) botBy.add(id)
     if (!own && l.path === '/' && l.method === 'GET' && l.status >= 200 && l.status < 300 && l.bytes > 0) homeBytes.add(l.bytes)
     return { l, day, ua, id, probe, own }
