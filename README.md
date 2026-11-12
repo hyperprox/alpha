@@ -1285,13 +1285,25 @@ worked.
 #### Proxmox Backup Server
 
 Open **Plug-ins, Proxmox Backup Server** and press **Add a backup server** (admins; the master password
-is asked again, because a token is being stored). Give it a name, its address (`https://`, port 8007 if
-you leave the port out), an API token id and the token's secret. **Check and add** reads the server's
-certificate, pins it, and makes one real read with the token through that pin before anything is saved:
-a token that cannot read the server is never stored. The token is kept in the vault and never shown
-again. Each server you add gets its own tab.
+is asked again, because a token is being stored). Give it a name and its address (`https://`, port 8007
+if you leave the port out), then choose how HyperProx gets in. Each server you add gets its own tab.
 
-**The token.** Give HyperProx a read-only token of its own. In the backup server's shell:
+**Sign in (recommended).** Enter a PBS admin login once: user, realm (`pam` for a Linux user such as
+`root`, or `pbs`) and password. HyperProx first reads and pins the server's certificate, and only then
+signs in, through that pin. It makes its own user `hyperprox@pbs` if it is missing, and the API token
+`hyperprox@pbs!readonly` with the Audit role on `/`, checks that the permission reads back, makes one
+read with the new token, and keeps only that token in the vault. The password is used for that one
+sign-in and then dropped: it is never stored, logged, written to the audit log or shown. Adding the same
+server again makes a fresh token and replaces the stored one; it does not add a second entry. Sign-ins
+are limited to 3 a minute, and each attempt is in the audit log with the user name and the result.
+
+**Allow Verify now and GC now** (a checkbox in the same form, off by default). PBS has no role with only
+`Datastore.Verify` and `Datastore.Modify`, so this gives the token the DatastoreAdmin role on each
+datastore (never on `/`). The token is then no longer read-only on those datastores: anyone holding it
+could also prune or delete backups there through the PBS API. HyperProx itself never does, and its two
+actions still need an admin and the master password.
+
+**Paste a token (advanced).** If you would rather make the token yourself, in the backup server's shell:
 
 ```
 proxmox-backup-manager user create hyperprox@pbs
@@ -1300,10 +1312,12 @@ proxmox-backup-manager user generate-token hyperprox@pbs readonly
 proxmox-backup-manager acl update / Audit --auth-id 'hyperprox@pbs!readonly'
 ```
 
-The Audit role on `/` gives `Datastore.Audit` and `Sys.Audit`: HyperProx can read everything the page
-shows and change nothing. **Verify now** also needs `Datastore.Verify`, and **GC now** needs
-`Datastore.Modify`, on that datastore; without them the server refuses, and the page says which one is
-missing. The token id to paste is `hyperprox@pbs!readonly`.
+and paste the token id (`hyperprox@pbs!readonly`) and its secret. **Check and add** reads and pins the
+certificate and makes one real read with the token through that pin before anything is saved: a token
+that cannot read the server is never stored. The Audit role on `/` gives `Datastore.Audit` and
+`Sys.Audit`: HyperProx can read everything the page shows and change nothing. **Verify now** also needs
+`Datastore.Verify`, and **GC now** needs `Datastore.Modify`, on that datastore; without them the server
+refuses, and the page says which one is missing.
 
 **The certificate.** A certificate that checks out against a public certificate authority stays checked
 that way, so a renewal keeps working. Otherwise the server's own certificate is pinned when you add it,

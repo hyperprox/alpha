@@ -357,3 +357,136 @@ test('cross-check: finds the PBS storage by fingerprint or address, and lists gu
   assert.deepEqual(cov[0].noGroup.map(g => g.vmid), [300])
   assert.deepEqual(cov[0].notInJob!.map(g => g.vmid), [300])
 })
+
+// ── adding a server by signing in once ───────────────────────────────────────
+
+const PASSWORD = 'correct-horse-battery-STAPLE-91'
+
+/** A fake PBS admin API for the sign-in flow: users, tokens, ACLs and datastores, recording every call. */
+function signinWorld() {
+  const order: string[] = []
+  const users: any[] = [{ userid: 'root@pam' }]
+  const tokens: Record<string, string[]> = {}
+  let acl: any[] = []
+  let n = 0
+  const admin: PbsApi = {
+    async call(method, p, params) {
+      order.push(`${method} ${p}`)
+      if (p === '/access/users' && method === 'GET') return users
+      if (p === '/access/users' && method === 'POST') { users.push({ userid: params!.userid }); return null }
+      const t = /^\/access\/users\/([^/]+)\/token(?:\/([^/]+))?$/.exec(p)
+      if (t) {
+        const u = decodeURIComponent(t[1])
+        if (method === 'GET') return (tokens[u] ?? []).map(x => ({ tokenid: `${u}!${x}` }))
+        if (method === 'DELETE') { tokens[u] = (tokens[u] ?? []).filter(x => x !== t[2]); acl = acl.filter(r => r.ugid !== `${u}!${t[2]}`); return null }
+        if (method === 'POST') { (tokens[u] ??= []).push(t[2]!); return { tokenid: `${u}!${t[2]}`, value: `token-secret-${++n}` } }
+      }
+      if (p === '/access/acl' && method === 'PUT') { acl.push({ path: params!.path, roleid: params!.role, ugid: params!['auth-id'] }); return null }
+      if (p === '/access/acl') return acl
+      if (p === '/admin/datastore') return [{ store: 'tank' }, { store: 'offsite' }]
+      throw new PbsHttpError(404, p)
+    },
+  }
+  const io = memIO()
+  const audit: any[] = []
+  const store = new PbsInstanceStore(io)
+  const logins: Array<{ userid: string; pinned: boolean }> = []
+  const svc = new PbsService({
+    store, audit: async (action, resource, details) => { audit.push({ action, resource, details }) },
+    probe: async () => { order.push('probe'); return { fingerprint: normaliseFingerprint('cd'.repeat(32))!, caVerified: false } },
+    login: async (_u, pin, userid, password) => {
+      order.push('login')
+      logins.push({ userid, pinned: !!pin?.fingerprint })
+      if (password !== PASSWORD) throw new PbsHttpError(401, 'authentication failure')
+      return admin
+    },
+    api: () => fakeApi(), now: () => NOW.getTime(), wait: async () => {},
+  })
+  return { svc, io, audit, order, acl: () => acl, tokens, logins, store }
+}
+
+const signin = (extra: Record<string, unknown> = {}) => ({ name: 'backups', url: 'https://10.9.8.7:8007', username: 'root', realm: 'pam', password: PASSWORD, ...extra })
+
+/** Everything printed while fn runs (console and stdout/stderr). */
+async function captureOutput(fn: () => Promise<unknown>): Promise<string> {
+  const out: string[] = []
+  const saved = { log: console.log, info: console.info, warn: console.warn, error: console.error, debug: console.debug, o: process.stdout.write, e: process.stderr.write }
+  const grab = (...a: any[]) => { out.push(a.map(String).join(' ')) }
+  Object.assign(console, { log: grab, info: grab, warn: grab, error: grab, debug: grab })
+  process.stdout.write = ((c: any) => { out.push(String(c)); return true }) as any
+  process.stderr.write = ((c: any) => { out.push(String(c)); return true }) as any
+  try { await fn().catch(e => out.push(String(e?.message ?? e))) } finally {
+    Object.assign(console, { log: saved.log, info: saved.info, warn: saved.warn, error: saved.error, debug: saved.debug })
+    process.stdout.write = saved.o; process.stderr.write = saved.e
+  }
+  return out.join('\n')
+}
+
+test('sign-in: pins before the password is sent, makes hyperprox@pbs and its read-only token, keeps only the token', async () => {
+  const w = signinWorld()
+  const m = await w.svc.addWithLogin(signin(), admin)
+  assert.ok(w.order.indexOf('probe') < w.order.indexOf('login'), 'the certificate is pinned before the password is sent')
+  assert.deepEqual(w.logins, [{ userid: 'root@pam', pinned: true }])
+  assert.deepEqual(w.acl(), [
+    { path: '/', roleid: 'Audit', ugid: 'hyperprox@pbs' },
+    { path: '/', roleid: 'Audit', ugid: 'hyperprox@pbs!readonly' },
+  ], 'read-only: Audit on /, and no datastore role unless asked')
+  const c = await w.store.connection(m.id)
+  assert.deepEqual([c!.tokenId, c!.secret, c!.meta.pin?.source], ['hyperprox@pbs!readonly', 'token-secret-1', 'first-use'])
+  assert.equal(m.allowActions, false)
+  assert.deepEqual(w.audit.map(a => [a.action, a.details.login, a.details.result]), [['pbs.instance.signin', 'root@pam', 'done']])
+})
+
+test('sign-in: the password never reaches the vault, the audit log or the logs, on success or failure', async () => {
+  const w = signinWorld()
+  const printed = await captureOutput(async () => {
+    await w.svc.addWithLogin(signin(), admin)
+    await w.svc.addWithLogin(signin({ password: `${PASSWORD}-wrong` }), { ...admin, sid: 's-2' }).catch(e => { assert.equal(e.code, 'signin_failed'); assert.ok(!e.message.includes(PASSWORD)); throw e })
+  })
+  const vault = JSON.stringify([...w.io.data.entries()])
+  assert.ok(!vault.includes(PASSWORD), 'not in the vault')
+  assert.ok(!JSON.stringify(w.audit).includes(PASSWORD), 'not in the audit log')
+  assert.ok(!printed.includes(PASSWORD), 'not in the logs')
+  assert.deepEqual(w.audit.map(a => a.details.result), ['done', 'failed:signin'])
+})
+
+test('sign-in: adding the same server again is idempotent and regenerates the token', async () => {
+  const w = signinWorld()
+  const a = await w.svc.addWithLogin(signin(), admin)
+  const b = await w.svc.addWithLogin(signin({ name: 'other name' }), { ...admin, sid: 's-3' })
+  assert.equal(b.id, a.id, 'the same instance, not a second one')
+  assert.equal((await w.store.list()).length, 1)
+  assert.deepEqual(w.tokens['hyperprox@pbs'], ['readonly'], 'one token, made again')
+  assert.ok(w.order.includes('DELETE /access/users/hyperprox%40pbs/token/readonly'))
+  assert.equal((await w.store.connection(a.id))!.secret, 'token-secret-2')
+  assert.equal(w.audit.at(-1).details.result, 'done:token_replaced')
+  assert.equal((await w.store.list())[0].name, 'backups', 'the existing entry keeps its name')
+})
+
+test('sign-in: "Allow Verify now / GC now" grants on the datastores only, never on /', async () => {
+  const w = signinWorld()
+  const m = await w.svc.addWithLogin(signin({ allowActions: true }), admin)
+  assert.equal(m.allowActions, true)
+  const roles = w.acl().filter(r => r.roleid !== 'Audit')
+  assert.deepEqual(roles.map(r => `${r.path} ${r.roleid} ${r.ugid}`), [
+    '/datastore/tank DatastoreAdmin hyperprox@pbs', '/datastore/tank DatastoreAdmin hyperprox@pbs!readonly',
+    '/datastore/offsite DatastoreAdmin hyperprox@pbs', '/datastore/offsite DatastoreAdmin hyperprox@pbs!readonly',
+  ])
+  assert.ok(!w.acl().some(r => r.path === '/' && r.roleid !== 'Audit'))
+  // Only when asked: a truthy string is not consent.
+  const w2 = signinWorld()
+  await w2.svc.addWithLogin(signin({ allowActions: 'yes' }), admin)
+  assert.ok(!w2.acl().some(r => r.roleid === 'DatastoreAdmin'))
+})
+
+test('sign-in: rate-limited, admin only, never an API token; every refusal audited with no password', async () => {
+  const w = signinWorld()
+  await assert.rejects(w.svc.addWithLogin(signin(), tokenActor), (e: any) => e.code === 'token_forbidden')
+  await assert.rejects(w.svc.addWithLogin(signin(), operator), (e: any) => e.code === 'forbidden')
+  for (let i = 0; i < 3; i++) await w.svc.addWithLogin(signin({ password: 'wrong' }), admin).catch(() => {})
+  await assert.rejects(w.svc.addWithLogin(signin(), admin), (e: any) => e.code === 'rate_limited')
+  assert.deepEqual(w.audit.map(a => a.details.result), ['refused:token_forbidden', 'refused:forbidden', 'failed:signin', 'failed:signin', 'failed:signin', 'refused:rate_limited'])
+  assert.ok(!w.order.includes('login') || w.logins.length === 3, 'the refused and rate-limited attempts never signed in')
+  assert.equal(requiredRole('POST', '/api/plugins/pbs/instances/signin'), 'admin')
+  assert.equal(needsReconfirm('POST', '/api/plugins/pbs/instances/signin'), true)
+})

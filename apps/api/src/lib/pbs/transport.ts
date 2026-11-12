@@ -110,12 +110,12 @@ export class PbsTransport {
   }
 
   /** One API call; resolves with the answer's `data`. `path` is under /api2/json. */
-  async call(method: 'GET' | 'POST' | 'PUT', path: string, params?: Record<string, string | number | boolean | undefined>, timeoutMs = 15_000): Promise<any> {
+  async call(method: 'GET' | 'POST' | 'PUT' | 'DELETE', path: string, params?: Record<string, string | number | boolean | undefined>, timeoutMs = 15_000): Promise<any> {
     const qs = encodeParams(params)
-    const u = new URL(`api2/json${path.startsWith('/') ? path : `/${path}`}${method === 'GET' && qs ? `?${qs}` : ''}`, this.base)
+    const u = new URL(`api2/json${path.startsWith('/') ? path : `/${path}`}${(method === 'GET' || method === 'DELETE') && qs ? `?${qs}` : ''}`, this.base)
     let address: string
     try { address = await (this.o.resolve ?? resolvePbsTarget)(u) } catch (e) { throw plainError(e) }
-    const body = method !== 'GET' ? qs : undefined
+    const body = method === 'POST' || method === 'PUT' ? qs : undefined
     const opts: https.RequestOptions = {
       host: address, port: u.port || 443, path: u.pathname + u.search, method, timeout: timeoutMs,
       headers: {

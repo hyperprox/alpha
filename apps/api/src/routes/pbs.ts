@@ -69,6 +69,16 @@ export const pbsRoutes: FastifyPluginAsync = async (fastify) => {
     } catch (e) { return fail(reply, e) }
   })
 
+  // Add by signing in once with a PBS admin login (recommended): HyperProx makes its own read-only token there and
+  // keeps only that. The password is used for that one sign-in and never stored, audited or logged (the service
+  // audits the attempt with the user name only).
+  fastify.post<{ Body: Record<string, unknown> }>('/instances/signin', async (req, reply) => {
+    try {
+      const m = await svc().addWithLogin(req.body ?? {}, actor(req))
+      return reply.status(201).send({ success: true, data: view(m, false) })
+    } catch (e) { return fail(reply, e) }
+  })
+
   fastify.put<P & { Body: Record<string, unknown> }>('/instances/:iid', async (req, reply) => {
     try {
       const b = (req.body ?? {}) as Record<string, unknown>

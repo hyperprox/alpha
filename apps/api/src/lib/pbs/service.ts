@@ -41,12 +41,14 @@ export interface ServiceDeps {
   probe: (url: string) => Promise<Presented>
   /** The API for a connection, through its pin. */
   api: (c: { url: string; tokenId: string; secret: string; pin: PbsPin }) => PbsApi
+  /** A signed-in session through the pin (the sign-in way of adding a server). The password goes nowhere else. */
+  login?: (url: string, pin: PbsPin, userid: string, password: string) => Promise<PbsApi>
   now?: () => number
   wait?: (ms: number) => Promise<unknown>
   limits?: Partial<Limits>
 }
 
-export interface Limits { readsPerMinute: number; actionsPerMinute: number; attemptsPerMinute: number; addsPerMinute: number }
+export interface Limits { readsPerMinute: number; actionsPerMinute: number; attemptsPerMinute: number; addsPerMinute: number; signinsPerMinute: number }
 
 const CACHE_MS = 30_000
 
@@ -73,7 +75,7 @@ export class PbsService {
   constructor(deps: ServiceDeps) {
     this.d = {
       now: () => Date.now(), wait: ms => new Promise(r => setTimeout(r, ms)), ...deps,
-      limits: { readsPerMinute: 30, actionsPerMinute: 3, attemptsPerMinute: 20, addsPerMinute: 6, ...(deps.limits ?? {}) },
+      limits: { readsPerMinute: 30, actionsPerMinute: 3, attemptsPerMinute: 20, addsPerMinute: 6, signinsPerMinute: 3, ...(deps.limits ?? {}) },
     }
   }
 
@@ -108,6 +110,101 @@ export class PbsService {
     if ((await this.d.store.list()).some(i => i.name.toLowerCase() === name.toLowerCase())) throw new PbsInputError('Another backup server already has that name.', 409)
     const pin = await this.connect(url, tokenId, secret)
     return this.d.store.create({ name, url, tokenId, secret, staleHours, pin })
+  }
+
+  /**
+   * Add a server by signing in once with a PBS admin login (the recommended way in): HyperProx makes its own
+   * user and read-only token there and keeps only the token.
+   *
+   *   1. the certificate is read and pinned BEFORE the password is sent; the sign-in goes through that pin;
+   *   2. user hyperprox@pbs is made if missing; its token "readonly" is made, or deleted and made again (so
+   *      adding the same server twice is safe and leaves one working token); Audit on / for the user and the
+   *      token (a token's privileges are the intersection of its own and its user's);
+   *   3. only with `allowActions` (off by default): Verify now / GC now on each datastore. PBS has no
+   *      custom roles, and Datastore.Modify (GC) exists only in DatastoreAdmin, so that role is granted on
+   *      /datastore/<each> (never on /): the token is then no longer read-only on those datastores, and could
+   *      prune or delete backups there through the PBS API. HyperProx itself never does;
+   *   4. the permissions are read back and the token is proved with a read through the pin;
+   *   5. the token is stored (an instance already at this address gets the new token, not a second entry).
+   *
+   * The password is used for the one sign-in and dropped: it is never stored, audited, logged or returned,
+   * and no error message carries it. Sign-ins are rate-limited per session (3 a minute) and every attempt is
+   * audited with the user name only.
+   */
+  async addWithLogin(input: PbsInput & { username?: unknown; realm?: unknown; password?: unknown; allowActions?: unknown }, actor: Actor): Promise<PbsMeta & { allowActions: boolean }> {
+    const user = typeof input.username === 'string' ? input.username.trim() : ''
+    const realm = typeof input.realm === 'string' && input.realm.trim() ? input.realm.trim() : 'pam'
+    const audit = (result: string, extra: Record<string, unknown> = {}) =>
+      this.d.audit('pbs.instance.signin', 'pbs:signin', { by: actor.email, via: actor.token ? `api:${actor.token}` : 'session', login: /^[A-Za-z0-9._-]{1,64}$/.test(user) ? `${user}@${realm.slice(0, 32)}` : 'invalid', result, ...extra })
+    try { this.limit(actor, 'signinsPerMinute', 'Too many sign-ins in a minute; wait a moment.') } catch (e) { await audit('refused:rate_limited'); throw e }
+    if (actor.token) { await audit('refused:token_forbidden'); throw new PbsRefusal('token_forbidden', 'API tokens cannot sign in to a backup server.', 403) }
+    if (!hasRole(actor.role, 'admin')) { await audit('refused:forbidden'); throw new PbsRefusal('forbidden', 'Adding a backup server needs the admin role.', 403) }
+    let name: string, url: string, staleHours: number
+    try {
+      name = cleanName(input.name); url = cleanUrl(input.url); staleHours = cleanStaleHours(input.staleHours, DEFAULT_STALE_HOURS)
+      if (!/^[A-Za-z0-9._-]{1,64}$/.test(user)) throw new PbsInputError('Enter the PBS user name, such as root.')
+      if (!/^[A-Za-z0-9._-]{1,32}$/.test(realm)) throw new PbsInputError('The realm is pam, pbs or the name of another realm on that server.')
+      if (typeof input.password !== 'string' || !input.password || input.password.length > 1024) throw new PbsInputError('Enter that user\'s password.')
+    } catch (e) { await audit('refused:bad_input'); throw e }
+    const allowActions = input.allowActions === true
+    const existing = await this.d.store.findByEndpoint(url)
+    if (!existing && (await this.d.store.list()).some(i => i.name.toLowerCase() === name.toLowerCase())) { await audit('refused:name_taken'); throw new PbsInputError('Another backup server already has that name.', 409) }
+
+    // 1. Pin first; nothing is sent before the certificate is known.
+    let pin: PbsPin
+    try { pin = pinFrom(await this.d.probe(url), new Date(this.d.now())) }
+    catch (e: any) { await audit('failed:unreachable'); throw new PbsRefusal('unreachable', e instanceof PbsUnreachableError ? e.message : 'Could not read a certificate from that address. Check it, and that HyperProx can reach port 8007.', 400) }
+    let api: PbsApi
+    try {
+      if (!this.d.login) throw new PbsUnreachableError('Signing in is not available here.')
+      api = await this.d.login(url, pin, `${user}@${realm}`, input.password as string)
+    }
+    catch (e) {
+      await audit('failed:signin')
+      throw new PbsRefusal('signin_failed', e instanceof PbsHttpError && (e.status === 401 || e.status === 403) ? 'The backup server refused that user name and password.' : refusalWords(e), 400)
+    }
+    const step = async <T>(what: string, fn: () => Promise<T>): Promise<T> => {
+      try { return await fn() } catch (e) {
+        await audit(`failed:${what}`)
+        throw new PbsRefusal('setup_failed', `Signed in, but HyperProx could not ${what.replace(/_/g, ' ')}: ${e instanceof PbsHttpError && (e.status === 401 || e.status === 403) ? 'that login is not allowed to (it needs to manage users and permissions; root@pam can)' : refusalWords(e)}. Nothing was saved.`, 400)
+      }
+    }
+    const U = 'hyperprox@pbs', T = 'readonly', TID = `${U}!${T}`
+    const enc = encodeURIComponent
+    // 2. The user and its token.
+    await step('make_the_user', async () => {
+      const users = await api.call('GET', '/access/users')
+      if (!(Array.isArray(users) ? users : []).some((x: any) => x?.userid === U)) await api.call('POST', '/access/users', { userid: U, comment: 'HyperProx (read-only)' })
+    })
+    const secret = await step('make_the_token', async () => {
+      const tokens = await api.call('GET', `/access/users/${enc(U)}/token`)
+      if ((Array.isArray(tokens) ? tokens : []).some((t: any) => t?.tokenid === TID || t?.['token-name'] === T)) await api.call('DELETE', `/access/users/${enc(U)}/token/${enc(T)}`)
+      const made = await api.call('POST', `/access/users/${enc(U)}/token/${enc(T)}`, { comment: 'HyperProx read-only' })
+      if (typeof made?.value !== 'string' || !made.value) throw new PbsUnreachableError('The server did not return a token secret.')
+      return made.value as string
+    })
+    await step('grant_audit', async () => { for (const who of [U, TID]) await api.call('PUT', '/access/acl', { path: '/', role: 'Audit', 'auth-id': who }) })
+    // 3. Optional: the two actions, on the datastores only.
+    let stores: string[] = []
+    if (allowActions) {
+      stores = await step('list_the_datastores', async () => ((await api.call('GET', '/admin/datastore')) as any[] ?? []).map(d => String(d?.store ?? d?.name ?? '')).filter(s => /^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$/.test(s)))
+      await step('grant_the_actions', async () => { for (const s of stores) for (const who of [U, TID]) await api.call('PUT', '/access/acl', { path: `/datastore/${s}`, role: 'DatastoreAdmin', 'auth-id': who }) })
+    }
+    // 4. Read back.
+    await step('read_the_permissions_back', async () => {
+      const acl = (await api.call('GET', '/access/acl')) as any[] ?? []
+      const has = (path: string, role: string, who: string) => acl.some(r => r?.path === path && r?.roleid === role && r?.ugid === who)
+      if (!has('/', 'Audit', TID) || !has('/', 'Audit', U)) throw new PbsUnreachableError('the Audit permission did not read back')
+      for (const s of stores) if (!has(`/datastore/${s}`, 'DatastoreAdmin', TID)) throw new PbsUnreachableError(`the ${s} permission did not read back`)
+    })
+    await step('read_with_the_new_token', async () => { await this.d.api({ url, tokenId: TID, secret, pin }).call('GET', '/status/datastore-usage') })
+    // 5. Keep the token, and only the token.
+    const meta = existing
+      ? await this.d.store.write(existing.id, { name: existing.name, url, tokenId: TID, secret, staleHours: existing.staleHours, pin })
+      : await this.d.store.create({ name, url, tokenId: TID, secret, staleHours, pin })
+    this.forget(meta.id)
+    await audit(existing ? 'done:token_replaced' : 'done', { server: meta.name, serverId: meta.id, token: TID, actions: allowActions ? stores.length : 0, pin: pin.source })
+    return { ...meta, allowActions }
   }
 
   /**

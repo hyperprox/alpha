@@ -13,7 +13,7 @@
 import { buildReading, type PbsReading, type RawPbs } from './parse'
 import { PbsHttpError } from './transport'
 
-export interface PbsApi { call(method: 'GET' | 'POST' | 'PUT', path: string, params?: Record<string, string | number | boolean | undefined>, timeoutMs?: number): Promise<any> }
+export interface PbsApi { call(method: 'GET' | 'POST' | 'PUT' | 'DELETE', path: string, params?: Record<string, string | number | boolean | undefined>, timeoutMs?: number): Promise<any> }
 
 const enc = encodeURIComponent
 /** Snapshot lists read per datastore; namespaces beyond this are left out and said so. */

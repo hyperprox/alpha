@@ -48,6 +48,7 @@ export function productionPbs(): PbsService {
     audit: auditCredentialUse,
     probe: probePbs,
     api: c => new PbsTransport(c),
+    login: (url, pin, userid, password) => PbsTransport.login({ url, pin }, userid, password),
   })
 }
 

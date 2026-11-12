@@ -148,6 +148,16 @@ export class PbsInstanceStore {
     return { meta, url, tokenId, secret }
   }
 
+  /** The server already stored at this address (host and port), if any. */
+  async findByEndpoint(url: string): Promise<PbsMeta | null> {
+    const want = endpointOf(url)
+    for (const m of await this.list()) {
+      const u = await this.io.get(CATEGORY, providerFor(m.id), 'url')
+      if (u && endpointOf(u) === want) return m
+    }
+    return null
+  }
+
   /** Store a server whose address, token and pin the caller has already checked by connecting. */
   async create(v: { name: string; url: string; tokenId: string; secret: string; staleHours: number; pin: PbsPin }): Promise<PbsMeta> {
     return this.serial(async () => {

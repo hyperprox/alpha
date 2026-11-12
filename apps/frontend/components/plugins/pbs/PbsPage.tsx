@@ -314,11 +314,28 @@ const TOKEN_STEPS = [
 ]
 
 function ServerForm({ s, onSaved, onCancel }: { s: Server | null; onSaved: () => void; onCancel?: () => void }) {
-  const [f, setF] = useState({ name: s?.name ?? '', url: s?.url ?? '', tokenId: s?.tokenId ?? '', secret: '', staleHours: String(s?.staleHours ?? 26) })
+  const [f, setF] = useState({ name: s?.name ?? '', url: s?.url ?? '', tokenId: s?.tokenId ?? '', secret: '', staleHours: String(s?.staleHours ?? 26),
+    username: 'root', realm: 'pam', password: '', allowActions: '0' })
+  // Adding: sign in once (recommended; HyperProx makes its own read-only token) or paste a token (advanced).
+  const [mode, setMode] = useState<'signin' | 'token'>('signin')
+  const signin = !s && mode === 'signin'
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const set = (k: keyof typeof f, v: string) => setF(x => ({ ...x, [k]: v }))
+
+  const signIn = async () => {
+    setBusy(true); setErr(null)
+    const r = await apiJson(`${API}/instances/signin`, 'POST', {
+      name: f.name, url: f.url, staleHours: Number(f.staleHours) || 26, username: f.username, realm: f.realm, password: f.password, allowActions: f.allowActions === '1',
+    })
+    setBusy(false)
+    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void signIn()); return }
+    // The password is cleared from the form either way: it was for this one sign-in.
+    set('password', '')
+    if (!r.ok) { setErr(r.error ?? 'Could not add the server'); return }
+    onSaved()
+  }
 
   const save = async (repin = false) => {
     setBusy(true); setErr(null)
@@ -343,6 +360,19 @@ function ServerForm({ s, onSaved, onCancel }: { s: Server | null; onSaved: () =>
   return (
     <div className="flex flex-col gap-3 rounded-lg border p-4" style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}>
       <h3 className="font-display font-semibold" style={{ fontSize: 18, color: 'var(--text-bright)' }}>{s ? `Settings: ${s.name}` : 'Add a backup server'}</h3>
+      {!s && (
+        <div className={p.views} role="tablist" aria-label="How to connect">
+          <button type="button" role="tab" aria-selected={mode === 'signin'} onClick={() => setMode('signin')}>Sign in (recommended)</button>
+          <button type="button" role="tab" aria-selected={mode === 'token'} onClick={() => setMode('token')}>Paste a token (advanced)</button>
+        </div>
+      )}
+      {signin ? (
+        <Notice kind="info">
+          Sign in once with a PBS admin login (root@pam works). HyperProx reads and pins the server&apos;s certificate first, then signs in through that pin,
+          creates its own user hyperprox@pbs and the read-only API token hyperprox@pbs!readonly (the Audit role on /), and keeps only that token in the vault.
+          The password is used for this one sign-in and then forgotten: it is never stored, logged or shown. Adding the same server again makes a fresh token.
+        </Notice>
+      ) : (
       <Notice kind="info">
         Give HyperProx its own read-only API token. In the backup server&apos;s shell (or its web interface: Configuration → Access Control) run:
         <code className="mt-2 block whitespace-pre-wrap break-all font-mono text-[12px]">{TOKEN_STEPS.join('\n')}</code>
@@ -350,11 +380,34 @@ function ServerForm({ s, onSaved, onCancel }: { s: Server | null; onSaved: () =>
         &quot;Verify now&quot; needs Datastore.Verify and &quot;GC now&quot; needs Datastore.Modify on that datastore as well; without them the server refuses, and the page says which one is missing.
         Paste the token id (hyperprox@pbs!readonly) and the secret PBS showed once. HyperProx checks the connection, pins the server&apos;s certificate and keeps the token in the vault.
       </Notice>
+      )}
       <label><span style={LABEL}>Name</span><input style={INPUT} value={f.name} onChange={e => set('name', e.target.value)} placeholder="Backups" /></label>
       <label><span style={LABEL}>Address (port 8007 if left out)</span><input style={INPUT} autoCapitalize="none" value={f.url} onChange={e => set('url', e.target.value)} placeholder="https://10.0.0.30:8007" /></label>
-      <label><span style={LABEL}>Token id</span><input style={INPUT} autoCapitalize="none" autoComplete="off" value={f.tokenId} onChange={e => set('tokenId', e.target.value)} placeholder="hyperprox@pbs!readonly" /></label>
-      <label><span style={LABEL}>Token secret {s?.hasSecret ? '(saved; leave blank to keep it)' : ''}</span>
-        <input style={INPUT} type="password" autoComplete="new-password" value={f.secret} onChange={e => set('secret', e.target.value)} /></label>
+      {signin ? (
+        <>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label><span style={LABEL}>PBS user</span><input style={INPUT} autoCapitalize="none" autoComplete="off" value={f.username} onChange={e => set('username', e.target.value)} placeholder="root" /></label>
+            <label><span style={LABEL}>Realm</span>
+              <select style={INPUT} value={f.realm} onChange={e => set('realm', e.target.value)}>
+                <option value="pam">pam (Linux user, such as root)</option>
+                <option value="pbs">pbs (Proxmox Backup Server user)</option>
+              </select></label>
+          </div>
+          <label><span style={LABEL}>Password (used once, never stored)</span>
+            <input style={INPUT} type="password" autoComplete="off" value={f.password} onChange={e => set('password', e.target.value)} /></label>
+          <label className="flex items-start gap-2 text-sm" style={{ color: 'var(--text)' }}>
+            <input type="checkbox" checked={f.allowActions === '1'} onChange={e => set('allowActions', e.target.checked ? '1' : '0')} />
+            <span>Allow &quot;Verify now&quot; and &quot;GC now&quot;
+              <span className="block text-[12px]" style={{ color: 'var(--warn-2)' }}>Off by default. PBS has no role with only Datastore.Verify and Datastore.Modify, so this gives the token DatastoreAdmin on each datastore (never on /). The token is then no longer read-only there: anyone holding it could also prune or delete backups on those datastores through the PBS API. HyperProx itself never does, and its two actions still need an admin and the master password.</span></span>
+          </label>
+        </>
+      ) : (
+        <>
+          <label><span style={LABEL}>Token id</span><input style={INPUT} autoCapitalize="none" autoComplete="off" value={f.tokenId} onChange={e => set('tokenId', e.target.value)} placeholder="hyperprox@pbs!readonly" /></label>
+          <label><span style={LABEL}>Token secret {s?.hasSecret ? '(saved; leave blank to keep it)' : ''}</span>
+            <input style={INPUT} type="password" autoComplete="new-password" value={f.secret} onChange={e => set('secret', e.target.value)} /></label>
+        </>
+      )}
       {s && (f.url !== (s.url ?? '') || f.tokenId !== (s.tokenId ?? '')) && <small style={{ color: 'var(--warn-2)' }}>A new address or token id needs the secret again: paste it above in the same save.</small>}
       <label><span style={LABEL}>Stale after (hours without a new snapshot)</span>
         <input style={INPUT} inputMode="numeric" value={f.staleHours} onChange={e => set('staleHours', e.target.value.replace(/[^0-9]/g, ''))} /></label>
@@ -373,7 +426,9 @@ function ServerForm({ s, onSaved, onCancel }: { s: Server | null; onSaved: () =>
       <div className="flex flex-wrap justify-end gap-2">
         {s && <GhostButton type="button" onClick={() => void remove()} style={{ color: 'var(--crit-soft)' }}>Remove</GhostButton>}
         {onCancel && <GhostButton type="button" onClick={onCancel}>Cancel</GhostButton>}
-        <PrimaryButton type="button" disabled={busy || !f.name || !f.url || !f.tokenId || (!s && !f.secret)} onClick={() => void save()}>{busy ? 'Checking…' : s ? 'Save' : 'Check and add'}</PrimaryButton>
+        {signin
+          ? <PrimaryButton type="button" disabled={busy || !f.name || !f.url || !f.username || !f.password} onClick={() => void signIn()}>{busy ? 'Setting up…' : 'Sign in and set up'}</PrimaryButton>
+          : <PrimaryButton type="button" disabled={busy || !f.name || !f.url || !f.tokenId || (!s && !f.secret)} onClick={() => void save()}>{busy ? 'Checking…' : s ? 'Save' : 'Check and add'}</PrimaryButton>}
       </div>
       {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const fn = reconfirm; setReconfirm(null); fn() }} />}
     </div>
