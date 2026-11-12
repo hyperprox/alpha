@@ -107,7 +107,7 @@ test('remove: a 23-row pack deletes those 23 row ids only, even though the upstr
   const out = await runAction(mkDeps(fa.client), req({ action: 'remove', downloadId: 'd:PACK1', blocklist: false }), 'a@example.com')
   assert.equal(fa.log.deletes.length, 1)
   assert.deepEqual([...fa.log.deletes[0].ids].sort(), p.map(r => r.id).sort())
-  assert.match(fa.log.deletes[0].p, /^\/api\/v3\/queue\/bulk\?removeFromClient=true&blocklist=false$/)
+  assert.equal(fa.log.deletes[0].p, '/api/v3/queue/bulk?removeFromClient=true&blocklist=false&skipRedownload=true')
   assert.equal(fa.rows.length, others.length, 'every other row is still there')
   assert.ok(fa.log.gets.every(g => g.startsWith('/api/v3/queue?') && !/[?&]seriesId=/.test(g)), 'no seriesId filter is ever sent')
   assert.equal(fa.log.posts.length, 0, 'remove never searches')
@@ -117,7 +117,7 @@ test('remove: a 23-row pack deletes those 23 row ids only, even though the upstr
 test('remove: the blocklist box decides blocklist=true', async () => {
   const fa = fakeArr([row({ downloadId: 'X1' })])
   await runAction(mkDeps(fa.client), req({ action: 'remove', downloadId: 'd:X1', blocklist: true }), 'a@example.com')
-  assert.match(fa.log.deletes[0].p, /blocklist=true$/)
+  assert.equal(fa.log.deletes[0].p, '/api/v3/queue/bulk?removeFromClient=true&blocklist=true&skipRedownload=true', 'the Arr must not start its own search')
 })
 
 test('a download that left the queue meanwhile is 404 and nothing is deleted', async () => {
@@ -146,7 +146,7 @@ test('find another: removes with blocklist, then searches exactly what it covere
   const s = row({ downloadId: 'S1' })
   const fa = fakeArr([s, ...pack(10, { downloadId: 'P' }), row({ downloadId: 'NOMATCH', episodeId: undefined, episode: undefined })])
   const a = await runAction(mkDeps(fa.client), req({ action: 'find-another', downloadId: 'd:S1' }), 'a@example.com')
-  assert.match(fa.log.deletes[0].p, /blocklist=true$/)
+  assert.match(fa.log.deletes[0].p, /blocklist=true&skipRedownload=true$/)
   assert.deepEqual(fa.log.deletes[0].ids, [s.id])
   assert.deepEqual(fa.log.posts, [{ name: 'EpisodeSearch', episodeIds: [s.episodeId] }])
   assert.match(a.result!.summary, /Searching for another copy of the episode/)
@@ -217,14 +217,21 @@ test('swap: selects only unfinished single-episode downloads of that season; not
   assert.deepEqual(plan.items.map(i => i.downloadId).sort(), ['d:A', 'd:B'])
   assert.deepEqual(plan.rowIds.sort(), [a.id, b.id].sort())
   assert.deepEqual(plan.packsBefore, ['d:OLDPACK'])
-  const r = await runAction(mkDeps(fa.client), req({ action: 'swap-pack', showKey: 's:1', seasonKey: '1' }), 'a@example.com')
-  assert.match(fa.log.deletes[0].p, /blocklist=false$/)
+  await refusal(runAction(mkDeps(fa.client), req({ action: 'swap-pack', showKey: 's:1', seasonKey: '1' }), 'a@example.com'), 'bad_request')
+  // A single grabbed after the preview: the confirm names only A and B, so nothing is removed.
+  const late = row({ downloadId: 'LATE' })
+  fa.rows.push(late)
+  await refusal(runAction(mkDeps(fa.client), req({ action: 'swap-pack', showKey: 's:1', seasonKey: '1', downloadIds: ['d:A', 'd:B'] }), 'a@example.com'), 'changed')
+  assert.equal(fa.log.deletes.length, 0)
+  fa.rows.splice(fa.rows.indexOf(late), 1)
+  const r = await runAction(mkDeps(fa.client), req({ action: 'swap-pack', showKey: 's:1', seasonKey: '1', downloadIds: ['d:B', 'd:A'] }), 'a@example.com')
+  assert.match(fa.log.deletes[0].p, /blocklist=false&skipRedownload=true$/)
   assert.deepEqual(fa.log.posts, [{ name: 'SeasonSearch', seriesId: 1, seasonNumber: 1 }])
   assert.match(r.result!.summary, /20 seconds/)
-  await refusal(runAction(mkDeps(fa.client), req({ action: 'swap-pack', showKey: 's:2', seasonKey: '1' }), 'a@example.com'), 'not_enough_singles')
+  await refusal(runAction(mkDeps(fa.client), req({ action: 'swap-pack', showKey: 's:2', seasonKey: '1', downloadIds: ['d:A'] }), 'a@example.com'), 'not_enough_singles')
   await refusal(runAction(mkDeps(fa.client), req({ action: 'swap-pack', showKey: 'x', seasonKey: '1' }), 'a@example.com'), 'bad_request')
   // Two singles are needed: one left is not enough.
-  await refusal(runAction(mkDeps(fakeArr([row({ downloadId: 'ONLY' })]).client), req({ action: 'swap-pack', showKey: 's:1', seasonKey: '1' }), 'a@example.com'), 'not_enough_singles')
+  await refusal(runAction(mkDeps(fakeArr([row({ downloadId: 'ONLY' })]).client), req({ action: 'swap-pack', showKey: 's:1', seasonKey: '1', downloadIds: ['d:ONLY'] }), 'a@example.com'), 'not_enough_singles')
 })
 
 test('swap check: reports a newly grabbed pack, or says none was found', async () => {
@@ -250,7 +257,7 @@ test('fix stalled: only downloads still stalled, merged into one search, others 
   const r = await runAction(mkDeps(fa.client), req({ action: 'fix-stalled', downloadIds: ['d:S1', 'd:S2', 'd:SP', 'd:FINE', 'd:GONE'] }), 'a@example.com')
   assert.deepEqual([...fa.log.deletes[0].ids].sort(), [s1.id, s2.id, ...sp.map(x => x.id)].sort())
   assert.ok(!fa.log.deletes[0].ids.includes(fine.id))
-  assert.match(fa.log.deletes[0].p, /blocklist=true$/)
+  assert.match(fa.log.deletes[0].p, /blocklist=true&skipRedownload=true$/)
   assert.equal(fa.log.posts.length, 2)
   assert.deepEqual(fa.log.posts[0], { name: 'EpisodeSearch', episodeIds: [s1.episodeId, s2.episodeId] })
   assert.deepEqual(fa.log.posts[1], { name: 'SeasonSearch', seriesId: 1, seasonNumber: 2 })

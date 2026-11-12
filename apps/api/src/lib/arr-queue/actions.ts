@@ -183,6 +183,12 @@ export function planAction(allRows: any[], req: ActionRequest): Plan {
         return !d.rows.every(r => num(r.size) > 0 && num(r.sizeleft) === 0)
       })
       if (singles.length < 2) throw new ActionRefusal(409, 'not_enough_singles', 'This season needs at least two single-episode downloads still in progress to swap them for a pack.')
+      // The confirm sends the downloads the person was shown: if the season's singles are not exactly those any more,
+      // nothing is removed (a single grabbed in between would otherwise go unseen).
+      if (req.downloadIds) {
+        const now = singles.map(d => d.id).sort().join('\n'), shown = distinct(req.downloadIds).sort().join('\n')
+        if (now !== shown) throw new ActionRefusal(409, 'changed', 'This season\'s downloads changed since you looked, so nothing was removed. Open the swap again to see the current list.')
+      }
       return {
         ...base, items: singles.map(d => item(d.id, d.rows)), rowIds: distinct(singles.flatMap(d => rowIdsOf(d.rows))), blocklist: false,
         commands: [{ name: 'SeasonSearch', body: { name: 'SeasonSearch', seriesId, seasonNumber: season }, label: seasonName(season) }],
@@ -246,6 +252,7 @@ export async function runAction(deps: ActionDeps, req: ActionRequest, who: strin
   const client = await (req.instance === 'sonarr' ? deps.sonarr() : deps.radarr())
   if (!client) throw new ActionRefusal(409, 'not_configured', `${label(req.instance)} is not set up in the Arr Stack plug-in.`)
   const rows = await readRows(client, req.instance).catch(e => { throw new ActionRefusal(502, 'queue_failed', `${label(req.instance)}'s queue could not be read: ${String(e?.message ?? e).slice(0, 120)}`) })
+  if (!opts.preview && req.action === 'swap-pack' && !req.downloadIds?.length) throw new ActionRefusal(400, 'bad_request', 'Confirm the swap with the downloads you were shown.')
   const plan = planAction(rows, req)
   if (opts.preview) return { plan }
 
@@ -280,7 +287,7 @@ export async function runAction(deps: ActionDeps, req: ActionRequest, who: strin
 
     if (plan.rowIds.length) {
       if (!client.deleteBody) throw new ActionRefusal(501, 'unsupported', 'This connection cannot remove downloads.')
-      await client.deleteBody(`/api/v3/queue/bulk?removeFromClient=true&blocklist=${plan.blocklist}`, { ids: plan.rowIds }, 30_000)
+      await client.deleteBody(`/api/v3/queue/bulk?removeFromClient=true&blocklist=${plan.blocklist}&skipRedownload=true`, { ids: plan.rowIds }, 30_000)
       res.removed = plan.items.map(i => ({ name: i.name, rows: i.rows }))
       // Read it back: the call's own answer is empty either way.
       const after = await readRows(client, req.instance).catch(() => null)

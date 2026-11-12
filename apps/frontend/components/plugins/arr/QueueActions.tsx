@@ -72,11 +72,13 @@ export function ActionsProvider({ children, refresh, canPrioritise }: { children
     timers.current.add(t)
   }, [refresh])
 
-  const run = useCallback(async (key: string, spec: Spec, blocklist: boolean) => {
+  const run = useCallback(async (key: string, spec: Spec, blocklist: boolean, plansShown: PlanView[] = []) => {
     patch(key, { phase: 'running' })
     const messages: string[] = [], details: string[] = []
     let hint: string | null = null
-    for (const r of spec.reqs) {
+    for (const [idx, r0] of spec.reqs.entries()) {
+      // A swap is confirmed against the exact downloads that were previewed.
+      const r: ActReq = r0.action === 'swap-pack' ? { ...r0, downloadIds: (plansShown[idx]?.items ?? []).map(i => i.downloadId) } : r0
       const body: ActReq & { confirmed?: boolean } = { ...r, ...(spec.choice ? { blocklist } : {}), ...(spec.destructive ? { confirmed: true } : {}) }
       const res = await apiJson<{ data: any }>('/api/plugins/arrstack/queue/actions', 'POST', body)
       if (!res.ok) { messages.push(res.error ?? 'It did not work.'); patch(key, { phase: 'error', message: messages.join(' '), details }); poke(); return }
@@ -117,7 +119,7 @@ export function ActionsProvider({ children, refresh, canPrioritise }: { children
 
   const value = useMemo<Ctx>(() => ({
     canAct, canPrioritise, flows, start,
-    confirm: key => { const f = flows[key]; if (f && f.phase === 'confirm') void run(key, f.spec, f.blocklist) },
+    confirm: key => { const f = flows[key]; if (f && f.phase === 'confirm') void run(key, f.spec, f.blocklist, f.plans) },
     setBlocklist: (key, v) => patch(key, { blocklist: v }),
     dismiss: key => setFlows(f => { const n = { ...f }; delete n[key]; return n }),
   }), [canAct, canPrioritise, flows, start, run, patch])
