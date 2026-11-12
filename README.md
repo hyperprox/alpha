@@ -2056,6 +2056,7 @@ Viewers see the readings but not the server's address, token id or pin. The page
 every two minutes while it is open (a reading is kept 30 seconds), and a server that cannot be read says
 why.
 
+
 ### Settings
 
 - **Setup checklist**: the installer's questions, whether each is done on every node, and a button to

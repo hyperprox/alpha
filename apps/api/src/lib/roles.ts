@@ -176,6 +176,9 @@ const PBS_MANAGE_RECONFIRM = /^\/api\/plugins\/pbs\/instances\/[^/]+\/manage(\/(
 // A plug-in's settings hold the address its stored credential is sent to: changing them is re-confirmed (which
 // also keeps API tokens out).
 const PLUGIN_SETTINGS = /^\/api\/plugins\/[^/]+\/settings$/
+// Local plug-ins (lib/local-plugins.ts): admin for every method, reads included, and every change re-confirmed,
+// which also keeps API tokens out (api-tokens.ts refuses them there for reads too). The plug-in cannot change this.
+const LOCAL = /^\/api\/local(\/|$)/
 
 /**
  * What an API token with the owner-granted plug-in settings permission may do without a re-confirmation: an explicit
@@ -300,6 +303,7 @@ export function requiredRole(method: string, path: string): Role | null {
   // API tokens: listing them is admin too (names, roles, who made them).
   if (TOKENS.test(p)) return 'admin'
   if (PROXY.test(p)) return (m === 'GET' || m === 'HEAD') && PROXY_READ.test(p) ? 'viewer' : 'admin'
+  if (LOCAL.test(p)) return 'admin'
   if (CATALOGUE_WIZARD.test(p)) return 'admin'
   if (CATALOGUE_DETECTED.test(p)) return 'admin'
   if (PLEX_SIGNIN.test(p)) return 'admin'
@@ -383,6 +387,7 @@ export function needsReconfirm(method: string, path: string, opts: { tokenPlugin
   for (const [rm, re] of REMOTE_RECONFIRM) if (m === rm && re.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && VPN.test(p) && !VPN_PREVIEW.test(p)) return true
   for (const [cm, re] of CLUSTERS_RECONFIRM) if (m === cm && re.test(p)) return true
+  if (m !== 'GET' && m !== 'HEAD' && LOCAL.test(p)) return true
   if (m === 'POST' && p === '/api/self-update/install') return true
   if (m === 'PUT' && p === '/api/self-update/settings') return true
   return false

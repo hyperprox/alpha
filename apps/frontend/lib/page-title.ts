@@ -34,7 +34,9 @@ function humanise(id: string): string {
  * The crumb and title for `pathname`, starting from what nav.tsx says (`base`). `names` maps plug-in ids to the
  * names the API reports; it wins over the built-in list, so a renamed or new plug-in shows its own name.
  */
-export function resolvePageMeta(base: PageMeta, pathname: string, names?: Record<string, string> | null): PageMeta {
+export function resolvePageMeta(base: PageMeta, pathname: string, names?: Record<string, string> | null, localNames?: Record<string, string>): PageMeta {
+  const local = /^\/plugins\/local\/([^/?#]+)\/?$/.exec(pathname)
+  if (local) return { crumb: 'Plug-ins', crumbHref: '/plugins', title: localNames?.[local[1]] || humanise(decodeURIComponent(local[1])) }
   const plugin = pluginIdOf(pathname)
   if (plugin) return { crumb: 'Plug-ins', crumbHref: '/plugins', title: names?.[plugin] || PLUGIN_NAMES[plugin] || humanise(plugin) }
   if (/^\/clusters\/[^/]+(\/updates)?$/.test(pathname) && pathname !== '/clusters/add') return { ...base, crumbHref: '/clusters' }

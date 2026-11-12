@@ -32,6 +32,8 @@ import { apiTokenRoutes }         from './routes/api-tokens'
 import { secretsRoutes }          from './routes/secrets'
 import { terminalRoutes }             from './routes/terminal'
 import { pluginRoutes }           from './routes/plugins'
+import { PLUGINS }                from './plugins'
+import { loadLocalPlugins, registerLocalPlugins } from './lib/local-plugins'
 import { haControlRoutes }      from './routes/ha-control'
 import { qnapRoutes }           from './routes/qnap'
 import { asusRoutes }           from './routes/asus'
@@ -166,6 +168,8 @@ async function main() {
   await server.register(arrQueueRoutes,        { prefix: '/api/plugins/arrstack' })
   await server.register(plexSigninRoutes,      { prefix: '/api/plugins/plex/signin' })
   await server.register(pbsRoutes,             { prefix: '/api/plugins/pbs' })
+  // Local plug-ins in the git-ignored apps/api/src/local-plugins (none: nothing is registered but an empty list).
+  await registerLocalPlugins(server, loadLocalPlugins(undefined, PLUGINS.map(p => p.manifest.id)))
   await server.register(catalogueRoutes,      { prefix: '/api/catalogue' })
   await server.register(siteRoutes,           { prefix: '/api/sites' })
   await registerSiteMetrics(server)
