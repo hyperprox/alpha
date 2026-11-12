@@ -1123,7 +1123,7 @@ otherwise every file is put back. Nothing in a site is ever changed without this
 | Plex activity | What is streaming now (progress, direct or transcode), internet and local bandwidth gauges, who watches most, what is watched most, and recent history, read through Tautulli |
 | Home Assistant | Your house as tiles by room, with quick actions, a light dial and a climate dial; plus unavailable entities, low batteries, pending updates and log errors, for each of your Home Assistant instances (see below) |
 | QNAP | Each NAS's drive bays with SMART health and temperature, volume rings, shares, temperature and load gauges, fans and firmware, with a quick SMART test, and restart and shut down behind the confirm step, for each of your NAS, a remote one included (see below) |
-| Proxmox Backup Server | Each backup server's datastores as gauges (used, deduplication, GC), every backup group as a tile that turns red when its newest snapshot is older than you allow, the prune, GC, verify and sync jobs, failed tasks of the last day, and which cluster guests have no backup there, with verify and GC now behind the master password (see below) |
+| Proxmox Backup Server | Each backup server's datastores as gauges (used, deduplication, GC), every backup group as a tile that turns red when its newest snapshot is older than you allow, the prune, GC, verify and sync jobs, failed tasks of the last day, and which cluster guests have no backup there, with verify now behind the master password; it never prunes, forgets or deletes (see below) |
 | MeshCentral | Finds npm installs in guests and adds them to Updates. Its page says what it would need to show your devices; it holds no MeshCentral login, so it shows none |
 
 Each plug-in page opens with a summary header and a bar to jump between plug-ins (each with a health
@@ -1297,11 +1297,11 @@ sign-in and then dropped: it is never stored, logged, written to the audit log o
 server again makes a fresh token and replaces the stored one; it does not add a second entry. Sign-ins
 are limited to 3 a minute, and each attempt is in the audit log with the user name and the result.
 
-**Allow Verify now and GC now** (a checkbox in the same form, off by default). PBS has no role with only
-`Datastore.Verify` and `Datastore.Modify`, so this gives the token the DatastoreAdmin role on each
-datastore (never on `/`). The token is then no longer read-only on those datastores: anyone holding it
-could also prune or delete backups there through the PBS API. HyperProx itself never does, and its two
-actions still need an admin and the master password.
+**Allow Verify now** (a checkbox in the same form, off by default) gives the token the DatastoreReader
+role on each datastore, never on `/`. In PBS 4 that role is `Datastore.Audit`, `Datastore.Read` and
+`Datastore.Verify`: the token can then start a verify, and anyone holding it could also read (restore)
+backup contents on those datastores. It still cannot prune, forget, delete or garbage-collect anything.
+Starting a verify still needs an admin and the master password.
 
 **Paste a token (advanced).** If you would rather make the token yourself, in the backup server's shell:
 
@@ -1316,8 +1316,8 @@ and paste the token id (`hyperprox@pbs!readonly`) and its secret. **Check and ad
 certificate and makes one real read with the token through that pin before anything is saved: a token
 that cannot read the server is never stored. The Audit role on `/` gives `Datastore.Audit` and
 `Sys.Audit`: HyperProx can read everything the page shows and change nothing. **Verify now** also needs
-`Datastore.Verify`, and **GC now** needs `Datastore.Modify`, on that datastore; without them the server
-refuses, and the page says which one is missing.
+`Datastore.Verify` on that datastore (the DatastoreReader role on `/datastore/<name>`); without it the
+server refuses, and the page says so.
 
 **The certificate.** A certificate that checks out against a public certificate authority stays checked
 that way, so a renewal keeps working. Otherwise the server's own certificate is pinned when you add it,
@@ -1332,7 +1332,8 @@ Under it:
 
 - **Datastores**: one card per datastore with a gauge of used of total, the free space, the
   deduplication factor (after the first garbage collection), the last and next GC, and the backup
-  group and snapshot counts. Admins get **Verify now** and **GC now** on each card.
+  group and snapshot counts. Admins get **Verify now** on each card. Garbage collection is left to the
+  server's own schedule; the card shows its last and next run.
 - **Backup groups**: one tile per group (`vm/100`, `ct/101`, ...), by datastore and namespace, with
   the age of its newest snapshot, how many snapshots it has, the newest one's size and its verify
   state. A group with no new snapshot for longer than **Stale after** (26 hours unless you change it
@@ -1353,10 +1354,13 @@ group whose newest snapshot failed verification). Otherwise it **Needs attention
 such as "2 guests not backed up in 26 h", "datastore 91% full" or "verify failed". The dashboard's
 plug-in chip shows the same words.
 
-**Verify now and GC now** are admin only, need the master password re-entered, and API tokens can never
-use them. Each one names a datastore the server reports, starts the task on the server, and reads the
-task's status back, so the page says whether it is running, finished or failed. Every attempt, refused
-or not, is in the audit log. There is no delete, prune or forget: HyperProx never removes a backup.
+**Verify now** is the only action. It is admin only, needs the master password re-entered, and API
+tokens can never use it. It names a datastore the server reports, starts the verify on the server, and
+reads the task's status back, so the page says whether it is running, finished or failed. Every attempt,
+refused or not, is in the audit log. There is no GC, prune, forget or delete in the plug-in, and no token
+HyperProx makes (here or in the Catalogue recipe) has a role that could prune, forget, delete or
+garbage-collect: they get Audit on `/`, DatastoreReader on a datastore when you allow verify, and, for
+Proxmox VE's backups, DatastoreBackup on one datastore.
 
 Viewers see the readings but not the server's address, token id or pin. The page reads the server again
 every two minutes while it is open (a reading is kept 30 seconds), and a server that cannot be read says

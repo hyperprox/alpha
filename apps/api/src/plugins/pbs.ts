@@ -4,7 +4,7 @@
 //  Each backup server as something to look at: datastores with their use,
 //  deduplication and GC, every backup group's newest snapshot (stale ones in
 //  red), the prune, GC, verify and sync jobs, and the failed tasks of the last
-//  day; with "verify now" and "GC now" behind the master password. The tokens,
+//  day; with "verify now" behind the master password (GC keeps its own schedule). The tokens,
 //  their pins and both actions live in lib/pbs; this file is the gallery card
 //  and its health, read through lib/pbs's own transport (coreTransport), so the
 //  plug-in never holds a token and the generic broker never sends one.
@@ -46,7 +46,7 @@ export const pbsPlugin: Plugin = {
     id: 'pbs',
     // Named as the wishlist names it, so the idea leaves the "not built yet" list.
     name: 'Proxmox Backup Server',
-    description: 'Each backup server: datastores (use, deduplication, GC), every backup group with its newest snapshot and verify state, prune/GC/verify/sync jobs and failed tasks, with verify and GC now behind the master password.',
+    description: 'Each backup server: datastores (use, deduplication, GC), every backup group with its newest snapshot and verify state, prune/GC/verify/sync jobs and failed tasks, with verify now behind the master password. It never prunes, forgets or deletes.',
     kind: 'device',
     icon: '🛡️',
     baseUrlSetting: 'url',

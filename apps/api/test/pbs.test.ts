@@ -1,5 +1,5 @@
 // Proxmox Backup Server: the client's reads from fixtures, stale-group detection, the health reason, the
-// instance store, the role / re-confirm / token guards on "verify now" and "GC now", the read-back of the task,
+// instance store, the role / re-confirm / token guards on "verify now" (the only action), the read-back of the task,
 // refusing a changed certificate before the token is sent, and the cluster cross-check. Nothing real is contacted.
 //
 // Fixtures (test/fixtures/pbs) are built by hand in the shape PBS 4 answers; every name in them is made up.
@@ -16,7 +16,7 @@ import { PbsClient, UPID_RE, type PbsApi } from '../src/lib/pbs/client'
 import { buildReading, groupsFromSnapshots, healthOf, dedupOf, type PbsReading } from '../src/lib/pbs/parse'
 import { PbsTransport, PbsHttpError, PbsUnreachableError } from '../src/lib/pbs/transport'
 import { PbsInstanceStore, cleanUrl, PbsInputError, type CredentialIO } from '../src/lib/pbs/instances'
-import { PbsService, PbsRefusal, refusalWords, type Actor } from '../src/lib/pbs/service'
+import { PbsService, PbsRefusal, refusalWords, GRANTED_ROLES, VERIFY_ROLE, type Actor } from '../src/lib/pbs/service'
 import { matchingStorages, guestsWithoutGroup, coverageFor } from '../src/lib/pbs/coverage'
 import { pbsSummary, pbsAnswer } from '../src/lib/pbs/ai-source'
 import { tileOf } from '../src/plugins/pbs'
@@ -212,12 +212,10 @@ async function serviceWith(api: PbsApi) {
   return { svc, audit, m }
 }
 
-test('gate: both actions are admin and need the master password re-entered; reads do not', () => {
-  for (const a of ['verify', 'gc']) {
-    const p = `/api/plugins/pbs/instances/p0a1b2c3d/actions/${a}`
-    assert.equal(requiredRole('POST', p), 'admin', a)
-    assert.equal(needsReconfirm('POST', p), true, a)
-  }
+test('gate: verify now is admin and needs the master password re-entered; reads do not', () => {
+  const p = '/api/plugins/pbs/instances/p0a1b2c3d/actions/verify'
+  assert.equal(requiredRole('POST', p), 'admin')
+  assert.equal(needsReconfirm('POST', p), true)
   assert.equal(needsReconfirm('POST', '/api/plugins/pbs/instances'), true, 'adding stores a token')
   assert.equal(needsReconfirm('DELETE', '/api/plugins/pbs/instances/p0a1b2c3d'), true)
   assert.equal(requiredRole('GET', '/api/plugins/pbs/instances/p0a1b2c3d/reading'), 'viewer')
@@ -227,13 +225,13 @@ test('gate: both actions are admin and need the master password re-entered; read
 test('actions: an API token and a non-admin are refused and audited; nothing reaches the server', async () => {
   const api = fakeApi({ 'POST /admin/datastore/tank/verify': () => UPID })
   const { svc, audit, m } = await serviceWith(api)
-  for (const action of ['verify', 'gc']) {
-    await assert.rejects(svc.act(m.id, action, { store: 'tank' }, tokenActor), (e: any) => e instanceof PbsRefusal && e.code === 'token_forbidden')
-    await assert.rejects(svc.act(m.id, action, { store: 'tank' }, operator), (e: any) => e instanceof PbsRefusal && e.code === 'forbidden')
-  }
+  await assert.rejects(svc.act(m.id, 'verify', { store: 'tank' }, tokenActor), (e: any) => e instanceof PbsRefusal && e.code === 'token_forbidden')
+  await assert.rejects(svc.act(m.id, 'verify', { store: 'tank' }, operator), (e: any) => e instanceof PbsRefusal && e.code === 'forbidden')
   assert.ok(!api.calls.some(c => c.startsWith('POST')), 'no action was sent')
-  assert.deepEqual(audit.filter(a => a.action === 'pbs.action').map(a => a.details.result), ['refused:token_forbidden', 'refused:forbidden', 'refused:token_forbidden', 'refused:forbidden'])
-  await assert.rejects(svc.act(m.id, 'prune', { store: 'tank' }, admin), (e: any) => e.code === 'action_not_allowed')
+  assert.deepEqual(audit.filter(a => a.action === 'pbs.action').map(a => a.details.result), ['refused:token_forbidden', 'refused:forbidden'])
+  // GC, prune, forget and delete are not actions at all, even for an admin.
+  for (const a of ['gc', 'prune', 'forget', 'delete']) await assert.rejects(svc.act(m.id, a, { store: 'tank' }, admin), (e: any) => e.code === 'action_not_allowed', a)
+  assert.ok(!api.calls.some(c => c.startsWith('POST')))
   await assert.rejects(svc.act(m.id, 'verify', { store: 'elsewhere' }, admin), (e: any) => e.code === 'bad_input' && e.status === 404)
 })
 
@@ -252,13 +250,38 @@ test('actions: verify now starts the task and reads its status back; audited wit
   assert.ok(UPID_RE.test(UPID))
 })
 
-test('actions: GC refused by PBS says which privilege the token lacks', async () => {
-  const api = fakeApi({ 'POST /admin/datastore/tank/gc': () => { throw new PbsHttpError(403, 'permission check failed') } })
+test('actions: a verify refused by PBS says which privilege and role the token lacks', async () => {
+  const api = fakeApi({ 'POST /admin/datastore/tank/verify': () => { throw new PbsHttpError(403, 'permission check failed') } })
   const { svc, audit, m } = await serviceWith(api)
-  await assert.rejects(svc.act(m.id, 'gc', { store: 'tank' }, admin), (e: any) => e.code === 'pbs_permission' && /Datastore\.Modify on \/datastore\/tank/.test(e.message))
+  await assert.rejects(svc.act(m.id, 'verify', { store: 'tank' }, admin), (e: any) => e.code === 'pbs_permission' && /Datastore\.Verify on \/datastore\/tank/.test(e.message) && /DatastoreReader/.test(e.message) && !/DatastoreAdmin/.test(e.message))
   assert.equal(audit.at(-1)!.details.result, 'refused:pbs_permission')
-  const v = refusalWords(new PbsHttpError(403, ''), 'verify', 'tank')
-  assert.match(v, /Datastore\.Verify/)
+})
+
+// The roles as PBS 4.2 defines them (GET /access/roles), for the ones HyperProx grants.
+const PBS_ROLES: Record<string, string[]> = {
+  Audit: ['Sys.Audit', 'Datastore.Audit'],
+  DatastoreReader: ['Datastore.Audit', 'Datastore.Read', 'Datastore.Verify'],
+  DatastoreBackup: ['Datastore.Backup'],
+}
+
+test('no token HyperProx makes can prune, forget, delete or garbage-collect', () => {
+  for (const role of GRANTED_ROLES) {
+    const privs = PBS_ROLES[role]
+    assert.ok(privs, `${role} is a role checked here`)
+    assert.ok(!privs.some(p => p === 'Datastore.Modify' || p === 'Datastore.Prune' || p === 'Datastore.Allocate' || p.startsWith('Sys.Modify') || p.startsWith('Permissions.')), role)
+  }
+  assert.ok(PBS_ROLES[VERIFY_ROLE].includes('Datastore.Verify'))
+  // The client has only reads and verify: no GC, prune, forget or delete call exists.
+  const proto = Object.getOwnPropertyNames(PbsClient.prototype)
+  assert.deepEqual(proto.filter(n => n !== 'constructor').sort(), ['read', 'taskStatus', 'verify'])
+  // Nothing in lib/pbs (plug-in and recipe) grants another role, or deletes anything but HyperProx's own token.
+  const dir = path.join(__dirname, '..', 'src', 'lib', 'pbs')
+  for (const f of fs.readdirSync(dir).filter(x => x.endsWith('.ts'))) {
+    const src = fs.readFileSync(path.join(dir, f), 'utf8')
+    for (const m of src.matchAll(/role:\s*'([A-Za-z]+)'/g)) assert.ok((GRANTED_ROLES as readonly string[]).includes(m[1]), `${f} grants ${m[1]}`)
+    assert.ok(!/DatastoreAdmin|DatastorePowerUser|Datastore\.Modify'|\/gc`|\/prune`|'\/admin\/datastore\/[^']*\/(gc|prune)'/.test(src.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')), `${f} has no GC/prune call or admin role`)
+    for (const m of src.matchAll(/call\('DELETE',\s*`([^`]*)`/g)) assert.match(m[1], /^\/access\/users\/\$\{enc\(U\)\}\/token\//, `${f}: the only delete is of HyperProx's own token`)
+  }
 })
 
 test('add: a token that cannot read the server is never stored', async () => {
@@ -433,7 +456,7 @@ test('sign-in: pins before the password is sent, makes hyperprox@pbs and its rea
   ], 'read-only: Audit on /, and no datastore role unless asked')
   const c = await w.store.connection(m.id)
   assert.deepEqual([c!.tokenId, c!.secret, c!.meta.pin?.source], ['hyperprox@pbs!readonly', 'token-secret-1', 'first-use'])
-  assert.equal(m.allowActions, false)
+  assert.equal(m.allowVerify, false)
   assert.deepEqual(w.audit.map(a => [a.action, a.details.login, a.details.result]), [['pbs.instance.signin', 'root@pam', 'done']])
 })
 
@@ -463,20 +486,20 @@ test('sign-in: adding the same server again is idempotent and regenerates the to
   assert.equal((await w.store.list())[0].name, 'backups', 'the existing entry keeps its name')
 })
 
-test('sign-in: "Allow Verify now / GC now" grants on the datastores only, never on /', async () => {
+test('sign-in: "Allow Verify now" grants DatastoreReader on the datastores only, never on /', async () => {
   const w = signinWorld()
-  const m = await w.svc.addWithLogin(signin({ allowActions: true }), admin)
-  assert.equal(m.allowActions, true)
+  const m = await w.svc.addWithLogin(signin({ allowVerify: true }), admin)
+  assert.equal(m.allowVerify, true)
   const roles = w.acl().filter(r => r.roleid !== 'Audit')
   assert.deepEqual(roles.map(r => `${r.path} ${r.roleid} ${r.ugid}`), [
-    '/datastore/tank DatastoreAdmin hyperprox@pbs', '/datastore/tank DatastoreAdmin hyperprox@pbs!readonly',
-    '/datastore/offsite DatastoreAdmin hyperprox@pbs', '/datastore/offsite DatastoreAdmin hyperprox@pbs!readonly',
+    '/datastore/tank DatastoreReader hyperprox@pbs', '/datastore/tank DatastoreReader hyperprox@pbs!readonly',
+    '/datastore/offsite DatastoreReader hyperprox@pbs', '/datastore/offsite DatastoreReader hyperprox@pbs!readonly',
   ])
   assert.ok(!w.acl().some(r => r.path === '/' && r.roleid !== 'Audit'))
   // Only when asked: a truthy string is not consent.
   const w2 = signinWorld()
-  await w2.svc.addWithLogin(signin({ allowActions: 'yes' }), admin)
-  assert.ok(!w2.acl().some(r => r.roleid === 'DatastoreAdmin'))
+  await w2.svc.addWithLogin(signin({ allowVerify: 'yes' }), admin)
+  assert.ok(!w2.acl().some(r => r.roleid !== 'Audit'))
 })
 
 test('sign-in: rate-limited, admin only, never an API token; every refusal audited with no password', async () => {

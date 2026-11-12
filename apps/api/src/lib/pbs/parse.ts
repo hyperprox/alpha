@@ -284,4 +284,4 @@ export function buildReading(raw: RawPbs, now: Date, staleHours = DEFAULT_STALE_
 }
 
 /** What PBS privilege an action needs, for the message when PBS refuses it. */
-export const ACTION_PRIVILEGE = { verify: 'Datastore.Verify', gc: 'Datastore.Modify' } as const
+export const ACTION_PRIVILEGE = { verify: 'Datastore.Verify' } as const

@@ -9,7 +9,7 @@
 //  stale threshold, the jobs and the failed tasks as feeds, the optional
 //  cluster cross-check, and the plain tables folded into Details.
 //
-//  Actions: refresh (anyone); "Verify now" and "GC now" per datastore (admin,
+//  Actions: refresh (anyone); "Verify now" per datastore (admin,
 //  master password; the server's answer, including which privilege a token
 //  lacks, is shown as it came). Nothing here deletes, prunes or forgets.
 // =============================================================================
@@ -71,7 +71,7 @@ function useServers() {
 
 // ── pieces ───────────────────────────────────────────────────────────────────
 
-function StoreCard({ d, admin, busy, onAct }: { d: Datastore; admin: boolean; busy: string | null; onAct: (action: 'verify' | 'gc', store: string) => void }) {
+function StoreCard({ d, admin, busy, onAct }: { d: Datastore; admin: boolean; busy: string | null; onAct: (action: 'verify', store: string) => void }) {
   const full = d.usedFrac !== null && d.usedFrac >= FULL_AT
   const pct = d.usedFrac === null ? '—' : `${Math.round(d.usedFrac * 100)}%`
   return (
@@ -97,7 +97,6 @@ function StoreCard({ d, admin, busy, onAct }: { d: Datastore; admin: boolean; bu
       {admin && (
         <div className={p.acts}>
           <button type="button" className={vs.btn} disabled={busy !== null} onClick={() => onAct('verify', d.store)}><Icon name="check" size={14} /> {busy === `verify:${d.store}` ? 'Starting…' : 'Verify now'}</button>
-          <button type="button" className={vs.btn} disabled={busy !== null} onClick={() => onAct('gc', d.store)}><Icon name="run" size={14} /> {busy === `gc:${d.store}` ? 'Starting…' : 'GC now'}</button>
         </div>
       )}
     </article>
@@ -198,7 +197,7 @@ function ServerView({ s }: { s: Server }) {
     return () => clearInterval(t)
   }, [load])
 
-  const act = async (action: 'verify' | 'gc', store: string): Promise<void> => {
+  const act = async (action: 'verify', store: string): Promise<void> => {
     setBusy(`${action}:${store}`); setNote(null)
     const r = await apiJson<{ data: { message: string } }>(`${API}/instances/${s.id}/actions/${action}`, 'POST', { store })
     setBusy(null)
@@ -245,7 +244,7 @@ function ServerView({ s }: { s: Server }) {
           {note && <p className="text-sm" role="status" style={{ color: note.ok ? 'var(--good)' : 'var(--warn-2)' }}>{note.text}</p>}
           {r.missing.length > 0 && <Notice kind="warn">Not read: {r.missing.join(', ')}. A read-only token (Audit on /) sees most of it; the rest of the page is real.</Notice>}
 
-          <Panel title="Datastores" sub={admin ? 'verify and GC need the master password' : undefined}>
+          <Panel title="Datastores" sub={admin ? 'verify needs the master password; GC runs on its schedule' : undefined}>
             {r.datastores.length === 0 ? <p className="text-sm" style={{ color: 'var(--text-muted)' }}>The token sees no datastore. Give it Datastore.Audit (the Audit role on /).</p>
               : <div className={p.stores}>{r.datastores.map(d => <StoreCard key={d.store} d={d} admin={admin} busy={busy} onAct={(a, st) => void act(a, st)} />)}</div>}
           </Panel>
@@ -315,7 +314,7 @@ const TOKEN_STEPS = [
 
 function ServerForm({ s, onSaved, onCancel }: { s: Server | null; onSaved: () => void; onCancel?: () => void }) {
   const [f, setF] = useState({ name: s?.name ?? '', url: s?.url ?? '', tokenId: s?.tokenId ?? '', secret: '', staleHours: String(s?.staleHours ?? 26),
-    username: 'root', realm: 'pam', password: '', allowActions: '0' })
+    username: 'root', realm: 'pam', password: '', allowVerify: '0' })
   // Adding: sign in once (recommended; HyperProx makes its own read-only token) or paste a token (advanced).
   const [mode, setMode] = useState<'signin' | 'token'>('signin')
   const signin = !s && mode === 'signin'
@@ -327,7 +326,7 @@ function ServerForm({ s, onSaved, onCancel }: { s: Server | null; onSaved: () =>
   const signIn = async () => {
     setBusy(true); setErr(null)
     const r = await apiJson(`${API}/instances/signin`, 'POST', {
-      name: f.name, url: f.url, staleHours: Number(f.staleHours) || 26, username: f.username, realm: f.realm, password: f.password, allowActions: f.allowActions === '1',
+      name: f.name, url: f.url, staleHours: Number(f.staleHours) || 26, username: f.username, realm: f.realm, password: f.password, allowVerify: f.allowVerify === '1',
     })
     setBusy(false)
     if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void signIn()); return }
@@ -377,7 +376,7 @@ function ServerForm({ s, onSaved, onCancel }: { s: Server | null; onSaved: () =>
         Give HyperProx its own read-only API token. In the backup server&apos;s shell (or its web interface: Configuration → Access Control) run:
         <code className="mt-2 block whitespace-pre-wrap break-all font-mono text-[12px]">{TOKEN_STEPS.join('\n')}</code>
         The Audit role on / gives Datastore.Audit and Sys.Audit: HyperProx can read everything this page shows and change nothing.
-        &quot;Verify now&quot; needs Datastore.Verify and &quot;GC now&quot; needs Datastore.Modify on that datastore as well; without them the server refuses, and the page says which one is missing.
+        &quot;Verify now&quot; also needs Datastore.Verify on that datastore (the DatastoreReader role on /datastore/&lt;name&gt;); without it the server refuses, and the page says so. GC runs on the server&apos;s own schedule.
         Paste the token id (hyperprox@pbs!readonly) and the secret PBS showed once. HyperProx checks the connection, pins the server&apos;s certificate and keeps the token in the vault.
       </Notice>
       )}
@@ -396,9 +395,9 @@ function ServerForm({ s, onSaved, onCancel }: { s: Server | null; onSaved: () =>
           <label><span style={LABEL}>Password (used once, never stored)</span>
             <input style={INPUT} type="password" autoComplete="off" value={f.password} onChange={e => set('password', e.target.value)} /></label>
           <label className="flex items-start gap-2 text-sm" style={{ color: 'var(--text)' }}>
-            <input type="checkbox" checked={f.allowActions === '1'} onChange={e => set('allowActions', e.target.checked ? '1' : '0')} />
-            <span>Allow &quot;Verify now&quot; and &quot;GC now&quot;
-              <span className="block text-[12px]" style={{ color: 'var(--warn-2)' }}>Off by default. PBS has no role with only Datastore.Verify and Datastore.Modify, so this gives the token DatastoreAdmin on each datastore (never on /). The token is then no longer read-only there: anyone holding it could also prune or delete backups on those datastores through the PBS API. HyperProx itself never does, and its two actions still need an admin and the master password.</span></span>
+            <input type="checkbox" checked={f.allowVerify === '1'} onChange={e => set('allowVerify', e.target.checked ? '1' : '0')} />
+            <span>Allow &quot;Verify now&quot;
+              <span className="block text-[12px]" style={{ color: 'var(--warn-2)' }}>Off by default. Gives the token the DatastoreReader role on each datastore (never on /): Datastore.Verify, plus Datastore.Read, so anyone holding the token could also read (restore) backup contents there. It still cannot prune, forget, delete or garbage-collect anything. Starting a verify still needs an admin and the master password.</span></span>
           </label>
         </>
       ) : (

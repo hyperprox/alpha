@@ -142,8 +142,8 @@ const HA_CONTROL_RECONFIRM = /^\/api\/plugins\/home-assistant\/instances(\/(?!pr
 const QNAP_ACT = /^\/api\/plugins\/qnap\/instances\/[^/]+\/actions$/
 const QNAP_RECONFIRM = /^\/api\/plugins\/qnap\/instances(\/(?!probe-certificate$)[^/]+(\/secure-actions)?)?$/
 // Proxmox Backup Server (routes/pbs.ts). Every write is admin (the default for a POST/PUT/DELETE) and re-confirmed:
-// adding, changing or removing a server stores a token, and "verify now" and "GC now" start work on the server.
-const PBS_RECONFIRM = /^\/api\/plugins\/pbs\/instances(\/[^/]+(\/actions\/(verify|gc))?)?$/
+// adding, changing or removing a server stores a token, and "verify now" starts work on the server.
+const PBS_RECONFIRM = /^\/api\/plugins\/pbs\/instances(\/[^/]+(\/actions\/verify)?)?$/
 // A plug-in's settings hold the address its stored credential is sent to: changing them is re-confirmed (which
 // also keeps API tokens out).
 const PLUGIN_SETTINGS = /^\/api\/plugins\/[^/]+\/settings$/

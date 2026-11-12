@@ -5,9 +5,9 @@
 //  can make. A part the token may not read (a sync job list needs Remote.Audit
 //  too, say) is listed in `missing` rather than failing the whole reading.
 //
-//  The two actions start a task on the server and return its UPID; the caller
-//  reads the task's status back afterwards. Nothing here deletes, prunes or
-//  forgets a snapshot.
+//  The one action, verify, starts a task on the server and returns its UPID;
+//  the caller reads the task's status back afterwards. There is no GC, prune,
+//  forget or delete call here: nothing in this client can remove a snapshot.
 // =============================================================================
 
 import { buildReading, type PbsReading, type RawPbs } from './parse'
@@ -60,11 +60,6 @@ export class PbsClient {
   /** Start a verify of the whole datastore. Resolves with the task's UPID. */
   async verify(store: string): Promise<string> {
     return String(await this.api.call('POST', `/admin/datastore/${enc(store)}/verify`))
-  }
-
-  /** Start garbage collection on a datastore. Resolves with the task's UPID. */
-  async gc(store: string): Promise<string> {
-    return String(await this.api.call('POST', `/admin/datastore/${enc(store)}/gc`))
   }
 
   /** A task's state: running, or stopped with its exit status ("OK", or the error). */

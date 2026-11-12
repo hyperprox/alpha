@@ -8,7 +8,8 @@
 //
 //  Reads: one reading per server, kept 30 seconds, limited per session.
 //
-//  Actions: run verify now, run GC now. Each one is admin, a person (never an
+//  The one action: run verify now (GC is left to its own weekly schedule, whose
+//  last and next run the page shows). It is admin, a person (never an
 //  API token: the gate's master-password re-confirmation already keeps tokens
 //  out, and this service refuses one again by name), names a datastore the
 //  server reports, is rate-limited, audited (every attempt, refused or not), and
@@ -29,8 +30,8 @@ export class PbsRefusal extends Error {
   constructor(public code: string, message: string, public status = 400) { super(message); this.name = 'PbsRefusal' }
 }
 
-export type PbsAction = 'verify' | 'gc'
-export const ACTION_WORD: Record<PbsAction, string> = { verify: 'Verify', gc: 'Garbage collection' }
+export type PbsAction = 'verify'
+export const ACTION_WORD: Record<PbsAction, string> = { verify: 'Verify' }
 
 export interface Presented { fingerprint: string; caVerified: boolean }
 
@@ -59,12 +60,19 @@ export function pinFrom(p: Presented, at: Date): PbsPin {
 /** The words for a refused or failed call, with the privilege PBS wants when it is a permission problem. */
 export function refusalWords(e: unknown, action?: PbsAction, store?: string): string {
   if (e instanceof PbsHttpError && (e.status === 401 || e.status === 403)) {
-    if (action) return `PBS refused: this token lacks ${ACTION_PRIVILEGE[action]} on /datastore/${store}. HyperProx's read-only token (Audit) cannot run ${action === 'gc' ? 'GC' : 'a verify'}; give the token ${ACTION_PRIVILEGE[action]} on that datastore (for example the DatastoreAdmin role on /datastore/${store}) to allow it.`
+    if (action) return `PBS refused: this token lacks ${ACTION_PRIVILEGE[action]} on /datastore/${store}. HyperProx's read-only token (Audit) cannot start a verify; give it the DatastoreReader role on /datastore/${store} (Datastore.Verify, with Datastore.Read and Datastore.Audit, and nothing that prunes or deletes) to allow it.`
     return 'PBS refused the token. Check the token id and secret, and that the token has the Audit role on / (Datastore.Audit and Sys.Audit).'
   }
   if (e instanceof PbsUnreachableError || e instanceof PbsHttpError || e instanceof PbsRefusal) return e.message
   return 'The backup server did not accept the request.'
 }
+
+/**
+ * The only roles HyperProx ever grants on a backup server: Audit on / (read-only) and, when asked, this on a
+ * datastore. Checked in the tests: none of them carries Datastore.Modify or Datastore.Prune.
+ */
+export const VERIFY_ROLE = 'DatastoreReader'
+export const GRANTED_ROLES = ['Audit', VERIFY_ROLE, 'DatastoreBackup'] as const
 
 export class PbsService {
   private cache = new Map<string, { at: number; reading: PbsReading }>()
@@ -120,10 +128,10 @@ export class PbsService {
    *   2. user hyperprox@pbs is made if missing; its token "readonly" is made, or deleted and made again (so
    *      adding the same server twice is safe and leaves one working token); Audit on / for the user and the
    *      token (a token's privileges are the intersection of its own and its user's);
-   *   3. only with `allowActions` (off by default): Verify now / GC now on each datastore. PBS has no
-   *      custom roles, and Datastore.Modify (GC) exists only in DatastoreAdmin, so that role is granted on
-   *      /datastore/<each> (never on /): the token is then no longer read-only on those datastores, and could
-   *      prune or delete backups there through the PBS API. HyperProx itself never does;
+   *   3. only with `allowVerify` (off by default): DatastoreReader on /datastore/<each> (never on /). In PBS
+   *      4.x that role is Datastore.Audit, Datastore.Read and Datastore.Verify: the token can start a verify
+   *      and read (restore) backup contents there, and still cannot prune, forget, delete or garbage-collect.
+   *      No role HyperProx grants has Datastore.Modify or Datastore.Prune;
    *   4. the permissions are read back and the token is proved with a read through the pin;
    *   5. the token is stored (an instance already at this address gets the new token, not a second entry).
    *
@@ -131,7 +139,7 @@ export class PbsService {
    * and no error message carries it. Sign-ins are rate-limited per session (3 a minute) and every attempt is
    * audited with the user name only.
    */
-  async addWithLogin(input: PbsInput & { username?: unknown; realm?: unknown; password?: unknown; allowActions?: unknown }, actor: Actor): Promise<PbsMeta & { allowActions: boolean }> {
+  async addWithLogin(input: PbsInput & { username?: unknown; realm?: unknown; password?: unknown; allowVerify?: unknown }, actor: Actor): Promise<PbsMeta & { allowVerify: boolean }> {
     const user = typeof input.username === 'string' ? input.username.trim() : ''
     const realm = typeof input.realm === 'string' && input.realm.trim() ? input.realm.trim() : 'pam'
     const audit = (result: string, extra: Record<string, unknown> = {}) =>
@@ -146,7 +154,7 @@ export class PbsService {
       if (!/^[A-Za-z0-9._-]{1,32}$/.test(realm)) throw new PbsInputError('The realm is pam, pbs or the name of another realm on that server.')
       if (typeof input.password !== 'string' || !input.password || input.password.length > 1024) throw new PbsInputError('Enter that user\'s password.')
     } catch (e) { await audit('refused:bad_input'); throw e }
-    const allowActions = input.allowActions === true
+    const allowVerify = input.allowVerify === true
     const existing = await this.d.store.findByEndpoint(url)
     if (!existing && (await this.d.store.list()).some(i => i.name.toLowerCase() === name.toLowerCase())) { await audit('refused:name_taken'); throw new PbsInputError('Another backup server already has that name.', 409) }
 
@@ -186,16 +194,16 @@ export class PbsService {
     await step('grant_audit', async () => { for (const who of [U, TID]) await api.call('PUT', '/access/acl', { path: '/', role: 'Audit', 'auth-id': who }) })
     // 3. Optional: the two actions, on the datastores only.
     let stores: string[] = []
-    if (allowActions) {
+    if (allowVerify) {
       stores = await step('list_the_datastores', async () => ((await api.call('GET', '/admin/datastore')) as any[] ?? []).map(d => String(d?.store ?? d?.name ?? '')).filter(s => /^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$/.test(s)))
-      await step('grant_the_actions', async () => { for (const s of stores) for (const who of [U, TID]) await api.call('PUT', '/access/acl', { path: `/datastore/${s}`, role: 'DatastoreAdmin', 'auth-id': who }) })
+      await step('grant_verify', async () => { for (const s of stores) for (const who of [U, TID]) await api.call('PUT', '/access/acl', { path: `/datastore/${s}`, role: VERIFY_ROLE, 'auth-id': who }) })
     }
     // 4. Read back.
     await step('read_the_permissions_back', async () => {
       const acl = (await api.call('GET', '/access/acl')) as any[] ?? []
       const has = (path: string, role: string, who: string) => acl.some(r => r?.path === path && r?.roleid === role && r?.ugid === who)
       if (!has('/', 'Audit', TID) || !has('/', 'Audit', U)) throw new PbsUnreachableError('the Audit permission did not read back')
-      for (const s of stores) if (!has(`/datastore/${s}`, 'DatastoreAdmin', TID)) throw new PbsUnreachableError(`the ${s} permission did not read back`)
+      for (const s of stores) if (!has(`/datastore/${s}`, VERIFY_ROLE, TID)) throw new PbsUnreachableError(`the ${s} permission did not read back`)
     })
     await step('read_with_the_new_token', async () => { await this.d.api({ url, tokenId: TID, secret, pin }).call('GET', '/status/datastore-usage') })
     // 5. Keep the token, and only the token.
@@ -203,8 +211,8 @@ export class PbsService {
       ? await this.d.store.write(existing.id, { name: existing.name, url, tokenId: TID, secret, staleHours: existing.staleHours, pin })
       : await this.d.store.create({ name, url, tokenId: TID, secret, staleHours, pin })
     this.forget(meta.id)
-    await audit(existing ? 'done:token_replaced' : 'done', { server: meta.name, serverId: meta.id, token: TID, actions: allowActions ? stores.length : 0, pin: pin.source })
-    return { ...meta, allowActions }
+    await audit(existing ? 'done:token_replaced' : 'done', { server: meta.name, serverId: meta.id, token: TID, verify: allowVerify ? stores.length : 0, pin: pin.source })
+    return { ...meta, allowVerify }
   }
 
   /**
@@ -278,7 +286,7 @@ export class PbsService {
       throw e
     }
     try { this.limit(actor, 'attemptsPerMinute', 'Too many attempts in a minute; wait a moment.') } catch (e: any) { return refuse(e) }
-    if (action !== 'verify' && action !== 'gc') return refuse(new PbsRefusal('action_not_allowed', 'HyperProx can run a verify or GC now. It never deletes, prunes or forgets a backup.'))
+    if (action !== 'verify') return refuse(new PbsRefusal('action_not_allowed', 'HyperProx can start a verify. GC runs on its own schedule, and HyperProx never deletes, prunes or forgets a backup.'))
     if (actor.token) return refuse(new PbsRefusal('token_forbidden', 'API tokens can never start a verify or GC: it needs a person with the master password.', 403))
     if (!hasRole(actor.role, 'admin')) return refuse(new PbsRefusal('forbidden', `${ACTION_WORD[action]} now needs the admin role.`, 403))
     try { this.limit(actor, 'actionsPerMinute', 'That is the most actions allowed in a minute.') } catch (e: any) { return refuse(e) }
@@ -289,7 +297,7 @@ export class PbsService {
 
     const { client } = await this.client(m.id)
     let upid: string
-    try { upid = action === 'verify' ? await client.verify(store) : await client.gc(store) }
+    try { upid = await client.verify(store) }
     catch (e) {
       const msg = refusalWords(e, action, store)
       const code = e instanceof PbsHttpError && (e.status === 401 || e.status === 403) ? 'pbs_permission' : 'call_failed'

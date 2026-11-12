@@ -4,12 +4,13 @@
 //  Roles (lib/roles.ts): reads are viewer, like every plug-in page; below
 //  operator a server's address, token id and pin are left out. Adding,
 //  changing or removing a server stores a token: admin, master password
-//  re-entered. "Verify now" and "GC now" (POST .../actions/verify|gc) are admin
+//  re-entered. "Verify now" (POST .../actions/verify, the only action) is admin
 //  with the master password re-entered, which also keeps API tokens out; the
 //  service refuses a token again by name.
 //
-//  No route returns a token secret, and no route takes a path: an action is one
-//  of two names and a datastore the server itself reports.
+//  No route returns a token secret, and no route takes a path: the one action is
+//  a verify of a datastore the server itself reports. There is no GC, prune,
+//  forget or delete route.
 // =============================================================================
 
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
@@ -50,9 +51,9 @@ export const pbsRoutes: FastifyPluginAsync = async (fastify) => {
   // Refusals the gate makes (role, re-confirmation, token) never reach a handler: record those too.
   fastify.addHook('onResponse', async (req, reply) => {
     if (req.method !== 'POST' || req.pbsHandled || reply.statusCode < 400) return
-    const m = /\/instances\/([^/]+)\/actions\/([a-z]+)$/.exec(req.url.split('?')[0])
+    const m = /\/instances\/([^/]+)\/actions\/verify$/.exec(req.url.split('?')[0])
     if (!m || !req.session || reply.statusCode === 401 || reply.statusCode === 423) return
-    await svc().auditRefusal(m[1], actor(req), m[2], `gate_${reply.statusCode}`).catch(() => {})
+    await svc().auditRefusal(m[1], actor(req), 'verify', `gate_${reply.statusCode}`).catch(() => {})
   })
 
   fastify.get('/instances', async (req, reply) => {
@@ -132,9 +133,9 @@ export const pbsRoutes: FastifyPluginAsync = async (fastify) => {
     }
   })
 
-  fastify.post<P & { Params: { action: string }; Body: Record<string, unknown> }>('/instances/:iid/actions/:action', async (req, reply) => {
+  fastify.post<P & { Body: Record<string, unknown> }>('/instances/:iid/actions/verify', async (req, reply) => {
     req.pbsHandled = true
-    try { return { success: true, data: await svc().act(req.params.iid, req.params.action, req.body ?? {}, actor(req)) } }
+    try { return { success: true, data: await svc().act(req.params.iid, 'verify', req.body ?? {}, actor(req)) } }
     catch (e) { return fail(reply, e) }
   })
 }
