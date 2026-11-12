@@ -114,7 +114,8 @@ const SETUP_CHECKLIST = /^\/api\/setup-checklist(\/|$)/
 // Websites the catalogue made (routes/sites.ts): admin for reads too (they name nodes, addresses and vault items).
 // The one-time WordPress admin sign-in is a login, so it also needs the master password re-entered.
 const SITES = /^\/api\/sites(\/|$)/
-const SITES_RECONFIRM = /^\/api\/sites\/[^/]+\/admin-login$/
+// Deleting a site removes DNS, proxy hosts and possibly its container: re-confirmed too (the preview is not).
+const SITES_RECONFIRM = /^\/api\/sites\/[^/]+\/(admin-login|delete)$/
 // Site metrics (routes/site-metrics.ts). Reads are viewer here and trimmed by the route (totals only below
 // operator); the adopt reads map containers, so they are admin. Adopting or forgetting a site and changing its
 // nginx log format also need the master password re-entered.

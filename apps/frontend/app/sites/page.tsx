@@ -21,6 +21,7 @@ import { apiJson } from '@/lib/api'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { Page, HudHeader, Panel, Pill, Tiles, styles } from '@/components/visual/kit'
 import { NewSiteWizard, type SiteRecipe } from '@/components/sites/NewSiteWizard'
+import { DeleteSiteDialog } from '@/components/sites/DeleteSiteDialog'
 // Site metrics: each card's visitors today and sparkline, and adopting a site HyperProx did not make.
 import { SiteSparkRow } from '@/components/sites/metrics/SiteCards'
 import { AdoptSiteDialog } from '@/components/sites/metrics/AdminTools'
@@ -33,6 +34,9 @@ interface Site {
   id: string; recipeId: string; name: string; vmid: number; node: string; ip: string | null
   domain: string | null; url: string | null; localUrl: string | null; adminUser: string | null
   vaultItem: string | null; adminUrl: string | null; createdAt: number
+  adopted?: boolean
+  /** Whether its container is still on the cluster ('gone': it was deleted outside HyperProx). */
+  container?: 'present' | 'gone' | 'unknown'
 }
 type Pending = { kind: 'login' | 'reveal'; site: Site } | null
 
@@ -58,6 +62,7 @@ export default function SitesPage() {
   const [pending, setPending] = useState<Pending>(null)
   const [busy, setBusy] = useState('')
   const [metrics, setMetrics] = useState<Record<string, SiteSummary>>({})
+  const [deleting, setDeleting] = useState<Site | null>(null)
   const [tab, setTabState] = useState<SiteTab>('sites')
   const setTab = (t: SiteTab) => {
     setTabState(t)
@@ -172,7 +177,10 @@ export default function SitesPage() {
               <div className={styles.row} style={{ flexWrap: 'wrap' }}>
                 <h2 className="font-display" style={{ margin: 0, fontSize: 20, fontWeight: 600, color: 'var(--text-bright)' }}>{s.name}</h2>
                 <span className={styles.tag}>{r?.name ?? ADOPTED_LABEL[s.recipeId] ?? s.recipeId}</span>
-                <span style={{ marginLeft: 'auto' }}><Pill tone={s.url ? 'good' : 'accent'}>{s.url ? 'published' : 'local only'}</Pill></span>
+                <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6 }}>
+                  {s.container === 'gone' && <Pill tone="bad">Container gone</Pill>}
+                  <Pill tone={s.url ? 'good' : 'accent'}>{s.url ? 'published' : 'local only'}</Pill>
+                </span>
               </div>
               {metrics[s.id] && <SiteSparkRow site={metrics[s.id]} />}
               <Tiles label={`${s.name} facts`} items={[{ label: 'CT', value: s.vmid }, { label: 'node', value: s.node }, { label: 'address', value: s.ip ?? '—' }]} />
@@ -183,7 +191,11 @@ export default function SitesPage() {
                 {s.recipeId === 'static-site' && <button type="button" className={styles.btn} disabled={busy === s.id + 'p'} onClick={() => void pull(s)}>{busy === s.id + 'p' ? 'Pulling…' : 'Pull now'}</button>}
                 <Link href={`/sites/${encodeURIComponent(s.id)}`} className={styles.btn} style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}>Metrics</Link>
                 <button type="button" className={styles.btn} disabled={busy === s.id + 'h'} onClick={() => void health(s)}>{busy === s.id + 'h' ? 'Checking…' : 'Health'}</button>
+                <button type="button" className={styles.btn} style={{ marginLeft: 'auto', color: 'var(--crit)' }} onClick={() => setDeleting(s)}>{s.adopted ? 'Stop tracking' : 'Delete'}</button>
               </div>
+              {s.container === 'gone' && (
+                <p style={{ margin: 0, fontSize: 12, color: 'var(--text-muted)' }}>CT {s.vmid} no longer exists on the cluster. Delete removes what is left of this site (its record, and its DNS record and proxy host if they are still there).</p>
+              )}
               {shown && (
                 <div className={styles.callout}>
                   {Object.entries(shown).filter(([k]) => /^(admin_user|admin_password|db_password)$/.test(k)).map(([k, v]) => (
@@ -204,6 +216,7 @@ export default function SitesPage() {
         })}
       </div>}
 
+      {deleting && <DeleteSiteDialog siteId={deleting.id} onClose={() => setDeleting(null)} onDone={() => { setDeleting(null); void load() }} />}
       {wizard && <NewSiteWizard recipes={recipes} previewId={previewId} onClose={() => { setWizard(false); setPreviewId(null) }} onDone={() => { setWizard(false); setPreviewId(null); void load() }} />}
       {pending && (
         <ReconfirmModal onClose={() => setPending(null)} onDone={() => {

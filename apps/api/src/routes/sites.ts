@@ -6,9 +6,15 @@
 //  WordPress admin sign-in. The install itself is the catalogue wizard's
 //  preview and apply. Every route here is admin; the sign-in also needs the
 //  master password re-entered (roles.ts), and is audited without its token.
+//
+//  Deleting a site (lib/site-delete.ts): POST /:id/delete/preview lists exactly
+//  what would go, with HyperProx's ownership defaults, and changes nothing;
+//  POST /:id/delete removes what was ticked from that preview. The preview is
+//  single use, the asker's own, for this site only, and lasts ten minutes. The
+//  delete needs the master password re-entered; API tokens are refused on both.
 // =============================================================================
 
-import type { FastifyPluginAsync } from 'fastify'
+import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { ownHeaders } from '../lib/own-user-agent'
 import { currentContext } from '../lib/auth'
 import { ownerOf } from './ai'
@@ -20,6 +26,11 @@ import {
   listSites, getSite, planPublish, makeAdminLogin, siteHealth, realPublishDeps,
   type PublishDeps, type SiteRecord,
 } from '../lib/sites'
+import { hasRole, type Role } from '../lib/roles'
+import { homePve } from '../lib/pve-env'
+import {
+  buildDeletePreview, checkChoice, runDelete, isAdoptedSite, DeletePreviewStore, SiteDeleteRefusal, type SiteDeleteDeps,
+} from '../lib/site-delete'
 
 export interface SiteRouteDeps {
   whoami(): string
@@ -29,6 +40,23 @@ export interface SiteRouteDeps {
   probe(url: string): Promise<{ status: number; body: string } | null>
   audit(action: string, resource: string, details?: Record<string, unknown>): Promise<void>
   now(): number
+  /** The home cluster's guest IDs, or null when Proxmox cannot be read (a site's container is then "unknown"). */
+  guestIds(): Promise<Set<number> | null>
+  /** Deleting a site: everything it reaches. Made on first use. */
+  deletion(): SiteDeleteDeps
+}
+
+async function realGuestIds(): Promise<Set<number> | null> {
+  // The home cluster: that is where the catalogue installs sites.
+  let rows: any[] | null
+  try { rows = await homePve().fetchStrict<any[]>('/cluster/resources?type=vm') } catch { rows = null }
+  return Array.isArray(rows) ? new Set(rows.map(r => Number(r?.vmid))) : null
+}
+
+let deletionDeps: SiteDeleteDeps | null = null
+async function loadDeletion(): Promise<SiteDeleteDeps> {
+  // Loaded when first used: the real connections pull in the install wizard and the proxy layer.
+  return (deletionDeps ??= (await import('../lib/site-delete-deps')).realSiteDeleteDeps())
 }
 
 export async function realRun(site: SiteRecord, script: string) {
@@ -53,8 +81,11 @@ export function siteProbe(url: string): Promise<{ status: number; body: string }
 }
 
 /** What the page shows for a site. Never a secret: the vault item is named, and revealed through the vault. */
-function view(s: SiteRecord) {
+function view(s: SiteRecord, ids: Set<number> | null = null) {
   return {
+    adopted: isAdoptedSite(s),
+    /** Whether its container is still on the cluster: 'gone' marks the card "Container gone". */
+    container: ids === null ? 'unknown' : ids.has(s.vmid) ? 'present' : 'gone',
     id: s.id, recipeId: s.recipeId, name: s.name, vmid: s.vmid, node: s.node, ip: s.ip ?? null,
     domain: s.domain ?? null, url: s.url ?? null, localUrl: s.localUrl ?? null, adminUser: s.adminUser ?? null,
     vaultItem: s.vault ? itemName(s.vault.category, s.vault.provider) : null,
@@ -71,11 +102,57 @@ export function buildSiteRoutes(over: Partial<SiteRouteDeps> = {}): FastifyPlugi
     probe: siteProbe,
     audit: auditCredentialUse,
     now: Date.now,
+    guestIds: realGuestIds,
+    deletion: () => { throw new Error('not loaded') },
     ...over,
   }
+  const deletion = async () => (over.deletion ? over.deletion() : loadDeletion())
+  const previews = new DeletePreviewStore(() => d.now())
+  const roleOf = (q: FastifyRequest): Role => (q.session?.role ?? 'viewer') as Role
+  /** Deleting is a person's decision: an API token is refused by name, and the role is checked here too. */
+  const deleteGuard = (q: FastifyRequest, reply: FastifyReply): boolean => {
+    if (q.apiToken) { void reply.status(403).send({ success: false, code: 'token_forbidden', error: 'An API token cannot delete a website.' }); return false }
+    if (!q.session || !hasRole(roleOf(q), 'admin')) { void reply.status(403).send({ success: false, code: 'forbidden', error: 'This needs the admin role' }); return false }
+    return true
+  }
+  const refused = (reply: FastifyReply, e: any) => e instanceof SiteDeleteRefusal
+    ? reply.status(e.status).send({ success: false, code: e.code, error: e.message })
+    : reply.status(502).send({ success: false, error: String(e?.message ?? e).slice(0, 300) })
+
   return async (fastify) => {
-    // GET / — the websites HyperProx made
-    fastify.get('/', async (_q, reply) => reply.send({ success: true, data: { sites: (await listSites()).map(view) } }))
+    // GET / — the websites HyperProx made or adopted, each with whether its container is still there
+    fastify.get('/', async (_q, reply) => {
+      const [sites, ids] = await Promise.all([listSites(), d.guestIds().catch(() => null)])
+      return reply.send({ success: true, data: { sites: sites.map(s => view(s, ids)) } })
+    })
+
+    // POST /:id/delete/preview — exactly what deleting the site would remove. Changes nothing.
+    fastify.post<{ Params: { id: string } }>('/:id/delete/preview', async (q, reply) => {
+      if (!deleteGuard(q, reply)) return
+      const site = await getSite(q.params.id)
+      if (!site) return reply.status(404).send({ success: false, error: 'No such site' })
+      try {
+        const built = await buildDeletePreview(site, await deletion())
+        reply.header('Cache-Control', 'no-store')
+        return reply.send({ success: true, data: previews.put(q.session!.sid, site, built) })
+      } catch (e) { return refused(reply, e) }
+    })
+
+    // POST /:id/delete — remove what was ticked from that preview (master password re-entered, roles.ts)
+    fastify.post<{ Params: { id: string }; Body: { previewId?: unknown; items?: unknown; confirm?: unknown } }>('/:id/delete', async (q, reply) => {
+      if (!deleteGuard(q, reply)) return
+      const site = await getSite(q.params.id)
+      if (!site) return reply.status(404).send({ success: false, error: 'No such site' })
+      const by = d.whoami() || q.session!.email
+      try {
+        const held = previews.take(q.body?.previewId, q.session!.sid, site.id)
+        const keys = checkChoice(held.preview, q.body ?? {})
+        const out = await runDelete(site, held, keys, by, await deletion())
+        const ok = out.results.every(r => r.outcome !== 'failed')
+        await d.audit('site.delete', `site:${site.id}`, { by, ok, items: out.results.map(r => `${r.key}: ${r.outcome}`), recordRemoved: out.recordRemoved })
+        return reply.status(ok ? 200 : 207).send({ success: ok, data: out, ...(ok ? {} : { error: 'Not everything was removed. Each item says what happened; preview again to retry what is left.' }) })
+      } catch (e) { return refused(reply, e) }
+    })
 
     // GET /address/options — the domains the DNS provider lists, and the proxies that can serve a site
     fastify.get('/address/options', async (_q, reply) => {

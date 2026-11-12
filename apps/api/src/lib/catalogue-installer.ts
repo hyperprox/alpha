@@ -96,6 +96,8 @@ export interface InstallJob {
   ledger?: PublishLedger
   /** The Sites entry a finished web install made. */
   siteId?: string
+  /** The container's hostname, as planned. */
+  hostname?: string
   /** A NAS datastore this job mounted on the container's node (Proxmox Backup Server); clean-up unmounts it. */
   hostMount?: { node: string; vmid: number }
 }
@@ -556,6 +558,8 @@ async function runJob(
         ...(job.vaultItem ? { vault: { category: job.vaultItem.category, provider: job.vaultItem.provider } } : {}),
         ...(admin ? { adminUser: admin.user } : {}),
         jobId: job.jobId, owner: job.owner, createdAt: Date.now(),
+        ...(job.hostname ? { hostname: job.hostname } : {}),
+        ...(job.ledger && ctx.publish ? { published: structuredClone(job.ledger) } : {}),
       }).catch(e => { job.storeError = `The site was installed but could not be listed under Sites: ${e.message}` })
     }
     job.status = 'completed'
@@ -1288,7 +1292,7 @@ export async function applyPreview(id: string, owner: string, over: Partial<Wiza
     CREATING.add(plan.vmid)
 
     const job = newJob(recipe, owner, `Create CT ${plan.vmid} (${plan.hostname}) on ${plan.node}`, plan.publish)
-    job.vmid = plan.vmid; job.node = plan.node
+    job.vmid = plan.vmid; job.node = plan.node; job.hostname = plan.hostname
     if (recipe.stack === 'arr') job.steps = arrJobSteps(job.steps, plan.options ?? {}, plan.arrPublish)
     const markId = `creating:${plan.vmid}`
     // The job row first, then the mark, then the create. After a restart the mark says this job may have

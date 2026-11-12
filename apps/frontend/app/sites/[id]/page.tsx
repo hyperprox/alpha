@@ -15,7 +15,8 @@ import { apiJson } from '@/lib/api'
 import { Page, styles } from '@/components/visual/kit'
 import { SiteCards } from '@/components/sites/metrics/SiteCards'
 import { SiteMetrics } from '@/components/sites/metrics/SiteMetrics'
-import { AlertSettingsPanel, LogFormatDialog, ForgetSiteButton } from '@/components/sites/metrics/AdminTools'
+import { AlertSettingsPanel, LogFormatDialog } from '@/components/sites/metrics/AdminTools'
+import { DeleteSiteDialog } from '@/components/sites/DeleteSiteDialog'
 import type { Range, SiteDetail, SiteSummary } from '@/components/sites/metrics/types'
 import s from '@/components/sites/metrics/metrics.module.css'
 
@@ -30,6 +31,7 @@ export default function SitePage() {
   const [sites, setSites] = useState<SiteSummary[]>([])
   const [err, setErr] = useState('')
   const [logFormat, setLogFormat] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   const load = useCallback(async () => {
     const [a, b] = await Promise.all([
@@ -52,6 +54,9 @@ export default function SitePage() {
               <button type="button" aria-pressed={tab === 'metrics'} onClick={() => setTab('metrics')}>Metrics</button>
               <button type="button" aria-pressed={tab === 'alerts'} onClick={() => setTab('alerts')}>Alerts</button>
             </div>
+          )}
+          {d?.canAdmin && (
+            <button type="button" className={styles.btn} style={{ color: 'var(--crit)' }} onClick={() => setDeleting(true)}>{d.summary.adopted ? 'Stop tracking' : 'Delete'}</button>
           )}
           {tab === 'metrics' && (
             <div className={s.seg} role="group" aria-label="Time range">
@@ -86,13 +91,14 @@ export default function SitePage() {
           {d.summary.adopted && (
             <section className={s.panel} aria-label="Adopted site">
               <h3>Adopted site</h3>
-              <p className={s.note}>HyperProx only reads from this container. Forgetting it removes it from Sites and deletes its numbers; the container is not touched.</p>
-              <div style={{ marginTop: 10 }}><ForgetSiteButton siteId={d.summary.id} onDone={() => router.push('/sites')} /></div>
+              <p className={s.note}>HyperProx only reads from this container. Stop tracking removes it from Sites and deletes its numbers; the container is never touched, and its DNS record and proxy host stay unless you tick them and type the site&apos;s name.</p>
+              <div style={{ marginTop: 10 }}><button type="button" className={styles.btn} onClick={() => setDeleting(true)}>Stop tracking</button></div>
             </section>
           )}
         </>
       )}
 
+      {deleting && d && <DeleteSiteDialog siteId={d.summary.id} onClose={() => setDeleting(false)} onDone={() => router.push('/sites')} />}
       {logFormat && d && <LogFormatDialog siteId={d.summary.id} onClose={() => { setLogFormat(false); void load() }} />}
     </Page>
   )

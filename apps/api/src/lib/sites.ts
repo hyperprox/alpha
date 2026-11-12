@@ -354,6 +354,11 @@ export interface SiteRecord {
   vault?: { category: string; provider: string }
   adminUser?: string
   jobId: string; owner: string; createdAt: number
+  /** The container's hostname as the install set it: deleting the site refuses a container that no longer has it. */
+  hostname?: string
+  /** What publishing made (DNS record, proxy host, certificate), copied from the install's ledger when the site was
+   *  recorded. Deleting the site ticks these by default; anything not in here is not known to be HyperProx's. */
+  published?: PublishLedger
 }
 
 export async function recordSite(s: SiteRecord): Promise<void> {

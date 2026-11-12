@@ -1299,7 +1299,7 @@ lines, whether nginx and WP-CLI are there, and whether every request seems to co
 `X-Forwarded-For` (then visitors cannot be told apart). **Enter manually** gives the empty form instead.
 The list is kept a minute. **Add site** asks for your master password and records it like a site
 HyperProx made, but HyperProx only reads from it: there is no Pull now or admin sign-in for it, and
-**Forget site** (master password again) removes only HyperProx's record and numbers. When the log has no
+**Stop tracking** (master password again, see below) removes only HyperProx's record and numbers. When the log has no
 request time (or, behind a proxy, no `X-Forwarded-For`), the next screen offers that logging change
 straight away.
 
@@ -1310,6 +1310,36 @@ change: a plain `access_log <log>;` becomes `access_log <log> hyperprox_metrics;
 **Make this change** asks for your master password, refuses if any file changed since the preview, backs each
 file up beside itself (`.hyperprox-bak-<time>`), runs `nginx -t`, and reloads nginx only if the test passes;
 otherwise every file is put back. Nothing in a site is ever changed without this.
+
+#### Deleting a website
+
+**Delete** on a site's card (or on its own page) shows exactly what would be removed, one checkbox per thing,
+and changes nothing until you confirm:
+
+- **The site record**, with its metrics history and the collector's state. Always included.
+- **Its DNS record**, at whichever provider serves the zone. Ticked only when HyperProx recorded making it
+  when it published the site, and it still points where HyperProx pointed it. Otherwise it starts unticked
+  and says why. Other records with the same name (a TXT, say) are listed and left alone.
+- **Its proxy host**, and on Nginx Proxy Manager **its certificate** when no other proxy host, redirection,
+  404 host or stream uses it. The same rule decides what is ticked. A host that also serves other names
+  starts unticked. The certificate goes together with its host, or on its own once the host is already gone.
+- **Its container**, only for a site HyperProx installed, and never ticked for you: it deletes the container and
+  its disk, permanently. HyperProx refuses if the container's hostname or its install mark no longer match
+  the site. It takes the container out of HA, stops it, deletes it with `purge` (never older disks that happen
+  to carry its ID), takes its ID out of every backup job (a job that listed only it is deleted, so no dead ID
+  fails the job on every node), and removes a backup-server NAS mount it made for it.
+
+Something already gone shows as **already gone** and is skipped, never an error. A site whose container was
+deleted outside HyperProx shows **Container gone** on its card; deleting it removes what is left, plus its ID
+from any backup job that still lists it. For an adopted site the only default is **Stop tracking**: its
+container is never offered, and its DNS record or proxy host is removed only if you tick it and type the
+site's name, because HyperProx did not make them.
+
+The delete is admin-only, needs your master password, and refuses API tokens. The preview is yours, for that
+site, works once and lasts ten minutes. Each item is written to the audit log before it is touched (if the
+log cannot be written, the item is not touched) and after, re-read just before it changes (if it changed
+since the preview it is left alone), and read back afterwards. If something fails, every item says what
+happened and the site record stays, so **Preview again** offers only what is left.
 
 ### Plug-ins
 
