@@ -1123,7 +1123,7 @@ otherwise every file is put back. Nothing in a site is ever changed without this
 | Plex activity | What is streaming now (progress, direct or transcode), internet and local bandwidth gauges, who watches most, what is watched most, and recent history, read through Tautulli |
 | Home Assistant | Your house as tiles by room, with quick actions, a light dial and a climate dial; plus unavailable entities, low batteries, pending updates and log errors, for each of your Home Assistant instances (see below) |
 | QNAP | Each NAS's drive bays with SMART health and temperature, volume rings, shares, temperature and load gauges, fans and firmware, with a quick SMART test, and restart and shut down behind the confirm step, for each of your NAS, a remote one included (see below) |
-| Proxmox Backup Server | Each backup server's datastores as gauges (used, deduplication, GC), every backup group as a tile that turns red when its newest snapshot is older than you allow, the prune, GC, verify and sync jobs, failed tasks of the last day, and which cluster guests have no backup there, with verify now behind the master password; it never prunes, forgets or deletes (see below) |
+| Proxmox Backup Server | Each backup server's datastores as gauges (used, deduplication, GC), every backup group as a tile that turns red when its newest snapshot is older than you allow, the prune, GC, verify and sync jobs, failed tasks of the last day, and which cluster guests have no backup there, with verify now behind the master password; read-only unless you turn on backup management, which adds deleting, pruning and clean-up (see below) |
 | MeshCentral | Finds npm installs in guests and adds them to Updates. Its page says what it would need to show your devices; it holds no MeshCentral login, so it shows none |
 
 Each plug-in page opens with a summary header and a bar to jump between plug-ins (each with a health
@@ -1354,13 +1354,44 @@ group whose newest snapshot failed verification). Otherwise it **Needs attention
 such as "2 guests not backed up in 26 h", "datastore 91% full" or "verify failed". The dashboard's
 plug-in chip shows the same words.
 
-**Verify now** is the only action. It is admin only, needs the master password re-entered, and API
-tokens can never use it. It names a datastore the server reports, starts the verify on the server, and
-reads the task's status back, so the page says whether it is running, finished or failed. Every attempt,
-refused or not, is in the audit log. There is no GC, prune, forget or delete in the plug-in, and no token
-HyperProx makes (here or in the Catalogue recipe) has a role that could prune, forget, delete or
-garbage-collect: they get Audit on `/`, DatastoreReader on a datastore when you allow verify, and, for
-Proxmox VE's backups, DatastoreBackup on one datastore.
+**Verify now** is admin only, needs the master password re-entered, and API tokens can never use it. It
+names a datastore the server reports, starts the verify on the server, and reads the task's status back,
+so the page says whether it is running, finished or failed. Every attempt, refused or not, is in the
+audit log.
+
+**Read-only by default.** Unless you turn on backup management (below), no token HyperProx makes (here or
+in the Catalogue recipe) has a role that could prune, forget, delete or garbage-collect: they get Audit on
+`/`, DatastoreReader on a datastore when you allow verify, and, for Proxmox VE's backups, DatastoreBackup
+on one datastore. Pruning by schedule is the server's own prune job.
+
+**Backup management (opt-in).** **Let HyperProx manage backups (delete, prune, clean up)** is a checkbox
+when you add a server by signing in, and a panel under **Settings** later; it is off by default. Turning it
+on means anyone who gets into HyperProx as an admin, with the master password, could delete or prune
+backups on the chosen datastores. HyperProx then makes a second token, `hyperprox@pbs!manage`, with the
+DatastoreAdmin role on each chosen datastore (never on `/`), and keeps it in its own vault item, apart from
+the read-only token. Every read still uses the read-only token; the manage token is used only by these
+actions:
+
+- **Delete snapshots**: tap a group, tick the snapshots, **Delete selected…**.
+- **Delete a whole group** (all of one guest's backups here): **Delete whole group…** in the same sheet.
+- **Prune now…** on a datastore card: by the datastore's prune job's keep settings (or the datastore's
+  own). The preview is PBS's own dry-run for each group, so it lists exactly which snapshots go.
+- **Clean up now** on a datastore card: garbage collection, which frees the space of deleted snapshots.
+
+Each is admin only, needs the master password re-entered, is refused for API tokens, is audited per
+snapshot, and is read back afterwards (nothing removed is still listed, and every protected snapshot is
+still there). The three that delete go through a preview the server holds: it is yours, works once and
+expires after 10 minutes, and it shows what goes and what stays. A **protected** snapshot is never deleted;
+the preview lists it as kept. Removing a guest's last remaining snapshot needs a second tick in the
+preview. Nothing is removed from a group while a backup of it is running (checked at the preview and again
+when you confirm). A prune is dry-run again when you confirm, and if the result changed (a new backup
+arrived), nothing is removed and you are asked to look again.
+
+Turning management on or off takes a PBS admin sign-in under **Settings** (to change which datastores, turn it
+off and on again)
+(the password is used once and never stored): turning it off deletes the manage token and its permissions
+on the server, and then the vault item. A server with management on cannot be removed from HyperProx until
+it is turned off, so no delete token is left behind on the server.
 
 Viewers see the readings but not the server's address, token id or pin. The page reads the server again
 every two minutes while it is open (a reading is kept 30 seconds), and a server that cannot be read says

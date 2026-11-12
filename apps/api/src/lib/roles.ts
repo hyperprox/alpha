@@ -144,6 +144,9 @@ const QNAP_RECONFIRM = /^\/api\/plugins\/qnap\/instances(\/(?!probe-certificate$
 // Proxmox Backup Server (routes/pbs.ts). Every write is admin (the default for a POST/PUT/DELETE) and re-confirmed:
 // adding, changing or removing a server stores a token, and "verify now" starts work on the server.
 const PBS_RECONFIRM = /^\/api\/plugins\/pbs\/instances(\/[^/]+(\/actions\/verify)?)?$/
+// Backup management (opt-in, lib/pbs/manage.ts): turning it on or off, previews, applies and clean-up. All admin and
+// re-confirmed, which keeps API tokens out; the snapshot list of one group is a read (viewer).
+const PBS_MANAGE_RECONFIRM = /^\/api\/plugins\/pbs\/instances\/[^/]+\/manage(\/(preview|apply|gc))?$/
 // A plug-in's settings hold the address its stored credential is sent to: changing them is re-confirmed (which
 // also keeps API tokens out).
 const PLUGIN_SETTINGS = /^\/api\/plugins\/[^/]+\/settings$/
@@ -289,6 +292,7 @@ export function needsReconfirm(method: string, path: string): boolean {
   if (m !== 'GET' && m !== 'HEAD' && HA_CONTROL_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && QNAP_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && PBS_RECONFIRM.test(p)) return true
+  if (m !== 'GET' && m !== 'HEAD' && PBS_MANAGE_RECONFIRM.test(p)) return true
   if (m === 'PUT' && PLUGIN_SETTINGS.test(p)) return true
   if (m === 'PUT' && SETTINGS_SAVE.test(p)) return true
   if (m === 'POST' && SETTINGS_TEST.test(p)) return true

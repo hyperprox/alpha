@@ -264,7 +264,7 @@ const PBS_ROLES: Record<string, string[]> = {
   DatastoreBackup: ['Datastore.Backup'],
 }
 
-test('no token HyperProx makes can prune, forget, delete or garbage-collect', () => {
+test('by default no token HyperProx makes can prune, forget, delete or garbage-collect; only the opt-in manage module can', () => {
   for (const role of GRANTED_ROLES) {
     const privs = PBS_ROLES[role]
     assert.ok(privs, `${role} is a role checked here`)
@@ -276,7 +276,11 @@ test('no token HyperProx makes can prune, forget, delete or garbage-collect', ()
   assert.deepEqual(proto.filter(n => n !== 'constructor').sort(), ['read', 'taskStatus', 'verify'])
   // Nothing in lib/pbs (plug-in and recipe) grants another role, or deletes anything but HyperProx's own token.
   const dir = path.join(__dirname, '..', 'src', 'lib', 'pbs')
-  for (const f of fs.readdirSync(dir).filter(x => x.endsWith('.ts'))) {
+  // manage.ts is the opt-in backup management (its own tests below): the only file allowed DatastoreAdmin and the
+  // delete, prune and GC calls, all through the manage token.
+  const manageSrc = fs.readFileSync(path.join(dir, 'manage.ts'), 'utf8')
+  assert.match(manageSrc, /MANAGE_ROLE = 'DatastoreAdmin'/)
+  for (const f of fs.readdirSync(dir).filter(x => x.endsWith('.ts') && x !== 'manage.ts')) {
     const src = fs.readFileSync(path.join(dir, f), 'utf8')
     for (const m of src.matchAll(/role:\s*'([A-Za-z]+)'/g)) assert.ok((GRANTED_ROLES as readonly string[]).includes(m[1]), `${f} grants ${m[1]}`)
     assert.ok(!/DatastoreAdmin|DatastorePowerUser|Datastore\.Modify'|\/gc`|\/prune`|'\/admin\/datastore\/[^']*\/(gc|prune)'/.test(src.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')), `${f} has no GC/prune call or admin role`)
@@ -512,4 +516,206 @@ test('sign-in: rate-limited, admin only, never an API token; every refusal audit
   assert.ok(!w.order.includes('login') || w.logins.length === 3, 'the refused and rate-limited attempts never signed in')
   assert.equal(requiredRole('POST', '/api/plugins/pbs/instances/signin'), 'admin')
   assert.equal(needsReconfirm('POST', '/api/plugins/pbs/instances/signin'), true)
+})
+
+// ── backup management (opt-in) ───────────────────────────────────────────────
+
+import { PbsManager, MANAGE_TOKEN_ID, PREVIEW_TTL_MS, runningGroups, keepFrom, createManageToken, removeManageToken } from '../src/lib/pbs/manage'
+
+const T0 = 1_800_000_000
+/** A small PBS: one datastore "tank", snapshots by group, protected flags, running tasks, ACLs and tokens; records who calls what. */
+function manageWorld(o: { running?: string[] } = {}) {
+  const calls: Array<{ token: string; method: string; path: string; params?: any }> = []
+  let snaps = [
+    { type: 'vm', id: '200', time: T0 - 3 * 86400, protected: false },
+    { type: 'vm', id: '200', time: T0 - 2 * 86400, protected: true },
+    { type: 'vm', id: '200', time: T0 - 1 * 86400, protected: false },
+    { type: 'ct', id: '101', time: T0 - 86400, protected: false },
+  ]
+  let acl: any[] = []
+  let tokens: string[] = []
+  const pruneKeep = 1
+  // PBS's prune per group: keep the newest `keep-last`, never a protected one.
+  const prune = (g: { type: string; id: string }, keepLast: number) => {
+    const list = snaps.filter(s => s.type === g.type && s.id === g.id).sort((a, b) => b.time - a.time)
+    let kept = 0
+    return list.map(s => { const keep = s.protected || kept++ < keepLast; return { 'backup-type': s.type, 'backup-id': s.id, 'backup-time': s.time, keep, protected: s.protected } })
+  }
+  const api = (token: string): PbsApi => ({
+    async call(method, p, params) {
+      calls.push({ token, method, path: p, params })
+      if (p === '/status/datastore-usage') return [{ store: 'tank', total: 100, used: 10 }]
+      if (p === '/admin/datastore') return [{ store: 'tank' }]
+      if (p === '/admin/datastore/tank/status') return { total: 100, used: 10, avail: 90 }
+      if (p === '/admin/datastore/tank/snapshots' && method === 'GET') return snaps.filter(s => !params?.['backup-type'] || (s.type === params['backup-type'] && s.id === params['backup-id'])).map(s => ({ 'backup-type': s.type, 'backup-id': s.id, 'backup-time': s.time, protected: s.protected, size: 1024 }))
+      if (p === '/admin/datastore/tank/snapshots' && method === 'DELETE') { snaps = snaps.filter(s => !(s.type === params!['backup-type'] && s.id === params!['backup-id'] && s.time === params!['backup-time'] && !s.protected)); return null }
+      if (p === '/admin/datastore/tank/groups' && method === 'DELETE') { snaps = snaps.filter(s => !(s.type === params!['backup-type'] && s.id === params!['backup-id'])); return null }
+      if (p === '/admin/prune') return [{ id: 'daily', store: 'tank', ns: '', 'keep-last': pruneKeep }]
+      if (p === '/admin/datastore/tank/prune') {
+        const res = prune({ type: params!['backup-type'], id: params!['backup-id'] }, params!['keep-last'])
+        if (!params!['dry-run']) snaps = snaps.filter(s => res.some(r => r['backup-time'] === s.time && r['backup-type'] === s.type && r.keep) || !(s.type === params!['backup-type'] && s.id === params!['backup-id']))
+        return res
+      }
+      if (p === '/nodes/localhost/tasks') return (o.running ?? []).map(g => ({ worker_type: 'backup', worker_id: `tank:${g}`, starttime: T0 }))
+      if (p === '/admin/datastore/tank/gc') return UPID
+      if (p.startsWith('/nodes/localhost/tasks/')) return { status: 'running' }
+      // admin session (sign-in) only:
+      if (p === '/access/users' && method === 'GET') return [{ userid: 'hyperprox@pbs' }]
+      if (p === '/access/users/hyperprox%40pbs/token' && method === 'GET') return tokens.map(t => ({ tokenid: `hyperprox@pbs!${t}` }))
+      const tk = /^\/access\/users\/hyperprox%40pbs\/token\/([a-z]+)$/.exec(p)
+      if (tk && method === 'POST') { tokens = [...tokens.filter(t => t !== tk[1]), tk[1]]; return { tokenid: `hyperprox@pbs!${tk[1]}`, value: `${tk[1]}-secret` } }
+      if (tk && method === 'DELETE') { tokens = tokens.filter(t => t !== tk[1]); acl = acl.filter(r => r.ugid !== `hyperprox@pbs!${tk[1]}`); return null }
+      if (p === '/access/acl' && method === 'PUT') {
+        if (params!.delete) acl = acl.filter(r => !(r.path === params!.path && r.roleid === params!.role && r.ugid === params!['auth-id']))
+        else acl.push({ path: params!.path, roleid: params!.role, ugid: params!['auth-id'] })
+        return null
+      }
+      if (p === '/access/acl') return acl
+      throw new PbsHttpError(404, `${method} ${p}`)
+    },
+  })
+  const io = memIO()
+  const store = new PbsInstanceStore(io)
+  const audit: any[] = []
+  const now = { t: NOW.getTime() }
+  const svc = new PbsService({
+    store, audit: async (action, _r, details) => { audit.push({ action, details }) },
+    probe: async () => ({ fingerprint: normaliseFingerprint('cd'.repeat(32))!, caVerified: false }),
+    api: c => api(c.tokenId),
+    login: async (_u, _p, _user, password) => { if (password !== PASSWORD) throw new PbsHttpError(401, 'no'); return api('admin-session') },
+    now: () => now.t, wait: async () => {},
+  })
+  return { svc, io, store, audit, calls, now, acl: () => acl, tokens: () => tokens, snaps: () => snaps }
+}
+
+async function managed(o: { running?: string[] } = {}) {
+  const w = manageWorld(o)
+  const m = await w.svc.addWithLogin(signin({ manage: true }), admin)
+  assert.equal(m.manage?.tokenId, MANAGE_TOKEN_ID, m.manageError)
+  return { ...w, id: m.id }
+}
+
+test('manage: off by default; ticked, a second token with DatastoreAdmin on each datastore only, in its own vault item', async () => {
+  const off = manageWorld()
+  const plain = await off.svc.addWithLogin(signin(), admin)
+  assert.equal(plain.manage, null)
+  assert.equal(await off.store.manageConnection(plain.id), null)
+  await assert.rejects(off.svc.manager.gc(plain.id, admin, 'tank'), (e: any) => e.code === 'manage_off')
+
+  const w = await managed()
+  assert.deepEqual(w.acl().filter(r => r.roleid === 'DatastoreAdmin').map(r => `${r.path} ${r.ugid}`), ['/datastore/tank hyperprox@pbs', '/datastore/tank hyperprox@pbs!manage'])
+  assert.ok(!w.acl().some(r => r.path === '/' && r.roleid !== 'Audit'), 'never on /')
+  assert.equal(w.io.data.get(`plugin/pbs.${w.id}.manage/token_secret`), 'manage-secret', 'a vault item of its own')
+  assert.notEqual(w.io.data.get(`plugin/pbs.${w.id}/token_secret`), 'manage-secret', 'the read-only token is a different secret')
+})
+
+test('manage: the manage token is used only by the delete, prune and clean-up calls; every read uses the read-only token', async () => {
+  const w = await managed()
+  w.calls.length = 0
+  await w.svc.reading(w.id, { fresh: true }).catch(() => {})
+  await w.svc.groupSnapshots(w.id, { store: 'tank', ns: '', type: 'vm', id: '200' }, admin)
+  const p = await w.svc.manager.preview(w.id, admin, { action: 'delete-snapshots', store: 'tank', items: [{ type: 'ct', id: '101', time: T0 - 86400 }] })
+  await w.svc.manager.apply(w.id, admin, p.id, ['last-snapshot'])
+  const pr = await w.svc.manager.preview(w.id, admin, { action: 'prune', store: 'tank' })
+  await w.svc.manager.apply(w.id, admin, pr.id, [])
+  await w.svc.manager.gc(w.id, admin, 'tank')
+  const byManage = w.calls.filter(c => c.token === MANAGE_TOKEN_ID)
+  assert.ok(byManage.length > 0)
+  for (const c of byManage) {
+    assert.ok((c.method === 'DELETE' && /^\/admin\/datastore\/tank\/(snapshots|groups)$/.test(c.path)) || (c.method === 'POST' && /^\/admin\/datastore\/tank\/(prune|gc)$/.test(c.path)) || (c.method === 'GET' && c.path === '/admin/datastore/tank/status'),
+      `manage token used for ${c.method} ${c.path}`)
+  }
+  for (const c of w.calls.filter(c => c.method === 'GET' && c.path !== '/admin/datastore/tank/status')) assert.equal(c.token, 'hyperprox@pbs!readonly', `${c.path} is a read`)
+})
+
+test('manage: protected snapshots are never deleted and show as kept', async () => {
+  const w = await managed()
+  const g = await w.svc.manager.preview(w.id, admin, { action: 'delete-group', store: 'tank', group: { type: 'vm', id: '200' } })
+  assert.deepEqual(g.remove.map(s => s.time), [T0 - 3 * 86400, T0 - 86400])
+  assert.deepEqual(g.kept.map(s => [s.time, s.why]), [[T0 - 2 * 86400, 'protected']])
+  assert.deepEqual(g.acks, [], 'a protected snapshot stays, so this is not the last one')
+  const r = await w.svc.manager.apply(w.id, admin, g.id, [])
+  assert.equal(r.removed.length, 2)
+  assert.deepEqual(w.snaps().filter(s => s.type === 'vm').map(s => s.time), [T0 - 2 * 86400])
+  // Picking a protected snapshot by hand: kept, never sent.
+  const p = await w.svc.manager.preview(w.id, admin, { action: 'delete-snapshots', store: 'tank', items: [{ type: 'vm', id: '200', time: T0 - 2 * 86400 }] })
+  assert.deepEqual([p.remove.length, p.kept[0].why], [0, 'protected'])
+  assert.ok(!w.calls.some(c => c.method === 'DELETE' && c.params?.['backup-time'] === T0 - 2 * 86400))
+})
+
+test('manage: removing a guest\'s last snapshot needs the second confirmation', async () => {
+  const w = await managed()
+  const p = await w.svc.manager.preview(w.id, admin, { action: 'delete-snapshots', store: 'tank', items: [{ type: 'ct', id: '101', time: T0 - 86400 }] })
+  assert.deepEqual([p.lastSnapshot, p.acks], [['ct/101'], ['last-snapshot']])
+  assert.match(p.warnings.join(' '), /last remaining snapshot of ct\/101/)
+  await assert.rejects(w.svc.manager.apply(w.id, admin, p.id, []), (e: any) => e.code === 'confirm')
+  assert.equal(w.snaps().filter(s => s.type === 'ct').length, 1, 'nothing removed without it')
+  const again = await w.svc.manager.preview(w.id, admin, { action: 'delete-snapshots', store: 'tank', items: [{ type: 'ct', id: '101', time: T0 - 86400 }] })
+  await w.svc.manager.apply(w.id, admin, again.id, ['last-snapshot'])
+  assert.equal(w.snaps().filter(s => s.type === 'ct').length, 0)
+})
+
+test('manage: the prune preview is PBS\'s dry-run, and the execution removes exactly that', async () => {
+  const w = await managed()
+  const p = await w.svc.manager.preview(w.id, admin, { action: 'prune', store: 'tank' })
+  assert.equal(p.keep!.from, 'prune job daily')
+  assert.deepEqual(p.keep!.settings, { 'keep-last': 1 })
+  assert.ok(w.calls.filter(c => c.path === '/admin/datastore/tank/prune').every(c => c.params['dry-run'] === true), 'the preview only dry-runs')
+  assert.deepEqual(p.remove.map(s => `${s.type}/${s.id}/${s.time}`), [`vm/200/${T0 - 3 * 86400}`])
+  assert.deepEqual(p.kept.map(s => s.why).sort(), ['kept', 'kept', 'protected'])
+  const before = w.snaps().map(s => `${s.type}/${s.id}/${s.time}`)
+  const r = await w.svc.manager.apply(w.id, admin, p.id, [])
+  assert.deepEqual(r.removed, p.remove.map(s => `${s.type}/${s.id}/${s.time}`))
+  assert.deepEqual(before.filter(k => !w.snaps().some(s => `${s.type}/${s.id}/${s.time}` === k)), r.removed, 'exactly what the preview listed')
+})
+
+test('manage: a prune whose result changed since the preview removes nothing', async () => {
+  const w = await managed()
+  const p = await w.svc.manager.preview(w.id, admin, { action: 'prune', store: 'tank' })
+  w.snaps().push({ type: 'vm', id: '200', time: T0, protected: false })
+  const n = w.snaps().length
+  await assert.rejects(w.svc.manager.apply(w.id, admin, p.id, []), (e: any) => e.code === 'changed')
+  assert.equal(w.snaps().length, n)
+})
+
+test('manage: guards: admin only, never an API token, a running backup blocks, previews are single-use, per user, 10 minutes', async () => {
+  const w = await managed()
+  for (const a of [tokenActor, operator]) {
+    await assert.rejects(w.svc.manager.preview(w.id, a, { action: 'prune', store: 'tank' }), (e: any) => e.code === (a.token ? 'token_forbidden' : 'forbidden'))
+    await assert.rejects(w.svc.manager.gc(w.id, a, 'tank'), (e: any) => e.code === (a.token ? 'token_forbidden' : 'forbidden'))
+    await assert.rejects(w.svc.manager.disable(w.id, a, {}), (e: any) => e.code === (a.token ? 'token_forbidden' : 'forbidden'))
+  }
+  const p = await w.svc.manager.preview(w.id, admin, { action: 'delete-group', store: 'tank', group: { type: 'vm', id: '200' } })
+  await assert.rejects(w.svc.manager.apply(w.id, { ...admin, email: 'other@example.com' }, p.id, []), (e: any) => e.code === 'not_found', 'another admin cannot apply it')
+  await w.svc.manager.apply(w.id, admin, p.id, [])
+  await assert.rejects(w.svc.manager.apply(w.id, admin, p.id, []), (e: any) => e.code === 'used')
+  const q = await w.svc.manager.preview(w.id, admin, { action: 'prune', store: 'tank' })
+  w.now.t += PREVIEW_TTL_MS + 1
+  await assert.rejects(w.svc.manager.apply(w.id, admin, q.id, []), (e: any) => e.code === 'expired')
+  const busy = await managed({ running: ['ct/101'] })
+  await assert.rejects(busy.svc.manager.preview(busy.id, admin, { action: 'delete-snapshots', store: 'tank', items: [{ type: 'ct', id: '101', time: T0 - 86400 }] }), (e: any) => e.code === 'backup_running')
+  assert.deepEqual([...runningGroups([{ worker_type: 'backup', worker_id: 'tank\\x3alab\\x3avm\\x2f100' }, { worker_type: 'backup', worker_id: 'other:vm/1' }, { worker_type: 'verify', worker_id: 'tank:vm/2' }], 'tank')], ['vm/100'])
+  for (const path of ['/api/plugins/pbs/instances/p0a1b2c3d/manage', '/api/plugins/pbs/instances/p0a1b2c3d/manage/preview', '/api/plugins/pbs/instances/p0a1b2c3d/manage/apply', '/api/plugins/pbs/instances/p0a1b2c3d/manage/gc']) {
+    for (const m of path.endsWith('/manage') ? ['PUT'] : ['POST']) { assert.equal(requiredRole(m, path), 'admin', path); assert.equal(needsReconfirm(m, path), true, path) }
+  }
+  assert.deepEqual(keepFrom({ 'keep-last': 3, 'keep-daily': '7', 'keep-weekly': 0, other: 1 }), { 'keep-last': 3, 'keep-daily': 7 })
+  assert.equal(audit_has(w.audit, 'removed'), 2, 'audited per item')
+})
+
+const audit_has = (a: any[], result: string) => a.filter(x => x.action === 'pbs.manage' && x.details.result === result).length
+
+test('manage: turning it off deletes the manage token and its permissions on the server, then the vault item', async () => {
+  const w = await managed()
+  await assert.rejects(w.store.remove(w.id), /Turn it off first/)
+  await assert.rejects(w.svc.manager.disable(w.id, admin, { username: 'root', password: 'wrong' }), (e: any) => e.code === 'signin_failed')
+  assert.ok(w.tokens().includes('manage'), 'a failed sign-in changes nothing')
+  const m = await w.svc.manager.disable(w.id, admin, { username: 'root', realm: 'pam', password: PASSWORD })
+  assert.equal(m.manage, null)
+  assert.deepEqual(w.tokens(), ['readonly'])
+  assert.ok(!w.acl().some(r => r.roleid === 'DatastoreAdmin'))
+  assert.ok(w.acl().some(r => r.ugid === 'hyperprox@pbs!readonly' && r.roleid === 'Audit'), 'the read-only token is untouched')
+  assert.equal(w.io.data.get(`plugin/pbs.${w.id}.manage/token_secret`), undefined)
+  await assert.rejects(w.svc.manager.gc(w.id, admin, 'tank'), (e: any) => e.code === 'manage_off')
+  assert.ok(!JSON.stringify(w.audit).includes(PASSWORD))
+  await w.store.remove(w.id)
 })

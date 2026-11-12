@@ -6,7 +6,11 @@
 //
 //    plugin/pbs        instances   the list: names, stale threshold, pins. No
 //                                  address, no token.
-//    plugin/pbs.<id>   url, token_id, token_secret (masked).
+//    plugin/pbs.<id>   url, token_id, token_secret (masked): the read-only token,
+//                      which every read uses.
+//    plugin/pbs.<id>.manage   token_id, token_secret (masked): the manage token,
+//                      only when backup management is turned on (lib/pbs/manage.ts),
+//                      used by nothing but its delete, prune and clean-up actions.
 //
 //  The token goes only to the address it was entered for: a save that moves the
 //  address to another host or port, or changes the token id, needs the secret
@@ -34,6 +38,8 @@ export interface PbsMeta {
   /** A group whose newest snapshot is older than this many hours is stale. */
   staleHours: number
   pin:        PbsPin | null
+  /** Backup management (opt-in): the manage token's id and the datastores it has DatastoreAdmin on. Null: off. */
+  manage:     { tokenId: string; stores: string[]; at: string } | null
 }
 
 export interface PbsView extends PbsMeta { url: string; tokenId: string; hasSecret: boolean }
@@ -49,6 +55,13 @@ export class PbsInputError extends Error {
 }
 
 export const providerFor = (id: string) => `${PLUGIN_ID}.${id}`
+export const manageProviderFor = (id: string) => `${PLUGIN_ID}.${id}.manage`
+const STORE_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$/
+
+function cleanManage(v: any): PbsMeta['manage'] {
+  if (!v || typeof v !== 'object' || typeof v.tokenId !== 'string' || !TOKEN_ID_RE.test(v.tokenId) || !Array.isArray(v.stores)) return null
+  return { tokenId: v.tokenId, stores: v.stores.filter((s: unknown) => typeof s === 'string' && STORE_RE.test(s)).slice(0, 50), at: typeof v.at === 'string' ? v.at.slice(0, 40) : '' }
+}
 export const validInstanceId = (id: string) => ID_RE.test(id)
 
 export function cleanName(v: unknown): string {
@@ -104,6 +117,7 @@ function parseIndex(raw: string | null): PbsMeta[] {
       id: x.id, name: String(x.name).slice(0, 40),
       staleHours: Number.isInteger(x.staleHours) && x.staleHours >= 1 && x.staleHours <= 1440 ? x.staleHours : DEFAULT_STALE_HOURS,
       pin: cleanPin(x.pin),
+      manage: cleanManage(x.manage),
     }))
   } catch { return [] }
 }
@@ -164,7 +178,7 @@ export class PbsInstanceStore {
       const list = await this.list()
       if (list.length >= MAX_INSTANCES) throw new PbsInputError(`HyperProx holds up to ${MAX_INSTANCES} backup servers.`)
       if (list.some(i => i.name.toLowerCase() === v.name.toLowerCase())) throw new PbsInputError('Another backup server already has that name.', 409)
-      const meta: PbsMeta = { id: `p${crypto.randomBytes(4).toString('hex')}`, name: v.name, staleHours: v.staleHours, pin: v.pin }
+      const meta: PbsMeta = { id: `p${crypto.randomBytes(4).toString('hex')}`, name: v.name, staleHours: v.staleHours, pin: v.pin, manage: null }
       const p = providerFor(meta.id)
       await this.io.set(CATEGORY, p, 'url', v.url, false)
       await this.io.set(CATEGORY, p, 'token_id', v.tokenId, false)
@@ -200,7 +214,7 @@ export class PbsInstanceStore {
       const list = await this.list()
       if (!list.some(i => i.id === id)) throw new PbsInputError('No such backup server.', 404)
       const p = providerFor(id)
-      const next: PbsMeta = { id, name: v.name, staleHours: v.staleHours, pin: v.pin }
+      const next: PbsMeta = { id, name: v.name, staleHours: v.staleHours, pin: v.pin, manage: list.find(i => i.id === id)!.manage }
       if ((await this.io.get(CATEGORY, p, 'url')) !== v.url) await this.io.set(CATEGORY, p, 'url', v.url, false)
       if ((await this.io.get(CATEGORY, p, 'token_id')) !== v.tokenId) await this.io.set(CATEGORY, p, 'token_id', v.tokenId, false)
       if (v.secret) await this.io.set(CATEGORY, p, 'token_secret', v.secret, true)
@@ -209,10 +223,39 @@ export class PbsInstanceStore {
     })
   }
 
+  /** The manage token, for the manage actions only. Never returned by a route. */
+  async manageConnection(id: string): Promise<{ tokenId: string; secret: string; stores: string[] } | null> {
+    const meta = await this.get(id)
+    if (!meta?.manage) return null
+    const [tokenId, secret] = await Promise.all([this.io.get(CATEGORY, manageProviderFor(id), 'token_id'), this.io.get(CATEGORY, manageProviderFor(id), 'token_secret')])
+    if (!tokenId || !secret || tokenId !== meta.manage.tokenId) return null
+    return { tokenId, secret, stores: meta.manage.stores }
+  }
+
+  /** Turn backup management on (store the manage token in its own vault item) or off (delete that item). */
+  async setManage(id: string, v: { tokenId: string; secret: string; stores: string[]; at: string } | null): Promise<PbsMeta> {
+    return this.serial(async () => {
+      const list = await this.list()
+      const prev = list.find(i => i.id === id)
+      if (!prev) throw new PbsInputError('No such backup server.', 404)
+      const mp = manageProviderFor(id)
+      if (v) {
+        await this.io.set(CATEGORY, mp, 'token_id', v.tokenId, false)
+        await this.io.set(CATEGORY, mp, 'token_secret', v.secret, true)
+      } else await this.io.remove(CATEGORY, mp)
+      const next: PbsMeta = { ...prev, manage: v ? { tokenId: v.tokenId, stores: [...v.stores], at: v.at } : null }
+      await this.io.set(CATEGORY, PLUGIN_ID, INDEX_KEY, JSON.stringify(list.map(i => (i.id === id ? next : i))), false)
+      return next
+    })
+  }
+
   async remove(id: string): Promise<void> {
     return this.serial(async () => {
       const list = await this.list()
-      if (!list.some(i => i.id === id)) throw new PbsInputError('No such backup server.', 404)
+      const m = list.find(i => i.id === id)
+      if (!m) throw new PbsInputError('No such backup server.', 404)
+      // A manage token left behind on the server would be a delete key nobody is watching: turn it off first.
+      if (m.manage) throw new PbsInputError('Backup management is on for this server. Turn it off first (that deletes its manage token on the server), then remove the server.', 409)
       await this.io.remove(CATEGORY, providerFor(id))
       await this.io.set(CATEGORY, PLUGIN_ID, INDEX_KEY, JSON.stringify(list.filter(i => i.id !== id)), false)
     })

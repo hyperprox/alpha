@@ -23,6 +23,7 @@ import { ACTION_PRIVILEGE, type PbsReading } from './parse'
 import { PbsHttpError, PbsUnreachableError, type PbsPin } from './transport'
 import { cleanName, cleanSecret, cleanStaleHours, cleanTokenId, cleanUrl, PbsInputError, type PbsInput, type PbsInstanceStore, type PbsMeta } from './instances'
 import { DEFAULT_STALE_HOURS } from './parse'
+import { PbsManager } from './manage'
 
 export interface Actor { sid: string; email: string; role: Role; token: string | null }
 
@@ -79,12 +80,15 @@ export class PbsService {
   private inflight = new Map<string, Promise<PbsReading>>()
   private hits = new Map<string, number[]>()
   private d: ServiceDeps & { now: () => number; wait: (ms: number) => Promise<unknown>; limits: Limits }
+  /** Backup management (opt-in): the only code that uses a server's manage token. */
+  readonly manager: PbsManager
 
   constructor(deps: ServiceDeps) {
     this.d = {
       now: () => Date.now(), wait: ms => new Promise(r => setTimeout(r, ms)), ...deps,
       limits: { readsPerMinute: 30, actionsPerMinute: 3, attemptsPerMinute: 20, addsPerMinute: 6, signinsPerMinute: 3, ...(deps.limits ?? {}) },
     }
+    this.manager = new PbsManager({ store: deps.store, audit: deps.audit, api: deps.api, login: deps.login, now: this.d.now, wait: this.d.wait })
   }
 
   get instances(): PbsInstanceStore { return this.d.store }
@@ -139,7 +143,7 @@ export class PbsService {
    * and no error message carries it. Sign-ins are rate-limited per session (3 a minute) and every attempt is
    * audited with the user name only.
    */
-  async addWithLogin(input: PbsInput & { username?: unknown; realm?: unknown; password?: unknown; allowVerify?: unknown }, actor: Actor): Promise<PbsMeta & { allowVerify: boolean }> {
+  async addWithLogin(input: PbsInput & { username?: unknown; realm?: unknown; password?: unknown; allowVerify?: unknown; manage?: unknown }, actor: Actor): Promise<PbsMeta & { allowVerify: boolean; manageError?: string }> {
     const user = typeof input.username === 'string' ? input.username.trim() : ''
     const realm = typeof input.realm === 'string' && input.realm.trim() ? input.realm.trim() : 'pam'
     const audit = (result: string, extra: Record<string, unknown> = {}) =>
@@ -212,6 +216,15 @@ export class PbsService {
       : await this.d.store.create({ name, url, tokenId: TID, secret, staleHours, pin })
     this.forget(meta.id)
     await audit(existing ? 'done:token_replaced' : 'done', { server: meta.name, serverId: meta.id, token: TID, verify: allowVerify ? stores.length : 0, pin: pin.source })
+    // 6. Only when ticked (off by default): the second, manage token, on every datastore, through the same sign-in.
+    if (input.manage === true) {
+      try {
+        const all = ((await api.call('GET', '/admin/datastore')) as any[] ?? []).map(d => String(d?.store ?? d?.name ?? '')).filter(x => /^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$/.test(x))
+        return { ...(await this.manager.enable(meta.id, all, actor, { api })), allowVerify }
+      } catch (e: any) {
+        return { ...meta, allowVerify, manageError: `The server was added read-only, but backup management could not be turned on: ${String(e?.message ?? 'error').slice(0, 200)}` }
+      }
+    }
     return { ...meta, allowVerify }
   }
 
@@ -265,6 +278,20 @@ export class PbsService {
     })()
     this.inflight.set(id, p)
     try { return await p } finally { this.inflight.delete(id) }
+  }
+
+  /** The snapshots of one group (read-only token), for picking which to delete: time, size, verify, protected. */
+  async groupSnapshots(id: string, g: { store: string; ns: string; type: string; id: string }, actor: Actor): Promise<Array<{ time: number; size: number | null; verify: string; protected: boolean; comment: string | null }>> {
+    this.limit(actor, 'readsPerMinute')
+    if (!/^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$/.test(g.store) || !/^(vm|ct|host)$/.test(g.type) || !/^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/.test(g.id) || !/^$|^[A-Za-z0-9_][A-Za-z0-9._/-]{0,255}$/.test(g.ns)) throw new PbsInputError('Not a datastore and group.')
+    const c = await this.d.store.connection(id)
+    if (!c?.meta.pin) throw new PbsRefusal('not_configured', 'This backup server has no address, token or pin.', 409)
+    const rows = await this.d.api({ url: c.url, tokenId: c.tokenId, secret: c.secret, pin: c.meta.pin })
+      .call('GET', `/admin/datastore/${encodeURIComponent(g.store)}/snapshots`, { 'backup-type': g.type, 'backup-id': g.id, ...(g.ns ? { ns: g.ns } : {}) })
+      .catch(e => { throw new PbsRefusal('read_failed', refusalWords(e), 502) })
+    return (Array.isArray(rows) ? rows : []).filter((s: any) => s?.['backup-type'] === g.type && s?.['backup-id'] === g.id && Number.isInteger(s?.['backup-time']))
+      .map((s: any) => ({ time: s['backup-time'], size: typeof s.size === 'number' ? s.size : null, verify: String(s?.verification?.state ?? 'none').slice(0, 16), protected: s.protected === true, comment: typeof s.comment === 'string' ? s.comment.slice(0, 120) : null }))
+      .sort((a, b) => b.time - a.time)
   }
 
   // ── actions ────────────────────────────────────────────────────────────────

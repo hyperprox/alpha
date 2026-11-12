@@ -22,11 +22,12 @@ import { BusyNote, GhostButton, INPUT, LABEL, Notice, PrimaryButton } from '@/co
 import { Feed, HudHeader, Icon, Panel, Pill, RingGauge, styles as vs } from '@/components/visual/kit'
 import { DetailsSection, PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
 import p from './pbs.module.css'
+import { GroupSheet, ManageSettings, MANAGE_WARNING, PreviewModal, StoreManageButtons, type ManagePreview } from './PbsManage'
 
 const API = '/api/plugins/pbs'
 
 interface Pin { fingerprint: string; source: 'first-use' | 'ca'; at: string }
-export interface Server { id: string; name: string; staleHours: number; pin?: Pin | null; url?: string; tokenId?: string; hasSecret?: boolean }
+export interface Server { id: string; name: string; staleHours: number; pin?: Pin | null; url?: string; tokenId?: string; hasSecret?: boolean; manage?: { tokenId: string; stores: string[]; at: string } | null }
 
 interface Datastore {
   store: string; total: number | null; used: number | null; avail: number | null; usedFrac: number | null; dedup: number | null
@@ -71,7 +72,7 @@ function useServers() {
 
 // ── pieces ───────────────────────────────────────────────────────────────────
 
-function StoreCard({ d, admin, busy, onAct }: { d: Datastore; admin: boolean; busy: string | null; onAct: (action: 'verify', store: string) => void }) {
+function StoreCard({ d, admin, busy, onAct, extra }: { d: Datastore; admin: boolean; busy: string | null; onAct: (action: 'verify', store: string) => void; extra?: React.ReactNode }) {
   const full = d.usedFrac !== null && d.usedFrac >= FULL_AT
   const pct = d.usedFrac === null ? '—' : `${Math.round(d.usedFrac * 100)}%`
   return (
@@ -97,13 +98,14 @@ function StoreCard({ d, admin, busy, onAct }: { d: Datastore; admin: boolean; bu
       {admin && (
         <div className={p.acts}>
           <button type="button" className={vs.btn} disabled={busy !== null} onClick={() => onAct('verify', d.store)}><Icon name="check" size={14} /> {busy === `verify:${d.store}` ? 'Starting…' : 'Verify now'}</button>
+          {extra}
         </div>
       )}
     </article>
   )
 }
 
-function GroupTiles({ groups, staleHours }: { groups: Group[]; staleHours: number }) {
+function GroupTiles({ groups, staleHours, onOpen }: { groups: Group[]; staleHours: number; onOpen?: (g: Group) => void }) {
   const places = [...new Set(groups.map(g => `${g.store}\u0000${g.ns}`))]
   return (
     <>
@@ -119,7 +121,8 @@ function GroupTiles({ groups, staleHours }: { groups: Group[]; staleHours: numbe
                 const fresh = g.ageHours === null ? 0 : Math.max(0.04, 1 - g.ageHours / Math.max(1, staleHours))
                 return (
                   <li key={`${g.type}/${g.id}`} className={p.group} data-state={state}
-                    title={`${g.type}/${g.id}: newest ${g.newest ? new Date(g.newest * 1000).toLocaleString() : 'none'}, verify ${g.verify}`}>
+                    title={`${g.type}/${g.id}: newest ${g.newest ? new Date(g.newest * 1000).toLocaleString() : 'none'}, verify ${g.verify}`}
+                    {...(onOpen ? { role: 'button', tabIndex: 0, style: { cursor: 'pointer' }, onClick: () => onOpen(g), onKeyDown: (e: React.KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') onOpen(g) } } : {})}>
                     <b><small>{g.type}</small>{g.id}</b>
                     <span className={p.age}>{age(g.ageHours)}{g.stale ? ' · stale' : ''}</span>
                     <div className={p.fresh} aria-hidden><i style={{ width: `${Math.round(fresh * 100)}%` }} /></div>
@@ -180,6 +183,9 @@ function ServerView({ s }: { s: Server }) {
   const [busy, setBusy] = useState<string | null>(null)
   const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null)
   const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
+  const [preview, setPreview] = useState<ManagePreview | null>(null)
+  const [sheet, setSheet] = useState<Group | null>(null)
+  const managed = (store: string) => admin && !!s.manage?.stores.includes(store)
   const inFlight = useRef(false)
 
   const load = useCallback(async (fresh = false) => {
@@ -246,14 +252,16 @@ function ServerView({ s }: { s: Server }) {
 
           <Panel title="Datastores" sub={admin ? 'verify needs the master password; GC runs on its schedule' : undefined}>
             {r.datastores.length === 0 ? <p className="text-sm" style={{ color: 'var(--text-muted)' }}>The token sees no datastore. Give it Datastore.Audit (the Audit role on /).</p>
-              : <div className={p.stores}>{r.datastores.map(d => <StoreCard key={d.store} d={d} admin={admin} busy={busy} onAct={(a, st) => void act(a, st)} />)}</div>}
+              : <div className={p.stores}>{r.datastores.map(d => <StoreCard key={d.store} d={d} admin={admin} busy={busy} onAct={(a, st) => void act(a, st)}
+                extra={managed(d.store) ? <StoreManageButtons serverId={s.id} store={d.store} onPreview={setPreview} onNote={n => { setNote(n); if (n.ok) void load(true) }} /> : undefined} />)}</div>}
           </Panel>
 
           <Panel title="Backup groups" sub={`red: no snapshot in ${r.staleHours} h`} actions={
             <label className={p.filter}><input type="checkbox" checked={onlyStale} onChange={e => setOnlyStale(e.target.checked)} /> only stale</label>}>
             {shown.length === 0
               ? <p className="text-sm" style={{ color: onlyStale ? 'var(--good)' : 'var(--text-muted)' }}>{onlyStale ? 'No stale groups.' : 'No backups yet.'}</p>
-              : <GroupTiles groups={shown} staleHours={r.staleHours} />}
+              : <GroupTiles groups={shown} staleHours={r.staleHours} onOpen={s.manage && admin ? (g => { if (managed(g.store)) setSheet(g) }) : undefined} />}
+            {s.manage && admin && <p className="mt-2 text-[12px]" style={{ color: 'var(--text-dimmer)' }}>Backup management is on for {s.manage.stores.join(', ')}: tap a group to delete snapshots. Protected snapshots are never deleted.</p>}
           </Panel>
 
           <Panel title="Jobs" sub="prune · GC · verify · sync">
@@ -298,6 +306,8 @@ function ServerView({ s }: { s: Server }) {
           </div>
         </>
       )}
+      {sheet && <GroupSheet serverId={s.id} store={sheet.store} ns={sheet.ns} type={sheet.type} id={sheet.id} onClose={() => setSheet(null)} onPreview={pv => { setSheet(null); setPreview(pv) }} />}
+      {preview && <PreviewModal serverId={s.id} p={preview} onClose={() => setPreview(null)} onDone={m => { setPreview(null); setNote({ text: m, ok: true }); void load(true) }} />}
       {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const f = reconfirm; setReconfirm(null); f() }} />}
     </div>
   )
@@ -314,7 +324,12 @@ const TOKEN_STEPS = [
 
 function ServerForm({ s, onSaved, onCancel }: { s: Server | null; onSaved: () => void; onCancel?: () => void }) {
   const [f, setF] = useState({ name: s?.name ?? '', url: s?.url ?? '', tokenId: s?.tokenId ?? '', secret: '', staleHours: String(s?.staleHours ?? 26),
-    username: 'root', realm: 'pam', password: '', allowVerify: '0' })
+    username: 'root', realm: 'pam', password: '', allowVerify: '0', manage: '0' })
+  const [stores, setStores] = useState<string[]>([])
+  useEffect(() => {
+    if (!s) return
+    void apiJson<{ data: { ok: boolean; reading?: Reading } }>(`${API}/instances/${s.id}/reading`).then(r => setStores(r.ok && r.body!.data.reading ? r.body!.data.reading.datastores.map(d => d.store) : []))
+  }, [s])
   // Adding: sign in once (recommended; HyperProx makes its own read-only token) or paste a token (advanced).
   const [mode, setMode] = useState<'signin' | 'token'>('signin')
   const signin = !s && mode === 'signin'
@@ -326,13 +341,15 @@ function ServerForm({ s, onSaved, onCancel }: { s: Server | null; onSaved: () =>
   const signIn = async () => {
     setBusy(true); setErr(null)
     const r = await apiJson(`${API}/instances/signin`, 'POST', {
-      name: f.name, url: f.url, staleHours: Number(f.staleHours) || 26, username: f.username, realm: f.realm, password: f.password, allowVerify: f.allowVerify === '1',
+      name: f.name, url: f.url, staleHours: Number(f.staleHours) || 26, username: f.username, realm: f.realm, password: f.password, allowVerify: f.allowVerify === '1', manage: f.manage === '1',
     })
     setBusy(false)
     if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void signIn()); return }
     // The password is cleared from the form either way: it was for this one sign-in.
     set('password', '')
     if (!r.ok) { setErr(r.error ?? 'Could not add the server'); return }
+    const me = (r.body as any)?.data?.manageError
+    if (me) window.alert(me)
     onSaved()
   }
 
@@ -397,7 +414,12 @@ function ServerForm({ s, onSaved, onCancel }: { s: Server | null; onSaved: () =>
           <label className="flex items-start gap-2 text-sm" style={{ color: 'var(--text)' }}>
             <input type="checkbox" checked={f.allowVerify === '1'} onChange={e => set('allowVerify', e.target.checked ? '1' : '0')} />
             <span>Allow &quot;Verify now&quot;
-              <span className="block text-[12px]" style={{ color: 'var(--warn-2)' }}>Off by default. Gives the token the DatastoreReader role on each datastore (never on /): Datastore.Verify, plus Datastore.Read, so anyone holding the token could also read (restore) backup contents there. It still cannot prune, forget, delete or garbage-collect anything. Starting a verify still needs an admin and the master password.</span></span>
+              <span className="block text-[12px]" style={{ color: 'var(--text-dim)' }}>Off by default. Gives the token the DatastoreReader role on each datastore (never on /): Datastore.Verify, plus Datastore.Read, so anyone holding the token could also read (restore) backup contents there. It still cannot prune, forget, delete or garbage-collect anything. Starting a verify still needs an admin and the master password.</span></span>
+          </label>
+          <label className="flex items-start gap-2 text-sm" style={{ color: 'var(--text)' }}>
+            <input type="checkbox" checked={f.manage === '1'} onChange={e => set('manage', e.target.checked ? '1' : '0')} />
+            <span>Let HyperProx manage backups (delete, prune, clean up)
+              <span className="block text-[12px]" style={{ color: 'var(--warn-2)' }}>Off by default. {MANAGE_WARNING} It applies to every datastore on the server; choose fewer later under Settings.</span></span>
           </label>
         </>
       ) : (
@@ -421,6 +443,7 @@ function ServerForm({ s, onSaved, onCancel }: { s: Server | null; onSaved: () =>
           <div><GhostButton type="button" disabled={busy} onClick={() => void save(true)}>Re-pin the certificate presented now</GhostButton></div>
         </div>
       )}
+      {s && <ManageSettings key={`${s.id}:${s.manage ? 'on' : 'off'}`} serverId={s.id} manage={s.manage ?? null} stores={stores} onSaved={onSaved} />}
       {err && <Notice kind="error">{err}</Notice>}
       <div className="flex flex-wrap justify-end gap-2">
         {s && <GhostButton type="button" onClick={() => void remove()} style={{ color: 'var(--crit-soft)' }}>Remove</GhostButton>}

@@ -19,6 +19,7 @@ import { hasRole } from '../lib/roles'
 import { coverageOf, detailOf, pbsService } from '../lib/pbs'
 import { PbsInputError, type PbsMeta, type PbsView } from '../lib/pbs/instances'
 import { PbsRefusal, type Actor } from '../lib/pbs/service'
+import { ManageRefusal, MANAGE_CONSEQUENCE } from '../lib/pbs/manage'
 
 declare module 'fastify' {
   interface FastifyRequest { pbsHandled?: boolean }
@@ -36,12 +37,13 @@ const isViewer = (req: FastifyRequest) => !hasRole(req.session?.role ?? 'viewer'
 function fail(reply: FastifyReply, e: any) {
   if (e instanceof PbsRefusal) return reply.status(e.status).send({ success: false, code: e.code, error: e.message })
   if (e instanceof PbsInputError) return reply.status(e.status).send({ success: false, code: 'bad_input', error: e.message })
+  if (e instanceof ManageRefusal) return reply.status(e.status).send({ success: false, code: e.code, error: e.message, problems: e.problems })
   throw e
 }
 
 function view(m: PbsMeta & Partial<Pick<PbsView, 'url' | 'tokenId' | 'hasSecret'>>, viewer: boolean) {
   if (!viewer) return m
-  const { url: _u, tokenId: _t, pin: _p, ...rest } = m
+  const { url: _u, tokenId: _t, pin: _p, manage: _m, ...rest } = m
   return rest
 }
 
@@ -131,6 +133,48 @@ export const pbsRoutes: FastifyPluginAsync = async (fastify) => {
     } catch (e: any) {
       return { success: true, data: { ok: false, error: e instanceof PbsRefusal ? e.message : 'The cluster cross-check could not be made.' } }
     }
+  })
+
+  // ── backup management (opt-in; off by default) ─────────────────────────────
+
+  // The snapshots of one group, for picking which to delete. A read: the read-only token.
+  fastify.get<P & { Querystring: { store?: string; ns?: string; type?: string; id?: string } }>('/instances/:iid/snapshots', async (req, reply) => {
+    try {
+      const q = req.query
+      if (!q.store || !q.type || !q.id) return reply.status(400).send({ success: false, error: 'Name the datastore and the group.' })
+      return { success: true, data: await svc().groupSnapshots(req.params.iid, { store: q.store, ns: q.ns ?? '', type: q.type, id: q.id }, actor(req)) }
+    } catch (e) { return fail(reply, e) }
+  })
+
+  // Turn management on (an admin sign-in, used once, and the datastores) or off (deletes the manage token on PBS).
+  fastify.put<P & { Body: Record<string, unknown> }>('/instances/:iid/manage', async (req, reply) => {
+    try {
+      const b = req.body ?? {}
+      const login = { username: b.username, realm: b.realm, password: b.password }
+      const meta = b.enabled === true
+        ? await svc().manager.enable(req.params.iid, Array.isArray(b.stores) ? b.stores.filter((x): x is string => typeof x === 'string') : [], actor(req), { login })
+        : await svc().manager.disable(req.params.iid, actor(req), login)
+      svc().forget(req.params.iid)
+      return { success: true, data: { ...view(meta, false), consequence: MANAGE_CONSEQUENCE } }
+    } catch (e) { return fail(reply, e) }
+  })
+
+  fastify.post<P & { Body: Record<string, unknown> }>('/instances/:iid/manage/preview', async (req, reply) => {
+    try { return { success: true, data: await svc().manager.preview(req.params.iid, actor(req), req.body ?? {}) } }
+    catch (e) { return fail(reply, e) }
+  })
+
+  fastify.post<P & { Body: { previewId?: unknown; acks?: unknown } }>('/instances/:iid/manage/apply', async (req, reply) => {
+    try {
+      const r = await svc().manager.apply(req.params.iid, actor(req), String(req.body?.previewId ?? ''), req.body?.acks)
+      svc().forget(req.params.iid)
+      return { success: true, data: r }
+    } catch (e) { return fail(reply, e) }
+  })
+
+  fastify.post<P & { Body: { store?: unknown } }>('/instances/:iid/manage/gc', async (req, reply) => {
+    try { return { success: true, data: await svc().manager.gc(req.params.iid, actor(req), req.body?.store) } }
+    catch (e) { return fail(reply, e) }
   })
 
   fastify.post<P & { Body: Record<string, unknown> }>('/instances/:iid/actions/verify', async (req, reply) => {
