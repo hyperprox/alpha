@@ -1477,7 +1477,7 @@ happened and the site record stays, so **Preview again** offers only what is lef
 
 | Plug-in | What it shows |
 |---|---|
-| Arr Stack | Sonarr, Radarr, Prowlarr and qBittorrent as one pipeline (search, grabbed, downloading, import, library) with live counts; imports that need a person as alert cards; download progress; indexer status dots and health warnings |
+| Arr Stack | Sonarr, Radarr, Prowlarr and qBittorrent as one pipeline (search, grabbed, downloading, import, library) with live counts; a live **Queue** grouped by show and season; imports that need a person as alert cards; download progress; indexer status dots and health warnings; what is coming up |
 | Unmanic | One ring per worker with its slots, a caught-up (or stalled) banner, and what is encoding now with its progress |
 | MikroTik | A live map of internet, uplinks, router and subnets; CPU, memory, temperature and input-voltage rings; top talkers; port forwards; the log with errors highlighted. Also the per-device and per-interface tables, firewall, WireGuard and neighbours; feeds the bandwidth dials and offers an SSH console |
 | Plex activity | Read from Plex itself: what is streaming now with each title's cover (progress, direct play, direct stream or transcode), local and remote bandwidth gauges, who watches most, what is watched most, recent history and your libraries. Tautulli is optional and adds hours watched. Plus **Clear-out** (what nobody watches), **Library** (remove shows, seasons, episodes or films) and an optional message when something new is added (see below) |
@@ -1494,6 +1494,33 @@ phone, and stop animating when your system asks for reduced motion. Names on the
 the router (DHCP leases, ARP comments) and, where it has none, from HyperProx's own list of which cluster
 guest has which address. On the Arr Stack page, an import blocked because the filenames carry no season
 and episode offers **Map by filename**, the same rescue as before.
+
+**Arr Stack queue.** The Arr Stack page opens on a **Queue** tab (next to Overview and Upcoming) that
+updates by itself, like the Plex page: the queue about every 4 seconds and the rest of the page every 30
+seconds. Both stop while the browser tab is hidden and catch up when you come back. The **pause** button
+turns it off, and **Refresh** is now a small extra for when you want a reading right away. Behind the page, HyperProx
+reads the queue once and shares that reading with every open page for 3 seconds, so extra tabs do not
+cost Sonarr and Radarr extra requests.
+
+- **Every download, not 200 rows.** HyperProx reads every page of the Sonarr and Radarr queues. Sonarr
+  lists a queue row for each episode, so a 23-episode season pack arrives as 23 rows. HyperProx folds the
+  rows that share a download ID into one download, then groups them **show, then season, then download**.
+  A pack that spans several seasons gets its own group, such as S03–S04. Movies are a flat list.
+- **What each download shows.** A progress bar and percentage, how much is left of the total size, the time
+  left (or "no ETA"), its state, its quality, protocol (torrent or usenet), download client and indexer,
+  and for a show the episode count and range, such as "E01–E23". The size is the pack's size, counted once.
+- **Problems come first.** A download is marked Failed, Import blocked, Stalled (Sonarr or Radarr say it is
+  stalled) or Warning, and the message Sonarr or Radarr gave is printed under it. Groups and downloads are
+  sorted with problems first, then the soonest to finish. The **Problems** button hides everything else.
+- **Collapsible.** Click a show or a season to fold it. Seasons start open. Shows with a problem start open, and so
+  does every show when there are three shows or fewer; **Expand all** and **Collapse all** override that.
+- **The summary.** Tiles at the top and chips in the page header show how many downloads and shows are
+  queued, how much is left to fetch, and how many are stalled or have warnings. The Arr Stack tile on the
+  plug-ins page shows the same in its Queue row.
+
+The queue is read-only: there are no delete, blocklist or retry buttons. It uses the keys already saved in
+the plug-in's settings, which stay on the server; the page never receives a key, an address or the download folder. Messages are passed on as Sonarr and Radarr wrote them.
+If Sonarr or Radarr does not answer, its half is greyed with the reason and the other still shows.
 
 **Plex** needs only your Plex server. There are two ways to add it, both in the plug-in's settings.
 

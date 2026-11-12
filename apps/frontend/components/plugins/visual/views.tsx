@@ -137,11 +137,21 @@ export function PlexView({ v }: { v: PlexVisual }) {
 
 export interface Stuck { id: string; title: string; series: string; path: string; reason: string; files: number; mappable: number; unmappable: string[] }
 
-export function arrChips(v: ArrVisual): StatChip[] {
-  return [
+/** The live queue summary (from /api/plugins/arrstack/queue), when it has arrived: downloads, not rows. */
+export interface ArrQueueSummary { downloads: number; shows: number; movies: number; sizeLeft: number; attention: number; stalled: number; warnings: number }
+
+export function arrChips(v: ArrVisual, q?: ArrQueueSummary | null): StatChip[] {
+  const queueChips: StatChip[] = q ? [
+    { label: 'downloads', value: q.downloads, tone: 'accent' },
+    { label: 'shows', value: q.shows },
+    { label: 'left', value: bytes(q.sizeLeft) },
+    { label: 'stalled / warnings', value: q.stalled + q.warnings, tone: q.stalled + q.warnings ? 'warn' : undefined },
+  ] : [
     { label: 'in queue', value: v.pipeline.queued, tone: 'accent' },
+  ]
+  return [
+    ...queueChips,
     { label: 'blocked imports', value: v.pipeline.importBlocked, tone: v.pipeline.importBlocked ? 'crit' : 'good' },
-    { label: 'stalled', value: v.pipeline.stalled, tone: v.pipeline.stalled ? 'warn' : undefined },
     ...(v.pipeline.downBps !== null ? [{ label: 'download', value: rate(v.pipeline.downBps) }] : []),
   ]
 }

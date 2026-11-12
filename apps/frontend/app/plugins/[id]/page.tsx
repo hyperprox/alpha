@@ -20,6 +20,7 @@ import { DetailsSection, PLUGIN_ICON, PluginSwitcher } from '@/components/plugin
 import { PlexClearOut } from '@/components/plugins/plex/ClearOut'
 import { PlexLibrary } from '@/components/plugins/plex/Library'
 import { ArrUpcoming } from '@/components/plugins/arr/Upcoming'
+import { ArrQueue, useArrQueue } from '@/components/plugins/arr/Queue'
 import { ArrView, MeshView, PlexView, RouterView, UnmanicView, arrChips, plexChips, routerChips, unmanicChips, type Stuck } from '@/components/plugins/visual/views'
 
 interface Column { key: string; label: string; align?: 'left' | 'right' }
@@ -258,13 +259,15 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
     try { const t = window.localStorage.getItem('hp.plex.tab'); if (t === 'now' || t === 'clearout' || t === 'library') setPlexTabRaw(t) } catch { /* no storage */ }
   }, [])
   const isArr = params.id === 'arrstack'
-  const [arrTab, setArrTabRaw] = useState<'overview' | 'upcoming'>('overview')
+  const [arrTab, setArrTabRaw] = useState<'overview' | 'queue' | 'upcoming'>('queue')
   useEffect(() => {
-    try { const t = window.localStorage.getItem('hp.arr.tab'); if (t === 'overview' || t === 'upcoming') setArrTabRaw(t) } catch { /* no storage */ }
+    try { const t = window.localStorage.getItem('hp.arr.tab'); if (t === 'overview' || t === 'queue' || t === 'upcoming') setArrTabRaw(t) } catch { /* no storage */ }
   }, [])
-  const setArrTab = (t: 'overview' | 'upcoming') => { setArrTabRaw(t); try { window.localStorage.setItem('hp.arr.tab', t) } catch { /* no storage */ } }
-  // "See the queue" on a downloading item: back to the overview, scrolled to its Downloads panel.
-  const showArrQueue = () => { setArrTab('overview'); setTimeout(() => document.getElementById('arr-downloads')?.scrollIntoView({ block: 'start' }), 50) }
+  const setArrTab = (t: 'overview' | 'queue' | 'upcoming') => { setArrTabRaw(t); try { window.localStorage.setItem('hp.arr.tab', t) } catch { /* no storage */ } }
+  // "See the queue" on a downloading item: the Queue tab.
+  const showArrQueue = () => { setArrTab('queue'); window.scrollTo({ top: 0 }) }
+  // The grouped queue every few seconds from one light call (like Plex's /live), paused while the tab is hidden.
+  const arrQ = useArrQueue(isArr && live)
   const setPlexTab = (t: 'now' | 'clearout' | 'library') => { setPlexTabRaw(t); try { window.localStorage.setItem('hp.plex.tab', t) } catch { /* no storage */ } }
   const [liveAt, setLiveAt] = useState<number | null>(null)
   const sessionKeys = useRef<string | null>(null)
@@ -322,7 +325,7 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
 
   const v = detail?.ok ? detail.visual : undefined
   const unmatchedStuck = v?.kind === 'arrstack' ? stuck.filter(x => !v.blocked.some(b => b.downloadId === x.id)) : stuck
-  const chips: StatChip[] = !detail?.ok ? [] : v?.kind === 'plex' ? plexChips(v) : v?.kind === 'arrstack' ? arrChips(v)
+  const chips: StatChip[] = !detail?.ok ? [] : v?.kind === 'plex' ? plexChips(v) : v?.kind === 'arrstack' ? arrChips(v, arrQ.data?.summary)
     : v?.kind === 'unmanic' ? unmanicChips(v) : v?.kind === 'mikrotik' ? routerChips(v)
     : (detail.stats ?? []).slice(0, 4).map(x => ({ label: x.label, value: x.value, tone: x.tone === 'bad' ? 'crit' as const : x.tone === 'warn' ? 'warn' as const : undefined }))
 
@@ -361,10 +364,11 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
       <div className={vs.page}>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <div className="ml-auto flex flex-wrap items-center gap-2">
-            {fetchedAt && !isPlex && <span className="font-mono text-[10px] tabular-nums" style={{ color: 'var(--text-dimmer)' }}>{agoLabel(fetchedAt)}</span>}
-            {isPlex && live && (() => {
-              const last = Math.max(liveAt ?? 0, fetchedAt ?? 0)
-              const fresh = !!liveAt && Date.now() - liveAt < 15_000
+            {fetchedAt && !isPlex && !isArr && <span className="font-mono text-[10px] tabular-nums" style={{ color: 'var(--text-dimmer)' }}>{agoLabel(fetchedAt)}</span>}
+            {(isPlex || isArr) && live && (() => {
+              const at = isArr ? arrQ.at : liveAt
+              const last = Math.max(at ?? 0, fetchedAt ?? 0)
+              const fresh = !!at && Date.now() - at < 15_000
               return (
                 <span className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.1em]" role="status"
                   style={{ color: fresh ? 'var(--accent)' : 'var(--text-dimmer)' }}>
@@ -378,21 +382,21 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
                 asked to be polled does not get a switch that implies it could be. */}
             {everySeconds > 0 && (
               <button onClick={() => setLive(!live)} aria-pressed={live}
-                title={isPlex ? (live ? 'Now streaming updates every 5 s, the rest every minute. Click to pause.' : 'Updates are paused') : live ? `Refreshing every ${everySeconds}s — click to pause` : 'Auto-refresh is off'}
+                title={isArr ? (live ? 'The queue updates every 4 s, the rest every 30 s. Click to pause.' : 'Updates are paused') : isPlex ? (live ? 'Now streaming updates every 5 s, the rest every minute. Click to pause.' : 'Updates are paused') : live ? `Refreshing every ${everySeconds}s — click to pause` : 'Auto-refresh is off'}
                 className="flex h-10 items-center gap-2 rounded-md border px-4 font-mono text-xs uppercase tracking-[0.1em] transition-colors hover:bg-hover"
                 style={{ borderColor: live ? 'color-mix(in srgb, var(--accent) 40%, transparent)' : 'var(--border-strong)',
                          color: live ? 'var(--accent)' : 'var(--text)', background: 'transparent' }}>
                 <span aria-hidden className={live ? 'animate-pulse' : ''} style={{ width: 8, height: 8, borderRadius: 999, display: 'inline-block',
                   background: live ? 'var(--accent)' : 'var(--text-dimmer)', boxShadow: live ? '0 0 10px var(--accent)' : 'none' }} />
-                {isPlex ? (live ? 'pause' : 'paused') : live ? `live · ${everySeconds} s` : 'paused'}
+                {isPlex || isArr ? (live ? 'pause' : 'paused') : live ? `live · ${everySeconds} s` : 'paused'}
               </button>
             )}
             {/* A page that refreshes itself keeps Refresh only as a small secondary control. */}
             <button onClick={() => load()} disabled={loading}
-              className={isPlex
+              className={isPlex || isArr
                 ? 'h-10 rounded-md border px-3 text-xs transition-colors hover:bg-hover disabled:opacity-40'
                 : 'h-10 rounded-md px-5 text-sm font-semibold transition-opacity hover:opacity-85 disabled:opacity-40'}
-              style={isPlex
+              style={isPlex || isArr
                 ? { borderColor: 'var(--border-strong)', color: 'var(--text-dim)', background: 'transparent' }
                 : { background: 'var(--accent)', color: 'var(--accent-ink)', border: 'none' }}>
               {loading ? 'reading…' : 'Refresh'}
@@ -429,7 +433,7 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
             )}
             {isArr && v?.kind === 'arrstack' && (
               <div role="tablist" aria-label="Arr Stack views" className="flex flex-wrap gap-2">
-                {([['overview', 'Overview'], ['upcoming', 'Upcoming']] as const).map(([k, label]) => (
+                {([['queue', 'Queue'], ['overview', 'Overview'], ['upcoming', 'Upcoming']] as const).map(([k, label]) => (
                   <button key={k} role="tab" aria-selected={arrTab === k} onClick={() => setArrTab(k)}
                     className="h-10 rounded-md border px-4 font-display text-sm font-semibold uppercase tracking-[0.1em]"
                     style={{ borderColor: arrTab === k ? 'color-mix(in srgb, var(--accent) 45%, transparent)' : 'var(--border-strong)',
@@ -443,6 +447,7 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
             {/* What nobody watches, and the whole library. Read on their own (Plex itself), so they never slow the live view. */}
             {isPlex && plexTab === 'clearout' && <PlexClearOut live={live} />}
             {isPlex && plexTab === 'library' && <PlexLibrary />}
+            {v?.kind === 'arrstack' && arrTab === 'queue' && <ArrQueue q={arrQ} />}
             {v?.kind === 'arrstack' && arrTab === 'overview' && <ArrView v={v} stuck={stuck} rescuing={rescuing} onRescue={rescue} rescueNote={rescueNote} />}
             {v?.kind === 'arrstack' && arrTab === 'upcoming' && <ArrUpcoming onQueue={showArrQueue} />}
             {v?.kind === 'unmanic' && <UnmanicView v={v} />}

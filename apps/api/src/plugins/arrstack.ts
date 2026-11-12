@@ -18,6 +18,8 @@ import type {
   Plugin, PluginContext, PluginTileData, PluginDetail,
   PluginMetric, PluginStuckImport } from '../lib/plugin-host'
 import type { ArrDownloadState, ArrVisual } from '../lib/plugin-visual-types'
+import { buildQueueData } from '../lib/arr-queue/logic'
+import { bytes as fmtBytes } from '../lib/arr-queue/format'
 
 type Tone = 'good' | 'warn' | 'bad'
 const EPISODE = /[Ss]\d{1,2}[Ee]\d{1,2}|\b\d{1,2}x\d{2}\b/
@@ -69,12 +71,24 @@ async function readArr(ctx: PluginContext, key: string, label: string): Promise<
   if (key !== 'default' && !ctx.has(key)) return null
   const c = key === 'default' ? ctx : ctx.from(key)
   try {
+    // Every page, so the counts are the whole queue and not its first 200 rows (a long pack run is more).
+    const readQueue = async () => {
+      const rows: any[] = []
+      let total = 0
+      for (let page = 1; page <= 10; page++) {
+        const q = await c.get(`/api/v3/queue?page=${page}&pageSize=200&includeUnknownSeriesItems=true&includeUnknownMovieItems=true`)
+        const recs: any[] = Array.isArray(q?.records) ? q.records : []
+        rows.push(...recs)
+        total = Number(q?.totalRecords ?? rows.length)
+        if (!recs.length || rows.length >= total) break
+      }
+      return { rows, total }
+    }
     const [q, health] = await Promise.all([
-      c.get('/api/v3/queue?pageSize=200&includeUnknownSeriesItems=true&includeUnknownMovieItems=true'),
+      readQueue(),
       c.get('/api/v3/health').catch(() => []),
     ])
-    return { key, label, queue: q?.records ?? [],
-             total: Number(q?.totalRecords ?? (q?.records?.length ?? 0)),
+    return { key, label, queue: q.rows, total: Math.max(q.total, q.rows.length),
              health: Array.isArray(health) ? health : [] }
   } catch (e: any) {
     return { key, label, queue: [], total: 0, health: [], error: e.message }
@@ -320,6 +334,8 @@ export const arrstackPlugin: Plugin = {
     description: 'The whole pipeline — Sonarr, Radarr, Prowlarr and qBittorrent — as one view, with search across every indexer.',
     kind: 'device',
     icon: '📺',
+    // The whole page every 30 s; the grouped queue every few seconds through /api/plugins/arrstack/queue.
+    refreshSeconds: 30,
     baseUrlSetting: 'sonarr_url',
     auth: { kind: 'header', header: 'X-Api-Key', fromSetting: 'sonarr_key' },
     endpoints: [
@@ -381,6 +397,21 @@ export const arrstackPlugin: Plugin = {
     }
     for (const a of arrs) {
       if (a.error) rows.push({ label: a.label, value: 'unreachable', tone: 'bad' })
+    }
+    // The queue as downloads, not rows: a 23-episode pack is one.
+    const sq = arrs.find(a => a.label === 'Sonarr'), rq = arrs.find(a => a.label === 'Radarr')
+    const qs = buildQueueData({
+      sonarr: { rows: sq && !sq.error ? sq.queue : null, configured: !!sq },
+      radarr: { rows: rq && !rq.error ? rq.queue : null, configured: !!rq },
+    }).summary
+    if (qs.downloads) {
+      rows.unshift({
+        label: 'Queue',
+        value: `${qs.downloads} download${qs.downloads === 1 ? '' : 's'} · ${qs.shows} show${qs.shows === 1 ? '' : 's'}`
+          + `${qs.movies ? ` · ${qs.movies} movie${qs.movies === 1 ? '' : 's'}` : ''} · ${fmtBytes(qs.sizeLeft)} left`,
+      })
+      const bad = qs.stalled + qs.warnings
+      if (bad) rows.push({ label: 'Warnings', value: `${bad} stalled or warning`, tone: 'warn' })
     }
 
     return {

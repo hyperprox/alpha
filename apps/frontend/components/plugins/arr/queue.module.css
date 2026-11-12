@@ -1,0 +1,72 @@
+/* =============================================================================
+   HyperProx — Arr Stack, Queue
+   Theme variables only (dark and light). Every row wraps at phone width: no
+   table, nothing absolutely positioned that could widen the page. The root is
+   position:relative so the visually-hidden labels inside the shared kit (tiles,
+   progress bars) stay inside it instead of stretching the page.
+   ============================================================================= */
+
+.root { position: relative; min-width: 0; display: flex; flex-direction: column; gap: 16px; overflow-x: clip; }
+
+.bar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-top: 12px; }
+.seg { display: inline-flex; border: 1px solid var(--hx-line-hi); border-radius: 10px; overflow: hidden; }
+.seg button { min-height: 40px; padding: 0 14px; background: transparent; border: 0; color: var(--text-muted);
+  font: 600 .8rem var(--font-display); letter-spacing: .1em; text-transform: uppercase; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--hx-line); }
+.seg button[aria-pressed="true"] { color: var(--hx-accent); background: color-mix(in srgb, var(--hx-accent) var(--glow), transparent); }
+.seg button:focus-visible { outline: 2px solid var(--hx-accent); outline-offset: -2px; }
+
+.fold { margin: 10px 0 0; color: var(--text-muted); font: 500 .74rem/1.45 var(--font-mono); letter-spacing: .03em; overflow-wrap: anywhere; }
+.err { margin: 10px 0 0; color: var(--warn); font-size: .88rem; line-height: 1.45; overflow-wrap: anywhere; }
+
+.groups, .seasons, .dls { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+
+.group { background: var(--hx-deep); border: 1px solid var(--hx-line); border-radius: 12px; min-width: 0; }
+.group[data-problem="failed"], .group[data-problem="blocked"] { border-color: color-mix(in srgb, var(--crit) 55%, transparent); }
+.group[data-problem="stalled"], .group[data-problem="warning"] { border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+
+.groupHead, .seasonHead, .moviesHead {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; text-align: left; cursor: pointer;
+  background: transparent; border: 0; color: inherit; font: inherit; padding: 8px 10px; min-height: 44px; border-radius: 12px;
+}
+.groupHead:focus-visible, .seasonHead:focus-visible, .moviesHead:focus-visible { outline: 2px solid var(--hx-accent); outline-offset: -2px; }
+.chev { flex: none; font-size: .6rem; color: var(--text-muted); transition: transform .15s; display: inline-block; }
+.chev[data-open="true"] { transform: rotate(90deg); }
+
+.groupTitle { flex: 1 1 10rem; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.groupTitle b { font: 700 1.1rem/1.15 var(--font-display); letter-spacing: .02em; color: var(--text-bright); overflow-wrap: anywhere; }
+.groupTitle small { font: 500 .72rem/1.4 var(--font-mono); color: var(--text-muted); letter-spacing: .04em; }
+.groupStats { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px 10px; margin-left: auto;
+  font: 600 .78rem var(--font-mono); color: var(--text-soft); min-width: 0; }
+
+.seasons { padding: 0 10px 10px 18px; border-top: 1px solid var(--hx-line); padding-top: 8px; }
+.season { border-left: 2px solid var(--hx-line-hi); padding-left: 8px; min-width: 0; }
+.season[data-problem="failed"], .season[data-problem="blocked"] { border-left-color: var(--crit); }
+.season[data-problem="stalled"], .season[data-problem="warning"] { border-left-color: var(--warn); }
+.seasonHead { padding: 4px 6px; min-height: 40px; }
+.seasonTitle { flex: 1 1 8rem; min-width: 0; font: 700 .95rem var(--font-display); letter-spacing: .06em; text-transform: uppercase; color: var(--text-soft); overflow-wrap: anywhere; }
+
+.dls { padding: 4px 0 4px 18px; }
+.dl { background: color-mix(in srgb, var(--hx-panel) 60%, transparent); border: 1px solid var(--hx-line); border-radius: 10px; padding: 8px 10px;
+  display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.dl[data-problem="failed"], .dl[data-problem="blocked"] { border-color: color-mix(in srgb, var(--crit) 55%, transparent); }
+.dl[data-problem="stalled"], .dl[data-problem="warning"] { border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+.dlHead { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.dlName { flex: 1; min-width: 0; font: 600 .9rem/1.25 var(--font-body); color: var(--text-bright); overflow-wrap: anywhere; }
+.dlNum { flex: none; font: 700 .85rem var(--font-mono); color: var(--hx-accent); }
+.dlMeta { display: flex; flex-wrap: wrap; gap: 2px 12px; font: 500 .72rem/1.4 var(--font-mono); color: var(--text-muted); letter-spacing: .03em; overflow-wrap: anywhere; }
+.dlMeta span { min-width: 0; }
+
+.warn { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 6px 8px; border-radius: 8px;
+  background: color-mix(in srgb, var(--warn) 9%, transparent); }
+.dl[data-problem="failed"] .warn, .dl[data-problem="blocked"] .warn { background: color-mix(in srgb, var(--crit) 10%, transparent); }
+.warn p { margin: 0; font-size: .82rem; line-height: 1.4; color: var(--text-soft); overflow-wrap: anywhere; }
+
+.moviesHead { min-height: 40px; padding: 4px 6px; font: 600 .8rem var(--font-display); letter-spacing: .1em; text-transform: uppercase; color: var(--text-muted); width: auto; }
+
+@media (max-width: 520px) {
+  .groupStats { margin-left: 0; justify-content: flex-start; flex-basis: 100%; padding-left: 26px; }
+  .groupHead, .seasonHead { flex-wrap: wrap; }
+  .seasons { padding-left: 10px; }
+  .dls { padding-left: 6px; }
+}
