@@ -1,0 +1,12 @@
+[
+ {
+  "backup-type": "vm",
+  "backup-id": "200",
+  "backup-time": 1799964000,
+  "size": 34359738368,
+  "verification": {
+   "state": "ok",
+   "upid": "UPID:v"
+  }
+ }
+]

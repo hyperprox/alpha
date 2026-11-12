@@ -34,6 +34,7 @@ import { terminalRoutes }             from './routes/terminal'
 import { pluginRoutes }           from './routes/plugins'
 import { haControlRoutes }      from './routes/ha-control'
 import { qnapRoutes }           from './routes/qnap'
+import { pbsRoutes }            from './routes/pbs'
 import { catalogueRoutes } from './routes/catalogue'
 import { siteRoutes } from './routes/sites'
 // Site metrics (lib/site-metrics): routes under /api/site-metrics and the five-minute collector.
@@ -153,6 +154,7 @@ async function main() {
   await server.register(pluginRoutes,          { prefix: '/api/plugins' })
   await server.register(haControlRoutes,       { prefix: '/api/plugins/home-assistant' })
   await server.register(qnapRoutes,            { prefix: '/api/plugins/qnap' })
+  await server.register(pbsRoutes,             { prefix: '/api/plugins/pbs' })
   await server.register(catalogueRoutes,      { prefix: '/api/catalogue' })
   await server.register(siteRoutes,           { prefix: '/api/sites' })
   await registerSiteMetrics(server)

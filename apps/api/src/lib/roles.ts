@@ -141,6 +141,9 @@ const HA_CONTROL_RECONFIRM = /^\/api\/plugins\/home-assistant\/instances(\/(?!pr
 // login) are admin and re-confirmed, which keeps API tokens off them too.
 const QNAP_ACT = /^\/api\/plugins\/qnap\/instances\/[^/]+\/actions$/
 const QNAP_RECONFIRM = /^\/api\/plugins\/qnap\/instances(\/(?!probe-certificate$)[^/]+(\/secure-actions)?)?$/
+// Proxmox Backup Server (routes/pbs.ts). Every write is admin (the default for a POST/PUT/DELETE) and re-confirmed:
+// adding, changing or removing a server stores a token, and "verify now" and "GC now" start work on the server.
+const PBS_RECONFIRM = /^\/api\/plugins\/pbs\/instances(\/[^/]+(\/actions\/(verify|gc))?)?$/
 // A plug-in's settings hold the address its stored credential is sent to: changing them is re-confirmed (which
 // also keeps API tokens out).
 const PLUGIN_SETTINGS = /^\/api\/plugins\/[^/]+\/settings$/
@@ -285,6 +288,7 @@ export function needsReconfirm(method: string, path: string): boolean {
   if (m === 'POST' && HA_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && HA_CONTROL_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && QNAP_RECONFIRM.test(p)) return true
+  if (m !== 'GET' && m !== 'HEAD' && PBS_RECONFIRM.test(p)) return true
   if (m === 'PUT' && PLUGIN_SETTINGS.test(p)) return true
   if (m === 'PUT' && SETTINGS_SAVE.test(p)) return true
   if (m === 'POST' && SETTINGS_TEST.test(p)) return true
