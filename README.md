@@ -9,6 +9,7 @@
 <p align="center">
   <a href="https://www.gnu.org/licenses/agpl-3.0"><img src="https://img.shields.io/badge/License-AGPL_v3-blue.svg" alt="License: AGPL v3"></a>
   <a href="https://github.com/hyperprox/alpha/stargazers"><img src="https://img.shields.io/github/stars/hyperprox/alpha?style=flat" alt="GitHub Stars"></a>
+  <a href="https://hyperprox.dev"><img src="https://img.shields.io/badge/website-hyperprox.dev-2fd6e8?style=flat" alt="Website: hyperprox.dev"></a>
 </p>
 
 ---
@@ -21,6 +22,8 @@ websites, with the detail a click away.
 
 It runs in a single container on your cluster, installs with one command, and talks to Proxmox
 through its API.
+
+**Website:** [hyperprox.dev](https://hyperprox.dev) has the tour, screenshots, the comparison with other tools and the roadmap.
 
 ## Screenshots
 
@@ -2210,5 +2213,5 @@ HyperProx is free software under the [GNU AGPL v3](https://www.gnu.org/licenses/
 ---
 
 <p align="center">
-  Built by <a href="https://example.net">HyperProx</a> — running on a real 5-node Proxmox cluster so every feature solves a real problem.
+  <a href="https://hyperprox.dev">hyperprox.dev</a> · built and run on a real 5-node Proxmox cluster, so every feature solves a real problem.
 </p>

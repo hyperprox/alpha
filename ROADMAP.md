@@ -2,7 +2,7 @@
 
 > *"Your Proxmox infrastructure, hypercharged."*
 >
-> Built by [HyperProx](https://example.net) — every feature comes from real operational pain running a real 5-node Proxmox homelab.
+> [hyperprox.dev](https://hyperprox.dev) · every feature comes from real operational pain running a real 5-node Proxmox homelab.
 
 ---
 
@@ -408,5 +408,5 @@ Commercial licensing for MSPs and enterprise deployments is an idea for later (s
 ---
 
 <div align="center">
-Built by <a href="https://example.net">HyperProx</a> — running on a real 5-node Proxmox cluster so every feature solves a real problem.
+<a href="https://hyperprox.dev">hyperprox.dev</a> · built and run on a real 5-node Proxmox cluster, so every feature solves a real problem.
 </div>
