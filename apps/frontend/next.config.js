@@ -19,6 +19,31 @@ function gitSha() {
     return /^[0-9a-f]{4,40}$/i.test(out) ? out : ''
   } catch { return '' }
 }
+// `git describe --tags --always`; without .git, VERSION as `git archive` filled it in ("<describe> <sha>").
+function versionFile() {
+  try {
+    const t = fs.readFileSync(path.join(__dirname, '../../VERSION'), 'utf8').trim()
+    if (!t || t.includes('$Format')) return null
+    const parts = t.split(/\s+/)
+    // No tag to describe from: git archive leaves only the commit.
+    if (parts.length === 1 && /^[0-9a-f]{40}$/.test(parts[0])) return { describe: parts[0].slice(0, 7), sha: parts[0].slice(0, 7) }
+    const [describe, sha] = parts
+    return { describe, sha: /^[0-9a-f]{40}$/.test(sha || '') ? sha.slice(0, 7) : '' }
+  } catch { return null }
+}
+function gitDescribe() {
+  const fromEnv = (process.env.GIT_DESCRIBE || '').trim()
+  if (/^[0-9A-Za-z._+-]{1,80}$/.test(fromEnv)) return fromEnv
+  try {
+    const out = execFileSync('git', ['describe', '--tags', '--always'], {
+      cwd: __dirname, stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000,
+    }).toString().trim()
+    return /^[0-9A-Za-z._+-]{1,80}$/.test(out) ? out : ''
+  } catch { return '' }
+}
+const fromFile = versionFile()
+const sha = gitSha() || (fromFile ? fromFile.sha : '')
+const describe = gitDescribe() || (fromFile ? fromFile.describe : '')
 const version = readVersion(path.join(__dirname, '../../package.json'))
              || readVersion(path.join(__dirname, 'package.json'))
              || 'unknown'
@@ -31,7 +56,8 @@ const nextConfig = {
   distDir: process.env.HYPERPROX_NEXT_DIST || '.next',
   env: {
     NEXT_PUBLIC_APP_VERSION: version,
-    NEXT_PUBLIC_GIT_SHA:     gitSha(),
+    NEXT_PUBLIC_GIT_SHA:     sha,
+    NEXT_PUBLIC_GIT_DESCRIBE: describe,
   },
   // Vault sign-in (and the first credential migration) can take ~30 s; the rewrite proxy's default is 30 s.
   experimental: { proxyTimeout: 180_000 },

@@ -18,6 +18,12 @@ pending package and kernel pin on every host. Live progress goes over its own so
 these frames carry command output from hosts); a lock closes it. Every job start,
 confirmation, resume, cancel and node reboot is written to the audit log.
 
+HyperProx's own update is on the same page, in the **HyperProx** card (home cluster only): its version, the
+channel (stable releases or every commit on `main`), what a newer version brings, and an install that runs in
+a process of its own, survives the restart and rolls itself back when something fails. It is not part of a
+run and is not governed by the policy file. How it works and its settings: "Updating HyperProx" in the
+README; how releases are cut: `RELEASING.md`.
+
 ## Getting started
 
 1. Copy `config/updates.example.yaml` to `config/updates.yaml` and edit it. The file is

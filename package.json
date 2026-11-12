@@ -8,6 +8,7 @@
     "build":     "pnpm --filter './apps/*' build",
     "lint":      "pnpm --filter './apps/*' lint",
     "typecheck": "pnpm --filter './apps/*' typecheck",
-    "demo":      "bash scripts/demo.sh"
+    "demo":      "bash scripts/demo.sh",
+    "release":   "bash scripts/release.sh"
   }
 }

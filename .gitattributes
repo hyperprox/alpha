@@ -1,0 +1,3 @@
+# VERSION is filled in by `git archive` (and so in GitHub's release tarballs): an install without .git
+# still knows which release and commit it is. A checkout keeps the placeholder and asks git instead.
+VERSION export-subst

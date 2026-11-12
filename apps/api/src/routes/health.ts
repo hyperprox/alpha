@@ -7,6 +7,7 @@ export const healthRoute: FastifyPluginAsync = async (fastify) => {
       status:  'ok',
       version: APP_VERSION.version,
       commit:  APP_VERSION.sha || undefined,
+      describe: APP_VERSION.describe || undefined,
       uptime:  process.uptime(),
       ts:      new Date().toISOString(),
     }

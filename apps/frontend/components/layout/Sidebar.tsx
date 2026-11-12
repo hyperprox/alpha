@@ -12,7 +12,7 @@ import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { SessionBadge } from './SessionBadge'
-import { versionLabel } from './version'
+import { versionLabel, GIT_DESCRIBE } from './version'
 import { NAV, isActive } from './nav'
 import { useSession } from '@/lib/session'
 import { DemoBadge } from './TopBar'
@@ -105,7 +105,7 @@ export function Sidebar() {
               ? <span className={s.srOnly}>{vaultState === 'unlocked' ? 'Vault unlocked' : 'Checking the vault'}</span>
               : <div style={{ minWidth: 0 }}>
                   <b>{vaultState === 'unlocked' ? 'Vault unlocked' : 'Checking the vault…'}</b>
-                  <div className={s.vaultMeta} title="HyperProx version and build commit">{versionLabel()}</div>
+                  <div className={s.vaultMeta} title={`HyperProx version and build commit${GIT_DESCRIBE ? ` (${GIT_DESCRIBE})` : ''}`}><Link href="/updates#hyperprox" className={s.vaultMetaLink}>{versionLabel()}</Link></div>
                 </div>}
           </div>
           {!collapsed && email && <SessionBadge />}

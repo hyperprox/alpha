@@ -3,6 +3,8 @@
 // when the build had no git history to read.
 export const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'unknown'
 export const GIT_SHA     = process.env.NEXT_PUBLIC_GIT_SHA || ''
+/** `git describe --tags --always` at build time ("v0.2.0-alpha-12-g1a2b3c4"); '' when unknown. */
+export const GIT_DESCRIBE = process.env.NEXT_PUBLIC_GIT_DESCRIBE || ''
 
 export function versionLabel(): string {
   const v = APP_VERSION === 'unknown' ? 'dev' : `v${APP_VERSION}`

@@ -46,6 +46,7 @@ import { setWizardStore, PrismaWizardStore } from './lib/catalogue-store'
 import { restoreWizardState } from './lib/catalogue-installer'
 import { terminalWsRoutes }           from './routes/terminal-ws'
 import { updatesRoutes, updatesWsRoutes } from './routes/updates'
+import { selfUpdateRoutes }     from './routes/self-update'
 import { certsRoutes }            from './routes/certs'
 import { haRoutes }               from './routes/ha'
 import { notifyRoutes }           from './routes/notify'
@@ -166,6 +167,7 @@ async function main() {
   await registerSiteMetrics(server)
   await server.register(updatesRoutes,        { prefix: '/api/updates' })
   await server.register(updatesWsRoutes,      { prefix: '/ws/updates' })
+  await server.register(selfUpdateRoutes,     { prefix: '/api/self-update' })
   await server.register(certsRoutes,          { prefix: '/api/certs' })
   await server.register(haRoutes,             { prefix: '/api/ha' })
   await server.register(notifyRoutes,         { prefix: '/api/settings/notifications' })

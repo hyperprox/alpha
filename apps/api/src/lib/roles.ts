@@ -237,6 +237,11 @@ const REMOTE_RECONFIRM: Array<[string, RegExp]> = [
 // WireGuard (/api/vpn): admin for every call, reads included; every change, reveal or rotation re-confirmed.
 // Previews (POST .../preview) only read, so they are not.
 const VPN = /^\/api\/vpn(\/|$)/
+// HyperProx's own update (routes/self-update.ts): the header chip's summary is for everyone signed in; the rest,
+// reads included, is admin (the log names paths and commits). Installing and changing its settings re-confirm.
+const SELF_UPDATE = /^\/api\/self-update(\/|$)/
+const SELF_UPDATE_SUMMARY = '/api/self-update/summary'
+
 const VPN_PREVIEW = /^\/api\/vpn\/wg\/router\/peers\/preview$/
 // Remote access job output names hosts, packages and addresses: admins only, like Updates.
 const REMOTE_JOBS = /^\/api\/remote\/(exclusions$|(v1\/)?jobs(\/|$)|machines\/[^/]+\/((tailscale|netbird)\/firewall|host-key)$|v1\/machines\/[^/]+\/(tailscale|netbird)\/(install-preview|settings)$)/
@@ -298,6 +303,7 @@ export function requiredRole(method: string, path: string): Role | null {
   if (SETUP_CHECKLIST.test(p)) return 'admin'
   if (ASUS_DIAGNOSTICS.test(p)) return 'admin'
   if (HA.test(p)) return (m === 'GET' || m === 'HEAD') && HA_READ.test(p) ? 'viewer' : 'admin'
+  if (SELF_UPDATE.test(p)) return (m === 'GET' || m === 'HEAD') && p === SELF_UPDATE_SUMMARY ? 'viewer' : 'admin'
   if (CLUSTERS.test(p)) {
     if (m === 'GET' || m === 'HEAD') return CLUSTERS_VIEW.test(p) ? 'viewer' : 'admin'
     if (m === 'POST' && CLUSTERS_POWER.test(p)) return 'operator'
@@ -372,5 +378,7 @@ export function needsReconfirm(method: string, path: string, opts: { tokenPlugin
   for (const [rm, re] of REMOTE_RECONFIRM) if (m === rm && re.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && VPN.test(p) && !VPN_PREVIEW.test(p)) return true
   for (const [cm, re] of CLUSTERS_RECONFIRM) if (m === cm && re.test(p)) return true
+  if (m === 'POST' && p === '/api/self-update/install') return true
+  if (m === 'PUT' && p === '/api/self-update/settings') return true
   return false
 }

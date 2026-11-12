@@ -139,6 +139,8 @@ export function tokenForbidden(method: string, path: string): boolean {
   if (p === '/api/secrets' || p.startsWith('/api/secrets/')) return true
   if (p === '/api/terminal' || p.startsWith('/api/terminal/')) return true
   if (p === '/ws' || p.startsWith('/ws/')) return true
+  // Installing a new HyperProx, or changing how it updates itself, is a person's act (routes/self-update.ts).
+  if (p === '/api/self-update/install' || p === '/api/self-update/settings') return true
   return false
 }
 

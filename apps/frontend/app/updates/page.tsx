@@ -15,6 +15,7 @@ import { AppsTable, appRows, offeredApprovals } from '@/components/updates/AppsT
 import { PlanList } from '@/components/updates/PlanList'
 import { JobPanel, type LogLine } from '@/components/updates/JobPanel'
 import { History } from '@/components/updates/History'
+import { SelfUpdatePanel } from '@/components/updates/SelfUpdatePanel'
 import { ClusterHeader, ClusterTag, CheckPanel, RebootPreviewList, useUpdatesCluster } from '@/components/updates/ClusterBits'
 import { Page, HudHeader, Tiles, GlowBars, type Tone } from '@/components/visual/kit'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
@@ -364,6 +365,9 @@ export default function UpdatesPage() {
       {notice && <Notice tone={notice.tone}>{notice.text}</Notice>}
 
       <CheckPanel status={check} error={checkErr} busy={busy} onCheck={checkNow} current={cluster.id} />
+
+      {/* HyperProx's own version and update: home only (it updates this install, nothing on a remote). */}
+      {!remote && <SelfUpdatePanel />}
 
       {active && <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-muted)' }}>This job runs on {tag}</div>}
       {active && (

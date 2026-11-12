@@ -10,6 +10,7 @@ import { usePathname } from 'next/navigation'
 import { useSession } from '@/lib/session'
 import { ThemeToggle } from './ThemeToggle'
 import { Finder } from './Finder'
+import { UpdateChip } from './UpdateChip'
 import { pageMeta } from './nav'
 import Link from 'next/link'
 import { pluginIdOf, resolvePageMeta } from '@/lib/page-title'
@@ -85,6 +86,7 @@ export function TopBar({ full = false }: { full?: boolean }) {
       </div>
       <div className={s.tools}>
         {status?.demo && <DemoBadge />}
+        {!status?.demo && <UpdateChip />}
         <span className={s.live} data-state={live} role="status">
           <i aria-hidden />{live === 'live' ? 'Live' : live === 'offline' ? 'Offline' : 'Connecting'}
         </span>

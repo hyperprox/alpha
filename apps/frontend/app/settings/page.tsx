@@ -6,6 +6,7 @@ import { atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
 import { HudHeader, Icon, Page, Panel, Pill, styles as ks, type StatChip } from '@/components/visual/kit'
 import ss from './settings.module.css'
+import { APP_VERSION, GIT_SHA, GIT_DESCRIBE } from '@/components/layout/version'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 
 // ---------------------------------------------------------------------------
@@ -50,6 +51,7 @@ const AREAS: Array<{ href: string; label: string; icon: string; sub: string }> =
   { href: '/settings/notifications',   label: 'Notifications',   icon: 'alarm',  sub: 'Where HyperProx tells you something needs attention.' },
   { href: '/settings/naming',          label: 'Naming & addresses', icon: 'network', sub: 'The network, address range, ID scheme and DHCP policy for new guests.' },
   { href: '/catalogue/settings',       label: 'Container ID rule', icon: 'plugin', sub: 'The older ID pattern, used only when Naming & addresses is not saved.' },
+  { href: '/updates#hyperprox',        label: 'HyperProx updates', icon: 'check', sub: 'This version, the update channel, and installing a newer HyperProx.' },
 ]
 
 // ---------------------------------------------------------------------------
@@ -302,6 +304,14 @@ export default function SettingsPage() {
             </li>
           ))}
         </ul>
+      </Panel>
+
+      <Panel title="About" sub="the HyperProx you are running" href="/updates#hyperprox" linkLabel="Updates">
+        <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
+          <dt style={{ color: 'var(--text-muted)' }}>Version</dt><dd className="font-mono">{APP_VERSION === 'unknown' ? 'dev' : `v${APP_VERSION}`}</dd>
+          <dt style={{ color: 'var(--text-muted)' }}>Commit</dt><dd className="font-mono">{GIT_SHA || 'unknown'}</dd>
+          <dt style={{ color: 'var(--text-muted)' }}>Build</dt><dd className="font-mono">{GIT_DESCRIBE || 'unknown'}</dd>
+        </dl>
       </Panel>
 
       <Panel title="Connections" sub="the logins HyperProx uses">

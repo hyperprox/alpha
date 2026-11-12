@@ -319,10 +319,50 @@ you sign in with this vault account from now on.
 
 ### Updating HyperProx
 
+**From the app.** Updates → **HyperProx** shows the version you run (also in Settings and at the foot of the
+sidebar), and whether a newer one is out. A small **Update available** chip appears in the top bar when there
+is. HyperProx checks every 6 hours, and when you press **Check now**.
+
+- **Channel.** *Stable* (the default) offers GitHub Releases newer than your version. *Alpha* follows every
+  commit on `main`. Before you install you see the version, its date, the release notes (or, on alpha, the
+  commits since yours in plain words), and flags for breaking changes, database migrations, and a keyholder
+  change (which locks HyperProx once, so you sign in again).
+- **Install.** Admins only, with your master password re-entered; an API token can never do it. **Preview**
+  lists what will happen and anything that stops it. The update runs in a process of its own, so it carries on
+  while HyperProx restarts, and the page picks the progress up again when it comes back:
+  1. check the disk space; refuse if the install has local changes, another update or a `deploy.sh` is running,
+     or HyperProx is locked;
+  2. back up the database to `/root/hyperprox-pre-update-<version>-<commit>.sql` (the newest 3 are kept) and
+     note the current commit;
+  3. fetch the new version from the configured upstream only, check it is the commit you were shown and that it
+     is on the release tag or on `main` (and its signature, when the tag is signed), look it over in a staging
+     copy, then check it out;
+  4. run `deploy.sh` from the new version: dependencies, build, migrations, restart (you stay signed in);
+  5. check that the API runs the new commit, the web app answers, and the sign-in page loads through nginx.
+
+  If anything after the checkout fails, it rolls back by itself: the previous commit is checked out, rebuilt and
+  restarted. Migrations only go forward, so if the update had applied migrations the database is restored from
+  the backup as well, and the page says so (anything written in between is lost). Every update is audited at the
+  start and at the end, and the end result goes to your notification channels.
+- **Settings** (Updates → HyperProx → Settings): channel, how often to check, a notification when an update is
+  out (off by default), **Require signed releases** (off by default), and **Automatic install** (off by default;
+  stable releases only, and only inside the maintenance window you set).
+- **Where updates come from** is set in `.env`, not in the app: `HYPERPROX_UPDATE_REPO` (default
+  `https://github.com/hyperprox/alpha.git`), `HYPERPROX_UPDATE_MIRROR` (a GitLab mirror, tried when GitHub does
+  not answer or its hourly limit for requests without a token is used up), and `HYPERPROX_UPDATE_TRUSTED_KEYS`
+  (an SSH `allowed_signers` file or a GPG key file, for signed releases). The self-update needs an install made
+  by `install.sh` (a git checkout); it only ever updates HyperProx itself.
+
+How releases are made: [RELEASING.md](RELEASING.md). To install a particular version in the first place:
+`bootstrap.sh --ref v0.3.0` (or `install.sh --ref=v0.3.0`).
+
+**By hand**, as before:
+
 ```bash
 cd /opt/hyperprox && git pull && bash deploy.sh
 ```
 
+Only one `deploy.sh` (or in-app update) runs at a time; a second one stops at once and says why.
 `deploy.sh` brings per-install settings up to date (`bin/hyperprox-config`, the same step the
 installer runs), checks the nginx config, installs dependencies and builds everything **before** it
 applies database migrations, so a failed build leaves the database and the running HyperProx as they

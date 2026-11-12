@@ -5,7 +5,10 @@
 #  Targets:  Proxmox LXC (privileged), bare metal, VM
 #  Usage:    curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/install.sh | bash
 #            — or —
-#            bash install.sh [--no-build] [--dev]
+#            bash install.sh [--no-build] [--dev] [--ref=REF]
+#
+#  --ref=REF (or HYPERPROX_REF) installs a release tag, branch or commit instead of main; the in-app updater
+#  (Updates page) takes it from there. HYPERPROX_REPO_URL clones a mirror or fork instead of GitHub.
 # =============================================================================
 
 set -euo pipefail
@@ -24,14 +27,17 @@ for arg in "$@"; do
   case $arg in
     --no-build) SKIP_BUILD=true ;;
     --dev)      DEV_MODE=true ;;
+    --ref=*)    HYPERPROX_REF="${arg#--ref=}" ;;
   esac
 done
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 HYPERPROX_DIR="/opt/hyperprox"
-REPO_URL="https://github.com/hyperprox/alpha.git"
+REPO_URL="${HYPERPROX_REPO_URL:-https://github.com/hyperprox/alpha.git}"
+INSTALL_REF="${HYPERPROX_REF:-}"
 NODE_VERSION="20"
-PNPM_VERSION="9"
+# 10: pnpm-workspace.yaml carries overrides and allowBuilds, which pnpm 9 ignores, so a frozen install fails.
+PNPM_VERSION="10"
 SETUP_PORT="3001"
 API_PORT="3002"
 FRONTEND_PORT="3000"
@@ -414,7 +420,7 @@ install_node() {
     _install_node_nodesource
   fi
 
-  if command -v pnpm &>/dev/null; then
+  if command -v pnpm &>/dev/null && [[ "$(pnpm --version 2>/dev/null | cut -d. -f1)" -ge "${PNPM_VERSION}" ]]; then
     ok "pnpm already installed: $(pnpm --version)"
   else
     info "Installing pnpm..."
@@ -442,6 +448,11 @@ clone_repo() {
 
   if [[ -d "${HYPERPROX_DIR}/.git" ]]; then
     warn "Repository already exists at ${HYPERPROX_DIR}"
+    if [[ -n "${INSTALL_REF}" ]]; then
+      if [[ -z "$(git -C "${HYPERPROX_DIR}" status --porcelain --untracked-files=no)" ]]; then checkout_ref
+      else warn "Local changes in ${HYPERPROX_DIR}: not moving it to ${INSTALL_REF} — installing the code that is there"; fi
+      return
+    fi
     # No question here: an install always wants the current code. Fast-forward only, so local edits are never overwritten.
     if git -C "${HYPERPROX_DIR}" pull --ff-only --quiet >>"${LOG_FILE}" 2>&1; then
       ok "Repository updated"
@@ -461,6 +472,23 @@ clone_repo() {
     git clone --quiet "${REPO_URL}" "${HYPERPROX_DIR}"
 
   ok "Cloned to ${HYPERPROX_DIR}"
+  checkout_ref
+}
+
+# --ref: put main at that tag, branch or commit. Staying on a branch (not a detached HEAD) keeps a later
+# install.sh, a `git pull` and the in-app updater working.
+checkout_ref() {
+  [[ -n "${INSTALL_REF}" ]] || return 0
+  [[ "${INSTALL_REF}" =~ ^[A-Za-z0-9._/-]{1,100}$ && "${INSTALL_REF}" != *..* && "${INSTALL_REF}" != -* ]] \
+    || die "--ref must be a tag, branch or commit id"
+  git -C "${HYPERPROX_DIR}" fetch --quiet --tags origin >>"${LOG_FILE}" 2>&1 || true
+  local sha
+  sha="$(git -C "${HYPERPROX_DIR}" rev-parse --verify --quiet "${INSTALL_REF}^{commit}" \
+      || git -C "${HYPERPROX_DIR}" rev-parse --verify --quiet "origin/${INSTALL_REF}^{commit}" || true)"
+  [[ -n "$sha" ]] || die "${INSTALL_REF} is not a tag, branch or commit in ${REPO_URL}"
+  git -C "${HYPERPROX_DIR}" checkout --quiet -B main "$sha" >>"${LOG_FILE}" 2>&1 \
+    || die "Could not check out ${INSTALL_REF}"
+  ok "Pinned to ${INSTALL_REF} ($(git -C "${HYPERPROX_DIR}" rev-parse --short=7 HEAD))"
 }
 
 # ── Install Dependencies + Build ───────────────────────────────────────────────

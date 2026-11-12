@@ -37,6 +37,7 @@ CORES=4            ; MEMORY=8192        ; DISK=100
 BRIDGE="vmbr0"     ; NET="dhcp"         ; GATEWAY=""
 STORAGE=""         ; TEMPLATE_STORAGE=""
 PASSWORD=""        ; ASSUME_YES=0       ; DRY_RUN=0       ; KEEP_ON_FAILURE=0
+REF=""             # a tag, branch or commit to install instead of main (--ref)
 [ "${HYPERPROX_YES:-}" = 1 ] && ASSUME_YES=1
 # Answers: "" means ask (or take the default with -y); a flag below answers in advance.
 A_NODE_HEALTH=""   ; A_POWER=""         ; A_GPU=""
@@ -72,6 +73,8 @@ Usage: bootstrap.sh [options]
   --igpu | --no-igpu  Answer yes or no: let containers use the nodes' built-in graphics
   --dry-run           Look and ask, then show what would be done; change nothing
   --keep-on-failure   If the install fails, keep what was created so you can look inside
+  --ref REF           Install this release tag, branch or commit instead of main (e.g. v0.3.0);
+                      HyperProx can update itself from there (Updates page)
   -y, --yes           Take every default and do not ask (or set HYPERPROX_YES=1)
 USAGE
 }
@@ -446,6 +449,7 @@ main() {
       --no-igpu) A_IGPU=no; shift;;
       --dry-run) DRY_RUN=1; shift;;
       --keep-on-failure) KEEP_ON_FAILURE=1; shift;;
+      --ref) REF="${2:-}"; shift 2;;
       -y|--yes) ASSUME_YES=1; shift;;
       -h|--help) usage; exit 0;;
       *) die "Unknown option: $1 (try --help)";;
@@ -458,6 +462,14 @@ main() {
   [ -z "$GATEWAY" ] || [[ "$GATEWAY" =~ $ipv4 ]] || die "--gateway must be an IPv4 address."
   for v in CORES MEMORY DISK; do [[ "${!v}" =~ ^[1-9][0-9]*$ ]] || die "--${v,,} must be a whole number."; done
   [ -z "$CTID" ] || [[ "$CTID" =~ ^[1-9][0-9]{2,8}$ ]] || die "--vmid must be a number of 100 or more."
+  if [ -n "$REF" ]; then
+    [[ "$REF" =~ ^[A-Za-z0-9._/-]{1,100}$ && "$REF" != *..* && "$REF" != -* ]] || die "--ref must be a tag, branch or commit id."
+    # The installer and the node scripts come from that same version (HPX_RAW_BASE, when set, is used as given).
+    [ -n "${HPX_RAW_BASE:-}" ] || RAW_BASE="https://raw.githubusercontent.com/hyperprox/alpha/$REF"
+  fi
+  # A mirror or fork to clone instead of GitHub (HPX_REPO_URL), as install.sh's HYPERPROX_REPO_URL.
+  REPO_URL_ARG="${HPX_REPO_URL:-}"
+  [ -z "$REPO_URL_ARG" ] || [[ "$REPO_URL_ARG" =~ ^https?://[A-Za-z0-9.:-]+/[A-Za-z0-9._~/-]+$ ]] || die "HPX_REPO_URL must be an http(s) git URL."
   if [ "$NET" != dhcp ]; then
     [[ "${NET%%/*}" =~ $ipv4 ]] && [[ "$NET" =~ /([1-9]|[12][0-9]|3[0-2])$ ]] || die "--ip must be an address with its prefix, e.g. 10.0.0.50/24."
     [ -n "$GATEWAY" ] || die "--ip needs --gateway too."
@@ -913,7 +925,7 @@ main() {
   say "Installing HyperProx (this takes a few minutes)"
   pct exec "$CTID" -- bash -c "DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl ca-certificates >/dev/null 2>&1" \
     || die "Could not install curl inside the container."
-  pct exec "$CTID" -- bash -c "curl -fsSL '$RAW_BASE/install.sh' -o /tmp/install.sh && yes | bash /tmp/install.sh" \
+  pct exec "$CTID" -- bash -c "curl -fsSL '$RAW_BASE/install.sh' -o /tmp/install.sh && yes | HYPERPROX_REF='$REF' HYPERPROX_REPO_URL='$REPO_URL_ARG' bash /tmp/install.sh" \
     || die "The HyperProx installer failed inside the container. To keep the container and look inside, re-run with --keep-on-failure."
 
   # -------------------------------------------------------------------------

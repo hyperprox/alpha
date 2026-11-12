@@ -1,16 +1,34 @@
 #!/usr/bin/env bash
 # HyperProx — Production Deploy
 # Usage: bash /opt/hyperprox/deploy.sh
+#
+# The in-app updater (apps/api/src/lib/self-update) runs this same script from the version it is installing, and
+# reads its "→ ..." lines to show which step it is in; keep them (apps/api/test/self-update-deploy.test.ts).
+#   HYPERPROX_DIR               the install (default /opt/hyperprox)
+#   HYPERPROX_DEPLOY_LOCK       the lock file one deploy or update at a time holds (default /run/lock/hyperprox-deploy.lock)
+#   HYPERPROX_DEPLOY_LOCK_HELD  set to 1 by the updater, which holds the lock already for the whole update
 
 set -euo pipefail
-cd /opt/hyperprox
+HYPERPROX_DIR="${HYPERPROX_DIR:-/opt/hyperprox}"; export HYPERPROX_DIR
+cd "$HYPERPROX_DIR"
+
+# One deploy at a time, and never one under a running in-app update (which holds this lock throughout).
+if [ "${HYPERPROX_DEPLOY_LOCK_HELD:-}" != 1 ]; then
+  LOCK="${HYPERPROX_DEPLOY_LOCK:-/run/lock/hyperprox-deploy.lock}"
+  mkdir -p "$(dirname "$LOCK")"
+  exec 9>>"$LOCK"
+  if ! flock -n 9; then
+    echo "✗ Another deploy or a HyperProx update is running (lock: $LOCK). Wait for it to finish; its progress is on the Updates page." >&2
+    exit 1
+  fi
+fi
 
 # Since the vault gate, the API cannot run without the bundled vault: an install that predates it would
 # restart into a HyperProx that stays locked forever. Re-running the installer adds the vault and keeps
 # all existing data and settings.
 if ! grep -q '^VAULT_ADMIN_TOKEN_HASH=' .env 2>/dev/null || [ ! -s config/vault-tls/cert.pem ] \
    || ! grep -q 'wait-for-vault' /etc/systemd/system/hyperprox-api.service 2>/dev/null; then
-  echo "✗ This install has no vault yet. Run: bash /opt/hyperprox/install.sh  (safe to re-run; keeps your data)" >&2
+  echo "✗ This install has no vault yet. Run: bash ${HYPERPROX_DIR}/install.sh  (safe to re-run; keeps your data)" >&2
   exit 1
 fi
 docker compose up -d --no-deps vault >/dev/null
@@ -45,17 +63,22 @@ if ! NGINX_T="$(docker compose run --rm --no-deps -T nginx nginx -t -q 2>&1)"; t
   exit 1
 fi
 
+# The lockfile's settings (overrides, allowBuilds in pnpm-workspace.yaml) need pnpm 10; pnpm 9 refuses a frozen install.
+if [ "$(pnpm --version 2>/dev/null | cut -d. -f1)" -lt 10 ] 2>/dev/null || ! command -v pnpm >/dev/null; then
+  echo "→ Installing pnpm 10 (this version's lockfile needs it)..."
+  npm install -g pnpm@10 >/dev/null
+fi
 echo "→ Installing dependencies..."
 pnpm install --frozen-lockfile >/dev/null
 (cd apps/api && npx prisma generate --schema ./prisma/schema.prisma >/dev/null)
 
 echo "→ Building API..."
 cd apps/api && npx tsc -p tsconfig.json
-cd /opt/hyperprox
+cd "$HYPERPROX_DIR"
 
 echo "→ Building Frontend..."
 cd apps/frontend && npx next build
-cd /opt/hyperprox   # next build leaves us in apps/frontend; every path below is repo-relative
+cd "$HYPERPROX_DIR"   # next build leaves us in apps/frontend; every path below is repo-relative
 
 # next build regenerates .next/standalone from scratch and deliberately does NOT
 # include .next/static or public/ — they have to be copied in after every build.
