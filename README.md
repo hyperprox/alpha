@@ -771,6 +771,9 @@ more than one, gets a question back listing your clusters.
   temperatures and fans, firmware and whether an update is available, and the alerts the QNAP plug-in
   raises. A NAS beside a remote cluster is labelled with that cluster. A disk's serial number is given only
   for a disk with a SMART warning; host names, addresses and MACs never.
+- **Proxmox Backup Server**: each backup server's health and its reasons, each datastore's use,
+  deduplication and last GC, the stale backup groups, the prune, GC, verify and sync jobs with their last
+  and next run, and the failed tasks of the last day. Never an address or a token.
 - **Network storage** on every cluster: each NFS or CIFS server the nodes mount, named by its Proxmox storage
   ids (never its address), with shares, volumes and how full it is.
 - **Alerts**: what Prometheus has firing and pending now, in each rule's plain words, including the hardware
@@ -789,6 +792,10 @@ more than one, gets a question back listing your clusters.
   are not collected; the source plugs into the site-metrics module when it is added.
 - **Plug-in pages**: for Plex, the Arr Stack, Unmanic, MikroTik and MeshCentral, the figures their pages
   show (now playing, the download pipeline, encoding workers, the router's traffic), in words.
+- **Plex Clear-out and Library**: read only. How far back Plex's history goes, how much of each library has
+  never been played, what the never-watched and idle lists add up to and their largest items, what the keep
+  rules held back, how big the library is and how much of it Sonarr and Radarr manage. It cannot remove
+  anything.
 
 Using the assistant needs the admin role, and its sources also follow each page's own viewer rules (no
 serial numbers or security device states for a viewer, and notification channels, websites and
@@ -843,7 +850,7 @@ reports, are passed on as they were written.
 
 Installs a service you do not run yet into a new unprivileged container, checks that it answers, and
 connects it to HyperProx: Nginx Proxy Manager, Ollama, Tautulli, Nextcloud, Jellyfin, Vaultwarden,
-Gitea, Uptime Kuma, Homepage and Grafana. Websites are not listed here: they have their own section,
+Gitea, Uptime Kuma, Homepage, Grafana and Proxmox Backup Server. Websites are not listed here: they have their own section,
 [Websites](#websites), and a banner on the Catalogue page links to it.
 
 **Already running?** For admins, the Catalogue page looks for each app on your cluster before offering it.
@@ -851,8 +858,8 @@ It asks the places HyperProx already knows serve the web (every enabled proxy ho
 running containers listening on port 80 or 443, the same list as [Add an existing site](#add-an-existing-site))
 one read-only question per app: Nextcloud's `/status.php`, Jellyfin's `/System/Info/Public`, Gitea's
 `/api/v1/version`, Vaultwarden's `/api/config` (or `/alive`), Grafana's `/api/health`, Uptime Kuma's
-`/api/entry-page`, Homepage's start page, Ollama's `/api/tags`, Tautulli's sign-in page and Nginx Proxy
-Manager's `/api/`. Each is a plain GET with no login, no cookies and no redirects followed, a 3-second
+`/api/entry-page`, Homepage's start page, Ollama's `/api/tags`, Tautulli's sign-in page, Nginx Proxy
+Manager's `/api/` and Proxmox Backup Server's web page. Each is a plain GET with no login, no cookies and no redirects followed, a 3-second
 timeout and at most 64 KiB read; a proxy target is asked with the public name as its Host header, as the
 proxy would, and an internal certificate is not checked. A recipe found this way says **Running on** the
 guest and its public name (with the version when the app shows one) and offers **Open**; **Install another…**
@@ -972,6 +979,72 @@ instead. Once that plug-in has a Sonarr address, the Arr Stack counts as **confi
 
 **Clean-up.** Removing a failed install also removes the public names it made and its NAS mount on the node (the
 mount and its fstab line; the files on the NAS are not touched).
+
+#### Proxmox Backup Server from the Catalogue
+
+**Proxmox Backup Server** installs into a new unprivileged Debian 13 container (2 cores, 2 GB of memory
+and a 10 GB root disk suggested). The script fetches the Proxmox archive key over `https`, checks it
+against its published SHA-256 before apt trusts it (it stops if the file differs), and installs
+`proxmox-backup-server` from Proxmox's `pbs-no-subscription` repository for trixie. The package adds
+Proxmox's enterprise repository, which refuses updates without a subscription; the install switches it off
+(`Enabled: no`), so later updates in that container work.
+
+A backup server on the same cluster it backs up is not an off-site copy: if the cluster is lost, its
+backups go with it. So the wizard's first step asks where the backups live:
+
+- **On a NAS** (recommended, and the default): an NFS export on a NAS or another machine, the only
+  choice that survives losing the cluster. A NAS HyperProx already knows is listed (each NAS the QNAP
+  plug-in reads, and each NFS server the cluster already uses as storage); pick one and its NFS exports
+  are read from a node with `showmount`, or type the address and export. **NFS only, never SMB/CIFS**: PBS
+  names every snapshot after its time, which contains `:`, and SMB cannot store that, so the datastore
+  breaks. An SMB address or share is refused.
+- **A disk on this cluster**: a new disk of the size you give, on the same storage as the container,
+  mounted at `/mnt/datastore/<name>` and left out of the container's own backups. The review repeats
+  that this is not an off-site copy.
+
+For a NAS, the review (preview) mounts the export read-only on the chosen node for a moment and checks
+that it can be reached, that it has at least the free space you asked for, and whether it already holds
+a PBS datastore. An existing datastore is never wiped or re-initialised: tick **Re-attach the existing
+datastore** to use it as it is, with its backups, or pick an empty export. An export with other files in
+it is refused. On install, the export is mounted on **that node only**, at `/mnt/hyperprox-pbs/<id>`, by
+one line in its `/etc/fstab` (`rw,vers=3,hard,timeo=600,retrans=2,_netdev,nofail`; `nofail` means a NAS
+that is off when the node starts does not hang its boot), marked `# hyperprox-pbs <id>`, and passed into
+the container at `/mnt/datastore/<name>`. The container is unprivileged, and an unprivileged container
+cannot mount NFS itself, so the node mounts it. Removing a failed install takes the line, the mount and
+the folder away again, and so does deleting that container later from HyperProx (a guest's **Delete**); the
+NAS's files are never touched, and another container with the same ID is never changed. The fstab line is
+matched exactly (CT 100's line never matches CT 1000's) and fstab is replaced in one step, never rewritten in
+place. Because the mount is on one node, that container cannot be migrated to another node as it is; the
+wizard says so.
+
+**Permissions on the NAS.** PBS writes as the user `backup` (uid 34) inside the container. The container
+is unprivileged, so on the node and on the NAS that user is uid 100034 (34 + 100000), group 100034. The
+export must let uid 100034 create files and folders, or squash every user to one that can. PBS sets
+0755 on the datastore folder and 0750 on `.chunks` itself, so the export must not rewrite modes. The
+install tests a write as `backup` before it creates anything, and stops with this explanation if the
+write fails.
+
+The datastore is created with `proxmox-backup-manager datastore create`, with default jobs you can change
+later in PBS: prune every day (keep the last 3, 7 daily, 4 weekly, 6 monthly), garbage collection every
+Saturday, and a verify every Sunday. Then setup does the chores, each step reported and read back:
+
+1. **Pin the server's certificate**: the fingerprint the server reports from inside the container must be
+   the one port 8007 presents; it is pinned.
+2. **Check :8007 answers and the datastore is readable**: a sign-in as `root@pam` with the generated
+   password, and the datastore's status.
+3. **Make the backup token for Proxmox VE**: a user `pve-backup@pbs` with a token `pve`, given
+   `DatastoreBackup` on that datastore only.
+4. **Make HyperProx's read-only token**: a user `hyperprox@pbs` with a token `readonly`, given `Audit`
+   on `/`.
+5. **Connect the PBS plug-in**: the server is added to the plug-in with the read-only token and the pin,
+   and read through it.
+6. **Add it as storage on the cluster**: only if you ticked it (off by default). Proxmox VE gets a `pbs`
+   storage for the server with the backup token and the certificate fingerprint, so backup jobs can use
+   it. Nothing is backed up to it until you add it to a backup job.
+
+The `root@pam` password is generated, kept in the vault and shown to you once; both tokens are kept in
+the same vault item (`apps/proxmox-backup-server-<id>`) and never shown on the page. A backup server the
+PBS plug-in already reads shows as configured; one behind a proxy host is found by its web page.
 
 ### Websites
 
@@ -1170,9 +1243,10 @@ otherwise every file is put back. Nothing in a site is ever changed without this
 | Arr Stack | Sonarr, Radarr, Prowlarr and qBittorrent as one pipeline (search, grabbed, downloading, import, library) with live counts; imports that need a person as alert cards; download progress; indexer status dots and health warnings |
 | Unmanic | One ring per worker with its slots, a caught-up (or stalled) banner, and what is encoding now with its progress |
 | MikroTik | A live map of internet, uplinks, router and subnets; CPU, memory, temperature and input-voltage rings; top talkers; port forwards; the log with errors highlighted. Also the per-device and per-interface tables, firewall, WireGuard and neighbours; feeds the bandwidth dials and offers an SSH console |
-| Plex activity | What is streaming now (progress, direct or transcode), internet and local bandwidth gauges, who watches most, what is watched most, and recent history, read through Tautulli |
+| Plex activity | Read from Plex itself: what is streaming now with each title's cover (progress, direct play, direct stream or transcode), local and remote bandwidth gauges, who watches most, what is watched most, recent history and your libraries. Tautulli is optional and adds hours watched. Plus **Clear-out** (what nobody watches), **Library** (remove shows, seasons, episodes or films) and an optional message when something new is added (see below) |
 | Home Assistant | Your house as tiles by room, with quick actions, a light dial and a climate dial; plus unavailable entities, low batteries, pending updates and log errors, for each of your Home Assistant instances (see below) |
 | QNAP | Each NAS's drive bays with SMART health and temperature, volume rings, shares, temperature and load gauges, fans and firmware, with a quick SMART test, and restart and shut down behind the confirm step, for each of your NAS, a remote one included (see below) |
+| Proxmox Backup Server | Each backup server's datastores as gauges (used, deduplication, GC), every backup group as a tile that turns red when its newest snapshot is older than you allow, the prune, GC, verify and sync jobs, failed tasks of the last day, and which cluster guests have no backup there, with verify now behind the master password; read-only unless you turn on backup management, which adds deleting, pruning and clean-up (see below) |
 | MeshCentral | Finds npm installs in guests and adds them to Updates. Its page says what it would need to show your devices; it holds no MeshCentral login, so it shows none |
 
 Each plug-in page opens with a summary header and a bar to jump between plug-ins (each with a health
@@ -1183,7 +1257,103 @@ the router (DHCP leases, ARP comments) and, where it has none, from HyperProx's 
 guest has which address. On the Arr Stack page, an import blocked because the filenames carry no season
 and episode offers **Map by filename**, the same rescue as before.
 
-**Scan for services** finds qBittorrent, Sonarr, Radarr, Prowlarr, Unmanic and Tautulli on running
+**Plex** needs only your Plex server. In the plug-in's settings, enter its address and token. The token
+goes into the vault and is only ever sent to that address. To find the token, open any item in Plex Web,
+choose Get Info, then View XML: it is the `X-Plex-Token` at the end of the address. **Scan for
+services** finds a Plex server on your cluster and fills in the address for you. Use https if Plex is on
+another network.
+
+- From Plex itself: who is watching what, on which player, whether it plays directly, streams directly
+  or transcodes, local and remote bandwidth, and how far through it they are. Also plays from Plex's own
+  history (who watches most, what is watched most, recently watched) and how big each library is.
+- Plex keeps no watch time, so "who watches most" counts plays. **Add Tautulli for richer stats
+  (optional)**: with its address and API key, the page shows hours watched instead, and Tautulli's
+  wording for stream quality. Everything else still comes from Plex.
+- An install set up before this, with only Tautulli, keeps working and shows everything it showed
+  before. Its card says **Needs attention: add your Plex server for live data** until a Plex address and
+  token are saved. Nothing has to be entered again.
+- **Tell me when something new is added** is a switch in the settings, off by default. When it is on,
+  HyperProx checks Plex's recently added list every 5 minutes and sends one message per batch, with each
+  title and year, to the notification channels that take **Plex: new in the library** at the
+  "Everything" level. Nothing is ever announced twice, and turning it on does not announce what is
+  already there. Covers are not attached: they would need a public picture address, and HyperProx's
+  covers need a sign-in. If Tautulli already sends you these, you will get them twice.
+
+**Plex Clear-out** shows what nobody watches. It reads your Plex server itself, because Plex's own play
+history covers every account. That history only goes back as far as Plex's records, so the page says "history since"
+that date. Plays count by title as well as by Plex's item number, so a film you downloaded again still
+has its old plays. A show counts every episode's plays.
+
+- **Never watched**: no plays at all, and in Plex longer than 6 months. **Idle**: played before, but not
+  in 6 months. Both numbers are settings.
+- Each row shows the size, plays, how many people watched it, when it was last played and when it was
+  added, with its cover. Tick rows to see roughly how much space they would free. Movies and TV have their
+  own tabs, with filters for the list, the library and a title search.
+- Sizes come from Plex. If the Arr Stack plug-in is set up, they come from Sonarr and Radarr instead,
+  which also add genres, the folder and whether a show is anime.
+- **Keep rules** take things off the lists, and **Kept off this list** counts what each rule held back.
+  By default it keeps anything released before 2000, anime, anything in a folder whose path contains
+  "complete series", the Science Fiction genre, and anything added in the last 90 days. You can also list
+  folders to keep and names to keep. A name keeps every title that starts with it, so "Night Desk" keeps
+  every Night Desk show. A name of three letters or fewer must match the whole title. Change the rules in the
+  plug-in's settings. Leave a setting blank for the default, or write "none" to turn that rule off.
+- In a library that is mostly films, most films are watched once. So the Movies tab says what share of
+  your films has never been played, and lists the largest files first.
+- **Removing** works the same way here and in the Library (below).
+
+**Plex Library** lists every show and film with its cover, size, plays and when it was last played,
+with search, a library filter, and sorting by size, date added or last played. Open a show to see its
+seasons and episodes. Each episode shows its size, quality, plays, when it was last played, whether it
+has been watched, and whether it is partly watched. You can remove a whole show, one season, the
+episodes you tick, or a film. Quick picks tick a season's watched episodes, or everything before the
+next unwatched one.
+
+How removing works, in the Library and in Clear-out:
+
+- **Which way.** If Sonarr or Radarr manages the item (matched by its tvdb or tmdb id, never by its
+  title), the removal goes through them. That way it is not downloaded again. An episode is only removed
+  through Sonarr when Sonarr's file for it has the same name (and size) as Plex's, so shows numbered
+  differently (anime in absolute order, DVD order, specials) never lose the wrong file; an episode that
+  does not match is left alone:
+  - a show or film is deleted with its files and added to the import-list exclusions;
+  - episodes or a season have their files deleted, and those episodes (and the season) are set to
+    unmonitored. In the preview you can tick **Keep monitored so a better copy downloads** instead,
+    which is handy for replacing a bad file.
+
+  Plex itself removes an item only when no Sonarr (for TV) or Radarr (for films) is set up, or when it
+  answered and does not have the item. If it did not answer, or has something with the same title but
+  other ids, or Plex has no id to check, nothing is removed and the page says why. The preview then says: "Removed from disk by Plex. If
+  something else downloads your media, it may come back." Plex only allows this with **Allow media
+  deletion** on (Plex: Settings → Server → Library). If it is off, the page says so and how to turn it
+  on. HyperProx does not change that setting. When an episode or film has more than one version, you can
+  remove just one of them, through Plex. Just before Plex deletes something, HyperProx checks it is still
+  the same item, and that a season has not gained episodes since the preview.
+- **The preview** comes first, and lists each item, which way it goes, exactly which files go, and the
+  total size. It warns when an episode is someone's next one (they watched the episode before it in the
+  last 14 days and not this one) or is partly watched. A **kept by rule** badge shows when a keep rule
+  would normally keep it; keep rules do not stop a removal you choose yourself.
+- **Never while someone is watching.** Anything being played right now is left alone, checked again at
+  the moment of removing.
+- **Guards.** Removing needs the operator role or higher and your master password again. A preview
+  can be used once, only by the person who made it, only on the page that made it, within 10 minutes.
+  API tokens can never remove anything. With Sonarr, episodes are unmonitored before their files are
+  deleted. If the audit log cannot be written, the removal stops and says what was already done.
+- **Afterwards** HyperProx reads each item back and reports it as removed only once it is really gone.
+  It then asks Plex to rescan just that folder, so it leaves Plex straight away. Every item is written to
+  the audit log before and after it is removed.
+
+The Plex page updates itself. What is streaming and the bandwidth gauges refresh about every 5 seconds,
+and the rest of the page, Clear-out included, about every minute, or straight away when someone starts
+or stops watching. Updates pause while the tab is hidden and start again as soon as you come back. The
+dot at the top says **live**; if updates stop it turns grey and says when the page last updated.
+**Pause** stops the updates, and **Refresh** is still there to read everything at once.
+
+Covers on the Plex page come through HyperProx. The browser only ever gets a HyperProx address, and the
+API fetches the picture from Plex with the token from the vault, so the token never reaches the browser.
+It only fetches Plex's own cover pictures, at a fixed size, and keeps them for a short while. If a cover
+cannot be loaded, the page shows the title card instead.
+
+**Scan for services** finds qBittorrent, Sonarr, Radarr, Prowlarr, Unmanic, Plex and Tautulli on running
 guests and offers to configure them; nothing is saved until you press **Use this**, and API keys are
 never guessed. A plug-in declares the settings it needs and HyperProx makes its HTTP calls for it, so
 the plug-in never reads a credential. The page also lists plug-ins that do not exist yet, each with a
@@ -1331,6 +1501,132 @@ been checked against a QTS 5 NAS yet. The quick SMART test, restart and shut dow
 run against either firmware; when a NAS does not accept one, the page says so instead of claiming it
 worked.
 
+#### Proxmox Backup Server
+
+Open **Plug-ins, Proxmox Backup Server** and press **Add a backup server** (admins; the master password
+is asked again, because a token is being stored). Give it a name and its address (`https://`, port 8007
+if you leave the port out), then choose how HyperProx gets in. Each server you add gets its own tab.
+
+**Sign in (recommended).** Enter a PBS admin login once: user, realm (`pam` for a Linux user such as
+`root`, or `pbs`) and password. First press **Read certificate**: HyperProx shows the fingerprint the server
+presents, you compare it with the one on the server's own dashboard (**Dashboard → Show Fingerprint**) and
+confirm it (a certificate from a public certificate authority needs no comparing). Only then is the password
+sent, through that pin. It makes its own user `hyperprox@pbs` if it is missing, and the API token
+`hyperprox@pbs!readonly` with the Audit role on `/`, checks that the permission reads back, makes one
+read with the new token, and keeps only that token in the vault. The password is used for that one
+sign-in and then dropped: it is never stored, logged, written to the audit log or shown. Adding the same
+server again makes a fresh token and replaces the stored one; it does not add a second entry. Sign-ins
+are limited to 3 a minute, and each attempt is in the audit log with the user name and the result.
+
+**Allow Verify now** (a checkbox in the same form, off by default) gives the token the DatastoreReader
+role on each datastore, never on `/`. In PBS 4 that role is `Datastore.Audit`, `Datastore.Read` and
+`Datastore.Verify`: the token can then start a verify, and anyone holding it could also read (restore)
+backup contents on those datastores. It still cannot prune, forget, delete or garbage-collect anything.
+Starting a verify still needs an admin and the master password.
+
+**Paste a token (advanced).** If you would rather make the token yourself, in the backup server's shell:
+
+```
+proxmox-backup-manager user create hyperprox@pbs
+proxmox-backup-manager acl update / Audit --auth-id hyperprox@pbs
+proxmox-backup-manager user generate-token hyperprox@pbs readonly
+proxmox-backup-manager acl update / Audit --auth-id 'hyperprox@pbs!readonly'
+```
+
+and paste the token id (`hyperprox@pbs!readonly`) and its secret. As with signing in, you confirm the
+certificate first; **Check and add** then makes one real read with the token through that pin before
+anything is saved: a token
+that cannot read the server is never stored. The Audit role on `/` gives `Datastore.Audit` and
+`Sys.Audit`: HyperProx can read everything the page shows and change nothing. **Verify now** also needs
+`Datastore.Verify` on that datastore (the DatastoreReader role on `/datastore/<name>`); without it the
+server refuses, and the page says so.
+
+**The certificate.** A certificate that checks out against a public certificate authority stays checked
+that way, so a renewal keeps working. Otherwise the certificate you confirmed is pinned, and any other one
+is refused before a token or password is sent, with both fingerprints in the message. That includes adding
+the same server again and changing its token: the pin stands, and a different certificate is never pinned
+quietly in its place. If the server's certificate was replaced on purpose, use **Read the certificate
+presented now** under **Settings**, compare the new fingerprint with the server's dashboard, tick it and
+**Re-pin this certificate**. A new address is a new server: its certificate is confirmed afresh, and the
+secret is pasted again in the same save.
+
+The page opens with a header ring for the fullest datastore and counts of datastores, backup groups,
+stale groups and failed tasks, then a band that says **Active** or **Needs attention** with the reasons.
+Under it:
+
+- **Datastores**: one card per datastore with a gauge of used of total, the free space, the
+  deduplication factor (after the first garbage collection), the last and next GC, and the backup
+  group and snapshot counts. Admins get **Verify now** on each card. Garbage collection is left to the
+  server's own schedule; the card shows its last and next run.
+- **Backup groups**: one tile per group (`vm/100`, `ct/101`, ...), by datastore and namespace, with
+  the age of its newest snapshot, how many snapshots it has, the newest one's size and its verify
+  state. A group with no new snapshot for longer than **Stale after** (26 hours unless you change it
+  under Settings) glows red; one whose newest snapshot failed verification glows amber. **only stale**
+  hides the rest.
+- **Jobs**: every prune, GC, verify and sync job with its result, its last run and its next run.
+- **Failed tasks**: the server's tasks that ended in an error in the last 24 hours (warnings are not
+  counted).
+- **Cluster cross-check** (press **Check**): for every cluster HyperProx manages that has this server as
+  a `pbs` storage (found by the certificate fingerprint Proxmox keeps for it, or by its address and
+  port), the guests with no backup group at all in that storage's datastore and namespace, and the
+  guests the cluster says no backup job includes.
+- **Details**: the same readings as plain tables.
+
+**Health.** A server is **Active** when every datastore is under 85% full, no group is stale, and
+nothing failed in the last 24 hours (no failed task, no failed prune, GC, verify or sync job, and no
+group whose newest snapshot failed verification). Otherwise it **Needs attention**, with a few words
+such as "2 guests not backed up in 26 h", "datastore 91% full" or "verify failed". The dashboard's
+plug-in chip shows the same words.
+
+**Verify now** is admin only, needs the master password re-entered, and API tokens can never use it. It
+names a datastore the server reports, starts the verify on the server, and reads the task's status back,
+so the page says whether it is running, finished or failed. Every attempt, refused or not, is in the
+audit log.
+
+**Read-only by default.** Unless you turn on backup management (below), no token HyperProx makes (here or
+in the Catalogue recipe) has a role that could prune, forget, delete or garbage-collect: they get Audit on
+`/`, DatastoreReader on a datastore when you allow verify, and, for Proxmox VE's backups, DatastoreBackup
+on one datastore. Pruning by schedule is the server's own prune job.
+
+**Backup management (opt-in).** **Let HyperProx manage backups (delete, prune, clean up)** is a checkbox
+when you add a server by signing in, and a panel under **Settings** later; it is off by default. Turning it
+on means anyone who gets into HyperProx as an admin, with the master password, could delete or prune
+backups on the chosen datastores. HyperProx then makes a second token, `hyperprox@pbs!manage`, with the
+DatastoreAdmin role on each chosen datastore (never on `/`), and keeps it in its own vault item, apart from
+the read-only token. Every read still uses the read-only token; the manage token is used only by these
+actions:
+
+- **Delete snapshots**: tap a group, tick the snapshots, **Delete selected…**.
+- **Delete a whole group** (all of one guest's backups here): **Delete whole group…** in the same sheet.
+- **Prune now…** on a datastore card: by the datastore's prune job's keep settings (or the datastore's
+  own). The preview is PBS's own dry-run for each group, so it lists exactly which snapshots go.
+- **Clean up now** on a datastore card: garbage collection, which frees the space of deleted snapshots.
+
+Each is admin only, needs the master password re-entered, is refused for API tokens, is audited per
+snapshot, and is read back afterwards (nothing removed is still listed, and every protected snapshot is
+still there). The three that delete go through a preview the server holds: it is yours, works once and
+expires after 10 minutes, and it shows what goes and what stays. A **protected** snapshot is never deleted;
+the preview lists it as kept. Removing a guest's last remaining snapshot needs a second tick in the
+preview. Nothing is removed from a group while a backup of it is running (checked at the preview and again
+when you confirm). A prune is dry-run again when you confirm, and if the result changed (a new backup
+arrived), nothing is removed and you are asked to look again.
+
+Turning management on or off takes a PBS admin sign-in under **Settings** (to change which datastores, turn it
+off and on again)
+(the password is used once and never stored): turning it off deletes the manage token and its permissions
+on the server, and then the vault item. A server with management on cannot be removed from HyperProx until
+it is turned off, so no delete token is left behind on the server. For a server that cannot be reached
+any more, **Forget this server** (admins, master password) removes only HyperProx's copy and names the
+tokens that may remain on that server (the manage token first), to delete there by hand if it comes back.
+If turning management on fails halfway and its token cannot be deleted again, the page says so and names it.
+
+Previews, deletes and clean-ups are limited per session (10 previews, 3 deletes and 3 clean-ups a minute),
+and every refused attempt, by the gate or by HyperProx, is in the audit log.
+
+Viewers see the readings but not the server's address, token id or pin. The page reads the server again
+every two minutes while it is open (a reading is kept 30 seconds), and a server that cannot be read says
+why.
+
 ### Settings
 
 - **Setup checklist**: the installer's questions, whether each is done on every node, and a button to
@@ -1378,7 +1674,7 @@ not protected, are in [docs/security.md](docs/security.md).
   minutes). So do, for remote clusters: adding or removing one, replacing its token, confirming or verifying its
   certificate, verifying its node keys, saving or removing a node login, deleting a guest, installing or removing monitoring,
   changing a server's address, node addresses, copy folders or "never look inside" list, setting up a sending key (including
-  the first-time setup of Send files), and saving a Plex address or token. The AI assistant asks for it in exactly the same cases.
+  the first-time setup of Send files), and saving a Plex address or token. Removing media with Plex Clear-out or Library asks for it too. The AI assistant asks for it in exactly the same cases.
 - **Remote clusters.** Each remote's API token, node logins, sending keys and Plex token live only in
   the vault, one item per cluster (`hyperprox:proxmox/<id>` and so on): never in `.env`, the database,
   logs, audit entries or API answers. Its API is reached only over a connection that accepts the one
@@ -1494,7 +1790,7 @@ upcoming work are in [docs/superpowers/specs/](docs/superpowers/specs/).
   read it).
 - **Next**: the six-point standard for every catalogue install (address, proxy and certificate; login in
   the vault; backed up; monitored; under update policy; plug-in panel), MeshCentral remote desktop,
-  a Proxmox Backup Server plug-in with automatic restore tests, catalogue packs, noVNC and container text
+  automatic restore tests for the Proxmox Backup Server plug-in, catalogue packs, noVNC and container text
   consoles, Ceph operations, versioned releases with `hyperprox update`, demo mode and screenshots, the
   hyperprox.dev website, and more DNS providers, email notifications and LDAP/OIDC sign-in.
 - **Later, as ideas**: live migration between clusters, ESXi import, XCP-ng, bare-metal install, CVE

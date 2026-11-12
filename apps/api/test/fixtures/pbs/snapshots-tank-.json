@@ -1,0 +1,63 @@
+[
+ {
+  "backup-type": "ct",
+  "backup-id": "101",
+  "backup-time": 1799982000,
+  "size": 2147483648,
+  "owner": "pve-backup@pbs!pve",
+  "protected": false,
+  "verification": {
+   "state": "ok",
+   "upid": "UPID:y"
+  },
+  "files": [
+   {
+    "filename": "index.json.blob",
+    "size": 1,
+    "crypt-mode": "none"
+   }
+  ]
+ },
+ {
+  "backup-type": "ct",
+  "backup-id": "101",
+  "backup-time": 1799895600,
+  "size": 2147483648,
+  "verification": {
+   "state": "ok",
+   "upid": "UPID:y"
+  }
+ },
+ {
+  "backup-type": "ct",
+  "backup-id": "101",
+  "backup-time": 1799809200,
+  "size": 2147483648
+ },
+ {
+  "backup-type": "vm",
+  "backup-id": "200",
+  "backup-time": 1799856000,
+  "size": 34359738368,
+  "verification": {
+   "state": "failed",
+   "upid": "UPID:z"
+  }
+ },
+ {
+  "backup-type": "vm",
+  "backup-id": "200",
+  "backup-time": 1799769600,
+  "size": 34359738368,
+  "verification": {
+   "state": "ok",
+   "upid": "UPID:z"
+  }
+ },
+ {
+  "backup-type": "vm",
+  "backup-id": "200",
+  "backup-time": 1799683200,
+  "size": 34359738368
+ }
+]

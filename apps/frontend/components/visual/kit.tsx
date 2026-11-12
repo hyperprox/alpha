@@ -150,7 +150,9 @@ export function SemiGauge({ value, max, label, unit, color = 'var(--hx-accent)' 
         <path d="M15 85a60 60 0 0 1 120 0" fill="none" stroke={color} strokeWidth="12" strokeLinecap="round" strokeDasharray={`${len * clamp01(value / max)} 999`}
           style={{ filter: `drop-shadow(0 0 6px color-mix(in srgb, ${color} var(--glow), transparent))`, transition: 'stroke-dasharray .6s' }} />
       </svg>
-      <div aria-hidden><b>{value}<small> {unit}</small></b><span>{label}</span></div>
+      <div aria-hidden className={s.semiValue}><b>{value}<small> {unit}</small></b></div>
+      {/* Below the arc, never on it: a long label at phone width ran into the arc's end cap. */}
+      <span aria-hidden className={s.semiLabel}>{label}</span>
     </div>
   )
 }

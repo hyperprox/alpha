@@ -12,10 +12,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { Page, HudHeader, Panel, styles } from '@/components/visual/kit'
+import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 
 interface PluginSetting {
-  key: string; label: string; type: 'text' | 'secret' | 'url'
+  key: string; label: string; type: 'text' | 'secret' | 'url' | 'toggle'
   required: boolean; hint?: string; value: string; isSet: boolean
+  /** A heading shown above this setting and the ones after it. */
+  section?: string
 }
 
 interface PluginCard {
@@ -136,8 +139,8 @@ function SettingsDialog({ plugin, onSave, onClose }: {
     <div className="fixed inset-0 z-50 flex items-center justify-center p-6" style={{ background: 'var(--scrim)', backdropFilter: 'blur(4px)' }}>
       <form
         onSubmit={e => { e.preventDefault(); onSave(values) }}
-        className="w-full max-w-md rounded-xl border"
-        style={{ background: 'linear-gradient(135deg, var(--surface), var(--surface-hi))', borderColor: 'var(--border-strong)', boxShadow: 'var(--shadow)' }}
+        className="w-full max-w-md rounded-xl border overflow-y-auto"
+        style={{ background: 'linear-gradient(135deg, var(--surface), var(--surface-hi))', borderColor: 'var(--border-strong)', boxShadow: 'var(--shadow)', maxHeight: 'calc(100dvh - 48px)' }}
       >
         <div className="flex items-center gap-3 border-b px-6 py-4" style={{ borderColor: BORDER }}>
           <span className="flex h-8 w-8 items-center justify-center rounded border text-base"
@@ -153,6 +156,16 @@ function SettingsDialog({ plugin, onSave, onClose }: {
         <div className="flex flex-col gap-4 px-6 py-5">
           {plugin.settings.map(s => (
             <div key={s.key}>
+              {s.section && (
+                <h3 className="mb-3 mt-2 font-display text-[15px] font-semibold uppercase tracking-[0.12em]" style={{ color: 'var(--accent)' }}>{s.section}</h3>
+              )}
+              {s.type === 'toggle' ? (
+                <label className="flex items-center gap-3" style={{ minHeight: 40, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={values[s.key] === 'yes'} style={{ width: 22, height: 22, accentColor: 'var(--accent)' }}
+                    onChange={e => setValues(v => ({ ...v, [s.key]: e.target.checked ? 'yes' : 'no' }))} />
+                  <span className="text-sm" style={{ color: 'var(--text-bright)' }}>{s.label}</span>
+                </label>
+              ) : (<>
               <Label>{s.label}{!s.required && <span style={{ color: 'var(--text-dimmer)' }}> · optional</span>}</Label>
               <input
                 type={s.type === 'secret' ? 'password' : 'text'}
@@ -163,6 +176,7 @@ function SettingsDialog({ plugin, onSave, onClose }: {
                 autoComplete="off"
                 className={styles.input}
               />
+              </>)}
               {s.hint && (
                 <p className="mt-1.5 text-[12.5px] leading-relaxed" style={{ color: 'var(--text-dimmer)' }}>{s.hint}</p>
               )}
@@ -234,6 +248,7 @@ export default function PluginsPage() {
   const [loading, setLoading] = useState(true)
   const [scanning, setScanning] = useState(false)
   const [findings, setFindings] = useState<Finding[] | null>(null)
+  const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
 
   const readOne = useCallback(async (id: string) => {
     setBusy(b => ({ ...b, [id]: true }))
@@ -286,6 +301,7 @@ export default function PluginsPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ [f.setting]: f.address }),
     }).then(r => r.json())
+    if (res?.code === 'reconfirm_required') { setReconfirm(() => () => void applyFinding(f)); return }
     if (!res.success) return setNotice(res.error)
     setFindings(prev => (prev ?? []).filter(x => x !== f))
     await load()
@@ -300,14 +316,16 @@ export default function PluginsPage() {
 
   const configuredCount = plugins.filter(p => p.configured).length
 
-  const save = async (values: Record<string, string>) => {
-    const p = editing!
+  const save = async (values: Record<string, string>, plugin?: PluginCard) => {
+    const p = plugin ?? editing!
     setEditing(null)
     const res = await fetch(`/api/plugins/${p.id}/settings`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(values),
     }).then(r => r.json())
+    // Settings hold where a stored credential is sent, so saving asks for the master password again.
+    if (res?.code === 'reconfirm_required') { setReconfirm(() => () => void save(values, p)); return }
     if (!res.success) return setNotice(res.error)
     await load()
     readOne(p.id)
@@ -470,7 +488,8 @@ export default function PluginsPage() {
           </Panel>
         )}
 
-      {editing && <SettingsDialog plugin={editing} onSave={save} onClose={() => setEditing(null)} />}
+      {editing && <SettingsDialog plugin={editing} onSave={v => void save(v)} onClose={() => setEditing(null)} />}
+      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const fn = reconfirm; setReconfirm(null); fn() }} />}
     </Page>
   )
 }

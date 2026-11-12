@@ -16,6 +16,8 @@
   background: radial-gradient(80% 50% at var(--px, 70%) 20%, color-mix(in srgb, var(--pc1, var(--crit-2)) 35%, transparent), transparent 70%),
               radial-gradient(60% 40% at 20% var(--py, 60%), color-mix(in srgb, var(--pc2, var(--hx-accent)) 28%, transparent), transparent 70%); }
 .poster span { position: relative; }
+/* The real cover, over the title card; if it fails to load the card is what shows. */
+.posterImg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 1; }
 .npInfo { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .npInfo h3 { margin: 0; font: 700 1.6rem/1.05 var(--font-display); letter-spacing: .03em; color: var(--text-bright); overflow-wrap: anywhere; }
 .npInfo .ep { color: var(--text-soft); font-size: .95rem; }

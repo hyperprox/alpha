@@ -13,8 +13,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PluginVisual } from '@hyperprox/types'
 import { HomeAssistantPage } from '@/components/plugins/home-assistant/HomeAssistant'
 import { QnapPage } from '@/components/plugins/qnap/QnapPage'
+import { PbsPage } from '@/components/plugins/pbs/PbsPage'
 import { HudHeader, styles as vs, type StatChip } from '@/components/visual/kit'
 import { DetailsSection, PLUGIN_ICON, PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
+import { PlexClearOut } from '@/components/plugins/plex/ClearOut'
+import { PlexLibrary } from '@/components/plugins/plex/Library'
 import { ArrView, MeshView, PlexView, RouterView, UnmanicView, arrChips, plexChips, routerChips, unmanicChips, type Stuck } from '@/components/plugins/visual/views'
 
 interface Column { key: string; label: string; align?: 'left' | 'right' }
@@ -244,6 +247,47 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
     return () => { stop(); document.removeEventListener('visibilitychange', onVisibility) }
   }, [everySeconds, live, load])
 
+  // Plex: now streaming and bandwidth every five seconds, from one light call, merged into the page in place so
+  // nothing flickers and the posters stay put. A change in who is watching what also re-reads the whole page.
+  // Paused while the tab is hidden, and read at once when it is shown again.
+  const isPlex = params.id === 'plex'
+  const [plexTab, setPlexTabRaw] = useState<'now' | 'clearout' | 'library'>('now')
+  useEffect(() => {
+    try { const t = window.localStorage.getItem('hp.plex.tab'); if (t === 'now' || t === 'clearout' || t === 'library') setPlexTabRaw(t) } catch { /* no storage */ }
+  }, [])
+  const setPlexTab = (t: 'now' | 'clearout' | 'library') => { setPlexTabRaw(t); try { window.localStorage.setItem('hp.plex.tab', t) } catch { /* no storage */ } }
+  const [liveAt, setLiveAt] = useState<number | null>(null)
+  const sessionKeys = useRef<string | null>(null)
+  useEffect(() => {
+    if (!isPlex || !live) return
+    let timer: ReturnType<typeof setInterval> | null = null
+    let busy = false
+    const tick = async () => {
+      if (busy || document.hidden) return
+      busy = true
+      try {
+        const r = await fetch('/api/plugins/plex/live').then(x => x.json())
+        const d = r?.success ? r.data : null
+        if (d?.ok) {
+          setDetail(prev => (prev?.ok && prev.visual?.kind === 'plex')
+            ? { ...prev, visual: { ...prev.visual, sessions: d.sessions, counts: d.counts, bandwidth: d.bandwidth } }
+            : prev)
+          setLiveAt(Date.now())
+          const keys = (d.sessions as Array<{ user: string; title: string; episode: string | null }>)
+            .map(x => `${x.user}|${x.title}|${x.episode ?? ''}`).sort().join('\n')
+          if (sessionKeys.current !== null && keys !== sessionKeys.current) void load(true)
+          sessionKeys.current = keys
+        }
+      } catch { /* the dot goes grey; the last reading stays */ } finally { busy = false }
+    }
+    const start = () => { if (!timer) timer = setInterval(() => void tick(), 5000) }
+    const stop = () => { if (timer) { clearInterval(timer); timer = null } }
+    const onVisibility = () => { if (document.hidden) stop(); else { void tick(); start() } }
+    void tick(); start()
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => { stop(); document.removeEventListener('visibilitychange', onVisibility) }
+  }, [isPlex, live, load])
+
   // Re-render once a second purely so the "12s ago" label stays honest.
   const [, tick] = useState(0)
   useEffect(() => {
@@ -307,23 +351,40 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
       <div className={vs.page}>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <div className="ml-auto flex flex-wrap items-center gap-2">
-            {fetchedAt && <span className="font-mono text-[10px] tabular-nums" style={{ color: 'var(--text-dimmer)' }}>{agoLabel(fetchedAt)}</span>}
+            {fetchedAt && !isPlex && <span className="font-mono text-[10px] tabular-nums" style={{ color: 'var(--text-dimmer)' }}>{agoLabel(fetchedAt)}</span>}
+            {isPlex && live && (() => {
+              const last = Math.max(liveAt ?? 0, fetchedAt ?? 0)
+              const fresh = !!liveAt && Date.now() - liveAt < 15_000
+              return (
+                <span className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.1em]" role="status"
+                  style={{ color: fresh ? 'var(--accent)' : 'var(--text-dimmer)' }}>
+                  <span aria-hidden className={fresh ? 'animate-pulse' : ''} style={{ width: 8, height: 8, borderRadius: 999, display: 'inline-block',
+                    background: fresh ? 'var(--accent)' : 'var(--text-dimmer)', boxShadow: fresh ? '0 0 10px var(--accent)' : 'none' }} />
+                  {fresh ? 'live' : last ? `last updated ${agoLabel(last)}` : 'connecting…'}
+                </span>
+              )
+            })()}
             {/* Only offered where the plug-in declared a rate. A device that never
                 asked to be polled does not get a switch that implies it could be. */}
             {everySeconds > 0 && (
               <button onClick={() => setLive(!live)} aria-pressed={live}
-                title={live ? `Refreshing every ${everySeconds}s — click to pause` : 'Auto-refresh is off'}
+                title={isPlex ? (live ? 'Now streaming updates every 5 s, the rest every minute. Click to pause.' : 'Updates are paused') : live ? `Refreshing every ${everySeconds}s — click to pause` : 'Auto-refresh is off'}
                 className="flex h-10 items-center gap-2 rounded-md border px-4 font-mono text-xs uppercase tracking-[0.1em] transition-colors hover:bg-hover"
                 style={{ borderColor: live ? 'color-mix(in srgb, var(--accent) 40%, transparent)' : 'var(--border-strong)',
                          color: live ? 'var(--accent)' : 'var(--text)', background: 'transparent' }}>
                 <span aria-hidden className={live ? 'animate-pulse' : ''} style={{ width: 8, height: 8, borderRadius: 999, display: 'inline-block',
                   background: live ? 'var(--accent)' : 'var(--text-dimmer)', boxShadow: live ? '0 0 10px var(--accent)' : 'none' }} />
-                {live ? `live · ${everySeconds} s` : 'paused'}
+                {isPlex ? (live ? 'pause' : 'paused') : live ? `live · ${everySeconds} s` : 'paused'}
               </button>
             )}
+            {/* A page that refreshes itself keeps Refresh only as a small secondary control. */}
             <button onClick={() => load()} disabled={loading}
-              className="h-10 rounded-md px-5 text-sm font-semibold transition-opacity hover:opacity-85 disabled:opacity-40"
-              style={{ background: 'var(--accent)', color: 'var(--accent-ink)', border: 'none' }}>
+              className={isPlex
+                ? 'h-10 rounded-md border px-3 text-xs transition-colors hover:bg-hover disabled:opacity-40'
+                : 'h-10 rounded-md px-5 text-sm font-semibold transition-opacity hover:opacity-85 disabled:opacity-40'}
+              style={isPlex
+                ? { borderColor: 'var(--border-strong)', color: 'var(--text-dim)', background: 'transparent' }
+                : { background: 'var(--accent)', color: 'var(--accent-ink)', border: 'none' }}>
               {loading ? 'reading…' : 'Refresh'}
             </button>
           </div>
@@ -344,7 +405,22 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
 
         {detail?.ok && (
           <>
-            {v?.kind === 'plex' && <PlexView v={v} />}
+            {isPlex && (
+              <div role="tablist" aria-label="Plex views" className="flex flex-wrap gap-2">
+                {([['now', 'Now playing'], ['clearout', 'Clear-out'], ['library', 'Library']] as const).map(([k, label]) => (
+                  <button key={k} role="tab" aria-selected={plexTab === k} onClick={() => setPlexTab(k)}
+                    className="h-10 rounded-md border px-4 font-display text-sm font-semibold uppercase tracking-[0.1em]"
+                    style={{ borderColor: plexTab === k ? 'color-mix(in srgb, var(--accent) 45%, transparent)' : 'var(--border-strong)',
+                      color: plexTab === k ? 'var(--accent)' : 'var(--text)', background: plexTab === k ? 'color-mix(in srgb, var(--accent) 10%, transparent)' : 'transparent' }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+            {v?.kind === 'plex' && (!isPlex || plexTab === 'now') && <PlexView v={v} />}
+            {/* What nobody watches, and the whole library. Read on their own (Plex itself), so they never slow the live view. */}
+            {isPlex && plexTab === 'clearout' && <PlexClearOut live={live} />}
+            {isPlex && plexTab === 'library' && <PlexLibrary />}
             {v?.kind === 'arrstack' && <ArrView v={v} stuck={stuck} rescuing={rescuing} onRescue={rescue} rescueNote={rescueNote} />}
             {v?.kind === 'unmanic' && <UnmanicView v={v} />}
             {v?.kind === 'mikrotik' && <RouterView v={v} />}
@@ -406,5 +482,6 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
 /** Home Assistant has its own page: several houses, each with Devices (controls), health and settings. */
 export default function PluginPage({ params }: { params: { id: string } }) {
   if (params.id === 'qnap') return <QnapPage />
+  if (params.id === 'pbs') return <PbsPage />
   return params.id === 'home-assistant' ? <HomeAssistantPage /> : <PluginDetailPage params={params} />
 }

@@ -15,6 +15,7 @@ import { alpha } from '@/lib/theme'
 import { ArrPicker, type ArrNames, type ArrVpn } from './ArrPicker'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { GhostButton, INPUT, LABEL, Notice, PrimaryButton } from '@/components/vault/ui'
+import { PbsLocation } from './PbsLocation'
 
 export interface WizardRecipe {
   id: string; name: string; summary: string; category: string; port: number; needsDocker: boolean
@@ -104,7 +105,12 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
   // The Arr Stack picks its apps and library in a panel of its own (ArrPicker), with its options held apart.
   const options = recipe.id === 'arr-stack' ? [] : recipe.options ?? []
   const [opts, setOpts] = useState<Record<string, string>>(() => Object.fromEntries(options.map(o => [o.key, o.default ?? ''])))
-  const missing = options.filter(o => o.required && !String(opts[o.key] ?? '').trim())
+  // Proxmox Backup Server asks where its backups live in a panel of its own (PbsLocation).
+  const isPbs = recipe.id === 'proxmox-backup-server'
+  const missing = [
+    ...options.filter(o => o.required && !String(opts[o.key] ?? '').trim()),
+    ...(isPbs && opts.PBS_LOCATION !== 'disk' ? options.filter(o => (o.key === 'PBS_NFS_HOST' || o.key === 'PBS_NFS_EXPORT') && !String(opts[o.key] ?? '').trim()) : []),
+  ]
 
   const isArr = recipe.id === 'arr-stack'
   const [arrOpts, setArrOpts] = useState<Record<string, string>>(() => Object.fromEntries((recipe.options ?? []).map(o => [o.key, o.default ?? ''])))
@@ -361,7 +367,8 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
                   </p>
                 </div>
               </div>
-              {options.length > 0 && (
+              {isPbs && <PbsLocation opts={opts} setOpts={setOpts} />}
+              {options.length > 0 && !isPbs && (
                 <div className="rounded-lg border p-4 space-y-3" style={{ borderColor: 'var(--border-soft)', background: 'var(--ground-inset)' }}>
                   <p className="font-display text-[17px] font-semibold" style={{ color: 'var(--text-bright)' }}>Settings</p>
                   <div className="grid gap-4 sm:grid-cols-2">

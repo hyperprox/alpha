@@ -44,3 +44,9 @@ export async function auditCredentialUse(action: string, resource: string, detai
     console.warn(`[audit] could not record ${action} on ${resource}: ${e?.message ?? e}`)
   }
 }
+
+/** The same row, for a caller that must know when it was not written (it says so to the person). Throws on failure. */
+export async function auditOrThrow(action: string, resource: string, details?: Record<string, unknown>): Promise<void> {
+  if (!sink) sink = prismaAuditSink(new PrismaClient())
+  await sink.write({ action, resource, details: scrubDetails(details) })
+}

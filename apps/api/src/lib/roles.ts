@@ -141,6 +141,17 @@ const HA_CONTROL_RECONFIRM = /^\/api\/plugins\/home-assistant\/instances(\/(?!pr
 // login) are admin and re-confirmed, which keeps API tokens off them too.
 const QNAP_ACT = /^\/api\/plugins\/qnap\/instances\/[^/]+\/actions$/
 const QNAP_RECONFIRM = /^\/api\/plugins\/qnap\/instances(\/(?!probe-certificate$)[^/]+(\/secure-actions)?)?$/
+// Plex clear-out and Library (routes/plex-clearout.ts). The lists are a read (viewer). Previewing a removal is
+// operator; removing (through Sonarr, Radarr or Plex itself) deletes files, so it is operator with the master password re-entered, which keeps API
+// tokens out too.
+const PLEX_CLEAROUT_ACT = /^\/api\/plugins\/plex\/(clearout|library)\/(preview|remove)$/
+const PLEX_CLEAROUT_RECONFIRM = /^\/api\/plugins\/plex\/(clearout|library)\/remove$/
+// Proxmox Backup Server (routes/pbs.ts). Every write is admin (the default for a POST/PUT/DELETE) and re-confirmed:
+// adding, changing or removing a server stores a token, and "verify now" starts work on the server.
+const PBS_RECONFIRM = /^\/api\/plugins\/pbs\/instances(\/(?!probe-certificate$)[^/]+(\/(actions\/verify|forget))?)?$/
+// Backup management (opt-in, lib/pbs/manage.ts): turning it on or off, previews, applies and clean-up. All admin and
+// re-confirmed, which keeps API tokens out; the snapshot list of one group is a read (viewer).
+const PBS_MANAGE_RECONFIRM = /^\/api\/plugins\/pbs\/instances\/[^/]+\/manage(\/(preview|apply|gc))?$/
 // A plug-in's settings hold the address its stored credential is sent to: changing them is re-confirmed (which
 // also keeps API tokens out).
 const PLUGIN_SETTINGS = /^\/api\/plugins\/[^/]+\/settings$/
@@ -260,6 +271,7 @@ export function requiredRole(method: string, path: string): Role | null {
   if (m === 'POST' && POWER.test(p)) return 'operator'
   if (m === 'POST' && HA_CONTROL_ACT.test(p)) return 'operator'
   if (m === 'POST' && QNAP_ACT.test(p)) return 'operator'
+  if (m === 'POST' && PLEX_CLEAROUT_ACT.test(p)) return 'operator'
   for (const [tm, re] of TERMINAL_OPERATOR) if (m === tm && re.test(p)) return 'operator'
 
   return 'admin'
@@ -285,7 +297,10 @@ export function needsReconfirm(method: string, path: string): boolean {
   if (m === 'POST' && HA_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && HA_CONTROL_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && QNAP_RECONFIRM.test(p)) return true
+  if (m !== 'GET' && m !== 'HEAD' && PBS_RECONFIRM.test(p)) return true
+  if (m !== 'GET' && m !== 'HEAD' && PBS_MANAGE_RECONFIRM.test(p)) return true
   if (m === 'PUT' && PLUGIN_SETTINGS.test(p)) return true
+  if (m === 'POST' && PLEX_CLEAROUT_RECONFIRM.test(p)) return true
   if (m === 'PUT' && SETTINGS_SAVE.test(p)) return true
   if (m === 'POST' && SETTINGS_TEST.test(p)) return true
   // Creating or revoking an API token.

@@ -11,7 +11,7 @@
 // =============================================================================
 
 import type { ArrVisual, MeshVisual, PlexVisual, RouterVisual, UnmanicVisual } from '@hyperprox/types'
-import type { CSSProperties, ReactNode } from 'react'
+import { useState, type CSSProperties, type ReactNode } from 'react'
 import {
   Cols, FlowPipeline, GlowBars, Icon, Panel, ProgressBar, RingGauge, SemiGauge, StatusDots, Timeline, Topology,
   bytes, duration, mbps, niceMax, rate, styles as s, type StatChip,
@@ -31,6 +31,21 @@ function posterStyle(title: string): CSSProperties {
   }
 }
 
+/**
+ * A cover: the real poster when Plex has one, else the title card. `art` is a HyperProx image path
+ * (/api/plugins/plex/art/...), fetched by the API with the vault token, so no Plex address or token is in the page.
+ */
+export function Poster({ title, art, className, style }: { title: string; art?: string | null; className?: string; style?: CSSProperties }) {
+  const [failed, setFailed] = useState(false)
+  const real = !!art && !failed && art.startsWith('/api/plugins/plex/art/')
+  return (
+    <div className={`${pg.poster} ${className ?? ''}`} style={{ ...posterStyle(title), ...style }} aria-hidden>
+      <span>{title}</span>
+      {real && <img className={pg.posterImg} src={art!} alt="" loading="lazy" decoding="async" onError={() => setFailed(true)} />}
+    </div>
+  )
+}
+
 export function plexChips(v: PlexVisual): StatChip[] {
   return [
     { label: 'watching now', value: v.counts.streams, tone: 'accent' },
@@ -42,14 +57,22 @@ export function plexChips(v: PlexVisual): StatChip[] {
 
 export function PlexView({ v }: { v: PlexVisual }) {
   const when = (at: number | null) => at ? new Date(at).toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : '—'
+  const byPlays = v.topBy === 'plays'
+  const watchers = [...v.topWatchers].sort((a, b) => byPlays ? b.plays - a.plays : b.minutes - a.minutes)
   return (
     <>
+      {v.needsPlex && (
+        <AlertCard warn title="Needs attention: add your Plex server for live data">
+          This page is reading Tautulli only. Add your Plex server’s address and token in this plug-in’s settings on the
+          Plug-ins page: Plex itself then gives now streaming, history and libraries, and Tautulli stays as an optional extra.
+        </AlertCard>
+      )}
       <Cols>
         <Panel title="Now streaming" sub={v.sessions.length ? 'LIVE' : undefined}>
           {v.sessions.length === 0 && <p className={s.empty}>Nobody is watching anything right now.</p>}
           {v.sessions.map((x, i) => (
             <article key={`${x.user}-${x.title}-${i}`} className={pg.np} aria-label={`${x.user} watching ${x.title}`}>
-              <div className={pg.poster} style={posterStyle(x.title)} aria-hidden><span>{x.title}</span></div>
+              <Poster title={x.title} art={x.art} />
               <div className={pg.npInfo}>
                 <h3>{x.title}{x.year && !x.episode ? <small style={{ fontSize: '.9rem', color: 'var(--text-muted)' }}> ({x.year})</small> : null}</h3>
                 {x.episode && <div className={pg.ep}>{x.number ? `${x.number} · ` : ''}“{x.episode}”</div>}
@@ -73,12 +96,15 @@ export function PlexView({ v }: { v: PlexVisual }) {
         </Panel>
       </Cols>
       <Cols>
-        <Panel title="Who watches most" sub="30 DAYS · HOURS">
-          {v.topWatchers.length === 0 ? <p className={s.empty}>Not enough history yet.</p> : (
-            <GlowBars label="Hours watched per person, last 30 days" items={v.topWatchers.map(w => ({
+        <Panel title="Who watches most" sub={byPlays ? '30 DAYS · PLAYS' : '30 DAYS · HOURS'}>
+          {watchers.length === 0 ? <p className={s.empty}>Not enough history yet.</p> : byPlays ? (
+            <GlowBars label="Plays per person, last 30 days" items={watchers.map(w => ({ label: w.user, value: w.plays, text: String(w.plays) }))} />
+          ) : (
+            <GlowBars label="Hours watched per person, last 30 days" items={watchers.map(w => ({
               label: w.user, value: w.minutes, text: w.minutes >= 60 ? `${Math.round(w.minutes / 60)} h` : `${w.minutes} m`,
             }))} />
           )}
+          {byPlays && watchers.length > 0 && <p className={s.empty} style={{ marginTop: 8, fontSize: '.8rem' }}>Plex counts plays, not hours. Add Tautulli in settings to see hours watched.</p>}
         </Panel>
         <Panel title="Most watched" sub="30 DAYS · PLAYS">
           {v.topTitles.length === 0 ? <p className={s.empty}>Not enough history yet.</p> : (
@@ -86,11 +112,16 @@ export function PlexView({ v }: { v: PlexVisual }) {
           )}
         </Panel>
       </Cols>
+      {!!v.libraries?.length && (
+        <Panel title="Libraries" sub="ITEMS">
+          <GlowBars label="Items in each library" items={[...v.libraries].sort((a, b) => b.count - a.count).map(l => ({ label: l.title, value: l.count, text: l.count.toLocaleString() }))} />
+        </Panel>
+      )}
       <Panel title="Recently watched">
         {v.recent.length === 0 ? <p className={s.empty}>No history recorded yet.</p> : (
           <Timeline label="Recently watched" items={v.recent.slice(0, 10).map((r, i) => ({
             key: `${r.at}-${i}`, title: <><b>{r.user}</b> watched {r.title}</>,
-            meta: `${when(r.at)} · ${r.player} · ${r.minutes} min`,
+            meta: [when(r.at), r.player !== '—' ? r.player : null, r.minutes ? `${r.minutes} min` : null].filter(Boolean).join(' · '),
           }))} />
         )}
       </Panel>

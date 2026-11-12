@@ -31,6 +31,9 @@ import { setCredential, setCredentials, getProviderCredentials, vaultWritable, d
 import { saveSettings, getSettings } from './plugin-host'
 import { PLUGINS } from '../plugins'
 import { wizardStore } from './catalogue-store'
+import { pbsSetupDeps, pbsSetupNodeRunner } from './pbs/setup-deps'
+import { PBS_SETUP_STEPS, pbsPreviewChecks, runPbsSetup, scriptEnv as pbsScriptEnv, type SetupDeps as PbsSetupDeps } from './pbs/catalogue'
+import { bindMountpoint, cleanNfsSource, mountScript, unmountScript, DATASTORE_BASE } from './pbs/nfs'
 import {
   planPublish, runPublish, cleanupPublish, recordSite, realPublishDeps, PUBLISH_STEPS,
   type PublishDeps, type PublishPlan, type PublishLedger, type PublishInput,
@@ -91,6 +94,8 @@ export interface InstallJob {
   ledger?: PublishLedger
   /** The Sites entry a finished web install made. */
   siteId?: string
+  /** A NAS datastore this job mounted on the container's node (Proxmox Backup Server); clean-up unmounts it. */
+  hostMount?: { node: string; vmid: number }
 }
 
 const JOBS = new Map<string, InstallJob>()
@@ -118,6 +123,10 @@ export interface InstallDeps {
   deleteSecrets: (category: string, provider: string) => Promise<void>
   /** DNS, proxy, certificate and the public check, for a plan that publishes. */
   publish:     PublishDeps
+  /** Run a script on a node over its saved login (the NFS probe and mount for a backup server's datastore). */
+  nodeRun?:    (node: string, script: string, timeoutMs: number) => Promise<{ code: number; output: string }>
+  /** Proxmox Backup Server's setup steps reach the new server, the vault, its plug-in and the cluster's storage. */
+  pbsSetup?:   () => PbsSetupDeps
 }
 
 const realDeps = (): InstallDeps => ({
@@ -133,6 +142,8 @@ const realDeps = (): InstallDeps => ({
   saveSecrets: (c, p, v) => setCredentials(c, p, v),
   readSecrets: (c, p) => getProviderCredentials(c, p),
   deleteSecrets: (c, p) => deleteProviderCredentials(c, p),
+  nodeRun:     pbsSetupNodeRunner,
+  pbsSetup:    () => pbsSetupDeps(pve()),
   publish: realPublishDeps(),
 })
 
@@ -240,7 +251,11 @@ export async function createFromPlan(
   set('memory', plan.memoryMb); set('swap', plan.swapMb); set('cores', plan.cores)
   set('net0', planNet0(plan))
   if (plan.dns) set('nameserver', plan.dns)
-  set('unprivileged', 1); set('features', 'nesting=1'); set('onboot', 1); set('start', 1)
+  // Proxmox Backup Server's datastore: a disk of its own on the same storage (left out of vzdump: backups of
+  // backups), or a NAS export the node mounts, given to the container after the create, before its first start.
+  const pbs = recipe.setup === 'pbs' ? plan.options ?? {} : null
+  if (pbs?.PBS_LOCATION === 'disk') set('mp0', `${plan.storage}:${Number(pbs.PBS_SIZE_GB)},mp=${DATASTORE_BASE}/${pbs.PBS_DATASTORE},backup=0`)
+  set('unprivileged', 1); set('features', 'nesting=1'); set('onboot', 1); set('start', pbs?.PBS_LOCATION === 'nas' ? 0 : 1)
   set('password', randomBytes(18).toString('base64url') + 'Aa1')
   set('description', `${recipe.name}, installed by HyperProx on ${new Date().toISOString().slice(0, 10)}.\n${installMark(jobId)}`)
   const upid = await client.fetchStrict<string>(`/nodes/${enc(plan.node)}/lxc`, 'POST', body.toString())
@@ -320,8 +335,10 @@ const STEPS = (recipe: CatalogueRecipe, first: string, publish?: PublishPlan): I
   { id: 'container', label: first, status: 'pending' },
   { id: 'network',   label: 'Wait for an address',   status: 'pending' },
   { id: 'install',   label: `Install ${recipe.name}`, status: 'pending' },
-  { id: 'verify',    label: 'Check it answers',       status: 'pending' },
-  { id: 'wire',      label: 'Configure the integration', status: 'pending' },
+  ...(recipe.setup === 'pbs' ? PBS_SETUP_STEPS.map(x => ({ ...x, status: 'pending' as Phase })) : [
+    { id: 'verify',    label: 'Check it answers',       status: 'pending' as Phase },
+    { id: 'wire',      label: 'Configure the integration', status: 'pending' as Phase },
+  ]),
   ...(publish ? PUBLISH_STEPS.map(s => ({ id: s.id, label: s.label, status: 'pending' as Phase })) : []),
 ]
 
@@ -420,7 +437,7 @@ async function runJob(
       ? (fr.secrets ?? []).map(x => ({ ...x, value: randomBytes(24).toString('base64url') })) : []
     // Before the vault write: a container with no address fails here, leaving nothing saved.
     // Options first, so nothing the installer sets can be replaced by one.
-    const env: Record<string, string> = { ...options, ...hostEnv(recipe, { ip: job.ip }) }
+    const env: Record<string, string> = { ...options, ...hostEnv(recipe, { ip: job.ip }), ...(recipe.setup === 'pbs' ? pbsScriptEnv() : {}) }
     if (fr.kind === 'env-admin' && admin) {
       env[fr.passwordEnv] = admin.password
       if (fr.userEnv) env[fr.userEnv] = admin.user
@@ -448,6 +465,21 @@ async function runJob(
     if (run.timedOut) throw new Error('The install ran for twenty minutes without finishing.')
     if (run.code !== 0) throw new Error(`The install script exited ${run.code}. See the log below.`)
     s3.status = 'done'
+
+    // Proxmox Backup Server: its own setup steps (certificate pin, health, tokens, plug-in, optional storage).
+    if (recipe.setup === 'pbs') {
+      if (!job.ip) throw new Error('The backup server has no address, so its setup cannot reach it.')
+      if (!admin || !deps.pbsSetup) throw new Error('The backup server\'s setup is not available here.')
+      const out = await runPbsSetup({
+        ip: job.ip, vmid: job.vmid!, hostname: `PBS ${job.vmid}`,
+        datastore: options.PBS_DATASTORE, rootPassword: admin.password, installLog: job.log, addStorage: options.PBS_ADD_STORAGE === '1',
+        vault: { category: 'apps', provider: `${recipe.id}-${job.vmid}` },
+      }, id => step(job, id), deps.pbsSetup())
+      job.url = out.url
+      job.adminCredential = { user: admin.user, vault: { category: 'apps', provider: `${recipe.id}-${job.vmid}`, key: 'admin_password' }, issuedAt: Date.now() }
+      job.status = 'completed'
+      return
+    }
 
     // 4. Listening is not the same as serving.
     // The Arr Stack proves each app itself, then does its setup chores (lib/arr/setup.ts) in place of the wiring.
@@ -1157,6 +1189,10 @@ export async function previewInstall(
       publish = pp.plan
     }
   }
+  if (!r.errors.length && recipe.setup === 'pbs') {
+    const pc = await pbsPreview(input, recipe, deps)
+    r.errors.push(...pc.errors); r.warnings.push(...pc.warnings); r.checks.push(...pc.checks)
+  }
   if (r.errors.length) return r
   const t = await resolveTemplate(deps.client, input.node, view)
   if ('error' in t) return { ...r, errors: [t.error] }
@@ -1255,6 +1291,7 @@ export async function applyPreview(id: string, owner: string, over: Partial<Wiza
     }
     void runJob(job, recipe, deps, async () => {
       await createFromPlan(plan, recipe, job.jobId, deps.client, () => { job.created = true; void persistJob(job).catch(() => {}) })
+      if (recipe.setup === 'pbs' && plan.options?.PBS_LOCATION === 'nas') await mountNasDatastore(job, plan, deps)
       await waitRunning(deps, plan.node, plan.vmid)
       if (recipe.stack === 'arr') {
         // keyctl, the VPN's tun device and the library, which an API token cannot set; then it starts again.
@@ -1343,7 +1380,7 @@ export async function removeFailedInstall(jobId: string, owner: string, over: Pa
   const here = (listed ?? []).find((r: any) => Number(r?.vmid) === job.vmid)
   if (!here) {
     job.removed = true
-    const msg = `CT ${job.vmid} no longer exists, so there was nothing to remove.${await removePublished(job, deps)}${await removeVaultItem(job, deps)}`
+    const msg = `CT ${job.vmid} no longer exists, so there was nothing to remove.${await removePublished(job, deps)}${await removeHostMount(job, deps)}${await removeVaultItem(job, deps)}`
     await persistJob(job).catch(() => {})
     return msg
   }
@@ -1374,9 +1411,48 @@ export async function removeFailedInstall(jobId: string, owner: string, over: Pa
   const left = await deps.client.fetchStrict<any[]>('/cluster/resources?type=vm')
   if ((left ?? []).some((r: any) => Number(r?.vmid) === job.vmid)) throw new Error(`CT ${job.vmid} is still listed after the removal.`)
   job.removed = true
-  const msg = `CT ${job.vmid} was removed from ${job.node}.${published}${await removeVaultItem(job, deps)}`
+  const msg = `CT ${job.vmid} was removed from ${job.node}.${published}${await removeHostMount(job, deps)}${await removeVaultItem(job, deps)}`
   await persistJob(job).catch(() => {})
   return msg
+}
+
+// ── Proxmox Backup Server: the NAS datastore on the node ─────────────────────
+
+/** The preview's checks of where the backups will live (lib/pbs/catalogue.ts), with the NFS look run on the node. */
+async function pbsPreview(input: WizardInput, recipe: CatalogueRecipe, deps: WizardDeps): Promise<{ errors: string[]; warnings: string[]; checks: string[] }> {
+  const v = checkOptions(recipe, input.options).values
+  if (!deps.nodeRun) return { errors: ['HyperProx cannot reach the node to check the NAS export.'], warnings: [], checks: [] }
+  return pbsPreviewChecks(input.node, v, { runOnNode: deps.nodeRun })
+}
+
+/**
+ * Mount the NAS export on the container's node only (fstab line marked with the container's id), give the
+ * container its bind mountpoint, then start it. Recorded on the job first, so a clean-up undoes it.
+ */
+async function mountNasDatastore(job: InstallJob, plan: InstallPlan, deps: WizardDeps): Promise<void> {
+  const o = plan.options!
+  const src = cleanNfsSource(o.PBS_NFS_HOST, o.PBS_NFS_EXPORT)
+  if (!deps.nodeRun) throw new Error('HyperProx cannot reach the node to mount the NAS export.')
+  job.hostMount = { node: plan.node, vmid: plan.vmid }
+  await persistJob(job).catch(() => {})
+  const r = await deps.nodeRun(plan.node, mountScript(src, plan.vmid, o.PBS_DATASTORE), 90_000)
+  if (r.code !== 0 || !/@@pbs mounted/.test(r.output)) throw new Error(`${src.source} could not be mounted on ${plan.node} for CT ${plan.vmid}.`)
+  // Read back: the container's config carries the mountpoint exactly.
+  const cfg = await deps.client.fetchStrict<Record<string, unknown>>(`/nodes/${encodeURIComponent(plan.node)}/lxc/${plan.vmid}/config`)
+  if (String(cfg?.mp0 ?? '') !== bindMountpoint(plan.vmid, o.PBS_DATASTORE)) throw new Error(`CT ${plan.vmid}'s datastore mountpoint did not read back.`)
+  const step0 = job.steps.find(x => x.id === 'container')
+  if (step0) step0.detail = `${src.source} mounted on ${plan.node} and passed in at ${DATASTORE_BASE}/${o.PBS_DATASTORE}`
+  await deps.client.waitForTask(plan.node, await deps.client.fetchStrict<string>(`/nodes/${encodeURIComponent(plan.node)}/lxc/${plan.vmid}/status/start`, 'POST'), { timeoutMs: 2 * 60_000 })
+}
+
+/** Undo a NAS mount this job made (its fstab line, mount and folder). The NAS's data is never touched. */
+async function removeHostMount(job: InstallJob, deps: WizardDeps): Promise<string> {
+  if (!job.hostMount || !deps.nodeRun) return ''
+  const r = await deps.nodeRun(job.hostMount.node, unmountScript(job.hostMount.vmid), 60_000).catch(() => null)
+  if (!r || !/@@pbs (unmounted|nomount)/.test(r.output)) return ` The NAS mount for CT ${job.hostMount.vmid} on ${job.hostMount.node} could not be undone; remove its "# hyperprox-pbs ${job.hostMount.vmid}" line from /etc/fstab there.`
+  const where = job.hostMount
+  job.hostMount = undefined
+  return ` The NAS mount on ${where.node} was undone (the NAS's files were not touched).`
 }
 
 /** Remove the proxy host and DNS record this job's ledger says it made. Returns sentences to append. */

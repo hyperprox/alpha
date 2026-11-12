@@ -20,10 +20,12 @@ export const PLUGIN_CATEGORY = 'plugin'
 export interface PluginSetting {
   key:      string
   label:    string
-  /** `secret` values are encrypted and never returned to the browser. */
-  type:     'text' | 'secret' | 'url'
+  /** `secret` values are encrypted and never returned to the browser. `toggle` stores "yes" or "no". */
+  type:     'text' | 'secret' | 'url' | 'toggle'
   required: boolean
   hint?:    string
+  /** A heading the settings form shows above this setting and the ones after it. */
+  section?: string
 }
 
 /** How the host authenticates this plug-in's HTTP calls on its behalf. */
@@ -79,6 +81,11 @@ export interface PluginManifest {
   /** Setting holding the base URL every request is resolved against. */
   baseUrlSetting: string
   auth:        PluginAuth
+  /**
+   * Set up when any one of these groups of settings is complete, rather than when every `required` setting is:
+   * Plex works with its own server, or (as installs from before did) with Tautulli alone.
+   */
+  requiredAny?: string[][]
   /** Additional endpoints beyond the default one above. */
   endpoints?:  PluginEndpoint[]
   /** Ignore TLS errors — routers and media servers routinely use self-signed certs. */
@@ -505,65 +512,44 @@ export async function describeSettings(manifest: PluginManifest) {
 }
 
 export function missingSettings(manifest: PluginManifest, stored: Record<string, string>): string[] {
-  return manifest.settings.filter(s => s.required && !stored[s.key]).map(s => s.label)
+  const missing = manifest.settings.filter(s => s.required && !stored[s.key]).map(s => s.label)
+  const groups = manifest.requiredAny ?? []
+  if (groups.length && !groups.some(g => g.every(k => stored[k]))) {
+    // Name what the first (preferred) group still needs.
+    for (const k of groups[0]) if (!stored[k]) missing.push(manifest.settings.find(x => x.key === k)?.label ?? k)
+  }
+  return missing
 }
 
 // ---------------------------------------------------------------------------
 //  The broker
 // ---------------------------------------------------------------------------
 
-class BrokerContext implements PluginContext {
-  private endpoint: PluginEndpoint
-
-  constructor(
-    private manifest: PluginManifest,
-    private settings: Record<string, string>,
-    endpointKey?: string,
-  ) {
+/**
+ * Makes one endpoint's calls: its address and credential, a timeout, no redirects. Never handed to a plug-in.
+ * BrokerContext (what a plug-in gets) keeps one in an ES private field and exposes only get and post; the
+ * delete, image and other host-only calls exist only on this class, which is not exported.
+ */
+class Requester {
+  readonly endpoint: PluginEndpoint
+  constructor(readonly manifest: PluginManifest, private settings: Record<string, string>, endpointKey?: string) {
     this.endpoint = resolveEndpoint(manifest, endpointKey)
   }
 
-  from(endpointKey: string): PluginContext {
-    return new BrokerContext(this.manifest, this.settings, endpointKey)
+  /** The address and every credential this endpoint sends are set. */
+  ready(): boolean {
+    if (!(this.settings[this.endpoint.baseUrlSetting] ?? '').trim()) return false
+    return authSecrets(this.endpoint.auth).every(k => (this.settings[k] ?? '').trim())
   }
 
-  has(endpointKey: string): boolean {
-    try {
-      const e = resolveEndpoint(this.manifest, endpointKey)
-      return Boolean((this.settings[e.baseUrlSetting] ?? '').trim())
-    } catch { return false }
-  }
-
-  option(key: string): string | undefined {
-    const declared = this.manifest.settings.find(s => s.key === key)
-    if (!declared || declared.type === 'secret') return undefined
-    return this.settings[key] || undefined
-  }
-
-  get(path: string, opts?: { timeoutMs?: number }) {
-    return this.request('GET', path, undefined, opts?.timeoutMs)
-  }
-  post(path: string, body: Record<string, unknown>, opts?: { timeoutMs?: number }) {
-    return this.request('POST', path, body, opts?.timeoutMs)
-  }
-
-  private async request(
-    method: 'GET' | 'POST',
-    path: string,
-    body?: Record<string, unknown>,
-    timeoutMs?: number,
-  ): Promise<any> {
-    if (this.manifest.coreTransport) {
-      const t = transports.get(this.manifest.id)
-      if (!t) throw new Error(`${this.manifest.name} is not connected yet.`)
-      return t(method, path, timeoutMs)
-    }
+  /** The address and credential for one call. */
+  private prepare(path: string, json: boolean): { url: URL; headers: Record<string, string> } {
     const base = (this.settings[this.endpoint.baseUrlSetting] ?? '').replace(/\/+$/, '')
     if (!base) throw new Error(`${this.manifest.name}: no address configured for ${this.endpoint.label}`)
 
     const url = new URL(base + (path.startsWith('/') ? path : `/${path}`))
     const headers: Record<string, string> = { Accept: 'application/json' }
-    if (body) headers['Content-Type'] = 'application/json'
+    if (json) headers['Content-Type'] = 'application/json'
     const auth = this.endpoint.auth
 
     if (auth.kind === 'header') {
@@ -580,6 +566,42 @@ class BrokerContext implements PluginContext {
       if (!v) throw new Error(`${this.manifest.name} is missing its credential`)
       url.searchParams.set(auth.param, v)
     }
+    return { url, headers }
+  }
+
+  /** An image's bytes (Plex cover art). Must be an image; reading stops as soon as it passes `maxBytes`. */
+  async image(path: string, timeoutMs = 10_000, maxBytes = 4 * 1024 * 1024): Promise<{ contentType: string; body: Buffer }> {
+    if (this.manifest.coreTransport) throw new Error(`${this.manifest.name} serves no images.`)
+    const { url, headers } = this.prepare(path, false)
+    headers.Accept = 'image/*'
+    const res = await fetchWithTimeout(url.toString(), headers, this.endpoint.insecureTLS, 'GET', undefined, timeoutMs, maxBytes)
+    if (!res.ok) throw new Error(`${this.manifest.name} returned HTTP ${res.status}`)
+    const contentType = String(res.contentType ?? '').split(';')[0].trim().toLowerCase()
+    if (!/^image\/(jpeg|png|webp|gif)$/.test(contentType)) throw new Error(`${this.manifest.name} did not return an image`)
+    return { contentType, body: await res.buffer() }
+  }
+
+  /** A GET whose answer is not read (Plex's partial library scan answers with an empty body). */
+  async trigger(path: string, timeoutMs?: number): Promise<void> {
+    if (this.manifest.coreTransport) throw new Error(`${this.manifest.name} takes no triggers.`)
+    const { url, headers } = this.prepare(path, false)
+    const res = await fetchWithTimeout(url.toString(), headers, this.endpoint.insecureTLS, 'GET', undefined, timeoutMs)
+    if (!res.ok) throw new Error(`${this.manifest.name} returned HTTP ${res.status}`)
+  }
+
+  async request(
+    method: 'GET' | 'POST' | 'DELETE' | 'PUT',
+    path: string,
+    body?: Record<string, unknown>,
+    timeoutMs?: number,
+  ): Promise<any> {
+    if (this.manifest.coreTransport) {
+      const t = transports.get(this.manifest.id)
+      if (!t) throw new Error(`${this.manifest.name} is not connected yet.`)
+      if (method === 'DELETE' || method === 'PUT') throw new Error(`${this.manifest.name} takes no ${method === 'PUT' ? 'edits' : 'deletes'}.`)
+      return t(method, path, timeoutMs)
+    }
+    const { url, headers } = this.prepare(path, !!body)
 
     // Routers and media servers ship self-signed certs. A plug-in cannot turn
     // this on for itself — only its manifest can, and only for its own host.
@@ -587,8 +609,50 @@ class BrokerContext implements PluginContext {
     if (!res.ok) throw new Error(`${this.manifest.name} returned HTTP ${res.status}`)
 
     const text = await res.text()
+    // Sonarr, Radarr and Plex answer a delete (and some edits) with 200 or 202 and no body.
+    if ((method === 'DELETE' || method === 'PUT') && !text.trim()) return null
     try { return JSON.parse(text) }
     catch { throw new Error(`${this.manifest.name} did not return JSON`) }
+  }
+}
+
+/** True when that endpoint has its address and every credential it sends (a half-entered one is not set). */
+export function endpointReady(manifest: PluginManifest, settings: Record<string, string>, endpointKey = 'default'): boolean {
+  try { return new Requester(manifest, settings, endpointKey).ready() } catch { return false }
+}
+
+/** What a plug-in is handed: get and post through its own endpoints, its non-secret options, and nothing else. */
+class BrokerContext implements PluginContext {
+  readonly #req: Requester
+  readonly #manifest: PluginManifest
+  readonly #settings: Record<string, string>
+
+  constructor(manifest: PluginManifest, settings: Record<string, string>, endpointKey?: string) {
+    this.#manifest = manifest
+    this.#settings = settings
+    this.#req = new Requester(manifest, settings, endpointKey)
+  }
+
+  from(endpointKey: string): PluginContext {
+    return new BrokerContext(this.#manifest, this.#settings, endpointKey)
+  }
+
+  /** The endpoint has its address AND every credential it sends: a half-entered one is not "set". */
+  has(endpointKey: string): boolean {
+    return endpointReady(this.#manifest, this.#settings, endpointKey)
+  }
+
+  option(key: string): string | undefined {
+    const declared = this.#manifest.settings.find(s => s.key === key)
+    if (!declared || declared.type === 'secret') return undefined
+    return this.#settings[key] || undefined
+  }
+
+  get(path: string, opts?: { timeoutMs?: number }) {
+    return this.#req.request('GET', path, undefined, opts?.timeoutMs)
+  }
+  post(path: string, body: Record<string, unknown>, opts?: { timeoutMs?: number }) {
+    return this.#req.request('POST', path, body, opts?.timeoutMs)
   }
 }
 
@@ -612,12 +676,15 @@ export function fetchWithTimeout(
   url: string,
   headers: Record<string, string>,
   insecure?: boolean,
-  method: 'GET' | 'POST' = 'GET',
+  method: 'GET' | 'POST' | 'DELETE' | 'PUT' = 'GET',
   body?: Record<string, unknown>,
   // Eight seconds is right for a tile and far too short for a search that fans
   // out to a dozen indexers, several of them behind FlareSolverr.
   timeoutMs = 8000,
-): Promise<{ ok: boolean; status: number; text: () => Promise<string> }> {
+  /** Stop reading (and fail) once the body passes this many bytes. */
+  maxBytes?: number,
+): Promise<{ ok: boolean; status: number; contentType?: string | null; text: () => Promise<string>; buffer: () => Promise<Buffer> }> {
+  const tooBig = () => new Error('The answer is larger than allowed.')
   const payload = body ? JSON.stringify(body) : undefined
 
   // Never followed: a redirect would carry the plug-in's credential (its headers) to wherever the device, or
@@ -628,7 +695,25 @@ export function fetchWithTimeout(
     return fetch(url, { method, headers, body: payload, signal: controller.signal, redirect: 'manual' })
       .then(res => {
         if (res.status >= 300 && res.status < 400) throw new PluginRedirectError(res.status)
-        return res
+        return {
+          ok: res.ok, status: res.status, contentType: res.headers.get('content-type'),
+          text: () => res.text(),
+          buffer: async () => {
+            if (!maxBytes || !res.body) return Buffer.from(await res.arrayBuffer())
+            if (Number(res.headers.get('content-length') ?? 0) > maxBytes) { await res.body.cancel().catch(() => {}); throw tooBig() }
+            const reader = res.body.getReader()
+            const chunks: Buffer[] = []
+            let n = 0
+            for (;;) {
+              const { done, value } = await reader.read()
+              if (done) break
+              n += value.length
+              if (n > maxBytes) { await reader.cancel().catch(() => {}); throw tooBig() }
+              chunks.push(Buffer.from(value))
+            }
+            return Buffer.concat(chunks)
+          },
+        }
       })
       .finally(() => clearTimeout(timer)) as any
   }
@@ -638,14 +723,23 @@ export function fetchWithTimeout(
       const req = https.request(url, { method, headers, rejectUnauthorized: false, timeout: timeoutMs }, res => {
         const code = res.statusCode ?? 500
         if (code >= 300 && code < 400) { res.resume(); return reject(new PluginRedirectError(code)) }
-        let body = ''
-        res.setEncoding('utf8')
-        res.on('data', c => { body += c })
-        res.on('end', () => resolve({
-          ok:     (res.statusCode ?? 500) < 400,
-          status: res.statusCode ?? 500,
-          text:   async () => body,
-        }))
+        const chunks: Buffer[] = []
+        let n = 0
+        res.on('data', (c: Buffer) => {
+          n += c.length
+          if (maxBytes && n > maxBytes) { req.destroy(tooBig()); return }
+          chunks.push(c)
+        })
+        res.on('end', () => {
+          const all = Buffer.concat(chunks)
+          resolve({
+            ok:     (res.statusCode ?? 500) < 400,
+            status: res.statusCode ?? 500,
+            contentType: (res.headers['content-type'] as string | undefined) ?? null,
+            text:   async () => all.toString('utf8'),
+            buffer: async () => all,
+          })
+        })
       })
       req.on('timeout', () => { req.destroy(new Error(`timed out after ${Math.round(timeoutMs / 1000)}s`)) })
       req.on('error', reject)
@@ -682,6 +776,50 @@ async function contextFor(plugin: Plugin): Promise<BrokerContext> {
  */
 export async function pluginRead(plugin: Plugin, path: string, timeoutMs?: number): Promise<any> {
   return (await contextFor(plugin)).get(path, { timeoutMs })
+}
+
+/** One endpoint of a plug-in, as a core feature uses it. The credential stays inside this module. */
+export interface CoreEndpointClient {
+  get(path: string, timeoutMs?: number): Promise<any>
+  delete(path: string, timeoutMs?: number): Promise<any>
+  /** An image's bytes and type (Plex cover art); refuses anything that is not an image. */
+  image(path: string, timeoutMs?: number): Promise<{ contentType: string; body: Buffer }>
+  /** A JSON PUT (Sonarr: unmonitor episodes, edit a series). */
+  put(path: string, body: unknown, timeoutMs?: number): Promise<any>
+  /** A GET whose answer is not read (Plex: scan one folder). */
+  trigger(path: string, timeoutMs?: number): Promise<void>
+}
+
+/**
+ * A core feature building on a plug-in's connection, with delete as well as read (the Plex clear-out removes a
+ * show through the Arr Stack's Sonarr). Null when the plug-in is not set up or that endpoint has no address.
+ * Never handed to a plug-in: PluginContext stays read-only.
+ */
+export class PluginSettingsReadError extends Error {
+  constructor(name: string) { super(`Couldn't read the ${name} settings, try again.`); this.name = 'PluginSettingsReadError' }
+}
+
+/**
+ * `strict`: a failure to READ the settings (the vault locked or unreachable) throws PluginSettingsReadError instead
+ * of answering null, so a caller can tell "not set up" from "could not tell".
+ */
+export async function pluginEndpointClient(plugin: Plugin, endpointKey = 'default', opts: { strict?: boolean } = {}): Promise<CoreEndpointClient | null> {
+  let settings: Record<string, string> | null
+  try { settings = await getSettings(plugin.manifest.id) } catch {
+    if (opts.strict) throw new PluginSettingsReadError(plugin.manifest.name)
+    settings = null
+  }
+  if (!settings || missingSettings(plugin.manifest, settings).length) return null
+  let r: Requester
+  try { r = new Requester(plugin.manifest, settings, endpointKey) } catch { return null }
+  if (!r.ready()) return null
+  return {
+    get:    (path, timeoutMs) => r.request('GET', path, undefined, timeoutMs),
+    delete: (path, timeoutMs) => r.request('DELETE', path, undefined, timeoutMs),
+    image:  (path, timeoutMs) => r.image(path, timeoutMs),
+    put:    (path, body, timeoutMs) => r.request('PUT', path, body as Record<string, unknown>, timeoutMs),
+    trigger: (path, timeoutMs) => r.trigger(path, timeoutMs),
+  }
 }
 
 /** A plug-in's address and TLS rule (both non-secret), for a write client that brings its own credential. */

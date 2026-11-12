@@ -36,6 +36,10 @@ export interface PlexSessionVisual {
   state:     string
   /** 0 to 100. */
   progress:  number
+  /** The poster, as a HyperProx image path (never a Plex URL, never the token), or null for the title card. */
+  art?:      string | null
+  /** Plex's session key, to match Tautulli's quality detail to the same stream. */
+  sessionKey?: string | null
 }
 
 export interface PlexVisual {
@@ -48,6 +52,14 @@ export interface PlexVisual {
   topTitles:   Array<{ title: string; plays: number; minutes: number }>
   /** Newest first. `at` is milliseconds since the epoch, or null. */
   recent:      Array<{ at: number | null; user: string; title: string; player: string; minutes: number }>
+  /** What "who watches most" is measured in: hours (Tautulli) or plays (Plex alone keeps no watch time). */
+  topBy?:      'minutes' | 'plays'
+  /** Each library and how many items it holds (Plex only). */
+  libraries?:  Array<{ title: string; kind: string; count: number }>
+  /** Read from Plex, from Tautulli, or both. */
+  source?:     'plex' | 'tautulli' | 'both'
+  /** Only Tautulli is set: the page asks for the Plex server for live data. */
+  needsPlex?:  boolean
 }
 
 export type ArrDownloadState = 'downloading' | 'seeding' | 'stalled' | 'queued' | 'checking' | 'paused' | 'other'
