@@ -3,8 +3,8 @@
 // =============================================================================
 //  HyperProx — Arr Stack, Queue
 //
-//  What Sonarr and Radarr are downloading right now, grouped Show → Season →
-//  download. The API collapses the queue (a 23-episode pack is 23 rows but one
+//  What Sonarr and Radarr (and Lidarr, when set up) are downloading right now,
+//  grouped Show → Season → download, and Artist → Album → download for music. The API collapses the queue (a 23-episode pack is 23 rows but one
 //  download) and sends the grouped shape, so 200+ rows stay light here. The
 //  reading comes from /api/plugins/arrstack/queue every few seconds, shared by
 //  every open page, and pauses while the tab is hidden — the same rule the
@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { apiJson } from '@/lib/api'
 import { Panel, Pill, ProgressBar, RingGauge, Tiles, bytes, duration, styles as s } from '@/components/visual/kit'
-import { badgeOf, problemsOnly, type Badge, type Scoped } from './queue-view'
+import { badgeOf, problemsOnly, problemsOnlyMusic, type Badge, type Scoped, type ScopedArtist } from './queue-view'
 import { ActionResults, ActionsProvider, ClearDone, DownloadActions, FixStalled, SeasonActions, type Instance } from './QueueActions'
 import c from './queue.module.css'
 
@@ -23,17 +23,22 @@ export type Problem = 'failed' | 'blocked' | 'incomplete' | 'stalled' | 'warning
 export interface QDownload {
   id: string; name: string; size: number; sizeLeft: number; progress: number; etaSec: number | null
   status: string; state: string; quality: string | null; protocol: string | null; client: string | null; indexer: string | null
-  episodes: number; episodeRange: string | null; problem: Problem | null; done?: boolean; why?: string | null; messages: string[]; hint?: string | null
+  episodes: number; episodeRange: string | null; /** Lidarr only. */ albums?: number; tracks?: number
+  problem: Problem | null; done?: boolean; why?: string | null; messages: string[]; hint?: string | null
 }
 export interface QSeason { key: string; label: string; downloads: QDownload[]; episodes: number; size: number; sizeLeft: number; progress: number; etaSec: number | null; problem: Problem | null; done?: boolean }
 export interface QShow { key: string; title: string; seasons: QSeason[]; downloads: number; episodes: number; size: number; sizeLeft: number; progress: number; etaSec: number | null; problem: Problem | null; done?: boolean }
 export interface QMovie extends QDownload { title: string; year: number | null }
+export interface QAlbum { key: string; title: string; downloads: QDownload[]; tracks: number; size: number; sizeLeft: number; progress: number; etaSec: number | null; problem: Problem | null; done?: boolean }
+export interface QArtist { key: string; title: string; albums: QAlbum[]; downloads: number; albumCount: number; tracks: number; size: number; sizeLeft: number; progress: number; etaSec: number | null; problem: Problem | null; done?: boolean }
 export interface QueueData {
   at: number
-  services: { sonarr: { ok: boolean; configured: boolean; error?: string }; radarr: { ok: boolean; configured: boolean; error?: string } }
-  summary: { downloads: number; shows: number; movies: number; rows: number; sizeLeft: number; attention: number; stalled: number; warnings: number; done?: number }
+  services: { sonarr: { ok: boolean; configured: boolean; error?: string }; radarr: { ok: boolean; configured: boolean; error?: string }; lidarr?: { ok: boolean; configured: boolean; error?: string } }
+  summary: { downloads: number; shows: number; movies: number; artists?: number; albums?: number; rows: number; sizeLeft: number; attention: number; stalled: number; warnings: number; done?: number }
   shows: QShow[]
   movies: QMovie[]
+  /** Music (Lidarr). Empty, and every music field absent from the page, when Lidarr is not set up. */
+  artists?: QArtist[]
   capabilities?: { prioritise: boolean }
 }
 
@@ -106,6 +111,7 @@ function DownloadRow({ d, name, instance }: { d: QDownload; name?: string; insta
         <span>{d.etaSec ? `${duration(d.etaSec)} left` : 'no ETA'}</span>
         <span>{state}</span>
         {d.episodes > 0 && <span>{plural(d.episodes, 'episode')}{d.episodeRange ? ` · ${d.episodeRange}` : ''}</span>}
+        {(d.albums ?? 0) > 0 && <span>{plural(d.albums!, 'album')}{d.tracks ? ` · ${plural(d.tracks, 'track')}` : ''}</span>}
       </div>
       {meta && <div className={c.dlMeta}><span>{meta}</span></div>}
       {d.why && <p className={c.why}><b>Why this download:</b> {d.why}</p>}
@@ -195,6 +201,53 @@ function ShowCard({ show, open, onToggle, isOpen, toggleKey }: {
   )
 }
 
+
+/** Music: Artist → Album → download. No season swap (music has no season packs), everything else as a show. */
+function ArtistCard({ artist, open, onToggle, isOpen, toggleKey }: {
+  artist: ScopedArtist<QArtist>; open: boolean; onToggle: () => void; isOpen: (k: string, dflt: boolean) => boolean; toggleKey: (k: string, current: boolean) => void
+}) {
+  const stalledItems = artist.albums.flatMap(al => al.downloads).filter(d => d.problem === 'stalled').map(d => ({ instance: 'lidarr' as const, id: d.id }))
+  const tone = artist.problem ? (PROBLEM_TONE[artist.problem] === 'bad' ? 'var(--crit)' : 'var(--warn)') : 'var(--hx-accent)'
+  return (
+    <li className={c.group} data-problem={artist.problem ?? undefined}>
+      <button type="button" className={c.groupHead} aria-expanded={open} onClick={onToggle}>
+        <Chevron open={open} />
+        <RingGauge value={artist.progress / 100} size={44} stroke={5} color={tone} text={`${Math.round(artist.progress)}%`} label={`${artist.title} progress`} compact />
+        <span className={c.groupTitle}>
+          <b>{artist.title}</b>
+          <small>
+            {artist.scope
+              ? `Showing ${artist.scope.albums} of ${plural(artist.scope.totalAlbums, 'album')} and ${artist.scope.downloads} of ${plural(artist.scope.totalDownloads, 'download')} with problems · totals count the whole artist`
+              : `${plural(artist.albumCount || artist.albums.length, 'album')} · ${plural(artist.downloads, 'download')}${artist.tracks ? ` · ${plural(artist.tracks, 'track')}` : ''}`}
+          </small>
+        </span>
+        <span className={c.groupStats}><Totals left={artist.sizeLeft} eta={artist.etaSec} progress={artist.progress} badge={badgeOf(artist.problem, artist.albums.flatMap(al => al.downloads))} /></span>
+      </button>
+      {open && (
+        <>
+        <FixStalled keyName={artist.key} label={`Fix ${stalledItems.length} stalled`} items={stalledItems} />
+        <ul className={c.seasons}>
+          {artist.albums.map(al => {
+            const k = `${artist.key}|${al.key}`
+            const alOpen = isOpen(k, true)
+            return (
+              <li key={al.key} className={c.season} data-problem={al.problem ?? undefined}>
+                <button type="button" className={c.seasonHead} aria-expanded={alOpen} onClick={() => toggleKey(k, alOpen)}>
+                  <Chevron open={alOpen} />
+                  <span className={c.seasonTitle}>{al.title}{al.tracks ? ` · ${plural(al.tracks, 'track')}` : ''}</span>
+                  <span className={c.groupStats}><Totals left={al.sizeLeft} eta={al.etaSec} progress={al.progress} badge={badgeOf(al.problem, al.downloads)} /></span>
+                </button>
+                {alOpen && <ul className={c.dls}>{al.downloads.map(d => <DownloadRow key={d.id} d={d} instance="lidarr" />)}</ul>}
+              </li>
+            )
+          })}
+        </ul>
+        </>
+      )}
+    </li>
+  )
+}
+
 type QState = { data: QueueData | null; error: string | null; at: number | null; refresh?: () => void }
 
 export function ArrQueue({ q }: { q: QState }) {
@@ -218,29 +271,34 @@ function ArrQueueView({ q }: { q: QState }) {
   const sm = data?.summary
   const shows = useMemo<Array<Scoped<QShow>>>(() => (only === 'all' ? data?.shows ?? [] : problemsOnly(data?.shows ?? [])), [data, only])
   const movies = useMemo(() => (data?.movies ?? []).filter(x => only === 'all' || x.problem), [data, only])
+  const lidarrOn = !!data?.services.lidarr?.configured
+  const artists = useMemo<Array<ScopedArtist<QArtist>>>(() => (only === 'all' ? data?.artists ?? [] : problemsOnlyMusic(data?.artists ?? [])), [data, only])
   const allStalled = useMemo(() => [
     ...(data?.shows ?? []).flatMap(sh => sh.seasons.flatMap(se => se.downloads)).filter(d => d.problem === 'stalled').map(d => ({ instance: 'sonarr' as const, id: d.id })),
     ...(data?.movies ?? []).filter(m => m.problem === 'stalled').map(m => ({ instance: 'radarr' as const, id: m.id })),
+    ...(data?.artists ?? []).flatMap(ar => ar.albums.flatMap(al => al.downloads)).filter(d => d.problem === 'stalled').map(d => ({ instance: 'lidarr' as const, id: d.id })),
   ], [data])
   const allDone = useMemo(() => [
     ...(data?.shows ?? []).flatMap(sh => sh.seasons.flatMap(se => se.downloads)).filter(d => d.done).map(d => ({ instance: 'sonarr' as const, id: d.id })),
     ...(data?.movies ?? []).filter(m => m.done).map(m => ({ instance: 'radarr' as const, id: m.id })),
+    ...(data?.artists ?? []).flatMap(ar => ar.albums.flatMap(al => al.downloads)).filter(d => d.done).map(d => ({ instance: 'lidarr' as const, id: d.id })),
   ], [data])
   const few = (data?.shows.length ?? 0) <= 3
-  const down = data ? (['sonarr', 'radarr'] as const).filter(k => data.services[k].configured && !data.services[k].ok) : []
+  const down = data ? (['sonarr', 'radarr', 'lidarr'] as const).filter(k => data.services[k]?.configured && !data.services[k]?.ok) : []
   const movieOpen = dflt('movies', true)
 
   return (
     <div className={c.root}>
-      <Panel title="Queue" sub={sm ? `${plural(sm.downloads, 'DOWNLOAD')} · ${plural(sm.shows, 'SHOW')}${sm.movies ? ` · ${plural(sm.movies, 'MOVIE')}` : ''}` : undefined}>
+      <Panel title="Queue" sub={sm ? `${plural(sm.downloads, 'DOWNLOAD')} · ${plural(sm.shows, 'SHOW')}${sm.movies ? ` · ${plural(sm.movies, 'MOVIE')}` : ''}${lidarrOn ? ` · ${plural(sm.artists ?? 0, 'ARTIST')}` : ''}` : undefined}>
         {sm && (
           <Tiles label="Queue summary" items={[
             { label: 'downloads', value: sm.downloads, tone: 'accent' },
             { label: 'shows', value: sm.shows },
+            ...(lidarrOn ? [{ label: 'artists', value: sm.artists ?? 0 }] : []),
             { label: 'left to fetch', value: bytes(sm.sizeLeft) },
             { label: 'needs you', value: sm.attention, tone: sm.attention ? 'crit' : 'good', title: 'Failed downloads, blocked imports and incomplete packs' },
             { label: 'stalled or warning', value: sm.stalled + sm.warnings, tone: sm.stalled + sm.warnings ? 'warn' : undefined },
-            ...(sm.done ? [{ label: 'ready to clear', value: sm.done, tone: 'good' as const, title: 'Finished downloads whose episodes or movies are all already in your library' }] : []),
+            ...(sm.done ? [{ label: 'ready to clear', value: sm.done, tone: 'good' as const, title: 'Finished downloads whose episodes, movies or albums are all already in your library' }] : []),
           ]} />
         )}
         {sm && sm.rows > sm.downloads && (
@@ -261,11 +319,11 @@ function ArrQueueView({ q }: { q: QState }) {
         <ActionResults />
         {error && <p className={c.err} role="alert">{data ? `Showing the last reading. ${error}` : error}</p>}
         {down.map(k => (
-          <p key={k} className={c.err} role="status">{k === 'sonarr' ? 'Sonarr' : 'Radarr'} is not answering{data!.services[k].error ? `: ${data!.services[k].error}` : ''}. Its queue is missing.</p>
+          <p key={k} className={c.err} role="status">{k === 'sonarr' ? 'Sonarr' : k === 'lidarr' ? 'Lidarr' : 'Radarr'} is not answering{data!.services[k]?.error ? `: ${data!.services[k]!.error}` : ''}. Its queue is missing.</p>
         ))}
         {!data && !error && <p className={s.empty}>Reading the queue…</p>}
-        {data && sm!.downloads === 0 && !error && !down.length && <p className={s.empty}>Both queues are empty.</p>}
-        {data && sm!.downloads > 0 && shows.length + movies.length === 0 && <p className={s.empty}>No problems in the queue.</p>}
+        {data && sm!.downloads === 0 && !error && !down.length && <p className={s.empty}>{lidarrOn ? 'The queues are empty.' : 'Both queues are empty.'}</p>}
+        {data && sm!.downloads > 0 && shows.length + movies.length + artists.length === 0 && <p className={s.empty}>No problems in the queue.</p>}
       </Panel>
 
       {shows.length > 0 && (
@@ -274,6 +332,18 @@ function ArrQueueView({ q }: { q: QState }) {
             {shows.map(sh => {
               const open = dflt(sh.key, few || !!sh.problem)
               return <ShowCard key={sh.key} show={sh} open={open} onToggle={() => toggle(sh.key, open)}
+                isOpen={(k, f) => dflt(k, f)} toggleKey={toggle} />
+            })}
+          </ul>
+        </Panel>
+      )}
+
+      {artists.length > 0 && (
+        <Panel title="Music" sub={`${artists.length}`} level={3}>
+          <ul className={c.groups}>
+            {artists.map(ar => {
+              const open = dflt(ar.key, artists.length <= 3 || !!ar.problem)
+              return <ArtistCard key={ar.key} artist={ar} open={open} onToggle={() => toggle(ar.key, open)}
                 isOpen={(k, f) => dflt(k, f)} toggleKey={toggle} />
             })}
           </ul>

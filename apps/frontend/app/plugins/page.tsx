@@ -128,6 +128,30 @@ function Preview({ data, loading }: { data?: TileData; loading: boolean }) {
 //  Settings — the form is generated from what the plug-in declares
 // ---------------------------------------------------------------------------
 
+/**
+ * "Test Lidarr": reads /api/v1/system/status with what is SAVED (never with what is typed in the form, so a typed key can
+ * never be sent to a typed address), and says whether Lidarr answered. Shown only once an address and key are saved.
+ */
+function LidarrTest({ plugin }: { plugin: PluginCard }) {
+  const saved = (plugin.settings.find(x => x.key === 'lidarr_url')?.value ?? '') !== '' && !!plugin.settings.find(x => x.key === 'lidarr_key')?.isSet
+  const [state, setState] = useState<{ busy: boolean; ok?: boolean; text?: string }>({ busy: false })
+  if (!saved) return null
+  const run = async () => {
+    setState({ busy: true })
+    try {
+      const r = await fetch('/api/plugins/arrstack/lidarr/test').then(x => x.json())
+      const d = r?.data
+      setState(d?.ok ? { busy: false, ok: true, text: `Lidarr ${d.version} answered.` } : { busy: false, ok: false, text: d?.error ?? r?.error ?? 'The test could not run.' })
+    } catch { setState({ busy: false, ok: false, text: 'The test could not run.' }) }
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-3 border-t px-6 py-3" style={{ borderColor: BORDER }}>
+      <button type="button" onClick={run} disabled={state.busy} className={styles.btn}>{state.busy ? 'Testing…' : 'Test Lidarr'}</button>
+      {state.text && <span role="status" className="text-[13px]" style={{ color: state.ok ? 'var(--good)' : 'var(--warn)', overflowWrap: 'anywhere' }}>{state.text}</span>}
+    </div>
+  )
+}
+
 function SettingsDialog({ plugin, onSave, onClose, known, onSignedIn }: {
   plugin: PluginCard
   onSave: (values: Record<string, string>) => void
@@ -199,6 +223,7 @@ function SettingsDialog({ plugin, onSave, onClose, known, onSignedIn }: {
           ))}
         </div>
 
+        {plugin.id === 'arrstack' && <LidarrTest plugin={plugin} />}
         <div className="flex justify-end gap-2 border-t px-6 py-4" style={{ borderColor: BORDER }}>
           <button type="button" onClick={onClose}
             className={styles.btn}>Cancel</button>

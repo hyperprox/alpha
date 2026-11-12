@@ -2,10 +2,14 @@
 //  HyperProx — Arr Stack live queue (/api/plugins/arrstack)
 //
 //  Roles (lib/roles.ts): a GET, so viewer, like the Arr Stack page itself.
-//    GET /queue    the Sonarr and Radarr download queues, every page, collapsed server-side: one entry per
+//    GET /queue    the Sonarr, Radarr and (when set up) Lidarr download queues, every page, collapsed server-side: one entry per
 //                  download (a season pack is 23 queue rows but one download), grouped Show → Season, with
 //                  progress, ETA, quality, client, any warning, and a "why this download" line (what it fills, upgrades or
 //                  skips, read from the episodes and files on disk, batched into the same shared reading), problems first. Movies are a flat list.
+//                  Music (Lidarr, API v1) is grouped Artist → Album → download, with its own "why" from the albums' track counts
+//                  and track files.
+//    GET /lidarr/test  reads Lidarr's /api/v1/system/status with the stored key and says whether it answered, with its version.
+//                  The address and key are never in the answer, and it only ever tests what is saved.
 //
 //  POST /queue/actions  admin only (a signed-in person: an API token is refused by name, here and in the gate), no
 //                  master password, rate-limited per person. What to do about a problem in the queue: find another,
@@ -26,12 +30,12 @@ import { findPlugin } from '../plugins'
 import { pluginEndpointClient, type CoreEndpointClient } from '../lib/plugin-host'
 import { buildQueueData, readAllQueue, type QueueData } from '../lib/arr-queue/logic'
 import { ACTIONS, ActionRefusal, DESTRUCTIVE, runAction, type ActionName, type ActionRequest } from '../lib/arr-queue/actions'
-import { readEpisodeInfo, readMovieInfo } from '../lib/arr-queue/lookup'
+import { readAlbumInfo, readEpisodeInfo, readMovieInfo } from '../lib/arr-queue/lookup'
 import { auditOrThrow } from '../lib/audit'
 import { hasRole } from '../lib/roles'
 import { MissLimiter } from '../lib/plex-art'
 
-const arrClient = async (endpoint: 'default' | 'radarr'): Promise<CoreEndpointClient | null> => {
+const arrClient = async (endpoint: 'default' | 'radarr' | 'lidarr'): Promise<CoreEndpointClient | null> => {
   const p = findPlugin('arrstack')
   return p ? pluginEndpointClient(p, endpoint).catch(() => null) : null
 }
@@ -51,9 +55,9 @@ const msg = (e: any) => {
   return String(e?.message ?? e).slice(0, 160)
 }
 
-export async function readQueue(deps: { sonarr: CoreEndpointClient | null; radarr: CoreEndpointClient | null; now: number; lookupMs?: number }): Promise<QueueData> {
-  const one = async (c: CoreEndpointClient | null, kind: 'sonarr' | 'radarr') => {
-    if (!c) return { rows: null, info: undefined, configured: false, error: undefined as string | undefined }
+export async function readQueue(deps: { sonarr: CoreEndpointClient | null; radarr: CoreEndpointClient | null; lidarr?: CoreEndpointClient | null; now: number; lookupMs?: number }): Promise<QueueData> {
+  const one = async (c: CoreEndpointClient | null, kind: 'sonarr' | 'radarr' | 'lidarr') => {
+    if (!c) return { rows: null, info: undefined as any, configured: false, error: undefined as string | undefined }
     try {
       const get = (p: string, t?: number) => c.get(p, t)
       const rows = await readAllQueue(get, kind)
@@ -61,17 +65,17 @@ export async function readQueue(deps: { sonarr: CoreEndpointClient | null; radar
       // Its own budget: if the lookups run long they are dropped and the queue is still returned, without the lines.
       let timer: ReturnType<typeof setTimeout> | undefined
       const budget = new Promise<undefined>(res => { timer = setTimeout(() => res(undefined), deps.lookupMs ?? LOOKUP_BUDGET_MS) })
-      const info = await Promise.race([kind === 'sonarr' ? readEpisodeInfo(get, rows, deps.now) : readMovieInfo(get, rows, deps.now), budget]).finally(() => clearTimeout(timer))
-      return { rows, info, configured: true, error: undefined as string | undefined }
+      const info = await Promise.race([kind === 'sonarr' ? readEpisodeInfo(get, rows, deps.now) : kind === 'lidarr' ? readAlbumInfo(get, rows, deps.now) : readMovieInfo(get, rows, deps.now), budget]).finally(() => clearTimeout(timer))
+      return { rows, info: info as any, configured: true, error: undefined as string | undefined }
     }
     catch (e) { return { rows: null, info: undefined, configured: true, error: msg(e) } }
   }
-  const [sonarr, radarr] = await Promise.all([one(deps.sonarr, 'sonarr'), one(deps.radarr, 'radarr')])
-  return buildQueueData({ sonarr, radarr, now: deps.now })
+  const [sonarr, radarr, lidarr] = await Promise.all([one(deps.sonarr, 'sonarr'), one(deps.radarr, 'radarr'), one(deps.lidarr ?? null, 'lidarr')])
+  return buildQueueData({ sonarr, radarr, lidarr, now: deps.now })
 }
 
 export function buildArrQueueRoutes(deps: {
-  sonarr?: () => Promise<CoreEndpointClient | null>; radarr?: () => Promise<CoreEndpointClient | null>
+  sonarr?: () => Promise<CoreEndpointClient | null>; radarr?: () => Promise<CoreEndpointClient | null>; lidarr?: () => Promise<CoreEndpointClient | null>
   qbit?: () => Promise<CoreEndpointClient | null>
   audit?: (action: string, details: Record<string, unknown>) => Promise<void>
   limiter?: MissLimiter
@@ -83,6 +87,7 @@ export function buildArrQueueRoutes(deps: {
   const limiter = deps.limiter ?? new MissLimiter(30)
   const sonarr = deps.sonarr ?? (() => arrClient('default'))
   const radarr = deps.radarr ?? (() => arrClient('radarr'))
+  const lidarr = deps.lidarr ?? (() => arrClient('lidarr'))
   const now = deps.now ?? Date.now
   const ttl = deps.ttlMs ?? 3000
   // One reading shared by everyone. The in-flight promise is shared, and the TTL starts when the read FINISHES (so a
@@ -96,7 +101,7 @@ export function buildArrQueueRoutes(deps: {
       const fresh = memo && (memo.doneAt === null ? t - memo.startedAt <= STALE_MS : t - memo.doneAt <= ttl)
       if (!fresh) {
         const work = (async () => {
-          const data = await readQueue({ sonarr: await sonarr().catch(() => null), radarr: await radarr().catch(() => null), now: t })
+          const data = await readQueue({ sonarr: await sonarr().catch(() => null), radarr: await radarr().catch(() => null), lidarr: await lidarr().catch(() => null), now: t })
           // Moving a torrent up needs qBittorrent in the plug-in's settings: the page hides the button otherwise.
           return { ...data, capabilities: { prioritise: !!(await qbit().catch(() => null)) } }
         })()
@@ -114,6 +119,23 @@ export function buildArrQueueRoutes(deps: {
       }
     })
 
+    // The settings page's Test button: has the saved Lidarr address and key got an answer? Read-only (one GET).
+    fastify.get('/lidarr/test', async (_req, reply) => {
+      const c = await lidarr().catch(() => null)
+      if (!c) return { success: true, data: { ok: false, configured: false, error: 'Lidarr is not set up yet. Save its address and API key first.' } }
+      try {
+        const st = await c.get('/api/v1/system/status', 10_000)
+        if (!st || typeof st !== 'object' || typeof st.version !== 'string') return { success: true, data: { ok: false, configured: true, error: 'That address answered, but not like Lidarr.' } }
+        return { success: true, data: { ok: true, configured: true, version: st.version.slice(0, 40), name: typeof st.appName === 'string' ? st.appName.slice(0, 40) : 'Lidarr' } }
+      } catch (e: any) {
+        // A plain phrase: what the connection said can name the address.
+        const text = String(e?.message ?? e)
+        const error = /\b40[13]\b|unauthori[sz]ed|forbidden/i.test(text) ? 'Lidarr refused the API key.'
+          : /abort|timed? ?out/i.test(text) ? 'Lidarr did not answer in time.' : 'Lidarr could not be reached at the saved address.'
+        return reply.send({ success: true, data: { ok: false, configured: true, error } })
+      }
+    })
+
     fastify.post('/queue/actions', async (req, reply) => {
       const refuse = (status: number, code: string, error: string) => reply.status(status).send({ success: false, code, error })
       // The gate already refuses a token and anyone below admin; checked again here so this route is safe on its own.
@@ -127,7 +149,7 @@ export function buildArrQueueRoutes(deps: {
       if (!limiter.allow(session.email)) return refuse(429, 'rate_limited', 'Too many queue actions in a minute. Wait a moment and try again.')
       if (!preview && DESTRUCTIVE.includes(parsed.action) && body.confirmed !== true) return refuse(400, 'confirm_required', 'This removes downloads: confirm it first.')
       try {
-        const out = await runAction({ sonarr, radarr, qbit, audit }, parsed, session.email, { preview })
+        const out = await runAction({ sonarr, radarr, lidarr, qbit, audit }, parsed, session.email, { preview })
         // The next reading of the queue must not be the cached one from before the change.
         memo = null
         if (preview) return { success: true, data: { preview: true, plan: publicPlan(out.plan) } }
@@ -149,7 +171,7 @@ function parseBody(b: unknown): ActionRequest | string {
   if (!b || typeof b !== 'object' || Array.isArray(b)) return 'Send a JSON body.'
   const o = b as Record<string, unknown>
   if (!ACTIONS.includes(o.action as ActionName)) return 'Unknown action.'
-  if (o.instance !== 'sonarr' && o.instance !== 'radarr') return 'Name sonarr or radarr.'
+  if (o.instance !== 'sonarr' && o.instance !== 'radarr' && o.instance !== 'lidarr') return 'Name sonarr, radarr or lidarr.'
   if (o.downloadId !== undefined && !str(o.downloadId, 220)) return 'Bad download id.'
   if (o.downloadIds !== undefined && !strList(o.downloadIds, 50)) return 'Bad download ids.'
   if (o.known !== undefined && !strList(o.known, 200)) return 'Bad list.'

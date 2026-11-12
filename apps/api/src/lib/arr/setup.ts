@@ -443,10 +443,22 @@ export async function runArrSetup(input: ArrSetupInput, step: (id: string) => St
   st = step('arr-plugin')
   const current = await d.pluginSettings('arrstack').catch(() => ({} as Record<string, string>))
   if (!has(s, 'sonarr')) { st.status = 'skipped'; st.detail = 'The Arr Stack plug-in starts from Sonarr, which was not picked.' }
-  else if (current.sonarr_url) { st.status = 'skipped'; st.detail = `The Arr Stack plug-in already reads ${current.sonarr_url}, so it was left as it is.` }
+  else if (current.sonarr_url) {
+    st.status = 'skipped'; st.detail = `The Arr Stack plug-in already reads ${current.sonarr_url}, so it was left as it is.`
+    // Lidarr is new to a plug-in that already reads Sonarr: fill in only its own two blanks, change nothing else.
+    if (has(s, 'lidarr') && !current.lidarr_url && !current.lidarr_key) {
+      const values = { lidarr_url: hostUrl(ip, 'lidarr'), lidarr_key: keys.lidarr! }
+      await d.savePluginSettings('arrstack', values)
+      const back = await d.pluginSettings('arrstack')
+      const lost = Object.keys(values).filter(k => back[k] !== (values as Record<string, string>)[k])
+      if (lost.length) fail(`The Arr Stack plug-in did not read back ${lost.join(', ')}.`)
+      st.status = 'done'; st.detail += ' Lidarr was added to it.'
+    }
+  }
   else {
     const values: Record<string, string> = { sonarr_url: hostUrl(ip, 'sonarr'), sonarr_key: keys.sonarr! }
     if (has(s, 'radarr')) Object.assign(values, { radarr_url: hostUrl(ip, 'radarr'), radarr_key: keys.radarr! })
+    if (has(s, 'lidarr')) Object.assign(values, { lidarr_url: hostUrl(ip, 'lidarr'), lidarr_key: keys.lidarr! })
     if (has(s, 'prowlarr')) Object.assign(values, { prowlarr_url: hostUrl(ip, 'prowlarr'), prowlarr_key: keys.prowlarr! })
     if (has(s, 'qbittorrent')) values.qbit_url = hostUrl(ip, 'qbittorrent')
     await d.savePluginSettings('arrstack', values)

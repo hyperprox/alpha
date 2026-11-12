@@ -376,7 +376,7 @@ export function pluginSources(d: PluginDeps): AskSource[] {
       mikrotik: 'router|wan|bandwidth|internet|firewall',
       asus: 'asus|merlin|asuswrt|router|wi-?fi|wireless|ssid|wan|internet',
       plex: 'plex|tautulli|streams?|watching|transcod\\w*',
-      arrstack: 'sonarr|radarr|prowlarr|downloads?|queue|movies?|shows?',
+      arrstack: 'sonarr|radarr|lidarr|prowlarr|downloads?|queue|movies?|shows?|music|albums?|artists?',
     }
     const alias = [...names.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), extra[m.id]].filter(Boolean).join('|')
     return {

@@ -45,6 +45,32 @@ export function problemsOnly<D extends Dl, S extends Season<D>, H extends Show<S
   return out
 }
 
+interface Album<D extends Dl> { problem: Problem | null; done?: boolean; downloads: D[] }
+interface Artist<A extends Album<Dl>> { problem: Problem | null; done?: boolean; albums: A[] }
+export type ScopedArtist<T> = T & { scope?: { albums: number; totalAlbums: number; downloads: number; totalDownloads: number } }
+
+/** The same cut for music (Artist → Album → download): only artists, albums and downloads that really have a problem. */
+export function problemsOnlyMusic<D extends Dl, A extends Album<D>, H extends Artist<A>>(artists: H[]): Array<ScopedArtist<H>> {
+  const out: Array<ScopedArtist<H>> = []
+  for (const ar of artists) {
+    const albums: A[] = []
+    for (const al of ar.albums) {
+      const downloads = al.downloads.filter(d => d.problem !== null)
+      if (downloads.length) albums.push({ ...al, downloads })
+    }
+    if (!albums.length) continue
+    out.push({
+      ...ar, albums,
+      problem: albums.reduce<Problem | null>((p, x) => worse(p, x.problem), null),
+      scope: {
+        albums: albums.length, totalAlbums: ar.albums.length,
+        downloads: albums.reduce((t, x) => t + x.downloads.length, 0), totalDownloads: ar.albums.reduce((t, x) => t + x.downloads.length, 0),
+      },
+    })
+  }
+  return out
+}
+
 export type Badge =
   | { kind: 'problem'; problem: Problem; ready: number }
   | { kind: 'done'; ready: number }

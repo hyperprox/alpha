@@ -14,7 +14,7 @@
 import type { ArrVisual, MeshVisual, PlexVisual, RouterVisual, UnmanicVisual } from '@hyperprox/types'
 import { useState, type CSSProperties, type ReactNode } from 'react'
 import {
-  Cols, FlowPipeline, GlowBars, Icon, Panel, ProgressBar, RingGauge, SemiGauge, StatusDots, Timeline, Topology,
+  Cols, FlowPipeline, GlowBars, Icon, Panel, ProgressBar, RingGauge, SemiGauge, StatusDots, Tiles, Timeline, Topology,
   bytes, duration, mbps, niceMax, rate, styles as s, type StatChip,
 } from '@/components/visual/kit'
 import pg from './pages.module.css'
@@ -237,6 +237,19 @@ export function ArrView({ v, stuck, rescuing, onRescue, rescueNote }: {
           ))}
         </Panel>
       </Cols>
+
+      {/* Music (Lidarr): only when Lidarr is set up. Its health notes are in the Indexers panel above, with the others. */}
+      {v.music && (
+        <Panel title="Music" sub="LIDARR">
+          <Tiles label="Music library" items={[
+            { label: 'artists', value: v.music.artists, tone: 'accent' },
+            { label: 'albums', value: v.music.albums },
+            { label: 'tracks', value: v.music.tracks },
+            { label: 'on disk', value: bytes(v.music.sizeBytes) },
+            { label: 'missing albums', value: v.music.missingAlbums ?? '—', tone: v.music.missingAlbums ? 'warn' : v.music.missingAlbums === 0 ? 'good' : undefined, title: 'Monitored albums Lidarr has no files for' },
+          ]} />
+        </Panel>
+      )}
     </>
   )
 }

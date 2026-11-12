@@ -1,8 +1,9 @@
 // =============================================================================
 //  Plug-in — Arr Stack
 //
-//  Sonarr, Radarr, Prowlarr and qBittorrent are one pipeline, not four services,
-//  and splitting them across four cards meant reading four places to answer one
+//  Sonarr, Radarr, Prowlarr and qBittorrent (and Lidarr, when you run it) are one
+//  pipeline, not separate services,
+//  and splitting them across cards meant reading several places to answer one
 //  question: is anything stuck between "wanted" and "on disk".
 //
 //  Each still gets its own endpoint and its own credential — Sonarr's key can
@@ -71,12 +72,17 @@ async function readArr(ctx: PluginContext, key: string, label: string): Promise<
   if (key !== 'default' && !ctx.has(key)) return null
   const c = key === 'default' ? ctx : ctx.from(key)
   try {
+    // Lidarr's API is v1; Sonarr's and Radarr's is v3.
+    const music = key === 'lidarr'
+    const v = music ? 'v1' : 'v3'
     // Every page, so the counts are the whole queue and not its first 200 rows (a long pack run is more).
     const readQueue = async () => {
       const rows: any[] = []
       let total = 0
       for (let page = 1; page <= 10; page++) {
-        const q = await c.get(`/api/v3/queue?page=${page}&pageSize=200&includeUnknownSeriesItems=true&includeUnknownMovieItems=true`)
+        const q = await c.get(music
+          ? `/api/v1/queue?page=${page}&pageSize=200&includeUnknownArtistItems=true&includeArtist=true&includeAlbum=true`
+          : `/api/v3/queue?page=${page}&pageSize=200&includeUnknownSeriesItems=true&includeUnknownMovieItems=true`)
         const recs: any[] = Array.isArray(q?.records) ? q.records : []
         rows.push(...recs)
         total = Number(q?.totalRecords ?? rows.length)
@@ -86,7 +92,7 @@ async function readArr(ctx: PluginContext, key: string, label: string): Promise<
     }
     const [q, health] = await Promise.all([
       readQueue(),
-      c.get('/api/v3/health').catch(() => []),
+      c.get(`/api/${v}/health`).catch(() => []),
     ])
     return { key, label, queue: q.rows, total: Math.max(q.total, q.rows.length),
              health: Array.isArray(health) ? health : [] }
@@ -96,15 +102,16 @@ async function readArr(ctx: PluginContext, key: string, label: string): Promise<
 }
 
 async function readAll(ctx: PluginContext) {
-  const [sonarr, radarr, indexers, transfer, torrents] = await Promise.all([
+  const [sonarr, radarr, lidarr, indexers, transfer, torrents] = await Promise.all([
     readArr(ctx, 'default', 'Sonarr'),
     readArr(ctx, 'radarr', 'Radarr'),
+    readArr(ctx, 'lidarr', 'Lidarr'),
     ctx.has('prowlarr') ? ctx.from('prowlarr').get('/api/v1/indexer').catch(() => null) : null,
     ctx.has('qbit') ? ctx.from('qbit').get('/api/v2/transfer/info').catch(() => null) : null,
     ctx.has('qbit') ? ctx.from('qbit').get('/api/v2/torrents/info').catch(() => null) : null,
   ])
   return {
-    arrs: [sonarr, radarr].filter((x): x is Arr => x !== null),
+    arrs: [sonarr, radarr, lidarr].filter((x): x is Arr => x !== null),
     indexers: Array.isArray(indexers) ? indexers : null,
     transfer,
     torrents: Array.isArray(torrents) ? torrents : null,
@@ -150,6 +157,8 @@ const num = (v: unknown): number => { const n = Number(v); return Number.isFinit
 export function buildArrVisual(input: {
   arrs: Array<{ label: string; queue: any[]; total: number; health: any[]; error?: string }>
   indexers: any[] | null; indexerStatus?: any[] | null; transfer: any; torrents: any[] | null; now?: number
+  /** Lidarr's library counts (see musicCounts), when Lidarr is set up. */
+  music?: NonNullable<ArrVisual['music']> | null
 }): ArrVisual {
   const now = input.now ?? Date.now()
   const tor = input.torrents ?? []
@@ -218,7 +227,43 @@ export function buildArrVisual(input: {
       message: String(h.message ?? '').slice(0, 300),
     })),
     services: input.arrs.map(a => ({ name: a.label, up: !a.error })),
+    ...(input.music ? { music: input.music } : {}),
   }
+}
+
+/**
+ * Lidarr's library in four numbers: artists, albums and tracks it has files for, how much disk they use, and how many
+ * monitored albums are still missing. `artists` is /api/v1/artist (each carries its own statistics); `missing` is the
+ * first page of /api/v1/wanted/missing, whose totalRecords is the count. Pure, so it is tested without Lidarr.
+ */
+export function musicCounts(artists: unknown, missing: unknown): NonNullable<ArrVisual['music']> {
+  const list: any[] = Array.isArray(artists) ? artists : []
+  const st = (a: any) => a?.statistics ?? {}
+  const total = (m: unknown) => { const n = Number((m as any)?.totalRecords); return Number.isFinite(n) && n >= 0 ? n : null }
+  return {
+    artists: list.length,
+    albums: list.reduce((t, a) => t + (num(st(a).albumCount)), 0),
+    tracks: list.reduce((t, a) => t + (num(st(a).trackFileCount)), 0),
+    sizeBytes: list.reduce((t, a) => t + (num(st(a).sizeOnDisk)), 0),
+    missingAlbums: total(missing),
+  }
+}
+
+let musicMemo: { at: number; v: NonNullable<ArrVisual['music']> } | null = null
+/** The Overview's music numbers. A whole artist list is a big read, so it is kept two minutes; a failure leaves them out. */
+async function readMusic(ctx: PluginContext): Promise<NonNullable<ArrVisual['music']> | null> {
+  if (!ctx.has('lidarr')) return null
+  if (musicMemo && Date.now() - musicMemo.at < 120_000) return musicMemo.v
+  const c = ctx.from('lidarr')
+  try {
+    const [artists, missing] = await Promise.all([
+      c.get('/api/v1/artist', { timeoutMs: 20_000 }),
+      c.get('/api/v1/wanted/missing?page=1&pageSize=1&monitored=true', { timeoutMs: 20_000 }).catch(() => null),
+    ])
+    const v = musicCounts(artists, missing)
+    musicMemo = { at: Date.now(), v }
+    return v
+  } catch { return null }
 }
 
 // ---------------------------------------------------------------------------
@@ -331,7 +376,7 @@ export const arrstackPlugin: Plugin = {
   manifest: {
     id:   'arrstack',
     name: 'Arr Stack',
-    description: 'The whole pipeline — Sonarr, Radarr, Prowlarr and qBittorrent — as one view, with search across every indexer.',
+    description: 'The whole pipeline — Sonarr, Radarr, Prowlarr, qBittorrent and (optionally) Lidarr — as one view, with search across every indexer.',
     kind: 'device',
     icon: '📺',
     // The whole page every 30 s; the grouped queue every few seconds through /api/plugins/arrstack/queue.
@@ -341,6 +386,9 @@ export const arrstackPlugin: Plugin = {
     endpoints: [
       { key: 'radarr',   label: 'Radarr',   baseUrlSetting: 'radarr_url',
         auth: { kind: 'header', header: 'X-Api-Key', fromSetting: 'radarr_key' } },
+      // Music. Lidarr's API is v1 (/api/v1/...), not v3.
+      { key: 'lidarr',   label: 'Lidarr',   baseUrlSetting: 'lidarr_url',
+        auth: { kind: 'header', header: 'X-Api-Key', fromSetting: 'lidarr_key' } },
       { key: 'prowlarr', label: 'Prowlarr', baseUrlSetting: 'prowlarr_url',
         auth: { kind: 'header', header: 'X-Api-Key', fromSetting: 'prowlarr_key' } },
       // qBittorrent's WebUI is normally set to skip auth for the local subnet.
@@ -351,6 +399,9 @@ export const arrstackPlugin: Plugin = {
       { key: 'sonarr_key',   label: 'Sonarr API key',   type: 'secret', required: true,  hint: 'Settings → General → API Key.' },
       { key: 'radarr_url',   label: 'Radarr address',   type: 'url',    required: false, hint: 'Leave blank if you do not run Radarr.' },
       { key: 'radarr_key',   label: 'Radarr API key',   type: 'secret', required: false },
+      { key: 'lidarr_url',   label: 'Lidarr address',   type: 'url',    required: false,
+        hint: 'Optional, for music: http://example-host:8686. Leave blank if you do not run Lidarr; add it from the Catalogue and this fills itself in.' },
+      { key: 'lidarr_key',   label: 'Lidarr API key',   type: 'secret', required: false, hint: 'Settings → General → API Key. Use "Test Lidarr" after saving to check it.' },
       { key: 'prowlarr_url', label: 'Prowlarr address', type: 'url',    required: false, hint: 'Enables Search across every indexer.' },
       { key: 'prowlarr_key', label: 'Prowlarr API key', type: 'secret', required: false },
       { key: 'qbit_url',     label: 'qBittorrent WebUI', type: 'url',   required: false,
@@ -399,16 +450,18 @@ export const arrstackPlugin: Plugin = {
       if (a.error) rows.push({ label: a.label, value: 'unreachable', tone: 'bad' })
     }
     // The queue as downloads, not rows: a 23-episode pack is one.
-    const sq = arrs.find(a => a.label === 'Sonarr'), rq = arrs.find(a => a.label === 'Radarr')
+    const sq = arrs.find(a => a.label === 'Sonarr'), rq = arrs.find(a => a.label === 'Radarr'), lq = arrs.find(a => a.label === 'Lidarr')
     const qs = buildQueueData({
       sonarr: { rows: sq && !sq.error ? sq.queue : null, configured: !!sq },
       radarr: { rows: rq && !rq.error ? rq.queue : null, configured: !!rq },
+      ...(lq ? { lidarr: { rows: !lq.error ? lq.queue : null, configured: true } } : {}),
     }).summary
     if (qs.downloads) {
       rows.unshift({
         label: 'Queue',
         value: `${qs.downloads} download${qs.downloads === 1 ? '' : 's'} · ${qs.shows} show${qs.shows === 1 ? '' : 's'}`
-          + `${qs.movies ? ` · ${qs.movies} movie${qs.movies === 1 ? '' : 's'}` : ''} · ${fmtBytes(qs.sizeLeft)} left`,
+          + `${qs.movies ? ` · ${qs.movies} movie${qs.movies === 1 ? '' : 's'}` : ''}`
+          + `${qs.artists ? ` · ${qs.artists} artist${qs.artists === 1 ? '' : 's'}` : ''} · ${fmtBytes(qs.sizeLeft)} left`,
       })
       const bad = qs.stalled + qs.warnings
       if (bad) rows.push({ label: 'Warnings', value: `${bad} stalled or warning`, tone: 'warn' })
@@ -424,10 +477,11 @@ export const arrstackPlugin: Plugin = {
   },
 
   async detail(ctx: PluginContext): Promise<PluginDetail> {
-    const [{ arrs, indexers, transfer, torrents }, indexerStatus] = await Promise.all([
+    const [{ arrs, indexers, transfer, torrents }, indexerStatus, music] = await Promise.all([
       readAll(ctx),
       // Which indexers Prowlarr has backed off from. Read-only; a missing answer only loses the red dots.
       ctx.has('prowlarr') ? ctx.from('prowlarr').get('/api/v1/indexerstatus').catch(() => null) : null,
+      readMusic(ctx),
     ])
     const pct = (i: any) => {
       const total = Number(i.size ?? 0), left = Number(i.sizeleft ?? 0)
@@ -437,7 +491,9 @@ export const arrstackPlugin: Plugin = {
     const now = Date.now() / 1000
 
     return {
-      visual: buildArrVisual({ arrs, indexers, indexerStatus: Array.isArray(indexerStatus) ? indexerStatus : null, transfer, torrents }),
+      // Library numbers only while Lidarr answers: a cached reading of one that has gone quiet would look current.
+      visual: buildArrVisual({ arrs, indexers, indexerStatus: Array.isArray(indexerStatus) ? indexerStatus : null, transfer, torrents,
+        music: arrs.some(a => a.label === 'Lidarr' && !a.error) ? music : null }),
       stats: [
         { label: 'In queue', value: String(arrs.reduce((t, a) => t + a.total, 0)) },
         { label: 'Blocked imports', value: String(arrs.reduce((t, a) => t + importBlocked(a.queue).length, 0)),
@@ -467,7 +523,7 @@ export const arrstackPlugin: Plugin = {
         },
         {
           title: 'Queue',
-          empty: 'Both queues are empty.',
+          empty: 'The queues are empty.',
           total: arrs.reduce((t, a) => t + a.total, 0),
           columns: [
             { key: 'service', label: 'Service' }, { key: 'title', label: 'Title' },
@@ -478,7 +534,7 @@ export const arrstackPlugin: Plugin = {
             service: a.label, title: titleOf(i),
             // Which of these is a pack is the whole point of the queue for this
             // library, so it is a column rather than something to squint at.
-            kind: EPISODE.test(titleOf(i)) ? 'episode' : 'pack',
+            kind: a.label === 'Lidarr' ? 'album' : EPISODE.test(titleOf(i)) ? 'episode' : 'pack',
             progress: pct(i), status: i.status ?? '—',
           }))),
         },

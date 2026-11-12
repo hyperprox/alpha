@@ -52,6 +52,12 @@ export const PROBES: Probe[] = [
     needs: ['radarr_key'],
   },
   {
+    pluginId: 'arrstack', setting: 'lidarr_url', label: 'Lidarr',
+    port: 8686, path: '/ping',
+    match: (s, b) => s === 200 && b.includes('"status"'),
+    needs: ['lidarr_key'],
+  },
+  {
     pluginId: 'arrstack', setting: 'prowlarr_url', label: 'Prowlarr',
     port: 9696, path: '/api/v1/system/status',
     // Answers 401 without a key, which is itself proof it is Prowlarr.

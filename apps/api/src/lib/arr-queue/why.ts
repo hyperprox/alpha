@@ -173,3 +173,105 @@ export function whyRadarr(file: FileInfo | undefined, release: string | null, do
   if (!rel || !have) return null
   return compareQuality(rel, have) > 0 ? `Upgrades ${full(have)} → ${full(rel)}.` : `Already have ${full(have)}: this will be skipped.`
 }
+
+// ── Lidarr (music) ───────────────────────────────────────────────────────────
+
+/**
+ * What is on disk for one album: the tracks it should have (null when Lidarr does not say), how many have a file, and
+ * the quality of those files ("FLAC", "MP3-320"), counted by name.
+ */
+export interface AlbumInfo { title: string | null; total: number | null; have: number; files: Array<{ quality: string | null; count: number }> }
+
+export interface AudioRank { rank: number; label: string; lossless: boolean }
+
+/**
+ * "FLAC" → lossless; "MP3-320" → 320 kbps MP3; "MP3-VBR-V0" → about 245 kbps. Higher rank is better: any lossless
+ * format beats any lossy one, then bitrate. Null when the name says neither (e.g. "Unknown").
+ */
+export function parseAudioQuality(name: string | null | undefined): AudioRank | null {
+  const n = String(name ?? '').trim()
+  if (!n || /^unknown$/i.test(n)) return null
+  const lossless = /flac|alac|wav|ape|wavpack|lossless/i.test(n)
+  if (lossless) {
+    const fmt = /alac/i.test(n) ? 'ALAC' : /wav(?!pack)/i.test(n) ? 'WAV' : /wavpack/i.test(n) ? 'WavPack' : /\bape\b/i.test(n) ? 'APE' : 'FLAC'
+    const deep = /24\s*-?\s*bit/i.test(n)
+    return { rank: deep ? 1100 : 1000, label: deep ? `${fmt} 24-bit` : fmt, lossless: true }
+  }
+  const codec = /aac/i.test(n) ? 'AAC' : /mp3/i.test(n) ? 'MP3' : /vorbis|ogg/i.test(n) ? 'Vorbis' : /opus/i.test(n) ? 'Opus' : /wma/i.test(n) ? 'WMA' : null
+  if (!codec) return null
+  const vbr = /v(\d)\b/i.exec(n)
+  if (vbr) return { rank: 245 - 55 * Math.min(4, Number(vbr[1])) / 2, label: `${codec} VBR V${vbr[1]}`, lossless: false }
+  const kbps = /(\d{2,3})/.exec(n)
+  if (!kbps) return { rank: 128, label: codec, lossless: false }
+  return { rank: Number(kbps[1]), label: `${codec} ${Number(kbps[1])}`, lossless: false }
+}
+
+/** Positive when `a` is better than `b`. */
+export const compareAudio = (a: AudioRank, b: AudioRank): number => a.rank - b.rank
+
+const noun = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
+
+/** The worst quality among the files on disk (the first one a better release would replace). Null when none is readable. */
+function worstOnDisk(albums: AlbumInfo[]): AudioRank | null {
+  let worst: AudioRank | null = null
+  for (const a of albums) for (const f of a.files) {
+    const r = parseAudioQuality(f.quality)
+    if (r && (worst === null || compareAudio(r, worst) < 0)) worst = r
+  }
+  return worst
+}
+function bestOnDisk(albums: AlbumInfo[]): AudioRank | null {
+  let best: AudioRank | null = null
+  for (const a of albums) for (const f of a.files) {
+    const r = parseAudioQuality(f.quality)
+    if (r && (best === null || compareAudio(r, best) > 0)) best = r
+  }
+  return best
+}
+
+/** Totals over the albums a download covers. `total` is null when any album's track count is not known. */
+function tally(albums: AlbumInfo[]): { total: number | null; have: number; missing: number | null } {
+  const have = albums.reduce((t, a) => t + a.have, 0)
+  if (albums.some(a => a.total === null)) return { total: null, have, missing: null }
+  const total = albums.reduce((t, a) => t + (a.total as number), 0)
+  const missing = albums.reduce((t, a) => t + Math.max(0, (a.total as number) - a.have), 0)
+  return { total, have, missing }
+}
+
+/**
+ * One line for a Lidarr download: "Fills 4 of 12 tracks · upgrades MP3 320 → FLAC". `release` is the release's quality
+ * name. Done: the same facts in the past tense. Null when nothing is known about any album.
+ */
+export function whyLidarr(albums: AlbumInfo[], release: string | null, done: boolean): string | null {
+  if (!albums.length) return null
+  const rel = parseAudioQuality(release)
+  const t = tally(albums)
+  if (done) {
+    const best = bestOnDisk(albums)
+    return rel && best && compareAudio(best, rel) > 0
+      ? `Kept your better copy (${best.label}); nothing left to import.`
+      : 'Imported this release; nothing left to import.'
+  }
+  const parts: string[] = []
+  if (t.missing !== null && t.total !== null) {
+    if (t.missing > 0) parts.push(`fills ${t.missing} of ${noun(t.total, 'track')}`)
+  } else if (t.have === 0) parts.push('fills a missing album')
+  if (t.have > 0 && rel) {
+    const worst = worstOnDisk(albums)
+    if (worst && compareAudio(rel, worst) > 0) parts.push(`upgrades ${worst.label} → ${rel.label}`)
+    else if (worst && t.missing === 0) parts.push(`already have ${bestOnDisk(albums)!.label} (will be skipped)`)
+  }
+  return parts.length ? cap(parts.join(' · ')) : null
+}
+
+/**
+ * A pack whose messages say everything is already imported while some tracks it covers still have no file: Lidarr
+ * counts them as queued, so it never searches for them.
+ */
+export function whyIncompleteLidarr(albums: AlbumInfo[]): string | null {
+  const t = tally(albums)
+  if (t.missing === null || t.missing === 0 || t.total === null) return null
+  const n = t.missing
+  const what = albums.length === 1 && albums[0].title ? `"${albums[0].title}"` : noun(albums.length, 'album')
+  return `This release claims ${what} (${noun(t.total, 'track')}) but only ${t.have} ${t.have === 1 ? 'has a file' : 'have files'}; ${n} ${n === 1 ? 'track is' : 'tracks are'} still missing and won't be searched while it sits here.`
+}

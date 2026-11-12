@@ -72,6 +72,8 @@ export interface ArrVisual {
   indexers:  Array<{ name: string; state: 'ok' | 'failing' | 'off' }>
   health:    Array<{ service: string; level: 'error' | 'warning' | 'notice'; message: string }>
   services:  Array<{ name: string; up: boolean }>
+  /** Lidarr's library, when Lidarr is set up: absent otherwise, so a page shows nothing about music. */
+  music?:    { artists: number; albums: number; tracks: number; sizeBytes: number; missingAlbums: number | null } | null
 }
 
 export interface UnmanicVisual {

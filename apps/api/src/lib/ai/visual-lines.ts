@@ -42,6 +42,7 @@ export function visualLines(v: PluginVisual): string[] {
       const failing = v.indexers.filter(i => i.state === 'failing')
       if (failing.length) out.push(`Failing indexers: ${failing.map(i => i.name).join(', ')}.`)
       for (const h of v.health.slice(0, 6)) out.push(`${h.service} ${h.level}: ${h.message}`)
+      if (v.music) out.push(`Music (Lidarr): ${plural(v.music.artists, 'artist')}, ${plural(v.music.albums, 'album')}, ${plural(v.music.tracks, 'track')} on disk${v.music.missingAlbums !== null ? `, ${plural(v.music.missingAlbums, 'monitored album')} missing` : ''}.`)
       const down = v.services.filter(s => !s.up)
       out.push(down.length ? `Not answering: ${down.map(s => s.name).join(', ')}.` : `All ${plural(v.services.length, 'service')} answer.`)
       break
