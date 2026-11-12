@@ -519,11 +519,11 @@ export function PbsPage() {
   return (
     <div className="min-h-full overflow-x-hidden" style={{ background: 'var(--ground)' }}>
       {admin && (
-        <div className="flex flex-wrap items-center gap-3 px-4 pb-2 sm:px-8">
+        <div className="flex flex-wrap items-center gap-3 pb-2">
           <span className="ml-auto"><PrimaryButton type="button" onClick={() => setAdding(true)}>Add a backup server</PrimaryButton></span>
         </div>
       )}
-      <div className="flex min-w-0 flex-col gap-4 px-4 py-4 sm:px-8">
+      <div className="flex min-w-0 flex-col gap-4 py-4">
         <PluginSwitcher current="pbs" />
         {error && <Notice kind="error">{error}</Notice>}
         {!list && !error && <BusyNote>Reading…</BusyNote>}

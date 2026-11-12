@@ -45,7 +45,7 @@ export function WebsitesPanel() {
               <div><strong>{fmtCount(x.visitorsToday)}</strong><br /><small>people today</small></div>
               <SparkLine data={x.spark} label={`${x.name}: people per hour, last 24 hours`} />
             </div>
-            <dl className={s.facts} style={{ marginTop: 4, gridTemplateColumns: 'repeat(4, minmax(0, 1fr))' }}>
+            <dl className={s.facts} style={{ marginTop: 4, gridTemplateColumns: "repeat(auto-fit, minmax(6rem, 1fr))" }}>
               <div className={s.fact}><dd>{x.up ? fmtMs(x.latencyMs) : '—'}</dd><dt>check</dt></div>
               <div className={s.fact}><dd>{fmtPct(x.errorRatePct)}</dd><dt>5xx</dt></div>
               <div className={s.fact}><dd>{fmtMs(x.p95Ms)}</dd><dt>p95</dt></div>

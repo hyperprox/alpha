@@ -101,7 +101,7 @@
 .g span { font: 500 .55rem var(--font-mono); letter-spacing: .1em; color: var(--text-muted); }
 .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: 8px; margin: 14px 0 0; }
 .fact { border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; background: var(--ground-deep); min-width: 0; }
-.fact dd { margin: 0; font: 700 1.15rem var(--font-display); color: var(--text-bright); overflow-wrap: anywhere; }
+.fact dd { margin: 0; font: 700 1.15rem var(--font-display); color: var(--text-bright); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fact dt { font: 500 .58rem var(--font-mono); letter-spacing: .1em; color: var(--text-muted); text-transform: uppercase; }
 .upd { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; list-style: none; padding: 0; }
 .upd li { display: flex; justify-content: space-between; gap: 10px; border: 1px solid var(--border); border-radius: 9px; padding: 7px 10px; font-size: .84rem; color: var(--text-soft); }

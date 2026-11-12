@@ -361,17 +361,33 @@ export function RouterView({ v }: { v: RouterVisual }) {
         <Panel title="Live log" sub={v.log.some(l => l.level === 'error') ? `${v.log.filter(l => l.level === 'error').length} ERRORS` : undefined}>
           {v.log.length === 0 ? <p className={s.empty}>The log is empty.</p> : (
             <ol className={pg.log} aria-label="Router log, newest first">
-              {v.log.map((l, i) => (
-                <li key={i} data-level={l.level} title={l.message}>
-                  <time>{l.time.length > 8 ? l.time.slice(-8) : l.time}</time>
-                  {l.level !== 'info' && <span className={s.srOnly}>{l.level}: </span>}{l.message}
-                </li>
-              ))}
+              {v.log.map((l, i) => <LogRow key={i} l={l} />)}
             </ol>
           )}
         </Panel>
       </Cols>
     </>
+  )
+}
+
+/**
+ * One router log line: time, topic, message. Errors are red with an icon, warnings amber. The message wraps inside
+ * the panel (two lines, then a tap or Enter opens the rest); the full line is also the hover text.
+ */
+function LogRow({ l }: { l: RouterVisual['log'][number] }) {
+  const [open, setOpen] = useState(false)
+  const full = `${l.time} ${l.topic ? `[${l.topic}] ` : ''}${l.message}`
+  return (
+    <li data-level={l.level} data-open={open} title={full} tabIndex={0} aria-expanded={open}
+      onClick={() => setOpen(o => !o)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(o => !o) } }}>
+      <time>{l.time.length > 8 ? l.time.slice(-8) : l.time}</time>
+      <span className={pg.logIcon} aria-hidden>{l.level === 'error' ? <Icon name="error" size={13} /> : l.level === 'warning' ? <Icon name="warn" size={13} /> : null}</span>
+      <span className={pg.logBody}>
+        {l.level !== 'info' && <span className={s.srOnly}>{l.level}: </span>}
+        {l.topic && <code>{l.topic}</code>}
+        {l.message}
+      </span>
+    </li>
   )
 }
 

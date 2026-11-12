@@ -374,6 +374,7 @@ export function buildRouterVisual(input: {
     forwardsActive: forwards.filter(f => f.active).length,
     log: [...input.log].reverse().slice(0, 30).map(l => ({
       time: String(l.time ?? '').slice(0, 40), message: String(l.message ?? '').trim().slice(0, 300), level: logLevel(l.topics),
+      topic: String(l.topics ?? '').slice(0, 60),
     })),
   }
 }

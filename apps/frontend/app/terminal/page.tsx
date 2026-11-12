@@ -420,9 +420,10 @@ export default function TerminalPage() {
     <div className="flex h-full">
       {/* ---- Panes ---------------------------------------------------------- */}
       <section className="flex min-w-0 flex-1 flex-col">
-        {/* Tab bar. Always rendered, because it is also where hosts are opened
+        {/* Tab bar, once a pane is open: it is also where hosts are opened
             from — the left-hand host column it replaces was a second menu
             stacked against the app's own. */}
+        {sessions.length > 0 && (
         <div className="flex flex-shrink-0 items-stretch overflow-x-auto border-b"
           style={{ borderColor: 'var(--border-strong)', background: 'linear-gradient(180deg, var(--surface-hi), var(--ground-deep))', height: 40 }}>
           {sessions.map(sess => {
@@ -462,13 +463,13 @@ export default function TerminalPage() {
             <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.8}>
               <path d="M8 3v10M3 8h10" strokeLinecap="round" />
             </svg>
-            {!sessions.length && <span className="text-[13px]">Open a terminal</span>}
-          </button>
+                      </button>
 
           <div className="ml-auto flex flex-shrink-0 items-center px-3 font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>
             {loading ? 'loading…' : `${hosts.length} hosts · ${sessions.length} open`}
           </div>
         </div>
+        )}
 
         {/* Header for the active pane */}
         <header className="flex flex-shrink-0 flex-wrap items-center gap-2 border-b px-3 py-1.5 sm:gap-3 sm:px-4"
@@ -568,14 +569,15 @@ export default function TerminalPage() {
               </div>
             </>
           ) : (
-            <button onClick={() => setPalette(true)}
-              className="flex items-center gap-2 text-[14px] transition-colors hover:text-[var(--text)]"
+            // With nothing open there is no tab strip (below), so this bar carries the one "open" control.
+            <button onClick={() => setPalette(true)} title="Open a terminal   (Ctrl/⌘ K)"
+              className="flex min-w-0 items-center gap-2 text-[14px] transition-colors hover:text-[var(--text)]"
               style={{ color: 'var(--text-dimmer)' }}>
-              <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.8}>
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.8} className="flex-shrink-0">
                 <path d="M8 3v10M3 8h10" strokeLinecap="round" />
               </svg>
-              Open a terminal
-              <span style={{ color: 'var(--text-faint)' }}>Ctrl / ⌘ K</span>
+              <span className="truncate">Open a terminal</span>
+              <span className="hidden sm:inline" style={{ color: 'var(--text-faint)' }}>Ctrl / ⌘ K</span>
             </button>
           )}
 
