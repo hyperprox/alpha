@@ -313,10 +313,12 @@ export function coreSources(d: CoreDeps): AskSource[] {
     },
     {
       id: 'dns', title: 'DNS', blurb: 'zones and records',
-      aliases: /\b(dns|domains?|zones?|records?|cname|godaddy|subdomain)\b/,
+      aliases: /\b(dns|domains?|zones?|records?|cname|godaddy|cloudflare|subdomain)\b/,
       load: async () => {
         const unread = fp.filter(p => p === 'zones' || p.startsWith('records:')).map(p => p === 'zones' ? 'the DNS zone list' : `the records of ${p.slice(8)}`)
-        const lines = d.facts.zones.map(z => `${z}: ${d.facts.records[z]?.length ?? 'unknown'} records`)
+        const prov = d.facts.zoneProvider ?? {}
+        const label: Record<string, string> = { godaddy: 'GoDaddy', cloudflare: 'Cloudflare' }
+        const lines = d.facts.zones.map(z => `${z}${prov[z] ? ` (${label[prov[z]] ?? prov[z]})` : ''}: ${d.facts.records[z]?.length ?? 'unknown'} records`)
         return { headline: `DNS: ${d.facts.zones.length} zones.`, lines: lines.length ? lines : ['No DNS zones are configured.'], unread: unread.length ? unread : undefined }
       },
       answer: (p, s) => /\bhow many\b.*\b(zones?|domains?)\b/i.test(p) ? s.headline.replace('DNS: ', 'You have ') : null,
