@@ -50,7 +50,11 @@ function cluster(nodes, opts = {}) {
   w('hostname', 'case "$1" in -I) echo 10.9.9.9;; *) echo installer;; esac')
   w('dpkg', '[ "$1" = --print-architecture ] && [ -n "${FAKE_ARCH-amd64}" ] && echo "${FAKE_ARCH-amd64}" && exit 0; exit 1')
   w('uname', 'case "$1" in -m) echo "${FAKE_UNAME_M:-x86_64}";; *) /bin/uname "$@";; esac')
-  w('ping', `for a in "$@"; do t="$a"; done; grep -qxF "$t" ${root}/pingable`)
+  w('ping', `for a in "$@"; do t="$a"; done; grep -qxF "$t" \${FAKE_PINGABLE:-${root}/pingable}`)
+  // iputils arping -D: exits non-zero when something replies. Some hosts drop pings but answer ARP.
+  w('arping', `[ "$1" = -V ] && { echo "arping from iputils 20240905"; exit 0; }
+for a in "$@"; do t="$a"; done; ! grep -qxF "$t" ${root}/arpable 2>/dev/null`)
+  w('ip', 'case "$1" in link) exit 0;; *) exit 0;; esac')
   w('pvesh', `case "$2" in
   /cluster/nextid) if [ "$3" = --vmid ]; then echo "$4"; else echo 900; fi;;
   /nodes) echo '${nodeJson}';; /cluster/status) echo '${statusJson}';; esac`)
@@ -62,15 +66,23 @@ function cluster(nodes, opts = {}) {
 esac`)
   w('pveam', `case "$1" in
   available) cat ${root}/available;;
-  list) echo "NAME SIZE"; for f in ${tpl}/*; do [ -e "$f" ] && echo "$2:vztmpl/$(basename "$f")   100MB"; done;;
+  list) [ -n "\${FAKE_LIST_FAIL:-}" ] && exit 1; echo "NAME SIZE"; for f in ${tpl}/*; do [ -e "$f" ] && echo "$2:vztmpl/$(basename "$f")   100MB"; done;;
   download) echo template > "${tpl}/$3";;
   remove) rm -f "${tpl}/\${2#*vztmpl/}";;
 esac; exit 0`)
   w('pct', `case "$1" in
   status) exit 1;;
-  create) h=""; prev=""; for a in "$@"; do [ "$prev" = --hostname ] && h="$a"; prev="$a"; done
-          echo "hostname: $h" > "$HPX_PVE_ETC/lxc/$2.conf"
-          [ -n "\${FAKE_INT_ON_CREATE:-}" ] && kill -INT $PPID; exit 0;;
+  create) ctrl_c() { kill -INT $PPID; p=$PPID; while [ "$p" -gt 1 ]; do
+            if tr '\\0' ' ' < /proc/$p/cmdline | grep -q 'bootstrap.sh'; then kill -INT $p; fi
+            p=$(awk '{print $4}' /proc/$p/stat); done; }
+          h=""; d=""; prev=""; for a in "$@"; do [ "$prev" = --hostname ] && h="$a"; [ "$prev" = --description ] && d="$a"; prev="$a"; done
+          c="$HPX_PVE_ETC/lxc/$2.conf"
+          # Another run got there first: its container, with the same hostname but its own mark.
+          if [ -n "\${FAKE_RACE:-}" ]; then printf '#hyperprox-install-someoneelse\nhostname: %s\n' "$h" > "$c"; echo "CT $2 already exists on node 'other'" >&2; exit 255; fi
+          # Cut off right after Proxmox wrote its lock, before anything else.
+          if [ -n "\${FAKE_STUB:-}" ]; then echo 'lock: create' > "$c"; ctrl_c; exit 1; fi
+          printf '#%s\nhostname: %s\n' "$d" "$h" > "$c"
+          [ -n "\${FAKE_INT_ON_CREATE:-}" ] && ctrl_c; exit 0;;
   start) [ -n "\${FAKE_START_FAIL:-}" ] && exit 1; exit 0;;
   destroy) rm -f "$HPX_PVE_ETC/lxc/$2.conf"; exit 0;;
   exec) [ -t 0 ] || cat > /dev/null   # a command that reads stdin, as pct exec does
@@ -81,7 +93,10 @@ esac`)
   w('pveum', `t=${root}/tokens
 case "$*" in
   *"token list"*) printf '['; sep=''; while read -r n; do [ -n "$n" ] && printf '%s{"tokenid":"%s"}' "$sep" "$n" && sep=,; done < $t; echo ']';;
-  *"token add"*) echo "$5" >> $t; echo '{"value":"tok-secret"}';;
+  *"token add"*) echo "$5" >> $t
+                 # Someone else made the same token meanwhile.
+                 [ -n "\${FAKE_TOKEN_RACE:-}" ] && [ "$5" = hyperprox ] && { echo "Token already exists." >&2; exit 255; }
+                 echo '{"value":"tok-secret"}';;
   *"token remove"*) grep -vxF "$5" $t > $t.new; mv $t.new $t;;
 esac; exit 0`)
   // Exporters "answer" from here when the fixture says they would after the step: the stand-in curl
@@ -533,4 +548,111 @@ test('a GoDaddy key is checked before it is held, and a wrong one is dropped', (
       assert.ok(!c.calls().split('\n').some(l => l.startsWith('curl') && l.includes(key)), 'never on a command line')
     } finally { c.cleanup() }
   }
+})
+
+// ── From review: the undo only ever removes what this run made ─────────────────────────────────────────
+
+test('two runs, one ID: the second never removes the first one\'s container', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_AMD] })
+  try {
+    const first = c.run(['-y', '--no-pve-metrics'])
+    assert.equal(first.status, 0, first.stdout + first.stderr)
+    const conf = path.join(c.root, 'pve/lxc/900.conf')
+    const before = fs.readFileSync(conf, 'utf8')
+    const second = c.run(['-y', '--no-pve-metrics'])
+    assert.notEqual(second.status, 0)
+    assert.match(plain(second.stderr), /ID 900 is already used/)
+    assert.doesNotMatch(c.calls(), /^pct destroy/m)
+    assert.equal(fs.readFileSync(conf, 'utf8'), before)
+  } finally { c.cleanup() }
+})
+
+test('the ID is taken between the check and pct create: that container is not ours and stays', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_AMD] })
+  try {
+    const r = c.run(['-y'], '', { FAKE_RACE: '1' })
+    assert.notEqual(r.status, 0)
+    assert.match(plain(r.stderr), /already exists/)
+    assert.doesNotMatch(c.calls(), /^pct (stop|destroy)/m)
+    assert.match(fs.readFileSync(path.join(c.root, 'pve/lxc/900.conf'), 'utf8'), /someoneelse/)
+  } finally { c.cleanup() }
+})
+
+test('a create cut off at its lock: not removed, and the commands to remove it are shown', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_AMD] })
+  try {
+    const r = c.run(['-y'], '', { FAKE_STUB: '1' })
+    assert.equal(r.status, 130, r.stdout + r.stderr)
+    assert.doesNotMatch(c.calls(), /^pct destroy/m)
+    assert.match(plain(r.stdout), /pct unlock 900 && pct destroy 900 --purge/)
+  } finally { c.cleanup() }
+})
+
+test('a failed token add (someone made it meanwhile): that token is not removed', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_AMD] })
+  try {
+    const r = c.run(['-y'], '', { FAKE_TOKEN_RACE: '1' })
+    const out = plain(r.stdout + r.stderr)
+    assert.equal(r.status, 1, out)
+    assert.match(out, /Could not create the token root@pam!hyperprox/)
+    assert.doesNotMatch(c.calls(), /^pveum user token remove/m)
+    assert.deepEqual(c.tokens(), ['hyperprox'])
+    assert.match(c.calls(), /^pct destroy 900 --purge$/m, 'the container this run made is still removed')
+  } finally { c.cleanup() }
+})
+
+test('EOF at the questions and at "Create it?": no to everything, cancelled, nothing created', () => {
+  const c = cluster({ 'node-a': 'fresh-intel-node' }, { guests: conventional })
+  try {
+    const r = c.run([], '', { HPX_TTY: c.tty('') })
+    const out = plain(r.stdout + r.stderr)
+    assert.notEqual(r.status, 0)
+    assert.match(out, /numbering[^]*?\[Y\/n\] \(no answer: no\)/, 'the static address is not taken on EOF')
+    assert.match(out, /Container ID 900/)
+    assert.match(out, /No answer\. Cancelled\. Nothing was created\./)
+    assert.doesNotMatch(c.calls(), /^(pct create|pveam download|pveum user token add)/m)
+  } finally { c.cleanup() }
+})
+
+test('a template listing that fails: the template already there is used, and never removed', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_AMD] })
+  try {
+    const r = c.run(['-y'], '', { FAKE_LIST_FAIL: '1', FAKE_INSTALL_FAIL: '1' })
+    const out = plain(r.stdout + r.stderr)
+    assert.equal(r.status, 1, out)
+    assert.match(out, /Could not list the templates on local/)
+    assert.match(out, /is on local already/)
+    assert.doesNotMatch(c.calls(), /^pveam (download|remove)/m)
+    assert.deepEqual(c.templates(), [T13_AMD])
+  } finally { c.cleanup() }
+})
+
+test('the root password is set over stdin, never on the pct create command line', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_AMD] })
+  try {
+    const r = c.run(['-y', '--password', 'pw-secret-1'])
+    assert.equal(r.status, 0, r.stdout + r.stderr)
+    assert.ok(!c.calls().split('\n').some(l => l.includes('pw-secret-1')), 'on no command line')
+    assert.match(c.calls(), /^pct exec 900 -- chpasswd$/m)
+  } finally { c.cleanup() }
+})
+
+test('a static address that drops pings but answers ARP is not offered', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' }, { guests: conventional, pingable: ['192.0.2.200'] })
+  try {
+    fs.writeFileSync(path.join(c.root, 'arpable'), '192.0.2.205\n')
+    const out = plain(c.run(['-y', '--dry-run']).stdout)
+    assert.match(out, /use CT 106 with IP 192\.0\.2\.206\/24/)
+  } finally { c.cleanup() }
+})
+
+test('bad --hostname, --gateway or --bridge are refused before anything runs', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' })
+  try {
+    for (const args of [['--hostname', 'a b'], ['--hostname', '-x'], ['--ip', '192.0.2.9/24', '--gateway', '300.1.1.1'], ['--bridge', 'vmbr0;x'], ['--ip', '192.0.2.9/40', '--gateway', '192.0.2.1']]) {
+      const r = c.run(['-y', '--dry-run', ...args])
+      assert.notEqual(r.status, 0, args.join(' '))
+    }
+    assert.doesNotMatch(c.calls(), /^pveversion/m, 'refused before looking at anything')
+  } finally { c.cleanup() }
 })

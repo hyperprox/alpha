@@ -170,7 +170,9 @@ If the install stops part-way, because you pressed Ctrl+C or something failed, i
 created: the container, the tokens it made, a template it downloaded, and built-in graphics or AMD GPU
 settings it turned on. Monitoring software it added to a node is left there (it does no harm) and named,
 and so is the power-counter rule, with the file to delete to undo it.
-Anything that was there before it started is never touched. `--keep-on-failure` keeps what was made after a
+Anything that was there before it started is never touched: a container is removed only if it carries
+this run's mark in its description. A container cut off while Proxmox was still creating it is not removed;
+the commands to remove it are shown instead. `--keep-on-failure` keeps what was made after a
 failure, so you can look inside the container.
 
 Pass options through `bash -s --`:

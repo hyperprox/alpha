@@ -127,7 +127,8 @@ ask_yn() {
   if [ "$ASSUME_YES" -eq 1 ] || [ "$NO_TERMINAL" -eq 1 ]; then printf -v "$var" '%s' "$def"; printf '  %s %s\n' "$q" "$def"; return; fi
   [ "$def" = yes ] && hint='[Y/n]' || hint='[y/N]'
   printf '\n  %s%s%s\n    %s%s%s\n  %s ' "$C_ACC" "$q" "$C_OFF" "$C_DIM" "$what" "$C_OFF" "$hint"
-  if ! IFS= read -r reply <&3; then reply=""; fi
+  # Nothing more to read (EOF) is not consent: every question here asks to add something, so it means no.
+  if ! IFS= read -r reply <&3 && [ -z "$reply" ]; then printf -v "$var" no; printf '(no answer: no)'; [ -t 1 ] || echo; return; fi
   case "$reply" in [yY]*) printf -v "$var" yes;; [nN]*) printf -v "$var" no;; *) printf -v "$var" '%s' "$def";; esac
   [ -t 1 ] || echo
 }
@@ -148,7 +149,9 @@ ask_secret() {
 # ---------------------------------------------------------------------------
 FINISHED=0; INTERRUPTED=0
 TMP_PATHS=()
-CT_TRY=0; CT_VOLS_BEFORE=""
+CT_TRY=0
+# This run's mark, put in the container's description: the rollback removes a container only if it carries it.
+RUN_MARK="hyperprox-install-$(od -An -N8 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
 TPL_TRY=0
 TOKEN_TRY=0; TOKEN_EXISTED=0; XTOKEN_TRY=0; XTOKEN_EXISTED=0
 NODE_UNDO=(); NODE_LEFT=()
@@ -162,27 +165,32 @@ guest_conf() {   # the config file of guest ID anywhere in the cluster, if there
 }
 # Read whole before searching: with pipefail, `cmd | grep -q` fails when grep stops reading early.
 token_exists() { grep -q "\"$1\"" <<< "$(pveum user token list root@pam --output-format json 2>/dev/null)"; }
-ct_vols() { pvesm list "$STORAGE" --vmid "$CTID" 2>/dev/null | awk 'NR>1 {print $1}' | sort; }
+# The path of a template on its storage, or nothing if the storage cannot say.
+template_path() { pvesm path "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" 2>/dev/null || true; }
 
 rollback() {
-  local p node step f vol
+  local p node step f out tp
   # Node steps first, newest first; then the container, tokens and template.
   for (( i=${#NODE_UNDO[@]}-1; i>=0; i-- )); do
     p="${NODE_UNDO[$i]}"; node="${p%%$'\t'*}"; step="${p#*$'\t'}"
-    if step_text "$step" | node_run "$node" 2>/dev/null | grep -q $'^HPX-RESULT\t\(done\|already\)'; then
+    out="$(step_text "$step" | node_run "$node" 2>/dev/null || true)"
+    if grep -q $'^HPX-RESULT\t\(done\|already\)' <<< "$out"; then
       ok "$node: undid $(step_label "${step%-undo}")"
     else warn "$node: could not undo $(step_label "${step%-undo}"); see Settings → Setup checklist"; fi
   done
   if [ "$CT_TRY" -eq 1 ]; then
-    if f="$(guest_conf "$CTID")" && grep -q "^hostname: ${HOSTNAME}\$" "$f"; then
-      pct stop "$CTID" >/dev/null 2>&1 || true
-      if pct destroy "$CTID" --purge >/dev/null 2>&1; then ok "Removed container $CTID"
-      else warn "Could not remove container $CTID; remove it with: pct destroy $CTID --purge"; fi
+    # Only a container that carries this run's mark is ours. pct create removes its own volumes when it fails.
+    if f="$(guest_conf "$CTID")"; then
+      if grep -qF "$RUN_MARK" "$f" && grep -qxF "hostname: ${HOSTNAME}" "$f"; then
+        pct stop "$CTID" >/dev/null 2>&1 || true
+        if pct destroy "$CTID" --purge >/dev/null 2>&1; then ok "Removed container $CTID"
+        else warn "Could not remove container $CTID; remove it with: pct destroy $CTID --purge"; fi
+      elif grep -qxF "lock: create" "$f"; then
+        # A create cut off before it wrote anything but its lock: not provably ours, so it is not removed here.
+        warn "Container $CTID was left half-made (locked while being created). If nobody else is creating it, remove it with:"
+        note "pct unlock $CTID && pct destroy $CTID --purge"
+      fi
     fi
-    # A create cut off part-way can leave its disk behind: free only volumes that were not there before.
-    for vol in $(comm -13 <(printf '%s\n' "$CT_VOLS_BEFORE") <(ct_vols)); do
-      pvesm free "$vol" >/dev/null 2>&1 && ok "Removed $vol" || warn "Could not remove $vol"
-    done
   fi
   if [ "$XTOKEN_TRY" -eq 1 ] && [ "$XTOKEN_EXISTED" -eq 0 ] && token_exists "$EXPORTER_TOKEN"; then
     pveum user token remove root@pam "$EXPORTER_TOKEN" >/dev/null 2>&1 \
@@ -192,7 +200,8 @@ rollback() {
     pveum user token remove root@pam hyperprox >/dev/null 2>&1 \
       && ok "Removed token root@pam!hyperprox" || warn "Could not remove token root@pam!hyperprox"
   fi
-  if [ "$TPL_TRY" -eq 1 ] && grep -qF "vztmpl/${TEMPLATE}" <<< "$(pveam list "$TEMPLATE_STORAGE" 2>/dev/null)"; then
+  tp=""; [ "$TPL_TRY" -eq 1 ] && tp="$(template_path)"
+  if [ -n "$tp" ] && [ -e "$tp" ]; then
     pveam remove "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" >/dev/null 2>&1 \
       && ok "Removed the template this run downloaded" || warn "Could not remove ${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}"
   fi
@@ -248,10 +257,11 @@ node_scripts_dir() {   # sets NODE_DIR
 # the cluster recorded for that node name.
 node_run() {
   if [ "$1" = "$THIS_NODE" ]; then bash -s; return; fi
-  local ip kh="" opts=(-o BatchMode=yes -o ConnectTimeout=8 -o "HostKeyAlias=$1")
+  local ip f kh="" opts=(-o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=yes -o "HostKeyAlias=$1")
   ip="$(node_ip "$1")"; [ -n "$ip" ] && opts+=(-o "HostName=$ip")
-  [ -f "$PVE_ETC/nodes/$1/ssh_known_hosts" ] && kh="$PVE_ETC/nodes/$1/ssh_known_hosts"
-  [ -n "$kh" ] && opts+=(-o "UserKnownHostsFile=$kh ${HOME:-/root}/.ssh/known_hosts")
+  # The keys the cluster itself recorded: the node's own file (PVE 8.1+) and the cluster-wide one.
+  for f in "$PVE_ETC/nodes/$1/ssh_known_hosts" "$PVE_ETC/priv/known_hosts"; do [ -f "$f" ] && kh="${kh:+$kh }$f"; done
+  [ -n "$kh" ] && opts+=(-o "GlobalKnownHostsFile=$kh")
   ssh "${opts[@]}" "$1" 'bash -s'
 }
 
@@ -341,6 +351,19 @@ conf_ip() {
 node_digit_from_name() { [[ "$1" =~ [^0-9]([1-9])$ ]] && echo "${BASH_REMATCH[1]}"; return 0; }
 majority() { sort | uniq -c | sort -k1,1nr | awk 'NR==1 {print $2}'; }
 
+# addr_answers ADDR: something on the network answers on ADDR (a ping, or an ARP reply where iputils arping is
+# installed: hosts that drop pings still answer ARP).
+addr_answers() {
+  ping -c 1 -W 1 "$1" >/dev/null 2>&1 && return 0
+  if command -v arping >/dev/null 2>&1 && arping -V 2>&1 | grep -q iputils; then
+    # -D: duplicate address detection, which exits non-zero when anything replies.
+    arping -q -D -c 2 -w 3 -I "$BRIDGE" "$1" >/dev/null 2>&1 || return 0
+  fi
+  return 1
+}
+# addr_in_configs ADDR: some guest config (snapshots and pending changes too) names ADDR.
+addr_in_configs() { grep -qsE "ip=${1//./\\.}/" "$PVE_ETC"/nodes/*/lxc/*.conf "$PVE_ETC"/nodes/*/qemu-server/*.conf; }
+
 CONV_ID=""; CONV_IP=""; CONV_GW=""; CONV_MATCH=0; CONV_TOTAL=0
 detect_numbering() {
   local f node id ipc ip gw o lead d subnet cidr x cand_id cand_ip pings=0 used_ips
@@ -392,7 +415,7 @@ detect_numbering() {
     [ "$cand_ip" = "$gw" ] && continue
     grep -qxF "$cand_ip" <<< "$used_ips" && continue
     pings=$((pings + 1)); [ "$pings" -le 12 ] || return 0
-    ping -c 1 -W 1 "$cand_ip" >/dev/null 2>&1 && continue
+    addr_answers "$cand_ip" && continue
     CONV_ID="$cand_id"; CONV_IP="$cand_ip/$cidr"; CONV_GW="$gw"
     return 0
   done
@@ -428,10 +451,15 @@ main() {
       *) die "Unknown option: $1 (try --help)";;
     esac
   done
+  ipv4='^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$'
+  [[ "$HOSTNAME" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$ ]] && [ "${#HOSTNAME}" -le 253 ] \
+    || die "--hostname must be a host name: letters, digits and hyphens, optionally dotted."
+  [[ "$BRIDGE" =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || die "--bridge must be a network interface name, e.g. vmbr0."
+  [ -z "$GATEWAY" ] || [[ "$GATEWAY" =~ $ipv4 ]] || die "--gateway must be an IPv4 address."
   for v in CORES MEMORY DISK; do [[ "${!v}" =~ ^[1-9][0-9]*$ ]] || die "--${v,,} must be a whole number."; done
   [ -z "$CTID" ] || [[ "$CTID" =~ ^[1-9][0-9]{2,8}$ ]] || die "--vmid must be a number of 100 or more."
   if [ "$NET" != dhcp ]; then
-    [[ "$NET" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]] || die "--ip must be an address with its prefix, e.g. 10.0.0.50/24."
+    [[ "${NET%%/*}" =~ $ipv4 ]] && [[ "$NET" =~ /([1-9]|[12][0-9]|3[0-2])$ ]] || die "--ip must be an address with its prefix, e.g. 10.0.0.50/24."
     [ -n "$GATEWAY" ] || die "--ip needs --gateway too."
   fi
 
@@ -447,6 +475,7 @@ main() {
   command -v pveversion >/dev/null 2>&1 || die "This must run on a Proxmox VE host — pveversion was not found."
   [ "$(id -u)" -eq 0 ] || die "This must run as root."
   ok "Proxmox $(pveversion | cut -d/ -f2)"
+  ip link show "$BRIDGE" >/dev/null 2>&1 || die "There is no network bridge '$BRIDGE' on this node. Pass --bridge."
   ARCH="$(host_arch)" || die "This host's CPU ($(uname -m)) has no Proxmox container template; HyperProx needs amd64 or arm64."
   ok "CPU architecture: $ARCH"
   # This node's name in the cluster (which is not always what `hostname` says).
@@ -481,10 +510,8 @@ main() {
   if [ "$NET" = dhcp ]; then ok "Network: DHCP on $BRIDGE"
   else
     if [ "$NET" != "${CONV_IP:-}" ]; then
-      ipc="${NET%%/*}"
-      grep -qsE "ip=${ipc//./\\.}/" "$PVE_ETC"/nodes/*/lxc/*.conf "$PVE_ETC"/nodes/*/qemu-server/*.conf \
-        && die "Another guest's config already uses $ipc. Choose another --ip."
-      ping -c 1 -W 1 "$ipc" >/dev/null 2>&1 && die "Something already answers on $ipc. Choose another --ip."
+      addr_in_configs "${NET%%/*}" && die "Another guest's config already uses ${NET%%/*}. Choose another --ip."
+      addr_answers "${NET%%/*}" && die "Something already answers on ${NET%%/*}. Choose another --ip."
     fi
     ok "Network: $NET, gateway $GATEWAY, on $BRIDGE"
   fi
@@ -510,7 +537,8 @@ main() {
   declare -gA HAVE
   ALL_HAVE=""; OTHER_ARCH=""
   for s in "${TPL_STORES[@]}"; do
-    l="$(pveam list "$s" 2>/dev/null | debian_templates)"
+    if ! l="$(pveam list "$s" 2>/dev/null)"; then warn "Could not list the templates on $s; any there are checked again before downloading."; fi
+    l="$(debian_templates <<< "$l")"
     HAVE[$s]="$(for_arch "$ARCH" <<< "$l")"
     ALL_HAVE="$ALL_HAVE${HAVE[$s]:+${HAVE[$s]}$'\n'}"
     OTHER_ARCH="$OTHER_ARCH$(grep -vE "_${ARCH}\.tar\.zst\$" <<< "$l" | grep . | sed "s|^|$s:|" || true)"$'\n'
@@ -534,7 +562,7 @@ main() {
     TEMPLATE_STORAGE="${TPL_STORES[0]}"
     ok "Template: $TEMPLATE ($ARCH), to be downloaded to $TEMPLATE_STORAGE"
   else
-    TEMPLATE_PATH="$(pvesm path "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" 2>/dev/null || true)"
+    TEMPLATE_PATH="$(template_path)"
     [ -n "$TEMPLATE_PATH" ] && [ -r "$TEMPLATE_PATH" ] && [ -s "$TEMPLATE_PATH" ] \
       || die "The template ${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE} is listed but cannot be read (${TEMPLATE_PATH:-no path}). Is the storage mounted?"
     ok "Template: $TEMPLATE ($ARCH), already on $TEMPLATE_STORAGE"
@@ -708,7 +736,7 @@ main() {
   if [ "$ASSUME_YES" -ne 1 ]; then
     [ "$INTERACTIVE" -eq 1 ] || die "No terminal to confirm on. Re-run with -y (or HYPERPROX_YES=1) to accept the plan above."
     printf "  Create it? [Y/n] "
-    IFS= read -r reply <&3 || reply=""
+    if ! IFS= read -r reply <&3 && [ -z "$reply" ]; then echo; die "No answer. Cancelled. Nothing was created."; fi
     [ -t 1 ] || echo
     case "$reply" in [nN]*) die "Cancelled. Nothing was created.";; esac
   fi
@@ -721,30 +749,44 @@ main() {
   #  so Tailscale works later without a second reboot.
   # -------------------------------------------------------------------------
   if [ "$NEED_DOWNLOAD" -eq 1 ]; then
+    # The listing can fail quietly; the storage's own path is the last word on whether the file is there.
+    TEMPLATE_PATH="$(template_path)"
+    [ -n "$TEMPLATE_PATH" ] || die "Cannot find where ${TEMPLATE_STORAGE} keeps templates (pvesm path failed)."
+    [ -e "$TEMPLATE_PATH" ] && NEED_DOWNLOAD=0 && ok "Template $TEMPLATE is on $TEMPLATE_STORAGE already"
+  fi
+  if [ "$NEED_DOWNLOAD" -eq 1 ]; then
     note "Downloading $TEMPLATE — this is the slow part, usually a minute or two."
     TPL_TRY=1
     pveam download "$TEMPLATE_STORAGE" "$TEMPLATE" >/dev/null || die "Template download failed."
     ok "Downloaded $TEMPLATE"
   fi
-  TEMPLATE_PATH="$(pvesm path "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" 2>/dev/null || true)"
+  TEMPLATE_PATH="$(template_path)"
   [ -n "$TEMPLATE_PATH" ] && [ -r "$TEMPLATE_PATH" ] && [ -s "$TEMPLATE_PATH" ] \
     || die "The template ${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE} cannot be read (${TEMPLATE_PATH:-no path})."
 
   say "Creating the container"
   # Checked again at the last moment: the ID may have been taken while the questions were open.
   if f="$(guest_conf "$CTID")"; then die "ID $CTID was taken meanwhile ($f). Re-run to pick another."; fi
-  CT_VOLS_BEFORE="$(ct_vols)"
+  if [ "$NET" != dhcp ]; then
+    addr_in_configs "${NET%%/*}" && die "${NET%%/*} was taken meanwhile by another guest's config. Re-run to pick another."
+    addr_answers "${NET%%/*}" && die "Something answers on ${NET%%/*} now. Re-run to pick another address."
+  fi
   CT_TRY=1
-  pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" \
+  if ! create_out="$(pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" \
     --arch "$ARCH" --ostype debian \
+    --description "$RUN_MARK" \
     --hostname "$HOSTNAME" \
     --cores "$CORES" --memory "$MEMORY" --swap 512 \
     --rootfs "${STORAGE}:${DISK}" \
     --net0 "$NETCONF" \
     --unprivileged 0 \
     --features "keyctl=1,nesting=1" \
-    --password "$PASSWORD" \
-    --onboot 1 --start 0 >/dev/null || die "Container creation failed."
+    --onboot 1 --start 0 2>&1)"; then
+    # Someone else's container with this ID: not ours to remove.
+    grep -q 'already exists' <<< "$create_out" && CT_TRY=0
+    printf '%s\n' "$create_out" | sed 's/^/    /' >&2
+    die "Container creation failed."
+  fi
 
   # tun needs a device rule; --features tun=1 is not accepted on every PVE version, so set it the way
   # that works everywhere. The container was made a moment ago and has no pending changes to append into.
@@ -755,6 +797,9 @@ main() {
   ok "Container $CTID created"
 
   pct start "$CTID" >/dev/null || die "Container failed to start."
+  # The root password goes in on stdin, so it is on no command line (and in no process list).
+  printf 'root:%s\n' "$PASSWORD" | pct exec "$CTID" -- chpasswd \
+    || warn "Could not set the root password; set it with: pct exec $CTID -- passwd"
   say "Waiting for the container's network"
   for _ in $(seq 1 60); do
     if pct exec "$CTID" -- getent hosts deb.debian.org >/dev/null 2>&1; then break; fi
@@ -775,10 +820,12 @@ main() {
     warn "A token named 'hyperprox' already exists; its secret is only shown once, so it is left alone."
     note "The setup page will ask for a token. Or delete it (pveum user token remove root@pam hyperprox) and re-run."
   else
+    TOKEN_SECRET="$(pveum user token add root@pam hyperprox --privsep=0 --output-format json 2>/dev/null \
+      | sed -n 's/.*"value"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')" || TOKEN_SECRET=""
+    # Ours only once it has handed back its secret: a token that failed to be made, or was made by someone
+    # else meanwhile ("already exists"), is never removed by the undo.
+    [ -n "$TOKEN_SECRET" ] || die "Could not create the token root@pam!hyperprox (check: pveum user token list root@pam)."
     TOKEN_TRY=1
-    TOKEN_SECRET="$(pveum user token add root@pam hyperprox --privsep=0 --output-format json \
-      | sed -n 's/.*"value"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
-    [ -n "$TOKEN_SECRET" ] || die "Token creation returned no secret."
     ok "Token root@pam!hyperprox created"
     pveum acl modify / --token 'root@pam!hyperprox' --role Administrator >/dev/null 2>&1 \
       && ok "Granted Administrator on /" || warn "Could not set the ACL; grant it by hand."
@@ -794,10 +841,10 @@ main() {
     warn "A token named '${EXPORTER_TOKEN}' already exists; its secret is only shown once."
     note "After signing in to HyperProx, run in the container: hyperprox pve-exporter"
   else
-    XTOKEN_TRY=1
     EXPORTER_SECRET="$(pveum user token add root@pam "${EXPORTER_TOKEN}" --privsep 1 \
-      --comment 'HyperProx metrics exporter, read-only (PVEAuditor) [exporter for root@pam!hyperprox]' --output-format json \
+      --comment 'HyperProx metrics exporter, read-only (PVEAuditor) [exporter for root@pam!hyperprox]' --output-format json 2>/dev/null \
       | sed -n 's/.*"value"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || true)"
+    [ -n "$EXPORTER_SECRET" ] && XTOKEN_TRY=1
     if [ -n "$EXPORTER_SECRET" ] && pveum acl modify / --token "root@pam!${EXPORTER_TOKEN}" --role PVEAuditor >/dev/null 2>&1; then
       ok "Token root@pam!${EXPORTER_TOKEN} created (read-only: PVEAuditor on /)"
     else
