@@ -27,7 +27,7 @@
 // =============================================================================
 
 import type { FastifyPluginAsync, FastifyReply } from 'fastify'
-import { auditCredentialUse } from '../lib/audit'
+import { auditCredentialUse, auditOrThrow } from '../lib/audit'
 import { hasRole } from '../lib/roles'
 import { ClearoutRefusal, ClearoutService, type ClearoutDeps } from '../lib/plex-clearout/service'
 import { LibraryService } from '../lib/plex-library/service'
@@ -50,8 +50,9 @@ export function clearoutService(): ClearoutService {
   if (shared) return shared
   const deps: ClearoutDeps = {
     plex: plexServer,
-    sonarr: async () => { const p = findPlugin('arrstack'); return p ? pluginEndpointClient(p, 'default') : null },
-    radarr: async () => { const p = findPlugin('arrstack'); return p ? pluginEndpointClient(p, 'radarr') : null },
+    // Strict: "could not read the Arr Stack settings" must never look like "no Arr", which would hand removal to Plex.
+    sonarr: async () => { const p = findPlugin('arrstack'); return p ? pluginEndpointClient(p, 'default', { strict: true }) : null },
+    radarr: async () => { const p = findPlugin('arrstack'); return p ? pluginEndpointClient(p, 'radarr', { strict: true }) : null },
     option: async key => {
       const p = findPlugin('plex')
       if (!p) return undefined
@@ -206,8 +207,7 @@ export function buildPlexClearoutRoutes(deps: {
       if (!hasRole(req.session?.role ?? 'viewer', 'operator')) return reply.status(403).send({ success: false, code: 'forbidden', error: 'This needs the operator role.' })
       try {
         const out = await svc().remove(req.body?.previewId, req.session!.sid, req.session!.email)
-        await summary('plex.clearout.remove', req.session!.email, out)
-        return { success: true, data: out }
+        return { success: true, data: { ...out, ...(await summary('plex.clearout.remove', req.session!.email, out)) } }
       } catch (e) { return fail(reply, e) }
     })
 
@@ -227,18 +227,21 @@ export function buildPlexClearoutRoutes(deps: {
       if (!hasRole(req.session?.role ?? 'viewer', 'operator')) return reply.status(403).send({ success: false, code: 'forbidden', error: 'This needs the operator role.' })
       try {
         const out = await lib().remove(req.body?.previewId, req.session!.sid, req.session!.email)
-        await summary('plex.library.remove', req.session!.email, out)
-        return { success: true, data: out }
+        return { success: true, data: { ...out, ...(await summary('plex.library.remove', req.session!.email, out)) } }
       } catch (e) { return fail(reply, e) }
     })
   }
 }
 
 /** One summary row per removal, besides the per-item rows the engine writes before and after each delete. */
-async function summary(action: string, by: string, out: { preview: { items: unknown[] }; results: Array<{ removed: boolean; title: string; via: string; sizeBytes: number }> }) {
+async function summary(action: string, by: string, out: { preview: { items: unknown[] }; results: Array<{ removed: boolean; title: string; via: string; sizeBytes: number }> }): Promise<{ note?: string }> {
   const removed = out.results.filter(r => r.removed)
   // The per-item rows were already written; a failed summary must not hide the results from the person.
-  await auditCredentialUse(action, 'plugin:plex', {
+  try { await writeSummary(action, by, out, removed) } catch { return { note: 'The summary row could not be written to the audit log. Each item was logged on its own.' } }
+  return {}
+}
+async function writeSummary(action: string, by: string, out: { preview: { items: unknown[] }; results: Array<{ removed: boolean; title: string; via: string; sizeBytes: number }> }, removed: typeof out.results) {
+  await auditOrThrow(action, 'plugin:plex', {
     by, asked: out.preview.items.length, removed: removed.length, failed: out.results.length - removed.length,
     bytes: removed.reduce((a, r) => a + (r.sizeBytes ?? 0), 0),
     titles: out.results.map(r => `${r.removed ? 'removed' : 'kept'}: ${r.title} (${r.via})`),

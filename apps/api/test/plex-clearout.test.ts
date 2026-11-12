@@ -549,3 +549,34 @@ test('the art cache stays within its byte budget', () => {
   c.set('huge', 'image/png', Buffer.alloc(11))
   assert.equal(c.get('huge'), null, 'larger than the whole budget: not kept')
 })
+
+test('Arr settings that cannot be read are not "no Arr": refused, never Plex; a failed summary row still returns the results', async () => {
+  const ff = fakes()
+  const s6 = new ClearoutService({ plex: async () => ff.plex, sonarr: async () => null, radarr: async () => { throw new Error('vault locked') }, option: async () => 'none', now: () => NOW })
+  const { report } = await s6.report()
+  assert.ok(report.rows.every(r => r.refused === "Couldn't read the Arr settings, try again."))
+  const p = await s6.preview(['movie:2'], 'sid')
+  assert.equal(p.items.length, 0)
+  assert.match(p.skipped[0].reason, /Couldn't read the Arr settings/)
+  assert.equal(ff.plexDeletes.length, 0)
+
+  setAuditSink({ async write(r) { if (r.action === 'plex.clearout.remove') throw new Error('db down'); audits.push(r) } })
+  try {
+    const ff2 = fakes()
+    const s7 = new ClearoutService({ plex: async () => ff2.plex, sonarr: async () => null, radarr: async () => ff2.radarr, option: async () => 'none', now: () => NOW })
+    const a = Fastify({ logger: false })
+    await registerGate(a)
+    await a.register(authRoutes, { prefix: '/api/auth' })
+    await a.register(buildPlexClearoutRoutes({ service: () => s7 }), { prefix: '/api/plugins/plex' })
+    await a.ready()
+    try {
+      const { cookie } = await signIn(a, 'op@example.com', 'operator master password')
+      const pv = (await a.inject({ method: 'POST', url: `${BASE}/preview`, headers: { cookie }, payload: { ids: ['movie:1'] } })).json().data
+      await a.inject({ method: 'POST', url: '/api/auth/reconfirm', headers: { cookie }, payload: { password: 'operator master password' } })
+      const r = await a.inject({ method: 'POST', url: `${BASE}/remove`, headers: { cookie }, payload: { previewId: pv.id } })
+      assert.equal(r.statusCode, 200, r.body)
+      assert.equal(r.json().data.results[0].removed, true)
+      assert.match(r.json().data.note ?? '', /summary row could not be written/)
+    } finally { await a.close() }
+  } finally { setAuditSink({ async write(r) { audits.push(r) } }) }
+})

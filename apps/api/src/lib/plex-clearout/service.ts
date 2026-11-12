@@ -157,8 +157,14 @@ const dirOf = (p: string) => p.replace(/[\\/][^\\/]*$/, '')
 export async function gather(d: ClearoutDeps): Promise<Gathered> {
   const plex = await d.plex()
   if (!plex) throw new ClearoutRefusal('This reads your Plex server directly. Add the Plex server address and token in this plug-in’s settings.', 409, 'plex_not_set')
-  const [sonarr, radarr] = await Promise.all([d.sonarr(), d.radarr()])
   const notes: string[] = []
+  // "Could not read the Arr Stack settings" is not "no Arr": items of that kind are refused, never handed to Plex.
+  const unreadable = { sonarr: false, radarr: false }
+  const [sonarr, radarr] = await Promise.all([
+    d.sonarr().catch(() => { unreadable.sonarr = true; return null }),
+    d.radarr().catch(() => { unreadable.radarr = true; return null }),
+  ])
+  if (unreadable.sonarr || unreadable.radarr) notes.push("Couldn't read the Arr settings, so nothing can be removed until they can be read. Try again.")
 
   const dirs = mc(await plex.get('/library/sections', SLOW)).Directory
   const sections = (Array.isArray(dirs) ? dirs : [])
@@ -217,7 +223,8 @@ export async function gather(d: ClearoutDeps): Promise<Gathered> {
       const tvdb = guids.find(g => g.startsWith('tvdb:'))
       const name = s.kind === 'show' ? 'Sonarr' : 'Radarr'
       const configured = s.kind === 'show' ? !!sonarr : !!radarr
-      const refuse = !configured || managedArr ? null
+      const refuse = (s.kind === 'show' ? unreadable.sonarr : unreadable.radarr) ? "Couldn't read the Arr settings, try again."
+        : !configured || managedArr ? null
         : !idx ? `${name} didn't answer, try again.`
         : arr || idx.hasTitle(title) ? `${name} has something with this title, but not with Plex's ids, so it is left alone. Fix the match in Plex or ${name}.`
         : !guids.length ? `Plex has no tvdb or tmdb id for it, so HyperProx cannot tell whether ${name} manages it.`

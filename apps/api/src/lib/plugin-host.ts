@@ -795,8 +795,20 @@ export interface CoreEndpointClient {
  * show through the Arr Stack's Sonarr). Null when the plug-in is not set up or that endpoint has no address.
  * Never handed to a plug-in: PluginContext stays read-only.
  */
-export async function pluginEndpointClient(plugin: Plugin, endpointKey = 'default'): Promise<CoreEndpointClient | null> {
-  const settings = await getSettings(plugin.manifest.id).catch(() => null)
+export class PluginSettingsReadError extends Error {
+  constructor(name: string) { super(`Couldn't read the ${name} settings, try again.`); this.name = 'PluginSettingsReadError' }
+}
+
+/**
+ * `strict`: a failure to READ the settings (the vault locked or unreachable) throws PluginSettingsReadError instead
+ * of answering null, so a caller can tell "not set up" from "could not tell".
+ */
+export async function pluginEndpointClient(plugin: Plugin, endpointKey = 'default', opts: { strict?: boolean } = {}): Promise<CoreEndpointClient | null> {
+  let settings: Record<string, string> | null
+  try { settings = await getSettings(plugin.manifest.id) } catch {
+    if (opts.strict) throw new PluginSettingsReadError(plugin.manifest.name)
+    settings = null
+  }
   if (!settings || missingSettings(plugin.manifest, settings).length) return null
   let r: Requester
   try { r = new Requester(plugin.manifest, settings, endpointKey) } catch { return null }
