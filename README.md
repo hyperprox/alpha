@@ -1361,27 +1361,54 @@ history covers every account. That history only goes back as far as Plex's recor
 that date. Plays count by title as well as by Plex's item number, so a film you downloaded again still
 has its old plays. A show counts every episode's plays.
 
-- **Never watched**: no plays at all, and in Plex longer than 6 months. **Idle**: played before, but not
-  in 6 months. Both numbers are settings.
-- Each row shows the size, plays, how many people watched it, when it was last played and when it was
-  added, with its cover. Tick rows to see roughly how much space they would free. Movies and TV have their
-  own tabs, with filters for the list, the library and a title search.
+The history misses anything watched before it starts, and anything someone **marked as watched**. So
+Clear-out also counts what Plex itself has as watched, for every account on the server:
+
+- **The owner** (the server token): read with the library.
+- **Everyone the server is shared with**, friends and Plex Home users alike. plex.tv lists them, each with
+  their own key for this server, when asked with the owner's Plex account token (what **Sign in with Plex**
+  saves). HyperProx then reads each person's watched marks with their own key. Those keys are kept in
+  memory only: never saved, logged or shown, and forgotten when HyperProx locks. If plex.tv does not accept
+  the token in the settings as the owner's account token, only the owner's marks count. The page says so,
+  and so does every Clear-out removal preview.
+- This reading takes a while on a big server (each person times each library), so it runs in the
+  background, at most every 10 minutes, and the page shows its progress. Until the first one is done,
+  nothing can be removed from Clear-out.
+
+Something counts as watched when anyone has a play in the history, has it marked as watched, has watched
+any episode of a show, or has a last-watched date for it.
+
+- **Never watched**: nobody has watched it in any of those ways, and it has been in Plex longer than 6
+  months. **Idle**: watched before, but not in 6 months. "Last watched" is the latest date from the history
+  or any account. Both numbers are settings.
+- Each row shows the size, plays, how many people watched it, when it was last watched and when it was
+  added, with its cover. Operators and admins also see who watched it; viewers see only how many. A
+  **marked watched** badge shows when someone has it as watched with no play in the history. Tick rows to
+  see roughly how much space they would free. Movies and TV have their own tabs, with filters for the list,
+  the library and a title search.
 - Sizes come from Plex. If the Arr Stack plug-in is set up, they come from Sonarr and Radarr instead,
   which also add genres, the folder and whether a show is anime.
 - **Keep rules** take things off the lists, and **Kept off this list** counts what each rule held back.
   By default it keeps anything released before 2000, anime, anything in a folder whose path contains
   "complete series", the Science Fiction genre, and anything added in the last 90 days. You can also list
-  folders to keep and names to keep. A name keeps every title that starts with it, so "Night Desk" keeps
-  every Night Desk show. A name of three letters or fewer must match the whole title. Change the rules in the
+  folders to keep and names to keep, each as a comma list. A name keeps every title that starts with it, so
+  "Night Desk" keeps every Night Desk show. Case and punctuation do not matter: "K*O*B*A" and "KOBA" are the
+  same, and "Bench & Gavel" keeps "Bench & Gavel: NSU". A name of three letters or fewer must match the whole
+  title, so "OR" never keeps "Oriel Lane". A name that starts with "The" keeps only titles that start with it
+  too, so "The Spire" keeps "The Spire" and not "Spire in the Mist" (before, the "The" was ignored, so a name
+  written as "The X" also kept titles starting with just "X"; write "X" to keep both). A kept folder keeps
+  everything under it.
+  Kept items are left off the lists entirely and counted in **Kept off this list**. Change the rules in the
   plug-in's settings. Leave a setting blank for the default, or write "none" to turn that rule off.
 - In a library that is mostly films, most films are watched once. So the Movies tab says what share of
-  your films has never been played, and lists the largest files first.
+  your films nobody has watched, and lists the largest files first.
 - **Removing** works the same way here and in the Library (below).
 
-**Plex Library** lists every show and film with its cover, size, plays and when it was last played,
-with search, a library filter, and sorting by size, date added or last played. Open a show to see its
-seasons and episodes. Each episode shows its size, quality, plays, when it was last played, whether it
-has been watched, and whether it is partly watched. You can remove a whole show, one season, the
+**Plex Library** lists every show and film with its cover, size, plays, how many people watched it and
+when it was last watched, with search, a library filter, and sorting by size, date added or last watched.
+Open a show to see its seasons and episodes. Each episode shows its size, quality, plays, who watched it,
+whether it has been watched, and whether it is partly watched. Like Clear-out, "watched" and "next up"
+count every account's watched marks as well as the play history. You can remove a whole show, one season, the
 episodes you tick, or a film. Quick picks tick a season's watched episodes, or everything before the
 next unwatched one.
 

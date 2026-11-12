@@ -20,20 +20,23 @@ import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { BusyNote, Notice } from '@/components/vault/ui'
 import { RemovalModal, VIA_WORD, type ItemResult, type Plan, type Via } from './Removal'
 import c from './clearout.module.css'
+import { MARKED_TIP, watchStateText, watchedText, type WatchState } from './watched'
 
 type Kind = 'movie' | 'show'
 interface Row {
   id: string; kind: Kind; ratingKey: string; title: string; year: number | null; section: string; sectionTitle: string
   sizeBytes: number | null; plays: number; viewers: number; lastPlayed: number | null; addedAt: number; art: string | null
+  watchers: number; marked: number; watchedBy?: Array<{ name: string; how: 'played' | 'marked' }>
   via: Via; keptBy: string | null
   /** Why it cannot be removed (Sonarr or Radarr did not answer, a title matched without an id), or null. */
   refused: string | null
 }
-interface ListData { rows: Row[]; sections: Array<{ key: string; title: string; kind: Kind }>; arr: { sonarr: boolean; radarr: boolean }; plexDeletes: boolean | null; historySince: number | null }
+interface ListData { rows: Row[]; sections: Array<{ key: string; title: string; kind: Kind }>; arr: { sonarr: boolean; radarr: boolean }; plexDeletes: boolean | null; historySince: number | null; watchState?: WatchState }
 interface Version { mediaId: string; label: string; sizeBytes: number | null; files: string[] }
 interface Episode {
   ratingKey: string; season: number; episode: number; title: string; sizeBytes: number | null; quality: string
-  plays: number; viewers: number; lastPlayed: number | null; watched: boolean; inProgress: boolean; nextUpFor: string[]; versions: Version[]; via: 'sonarr' | 'plex'
+  plays: number; viewers: number; lastPlayed: number | null; watched: boolean; inProgress: boolean; nextUpFor?: string[]; nextUpCount: number; versions: Version[]; via: 'sonarr' | 'plex'
+  watchers: number; marked: number; watchedBy?: Array<{ name: string; how: 'played' | 'marked' }>
   refused: string | null
 }
 interface ShowView {
@@ -130,6 +133,7 @@ export function PlexLibrary() {
         Connect {tab === 'show' ? 'Sonarr' : 'Radarr'} in the Arr Stack plug-in (its address and API key) so a removed item is not downloaded again.
       </p>}
       {data.plexDeletes === false && <p className={c.caveat} style={{ marginTop: 8 }}>{PLEX_OFF}</p>}
+      {data.watchState && <p className={c.note} style={{ marginTop: 8 }} role="status">{watchStateText(data.watchState)}</p>}
     </>
   )
 
@@ -194,13 +198,14 @@ export function PlexLibrary() {
                               <div className={c.head}>
                                 <span className={c.title}>E{e.episode} · {e.title}</span>
                                 {e.watched ? <Pill tone="good">watched</Pill> : <Pill>not watched</Pill>}
+                                {e.marked > 0 && <Pill title={MARKED_TIP}>marked watched</Pill>}
                                 {e.inProgress && <Pill tone="warn">partly watched</Pill>}
-                                {e.nextUpFor.length > 0 && <Pill tone="warn" title="Watched the episode before it in the last 14 days">next up for {e.nextUpFor.join(', ')}</Pill>}
+                                {e.nextUpCount > 0 && <Pill tone="warn" title="Watched the episode before it in the last 14 days">next up for {e.nextUpFor?.length ? e.nextUpFor.join(', ') : `${e.nextUpCount} ${e.nextUpCount === 1 ? 'person' : 'people'}`}</Pill>}
                                 <span className={c.size}>{size(e.sizeBytes)}</span>
                               </div>
                               {e.refused && <div className={c.meta} style={{ color: 'var(--warn)' }}>Cannot be removed: {e.refused}</div>}
                               <div className={c.meta}>
-                                {e.quality} · {e.plays} {e.plays === 1 ? 'play' : 'plays'} · {e.viewers} {e.viewers === 1 ? 'viewer' : 'viewers'} · last played {e.lastPlayed ? day(e.lastPlayed) : 'never'} · {VIA_WORD[e.via]}
+                                {e.quality} · {watchedText(e)} · last watched {e.lastPlayed ? day(e.lastPlayed) : 'never'} · {VIA_WORD[e.via]}
                               </div>
                               {e.versions.length > 1 && (
                                 <select className={c.input} aria-label={`Which version of S${e.season}E${e.episode}`} value={versions[e.ratingKey] ?? ''}
@@ -282,7 +287,7 @@ export function PlexLibrary() {
                 </div>
                 <div className={c.meter} aria-hidden><i style={{ width: `${Math.max(2, ((r.sizeBytes ?? 0) / biggest) * 100)}%` }} /></div>
                 <div className={c.meta}>
-                  {r.plays} {r.plays === 1 ? 'play' : 'plays'} · {r.viewers} {r.viewers === 1 ? 'viewer' : 'viewers'} · last played {r.lastPlayed ? day(r.lastPlayed) : 'never'} · added {day(r.addedAt)} · {r.sectionTitle}
+                  {watchedText(r)} · last watched {r.lastPlayed ? day(r.lastPlayed) : 'never'} · added {day(r.addedAt)} · {r.sectionTitle}
                 </div>
                 <div className={c.bar}>
                   {r.kind === 'show' && <button className={c.btn} onClick={() => setOpen(r.ratingKey)}>Seasons and episodes</button>}

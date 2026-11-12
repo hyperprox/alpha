@@ -407,6 +407,9 @@ export const plexPlugin: Plugin = {
     // stream quality wording; an install that only ever had Tautulli keeps working and is asked for Plex.
     baseUrlSetting: 'plex_url',
     auth: { kind: 'header', header: 'X-Plex-Token', fromSetting: 'plex_token' },
+    // The server owner's account token (what Sign in with Plex saves) also reads plex.tv's list of who the server is
+    // shared with, so Clear-out can count everyone's watched marks (lib/plex-clearout/watchers.ts).
+    credentialOrigins: ['https://plex.tv'],
     // The whole page every minute; now streaming and bandwidth every five seconds through /api/plugins/plex/live.
     refreshSeconds: 60,
     requiredAny: [['plex_url', 'plex_token'], ['url', 'apikey']],
@@ -414,7 +417,7 @@ export const plexPlugin: Plugin = {
       { key: 'plex_url',   label: 'Plex server address', type: 'url', required: false, section: 'Plex server',
         hint: 'Easiest: Sign in with Plex, above, fills in the address and token for you. By hand: like http://plex.local:32400; use https if Plex is on another network.' },
       { key: 'plex_token', label: 'Plex token', type: 'secret', required: false,
-        hint: 'In Plex Web, open any item, choose Get Info, then View XML: the token is the X-Plex-Token at the end of the address. Stored in the vault and only ever sent to the address above.' },
+        hint: 'In Plex Web, open any item, choose Get Info, then View XML: the token is the X-Plex-Token at the end of the address. Stored in the vault and only ever sent to the address above, and to plex.tv to list who the server is shared with.' },
       { key: 'url',    label: 'Tautulli address', type: 'url', required: false, section: 'Add Tautulli for richer stats (optional)',
         hint: 'Like http://tautulli.local:8181. Adds hours watched and stream quality. Plex works without it.' },
       { key: 'apikey', label: 'Tautulli API key', type: 'secret', required: false,

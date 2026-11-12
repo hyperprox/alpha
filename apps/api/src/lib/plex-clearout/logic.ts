@@ -9,11 +9,16 @@
 //      a minimum age; "idle" is played before, but not for N months;
 //    - keep rules take an item off both lists, and say how many each one kept.
 //
-//  Plex's history only goes back as far as the server's own records, so the
-//  report carries the date of the oldest play it saw, and the page says it.
+//  Plex's history only goes back as far as the server's own records, and has
+//  nothing for a title someone marked as watched. So "watched" also counts
+//  Plex's own view state, for every account (watchers.ts): a viewCount, any
+//  watched episode of a show, or a lastViewedAt. "Never watched" is none of
+//  that for anyone; "last played" is the latest of the history and every
+//  account's lastViewedAt.
 // =============================================================================
 
 import { artRef } from '../plex-art'
+import { hasWatched, type AccountView, type ViewMap, type WatchersStatus } from './watchers'
 
 export type MediaKind = 'movie' | 'show'
 export type ClearoutList = 'never' | 'idle'
@@ -56,7 +61,21 @@ export interface LibItem {
   thumb?:       string | null
 }
 
-export interface PlayStat { plays: number; viewers: number; lastPlayed: number | null }
+export interface PlayStat {
+  plays: number; viewers: number; lastPlayed: number | null
+  /** Accounts that watched it by the history or by Plex's view state (absent: history only, as `viewers`). */
+  watchers?: number
+}
+
+/** One account that has watched an item: played (in the history) or marked (Plex has it watched, the history has no play). */
+export interface Watcher { account: number; how: 'played' | 'marked' }
+
+export interface WatchStat extends PlayStat {
+  watchers: number
+  /** Accounts Plex has as watched with no play in the history: marked by hand, or watched before the history starts. */
+  marked:   number
+  who:      Watcher[]
+}
 
 export interface PlayIndex {
   byKey:   Map<string, Set<number>>
@@ -110,18 +129,49 @@ export function indexPlays(rows: PlayRow[]): PlayIndex {
   return { byKey, byTitle, rows, since }
 }
 
-/** Plays for one item: those under its ratingKey and those under its title, each play counted once. */
-export function playsFor(index: PlayIndex, item: Pick<LibItem, 'ratingKey' | 'title'>): PlayStat {
+function historyFor(index: PlayIndex, item: Pick<LibItem, 'ratingKey' | 'title'>): { plays: number; accounts: Set<number>; last: number | null } {
   const ids = new Set<number>([...(index.byKey.get(item.ratingKey) ?? []), ...(index.byTitle.get(normTitle(item.title)) ?? [])])
-  const viewers = new Set<number>()
+  const accounts = new Set<number>()
   let last: number | null = null
   for (const i of ids) {
     const r = index.rows[i]
-    viewers.add(Number(r.accountID))
+    accounts.add(Number(r.accountID))
     const at = Number(r.viewedAt) * 1000
     if (Number.isFinite(at) && (last === null || at > last)) last = at
   }
-  return { plays: ids.size, viewers: viewers.size, lastPlayed: last }
+  return { plays: ids.size, accounts, last }
+}
+
+/** Plays for one item: those under its ratingKey and those under its title, each play counted once. */
+export function playsFor(index: PlayIndex, item: Pick<LibItem, 'ratingKey' | 'title'>): PlayStat {
+  const h = historyFor(index, item)
+  return { plays: h.plays, viewers: h.accounts.size, lastPlayed: h.last }
+}
+
+/**
+ * Who has watched one item, by the history AND by every account's view state for it: an account counts once,
+ * as "played" when the history has a play by it, else as "marked". Last played is the latest of both.
+ */
+export function watchFor(index: PlayIndex, views: ViewMap | null | undefined, item: Pick<LibItem, 'ratingKey' | 'title'>): WatchStat {
+  const h = historyFor(index, item)
+  let last = h.last
+  const marked = new Set<number>()
+  const per: Map<number, AccountView> | undefined = views?.get(item.ratingKey)
+  for (const [acct, v] of per ?? []) {
+    if (!hasWatched(v)) continue
+    if (!h.accounts.has(acct)) marked.add(acct)
+    if (v.lastViewedAt !== null && (last === null || v.lastViewedAt > last)) last = v.lastViewedAt
+  }
+  const who: Watcher[] = [
+    ...[...h.accounts].sort((a, b) => a - b).map(account => ({ account, how: 'played' as const })),
+    ...[...marked].sort((a, b) => a - b).map(account => ({ account, how: 'marked' as const })),
+  ]
+  return { plays: h.plays, viewers: h.accounts.size, lastPlayed: last, watchers: who.length, marked: marked.size, who }
+}
+
+/** Names for the people who watched, for operators: the server's account name, else plex.tv's, else "account N". */
+export function watcherNames(who: Watcher[], names: Map<number, string> | null | undefined): Array<{ name: string; how: 'played' | 'marked' }> {
+  return who.map(w => ({ name: names?.get(w.account) ?? `account ${w.account}`, how: w.how }))
 }
 
 // ---------------------------------------------------------------------------
@@ -213,16 +263,41 @@ export function parseRules(opt: (key: string) => string | undefined): { rules: K
 }
 
 /**
+ * A title for keep-name matching: like normTitle, but the leading article is kept, and runs of single letters are
+ * joined, so "K*O*B*A", "K.O.B.A." and "KOBA" all read "koba", and "Bench & Gavel: NSU" reads "bench and gavel nsu".
+ */
+function nameKey(t: string | null | undefined): string {
+  return String(t ?? '')
+    .toLowerCase()
+    .normalize('NFKD').replace(/[̀-ͯ]/g, '')
+    .replace(/&/g, ' and ')
+    .replace(/\(\d{4}\)\s*$/, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\b(?:[a-z0-9] ){1,}[a-z0-9]\b/g, m => m.replace(/ /g, ''))
+}
+const ARTICLE = /^(the|a|an) /
+
+/**
  * A keep name matches a title by prefix, on whole words: "Night Desk" keeps "Night Desk: Harbour" but not "Night Deskwork".
- * A name of three characters or fewer must match the whole title, or "Up" would keep "Up in the Air" and
- * "It" every film starting with the word "it".
+ * Case and punctuation do not matter. A name of three characters or fewer must match the whole title, or "Up"
+ * would keep "Up in the Air" and "OR" every title starting with "Or". A name without a leading article also
+ * matches the title with one ("Night Desk" keeps "The Night Desk"); a name WITH one keeps only titles that start
+ * the same way ("The Spire" keeps "The Spire", never "Spire in the Mist"), or the bare title exactly.
  */
 export function nameMatches(name: string, title: string): boolean {
-  const n = normTitle(name)
-  const t = normTitle(title)
+  const n = nameKey(name)
+  const t = nameKey(title)
   if (!n || !t) return false
-  if (n.length <= 3) return t === n
-  return t === n || t.startsWith(n + ' ')
+  const prefix = (a: string, b: string) => b === a || b.startsWith(a + ' ')
+  if (ARTICLE.test(n)) {
+    const bare = n.replace(ARTICLE, '')
+    if (!bare) return false
+    if (bare.length <= 3) return t === n || t === bare
+    return prefix(n, t) || t === bare
+  }
+  if (n.length <= 3) return t === n || t.replace(ARTICLE, '') === n
+  return prefix(n, t) || prefix(n, t.replace(ARTICLE, ''))
 }
 
 const pathNorm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
@@ -255,7 +330,7 @@ export function monthsAgo(now: number, n: number): number {
 
 /** Which list an item is on, before keep rules: never watched, idle, or neither. */
 export function classify(stat: PlayStat, addedAt: number, now: number, c: Cutoffs): ClearoutList | null {
-  if (stat.plays === 0) return addedAt > 0 && addedAt <= monthsAgo(now, c.neverMinMonths) ? 'never' : null
+  if (stat.plays === 0 && !stat.watchers) return addedAt > 0 && addedAt <= monthsAgo(now, c.neverMinMonths) ? 'never' : null
   return stat.lastPlayed !== null && stat.lastPlayed < monthsAgo(now, c.idleMonths) ? 'idle' : null
 }
 
@@ -272,8 +347,17 @@ export interface ClearoutRow {
   section:      string
   sectionTitle: string
   sizeBytes:    number | null
+  /** Plays in the history. */
   plays:        number
+  /** Accounts with a play in the history. */
   viewers:      number
+  /** Accounts that watched it, by the history or by Plex's view state. */
+  watchers:     number
+  /** Of those, accounts Plex has as watched with no play in the history (marked by hand, or before the history). */
+  marked:       number
+  /** Who, by name: for operators and above only (the route takes it out for a viewer). */
+  watchedBy?:   Array<{ name: string; how: 'played' | 'marked' }>
+  /** The latest of the history and every account's lastViewedAt. */
   lastPlayed:   number | null
   addedAt:      number
   list:         ClearoutList
@@ -289,7 +373,7 @@ export interface ClearoutRow {
 
 export interface KindTotals {
   items:          number
-  /** Items with no play at all in the history. */
+  /** Items nobody has watched: no play in the history and no watched mark on any account. */
   unwatched:      number
   unwatchedShare: number
   never:          number
@@ -311,12 +395,16 @@ export interface ClearoutReport {
   rules:         KeepRules
   cutoffs:       Cutoffs
   notes:         string[]
+  /** Whose watched marks are counted, and whether a reading is running. */
+  watchState:    WatchersStatus
 }
 
 export function buildReport(input: {
   items: LibItem[]; plays: PlayRow[]; rules: KeepRules; cutoffs: Cutoffs; now: number
   sections: Array<{ key: string; title: string; kind: MediaKind }>
   arr: { sonarr: boolean; radarr: boolean }; sizesFrom: ClearoutReport['sizesFrom']; notes?: string[]
+  /** Every account's view state (the owner's and shared accounts'). Without it, only the history counts. */
+  views?: ViewMap; names?: Map<number, string>; watchState?: WatchersStatus
 }): ClearoutReport {
   const index = indexPlays(input.plays)
   const keptCount = new Map<KeepRuleId, { tv: number; movies: number }>()
@@ -326,9 +414,9 @@ export function buildReport(input: {
 
   for (const item of input.items) {
     const t = item.kind === 'show' ? totals.tv : totals.movies
-    const stat = playsFor(index, item)
+    const stat = watchFor(index, input.views, item)
     t.items++
-    if (stat.plays === 0) t.unwatched++
+    if (stat.watchers === 0) t.unwatched++
     const list = classify(stat, item.addedAt, input.now, input.cutoffs)
     if (!list) continue
     const rule = keptBy(item, input.rules, input.now)
@@ -343,7 +431,8 @@ export function buildReport(input: {
     rows.push({
       id: `${item.kind}:${item.ratingKey}`, kind: item.kind, title: item.title, year: item.year,
       section: item.section, sectionTitle: item.sectionTitle, sizeBytes: item.sizeBytes,
-      plays: stat.plays, viewers: stat.viewers, lastPlayed: stat.lastPlayed, addedAt: item.addedAt,
+      plays: stat.plays, viewers: stat.viewers, watchers: stat.watchers, marked: stat.marked,
+      watchedBy: watcherNames(stat.who, input.names), lastPlayed: stat.lastPlayed, addedAt: item.addedAt,
       list, removable: true, via: item.arr?.service ?? 'plex', art: artRef(item.thumb),
     })
   }
@@ -366,5 +455,6 @@ export function buildReport(input: {
     rules: input.rules,
     cutoffs: input.cutoffs,
     notes: input.notes ?? [],
+    watchState: input.watchState ?? { accounts: 1, shared: 0, reading: false, done: 0, total: 0, at: null, note: null, ownerOnly: true },
   }
 }

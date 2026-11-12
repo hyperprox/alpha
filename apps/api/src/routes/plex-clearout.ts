@@ -18,6 +18,10 @@
 //    POST /library/preview   operator: a show, season, episodes (or one version) or a movie; changes nothing
 //    POST /library/remove    operator with the master password re-entered, like /clearout/remove
 //
+//  Who watched what: every row carries how many accounts watched it (by the history or by Plex's own watched
+//  marks, lib/plex-clearout/watchers.ts). Their names (watchedBy) go to operators and up only; a viewer gets the
+//  counts. The per-account tokens those marks are read with never leave the API, and are dropped on lock.
+//
 //  Removal (both) goes through the Arr that manages an item, matched by tvdb or tmdb id, or else through Plex
 //  itself (lib/plex-remove/engine.ts). Each item is audited before and after, and read back.
 //
@@ -38,7 +42,13 @@ import { findPlugin } from '../plugins'
 import { FileNewStore, startNewWatcher, type NewStore, type NewWatcherDeps } from '../lib/plex-new'
 import type { NotifyEventInput } from '../lib/notify/types'
 import { publish } from '../lib/notify'
-import { isUnlocked } from '../lib/vault/state'
+import { isUnlocked, onLock } from '../lib/vault/state'
+
+/** Names of who watched what, or whose next episode it is, are for operators and up: a viewer gets the counts only. */
+export function forRole<T extends { watchedBy?: unknown; nextUpFor?: unknown }>(rows: T[], role: string | undefined): T[] {
+  if (hasRole((role ?? 'viewer') as any, 'operator')) return rows
+  return rows.map(r => { const { watchedBy: _w, nextUpFor: _n, ...rest } = r; return rest as T })
+}
 
 let shared: ClearoutService | null = null
 
@@ -61,7 +71,10 @@ export function clearoutService(): ClearoutService {
     now: () => Date.now(),
     audit: (action, details) => auditCredentialUse(action, 'plugin:plex', details),
   }
-  return (shared = new ClearoutService(deps))
+  shared = new ClearoutService(deps)
+  // Locked: every Plex account token the watched marks were read with is forgotten.
+  onLock(() => shared?.dropWatchers())
+  return shared
 }
 
 let sharedLibrary: LibraryService | null = null
@@ -190,7 +203,7 @@ export function buildPlexClearoutRoutes(deps: {
         // A forced re-read walks the whole library and history: operator and up, and at most once a minute.
         if (refresh && !hasRole(req.session?.role ?? 'viewer', 'operator')) return reply.status(403).send({ success: false, code: 'forbidden', error: 'Reading again needs the operator role.' })
         const { report } = await svc().report(refresh)
-        return { success: true, data: report }
+        return { success: true, data: { ...report, rows: forRole(report.rows, req.session?.role) } }
       } catch (e) { return fail(reply, e) }
     })
 
@@ -211,12 +224,15 @@ export function buildPlexClearoutRoutes(deps: {
       } catch (e) { return fail(reply, e) }
     })
 
-    fastify.get('/library', async (_req, reply) => {
-      try { return { success: true, data: await lib().list() } } catch (e) { return fail(reply, e) }
+    fastify.get('/library', async (req, reply) => {
+      try { const d = await lib().list(); return { success: true, data: { ...d, rows: forRole(d.rows, req.session?.role) } } } catch (e) { return fail(reply, e) }
     })
     fastify.get<{ Params: { key: string } }>('/library/show/:key', async (req, reply) => {
       if (!showLimiter.allow(req.session?.sid ?? 'anonymous')) return reply.status(429).send({ success: false, code: 'slow_down', error: 'Too many shows opened at once. Try again in a minute.' })
-      try { return { success: true, data: await lib().show(req.params.key) } } catch (e) { return fail(reply, e) }
+      try {
+        const d = await lib().show(req.params.key)
+        return { success: true, data: { ...d, seasons: d.seasons.map(se => ({ ...se, episodes: forRole(se.episodes, req.session?.role) })) } }
+      } catch (e) { return fail(reply, e) }
     })
     fastify.post<{ Body: Record<string, unknown> }>('/library/preview', async (req, reply) => {
       if (!hasRole(req.session?.role ?? 'viewer', 'operator')) return reply.status(403).send({ success: false, code: 'forbidden', error: 'This needs the operator role.' })
