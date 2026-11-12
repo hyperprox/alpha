@@ -59,7 +59,10 @@ export function PreviewModal({ serverId, p, onClose, onDone }: { serverId: strin
     })
   }
   return (
-    <Modal title={title} onClose={onClose}>
+    <Modal title={title} onClose={onClose} footer={<>
+      <GhostButton type="button" onClick={onClose}>Cancel</GhostButton>
+      <PrimaryButton type="button" style={{ background: 'var(--crit)' }} disabled={busy || !p.remove.length || (p.acks.includes('last-snapshot') && !last)} onClick={apply}>{busy ? 'Deleting…' : 'Delete'}</PrimaryButton>
+    </>}>
       <div className="flex flex-col gap-3">
         {p.keep && <p className="text-sm" style={{ color: 'var(--text-soft)' }}>Keep settings from {p.keep.from}: {Object.entries(p.keep.settings).map(([k, v]) => `${k.replace('keep-', '')} ${v}`).join(', ')}. This is PBS&apos;s own dry-run: exactly this goes.</p>}
         <p className="font-semibold" style={{ color: p.remove.length ? 'var(--crit)' : 'var(--text-soft)' }}>{p.remove.length ? `${p.remove.length} snapshot${p.remove.length === 1 ? '' : 's'} will be deleted for good` : 'Nothing would be removed.'}</p>
@@ -82,10 +85,6 @@ export function PreviewModal({ serverId, p, onClose, onDone }: { serverId: strin
         )}
         <small style={{ color: 'var(--text-dimmer)' }}>This preview is yours, works once, and expires {new Date(p.expiresAt).toLocaleTimeString()}. Space returns at the next clean-up.</small>
         {err && <Notice kind="error">{err}</Notice>}
-        <div className="flex justify-end gap-2">
-          <GhostButton type="button" onClick={onClose}>Cancel</GhostButton>
-          <PrimaryButton type="button" style={{ background: 'var(--crit)' }} disabled={busy || !p.remove.length || (p.acks.includes('last-snapshot') && !last)} onClick={apply}>{busy ? 'Deleting…' : 'Delete'}</PrimaryButton>
-        </div>
       </div>
       {modal}
     </Modal>

@@ -3,6 +3,8 @@
 // Creating a container or VM. Moved as it was from the old Infrastructure page; the page opens it with a type.
 
 import { useEffect, useState } from 'react'
+import { apiJson } from '@/lib/api'
+import { ConfirmOverride, confirmNeeded, type NamingSettingsView, type Proposal } from '@/components/catalogue/NamingProposal'
 
 interface PVENode { node: string; status: string }
 
@@ -26,6 +28,34 @@ export function CreateGuestModal({ type, nodes, onClose }: { type: 'lxc' | 'qemu
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState('')
   const [createSuccess, setCreateSuccess] = useState('')
+  // Settings → Naming & addresses: a container's ID and net0 are proposed from it (the server pings the address
+  // first), and DHCP under "never" or an address outside the range needs a typed confirmation. The API enforces it.
+  const [savedNaming, setSavedNaming] = useState<NamingSettingsView | null>(null)
+  const [proposal, setProposal] = useState<Proposal | null>(null)
+  const [touchedNet, setTouchedNet] = useState(false)
+  const [namingConfirm, setNamingConfirm] = useState('')
+  useEffect(() => {
+    void apiJson<{ data: { settings: NamingSettingsView | null } }>('/api/catalogue/wizard/naming').then(r => { if (r.ok) setSavedNaming(r.body?.data?.settings ?? null) })
+  }, [])
+  useEffect(() => {
+    if (createType !== 'lxc' || !createForm.node) return
+    let gone = false
+    setProposal(null)
+    void apiJson<{ data: Proposal }>('/api/catalogue/wizard/propose', 'POST', { node: createForm.node }).then(r => {
+      if (gone || !r.ok || !r.body?.data) return
+      setProposal(r.body.data)
+    })
+    return () => { gone = true }
+  }, [createType, createForm.node])
+  useEffect(() => {
+    if (!proposal || touchedNet) return
+    const p = proposal
+    const net0 = `name=eth0,bridge=${p.bridge || 'vmbr0'},ip=${p.ip}${p.ip !== 'dhcp' && p.gateway ? `,gw=${p.gateway}` : ''}${p.vlan ? `,tag=${p.vlan}` : ''}`
+    setCreateForm(f => ({ ...f, vmid: String(p.vmid), net0 }))
+  }, [proposal, touchedNet])
+  const net0Ip = /(?:^|,)ip=([^,]+)/.exec(createForm.net0)?.[1] ?? 'dhcp'
+  const overrideNeed = createType === 'lxc' ? confirmNeeded(savedNaming, net0Ip === 'dhcp' ? 'dhcp' : 'static', net0Ip) : null
+  useEffect(() => { setNamingConfirm('') }, [createForm.net0])
 
   const loadNodeData = async (node: string) => {
     setNodeLoading(true)
@@ -103,7 +133,7 @@ export function CreateGuestModal({ type, nodes, onClose }: { type: 'lxc' | 'qemu
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ node: createForm.node, params }),
+        body: JSON.stringify({ node: createForm.node, params, ...(overrideNeed ? { namingConfirm } : {}) }),
       }).then(r=>r.json())
       if (res.success) {
         setCreateSuccess(`${createType.toUpperCase()} ${createForm.vmid} created successfully!`)
@@ -127,7 +157,7 @@ export function CreateGuestModal({ type, nodes, onClose }: { type: 'lxc' | 'qemu
       {/* Create Modal */}
       {showCreate && (
         <div className="fixed inset-0 z-50 flex items-center justify-center" style={{background:'var(--scrim)',padding:'16px'}}>
-          <div className="rounded-xl border p-6" style={{background:'var(--surface)',borderColor:'var(--border-soft)',maxHeight:'90vh',overflowY:'auto',width:'100%',maxWidth:'480px'}}>
+          <div className="rounded-xl border p-6" style={{background:'var(--surface)',borderColor:'var(--border-soft)',maxHeight:'calc(100dvh - 32px)',overflowY:'auto',overscrollBehavior:'contain',width:'100%',maxWidth:'480px'}}>
             <div className="flex items-center justify-between mb-5">
               <div className="flex items-center gap-3">
                 <div className="w-1 h-5 rounded-full" style={{background: createType==='lxc'?'var(--accent)':'var(--violet)'}}/>
@@ -154,7 +184,7 @@ export function CreateGuestModal({ type, nodes, onClose }: { type: 'lxc' | 'qemu
               {/* VM ID */}
               <div>
                 <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>VM ID</label>
-                <input style={FIELD} value={createForm.vmid} onChange={e=>setCreateForm(f=>({...f,vmid:e.target.value}))} placeholder="100"/>
+                <input style={FIELD} value={createForm.vmid} onChange={e=>{ setTouchedNet(true); setCreateForm(f=>({...f,vmid:e.target.value})) }} placeholder="100"/>
               </div>
 
               {/* Hostname / Name */}
@@ -232,7 +262,13 @@ export function CreateGuestModal({ type, nodes, onClose }: { type: 'lxc' | 'qemu
                   {/* Network */}
                   <div>
                     <label className="text-sm mb-1 block" style={{color:'var(--text-muted)'}}>Network (net0)</label>
-                    <input style={FIELD} value={createForm.net0} onChange={e=>setCreateForm(f=>({...f,net0:e.target.value}))}/>
+                    <input style={FIELD} value={createForm.net0} onChange={e=>{ setTouchedNet(true); setCreateForm(f=>({...f,net0:e.target.value})) }}/>
+                    {proposal && (
+                      <p className="text-xs mt-1" style={{color: proposal.ip === 'dhcp' ? 'var(--warn)' : 'var(--text-muted)'}}>
+                        {proposal.ip === 'dhcp' ? `Proposed: CT ${proposal.vmid}, DHCP. ${proposal.warnings[0] ?? ''}` : `Proposed: CT ${proposal.vmid} · ${proposal.ip.split('/')[0]} (${proposal.label})`}
+                        {touchedNet && <> · <button type="button" className="underline" onClick={() => setTouchedNet(false)}>use it</button></>}
+                      </p>
+                    )}
                   </div>
                   {/* Password */}
                   <div>
@@ -263,6 +299,7 @@ export function CreateGuestModal({ type, nodes, onClose }: { type: 'lxc' | 'qemu
               )}
 
               {/* Error / Success */}
+              {overrideNeed && <ConfirmOverride need={overrideNeed} value={namingConfirm} onChange={setNamingConfirm} inputStyle={FIELD} />}
               {createError && <div className="text-sm px-3 py-2 rounded" style={{background:'color-mix(in srgb, var(--crit) 8%, transparent)',border:'1px solid color-mix(in srgb, var(--crit) 19%, transparent)',color:'var(--crit)'}}>{createError}</div>}
               {createSuccess && <div className="text-sm px-3 py-2 rounded" style={{background:'color-mix(in srgb, var(--good) 8%, transparent)',border:'1px solid color-mix(in srgb, var(--good) 19%, transparent)',color:'var(--good)'}}>{createSuccess}</div>}
             </div>

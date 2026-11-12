@@ -4,8 +4,8 @@
 // Barlow text, IBM Plex Mono labels; navy ground, teal accent). Kept in this folder so the panel can be
 // mounted by another page without reaching into another feature's components.
 
-import { useEffect } from 'react'
 import { Panel as KitPanel, Pill, styles } from '@/components/visual/kit'
+import { ModalFrame } from '@/components/layout/ModalFrame'
 
 export const mix = (c: string, pct: number) => `color-mix(in srgb, ${c} ${pct}%, transparent)`
 
@@ -56,24 +56,17 @@ export function Switch({ on, onChange, label, disabled }: { on: boolean; onChang
 }
 
 export function Dialog({ title, onClose, children, wide }: { title: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', h)
-    return () => window.removeEventListener('keydown', h)
-  }, [onClose])
   return (
-    <div className="fixed inset-0 z-50 flex items-stretch sm:items-center justify-center sm:p-6" style={{ background: 'var(--scrim)', backdropFilter: 'blur(4px)' }}
-      onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
-      <div role="dialog" aria-modal="true" aria-label={title}
-        className={`flex w-full ${wide ? 'max-w-3xl' : 'max-w-xl'} flex-col overflow-hidden border sm:rounded-xl`}
-        style={{ background: 'var(--surface-raised)', borderColor: 'var(--border-soft)', maxHeight: '100dvh' }}>
+    <ModalFrame label={title} onClose={onClose} closeOnScrim z="z-50" width={wide ? 'sm:max-w-3xl' : 'sm:max-w-xl'}
+      frameStyle={{ borderColor: 'var(--border-soft)', boxShadow: 'none' }}
+      header={
         <div className="flex items-start justify-between gap-3 border-b px-4 sm:px-6 py-4" style={{ borderColor: 'var(--border-soft)' }}>
           <h2 className="font-display text-[24px] font-bold leading-tight" style={{ color: 'var(--text-bright)' }}>{title}</h2>
           <button onClick={onClose} aria-label="Close" className="px-2 text-lg" style={{ color: 'var(--text-dimmer)' }}>✕</button>
         </div>
-        <div className="flex-1 space-y-4 overflow-y-auto px-4 sm:px-6 py-5">{children}</div>
-      </div>
-    </div>
+      }>
+      {children}
+    </ModalFrame>
   )
 }
 

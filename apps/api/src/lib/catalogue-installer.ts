@@ -31,6 +31,11 @@ import { setCredential, setCredentials, getProviderCredentials, vaultWritable, d
 import { saveSettings, getSettings } from './plugin-host'
 import { PLUGINS } from '../plugins'
 import { wizardStore } from './catalogue-store'
+import { auditCredentialUse } from './audit'
+import {
+  validateNaming, detectConvention, pickNext, managementFallback, namingPolicy, takenAddresses, schemeLabel, bareIp, readSavedNaming, NAMING_ID,
+  type NamingSettings, type Detection,
+} from './naming'
 import { pbsSetupDeps, pbsSetupNodeRunner } from './pbs/setup-deps'
 import { PBS_SETUP_STEPS, pbsPreviewChecks, runPbsSetup, scriptEnv as pbsScriptEnv, type SetupDeps as PbsSetupDeps } from './pbs/catalogue'
 import { bindMountpoint, cleanNfsSource, mountScript, unmountScript, DATASTORE_BASE } from './pbs/nfs'
@@ -234,9 +239,9 @@ export function persistJob(job: InstallJob): Promise<void> {
 export const installMark = (jobId: string) => `hyperprox-install: ${jobId}`
 
 /** net0 for a plan: DHCP, or the static address with its gateway, always behind the Proxmox firewall. */
-export function planNet0(plan: Pick<InstallPlan, 'bridge' | 'ip' | 'gateway'>): string {
+export function planNet0(plan: Pick<InstallPlan, 'bridge' | 'ip' | 'gateway' | 'vlan'>): string {
   const ip = plan.ip === 'dhcp' ? 'ip=dhcp' : `ip=${plan.ip}${plan.gateway ? `,gw=${plan.gateway}` : ''}`
-  return `name=eth0,bridge=${plan.bridge},${ip},firewall=1`
+  return `name=eth0,bridge=${plan.bridge},${ip},firewall=1${plan.vlan ? `,tag=${plan.vlan}` : ''}`
 }
 
 /**
@@ -676,8 +681,15 @@ export interface InstallPlan {
   /** 'dhcp', or a static address in CIDR form. */
   ip:       string
   gateway?: string
+  /** 802.1Q tag on the guest's interface, from the naming settings or the person. */
+  vlan?:    number
   /** Space-separated DNS servers; empty uses the node's. */
   dns?:     string
+  /**
+   * What the person typed to go against the naming settings: the word DHCP, or the address itself when it is
+   * outside the range. Checked again at apply, and the override is written to the audit log there.
+   */
+  namingConfirm?: string
   /** Resolved when the preview is made: the template volume the container is created from. */
   template: string
   /** The template is not on the node yet and is downloaded first. */
@@ -726,6 +738,11 @@ export interface WizardDeps extends InstallDeps {
   ping(node: string, ip: string): Promise<boolean | null>
   readRule(): Promise<VmidRule>
   saveRule(rule: VmidRule): Promise<void>
+  /** The saved naming settings, or null when none are saved. */
+  readNaming(): Promise<NamingSettings | null>
+  saveNaming(s: NamingSettings): Promise<void>
+  /** An override of the naming settings, at apply. */
+  audit(action: string, resource: string, details: Record<string, unknown>): Promise<void>
   now(): number
 }
 
@@ -755,20 +772,27 @@ export function parseRule(raw: unknown): VmidRule {
 function wizardDeps(over: Partial<WizardDeps> = {}): WizardDeps {
   return {
     ...realDeps(),
-    ping: async (node, ip) => {
-      if (!parseCidr(`${ip}/32`)) return null
+    ping: async (node, raw) => {
+      // Only the normalised address (four octets, nothing else) ever reaches the command line.
+      const ip = parseCidr(`${String(raw ?? '').trim()}/32`)?.ip
+      if (!ip || !/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) return null
       const cred = await nodeCredential(node).catch(() => null)
       if (!cred) return null
       const host = await nodeAddress(pve(), node).catch(() => '')
       if (!host) return null
-      // The address is checked to be four octets above; nothing else reaches the command line.
-      const r = await execOnNode({ host, cred, command: `ping -c 2 -W 1 ${ip} >/dev/null 2>&1 && echo up || echo down`, timeoutMs: 15_000 })
+      // A device that drops pings still answers ARP, so after the ping the node's neighbour table is asked too.
+      const command = `if ping -c 2 -W 1 ${ip} >/dev/null 2>&1; then echo up; ` +
+        `elif ip neigh show ${ip} 2>/dev/null | grep -q lladdr && ! ip neigh show ${ip} | grep -Eq 'FAILED|INCOMPLETE'; then echo up; else echo down; fi`
+      const r = await execOnNode({ host, cred, command, timeoutMs: 15_000 })
         .catch(() => null)
       if (!r) return null
       return /\bup\b/.test(r.output) ? true : /\bdown\b/.test(r.output) ? false : null
     },
     readRule: async () => parseRule((await getProviderCredentials(RULE_CATEGORY, RULE_PROVIDER).catch(() => ({} as Record<string, string>)))[RULE_KEY]),
     saveRule: async rule => setCredential(RULE_CATEGORY, RULE_PROVIDER, RULE_KEY, JSON.stringify(rule), false),
+    readNaming: readSavedNaming,
+    saveNaming: async s => wizardStore().put({ id: NAMING_ID, kind: 'setting', owner: s.updatedBy ?? '', data: s, expiresAt: null }),
+    audit: (action, resource, details) => auditCredentialUse(action, resource, details),
     now: Date.now,
     ...over,
   }
@@ -1075,8 +1099,8 @@ const DNS_LIST = /^\s*\d{1,3}(\.\d{1,3}){3}(\s*[ ,]\s*\d{1,3}(\.\d{1,3}){3})*\s*
 /** Every value of a plan held against the cluster as it is now. Errors refuse; warnings are shown. */
 export function checkPlan(
   input: WizardInput & { addressAck?: string[] }, recipe: CatalogueRecipe, view: ClusterView,
-  live: LiveRead, pinged: boolean | null,
-): { errors: string[]; warnings: string[]; checks: string[]; unknowns: string[] } {
+  live: LiveRead, pinged: boolean | null, naming: NamingSettings | null = null,
+): { errors: string[]; warnings: string[]; checks: string[]; unknowns: string[]; override?: { kind: 'dhcp' | 'outside-range'; value: string } } {
   const errors: string[] = [], warnings: string[] = [], checks: string[] = [], unknowns: string[] = []
   const int = (x: unknown) => typeof x === 'number' && Number.isSafeInteger(x)
   const node = view.nodes.find(n => n.node === input.node)
@@ -1174,11 +1198,18 @@ export function checkPlan(
       if (!a.problems.length) checks.push(...addressChecks(c.ip, input.node, view, live, pinged))
     }
   }
+  if (input.vlan !== undefined && (!Number.isInteger(input.vlan) || input.vlan < 1 || input.vlan > 4094)) {
+    errors.push('The VLAN tag must be a whole number from 1 to 4094.')
+  }
+  // The naming settings: DHCP and an address outside the range need the person's typed confirmation.
+  const policy = namingPolicy(naming, { node: input.node, vmid: Number(input.vmid), ip: String(input.ip ?? ''), bridge: input.bridge }, input.namingConfirm)
+  errors.push(...policy.errors); warnings.push(...policy.warnings)
+  if (naming && input.ip !== 'dhcp' && !policy.errors.length && !policy.override) checks.push(`${bareIp(String(input.ip))} is inside your range ${naming.rangeStart}–${naming.rangeEnd}.`)
   if (recipe.options?.length) errors.push(...checkOptions(recipe, input.options).errors)
   if (input.dns && !DNS_LIST.test(input.dns)) errors.push(`"${input.dns}" is not a list of IPv4 DNS servers.`)
   else if (input.dns && input.dns.split(/[\s,]+/).some(d => !parseCidr(`${d}/32`))) errors.push(`"${input.dns}" holds an address that is not IPv4.`)
 
-  return { errors, warnings, checks: checks.filter(Boolean), unknowns }
+  return { errors, warnings, checks: checks.filter(Boolean), unknowns, ...(policy.override ? { override: policy.override } : {}) }
 }
 
 /** The template to create from on `node`: the newest Debian (then Ubuntu) there, or one to download. */
@@ -1223,8 +1254,8 @@ export async function previewInstall(
   if (await store.count('preview') >= PREVIEW_CAP) {
     return { errors: [`There are already ${PREVIEW_CAP} open install previews. Wait ten minutes for them to expire.`], warnings: [], checks: [] }
   }
-  const { view, live, pinged } = await freshRead(input, deps)
-  const r = checkPlan(input, recipe, view, live, pinged)
+  const { view, live, pinged, naming } = await freshRead(input, deps)
+  const r = checkPlan(input, recipe, view, live, pinged, naming)
   // The Arr Stack: its apps, its library (looked at from the node), its VPN login (to the vault) and public names.
   const arr = recipe.stack === 'arr' && !r.errors.length ? await arrPreview({
     node: input.node, vmid: input.vmid, owner, storage: input.storage, diskGb: input.diskGb, values: checkOptions(recipe, input.options).values,
@@ -1267,6 +1298,8 @@ export async function previewInstall(
       storage: input.storage, bridge: input.bridge, ip: input.ip,
       ...(input.ip !== 'dhcp' && input.gateway ? { gateway: input.gateway } : {}),
       ...(input.dns ? { dns: input.dns.trim().split(/[\s,]+/).join(' ') } : {}),
+      ...(input.vlan ? { vlan: input.vlan } : {}),
+      ...(r.override && input.namingConfirm ? { namingConfirm: input.namingConfirm.trim() } : {}),
       ...(input.ip !== 'dhcp' && input.addressAck?.length ? { addressAck: [...input.addressAck].sort() } : {}),
       ...(recipe.options?.length ? { options: checkOptions(recipe, input.options).values } : {}),
       ...(publish ? { publish } : {}),
@@ -1285,7 +1318,9 @@ async function freshRead(input: Pick<WizardInput, 'node' | 'ip'>, deps: WizardDe
   const live: LiveRead = staticIp ? await readLiveAddresses(deps.client, view.guests) : { seen: [], unknown: [] }
   notePartial(view, live)
   const pinged = staticIp ? await deps.ping(input.node, staticIp.ip).catch(() => null) : null
-  return { view, live, pinged }
+  // Settings that cannot be read are not "no settings": the plan is refused rather than let DHCP through.
+  const naming = await deps.readNaming()
+  return { view, live, pinged, naming }
 }
 
 export async function getPreview(id: string, owner: string): Promise<Preview | undefined> {
@@ -1315,8 +1350,8 @@ export async function applyPreview(id: string, owner: string, over: Partial<Wiza
     const plan = p.plan
     const recipe = findRecipe(plan.recipeId)!
 
-    const { view, live, pinged } = await freshRead(plan, deps)
-    const r = checkPlan(plan, recipe, view, live, pinged)
+    const { view, live, pinged, naming } = await freshRead(plan, deps)
+    const r = checkPlan(plan, recipe, view, live, pinged, naming)
     if (recipe.firstRun.kind === 'env-admin' && !await deps.vaultOpen()) r.errors.push('The vault is locked, so the generated admin password could not be kept.')
     if (plan.publish) {
       // The name is checked again: a record or a proxy change since the preview refuses the apply.
@@ -1333,6 +1368,10 @@ export async function applyPreview(id: string, owner: string, over: Partial<Wiza
       throw new WizardRefusal('The cluster changed since the preview, so nothing was created.', 'changed', r.errors)
     }
     if (CREATING.has(plan.vmid)) throw new WizardRefusal('Another install is creating that ID now.', 'changed', [`ID ${plan.vmid} is being created.`])
+    if (r.override) {
+      // Going against the naming settings is allowed, typed and recorded: who, what, and for which guest.
+      await deps.audit('naming.override', `ct/${plan.vmid}`, { kind: r.override.kind, value: r.override.value, node: plan.node, owner, recipe: plan.recipeId })
+    }
     CREATING.add(plan.vmid)
 
     const job = newJob(recipe, owner, `Create CT ${plan.vmid} (${plan.hostname}) on ${plan.node}`, plan.publish)
@@ -1555,6 +1594,114 @@ export async function saveVmidRule(raw: unknown, over: Partial<WizardDeps> = {})
 export async function wizardView(over: Partial<WizardDeps> = {}) {
   const deps = wizardDeps(over)
   return { deps, view: await readCluster(deps.client, async n => Boolean(await deps.credential(n))) }
+}
+
+// ---------------------------------------------------------------------------
+//  Naming and addresses: the saved settings, what the cluster already does, and the next ID and address
+// ---------------------------------------------------------------------------
+
+export const readNamingSettings = (over: Partial<WizardDeps> = {}) => wizardDeps(over).readNaming()
+
+/** Check and save the naming settings. The route has already asked for the master password again. */
+export async function saveNamingSettings(raw: unknown, who: string, over: Partial<WizardDeps> = {}): Promise<{ settings?: NamingSettings; errors: string[] }> {
+  const deps = wizardDeps(over)
+  const v = validateNaming(raw)
+  if (!v.settings) return v
+  const settings: NamingSettings = { ...v.settings, updatedAt: new Date(deps.now()).toISOString(), updatedBy: who }
+  await deps.saveNaming(settings)
+  await deps.audit('naming.saved', 'settings/naming', {
+    subnet: settings.subnet, range: `${settings.rangeStart}-${settings.rangeEnd}`, idScheme: settings.idScheme, dhcp: settings.dhcp, owner: who,
+  })
+  return { settings, errors: [] }
+}
+
+/** Does this cluster's numbering follow node + address? Read from the guests it has. */
+export function detectFromView(view: ClusterView): Detection {
+  return detectConvention(
+    view.guests.map(g => ({ vmid: g.vmid, node: g.node, config: g.config })),
+    view.nodes.map(n => ({ node: n.node, address: n.address, bridges: n.bridges })),
+  )
+}
+
+export type NamingSource = 'settings' | 'detected' | 'subnet' | 'none'
+
+export interface Proposal {
+  source:   NamingSource
+  /** "CT 3xx ↔ 192.0.2.2xx (your numbering)", or what the address is based on. */
+  label:    string
+  vmid:     number
+  /** A static address with its prefix, or 'dhcp' when none could be picked. */
+  ip:       string
+  gateway?: string
+  bridge:   string
+  dns:      string[]
+  vlan?:    number
+  /** true: nothing answered a ping or ARP from the node. null: not asked. */
+  quiet?:   boolean | null
+  /** Shown beside the proposal: why it is DHCP, or what to look at. */
+  warnings: string[]
+  /** The settings it came from: saved, detected, or the node's own subnet. Absent with 'none'. */
+  settings?: NamingSettings
+  detection: Pick<Detection, 'verdict' | 'matching' | 'considered' | 'total'>
+  skipped:  Array<{ ip: string; why: string }>
+}
+
+/**
+ * The ID and address to offer for a new guest on `node`. Saved settings win; with none, a convention the guests
+ * already follow; with none, a fixed address at the top of the node's own subnet; and only when nothing can be
+ * picked safely, DHCP with a warning. Every candidate address is in no guest config (stopped guests included),
+ * no running guest reports it, it is no node's and not the gateway, and (with `ping`) nothing answers it.
+ */
+export async function proposeFor(
+  node: string, view: ClusterView, live: LiveRead, saved: NamingSettings | null,
+  ping?: (node: string, ip: string) => Promise<boolean | null>,
+): Promise<Proposal> {
+  const detection = detectFromView(view)
+  const det = { verdict: detection.verdict, matching: detection.matching, considered: detection.considered, total: detection.total }
+  const n = view.nodes.find(x => x.node === node)
+  const nextId = nextIdOf(view)
+  const firstBridge = n?.bridges.find(b => b.gateway)?.iface ?? n?.bridges[0]?.iface ?? ''
+  const base: Proposal = { source: 'none', label: 'next free ID', vmid: nextId, ip: 'dhcp', bridge: firstBridge, dns: [], warnings: [], detection: det, skipped: [] }
+
+  let source: NamingSource = 'none'
+  let settings: NamingSettings | null = null
+  if (saved) { settings = saved; source = 'settings' }
+  else if (detection.verdict === 'follows' && detection.proposal) { settings = detection.proposal; source = 'detected' }
+  else if (n) { settings = managementFallback({ node: n.node, address: n.address, bridges: n.bridges }); if (settings) source = 'subnet' }
+  if (!settings) {
+    base.warnings.push(view.partial.includes('cluster-status')
+      ? 'The node\'s own address could not be read, so no fixed address could be picked safely. DHCP may hand out an address on another network.'
+      : 'No naming settings are saved and no fixed address could be picked safely, so this uses DHCP. DHCP may hand out an address on another network; set a range under Settings → Naming & addresses.')
+    return base
+  }
+
+  const unread = view.partial.filter(p => p.startsWith('config:'))
+  const taken = takenAddresses({
+    configs: view.guests.map(g => ({ config: g.config })), live: live.seen,
+    nodes: view.nodes.map(x => ({ address: x.address })),
+  })
+  const ctx = { node, usedIds: usedIds(view), nextId, taken, ...(ping ? { ping: (ip: string) => ping(node, ip) } : {}) }
+  let r = await pickNext(settings, ctx)
+  const warnings: string[] = []
+  if (!r.pick && settings.idScheme === 'node-ip' && r.problem && !Number.isInteger(settings.nodeIndex[node])) {
+    // A node with no index: an address from the range, and the next free ID.
+    warnings.push(r.problem)
+    r = await pickNext({ ...settings, idScheme: 'next-free' }, ctx)
+  }
+  if (!r.pick) {
+    return { ...base, source, settings, skipped: r.skipped, warnings: [...warnings, `${r.problem ?? 'No address could be picked.'} This uses DHCP, which may hand out an address on another network.`] }
+  }
+  if (unread.length) warnings.push(`HyperProx could not read every guest's settings (${unread.length} unread), so the address must be checked again before install.`)
+  if (live.unknown.length) warnings.push(`${live.unknown.length} running guest${live.unknown.length === 1 ? '' : 's'} could not be asked which address they hold.`)
+  const bridge = n?.bridges.some(b => b.iface === settings!.bridge) ? settings.bridge : firstBridge
+  if (bridge !== settings.bridge) warnings.push(`${node} has no bridge ${settings.bridge}; ${bridge || 'none'} is offered instead.`)
+  const label = source === 'settings' ? `${schemeLabel(settings, node)} (your numbering)`
+    : source === 'detected' ? `${schemeLabel(settings, node)} (follows your numbering: ${detection.matching} of ${detection.considered} guests with a fixed address)`
+      : `a free address at the top of ${settings.subnet}, ${node}'s own network`
+  return {
+    source, label, vmid: r.pick.vmid, ip: r.pick.ip, gateway: r.pick.gateway || undefined, bridge, dns: r.pick.dns,
+    ...(r.pick.vlan ? { vlan: r.pick.vlan } : {}), quiet: r.pick.quiet, warnings, settings, detection: det, skipped: r.skipped,
+  }
 }
 
 /** How long the identity step reuses one read of the cluster while the person types. */

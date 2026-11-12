@@ -100,7 +100,7 @@ function Modal({ title, eyebrow, onClose, children, wide }: { title: string; eye
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'var(--scrim)' }} onClick={onClose}>
       <div className="rounded-lg border w-full overflow-y-auto" onClick={e => e.stopPropagation()}
-        style={{ maxWidth: wide ? 720 : 560, maxHeight: '90vh', background: 'var(--surface)', borderColor: 'var(--border-strong)' }}>
+        style={{ maxWidth: wide ? 720 : 560, maxHeight: 'calc(100dvh - 32px)', overscrollBehavior: 'contain', background: 'var(--surface)', borderColor: 'var(--border-strong)' }}>
         <div className="flex items-start justify-between p-5 border-b" style={{ borderColor: 'var(--border-soft)' }}>
           <div>
             {eyebrow && <div className="font-mono uppercase mb-1" style={{ fontSize: 11, letterSpacing: '0.14em', color: 'var(--accent)' }}>{eyebrow}</div>}

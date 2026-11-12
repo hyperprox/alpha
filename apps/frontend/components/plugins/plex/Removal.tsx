@@ -35,7 +35,10 @@ export function RemovalModal({ plan, results, busy, error, extra, onRemove, onCl
   const go = plan.items.filter(i => !i.blocked)
   const held = plan.items.filter(i => i.blocked)
   return (
-    <Modal title={results ? 'Removal finished' : 'Remove for good?'} onClose={onClose}>
+    <Modal title={results ? 'Removal finished' : 'Remove for good?'} onClose={onClose} footer={!results ? <>
+      <button className={c.btn} onClick={onClose}>Cancel</button>
+      <button className={`${c.btn} ${c.btnDanger}`} disabled={!go.length || busy} onClick={onRemove}>{busy ? 'Removing…' : `Remove ${go.length}`}</button>
+    </> : undefined}>
       {!results ? (
         <div className="space-y-4">
           <p className="text-sm" style={{ color: 'var(--text-soft)' }}>
@@ -68,10 +71,6 @@ export function RemovalModal({ plan, results, busy, error, extra, onRemove, onCl
           </p>
           {plan.skipped.length > 0 && <Notice kind="warn">{plan.skipped.length} left out: {plan.skipped.map(x => x.reason).slice(0, 3).join(' ')}</Notice>}
           {error && <Notice kind="error">{error}</Notice>}
-          <div className="flex gap-2 justify-end">
-            <button className={c.btn} onClick={onClose}>Cancel</button>
-            <button className={`${c.btn} ${c.btnDanger}`} disabled={!go.length || busy} onClick={onRemove}>{busy ? 'Removing…' : `Remove ${go.length}`}</button>
-          </div>
           {busy && <BusyNote>Removing one at a time, and checking each one is gone.</BusyNote>}
         </div>
       ) : (

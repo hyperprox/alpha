@@ -259,3 +259,14 @@ body {
   --remote:     #9a6200;
   --remote-ink: #ffffff;
 }
+
+/* ── Modal frames (components/layout/ModalFrame.tsx) ──────────────────────────
+   A dialog never grows past the screen: its header and footer stay put and the
+   body between them scrolls. On a phone it is a full-screen sheet; from 640 px
+   up it floats with a 24 px margin. 100vh first for browsers without dvh. */
+.hx-modal { height: 100vh; height: 100dvh; max-height: 100vh; max-height: 100dvh; }
+.hx-modal-foot { padding-bottom: max(12px, env(safe-area-inset-bottom, 0px)); }
+@media (min-width: 640px) {
+  .hx-modal { height: auto; max-height: calc(100vh - 48px); max-height: calc(100dvh - 48px); }
+  .hx-modal-foot { padding-bottom: 12px; }
+}

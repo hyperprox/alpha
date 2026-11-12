@@ -13,6 +13,7 @@ import { getProviderCredentials } from '../credentials'
 import { nodeCredential } from '../node-exec'
 import { bridgeInfo, configAddresses, configGpuKind, pciGpus, type BridgeFact } from '../wizard-placement'
 import { distroOf, type Distro } from '../install-script'
+import { readSavedNaming, type NamingSettings } from '../naming'
 
 // The client of the cluster this request is for (home unless a remote cluster's context is set), resolved at
 // each call: lib/pve-env.ts. A call that cannot build one (locked, not configured) rejects, and is a failed source.
@@ -89,6 +90,10 @@ export interface TemplateFacts {
   zoneProvider?: Record<string, string>
   /** Sources that could not be read; their facts are empty, which must not pass as "nothing there". */
   partial: string[]
+  /** Settings → Naming & addresses, when saved. Every guest the assistant plans follows it. */
+  naming?: NamingSettings | null
+  /** Each node's own address (from /cluster/status), so no guest is offered one. */
+  nodeAddresses?: Record<string, string>
 }
 export interface FactsDeps {
   pve: Pick<ProxmoxClient, 'fetchStrict'>
@@ -98,6 +103,8 @@ export interface FactsDeps {
   hasLogin(node: string): Promise<boolean>
   /** Names in `zone` holding an A, AAAA or CNAME record, relative to the zone ('@' at the apex). */
   records(zone: string): Promise<string[]>
+  /** The saved naming settings, or null. */
+  naming?(): Promise<NamingSettings | null>
   /** Zone → the provider serving it. Optional: a stand-in without it just leaves the provider out. */
   zoneProviders?(): Promise<Record<string, string>>
 }
@@ -139,6 +146,7 @@ function defaultDeps(): FactsDeps {
       return [...new Set((all ?? []).filter((r: any) => ['A', 'AAAA', 'CNAME'].includes(r?.type))
         .map((r: any) => String(r.name ?? '').toLowerCase()).filter(Boolean))]
     },
+    naming: readSavedNaming,
   }
 }
 
@@ -247,9 +255,19 @@ export async function gatherTemplateFacts(over: Partial<FactsDeps> = {}): Promis
     else records[zone] = r.map(n => String(n).toLowerCase())
   }
 
+  // Naming settings that cannot be read are a failed source, never "none saved": that would let DHCP through.
+  let naming: NamingSettings | null = null
+  if (deps.naming) {
+    try { naming = await deps.naming() } catch { partial.push('naming') }
+  }
+  const nodeAddresses: Record<string, string> = {}
+  for (const r of (await client.fetchStrict<any[]>('/cluster/status').catch(() => null)) ?? []) {
+    if (r?.type === 'node' && r.name && r.ip) nodeAddresses[r.name] = r.ip
+  }
   const zoneProvider = deps.zoneProviders ? await deps.zoneProviders().catch(() => undefined) : undefined
 
   return {
+    naming, nodeAddresses,
     nodes, storages, templates, downloadable, guests, records,
     ...(zoneProvider ? { zoneProvider } : {}),
     nextVmid: nextR.status === 'fulfilled' ? Number(nextR.value) : 0,

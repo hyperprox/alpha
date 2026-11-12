@@ -13,9 +13,11 @@
 //  earlier step filled in from it; Install still asks for the master password.
 // =============================================================================
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { apiJson } from '@/lib/api'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
+import { ModalFrame } from '@/components/layout/ModalFrame'
+import { ConfirmOverride, NamingCallout, confirmNeeded, useProposal, type NamingSettingsView, type Proposal } from '@/components/catalogue/NamingProposal'
 import { FlowPipeline, Pill, Tiles, styles } from '@/components/visual/kit'
 import type { RecipeOption, WizardRecipe } from '@/components/catalogue/InstallWizard'
 
@@ -35,7 +37,10 @@ interface NodeRow {
   rootStorages: Array<{ storage: string; type: string; shared: boolean; freeGb: number }>
   verdict: { eligible: boolean; why: string[]; storage: { storage: string } | null }
 }
-interface Placement { nodes: NodeRow[]; recommendation: { node: string; reason: string } | null; nextVmid: number; partial: string[] }
+interface Placement {
+  nodes: NodeRow[]; recommendation: { node: string; reason: string } | null; nextVmid: number; partial: string[]
+  naming?: { settings: NamingSettingsView | null; detection: Proposal['detection'] }
+}
 interface Identity {
   suggestedVmid: number
   vmid?: { free: boolean; problem?: string }
@@ -95,6 +100,20 @@ export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes
   const [ip, setIp] = useState(''), [gateway, setGateway] = useState('')
   const [identity, setIdentity] = useState<Identity | null>(null)
   const [acked, setAcked] = useState(false)
+  const [dns, setDns] = useState(''), [vlan, setVlan] = useState<number | ''>('')
+  // The server's pick fills the ID and address in until the person changes one of them.
+  const [touchedNet, setTouchedNet] = useState(false)
+  const [namingConfirm, setNamingConfirm] = useState('')
+  const { proposal, loading: proposing, error: proposeError, refresh: repropose } = useProposal(node, step === 2 && !!placement)
+  const applyProposal = useCallback((p: Proposal) => {
+    setVmid(p.vmid)
+    if (p.bridge) setBridge(p.bridge)
+    if (p.ip === 'dhcp') setMode('dhcp')
+    else { setMode('static'); setIp(p.ip); setGateway(p.gateway ?? '') }
+    setDns(p.dns.join(' ')); setVlan(p.vlan ?? '')
+  }, [])
+  useEffect(() => { if (proposal && !touchedNet) applyProposal(proposal) }, [proposal, touchedNet, applyProposal])
+  useEffect(() => { setNamingConfirm('') }, [ip, mode])
 
   // Basics
   const [opts, setOpts] = useState<Record<string, string>>({})
@@ -187,6 +206,7 @@ export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes
   useEffect(() => { setAcked(false) }, [ip, mode, node])
 
   const unknownKeys = mode === 'static' ? identity?.ip?.unknownKeys ?? [] : []
+  const overrideNeed = confirmNeeded(placement?.naming?.settings, mode, ip)
 
   const canNext = useMemo(() => {
     if (step === 0) return Boolean(recipe)
@@ -196,11 +216,12 @@ export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes
       if (identity?.vmid && !identity.vmid.free) return false
       if (mode === 'static' && (!ip || (identity?.ip?.problems.length ?? 0) > 0)) return false
       if (unknownKeys.length && !acked) return false
+      if (overrideNeed && namingConfirm.trim().toUpperCase() !== overrideNeed.word.toUpperCase()) return false
       return true
     }
     if (step === 3) return missing.length === 0 && (!needsSmtpPassword || Boolean(smtpPassword))
     return true
-  }, [step, recipe, lanOnly, addrPlan, selected, storage, vmid, hostname, bridge, identity, mode, ip, unknownKeys, acked, missing, needsSmtpPassword, smtpPassword])
+  }, [step, recipe, lanOnly, addrPlan, selected, storage, vmid, hostname, bridge, identity, mode, ip, unknownKeys, acked, missing, overrideNeed, namingConfirm, needsSmtpPassword, smtpPassword])
 
   const makePreview = async () => {
     if (!recipe) return
@@ -211,6 +232,8 @@ export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes
     const r = await apiJson<{ data: Preview }>('/api/catalogue/wizard/preview', 'POST', {
       recipeId: recipe.id, node, vmid, hostname, cores, memoryMb, swapMb: Math.min(512, memoryMb), diskGb, storage, bridge,
       ip: mode === 'dhcp' ? 'dhcp' : ip, ...(mode === 'static' && gateway ? { gateway } : {}),
+      ...(dns.trim() ? { dns: dns.trim() } : {}), ...(vlan !== '' ? { vlan } : {}),
+      ...(overrideNeed ? { namingConfirm } : {}),
       ...(mode === 'static' && acked && unknownKeys.length ? { addressAck: unknownKeys } : {}),
       options: sent, ...(domain ? { publish: { zone, name: apex ? '@' : sub, instanceId: proxy } } : {}),
       ...(needsSmtpPassword && smtpPassword ? { ghostSmtpPassword: smtpPassword } : {}),
@@ -265,7 +288,9 @@ export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes
       setRecipe(rc); setOpts(Object.fromEntries(Object.entries(pl.options ?? {}).map(([k, v]) => [k, String(v)])))
       setCores(pl.cores); setMemoryMb(pl.memoryMb); setDiskGb(pl.diskGb)
       setNode(pl.node); setStorage(pl.storage); setVmid(pl.vmid); setHostname(pl.hostname); setBridge(pl.bridge)
+      setTouchedNet(true)
       if (pl.ip && pl.ip !== 'dhcp') { setMode('static'); setIp(pl.ip); if (pl.gateway) setGateway(pl.gateway) }
+      if (pl.dns) setDns(String(pl.dns)); if (pl.vlan) setVlan(Number(pl.vlan))
       if (pl.publish) { setLanOnly(false); setZone(pl.publish.zone); setApex(pl.publish.name === '@'); setSub(pl.publish.name === '@' ? '' : pl.publish.name); setProxy(pl.publish.instanceId) }
       else setLanOnly(true)
       setPreview({ previewId: pv.previewId, plan: pl, checks: pv.checks, warnings: pv.warnings })
@@ -277,9 +302,10 @@ export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes
   const field = styles.field
 
   return (
-    <div className="fixed inset-0 z-40 flex items-stretch sm:items-center justify-center sm:p-6" style={{ background: 'var(--scrim)', backdropFilter: 'blur(4px)' }}>
-      <div role="dialog" aria-modal="true" aria-label="New website" className={`${styles.card} flex w-full max-w-4xl flex-col overflow-hidden`}
-        style={{ maxHeight: '100dvh', padding: 0 }}>
+    <ModalFrame label="New website" escape={false}
+      frameClassName={styles.card} frameStyle={{ padding: 0 }}
+      after={reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const w = reconfirm; setReconfirm(null); void (w === 'apply' ? apply() : cleanup()) }} />}
+      header={<>
         <div className="flex items-start justify-between gap-3 border-b px-4 sm:px-6 py-4" style={{ borderColor: 'var(--border-soft)' }}>
           <div className="min-w-0">
             <p className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: 'var(--accent)' }}>New website · step {step + 1} of {STEPS.length}</p>
@@ -292,8 +318,15 @@ export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes
         <div className="px-4 sm:px-6 pt-3">
           <FlowPipeline label="Wizard steps" stages={STEPS.map((s, i) => ({ key: s, label: s, value: i < step ? '✓' : i + 1, state: i < step ? 'done' : i === step ? 'ok' : undefined }))} />
         </div>
-
-        <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-5 space-y-4">
+      </>}
+      footer={<>
+        {step < 5 ? <button type="button" className={styles.btn} onClick={() => (step === 0 ? onClose() : go(step - 1))} disabled={busy}>{step === 0 ? 'Cancel' : 'Back'}</button>
+          : <span />}
+        {step < 4 && <button type="button" className={`${styles.btn} ${styles.btnPri}`} onClick={() => go(step + 1)} disabled={!canNext}>Next</button>}
+        {step === 4 && !preview && !busy && <button type="button" className={`${styles.btn} ${styles.btnPri}`} onClick={() => void makePreview()}>Check again</button>}
+        {step === 4 && preview && <button type="button" className={`${styles.btn} ${styles.btnPri}`} onClick={() => void apply()} disabled={busy}>{busy ? 'Starting…' : 'Install'}</button>}
+        {step === 5 && job?.status !== 'running' && <button type="button" className={`${styles.btn} ${styles.btnPri}`} onClick={onDone}>Done</button>}
+      </>}>
           {step === 0 && (
             <div className="grid gap-3 sm:grid-cols-3">
               {recipes.map(r => (
@@ -376,6 +409,10 @@ export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes
               {!placement && <p className={styles.empty}>reading the cluster…</p>}
               {placement?.recommendation && <p className={styles.callout}>Recommended: {placement.recommendation.reason}</p>}
               {placement && (
+                <NamingCallout proposal={proposal} loading={proposing} error={proposeError} applied={!touchedNet}
+                  onUse={() => { setTouchedNet(false); if (proposal) applyProposal(proposal) }} onRefresh={() => { setTouchedNet(false); void repropose() }} />
+              )}
+              {placement && (
                 <div className="grid gap-4 sm:grid-cols-2">
                   <Field label="Node">
                     <select className={field} value={node} onChange={e => {
@@ -392,7 +429,7 @@ export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes
                     </select>
                   </Field>
                   <Field label="Container ID" hint={identity?.vmid && !identity.vmid.free ? <span style={{ color: 'var(--crit-soft)' }}>{identity.vmid.problem}</span> : `Suggested ${identity?.suggestedVmid ?? placement.nextVmid}.`}>
-                    <input className={field} type="number" value={vmid} onChange={e => setVmid(e.target.value === '' ? '' : Number(e.target.value))} />
+                    <input className={field} type="number" value={vmid} onChange={e => { setTouchedNet(true); setVmid(e.target.value === '' ? '' : Number(e.target.value)) }} />
                   </Field>
                   <Field label="Hostname"><input className={field} value={hostname} onChange={e => setHostname(e.target.value.toLowerCase())} autoCapitalize="none" spellCheck={false} /></Field>
                   <Field label="Bridge">
@@ -400,17 +437,22 @@ export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes
                       {(selected?.bridges ?? []).map(b => <option key={b.iface} value={b.iface}>{b.iface}{b.cidr ? ` · ${b.cidr}` : ''}</option>)}
                     </select>
                   </Field>
-                  <Field label="Address" hint={mode === 'static' ? (identity?.ip?.problems.length ? <span style={{ color: 'var(--crit-soft)' }}>{identity.ip.problems.join(' ')}</span> : 'Checked against every guest as you type; Install pings it again.') : 'From DHCP. A fixed address suits a published site better.'}>
+                  <Field label="Address" hint={mode === 'static' ? (identity?.ip?.problems.length ? <span style={{ color: 'var(--crit-soft)' }}>{identity.ip.problems.join(' ')}</span> : 'Checked against every guest as you type; Install pings it again.') : <span style={{ color: 'var(--warn)' }}>From DHCP, which may hand out an address on another network. A fixed address suits a published site better.</span>}>
                     <div className={styles.row} style={{ gap: 8 }}>
-                      <select className={field} value={mode} onChange={e => setMode(e.target.value as 'dhcp' | 'static')} style={{ maxWidth: 120 }}>
+                      <select className={field} value={mode} onChange={e => { setTouchedNet(true); setMode(e.target.value as 'dhcp' | 'static') }} style={{ maxWidth: 120 }}>
                         <option value="dhcp">DHCP</option><option value="static">Fixed</option>
                       </select>
-                      {mode === 'static' && <input className={field} value={ip} onChange={e => setIp(e.target.value.trim())} placeholder="192.0.2.50/24" />}
+                      {mode === 'static' && <input className={field} value={ip} onChange={e => { setTouchedNet(true); setIp(e.target.value.trim()) }} placeholder="192.0.2.50/24" />}
                     </div>
                   </Field>
-                  {mode === 'static' && <Field label="Gateway"><input className={field} value={gateway} onChange={e => setGateway(e.target.value.trim())} /></Field>}
+                  {mode === 'static' && <Field label="Gateway"><input className={field} value={gateway} onChange={e => { setTouchedNet(true); setGateway(e.target.value.trim()) }} /></Field>}
+                  {mode === 'static' && <Field label="DNS servers" hint="Optional. Blank uses the node's."><input className={field} value={dns} onChange={e => setDns(e.target.value)} placeholder="192.0.2.53" /></Field>}
+                  <Field label="VLAN tag" hint="Optional; blank for none.">
+                    <input className={field} type="number" min={1} max={4094} value={vlan} onChange={e => setVlan(e.target.value === '' ? '' : Number(e.target.value))} />
+                  </Field>
                 </div>
               )}
+              {overrideNeed && <ConfirmOverride need={overrideNeed} value={namingConfirm} onChange={setNamingConfirm} inputStyle={{}} />}
               {unknownKeys.length > 0 && (
                 <div className={styles.callout}>
                   <p style={{ margin: '0 0 6px' }}>HyperProx could not check everything about this address:</p>
@@ -468,7 +510,8 @@ export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes
                         { label: 'CT', value: preview.plan.vmid }, { label: 'node', value: preview.plan.node },
                         { label: 'cores', value: preview.plan.cores }, { label: 'MB RAM', value: preview.plan.memoryMb }, { label: 'GB disk', value: preview.plan.diskGb },
                       ]} />
-                      <p style={{ margin: '8px 0 0', fontSize: 13, color: 'var(--text-muted)' }}>{preview.plan.hostname} on {preview.plan.storage}, {preview.plan.ip === 'dhcp' ? 'DHCP' : preview.plan.ip}, unprivileged.</p>
+                      <p style={{ margin: '8px 0 0', fontSize: 13, color: 'var(--text-muted)' }}>{preview.plan.hostname} on {preview.plan.storage}, {preview.plan.ip === 'dhcp' ? <b style={{ color: 'var(--warn)' }}>DHCP: no fixed address (see the warning below)</b> : <b style={{ color: 'var(--text-bright)' }}>{preview.plan.ip}</b>}{preview.plan.vlan ? `, VLAN ${preview.plan.vlan}` : ''}, unprivileged.
+                        {proposal && proposal.ip === preview.plan.ip && proposal.vmid === preview.plan.vmid && proposal.ip !== 'dhcp' ? ` ${proposal.label}.` : ''}</p>
                     </div>
                     <div className={styles.card}>
                       <p className="font-mono text-[10px] uppercase tracking-[0.14em] mb-2" style={{ color: 'var(--accent)' }}>Publishing</p>
@@ -539,18 +582,6 @@ export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes
               )}
             </div>
           )}
-        </div>
-
-        <div className="flex items-center justify-between gap-2 border-t px-4 sm:px-6 py-3" style={{ borderColor: 'var(--border-soft)' }}>
-          {step < 5 ? <button type="button" className={styles.btn} onClick={() => (step === 0 ? onClose() : go(step - 1))} disabled={busy}>{step === 0 ? 'Cancel' : 'Back'}</button>
-            : <span />}
-          {step < 4 && <button type="button" className={`${styles.btn} ${styles.btnPri}`} onClick={() => go(step + 1)} disabled={!canNext}>Next</button>}
-          {step === 4 && !preview && !busy && <button type="button" className={`${styles.btn} ${styles.btnPri}`} onClick={() => void makePreview()}>Check again</button>}
-          {step === 4 && preview && <button type="button" className={`${styles.btn} ${styles.btnPri}`} onClick={() => void apply()} disabled={busy}>{busy ? 'Starting…' : 'Install'}</button>}
-          {step === 5 && job?.status !== 'running' && <button type="button" className={`${styles.btn} ${styles.btnPri}`} onClick={onDone}>Done</button>}
-        </div>
-      </div>
-      {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const w = reconfirm; setReconfirm(null); void (w === 'apply' ? apply() : cleanup()) }} />}
-    </div>
+    </ModalFrame>
   )
 }

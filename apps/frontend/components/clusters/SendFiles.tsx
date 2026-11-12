@@ -104,13 +104,13 @@ export function SendFilesDialog({ clusterId, clusterName, onClose }: { clusterId
     <div className="fixed inset-0 z-50 flex items-stretch sm:items-center justify-center sm:p-4" style={{ background: 'var(--scrim)', backdropFilter: 'blur(4px)' }}
          onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
       {reconfirm && <ReconfirmModal onClose={() => setReconfirm(false)} onDone={() => { setReconfirm(false); void send() }} />}
-      <div role="dialog" aria-modal="true" aria-label={`Send files to ${clusterName}`} className="w-full sm:max-w-2xl sm:rounded-xl border flex flex-col min-h-0 sm:max-h-[90vh]"
+      <div role="dialog" aria-modal="true" aria-label={`Send files to ${clusterName}`} className="w-full sm:max-w-2xl sm:rounded-xl border flex flex-col min-h-0 overflow-hidden max-h-[100dvh] sm:max-h-[calc(100dvh-2rem)]"
            style={{ background: 'var(--surface-raised)', borderColor: 'var(--border-soft)', borderTop: '4px solid var(--remote)' }}>
         <div className="flex items-center justify-between gap-2 px-4 py-3 border-b" style={{ borderColor: 'var(--border)' }}>
           <h2 className="font-display font-semibold truncate" style={{ fontSize: 20, color: 'var(--text-bright)' }}>Send files to {clusterName}</h2>
           <button onClick={onClose} aria-label="Close" style={{ color: 'var(--text-dimmer)', fontSize: 18, minWidth: 32, minHeight: 32 }}>✕</button>
         </div>
-        <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-4 min-w-0">
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 flex flex-col gap-4 min-w-0">
           {!plan && busy === 'look' && <BusyNote>Looking at both servers&apos; libraries. The first time takes a few seconds.</BusyNote>}
           {plan?.problems.map((p, i) => <Notice key={i} kind="warn">{p}</Notice>)}
           {err && <Notice kind="error">{err}</Notice>}

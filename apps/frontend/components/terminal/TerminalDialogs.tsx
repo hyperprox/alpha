@@ -44,7 +44,7 @@ function Shell({ title, subtitle, submitLabel = 'Save', onSubmit, onClose, child
 }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-6" style={{ background: 'color-mix(in srgb, var(--ground-deep) 80%, transparent)' }}>
-      <form onSubmit={onSubmit} className="w-full max-w-md rounded-lg border shadow-2xl" style={PANEL}>
+      <form onSubmit={onSubmit} className="w-full max-w-md rounded-lg border shadow-2xl max-h-[calc(100dvh-3rem)] overflow-y-auto overscroll-contain" style={PANEL}>
         <div className="border-b px-6 py-5" style={{ borderColor: 'var(--border)' }}>
           <h2 className="font-display text-[22px] font-bold uppercase" style={{ color: 'var(--text-bright)', letterSpacing: '.06em' }}>{title}</h2>
           <p className="mt-1 text-[14px]" style={{ color: 'var(--text-soft)' }}>{subtitle}</p>

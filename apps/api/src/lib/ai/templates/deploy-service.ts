@@ -14,6 +14,7 @@ import {
   isHostAddress, parseCidr, pickTemplate, scoreNodes, nextFreeVmid, rootStorages as rankRootStorages, PLACEMENT, ROOTFS_EXCLUDED,
 } from '../../wizard-placement'
 import { zoneFor } from '../../dns-zones'
+import { firstCandidate, namingPolicy, schemeLabel, takenAddresses, DHCP_CONFIRM } from '../../naming'
 import { archOfTemplate, type NodeFact, type StorageFact } from '../facts'
 import { isWildcard, publishableHostname } from './fields'
 import type { FieldIssue, FieldSpec, Fields, FieldValue, StepSpec, TaskTemplate, TemplateFacts, TemplateSettings } from './types'
@@ -204,6 +205,19 @@ export function buildDeployService(deps: DeployServiceDeps = { recipes: wizardRe
     // With no such bridge the value is empty (so the field counts as missing) and the note keeps the
     // bridge that was wanted, which validate has no settings to read from.
     out.bridge = bridge ? { value: bridge.iface, source: 'fact' } : { value: '', source: 'fact', note: s.bridge }
+
+    // Settings → Naming & addresses: the next ID and address in the range that fit the scheme, as the wizard
+    // offers them. Only when the person named neither; the address is pinged again before anything is created.
+    const nm = facts.naming
+    if (nm && node && !out.ip && !facts.partial.includes('resources') && !facts.partial.some(p => p.startsWith('config:'))) {
+      const taken = takenAddresses({ configs: [], nodes: Object.values(facts.nodeAddresses ?? {}).map(address => ({ address })) })
+      for (const g of facts.guests) for (const a of g.addresses) taken.add(a)
+      const c = firstCandidate(nm, { node: node.node, usedIds: facts.guests.map(g => g.vmid), nextId: facts.nextVmid || VMID_MIN, taken })
+      if (c) {
+        out.ip = { value: c.ip, source: 'derived', note: `${schemeLabel(nm, node.node)} (your numbering)` }
+        if (!out.vmid) out.vmid = { value: c.vmid, source: 'derived', note: 'your numbering' }
+      }
+    }
 
     // The next ID no CT or VM has, the same answer the Catalogue wizard gives.
     if (!out.vmid && !facts.partial.includes('resources')) {
@@ -397,6 +411,22 @@ export function buildDeployService(deps: DeployServiceDeps = { recipes: wizardRe
       ip: () => {
         const ip = str(f, 'ip')
         if (!ip) return missing('ip', 'Which address, or DHCP?', ['dhcp'])
+        if (failed('naming')) return invalid('ip', `HyperProx couldn't read your naming settings, so it can't tell which addresses are allowed. ${AGAIN}`)
+        // Going against the naming settings (DHCP when they say never, an address outside the range) needs a typed
+        // confirmation, which only the wizards ask for; here it is refused with the address that fits.
+        const pol = namingPolicy(facts.naming ?? null, { node: nodeName, vmid: num(f, 'vmid') ?? 0, ip }, undefined)
+        if (pol.errors.length) {
+          const nm = facts.naming!
+          const taken = takenAddresses({ configs: [], nodes: Object.values(facts.nodeAddresses ?? {}).map(address => ({ address })) })
+          for (const g of facts.guests) for (const a of g.addresses) taken.add(a)
+          const c = node ? firstCandidate(nm, { node: node.node, usedIds: facts.guests.map(g => g.vmid), nextId: facts.nextVmid || VMID_MIN, taken }) : null
+          const msg = ip === 'dhcp'
+            ? `Your naming settings never allow DHCP${c ? `. Use ${c.ip}?` : ', and no free address is left in the range.'} (To use DHCP anyway, use the wizard and type ${DHCP_CONFIRM}.)`
+            : `${ip.split('/')[0]} is outside your range ${nm.rangeStart}–${nm.rangeEnd}${c ? `. Use ${c.ip}?` : '.'} (To use it anyway, use the wizard, which asks you to confirm it.)`
+          return invalid('ip', msg, c ? [c.ip] : [])
+        }
+        const nodeIp = Object.entries(facts.nodeAddresses ?? {}).find(([, a]) => a === ip.split('/')[0])
+        if (nodeIp) return invalid('ip', `${ip.split('/')[0]} is the address of node ${nodeIp[0]}. Which address, or DHCP?`, ['dhcp'])
         if (ip === 'dhcp' || !bridge) return null // no bridge is the bridge's issue
         if (!bridge.gateway) {
           return invalid('ip', `${bridge.iface} on ${nodeName} has no gateway, so a static address cannot be routed. Use DHCP?`, ['dhcp'])

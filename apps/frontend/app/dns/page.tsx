@@ -283,7 +283,7 @@ function RecordModal({ record, domain, provider, onClose, onSave, wanIp }: {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
       style={{ background: 'var(--scrim)', backdropFilter: 'blur(4px)' }}>
-      <div className="w-full max-w-lg rounded-xl border overflow-hidden"
+      <div className="w-full max-w-lg rounded-xl border overflow-y-auto overscroll-contain max-h-[calc(100dvh-2rem)]"
         style={{ background: 'var(--surface-raised)', borderColor: 'color-mix(in srgb, var(--accent) 15%, transparent)', boxShadow: '0 0 40px color-mix(in srgb, var(--accent) 3%, transparent)' }}>
 
         {/* Header */}
@@ -561,7 +561,7 @@ function DeleteModal({ record, domain, onClose, onDelete }: {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
       style={{ background: 'var(--scrim)', backdropFilter: 'blur(4px)' }}>
-      <div className="w-full max-w-sm rounded-xl border p-6"
+      <div className="w-full max-w-sm rounded-xl border p-6 overflow-y-auto overscroll-contain max-h-[calc(100dvh-2rem)]"
         style={{ background: 'var(--surface-raised)', borderColor: 'color-mix(in srgb, var(--crit-2) 15%, transparent)' }}>
         <h2 className="font-display mb-2" style={{ color: 'var(--crit-2)', fontSize: 22, fontWeight: 600 }}>Delete Record</h2>
         <p className="text-sm mb-1" style={{ color: 'var(--text-soft)' }}>This will permanently delete:</p>

@@ -656,3 +656,41 @@ test("assistant: Ghost is a kind it offers, asks for the owner's email and name,
   assert.deepEqual(sent.options, { GHOST_TITLE: "News", GHOST_OWNER_EMAIL: "alex@example.com", GHOST_OWNER_NAME: "Alex Doe" })
   assert.deepEqual([sent.cores, sent.memoryMb, sent.diskGb], [2, 2048, 10])
 })
+
+// ── Naming & addresses ──────────────────────────────────────────────────────
+
+import Fastify from "fastify"
+import { buildCatalogueRoutes } from "../src/routes/catalogue"
+
+test("wizard: a Ghost site gets the naming proposal, and its plan is held to the naming policy at preview", async () => {
+  const f = new FakePve(), vault = new MemVault()
+  const naming = { subnet: "192.0.2.0/24", rangeStart: "192.0.2.100", rangeEnd: "192.0.2.120", gateway: "192.0.2.1", dns: [] as string[],
+    bridge: "vmbr0", idScheme: "node-ip" as const, nodeIndex: { "node-a": 1, "node-b": 2 }, dhcp: "never" as const }
+  const d = deps(f, {
+    publish: publishFake(), saveSecrets: vault.saveSecrets, readSecrets: vault.readSecrets, deleteSecrets: vault.deleteSecrets,
+    readNaming: async () => naming, saveNaming: async () => {}, audit: async () => {},
+  })
+  const a = Fastify()
+  a.register(buildCatalogueRoutes({ whoami: () => "a@example.com", wizard: d }))
+  // .100 and .101 give IDs 100 and 101, which guests already have: the proposal is .102 and CT 102.
+  const p = (await a.inject({ method: "POST", url: "/wizard/propose", payload: { node: "node-a" } })).json().data
+  assert.equal(p.source, "settings")
+  assert.equal(p.ip, "192.0.2.102/24")
+  assert.equal(p.vmid, 102)
+  assert.match(p.label, /CT 1xx ↔ 192\.0\.2\.1xx \(your numbering\)/)
+
+  // Through the same route the wizard uses: DHCP is refused under "never"...
+  const dhcp = await a.inject({ method: "POST", url: "/wizard/preview", payload: GHOST_INPUT({ ip: "dhcp", gateway: undefined }) })
+  assert.equal(dhcp.statusCode, 422)
+  assert.match(dhcp.json().problems.join(" "), /never allow DHCP/)
+  // ...an address outside the range needs it typed...
+  const outside = await previewInstall(GHOST_INPUT(), "a@example.com", d)
+  assert.equal(outside.preview, undefined)
+  assert.match(outside.errors.join(" "), /192\.0\.2\.50 is outside your range/)
+  // ...and the proposal passes, saying it is inside the range.
+  const ok = await a.inject({ method: "POST", url: "/wizard/preview", payload: GHOST_INPUT({ ip: p.ip, gateway: p.gateway, vmid: p.vmid }) })
+  assert.equal(ok.statusCode, 200, ok.body)
+  assert.equal(ok.json().data.plan.recipeId, "ghost")
+  assert.equal(ok.json().data.plan.ip, "192.0.2.102/24")
+  assert.ok(ok.json().data.checks.some((c: string) => /inside your range 192\.0\.2\.100–192\.0\.2\.120/.test(c)))
+})

@@ -63,7 +63,11 @@ export function BusyNote({ children }: { children: React.ReactNode }) {
   )
 }
 
-export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+/**
+ * A dialog that never grows past the screen: the title stays at the top, `footer` (the action buttons) stays at the
+ * bottom, and only what is between them scrolls. Without `footer` the buttons scroll with the body.
+ */
+export function Modal({ title, onClose, children, footer }: { title: string; onClose: () => void; children: React.ReactNode; footer?: React.ReactNode }) {
   useEffect(() => {
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
     window.addEventListener('keydown', h)
@@ -77,7 +81,8 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
           <h2 className={v.title}>{title}</h2>
           <button type="button" onClick={onClose} aria-label="Close" className={v.close}>✕</button>
         </div>
-        {children}
+        <div className={v.body}>{children}</div>
+        {footer && <div className={v.foot}>{footer}</div>}
       </div>
     </div>
   )
