@@ -27,7 +27,14 @@ export function checkGuest(node: string, type: string, vmid: string | number): {
 const form = (p: Record<string, string | number>) => new URLSearchParams(Object.entries(p).map(([k, v]) => [k, String(v)] as [string, string])).toString()
 const base = (g: { node: string; type: GuestType; vmid: number }) => `/nodes/${encodeURIComponent(g.node)}/${g.type}/${g.vmid}`
 
-export interface ActionDeps { pve: ProxmoxClient; sleep?: (ms: number) => Promise<void>; waitMs?: number; pollMs?: number }
+export interface ActionDeps {
+  pve: ProxmoxClient; sleep?: (ms: number) => Promise<void>; waitMs?: number; pollMs?: number
+  /**
+   * After a container is deleted: undo what HyperProx set up on its node for it (a backup server's NAS mount and
+   * fstab line, lib/pbs/nfs.ts). Returns a sentence to append, or ''. It never fails the delete.
+   */
+  afterDestroy?: (g: { node: string; type: GuestType; vmid: number }) => Promise<string>
+}
 
 async function statusOf(pve: ProxmoxClient, g: { node: string; type: GuestType; vmid: number }): Promise<{ status: string; name: string; ha: boolean }> {
   const st = await pve.fetchStrict<any>(`${base(g)}/status/current`)
@@ -118,5 +125,6 @@ export async function destroy(d: ActionDeps, g: { node: string; type: GuestType;
   if (typeof upid === 'string' && upid.startsWith('UPID:')) await d.pve.waitForTask(g.node, upid, { timeoutMs: d.waitMs ?? 600_000, intervalMs: d.pollMs ?? 2000, sleep: d.sleep })
   const left = await d.pve.fetchStrict<any[]>('/cluster/resources?type=vm')
   const gone = !(left ?? []).some(r => Number(r?.vmid) === g.vmid)
-  return { ok: gone, words: gone ? `${name} (${g.vmid}) is deleted: it is no longer listed.` : `Proxmox finished, but ${g.vmid} is still listed.` }
+  const after = gone && g.type === 'lxc' && d.afterDestroy ? await d.afterDestroy(g).catch(() => ' HyperProx could not check its node for a leftover NAS mount.') : ''
+  return { ok: gone, words: gone ? `${name} (${g.vmid}) is deleted: it is no longer listed.${after}` : `Proxmox finished, but ${g.vmid} is still listed.` }
 }

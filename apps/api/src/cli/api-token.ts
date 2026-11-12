@@ -7,6 +7,8 @@
 //    hyperprox token create <name> [--role viewer|operator|admin] [--expires-days N]
 //    hyperprox token list
 //    hyperprox token revoke <name|id>
+//    hyperprox token plugin-settings <name|id> on|off
+//        let an admin token save plug-in settings without the master password (or stop it). Root only.
 //
 //  create prints the token once, on stdout, alone on its line; everything else
 //  goes to stderr so `TOKEN=$(hyperprox token create ci)` captures only it.
@@ -15,7 +17,7 @@
 
 import { PrismaClient } from '@prisma/client'
 import {
-  ApiTokenInputError, ApiTokenNotFoundError, PrismaApiTokenStore, createApiToken, revokeApiToken, tokenView,
+  ApiTokenInputError, ApiTokenNotFoundError, PrismaApiTokenStore, createApiToken, revokeApiToken, setTokenPluginSettings, tokenView,
   type ApiTokenStore,
 } from '../lib/api-tokens'
 
@@ -30,7 +32,11 @@ const USAGE = [
   'usage: hyperprox token create <name> [--role viewer|operator|admin] [--expires-days N]',
   '       hyperprox token list',
   '       hyperprox token revoke <name|id>',
+  '       hyperprox token plugin-settings <name|id> on|off',
 ].join('\n')
+
+/** The audit action for a plug-in settings change made here. */
+export const CLI_PLUGIN_SETTINGS_AUDIT = 'token.scope.plugin-settings'
 
 function parseFlags(args: string[]): { positional: string[]; flags: Record<string, string> } {
   const positional: string[] = []
@@ -55,7 +61,11 @@ function pad(s: string, n: number) { return s.length >= n ? s : s + ' '.repeat(n
 const day = (s: string | null) => (s ? s.slice(0, 16).replace('T', ' ') : '-')
 
 /** Exit code: 0 ok, 1 failed, 2 usage. */
-export async function runTokenCli(argv: string[], store: ApiTokenStore, io: CliIo): Promise<number> {
+export async function runTokenCli(
+  argv: string[], store: ApiTokenStore, io: CliIo,
+  /** The caller's uid (tests pass one); plugin-settings refuses anyone but root. */
+  opts: { uid?: number } = {},
+): Promise<number> {
   const [cmd, ...rest] = argv
   try {
     switch (cmd) {
@@ -91,6 +101,22 @@ export async function runTokenCli(argv: string[], store: ApiTokenStore, io: CliI
         const before = (await store.findById(rest[0])) ?? (await store.findByName(rest[0]))
         const row = await revokeApiToken(rest[0], CLI_ACTOR, store)
         io.out(before?.revokedAt ? `API token "${row.name}" was already revoked` : `revoked API token "${row.name}"`)
+        return 0
+      }
+      case 'plugin-settings': {
+        const uid = opts.uid ?? (typeof process.getuid === 'function' ? process.getuid() : -1)
+        if (uid !== 0) { io.err('token: plugin-settings must be run as root on the HyperProx machine'); return 1 }
+        if (rest.length !== 2 || !['on', 'off'].includes(rest[1])) { io.err(USAGE); return 2 }
+        const row = (await store.findById(rest[0])) ?? (await store.findByName(rest[0]))
+        if (!row) throw new ApiTokenNotFoundError(`"${rest[0]}"`)
+        const on = rest[1] === 'on'
+        const out = await setTokenPluginSettings(row.id, on, CLI_ACTOR, store, Date.now(), {
+          action: CLI_PLUGIN_SETTINGS_AUDIT, details: { state: on ? 'on' : 'off', via: 'server shell (root)', by: CLI_ACTOR },
+        })
+        const v = tokenView(out)
+        io.out(`API token "${v.name}" (role ${v.role}, ${v.state}): plug-in settings without the master password ${v.pluginSettingsWithoutReconfirm ? 'ON' : 'OFF'}`)
+        if (v.pluginSettingsWithoutReconfirm) io.err('anyone holding this token can now change plug-in connections and their credentials; saves are written as the signed-in owner and audited')
+        io.err('a running API sees this within 10 seconds')
         return 0
       }
       case undefined: case '-h': case '--help': case 'help':

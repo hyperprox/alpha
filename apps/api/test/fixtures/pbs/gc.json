@@ -1,0 +1,25 @@
+[
+ {
+  "cache-stats": {
+   "hits": 10,
+   "misses": 2
+  },
+  "disk-bytes": 429496729600,
+  "disk-chunks": 1000,
+  "index-data-bytes": 1717986918400,
+  "index-file-count": 40,
+  "pending-bytes": 0,
+  "pending-chunks": 0,
+  "removed-bad": 0,
+  "removed-bytes": 5368709120,
+  "removed-chunks": 10,
+  "still-bad": 0,
+  "upid": "UPID:backup-01:0000ABCD:00001234:00000001:6B49D200:garbage_collection:tank:root@pam:",
+  "store": "tank",
+  "schedule": "sat 06:00",
+  "last-run-state": "ok",
+  "last-run-endtime": 1799827200,
+  "next-run": 1800432000,
+  "duration": 600
+ }
+]

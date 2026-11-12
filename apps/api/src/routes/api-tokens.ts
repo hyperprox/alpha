@@ -8,12 +8,15 @@
 //    GET    /api/auth/tokens        list (never the hash, never the token)
 //    POST   /api/auth/tokens        { name, role?, expiresDays? } → the token, once
 //    DELETE /api/auth/tokens/:id    revoke (the row stays, with revokedAt)
+//    PUT    /api/auth/tokens/:id/plugin-settings  { enabled } owner only, re-confirmed:
+//           let an admin token save plug-in settings without the master password
 // =============================================================================
 
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { hasRole } from '../lib/roles'
+import { isReconfirmed } from '../lib/auth'
 import {
-  ApiTokenInputError, ApiTokenNotFoundError, TOKEN_ROLES, apiTokenStore, createApiToken, revokeApiToken, tokenView,
+  ApiTokenInputError, ApiTokenNotFoundError, TOKEN_ROLES, apiTokenStore, createApiToken, revokeApiToken, setTokenPluginSettings, tokenView,
 } from '../lib/api-tokens'
 
 async function adminSessionOnly(req: FastifyRequest, reply: FastifyReply) {
@@ -45,6 +48,27 @@ export const apiTokenRoutes: FastifyPluginAsync = async (fastify) => {
       req.log.info({ name: record.name, role: record.role, by: s.email }, '[api-token] created')
       return { ok: true, token, data: tokenView(record) }
     } catch (e) {
+      if (e instanceof ApiTokenInputError) return reply.status(400).send({ ok: false, error: e.message })
+      throw e
+    }
+  })
+
+  // Owner only, and re-confirmed here as well as by the gate: anyone holding a token with this on can change
+  // plug-in connections and their credentials. A token never reaches this route (the gate and the hook above).
+  fastify.put<{ Params: { id: string }; Body: { enabled?: unknown } }>('/:id/plugin-settings', async (req, reply) => {
+    const s = req.session!
+    if (s.role !== 'owner') return reply.status(403).send({ ok: false, code: 'forbidden', error: 'Only an owner can change this', required: 'owner', role: s.role })
+    if (!isReconfirmed(s.sid)) return reply.status(403).send({ ok: false, code: 'reconfirm_required', error: 'Re-enter your master password to continue' })
+    const b = req.body ?? {}
+    if (typeof b.enabled !== 'boolean' || Object.keys(b).some(k => k !== 'enabled')) {
+      return reply.status(400).send({ ok: false, error: 'Send { "enabled": true } or { "enabled": false }' })
+    }
+    try {
+      const out = await setTokenPluginSettings(req.params.id, b.enabled, s.email)
+      req.log.info({ name: out.name, enabled: b.enabled, by: s.email }, '[api-token] plug-in settings permission changed')
+      return { ok: true, data: tokenView(out) }
+    } catch (e) {
+      if (e instanceof ApiTokenNotFoundError) return reply.status(404).send({ ok: false, error: e.message })
       if (e instanceof ApiTokenInputError) return reply.status(400).send({ ok: false, error: e.message })
       throw e
     }

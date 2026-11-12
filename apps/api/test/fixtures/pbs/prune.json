@@ -1,0 +1,14 @@
+[
+ {
+  "id": "daily-tank",
+  "store": "tank",
+  "ns": "",
+  "schedule": "05:00",
+  "keep-daily": 7,
+  "keep-weekly": 4,
+  "next-run": 1800010800,
+  "last-run-state": "ok",
+  "last-run-endtime": 1799924400,
+  "last-run-upid": "UPID:x"
+ }
+]

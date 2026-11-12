@@ -102,7 +102,14 @@ registerSnapshotPart('sessions', {
 // The credential store writes through to the vault as the user who made the
 // request, without every caller having to pass a session id down.
 
-export interface RequestContext { sid: string; email: string; role: Role }
+export interface RequestContext {
+  sid: string; email: string; role: Role
+  /**
+   * Set by the gate only for an API token's PUT /api/plugins/:id/settings when an owner gave that token the
+   * plug-in settings permission: which plug-in, and which owner granted it.
+   */
+  pluginSettings?: { pluginId: string; grantedBy: string; instances?: boolean }
+}
 
 export const requestContext = new AsyncLocalStorage<RequestContext>()
 
@@ -129,6 +136,35 @@ export function actingSid(): string | null {
   if (ctx && sessions.has(ctx.sid)) return ctx.sid
   let best: ActiveSession | null = null
   for (const s of sessions.values()) if (!best || s.lastSeen > best.lastSeen) best = s
+  return best?.sid ?? null
+}
+
+/** The vault item category plug-in settings live in (lib/plugin-host.ts PLUGIN_CATEGORY; not imported: a cycle). */
+const PLUGIN_SETTINGS_CATEGORY = 'plugin'
+/** cli/api-token.ts CLI_ACTOR: a grant made by root on the host (not imported: the CLI pulls in Prisma). */
+const HOST_CLI = 'host-cli'
+
+/**
+ * The vault session an API token's plug-in settings save writes with, or null. Only when the gate marked this
+ * request as a granted plug-in settings save (RequestContext.pluginSettings), only for that plug-in's own item
+ * (`plugin/<id>`, plus `plugin/<id>.<instance>` for an instance add or change), and only with a signed-in owner session of the owner who granted it (granted by root from the
+ * host CLI, "host-cli": the most recently active signed-in owner). Every other token write gets null and stays refused.
+ */
+export function grantedPluginSettingsSid(category: string, provider: string): string | null {
+  const ctx = requestContext.getStore()
+  const g = ctx?.pluginSettings
+  if (!ctx || !isTokenContext(ctx) || !g) return null
+  if (category !== PLUGIN_SETTINGS_CATEGORY) return null
+  // A settings save writes only `plugin/<id>`. An instance add or change also writes that instance's own item,
+  // `plugin/<id>.<instance>`, and nothing deeper (so never PBS's backup-management token, `pbs.<instance>.manage`).
+  const rest = provider.startsWith(`${g.pluginId}.`) ? provider.slice(g.pluginId.length + 1) : null
+  const ownInstance = g.instances === true && rest !== null && /^[A-Za-z0-9_-]+$/.test(rest)
+  if (provider !== g.pluginId && !ownInstance) return null
+  let best: ActiveSession | null = null
+  for (const s of sessions.values()) {
+    if (s.role !== 'owner' || (g.grantedBy !== HOST_CLI && s.email !== g.grantedBy)) continue
+    if (!best || s.lastSeen > best.lastSeen) best = s
+  }
   return best?.sid ?? null
 }
 

@@ -6,7 +6,8 @@
 //  is made; HyperProx keeps only its hash. Creating and revoking need the master
 //  password again (the API enforces it). Tokens work only while HyperProx is
 //  unlocked and can never reach secrets, terminals or anything that needs a
-//  re-confirmation.
+//  re-confirmation, except that an owner may let one admin token save plug-in
+//  settings without it (re-confirmed; the API enforces owner-only).
 // =============================================================================
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -29,7 +30,12 @@ interface TokenRow {
   expiresAt:  string | null
   revokedAt:  string | null
   state:      'active' | 'expired' | 'revoked'
+  /** Owner-granted: may save plug-in settings without the master password. */
+  pluginSettingsWithoutReconfirm?: boolean
+  pluginSettingsGrantedBy?: string | null
 }
+
+const PLUGIN_BADGE = 'Can save plug-in settings without your master password'
 
 const TOKEN_ROLES: Role[] = ['viewer', 'operator', 'admin']
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
@@ -139,6 +145,38 @@ function ShowOnceModal({ token, row, onClose }: { token: string; row: TokenRow; 
   )
 }
 
+function PluginSettingsModal({ row, onConfirm, onClose }: { row: TokenRow; onConfirm: () => void; onClose: () => void }) {
+  const on = !row.pluginSettingsWithoutReconfirm
+  return (
+    <Modal title={on ? `Let "${row.name}" save plug-in settings?` : `Stop "${row.name}" saving plug-in settings?`} onClose={onClose}>
+      <div className="space-y-4">
+        {on ? (
+          <>
+            <Notice kind="warn">
+              Anyone holding this token can change plug-in connections and their credentials (addresses, API keys,
+              passwords), without your master password.
+            </Notice>
+            <p className="text-sm" style={{ color: 'var(--text-soft)' }}>
+              Only plug-in settings, and adding or changing a backup server (by its token), a Home Assistant house or a
+              QNAP. It still cannot read a saved secret back, reach Secrets or Send, manage users,
+              roles or tokens, change cluster logins, or delete anything. Each save is written with your signed-in
+              session and recorded in the audit log under this token&apos;s name. You can turn it off at any time.
+            </p>
+          </>
+        ) : (
+          <p className="text-sm" style={{ color: 'var(--text-soft)' }}>
+            From the next request, this token needs a person&apos;s master password again to save plug-in settings, so it cannot.
+          </p>
+        )}
+        <div className="flex gap-2 justify-end">
+          <GhostButton type="button" onClick={onClose}>Cancel</GhostButton>
+          <PrimaryButton onClick={onConfirm}>{on ? 'Allow' : 'Turn off'}</PrimaryButton>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 function RevokeModal({ row, onConfirm, onClose }: { row: TokenRow; onConfirm: () => void; onClose: () => void }) {
   return (
     <Modal title={`Revoke "${row.name}"?`} onClose={onClose}>
@@ -160,6 +198,8 @@ function RevokeModal({ row, onConfirm, onClose }: { row: TokenRow; onConfirm: ()
 export default function ApiTokensPage() {
   const { role } = useSession()
   const canUse = atLeast(role, 'admin')
+  const isOwner = role === 'owner'
+  const [scoping, setScoping] = useState<TokenRow | null>(null)
   const [rows, setRows] = useState<TokenRow[] | null>(null)
   const [error, setError] = useState('')
   const [creating, setCreating] = useState(false)
@@ -187,6 +227,13 @@ export default function ApiTokensPage() {
     setRevoking(null); flash(r.error ?? 'Could not revoke')
   }
 
+  async function setPluginSettings(row: TokenRow, enabled: boolean) {
+    const r = await apiJson<{ data: TokenRow }>(`/api/auth/tokens/${encodeURIComponent(row.id)}/plugin-settings`, 'PUT', { enabled })
+    if (r.ok) { setScoping(null); flash(enabled ? `"${row.name}" can now save plug-in settings.` : `"${row.name}" can no longer save plug-in settings.`); load(); return }
+    if (r.status === 403 && r.code === 'reconfirm_required') { setAskConfirm({ then: () => setPluginSettings(row, enabled) }); return }
+    setScoping(null); flash(r.error ?? 'Could not change the token')
+  }
+
   const counts = { active: 0, expired: 0, revoked: 0 }
   for (const r of rows ?? []) counts[r.state] = (counts[r.state] ?? 0) + 1
   const lastUse = (rows ?? []).map(r => r.lastUsedAt).filter((x): x is string => !!x)
@@ -207,6 +254,7 @@ export default function ApiTokensPage() {
         <p className="text-sm max-w-3xl" style={{ margin: 0, color: 'var(--text-soft)' }}>
           For scripts and agents that call the HyperProx API. A token works only while HyperProx is unlocked, and never
           reaches secrets, terminals, or anything that needs your master password again. Creating or revoking one asks for it.
+          The one exception is opt-in: an owner can let an admin token save plug-in settings without it.
         </p>
       </HudHeader>
 
@@ -226,6 +274,11 @@ export default function ApiTokensPage() {
                   <span className={ss.itemName}>{r.name}</span>
                   <span className={ss.pills}><StateTag state={r.state} /><Pill tone="violet">{r.role}</Pill></span>
                 </div>
+                {r.pluginSettingsWithoutReconfirm && (
+                  <p className={ss.said}><Pill tone="warn">{PLUGIN_BADGE}</Pill>
+                    {r.pluginSettingsGrantedBy && <span style={{ color: 'var(--text-muted)' }}> allowed by {r.pluginSettingsGrantedBy === 'host-cli' ? 'root on the server' : r.pluginSettingsGrantedBy}</span>}
+                  </p>
+                )}
                 <p className={ss.said}>
                   <span title={exact(r.lastUsedAt) ?? 'Not used yet'}>{lastUsedWords(r)}</span>
                   {' · '}
@@ -234,6 +287,12 @@ export default function ApiTokensPage() {
                 <p className={ss.meta} title={exact(r.createdAt)}>by {r.createdBy} · made {inWords(r.createdAt) ?? fmtDate(r.createdAt)}</p>
                 {canUse && r.state !== 'revoked' && (
                   <div className={ss.acts}>
+                    {isOwner && (r.pluginSettingsWithoutReconfirm || (r.state === 'active' && r.role === 'admin')) && (
+                      <button type="button" onClick={() => setScoping(r)} className={ss.mini}
+                              aria-label={`${r.pluginSettingsWithoutReconfirm ? 'Stop' : 'Allow'} ${r.name} saving plug-in settings without your master password`}>
+                        {r.pluginSettingsWithoutReconfirm ? 'Stop plug-in settings' : 'Allow plug-in settings'}
+                      </button>
+                    )}
                     <button type="button" onClick={() => setRevoking(r)} className={ss.mini} data-tone="bad"
                             aria-label={`Revoke ${r.name}`}>Revoke</button>
                   </div>
@@ -267,6 +326,7 @@ export default function ApiTokensPage() {
                   <tr key={r.id} style={{ opacity: r.state === 'active' ? 1 : 0.65 }}>
                     <td className="break-all" style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-bright)' }}>
                       {r.name} <span className="ml-1"><StateTag state={r.state} /></span>
+                      {r.pluginSettingsWithoutReconfirm && <span className="ml-1"><Pill tone="warn">{PLUGIN_BADGE}</Pill></span>}
                       <div className="text-xs mt-0.5" style={{ fontFamily: 'var(--font-body)', color: 'var(--text-muted)' }}>by {r.createdBy}</div>
                     </td>
                     <td style={{ color: 'var(--text-soft)' }}>{r.role}</td>
@@ -299,6 +359,8 @@ export default function ApiTokensPage() {
         />
       )}
       {created && <ShowOnceModal token={created.token} row={created.row} onClose={() => setCreated(null)} />}
+      {scoping && <PluginSettingsModal row={scoping} onClose={() => setScoping(null)}
+        onConfirm={() => setPluginSettings(scoping, !scoping.pluginSettingsWithoutReconfirm)} />}
       {revoking && <RevokeModal row={revoking} onClose={() => setRevoking(null)} onConfirm={() => revoke(revoking)} />}
       {askConfirm && (
         <ReconfirmModal

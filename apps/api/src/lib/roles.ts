@@ -151,9 +151,50 @@ const PLEX_CLEAROUT_RECONFIRM = /^\/api\/plugins\/plex\/(clearout|library)\/remo
 // re-confirmed like a settings save, which also keeps API tokens out.
 const PLEX_SIGNIN = /^\/api\/plugins\/plex\/signin(\/|$)/
 const PLEX_SIGNIN_RECONFIRM = /^\/api\/plugins\/plex\/signin(\/[^/]+\/connect)?$/
+// Proxmox Backup Server (routes/pbs.ts). Every write is admin (the default for a POST/PUT/DELETE) and re-confirmed:
+// adding, changing or removing a server stores a token, and "verify now" starts work on the server.
+const PBS_RECONFIRM = /^\/api\/plugins\/pbs\/instances(\/(?!probe-certificate$)[^/]+(\/(actions\/verify|forget))?)?$/
+// Backup management (opt-in, lib/pbs/manage.ts): turning it on or off, previews, applies and clean-up. All admin and
+// re-confirmed, which keeps API tokens out; the snapshot list of one group is a read (viewer).
+const PBS_MANAGE_RECONFIRM = /^\/api\/plugins\/pbs\/instances\/[^/]+\/manage(\/(preview|apply|gc))?$/
 // A plug-in's settings hold the address its stored credential is sent to: changing them is re-confirmed (which
 // also keeps API tokens out).
 const PLUGIN_SETTINGS = /^\/api\/plugins\/[^/]+\/settings$/
+
+/**
+ * What an API token with the owner-granted plug-in settings permission may do without a re-confirmation: an explicit
+ * allowlist of (method, path) pairs and nothing else. The gate checks both the raw path and the route Fastify matched.
+ *   settings   PUT  /api/plugins/:id/settings                         any plug-in's settings, secrets included
+ *   instances  POST /api/plugins/{pbs|home-assistant|qnap}/instances   add one (PBS: by token; the confirmed
+ *                                                                      fingerprint travels in the same body)
+ *              PUT  /api/plugins/{pbs|home-assistant|qnap}/instances/:iid   change one
+ *   probe      POST /api/plugins/{pbs|home-assistant|qnap}/instances/probe-certificate   read the fingerprint to confirm
+ * Never: PBS add-by-sign-in (it carries a PBS admin password), PBS manage, verify, apply, gc or forget, Home
+ * Assistant actions and secure actions, QNAP actions and secure actions, or deleting any instance.
+ */
+export type TokenPluginScope = { pluginId: string; kind: 'settings' | 'instances' | 'probe' }
+const INSTANCE_PLUGINS = '(pbs|home-assistant|qnap)'
+const TOKEN_PLUGIN_ALLOW: Array<[string, RegExp, TokenPluginScope['kind']]> = [
+  ['PUT',  /^\/api\/plugins\/([^/]+)\/settings$/, 'settings'],
+  ['POST', new RegExp(`^/api/plugins/${INSTANCE_PLUGINS}/instances$`), 'instances'],
+  ['PUT',  new RegExp(`^/api/plugins/${INSTANCE_PLUGINS}/instances/(?!probe-certificate$|signin$)[^/]+$`), 'instances'],
+  ['POST', new RegExp(`^/api/plugins/${INSTANCE_PLUGINS}/instances/probe-certificate$`), 'probe'],
+]
+
+/** The allowlisted plug-in action this request is, or null (see TOKEN_PLUGIN_ALLOW). */
+export function tokenPluginScope(method: string, path: string): TokenPluginScope | null {
+  const m = method.toUpperCase()
+  const p = normalisePath(path)
+  for (const [am, re, kind] of TOKEN_PLUGIN_ALLOW) {
+    if (m !== am) continue
+    const hit = re.exec(p)
+    if (hit) return { pluginId: hit[1], kind }
+  }
+  return null
+}
+
+// The owner-only switch on one API token (routes/api-tokens.ts).
+const TOKEN_PLUGIN_SETTINGS = /^\/api\/auth\/tokens\/[^/]+\/plugin-settings$/
 // Settings → connections (routes/settings.ts): saving a provider's login or address, and testing one (which sends
 // the stored secret to the stored address). Re-confirmed, which also keeps API tokens out. Notification channels
 // live under /api/settings/notifications and keep their own rules.
@@ -233,6 +274,8 @@ export function requiredRole(method: string, path: string): Role | null {
   if (p === '/api/auth/reconfirm') return 'viewer'
   if (p === SESSION_CHECK) return 'viewer'
   if (p === '/api/auth/lock') return 'admin'
+  // Letting a token save plug-in settings without the master password: an owner's call.
+  if (TOKEN_PLUGIN_SETTINGS.test(p)) return 'owner'
   // API tokens: listing them is admin too (names, roles, who made them).
   if (TOKENS.test(p)) return 'admin'
   if (PROXY.test(p)) return (m === 'GET' || m === 'HEAD') && PROXY_READ.test(p) ? 'viewer' : 'admin'
@@ -277,10 +320,15 @@ export function requiredRole(method: string, path: string): Role | null {
   return 'admin'
 }
 
-/** Requests that need the master password re-entered within the last 5 minutes. */
-export function needsReconfirm(method: string, path: string): boolean {
+/**
+ * Requests that need the master password re-entered within the last 5 minutes.
+ * `opts.tokenPluginScope` (the gate, for an API token an owner gave the plug-in settings permission) lifts the
+ * re-confirmation for exactly the allowlisted pairs in tokenPluginScope(); every other request is unchanged.
+ */
+export function needsReconfirm(method: string, path: string, opts: { tokenPluginScope?: boolean } = {}): boolean {
   const m = method.toUpperCase()
   const p = normalisePath(path)
+  if (opts.tokenPluginScope && tokenPluginScope(m, p)) return false
   if (m === 'DELETE' && DESTROY.test(p)) return true
   if (m === 'POST' && p === '/api/secrets/reveal') return true
   // A Send hands the value out too (as an expiring link), so it is re-confirmed like reveal.
@@ -297,13 +345,15 @@ export function needsReconfirm(method: string, path: string): boolean {
   if (m === 'POST' && HA_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && HA_CONTROL_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && QNAP_RECONFIRM.test(p)) return true
+  if (m !== 'GET' && m !== 'HEAD' && PBS_RECONFIRM.test(p)) return true
+  if (m !== 'GET' && m !== 'HEAD' && PBS_MANAGE_RECONFIRM.test(p)) return true
   if (m === 'PUT' && PLUGIN_SETTINGS.test(p)) return true
   if (m === 'POST' && PLEX_SIGNIN_RECONFIRM.test(p)) return true
   if (m === 'POST' && PLEX_CLEAROUT_RECONFIRM.test(p)) return true
   if (m === 'PUT' && SETTINGS_SAVE.test(p)) return true
   if (m === 'POST' && SETTINGS_TEST.test(p)) return true
-  // Creating or revoking an API token.
-  if ((m === 'POST' || m === 'DELETE') && TOKENS.test(p)) return true
+  // Creating or revoking an API token, or changing what one may do.
+  if ((m === 'POST' || m === 'DELETE' || m === 'PUT') && TOKENS.test(p)) return true
   for (const [rm, re] of REMOTE_RECONFIRM) if (m === rm && re.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && VPN.test(p) && !VPN_PREVIEW.test(p)) return true
   for (const [cm, re] of CLUSTERS_RECONFIRM) if (m === cm && re.test(p)) return true

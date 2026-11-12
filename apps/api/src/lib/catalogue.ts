@@ -21,6 +21,7 @@
 import { DETECT, type Fingerprint } from './catalogue-detect'
 import { LOG_FORMAT_LINE } from './site-metrics/log-format'
 import type { Distro } from './install-script'
+import { PBS_OPTIONS, PBS_SCRIPT, NOT_OFFSITE, checkPbsOptions, RECIPE_ID as PBS_RECIPE_ID } from './pbs/catalogue'
 
 /** What a person does the first time they open the service. */
 export type FirstRun =
@@ -115,6 +116,13 @@ export interface CatalogueRecipe {
    * it answers that way. Without one (or a kind site discovery reads), the catalogue cannot see an install.
    */
   detect?:     Fingerprint[]
+  /**
+   * A recipe with its own guided setup after the install, in place of the generic health check and wiring
+   * (lib/pbs/catalogue.ts for Proxmox Backup Server: datastore location, tokens, plug-in, optional storage).
+   */
+  setup?:      'pbs'
+  /** Checks across the recipe's options, after each one passed its own kind. */
+  checkOptions?: (values: Record<string, string>) => string[]
 }
 
 // ── Web hosting scripts ─────────────────────────────────────────────────────
@@ -595,6 +603,35 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
       - ./config:/config` },
   },
 
+  // ── Backups ─────────────────────────────────────────────────────────────
+  {
+    id: PBS_RECIPE_ID,
+    detect: DETECT[PBS_RECIPE_ID],
+    name: 'Proxmox Backup Server',
+    summary: 'Deduplicated, verified backups for your guests. Keeps them on a NAS (recommended) or a disk, and connects the PBS plug-in for you.',
+    category: 'apps',
+    port: 8007,
+    // PBS answers only over https with its own certificate; its setup steps check it (pinned), not the generic probe.
+    healthPath: '/api2/json/version',
+    expectStatus: [401],
+    needsDocker: false,
+    // The helper-scripts PBS container is unprivileged too; PBS needs nothing a host must grant.
+    defaults: { cores: 2, memoryMb: 2048, diskGb: 10, swapMb: 512 },
+    minimum: { cores: 1, memoryMb: 1024, diskGb: 8 },
+    firstRun: { kind: 'env-admin', user: 'root@pam', passwordEnv: 'PBS_ROOT_PASSWORD' },
+    firstLogin: 'Sign in at https://<its address>:8007 as root@pam with the generated password (in the vault). HyperProx makes the tokens it needs itself.',
+    notes: [
+      NOT_OFFSITE,
+      'On a NAS: NFS only. SMB/CIFS is refused, because PBS snapshot names contain ":", which SMB cannot store.',
+      'Defaults, editable in PBS later: prune daily (keep last 3, daily 7, weekly 4, monthly 6), GC weekly (Saturday), verify weekly (Sunday).',
+    ],
+    wizard: false,
+    options: PBS_OPTIONS,
+    checkOptions: checkPbsOptions,
+    setup: 'pbs',
+    install: { kind: 'script', script: PBS_SCRIPT },
+  },
+
   // ── Apps the AI wizard can install ──────────────────────────────────────
   {
     id: 'nextcloud',
@@ -902,6 +939,7 @@ export function checkOptions(recipe: CatalogueRecipe, raw: unknown): { values: R
     }
     values[o.key] = v
   }
+  if (!errors.length && recipe.checkOptions) errors.push(...recipe.checkOptions(values))
   return { values, errors }
 }
 
