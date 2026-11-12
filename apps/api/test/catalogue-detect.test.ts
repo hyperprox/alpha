@@ -121,7 +121,7 @@ test('catalogue: the list leaves out the website recipes (sent apart for the Web
   const list = (await a.inject({ url: '/' })).json().data
   assert.ok(list.recipes.length > 0)
   assert.ok(list.recipes.every((r: any) => r.category !== 'web'), 'no web recipe in the catalogue')
-  assert.deepEqual(list.websites.map((r: any) => r.id).sort(), ['static-site', 'wordpress'])
+  assert.deepEqual(list.websites.map((r: any) => r.id).sort(), ['ghost', 'static-site', 'wordpress'])
   assert.equal(list.recipes.find((r: any) => r.id === 'nextcloud').detectable, true)
   assert.equal((await a.inject({ url: '/detected' })).statusCode, 200)
   role = 'operator'

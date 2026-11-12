@@ -22,13 +22,14 @@ import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { Page, HudHeader, Panel, Pill, Tiles, styles } from '@/components/visual/kit'
 import { NewSiteWizard, type SiteRecipe } from '@/components/sites/NewSiteWizard'
 import { DeleteSiteDialog } from '@/components/sites/DeleteSiteDialog'
+import { GhostCard } from '@/components/sites/GhostCard'
 // Site metrics: each card's visitors today and sparkline, and adopting a site HyperProx did not make.
 import { SiteSparkRow } from '@/components/sites/metrics/SiteCards'
 import { AdoptSiteDialog } from '@/components/sites/metrics/AdminTools'
 import { SitesOverview } from '@/components/sites/metrics/SitesOverview'
 import ms from '@/components/sites/metrics/metrics.module.css'
 import type { SiteSummary } from '@/components/sites/metrics/types'
-const ADOPTED_LABEL: Record<string, string> = { 'adopted-static': 'Static (adopted)', 'adopted-wordpress': 'WordPress (adopted)', 'adopted-other': 'Adopted' }
+const ADOPTED_LABEL: Record<string, string> = { 'adopted-static': 'Static (adopted)', 'adopted-wordpress': 'WordPress (adopted)', 'adopted-ghost': 'Ghost (adopted)', 'adopted-other': 'Adopted' }
 
 interface Site {
   id: string; recipeId: string; name: string; vmid: number; node: string; ip: string | null
@@ -184,9 +185,11 @@ export default function SitesPage() {
               </div>
               {metrics[s.id] && <SiteSparkRow site={metrics[s.id]} />}
               <Tiles label={`${s.name} facts`} items={[{ label: 'CT', value: s.vmid }, { label: 'node', value: s.node }, { label: 'address', value: s.ip ?? '—' }]} />
+              {s.recipeId === 'ghost' && <GhostCard siteId={s.id} name={s.name} />}
               <div className={styles.row} style={{ flexWrap: 'wrap', gap: 8 }}>
                 {(s.url ?? s.localUrl) && <a className={`${styles.btn} ${styles.btnPri}`} href={s.url ?? s.localUrl!} target="_blank" rel="noreferrer">Open site</a>}
                 {s.recipeId === 'wordpress' && <button type="button" className={styles.btn} onClick={() => void openAdmin(s)}>Open WordPress admin</button>}
+                {(s.recipeId === 'ghost' || s.recipeId === 'adopted-ghost') && s.adminUrl && <a className={styles.btn} href={s.adminUrl} target="_blank" rel="noreferrer">Open Ghost admin</a>}
                 {s.vaultItem && <button type="button" className={styles.btn} onClick={() => void reveal(s)}>Reveal password</button>}
                 {s.recipeId === 'static-site' && <button type="button" className={styles.btn} disabled={busy === s.id + 'p'} onClick={() => void pull(s)}>{busy === s.id + 'p' ? 'Pulling…' : 'Pull now'}</button>}
                 <Link href={`/sites/${encodeURIComponent(s.id)}`} className={styles.btn} style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}>Metrics</Link>
@@ -198,7 +201,7 @@ export default function SitesPage() {
               )}
               {shown && (
                 <div className={styles.callout}>
-                  {Object.entries(shown).filter(([k]) => /^(admin_user|admin_password|db_password)$/.test(k)).map(([k, v]) => (
+                  {Object.entries(shown).filter(([k]) => /^(admin_user|admin_password|db_password|db_root_password)$/.test(k)).map(([k, v]) => (
                     <div key={k} className={styles.row} style={{ gap: 8 }}>
                       <span className="font-mono" style={{ fontSize: 12, color: 'var(--text-muted)', minWidth: 110 }}>{k.replace('_', ' ')}</span>
                       <code className="select-all font-mono" style={{ fontSize: 12, color: 'var(--text-bright)', overflowWrap: 'anywhere' }}>{v}</code>

@@ -70,7 +70,12 @@ export interface CfRecordBody {
   data?: Record<string, unknown>
 }
 
-export interface TokenStatus { id: string | null; status: string; expires_on?: string | null; not_before?: string | null }
+export interface TokenStatus {
+  id: string | null; status: string; expires_on?: string | null; not_before?: string | null
+  /** A user's token (My Profile → API Tokens) or an account-owned token (Manage Account → API Tokens). */
+  owner?: 'user' | 'account'
+  account?: { id: string; name: string }
+}
 
 type Query = Record<string, string | number | undefined>
 
@@ -151,21 +156,57 @@ export class CloudflareClient {
 
   // --- The credential -------------------------------------------------------------------
 
-  /** A token's status. With a Global API Key there is no token to verify; the account answering is the check. */
+  /**
+   * A token's status. A user's token verifies at /user/tokens/verify; an account-owned token gets "Invalid API
+   * Token" (code 1000) there and verifies at /accounts/{id}/tokens/verify instead, so on a refusal the accounts
+   * the token can see are tried one by one. The first error is thrown only when neither way verifies it.
+   * With a Global API Key there is no token to verify; the account answering is the check.
+   */
   async verify(): Promise<TokenStatus> {
     if (this.authKind === 'global-key') {
       await this.req('GET', ['user'])
       return { id: null, status: 'active' }
     }
-    const { result } = await this.req<any>('GET', ['user', 'tokens', 'verify'])
-    return { id: result?.id ? String(result.id) : null, status: String(result?.status ?? 'unknown'), expires_on: result?.expires_on ?? null, not_before: result?.not_before ?? null }
+    const status = (result: any, extra: Partial<TokenStatus>): TokenStatus => ({ id: result?.id ? String(result.id) : null,
+      status: String(result?.status ?? 'unknown'), expires_on: result?.expires_on ?? null, not_before: result?.not_before ?? null, ...extra })
+    try {
+      const { result } = await this.req<any>('GET', ['user', 'tokens', 'verify'])
+      return status(result, { owner: 'user' })
+    } catch (e) {
+      // Only a refused credential is worth a second way; an outage or a rate limit is reported as it is.
+      if (!(e instanceof CloudflareError) || e.statusCode !== 400) throw e
+      const accounts = await this.listAccounts().catch(() => null)
+      if (!accounts?.length) throw e
+      let fallback: TokenStatus | null = null
+      for (const a of accounts) {
+        let id: string
+        try { id = checkedId(a.id, 'account id') } catch { continue }
+        try {
+          const { result } = await this.req<any>('GET', ['accounts', id, 'tokens', 'verify'])
+          const s = status(result, { owner: 'account', account: { id, name: String(a.name ?? id) } })
+          if (s.status === 'active') return s
+          fallback ??= s
+        } catch { /* not this account's token */ }
+      }
+      if (fallback) return fallback
+      throw e
+    }
   }
 
-  /** The names of a token's permission groups. Needs "API Tokens: Read", which most DNS tokens lack: null then. */
-  async tokenPermissions(id: string | null): Promise<string[] | null> {
+  /** The accounts this credential can see. */
+  async listAccounts(): Promise<Array<{ id: string; name: string }>> {
+    return this.paged<{ id: string; name: string }>(['accounts'], {}, 50)
+  }
+
+  /**
+   * The names of a token's permission groups. Needs "API Tokens: Read" (on the account, for an account-owned
+   * token), which most DNS tokens lack: null then.
+   */
+  async tokenPermissions(id: string | null, accountId?: string): Promise<string[] | null> {
     if (!id) return null
     try {
-      const { result } = await this.req<any>('GET', ['user', 'tokens', checkedId(id, 'token id')])
+      const path = accountId ? ['accounts', checkedId(accountId, 'account id'), 'tokens', checkedId(id, 'token id')] : ['user', 'tokens', checkedId(id, 'token id')]
+      const { result } = await this.req<any>('GET', path)
       const names = (Array.isArray(result?.policies) ? result.policies : [])
         .flatMap((p: any) => (Array.isArray(p?.permission_groups) ? p.permission_groups : []).map((g: any) => String(g?.name ?? '')))
         .filter(Boolean)
@@ -220,21 +261,30 @@ export interface CloudflareTestResult {
  * account has none until a domain is added in Cloudflare.
  */
 export async function testCloudflare(client: CloudflareClient, now = Date.now()): Promise<CloudflareTestResult> {
-  const v = await client.verify()
+  let v: TokenStatus
+  try { v = await client.verify() } catch (e) {
+    // The DNS page lists zones with this same token; the Test must not call it invalid when that works.
+    const zones = await client.listZones().catch(() => null)
+    if (!zones) throw e
+    return result(client, zones, null, [`Cloudflare would not verify the token itself (${(e as Error).message}), but it lists zones, so DNS works with it.`], 'Token works')
+  }
   const expired = v.status === 'expired' || (v.expires_on ? Date.parse(v.expires_on) <= now : false)
   if (expired) throw new CloudflareError(`The Cloudflare token has expired${v.expires_on ? ` (${v.expires_on.slice(0, 10)})` : ''}. Make a new one in Cloudflare and save it here.`, 400)
   if (v.status !== 'active') throw new CloudflareError(`The Cloudflare token is ${v.status}, not active. Re-enable it or make a new one.`, 400)
   if (v.not_before && Date.parse(v.not_before) > now) throw new CloudflareError(`The Cloudflare token is not valid until ${v.not_before.slice(0, 10)}.`, 400)
 
   const zones = await client.listZones()
+  const permissions = await client.tokenPermissions(v.id, v.owner === 'account' ? v.account?.id : undefined)
+  const label = v.owner === 'account' ? `Account token works (account ${v.account?.name})` : 'Token works'
+  const first = client.authKind === 'token'
+    ? `${v.owner === 'account' ? 'Account-owned token' : 'Token'} is active${v.expires_on ? `, expires ${v.expires_on.slice(0, 10)}` : ', no expiry'}.`
+    : 'Global API Key accepted. A scoped API token (Zone: Read, DNS: Edit) is safer.'
+  return result(client, zones, permissions, [first], label)
+}
+
+function result(client: CloudflareClient, zones: CfZone[], permissions: string[] | null, lead: string[], label: string): CloudflareTestResult {
   const names = zones.map(z => String(z.name).toLowerCase())
-  const permissions = await client.tokenPermissions(v.id)
-  const details: string[] = [
-    client.authKind === 'token'
-      ? `Token is active${v.expires_on ? `, expires ${v.expires_on.slice(0, 10)}` : ', no expiry'}.`
-      : 'Global API Key accepted. A scoped API token (Zone: Read, DNS: Edit) is safer.',
-    `Zone: Read works (${names.length} zone${names.length === 1 ? '' : 's'} listed).`,
-  ]
+  const details: string[] = [...lead, `Zone: Read works (${names.length} zone${names.length === 1 ? '' : 's'} listed).`]
   if (permissions?.length) details.push(`Permissions: ${permissions.join(', ')}.`)
   else if (client.authKind === 'token') details.push('Cloudflare does not show this token its own permissions (that needs "API Tokens: Read"). Give it Zone: Read and DNS: Edit.')
   const inactive = zones.filter(z => z.status !== 'active')
@@ -242,8 +292,8 @@ export async function testCloudflare(client: CloudflareClient, now = Date.now())
 
   if (!names.length) {
     details.push('If you expected domains here, check the token is allowed to read the zones (Zone: Read on all zones or the ones you want).')
-    return { ok: true, message: 'Token works, but this account has no domains yet.', details, zones: [], permissions }
+    return { ok: true, message: `${label}, but this account has no domains yet.`, details, zones: [], permissions }
   }
   const shown = names.slice(0, 5).join(', ') + (names.length > 5 ? `, and ${names.length - 5} more` : '')
-  return { ok: true, message: `Token works: ${names.length} zone${names.length === 1 ? '' : 's'} (${shown}).`, details, zones: names, permissions }
+  return { ok: true, message: `${label}: ${names.length} zone${names.length === 1 ? '' : 's'} (${shown}).`, details, zones: names, permissions }
 }

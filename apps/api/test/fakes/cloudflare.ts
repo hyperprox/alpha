@@ -17,6 +17,11 @@ export class FakeCloudflare {
   validToken = 'cf-token-good-0000000000000000000000000'
   /** Zones per page Cloudflare returns, small so pagination is exercised. */
   pageSize = 2
+  /** Who owns the token: a user's token verifies at /user/tokens/verify, an account's only at /accounts/{id}/tokens/verify. */
+  tokenOwner: 'user' | 'account' = 'user'
+  accounts: Array<{ id: string; name: string }> = [{ id: hexId(), name: 'Example Account' }]
+  /** The account that owns an account-owned token: the first one unless a test says otherwise. */
+  owningAccount: string | null = null
   /** Answer the next N requests with 429. */
   rateLimit = 0
   retryAfter = '0'
@@ -52,6 +57,16 @@ export class FakeCloudflare {
     const q = url.searchParams
 
     if (p[0] === 'user' && p.length === 1) return json(200, { success: true, result: { id: 'u', email: 'admin@example.com' } })
+    const invalid = () => json(401, { success: false, errors: [{ code: 1000, message: 'Invalid API Token' }], messages: [], result: null })
+    if (p[0] === 'accounts' && p.length === 1) return json(200, { success: true, ...this.page(this.accounts, q) })
+    if (p[0] === 'accounts' && p[2] === 'tokens') {
+      const owner = this.owningAccount ?? this.accounts[0]?.id
+      if (this.tokenOwner !== 'account' || p[1] !== owner) return invalid()
+      if (p[3] === 'verify') return json(200, { success: true, errors: [], result: { id: this.token.id, status: this.token.status, expires_on: this.token.expires_on, not_before: this.token.not_before } })
+      if (!this.permissions) return json(403, { success: false, errors: [{ code: 9109, message: 'Unauthorized to access requested resource' }] })
+      return json(200, { success: true, result: { id: p[3], policies: [{ permission_groups: this.permissions.map(name => ({ id: hexId(), name })) }] } })
+    }
+    if (p[0] === 'user' && p[1] === 'tokens' && this.tokenOwner === 'account') return invalid()
     if (p[0] === 'user' && p[1] === 'tokens' && p[2] === 'verify') return json(200, { success: true, errors: [], result: { id: this.token.id, status: this.token.status, expires_on: this.token.expires_on, not_before: this.token.not_before } })
     if (p[0] === 'user' && p[1] === 'tokens' && p.length === 3) {
       if (!this.permissions) return json(403, { success: false, errors: [{ code: 9109, message: 'Unauthorized to access requested resource' }] })
