@@ -120,7 +120,9 @@ const add = (c: Counts, from: Counts) => { for (const [k, v] of Object.entries(f
  */
 export function settle(day: Map<number, VisitorHour>): { changed: Set<number>; lists: Map<number, ListDelta> } {
   const rows = [...day.values()]
-  const browser = behavesLikeBrowser(rows)
+  // Confirmation is kept for the day: the time lists are trimmed, so a person opening many cached pages would
+  // otherwise drift back to unconfirmed once the page their assets matched falls off the list.
+  const browser = rows.some(r => r.person) || behavesLikeBrowser(rows)
   const changed = new Set<number>()
   const lists = new Map<number, ListDelta>()
   for (const [h, r] of day) {

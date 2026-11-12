@@ -15,6 +15,7 @@ import { classifyUa, isBotUa, isOwnUa, isProbePath, isSpoofedUa, probeKind } fro
 import { aggregateLines, emptyAgg, mergeAgg, percentileMs, referrerHost, isPageView, isAssetLoad, isRevisit, trimTop, RT_BOUNDS, RULES } from '../src/lib/site-metrics/aggregate'
 import { behavesLikeBrowser, newVisit } from '../src/lib/site-metrics/people'
 import { ownUserAgent } from '../src/lib/own-user-agent'
+import { ownRequestPaths } from '../src/lib/site-metrics/own-paths'
 import { realHealthDeps } from '../src/lib/site-metrics/health'
 import { createServer } from 'node:http'
 import { visitorHash, saltDayAllowed, makeSalt } from '../src/lib/site-metrics/visitors'
@@ -569,13 +570,30 @@ test('people: HyperProx\'s own requests are counted only as such, never as peopl
   const lines = [
     combined('10.0.0.51', '/api/health', 404, 'HyperProx-catalogue-detect'), combined('10.0.0.51', '/status.php', 404, 'HyperProx-catalogue-detect'),
     combined('10.0.0.51', '/', 200, ownUserAgent('site-check')),
-    // HyperProx never asks for secrets: a scanner borrowing its name is a scanner.
-    combined('203.0.113.7', '/.env', 404, 'HyperProx-catalogue-detect'),
+    // The name is public: on anything HyperProx does not ask for, it is a scanner borrowing it.
+    combined('203.0.113.7', '/.env', 404, 'HyperProx-catalogue-detect'), combined('203.0.113.7', '/phpmyadmin/', 404, ownUserAgent('site-check')),
+    combined('203.0.113.7', '/info.php', 404, 'HyperProx-x/1'), combined('203.0.113.7', '/api/secret', 404, 'HyperProx-x/1'),
   ].map(l => parseLogLine(l)!)
-  const a = [...aggregateLines(lines, { ...noHash, kind: 'static' }).hours.values()][0].agg
+  const a = [...aggregateLines(lines, { ...noHash, kind: 'static', ownPaths: ownRequestPaths() }).hours.values()][0].agg
   assert.equal(a.own, 3)
-  assert.equal(a.requests, 1); assert.equal(a.bots, 1); assert.equal(a.s4xx, 1); assert.equal(a.s2xx, 0)
-  assert.deepEqual(a.notFound, {}); assert.deepEqual(a.probes, { secrets: 1, 'secrets:refused': 1 })
+  assert.equal(a.requests, 4); assert.equal(a.bots, 4); assert.equal(a.s4xx, 4); assert.equal(a.s2xx, 0)
+  assert.deepEqual(a.notFound, {})
+  assert.deepEqual(a.probes, { secrets: 1, 'secrets:refused': 1, admin: 1, 'admin:refused': 1, php: 1, 'php:refused': 1, api: 1, 'api:refused': 1 })
+  // Without the list of HyperProx's own paths, its detection on a static site would look like probes.
+  const bare = [...aggregateLines(lines.slice(0, 2), { ...noHash, kind: 'static' }).hours.values()][0].agg
+  assert.equal(bare.own, 0)
+})
+
+test('own paths: everything HyperProx asks sites for is listed, never a secret, and only two app logins look like admin', () => {
+  const paths = ownRequestPaths()
+  for (const p of ['/', '/status.php', '/api/health', '/api/tags', '/auth/login', '/wp-login.php', '/alive']) assert.ok(paths.has(p), p)
+  for (const p of paths) {
+    for (const kind of ['static', 'wordpress', 'other'] as const) {
+      const k = probeKind(p, kind, 404)
+      assert.notEqual(k, 'secrets', `${p} on ${kind}`)
+      if (k === 'admin') assert.ok(['/wp-login.php', '/auth/login'].includes(p), `${p} on ${kind} is an admin probe`)
+    }
+  }
 })
 
 test('people: an asset within two minutes confirms a page view; later, never, or only a favicon does not', () => {
@@ -630,6 +648,18 @@ test('collector: a page view in one read and its images in the next still make a
   h = (await hourOf(store, '2026-11-11T10:00:00Z'))!
   assert.equal(h.visitors, 1); assert.deepEqual(h.pages, { '/guide': 1, '/more': 1 }); assert.deepEqual(h.browsers, { Chrome: 1 })
   assert.equal(JSON.stringify([...store.visitorMap.values()].map(m => [...m.values()])).includes('198.51.100'), false, 'no address kept')
+})
+
+test('collector: a confirmed person stays one for the day, however many cached pages they open', async () => {
+  const store = new MemoryMetricsStore()
+  await read(store, [combined('198.51.100.3', '/', 200, CHROME, '-', at('10:00:00')), combined('198.51.100.3', '/site.css', 200, CHROME, '-', at('10:00:01'))])
+  assert.equal((await hourOf(store, '2026-11-11T10:00:00Z'))!.visitors, 1)
+  // 18 more pages, assets all from the browser's cache (no requests), over two reads: more than the 16 times kept.
+  const pages = Array.from({ length: 18 }, (_, i) => combined('198.51.100.3', `/p${i}`, 200, CHROME, '-', at(`10:${String(6 + i).padStart(2, '0')}:00`)))
+  await read(store, pages.slice(0, 9)); await read(store, pages.slice(9))
+  const h = (await hourOf(store, '2026-11-11T10:00:00Z'))!
+  assert.equal(h.visitors, 1); assert.equal(h.unconfirmed, 0); assert.equal(h.pageViews, 19); assert.equal(h.human, 20)
+  assert.equal((await dayOf(store))!.visitors, 1)
 })
 
 test('collector: a probe in a later read turns the visitor into a bot for that hour, earlier requests included', async () => {
@@ -754,7 +784,7 @@ test('fixture: a site\'s launch day, read the way the collector reads it, finds 
   assert.equal(d.probes.secrets, 24); assert.equal(d.probes['secrets:refused'], 24)
   assert.deepEqual(d.exposed, {}, 'nothing a scanner asked for was given')
   // The same log read in one go gives the same answer.
-  const one = [...aggregateLines(raw.map(l => parseLogLine(l)!), { visitorHash: (_d, c, u) => `${c}|${u}`, ownHosts: ['example.com'], kind: 'static' }).hours.values()]
+  const one = [...aggregateLines(raw.map(l => parseLogLine(l)!), { visitorHash: (_d, c, u) => `${c}|${u}`, ownHosts: ['example.com'], kind: 'static', ownPaths: ownRequestPaths() }).hours.values()]
     .reduce((x, h) => mergeAgg(x, h.agg), emptyAgg())
   assert.deepEqual([one.human, one.bots, one.unconfirmedReq, one.own], [d.human, d.bots, d.unconfirmedReq, d.own])
 })

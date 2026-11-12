@@ -948,7 +948,9 @@ short, years out of date, or one of the fakes scanners copy from each other; Chr
 HTTP, or a scanner's path makes the visitor a bot for that whole hour, page views and images included.
 
 **HyperProx's own requests are never counted.** Its checks and detection say `HyperProx-…` in the
-User-Agent, and the Metrics tab only shows how many there were ("HyperProx checks").
+User-Agent, and the Metrics tab only shows how many there were ("HyperProx checks"). That name is believed
+only for ordinary requests and the few paths HyperProx itself asks for; anyone using it to ask for a secret
+file, an admin panel or anything else a scanner wants is counted as a scanner.
 
 **Scanner probes** are requests for things a website should not have or this one does not: secret files
 (`.env`, `.git`, keys, backups), admin panels and consoles (`/phpmyadmin`, `/actuator`, WordPress's admin on
@@ -985,7 +987,8 @@ message when a problem starts and one when it clears: the site is **down** (2 fa
 errors** above 5% of the requests in the hour so far, or the last hour while this one is quiet (from 20 requests), the **certificate** has under 14 days left,
 and a **traffic spike** of 10 times the usual hour of people's requests (the week before, from 100 requests).
 Bots and scanners never make a traffic spike: when they burst instead, the Metrics tab shows a **scanner burst**
-note, and nothing is sent. Each limit can be
+note, and nothing is sent. Both need a day of hours counted the new way, so after this update they stay quiet for
+about the first day. Each limit can be
 changed or turned off per site on its **Alerts** tab. The Monitoring page shows a **Websites** panel and the
 site alerts in its feed. Prometheus scrapes `hyperprox_site_*` gauges (up, check latency, people, unconfirmed visitors,
 page views, requests by class, bot requests, scanner probes and probes answered, p95, certificate days), labelled by site name only, through the existing

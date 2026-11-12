@@ -22,6 +22,7 @@ import type { NotifyEventInput } from '../notify/types'
 import { listSites, type SiteRecord } from '../sites'
 import { aggregateLines, dayKey, emptyAgg, hourStart, mergeAgg, sumAggs, RULES, type Agg, type HourBatch } from './aggregate'
 import { mergeVisit, settle, type VisitorHour } from './people'
+import { ownRequestPaths } from './own-paths'
 import { parseLogLine, splitLines, type LogLine } from './log-parser'
 import { parseReadOutput, readLogScript, READ_CHUNK } from './read-script'
 import { makeSalt, saltDayAllowed, visitorHash } from './visitors'
@@ -100,7 +101,7 @@ export async function countLines(site: SiteRecord, st: SiteState, raw: string[],
   }
   const host = publicHost(site)
   const res = aggregateLines(parsed, {
-    ownHosts: host ? [host] : [], kind: st.kind, homeSizes: st.homeSizes,
+    ownHosts: host ? [host] : [], kind: st.kind, homeSizes: st.homeSizes, ownPaths: ownRequestPaths(),
     visitorHash: (day, client, ua) => { const s = salts.get(day); return s ? visitorHash(s, site.id, client, ua) : null },
   })
   st.homeSizes = res.homeSizes
