@@ -20,7 +20,7 @@ import { FINAL, initialState, readState, writeJsonAtomic, STEP_LABELS, type Upda
 import { makeRedactor, envSecrets, type Redactor } from './redact'
 import { findUpdate, type AvailableUpdate, type CheckResult, type Installed } from './check'
 import { RateLimitedError, type Upstream } from './upstream'
-import { inWindow, mergeSettings, SettingsStore, type SelfUpdateSettings } from './settings'
+import { inWindow, mergeSettings, SettingsError, SettingsStore, type SelfUpdateSettings } from './settings'
 import { upstreamAllowed } from './runner'
 
 export interface Refusal { code: string; text: string; detail?: string[] }
@@ -59,6 +59,7 @@ const PATHS = (dataDir: string) => ({
   check:    path.join(dataDir, 'check.json'),
   state:    path.join(dataDir, 'state.json'),
   reported: path.join(dataDir, 'reported.json'),
+  attempts: path.join(dataDir, 'auto-attempts.json'),
   jobs:     path.join(dataDir, 'jobs'),
   logs:     path.join(dataDir, 'logs'),
 })
@@ -72,7 +73,6 @@ export class SelfUpdateService {
   private timer: NodeJS.Timeout | null = null
   private checking: Promise<CheckResult> | null = null
   private redact: Redactor
-  private autoTried = new Set<string>()
   constructor(private d: SelfUpdateDeps) {
     this.p = PATHS(d.dataDir)
     this.store = new SettingsStore(this.p.settings)
@@ -85,10 +85,27 @@ export class SelfUpdateService {
 
   // --- settings --------------------------------------------------------------------------------------
 
-  settings(): SelfUpdateSettings { return this.store.load() }
+  /** The settings in effect: with trusted keys configured in .env, signatures are required whatever the file says. */
+  settings(): SelfUpdateSettings {
+    const s = this.store.load()
+    if (this.d.config.trustedKeys) s.requireSigned = true
+    return s
+  }
+  /** Settings the page cannot change, and why. */
+  locks(): { requireSigned?: string } {
+    return this.d.config.trustedKeys ? { requireSigned: 'Trusted keys are configured in .env (HYPERPROX_UPDATE_TRUSTED_KEYS), so signed releases are always required.' } : {}
+  }
+  /** Why automatic install cannot be turned on here, or null. */
+  autoInstallBlocked(s = this.settings()): string | null {
+    if (!this.d.config.trustedKeys || !s.requireSigned) return 'Automatic install needs every release checked against trusted keys: set HYPERPROX_UPDATE_TRUSTED_KEYS in .env (an SSH allowed_signers or GPG key file). Until then, updates are installed by a person.'
+    return null
+  }
   async saveSettings(patch: unknown, by: string): Promise<SelfUpdateSettings> {
     const before = this.store.load()
+    if (this.d.config.trustedKeys && (patch as any)?.requireSigned === false) throw new SettingsError(this.locks().requireSigned!)
     const next = mergeSettings(before, patch)
+    if (this.d.config.trustedKeys) next.requireSigned = true
+    if (next.autoInstall) { const why = this.autoInstallBlocked(next); if (why) throw new SettingsError(why) }
     this.store.save(next)
     const changed = Object.keys(next).filter(k => JSON.stringify((next as any)[k]) !== JSON.stringify((before as any)[k]))
     await this.d.audit('self-update.settings', { by, changed, channel: next.channel, autoInstall: next.autoInstall, requireSigned: next.requireSigned })
@@ -137,8 +154,8 @@ export class SelfUpdateService {
     } else {
       for (const up of this.d.upstreams()) {
         try {
-          const r = await findUpdate(inst, s.channel, up)
-          result = { checkedAt: this.now().toISOString(), source: up.where, available: r.available, note: r.note, error: null }
+          const r = await findUpdate(inst, s.channel, up, { includePrereleases: s.includePrereleases })
+          result = { checkedAt: this.now().toISOString(), source: up.where, fromMirror: !!up.mirror, available: r.available, note: r.note, error: null }
           break
         } catch (e: any) {
           errors.push(e instanceof RateLimitedError ? `${up.where}: rate limit reached until ${e.until.toISOString()}` : `${up.where}: ${e?.message ?? e}`)
@@ -235,7 +252,7 @@ export class SelfUpdateService {
     const need = this.d.minFreeMiB ?? 3072
     if (free !== null && free < need) refusals.push({ code: 'disk', text: `Only ${free} MiB free; an update needs ${need} MiB.` })
     if (available) {
-      if (available.flags.unknownBase) warnings.push(`Upstream does not have this install's commit ${inst.sha.slice(0, 7)} (local commits, or upstream rewrote its history). The update moves ${inst.branch ?? 'the checkout'} to ${available.label}; the commit being left is kept as refs/hyperprox-update/previous.`)
+      if (available.flags.unknownBase) warnings.push(`Upstream does not contain this install's commit ${inst.sha.slice(0, 7)} (local commits, or upstream rewrote its history). The update would move ${inst.branch ?? 'the checkout'} to ${available.label}, which may be older; type its name to confirm. The commit being left is kept as refs/hyperprox-update/previous.`)
       if (available.flags.migrations.length) warnings.push(`${available.flags.migrations.length} database migration${available.flags.migrations.length === 1 ? '' : 's'} will run. Migrations only go forward: if the update then fails, the database is restored from the backup taken first, and anything written in between is lost.`)
       else if (available.flags.filesUnknown) warnings.push('Upstream did not say which files change; whether migrations run is checked after fetching.')
       if (available.flags.keyholder) warnings.push('This version changes the keyholder, so HyperProx locks once when it restarts: someone has to sign in again.')
@@ -255,9 +272,10 @@ export class SelfUpdateService {
       `${STEP_LABELS.fetch}: ${available ? `${available.label} (${available.sha.slice(0, 7)})` : 'nothing'} from ${this.d.config.repoUrl}${this.d.config.mirrorUrl ? ` (mirror: ${this.d.config.mirrorUrl})` : ''}; checked into a staging worktree before anything in it runs`,
       `${STEP_LABELS.build}, ${STEP_LABELS.migrate.toLowerCase()} and restart: deploy.sh from the new version, as when updating by hand`,
       `${STEP_LABELS.health}`,
-      'If anything after the checkout fails: back to the previous commit, rebuilt and restarted; the database is restored only if this update ran migrations',
+      'If anything after the checkout fails: back to the previous commit, rebuilt and restarted; the database is restored from the backup only if its record of applied migrations changed',
     ]
-    return { installed: inst, target: available, refusals, warnings, steps, disk: { freeMiB: free, needMiB: need }, untracked }
+    return { installed: inst, target: available, refusals, warnings, steps, disk: { freeMiB: free, needMiB: need }, untracked,
+             confirmUnrelated: available?.flags.unknownBase ? available.label : null }
   }
 
   private async freeMiB(): Promise<number | null> {
@@ -267,13 +285,25 @@ export class SelfUpdateService {
   }
 
   /** Start an update to `sha`, which must be the update the last check offered. */
-  async install(by: string, sha: string, how: 'manual' | 'auto' = 'manual'): Promise<UpdateState> {
+  async install(by: string, sha: string, how: 'manual' | 'auto' = 'manual', opts: { confirmUnrelated?: string } = {}): Promise<UpdateState> {
     const check = this.lastCheck()
     const available = check?.available ?? null
     const settings = this.settings()
     const { refusals, inst } = await this.refusals(available, settings)
     if (available && sha !== available.sha) refusals.push({ code: 'stale_target', text: 'The update on offer has changed since this page loaded. Check again.' })
     if (how === 'auto' && (available?.channel !== 'stable' || settings.channel !== 'stable')) refusals.push({ code: 'auto_stable_only', text: 'Automatic install only installs stable releases.' })
+    if (how === 'auto') {
+      const blocked = this.autoInstallBlocked(settings)
+      if (blocked) refusals.push({ code: 'auto_unsigned', text: blocked })
+      if ((check as any)?.fromMirror) refusals.push({ code: 'auto_mirror', text: 'This update was found on the mirror, not the configured upstream; automatic install never takes it from a mirror.' })
+      if (this.autoAttemptRefused(sha)) refusals.push({ code: 'auto_attempted', text: 'Automatic install already tried this version and it did not succeed; it is not tried again on its own.' })
+    }
+    // A move to a commit that does not contain the installed one: a person types the label, and never automatically.
+    const unrelated = !!available?.flags.unknownBase
+    if (unrelated && how === 'auto') refusals.push({ code: 'auto_unrelated', text: 'This update does not contain the installed commit; automatic install never makes that move.' })
+    else if (unrelated && opts.confirmUnrelated !== available!.label) {
+      refusals.push({ code: 'confirm_unrelated', text: `Upstream does not contain this install's commit ${inst.sha.slice(0, 7)} (other history, or local commits). To move to ${available!.label} anyway, type "${available!.label}" to confirm.` })
+    }
     const free = await this.freeMiB()
     const need = this.d.minFreeMiB ?? 3072
     if (free !== null && free < need) refusals.push({ code: 'disk', text: `Only ${free} MiB free; an update needs ${need} MiB.` })
@@ -286,8 +316,11 @@ export class SelfUpdateService {
       repoUrl: this.d.config.repoUrl, mirrorUrl: this.d.config.mirrorUrl, requireSigned: settings.requireSigned, trustedKeys: this.d.config.trustedKeys,
       stateFile: this.p.state, logFile: path.join(this.p.logs, `${id}.log`), backupDir: this.d.backupDir, keepBackups: 3, minFreeMiB: need,
       health: this.d.health ?? { api: 'http://127.0.0.1:3002/health', frontend: 'http://127.0.0.1:3000/login', nginx: 'https://127.0.0.1/login', timeoutMs: 180_000 },
-      lockHeld: true, createdAt: this.now().toISOString(),
+      lockHeld: true, createdAt: this.now().toISOString(), how, allowUnrelated: unrelated && how === 'manual',
     }
+    // One automatic attempt per release, kept on disk: a release that rolled back is not retried every minute, nor
+    // after a restart (autoAttemptRefused).
+    if (how === 'auto') this.recordAutoAttempt(sha)
     // Audited before anything starts: an update that cannot be recorded does not run.
     await this.d.audit('self-update.start', { by, how, from: inst.sha, fromVersion: inst.version, to: job.target.sha, toLabel: job.target.label, channel: job.target.channel, job: id })
     fs.mkdirSync(this.p.jobs, { recursive: true, mode: 0o700 })
@@ -339,11 +372,24 @@ export class SelfUpdateService {
     const due = !last || last.channel !== s.channel || Date.parse(last.checkedAt) + s.checkEveryHours * 3_600_000 <= this.now().getTime()
     const result = due ? await this.check() : last!
     if (!s.autoInstall || s.channel !== 'stable' || !result.available || result.available.channel !== 'stable') return
-    if (!inWindow(s.window, this.now()) || this.autoTried.has(result.available.sha)) return
-    // One attempt per release: a failed (rolled back) one is not retried every minute.
-    this.autoTried.add(result.available.sha)
+    if (!inWindow(s.window, this.now()) || this.autoAttemptRefused(result.available.sha)) return
     try { await this.install('automatic install', result.available.sha, 'auto') }
     catch (e: any) { this.d.log?.(`[self-update] automatic install of ${result.available.label} not started: ${e instanceof RefusedError ? e.refusals.map(r => r.text).join(' ') : e?.message ?? e}`) }
+  }
+
+  private autoAttempts(): Record<string, { at: string }> {
+    try { const j = JSON.parse(fs.readFileSync(this.p.attempts, 'utf8')); return j && typeof j === 'object' ? j : {} } catch { return {} }
+  }
+  private recordAutoAttempt(sha: string): void {
+    const a = this.autoAttempts()
+    a[sha] = { at: this.now().toISOString() }
+    writeJsonAtomic(this.p.attempts, a)
+  }
+  /** An automatic install of `sha` was tried before and its last run did not succeed. */
+  autoAttemptRefused(sha: string): boolean {
+    if (!this.autoAttempts()[sha]) return false
+    const last = readState(this.p.state)
+    return !(last && last.target.sha === sha && last.status === 'succeeded')
   }
 
   start(everyMs = 60_000): void {

@@ -34,6 +34,8 @@ export interface Comparison {
 
 export interface Upstream {
   source: Source
+  /** A mirror of the configured upstream rather than the upstream itself: never used by the automatic install. */
+  mirror?: boolean
   /** Where it is, for the page ("github.com/hyperprox/alpha"). */
   where: string
   releases(): Promise<Release[]>
@@ -196,6 +198,7 @@ export class GitHubUpstream implements Upstream {
 
 export class GitLabUpstream implements Upstream {
   source: Source = 'gitlab'
+  mirror = true
   where: string
   private api: string
   constructor(p: { base: string; project: string }, private d: HttpDeps) {
@@ -225,11 +228,18 @@ export class GitLabUpstream implements Upstream {
     return { sha: c.id, subject: c.title ?? firstLine(c.message), body: restLines(c.message), date: c.committed_date ?? null }
   }
   async compare(base: string, head: string): Promise<Comparison> {
+    if (base === head) return { status: 'identical', commits: [], files: [], total: 0 }
     try {
-      const c = await this.get(`/repository/compare?from=${encodeURIComponent(checkRef(base))}&to=${encodeURIComponent(checkRef(head))}`)
+      const q = (a: string, b: string) => `/repository/compare?from=${encodeURIComponent(checkRef(a))}&to=${encodeURIComponent(checkRef(b))}&straight=false`
+      const c = await this.get(q(base, head))
       const commits: CommitInfo[] = (c.commits ?? []).map((x: any) => ({ sha: x.id, subject: x.title ?? firstLine(x.message), body: restLines(x.message), date: x.committed_date ?? null }))
       const files = Array.isArray(c.diffs) ? c.diffs.map((f: any) => f.new_path) : null
-      return { status: commits.length ? 'ahead' : base === head ? 'identical' : 'unknown', commits, files, total: commits.length }
+      // GitLab's compare lists what head has that base does not; the other way round says whether base is
+      // ahead (a stale mirror behind this install), which must never be offered as an update.
+      const back = await this.get(q(head, base))
+      const behindBy = Array.isArray(back.commits) ? back.commits.length : 0
+      const status = commits.length && behindBy ? 'diverged' : commits.length ? 'ahead' : behindBy ? 'behind' : 'unknown'
+      return { status, commits, files, total: commits.length }
     } catch (e) {
       if (e instanceof UpstreamError && e.status === 404) return { status: 'unknown', commits: [], files: null, total: 0 }
       throw e
@@ -245,7 +255,7 @@ export class GitLabUpstream implements Upstream {
 export class GitUpstream implements Upstream {
   source: Source = 'git'
   where: string
-  constructor(private url: string, private dir: string, private sh: Shell, private allowFile = false) { this.where = url }
+  constructor(private url: string, private dir: string, private sh: Shell, private allowFile = false, public mirror = false) { this.where = url }
   private async git(args: string[], ok = [0]): Promise<string> {
     const r = await this.sh.run('git', ['-c', 'protocol.ext.allow=never', '-c', `protocol.file.allow=${this.allowFile ? 'always' : 'never'}`, ...args],
       { cwd: this.dir, env: { GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '/bin/false' }, timeoutMs: 120_000 })

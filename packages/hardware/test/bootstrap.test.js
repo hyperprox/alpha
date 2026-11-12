@@ -742,7 +742,29 @@ test('DNS: an existing HyperProx\'s Naming & addresses DNS is preferred; its tok
     assert.match(plain(ok.stdout), /DNS\s+10\.0\.0\.53, 10\.0\.0\.54 \(from Naming & addresses\)/)
     assert.match(createLine(c), /--nameserver 10\.0\.0\.53 10\.0\.0\.54/)
     assert.ok(!c.calls().includes('tok-naming-1'), 'the token is on no command line')
+    const call = c.calls().split('\n').find(l => l.includes('/api/catalogue/wizard/naming')) ?? ''
+    assert.match(call, /--proto =https/)
+    assert.doesNotMatch(call, /--insecure| -k /, 'the certificate is checked')
   } finally { c.cleanup() }
+  // A pinned key stands in for the CA check (HyperProx's self-signed certificate); a malformed pin, or http, is not used.
+  const PIN = 'sha256//' + 'A'.repeat(43) + '='
+  const p = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_AMD], resolv: 'nameserver 100.100.100.100\n' })
+  try {
+    const okPin = p.run(['-y', '--dry-run'], '', { HPX_API_URL: 'https://hyperprox.example', HPX_API_TOKEN: 'tok', HPX_API_PINNEDPUBKEY: PIN })
+    assert.equal(okPin.status, 0, okPin.stdout + okPin.stderr)
+    const call = p.calls().split('\n').find(l => l.includes('/api/catalogue/wizard/naming')) ?? ''
+    assert.match(call, new RegExp(`--insecure --pinnedpubkey ${PIN.replace(/[/+=]/g, '\\$&')}`))
+  } finally { p.cleanup() }
+  for (const extra of [{ HPX_API_URL: 'http://hyperprox.example', HPX_API_TOKEN: 'tok' }, { HPX_API_URL: 'https://hyperprox.example', HPX_API_TOKEN: 'tok', HPX_API_PINNEDPUBKEY: 'md5//x' }]) {
+    const q = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_AMD], resolv: 'nameserver 100.100.100.100\n' })
+    try {
+      const r = q.run(['-y', '--dry-run'], '', extra)
+      assert.equal(r.status, 0, r.stdout + r.stderr)
+      assert.ok(!q.calls().includes('/api/catalogue/wizard/naming'), 'not asked at all')
+      assert.match(plain(r.stdout + r.stderr), /HPX_API_(URL must be an https|PINNEDPUBKEY must be)/)
+      assert.ok(plain(r.stdout).includes(TAILSCALE_NOTE))
+    } finally { q.cleanup() }
+  }
   // Not reachable, or the wrong token: skipped, and the Tailscale rule applies.
   for (const extra of [{ HPX_API_URL: 'https://hyperprox.example', HPX_API_TOKEN: 'wrong' }, { HPX_API_URL: 'https://down.example', HPX_API_TOKEN: 'tok' }, {}]) {
     const d = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_AMD], resolv: 'nameserver 100.100.100.100\n' })

@@ -24,7 +24,7 @@ interface Available {
   signature: { annotated: boolean; signed: boolean | null; verifiedByHost: boolean | null } | null
 }
 interface Check { checkedAt: string; source: string | null; available: Available | null; note: string; error: string | null }
-interface Settings { channel: Channel; checkEveryHours: number; notify: boolean; requireSigned: boolean; autoInstall: boolean; window: { days: number[]; start: string; end: string } }
+interface Settings { channel: Channel; checkEveryHours: number; notify: boolean; requireSigned: boolean; includePrereleases: boolean; autoInstall: boolean; window: { days: number[]; start: string; end: string } }
 interface Step { id: string; label: string; status: 'pending' | 'running' | 'done' | 'failed' | 'skipped'; detail?: string }
 interface Job {
   id: string; status: 'running' | 'succeeded' | 'failed' | 'rolled-back' | 'rollback-failed' | 'interrupted'; by: string
@@ -34,11 +34,14 @@ interface Job {
 interface Status {
   installed: { version: string; sha: string; describe: string; branch: string | null; git: boolean }
   running: { version: string; commit: string }
-  settings: Settings; check: Check | null; job: Job | null
+  settings: Settings; locks: { requireSigned?: string }; autoInstallBlocked: string | null; check: Check | null; job: Job | null
   upstream: { repoUrl: string; mirrorUrl: string | null; trustedKeys: boolean }
 }
 interface Refusal { code: string; text: string; detail?: string[] }
-interface Preview { target: Available | null; refusals: Refusal[]; warnings: string[]; steps: string[]; disk: { freeMiB: number | null; needMiB: number } }
+interface Preview { target: Available | null; refusals: Refusal[]; warnings: string[]; steps: string[]; disk: { freeMiB: number | null; needMiB: number }; confirmUnrelated: string | null }
+
+/** Only an https page is linked; anything else upstream sends stays plain text. */
+const safeHref = (u: string | null) => { try { return u && new URL(u).protocol === 'https:' ? u : null } catch { return null } }
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 const STEP_MARK: Record<Step['status'], string> = { pending: '○', running: '◐', done: '✓', failed: '✗', skipped: '–' }
@@ -57,6 +60,7 @@ export function SelfUpdatePanel() {
   const [showCommits, setShowCommits] = useState(false)
   const [editing, setEditing] = useState<Settings | null>(null)
   const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
+  const [typed, setTyped] = useState('')
   const logRef = useRef<HTMLPreElement>(null)
 
   const load = useCallback(async () => {
@@ -100,13 +104,13 @@ export function SelfUpdatePanel() {
     setBusy(true); setNotice(null)
     const r = await apiJson<Preview>('/api/self-update/preview')
     setBusy(false)
-    if (r.ok && r.body) setPreview(r.body); else setNotice({ tone: 'crit', text: r.error ?? 'Could not build the preview.' })
+    if (r.ok && r.body) { setTyped(''); setPreview(r.body) } else setNotice({ tone: 'crit', text: r.error ?? 'Could not build the preview.' })
   }
   const install = async () => {
     const sha = preview?.target?.sha
     if (!sha) return
     setBusy(true)
-    const r = await apiJson<{ job: Job }>('/api/self-update/install', 'POST', { sha })
+    const r = await apiJson<{ job: Job }>('/api/self-update/install', 'POST', { sha, ...(preview?.confirmUnrelated ? { confirmUnrelated: typed } : {}) })
     setBusy(false)
     if (askedAgain(r, install)) return
     if (r.ok && r.body?.job) { setPreview(null); setJob(r.body.job); return }
@@ -154,7 +158,7 @@ export function SelfUpdatePanel() {
             {job && (job.status === 'running' || job.finishedAt) && <JobView job={job} away={away} logRef={logRef} />}
 
             {av && !running && <Offer av={av} showCommits={showCommits} onCommits={() => setShowCommits(v => !v)} onPreview={() => void openPreview()} busy={busy} />}
-            {editing && <SettingsForm s={editing} onChange={setEditing} onSave={() => void saveSettings()} onCancel={() => setEditing(null)} busy={busy} />}
+            {editing && <SettingsForm s={editing} locks={st.locks ?? {}} autoBlocked={st.autoInstallBlocked} onChange={setEditing} onSave={() => void saveSettings()} onCancel={() => setEditing(null)} busy={busy} />}
           </div>
         )}
       </Panel>
@@ -171,9 +175,16 @@ export function SelfUpdatePanel() {
               {r.detail && <pre className="mt-1 max-h-40 overflow-auto font-mono text-xs">{r.detail.join('\n')}</pre>}
             </Notice>
           ))}
+          {preview.confirmUnrelated && (
+            <label className="block space-y-1 text-sm">
+              <span>This version does not contain the one installed, so it may be older. To go ahead anyway, type <b className="font-mono">{preview.confirmUnrelated}</b>:</span>
+              <input value={typed} onChange={e => setTyped(e.target.value)} className="w-full font-mono" aria-label="Type the version to confirm"
+                     style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 8px', color: 'var(--text)' }} />
+            </label>
+          )}
           <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Only HyperProx is updated; nothing else on this machine or cluster is touched. You will be asked for your master password.</p>
           <div className="flex justify-end gap-2">
-            <Btn kind="primary" onClick={() => void install()} disabled={busy || preview.refusals.length > 0 || !preview.target}>Install {preview.target?.label ?? ''}</Btn>
+            <Btn kind="primary" onClick={() => void install()} disabled={busy || preview.refusals.length > 0 || !preview.target || (!!preview.confirmUnrelated && typed !== preview.confirmUnrelated)}>Install {preview.target?.label ?? ''}</Btn>
             <Btn onClick={() => setPreview(null)}>Cancel</Btn>
           </div>
         </ConfirmDialog>
@@ -193,7 +204,7 @@ function Offer({ av, showCommits, onCommits, onPreview, busy }: { av: Available;
         {av.flags.migrations.length > 0 && <Badge tone="warn" title={av.flags.migrations.join('\n')}>{av.flags.migrations.length} database migration{av.flags.migrations.length === 1 ? '' : 's'}</Badge>}
         {av.flags.keyholder && <Badge tone="warn">locks once: sign in again</Badge>}
         {av.signature?.signed && <Badge tone="good">signed tag</Badge>}
-        {av.url && <a href={av.url} target="_blank" rel="noreferrer noopener" className="text-xs underline" style={{ color: 'var(--accent)' }}>release page</a>}
+        {safeHref(av.url) && <a href={safeHref(av.url)!} target="_blank" rel="noreferrer noopener" className="text-xs underline" style={{ color: 'var(--accent)' }}>release page</a>}
         <span className="ml-auto"><Btn kind="primary" small onClick={onPreview} disabled={busy}>Preview and install</Btn></span>
       </div>
       {av.flags.breaking.length > 0 && <Notice tone="warn"><ul className="list-disc pl-5">{av.flags.breaking.map((b, i) => <li key={i}>{b}</li>)}</ul></Notice>}
@@ -239,7 +250,7 @@ function JobView({ job, away, logRef }: { job: Job; away: boolean; logRef: React
   )
 }
 
-function SettingsForm({ s, onChange, onSave, onCancel, busy }: { s: Settings; onChange: (s: Settings) => void; onSave: () => void; onCancel: () => void; busy: boolean }) {
+function SettingsForm({ s, locks, autoBlocked, onChange, onSave, onCancel, busy }: { s: Settings; locks: { requireSigned?: string }; autoBlocked: string | null; onChange: (s: Settings) => void; onSave: () => void; onCancel: () => void; busy: boolean }) {
   const set = (p: Partial<Settings>) => onChange({ ...s, ...p })
   const input = { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 8px', color: 'var(--text)' }
   return (
@@ -254,11 +265,20 @@ function SettingsForm({ s, onChange, onSave, onCancel, busy }: { s: Settings; on
         <input type="number" min={1} max={168} value={s.checkEveryHours} style={{ ...input, width: 70 }} onChange={e => set({ checkEveryHours: Math.max(1, Math.min(168, Number(e.target.value) || 6)) })} /> hours
       </label>
       <label className="flex items-center gap-2"><input type="checkbox" checked={s.notify} onChange={e => set({ notify: e.target.checked })} /> Send a notification when an update is available</label>
-      <label className="flex items-center gap-2"><input type="checkbox" checked={s.requireSigned} onChange={e => set({ requireSigned: e.target.checked })} /> Require signed releases (refuse a release whose tag is unsigned or does not verify)</label>
+      <label className="flex items-center gap-2" title={locks.requireSigned}>
+        <input type="checkbox" checked={s.requireSigned} disabled={!!locks.requireSigned} onChange={e => set({ requireSigned: e.target.checked })} />
+        Require signed releases (refuse a release whose tag is unsigned or does not verify){locks.requireSigned && ' — always on here'}
+      </label>
+      {locks.requireSigned && <p className="pl-6 text-xs" style={{ color: 'var(--text-muted)' }}>{locks.requireSigned}</p>}
       <label className="flex items-center gap-2">
-        <input type="checkbox" checked={s.autoInstall} disabled={s.channel !== 'stable'} onChange={e => set({ autoInstall: e.target.checked })} />
+        <input type="checkbox" checked={s.includePrereleases} disabled={s.channel !== 'stable'} onChange={e => set({ includePrereleases: e.target.checked })} />
+        Include pre-releases on the stable channel (on by default: every HyperProx release is an -alpha for now)
+      </label>
+      <label className="flex items-center gap-2">
+        <input type="checkbox" checked={s.autoInstall} disabled={s.channel !== 'stable' || (!!autoBlocked && !s.autoInstall)} onChange={e => set({ autoInstall: e.target.checked })} />
         Install stable releases automatically, inside the maintenance window{s.channel !== 'stable' && ' (stable channel only)'}
       </label>
+      {autoBlocked && <p className="pl-6 text-xs" style={{ color: 'var(--text-muted)' }}>Not available: {autoBlocked}</p>}
       {s.autoInstall && (
         <div className="flex flex-wrap items-center gap-2 pl-6">
           {DAYS.map((d, i) => (

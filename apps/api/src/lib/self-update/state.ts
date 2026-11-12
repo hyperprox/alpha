@@ -68,6 +68,10 @@ export interface UpdateJob {
   keepBackups: number
   minFreeMiB:  number
   health: { api: string; frontend: string; nginx: string; timeoutMs: number }
+  /** 'auto': started by the automatic install, which never falls back to a mirror or moves to unrelated history. */
+  how:         'manual' | 'auto'
+  /** A person typed the confirmation to move to a commit that does not contain the installed one. */
+  allowUnrelated: boolean
   /** True when the updater runs under the deploy lock (flock), so deploy.sh must not take it again. */
   lockHeld:    boolean
   createdAt:   string

@@ -24,7 +24,14 @@ export interface FakeOptions {
   tagText?: string
   verifyTagCode?: number
   keyholderChanged?: boolean
+  /** The installed commit is not an ancestor of the target (an older commit, or other history). */
+  unrelated?: boolean
+  /** The version in the target's package.json (default 0.3.0, as offered). */
+  stagedVersion?: string
+  restoreFails?: boolean
 }
+
+const BASE_MIGRATIONS = '20261001_init|2026-10-01 00:00:00|-\n20261101_more|2026-11-01 00:00:00|-'
 
 export class FakeInstall implements Shell {
   dir: string
@@ -34,6 +41,8 @@ export class FakeInstall implements Shell {
   restored = false
   apiStopped = false
   stagingSeen = false
+  /** What _prisma_migrations holds, as the runner's query prints it. */
+  migrations = BASE_MIGRATIONS
   constructor(public o: FakeOptions = {}) {
     this.dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hpx-selfupd-'))
     fs.mkdirSync(path.join(this.dir, 'data', 'self-update'), { recursive: true })
@@ -55,7 +64,7 @@ export class FakeInstall implements Shell {
       stateFile: path.join(this.dir, 'data', 'self-update', 'state.json'), logFile: path.join(this.dir, 'data', 'self-update', 'log.txt'),
       backupDir: path.join(this.dir, 'backups'), keepBackups: 3, minFreeMiB: 3072,
       health: { api: 'http://127.0.0.1:3002/health', frontend: 'http://127.0.0.1:3000/login', nginx: 'https://127.0.0.1/login', timeoutMs: 1 },
-      lockHeld: true, createdAt: new Date().toISOString(), ...over,
+      lockHeld: true, createdAt: new Date().toISOString(), how: 'manual', allowUnrelated: false, ...over,
     }
   }
 
@@ -87,7 +96,12 @@ export class FakeInstall implements Shell {
           return ok(this.o.tagText ?? '')
         }
         case 'verify-tag': return { code: this.o.verifyTagCode ?? 1, stdout: '', stderr: '' }
-        case 'merge-base': return f === 'not-on-branch' ? fail(1, '') : ok()
+        case 'merge-base': {
+          const [, x] = rest
+          if (x === TO && f === 'not-on-branch') return fail(1, '')
+          if (x === FROM && this.o.unrelated) return fail(1, '')
+          return ok()
+        }
         case 'worktree': {
           if (rest[0] === 'add') {
             const dir = rest[rest.length - 2]
@@ -95,7 +109,7 @@ export class FakeInstall implements Shell {
             const files = ['deploy.sh', 'package.json', 'pnpm-lock.yaml', 'apps/api/package.json', 'apps/api/prisma/schema.prisma', 'apps/frontend/package.json']
             for (const x of f === 'staging' ? files.slice(1) : files) {
               fs.mkdirSync(path.dirname(path.join(dir, x)), { recursive: true })
-              fs.writeFileSync(path.join(dir, x), x === 'deploy.sh' ? 'prisma migrate deploy\nsystemctl restart hyperprox-api\n' : x === 'package.json' ? '{"version":"0.3.0"}' : '')
+              fs.writeFileSync(path.join(dir, x), x === 'deploy.sh' ? 'prisma migrate deploy\nsystemctl restart hyperprox-api\n' : x === 'package.json' ? JSON.stringify({ version: this.o.stagedVersion ?? '0.3.0' }) : '')
             }
             return ok()
           }
@@ -116,7 +130,11 @@ export class FakeInstall implements Shell {
         fs.writeFileSync(opts.stdoutFile!, '-- dump\n-- PostgreSQL database dump complete\n')
         return ok()
       }
-      if (a.includes('psql')) { this.restored = true; return ok() }
+      if (a.includes('psql') && a.includes('-c')) return ok(this.migrations + '\n')
+      if (a.includes('psql')) {
+        if (this.o.restoreFails) return fail(3, 'psql: error: restore failed')
+        this.restored = true; this.migrations = BASE_MIGRATIONS; return ok()
+      }
       return fail()
     }
     if (cmd === 'systemctl') { if (a[0] === 'stop') this.apiStopped = true; return ok() }
@@ -131,7 +149,12 @@ export class FakeInstall implements Shell {
       if (target && f === 'build') { line('src/index.ts(1,1): error TS1005'); return fail(2) }
       line(`→ Building Frontend...`)
       line(`→ Applying database migrations...`)
-      if (target && f === 'migrate') { line('Error: P3018 A migration failed to apply'); return fail(1) }
+      const n = this.o.migrationsAdded ?? 0
+      if (target && f === 'migrate') {
+        if (n) this.migrations += '\n20261113_new|-|-'   // Prisma records the failed one
+        line('Error: P3018 A migration failed to apply'); return fail(1)
+      }
+      if (target && n) for (let i = 0; i < n; i++) this.migrations += `\n2026111${i}_x|2026-11-12 00:00:00|-`
       line(`  token=${SECRET_TOKEN} printed by a careless script`)
       line(`→ Checking the keyholder...`)
       line(`→ Restarting services...`)

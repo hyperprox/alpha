@@ -55,6 +55,8 @@ export interface AvailableUpdate {
 export interface CheckResult {
   checkedAt: string
   source:    string | null
+  /** Found on the mirror, not the configured upstream. */
+  fromMirror?: boolean
   available: AvailableUpdate | null
   /** Why there is nothing to offer, in a sentence ("You are on the newest release, v0.3.0."). */
   note:      string
@@ -104,7 +106,11 @@ function commitsFrom(cmp: Comparison | null): { list: UpdateCommit[]; total: num
 }
 
 /** Ask one upstream. Throws when it cannot answer (the caller tries the next). */
-export async function findUpdate(installed: Installed, channel: Channel, up: Upstream, branch = 'main'): Promise<{ available: AvailableUpdate | null; note: string }> {
+export interface FindOptions { branch?: string; /** Stable: also offer GitHub pre-releases (default true while every version is -alpha). */ includePrereleases?: boolean }
+
+export async function findUpdate(installed: Installed, channel: Channel, up: Upstream, opts: FindOptions = {}): Promise<{ available: AvailableUpdate | null; note: string }> {
+  const branch = opts.branch ?? 'main'
+  const pre = opts.includePrereleases ?? true
   if (channel === 'alpha') {
     const head = await up.head(branch)
     if (head.sha === installed.sha) return { available: null, note: `You are on the newest commit on ${branch} (${head.sha.slice(0, 7)}).` }
@@ -124,9 +130,15 @@ export async function findUpdate(installed: Installed, channel: Channel, up: Ups
 
   // stable
   const releases = await up.releases()
-  let candidates = releases.map(r => ({ tag: r.tag, version: tagVersion(r.tag), release: r as typeof r | null })).filter(c => c.version)
-  if (!candidates.length) candidates = (await up.tags()).map(t => ({ tag: t, version: tagVersion(t), release: null })).filter(c => c.version)
-  if (!candidates.length) return { available: null, note: 'No releases have been published yet. The alpha channel follows main.' }
+  // A pre-release is one GitHub marks as such, or (for bare tags) a version with a pre-release part.
+  let candidates = releases.map(r => ({ tag: r.tag, version: tagVersion(r.tag), release: r as typeof r | null, prerelease: r.prerelease || /-/.test(tagVersion(r.tag) ?? '') }))
+    .filter(c => c.version)
+  if (!candidates.length) candidates = (await up.tags()).map(t => ({ tag: t, version: tagVersion(t), release: null, prerelease: /-/.test(tagVersion(t) ?? '') })).filter(c => c.version)
+  const all = candidates.length
+  if (!pre) candidates = candidates.filter(c => !c.prerelease)
+  if (!candidates.length) {
+    return { available: null, note: all ? 'Only pre-releases have been published. Turn on "include pre-releases" to be offered them.' : 'No releases have been published yet. The alpha channel follows main.' }
+  }
   candidates.sort((a, b) => compareVersions(b.version!, a.version!))
   const best = candidates[0]
   const installedVersion = isVersion(installed.version) ? installed.version : null
@@ -135,8 +147,12 @@ export async function findUpdate(installed: Installed, channel: Channel, up: Ups
   const tag = await up.tag(best.tag)
   if (tag.commit === installed.sha) return { available: null, note: `You are on the newest release, ${best.tag}.` }
   const cmp = await up.compare(installed.sha, tag.commit)
-  if (cmpV === 0 && cmp.status !== 'ahead') {
-    return { available: null, note: `You are on ${installed.version}, the newest release (${best.tag})${cmp.status === 'behind' ? ', with newer commits than it' : ''}.` }
+  // A release is offered only when it contains the installed commit: never an older one, whatever its tag says.
+  if (cmp.status !== 'ahead') {
+    const why = cmp.status === 'behind' ? `this install already contains ${best.tag} and more`
+      : cmp.status === 'identical' ? `you are on ${best.tag}`
+      : `${best.tag} does not contain this install's commit ${installed.sha.slice(0, 7)} (other history, or upstream does not know it); reinstall, or use the alpha channel`
+    return { available: null, note: `Nothing to offer on stable: ${why}.` }
   }
   const { list, total } = commitsFrom(cmp)
   const notes = best.release?.notes?.trim() || null

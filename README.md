@@ -195,7 +195,7 @@ curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/bootstrap.sh |
 | `--bridge NAME` | `vmbr0` | Network bridge |
 | `--ip CIDR` | fits your numbering, or `dhcp` | Static address, for example `192.0.2.50/24` |
 | `--gateway IP` | | Gateway, required with `--ip` |
-| `--dns IP[,IP]` | the node's own | The container's DNS servers (IPv4 or IPv6, up to three). When the node's resolver is one a container cannot reach (Tailscale's 100.100.100.100 or anything in 100.64.0.0/10, a local 127.x or `::1` stub), the container gets 1.1.1.1 and the summary says so. With `HPX_API_URL` and `HPX_API_TOKEN` pointing at an existing HyperProx, the DNS saved in its Naming & addresses is used instead |
+| `--dns IP[,IP]` | the node's own | The container's DNS servers (IPv4 or IPv6, up to three). When the node's resolver is one a container cannot reach (Tailscale's 100.100.100.100 or anything in 100.64.0.0/10, a local 127.x or `::1` stub), the container gets 1.1.1.1 and the summary says so. With `HPX_API_URL` (https only) and `HPX_API_TOKEN` (a read-only viewer token) pointing at an existing HyperProx, the DNS saved in its Naming & addresses is used instead; its certificate is checked, or pinned with `HPX_API_PINNEDPUBKEY=sha256//...` for a self-signed one |
 | `--ref REF` | `main` | Install a release tag, branch or commit |
 | `--password PASS` | generated | Container root password |
 | `--skip-exporter` | | Answer no to watching node health |
@@ -325,7 +325,9 @@ you sign in with this vault account from now on.
 sidebar), and whether a newer one is out. A small **Update available** chip appears in the top bar when there
 is. HyperProx checks every 6 hours, and when you press **Check now**.
 
-- **Channel.** *Stable* (the default) offers GitHub Releases newer than your version. *Alpha* follows every
+- **Channel.** *Stable* (the default) offers GitHub Releases newer than your version that contain the commit you
+  run (never an older one, whatever its tag says). Pre-releases are included while **Include pre-releases** is
+  on, which it is by default because every HyperProx release is an `-alpha` for now. *Alpha* follows every
   commit on `main`. Before you install you see the version, its date, the release notes (or, on alpha, the
   commits since yours in plain words), and flags for breaking changes, database migrations, and a keyholder
   change (which locks HyperProx once, so you sign in again).
@@ -334,21 +336,26 @@ is. HyperProx checks every 6 hours, and when you press **Check now**.
   while HyperProx restarts, and the page picks the progress up again when it comes back:
   1. check the disk space; refuse if the install has local changes, another update or a `deploy.sh` is running,
      or HyperProx is locked;
-  2. back up the database to `/root/hyperprox-pre-update-<version>-<commit>.sql` (the newest 3 are kept) and
-     note the current commit;
-  3. fetch the new version from the configured upstream only, check it is the commit you were shown and that it
-     is on the release tag or on `main` (and its signature, when the tag is signed), look it over in a staging
-     copy, then check it out;
+  2. back up the database to `/root/hyperprox-backups/hyperprox-pre-update-<version>-<commit>.sql` (a 0700
+     directory of its own; the newest 3 are kept) and note the current commit;
+  3. fetch the new version from the configured upstream only, check it is the commit you were shown, that it
+     is on the release tag (a tag made under another name is refused) or on `main`, that it contains the commit
+     you run, that its version is the one offered, and its signature when the tag is signed; look it over in a
+     staging copy, then check it out. A version that does not contain yours (upstream rewrote its history)
+     installs only after you type its name;
   4. run `deploy.sh` from the new version: dependencies, build, migrations, restart (you stay signed in);
   5. check that the API runs the new commit, the web app answers, and the sign-in page loads through nginx.
 
   If anything after the checkout fails, it rolls back by itself: the previous commit is checked out, rebuilt and
-  restarted. Migrations only go forward, so if the update had applied migrations the database is restored from
-  the backup as well, and the page says so (anything written in between is lost). Every update is audited at the
+  restarted. Migrations only go forward, so if the database's record of applied migrations changed, it is
+  restored from the backup as well, and the page says so (anything written in between is lost). If that restore
+  fails, the API is left stopped on purpose and the page gives the exact commands to recover by hand. Every update is audited at the
   start and at the end, and the end result goes to your notification channels.
 - **Settings** (Updates → HyperProx → Settings): channel, how often to check, a notification when an update is
-  out (off by default), **Require signed releases** (off by default), and **Automatic install** (off by default;
-  stable releases only, and only inside the maintenance window you set).
+  out (off by default), **Require signed releases** (off by default; always on when trusted keys are configured),
+  **Include pre-releases**, and **Automatic install** (off by default; stable releases only, inside the
+  maintenance window you set, only with trusted keys configured, never from the mirror, and never retried for a
+  version that did not succeed).
 - **Where updates come from** is set in `.env`, not in the app: `HYPERPROX_UPDATE_REPO` (default
   `https://github.com/hyperprox/alpha.git`), `HYPERPROX_UPDATE_MIRROR` (a GitLab mirror, tried when GitHub does
   not answer or its hourly limit for requests without a token is used up), and `HYPERPROX_UPDATE_TRUSTED_KEYS`

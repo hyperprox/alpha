@@ -21,12 +21,14 @@ export interface SelfUpdateSettings {
   checkEveryHours: number
   notify:          boolean
   requireSigned:   boolean
+  /** Stable: also offer releases GitHub marks as pre-releases. On while every HyperProx version is an -alpha. */
+  includePrereleases: boolean
   autoInstall:     boolean
   window:          MaintenanceWindow
 }
 
 export const DEFAULT_SETTINGS: SelfUpdateSettings = {
-  channel: 'stable', checkEveryHours: 6, notify: false, requireSigned: false, autoInstall: false,
+  channel: 'stable', checkEveryHours: 6, notify: false, requireSigned: false, includePrereleases: true, autoInstall: false,
   window: { days: [0, 1, 2, 3, 4, 5, 6], start: '03:00', end: '05:00' },
 }
 
@@ -38,7 +40,7 @@ export class SettingsError extends Error {}
 export function mergeSettings(base: SelfUpdateSettings, patch: unknown): SelfUpdateSettings {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new SettingsError('Settings must be an object.')
   const p = patch as Record<string, unknown>
-  const known = new Set(['channel', 'checkEveryHours', 'notify', 'requireSigned', 'autoInstall', 'window'])
+  const known = new Set(['channel', 'checkEveryHours', 'notify', 'requireSigned', 'includePrereleases', 'autoInstall', 'window'])
   for (const k of Object.keys(p)) if (!known.has(k)) throw new SettingsError(`"${k}" is not a self-update setting.`)
   const out: SelfUpdateSettings = { ...base, window: { ...base.window, days: [...base.window.days] } }
   if (p.channel !== undefined) {
@@ -50,7 +52,7 @@ export function mergeSettings(base: SelfUpdateSettings, patch: unknown): SelfUpd
     if (typeof n !== 'number' || !Number.isInteger(n) || n < 1 || n > 168) throw new SettingsError('Check every 1 to 168 hours.')
     out.checkEveryHours = n
   }
-  for (const k of ['notify', 'requireSigned', 'autoInstall'] as const) {
+  for (const k of ['notify', 'requireSigned', 'includePrereleases', 'autoInstall'] as const) {
     if (p[k] === undefined) continue
     if (typeof p[k] !== 'boolean') throw new SettingsError(`"${k}" is on or off.`)
     out[k] = p[k] as boolean

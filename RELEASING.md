@@ -47,6 +47,9 @@ Two kinds of line are flagged on every install's Updates page before anyone inst
   `BREAKING CHANGE` in their body;
 - a line starting with **`MIGRATION:`** or `UPGRADE NOTE:`.
 
+Mark a release as a pre-release on GitHub (the script does it for versions like `0.3.0-alpha`): installs with
+"include pre-releases" turned off skip it.
+
 Write them for the person updating: what changes for them and anything they have to do.
 
 ### Signed releases
@@ -54,7 +57,10 @@ Write them for the person updating: what changes for them and anything they have
 `--sign` (or `git config tag.gpgSign true`) makes a signed tag with your GPG or SSH signing key instead of a plain
 annotated one. Installs check a signed tag against the keys they trust (`HYPERPROX_UPDATE_TRUSTED_KEYS` in `.env`:
 an SSH `allowed_signers` file or an armoured GPG key file). An install with **Require signed releases** turned on
-refuses any release that is unsigned or does not verify, so once you start signing, keep signing.
+refuses any release that is unsigned or does not verify, so once you start signing, keep signing. Configuring
+trusted keys turns that requirement on for good (the page cannot turn it off), and automatic install is only
+available on installs that have them. A signed tag names itself: a tag pushed under a different name from the
+one it was made with is refused.
 
 ## After publishing
 

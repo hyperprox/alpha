@@ -279,14 +279,22 @@ dns_unusable() {
   if [[ "$a" =~ ^100\.([0-9]{1,3})\. ]]; then o2="${BASH_REMATCH[1]}"; [ "$o2" -ge 64 ] && [ "$o2" -le 127 ] && echo cgnat; fi
   return 0
 }
-# The DNS servers in an existing HyperProx's Naming & addresses, comma separated, or nothing.
+# The DNS servers in an existing HyperProx's Naming & addresses, comma separated, or nothing. Over https only,
+# with the certificate checked: against the system's CAs, or, for HyperProx's own self-signed certificate, against
+# HPX_API_PINNEDPUBKEY (curl's sha256//<base64> form, e.g. from `openssl x509 -pubkey ... | openssl dgst -sha256 -binary | base64`).
+# HPX_API_TOKEN should be a read-only (viewer) API token: this only reads the naming settings.
 naming_dns() {
   [ -n "${HPX_API_URL:-}" ] && [ -n "${HPX_API_TOKEN:-}" ] || return 0
-  [[ "$HPX_API_URL" =~ ^https?://[A-Za-z0-9.:-]+(/[A-Za-z0-9._/-]*)?$ ]] || return 0
-  local body list
+  [[ "$HPX_API_URL" =~ ^https://[A-Za-z0-9.:-]+(/[A-Za-z0-9._/-]*)?$ ]] || { warn "HPX_API_URL must be an https address; its Naming & addresses DNS is not used." >&2; return 0; }
+  local body list tls=()
+  if [ -n "${HPX_API_PINNEDPUBKEY:-}" ]; then
+    [[ "$HPX_API_PINNEDPUBKEY" =~ ^sha256//[A-Za-z0-9+/]{43}=$ ]] || { warn "HPX_API_PINNEDPUBKEY must be sha256//<base64>; its Naming & addresses DNS is not used." >&2; return 0; }
+    # The pin stands in for the CA check (a self-signed certificate), and curl still refuses any other key.
+    tls=(--insecure --pinnedpubkey "$HPX_API_PINNEDPUBKEY")
+  fi
   # The token goes to curl on stdin, never on a command line.
   body="$(printf 'Authorization: Bearer %s\n' "$HPX_API_TOKEN" \
-    | curl -fsSk --max-time 8 -H @- "${HPX_API_URL%/}/api/catalogue/wizard/naming" 2>/dev/null)" || return 0
+    | curl -fsS --proto =https "${tls[@]}" --max-time 8 -H @- "${HPX_API_URL%/}/api/catalogue/wizard/naming" 2>/dev/null)" || return 0
   list="$(tr -d '\n' <<< "$body" | sed -n 's/.*"dns"[[:space:]]*:[[:space:]]*\[\([^]]*\)\].*/\1/p' | tr -d '" \t')"
   [ -n "$list" ] && dns_list_ok "$list" && echo "$list"
 }

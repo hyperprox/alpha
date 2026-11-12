@@ -101,9 +101,18 @@ export async function runUpdate(job: UpdateJob, d: RunnerDeps): Promise<UpdateSt
         { ...opts, env: { GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '/bin/false', ...(opts.env ?? {}) } })
 
   let checkedOut = false
-  let migrationStarted = false
   let newMigrations = 0
+  /** _prisma_migrations as it was before deploy.sh ran; null until read. */
+  let migrationsBefore: string | null = null
   let failedStep: StepId | null = null
+  // What the database says it has applied: compared before and after deploy.sh, so a restore depends on what
+  // changed in the database, not on which line deploy.sh printed last.
+  const migrationState = async (step: StepId): Promise<string> => {
+    const env = readEnv(path.join(job.dir, '.env'))
+    const r = await run(step, 'docker', ['exec', 'hyperprox-postgres', 'psql', '-At', '-v', 'ON_ERROR_STOP=1', '-U', env.POSTGRES_USER ?? '', '-d', env.POSTGRES_DB ?? '', '-c',
+      "SELECT migration_name || '|' || coalesce(finished_at::text, '-') || '|' || coalesce(rolled_back_at::text, '-') FROM _prisma_migrations ORDER BY 1"], { quiet: true, timeoutMs: 60_000 })
+    return r.stdout.trim()
+  }
   let current: StepId = 'preflight'
 
   say(`Updating HyperProx ${job.from.version} (${short(job.from.sha)}) to ${job.target.label} (${short(job.target.sha)}), started by ${job.by}`)
@@ -133,7 +142,9 @@ export async function runUpdate(job: UpdateJob, d: RunnerDeps): Promise<UpdateSt
     const env = readEnv(path.join(job.dir, '.env'))
     const pgUser = env.POSTGRES_USER, pgDb = env.POSTGRES_DB
     if (!pgUser || !pgDb) throw new StepFailure('backup', 'POSTGRES_USER and POSTGRES_DB are not in .env, so the database could not be backed up.')
+    // A directory of its own, 0700: the dumps hold everything HyperProx keeps, and pruning only ever looks here.
     fs.mkdirSync(job.backupDir, { recursive: true, mode: 0o700 })
+    fs.chmodSync(job.backupDir, 0o700)
     const safeVer = job.from.version.replace(/[^0-9A-Za-z.+-]/g, '_')
     const backupFile = path.join(job.backupDir, `hyperprox-pre-update-${safeVer}-${short(job.from.sha)}.sql`)
     const partial = `${backupFile}.partial`
@@ -144,6 +155,7 @@ export async function runUpdate(job: UpdateJob, d: RunnerDeps): Promise<UpdateSt
     fs.chmodSync(backupFile, 0o600)
     st.update(s => { s.backupFile = backupFile })
     pruneBackups(job.backupDir, job.keepBackups, backupFile)
+    migrationsBefore = await migrationState('backup')
     await git('backup', ['update-ref', `${REF_NS}/previous`, job.from.sha], { quiet: true })
     setStep('backup', 'done', `${backupFile} (${fs.statSync(backupFile).size} bytes); previous commit ${short(job.from.sha)}`)
 
@@ -159,7 +171,8 @@ export async function runUpdate(job: UpdateJob, d: RunnerDeps): Promise<UpdateSt
     const fetchArgs = (url: string) => ['-c', 'protocol.file.allow=' + (allowInsecure ? 'always' : 'never'), 'fetch', '--no-tags', '--no-recurse-submodules', '--quiet', url, ...refspecs]
     try { await git('fetch', fetchArgs(job.repoUrl), { timeoutMs: 10 * 60_000 }) }
     catch (e) {
-      if (!job.mirrorUrl) throw e
+      // An automatic install takes its code from the configured upstream only, never from a mirror.
+      if (!job.mirrorUrl || job.how === 'auto') throw e
       say(`! ${job.repoUrl} could not be fetched; trying the mirror ${job.mirrorUrl}`)
       fetchedFrom = job.mirrorUrl
       await git('fetch', fetchArgs(job.mirrorUrl), { timeoutMs: 10 * 60_000 })
@@ -170,6 +183,9 @@ export async function runUpdate(job: UpdateJob, d: RunnerDeps): Promise<UpdateSt
       if (peeled !== job.target.sha) throw new StepFailure('fetch', `The tag ${tag} at ${fetchedFrom} points at ${short(peeled || 'nothing')}, not ${short(job.target.sha)} as confirmed. Nothing was changed.`)
       const kind = (await git('fetch', ['cat-file', '-t', `${REF_NS}/tags/${tag}`], { quiet: true })).stdout.trim()
       const raw = kind === 'tag' ? (await git('fetch', ['cat-file', 'tag', `${REF_NS}/tags/${tag}`], { quiet: true })).stdout : ''
+      // A signed tag names itself: an old release's signed tag pushed again under a newer name is refused.
+      const named = /^tag (.+)$/m.exec(raw.split('\n\n')[0] ?? '')?.[1]?.trim()
+      if (kind === 'tag' && named !== tag) throw new StepFailure('fetch', `The tag ${tag} at ${fetchedFrom} was made as "${named ?? 'nothing'}", not ${tag}: a renamed tag is refused. Nothing was changed.`)
       const signed = /-----BEGIN (PGP|SSH) SIGNATURE-----/.exec(raw)
       if (!signed) {
         if (job.requireSigned) throw new StepFailure('fetch', `The release ${tag} is not signed, and this install requires signed releases. Nothing was changed.`)
@@ -203,6 +219,16 @@ export async function runUpdate(job: UpdateJob, d: RunnerDeps): Promise<UpdateSt
     } finally {
       await git('fetch', ['worktree', 'remove', '--force', staging], { quiet: true, ok: [0, 1, 128] }).catch(() => undefined)
     }
+    if (job.target.version && stagedVersion !== job.target.version) {
+      throw new StepFailure('fetch', `${job.target.label} contains version ${stagedVersion ?? 'none'}, not ${job.target.version} as offered. Nothing was changed.`)
+    }
+    // Forward only: the new commit must contain the installed one. Moving to unrelated history (upstream rewrote it,
+    // or this install has its own commits) needs a person to have typed the confirmation, and never happens on its own.
+    const fwd = await git('fetch', ['merge-base', '--is-ancestor', job.from.sha, job.target.sha], { quiet: true, ok: [0, 1, 128] })
+    if (fwd.code !== 0) {
+      if (!job.allowUnrelated || job.how === 'auto') throw new StepFailure('fetch', `${short(job.target.sha)} does not contain the installed ${short(job.from.sha)}: it is older, or from other history. Refused, so nothing was changed.`)
+      say(`! ${short(job.target.sha)} does not contain the installed ${short(job.from.sha)}; going ahead because ${job.by} confirmed it.`)
+    }
     const added = (await git('fetch', ['diff', '--name-only', '--diff-filter=A', job.from.sha, job.target.sha, '--', MIGRATIONS], { quiet: true, ok: [0, 128] })).stdout
     newMigrations = added.split('\n').filter(l => /\/migration\.sql$/.test(l)).length
     // By content (blob id): a mode-only change does not make install-keyholder restart it.
@@ -220,7 +246,6 @@ export async function runUpdate(job: UpdateJob, d: RunnerDeps): Promise<UpdateSt
       if (phase === current || (phase === 'build' && current !== 'build')) return
       setStep(current, 'done')
       current = phase
-      if (phase === 'migrate') { migrationStarted = true; st.update(s => { s.migrationsApplied = newMigrations > 0 }) }
       setStep(phase, 'running')
     }, say)
     if (r.code !== 0) throw new StepFailure(current, `deploy.sh stopped during "${STEP_TITLE[current]}" (exit ${r.code}).`)
@@ -236,6 +261,8 @@ export async function runUpdate(job: UpdateJob, d: RunnerDeps): Promise<UpdateSt
     if (!h.ok) throw new StepFailure('health', h.why)
     setStep('health', 'done', h.why)
     setStep('rollback', 'skipped')
+    const after = await migrationState('health').catch(() => null)
+    st.update(s => { s.migrationsApplied = after !== null && after !== migrationsBefore })
     st.update(s => { s.status = 'succeeded'; s.finishedAt = now().toISOString(); s.summary = `HyperProx is now ${job.target.label} (${short(job.target.sha)}).` })
     say(`✓ ${st.get().summary}`)
     st.flush()
@@ -256,18 +283,26 @@ export async function runUpdate(job: UpdateJob, d: RunnerDeps): Promise<UpdateSt
 
   // --- rollback ----------------------------------------------------------------------------------------
   setStep('rollback', 'running')
-  const restoreDb = migrationStarted && newMigrations > 0
+  // Restore exactly when the database's own record of applied migrations changed (a failed one included).
+  let restoreDb = false
+  if (migrationsBefore !== null) {
+    const after = await migrationState('rollback').catch(() => null)
+    restoreDb = after === null || after !== migrationsBefore
+    if (after === null) say('! The database could not be read after the failure; restoring it from the backup to be safe.')
+  }
+  st.update(s => { s.migrationsApplied = restoreDb })
   say(`↩ Rolling back to ${job.from.version} (${short(job.from.sha)})${restoreDb ? ' and restoring the database from the backup' : ''}`)
   try {
     await checkout(job, job.from.sha, git, 'rollback')
     if (restoreDb) {
       const file = st.get().backupFile
       if (!file) throw new StepFailure('rollback', 'There is no database backup to restore.')
-      say(`↩ This update applied database migrations, which only go forward. Restoring the database from ${file}; anything written to HyperProx since the update started is lost.`)
+      say(`↩ This update changed the database (migrations only go forward). Restoring it from ${file}; anything written to HyperProx since the update started is lost.`)
       await run('rollback', 'systemctl', ['stop', 'hyperprox-api'], { ok: [0, 5] })
       const env = readEnv(path.join(job.dir, '.env'))
-      await run('rollback', 'docker', ['exec', '-i', 'hyperprox-postgres', 'psql', '-q', '-v', 'ON_ERROR_STOP=1', '--single-transaction', '-U', env.POSTGRES_USER, '-d', env.POSTGRES_DB],
-        { stdin: [{ text: 'DROP SCHEMA public CASCADE;\nCREATE SCHEMA public;\n' }, { file }], quiet: true, timeoutMs: 15 * 60_000 })
+      const restore = await d.sh.run('docker', ['exec', '-i', 'hyperprox-postgres', 'psql', '-q', '-v', 'ON_ERROR_STOP=1', '--single-transaction', '-U', env.POSTGRES_USER, '-d', env.POSTGRES_DB],
+        { cwd: job.dir, stdin: [{ text: 'DROP SCHEMA public CASCADE;\nCREATE SCHEMA public;\n' }, { file }], timeoutMs: 15 * 60_000 })
+      if (restore.code !== 0) throw new RestoreFailure(restoreCommands(job, env, file))
       st.update(s => { s.dbRestored = true })
       say('↩ Database restored from the backup taken before the update.')
     }
@@ -282,6 +317,17 @@ export async function runUpdate(job: UpdateJob, d: RunnerDeps): Promise<UpdateSt
         (s.dbRestored ? ' The database was restored from the backup taken before the update.' : ' The database was not restored (no migration had run).')
     })
   } catch (e: any) {
+    if (e instanceof RestoreFailure) {
+      setStep('rollback', 'failed', 'The database restore failed')
+      st.update(s => {
+        s.status = 'rollback-failed'; s.finishedAt = now().toISOString()
+        s.summary = `The update failed at "${STEP_TITLE[failedStep!]}", and restoring the database from the backup failed. ` +
+          'The HyperProx API was left stopped on purpose, so nothing runs against a half-restored database. To recover, as root: ' + e.commands
+      })
+      say(`✗ ${st.get().summary}`)
+      st.flush()
+      return st.get()
+    }
     const why = d.redact(String(e?.message ?? e))
     setStep('rollback', 'failed', why)
     st.update(s => {
@@ -293,6 +339,16 @@ export async function runUpdate(job: UpdateJob, d: RunnerDeps): Promise<UpdateSt
   say(`${st.get().status === 'rolled-back' ? '↩' : '✗'} ${st.get().summary}`)
   st.flush()
   return st.get()
+}
+
+class RestoreFailure extends Error { constructor(public commands: string) { super('database restore failed') } }
+
+/** The exact commands to restore by hand and bring the previous version back (the previous commit is already checked out). */
+export function restoreCommands(job: UpdateJob, env: Record<string, string>, file: string): string {
+  const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
+  return `(1) { printf 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;\\n'; cat ${q(file)}; } | docker exec -i hyperprox-postgres psql -v ON_ERROR_STOP=1 --single-transaction -U ${q(env.POSTGRES_USER ?? 'hyperprox')} -d ${q(env.POSTGRES_DB ?? 'hyperprox')}` +
+    `  (2) cd ${q(job.dir)} && git checkout -B ${q(job.from.branch ?? 'main')} ${job.from.sha} && bash deploy.sh` +
+    '  (3) check: curl -s http://127.0.0.1:3002/health'
 }
 
 const STEP_TITLE: Record<StepId, string> = {

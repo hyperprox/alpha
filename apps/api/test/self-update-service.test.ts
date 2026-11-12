@@ -230,9 +230,15 @@ test('check: the next upstream answers when the first fails; a notification only
   assert.equal(e.available, null); assert.match(e.error!, /Could not check/)
 })
 
-test('automatic install: off by default; when on, stable only, inside the window, once per release', async () => {
+const SIGNED = { config: { repoUrl: 'https://github.com/example/hyperprox.git', mirrorUrl: null, trustedKeys: '/keys/allowed_signers', allowInsecure: false } }
+
+test('automatic install: off by default; only with trusted keys; stable only, inside the window', async () => {
+  const plain = rig()
+  await assert.rejects(plain.svc.saveSettings({ autoInstall: true }, 'admin@example.com'), /HYPERPROX_UPDATE_TRUSTED_KEYS/)
+  assert.match(plain.svc.autoInstallBlocked()!, /trusted keys/)
   let now = new Date('2026-11-12T12:00:00')
-  const r = rig({ now: () => now })
+  const r = rig({ now: () => now, ...SIGNED })
+  assert.equal(r.svc.autoInstallBlocked(), null)
   await r.svc.tick()
   assert.equal(r.launched.length, 0, 'off by default')
   await r.svc.saveSettings({ autoInstall: true, window: { days: [4], start: '03:00', end: '05:00' } }, 'admin@example.com')
@@ -241,12 +247,69 @@ test('automatic install: off by default; when on, stable only, inside the window
   now = new Date('2026-11-12T03:30:00')   // Thursday
   await r.svc.tick()
   assert.equal(r.launched.length, 1)
-  assert.equal(r.launched[0].by, 'automatic install')
-  fs.rmSync(r.launched[0].stateFile)
-  await r.svc.tick()
-  assert.equal(r.launched.length, 1, 'never tried twice for the same release')
-  const alpha = rig({ now: () => new Date('2026-11-12T03:30:00') }, {}, [upstreamWith(B, 'alpha')])
+  assert.equal(r.launched[0].by, 'automatic install'); assert.equal(r.launched[0].how, 'auto')
+  assert.equal(r.launched[0].requireSigned, true); assert.equal(r.launched[0].allowUnrelated, false)
+  const alpha = rig({ now: () => new Date('2026-11-12T03:30:00'), ...SIGNED }, {}, [upstreamWith(B, 'alpha')])
   await assert.rejects(alpha.svc.saveSettings({ channel: 'alpha', autoInstall: true }, 'x'), /stable/)
+})
+
+test('automatic install: a release that rolled back is never retried, also after an API restart', async () => {
+  const at = () => new Date('2026-11-12T03:30:00')
+  const r = rig({ now: at, ...SIGNED })
+  await r.svc.saveSettings({ autoInstall: true, window: { days: [4], start: '03:00', end: '05:00' } }, 'admin@example.com')
+  await r.svc.tick()
+  assert.equal(r.launched.length, 1)
+  // The updater ends rolled back.
+  const st = readState(r.launched[0].stateFile)!
+  st.status = 'rolled-back'; st.finishedAt = new Date().toISOString()
+  fs.writeFileSync(r.launched[0].stateFile, JSON.stringify(st))
+  await r.svc.tick()
+  assert.equal(r.launched.length, 1, 'not again in the same process')
+  // "Restart": a new service over the same files.
+  const after = rig({ now: at, ...SIGNED }, {}, [upstreamWith(B)], r.dir)
+  await after.svc.tick()
+  assert.equal(after.launched.length, 0, 'not again after the restart either')
+  assert.equal(after.svc.autoAttemptRefused(B), true)
+  // The state file gone (or lost) is no excuse to retry.
+  fs.rmSync(r.launched[0].stateFile)
+  await after.svc.tick()
+  assert.equal(after.launched.length, 0)
+  // A person can still install it.
+  await after.svc.install('admin@example.com', B)
+  assert.equal(after.launched.length, 1)
+})
+
+test('automatic install never takes an update found only on the mirror', async () => {
+  const fromMirror: Upstream = { ...upstreamWith(B), where: 'gitlab.example.com/root/hyperprox', mirror: true }
+  const broken: Upstream = { ...upstreamWith(B), async releases() { throw new Error('down') } }
+  const r = rig({ now: () => new Date('2026-11-12T03:30:00'), ...SIGNED }, {}, [broken, fromMirror])
+  await r.svc.saveSettings({ autoInstall: true, window: { days: [4], start: '03:00', end: '05:00' } }, 'admin@example.com')
+  await r.svc.tick()
+  assert.equal(r.svc.lastCheck()!.fromMirror, true)
+  assert.equal(r.launched.length, 0)
+  await assert.rejects(r.svc.install('automatic install', B, 'auto'), (e: any) => e.refusals.some((x: any) => x.code === 'auto_mirror'))
+})
+
+test('trusted keys in .env lock "require signed releases" on; the page cannot turn it off', async () => {
+  const r = rig(SIGNED)
+  assert.equal(r.svc.settings().requireSigned, true)
+  assert.match(r.svc.locks().requireSigned!, /HYPERPROX_UPDATE_TRUSTED_KEYS/)
+  await assert.rejects(r.svc.saveSettings({ requireSigned: false }, 'x'), /always required/)
+  assert.deepEqual(rig().svc.locks(), {})
+})
+
+test('a move to a commit that does not contain the installed one needs the label typed, and never automatically', async () => {
+  const unrelated: Upstream = { ...upstreamWith(B, 'alpha'), async compare() { return { status: 'unknown' as const, commits: [], files: null, total: 0 } } }
+  const r = rig({}, {}, [unrelated])
+  await r.svc.saveSettings({ channel: 'alpha' }, 'x')
+  const c = await r.svc.check()
+  assert.equal(c.available?.flags.unknownBase, true)
+  const pv = await r.svc.preview()
+  assert.equal(pv.confirmUnrelated, c.available!.label)
+  await assert.rejects(r.svc.install('admin@example.com', B), (e: any) => e.refusals.some((x: any) => x.code === 'confirm_unrelated'))
+  await assert.rejects(r.svc.install('admin@example.com', B, 'manual', { confirmUnrelated: 'main' }), (e: any) => e.refusals.some((x: any) => x.code === 'confirm_unrelated'))
+  await r.svc.install('admin@example.com', B, 'manual', { confirmUnrelated: c.available!.label })
+  assert.equal(r.launched[0].allowUnrelated, true)
 })
 
 // --- the routes, behind the real gate -----------------------------------------------------------------------------

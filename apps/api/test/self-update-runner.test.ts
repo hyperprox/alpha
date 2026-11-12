@@ -85,7 +85,7 @@ test('a failing health check after migrations ran restores the database, and say
     assert.equal(f.restored, true); assert.equal(end.dbRestored, true)
     assert.equal(f.apiStopped, true, 'the API is stopped while the database is restored')
     assert.match(end.summary!, /database was restored from the backup/)
-    assert.ok(end.log.some(l => /Restoring the database/.test(l)))
+    assert.ok(end.log.some(l => /Restoring it from/.test(l)))
   } finally { f.cleanup() }
 })
 
@@ -96,7 +96,7 @@ test('a migration failure rolls back and restores the database from the backup',
     assert.equal(step(end, 'migrate'), 'failed')
     assert.equal(step(end, 'build'), 'done')
     assert.equal(f.restored, true); assert.equal(end.dbRestored, true)
-    const restore = f.calls.findIndex(c => c.includes('psql'))
+    const restore = f.calls.findIndex(c => c.includes('psql') && c.includes('--single-transaction'))
     const rollbackDeploy = f.calls.map((c, i) => [c, i] as const).filter(([c]) => c.startsWith('bash ')).pop()![1]
     assert.ok(restore < rollbackDeploy, 'the database is restored before the previous version starts')
     const psql = f.calls[restore]
@@ -158,6 +158,84 @@ test('a keyholder change (by content) is said in the log, so a lock after the re
   } finally { f.cleanup() }
   const quiet = await run({})
   try { assert.ok(!quiet.end.log.some(l => /changes the keyholder/.test(l))) } finally { quiet.f.cleanup() }
+})
+
+test('a renamed signed tag (an old release pushed under a newer name) is refused before anything changes', async () => {
+  const oldSigned = 'object x\ntype commit\ntag v0.1.0\ntagger t <t@example.com> 1 +0000\n\nOld release\n-----BEGIN SSH SIGNATURE-----\nAAAA\n-----END SSH SIGNATURE-----\n'
+  const { f, end } = await run({ tagText: oldSigned, verifyTagCode: 0 }, { requireSigned: true, trustedKeys: '/keys' })
+  try {
+    assert.equal(end.status, 'failed')
+    assert.match(end.summary!, /made as "v0\.1\.0", not v0\.3\.0/)
+    assert.ok(!f.calls.some(c => c.startsWith('git verify-tag')), 'refused before the signature is even looked at')
+    assert.equal(f.head, FROM)
+  } finally { f.cleanup() }
+})
+
+test('a release whose package.json is not the offered version is refused', async () => {
+  const { f, end } = await run({ stagedVersion: '0.1.0' })
+  try {
+    assert.equal(end.status, 'failed')
+    assert.match(end.summary!, /contains version 0\.1\.0, not 0\.3\.0/)
+    assert.equal(f.head, FROM)
+  } finally { f.cleanup() }
+})
+
+test('a target that does not contain the installed commit is refused; a person can confirm it, an automatic install never', async () => {
+  const plain = await run({ unrelated: true })
+  const confirmed = await run({ unrelated: true }, { allowUnrelated: true })
+  const auto = await run({ unrelated: true }, { allowUnrelated: true, how: 'auto' })
+  try {
+    assert.equal(plain.end.status, 'failed'); assert.match(plain.end.summary!, /does not contain the installed aaaaaaa/)
+    assert.equal(plain.f.head, FROM)
+    assert.equal(confirmed.end.status, 'succeeded', confirmed.end.summary)
+    assert.ok(confirmed.end.log.some(l => /because admin@example\.com confirmed it/.test(l)))
+    assert.equal(auto.end.status, 'failed', 'auto never moves to unrelated history'); assert.equal(auto.f.head, FROM)
+  } finally { for (const r of [plain, confirmed, auto]) r.f.cleanup() }
+})
+
+test('the database restore follows _prisma_migrations, not deploy.sh\'s words', async () => {
+  // A failure after the migrate step but with no migration in it: the table is unchanged, so no restore.
+  const { f, end } = await run({ failAt: 'restart', migrationsAdded: 0 })
+  try { assert.equal(end.status, 'rolled-back'); assert.equal(f.restored, false) } finally { f.cleanup() }
+  // A failure whose deploy.sh printed nothing about migrations, yet the table changed: restored.
+  const g = new FakeInstall({ failAt: 'restart' })
+  const orig = g.run.bind(g)
+  g.run = async (cmd, args, opts) => {
+    if (cmd === 'bash' && g.head === TO) { g.migrations += '\nsneaky|2026-11-12|-'; return { code: 1, stdout: '', stderr: '' } }
+    return orig(cmd, args, opts)
+  }
+  const job = g.job()
+  const out = await runUpdate(job, { sh: g, http: g.http, state: new MemoryStateSink(initialState(job)), redact: s => s, sleep: async () => undefined })
+  try { assert.equal(out.status, 'rolled-back'); assert.equal(out.dbRestored, true); assert.equal(g.restored, true) } finally { g.cleanup() }
+})
+
+test('a failed database restore leaves the API stopped on purpose and gives the exact recovery commands', async () => {
+  const { f, end } = await run({ failAt: 'migrate', migrationsAdded: 1, restoreFails: true })
+  try {
+    assert.equal(end.status, 'rollback-failed')
+    assert.equal(f.apiStopped, true)
+    assert.equal(f.calls.filter(c => c.startsWith('bash ')).length, 1, 'the previous version is not started over a half-restored database')
+    assert.match(end.summary!, /left stopped on purpose/)
+    assert.match(end.summary!, /DROP SCHEMA public CASCADE; CREATE SCHEMA public;.*hyperprox-pre-update-0\.2\.0-alpha-aaaaaaa\.sql.*docker exec -i hyperprox-postgres psql -v ON_ERROR_STOP=1 --single-transaction/)
+    assert.match(end.summary!, new RegExp(`git checkout -B 'main' ${FROM} && bash deploy\\.sh`))
+    assert.ok(!end.summary!.includes(SECRET_PW))
+  } finally { f.cleanup() }
+})
+
+test('the backup directory is made 0700', async () => {
+  const { f, end } = await run({})
+  try {
+    assert.equal(end.status, 'succeeded')
+    assert.equal(fs.statSync(path.dirname(end.backupFile!)).mode & 0o777, 0o700)
+  } finally { f.cleanup() }
+})
+
+test('an automatic install never falls back to the mirror', async () => {
+  const { f, end } = await run({ failAt: 'fetch' }, { how: 'auto', mirrorUrl: 'https://mirror.example/hyperprox.git' })
+  try {
+    assert.equal(end.status, 'failed')
+    assert.equal(f.calls.filter(c => c.startsWith('git fetch')).length, 1, 'one fetch, from the upstream')
+  } finally { f.cleanup() }
 })
 
 test('a non-https upstream is refused before anything is fetched', async () => {
@@ -248,7 +326,7 @@ test('real git: a commit that is not reachable from main upstream is refused, on
       async run(cmd: string, args: string[], opts: any = {}) {
         if (cmd === 'git') return real.run(cmd, args, opts)
         if (cmd === 'df') return { code: 0, stdout: 'h\n/dev/x 1 1 99999999 1% /\n', stderr: '' }
-        if (cmd === 'docker') { fs.writeFileSync(opts.stdoutFile, '-- PostgreSQL database dump complete\n'); return { code: 0, stdout: '', stderr: '' } }
+        if (cmd === 'docker') { if (opts.stdoutFile) fs.writeFileSync(opts.stdoutFile, '-- PostgreSQL database dump complete\n'); return { code: 0, stdout: '', stderr: '' } }
         if (cmd === 'bash') { deployedHead = g(inst, 'rev-parse', 'HEAD'); return { code: 0, stdout: '', stderr: '' } }
         return { code: 0, stdout: '', stderr: '' }
       },

@@ -113,8 +113,52 @@ test('stable: nothing newer, an older release, and the same version with newer c
   const tagsOnly = gh({ [`${R}/releases?per_page=30`]: { body: [] }, [`${R}/tags?per_page=100`]: { body: [{ name: 'v0.4.0' }, { name: 'junk' }] },
     [`${R}/git/ref/tags/v0.4.0`]: { body: { object: { type: 'commit', sha: SHA_B } } } })
   const t = await findUpdate(installed(), 'stable', tagsOnly.up)
-  assert.equal(t.available?.label, 'v0.4.0')
-  assert.equal(t.available?.flags.unknownBase, true, 'compare 404: the installed commit is unknown upstream')
+  assert.equal(t.available, null, 'compare 404: upstream does not know the installed commit, so stable offers nothing')
+  assert.match(t.note, /does not contain this install's commit/)
+  const withCmp = gh({ [`${R}/releases?per_page=30`]: { body: [] }, [`${R}/tags?per_page=100`]: { body: [{ name: 'v0.4.0' }] },
+    [`${R}/git/ref/tags/v0.4.0`]: { body: { object: { type: 'commit', sha: SHA_B } } },
+    [`${R}/compare/${SHA_A}...${SHA_B}`]: { body: { status: 'ahead', total_commits: 1, commits: [commit(SHA_B, 'x')], files: [] } } })
+  assert.equal((await findUpdate(installed(), 'stable', withCmp.up)).available?.label, 'v0.4.0')
+})
+
+test('stable: a newer version number that does not contain the installed commit (a renamed old tag) is never offered', async () => {
+  const mk = (status: string) => gh({
+    [`${R}/releases?per_page=30`]: { body: [{ tag_name: 'v9.0.0', body: '' }] },
+    [`${R}/git/ref/tags/v9.0.0`]: { body: { object: { type: 'commit', sha: SHA_C } } },
+    [`${R}/compare/${SHA_A}...${SHA_C}`]: { body: { status, total_commits: 1, commits: [commit(SHA_C, 'x')], files: [] } },
+  }).up
+  const r = await findUpdate(installed(), 'stable', mk('behind'))
+  assert.equal(r.available, null)
+  assert.match(r.note, /already contains v9\.0\.0/)
+  assert.equal((await findUpdate(installed(), 'stable', mk('diverged'))).available, null, 'diverged is not ahead')
+})
+
+test('stable: pre-releases only with "include pre-releases" (on by default)', async () => {
+  const routes = {
+    [`${R}/releases?per_page=30`]: { body: [{ tag_name: 'v0.3.0-alpha', body: '', prerelease: true }, { tag_name: 'v0.1.0', body: '', prerelease: false }] },
+    [`${R}/git/ref/tags/v0.3.0-alpha`]: { body: { object: { type: 'commit', sha: SHA_B } } },
+    [`${R}/compare/${SHA_A}...${SHA_B}`]: { body: { status: 'ahead', total_commits: 1, commits: [commit(SHA_B, 'x')], files: [] } },
+  }
+  assert.equal((await findUpdate(installed(), 'stable', gh(routes).up)).available?.label, 'v0.3.0-alpha')
+  const off = await findUpdate(installed(), 'stable', gh(routes).up, { includePrereleases: false })
+  assert.equal(off.available, null, 'v0.1.0 is older than the installed 0.2.0-alpha, and the pre-release is excluded')
+  const onlyPre = gh({ [`${R}/releases?per_page=30`]: { body: [{ tag_name: 'v0.3.0-alpha', body: '', prerelease: true }] } })
+  assert.match((await findUpdate(installed(), 'stable', onlyPre.up, { includePrereleases: false })).note, /Only pre-releases/)
+})
+
+test('alpha: a stale GitLab mirror behind this install is "behind", never offered as an update', async () => {
+  const P = '/api/v4/projects/root%2Fhyperprox/repository'
+  const gl = fakeGitHub({
+    [`${P}/commits/main`]: { body: { id: SHA_C, title: 'old', message: 'old', committed_date: null } },
+    [`${P}/compare?from=${SHA_A}&to=${SHA_C}&straight=false`]: { body: { commits: [], diffs: [] } },
+    [`${P}/compare?from=${SHA_C}&to=${SHA_A}&straight=false`]: { body: { commits: [{ id: SHA_A, title: 'newer, installed' }], diffs: [] } },
+  })
+  const mirror = new GitLabUpstream(gitlabProject('https://gitlab.example.com/root/hyperprox.git')!, { cache: new HttpCache(null), fetch: gl.fetcher })
+  assert.equal(mirror.mirror, true)
+  assert.equal((await mirror.compare(SHA_A, SHA_C)).status, 'behind')
+  const r = await findUpdate(installed(), 'alpha', mirror)
+  assert.equal(r.available, null)
+  assert.match(r.note, /ahead of main/)
 })
 
 test('alpha: the newest commit on main, the commits since, and nothing when up to date or ahead', async () => {
@@ -168,7 +212,8 @@ test('rate limit: a spent limit stops every request until its reset, and a mirro
   // The mirror: GitLab's API, tried next.
   const gl = fakeGitHub({
     '/api/v4/projects/root%2Fhyperprox/repository/commits/main': { body: { id: SHA_B, title: 'from the mirror', message: 'from the mirror', committed_date: '2026-11-11T00:00:00Z' } },
-    ['/api/v4/projects/root%2Fhyperprox/repository/compare?from=' + SHA_A + '&to=' + SHA_B]: { body: { commits: [{ id: SHA_B, title: 'from the mirror' }], diffs: [] } },
+    ['/api/v4/projects/root%2Fhyperprox/repository/compare?from=' + SHA_A + '&to=' + SHA_B + '&straight=false']: { body: { commits: [{ id: SHA_B, title: 'from the mirror' }], diffs: [] } },
+    ['/api/v4/projects/root%2Fhyperprox/repository/compare?from=' + SHA_B + '&to=' + SHA_A + '&straight=false']: { body: { commits: [], diffs: [] } },
   })
   const mirror = new GitLabUpstream(gitlabProject('https://gitlab.example.com/root/hyperprox.git')!, { cache: new HttpCache(null), fetch: gl.fetcher })
   const ups: Upstream[] = [up, mirror]
@@ -189,7 +234,7 @@ test('repo URLs: GitHub and GitLab parsing', () => {
 })
 
 test('settings: defaults off, validated, auto-install only on stable; the maintenance window', () => {
-  assert.deepEqual({ ...DEFAULT_SETTINGS, window: undefined }, { channel: 'stable', checkEveryHours: 6, notify: false, requireSigned: false, autoInstall: false, window: undefined })
+  assert.deepEqual({ ...DEFAULT_SETTINGS, window: undefined }, { channel: 'stable', checkEveryHours: 6, notify: false, requireSigned: false, includePrereleases: true, autoInstall: false, window: undefined })
   assert.throws(() => mergeSettings(DEFAULT_SETTINGS, { channel: 'nightly' }), SettingsError)
   assert.throws(() => mergeSettings(DEFAULT_SETTINGS, { checkEveryHours: 0 }), SettingsError)
   assert.throws(() => mergeSettings(DEFAULT_SETTINGS, { repoUrl: 'https://evil.example/x.git' }), /not a self-update setting/)
