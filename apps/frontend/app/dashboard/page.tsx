@@ -8,6 +8,7 @@ import Link from 'next/link'
 import { formatUptime, pct } from '@/lib/utils'
 import { wsBase } from '@/lib/ws'
 import { PluginCards } from '@/components/plugins/PluginCards'
+import { DashboardSitesCard } from '@/components/sites/metrics/DashboardSitesCard'
 import { Speedometer, Sparkline, StreamChart, Meter, useHistory, zoneColor, ACCENT, GOOD, WARN, CRIT } from '@/components/dashboard/Viz'
 import { alpha } from '@/lib/theme'
 import { CheckIcon, WarnIcon } from '@/components/dashboard/Icons'
@@ -849,6 +850,8 @@ export default function DashboardView() {
         <HappeningPanel fast={fast} slow={slow}/>
         <PluginCards variant="strip"/>
       </Cols>
+
+      <DashboardSitesCard/>
 
       {/* The dials, the GPU and the services this install talks to */}
       <div className="grid gap-4 grid-cols-1 xl:grid-cols-[1.25fr_1.25fr_1fr]">
