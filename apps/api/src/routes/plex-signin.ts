@@ -16,7 +16,8 @@
 
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { randomUUID } from 'node:crypto'
-import { auditCredentialUse } from '../lib/audit'
+import { auditOrThrow } from '../lib/audit'
+import { onLock } from '../lib/vault/state'
 import { hasRole } from '../lib/roles'
 import { PLUGIN_CATEGORY, fetchWithTimeout, getSettings, saveSettings } from '../lib/plugin-host'
 import { getCredential, setCredential } from '../lib/credentials'
@@ -26,9 +27,12 @@ import { findPlugin } from '../plugins'
 /** The setting that holds this install's Plex client identifier. Not secret: plex.tv shows it as the device. */
 export const CLIENT_ID_KEY = 'plex_client_id'
 
+const PLEX_MAX_BYTES = 4 * 1024 * 1024
+
 export const plexHttp: PlexHttp = async (method, url, headers, timeoutMs) => {
-  const r = await fetchWithTimeout(url, headers, false, method, undefined, timeoutMs, 4 * 1024 * 1024)
-  return { status: r.status, ok: r.ok, json: async () => JSON.parse(await r.text()) }
+  // buffer() stops reading past 4 MiB (text() has no cap).
+  const r = await fetchWithTimeout(url, headers, false, method, undefined, timeoutMs, PLEX_MAX_BYTES)
+  return { status: r.status, ok: r.ok, json: async () => JSON.parse((await r.buffer()).toString('utf8')) }
 }
 
 export async function plexClientId(): Promise<string> {
@@ -55,9 +59,12 @@ export function buildPlexSigninRoutes(deps: {
   return async (fastify) => {
     const svc = deps.signin ?? (shared ??= new PlexSignin({
       http: plexHttp, clientId: plexClientId, save: savePlexEndpoint,
-      audit: (action, details) => auditCredentialUse(action, 'plugin:plex', details),
+      // Throws when the row is not written, so the person is told (the save itself stands).
+      audit: (action, details) => auditOrThrow(action, 'plugin:plex', details),
       log: (msg, fields) => fastify.log.info(fields ?? {}, msg),
     } satisfies SigninDeps))
+    // No server token is held past a lock.
+    onLock(() => svc.dropAll())
     const known = deps.known ?? (async () => (await getSettings('plex').catch(() => ({} as Record<string, string>))).plex_url ?? null)
 
     const guard = (req: FastifyRequest, reply: FastifyReply): boolean => {
@@ -66,7 +73,7 @@ export function buildPlexSigninRoutes(deps: {
       return true
     }
     const fail = (reply: FastifyReply, e: any) => {
-      if (e instanceof PlexSigninError) return reply.status(e.status).send({ success: false, code: e.code, error: e.message, ...(e.tried ? { tried: e.tried } : {}) })
+      if (e instanceof PlexSigninError) return reply.status(e.status).send({ success: false, code: e.code, error: e.message, ...(e.tried ? { tried: e.tried } : {}), ...(e.skipped?.length ? { skipped: e.skipped } : {}) })
       // A lock or an ended vault session mid-save: the gate's own answers (423, 401), as for any other route.
       if (e?.name === 'VaultLockedError' || e?.name === 'VaultSessionError') throw e
       if (e?.name === 'PluginSettingsError') return reply.status(400).send({ success: false, code: 'credential_required', error: e.message })

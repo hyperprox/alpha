@@ -12,7 +12,11 @@
 //
 //  Only an address plex.tv listed for that server is ever tried, so the server token cannot be sent anywhere
 //  else. plex.tv and https://*.plex.direct are checked against the normal certificate authorities; plain http
-//  works as it does for an address typed by hand.
+//  works as it does for an address typed by hand. Falling back from the address picked never goes to plain http
+//  on a remote address (the token would cross the internet unencrypted); only the person can pick one of those.
+//
+//  Server tokens are held in memory only while a choice is open: every flow is dropped at its expiresAt by a
+//  timer, whatever its state, on a successful save, and all at once when HyperProx locks.
 // =============================================================================
 
 import { randomUUID } from 'node:crypto'
@@ -66,7 +70,7 @@ export interface FlowView {
 }
 
 export class PlexSigninError extends Error {
-  constructor(readonly status: number, readonly code: string, message: string, readonly tried?: Array<{ uri: string; error: string }>) {
+  constructor(readonly status: number, readonly code: string, message: string, readonly tried?: Array<{ uri: string; error: string }>, readonly skipped?: string[]) {
     super(message); this.name = 'PlexSigninError'
   }
 }
@@ -162,6 +166,8 @@ interface Flow {
   known: string | null
   error?: string
   timer?: ReturnType<typeof setTimeout>
+  /** Drops the flow at expiresAt, whatever its state. */
+  endTimer?: ReturnType<typeof setTimeout>
   /** Set while a check of plex.tv is in flight, so two never overlap. */
   busy?: boolean
 }
@@ -178,7 +184,15 @@ export interface SigninDeps {
   /** The timer; tests pass their own and drive tick() by hand. */
   schedule?(fn: () => void, ms: number): ReturnType<typeof setTimeout> | undefined
   cancel?(t: ReturnType<typeof setTimeout> | undefined): void
+  /** The end-of-life timer (drops a flow at expiresAt); tests pass their own. */
+  expire?(fn: () => void, ms: number): ReturnType<typeof setTimeout> | undefined
 }
+
+/**
+ * Plain http to an address that is not on the local network: the server token would cross the internet
+ * unencrypted. Never tried on HyperProx's own initiative, only when the person picked that address.
+ */
+export const unsafeFallback = (c: PlexConnection): boolean => !c.local && c.protocol === 'http'
 
 const MAX_FLOWS = 20
 
@@ -231,8 +245,21 @@ export class PlexSignin {
       known: typeof known === 'string' && known.trim() ? known.trim().slice(0, 300) : null,
     }
     this.flows.set(flow.id, flow)
+    this.arm(flow)
     this.later(flow)
     return this.view(flow)
+  }
+
+  /** (Re)set the timer that drops this flow, and every token it holds, at its expiresAt. */
+  private arm(flow: Flow) {
+    ;(this.d.cancel ?? clearTimeout)(flow.endTimer as any)
+    const expire = this.d.expire ?? ((fn, ms) => { const t = setTimeout(fn, ms); t.unref?.(); return t })
+    flow.endTimer = expire(() => { if (this.flows.get(flow.id) === flow) this.drop(flow) }, Math.max(0, flow.expiresAt - this.now()))
+  }
+
+  /** Forget every sign-in at once (HyperProx locked): no server token is held past a lock. */
+  dropAll(): void {
+    for (const f of [...this.flows.values()]) this.drop(f)
   }
 
   private later(flow: Flow) {
@@ -244,7 +271,7 @@ export class PlexSignin {
   async tick(id: string): Promise<void> {
     const flow = this.flows.get(id)
     if (!flow || flow.state !== 'waiting' || flow.busy) return
-    if (this.now() >= flow.expiresAt) { flow.state = 'expired'; return }
+    if (this.now() >= flow.expiresAt) { this.drop(flow); return }
     flow.busy = true
     try {
       let accountToken = ''
@@ -283,7 +310,6 @@ export class PlexSignin {
       flow.user = (str(user?.username) || str(user?.title) || 'your Plex account').slice(0, 80)
       flow.servers = parseResources(await res.json(), flow.known)
       flow.state = 'signed-in'
-      flow.expiresAt = this.now() + CHOOSE_MS
       if (!flow.servers.length) {
         flow.state = 'error'
         flow.error = `You signed in as ${flow.user}, but that Plex account owns no Plex server. Sign in with the account that owns the server, or enter the address and token by hand.`
@@ -294,6 +320,9 @@ export class PlexSignin {
       flow.error = 'You signed in, but HyperProx could not read your Plex servers from plex.tv. Try again with a new code.'
       flow.servers = undefined
     }
+    // Signed in (or failed after signing in): a fresh window to choose a server or read the error, then dropped.
+    flow.expiresAt = this.now() + CHOOSE_MS
+    if (this.flows.get(flow.id) === flow) this.arm(flow)
     this.d.log?.('[plex] sign-in: account signed in', { user: flow.user, servers: flow.servers?.length ?? 0 })
   }
 
@@ -305,9 +334,7 @@ export class PlexSignin {
   }
 
   status(id: string, sid: string): FlowView {
-    const f = this.own(id, sid)
-    if (f.state === 'waiting' && this.now() >= f.expiresAt) f.state = 'expired'
-    return this.view(f)
+    return this.view(this.own(id, sid))
   }
 
   cancel(id: string, sid: string): void {
@@ -316,7 +343,7 @@ export class PlexSignin {
   }
 
   /** Test the chosen server at the chosen address (then its other listed ones), and save the first that answers. */
-  async connect(id: string, sid: string, by: string, serverId: unknown, uri: unknown): Promise<{ url: string; server: string; user: string; tried: Array<{ uri: string; error: string }> }> {
+  async connect(id: string, sid: string, by: string, serverId: unknown, uri: unknown): Promise<{ url: string; server: string; user: string; tried: Array<{ uri: string; error: string }>; note?: string }> {
     const f = this.own(id, sid)
     if (f.state !== 'signed-in' || !f.servers) throw new PlexSigninError(409, 'not_signed_in', f.state === 'waiting' ? 'Plex has not confirmed the sign-in yet.' : 'This sign-in cannot be used. Start again.')
     const server = f.servers.find(s => s.id === serverId)
@@ -324,26 +351,36 @@ export class PlexSignin {
     if (uri !== undefined && uri !== null && uri !== '' && !server.connections.some(c => c.uri === uri)) {
       throw new PlexSigninError(400, 'no_connection', 'Choose one of the addresses shown for that server.')
     }
-    const order = [
-      ...server.connections.filter(c => c.uri === uri),
-      ...server.connections.filter(c => c.uri !== uri),
-    ]
-    if (!order.length) throw new PlexSigninError(502, 'unreachable', `plex.tv lists no address for ${server.name}. Enter its address and token by hand instead.`, [])
+    // The address picked is tried whatever it is; the fallback never sends the token over plain http to a remote address.
+    const others = server.connections.filter(c => c.uri !== uri)
+    const order = [...server.connections.filter(c => c.uri === uri), ...others.filter(c => !unsafeFallback(c))]
+    const skipped = others.filter(unsafeFallback).map(c => c.uri)
+    if (!order.length) {
+      throw new PlexSigninError(502, 'unreachable', server.connections.length
+        ? `${server.name}'s only addresses are plain http over the internet, which would send its token unencrypted. Choose one yourself if you accept that, or enter an address by hand.`
+        : `plex.tv lists no address for ${server.name}. Enter its address and token by hand instead.`, [], skipped)
+    }
     const tried: Array<{ uri: string; error: string }> = []
     for (const c of order) {
       const err = await this.identity(c.uri, server)
       if (err) { tried.push({ uri: c.uri, error: err }); continue }
       await this.d.save(c.uri, server.accessToken)
       const user = f.user ?? 'your Plex account'
-      await this.d.audit('plex.signin', {
-        message: `Plex signed in as ${user}, server ${server.name}`, user, server: server.name, address: c.uri, by,
-      })
-      this.d.log?.('[plex] sign-in: server saved', { server: server.name, address: c.uri })
+      // Saved: the flow, and the server token it held, end here whatever the audit does.
       f.state = 'saved'
       this.drop(f)
-      return { url: c.uri, server: server.name, user, tried }
+      let note: string | undefined
+      try {
+        await this.d.audit('plex.signin', {
+          message: `Plex signed in as ${user}, server ${server.name}`, user, server: server.name, address: c.uri, by,
+        })
+      } catch {
+        note = 'The server was saved, but the audit log row for this sign-in could not be written.'
+      }
+      this.d.log?.('[plex] sign-in: server saved', { server: server.name, address: c.uri, audited: !note })
+      return { url: c.uri, server: server.name, user, tried, ...(note ? { note } : {}) }
     }
-    throw new PlexSigninError(502, 'unreachable', `HyperProx could not reach ${server.name} at any of its addresses. Check the server is on and that HyperProx can reach it, or enter its address by hand.`, tried)
+    throw new PlexSigninError(502, 'unreachable', `HyperProx could not reach ${server.name} at any of its addresses. Check the server is on and that HyperProx can reach it, or enter its address by hand.`, tried, skipped)
   }
 
   /** null when the address answers /identity with this server's own identifier; otherwise why not, in words. */
@@ -385,18 +422,15 @@ export class PlexSignin {
 
   private drop(f: Flow) {
     ;(this.d.cancel ?? clearTimeout)(f.timer as any)
+    ;(this.d.cancel ?? clearTimeout)(f.endTimer as any)
     f.servers = undefined
     this.flows.delete(f.id)
   }
 
-  /** Forget finished flows (and their in-memory server tokens) once their time is up. */
+  /** The end timer's backstop: any flow past its expiresAt is dropped, whatever its state. */
   private sweep() {
     const now = this.now()
-    for (const f of this.flows.values()) {
-      if (f.state === 'waiting' && now >= f.expiresAt) f.state = 'expired'
-      if (f.state !== 'waiting' && now >= f.expiresAt + 5 * 60_000) this.drop(f)
-      if (f.state === 'signed-in' && now >= f.expiresAt) this.drop(f)
-    }
+    for (const f of [...this.flows.values()]) if (now >= f.expiresAt) this.drop(f)
   }
 
   /** For tests: how many flows are held. */

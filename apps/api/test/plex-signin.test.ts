@@ -1,7 +1,8 @@
 // Sign in with Plex: PIN creation and polling against a pretend plex.tv (expiry included), the resources parse and
 // the preference for a local connection, the server token saved while the account token is dropped (never in the
 // vault, the audit log, the log or any answer), the admin and re-confirm guards (API tokens out), and the /identity
-// check failing.
+// check failing, the fallback never sending a token over plain http to a remote address, and every flow dropped
+// at its expiry, on a lock, and after a save even when the audit row cannot be written.
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import Fastify, { type FastifyInstance } from 'fastify'
@@ -147,6 +148,7 @@ let app: FastifyInstance
 let fake = plexTv()
 let clock = Date.UTC(2026, 5, 15)
 let signin: PlexSignin
+let auditFails = false
 
 before(async () => {
   setBroker(broker)
@@ -156,10 +158,11 @@ before(async () => {
   process.env.ENV_FILE_PATH = '/nonexistent/hyperprox-test.env'
   signin = new PlexSignin({
     http: (...a) => fake.http(...a), clientId: plexClientId, save: savePlexEndpoint,
-    audit: async (action, details) => { audits.push({ action, details }) },
+    audit: async (action, details) => { if (auditFails) throw new Error('database down'); audits.push({ action, details }) },
     log: (msg, fields) => { logs.push(msg + ' ' + JSON.stringify(fields ?? {})) },
     now: () => clock,
     schedule: () => undefined, // the test drives tick() itself
+    expire: () => undefined,   // and the clock: sweep() drops what is past its time
   })
   app = Fastify({ logger: { level: 'info', stream: { write: (l: string) => { logs.push(l) } } } })
   await registerGate(app)
@@ -275,17 +278,20 @@ test('the PIN expires: by time, or when plex.tv forgets it; a new code can be as
   const v = (await app.inject({ method: 'POST', url: BASE, headers: { cookie }, payload: {} })).json().data
   clock += 901_000
   await signin.tick(v.id)
-  const e = (await app.inject({ method: 'GET', url: `${BASE}/${v.id}`, headers: { cookie } })).json().data
-  assert.equal(e.state, 'expired')
-  assert.match(e.error, /expired.*new code/i)
+  // Past its time the flow is gone, whatever its state (the page then offers a new code).
+  const e = await app.inject({ method: 'GET', url: `${BASE}/${v.id}`, headers: { cookie } })
+  assert.equal(e.statusCode, 404)
+  assert.equal(e.json().code, 'no_signin')
   const nope = await app.inject({ method: 'POST', url: `${BASE}/${v.id}/connect`, headers: { cookie }, payload: { server: MACHINE } })
-  assert.equal(nope.statusCode, 409)
+  assert.equal(nope.statusCode, 404)
 
   const v2 = (await app.inject({ method: 'POST', url: BASE, headers: { cookie }, payload: {} })).json().data
   assert.notEqual(v2.id, v.id)
   fake.st.pinGone = true
   await signin.tick(v2.id)
-  assert.equal((await app.inject({ method: 'GET', url: `${BASE}/${v2.id}`, headers: { cookie } })).json().data.state, 'expired')
+  const e2 = (await app.inject({ method: 'GET', url: `${BASE}/${v2.id}`, headers: { cookie } })).json().data
+  assert.equal(e2.state, 'expired')
+  assert.match(e2.error, /expired.*new code/i)
 })
 
 test('no owned server: said in plain words, nothing saved', async () => {
@@ -354,4 +360,80 @@ test('polling: plex.tv is asked every 2 seconds while waiting, and not again onc
   assert.equal(f.st.calls.filter(c => c.method === 'GET' && c.url.includes('/api/v2/pins/')).length, polls)
   sv.cancel(v.id, 'sid-1')
   assert.equal(sv.size, 0)
+})
+
+// ── fallback over plain http, expiry, lock, audit failure ────────────────────
+
+const REMOTE_HTTP = { protocol: 'http', address: 'den.example.net', port: 32400, uri: 'http://den.example.net:32400', local: false, relay: false }
+const DEN_HTTP = { ...DEN, connections: [...DEN.connections, REMOTE_HTTP] }
+
+test('the fallback never sends the token over plain http to a remote address; picking one yourself does', async () => {
+  fake = plexTv()
+  fake.st.resources = [DEN_HTTP]
+  fake.st.authorised = true
+  const cookie = await adminCookie()
+  const v = (await app.inject({ method: 'POST', url: BASE, headers: { cookie }, payload: {} })).json().data
+  await signin.tick(v.id)
+  for (const u of ['https://den-lan.abc.plex.direct:32400', 'http://den.lan:32400', 'https://den-remote.abc.plex.direct:32400']) fake.st.identity.set(u, 'down')
+
+  const r = await app.inject({ method: 'POST', url: `${BASE}/${v.id}/connect`, headers: { cookie }, payload: { server: MACHINE } })
+  assert.equal(r.statusCode, 502)
+  assert.deepEqual(r.json().tried.map((t: any) => t.uri), ['https://den-lan.abc.plex.direct:32400', 'http://den.lan:32400', 'https://den-remote.abc.plex.direct:32400'])
+  assert.deepEqual(r.json().skipped, ['http://den.example.net:32400'])
+  assert.ok(!fake.st.calls.some(c => c.url.startsWith('http://den.example.net')), 'the token never went there')
+
+  // Picked explicitly: tried (first), and saved when it answers.
+  fake.st.calls.length = 0
+  const ok = await app.inject({ method: 'POST', url: `${BASE}/${v.id}/connect`, headers: { cookie }, payload: { server: MACHINE, uri: 'http://den.example.net:32400' } })
+  assert.equal(ok.statusCode, 200, ok.body)
+  assert.equal(ok.json().data.url, 'http://den.example.net:32400')
+  assert.ok(fake.st.calls[0].url.startsWith('http://den.example.net:32400/identity'))
+})
+
+test('a flow is dropped at its expiresAt by its timer, whatever its state, server tokens included', async () => {
+  const f = plexTv()
+  f.st.authorised = true
+  let t = 1_000_000
+  const ends: Array<{ fn: () => void; ms: number }> = []
+  const sv = new PlexSignin({
+    http: f.http, clientId: async () => 'client-1', save: async () => {}, audit: async () => {},
+    now: () => t, schedule: () => undefined, expire: (fn, ms) => { ends.push({ fn, ms }); return undefined },
+  })
+  const v = await sv.start('sid-1', null)
+  assert.equal(ends.length, 1)
+  assert.equal(ends[0].ms, 900_000, 'armed for the code’s life')
+  await sv.tick(v.id)
+  assert.equal(sv.status(v.id, 'sid-1').state, 'signed-in')
+  assert.equal(ends.length, 2)
+  assert.equal(ends[1].ms, 15 * 60_000, 're-armed for the time to choose')
+  ends[0].fn() // a stale timer from before: still drops only its own flow, which is this one
+  assert.equal(sv.size, 0, 'dropped while signed in, with its server tokens')
+  assert.throws(() => sv.status(v.id, 'sid-1'), /ended/)
+})
+
+test('a failed audit row: the save stands, the person is told, and the flow ends', async () => {
+  fake = plexTv()
+  fake.st.authorised = true
+  const cookie = await adminCookie()
+  const v = (await app.inject({ method: 'POST', url: BASE, headers: { cookie }, payload: {} })).json().data
+  await signin.tick(v.id)
+  auditFails = true
+  try {
+    const r = await app.inject({ method: 'POST', url: `${BASE}/${v.id}/connect`, headers: { cookie }, payload: { server: MACHINE } })
+    assert.equal(r.statusCode, 200, r.body)
+    assert.match(r.json().data.note, /audit log row .* could not be written/)
+    assert.equal((await getSettings('plex')).plex_token, SERVER)
+    assert.equal((await app.inject({ method: 'GET', url: `${BASE}/${v.id}`, headers: { cookie } })).statusCode, 404)
+  } finally { auditFails = false }
+})
+
+test('locking HyperProx drops every sign-in, server tokens included', async () => {
+  fake = plexTv()
+  fake.st.authorised = true
+  const cookie = await adminCookie()
+  const v = (await app.inject({ method: 'POST', url: BASE, headers: { cookie }, payload: {} })).json().data
+  await signin.tick(v.id)
+  assert.ok(signin.size >= 1)
+  await lock('manual')
+  assert.equal(signin.size, 0)
 })

@@ -134,7 +134,7 @@ function SettingsDialog({ plugin, onSave, onClose, known, onSignedIn }: {
   /** Plex: an address Scan for services found, to preselect in Sign in with Plex. */
   known?: string | null
   /** Plex: Sign in with Plex saved the server. */
-  onSignedIn?: (r: { server: string; url: string }) => void
+  onSignedIn?: (r: { server: string; url: string; note?: string }) => void
 }) {
   const [values, setValues] = useState<Record<string, string>>(
     Object.fromEntries(plugin.settings.map(s => [s.key, s.type === 'secret' ? '' : s.value])),
@@ -507,7 +507,7 @@ export default function PluginsPage() {
           known={findings?.find(f => f.pluginId === 'plex' && f.setting === 'plex_url')?.address ?? null}
           onSignedIn={async r => {
             setEditing(null)
-            setNotice(`Plex is set up: ${r.server}, at ${r.url}.`)
+            setNotice(`Plex is set up: ${r.server}, at ${r.url}.${r.note ? ` ${r.note}` : ''}`)
             setFindings(prev => prev ? prev.filter(f => !(f.pluginId === 'plex' && f.setting === 'plex_url')) : prev)
             await load()
             readOne('plex')

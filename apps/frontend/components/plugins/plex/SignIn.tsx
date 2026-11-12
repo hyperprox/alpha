@@ -33,13 +33,15 @@ async function call(method: string, url: string, body?: unknown): Promise<{ stat
   return { status: r.status, json: await r.json().catch(() => ({})) }
 }
 
-const where = (c: Connection) => `${c.local ? 'On your network' : 'Over the internet'} · ${c.protocol === 'https' ? 'secure' : 'plain http'}`
+const where = (c: Connection) => c.protocol === 'https'
+  ? `${c.local ? 'On your network' : 'Over the internet'} · secure`
+  : c.local ? 'On your network · plain http' : 'Over the internet · plain http, the token is sent unencrypted'
 
 export function PlexSignIn({ known, onDone, compact }: {
   /** An address discovery already found, to preselect the matching connection. */
   known?: string | null
   /** Called once the server is saved. */
-  onDone: (r: { server: string; url: string }) => void
+  onDone: (r: { server: string; url: string; note?: string }) => void
   /** Smaller button, for an alert card. */
   compact?: boolean
 }) {
@@ -47,6 +49,8 @@ export function PlexSignIn({ known, onDone, compact }: {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [tried, setTried] = useState<Tried[]>([])
+  const [skipped, setSkipped] = useState<string[]>([])
+  const [expired, setExpired] = useState(false)
   const [server, setServer] = useState<string>('')
   const [uri, setUri] = useState<string>('')
   const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
@@ -54,7 +58,7 @@ export function PlexSignIn({ known, onDone, compact }: {
   useEffect(() => () => { alive.current = false }, [])
 
   const start = useCallback(async () => {
-    setBusy(true); setError(null); setTried([])
+    setBusy(true); setError(null); setTried([]); setSkipped([]); setExpired(false)
     try {
       const r = await call('POST', BASE, { known: known ?? undefined })
       if (r.json?.code === 'reconfirm_required') { setReconfirm(() => () => void start()); return }
@@ -69,7 +73,13 @@ export function PlexSignIn({ known, onDone, compact }: {
     const t = setInterval(async () => {
       const r = await call('GET', `${BASE}/${flow.id}`).catch(() => null)
       if (!alive.current || !r) return
-      if (r.status === 404) { setFlow(null); setError('That Plex sign-in has ended. Start again.'); return }
+      if (r.status === 404) {
+        // The API drops a sign-in at its expiry: past that time, this is the code running out.
+        const ranOut = Date.now() >= flow.expiresAt - 5000
+        setFlow(null); setExpired(ranOut)
+        setError(ranOut ? 'The code expired before it was used. Get a new code and try again.' : 'That Plex sign-in has ended. Start again.')
+        return
+      }
       if (r.json?.success) setFlow(r.json.data)
     }, 2000)
     return () => clearInterval(t)
@@ -86,19 +96,20 @@ export function PlexSignIn({ known, onDone, compact }: {
 
   const connect = useCallback(async () => {
     if (!flow || !server) return
-    setBusy(true); setError(null); setTried([])
+    setBusy(true); setError(null); setTried([]); setSkipped([])
     try {
       const r = await call('POST', `${BASE}/${flow.id}/connect`, { server, uri })
       if (r.json?.code === 'reconfirm_required') { setReconfirm(() => () => void connect()); return }
-      if (!r.json?.success) { setError(r.json?.error ?? 'Could not save the server.'); setTried(r.json?.tried ?? []); return }
+      if (r.status === 404) { setFlow(null); setError('That Plex sign-in has ended. Get a new code and try again.'); setExpired(true); return }
+      if (!r.json?.success) { setError(r.json?.error ?? 'Could not save the server.'); setTried(r.json?.tried ?? []); setSkipped(r.json?.skipped ?? []); return }
       setFlow(null)
-      onDone({ server: r.json.data.server, url: r.json.data.url })
+      onDone({ server: r.json.data.server, url: r.json.data.url, note: r.json.data.note })
     } catch { setError('Could not reach HyperProx.') } finally { setBusy(false) }
   }, [flow, server, uri, onDone])
 
   const cancel = () => {
     if (flow) void call('DELETE', `${BASE}/${flow.id}`).catch(() => {})
-    setFlow(null); setError(null); setTried([])
+    setFlow(null); setError(null); setTried([]); setSkipped([]); setExpired(false)
   }
 
   const box: React.CSSProperties = { border: '1px solid var(--border-strong)', borderRadius: 10, padding: 14, background: 'var(--ground-deep)' }
@@ -106,7 +117,7 @@ export function PlexSignIn({ known, onDone, compact }: {
 
   return (
     <div className="flex flex-col gap-3">
-      {!flow && (
+      {!flow && !expired && (
         <div className="flex flex-wrap items-center gap-2">
           <button type="button" onClick={() => void start()} disabled={busy} className={`${styles.btn} ${styles.btnPri}`}>
             {busy ? 'Starting…' : 'Sign in with Plex'}
@@ -175,7 +186,7 @@ export function PlexSignIn({ known, onDone, compact }: {
                 ))}
               </select>
               <span style={{ ...muted, display: 'block', marginTop: 6, fontSize: 12.5 }}>
-                If this address does not answer, HyperProx tries the server’s other addresses.
+                If this address does not answer, HyperProx tries the server’s other addresses, except plain http over the internet.
               </span>
             </label>
           )}
@@ -195,6 +206,17 @@ export function PlexSignIn({ known, onDone, compact }: {
             <ul style={{ ...muted, marginTop: 8, paddingLeft: 18, listStyle: 'disc' }}>
               {tried.map(t => <li key={t.uri}><span className="font-mono" style={{ fontSize: 12 }}>{t.uri}</span>: {t.error}</li>)}
             </ul>
+          )}
+          {skipped.length > 0 && (
+            <p style={{ ...muted, marginTop: 8 }}>
+              Not tried, because they are plain http over the internet and would send the token unencrypted (choose one
+              yourself to use it): <span className="font-mono" style={{ fontSize: 12 }}>{skipped.join(', ')}</span>
+            </p>
+          )}
+          {expired && (
+            <div className="mt-3 flex gap-2">
+              <button type="button" onClick={() => void start()} disabled={busy} className={`${styles.btn} ${styles.btnPri}`}>Get a new code</button>
+            </div>
           )}
         </div>
       )}

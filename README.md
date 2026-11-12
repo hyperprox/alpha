@@ -1080,13 +1080,15 @@ and episode offers **Map by filename**, the same rescue as before.
   new tab**. HyperProx waits for Plex to confirm, then lists the servers your Plex account owns, with
   their version and addresses. It picks the one on your own network, or the one **Scan for services**
   already found. Choose **Use this server**: HyperProx checks it answers at that address (and, if not,
-  at the server's other addresses plex.tv lists), then saves the address and the server's own token in
-  the vault. It needs the admin role and your master password again, like any settings change, and an
-  API token cannot do it. Your Plex account sign-in itself is never stored or logged and never reaches
-  your browser: HyperProx uses it only to read your server list, then drops it. The audit log says who
-  signed in to Plex and which server was chosen. If the code runs out, if the account owns no server, or
-  if the server does not answer at any of its addresses (each one tried is listed), the page says so and
-  you can try again.
+  at the server's other addresses plex.tv lists, except plain http over the internet, which would send
+  the token unencrypted: that is used only if you pick it yourself), then saves the address and the
+  server's own token in the vault. It needs the admin role and your master password again, like any
+  settings change, and an API token cannot do it. Your Plex account sign-in itself is never stored or
+  logged and never reaches your browser: HyperProx uses it only to read your server list, then drops it.
+  The server's token is held in memory only while you choose, and is forgotten when the sign-in ends,
+  runs out or HyperProx locks. The audit log says who signed in to Plex and which server was chosen. If
+  the code runs out, if the account owns no server, or if the server does not answer at any of its
+  addresses (each one tried is listed), the page says so and you can try again.
 - **By hand**: enter the server's address and token. The token goes into the vault and is only ever sent
   to that address. To find the token, open any item in Plex Web, choose Get Info, then View XML: it is
   the `X-Plex-Token` at the end of the address. **Scan for services** finds a Plex server on your cluster
