@@ -109,3 +109,69 @@ test('credentials: a token, or a Global API Key only when it has a key\'s shape 
   assert.throws(() => new CloudflareClient({ token: 'two words' }), /malformed/)
   assert.throws(() => new CloudflareClient({ globalKey: key, email: 'a@example.com\r\nX: y' }), /malformed/)
 })
+
+// --- Account-owned tokens --------------------------------------------------------------------
+// They answer "Invalid API Token" at /user/tokens/verify and verify at /accounts/{id}/tokens/verify.
+
+test('an account-owned token is verified through its account, and works', async () => {
+  const cf = new FakeCloudflare()
+  cf.tokenOwner = 'account'
+  cf.accounts = [{ id: '1'.repeat(32), name: 'Other' }, { id: '2'.repeat(32), name: 'Example Account' }]
+  cf.owningAccount = '2'.repeat(32)
+  const t = await testCloudflare(client(cf))
+  assert.equal(t.ok, true)
+  assert.equal(t.message, 'Account token works (account Example Account), but this account has no domains yet.')
+  assert.ok(t.details[0].startsWith('Account-owned token is active'))
+  assert.ok(t.details.some(d => /Give it Zone: Read and DNS: Edit/.test(d)))
+  assert.deepEqual(cf.calls.map(c => new URL(c.url).pathname), [
+    '/client/v4/user/tokens/verify', '/client/v4/accounts',
+    `/client/v4/accounts/${'1'.repeat(32)}/tokens/verify`, `/client/v4/accounts/${'2'.repeat(32)}/tokens/verify`,
+    '/client/v4/zones', `/client/v4/accounts/${'2'.repeat(32)}/tokens/${cf.token.id}`])
+})
+
+test('an account-owned token: zones counted, permissions read from the account when allowed', async () => {
+  const cf = new FakeCloudflare()
+  cf.tokenOwner = 'account'
+  cf.addZone('example.com')
+  cf.permissions = ['Zone Read', 'DNS Write']
+  const t = await testCloudflare(client(cf))
+  assert.equal(t.message, 'Account token works (account Example Account): 1 zone (example.com).')
+  assert.deepEqual(t.permissions, ['Zone Read', 'DNS Write'])
+  // Records work the same with an account-owned token.
+  const c = client(cf)
+  const z = (await c.listZones())[0]
+  await c.createRecord(z.id, { type: 'A', name: 'app.example.com', content: '192.0.2.1', ttl: 1 })
+  assert.equal((await c.listRecords(z.id)).length, 1)
+})
+
+test('an account-owned token that is expired is reported as expired, not invalid', async () => {
+  const cf = new FakeCloudflare()
+  cf.tokenOwner = 'account'
+  cf.token.status = 'expired'
+  await assert.rejects(testCloudflare(client(cf)), /has expired/)
+})
+
+test('a truly invalid token is invalid only when the user and account ways both refuse it', async () => {
+  const cf = new FakeCloudflare()
+  await assert.rejects(testCloudflare(client(cf, 'not-a-real-token')), (e: any) => e.message === 'Invalid API Token (code 1000)')
+  const paths = cf.calls.map(c => new URL(c.url).pathname)
+  assert.deepEqual(paths, ['/client/v4/user/tokens/verify', '/client/v4/accounts', '/client/v4/zones'])
+})
+
+test('the Test and the providers card agree: a token that lists zones is never called invalid', async () => {
+  const cf = new FakeCloudflare()
+  cf.tokenOwner = 'account'
+  cf.owningAccount = 'f'.repeat(32)       // in no account the token can list: verification cannot succeed
+  cf.addZone('example.com')
+  const t = await testCloudflare(client(cf))
+  assert.equal(t.ok, true)
+  assert.equal(t.message, 'Token works: 1 zone (example.com).')
+  assert.match(t.details[0], /would not verify the token itself \(Invalid API Token \(code 1000\)\), but it lists zones/)
+})
+
+test('an outage at verify is not retried as an account token', async () => {
+  const cf = new FakeCloudflare()
+  cf.rateLimit = 10
+  await assert.rejects(testCloudflare(client(cf)), /rate limit/)
+  assert.ok(!cf.calls.some(c => new URL(c.url).pathname === '/client/v4/accounts'))
+})
