@@ -74,7 +74,8 @@
 .top { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   width: 100%; max-width: 92rem; margin: 0 auto;
   padding: 16px max(18px, env(safe-area-inset-right, 0px)) 14px max(18px, env(safe-area-inset-left, 0px));
-  background: linear-gradient(180deg, var(--ground) 70%, color-mix(in srgb, var(--ground) 0%, transparent)); }
+  /* A 0% colour-mix is invalid (its percentages sum to 0), which dropped this whole background and let the page scroll through the title. */
+  background: linear-gradient(180deg, var(--ground) 88%, transparent); }
 .topFull { position: static; max-width: none; padding-top: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--border); background: var(--ground); }
 .titleBlock { min-width: 0; }
 .crumb { display: block; margin-bottom: 4px; font: 500 .72rem var(--font-mono); letter-spacing: .12em; color: var(--accent); text-transform: uppercase;
