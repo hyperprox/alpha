@@ -12,7 +12,7 @@ export interface PageMeta { crumb: string; title: string; crumbHref?: string }
 /** Names shown before the plug-in list has loaded, so the title never flashes a generic word. */
 export const PLUGIN_NAMES: Record<string, string> = {
   'home-assistant': 'Home Assistant', plex: 'Plex', arrstack: 'Arr Stack', unmanic: 'Unmanic',
-  mikrotik: 'MikroTik', meshcentral: 'MeshCentral', qnap: 'QNAP',
+  mikrotik: 'MikroTik', meshcentral: 'MeshCentral', qnap: 'QNAP', asus: 'ASUS',
   pbs: 'Proxmox Backup Server',
 }
 

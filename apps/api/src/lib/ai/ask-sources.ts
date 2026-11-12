@@ -372,6 +372,7 @@ export function pluginSources(d: PluginDeps): AskSource[] {
     const extra: Record<string, string> = {
       'home-assistant': 'home|lights?|switch(es)?|doors?|locks?|sensors?|temperature|garage|thermostat|automations?',
       mikrotik: 'router|wan|bandwidth|internet|firewall',
+      asus: 'asus|merlin|asuswrt|router|wi-?fi|wireless|ssid|wan|internet',
       plex: 'plex|tautulli|streams?|watching|transcod\\w*',
       arrstack: 'sonarr|radarr|prowlarr|downloads?|queue|movies?|shows?',
     }

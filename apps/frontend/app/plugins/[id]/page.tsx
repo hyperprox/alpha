@@ -13,6 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PluginVisual } from '@hyperprox/types'
 import { HomeAssistantPage } from '@/components/plugins/home-assistant/HomeAssistant'
 import { QnapPage } from '@/components/plugins/qnap/QnapPage'
+import { AsusPage } from '@/components/plugins/asus/AsusPage'
 import { PbsPage } from '@/components/plugins/pbs/PbsPage'
 import { HudHeader, styles as vs, type StatChip } from '@/components/visual/kit'
 import { DetailsSection, PLUGIN_ICON, PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
@@ -482,6 +483,7 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
 /** Home Assistant has its own page: several houses, each with Devices (controls), health and settings. */
 export default function PluginPage({ params }: { params: { id: string } }) {
   if (params.id === 'qnap') return <QnapPage />
+  if (params.id === 'asus') return <AsusPage />
   if (params.id === 'pbs') return <PbsPage />
   return params.id === 'home-assistant' ? <HomeAssistantPage /> : <PluginDetailPage params={params} />
 }

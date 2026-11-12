@@ -12,7 +12,7 @@ import { Icon, styles as s } from '@/components/visual/kit'
 /** Which icon a plug-in id gets in the switcher and the HUD. */
 export const PLUGIN_ICON: Record<string, string> = {
   'home-assistant': 'home', plex: 'play', arrstack: 'arr', unmanic: 'encode', mikrotik: 'router', meshcentral: 'mesh',
-  qnap: 'encode', pbs: 'lock',
+  qnap: 'encode', pbs: 'lock', asus: 'router',
 }
 
 // ── plug-in switcher ─────────────────────────────────────────────────────────

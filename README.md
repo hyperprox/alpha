@@ -95,7 +95,7 @@ node screenshots.mjs --all http://127.0.0.1:3100 /tmp/hyperprox-shots
 | Catalogue | Guided installs of NPM, Ollama, Tautulli, Nextcloud, Jellyfin, Gitea, Proxmox Backup Server and more: choose resources, see every node's free capacity with a recommended node, pick the ID and address; an app already running on your cluster shows where. The **Arr Stack** recipe installs Sonarr, Radarr and the apps you pick, wired together, with the logins in the vault |
 | Websites | Its own section: a New website wizard (static site or WordPress) from a domain your DNS provider lists to a live HTTPS site (container, DNS record, proxy host, certificate and a check of the public address), Add existing for the sites HyperProx finds already running, and privacy-friendly metrics from each site's own access log (people counted apart from bots and scanners, with a Security card for probes; LiteSpeed and CyberPanel sites are read-only); then open it, sign in to WordPress with a one-time link, reveal its password, pull it again, check its health |
 | AI assistant | Questions about your cluster, and plain-language deploys run end to end after you confirm |
-| Plug-ins | Arr Stack, Unmanic, MikroTik, Plex, Proxmox Backup Server, Home Assistant, QNAP and MeshCentral, with no access to credentials; Home Assistant also controls devices, in more than one house |
+| Plug-ins | Arr Stack, Unmanic, MikroTik, ASUS routers, Plex, Proxmox Backup Server, Home Assistant, QNAP and MeshCentral, with no access to credentials; Home Assistant also controls devices, in more than one house |
 | Plex | Works from Plex alone (Tautulli is optional), added with **Sign in with Plex** and a short code; live updates and covers; **Clear-out** lists what nobody watches, with keep rules; **Library** removes shows, seasons, episodes and films through Sonarr, Radarr or Plex, behind a preview and the master password; a message when something new is added |
 | Backups | The Proxmox Backup Server plug-in: datastores, stale guests, job health and an optional Verify, read-only unless you turn on managing backups (delete, prune, clean up; protected snapshots are never touched) |
 | Notifications | Discord, Slack, Teams, ntfy, Gotify, Telegram and generic webhooks |
@@ -1288,6 +1288,7 @@ otherwise every file is put back. Nothing in a site is ever changed without this
 | Plex activity | Read from Plex itself: what is streaming now with each title's cover (progress, direct play, direct stream or transcode), local and remote bandwidth gauges, who watches most, what is watched most, recent history and your libraries. Tautulli is optional and adds hours watched. Plus **Clear-out** (what nobody watches), **Library** (remove shows, seasons, episodes or films) and an optional message when something new is added (see below) |
 | Home Assistant | Your house as tiles by room, with quick actions, a light dial and a climate dial; plus unavailable entities, low batteries, pending updates and log errors, for each of your Home Assistant instances (see below) |
 | QNAP | Each NAS's drive bays with SMART health and temperature, volume rings, shares, temperature and load gauges, fans and firmware, with a quick SMART test, and restart and shut down behind the confirm step, for each of your NAS, a remote one included (see below) |
+| ASUS router | Stock Asuswrt or Merlin, without Home Assistant: model, firmware, uptime, CPU and RAM; internet status with live down and up rates; each Wi-Fi band with its network name, channel and clients; connected devices with connection, signal and time online; what needs attention; reboot behind the confirm step (see below) |
 | Proxmox Backup Server | Each backup server's datastores as gauges (used, deduplication, GC), every backup group as a tile that turns red when its newest snapshot is older than you allow, the prune, GC, verify and sync jobs, failed tasks of the last day, and which cluster guests have no backup there, with verify now behind the master password; read-only unless you turn on backup management, which adds deleting, pruning and clean-up (see below) |
 | MeshCentral | Finds npm installs in guests and adds them to Updates. Its page says what it would need to show your devices; it holds no MeshCentral login, so it shows none |
 
@@ -1557,6 +1558,61 @@ sizes), `qsmart.cgi?func=all_hd_data` (disks and SMART), `sysRequest.cgi?subfunc
 been checked against a QTS 5 NAS yet. The quick SMART test, restart and shut down calls have not been
 run against either firmware; when a NAS does not accept one, the page says so instead of claiming it
 worked.
+
+#### ASUS routers
+
+For an ASUS router on stock Asuswrt or Asuswrt-Merlin (388.x, 3004.x and the 3.0.0.6 base), without
+Home Assistant. Open **Plug-ins, ASUS** and press **Add a router** (admins; the master password is asked
+again, because a login is being stored). Enter the router's address, its admin user and its password.
+**Find my router** fills in the address when the router is this network's gateway. HyperProx signs in
+once to check the login, reads the model and firmware itself, and names the router after its model if
+you leave the name blank. If the router refuses the login, nothing is saved.
+
+Each router gets its own tab. Its page opens with a header ring for CPU and five readings: health,
+firmware (stock or Merlin), uptime, CPU and RAM. Under it:
+
+- **Internet**: connected or down, the connection type, and live download and upload rates with a
+  short trail. The rates come from the router's own traffic counters, read twice a few seconds apart.
+  Operators and admins also see the WAN address and gateway.
+- **Wi-Fi**: one tile per band (2.4, 5 and 6 GHz, and both 5 GHz radios on a tri-band model), each with
+  its network name, channel, width and how many clients are on it. A radio that is off says so.
+- **Health**, or **Needs attention** when something is wrong: the internet is down, CPU is at 90% or
+  more, memory is at 92% or more (Asuswrt keeps a lot of memory busy as cache, so the bar is high), or
+  the router says a firmware update is available. HyperProx does not install firmware; do that on the
+  router.
+- **Connected devices**: every device online now with its name, how it connects (wired or the Wi-Fi
+  band), its signal as bars and dBm, and how long it has been on Wi-Fi. You can filter by wired or by
+  band. Operators and admins also see each device's address and MAC; viewers never see MACs or
+  addresses.
+- **Reboot** (admins): needs the master password re-entered and the router's name typed. API tokens can
+  never use it, and three reboots an hour is the most allowed. Every attempt is in the audit log, and a
+  notification goes to your channels. Afterwards HyperProx reads the router again and records whether it
+  came back with a fresh uptime, and sends a notification if it has not.
+- **Details**: the same readings as plain tables.
+
+The page reads the router every 10 seconds while you have it open.
+
+**The login.** HyperProx uses the same web API as the ASUS phone app (`login.cgi`, then `appGet.cgi`
+reads with the session token). ASUS routers allow one admin session at a time, so HyperProx keeps one
+session while it is reading and signs out after two minutes without reads. If you are signed in to the
+router's own page at the same moment, one of the two may be asked to sign in again. If the router
+refuses the login, HyperProx stops asking (the page, the card and the AI page) until you save the login
+again or HyperProx restarts. If the router has locked logins after too many failures, HyperProx waits
+until the router's own lockout ends. It never retries a password in a loop. The login is kept in the
+vault.
+
+**Addresses** follow the same rules as Home Assistant's and QNAP's: `http://` only to a private address
+(your LAN, Tailscale, WireGuard), checked when saved and on every use. For an `https://` router,
+HyperProx pins the certificate the router presents the first time, and after that sends nothing (not
+even the login) to a router that shows a different one. If the router's certificate changes on purpose,
+tick **pin the one it presents now** in Settings.
+
+**What it does not do.** Version 1 has one action, reboot. Blocking a device's internet access is not
+included: Asuswrt has no single call for it. It would mean rewriting the router's whole parental-control
+list, whose format differs between firmware versions, and that could wipe schedules you set up on the
+router. **Tested** against a pretend router in the test suite only, built from the published API; it has
+not been run against a real ASUS router yet. When a router leaves a call out, the page names the missing
+part, and the rest of the page still works.
 
 #### Proxmox Backup Server
 
