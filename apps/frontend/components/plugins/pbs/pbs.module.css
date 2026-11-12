@@ -1,0 +1,68 @@
+/* =============================================================================
+   HyperProx — Proxmox Backup Server plug-in page
+
+   Theme tokens only (light and dark both come from globals.css). Health glows
+   are --good / --warn / --crit; colour is never the only signal (every tile
+   also says its state in words). Motion stops under prefers-reduced-motion.
+   ============================================================================= */
+
+.band { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; border-radius: 10px; padding: 8px 12px; font-weight: 600;
+  border: 1px solid color-mix(in srgb, var(--band-c) 45%, var(--border)); color: var(--text-bright);
+  background: color-mix(in srgb, var(--band-c) 12%, var(--surface)); --band-c: var(--good); }
+.band[data-state="attention"] { --band-c: var(--warn); }
+.band b { font: 700 .78rem var(--font-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--band-c); }
+.band small { font-weight: 500; color: var(--text-soft); }
+
+.tabs { display: flex; flex-wrap: wrap; gap: 8px; }
+.tab { min-height: 40px; border-radius: 9px; padding: 0 14px; font: 600 .85rem var(--font-body); cursor: pointer;
+  border: 1px solid var(--accent); color: var(--accent); background: transparent; }
+.tab[aria-selected="true"] { background: var(--accent); color: var(--accent-ink); }
+.tab:focus-visible { outline: 2px solid var(--hx-accent); outline-offset: 2px; }
+
+.views { display: flex; gap: 2px; border-bottom: 1px solid var(--border); }
+.views button { background: none; border: 0; border-bottom: 2px solid transparent; padding: 10px 12px; min-height: 40px; color: var(--text-muted); font: 500 .9rem var(--font-body); cursor: pointer; }
+.views button[aria-selected="true"] { color: var(--text-bright); border-bottom-color: var(--hx-accent); font-weight: 600; }
+
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.toolbar small { color: var(--text-muted); font: 500 .72rem var(--font-mono); letter-spacing: .06em; }
+
+/* ── datastores ── */
+.stores { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 17rem), 1fr)); gap: 12px; }
+.store { --glow-c: var(--hx-accent); display: flex; flex-direction: column; gap: 10px; padding: 14px; border-radius: 12px; min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--glow-c) 35%, var(--border));
+  background: linear-gradient(160deg, var(--hx-panel), var(--hx-deep));
+  box-shadow: 0 0 22px -12px color-mix(in srgb, var(--glow-c) var(--glow), transparent); }
+.store[data-full="true"] { --glow-c: var(--warn); }
+.store[data-error="true"] { --glow-c: var(--crit); }
+.storeTop { display: flex; gap: 14px; align-items: center; min-width: 0; }
+.storeName { font: 700 1.25rem/1.1 var(--font-display); color: var(--text-bright); letter-spacing: .04em; overflow-wrap: anywhere; }
+.facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: .85rem; }
+.facts dt { color: var(--text-muted); font: 500 .68rem var(--font-mono); letter-spacing: .08em; text-transform: uppercase; align-self: center; }
+.facts dd { margin: 0; color: var(--text-bright); overflow-wrap: anywhere; }
+.acts { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* ── backup groups ── */
+.nsHead { margin: 14px 0 8px; font: 600 .72rem var(--font-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--text-muted); }
+.nsHead:first-child { margin-top: 0; }
+.groups { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 9.5rem), 1fr)); gap: 8px; }
+.group { --glow-c: var(--good); position: relative; border-radius: 10px; padding: 10px 10px 9px; min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--glow-c) 38%, var(--border)); background: color-mix(in srgb, var(--ground) 55%, transparent);
+  box-shadow: 0 0 16px -10px color-mix(in srgb, var(--glow-c) var(--glow), transparent); }
+.group[data-state="stale"] { --glow-c: var(--crit); animation: pPulse 2.4s ease-in-out infinite; }
+.group[data-state="verify"] { --glow-c: var(--warn); }
+@keyframes pPulse { 50% { box-shadow: 0 0 24px -6px color-mix(in srgb, var(--glow-c) var(--glow), transparent); } }
+.group b { display: flex; align-items: baseline; gap: 6px; font: 700 1.05rem/1.1 var(--font-display); color: var(--text-bright); letter-spacing: .04em; overflow-wrap: anywhere; }
+.group b small { font: 600 .6rem var(--font-mono); letter-spacing: .12em; color: var(--text-muted); text-transform: uppercase; }
+.group .age { display: block; margin-top: 6px; font: 600 .82rem var(--font-mono); color: var(--glow-c); }
+.group .meta { display: flex; justify-content: space-between; gap: 6px; margin-top: 4px; font: 500 .66rem var(--font-mono); letter-spacing: .05em; color: var(--text-muted); text-transform: uppercase; }
+.fresh { height: 4px; border-radius: 2px; margin-top: 8px; background: var(--track); overflow: hidden; }
+.fresh i { display: block; height: 100%; border-radius: 2px; background: var(--glow-c); transition: width .6s; }
+
+.filter { display: flex; align-items: center; gap: 8px; font-size: .85rem; color: var(--text-soft); }
+
+.guests { display: flex; flex-wrap: wrap; gap: 6px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .group[data-state="stale"] { animation: none; }
+  .fresh i { transition: none; }
+}

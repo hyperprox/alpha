@@ -55,6 +55,8 @@ import { type SiteMetricsSource } from '../lib/ai/site-metrics'
 import { parseHomeAction, prepareHomeAction, applyHomeAction, isTokenSid, type HomePlan, type HomePrepareDeps, type HomeApplyDeps, type HomeSite, type HomeNas } from '../lib/ai/home-actions'
 import { isWebsiteRequest, websiteTurn, asChoices, WebsiteDrafts, type WebsitePlanDeps } from '../lib/ai/templates/website'
 import { qnapService } from '../lib/qnap'
+import { pbsService } from '../lib/pbs'
+import { pbsSource } from '../lib/pbs/ai-source'
 import { fetchPrometheusAlerts, FileForwarderState, notForwardedFromEnv } from '../lib/alerts/forwarder'
 import { getNotifyService } from '../lib/notify'
 import { getCluster } from '../lib/clusters/registry'
@@ -328,6 +330,13 @@ function productionClusterSources(c: ClusterRef, facts: TemplateFacts | null, pr
   // Before the per-cluster sources, so "is my NAS healthy" is the NAS and not the cluster's network storage.
   const attached: AskSource[] = [
     qnapSource({ list: nasEntries, role, unlocked: isUnlocked }),
+    pbsSource({ unlocked: isUnlocked, list: async () => {
+      const svc = pbsService()
+      return Promise.all((await svc.instances.list()).map(async m => {
+        try { return { name: m.name, reading: await svc.reading(m.id), error: null } }
+        catch (e: any) { return { name: m.name, reading: null, error: String(e?.message ?? 'no answer').slice(0, 160) } }
+      }))
+    } }),
     alertsSource({ fetch: () => fetchPrometheusAlerts(), state: () => new FileForwarderState().load(), notForwarded: () => notForwardedFromEnv(), clusterName: id => getCluster(id)?.name ?? null }),
     notifySource({ role, channels: async () => {
       const svc = getNotifyService()
@@ -361,7 +370,7 @@ function productionClusterSources(c: ClusterRef, facts: TemplateFacts | null, pr
     }), runInCluster),
     ...boundTo(HOME_ID, attached, runInCluster),
     ...extra.filter(s => s.id !== 'cluster' && s.id !== 'backups'),
-    ...boundTo(HOME_ID, pluginSources({ plugins: PLUGINS, unlocked: isUnlocked, run: runPluginSummary, detail: runPluginDetail, skip: ['qnap'] }), runInCluster),
+    ...boundTo(HOME_ID, pluginSources({ plugins: PLUGINS, unlocked: isUnlocked, run: runPluginSummary, detail: runPluginDetail, skip: ['qnap', 'pbs'] }), runInCluster),
   ]
 }
 

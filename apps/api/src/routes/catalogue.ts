@@ -25,6 +25,11 @@ import { ProxmoxClient } from '../lib/proxmox-client'
 import { DetectionCache, type DetectResult, type FingerprintList } from '../lib/catalogue-detect'
 import { sharedCandidateCache } from './site-metrics'
 import { hasRole, type Role } from '../lib/roles'
+import { knownNas, listExports } from '../lib/pbs/nas-list'
+import { pbsSetupNodeRunner } from '../lib/pbs/setup-deps'
+import { pbsService } from '../lib/pbs'
+import { qnapService } from '../lib/qnap'
+import { RECIPE_ID as PBS_RECIPE_ID } from '../lib/pbs/catalogue'
 
 function pve(): ProxmoxClient {
   return new ProxmoxClient(
@@ -45,6 +50,8 @@ async function nodeAddresses(): Promise<Record<string, string>> {
 
 /** Is the thing this recipe provides already configured? */
 async function alreadySatisfied(recipeId: string): Promise<string | null> {
+  // A backup server the PBS plug-in already reads (it keeps its servers as instances, not settings).
+  if (recipeId === PBS_RECIPE_ID) return (await pbsService().instances.views().catch(() => []))[0]?.url || null
   const r = findRecipe(recipeId)
   if (!r?.satisfies) return null
   const { kind, id, setting } = r.satisfies
@@ -168,6 +175,35 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
     }
     return reply.status(500).send({ success: false, error: (e as Error).message })
   }
+
+  // GET /wizard/pbs/nas — the NAS HyperProx knows, for a backup server's datastore (admin, like every wizard route).
+  // With ?node=&host=, that NAS's NFS exports as the node sees them (showmount, read-only).
+  fastify.get<{ Querystring: { node?: string; host?: string } }>('/wizard/pbs/nas', async (req, reply) => {
+    // Reading a NAS's exports runs a command on a node: a person only, never an API token (like the probes).
+    if ((req as any).apiToken) return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'API tokens cannot look at NAS exports.' })
+    try {
+      if (req.query.host) {
+        // Asked from the node given, or the first online node with a saved login; the preview asks again from the
+        // node the container goes on.
+        let node = req.query.node
+        if (node && !/^[A-Za-z0-9][A-Za-z0-9.-]{0,62}$/.test(node)) return reply.status(400).send({ success: false, error: 'Not a node name.' })
+        if (!node) {
+          for (const n of ((await pve().getNodes().catch(() => [])) as any[]).filter(x => x?.status === 'online')) {
+            if (await nodeCredential(n.node).catch(() => null)) { node = n.node; break }
+          }
+        }
+        if (!node) return reply.status(409).send({ success: false, error: 'No online node has a saved login to ask the NAS from.' })
+        return reply.send({ success: true, data: { node, ...(await listExports(node, req.query.host, deps.wizard.nodeRun ?? pbsSetupNodeRunner)) } })
+      }
+      const list = await knownNas({
+        qnap: async () => (await qnapService().instances.views()).map(v => ({ name: v.name, url: v.url })),
+        storages: async () => (await pve().fetchStrict<any[]>('/storage')) ?? [],
+      })
+      return reply.send({ success: true, data: list })
+    } catch (e: any) {
+      return reply.status(400).send({ success: false, error: String(e?.message ?? 'Could not list the NAS.').slice(0, 300) })
+    }
+  })
 
   // GET /wizard/placement — every node with its room, and where this recipe would go best
   fastify.get<{ Querystring: { recipeId?: string; cores?: string; memoryMb?: string; diskGb?: string; storage?: string } }>(
