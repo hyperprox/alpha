@@ -88,7 +88,7 @@ node screenshots.mjs --all http://127.0.0.1:3100 /tmp/hyperprox-shots
 | Monitoring | Bundled Prometheus and Grafana with HyperProx dashboards and alert rules |
 | Storage | Every storage on every node, Ceph health, OSDs and pools, and per-guest disks |
 | Reverse proxy | Nginx Proxy Manager, Traefik, Caddy, HAProxy and Pangolin, several at once in one table; every change previewed, then read back |
-| DNS | GoDaddy records with guided creation, domain expiry, WAN IP mismatch flags and DDNS |
+| DNS | GoDaddy and Cloudflare records side by side, each domain at the provider that holds it, with guided creation, Cloudflare's proxy (orange cloud) per record, domain expiry, WAN IP mismatch flags and DDNS |
 | Certificates | Inventory of every endpoint's certificate, ACME DNS-01 issuance and renewal, delivery into guests |
 | Updates | Pending packages everywhere, on every cluster, and a gated update run that respects HA and quorum, restarts Ceph one OSD at a time and refuses any restart or reboot that would take data offline; a daily read-only check tells you when something new needs updating |
 | Terminal | Browser SSH with persistent tmux sessions, split panes and saved layouts |
@@ -699,15 +699,29 @@ refuses if the host changed since the preview, and reads the proxy back to confi
 tool made on Traefik, Caddy, HAProxy or Pangolin are shown read-only. Scripts use the same preview and
 apply calls (see [docs/proxy.md](docs/proxy.md)).
 
-**DNS** lists your GoDaddy
-domains with their expiry dates and every record. **Add record** starts from what you want to do
-(point at this server, a subdomain, email, verification) or a custom record. A records that differ
-from your current WAN IP are flagged, and **DDNS Update** rewrites them to it.
+**DNS** lists the domains of every DNS provider you connect, GoDaddy and Cloudflare, each with a badge
+for its provider, and every record. A card per provider says whether it answered and how many domains
+it has; a Cloudflare account with no domains yet says so instead of disappearing. When a domain shows at
+both (registered at GoDaddy, DNS moved to Cloudflare), the provider where the zone is active serves it,
+and an active Cloudflare zone wins. **Add record** starts from what you want to do (point at this server,
+a subdomain, email, verification) or a custom record. A records that differ from your current WAN IP are
+flagged, and **DDNS Update** rewrites them to it.
+
+Cloudflare takes a scoped **API token** with Zone: Read and DNS: Edit (Settings → DNS → Cloudflare). A
+legacy Global API Key also works if you paste it in the token field and fill in the email; beside an
+ordinary token the email is ignored. **Test** checks the token, then lists the zones it can see: "Token
+works: 2 zones", or "Token works, but this account has no domains yet" for a fresh account. Records the
+wizards create at Cloudflare are always **DNS only** (grey cloud), and so is a record you add on the DNS
+page unless you tick **Proxy through Cloudflare**: proxying hides your address but breaks Let's Encrypt's
+HTTP check in the proxy and any port that is not web. Editing a proxied record keeps it proxied unless you
+untick it, and a wizard that finds its record proxied stops before asking Let's Encrypt and says why.
+Adding, editing or deleting a record on the DNS page needs the admin role, at either provider, and leaves
+an audit row.
 
 ### Certificates
 
 Probes every endpoint HyperProx knows the way a client would, issues and renews certificates over ACME
-DNS-01 through GoDaddy, delivers them into guests or to HyperProx's own nginx, and checks each delivery
+DNS-01 through GoDaddy or Cloudflare, delivers them into guests or to HyperProx's own nginx, and checks each delivery
 by fingerprint. Configure it in `config/certs.yaml` (copy `config/certs.example.yaml`), start with
 `acme.directory: staging`, and press **Issue**. Admin-only. See [docs/certificates.md](docs/certificates.md).
 
@@ -1387,27 +1401,54 @@ history covers every account. That history only goes back as far as Plex's recor
 that date. Plays count by title as well as by Plex's item number, so a film you downloaded again still
 has its old plays. A show counts every episode's plays.
 
-- **Never watched**: no plays at all, and in Plex longer than 6 months. **Idle**: played before, but not
-  in 6 months. Both numbers are settings.
-- Each row shows the size, plays, how many people watched it, when it was last played and when it was
-  added, with its cover. Tick rows to see roughly how much space they would free. Movies and TV have their
-  own tabs, with filters for the list, the library and a title search.
+The history misses anything watched before it starts, and anything someone **marked as watched**. So
+Clear-out also counts what Plex itself has as watched, for every account on the server:
+
+- **The owner** (the server token): read with the library.
+- **Everyone the server is shared with**, friends and Plex Home users alike. plex.tv lists them, each with
+  their own key for this server, when asked with the owner's Plex account token (what **Sign in with Plex**
+  saves). HyperProx then reads each person's watched marks with their own key. Those keys are kept in
+  memory only: never saved, logged or shown, and forgotten when HyperProx locks. If plex.tv does not accept
+  the token in the settings as the owner's account token, only the owner's marks count. The page says so,
+  and so does every Clear-out removal preview.
+- This reading takes a while on a big server (each person times each library), so it runs in the
+  background, at most every 10 minutes, and the page shows its progress. Until the first one is done,
+  nothing can be removed from Clear-out.
+
+Something counts as watched when anyone has a play in the history, has it marked as watched, has watched
+any episode of a show, or has a last-watched date for it.
+
+- **Never watched**: nobody has watched it in any of those ways, and it has been in Plex longer than 6
+  months. **Idle**: watched before, but not in 6 months. "Last watched" is the latest date from the history
+  or any account. Both numbers are settings.
+- Each row shows the size, plays, how many people watched it, when it was last watched and when it was
+  added, with its cover. Operators and admins also see who watched it; viewers see only how many. A
+  **marked watched** badge shows when someone has it as watched with no play in the history. Tick rows to
+  see roughly how much space they would free. Movies and TV have their own tabs, with filters for the list,
+  the library and a title search.
 - Sizes come from Plex. If the Arr Stack plug-in is set up, they come from Sonarr and Radarr instead,
   which also add genres, the folder and whether a show is anime.
 - **Keep rules** take things off the lists, and **Kept off this list** counts what each rule held back.
   By default it keeps anything released before 2000, anime, anything in a folder whose path contains
   "complete series", the Science Fiction genre, and anything added in the last 90 days. You can also list
-  folders to keep and names to keep. A name keeps every title that starts with it, so "Night Desk" keeps
-  every Night Desk show. A name of three letters or fewer must match the whole title. Change the rules in the
+  folders to keep and names to keep, each as a comma list. A name keeps every title that starts with it, so
+  "Night Desk" keeps every Night Desk show. Case and punctuation do not matter: "K*O*B*A" and "KOBA" are the
+  same, and "Bench & Gavel" keeps "Bench & Gavel: NSU". A name of three letters or fewer must match the whole
+  title, so "OR" never keeps "Oriel Lane". A name that starts with "The" keeps only titles that start with it
+  too, so "The Spire" keeps "The Spire" and not "Spire in the Mist" (before, the "The" was ignored, so a name
+  written as "The X" also kept titles starting with just "X"; write "X" to keep both). A kept folder keeps
+  everything under it.
+  Kept items are left off the lists entirely and counted in **Kept off this list**. Change the rules in the
   plug-in's settings. Leave a setting blank for the default, or write "none" to turn that rule off.
 - In a library that is mostly films, most films are watched once. So the Movies tab says what share of
-  your films has never been played, and lists the largest files first.
+  your films nobody has watched, and lists the largest files first.
 - **Removing** works the same way here and in the Library (below).
 
-**Plex Library** lists every show and film with its cover, size, plays and when it was last played,
-with search, a library filter, and sorting by size, date added or last played. Open a show to see its
-seasons and episodes. Each episode shows its size, quality, plays, when it was last played, whether it
-has been watched, and whether it is partly watched. You can remove a whole show, one season, the
+**Plex Library** lists every show and film with its cover, size, plays, how many people watched it and
+when it was last watched, with search, a library filter, and sorting by size, date added or last watched.
+Open a show to see its seasons and episodes. Each episode shows its size, quality, plays, who watched it,
+whether it has been watched, and whether it is partly watched. Like Clear-out, "watched" and "next up"
+count every account's watched marks as well as the play history. You can remove a whole show, one season, the
 episodes you tick, or a film. Quick picks tick a season's watched episodes, or everything before the
 next unwatched one.
 
@@ -1613,6 +1654,12 @@ again, because a login is being stored). Enter the router's address, its admin u
 once to check the login, reads the model and firmware itself, and names the router after its model if
 you leave the name blank. If the router refuses the login, nothing is saved.
 
+**Names.** A router is named after the unit itself: its AiMesh location from the ASUS app (such as
+"Living Room"), else its host name, else its model. The name follows the unit, checked every 5 minutes,
+so renaming it in the ASUS app renames it here. A name you type in Settings is kept and never changed;
+clear it to go back to the unit's own name. When two routers report the same name, the model is added,
+as in "Living Room (ET-X)". The reboot confirmation uses the current name.
+
 ASUS routers allow a single admin session at a time. While HyperProx is reading a router, signing in
 to the router's own web page can sign HyperProx out, and the other way round.
 
@@ -1646,6 +1693,11 @@ router has an internet connection of its own. On any other unit the Internet pan
 handled by your main router (with the upstream address, for operators and admins), and HyperProx never
 raises "internet down" for it: such a unit reports its unused WAN as disconnected, which is normal.
 
+When a unit leads an AiMesh network and lists its nodes, an **AiMesh** panel draws the mesh as one
+picture: the main unit on top and each node under it, with its model, firmware (and whether an update is
+waiting), how it reaches the mesh (wired, or the band of its wireless backhaul, with the signal), and
+how many clients it carries. Each connected device also says which unit it is on.
+
 **Diagnostics** (admins, API tokens allowed): `GET /api/plugins/asus/instances/<id>/diagnostics` returns
 the router's raw answer to every call the plug-in makes, plus a set of other read-only calls, to work out
 how a firmware answers. Passwords, Wi-Fi keys, tokens, WPS PINs and anything else with a secret-looking
@@ -1676,9 +1728,12 @@ certificate**, needs the router's password again in the same save.
 **What it does not do.** Version 1 has one action, reboot. Blocking a device's internet access is not
 included: Asuswrt has no single call for it. It would mean rewriting the router's whole parental-control
 list, whose format differs between firmware versions, and that could wipe schedules you set up on the
-router. **Tested** against a pretend router in the test suite only, built from the published API; it has
-not been run against a real ASUS router yet. When a router leaves a call out, the page names the missing
-part, and the rest of the page still works.
+router. **Tested** against anonymised answers from a real stock Asuswrt 388 build, in router mode leading a
+three-unit AiMesh network and in access-point mode. That build answers only the first of several reads
+sent together, so HyperProx checks that every read was answered and, on such a firmware, asks them one
+at a time. Settings that rarely change (firmware, mode, radio names) are read every 5 minutes, not on
+every refresh. Merlin and other builds are covered by the test suite's pretend router. When a router leaves
+a call out, the page names the missing part, and the rest of the page still works.
 
 #### Proxmox Backup Server
 
@@ -1810,7 +1865,7 @@ why.
 
 - **Setup checklist**: the installer's questions, whether each is done on every node, and a button to
   do it now.
-- **Credentials** for Proxmox, your first Nginx Proxy Manager and GoDaddy, each with a **Test** button
+- **Credentials** for Proxmox, your first Nginx Proxy Manager, GoDaddy and Cloudflare, each with a **Test** button
   (other proxies are added on the Proxy page).
 - **Secrets**: names of everything in the vault. Owners and admins can reveal a value, send it as an
   expiring one-view link (a Bitwarden Send), or generate and store a new password.
@@ -1926,7 +1981,7 @@ flowchart LR
   end
   A -->|API token| PVE[Proxmox VE API]
   A -->|node login, pct exec| NODES[Proxmox nodes]
-  A --> EXT[NPM, GoDaddy, ACME, plug-in devices]
+  A --> EXT[NPM, GoDaddy, Cloudflare, ACME, plug-in devices]
   P --> NE[node_exporter and GPU exporters]
 ```
 
@@ -1990,7 +2045,7 @@ upcoming work are in [docs/superpowers/specs/](docs/superpowers/specs/).
   the vault; backed up; monitored; under update policy; plug-in panel), MeshCentral remote desktop,
   automatic restore tests for the Proxmox Backup Server plug-in, catalogue packs, noVNC and container text
   consoles, Ceph operations, versioned releases with `hyperprox update`, demo mode and screenshots, and
-  more DNS providers, email notifications and LDAP/OIDC sign-in.
+  more DNS providers (beyond GoDaddy and Cloudflare), email notifications and LDAP/OIDC sign-in.
 - **Later, as ideas**: live migration between clusters, ESXi import, XCP-ng, bare-metal install, CVE
   scanning and hardening, and a commercial tier.
 
@@ -2005,7 +2060,7 @@ HyperProx next to one of them.
 | Several Proxmox clusters | ✅ view and control | ✅ | ✅ | ◐ view only | — | — | ◐ widgets |
 | Guests: create, power, migrate | ✅ within a cluster | ◐ no create yet | ✅ incl. cross-cluster | — | ◐ create | — | — |
 | Installs apps | ✅ catalogue + AI wizard, incl. a wired-up Arr stack | — | ◐ templates | — | ✅ 700+ | ✅ hundreds | — |
-| Proxy, DNS and certificates | ✅ all three | ◐ own cert | ◐ own cert | — | — | ◐ proxy + certs | — |
+| Proxy, DNS and certificates | ✅ all three (DNS: GoDaddy, Cloudflare) | ◐ own cert | ◐ own cert | — | — | ◐ proxy + certs | — |
 | Alerts to your channels | ✅ | ◐ planned | ✅ | ✅ | — | ✅ | — |
 | Updates for hosts and guests | ✅ | ◐ hosts | ◐ hosts | ◐ alerts | ◐ per app | ◐ | — |
 | Proxmox Backup Server | ✅ health, verify, opt-in delete and prune | ✅ | ✅ | ✅ | — | ◐ to S3 | ◐ widget |
@@ -2018,7 +2073,7 @@ HyperProx next to one of them.
 **What others do better:** Proxmox Datacenter Manager is the official tool, with enterprise support,
 live migration between clusters and LDAP/OIDC sign-in. PegaProx adds load balancing and VMware/XCP-ng
 import. Pulse has the widest monitoring coverage. Coolify and Dokploy deploy straight from git. HyperProx
-does not yet support LDAP/OIDC, email notifications, DNS providers other than GoDaddy, or moving guests
+does not yet support LDAP/OIDC, email notifications, DNS providers other than GoDaddy and Cloudflare, or moving guests
 between clusters. On backups, it reads Proxmox Backup Server and can verify, delete, prune and clean up, but
 it does not restore, test restores or create backup jobs.
 

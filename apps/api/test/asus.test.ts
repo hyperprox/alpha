@@ -670,7 +670,7 @@ test('diagnostics redaction: secret keys and nvram names, wanlink fields, every 
 test('diagnostics end to end: admin read, every hook on its own, nothing secret or MAC-shaped in the answer, refused while held', async () => {
   assert.equal(requiredRole('GET', '/api/plugins/asus/instances/a12345678/diagnostics'), 'admin')
   assert.equal(needsReconfirm('GET', '/api/plugins/asus/instances/a12345678/diagnostics'), false, 'an admin API token may call it')
-  const { fake, svc, store, url, audits } = await setup({ mode: 'ap-main' })
+  const { fake, svc, store, url, audits } = await setup({ mode: 'ap-main', meshList: true })
   const m = await store.create(await store.prepare(null, { url, username: 'admin', password: 'correct horse' }), 'Mesh main', { model: null, firmware: null })
   const d = await svc.diagnostics(m.id, { ...admin, token: 'ops' })
   assert.equal(d.calls.length, DIAGNOSTIC_HOOKS.length)
@@ -689,4 +689,252 @@ test('diagnostics end to end: admin read, every hook on its own, nothing secret 
   await assert.rejects(bad.svc.reading(b.id))
   await assert.rejects(bad.svc.diagnostics(b.id, admin), (e: any) => e.code === 'login_held')
   assert.equal(bad.fake.logins(), 1)
+})
+
+// ── real firmware: one hook per request, AiMesh ──────────────────────────────
+//
+// test/fixtures/asus/*-mode.json are real answers from an Asuswrt 388 build (one unit in router mode leading a
+// three-unit AiMesh network, one in access-point mode), anonymised: names, SSIDs, addresses, vendors, models and
+// firmware numbers replaced, MACs in the documentation range. That build answered nvram values only one per
+// request, so the nvram values below are constructed in the shape it uses, not captured.
+
+import { readHooks } from '../src/lib/asus/service'
+import { parseMesh, hookKey, staticHooks, radioCount } from '../src/lib/asus/parse'
+import type { AsusRequest, AsusResponse } from '../src/lib/asus/transport'
+
+const FX = (name: string) => JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'asus', `${name}-mode.json`), 'utf8'))
+
+/** A router that, like that firmware, answers only the first hook of a semicolon list. */
+class OneHookRouter implements AsusTransport {
+  sent: string[] = []
+  private ticks = 0
+  constructor(private fx: any, private nv: Record<string, string>) {}
+  async send(r: AsusRequest): Promise<AsusResponse> {
+    const j = (v: unknown) => ({ status: 200, text: typeof v === 'string' ? v : JSON.stringify(v) })
+    if (r.path === '/login.cgi') return j({ asus_token: 'tok1' })
+    if (r.path === '/Logout.asp') return j('')
+    const hook = decodeURIComponent((r.body ?? '').replace(/^hook=/, ''))
+    this.sent.push(hook)
+    const first = hook.split(';')[0]
+    const k = hookKey(first)!
+    if (first.startsWith('nvram_get(')) return j({ [k]: this.nv[k] ?? '' })
+    if (first === 'cpu_usage(appobj)') {
+      const n = ++this.ticks, c = { ...this.fx.cpu_usage.cpu_usage }
+      for (let i = 1; c[`cpu${i}_total`]; i++) { c[`cpu${i}_total`] = String(Number(c[`cpu${i}_total`]) + n * 1000); c[`cpu${i}_usage`] = String(Number(c[`cpu${i}_usage`]) + n * 250) }
+      return j({ cpu_usage: c })
+    }
+    const by: Record<string, unknown> = {
+      'uptime()': this.fx.uptime, 'memory_usage(appobj)': this.fx.memory_usage, 'netdev(appobj)': this.fx.netdev,
+      'wl_control_channel()': this.fx.wl_control_channel, 'wanlink()': this.fx.wanlink, 'get_clientlist()': this.fx.get_clientlist,
+      'get_cfg_clientlist()': this.fx.get_cfg_clientlist, 'get_allclientlist()': this.fx.get_allclientlist, 'get_wan_unit()': { get_wan_unit: '0' },
+    }
+    return j(by[first] ?? {})
+  }
+}
+
+const NV = (mode: 'router' | 'ap') => ({
+  productid: mode === 'router' ? 'XX-MESH9' : 'XX-AP7', odmpid: '', firmver: '3.0.0.4', buildno: '388', extendno: '20971-gabc1234', '3rd-party': '',
+  webs_state_flag: '0', webs_state_info: '', sw_mode: mode === 'router' ? '1' : '3', re_mode: '0', cfg_master: '1', wlc_psta: '0',
+  lan_gateway: mode === 'router' ? '' : '10.9.8.1', wl_ifnames: 'eth4 eth5 eth6',
+  wl0_ssid: 'ExampleNet', wl0_nband: '2', wl0_radio: '1', wl0_chanspec: '0', wl0_bw: '1',
+  wl1_ssid: 'ExampleNet', wl1_nband: '1', wl1_radio: '1', wl1_chanspec: '149/80', wl1_bw: '3',
+  wl2_ssid: 'ExampleNet_6G', wl2_nband: '4', wl2_radio: '1', wl2_chanspec: '0', wl2_bw: '5',
+})
+
+async function fixtureService(mode: 'router' | 'ap') {
+  const fx = FX(mode)
+  const router = new OneHookRouter(fx, NV(mode))
+  let clock = 1_700_000_000_000
+  const store = new AsusInstanceStore(memoryIO(), async () => '10.9.8.2')
+  const svc = new AsusService({ store, audit: async () => {}, transportFor: () => router, now: () => clock, sleep: async ms => { clock += ms } })
+  const m = await store.create(await store.prepare(null, { url: 'http://10.9.8.2', username: 'admin', password: 'correct horse' }), 'Unit', { model: null, firmware: null })
+  return { fx, router, svc, m, tick: (ms: number) => { clock += ms } }
+}
+
+test('readHooks: one list on a firmware that answers lists, one hook per call on one that answers only the first', async () => {
+  const hooks = ['nvram_get(a)', 'nvram_get(b)', 'uptime()']
+  const all = { calls: [] as string[], hook: async (h: string) => { all.calls.push(h); return JSON.stringify(Object.fromEntries(h.split(';').map(x => [hookKey(x), 'v']))) } }
+  const r1 = await readHooks(all as any, hooks, undefined)
+  assert.deepEqual(r1, { values: { a: 'v', b: 'v', uptime: 'v' }, multi: true })
+  assert.equal(all.calls.length, 1)
+  const one = { calls: [] as string[], hook: async (h: string) => { one.calls.push(h); const f = h.split(';')[0]; return JSON.stringify({ [hookKey(f)!]: 'v' }) } }
+  const r2 = await readHooks(one as any, hooks, undefined)
+  assert.deepEqual(r2, { values: { a: 'v', b: 'v', uptime: 'v' }, multi: false })
+  assert.deepEqual(one.calls, ['nvram_get(a);nvram_get(b);uptime()', 'nvram_get(b)', 'uptime()'])
+  one.calls = []
+  await readHooks(one as any, hooks, false)
+  assert.deepEqual(one.calls, hooks, 'once known, no list is sent')
+  const fail = { hook: async (h: string) => { if (h === 'nvram_get(b)') throw new Error('one bad call'); return JSON.stringify({ [hookKey(h.split(';')[0])!]: 'v' }) } }
+  assert.deepEqual((await readHooks(fail as any, hooks, false)).values, { a: 'v', uptime: 'v' }, 'a single failing hook costs only its value')
+  const locked = { hook: async () => { throw new AsusLoginError('refused', 'refused') } }
+  await assert.rejects(readHooks(locked as any, hooks, false), (e: any) => e instanceof AsusLoginError)
+  assert.equal(radioCount({ wl_ifnames: 'eth4 eth5 eth6' }), 3)
+  assert.equal(radioCount({}), 4)
+  assert.equal(staticHooks(3).filter(h => /wl\d_/.test(h)).length, 15)
+})
+
+test('real firmware, router mode: firmware, uptime, CPU, RAM, three radios, clients and the AiMesh network', async () => {
+  const { router, svc, m, tick } = await fixtureService('router')
+  const r = await svc.reading(m.id)
+  assert.deepEqual(r.mode, { kind: 'router', label: 'Router · AiMesh main', aimesh: 'main' })
+  assert.equal(r.model, 'XX-MESH9')
+  assert.deepEqual(r.firmware, { version: '3.0.0.4.388_20971', flavour: 'stock' })
+  assert.equal(r.update.available, false)
+  assert.ok(r.uptimeSec! > 100_000)
+  assert.equal(r.cpuCores, 4)
+  assert.ok(r.cpuPct !== null && r.cpuPct > 0 && r.cpuPct <= 100, `cpu ${r.cpuPct}`)
+  assert.equal(r.mem!.pct, Math.round((366052 / 524288) * 100))
+  assert.deepEqual(r.bands.map(b => [b.label, b.ssid, b.channel, b.widthMhz]), [['2.4 GHz', 'ExampleNet', '3', 20], ['5 GHz', 'ExampleNet', '153', 80], ['6 GHz', 'ExampleNet_6G', '197', 160]])
+  assert.ok(r.devices.length >= 15, `devices ${r.devices.length}`)
+  assert.ok(r.bands.reduce((t, b) => t + b.clients, 0) > 0, 'clients per band')
+  assert.equal(r.wan.up, true); assert.equal(r.wan.type, 'dhcp')
+  assert.ok(r.wan.downBps !== null, 'live rates from INTERNET counters')
+  assert.deepEqual(r.missing, [])
+  // The mesh: main first, then each node with its backhaul, signal and clients.
+  assert.equal(r.mesh.length, 3)
+  assert.deepEqual(r.mesh.map(n => [n.name, n.main, n.backhaul, n.rssi, n.online]), [['Main unit', true, null, null, true], ['Garage', false, '5 GHz', -51, true], ['Upstairs', false, '5 GHz', -51, true]])
+  assert.ok(r.mesh.every(n => n.clients >= 0) && r.mesh[0].clients > r.mesh[1].clients)
+  assert.equal(r.mesh[0].firmware, '3.0.0.4.388_20971')
+  assert.ok(r.devices.some(d => d.node === 'Upstairs') && r.devices.some(d => d.node === 'Main unit'), 'each device says which unit it is on')
+  assert.equal(r.health.level, 'good')
+  // After the first reading the firmware is known as one-hook: no more lists, and the slow values are not re-read.
+  router.sent = []
+  tick(10_000)
+  await svc.reading(m.id)
+  assert.ok(!router.sent.some(h => h.includes(';')), 'no lists once known')
+  assert.ok(!router.sent.some(h => h.startsWith('nvram_get(')), 'firmware, mode and radio settings come from the 5-minute cache')
+  assert.ok(router.sent.length <= 10, `${router.sent.length} calls for a warm reading`)
+  // A viewer sees the mesh without addresses or MAC-derived anything.
+  const v = viewerReading(r)
+  assert.ok(v.mesh.every(n => n.ip === null))
+  assert.ok(!/00:00:5E|10\.9\.8\./i.test(JSON.stringify(v)))
+})
+
+test('real firmware, access point mode: no WAN, no alarm, radios and clients read, no mesh when the list is empty', async () => {
+  const { svc, m, router } = await fixtureService('ap')
+  const r = await svc.reading(m.id)
+  assert.deepEqual(r.mode, { kind: 'ap', label: 'Access point · AiMesh main', aimesh: 'main' })
+  assert.equal(r.health.level, 'good')
+  assert.equal(r.wan.up, null)
+  assert.deepEqual(r.uplink, { gateway: '10.9.8.1' })
+  assert.equal(r.firmware.version, '3.0.0.4.388_20971')
+  assert.ok(r.uptimeSec! > 1_000_000)
+  assert.ok(r.cpuPct !== null)
+  assert.equal(r.mem!.pct, Math.round((265000 / 524288) * 100))
+  assert.deepEqual(r.bands.map(b => [b.label, b.channel]), [['2.4 GHz', '1'], ['5 GHz', '149'], ['6 GHz', 'auto']])
+  assert.ok(r.devices.length >= 15, `devices ${r.devices.length}`)
+  assert.deepEqual(r.mesh, [])
+  assert.ok(!router.sent.includes('wanlink()'), 'an access point is not asked about a WAN it does not use')
+  assert.ok(!router.sent.includes('get_allclientlist()'), 'nor for mesh clients when it leads no mesh')
+})
+
+test('mesh parsing: backhaul from re_path bits, wired, offline, and nothing for an empty list', () => {
+  assert.deepEqual(parseMesh([], {}, 'a'), { nodes: [], byMac: new Map(), main: null, mainAlias: null })
+  assert.deepEqual(parseMesh(undefined, undefined, 'a').nodes, [])
+  const nodes = parseMesh([
+    { alias: 'Hub', mac: '00:00:5E:00:53:01', level: '0', re_path: '0', online: '1', ui_model_name: 'XX-MESH9', fwver: '3.0.0.4.388_1-gabc', newfwver: '' },
+    { alias: 'Den', mac: '00:00:5E:00:53:02', level: '1', re_path: '1', online: '1', fwver: '' },
+    { alias: 'Loft', mac: '00:00:5E:00:53:03', level: '1', re_path: '16', rssi6g: '-70', online: '0', newfwver: '3.0.0.4.388_2-gdef' },
+    { alias: 'bad', mac: 'nope' },
+  ], { '00:00:5E:00:53:01': { '2G': { x: {}, y: {} }, wired_mac: { z: {} } }, '00:00:5E:00:53:02': { '5G': ['p', 'q'] } }, 'a').nodes
+  assert.deepEqual(nodes.map(n => [n.name, n.main, n.backhaul, n.rssi, n.online, n.clients, n.update]), [
+    ['Hub', true, null, null, true, 3, null], ['Den', false, 'wired', null, true, 2, null], ['Loft', false, '6 GHz', -70, false, 0, '3.0.0.4.388_2'],
+  ])
+})
+
+// ── the units' own names ─────────────────────────────────────────────────────
+
+import { unitNameOf } from '../src/lib/asus/parse'
+import { looksModelMade } from '../src/lib/asus/instances'
+
+test('unit name precedence: AiMesh location, then its mesh entry, then host names; never the model or an address', () => {
+  assert.equal(unitNameOf({ cfg_alias: 'Living Room', computer_name: 'host-a', lan_hostname: 'host-b' }, 'Mesh alias', 'XX-MESH9'), 'Living Room')
+  assert.equal(unitNameOf({ cfg_alias: '', computer_name: 'host-a' }, 'Mesh alias', 'XX-MESH9'), 'Mesh alias')
+  assert.equal(unitNameOf({ computer_name: 'host-a', lan_hostname: 'host-b' }, null, 'XX-MESH9'), 'host-a')
+  assert.equal(unitNameOf({ lan_hostname: 'host-b' }, null, 'XX-MESH9'), 'host-b')
+  assert.equal(unitNameOf({ cfg_alias: 'xx-mesh9', computer_name: 'XX-MESH9' }, null, 'XX-MESH9'), null, 'only the model is no name')
+  assert.equal(unitNameOf({ cfg_alias: '00:00:5E:00:53:01', computer_name: '10.9.8.5', lan_hostname: 'Hall' }, null, 'XX-MESH9'), 'Hall', 'addresses are skipped')
+  assert.equal(unitNameOf({ cfg_alias: 'Den\u0001' }, null, null), 'Den')
+})
+
+test('names HyperProx made from the model are recognised; a typed name is not', () => {
+  assert.ok(looksModelMade('XX-MESH9', 'XX-MESH9'))
+  assert.ok(looksModelMade('XX-MESH9 2', 'XX-MESH9'))
+  assert.ok(looksModelMade('ASUS router', null))
+  assert.ok(!looksModelMade('Office', 'XX-MESH9'))
+  assert.ok(!looksModelMade('XX-MESH9 upstairs', 'XX-MESH9'))
+})
+
+test('precedence and the auto-rename: user-set > unit name > model; model-named instances follow the unit; duplicates told apart', async () => {
+  const io = memoryIO()
+  const store = new AsusInstanceStore(io, async () => '10.9.8.2')
+  const prep = () => store.prepare(null, { url: 'http://10.9.8.2', username: 'admin', password: 'pw' })
+  // Instances from before names were read: no nameSource, named after their model.
+  const a = await store.create(await prep(), undefined, { model: 'XX-MESH9', firmware: null })
+  const b = await store.create(await prep(), undefined, { model: 'XX-MESH9', firmware: null })
+  const c = await store.create(await prep(), 'Garage', { model: 'XX-MESH9', firmware: null })
+  const raw = JSON.parse((await io.get('plugin', 'asus', 'instances'))!)
+  for (const x of raw) delete x.nameSource
+  await io.set('plugin', 'asus', 'instances', JSON.stringify(raw), false)
+  const legacy = await store.list()
+  assert.deepEqual(legacy.map(x => [x.name, x.nameSource]), [['XX-MESH9', 'model'], ['XX-MESH9 2', 'model'], ['Garage', 'user']])
+
+  assert.equal((await store.adoptDeviceName(a.id, 'Living Room'))!.name, 'Living Room')
+  // A second unit reporting the same name (two instances of one mesh): told apart by its model.
+  const b2 = (await store.adoptDeviceName(b.id, 'Living Room'))!
+  assert.equal(b2.name, 'Living Room (XX-MESH9)')
+  assert.equal(b2.nameSource, 'device')
+  // A typed name is never touched, though the unit's own name is remembered.
+  const c2 = (await store.adoptDeviceName(c.id, 'Workshop'))!
+  assert.deepEqual([c2.name, c2.nameSource, c2.deviceName], ['Garage', 'user', 'Workshop'])
+  // Renaming the unit in the ASUS app renames it here; no name at all keeps the last one.
+  assert.equal((await store.adoptDeviceName(a.id, 'Lounge'))!.name, 'Lounge')
+  assert.equal((await store.adoptDeviceName(a.id, null))!.name, 'Lounge')
+  // Clearing a typed name hands naming back to the unit; typing one takes it back.
+  const cleared = await store.update(c.id, await store.prepare(c.id, {}), '', null)
+  assert.deepEqual([cleared.name, cleared.nameSource], ['Workshop', 'device'])
+  const typed = await store.update(c.id, await store.prepare(c.id, {}), 'Shed', null)
+  assert.deepEqual([typed.name, typed.nameSource], ['Shed', 'user'])
+  assert.equal((await store.adoptDeviceName(c.id, 'Workshop'))!.name, 'Shed')
+})
+
+test('end to end: setup names a new router after the unit; a model-named one switches on the slow cycle; the reboot phrase follows', async () => {
+  const { svc, store, url, fake, tick } = await setup({ alias: 'Living Room', meshList: false })
+  const { meta } = await svc.add({ url, username: 'admin', password: 'correct horse' }, admin)
+  assert.deepEqual([meta.name, meta.nameSource, meta.deviceName], ['Living Room', 'device', 'Living Room'])
+
+  // An instance from before: named after its model. The first reading (a slow cycle) adopts the unit's name.
+  const old = await store.create(await store.prepare(null, { url, username: 'admin', password: 'correct horse' }), undefined, { model: 'RT-XX9000', firmware: null })
+  assert.deepEqual([old.name, old.nameSource], ['RT-XX9000', 'model'])
+  // Same name as the first router: told apart by model, then the unit is renamed in the app before the slow cycle.
+  fake.st.alias = 'Den'
+  await svc.reading(old.id)
+  const now = (await store.get(old.id))!
+  assert.equal(now.name, 'Den')
+  assert.equal(confirmPhrase(now.name), 'Reboot Den')
+  await assert.rejects(svc.act(old.id, { action: 'reboot', confirm: 'Reboot RT-XX9000', typed: 'RT-XX9000' }, admin), (e: any) => e.code === 'confirm_required', 'the old phrase no longer works')
+  await svc.act(old.id, { action: 'reboot', confirm: 'Reboot Den', typed: 'den' }, admin)
+  await svc.readBacks.get(old.id)
+  // Within the 5-minute cycle the name is not re-read; after it, a rename in the app arrives.
+  fake.st.alias = 'Study'
+  tick(60_000); await svc.reading(old.id, { fresh: true })
+  assert.equal((await store.get(old.id))!.name, 'Den')
+  tick(5 * 60_000); await svc.reading(old.id, { fresh: true })
+  assert.equal((await store.get(old.id))!.name, 'Study')
+  // The AI summary and the card carry the unit's name, quoted.
+  setAsusService(svc)
+  try {
+    const ctx = { get: async () => allReadings() } as unknown as PluginContext
+    const sum = await asusPlugin.summary!(ctx)
+    assert.ok(sum.lines.some(l => l.startsWith('"Study"')))
+  } finally { setAsusService(null) }
+})
+
+test('a unit name that looks like an address is never adopted, and viewers never see one', async () => {
+  const { svc, store, url } = await setup({ alias: '00:00:5E:00:53:77', hostname: '10.9.8.77' })
+  const { meta } = await svc.add({ url, username: 'admin', password: 'correct horse' }, admin)
+  assert.deepEqual([meta.name, meta.nameSource], ['RT-XX9000', 'model'])
+  await svc.reading(meta.id)
+  assert.equal((await store.get(meta.id))!.name, 'RT-XX9000')
+  assert.equal((await svc.reading(meta.id)).unitName, null)
 })

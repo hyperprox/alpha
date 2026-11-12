@@ -4,7 +4,8 @@
 //  HyperProx — Plex Clear-out
 //
 //  What nobody watches, so space can be freed: never watched (no play in the
-//  whole history, in Plex longer than a minimum age) and idle (played before,
+//  whole history and no account has it marked as watched, in Plex longer than
+//  a minimum age) and idle (watched before,
 //  but not for months), with the keep rules' counts, a running "frees about"
 //  total, and removal through Sonarr or Radarr only: a preview of exactly what
 //  goes, then the master password. Without the Arr Stack plug-in it only copies
@@ -21,12 +22,14 @@ import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { BusyNote, CopyButton, Notice } from '@/components/vault/ui'
 import { RemovalModal, VIA_WORD, type ItemResult, type Plan, type Via } from './Removal'
 import c from './clearout.module.css'
+import { MARKED_TIP, watchStateText, watchedText, type WatchState } from './watched'
 
 type Kind = 'movie' | 'show'
 interface Row {
   id: string; kind: Kind; title: string; year: number | null; section: string; sectionTitle: string
   sizeBytes: number | null; plays: number; viewers: number; lastPlayed: number | null; addedAt: number
   list: 'never' | 'idle'; removable: boolean; via: Via; art: string | null; refused?: string | null
+  watchers: number; marked: number; watchedBy?: Array<{ name: string; how: 'played' | 'marked' }>
 }
 interface Totals { items: number; unwatched: number; unwatchedShare: number; never: number; idle: number; listBytes: number }
 interface Report {
@@ -39,6 +42,7 @@ interface Report {
   totals: { tv: Totals; movies: Totals }
   cutoffs: { neverMinMonths: number; idleMonths: number }
   notes: string[]
+  watchState?: WatchState
 }
 type Preview = Plan
 type Result = ItemResult
@@ -88,6 +92,14 @@ export function PlexClearOut({ live = true }: { live?: boolean }) {
     return () => { clearInterval(t); document.removeEventListener('visibilitychange', onVisibility) }
   }, [live, load])
 
+  // While everyone's watched marks are being read, look again every 10 seconds so the lists catch up.
+  const reading = !!report?.watchState?.reading
+  useEffect(() => {
+    if (!reading) return
+    const t = setTimeout(() => { if (!document.hidden) void load(false, true) }, 10_000)
+    return () => clearTimeout(t)
+  }, [reading, report, load])
+
   // Each tab starts from its own sensible default: largest first.
   useEffect(() => { setSection('all'); setShown(PAGE); setTicked(new Set()) }, [tab])
 
@@ -113,7 +125,7 @@ export function PlexClearOut({ live = true }: { live?: boolean }) {
 
   const toggle = (id: string) => setTicked(t => { const n = new Set(t); if (n.has(id)) n.delete(id); else n.add(id); return n })
   const copyText = (tickedRows.length ? tickedRows : rows).map(r =>
-    `${r.title}${r.year ? ` (${r.year})` : ''}\t${size(r.sizeBytes)}\t${r.list === 'never' ? 'never watched' : `last played ${day(r.lastPlayed)}`}`).join('\n')
+    `${r.title}${r.year ? ` (${r.year})` : ''}\t${size(r.sizeBytes)}\t${r.list === 'never' ? 'never watched' : `last watched ${day(r.lastPlayed)}`}`).join('\n')
 
   async function askPreview() {
     setBusy('preview'); setActionError(null); setResults(null)
@@ -170,19 +182,20 @@ export function PlexClearOut({ live = true }: { live?: boolean }) {
           { label: 'never watched', value: t.never, tone: 'warn' },
           { label: 'idle', value: t.idle },
           { label: 'lists add up to', value: bytes(t.listBytes), tone: 'accent' },
-          { label: 'of library unplayed', value: `${t.unwatchedShare}%` },
+          { label: 'of library unwatched', value: `${t.unwatchedShare}%` },
         ]} />
         <p className={c.note} style={{ marginTop: 10 }}>
-          Plex only remembers plays back to {report.historySince ? day(report.historySince) : 'when it started recording'}, so “never watched” means not since then.
-          Never watched: no plays at all and in Plex more than {report.cutoffs.neverMinMonths} months. Idle: played before, but not in {report.cutoffs.idleMonths} months.
+          Plex only remembers plays back to {report.historySince ? day(report.historySince) : 'when it started recording'}, but it also keeps what each account has watched (or marked as watched), and that counts too.
+          Never watched: nobody has played it or has it as watched, and it has been in Plex more than {report.cutoffs.neverMinMonths} months. Idle: watched before, but not in {report.cutoffs.idleMonths} months.
           Sizes come from {(tab === 'show' ? report.sizesFrom.tv : report.sizesFrom.movies) === 'arr' ? (tab === 'show' ? 'Sonarr' : 'Radarr') : 'Plex'}.
         </p>
         {tab === 'movie' && (
           <p className={c.caveat} style={{ marginTop: 10 }}>
-            <b>Most films are watched once.</b> {t.unwatchedShare}% of your {t.items} films have never been played, so “never watched” is not the same as “not wanted”.
+            <b>Most films are watched once.</b> {t.unwatchedShare}% of your {t.items} films have never been watched by anyone, so “never watched” is not the same as “not wanted”.
             The list starts with the largest files, where removing one frees the most.
           </p>
         )}
+        {report.watchState && <p className={report.watchState.reading ? c.caveat : c.note} style={{ marginTop: 8 }} role="status">{watchStateText(report.watchState)}</p>}
         {report.notes.map(n => <p key={n} className={c.note} style={{ marginTop: 8 }}>{n}</p>)}
       </Panel>
 
@@ -209,7 +222,7 @@ export function PlexClearOut({ live = true }: { live?: boolean }) {
           <select className={c.input} aria-label="Order" value={sort} onChange={e => setSort(e.target.value as typeof sort)}>
             <option value="size">Largest first</option>
             <option value="added">Oldest in Plex first</option>
-            <option value="played">Longest since played first</option>
+            <option value="played">Longest since watched first</option>
           </select>
           <input className={`${c.input} ${c.search}`} type="search" placeholder="Search titles" aria-label="Search titles" value={q} onChange={e => setQ(e.target.value)} />
         </div>
@@ -226,13 +239,14 @@ export function PlexClearOut({ live = true }: { live?: boolean }) {
                     <div className={c.head}>
                       <span className={c.title}>{r.title}{r.year ? <small> ({r.year})</small> : null}</span>
                       <Pill tone={r.list === 'never' ? 'warn' : 'violet'}>{r.list === 'never' ? 'never watched' : 'idle'}</Pill>
+                      {r.marked > 0 && <Pill title={MARKED_TIP}>marked watched</Pill>}
                       <Pill tone={r.via === 'plex' ? undefined : 'accent'} title={r.via === 'plex' ? 'Not managed by Sonarr or Radarr: Plex itself would remove it' : 'Managed by the Arr Stack: removed there, so it is not downloaded again'}>{VIA_WORD[r.via]}</Pill>
                       <span className={c.size}>{size(r.sizeBytes)}</span>
                     </div>
                     <div className={c.meter} aria-hidden><i style={{ width: `${Math.max(2, ((r.sizeBytes ?? 0) / biggest) * 100)}%` }} /></div>
                     {r.refused && <div className={c.meta} style={{ color: 'var(--warn)' }}>Cannot be removed: {r.refused}</div>}
                     <div className={c.meta}>
-                      {r.plays} {r.plays === 1 ? 'play' : 'plays'} · {r.viewers} {r.viewers === 1 ? 'viewer' : 'viewers'} · last played {r.lastPlayed ? day(r.lastPlayed) : 'never'} · added {day(r.addedAt)} · {r.sectionTitle}
+                      {watchedText(r)} · last watched {r.lastPlayed ? day(r.lastPlayed) : 'never'} · added {day(r.addedAt)} · {r.sectionTitle}
                     </div>
                   </div>
                 </li>

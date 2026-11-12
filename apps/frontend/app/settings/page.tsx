@@ -24,6 +24,8 @@ interface CredentialField {
 interface TestResult {
   success: boolean
   message?: string
+  /** Extra lines a test may add (Cloudflare: token status, what the token was seen to do). */
+  details?: string[]
   error?:  string
 }
 
@@ -129,6 +131,9 @@ function ProviderSection({
           border:     `1px solid ${result.success ? 'color-mix(in srgb, var(--good) 30%, transparent)' : 'color-mix(in srgb, var(--crit) 30%, transparent)'}`,
         }}>
           {result.success ? `✓ ${result.message ?? 'Connection successful'}` : `✗ ${result.error}`}
+          {result.success && result.details?.map((d, i) => (
+            <span key={i} className="block text-xs mt-1" style={{ color: 'var(--text-dim)' }}>{d}</span>
+          ))}
         </p>
       )}
 
@@ -228,7 +233,9 @@ export default function SettingsPage() {
   const handleTest = async (category: string, provider: string): Promise<TestResult> => {
     try {
       const { json } = await withReconfirm(() => fetch(`/api/settings/test/${category}/${provider}`, { method: 'POST' }))
-      return { success: json.success, message: json.data?.message, error: json.error ?? json.data?.error ?? 'Test failed' }
+      return { success: json.success, message: json.data?.message,
+        details: Array.isArray(json.data?.details) ? json.data.details.map(String) : undefined,
+        error: json.error ?? json.data?.error ?? 'Test failed' }
     } catch (e: any) {
       return { success: false, error: e.message }
     }

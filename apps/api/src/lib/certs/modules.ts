@@ -10,6 +10,7 @@
 // =============================================================================
 
 import type { GoDaddyClient } from '../godaddy-client'
+import type { CloudflareClient } from '../cloudflare-client'
 import { NPMClient, type NPMCertificate } from '../npm-client'
 import { getProviderCredentials } from '../credentials'
 import { inventoryHosts } from '../proxy'
@@ -24,7 +25,7 @@ import type { HousekeepingDeps } from './housekeeping'
 import type { AlertState } from './alerts'
 import { loadCertsPolicy, LE_STAGING } from './policy'
 import { renewAfter, dueForRenewal } from './timing'
-import { godaddyProvider } from './dns01'
+import { godaddyProvider, cloudflareProvider } from './dns01'
 import { issueCertificate, fetchAri, zonesFor } from './acme'
 import { probeEndpoint, verdictFor } from './probe'
 import { discoverProbeTargets, buildInventory } from './inventory'
@@ -48,6 +49,7 @@ export interface CertsModules {
   renewAfter(c: { notBefore: Date; notAfter: Date }, ari: { start: Date; end: Date } | null, rand?: () => number): Date
   dueForRenewal(now: Date, renewAfterAt: Date | null, notAfter: Date | null): boolean
   godaddyProvider(client: GoDaddyClient): DnsProvider
+  cloudflareProvider(client: CloudflareClient): DnsProvider
   issueCertificate(deps: IssueDeps, names: string[], keyType: KeyType): Promise<IssuedBundle>
   fetchAri(directoryUrl: string, certPem: string): Promise<{ start: Date; end: Date } | null>
   zonesFor(names: string[], dns: DnsProvider[]): Promise<{ name: string; zone: string | null; provider: string | null }[]>
@@ -65,7 +67,7 @@ export interface CertsModules {
 
 export const defaultModules: CertsModules = {
   loadCertsPolicy, LE_STAGING, renewAfter, dueForRenewal,
-  godaddyProvider, issueCertificate, fetchAri, zonesFor, probeEndpoint, verdictFor,
+  godaddyProvider, cloudflareProvider, issueCertificate, fetchAri, zonesFor, probeEndpoint, verdictFor,
   discoverProbeTargets, buildInventory, listHousekeeping, applyHousekeeping, alertChanges, certsEvent,
 }
 

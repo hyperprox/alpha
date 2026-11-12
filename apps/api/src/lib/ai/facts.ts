@@ -8,7 +8,7 @@
 import type { ProxmoxClient } from '../proxmox-client'
 import { livePve } from '../pve-env'
 import { NPMClient } from '../npm-client'
-import { GoDaddyClient } from '../godaddy-client'
+import { dnsRouter, type DnsRouter } from '../dns-providers'
 import { getProviderCredentials } from '../credentials'
 import { nodeCredential } from '../node-exec'
 import { bridgeInfo, configAddresses, configGpuKind, pciGpus, type BridgeFact } from '../wizard-placement'
@@ -85,6 +85,8 @@ export interface TemplateFacts {
   guests: GuestFact[]; nextVmid: number; zones: string[]; proxyHosts: string[]; hasReverseProxy: boolean
   /** Per managed zone, the names ('@' at the apex) that already have an A, AAAA or CNAME record. */
   records: Record<string, string[]>
+  /** Which DNS provider serves each zone ('godaddy', 'cloudflare'), where known. */
+  zoneProvider?: Record<string, string>
   /** Sources that could not be read; their facts are empty, which must not pass as "nothing there". */
   partial: string[]
 }
@@ -96,6 +98,8 @@ export interface FactsDeps {
   hasLogin(node: string): Promise<boolean>
   /** Names in `zone` holding an A, AAAA or CNAME record, relative to the zone ('@' at the apex). */
   records(zone: string): Promise<string[]>
+  /** Zone → the provider serving it. Optional: a stand-in without it just leaves the provider out. */
+  zoneProviders?(): Promise<Record<string, string>>
 }
 
 /** `x86_64` is amd64, `aarch64` is arm64; anything else is unknown (''). */
@@ -110,14 +114,14 @@ export function archOfTemplate(name: string): string {
 }
 
 function defaultDeps(): FactsDeps {
+  // One router per gathering: every provider's zone list is read once, read-only.
+  let routerP: Promise<DnsRouter | null> | null = null
+  const router = () => (routerP ??= dnsRouter())
+  const active = async () => { const r = await router().catch(() => null); return r ? (await r.getDomains()).filter(z => z.active) : [] }
   return {
     pve: pve(),
-    zones: async () => {
-      const gd = await getProviderCredentials('dns', 'godaddy').catch(() => null)
-      if (!gd?.api_key || !gd?.api_secret) return []
-      const domains = await new GoDaddyClient(gd.api_key, gd.api_secret).getDomains()
-      return (domains ?? []).map((d: any) => d.domain).filter(Boolean)
-    },
+    zones: async () => (await active()).map(z => z.domain).filter(Boolean),
+    zoneProviders: async () => Object.fromEntries((await active()).map(z => [z.domain, z.provider])),
     proxyHosts: async () => {
       const npm = await getProviderCredentials('proxy', 'npm').catch(() => null)
       if (!npm?.url) return []
@@ -129,9 +133,9 @@ function defaultDeps(): FactsDeps {
     // A lookup that throws is a failed source (login:<node>), not "no login".
     hasLogin: async node => Boolean(await nodeCredential(node)),
     records: async zone => {
-      const gd = await getProviderCredentials('dns', 'godaddy')
-      if (!gd?.api_key || !gd?.api_secret) throw new Error('DNS provider is not configured')
-      const all = await new GoDaddyClient(gd.api_key, gd.api_secret).getRecords(zone)
+      const r = await router()
+      if (!r) throw new Error('DNS provider is not configured')
+      const all = await r.getRecords(zone)
       return [...new Set((all ?? []).filter((r: any) => ['A', 'AAAA', 'CNAME'].includes(r?.type))
         .map((r: any) => String(r.name ?? '').toLowerCase()).filter(Boolean))]
     },
@@ -243,8 +247,11 @@ export async function gatherTemplateFacts(over: Partial<FactsDeps> = {}): Promis
     else records[zone] = r.map(n => String(n).toLowerCase())
   }
 
+  const zoneProvider = deps.zoneProviders ? await deps.zoneProviders().catch(() => undefined) : undefined
+
   return {
     nodes, storages, templates, downloadable, guests, records,
+    ...(zoneProvider ? { zoneProvider } : {}),
     nextVmid: nextR.status === 'fulfilled' ? Number(nextR.value) : 0,
     zones: ok(zonesR, []), proxyHosts: ok(proxyR, []), hasReverseProxy: ok(rpR, false),
     partial,

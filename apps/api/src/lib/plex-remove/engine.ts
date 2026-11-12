@@ -55,7 +55,11 @@ export interface PlanItem {
   plex:      { keys: string[]; section: string | null; folder: string | null }
 }
 
-export interface Plan { id: string; owner: string; scope: string; createdAt: number; items: PlanItem[]; totalBytes: number; skipped: Array<{ id: string; reason: string }> }
+export interface Plan {
+  id: string; owner: string; scope: string; createdAt: number; items: PlanItem[]; totalBytes: number; skipped: Array<{ id: string; reason: string }>
+  /** Something the person must see before removing (Clear-out: only the owner's watched marks could be read). */
+  notice?: string
+}
 
 export interface ItemResult { id: string; title: string; via: Via; removed: boolean; message: string; sizeBytes: number }
 
