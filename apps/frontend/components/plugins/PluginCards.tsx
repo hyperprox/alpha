@@ -14,7 +14,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { alpha } from '@/lib/theme'
-import { Icon, Panel, PluginStrip, PluginTile, styles as vs } from '@/components/visual/kit'
+import { Icon, Panel, Pill, PluginStrip, PluginTile, styles as vs } from '@/components/visual/kit'
 import { PLUGIN_ICON } from './visual/plugin-kit'
 
 interface Card {
@@ -23,6 +23,7 @@ interface Card {
   tone?: 'good' | 'warn' | 'bad'
   rows?: Array<{ label: string; value: string; tone?: 'good' | 'warn' | 'bad' }>
   error?: string
+  off?: boolean
 }
 
 const TONE = { good: 'var(--good)', warn: 'var(--warn)', bad: 'var(--crit)' } as const
@@ -31,7 +32,7 @@ const TONE = { good: 'var(--good)', warn: 'var(--warn)', bad: 'var(--crit)' } as
  * `variant="strip"` is the dashboard's compact form: a panel of small tiles, each a name, a health dot and the
  * headline, linking to the plug-in's page. The default is the full cards with their rows.
  */
-export function PluginCards({ heading = 'Plug-ins', rowLimit = 4, variant = 'cards' }: { heading?: string; rowLimit?: number; variant?: 'cards' | 'strip' }) {
+export function PluginCards({ heading = 'Plug-ins', rowLimit = 4, variant = 'cards' }: { heading?: string; rowLimit?: number; variant?: 'cards' | 'strip' | 'chips' }) {
   const [cards, setCards] = useState<Card[]>([])
 
   useEffect(() => {
@@ -44,10 +45,12 @@ export function PluginCards({ heading = 'Plug-ins', rowLimit = 4, variant = 'car
 
         // Only plug-ins that are set up. An unconfigured one is a normal state,
         // not something to occupy space on a dashboard.
-        const configured = list.data.filter((p: any) => p.configured)
+        // The chips variant also lists the ones that are not set up, as Off.
+        const configured = list.data.filter((p: any) => p.configured || variant === 'chips')
 
         const next = await Promise.all(configured.map(async (p: any): Promise<Card> => {
           const base = { id: p.id, name: p.name, icon: p.icon, hasDetail: p.hasDetail }
+          if (!p.configured) return { ...base, off: true }
           try {
             const d = await fetch(`/api/plugins/${p.id}/data`).then(r => r.json())
             const data = d?.data ?? {}
@@ -69,9 +72,29 @@ export function PluginCards({ heading = 'Plug-ins', rowLimit = 4, variant = 'car
     load()
     const timer = setInterval(load, 30_000)
     return () => { cancelled = true; clearInterval(timer) }
-  }, [])
+  }, [variant])
 
   if (!cards.length) return null
+
+  if (variant === 'chips') {
+    return (
+      <Panel title={heading || 'Plug-ins'} href="/plugins" linkLabel="All">
+        <ul aria-label="Plug-in status" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: 0, padding: 0, listStyle: 'none' }}>
+          {cards.map(p => {
+            const bad = !p.off && (p.error || p.tone === 'bad' || p.tone === 'warn')
+            const word = p.off ? 'Off' : bad ? `Needs attention: ${p.error ? 'unreachable' : p.headline ?? 'check it'}` : 'Active'
+            return (
+              <li key={p.id} style={{ minWidth: 0 }}>
+                <Link href={p.hasDetail ? `/plugins/${p.id}` : '/plugins'}>
+                  <Pill tone={p.off ? undefined : bad ? (p.error || p.tone === 'bad' ? 'bad' : 'warn') : 'good'}>{p.name} · {word}</Pill>
+                </Link>
+              </li>
+            )
+          })}
+        </ul>
+      </Panel>
+    )
+  }
 
   if (variant === 'strip') {
     return (
