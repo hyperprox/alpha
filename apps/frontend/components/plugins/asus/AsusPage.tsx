@@ -30,7 +30,8 @@ import a from './asus.module.css'
 
 const API = '/api/plugins/asus'
 
-interface LastAction { action: 'reboot'; at: string; by: string; state: 'sent' | 'unconfirmed' | 'back' | 'not_back'; detail: string | null }
+/** `by` is only sent to operators and up. */
+interface LastAction { action: 'reboot'; at: string; by?: string; state: 'sending' | 'sent' | 'unconfirmed' | 'back' | 'not_back'; detail: string | null }
 
 export interface Router {
   id: string; name: string; insecureTLS: boolean; fingerprint?: string | null; model: string | null; firmware: string | null
@@ -57,6 +58,7 @@ function ago(iso: string): string {
 }
 
 const ACTION_WORD: Record<LastAction['state'], string> = {
+  sending: 'is being asked to restart',
   sent: 'is restarting; HyperProx is waiting for it to come back',
   unconfirmed: 'was asked to restart but did not confirm it; HyperProx is checking',
   back: 'came back',
@@ -121,7 +123,7 @@ function RouterView({ n }: { n: Router }) {
       {data && !data.ok && <Notice kind="error">{data.error}{data.held ? '' : ' The page tries again every 10 seconds.'}</Notice>}
       {last && (
         <Notice kind={last.state === 'not_back' ? 'error' : last.state === 'back' ? 'info' : 'warn'}>
-          Reboot by {last.by} {ago(last.at)}: {n.name} {ACTION_WORD[last.state]}{last.detail ? ` (${last.detail})` : ''}.
+          Reboot{last.by ? ` by ${last.by}` : ''} {ago(last.at)}: {n.name} {ACTION_WORD[last.state]}{last.detail ? ` (${last.detail})` : ''}.
         </Notice>
       )}
       {r && (
@@ -164,7 +166,7 @@ function RouterView({ n }: { n: Router }) {
               <p className="mb-3 text-sm" style={{ color: 'var(--text-soft)' }}>
                 Rebooting drops Wi-Fi and the internet for everyone for 2 to 4 minutes, HyperProx included if it reaches the internet through {n.name}.
               </p>
-              <button type="button" className={a.danger} disabled={last?.state === 'sent'} onClick={() => { setTyped(''); setConfirming(true) }}><Icon name="power" size={14} /> Reboot router</button>
+              <button type="button" className={a.danger} disabled={last?.state === 'sent' || last?.state === 'sending'} onClick={() => { setTyped(''); setConfirming(true) }}><Icon name="power" size={14} /> Reboot router</button>
             </Panel>
           )}
 
@@ -219,7 +221,8 @@ function RouterView({ n }: { n: Router }) {
 const ADVICE = 'Enter the router’s address and its admin login (Administration → System on the router). HyperProx signs in once to check it, reads the model and firmware itself, and keeps the login in the vault; it is never shown again. ASUS routers allow one admin session at a time, so HyperProx signs out whenever it has not needed the router for two minutes. If you are signed in to the router’s own page at the same moment, one of the two may be asked to sign in again.'
 
 function RouterForm({ n, onSaved, onCancel }: { n: Router | null; onSaved: () => void; onCancel?: () => void }) {
-  const [f, setF] = useState({ name: n?.name ?? '', url: n?.url ?? '', username: n?.username ?? '', password: '', insecureTLS: n?.insecureTLS ?? false, repin: false })
+  const [f, setF] = useState({ name: n?.name ?? '', url: n?.url ?? '', username: n?.username ?? '', password: '', insecureTLS: n?.insecureTLS ?? false, fingerprint: n?.fingerprint ?? '' })
+  const [probe, setProbe] = useState<null | { fingerprint: string; subject: string; validTo: string }>(null)
   const [err, setErr] = useState<string | null>(null)
   const [ok, setOk] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -228,6 +231,15 @@ function RouterForm({ n, onSaved, onCancel }: { n: Router | null; onSaved: () =>
   const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const set = (k: keyof typeof f, v: any) => setF(x => ({ ...x, [k]: v }))
   const https = f.url.trim().toLowerCase().startsWith('https:')
+  const pinChanged = f.fingerprint !== (n?.fingerprint ?? '')
+  // Loosening how the router is recognised needs its password in the same save (the API refuses it otherwise).
+  const loosening = !!n && ((!!n.fingerprint && !f.fingerprint) || (f.insecureTLS && !n.insecureTLS))
+
+  const readCert = async () => {
+    setErr(null)
+    const r = await apiJson<{ data: { fingerprint: string; subject: string; validTo: string } }>(`${API}/instances/probe-certificate`, 'POST', { url: f.url })
+    if (r.ok) setProbe(r.body!.data); else setErr(r.error ?? 'Could not read the certificate')
+  }
 
   const find = async () => {
     setFinding(true); setErr(null)
@@ -244,14 +256,16 @@ function RouterForm({ n, onSaved, onCancel }: { n: Router | null; onSaved: () =>
     const body: Record<string, unknown> = { url: f.url, username: f.username, insecureTLS: f.insecureTLS }
     if (f.name.trim() || n) body.name = f.name.trim() || undefined
     if (f.password || !n) body.password = f.password
-    if (f.repin) body.fingerprint = ''
+    // Only a fingerprint a person read and confirmed here is sent; a new router with none is pinned on first use.
+    if (pinChanged) body.fingerprint = f.fingerprint || null
     const r = await apiJson<{ data: Router & { pinnedNow: boolean } }>(n ? `${API}/instances/${n.id}` : `${API}/instances`, n ? 'PUT' : 'POST', body)
     setBusy(false)
     if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void save()); return }
     if (!r.ok) { setErr(r.error ?? 'Could not save'); return }
     const d = r.body!.data
     setOk(`Saved ${d.name}${d.model ? `: ${d.model}` : ''}${d.firmware ? `, firmware ${d.firmware}` : ''}.${d.pinnedNow ? ' Its certificate is pinned: only that certificate is accepted from now on.' : ''}`)
-    setF(x => ({ ...x, password: '', repin: false }))
+    setF(x => ({ ...x, password: '' }))
+    setProbe(null)
     onSaved()
   }
 
@@ -287,15 +301,21 @@ function RouterForm({ n, onSaved, onCancel }: { n: Router | null; onSaved: () =>
       {https ? (
         <div className="flex flex-col gap-2 rounded-md border p-3" style={{ borderColor: 'var(--border-strong)' }}>
           <span className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Certificate</span>
-          <small style={{ color: 'var(--text-muted)' }}>An ASUS router&apos;s own certificate is self-signed. HyperProx pins the one it presents the first time and accepts only that one afterwards, so nothing else on the network can pose as the router.</small>
-          {n?.fingerprint && !f.repin && <small className="break-all font-mono" style={{ color: 'var(--good)' }}>Pinned: {n.fingerprint}</small>}
-          {n?.fingerprint && <label className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-soft)' }}>
-            <input type="checkbox" checked={f.repin} onChange={e => set('repin', e.target.checked)} /> The router has a new certificate: pin the one it presents now</label>}
+          <small style={{ color: 'var(--text-muted)' }}>An ASUS router&apos;s own certificate is self-signed. {n ? 'HyperProx accepts only the pinned one. If the router has a new certificate, read it here, compare the fingerprint with the one your browser shows for that address, and pin it.' : 'HyperProx pins the one it presents when you save, and accepts only that one afterwards. To check it first, read it here and compare it with what your browser shows.'}</small>
+          {f.fingerprint ? <small className="break-all font-mono" style={{ color: 'var(--good)' }}>{pinChanged ? 'To pin' : 'Pinned'}: {f.fingerprint}</small>
+            : n?.fingerprint ? <small style={{ color: 'var(--warn-2)' }}>The pin will be removed.</small> : null}
+          {probe && <small className="break-all font-mono" style={{ color: 'var(--text-soft)' }}>Presented now: {probe.fingerprint} ({probe.subject}, valid to {probe.validTo})</small>}
+          <div className="flex flex-wrap gap-2">
+            <GhostButton type="button" onClick={() => void readCert()}>Read certificate</GhostButton>
+            {probe && probe.fingerprint !== f.fingerprint && <GhostButton type="button" onClick={() => set('fingerprint', probe.fingerprint)}>I compared it: pin this certificate</GhostButton>}
+            {f.fingerprint && <GhostButton type="button" onClick={() => set('fingerprint', '')}>Remove the pin</GhostButton>}
+          </div>
           <label className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-soft)' }}>
             <input type="checkbox" checked={f.insecureTLS} onChange={e => set('insecureTLS', e.target.checked)} /> Accept any certificate (not recommended; the pin is safer)
           </label>
         </div>
       ) : f.url ? <small style={{ color: 'var(--text-dimmer)' }}>http:// is accepted for a router on your own network only. Use https:// for anything reached over the internet.</small> : null}
+      {loosening && !f.password && <small style={{ color: 'var(--warn-2)' }}>{n?.fingerprint && !f.fingerprint ? 'Removing the pin' : 'Accepting any certificate'} needs the router&apos;s password again: enter it above in the same save.</small>}
       {err && <Notice kind="error">{err}</Notice>}
       {ok && <Notice kind="info">{ok}</Notice>}
       {busy && <BusyNote>Signing in to the router once to check the login…</BusyNote>}

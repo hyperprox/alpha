@@ -47,7 +47,17 @@ export interface ActionRequest { action?: unknown; confirm?: unknown; typed?: un
 
 export interface Limits { readsPerMinute: number; attemptsPerMinute: number; rebootsPerHour: number; setupsPerMinute: number }
 
-export type ActionState = { action: 'reboot'; at: string; by: string; state: 'sent' | 'unconfirmed' | 'back' | 'not_back'; detail: string | null }
+export type ActionState = { action: 'reboot'; at: string; by: string; state: 'sending' | 'sent' | 'unconfirmed' | 'back' | 'not_back'; detail: string | null }
+
+/** The last reboot as a viewer may see it: not who did it. */
+export function viewerAction(a: ActionState | null): Omit<ActionState, 'by'> | ActionState | null {
+  if (!a) return null
+  const { by: _b, ...rest } = a
+  return rest
+}
+
+/** What a router's certificate probe shows a person before they confirm a pin. */
+export interface PresentedCert { fingerprint: string; subject: string; issuer: string; validTo: string }
 
 export interface ServiceDeps {
   store: AsusInstanceStore
@@ -55,8 +65,8 @@ export interface ServiceDeps {
   publish?: (e: NotifyEventInput) => Promise<void>
   /** Tests replace the transport. */
   transportFor?: (c: { url: string; meta: Pick<AsusMeta, 'insecureTLS' | 'fingerprint'> }) => AsusTransport
-  /** The certificate an https address presents (first-use pin). Tests replace it. */
-  probe?: (url: string) => Promise<string>
+  /** The certificate an https address presents (first-use pin, and the probe a person confirms). Tests replace it. */
+  probe?: (url: string) => Promise<PresentedCert>
   now?: () => number
   sleep?: (ms: number) => Promise<void>
   limits?: Partial<Limits>
@@ -69,17 +79,23 @@ export const IDLE_LOGOUT_MS = 120_000
 /** No counter sample this recent: take a second one 1.5 s later so the first reading already has rates. */
 const SAMPLE_FRESH_MS = 60_000
 const LOCK_DEFAULT_S = 15 * 60
+/** "Not an ASUS router" is held for 15 minutes, doubling each time it repeats, up to 4 hours. */
+const NOT_ASUS_FIRST_MS = 15 * 60_000
+const NOT_ASUS_MAX_MS = 4 * 3_600_000
 
-async function liveProbe(url: string): Promise<string> {
+async function liveProbe(url: string): Promise<PresentedCert> {
   const u = new URL(url)
   const address = await resolveAsusTarget(u)
-  return (await probeCertificate(address, portOf(u), 10_000, u.hostname)).fingerprint
+  const c = await probeCertificate(address, portOf(u), 10_000, u.hostname)
+  return { fingerprint: c.fingerprint, subject: c.subject, issuer: c.issuer, validTo: c.validTo }
 }
 
 export class AsusService {
   private cache = new Map<string, { at: number; reading: AsusReading }>()
   private inflight = new Map<string, Promise<AsusReading>>()
   private blocked = new Map<string, { until: number | null; message: string }>()
+  /** Consecutive "not an ASUS router" answers, for the back-off. Cleared by a good reading or a save. */
+  private notAsus = new Map<string, number>()
   private clients = new Map<string, { sig: string; client: AsusClient }>()
   private samples = new Map<string, CounterSample>()
   private actions = new Map<string, ActionState>()
@@ -99,7 +115,7 @@ export class AsusService {
 
   /** Forget a router's held login, session, counters and cached reading: called when its login is saved again. */
   forget(id: string): void {
-    this.blocked.delete(id); this.cache.delete(id); this.samples.delete(id)
+    this.blocked.delete(id); this.notAsus.delete(id); this.cache.delete(id); this.samples.delete(id)
     const c = this.clients.get(id)
     this.clients.delete(id)
     void c?.client.logout()
@@ -116,12 +132,17 @@ export class AsusService {
   lastAction(id: string): ActionState | null { return this.actions.get(id) ?? null }
 
   limit(actor: Actor, bucket: keyof Limits, message = 'Too many requests; wait a moment.', windowMs = 60_000): void {
-    const key = `${actor.sid}:${bucket}`
+    this.limitKeys([`sid:${actor.sid}`], bucket, message, windowMs)
+  }
+
+  /** One hit against every key, or none: all are checked before any is counted. */
+  private limitKeys(keys: string[], bucket: keyof Limits, message: string, windowMs: number): void {
     const now = this.d.now()
     if (this.hits.size > 1000) for (const [k, v] of this.hits) if (!v.some(t => now - t < 3_600_000)) this.hits.delete(k)
-    const recent = (this.hits.get(key) ?? []).filter(t => now - t < windowMs)
-    if (recent.length >= this.d.limits[bucket]) { this.hits.set(key, recent); throw new AsusRefusal('rate_limited', message, 429) }
-    recent.push(now); this.hits.set(key, recent)
+    const rows = keys.map(k => [`${k}:${bucket}`, (this.hits.get(`${k}:${bucket}`) ?? []).filter(t => now - t < windowMs)] as const)
+    for (const [k, recent] of rows) this.hits.set(k, recent)
+    if (rows.some(([, recent]) => recent.length >= this.d.limits[bucket])) throw new AsusRefusal('rate_limited', message, 429)
+    for (const [k, recent] of rows) this.hits.set(k, [...recent, now])
   }
 
   private transport(url: string, meta: Pick<AsusMeta, 'insecureTLS' | 'fingerprint'>): AsusTransport {
@@ -156,6 +177,13 @@ export class AsusService {
         this.blocked.set(id, { until: now + s * 1000, message: `${e.message} HyperProx will not try again until then.` })
       } else if (e.kind === 'busy') {
         this.blocked.set(id, { until: now + (e.retryAfterSec ?? 60) * 1000, message: `${e.message} HyperProx tries again in a minute.` })
+      } else if (e.kind === 'not-asus') {
+        // Not a password problem (nothing was refused), so not held for good: a router mid-boot or a firmware
+        // page in the way answers like this. Backed off, so a wrong address is not asked every 10 seconds.
+        const n = (this.notAsus.get(id) ?? 0) + 1
+        this.notAsus.set(id, n)
+        const ms = Math.min(NOT_ASUS_MAX_MS, NOT_ASUS_FIRST_MS * 2 ** (n - 1))
+        this.blocked.set(id, { until: now + ms, message: `${e.message} HyperProx tries again in ${Math.round(ms / 60_000)} min, or as soon as the login is saved again.` })
       } else {
         this.blocked.set(id, { until: null, message: `${e.message} HyperProx will not try again until the login is saved again (so the router does not lock the account).` })
       }
@@ -201,6 +229,7 @@ export class AsusService {
       this.samples.set(id, cur)
       const reading = buildReading({ system, wan, clients, channels }, { instanceId: id, prev, cur, now: new Date(this.d.now()) })
       this.cache.set(id, { at: this.d.now(), reading })
+      this.notAsus.delete(id)
       if (reading.model !== meta.model || reading.firmware.version !== meta.firmware) {
         await this.d.store.noteFound(id, { model: reading.model, firmware: reading.firmware.version }).catch(() => {})
       }
@@ -223,11 +252,15 @@ export class AsusService {
   /**
    * Pin an https router's certificate on first use, then sign in once and read what it is. Throws AsusRefusal
    * with the router's own reason; one login attempt, never a retry.
+   *
+   * "First use" means a new address only: a router being added, or one whose address moved (both need the
+   * password in the same save). An existing router never gets "whatever it presents now": a changed
+   * certificate is pinned through probeCertificate(), shown to a person and confirmed by its fingerprint.
    */
   private async setUp(p: Prepared): Promise<{ fingerprint: string | null; pinnedNow: boolean; model: string | null; firmware: string | null }> {
     let fingerprint = p.fingerprint, pinnedNow = false
-    if (p.url.startsWith('https:') && !fingerprint && !p.insecureTLS) {
-      try { fingerprint = await (this.d.probe ?? liveProbe)(p.url); pinnedNow = true }
+    if (p.moved && p.url.startsWith('https:') && !fingerprint && !p.insecureTLS) {
+      try { fingerprint = (await (this.d.probe ?? liveProbe)(p.url)).fingerprint; pinnedNow = true }
       catch (e: any) { throw new AsusRefusal('unreachable', `HyperProx could not read the router's certificate to pin it: ${String(e?.message ?? 'no answer').slice(0, 160)}`, 400) }
     }
     if (!p.password) return { fingerprint, pinnedNow, model: null, firmware: null }
@@ -256,15 +289,26 @@ export class AsusService {
   async edit(id: string, input: AsusInput, actor: Actor): Promise<{ meta: AsusMeta; pinnedNow: boolean; loginChanged: boolean }> {
     this.limit(actor, 'setupsPerMinute', 'Too many changes in a minute; wait a moment.')
     const p = await this.d.store.prepare(id, input)
-    // A new address or login is proved before it is saved, as at setup. A rename or pin change is not.
-    const needsProof = p.loginChanged || (p.url.startsWith('https:') && !p.fingerprint && !p.insecureTLS)
-    const found = needsProof ? await this.setUp(p) : null
+    // A new address or login is proved before it is saved, as at setup (a moved https address is pinned again on
+    // that first use). Removing the pin or accepting any certificate needs the password too (instances.ts), and
+    // is proved the same way. A rename, or a pin a person confirmed from probeCertificate(), is not.
+    const found = p.loginChanged ? await this.setUp(p) : null
     const meta = await this.d.store.update(id, { ...p, fingerprint: found ? found.fingerprint : p.fingerprint }, input.name, found && found.model ? found : null)
     this.forget(id)
     return { meta, pinnedNow: !!found?.pinnedNow, loginChanged: p.loginChanged }
   }
 
   // ── the action ─────────────────────────────────────────────────────────────
+
+  /** The certificate an https address presents now, for a person to compare and confirm. Nothing is sent to it. */
+  async probeCertificate(url: unknown, actor: Actor): Promise<PresentedCert> {
+    this.limit(actor, 'setupsPerMinute', 'Too many certificate reads; wait a moment.')
+    let u: URL
+    try { u = new URL(String(url ?? '')) } catch { throw new AsusRefusal('bad_input', 'Enter the router\'s https:// address first.') }
+    if (u.protocol !== 'https:') throw new AsusRefusal('bad_input', 'Only an https:// address has a certificate to pin.')
+    try { return await (this.d.probe ?? liveProbe)(`${u.protocol}//${u.host}`) }
+    catch (e: any) { throw new AsusRefusal('bad_input', e?.name === 'AsusTargetError' ? e.message : 'Could not read a certificate from that address.') }
+  }
 
   async auditRefusal(id: string, actor: Actor | null, req: ActionRequest, code: string): Promise<void> {
     await this.d.audit('asus.action', `asus:${String(id).replace(/[^a-z0-9]/gi, '').slice(0, 20)}`, {
@@ -290,15 +334,21 @@ export class AsusService {
     if (req.confirm !== confirmPhrase(m.name) || typed !== m.name.toLowerCase()) {
       return refuse(new AsusRefusal('confirm_required', 'Confirm the reboot and type the router\'s name exactly as shown.', 409))
     }
-    try { this.limit(actor, 'rebootsPerHour', 'That is the most reboots allowed in an hour.', 3_600_000) } catch (e: any) { return refuse(e) }
+    // From here to the 'sending' mark there is no await, so two requests cannot both pass the checks.
     const held = this.blockedReason(m.id)
     if (held) return refuse(new AsusRefusal('login_held', held, 409))
     const pending = this.actions.get(m.id)
-    if (pending && pending.state === 'sent') return refuse(new AsusRefusal('in_progress', `${m.name} is still coming back from the last reboot.`, 409))
+    if ((pending && (pending.state === 'sending' || pending.state === 'sent')) || this.readBacks.has(m.id)) {
+      return refuse(new AsusRefusal('in_progress', `${m.name} is still coming back from the last reboot.`, 409))
+    }
+    // Per router and per person, not per browser session: signing in again does not buy another reboot.
+    try { this.limitKeys([`router:${m.id}`, `email:${actor.email.toLowerCase()}`], 'rebootsPerHour', 'That is the most reboots allowed in an hour.', 3_600_000) } catch (e: any) { return refuse(e) }
+    this.actions.set(m.id, { action: 'reboot', at: new Date(this.d.now()).toISOString(), by: actor.email, state: 'sending', detail: null })
 
     let answer
     try { const { client } = await this.client(m.id); answer = await client.reboot() }
     catch (e: any) {
+      if (pending) this.actions.set(m.id, pending); else this.actions.delete(m.id)
       const msg = e instanceof AsusUnreachableError || e instanceof AsusLoginError || e instanceof AsusRefusal ? e.message : 'The router did not accept the request.'
       await this.d.audit('asus.action', `asus:${m.id}`, { ...base, result: 'failed', reason: msg })
       await this.notify(m, actor, 'failed')

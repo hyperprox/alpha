@@ -181,13 +181,15 @@ export class AsusInstanceStore {
     const moved = !oldUrl || endpointOf(url) !== endpointOf(oldUrl)
     const password = input.password === undefined || input.password === '' ? null : cleanPassword(input.password)
     if ((moved || username !== oldUser) && !password) throw new AsusInputError('The address or user name changed, so enter the password again in the same save.')
+    const insecureTLS = input.insecureTLS === undefined ? prev.insecureTLS : input.insecureTLS === true
+    const fingerprint = cleanFingerprint(input.fingerprint, moved ? null : prev.fingerprint)
+    // Loosening how the router is recognised is as weighty as entering its login: removing the pin or accepting any
+    // certificate needs the password in the same save (and the save proves it, through the new rule).
+    const pinCleared = !moved && !!prev.fingerprint && fingerprint === null
+    const insecureOn = insecureTLS && !prev.insecureTLS
+    if ((pinCleared || insecureOn) && !password) throw new AsusInputError(`${pinCleared ? 'Removing the certificate pin' : 'Accepting any certificate'} needs the router's password again in the same save.`)
     await this.checkAddress(url)
-    return {
-      url, username, password,
-      insecureTLS: input.insecureTLS === undefined ? prev.insecureTLS : input.insecureTLS === true,
-      fingerprint: cleanFingerprint(input.fingerprint, moved ? null : prev.fingerprint),
-      moved, loginChanged: moved || username !== oldUser || !!password,
-    }
+    return { url, username, password, insecureTLS, fingerprint, moved, loginChanged: moved || username !== oldUser || !!password }
   }
 
   private uniqueName(list: AsusMeta[], want: string, except: string | null): string {

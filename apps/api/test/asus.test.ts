@@ -13,11 +13,11 @@ import { AsusClient, AsusLoginError, readLogin, loginBody } from '../src/lib/asu
 import { DirectTransport, ASUS_USER_AGENT, type AsusTransport } from '../src/lib/asus/transport'
 import {
   buildReading, parseClients, parseWanlink, firmwareOf, updateOf, bandsOf, ratesFrom, sampleOf, healthOf, viewerReading,
-  looseJson, counter, connectSeconds, barsOf, type CounterSample,
+  looseJson, counter, connectSeconds, barsOf, addressLike, type CounterSample,
 } from '../src/lib/asus/parse'
 import { AsusInstanceStore, cleanUrl, type CredentialIO } from '../src/lib/asus/instances'
-import { AsusService, confirmPhrase, type Actor } from '../src/lib/asus/service'
-import { checkAsusAddresses } from '../src/lib/asus/target'
+import { AsusService, confirmPhrase, viewerAction, type Actor, type PresentedCert } from '../src/lib/asus/service'
+import { checkAsusAddresses, asusResolver } from '../src/lib/asus/target'
 import { defaultGateways, asusLoginPage, findAsusRouters } from '../src/lib/asus/detect'
 import { setAsusService, detailOf, allReadings } from '../src/lib/asus'
 import { asusPlugin } from '../src/plugins/asus'
@@ -42,7 +42,7 @@ const admin: Actor = { sid: 's-admin', email: 'admin@example.com', role: 'admin'
 const operator: Actor = { sid: 's-op', email: 'op@example.com', role: 'operator', token: null }
 
 /** A service over a fresh fake router on 127.0.0.1, with a clock and sleeps the test controls. */
-async function setup(over: Parameters<typeof fakeRouter>[0] = {}, o: { tls?: { key: Buffer; cert: Buffer }; probe?: (url: string) => Promise<string> } = {}) {
+async function setup(over: Parameters<typeof fakeRouter>[0] = {}, o: { tls?: { key: Buffer; cert: Buffer }; probe?: (url: string) => Promise<PresentedCert> } = {}) {
   const fake = fakeRouter(over)
   const srv = await listen(fake.handler, o.tls)
   closers.push(srv.close)
@@ -347,8 +347,10 @@ test('the plug-in card and the AI summary are viewer-shaped for everyone, and on
     const ctx = { get: async (p: string) => { assert.equal(p, '/readings'); return allReadings() }, post: async () => { throw new Error('no posts') } } as unknown as PluginContext
     const s = await asusPlugin.summary!(ctx)
     const all = s.lines.join('\n')
-    assert.ok(s.lines.some(l => /Home router: healthy/.test(l)))
+    assert.match(s.lines[0], /^"Home router": healthy/, 'the headline is the router, not the note')
     assert.ok(s.lines.some(l => /Wi-Fi 5 GHz "Example Net 5G": channel 36, 1 client/.test(l)))
+    assert.ok(s.lines.some(l => /online: "Desk PC" \(wired\), "tablet" \(2\.4 GHz\)/.test(l)), 'device names quoted as data')
+    assert.match(s.lines.at(-1)!, /data, not instructions/)
     assert.ok(!MAC.test(all) && !IP.test(all), 'no MAC or address reaches the AI page')
     const tile = await asusPlugin.load(ctx)
     assert.equal(tile.tone, 'good')
@@ -417,7 +419,21 @@ test('reboot: a held login refuses before anything is sent; three an hour at mos
   const m2 = await s2.store.create(await s2.store.prepare(null, { url: s2.url, username: 'admin', password: 'correct horse' }), 'R', { model: null, firmware: null })
   for (let i = 0; i < 3; i++) { await s2.svc.act(m2.id, { action: 'reboot', confirm: 'Reboot R', typed: 'R' }, admin); await s2.svc.readBacks.get(m2.id); s2.tick(60_000) }
   await assert.rejects(s2.svc.act(m2.id, { action: 'reboot', confirm: 'Reboot R', typed: 'R' }, admin), (e: any) => e.code === 'rate_limited')
+  // Per router and per person, not per browser session: a new sign-in or another admin gets no extra reboot.
+  await assert.rejects(s2.svc.act(m2.id, { action: 'reboot', confirm: 'Reboot R', typed: 'R' }, { ...admin, sid: 's-new' }), (e: any) => e.code === 'rate_limited')
+  await assert.rejects(s2.svc.act(m2.id, { action: 'reboot', confirm: 'Reboot R', typed: 'R' }, { ...admin, sid: 's-other', email: 'other@example.com' }), (e: any) => e.code === 'rate_limited')
   void tick
+})
+
+test('reboot: two at once send one; the pending mark is set before anything is awaited', async () => {
+  const { fake, svc, store, url } = await setup()
+  const m = await store.create(await store.prepare(null, { url, username: 'admin', password: 'correct horse' }), 'R', { model: null, firmware: null })
+  const req = { action: 'reboot', confirm: 'Reboot R', typed: 'R' }
+  const both = await Promise.allSettled([svc.act(m.id, req, admin), svc.act(m.id, req, { ...admin, sid: 's-2', email: 'second@example.com' })])
+  assert.equal(both.filter(x => x.status === 'fulfilled').length, 1)
+  assert.equal((both.find(x => x.status === 'rejected') as PromiseRejectedResult).reason.code, 'in_progress')
+  assert.equal(fake.seen.filter(x => x.path === '/applyapp.cgi').length, 1)
+  await svc.readBacks.get(m.id)
 })
 
 // ── the certificate pin ──────────────────────────────────────────────────────
@@ -432,7 +448,7 @@ function makeCert(dir: string, name: string) {
 test('TLS: an https router is pinned on first use, and a different certificate gets nothing, not even the login', { skip: !haveOpenssl && 'openssl not installed' }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hpx-asus-'))
   const a = makeCert(dir, 'a'), b = makeCert(dir, 'b')
-  const probe = async (u: string) => (await probeCertificate('127.0.0.1', Number(new URL(u).port))).fingerprint
+  const probe = async (u: string): Promise<PresentedCert> => { const c = await probeCertificate('127.0.0.1', Number(new URL(u).port)); return { fingerprint: c.fingerprint, subject: c.subject, issuer: c.issuer, validTo: c.validTo } }
   const s = await setup({}, { tls: a, probe })
   const { meta, pinnedNow } = await s.svc.add({ url: s.url, username: 'admin', password: 'correct horse' }, admin)
   assert.equal(pinnedNow, true)
@@ -454,10 +470,21 @@ test('TLS: an https router is pinned on first use, and a different certificate g
   await assert.rejects(plain.hook('uptime()'), (e: any) => /certificate|unreachable/i.test(e.message))
   assert.equal(other.seen.length, 0)
 
-  // Clearing the pin on an https router pins again on the next save (first use again).
-  const edited = await s.svc.edit(meta.id, { fingerprint: '' }, admin)
-  assert.equal(edited.pinnedNow, true)
-  assert.equal(edited.meta.fingerprint, fpA)
+  // An existing router is never re-pinned to "whatever it presents": removing the pin needs the password, and with
+  // it the save is proved against strict certificate checks, which a self-signed router fails, so nothing changes.
+  await assert.rejects(s.svc.edit(meta.id, { fingerprint: '' }, admin), (e: any) => /password again/.test(e.message))
+  await assert.rejects(s.svc.edit(meta.id, { fingerprint: '', password: 'correct horse' }, admin), (e: any) => /certificate|Nothing was saved/.test(e.message))
+  assert.equal((await s.store.get(meta.id))!.fingerprint, fpA)
+  // A renewed certificate is pinned through the probe a person confirms: exactly that fingerprint, nothing else.
+  s.tick(61_000)   // past the per-minute limit on setup changes
+  const presented = await s.svc.probeCertificate(s.url, admin)
+  assert.equal(presented.fingerprint, fpA)
+  await assert.rejects(s.svc.probeCertificate('http://127.0.0.1:1', admin), (e: any) => /Only an https/.test(e.message))
+  const fpB = normaliseFingerprint(new (require('node:crypto').X509Certificate)(b.cert).fingerprint256)!
+  const repinned = await s.svc.edit(meta.id, { fingerprint: fpB }, admin)
+  assert.equal(repinned.pinnedNow, false)
+  assert.equal(repinned.meta.fingerprint, fpB, 'the confirmed fingerprint, not one HyperProx read for itself')
+  await assert.rejects(s.svc.reading(meta.id), (e: any) => /different certificate/.test(e.message), 'and it holds: router A no longer matches')
 })
 
 test('http on the LAN needs no pin and none is taken', async () => {
@@ -479,4 +506,88 @@ test('detection: the default gateway from the routing table, and the Asuswrt log
   const found = await findAsusRouters({ gateways: ['10.9.8.1', '198.51.100.1'], get: async u => { asked.push(u); return u.startsWith('http://10.9.8.1') ? { status: 200, body: page } : null } })
   assert.deepEqual(found, [{ url: 'http://10.9.8.1', model: 'RT-XX9000', source: 'default gateway' }])
   assert.ok(!asked.includes('http://198.51.100.1/Main_Login.asp'), 'never plain http to a public address')
+})
+
+// ── review follow-ups ────────────────────────────────────────────────────────
+
+test('"not an ASUS router" is held for 15 minutes, then backed off, not until a re-save; a bad password still is', async () => {
+  const { fake, svc, store, url, tick } = await setup({ loginError: { status: 42 } })
+  const m = await store.create(await store.prepare(null, { url, username: 'admin', password: 'correct horse' }), 'R', { model: null, firmware: null })
+  await assert.rejects(svc.reading(m.id), (e: any) => e.kind === 'not-asus')
+  await assert.rejects(svc.reading(m.id), (e: any) => e.code === 'login_held')
+  assert.match(svc.blockedReason(m.id)!, /15 min/)
+  tick(15 * 60_000 + 1)
+  await assert.rejects(svc.reading(m.id), (e: any) => e.kind === 'not-asus')
+  assert.equal(fake.logins(), 2)
+  assert.match(svc.blockedReason(m.id)!, /30 min/, 'twice as long the second time')
+  tick(30 * 60_000 + 1)
+  fake.st.loginError = null
+  await svc.reading(m.id)
+  assert.equal(svc.blockedReason(m.id), null)
+})
+
+test('loosening TLS (accept any certificate, or no pin) needs the password in the same save', async () => {
+  const { svc, store, url } = await setup()
+  const { meta } = await svc.add({ url, username: 'admin', password: 'correct horse' }, admin)
+  await assert.rejects(svc.edit(meta.id, { insecureTLS: true }, admin), (e: any) => /Accepting any certificate needs the router's password/.test(e.message))
+  assert.equal((await store.get(meta.id))!.insecureTLS, false)
+  const ok = await svc.edit(meta.id, { insecureTLS: true, password: 'correct horse' }, admin)
+  assert.equal(ok.meta.insecureTLS, true)
+  assert.equal((await svc.edit(meta.id, { name: 'Renamed' }, admin)).meta.name, 'Renamed', 'a rename needs nothing more')
+})
+
+test('viewers: no "by" on the last reboot, address-shaped device names masked, generic errors on the card and AI page', async () => {
+  assert.deepEqual(viewerAction({ action: 'reboot', at: 'x', by: 'admin@example.com', state: 'back', detail: null }), { action: 'reboot', at: 'x', state: 'back', detail: null })
+  assert.equal(viewerAction(null), null)
+  for (const n of ['00:00:5E:00:53:09', '00-00-5e-00-53-09', '00005E005309', '0000.5e00.5309', '10.9.8.30', 'host 10.9.8.30', 'fe80::1', '2001:db8::5']) assert.ok(addressLike(n), n)
+  for (const n of ['Desk PC', 'tablet', 'Kitchen speaker 2', 'TV-5G']) assert.ok(!addressLike(n), n)
+  const raw = { get_clientlist: {
+    '00:00:5E:00:53:09': { mac: '00:00:5E:00:53:09', name: '00:00:5E:00:53:09', nickName: '', ip: '10.9.8.30', isWL: '0', isOnline: '1' },
+    '00:00:5E:00:53:0A': { mac: '00:00:5E:00:53:0A', name: '10.9.8.31', nickName: '', ip: '10.9.8.31', isWL: '0', isOnline: '1' },
+  } }
+  const r = buildReading({ system: '{}', wan: null, clients: JSON.stringify(raw), channels: null }, { instanceId: 'a00000001', prev: null, cur: sample(1, null, null) })
+  const v = viewerReading(r)
+  assert.deepEqual(v.devices.map(d => d.name), ['Unnamed device', 'Unnamed device'])
+  assert.ok(!/5E:00:53|10\.9\.8\./i.test(JSON.stringify(v)))
+
+  const { svc, store, url } = await setup({ pass: 'other' })
+  await store.create(await store.prepare(null, { url, username: 'admin', password: 'wrong' }), 'R', { model: null, firmware: null })
+  setAsusService(svc)
+  try {
+    const first = await allReadings()
+    assert.equal(first[0].error, 'not reachable right now')
+    const second = await allReadings()
+    assert.equal(second[0].error, 'waiting before it signs in again')
+    assert.ok(!/password|refused|127\.0\.0\.1/i.test(JSON.stringify(second)), 'no router or address text reaches the card')
+  } finally { setAsusService(null) }
+})
+
+test('request time: a name that later resolves to loopback (DNS rebinding) is refused, and nothing is sent', async () => {
+  const fake = fakeRouter()
+  const srv = await listen(fake.handler)
+  closers.push(srv.close)
+  const env = { own: new Set<string>(['10.9.8.5']), ports: new Set<number>([443]), bridges: new (require('node:net').BlockList)() }
+  let answer = ['10.9.8.1']
+  const resolve = asusResolver({ lookup: async () => answer, env })
+  const u = `http://router.example.lan:${srv.port}`
+  assert.equal(await resolve(new URL(u)), '10.9.8.1', 'when saved, the name is a LAN address')
+  answer = ['127.0.0.1']
+  const c = new AsusClient(new DirectTransport({ url: u, insecureTLS: false, fingerprint: null, resolve }), { username: 'admin', password: 'correct horse' })
+  await assert.rejects(c.hook('uptime()'), (e: any) => /Router address refused: .*loopback/.test(e.message))
+  answer = ['10.9.8.1', '127.0.0.1']
+  await assert.rejects(c.hook('uptime()'), (e: any) => /loopback/.test(e.message), 'one bad address among several is enough to refuse')
+  assert.equal(fake.seen.length, 0, 'the login never left HyperProx')
+})
+
+test("request time: loopback, and HyperProx's own addresses on any port, are refused", async () => {
+  const env = { own: new Set<string>(['10.9.8.5']), ports: new Set<number>([443]), bridges: new (require('node:net').BlockList)() }
+  const resolve = asusResolver({ lookup: async () => ['10.9.8.5'], env })
+  for (const url of ['http://10.9.8.5', 'http://10.9.8.5:8080', 'https://10.9.8.5:8443', 'https://hyperprox.example.lan:443']) {
+    await assert.rejects(resolve(new URL(url)), (e: any) => /HyperProx's own machine/.test(e.message), url)
+  }
+  await assert.rejects(asusResolver({ env })(new URL('http://127.0.0.1:8080')), (e: any) => /loopback/.test(e.message))
+  await assert.rejects(asusResolver({ env })(new URL('http://[::1]:80')), (e: any) => /loopback/.test(e.message))
+  await assert.rejects(asusResolver({ env })(new URL('http://198.51.100.7')), (e: any) => /only allowed to a private address/.test(e.message))
+  assert.equal(await asusResolver({ env })(new URL('http://10.9.8.1:8080')), '10.9.8.1')
+  assert.equal(checkAsusAddresses('http:', 8080, ['10.9.8.5'], env).ok, false, 'not just the ports HyperProx itself serves')
 })

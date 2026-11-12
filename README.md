@@ -1564,9 +1564,12 @@ worked.
 For an ASUS router on stock Asuswrt or Asuswrt-Merlin (388.x, 3004.x and the 3.0.0.6 base), without
 Home Assistant. Open **Plug-ins, ASUS** and press **Add a router** (admins; the master password is asked
 again, because a login is being stored). Enter the router's address, its admin user and its password.
-**Find my router** fills in the address when the router is this network's gateway. HyperProx signs in
+**Find my router** fills in the address when the router is HyperProx's own network gateway. HyperProx signs in
 once to check the login, reads the model and firmware itself, and names the router after its model if
 you leave the name blank. If the router refuses the login, nothing is saved.
+
+ASUS routers allow a single admin session at a time. While HyperProx is reading a router, signing in
+to the router's own web page can sign HyperProx out, and the other way round.
 
 Each router gets its own tab. Its page opens with a header ring for CPU and five readings: health,
 firmware (stock or Merlin), uptime, CPU and RAM. Under it:
@@ -1585,7 +1588,7 @@ firmware (stock or Merlin), uptime, CPU and RAM. Under it:
   band. Operators and admins also see each device's address and MAC; viewers never see MACs or
   addresses.
 - **Reboot** (admins): needs the master password re-entered and the router's name typed. API tokens can
-  never use it, and three reboots an hour is the most allowed. Every attempt is in the audit log, and a
+  never use it, and each router (and each person) gets at most three reboots an hour. Every attempt is in the audit log, and a
   notification goes to your channels. Afterwards HyperProx reads the router again and records whether it
   came back with a fresh uptime, and sends a notification if it has not.
 - **Details**: the same readings as plain tables.
@@ -1598,14 +1601,19 @@ session while it is reading and signs out after two minutes without reads. If yo
 router's own page at the same moment, one of the two may be asked to sign in again. If the router
 refuses the login, HyperProx stops asking (the page, the card and the AI page) until you save the login
 again or HyperProx restarts. If the router has locked logins after too many failures, HyperProx waits
-until the router's own lockout ends. It never retries a password in a loop. The login is kept in the
-vault.
+until the router's own lockout ends. If the address answers but not as an ASUS router (a router still
+starting up, say), HyperProx waits 15 minutes before asking again, and twice as long each time it
+happens again, up to 4 hours; saving the login again asks at once. It never retries a password in a
+loop. The login is kept in the vault.
 
 **Addresses** follow the same rules as Home Assistant's and QNAP's: `http://` only to a private address
-(your LAN, Tailscale, WireGuard), checked when saved and on every use. For an `https://` router,
-HyperProx pins the certificate the router presents the first time, and after that sends nothing (not
-even the login) to a router that shows a different one. If the router's certificate changes on purpose,
-tick **pin the one it presents now** in Settings.
+(your LAN, Tailscale, WireGuard), checked when saved and again on every request against what the name
+resolves to at that moment. HyperProx's own addresses are refused on every port. For an `https://`
+router, HyperProx pins the certificate the router presents when you add it (or when you change its
+address), and after that sends nothing (not even the login) to a router that shows a different one. If
+the router's certificate changes on purpose, open Settings, press **Read certificate**, compare the
+fingerprint with the one your browser shows, and pin it. Removing the pin, or ticking **Accept any
+certificate**, needs the router's password again in the same save.
 
 **What it does not do.** Version 1 has one action, reboot. Blocking a device's internet access is not
 included: Asuswrt has no single call for it. It would mean rewriting the router's whole parental-control

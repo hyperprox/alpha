@@ -143,8 +143,9 @@ const QNAP_ACT = /^\/api\/plugins\/qnap\/instances\/[^/]+\/actions$/
 const QNAP_RECONFIRM = /^\/api\/plugins\/qnap\/instances(\/(?!probe-certificate$)[^/]+(\/secure-actions)?)?$/
 // ASUS routers (routes/asus.ts). Reads are viewer (trimmed by the route below operator). Every write is admin, the
 // default for a POST/PUT/DELETE: finding a router on the LAN, every change to a router (it stores an admin login)
-// and rebooting one. All but the search are also re-confirmed, which keeps API tokens off them too.
-const ASUS_RECONFIRM = /^\/api\/plugins\/asus\/instances(\/[^/]+(\/actions)?)?$/
+// and rebooting one. All but the search and the certificate read are also re-confirmed, which keeps API tokens off
+// them too.
+const ASUS_RECONFIRM = /^\/api\/plugins\/asus\/instances(\/(?!probe-certificate$)[^/]+(\/actions)?)?$/
 // Plex clear-out and Library (routes/plex-clearout.ts). The lists are a read (viewer). Previewing a removal is
 // operator; removing (through Sonarr, Radarr or Plex itself) deletes files, so it is operator with the master password re-entered, which keeps API
 // tokens out too.

@@ -400,6 +400,22 @@ export function viewerReading(r: AsusReading): AsusReading {
   return {
     ...r,
     wan: { ...r.wan, ip: null, gateway: null },
-    devices: r.devices.map(d => ({ ...d, ip: null, mac: null })),
+    devices: r.devices.map(d => ({ ...d, name: addressLike(d.name) ? 'Unnamed device' : d.name, vendor: d.vendor && addressLike(d.vendor) ? null : d.vendor, ip: null, mac: null })),
   }
+}
+
+/**
+ * A device "name" that is really an address: Asuswrt falls back to the MAC or the IP for a device with no
+ * hostname, and a viewer must not get one back that way. MACs with any separator (or none), IPv4, and anything
+ * IPv6-shaped.
+ */
+export function addressLike(name: string): boolean {
+  const s = name.trim()
+  if (/^[0-9a-f]{2}([:\-. ]?[0-9a-f]{2}){5}$/i.test(s)) return true
+  if (/^[0-9a-f]{4}\.[0-9a-f]{4}\.[0-9a-f]{4}$/i.test(s)) return true
+  if (/\b\d{1,3}(\.\d{1,3}){3}\b/.test(s)) return true
+  if (/([0-9a-f]{2}[:-]){5}[0-9a-f]{2}/i.test(s)) return true
+  if (/^[0-9a-f:]+$/i.test(s) && s.includes('::')) return true
+  if ((s.match(/:/g) ?? []).length >= 2 && /^[0-9a-f:.%]+$/i.test(s)) return true
+  return false
 }

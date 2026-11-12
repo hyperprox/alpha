@@ -19,7 +19,7 @@ import { auditCredentialUse } from '../lib/audit'
 import { hasRole } from '../lib/roles'
 import { asusService, detailOf, stopAsus, viewerReading } from '../lib/asus'
 import { AsusInputError, type AsusMeta, type AsusView } from '../lib/asus/instances'
-import { AsusRefusal, confirmPhrase, type Actor } from '../lib/asus/service'
+import { AsusRefusal, confirmPhrase, viewerAction, type Actor } from '../lib/asus/service'
 import { AsusLoginError } from '../lib/asus/client'
 import { AsusUnreachableError } from '../lib/asus/transport'
 import { findAsusRouters } from '../lib/asus/detect'
@@ -44,8 +44,14 @@ function fail(reply: FastifyReply, e: any) {
 }
 
 /** One router as the page sees it. Below operator: its name and what it is; no address, user or pin. */
+/** The last reboot, as a role may see it: who did it is for operators and up. */
+function actionFor(id: string, viewer: boolean) {
+  const a = svc().lastAction(id)
+  return viewer ? viewerAction(a) : a
+}
+
 function view(m: AsusMeta & Partial<Pick<AsusView, 'url' | 'username' | 'hasPassword'>>, viewer: boolean) {
-  const out = { ...m, held: svc().blockedReason(m.id), phrase: confirmPhrase(m.name), lastAction: svc().lastAction(m.id) }
+  const out = { ...m, held: svc().blockedReason(m.id), phrase: confirmPhrase(m.name), lastAction: actionFor(m.id, viewer) }
   if (!viewer) return out
   const { url: _u, username: _n, fingerprint: _f, ...rest } = out
   return rest
@@ -73,6 +79,13 @@ export const asusRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post('/detect', async (req, reply) => {
     try { svc().limit(actor(req), 'setupsPerMinute', 'Too many searches; wait a moment.') } catch (e) { return fail(reply, e) }
     return { success: true, data: await findAsusRouters().catch(() => []) }
+  })
+
+  // The certificate an https router presents now, for a person to compare and pin (admin; address rules first).
+  fastify.post<{ Body: { url?: unknown } }>('/instances/probe-certificate', async (req, reply) => {
+    if (req.apiToken) return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'API tokens cannot read router certificates.' })
+    try { return { success: true, data: await svc().probeCertificate(req.body?.url, actor(req)) } }
+    catch (e) { return fail(reply, e) }
   })
 
   fastify.post<{ Body: Record<string, unknown> }>('/instances', async (req, reply) => {
@@ -108,11 +121,11 @@ export const asusRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get<P & { Querystring: { fresh?: string } }>('/instances/:iid/reading', async (req, reply) => {
     try {
       const r = await svc().reading(req.params.iid, { actor: actor(req), fresh: req.query.fresh === '1' })
-      return { success: true, data: { ok: true, reading: isViewer(req) ? viewerReading(r) : r, lastAction: svc().lastAction(req.params.iid) } }
+      return { success: true, data: { ok: true, reading: isViewer(req) ? viewerReading(r) : r, lastAction: actionFor(req.params.iid, isViewer(req)) } }
     } catch (e: any) {
       if (e instanceof AsusRefusal && (e.status === 404 || e.status === 429)) return fail(reply, e)
       const known = e instanceof AsusRefusal || e instanceof AsusUnreachableError || e instanceof AsusLoginError
-      return { success: true, data: { ok: false, held: e?.code === 'login_held' || e instanceof AsusLoginError, error: known ? e.message : 'The router could not be read.', lastAction: svc().lastAction(req.params.iid) } }
+      return { success: true, data: { ok: false, held: e?.code === 'login_held' || e instanceof AsusLoginError, error: known ? e.message : 'The router could not be read.', lastAction: actionFor(req.params.iid, isViewer(req)) } }
     }
   })
 

@@ -97,7 +97,9 @@ export async function allReadings(): Promise<ReadingRow[]> {
   const list = await svc.instances.list()
   return Promise.all(list.map(async m => {
     try { return { id: m.id, name: m.name, reading: viewerReading(await svc.reading(m.id)), error: null } }
-    catch (e: any) { return { id: m.id, name: m.name, reading: null, error: String(e?.message ?? 'Could not be read.').slice(0, 300) } }
+    // Generic words only: this feeds the gallery card and the AI page, whoever is reading them, and a router's own
+    // error text (or a refused address) is for the router's page, where the role decides what is shown.
+    catch (e: any) { return { id: m.id, name: m.name, reading: null, error: e?.code === 'login_held' ? 'waiting before it signs in again' : 'not reachable right now' } }
   }))
 }
 
