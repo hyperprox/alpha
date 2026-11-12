@@ -350,7 +350,7 @@ function productionClusterSources(c: ClusterRef, facts: TemplateFacts | null, pr
     }),
     siteMetricsSource({ metrics: siteMetrics, sites: siteLites, role }),
     // Read-only: the Plex Clear-out page's lists (cached for ten minutes, as the page reads them).
-    clearoutSource({ unlocked: isUnlocked, report: async () => (await clearoutService().report()).report }),
+    clearoutSource({ unlocked: isUnlocked, report: async () => clearoutService().report() }),
   ]
   // Home's own sources (cluster, DNS, proxy, certificates, backups, plug-ins) are read in home's context whatever
   // cluster this request is for: a certificate inventory built while a remote is open must still be home's.

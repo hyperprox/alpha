@@ -18,14 +18,15 @@ import { useSession } from '@/lib/session'
 import { GlowBars, Panel, Pill, Tiles, bytes, styles as s } from '@/components/visual/kit'
 import { Poster } from '@/components/plugins/visual/views'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
-import { BusyNote, CopyButton, Modal, Notice } from '@/components/vault/ui'
+import { BusyNote, CopyButton, Notice } from '@/components/vault/ui'
+import { RemovalModal, VIA_WORD, type ItemResult, type Plan, type Via } from './Removal'
 import c from './clearout.module.css'
 
 type Kind = 'movie' | 'show'
 interface Row {
   id: string; kind: Kind; title: string; year: number | null; section: string; sectionTitle: string
   sizeBytes: number | null; plays: number; viewers: number; lastPlayed: number | null; addedAt: number
-  list: 'never' | 'idle'; removable: boolean; art: string | null
+  list: 'never' | 'idle'; removable: boolean; via: Via; art: string | null
 }
 interface Totals { items: number; unwatched: number; unwatchedShare: number; never: number; idle: number; listBytes: number }
 interface Report {
@@ -39,9 +40,8 @@ interface Report {
   cutoffs: { neverMinMonths: number; idleMonths: number }
   notes: string[]
 }
-interface PreviewItem { id: string; title: string; year: number | null; service: 'sonarr' | 'radarr'; sizeBytes: number | null; path: string | null }
-interface Preview { id: string; items: PreviewItem[]; totalBytes: number; skipped: Array<{ id: string; reason: string }> }
-interface Result { id: string; title: string; service: string; removed: boolean; message: string; sizeBytes: number | null }
+type Preview = Plan
+type Result = ItemResult
 
 const PAGE = 60
 const day = (ms: number | null) => (ms ? new Date(ms).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : '—')
@@ -226,7 +226,7 @@ export function PlexClearOut({ live = true }: { live?: boolean }) {
                     <div className={c.head}>
                       <span className={c.title}>{r.title}{r.year ? <small> ({r.year})</small> : null}</span>
                       <Pill tone={r.list === 'never' ? 'warn' : 'violet'}>{r.list === 'never' ? 'never watched' : 'idle'}</Pill>
-                      {!r.removable && arrOn && <Pill title={`Not found in ${tab === 'show' ? 'Sonarr' : 'Radarr'}, so it can only be copied`}>not in {tab === 'show' ? 'Sonarr' : 'Radarr'}</Pill>}
+                      <Pill tone={r.via === 'plex' ? undefined : 'accent'} title={r.via === 'plex' ? 'Not managed by Sonarr or Radarr: Plex itself would remove it' : 'Managed by the Arr Stack: removed there, so it is not downloaded again'}>{VIA_WORD[r.via]}</Pill>
                       <span className={c.size}>{size(r.sizeBytes)}</span>
                     </div>
                     <div className={c.meter} aria-hidden><i style={{ width: `${Math.max(2, ((r.sizeBytes ?? 0) / biggest) * 100)}%` }} /></div>
@@ -253,51 +253,20 @@ export function PlexClearOut({ live = true }: { live?: boolean }) {
           <button className={c.btn} disabled={!rows.length} onClick={() => setTicked(new Set(rows.slice(0, shown).map(r => r.id)))}>Tick all shown</button>
           {ticked.size > 0 && <button className={c.btn} onClick={() => setTicked(new Set())}>Clear</button>}
           <CopyButton text={copyText} label={ticked.size ? 'Copy ticked list' : 'Copy list'} />
-          {arrOn && canRemove && (
+          {canRemove && (
             <button className={`${c.btn} ${c.btnPrimary}`} disabled={!removable.length || busy === 'preview'} onClick={() => void askPreview()}>
               {busy === 'preview' ? 'Checking…' : `Preview removal${removable.length ? ` (${removable.length})` : ''}`}
             </button>
           )}
         </div>
         {actionError && !preview && <div style={{ flexBasis: '100%' }}><Notice kind="error">{actionError}</Notice></div>}
-        {!arrOn && <span style={{ flexBasis: '100%' }}>Set up the Arr Stack plug-in to remove from here. Until then, copy the list.</span>}
-        {arrOn && !canRemove && <span style={{ flexBasis: '100%' }}>Removing needs the operator role.</span>}
+        {!arrOn && <span style={{ flexBasis: '100%' }}>Without Sonarr or Radarr, Plex itself removes what you tick. Connect them in the Arr Stack plug-in so removed things are not downloaded again.</span>}
+        {!canRemove && <span style={{ flexBasis: '100%' }}>Removing needs the operator role.</span>}
       </div>
 
       {preview && (
-        <Modal title={results ? 'Removal finished' : 'Remove for good?'} onClose={() => { setPreview(null); setResults(null); setActionError(null) }}>
-          {!results ? (
-            <div className="space-y-4">
-              <p className="text-sm" style={{ color: 'var(--text-soft)' }}>
-                These are deleted in {preview.items.some(i => i.service === 'sonarr') ? 'Sonarr' : 'Radarr'} <b>with their files</b>, and excluded from import lists so they are not downloaded again.
-                This cannot be undone. Plex drops them at its next library scan.
-              </p>
-              <ul className={c.plist} aria-label="What will be removed">
-                {preview.items.map(i => <li key={i.id}><b>{i.title}{i.year ? ` (${i.year})` : ''}</b><em>{size(i.sizeBytes)}</em></li>)}
-              </ul>
-              <p className="text-sm" style={{ color: 'var(--text-bright)' }}><b>{preview.items.length} {preview.items.length === 1 ? 'item' : 'items'} · about {bytes(preview.totalBytes)}</b></p>
-              {preview.skipped.length > 0 && <Notice kind="warn">{preview.skipped.length} ticked {preview.skipped.length === 1 ? 'item is' : 'items are'} left out: {preview.skipped.map(x => x.reason).slice(0, 3).join(' ')}</Notice>}
-              {actionError && <Notice kind="error">{actionError}</Notice>}
-              <div className="flex gap-2 justify-end">
-                <button className={c.btn} onClick={() => setPreview(null)}>Cancel</button>
-                <button className={`${c.btn} ${c.btnDanger}`} disabled={!preview.items.length || busy === 'remove'} onClick={() => void remove()}>
-                  {busy === 'remove' ? 'Removing…' : `Remove ${preview.items.length}`}
-                </button>
-              </div>
-              {busy === 'remove' && <BusyNote>Removing one at a time, and checking each one is gone.</BusyNote>}
-            </div>
-          ) : (
-            <div className="space-y-4">
-              <ul className={c.plist} aria-label="What happened">
-                {results.map(r => <li key={r.id}><b>{r.title}</b><em className={r.removed ? c.ok : c.bad}>{r.removed ? 'removed' : 'not removed'}</em></li>)}
-              </ul>
-              {results.filter(r => !r.removed).map(r => <Notice key={r.id} kind="warn">{r.title}: {r.message}</Notice>)}
-              <p className="text-sm" style={{ color: 'var(--text-soft)' }}>
-                {results.filter(r => r.removed).length} removed, about {bytes(results.filter(r => r.removed).reduce((a, r) => a + (r.sizeBytes ?? 0), 0))} freed.
-              </p>
-            </div>
-          )}
-        </Modal>
+        <RemovalModal plan={preview} results={results} busy={busy === 'remove'} error={actionError}
+          onRemove={() => void remove()} onClose={() => { setPreview(null); setResults(null); setActionError(null) }} />
       )}
       {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const fn = reconfirm; setReconfirm(null); fn() }} />}
     </>

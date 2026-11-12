@@ -144,8 +144,8 @@ test('buildReport: lists, kept counts, unwatched share, largest first', () => {
     plays: [play({ ratingKey: '4', title: 'Comet Kite', viewedAt: s(NOW - 10 * DAY) })],
   })
   assert.deepEqual(r.rows.map(x => x.title), ['Glass Orchard', 'Paper Moons'])
-  assert.equal(r.rows[1].removable, true)
-  assert.equal(r.rows[0].removable, false)
+  assert.equal(r.rows[1].via, 'radarr', 'managed by Radarr (by id)')
+  assert.equal(r.rows[0].via, 'plex', 'no Arr: removed through Plex itself')
   assert.deepEqual(r.kept, [{ rule: 'beforeYear', label: 'Released before the cut-off year', tv: 0, movies: 1 }])
   assert.equal(r.totals.movies.items, 4)
   assert.equal(r.totals.movies.unwatched, 3)
@@ -160,8 +160,16 @@ test('buildReport: lists, kept counts, unwatched share, largest first', () => {
 function fakes() {
   const movies = new Map<number, any>([[5, { id: 5, title: 'Paper Moons', year: 2015, tmdbId: 111, path: '/media/films/Paper Moons', sizeOnDisk: 2e9, genres: [] }]])
   const deletes: string[] = []
+  const plexDeletes: string[] = []
+  const gonePlex = new Set<string>()
+  const state = { allow: true, streaming: [] as any[] }
   const plex: CoreEndpointClient = {
     async get(p) {
+      if (p === '/status/sessions') return { MediaContainer: { Metadata: state.streaming } }
+      if (p === '/:/prefs') return { MediaContainer: { Setting: [{ id: 'allowMediaDeletion', value: state.allow }] } }
+      if (p === '/accounts') return { MediaContainer: { Account: [{ id: 1, name: 'alex' }] } }
+      const md = /^\/library\/metadata\/(\d+)$/.exec(p)
+      if (md) { if (gonePlex.has(md[1])) throw new Error('Plex returned HTTP 404'); return { MediaContainer: { Metadata: [{ ratingKey: md[1], Media: [] }] } } }
       if (p.startsWith('/library/sections/1/all')) return { MediaContainer: { totalSize: 2, Metadata: [
         { ratingKey: '1', title: 'Paper Moons', year: 2015, addedAt: s(NOW - 400 * DAY), Guid: [{ id: 'tmdb://111' }], Media: [{ Part: [{ size: 1 }] }] },
         { ratingKey: '2', title: 'Glass Orchard', year: 2016, addedAt: s(NOW - 400 * DAY), Media: [{ Part: [{ size: 3e9 }] }] },
@@ -170,8 +178,10 @@ function fakes() {
       if (p.startsWith('/status/sessions/history/all')) return { MediaContainer: { totalSize: 0, Metadata: [] } }
       throw new Error(`unexpected ${p}`)
     },
-    async delete() { throw new Error('Plex is never asked to delete') },
+    async delete(p) { plexDeletes.push(p); const m = /^\/library\/metadata\/(\d+)$/.exec(p); if (m) gonePlex.add(m[1]); return null },
     async image() { throw new Error('no art in this fake') },
+    async put() { throw new Error('Plex takes no edits here') },
+    async trigger(p) { plexDeletes.push(`scan ${p}`) },
   }
   const radarr: CoreEndpointClient = {
     async get(p) {
@@ -182,8 +192,10 @@ function fakes() {
     },
     async delete(p) { deletes.push(p); const m = /^\/api\/v3\/movie\/(\d+)\?/.exec(p); if (m) movies.delete(Number(m[1])); return null },
     async image() { throw new Error('Radarr serves no art here') },
+    async put() { throw new Error('no edits') },
+    async trigger() {},
   }
-  return { plex, radarr, deletes, movies }
+  return { plex, radarr, deletes, movies, plexDeletes, state }
 }
 
 const broker = new FakeBroker()
@@ -205,6 +217,7 @@ before(async () => {
   svc = new ClearoutService({
     plex: async () => f.plex, sonarr: async () => null, radarr: async () => f.radarr,
     option: async k => (k === 'keep_added_days' ? 'none' : undefined), now: () => NOW,
+    audit: async (action, details) => { audits.push({ action, details }) },
   })
   app = Fastify({ logger: false })
   await registerGate(app)
@@ -229,7 +242,7 @@ test('a viewer sees the lists but cannot preview or remove', async () => {
   const { cookie } = await signIn(app, 'viewer@example.com', 'viewer master password')
   const list = await app.inject({ method: 'GET', url: BASE, headers: { cookie } })
   assert.equal(list.statusCode, 200, list.body)
-  assert.deepEqual(list.json().data.rows.map((r: any) => [r.title, r.removable, r.sizeBytes]), [['Glass Orchard', false, 3e9], ['Paper Moons', true, 2e9]])
+  assert.deepEqual(list.json().data.rows.map((r: any) => [r.title, r.via, r.sizeBytes]), [['Glass Orchard', 'plex', 3e9], ['Paper Moons', 'radarr', 2e9]])
   for (const u of [`${BASE}/preview`, `${BASE}/remove`]) {
     const r = await app.inject({ method: 'POST', url: u, headers: { cookie }, payload: { ids: ['movie:1'], previewId: 'x' } })
     assert.equal(r.statusCode, 403, u)
@@ -253,9 +266,10 @@ test('operator: preview, then remove only after the master password, through Rad
   const pv = await app.inject({ method: 'POST', url: `${BASE}/preview`, headers: { cookie }, payload: { ids: ['movie:1', 'movie:2', 'movie:404'] } })
   assert.equal(pv.statusCode, 200, pv.body)
   const p = pv.json().data
-  assert.deepEqual(p.items.map((x: any) => [x.title, x.service, x.sizeBytes]), [['Paper Moons', 'radarr', 2e9]])
-  assert.equal(p.totalBytes, 2e9)
-  assert.equal(p.skipped.length, 2, 'not in Radarr, and not on the list')
+  assert.deepEqual(p.items.map((x: any) => [x.title, x.via, x.sizeBytes]), [['Paper Moons (2015)', 'radarr', 2e9], ['Glass Orchard (2016)', 'plex', 3e9]])
+  assert.match(p.items[1].note, /Removed from disk by Plex/)
+  assert.equal(p.totalBytes, 5e9)
+  assert.equal(p.skipped.length, 1, 'not on the list')
 
   const noConfirm = await app.inject({ method: 'POST', url: `${BASE}/remove`, headers: { cookie }, payload: { previewId: p.id } })
   assert.equal(noConfirm.statusCode, 403)
@@ -267,11 +281,16 @@ test('operator: preview, then remove only after the master password, through Rad
   const done = await app.inject({ method: 'POST', url: `${BASE}/remove`, headers: { cookie }, payload: { previewId: p.id } })
   assert.equal(done.statusCode, 200, done.body)
   assert.deepEqual(f.deletes, ['/api/v3/movie/5?deleteFiles=true&addImportExclusion=true'])
+  assert.equal(f.plexDeletes[0], '/library/metadata/2', 'the one Radarr does not manage goes through Plex')
+  assert.ok(f.plexDeletes.some(x => x.startsWith('scan /library/sections/1/refresh')), 'and Plex is asked to rescan')
   const res = done.json().data.results
-  assert.equal(res.length, 1)
+  assert.equal(res.length, 2)
   assert.equal(res[0].removed, true, 'Radarr no longer has it')
+  assert.equal(res[1].removed, true, 'Plex no longer has it (read back: 404)')
   const a = audits.find(x => x.action === 'plex.clearout.remove')!
-  assert.equal(a.details?.removed, 1)
+  assert.equal(a.details?.removed, 2)
+  assert.deepEqual(audits.filter(x => x.action.startsWith('plex.media.remove')).map(x => x.action),
+    ['plex.media.remove.start', 'plex.media.remove.result', 'plex.media.remove.start', 'plex.media.remove.result'], 'each item, before and after')
   assert.equal(a.details?.by, 'op@example.com')
 
   const again = await app.inject({ method: 'POST', url: `${BASE}/remove`, headers: { cookie }, payload: { previewId: p.id } })
@@ -328,6 +347,7 @@ test('art route: signed in only, fixed upstream paths, image type and cache head
   let answer: 'ok' | 'html' | 'fail' = 'ok'
   const plexArt: CoreEndpointClient = {
     async get() { throw new Error('not used') }, async delete() { throw new Error('not used') },
+    async put() { throw new Error('not used') }, async trigger() {},
     async image(p) {
       asked.push(p)
       if (answer === 'fail') throw new Error('Plex returned HTTP 404')
@@ -443,10 +463,11 @@ test('title matches never guess: two Arr entries with one title and year match n
       throw new Error('HTTP 404')
     },
     async delete() { throw new Error('no') }, async image() { throw new Error('no') },
+    async put() { throw new Error('no') }, async trigger() {},
   }
   const s2 = new ClearoutService({ plex: async () => fakes().plex, sonarr: async () => null, radarr: async () => twins, option: async () => 'none', now: () => NOW })
   const { report } = await s2.report()
-  assert.equal(report.rows.find(r => r.title === 'Glass Orchard')?.removable, false)
+  assert.equal(report.rows.find(r => r.title === 'Glass Orchard')?.via, 'plex', 'an ambiguous title is never Radarr’s to delete')
 })
 
 test('an Arr entry shared with a Plex item that is watched or kept is refused; each delete is audited before and after', async () => {
@@ -473,7 +494,7 @@ test('an Arr entry shared with a Plex item that is watched or kept is refused; e
     audit: async (a, d) => { log.push([a, d]) } })
   const ok = await s4.preview(['movie:1'], 'sid')
   await s4.remove(ok.id, 'sid', 'op@example.com')
-  assert.deepEqual(log.map(x => x[0]), ['plex.clearout.remove.start', 'plex.clearout.remove.result'])
+  assert.deepEqual(log.map(x => x[0]), ['plex.media.remove.start', 'plex.media.remove.result'])
   assert.equal(log[1][1].removed, true)
   assert.equal(log[0][1].by, 'op@example.com')
 })

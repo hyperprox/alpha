@@ -13,17 +13,24 @@
 //    GET  /art/:id/:kind/:v  viewer: one Plex poster, fetched server-side with the vault token (lib/plex-art.ts);
 //                            at most 4 MB, cached (150 MB at most), 120 cache misses a minute per person
 //
+//    GET  /library           viewer: every movie and show, with posters, sizes, plays and which way each would go
+//    GET  /library/show/:key viewer: one show's seasons and episodes, with plays, quality and who it is next up for
+//    POST /library/preview   operator: a show, season, episodes (or one version) or a movie; changes nothing
+//    POST /library/remove    operator with the master password re-entered, like /clearout/remove
+//
+//  Removal (both) goes through the Arr that manages an item, matched by tvdb or tmdb id, or else through Plex
+//  itself (lib/plex-remove/engine.ts). Each item is audited before and after, and read back.
+//
 //  It also starts the "tell me when something new is added" watcher (lib/plex-new.ts), which does nothing unless
 //  the plug-in's notify_new setting is on.
 //
-//  Removal goes only through Sonarr or Radarr (the Arr Stack plug-in's connection), with deleteFiles and an
-//  import-list exclusion. Every removal writes an audit entry: who, how many, how big, and the titles.
 // =============================================================================
 
 import type { FastifyPluginAsync, FastifyReply } from 'fastify'
 import { auditCredentialUse } from '../lib/audit'
 import { hasRole } from '../lib/roles'
 import { ClearoutRefusal, ClearoutService, type ClearoutDeps } from '../lib/plex-clearout/service'
+import { LibraryService } from '../lib/plex-library/service'
 import { getSettings, pluginEndpointClient, pluginOptions, type CoreEndpointClient } from '../lib/plugin-host'
 import { liveFromPlex, plexLiveVisual } from '../plugins/plex'
 import { ArtCache, MissLimiter, artKey, artUpstream } from '../lib/plex-art'
@@ -51,10 +58,13 @@ export function clearoutService(): ClearoutService {
       return pluginOptions(p.manifest, await getSettings('plex'))[key]
     },
     now: () => Date.now(),
-    audit: (action, details) => auditCredentialUse(action, 'plugin:arrstack', details),
+    audit: (action, details) => auditCredentialUse(action, 'plugin:plex', details),
   }
   return (shared = new ClearoutService(deps))
 }
+
+let sharedLibrary: LibraryService | null = null
+export const libraryService = (): LibraryService => (sharedLibrary ??= new LibraryService(clearoutService()))
 
 function fail(reply: FastifyReply, e: any) {
   if (e instanceof ClearoutRefusal) return reply.status(e.status).send({ success: false, code: e.code, error: e.message })
@@ -102,13 +112,14 @@ export function newWatcherDeps(o: {
 }
 
 export function buildPlexClearoutRoutes(deps: {
-  service?: () => ClearoutService; plex?: () => Promise<CoreEndpointClient | null>; cache?: ArtCache; live?: () => Promise<any>
+  service?: () => ClearoutService; library?: () => LibraryService; plex?: () => Promise<CoreEndpointClient | null>; cache?: ArtCache; live?: () => Promise<any>
   limiter?: MissLimiter
   liveTtlMs?: number
   /** The new-items watcher. Production starts the real one; tests pass their own, or nothing (no watcher). */
   watcher?: { start(d: NewWatcherDeps): () => void; deps: NewWatcherDeps }
 } = {}): FastifyPluginAsync {
   const svc = deps.service ?? clearoutService
+  const lib = deps.library ?? (deps.service ? (() => { let l: LibraryService | null = null; return () => (l ??= new LibraryService(deps.service!())) })() : libraryService)
   const live = deps.live ?? readLive
   const plex = deps.plex ?? plexServer
   const cache = deps.cache ?? new ArtCache()
@@ -192,19 +203,41 @@ export function buildPlexClearoutRoutes(deps: {
       if (!hasRole(req.session?.role ?? 'viewer', 'operator')) return reply.status(403).send({ success: false, code: 'forbidden', error: 'This needs the operator role.' })
       try {
         const out = await svc().remove(req.body?.previewId, req.session!.sid, req.session!.email)
-        const removed = out.results.filter(r => r.removed)
-        await auditCredentialUse('plex.clearout.remove', 'plugin:arrstack', {
-          by: req.session!.email,
-          asked: out.preview.items.length,
-          removed: removed.length,
-          failed: out.results.length - removed.length,
-          bytes: removed.reduce((a, r) => a + (r.sizeBytes ?? 0), 0),
-          titles: out.results.map(r => `${r.removed ? 'removed' : 'kept'}: ${r.title} (${r.service})`),
-        })
+        await summary('plex.clearout.remove', req.session!.email, out)
+        return { success: true, data: out }
+      } catch (e) { return fail(reply, e) }
+    })
+
+    fastify.get('/library', async (_req, reply) => {
+      try { return { success: true, data: await lib().list() } } catch (e) { return fail(reply, e) }
+    })
+    fastify.get<{ Params: { key: string } }>('/library/show/:key', async (req, reply) => {
+      try { return { success: true, data: await lib().show(req.params.key) } } catch (e) { return fail(reply, e) }
+    })
+    fastify.post<{ Body: Record<string, unknown> }>('/library/preview', async (req, reply) => {
+      if (!hasRole(req.session?.role ?? 'viewer', 'operator')) return reply.status(403).send({ success: false, code: 'forbidden', error: 'This needs the operator role.' })
+      try { return { success: true, data: await lib().preview(req.body ?? {}, req.session!.sid) } } catch (e) { return fail(reply, e) }
+    })
+    fastify.post<{ Body: { previewId?: unknown } }>('/library/remove', async (req, reply) => {
+      if (req.apiToken) return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'An API token cannot remove media.' })
+      if (!hasRole(req.session?.role ?? 'viewer', 'operator')) return reply.status(403).send({ success: false, code: 'forbidden', error: 'This needs the operator role.' })
+      try {
+        const out = await lib().remove(req.body?.previewId, req.session!.sid, req.session!.email)
+        await summary('plex.library.remove', req.session!.email, out)
         return { success: true, data: out }
       } catch (e) { return fail(reply, e) }
     })
   }
+}
+
+/** One summary row per removal, besides the per-item rows the engine writes before and after each delete. */
+async function summary(action: string, by: string, out: { preview: { items: unknown[] }; results: Array<{ removed: boolean; title: string; via: string; sizeBytes: number }> }) {
+  const removed = out.results.filter(r => r.removed)
+  await auditCredentialUse(action, 'plugin:plex', {
+    by, asked: out.preview.items.length, removed: removed.length, failed: out.results.length - removed.length,
+    bytes: removed.reduce((a, r) => a + (r.sizeBytes ?? 0), 0),
+    titles: out.results.map(r => `${r.removed ? 'removed' : 'kept'}: ${r.title} (${r.via})`),
+  })
 }
 
 export const plexClearoutRoutes = buildPlexClearoutRoutes()

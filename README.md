@@ -789,9 +789,10 @@ more than one, gets a question back listing your clusters.
   are not collected; the source plugs into the site-metrics module when it is added.
 - **Plug-in pages**: for Plex, the Arr Stack, Unmanic, MikroTik and MeshCentral, the figures their pages
   show (now playing, the download pipeline, encoding workers, the router's traffic), in words.
-- **Plex Clear-out**: what nobody watches, read only. How far back Plex's history goes, how much of each
-  library has never been played, what the never-watched and idle lists add up to, the largest items on
-  them, and what the keep rules held back. It cannot remove anything.
+- **Plex Clear-out and Library**: read only. How far back Plex's history goes, how much of each library has
+  never been played, what the never-watched and idle lists add up to and their largest items, what the keep
+  rules held back, how big the library is and how much of it Sonarr and Radarr manage. It cannot remove
+  anything.
 
 Using the assistant needs the admin role, and its sources also follow each page's own viewer rules (no
 serial numbers or security device states for a viewer, and notification channels, websites and
@@ -1059,7 +1060,7 @@ otherwise every file is put back. Nothing in a site is ever changed without this
 | Arr Stack | Sonarr, Radarr, Prowlarr and qBittorrent as one pipeline (search, grabbed, downloading, import, library) with live counts; imports that need a person as alert cards; download progress; indexer status dots and health warnings |
 | Unmanic | One ring per worker with its slots, a caught-up (or stalled) banner, and what is encoding now with its progress |
 | MikroTik | A live map of internet, uplinks, router and subnets; CPU, memory, temperature and input-voltage rings; top talkers; port forwards; the log with errors highlighted. Also the per-device and per-interface tables, firewall, WireGuard and neighbours; feeds the bandwidth dials and offers an SSH console |
-| Plex activity | Read from Plex itself: what is streaming now with each title's cover (progress, direct play, direct stream or transcode), local and remote bandwidth gauges, who watches most, what is watched most, recent history and your libraries. Tautulli is optional and adds hours watched. Plus **Clear-out** (what nobody watches) and an optional message when something new is added (see below) |
+| Plex activity | Read from Plex itself: what is streaming now with each title's cover (progress, direct play, direct stream or transcode), local and remote bandwidth gauges, who watches most, what is watched most, recent history and your libraries. Tautulli is optional and adds hours watched. Plus **Clear-out** (what nobody watches), **Library** (remove shows, seasons, episodes or films) and an optional message when something new is added (see below) |
 | Home Assistant | Your house as tiles by room, with quick actions, a light dial and a climate dial; plus unavailable entities, low batteries, pending updates and log errors, for each of your Home Assistant instances (see below) |
 | QNAP | Each NAS's drive bays with SMART health and temperature, volume rings, shares, temperature and load gauges, fans and firmware, with a quick SMART test, and restart and shut down behind the confirm step, for each of your NAS, a remote one included (see below) |
 | MeshCentral | Finds npm installs in guests and adds them to Updates. Its page says what it would need to show your devices; it holds no MeshCentral login, so it shows none |
@@ -1114,13 +1115,41 @@ has its old plays. A show counts every episode's plays.
   plug-in's settings. Leave a setting blank for the default, or write "none" to turn that rule off.
 - In a library that is mostly films, most films are watched once. So the Movies tab says what share of
   your films has never been played, and lists the largest files first.
-- **Removing** is done only through Sonarr or Radarr. HyperProx never deletes a file itself. The show or
-  film is deleted there with its files, and added to the import-list exclusions so it is not downloaded
-  again. You see a preview first, with exactly what will go and how big it is. Then you need the
-  operator role or higher, and your master password again. API tokens can never remove anything.
-  Afterwards HyperProx asks Sonarr or Radarr again, and reports something as removed only once it is
-  really gone. Every removal is written to the audit log. Without the Arr Stack plug-in there is no
-  remove button, only **Copy list**.
+- **Removing** works the same way here and in the Library (below).
+
+**Plex Library** lists every show and film with its cover, size, plays and when it was last played,
+with search, a library filter, and sorting by size, date added or last played. Open a show to see its
+seasons and episodes. Each episode shows its size, quality, plays, when it was last played, whether it
+has been watched, and whether it is partly watched. You can remove a whole show, one season, the
+episodes you tick, or a film. Quick picks tick a season's watched episodes, or everything before the
+next unwatched one.
+
+How removing works, in the Library and in Clear-out:
+
+- **Which way.** If Sonarr or Radarr manages the item (matched by its tvdb or tmdb id, never by its
+  title), the removal goes through them. That way it is not downloaded again:
+  - a show or film is deleted with its files and added to the import-list exclusions;
+  - episodes or a season have their files deleted, and those episodes (and the season) are set to
+    unmonitored. In the preview you can tick **Keep monitored so a better copy downloads** instead,
+    which is handy for replacing a bad file.
+
+  Anything else is removed by Plex itself. The preview then says: "Removed from disk by Plex. If
+  something else downloads your media, it may come back." Plex only allows this with **Allow media
+  deletion** on (Plex: Settings → Server → Library). If it is off, the page says so and how to turn it
+  on. HyperProx does not change that setting. When an episode or film has more than one version, you can
+  remove just one of them, through Plex.
+- **The preview** comes first, and lists each item, which way it goes, exactly which files go, and the
+  total size. It warns when an episode is someone's next one (they watched the episode before it in the
+  last 14 days and not this one) or is partly watched. A **kept by rule** badge shows when a keep rule
+  would normally keep it; keep rules do not stop a removal you choose yourself.
+- **Never while someone is watching.** Anything being played right now is left alone, checked again at
+  the moment of removing.
+- **Guards.** Removing needs the operator role or higher and your master password again. A preview
+  can be used once, only by the person who made it, within 10 minutes. API tokens can never remove
+  anything.
+- **Afterwards** HyperProx reads each item back and reports it as removed only once it is really gone.
+  It then asks Plex to rescan just that folder, so it leaves Plex straight away. Every item is written to
+  the audit log before and after it is removed.
 
 The Plex page updates itself. What is streaming and the bandwidth gauges refresh about every 5 seconds,
 and the rest of the page, Clear-out included, about every minute, or straight away when someone starts
@@ -1328,7 +1357,7 @@ not protected, are in [docs/security.md](docs/security.md).
   minutes). So do, for remote clusters: adding or removing one, replacing its token, confirming or verifying its
   certificate, verifying its node keys, saving or removing a node login, deleting a guest, installing or removing monitoring,
   changing a server's address, node addresses, copy folders or "never look inside" list, setting up a sending key (including
-  the first-time setup of Send files), and saving a Plex address or token. Removing media with Plex Clear-out asks for it too. The AI assistant asks for it in exactly the same cases.
+  the first-time setup of Send files), and saving a Plex address or token. Removing media with Plex Clear-out or Library asks for it too. The AI assistant asks for it in exactly the same cases.
 - **Remote clusters.** Each remote's API token, node logins, sending keys and Plex token live only in
   the vault, one item per cluster (`hyperprox:proxmox/<id>` and so on): never in `.env`, the database,
   logs, audit entries or API answers. Its API is reached only over a connection that accepts the one

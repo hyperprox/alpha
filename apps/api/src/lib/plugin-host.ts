@@ -581,8 +581,16 @@ class Requester {
     return { contentType, body: await res.buffer() }
   }
 
+  /** A GET whose answer is not read (Plex's partial library scan answers with an empty body). */
+  async trigger(path: string, timeoutMs?: number): Promise<void> {
+    if (this.manifest.coreTransport) throw new Error(`${this.manifest.name} takes no triggers.`)
+    const { url, headers } = this.prepare(path, false)
+    const res = await fetchWithTimeout(url.toString(), headers, this.endpoint.insecureTLS, 'GET', undefined, timeoutMs)
+    if (!res.ok) throw new Error(`${this.manifest.name} returned HTTP ${res.status}`)
+  }
+
   async request(
-    method: 'GET' | 'POST' | 'DELETE',
+    method: 'GET' | 'POST' | 'DELETE' | 'PUT',
     path: string,
     body?: Record<string, unknown>,
     timeoutMs?: number,
@@ -590,7 +598,7 @@ class Requester {
     if (this.manifest.coreTransport) {
       const t = transports.get(this.manifest.id)
       if (!t) throw new Error(`${this.manifest.name} is not connected yet.`)
-      if (method === 'DELETE') throw new Error(`${this.manifest.name} takes no deletes.`)
+      if (method === 'DELETE' || method === 'PUT') throw new Error(`${this.manifest.name} takes no ${method === 'PUT' ? 'edits' : 'deletes'}.`)
       return t(method, path, timeoutMs)
     }
     const { url, headers } = this.prepare(path, !!body)
@@ -601,8 +609,8 @@ class Requester {
     if (!res.ok) throw new Error(`${this.manifest.name} returned HTTP ${res.status}`)
 
     const text = await res.text()
-    // Sonarr and Radarr answer a delete with 200 and no body.
-    if (method === 'DELETE' && !text.trim()) return null
+    // Sonarr, Radarr and Plex answer a delete (and some edits) with 200 or 202 and no body.
+    if ((method === 'DELETE' || method === 'PUT') && !text.trim()) return null
     try { return JSON.parse(text) }
     catch { throw new Error(`${this.manifest.name} did not return JSON`) }
   }
@@ -668,7 +676,7 @@ export function fetchWithTimeout(
   url: string,
   headers: Record<string, string>,
   insecure?: boolean,
-  method: 'GET' | 'POST' | 'DELETE' = 'GET',
+  method: 'GET' | 'POST' | 'DELETE' | 'PUT' = 'GET',
   body?: Record<string, unknown>,
   // Eight seconds is right for a tile and far too short for a search that fans
   // out to a dozen indexers, several of them behind FlareSolverr.
@@ -776,6 +784,10 @@ export interface CoreEndpointClient {
   delete(path: string, timeoutMs?: number): Promise<any>
   /** An image's bytes and type (Plex cover art); refuses anything that is not an image. */
   image(path: string, timeoutMs?: number): Promise<{ contentType: string; body: Buffer }>
+  /** A JSON PUT (Sonarr: unmonitor episodes, edit a series). */
+  put(path: string, body: unknown, timeoutMs?: number): Promise<any>
+  /** A GET whose answer is not read (Plex: scan one folder). */
+  trigger(path: string, timeoutMs?: number): Promise<void>
 }
 
 /**
@@ -793,6 +805,8 @@ export async function pluginEndpointClient(plugin: Plugin, endpointKey = 'defaul
     get:    (path, timeoutMs) => r.request('GET', path, undefined, timeoutMs),
     delete: (path, timeoutMs) => r.request('DELETE', path, undefined, timeoutMs),
     image:  (path, timeoutMs) => r.image(path, timeoutMs),
+    put:    (path, body, timeoutMs) => r.request('PUT', path, body as Record<string, unknown>, timeoutMs),
+    trigger: (path, timeoutMs) => r.trigger(path, timeoutMs),
   }
 }
 

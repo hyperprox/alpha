@@ -29,6 +29,9 @@ export interface PlayRow {
   /** Unix seconds, as Plex sends it. */
   viewedAt:          number
   accountID:         number
+  /** An episode's season and episode numbers (Plex's parentIndex and index). */
+  season?:           number | null
+  episode?:          number | null
 }
 
 export interface ArrRef { service: 'sonarr' | 'radarr'; id: number }
@@ -274,8 +277,10 @@ export interface ClearoutRow {
   lastPlayed:   number | null
   addedAt:      number
   list:         ClearoutList
-  /** Matched to a Sonarr series or Radarr movie, so it can be removed there. */
+  /** Always true: an item goes through the Arr that manages it, or through Plex (`via`). */
   removable:    boolean
+  /** Which way it would be removed: the Arr that manages it (matched by id), or Plex itself. */
+  via:          'sonarr' | 'radarr' | 'plex'
   /** The poster through HyperProx's image route, or null for the title card. */
   art:          string | null
 }
@@ -337,7 +342,7 @@ export function buildReport(input: {
       id: `${item.kind}:${item.ratingKey}`, kind: item.kind, title: item.title, year: item.year,
       section: item.section, sectionTitle: item.sectionTitle, sizeBytes: item.sizeBytes,
       plays: stat.plays, viewers: stat.viewers, lastPlayed: stat.lastPlayed, addedAt: item.addedAt,
-      list, removable: !!item.arr, art: artRef(item.thumb),
+      list, removable: true, via: item.arr?.service ?? 'plex', art: artRef(item.thumb),
     })
   }
   for (const t of [totals.tv, totals.movies]) t.unwatchedShare = t.items ? Math.round((t.unwatched / t.items) * 1000) / 10 : 0

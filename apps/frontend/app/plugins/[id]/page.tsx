@@ -16,6 +16,7 @@ import { QnapPage } from '@/components/plugins/qnap/QnapPage'
 import { HudHeader, styles as vs, type StatChip } from '@/components/visual/kit'
 import { DetailsSection, PLUGIN_ICON, PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
 import { PlexClearOut } from '@/components/plugins/plex/ClearOut'
+import { PlexLibrary } from '@/components/plugins/plex/Library'
 import { ArrView, MeshView, PlexView, RouterView, UnmanicView, arrChips, plexChips, routerChips, unmanicChips, type Stuck } from '@/components/plugins/visual/views'
 
 interface Column { key: string; label: string; align?: 'left' | 'right' }
@@ -249,6 +250,11 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
   // nothing flickers and the posters stay put. A change in who is watching what also re-reads the whole page.
   // Paused while the tab is hidden, and read at once when it is shown again.
   const isPlex = params.id === 'plex'
+  const [plexTab, setPlexTabRaw] = useState<'now' | 'clearout' | 'library'>('now')
+  useEffect(() => {
+    try { const t = window.localStorage.getItem('hp.plex.tab'); if (t === 'now' || t === 'clearout' || t === 'library') setPlexTabRaw(t) } catch { /* no storage */ }
+  }, [])
+  const setPlexTab = (t: 'now' | 'clearout' | 'library') => { setPlexTabRaw(t); try { window.localStorage.setItem('hp.plex.tab', t) } catch { /* no storage */ } }
   const [liveAt, setLiveAt] = useState<number | null>(null)
   const sessionKeys = useRef<string | null>(null)
   useEffect(() => {
@@ -398,9 +404,22 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
 
         {detail?.ok && (
           <>
-            {v?.kind === 'plex' && <PlexView v={v} />}
-            {/* What nobody watches. Read on its own (Plex itself, not Tautulli), so it never slows the live view. */}
-            {params.id === 'plex' && <PlexClearOut live={live} />}
+            {isPlex && (
+              <div role="tablist" aria-label="Plex views" className="flex flex-wrap gap-2">
+                {([['now', 'Now playing'], ['clearout', 'Clear-out'], ['library', 'Library']] as const).map(([k, label]) => (
+                  <button key={k} role="tab" aria-selected={plexTab === k} onClick={() => setPlexTab(k)}
+                    className="h-10 rounded-md border px-4 font-display text-sm font-semibold uppercase tracking-[0.1em]"
+                    style={{ borderColor: plexTab === k ? 'color-mix(in srgb, var(--accent) 45%, transparent)' : 'var(--border-strong)',
+                      color: plexTab === k ? 'var(--accent)' : 'var(--text)', background: plexTab === k ? 'color-mix(in srgb, var(--accent) 10%, transparent)' : 'transparent' }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+            {v?.kind === 'plex' && (!isPlex || plexTab === 'now') && <PlexView v={v} />}
+            {/* What nobody watches, and the whole library. Read on their own (Plex itself), so they never slow the live view. */}
+            {isPlex && plexTab === 'clearout' && <PlexClearOut live={live} />}
+            {isPlex && plexTab === 'library' && <PlexLibrary />}
             {v?.kind === 'arrstack' && <ArrView v={v} stuck={stuck} rescuing={rescuing} onRescue={rescue} rescueNote={rescueNote} />}
             {v?.kind === 'unmanic' && <UnmanicView v={v} />}
             {v?.kind === 'mikrotik' && <RouterView v={v} />}

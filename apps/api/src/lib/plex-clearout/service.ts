@@ -1,24 +1,31 @@
 // =============================================================================
-//  HyperProx — Plex clear-out: reading Plex and the Arr Stack, and removing
+//  HyperProx — Plex clear-out and Library: reading Plex and the Arr Stack
 //
 //  Reads: Plex's own play history for every account, every movie and show with
-//  its addedAt, and (when the Arr Stack plug-in is set up) Sonarr's series and
-//  Radarr's movies for size on disk, genres, year, path and anime.
+//  its addedAt, files and folder, and (when the Arr Stack plug-in is set up)
+//  Sonarr's series and Radarr's movies for size on disk, genres, year, path and
+//  anime.
 //
-//  Removal goes ONLY through Sonarr or Radarr: delete the series or movie with
-//  its files, and add an import-list exclusion so it does not come straight
-//  back. HyperProx never deletes a file itself. A removal must first be
-//  previewed (exactly what goes and how big it is); the preview is held here,
-//  bound to the person who made it, for ten minutes. After each delete the item
-//  is read again from the Arr, and only an item the Arr no longer has counts as
-//  removed.
+//  Removal (lib/plex-remove/engine.ts) goes through the Arr that manages an item,
+//  matched by tvdb or tmdb id and never by title, or otherwise through Plex
+//  itself. HyperProx never deletes a file itself. A removal is previewed first
+//  (exactly which files go, which way, and how big), held single use for the
+//  person who made it for ten minutes, and every item is read back afterwards.
 // =============================================================================
 
 import type { CoreEndpointClient } from '../plugin-host'
 import {
-  buildReport, normTitle, parseRules,
-  type ClearoutReport, type ClearoutRow, type LibItem, type MediaKind, type PlayRow,
+  RULE_LABEL, buildReport, indexPlays, keptBy as keptByRule, normTitle, parseRules, playsFor,
+  type ClearoutReport, type KeepRuleId, type LibItem, type MediaKind, type PlayRow,
 } from './logic'
+import { artRef } from '../plex-art'
+import { accountNames } from '../plex-direct'
+import {
+  RemoveRefusal as ClearoutRefusal,
+  PLEX_DELETION_OFF, PLEX_NOTE, PreviewStore, STREAMING, executePlan, plexAllowsDeletion, streamingKeys,
+  type ItemResult, type Plan, type PlanItem,
+} from '../plex-remove/engine'
+export { ClearoutRefusal }
 
 export interface ClearoutDeps {
   /** The Plex server endpoint of the Plex plug-in, or null when its address and token are not set. */
@@ -33,9 +40,6 @@ export interface ClearoutDeps {
   audit?(action: string, details: Record<string, unknown>): Promise<void>
 }
 
-export class ClearoutRefusal extends Error {
-  constructor(message: string, readonly status = 400, readonly code = 'refused') { super(message); this.name = 'ClearoutRefusal' }
-}
 
 const PAGE = 1000
 const SLOW = 60_000
@@ -85,6 +89,11 @@ function arrIndex(list: any[], service: 'sonarr' | 'radarr') {
   }
   return {
     service,
+    /** By tvdb, tmdb or imdb id only: the match removal trusts. */
+    byId(guids: string[]): any | null {
+      for (const g of guids) { const hit = by.get(g); if (hit) return hit }
+      return null
+    },
     find(guids: string[], title: string, year: number | null): any | null {
       for (const g of guids) { const hit = by.get(g); if (hit) return hit }
       const t = normTitle(title)
@@ -102,17 +111,42 @@ function arrIndex(list: any[], service: 'sonarr' | 'radarr') {
   }
 }
 
+/** What the Library and Clear-out need about one Plex item beyond its row. Server-side only. */
+export interface ItemMeta {
+  item:    LibItem
+  /** The Arr entry that manages it, matched by id (never by title); null: Plex removes it. */
+  managed: { service: 'sonarr' | 'radarr'; arrId: number; path: string | null } | null
+  /** Plex's own folder for it (a show's folder, a film's folder) and its files with sizes. */
+  folder:  string | null
+  files:   Array<{ path: string; sizeBytes: number | null }>
+  keptBy:  KeepRuleId | null
+  tvdbId:  number | null
+}
+
+export interface LibraryRow {
+  id: string; kind: MediaKind; ratingKey: string; title: string; year: number | null; section: string; sectionTitle: string
+  sizeBytes: number | null; plays: number; viewers: number; lastPlayed: number | null; addedAt: number; art: string | null
+  via: 'sonarr' | 'radarr' | 'plex'; keptBy: string | null
+}
+
 export interface Gathered {
-  report: ClearoutReport
-  /** Row id → what removing it means. Server-side only. */
-  targets: Map<string, { row: ClearoutRow; service: 'sonarr' | 'radarr'; arrId: number; path: string | null }>
+  report:  ClearoutReport
+  /** Every movie and show, for the Library view. */
+  library: LibraryRow[]
+  meta:    Map<string, ItemMeta>
+  /** Plex's play history (every account), for per-episode plays and the next-up warning. */
+  plays:   PlayRow[]
+  /** Account id → name. */
+  names:   Map<number, string>
   /** `${service}:${id}` of Arr entries that some Plex item NOT on the lists (watched, or kept by a rule) also maps to. */
   protectedArr: Set<string>
 }
 
+const dirOf = (p: string) => p.replace(/[\\/][^\\/]*$/, '')
+
 export async function gather(d: ClearoutDeps): Promise<Gathered> {
   const plex = await d.plex()
-  if (!plex) throw new ClearoutRefusal('Clear-out reads your Plex server directly. Add the Plex server address and token in this plug-in’s settings.', 409, 'plex_not_set')
+  if (!plex) throw new ClearoutRefusal('This reads your Plex server directly. Add the Plex server address and token in this plug-in’s settings.', 409, 'plex_not_set')
   const [sonarr, radarr] = await Promise.all([d.sonarr(), d.radarr()])
   const notes: string[] = []
 
@@ -122,19 +156,20 @@ export async function gather(d: ClearoutDeps): Promise<Gathered> {
     .map((s: any) => ({ key: String(s.key), title: String(s.title ?? s.key).slice(0, 80), kind: (s.type === 'movie' ? 'movie' : 'show') as MediaKind }))
     .filter((s: { key: string }) => /^\d+$/.test(s.key))
 
-  const [series, movies, history] = await Promise.all([
+  const [series, movies, history, accounts] = await Promise.all([
     sonarr ? sonarr.get('/api/v3/series', SLOW).catch((e: any) => { notes.push(`Sonarr could not be read (${e.message}), so TV sizes come from Plex.`); return null }) : null,
     radarr ? radarr.get('/api/v3/movie', SLOW).catch((e: any) => { notes.push(`Radarr could not be read (${e.message}), so movie sizes come from Plex.`); return null }) : null,
     paged(plex, '/status/sessions/history/all?sort=viewedAt:desc'),
+    plex.get('/accounts', SLOW).catch(() => null),
   ])
   const sIdx = Array.isArray(series) ? arrIndex(series, 'sonarr') : null
   const rIdx = Array.isArray(movies) ? arrIndex(movies, 'radarr') : null
 
   const items: LibItem[] = []
-  const arrOf = new Map<string, any>()
+  const partial = new Map<string, Omit<ItemMeta, 'item' | 'keptBy'>>()
   for (const s of sections) {
     const meta = await paged(plex, `/library/sections/${s.key}/all?type=${s.kind === 'movie' ? 1 : 2}&includeGuids=1`)
-    // Without Sonarr, a show's size is the sum of its episodes' files, read from Plex.
+    // A show's files (and size, without Sonarr) are its episodes', read from Plex.
     const showBytes = new Map<string, number>()
     if (s.kind === 'show' && !sIdx) {
       for (const ep of await paged(plex, `/library/sections/${s.key}/all?type=4`)) {
@@ -148,24 +183,32 @@ export async function gather(d: ClearoutDeps): Promise<Gathered> {
       const title = String(m?.title ?? '').slice(0, 200)
       const year = n0(m?.year) || null
       const idx = s.kind === 'show' ? sIdx : rIdx
-      const arr = idx?.find(guidsOf(m), title, year) ?? null
+      const guids = guidsOf(m)
+      const arr = idx?.find(guids, title, year) ?? null
+      const managedArr = idx?.byId(guids) ?? null
       const plexBytes = s.kind === 'movie' ? partBytes(m) : (showBytes.get(ratingKey) ?? 0)
       const arrBytes = arr ? n0(arr.statistics?.sizeOnDisk ?? arr.sizeOnDisk) : 0
+      const plexFiles: ItemMeta['files'] = s.kind === 'movie'
+        ? (Array.isArray(m?.Media) ? m.Media : []).flatMap((md: any) => (Array.isArray(md?.Part) ? md.Part : []).map((pt: any) => ({ path: String(pt?.file ?? ''), sizeBytes: n0(pt?.size) || null }))).filter((f: { path: string }) => f.path)
+        : []
+      const folder = typeof m?.Location?.[0]?.path === 'string' ? m.Location[0].path : plexFiles[0] ? dirOf(plexFiles[0].path) : null
       const item: LibItem = {
         kind: s.kind, ratingKey, title, year: year ?? (n0(arr?.year) || null),
         addedAt: n0(m?.addedAt) * 1000,
         section: s.key, sectionTitle: s.title,
         sizeBytes: (arr ? arrBytes : plexBytes) || null,
         genres: [...new Set([...tags(m?.Genre), ...(Array.isArray(arr?.genres) ? arr.genres.map(String) : [])])],
-        path: typeof arr?.path === 'string' ? arr.path
-          : typeof m?.Location?.[0]?.path === 'string' ? m.Location[0].path
-          : typeof m?.Media?.[0]?.Part?.[0]?.file === 'string' ? m.Media[0].Part[0].file : null,
+        path: typeof arr?.path === 'string' ? arr.path : folder ?? (plexFiles[0]?.path ?? null),
         seriesType: typeof arr?.seriesType === 'string' ? arr.seriesType : null,
-        arr: arr ? { service: s.kind === 'show' ? 'sonarr' : 'radarr', id: arr.id } : null,
+        arr: managedArr ? { service: s.kind === 'show' ? 'sonarr' : 'radarr', id: managedArr.id } : null,
         thumb: typeof m?.thumb === 'string' ? m.thumb : null,
       }
       items.push(item)
-      if (arr) arrOf.set(`${s.kind}:${ratingKey}`, arr)
+      const tvdb = guids.find(g => g.startsWith('tvdb:'))
+      partial.set(`${s.kind}:${ratingKey}`, {
+        managed: managedArr ? { service: s.kind === 'show' ? 'sonarr' : 'radarr', arrId: managedArr.id, path: typeof managedArr.path === 'string' ? managedArr.path : null } : null,
+        folder, files: plexFiles, tvdbId: tvdb ? n0(tvdb.slice(5)) || null : null,
+      })
     }
   }
 
@@ -173,6 +216,7 @@ export async function gather(d: ClearoutDeps): Promise<Gathered> {
     ratingKey: String(h?.ratingKey ?? ''), grandparentKey: h?.grandparentKey ?? null, type: String(h?.type ?? ''),
     title: String(h?.title ?? ''), grandparentTitle: h?.grandparentTitle ?? null,
     viewedAt: n0(h?.viewedAt), accountID: n0(h?.accountID),
+    season: n0(h?.parentIndex) || null, episode: n0(h?.index) || null,
   }))
 
   const opts = new Map<string, string | undefined>()
@@ -180,47 +224,52 @@ export async function gather(d: ClearoutDeps): Promise<Gathered> {
     opts.set(k, await d.option(k))
   }
   const { rules, cutoffs } = parseRules(k => opts.get(k))
-  if (!sonarr && !radarr) notes.push('The Arr Stack plug-in is not set up, so nothing can be removed from here: copy the list instead.')
+  if (!sonarr && !radarr) notes.push('The Arr Stack plug-in is not set up, so removals go through Plex itself.')
 
+  const now = d.now()
   const report = buildReport({
-    items, plays, rules, cutoffs, now: d.now(), sections,
+    items, plays, rules, cutoffs, now, sections,
     arr: { sonarr: !!sIdx, radarr: !!rIdx },
     sizesFrom: { tv: sIdx ? 'arr' : 'plex', movies: rIdx ? 'arr' : 'plex' },
     notes,
   })
-  const targets: Gathered['targets'] = new Map()
-  for (const row of report.rows) {
-    const arr = arrOf.get(row.id)
-    if (arr) targets.set(row.id, { row, service: row.kind === 'show' ? 'sonarr' : 'radarr', arrId: arr.id, path: typeof arr.path === 'string' ? arr.path : null })
-  }
-  // Removing an Arr entry removes it for every Plex item that maps to it: refuse when one of those is protected.
+  const listed = new Set(report.rows.map(r => r.id))
+  const index = indexPlays(plays)
+  const meta = new Map<string, ItemMeta>()
+  const library: LibraryRow[] = []
   const protectedArr = new Set<string>()
-  for (const [id, arr] of arrOf) {
-    if (!targets.has(id)) protectedArr.add(`${id.startsWith('show:') ? 'sonarr' : 'radarr'}:${arr.id}`)
+  for (const item of items) {
+    const id = `${item.kind}:${item.ratingKey}`
+    const pm = partial.get(id)!
+    const keptBy = keptByRule(item, rules, now)
+    meta.set(id, { item, keptBy, ...pm })
+    // Removing an Arr entry removes it for every Plex item that maps to it: an entry shared with an item that is
+    // not on the lists (watched, or kept by a rule) is protected.
+    if (pm.managed && !listed.has(id)) protectedArr.add(`${pm.managed.service}:${pm.managed.arrId}`)
+    const st = playsFor(index, item)
+    library.push({
+      id, kind: item.kind, ratingKey: item.ratingKey, title: item.title, year: item.year, section: item.section, sectionTitle: item.sectionTitle,
+      sizeBytes: item.sizeBytes, plays: st.plays, viewers: st.viewers, lastPlayed: st.lastPlayed, addedAt: item.addedAt,
+      art: artRef(item.thumb), via: pm.managed?.service ?? 'plex', keptBy: keptBy ? RULE_LABEL[keptBy] : null,
+    })
   }
-  return { report, targets, protectedArr }
+  return { report, library, meta, plays, names: accountNames(accounts), protectedArr }
 }
 
 // ---------------------------------------------------------------------------
-//  The service: a cached report, previews and removal
+//  The service: a cached reading, Clear-out previews and removal
 // ---------------------------------------------------------------------------
 
-export interface PreviewItem { id: string; title: string; year: number | null; service: 'sonarr' | 'radarr'; sizeBytes: number | null; path: string | null }
-export interface Preview { id: string; owner: string; createdAt: number; items: PreviewItem[]; totalBytes: number; skipped: Array<{ id: string; reason: string }> }
-export interface RemoveResult { id: string; title: string; service: 'sonarr' | 'radarr'; removed: boolean; message: string; sizeBytes: number | null }
-
 const REPORT_TTL = 10 * 60_000
-const PREVIEW_TTL = 10 * 60_000
 const MAX_ITEMS = 100
 
 export class ClearoutService {
   private cached: { at: number; data: Gathered } | null = null
   private lastFresh = 0
   private inflight: Promise<Gathered> | null = null
-  private previews = new Map<string, Preview & { targets: Map<string, { service: 'sonarr' | 'radarr'; arrId: number; path: string | null }> }>()
+  readonly previews: PreviewStore
 
-  constructor(private d: ClearoutDeps, private newId: () => string = () => Math.random().toString(36).slice(2) + Date.now().toString(36)) {}
-
+  constructor(readonly d: ClearoutDeps, newId?: () => string) { this.previews = new PreviewStore(() => d.now(), newId) }
 
   async report(refresh = false): Promise<Gathered> {
     // A forced re-read reads the whole history and library: at most once a minute.
@@ -234,83 +283,89 @@ export class ClearoutService {
     return this.inflight
   }
 
-  /** Exactly what removing these would delete, checked against the Arr as it is now. */
-  async preview(ids: unknown, owner: string): Promise<Preview> {
+  /** Forget the reading: the library changed. */
+  invalidate(): void { this.cached = null }
+
+  /** Exactly what removing these would delete, and which way each goes, checked against the Arr and Plex now. */
+  async preview(ids: unknown, owner: string): Promise<Plan> {
     if (!Array.isArray(ids) || ids.length === 0) throw new ClearoutRefusal('Tick at least one item first.')
     if (ids.length > MAX_ITEMS) throw new ClearoutRefusal(`At most ${MAX_ITEMS} items at a time.`)
     const want = [...new Set(ids.map(String))]
-    const { targets, protectedArr } = await this.report()
-    const items: PreviewItem[] = []
-    const skipped: Preview['skipped'] = []
-    const held = new Map<string, { service: 'sonarr' | 'radarr'; arrId: number; path: string | null }>()
+    const g = await this.report()
+    const listed = new Map(g.report.rows.map(r => [r.id, r]))
+    const ctx = await planContext(this.d)
+    const items: PlanItem[] = []
+    const skipped: Plan['skipped'] = []
     for (const id of want) {
-      const t = targets.get(id)
-      // Only rows on the never or idle list, kept by no rule and matched in the Arr, can be removed.
-      if (!t) { skipped.push({ id, reason: 'Not on the clear-out list, or not found in Sonarr or Radarr.' }); continue }
-      if (protectedArr.has(`${t.service}:${t.arrId}`)) {
-        skipped.push({ id, reason: `${t.row.title} shares its ${t.service === 'sonarr' ? 'Sonarr' : 'Radarr'} entry with another Plex item that is watched or kept by a rule, so it is left alone.` })
-        continue
-      }
-      const client = t.service === 'sonarr' ? await this.d.sonarr() : await this.d.radarr()
-      if (!client) { skipped.push({ id, reason: `${t.service === 'sonarr' ? 'Sonarr' : 'Radarr'} is not set up.` }); continue }
-      const live = await client.get(`/api/v3/${t.service === 'sonarr' ? 'series' : 'movie'}/${t.arrId}`, SLOW).catch(() => null)
-      if (!live || live.id !== t.arrId) { skipped.push({ id, reason: `${t.row.title} is no longer in ${t.service === 'sonarr' ? 'Sonarr' : 'Radarr'}.` }); continue }
-      const sizeBytes = n0(live.statistics?.sizeOnDisk ?? live.sizeOnDisk) || t.row.sizeBytes
-      items.push({ id, title: String(live.title ?? t.row.title).slice(0, 200), year: n0(live.year) || t.row.year, service: t.service, sizeBytes, path: typeof live.path === 'string' ? live.path : t.path })
-      held.set(id, { service: t.service, arrId: t.arrId, path: typeof live.path === 'string' ? live.path : t.path })
+      const row = listed.get(id)
+      const m = g.meta.get(id)
+      // Only rows on the never or idle list (kept by no rule) can be removed from Clear-out.
+      if (!row || !m) { skipped.push({ id, reason: 'Not on the clear-out list.' }); continue }
+      const it = await wholeItemPlan(m, g, ctx, this.d, row.sizeBytes)
+      if ('skip' in it) { skipped.push({ id, reason: it.skip }); continue }
+      items.push(it)
     }
-    const p = { id: this.newId(), owner, createdAt: this.d.now(), items, totalBytes: items.reduce((a, x) => a + (x.sizeBytes ?? 0), 0), skipped }
-    this.prune()
-    if (items.length) this.previews.set(p.id, { ...p, targets: held })
-    return p
+    return this.previews.put(owner, items, skipped)
   }
 
-  /** Remove what a preview listed, through the Arr, then read each one back. */
-  async remove(previewId: unknown, owner: string, by = owner): Promise<{ preview: Preview; results: RemoveResult[] }> {
-    this.prune()
-    const p = typeof previewId === 'string' ? this.previews.get(previewId) : undefined
-    if (!p) throw new ClearoutRefusal('That preview has expired. Preview the removal again.', 409, 'preview_expired')
-    if (p.owner !== owner) throw new ClearoutRefusal('That preview belongs to someone else.', 403, 'not_yours')
-    this.previews.delete(p.id)
-    const results: RemoveResult[] = []
-    for (const it of p.items) {
-      const t = p.targets.get(it.id)!
-      const name = t.service === 'sonarr' ? 'Sonarr' : 'Radarr'
-      const client = t.service === 'sonarr' ? await this.d.sonarr() : await this.d.radarr()
-      if (!client) { results.push({ id: it.id, title: it.title, service: t.service, removed: false, message: `${name} is not set up.`, sizeBytes: it.sizeBytes }); continue }
-      const base = `/api/v3/${t.service === 'sonarr' ? 'series' : 'movie'}/${t.arrId}`
-      // Still the same thing the preview showed: a re-added item under the same id must not be deleted unseen.
-      const before = await client.get(base, SLOW).catch(() => null)
-      if (!before || before.id !== t.arrId || (t.path && before.path !== t.path)) {
-        results.push({ id: it.id, title: it.title, service: t.service, removed: false, message: `${name} no longer has it as previewed, so it was left alone.`, sizeBytes: it.sizeBytes })
-        continue
-      }
-      const exclusion = t.service === 'sonarr' ? 'addImportListExclusion=true' : 'addImportExclusion=true'
-      const what = { by, title: it.title, service: t.service, arrId: t.arrId, bytes: it.sizeBytes ?? 0, preview: p.id }
-      await this.d.audit?.('plex.clearout.remove.start', what)
-      try {
-        await client.delete(`${base}?deleteFiles=true&${exclusion}`, SLOW)
-      } catch (e: any) {
-        await this.d.audit?.('plex.clearout.remove.result', { ...what, removed: false, error: String(e?.message ?? e) })
-        results.push({ id: it.id, title: it.title, service: t.service, removed: false, message: `${name} refused: ${e.message}`, sizeBytes: it.sizeBytes })
-        continue
-      }
-      // Read after write: only an item the Arr no longer has is reported as removed.
-      let gone = false
-      try { const after = await client.get(base, SLOW); gone = !after || after.id !== t.arrId } catch (e: any) { gone = /HTTP 404\b/.test(String(e?.message)) }
-      await this.d.audit?.('plex.clearout.remove.result', { ...what, removed: gone })
-      results.push({
-        id: it.id, title: it.title, service: t.service, removed: gone, sizeBytes: it.sizeBytes,
-        message: gone ? `Removed from ${name} with its files, and excluded from import lists.` : `${name} said yes but still lists it. Check ${name}.`,
-      })
-    }
+  /** Remove what a preview listed, then read each one back. */
+  async remove(previewId: unknown, owner: string, by = owner): Promise<{ preview: Plan; results: ItemResult[]; rescanned: number }> {
+    const p = this.previews.take(previewId, owner)
+    const out = await executePlan(p, { plex: this.d.plex, sonarr: this.d.sonarr, radarr: this.d.radarr, audit: this.d.audit }, by)
     // The list changed: the next read is fresh.
-    this.cached = null
-    return { preview: { id: p.id, owner: p.owner, createdAt: p.createdAt, items: p.items, totalBytes: p.totalBytes, skipped: p.skipped }, results }
+    this.invalidate()
+    return { preview: p, ...out }
   }
+}
 
-  private prune() {
-    const now = this.d.now()
-    for (const [k, v] of this.previews) if (now - v.createdAt > PREVIEW_TTL) this.previews.delete(k)
+/** What every preview checks once: who is streaming, and whether Plex allows deletions. */
+export interface PlanContext { streaming: Set<string> | null; plexDeletes: boolean | null }
+export async function planContext(d: Pick<ClearoutDeps, 'plex'>): Promise<PlanContext> {
+  const plex = await d.plex()
+  const [streaming, plexDeletes] = await Promise.all([streamingKeys(plex).catch(() => null), plexAllowsDeletion(plex)])
+  return { streaming, plexDeletes }
+}
+
+export function blockedBy(ctx: PlanContext, keys: string[], via: 'sonarr' | 'radarr' | 'plex'): string | null {
+  if (ctx.streaming === null) return 'Plex could not say what is playing, so this cannot be removed right now.'
+  if (keys.some(k => ctx.streaming!.has(k))) return STREAMING
+  if (via === 'plex' && ctx.plexDeletes !== true) return PLEX_DELETION_OFF
+  return null
+}
+
+/** A whole movie or show: through the Arr that manages it (by id), else through Plex. */
+export async function wholeItemPlan(m: ItemMeta, g: Gathered, ctx: PlanContext, d: ClearoutDeps, size: number | null): Promise<PlanItem | { skip: string }> {
+  const { item } = m
+  const title = `${item.title}${item.year ? ` (${item.year})` : ''}`
+  const keys = [item.ratingKey]
+  const keptBy = m.keptBy ? RULE_LABEL[m.keptBy] : null
+  if (m.managed) {
+    const t = m.managed
+    const name = t.service === 'sonarr' ? 'Sonarr' : 'Radarr'
+    if (g.protectedArr.has(`${t.service}:${t.arrId}`) && !m.keptBy) {
+      return { skip: `${item.title} shares its ${name} entry with another Plex item that is watched or kept by a rule, so it is left alone.` }
+    }
+    const client = t.service === 'sonarr' ? await d.sonarr() : await d.radarr()
+    if (!client) return { skip: `${name} is not set up.` }
+    const live = await client.get(`/api/v3/${t.service === 'sonarr' ? 'series' : 'movie'}/${t.arrId}`, SLOW).catch(() => null)
+    if (!live || live.id !== t.arrId) return { skip: `${item.title} is no longer in ${name}.` }
+    const sizeBytes = n0(live.statistics?.sizeOnDisk ?? live.sizeOnDisk) || size || 0
+    const path = typeof live.path === 'string' ? live.path : t.path
+    return {
+      id: `${item.kind}:${item.ratingKey}`, title, via: t.service,
+      step: t.service === 'sonarr' ? { kind: 'arr-series', arrId: t.arrId, path } : { kind: 'arr-movie', arrId: t.arrId, path },
+      files: [{ path: path ?? '(the whole folder)', sizeBytes }], sizeBytes,
+      note: `Deleted in ${name} with its files, and added to its import-list exclusions so it is not downloaded again.`,
+      warnings: [], keptBy, blocked: blockedBy(ctx, keys, t.service),
+      plex: { keys, section: item.section, folder: m.folder },
+    }
+  }
+  const files = m.files.length ? m.files : [{ path: m.folder ?? '(the files Plex has for it)', sizeBytes: size }]
+  return {
+    id: `${item.kind}:${item.ratingKey}`, title, via: 'plex',
+    step: { kind: 'plex-item', ratingKey: item.ratingKey },
+    files, sizeBytes: size ?? files.reduce((a, f) => a + (f.sizeBytes ?? 0), 0),
+    note: PLEX_NOTE, warnings: [], keptBy, blocked: blockedBy(ctx, keys, 'plex'),
+    plex: { keys, section: item.section, folder: m.folder },
   }
 }
