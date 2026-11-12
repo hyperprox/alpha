@@ -61,3 +61,9 @@ config/grafana/gpu-vendors.json
 
 # Release notes scripts/release.sh leaves for gh release create when it does not push
 .release-notes-*.md
+
+# Local plug-ins: install-specific code, never committed.
+# Ignored, so git status, the in-app updater's local-changes check and deploy.sh never count them.
+apps/api/src/local-plugins/
+apps/api/test/local-plugins/
+apps/frontend/local-plugins/

@@ -14,7 +14,10 @@ import { UpdateChip } from './UpdateChip'
 import { pageMeta } from './nav'
 import Link from 'next/link'
 import { pluginIdOf, resolvePageMeta } from '@/lib/page-title'
+import { LOCAL_PLUGINS } from '@local-plugins'
 import s from './shell.module.css'
+
+const LOCAL_NAMES: Record<string, string> = Object.fromEntries(LOCAL_PLUGINS.map(p => [p.id, p.name]))
 
 const CLUSTER = process.env.NEXT_PUBLIC_CLUSTER_NAME ?? ''
 
@@ -58,7 +61,7 @@ function usePluginNames(pathname: string): Record<string, string> | null {
 
 export function TopBar({ full = false }: { full?: boolean }) {
   const pathname = usePathname()
-  const { crumb, title, crumbHref } = resolvePageMeta(pageMeta(pathname), pathname, usePluginNames(pathname))
+  const { crumb, title, crumbHref } = resolvePageMeta(pageMeta(pathname), pathname, usePluginNames(pathname), LOCAL_NAMES)
   const live = useLive()
   const { status } = useSession()
   const [finder, setFinder] = useState(false)

@@ -1,6 +1,7 @@
 const fs = require('fs')
 const path = require('path')
 const { execFileSync } = require('child_process')
+const { writeLocalRegistry } = require('./scripts/local-plugins')
 
 // One version for the whole product: the root package.json, plus the commit the
 // bundle was built from. Both are baked in at build time, so the browser never
@@ -48,6 +49,9 @@ const version = readVersion(path.join(__dirname, '../../package.json'))
              || readVersion(path.join(__dirname, 'package.json'))
              || 'unknown'
 
+// Local plug-in pages: the generated list in the git-ignored local-plugins/, or an empty one.
+const localPlugins = writeLocalRegistry()
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: 'standalone',
@@ -61,6 +65,10 @@ const nextConfig = {
   },
   // Vault sign-in (and the first credential migration) can take ~30 s; the rewrite proxy's default is 30 s.
   experimental: { proxyTimeout: 180_000 },
+  webpack(config) {
+    config.resolve.alias = { ...(config.resolve.alias || {}), '@local-plugins$': localPlugins }
+    return config
+  },
   async rewrites() {
     return [
       {

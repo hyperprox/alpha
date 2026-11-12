@@ -139,6 +139,8 @@ export function tokenForbidden(method: string, path: string): boolean {
   if (p === '/api/auth' || p.startsWith('/api/auth/')) return !(p === '/api/auth/status' && (m === 'GET' || m === 'HEAD'))
   if (p === '/api/secrets' || p.startsWith('/api/secrets/')) return true
   if (p === '/api/terminal' || p.startsWith('/api/terminal/')) return true
+  // Local plug-ins are for a signed-in person only, reads included (lib/local-plugins.ts).
+  if (p === '/api/local' || p.startsWith('/api/local/')) return true
   if (p === '/ws' || p.startsWith('/ws/')) return true
   // Arr Stack queue actions (remove, blocklist, search, retry, prioritise): a signed-in admin's act, never a token's.
   if (/^\/api\/plugins\/arrstack\/queue\/actions$/.test(p)) return true

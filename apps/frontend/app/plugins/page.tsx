@@ -14,6 +14,7 @@ import Link from 'next/link'
 import { Page, HudHeader, Panel, styles } from '@/components/visual/kit'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { PlexSignIn } from '@/components/plugins/plex/SignIn'
+import { LOCAL_PLUGINS } from '@local-plugins'
 
 interface PluginSetting {
   key: string; label: string; type: 'text' | 'secret' | 'url' | 'toggle'
@@ -394,6 +395,23 @@ export default function PluginsPage() {
                     Use this
                   </button>
                 </div>
+              ))}
+            </div>
+          </Panel>
+        )}
+
+        {LOCAL_PLUGINS.length > 0 && (
+          <Panel title="Local plug-ins" sub="on this install only">
+            <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 280px), 1fr))' }}>
+              {LOCAL_PLUGINS.map(p => (
+                <Link key={p.id} href={`/plugins/local/${p.id}`} className={styles.card} style={{ padding: '14px 16px', display: 'flex', gap: 12, alignItems: 'flex-start', textDecoration: 'none' }}>
+                  <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-md border text-lg"
+                    style={{ borderColor: 'var(--border-strong)', background: 'var(--ground-deep)' }}>{p.icon ?? '◆'}</span>
+                  <span className="min-w-0">
+                    <span className="block truncate font-display text-[19px] font-semibold" style={{ color: 'var(--text-bright)' }}>{p.name}</span>
+                    <span className="block text-sm leading-snug" style={{ color: 'var(--text-muted)' }}>{p.description}</span>
+                  </span>
+                </Link>
               ))}
             </div>
           </Panel>
