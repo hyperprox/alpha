@@ -22,7 +22,13 @@ const arrClient = async (endpoint: 'default' | 'radarr'): Promise<CoreEndpointCl
   return p ? pluginEndpointClient(p, endpoint).catch(() => null) : null
 }
 
-const msg = (e: any) => String(e?.message ?? e).slice(0, 160)
+const READ_DEADLINE_MS = 45_000
+const STALE_MS = 60_000
+
+const msg = (e: any) => {
+  if (e?.name === 'AbortError' || e?.name === 'TimeoutError' || /abort/i.test(String(e?.message ?? ''))) return 'timed out'
+  return String(e?.message ?? e).slice(0, 160)
+}
 
 export async function readQueue(deps: { sonarr: CoreEndpointClient | null; radarr: CoreEndpointClient | null; now: number }): Promise<QueueData> {
   const one = async (c: CoreEndpointClient | null, kind: 'sonarr' | 'radarr') => {
@@ -42,19 +48,27 @@ export function buildArrQueueRoutes(deps: {
   const radarr = deps.radarr ?? (() => arrClient('radarr'))
   const now = deps.now ?? Date.now
   const ttl = deps.ttlMs ?? 3000
-  // One reading shared by everyone. A failed one is dropped at once so the next ask retries.
-  let memo: { at: number; p: Promise<QueueData> } | null = null
+  // One reading shared by everyone. The in-flight promise is shared, and the TTL starts when the read FINISHES (so a
+  // slow read never lets each new request start another one). A hung read is cut off at READ_DEADLINE_MS, and one
+  // older than STALE_MS is replaced. A failed one is dropped at once (only if it is still the current one).
+  let memo: { startedAt: number; doneAt: number | null; p: Promise<QueueData> } | null = null
 
   return async (fastify) => {
     fastify.get('/queue', async (_req, reply) => {
       const t = now()
-      if (!memo || t - memo.at > ttl) {
-        const p = (async () => readQueue({ sonarr: await sonarr().catch(() => null), radarr: await radarr().catch(() => null), now: t }))()
-        const mine = { at: t, p }
+      const fresh = memo && (memo.doneAt === null ? t - memo.startedAt <= STALE_MS : t - memo.doneAt <= ttl)
+      if (!fresh) {
+        const work = (async () => readQueue({ sonarr: await sonarr().catch(() => null), radarr: await radarr().catch(() => null), now: t }))()
+        let timer: ReturnType<typeof setTimeout> | undefined
+        const deadline = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('timed out reading the queue')), READ_DEADLINE_MS) })
+        const p = Promise.race([work, deadline]).finally(() => clearTimeout(timer))
+        const mine: { startedAt: number; doneAt: number | null; p: Promise<QueueData> } = { startedAt: t, doneAt: null, p }
         memo = mine
-        p.catch(() => { if (memo === mine) memo = null })
+        p.then(() => { mine.doneAt = now() }, () => { if (memo === mine) memo = null })
+        work.catch(() => {})
       }
-      try { return { success: true, data: await memo.p } } catch (e) {
+      const cur = memo!
+      try { return { success: true, data: await cur.p } } catch (e) {
         return reply.status(502).send({ success: false, code: 'queue_failed', error: msg(e) })
       }
     })

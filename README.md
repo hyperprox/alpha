@@ -1519,7 +1519,7 @@ cost Sonarr and Radarr extra requests.
   plug-ins page shows the same in its Queue row.
 
 The queue is read-only: there are no delete, blocklist or retry buttons. It uses the keys already saved in
-the plug-in's settings, which stay on the server; the page never receives a key, an address or the download folder. Messages are passed on as Sonarr and Radarr wrote them.
+the plug-in's settings, which stay on the server; the page never receives a key, an address or the download folder. Messages are passed on as Sonarr and Radarr wrote them, except that any folder path in one is replaced with "the download folder".
 If Sonarr or Radarr does not answer, its half is greyed with the reason and the other still shows.
 
 **Plex** needs only your Plex server. There are two ways to add it, both in the plug-in's settings.

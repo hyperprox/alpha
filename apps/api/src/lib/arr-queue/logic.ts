@@ -90,6 +90,13 @@ export interface QueueData {
 const num = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
 const str = (v: unknown, max: number): string | null => { const s = String(v ?? '').trim(); return s ? s.slice(0, max) : null }
 
+/** Absolute paths (Unix or Windows) in an Arr message name the server's folders: the browser gets a plain phrase instead. */
+export function stripPaths(text: string): string {
+  return text
+    .replace(/\b[A-Za-z]:\\[^\s"'<>|]*/g, 'the download folder')
+    .replace(/(^|[\s"'(\[:=])\/(?:[^\s"'<>|\/]+\/)*[^\s"'<>|\/]*(?=$|[\s"')\],;])/g, (m, pre) => (m.length - pre.length > 1 ? `${pre}the download folder` : m))
+}
+
 /** "00:12:34", "1.02:03:04" or "12:34" read as seconds. Null when absent or unreadable. */
 export function parseTimeLeft(v: unknown): number | null {
   const s = String(v ?? '').trim()
@@ -136,8 +143,8 @@ function problemOf(rows: any[]): Problem | null {
 function messagesOf(rows: any[]): string[] {
   const out = new Set<string>()
   for (const r of rows) {
-    if (r.errorMessage) out.add(String(r.errorMessage).slice(0, 240))
-    for (const m of r.statusMessages ?? []) for (const t of (m?.messages?.length ? m.messages : [m?.title])) if (t) out.add(String(t).slice(0, 240))
+    if (r.errorMessage) out.add(stripPaths(String(r.errorMessage)).slice(0, 240))
+    for (const m of r.statusMessages ?? []) for (const t of (m?.messages?.length ? m.messages : [m?.title])) if (t) out.add(stripPaths(String(t)).slice(0, 240))
   }
   return [...out].slice(0, 6)
 }
@@ -145,9 +152,10 @@ function messagesOf(rows: any[]): string[] {
 /** Rows that share a downloadId are one download. Rows with none stand alone. */
 export function collapseByDownload(rows: any[]): Array<{ id: string; rows: any[] }> {
   const by = new Map<string, any[]>()
+  let anon = 0
   for (const r of rows) {
     if (!r || typeof r !== 'object') continue
-    const k = r.downloadId ? `d:${r.downloadId}` : `i:${r.id ?? by.size}`
+    const k = r.downloadId ? `d:${r.downloadId}` : r.id != null ? `i:${r.id}` : `n:${anon++}`
     const l = by.get(k); if (l) l.push(r); else by.set(k, [r])
   }
   return [...by.entries()].map(([id, rs]) => ({ id, rows: rs }))

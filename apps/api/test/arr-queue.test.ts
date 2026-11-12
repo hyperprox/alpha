@@ -236,3 +236,43 @@ test('route: signed in only, read-only, one shared reading per few seconds, no k
     assert.ok(askedS.length > n, 'a fresh one after it')
   } finally { await a.close() }
 })
+
+// ── review fixes: shared in-flight read, paths, anonymous rows ───────────────
+
+test('route: a read slower than the TTL is shared by every request that arrives meanwhile (one upstream call)', async () => {
+  let calls = 0
+  let release!: () => void
+  const gate = new Promise<void>(r => { release = r })
+  const sonarr = { async get() { calls++; await gate; return { totalRecords: 0, records: [] } } } as any
+  let clock = NOW
+  const a = Fastify({ logger: false })
+  await registerGate(a)
+  await a.register(authRoutes, { prefix: '/api/auth' })
+  await a.register(buildArrQueueRoutes({ sonarr: async () => sonarr, radarr: async () => null, now: () => clock, ttlMs: 3000 }), { prefix: '/api/plugins/arrstack' })
+  await a.ready()
+  try {
+    const { cookie } = await signIn(a, 'viewer@example.com', 'viewer master password')
+    const ask = () => a.inject({ method: 'GET', url: '/api/plugins/arrstack/queue', headers: { cookie } })
+    const first = ask()
+    await new Promise(r => setTimeout(r, 30))
+    clock += 10_000 // far past the TTL while the first read is still running
+    const second = ask(), third = ask()
+    await new Promise(r => setTimeout(r, 30))
+    release()
+    const all = await Promise.all([first, second, third])
+    assert.ok(all.every(r => r.statusCode === 200))
+    assert.equal(calls, 1, 'one upstream read served all three')
+  } finally { release(); await a.close() }
+})
+
+test('logic: paths in messages are replaced; a row with no id never collides with a real one', () => {
+  const rows = [
+    row({ downloadId: undefined, id: undefined, episodeId: 1 }),
+    row({ downloadId: undefined, id: 0, episodeId: 2 }),
+    row({ downloadId: undefined, id: undefined, episodeId: 3 }),
+  ] as any[]
+  assert.equal(collapseByDownload(rows).length, 3)
+  const m = groupSonarr([row({ downloadId: 'Z', statusMessages: [{ title: 't', messages: ['No files found in /downloads/tv/Example.Show.S01 to import', 'Access to the path "/data/tv/x" is denied', 'C:\\Users\\x\\dl is full', 'and/or 1/2 ok'] }] })], NOW)[0].seasons[0].downloads[0].messages
+  assert.ok(m.every(x => !/\/downloads|\/data|C:\\/.test(x)), m.join(' | '))
+  assert.ok(m[0].includes('the download folder') && m[3] === 'and/or 1/2 ok')
+})

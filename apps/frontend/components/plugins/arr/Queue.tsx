@@ -45,22 +45,26 @@ export function useArrQueue(enabled: boolean, everyMs = 4000) {
 
   useEffect(() => {
     if (!enabled) return
-    let timer: ReturnType<typeof setInterval> | null = null
+    let timer: ReturnType<typeof setTimeout> | null = null
     let gone = false
+    let fails = 0
+    // Repeated errors double the wait (up to 30 s); one good reading puts it back.
+    const delay = () => Math.min(30_000, everyMs * 2 ** Math.min(fails, 6))
+    const schedule = () => { if (!gone && !document.hidden && !timer) timer = setTimeout(() => { timer = null; void tick() }, delay()) }
     const tick = async () => {
-      if (busy.current || document.hidden) return
+      if (gone) return
+      if (busy.current || document.hidden) { schedule(); return }
       busy.current = true
       try {
         const r = await apiJson<{ data: QueueData }>('/api/plugins/arrstack/queue')
         if (gone) return
-        if (r.ok && r.body?.data) { setData(r.body.data); setError(null); setAt(Date.now()) }
-        else setError(r.error ?? 'The queue could not be read.')
-      } catch (e: any) { if (!gone) setError(String(e?.message ?? e)) } finally { busy.current = false }
+        if (r.ok && r.body?.data) { setData(r.body.data); setError(null); setAt(Date.now()); fails = 0 }
+        else { setError(r.error ?? 'The queue could not be read.'); fails++ }
+      } catch (e: any) { fails++; if (!gone) setError(String(e?.message ?? e)) } finally { busy.current = false; schedule() }
     }
-    const start = () => { if (!timer) timer = setInterval(() => void tick(), everyMs) }
-    const stop = () => { if (timer) { clearInterval(timer); timer = null } }
-    const onVisibility = () => { if (document.hidden) stop(); else { void tick(); start() } }
-    void tick(); start()
+    const stop = () => { if (timer) { clearTimeout(timer); timer = null } }
+    const onVisibility = () => { if (document.hidden) stop(); else { stop(); void tick() } }
+    void tick()
     document.addEventListener('visibilitychange', onVisibility)
     return () => { gone = true; stop(); document.removeEventListener('visibilitychange', onVisibility) }
   }, [enabled, everyMs])
