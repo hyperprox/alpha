@@ -25,7 +25,7 @@ import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { BusyNote, GhostButton, INPUT, LABEL, Modal, Notice, PrimaryButton } from '@/components/vault/ui'
 import { HudHeader, Panel, Cols, Icon, styles as vs } from '@/components/visual/kit'
 import { DetailsSection, PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
-import { BandTiles, DeviceList, HealthList, UplinkPanel, WanPanel, hudChips, routes, type Reading } from './AsusVisual'
+import { BandTiles, DeviceList, HealthList, MeshView, UplinkPanel, WanPanel, hudChips, routes, type Reading } from './AsusVisual'
 import a from './asus.module.css'
 
 const API = '/api/plugins/asus'
@@ -162,6 +162,12 @@ function RouterView({ n }: { n: Router }) {
               {r.update.available && <p className="mt-3 text-sm" style={{ color: 'var(--text-soft)' }}>Install firmware from the router itself (Administration → Firmware Upgrade). HyperProx does not update router firmware.</p>}
             </Panel>
           </Cols>
+
+          {(r.mesh?.length ?? 0) > 0 && (
+            <Panel title="AiMesh" sub={`${r.mesh!.length} unit${r.mesh!.length === 1 ? '' : 's'} · ${r.mesh!.filter(m => m.online).length} online`}>
+              <MeshView nodes={r.mesh!} />
+            </Panel>
+          )}
 
           <Panel title="Connected devices" sub={`${r.devices.length} online${operator ? '' : ' · MACs and addresses for operators'}`}>
             <DeviceList devices={r.devices} bands={r.bands} offline={r.offlineKnown} />

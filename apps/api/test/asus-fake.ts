@@ -51,6 +51,8 @@ export interface FakeState {
   reboot: 'ok' | 'drop'
   /** How the unit is used: a router, an access point leading an AiMesh network, or an AiMesh node. */
   mode: 'router' | 'ap-main' | 'node'
+  /** Answer get_cfg_clientlist() with a one-node list (for the redaction test). */
+  meshList: boolean
 }
 
 export interface Seen { method: string; path: string; ua: string | undefined; cookie: string | undefined; body: string }
@@ -58,7 +60,7 @@ export interface Seen { method: string; path: string; ua: string | undefined; co
 export function fakeRouter(over: Partial<FakeState> = {}) {
   const st: FakeState = {
     user: 'admin', pass: 'correct horse', flavour: 'stock', loginError: null, expireAfter: null, wanUp: true, memUsedPct: 40, update: null,
-    rxStep: 1_250_000n, txStep: 125_000n, cpuBusy: 0.2, uptime: 86_400 * 3, reboot: 'ok', mode: 'router', ...over,
+    rxStep: 1_250_000n, txStep: 125_000n, cpuBusy: 0.2, uptime: 86_400 * 3, reboot: 'ok', mode: 'router', meshList: false, ...over,
   }
   const seen: Seen[] = []
   const tokens = new Set<string>()
@@ -94,7 +96,7 @@ export function fakeRouter(over: Partial<FakeState> = {}) {
       if (p === 'get_clientlist()') Object.assign(out, CLIENTLIST)
       if (p === 'wl_control_channel()') out.wl_control_channel = ['6', '36', '0']
       // A mesh list the way a main unit might answer it, with a secret and MACs in it (for the redaction test).
-      if (p === 'get_cfg_clientlist()') out.get_cfg_clientlist = [{ alias: 'Hall', model_name: 'XX-NODE', mac: '00:00:5E:00:53:20', pap2g: '00005E005321', backhalctrl: { key: 'mesh-secret-value' }, ip: '10.9.8.40' }]
+      if (p === 'get_cfg_clientlist()' && st.meshList) out.get_cfg_clientlist = [{ alias: 'Hall', model_name: 'XX-NODE', mac: '00:00:5E:00:53:20', pap2g: '00005E005321', backhalctrl: { key: 'mesh-secret-value' }, ip: '10.9.8.40' }]
     }
     // Asuswrt really does leave a trailing comma now and then.
     return JSON.stringify(out).replace(/}$/, ',}')

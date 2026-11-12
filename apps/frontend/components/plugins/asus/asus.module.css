@@ -68,6 +68,22 @@
 .clients b { font: 700 1.7rem/1 var(--font-display); color: var(--c); }
 .clients span { font: 500 .72rem var(--font-mono); color: var(--text-muted); letter-spacing: .08em; text-transform: uppercase; }
 
+/* ── AiMesh: the main unit, a plain trunk under it (no label on it), then the nodes ── */
+.mesh { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
+.meshRow { display: flex; justify-content: center; }
+.meshRow > li { width: min(100%, 18rem); }
+.meshTrunk { align-self: center; width: 2px; height: 18px; background: linear-gradient(var(--hx-accent), var(--hx-violet)); opacity: .7; }
+.meshNodes { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 12rem), 1fr)); gap: 12px; padding-top: 12px !important;
+  border-top: 2px solid color-mix(in srgb, var(--hx-violet) 45%, transparent); }
+.meshNode { --c: var(--hx-violet); display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 12px; border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--c) 35%, var(--border)); background: linear-gradient(160deg, var(--hx-panel), var(--hx-deep)); }
+.meshNode[data-main="true"] { --c: var(--hx-accent); }
+.meshNode[data-online="false"] { --c: var(--crit); opacity: .8; }
+.meshTop { display: flex; align-items: center; gap: 8px; }
+.meshName { font: 700 1.15rem/1.1 var(--font-display); color: var(--text-bright); overflow-wrap: anywhere; min-width: 0; }
+.meshBadge { margin-left: auto; padding: 2px 8px; border-radius: 10px; font: 600 .66rem var(--font-mono); letter-spacing: .08em; text-transform: uppercase;
+  border: 1px solid color-mix(in srgb, var(--hx-accent) 50%, transparent); color: var(--hx-accent); }
+
 /* ── health ── */
 .health { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .health li { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: 10px; font-size: .9rem; color: var(--text-bright);

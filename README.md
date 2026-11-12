@@ -1620,6 +1620,11 @@ router has an internet connection of its own. On any other unit the Internet pan
 handled by your main router (with the upstream address, for operators and admins), and HyperProx never
 raises "internet down" for it: such a unit reports its unused WAN as disconnected, which is normal.
 
+When a unit leads an AiMesh network and lists its nodes, an **AiMesh** panel draws the mesh as one
+picture: the main unit on top and each node under it, with its model, firmware (and whether an update is
+waiting), how it reaches the mesh (wired, or the band of its wireless backhaul, with the signal), and
+how many clients it carries. Each connected device also says which unit it is on.
+
 **Diagnostics** (admins, API tokens allowed): `GET /api/plugins/asus/instances/<id>/diagnostics` returns
 the router's raw answer to every call the plug-in makes, plus a set of other read-only calls, to work out
 how a firmware answers. Passwords, Wi-Fi keys, tokens, WPS PINs and anything else with a secret-looking
@@ -1650,9 +1655,12 @@ certificate**, needs the router's password again in the same save.
 **What it does not do.** Version 1 has one action, reboot. Blocking a device's internet access is not
 included: Asuswrt has no single call for it. It would mean rewriting the router's whole parental-control
 list, whose format differs between firmware versions, and that could wipe schedules you set up on the
-router. **Tested** against a pretend router in the test suite only, built from the published API; it has
-not been run against a real ASUS router yet. When a router leaves a call out, the page names the missing
-part, and the rest of the page still works.
+router. **Tested** against anonymised answers from a real stock Asuswrt 388 build, in router mode leading a
+three-unit AiMesh network and in access-point mode. That build answers only the first of several reads
+sent together, so HyperProx checks that every read was answered and, on such a firmware, asks them one
+at a time. Settings that rarely change (firmware, mode, radio names) are read every 5 minutes, not on
+every refresh. Merlin and other builds are covered by the test suite's pretend router. When a router leaves
+a call out, the page names the missing part, and the rest of the page still works.
 
 #### Proxmox Backup Server
 

@@ -86,6 +86,11 @@ export function detailOf(name: string, r: AsusReading): PluginDetail {
         { key: 'signal', label: 'Signal', align: 'right' }, { key: 'online', label: 'Online', align: 'right' }],
         rows: r.devices.map(d => ({ name: d.name, via: d.connection === 'wired' ? 'wired' : d.band ?? 'Wi-Fi', ip: d.ip ?? '—', mac: d.mac ?? '—',
           signal: d.rssi === null ? '—' : `${d.rssi} dBm`, online: duration(d.onlineSec) })) },
+      ...(r.mesh.length ? [{ title: 'AiMesh', columns: [
+        { key: 'name', label: 'Unit' }, { key: 'model', label: 'Model' }, { key: 'role', label: 'Role' }, { key: 'link', label: 'Backhaul' },
+        { key: 'signal', label: 'Signal', align: 'right' as const }, { key: 'clients', label: 'Clients', align: 'right' as const }, { key: 'fw', label: 'Firmware' }, { key: 'ip', label: 'Address' }],
+        rows: r.mesh.map(m => ({ name: m.name, model: m.model ?? '—', role: m.main ? 'main' : m.online ? 'node' : 'node (offline)', link: m.main ? '—' : m.backhaul ?? '—',
+          signal: m.rssi === null ? '—' : `${m.rssi} dBm`, clients: m.clients, fw: `${m.firmware ?? '—'}${m.update ? ` → ${m.update}` : ''}`, ip: m.ip ?? '—' })) }] : []),
       { title: 'Health', empty: 'Nothing needs attention.', columns: [{ key: 'reason', label: 'Needs attention' }], rows: r.health.reasons.map(reason => ({ reason })) },
     ],
   }

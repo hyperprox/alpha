@@ -21,14 +21,14 @@ export const SECRET_RE = /(passw|psk|key|wpa|token|secret|auth|wps|pin)/i
 export const MAX_ANSWER_CHARS = 24_000
 export const MAX_TOTAL_CHARS = 240_000
 
-const nv = (keys: string[]) => keys.map(k => `nvram_get(${k})`).join(';')
+// One nvram value per call: Asuswrt 388 answers only the first hook of a semicolon list.
+const each = (group: string, keys: string[]): Array<[string, string]> => keys.map(k => [`${group}.${k}`, `nvram_get(${k})`])
 const wl = (k: string[]) => [0, 1, 2, 3].flatMap(u => k.map(x => `wl${u}_${x}`))
 
 /** The calls a diagnostics read sends, by name: the plug-in's own, then the candidates. Fixed text, all reads. */
 export const DIAGNOSTIC_HOOKS: Array<[string, string]> = [
   ...Object.entries(HOOKS).map(([k, v]) => [`plugin.${k}`, v] as [string, string]),
-  ['firmware.nvram', nv(['productid', 'odmpid', 'model', 'firmver', 'buildno', 'extendno', 'innerver', 'buildinfo', '3rd-party', 'webs_state_flag', 'webs_state_info', 'webs_state_info_am'])],
-  ['firmware.productid', 'nvram_get(productid)'],
+  ...each('firmware', ['productid', 'odmpid', 'model', 'firmver', 'buildno', 'extendno', 'innerver', 'buildinfo', '3rd-party', 'webs_state_flag', 'webs_state_info', 'webs_state_info_am']),
   ['uptime.call', 'uptime()'],
   ['uptime.sys_uptime', 'sys_uptime()'],
   ['cpu.appobj', 'cpu_usage(appobj)'],
@@ -36,11 +36,11 @@ export const DIAGNOSTIC_HOOKS: Array<[string, string]> = [
   ['memory.appobj', 'memory_usage(appobj)'],
   ['memory.plain', 'memory_usage()'],
   ['netdev.appobj', 'netdev(appobj)'],
-  ['wireless.nvram', nv(['wl_ifnames', 'wl_nband', ...wl(['ssid', 'nband', 'radio', 'chanspec', 'channel', 'bw', 'ifname', 'closed'])])],
+  ...each('wireless', ['wl_ifnames', ...wl(['ssid', 'nband', 'radio', 'chanspec', 'channel', 'bw'])]),
   ['wireless.control_channel', 'wl_control_channel()'],
   ['wireless.wl_extent_channel', 'wl_extent_channel()'],
   ['wireless.chanspec', 'wl_chanspec()'],
-  ['mode.nvram', nv(['sw_mode', 're_mode', 'cfg_master', 'cfg_alias', 'cfg_group', 'wlc_psta', 'wlc_band', 'amas_bdl', 'amas_ethernet', 'lan_proto', 'lan_ipaddr', 'lan_gateway', 'lan_dns'])],
+  ...each('mode', ['sw_mode', 're_mode', 'cfg_master', 'cfg_alias', 'wlc_psta', 'amas_bdl', 'amas_ethernet', 'lan_proto', 'lan_gateway']),
   ['aimesh.cfg_clientlist', 'get_cfg_clientlist()'],
   ['aimesh.onboardinglist', 'get_onboardinglist()'],
   ['aimesh.allclientlist', 'get_allclientlist()'],

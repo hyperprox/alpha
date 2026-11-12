@@ -18,6 +18,11 @@ export interface Band { unit: number; label: string; ssid: string | null; channe
 export interface Device {
   key: string; name: string; ip: string | null; mac: string | null; vendor: string | null
   connection: 'wired' | 'wifi'; band: string | null; rssi: number | null; bars: number | null; onlineSec: number | null
+  node?: string | null
+}
+export interface MeshNode {
+  key: string; name: string; model: string | null; firmware: string | null; update: string | null; main: boolean; online: boolean
+  backhaul: string | null; rssi: number | null; bars: number | null; clients: number; ip: string | null
 }
 export interface Mode { kind: 'router' | 'ap' | 'repeater' | 'bridge' | 'node' | null; label: string | null; aimesh: 'main' | 'node' | null }
 export interface Reading {
@@ -33,6 +38,8 @@ export interface Reading {
   mem: { totalKiB: number; usedKiB: number; pct: number } | null
   wan: { up: boolean | null; status: string | null; type: string | null; ip: string | null; gateway: string | null; unit: number | null; downBps: number | null; upBps: number | null }
   bands: Band[]
+  /** Absent from an API older than the mesh view. */
+  mesh?: MeshNode[]
   devices: Device[]
   offlineKnown: number
   health: { level: 'good' | 'attention'; reasons: string[] }
@@ -157,7 +164,7 @@ export function HealthList({ r }: { r: Reading }) {
 
 // ── devices ──────────────────────────────────────────────────────────────────
 
-function Signal({ d }: { d: Device }) {
+function Signal({ d }: { d: { bars: number | null; rssi: number | null } }) {
   if (d.bars === null) return null
   const tone = d.bars >= 3 ? 'good' : d.bars === 2 ? 'warn' : 'bad'
   const word = ['very weak', 'weak', 'fair', 'good', 'excellent'][d.bars]
@@ -189,6 +196,7 @@ export function DeviceList({ devices, bands, offline }: { devices: Device[]; ban
               <span className={a.via} data-wired={String(d.connection === 'wired')}>{d.connection === 'wired' ? 'wired' : d.band ?? 'Wi-Fi'}</span>
               <span className={a.devMeta}>
                 <Signal d={d} />
+                {d.node && <span>on {d.node}</span>}
                 {d.onlineSec !== null && <span>online {duration(d.onlineSec)}</span>}
                 {d.ip && <span>{d.ip}</span>}
                 {d.mac && <span>{d.mac}</span>}
@@ -200,5 +208,37 @@ export function DeviceList({ devices, bands, offline }: { devices: Device[]; ban
       )}
       {offline > 0 && <p className="mt-3 text-sm" style={{ color: 'var(--text-dimmer)' }}>The router also remembers {offline} device{offline === 1 ? '' : 's'} that {offline === 1 ? 'is' : 'are'} not online now.</p>}
     </>
+  )
+}
+
+// ── AiMesh ───────────────────────────────────────────────────────────────────
+
+function MeshCard({ n }: { n: MeshNode }) {
+  const via = n.main ? 'main unit' : n.backhaul === 'wired' ? 'wired backhaul' : n.backhaul ? `${n.backhaul} backhaul` : 'backhaul not reported'
+  return (
+    <li className={a.meshNode} data-main={String(n.main)} data-online={String(n.online)}
+      aria-label={`${n.name}${n.model ? `, ${n.model}` : ''}: ${n.online ? 'online' : 'offline'}, ${via}${n.rssi !== null ? `, ${n.rssi} dBm` : ''}, ${n.clients} client${n.clients === 1 ? '' : 's'}`}>
+      <span className={a.meshTop}><span className={a.meshName}>{n.name}</span>{n.main && <span className={a.meshBadge}>main</span>}</span>
+      <span className={a.ssid}>{n.model ?? 'ASUS unit'}{n.online ? '' : ' · offline'}</span>
+      <span className={a.bandRow}><span>link</span><b>{n.main ? '—' : n.backhaul === 'wired' ? 'wired' : n.backhaul ?? '—'}</b></span>
+      {!n.main && n.bars !== null && <span className={a.bandRow}><span>signal</span><b><Signal d={n} /></b></span>}
+      <span className={a.bandRow}><span>firmware</span><b>{n.firmware ?? '—'}{n.update ? ' · update' : ''}</b></span>
+      {n.ip && <span className={a.bandRow}><span>address</span><b className="font-mono">{n.ip}</b></span>}
+      <span className={a.clients}><b>{n.clients}</b><span>client{n.clients === 1 ? '' : 's'}</span></span>
+    </li>
+  )
+}
+
+/** The mesh as one picture: the main unit on top, every node under it, each saying how it is connected. */
+export function MeshView({ nodes }: { nodes: MeshNode[] }) {
+  const main = nodes.filter(n => n.main), rest = nodes.filter(n => !n.main)
+  return (
+    <div className={a.mesh}>
+      <ul className={a.meshRow} aria-label="AiMesh main unit" style={{ listStyle: 'none', margin: 0, padding: 0 }}>{main.map(n => <MeshCard key={n.key} n={n} />)}</ul>
+      {rest.length > 0 && <>
+        <span className={a.meshTrunk} aria-hidden />
+        <ul className={a.meshNodes} aria-label="AiMesh nodes" style={{ listStyle: 'none', margin: 0, padding: 0 }}>{rest.map(n => <MeshCard key={n.key} n={n} />)}</ul>
+      </>}
+    </div>
   )
 }
