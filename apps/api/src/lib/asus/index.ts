@@ -9,7 +9,7 @@
 // =============================================================================
 
 import { setPluginTransport, type PluginDetail } from '../plugin-host'
-import { getCredential, setCredential, deleteProviderCredentials } from '../credentials'
+import { getCredential, setCredential, deleteProviderCredentials, vaultWritable } from '../credentials'
 import { auditCredentialUse } from '../audit'
 import { publish } from '../notify'
 import { AsusInstanceStore } from './instances'
@@ -23,7 +23,7 @@ let sweeper: NodeJS.Timeout | null = null
 
 export function productionAsus(): AsusService {
   return new AsusService({
-    store: new AsusInstanceStore({ get: getCredential, set: setCredential, remove: deleteProviderCredentials }),
+    store: new AsusInstanceStore({ get: getCredential, set: setCredential, remove: deleteProviderCredentials, writable: vaultWritable }),
     audit: auditCredentialUse,
     publish: e => publish(e),
   })
