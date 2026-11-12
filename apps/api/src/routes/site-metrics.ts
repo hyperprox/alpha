@@ -135,6 +135,8 @@ export interface AdoptInput {
   errorLog: string | null
   /** LiteSpeed's lsphp for WP-CLI (WordPress only); null uses the php on the PATH. */
   phpBin: string | null
+  /** The app it runs, when site discovery named one (Ghost): only the label. Its metrics are an 'other' site's. */
+  app?: 'ghost'
 }
 
 /** Check what an admin typed for an adoption. Returns the clean values or the reasons it is refused. */
@@ -168,10 +170,12 @@ export function checkAdoptInput(raw: any): { input?: AdoptInput; errors: string[
     phpBin = safePhpBin(raw.phpBin)
     if (!phpBin) errors.push('The PHP for WP-CLI must be one of LiteSpeed\'s, /usr/local/lsws/lsphpNN/bin/php.')
   }
+  const app = raw?.app === 'ghost' && kind === 'other' ? 'ghost' as const : null
+  if (raw?.app !== undefined && raw?.app !== null && raw?.app !== '' && !app) errors.push('Only an "other" site can be marked as Ghost.')
   const name = String(raw?.name ?? '').trim().slice(0, 80)
   if (name && !/^[\p{L}\p{N} ._'()-]+$/u.test(name)) errors.push('The name may hold letters, digits, spaces and . _ \' ( ) - only.')
   if (errors.length) return { errors }
-  return { input: { vmid, url, logPath: logPath!, kind: kind!, wpPath, name, errorLog, phpBin }, errors }
+  return { input: { vmid, url, logPath: logPath!, kind: kind!, wpPath, name, errorLog, phpBin, ...(app ? { app } : {}) }, errors }
 }
 
 /** The read-only look inside a container before it is adopted. Sends back facts and at most 50 log lines, as base64. */
@@ -380,7 +384,7 @@ export function buildSiteMetricsRoutes(over: Partial<SiteMetricsRouteDeps> = {})
       const u = new URL(i.url)
       const isPublic = u.protocol === 'https:' && !/^\d+\.\d+\.\d+\.\d+$/.test(u.hostname) && !/\.(local|lan|internal|home\.arpa)$/.test(u.hostname)
       const site: SiteRecord = {
-        id: `a${randomBytes(6).toString('hex')}`, recipeId: `adopted-${i.kind}`, name: i.name || g.name || u.hostname,
+        id: `a${randomBytes(6).toString('hex')}`, recipeId: i.app === 'ghost' ? 'adopted-ghost' : `adopted-${i.kind}`, name: i.name || g.name || u.hostname,
         vmid: g.vmid, node: g.node, ip: (await d.guestIp(g.node, g.vmid)) ?? undefined,
         domain: isPublic ? u.hostname : undefined, url: isPublic ? i.url : undefined, localUrl: isPublic ? undefined : i.url,
         jobId: 'adopted', owner: who(req), createdAt: d.now().getTime(),

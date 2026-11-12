@@ -35,6 +35,10 @@ import { pbsSetupDeps, pbsSetupNodeRunner } from './pbs/setup-deps'
 import { PBS_SETUP_STEPS, pbsPreviewChecks, runPbsSetup, scriptEnv as pbsScriptEnv, type SetupDeps as PbsSetupDeps } from './pbs/catalogue'
 import { bindMountpoint, cleanNfsSource, mountScript, unmountScript, DATASTORE_BASE } from './pbs/nfs'
 import {
+  GHOST_SETUP_STEPS, ghostOverShell, runGhostSetup, ghostPreview, ghostInstallEnv, dropPendingSmtp, type GhostHttp, type Shell,
+} from './ghost/setup'
+import { mailWanted } from './ghost/recipe'
+import {
   planPublish, runPublish, cleanupPublish, recordSite, realPublishDeps, PUBLISH_STEPS,
   type PublishDeps, type PublishPlan, type PublishLedger, type PublishInput,
 } from './sites'
@@ -129,6 +133,8 @@ export interface InstallDeps {
   nodeRun?:    (node: string, script: string, timeoutMs: number) => Promise<{ code: number; output: string }>
   /** Proxmox Backup Server's setup steps reach the new server, the vault, its plug-in and the cluster's storage. */
   pbsSetup?:   () => PbsSetupDeps
+  /** Ghost's setup requests, given the site's address and the container's shell (default: curl over pct exec). */
+  ghostHttp?:  (url: string, sh: Shell) => GhostHttp
 }
 
 const realDeps = (): InstallDeps => ({
@@ -338,6 +344,7 @@ const STEPS = (recipe: CatalogueRecipe, first: string, publish?: PublishPlan): I
   { id: 'network',   label: 'Wait for an address',   status: 'pending' },
   { id: 'install',   label: `Install ${recipe.name}`, status: 'pending' },
   ...(recipe.setup === 'pbs' ? PBS_SETUP_STEPS.map(x => ({ ...x, status: 'pending' as Phase })) : [
+    ...(recipe.setup === 'ghost' ? GHOST_SETUP_STEPS.map(x => ({ id: x.id, label: x.label, status: 'pending' as Phase })) : []),
     { id: 'verify',    label: 'Check it answers',       status: 'pending' as Phase },
     { id: 'wire',      label: 'Configure the integration', status: 'pending' as Phase },
   ]),
@@ -368,6 +375,8 @@ export async function startInstall(opts: {
   }
   const opt = checkOptions(recipe, opts.options)
   if (opt.errors.length) throw new Error(opt.errors.join(' '))
+  // Only a wizard preview puts an SMTP password in the vault; a reference sent here is never used.
+  if (recipe.setup === 'ghost') opt.values.GHOST_SMTP_REF = ''
   const target = await preflight(deps, opts.intoVmid)
   const job = newJob(recipe, opts.owner ?? '', `Use CT ${opts.intoVmid}`)
   void persistJob(job).catch(() => {})
@@ -440,6 +449,10 @@ async function runJob(
     // Before the vault write: a container with no address fails here, leaving nothing saved.
     // Options first, so nothing the installer sets can be replaced by one.
     const env: Record<string, string> = { ...options, ...hostEnv(recipe, { ip: job.ip }), ...(recipe.setup === 'pbs' ? pbsScriptEnv() : {}) }
+    // Ghost: its url (the public https:// name, or the container's own address), ghost.env and the SMTP password,
+    // which moves from the preview's vault item into the site's own.
+    const ghost = recipe.setup === 'ghost' ? await ghostInstallEnv({ options, domain: ctx.publish?.domain, ip: job.ip }, deps) : null
+    if (ghost) Object.assign(env, ghost.env)
     if (fr.kind === 'env-admin' && admin) {
       env[fr.passwordEnv] = admin.password
       if (fr.userEnv) env[fr.userEnv] = admin.user
@@ -453,9 +466,11 @@ async function runJob(
       await deps.saveSecrets('apps', provider, {
         admin_user: admin.user, admin_password: admin.password,
         ...Object.fromEntries(extra.map(x => [x.vaultKey, x.value])),
+        ...(ghost?.vault ?? {}),
       })
       job.vaultItem = { category: 'apps', provider, createdByJob }
       await persistJob(job).catch(() => {})
+      if (ghost?.pendingRef) await dropPendingSmtp(ghost.pendingRef, deps)
     }
     // The Arr Stack's compose file, folders and VPN login (moved from the preview's vault item to the stack's own).
     if (recipe.stack === 'arr') Object.assign(env, await arrInstallEnv({ owner: job.owner, options, vault: job.vaultItem }, deps))
@@ -512,6 +527,25 @@ async function runJob(
       job.status = 'completed'
       return
     }
+    // Ghost: the owner, the title, HyperProx's Admin API key and mail, over the container's loopback. A failure stops
+    // Ghost and nginx (lib/ghost/setup.ts), so its setup is never left waiting.
+    if (recipe.setup === 'ghost') {
+      if (!admin || !job.vaultItem || !ghost) throw new Error('Ghost needs its generated owner password and its vault item to be set up.')
+      const sh: Shell = (script, timeoutMs) => deps.exec({ host: nodeIp, cred, vmid: job.vmid!, script, timeoutMs, onData: () => {} })
+      const base = `/nodes/${encodeURIComponent(job.node!)}/lxc/${job.vmid}`
+      await runGhostSetup({
+        url: ghost.env.GHOST_URL, owner: { name: options.GHOST_OWNER_NAME, email: admin.user, password: admin.password },
+        title: options.GHOST_TITLE, description: options.GHOST_DESCRIPTION ?? '', mail: mailWanted(options),
+        vault: { category: job.vaultItem.category, provider: job.vaultItem.provider },
+      }, id => step(job, id), {
+        http: (deps.ghostHttp ?? ghostOverShell)(ghost.env.GHOST_URL, sh), sh, wait: deps.wait, saveSecrets: deps.saveSecrets, now: Date.now,
+        stopContainer: async () => {
+          await deps.client.waitForTask(job.node!, await deps.client.fetchStrict<string>(`${base}/status/stop`, 'POST'), { timeoutMs: 2 * 60_000 })
+          return (await deps.client.fetchStrict<any>(`${base}/status/current`))?.status === 'stopped'
+        },
+      })
+    }
+
     const s4 = step(job, 'verify')
     const url = job.ip ? `http://${job.ip}:${recipe.port}` : ''
     if (url) {
@@ -667,6 +701,8 @@ export type WizardInput = Omit<InstallPlan, 'template' | 'downloadTemplate' | 'u
   arrNames?: ArrPublishInput
   /** Publish it: the zone, the name in it and the proxy. Checked into a PublishPlan by the preview. */
   publish?: PublishInput
+  /** Ghost's SMTP password. Never kept in the plan: the preview puts it in the vault. */
+  ghostSmtpPassword?: unknown
 }
 
 export interface Preview {
@@ -1192,6 +1228,14 @@ export async function previewInstall(
     storageFreeGb: view.storages.find(x => x.node === input.node && x.storage === input.storage)?.freeGb,
   }, deps, () => randomBytes(6).toString('hex')) : null
   if (arr) { r.errors.push(...arr.errors); r.warnings.push(...arr.warnings); r.checks.push(...arr.checks); input = { ...input, options: arr.options } }
+  // Ghost: the SMTP password into the vault (only this preview names its item), and what mail will do.
+  if (recipe.setup === 'ghost') {
+    const o = checkOptions(recipe, input.options)
+    const g = o.errors.length || r.errors.length ? null : await ghostPreview(o.values, input.ghostSmtpPassword, deps)
+    if (g) { r.errors.push(...g.errors); r.warnings.push(...g.warnings); r.checks.push(...g.checks) }
+    // The reference is the preview's own, or empty: one sent in the request is never used.
+    input = { ...input, options: g?.options ?? { ...o.values, GHOST_SMTP_REF: '' } }
+  }
   let publish: PublishPlan | undefined
   if (input.publish) {
     if (recipe.category !== 'web') r.errors.push(`${recipe.name} is not published by the wizard; only websites are.`)

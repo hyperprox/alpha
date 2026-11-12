@@ -50,6 +50,13 @@ interface Job {
 }
 
 const STEPS = ['Kind', 'Address', 'Placement', 'Basics', 'Review', 'Run'] as const
+/** Options the server fills in itself (a vault reference), never shown or typed. */
+const INTERNAL_OPTIONS = new Set(['GHOST_SMTP_REF'])
+/** What each website's vault item holds, for the review. */
+const VAULT_HOLDS: Record<string, string> = {
+  wordpress: 'admin user, admin password, database password',
+  ghost: 'owner email, owner password, database passwords, HyperProx\'s Ghost Admin API key, and the SMTP password when there is one',
+}
 const SIZE_WORD = { small: 'Small', medium: 'Medium', large: 'Large' } as const
 
 function Field({ label, hint, children }: { label: string; hint?: React.ReactNode; children: React.ReactNode }) {
@@ -91,6 +98,8 @@ export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes
 
   // Basics
   const [opts, setOpts] = useState<Record<string, string>>({})
+  // Ghost's SMTP password: sent once with the preview, which puts it in the vault; never kept in the plan.
+  const [smtpPassword, setSmtpPassword] = useState('')
 
   // Review and run
   const [preview, setPreview] = useState<Preview | null>(null)
@@ -101,7 +110,9 @@ export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes
   const [job, setJob] = useState<Job | null>(null)
   const [cleanupNote, setCleanupNote] = useState('')
 
-  const options: RecipeOption[] = recipe?.options ?? []
+  const options: RecipeOption[] = (recipe?.options ?? []).filter(o => !INTERNAL_OPTIONS.has(o.key))
+  const isGhost = recipe?.id === 'ghost'
+  const needsSmtpPassword = isGhost && Boolean(String(opts.GHOST_SMTP_USER ?? '').trim())
   const missing = options.filter(o => o.required && !String(opts[o.key] ?? '').trim())
   const selected = placement?.nodes.find(n => n.node === node)
   const domain = lanOnly ? '' : apex ? zone : sub && zone ? `${sub}.${zone}` : ''
@@ -111,7 +122,7 @@ export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes
     setOpts(Object.fromEntries((r.options ?? []).map(o => [o.key, o.default ?? ''])))
     const sz = r.sizes?.medium ?? r.defaults
     setCores(sz.cores); setMemoryMb(sz.memoryMb); setDiskGb(sz.diskGb); setSize('medium')
-    setSub(s => s || (r.id === 'wordpress' ? 'blog' : 'www'))
+    setSub(s => s || (r.id === 'wordpress' || r.id === 'ghost' ? 'blog' : 'www'))
   }
   const applySize = (k: 'small' | 'medium' | 'large') => {
     const sz = recipe?.sizes?.[k]; if (!sz) return
@@ -187,9 +198,9 @@ export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes
       if (unknownKeys.length && !acked) return false
       return true
     }
-    if (step === 3) return missing.length === 0
+    if (step === 3) return missing.length === 0 && (!needsSmtpPassword || Boolean(smtpPassword))
     return true
-  }, [step, recipe, lanOnly, addrPlan, selected, storage, vmid, hostname, bridge, identity, mode, ip, unknownKeys, acked, missing])
+  }, [step, recipe, lanOnly, addrPlan, selected, storage, vmid, hostname, bridge, identity, mode, ip, unknownKeys, acked, missing, needsSmtpPassword, smtpPassword])
 
   const makePreview = async () => {
     if (!recipe) return
@@ -202,6 +213,7 @@ export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes
       ip: mode === 'dhcp' ? 'dhcp' : ip, ...(mode === 'static' && gateway ? { gateway } : {}),
       ...(mode === 'static' && acked && unknownKeys.length ? { addressAck: unknownKeys } : {}),
       options: sent, ...(domain ? { publish: { zone, name: apex ? '@' : sub, instanceId: proxy } } : {}),
+      ...(needsSmtpPassword && smtpPassword ? { ghostSmtpPassword: smtpPassword } : {}),
     })
     setBusy(false)
     if (!r.ok) { setError(r.error ?? 'The plan could not be checked.'); setProblems((r.body as any)?.problems ?? []); return }
@@ -291,12 +303,6 @@ export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes
                   <p style={{ margin: '6px 0 0', fontSize: 13, lineHeight: 1.5, color: 'var(--text-muted)' }}>{r.summary}</p>
                 </button>
               ))}
-              <div className={styles.card} aria-disabled="true" style={{ opacity: 0.55 }}>
-                <b className="font-display" style={{ fontSize: 19, color: 'var(--text-bright)' }}>Ghost</b>
-                <p style={{ margin: '6px 0 0', fontSize: 13, lineHeight: 1.5, color: 'var(--text-muted)' }}>
-                  Not available yet. Ghost supports only MySQL 8 in production, which Debian 13 does not ship, and its installer takes the database password on the command line.
-                </p>
-              </div>
             </div>
           )}
 
@@ -431,8 +437,19 @@ export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes
                   </Field>
                 ))}
               </div>
+              {needsSmtpPassword && (
+                <Field label="SMTP password *" hint="Put straight into the vault when you go on to Review; it is never kept in the plan or shown in a log.">
+                  <input className={field} type="password" autoComplete="new-password" value={smtpPassword} maxLength={300}
+                    onChange={e => setSmtpPassword(e.target.value)} />
+                </Field>
+              )}
+              {isGhost && !String(opts.GHOST_SMTP_HOST ?? '').trim() && (
+                <p className={styles.callout}>Without an SMTP server Ghost sends no mail: no staff invites, password resets, member sign-in links or newsletters. The owner signs in with the password from the vault, and you can add mail later.</p>
+              )}
               {recipe.firstRunKind === 'env-admin' && (
-                <p className={styles.callout}>The admin password and the database password are generated, saved in the vault before anything installs, and never shown in a log. The admin password is shown to you once when the install finishes, and the vault can reveal both later.</p>
+                <p className={styles.callout}>{isGhost
+                  ? 'The owner password and the database passwords are generated and saved in the vault before anything installs, and never shown in a log. HyperProx then creates the owner through Ghost\'s own setup, sets the title, and keeps an Admin API key in the vault for the Sites card. Ghost\'s setup page is never open to the network. The owner password is shown to you once when the install finishes.'
+                  : 'The admin password and the database password are generated, saved in the vault before anything installs, and never shown in a log. The admin password is shown to you once when the install finishes, and the vault can reveal both later.'}</p>
               )}
             </div>
           )}
@@ -467,13 +484,13 @@ export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes
                     {recipe?.firstRunKind === 'env-admin' && (
                       <div className={styles.card}>
                         <p className="font-mono text-[10px] uppercase tracking-[0.14em] mb-2" style={{ color: 'var(--accent)' }}>Vault</p>
-                        <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)' }}>One item, apps/{recipe.id}-{preview.plan.vmid}: admin user, admin password, database password.</p>
+                        <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)' }}>One item, apps/{recipe.id}-{preview.plan.vmid}: {VAULT_HOLDS[recipe.id] ?? 'admin user, admin password, database password'}.</p>
                       </div>
                     )}
                     <div className={styles.card}>
                       <p className="font-mono text-[10px] uppercase tracking-[0.14em] mb-2" style={{ color: 'var(--accent)' }}>Site</p>
                       <ul style={{ margin: 0, paddingLeft: 0, listStyle: 'none', fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.7 }}>
-                        {options.filter(o => preview.plan.options?.[o.key]).map(o => (
+                        {options.filter(o => preview.plan.options?.[o.key] && !(isGhost && o.key.startsWith('GHOST_SMTP_') && !preview.plan.options.GHOST_SMTP_HOST)).map(o => (
                           <li key={o.key}>{o.label}: {o.kind === 'boolean' ? (preview.plan.options[o.key] === '1' ? 'yes' : 'no') : preview.plan.options[o.key]}</li>
                         ))}
                       </ul>
@@ -501,6 +518,7 @@ export function NewSiteWizard({ recipes, onClose, onDone, previewId }: { recipes
                 <div className={styles.card} style={{ borderColor: 'var(--good)' }}>
                   <Pill tone="good">live</Pill>
                   {job.url && <p style={{ margin: '8px 0' }}><a href={job.url} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>{job.url}</a></p>}
+                  {job.url && isGhost && <p style={{ margin: '8px 0' }}><a className={styles.btn} href={`${job.url.replace(/\/+$/, '')}/ghost/`} target="_blank" rel="noreferrer">Open Ghost admin</a></p>}
                   {job.adminCredential && (
                     <p style={{ margin: '8px 0', fontSize: 13, color: 'var(--text-muted)' }}>
                       Admin <b>{job.adminCredential.user}</b>, password <code className="select-all" style={{ color: 'var(--text-bright)' }}>{job.adminCredential.password}</code>. Shown once here; the vault keeps it.

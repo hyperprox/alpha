@@ -20,6 +20,8 @@ import {
   listSites, getSite, planPublish, makeAdminLogin, siteHealth, realPublishDeps,
   type PublishDeps, type SiteRecord,
 } from '../lib/sites'
+import { getProviderCredentials } from '../lib/credentials'
+import { ghostStats, type GhostStatsDeps } from '../lib/ghost/stats'
 
 export interface SiteRouteDeps {
   whoami(): string
@@ -29,6 +31,8 @@ export interface SiteRouteDeps {
   probe(url: string): Promise<{ status: number; body: string } | null>
   audit(action: string, resource: string, details?: Record<string, unknown>): Promise<void>
   now(): number
+  /** The Ghost card's reads: the site's vault item and its own address. */
+  ghost: GhostStatsDeps
 }
 
 export async function realRun(site: SiteRecord, script: string) {
@@ -52,13 +56,29 @@ export function siteProbe(url: string): Promise<{ status: number; body: string }
     .catch(() => null)
 }
 
+/** A GET with headers for the Ghost card: redirects reported, never followed. */
+export function ghostGet(url: string, headers: Record<string, string>): Promise<{ status: number; body: string } | null> {
+  return fetch(url, { headers: { ...ownHeaders('site-probe'), ...headers }, signal: AbortSignal.timeout(8000), redirect: 'manual' })
+    .then(async r => ({ status: r.status, body: r.status >= 300 && r.status < 400 ? '' : (await r.text().catch(() => '')).slice(0, 200_000) }))
+    .catch(() => null)
+}
+
+/** Where a site's admin is: WordPress's wp-admin, Ghost's /ghost/. */
+export function adminUrlOf(s: Pick<SiteRecord, 'recipeId' | 'url' | 'localUrl'>): string | null {
+  const base = (s.url ?? s.localUrl)?.replace(/\/+$/, '')
+  if (!base) return null
+  if (s.recipeId === 'wordpress') return `${base}/wp-admin/`
+  if (s.recipeId === 'ghost' || s.recipeId === 'adopted-ghost') return `${base}/ghost/`
+  return null
+}
+
 /** What the page shows for a site. Never a secret: the vault item is named, and revealed through the vault. */
 function view(s: SiteRecord) {
   return {
     id: s.id, recipeId: s.recipeId, name: s.name, vmid: s.vmid, node: s.node, ip: s.ip ?? null,
     domain: s.domain ?? null, url: s.url ?? null, localUrl: s.localUrl ?? null, adminUser: s.adminUser ?? null,
     vaultItem: s.vault ? itemName(s.vault.category, s.vault.provider) : null,
-    adminUrl: s.recipeId === 'wordpress' ? `${s.url ?? s.localUrl}/wp-admin/` : null,
+    adminUrl: adminUrlOf(s),
     createdAt: s.createdAt,
   }
 }
@@ -71,6 +91,7 @@ export function buildSiteRoutes(over: Partial<SiteRouteDeps> = {}): FastifyPlugi
     probe: siteProbe,
     audit: auditCredentialUse,
     now: Date.now,
+    ghost: { readSecrets: getProviderCredentials, get: ghostGet, now: Date.now },
     ...over,
   }
   return async (fastify) => {
@@ -96,6 +117,17 @@ export function buildSiteRoutes(over: Partial<SiteRouteDeps> = {}): FastifyPlugi
       const site = await getSite(q.params.id)
       if (!site) return reply.status(404).send({ success: false, error: 'No such site' })
       return reply.send({ success: true, data: { checks: await siteHealth(site, d.probe) } })
+    })
+
+    // GET /:id/ghost — the Ghost card: version, published posts and members, read with HyperProx's Admin API key
+    fastify.get<{ Params: { id: string }; Querystring: { refresh?: string } }>('/:id/ghost', async (q, reply) => {
+      const site = await getSite(q.params.id)
+      if (!site) return reply.status(404).send({ success: false, error: 'No such site' })
+      if (site.recipeId !== 'ghost') return reply.status(400).send({ success: false, error: 'Only a Ghost site HyperProx made has an Admin API key for this card.' })
+      try {
+        reply.header('Cache-Control', 'no-store')
+        return reply.send({ success: true, data: await ghostStats(site, d.ghost, q.query.refresh === '1') })
+      } catch (e: any) { return reply.status(502).send({ success: false, error: e.message }) }
     })
 
     // POST /:id/pull — pull a static site from its git repository now
