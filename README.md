@@ -867,7 +867,9 @@ integration already has an address (Settings) still counts as **configured**, as
 **Proxmox Backup Server** installs into a new unprivileged Debian 13 container (2 cores, 2 GB of memory
 and a 10 GB root disk suggested). The script fetches the Proxmox archive key over `https`, checks it
 against its published SHA-256 before apt trusts it (it stops if the file differs), and installs
-`proxmox-backup-server` from Proxmox's `pbs-no-subscription` repository for trixie.
+`proxmox-backup-server` from Proxmox's `pbs-no-subscription` repository for trixie. The package adds
+Proxmox's enterprise repository, which refuses updates without a subscription; the install switches it off
+(`Enabled: no`), so later updates in that container work.
 
 A backup server on the same cluster it backs up is not an off-site copy: if the cluster is lost, its
 backups go with it. So the wizard's first step asks where the backups live:

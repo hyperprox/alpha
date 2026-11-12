@@ -80,6 +80,11 @@ export { SMB_REFUSAL, UID_NOTE }
  */
 export const PBS_SCRIPT = String.raw`. /etc/os-release
 [ "$VERSION_CODENAME" = trixie ] || { echo "This recipe needs Debian 13 (trixie); the container is $VERSION_CODENAME."; exit 1; }
+# The package adds Proxmox's enterprise repository, which answers 401 without a subscription and would break every
+# later apt update in this container (an update, a re-run of this recipe). It is switched off, not deleted: before
+# the first update (a re-run) and again right after the install.
+pbs_no_enterprise() { F=/etc/apt/sources.list.d/pbs-enterprise.sources; if [ -f "$F" ] && ! grep -q '^Enabled:' "$F"; then printf 'Enabled: no\n' >> "$F"; fi; }
+pbs_no_enterprise
 apt-get update -qq
 apt-get install -y -qq ca-certificates curl
 curl -fsSL --proto '=https' -o /tmp/proxmox-archive-keyring.gpg "$PBS_KEY_URL"
@@ -95,17 +100,21 @@ Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
 SOURCES
 apt-get update -qq
 apt-get install -y -qq proxmox-backup-server
+pbs_no_enterprise
+apt-get update -qq
 # The generated root password (in the vault already): the web interface's root@pam login.
 printf 'root:%s\n' "$PBS_ROOT_PASSWORD" | chpasswd
 DS="$PBS_DATASTORE_BASE/$PBS_DATASTORE"
 mountpoint -q "$DS" || { echo "The datastore location $DS is not mounted in the container."; exit 1; }
-# PBS writes as "backup" (uid 34; on the host and the NAS that is uid 100034). Prove it can, before anything is made.
+# PBS writes as "backup" (uid 34; on the host and the NAS that is uid 100034). A new disk's folder belongs to root,
+# so it is handed to backup first (the folder only, never what is in it; a NAS may refuse, and the test decides).
+chown backup:backup "$DS" 2>/dev/null || true
+chmod 0755 "$DS" 2>/dev/null || true
+# Prove it can write, before anything is made.
 if ! su -s /bin/sh backup -c "touch '$DS/.hyperprox-write-test' && rm -f '$DS/.hyperprox-write-test'"; then
   echo "The backup user cannot write to $DS. $PBS_UID_NOTE"
   exit 1
 fi
-chown backup:backup "$DS" 2>/dev/null || true
-chmod 0755 "$DS" 2>/dev/null || true
 if [ -d "$DS/.chunks" ]; then
   [ "$PBS_REATTACH" = 1 ] || { echo "$DS already holds a PBS datastore and re-attaching was not chosen; nothing was changed."; exit 1; }
   proxmox-backup-manager datastore create "$PBS_DATASTORE" "$DS" --reuse-datastore true
