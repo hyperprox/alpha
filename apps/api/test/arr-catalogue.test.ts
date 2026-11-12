@@ -615,3 +615,29 @@ test("wizard: Seerr waiting is never told to be started by hand", async () => {
   assert.match(st.steps["arr-seerr"].detail!, /Connect Plex in HyperProx, then press "Finish Seerr"/)
   assert.doesNotMatch(st.steps["arr-seerr"].detail!, /docker compose up/)
 })
+
+test("failure: an install script that fails, or a stack with no address, stops the apps Compose may already have started", async () => {
+  for (const kind of ["script", "address"] as const) {
+    const pve = new FakePve()
+    const f = new FakeStack()
+    const vmid = kind === "script" ? 907 : 908
+    const vault: Record<string, Record<string, string>> = {}
+    const d = deps(pve, {
+      arr: () => arrDeps(f, pve, []),
+      saveSecrets: async (c, p, v) => { vault[`${c}/${p}`] = { ...(vault[`${c}/${p}`] ?? {}), ...v } },
+      readSecrets: async (c, p) => ({ ...(vault[`${c}/${p}`] ?? {}) }),
+      exec: async (o: any) => (o.script.includes("ARR_COMPOSE_B64") && kind === "script" ? { code: 6, output: "", timedOut: false } : { ...(await f.sh(o.script)), timedOut: false }),
+    })
+    const input: any = { ...INPUT({ recipeId: "arr-stack", hostname: `arr${vmid}`, vmid, ...(kind === "address" ? { ip: "dhcp", gateway: undefined } : {}) }) }
+    if (kind === "address") delete input.gateway
+    const r = await previewInstall(input, "a@example.com", d)
+    assert.deepEqual(r.errors, [], kind)
+    // No address ever comes up for the DHCP container.
+    if (kind === "address") pve.failing.add(`/nodes/node-a/lxc/${vmid}/interfaces`)
+    const job = await applyPreview(r.preview!.id, "a@example.com", d)
+    const done = await settled(job.jobId)
+    assert.equal(done.status, "failed", kind)
+    assert.match(done.error!, kind === "script" ? /The install script exited 6\. See the log below\. Every app was stopped/ : /needs its address and its vault item.*Every app was stopped/, kind)
+    assert.equal(f.stops.length, 1, `${kind}: docker compose stop ran before the job was marked failed`)
+  }
+})

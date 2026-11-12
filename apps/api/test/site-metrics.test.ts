@@ -604,6 +604,15 @@ test('people: HyperProx\'s name from another address is a scanner borrowing it, 
   assert.equal(a.requests, 3)
   assert.equal(a.probes.admin, 1, 'the spoofed /login is counted as an admin probe')
   assert.equal(a.bots, 3)
+  // The proxy runs on HyperProx's own host: its address is the line's remote, never a reason to believe the name.
+  const proxied = [
+    extended('10.0.0.51', '/status.php', '0.010', '203.0.113.9', 404, 'HyperProx-catalogue-detect'),
+    extended('10.0.0.51', '/status.php', '0.010', '-', 404, 'HyperProx-catalogue-detect'),
+  ].map(l => parseLogLine(l)!)
+  assert.equal(proxied[0].remote, '10.0.0.51'); assert.equal(proxied[0].client, '203.0.113.9')
+  const pa = [...aggregateLines(proxied, { ...noHash, kind: 'static', ownPaths: ownRequestPaths(), ownAddresses: US }).hours.values()][0].agg
+  assert.equal(pa.own, 1, 'only the request whose client is HyperProx')
+  assert.equal(pa.probes.php, 1, 'the spoofed one, from a foreign client through the proxy, is a probe')
   // ::ffff:-mapped addresses and the WAN address are matched as plain addresses.
   assert.equal(plainAddress('::FFFF:10.0.0.51'), '10.0.0.51')
   assert.deepEqual(envAddresses('203.0.113.4, 2001:db8::1 nope;value'), ['203.0.113.4', '2001:db8::1'])

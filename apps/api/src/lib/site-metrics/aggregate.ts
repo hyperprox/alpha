@@ -249,7 +249,9 @@ export function aggregateLines(lines: LogLine[], o: BatchOptions): BatchResult {
     const probe = probeKind(l.path, o.kind ?? 'other', l.status)
     // HyperProx's name is believed only for what HyperProx asks for: an ordinary request or one of its own paths.
     // Anything else (a secret file, an admin panel) is a scanner borrowing the name.
-    const fromUs = Boolean(o.ownAddresses?.has(plainAddress(l.client)) || o.ownAddresses?.has(plainAddress(l.remote)))
+    // The visitor's own address only (X-Forwarded-For behind a proxy): `remote` is the proxy, which may well run on
+    // HyperProx's own host and so would vouch for anyone it forwards.
+    const fromUs = Boolean(o.ownAddresses?.has(plainAddress(l.client)))
     const own = isOwnUa(l.ua) && fromUs && (probe === null || (o.ownPaths?.has(l.path) ?? false))
     if (!own && (ua.bot || probe || l.path === '/robots.txt' || !l.method)) botBy.add(id)
     if (!own && l.path === '/' && l.method === 'GET' && l.status >= 200 && l.status < 300 && l.bytes > 0) homeBytes.add(l.bytes)

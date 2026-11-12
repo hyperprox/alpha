@@ -21,7 +21,7 @@ import {
 } from './wizard-placement'
 import { archOfKernel, archOfTemplate } from './ai/facts'
 import {
-  arrPreview, arrPrepare, arrInstallEnv, arrRunSetup, arrJobSteps, arrCleanup, arrFinishSeerr, realHttp, localAddressTo,
+  arrPreview, arrPrepare, arrInstallEnv, arrRunSetup, arrJobSteps, arrCleanup, arrFinishSeerr, stopApps, stoppedSentence, realHttp, localAddressTo,
   type ArrDeps, type ArrPublishInput, type ArrPublishPlan,
 } from './arr/catalogue'
 import { execOnNode } from './node-exec'
@@ -459,13 +459,22 @@ async function runJob(
     }
     // The Arr Stack's compose file, folders and VPN login (moved from the preview's vault item to the stack's own).
     if (recipe.stack === 'arr') Object.assign(env, await arrInstallEnv({ owner: job.owner, options, vault: job.vaultItem }, deps))
+    // The Arr Stack's shell in its container, and the stop that every failure after `docker compose up` runs first:
+    // an app Compose already started may have no sign-in yet.
+    const arrSh = (script: string, timeoutMs: number) => deps.exec({ host: nodeIp, cred, vmid: job.vmid!, script, timeoutMs, onData: () => {} })
+    const arrStopContainer = async () => {
+      const base = `/nodes/${encodeURIComponent(job.node!)}/lxc/${job.vmid}`
+      await deps.client.waitForTask(job.node!, await deps.client.fetchStrict<string>(`${base}/status/stop`, 'POST'), { timeoutMs: 2 * 60_000 })
+      return (await deps.client.fetchStrict<any>(`${base}/status/current`))?.status === 'stopped'
+    }
+    const arrFail = async (msg: string): Promise<never> => { throw new Error(`${msg} ${stoppedSentence(await stopApps(arrSh, arrStopContainer))}`) }
     const run = await deps.exec({
       host: nodeIp, cred, vmid: job.vmid!, script: installScript(recipe, distro, env),
       timeoutMs: 20 * 60_000,
       onData: chunk => { job.log = (job.log + chunk).slice(-20_000) },
     })
-    if (run.timedOut) throw new Error('The install ran for twenty minutes without finishing.')
-    if (run.code !== 0) throw new Error(`The install script exited ${run.code}. See the log below.`)
+    if (run.timedOut) { const m = 'The install ran for twenty minutes without finishing.'; if (recipe.stack === 'arr') return await arrFail(m); throw new Error(m) }
+    if (run.code !== 0) { const m = `The install script exited ${run.code}. See the log below.`; if (recipe.stack === 'arr') return await arrFail(m); throw new Error(m) }
     s3.status = 'done'
 
     // Proxmox Backup Server: its own setup steps (certificate pin, health, tokens, plug-in, optional storage).
@@ -486,7 +495,7 @@ async function runJob(
     // 4. Listening is not the same as serving.
     // The Arr Stack proves each app itself, then does its setup chores (lib/arr/setup.ts) in place of the wiring.
     if (recipe.stack === 'arr') {
-      if (!job.ip || !admin || !job.vaultItem) throw new Error('The Arr Stack needs its address and its vault item to be set up.')
+      if (!job.ip || !admin || !job.vaultItem) return await arrFail('The Arr Stack needs its address and its vault item to be set up.')
       const s0 = job.steps.find(x => x.id === 'container')
       if (s0 && job.arrPrepared) s0.detail = `${s0.detail}: ${job.arrPrepared}`
       const out = await arrRunSetup({
@@ -494,12 +503,7 @@ async function runJob(
         publish: ctx.arrPublish, recipe, ledgers: (job.arrLedgers ??= {}), save: () => { void persistJob(job).catch(() => {}) },
       }, id => step(job, id), {
         arr: deps.arr, wait: deps.wait, publish: deps.publish, saveSecrets: deps.saveSecrets, readSecrets: deps.readSecrets,
-        sh: (script, timeoutMs) => deps.exec({ host: nodeIp, cred, vmid: job.vmid!, script, timeoutMs, onData: () => {} }),
-        stopContainer: async () => {
-          const base = `/nodes/${encodeURIComponent(job.node!)}/lxc/${job.vmid}`
-          await deps.client.waitForTask(job.node!, await deps.client.fetchStrict<string>(`${base}/status/stop`, 'POST'), { timeoutMs: 2 * 60_000 })
-          return (await deps.client.fetchStrict<any>(`${base}/status/current`))?.status === 'stopped'
-        },
+        sh: arrSh, stopContainer: arrStopContainer,
       })
       job.url = out.url
       job.arrApps = out.apps

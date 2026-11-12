@@ -298,11 +298,15 @@ export async function arrRunSetup(o: {
     // A half set up stack may have an app with no sign-in yet: nothing is left running when setup fails.
     const secrets = [o.admin.password, ...Object.values(await d.readSecrets(o.vault.category, o.vault.provider).catch(() => ({} as Record<string, string>)))]
     const msg = redact(String(e?.message ?? e), secrets)
-    const stopped = await stopApps(d.sh, d.stopContainer)
-    throw new Error(`${msg} ${stopped === 'apps' ? 'Every app was stopped, so nothing is left running half set up; clean up the install or run it again.'
-      : stopped === 'container' ? 'The apps could not be stopped one by one, so the whole container was stopped; clean up the install or run it again.'
-        : 'The apps could not be stopped: stop the container yourself before anyone reaches it.'}`)
+    throw new Error(`${msg} ${stoppedSentence(await stopApps(d.sh, d.stopContainer))}`)
   }
+}
+
+/** What a failure message says about the apps it stopped. */
+export function stoppedSentence(stopped: 'apps' | 'container' | null): string {
+  return stopped === 'apps' ? 'Every app was stopped, so nothing is left running half set up; clean up the install or run it again.'
+    : stopped === 'container' ? 'The apps could not be stopped one by one, so the whole container was stopped; clean up the install or run it again.'
+      : 'The apps could not be stopped: stop the container yourself before anyone reaches it.'
 }
 
 /** Replace every known secret in a message, longest first, so nothing generated reaches the job or its steps. */
