@@ -195,6 +195,8 @@ curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/bootstrap.sh |
 | `--bridge NAME` | `vmbr0` | Network bridge |
 | `--ip CIDR` | fits your numbering, or `dhcp` | Static address, for example `192.0.2.50/24` |
 | `--gateway IP` | | Gateway, required with `--ip` |
+| `--dns IP[,IP]` | the node's own | The container's DNS servers (IPv4 or IPv6, up to three). When the node's resolver is one a container cannot reach (Tailscale's 100.100.100.100 or anything in 100.64.0.0/10, a local 127.x or `::1` stub), the container gets 1.1.1.1 and the summary says so. With `HPX_API_URL` and `HPX_API_TOKEN` pointing at an existing HyperProx, the DNS saved in its Naming & addresses is used instead |
+| `--ref REF` | `main` | Install a release tag, branch or commit |
 | `--password PASS` | generated | Container root password |
 | `--skip-exporter` | | Answer no to watching node health |
 | `--skip-rapl` | | Answer no to power monitoring |

@@ -38,6 +38,7 @@ BRIDGE="vmbr0"     ; NET="dhcp"         ; GATEWAY=""
 STORAGE=""         ; TEMPLATE_STORAGE=""
 PASSWORD=""        ; ASSUME_YES=0       ; DRY_RUN=0       ; KEEP_ON_FAILURE=0
 REF=""             # a tag, branch or commit to install instead of main (--ref)
+DNS=""             ; DNS_FROM=""        ; DNS_NOTE=""      # the container's nameservers (--dns, or chosen below)
 [ "${HYPERPROX_YES:-}" = 1 ] && ASSUME_YES=1
 # Answers: "" means ask (or take the default with -y); a flag below answers in advance.
 A_NODE_HEALTH=""   ; A_POWER=""         ; A_GPU=""
@@ -73,6 +74,8 @@ Usage: bootstrap.sh [options]
   --igpu | --no-igpu  Answer yes or no: let containers use the nodes' built-in graphics
   --dry-run           Look and ask, then show what would be done; change nothing
   --keep-on-failure   If the install fails, keep what was created so you can look inside
+  --dns IP[,IP]       The container's DNS servers, IPv4 or IPv6, at most three (default: the node's own,
+                      unless the container cannot reach it, e.g. Tailscale's 100.100.100.100; then 1.1.1.1)
   --ref REF           Install this release tag, branch or commit instead of main (e.g. v0.3.0);
                       HyperProx can update itself from there (Updates page)
   -y, --yes           Take every default and do not ask (or set HYPERPROX_YES=1)
@@ -238,6 +241,70 @@ on_exit() {
   fi
   for p in "${TMP_PATHS[@]}"; do [ -n "$p" ] && rm -rf -- "$p"; done
   exit "$rc"
+}
+
+# ---------------------------------------------------------------------------
+#  The container's DNS
+#
+#  Proxmox gives a new container the node's own /etc/resolv.conf. That fails when the node's resolver is one
+#  only the node can reach: Tailscale's MagicDNS (100.100.100.100, fd7a:115c:a1e0::53), a local stub
+#  (127.0.0.53 from systemd-resolved, ::1), or anything else in Tailscale's 100.64.0.0/10. In that order of
+#  preference the container gets: --dns; the DNS saved in an existing HyperProx's Naming & addresses, when
+#  HPX_API_URL and HPX_API_TOKEN point at one; 1.1.1.1 when the node's resolver is unusable; else the node's.
+# ---------------------------------------------------------------------------
+IPV4_RE='^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$'
+is_ipv4() { [[ "$1" =~ $IPV4_RE ]]; }
+is_ipv6() {   # hex groups and colons, at most one "::", 2..8 groups; no zone, no embedded IPv4
+  local a="$1" groups
+  [[ "$a" =~ ^[0-9A-Fa-f:]{2,39}$ && "$a" == *:* ]] || return 1
+  [[ "$a" != *:::* ]] || return 1
+  [ "$(grep -o '::' <<< "$a" | wc -l)" -le 1 ] || return 1
+  [[ "$a" =~ (^|:)[0-9A-Fa-f]{5,} ]] && return 1
+  groups="$(tr ':' '\n' <<< "$a" | grep -c .)"
+  if [[ "$a" == *::* ]]; then [ "$groups" -le 7 ]; else [ "$groups" -eq 8 ] && [[ "$a" != :* && "$a" != *: ]]; fi
+}
+dns_list_ok() {   # "ip[,ip[,ip]]"
+  local a n=0 IFS=,
+  [ -n "$1" ] && [[ "$1" != *,,* && "$1" != ,* && "$1" != *, ]] || return 1
+  for a in $1; do n=$((n + 1)); is_ipv4 "$a" || is_ipv6 "$a" || return 1; done
+  [ "$n" -ge 1 ] && [ "$n" -le 3 ]
+}
+# Why a resolver is unusable from a container ("tailscale", "stub", "cgnat"), or nothing.
+dns_unusable() {
+  local a="${1,,}" o2
+  case "$a" in
+    100.100.100.100|fd7a:115c:a1e0:*) echo tailscale; return;;
+    127.*|::1) echo stub; return;;
+  esac
+  if [[ "$a" =~ ^100\.([0-9]{1,3})\. ]]; then o2="${BASH_REMATCH[1]}"; [ "$o2" -ge 64 ] && [ "$o2" -le 127 ] && echo cgnat; fi
+  return 0
+}
+# The DNS servers in an existing HyperProx's Naming & addresses, comma separated, or nothing.
+naming_dns() {
+  [ -n "${HPX_API_URL:-}" ] && [ -n "${HPX_API_TOKEN:-}" ] || return 0
+  [[ "$HPX_API_URL" =~ ^https?://[A-Za-z0-9.:-]+(/[A-Za-z0-9._/-]*)?$ ]] || return 0
+  local body list
+  # The token goes to curl on stdin, never on a command line.
+  body="$(printf 'Authorization: Bearer %s\n' "$HPX_API_TOKEN" \
+    | curl -fsSk --max-time 8 -H @- "${HPX_API_URL%/}/api/catalogue/wizard/naming" 2>/dev/null)" || return 0
+  list="$(tr -d '\n' <<< "$body" | sed -n 's/.*"dns"[[:space:]]*:[[:space:]]*\[\([^]]*\)\].*/\1/p' | tr -d '" \t')"
+  [ -n "$list" ] && dns_list_ok "$list" && echo "$list"
+}
+choose_dns() {   # sets DNS, DNS_FROM, DNS_NOTE
+  [ -n "$DNS_FROM" ] && return
+  local saved ns why=""
+  saved="$(naming_dns)"
+  if [ -n "$saved" ]; then DNS="$saved"; DNS_FROM="Naming & addresses"; return; fi
+  for ns in $(awk '$1 == "nameserver" {print $2}' "${HPX_RESOLV_CONF:-/etc/resolv.conf}" 2>/dev/null); do
+    why="$(dns_unusable "$ns")"; [ -n "$why" ] && break
+  done
+  [ -n "$why" ] || return 0
+  DNS="1.1.1.1"; DNS_FROM="auto"
+  case "$why" in
+    tailscale) DNS_NOTE="Your node uses Tailscale DNS; the container will use 1.1.1.1 (change with --dns).";;
+    stub)      DNS_NOTE="Your node uses a local DNS stub ($ns), which a container cannot reach; the container will use 1.1.1.1 (change with --dns).";;
+    cgnat)     DNS_NOTE="Your node's DNS server $ns is in 100.64.0.0/10 (Tailscale's range), which a container usually cannot reach; the container will use 1.1.1.1 (change with --dns).";;
+  esac
 }
 
 # ---------------------------------------------------------------------------
@@ -450,6 +517,7 @@ main() {
       --dry-run) DRY_RUN=1; shift;;
       --keep-on-failure) KEEP_ON_FAILURE=1; shift;;
       --ref) REF="${2:-}"; shift 2;;
+      --dns) DNS="${2:-}"; DNS_FROM="--dns"; shift 2;;
       -y|--yes) ASSUME_YES=1; shift;;
       -h|--help) usage; exit 0;;
       *) die "Unknown option: $1 (try --help)";;
@@ -466,6 +534,9 @@ main() {
     [[ "$REF" =~ ^[A-Za-z0-9._/-]{1,100}$ && "$REF" != *..* && "$REF" != -* ]] || die "--ref must be a tag, branch or commit id."
     # The installer and the node scripts come from that same version (HPX_RAW_BASE, when set, is used as given).
     [ -n "${HPX_RAW_BASE:-}" ] || RAW_BASE="https://raw.githubusercontent.com/hyperprox/alpha/$REF"
+  fi
+  if [ -n "$DNS_FROM" ]; then
+    dns_list_ok "$DNS" || die "--dns must be one to three IPv4 or IPv6 addresses, separated by commas."
   fi
   # A mirror or fork to clone instead of GitHub (HPX_REPO_URL), as install.sh's HYPERPROX_REPO_URL.
   REPO_URL_ARG="${HPX_REPO_URL:-}"
@@ -536,6 +607,12 @@ main() {
       || die "Storage '$STORAGE' is not active on this node, or cannot hold containers."
   fi
   ok "Rootfs storage: $STORAGE"
+  choose_dns
+  case "$DNS_FROM" in
+    "")   ok "DNS: the node's own" ;;
+    auto) ok "DNS: ${DNS//,/, }"; note "$DNS_NOTE" ;;
+    *)    ok "DNS: ${DNS//,/, } (from ${DNS_FROM})" ;;
+  esac
 
   # -------------------------------------------------------------------------
   #  3. Template — the newest Debian 13 built for this CPU. A template for
@@ -724,6 +801,9 @@ main() {
   echo "    Resources  ${CORES} cores · ${MEMORY} MB · ${DISK} GB on ${STORAGE}"
   if [ "$NET" = dhcp ]; then echo "    Network    DHCP on ${BRIDGE}"
   else echo "    Network    ${NET}, gateway ${GATEWAY}, on ${BRIDGE}"; fi
+  if [ -n "$DNS" ]; then echo "    DNS        ${DNS//,/, }$([ "$DNS_FROM" = auto ] || echo " (from ${DNS_FROM})")"
+  else echo "    DNS        the node's own"; fi
+  [ -z "$DNS_NOTE" ] || echo "               ${DNS_NOTE}"
   echo "    Template   ${TEMPLATE} (${ARCH}) on ${TEMPLATE_STORAGE}$([ "$NEED_DOWNLOAD" -eq 1 ] && echo ', downloaded first' || echo ', already there')"
   if [ "$TOKEN_EXISTED" -eq 1 ]; then echo "    Token      root@pam!hyperprox exists already and is left alone; the setup page will ask for one"
   else echo "    Token      root@pam!hyperprox (Administrator on /)"; fi
@@ -791,6 +871,7 @@ main() {
     --cores "$CORES" --memory "$MEMORY" --swap 512 \
     --rootfs "${STORAGE}:${DISK}" \
     --net0 "$NETCONF" \
+    ${DNS:+--nameserver "${DNS//,/ }"} \
     --unprivileged 0 \
     --features "keyctl=1,nesting=1" \
     --onboot 1 --start 0 2>&1)"; then

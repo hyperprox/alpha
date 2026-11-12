@@ -39,6 +39,8 @@ function cluster(nodes, opts = {}) {
     fs.writeFileSync(path.join(dir, `${id}.conf`), conf)
   }
   fs.writeFileSync(path.join(root, 'pingable'), (opts.pingable ?? []).join('\n') + '\n')
+  // The node's resolver: a plain LAN one unless the test says otherwise (opts.resolv).
+  fs.writeFileSync(path.join(root, 'resolv.conf'), opts.resolv ?? 'search lan\nnameserver 192.0.2.53\n')
   fs.writeFileSync(path.join(root, 'tokens'), (opts.tokens ?? []).join('\n') + (opts.tokens?.length ? '\n' : ''))
   fs.writeFileSync(path.join(root, 'rootdir'), opts.rootdir ??
     'Name Type Status Total Used Available %\nnas cifs active 9000000000 0 9000000000 0.00%\nlocal-lvm lvmthin active 300000000 0 300000000 0.00%\nsmall zfspool active 50000000 0 50000000 0.00%\n')
@@ -123,7 +125,7 @@ if ! grep -q '^# HyperProx node-side helpers' <<< "$s" && grep -q '^# HyperProx 
 step="$(grep -m1 -oE '^# (Undo|node_exporter|Power|Intel GPU|NVIDIA GPU|AMD GPU|Let containers)' <<< "$s" | cut -c3-)"
 echo "$node $step" >> ${root}/steps.log
 printf 'HPX-RESULT\\tdone\\tset up (%s)\\n' "$step"`)
-  const env = extra => ({ PATH: `${bin}:/usr/bin:/bin`, HPX_PVE_ETC: path.join(root, 'pve'), HOME: root, TMPDIR: tmp, LANG: 'C', TERM: 'dumb', ...extra })
+  const env = extra => ({ PATH: `${bin}:/usr/bin:/bin`, HPX_PVE_ETC: path.join(root, 'pve'), HPX_RESOLV_CONF: path.join(root, 'resolv.conf'), HOME: root, TMPDIR: tmp, LANG: 'C', TERM: 'dumb', ...extra })
   // A file of answers standing in for the keyboard (HPX_TTY).
   const tty = answers => { const f = path.join(root, `tty-${Math.random().toString(36).slice(2)}`); fs.writeFileSync(f, answers); return f }
   const run = (args, input, extra = {}) => spawnSync('/bin/bash', [BOOTSTRAP, ...args], {
@@ -655,4 +657,99 @@ test('bad --hostname, --gateway or --bridge are refused before anything runs', (
     }
     assert.doesNotMatch(c.calls(), /^pveversion/m, 'refused before looking at anything')
   } finally { c.cleanup() }
+})
+
+// --- the container's DNS ----------------------------------------------------------------------------------------
+
+const TAILSCALE_NOTE = 'Your node uses Tailscale DNS; the container will use 1.1.1.1 (change with --dns).'
+const dnsRun = (opts, args = [], extra = {}) => {
+  const c = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_AMD], ...opts })
+  const r = c.run(['-y', ...args], '', extra)
+  return { c, r, out: plain(r.stdout), create: createLine(c) }
+}
+
+test('DNS: a node on Tailscale DNS gives the container 1.1.1.1, and the summary says why', () => {
+  for (const resolv of ['nameserver 100.100.100.100\nnameserver fd7a:115c:a1e0::53\nsearch tailnet.ts.net\n', 'nameserver fd7a:115c:a1e0::53\n']) {
+    const { c, r, out, create } = dnsRun({ resolv })
+    try {
+      assert.equal(r.status, 0, r.stdout + r.stderr)
+      assert.ok(out.includes(TAILSCALE_NOTE), out)
+      assert.match(out, /DNS\s+1\.1\.1\.1/)
+      assert.match(create, /--nameserver 1\.1\.1\.1( |$)/)
+    } finally { c.cleanup() }
+  }
+})
+
+test('DNS: a local stub (127.x, ::1) and an address in 100.64.0.0/10 are unusable too', () => {
+  for (const [resolv, word] of [['nameserver 127.0.0.53\n', /local DNS stub \(127\.0\.0\.53\)/], ['nameserver ::1\n', /local DNS stub \(::1\)/],
+                                ['nameserver 100.88.1.2\n', /100\.88\.1\.2 is in 100\.64\.0\.0\/10/], ['nameserver 192.0.2.53\nnameserver 127.0.0.1\n', /local DNS stub \(127\.0\.0\.1\)/]]) {
+    const { c, r, out, create } = dnsRun({ resolv })
+    try {
+      assert.equal(r.status, 0, r.stdout + r.stderr)
+      assert.match(out, word)
+      assert.match(out, /the container will use 1\.1\.1\.1 \(change with --dns\)/)
+      assert.match(create, /--nameserver 1\.1\.1\.1/)
+    } finally { c.cleanup() }
+  }
+})
+
+test('DNS: a usable node resolver is left alone (no --nameserver), including 100.128.x just outside CGNAT', () => {
+  for (const resolv of ['nameserver 192.0.2.53\n', 'nameserver 100.128.0.1\n', 'nameserver 2001:db8::53\n', '# no nameserver at all\n']) {
+    const { c, r, out, create } = dnsRun({ resolv })
+    try {
+      assert.equal(r.status, 0, r.stdout + r.stderr)
+      assert.doesNotMatch(create, /--nameserver/)
+      assert.doesNotMatch(out, /change with --dns/)
+      assert.match(out, /DNS\s+the node's own/)
+    } finally { c.cleanup() }
+  }
+})
+
+test('DNS: --dns wins over everything, IPv4 and IPv6, and is passed to pct create as one list', () => {
+  const { c, r, out, create } = dnsRun({ resolv: 'nameserver 100.100.100.100\n' }, ['--dns', '9.9.9.9,2606:4700:4700::1111'])
+  try {
+    assert.equal(r.status, 0, r.stdout + r.stderr)
+    assert.ok(!out.includes(TAILSCALE_NOTE), 'the person chose; nothing to explain')
+    assert.match(out, /DNS\s+9\.9\.9\.9, 2606:4700:4700::1111 \(from --dns\)/)
+    assert.match(create, /--nameserver 9\.9\.9\.9 2606:4700:4700::1111/)
+  } finally { c.cleanup() }
+})
+
+test('DNS: a bad --dns is refused before anything runs', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' })
+  try {
+    for (const bad of ['', '1.2.3', '300.1.1.1', 'dns.example.com', '1.1.1.1;id', '1.1.1.1,,8.8.8.8', '1::2::3', '12345::1',
+                       '1.1.1.1,2.2.2.2,3.3.3.3,4.4.4.4', '$(id)', 'fe80::1%eth0']) {
+      const r = c.run(['-y', '--dry-run', '--dns', bad])
+      assert.notEqual(r.status, 0, bad)
+      assert.match(plain(r.stderr), /--dns must be/, bad)
+    }
+    assert.doesNotMatch(c.calls(), /^pveversion/m, 'refused before looking at anything')
+  } finally { c.cleanup() }
+})
+
+test('DNS: an existing HyperProx\'s Naming & addresses DNS is preferred; its token never reaches a command line', () => {
+  const c = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_AMD], resolv: 'nameserver 100.100.100.100\n' })
+  const curl = path.join(c.root, 'bin', 'curl')
+  const orig = fs.readFileSync(curl, 'utf8')
+  // The stand-in API: answers the naming route only for the right bearer token, read from stdin (-H @-).
+  fs.writeFileSync(curl, orig.replace('  *) exit 7;;', `  https://hyperprox.example/api/catalogue/wizard/naming) h="$(cat)"; [ "$h" = 'Authorization: Bearer tok-naming-1' ] || exit 22
+    echo '{"success":true,"data":{"settings":{"subnet":"10.0.0.0/24","dns":["10.0.0.53", "10.0.0.54"],"bridge":"vmbr0"}}}';;
+  *) exit 7;;`), { mode: 0o755 })
+  try {
+    const ok = c.run(['-y'], '', { HPX_API_URL: 'https://hyperprox.example', HPX_API_TOKEN: 'tok-naming-1' })
+    assert.equal(ok.status, 0, ok.stdout + ok.stderr)
+    assert.match(plain(ok.stdout), /DNS\s+10\.0\.0\.53, 10\.0\.0\.54 \(from Naming & addresses\)/)
+    assert.match(createLine(c), /--nameserver 10\.0\.0\.53 10\.0\.0\.54/)
+    assert.ok(!c.calls().includes('tok-naming-1'), 'the token is on no command line')
+  } finally { c.cleanup() }
+  // Not reachable, or the wrong token: skipped, and the Tailscale rule applies.
+  for (const extra of [{ HPX_API_URL: 'https://hyperprox.example', HPX_API_TOKEN: 'wrong' }, { HPX_API_URL: 'https://down.example', HPX_API_TOKEN: 'tok' }, {}]) {
+    const d = cluster({ 'node-a': 'server-no-gpu' }, { have: [T13_AMD], resolv: 'nameserver 100.100.100.100\n' })
+    try {
+      const r = d.run(['-y', '--dry-run'], '', extra)
+      assert.equal(r.status, 0, r.stdout + r.stderr)
+      assert.ok(plain(r.stdout).includes(TAILSCALE_NOTE))
+    } finally { d.cleanup() }
+  }
 })
