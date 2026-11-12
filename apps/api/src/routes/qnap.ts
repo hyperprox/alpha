@@ -112,7 +112,8 @@ export const qnapRoutes: FastifyPluginAsync = async (fastify) => {
 
   // The certificate a NAS presents, for pinning (admin; checked against the same address rules first).
   fastify.post<{ Body: { url?: unknown } }>('/instances/probe-certificate', async (req, reply) => {
-    if (req.apiToken) return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'API tokens cannot probe certificates.' })
+    // A token only with the owner-granted plug-in settings permission (lib/gate.ts), to confirm a fingerprint before adding.
+    if (req.apiToken && req.tokenPluginSettings?.kind !== 'probe') return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'API tokens cannot probe certificates.' })
     try { svc().limit(actor(req), 'probesPerMinute', 'Too many certificate reads; wait a moment.') } catch (e) { return fail(reply, e) }
     try {
       const u = new URL(String(req.body?.url ?? ''))

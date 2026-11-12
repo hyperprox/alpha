@@ -35,6 +35,7 @@ import { pluginRoutes }           from './routes/plugins'
 import { haControlRoutes }      from './routes/ha-control'
 import { qnapRoutes }           from './routes/qnap'
 import { plexClearoutRoutes }   from './routes/plex-clearout'
+import { plexSigninRoutes }     from './routes/plex-signin'
 import { pbsRoutes }            from './routes/pbs'
 import { catalogueRoutes } from './routes/catalogue'
 import { siteRoutes } from './routes/sites'
@@ -156,6 +157,7 @@ async function main() {
   await server.register(haControlRoutes,       { prefix: '/api/plugins/home-assistant' })
   await server.register(qnapRoutes,            { prefix: '/api/plugins/qnap' })
   await server.register(plexClearoutRoutes,    { prefix: '/api/plugins/plex' })
+  await server.register(plexSigninRoutes,      { prefix: '/api/plugins/plex/signin' })
   await server.register(pbsRoutes,             { prefix: '/api/plugins/pbs' })
   await server.register(catalogueRoutes,      { prefix: '/api/catalogue' })
   await server.register(siteRoutes,           { prefix: '/api/sites' })

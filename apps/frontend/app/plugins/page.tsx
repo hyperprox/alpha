@@ -13,6 +13,7 @@ import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { Page, HudHeader, Panel, styles } from '@/components/visual/kit'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
+import { PlexSignIn } from '@/components/plugins/plex/SignIn'
 
 interface PluginSetting {
   key: string; label: string; type: 'text' | 'secret' | 'url' | 'toggle'
@@ -126,10 +127,14 @@ function Preview({ data, loading }: { data?: TileData; loading: boolean }) {
 //  Settings — the form is generated from what the plug-in declares
 // ---------------------------------------------------------------------------
 
-function SettingsDialog({ plugin, onSave, onClose }: {
+function SettingsDialog({ plugin, onSave, onClose, known, onSignedIn }: {
   plugin: PluginCard
   onSave: (values: Record<string, string>) => void
   onClose: () => void
+  /** Plex: an address Scan for services found, to preselect in Sign in with Plex. */
+  known?: string | null
+  /** Plex: Sign in with Plex saved the server. */
+  onSignedIn?: (r: { server: string; url: string; note?: string }) => void
 }) {
   const [values, setValues] = useState<Record<string, string>>(
     Object.fromEntries(plugin.settings.map(s => [s.key, s.type === 'secret' ? '' : s.value])),
@@ -154,6 +159,15 @@ function SettingsDialog({ plugin, onSave, onClose }: {
         </div>
 
         <div className="flex flex-col gap-4 px-6 py-5">
+          {plugin.id === 'plex' && onSignedIn && (
+            <div>
+              <h3 className="mb-3 mt-2 font-display text-[15px] font-semibold uppercase tracking-[0.12em]" style={{ color: 'var(--accent)' }}>Sign in with Plex</h3>
+              <PlexSignIn known={known} onDone={onSignedIn} />
+              <p className="mt-3 text-[12.5px] leading-relaxed" style={{ color: 'var(--text-dimmer)' }}>
+                Or enter the server address and token by hand below.
+              </p>
+            </div>
+          )}
           {plugin.settings.map(s => (
             <div key={s.key}>
               {s.section && (
@@ -488,7 +502,17 @@ export default function PluginsPage() {
           </Panel>
         )}
 
-      {editing && <SettingsDialog plugin={editing} onSave={v => void save(v)} onClose={() => setEditing(null)} />}
+      {editing && (
+        <SettingsDialog plugin={editing} onSave={v => void save(v)} onClose={() => setEditing(null)}
+          known={findings?.find(f => f.pluginId === 'plex' && f.setting === 'plex_url')?.address ?? null}
+          onSignedIn={async r => {
+            setEditing(null)
+            setNotice(`Plex is set up: ${r.server}, at ${r.url}.${r.note ? ` ${r.note}` : ''}`)
+            setFindings(prev => prev ? prev.filter(f => !(f.pluginId === 'plex' && f.setting === 'plex_url')) : prev)
+            await load()
+            readOne('plex')
+          }} />
+      )}
       {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const fn = reconfirm; setReconfirm(null); fn() }} />}
     </Page>
   )

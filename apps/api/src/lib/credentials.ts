@@ -18,7 +18,7 @@ import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from '
 import { decrypt, mask } from './crypto'
 import { getBroker, type SecretItem } from './vault/broker'
 import { isUnlocked, cachedSecret, putCachedSecret, removeCachedSecret, onLock, onUnlock } from './vault/state'
-import { actingSid, isTokenContext } from './auth'
+import { actingSid, currentContext, grantedPluginSettingsSid, isTokenContext } from './auth'
 
 export interface CredentialDef {
   category: string
@@ -152,16 +152,27 @@ function requireUnlocked(what?: string): void {
 }
 
 /** A vault write attempted for an API token's request. Tokens never write to the vault (lib/auth.ts actingSid). */
+const GRANTER_SIGNED_OUT = 'This token may save plug-in settings, but the owner who allowed it is not signed in, so there is no vault session to save with. Sign in as that owner and try again.'
+
 export class TokenVaultWriteError extends Error {
-  constructor() {
-    super('API tokens cannot change what HyperProx keeps in its vault. Sign in and make this change as a person.')
+  constructor(message = 'API tokens cannot change what HyperProx keeps in its vault. Sign in and make this change as a person.') {
+    super(message)
     this.name = 'TokenVaultWriteError'
   }
 }
 
-function requireSid(): string {
+/**
+ * The session to write with. `target` is the item a write goes to: an API token's write is refused unless it is
+ * an owner-granted plug-in settings save to that plug-in's own item (lib/auth.ts grantedPluginSettingsSid).
+ */
+function requireSid(target?: { category: string; provider: string }): string {
   requireUnlocked()
-  if (isTokenContext()) throw new TokenVaultWriteError()
+  if (isTokenContext()) {
+    const granted = target ? grantedPluginSettingsSid(target.category, target.provider) : null
+    if (granted) return granted
+    if (target && currentContext()?.pluginSettings) throw new TokenVaultWriteError(GRANTER_SIGNED_OUT)
+    throw new TokenVaultWriteError()
+  }
   const sid = actingSid()
   if (!sid) throw new VaultLockedError('credentials (no signed-in session to write with)')
   return sid
@@ -292,7 +303,7 @@ export async function getProviderCredentials(category: string, provider: string)
 // ---------------------------------------------------------------------------
 
 export async function setCredential(category: string, provider: string, key: string, value: string, _masked = true): Promise<void> {
-  const sid  = requireSid()
+  const sid  = requireSid({ category, provider })
   const name = itemName(category, provider)
   const prev = cachedSecret(name)
   const meta = readMeta(prev)
@@ -327,7 +338,7 @@ export async function setCredential(category: string, provider: string, key: str
 export async function setCredentials(category: string, provider: string, values: Record<string, string>): Promise<void> {
   const keys = Object.keys(values)
   if (!keys.length) return
-  const sid  = requireSid()
+  const sid  = requireSid({ category, provider })
   const name = itemName(category, provider)
   const prev = cachedSecret(name)
   const meta = readMeta(prev)

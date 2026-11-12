@@ -7,7 +7,8 @@
 //  typed reading its plug-in's detail() returned and nothing else; the old
 //  tables stay in the page's Details section below. Nothing here writes,
 //  except the Arr Stack's existing "Map by filename" rescue, passed in by the
-//  page and confirmed there.
+//  page and confirmed there, and Sign in with Plex on the Plex page's
+//  "Needs attention" card (admin, master password re-entered).
 // =============================================================================
 
 import type { ArrVisual, MeshVisual, PlexVisual, RouterVisual, UnmanicVisual } from '@hyperprox/types'
@@ -17,6 +18,7 @@ import {
   bytes, duration, mbps, niceMax, rate, styles as s, type StatChip,
 } from '@/components/visual/kit'
 import pg from './pages.module.css'
+import { PlexSignIn } from '@/components/plugins/plex/SignIn'
 
 // ── Plex ─────────────────────────────────────────────────────────────────────
 
@@ -62,9 +64,11 @@ export function PlexView({ v }: { v: PlexVisual }) {
   return (
     <>
       {v.needsPlex && (
-        <AlertCard warn title="Needs attention: add your Plex server for live data">
-          This page is reading Tautulli only. Add your Plex server’s address and token in this plug-in’s settings on the
-          Plug-ins page: Plex itself then gives now streaming, history and libraries, and Tautulli stays as an optional extra.
+        <AlertCard warn title="Needs attention: add your Plex server for live data"
+          actions={<PlexSignIn compact onDone={() => window.location.reload()} />}>
+          This page is reading Tautulli only. Sign in with Plex to add your server, or enter its address and token in
+          this plug-in’s settings on the Plug-ins page: Plex itself then gives now streaming, history and libraries,
+          and Tautulli stays as an optional extra.
         </AlertCard>
       )}
       <Cols>

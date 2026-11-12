@@ -116,6 +116,11 @@ model ApiToken {
   lastUsedAt DateTime?
   expiresAt  DateTime?
   revokedAt  DateTime?
+  // Opt-in, owner-granted: may save plug-in settings (PUT /api/plugins/:id/settings) without a master-password
+  // re-confirmation. Nothing else. Granted and removed only by an owner, re-confirmed (routes/api-tokens.ts).
+  pluginSettingsWithoutReconfirm Boolean   @default(false)
+  pluginSettingsGrantedBy        String?   // the owner's email; their signed-in session writes the vault item
+  pluginSettingsGrantedAt        DateTime?
 }
 
 // --- Credentials (encrypted) ------------------------------------------------

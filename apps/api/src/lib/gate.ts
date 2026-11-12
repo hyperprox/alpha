@@ -17,7 +17,7 @@ import jwt from '@fastify/jwt'
 import { isUnlocked, signingKey, touch, onLock } from './vault/state'
 import { VaultSessionError, type Role } from './vault/broker'
 import { bearerApiToken, tokenForbidden, verifyApiToken, apiTokenStore, type ApiTokenRecord } from './api-tokens'
-import { unsafeRequestPath, requiredRole, needsReconfirm, hasRole, bypassesLock, normalisePath, SESSION_CHECK } from './roles'
+import { unsafeRequestPath, requiredRole, needsReconfirm, hasRole, bypassesLock, normalisePath, tokenPluginScope, SESSION_CHECK, type TokenPluginScope } from './roles'
 import {
   extractToken, getSession, clearSessions, removeSession, requestContext, isReconfirmed, isLocalCliRequest,
   buildAuthCookie, type ActiveSession,
@@ -31,6 +31,11 @@ declare module 'fastify' {
     session?: ActiveSession
     /** Set when the request authenticated with an API token rather than a sign-in. */
     apiToken?: { id: string; name: string }
+    /**
+     * Set only for an API token's plug-in settings save when an owner gave that token the permission to do it
+     * without a re-confirmation: which plug-in, and who granted it. routes/plugins.ts audits the save.
+     */
+    tokenPluginSettings?: { pluginId: string; grantedBy: string; kind: TokenPluginScope['kind'] }
   }
 }
 
@@ -170,6 +175,16 @@ export async function registerGate(server: FastifyInstance): Promise<void> {
       session = tokenSession(row)
       req.session = session
       req.apiToken = { id: row.id, name: row.name }
+      // The owner-granted plug-in settings permission: the raw path and the matched route must both be on the
+      // allowlist (roles.ts tokenPluginScope), as the same kind and for the same plug-in (a route parameter such as
+      // :id stands for the plug-in in the path). Anything else is an ordinary token request.
+      if (row.pluginSettingsWithoutReconfirm === true && row.pluginSettingsGrantedBy && route !== null) {
+        const raw = tokenPluginScope(req.method, path)
+        const matched = tokenPluginScope(req.method, route)
+        if (raw && matched && raw.kind === matched.kind && (matched.pluginId.startsWith(':') || matched.pluginId === raw.pluginId)) {
+          req.tokenPluginSettings = { pluginId: raw.pluginId, grantedBy: row.pluginSettingsGrantedBy, kind: raw.kind }
+        }
+      }
       // No touch(): automation must not keep HyperProx unlocked. Only people reset the idle timer.
     } else {
       session = await authenticate(req)
@@ -195,7 +210,8 @@ export async function registerGate(server: FastifyInstance): Promise<void> {
     if (!hasRole(session.role, needed)) {
       return reply.status(403).send({ ok: false, code: 'forbidden', error: `This needs the ${needed} role`, required: needed, role: session.role })
     }
-    if (needsReconfirm(req.method, path) && !isReconfirmed(session.sid)) {
+    // A token with the plug-in settings permission skips only that one rule; every other rule still applies.
+    if (needsReconfirm(req.method, path, { tokenPluginScope: !!req.tokenPluginSettings }) && !isReconfirmed(session.sid)) {
       return reply.status(403).send({ ok: false, code: 'reconfirm_required', error: 'Re-enter your master password to continue' })
     }
   })
@@ -236,12 +252,32 @@ export async function registerGate(server: FastifyInstance): Promise<void> {
     }
   })
 
+  // A plug-in instance added or changed through the owner-granted permission is audited before its handler runs,
+  // and refused if the entry cannot be written (the settings route audits its own saves: routes/plugins.ts).
+  // Field names only, never a value.
+  server.addHook('preHandler', async (req, reply) => {
+    const g = req.tokenPluginSettings
+    if (!req.apiToken || !g || g.kind !== 'instances') return
+    const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {}
+    const keys = Object.keys(body).filter(k => /^[A-Za-z0-9_]{1,40}$/.test(k)).slice(0, 30)
+    try {
+      await apiTokenStore().audit('plugin.settings.save', g.pluginId, {
+        via: `token ${req.apiToken.name}, without reconfirm`, tokenId: req.apiToken.id, grantedBy: g.grantedBy,
+        action: `${req.method} ${routePath(req) ?? normalisePath(req.url)}`, keys,
+      })
+    } catch (e: any) {
+      req.log.warn({ err: e?.message, plugin: g.pluginId }, '[api-token] plug-in save refused: audit write failed')
+      return reply.status(503).send({ success: false, code: 'audit_unavailable', error: 'The audit log could not be written, so this change was not made.' })
+    }
+  })
+
   // Run the rest of the request inside the caller's context, so the credential
   // store can write to the vault as this user. Callback style on purpose: the
   // context set here must wrap the handler, which an async hook cannot do.
   server.addHook('onRequest', (req, _reply, done) => {
     const s = req.session
     if (!s) return done()
-    requestContext.run({ sid: s.sid, email: s.email, role: s.role }, done)
+    const g = req.apiToken ? req.tokenPluginSettings : undefined
+    requestContext.run({ sid: s.sid, email: s.email, role: s.role, ...(g ? { pluginSettings: { pluginId: g.pluginId, grantedBy: g.grantedBy, instances: g.kind !== 'settings' } } : {}) }, done)
   })
 }
