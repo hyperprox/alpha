@@ -2,7 +2,9 @@
 //  HyperProx — Plex clear-out and Library: reading Plex and the Arr Stack
 //
 //  Reads: Plex's own play history for every account, every movie and show with
-//  its addedAt, files and folder, and (when the Arr Stack plug-in is set up)
+//  its addedAt, files, folder and the owner's watched marks, every other
+//  account's watched marks in the background (watchers.ts), and (when the Arr
+//  Stack plug-in is set up)
 //  Sonarr's series and Radarr's movies for size on disk, genres, year, path and
 //  anime.
 //
@@ -15,9 +17,10 @@
 
 import type { CoreEndpointClient } from '../plugin-host'
 import {
-  RULE_LABEL, buildReport, indexPlays, keptBy as keptByRule, normTitle, parseRules, playsFor,
-  type ClearoutReport, type KeepRuleId, type LibItem, type MediaKind, type PlayRow,
+  RULE_LABEL, buildReport, indexPlays, keptBy as keptByRule, normTitle, parseRules, watchFor, watcherNames,
+  type ClearoutReport, type Cutoffs, type KeepRuleId, type KeepRules, type LibItem, type MediaKind, type PlayRow,
 } from './logic'
+import { OWNER_ACCOUNT, PlexWatchers, addViews, mergeViews, type ViewMap, type WatchersStatus } from './watchers'
 import { artRef } from '../plex-art'
 import { accountNames } from '../plex-direct'
 import {
@@ -134,6 +137,10 @@ export interface ItemMeta {
 export interface LibraryRow {
   id: string; kind: MediaKind; ratingKey: string; title: string; year: number | null; section: string; sectionTitle: string
   sizeBytes: number | null; plays: number; viewers: number; lastPlayed: number | null; addedAt: number; art: string | null
+  /** Accounts that watched it (history or watched marks), and of those how many only by a mark. */
+  watchers: number; marked: number
+  /** Who, by name: operators and above only (the route takes it out for a viewer). */
+  watchedBy?: Array<{ name: string; how: 'played' | 'marked' }>
   via: 'sonarr' | 'radarr' | 'plex'; keptBy: string | null
   /** Why it cannot be removed, or null. */
   refused: string | null
@@ -148,13 +155,26 @@ export interface Gathered {
   plays:   PlayRow[]
   /** Account id → name. */
   names:   Map<number, string>
+  /** Every account's watched marks this reading counted (the owner's and, once read, everyone else's). */
+  views:   ViewMap
   /** `${service}:${id}` of Arr entries that some Plex item NOT on the lists (watched, or kept by a rule) also maps to. */
   protectedArr: Set<string>
 }
 
 const dirOf = (p: string) => p.replace(/[\\/][^\\/]*$/, '')
 
-export async function gather(d: ClearoutDeps): Promise<Gathered> {
+/** One reading of Plex and the Arr, before anyone's watched marks but the owner's are merged in. */
+export interface RawReading {
+  items: LibItem[]; plays: PlayRow[]; partial: Map<string, Omit<ItemMeta, 'item' | 'keptBy'>>
+  accounts: any; rules: KeepRules; cutoffs: Cutoffs; now: number; notes: string[]
+  sections: ClearoutReport['sections']; arr: ClearoutReport['arr']; sizesFrom: ClearoutReport['sizesFrom']
+  /** The owner's watched marks, from the library reading itself. */
+  ownerViews: ViewMap
+}
+
+export async function gather(d: ClearoutDeps): Promise<Gathered> { return assemble(await readPlex(d)) }
+
+export async function readPlex(d: ClearoutDeps): Promise<RawReading> {
   const plex = await d.plex()
   if (!plex) throw new ClearoutRefusal('This reads your Plex server directly. Add the Plex server address and token in this plug-in’s settings.', 409, 'plex_not_set')
   const notes: string[] = []
@@ -182,9 +202,12 @@ export async function gather(d: ClearoutDeps): Promise<Gathered> {
   const rIdx = Array.isArray(movies) ? arrIndex(movies, 'radarr') : null
 
   const items: LibItem[] = []
+  const ownerViews: ViewMap = new Map()
   const partial = new Map<string, Omit<ItemMeta, 'item' | 'keptBy'>>()
   for (const s of sections) {
     const meta = await paged(plex, `/library/sections/${s.key}/all?type=${s.kind === 'movie' ? 1 : 2}&includeGuids=1`)
+    // The server token is the owner's: its viewCount / viewedLeafCount / lastViewedAt are the owner's marks.
+    addViews(ownerViews, meta, OWNER_ACCOUNT)
     // A show's files (and size, without Sonarr) are its episodes', read from Plex.
     const showBytes = new Map<string, number>()
     if (s.kind === 'show' && !sIdx) {
@@ -251,12 +274,23 @@ export async function gather(d: ClearoutDeps): Promise<Gathered> {
   const { rules, cutoffs } = parseRules(k => opts.get(k))
   if (!sonarr && !radarr) notes.push('The Arr Stack plug-in is not set up, so removals go through Plex itself.')
 
-  const now = d.now()
-  const report = buildReport({
-    items, plays, rules, cutoffs, now, sections,
+  return {
+    items, plays, partial, accounts, rules, cutoffs, now: d.now(), notes, sections, ownerViews,
     arr: { sonarr: !!sIdx, radarr: !!rIdx },
     sizesFrom: { tv: sIdx ? 'arr' : 'plex', movies: rIdx ? 'arr' : 'plex' },
-    notes,
+  }
+}
+
+/** The lists, the Library rows and each item's meta, from one reading plus everyone else's watched marks. */
+export function assemble(raw: RawReading, w?: { views: ViewMap; names: Map<number, string>; status: WatchersStatus }): Gathered {
+  const { items, plays, partial, rules, cutoffs, now, sections } = raw
+  const names = accountNames(raw.accounts)
+  for (const [k, v] of w?.names ?? []) if (!names.has(k)) names.set(k, v)
+  // The owner's marks come from the library reading itself, so they win over anything older.
+  const views = mergeViews(w?.views, raw.ownerViews)
+  const report = buildReport({
+    items, plays, rules, cutoffs, now, sections, arr: raw.arr, sizesFrom: raw.sizesFrom, notes: [...raw.notes],
+    views, names, watchState: w?.status,
   })
   for (const r of report.rows) { const pm = partial.get(r.id); if (pm) r.refused = pm.refuse }
   const listed = new Set(report.rows.map(r => r.id))
@@ -272,14 +306,15 @@ export async function gather(d: ClearoutDeps): Promise<Gathered> {
     // Removing an Arr entry removes it for every Plex item that maps to it: an entry shared with an item that is
     // not on the lists (watched, or kept by a rule) is protected.
     if (pm.managed && !listed.has(id)) protectedArr.add(`${pm.managed.service}:${pm.managed.arrId}`)
-    const st = playsFor(index, item)
+    const st = watchFor(index, views, item)
     library.push({
       id, kind: item.kind, ratingKey: item.ratingKey, title: item.title, year: item.year, section: item.section, sectionTitle: item.sectionTitle,
       sizeBytes: item.sizeBytes, plays: st.plays, viewers: st.viewers, lastPlayed: st.lastPlayed, addedAt: item.addedAt,
+      watchers: st.watchers, marked: st.marked, watchedBy: watcherNames(st.who, names),
       art: artRef(item.thumb), via: pm.managed?.service ?? 'plex', keptBy: keptBy ? RULE_LABEL[keptBy] : null, refused: pm.refuse,
     })
   }
-  return { report, library, meta, plays, names: accountNames(accounts), protectedArr }
+  return { report, library, meta, plays, names, views, protectedArr }
 }
 
 // ---------------------------------------------------------------------------
@@ -290,24 +325,44 @@ const REPORT_TTL = 10 * 60_000
 const MAX_ITEMS = 100
 
 export class ClearoutService {
-  private cached: { at: number; data: Gathered } | null = null
+  private cached: { at: number; data: RawReading } | null = null
   private lastFresh = 0
-  private inflight: Promise<Gathered> | null = null
+  private inflight: Promise<RawReading> | null = null
+  private built: { raw: RawReading; version: number; data: Gathered } | null = null
   readonly previews: PreviewStore
+  /** Every other account's watched marks, read in the background at most every ten minutes. */
+  readonly watchers: PlexWatchers
 
-  constructor(readonly d: ClearoutDeps, newId?: () => string) { this.previews = new PreviewStore(() => d.now(), newId) }
+  constructor(readonly d: ClearoutDeps, newId?: () => string, watchers?: PlexWatchers) {
+    this.previews = new PreviewStore(() => d.now(), newId)
+    this.watchers = watchers ?? new PlexWatchers(() => d.now())
+  }
 
   async report(refresh = false): Promise<Gathered> {
+    // Everyone's watched marks: started (or not, inside its ten minutes) alongside the reading, never waited for.
+    void this.d.plex().then(p => { this.watchers.kick(p) }).catch(() => undefined)
     // A forced re-read reads the whole history and library: at most once a minute.
     if (refresh && this.cached && this.d.now() - this.lastFresh < 60_000) refresh = false
-    if (!refresh && this.cached && this.d.now() - this.cached.at < REPORT_TTL) return this.cached.data
-    if (!this.inflight) {
-      this.inflight = gather(this.d)
-        .then(data => { this.cached = { at: this.d.now(), data }; this.lastFresh = this.d.now(); return data })
-        .finally(() => { this.inflight = null })
+    let raw: RawReading
+    if (!refresh && this.cached && this.d.now() - this.cached.at < REPORT_TTL) raw = this.cached.data
+    else {
+      if (!this.inflight) {
+        this.inflight = readPlex(this.d)
+          .then(data => { this.cached = { at: this.d.now(), data }; this.lastFresh = this.d.now(); return data })
+          .finally(() => { this.inflight = null })
+      }
+      raw = await this.inflight
     }
-    return this.inflight
+    // Put together again only when the reading or the watched marks changed.
+    const version = this.watchers.version
+    if (this.built?.raw === raw && this.built.version === version) return this.built.data
+    const data = assemble(raw, { views: this.watchers.views(), names: this.watchers.names(), status: this.watchers.status() })
+    this.built = { raw, version, data }
+    return data
   }
+
+  /** HyperProx locked: every account token, and the marks read with them, are forgotten. */
+  dropWatchers(): void { this.watchers.drop(); this.built = null }
 
   /** Forget the reading: the library changed. */
   invalidate(): void { this.cached = null }
@@ -318,6 +373,11 @@ export class ClearoutService {
     if (ids.length > MAX_ITEMS) throw new ClearoutRefusal(`At most ${MAX_ITEMS} items at a time.`)
     const want = [...new Set(ids.map(String))]
     const g = await this.report()
+    // The lists are history-only until the first reading of everyone's watched marks is in: nothing goes before it.
+    if (this.watchers.pending()) {
+      const st = this.watchers.status()
+      return this.previews.put(owner, [], want.map(id => ({ id, reason: `Still reading who has watched what${st.total ? ` (${st.done} of ${st.total} accounts)` : ''}. Try again in a minute.` })), 'clearout')
+    }
     const listed = new Map(g.report.rows.map(r => [r.id, r]))
     const ctx = await planContext(this.d)
     const items: PlanItem[] = []

@@ -49,6 +49,12 @@ export interface PluginEndpoint {
   baseUrlSetting: string
   auth:           PluginAuth
   insecureTLS?:   boolean
+  /**
+   * Fixed https origins (no path) this endpoint's own stored credential may ALSO be sent to, by core code only
+   * (CoreEndpointClient.textAt). Plex: https://plex.tv, which takes the server owner's account token to list who
+   * the server is shared with. Never a setting, never followed through a redirect.
+   */
+  credentialOrigins?: string[]
 }
 
 /**
@@ -90,6 +96,8 @@ export interface PluginManifest {
   endpoints?:  PluginEndpoint[]
   /** Ignore TLS errors — routers and media servers routinely use self-signed certs. */
   insecureTLS?: boolean
+  /** The default endpoint's credentialOrigins (see PluginEndpoint). */
+  credentialOrigins?: string[]
   /**
    * How often the detail page may re-read this plug-in, in seconds.
    *
@@ -581,6 +589,53 @@ class Requester {
     return { contentType, body: await res.buffer() }
   }
 
+  /**
+   * A JSON GET to this endpoint's own address with `credential` in place of the stored one (Plex: one account's own
+   * token for this server, to read that account's watched marks). Header and query credentials only. The
+   * credential is never part of an error.
+   */
+  async requestAs(path: string, credential: string, timeoutMs?: number): Promise<any> {
+    if (this.manifest.coreTransport) throw new Error(`${this.manifest.name} takes no other credential.`)
+    const auth = this.endpoint.auth
+    if (auth.kind !== 'header' && auth.kind !== 'query') throw new Error(`${this.manifest.name} cannot read as another account.`)
+    if (typeof credential !== 'string' || !credential.trim() || /[\r\n\0]/.test(credential)) throw new Error(`${this.manifest.name}: that credential is not usable.`)
+    const { url, headers } = this.prepare(path, false)
+    if (auth.kind === 'header') headers[auth.header] = (auth.prefix ?? '') + credential
+    else url.searchParams.set(auth.param, credential)
+    const res = await fetchWithTimeout(url.toString(), headers, this.endpoint.insecureTLS, 'GET', undefined, timeoutMs)
+    if (!res.ok) throw new Error(`${this.manifest.name} returned HTTP ${res.status}`)
+    try { return JSON.parse(await res.text()) }
+    catch { throw new Error(`${this.manifest.name} did not return JSON`) }
+  }
+
+  /**
+   * A GET to one of the endpoint's declared credentialOrigins with the stored credential; the answer as text (it
+   * may be XML), at most `maxBytes`. Certificates are always checked and redirects never followed.
+   */
+  async textAt(origin: string, path: string, timeoutMs = 15_000, maxBytes = 4 * 1024 * 1024): Promise<string> {
+    if (this.manifest.coreTransport) throw new Error(`${this.manifest.name} reaches nothing else.`)
+    if (!(this.endpoint.credentialOrigins ?? []).includes(origin) || !/^https:\/\/[a-z0-9.-]+$/.test(origin)) {
+      throw new Error(`${this.manifest.name} does not send its credential to ${origin}.`)
+    }
+    if (!path.startsWith('/') || path.startsWith('//') || /[\\@\s]/.test(path)) throw new Error('Not a path.')
+    const url = new URL(origin + path)
+    if (url.origin !== origin) throw new Error('Not a path.')
+    const headers: Record<string, string> = { Accept: 'application/json, application/xml;q=0.9' }
+    const auth = this.endpoint.auth
+    if (auth.kind === 'header') {
+      const v = this.settings[auth.fromSetting]
+      if (!v) throw new Error(`${this.manifest.name} is missing its credential`)
+      headers[auth.header] = (auth.prefix ?? '') + v
+    } else if (auth.kind === 'query') {
+      const v = this.settings[auth.fromSetting]
+      if (!v) throw new Error(`${this.manifest.name} is missing its credential`)
+      url.searchParams.set(auth.param, v)
+    } else throw new Error(`${this.manifest.name} has no credential to send.`)
+    const res = await fetchWithTimeout(url.toString(), headers, false, 'GET', undefined, timeoutMs, maxBytes)
+    if (!res.ok) throw new Error(`${url.host} returned HTTP ${res.status}`)
+    return (await res.buffer()).toString('utf8')
+  }
+
   /** A GET whose answer is not read (Plex's partial library scan answers with an empty body). */
   async trigger(path: string, timeoutMs?: number): Promise<void> {
     if (this.manifest.coreTransport) throw new Error(`${this.manifest.name} takes no triggers.`)
@@ -753,7 +808,7 @@ function resolveEndpoint(manifest: PluginManifest, key?: string): PluginEndpoint
   const primary: PluginEndpoint = {
     key: 'default', label: manifest.name,
     baseUrlSetting: manifest.baseUrlSetting,
-    auth: manifest.auth, insecureTLS: manifest.insecureTLS,
+    auth: manifest.auth, insecureTLS: manifest.insecureTLS, credentialOrigins: manifest.credentialOrigins,
   }
   if (!key || key === 'default') return primary
   const found = (manifest.endpoints ?? []).find(e => e.key === key)
@@ -788,6 +843,10 @@ export interface CoreEndpointClient {
   put(path: string, body: unknown, timeoutMs?: number): Promise<any>
   /** A GET whose answer is not read (Plex: scan one folder). */
   trigger(path: string, timeoutMs?: number): Promise<void>
+  /** A GET with another credential in place of the stored one (Plex: a shared account's own server token). Optional. */
+  getAs?(path: string, credential: string, timeoutMs?: number): Promise<any>
+  /** A GET to one of the endpoint's declared credentialOrigins (Plex: plex.tv), answered as text. Optional. */
+  textAt?(origin: string, path: string, timeoutMs?: number): Promise<string>
 }
 
 /**
@@ -819,6 +878,8 @@ export async function pluginEndpointClient(plugin: Plugin, endpointKey = 'defaul
     image:  (path, timeoutMs) => r.image(path, timeoutMs),
     put:    (path, body, timeoutMs) => r.request('PUT', path, body as Record<string, unknown>, timeoutMs),
     trigger: (path, timeoutMs) => r.trigger(path, timeoutMs),
+    getAs:  (path, credential, timeoutMs) => r.requestAs(path, credential, timeoutMs),
+    textAt: (origin, path, timeoutMs) => r.textAt(origin, path, timeoutMs),
   }
 }
 

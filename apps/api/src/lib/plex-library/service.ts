@@ -18,11 +18,12 @@
 
 import type { ClearoutService, Gathered, ItemMeta } from '../plex-clearout/service'
 import { ClearoutRefusal, blockedBy, planContext, wholeItemPlan, type PlanContext } from '../plex-clearout/service'
-import { RULE_LABEL } from '../plex-clearout/logic'
+import { RULE_LABEL, watcherNames } from '../plex-clearout/logic'
+import { OWNER_ACCOUNT, addViews, mergeViews, type ViewMap } from '../plex-clearout/watchers'
 import { artRef } from '../plex-art'
 import { PLEX_NOTE, executePlan, type ItemResult, type Plan, type PlanItem } from '../plex-remove/engine'
 import {
-  mapEpisodes, nextUpFor, playsByEpisode, plexEpisodes, seriesByTvdb, showPlays, versionsOf,
+  episodeWatch, mapEpisodes, nextUpFor, playsByEpisode, plexEpisodes, seriesByTvdb, showPlays, versionsOf,
   type PlexEpisode, type PlexVersion, type SonarrLink,
 } from './logic'
 
@@ -32,7 +33,12 @@ const KEY = /^\d{1,10}$/
 export interface EpisodeView {
   ratingKey: string; season: number; episode: number; title: string
   sizeBytes: number | null; quality: string; plays: number; viewers: number; lastPlayed: number | null
+  /** Watched by anyone: a play in the history, or any account's watched mark. */
   watched: boolean; inProgress: boolean; nextUpFor: string[]; versions: PlexVersion[]
+  /** Accounts that watched it, and of those how many only by a watched mark. */
+  watchers: number; marked: number
+  /** Who, by name: operators and above only (the route takes it out for a viewer). */
+  watchedBy?: Array<{ name: string; how: 'played' | 'marked' }>
   via: 'sonarr' | 'plex'
   /** Why it cannot be removed (its file could not be confirmed as Sonarr's, Sonarr did not answer), or null. */
   refused: string | null
@@ -66,10 +72,10 @@ export class LibraryService {
     return list
   }
 
-  async list(): Promise<{ rows: Gathered['library']; sections: Gathered['report']['sections']; arr: Gathered['report']['arr']; plexDeletes: boolean | null; historySince: number | null }> {
+  async list(): Promise<{ rows: Gathered['library']; sections: Gathered['report']['sections']; arr: Gathered['report']['arr']; plexDeletes: boolean | null; historySince: number | null; watchState: Gathered['report']['watchState'] }> {
     const g = await this.clearout.report()
     const ctx = await planContext(this.d)
-    return { rows: g.library, sections: g.report.sections, arr: g.report.arr, plexDeletes: ctx.plexDeletes, historySince: g.report.historySince }
+    return { rows: g.library, sections: g.report.sections, arr: g.report.arr, plexDeletes: ctx.plexDeletes, historySince: g.report.historySince, watchState: g.report.watchState }
   }
 
   private async showData(ratingKey: string): Promise<{ g: Gathered; s: ShowData }> {
@@ -79,7 +85,12 @@ export class LibraryService {
     if (!m) throw new ClearoutRefusal('That show is not in Plex any more.', 404, 'not_found')
     const plex = await this.d.plex()
     if (!plex) throw new ClearoutRefusal('Plex is not set.', 409, 'plex_not_set')
-    const eps = plexEpisodes(await plex.get(`/library/metadata/${ratingKey}/allLeaves`, SLOW))
+    const leaves = await plex.get(`/library/metadata/${ratingKey}/allLeaves`, SLOW)
+    const eps = plexEpisodes(leaves)
+    // Watched marks per episode: the owner's from this same read, everyone else's with their own tokens.
+    const ownerViews: ViewMap = new Map()
+    addViews(ownerViews, leaves?.MediaContainer?.Metadata ?? [], OWNER_ACCOUNT)
+    const views = mergeViews(await this.clearout.watchers.episodes(plex, ratingKey).catch(() => new Map()), ownerViews)
     // Sonarr only for a show it manages by id (never by title), and only for episodes whose files it confirms.
     let seriesId: number | null = null
     let links = new Map<string, SonarrLink>()
@@ -113,21 +124,23 @@ export class LibraryService {
     }
     const rows = showPlays(g.plays, ratingKey, m.item.title)
     const plays = playsByEpisode(eps, rows)
-    const next = nextUpFor(eps, rows, g.names, this.d.now())
-    const views: EpisodeView[] = eps.map(e => {
+    const next = nextUpFor(eps, rows, g.names, this.d.now(), 14, views)
+    const epViews: EpisodeView[] = eps.map(e => {
       const p = plays.get(e.ratingKey)
       const l = links.get(e.ratingKey)
+      const w = episodeWatch(p, views.get(e.ratingKey))
       return {
         ratingKey: e.ratingKey, season: e.season, episode: e.episode, title: e.title,
         sizeBytes: l?.fileSize ?? e.sizeBytes, quality: l?.quality ? `${l.quality}${e.versions[0] ? ` · ${e.versions[0].label.split(' · ').pop()}` : ''}` : e.quality,
-        plays: p?.plays ?? 0, viewers: p?.viewers.size ?? 0, lastPlayed: p?.lastPlayed ?? null,
-        watched: (p?.plays ?? 0) > 0, inProgress: e.inProgress, nextUpFor: next.get(e.ratingKey) ?? [],
+        plays: p?.plays ?? 0, viewers: p?.viewers.size ?? 0, lastPlayed: w.lastPlayed,
+        watchers: w.watchers, marked: w.marked, watchedBy: watcherNames(w.who, g.names),
+        watched: w.watched, inProgress: e.inProgress || w.inProgress, nextUpFor: next.get(e.ratingKey) ?? [],
         versions: e.versions, via: m.managed ? 'sonarr' : 'plex',
         // A show Sonarr manages: an episode it cannot confirm is refused, never handed to Plex.
         refused: refuse ?? (m.managed ? (l?.fileId ? null : refusedEps.get(e.ratingKey) ?? 'Sonarr has no file for it, so it is left alone.') : null),
       }
     })
-    return { g, s: { m, eps, links, seriesId, sonarrEpisodes, views, refuse } }
+    return { g, s: { m, eps, links, seriesId, sonarrEpisodes, views: epViews, refuse } }
   }
 
   async show(ratingKey: string): Promise<ShowView> {
