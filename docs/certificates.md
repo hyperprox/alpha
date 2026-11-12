@@ -35,9 +35,10 @@ a first attempt failed.
 the page polls until it settles. One issuance per certificate at a time: a second press
 while one runs gets *already being issued* (409).
 
-1. The ACME order runs through the DNS provider HyperProx already holds (GoDaddy). A zone
-   counts as managed only when its NS records point at GoDaddy (`*.domaincontrol.com`); a
-   domain registered there with its DNS hosted elsewhere shows "DNS provider not managed".
+1. The ACME order runs through the DNS provider HyperProx already holds (GoDaddy or Cloudflare). A
+   GoDaddy zone counts as managed only when its NS records point at GoDaddy (`*.domaincontrol.com`); a
+   domain registered there with its DNS hosted elsewhere shows "DNS provider not managed". A Cloudflare
+   zone counts only when Cloudflare calls it active, which it does once the nameservers point at it.
    A name in no managed zone fails the order before any record is written.
 2. On success the private key and full chain go into the vault, as one Secure Note per
    certificate (`hyperprox:certs/cert-<label>`) in the HyperProx collection; the ACME

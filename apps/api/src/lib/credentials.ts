@@ -58,8 +58,10 @@ export const CREDENTIAL_DEFS: CredentialDef[] = [
   { category: 'dns', provider: 'godaddy', key: 'api_secret', label: 'API Secret', masked: true,  envKey: 'GODADDY_API_SECRET' },
 
   // Cloudflare
+  // An API token (Zone: Read + DNS: Edit) is the normal login. The email is only for a legacy Global API Key
+  // pasted in the token field; beside an ordinary token it is ignored (lib/dns-providers.ts cloudflareFrom).
   { category: 'dns', provider: 'cloudflare', key: 'api_token', label: 'API Token', masked: true, envKey: 'CLOUDFLARE_API_TOKEN' },
-  { category: 'dns', provider: 'cloudflare', key: 'email',     label: 'Email',     masked: false, envKey: 'CLOUDFLARE_EMAIL' },
+  { category: 'dns', provider: 'cloudflare', key: 'email',     label: 'Email (only with a Global API Key)', masked: false, envKey: 'CLOUDFLARE_EMAIL' },
 
   // Namecheap
   { category: 'dns', provider: 'namecheap', key: 'api_key',  label: 'API Key',  masked: true,  envKey: 'NAMECHEAP_API_KEY' },

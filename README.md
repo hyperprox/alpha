@@ -88,7 +88,7 @@ node screenshots.mjs --all http://127.0.0.1:3100 /tmp/hyperprox-shots
 | Monitoring | Bundled Prometheus and Grafana with HyperProx dashboards and alert rules |
 | Storage | Every storage on every node, Ceph health, OSDs and pools, and per-guest disks |
 | Reverse proxy | Nginx Proxy Manager, Traefik, Caddy, HAProxy and Pangolin, several at once in one table; every change previewed, then read back |
-| DNS | GoDaddy records with guided creation, domain expiry, WAN IP mismatch flags and DDNS |
+| DNS | GoDaddy and Cloudflare records side by side, each domain at the provider that holds it, with guided creation, Cloudflare's proxy (orange cloud) per record, domain expiry, WAN IP mismatch flags and DDNS |
 | Certificates | Inventory of every endpoint's certificate, ACME DNS-01 issuance and renewal, delivery into guests |
 | Updates | Pending packages everywhere, on every cluster, and a gated update run that respects HA and quorum, restarts Ceph one OSD at a time and refuses any restart or reboot that would take data offline; a daily read-only check tells you when something new needs updating |
 | Terminal | Browser SSH with persistent tmux sessions, split panes and saved layouts |
@@ -673,15 +673,29 @@ refuses if the host changed since the preview, and reads the proxy back to confi
 tool made on Traefik, Caddy, HAProxy or Pangolin are shown read-only. Scripts use the same preview and
 apply calls (see [docs/proxy.md](docs/proxy.md)).
 
-**DNS** lists your GoDaddy
-domains with their expiry dates and every record. **Add record** starts from what you want to do
-(point at this server, a subdomain, email, verification) or a custom record. A records that differ
-from your current WAN IP are flagged, and **DDNS Update** rewrites them to it.
+**DNS** lists the domains of every DNS provider you connect, GoDaddy and Cloudflare, each with a badge
+for its provider, and every record. A card per provider says whether it answered and how many domains
+it has; a Cloudflare account with no domains yet says so instead of disappearing. When a domain shows at
+both (registered at GoDaddy, DNS moved to Cloudflare), the provider where the zone is active serves it,
+and an active Cloudflare zone wins. **Add record** starts from what you want to do (point at this server,
+a subdomain, email, verification) or a custom record. A records that differ from your current WAN IP are
+flagged, and **DDNS Update** rewrites them to it.
+
+Cloudflare takes a scoped **API token** with Zone: Read and DNS: Edit (Settings → DNS → Cloudflare). A
+legacy Global API Key also works if you paste it in the token field and fill in the email; beside an
+ordinary token the email is ignored. **Test** checks the token, then lists the zones it can see: "Token
+works: 2 zones", or "Token works, but this account has no domains yet" for a fresh account. Records the
+wizards create at Cloudflare are always **DNS only** (grey cloud), and so is a record you add on the DNS
+page unless you tick **Proxy through Cloudflare**: proxying hides your address but breaks Let's Encrypt's
+HTTP check in the proxy and any port that is not web. Editing a proxied record keeps it proxied unless you
+untick it, and a wizard that finds its record proxied stops before asking Let's Encrypt and says why.
+Adding, editing or deleting a record on the DNS page needs the admin role, at either provider, and leaves
+an audit row.
 
 ### Certificates
 
 Probes every endpoint HyperProx knows the way a client would, issues and renews certificates over ACME
-DNS-01 through GoDaddy, delivers them into guests or to HyperProx's own nginx, and checks each delivery
+DNS-01 through GoDaddy or Cloudflare, delivers them into guests or to HyperProx's own nginx, and checks each delivery
 by fingerprint. Configure it in `config/certs.yaml` (copy `config/certs.example.yaml`), start with
 `acme.directory: staging`, and press **Issue**. Admin-only. See [docs/certificates.md](docs/certificates.md).
 
@@ -1784,7 +1798,7 @@ why.
 
 - **Setup checklist**: the installer's questions, whether each is done on every node, and a button to
   do it now.
-- **Credentials** for Proxmox, your first Nginx Proxy Manager and GoDaddy, each with a **Test** button
+- **Credentials** for Proxmox, your first Nginx Proxy Manager, GoDaddy and Cloudflare, each with a **Test** button
   (other proxies are added on the Proxy page).
 - **Secrets**: names of everything in the vault. Owners and admins can reveal a value, send it as an
   expiring one-view link (a Bitwarden Send), or generate and store a new password.
@@ -1900,7 +1914,7 @@ flowchart LR
   end
   A -->|API token| PVE[Proxmox VE API]
   A -->|node login, pct exec| NODES[Proxmox nodes]
-  A --> EXT[NPM, GoDaddy, ACME, plug-in devices]
+  A --> EXT[NPM, GoDaddy, Cloudflare, ACME, plug-in devices]
   P --> NE[node_exporter and GPU exporters]
 ```
 
@@ -1964,7 +1978,7 @@ upcoming work are in [docs/superpowers/specs/](docs/superpowers/specs/).
   the vault; backed up; monitored; under update policy; plug-in panel), MeshCentral remote desktop,
   automatic restore tests for the Proxmox Backup Server plug-in, catalogue packs, noVNC and container text
   consoles, Ceph operations, versioned releases with `hyperprox update`, demo mode and screenshots, and
-  more DNS providers, email notifications and LDAP/OIDC sign-in.
+  more DNS providers (beyond GoDaddy and Cloudflare), email notifications and LDAP/OIDC sign-in.
 - **Later, as ideas**: live migration between clusters, ESXi import, XCP-ng, bare-metal install, CVE
   scanning and hardening, and a commercial tier.
 
@@ -1979,7 +1993,7 @@ HyperProx next to one of them.
 | Several Proxmox clusters | ✅ view and control | ✅ | ✅ | ◐ view only | — | — | ◐ widgets |
 | Guests: create, power, migrate | ✅ within a cluster | ◐ no create yet | ✅ incl. cross-cluster | — | ◐ create | — | — |
 | Installs apps | ✅ catalogue + AI wizard, incl. a wired-up Arr stack | — | ◐ templates | — | ✅ 700+ | ✅ hundreds | — |
-| Proxy, DNS and certificates | ✅ all three | ◐ own cert | ◐ own cert | — | — | ◐ proxy + certs | — |
+| Proxy, DNS and certificates | ✅ all three (DNS: GoDaddy, Cloudflare) | ◐ own cert | ◐ own cert | — | — | ◐ proxy + certs | — |
 | Alerts to your channels | ✅ | ◐ planned | ✅ | ✅ | — | ✅ | — |
 | Updates for hosts and guests | ✅ | ◐ hosts | ◐ hosts | ◐ alerts | ◐ per app | ◐ | — |
 | Proxmox Backup Server | ✅ health, verify, opt-in delete and prune | ✅ | ✅ | ✅ | — | ◐ to S3 | ◐ widget |
@@ -1992,7 +2006,7 @@ HyperProx next to one of them.
 **What others do better:** Proxmox Datacenter Manager is the official tool, with enterprise support,
 live migration between clusters and LDAP/OIDC sign-in. PegaProx adds load balancing and VMware/XCP-ng
 import. Pulse has the widest monitoring coverage. Coolify and Dokploy deploy straight from git. HyperProx
-does not yet support LDAP/OIDC, email notifications, DNS providers other than GoDaddy, or moving guests
+does not yet support LDAP/OIDC, email notifications, DNS providers other than GoDaddy and Cloudflare, or moving guests
 between clusters. On backups, it reads Proxmox Backup Server and can verify, delete, prune and clean up, but
 it does not restore, test restores or create backup jobs.
 

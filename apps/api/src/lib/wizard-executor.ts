@@ -24,7 +24,7 @@ import { ProxmoxClient } from './proxmox-client'
 import { wizardCreateHost, wizardRequestCertificate, wizardUpdateHost } from './proxy'
 import type { HostPatch, HostSpec } from './proxy/types'
 import { GoDaddyClient }  from './godaddy-client'
-import { getCredential }  from './credentials'
+import { dnsRouter, proxiedProblem, type DnsRouter } from './dns-providers'
 import { execInGuest, nodeCredential } from './node-exec'
 import { wizardRecipes, healthProblem, type CatalogueRecipe } from './catalogue'
 import { installScript, manualCommands, distroOf, hostEnv } from './install-script'
@@ -94,7 +94,8 @@ export interface ExecDeps {
   exec:  typeof execInGuest
   /** The proxy, through lib/proxy (preview → apply → read-back, audited). The wizard's confirm step is the preview. */
   proxy: WizardProxy
-  dns(): Promise<GoDaddyClient | null>
+  /** Every configured DNS provider; each zone is written at the one that serves it. */
+  dns(): Promise<WizardDns | null>
   /** The stored SSH login for a node, or null when there is none. */
   login(node: string): Promise<TerminalCredential | null>
   /** This site's public IPv4 address, for the A record. */
@@ -160,11 +161,13 @@ function getPVE(): ProxmoxClient {
   )
 }
 
-async function getGoDaddy(): Promise<GoDaddyClient | null> {
-  const key    = await getCredential('dns', 'godaddy', 'api_key').catch(() => null)
-  const secret = await getCredential('dns', 'godaddy', 'api_secret').catch(() => null)
-  if (!key || !secret) return null
-  return new GoDaddyClient(key, secret)
+/** The DNS calls the wizard makes. A record it creates carries no `proxied`: at Cloudflare it is DNS only. */
+export type WizardDns = Pick<DnsRouter, 'getDomains' | 'getRecords' | 'createRecord'>
+
+async function getDns(): Promise<WizardDns | null> {
+  const r = await dnsRouter().catch(() => null)
+  if (!r) return null
+  return { getDomains: async () => (await r.getDomains()).filter(z => z.active), getRecords: (z, t) => r.getRecords(z, t), createRecord: (z, rec) => r.createRecord(z, rec) }
 }
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
@@ -179,7 +182,7 @@ async function publicResolve4(domain: string): Promise<string[]> {
 
 function defaultDeps(): ExecDeps {
   return {
-    pve: getPVE(), wait: sleep, fetch, exec: execInGuest, proxy: productionProxy, dns: getGoDaddy,
+    pve: getPVE(), wait: sleep, fetch, exec: execInGuest, proxy: productionProxy, dns: getDns,
     login: nodeCredential,
     wanIp: async () => (await GoDaddyClient.getWanIP()).ip,
     resolve4: publicResolve4,
@@ -467,6 +470,12 @@ async function stepWaitPropagation(job: JobState, d: ExecDeps): Promise<string> 
     await d.wait(10000)
     const addrs = await d.resolve4(domain).catch(() => [] as string[])
     if (addrs.includes(wanIp)) return `DNS propagated — ${domain} resolves to ${wanIp} (${i * 10 + 10}s)`
+  }
+  // A Cloudflare record someone set to proxied resolves to Cloudflare, never to the WAN address: say so.
+  const dns = await d.dns().catch(() => null)
+  const z = dns ? zoneFor(domain, ((await dns.getDomains().catch(() => [])) ?? []).map((x: any) => x.domain)) : null
+  if (dns && z && ((await dns.getRecords(z.zone).catch(() => [])) ?? []).some((r: any) => r?.type === 'A' && String(r?.name ?? '').toLowerCase() === z.name && r?.proxied === true)) {
+    throw new Error(proxiedProblem(domain, wanIp))
   }
   // Failing here keeps a doomed Let's Encrypt challenge from counting against the hourly limit.
   throw new Error(

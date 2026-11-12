@@ -27,7 +27,7 @@ Many people run HyperProx next to one of these, not instead of it.
 | Several clusters in one place | ✅ view and control | ✅ | ✅ | — | ◐ view only | — | — | — | — | ◐ widgets | ? | — |
 | Installs apps | ✅ catalogue + AI wizard, incl. an Arr stack with the apps you pick wired together | — | ◐ cloud-init templates | ✅ | — | ✅ 700+ scripts | ✅ 360+ | ✅ 600+ | ✅ 266 | — | — | — |
 | Reverse proxy | ✅ Nginx Proxy Manager | — | — | — | — | — | ✅ | ✅ | ✅ | — | — | — |
-| DNS records | ✅ GoDaddy | — | — | — | — | — | — | — | — | — | — | — |
+| DNS records | ✅ GoDaddy, Cloudflare | — | — | — | — | — | — | — | — | — | — | — |
 | Certificates | ✅ issue, deploy, watch | ◐ own cert | ◐ own UI cert | — | ◐ expiry warnings | — | ✅ | ✅ | ✅ | — | — | — |
 | Monitoring and alerts | ✅ Prometheus + Grafana, per-site traffic from access logs, people counted apart from bots; Discord, Slack, Teams, ntfy, Gotify, Telegram, webhook | ◐ metrics; alerts planned | ✅ | ✅ | ✅ | — | ✅ | ✅ | ? | ◐ status only | ◐ status only | ◐ metrics only |
 | Updates for hosts and guests | ✅ incl. pinned kernels | ✅ hosts | ◐ rolling host updates | ✅ | ◐ alerts | ◐ per script | ◐ OS checks | ? | ◐ per app | — | — | ◐ own host |
@@ -63,7 +63,7 @@ Being fair matters more than winning a table.
 
 - Sign-in through LDAP, AD or OIDC is not supported yet.
 - Notifications cannot go out by email yet.
-- DNS works with GoDaddy only.
+- DNS works with GoDaddy and Cloudflare only.
 - Guests can move between nodes of one cluster, but not to another cluster.
 - Guest hardware is still edited in the Proxmox web interface.
 - Proxmox Backup Server is read and cleaned up, not driven: no restores, no automatic restore tests and no creating backup jobs.

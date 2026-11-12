@@ -21,6 +21,7 @@ import { currentClusterId } from '../clusters/context'
 import { X509Certificate, createPrivateKey } from 'node:crypto'
 import type { PrismaClient } from '@prisma/client'
 import { GoDaddyClient } from '../godaddy-client'
+import { cloudflareFrom } from '../dns-providers'
 import { getCredential, getProviderCredentials, setCredential, setCredentials } from '../credentials'
 import { nextRun } from '../updates/cron'
 import { publish } from '../notify'
@@ -811,8 +812,13 @@ export function productionCertsService(db: PrismaClient, log: (m: string) => voi
     modules,
     async dnsProviders() {
       // The DNS credential already in the vault; no new one for certificates.
+      // Each provider claims only the zones delegated to it, so a domain is never written at both.
+      const out: DnsProvider[] = []
       const c = await getProviderCredentials('dns', 'godaddy').catch(() => ({} as Record<string, string>))
-      return c.api_key && c.api_secret ? [modules.godaddyProvider(new GoDaddyClient(c.api_key, c.api_secret))] : []
+      if (c.api_key && c.api_secret) out.push(modules.godaddyProvider(new GoDaddyClient(c.api_key, c.api_secret)))
+      const cf = cloudflareFrom(await getProviderCredentials('dns', 'cloudflare').catch(() => ({} as Record<string, string>)))
+      if (cf) out.push(modules.cloudflareProvider(cf))
+      return out
     },
     deploy: { ...guestRunner(exec), hyperproxInstall: b => installHyperproxCert(b) },
     housekeepingExec: guestRunner(exec, 60_000).guestExec,
