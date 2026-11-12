@@ -368,7 +368,8 @@ test('roles: reads viewer; search admin; every router change and reboot admin an
   for (const [m, p] of [['POST', '/api/plugins/asus/instances'], ['PUT', '/api/plugins/asus/instances/a12345678'], ['DELETE', '/api/plugins/asus/instances/a12345678'], ['POST', '/api/plugins/asus/instances/a12345678/actions']] as const) {
     assert.equal(requiredRole(m, p), 'admin', `${m} ${p}`)
     assert.equal(needsReconfirm(m, p), true, `${m} ${p}`)
-    assert.equal(needsReconfirm(m, p, { tokenPluginScope: true }), true, 'no token permission lifts it')
+    // The owner-granted plug-in settings permission lifts add and change only; delete and reboot never.
+    assert.equal(needsReconfirm(m, p, { tokenPluginScope: true }), m === 'DELETE' || p.endsWith('/actions'), `${m} ${p} with the token permission`)
   }
 })
 

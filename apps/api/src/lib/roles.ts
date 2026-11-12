@@ -170,15 +170,15 @@ const PLUGIN_SETTINGS = /^\/api\/plugins\/[^/]+\/settings$/
  * What an API token with the owner-granted plug-in settings permission may do without a re-confirmation: an explicit
  * allowlist of (method, path) pairs and nothing else. The gate checks both the raw path and the route Fastify matched.
  *   settings   PUT  /api/plugins/:id/settings                         any plug-in's settings, secrets included
- *   instances  POST /api/plugins/{pbs|home-assistant|qnap}/instances   add one (PBS: by token; the confirmed
+ *   instances  POST /api/plugins/{pbs|home-assistant|qnap|asus}/instances   add one (PBS: by token; the confirmed
  *                                                                      fingerprint travels in the same body)
- *              PUT  /api/plugins/{pbs|home-assistant|qnap}/instances/:iid   change one
- *   probe      POST /api/plugins/{pbs|home-assistant|qnap}/instances/probe-certificate   read the fingerprint to confirm
+ *              PUT  /api/plugins/{pbs|home-assistant|qnap|asus}/instances/:iid   change one
+ *   probe      POST /api/plugins/{pbs|home-assistant|qnap|asus}/instances/probe-certificate   read the fingerprint to confirm
  * Never: PBS add-by-sign-in (it carries a PBS admin password), PBS manage, verify, apply, gc or forget, Home
- * Assistant actions and secure actions, QNAP actions and secure actions, or deleting any instance.
+ * Assistant actions and secure actions, QNAP actions and secure actions, ASUS reboots, or deleting any instance.
  */
 export type TokenPluginScope = { pluginId: string; kind: 'settings' | 'instances' | 'probe' }
-const INSTANCE_PLUGINS = '(pbs|home-assistant|qnap)'
+const INSTANCE_PLUGINS = '(pbs|home-assistant|qnap|asus)'
 const TOKEN_PLUGIN_ALLOW: Array<[string, RegExp, TokenPluginScope['kind']]> = [
   ['PUT',  /^\/api\/plugins\/([^/]+)\/settings$/, 'settings'],
   ['POST', new RegExp(`^/api/plugins/${INSTANCE_PLUGINS}/instances$`), 'instances'],

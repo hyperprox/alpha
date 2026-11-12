@@ -13,6 +13,10 @@ import { pluginRoutes } from '../src/routes/plugins'
 import { haControlRoutes } from '../src/routes/ha-control'
 import { qnapRoutes } from '../src/routes/qnap'
 import { pbsRoutes } from '../src/routes/pbs'
+import { asusRoutes } from '../src/routes/asus'
+import { setAsusService } from '../src/lib/asus'
+import { AsusService } from '../src/lib/asus/service'
+import { AsusInstanceStore } from '../src/lib/asus/instances'
 import { setBroker } from '../src/lib/vault/broker'
 import { lock, isUnlocked } from '../src/lib/vault/state'
 import { setCredentialTable, setCredential } from '../src/lib/credentials'
@@ -53,6 +57,7 @@ async function build(): Promise<FastifyInstance> {
   await app.register(haControlRoutes, { prefix: '/api/plugins/home-assistant' })
   await app.register(qnapRoutes,      { prefix: '/api/plugins/qnap' })
   await app.register(pbsRoutes,       { prefix: '/api/plugins/pbs' })
+  await app.register(asusRoutes,      { prefix: '/api/plugins/asus' })
   await app.register(async f => {
     f.post('/:id/token', ok)
     f.post('/:id/plex', ok)
@@ -112,7 +117,7 @@ async function savePlex(t: string, payload: Record<string, string> = NEW_PLEX) {
 test('roles: only PUT /api/plugins/:id/settings is the plug-in settings save, and only its rule can be skipped', () => {
   assert.deepEqual(tokenPluginScope('PUT', '/api/plugins/plex/settings'), { pluginId: 'plex', kind: 'settings' })
   assert.deepEqual(tokenPluginScope('PUT', '/api/plugins/plex/settings/'), { pluginId: 'plex', kind: 'settings' })
-  for (const id of ['pbs', 'home-assistant', 'qnap']) {
+  for (const id of ['pbs', 'home-assistant', 'qnap', 'asus']) {
     assert.deepEqual(tokenPluginScope('POST', `/api/plugins/${id}/instances`), { pluginId: id, kind: 'instances' })
     assert.deepEqual(tokenPluginScope('PUT', `/api/plugins/${id}/instances/x1`), { pluginId: id, kind: 'instances' })
     assert.deepEqual(tokenPluginScope('POST', `/api/plugins/${id}/instances/probe-certificate`), { pluginId: id, kind: 'probe' })
@@ -122,7 +127,8 @@ test('roles: only PUT /api/plugins/:id/settings is the plug-in settings save, an
     ['POST', '/api/plugins/pbs/instances/signin'], ['PUT', '/api/plugins/pbs/instances/signin'], ['PUT', '/api/plugins/pbs/instances/probe-certificate'],
     ['PUT', '/api/plugins/pbs/instances/p1/manage'], ['POST', '/api/plugins/pbs/instances/p1/manage/preview'], ['POST', '/api/plugins/pbs/instances/p1/manage/apply'],
     ['POST', '/api/plugins/pbs/instances/p1/manage/gc'], ['POST', '/api/plugins/pbs/instances/p1/actions/verify'], ['POST', '/api/plugins/pbs/instances/p1/forget'],
-    ['DELETE', '/api/plugins/pbs/instances/p1'], ['DELETE', '/api/plugins/home-assistant/instances/h1'], ['DELETE', '/api/plugins/qnap/instances/q1'],
+    ['DELETE', '/api/plugins/pbs/instances/p1'], ['DELETE', '/api/plugins/home-assistant/instances/h1'], ['DELETE', '/api/plugins/qnap/instances/q1'], ['DELETE', '/api/plugins/asus/instances/a1'],
+    ['POST', '/api/plugins/asus/instances/a1/actions'], ['PUT', '/api/plugins/asus/instances/probe-certificate'], ['POST', '/api/plugins/asus/detect'],
     ['POST', '/api/plugins/home-assistant/instances/h1/actions'], ['POST', '/api/plugins/home-assistant/instances/h1/secure-actions'],
     ['POST', '/api/plugins/qnap/instances/q1/actions'], ['POST', '/api/plugins/qnap/instances/q1/secure-actions'],
     ['POST', '/api/plugins/mikrotik/instances'], ['PUT', '/api/plugins/plex/instances/1'], ['POST', '/api/plugins/pbs/instances/x/y'],
@@ -523,4 +529,73 @@ test('instances: a matched route outside the allowlist is never granted, whateve
   assert.equal(r.statusCode, 403)
   assert.equal(r.json().code, 'reconfirm_required')
   assert.equal(store.audits.some(a => a.action === 'plugin.settings.save'), false)
+})
+
+// --- ASUS router ------------------------------------------------------------------------------------
+
+function asusInMemory() {
+  const items = new Map<string, string>()
+  const io = {
+    get: async (c: string, p: string, k: string) => items.get(`${c}/${p}/${k}`) ?? null,
+    set: async (c: string, p: string, k: string, v: string) => { items.set(`${c}/${p}/${k}`, v) },
+    remove: async () => {},
+  }
+  const audits: string[] = []
+  const svc = new AsusService({ store: new AsusInstanceStore(io as any, async () => '127.0.0.1'), audit: async a => { audits.push(a) }, publish: async () => {} })
+  return svc
+}
+
+test('asus: without the permission, add, change and the probe are refused for a token', async () => {
+  await signedIn()
+  const t = await adminToken()
+  const app = await appP
+  for (const [method, url] of [['POST', '/api/plugins/asus/instances'], ['PUT', '/api/plugins/asus/instances/x1']] as const) {
+    const r = await app.inject({ method, url, headers: bearer(t), payload: {} })
+    assert.equal(r.statusCode, 403, `${method} ${url}`)
+    assert.equal(r.json().code, 'reconfirm_required')
+  }
+  const probe = await app.inject({ method: 'POST', url: '/api/plugins/asus/instances/probe-certificate', headers: bearer(t), payload: { url: 'not a url' } })
+  assert.equal(probe.statusCode, 403)
+  assert.equal(probe.json().code, 'token_forbidden')
+})
+
+test('asus: with the permission, add, change and the probe reach their handler and are audited; reboot and delete stay refused', async () => {
+  await signedIn()
+  const t = await grantedToken()
+  const app = await appP
+  setAsusService(asusInMemory())
+  try {
+    store.audits.length = 0
+    const add = await app.inject({ method: 'POST', url: '/api/plugins/asus/instances', headers: bearer(t), payload: { name: '' } })
+    assert.equal(add.statusCode, 400, add.body)
+    const put = await app.inject({ method: 'PUT', url: '/api/plugins/asus/instances/nosuch', headers: bearer(t), payload: { name: 'x' } })
+    assert.ok(put.statusCode === 400 || put.statusCode === 404, put.body)
+    const probe = await app.inject({ method: 'POST', url: '/api/plugins/asus/instances/probe-certificate', headers: bearer(t), payload: { url: 'not a url' } })
+    assert.equal(probe.statusCode, 400, probe.body)
+    assert.equal(probe.json().code, 'bad_input')
+    const saves = store.audits.filter(a => a.action === 'plugin.settings.save')
+    assert.deepEqual(saves.map(a => [a.resource, a.details!.action]), [
+      ['asus', 'POST /api/plugins/asus/instances'], ['asus', 'PUT /api/plugins/asus/instances/:iid'],
+    ])
+    for (const a of saves) assert.equal(a.details!.via, 'token automation, without reconfirm')
+    // Reboot and delete: the gate still wants the master password, so the token never reaches them.
+    for (const [method, url] of [['POST', '/api/plugins/asus/instances/a1/actions'], ['DELETE', '/api/plugins/asus/instances/a1']] as const) {
+      const r = await app.inject({ method, url, headers: bearer(t), payload: { action: 'reboot', confirm: 'x', name: 'x' } })
+      assert.equal(r.statusCode, 403, `${method} ${url}: ${r.body}`)
+      assert.equal(r.json().code, 'reconfirm_required')
+    }
+  } finally { setAsusService(null) }
+})
+
+test('asus: vault writes stay on plugin/asus and plugin/asus.<instance>', async () => {
+  await signedIn()
+  const base = { sid: 'token:tok1', email: 'token:automation', role: 'admin' as const }
+  await requestContext.run({ ...base, pluginSettings: { pluginId: 'asus', grantedBy: OWNER, instances: true } }, async () => {
+    await setCredential('plugin', 'asus', 'instances', '[]')
+    await setCredential('plugin', 'asus.a1234567', 'password', 'x')
+    await assert.rejects(setCredential('plugin', 'asus.a1234567.deeper', 'k', 'x'), { name: 'TokenVaultWriteError' })
+    await assert.rejects(setCredential('plugin', 'pbs.p1', 'url', 'x'), { name: 'TokenVaultWriteError' })
+    await assert.rejects(setCredential('plugin', 'asusx', 'url', 'x'), { name: 'TokenVaultWriteError' })
+    await assert.rejects(setCredential('proxmox', 'asus', 'url', 'x'), { name: 'TokenVaultWriteError' })
+  })
 })
