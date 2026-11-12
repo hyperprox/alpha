@@ -208,7 +208,7 @@ async function serviceWith(api: PbsApi) {
     probe: async () => ({ fingerprint: normaliseFingerprint('cd'.repeat(32))!, caVerified: false }),
     api: () => api, now: () => NOW.getTime(), wait: async () => {},
   })
-  const m = await svc.add({ name: 'backups', url: 'https://10.9.8.7:8007', tokenId: 'hyperprox@pbs!admin', secret: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }, admin)
+  const m = await svc.add({ name: 'backups', url: 'https://10.9.8.7:8007', tokenId: 'hyperprox@pbs!admin', secret: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', confirmFingerprint: normaliseFingerprint('cd'.repeat(32))! }, admin)
   return { svc, audit, m }
 }
 
@@ -292,7 +292,7 @@ test('add: a token that cannot read the server is never stored', async () => {
   const api = fakeApi({ 'GET /status/datastore-usage': () => { throw new PbsHttpError(403, 'no') } })
   const store = new PbsInstanceStore(memIO())
   const svc = new PbsService({ store, audit: async () => {}, probe: async () => ({ fingerprint: normaliseFingerprint('cd'.repeat(32))!, caVerified: false }), api: () => api })
-  await assert.rejects(svc.add({ name: 'b', url: 'https://10.9.8.7', tokenId: 'a@pbs!b', secret: 'aaaaaaaa-bbbb' }, admin), (e: any) => e.code === 'connect_failed')
+  await assert.rejects(svc.add({ name: 'b', url: 'https://10.9.8.7', tokenId: 'a@pbs!b', secret: 'aaaaaaaa-bbbb', confirmFingerprint: normaliseFingerprint('cd'.repeat(32))! }, admin), (e: any) => e.code === 'connect_failed')
   assert.deepEqual(await store.list(), [])
 })
 
@@ -418,9 +418,10 @@ function signinWorld() {
   const audit: any[] = []
   const store = new PbsInstanceStore(io)
   const logins: Array<{ userid: string; pinned: boolean }> = []
+  const cert = { fp: normaliseFingerprint('cd'.repeat(32))!, ca: false }
   const svc = new PbsService({
     store, audit: async (action, resource, details) => { audit.push({ action, resource, details }) },
-    probe: async () => { order.push('probe'); return { fingerprint: normaliseFingerprint('cd'.repeat(32))!, caVerified: false } },
+    probe: async () => { order.push('probe'); return { fingerprint: cert.fp, caVerified: cert.ca } },
     login: async (_u, pin, userid, password) => {
       order.push('login')
       logins.push({ userid, pinned: !!pin?.fingerprint })
@@ -429,10 +430,10 @@ function signinWorld() {
     },
     api: () => fakeApi(), now: () => NOW.getTime(), wait: async () => {},
   })
-  return { svc, io, audit, order, acl: () => acl, tokens, logins, store }
+  return { svc, io, audit, order, acl: () => acl, tokens, logins, store, cert }
 }
 
-const signin = (extra: Record<string, unknown> = {}) => ({ name: 'backups', url: 'https://10.9.8.7:8007', username: 'root', realm: 'pam', password: PASSWORD, ...extra })
+const signin = (extra: Record<string, unknown> = {}) => ({ name: 'backups', url: 'https://10.9.8.7:8007', username: 'root', realm: 'pam', password: PASSWORD, confirmFingerprint: normaliseFingerprint('cd'.repeat(32))!, ...extra })
 
 /** Everything printed while fn runs (console and stdout/stderr). */
 async function captureOutput(fn: () => Promise<unknown>): Promise<string> {
@@ -524,7 +525,7 @@ import { PbsManager, MANAGE_TOKEN_ID, PREVIEW_TTL_MS, runningGroups, keepFrom, c
 
 const T0 = 1_800_000_000
 /** A small PBS: one datastore "tank", snapshots by group, protected flags, running tasks, ACLs and tokens; records who calls what. */
-function manageWorld(o: { running?: string[] } = {}) {
+function manageWorld(o: { running?: string[]; sneaky?: boolean; failManageRead?: boolean; failTokenDelete?: boolean } = {}) {
   const calls: Array<{ token: string; method: string; path: string; params?: any }> = []
   let snaps = [
     { type: 'vm', id: '200', time: T0 - 3 * 86400, protected: false },
@@ -546,13 +547,15 @@ function manageWorld(o: { running?: string[] } = {}) {
       calls.push({ token, method, path: p, params })
       if (p === '/status/datastore-usage') return [{ store: 'tank', total: 100, used: 10 }]
       if (p === '/admin/datastore') return [{ store: 'tank' }]
-      if (p === '/admin/datastore/tank/status') return { total: 100, used: 10, avail: 90 }
+      if (p === '/admin/datastore/tank/status') { if (o.failManageRead && token === MANAGE_TOKEN_ID) throw new PbsHttpError(403, 'no'); return { total: 100, used: 10, avail: 90 } }
       if (p === '/admin/datastore/tank/snapshots' && method === 'GET') return snaps.filter(s => !params?.['backup-type'] || (s.type === params['backup-type'] && s.id === params['backup-id'])).map(s => ({ 'backup-type': s.type, 'backup-id': s.id, 'backup-time': s.time, protected: s.protected, size: 1024 }))
       if (p === '/admin/datastore/tank/snapshots' && method === 'DELETE') { snaps = snaps.filter(s => !(s.type === params!['backup-type'] && s.id === params!['backup-id'] && s.time === params!['backup-time'] && !s.protected)); return null }
       if (p === '/admin/datastore/tank/groups' && method === 'DELETE') { snaps = snaps.filter(s => !(s.type === params!['backup-type'] && s.id === params!['backup-id'])); return null }
       if (p === '/admin/prune') return [{ id: 'daily', store: 'tank', ns: '', 'keep-last': pruneKeep }]
       if (p === '/admin/datastore/tank/prune') {
         const res = prune({ type: params!['backup-type'], id: params!['backup-id'] }, params!['keep-last'])
+        // A PBS that removes one more than its own dry-run said (a race): the newest kept, unprotected one.
+        if (o.sneaky && !params!['dry-run']) { const x = res.find(r => r.keep && !r.protected); if (x) x.keep = false }
         if (!params!['dry-run']) snaps = snaps.filter(s => res.some(r => r['backup-time'] === s.time && r['backup-type'] === s.type && r.keep) || !(s.type === params!['backup-type'] && s.id === params!['backup-id']))
         return res
       }
@@ -564,6 +567,7 @@ function manageWorld(o: { running?: string[] } = {}) {
       if (p === '/access/users/hyperprox%40pbs/token' && method === 'GET') return tokens.map(t => ({ tokenid: `hyperprox@pbs!${t}` }))
       const tk = /^\/access\/users\/hyperprox%40pbs\/token\/([a-z]+)$/.exec(p)
       if (tk && method === 'POST') { tokens = [...tokens.filter(t => t !== tk[1]), tk[1]]; return { tokenid: `hyperprox@pbs!${tk[1]}`, value: `${tk[1]}-secret` } }
+      if (tk && method === 'DELETE' && o.failTokenDelete) throw new PbsHttpError(500, 'busy')
       if (tk && method === 'DELETE') { tokens = tokens.filter(t => t !== tk[1]); acl = acl.filter(r => r.ugid !== `hyperprox@pbs!${tk[1]}`); return null }
       if (p === '/access/acl' && method === 'PUT') {
         if (params!.delete) acl = acl.filter(r => !(r.path === params!.path && r.roleid === params!.role && r.ugid === params!['auth-id']))
@@ -718,4 +722,152 @@ test('manage: turning it off deletes the manage token and its permissions on the
   await assert.rejects(w.svc.manager.gc(w.id, admin, 'tank'), (e: any) => e.code === 'manage_off')
   assert.ok(!JSON.stringify(w.audit).includes(PASSWORD))
   await w.store.remove(w.id)
+})
+
+// ── review fixes ─────────────────────────────────────────────────────────────
+
+import { fstabEditScript, unmountScript as unmountScriptFor, fstabLine as fstabLineFor, cleanNfsSource as nfsSource } from '../src/lib/pbs/nfs'
+import { pbsMountCleanup } from '../src/lib/pbs/setup-deps'
+
+test('pin: a first sign-in needs the presented fingerprint confirmed before the password is sent', async () => {
+  const w = signinWorld()
+  await assert.rejects(w.svc.addWithLogin(signin({ confirmFingerprint: undefined }), admin), (e: any) => e.code === 'confirm_fingerprint' && e.extra.presented === w.cert.fp)
+  await assert.rejects(w.svc.addWithLogin(signin({ confirmFingerprint: 'ab'.repeat(32) }), { ...admin, sid: 's-x' }), (e: any) => e.code === 'confirm_fingerprint')
+  assert.deepEqual(w.logins, [], 'the password was never sent')
+  // A certificate that verifies against the public CAs needs no manual confirmation.
+  w.cert.ca = true
+  const m = await w.svc.addWithLogin(signin({ confirmFingerprint: undefined }), { ...admin, sid: 's-y' })
+  assert.equal(m.pin?.source, 'ca')
+  // The token way in too.
+  const t = signinWorld()
+  const svc = new PbsService({ store: t.store, audit: async () => {}, probe: async () => ({ fingerprint: t.cert.fp, caVerified: false }), api: () => fakeApi() })
+  await assert.rejects(svc.add({ name: 'b', url: 'https://10.9.8.9', tokenId: 'a@pbs!b', secret: 'aaaaaaaa-bbbb' }, admin), (e: any) => e.code === 'confirm_fingerprint')
+})
+
+test('pin: re-adding keeps the pin; a changed certificate is refused before the password, unless re-pinned after being shown', async () => {
+  const w = signinWorld()
+  const a = await w.svc.addWithLogin(signin(), admin)
+  await w.svc.addWithLogin(signin({ confirmFingerprint: undefined }), { ...admin, sid: 's-2' })
+  assert.equal(w.logins.length, 2, 'the same certificate: no confirmation needed again')
+  // Someone in the middle presents another certificate.
+  w.cert.fp = normaliseFingerprint('ee'.repeat(32))!
+  await assert.rejects(w.svc.addWithLogin(signin(), { ...admin, sid: 's-3' }), (e: any) => e.code === 'cert_changed' && e.extra.presented === w.cert.fp && e.extra.pinned === normaliseFingerprint('cd'.repeat(32)))
+  await assert.rejects(w.svc.addWithLogin(signin({ repin: true }), { ...admin, sid: 's-4' }), (e: any) => e.code === 'cert_changed', 'repin without confirming the new one')
+  assert.equal(w.logins.length, 2, 'the password never reached the other certificate')
+  assert.equal((await w.store.get(a.id))!.pin!.fingerprint, normaliseFingerprint('cd'.repeat(32)), 'the pin was not replaced')
+  // The admin was shown it, compared it, and re-pins on purpose.
+  const b = await w.svc.addWithLogin(signin({ repin: true, confirmFingerprint: w.cert.fp }), { ...admin, sid: 's-5' })
+  assert.equal(b.pin!.fingerprint, w.cert.fp)
+})
+
+test('pin: changing a token keeps the pin and refuses a changed certificate', async () => {
+  const api = fakeApi()
+  let fp = normaliseFingerprint('cd'.repeat(32))!
+  const store = new PbsInstanceStore(memIO())
+  const svc = new PbsService({ store, audit: async () => {}, probe: async () => ({ fingerprint: fp, caVerified: false }), api: () => api })
+  const m = await svc.add({ name: 'b', url: 'https://10.9.8.7', tokenId: 'a@pbs!b', secret: 'aaaaaaaa-bbbb', confirmFingerprint: fp }, admin)
+  fp = normaliseFingerprint('ee'.repeat(32))!
+  await assert.rejects(svc.update(m.id, { secret: 'cccccccc-dddd' }, admin), (e: any) => e.code === 'cert_changed')
+  await assert.rejects(svc.update(m.id, { repin: true }, admin), (e: any) => e.code === 'cert_changed')
+  const r = await svc.update(m.id, { repin: true, confirmFingerprint: fp }, admin)
+  assert.equal(r.meta.pin!.fingerprint, fp)
+})
+
+test('fstab: the marker is anchored (CT 100 never matches 1000), the edit is atomic, and an unreadable fstab is fatal', { skip: spawnSync('bash', ['-c', 'true']).status !== 0 && 'no bash' }, () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'hpx-fstab-'))
+  const fstab = path.join(dir, 'fstab')
+  const src = nfsSource('10.20.30.40', '/Backups')
+  const l100 = fstabLineFor(src, 100), l1000 = fstabLineFor(src, 1000)
+  fs.writeFileSync(fstab, `UUID=abc / ext4 defaults 0 1\n${l1000}\n${l100}\n`)
+  fs.chmodSync(fstab, 0o640)
+  const run = (script: string) => spawnSync('bash', ['-c', script], { encoding: 'utf8' })
+  // Remove CT 100's line: CT 1000's stays.
+  assert.equal(run(fstabEditScript(100, null, fstab)).status, 0)
+  assert.equal(fs.readFileSync(fstab, 'utf8'), `UUID=abc / ext4 defaults 0 1\n${l1000}\n`)
+  assert.equal(fs.statSync(fstab).mode & 0o777, 0o640, 'the mode is kept')
+  // Add it back, twice: one line, never doubled.
+  run(fstabEditScript(100, l100, fstab)); run(fstabEditScript(100, l100, fstab))
+  assert.equal(fs.readFileSync(fstab, 'utf8').split('\n').filter(x => x === l100).length, 1)
+  assert.ok(fs.readFileSync(fstab, 'utf8').includes(l1000))
+  // Removing 1000 leaves 100.
+  run(fstabEditScript(1000, null, fstab))
+  assert.ok(fs.readFileSync(fstab, 'utf8').includes(l100) && !fs.readFileSync(fstab, 'utf8').includes(l1000))
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['fstab'], 'no temporary file left')
+  // grep exit 2 (no such fstab) stops it and creates nothing.
+  const missing = path.join(dir, 'gone')
+  const r = run(fstabEditScript(100, l100, missing))
+  assert.equal(r.status, 4)
+  assert.match(r.stdout, /@@pbs fstabfail/)
+  assert.ok(!fs.existsSync(missing))
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['fstab'])
+  assert.throws(() => fstabEditScript(100, l1000, fstab), /not this container/)
+  // The scripts no longer cat over fstab or match by substring.
+  const u = unmountScriptFor(100)
+  assert.ok(!/grep -vF|cat .*> \/etc\/fstab/.test(u + fstabEditScript(100, l100)))
+  assert.match(u, / # hyperprox-pbs 100\$/)
+})
+
+test('fstab: after a container is deleted, its mount is cleaned up without touching any container', async () => {
+  const u = unmountScriptFor(909, { detach: false })
+  assert.ok(!/pct set/.test(u), 'a later container with the same id is never changed')
+  assert.match(u, /@@pbs nomount/)
+  assert.equal(await pbsMountCleanup({ node: 'node-a', vmid: 909 }, async () => ({ code: 0, output: '@@pbs nomount\n' })), '')
+  assert.match(await pbsMountCleanup({ node: 'node-a', vmid: 909 }, async (_n, script) => { assert.equal(script, u); return { code: 0, output: '@@pbs unmounted\n' } }), /NAS mount on node-a was removed/)
+  assert.match(await pbsMountCleanup({ node: 'node-a', vmid: 909 }, async () => ({ code: 1, output: '' })), /# hyperprox-pbs 909/)
+})
+
+test('delete-group: the exact set of snapshots must match at apply, not only the count', async () => {
+  const w = await managed()
+  const p = await w.svc.manager.preview(w.id, admin, { action: 'delete-group', store: 'tank', group: { type: 'ct', id: '101' } })
+  // Same count, different snapshot: one went, another arrived.
+  const ct = w.snaps().find(s => s.type === 'ct')!
+  ct.time = T0 - 60
+  await assert.rejects(w.svc.manager.apply(w.id, admin, p.id, ['last-snapshot']), (e: any) => e.code === 'changed')
+  assert.equal(w.snaps().filter(s => s.type === 'ct').length, 1, 'nothing removed')
+})
+
+test('prune: snapshots PBS removed beyond the plan are reported and audited', async () => {
+  const w = await managed({ sneaky: true })
+  const p = await w.svc.manager.preview(w.id, admin, { action: 'prune', store: 'tank' })
+  const r = await w.svc.manager.apply(w.id, admin, p.id, [])
+  assert.equal(r.unplanned.length, 1)
+  assert.match(r.message, /PBS also removed 1 snapshot the preview did not list/)
+  assert.equal(audit_has(w.audit, 'removed_unplanned'), 1)
+})
+
+test('enable: a manage token that cannot be deleted again after a failed check is audited and named', async () => {
+  const w = manageWorld({ failManageRead: true, failTokenDelete: true })
+  const m = await w.svc.addWithLogin(signin({ manage: true }), admin)
+  assert.equal(m.manage, null)
+  assert.match(m.manageError!, /hyperprox@pbs!manage may still exist on the server: delete it there by hand/)
+  assert.equal(w.audit.filter(a => a.action === 'pbs.manage' && a.details.result === 'failed:readback_token_left').length, 1)
+})
+
+test('forget: a server with management on is forgotten locally, naming the tokens left on it', async () => {
+  const w = await managed()
+  await assert.rejects(w.svc.manager.forget(w.id, tokenActor), (e: any) => e.code === 'token_forbidden')
+  await assert.rejects(w.svc.manager.forget(w.id, operator), (e: any) => e.code === 'forbidden')
+  const r = await w.svc.manager.forget(w.id, admin)
+  assert.deepEqual(r.tokensLeft, ['hyperprox@pbs!manage', 'hyperprox@pbs!readonly'])
+  assert.match(r.message, /manage token hyperprox@pbs!manage \(DatastoreAdmin on tank\) may still exist/)
+  assert.deepEqual(await w.store.list(), [])
+  assert.equal([...w.io.data.keys()].filter(k => k.includes(`pbs.${w.id}`)).length, 0, 'both vault items gone')
+  assert.equal(w.tokens().includes('manage'), true, 'nothing was sent to the server')
+  assert.equal(w.audit.at(-1).details.action, 'forget')
+  assert.equal(needsReconfirm('POST', '/api/plugins/pbs/instances/p0a1b2c3d/forget'), true)
+  assert.equal(requiredRole('POST', '/api/plugins/pbs/instances/p0a1b2c3d/forget'), 'admin')
+  assert.equal(needsReconfirm('POST', '/api/plugins/pbs/instances/probe-certificate'), false, 'reading a certificate sends nothing')
+  assert.equal(requiredRole('POST', '/api/plugins/pbs/instances/probe-certificate'), 'admin')
+})
+
+test('manage: previews, applies and clean-ups are rate-limited per session', async () => {
+  const w = await managed()
+  for (let i = 0; i < PbsManager.LIMITS.preview; i++) await w.svc.manager.preview(w.id, admin, { action: 'prune', store: 'tank' })
+  await assert.rejects(w.svc.manager.preview(w.id, admin, { action: 'prune', store: 'tank' }), (e: any) => e.code === 'rate_limited')
+  for (let i = 0; i < PbsManager.LIMITS.gc; i++) await w.svc.manager.gc(w.id, admin, 'tank')
+  await assert.rejects(w.svc.manager.gc(w.id, admin, 'tank'), (e: any) => e.code === 'rate_limited')
+  for (let i = 0; i < PbsManager.LIMITS.apply; i++) await w.svc.manager.apply(w.id, admin, 'none', []).catch(() => {})
+  await assert.rejects(w.svc.manager.apply(w.id, admin, 'none', []), (e: any) => e.code === 'rate_limited')
+  // Another session has its own allowance.
+  await w.svc.manager.preview(w.id, { ...admin, sid: 'other' }, { action: 'prune', store: 'tank' })
 })

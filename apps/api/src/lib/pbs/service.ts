@@ -18,6 +18,7 @@
 // =============================================================================
 
 import { hasRole, type Role } from '../roles'
+import { normaliseFingerprint } from '../clusters/tls-pin'
 import { PbsClient, UPID_RE, type PbsApi } from './client'
 import { ACTION_PRIVILEGE, type PbsReading } from './parse'
 import { PbsHttpError, PbsUnreachableError, type PbsPin } from './transport'
@@ -28,13 +29,14 @@ import { PbsManager } from './manage'
 export interface Actor { sid: string; email: string; role: Role; token: string | null }
 
 export class PbsRefusal extends Error {
-  constructor(public code: string, message: string, public status = 400) { super(message); this.name = 'PbsRefusal' }
+  /** `extra` goes to the page as it is: never a secret (a presented and a pinned fingerprint, say). */
+  constructor(public code: string, message: string, public status = 400, public extra: Record<string, unknown> = {}) { super(message); this.name = 'PbsRefusal' }
 }
 
 export type PbsAction = 'verify'
 export const ACTION_WORD: Record<PbsAction, string> = { verify: 'Verify' }
 
-export interface Presented { fingerprint: string; caVerified: boolean }
+export interface Presented { fingerprint: string; caVerified: boolean; subject?: string; issuer?: string; validTo?: string }
 
 export interface ServiceDeps {
   store: PbsInstanceStore
@@ -50,7 +52,7 @@ export interface ServiceDeps {
   limits?: Partial<Limits>
 }
 
-export interface Limits { readsPerMinute: number; actionsPerMinute: number; attemptsPerMinute: number; addsPerMinute: number; signinsPerMinute: number }
+export interface Limits { readsPerMinute: number; actionsPerMinute: number; attemptsPerMinute: number; addsPerMinute: number; signinsPerMinute: number; probesPerMinute: number }
 
 const CACHE_MS = 30_000
 
@@ -86,7 +88,7 @@ export class PbsService {
   constructor(deps: ServiceDeps) {
     this.d = {
       now: () => Date.now(), wait: ms => new Promise(r => setTimeout(r, ms)), ...deps,
-      limits: { readsPerMinute: 30, actionsPerMinute: 3, attemptsPerMinute: 20, addsPerMinute: 6, signinsPerMinute: 3, ...(deps.limits ?? {}) },
+      limits: { readsPerMinute: 30, actionsPerMinute: 3, attemptsPerMinute: 20, addsPerMinute: 6, signinsPerMinute: 3, probesPerMinute: 10, ...(deps.limits ?? {}) },
     }
     this.manager = new PbsManager({ store: deps.store, audit: deps.audit, api: deps.api, login: deps.login, now: this.d.now, wait: this.d.wait })
   }
@@ -105,22 +107,52 @@ export class PbsService {
   }
 
   /** Probe, pin and prove a connection, before anything is stored. */
-  private async connect(url: string, tokenId: string, secret: string): Promise<PbsPin> {
-    let presented: Presented
-    try { presented = await this.d.probe(url) } catch (e: any) { throw new PbsRefusal('unreachable', e instanceof PbsUnreachableError ? e.message : 'Could not read a certificate from that address. Check it, and that HyperProx can reach port 8007.', 400) }
-    const pin = pinFrom(presented, new Date(this.d.now()))
+  /** What the address presents now (after the address checks). Nothing else is sent. */
+  async presented(url: string, actor?: Actor): Promise<Presented> {
+    if (actor) this.limit(actor, 'probesPerMinute', 'Too many certificate reads; wait a moment.')
+    try { return await this.d.probe(url) }
+    catch (e: any) { throw new PbsRefusal('unreachable', e instanceof PbsUnreachableError ? e.message : 'Could not read a certificate from that address. Check it, and that HyperProx can reach port 8007.', 400) }
+  }
+
+  /**
+   * The pin to use, decided BEFORE any token or password is sent:
+   *   - a server already pinned at this address keeps its pin: the certificate presented must be that one (or,
+   *     for a CA-verified pin, verify against the public CAs again, which is how a renewal keeps working). A
+   *     different one is refused, unless `repin` is set and the admin confirmed exactly the fingerprint presented
+   *     now (they were shown it, and compared it with the server's dashboard);
+   *   - a new server: a CA-verified certificate is pinned as such; otherwise the admin must have confirmed exactly
+   *     the presented fingerprint first (the probe-certificate step), as for a remote cluster or a Home Assistant.
+   */
+  async decidePin(url: string, existing: PbsPin | null, confirm: unknown, repin: boolean): Promise<PbsPin> {
+    const p = await this.presented(url)
+    const confirmed = typeof confirm === 'string' ? normaliseFingerprint(confirm) : null
+    const fresh = pinFrom(p, new Date(this.d.now()))
+    if (existing) {
+      if (existing.source === 'ca' && p.caVerified) return fresh
+      if (existing.fingerprint === p.fingerprint) return { ...existing }
+      if (repin && confirmed === p.fingerprint) return { ...fresh, source: p.caVerified ? 'ca' : 'first-use' }
+      throw new PbsRefusal('cert_changed', `The server presents a different certificate (${p.fingerprint}) from the one pinned (${existing.fingerprint}), so nothing was sent to it. If it was replaced on purpose, compare the new fingerprint with the one on the server's dashboard and re-pin it.`, 409, { presented: p.fingerprint, pinned: existing.fingerprint })
+    }
+    if (p.caVerified) return fresh
+    if (confirmed === p.fingerprint) return fresh
+    throw new PbsRefusal('confirm_fingerprint', `Confirm the server's certificate first: compare ${p.fingerprint} with the fingerprint on its dashboard (Dashboard → Show Fingerprint), then confirm it. Nothing was sent to the server.`, 409, { presented: p.fingerprint, subject: p.subject ?? null, validTo: p.validTo ?? null })
+  }
+
+  /** Prove a token through a pin, before anything is stored. */
+  private async prove(url: string, tokenId: string, secret: string, pin: PbsPin): Promise<void> {
     try { await this.d.api({ url, tokenId, secret, pin }).call('GET', '/status/datastore-usage') }
     catch (e) { throw new PbsRefusal('connect_failed', `HyperProx reached the server but could not read it, so nothing was saved. ${refusalWords(e)}`, 400) }
-    return pin
   }
 
   /** Add a server: check, pin, prove, then store. */
-  async add(input: PbsInput, actor: Actor): Promise<PbsMeta> {
+  async add(input: PbsInput & { confirmFingerprint?: unknown }, actor: Actor): Promise<PbsMeta> {
     this.limit(actor, 'addsPerMinute', 'Too many attempts to add a server; wait a moment.')
     const name = cleanName(input.name), url = cleanUrl(input.url), tokenId = cleanTokenId(input.tokenId), secret = cleanSecret(input.secret)
     const staleHours = cleanStaleHours(input.staleHours, DEFAULT_STALE_HOURS)
     if ((await this.d.store.list()).some(i => i.name.toLowerCase() === name.toLowerCase())) throw new PbsInputError('Another backup server already has that name.', 409)
-    const pin = await this.connect(url, tokenId, secret)
+    if (await this.d.store.findByEndpoint(url)) throw new PbsInputError('That server is added already; change its token under its Settings.', 409)
+    const pin = await this.decidePin(url, null, input.confirmFingerprint, false)
+    await this.prove(url, tokenId, secret, pin)
     return this.d.store.create({ name, url, tokenId, secret, staleHours, pin })
   }
 
@@ -143,7 +175,7 @@ export class PbsService {
    * and no error message carries it. Sign-ins are rate-limited per session (3 a minute) and every attempt is
    * audited with the user name only.
    */
-  async addWithLogin(input: PbsInput & { username?: unknown; realm?: unknown; password?: unknown; allowVerify?: unknown; manage?: unknown }, actor: Actor): Promise<PbsMeta & { allowVerify: boolean; manageError?: string }> {
+  async addWithLogin(input: PbsInput & { username?: unknown; realm?: unknown; password?: unknown; allowVerify?: unknown; manage?: unknown; confirmFingerprint?: unknown; repin?: unknown }, actor: Actor): Promise<PbsMeta & { allowVerify: boolean; manageError?: string }> {
     const user = typeof input.username === 'string' ? input.username.trim() : ''
     const realm = typeof input.realm === 'string' && input.realm.trim() ? input.realm.trim() : 'pam'
     const audit = (result: string, extra: Record<string, unknown> = {}) =>
@@ -162,10 +194,12 @@ export class PbsService {
     const existing = await this.d.store.findByEndpoint(url)
     if (!existing && (await this.d.store.list()).some(i => i.name.toLowerCase() === name.toLowerCase())) { await audit('refused:name_taken'); throw new PbsInputError('Another backup server already has that name.', 409) }
 
-    // 1. Pin first; nothing is sent before the certificate is known.
+    // 1. The pin, before the password goes anywhere: an existing server's pin must match what is presented now
+    //    (a changed certificate is refused unless the admin re-pins it, having seen the new fingerprint), and a new
+    //    server's certificate must have been confirmed by the admin (or verify against the public CAs).
     let pin: PbsPin
-    try { pin = pinFrom(await this.d.probe(url), new Date(this.d.now())) }
-    catch (e: any) { await audit('failed:unreachable'); throw new PbsRefusal('unreachable', e instanceof PbsUnreachableError ? e.message : 'Could not read a certificate from that address. Check it, and that HyperProx can reach port 8007.', 400) }
+    try { pin = await this.decidePin(url, existing?.pin ?? null, input.confirmFingerprint, input.repin === true) }
+    catch (e: any) { await audit(`refused:${e?.code ?? 'unreachable'}`); throw e }
     let api: PbsApi
     try {
       if (!this.d.login) throw new PbsUnreachableError('Signing in is not available here.')
@@ -222,7 +256,7 @@ export class PbsService {
         const all = ((await api.call('GET', '/admin/datastore')) as any[] ?? []).map(d => String(d?.store ?? d?.name ?? '')).filter(x => /^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$/.test(x))
         return { ...(await this.manager.enable(meta.id, all, actor, { api })), allowVerify }
       } catch (e: any) {
-        return { ...meta, allowVerify, manageError: `The server was added read-only, but backup management could not be turned on: ${String(e?.message ?? 'error').slice(0, 200)}` }
+        return { ...meta, allowVerify, manageError: `The server was added read-only, but backup management could not be turned on: ${String(e?.message ?? 'error').slice(0, 400)}` }
       }
     }
     return { ...meta, allowVerify }
@@ -233,14 +267,16 @@ export class PbsService {
    * afresh). `repin` reads the certificate again and pins what is presented now: the deliberate way to accept a
    * renewed certificate, admin and re-confirmed like every change here.
    */
-  async update(id: string, input: PbsInput & { repin?: unknown }, actor: Actor): Promise<{ meta: PbsMeta; credentialChanged: boolean }> {
+  async update(id: string, input: PbsInput & { repin?: unknown; confirmFingerprint?: unknown }, actor: Actor): Promise<{ meta: PbsMeta; credentialChanged: boolean }> {
     this.limit(actor, 'addsPerMinute', 'Too many changes; wait a moment.')
     const plan = await this.d.store.planUpdate(id, input)
     let pin = plan.prev.pin
     if (plan.credentialChanged || input.repin === true || !pin) {
       const secret = plan.secret ?? (await this.d.store.connection(id))?.secret
       if (!secret) throw new PbsInputError('Paste the token secret again.')
-      pin = await this.connect(plan.url, plan.tokenId, secret)
+      // A moved address is a new server: its certificate is confirmed afresh. Otherwise the pin stands.
+      pin = await this.decidePin(plan.url, plan.moved ? null : plan.prev.pin, input.confirmFingerprint, input.repin === true)
+      await this.prove(plan.url, plan.tokenId, secret, pin)
     }
     const meta = await this.d.store.write(id, { name: plan.name, url: plan.url, tokenId: plan.tokenId, secret: plan.secret, staleHours: plan.staleHours, pin })
     this.forget(id)

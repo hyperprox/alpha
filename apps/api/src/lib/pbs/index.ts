@@ -39,7 +39,7 @@ export async function probePbs(url: string): Promise<Presented> {
   const address = await resolvePbsTarget(u)
   const name = net.isIP(u.hostname.replace(/^\[|\]$/g, '')) ? undefined : u.hostname
   const cert = await probeCertificate(address, portOf(u), 10_000, name)
-  return { fingerprint: cert.fingerprint, caVerified: name ? await caVerifies(address, portOf(u), name) : false }
+  return { fingerprint: cert.fingerprint, caVerified: name ? await caVerifies(address, portOf(u), name) : false, subject: cert.subject, issuer: cert.issuer, validTo: cert.validTo }
 }
 
 export function productionPbs(): PbsService {

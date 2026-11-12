@@ -12,6 +12,7 @@ import { execOnNode, nodeCredential } from '../node-exec'
 import { setCredentials } from '../credentials'
 import { pbsService, probePbs } from './index'
 import { PbsTransport } from './transport'
+import { unmountScript } from './nfs'
 import type { SetupDeps } from './catalogue'
 
 /** Run a script on a node (stdin, never the command line) over its saved login. */
@@ -24,6 +25,18 @@ export async function pbsSetupNodeRunner(node: string, script: string, timeoutMs
   if (!host) throw new Error(`Could not find an address for node ${node}.`)
   const r = await execOnNode({ host, cred, command: 'bash -s', input: script, timeoutMs })
   return { code: r.code, output: r.output }
+}
+
+/**
+ * After a container is deleted: if the node's fstab still has this container's backup-server NAS line (marked
+ * "# hyperprox-pbs <id>"), unmount it and remove the line and its empty folder. The NAS's files are not touched,
+ * and the container's id is not used for anything else (a later container with the same id is never changed).
+ */
+export async function pbsMountCleanup(g: { node: string; vmid: number }, run = pbsSetupNodeRunner): Promise<string> {
+  const r = await run(g.node, unmountScript(g.vmid, { detach: false }), 60_000)
+  if (/@@pbs nomount/.test(r.output)) return ''
+  if (/@@pbs unmounted/.test(r.output)) return ` Its backup-server NAS mount on ${g.node} was removed too (the NAS's files were not touched).`
+  return ` Its backup-server NAS mount on ${g.node} could not be removed: delete the line ending "# hyperprox-pbs ${g.vmid}" in /etc/fstab there and unmount /mnt/hyperprox-pbs/${g.vmid}.`
 }
 
 export function pbsSetupDeps(pve: Pick<ProxmoxClient, 'fetchStrict'>): SetupDeps {

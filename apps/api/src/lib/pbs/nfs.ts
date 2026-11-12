@@ -176,18 +176,42 @@ export function judgeProbe(p: ExportProbe, src: { source: string }, o: { minFree
   return { errors, warnings, checks, existing: p.existing }
 }
 
+/** The anchored grep pattern for this container's fstab line: " # hyperprox-pbs 100" at the end, so 100 never matches 1000. */
+export const markerPattern = (vmid: number) => ` ${marker(vmid)}$`
+
+/**
+ * Replace (or remove, with no line) this container's fstab line, atomically: everything except its own marked
+ * line is copied to a temporary file next to fstab (same filesystem, same mode), the new line is added, and the
+ * file is renamed over fstab. grep failing (exit 2 or more: unreadable fstab) stops it and changes nothing; exit 1
+ * only means no other line was left. `fstab` is a parameter so the tests can run this on a scratch file.
+ */
+export function fstabEditScript(vmid: number, line: string | null, fstab = '/etc/fstab'): string {
+  if (!Number.isInteger(vmid) || vmid < 100 || vmid > 999_999_999) throw new NfsInputError('Bad container id.')
+  if (!/^\/[A-Za-z0-9._/-]+$/.test(fstab)) throw new NfsInputError('Bad fstab path.')
+  if (line !== null && (/[\r\n]/.test(line) || !line.endsWith(` ${marker(vmid)}`))) throw new NfsInputError('Refused: not this container\'s fstab line.')
+  return [
+    `FS=${sq(fstab)}; K=${sq(markerPattern(vmid))}`,
+    'T=$(mktemp "${FS%/*}/.fstab.hpx-pbs.XXXXXX") || { echo "@@pbs fstabfail"; exit 4; }',
+    'chmod --reference="$FS" "$T" 2>/dev/null || chmod 0644 "$T"',
+    'rc=0; grep -v -- "$K" "$FS" > "$T" || rc=$?',
+    'if [ "$rc" -ge 2 ]; then rm -f "$T"; echo "@@pbs fstabfail"; exit 4; fi',
+    ...(line !== null ? [`printf '%s\\n' ${sq(line)} >> "$T" || { rm -f "$T"; echo "@@pbs fstabfail"; exit 4; }`] : []),
+    'mv -f "$T" "$FS" || { rm -f "$T"; echo "@@pbs fstabfail"; exit 4; }',
+  ].join('\n')
+}
+
 /** Mount on the node, add the fstab line (once), and give the container its bind mountpoint. Reversible. */
 export function mountScript(src: { source: string }, vmid: number, datastore: string): string {
   if (!Number.isInteger(vmid) || vmid < 100) throw new NfsInputError('Bad container id.')
   const mp = hostMountPoint(vmid)
   return [
     'set -eu',
-    `M=${sq(ok(mp))}; L=${sq(fstabLine(src, vmid))}; K=${sq(marker(vmid))}`,
+    `M=${sq(ok(mp))}`,
     'mkdir -p "$M"',
     // Once only: a line already marked for this container is replaced, not doubled.
-    'grep -vF "$K" /etc/fstab > /etc/fstab.hpx-pbs.tmp || true',
-    'printf "%s\\n" "$L" >> /etc/fstab.hpx-pbs.tmp',
-    'cat /etc/fstab.hpx-pbs.tmp > /etc/fstab && rm -f /etc/fstab.hpx-pbs.tmp',
+    'set +e',
+    fstabEditScript(vmid, fstabLine(src, vmid)),
+    'set -e',
     'mountpoint -q "$M" || mount "$M"',
     'mountpoint -q "$M" || { echo "@@pbs mountfail"; exit 3; }',
     `pct set ${vmid} -mp0 ${sq(ok(bindMountpoint(vmid, datastore)))}`,
@@ -195,15 +219,21 @@ export function mountScript(src: { source: string }, vmid: number, datastore: st
   ].join('\n') + '\n'
 }
 
-/** The reversal: the mountpoint off the container, the mount off the node, its fstab line and folder gone. */
-export function unmountScript(vmid: number): string {
+/**
+ * The reversal: the mount off the node, its fstab line and its (empty) folder gone. `detach` also takes the
+ * mountpoint off the container (a failed install's clean-up); after the container was destroyed it is left out,
+ * so a later container with the same id is never touched. With no marked line in fstab it does nothing.
+ */
+export function unmountScript(vmid: number, o: { detach?: boolean; fstab?: string } = {}): string {
   const mp = hostMountPoint(vmid)
+  const fstab = o.fstab ?? '/etc/fstab'
   return [
     'set -u',
-    `M=${sq(ok(mp))}; K=${sq(marker(vmid))}`,
-    `pct set ${vmid} -delete mp0 2>/dev/null || true`,
-    'mountpoint -q "$M" && { umount "$M" || umount -l "$M"; }',
-    'grep -vF "$K" /etc/fstab > /etc/fstab.hpx-pbs.tmp && cat /etc/fstab.hpx-pbs.tmp > /etc/fstab; rm -f /etc/fstab.hpx-pbs.tmp',
+    `M=${sq(ok(mp))}`,
+    `if ! grep -q -- ${sq(markerPattern(vmid))} ${sq(fstab)} && ! mountpoint -q "$M"; then echo "@@pbs nomount"; exit 0; fi`,
+    ...(o.detach !== false ? [`pct set ${vmid} -delete mp0 2>/dev/null || true`] : []),
+    'if mountpoint -q "$M"; then umount "$M" || umount -l "$M"; fi',
+    fstabEditScript(vmid, null, fstab),
     'rmdir "$M" 2>/dev/null || true',
     'echo "@@pbs unmounted"',
   ].join('\n') + '\n'

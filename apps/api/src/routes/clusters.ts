@@ -9,6 +9,7 @@
 //  one, and the audit log records who did what to which cluster, never a value.
 // =============================================================================
 
+import { pbsMountCleanup } from '../lib/pbs/setup-deps'
 import type { FastifyPluginAsync, FastifyReply } from 'fastify'
 import { currentContext, requestContext } from '../lib/auth'
 import { strictParams } from '../lib/route-params'
@@ -625,7 +626,7 @@ export const clusterRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<G & { Body: { action?: PowerAction } }>('/:id/guests/:node/:type/:vmid/power', guestRoute((g, b) => power({ pve: pveFromEnv() }, g, b.action), 'power'))
   fastify.post<G & { Body: { name?: string; description?: string } }>('/:id/guests/:node/:type/:vmid/snapshot', guestRoute((g, b) => snapshot({ pve: pveFromEnv() }, g, String(b.name ?? ''), String(b.description ?? '')), 'snapshot'))
   fastify.post<G & { Body: { storage?: string } }>('/:id/guests/:node/:type/:vmid/backup', guestRoute((g, b) => backupNow({ pve: pveFromEnv() }, g, String(b.storage ?? '')), 'backup'))
-  fastify.post<G & { Body: { confirmName?: string } }>('/:id/guests/:node/:type/:vmid/delete', guestRoute((g, b) => destroy({ pve: pveFromEnv() }, g, String(b.confirmName ?? '')), 'delete'))
+  fastify.post<G & { Body: { confirmName?: string } }>('/:id/guests/:node/:type/:vmid/delete', guestRoute((g, b) => destroy({ pve: pveFromEnv(), afterDestroy: pbsMountCleanup }, g, String(b.confirmName ?? '')), 'delete'))
 
   fastify.get<{ Params: { id: string; node: string } }>('/:id/nodes/:node/backup-storages', async (req, reply) => {
     const row = clusterOr404(req.params.id, reply); if (!row) return

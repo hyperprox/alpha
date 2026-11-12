@@ -249,6 +249,22 @@ export class PbsInstanceStore {
     })
   }
 
+  /**
+   * Forget a server locally, whatever its state (it may be gone for good): both vault items and its entry. Nothing is
+   * sent to the server, so a token HyperProx made there stays there until someone deletes it by hand.
+   */
+  async forget(id: string): Promise<PbsMeta> {
+    return this.serial(async () => {
+      const list = await this.list()
+      const m = list.find(i => i.id === id)
+      if (!m) throw new PbsInputError('No such backup server.', 404)
+      await this.io.remove(CATEGORY, manageProviderFor(id))
+      await this.io.remove(CATEGORY, providerFor(id))
+      await this.io.set(CATEGORY, PLUGIN_ID, INDEX_KEY, JSON.stringify(list.filter(i => i.id !== id)), false)
+      return m
+    })
+  }
+
   async remove(id: string): Promise<void> {
     return this.serial(async () => {
       const list = await this.list()

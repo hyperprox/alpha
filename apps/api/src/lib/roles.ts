@@ -143,7 +143,7 @@ const QNAP_ACT = /^\/api\/plugins\/qnap\/instances\/[^/]+\/actions$/
 const QNAP_RECONFIRM = /^\/api\/plugins\/qnap\/instances(\/(?!probe-certificate$)[^/]+(\/secure-actions)?)?$/
 // Proxmox Backup Server (routes/pbs.ts). Every write is admin (the default for a POST/PUT/DELETE) and re-confirmed:
 // adding, changing or removing a server stores a token, and "verify now" starts work on the server.
-const PBS_RECONFIRM = /^\/api\/plugins\/pbs\/instances(\/[^/]+(\/actions\/verify)?)?$/
+const PBS_RECONFIRM = /^\/api\/plugins\/pbs\/instances(\/(?!probe-certificate$)[^/]+(\/(actions\/verify|forget))?)?$/
 // Backup management (opt-in, lib/pbs/manage.ts): turning it on or off, previews, applies and clean-up. All admin and
 // re-confirmed, which keeps API tokens out; the snapshot list of one group is a read (viewer).
 const PBS_MANAGE_RECONFIRM = /^\/api\/plugins\/pbs\/instances\/[^/]+\/manage(\/(preview|apply|gc))?$/

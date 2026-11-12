@@ -1389,7 +1389,7 @@ async function mountNasDatastore(job: InstallJob, plan: InstallPlan, deps: Wizar
 async function removeHostMount(job: InstallJob, deps: WizardDeps): Promise<string> {
   if (!job.hostMount || !deps.nodeRun) return ''
   const r = await deps.nodeRun(job.hostMount.node, unmountScript(job.hostMount.vmid), 60_000).catch(() => null)
-  if (!r || !/@@pbs unmounted/.test(r.output)) return ` The NAS mount for CT ${job.hostMount.vmid} on ${job.hostMount.node} could not be undone; remove its "# hyperprox-pbs ${job.hostMount.vmid}" line from /etc/fstab there.`
+  if (!r || !/@@pbs (unmounted|nomount)/.test(r.output)) return ` The NAS mount for CT ${job.hostMount.vmid} on ${job.hostMount.node} could not be undone; remove its "# hyperprox-pbs ${job.hostMount.vmid}" line from /etc/fstab there.`
   const where = job.hostMount
   job.hostMount = undefined
   return ` The NAS mount on ${where.node} was undone (the NAS's files were not touched).`

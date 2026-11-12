@@ -179,6 +179,8 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
   // GET /wizard/pbs/nas — the NAS HyperProx knows, for a backup server's datastore (admin, like every wizard route).
   // With ?node=&host=, that NAS's NFS exports as the node sees them (showmount, read-only).
   fastify.get<{ Querystring: { node?: string; host?: string } }>('/wizard/pbs/nas', async (req, reply) => {
+    // Reading a NAS's exports runs a command on a node: a person only, never an API token (like the probes).
+    if ((req as any).apiToken) return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'API tokens cannot look at NAS exports.' })
     try {
       if (req.query.host) {
         // Asked from the node given, or the first online node with a saved login; the preview asks again from the

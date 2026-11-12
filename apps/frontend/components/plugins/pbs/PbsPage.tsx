@@ -337,17 +337,33 @@ function ServerForm({ s, onSaved, onCancel }: { s: Server | null; onSaved: () =>
   const [busy, setBusy] = useState(false)
   const [reconfirm, setReconfirm] = useState<null | (() => void)>(null)
   const set = (k: keyof typeof f, v: string) => setF(x => ({ ...x, [k]: v }))
+  // The certificate, read and shown BEFORE a password or token is sent; the admin compares and confirms it.
+  const [cert, setCert] = useState<null | { fingerprint: string; caVerified: boolean; subject?: string | null; validTo?: string | null; pinned?: string }>(null)
+  const [certOk, setCertOk] = useState(false)
+  const readCert = async () => {
+    setErr(null); setCertOk(false)
+    const r = await apiJson<{ data: { fingerprint: string; caVerified: boolean; subject: string | null; validTo: string | null } }>(`${API}/instances/probe-certificate`, 'POST', { url: f.url })
+    if (r.ok) setCert({ ...r.body!.data, ...(s?.pin ? { pinned: s.pin.fingerprint } : {}) }); else setErr(r.error ?? 'Could not read the certificate.')
+  }
+  const confirmed = cert && (certOk || cert.caVerified) ? { confirmFingerprint: cert.fingerprint } : {}
+  /** A refusal that carries the presented fingerprint (unconfirmed, or changed): show it for the admin to compare. */
+  const certRefused = (r: any): boolean => {
+    const b = r.body as any
+    if ((r.code === 'confirm_fingerprint' || r.code === 'cert_changed') && b?.presented) { setCert({ fingerprint: b.presented, caVerified: false, subject: b.subject ?? null, validTo: b.validTo ?? null, ...(b.pinned ? { pinned: b.pinned } : {}) }); setCertOk(false) }
+    return false
+  }
 
   const signIn = async () => {
     setBusy(true); setErr(null)
     const r = await apiJson(`${API}/instances/signin`, 'POST', {
       name: f.name, url: f.url, staleHours: Number(f.staleHours) || 26, username: f.username, realm: f.realm, password: f.password, allowVerify: f.allowVerify === '1', manage: f.manage === '1',
+      ...confirmed, ...(cert?.pinned && certOk ? { repin: true } : {}),
     })
     setBusy(false)
     if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void signIn()); return }
     // The password is cleared from the form either way: it was for this one sign-in.
     set('password', '')
-    if (!r.ok) { setErr(r.error ?? 'Could not add the server'); return }
+    if (!r.ok) { certRefused(r); setErr(r.error ?? 'Could not add the server'); return }
     const me = (r.body as any)?.data?.manageError
     if (me) window.alert(me)
     onSaved()
@@ -355,13 +371,23 @@ function ServerForm({ s, onSaved, onCancel }: { s: Server | null; onSaved: () =>
 
   const save = async (repin = false) => {
     setBusy(true); setErr(null)
-    const body: Record<string, unknown> = { name: f.name, url: f.url, tokenId: f.tokenId, staleHours: Number(f.staleHours) || 26, ...(repin ? { repin: true } : {}) }
+    const body: Record<string, unknown> = { name: f.name, url: f.url, tokenId: f.tokenId, staleHours: Number(f.staleHours) || 26, ...(repin ? { repin: true } : {}), ...confirmed }
     if (f.secret || !s) body.secret = f.secret
     const r = await apiJson(s ? `${API}/instances/${s.id}` : `${API}/instances`, s ? 'PUT' : 'POST', body)
     setBusy(false)
     if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void save(repin)); return }
-    if (!r.ok) { setErr(r.error ?? 'Could not save'); return }
-    set('secret', '')
+    if (!r.ok) { certRefused(r); setErr(r.error ?? 'Could not save'); return }
+    set('secret', ''); setCert(null)
+    onSaved()
+  }
+
+  // For a server with management on that cannot be reached any more (turning management off needs the server).
+  const forget = async () => {
+    if (!s?.manage || !window.confirm(`Forget ${s.name} here, without reaching it? Its manage token ${s.manage.tokenId} may stay on that server and could still delete backups there. Delete it by hand on that server if it comes back. Use this only if the server is gone.`)) return
+    const r = await apiJson<{ data: { message: string } }>(`${API}/instances/${s.id}/forget`, 'POST', {})
+    if (r.status === 403 && r.code === 'reconfirm_required') { setReconfirm(() => () => void forget()); return }
+    if (!r.ok) { setErr(r.error ?? 'Could not forget it'); return }
+    window.alert(r.body!.data.message)
     onSaved()
   }
 
@@ -440,17 +466,39 @@ function ServerForm({ s, onSaved, onCancel }: { s: Server | null; onSaved: () =>
             {s.pin.source === 'ca' ? 'It verified against a public certificate authority, so a renewal is accepted.' : 'The server\'s own certificate, pinned when it was added. Any other certificate is refused before the token is sent.'}
             {' '}If the server&apos;s certificate was replaced on purpose, compare the new fingerprint on its dashboard and re-pin.
           </small>
-          <div><GhostButton type="button" disabled={busy} onClick={() => void save(true)}>Re-pin the certificate presented now</GhostButton></div>
+          <div><GhostButton type="button" disabled={busy} onClick={() => void readCert()}>Read the certificate presented now</GhostButton></div>
+        </div>
+      )}
+      {(!s || cert) && (
+        <div className="flex flex-col gap-2 rounded-md border p-3" style={{ borderColor: cert && cert.pinned && cert.pinned !== cert.fingerprint ? 'var(--crit)' : 'var(--border-strong)' }}>
+          <span className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Confirm the server&apos;s certificate</span>
+          <small style={{ color: 'var(--text-muted)' }}>Before any password or token is sent, compare this fingerprint with the one on the backup server&apos;s own dashboard (Dashboard → Show Fingerprint). Only that certificate is then accepted.</small>
+          {!cert && <div><GhostButton type="button" disabled={!f.url} onClick={() => void readCert()}>Read certificate</GhostButton></div>}
+          {cert && (
+            <>
+              {cert.pinned && <small className="break-all font-mono" style={{ color: 'var(--text-soft)' }}>Pinned: {cert.pinned}</small>}
+              <small className="break-all font-mono" style={{ color: cert.pinned && cert.pinned !== cert.fingerprint ? 'var(--crit)' : 'var(--text-bright)' }}>Presented: {cert.fingerprint}</small>
+              {cert.subject && <small style={{ color: 'var(--text-dimmer)' }}>{cert.subject}{cert.validTo ? `, valid to ${cert.validTo}` : ''}</small>}
+              {cert.caVerified ? <small style={{ color: 'var(--good)' }}>It verifies against a public certificate authority.</small> : (
+                <label className="flex items-start gap-2 text-sm" style={{ color: 'var(--text)' }}>
+                  <input type="checkbox" checked={certOk} onChange={e => setCertOk(e.target.checked)} />
+                  <span>{cert.pinned && cert.pinned !== cert.fingerprint ? 'It changed. I compared the new fingerprint with the server\'s dashboard and want to re-pin it.' : 'It matches the fingerprint on the server\'s dashboard.'}</span>
+                </label>
+              )}
+              {s && <div><GhostButton type="button" disabled={busy || (!certOk && !cert.caVerified)} onClick={() => void save(true)}>Re-pin this certificate</GhostButton></div>}
+            </>
+          )}
         </div>
       )}
       {s && <ManageSettings key={`${s.id}:${s.manage ? 'on' : 'off'}`} serverId={s.id} manage={s.manage ?? null} stores={stores} onSaved={onSaved} />}
       {err && <Notice kind="error">{err}</Notice>}
       <div className="flex flex-wrap justify-end gap-2">
-        {s && <GhostButton type="button" onClick={() => void remove()} style={{ color: 'var(--crit-soft)' }}>Remove</GhostButton>}
+        {s && !s.manage && <GhostButton type="button" onClick={() => void remove()} style={{ color: 'var(--crit-soft)' }}>Remove</GhostButton>}
+        {s?.manage && <GhostButton type="button" onClick={() => void forget()} style={{ color: 'var(--crit-soft)' }} title="For a server that cannot be reached any more">Forget this server</GhostButton>}
         {onCancel && <GhostButton type="button" onClick={onCancel}>Cancel</GhostButton>}
         {signin
-          ? <PrimaryButton type="button" disabled={busy || !f.name || !f.url || !f.username || !f.password} onClick={() => void signIn()}>{busy ? 'Setting up…' : 'Sign in and set up'}</PrimaryButton>
-          : <PrimaryButton type="button" disabled={busy || !f.name || !f.url || !f.tokenId || (!s && !f.secret)} onClick={() => void save()}>{busy ? 'Checking…' : s ? 'Save' : 'Check and add'}</PrimaryButton>}
+          ? <PrimaryButton type="button" disabled={busy || !f.name || !f.url || !f.username || !f.password || !cert || (!certOk && !cert.caVerified)} onClick={() => void signIn()}>{busy ? 'Setting up…' : 'Sign in and set up'}</PrimaryButton>
+          : <PrimaryButton type="button" disabled={busy || !f.name || !f.url || !f.tokenId || (!s && (!f.secret || !cert || (!certOk && !cert.caVerified)))} onClick={() => void save()}>{busy ? 'Checking…' : s ? 'Save' : 'Check and add'}</PrimaryButton>}
       </div>
       {reconfirm && <ReconfirmModal onClose={() => setReconfirm(null)} onDone={() => { const fn = reconfirm; setReconfirm(null); fn() }} />}
     </div>

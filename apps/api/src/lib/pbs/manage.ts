@@ -170,6 +170,17 @@ export function runningGroups(tasks: unknown, store: string): Set<string> {
 
 export class PbsManager {
   private previews = new Map<string, ManagePreview>()
+  private hits = new Map<string, number[]>()
+  /** Per session, per minute: previews read a whole datastore and dry-run every group; applies and GC change it. */
+  static LIMITS = { preview: 10, apply: 3, gc: 3, toggle: 3 } as const
+
+  private limit(actor: Actor, bucket: keyof typeof PbsManager.LIMITS): void {
+    const key = `${actor.sid}:${bucket}`, now = this.d.now()
+    if (this.hits.size > 1000) for (const [k, v] of this.hits) if (!v.some(t => now - t < 60_000)) this.hits.delete(k)
+    const recent = (this.hits.get(key) ?? []).filter(t => now - t < 60_000)
+    if (recent.length >= PbsManager.LIMITS[bucket]) { this.hits.set(key, recent); throw new ManageRefusal('rate_limited', 'Too many of these in a minute; wait a moment.', 429) }
+    recent.push(now); this.hits.set(key, recent)
+  }
   private applying = new Set<string>()
   private d: ManagerDeps & { now: () => number; wait: (ms: number) => Promise<unknown> }
 
@@ -204,6 +215,7 @@ export class PbsManager {
    */
   async enable(id: string, stores: string[], actor: Actor, via: { login?: { username?: unknown; realm?: unknown; password?: unknown }; api?: PbsApi }): Promise<PbsMeta> {
     this.guard(actor)
+    if (via.login) this.limit(actor, 'toggle')
     const c = await this.d.store.connection(id)
     if (!c) throw new ManageRefusal('no_instance', 'No such backup server.', 404)
     const known = await this.datastores(c)
@@ -215,7 +227,13 @@ export class PbsManager {
     catch (e: any) { await this.audit(id, actor, { action: 'manage.on', result: 'failed' }); throw new ManageRefusal('setup_failed', `The manage token could not be made: ${e instanceof PbsHttpError && (e.status === 401 || e.status === 403) ? 'that login may not manage users and permissions (root@pam can)' : String(e?.message ?? 'error').slice(0, 160)}. Management stays off.`, 400) }
     // Proved before it is kept: the new token reads a chosen datastore.
     try { await this.d.api({ url: c.url, tokenId: tok.tokenId, secret: tok.secret, pin: c.meta.pin! }).call('GET', `/admin/datastore/${enc(chosen[0])}/status`) }
-    catch { await removeManageToken(admin, chosen).catch(() => {}); await this.audit(id, actor, { action: 'manage.on', result: 'failed:readback' }); throw new ManageRefusal('setup_failed', 'The manage token was made but could not read the datastore, so it was deleted again. Management stays off.', 400) }
+    catch {
+      const cleaned = await removeManageToken(admin, chosen).then(() => true, () => false)
+      await this.audit(id, actor, { action: 'manage.on', result: cleaned ? 'failed:readback' : 'failed:readback_token_left', token: tok.tokenId })
+      throw new ManageRefusal(cleaned ? 'setup_failed' : 'token_left', cleaned
+        ? 'The manage token was made but could not read the datastore, so it was deleted again. Management stays off.'
+        : `The manage token was made but could not read the datastore, and deleting it again failed. Management stays off, but the token ${tok.tokenId} may still exist on the server: delete it there by hand (Configuration → Access Control → API Token).`, 400)
+    }
     const meta = await this.d.store.setManage(id, { tokenId: tok.tokenId, secret: tok.secret, stores: chosen, at: new Date(this.d.now()).toISOString() })
     await this.audit(id, actor, { action: 'manage.on', result: 'done', token: tok.tokenId, stores: chosen })
     return meta
@@ -224,6 +242,7 @@ export class PbsManager {
   /** Turn management off: the manage token and its permissions are deleted on the server first, then the vault item. */
   async disable(id: string, actor: Actor, login: { username?: unknown; realm?: unknown; password?: unknown }): Promise<PbsMeta> {
     this.guard(actor)
+    this.limit(actor, 'toggle')
     const c = await this.d.store.connection(id)
     if (!c) throw new ManageRefusal('no_instance', 'No such backup server.', 404)
     if (!c.meta.manage) return c.meta
@@ -294,6 +313,7 @@ export class PbsManager {
   /** Make a preview. Nothing is removed. */
   async preview(id: string, actor: Actor, req: { action?: unknown; store?: unknown; ns?: unknown; items?: unknown; group?: unknown; job?: unknown }): Promise<ManagePreview> {
     this.guard(actor)
+    this.limit(actor, 'preview')
     const action = req.action as ManageAction
     if (action !== 'delete-snapshots' && action !== 'delete-group' && action !== 'prune') throw new ManageRefusal('bad_input', 'Choose delete snapshots, delete a group, or prune.')
     const store = typeof req.store === 'string' && STORE_RE.test(req.store) ? req.store : ''
@@ -359,8 +379,9 @@ export class PbsManager {
   private prunePreviews(): void { const now = this.d.now(); for (const [k, p] of this.previews) if (p.expiresAt < now) this.previews.delete(k) }
 
   /** Remove exactly what preview `pid` lists, after checking it all again. */
-  async apply(id: string, actor: Actor, pid: string, acks: unknown): Promise<{ removed: string[]; skipped: string[]; message: string }> {
+  async apply(id: string, actor: Actor, pid: string, acks: unknown): Promise<{ removed: string[]; skipped: string[]; unplanned: string[]; message: string }> {
     this.guard(actor)
+    this.limit(actor, 'apply')
     if (this.applying.has(pid)) throw new ManageRefusal('used', 'This preview is being applied already.', 409)
     this.applying.add(pid)
     try {
@@ -378,7 +399,7 @@ export class PbsManager {
       const busy = await this.running(read, p.store)
       const blocked = [...new Set(p.remove.map(groupKey))].filter(g => busy.has(g))
       if (blocked.length) throw new ManageRefusal('backup_running', `A backup of ${blocked.join(', ')} started since the preview. Nothing was removed.`, 409, blocked)
-      const removed: string[] = [], skipped: string[] = []
+      const removed: string[] = [], skipped: string[] = [], unplanned: string[] = []
       const audit = (item: string, result: string, extra: Record<string, unknown> = {}) => this.audit(id, actor, { action: p.action, store: p.store, ns: p.ns, item, result, preview: p.id, ...extra })
 
       if (p.action === 'prune') {
@@ -394,12 +415,16 @@ export class PbsManager {
           for (const k of planned.filter(k => k.startsWith(`${groupKey(g)}/`))) {
             if (gone.includes(k)) { removed.push(k); await audit(k, 'removed') } else { skipped.push(k); await audit(k, 'not_removed') }
           }
+          // PBS removing something the preview did not list (a race the second dry-run missed): said and audited.
+          for (const k of gone.filter(k => !planned.includes(k))) { unplanned.push(k); await audit(k, 'removed_unplanned') }
         }
       } else if (p.action === 'delete-group' && p.kept.length === 0) {
         const [first] = p.remove
         const fresh = all.filter(s => s.type === first.type && s.id === first.id)
         if (fresh.some(s => s.protected)) throw new ManageRefusal('changed', `A snapshot of ${groupKey(first)} was protected since the preview. Nothing was removed; look again.`, 409)
-        if (fresh.length !== p.remove.length) throw new ManageRefusal('changed', `${groupKey(first)} has a different number of snapshots than in the preview. Nothing was removed; look again.`, 409)
+        // The exact set, not a count: a snapshot added and another gone since the preview is a different group.
+        const want = new Set(p.remove.map(itemKey)), have = new Set(fresh.map(itemKey))
+        if (want.size !== have.size || [...have].some(k => !want.has(k))) throw new ManageRefusal('changed', `${groupKey(first)} does not hold exactly the snapshots the preview listed any more. Nothing was removed; look again.`, 409)
         await manage.call('DELETE', `/admin/datastore/${enc(p.store)}/groups`, { 'backup-type': first.type, 'backup-id': first.id, ...(p.ns ? { ns: p.ns } : {}) })
         for (const s of p.remove) { removed.push(itemKey(s)); await audit(itemKey(s), 'removed') }
       } else {
@@ -422,14 +447,16 @@ export class PbsManager {
         await this.audit(id, actor, { action: p.action, store: p.store, result: 'readback_mismatch', still: still.length, protectedMissing: lostProtected.length })
         throw new ManageRefusal('readback', `The server still lists ${still.length} snapshot${still.length === 1 ? '' : 's'} HyperProx removed${lostProtected.length ? `, and ${lostProtected.length} protected snapshot${lostProtected.length === 1 ? ' is' : 's are'} missing` : ''}. Check the server.`, 502)
       }
-      const message = `Removed ${removed.length} snapshot${removed.length === 1 ? '' : 's'} from ${p.store}${p.ns ? `/${p.ns}` : ''}${skipped.length ? `; ${skipped.length} not removed (see the audit log)` : ''}. Their space returns at the next clean-up (GC).`
-      return { removed, skipped, message }
+      const message = `Removed ${removed.length} snapshot${removed.length === 1 ? '' : 's'} from ${p.store}${p.ns ? `/${p.ns}` : ''}${skipped.length ? `; ${skipped.length} not removed (see the audit log)` : ''}.` +
+        `${unplanned.length ? ` PBS also removed ${unplanned.length} snapshot${unplanned.length === 1 ? '' : 's'} the preview did not list: ${unplanned.join(', ')} (in the audit log).` : ''} Their space returns at the next clean-up (GC).`
+      return { removed, skipped, unplanned, message }
     } finally { this.applying.delete(pid) }
   }
 
   /** Clean up now: garbage collection, with the manage token; its task status is read back. */
   async gc(id: string, actor: Actor, store: unknown): Promise<{ upid: string; state: 'running' | 'ok' | 'failed'; message: string }> {
     this.guard(actor)
+    this.limit(actor, 'gc')
     const s = typeof store === 'string' && STORE_RE.test(store) ? store : ''
     if (!s) throw new ManageRefusal('bad_input', 'Name the datastore.')
     const { read, manage } = await this.both(id, s)
@@ -442,6 +469,25 @@ export class PbsManager {
     const state: 'running' | 'ok' | 'failed' = st?.status === 'running' ? 'running' : st?.exitstatus === 'OK' || /^WARNINGS?:/i.test(String(st?.exitstatus ?? '')) ? 'ok' : 'failed'
     await this.audit(id, actor, { action: 'gc', store: s, upid, result: state === 'failed' ? 'failed' : 'done' })
     return { upid, state, message: state === 'running' ? `Clean-up of ${s} is running. It frees the space of deleted snapshots; on a large datastore it takes a while.` : state === 'ok' ? `Clean-up of ${s} finished.` : `Clean-up of ${s} stopped with an error: ${String(st?.exitstatus ?? '').slice(0, 160)}` }
+  }
+
+  /**
+   * "Forget this server" (for one that cannot be reached any more, with management on): only HyperProx's copy goes.
+   * Admin, re-confirmed at the gate, never an API token, audited. The answer names every token HyperProx made there,
+   * the manage token first, so a person can delete them on that server by hand if it ever comes back.
+   */
+  async forget(id: string, actor: Actor): Promise<{ message: string; tokensLeft: string[] }> {
+    this.guard(actor)
+    this.limit(actor, 'toggle')
+    const c = await this.d.store.connection(id)
+    const m = await this.d.store.forget(id)
+    this.previews.forEach((p, k) => { if (p.serverId === id) this.previews.delete(k) })
+    const tokensLeft = [...(m.manage ? [m.manage.tokenId] : []), ...(c?.tokenId ? [c.tokenId] : [])]
+    await this.audit(id, actor, { action: 'forget', result: 'done', server: m.name, tokensLeft })
+    const message = m.manage
+      ? `${m.name} is forgotten here. Its manage token ${m.manage.tokenId} (DatastoreAdmin on ${m.manage.stores.join(', ')}) may still exist on that server and can delete backups there: if the server comes back, delete it in Configuration → Access Control → API Token${c?.tokenId ? `, with ${c.tokenId}` : ''}.`
+      : `${m.name} is forgotten here.${c?.tokenId ? ` Its read-only token ${c.tokenId} may still exist on that server; delete it there if you like.` : ''}`
+    return { message, tokensLeft }
   }
 
   getPreview(owner: string, pid: string): ManagePreview | null {

@@ -98,6 +98,7 @@ export function PbsLocation({ opts, setOpts }: { opts: Record<string, string>; s
           {smb && <Notice kind="error">That looks like an SMB/CIFS share. A backup server cannot use one: PBS snapshot names contain &quot;:&quot;, which SMB cannot store, so the datastore breaks. Turn on NFS for the share on the NAS and use its NFS export.</Notice>}
           <Notice kind="info">
             Use NFS, never SMB. The node mounts the export (only the container&apos;s node, with nofail so an offline NAS cannot hang its boot) and passes it into the container.
+            Because that mount is on one node, the backup server container cannot be migrated to another node as it is (to move it, remove the mount, move it, and mount the export on the new node).
             PBS writes as the user &quot;backup&quot; (uid 34), which is uid 100034 on the NAS because the container is unprivileged: the export must let uid 100034 write
             (or squash all users to one that can). Setup tests a write first, and the preview checks the export is reachable, has room, and whether it already holds a datastore.
           </Notice>

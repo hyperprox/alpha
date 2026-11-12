@@ -17,7 +17,7 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { auditCredentialUse } from '../lib/audit'
 import { hasRole } from '../lib/roles'
 import { coverageOf, detailOf, pbsService } from '../lib/pbs'
-import { PbsInputError, type PbsMeta, type PbsView } from '../lib/pbs/instances'
+import { PbsInputError, cleanUrl, type PbsMeta, type PbsView } from '../lib/pbs/instances'
 import { PbsRefusal, type Actor } from '../lib/pbs/service'
 import { ManageRefusal, MANAGE_CONSEQUENCE } from '../lib/pbs/manage'
 
@@ -35,7 +35,7 @@ function actor(req: FastifyRequest): Actor {
 const isViewer = (req: FastifyRequest) => !hasRole(req.session?.role ?? 'viewer', 'operator')
 
 function fail(reply: FastifyReply, e: any) {
-  if (e instanceof PbsRefusal) return reply.status(e.status).send({ success: false, code: e.code, error: e.message })
+  if (e instanceof PbsRefusal) return reply.status(e.status).send({ success: false, code: e.code, error: e.message, ...e.extra })
   if (e instanceof PbsInputError) return reply.status(e.status).send({ success: false, code: 'bad_input', error: e.message })
   if (e instanceof ManageRefusal) return reply.status(e.status).send({ success: false, code: e.code, error: e.message, problems: e.problems })
   throw e
@@ -52,15 +52,33 @@ type P = { Params: { iid: string } }
 export const pbsRoutes: FastifyPluginAsync = async (fastify) => {
   // Refusals the gate makes (role, re-confirmation, token) never reach a handler: record those too.
   fastify.addHook('onResponse', async (req, reply) => {
-    if (req.method !== 'POST' || req.pbsHandled || reply.statusCode < 400) return
-    const m = /\/instances\/([^/]+)\/actions\/verify$/.exec(req.url.split('?')[0])
-    if (!m || !req.session || reply.statusCode === 401 || reply.statusCode === 423) return
-    await svc().auditRefusal(m[1], actor(req), 'verify', `gate_${reply.statusCode}`).catch(() => {})
+    if (req.method === 'GET' || req.method === 'HEAD' || reply.statusCode < 400) return
+    const path = req.url.split('?')[0]
+    const v = /\/instances\/([^/]+)\/actions\/verify$/.exec(path)
+    // The manage routes (on/off, preview, apply, clean-up) and forget, refused by the gate (role, re-confirm, token).
+    const mg = /\/instances\/([^/]+)\/(manage(?:\/(preview|apply|gc))?|forget)$/.exec(path)
+    if ((!v && !mg) || !req.session || reply.statusCode === 401 || reply.statusCode === 423) return
+    // A verify handler audits its own refusals; every manage and forget refusal (gate or handler) is recorded here.
+    if (v && req.pbsHandled) return
+    if (v) await svc().auditRefusal(v[1], actor(req), 'verify', `gate_${reply.statusCode}`).catch(() => {})
+    else await auditCredentialUse('pbs.manage', `pbs:${mg![1].replace(/[^a-z0-9]/gi, '').slice(0, 20)}`, {
+      by: req.session.email, via: req.apiToken ? `api:${req.apiToken.name}` : 'session', action: mg![3] ?? (mg![2] === 'forget' ? 'forget' : 'manage'), result: `refused:http_${reply.statusCode}`,
+    }).catch(() => {})
   })
 
   fastify.get('/instances', async (req, reply) => {
     try { return { success: true, data: (await svc().instances.views()).map(v => view(v, isViewer(req))) } }
     catch (e) { return fail(reply, e) }
+  })
+
+  // The certificate an address presents, for the admin to compare and confirm BEFORE a token or password is sent
+  // (as for a remote cluster or a Home Assistant). Admin; never an API token; rate-limited; nothing else is sent.
+  fastify.post<{ Body: { url?: unknown } }>('/instances/probe-certificate', async (req, reply) => {
+    if (req.apiToken) return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'API tokens cannot read certificates.' })
+    try {
+      const p = await svc().presented(cleanUrl(req.body?.url), actor(req))
+      return { success: true, data: { fingerprint: p.fingerprint, caVerified: p.caVerified, subject: p.subject ?? null, issuer: p.issuer ?? null, validTo: p.validTo ?? null } }
+    } catch (e) { return fail(reply, e) }
   })
 
   // Add: the address and token are checked, the certificate read and pinned, and a real read made, before saving.
@@ -147,6 +165,12 @@ export const pbsRoutes: FastifyPluginAsync = async (fastify) => {
   })
 
   // Turn management on (an admin sign-in, used once, and the datastores) or off (deletes the manage token on PBS).
+  // Forget a server locally (it cannot be reached any more): admin, re-confirmed; the answer names tokens left there.
+  fastify.post<P>('/instances/:iid/forget', async (req, reply) => {
+    try { const r = await svc().manager.forget(req.params.iid, actor(req)); svc().forget(req.params.iid); return { success: true, data: r } }
+    catch (e) { return fail(reply, e) }
+  })
+
   fastify.put<P & { Body: Record<string, unknown> }>('/instances/:iid/manage', async (req, reply) => {
     try {
       const b = req.body ?? {}

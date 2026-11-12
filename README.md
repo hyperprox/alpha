@@ -893,8 +893,11 @@ one line in its `/etc/fstab` (`rw,vers=3,hard,timeo=600,retrans=2,_netdev,nofail
 that is off when the node starts does not hang its boot), marked `# hyperprox-pbs <id>`, and passed into
 the container at `/mnt/datastore/<name>`. The container is unprivileged, and an unprivileged container
 cannot mount NFS itself, so the node mounts it. Removing a failed install takes the line, the mount and
-the folder away again; the NAS's files are never touched. Because the mount is on one node, that
-container cannot be migrated to another node as it is.
+the folder away again, and so does deleting that container later from HyperProx (a guest's **Delete**); the
+NAS's files are never touched, and another container with the same ID is never changed. The fstab line is
+matched exactly (CT 100's line never matches CT 1000's) and fstab is replaced in one step, never rewritten in
+place. Because the mount is on one node, that container cannot be migrated to another node as it is; the
+wizard says so.
 
 **Permissions on the NAS.** PBS writes as the user `backup` (uid 34) inside the container. The container
 is unprivileged, so on the node and on the NAS that user is uid 100034 (34 + 100000), group 100034. The
@@ -1291,8 +1294,10 @@ is asked again, because a token is being stored). Give it a name and its address
 if you leave the port out), then choose how HyperProx gets in. Each server you add gets its own tab.
 
 **Sign in (recommended).** Enter a PBS admin login once: user, realm (`pam` for a Linux user such as
-`root`, or `pbs`) and password. HyperProx first reads and pins the server's certificate, and only then
-signs in, through that pin. It makes its own user `hyperprox@pbs` if it is missing, and the API token
+`root`, or `pbs`) and password. First press **Read certificate**: HyperProx shows the fingerprint the server
+presents, you compare it with the one on the server's own dashboard (**Dashboard → Show Fingerprint**) and
+confirm it (a certificate from a public certificate authority needs no comparing). Only then is the password
+sent, through that pin. It makes its own user `hyperprox@pbs` if it is missing, and the API token
 `hyperprox@pbs!readonly` with the Audit role on `/`, checks that the permission reads back, makes one
 read with the new token, and keeps only that token in the vault. The password is used for that one
 sign-in and then dropped: it is never stored, logged, written to the audit log or shown. Adding the same
@@ -1314,19 +1319,22 @@ proxmox-backup-manager user generate-token hyperprox@pbs readonly
 proxmox-backup-manager acl update / Audit --auth-id 'hyperprox@pbs!readonly'
 ```
 
-and paste the token id (`hyperprox@pbs!readonly`) and its secret. **Check and add** reads and pins the
-certificate and makes one real read with the token through that pin before anything is saved: a token
+and paste the token id (`hyperprox@pbs!readonly`) and its secret. As with signing in, you confirm the
+certificate first; **Check and add** then makes one real read with the token through that pin before
+anything is saved: a token
 that cannot read the server is never stored. The Audit role on `/` gives `Datastore.Audit` and
 `Sys.Audit`: HyperProx can read everything the page shows and change nothing. **Verify now** also needs
 `Datastore.Verify` on that datastore (the DatastoreReader role on `/datastore/<name>`); without it the
 server refuses, and the page says so.
 
 **The certificate.** A certificate that checks out against a public certificate authority stays checked
-that way, so a renewal keeps working. Otherwise the server's own certificate is pinned when you add it,
-and any other certificate is refused before the token is sent, with both fingerprints in the message. If
-the server's certificate was replaced on purpose, compare the new fingerprint on its dashboard and use
-**Re-pin the certificate presented now** under **Settings**. A new address or token id needs the secret
-pasted again in the same save, and pins the certificate afresh.
+that way, so a renewal keeps working. Otherwise the certificate you confirmed is pinned, and any other one
+is refused before a token or password is sent, with both fingerprints in the message. That includes adding
+the same server again and changing its token: the pin stands, and a different certificate is never pinned
+quietly in its place. If the server's certificate was replaced on purpose, use **Read the certificate
+presented now** under **Settings**, compare the new fingerprint with the server's dashboard, tick it and
+**Re-pin this certificate**. A new address is a new server: its certificate is confirmed afresh, and the
+secret is pasted again in the same save.
 
 The page opens with a header ring for the fullest datastore and counts of datastores, backup groups,
 stale groups and failed tasks, then a band that says **Active** or **Needs attention** with the reasons.
@@ -1393,7 +1401,13 @@ Turning management on or off takes a PBS admin sign-in under **Settings** (to ch
 off and on again)
 (the password is used once and never stored): turning it off deletes the manage token and its permissions
 on the server, and then the vault item. A server with management on cannot be removed from HyperProx until
-it is turned off, so no delete token is left behind on the server.
+it is turned off, so no delete token is left behind on the server. For a server that cannot be reached
+any more, **Forget this server** (admins, master password) removes only HyperProx's copy and names the
+tokens that may remain on that server (the manage token first), to delete there by hand if it comes back.
+If turning management on fails halfway and its token cannot be deleted again, the page says so and names it.
+
+Previews, deletes and clean-ups are limited per session (10 previews, 3 deletes and 3 clean-ups a minute),
+and every refused attempt, by the gate or by HyperProx, is in the audit log.
 
 Viewers see the readings but not the server's address, token id or pin. The page reads the server again
 every two minutes while it is open (a reading is kept 30 seconds), and a server that cannot be read says
