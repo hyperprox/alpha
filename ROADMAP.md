@@ -107,8 +107,8 @@ if something changed since the preview, and is read back afterwards.
 
 ### Apps & Plug-ins
 
-- **Catalogue** (`lib/catalogue.ts`): twelve recipes; the Catalogue page lists ten (Nginx Proxy Manager,
-  Ollama, Tautulli, Nextcloud, Jellyfin, Vaultwarden, Gitea, Uptime Kuma, Homepage, Grafana), and the two
+- **Catalogue** (`lib/catalogue.ts`): fourteen recipes; the Catalogue page lists twelve (Nginx Proxy Manager,
+  Ollama, Tautulli, Proxmox Backup Server, Arr Stack, Nextcloud, Jellyfin, Vaultwarden, Gitea, Uptime Kuma, Homepage, Grafana), and the two
   website recipes (Static site, WordPress) are used by the Websites section. A wizard picks resources,
   recommends a node from live capacity, sets ID, hostname and address, and shows the exact plan. A failed
   install can remove only the container it made. An app already running on the cluster is found by a
@@ -118,8 +118,14 @@ if something changed since the preview, and is read back afterwards.
   and Metrics tabs. New website is a wizard for a static site or WordPress that also makes the DNS record,
   proxy host and certificate and checks the public address, with a clean-up of only what a failed run made;
   then open, one-time WordPress admin sign-in, reveal password, pull now and health.
+- **People, bots and probes** (2026-11-11/12): the Metrics tab counts people apart from bots and scanners (a
+  person is a visitor that behaves like a browser: a page plus its assets), keeps unconfirmed visitors
+  separate, and has a **Security** card for probes. HyperProx's own checks are recognised by both their
+  `HyperProx-…` User-Agent and their source address, so a scanner cannot borrow the name. LiteSpeed and
+  CyberPanel sites are supported read-only, with unique visitors approximated when LiteSpeed logs the proxy's
+  address. The dashboard's Websites row shows the same counts.
 - **Site metrics** (`lib/site-metrics`): privacy-friendly analytics read from each site's own nginx access log
-  every 5 minutes (no scripts, no cookies, addresses never stored; visitors counted with a salted hash whose
+  (and, read-only, from LiteSpeed and CyberPanel sites, with visitors approximated) every 5 minutes (no scripts, no cookies, addresses never stored; visitors counted with a salted hash whose
   key changes daily), the public check and certificate days, container gauges, a read-only WordPress check,
   alerts (down, server errors, certificate, traffic spike), a Websites panel on Monitoring, Prometheus gauges
   and a Grafana dashboard. **Add existing** lists the websites HyperProx finds (proxy hosts matched to their
@@ -138,10 +144,26 @@ if something changed since the preview, and is read back afterwards.
   and prepares a static site's pull now and a NAS disk's quick SMART test. Visitor figures wait for the
   site-metrics module: until it is added the assistant says they are not collected. Providers: Anthropic,
   OpenAI-compatible, Ollama.
-- **Plug-ins** (`apps/api/src/plugins`): Arr Stack, Unmanic, MikroTik, Plex activity (through Tautulli),
+- **Plug-ins** (`apps/api/src/plugins`): Arr Stack, Unmanic, MikroTik, Plex, Proxmox Backup Server,
   Home Assistant, QNAP and MeshCentral. Each has a visual page that follows the theme, with the old tables
   under **Details**. Plug-ins never read a credential: HyperProx makes their HTTP calls. **Scan for
   services** finds known apps on running guests.
+- **Arr Stack recipe** (`lib/arr`, 2026-11-12): a component picker in the wizard (Sonarr, Radarr, Prowlarr and
+  qBittorrent ticked to start; SABnzbd, Bazarr, Lidarr, Seerr and FlareSolverr optional; qBittorrent can go
+  through a VPN with Gluetun). One user and group and a `/data` layout that allows hardlinks, every app wired to
+  the others at install, and every login kept in the vault.
+- **Plex** (2026-11-12): works from Plex alone, with Tautulli optional. **Sign in with Plex** uses a PIN code
+  and stores only the server's own token in the vault. The page updates live, and covers come through a
+  signed-in image proxy so the token never reaches the browser. **Clear-out** lists what nobody watches, with
+  keep rules. **Library** removes shows, seasons, episodes and films through Sonarr or Radarr (or through Plex
+  when none manages the item), after a preview, with a warning for someone's next-up episode, a refusal while
+  it is streaming and the master password. An optional message when something new is added.
+- **Proxmox Backup Server** (`lib/pbs`, 2026-11-12): a plug-in, and a catalogue recipe that puts the datastore
+  on a NAS over NFS (recommended) or on a local disk. The plug-in is read-only by default and pins the
+  server's certificate. **Add a backup server** by signing in once: HyperProx makes its own read-only token and
+  drops the password. It shows datastores, stale guests and job health, with an optional **Verify now**.
+  **Backup management** is opt-in (delete, prune, clean up) with its own token; protected snapshots are never
+  touched.
 - **Home Assistant control** (`lib/ha-control`): more than one house, devices as tiles by room, read-back
   after every action, and an audit entry for each. Locks, alarm panels, sirens and other security devices
   need the admin role, the master password and a confirm step where you type the device name.
@@ -197,7 +219,10 @@ if something changed since the preview, and is read back afterwards.
 ### Interface
 
 - A redesigned interface with a grouped side rail, a **Find anything** box, and Auto, Light and Dark themes.
-- A real-time dashboard: nodes, storage, Ceph, HA and quorum, GPUs, network, bandwidth and power.
+- A dashboard built for a glance (condensed 2026-11-12): one status header with a verdict in words, storage
+  and what is happening now, a chip for each plug-in (Active, Needs attention or Off) and a Websites row (sites
+  up, people today, bots apart, certificate and alert pills). Dials, GPU, network, bandwidth, Ceph and HA are
+  folded under **More detail**; the node tiles moved to Infrastructure.
 - Works on a phone and installs as an app.
 
 ---
@@ -268,8 +293,9 @@ every house, room by room, and on purpose switches nothing).
 
 ### Backups
 
-**Built:** the last backup per cluster on the Command center, back up now on any cluster, and the assistant
-answers questions about backup runs. **Not built:** anything that reads Proxmox Backup Server itself.
+**Built:** the last backup per cluster on the Command center, back up now on any cluster, the assistant
+answering questions about backup runs, and the Proxmox Backup Server plug-in (see Apps & Plug-ins).
+**Not built:** automatic restore tests, restoring from the plug-in, and creating or editing backup jobs.
 
 ### Audit and access control
 
@@ -302,16 +328,18 @@ session.** Today consoles, templates, Ceph maintenance and backups still send yo
    missing. Today the catalogue makes the container, installs the app, checks that it answers, and fills in
    the HyperProx setting that was waiting for it; for websites (New website) it also makes the address,
    proxy host and certificate, keeps generated logins in the vault, and gives the site monitoring with alerts
-   (its Metrics tab). Backups, the update policy and a plug-in panel are not automatic for any recipe yet, and
+   (its Metrics tab). The Arr Stack recipe also wires its apps together and keeps their logins in the vault, and the
+   Proxmox Backup Server recipe pins its certificate and hands the plug-in a read-only token. Backups, the update policy and a plug-in panel are not automatic for any recipe yet, and
    monitoring with alerts is not automatic for the other recipes. Ghost as a website kind waits on a supported
    database for Debian 13.
 2. **MeshCentral remote desktop**: a catalogue recipe that installs MeshCentral, an adopt flow for an
    existing install, and its devices and remote desktop on the plug-in page.
-3. **A Proxmox Backup Server plug-in** with datastore use, job history and retention, and **automatic
-   restore tests**: restore a recent backup to a throwaway guest on a schedule, check it starts and holds
-   data, then remove it. A backup nobody has restored is not known to work.
+3. **Automatic restore tests for the Proxmox Backup Server plug-in.** The plug-in itself is built (datastore
+   use, job history, stale guests, verify and opt-in cleanup). What is missing is the proof: restore a recent
+   backup to a throwaway guest on a schedule, check it starts and holds data, then remove it. A backup nobody
+   has restored is not known to work.
 4. **Catalogue packs**: one install for a set of apps that belong together, each meeting the six-point
-   standard. Planned packs: family server, network, media automation, and home security with Frigate.
+   standard. Planned packs: family server, network, media automation (the Arr Stack recipe is the first piece of it), and home security with Frigate.
 5. **Consoles: when SSH cannot reach.** The Deck reaches every guest over SSH, which is the path that is
    missing when you need a console most: a Windows VM, an appliance with no shell, a guest whose network is
    broken, a VM stuck at boot.
@@ -327,9 +355,9 @@ session.** Today consoles, templates, Ceph maintenance and backups still send yo
 7. **Releases and self-update**: versioned, checksum-verified builds instead of installing whatever `main`
    is, and `hyperprox update`, `rollback` and `uninstall`. Today you update with `git pull` and `deploy.sh`.
    The design is in [docs/superpowers/specs/2026-10-06-installer-design.md](docs/superpowers/specs/2026-10-06-installer-design.md).
-8. **Demo mode and screenshots**: run HyperProx against made-up data so people can try it without a
-   cluster, and real screenshots in the README.
-9. **The hyperprox.dev website.**
+8. **Demo mode and screenshots**: the demo and the README screenshots are built; the dashboard pictures
+   still show the layout from before the 2026-11-12 condense and need retaking.
+9. ~~**The hyperprox.dev website.**~~ Built; it is kept in step with this file.
 10. **More integrations**:
     - DNS providers beyond GoDaddy: Cloudflare, Namecheap, Route 53, Porkbun, with a provider chosen per
       domain. (The credential form already has Cloudflare fields; there is no Cloudflare client.)

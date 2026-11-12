@@ -1,6 +1,6 @@
 # How HyperProx compares
 
-Checked on **2026-11-11** against each project's own documentation, site, repository or changelog. Sources are
+Checked on **2026-11-11** (HyperProx's own column updated 2026-11-12) against each project's own documentation, site, repository or changelog. Sources are
 listed under every product. Tools change quickly: if a cell is out of date, open an issue with a link and it
 will be corrected.
 
@@ -25,17 +25,17 @@ Many people run HyperProx next to one of these, not instead of it.
 | Licence | AGPL-3.0 | AGPL-3.0 | AGPL-3.0 | GPL-3.0 | MIT (paid Pro tiers) | MIT | Apache-2.0 | Apache-2.0 + proprietary dir | GPL-3.0 | GPL-3.0 | Apache-2.0 | LGPL-2.1+ |
 | Proxmox guests: create, power, migrate | ✅ create, power, migrate within a cluster | ◐ power, migrate; create planned | ✅ incl. cross-cluster | ◐ creates VMs | — read-only | ◐ creates guests | — | — | — | — | — | — |
 | Several clusters in one place | ✅ view and control | ✅ | ✅ | — | ◐ view only | — | — | — | — | ◐ widgets | ? | — |
-| Installs apps | ✅ catalogue + AI wizard | — | ◐ cloud-init templates | ✅ | — | ✅ 700+ scripts | ✅ 360+ | ✅ 600+ | ✅ 266 | — | — | — |
+| Installs apps | ✅ catalogue + AI wizard, incl. an Arr stack with the apps you pick wired together | — | ◐ cloud-init templates | ✅ | — | ✅ 700+ scripts | ✅ 360+ | ✅ 600+ | ✅ 266 | — | — | — |
 | Reverse proxy | ✅ Nginx Proxy Manager | — | — | — | — | — | ✅ | ✅ | ✅ | — | — | — |
 | DNS records | ✅ GoDaddy | — | — | — | — | — | — | — | — | — | — | — |
 | Certificates | ✅ issue, deploy, watch | ◐ own cert | ◐ own UI cert | — | ◐ expiry warnings | — | ✅ | ✅ | ✅ | — | — | — |
-| Monitoring and alerts | ✅ Prometheus + Grafana, per-site traffic from access logs; Discord, Slack, Teams, ntfy, Gotify, Telegram, webhook | ◐ metrics; alerts planned | ✅ | ✅ | ✅ | — | ✅ | ✅ | ? | ◐ status only | ◐ status only | ◐ metrics only |
+| Monitoring and alerts | ✅ Prometheus + Grafana, per-site traffic from access logs, people counted apart from bots; Discord, Slack, Teams, ntfy, Gotify, Telegram, webhook | ◐ metrics; alerts planned | ✅ | ✅ | ✅ | — | ✅ | ✅ | ? | ◐ status only | ◐ status only | ◐ metrics only |
 | Updates for hosts and guests | ✅ incl. pinned kernels | ✅ hosts | ◐ rolling host updates | ✅ | ◐ alerts | ◐ per script | ◐ OS checks | ? | ◐ per app | — | — | ◐ own host |
-| Backups (PBS) | ◐ last backup per cluster | ✅ PBS remotes | ✅ | ◐ host config | ✅ visibility + alerts | — | ◐ to S3 | ◐ to S3 | ◐ per app | ◐ widget | ? | — |
+| Backups (PBS) | ✅ plug-in: datastores, stale guests, jobs, optional Verify; opt-in delete, prune and clean up. No restore, restore tests or backup-job creation | ✅ PBS remotes | ✅ | ◐ host config | ✅ visibility + alerts | — | ◐ to S3 | ◐ to S3 | ◐ per app | ◐ widget | ? | — |
 | Secrets vault | ✅ zero-knowledge Vaultwarden | — | — | — | — | — | — | — | — | — | — | — |
 | Roles | ✅ owner, admin, operator, viewer | ✅ + LDAP/AD/OIDC | ✅ + LDAP/OIDC, 2FA | ◐ one login + 2FA | ◐ Pro only | — | ✅ | ✅ | ? | — | ✅ + OIDC/LDAP | ◐ system accounts |
 | Browser terminal | ✅ | ✅ | ◐ consoles | ✅ | — | — | ✅ | ✅ | ? | — | ? | ✅ |
-| App control panels | ✅ Home Assistant, Plex, Arr, Unmanic, MikroTik, QNAP, MeshCentral | — | ◐ plug-in system | — | — | — | — | — | — | ✅ 100+ read-only widgets | ✅ 91+ integrations | ◐ add-on apps |
+| App control panels | ✅ Home Assistant, Plex (live, with library clear-out and removal), Arr, Unmanic, MikroTik, QNAP, Proxmox Backup Server, MeshCentral | — | ◐ plug-in system | — | — | — | — | — | — | ✅ 100+ read-only widgets | ✅ 91+ integrations | ◐ add-on apps |
 | NAS | ✅ QNAP plug-in, NAS on cluster cards | — | — | ✅ NAS VMs, shares | ◐ TrueNAS monitoring | — | — | — | — | ◐ widgets | ? | ◐ 45Drives add-on |
 | VPN / remote access | ✅ WireGuard, Tailscale | — | — | ? | — | ◐ Tailscale add-on | — | — | ◐ Tailscale app | — | — | — |
 | AI assistant | ✅ local (Ollama) | — | — | ◐ rewrites alerts | ✅ Patrol + MCP | — | ◐ MCP | ✅ | — | — | ? | — |
@@ -45,7 +45,7 @@ Many people run HyperProx next to one of these, not instead of it.
 
 Being fair matters more than winning a table.
 
-- **PDM:** it is Proxmox's own product with enterprise support, and it does live migration between clusters.
+- **PDM:** it is Proxmox's own product with enterprise support, and it does live migration between clusters. It also adds Proxmox Backup Server as a remote, which goes further than HyperProx's plug-in.
   It also manages SDN/EVPN across clusters and sign-in through LDAP, AD and OIDC.
 - **PegaProx:** load balancing and affinity rules across clusters, import from ESXi, vCenter and XCP-ng,
   rolling updates that move guests out of the way first, SIEM forwarding and multi-tenancy.
@@ -66,12 +66,12 @@ Being fair matters more than winning a table.
 - DNS works with GoDaddy only.
 - Guests can move between nodes of one cluster, but not to another cluster.
 - Guest hardware is still edited in the Proxmox web interface.
-- Backups show as the last result per cluster; PBS itself is not managed yet.
+- Proxmox Backup Server is read and cleaned up, not driven: no restores, no automatic restore tests and no creating backup jobs.
 
 ## Sources
 
 **HyperProx:** this repository (`apps/api/src/lib/notify`, `lib/clusters/guest-actions.ts`,
-`lib/catalogue.ts`, `lib/roles.ts`, `routes/vpn.ts`).
+`lib/catalogue.ts`, `lib/roles.ts`, `routes/vpn.ts`, `lib/pbs`, `lib/arr`, `plugins/plex.ts`, `lib/site-metrics`).
 
 **Proxmox Datacenter Manager** (1.1, 2026-05-28):
 - https://pdm.proxmox.com/docs/roadmap.html

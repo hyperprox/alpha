@@ -15,8 +15,9 @@
 
 HyperProx is a self-hosted control panel that sits on top of Proxmox VE. It puts the things a
 homelab runs around the hypervisor (reverse proxy hosts, DNS records, TLS certificates, monitoring,
-updates, SSH access and the services on your network) into one web interface, behind a built-in,
-zero-knowledge vault.
+updates, SSH access, backups and the services on your network) into one web interface, behind a built-in,
+zero-knowledge vault. Its dashboard is a glance: one verdict, a chip for each plug-in and a row for your
+websites, with the detail a click away.
 
 It runs in a single container on your cluster, installs with one command, and talks to Proxmox
 through its API.
@@ -45,7 +46,9 @@ through its API.
 </p>
 
 A few more are in [docs/screenshots](docs/screenshots), including the QNAP plug-in. They are taken from
-the demo below, so every name, address and number in them is invented.
+the demo below, so every name, address and number in them is invented. The dashboard pictures show the
+layout from before 12 November 2026, with a tile for each node. That detail has moved to
+Infrastructure (see [Dashboard](#dashboard)); the pictures will be retaken.
 
 ## Try the demo
 
@@ -81,7 +84,7 @@ node screenshots.mjs --all http://127.0.0.1:3100 /tmp/hyperprox-shots
 | Area | What you get |
 |---|---|
 | Proxmox | Every VM and container with power actions, snapshots, migration, HA state and an SSH console; create guests from any template or ISO on any node |
-| Dashboard | Real-time nodes, Ceph, HA and quorum, GPU, network, bandwidth and per-node power |
+| Dashboard | A glance: one cluster verdict, storage and what is happening now, a chip for each plug-in (Active, Needs attention or Off) and a Websites row with people today, bots kept apart, and certificate and alert pills; dials, GPU, network, Ceph and HA are folded away under **More detail** |
 | Monitoring | Bundled Prometheus and Grafana with HyperProx dashboards and alert rules |
 | Storage | Every storage on every node, Ceph health, OSDs and pools, and per-guest disks |
 | Reverse proxy | Nginx Proxy Manager, Traefik, Caddy, HAProxy and Pangolin, several at once in one table; every change previewed, then read back |
@@ -89,12 +92,14 @@ node screenshots.mjs --all http://127.0.0.1:3100 /tmp/hyperprox-shots
 | Certificates | Inventory of every endpoint's certificate, ACME DNS-01 issuance and renewal, delivery into guests |
 | Updates | Pending packages everywhere, on every cluster, and a gated update run that respects HA and quorum, restarts Ceph one OSD at a time and refuses any restart or reboot that would take data offline; a daily read-only check tells you when something new needs updating |
 | Terminal | Browser SSH with persistent tmux sessions, split panes and saved layouts |
-| Catalogue | Guided installs of NPM, Ollama, Tautulli, Nextcloud, Jellyfin, Gitea and more: choose resources, see every node's free capacity with a recommended node, pick the ID and address; an app already running on your cluster shows where |
-| Websites | Its own section: a New website wizard (static site or WordPress) from a domain your DNS provider lists to a live HTTPS site (container, DNS record, proxy host, certificate and a check of the public address), Add existing for the sites HyperProx finds already running, and privacy-friendly metrics from each site's own access log; then open it, sign in to WordPress with a one-time link, reveal its password, pull it again, check its health |
+| Catalogue | Guided installs of NPM, Ollama, Tautulli, Nextcloud, Jellyfin, Gitea, Proxmox Backup Server and more: choose resources, see every node's free capacity with a recommended node, pick the ID and address; an app already running on your cluster shows where. The **Arr Stack** recipe installs Sonarr, Radarr and the apps you pick, wired together, with the logins in the vault |
+| Websites | Its own section: a New website wizard (static site or WordPress) from a domain your DNS provider lists to a live HTTPS site (container, DNS record, proxy host, certificate and a check of the public address), Add existing for the sites HyperProx finds already running, and privacy-friendly metrics from each site's own access log (people counted apart from bots and scanners, with a Security card for probes; LiteSpeed and CyberPanel sites are read-only); then open it, sign in to WordPress with a one-time link, reveal its password, pull it again, check its health |
 | AI assistant | Questions about your cluster, and plain-language deploys run end to end after you confirm |
-| Plug-ins | Arr Stack, Unmanic, MikroTik, Plex, Home Assistant and MeshCentral, with no access to credentials; Home Assistant also controls devices, in more than one house |
+| Plug-ins | Arr Stack, Unmanic, MikroTik, Plex, Proxmox Backup Server, Home Assistant, QNAP and MeshCentral, with no access to credentials; Home Assistant also controls devices, in more than one house |
+| Plex | Works from Plex alone (Tautulli is optional), added with **Sign in with Plex** and a short code; live updates and covers; **Clear-out** lists what nobody watches, with keep rules; **Library** removes shows, seasons, episodes and films through Sonarr, Radarr or Plex, behind a preview and the master password; a message when something new is added |
+| Backups | The Proxmox Backup Server plug-in: datastores, stale guests, job health and an optional Verify, read-only unless you turn on managing backups (delete, prune, clean up; protected snapshots are never touched) |
 | Notifications | Discord, Slack, Teams, ntfy, Gotify, Telegram and generic webhooks |
-| Security | Built-in Vaultwarden sign-in with 2FA, secrets in memory only, auto-lock, roles and API tokens |
+| Security | Built-in Vaultwarden sign-in with 2FA, secrets in memory only, auto-lock, roles and API tokens (an owner can let one admin token save plug-in settings without the master password; off by default and audited) |
 
 ## Quick start
 
@@ -374,16 +379,27 @@ topic, and the theme switch: Auto (follow your system), Light or Dark.
 
 ### Dashboard
 
-A status header opens the page: guests running on the outer ring and memory on the inner, a verdict in
-words (quorum, or nodes online when HA status cannot be read), and the numbers people look for first
-(nodes online, CPU, memory, storage, and power or HA). Below it, each node as a tile with CPU and memory
-rings plus its disk, uptime, GPU, power and guests; each Proxmox storage as a bar; the busiest guests
-with a trace of their recent CPU; what is happening now (firing alerts, offline nodes, Ceph checks, HA
-guests not started, services not answering); and your plug-ins with a health dot each. Further down
-are the capacity dials and trend lines, GPU use and VRAM, connected services, bandwidth, network
-throughput, Ceph capacity and OSDs, and HA quorum, fencing and resources. If a plug-in reports
-bandwidth (MikroTik does), WAN and LAN dials show it, scaled to your plan speed when you set one in the
-plug-in's settings.
+The dashboard is for a quick look. It opens with a status header: guests running on the outer ring and
+memory on the inner, a verdict in words (quorum, or nodes online when HA status cannot be read), and the
+numbers people look for first (nodes online, CPU, memory, storage, and power or HA). The verdict reads
+"All systems normal" or says how many things need attention, and names them (a node offline, no quorum,
+a Ceph error, storage at 85% or more, HA guests not started). With more than one cluster, every cluster
+sits beside it (see Command center below).
+
+Under the header are each Proxmox storage as a bar and what is happening now (firing alerts, offline
+nodes, Ceph checks, HA guests not started, services not answering). Then a row of **plug-in chips**, one
+for each plug-in: **Active**, **Needs attention** with the reason, or **Off** when it is not set up. Each
+chip opens that plug-in. Then a **Websites** row: how many sites, how many are up, **people today** across
+all of them, with bots and unconfirmed visitors counted apart in smaller type, and a pill for each
+certificate under 14 days and each site alert. Each site, its chart and the scanner detail stay on the
+[Websites](#websites) page.
+
+Everything else is folded under **More detail** and opens when you ask: the capacity dials and trend
+lines, GPU use and VRAM, connected services, bandwidth, network throughput, Ceph capacity and OSDs, and HA
+quorum, fencing and resources. If a plug-in reports bandwidth (MikroTik does), WAN and LAN dials show it,
+scaled to your plan speed when you set one in the plug-in's settings. The node tiles (CPU and memory rings,
+threads, disk, uptime, GPU, power and guests) are on **Infrastructure** now, and so is the full list of
+guests.
 
 ### Command center: more than one cluster
 
@@ -555,8 +571,9 @@ never its addresses.
 
 ### Infrastructure
 
-Every VM and container in one list: status, node, CPU, memory and disk, address, tags, HA state, and a
-GPU tag on guests that have graphics passed through. Filter, search, or group by node; it works on a
+Each node is a tile at the top (CPU and memory rings, threads, disk, uptime, how many guests are on and
+off, and GPU and power pills). Below them, every VM and container in one list: status, node, CPU, memory
+and disk, address, tags, HA state, and a GPU tag on guests that have graphics passed through. Filter, search, or group by node; it works on a
 phone too. **Create** builds a container from a template or a VM from an ISO. Deleting a guest asks for
 your master password again.
 
@@ -850,7 +867,7 @@ reports, are passed on as they were written.
 
 Installs a service you do not run yet into a new unprivileged container, checks that it answers, and
 connects it to HyperProx: Nginx Proxy Manager, Ollama, Tautulli, Nextcloud, Jellyfin, Vaultwarden,
-Gitea, Uptime Kuma, Homepage, Grafana and Proxmox Backup Server. Websites are not listed here: they have their own section,
+Gitea, Uptime Kuma, Homepage, Grafana, Proxmox Backup Server and the Arr Stack (below). Websites are not listed here: they have their own section,
 [Websites](#websites), and a banner on the Catalogue page links to it.
 
 **Already running?** For admins, the Catalogue page looks for each app on your cluster before offering it.
@@ -1836,16 +1853,22 @@ single `docker-compose.yml`; `COMPOSE_PROFILES` in `.env` picks the optional par
 [ROADMAP.md](ROADMAP.md) lists what is built, what is partly built and what comes next. Designs for
 upcoming work are in [docs/superpowers/specs/](docs/superpowers/specs/).
 
+- **Done on 11-12 November 2026**: the condensed dashboard (status header, plug-in chips, a Websites row,
+  detail folded away); people counted apart from bots and scanners, with a Security card, and LiteSpeed and
+  CyberPanel sites read-only; the Plex plug-in working from Plex alone, with Sign in with Plex, live updates,
+  Clear-out, Library removal and new-in-library messages; the Proxmox Backup Server plug-in and its catalogue
+  recipe; the Arr Stack catalogue recipe; and the opt-in for an API token to save plug-in settings.
 - **Partly built**: network-mount health (NAS usage is shown; per-mount status and named alerts are not),
   Ceph measurement (restart safety in Updates is built; version-skew view, rolling restarts and slow-op
   history are not), remote clusters (no high availability, GPU sharing, or Sync and Move in Send files
-  there yet), Home Assistant (no locks that need a code), and the audit log (recorded, with no page to
-  read it).
+  there yet), Home Assistant (no locks that need a code), Proxmox Backup Server (reading, verify and
+  opt-in cleanup are built; restore tests and creating backup jobs are not), and the audit log (recorded,
+  with no page to read it).
 - **Next**: the six-point standard for every catalogue install (address, proxy and certificate; login in
   the vault; backed up; monitored; under update policy; plug-in panel), MeshCentral remote desktop,
   automatic restore tests for the Proxmox Backup Server plug-in, catalogue packs, noVNC and container text
-  consoles, Ceph operations, versioned releases with `hyperprox update`, demo mode and screenshots, the
-  hyperprox.dev website, and more DNS providers, email notifications and LDAP/OIDC sign-in.
+  consoles, Ceph operations, versioned releases with `hyperprox update`, demo mode and screenshots, and
+  more DNS providers, email notifications and LDAP/OIDC sign-in.
 - **Later, as ideas**: live migration between clusters, ESXi import, XCP-ng, bare-metal install, CVE
   scanning and hardening, and a commercial tier.
 
@@ -1859,12 +1882,13 @@ HyperProx next to one of them.
 |---|---|---|---|---|---|---|---|
 | Several Proxmox clusters | ✅ view and control | ✅ | ✅ | ◐ view only | — | — | ◐ widgets |
 | Guests: create, power, migrate | ✅ within a cluster | ◐ no create yet | ✅ incl. cross-cluster | — | ◐ create | — | — |
-| Installs apps | ✅ catalogue + AI wizard | — | ◐ templates | — | ✅ 700+ | ✅ hundreds | — |
+| Installs apps | ✅ catalogue + AI wizard, incl. a wired-up Arr stack | — | ◐ templates | — | ✅ 700+ | ✅ hundreds | — |
 | Proxy, DNS and certificates | ✅ all three | ◐ own cert | ◐ own cert | — | — | ◐ proxy + certs | — |
 | Alerts to your channels | ✅ | ◐ planned | ✅ | ✅ | — | ✅ | — |
 | Updates for hosts and guests | ✅ | ◐ hosts | ◐ hosts | ◐ alerts | ◐ per app | ◐ | — |
+| Proxmox Backup Server | ✅ health, verify, opt-in delete and prune | ✅ | ✅ | ✅ | — | ◐ to S3 | ◐ widget |
 | Secrets in a vault | ✅ | — | — | — | — | — | — |
-| App control panels | ✅ HA, Plex, Arr, QNAP… | — | ◐ | — | — | — | ✅ read-only widgets |
+| App control panels | ✅ HA, Plex (incl. library clear-out), Arr, QNAP… | — | ◐ | — | — | — | ✅ read-only widgets |
 | VPN / remote access | ✅ WireGuard, Tailscale | — | — | — | ◐ add-on | — | — |
 
 ✅ yes · ◐ partly · — no. Checked 2026-11-11 against each project's own docs.
@@ -1873,7 +1897,8 @@ HyperProx next to one of them.
 live migration between clusters and LDAP/OIDC sign-in. PegaProx adds load balancing and VMware/XCP-ng
 import. Pulse has the widest monitoring coverage. Coolify and Dokploy deploy straight from git. HyperProx
 does not yet support LDAP/OIDC, email notifications, DNS providers other than GoDaddy, or moving guests
-between clusters.
+between clusters. On backups, it reads Proxmox Backup Server and can verify, delete, prune and clean up, but
+it does not restore, test restores or create backup jobs.
 
 The full table, with ProxMenux, Runtipi and Cockpit, and a source link for every cell, is in
 [docs/comparison.md](docs/comparison.md).
