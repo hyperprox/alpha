@@ -35,11 +35,11 @@ function posterStyle(title: string): CSSProperties {
 
 /**
  * A cover: the real poster when Plex has one, else the title card. `art` is a HyperProx image path
- * (/api/plugins/plex/art/...), fetched by the API with the vault token, so no Plex address or token is in the page.
+ * (/api/plugins/plex/art/... or /api/plugins/arrstack/art/...), fetched by the API with the vault token, so no Plex address or token is in the page.
  */
 export function Poster({ title, art, className, style }: { title: string; art?: string | null; className?: string; style?: CSSProperties }) {
   const [failed, setFailed] = useState(false)
-  const real = !!art && !failed && art.startsWith('/api/plugins/plex/art/')
+  const real = !!art && !failed && (art.startsWith('/api/plugins/plex/art/') || art.startsWith('/api/plugins/arrstack/art/'))
   return (
     <div className={`${pg.poster} ${className ?? ''}`} style={{ ...posterStyle(title), ...style }} aria-hidden>
       <span>{title}</span>
@@ -198,7 +198,7 @@ export function ArrView({ v, stuck, rescuing, onRescue, rescueNote }: {
       })}
 
       <Cols>
-        <Panel title="Downloads" sub={`${v.downloads.length} ACTIVE`}>
+        <Panel id="arr-downloads" title="Downloads" sub={`${v.downloads.length} ACTIVE`}>
           {v.downloads.length === 0 ? <p className={s.empty}>Nothing is transferring.</p> : (
             <ul className={s.dl}>
               {v.downloads.map((d, i) => {
