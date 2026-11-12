@@ -551,13 +551,14 @@ class Requester {
   }
 
   /** The address and credential for one call. */
-  private prepare(path: string, json: boolean): { url: URL; headers: Record<string, string> } {
+  private prepare(path: string, json: boolean, form = false): { url: URL; headers: Record<string, string> } {
     const base = (this.settings[this.endpoint.baseUrlSetting] ?? '').replace(/\/+$/, '')
     if (!base) throw new Error(`${this.manifest.name}: no address configured for ${this.endpoint.label}`)
 
     const url = new URL(base + (path.startsWith('/') ? path : `/${path}`))
     const headers: Record<string, string> = { Accept: 'application/json' }
     if (json) headers['Content-Type'] = 'application/json'
+    if (form) headers['Content-Type'] = 'application/x-www-form-urlencoded'
     const auth = this.endpoint.auth
 
     if (auth.kind === 'header') {
@@ -665,9 +666,19 @@ class Requester {
 
     const text = await res.text()
     // Sonarr, Radarr and Plex answer a delete (and some edits) with 200 or 202 and no body.
-    if ((method === 'DELETE' || method === 'PUT') && !text.trim()) return null
+    if ((method === 'DELETE' || method === 'PUT' || method === 'POST') && !text.trim()) return null
     try { return JSON.parse(text) }
     catch { throw new Error(`${this.manifest.name} did not return JSON`) }
+  }
+
+  /** A form-encoded POST. Whatever comes back that is not JSON (qBittorrent answers "Ok.") is null. */
+  async requestForm(path: string, form: Record<string, string>, timeoutMs?: number): Promise<any> {
+    if (this.manifest.coreTransport) throw new Error(`${this.manifest.name} takes no form posts.`)
+    const { url, headers } = this.prepare(path, false, true)
+    const res = await fetchWithTimeout(url.toString(), headers, this.endpoint.insecureTLS, 'POST', new URLSearchParams(form), timeoutMs)
+    if (!res.ok) throw new Error(`${this.manifest.name} returned HTTP ${res.status}`)
+    const text = await res.text()
+    try { return text.trim() ? JSON.parse(text) : null } catch { return null }
   }
 }
 
@@ -732,7 +743,7 @@ export function fetchWithTimeout(
   headers: Record<string, string>,
   insecure?: boolean,
   method: 'GET' | 'POST' | 'DELETE' | 'PUT' = 'GET',
-  body?: Record<string, unknown>,
+  body?: Record<string, unknown> | URLSearchParams,
   // Eight seconds is right for a tile and far too short for a search that fans
   // out to a dozen indexers, several of them behind FlareSolverr.
   timeoutMs = 8000,
@@ -740,7 +751,7 @@ export function fetchWithTimeout(
   maxBytes?: number,
 ): Promise<{ ok: boolean; status: number; contentType?: string | null; text: () => Promise<string>; buffer: () => Promise<Buffer> }> {
   const tooBig = () => new Error('The answer is larger than allowed.')
-  const payload = body ? JSON.stringify(body) : undefined
+  const payload = body ? (body instanceof URLSearchParams ? body.toString() : JSON.stringify(body)) : undefined
 
   // Never followed: a redirect would carry the plug-in's credential (its headers) to wherever the device, or
   // anyone answering in its place, points. The address in its settings is the only place the credential goes.
@@ -843,6 +854,12 @@ export interface CoreEndpointClient {
   put(path: string, body: unknown, timeoutMs?: number): Promise<any>
   /** A GET whose answer is not read (Plex: scan one folder). */
   trigger(path: string, timeoutMs?: number): Promise<void>
+  /** A JSON POST (Sonarr and Radarr: run a command). An empty answer is null. Optional. */
+  post?(path: string, body: Record<string, unknown>, timeoutMs?: number): Promise<any>
+  /** A form-encoded POST (qBittorrent's WebUI API). An empty answer is null. Optional. */
+  postForm?(path: string, form: Record<string, string>, timeoutMs?: number): Promise<any>
+  /** A DELETE with a JSON body (Sonarr and Radarr: bulk queue removal). Optional. */
+  deleteBody?(path: string, body: Record<string, unknown>, timeoutMs?: number): Promise<any>
   /** A GET with another credential in place of the stored one (Plex: a shared account's own server token). Optional. */
   getAs?(path: string, credential: string, timeoutMs?: number): Promise<any>
   /** A GET to one of the endpoint's declared credentialOrigins (Plex: plex.tv), answered as text. Optional. */
@@ -880,6 +897,9 @@ export async function pluginEndpointClient(plugin: Plugin, endpointKey = 'defaul
     trigger: (path, timeoutMs) => r.trigger(path, timeoutMs),
     getAs:  (path, credential, timeoutMs) => r.requestAs(path, credential, timeoutMs),
     textAt: (origin, path, timeoutMs) => r.textAt(origin, path, timeoutMs),
+    post:   (path, body, timeoutMs) => r.request('POST', path, body, timeoutMs),
+    postForm: (path, form, timeoutMs) => r.requestForm(path, form, timeoutMs),
+    deleteBody: (path, body, timeoutMs) => r.request('DELETE', path, body, timeoutMs),
   }
 }
 

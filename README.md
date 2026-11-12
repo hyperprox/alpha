@@ -1499,8 +1499,8 @@ and episode offers **Map by filename**, the same rescue as before.
 updates by itself, like the Plex page: the queue about every 4 seconds and the rest of the page every 30
 seconds. Both stop while the browser tab is hidden and catch up when you come back. The **pause** button
 turns it off, and **Refresh** is now a small extra for when you want a reading right away. Behind the page, HyperProx
-reads the queue once and shares that reading with every open page for 3 seconds, so extra tabs do not
-cost Sonarr and Radarr extra requests.
+reads the queue once and shares that reading with every open page for 3 seconds after it finishes (a slow reading is
+shared while it runs, and given up after 45 seconds), so extra tabs do not cost Sonarr and Radarr extra requests.
 
 - **Every download, not 200 rows.** HyperProx reads every page of the Sonarr and Radarr queues. Sonarr
   lists a queue row for each episode, so a 23-episode season pack arrives as 23 rows. HyperProx folds the
@@ -1518,8 +1518,37 @@ cost Sonarr and Radarr extra requests.
   queued, how much is left to fetch, and how many are stalled or have warnings. The Arr Stack tile on the
   plug-ins page shows the same in its Queue row.
 
-The queue is read-only: there are no delete, blocklist or retry buttons. It uses the keys already saved in
-the plug-in's settings, which stay on the server; the page never receives a key, an address or the download folder. Messages are passed on as Sonarr and Radarr wrote them, except that any folder path in one is replaced with "the download folder".
+**What you can do about a problem.** Admins get buttons in the Queue tab; viewers and operators see none.
+They act on queue downloads only. They never delete anything in your library. Before anything is removed, the
+page shows a confirm step that lists exactly which downloads will go (the server reads the queue fresh and says
+what it found), and you click to confirm. There is no master password, because nothing permanent is lost.
+Every action is written to the audit log (who, which downloads, whether it was blocklisted) before it runs; if the
+log cannot be written, nothing happens. Actions are limited to 30 requests a minute per person. API tokens cannot
+use them. The result shows right under the buttons, and the queue refreshes itself straight away.
+
+- **Find another** (on any download). Removes it from the download client and the queue, blocklists the
+  release, then asks Sonarr or Radarr to search again for exactly what it covered: the episode (or the few
+  episodes named in the release), the whole season when it was a season pack, or the movie. A download Sonarr or
+  Radarr never matched to an episode or movie is refused, because there is nothing to search for; use Remove.
+- **Remove.** The same removal with a "Blocklist this release" box (off by default) and no search.
+- **Retry import** (on a blocked or failed import). Asks Sonarr or Radarr to check its downloads again and shows
+  the import messages. If a message looks like a permissions problem, HyperProx adds a line of advice and nothing
+  more: it does not change permissions. A wrong match just shows the message; there is no manual mapping here.
+- **Move to top** (torrents, and only when the qBittorrent address is saved in the plug-in's settings; the
+  button is hidden otherwise). Moves the torrent to the top of qBittorrent's queue. qBittorrent has to have
+  queueing switched on for the order to matter.
+- **Swap singles for a season pack** (on a season with two or more single-episode downloads still going).
+  Removes those singles without blocklisting them, so they can come back, then searches for the season. About
+  20 seconds later it looks at the queue and says either which season pack was grabbed, or "no season pack
+  found; singles will be re-grabbed". Finished downloads waiting to import are left alone.
+- **Fix all stalled** (above the list, and per show). Find another over every stalled download. The confirm lists
+  each one; any that stopped being stalled before you confirmed are skipped and named.
+
+The page sends only a download's ID, never a queue row number; the server re-reads the whole queue and picks the
+rows itself, and checks every one belongs to that download before it removes anything (a 23-episode pack is
+removed as all 23 of its rows, and nothing else).
+
+The queue uses the keys already saved in the plug-in's settings, which stay on the server; the page never receives a key, an address or the download folder. Messages are passed on as Sonarr and Radarr wrote them, except that any folder path in one is replaced with "the download folder". If a reading fails the page waits longer before asking again (up to 30 seconds), and goes back to every 4 seconds after one works.
 If Sonarr or Radarr does not answer, its half is greyed with the reason and the other still shows.
 
 **Plex** needs only your Plex server. There are two ways to add it, both in the plug-in's settings.

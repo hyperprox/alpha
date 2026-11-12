@@ -6,7 +6,15 @@
 //                  download (a season pack is 23 queue rows but one download), grouped Show → Season, with
 //                  progress, ETA, quality, client and any warning, problems first. Movies are a flat list.
 //
-//  Read-only, and the same light "live" route shape as Plex's /live: the page asks every few seconds, and one
+//  POST /queue/actions  admin only (a signed-in person: an API token is refused by name, here and in the gate), no
+//                  master password, rate-limited per person. What to do about a problem in the queue: find another,
+//                  remove, retry an import, move a torrent to the top, swap singles for a season pack, fix all
+//                  stalled (lib/arr-queue/actions.ts). The browser sends an instance and download ids; the server
+//                  re-reads the whole queue fresh (never this cache) and resolves the rows itself. `preview: true`
+//                  answers with exactly what would be removed and searched and changes nothing. Queue downloads only,
+//                  never library files. Every run is audited before it starts.
+//
+//  The reading is read-only, and the same light "live" route shape as Plex's /live: the page asks every few seconds, and one
 //  upstream reading is shared by every open page for a few seconds, so several tabs cost Sonarr and Radarr one
 //  read of the queue. The keys stay with the vault-backed plug-in settings; none is ever in a response.
 //  Sonarr and Radarr are separate: one being down greys its own half and the other still shows.
@@ -16,10 +24,19 @@ import type { FastifyPluginAsync } from 'fastify'
 import { findPlugin } from '../plugins'
 import { pluginEndpointClient, type CoreEndpointClient } from '../lib/plugin-host'
 import { buildQueueData, readAllQueue, type QueueData } from '../lib/arr-queue/logic'
+import { ACTIONS, ActionRefusal, DESTRUCTIVE, runAction, type ActionName, type ActionRequest } from '../lib/arr-queue/actions'
+import { auditOrThrow } from '../lib/audit'
+import { hasRole } from '../lib/roles'
+import { MissLimiter } from '../lib/plex-art'
 
 const arrClient = async (endpoint: 'default' | 'radarr'): Promise<CoreEndpointClient | null> => {
   const p = findPlugin('arrstack')
   return p ? pluginEndpointClient(p, endpoint).catch(() => null) : null
+}
+
+const qbitClient = async (): Promise<CoreEndpointClient | null> => {
+  const p = findPlugin('arrstack')
+  return p ? pluginEndpointClient(p, 'qbit').catch(() => null) : null
 }
 
 const READ_DEADLINE_MS = 45_000
@@ -42,8 +59,15 @@ export async function readQueue(deps: { sonarr: CoreEndpointClient | null; radar
 
 export function buildArrQueueRoutes(deps: {
   sonarr?: () => Promise<CoreEndpointClient | null>; radarr?: () => Promise<CoreEndpointClient | null>
+  qbit?: () => Promise<CoreEndpointClient | null>
+  audit?: (action: string, details: Record<string, unknown>) => Promise<void>
+  limiter?: MissLimiter
   now?: () => number; ttlMs?: number
 } = {}): FastifyPluginAsync {
+  const qbit = deps.qbit ?? qbitClient
+  const audit = deps.audit ?? ((a: string, d: Record<string, unknown>) => auditOrThrow(a, 'plugin:arrstack', d))
+  // Thirty requests a minute per person: a preview and its confirmation are two.
+  const limiter = deps.limiter ?? new MissLimiter(30)
   const sonarr = deps.sonarr ?? (() => arrClient('default'))
   const radarr = deps.radarr ?? (() => arrClient('radarr'))
   const now = deps.now ?? Date.now
@@ -58,7 +82,11 @@ export function buildArrQueueRoutes(deps: {
       const t = now()
       const fresh = memo && (memo.doneAt === null ? t - memo.startedAt <= STALE_MS : t - memo.doneAt <= ttl)
       if (!fresh) {
-        const work = (async () => readQueue({ sonarr: await sonarr().catch(() => null), radarr: await radarr().catch(() => null), now: t }))()
+        const work = (async () => {
+          const data = await readQueue({ sonarr: await sonarr().catch(() => null), radarr: await radarr().catch(() => null), now: t })
+          // Moving a torrent up needs qBittorrent in the plug-in's settings: the page hides the button otherwise.
+          return { ...data, capabilities: { prioritise: !!(await qbit().catch(() => null)) } }
+        })()
         let timer: ReturnType<typeof setTimeout> | undefined
         const deadline = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('timed out reading the queue')), READ_DEADLINE_MS) })
         const p = Promise.race([work, deadline]).finally(() => clearTimeout(timer))
@@ -72,6 +100,63 @@ export function buildArrQueueRoutes(deps: {
         return reply.status(502).send({ success: false, code: 'queue_failed', error: msg(e) })
       }
     })
+
+    fastify.post('/queue/actions', async (req, reply) => {
+      const refuse = (status: number, code: string, error: string) => reply.status(status).send({ success: false, code, error })
+      // The gate already refuses a token and anyone below admin; checked again here so this route is safe on its own.
+      if (req.apiToken) return refuse(403, 'token_forbidden', 'API tokens cannot use this route')
+      const session = req.session
+      if (!session || !hasRole(session.role, 'admin')) return refuse(403, 'forbidden', 'This needs the admin role')
+      const parsed = parseBody(req.body)
+      if (typeof parsed === 'string') return refuse(400, 'bad_request', parsed)
+      const body = req.body as Record<string, unknown>
+      const preview = body.preview === true
+      if (!limiter.allow(session.email)) return refuse(429, 'rate_limited', 'Too many queue actions in a minute. Wait a moment and try again.')
+      if (!preview && DESTRUCTIVE.includes(parsed.action) && body.confirmed !== true) return refuse(400, 'confirm_required', 'This removes downloads: confirm it first.')
+      try {
+        const out = await runAction({ sonarr, radarr, qbit, audit }, parsed, session.email, { preview })
+        // The next reading of the queue must not be the cached one from before the change.
+        memo = null
+        if (preview) return { success: true, data: { preview: true, plan: publicPlan(out.plan) } }
+        return { success: true, data: out.result }
+      } catch (e) {
+        memo = null
+        if (e instanceof ActionRefusal) return refuse(e.status, e.code, e.message)
+        return refuse(502, 'action_failed', msg(e))
+      }
+    })
+  }
+}
+
+const str = (v: unknown, max: number) => typeof v === 'string' && v.length > 0 && v.length <= max
+const strList = (v: unknown, n: number) => Array.isArray(v) && v.length <= n && v.every(x => str(x, 220))
+
+/** The request body, checked field by field. A string is the reason it was refused. */
+function parseBody(b: unknown): ActionRequest | string {
+  if (!b || typeof b !== 'object' || Array.isArray(b)) return 'Send a JSON body.'
+  const o = b as Record<string, unknown>
+  if (!ACTIONS.includes(o.action as ActionName)) return 'Unknown action.'
+  if (o.instance !== 'sonarr' && o.instance !== 'radarr') return 'Name sonarr or radarr.'
+  if (o.downloadId !== undefined && !str(o.downloadId, 220)) return 'Bad download id.'
+  if (o.downloadIds !== undefined && !strList(o.downloadIds, 50)) return 'Bad download ids.'
+  if (o.known !== undefined && !strList(o.known, 200)) return 'Bad list.'
+  if (o.showKey !== undefined && !str(o.showKey, 40)) return 'Bad show.'
+  if (o.seasonKey !== undefined && !str(o.seasonKey, 40)) return 'Bad season.'
+  if (o.blocklist !== undefined && typeof o.blocklist !== 'boolean') return 'Bad blocklist value.'
+  const needsOne = ['find-another', 'remove', 'retry-import', 'prioritise'].includes(o.action as string)
+  if (needsOne && o.downloadId === undefined) return 'Name the download.'
+  return {
+    action: o.action as ActionName, instance: o.instance, downloadId: o.downloadId as string | undefined,
+    downloadIds: o.downloadIds as string[] | undefined, blocklist: o.blocklist as boolean | undefined,
+    showKey: o.showKey as string | undefined, seasonKey: o.seasonKey as string | undefined, known: o.known as string[] | undefined,
+  }
+}
+
+/** A plan as the browser sees it: names and counts, never a row id. */
+function publicPlan(p: import('../lib/arr-queue/actions').Plan) {
+  return {
+    action: p.action, instance: p.instance, blocklist: p.blocklist, items: p.items,
+    search: p.commands.map(c => c.label), skipped: p.skipped, seasonLabel: p.seasonLabel, prioritise: !!p.qbitHash,
   }
 }
 

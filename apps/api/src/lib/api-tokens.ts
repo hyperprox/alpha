@@ -129,6 +129,7 @@ export function bearerApiToken(headers: Record<string, any>): string | null {
  *                      value out) and generate
  *   /api/terminal*     saved SSH logins, host keys and shells (the Deck)
  *   /ws, /ws/*         live status, update progress and terminal sockets
+ *   /api/plugins/arrstack/queue/actions   Arr queue removal, blocklist, search, retry and prioritise
  * Requests that need a re-confirmation (lib/roles.ts needsReconfirm) are refused
  * by the gate as reconfirm_required: a token has no master password.
  */
@@ -139,6 +140,8 @@ export function tokenForbidden(method: string, path: string): boolean {
   if (p === '/api/secrets' || p.startsWith('/api/secrets/')) return true
   if (p === '/api/terminal' || p.startsWith('/api/terminal/')) return true
   if (p === '/ws' || p.startsWith('/ws/')) return true
+  // Arr Stack queue actions (remove, blocklist, search, retry, prioritise): a signed-in admin's act, never a token's.
+  if (/^\/api\/plugins\/arrstack\/queue\/actions$/.test(p)) return true
   // Installing a new HyperProx, or changing how it updates itself, is a person's act (routes/self-update.ts).
   if (p === '/api/self-update/install' || p === '/api/self-update/settings') return true
   return false

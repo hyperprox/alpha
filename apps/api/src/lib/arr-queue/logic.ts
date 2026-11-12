@@ -35,6 +35,8 @@ export interface QueueDownload {
   episodeRange: string | null
   problem: Problem | null
   messages: string[]
+  /** For a blocked or failed import that looks like a permissions problem: plain advice. Otherwise null. */
+  hint: string | null
 }
 
 export interface QueueSeason {
@@ -85,6 +87,8 @@ export interface QueueData {
   summary: QueueSummary
   shows: QueueShow[]
   movies: QueueMovie[]
+  /** Added by the route: what the page may offer (moving a torrent up needs qBittorrent set). */
+  capabilities?: { prioritise: boolean }
 }
 
 const num = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
@@ -125,7 +129,7 @@ export function episodeRange(eps: number[]): string | null {
   return runs.length > 3 ? `${runs.slice(0, 3).join(', ')} +${runs.length - 3} more` : runs.join(', ')
 }
 
-function problemOf(rows: any[]): Problem | null {
+export function problemOf(rows: any[]): Problem | null {
   let worst: Problem | null = null
   const bump = (p: Problem) => { if (worst === null || SEVERITY[p] < SEVERITY[worst]) worst = p }
   for (const r of rows) {
@@ -138,6 +142,13 @@ function problemOf(rows: any[]): Problem | null {
     else if (tracked === 'warning' || status === 'warning' || status === 'downloadClientUnavailable') bump('warning')
   }
   return worst
+}
+
+/** For a permission problem, a hint. Text only: HyperProx changes no permissions. */
+export function importHint(messages: string[]): string | null {
+  return messages.some(m => /permission|access (to the path )?.*denied|not writable|read-only file system|operation not permitted/i.test(m))
+    ? 'This looks like a permissions problem: the Arr cannot read or write the download folder. HyperProx does not change permissions. Check that the folder belongs to the user the Arr runs as, then retry.'
+    : null
 }
 
 function messagesOf(rows: any[]): string[] {
@@ -187,6 +198,7 @@ function downloadOf(id: string, rows: any[], now: number, episodic: boolean): Qu
     episodeRange: episodic ? episodeRange(bySeason) : null,
     problem: problemOf(rows),
     messages: messagesOf(rows),
+    hint: (() => { const p = problemOf(rows); return p === 'blocked' || p === 'failed' ? importHint(messagesOf(rows)) : null })(),
   }
 }
 

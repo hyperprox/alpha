@@ -84,6 +84,11 @@ export function bypassesLock(path: string): boolean {
   return path === '/health' || path.startsWith('/health/') || path === '/api/auth' || path.startsWith('/api/auth/')
 }
 
+// Arr Stack queue actions (routes/arr-queue.ts POST /queue/actions): removing, blocklisting, searching, retrying
+// an import and moving a torrent to the top of qBittorrent's queue. Admin for every action (the default for a POST),
+// previews and the follow-up check included. No master password (nothing permanent is lost: library files are never
+// touched), and refused to API tokens by name (lib/api-tokens.ts tokenForbidden).
+
 // Guest power actions. Both route families exist: /api/infra (infrastructure.ts)
 // and /api/proxmox (proxmox.ts).
 const POWER = /^\/api\/(infra|proxmox)\/vms\/[^/]+\/[^/]+\/[^/]+\/(start|stop|shutdown|reboot)$/

@@ -70,3 +70,28 @@
   .seasons { padding-left: 10px; }
   .dls { padding-left: 6px; }
 }
+
+/* Actions (admins only). Buttons wrap; every box wraps its text; nothing is wider than the column. */
+.actRow { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 0; min-width: 0; }
+.actBtn, .actGo { min-height: 40px; padding: 0 14px; border-radius: 10px; cursor: pointer; font: 600 .78rem var(--font-display); letter-spacing: .1em;
+  text-transform: uppercase; background: transparent; color: var(--text-soft); border: 1px solid var(--hx-line-hi); max-width: 100%; }
+.actBtn:hover:not(:disabled) { color: var(--hx-accent); border-color: var(--hx-accent); }
+.actBtn:disabled { opacity: .5; cursor: default; }
+.actGo { color: var(--hx-bg, #0a111c); background: var(--hx-accent); border-color: var(--hx-accent); }
+.actBtn:focus-visible, .actGo:focus-visible { outline: 2px solid var(--hx-accent); outline-offset: 2px; }
+.actBox, .actResult { margin: 8px 0 0; padding: 10px 12px; border: 1px solid var(--hx-line-hi); border-radius: 10px; min-width: 0;
+  background: color-mix(in srgb, var(--hx-accent) 6%, transparent); display: flex; flex-direction: column; gap: 8px; }
+.actResult[data-ok="false"] { border-color: color-mix(in srgb, var(--crit) 55%, transparent); background: color-mix(in srgb, var(--crit) 8%, transparent); }
+.actResult p, .actLead { margin: 0; font-size: .86rem; line-height: 1.45; color: var(--text-bright); overflow-wrap: anywhere; }
+.actNote { margin: 0; font: 500 .76rem/1.45 var(--font-mono); color: var(--text-muted); overflow-wrap: anywhere; letter-spacing: .02em; }
+.actList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 14rem; overflow-y: auto; }
+.actList li { display: flex; flex-direction: column; gap: 1px; font: 600 .84rem/1.3 var(--font-body); color: var(--text-soft); overflow-wrap: anywhere; min-width: 0; }
+.actList small { font: 500 .7rem var(--font-mono); color: var(--text-muted); }
+.chk { display: flex; align-items: flex-start; gap: 8px; min-height: 40px; font-size: .86rem; color: var(--text-soft); cursor: pointer; }
+.chk input { margin-top: 3px; accent-color: var(--hx-accent); width: 18px; height: 18px; flex: none; }
+.strip { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.strip li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--hx-line-hi);
+  font-size: .84rem; color: var(--text-soft); min-width: 0; }
+.strip li[data-ok="false"] { border-color: color-mix(in srgb, var(--crit) 55%, transparent); }
+.strip li span { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; }
+.hint { color: var(--text-bright) !important; font-weight: 600; }
