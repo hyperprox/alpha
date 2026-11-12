@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { accountNames, historyStats, isLocal, librarySections, plexSessions, sectionCount, streamMode, withTautulliQuality } from '../src/lib/plex-direct'
 import { emptyNewState, newMessage, newPass, pickNew, recentItems, type NewState } from '../src/lib/plex-new'
 import { plexPlugin, liveFromPlex } from '../src/plugins/plex'
-import { missingSettings, type PluginContext } from '../src/lib/plugin-host'
+import { endpointReady, missingSettings, type PluginContext } from '../src/lib/plugin-host'
 import { visualLines } from '../src/lib/ai/visual-lines'
 
 const SESSIONS = { MediaContainer: { size: 3, Metadata: [
@@ -178,4 +178,13 @@ test('with Plex set, the plug-in reads Plex; Tautulli only adds hours watched', 
   assert.equal(both.visual.counts.streams, 3, 'now streaming still comes from Plex')
   const live = await liveFromPlex({ get: async p => plex(p) })
   assert.equal(live.counts.streams, 3)
+})
+
+test('a half-entered Plex (address, no token) is not "set": the Tautulli-only path keeps working', () => {
+  const m = plexPlugin.manifest
+  assert.equal(endpointReady(m, { plex_url: 'http://plex.local:32400' }), false)
+  assert.equal(endpointReady(m, { plex_url: 'http://plex.local:32400', plex_token: 't' }), true)
+  assert.equal(endpointReady(m, { url: 'http://tautulli.local:8181', apikey: 'k' }, 'tautulli'), true)
+  assert.equal(endpointReady(m, { url: 'http://tautulli.local:8181' }, 'tautulli'), false)
+  assert.equal(endpointReady(m, {}, 'nope'), false)
 })

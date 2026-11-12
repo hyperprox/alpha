@@ -525,47 +525,24 @@ export function missingSettings(manifest: PluginManifest, stored: Record<string,
 //  The broker
 // ---------------------------------------------------------------------------
 
-class BrokerContext implements PluginContext {
-  private endpoint: PluginEndpoint
-
-  constructor(
-    private manifest: PluginManifest,
-    private settings: Record<string, string>,
-    endpointKey?: string,
-  ) {
+/**
+ * Makes one endpoint's calls: its address and credential, a timeout, no redirects. Never handed to a plug-in.
+ * BrokerContext (what a plug-in gets) keeps one in an ES private field and exposes only get and post; the
+ * delete, image and other host-only calls exist only on this class, which is not exported.
+ */
+class Requester {
+  readonly endpoint: PluginEndpoint
+  constructor(readonly manifest: PluginManifest, private settings: Record<string, string>, endpointKey?: string) {
     this.endpoint = resolveEndpoint(manifest, endpointKey)
   }
 
-  from(endpointKey: string): PluginContext {
-    return new BrokerContext(this.manifest, this.settings, endpointKey)
+  /** The address and every credential this endpoint sends are set. */
+  ready(): boolean {
+    if (!(this.settings[this.endpoint.baseUrlSetting] ?? '').trim()) return false
+    return authSecrets(this.endpoint.auth).every(k => (this.settings[k] ?? '').trim())
   }
 
-  has(endpointKey: string): boolean {
-    try {
-      const e = resolveEndpoint(this.manifest, endpointKey)
-      return Boolean((this.settings[e.baseUrlSetting] ?? '').trim())
-    } catch { return false }
-  }
-
-  option(key: string): string | undefined {
-    const declared = this.manifest.settings.find(s => s.key === key)
-    if (!declared || declared.type === 'secret') return undefined
-    return this.settings[key] || undefined
-  }
-
-  get(path: string, opts?: { timeoutMs?: number }) {
-    return this.request('GET', path, undefined, opts?.timeoutMs)
-  }
-  post(path: string, body: Record<string, unknown>, opts?: { timeoutMs?: number }) {
-    return this.request('POST', path, body, opts?.timeoutMs)
-  }
-
-  /** Host-only (pluginEndpointClient): PluginContext has no delete, so a plug-in itself can never send one. */
-  del(path: string, opts?: { timeoutMs?: number }) {
-    return this.request('DELETE', path, undefined, opts?.timeoutMs)
-  }
-
-  /** The address and credential for one call. The credential never leaves this class. */
+  /** The address and credential for one call. */
   private prepare(path: string, json: boolean): { url: URL; headers: Record<string, string> } {
     const base = (this.settings[this.endpoint.baseUrlSetting] ?? '').replace(/\/+$/, '')
     if (!base) throw new Error(`${this.manifest.name}: no address configured for ${this.endpoint.label}`)
@@ -592,24 +569,19 @@ class BrokerContext implements PluginContext {
     return { url, headers }
   }
 
-  /**
-   * Host-only (pluginEndpointClient): an image's bytes, for HyperProx's own image proxy (Plex cover art). The
-   * caller chooses the path from a fixed shape; the answer must be an image and at most `maxBytes`.
-   */
+  /** An image's bytes (Plex cover art). Must be an image; reading stops as soon as it passes `maxBytes`. */
   async image(path: string, timeoutMs = 10_000, maxBytes = 4 * 1024 * 1024): Promise<{ contentType: string; body: Buffer }> {
     if (this.manifest.coreTransport) throw new Error(`${this.manifest.name} serves no images.`)
     const { url, headers } = this.prepare(path, false)
     headers.Accept = 'image/*'
-    const res = await fetchWithTimeout(url.toString(), headers, this.endpoint.insecureTLS, 'GET', undefined, timeoutMs)
+    const res = await fetchWithTimeout(url.toString(), headers, this.endpoint.insecureTLS, 'GET', undefined, timeoutMs, maxBytes)
     if (!res.ok) throw new Error(`${this.manifest.name} returned HTTP ${res.status}`)
     const contentType = String(res.contentType ?? '').split(';')[0].trim().toLowerCase()
     if (!/^image\/(jpeg|png|webp|gif)$/.test(contentType)) throw new Error(`${this.manifest.name} did not return an image`)
-    const body = await res.buffer()
-    if (body.length > maxBytes) throw new Error(`${this.manifest.name} returned an image larger than allowed`)
-    return { contentType, body }
+    return { contentType, body: await res.buffer() }
   }
 
-  private async request(
+  async request(
     method: 'GET' | 'POST' | 'DELETE',
     path: string,
     body?: Record<string, unknown>,
@@ -633,6 +605,46 @@ class BrokerContext implements PluginContext {
     if (method === 'DELETE' && !text.trim()) return null
     try { return JSON.parse(text) }
     catch { throw new Error(`${this.manifest.name} did not return JSON`) }
+  }
+}
+
+/** True when that endpoint has its address and every credential it sends (a half-entered one is not set). */
+export function endpointReady(manifest: PluginManifest, settings: Record<string, string>, endpointKey = 'default'): boolean {
+  try { return new Requester(manifest, settings, endpointKey).ready() } catch { return false }
+}
+
+/** What a plug-in is handed: get and post through its own endpoints, its non-secret options, and nothing else. */
+class BrokerContext implements PluginContext {
+  readonly #req: Requester
+  readonly #manifest: PluginManifest
+  readonly #settings: Record<string, string>
+
+  constructor(manifest: PluginManifest, settings: Record<string, string>, endpointKey?: string) {
+    this.#manifest = manifest
+    this.#settings = settings
+    this.#req = new Requester(manifest, settings, endpointKey)
+  }
+
+  from(endpointKey: string): PluginContext {
+    return new BrokerContext(this.#manifest, this.#settings, endpointKey)
+  }
+
+  /** The endpoint has its address AND every credential it sends: a half-entered one is not "set". */
+  has(endpointKey: string): boolean {
+    return endpointReady(this.#manifest, this.#settings, endpointKey)
+  }
+
+  option(key: string): string | undefined {
+    const declared = this.#manifest.settings.find(s => s.key === key)
+    if (!declared || declared.type === 'secret') return undefined
+    return this.#settings[key] || undefined
+  }
+
+  get(path: string, opts?: { timeoutMs?: number }) {
+    return this.#req.request('GET', path, undefined, opts?.timeoutMs)
+  }
+  post(path: string, body: Record<string, unknown>, opts?: { timeoutMs?: number }) {
+    return this.#req.request('POST', path, body, opts?.timeoutMs)
   }
 }
 
@@ -661,7 +673,10 @@ export function fetchWithTimeout(
   // Eight seconds is right for a tile and far too short for a search that fans
   // out to a dozen indexers, several of them behind FlareSolverr.
   timeoutMs = 8000,
+  /** Stop reading (and fail) once the body passes this many bytes. */
+  maxBytes?: number,
 ): Promise<{ ok: boolean; status: number; contentType?: string | null; text: () => Promise<string>; buffer: () => Promise<Buffer> }> {
+  const tooBig = () => new Error('The answer is larger than allowed.')
   const payload = body ? JSON.stringify(body) : undefined
 
   // Never followed: a redirect would carry the plug-in's credential (its headers) to wherever the device, or
@@ -674,7 +689,22 @@ export function fetchWithTimeout(
         if (res.status >= 300 && res.status < 400) throw new PluginRedirectError(res.status)
         return {
           ok: res.ok, status: res.status, contentType: res.headers.get('content-type'),
-          text: () => res.text(), buffer: async () => Buffer.from(await res.arrayBuffer()),
+          text: () => res.text(),
+          buffer: async () => {
+            if (!maxBytes || !res.body) return Buffer.from(await res.arrayBuffer())
+            if (Number(res.headers.get('content-length') ?? 0) > maxBytes) { await res.body.cancel().catch(() => {}); throw tooBig() }
+            const reader = res.body.getReader()
+            const chunks: Buffer[] = []
+            let n = 0
+            for (;;) {
+              const { done, value } = await reader.read()
+              if (done) break
+              n += value.length
+              if (n > maxBytes) { await reader.cancel().catch(() => {}); throw tooBig() }
+              chunks.push(Buffer.from(value))
+            }
+            return Buffer.concat(chunks)
+          },
         }
       })
       .finally(() => clearTimeout(timer)) as any
@@ -686,7 +716,12 @@ export function fetchWithTimeout(
         const code = res.statusCode ?? 500
         if (code >= 300 && code < 400) { res.resume(); return reject(new PluginRedirectError(code)) }
         const chunks: Buffer[] = []
-        res.on('data', (c: Buffer) => { chunks.push(c) })
+        let n = 0
+        res.on('data', (c: Buffer) => {
+          n += c.length
+          if (maxBytes && n > maxBytes) { req.destroy(tooBig()); return }
+          chunks.push(c)
+        })
         res.on('end', () => {
           const all = Buffer.concat(chunks)
           resolve({
@@ -749,14 +784,15 @@ export interface CoreEndpointClient {
  * Never handed to a plug-in: PluginContext stays read-only.
  */
 export async function pluginEndpointClient(plugin: Plugin, endpointKey = 'default'): Promise<CoreEndpointClient | null> {
-  let ctx: BrokerContext
-  try { ctx = await contextFor(plugin) } catch { return null }
-  if (!ctx.has(endpointKey)) return null
-  const c = (endpointKey === 'default' ? ctx : ctx.from(endpointKey)) as BrokerContext
+  const settings = await getSettings(plugin.manifest.id).catch(() => null)
+  if (!settings || missingSettings(plugin.manifest, settings).length) return null
+  let r: Requester
+  try { r = new Requester(plugin.manifest, settings, endpointKey) } catch { return null }
+  if (!r.ready()) return null
   return {
-    get:    (path, timeoutMs) => c.get(path, { timeoutMs }),
-    delete: (path, timeoutMs) => c.del(path, { timeoutMs }),
-    image:  (path, timeoutMs) => c.image(path, timeoutMs),
+    get:    (path, timeoutMs) => r.request('GET', path, undefined, timeoutMs),
+    delete: (path, timeoutMs) => r.request('DELETE', path, undefined, timeoutMs),
+    image:  (path, timeoutMs) => r.image(path, timeoutMs),
   }
 }
 

@@ -29,6 +29,8 @@ export interface ClearoutDeps {
   /** The Plex plug-in's non-secret settings (the keep rules). */
   option(key: string): Promise<string | undefined>
   now(): number
+  /** One audit row. Written per item, before and after each delete, so a failed write cannot hide a removal. */
+  audit?(action: string, details: Record<string, unknown>): Promise<void>
 }
 
 export class ClearoutRefusal extends Error {
@@ -76,18 +78,26 @@ function arrIndex(list: any[], service: 'sonarr' | 'radarr') {
     if (x.tmdbId) by.set(`tmdb:${x.tmdbId}`, x)
     if (x.imdbId) by.set(`imdb:${x.imdbId}`, x)
     const t = normTitle(x.title)
-    by.set(`t:${t}|${n0(x.year)}`, x)
-    titleCount.set(t, (titleCount.get(t) ?? 0) + 1)
-    by.set(`t:${t}`, x)
+    for (const k of [`t:${t}|${n0(x.year)}`, `t:${t}`]) {
+      by.set(k, x)
+      titleCount.set(k, (titleCount.get(k) ?? 0) + 1)
+    }
   }
   return {
     service,
     find(guids: string[], title: string, year: number | null): any | null {
       for (const g of guids) { const hit = by.get(g); if (hit) return hit }
       const t = normTitle(title)
-      if (year) { const hit = by.get(`t:${t}|${year}`); if (hit) return hit }
-      // A bare title match only when the title is unique in the Arr: two "Dune"s must not be guessed between.
-      return titleCount.get(t) === 1 ? by.get(`t:${t}`) ?? null : null
+      // A title match only when it is unique in the Arr: two entries with the same title (and year) are never
+      // guessed between, and a title that has a year match but more than one entry refuses outright.
+      const unique = (k: string) => (titleCount.get(k) === 1 ? by.get(k) ?? null : null)
+      if (year) {
+        const k = `t:${t}|${year}`
+        if ((titleCount.get(k) ?? 0) > 1) return null
+        const hit = unique(k)
+        if (hit) return hit
+      }
+      return unique(`t:${t}`)
     },
   }
 }
@@ -96,6 +106,8 @@ export interface Gathered {
   report: ClearoutReport
   /** Row id → what removing it means. Server-side only. */
   targets: Map<string, { row: ClearoutRow; service: 'sonarr' | 'radarr'; arrId: number; path: string | null }>
+  /** `${service}:${id}` of Arr entries that some Plex item NOT on the lists (watched, or kept by a rule) also maps to. */
+  protectedArr: Set<string>
 }
 
 export async function gather(d: ClearoutDeps): Promise<Gathered> {
@@ -181,7 +193,12 @@ export async function gather(d: ClearoutDeps): Promise<Gathered> {
     const arr = arrOf.get(row.id)
     if (arr) targets.set(row.id, { row, service: row.kind === 'show' ? 'sonarr' : 'radarr', arrId: arr.id, path: typeof arr.path === 'string' ? arr.path : null })
   }
-  return { report, targets }
+  // Removing an Arr entry removes it for every Plex item that maps to it: refuse when one of those is protected.
+  const protectedArr = new Set<string>()
+  for (const [id, arr] of arrOf) {
+    if (!targets.has(id)) protectedArr.add(`${id.startsWith('show:') ? 'sonarr' : 'radarr'}:${arr.id}`)
+  }
+  return { report, targets, protectedArr }
 }
 
 // ---------------------------------------------------------------------------
@@ -198,6 +215,7 @@ const MAX_ITEMS = 100
 
 export class ClearoutService {
   private cached: { at: number; data: Gathered } | null = null
+  private lastFresh = 0
   private inflight: Promise<Gathered> | null = null
   private previews = new Map<string, Preview & { targets: Map<string, { service: 'sonarr' | 'radarr'; arrId: number; path: string | null }> }>()
 
@@ -205,10 +223,12 @@ export class ClearoutService {
 
 
   async report(refresh = false): Promise<Gathered> {
+    // A forced re-read reads the whole history and library: at most once a minute.
+    if (refresh && this.cached && this.d.now() - this.lastFresh < 60_000) refresh = false
     if (!refresh && this.cached && this.d.now() - this.cached.at < REPORT_TTL) return this.cached.data
     if (!this.inflight) {
       this.inflight = gather(this.d)
-        .then(data => { this.cached = { at: this.d.now(), data }; return data })
+        .then(data => { this.cached = { at: this.d.now(), data }; this.lastFresh = this.d.now(); return data })
         .finally(() => { this.inflight = null })
     }
     return this.inflight
@@ -219,7 +239,7 @@ export class ClearoutService {
     if (!Array.isArray(ids) || ids.length === 0) throw new ClearoutRefusal('Tick at least one item first.')
     if (ids.length > MAX_ITEMS) throw new ClearoutRefusal(`At most ${MAX_ITEMS} items at a time.`)
     const want = [...new Set(ids.map(String))]
-    const { targets } = await this.report()
+    const { targets, protectedArr } = await this.report()
     const items: PreviewItem[] = []
     const skipped: Preview['skipped'] = []
     const held = new Map<string, { service: 'sonarr' | 'radarr'; arrId: number; path: string | null }>()
@@ -227,6 +247,10 @@ export class ClearoutService {
       const t = targets.get(id)
       // Only rows on the never or idle list, kept by no rule and matched in the Arr, can be removed.
       if (!t) { skipped.push({ id, reason: 'Not on the clear-out list, or not found in Sonarr or Radarr.' }); continue }
+      if (protectedArr.has(`${t.service}:${t.arrId}`)) {
+        skipped.push({ id, reason: `${t.row.title} shares its ${t.service === 'sonarr' ? 'Sonarr' : 'Radarr'} entry with another Plex item that is watched or kept by a rule, so it is left alone.` })
+        continue
+      }
       const client = t.service === 'sonarr' ? await this.d.sonarr() : await this.d.radarr()
       if (!client) { skipped.push({ id, reason: `${t.service === 'sonarr' ? 'Sonarr' : 'Radarr'} is not set up.` }); continue }
       const live = await client.get(`/api/v3/${t.service === 'sonarr' ? 'series' : 'movie'}/${t.arrId}`, SLOW).catch(() => null)
@@ -242,7 +266,7 @@ export class ClearoutService {
   }
 
   /** Remove what a preview listed, through the Arr, then read each one back. */
-  async remove(previewId: unknown, owner: string): Promise<{ preview: Preview; results: RemoveResult[] }> {
+  async remove(previewId: unknown, owner: string, by = owner): Promise<{ preview: Preview; results: RemoveResult[] }> {
     this.prune()
     const p = typeof previewId === 'string' ? this.previews.get(previewId) : undefined
     if (!p) throw new ClearoutRefusal('That preview has expired. Preview the removal again.', 409, 'preview_expired')
@@ -262,15 +286,19 @@ export class ClearoutService {
         continue
       }
       const exclusion = t.service === 'sonarr' ? 'addImportListExclusion=true' : 'addImportExclusion=true'
+      const what = { by, title: it.title, service: t.service, arrId: t.arrId, bytes: it.sizeBytes ?? 0, preview: p.id }
+      await this.d.audit?.('plex.clearout.remove.start', what)
       try {
         await client.delete(`${base}?deleteFiles=true&${exclusion}`, SLOW)
       } catch (e: any) {
+        await this.d.audit?.('plex.clearout.remove.result', { ...what, removed: false, error: String(e?.message ?? e) })
         results.push({ id: it.id, title: it.title, service: t.service, removed: false, message: `${name} refused: ${e.message}`, sizeBytes: it.sizeBytes })
         continue
       }
       // Read after write: only an item the Arr no longer has is reported as removed.
       let gone = false
       try { const after = await client.get(base, SLOW); gone = !after || after.id !== t.arrId } catch (e: any) { gone = /HTTP 404\b/.test(String(e?.message)) }
+      await this.d.audit?.('plex.clearout.remove.result', { ...what, removed: gone })
       results.push({
         id: it.id, title: it.title, service: t.service, removed: gone, sizeBytes: it.sizeBytes,
         message: gone ? `Removed from ${name} with its files, and excluded from import lists.` : `${name} said yes but still lists it. Check ${name}.`,

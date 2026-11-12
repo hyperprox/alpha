@@ -42,20 +42,45 @@ export function artUpstream(k: ArtKey): string[] {
 
 interface Cached { at: number; contentType: string; body: Buffer }
 
-/** A small in-memory cache: posters are re-requested on every page load and poll. */
+/**
+ * A small in-memory cache: posters are re-requested on every page load and poll. Bounded by total bytes as well
+ * as entries, so its worst case stays near `maxBytes` (150 MB by default) whatever the images weigh.
+ */
 export class ArtCache {
   private m = new Map<string, Cached>()
-  constructor(private max = 300, private ttlMs = 15 * 60_000, private now: () => number = Date.now) {}
+  private bytes = 0
+  constructor(private max = 500, private ttlMs = 15 * 60_000, private now: () => number = Date.now, private maxBytes = 150 * 1024 * 1024) {}
   get(key: string): Cached | null {
     const c = this.m.get(key)
     if (!c) return null
-    if (this.now() - c.at > this.ttlMs) { this.m.delete(key); return null }
+    if (this.now() - c.at > this.ttlMs) { this.drop(key); return null }
     // Most recently used goes to the end.
     this.m.delete(key); this.m.set(key, c)
     return c
   }
   set(key: string, contentType: string, body: Buffer): void {
+    if (body.length > this.maxBytes) return
+    this.drop(key)
     this.m.set(key, { at: this.now(), contentType, body })
-    while (this.m.size > this.max) this.m.delete(this.m.keys().next().value as string)
+    this.bytes += body.length
+    while (this.m.size > this.max || this.bytes > this.maxBytes) this.drop(this.m.keys().next().value as string)
+  }
+  get size(): { entries: number; bytes: number } { return { entries: this.m.size, bytes: this.bytes } }
+  private drop(key: string) {
+    const c = this.m.get(key)
+    if (c) { this.bytes -= c.body.length; this.m.delete(key) }
+  }
+}
+
+/** Cache misses per person: each one is a fetch from Plex. */
+export class MissLimiter {
+  private m = new Map<string, { start: number; n: number }>()
+  constructor(private perMinute = 120, private now: () => number = Date.now) {}
+  allow(who: string): boolean {
+    const t = this.now()
+    const e = this.m.get(who)
+    if (!e || t - e.start >= 60_000) { this.m.set(who, { start: t, n: 1 }); if (this.m.size > 5000) this.m.clear(); return true }
+    e.n++
+    return e.n <= this.perMinute
   }
 }

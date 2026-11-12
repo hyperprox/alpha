@@ -412,11 +412,11 @@ export const plexPlugin: Plugin = {
     requiredAny: [['plex_url', 'plex_token'], ['url', 'apikey']],
     settings: [
       { key: 'plex_url',   label: 'Plex server address', type: 'url', required: false, section: 'Plex server',
-        hint: 'Like http://192.168.1.20:32400. Use https if Plex is on another network.' },
+        hint: 'Like http://plex.local:32400. Use https if Plex is on another network.' },
       { key: 'plex_token', label: 'Plex token', type: 'secret', required: false,
         hint: 'In Plex Web, open any item, choose Get Info, then View XML: the token is the X-Plex-Token at the end of the address. Stored in the vault and only ever sent to the address above.' },
       { key: 'url',    label: 'Tautulli address', type: 'url', required: false, section: 'Add Tautulli for richer stats (optional)',
-        hint: 'Like http://192.168.1.20:8181. Adds hours watched and stream quality. Plex works without it.' },
+        hint: 'Like http://tautulli.local:8181. Adds hours watched and stream quality. Plex works without it.' },
       { key: 'apikey', label: 'Tautulli API key', type: 'secret', required: false,
         hint: 'Tautulli → Settings → Web Interface → API key.' },
       { key: 'notify_new', label: 'Tell me when something new is added', type: 'toggle', required: false, section: 'Notifications',

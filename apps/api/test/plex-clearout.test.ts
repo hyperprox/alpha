@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { registerGate } from '../src/lib/gate'
 import { authRoutes } from '../src/routes/auth'
-import { buildPlexClearoutRoutes } from '../src/routes/plex-clearout'
+import { buildPlexClearoutRoutes, newWatcherDeps } from '../src/routes/plex-clearout'
 import { setBroker } from '../src/lib/vault/broker'
 import { lock, isUnlocked } from '../src/lib/vault/state'
 import { setCredentialTable } from '../src/lib/credentials'
@@ -20,7 +20,7 @@ import {
 import { ClearoutService } from '../src/lib/plex-clearout/service'
 import type { CoreEndpointClient } from '../src/lib/plugin-host'
 import { clearoutLines } from '../src/lib/ai/plex-clearout-source'
-import { ArtCache, artKey, artRef, artUpstream } from '../src/lib/plex-art'
+import { ArtCache, MissLimiter, artKey, artRef, artUpstream } from '../src/lib/plex-art'
 import { liveFromPlex } from '../src/plugins/plex'
 import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
@@ -386,6 +386,7 @@ test('live route: now streaming and bandwidth from Plex, for any signed-in perso
       if (fail) throw new Error('Plex returned HTTP 500')
       return liveFromPlex({ get: async () => sessions })
     },
+    liveTtlMs: -1,
   }), { prefix: '/api/plugins/plex' })
   await a.ready()
   try {
@@ -407,4 +408,117 @@ test('live route: now streaming and bandwidth from Plex, for any signed-in perso
     assert.equal(bad.ok, false)
     assert.match(bad.error, /HTTP 500/)
   } finally { await a.close() }
+})
+
+// ── review fixes ────────────────────────────────────────────────────────────
+
+test('the new-items watcher really starts with the routes, and its switches are wait / off / on', async () => {
+  let started = 0
+  let unlocked = false
+  let settings: Record<string, string> = {}
+  let plexSet: CoreEndpointClient | null = null
+  const wd = newWatcherDeps({
+    unlocked: () => unlocked, settings: async () => settings, plex: async () => plexSet,
+    publish: async () => {}, store: { load: () => ({ watermark: null, seen: [] }), save: () => {} },
+  })
+  const a = Fastify({ logger: false })
+  await a.register(buildPlexClearoutRoutes({ service: () => svc, watcher: { start: () => { started++; return () => {} }, deps: wd } }), { prefix: '/api/plugins/plex' })
+  await a.ready()
+  try {
+    assert.equal(started, 1, 'started once, when the routes are registered')
+    assert.equal(await wd.enabled(), 'wait', 'locked')
+    unlocked = true
+    assert.equal(await wd.enabled(), 'off', 'setting not on')
+    settings = { notify_new: 'yes' }
+    assert.equal(await wd.enabled(), 'wait', 'Plex not set yet')
+    plexSet = f.plex
+    assert.equal(await wd.enabled(), 'on')
+  } finally { await a.close() }
+})
+
+test('title matches never guess: two Arr entries with one title and year match neither', async () => {
+  const twins: CoreEndpointClient = {
+    async get(p) {
+      if (p === '/api/v3/movie') return [{ id: 1, title: 'Glass Orchard', year: 2016, path: '/a' }, { id: 2, title: 'Glass Orchard', year: 2016, path: '/b' }]
+      throw new Error('HTTP 404')
+    },
+    async delete() { throw new Error('no') }, async image() { throw new Error('no') },
+  }
+  const s2 = new ClearoutService({ plex: async () => fakes().plex, sonarr: async () => null, radarr: async () => twins, option: async () => 'none', now: () => NOW })
+  const { report } = await s2.report()
+  assert.equal(report.rows.find(r => r.title === 'Glass Orchard')?.removable, false)
+})
+
+test('an Arr entry shared with a Plex item that is watched or kept is refused; each delete is audited before and after', async () => {
+  const ff = fakes()
+  const shared: CoreEndpointClient = {
+    ...ff.plex,
+    async get(p) {
+      if (p.startsWith('/library/sections/1/all')) return { MediaContainer: { totalSize: 2, Metadata: [
+        { ratingKey: '1', title: 'Paper Moons', year: 2015, addedAt: s(NOW - 400 * DAY), Guid: [{ id: 'tmdb://111' }] },
+        { ratingKey: '3', title: 'Paper Moons', year: 2015, addedAt: s(NOW - 400 * DAY), Guid: [{ id: 'tmdb://111' }] },
+      ] } }
+      if (p.startsWith('/status/sessions/history/all')) return { MediaContainer: { Metadata: [{ ratingKey: '3', type: 'movie', title: 'Other cut', viewedAt: s(NOW - DAY), accountID: 1 }] } }
+      return ff.plex.get(p)
+    },
+  }
+  const log: Array<[string, Record<string, unknown>]> = []
+  const s3 = new ClearoutService({ plex: async () => shared, sonarr: async () => null, radarr: async () => ff.radarr, option: async () => 'none', now: () => NOW,
+    audit: async (a, d) => { log.push([a, d]) } })
+  const p = await s3.preview(['movie:1'], 'sid')
+  assert.equal(p.items.length, 0)
+  assert.match(p.skipped[0].reason, /shares its Radarr entry/)
+
+  const s4 = new ClearoutService({ plex: async () => ff.plex, sonarr: async () => null, radarr: async () => ff.radarr, option: async () => 'none', now: () => NOW,
+    audit: async (a, d) => { log.push([a, d]) } })
+  const ok = await s4.preview(['movie:1'], 'sid')
+  await s4.remove(ok.id, 'sid', 'op@example.com')
+  assert.deepEqual(log.map(x => x[0]), ['plex.clearout.remove.start', 'plex.clearout.remove.result'])
+  assert.equal(log[1][1].removed, true)
+  assert.equal(log[0][1].by, 'op@example.com')
+})
+
+test('reading again is operator only and at most once a minute; /live is one shared reading; art misses are limited', async () => {
+  let reads = 0
+  let now = NOW
+  const ff = fakes()
+  const counting: CoreEndpointClient = { ...ff.plex, async get(p) { if (p === '/library/sections') reads++; return ff.plex.get(p) } }
+  const s5 = new ClearoutService({ plex: async () => counting, sonarr: async () => null, radarr: async () => null, option: async () => undefined, now: () => now })
+  let liveCalls = 0
+  const a = Fastify({ logger: false })
+  await registerGate(a)
+  await a.register(authRoutes, { prefix: '/api/auth' })
+  await a.register(buildPlexClearoutRoutes({
+    service: () => s5, live: async () => { liveCalls++; return { sessions: [], counts: { streams: 0 }, bandwidth: {} } },
+    plex: async () => ({ ...ff.plex, async image() { return { contentType: 'image/png', body: Buffer.from([1]) } } }),
+    limiter: new MissLimiter(1), cache: new ArtCache(),
+  }), { prefix: '/api/plugins/plex' })
+  await a.ready()
+  try {
+    const viewer = (await signIn(a, 'viewer@example.com', 'viewer master password')).cookie
+    const op = (await signIn(a, 'op@example.com', 'operator master password')).cookie
+    assert.equal((await a.inject({ method: 'GET', url: `${BASE}?refresh=1`, headers: { cookie: viewer } })).statusCode, 403)
+    assert.equal((await a.inject({ method: 'GET', url: BASE, headers: { cookie: viewer } })).statusCode, 200)
+    assert.equal((await a.inject({ method: 'GET', url: `${BASE}?refresh=1`, headers: { cookie: op } })).statusCode, 200)
+    assert.equal(reads, 1, 'a re-read within a minute of the last read is served from the cache')
+    now += 61_000
+    await a.inject({ method: 'GET', url: `${BASE}?refresh=1`, headers: { cookie: op } })
+    assert.equal(reads, 2)
+
+    await Promise.all([1, 2, 3].map(() => a.inject({ method: 'GET', url: '/api/plugins/plex/live', headers: { cookie: viewer } })))
+    assert.equal(liveCalls, 1, 'three pages, one reading')
+
+    assert.equal((await a.inject({ method: 'GET', url: '/api/plugins/plex/art/1/thumb/1', headers: { cookie: viewer } })).statusCode, 200)
+    assert.equal((await a.inject({ method: 'GET', url: '/api/plugins/plex/art/1/thumb/1', headers: { cookie: viewer } })).statusCode, 200, 'a cache hit is not a miss')
+    assert.equal((await a.inject({ method: 'GET', url: '/api/plugins/plex/art/2/thumb/1', headers: { cookie: viewer } })).statusCode, 429)
+  } finally { await a.close() }
+})
+
+test('the art cache stays within its byte budget', () => {
+  const c = new ArtCache(100, 60_000, () => NOW, 10)
+  c.set('a', 'image/png', Buffer.alloc(4)); c.set('b', 'image/png', Buffer.alloc(4)); c.set('c', 'image/png', Buffer.alloc(4))
+  assert.deepEqual(c.size, { entries: 2, bytes: 8 })
+  assert.equal(c.get('a'), null, 'the oldest went first')
+  c.set('huge', 'image/png', Buffer.alloc(11))
+  assert.equal(c.get('huge'), null, 'larger than the whole budget: not kept')
 })

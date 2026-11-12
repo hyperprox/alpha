@@ -156,9 +156,9 @@ export function PlexClearOut({ live = true }: { live?: boolean }) {
 
   return (
     <>
-      <Panel title="Clear-out" sub="WHAT NOBODY WATCHES" actions={
-        <button className={c.btn} onClick={() => void load(true)} disabled={loading}>{loading ? 'Reading…' : 'Read again'}</button>
-      }>
+      <Panel title="Clear-out" sub="WHAT NOBODY WATCHES" actions={canRemove ? (
+        <button className={c.btn} onClick={() => void load(true)} disabled={loading} title="Reads Plex again (at most once a minute)">{loading ? 'Reading…' : 'Read again'}</button>
+      ) : undefined}>
         <div className={c.bar} style={{ marginBottom: 12 }}>
           <div className={c.seg} role="group" aria-label="Library type">
             <button aria-pressed={tab === 'movie'} onClick={() => setTab('movie')}>Movies</button>
