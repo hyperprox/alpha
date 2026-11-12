@@ -6,6 +6,7 @@
 //    remove         the same removal, blocklist optional, no search
 //    retry-import   ask the Arr to check its downloads again (importBlocked / importFailed)
 //    prioritise     move a torrent to the top of qBittorrent's queue
+//    (Lidarr has no swap-pack or swap-check: music has no season packs. Its search is AlbumSearch, through /api/v1.)
 //    swap-pack      remove a season's single-episode downloads (not blocklisted) and search for a season pack
 //    fix-stalled    find-another over every stalled download the person confirmed
 //    clear-done     remove (not blocklisted, no search) every finished download whose items are all already in the library
@@ -20,11 +21,11 @@
 // =============================================================================
 
 import type { CoreEndpointClient } from '../plugin-host'
-import { collapseByDownload, importHint, isDone, problemOf, readAllQueue, stripPaths, type FileInfo } from './logic'
-import { readEpisodeInfo, readMovieInfo } from './lookup'
+import { collapseByDownload, importHint, isDone, isDoneMusic, problemOf, readAllQueue, stripPaths, type AlbumInfo, type FileInfo } from './logic'
+import { FileCache, readAlbumInfo, readEpisodeInfo, readMovieInfo } from './lookup'
 export { importHint }
 
-export type Instance = 'sonarr' | 'radarr'
+export type Instance = 'sonarr' | 'radarr' | 'lidarr'
 export type ActionName = 'find-another' | 'remove' | 'retry-import' | 'prioritise' | 'swap-pack' | 'fix-stalled' | 'clear-done' | 'swap-check'
 export const ACTIONS: ActionName[] = ['find-another', 'remove', 'retry-import', 'prioritise', 'swap-pack', 'fix-stalled', 'clear-done', 'swap-check']
 /** Actions that remove something from a client: the server wants `confirmed: true` for them. */
@@ -45,8 +46,8 @@ export class ActionRefusal extends Error {
   constructor(readonly status: number, readonly code: string, message: string) { super(message); this.name = 'ActionRefusal' }
 }
 
-export interface Command { name: 'EpisodeSearch' | 'SeasonSearch' | 'MoviesSearch' | 'RefreshMonitoredDownloads'; body: Record<string, unknown>; label: string }
-export interface PlanItem { downloadId: string; name: string; rows: number; episodes: number }
+export interface Command { name: 'EpisodeSearch' | 'SeasonSearch' | 'MoviesSearch' | 'AlbumSearch' | 'RefreshMonitoredDownloads'; body: Record<string, unknown>; label: string }
+export interface PlanItem { downloadId: string; name: string; rows: number; episodes: number; /** Lidarr only. */ albums?: number }
 export interface Plan {
   action: ActionName
   instance: Instance
@@ -69,6 +70,7 @@ const nameOf = (rows: any[]) => stripPaths(String(rows[0]?.title ?? 'unknown rel
 const epIdOf = (r: any): number | null => { const n = Number(r?.episodeId ?? r?.episode?.id); return Number.isInteger(n) && n > 0 ? n : null }
 const seasonOf = (r: any): number | null => { const n = Number(r?.seasonNumber ?? r?.episode?.seasonNumber); return Number.isInteger(n) && n >= 0 ? n : null }
 const seriesOf = (r: any): number | null => { const n = Number(r?.seriesId ?? r?.series?.id); return Number.isInteger(n) && n > 0 ? n : null }
+const albumOf = (r: any): number | null => { const n = Number(r?.albumId ?? r?.album?.id); return Number.isInteger(n) && n > 0 ? n : null }
 const movieOf = (r: any): number | null => { const n = Number(r?.movieId ?? r?.movie?.id); return Number.isInteger(n) && n > 0 ? n : null }
 const distinct = <T,>(xs: T[]): T[] => [...new Set(xs)]
 const pad = (n: number) => String(n).padStart(2, '0')
@@ -92,7 +94,7 @@ export function resolveDownload(allRows: any[], id: string): any[] | null {
 /** Each row's id, as a number, for the removal call. A row without a usable id cannot be removed by id. */
 function rowIdsOf(rows: any[]): number[] {
   const ids = rows.map(r => Number(r.id))
-  if (!ids.every(n => Number.isInteger(n) && n > 0)) throw new ActionRefusal(409, 'no_row_id', 'This download has a queue row Sonarr or Radarr gave no id, so it cannot be removed from here.')
+  if (!ids.every(n => Number.isInteger(n) && n > 0)) throw new ActionRefusal(409, 'no_row_id', 'This download has a queue row the Arr gave no id, so it cannot be removed from here.')
   return distinct(ids)
 }
 
@@ -104,6 +106,10 @@ const PACK_EPISODE_MARK = /S\d{1,3}\s*[._ -]?E\d{1,4}|\b\d{1,2}x\d{2,3}\b/i
  * individually (S01E01E02): EpisodeSearch for exactly those. A film: MoviesSearch. Nothing matched: no commands.
  */
 export function searchCommands(instance: Instance, rows: any[]): Command[] {
+  if (instance === 'lidarr') {
+    const ids = distinct(rows.map(albumOf).filter((n): n is number => n !== null))
+    return ids.length ? [{ name: 'AlbumSearch', body: { name: 'AlbumSearch', albumIds: ids }, label: ids.length === 1 ? 'the album' : `${ids.length} albums` }] : []
+  }
   if (instance === 'radarr') {
     const ids = distinct(rows.map(movieOf).filter((n): n is number => n !== null))
     return ids.length ? [{ name: 'MoviesSearch', body: { name: 'MoviesSearch', movieIds: ids }, label: ids.length === 1 ? 'the movie' : `${ids.length} movies` }] : []
@@ -123,19 +129,22 @@ export function searchCommands(instance: Instance, rows: any[]): Command[] {
 /** Merge search commands: one EpisodeSearch or MoviesSearch with every id, one SeasonSearch per season. */
 export function mergeCommands(cmds: Command[]): Command[] {
   const out: Command[] = []
-  const eps: number[] = [], movies: number[] = [], seasons = new Map<string, Command>()
+  const eps: number[] = [], movies: number[] = [], albums: number[] = [], seasons = new Map<string, Command>()
   for (const c of cmds) {
     if (c.name === 'EpisodeSearch') eps.push(...(c.body.episodeIds as number[]))
     else if (c.name === 'MoviesSearch') movies.push(...(c.body.movieIds as number[]))
+    else if (c.name === 'AlbumSearch') albums.push(...(c.body.albumIds as number[]))
     else seasons.set(`${c.body.seriesId}:${c.body.seasonNumber}`, c)
   }
   if (eps.length) { const ids = distinct(eps); out.push({ name: 'EpisodeSearch', body: { name: 'EpisodeSearch', episodeIds: ids }, label: ids.length === 1 ? 'the episode' : `${ids.length} episodes` }) }
   if (movies.length) { const ids = distinct(movies); out.push({ name: 'MoviesSearch', body: { name: 'MoviesSearch', movieIds: ids }, label: ids.length === 1 ? 'the movie' : `${ids.length} movies` }) }
+  if (albums.length) { const ids = distinct(albums); out.push({ name: 'AlbumSearch', body: { name: 'AlbumSearch', albumIds: ids }, label: ids.length === 1 ? 'the album' : `${ids.length} albums` }) }
   return [...out, ...seasons.values()]
 }
 
 const isPack = (rows: any[]) => distinct(rows.map(epIdOf).filter((n): n is number => n !== null)).length >= 2
-const item = (id: string, rows: any[]): PlanItem => ({ downloadId: id, name: nameOf(rows), rows: rows.length, episodes: distinct(rows.map(epIdOf).filter((n): n is number => n !== null)).length })
+const item = (id: string, rows: any[]): PlanItem => ({ downloadId: id, name: nameOf(rows), rows: rows.length, episodes: distinct(rows.map(epIdOf).filter((n): n is number => n !== null)).length,
+  ...(rows.some(r => albumOf(r) !== null) ? { albums: distinct(rows.map(albumOf).filter((n): n is number => n !== null)).length } : {}) })
 
 function parseSwapTarget(req: ActionRequest): { seriesId: number; season: number } {
   const s = /^s:(\d{1,9})$/.exec(req.showKey ?? ''), n = /^(\d{1,4})$/.exec(req.seasonKey ?? '')
@@ -149,7 +158,9 @@ function packsIn(rows: any[], seriesId: number, season: number): string[] {
 }
 
 /** Pure: from a fresh, full queue and a request, exactly what would be done. Throws ActionRefusal when it should not. */
-export function planAction(allRows: any[], req: ActionRequest, info?: Map<number, FileInfo>): Plan {
+export function planAction(allRows: any[], req: ActionRequest, info?: Map<number, FileInfo>, albumInfo?: Map<number, AlbumInfo>): Plan {
+  // Music has no seasons: a swap for a season pack does not apply to it, whatever the page sends.
+  if (req.instance === 'lidarr' && (req.action === 'swap-pack' || req.action === 'swap-check')) throw new ActionRefusal(400, 'bad_request', 'Season packs do not apply to music.')
   const base = { action: req.action, instance: req.instance, items: [] as PlanItem[], rowIds: [] as number[], blocklist: false, commands: [] as Command[], skipped: [] as Plan['skipped'] }
   const gone = () => new ActionRefusal(404, 'gone', 'That download is no longer in the queue.')
 
@@ -161,7 +172,7 @@ export function planAction(allRows: any[], req: ActionRequest, info?: Map<number
     case 'find-another': {
       const rows = resolveDownload(allRows, req.downloadId as string); if (!rows) throw gone()
       const commands = searchCommands(req.instance, rows)
-      if (!commands.length) throw new ActionRefusal(409, 'nothing_to_search', `${req.instance === 'sonarr' ? 'Sonarr' : 'Radarr'} has not matched this download to ${req.instance === 'sonarr' ? 'an episode' : 'a movie'}, so there is nothing to search for. Use Remove instead.`)
+      if (!commands.length) throw new ActionRefusal(409, 'nothing_to_search', `${label(req.instance)} has not matched this download to ${req.instance === 'sonarr' ? 'an episode' : req.instance === 'lidarr' ? 'an album' : 'a movie'}, so there is nothing to search for. Use Remove instead.`)
       return { ...base, items: [item(req.downloadId!, rows)], rowIds: rowIdsOf(rows), blocklist: true, commands }
     }
     case 'retry-import': {
@@ -224,7 +235,7 @@ export function planAction(allRows: any[], req: ActionRequest, info?: Map<number
         const rows = resolveDownload(allRows, id)
         if (!rows) { skipped.push({ downloadId: id, name: id, reason: 'no longer in the queue' }); continue }
         // Re-checked on this fresh read: only a download that is still finished with nothing left to import goes.
-        if (!isDone(rows, info)) { skipped.push({ downloadId: id, name: nameOf(rows), reason: 'no longer done' }); continue }
+        if (!(req.instance === 'lidarr' ? isDoneMusic(rows, albumInfo) : isDone(rows, info))) { skipped.push({ downloadId: id, name: nameOf(rows), reason: 'no longer done' }); continue }
         items.push(item(id, rows)); rowIds.push(...rowIdsOf(rows))
       }
       if (!items.length) throw new ActionRefusal(409, 'nothing_to_do', 'None of those downloads is still done, so nothing was changed.')
@@ -237,6 +248,8 @@ export function planAction(allRows: any[], req: ActionRequest, info?: Map<number
 export interface ActionDeps {
   sonarr: () => Promise<CoreEndpointClient | null>
   radarr: () => Promise<CoreEndpointClient | null>
+  /** Optional: a deployment (or a test) without Lidarr passes none. */
+  lidarr?: () => Promise<CoreEndpointClient | null>
   qbit: () => Promise<CoreEndpointClient | null>
   /** Throws when the entry cannot be written: the action then does not run. */
   audit: (action: string, details: Record<string, unknown>) => Promise<void>
@@ -256,7 +269,9 @@ export interface ActionResult {
   packGrabbed?: boolean
 }
 
-const label = (i: Instance) => (i === 'sonarr' ? 'Sonarr' : 'Radarr')
+const label = (i: Instance) => (i === 'sonarr' ? 'Sonarr' : i === 'lidarr' ? 'Lidarr' : 'Radarr')
+/** Sonarr and Radarr are v3; Lidarr is v1. */
+const apiOf = (i: Instance) => (i === 'lidarr' ? '/api/v1' : '/api/v3')
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
 
 async function readRows(c: CoreEndpointClient, i: Instance): Promise<any[]> {
@@ -265,15 +280,18 @@ async function readRows(c: CoreEndpointClient, i: Instance): Promise<any[]> {
 
 /** The preview (what would happen) or the run. Always starts from a fresh read of the whole queue. */
 export async function runAction(deps: ActionDeps, req: ActionRequest, who: string, opts: { preview?: boolean; delay?: (ms: number) => Promise<void> } = {}): Promise<{ plan: Plan; result?: ActionResult }> {
-  const client = await (req.instance === 'sonarr' ? deps.sonarr() : deps.radarr())
+  const client = await (req.instance === 'sonarr' ? deps.sonarr() : req.instance === 'lidarr' ? (deps.lidarr ? deps.lidarr() : null) : deps.radarr())
   if (!client) throw new ActionRefusal(409, 'not_configured', `${label(req.instance)} is not set up in the Arr Stack plug-in.`)
   const rows = await readRows(client, req.instance).catch(e => { throw new ActionRefusal(502, 'queue_failed', `${label(req.instance)}'s queue could not be read: ${String(e?.message ?? e).slice(0, 120)}`) })
   if (!opts.preview && req.action === 'swap-pack' && !req.downloadIds?.length) throw new ActionRefusal(400, 'bad_request', 'Confirm the swap with the downloads you were shown.')
   // "Done" also means every episode it covers has a file now: read that fresh, here, never trusting the page.
-  const info = req.action === 'clear-done'
-    ? await (req.instance === 'sonarr' ? readEpisodeInfo((p, t) => client.get(p, t), rows, Date.now()) : readMovieInfo((p, t) => client.get(p, t), rows, Date.now()))
+  const get = (p: string, t?: number) => client.get(p, t)
+  const info = req.action === 'clear-done' && req.instance !== 'lidarr'
+    ? await (req.instance === 'sonarr' ? readEpisodeInfo(get, rows, Date.now()) : readMovieInfo(get, rows, Date.now()))
     : undefined
-  const plan = planAction(rows, req, info)
+  // Music: a cache of its own, so the track files are read now and never from an earlier reading.
+  const albumInfo = req.action === 'clear-done' && req.instance === 'lidarr' ? await readAlbumInfo(get, rows, Date.now(), new FileCache()) : undefined
+  const plan = planAction(rows, req, info, albumInfo)
   if (opts.preview) return { plan }
 
   const named = plan.items.map(i => i.name.slice(0, 120)).slice(0, 20)
@@ -307,7 +325,7 @@ export async function runAction(deps: ActionDeps, req: ActionRequest, who: strin
 
     if (plan.rowIds.length) {
       if (!client.deleteBody) throw new ActionRefusal(501, 'unsupported', 'This connection cannot remove downloads.')
-      await client.deleteBody(`/api/v3/queue/bulk?removeFromClient=true&blocklist=${plan.blocklist}&skipRedownload=true`, { ids: plan.rowIds }, 30_000)
+      await client.deleteBody(`${apiOf(req.instance)}/queue/bulk?removeFromClient=true&blocklist=${plan.blocklist}&skipRedownload=true`, { ids: plan.rowIds }, 30_000)
       res.removed = plan.items.map(i => ({ name: i.name, rows: i.rows }))
       // Read it back: the call's own answer is empty either way.
       const after = await readRows(client, req.instance).catch(() => null)
@@ -320,7 +338,7 @@ export async function runAction(deps: ActionDeps, req: ActionRequest, who: strin
       if (!client.post) throw new ActionRefusal(501, 'unsupported', 'This connection cannot start searches.')
       for (const c of plan.commands) {
         let r: any
-        try { r = await client.post(`/api/v3/command`, c.body, 30_000) }
+        try { r = await client.post(`${apiOf(req.instance)}/command`, c.body, 30_000) }
         catch (e: any) {
           res.summary = (res.removed.length ? `Removed ${plural(res.removed.length, 'download')}, but the ${c.name} failed: ` : `${c.name} failed: `) + String(e?.message ?? e).slice(0, 120)
           await finish(res, false)
@@ -337,7 +355,7 @@ export async function runAction(deps: ActionDeps, req: ActionRequest, who: strin
 
     res.done = true
     const first = plan.items[0]
-    const nm = plan.items.length === 1 ? `"${first.name}"${first.episodes > 1 ? ` (${plural(first.episodes, 'episode')})` : ''}` : plural(plan.items.length, 'download')
+    const nm = plan.items.length === 1 ? `"${first.name}"${first.episodes > 1 ? ` (${plural(first.episodes, 'episode')})` : (first.albums ?? 0) > 1 ? ` (${plural(first.albums!, 'album')})` : ''}` : plural(plan.items.length, 'download')
     switch (req.action) {
       case 'remove': res.summary = `Removed ${nm} from the queue and the download client${plan.blocklist ? ', and blocklisted the release' : ''}.`; break
       case 'find-another': res.summary = `Removed ${nm} and blocklisted the release. Searching for another copy of ${res.searched.join(' and ')}.`; break

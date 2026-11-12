@@ -8,7 +8,7 @@
 //  the film and its file id, so only the files are asked for. Any failure leaves the answer out; it never fails the queue.
 // =============================================================================
 
-import type { FileInfo } from './why'
+import type { AlbumInfo, FileInfo } from './why'
 
 type Get = (path: string, timeoutMs?: number) => Promise<any>
 
@@ -94,6 +94,78 @@ export async function readMovieInfo(get: Get, rows: any[], now: number, cache: F
       const has = m.fid !== null && q.has(m.fid)
       out.set(id, { hasFile: has, quality: has ? (q.get(m.fid as number) ?? m.emb) : null, season: null, number: null })
     }
+  } catch { out.clear() }
+  return out
+}
+
+/** The album id a Lidarr queue row is for. */
+export const albumIdOf = (r: any): number | null => posInt(r?.albumId ?? r?.album?.id)
+
+/**
+ * One batched read, tolerant of ids Lidarr no longer knows: Lidarr answers a batch that names a missing album with an
+ * error for the whole batch (500 on /album, 404 on /trackfile), so a failed batch is retried one id at a time and the
+ * ids that fail alone are simply left out. At most 20 single retries a batch, so a dead service costs a few seconds.
+ */
+async function tolerant(get: Get, path: string, param: string, ids: number[]): Promise<any[]> {
+  try {
+    const r = await get(`${path}?${ids.map(i => `${param}=${i}`).join('&')}`, 15_000)
+    return Array.isArray(r) ? r : []
+  } catch (e) {
+    if (ids.length === 1) throw e
+    const out: any[] = []
+    let answered = 0
+    for (const id of ids.slice(0, 20)) {
+      try { const r = await get(`${path}?${param}=${id}`, 10_000); answered++; if (Array.isArray(r)) out.push(...r) } catch { /* that album is gone */ }
+    }
+    if (!answered) throw e
+    return out
+  }
+}
+
+/**
+ * Lidarr: album id → what is on disk. The albums are read every time (their track counts are as fresh as the queue);
+ * the quality of an album's files is cached 60 seconds under the album's file count and size on disk, so a replaced
+ * file reads fresh. Any failure leaves the whole answer out: a failed lookup vouches for nothing.
+ */
+export async function readAlbumInfo(get: Get, rows: any[], now: number, cache: FileCache = sharedFileCache): Promise<Map<number, AlbumInfo>> {
+  const out = new Map<number, AlbumInfo>()
+  try {
+    const ids = [...new Set(rows.map(albumIdOf).filter((n): n is number => n !== null))].slice(0, MAX_IDS)
+    const albums: any[] = []
+    for (const b of batches(ids)) albums.push(...await tolerant(get, '/api/v1/album', 'albumIds', b))
+    const stats = new Map<number, { total: number | null; have: number; size: number; title: string | null }>()
+    for (const a of albums) {
+      const id = posInt(a?.id); if (id === null) continue
+      const st = a?.statistics ?? {}
+      const total = [st.trackCount, st.totalTrackCount].map(Number).find(n => Number.isInteger(n) && n > 0) ?? null
+      const have = Number.isInteger(Number(st.trackFileCount)) ? Number(st.trackFileCount) : 0
+      stats.set(id, { total, have, size: Number(st.sizeOnDisk) || 0, title: typeof a.title === 'string' && a.title ? a.title.slice(0, 120) : null })
+    }
+    const key = (id: number) => { const s = stats.get(id)!; return `tf:${id}:${s.have}:${s.size}` }
+    const need: number[] = []
+    const files = new Map<number, Array<{ quality: string | null; count: number }>>()
+    for (const [id, s] of stats) {
+      if (s.have === 0) { files.set(id, []); continue }
+      const c = cache.get(key(id), now)
+      if (c) { try { files.set(id, JSON.parse(c.v ?? '[]')) } catch { need.push(id) } } else need.push(id)
+    }
+    for (const b of batches(need)) {
+      const recs = await tolerant(get, '/api/v1/trackfile', 'albumId', b)
+      const by = new Map<number, Map<string | null, number>>()
+      for (const f of recs) {
+        const aid = posInt(f?.albumId); if (aid === null) continue
+        const q = qname(f)
+        const m = by.get(aid) ?? new Map<string | null, number>()
+        m.set(q, (m.get(q) ?? 0) + 1); by.set(aid, m)
+      }
+      for (const id of b) {
+        if (!stats.has(id)) continue
+        const list = [...(by.get(id) ?? new Map()).entries()].map(([quality, count]) => ({ quality, count }))
+        files.set(id, list)
+        cache.set(key(id), JSON.stringify(list), now)
+      }
+    }
+    for (const [id, s] of stats) out.set(id, { title: s.title, total: s.total, have: s.have, files: files.get(id) ?? [] })
   } catch { out.clear() }
   return out
 }

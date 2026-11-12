@@ -641,3 +641,33 @@ test("failure: an install script that fails, or a stack with no address, stops t
     assert.equal(f.stops.length, 1, `${kind}: docker compose stop ran before the job was marked failed`)
   }
 })
+
+test("setup: Lidarr, when picked, fills the plug-in's own address and key (v1 app, read back)", async () => {
+  const f = new FakeStack()
+  const d = setupDeps(f)
+  const st = stepper()
+  await runArrSetup(INPUT_S(sel(["sonarr", "radarr", "prowlarr", "lidarr"])), st.step, d)
+  assert.equal(st.steps["arr-plugin"].status, "done")
+  assert.match(d.plugins.arrstack.lidarr_url, /^http:\/\/[^/]+:8686$/)
+  assert.equal(d.plugins.arrstack.lidarr_key, f.key("lidarr"))
+  assert.equal(d.plugins.arrstack.sonarr_key, f.key("sonarr"))
+  // Not picked: nothing music is written.
+  const g = new FakeStack(), e = setupDeps(g)
+  await runArrSetup(INPUT_S(sel(["sonarr", "prowlarr"])), stepper().step, e)
+  assert.equal(e.plugins.arrstack.lidarr_url, undefined); assert.equal(e.plugins.arrstack.lidarr_key, undefined)
+})
+
+test("setup: a plug-in already reading Sonarr gets only its two Lidarr blanks filled, and never has them replaced", async () => {
+  const f = new FakeStack()
+  const d = setupDeps(f)
+  d.plugins.arrstack = { sonarr_url: "http://192.0.2.9:8989", sonarr_key: "k" }
+  const st = stepper()
+  await runArrSetup(INPUT_S(sel(["sonarr", "prowlarr", "lidarr"])), st.step, d)
+  assert.equal(d.plugins.arrstack.sonarr_url, "http://192.0.2.9:8989"); assert.equal(d.plugins.arrstack.sonarr_key, "k")
+  assert.match(d.plugins.arrstack.lidarr_url, /:8686$/); assert.equal(d.plugins.arrstack.lidarr_key, f.key("lidarr"))
+  assert.match(st.steps["arr-plugin"].detail!, /left as it is\. Lidarr was added to it/)
+  const g = new FakeStack(), e = setupDeps(g)
+  e.plugins.arrstack = { sonarr_url: "http://192.0.2.9:8989", sonarr_key: "k", lidarr_url: "http://192.0.2.9:8686", lidarr_key: "mine" }
+  await runArrSetup(INPUT_S(sel(["sonarr", "prowlarr", "lidarr"])), stepper().step, e)
+  assert.equal(e.plugins.arrstack.lidarr_url, "http://192.0.2.9:8686"); assert.equal(e.plugins.arrstack.lidarr_key, "mine", "a Lidarr already set is never replaced")
+})

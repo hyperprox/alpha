@@ -18,7 +18,7 @@ import { apiJson, atLeast } from '@/lib/api'
 import { useSession } from '@/lib/session'
 import c from './queue.module.css'
 
-export type Instance = 'sonarr' | 'radarr'
+export type Instance = 'sonarr' | 'radarr' | 'lidarr'
 export interface ActReq {
   action: 'find-another' | 'remove' | 'retry-import' | 'prioritise' | 'swap-pack' | 'fix-stalled' | 'clear-done' | 'swap-check'
   instance: Instance
@@ -26,7 +26,7 @@ export interface ActReq {
 }
 interface PlanView {
   action: string; instance: Instance; blocklist: boolean; search: string[]; seasonLabel?: string
-  items: Array<{ downloadId: string; name: string; rows: number; episodes: number }>
+  items: Array<{ downloadId: string; name: string; rows: number; episodes: number; albums?: number }>
   skipped: Array<{ name: string; reason: string }>
 }
 interface Spec { title: string; reqs: ActReq[]; destructive: boolean; /** Offer the "blocklist this release" box. */ choice?: boolean; /** Clearing finished downloads: calm wording, never blocklisted. */ done?: boolean }
@@ -128,7 +128,7 @@ export function ActionsProvider({ children, refresh, canPrioritise }: { children
 }
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
-const inst = (i: Instance) => (i === 'sonarr' ? 'Sonarr' : 'Radarr')
+const inst = (i: Instance) => (i === 'sonarr' ? 'Sonarr' : i === 'lidarr' ? 'Lidarr' : 'Radarr')
 
 function Confirm({ k, f }: { k: string; f: Flow }) {
   const a = useAct()!
@@ -145,7 +145,7 @@ function Confirm({ k, f }: { k: string; f: Flow }) {
         {items.map(i => (
           <li key={`${i.instance}${i.downloadId}`}>
             <span>{i.name}</span>
-            <small>{i.episodes > 1 ? `${plural(i.episodes, 'episode')} · ` : ''}{inst(i.instance)}</small>
+            <small>{i.episodes > 1 ? `${plural(i.episodes, 'episode')} · ` : ''}{(i.albums ?? 0) > 1 ? `${plural(i.albums!, 'album')} · ` : ''}{inst(i.instance)}</small>
           </li>
         ))}
       </ul>
@@ -267,7 +267,7 @@ export function FixStalled({ keyName, items, label }: { keyName: string; items: 
   if (!a?.canAct || !items.length) return null
   const k = `stalled:${keyName}`
   const busy = ['asking', 'running', 'confirm'].includes(a.flows[k]?.phase ?? '')
-  const reqs: ActReq[] = (['sonarr', 'radarr'] as const)
+  const reqs: ActReq[] = (['sonarr', 'radarr', 'lidarr'] as const)
     .map(i => ({ i, ids: items.filter(x => x.instance === i).map(x => x.id).slice(0, 50) }))
     .filter(x => x.ids.length)
     .map(x => ({ action: 'fix-stalled' as const, instance: x.i, downloadIds: x.ids }))
@@ -287,7 +287,7 @@ export function ClearDone({ items }: { items: Array<{ instance: Instance; id: st
   if (!a?.canAct || !items.length) return null
   const k = 'done:all'
   const busy = ['asking', 'running', 'confirm'].includes(a.flows[k]?.phase ?? '')
-  const groups = (['sonarr', 'radarr'] as const)
+  const groups = (['sonarr', 'radarr', 'lidarr'] as const)
     .map(i => ({ i, ids: items.filter(x => x.instance === i).map(x => x.id).slice(0, 50) }))
     .filter(x => x.ids.length)
   const reqs: ActReq[] = groups.map(x => ({ action: 'clear-done' as const, instance: x.i, downloadIds: x.ids }))

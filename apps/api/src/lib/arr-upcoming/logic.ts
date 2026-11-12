@@ -22,7 +22,7 @@ export type ReleaseKind = 'cinema' | 'digital' | 'physical'
 
 export interface UpcomingItem {
   id: string
-  kind: 'tv' | 'film'
+  kind: 'tv' | 'film' | 'music'
   title: string
   /** TV only. */
   season?: number; episode?: number; code?: string; episodeTitle?: string; network?: string | null
@@ -30,6 +30,8 @@ export interface UpcomingItem {
   airUtc?: string
   /** Film only. */
   year?: number | null; releaseKind?: ReleaseKind; releaseDate?: string
+  /** Music only (Lidarr): the artist, and "Album", "EP", "Single". The album's date is `releaseDate`, a calendar date. */
+  artist?: string; albumType?: string
   /** The viewer's calendar day this sits under, YYYY-MM-DD. */
   day: string
   /** "tonight 9 pm", "tomorrow 8:30 pm", "Thu 9 pm", "17 Nov". */
@@ -46,6 +48,7 @@ export interface UpcomingGroup { key: GroupKey; label: string; items: UpcomingIt
 export interface MissingRow { id: string; title: string; detail: string; date: string | null }
 export interface MissingStrip { total: number; items: MissingRow[]; approximate?: boolean }
 
+const KIND_ORDER: Record<UpcomingItem['kind'], number> = { tv: 0, film: 1, music: 2 }
 const GROUP_LABEL: Record<GroupKey, string> = { today: 'Today', tomorrow: 'Tomorrow', week: 'This week', later: 'Later' }
 const DAY_MS = 86_400_000
 
@@ -109,7 +112,7 @@ const inDays = (n: number) => (n <= 0 ? 'today' : n === 1 ? 'tomorrow' : `in ${n
 // ── queue ────────────────────────────────────────────────────────────────────
 
 /** Which episode or movie ids are in a download queue, with how far along each is. */
-export function queueIndex(records: any[] | null | undefined, idField: 'episodeId' | 'movieId'): Map<number, number> {
+export function queueIndex(records: any[] | null | undefined, idField: 'episodeId' | 'movieId' | 'albumId'): Map<number, number> {
   const out = new Map<number, number>()
   for (const r of Array.isArray(records) ? records : []) {
     const id = Number(r?.[idField])
@@ -198,13 +201,51 @@ export function filmItems(calendar: any[], queue: Map<number, number>, nowMs: nu
   return out
 }
 
+// ── music (Lidarr) ───────────────────────────────────────────────────────────
+
+const hasCover = (images: any): boolean => Array.isArray(images) && images.some(i => i?.coverType === 'cover')
+
+/** All the tracks a Lidarr album should have are on disk. */
+const albumComplete = (a: any): boolean => {
+  const st = a?.statistics ?? {}
+  const total = Number(st.trackCount) || Number(st.totalTrackCount) || 0
+  return total > 0 && Number(st.trackFileCount) >= total
+}
+
+/**
+ * One row per album Lidarr's calendar returns. An album's release is a CALENDAR DATE (midnight UTC), read as written
+ * like a film's, never shifted into a zone. Status: all tracks on disk is "have"; in the queue is "downloading"; a date
+ * already passed with tracks missing is "waiting"; anything later is "upcoming" (Lidarr searches once it is out).
+ */
+export function musicItems(calendar: any[], queue: Map<number, number>, nowMs: number, tz: string, end: string): UpcomingItem[] {
+  const today = dayKey(nowMs, tz)
+  const out: UpcomingItem[] = []
+  for (const a of Array.isArray(calendar) ? calendar : []) {
+    const date = dateOnly(a?.releaseDate)
+    if (!a?.title || !date || date < today || date > end) continue
+    const id = Number(a.id)
+    const n = dayDiff(today, date)
+    const base = {
+      id: `music-${a.id}`, kind: 'music' as const, title: String(a.title),
+      artist: String(a.artist?.artistName ?? 'Unknown artist'), albumType: a.albumType ? String(a.albumType) : 'Album',
+      releaseDate: date, day: date, when: dateLabel(date, today),
+      art: Number.isInteger(id) && id > 0 && hasCover(a.images) ? artRef('lidarr', id) : null,
+    }
+    if (albumComplete(a)) out.push({ ...base, status: 'have', statusText: 'already have it' })
+    else if (queue.has(id)) out.push({ ...base, status: 'downloading', statusText: 'downloading', progress: queue.get(id) })
+    else if (n <= 0) out.push({ ...base, status: 'waiting', statusText: 'out today, waiting for a release' })
+    else out.push({ ...base, status: 'upcoming', statusText: `release ${inDays(n)}; Lidarr searches once it is out` })
+  }
+  return out
+}
+
 // ── grouping ─────────────────────────────────────────────────────────────────
 
 /** Today / Tomorrow / This week / Later, empty groups left out; within a day TV by air time, then films by title. */
 export function groupItems(items: UpcomingItem[], nowMs: number, tz: string): UpcomingGroup[] {
   const today = dayKey(nowMs, tz)
   const sorted = [...items].sort((a, b) =>
-    a.day.localeCompare(b.day) || (a.kind === b.kind ? 0 : a.kind === 'tv' ? -1 : 1) ||
+    a.day.localeCompare(b.day) || KIND_ORDER[a.kind] - KIND_ORDER[b.kind] ||
     String(a.airUtc ?? '').localeCompare(String(b.airUtc ?? '')) || a.title.localeCompare(b.title))
   const groups: UpcomingGroup[] = (['today', 'tomorrow', 'week', 'later'] as GroupKey[]).map(key => ({ key, label: GROUP_LABEL[key], items: [] }))
   for (const it of sorted) groups.find(g => g.key === groupOf(dayDiff(today, it.day)))!.items.push(it)
@@ -253,5 +294,28 @@ export function radarrMissing(page: any, top = 10): MissingStrip {
       detail: Number(m.year) > 0 ? String(m.year) : '',
       date: dateOnly(m.releaseDate) ? `released ${dateWord(dateOnly(m.releaseDate)!)}` : null,
     })),
+  }
+}
+
+/**
+ * Lidarr's wanted/missing page (monitored albums with no files), newest release first. Only albums already out count:
+ * a future release is not overdue. `approximate` means the page was not the whole list.
+ */
+export function lidarrMissing(page: any, nowMs: number, tz: string, top = 10): MissingStrip {
+  const rows: any[] = Array.isArray(page?.records) ? page.records : []
+  const today = dayKey(nowMs, tz)
+  const out = rows.filter(a => { const d = dateOnly(a?.releaseDate); return !d || d <= today })
+  const total = Number(page?.totalRecords) || rows.length
+  return {
+    total: out.length,
+    approximate: total > rows.length ? true : undefined,
+    items: out.slice(0, top).map(a => {
+      const d = dateOnly(a?.releaseDate)
+      const ago = d ? dayDiff(d, today) : null
+      return {
+        id: `music-${a.id}`, title: String(a?.artist?.artistName ?? 'Unknown artist'), detail: String(a?.title ?? 'Unknown album'),
+        date: ago === null ? null : ago <= 0 ? 'released today' : ago === 1 ? 'released yesterday' : `released ${ago} days ago`,
+      }
+    }),
   }
 }

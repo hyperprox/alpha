@@ -3,7 +3,7 @@
 // =============================================================================
 //  HyperProx — Arr Stack, Upcoming
 //
-//  What Sonarr and Radarr expect to grab soon, by day, plus what is overdue.
+//  What Sonarr, Radarr and (when set up) Lidarr expect to grab soon, by day, plus what is overdue.
 //  Everything comes from the API (routes/arr-upcoming.ts), which groups by day
 //  in this browser's time zone and cross-references the download queue. Posters
 //  are HyperProx paths, fetched by the API with the stored key: no Sonarr or
@@ -18,22 +18,23 @@ import c from './upcoming.module.css'
 
 type Status = 'have' | 'downloading' | 'waiting' | 'upcoming'
 interface Item {
-  id: string; kind: 'tv' | 'film'; title: string
+  id: string; kind: 'tv' | 'film' | 'music'; title: string
   code?: string; episodeTitle?: string; network?: string | null; airUtc?: string
   year?: number | null; releaseKind?: 'cinema' | 'digital' | 'physical'; releaseDate?: string
+  artist?: string; albumType?: string
   when: string; status: Status; statusText: string; progress?: number; art: string | null
 }
 interface Group { key: string; label: string; items: Item[] }
 interface Missing { total: number; items: Array<{ id: string; title: string; detail: string; date: string | null }>; approximate?: boolean }
 interface Data {
   at: number; tz: string; days: number
-  services: { sonarr: { ok: boolean; error?: string }; radarr: { ok: boolean; error?: string } }
+  services: { sonarr: { ok: boolean; error?: string }; radarr: { ok: boolean; error?: string }; lidarr?: { ok: boolean; error?: string } }
   groups: Group[]
-  counts: { tv: number; film: number; tonight: number; downloading: number }
-  missing: { sonarr: Missing | null; radarr: Missing | null }
+  counts: { tv: number; film: number; tonight: number; downloading: number; music?: number }
+  missing: { sonarr: Missing | null; radarr: Missing | null; lidarr?: Missing | null }
 }
 
-type Show = 'both' | 'tv' | 'film'
+type Show = 'both' | 'tv' | 'film' | 'music'
 const RANGES = [7, 14, 30, 60] as const
 const RELEASE_WORD = { cinema: 'In cinemas', digital: 'Digital release', physical: 'Physical release' }
 const TONE: Record<Status, 'good' | 'accent' | 'warn' | undefined> = { have: 'good', downloading: 'accent', waiting: 'warn', upcoming: undefined }
@@ -51,7 +52,7 @@ export function ArrUpcoming({ onQueue }: { onQueue: () => void }) {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    setShow(remembered('hp.arr.up.show', ['both', 'tv', 'film'] as const, 'both'))
+    setShow(remembered('hp.arr.up.show', ['both', 'tv', 'film', 'music'] as const, 'both'))
     setDays(remembered('hp.arr.up.days', RANGES, 14))
   }, [])
 
@@ -74,14 +75,16 @@ export function ArrUpcoming({ onQueue }: { onQueue: () => void }) {
   const groups = (data?.groups ?? [])
     .map(g => ({ ...g, items: g.items.filter(i => show === 'both' || i.kind === show) }))
     .filter(g => g.items.length)
-  const down = data ? (['sonarr', 'radarr'] as const).filter(k => !data.services[k].ok) : []
+  // Music appears only when Lidarr is set up: without it there is no button, no count and no strip.
+  const lidarrOn = !!data?.services.lidarr
+  const down = data ? (['sonarr', 'radarr', 'lidarr'] as const).filter(k => data.services[k] && !data.services[k]!.ok) : []
 
   return (
     <>
-      <Panel title="Upcoming" sub={data ? `${data.counts.tv} EPISODES · ${data.counts.film} FILMS${data.counts.tonight ? ` · ${data.counts.tonight} TONIGHT` : ''}` : undefined}>
+      <Panel title="Upcoming" sub={data ? `${data.counts.tv} EPISODES · ${data.counts.film} FILMS${lidarrOn ? ` · ${data.counts.music ?? 0} ALBUMS` : ''}${data.counts.tonight ? ` · ${data.counts.tonight} TONIGHT` : ''}` : undefined}>
         <div className={c.bar}>
           <div className={c.seg} role="group" aria-label="Show">
-            {([['both', 'Both'], ['tv', 'TV'], ['film', 'Films']] as const).map(([k, label]) => (
+            {([['both', lidarrOn ? 'All' : 'Both'], ['tv', 'TV'], ['film', 'Films'], ...(lidarrOn ? [['music', 'Music'] as const] : [])] as ReadonlyArray<readonly [Show, string]>).map(([k, label]) => (
               <button key={k} type="button" aria-pressed={show === k} onClick={() => pick(k)}>{label}</button>
             ))}
           </div>
@@ -91,7 +94,7 @@ export function ArrUpcoming({ onQueue }: { onQueue: () => void }) {
         </div>
         {error && <p className={c.err} role="alert">{error}</p>}
         {down.map(k => (
-          <p key={k} className={c.err} role="status">{k === 'sonarr' ? 'Sonarr' : 'Radarr'} is not answering{data!.services[k].error ? `: ${data!.services[k].error}` : ''}. Its half of the schedule is missing.</p>
+          <p key={k} className={c.err} role="status">{k === 'sonarr' ? 'Sonarr' : k === 'lidarr' ? 'Lidarr' : 'Radarr'} is not answering{data!.services[k]?.error ? `: ${data!.services[k]!.error}` : ''}. Its part of the schedule is missing.</p>
         ))}
         {!data && !error && <p className={s.empty}>Reading the schedule…</p>}
         {data && groups.length === 0 && !error && <p className={s.empty}>Nothing scheduled in the next {days} days.</p>}
@@ -109,7 +112,8 @@ export function ArrUpcoming({ onQueue }: { onQueue: () => void }) {
                     <span className={c.when}>{i.kind === 'film' && i.releaseKind ? `${RELEASE_WORD[i.releaseKind]} · ${i.when}` : i.when}</span>
                   </div>
                   <span className={c.meta}>
-                    {i.kind === 'tv' ? `${i.code}${i.episodeTitle ? ` · ${i.episodeTitle}` : ''}${i.network ? ` · ${i.network}` : ''}` : 'Film'}
+                    {i.kind === 'tv' ? `${i.code}${i.episodeTitle ? ` · ${i.episodeTitle}` : ''}${i.network ? ` · ${i.network}` : ''}`
+                      : i.kind === 'music' ? `${i.artist ?? 'Unknown artist'} · ${i.albumType ?? 'Album'}` : 'Film'}
                   </span>
                   <div className={c.state}>
                     <Pill tone={TONE[i.status]}>{i.status === 'have' ? 'Have it' : i.status === 'downloading' ? `Downloading${i.progress ? ` ${i.progress}%` : ''}` : i.status === 'waiting' ? 'Waiting' : 'Scheduled'}</Pill>
@@ -123,10 +127,10 @@ export function ArrUpcoming({ onQueue }: { onQueue: () => void }) {
         </Panel>
       ))}
 
-      {data && (data.missing.sonarr || data.missing.radarr) && (
+      {data && (data.missing.sonarr || data.missing.radarr || data.missing.lidarr) && (
         <Panel title="Missing, searching" sub="AIRED OR RELEASED, NO FILE">
           <Cols>
-            {([['TV', data.missing.sonarr, 'Sonarr'], ['Films', data.missing.radarr, 'Radarr']] as const).map(([label, m]) => m && (
+            {([['TV', data.missing.sonarr], ['Films', data.missing.radarr], ['Music', data.missing.lidarr ?? null]] as const).map(([label, m]) => m && (
               <div key={label} className={c.miss}>
                 <h3 className={c.missHead}>{label} <small>{m.approximate ? `${m.total}+` : m.total} overdue</small></h3>
                 {m.items.length === 0 ? <p className={s.empty}>Nothing overdue.</p> : (

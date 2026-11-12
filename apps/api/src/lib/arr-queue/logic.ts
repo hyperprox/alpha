@@ -10,8 +10,8 @@
 //  never sends the downloader's output path, a host or a key to the browser.
 // =============================================================================
 
-import { coverage, whyIncomplete, whyRadarr, whySonarr, type FileInfo } from './why'
-export type { FileInfo }
+import { coverage, whyIncomplete, whyIncompleteLidarr, whyLidarr, whyRadarr, whySonarr, type AlbumInfo, type FileInfo } from './why'
+export type { AlbumInfo, FileInfo }
 
 export type Problem = 'failed' | 'blocked' | 'incomplete' | 'stalled' | 'warning'
 /** Lower is worse. Used to float problems to the top. */
@@ -38,6 +38,9 @@ export interface QueueDownload {
   episodes: number
   /** "E01–E23", "E01–E05, E08", or null for a movie. */
   episodeRange: string | null
+  /** Lidarr only (absent for TV and films): how many albums the download covers, and their tracks when known. */
+  albums?: number
+  tracks?: number
   problem: Problem | null
   /**
    * Finished and nothing left to import: everything it covers is already in the library. Not a problem; the person
@@ -82,11 +85,46 @@ export interface QueueShow {
 
 export interface QueueMovie extends QueueDownload { title: string; year: number | null }
 
+/** Lidarr: one album (or a few, for a discography release) under an artist. */
+export interface QueueAlbum {
+  key: string
+  /** The album's title; "A, B" for two albums in one release, "A +2 more" beyond that. */
+  title: string
+  downloads: QueueDownload[]
+  /** Tracks the album(s) should have, when Lidarr says. */
+  tracks: number
+  size: number
+  sizeLeft: number
+  progress: number
+  etaSec: number | null
+  problem: Problem | null
+  done: boolean
+}
+
+export interface QueueArtist {
+  key: string
+  title: string
+  albums: QueueAlbum[]
+  downloads: number
+  /** Albums covered by the artist's downloads. */
+  albumCount: number
+  tracks: number
+  size: number
+  sizeLeft: number
+  progress: number
+  etaSec: number | null
+  problem: Problem | null
+  done: boolean
+}
+
 export interface QueueSummary {
   /** Collapsed downloads (not rows). */
   downloads: number
   shows: number
   movies: number
+  /** Lidarr: artists with something in the queue, and the albums those downloads cover. 0 without Lidarr. */
+  artists: number
+  albums: number
   /** Raw queue rows before collapsing, to show how much was folded. */
   rows: number
   sizeLeft: number
@@ -100,10 +138,12 @@ export interface QueueSummary {
 
 export interface QueueData {
   at: number
-  services: { sonarr: { ok: boolean; error?: string; configured: boolean }; radarr: { ok: boolean; error?: string; configured: boolean } }
+  services: { sonarr: { ok: boolean; error?: string; configured: boolean }; radarr: { ok: boolean; error?: string; configured: boolean }; lidarr: { ok: boolean; error?: string; configured: boolean } }
   summary: QueueSummary
   shows: QueueShow[]
   movies: QueueMovie[]
+  /** Lidarr: Artist → Album → download. Empty without Lidarr. */
+  artists: QueueArtist[]
   /** Added by the route: what the page may offer (moving a torrent up needs qBittorrent set). */
   capabilities?: { prioritise: boolean }
 }
@@ -161,9 +201,12 @@ export function problemOf(rows: any[]): Problem | null {
   return worst
 }
 
-/** Sonarr's and Radarr's top-line summary of an import that skipped something. Says nothing a per-file message does not. */
-const SUMMARY_LINE = /^one or more (?:episodes?|movies?|files?) expected in this release (?:were|was) not imported or missing/i
-/** The two per-file messages that mean "nothing is left to import for this one". */
+/** Sonarr's, Radarr's and Lidarr's top-line summary of an import that skipped something. Says nothing a per-file message does not. */
+const SUMMARY_LINE = /^one or more (?:episodes?|movies?|files?|albums?|tracks?) expected in this release (?:were|was) not imported or missing/i
+/**
+ * The two per-file messages that mean "nothing is left to import for this one". Lidarr says "Track file already
+ * imported" and "Not an upgrade for existing track file(s)": both are caught by the same two patterns.
+ */
 const ALREADY_HANDLED = /\balready imported\b|^not an upgrade for existing\b/i
 
 /** Every message text on the rows, untouched (no path stripping, no cap): for classification, not display. */
@@ -308,6 +351,58 @@ function whyOf(rows: any[], info: Map<number, FileInfo>, episodic: boolean, done
   return whySonarr(ids, info, release, done)
 }
 
+
+// ── Lidarr (music) ───────────────────────────────────────────────────────────
+
+const albumIdOfRow = (r: any): number | null => { const n = Number(r?.albumId ?? r?.album?.id); return Number.isInteger(n) && n > 0 ? n : null }
+
+/** The albums a download covers, from the lookup. Null when any of them could not be looked up. */
+function albumsOf(rows: any[], info?: Map<number, AlbumInfo>): AlbumInfo[] | null {
+  if (!info) return null
+  const ids = [...new Set(rows.map(albumIdOfRow).filter((n): n is number => n !== null))]
+  if (!ids.length) return null
+  const out: AlbumInfo[] = []
+  for (const id of ids) { const a = info.get(id); if (!a) return null; out.push(a) }
+  return out
+}
+
+/** Every album the download covers has all its tracks on disk now. Without a lookup nothing can be vouched for: false. */
+function tracksAllThere(rows: any[], info?: Map<number, AlbumInfo>): boolean {
+  const albums = albumsOf(rows, info)
+  return !!albums && albums.every(a => a.total !== null && a.have >= a.total)
+}
+
+/** Done: the messages say nothing is left to import AND every album it covers has all its tracks. */
+export function isDoneMusic(rows: any[], info?: Map<number, AlbumInfo>): boolean {
+  return messagesSayDone(rows) && tracksAllThere(rows, info)
+}
+
+/** The messages say "already imported" but some tracks it covers have no file, so Lidarr will never search for them. */
+export function isIncompleteMusic(rows: any[], info?: Map<number, AlbumInfo>): boolean {
+  if (!messagesSayDone(rows)) return false
+  const albums = albumsOf(rows, info)
+  return !!albums && albums.every(a => a.total !== null) && albums.some(a => a.have < (a.total as number))
+}
+
+function musicDownloadOf(id: string, rows: any[], now: number, info?: Map<number, AlbumInfo>): QueueDownload {
+  // Sizes, ETA, client and messages are read the same way for every Arr; only what "done" and "why" mean differs.
+  const base = downloadOf(id, rows, now, false, undefined)
+  const done = isDoneMusic(rows, info)
+  const incomplete = !done && isIncompleteMusic(rows, info)
+  const problem: Problem | null = done ? null : incomplete ? 'incomplete' : base.problem
+  const albums = albumsOf(rows, info)
+  const albumIds = new Set(rows.map(albumIdOfRow).filter((n): n is number => n !== null))
+  const tracks = albums && albums.every(a => a.total !== null) ? albums.reduce((t, a) => t + (a.total as number), 0) : 0
+  const release = str(rows[0]?.quality?.quality?.name, 40)
+  return {
+    ...base,
+    albums: albumIds.size, ...(tracks ? { tracks } : {}),
+    problem, done,
+    why: albums ? (incomplete ? whyIncompleteLidarr(albums) : whyLidarr(albums, release, done)) : null,
+    hint: problem === 'blocked' || problem === 'failed' ? importHint(messagesOf(rows)) : null,
+  }
+}
+
 const seasonLabel = (seasons: number[]): string => {
   const u = [...new Set(seasons)].sort((a, b) => a - b)
   if (!u.length) return 'Unknown season'
@@ -388,10 +483,65 @@ export function groupRadarr(rows: any[], now = Date.now(), info?: Map<number, Fi
   }).sort((a, b) => cmp(a, b, a.title, b.title))
 }
 
-export function summarize(shows: QueueShow[], movies: QueueMovie[], rows: number): QueueSummary {
-  const all: QueueDownload[] = [...shows.flatMap(s => s.seasons.flatMap(x => x.downloads)), ...movies]
+
+const albumTitle = (titles: string[]): string => {
+  const u = [...new Set(titles.filter(Boolean))]
+  if (!u.length) return 'Unknown album'
+  return u.length <= 2 ? u.join(', ') : `${u[0]} +${u.length - 1} more`
+}
+
+/** Lidarr's queue, collapsed by downloadId and grouped Artist → Album → download. */
+export function groupLidarr(rows: any[], now = Date.now(), info?: Map<number, AlbumInfo>): QueueArtist[] {
+  const artists = new Map<string, { title: string; albumMap: Map<string, QueueAlbum> }>()
+  for (const { id, rows: rs } of collapseByDownload(rows)) {
+    const first = rs[0]
+    const artistId = Number(first.artistId ?? first.artist?.id)
+    const artistKey = Number.isInteger(artistId) && artistId > 0 ? `a:${artistId}` : `t:${first.artist?.artistName ?? first.title ?? id}`
+    const title = str(first.artist?.artistName, 120) ?? (artistKey.startsWith('a:') ? `Artist ${artistId}` : 'Unknown artist')
+    const dl = musicDownloadOf(id, rs, now, info)
+    const ids = [...new Set(rs.map(albumIdOfRow).filter((n): n is number => n !== null))].sort((a, b) => a - b)
+    const key = ids.join(',') || 'unknown'
+    const albumNames = [...new Map(rs.map(r => [albumIdOfRow(r) ?? -1, str(r.album?.title, 120) ?? ''])).values()]
+    let a = artists.get(artistKey)
+    if (!a) artists.set(artistKey, a = { title, albumMap: new Map() })
+    let album = a.albumMap.get(key)
+    if (!album) a.albumMap.set(key, album = { key, title: albumTitle(albumNames), downloads: [], tracks: 0, size: 0, sizeLeft: 0, progress: 0, etaSec: null, problem: null, done: false })
+    album.downloads.push(dl)
+  }
+
+  const out: QueueArtist[] = []
+  for (const [key, a] of artists) {
+    const albums = [...a.albumMap.values()]
+    for (const al of albums) {
+      al.downloads.sort((x, y) => cmp(x, y, x.name, y.name))
+      al.tracks = al.downloads.reduce((t, d) => Math.max(t, d.tracks ?? 0), 0)
+      al.size = al.downloads.reduce((t, d) => t + d.size, 0)
+      al.sizeLeft = al.downloads.reduce((t, d) => t + d.sizeLeft, 0)
+      al.progress = pct(al.size, al.sizeLeft)
+      al.etaSec = etaMax(al.downloads)
+      al.problem = al.downloads.reduce<Problem | null>((p, d) => worse(p, d.problem), null)
+      al.done = al.downloads.length > 0 && al.downloads.every(d => d.done)
+    }
+    albums.sort((x, y) => cmp(x, y, x.title, y.title))
+    const size = albums.reduce((t, x) => t + x.size, 0), left = albums.reduce((t, x) => t + x.sizeLeft, 0)
+    out.push({
+      key, title: a.title, albums,
+      downloads: albums.reduce((t, x) => t + x.downloads.length, 0),
+      albumCount: new Set(albums.flatMap(x => x.key.split(',')).filter(k => k !== 'unknown')).size,
+      tracks: albums.reduce((t, x) => t + x.tracks, 0),
+      size, sizeLeft: left, progress: pct(size, left), etaSec: etaMax(albums),
+      problem: albums.reduce<Problem | null>((p, x) => worse(p, x.problem), null),
+      done: albums.length > 0 && albums.every(x => x.done),
+    })
+  }
+  return out.sort((x, y) => cmp(x, y, x.title, y.title))
+}
+
+export function summarize(shows: QueueShow[], movies: QueueMovie[], rows: number, artists: QueueArtist[] = []): QueueSummary {
+  const all: QueueDownload[] = [...shows.flatMap(s => s.seasons.flatMap(x => x.downloads)), ...movies, ...artists.flatMap(a => a.albums.flatMap(x => x.downloads))]
   return {
-    downloads: all.length, shows: shows.length, movies: movies.length, rows,
+    downloads: all.length, shows: shows.length, movies: movies.length,
+    artists: artists.length, albums: artists.reduce((t, a) => t + a.albumCount, 0), rows,
     sizeLeft: all.reduce((t, d) => t + d.sizeLeft, 0),
     attention: all.filter(d => d.problem === 'failed' || d.problem === 'blocked' || d.problem === 'incomplete').length,
     stalled: all.filter(d => d.problem === 'stalled').length,
@@ -403,28 +553,34 @@ export function summarize(shows: QueueShow[], movies: QueueMovie[], rows: number
 export function buildQueueData(input: {
   sonarr: { rows: any[] | null; error?: string; configured: boolean; info?: Map<number, FileInfo> }
   radarr: { rows: any[] | null; error?: string; configured: boolean; info?: Map<number, FileInfo> }
+  /** Optional: absent when Lidarr is not set up, which reads as "not configured". */
+  lidarr?: { rows: any[] | null; error?: string; configured: boolean; info?: Map<number, AlbumInfo> }
   now?: number
 }): QueueData {
   const now = input.now ?? Date.now()
   const shows = input.sonarr.rows ? groupSonarr(input.sonarr.rows, now, input.sonarr.info) : []
   const movies = input.radarr.rows ? groupRadarr(input.radarr.rows, now, input.radarr.info) : []
-  const state = (x: typeof input.sonarr) => ({ ok: x.rows !== null, configured: x.configured, ...(x.error ? { error: x.error.slice(0, 160) } : {}) })
+  const lid = input.lidarr ?? { rows: null, configured: false }
+  const artists = lid.rows ? groupLidarr(lid.rows, now, lid.info) : []
+  const state = (x: { rows: any[] | null; error?: string; configured: boolean }) => ({ ok: x.rows !== null, configured: x.configured, ...(x.error ? { error: x.error.slice(0, 160) } : {}) })
   return {
     at: now,
-    services: { sonarr: state(input.sonarr), radarr: state(input.radarr) },
-    summary: summarize(shows, movies, (input.sonarr.rows?.length ?? 0) + (input.radarr.rows?.length ?? 0)),
-    shows, movies,
+    services: { sonarr: state(input.sonarr), radarr: state(input.radarr), lidarr: input.lidarr ? state(input.lidarr) : { ok: true, configured: false } },
+    summary: summarize(shows, movies, (input.sonarr.rows?.length ?? 0) + (input.radarr.rows?.length ?? 0) + (lid.rows?.length ?? 0), artists),
+    shows, movies, artists,
   }
 }
 
 /** Every page of a queue. `get` is a read-only client call; a missing total or an empty page ends the loop. */
-export async function readAllQueue(get: (path: string, timeoutMs?: number) => Promise<any>, kind: 'sonarr' | 'radarr', maxPages = 50): Promise<any[]> {
+export async function readAllQueue(get: (path: string, timeoutMs?: number) => Promise<any>, kind: 'sonarr' | 'radarr' | 'lidarr', maxPages = 50): Promise<any[]> {
+  // Lidarr's API is v1; Sonarr's and Radarr's is v3.
   const extra = kind === 'sonarr'
     ? 'includeUnknownSeriesItems=true&includeSeries=true&includeEpisode=true'
+    : kind === 'lidarr' ? 'includeUnknownArtistItems=true&includeArtist=true&includeAlbum=true'
     : 'includeUnknownMovieItems=true&includeMovie=true'
   const out: any[] = []
   for (let page = 1; page <= maxPages; page++) {
-    const r = await get(`/api/v3/queue?page=${page}&pageSize=200&${extra}`, 20_000)
+    const r = await get(`/api/${kind === 'lidarr' ? 'v1' : 'v3'}/queue?page=${page}&pageSize=200&${extra}`, 20_000)
     const recs: any[] = Array.isArray(r?.records) ? r.records : []
     out.push(...recs)
     if (!recs.length || out.length >= num(r?.totalRecords)) break

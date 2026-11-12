@@ -1106,8 +1106,9 @@ when the read-back agrees. The steps:
     whoever opens it first. Connect Plex in HyperProx (the Plex plug-in's server and token), then press
     **Finish Seerr** on the Catalogue page. That does the same start and sign-in at once, and needs an admin and
     the master password again. If it fails, Seerr is stopped again.
-12. Points HyperProx's Arr Stack plug-in at the new Sonarr, Radarr, Prowlarr and qBittorrent. If the plug-in
-    already reads a stack, it is left as it is. The Plex plug-in has no Arr setting of its own: where it reaches
+12. Points HyperProx's Arr Stack plug-in at the new Sonarr, Radarr, Lidarr (if picked), Prowlarr and qBittorrent. If
+    the plug-in already reads a stack, it is left as it is, except that a Lidarr you picked is added to it when the
+    plug-in has no Lidarr address or key yet (an address or key already there is never replaced). The Plex plug-in has no Arr setting of its own: where it reaches
     Sonarr or Radarr, it does so through the Arr Stack plug-in, so it follows this step.
 
 **If setup fails at any step,** every app is stopped (`docker compose stop`, or the whole container when that does
@@ -1546,7 +1547,7 @@ happened and the site record stays, so **Preview again** offers only what is lef
 
 | Plug-in | What it shows |
 |---|---|
-| Arr Stack | Sonarr, Radarr, Prowlarr and qBittorrent as one pipeline (search, grabbed, downloading, import, library) with live counts; a live **Queue** grouped by show and season; imports that need a person as alert cards; download progress; indexer status dots and health warnings; what is coming up |
+| Arr Stack | Sonarr, Radarr, Prowlarr and qBittorrent (and Lidarr for music, if you run it) as one pipeline (search, grabbed, downloading, import, library) with live counts; a live **Queue** grouped by show and season, and by artist and album for music; imports that need a person as alert cards; download progress; indexer status dots and health warnings; what is coming up, music releases included |
 | Unmanic | One ring per worker with its slots, a caught-up (or stalled) banner, and what is encoding now with its progress |
 | MikroTik | A live map of internet, uplinks, router and subnets; CPU, memory, temperature and input-voltage rings; top talkers; port forwards; the log with errors highlighted. Also the per-device and per-interface tables, firewall, WireGuard and neighbours; feeds the bandwidth dials and offers an SSH console |
 | Plex activity | Read from Plex itself: what is streaming now with each title's cover (progress, direct play, direct stream or transcode), local and remote bandwidth gauges, who watches most, what is watched most, recent history and your libraries. Tautulli is optional and adds hours watched. Plus **Clear-out** (what nobody watches), **Library** (remove shows, seasons, episodes or films) and an optional message when something new is added (see below) |
@@ -1655,6 +1656,52 @@ removed as all 23 of its rows, and nothing else).
 
 The queue uses the keys already saved in the plug-in's settings, which stay on the server; the page never receives a key, an address or the download folder. Messages are passed on as Sonarr and Radarr wrote them, except that any folder path in one is replaced with "the download folder". If a reading fails the page waits longer before asking again (up to 30 seconds), and goes back to every 4 seconds after one works.
 If Sonarr or Radarr does not answer, its half is greyed with the reason and the other still shows.
+
+**Music (Lidarr).** Lidarr is optional and is treated like Sonarr and Radarr everywhere on the Arr Stack page. Its API
+is version 1 (`/api/v1/...`) where Sonarr's and Radarr's is version 3, and HyperProx only ever asks it for that. With
+no Lidarr saved, the page shows nothing about music: no tab, no button, no count. The only trace is a hint under the
+Lidarr address in the plug-in's settings, which says to leave it blank if you do not run Lidarr.
+
+- **Settings.** The plug-in's settings have an optional **Lidarr address** and **Lidarr API key**. The key is kept in
+  the vault like the Sonarr and Radarr keys and is never sent back to the browser (the form only says it is set). Like
+  the others, moving the address to another host needs the key entered again in the same save. Once an address and key
+  are saved, a **Test Lidarr** button appears in the settings. It reads Lidarr's system status with the
+  saved key, so it only ever tests what is saved, and answers with Lidarr's version or a plain reason ("Lidarr refused
+  the API key", "could not be reached at the saved address", "did not answer in time"). If you install Lidarr from the
+  Catalogue's Arr Stack recipe, the address and key are filled in for you (step 12 above); **Scan for services** also
+  finds a Lidarr on port 8686 and fills in the address.
+- **Overview.** Lidarr is listed with the other apps, so it greys out when it does not answer and its health warnings
+  sit with theirs. A **Music** panel shows artists, albums and tracks with files, how much disk they use, and how many
+  monitored albums are still missing. The artist list is a big reading, so these numbers are kept for two minutes.
+- **Queue.** Lidarr's queue is read page by page, like the others, and grouped **artist, then
+  album, then download**. Lidarr lists one queue row per album, so a discography release arrives as several rows;
+  HyperProx folds the rows that share a download ID into one download, sized once, and shows "3 albums" and the track
+  count. The summary counts artists as well as downloads. Failed, Import blocked, Stalled and Warning work as for TV,
+  and **Problems** cuts the list down to artists, albums and downloads that really have one.
+- **Done and incomplete, in Lidarr's words.** A finished, import-blocked download is **Done: nothing left to import**
+  when every message is "Track file already imported", "Not an upgrade for existing track file(s)" or the top line
+  "One or more albums expected in this release were not imported or missing", **and** every album it covers now has
+  all its tracks on disk. If the messages say so but some tracks of the album still have no file, it is an
+  **Incomplete pack** in red, with "This release claims "Example Album" (12 tracks) but only 8 have files; 4 tracks are
+  still missing and won't be searched while it sits here." Any other message keeps it an ordinary problem.
+- **Why this download.** One line from the album's track count and its track files: "Fills 4 of 12 tracks · upgrades MP3 320 → FLAC".
+  Any lossless format (FLAC, ALAC, WAV and so on) beats any lossy one, then a higher bitrate wins (MP3 VBR V0 counts
+  as about 245 kbit/s). A release no better than what you have reads "Already have FLAC (will be skipped)", and a
+  done download reads "Kept your better copy (FLAC); nothing left to import." The albums and their track files are
+  read in batches inside the shared reading, never one request per row, and the file qualities are kept for 60 seconds
+  (and read again as soon as the album's file count or size on disk changes). If Lidarr cannot answer, the line is left out.
+- **Actions.** The same buttons with the same rules: admin only, API tokens refused, no master password, written to
+  the audit log before they run, 30 a minute, a confirm step, and the queue read fresh by the server. **Find another**
+  removes the download, blocklists the release (without letting Lidarr start its own search) and then asks Lidarr to
+  run an album search for exactly the albums it covered; **Remove**, **Retry import**, **Move to top** (qBittorrent, torrents
+  only), **Clear from queue** (done downloads only, never blocklisted, rechecked on a fresh reading) and **Fix all
+  stalled** work as they do for TV. Swapping singles for a season pack is a TV idea, so it is not offered for music.
+- **Upcoming.** A **Music** button joins TV and Films. It lists albums with a release date in the range you pick, from
+  Lidarr's calendar, with the cover, artist and kind (Album, EP, Single): **Have it** when every track is on disk,
+  **Downloading** with its progress when it is in the queue, **Waiting** on the day it comes out when tracks are
+  still missing, and **Scheduled** before that. An album's release is a calendar date and is shown as written, not
+  shifted by your time zone. **Missing, searching** gains a Music column of monitored albums already out with no
+  files. The cover is fetched by HyperProx with the stored key, like the TV posters.
 
 **Plex** needs only your Plex server. There are two ways to add it, both in the plug-in's settings.
 
