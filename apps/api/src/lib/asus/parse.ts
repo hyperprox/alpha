@@ -45,10 +45,44 @@ export interface AsusDevice {
   /** 0..4 bars from the RSSI, null for wired or unreported. */
   bars:       number | null
   onlineSec:  number | null
+  /** The AiMesh unit it is connected to, when the router leads a mesh. */
+  node?:      string | null
+}
+
+/** One unit of an AiMesh network, as the main unit reports it (get_cfg_clientlist). */
+export interface MeshNode {
+  key:      string
+  name:     string
+  model:    string | null
+  firmware: string | null
+  /** A newer firmware the main unit knows of for this node. */
+  update:   string | null
+  main:     boolean
+  online:   boolean
+  /** How a node reaches the mesh: "wired", or the band of its wireless backhaul. Null for the main unit. */
+  backhaul: string | null
+  rssi:     number | null
+  bars:     number | null
+  clients:  number
+  ip:       string | null
+}
+
+/** How the unit is used. Only a router has a WAN of its own; every other mode gets its internet from upstream. */
+export type ModeKind = 'router' | 'ap' | 'repeater' | 'bridge' | 'node'
+
+export interface AsusMode {
+  kind:   ModeKind | null
+  /** "Router", "Access point", "Repeater", "Media bridge", "AiMesh node"; " · AiMesh main" added for a mesh main unit. */
+  label:  string | null
+  /** The unit's AiMesh role, when it is in a mesh. */
+  aimesh: 'main' | 'node' | null
 }
 
 export interface AsusReading {
   fetchedAt: string
+  mode:      AsusMode
+  /** Not a router: where its LAN connects upstream. The gateway address is for operators and up. */
+  uplink:    { gateway: string | null } | null
   model:     string | null
   firmware:  { version: string | null; flavour: 'merlin' | 'stock' | null }
   update:    { available: boolean | null; version: string | null }
@@ -67,6 +101,8 @@ export interface AsusReading {
     upBps:   number | null
   }
   bands:        AsusBand[]
+  /** The AiMesh network when this unit leads one (main first), otherwise empty. */
+  mesh:         MeshNode[]
   devices:      AsusDevice[]
   /** Devices the router remembers that are not online now. */
   offlineKnown: number
@@ -76,21 +112,74 @@ export interface AsusReading {
 
 // ── the hook calls ───────────────────────────────────────────────────────────
 
-const WL_KEYS = ['ssid', 'nband', 'radio', 'chanspec', 'channel', 'bw'] as const
-export const NVRAM_KEYS = [
-  'productid', 'odmpid', 'firmver', 'buildno', 'extendno', '3rd-party',
-  'webs_state_flag', 'webs_state_info', 'link_internet',
-  ...[0, 1, 2, 3].flatMap(u => WL_KEYS.map(k => `wl${u}_${k}`)),
-]
+export const WL_KEYS = ['ssid', 'nband', 'radio', 'chanspec', 'bw'] as const
+export const FIRMWARE_KEYS = ['productid', 'odmpid', 'firmver', 'buildno', 'extendno', '3rd-party', 'webs_state_flag', 'webs_state_info'] as const
+export const MODE_KEYS = ['sw_mode', 're_mode', 'cfg_master', 'wlc_psta', 'lan_gateway'] as const
+export const nv = (k: string) => `nvram_get(${k})`
 
-/** The calls one reading sends, by name. Fixed text: nothing a person or a router says ever reaches one. */
+/** The values that change only when someone reconfigures the unit: read every few minutes, not every reading. */
+export function staticHooks(units: number): string[] {
+  return [...FIRMWARE_KEYS, ...MODE_KEYS, 'wl_ifnames', ...Array.from({ length: units }, (_, u) => WL_KEYS.map(k => `wl${u}_${k}`)).flat()].map(nv)
+}
+/** What a reading needs fresh every time. get_wan_unit only means something on a router. */
+export const dynamicHooks = (router: boolean) => ['uptime()', 'cpu_usage(appobj)', 'memory_usage(appobj)', 'netdev(appobj)', ...(router ? ['get_wan_unit()'] : [])]
+
+/** How many radios: wl_ifnames lists one interface per radio ("eth4 eth5 eth6"). 4 when it does not say. */
+export function radioCount(n: Record<string, unknown>): number {
+  const k = String(n.wl_ifnames ?? '').trim().split(/\s+/).filter(Boolean).length
+  return k ? Math.min(4, k) : 4
+}
+
+/** The key a hook answers under: nvram_get(x) answers as "x", f(...) as "f". */
+export function hookKey(h: string): string | null {
+  return /^nvram_get\(([^)]+)\)$/.exec(h)?.[1] ?? /^([A-Za-z0-9_]+)\(/.exec(h)?.[1] ?? null
+}
+
+/**
+ * The calls, by name, as one string each. A reading does not send `system` as one call: Asuswrt 388 builds
+ * (stock 3.0.0.4.388_24971, router and access point alike) answer only the FIRST hook of a semicolon list, so
+ * the service sends lists, checks every hook was answered, and falls back to one call per hook when they were
+ * not (service.ts readHooks). The combined form stays here for the diagnostics read, as evidence.
+ */
 export const HOOKS = {
-  system:   [...NVRAM_KEYS.map(k => `nvram_get(${k})`), 'uptime()', 'get_wan_unit()', 'cpu_usage(appobj)', 'memory_usage(appobj)', 'netdev(appobj)'].join(';'),
+  system:   [...staticHooks(4), ...dynamicHooks(true)].join(';'),
   wan:      'wanlink()',
   clients:  'get_clientlist()',
   channels: 'wl_control_channel()',
   counters: 'cpu_usage(appobj);netdev(appobj)',
+  mode:     MODE_KEYS.map(nv).join(';'),
+  /** AiMesh: the nodes as the main unit knows them, and which clients each one carries. */
+  meshNodes:   'get_cfg_clientlist()',
+  meshClients: 'get_allclientlist()',
 } as const
+
+/**
+ * The unit's operation mode. sw_mode: 1 router, 2 repeater, 3 access point, 4 media bridge. AiMesh marks a node
+ * with re_mode=1 (whatever its sw_mode says) and the mesh's main unit with cfg_master=1, which may be a router
+ * or, on a network where something else routes, an access point.
+ */
+export function modeOf(n: Record<string, unknown> | null): AsusMode {
+  if (!n) return { kind: null, label: null, aimesh: null }
+  const sw = str(n.sw_mode, 2), re = str(n.re_mode, 2), master = str(n.cfg_master, 2)
+  if (re === '1') return { kind: 'node', label: 'AiMesh node', aimesh: 'node' }
+  const kind: ModeKind | null = sw === '1' ? 'router' : sw === '2' ? (str(n.wlc_psta, 2) === '2' ? 'bridge' : 'repeater') : sw === '3' ? 'ap' : sw === '4' ? 'bridge' : null
+  const base = kind === 'router' ? 'Router' : kind === 'ap' ? 'Access point' : kind === 'repeater' ? 'Repeater' : kind === 'bridge' ? 'Media bridge' : null
+  const main = master === '1'
+  return { kind, label: base ? `${base}${main ? ' · AiMesh main' : ''}` : (main ? 'AiMesh main' : null), aimesh: main ? 'main' : null }
+}
+
+/**
+ * Flat `"key":"value"` pairs, for when an answer is not valid JSON as a whole (one value with an unescaped
+ * quote, say): every pair that does parse is kept, so one bad value costs one value, not the whole answer.
+ */
+export function loosePairs(text: string | null | undefined): Record<string, string> | null {
+  if (!text) return null
+  const out: Record<string, string> = {}
+  const re = /"([A-Za-z0-9_.\-]{1,64})"\s*:\s*"((?:[^"\\\n]|\\.){0,512})"/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text))) { try { out[m[1]] = JSON.parse(`"${m[2]}"`) } catch { out[m[1]] = m[2] } }
+  return Object.keys(out).length ? out : null
+}
 
 // ── tolerant JSON ────────────────────────────────────────────────────────────
 
@@ -244,7 +333,7 @@ export function barsOf(rssi: number | null): number | null {
  * get_clientlist(): one object per MAC (plus "maclist" and "ClientAPILevel"), every value a string.
  * isWL is 0 for wired, otherwise the radio's unit + 1; isOnline is "1" for a device on the network now.
  */
-export function parseClients(v: unknown, instanceId: string, bands: Array<Pick<AsusBand, 'unit' | 'label'>>): { online: AsusDevice[]; offline: number } {
+export function parseClients(v: unknown, instanceId: string, bands: Array<Pick<AsusBand, 'unit' | 'label'>>, nodeByMac: Map<string, string> = new Map(), mainNode: string | null = null): { online: AsusDevice[]; offline: number } {
   if (!v || typeof v !== 'object') return { online: [], offline: 0 }
   const online: AsusDevice[] = []
   let offline = 0
@@ -267,10 +356,54 @@ export function parseClients(v: unknown, instanceId: string, bands: Array<Pick<A
       band, rssi: rssi !== null && rssi < 0 ? rssi : null,
       bars: barsOf(rssi),
       onlineSec: wl > 0 ? connectSeconds(c.wlConnectTime) : null,
+      ...(nodeByMac.size ? { node: nodeByMac.get(String(c.amesh_papMac ?? '').toUpperCase()) ?? mainNode } : {}),
     })
   }
   online.sort((a, b) => a.name.localeCompare(b.name))
   return { online, offline }
+}
+
+// ── AiMesh ───────────────────────────────────────────────────────────────────
+
+/** re_path, a bit per way a node can reach the mesh, and the RSSI field that goes with each band. */
+const RE_PATH: Array<[number, string, string | null]> = [[1, 'wired', null], [2, '2.4 GHz', 'rssi2g'], [4, '5 GHz', 'rssi5g'], [8, '5 GHz-2', 'rssi5g1'], [16, '6 GHz', 'rssi6g'], [32, '6 GHz-2', 'rssi6g1']]
+
+const fwOf = (v: unknown) => { const s = str(v, 40); return s ? s.replace(/-g[0-9a-f]+$/i, '') : null }
+
+/**
+ * get_cfg_clientlist(): one object per unit (level 0 is the main unit), and get_allclientlist(): per unit MAC,
+ * per band ("2G", "5G", "6G", "6G_4", "wired_mac"), the clients on it. Pure; an empty or missing list is no mesh.
+ */
+export function parseMesh(nodesRaw: unknown, clientsRaw: unknown, instanceId: string): { nodes: MeshNode[]; byMac: Map<string, string>; main: string | null } {
+  const byMac = new Map<string, string>()
+  if (!Array.isArray(nodesRaw) || !nodesRaw.length) return { nodes: [], byMac, main: null }
+  const per = clientsRaw && typeof clientsRaw === 'object' ? clientsRaw as Record<string, any> : {}
+  const nodes: MeshNode[] = []
+  for (const n of nodesRaw.slice(0, 32)) {
+    if (!n || typeof n !== 'object') continue
+    const mac = String(n.mac ?? '').toUpperCase()
+    if (!MAC_RE.test(mac)) continue
+    const main = str(n.level, 3) === '0'
+    const path = int(n.re_path) ?? 0
+    const hop = main ? null : RE_PATH.find(([bit]) => path & bit) ?? null
+    const rssi = hop?.[2] ? int(n[hop[2]]) : null
+    const bucket = per[mac] ?? per[mac.toLowerCase()] ?? {}
+    const clients = Object.values(bucket && typeof bucket === 'object' ? bucket : {}).reduce((t: number, v: any) => t + (Array.isArray(v) ? v.length : v && typeof v === 'object' ? Object.keys(v).length : 0), 0)
+    const name = str(n.alias, 40) ?? str(n.ui_model_name, 40) ?? 'AiMesh node'
+    const ip = str(n.ip, 45)
+    nodes.push({
+      key: deviceKey(instanceId, mac), name,
+      model: str(n.ui_model_name, 40) ?? str(n.model_name, 40) ?? str(n.product_id, 40),
+      firmware: fwOf(n.fwver), update: fwOf(n.newfwver), main,
+      online: str(n.online, 2) !== '0',
+      backhaul: hop ? hop[1] : main ? null : (path ? 'unknown' : null),
+      rssi: rssi !== null && rssi < 0 ? rssi : null, bars: barsOf(rssi !== null && rssi < 0 ? rssi : null),
+      clients, ip: ip && IPV4_RE.test(ip) ? ip : null,
+    })
+    byMac.set(mac, name)
+  }
+  nodes.sort((a, b) => Number(b.main) - Number(a.main) || a.name.localeCompare(b.name))
+  return { nodes, byMac, main: nodes.find(x => x.main)?.name ?? null }
 }
 
 // ── counters and rates ───────────────────────────────────────────────────────
@@ -317,9 +450,12 @@ export const CPU_HIGH_PCT = 90
 /** Asuswrt keeps most of its memory in use as cache, so "high" sits well above where a PC would worry. */
 export const MEM_HIGH_PCT = 92
 
-export function healthOf(r: Pick<AsusReading, 'wan' | 'cpuPct' | 'mem' | 'update'>): AsusReading['health'] {
+export function healthOf(r: Pick<AsusReading, 'wan' | 'cpuPct' | 'mem' | 'update'> & { mode?: AsusMode }): AsusReading['health'] {
   const reasons: string[] = []
-  if (r.wan.up === false) reasons.push(`The internet connection is down${r.wan.status ? ` (${r.wan.status})` : ''}.`)
+  // Only a router has a WAN of its own. An access point, repeater, bridge or mesh node reports its unused WAN
+  // as "Disconnected", which is normal, never an alarm.
+  const routes = !r.mode || r.mode.kind === null || r.mode.kind === 'router'
+  if (routes && r.wan.up === false) reasons.push(`The internet connection is down${r.wan.status ? ` (${r.wan.status})` : ''}.`)
   if (r.cpuPct !== null && r.cpuPct >= CPU_HIGH_PCT) reasons.push(`CPU is at ${Math.round(r.cpuPct)}%.`)
   if (r.mem && r.mem.pct >= MEM_HIGH_PCT) reasons.push(`Memory is at ${r.mem.pct}%.`)
   if (r.update.available) reasons.push(`A firmware update is available${r.update.version ? ` (${r.update.version})` : ''}.`)
@@ -333,6 +469,11 @@ export interface RawAnswers {
   wan:      string | null
   clients:  string | null
   channels: string | null
+  /** HOOKS.mode. Optional so an answer set from before it existed still builds a reading. */
+  mode?:    string | null
+  /** HOOKS.meshNodes and HOOKS.meshClients, when the unit leads a mesh. */
+  meshNodes?:   string | null
+  meshClients?: string | null
 }
 
 export function uptimeSeconds(v: unknown): number | null {
@@ -343,9 +484,14 @@ export function uptimeSeconds(v: unknown): number | null {
 /** One reading from the answers. `prev` is the last counter sample (from this or an earlier reading), `cur` this one's. */
 export function buildReading(raw: RawAnswers, o: { instanceId: string; prev: CounterSample | null; cur: CounterSample; now?: Date }): AsusReading {
   const missing: string[] = []
-  const sys = looseJson(raw.system)
-  if (!sys) missing.push('system')
+  const sysJson = looseJson(raw.system)
+  // Not valid JSON as a whole: keep every flat value that does parse (firmware, radios), and say so.
+  const sys: Record<string, any> | null = sysJson ?? loosePairs(raw.system)
+  if (!sysJson) missing.push('system')
   const n: Record<string, unknown> = sys ?? {}
+  const modeAnswer = looseJson(raw.mode) ?? loosePairs(raw.mode)
+  const mode = modeOf(modeAnswer ?? (n.sw_mode !== undefined ? n : null))
+  const routes = mode.kind === null || mode.kind === 'router'
 
   const firmware = firmwareOf(n)
   const update = updateOf(n, firmware.flavour)
@@ -361,30 +507,36 @@ export function buildReading(raw: RawAnswers, o: { instanceId: string; prev: Cou
   const link = str(n.link_internet, 2)
   const wanUp = wl?.status !== undefined && wl.status !== '' ? wl.status === '1' : link === '2' ? true : link === '1' || link === '0' ? false : null
   const unit = int(sys?.get_wan_unit)
-  const rates = ratesFrom(o.prev, o.cur)
+  // The INTERNET counters only mean the internet on a router; elsewhere they count an unused port.
+  const rates = routes ? ratesFrom(o.prev, o.cur) : { ...ratesFrom(o.prev, o.cur), downBps: null, upBps: null }
   const ipOk = (v?: string) => (v && v !== '0.0.0.0' && (IPV4_RE.test(v) || v.includes(':')) ? v.slice(0, 45) : null)
-  const wan: AsusReading['wan'] = {
+  const wan: AsusReading['wan'] = routes ? {
     up: wanUp, status: str(wl?.statusstr, 40), type: str(wl?.type, 20),
     ip: ipOk(wl?.ipaddr), gateway: ipOk(wl?.gateway), unit,
     downBps: rates.downBps, upBps: rates.upBps,
-  }
+  } : { up: null, status: null, type: null, ip: null, gateway: null, unit: null, downBps: null, upBps: null }
+  if (!wl && !routes) missing.splice(missing.indexOf('wan'), 1)
+  const uplink = routes ? null : { gateway: ipOk(str((modeAnswer ?? n).lan_gateway, 45) ?? undefined) }
 
   const chJson = looseJson(raw.channels)
   const radio = bandsOf(n, controlChannels(chJson?.wl_control_channel))
   const cl = looseJson(raw.clients)
   if (!cl) missing.push('clients')
   const list = cl?.get_clientlist ?? cl?.get_clientlist_from_json_database ?? null
-  const { online, offline } = parseClients(list, o.instanceId, radio)
+  const meshAnswer = looseJson(raw.meshNodes)
+  const mesh = parseMesh(meshAnswer?.get_cfg_clientlist, looseJson(raw.meshClients)?.get_allclientlist, o.instanceId)
+  const { online, offline } = parseClients(list, o.instanceId, radio, mesh.byMac, mesh.main)
   const bands: AsusBand[] = radio.map(b => ({ ...b, clients: online.filter(d => d.band === b.label).length }))
 
   const model = str(n.odmpid, 40) ?? str(n.productid, 40)
-  const base = { wan, cpuPct: rates.cpuPct, mem, update }
+  const base = { wan, cpuPct: rates.cpuPct, mem, update, mode }
   return {
     fetchedAt: (o.now ?? new Date()).toISOString(),
+    mode, uplink,
     model, firmware, update,
     uptimeSec: uptimeSeconds(sys?.uptime),
     cpuPct: rates.cpuPct, cpuCores: o.cur.cores,
-    mem, wan, bands, devices: online, offlineKnown: offline,
+    mem, wan, bands, mesh: mesh.nodes, devices: online, offlineKnown: offline,
     health: healthOf(base),
     missing,
   }
@@ -400,7 +552,9 @@ export function viewerReading(r: AsusReading): AsusReading {
   return {
     ...r,
     wan: { ...r.wan, ip: null, gateway: null },
-    devices: r.devices.map(d => ({ ...d, name: addressLike(d.name) ? 'Unnamed device' : d.name, vendor: d.vendor && addressLike(d.vendor) ? null : d.vendor, ip: null, mac: null })),
+    uplink: r.uplink ? { gateway: null } : null,
+    mesh: r.mesh.map(m => ({ ...m, ip: null, name: addressLike(m.name) ? 'AiMesh node' : m.name })),
+    devices: r.devices.map(d => ({ ...d, name: addressLike(d.name) ? 'Unnamed device' : d.name, ...(d.node !== undefined ? { node: d.node && addressLike(d.node) ? 'AiMesh node' : d.node } : {}), vendor: d.vendor && addressLike(d.vendor) ? null : d.vendor, ip: null, mac: null })),
   }
 }
 

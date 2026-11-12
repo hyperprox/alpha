@@ -84,9 +84,11 @@ export const asusPlugin: Plugin = {
       lines.push(`${x.name}: ${r.health.level === 'good' ? 'healthy' : `needs attention: ${r.health.reasons.join(' ')}`}`)
       lines.push(`${x.name} is a ${r.model ?? 'ASUS router'} on ${r.firmware.flavour === 'merlin' ? 'Asuswrt-Merlin' : 'Asuswrt'} ${quoted(r.firmware.version).slice(1, -1)}`.trim() +
         `${r.update.available ? `, update ${r.update.version ?? ''} available`.trimEnd() : ''}, up ${duration(r.uptimeSec)}.`)
-      lines.push(`${x.name} internet: ${r.wan.up === null ? 'unknown' : r.wan.up ? 'connected' : 'down'}${r.wan.downBps !== null ? `, ${mbps(r.wan.downBps)} down and ${mbps(r.wan.upBps)} up right now` : ''}.`)
+      if (r.mode.kind && r.mode.kind !== 'router') lines.push(`${x.name} runs as ${r.mode.label ?? 'an access point'}: the internet is handled by the main router, so it has no WAN of its own.`)
+      else lines.push(`${x.name} internet: ${r.wan.up === null ? 'unknown' : r.wan.up ? 'connected' : 'down'}${r.wan.downBps !== null ? `, ${mbps(r.wan.downBps)} down and ${mbps(r.wan.upBps)} up right now` : ''}.`)
       if (r.cpuPct !== null || r.mem) lines.push(`${x.name} load: CPU ${r.cpuPct ?? '—'}%, memory ${r.mem?.pct ?? '—'}%.`)
       for (const b of r.bands) lines.push(`${x.name} Wi-Fi ${b.label}${b.ssid ? ` ${quoted(b.ssid)}` : ''}: ${b.enabled ? `channel ${b.channel ?? '—'}, ${b.clients} client${b.clients === 1 ? '' : 's'}` : 'off'}.`)
+      for (const m of r.mesh) lines.push(`${x.name} AiMesh ${m.main ? 'main unit' : 'node'} ${quoted(m.name)}: ${m.online ? 'online' : 'offline'}${m.main ? '' : `, ${m.backhaul === 'wired' ? 'wired backhaul' : m.backhaul ? `${m.backhaul} backhaul${m.rssi !== null ? ` at ${m.rssi} dBm` : ''}` : 'backhaul not reported'}`}, ${m.clients} client${m.clients === 1 ? '' : 's'}${m.update ? ', firmware update available' : ''}.`)
       const wired = r.devices.filter(d => d.connection === 'wired').length
       lines.push(`${x.name} devices online: ${r.devices.length} (${wired} wired, ${r.devices.length - wired} on Wi-Fi).`)
       const named = r.devices.slice(0, 25).map(d => `${quoted(d.name)} (${d.connection === 'wired' ? 'wired' : d.band ?? 'Wi-Fi'})`)

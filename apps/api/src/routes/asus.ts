@@ -1,6 +1,9 @@
 // =============================================================================
 //  HyperProx — ASUS router routes (/api/plugins/asus)
 //
+//  An API token with the owner-granted plug-in settings permission (lib/roles.ts tokenPluginScope) may add or
+//  change a router and read a certificate to pin, only where the gate set req.tokenPluginSettings. Never reboot, never remove.
+//
 //  Roles (lib/roles.ts): reads are viewer, like every plug-in page, and a
 //  viewer's reading carries no MAC addresses, no client addresses and not the
 //  WAN address (operator and above see them). Finding a router on the LAN
@@ -83,7 +86,7 @@ export const asusRoutes: FastifyPluginAsync = async (fastify) => {
 
   // The certificate an https router presents now, for a person to compare and pin (admin; address rules first).
   fastify.post<{ Body: { url?: unknown } }>('/instances/probe-certificate', async (req, reply) => {
-    if (req.apiToken) return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'API tokens cannot read router certificates.' })
+    if (req.apiToken && req.tokenPluginSettings?.kind !== 'probe') return reply.status(403).send({ success: false, code: 'token_forbidden', error: 'API tokens cannot read router certificates.' })
     try { return { success: true, data: await svc().probeCertificate(req.body?.url, actor(req)) } }
     catch (e) { return fail(reply, e) }
   })
@@ -139,6 +142,16 @@ export const asusRoutes: FastifyPluginAsync = async (fastify) => {
       if (e instanceof AsusRefusal && (e.status === 404 || e.status === 429)) return fail(reply, e)
       const known = e instanceof AsusRefusal || e instanceof AsusUnreachableError || e instanceof AsusLoginError
       return { success: true, data: { ok: false, error: known ? e.message : 'The router could not be read.' } }
+    }
+  })
+
+  // Admin (lib/roles.ts), API tokens allowed, reads only: every hook's raw answer with secrets and MACs removed.
+  fastify.get<P>('/instances/:iid/diagnostics', async (req, reply) => {
+    try { return { success: true, data: await svc().diagnostics(req.params.iid, actor(req)) } }
+    catch (e: any) {
+      if (e instanceof AsusRefusal || e instanceof AsusInputError) return fail(reply, e)
+      const known = e instanceof AsusUnreachableError || e instanceof AsusLoginError
+      return reply.status(502).send({ success: false, code: 'unreachable', error: known ? e.message : 'The router could not be read.' })
     }
   })
 

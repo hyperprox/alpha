@@ -29,7 +29,8 @@ import { hasRole, type Role } from '../roles'
 import { probeCertificate } from '../clusters/tls-pin'
 import { AsusClient, AsusLoginError } from './client'
 import { endpointOf, type AsusInstanceStore, type AsusInput, type AsusMeta, type Prepared } from './instances'
-import { HOOKS, buildReading, firmwareOf, looseJson, sampleOf, type AsusReading, type CounterSample } from './parse'
+import { FIRMWARE_KEYS, HOOKS, buildReading, dynamicHooks, firmwareOf, hookKey, looseJson, loosePairs, modeOf, nv, radioCount, sampleOf, staticHooks, type AsusReading, type CounterSample } from './parse'
+import { DIAGNOSTIC_HOOKS, MAX_TOTAL_CHARS, MacMasker, redactAnswer } from './diagnostics'
 import { DirectTransport, AsusUnreachableError, type AsusTransport } from './transport'
 import { portOf, resolveAsusTarget } from './target'
 import type { NotifyEventInput } from '../notify/types'
@@ -45,7 +46,7 @@ export const confirmPhrase = (name: string) => `Reboot ${name}`
 
 export interface ActionRequest { action?: unknown; confirm?: unknown; typed?: unknown }
 
-export interface Limits { readsPerMinute: number; attemptsPerMinute: number; rebootsPerHour: number; setupsPerMinute: number }
+export interface Limits { readsPerMinute: number; attemptsPerMinute: number; rebootsPerHour: number; setupsPerMinute: number; diagnosticsPerMinute: number }
 
 export type ActionState = { action: 'reboot'; at: string; by: string; state: 'sending' | 'sent' | 'unconfirmed' | 'back' | 'not_back'; detail: string | null }
 
@@ -79,6 +80,41 @@ export const IDLE_LOGOUT_MS = 120_000
 /** No counter sample this recent: take a second one 1.5 s later so the first reading already has rates. */
 const SAMPLE_FRESH_MS = 60_000
 const LOCK_DEFAULT_S = 15 * 60
+/** Firmware, mode and radio settings change when someone reconfigures the unit: read them every 5 minutes. */
+const STATIC_MS = 5 * 60_000
+
+/**
+ * Several hooks, as few requests as the firmware allows. Most Asuswrt builds answer a semicolon list in one go;
+ * 388 builds answer only its first hook. So a list is sent once, every hook is checked for its answer, and any
+ * that came back unanswered are asked one at a time; `multi` remembers which kind of firmware this is, so a
+ * one-hook firmware is not sent lists again. Login refusals always propagate; after the first request, a single
+ * hook that fails costs that value only.
+ */
+export async function readHooks(client: AsusClient, hooks: string[], multi: boolean | undefined): Promise<{ values: Record<string, any>; multi: boolean | undefined }> {
+  const parse = (t: string | null) => looseJson(t) ?? loosePairs(t) ?? {}
+  const answered = (v: Record<string, any>, h: string) => { const k = hookKey(h); return !k || k in v }
+  if (!hooks.length) return { values: {}, multi }
+  let values: Record<string, any> = {}
+  let todo = hooks
+  if (multi !== false) {
+    // The first request carries the failure if the router is not there at all.
+    values = parse(await client.hook(hooks.join(';')))
+    todo = hooks.filter(h => !answered(values, h))
+    if (hooks.length === 1) return { values, multi }
+    if (hooks.length > 1) {
+      if (!todo.length) multi = true
+      // Exactly the first answered and nothing else: the one-hook kind.
+      else if (answered(values, hooks[0]) && todo.length === hooks.length - 1) multi = false
+      else if (todo.length < hooks.length - 1) multi = true
+    }
+  }
+  for (const h of todo) {
+    try { Object.assign(values, parse(await client.hook(h))) }
+    catch (e) { if (e instanceof AsusLoginError) throw e }
+  }
+  return { values, multi }
+}
+
 /** "Not an ASUS router" is held for 15 minutes, doubling each time it repeats, up to 4 hours. */
 const NOT_ASUS_FIRST_MS = 15 * 60_000
 const NOT_ASUS_MAX_MS = 4 * 3_600_000
@@ -96,6 +132,10 @@ export class AsusService {
   private blocked = new Map<string, { until: number | null; message: string }>()
   /** Consecutive "not an ASUS router" answers, for the back-off. Cleared by a good reading or a save. */
   private notAsus = new Map<string, number>()
+  /** Per router: does its firmware answer a list of hooks in one call (readHooks)? Unknown until first asked. */
+  private multi = new Map<string, boolean>()
+  /** Per router: the slow-changing values (firmware, mode, radio settings), and whether it leads a mesh. */
+  private statics = new Map<string, { at: number; values: Record<string, any>; mesh: boolean | null }>()
   private clients = new Map<string, { sig: string; client: AsusClient }>()
   private samples = new Map<string, CounterSample>()
   private actions = new Map<string, ActionState>()
@@ -107,7 +147,7 @@ export class AsusService {
   constructor(deps: ServiceDeps) {
     this.d = {
       now: () => Date.now(), sleep: ms => new Promise(r => setTimeout(r, ms)), readBackAt: [60_000, 120_000, 240_000], ...deps,
-      limits: { readsPerMinute: 30, attemptsPerMinute: 10, rebootsPerHour: 3, setupsPerMinute: 5, ...(deps.limits ?? {}) },
+      limits: { readsPerMinute: 30, attemptsPerMinute: 10, rebootsPerHour: 3, setupsPerMinute: 5, diagnosticsPerMinute: 2, ...(deps.limits ?? {}) },
     }
   }
 
@@ -115,7 +155,7 @@ export class AsusService {
 
   /** Forget a router's held login, session, counters and cached reading: called when its login is saved again. */
   forget(id: string): void {
-    this.blocked.delete(id); this.notAsus.delete(id); this.cache.delete(id); this.samples.delete(id)
+    this.blocked.delete(id); this.notAsus.delete(id); this.cache.delete(id); this.samples.delete(id); this.multi.delete(id); this.statics.delete(id)
     const c = this.clients.get(id)
     this.clients.delete(id)
     void c?.client.logout()
@@ -213,21 +253,46 @@ export class AsusService {
     try {
       // A login refusal anywhere stops the whole reading; any other failure costs only that part.
       const part = (h: string) => client.hook(h).catch(e => { if (e instanceof AsusLoginError) throw e; return null })
-      const system = await client.hook(HOOKS.system)
-      const sys = looseJson(system)
-      if (!sys) throw new AsusUnreachableError('The router answered, but not with its status. Is this an ASUS router on Asuswrt or Asuswrt-Merlin?')
-      const wan = await part(HOOKS.wan)
+      const read = async (hooks: string[]) => {
+        const r = await readHooks(client, hooks, this.multi.get(id))
+        if (r.multi !== undefined) this.multi.set(id, r.multi)
+        return r.values
+      }
+      let st = this.statics.get(id)
+      if (!st || this.d.now() - st.at > STATIC_MS) {
+        // The radio count first (wl_ifnames), so a one-hook firmware is not asked about radios it does not have.
+        const base = await read(staticHooks(0))
+        if (base.productid === undefined && base.firmver === undefined && base.sw_mode === undefined) {
+          throw new AsusUnreachableError('The router answered, but not with its status. Is this an ASUS router on Asuswrt or Asuswrt-Merlin?')
+        }
+        const radios = await read(staticHooks(radioCount(base)).slice(staticHooks(0).length))
+        st = { at: this.d.now(), values: { ...base, ...radios }, mesh: null }
+        this.statics.set(id, st)
+      }
+      const routes = (() => { const k = modeOf(st.values).kind; return k === null || k === 'router' })()
+      const dyn = await read(dynamicHooks(routes))
+      const sys = { ...st.values, ...dyn }
+      const system = JSON.stringify(sys)
+      const wan = routes ? await part(HOOKS.wan) : null
       const clients = await part(HOOKS.clients)
       const channels = await part(HOOKS.channels)
+      // A mesh list is asked for until it comes back empty, then again at the next slow refresh.
+      let meshNodes: string | null = null, meshClients: string | null = null
+      if (st.mesh !== false) {
+        meshNodes = await part(HOOKS.meshNodes)
+        const list = looseJson(meshNodes)?.get_cfg_clientlist
+        st.mesh = Array.isArray(list) && list.length > 0
+        if (st.mesh) meshClients = await part(HOOKS.meshClients)
+      }
       let cur = sampleOf(sys, this.d.now())
       let prev = this.samples.get(id) ?? null
       if (!prev || cur.at - prev.at > SAMPLE_FRESH_MS) {
         await this.d.sleep(1_500)
-        const again = await part(HOOKS.counters)
-        if (again) { prev = cur; cur = sampleOf(looseJson(again), this.d.now()) }
+        const again = await read(['cpu_usage(appobj)', 'netdev(appobj)']).catch(e => { if (e instanceof AsusLoginError) throw e; return null })
+        if (again) { prev = cur; cur = sampleOf(again, this.d.now()) }
       }
       this.samples.set(id, cur)
-      const reading = buildReading({ system, wan, clients, channels }, { instanceId: id, prev, cur, now: new Date(this.d.now()) })
+      const reading = buildReading({ system, wan, clients, channels, mode: null, meshNodes, meshClients }, { instanceId: id, prev, cur, now: new Date(this.d.now()) })
       this.cache.set(id, { at: this.d.now(), reading })
       this.notAsus.delete(id)
       if (reading.model !== meta.model || reading.firmware.version !== meta.firmware) {
@@ -266,8 +331,8 @@ export class AsusService {
     if (!p.password) return { fingerprint, pinnedNow, model: null, firmware: null }
     const client = new AsusClient(this.transport(p.url, { insecureTLS: p.insecureTLS, fingerprint }), { username: p.username, password: p.password }, { now: this.d.now })
     try {
-      const sys = looseJson(await client.hook(HOOKS.system))
-      if (!sys) throw new AsusRefusal('not_asus', 'The router signed HyperProx in, but did not answer with its status.', 400)
+      const sys = (await readHooks(client, FIRMWARE_KEYS.map(nv), undefined)).values
+      if (sys.productid === undefined && sys.firmver === undefined) throw new AsusRefusal('not_asus', 'The router signed HyperProx in, but did not answer with its status.', 400)
       const fw = firmwareOf(sys)
       const model = (typeof sys.odmpid === 'string' && sys.odmpid.trim()) || (typeof sys.productid === 'string' && sys.productid.trim()) || null
       return { fingerprint, pinnedNow, model: model ? model.slice(0, 40) : null, firmware: fw.version }
@@ -299,6 +364,38 @@ export class AsusService {
   }
 
   // ── the action ─────────────────────────────────────────────────────────────
+
+  /**
+   * Every hook the plug-in calls and the candidates in diagnostics.ts, each sent on its own, with secrets and MACs
+   * taken out (diagnostics.ts). Reads only. Refused while a login is held, so it can never be the call that locks
+   * the account; audited, since an admin (or an admin's API token) is reading the router's raw answers.
+   */
+  async diagnostics(id: string, actor: Actor): Promise<{ router: string; at: string; calls: Array<{ name: string; hook: string; status: 'ok' | 'no-answer' | 'error'; json: boolean; chars: number; truncated: boolean; body: string | null }>; truncated: boolean }> {
+    const m = await this.meta(id)
+    this.limitKeys([`sid:${actor.sid}`, `router:${m.id}`], 'diagnosticsPerMinute', 'One diagnostics read at a time; wait a moment.', 60_000)
+    const held = this.blockedReason(m.id)
+    if (held) throw new AsusRefusal('login_held', held, 409)
+    await this.d.audit('asus.diagnostics', `asus:${m.id}`, { by: actor.email, via: actor.token ? `api:${actor.token}` : 'session', router: m.name })
+    const { client } = await this.client(m.id)
+    const masks = new MacMasker()
+    const calls = []
+    let total = 0, truncated = false
+    for (const [name, hook] of DIAGNOSTIC_HOOKS) {
+      if (total >= MAX_TOTAL_CHARS) { truncated = true; break }
+      try {
+        const text = await client.hook(hook)
+        const r = redactAnswer(text, masks)
+        const room = MAX_TOTAL_CHARS - total
+        const body = r.body && r.body.length > room ? r.body.slice(0, room) : r.body
+        total += body?.length ?? 0
+        calls.push({ name, hook, status: (text === null ? 'no-answer' : 'ok') as 'ok' | 'no-answer', json: r.json, chars: r.chars, truncated: r.truncated || body !== r.body, body })
+      } catch (e: any) {
+        if (e instanceof AsusLoginError) return this.hold(m.id, e)
+        calls.push({ name, hook, status: 'error' as const, json: false, chars: 0, truncated: false, body: masks.text(String(e?.message ?? 'failed').slice(0, 200)) })
+      }
+    }
+    return { router: m.name, at: new Date(this.d.now()).toISOString(), calls, truncated }
+  }
 
   /** The certificate an https address presents now, for a person to compare and confirm. Nothing is sent to it. */
   async probeCertificate(url: unknown, actor: Actor): Promise<PresentedCert> {

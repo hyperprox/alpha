@@ -90,6 +90,8 @@ const POWER = /^\/api\/(infra|proxmox)\/vms\/[^/]+\/[^/]+\/[^/]+\/(start|stop|sh
 // Terminal (Deck) actions that only use a saved login, never change one.
 const TERMINAL_OPERATOR: Array<[string, RegExp]> = [
   ['POST',   /^\/api\/terminal\/hosts\/[^/]+\/tmux-sessions$/],
+  // A changed host key: the check, and trusting a key Proxmox verified (anything else needs admin, checked in the route).
+  ['POST',   /^\/api\/terminal\/hosts\/[^/]+\/hostkey\/(verify|trust)$/],
   ['PUT',    /^\/api\/terminal\/layouts$/],
   ['DELETE', /^\/api\/terminal\/layouts\/[^/]+$/],
 ]
@@ -145,6 +147,9 @@ const QNAP_RECONFIRM = /^\/api\/plugins\/qnap\/instances(\/(?!probe-certificate$
 // default for a POST/PUT/DELETE: finding a router on the LAN, every change to a router (it stores an admin login)
 // and rebooting one. All but the search and the certificate read are also re-confirmed, which keeps API tokens off
 // them too.
+// The diagnostics read (raw, redacted router answers): admin even though it is a GET, not re-confirmed, so an admin's
+// API token may call it. It only reads.
+const ASUS_DIAGNOSTICS = /^\/api\/plugins\/asus\/instances\/[^/]+\/diagnostics$/
 const ASUS_RECONFIRM = /^\/api\/plugins\/asus\/instances(\/(?!probe-certificate$)[^/]+(\/actions)?)?$/
 // Plex clear-out and Library (routes/plex-clearout.ts). The lists are a read (viewer). Previewing a removal is
 // operator; removing (through Sonarr, Radarr or Plex itself) deletes files, so it is operator with the master password re-entered, which keeps API
@@ -170,15 +175,15 @@ const PLUGIN_SETTINGS = /^\/api\/plugins\/[^/]+\/settings$/
  * What an API token with the owner-granted plug-in settings permission may do without a re-confirmation: an explicit
  * allowlist of (method, path) pairs and nothing else. The gate checks both the raw path and the route Fastify matched.
  *   settings   PUT  /api/plugins/:id/settings                         any plug-in's settings, secrets included
- *   instances  POST /api/plugins/{pbs|home-assistant|qnap}/instances   add one (PBS: by token; the confirmed
+ *   instances  POST /api/plugins/{pbs|home-assistant|qnap|asus}/instances   add one (PBS: by token; the confirmed
  *                                                                      fingerprint travels in the same body)
- *              PUT  /api/plugins/{pbs|home-assistant|qnap}/instances/:iid   change one
- *   probe      POST /api/plugins/{pbs|home-assistant|qnap}/instances/probe-certificate   read the fingerprint to confirm
+ *              PUT  /api/plugins/{pbs|home-assistant|qnap|asus}/instances/:iid   change one
+ *   probe      POST /api/plugins/{pbs|home-assistant|qnap|asus}/instances/probe-certificate   read the fingerprint to confirm
  * Never: PBS add-by-sign-in (it carries a PBS admin password), PBS manage, verify, apply, gc or forget, Home
- * Assistant actions and secure actions, QNAP actions and secure actions, or deleting any instance.
+ * Assistant actions and secure actions, QNAP actions and secure actions, ASUS reboots, or deleting any instance.
  */
 export type TokenPluginScope = { pluginId: string; kind: 'settings' | 'instances' | 'probe' }
-const INSTANCE_PLUGINS = '(pbs|home-assistant|qnap)'
+const INSTANCE_PLUGINS = '(pbs|home-assistant|qnap|asus)'
 const TOKEN_PLUGIN_ALLOW: Array<[string, RegExp, TokenPluginScope['kind']]> = [
   ['PUT',  /^\/api\/plugins\/([^/]+)\/settings$/, 'settings'],
   ['POST', new RegExp(`^/api/plugins/${INSTANCE_PLUGINS}/instances$`), 'instances'],
@@ -290,6 +295,7 @@ export function requiredRole(method: string, path: string): Role | null {
   if (SITES.test(p)) return 'admin'
   if (SITE_METRICS_ADMIN_READ.test(p)) return 'admin'
   if (SETUP_CHECKLIST.test(p)) return 'admin'
+  if (ASUS_DIAGNOSTICS.test(p)) return 'admin'
   if (HA.test(p)) return (m === 'GET' || m === 'HEAD') && HA_READ.test(p) ? 'viewer' : 'admin'
   if (CLUSTERS.test(p)) {
     if (m === 'GET' || m === 'HEAD') return CLUSTERS_VIEW.test(p) ? 'viewer' : 'admin'

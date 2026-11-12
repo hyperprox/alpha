@@ -637,7 +637,26 @@ cannot list, replace or remove them (Settings → Setup checklist manages them).
 
 Open hosts from the palette (**+** or **Ctrl+K** on Windows and Linux, **Cmd+K** on macOS). Panes can
 be tabs, columns, rows or a grid, and layouts can be saved by name. Host keys are pinned on first
-connect, and a changed key is refused with both fingerprints shown.
+connect, and a changed key is refused: no login is sent.
+
+When a guest's key has changed, you do not have to compare fingerprints. HyperProx works out which guest
+uses that address (a container from its network settings, a VM from what its guest agent reports) and
+asks Proxmox for that guest's own SSH keys, read on its node, never over the network from the address
+itself. Then it tells you what it found:
+
+- **The key belongs to the guest.** It was most likely rebuilt, restored or renumbered. **Trust the new key
+  and connect** pins exactly that key and reconnects.
+- **The key does not belong to the guest.** Something else is answering at its address. Don't connect.
+  An admin can still trust the key, but only by typing a confirmation.
+- **HyperProx could not check.** No running guest has that address, more than one might, it belongs to a
+  different guest from the one the pane is for, or the VM's guest agent is not running. The panel says why
+  and shows the fingerprints, and an admin can still trust the key by typing a confirmation.
+
+"Belongs to the guest" means the guest itself reports this key through Proxmox; it does not prove the
+guest has not been compromised.
+
+The panel also mentions a stopped guest that is set up with the same address. Every new pin is recorded
+in the audit log with what HyperProx found, and API tokens cannot check or trust keys.
 
 ### Proxy and DNS
 
@@ -1365,27 +1384,54 @@ history covers every account. That history only goes back as far as Plex's recor
 that date. Plays count by title as well as by Plex's item number, so a film you downloaded again still
 has its old plays. A show counts every episode's plays.
 
-- **Never watched**: no plays at all, and in Plex longer than 6 months. **Idle**: played before, but not
-  in 6 months. Both numbers are settings.
-- Each row shows the size, plays, how many people watched it, when it was last played and when it was
-  added, with its cover. Tick rows to see roughly how much space they would free. Movies and TV have their
-  own tabs, with filters for the list, the library and a title search.
+The history misses anything watched before it starts, and anything someone **marked as watched**. So
+Clear-out also counts what Plex itself has as watched, for every account on the server:
+
+- **The owner** (the server token): read with the library.
+- **Everyone the server is shared with**, friends and Plex Home users alike. plex.tv lists them, each with
+  their own key for this server, when asked with the owner's Plex account token (what **Sign in with Plex**
+  saves). HyperProx then reads each person's watched marks with their own key. Those keys are kept in
+  memory only: never saved, logged or shown, and forgotten when HyperProx locks. If plex.tv does not accept
+  the token in the settings as the owner's account token, only the owner's marks count. The page says so,
+  and so does every Clear-out removal preview.
+- This reading takes a while on a big server (each person times each library), so it runs in the
+  background, at most every 10 minutes, and the page shows its progress. Until the first one is done,
+  nothing can be removed from Clear-out.
+
+Something counts as watched when anyone has a play in the history, has it marked as watched, has watched
+any episode of a show, or has a last-watched date for it.
+
+- **Never watched**: nobody has watched it in any of those ways, and it has been in Plex longer than 6
+  months. **Idle**: watched before, but not in 6 months. "Last watched" is the latest date from the history
+  or any account. Both numbers are settings.
+- Each row shows the size, plays, how many people watched it, when it was last watched and when it was
+  added, with its cover. Operators and admins also see who watched it; viewers see only how many. A
+  **marked watched** badge shows when someone has it as watched with no play in the history. Tick rows to
+  see roughly how much space they would free. Movies and TV have their own tabs, with filters for the list,
+  the library and a title search.
 - Sizes come from Plex. If the Arr Stack plug-in is set up, they come from Sonarr and Radarr instead,
   which also add genres, the folder and whether a show is anime.
 - **Keep rules** take things off the lists, and **Kept off this list** counts what each rule held back.
   By default it keeps anything released before 2000, anime, anything in a folder whose path contains
   "complete series", the Science Fiction genre, and anything added in the last 90 days. You can also list
-  folders to keep and names to keep. A name keeps every title that starts with it, so "Night Desk" keeps
-  every Night Desk show. A name of three letters or fewer must match the whole title. Change the rules in the
+  folders to keep and names to keep, each as a comma list. A name keeps every title that starts with it, so
+  "Night Desk" keeps every Night Desk show. Case and punctuation do not matter: "K*O*B*A" and "KOBA" are the
+  same, and "Bench & Gavel" keeps "Bench & Gavel: NSU". A name of three letters or fewer must match the whole
+  title, so "OR" never keeps "Oriel Lane". A name that starts with "The" keeps only titles that start with it
+  too, so "The Spire" keeps "The Spire" and not "Spire in the Mist" (before, the "The" was ignored, so a name
+  written as "The X" also kept titles starting with just "X"; write "X" to keep both). A kept folder keeps
+  everything under it.
+  Kept items are left off the lists entirely and counted in **Kept off this list**. Change the rules in the
   plug-in's settings. Leave a setting blank for the default, or write "none" to turn that rule off.
 - In a library that is mostly films, most films are watched once. So the Movies tab says what share of
-  your films has never been played, and lists the largest files first.
+  your films nobody has watched, and lists the largest files first.
 - **Removing** works the same way here and in the Library (below).
 
-**Plex Library** lists every show and film with its cover, size, plays and when it was last played,
-with search, a library filter, and sorting by size, date added or last played. Open a show to see its
-seasons and episodes. Each episode shows its size, quality, plays, when it was last played, whether it
-has been watched, and whether it is partly watched. You can remove a whole show, one season, the
+**Plex Library** lists every show and film with its cover, size, plays, how many people watched it and
+when it was last watched, with search, a library filter, and sorting by size, date added or last watched.
+Open a show to see its seasons and episodes. Each episode shows its size, quality, plays, who watched it,
+whether it has been watched, and whether it is partly watched. Like Clear-out, "watched" and "next up"
+count every account's watched marks as well as the play history. You can remove a whole show, one season, the
 episodes you tick, or a film. Quick picks tick a season's watched episodes, or everything before the
 next unwatched one.
 
@@ -1618,6 +1664,24 @@ firmware (stock or Merlin), uptime, CPU and RAM. Under it:
 
 The page reads the router every 10 seconds while you have it open.
 
+**Access points and AiMesh.** HyperProx reads how each unit is used (router, access point, repeater,
+media bridge, AiMesh node, and whether it leads an AiMesh network) and shows it in the header. Only a
+router has an internet connection of its own. On any other unit the Internet panel says the internet is
+handled by your main router (with the upstream address, for operators and admins), and HyperProx never
+raises "internet down" for it: such a unit reports its unused WAN as disconnected, which is normal.
+
+When a unit leads an AiMesh network and lists its nodes, an **AiMesh** panel draws the mesh as one
+picture: the main unit on top and each node under it, with its model, firmware (and whether an update is
+waiting), how it reaches the mesh (wired, or the band of its wireless backhaul, with the signal), and
+how many clients it carries. Each connected device also says which unit it is on.
+
+**Diagnostics** (admins, API tokens allowed): `GET /api/plugins/asus/instances/<id>/diagnostics` returns
+the router's raw answer to every call the plug-in makes, plus a set of other read-only calls, to work out
+how a firmware answers. Passwords, Wi-Fi keys, tokens, WPS PINs and anything else with a secret-looking
+name are removed, and every MAC address is replaced with a placeholder. The answer has a size cap. It is
+audited, allowed twice a minute per router, and refused while HyperProx is holding back after a refused
+login.
+
 **The login.** HyperProx uses the same web API as the ASUS phone app (`login.cgi`, then `appGet.cgi`
 reads with the session token). ASUS routers allow one admin session at a time, so HyperProx keeps one
 session while it is reading and signs out after two minutes without reads. If you are signed in to the
@@ -1641,9 +1705,12 @@ certificate**, needs the router's password again in the same save.
 **What it does not do.** Version 1 has one action, reboot. Blocking a device's internet access is not
 included: Asuswrt has no single call for it. It would mean rewriting the router's whole parental-control
 list, whose format differs between firmware versions, and that could wipe schedules you set up on the
-router. **Tested** against a pretend router in the test suite only, built from the published API; it has
-not been run against a real ASUS router yet. When a router leaves a call out, the page names the missing
-part, and the rest of the page still works.
+router. **Tested** against anonymised answers from a real stock Asuswrt 388 build, in router mode leading a
+three-unit AiMesh network and in access-point mode. That build answers only the first of several reads
+sent together, so HyperProx checks that every read was answered and, on such a firmware, asks them one
+at a time. Settings that rarely change (firmware, mode, radio names) are read every 5 minutes, not on
+every refresh. Merlin and other builds are covered by the test suite's pretend router. When a router leaves
+a call out, the page names the missing part, and the rest of the page still works.
 
 #### Proxmox Backup Server
 

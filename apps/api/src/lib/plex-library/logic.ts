@@ -9,10 +9,13 @@
 //
 //  The next-up warning: people binge in order, so an episode is someone's next
 //  one when they watched the episode before it in the last 14 days and have
-//  not watched this one.
+//  not watched this one. "Watched" is a play in the history OR Plex's own
+//  watched mark for that account (viewCount, lastViewedAt), so an episode
+//  marked watched, or watched before the history starts, counts too.
 // =============================================================================
 
-import { normTitle, type PlayRow } from '../plex-clearout/logic'
+import { normTitle, type PlayRow, type Watcher } from '../plex-clearout/logic'
+import { hasWatched, type AccountView, type ViewMap } from '../plex-clearout/watchers'
 
 const n0 = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
 const str = (v: unknown, max = 160) => (typeof v === 'string' ? v.trim().slice(0, max) : typeof v === 'number' ? String(v) : '')
@@ -157,11 +160,34 @@ export function playsByEpisode(eps: PlexEpisode[], rows: PlayRow[]): Map<string,
   return out
 }
 
+/** One episode's watchers: the history's accounts, plus every account Plex has as watched (marked) without a play. */
+export interface EpisodeWatch { watched: boolean; watchers: number; marked: number; who: Watcher[]; lastPlayed: number | null; inProgress: boolean }
+
+export function episodeWatch(p: EpisodePlays | undefined, per: Map<number, AccountView> | undefined): EpisodeWatch {
+  const played = p?.viewers ?? new Set<number>()
+  const marked = new Set<number>()
+  let last = p?.lastPlayed ?? null
+  let inProgress = false
+  for (const [acct, v] of per ?? []) {
+    if (hasWatched(v)) {
+      if (!played.has(acct)) marked.add(acct)
+      if (v.lastViewedAt !== null && (last === null || v.lastViewedAt > last)) last = v.lastViewedAt
+    }
+    if (v.inProgress && v.viewCount === 0) inProgress = true
+  }
+  const who: Watcher[] = [
+    ...[...played].sort((a, b) => a - b).map(account => ({ account, how: 'played' as const })),
+    ...[...marked].sort((a, b) => a - b).map(account => ({ account, how: 'marked' as const })),
+  ]
+  return { watched: who.length > 0, watchers: who.length, marked: marked.size, who, lastPlayed: last, inProgress }
+}
+
 /**
  * Who this episode is next for: anyone who watched the episode just before it (in season and episode order)
- * within the last `days` days, and has never watched this one.
+ * within the last `days` days, and has never watched this one. `views` adds Plex's watched marks per account:
+ * a mark counts as watched, and its lastViewedAt as when.
  */
-export function nextUpFor(eps: PlexEpisode[], rows: PlayRow[], names: Map<number, string>, now: number, days = 14): Map<string, string[]> {
+export function nextUpFor(eps: PlexEpisode[], rows: PlayRow[], names: Map<number, string>, now: number, days = 14, views?: ViewMap): Map<string, string[]> {
   const ordered = eps.filter(e => e.season > 0).sort((a, b) => a.season - b.season || a.episode - b.episode)
   const watched = new Map<string, Map<number, number>>() // ratingKey → account → newest viewedAt (ms)
   const per = playsByEpisodeRaw(ordered, rows)
@@ -169,6 +195,14 @@ export function nextUpFor(eps: PlexEpisode[], rows: PlayRow[], names: Map<number
     const m = new Map<number, number>()
     for (const r of list) m.set(r.accountID, Math.max(m.get(r.accountID) ?? 0, r.viewedAt * 1000))
     watched.set(k, m)
+  }
+  for (const e of ordered) {
+    for (const [acct, v] of views?.get(e.ratingKey) ?? []) {
+      if (!hasWatched(v)) continue
+      const m = watched.get(e.ratingKey) ?? new Map<number, number>()
+      m.set(acct, Math.max(m.get(acct) ?? 0, v.lastViewedAt ?? 0))
+      watched.set(e.ratingKey, m)
+    }
   }
   const since = now - days * 86_400_000
   const out = new Map<string, string[]>()

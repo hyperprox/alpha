@@ -49,6 +49,10 @@ export interface FakeState {
   uptime: number
   /** Answer the reboot with run_service, or drop the connection. */
   reboot: 'ok' | 'drop'
+  /** How the unit is used: a router, an access point leading an AiMesh network, or an AiMesh node. */
+  mode: 'router' | 'ap-main' | 'node'
+  /** Answer get_cfg_clientlist() with a one-node list (for the redaction test). */
+  meshList: boolean
 }
 
 export interface Seen { method: string; path: string; ua: string | undefined; cookie: string | undefined; body: string }
@@ -56,7 +60,7 @@ export interface Seen { method: string; path: string; ua: string | undefined; co
 export function fakeRouter(over: Partial<FakeState> = {}) {
   const st: FakeState = {
     user: 'admin', pass: 'correct horse', flavour: 'stock', loginError: null, expireAfter: null, wanUp: true, memUsedPct: 40, update: null,
-    rxStep: 1_250_000n, txStep: 125_000n, cpuBusy: 0.2, uptime: 86_400 * 3, reboot: 'ok', ...over,
+    rxStep: 1_250_000n, txStep: 125_000n, cpuBusy: 0.2, uptime: 86_400 * 3, reboot: 'ok', mode: 'router', meshList: false, ...over,
   }
   const seen: Seen[] = []
   const tokens = new Set<string>()
@@ -71,6 +75,8 @@ export function fakeRouter(over: Partial<FakeState> = {}) {
       wl0_ssid: 'Example Net', wl0_nband: '2', wl0_radio: '1', wl0_chanspec: '6', wl0_channel: '0', wl0_bw: '1',
       wl1_ssid: 'Example Net 5G', wl1_nband: '1', wl1_radio: '1', wl1_chanspec: '36/80', wl1_channel: '36', wl1_bw: '3',
       wl2_ssid: '', wl2_nband: '', wl3_ssid: '', wl3_nband: '',
+      sw_mode: st.mode === 'router' ? '1' : '3', re_mode: st.mode === 'node' ? '1' : '0', cfg_master: st.mode === 'node' ? '0' : '1',
+      lan_proto: st.mode === 'router' ? 'static' : 'dhcp', lan_gateway: st.mode === 'router' ? '0.0.0.0' : '10.9.8.1',
     }
   }
 
@@ -89,6 +95,8 @@ export function fakeRouter(over: Partial<FakeState> = {}) {
       if (p === 'netdev(appobj)') out.netdev = { INTERNET_rx: '0x' + rx.toString(16).padStart(16, '0'), INTERNET_tx: '0x' + tx.toString(16).padStart(16, '0'), WIRED_rx: '0x00000000000000ff' }
       if (p === 'get_clientlist()') Object.assign(out, CLIENTLIST)
       if (p === 'wl_control_channel()') out.wl_control_channel = ['6', '36', '0']
+      // A mesh list the way a main unit might answer it, with a secret and MACs in it (for the redaction test).
+      if (p === 'get_cfg_clientlist()' && st.meshList) out.get_cfg_clientlist = [{ alias: 'Hall', model_name: 'XX-NODE', mac: '00:00:5E:00:53:20', pap2g: '00005E005321', backhalctrl: { key: 'mesh-secret-value' }, ip: '10.9.8.40' }]
     }
     // Asuswrt really does leave a trailing comma now and then.
     return JSON.stringify(out).replace(/}$/, ',}')
