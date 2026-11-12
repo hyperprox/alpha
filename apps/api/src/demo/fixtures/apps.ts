@@ -93,6 +93,7 @@ const catalogue = () => ({
   websites: [
     recipe('static-site', 'Static site', 'web', 'A static website served by nginx, pulled from a Git repository.', 80, 1, 512, 4, { needsDocker: false, firstRunKind: 'none' }),
     recipe('wordpress', 'WordPress', 'web', 'WordPress on nginx, PHP-FPM and MariaDB.', 80, 1, 1024, 10, { needsDocker: false, firstRunKind: 'none' }),
+    recipe('ghost', 'Ghost', 'web', 'A blog and newsletter: Ghost with its own MySQL 8, behind the site’s nginx.', 80, 2, 2048, 10, { firstRunKind: 'env-admin', healthPath: '/ghost/api/admin/site/' }),
   ],
 })
 

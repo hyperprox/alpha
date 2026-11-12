@@ -406,7 +406,7 @@ export default function CataloguePage() {
 
       {/* ── Recipes ─────────────────────────────────────────────────────────── */}
       <Link href="/sites" className={styles.callout} style={{ display: 'flex', alignItems: 'center', gap: 12, textDecoration: 'none', marginBottom: 12 }}>
-        <span style={{ flex: 1 }}><b>Websites</b> have their own section: a new static site or WordPress, adding one you already run, and their metrics.</span>
+        <span style={{ flex: 1 }}><b>Websites</b> have their own section: a new static site, WordPress or Ghost, adding one you already run, and their metrics.</span>
         <span aria-hidden style={{ color: ACCENT }}>→</span>
       </Link>
       {categories.length > 1 && (

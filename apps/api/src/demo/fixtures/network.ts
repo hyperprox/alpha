@@ -63,7 +63,7 @@ function certEvents() {
 function domains() {
   return [DOMAIN, DOMAIN2].map((domain, i) => ({ domain, domainId: 1000 + i, status: 'ACTIVE', createdAt: iso((900 + i * 200) * DAY), expires: new Date(Date.now() + (140 + i * 90) * DAY).toISOString(),
     renewAuto: true, renewable: true, locked: true, privacy: true, expirationProtected: false, exposeWhois: false, holdRegistrar: false, transferProtected: false, nameServers: null,
-    renewDeadline: new Date(Date.now() + (180 + i * 90) * DAY).toISOString(), registrarCreatedAt: iso((900 + i * 200) * DAY) }))
+    renewDeadline: new Date(Date.now() + (180 + i * 90) * DAY).toISOString(), registrarCreatedAt: iso((900 + i * 200) * DAY), provider: 'godaddy', active: true }))
 }
 function records(domain: string) {
   const base = [
@@ -129,6 +129,7 @@ export const NETWORK: FixtureRoute[] = [
   { path: '/api/certs/housekeeping', get: () => ({ items: [] }) },
   { path: '/api/dns/domains', get: () => ok(domains()) },
   { path: '/api/dns/wan', get: () => ok({ ip: WAN_IP, source: 'router' }) },
+  { path: '/api/dns/providers', get: () => ok([{ id: 'godaddy', label: 'GoDaddy', configured: true, ok: true, zones: 2, active: 2 }, { id: 'cloudflare', label: 'Cloudflare', configured: false, ok: false, zones: 0, active: 0 }]) },
   { path: '/api/dns/domains/:domain', get: p => ok(domains().find(d => d.domain === p.domain) ?? null) },
   { path: '/api/dns/domains/:domain/records', get: p => ok(records(p.domain)) },
   { path: '/api/dns/domains/:domain/stats', get: () => ok({ records: 14, proxied: 0 }) },

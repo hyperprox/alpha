@@ -19,6 +19,7 @@
 
 import { Resolver } from 'node:dns/promises'
 import type { GoDaddyClient } from '../godaddy-client'
+import type { CloudflareClient } from '../cloudflare-client'
 
 export interface DnsProvider {
   name: string
@@ -135,6 +136,54 @@ export function godaddyProvider(client: GoDaddyClient, opts: GoDaddyProviderOpts
         // GoDaddy has no per-value delete. One PUT puts back every survivor at once, so no other value of the
         // name is ever missing, even for a moment or after a failure part-way.
         await client.replaceRecords(zone, 'TXT', rel, keep.map(r => ({ data: r.data, ttl: r.ttl })))
+      })
+    },
+  }
+}
+
+// --- Cloudflare -------------------------------------------------------------------------
+
+/**
+ * DNS-01 at Cloudflare. A zone counts only when Cloudflare calls it active, which it does once the domain's
+ * nameservers point at Cloudflare, so no NS lookup is needed. Cloudflare keeps each TXT value as its own
+ * record with an id: present adds one record, cleanup deletes only the record holding this value, and the
+ * name's other values are never rewritten. Challenge records are never proxied (TXT cannot be).
+ */
+export function cloudflareProvider(client: Pick<CloudflareClient, 'listZones' | 'listRecords' | 'createRecord' | 'deleteRecord'>): DnsProvider {
+  let zonesP: Promise<{ id: string; name: string; status: string }[]> | null = null
+  const zones = () => (zonesP ??= client.listZones().catch(e => { zonesP = null; throw e }))
+  async function zoneId(zone: string): Promise<string> {
+    const z = (await zones()).find(x => norm(x.name) === zone && x.status === 'active')
+    if (!z) throw new Error(`${zone} is not an active zone on this Cloudflare account`)
+    return z.id
+  }
+  const unquote = (v: string) => (v.length >= 2 && v.startsWith('"') && v.endsWith('"') ? v.slice(1, -1) : v)
+  async function txt(zone: string, fqdn: string) {
+    const id = await zoneId(zone)
+    const name = norm(fqdn)
+    const recs = (await client.listRecords(id, { type: 'TXT', name })).filter(r => r.type === 'TXT' && norm(r.name) === name)
+    return { id, name, recs }
+  }
+  return {
+    name: 'cloudflare',
+    async zones() {
+      return (await zones()).filter(z => z.status === 'active').map(z => norm(z.name))
+    },
+    async present(rawZone, fqdn, value) {
+      const zone = norm(rawZone)
+      relativeName(zone, fqdn)   // throws when fqdn is outside the zone
+      await withNameLock(`cloudflare\n${zone}\n${norm(fqdn)}`, async () => {
+        const { id, name, recs } = await txt(zone, fqdn)
+        if (recs.some(r => unquote(String(r.content ?? '')) === value)) return
+        await client.createRecord(id, { type: 'TXT', name, content: value, ttl: CHALLENGE_TTL })
+      })
+    },
+    async cleanup(rawZone, fqdn, value) {
+      const zone = norm(rawZone)
+      relativeName(zone, fqdn)
+      await withNameLock(`cloudflare\n${zone}\n${norm(fqdn)}`, async () => {
+        const { id, recs } = await txt(zone, fqdn)
+        for (const r of recs) if (unquote(String(r.content ?? '')) === value) await client.deleteRecord(id, r.id)
       })
     },
   }

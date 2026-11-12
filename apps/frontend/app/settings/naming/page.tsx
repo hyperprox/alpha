@@ -109,8 +109,9 @@ export default function NamingSettingsPage() {
   }
 
   useEffect(() => {
-    void apiJson<{ data: { settings: Saved | null } }>('/api/catalogue/wizard/naming').then(r => {
+    void apiJson<{ data: { settings: Saved | null; problem?: string } }>('/api/catalogue/wizard/naming').then(r => {
       if (r.ok && r.body?.data?.settings) { setSaved(r.body.data.settings); setForm(toForm(r.body.data.settings)) }
+      if (r.ok && r.body?.data?.problem) setMsg({ kind: 'error', text: `${r.body.data.problem} Until then every wizard refuses to create a guest.` })
       else if (!r.ok) setMsg({ kind: 'error', text: r.error ?? 'Could not read the setting.' })
       setLoaded(true)
       void detect(false)

@@ -17,15 +17,40 @@ interface DNSRecord {
   data:      string
   ttl:       number
   priority?: number
+  /** Cloudflare only: traffic goes through Cloudflare (orange cloud). */
+  proxied?:  boolean
+  proxiable?: boolean
+  /** Cloudflare only: which record this is, when a name holds several. */
+  id?:       string
 }
+
+type ProviderId = 'godaddy' | 'cloudflare'
 
 interface Domain {
   domain:    string
-  domainId:  number
+  domainId?: number
   status:    string
   expires?:  string
-  renewAuto: boolean
-  locked:    boolean
+  renewAuto?: boolean
+  locked?:   boolean
+  provider?: ProviderId
+  active?:   boolean
+}
+
+interface ProviderStatus {
+  id: ProviderId; label: string; configured: boolean; ok: boolean; zones: number; active: number; error?: string
+}
+
+const PROVIDER_LABEL: Record<ProviderId, string> = { godaddy: 'GoDaddy', cloudflare: 'Cloudflare' }
+const PROXIABLE = new Set(['A', 'AAAA', 'CNAME'])
+const enc = encodeURIComponent
+/** The record's own path, plus its id when Cloudflare has several values on the name. */
+const recordPath = (domain: string, r: DNSRecord) =>
+  `/api/dns/domains/${enc(domain)}/records/${enc(r.type)}/${enc(r.name)}${r.id ? `?id=${enc(r.id)}` : ''}`
+
+function ttlLabel(ttl: number): string {
+  if (ttl === 1) return 'Auto'
+  return ttl >= 86400 ? `${ttl / 86400}d` : ttl >= 3600 ? `${ttl / 3600}h` : ttl >= 60 ? `${ttl / 60}m` : `${ttl}s`
 }
 
 // ---------------------------------------------------------------------------
@@ -169,14 +194,18 @@ const EMAIL_PROVIDERS: Record<string, { name: string; custom?: boolean; records:
   },
 }
 
-function RecordModal({ record, domain, onClose, onSave, wanIp }: {
+function RecordModal({ record, domain, provider, onClose, onSave, wanIp }: {
   record:  DNSRecord | null
   domain:  string
+  provider?: ProviderId
   onClose: () => void
   onSave:  () => void
   wanIp?:  string
 }) {
   const isEdit = !!record
+  const isCf = provider === 'cloudflare'
+  const ttlOptions = [...(isCf ? [{ v: 1, l: 'Auto' }] : []), { v: 600, l: '10 min' }, { v: 1800, l: '30 min' }, { v: 3600, l: '1 hour' },
+    { v: 14400, l: '4 hours' }, { v: 86400, l: '1 day' }]
 
   // Wizard state (create only)
   const [intent,        setIntent]        = useState<string | null>(null)
@@ -209,10 +238,11 @@ function RecordModal({ record, domain, onClose, onSave, wanIp }: {
 
   // Save single record
   const saveRecord = async (rec: DNSRecord) => {
-    const res = await fetch(`/api/dns/domains/${domain}/records`, {
+    const res = await fetch(`/api/dns/domains/${enc(domain)}/records`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(rec),
+      // At Cloudflare a new record is DNS only unless the toggle below was switched on.
+      body: JSON.stringify(isCf && PROXIABLE.has(rec.type) ? { ...rec, proxied: rec.proxied === true } : { ...rec, proxied: undefined }),
     })
     const json = await res.json()
     if (!json.success) throw new Error(json.error || 'Failed to create record')
@@ -222,11 +252,15 @@ function RecordModal({ record, domain, onClose, onSave, wanIp }: {
     setSaving(true); setError(null)
     try {
       if (isEdit) {
-        await fetch(`/api/dns/domains/${domain}/records/${record!.type}/${encodeURIComponent(record!.name)}`, {
+        const res = await fetch(recordPath(domain, record!), {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ data: form.data, ttl: form.ttl, priority: form.priority }),
+          // The proxy setting is sent only at Cloudflare, and only as the toggle shows it (it starts as the record's own).
+          body: JSON.stringify({ data: form.data, ttl: form.ttl, priority: form.priority,
+            ...(isCf && PROXIABLE.has(form.type) ? { proxied: form.proxied === true } : {}) }),
         })
+        const json = await res.json().catch(() => ({}))
+        if (!json.success) throw new Error(json.error || 'Failed to save record')
       } else if (intent === 'email') {
         // Create all MX records for the selected provider
         const provider = EMAIL_PROVIDERS[emailProvider]
@@ -379,7 +413,7 @@ function RecordModal({ record, domain, onClose, onSave, wanIp }: {
                   <label style={LABEL}>Type</label>
                   <select style={{ ...INPUT, cursor: 'pointer' }} value={form.type}
                     onChange={e => set('type', e.target.value)} disabled={isEdit}>
-                    {['A','AAAA','CNAME','TXT','MX','SRV','NS','CAA'].map(t => (
+                    {(isCf && !isEdit ? ['A','AAAA','CNAME','TXT','MX','SRV','CAA'] : ['A','AAAA','CNAME','TXT','MX','SRV','NS','CAA']).map(t => (
                       <option key={t} value={t}>{t}</option>
                     ))}
                   </select>
@@ -388,8 +422,7 @@ function RecordModal({ record, domain, onClose, onSave, wanIp }: {
                   <label style={LABEL}>TTL</label>
                   <select style={{ ...INPUT, cursor: 'pointer' }} value={form.ttl}
                     onChange={e => set('ttl', Number(e.target.value))}>
-                    {[{ v: 600, l: '10 min' }, { v: 1800, l: '30 min' }, { v: 3600, l: '1 hour' },
-                      { v: 14400, l: '4 hours' }, { v: 86400, l: '1 day' }].map(({ v, l }) => (
+                    {ttlOptions.map(({ v, l }) => (
                       <option key={v} value={v}>{l}</option>
                     ))}
                   </select>
@@ -403,8 +436,7 @@ function RecordModal({ record, domain, onClose, onSave, wanIp }: {
                 <label style={LABEL}>TTL</label>
                 <select style={{ ...INPUT, cursor: 'pointer' }} value={form.ttl}
                   onChange={e => set('ttl', Number(e.target.value))}>
-                  {[{ v: 600, l: '10 min' }, { v: 1800, l: '30 min' }, { v: 3600, l: '1 hour' },
-                    { v: 14400, l: '4 hours' }, { v: 86400, l: '1 day' }].map(({ v, l }) => (
+                  {ttlOptions.map(({ v, l }) => (
                     <option key={v} value={v}>{l}</option>
                   ))}
                 </select>
@@ -465,6 +497,23 @@ function RecordModal({ record, domain, onClose, onSave, wanIp }: {
                   onChange={e => set('priority', Number(e.target.value))}/>
               </div>
             )}
+
+            {isCf && PROXIABLE.has(form.type) && (
+              <div>
+                <label className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-bright)', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={form.proxied === true} onChange={e => set('proxied', e.target.checked)} />
+                  Proxy through Cloudflare (orange cloud)
+                </label>
+                <div className="mt-1 text-xs" style={{ color: 'var(--text-dim)' }}>
+                  Off (DNS only) suits proxy hosts: proxying hides your address but breaks Let&apos;s Encrypt checks in the proxy and any port that is not web.
+                </div>
+                {form.proxied && (
+                  <div className="mt-1 text-xs" style={{ color: 'var(--warn)' }}>
+                    While this is on, the name resolves to Cloudflare, so HyperProx cannot get a Let&apos;s Encrypt certificate for it through the proxy.
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -504,7 +553,7 @@ function DeleteModal({ record, domain, onClose, onDelete }: {
   const handleDelete = async () => {
     setDeleting(true)
     try {
-      await fetch(`/api/dns/domains/${domain}/records/${record.type}/${encodeURIComponent(record.name)}`, { method: 'DELETE' })
+      await fetch(recordPath(domain, record), { method: 'DELETE' })
       onDelete(); onClose()
     } finally { setDeleting(false) }
   }
@@ -545,7 +594,7 @@ function DomainCard({ domain, selected, recordCount, onSelect }: {
 }) {
   const days = daysUntilExpiry(domain.expires)
   const expiryColor = days === null ? 'var(--text-dim)' : days < 30 ? 'var(--crit)' : days < 90 ? 'var(--warn)' : 'var(--good)'
-  const active = domain.status === 'ACTIVE'
+  const active = domain.active ?? /^active$/i.test(domain.status)
 
   return (
     <button onClick={onSelect} aria-pressed={selected}
@@ -565,7 +614,10 @@ function DomainCard({ domain, selected, recordCount, onSelect }: {
             {domain.domain}
           </span>
         </div>
-        {domain.locked && <span className="flex" style={{ color: 'var(--text-muted)' }} title="Locked"><LockIcon size={13} /><span className="sr-only">Locked</span></span>}
+        <span className="flex items-center gap-1">
+          {domain.provider && <Pill tone={domain.provider === 'cloudflare' ? 'warn' : 'accent'} title={`DNS served by ${PROVIDER_LABEL[domain.provider]}`}>{PROVIDER_LABEL[domain.provider]}</Pill>}
+          {domain.locked && <span className="flex" style={{ color: 'var(--text-muted)' }} title="Locked"><LockIcon size={13} /><span className="sr-only">Locked</span></span>}
+        </span>
       </div>
       <div className="flex items-center gap-3 text-xs flex-wrap">
         <span style={{ color: 'var(--text-muted)' }}>{active ? 'active' : domain.status.toLowerCase()}</span>
@@ -601,17 +653,20 @@ export default function DNSPage() {
   const [ddnsRunning, setDdnsRunning] = useState(false)
   const [ddnsResult,  setDdnsResult]  = useState<string | null>(null)
   const [lastSync,    setLastSync]    = useState<Date | null>(null)
+  const [providers,   setProviders]   = useState<ProviderStatus[]>([])
 
-  // Load domains + WAN IP
+  // Load domains (from every provider) + the providers themselves + WAN IP
   useEffect(() => {
     Promise.all([
       fetch('/api/dns/domains').then(r => r.json()),
       fetch('/api/dns/wan').then(r => r.json()),
-    ]).then(([domsJson, wanJson]) => {
+      fetch('/api/dns/providers').then(r => r.json()).catch(() => ({})),
+    ]).then(([domsJson, wanJson, provJson]) => {
+      if (provJson?.success) setProviders(provJson.data)
       if (domsJson.success) {
         setDomains(domsJson.data)
         if (domsJson.data.length > 0) setActiveDomain(domsJson.data[0].domain)
-      }
+      } else setError(domsJson.error || 'The DNS providers could not be read')
       if (wanJson.success) setWanIP(wanJson.data.ip)
     }).catch(e => setError(e.message))
     .finally(() => setLoading(false))
@@ -621,7 +676,7 @@ export default function DNSPage() {
   const loadRecords = useCallback(async (domain: string) => {
     setRecLoading(true)
     try {
-      const res  = await fetch(`/api/dns/domains/${domain}/records`)
+      const res  = await fetch(`/api/dns/domains/${enc(domain)}/records`)
       const json = await res.json()
       if (json.success) {
         setRecords(json.data)
@@ -640,7 +695,7 @@ export default function DNSPage() {
     domains.forEach(async d => {
       if (d.domain === activeDomain) return
       try {
-        const res  = await fetch(`/api/dns/domains/${d.domain}/records`)
+        const res  = await fetch(`/api/dns/domains/${enc(d.domain)}/records`)
         const json = await res.json()
         if (json.success) setRecordCounts(prev => ({ ...prev, [d.domain]: json.data.length }))
       } catch { /* ignore */ }
@@ -651,7 +706,7 @@ export default function DNSPage() {
     if (!activeDomain) return
     setDdnsRunning(true); setDdnsResult(null)
     try {
-      const res  = await fetch(`/api/dns/domains/${activeDomain}/ddns`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      const res  = await fetch(`/api/dns/domains/${enc(activeDomain)}/ddns`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
       const json = await res.json()
       if (json.success) {
         const { updated, skipped, wanIP: newIP } = json.data
@@ -679,9 +734,9 @@ export default function DNSPage() {
     <Page>
       <Panel title="DNS">
         <div role="alert">
-          <div className="font-display" style={{ color: 'var(--crit)', fontSize: 22, fontWeight: 600 }}>Failed to connect to GoDaddy</div>
+          <div className="font-display" style={{ color: 'var(--crit)', fontSize: 22, fontWeight: 600 }}>Failed to reach the DNS provider</div>
           <div className="font-mono text-xs" style={{ color: 'var(--text-muted)' }}>{error}</div>
-          <div className="text-sm mt-2" style={{ color: 'var(--text-dim)' }}>Check Settings → DNS → GoDaddy</div>
+          <div className="text-sm mt-2" style={{ color: 'var(--text-dim)' }}>Check Settings → DNS (GoDaddy or Cloudflare)</div>
         </div>
       </Panel>
     </Page>
@@ -708,10 +763,13 @@ export default function DNSPage() {
     text: String(records.filter(r => r.type === tp).length),
   }))
 
+  const activeProvider = domains.find(d => d.domain === activeDomain)?.provider
+  const configured = providers.filter(p => p.configured)
+
   return (
     <Page>
       <HudHeader
-        eyebrow="GoDaddy"
+        eyebrow={activeProvider ? PROVIDER_LABEL[activeProvider] : 'DNS'}
         title={activeDomain ? `${activeDomain}: ${records.length} record${records.length === 1 ? '' : 's'}` : `${domains.length} domain${domains.length === 1 ? '' : 's'}`}
         icon="router"
         level={2}
@@ -733,7 +791,28 @@ export default function DNSPage() {
         <div className={styles.callout} role="status" style={{ color: 'var(--good)' }}>✓ {ddnsResult}</div>
       )}
 
-      <Panel title="Domains" sub={`${domains.length} at the provider`}>
+      {configured.length > 0 && (
+        <Panel title="DNS providers" sub="each domain is served by the provider that holds its zone">
+          <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 15rem), 1fr))' }}>
+            {configured.map(p => (
+              <div key={p.id} className="p-4 rounded-lg border" style={{ background: 'var(--ground-deep)', borderColor: 'var(--border-soft)' }}>
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <span className="font-semibold" style={{ color: 'var(--text-bright)' }}>{p.label}</span>
+                  <Pill tone={p.ok ? 'good' : 'bad'}>{p.ok ? 'connected' : 'not answering'}</Pill>
+                </div>
+                {!p.ok ? <div className="text-xs font-mono" style={{ color: 'var(--crit-soft)', overflowWrap: 'anywhere' }}>{p.error}</div>
+                  : p.zones === 0 ? <div className="text-sm" style={{ color: 'var(--text-dim)' }}>
+                      {p.id === 'cloudflare' ? 'No domains on this Cloudflare account yet: add one in Cloudflare and it appears here.' : `No domains on this ${p.label} account yet.`}
+                    </div>
+                  : <div className="text-sm" style={{ color: 'var(--text-dim)' }}>{p.zones} domain{p.zones === 1 ? '' : 's'}{p.active !== p.zones ? `, ${p.active} active` : ''}</div>}
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
+
+      <Panel title="Domains" sub={`${domains.length} across ${configured.length || 'the'} provider${configured.length === 1 ? '' : 's'}`}>
+        {domains.length === 0 && <p className={styles.empty}>No domains yet. Add a DNS provider under Settings → DNS, or a domain at your provider.</p>}
         <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 15rem), 1fr))' }}>
           {domains.map(d => (
             <DomainCard key={d.domain} domain={d} selected={activeDomain === d.domain}
@@ -800,7 +879,7 @@ export default function DNSPage() {
                 {recLoading ? (
                   <tr><td colSpan={5} className="text-center animate-pulse">Loading records...</td></tr>
                 ) : filtered.map((rec, i) => (
-                  <tr key={`${rec.type}-${rec.name}-${i}`}>
+                  <tr key={rec.id ?? `${rec.type}-${rec.name}-${i}`}>
                     <td>
                       <span className="px-1.5 py-0.5 rounded font-mono" style={{
                         fontSize: 10, background: alpha(TYPE_COLORS[rec.type] ?? 'var(--text-dim)', 12),
@@ -823,11 +902,15 @@ export default function DNSPage() {
                       {rec.type === 'A' && wanIP && rec.data !== wanIP && (
                         <span style={{ color: 'var(--warn)', fontSize: 10 }}>≠ WAN ({wanIP})</span>
                       )}
+                      {typeof rec.proxied === 'boolean' && rec.proxiable !== false && (
+                        <span className="ml-1" style={{ color: rec.proxied ? 'var(--warn)' : 'var(--text-dim)', fontSize: 10 }}
+                          title={rec.proxied ? 'Proxied through Cloudflare (orange cloud)' : 'DNS only (grey cloud)'}>
+                          {rec.proxied ? '● proxied' : '○ DNS only'}
+                        </span>
+                      )}
                     </td>
                     <td className="font-mono" style={{ color: 'var(--text-muted)' }}>
-                      {rec.ttl >= 86400 ? `${rec.ttl / 86400}d` :
-                       rec.ttl >= 3600  ? `${rec.ttl / 3600}h`  :
-                       rec.ttl >= 60    ? `${rec.ttl / 60}m`    : `${rec.ttl}s`}
+                      {ttlLabel(rec.ttl)}
                     </td>
                     <td>
                       <div className="flex gap-1">
@@ -850,7 +933,7 @@ export default function DNSPage() {
 
       {/* Modals */}
       {editRecord !== undefined && activeDomain && (
-        <RecordModal record={editRecord} domain={activeDomain} wanIp={wanIP ?? undefined}
+        <RecordModal record={editRecord} domain={activeDomain} provider={activeProvider} wanIp={wanIP ?? undefined}
           onClose={() => setEditRecord(undefined)}
           onSave={() => loadRecords(activeDomain)}/>
       )}

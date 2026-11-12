@@ -319,3 +319,70 @@ test("detect route: fills the settings from the cluster's guests and counts who 
   assert.equal(r.total, 2)
   assert.deepEqual(r.nodes.map((n: any) => n.node), ["node-a", "node-b", "node-c"])
 })
+
+// ── Hardening ───────────────────────────────────────────────────────────────
+
+import { readSavedNaming, guardRawCreate, net0Address, NAMING_ID } from "../src/lib/naming"
+import { wizardStore } from "../src/lib/catalogue-store"
+import { proxmoxRoutes } from "../src/routes/proxmox"
+import { setAuditSink } from "../src/lib/audit"
+
+test("saved settings that no longer validate throw, and a plan made with them is refused, not let through", async () => {
+  await wizardStore().put({ id: NAMING_ID, kind: "setting", owner: "", data: { ...GOOD, gateway: "198.51.100.1" }, expiresAt: null })
+  try {
+    await assert.rejects(readSavedNaming(), /no longer pass their checks.*not inside/)
+    // The installer's own reader (no override): the preview fails instead of treating it as "nothing saved".
+    const f = new FakePve()
+    await assert.rejects(previewInstall(INPUT({ ip: "dhcp", gateway: undefined }), "a@example.com", deps(f)), /no longer pass their checks/)
+    assert.equal(f.creates.length, 0)
+    await wizardStore().put({ id: NAMING_ID, kind: "setting", owner: "", data: GOOD, expiresAt: null })
+    assert.equal((await readSavedNaming())!.rangeStart, "192.0.2.200")
+  } finally { await wizardStore().delete(NAMING_ID) }
+  assert.equal(await readSavedNaming(), null)
+})
+
+test("raw create: net0 is read as the wizards read it; DHCP under never and out-of-range need the typed word", async () => {
+  assert.deepEqual(net0Address("name=eth0,bridge=vmbr0,ip=dhcp"), { ip: "dhcp", bridge: "vmbr0" })
+  assert.deepEqual(net0Address("name=eth0,bridge=vmbr1"), { ip: "dhcp", bridge: "vmbr1" })
+  assert.deepEqual(net0Address(undefined), { ip: "dhcp" })
+  assert.deepEqual(net0Address("name=eth0,bridge=vmbr0,ip=192.0.2.242/24,gw=192.0.2.1"), { ip: "192.0.2.242/24", bridge: "vmbr0" })
+  const read = async () => settings()
+  assert.match((await guardRawCreate({ node: "pve3", vmid: 342 }, undefined, read)).errors.join(" "), /never allow DHCP/)
+  assert.deepEqual((await guardRawCreate({ node: "pve3", vmid: 342 }, "dhcp", read)).override, { kind: "dhcp", value: "dhcp" })
+  const out = { node: "pve3", vmid: 350, net0: "name=eth0,bridge=vmbr0,ip=192.0.2.50/24" }
+  assert.match((await guardRawCreate(out, undefined, read)).errors.join(" "), /outside your range/)
+  assert.deepEqual((await guardRawCreate(out, "192.0.2.50", read)).errors, [])
+  assert.deepEqual((await guardRawCreate({ node: "pve3", vmid: 342, net0: "name=eth0,bridge=vmbr0,ip=192.0.2.242/24" }, undefined, read)).errors, [])
+  // Unreadable settings throw; the route refuses on that.
+  await assert.rejects(guardRawCreate({ node: "pve3", vmid: 1 }, undefined, async () => { throw new Error("db down") }), /db down/)
+})
+
+test("raw create route: refused before Proxmox is asked, and an accepted override is audited", async () => {
+  const audits: any[] = []
+  setAuditSink({ write: async r => { audits.push(r) } })
+  await wizardStore().put({ id: NAMING_ID, kind: "setting", owner: "", data: GOOD, expiresAt: null })
+  try {
+    const a = Fastify()
+    a.register(proxmoxRoutes, { prefix: "/api/proxmox" })
+    const params = { vmid: 342, hostname: "x", ostemplate: "t", storage: "s", rootfs_size: 8, memory: 512, cores: 1, net0: "name=eth0,bridge=vmbr0,ip=dhcp" }
+    const no = await a.inject({ method: "POST", url: "/api/proxmox/lxc", payload: { node: "pve3", params } })
+    assert.equal(no.statusCode, 422)
+    assert.equal(no.json().code, "naming")
+    assert.match(no.json().error, /never allow DHCP/)
+    const out = await a.inject({ method: "POST", url: "/api/proxmox/lxc", payload: { node: "pve3", params: { ...params, net0: "name=eth0,bridge=vmbr0,ip=192.0.2.50/24" } } })
+    assert.equal(out.statusCode, 422)
+    assert.match(out.json().error, /outside your range/)
+    assert.equal(audits.length, 0)
+    // Confirmed: the override is audited before the create is attempted (this test has no Proxmox, so the create fails).
+    await a.inject({ method: "POST", url: "/api/proxmox/lxc", payload: { node: "pve3", params, namingConfirm: "DHCP" } })
+    assert.equal(audits.length, 1)
+    assert.equal(audits[0].action, "naming.override")
+    assert.equal(audits[0].resource, "ct/342")
+    assert.equal(audits[0].details.kind, "dhcp")
+    // Saved settings that do not validate refuse the create.
+    await wizardStore().put({ id: NAMING_ID, kind: "setting", owner: "", data: { ...GOOD, rangeEnd: "192.0.2.255" }, expiresAt: null })
+    const bad = await a.inject({ method: "POST", url: "/api/proxmox/lxc", payload: { node: "pve3", params, namingConfirm: "DHCP" } })
+    assert.equal(bad.statusCode, 503)
+    assert.match(bad.json().error, /Nothing was created/)
+  } finally { await wizardStore().delete(NAMING_ID); setAuditSink(null) }
+})

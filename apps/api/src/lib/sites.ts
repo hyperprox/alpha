@@ -19,7 +19,7 @@
 
 import { createHash, randomBytes } from 'node:crypto'
 import { GoDaddyClient } from './godaddy-client'
-import { getCredential } from './credentials'
+import { dnsRouter, proxiedProblem } from './dns-providers'
 import { zoneFor } from './dns-zones'
 import { proxyService, proxyPlanner } from './proxy'
 import type { HostSpec } from './proxy/types'
@@ -31,8 +31,10 @@ export { WP_LOGIN_MU_PLUGIN } from './catalogue'
 // ── What publishing needs, so tests can stand in for every outside call ──────
 
 export interface DnsLike {
-  getDomains(): Promise<Array<{ domain: string; status?: string }>>
-  getRecords(zone: string): Promise<Array<{ type: string; name: string; data: string; ttl?: number }>>
+  /** `provider` is which DNS provider serves the zone ('godaddy', 'cloudflare'). */
+  getDomains(): Promise<Array<{ domain: string; status?: string; provider?: string }>>
+  /** `proxied` is Cloudflare's orange cloud: the name then resolves to Cloudflare, not to this site. */
+  getRecords(zone: string): Promise<Array<{ type: string; name: string; data: string; ttl?: number; proxied?: boolean }>>
   createRecord(zone: string, record: { type: 'A'; name: string; data: string; ttl: number }): Promise<void>
   deleteRecord(zone: string, type: 'A', name: string): Promise<void>
 }
@@ -57,18 +59,23 @@ export interface PublishDeps {
   wait(ms: number): Promise<unknown>
 }
 
+/**
+ * Every configured DNS provider behind one router: each zone is written at the provider that serves it.
+ * A record created here carries no `proxied`, so at Cloudflare it is DNS only (grey cloud) and Let's Encrypt's
+ * HTTP check reaches the proxy.
+ */
 async function realDns(): Promise<DnsLike | null> {
-  const key = await getCredential('dns', 'godaddy', 'api_key').catch(() => null)
-  const secret = await getCredential('dns', 'godaddy', 'api_secret').catch(() => null)
-  if (!key || !secret) return null
-  const gd = new GoDaddyClient(key, secret)
+  const r = await dnsRouter().catch(() => null)
+  if (!r) return null
   return {
-    getDomains: () => gd.getDomains() as any,
-    getRecords: zone => gd.getRecords(zone) as any,
-    createRecord: (zone, r) => gd.createRecord(zone, r),
-    deleteRecord: (zone, type, name) => gd.deleteRecord(zone, type, name),
+    // Only zones that are live: a Cloudflare zone still pending its nameserver change answers nobody yet.
+    getDomains: async () => (await r.getDomains()).filter(z => z.active),
+    getRecords: zone => r.getRecords(zone),
+    createRecord: (zone, rec) => r.createRecord(zone, rec),
+    deleteRecord: (zone, type, name) => r.deleteRecord(zone, type, name),
   }
 }
+
 
 const realProxy: ProxyLike = {
   async instances() {
@@ -165,7 +172,8 @@ export async function planPublish(raw: unknown, deps: PublishDeps): Promise<{ pl
   if (!apex && !sub.split('.').every(l => LABEL.test(l))) errors.push(`"${sub}" is not a usable name: lowercase letters, digits and inner hyphens, dot-separated.`)
   const dns = await deps.dns().catch(() => null)
   if (!dns) return { errors: [...errors, 'No DNS provider is set up, so HyperProx cannot make the public name. Add one under Settings → DNS.'], warnings, checks }
-  const zones = ((await dns.getDomains().catch(() => [])) ?? []).map(d => String(d.domain ?? '').toLowerCase()).filter(Boolean)
+  const listed = ((await dns.getDomains().catch(() => [])) ?? [])
+  const zones = listed.map(d => String(d.domain ?? '').toLowerCase()).filter(Boolean)
   if (!zones.includes(zoneIn)) errors.push(`${zoneIn || 'No domain'} is not one of the domains your DNS provider lists.`)
   const domain = apex ? zoneIn : `${sub}.${zoneIn}`
   // The longest listed zone the name falls in: a sub-zone listed on its own owns its names.
@@ -197,6 +205,9 @@ export async function planPublish(raw: unknown, deps: PublishDeps): Promise<{ pl
   if (errors.length || !inst) return { errors, warnings, checks, existing }
   const record = { type: 'A' as const, name: apex ? '@' : sub, data: wan, ttl: 600 }
   checks.push(`DNS: A record ${record.name} in ${zoneIn} → ${wan} (TTL ${record.ttl}).`)
+  if (listed.find(d => String(d.domain).toLowerCase() === zoneIn)?.provider === 'cloudflare') {
+    checks.push(`${zoneIn} is on Cloudflare: the record is made DNS only (grey cloud), so Let's Encrypt reaches the proxy directly.`)
+  }
   return {
     plan: { domain, zone: zoneIn, name: record.name, instanceId: inst.id, instanceName: inst.name, record, certificate: inst.certificates as 'request' | 'provider' },
     errors, warnings, checks, existing,
@@ -229,6 +240,11 @@ export interface PublishStepHooks {
  * Proxy host, DNS record, propagation, certificate, then the public health check. Each thing is in the ledger
  * before the next step starts. Throws at the first failure; the ledger says what exists.
  */
+async function isProxied(dns: DnsLike, plan: PublishPlan): Promise<boolean> {
+  const now = await dns.getRecords(plan.zone).catch(() => [])
+  return now.some(r => r.type === 'A' && String(r.name ?? '').toLowerCase() === plan.name && r.proxied === true)
+}
+
 export async function runPublish(
   plan: PublishPlan, recipe: CatalogueRecipe, ip: string, owner: string, ledger: PublishLedger, hooks: PublishStepHooks, d: PublishDeps,
 ): Promise<string> {
@@ -263,12 +279,17 @@ export async function runPublish(
     await d.wait(10_000)
     seen = (await d.resolve4(plan.domain).catch(() => [] as string[])).includes(plan.record.data)
   }
-  if (!seen) throw new Error(`${plan.domain} did not resolve to ${plan.record.data} within 5 minutes. Stopped before the certificate, so no failed request counts against Let's Encrypt's limit.`)
+  if (!seen) {
+    if (await isProxied(dns, plan)) throw new Error(proxiedProblem(plan.domain, plan.record.data))
+    throw new Error(`${plan.domain} did not resolve to ${plan.record.data} within 5 minutes. Stopped before the certificate, so no failed request counts against Let's Encrypt's limit.`)
+  }
   s.status = 'done'; s.detail = `${plan.domain} resolves to ${plan.record.data}`
 
   // 4. Certificate.
   s = hooks.step('cert')
   if (plan.certificate === 'request') {
+    // Someone may have turned the orange cloud on since the record was made; the request would then fail.
+    if (await isProxied(dns, plan)) throw new Error(proxiedProblem(plan.domain, plan.record.data))
     const email = d.letsEncryptEmail()
     if (!email) throw new Error('No Let\'s Encrypt email is set.')
     const c = await d.proxy.requestCertificate(plan.instanceId, [plan.domain], email, actor)

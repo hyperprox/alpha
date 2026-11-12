@@ -11,6 +11,8 @@ import { getProviderCredentials } from '../lib/credentials'
 import { pveFromEnv } from '../lib/pve-env'
 import { npmHealth, withTimeout } from '../lib/service-health'
 import { isRemoteContext } from '../lib/clusters/context'
+import { guardRawCreate } from '../lib/naming'
+import { auditCredentialUse } from '../lib/audit'
 
 // Not cached here: the token arrives from the vault after start-up and can change (lib/pve-env.ts).
 const getClient = pveFromEnv
@@ -111,8 +113,28 @@ export const proxmoxRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get('/nextid', async (_, r) =>
     wrap(r, () => getClient().getNextVMID()))
 
-  fastify.post<{ Body: { node: string; params: any } }>('/lxc', async (req, r) =>
-    wrap(r, () => getClient().createLXC(req.body.node, req.body.params)))
+  // A container made from the raw form follows Settings → Naming & addresses like every wizard: DHCP under "never"
+  // or an address outside the range needs the person's typed confirmation (namingConfirm), and is audited. A remote
+  // cluster has its own network, so the home cluster's settings are not applied to it.
+  fastify.post<{ Body: { node: string; params: any; namingConfirm?: string } }>('/lxc', async (req, r) => {
+    const b = req.body ?? ({} as any)
+    if (!isRemoteContext()) {
+      let g
+      try {
+        g = await guardRawCreate({ node: b.node, vmid: Number(b.params?.vmid), net0: b.params?.net0 },
+          typeof b.namingConfirm === 'string' ? b.namingConfirm.slice(0, 64) : undefined)
+      } catch (e: any) {
+        return r.status(503).send({ success: false, code: 'naming_unreadable', error: `Nothing was created: ${e?.message ?? 'the naming settings could not be read.'}` })
+      }
+      if (g.errors.length) return r.status(422).send({ success: false, code: 'naming', error: g.errors.join(' '), problems: g.errors })
+      if (g.override) {
+        await auditCredentialUse('naming.override', `ct/${Number(b.params?.vmid)}`, {
+          kind: g.override.kind, value: g.override.value, node: String(b.node ?? ''), via: 'create-container form',
+        })
+      }
+    }
+    return wrap(r, () => getClient().createLXC(b.node, b.params))
+  })
 
   fastify.post<{ Body: { node: string; params: any } }>('/vm', async (req, r) =>
     wrap(r, () => getClient().createVM(req.body.node, req.body.params)))

@@ -23,12 +23,39 @@ import { wizardStore } from './catalogue-store'
 /** The naming settings' row in the wizard's table. */
 export const NAMING_ID = 'setting:naming'
 
-/** The saved settings, or null when none are saved. A store that cannot be read throws: that is not "none". */
+/**
+ * The saved settings, or null when none are saved. A store that cannot be read throws, and so does a saved row that
+ * no longer passes the checks: either is "settings exist but cannot be applied", never "none saved", which would
+ * let DHCP and any address through. Callers refuse the plan.
+ */
 export async function readSavedNaming(): Promise<NamingSettings | null> {
   const r = await wizardStore().get(NAMING_ID)
-  if (r?.kind !== 'setting') return null
+  if (!r) return null
+  if (r.kind !== 'setting') throw new Error('The saved naming settings are not in the expected form. Save them again under Settings → Naming & addresses.')
   const v = validateNaming(r.data)
-  return v.settings ? { ...v.settings, updatedAt: r.data?.updatedAt, updatedBy: r.data?.updatedBy } : null
+  if (!v.settings) throw new Error(`The saved naming settings no longer pass their checks (${v.errors.join(' ')}). Save them again under Settings → Naming & addresses.`)
+  return { ...v.settings, updatedAt: r.data?.updatedAt, updatedBy: r.data?.updatedBy }
+}
+
+/** The address a raw container net0 asks for: 'dhcp' (also when it names none), or the static CIDR; and its bridge. */
+export function net0Address(net0: unknown): { ip: string; bridge?: string } {
+  const s = typeof net0 === 'string' ? net0 : ''
+  const ip = /(?:^|,)ip=([^,]+)/.exec(s)?.[1]?.trim()
+  const bridge = /(?:^|,)bridge=([^,]+)/.exec(s)?.[1]?.trim()
+  return { ip: !ip || ip === 'dhcp' || ip === 'manual' ? 'dhcp' : ip, ...(bridge ? { bridge } : {}) }
+}
+
+/**
+ * The naming policy for the raw Create container form (/api/proxmox/lxc), which takes Proxmox parameters as they
+ * are: the same DHCP and range rules as the wizards, with the same typed confirmation. Throws when the settings
+ * cannot be read (the caller refuses the create).
+ */
+export async function guardRawCreate(
+  input: { node: string; vmid: number; net0?: unknown }, confirm?: string, read: () => Promise<NamingSettings | null> = readSavedNaming,
+): Promise<PolicyVerdict> {
+  const s = await read()
+  const a = net0Address(input.net0)
+  return namingPolicy(s, { node: String(input.node ?? ''), vmid: Number(input.vmid), ip: a.ip, bridge: a.bridge }, confirm)
 }
 
 export type IdScheme = 'next-free' | 'node-ip'

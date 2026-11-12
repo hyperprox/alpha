@@ -770,7 +770,7 @@ test('readHooks: one list on a firmware that answers lists, one hook per call on
   await assert.rejects(readHooks(locked as any, hooks, false), (e: any) => e instanceof AsusLoginError)
   assert.equal(radioCount({ wl_ifnames: 'eth4 eth5 eth6' }), 3)
   assert.equal(radioCount({}), 4)
-  assert.equal(staticHooks(3).filter(h => /wl\d_/.test(h)).length, 15)
+  assert.equal(staticHooks(3).filter(h => /wl\d_(?!hwaddr)/.test(h)).length, 15)
 })
 
 test('real firmware, router mode: firmware, uptime, CPU, RAM, three radios, clients and the AiMesh network', async () => {
@@ -829,7 +829,7 @@ test('real firmware, access point mode: no WAN, no alarm, radios and clients rea
 })
 
 test('mesh parsing: backhaul from re_path bits, wired, offline, and nothing for an empty list', () => {
-  assert.deepEqual(parseMesh([], {}, 'a'), { nodes: [], byMac: new Map(), main: null, mainAlias: null })
+  assert.deepEqual(parseMesh([], {}, 'a'), { nodes: [], byMac: new Map(), main: null, mainAlias: null, mainModels: [], aliasByMac: new Map() })
   assert.deepEqual(parseMesh(undefined, undefined, 'a').nodes, [])
   const nodes = parseMesh([
     { alias: 'Hub', mac: '00:00:5E:00:53:01', level: '0', re_path: '0', online: '1', ui_model_name: 'XX-MESH9', fwver: '3.0.0.4.388_1-gabc', newfwver: '' },
@@ -858,11 +858,11 @@ test('unit name precedence: AiMesh location, then its mesh entry, then host name
 })
 
 test('names HyperProx made from the model are recognised; a typed name is not', () => {
-  assert.ok(looksModelMade('XX-MESH9', 'XX-MESH9'))
-  assert.ok(looksModelMade('XX-MESH9 2', 'XX-MESH9'))
-  assert.ok(looksModelMade('ASUS router', null))
-  assert.ok(!looksModelMade('Office', 'XX-MESH9'))
-  assert.ok(!looksModelMade('XX-MESH9 upstairs', 'XX-MESH9'))
+  assert.ok(looksModelMade('XX-MESH9', ['XX-MESH9']))
+  assert.ok(looksModelMade('XX-MESH9 2', ['XX-MESH9']))
+  assert.ok(looksModelMade('ASUS router', []))
+  assert.ok(!looksModelMade('Office', ['XX-MESH9']))
+  assert.ok(!looksModelMade('XX-MESH9 upstairs', ['XX-MESH9']))
 })
 
 test('precedence and the auto-rename: user-set > unit name > model; model-named instances follow the unit; duplicates told apart', async () => {
@@ -874,7 +874,7 @@ test('precedence and the auto-rename: user-set > unit name > model; model-named 
   const b = await store.create(await prep(), undefined, { model: 'XX-MESH9', firmware: null })
   const c = await store.create(await prep(), 'Garage', { model: 'XX-MESH9', firmware: null })
   const raw = JSON.parse((await io.get('plugin', 'asus', 'instances'))!)
-  for (const x of raw) delete x.nameSource
+  for (const x of raw) { delete x.nameSource; delete x.nameTyped }
   await io.set('plugin', 'asus', 'instances', JSON.stringify(raw), false)
   const legacy = await store.list()
   assert.deepEqual(legacy.map(x => [x.name, x.nameSource]), [['XX-MESH9', 'model'], ['XX-MESH9 2', 'model'], ['Garage', 'user']])
@@ -937,4 +937,76 @@ test('a unit name that looks like an address is never adopted, and viewers never
   await svc.reading(meta.id)
   assert.equal((await store.get(meta.id))!.name, 'RT-XX9000')
   assert.equal((await svc.reading(meta.id)).unitName, null)
+})
+
+// ── names, round 2: every model id, no vault write under a token, the mesh main's alias ──
+
+test('model-made names match any model id the unit reports, ignoring case and punctuation, with an optional number', () => {
+  const ids = ['XX9PRO', 'Zen_XX9', 'Zen_XX9P', 'Zen XX9']
+  for (const n of ['XX9PRO', 'xx9pro', 'XX9PRO 2', 'Zen_XX9', 'zen-xx9', 'ZEN XX9 3', 'XX9-PRO']) assert.ok(looksModelMade(n, ids), n)
+  for (const n of ['Living Room', 'XX9PRO upstairs', "Cabin router", 'XX9PRO 123']) assert.ok(!looksModelMade(n, ids), n)
+  assert.ok(looksModelMade('XX_V2', ['XX_V2', 'Zen_XX8', 'XX-V2']))
+})
+
+test('the live bug: a model-named instance stored as "user" after its model changed is renamed; a typed one is not', async () => {
+  const io = memoryIO()
+  const store = new AsusInstanceStore(io, async () => '10.9.8.2')
+  // As stored by the previous release: the model already moved to the odmpid, nameSource persisted as "user".
+  await io.set('plugin', 'asus', 'instances', JSON.stringify([
+    { id: 'a00000001', name: 'XX9PRO', model: 'Zen_XX9', nameSource: 'user', deviceName: null },
+    { id: 'a00000002', name: 'XX9PRO 2', model: 'Zen_XX9', nameSource: 'user', deviceName: null },
+    { id: 'a00000003', name: 'XX_V2', model: 'Zen_XX8', nameSource: 'user', deviceName: null },
+    { id: 'a00000004', name: "Cabin router", model: 'Zen_XX8', nameSource: 'user', deviceName: 'Study' },
+  ]), false)
+  const ids = (p: string, o: string, m: string) => [p, o, m]
+  assert.equal((await store.adoptDeviceName('a00000001', 'Living Room', ids('XX9PRO', 'Zen_XX9', 'Zen_XX9P')))!.name, 'Living Room')
+  assert.equal((await store.adoptDeviceName('a00000002', 'Cellar', ids('XX9PRO', 'Zen_XX9', 'Zen_XX9P')))!.name, 'Cellar')
+  assert.equal((await store.adoptDeviceName('a00000003', "Kid's Room", ids('XX_V2', 'Zen_XX8', 'XX-V2')))!.name, "Kid's Room")
+  const typed = (await store.adoptDeviceName('a00000004', 'Study', ids('XX_V2', 'Zen_XX8', 'XX-V2')))!
+  assert.deepEqual([typed.name, typed.nameSource, typed.nameTyped, typed.deviceName], ["Cabin router", 'user', true, 'Study'])
+  const stored = JSON.parse((await io.get('plugin', 'asus', 'instances'))!)
+  assert.deepEqual(stored.map((x: any) => [x.name, x.nameSource, x.nameTyped]), [
+    ['Living Room', 'device', false], ['Cellar', 'device', false], ["Kid's Room", 'device', false], ["Cabin router", 'user', true],
+  ])
+  // Once settled, a typed name stays typed even if it happens to look like a model.
+  const raw = JSON.parse((await io.get('plugin', 'asus', 'instances'))!)
+  raw[3].name = 'XX_V2'
+  await io.set('plugin', 'asus', 'instances', JSON.stringify(raw), false)
+  assert.equal((await store.adoptDeviceName('a00000004', 'Study', ids('XX_V2', 'Zen_XX8', 'XX-V2')))!.name, 'XX_V2')
+})
+
+test('a reading for an API token cannot write the vault: the name shows at once, and is written when a person is signed in', async () => {
+  const io = memoryIO()
+  let writable = false
+  const store = new AsusInstanceStore({ ...io, writable: () => writable }, async () => '10.9.8.2')
+  await io.set('plugin', 'asus', 'instances', JSON.stringify([{ id: 'a00000001', name: 'XX9PRO', model: 'Zen_XX9' }]), false)
+  const before = (await io.get('plugin', 'asus', 'instances'))!
+  assert.equal((await store.adoptDeviceName('a00000001', 'Living Room', ['XX9PRO']))!.name, 'Living Room')
+  assert.equal((await store.list())[0].name, 'Living Room', 'every page, the phrase and the AI see it now')
+  assert.equal(await io.get('plugin', 'asus', 'instances'), before, 'nothing written without a session')
+  await store.flushPending()
+  assert.equal(await io.get('plugin', 'asus', 'instances'), before)
+  writable = true
+  await store.flushPending()
+  assert.equal(JSON.parse((await io.get('plugin', 'asus', 'instances'))!)[0].name, 'Living Room')
+  // A write that fails (the vault busy) keeps the name in memory too.
+  const failing = new AsusInstanceStore({ ...io, set: async () => { throw new Error('vault busy') } }, async () => '10.9.8.2')
+  await io.set('plugin', 'asus', 'instances', JSON.stringify([{ id: 'a00000009', name: 'XX9PRO', model: 'Zen_XX9' }]), false)
+  assert.equal((await failing.adoptDeviceName('a00000009', 'Hall', ['XX9PRO']))!.name, 'Hall')
+  assert.equal((await failing.list())[0].name, 'Hall')
+})
+
+test('a unit with no name of its own takes the alias its mesh main reports for it, matched by MAC across routers', async () => {
+  const main = await setup({ mode: 'ap-main', meshList: true, alias: 'Cellar' })
+  const node = fakeRouter({ mode: 'node', alias: '', hostname: '', ownMac: '00:00:5E:00:53:20' })
+  const srv = await listen(node.handler)
+  closers.push(srv.close)
+  const mm = await main.store.create(await main.store.prepare(null, { url: main.url, username: 'admin', password: 'correct horse' }), undefined, { model: 'RT-XX9000', firmware: null })
+  const nm = await main.store.create(await main.store.prepare(null, { url: `http://127.0.0.1:${srv.port}`, username: 'admin', password: 'correct horse' }), undefined, { model: 'RT-XX9000', firmware: null })
+  await main.svc.reading(mm.id)
+  await main.svc.reading(nm.id)
+  assert.equal((await main.store.get(mm.id))!.name, 'Cellar')
+  assert.equal((await main.store.get(nm.id))!.name, 'Hall', 'the mesh main calls that MAC "Hall"')
+  const r = await main.svc.reading(nm.id)
+  assert.ok(!JSON.stringify(viewerReading(r)).includes('00:00:5E:00:53:20'), 'its MAC is used to match, never shown')
 })

@@ -139,6 +139,15 @@ export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
           return { success: true, data: { message: `Connected — ${domains.length} active domains`, domains: domains.map(d => d.domain) } }
         }
 
+        if (category === 'dns' && provider === 'cloudflare') {
+          const { cloudflareFrom } = await import('../lib/dns-providers')
+          const { testCloudflare } = await import('../lib/cloudflare-client')
+          const client = cloudflareFrom(creds)
+          if (!client) return r.status(400).send({ success: false, error: 'No Cloudflare API token is saved yet. Paste one and press Save first.' })
+          const t = await testCloudflare(client)
+          return { success: true, data: { message: t.message, details: t.details, domains: t.zones, permissions: t.permissions } }
+        }
+
         if (category === 'remote') {
           const { testProvider } = await import('../lib/remote/providers')
           return { success: true, data: { message: await testProvider(provider) } }
