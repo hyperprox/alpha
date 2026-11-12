@@ -802,3 +802,49 @@ test('the all-arr read paths in the API never use v3 for Lidarr', () => {
   const fl = fakeLidarr([])
   return assert.rejects(fl.client.get('/api/v3/queue'), /no \/api\/v3\/queue/)
 })
+
+test('lookup: one orphan in a batch of 30 leaves 29 resolved; the next reading makes one request, not a retry storm', async () => {
+  const ids = Array.from({ length: 30 }, (_, i) => 500 + i)
+  const orphan = 517
+  const calls: string[] = []
+  const get = async (p: string) => {
+    calls.push(p)
+    const asked = [...p.matchAll(/albumIds?=(\d+)/g)].map(m => Number(m[1]))
+    if (asked.includes(orphan)) throw new Error('Lidarr returned HTTP 500')
+    if (p.startsWith('/api/v1/album?')) return asked.map(i => ({ id: i, title: `A${i}`, statistics: { trackCount: 5, trackFileCount: 0 } }))
+    return []
+  }
+  const cache = new FileCache()
+  const rows = ids.map(i => lrow({ albumId: i }))
+  const first = await readAlbumInfo(get, rows, NOW, cache)
+  assert.equal(first.size, 29); assert.ok(!first.has(orphan))
+  const extra = calls.length - 1
+  assert.ok(extra > 0 && extra <= 40, `bounded search, got ${extra}`)
+  const before = calls.length
+  const second = await readAlbumInfo(get, rows, NOW + 5_000, cache)
+  assert.equal(second.size, 29)
+  assert.equal(calls.slice(before).filter(c => c.startsWith('/api/v1/album?')).length, 1, 'the dead id is left out: one batch, no retry')
+  // Past the 60 s memory the id is tried again.
+  const later = calls.length
+  await readAlbumInfo(get, rows, NOW + 61_000, cache)
+  assert.ok(calls.slice(later).length > 1)
+})
+
+test('lookup: a timeout or any other error fails the batch and starts no search', async () => {
+  const calls: string[] = []
+  const get = async (p: string) => { calls.push(p); throw new Error('The operation was aborted: timeout') }
+  const info = await readAlbumInfo(get, [lrow({ albumId: 1 }), lrow({ albumId: 2 }), lrow({ albumId: 3 })], NOW, new FileCache())
+  assert.equal(info.size, 0)
+  assert.equal(calls.length, 1)
+})
+
+test('lookup: albums past the first twenty still resolve when an early one is gone', async () => {
+  const ids = Array.from({ length: 60 }, (_, i) => 900 + i)
+  const get = async (p: string) => {
+    const asked = [...p.matchAll(/albumIds?=(\d+)/g)].map(m => Number(m[1]))
+    if (asked.includes(900)) throw new Error('Lidarr returned HTTP 500')
+    return p.startsWith('/api/v1/album?') ? asked.map(i => ({ id: i, statistics: { trackCount: 5, trackFileCount: 0 } })) : []
+  }
+  const info = await readAlbumInfo(get, ids.map(i => lrow({ albumId: i })), NOW, new FileCache())
+  assert.equal(info.size, 59); assert.ok(info.has(959))
+})

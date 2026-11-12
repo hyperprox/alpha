@@ -101,23 +101,35 @@ export async function readMovieInfo(get: Get, rows: any[], now: number, cache: F
 /** The album id a Lidarr queue row is for. */
 export const albumIdOf = (r: any): number | null => posInt(r?.albumId ?? r?.album?.id)
 
+const DEAD_MS_NOTE = 'dead album ids are remembered for the cache TTL (60 s)'
+const deadKey = (id: number) => `dead:al:${id}`
+/** Only these two mean "an id in this batch is unknown to Lidarr" (500 on /album, 404 on /trackfile). Timeouts and the rest are not. */
+const UNKNOWN_ID = /HTTP (?:500|404)\b/
+/** The most extra requests one reading may spend finding the unknown ids in failing batches. */
+const BISECT_BUDGET = 40
+
 /**
- * One batched read, tolerant of ids Lidarr no longer knows: Lidarr answers a batch that names a missing album with an
- * error for the whole batch (500 on /album, 404 on /trackfile), so a failed batch is retried one id at a time and the
- * ids that fail alone are simply left out. At most 20 single retries a batch, so a dead service costs a few seconds.
+ * One batched read, tolerant of album ids Lidarr no longer knows. Lidarr answers a batch that names a missing album
+ * with an error for the whole batch (HTTP 500 on /album, 404 on /trackfile). Only those two errors start a search for
+ * the culprit: the batch is split in halves, recursively, down to single ids; an id that fails alone is remembered as
+ * dead (see DEAD_MS_NOTE) so the next readings leave it out. Any other error, a timeout included, fails the batch as
+ * before. The search spends at most BISECT_BUDGET extra requests; ids it never got to are left unknown.
  */
-async function tolerant(get: Get, path: string, param: string, ids: number[]): Promise<any[]> {
+async function tolerant(get: Get, path: string, param: string, ids: number[], cache: FileCache, now: number, budget = { left: BISECT_BUDGET }): Promise<any[]> {
+  if (!ids.length) return []
   try {
     const r = await get(`${path}?${ids.map(i => `${param}=${i}`).join('&')}`, 15_000)
     return Array.isArray(r) ? r : []
-  } catch (e) {
-    if (ids.length === 1) throw e
+  } catch (e: any) {
+    if (!UNKNOWN_ID.test(String(e?.message ?? e))) throw e
+    if (ids.length === 1) { cache.set(deadKey(ids[0]), '1', now); return [] }
+    const mid = ids.length >> 1
     const out: any[] = []
-    let answered = 0
-    for (const id of ids.slice(0, 20)) {
-      try { const r = await get(`${path}?${param}=${id}`, 10_000); answered++; if (Array.isArray(r)) out.push(...r) } catch { /* that album is gone */ }
+    for (const half of [ids.slice(0, mid), ids.slice(mid)]) {
+      if (budget.left <= 0) break
+      budget.left--
+      out.push(...await tolerant(get, path, param, half, cache, now, budget))
     }
-    if (!answered) throw e
     return out
   }
 }
@@ -130,9 +142,9 @@ async function tolerant(get: Get, path: string, param: string, ids: number[]): P
 export async function readAlbumInfo(get: Get, rows: any[], now: number, cache: FileCache = sharedFileCache): Promise<Map<number, AlbumInfo>> {
   const out = new Map<number, AlbumInfo>()
   try {
-    const ids = [...new Set(rows.map(albumIdOf).filter((n): n is number => n !== null))].slice(0, MAX_IDS)
+    const ids = [...new Set(rows.map(albumIdOf).filter((n): n is number => n !== null))].filter(id => !cache.get(deadKey(id), now)).slice(0, MAX_IDS)
     const albums: any[] = []
-    for (const b of batches(ids)) albums.push(...await tolerant(get, '/api/v1/album', 'albumIds', b))
+    for (const b of batches(ids)) albums.push(...await tolerant(get, '/api/v1/album', 'albumIds', b, cache, now))
     const stats = new Map<number, { total: number | null; have: number; size: number; title: string | null }>()
     for (const a of albums) {
       const id = posInt(a?.id); if (id === null) continue
@@ -150,7 +162,7 @@ export async function readAlbumInfo(get: Get, rows: any[], now: number, cache: F
       if (c) { try { files.set(id, JSON.parse(c.v ?? '[]')) } catch { need.push(id) } } else need.push(id)
     }
     for (const b of batches(need)) {
-      const recs = await tolerant(get, '/api/v1/trackfile', 'albumId', b)
+      const recs = await tolerant(get, '/api/v1/trackfile', 'albumId', b.filter(id => !cache.get(deadKey(id), now)), cache, now)
       const by = new Map<number, Map<string | null, number>>()
       for (const f of recs) {
         const aid = posInt(f?.albumId); if (aid === null) continue
