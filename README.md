@@ -127,17 +127,33 @@ the setup key with it; the owner account cannot be created without it).
 
 `bootstrap.sh` sets up everything from one command on a Proxmox node, as root.
 
-First it looks at every node and tells you what it found, for example: "Found 3 nodes. node-a: NVIDIA
-GeForce GTX 1070 Ti (dedicated). node-b: Intel UHD Graphics 630 (built in)." Then it asks a few yes/no
-questions, only the ones that apply to your hardware (see
-[Monitoring, power, GPUs and more](#monitoring-power-gpus-and-more)). It shows the whole plan and asks once
-before it changes anything.
+First it looks at every node and lists what it found, one line per node, for example:
+
+```
+    Found 2 nodes:
+      • node-a: NVIDIA GeForce GTX 1070 Ti (dedicated) · health monitoring ✓
+      • node-b: Intel UHD Graphics 630 (built in)
+```
+
+Then it asks a few yes/no questions, only the ones that apply to your hardware (see
+[Monitoring, power, GPUs and more](#monitoring-power-gpus-and-more)). It never asks about something that is
+already there: if health monitoring already runs on every node, it says so and moves on, and if it runs on
+some, it names the nodes the question is about. Then it shows one summary of everything it will create
+(container ID, network, storage, template and its CPU type, tokens, and the work on each node) and asks
+"Create it?". Nothing is created before you answer.
+
+The questions work under `curl ... | bash`: they are read from your terminal, not from the pipe.
 
 Then it does the work:
 
-- It creates a **privileged** container on the next free ID and the storage with the most free space,
-  from the newest Debian template, with `nesting=1` and `keyctl=1` (Docker needs them), the TUN device for
-  Tailscale, and start on boot.
+- It creates a **privileged** container from the newest Debian 13 template built for your node's CPU
+  (amd64 or arm64; a template for another CPU is never used, even if it is the only one downloaded), with
+  `nesting=1` and `keyctl=1` (Docker needs them), the TUN device for Tailscale, and start on boot. The root
+  disk goes on block storage (Ceph RBD, ZFS or LVM) with room for it, the one with most free space first,
+  and only on a file share if there is nothing else.
+- If your guests are numbered by node and address (guest 342 on node 3 at `x.y.z.242`), it offers an ID
+  and a static address that fit, and checks that the ID is free, that no guest uses the address and that
+  nothing answers a ping on it. Otherwise it takes the next free ID and DHCP.
 - It makes the API token `root@pam!hyperprox` (privilege separation off, so it has root's rights) and,
   if you want Proxmox's own metrics, a read-only `root@pam!hyperprox-exporter` (`PVEAuditor` on `/`).
   A token named `hyperprox` that already exists is left alone, and the setup wizard makes its own.
@@ -147,7 +163,17 @@ Then it does the work:
 - It installs HyperProx in the container, then prints the address, the root password and a short list of
   what was done, skipped or failed, with the reason for each.
 
-`-y` takes every default. `--dry-run` looks and asks, shows the plan, and changes nothing.
+`-y` (or `HYPERPROX_YES=1`) takes every default. Without a terminal and without `-y`, it shows the
+defaults and stops before creating anything. `--dry-run` looks and asks, shows the plan, and changes nothing.
+
+If the install stops part-way, because you pressed Ctrl+C or something failed, it removes what this run
+created: the container, the tokens it made, a template it downloaded, and built-in graphics or AMD GPU
+settings it turned on. Monitoring software it added to a node is left there (it does no harm) and named,
+and so is the power-counter rule, with the file to delete to undo it.
+Anything that was there before it started is never touched: a container is removed only if it carries
+this run's mark in its description. A container cut off while Proxmox was still creating it is not removed;
+the commands to remove it are shown instead. `--keep-on-failure` keeps what was made after a
+failure, so you can look inside the container.
 
 Pass options through `bash -s --`:
 
@@ -157,14 +183,14 @@ curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/bootstrap.sh |
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--vmid N` | next free | Container ID |
+| `--vmid N` | fits your numbering, or next free | Container ID |
 | `--hostname NAME` | `hyperprox` | Container hostname |
 | `--cores N` | `4` | CPU cores |
 | `--memory MB` | `8192` | Memory |
 | `--disk GB` | `100` | Root disk |
-| `--storage NAME` | most free space | Storage for the root disk |
+| `--storage NAME` | block storage with room | Storage for the root disk |
 | `--bridge NAME` | `vmbr0` | Network bridge |
-| `--ip CIDR` | `dhcp` | Static address, for example `192.0.2.50/24` |
+| `--ip CIDR` | fits your numbering, or `dhcp` | Static address, for example `192.0.2.50/24` |
 | `--gateway IP` | | Gateway, required with `--ip` |
 | `--password PASS` | generated | Container root password |
 | `--skip-exporter` | | Answer no to watching node health |
@@ -173,8 +199,10 @@ curl -fsSL https://raw.githubusercontent.com/hyperprox/alpha/main/bootstrap.sh |
 | `--no-charts` | | Answer no to Prometheus and Grafana |
 | `--no-pve-metrics` | | Answer no to reading Proxmox's own metrics |
 | `--ai`, `--no-ai` | | Answer yes or no to a local AI assistant |
+| `--igpu`, `--no-igpu` | | Answer yes or no to letting containers use the nodes' built-in graphics |
 | `--dry-run` | | Look and ask, then show what would be done; change nothing |
-| `-y`, `--yes` | | Take every default and do not ask |
+| `--keep-on-failure` | | After a failure, keep what was made so you can look inside |
+| `-y`, `--yes` | | Take every default and do not ask (or set `HYPERPROX_YES=1`) |
 
 ### Option 2: install.sh on a machine you already have
 
