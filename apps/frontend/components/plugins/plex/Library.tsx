@@ -26,15 +26,18 @@ interface Row {
   id: string; kind: Kind; ratingKey: string; title: string; year: number | null; section: string; sectionTitle: string
   sizeBytes: number | null; plays: number; viewers: number; lastPlayed: number | null; addedAt: number; art: string | null
   via: Via; keptBy: string | null
+  /** Why it cannot be removed (Sonarr or Radarr did not answer, a title matched without an id), or null. */
+  refused: string | null
 }
 interface ListData { rows: Row[]; sections: Array<{ key: string; title: string; kind: Kind }>; arr: { sonarr: boolean; radarr: boolean }; plexDeletes: boolean | null; historySince: number | null }
 interface Version { mediaId: string; label: string; sizeBytes: number | null; files: string[] }
 interface Episode {
   ratingKey: string; season: number; episode: number; title: string; sizeBytes: number | null; quality: string
   plays: number; viewers: number; lastPlayed: number | null; watched: boolean; inProgress: boolean; nextUpFor: string[]; versions: Version[]; via: 'sonarr' | 'plex'
+  refused: string | null
 }
 interface ShowView {
-  show: { ratingKey: string; title: string; year: number | null; art: string | null; via: 'sonarr' | 'plex'; keptBy: string | null; sizeBytes: number | null }
+  show: { ratingKey: string; title: string; year: number | null; art: string | null; via: 'sonarr' | 'plex'; keptBy: string | null; sizeBytes: number | null; refused: string | null }
   seasons: Array<{ season: number; title: string; episodes: Episode[] }>
   plexDeletes: boolean | null
 }
@@ -165,6 +168,7 @@ export function PlexLibrary() {
               <div className={c.bar} style={{ marginBottom: 10 }}>
                 <Poster title={sh!.title} art={sh!.art} className={c.thumb} style={{ width: '4rem' }} />
                 {sh!.keptBy && <Pill tone="violet">kept by rule: {sh!.keptBy}</Pill>}
+                {sh!.refused && <span className={c.note} style={{ flexBasis: '100%', color: 'var(--warn)' }}>Nothing in this show can be removed right now: {sh!.refused}</span>}
                 {canRemove && <button className={`${c.btn} ${c.btnDanger}`} style={{ marginLeft: 'auto' }} onClick={() => void askPreview({ kind: 'show', ratingKey: sh!.ratingKey })}>Remove the whole show…</button>}
               </div>
               {show.seasons.map(se => {
@@ -174,9 +178,9 @@ export function PlexLibrary() {
                     <div className={c.bar} style={{ marginBottom: 8 }}>
                       <h3 className={c.title}>{se.title} <small>· {se.episodes.length} episodes · {size(se.episodes.reduce((a, e) => a + (e.sizeBytes ?? 0), 0))}</small></h3>
                       <div className={c.acts}>
-                        <button className={c.btn} onClick={() => setTicked(t => new Set([...t, ...se.episodes.filter(e => e.watched).map(e => e.ratingKey)]))}>Tick watched</button>
+                        <button className={c.btn} onClick={() => setTicked(t => new Set([...t, ...se.episodes.filter(e => e.watched && !e.refused).map(e => e.ratingKey)]))}>Tick watched</button>
                         <button className={c.btn} disabled={firstUnwatched <= 0} title="Every episode before the first one nobody has watched"
-                          onClick={() => setTicked(t => new Set([...t, ...se.episodes.slice(0, firstUnwatched).map(e => e.ratingKey)]))}>Tick everything before the next unwatched</button>
+                          onClick={() => setTicked(t => new Set([...t, ...se.episodes.slice(0, firstUnwatched).filter(e => !e.refused).map(e => e.ratingKey)]))}>Tick everything before the next unwatched</button>
                         {canRemove && <button className={`${c.btn} ${c.btnDanger}`} onClick={() => void askPreview({ kind: 'season', ratingKey: sh!.ratingKey, season: se.season })}>Remove season…</button>}
                       </div>
                     </div>
@@ -185,7 +189,7 @@ export function PlexLibrary() {
                         const on = ticked.has(e.ratingKey)
                         return (
                           <li key={e.ratingKey} className={c.row} data-on={on} style={{ gridTemplateColumns: 'auto minmax(0, 1fr)' }}>
-                            <input type="checkbox" className={c.check} checked={on} onChange={() => toggle(e.ratingKey)} aria-label={`Tick S${e.season}E${e.episode}`} />
+                            <input type="checkbox" className={c.check} checked={on} disabled={!!e.refused} onChange={() => toggle(e.ratingKey)} aria-label={`Tick S${e.season}E${e.episode}`} />
                             <div className={c.body}>
                               <div className={c.head}>
                                 <span className={c.title}>E{e.episode} · {e.title}</span>
@@ -194,6 +198,7 @@ export function PlexLibrary() {
                                 {e.nextUpFor.length > 0 && <Pill tone="warn" title="Watched the episode before it in the last 14 days">next up for {e.nextUpFor.join(', ')}</Pill>}
                                 <span className={c.size}>{size(e.sizeBytes)}</span>
                               </div>
+                              {e.refused && <div className={c.meta} style={{ color: 'var(--warn)' }}>Cannot be removed: {e.refused}</div>}
                               <div className={c.meta}>
                                 {e.quality} · {e.plays} {e.plays === 1 ? 'play' : 'plays'} · {e.viewers} {e.viewers === 1 ? 'viewer' : 'viewers'} · last played {e.lastPlayed ? day(e.lastPlayed) : 'never'} · {VIA_WORD[e.via]}
                               </div>
@@ -281,7 +286,8 @@ export function PlexLibrary() {
                 </div>
                 <div className={c.bar}>
                   {r.kind === 'show' && <button className={c.btn} onClick={() => setOpen(r.ratingKey)}>Seasons and episodes</button>}
-                  {r.kind === 'movie' && canRemove && <button className={`${c.btn} ${c.btnDanger}`} onClick={() => void askPreview({ kind: 'movie', ratingKey: r.ratingKey })}>Remove…</button>}
+                  {r.refused && <span className={c.meta} style={{ color: 'var(--warn)' }}>Cannot be removed: {r.refused}</span>}
+                  {r.kind === 'movie' && canRemove && !r.refused && <button className={`${c.btn} ${c.btnDanger}`} onClick={() => void askPreview({ kind: 'movie', ratingKey: r.ratingKey })}>Remove…</button>}
                 </div>
               </div>
             </li>

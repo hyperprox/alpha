@@ -22,9 +22,13 @@ export interface PlexVersion { mediaId: string; label: string; sizeBytes: number
 /** One episode from Plex's /library/metadata/<show>/allLeaves. */
 export interface PlexEpisode {
   ratingKey: string; seasonKey: string | null; season: number; episode: number; title: string
+  /** Plex's own titles, exactly, for the check just before Plex deletes it. */
+  rawTitle: string; seasonTitle: string
   sizeBytes: number | null; quality: string; versions: PlexVersion[]
   /** Plex's own (server owner's) progress through it. */
   inProgress: boolean
+  /** Every file Plex has for it, with its size: what a Sonarr file must agree with. */
+  parts: Array<{ file: string; size: number | null }>
 }
 
 export function versionsOf(m: any): PlexVersion[] {
@@ -49,9 +53,11 @@ export function plexEpisodes(body: any): PlexEpisode[] {
     return {
       ratingKey: String(m.ratingKey), seasonKey: m?.parentRatingKey != null ? String(m.parentRatingKey) : null,
       season: n0(m.parentIndex), episode: n0(m.index), title: str(m.title, 200) || `Episode ${n0(m.index)}`,
+      rawTitle: typeof m.title === 'string' ? m.title : '', seasonTitle: typeof m.parentTitle === 'string' ? m.parentTitle : '',
       sizeBytes: versions.reduce((a, v) => a + (v.sizeBytes ?? 0), 0) || null,
       quality: versions[0]?.label ?? '—', versions,
       inProgress: n0(m.viewOffset) > 0,
+      parts: (Array.isArray(m?.Media) ? m.Media : []).flatMap((md: any) => (Array.isArray(md?.Part) ? md.Part : []).map((p: any) => ({ file: str(p?.file, 400), size: n0(p?.size) || null }))).filter((p: { file: string }) => p.file),
     }
   }).sort((a, b) => a.season - b.season || a.episode - b.episode)
 }
@@ -65,11 +71,23 @@ export function seriesByTvdb(series: any[], tvdbId: number | null): any | null {
 
 export interface SonarrLink { episodeId: number; fileId: number | null; monitored: boolean; filePath: string | null; fileSize: number | null; quality: string | null }
 
+/** The last path segment, whatever the separator: container paths differ between Plex and Sonarr, names do not. */
+export const baseName = (p: string | null | undefined): string => String(p ?? '').split(/[\\/]/).pop()!.trim().toLowerCase()
+
+export interface EpisodeMapping {
+  /** Plex episodes whose Sonarr file was confirmed: the same file name (and size, when both know it). */
+  links:   Map<string, SonarrLink>
+  /** Plex episodes in a Sonarr-managed series that could not be confirmed, and why. Never removed. */
+  refused: Map<string, string>
+}
+
 /**
- * Plex episodes to Sonarr episodes, by season and episode number within the series the tvdb id chose. An
- * episode Sonarr does not have, or that two Sonarr episodes claim, maps to nothing.
+ * Plex episodes to Sonarr episode files. Season and episode numbers only PROPOSE a match: shows in absolute
+ * (anime), DVD or another order, and specials, number episodes differently in Plex and Sonarr. A link is made
+ * only when the Sonarr episode file and one of the Plex episode's files have the same name, and, when both
+ * know the size, the same size. Anything else is refused, never guessed and never handed to Plex instead.
  */
-export function mapEpisodes(eps: PlexEpisode[], sonarrEpisodes: any[], sonarrFiles: any[]): Map<string, SonarrLink> {
+export function mapEpisodes(eps: PlexEpisode[], sonarrEpisodes: any[], sonarrFiles: any[]): EpisodeMapping {
   const files = new Map<number, any>()
   for (const f of Array.isArray(sonarrFiles) ? sonarrFiles : []) if (typeof f?.id === 'number') files.set(f.id, f)
   const bySE = new Map<string, any[]>()
@@ -78,20 +96,40 @@ export function mapEpisodes(eps: PlexEpisode[], sonarrEpisodes: any[], sonarrFil
     const k = `${n0(e.seasonNumber)}x${n0(e.episodeNumber)}`
     bySE.set(k, [...(bySE.get(k) ?? []), e])
   }
-  const out = new Map<string, SonarrLink>()
+  // A Sonarr file by its name, for the reason given when numbers disagree.
+  const byName = new Map<string, any>()
+  for (const f of files.values()) byName.set(baseName(f.path), f)
+  const links = new Map<string, SonarrLink>()
+  const refused = new Map<string, string>()
   for (const p of eps) {
+    const where = `S${p.season}E${p.episode}`
     const hits = bySE.get(`${p.season}x${p.episode}`) ?? []
-    if (hits.length !== 1) continue
+    const named = p.parts.map(x => byName.get(baseName(x.file))).find(Boolean)
+    if (hits.length !== 1) {
+      refused.set(p.ratingKey, hits.length ? `Sonarr has more than one ${where}, so it is left alone.`
+        : named ? `Sonarr numbers this file differently (not ${where}), so it is left alone.` : `Sonarr has no ${where} with this file, so it is left alone.`)
+      continue
+    }
     const e = hits[0]
     const fid = n0(e.episodeFileId) || null
     const f = fid ? files.get(fid) : undefined
-    out.set(p.ratingKey, {
-      episodeId: e.id, fileId: fid && f ? fid : null, monitored: !!e.monitored,
-      filePath: f ? str(f.path, 400) || null : null, fileSize: f ? n0(f.size) || null : null,
-      quality: f ? str(f?.quality?.quality?.name, 40) || null : null,
+    if (!f) {
+      refused.set(p.ratingKey, named ? `Sonarr numbers this file differently (not ${where}), so it is left alone.` : `Sonarr has no file for ${where}, so it is left alone.`)
+      continue
+    }
+    const part = p.parts.find(x => baseName(x.file) === baseName(f.path))
+    const sonarrSize = n0(f.size) || null
+    if (!part || (part.size && sonarrSize && part.size !== sonarrSize)) {
+      refused.set(p.ratingKey, `Plex's file for ${where} is not the one Sonarr has as ${where}, so it is left alone.`)
+      continue
+    }
+    links.set(p.ratingKey, {
+      episodeId: e.id, fileId: fid, monitored: !!e.monitored,
+      filePath: str(f.path, 400) || null, fileSize: sonarrSize,
+      quality: str(f?.quality?.quality?.name, 40) || null,
     })
   }
-  return out
+  return { links, refused }
 }
 
 /** History rows that belong to this show: by its ratingKey, or (a re-download) by its title. */

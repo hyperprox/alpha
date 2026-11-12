@@ -114,6 +114,7 @@ export function newWatcherDeps(o: {
 export function buildPlexClearoutRoutes(deps: {
   service?: () => ClearoutService; library?: () => LibraryService; plex?: () => Promise<CoreEndpointClient | null>; cache?: ArtCache; live?: () => Promise<any>
   limiter?: MissLimiter
+  showLimiter?: MissLimiter
   liveTtlMs?: number
   /** The new-items watcher. Production starts the real one; tests pass their own, or nothing (no watcher). */
   watcher?: { start(d: NewWatcherDeps): () => void; deps: NewWatcherDeps }
@@ -124,6 +125,8 @@ export function buildPlexClearoutRoutes(deps: {
   const plex = deps.plex ?? plexServer
   const cache = deps.cache ?? new ArtCache()
   const limiter = deps.limiter ?? new MissLimiter()
+  // Opening a show reads Plex and Sonarr: 30 a minute per person.
+  const showLimiter = deps.showLimiter ?? new MissLimiter(30)
   const watcher = deps.watcher ?? (deps.service ? null : {
     start: startNewWatcher,
     deps: newWatcherDeps({
@@ -212,6 +215,7 @@ export function buildPlexClearoutRoutes(deps: {
       try { return { success: true, data: await lib().list() } } catch (e) { return fail(reply, e) }
     })
     fastify.get<{ Params: { key: string } }>('/library/show/:key', async (req, reply) => {
+      if (!showLimiter.allow(req.session?.sid ?? 'anonymous')) return reply.status(429).send({ success: false, code: 'slow_down', error: 'Too many shows opened at once. Try again in a minute.' })
       try { return { success: true, data: await lib().show(req.params.key) } } catch (e) { return fail(reply, e) }
     })
     fastify.post<{ Body: Record<string, unknown> }>('/library/preview', async (req, reply) => {
@@ -233,6 +237,7 @@ export function buildPlexClearoutRoutes(deps: {
 /** One summary row per removal, besides the per-item rows the engine writes before and after each delete. */
 async function summary(action: string, by: string, out: { preview: { items: unknown[] }; results: Array<{ removed: boolean; title: string; via: string; sizeBytes: number }> }) {
   const removed = out.results.filter(r => r.removed)
+  // The per-item rows were already written; a failed summary must not hide the results from the person.
   await auditCredentialUse(action, 'plugin:plex', {
     by, asked: out.preview.items.length, removed: removed.length, failed: out.results.length - removed.length,
     bytes: removed.reduce((a, r) => a + (r.sizeBytes ?? 0), 0),

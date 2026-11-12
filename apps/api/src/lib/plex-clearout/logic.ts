@@ -283,6 +283,8 @@ export interface ClearoutRow {
   via:          'sonarr' | 'radarr' | 'plex'
   /** The poster through HyperProx's image route, or null for the title card. */
   art:          string | null
+  /** Why it cannot be removed (the Arr did not answer, or a title matched without an id), or null. */
+  refused?:     string | null
 }
 
 export interface KindTotals {

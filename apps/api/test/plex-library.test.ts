@@ -18,6 +18,7 @@ import { LibraryService } from '../src/lib/plex-library/service'
 import { mapEpisodes, nextUpFor, plexEpisodes, seriesByTvdb } from '../src/lib/plex-library/logic'
 import { PLEX_DELETION_OFF, STREAMING } from '../src/lib/plex-remove/engine'
 import type { CoreEndpointClient } from '../src/lib/plugin-host'
+import { MissLimiter } from '../src/lib/plex-art'
 import { FakeBroker } from './fakes/fake-broker'
 import { signIn } from './fakes/app'
 
@@ -26,7 +27,7 @@ const DAY = 86_400_000
 const s = (ms: number) => Math.floor(ms / 1000)
 
 const leaf = (rk: string, season: number, ep: number, over: any = {}) => ({
-  type: 'episode', ratingKey: rk, parentRatingKey: `${7000 + season}`, parentIndex: season, index: ep, title: `Episode ${ep}`,
+  type: 'episode', ratingKey: rk, parentRatingKey: `${7000 + season}`, parentIndex: season, index: ep, title: `Episode ${ep}`, parentTitle: `Season ${season}`,
   Media: [{ id: Number(rk) * 10, videoResolution: '1080', videoCodec: 'hevc', Part: [{ size: 1e9, file: `/tv/Harbour Lights/S0${season}E0${ep}.mkv` }] }], ...over,
 })
 
@@ -42,13 +43,13 @@ test('episodes map to Sonarr by tvdb id plus season and episode, never by title'
   const eps = plexEpisodes({ MediaContainer: { Metadata: [leaf('702', 1, 2, { title: 'Renamed in Plex' }), leaf('701', 1, 1), leaf('703', 1, 3), { type: 'season', ratingKey: '1' }] } })
   assert.deepEqual(eps.map(e => [e.ratingKey, e.season, e.episode]), [['701', 1, 1], ['702', 1, 2], ['703', 1, 3]])
   assert.equal(eps[0].quality, '1080p · HEVC')
-  const links = mapEpisodes(eps,
+  const { links } = mapEpisodes(eps,
     [{ id: 91, seasonNumber: 1, episodeNumber: 1, episodeFileId: 501, monitored: true, title: 'Totally different' },
      { id: 92, seasonNumber: 1, episodeNumber: 2, episodeFileId: 502, monitored: true },
      { id: 93, seasonNumber: 1, episodeNumber: 3, episodeFileId: 0, monitored: true },
      { id: 94, seasonNumber: 1, episodeNumber: 3, episodeFileId: 504, monitored: true }],
-    [{ id: 501, path: '/tv/a.mkv', size: 2e9, quality: { quality: { name: 'WEBDL-1080p' } } }, { id: 502, path: '/tv/b.mkv', size: 3e9 }])
-  assert.deepEqual(links.get('701'), { episodeId: 91, fileId: 501, monitored: true, filePath: '/tv/a.mkv', fileSize: 2e9, quality: 'WEBDL-1080p' })
+    [{ id: 501, path: '/media/Harbour Lights/S01E01.mkv', size: 1e9, quality: { quality: { name: 'WEBDL-1080p' } } }, { id: 502, path: '/media/Harbour Lights/S01E02.mkv', size: 1e9 }])
+  assert.deepEqual(links.get('701'), { episodeId: 91, fileId: 501, monitored: true, filePath: '/media/Harbour Lights/S01E01.mkv', fileSize: 1e9, quality: 'WEBDL-1080p' })
   assert.equal(links.get('702')?.fileId, 502, 'a renamed episode still maps: by number, not title')
   assert.equal(links.has('703'), false, 'two Sonarr episodes claim S1E3: neither is used')
 })
@@ -74,15 +75,15 @@ test('next up: watched the episode before it in the last 14 days, and not this o
 // ── the service, against a fake Plex and Sonarr ─────────────────────────────
 
 function world() {
-  const state = { allow: true, streaming: [] as any[], plexGone: new Set<string>(), mediaGone: new Set<string>() }
+  const state = { allow: true, streaming: [] as any[], plexGone: new Set<string>(), mediaGone: new Set<string>(), extraOwl: [] as any[], renamed: new Map<string, string>(), sonarrDown: false, owlTitleInSonarr: false }
   const calls: string[] = []
   const files = new Map<number, any>([[501, { id: 501, seriesId: 9, path: '/tv/Harbour Lights/S01E01.mkv', size: 1e9 }], [502, { id: 502, seriesId: 9, path: '/tv/Harbour Lights/S01E02.mkv', size: 1e9 }], [503, { id: 503, seriesId: 9, path: '/tv/Harbour Lights/S01E03.mkv', size: 1e9 }]])
   const episodes = [1, 2, 3].map(n => ({ id: 90 + n, seriesId: 9, seasonNumber: 1, episodeNumber: n, episodeFileId: 500 + n, monitored: true }))
   const series = { id: 9, title: 'Harbour Lights', tvdbId: 500, path: '/tv/Harbour Lights', statistics: { sizeOnDisk: 3e9 }, seasons: [{ seasonNumber: 1, monitored: true }] }
   const owl = [
-    { type: 'episode', ratingKey: '801', parentRatingKey: '8001', parentIndex: 1, index: 1, title: 'Owls',
+    { type: 'episode', ratingKey: '801', parentRatingKey: '8001', parentIndex: 1, index: 1, title: 'Owls', parentTitle: 'Season 1',
       Media: [{ id: 11, videoResolution: '720', Part: [{ size: 5e8, file: '/tv/Owl Fen/S01E01 720p.mkv' }] }, { id: 12, videoResolution: '1080', Part: [{ size: 9e8, file: '/tv/Owl Fen/S01E01 1080p.mkv' }] }] },
-    { type: 'episode', ratingKey: '802', parentRatingKey: '8001', parentIndex: 1, index: 2, title: 'More owls', Media: [{ id: 13, Part: [{ size: 4e8, file: '/tv/Owl Fen/S01E02.mkv' }] }] },
+    { type: 'episode', ratingKey: '802', parentRatingKey: '8001', parentIndex: 1, index: 2, title: 'More owls', parentTitle: 'Season 1', Media: [{ id: 13, Part: [{ size: 4e8, file: '/tv/Owl Fen/S01E02.mkv' }] }] },
   ]
   const plex: CoreEndpointClient = {
     async get(p) {
@@ -92,7 +93,7 @@ function world() {
       if (p === '/accounts') return { MediaContainer: { Account: [{ id: 1, name: 'alex' }] } }
       if (p.startsWith('/library/sections/2/all')) return { MediaContainer: { totalSize: 2, Metadata: [
         { ratingKey: '77', title: 'Harbour Lights', year: 1990, addedAt: s(NOW - 900 * DAY), Guid: [{ id: 'tvdb://500' }], Location: [{ path: '/tv/Harbour Lights' }] },
-        { ratingKey: '88', title: 'Owl Fen', year: 2019, addedAt: s(NOW - 900 * DAY), Location: [{ path: '/tv/Owl Fen' }] },
+        { ratingKey: '88', title: 'Owl Fen', year: 2019, addedAt: s(NOW - 900 * DAY), Guid: [{ id: 'tvdb://4242' }], Location: [{ path: '/tv/Owl Fen' }] },
       ] } }
       if (p.startsWith('/library/sections/2/all?type=4')) return { MediaContainer: { Metadata: [] } }
       if (p.startsWith('/library/sections')) return { MediaContainer: { Directory: [{ key: '2', type: 'show', title: 'TV' }] } }
@@ -101,11 +102,14 @@ function world() {
       ] } }
       if (p === '/library/metadata/77/allLeaves') return { MediaContainer: { Metadata: [leaf('701', 1, 1), leaf('702', 1, 2), leaf('703', 1, 3, { viewOffset: 60_000 })] } }
       if (p === '/library/metadata/88/allLeaves') return { MediaContainer: { Metadata: owl.filter(e => !state.plexGone.has(e.ratingKey)) } }
+      if (p === '/library/metadata/8001/children') return { MediaContainer: { Metadata: [...owl, ...state.extraOwl].filter(e => !state.plexGone.has(e.ratingKey)) } }
       const md = /^\/library\/metadata\/(\d+)$/.exec(p)
       if (md) {
         if (state.plexGone.has(md[1])) throw new Error('Plex returned HTTP 404')
+        const known: Record<string, { type: string; title: string }> = { 77: { type: 'show', title: 'Harbour Lights' }, 88: { type: 'show', title: 'Owl Fen' }, 8001: { type: 'season', title: 'Season 1' } }
         const e = owl.find(x => x.ratingKey === md[1])
-        return { MediaContainer: { Metadata: [{ ratingKey: md[1], Media: (e?.Media ?? []).filter(m => !state.mediaGone.has(String(m.id))) }] } }
+        const t = e ? { type: 'episode', title: e.title } : known[md[1]] ?? { type: 'episode', title: `Episode ${Number(md[1]) % 10}` }
+        return { MediaContainer: { Metadata: [{ ratingKey: md[1], type: t.type, title: state.renamed.get(md[1]) ?? t.title, Media: (e?.Media ?? []).filter(m => !state.mediaGone.has(String(m.id))) }] } }
       }
       throw new Error(`unexpected ${p}`)
     },
@@ -123,7 +127,8 @@ function world() {
   const sonarr: CoreEndpointClient = {
     async get(p) {
       calls.push(`sonarr GET ${p}`)
-      if (p === '/api/v3/series') return [series, { id: 10, title: 'Owl Fen', tvdbId: 999, path: '/tv/Owl Fen' }]
+      if (state.sonarrDown) throw new Error('Arr Stack returned HTTP 503')
+      if (p === '/api/v3/series') return [series, { id: 10, title: state.owlTitleInSonarr ? 'Owl Fen' : 'Badger Moor', tvdbId: 999, path: '/tv/Other' }]
       if (p === '/api/v3/series/9') return series
       if (p === '/api/v3/episode?seriesId=9') return episodes
       if (p === '/api/v3/episodefile?seriesId=9') return [...files.values()]
@@ -161,7 +166,8 @@ test('show view: seasons, episodes with size, quality, plays, watched, next up, 
   assert.deepEqual(eps[1].nextUpFor, ['alex'])
   assert.equal(eps[2].inProgress, true)
   const owl = await w.lib.show('88')
-  assert.equal(owl.show.via, 'plex', 'Sonarr has an "Owl Fen", but Plex has no tvdb id for it: never matched by title')
+  assert.equal(owl.show.via, 'plex', 'Sonarr answered and has no show with its tvdb id: a definite not-found, so Plex removes it')
+  assert.equal(owl.show.refused, null)
   assert.equal(owl.seasons[0].episodes[0].versions.length, 2)
 })
 
@@ -246,7 +252,7 @@ test('one version of an episode with two: only that media item goes, read back b
   const v = await w.lib.show('88')
   assert.deepEqual(v.seasons[0].episodes[0].versions.map(x => [x.mediaId, x.label, x.sizeBytes]), [['11', '720p', 5e8], ['12', '1080p', 9e8]])
   const p = await w.lib.preview({ kind: 'episodes', ratingKey: '88', episodes: ['801'], mediaIds: { 801: '11' } }, 'sid')
-  assert.deepEqual(p.items[0].step, { kind: 'plex-media', ratingKey: '801', mediaId: '11' })
+  assert.deepEqual(p.items[0].step, { kind: 'plex-media', ratingKey: '801', mediaId: '11', expect: { type: 'episode', title: 'Owls' } })
   assert.deepEqual(p.items[0].files.map(f => f.path), ['/tv/Owl Fen/S01E01 720p.mkv'])
   const r = await w.lib.remove(p.id, 'sid')
   assert.equal(r.results[0].removed, true)
@@ -325,4 +331,161 @@ test('library routes: viewers browse; operators preview; removing needs the mast
   assert.equal(done.statusCode, 200, done.body)
   assert.equal(done.json().data.results[0].removed, true)
   assert.equal((await app.inject({ method: 'POST', url: `${L}/remove`, headers: { cookie: op }, payload: { previewId: p.id } })).statusCode, 409, 'single use')
+})
+
+// ── second review: matching, routing and the extra guards ───────────────────
+
+const ep = (rk: string, season: number, episode: number, file: string, size: number | null = 1e9) =>
+  plexEpisodes({ MediaContainer: { Metadata: [{ type: 'episode', ratingKey: rk, parentIndex: season, index: episode, title: 't', Media: [{ id: 1, Part: [{ file, size }] }] }] } })[0]
+
+test('a Sonarr file is linked only when its name (and size) agree with Plex’s file: absolute, DVD order and specials are refused', () => {
+  // Same file, different container paths: linked.
+  const ok = mapEpisodes([ep('1', 1, 1, '/data/tv/Show/S01E01.mkv')], [{ id: 11, seasonNumber: 1, episodeNumber: 1, episodeFileId: 101 }], [{ id: 101, path: '/tv/Show/S01E01.mkv', size: 1e9 }])
+  assert.equal(ok.links.get('1')?.fileId, 101)
+
+  // Anime in absolute order: Plex calls it S1E13, Sonarr's S1E13 is a different file (its S2E1 holds this one).
+  const anime = mapEpisodes([ep('2', 1, 13, '/tv/Fox Rangers/Fox Rangers - 013.mkv')],
+    [{ id: 21, seasonNumber: 1, episodeNumber: 13, episodeFileId: 201 }, { id: 22, seasonNumber: 2, episodeNumber: 1, episodeFileId: 202 }],
+    [{ id: 201, path: '/tv/Fox Rangers/Fox Rangers - S01E13.mkv' }, { id: 202, path: '/tv/Fox Rangers/Fox Rangers - 013.mkv' }])
+  assert.equal(anime.links.has('2'), false)
+  assert.match(anime.refused.get('2')!, /not the one Sonarr has as S1E13/)
+
+  // DVD order: Plex's S1E2 is the file Sonarr calls S1E3.
+  const dvd = mapEpisodes([ep('3', 1, 2, '/tv/Glass House/ep-b.mkv')],
+    [{ id: 31, seasonNumber: 1, episodeNumber: 2, episodeFileId: 301 }, { id: 32, seasonNumber: 1, episodeNumber: 3, episodeFileId: 302 }],
+    [{ id: 301, path: '/tv/Glass House/ep-a.mkv' }, { id: 302, path: '/tv/Glass House/ep-b.mkv' }])
+  assert.equal(dvd.links.has('3'), false)
+
+  // A special Sonarr numbers differently, and one Sonarr has no file for.
+  const specials = mapEpisodes([ep('4', 0, 1, '/tv/Show/Specials/behind-the-scenes.mkv'), ep('5', 0, 2, '/tv/Show/Specials/pilot.mkv')],
+    [{ id: 41, seasonNumber: 0, episodeNumber: 1, episodeFileId: 401 }, { id: 42, seasonNumber: 0, episodeNumber: 5, episodeFileId: 402 }],
+    [{ id: 401, path: '/tv/Show/Specials/trailer.mkv' }, { id: 402, path: '/tv/Show/Specials/pilot.mkv' }])
+  assert.equal(specials.links.size, 0)
+  assert.match(specials.refused.get('5')!, /numbers this file differently/)
+
+  // Same name, different size: not the same file.
+  const size = mapEpisodes([ep('6', 1, 1, '/x/S01E01.mkv', 2e9)], [{ id: 61, seasonNumber: 1, episodeNumber: 1, episodeFileId: 601 }], [{ id: 601, path: '/y/S01E01.mkv', size: 1e9 }])
+  assert.equal(size.links.has('6'), false)
+})
+
+test('an unconfirmed episode in a show Sonarr manages is refused, never removed through Plex', async () => {
+  const w = world()
+  w.files.get(502)!.path = '/tv/Harbour Lights/Some other file.mkv'
+  const v = await w.lib.show('77')
+  const e2 = v.seasons[0].episodes.find(e => e.ratingKey === '702')!
+  assert.equal(e2.via, 'sonarr')
+  assert.match(e2.refused!, /left alone/)
+  const p = await w.lib.preview({ kind: 'episodes', ratingKey: '77', episodes: ['702'] }, 'sid')
+  assert.equal(p.items.length, 0)
+  assert.match(p.skipped[0].reason, /S1E2/)
+  const season = await w.lib.preview({ kind: 'season', ratingKey: '77', season: 1 }, 'sid')
+  assert.equal(season.items.length, 0, 'a season with an unconfirmed episode is left alone')
+  assert.equal(w.calls.some(c => c.startsWith('plex DELETE')), false)
+})
+
+test('an Arr that is set up but does not answer, a title-only match, or no id: refused, never Plex', async () => {
+  const w = world()
+  await w.lib.list()
+  w.state.sonarrDown = true
+  const down = await w.lib.preview({ kind: 'episodes', ratingKey: '77', episodes: ['701'] }, 'sid')
+  assert.equal(down.items.length, 0)
+  assert.equal(down.skipped[0].reason, "Sonarr didn't answer, try again.")
+
+  // Sonarr did not answer when the library was read: every show is refused, not handed to Plex.
+  const w2 = world()
+  w2.state.sonarrDown = true
+  const rows = (await w2.lib.list()).rows
+  assert.ok(rows.every(r => r.refused === "Sonarr didn't answer, try again."))
+  const p2 = await w2.lib.preview({ kind: 'show', ratingKey: '88' }, 'sid')
+  assert.equal(p2.items.length, 0)
+
+  // A title match without an id.
+  const w3 = world()
+  w3.state.owlTitleInSonarr = true
+  const owl = (await w3.lib.list()).rows.find(r => r.title === 'Owl Fen')!
+  assert.match(owl.refused!, /has something with this title, but not with Plex's ids/)
+  const p3 = await w3.lib.preview({ kind: 'episodes', ratingKey: '88', episodes: ['802'] }, 'sid')
+  assert.equal(p3.items.length, 0)
+  assert.equal(w3.calls.some(c => c.startsWith('plex DELETE')), false)
+})
+
+test('Sonarr: unmonitor first, then delete; a double-episode file counts every episode it holds as playing', async () => {
+  const w = world()
+  w.files.delete(502)
+  w.episodes.find(e => e.id === 92)!.episodeFileId = 501
+  w.files.get(501)!.path = '/tv/Harbour Lights/S01E01-E02.mkv'
+  w.files.get(501)!.size = 2e9
+  // Plex has the same double file under both episodes.
+  const doubled = { ...w.plex, async get(p: string) {
+    if (p === '/library/metadata/77/allLeaves') return { MediaContainer: { Metadata: [
+      leaf('701', 1, 1, { Media: [{ id: 7010, Part: [{ size: 2e9, file: '/data/Harbour Lights/S01E01-E02.mkv' }] }] }),
+      leaf('702', 1, 2, { Media: [{ id: 7020, Part: [{ size: 2e9, file: '/data/Harbour Lights/S01E01-E02.mkv' }] }] }),
+      leaf('703', 1, 3)] } }
+    return w.plex.get(p)
+  } }
+  const lib = new LibraryService(new ClearoutService({ plex: async () => doubled, sonarr: async () => w.sonarr, radarr: async () => null, option: async () => undefined, now: () => NOW }))
+  const p = await lib.preview({ kind: 'episodes', ratingKey: '77', episodes: ['701'] }, 'sid')
+  assert.ok(p.items[0].plex.keys.includes('702'), 'the other episode in the same file')
+  assert.deepEqual((p.items[0].step as any).episodeIds, [91, 92])
+  w.state.streaming = [{ ratingKey: '702', parentRatingKey: '7001', grandparentRatingKey: '999' }]
+  const r = await lib.remove(p.id, 'sid')
+  assert.equal(r.results[0].message, STREAMING)
+  w.state.streaming = []
+  const p2 = await lib.preview({ kind: 'episodes', ratingKey: '77', episodes: ['701'] }, 'sid')
+  await lib.remove(p2.id, 'sid')
+  const put = w.calls.findIndex(c => c.startsWith('sonarr PUT /api/v3/episode/monitor'))
+  const del = w.calls.findIndex(c => c.startsWith('sonarr DELETE /api/v3/episodefile/'))
+  assert.ok(put >= 0 && del > put, 'unmonitored before the file is deleted')
+})
+
+test('Plex: a season that gained episodes since the preview, or a key that is now something else, is left alone', async () => {
+  const w = world()
+  const p = await w.lib.preview({ kind: 'season', ratingKey: '88', season: 1 }, 'sid')
+  assert.deepEqual(p.items[0].step, { kind: 'plex-item', ratingKey: '8001', expect: { type: 'season', title: 'Season 1', children: ['801', '802'] } })
+  w.state.extraOwl.push({ type: 'episode', ratingKey: '803', title: 'New owls' })
+  const r = await w.lib.remove(p.id, 'sid')
+  assert.equal(r.results[0].removed, false)
+  assert.match(r.results[0].message, /New episodes appeared/)
+
+  const p2 = await w.lib.preview({ kind: 'episodes', ratingKey: '88', episodes: ['802'] }, 'sid')
+  w.state.renamed.set('802', 'Something else entirely')
+  const r2 = await w.lib.remove(p2.id, 'sid')
+  assert.match(r2.results[0].message, /no longer has it as previewed/)
+  assert.equal(w.calls.some(c => c.startsWith('plex DELETE')), false)
+})
+
+test('a preview only works at the route that made it, and a failing audit stops the run with what was done', async () => {
+  const w = world()
+  const item = { id: 'x', title: 'x', via: 'plex' as const, step: { kind: 'plex-item' as const, ratingKey: '802', expect: { type: 'episode' as const, title: 'More owls' } },
+    files: [], sizeBytes: 0, note: '', warnings: [], keptBy: null, blocked: null, plex: { keys: ['802'], section: '2', folder: null } }
+  const fromClearout = w.clearout.previews.put('sid', [item], [], 'clearout')
+  await assert.rejects(w.lib.remove(fromClearout.id, 'sid'), /expired/, 'a Clear-out preview is not a Library one')
+  assert.equal(w.calls.some(c => c.startsWith('plex DELETE')), false)
+
+  let n = 0
+  const lib = new LibraryService(new ClearoutService({ plex: async () => w.plex, sonarr: async () => w.sonarr, radarr: async () => null, option: async () => undefined, now: () => NOW,
+    audit: async a => { if (a.endsWith('.start') && ++n === 2) throw new Error('database gone') } }))
+  const p = await lib.preview({ kind: 'episodes', ratingKey: '88', episodes: ['801', '802'] }, 'sid')
+  assert.equal(p.items.length, 2)
+  const r = await lib.remove(p.id, 'sid')
+  assert.equal(r.results[0].removed, true)
+  assert.equal(r.results[1].removed, false)
+  assert.match(r.results[1].message, /audit log could not be written/)
+  assert.deepEqual(w.calls.filter(c => c.startsWith('plex DELETE')), ['plex DELETE /library/metadata/801'])
+})
+
+test('opening shows is limited per person; Sonarr’s series list is read once for several shows', async () => {
+  const w = world()
+  await w.lib.show('77'); await w.lib.show('77')
+  assert.equal(w.calls.filter(c => c === 'sonarr GET /api/v3/series').length, 2, 'once for the library reading, once for the shows (cached)')
+  const a = Fastify({ logger: false })
+  await registerGate(a)
+  await a.register(authRoutes, { prefix: '/api/auth' })
+  await a.register(buildPlexClearoutRoutes({ service: () => w.clearout, library: () => w.lib, showLimiter: new MissLimiter(1) }), { prefix: '/api/plugins/plex' })
+  await a.ready()
+  try {
+    const viewer = (await signIn(a, 'viewer@example.com', 'viewer master password')).cookie
+    assert.equal((await a.inject({ method: 'GET', url: `${L}/show/77`, headers: { cookie: viewer } })).statusCode, 200)
+    assert.equal((await a.inject({ method: 'GET', url: `${L}/show/77`, headers: { cookie: viewer } })).statusCode, 429)
+  } finally { await a.close() }
 })

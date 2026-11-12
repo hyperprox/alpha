@@ -26,7 +26,7 @@ type Kind = 'movie' | 'show'
 interface Row {
   id: string; kind: Kind; title: string; year: number | null; section: string; sectionTitle: string
   sizeBytes: number | null; plays: number; viewers: number; lastPlayed: number | null; addedAt: number
-  list: 'never' | 'idle'; removable: boolean; via: Via; art: string | null
+  list: 'never' | 'idle'; removable: boolean; via: Via; art: string | null; refused?: string | null
 }
 interface Totals { items: number; unwatched: number; unwatchedShare: number; never: number; idle: number; listBytes: number }
 interface Report {
@@ -230,6 +230,7 @@ export function PlexClearOut({ live = true }: { live?: boolean }) {
                       <span className={c.size}>{size(r.sizeBytes)}</span>
                     </div>
                     <div className={c.meter} aria-hidden><i style={{ width: `${Math.max(2, ((r.sizeBytes ?? 0) / biggest) * 100)}%` }} /></div>
+                    {r.refused && <div className={c.meta} style={{ color: 'var(--warn)' }}>Cannot be removed: {r.refused}</div>}
                     <div className={c.meta}>
                       {r.plays} {r.plays === 1 ? 'play' : 'plays'} · {r.viewers} {r.viewers === 1 ? 'viewer' : 'viewers'} · last played {r.lastPlayed ? day(r.lastPlayed) : 'never'} · added {day(r.addedAt)} · {r.sectionTitle}
                     </div>

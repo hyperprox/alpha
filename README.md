@@ -1127,17 +1127,23 @@ next unwatched one.
 How removing works, in the Library and in Clear-out:
 
 - **Which way.** If Sonarr or Radarr manages the item (matched by its tvdb or tmdb id, never by its
-  title), the removal goes through them. That way it is not downloaded again:
+  title), the removal goes through them. That way it is not downloaded again. An episode is only removed
+  through Sonarr when Sonarr's file for it has the same name (and size) as Plex's, so shows numbered
+  differently (anime in absolute order, DVD order, specials) never lose the wrong file; an episode that
+  does not match is left alone:
   - a show or film is deleted with its files and added to the import-list exclusions;
   - episodes or a season have their files deleted, and those episodes (and the season) are set to
     unmonitored. In the preview you can tick **Keep monitored so a better copy downloads** instead,
     which is handy for replacing a bad file.
 
-  Anything else is removed by Plex itself. The preview then says: "Removed from disk by Plex. If
+  Plex itself removes an item only when no Sonarr (for TV) or Radarr (for films) is set up, or when it
+  answered and does not have the item. If it did not answer, or has something with the same title but
+  other ids, or Plex has no id to check, nothing is removed and the page says why. The preview then says: "Removed from disk by Plex. If
   something else downloads your media, it may come back." Plex only allows this with **Allow media
   deletion** on (Plex: Settings → Server → Library). If it is off, the page says so and how to turn it
   on. HyperProx does not change that setting. When an episode or film has more than one version, you can
-  remove just one of them, through Plex.
+  remove just one of them, through Plex. Just before Plex deletes something, HyperProx checks it is still
+  the same item, and that a season has not gained episodes since the preview.
 - **The preview** comes first, and lists each item, which way it goes, exactly which files go, and the
   total size. It warns when an episode is someone's next one (they watched the episode before it in the
   last 14 days and not this one) or is partly watched. A **kept by rule** badge shows when a keep rule
@@ -1145,8 +1151,9 @@ How removing works, in the Library and in Clear-out:
 - **Never while someone is watching.** Anything being played right now is left alone, checked again at
   the moment of removing.
 - **Guards.** Removing needs the operator role or higher and your master password again. A preview
-  can be used once, only by the person who made it, within 10 minutes. API tokens can never remove
-  anything.
+  can be used once, only by the person who made it, only on the page that made it, within 10 minutes.
+  API tokens can never remove anything. With Sonarr, episodes are unmonitored before their files are
+  deleted. If the audit log cannot be written, the removal stops and says what was already done.
 - **Afterwards** HyperProx reads each item back and reports it as removed only once it is really gone.
   It then asks Plex to rescan just that folder, so it leaves Plex straight away. Every item is written to
   the audit log before and after it is removed.

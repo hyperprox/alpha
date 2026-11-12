@@ -169,10 +169,10 @@ function fakes() {
       if (p === '/:/prefs') return { MediaContainer: { Setting: [{ id: 'allowMediaDeletion', value: state.allow }] } }
       if (p === '/accounts') return { MediaContainer: { Account: [{ id: 1, name: 'alex' }] } }
       const md = /^\/library\/metadata\/(\d+)$/.exec(p)
-      if (md) { if (gonePlex.has(md[1])) throw new Error('Plex returned HTTP 404'); return { MediaContainer: { Metadata: [{ ratingKey: md[1], Media: [] }] } } }
+      if (md) { if (gonePlex.has(md[1])) throw new Error('Plex returned HTTP 404'); return { MediaContainer: { Metadata: [{ ratingKey: md[1], type: 'movie', title: md[1] === '2' ? 'Glass Orchard' : 'Paper Moons', Media: [] }] } } }
       if (p.startsWith('/library/sections/1/all')) return { MediaContainer: { totalSize: 2, Metadata: [
         { ratingKey: '1', title: 'Paper Moons', year: 2015, addedAt: s(NOW - 400 * DAY), Guid: [{ id: 'tmdb://111' }], Media: [{ Part: [{ size: 1 }] }] },
-        { ratingKey: '2', title: 'Glass Orchard', year: 2016, addedAt: s(NOW - 400 * DAY), Media: [{ Part: [{ size: 3e9 }] }] },
+        { ratingKey: '2', title: 'Glass Orchard', year: 2016, addedAt: s(NOW - 400 * DAY), Guid: [{ id: 'tmdb://222' }], Media: [{ Part: [{ size: 3e9, file: '/films/Glass Orchard/Glass Orchard.mkv' }] }] },
       ] } }
       if (p.startsWith('/library/sections')) return { MediaContainer: { Directory: [{ key: '1', type: 'movie', title: 'Films' }, { key: '9', type: 'artist', title: 'Music' }] } }
       if (p.startsWith('/status/sessions/history/all')) return { MediaContainer: { totalSize: 0, Metadata: [] } }
@@ -467,7 +467,13 @@ test('title matches never guess: two Arr entries with one title and year match n
   }
   const s2 = new ClearoutService({ plex: async () => fakes().plex, sonarr: async () => null, radarr: async () => twins, option: async () => 'none', now: () => NOW })
   const { report } = await s2.report()
-  assert.equal(report.rows.find(r => r.title === 'Glass Orchard')?.via, 'plex', 'an ambiguous title is never Radarr’s to delete')
+  void report
+  const go = report.rows.find(r => r.title === 'Glass Orchard')!
+  assert.equal(go.via, 'plex', 'an ambiguous title is never Radarr’s to delete')
+  assert.match(go.refused!, /has something with this title, but not with Plex's ids/, '…and never handed to Plex either')
+  const p = await s2.preview(['movie:2'], 'sid')
+  assert.equal(p.items.length, 0)
+  assert.match(p.skipped[0].reason, /not with Plex's ids/)
 })
 
 test('an Arr entry shared with a Plex item that is watched or kept is refused; each delete is audited before and after', async () => {

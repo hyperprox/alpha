@@ -26,8 +26,14 @@ export type Step =
   | { kind: 'arr-movie'; arrId: number; path: string | null }
   | { kind: 'arr-series'; arrId: number; path: string | null }
   | { kind: 'arr-files'; seriesId: number; fileIds: number[]; episodeIds: number[]; unmonitor: boolean; season: number | null }
-  | { kind: 'plex-item'; ratingKey: string }
-  | { kind: 'plex-media'; ratingKey: string; mediaId: string }
+  | { kind: 'plex-item'; ratingKey: string; expect: PlexExpect }
+  | { kind: 'plex-media'; ratingKey: string; mediaId: string; expect: PlexExpect }
+
+/**
+ * What the key was at preview time. Re-checked just before Plex deletes it: a key Plex reused for something else,
+ * or a season that gained episodes since the preview, is refused.
+ */
+export interface PlexExpect { type: 'movie' | 'show' | 'season' | 'episode'; title: string; children?: string[] }
 
 export interface PlanItem {
   id:        string
@@ -49,7 +55,7 @@ export interface PlanItem {
   plex:      { keys: string[]; section: string | null; folder: string | null }
 }
 
-export interface Plan { id: string; owner: string; createdAt: number; items: PlanItem[]; totalBytes: number; skipped: Array<{ id: string; reason: string }> }
+export interface Plan { id: string; owner: string; scope: string; createdAt: number; items: PlanItem[]; totalBytes: number; skipped: Array<{ id: string; reason: string }> }
 
 export interface ItemResult { id: string; title: string; via: Via; removed: boolean; message: string; sizeBytes: number }
 
@@ -68,19 +74,20 @@ const PREVIEW_TTL = 10 * 60_000
 export class PreviewStore {
   private m = new Map<string, Plan>()
   constructor(private now: () => number, private newId: () => string = () => Math.random().toString(36).slice(2) + Date.now().toString(36)) {}
-  put(owner: string, items: PlanItem[], skipped: Plan['skipped']): Plan {
+  /** `scope` is the feature that made it (clearout, library): a plan is only ever removed by the same one. */
+  put(owner: string, items: PlanItem[], skipped: Plan['skipped'], scope: string): Plan {
     this.prune()
     const p: Plan = {
-      id: this.newId(), owner, createdAt: this.now(), items, skipped,
+      id: this.newId(), owner, scope, createdAt: this.now(), items, skipped,
       totalBytes: items.filter(i => !i.blocked).reduce((a, i) => a + i.sizeBytes, 0),
     }
     if (items.some(i => !i.blocked)) this.m.set(p.id, p)
     return p
   }
-  take(id: unknown, owner: string): Plan {
+  take(id: unknown, owner: string, scope: string): Plan {
     this.prune()
     const p = typeof id === 'string' ? this.m.get(id) : undefined
-    if (!p) throw new RemoveRefusal('That preview has expired. Preview the removal again.', 409, 'preview_expired')
+    if (!p || p.scope !== scope) throw new RemoveRefusal('That preview has expired. Preview the removal again.', 409, 'preview_expired')
     if (p.owner !== owner) throw new RemoveRefusal('That preview belongs to someone else.', 403, 'not_yours')
     this.m.delete(p.id)
     return p
@@ -143,7 +150,8 @@ async function runStep(it: PlanItem, d: EngineDeps): Promise<{ removed: boolean;
       const before = await c.get(`/api/v3/episodefile/${f}`, SLOW).catch(() => null)
       if (!before || before.id !== f || before.seriesId !== s.seriesId) return { removed: false, message: 'Sonarr no longer has these files as previewed, so they were left alone.' }
     }
-    for (const f of s.fileIds) await c.delete(`/api/v3/episodefile/${f}`, SLOW)
+    // Unmonitor FIRST: if a delete then fails part-way, nothing is left monitored with its file gone, which is
+    // exactly what makes Sonarr download it straight back.
     if (s.unmonitor && s.episodeIds.length) {
       await c.put('/api/v3/episode/monitor', { episodeIds: s.episodeIds, monitored: false }, SLOW)
       if (s.season !== null) {
@@ -154,6 +162,7 @@ async function runStep(it: PlanItem, d: EngineDeps): Promise<{ removed: boolean;
         }
       }
     }
+    for (const f of s.fileIds) await c.delete(`/api/v3/episodefile/${f}`, SLOW)
     // Read back: every file gone, and (when asked) every episode unmonitored.
     for (const f of s.fileIds) {
       if (!(await gone(() => c.get(`/api/v3/episodefile/${f}`, SLOW), x => x.id === f))) return { removed: false, message: 'Sonarr said yes but still has a file. Check Sonarr.' }
@@ -169,6 +178,18 @@ async function runStep(it: PlanItem, d: EngineDeps): Promise<{ removed: boolean;
   const c = await d.plex()
   if (!c) return { removed: false, message: 'Plex is not set.' }
   const base = `/library/metadata/${s.ratingKey}`
+  // Still what the preview showed: same kind of thing, same title, and (a season) no episodes added since.
+  const now = (await c.get(base, SLOW).catch(() => null))?.MediaContainer?.Metadata?.[0]
+  if (!now || String(now.type) !== s.expect.type || String(now.title ?? '') !== s.expect.title) {
+    return { removed: false, message: 'Plex no longer has it as previewed, so it was left alone.' }
+  }
+  if (s.expect.children) {
+    const kids: any[] = (await c.get(`${base}/children`, SLOW).catch(() => null))?.MediaContainer?.Metadata ?? null
+    const allowed = new Set(s.expect.children)
+    if (!Array.isArray(kids) || kids.some(k => !allowed.has(String(k?.ratingKey)))) {
+      return { removed: false, message: 'New episodes appeared in this season since the preview, so it was left alone. Preview it again.' }
+    }
+  }
   if (s.kind === 'plex-item') {
     await c.delete(base, SLOW)
     const ok = await gone(() => c.get(base, SLOW), x => (x?.MediaContainer?.Metadata ?? []).some((m: any) => String(m?.ratingKey) === s.ratingKey))
@@ -186,16 +207,25 @@ export async function executePlan(plan: Plan, d: EngineDeps, by: string): Promis
   const live = await streamingKeys(plex).catch(() => null)
   const results: ItemResult[] = []
   const rescans = new Map<string, Set<string | null>>()
+  let stopped: string | null = null
   for (const it of plan.items) {
     const base = { id: it.id, title: it.title, via: it.via, sizeBytes: it.sizeBytes }
     if (it.blocked) { results.push({ ...base, removed: false, message: it.blocked }); continue }
     if (live === null && plex) { results.push({ ...base, removed: false, message: 'Plex could not say what is playing, so nothing was removed. Try again.' }); continue }
     if (live && it.plex.keys.some(k => live.has(k))) { results.push({ ...base, removed: false, message: STREAMING }); continue }
+    if (stopped) { results.push({ ...base, removed: false, message: stopped }); continue }
     const what = { by, title: it.title, via: it.via, step: it.step.kind, bytes: it.sizeBytes, files: it.files.map(f => f.path).slice(0, 50), preview: plan.id }
-    await d.audit?.('plex.media.remove.start', what)
+    // No audit row, no delete: if the log cannot be written, the run stops here and says what was done so far.
+    try { await d.audit?.('plex.media.remove.start', what) } catch {
+      stopped = 'Stopped: the audit log could not be written, so nothing more was removed.'
+      results.push({ ...base, removed: false, message: stopped })
+      continue
+    }
     let r: { removed: boolean; message: string }
     try { r = await runStep(it, d) } catch (e: any) { r = { removed: false, message: `${it.via === 'plex' ? 'Plex' : it.via === 'sonarr' ? 'Sonarr' : 'Radarr'} refused: ${String(e?.message ?? e).slice(0, 200)}` } }
-    await d.audit?.('plex.media.remove.result', { ...what, removed: r.removed, message: r.message })
+    try { await d.audit?.('plex.media.remove.result', { ...what, removed: r.removed, message: r.message }) } catch {
+      stopped = 'Stopped: the audit log could not be written, so nothing more was removed.'
+    }
     results.push({ ...base, ...r })
     if (r.removed && it.plex.section) {
       const set = rescans.get(it.plex.section) ?? new Set()

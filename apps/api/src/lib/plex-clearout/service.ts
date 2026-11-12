@@ -89,6 +89,8 @@ function arrIndex(list: any[], service: 'sonarr' | 'radarr') {
   }
   return {
     service,
+    /** Something in the Arr has this title (once or more): it may be this item under other ids. */
+    hasTitle(title: string): boolean { return (titleCount.get(`t:${normTitle(title)}`) ?? 0) > 0 },
     /** By tvdb, tmdb or imdb id only: the match removal trusts. */
     byId(guids: string[]): any | null {
       for (const g of guids) { const hit = by.get(g); if (hit) return hit }
@@ -121,12 +123,20 @@ export interface ItemMeta {
   files:   Array<{ path: string; sizeBytes: number | null }>
   keptBy:  KeepRuleId | null
   tvdbId:  number | null
+  /**
+   * Why this may not be removed at all, or null. Plex removes an item only when no Arr is set up for its kind, or
+   * the Arr answered and positively does not have it (none of its ids is there). An Arr that did not answer, a
+   * title that matches without an id, or no id to look up: refused, never handed to Plex instead.
+   */
+  refuse:  string | null
 }
 
 export interface LibraryRow {
   id: string; kind: MediaKind; ratingKey: string; title: string; year: number | null; section: string; sectionTitle: string
   sizeBytes: number | null; plays: number; viewers: number; lastPlayed: number | null; addedAt: number; art: string | null
   via: 'sonarr' | 'radarr' | 'plex'; keptBy: string | null
+  /** Why it cannot be removed, or null. */
+  refused: string | null
 }
 
 export interface Gathered {
@@ -157,8 +167,8 @@ export async function gather(d: ClearoutDeps): Promise<Gathered> {
     .filter((s: { key: string }) => /^\d+$/.test(s.key))
 
   const [series, movies, history, accounts] = await Promise.all([
-    sonarr ? sonarr.get('/api/v3/series', SLOW).catch((e: any) => { notes.push(`Sonarr could not be read (${e.message}), so TV sizes come from Plex.`); return null }) : null,
-    radarr ? radarr.get('/api/v3/movie', SLOW).catch((e: any) => { notes.push(`Radarr could not be read (${e.message}), so movie sizes come from Plex.`); return null }) : null,
+    sonarr ? sonarr.get('/api/v3/series', SLOW).catch((e: any) => { notes.push(`Sonarr could not be read (${e.message}), so TV sizes come from Plex and nothing in TV can be removed until it answers.`); return null }) : null,
+    radarr ? radarr.get('/api/v3/movie', SLOW).catch((e: any) => { notes.push(`Radarr could not be read (${e.message}), so movie sizes come from Plex and no film can be removed until it answers.`); return null }) : null,
     paged(plex, '/status/sessions/history/all?sort=viewedAt:desc'),
     plex.get('/accounts', SLOW).catch(() => null),
   ])
@@ -205,7 +215,15 @@ export async function gather(d: ClearoutDeps): Promise<Gathered> {
       }
       items.push(item)
       const tvdb = guids.find(g => g.startsWith('tvdb:'))
+      const name = s.kind === 'show' ? 'Sonarr' : 'Radarr'
+      const configured = s.kind === 'show' ? !!sonarr : !!radarr
+      const refuse = !configured || managedArr ? null
+        : !idx ? `${name} didn't answer, try again.`
+        : arr || idx.hasTitle(title) ? `${name} has something with this title, but not with Plex's ids, so it is left alone. Fix the match in Plex or ${name}.`
+        : !guids.length ? `Plex has no tvdb or tmdb id for it, so HyperProx cannot tell whether ${name} manages it.`
+        : null
       partial.set(`${s.kind}:${ratingKey}`, {
+        refuse,
         managed: managedArr ? { service: s.kind === 'show' ? 'sonarr' : 'radarr', arrId: managedArr.id, path: typeof managedArr.path === 'string' ? managedArr.path : null } : null,
         folder, files: plexFiles, tvdbId: tvdb ? n0(tvdb.slice(5)) || null : null,
       })
@@ -233,6 +251,7 @@ export async function gather(d: ClearoutDeps): Promise<Gathered> {
     sizesFrom: { tv: sIdx ? 'arr' : 'plex', movies: rIdx ? 'arr' : 'plex' },
     notes,
   })
+  for (const r of report.rows) { const pm = partial.get(r.id); if (pm) r.refused = pm.refuse }
   const listed = new Set(report.rows.map(r => r.id))
   const index = indexPlays(plays)
   const meta = new Map<string, ItemMeta>()
@@ -250,7 +269,7 @@ export async function gather(d: ClearoutDeps): Promise<Gathered> {
     library.push({
       id, kind: item.kind, ratingKey: item.ratingKey, title: item.title, year: item.year, section: item.section, sectionTitle: item.sectionTitle,
       sizeBytes: item.sizeBytes, plays: st.plays, viewers: st.viewers, lastPlayed: st.lastPlayed, addedAt: item.addedAt,
-      art: artRef(item.thumb), via: pm.managed?.service ?? 'plex', keptBy: keptBy ? RULE_LABEL[keptBy] : null,
+      art: artRef(item.thumb), via: pm.managed?.service ?? 'plex', keptBy: keptBy ? RULE_LABEL[keptBy] : null, refused: pm.refuse,
     })
   }
   return { report, library, meta, plays, names: accountNames(accounts), protectedArr }
@@ -305,12 +324,12 @@ export class ClearoutService {
       if ('skip' in it) { skipped.push({ id, reason: it.skip }); continue }
       items.push(it)
     }
-    return this.previews.put(owner, items, skipped)
+    return this.previews.put(owner, items, skipped, 'clearout')
   }
 
   /** Remove what a preview listed, then read each one back. */
   async remove(previewId: unknown, owner: string, by = owner): Promise<{ preview: Plan; results: ItemResult[]; rescanned: number }> {
-    const p = this.previews.take(previewId, owner)
+    const p = this.previews.take(previewId, owner, 'clearout')
     const out = await executePlan(p, { plex: this.d.plex, sonarr: this.d.sonarr, radarr: this.d.radarr, audit: this.d.audit }, by)
     // The list changed: the next read is fresh.
     this.invalidate()
@@ -339,6 +358,7 @@ export async function wholeItemPlan(m: ItemMeta, g: Gathered, ctx: PlanContext, 
   const title = `${item.title}${item.year ? ` (${item.year})` : ''}`
   const keys = [item.ratingKey]
   const keptBy = m.keptBy ? RULE_LABEL[m.keptBy] : null
+  if (m.refuse) return { skip: `${item.title}: ${m.refuse}` }
   if (m.managed) {
     const t = m.managed
     const name = t.service === 'sonarr' ? 'Sonarr' : 'Radarr'
@@ -363,7 +383,7 @@ export async function wholeItemPlan(m: ItemMeta, g: Gathered, ctx: PlanContext, 
   const files = m.files.length ? m.files : [{ path: m.folder ?? '(the files Plex has for it)', sizeBytes: size }]
   return {
     id: `${item.kind}:${item.ratingKey}`, title, via: 'plex',
-    step: { kind: 'plex-item', ratingKey: item.ratingKey },
+    step: { kind: 'plex-item', ratingKey: item.ratingKey, expect: { type: item.kind === 'show' ? 'show' : 'movie', title: item.title } },
     files, sizeBytes: size ?? files.reduce((a, f) => a + (f.sizeBytes ?? 0), 0),
     note: PLEX_NOTE, warnings: [], keptBy, blocked: blockedBy(ctx, keys, 'plex'),
     plex: { keys, section: item.section, folder: m.folder },
