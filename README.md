@@ -1587,6 +1587,12 @@ again, because a login is being stored). Enter the router's address, its admin u
 once to check the login, reads the model and firmware itself, and names the router after its model if
 you leave the name blank. If the router refuses the login, nothing is saved.
 
+**Names.** A router is named after the unit itself: its AiMesh location from the ASUS app (such as
+"Living Room"), else its host name, else its model. The name follows the unit, checked every 5 minutes,
+so renaming it in the ASUS app renames it here. A name you type in Settings is kept and never changed;
+clear it to go back to the unit's own name. When two routers report the same name, the model is added,
+as in "Living Room (ET-X)". The reboot confirmation uses the current name.
+
 ASUS routers allow a single admin session at a time. While HyperProx is reading a router, signing in
 to the router's own web page can sign HyperProx out, and the other way round.
 

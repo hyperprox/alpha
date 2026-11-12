@@ -37,9 +37,11 @@ export interface Router {
   id: string; name: string; insecureTLS: boolean; fingerprint?: string | null; model: string | null; firmware: string | null
   url?: string; username?: string; hasPassword?: boolean
   held: string | null; phrase: string; lastAction: LastAction | null
+  /** user: typed by a person; device: the unit's own name; model: nothing better known yet. */
+  nameSource?: 'user' | 'device' | 'model'; deviceName?: string | null
 }
 
-type Answer = { ok: boolean; reading?: Reading; error?: string; held?: boolean; lastAction?: LastAction | null }
+type Answer = { ok: boolean; reading?: Reading; error?: string; held?: boolean; lastAction?: LastAction | null; name?: string; phrase?: string }
 
 function useRouters() {
   const [list, setList] = useState<Router[] | null>(null)
@@ -67,9 +69,11 @@ const ACTION_WORD: Record<LastAction['state'], string> = {
 
 // ── one router ───────────────────────────────────────────────────────────────
 
-function RouterView({ n }: { n: Router }) {
+function RouterView({ n: n0, onRenamed }: { n: Router; onRenamed?: () => void }) {
   const { role } = useSession()
   const [data, setData] = useState<Answer | null>(null)
+  // The name follows the unit's own (read every 5 minutes), so the latest reading's name and phrase win.
+  const n = { ...n0, ...(data?.name ? { name: data.name, phrase: data.phrase ?? n0.phrase } : {}) }
   const [busy, setBusy] = useState(false)
   const [detail, setDetail] = useState<any>(null)
   const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null)
@@ -86,9 +90,10 @@ function RouterView({ n }: { n: Router }) {
     inFlight.current = false; setBusy(false)
     const d = r.ok ? r.body!.data : { ok: false, error: r.error ?? 'Could not read the router.' }
     setData(d)
+    if (d.name && d.name !== n0.name) onRenamed?.()
     const w = d.reading?.wan
     if (w && w.downBps !== null && w.upBps !== null) setTrail(t => ({ down: [...t.down, w.downBps!].slice(-24), up: [...t.up, w.upBps!].slice(-24) }))
-  }, [n.id])
+  }, [n.id, n0.name, onRenamed])
 
   // Rates are live: every 10 seconds while the tab is visible (the API shares one router session between readings).
   useEffect(() => {
@@ -128,7 +133,7 @@ function RouterView({ n }: { n: Router }) {
       )}
       {r && (
         <>
-          <HudHeader level={2} label={`${n.name} overview`} eyebrow={`ASUS · ${r.firmware.flavour === 'merlin' ? 'Asuswrt-Merlin' : 'Asuswrt'}`} title={r.model ?? n.name}
+          <HudHeader level={2} label={`${n.name} overview`} eyebrow={`ASUS${r.model ? ` · ${r.model}` : ''} · ${r.firmware.flavour === 'merlin' ? 'Asuswrt-Merlin' : 'Asuswrt'}`} title={n.name}
             ring={{ value: r.cpuPct === null ? 0 : r.cpuPct / 100, text: r.cpuPct === null ? '—' : `${Math.round(r.cpuPct)}%`, label: 'CPU' }}
             chips={hudChips(r)}
             actions={
@@ -233,7 +238,9 @@ function RouterView({ n }: { n: Router }) {
 const ADVICE = 'Enter the router’s address and its admin login (Administration → System on the router). HyperProx signs in once to check it, reads the model and firmware itself, and keeps the login in the vault; it is never shown again. ASUS routers allow one admin session at a time, so HyperProx signs out whenever it has not needed the router for two minutes. If you are signed in to the router’s own page at the same moment, one of the two may be asked to sign in again.'
 
 function RouterForm({ n, onSaved, onCancel }: { n: Router | null; onSaved: () => void; onCancel?: () => void }) {
-  const [f, setF] = useState({ name: n?.name ?? '', url: n?.url ?? '', username: n?.username ?? '', password: '', insecureTLS: n?.insecureTLS ?? false, fingerprint: n?.fingerprint ?? '' })
+  // A name the unit chose is not put in the box: blank means "use the unit's own name", and stays that way.
+  const typedName = n?.nameSource === 'user' ? n.name : ''
+  const [f, setF] = useState({ name: typedName, url: n?.url ?? '', username: n?.username ?? '', password: '', insecureTLS: n?.insecureTLS ?? false, fingerprint: n?.fingerprint ?? '' })
   const [probe, setProbe] = useState<null | { fingerprint: string; subject: string; validTo: string }>(null)
   const [err, setErr] = useState<string | null>(null)
   const [ok, setOk] = useState<string | null>(null)
@@ -266,7 +273,7 @@ function RouterForm({ n, onSaved, onCancel }: { n: Router | null; onSaved: () =>
   const save = async () => {
     setBusy(true); setErr(null); setOk(null)
     const body: Record<string, unknown> = { url: f.url, username: f.username, insecureTLS: f.insecureTLS }
-    if (f.name.trim() || n) body.name = f.name.trim() || undefined
+    if (n ? f.name.trim() !== typedName : f.name.trim()) body.name = f.name.trim()
     if (f.password || !n) body.password = f.password
     // Only a fingerprint a person read and confirmed here is sent; a new router with none is pinned on first use.
     if (pinChanged) body.fingerprint = f.fingerprint || null
@@ -308,8 +315,8 @@ function RouterForm({ n, onSaved, onCancel }: { n: Router | null; onSaved: () =>
       <label><span style={LABEL}>Password {n?.hasPassword ? '(saved; leave blank to keep it)' : ''}</span>
         <input style={INPUT} type="password" autoComplete="new-password" value={f.password} onChange={e => set('password', e.target.value)} /></label>
       {n && (f.url !== (n.url ?? '') || f.username !== (n.username ?? '')) && <small style={{ color: 'var(--warn-2)' }}>A new address or user needs the password again: enter it above in the same save.</small>}
-      <label><span style={LABEL}>Name (optional: the model, when blank)</span>
-        <input style={INPUT} value={f.name} onChange={e => set('name', e.target.value)} placeholder={n?.model ?? 'Living room router'} /></label>
+      <label><span style={LABEL}>Name (optional: blank uses the unit&apos;s own name from the ASUS app)</span>
+        <input style={INPUT} value={f.name} onChange={e => set('name', e.target.value)} placeholder={n && n.nameSource !== 'user' ? n.name : 'its own name, such as its AiMesh location'} /></label>
       {https ? (
         <div className="flex flex-col gap-2 rounded-md border p-3" style={{ borderColor: 'var(--border-strong)' }}>
           <span className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Certificate</span>
@@ -380,7 +387,7 @@ export function AsusPage() {
                 <button role="tab" aria-selected={tab === 'settings'} onClick={() => setTab('settings')}>Settings</button>
               </div>
             )}
-            {(tab === 'router' || !admin) && <RouterView key={n.id} n={n} />}
+            {(tab === 'router' || !admin) && <RouterView key={n.id} n={n} onRenamed={reload} />}
             {tab === 'settings' && admin && <RouterForm key={n.id} n={n} onSaved={() => void reload()} />}
           </>
         )}
