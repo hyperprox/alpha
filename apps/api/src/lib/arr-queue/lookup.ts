@@ -8,7 +8,7 @@
 //  the film and its file id, so only the files are asked for. Any failure leaves the answer out; it never fails the queue.
 // =============================================================================
 
-import type { AlbumInfo, FileInfo } from './why'
+import { compileProfile, type AlbumInfo, type FileInfo, type Profile } from './why'
 
 type Get = (path: string, timeoutMs?: number) => Promise<any>
 
@@ -28,6 +28,35 @@ export class FileCache {
 }
 
 export const sharedFileCache = new FileCache()
+
+/** Quality profiles per service, kept five minutes: they change when a person edits them, not per queue reading. */
+export class ProfileCache {
+  private m = new Map<string, { at: number; v: Map<number, Profile> }>()
+  constructor(private ttlMs = 300_000) {}
+  get(k: string, now: number) { const e = this.m.get(k); return e && now - e.at <= this.ttlMs ? e.v : undefined }
+  set(k: string, v: Map<number, Profile>, now: number) { this.m.set(k, { at: now, v }) }
+}
+export const sharedProfileCache = new ProfileCache()
+
+/**
+ * The quality profiles by id: /api/v3/qualityprofile (Sonarr, Radarr) or /api/v1/qualityprofile (Lidarr). Never throws:
+ * a failed read is an empty map (not cached, so the next reading tries again), and the callers fall back to the
+ * generic quality ranking.
+ */
+export async function readProfiles(get: Get, kind: 'sonarr' | 'radarr' | 'lidarr', now: number, cache: ProfileCache = sharedProfileCache): Promise<Map<number, Profile>> {
+  const hit = cache.get(kind, now)
+  if (hit) return hit
+  try {
+    const recs = await get(kind === 'lidarr' ? '/api/v1/qualityprofile' : '/api/v3/qualityprofile', 10_000)
+    const out = new Map<number, Profile>()
+    for (const p of Array.isArray(recs) ? recs : []) {
+      const id = Number(p?.id), c = compileProfile(p)
+      if (Number.isInteger(id) && id > 0 && c) out.set(id, c)
+    }
+    if (out.size) cache.set(kind, out, now)
+    return out
+  } catch { return new Map() }
+}
 
 const BATCH = 100
 const MAX_IDS = 1000
@@ -52,7 +81,7 @@ async function fileQualities(get: Get, path: string, param: string, ids: number[
 }
 
 /** Sonarr: episode id → what is on disk. Empty (never throws) when anything fails. */
-export async function readEpisodeInfo(get: Get, rows: any[], now: number, cache: FileCache = sharedFileCache): Promise<Map<number, FileInfo>> {
+export async function readEpisodeInfo(get: Get, rows: any[], now: number, cache: FileCache = sharedFileCache, profiles: ProfileCache = sharedProfileCache): Promise<Map<number, FileInfo>> {
   const out = new Map<number, FileInfo>()
   try {
     const ids = [...new Set(rows.map(r => posInt(r?.episodeId ?? r?.episode?.id)).filter((n): n is number => n !== null))].slice(0, MAX_IDS)
@@ -72,7 +101,20 @@ export async function readEpisodeInfo(get: Get, rows: any[], now: number, cache:
       })
     }
   } catch { out.clear() }
+  await attachProfiles(get, 'sonarr', rows, r => posInt(r?.episodeId ?? r?.episode?.id), r => posInt(r?.series?.qualityProfileId), out, now, profiles)
   return out
+}
+
+/** Gives each entry its series', film's or artist's quality profile (read from the queue row), when profiles can be read. */
+async function attachProfiles<T extends { profile?: Profile | null }>(get: Get, kind: 'sonarr' | 'radarr' | 'lidarr', rows: any[], keyOf: (r: any) => number | null, profOf: (r: any) => number | null, out: Map<number, T>, now: number, cache: ProfileCache) {
+  if (!out.size || !rows.some(r => profOf(r) !== null)) return
+  const all = await readProfiles(get, kind, now, cache)
+  if (!all.size) return
+  for (const r of rows) {
+    const k = keyOf(r), pid = profOf(r)
+    const e = k !== null ? out.get(k) : undefined
+    if (e && pid !== null && all.has(pid)) e.profile = all.get(pid)
+  }
 }
 
 /**
@@ -80,7 +122,7 @@ export async function readEpisodeInfo(get: Get, rows: any[], now: number, cache:
  * `hasFile`. A film counts as having a file only when that id is positive AND /moviefile returned it: a failed lookup
  * vouches for nothing.
  */
-export async function readMovieInfo(get: Get, rows: any[], now: number, cache: FileCache = sharedFileCache): Promise<Map<number, FileInfo>> {
+export async function readMovieInfo(get: Get, rows: any[], now: number, cache: FileCache = sharedFileCache, profiles: ProfileCache = sharedProfileCache): Promise<Map<number, FileInfo>> {
   const out = new Map<number, FileInfo>()
   try {
     const movies = new Map<number, { fid: number | null; emb: string | null }>()
@@ -95,6 +137,7 @@ export async function readMovieInfo(get: Get, rows: any[], now: number, cache: F
       out.set(id, { hasFile: has, quality: has ? (q.get(m.fid as number) ?? m.emb) : null, season: null, number: null })
     }
   } catch { out.clear() }
+  await attachProfiles(get, 'radarr', rows, r => posInt(r?.movieId ?? r?.movie?.id), r => posInt(r?.movie?.qualityProfileId), out, now, profiles)
   return out
 }
 
@@ -139,7 +182,7 @@ async function tolerant(get: Get, path: string, param: string, ids: number[], ca
  * the quality of an album's files is cached 60 seconds under the album's file count and size on disk, so a replaced
  * file reads fresh. Any failure leaves the whole answer out: a failed lookup vouches for nothing.
  */
-export async function readAlbumInfo(get: Get, rows: any[], now: number, cache: FileCache = sharedFileCache): Promise<Map<number, AlbumInfo>> {
+export async function readAlbumInfo(get: Get, rows: any[], now: number, cache: FileCache = sharedFileCache, profiles: ProfileCache = sharedProfileCache): Promise<Map<number, AlbumInfo>> {
   const out = new Map<number, AlbumInfo>()
   try {
     const ids = [...new Set(rows.map(albumIdOf).filter((n): n is number => n !== null))].filter(id => !cache.get(deadKey(id), now)).slice(0, MAX_IDS)
@@ -179,5 +222,6 @@ export async function readAlbumInfo(get: Get, rows: any[], now: number, cache: F
     }
     for (const [id, s] of stats) out.set(id, { title: s.title, total: s.total, have: s.have, files: files.get(id) ?? [] })
   } catch { out.clear() }
+  await attachProfiles(get, 'lidarr', rows, albumIdOf, r => posInt(r?.artist?.qualityProfileId), out, now, profiles)
   return out
 }

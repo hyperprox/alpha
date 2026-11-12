@@ -10,12 +10,12 @@
 //  never sends the downloader's output path, a host or a key to the browser.
 // =============================================================================
 
-import { coverage, whyIncomplete, whyIncompleteLidarr, whyLidarr, whyRadarr, whySonarr, type AlbumInfo, type FileInfo } from './why'
+import { coverage, whySample, whyIncomplete, whyIncompleteLidarr, whyLidarr, whyRadarr, whySonarr, type AlbumInfo, type FileInfo } from './why'
 export type { AlbumInfo, FileInfo }
 
-export type Problem = 'failed' | 'blocked' | 'incomplete' | 'stalled' | 'warning'
+export type Problem = 'failed' | 'blocked' | 'incomplete' | 'sample' | 'stalled' | 'warning'
 /** Lower is worse. Used to float problems to the top. */
-const SEVERITY: Record<Problem, number> = { failed: 0, blocked: 1, incomplete: 1, stalled: 2, warning: 3 }
+const SEVERITY: Record<Problem, number> = { failed: 0, blocked: 1, incomplete: 1, sample: 1, stalled: 2, warning: 3 }
 const OK_RANK = 4
 /** A download that is finished and only waiting to be cleared sorts after every real problem, before the rest. */
 const DONE_RANK = 3.5
@@ -207,7 +207,7 @@ const SUMMARY_LINE = /^one or more (?:episodes?|movies?|files?|albums?|tracks?) 
  * The two per-file messages that mean "nothing is left to import for this one". Lidarr says "Track file already
  * imported" and "Not an upgrade for existing track file(s)": both are caught by the same two patterns.
  */
-const ALREADY_HANDLED = /\balready imported\b|^not an upgrade for existing\b/i
+const ALREADY_HANDLED = /\balready imported\b|^not an? (?:quality revision |custom format )?upgrade for existing\b/i
 
 /** Every message text on the rows, untouched (no path stripping, no cap): for classification, not display. */
 function rawMessages(rows: any[]): { texts: string[]; error: boolean } {
@@ -279,6 +279,15 @@ export function isIncomplete(rows: any[], info?: Map<number, FileInfo>): boolean
   return cov.unknown === 0 && cov.missing.length > 0
 }
 
+/**
+ * The only thing the Arr said is "Sample": it took the file for a preview clip, not the episode or film. A real problem
+ * (Find another), never done, and HyperProx offers no way to import it anyway.
+ */
+export function isSampleOnly(rows: any[]): boolean {
+  const { texts, error } = rawMessages(rows)
+  return !error && texts.length > 0 && texts.every(t => /^sample\b/i.test(t))
+}
+
 /** For a permission problem, a hint. Text only: HyperProx changes no permissions. */
 export function importHint(messages: string[]): string | null {
   return messages.some(m => /permission|access (to the path )?.*denied|not writable|read-only file system|operation not permitted/i.test(m))
@@ -319,6 +328,7 @@ function downloadOf(id: string, rows: any[], now: number, episodic: boolean, inf
   }
   const done = isDone(rows, info)
   const incomplete = !done && isIncomplete(rows, info)
+  const sample = !done && !incomplete && isSampleOnly(rows)
   const epIds = new Set(rows.map(r => r.episodeId ?? r.episode?.id ?? r.id))
   const bySeason = rows.map(r => num(r.episode?.episodeNumber ?? r.episodeNumber)).filter(n => n > 0)
   return {
@@ -333,11 +343,11 @@ function downloadOf(id: string, rows: any[], now: number, episodic: boolean, inf
     indexer: str(first.indexer, 60),
     episodes: episodic ? epIds.size : 0,
     episodeRange: episodic ? episodeRange(bySeason) : null,
-    problem: done ? null : incomplete ? 'incomplete' : problemOf(rows),
+    problem: done ? null : incomplete ? 'incomplete' : sample ? 'sample' : problemOf(rows),
     done,
-    why: info ? (incomplete ? whyIncomplete(rows.map(r => Number(r.episodeId ?? r.episode?.id)), info, messageTitles(rows)) : whyOf(rows, info, episodic, done)) : null,
+    why: sample ? whySample(rows, episodic) : info ? (incomplete ? whyIncomplete(rows.map(r => Number(r.episodeId ?? r.episode?.id)), info, messageTitles(rows)) : whyOf(rows, info, episodic, done)) : null,
     messages: messagesOf(rows),
-    hint: (() => { const p = done || incomplete ? null : problemOf(rows); return p === 'blocked' || p === 'failed' ? importHint(messagesOf(rows)) : null })(),
+    hint: (() => { const p = done || incomplete || sample ? null : problemOf(rows); return p === 'blocked' || p === 'failed' ? importHint(messagesOf(rows)) : null })(),
   }
 }
 
@@ -543,7 +553,7 @@ export function summarize(shows: QueueShow[], movies: QueueMovie[], rows: number
     downloads: all.length, shows: shows.length, movies: movies.length,
     artists: artists.length, albums: artists.reduce((t, a) => t + a.albumCount, 0), rows,
     sizeLeft: all.reduce((t, d) => t + d.sizeLeft, 0),
-    attention: all.filter(d => d.problem === 'failed' || d.problem === 'blocked' || d.problem === 'incomplete').length,
+    attention: all.filter(d => d.problem === 'failed' || d.problem === 'blocked' || d.problem === 'incomplete' || d.problem === 'sample').length,
     stalled: all.filter(d => d.problem === 'stalled').length,
     warnings: all.filter(d => d.problem === 'warning').length,
     done: all.filter(d => d.done).length,

@@ -1586,12 +1586,18 @@ shared while it runs, and given up after 45 seconds), so extra tabs do not cost 
   totals still count the whole show, and the line under its name says so).
 - **Done is not a problem.** A download that is at 100% and import-blocked (or import-pending) is shown as **Done:
   nothing left to import**, in a calm colour, when every message Sonarr or Radarr gave is "already imported", "Not an
-  upgrade for existing ..." or the top-line "One or more episodes expected in this release were not imported or
+  upgrade for existing ...", "Not a quality revision upgrade for existing ...", "Not a Custom Format upgrade for
+  existing ..." or the top-line "One or more episodes expected in this release were not imported or
   missing", **and** every episode (or the film) it covers now has a file in the library. It means everything the
   download covers is already in your library (imported, or kept as a better copy). If any other message is there (no files eligible, a wrong match, permissions, a sample, a missing file), or the
   download is not at 100%, it stays a real problem. Done downloads are not counted as needs-you, stalled or warnings;
   they have their own **ready to clear** count in the summary, they sort after the real problems, and they never turn
   a season or a show red. The raw messages stay under a collapsed **Details**.
+- **Sample clip.** When the only thing Sonarr or Radarr said about a download is "Sample", it took the file for a
+  preview clip, not the episode or film. That is a real problem (red, counted under needs you), never done. It says,
+  for example: "Sonarr thinks this is a preview clip, not the episode: episodes of this show run about 11 min, and this
+  download is only 64 MB." (If the queue gives no runtime, it says how small the download is.) The main button is
+  **Find another**. There is no "import anyway", and Retry import is hidden.
 - **Incomplete pack.** Sometimes a release is named as a whole season, so Sonarr queues every episode of it, but the
   torrent held only a few files. Every message then says "already imported", yet many of the episodes it claims still
   have no file, and Sonarr never searches for episodes that sit in the queue. That is a real problem, shown in red as
@@ -1604,11 +1610,17 @@ shared while it runs, and given up after 45 seconds), so extra tabs do not cost 
   HyperProx looks at each episode the download covers and the file you have for it now: no file means it **fills**
   the episode, a lower-quality file means it **upgrades** it (a new resolution, such as 720p to 1080p) or **may
   replace** it (the same resolution from a better source, such as WEB-DL to Bluray; Sonarr makes the final call),
-  and the same or better file means you **already have** it and it will be skipped. Sources rank Remux, Bluray, WEB-DL,
-  WEBRip, HDTV at the same resolution, and a higher resolution beats any source. Consecutive episodes are grouped
+  and the same or better file means you **already have** it and it will be skipped. HyperProx reads the show's (or
+  film's, or artist's) own quality profile, because Sonarr, Radarr and Lidarr only upgrade a file that is below the
+  profile's cutoff, and only to something that ranks higher in the profile's own order, with upgrades switched on.
+  So a file at or above the cutoff reads "already have ... (meets your quality target, will be skipped)", even when
+  the new release is a nicer source. Profiles are kept for five minutes. Only if the profile cannot be read does it
+  fall back to a general ranking: Remux, Bluray, WEB-DL, WEBRip, HDTV at the same resolution, and a higher resolution
+  beats any source. Consecutive episodes are grouped
   ("Fills E01 · upgrades E02 (720p → 1080p) · may replace E03–E10 (WEB-DL → Bluray)"). For a film it is one line:
   missing film, "Upgrades 1080p WEB-DL → 2160p Bluray", or already have it. For a done download the line tells the
-  outcome from the files you have now: "Imported 9 · kept 4 better copies; nothing left to import." (HyperProx cannot
+  outcome from the files you have now: "Imported 9 · kept 4 better copies; nothing left to import." Episodes that stay because they already meet your quality target are counted apart:
+  "Imported 1 · kept 21 (already at your quality target); nothing left to import." (HyperProx cannot
   tell afterwards whether an imported episode was new or an upgrade, so it says imported.) This costs a few
   batched requests inside the shared reading, never one per queue row, and the lookups of file qualities are kept
   for 60 seconds. If Sonarr or Radarr cannot answer them, the line is simply left out.

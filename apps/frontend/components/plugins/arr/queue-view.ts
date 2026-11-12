@@ -11,8 +11,8 @@
 //  adds a calm "ready to clear" note, and a group made of nothing but done downloads reads "Done".
 // =============================================================================
 
-type Problem = 'failed' | 'blocked' | 'incomplete' | 'stalled' | 'warning'
-const SEVERITY: Record<Problem, number> = { failed: 0, blocked: 1, incomplete: 1, stalled: 2, warning: 3 }
+type Problem = 'failed' | 'blocked' | 'incomplete' | 'sample' | 'stalled' | 'warning'
+const SEVERITY: Record<Problem, number> = { failed: 0, blocked: 1, incomplete: 1, sample: 1, stalled: 2, warning: 3 }
 
 interface Dl { problem: Problem | null; done?: boolean }
 interface Season<D extends Dl> { problem: Problem | null; done?: boolean; downloads: D[] }

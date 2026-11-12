@@ -19,7 +19,7 @@ import { badgeOf, problemsOnly, problemsOnlyMusic, type Badge, type Scoped, type
 import { ActionResults, ActionsProvider, ClearDone, DownloadActions, FixStalled, SeasonActions, type Instance } from './QueueActions'
 import c from './queue.module.css'
 
-export type Problem = 'failed' | 'blocked' | 'incomplete' | 'stalled' | 'warning'
+export type Problem = 'failed' | 'blocked' | 'incomplete' | 'sample' | 'stalled' | 'warning'
 export interface QDownload {
   id: string; name: string; size: number; sizeLeft: number; progress: number; etaSec: number | null
   status: string; state: string; quality: string | null; protocol: string | null; client: string | null; indexer: string | null
@@ -84,8 +84,8 @@ export function useArrQueue(enabled: boolean, everyMs = 4000) {
   return { data, error, at, refresh }
 }
 
-const PROBLEM_WORD: Record<Problem, string> = { failed: 'Failed', blocked: 'Import blocked', incomplete: 'Incomplete pack', stalled: 'Stalled', warning: 'Warning' }
-const PROBLEM_TONE: Record<Problem, 'bad' | 'warn'> = { failed: 'bad', blocked: 'bad', incomplete: 'bad', stalled: 'warn', warning: 'warn' }
+const PROBLEM_WORD: Record<Problem, string> = { failed: 'Failed', blocked: 'Import blocked', incomplete: 'Incomplete pack', sample: 'Sample clip', stalled: 'Stalled', warning: 'Warning' }
+const PROBLEM_TONE: Record<Problem, 'bad' | 'warn'> = { failed: 'bad', blocked: 'bad', incomplete: 'bad', sample: 'bad', stalled: 'warn', warning: 'warn' }
 const variantOf = (p: Problem | null) => (p === 'stalled' ? 'stall' as const : 'normal' as const)
 
 /** "importPending" → "import pending". */
@@ -116,7 +116,7 @@ function DownloadRow({ d, name, instance }: { d: QDownload; name?: string; insta
       {meta && <div className={c.dlMeta}><span>{meta}</span></div>}
       {d.why && <p className={c.why}><b>Why this download:</b> {d.why}</p>}
       {d.problem && (
-        <div className={c.warn} role={d.problem === 'failed' || d.problem === 'blocked' || d.problem === 'incomplete' ? 'alert' : 'status'}>
+        <div className={c.warn} role={d.problem === 'failed' || d.problem === 'blocked' || d.problem === 'incomplete' || d.problem === 'sample' ? 'alert' : 'status'}>
           <Pill tone={PROBLEM_TONE[d.problem]}>{PROBLEM_WORD[d.problem]}</Pill>
           {d.messages.map((m, i) => <p key={i}>{m}</p>)}
           {d.hint && <p className={c.hint}>{d.hint}</p>}
@@ -296,7 +296,7 @@ function ArrQueueView({ q }: { q: QState }) {
             { label: 'shows', value: sm.shows },
             ...(lidarrOn ? [{ label: 'artists', value: sm.artists ?? 0 }] : []),
             { label: 'left to fetch', value: bytes(sm.sizeLeft) },
-            { label: 'needs you', value: sm.attention, tone: sm.attention ? 'crit' : 'good', title: 'Failed downloads, blocked imports and incomplete packs' },
+            { label: 'needs you', value: sm.attention, tone: sm.attention ? 'crit' : 'good', title: 'Failed downloads, blocked imports, incomplete packs and sample clips' },
             { label: 'stalled or warning', value: sm.stalled + sm.warnings, tone: sm.stalled + sm.warnings ? 'warn' : undefined },
             ...(sm.done ? [{ label: 'ready to clear', value: sm.done, tone: 'good' as const, title: 'Finished downloads whose episodes, movies or albums are all already in your library' }] : []),
           ]} />

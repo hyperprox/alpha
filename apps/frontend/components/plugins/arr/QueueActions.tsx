@@ -215,7 +215,8 @@ export function DownloadActions({ instance, d }: { instance: Instance; d: ActDow
   if (!a?.canAct) return null
   const k = `dl:${instance}:${d.id}`
   const busy = ['asking', 'running', 'confirm'].includes(a.flows[k]?.phase ?? '')
-  const incomplete = d.problem === 'incomplete'
+  // An incomplete pack or a preview clip: a new copy is the answer. There is deliberately no "import anyway".
+  const incomplete = d.problem === 'incomplete' || d.problem === 'sample'
   const blocked = !incomplete && (d.state === 'importBlocked' || d.state === 'importFailed')
   if (d.done) {
     // Finished: everything it covers is in the library. The only thing to do is clear it (Remove, never blocklisted).
