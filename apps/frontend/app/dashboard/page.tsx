@@ -5,7 +5,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { CommandCenterIfRemotes } from '@/components/clusters/CommandCenter'
 import Link from 'next/link'
-import { formatUptime, pct } from '@/lib/utils'
+import { pct } from '@/lib/utils'
 import { wsBase } from '@/lib/ws'
 import { PluginCards } from '@/components/plugins/PluginCards'
 import { DashboardSitesCard } from '@/components/sites/metrics/DashboardSitesCard'
@@ -13,7 +13,7 @@ import { Speedometer, Sparkline, StreamChart, Meter, useHistory, zoneColor, ACCE
 import { alpha } from '@/lib/theme'
 import { CheckIcon, WarnIcon } from '@/components/dashboard/Icons'
 import {
-  HudHeader, Panel as KitPanel, Cols, NodeTiles, NodeTile, GlowBars, GuestRows, Feed, Pill, styles as vs, type StatChip, type FeedTone,
+  HudHeader, Panel as KitPanel, Cols, GlowBars, Feed, styles as vs, type StatChip, type FeedTone,
 } from '@/components/visual/kit'
 import {
   formatBinary as formatBytes, formatBinaryPair, summarizeStorage, summarizeHA, powerStatus, serviceState,
@@ -834,25 +834,19 @@ export default function DashboardView() {
       {/* Every cluster side by side, once a remote server has been added (nothing shows with none). */}
       <CommandCenterIfRemotes/>
 
-      <KitPanel title="Nodes" sub="CPU · memory" href="/infrastructure" linkLabel="Infrastructure">
-        <NodeTiles label="Nodes">
-          {sorted.map(node => <NodeTileFor key={node.node} node={node} vms={fast.vms} gpuInfo={fast.gpuStatus?.find(g=>g.node===node.node)}
-            power={clusterPower?.nodes.find(p=>p.node===node.node)} powerTotal={clusterPower?.total}/>)}
-        </NodeTiles>
-      </KitPanel>
-
       <Cols>
         <StoragePanel storage={fast.storage}/>
-        <BusiestGuests vms={fast.vms} stamp={lastSync?.getTime() ?? null}/>
+        <HappeningPanel fast={fast} slow={slow}/>
       </Cols>
 
-      <Cols>
-        <HappeningPanel fast={fast} slow={slow}/>
-        <PluginCards variant="strip"/>
-      </Cols>
+      <PluginCards variant="chips"/>
 
       <DashboardSitesCard/>
 
+      {/* The dials, GPU, links and Ceph: detail rather than status, so folded away until asked for. */}
+      <details className="hx-more">
+        <summary className="font-mono" style={{ cursor: 'pointer', fontSize: 13, color: 'var(--text-soft)', padding: '8px 0' }}>More detail: cluster dials, GPU, network, Ceph, HA</summary>
+        <div className="flex flex-col gap-4 mt-3">
       {/* The dials, the GPU and the services this install talks to */}
       <div className="grid gap-4 grid-cols-1 xl:grid-cols-[1.25fr_1.25fr_1fr]">
         <ClusterPanel cluster={fast.cluster} nodes={fast.nodes} vms={fast.vms} ceph={slow?.ceph??null} storage={fast.storage} ha={slow?.ha??null} power={clusterPower} stamp={lastSync?.getTime() ?? null}/>
@@ -870,6 +864,8 @@ export default function DashboardView() {
           <HAPanel   ha={slow.ha}/>
         </div>
       )}
+        </div>
+      </details>
     </div>
   )
 }
@@ -893,6 +889,7 @@ function ClusterHud({ fast, slow, clusterLabel, lastSync, power }: { fast: FastD
     online < fast.nodes.length && `${fast.nodes.length - online} node${fast.nodes.length - online === 1 ? '' : 's'} offline`,
     quorum && !quorum.quorate && 'no quorum',
     cephSt === 'HEALTH_ERR' && 'Ceph error',
+    stor.total > 0 && stor.pct >= 85 && `storage ${stor.pct}%`,
     haSum.state === 'ok' && haSum.started < haSum.services && `${haSum.services - haSum.started} HA guest${haSum.services - haSum.started === 1 ? '' : 's'} not started`,
   ].filter(Boolean) as string[]
   const warned = cephSt === 'HEALTH_WARN'
@@ -928,39 +925,6 @@ function ClusterHud({ fast, slow, clusterLabel, lastSync, power }: { fast: FastD
 }
 
 // ---------------------------------------------------------------------------
-//  A node as a tile: CPU and memory rings, then the rest of what its old card
-//  carried — disk, uptime, GPU, power and its guests — in words.
-// ---------------------------------------------------------------------------
-
-function NodeTileFor({ node, vms, gpuInfo, power, powerTotal }: { node:PVENode; vms:PVEVM[]; gpuInfo?: NodeGPUStatus; power?: NodePower; powerTotal?: number }) {
-  const off = node.status !== 'online'
-  const cpuPct = Math.round(node.cpu*100), memPct = pct(node.mem,node.maxmem), diskPct = pct(node.disk,node.maxdisk)
-  const nodeVMs = vms.filter(v=>v.node===node.node), running = nodeVMs.filter(v=>v.status==='running').length
-  const gpuType = gpuInfo?.gpus[0]?.type ?? null
-  const gpuWord = gpuType === 'nvidia' ? 'NVIDIA' : gpuType === 'amd' ? 'AMD' : gpuType === 'intel-arc' ? 'ARC' : gpuType ? 'iGPU' : null
-  return (
-    <NodeTile name={node.node} state={off ? 'off' : 'ok'} cpu={cpuPct} mem={memPct}
-      sub={off ? 'offline' : `${node.maxcpu} threads · disk ${diskPct}% · up ${formatUptime(node.uptime)}`}>
-      <div className="flex flex-wrap justify-center gap-1.5">
-        {gpuWord && (
-          <Pill tone={gpuInfo?.reachable ? 'violet' : 'warn'} title={gpuInfo?.reachable ? gpuInfo.gpus[0].deviceName : `${gpuInfo?.install?.title ?? 'GPU detected'} — metrics not available`}>
-            {gpuWord}{!gpuInfo?.reachable && <> · not monitored</>}
-          </Pill>
-        )}
-        {power && (power.total === null
-          ? <Pill title="No RAPL on this CPU, and no exporter reporting a package figure. Nothing here is measuring watts.">no power meter</Pill>
-          : <Pill tone="warn" title={power.gpu ? `cpu ${power.cpu?.toFixed(1)} · gpu ${power.gpu.toFixed(1)} W` : `cpu package · ${power.source}`}>
-              {power.total.toFixed(1)} W{powerTotal ? ` · ${Math.round((power.total / powerTotal) * 100)}% of cluster` : ''}
-            </Pill>)}
-      </div>
-      <div className="font-mono" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-        <span style={{ color: 'var(--good)' }}>▶ {running} running</span> · ■ {nodeVMs.length - running} stopped
-      </div>
-    </NodeTile>
-  )
-}
-
-// ---------------------------------------------------------------------------
 //  Storage as glow bars: each storage Proxmox lists, a shared one once and a
 //  node-local one per node, with its percentage in text.
 // ---------------------------------------------------------------------------
@@ -981,39 +945,6 @@ function StoragePanel({ storage }: { storage?: any[] }) {
   return (
     <KitPanel title="Storage" sub="used" href="/storage" linkLabel="Storage">
       {rows.length ? <GlowBars label="Storage used" items={rows} max={100} hiAt={70}/> : <p className={vs.empty}>No storage reported yet.</p>}
-    </KitPanel>
-  )
-}
-
-// ---------------------------------------------------------------------------
-//  The busiest running guests, each with a sparkline of its recent CPU.
-// ---------------------------------------------------------------------------
-
-function BusiestGuests({ vms, stamp }: { vms: PVEVM[]; stamp: number | null }) {
-  const hist = useRef<Map<number, number[]>>(new Map())
-  const [, tick] = useState(0)
-  const latest = useRef(vms); latest.current = vms
-  useEffect(() => {
-    if (stamp == null) return
-    const m = hist.current
-    for (const v of latest.current) {
-      if (v.status !== 'running') continue
-      const h = m.get(v.vmid) ?? []
-      h.push((v.cpu || 0) * 100)
-      m.set(v.vmid, h.slice(-12))
-    }
-    tick(t => t + 1)
-  }, [stamp])
-  const top = vms.filter(v => v.status === 'running').sort((a, b) => (b.cpu || 0) - (a.cpu || 0)).slice(0, 6)
-  return (
-    <KitPanel title="Busiest guests" sub="now" href="/infrastructure" linkLabel="All guests">
-      {top.length ? (
-        <GuestRows label="Busiest guests" items={top.map(v => ({
-          key: String(v.vmid), kind: v.type === 'lxc' ? 'CT' : 'VM', name: v.name || `${v.type} ${v.vmid}`,
-          meta: `${v.node} · ${((v.cpu || 0) * 100).toFixed(1)}% cpu · ${formatBytes(v.mem || 0)}`,
-          spark: hist.current.get(v.vmid) ?? [(v.cpu || 0) * 100], sparkMax: 10,
-        }))}/>
-      ) : <p className={vs.empty}>No guest is running.</p>}
     </KitPanel>
   )
 }

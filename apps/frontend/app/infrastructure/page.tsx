@@ -14,9 +14,10 @@ import { DevicesPanel } from '@/components/guest-config/DevicesPanel'
 import { CreateGuestModal } from '@/components/guest-config/CreateGuest'
 import { API, type GuestRow } from '@/components/guest-config/types'
 import { useHaBadges } from '@/components/ha'
+import { formatUptime } from '@/lib/utils'
 import { Page, Panel, HudHeader, NodeTile, NodeTiles, Pill, styles, type StatChip } from '@/components/visual/kit'
 
-interface PVENode { node: string; status: string; maxcpu: number; maxmem: number; cpu?: number; mem?: number }
+interface PVENode { node: string; status: string; maxcpu: number; maxmem: number; cpu?: number; mem?: number; disk?: number; maxdisk?: number; uptime?: number }
 
 type StatusFilter = 'all' | 'running' | 'stopped'
 type TypeFilter = 'all' | 'lxc' | 'qemu'
@@ -142,7 +143,7 @@ export default function InfrastructurePage() {
             const off = n.status !== 'online'
             return (
               <NodeTile key={n.node} name={n.node} state={off ? 'off' : 'ok'} cpu={Math.round((n.cpu ?? 0) * 100)} mem={n.maxmem && n.mem ? Math.round(n.mem / n.maxmem * 100) : 0}
-                sub={off ? 'offline' : `${on} on · ${nr.length - on} off`}>
+                sub={off ? 'offline' : `${n.maxcpu} threads · disk ${n.maxdisk ? Math.round((n.disk ?? 0) / n.maxdisk * 100) : 0}% · up ${formatUptime(n.uptime ?? 0)} · ${on} on · ${nr.length - on} off`}>
                 <div className="flex flex-wrap justify-center gap-1.5">
                   {gpu && <Pill tone="violet">GPU</Pill>}
                   {n.node in nodePower && <Pill tone={nodePower[n.node] === null ? undefined : 'warn'} title="CPU package plus any discrete GPU. Drives, fans and PSU losses are not measured.">{nodePower[n.node] === null ? '— W' : `${Math.round(nodePower[n.node]!)} W`}</Pill>}
