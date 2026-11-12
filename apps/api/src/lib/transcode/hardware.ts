@@ -112,17 +112,19 @@ export function resolveAccel(choice: string, h: NodeHardware, node: string): Acc
 export function deviceSettings(accel: Accel, h: NodeHardware): Array<[string, string]> {
   const out: Array<[string, string]> = []
   if (accel === 'vaapi' && h.vaapi) {
-    const paths = [...h.vaapi.renderNodes.map(p => `${p},gid=${h.vaapi!.renderGid}`), ...h.vaapi.cardNodes.map(p => `${p},gid=${h.vaapi!.videoGid}`)]
-    paths.forEach((v, i) => out.push([`--dev${i}`, v]))
+    // Render nodes only: encoding needs nothing else, and the card node is the display master.
+    h.vaapi.renderNodes.forEach((p, i) => out.push([`--dev${i}`, `${p},gid=${h.vaapi!.renderGid}`]))
   } else if (accel === 'nvidia' && h.nvidia) {
-    h.nvidia.nodes.forEach((p, i) => out.push([`--dev${i}`, p]))
+    // The control node, the compute node and the first card: not modeset or uvm-tools, and one GPU.
+    const first = h.nvidia.nodes.find(p => /^\/dev\/nvidia\d{1,2}$/.test(p))
+    for (const p of ['/dev/nvidiactl', '/dev/nvidia-uvm', first]) if (p && h.nvidia.nodes.includes(p)) out.push([`--dev${out.length}`, p])
   }
   return out
 }
 
 /** The ids the compose file adds to the app's groups so its user may open the render and card nodes. */
 export function groupAdd(accel: Accel, h: NodeHardware): number[] {
-  return accel === 'vaapi' && h.vaapi ? [...new Set([h.vaapi.renderGid, h.vaapi.videoGid])] : []
+  return accel === 'vaapi' && h.vaapi ? [h.vaapi.renderGid] : []
 }
 
 /** Facts for the wizard's picker: what this node offers, in words. */

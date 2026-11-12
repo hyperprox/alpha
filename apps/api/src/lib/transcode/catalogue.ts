@@ -25,7 +25,7 @@ import type { ArrDeps } from '../arr/catalogue'
 import type { StepRef } from '../arr/setup'
 import { HARDWARE_SCRIPT, deviceSettings, groupAdd, hardwareFacts, parseHardware, resolveAccel, type Accel, type NodeHardware } from './hardware'
 import { layoutFromOptions, judgeMedia, mediaProbeScript, prepareNoLibraryScript, LAYOUT_LINE } from './media'
-import { scriptEnv, TDARR_VERSION, TDARR_SERVER_PORT, TDARR_WEB_PORT, UNMANIC_PORT, type TcKind } from './compose'
+import { scriptEnv, NVIDIA_RUN_SHA256, TDARR_VERSION, TDARR_SERVER_PORT, TDARR_WEB_PORT, UNMANIC_PORT, type TcKind } from './compose'
 import { TRANSCODE_IDS, parseMainUrl } from './recipes'
 import {
   linkWorker, tdarrServerVersion, tdarrUrl, unlinkWorker, unmanicUrl, waitForTdarr, waitForTdarrNode, waitForUnmanic,
@@ -81,7 +81,9 @@ export async function tcPreview(i: TcPreviewInput, d: { arr?: () => ArrDeps }): 
     hw = parseHardware(i.node, hr.output)
     const r = resolveAccel(v.TC_ACCEL || 'auto', hw, i.node)
     errors.push(...r.errors); warnings.push(...r.warnings); checks.push(...r.checks)
-    if (!r.errors.length) { options.TC_ACCEL = r.accel; if (r.accel === 'nvidia') options.TC_NVIDIA_VERSION = hw.nvidia!.driver }
+    if (r.accel === 'nvidia' && !r.errors.length && !NVIDIA_RUN_SHA256[hw.nvidia!.driver]) {
+      errors.push(`${i.node}'s NVIDIA driver is ${hw.nvidia!.driver}, and HyperProx has no pinned checksum for that version's installer, so it will not run it in a container. Pick Intel / AMD or CPU only instead. A maintainer can add the version: download its .run from download.nvidia.com on a trusted machine, run sha256sum on it, and add the hash to NVIDIA_RUN_SHA256 in lib/transcode/compose.ts.`)
+    } else if (!r.errors.length) { options.TC_ACCEL = r.accel; if (r.accel === 'nvidia') options.TC_NVIDIA_VERSION = hw.nvidia!.driver }
   }
 
   // The library.

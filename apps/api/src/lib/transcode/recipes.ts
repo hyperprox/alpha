@@ -60,6 +60,9 @@ export function parseMainUrl(raw: string, defaultPort: number): { host: string; 
   if (!m) return null
   const port = m[2] ? Number(m[2]) : defaultPort
   if (port < 1 || port > 65535) return null
+  // Never HyperProx's own machine or an address that is not a real peer: this address is requested by HyperProx.
+  if (/^(localhost|localhost\.localdomain|ip6-localhost)$/i.test(m[1])) return null
+  if (/^\d+(\.\d+){3}$/.test(m[1])) { const [a, b] = m[1].split('.').map(Number); if (a === 127 || a === 0 || (a === 169 && b === 254)) return null }
   if (/^\d+(\.\d+){3}$/.test(m[1]) && m[1].split('.').some(x => Number(x) > 255)) return null
   return { host: m[1], port }
 }
@@ -121,7 +124,7 @@ export const UNMANIC_WORKER_RECIPE: CatalogueRecipe = {
   notes: [
     'This is what Unmanic calls a remote installation. Your main Unmanic sends a file to the worker, the worker converts it on its own hardware, and the result comes back and replaces the original. So the worker needs no library of its own, but every file crosses the network twice: on a 1 Gb network that can be the limit, and it shares the link with anything else on the node.',
     'Pick a node with a GPU you are not using for anything else. HyperProx links both sides for you: the main one sends, this one receives.',
-    'The main one is changed once, to add this worker. If the install fails and you clean it up, only that one link is removed, and only if this install made it.',
+    'The main one is changed once, to add this worker. If the install fails and you clean it up, only that one link is removed, and only if this install made it. Removing a worker later does not remove its link on the main Unmanic: delete it there, under Settings, Link remote installation.',
     ONE_APP_NOTE,
   ],
   wizard: false,

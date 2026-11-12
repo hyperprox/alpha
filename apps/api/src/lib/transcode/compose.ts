@@ -30,6 +30,17 @@ export const UNMANIC_IMAGE = 'josh5/unmanic:0.4.1'
 export const TDARR_VERSION = '2.86.01'
 export const tdarrImages = (v: string) => ({ server: `ghcr.io/haveagitgat/tdarr:${v}`, node: `ghcr.io/haveagitgat/tdarr_node:${v}` })
 
+/**
+ * SHA-256 of NVIDIA's driver installer for each version HyperProx may put in a container. The installer runs as root,
+ * so it is checked against a hash pinned here, never against a file fetched from the same host. A version is added by
+ * a maintainer: download the .run from https://download.nvidia.com/XFree86/Linux-x86_64/<v>/NVIDIA-Linux-x86_64-<v>.run
+ * on a trusted machine, run sha256sum on it, and add the line.
+ */
+export const NVIDIA_RUN_SHA256: Record<string, string> = {
+  // Downloaded once by hand from download.nvidia.com and hashed with sha256sum (398312209 bytes), 2026-11-12.
+  '580.173.02': '8d8eb9001e05a9a8a663d3d5d304feb64ef2844ee185ccdfd952786820f46e1b',
+}
+
 export const UNMANIC_PORT = 8888
 export const TDARR_WEB_PORT = 8265
 export const TDARR_SERVER_PORT = 8266
@@ -65,7 +76,7 @@ const VERSION = /^\d{1,2}\.\d{1,3}\.\d{1,3}$/
 function hardwareLines(accel: Accel, groups: number[]): { lines: string[]; env: string[] } {
   if (accel === 'vaapi') {
     return {
-      // The whole directory, so the render node and the card node libva also probes both arrive.
+      // The whole directory: the container holds only the render node(s) it was given.
       lines: ['    devices:', '      - /dev/dri:/dev/dri', ...(groups.length ? ['    group_add:', ...groups.map(g => `      - ${q(String(g))}`)] : [])],
       env: [],
     }
@@ -151,8 +162,8 @@ as_puid() { setpriv --reuid=$TC_PUID --regid=$TC_PGID --clear-groups "$@"; }
 # The library: made as the apps' own user first (a NAS may squash root), and only made by root when that fails.
 # Nothing is ever deleted here, and a folder that exists is left alone.
 if [ "$TC_LIBRARY" = 1 ]; then
-  mkdir -p /data
-  chown $TC_PUID:$TC_PGID /data 2>/dev/null || true
+  # A folder that was already there (a NAS, a folder the person chose) is never re-owned.
+  if [ ! -d /data ]; then mkdir -p /data; chown $TC_PUID:$TC_PGID /data 2>/dev/null || true; fi
   for d in /data/media; do
     [ -d "$d" ] && continue
     as_puid mkdir -p "$d" 2>/dev/null || { mkdir -p "$d" && chown $TC_PUID:$TC_PGID "$d"; }
@@ -173,10 +184,12 @@ if [ "$TC_ACCEL" = nvidia ]; then
   apt-get install -y -qq gnupg kmod
   if ! nvidia-smi -L >/dev/null 2>&1; then
     n=0
-    until curl -fsSL -o /tmp/nvidia.run "https://us.download.nvidia.com/XFree86/Linux-x86_64/$TC_NVIDIA_VERSION/NVIDIA-Linux-x86_64-$TC_NVIDIA_VERSION.run"; do
+    until curl -fsSL -o /tmp/nvidia.run "https://download.nvidia.com/XFree86/Linux-x86_64/$TC_NVIDIA_VERSION/NVIDIA-Linux-x86_64-$TC_NVIDIA_VERSION.run"; do
       n=$((n + 1)); [ "$n" -ge 3 ] && { echo "Could not download NVIDIA's libraries for version $TC_NVIDIA_VERSION." >&2; exit 7; }
       sleep 10
     done
+    # The installer runs as root: only the exact file whose hash is pinned in HyperProx is run.
+    echo "$TC_NVIDIA_SHA256  /tmp/nvidia.run" | sha256sum -c - || { rm -f /tmp/nvidia.run; echo "checksum mismatch" >&2; exit 7; }
     sh /tmp/nvidia.run --silent --no-kernel-module --no-kernel-module-source --no-drm --no-x-check --no-nouveau-check --no-install-compat32-libs || { echo "NVIDIA's libraries did not install." >&2; exit 7; }
     rm -f /tmp/nvidia.run
   fi
@@ -216,11 +229,13 @@ export interface ScriptInput extends ComposeInput {
 /** The variables TC_SCRIPT reads. */
 export function scriptEnv(i: ScriptInput): Record<string, string> {
   if (i.accel === 'nvidia' && !/^\d{3}\.\d{2,3}(\.\d{2})?$/.test(i.nvidiaVersion ?? '')) throw new Error('The NVIDIA driver version is missing or not a version.')
+  const sha = i.accel === 'nvidia' ? NVIDIA_RUN_SHA256[i.nvidiaVersion!] : ''
+  if (i.accel === 'nvidia' && !/^[0-9a-f]{64}$/.test(sha ?? '')) throw new Error(`NVIDIA driver ${i.nvidiaVersion} has no pinned checksum, so its installer is not run.`)
   if (!/^[A-Za-z][A-Za-z ]{0,30}$/.test(i.name)) throw new Error('Bad app name.')
   const b64 = (v: string) => Buffer.from(v, 'utf8').toString('base64')
   return {
     TC_PUID: String(PUID), TC_PGID: String(PGID), TC_NAME: i.name, TC_LIBRARY: i.library ? '1' : '0',
-    TC_ACCEL: i.accel, TC_NVIDIA_VERSION: i.accel === 'nvidia' ? i.nvidiaVersion! : '',
+    TC_ACCEL: i.accel, TC_NVIDIA_VERSION: i.accel === 'nvidia' ? i.nvidiaVersion! : '', TC_NVIDIA_SHA256: sha ?? '',
     TC_APP_DIR: APP_DIR[i.kind], TC_SUBDIRS: APP_SUBDIRS[i.kind].join(' '),
     TC_COMPOSE_B64: b64(composeFile(i)),
   }

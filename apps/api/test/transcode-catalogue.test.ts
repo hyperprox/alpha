@@ -13,7 +13,7 @@ import { TRANSCODE_RECIPES, TRANSCODE_IDS, parseMainUrl, UNMANIC_RECIPE, TDARR_R
 import {
   HARDWARE_SCRIPT, parseHardware, resolveAccel, autoAccel, deviceSettings, groupAdd, type NodeHardware,
 } from "../src/lib/transcode/hardware"
-import { composeFile, scriptEnv, TC_SCRIPT, UNMANIC_IMAGE, TDARR_VERSION, tdarrImages } from "../src/lib/transcode/compose"
+import { composeFile, scriptEnv, NVIDIA_RUN_SHA256, TC_SCRIPT, UNMANIC_IMAGE, TDARR_VERSION, tdarrImages } from "../src/lib/transcode/compose"
 import { layoutFromOptions, mediaProbeScript, judgeMedia, prepareNoLibraryScript, LIBRARY_DIR } from "../src/lib/transcode/media"
 import {
   waitForUnmanic, setUnmanicLibrary, setUnmanicWorkers, linkWorker, unlinkWorker, wireUnmanicPlugin, tdarrNodeSeen, waitForTdarrNode,
@@ -65,8 +65,8 @@ test("hardware: Intel graphics are offered as VAAPI with the node's own render g
   assert.equal(h.vaapi?.renderGid, 993)
   assert.equal(h.nvidia, null)
   assert.equal(autoAccel(h), "vaapi")
-  assert.deepEqual(deviceSettings("vaapi", h), [["--dev0", "/dev/dri/renderD128,gid=993"], ["--dev1", "/dev/dri/card0,gid=44"]])
-  assert.deepEqual(groupAdd("vaapi", h), [993, 44])
+  assert.deepEqual(deviceSettings("vaapi", h), [["--dev0", "/dev/dri/renderD128,gid=993"]], "the render node only, never the card")
+  assert.deepEqual(groupAdd("vaapi", h), [993])
 })
 
 test("hardware: an NVIDIA card counts only with its driver loaded, and the container is told the version to match", () => {
@@ -74,7 +74,7 @@ test("hardware: an NVIDIA card counts only with its driver loaded, and the conta
   assert.equal(h.vaapi, null)
   assert.equal(h.nvidia?.driver, "580.173.02")
   assert.equal(autoAccel(h), "nvidia")
-  assert.deepEqual(deviceSettings("nvidia", h).map(x => x[1]), ["/dev/nvidia-modeset", "/dev/nvidia-uvm", "/dev/nvidia-uvm-tools", "/dev/nvidia0", "/dev/nvidiactl"])
+  assert.deepEqual(deviceSettings("nvidia", h), [["--dev0", "/dev/nvidiactl"], ["--dev1", "/dev/nvidia-uvm"], ["--dev2", "/dev/nvidia0"]], "control, compute and the first card only")
   assert.deepEqual(groupAdd("nvidia", h), [])
   // The same card with no driver loaded is nothing to share.
   const noDriver = NVIDIA.replace(/##nvidia\n.*\n/, "").replace("##nvmodule\n580.173.02\n", "").replace(/##nvdev\n(.*\n)+?(?=##)/, "")
@@ -251,7 +251,44 @@ test("script env: carries the compose file whole and the hardware, and refuses a
   assert.throws(() => scriptEnv({ kind: "unmanic", accel: "nvidia", library: true, name: "Unmanic" }), /driver version/)
   assert.throws(() => scriptEnv({ kind: "unmanic", accel: "nvidia", nvidiaVersion: "580;id", library: true, name: "Unmanic" }), /driver version/)
   assert.equal(scriptEnv({ kind: "unmanic-worker", accel: "cpu", library: false, name: "Unmanic" }).TC_LIBRARY, "0")
-  assert.equal(scriptEnv({ kind: "tdarr", accel: "nvidia", nvidiaVersion: "580.173.02", library: true, name: "Tdarr" }).TC_NVIDIA_VERSION, "580.173.02")
+  const nv = scriptEnv({ kind: "tdarr", accel: "nvidia", nvidiaVersion: "580.173.02", library: true, name: "Tdarr" })
+  assert.equal(nv.TC_NVIDIA_VERSION, "580.173.02"); assert.match(nv.TC_NVIDIA_SHA256, /^[0-9a-f]{64}$/)
+  assert.equal(nv.TC_NVIDIA_SHA256, NVIDIA_RUN_SHA256["580.173.02"])
+  assert.throws(() => scriptEnv({ kind: "tdarr", accel: "nvidia", nvidiaVersion: "999.99.99", library: true, name: "Tdarr" }), /no pinned checksum/)
+  assert.equal(scriptEnv({ kind: "tdarr", accel: "cpu", library: true, name: "Tdarr" }).TC_NVIDIA_SHA256, "")
+})
+
+test("script: the NVIDIA installer is hash-checked against the pinned value before it is run, and /data is re-owned only when it did not exist", () => {
+  const check = TC_SCRIPT.indexOf('sha256sum -c -')
+  const run = TC_SCRIPT.indexOf('sh /tmp/nvidia.run')
+  assert.ok(check > 0 && run > check, "sha256sum -c comes before the installer runs")
+  assert.match(TC_SCRIPT, /echo "\$TC_NVIDIA_SHA256  \/tmp\/nvidia\.run" \| sha256sum -c - \|\| \{ rm -f \/tmp\/nvidia\.run; echo "checksum mismatch" >&2; exit 7; \}/)
+  assert.doesNotMatch(TC_SCRIPT, /\.sha256sum|\.sha256\b/, "no hash fetched from the same host")
+  assert.match(TC_SCRIPT, /download\.nvidia\.com/)
+  assert.match(TC_SCRIPT, /if \[ ! -d \/data \]; then mkdir -p \/data; chown/)
+  assert.doesNotMatch(TC_SCRIPT, /^\s*chown \$TC_PUID:\$TC_PGID \/data/m)
+  for (const v of Object.values(NVIDIA_RUN_SHA256)) assert.match(v, /^[0-9a-f]{64}$/)
+})
+
+test("preview: an NVIDIA driver with no pinned installer hash is refused with a way forward, and nothing is planned", async () => {
+  const pve = new FakePve()
+  const odd = NVIDIA.split("580.173.02").join("999.99.99")
+  const d = deps(pve, { arr: () => arrDeps(pve, { "node-a": { hardware: odd } }, []) })
+  const r = await previewInstall({ ...INPUT({ recipeId: "unmanic", hostname: "unmanic", vmid: 920, ip: "192.0.2.70/24" }) } as any, OWNER, d)
+  assert.ok(r.errors.some(e => /999\.99\.99/.test(e) && /no pinned checksum/.test(e) && /Intel \/ AMD or CPU only/.test(e) && /NVIDIA_RUN_SHA256/.test(e)), JSON.stringify(r.errors))
+  assert.equal(r.preview, undefined); assert.equal(pve.creates.length, 0)
+})
+
+test("options: a main address may not be this machine or a link-local or unspecified address", () => {
+  for (const bad of ["127.0.0.1", "127.9.9.9:8888", "localhost", "LOCALHOST:8888", "0.0.0.0", "169.254.169.254", "169.254.1.1:80", "[::1]", "::1", "fe80::1"]) assert.equal(parseMainUrl(bad, 8888), null, bad)
+  assert.deepEqual(parseMainUrl("10.0.0.30", 8888), { host: "10.0.0.30", port: 8888 })
+  assert.ok(checkOptions(UNMANIC_WORKER_RECIPE, { TC_MAIN_URL: "169.254.169.254" }).errors.length)
+  assert.ok(checkOptions(TDARR_NODE_RECIPE, { TC_MAIN_URL: "127.0.0.1:8265" }).errors.length)
+})
+
+test("notes: removing a worker later leaves its link on the main Unmanic, and the notes and README say so", () => {
+  assert.ok(UNMANIC_WORKER_RECIPE.notes!.some(n => /Removing a worker later does not remove its link/.test(n)))
+  assert.match(readFileSync(join(__dirname, "..", "..", "..", "README.md"), "utf8"), /Removing a worker later does not remove its link on the main Unmanic/)
 })
 
 // ── The library ─────────────────────────────────────────────────────────────
@@ -534,11 +571,12 @@ test("wizard (Unmanic): preview then apply makes the container, hands it the GPU
   assert.match(prep, /-mp0 '\/mnt\/hyperprox-arr\/912,mp=\/data,backup=0'/)
   assert.deepEqual(done.arrHostMount, { node: "node-a", vmid: 912 })
   assert.match(done.steps[0].detail!, /hardware: Intel\/AMD graphics \(VAAPI\); library on 10\.0\.0\.20:\/Media/)
-  assert.deepEqual(done.tcGroups, [993, 44])
+  assert.deepEqual(done.tcGroups, [993])
   // The install script carried the compose file with the group, and no secret was made or kept.
   const install = scripts.find(s => s.includes("TC_COMPOSE_B64"))!
   const compose = Buffer.from(/TC_COMPOSE_B64='([^']+)'/.exec(install)![1], "base64").toString()
-  assert.match(compose, /group_add:\n\s+- "993"\n\s+- "44"/)
+  assert.match(compose, /group_add:\n\s+- "993"\n/)
+  assert.doesNotMatch(compose, /- "44"/)
   assert.deepEqual(vault, {}, "nothing generated, so nothing in the vault")
   assert.equal(done.adminCredential, undefined)
   // Unmanic is set up and read back, and the plug-in reads it.

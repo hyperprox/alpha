@@ -1152,10 +1152,10 @@ and the same safety rules; they differ in how the work is shared.
 uses) and shows what it has: Intel or AMD graphics (VAAPI), an NVIDIA card whose driver is already loaded on the
 node, or nothing. The picker offers **Automatic** (Intel or AMD first, then NVIDIA, then the CPU), **Intel / AMD**,
 **NVIDIA** and **CPU only**. A choice the node cannot honour is refused in the preview; it is never swapped for
-another one quietly. Intel and AMD graphics are shared with Proxmox's own `dev` setting, together with the node's
+another one quietly. Intel and AMD graphics are shared (the render device only) with Proxmox's own `dev` setting, together with the node's
 render group number (read from the node, not assumed), so the app's user may open the device. NVIDIA is shared
-the same way, and the container gets NVIDIA's user-space libraries at exactly the node's driver version (they must
-match); HyperProx never installs or changes a driver on a node. On the CPU the preview warns that it is much
+the same way (the control node, the compute node and the first card only), and the container gets NVIDIA's user-space libraries at exactly the node's driver version (they must
+match). NVIDIA's installer runs as root, so it is checked against a SHA-256 pinned in HyperProx first: only listed driver versions are accepted, and any other is refused in the preview with a plain sentence. HyperProx never installs or changes a driver on a node. On the CPU the preview warns that it is much
 slower and that more than one worker only makes each one slower.
 
 **The library.** The same three choices as the Arr Stack: a new disk, a NAS over NFS (mounted on the container's
@@ -1181,7 +1181,7 @@ back from Unmanic. Unmanic's free tier allows two libraries; this uses one.
 worker converts it on its own hardware and the result comes back, so a worker needs no library of its own but every
 file crosses the network twice. On a 1 Gb network that can be the limit. HyperProx links both sides: the main one
 sends tasks to the worker and the worker accepts them. The main Unmanic is changed once, to add that link; if the
-main one already had it, it is left exactly as it was.
+main one already had it, it is left exactly as it was. Removing a worker later does not remove its link on the main Unmanic: delete it there, under Settings, Link remote installation.
 
 **Tdarr.** The server (web page on port 8265, nodes connect on 8266) does no encoding itself. After the install
 HyperProx waits for the server and for its node to register, and shows the server's address. HyperProx has no Tdarr
