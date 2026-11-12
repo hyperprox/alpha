@@ -1,0 +1,79 @@
+errorlog logs/error.log {
+}
+accessLog logs/access.log {
+}
+expires {
+}
+tuning{
+}
+accessDenyDir{
+}
+fileAccessControl{
+}
+perClientConnLimit{
+}
+CGIRLimit{
+}
+accessControl{
+}
+extProcessor lsphp{
+    address                         uds://tmp/lshttpd/lsphp.sock 
+    path                            lsphp83/bin/lsphp
+}
+scriptHandler{
+}
+railsDefaults{
+}
+wsgiDefaults{
+}
+nodeDefaults{
+}
+virtualHost Example{
+    vhRoot                   Example/
+    configFile               conf/vhosts/Example/vhconf.conf
+}
+listener Default{
+  map                     mail.example.org mail.example.org
+  map                     example.org example.org
+  map                     mail.example.com mail.example.com
+  map                     example.com example.com
+    address                  *:80
+}
+vhTemplate centralConfigLog{
+}
+vhTemplate EasyRailsWithSuEXEC{
+}
+module cache {
+}
+module cyberpanel_ols {
+}
+virtualHost example.com {
+  vhRoot                  /home/$VH_NAME
+  configFile              $SERVER_ROOT/conf/vhosts/$VH_NAME/vhost.conf
+}
+listener SSL {
+  map                     mail.example.org mail.example.org
+  map                     example.org example.org
+  map                     mail.example.com mail.example.com
+  address                 *:443
+  map                     example.com example.com
+}
+virtualHost mail.example.com {
+  vhRoot                  /home/example.com
+  configFile              $SERVER_ROOT/conf/vhosts/$VH_NAME/vhost.conf
+}
+listener SSL IPv6 {
+  map                     mail.example.org mail.example.org
+  map                     example.org example.org
+  map                     mail.example.com mail.example.com
+  address                 [ANY]:443
+  map                     mail.example.com mail.example.com
+}
+virtualHost example.org {
+  vhRoot                  /home/$VH_NAME
+  configFile              $SERVER_ROOT/conf/vhosts/$VH_NAME/vhost.conf
+}
+virtualHost mail.example.org {
+  vhRoot                  /home/example.org
+  configFile              $SERVER_ROOT/conf/vhosts/$VH_NAME/vhost.conf
+}

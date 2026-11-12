@@ -21,18 +21,28 @@
 //  log (no comment lines, and lines such as headers or passwords only when they
 //  share a line with a brace). They are parsed here and dropped: a candidate
 //  holds paths, names and true/false facts, never configuration text.
+//
+//  LiteSpeed (OpenLiteSpeed, and CyberPanel on top of it) is read the same
+//  way: from /usr/local/lsws/conf/httpd_config.conf the listeners, their
+//  domain → virtual host maps, each virtual host's vhRoot and the server's
+//  access log; from conf/vhosts/<vhost>/vhost.conf (or vhconf.conf) its
+//  docRoot, names, accesslog with its logFormat, errorlog and lsphp. Only lines
+//  that start with one of those directive names, or that open or close a block
+//  and hold nothing else, leave the container, so keyFile, passwords and
+//  rewrite rules stay where they are. HyperProx never changes LiteSpeed.
 // =============================================================================
 
 import { createHash } from 'node:crypto'
-import { safeLogPath, safeWordPressPath } from './paths'
+import { safeLogPath, safeWordPressPath, safePhpBin, isSharedServerLog, SHARED_LOG_NOTE } from './paths'
 import type { SiteKind } from './store'
 
 // ── the read-only look inside one container ─────────────────────────────────
 
 /**
  * The one script run in each candidate container. Read-only: listening ports from /proc, which web servers are
- * installed, nginx -T and Apache's site files filtered to the lines that place logs and roots, and whether a
- * wp-config.php sits in any root. It writes nothing (the exec path stages the script itself, as for every probe).
+ * installed, nginx -T, Apache's site files and LiteSpeed's configuration filtered to the lines that place logs and
+ * roots, and whether a wp-config.php (or any .php file) sits in any root. It writes nothing (the exec path stages
+ * the script itself, as for every probe).
  */
 export function discoverScript(): string {
   return String.raw`set -u
@@ -54,11 +64,40 @@ for D in /etc/apache2 /etc/httpd; do
   echo "HPXD1 apache $D $(printf '%s\n' "$A" | base64 -w0)"
   ROOTS="$ROOTS $(printf '%s\n' "$A" | sed -n 's/^[[:space:]]*DocumentRoot[[:space:]][[:space:]]*"\{0,1\}\([^"[:space:]]*\).*/\1/Ip')"
 done
+LSW=/usr/local/lsws
+if [ -x "$LSW/bin/openlitespeed" ] || [ -x "$LSW/bin/lshttpd" ] || [ -x "$LSW/bin/litespeed" ]; then
+  echo "HPXD1 bin litespeed"
+  LSF='^[[:space:]]*((virtualHost|listener|vhRoot|configFile|map|address|accessLog|errorLog|useServer|useIpInProxyHeader|logFormat|docRoot|vhDomain|vhAliases|path|extProcessor)([[:space:]]|[{]|$)|[A-Za-z]+([[:space:]]+[^[:space:]{}]+)*[[:space:]]*[{][[:space:]]*$|[}][[:space:]]*$)'
+  if [ -r "$LSW/conf/httpd_config.conf" ]; then
+    C=$(grep -i -E "$LSF" "$LSW/conf/httpd_config.conf" | cut -c1-300 | head -n 3000)
+    echo "HPXD1 lsserver $(printf '%s\n' "$C" | base64 -w0)"
+  else C=""; echo "HPXD1 lsbad"; fi
+  for V in "$LSW"/conf/vhosts/*/vhost.conf "$LSW"/conf/vhosts/*/vhconf.conf; do
+    [ -f "$V" ] && [ -r "$V" ] || continue
+    N=$(basename "$(dirname "$V")")
+    case "$N" in .*|*[!A-Za-z0-9._-]*) continue ;; esac
+    K=$(grep -i -E "$LSF" "$V" | cut -c1-300 | head -n 1000)
+    echo "HPXD1 lsvhost $N $(printf '%s\n' "$K" | base64 -w0)"
+    VR=$(printf '%s\n' "$C" | awk -v n="$N" 'tolower($1)=="virtualhost" { v=$2; sub(/[{].*/, "", v); cur=v; next } cur==n && tolower($1)=="vhroot" { print $2; exit } /^[[:space:]]*[}]/ { cur="" }')
+    [ -n "$VR" ] || VR="$LSW/conf/vhosts/$N"
+    case "$VR" in *[!A-Za-z0-9._/\$-]*) continue ;; esac
+    VR=$(printf '%s' "$VR" | sed "s|[$]VH_NAME|$N|g; s|[$]SERVER_ROOT|$LSW|g")
+    case "$VR" in /*) ;; *) VR="$LSW/$VR" ;; esac
+    VR=$(printf '%s' "$VR" | sed 's|//*|/|g; s|/$||')
+    DR=$(printf '%s\n' "$K" | awk 'tolower($1)=="docroot" { print $2; exit }')
+    [ -n "$DR" ] || continue
+    DR=$(printf '%s' "$DR" | sed "s|[$]VH_ROOT|$VR|g; s|[$]VH_NAME|$N|g; s|[$]SERVER_ROOT|$LSW|g")
+    case "$DR" in /*) ;; *) DR="$LSW/$DR" ;; esac
+    ROOTS="$ROOTS $(printf '%s' "$DR" | sed 's|//*|/|g; s|/$||')"
+  done
+  for P in "$LSW"/lsphp*/bin/php; do [ -x "$P" ] && echo "HPXD1 lsphp $P"; done
+fi
 set -f
 for R in $(printf '%s\n' $ROOTS | sort -u | head -n 50); do
   case "$R" in /*) ;; *) continue ;; esac
   case "$R" in *[!A-Za-z0-9._/-]*) continue ;; esac
   [ -f "$R/wp-config.php" ] && echo "HPXD1 wp $R"
+  [ -d "$R" ] && [ -n "$(find "$R" -maxdepth 1 -type f -name '*.php' 2>/dev/null | head -n 1)" ] && echo "HPXD1 php $R"
 done
 set +f
 echo "HPXD1 end"`
@@ -73,6 +112,14 @@ export interface DiscoverOutput {
   apache: ApacheConf | null
   /** Roots that hold a wp-config.php. */
   wpRoots: string[]
+  /** LiteSpeed's listeners and virtual hosts, when it is installed. */
+  litespeed?: LsConf | null
+  /** LiteSpeed is installed but httpd_config.conf could not be read. */
+  litespeedBroken?: boolean
+  /** LiteSpeed's own PHP builds that exist (/usr/local/lsws/lsphpNN/bin/php). */
+  lsphp?: string[]
+  /** Roots with a .php file at their top. */
+  phpRoots?: string[]
 }
 
 const B64 = /^[A-Za-z0-9+/=]*$/
@@ -80,14 +127,25 @@ const SAFE_PATH = /^\/[A-Za-z0-9._/-]{0,200}$/
 
 /** The script's answer, parsed. Throws when it did not finish, so a cut-off answer is never read as "nothing there". */
 export function parseDiscover(out: string): DiscoverOutput {
-  const r: DiscoverOutput = { complete: false, ports: [], bins: [], nginx: null, nginxBroken: false, apache: null, wpRoots: [] }
+  const r: DiscoverOutput = { complete: false, ports: [], bins: [], nginx: null, nginxBroken: false, apache: null, wpRoots: [], litespeed: null, litespeedBroken: false, lsphp: [], phpRoots: [] }
+  let lsServer: string | null = null
+  const lsVhosts: Array<{ name: string; text: string }> = []
   for (const raw of out.split('\n')) {
     const l = raw.replace(/\r$/, '')
     if (l === 'HPXD1 end') { r.complete = true; break }
     if (l === 'HPXD1 nginxbad') { r.nginxBroken = true; continue }
+    if (l === 'HPXD1 lsbad') { r.litespeedBroken = true; continue }
     let m = /^HPXD1 listen ([0-9A-Fa-f]{1,4})$/.exec(l)
     if (m) { const p = parseInt(m[1], 16); if (p > 0 && !r.ports.includes(p)) r.ports.push(p); continue }
-    m = /^HPXD1 bin (nginx|apache2|httpd|caddy)$/.exec(l)
+    m = /^HPXD1 lsserver ?(\S*)$/.exec(l)
+    if (m) { if (B64.test(m[1])) lsServer = Buffer.from(m[1], 'base64').toString('utf8'); continue }
+    m = /^HPXD1 lsvhost ([A-Za-z0-9][A-Za-z0-9._-]{0,120}) ?(\S*)$/.exec(l)
+    if (m) { if (B64.test(m[2]) && lsVhosts.length < 500) lsVhosts.push({ name: m[1], text: Buffer.from(m[2], 'base64').toString('utf8') }); continue }
+    m = /^HPXD1 lsphp (\S+)$/.exec(l)
+    if (m) { const p = safePhpBin(m[1]); if (p && !r.lsphp!.includes(p)) r.lsphp!.push(p); continue }
+    m = /^HPXD1 php (\S+)$/.exec(l)
+    if (m) { if (SAFE_PATH.test(m[1]) && !r.phpRoots!.includes(m[1])) r.phpRoots!.push(m[1]); continue }
+    m = /^HPXD1 bin (nginx|apache2|httpd|caddy|litespeed)$/.exec(l)
     if (m) { if (!r.bins.includes(m[1])) r.bins.push(m[1]); continue }
     m = /^HPXD1 nginx ?(\S*)$/.exec(l)
     if (m) { if (B64.test(m[1])) r.nginx = parseNginxConfig(Buffer.from(m[1], 'base64').toString('utf8')); continue }
@@ -98,6 +156,7 @@ export function parseDiscover(out: string): DiscoverOutput {
   }
   if (!r.complete) throw new Error('the look inside did not finish')
   r.ports.sort((a, b) => a - b)
+  if (r.bins.includes('litespeed') && lsServer !== null) r.litespeed = parseLiteSpeedConfig(lsServer, lsVhosts)
   return r
 }
 
@@ -341,14 +400,194 @@ export function apacheLogFor(conf: ApacheConf, vhost: ApacheVhost | null): LogCh
   return { logPath: usable.path, format: { name, requestTime: known ? known.requestTime : null, forwardedFor: known ? known.forwardedFor : null } }
 }
 
+// ── LiteSpeed ──────────────────────────────────────────────────────────────
+
+export const LSWS_ROOT = '/usr/local/lsws'
+
+export interface LsListener { name: string; ports: number[]; maps: Array<{ vhost: string; domains: string[] }> }
+export interface LsVhost {
+  name: string
+  /** vhRoot and docRoot with $VH_NAME, $VH_ROOT and $SERVER_ROOT filled in. */
+  vhRoot: string
+  docRoot: string | null
+  /** vhDomain and vhAliases. */
+  names: string[]
+  /** Its own access log; null when it has none or writes the server's (useServer 1). */
+  log: LogDirective | null
+  errorLog: string | null
+  /** The lsphp an extprocessor runs, e.g. /usr/local/lsws/lsphp83/bin/lsphp. */
+  lsphp: string | null
+}
+export interface LsConf {
+  listeners: LsListener[]
+  vhosts: LsVhost[]
+  /** The server's accessLog (logs/access.log when it sets none). */
+  serverLog: LogDirective
+  /** useIpInProxyHeader: 0 or unset logs the proxy's address; 1, 2 and 3 log the visitor's from X-Forwarded-For. */
+  useIpInProxyHeader: number | null
+}
+
+interface LsLine { blocks: Array<{ kind: string; name: string }>; key: string; value: string; opens: boolean }
+
+/**
+ * LiteSpeed's plain-text configuration as directives with the blocks they sit in. "key value" is a directive,
+ * "kind name {" opens a block (and is itself listed, with `opens`, so "accessLog logs/access.log {" gives the path).
+ */
+function lsLines(text: string): LsLine[] {
+  const out: LsLine[] = []
+  const stack: Array<{ kind: string; name: string }> = []
+  for (const raw of text.split('\n')) {
+    const l = raw.trim()
+    if (!l || l.startsWith('#')) continue
+    if (/^\}/.test(l)) { stack.pop(); continue }
+    const open = /^([A-Za-z]+)(?:\s+(.*?))?\s*\{\s*$/.exec(l)
+    if (open) {
+      const b = { kind: open[1].toLowerCase(), name: (open[2] ?? '').trim() }
+      out.push({ blocks: [...stack], key: b.kind, value: b.name, opens: true })
+      stack.push(b)
+      continue
+    }
+    const d = /^(\S+)(?:\s+(.*))?$/.exec(l)
+    if (d) out.push({ blocks: [...stack], key: d[1].toLowerCase(), value: (d[2] ?? '').trim(), opens: false })
+  }
+  return out
+}
+
+/** A path from LiteSpeed's configuration with its variables filled in; relative paths are under the server root. */
+export function lsPath(p: string, vars: { VH_NAME?: string; VH_ROOT?: string }): string {
+  let s = p.trim().replace(/^"(.*)"$/, '$1')
+  s = s.replace(/\$VH_ROOT/g, vars.VH_ROOT ?? '$VH_ROOT').replace(/\$VH_NAME/g, vars.VH_NAME ?? '$VH_NAME').replace(/\$SERVER_ROOT/g, LSWS_ROOT)
+  if (!s.startsWith('/')) s = `${LSWS_ROOT}/${s}`
+  return s.replace(/\/{2,}/g, '/').replace(/(.)\/$/, '$1')
+}
+
+const lsPorts = (address: string): number[] => {
+  const m = /:(\d{1,5})$/.exec(address.trim()) ?? /^(\d{1,5})$/.exec(address.trim())
+  return m ? [Number(m[1])] : []
+}
+
+const splitNames = (v: string) => v.split(/[\s,]+/).map(x => x.trim().toLowerCase()).filter(Boolean)
+
+/**
+ * httpd_config.conf (the filtered lines) and each vhost's own file, into listeners, virtual hosts and logs.
+ * Only virtual hosts the server file declares are kept, with the vhRoot it gives them.
+ */
+export function parseLiteSpeedConfig(server: string, vhostFiles: Array<{ name: string; text: string }>): LsConf {
+  const conf: LsConf = { listeners: [], vhosts: [], serverLog: { path: `${LSWS_ROOT}/logs/access.log`, format: null }, useIpInProxyHeader: null }
+  const roots = new Map<string, string>()
+  const listeners = new Map<string, LsListener>()
+  for (const d of lsLines(server)) {
+    const top = d.blocks[0]
+    if (!top) {
+      if (d.key === 'useipinproxyheader' && /^\d$/.test(d.value)) conf.useIpInProxyHeader = Number(d.value)
+      if (d.key === 'accesslog' && d.value) conf.serverLog.path = lsPath(d.value, {})
+      if (d.key === 'virtualhost' && d.opens && d.value && !roots.has(d.value)) roots.set(d.value, '')
+      continue
+    }
+    if (d.blocks.length !== 1) continue
+    if (top.kind === 'virtualhost' && d.key === 'vhroot') roots.set(top.name, d.value)
+    if (top.kind === 'listener') {
+      const li = listeners.get(top.name) ?? { name: top.name, ports: [], maps: [] }
+      if (d.key === 'address') for (const p of lsPorts(d.value)) if (!li.ports.includes(p)) li.ports.push(p)
+      if (d.key === 'map') {
+        const [vhost, ...rest] = d.value.split(/\s+/)
+        if (vhost) li.maps.push({ vhost, domains: splitNames(rest.join(' ')) })
+      }
+      listeners.set(top.name, li)
+    }
+    if (top.kind === 'accesslog' && d.key === 'logformat') conf.serverLog.format = d.value
+  }
+  conf.listeners = [...listeners.values()]
+  for (const [name, rawRoot] of roots) {
+    const vhRoot = lsPath(rawRoot || `conf/vhosts/${name}`, { VH_NAME: name })
+    const vars = { VH_NAME: name, VH_ROOT: vhRoot }
+    const v: LsVhost = { name, vhRoot, docRoot: null, names: [], log: null, errorLog: null, lsphp: null }
+    const file = vhostFiles.find(f => f.name === name)
+    if (file) {
+      let ownLog: LogDirective | null = null, useServer = false
+      for (const d of lsLines(file.text)) {
+        const top = d.blocks[0]
+        if (!top) {
+          if (d.key === 'docroot' && d.value) v.docRoot = lsPath(d.value, vars)
+          if (d.key === 'vhdomain' || d.key === 'vhaliases') v.names.push(...splitNames(d.value.replace(/\$VH_NAME/g, name)))
+          if (d.key === 'accesslog' && d.value) ownLog = { path: lsPath(d.value, vars), format: null }
+          if (d.key === 'errorlog' && d.value) v.errorLog = lsPath(d.value, vars)
+          continue
+        }
+        if (top.kind === 'accesslog' && d.blocks.length === 1 && d.key === 'logformat' && ownLog) ownLog.format = d.value
+        if (top.kind === 'accesslog' && d.blocks.length === 1 && d.key === 'useserver' && d.value === '1') useServer = true
+        if (top.kind === 'extprocessor' && d.key === 'path' && /^\/usr\/local\/lsws\/lsphp[0-9]{2,3}\/bin\/lsphp$/.test(d.value) && !v.lsphp) v.lsphp = d.value
+      }
+      v.log = useServer ? null : ownLog
+    }
+    conf.vhosts.push(v)
+  }
+  return conf
+}
+
+/** The virtual host LiteSpeed gives `host` on `port`: a listener's map by name, then the vhosts' own names. */
+export function matchLsVhost(conf: LsConf, host: string | null, port: number | null): { vhost: LsVhost; how: 'map' | 'name' } | null {
+  const onPort = conf.listeners.filter(l => port === null || l.ports.includes(port))
+  const pool = onPort.length ? onPort : conf.listeners
+  const byName = (n: string) => conf.vhosts.find(v => v.name === n) ?? null
+  if (host) {
+    const maps = pool.flatMap(l => l.maps)
+    for (const want of ['exact', 'wildcard'] as const) {
+      for (const m of maps) if (m.domains.some(d => d !== '*' && nameMatches(d, host) === want)) { const v = byName(m.vhost); if (v) return { vhost: v, how: 'map' } }
+    }
+    const mapped = new Set(maps.map(m => m.vhost))
+    const named = conf.vhosts.filter(v => !mapped.size || mapped.has(v.name))
+    const hit = named.find(v => v.names.some(n => nameMatches(n, host) === 'exact')) ?? named.find(v => v.names.some(n => nameMatches(n, host)))
+    if (hit) return { vhost: hit, how: 'name' }
+    // A catch-all "map <vhost> *".
+    for (const m of maps) if (m.domains.includes('*')) { const v = byName(m.vhost); if (v) return { vhost: v, how: 'map' } }
+    return null
+  }
+  const first = pool.flatMap(l => l.maps)[0]
+  const v = first ? byName(first.vhost) : conf.vhosts[0] ?? null
+  return v ? { vhost: v, how: 'map' } : null
+}
+
+/** What a LiteSpeed/Apache-style format string carries. The outer pair of quotes CyberPanel writes is ignored. */
+export function lsFormatFacts(format: string | null): { name: string; requestTime: boolean; forwardedFor: boolean } {
+  if (!format) return { name: 'combined', requestTime: false, forwardedFor: false }
+  const f = format.trim().replace(/^"([\s\S]*)"$/, '$1')
+  const combined = /^%h %l %u %t "%r" %>s %b "%\{Referer\}i" "%\{User-Agent\}i"$/i.test(f)
+  return { name: combined ? 'combined' : 'custom', ...apacheFacts(f) }
+}
+
+export function lsLogFor(conf: LsConf, vhost: LsVhost): LogChoice & { realClientIp: boolean } {
+  const log = vhost.log ?? conf.serverLog
+  const realClientIp = (conf.useIpInProxyHeader ?? 0) > 0
+  const facts = lsFormatFacts(log.format)
+  const format = { name: facts.name, requestTime: facts.requestTime, forwardedFor: facts.forwardedFor || realClientIp }
+  if (log.path.includes('$')) return { logPath: null, format: null, realClientIp, note: 'Its access log path is built from variables HyperProx does not fill in, so enter the file by hand.' }
+  if (!safeLogPath(log.path)) return { logPath: null, format: null, realClientIp, note: 'Its access log is outside /var/log, /usr/local/lsws/logs and /home/<site>/logs, which HyperProx does not read.' }
+  return { logPath: log.path, format, realClientIp, ...(isSharedServerLog(log.path) ? { note: SHARED_LOG_NOTE } : {}) }
+}
+
+/** In words: why visitors are approximated when LiteSpeed logs the proxy's address, and what the owner can turn on. */
+export const LITESPEED_PROXY_NOTE =
+  'LiteSpeed logs the proxy\'s address, not the visitor\'s, so requests and page views are exact but unique visitors are approximated ' +
+  '(people with the same browser cannot be told apart). For exact visitors, turn on "Use Client IP in Header" ' +
+  '(useIpInProxyHeader) yourself in LiteSpeed WebAdmin under Server Configuration → General; HyperProx does not change LiteSpeed or CyberPanel.'
+
 // ── one container, inspected ───────────────────────────────────────────────
 
+export type ServerName = 'nginx' | 'apache' | 'caddy' | 'litespeed'
+
 export interface Inspection {
-  server: 'nginx' | 'apache' | 'caddy' | null
+  server: ServerName | null
   kind: SiteKind
   logPath: string | null
   logFormat: LogChoice['format']
   wpPath: string | null
+  /** The site's own error log, when it is not the nginx default (LiteSpeed's per-site error_log). */
+  errorLog: string | null
+  /** The PHP that WP-CLI runs with, when the site's PHP is not on the PATH (LiteSpeed's lsphp). */
+  phpBin: string | null
+  /** Behind a proxy, the log holds only the proxy's address: requests are exact, unique visitors approximate. */
+  visitorsApproximate: boolean
   /** The proxy's forward port is one this container listens on (null when there is no proxy). */
   forwardPortOpen: boolean | null
   notes: string[]
@@ -360,13 +599,13 @@ export interface Inspection {
  */
 export function inspectFor(out: DiscoverOutput, host: string | null, port: number | null, behindProxy = port !== null): Inspection {
   const notes: string[] = []
-  const r: Inspection = { server: null, kind: 'other', logPath: null, logFormat: null, wpPath: null,
+  const r: Inspection = { server: null, kind: 'other', logPath: null, logFormat: null, wpPath: null, errorLog: null, phpBin: null, visitorsApproximate: false,
     forwardPortOpen: port === null ? null : out.ports.includes(port), notes }
   const wordpressAt = (root: string | null) => {
     if (!root || !out.wpRoots.includes(root)) return false
     r.kind = 'wordpress'
     r.wpPath = safeWordPressPath(root)
-    if (!r.wpPath) notes.push('WordPress is outside /var/www and /srv, so its versions cannot be read.')
+    if (!r.wpPath) notes.push('WordPress is outside /var/www, /srv and /home/<site>/public_html, so its versions cannot be read.')
     return true
   }
   if (out.nginx) {
@@ -378,6 +617,27 @@ export function inspectFor(out: DiscoverOutput, host: string | null, port: numbe
     r.logPath = log.logPath; r.logFormat = log.format
     if (log.note) notes.push(log.note)
     if (!wordpressAt(hit.server.root)) r.kind = hit.server.php || hit.server.proxied ? 'other' : 'static'
+  } else if (out.litespeed) {
+    r.server = 'litespeed'
+    const hit = matchLsVhost(out.litespeed, host, port)
+    if (!hit) { notes.push(host ? `No LiteSpeed listener maps ${host} to a virtual host.` : 'LiteSpeed is installed but has no virtual host.'); return r }
+    const vh = hit.vhost
+    const log = lsLogFor(out.litespeed, vh)
+    r.logPath = log.logPath; r.logFormat = log.format
+    if (log.note) notes.push(log.note)
+    if (vh.errorLog && safeLogPath(vh.errorLog)) r.errorLog = vh.errorLog
+    if (!wordpressAt(vh.docRoot)) r.kind = !vh.docRoot ? 'other' : (out.phpRoots ?? []).includes(vh.docRoot) ? 'other' : 'static'
+    if (r.kind === 'wordpress' && vh.lsphp) {
+      const php = safePhpBin(vh.lsphp.replace(/\/lsphp$/, '/php'))
+      if (php && (out.lsphp ?? []).includes(php)) r.phpBin = php
+      else notes.push(`The PHP this site runs (${vh.lsphp}) has no php command beside it, so WP-CLI uses the one on the PATH.`)
+    }
+    if (behindProxy && !log.realClientIp && r.logPath) { r.visitorsApproximate = true; notes.push(LITESPEED_PROXY_NOTE) }
+    if (r.logFormat?.requestTime === false) notes.push('The log has no request time, so response times stay empty. HyperProx does not offer a logging change for LiteSpeed.')
+    return r
+  } else if (out.litespeedBroken) {
+    r.server = 'litespeed'
+    notes.push('LiteSpeed is installed but its httpd_config.conf could not be read.')
   } else if (out.apache && (out.bins.includes('apache2') || out.bins.includes('httpd'))) {
     r.server = 'apache'
     const v = matchVhost(out.apache, host, port)
@@ -392,7 +652,7 @@ export function inspectFor(out: DiscoverOutput, host: string | null, port: numbe
     r.server = 'caddy'
     notes.push('Caddy writes JSON logs, which HyperProx does not read yet.')
   } else {
-    notes.push('No nginx, Apache or Caddy was found in this container.')
+    notes.push('No nginx, Apache, LiteSpeed or Caddy was found in this container.')
   }
   if (r.logFormat) {
     const missing: string[] = []
@@ -496,6 +756,9 @@ export interface Candidate {
   logPath: string | null
   logFormat: LogChoice['format']
   wpPath: string | null
+  errorLog: string | null
+  phpBin: string | null
+  visitorsApproximate: boolean
   alreadyASite: boolean
   alreadyAdopted: boolean
   siteId: string | null
@@ -560,6 +823,7 @@ export function buildCandidates(targets: Target[], inspected: Map<number, Inspec
         notAGuest: g ? null : (t.notGuest ?? 'an address that is not a guest'),
         server: grp.ins?.server ?? null, kind: grp.ins?.kind ?? null,
         logPath: grp.ins?.logPath ?? null, logFormat: grp.ins?.logFormat ?? null, wpPath: grp.ins?.wpPath ?? null,
+        errorLog: grp.ins?.errorLog ?? null, phpBin: grp.ins?.phpBin ?? null, visitorsApproximate: grp.ins?.visitorsApproximate ?? false,
         alreadyASite: !!site, alreadyAdopted: !!site?.recipeId.startsWith('adopted-'), siteId: site?.id ?? null,
         up: url ? (up.get(url) ?? null) : null,
         adoptable: !whyNot, whyNot, notes,

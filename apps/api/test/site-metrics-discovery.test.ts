@@ -72,7 +72,7 @@ test('kind: WordPress when wp-config.php is in the root, static for a plain root
   const caddy = inspectFor(parseDiscover('HPXD1 listen 01BB\nHPXD1 bin caddy\nHPXD1 end\n'), 'x.example.com', 443)
   assert.equal(caddy.server, 'caddy'); assert.equal(caddy.logPath, null)
   const none = inspectFor(parseDiscover('HPXD1 listen 0050\nHPXD1 end\n'), 'x.example.com', 80)
-  assert.equal(none.server, null); assert.match(none.notes[0], /No nginx, Apache or Caddy/)
+  assert.equal(none.server, null); assert.match(none.notes[0], /No nginx, Apache, LiteSpeed or Caddy/)
   const broken = inspectFor(parseDiscover('HPXD1 bin nginx\nHPXD1 nginxbad\nHPXD1 end\n'), 'x.example.com', 80)
   assert.equal(broken.server, 'nginx'); assert.match(broken.notes[0], /nginx -T fails/)
   assert.throws(() => parseDiscover('HPXD1 listen 0050\n'), /did not finish/)

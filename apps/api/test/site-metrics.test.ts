@@ -201,7 +201,7 @@ test('retention: hours 30 days, days 13 months, visitor hashes and salts two day
 
 // ── paths ────────────────────────────────────────────────────────────────
 
-test('paths: logs under /var/log only, absolute, no "..", no odd characters', () => {
+test('paths: logs under /var/log (LiteSpeed\'s places: site-metrics-litespeed.test.ts), absolute, no "..", no odd characters', () => {
   assert.equal(safeLogPath('/var/log/nginx/access.log'), '/var/log/nginx/access.log')
   for (const p of ['/var/log/../etc/shadow', 'var/log/x', '/etc/passwd', "/var/log/a'b", '/var/log/a b', '/var/log/nginx//x', '/var/log/', '/var/log/x;rm', '/var/log/$(id)', 42, null, '/var/log/./x'])
     assert.equal(safeLogPath(p), null, String(p))
@@ -409,7 +409,7 @@ test('WordPress: versions, updates, PHP-FPM and sanitised PHP errors', () => {
 
 test('adopt: input is checked, and the probe returns facts, never the log lines', () => {
   assert.deepEqual(checkAdoptInput({ vmid: 426, url: 'https://www.example.com/', kind: 'static' }).input,
-    { vmid: 426, url: 'https://www.example.com', logPath: '/var/log/nginx/access.log', kind: 'static', wpPath: null, name: '' })
+    { vmid: 426, url: 'https://www.example.com', logPath: '/var/log/nginx/access.log', kind: 'static', wpPath: null, name: '', errorLog: null, phpBin: null })
   assert.ok(checkAdoptInput({ vmid: 1, url: 'ftp://x', kind: 'x', logPath: '/etc/passwd' }).errors.length >= 4)
   assert.match(checkAdoptInput({ vmid: 500, url: 'https://u:p@www.example.com', kind: 'static' }).errors.join(), /no path or login/)
   assert.equal(checkAdoptInput({ vmid: 500, url: 'https://www.example.com', kind: 'wordpress' }).input!.wpPath, '/var/www/wordpress')

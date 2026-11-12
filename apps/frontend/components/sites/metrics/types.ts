@@ -32,13 +32,13 @@ export interface ContainerView {
 export interface SiteDetail {
   summary: SiteSummary
   range: Range
-  hud: { visitors: number; pageViews: number; requests: number; errorRatePct: number | null; p95Ms: number | null; p50Ms: number | null; bytes: number; uptimePct: number | null; hasRequestTime: boolean }
+  hud: { visitors: number; pageViews: number; requests: number; errorRatePct: number | null; p95Ms: number | null; p50Ms: number | null; bytes: number; uptimePct: number | null; hasRequestTime: boolean; visitorsApproximate?: boolean }
   series: Array<{ at: number; people: number; bots: number; visitors: number }>
   status: { s2xx: number; s3xx: number; s4xx: number; s5xx: number }
   devices: KeyValue[]; browsers: KeyValue[]; os: KeyValue[]
   pages?: KeyValue[]; referrers?: KeyValue[]; notFound?: KeyValue[]
   where?: { vmid: number; node: string }
-  collector?: { logPath: string; format: string | null; lastReadAt: number | null; lastError: string | null; gaps: number; malformed: number }
+  collector?: { logPath: string; format: string | null; lastReadAt: number | null; lastError: string | null; gaps: number; malformed: number; litespeed?: boolean; visitorsApproximate?: boolean }
   wordpress?: WpInfo | null
   alertSettings?: AlertSettings
   health: { up: boolean | null; status: number | null; latencyMs: number | null; problem: string | null; certDays: number | null; certIssuer: string | null; certError: string | null }

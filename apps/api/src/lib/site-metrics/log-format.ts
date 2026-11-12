@@ -18,7 +18,7 @@
 // =============================================================================
 
 import { createHash } from 'node:crypto'
-import { safeLogPath, safeNginxConfPath, shq } from './paths'
+import { safeNginxLogPath, safeNginxConfPath, shq } from './paths'
 
 export const FORMAT_NAME = 'hyperprox_metrics'
 export const INCLUDE_FILE = '/etc/nginx/hyperprox-metrics-log.conf'
@@ -28,8 +28,8 @@ export const LOG_FORMAT_LINE =
   `"$http_referer" "$http_user_agent" $request_time "$http_x_forwarded_for"';`
 
 export function inspectScript(logPath: string): string {
-  const p = safeLogPath(logPath)
-  if (!p) throw new Error('Refused: the log path must be absolute, under /var/log, with no "..".')
+  const p = safeNginxLogPath(logPath)
+  if (!p) throw new Error('Refused: the log path must be absolute, under /var/log, with no "..". HyperProx changes only nginx\'s log format, never LiteSpeed\'s.')
   return [
     'set -u',
     'export LC_ALL=C',
@@ -94,9 +94,9 @@ export interface LogFormatPlan {
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 export function planLogFormat(ins: Inspection, logPath: string): LogFormatPlan {
-  const p = safeLogPath(logPath)
+  const p = safeNginxLogPath(logPath)
   const plan: LogFormatPlan = { logPath: p ?? '', hashes: {}, edits: [], insert: null, includeFile: null, skipped: [] }
-  if (!p) return { ...plan, refusal: 'The log path must be absolute, under /var/log, with no "..".' }
+  if (!p) return { ...plan, refusal: 'HyperProx changes only nginx\'s log format, for a log under /var/log. A LiteSpeed or CyberPanel log is read as it is, and nothing there is changed.' }
   if (!ins.nginx) return { ...plan, refusal: 'nginx is not installed in this container.' }
   if (!ins.configOk) return { ...plan, refusal: 'nginx -T fails here, so its configuration cannot be read safely. Fix nginx first.' }
   const plain = new RegExp(`^([ \\t]*)access_log[ \\t]+${esc(p)}([ \\t]+combined)?[ \\t]*;[ \\t]*(#.*)?$`)

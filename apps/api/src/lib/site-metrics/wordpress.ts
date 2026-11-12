@@ -7,27 +7,37 @@
 //  site: versions, what has an update waiting, whether PHP-FPM is running,
 //  and the last few PHP errors from the logs, with addresses, e-mail addresses
 //  and the site's folders taken out before they are stored or shown.
+//
+//  On LiteSpeed (CyberPanel) there is often no php on the PATH: WP-CLI is run
+//  with the site's own lsphp (/usr/local/lsws/lsphpNN/bin/php) when one is
+//  given, and "PHP" reports that build's version.
 // =============================================================================
 
-import { safeWordPressPath, safeLogPath, shq, DEFAULT_WP_PATH, DEFAULT_ERROR_LOG } from './paths'
+import { safeWordPressPath, safeLogPath, safePhpBin, shq, LOG_RULE, DEFAULT_WP_PATH, DEFAULT_ERROR_LOG } from './paths'
 
 export const WP_CACHE_MS = 60 * 60_000
 export const WP_ERRORS = 10
 
-export function wordpressScript(wpPath = DEFAULT_WP_PATH, errorLog = DEFAULT_ERROR_LOG, errors = WP_ERRORS): string {
+export function wordpressScript(wpPath = DEFAULT_WP_PATH, errorLog = DEFAULT_ERROR_LOG, errors = WP_ERRORS, phpBin: string | null = null): string {
   const wp = safeWordPressPath(wpPath)
   const el = safeLogPath(errorLog)
-  if (!wp) throw new Error('Refused: the WordPress folder must be under /var/www or /srv, with no "..".')
-  if (!el) throw new Error('Refused: the error log must be absolute, under /var/log, with no "..".')
+  const php = phpBin === null ? null : safePhpBin(phpBin)
+  if (!wp) throw new Error('Refused: the WordPress folder must be under /var/www, /srv or /home/<site>/public_html, with no "..".')
+  if (!el) throw new Error(`Refused: the error log must be ${LOG_RULE}.`)
+  if (phpBin !== null && !php) throw new Error('Refused: the PHP binary must be one of LiteSpeed\'s, /usr/local/lsws/lsphpNN/bin/php.')
   const n = Number.isSafeInteger(errors) && errors > 0 && errors <= 50 ? errors : WP_ERRORS
   return [
     'set -u',
     'export LC_ALL=C',
     `WPP=${shq(wp)}`,
     `ELOG=${shq(el)}`,
+    `PHPBIN=${php ? shq(php) : "''"}`,
+    '[ -n "$PHPBIN" ] && [ ! -x "$PHPBIN" ] && PHPBIN=""',
     'WPBIN=$(command -v wp || true); [ -x /usr/local/bin/wp ] && WPBIN=/usr/local/bin/wp',
-    'OWNER=$(stat -c %U -- "$WPP" 2>/dev/null || echo www-data); [ "$OWNER" = root ] && OWNER=www-data',
-    'w() { runuser -u "$OWNER" -- env HOME=/tmp "$WPBIN" --path="$WPP" --skip-plugins --skip-themes --no-color "$@" 2>/dev/null; }',
+    'OWNER=$(stat -c %U -- "$WPP" 2>/dev/null || echo www-data)',
+    // WP-CLI runs as the folder's owner; never as a system account (root, LiteSpeed's lsadm, or nobody).
+    'case "$OWNER" in root|lsadm|nobody) echo "HPXW1 owner $OWNER"; echo "HPXW1 end"; exit 0 ;; esac',
+    'w() { runuser -u "$OWNER" -- env HOME=/tmp ${PHPBIN:+"$PHPBIN"} "$WPBIN" --path="$WPP" --skip-plugins --skip-themes --no-color "$@" 2>/dev/null; }',
     'echo "HPXW1 wpcli $([ -n "$WPBIN" ] && echo yes || echo no)"',
     'if [ -n "$WPBIN" ]; then',
     '  echo "HPXW1 core"; w core version; echo',
@@ -35,7 +45,7 @@ export function wordpressScript(wpPath = DEFAULT_WP_PATH, errorLog = DEFAULT_ERR
     '  echo "HPXW1 plugins"; w plugin list --format=json --fields=name,status,version,update_version,update; echo',
     '  echo "HPXW1 themes"; w theme list --format=json --fields=name,status,version,update_version,update; echo',
     'fi',
-    'echo "HPXW1 php"; php -r \'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;\' 2>/dev/null; echo',
+    'echo "HPXW1 php"; "${PHPBIN:-php}" -r \'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;\' 2>/dev/null; echo',
     'echo "HPXW1 fpm"; for u in $(systemctl list-units --type=service --all --plain --no-legend "php*-fpm.service" 2>/dev/null | awk \'{print $1}\'); do echo "$u $(systemctl is-active "$u" 2>/dev/null)"; done',
     `echo "HPXW1 errors"; { [ -r "$WPP/wp-content/debug.log" ] && tail -n 200 -- "$WPP/wp-content/debug.log" | grep -E "PHP (Fatal|Warning|Parse|Notice|Deprecated)" ; [ -r "$ELOG" ] && tail -n 2000 -- "$ELOG" | grep -E "PHP (Fatal|Warning|Parse|Notice|Deprecated)"; } 2>/dev/null | tail -n ${n} | cut -c1-600`,
     'echo "HPXW1 end"',
@@ -93,18 +103,23 @@ const VER = /^[0-9A-Za-z.+-]{1,30}$/
 
 export function parseWordPressOutput(out: string, now: number, wpPath = DEFAULT_WP_PATH): WpInfo {
   const parts = new Map<string, string>()
-  let key = '', wpCli = false, ended = false
+  let key = '', wpCli = false, ended = false, refused: string | null = null
   for (const raw of out.split('\n')) {
     const m = /^HPXW1 (\w+)(?: (.*))?$/.exec(raw.trim())
     if (m) {
       if (m[1] === 'wpcli') { wpCli = m[2] === 'yes'; continue }
       if (m[1] === 'end') { ended = true; break }
+      if (m[1] === 'owner') { refused = /^(root|lsadm|nobody)$/.test(m[2] ?? '') ? m[2]! : 'a system account'; continue }
       key = m[1]; parts.set(key, ''); continue
     }
     if (key) parts.set(key, (parts.get(key) ?? '') + raw + '\n')
   }
   const info: WpInfo = { checkedAt: now, wpCli, core: null, php: null, fpm: [], updates: [], plugins: 0, themes: 0, errors: [] }
   if (!ended) { info.problem = 'The WordPress check did not finish.'; return info }
+  if (refused) {
+    info.problem = `The WordPress folder belongs to ${refused}, a system account, so HyperProx does not run WP-CLI as it and the WordPress card is skipped. Give the folder to the site's own user to see versions and updates.`
+    return info
+  }
   const core = (parts.get('core') ?? '').trim()
   if (VER.test(core)) info.core = core
   const php = (parts.get('php') ?? '').trim()

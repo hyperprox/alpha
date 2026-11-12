@@ -72,12 +72,15 @@ export default function SitePage() {
         <>
           {d.alertSettings && <AlertSettingsPanel siteId={d.summary.id} initial={d.alertSettings} />}
           <section className={s.panel} aria-label="Log format">
-            <h3>Response times <small>NGINX LOG FORMAT</small></h3>
+            <h3>Response times <small>{d.collector?.litespeed ? 'LITESPEED LOG' : 'NGINX LOG FORMAT'}</small></h3>
             <p className={s.note}>
-              {d.hud.hasRequestTime ? 'This site\'s log already records how long each request took.'
+              {d.collector?.litespeed
+                ? (d.hud.hasRequestTime ? 'This site\'s LiteSpeed log already records how long each request took.'
+                  : 'This site\'s LiteSpeed log does not record how long each request took, so p50 and p95 stay empty. HyperProx reads LiteSpeed\'s log as it is and does not change LiteSpeed or CyberPanel, so no logging change is offered here.')
+                : d.hud.hasRequestTime ? 'This site\'s log already records how long each request took.'
                 : 'This site\'s log does not record how long each request took, so p50 and p95 stay empty. HyperProx can add $request_time (and the proxy\'s X-Forwarded-For, so visitors behind the proxy are told apart) to its nginx log format: you see the exact lines first, and it asks for the master password.'}
             </p>
-            {!d.hud.hasRequestTime && <button type="button" className={styles.btn} style={{ marginTop: 10 }} onClick={() => setLogFormat(true)}>Preview the change</button>}
+            {!d.hud.hasRequestTime && !d.collector?.litespeed && <button type="button" className={styles.btn} style={{ marginTop: 10 }} onClick={() => setLogFormat(true)}>Preview the change</button>}
             {d.collector && <p className={s.note} style={{ marginTop: 10 }}>Reading {d.collector.logPath} ({d.collector.format ?? 'not read yet'}){d.collector.lastReadAt ? `, last read ${new Date(d.collector.lastReadAt).toLocaleTimeString()}` : ''}.{d.collector.gaps ? ` ${d.collector.gaps} rotation gap(s) so far.` : ''}</p>}
           </section>
           {d.summary.adopted && (

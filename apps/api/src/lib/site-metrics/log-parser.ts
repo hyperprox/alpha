@@ -9,6 +9,12 @@
 //  orders of those two extras are read too. A line that fits none of them is
 //  counted as malformed and otherwise ignored.
 //
+//  LiteSpeed writes the same combined shape (Apache's %h %l %u %t "%r" %>s %b
+//  "%{Referer}i" "%{User-Agent}i"). CyberPanel's vhost template sets that as a
+//  logFormat wrapped in one more pair of quotes, and LiteSpeed writes those
+//  quotes too: the line starts with " and ends with "". That outer pair is
+//  taken off before the line is read.
+//
 //  The address is only ever used to make the day's visitor hash and is then
 //  dropped: a parsed line never leaves the collector.
 // =============================================================================
@@ -78,8 +84,14 @@ export function clientAddress(remote: string, xff: string | null): string {
 }
 
 /** One line, or null when it fits no known format. */
+/** A line wrapped in one extra pair of quotes, as LiteSpeed writes a quoted logFormat: '"203.0.113.7 - - [..] "GET / HTTP/1.1" 200 5 "-" "UA""'. */
+const WRAPPED = /^"([^\s"]+ \S+ \S+ \[[^\]]+\] "[\s\S]*)"$/
+
 export function parseLogLine(line: string): LogLine | null {
-  const m = HEAD.exec(line.replace(/\r$/, ''))
+  let text = line.replace(/\r$/, '')
+  const w = WRAPPED.exec(text)
+  if (w) text = w[1]
+  const m = HEAD.exec(text)
   if (!m) return null
   const time = parseNginxTime(m[2])
   if (!time) return null

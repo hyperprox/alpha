@@ -20,7 +20,7 @@ import { publish as busPublish } from '../notify'
 import type { NotifyEventInput } from '../notify/types'
 import { listSites, type SiteRecord } from '../sites'
 import { aggregateLines, bump, dayKey, emptyAgg, hourStart, sumAggs, type Agg } from './aggregate'
-import { parseLogLine, splitLines, type LogLine } from './log-parser'
+import { isPrivateAddress, parseLogLine, splitLines, type LogLine } from './log-parser'
 import { parseReadOutput, readLogScript, READ_CHUNK } from './read-script'
 import { makeSalt, saltDayAllowed, visitorHash } from './visitors'
 import { checkSite, realHealthDeps, publicHost, type HealthDeps } from './health'
@@ -57,9 +57,9 @@ export function isAdopted(site: SiteRecord): boolean { return site.recipeId.star
 export function defaultState(site: SiteRecord): SiteState {
   const kind = kindOf(site)
   return {
-    siteId: site.id, logPath: DEFAULT_ACCESS_LOG, errorLog: DEFAULT_ERROR_LOG, wpPath: kind === 'wordpress' ? DEFAULT_WP_PATH : null,
+    siteId: site.id, logPath: DEFAULT_ACCESS_LOG, errorLog: DEFAULT_ERROR_LOG, wpPath: kind === 'wordpress' ? DEFAULT_WP_PATH : null, phpBin: null,
     kind, adopted: isAdopted(site), enabled: true, inode: '', offset: 0, format: null, lastReadAt: null, lastError: null,
-    gaps: 0, malformed: 0, health: emptyHealth(), alerts: { ...DEFAULT_ALERTS }, alertState: {}, wordpress: null,
+    gaps: 0, malformed: 0, visitorsApproximate: false, health: emptyHealth(), alerts: { ...DEFAULT_ALERTS }, alertState: {}, wordpress: null,
   }
 }
 
@@ -86,11 +86,13 @@ export const realCollectorDeps = (log: (m: string) => void = () => {}): Collecto
 })
 
 /** Count one batch of lines into the store. Returns how many lines it counted. */
-export async function countLines(site: SiteRecord, st: SiteState, raw: string[], d: CollectorDeps): Promise<{ counted: number; malformed: number; format: string | null }> {
+export async function countLines(site: SiteRecord, st: SiteState, raw: string[], d: CollectorDeps): Promise<{ counted: number; malformed: number; format: string | null; proxyOnly: boolean }> {
   const parsed: LogLine[] = []
   let malformed = 0
   for (const l of raw) { const p = parseLogLine(l); if (p) parsed.push(p); else malformed++ }
-  if (!parsed.length) return { counted: 0, malformed, format: null }
+  if (!parsed.length) return { counted: 0, malformed, format: null, proxyOnly: false }
+  // Every line from a private address with no visitor address behind it: the proxy in front, so people blur together.
+  const proxyOnly = parsed.every(p => isPrivateAddress(p.remote) && p.client === p.remote)
   const now = d.now()
   const salts = new Map<string, string | null>()
   for (const day of new Set(parsed.map(p => dayKey(p.time)))) {
@@ -109,7 +111,7 @@ export async function countLines(site: SiteRecord, st: SiteState, raw: string[],
     await d.store.recountVisitors(site.id, hour)
   }
   const fmt = Object.entries(res.formats).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
-  return { counted: parsed.length, malformed, format: fmt }
+  return { counted: parsed.length, malformed, format: fmt, proxyOnly }
 }
 
 /** Pull and count new log lines. Moves the cursor in `st`; throws when the read itself failed. */
@@ -148,6 +150,7 @@ export async function pullLog(site: SiteRecord, st: SiteState, d: CollectorDeps)
     total += c.counted
     st.malformed += c.malformed
     if (c.format) st.format = c.format
+    if (c.counted) st.visitorsApproximate = c.proxyOnly
     st.inode = inode; st.offset = offset
     st.lastReadAt = d.now().getTime(); st.lastError = null
     await d.store.putState(st)
@@ -158,7 +161,7 @@ export async function pullLog(site: SiteRecord, st: SiteState, d: CollectorDeps)
 
 export async function refreshWordPress(site: SiteRecord, st: SiteState, d: Pick<CollectorDeps, 'run' | 'now'>): Promise<void> {
   const wp = st.wpPath ?? DEFAULT_WP_PATH
-  const r = await d.run(site, wordpressScript(wp, st.errorLog), 512 * 1024)
+  const r = await d.run(site, wordpressScript(wp, st.errorLog, undefined, st.phpBin ?? null), 512 * 1024)
   st.wordpress = parseWordPressOutput(r.output, d.now().getTime(), wp)
   if (r.code !== 0 && !st.wordpress.problem) st.wordpress.problem = `The check exited ${r.code}.`
 }

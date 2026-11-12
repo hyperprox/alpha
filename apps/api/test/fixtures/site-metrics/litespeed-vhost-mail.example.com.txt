@@ -1,0 +1,33 @@
+docRoot                   /home/example.com/mail.example.com
+vhDomain                  $VH_NAME
+vhAliases                 www.$VH_NAME
+index  {
+  useServer               0
+}
+errorlog $VH_ROOT/logs/example.com.error_log {
+  useServer               0
+}
+accesslog $VH_ROOT/logs/example.com.access_log {
+  useServer               0
+  logFormat               "%h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-Agent}i""
+}
+phpIniOverride  {
+}
+module cache {
+}
+scripthandler  {
+}
+extprocessor siteuser12120 {
+  address                 UDS://tmp/lshttpd/siteuser12120.sock
+  path                    /usr/local/lsws/lsphp73/bin/lsphp
+}
+rewrite  {
+}
+context /.well-known/acme-challenge {
+  rewrite  {
+  }
+  phpIniOverride  {
+  }
+}
+vhssl  {
+}

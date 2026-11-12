@@ -15,10 +15,12 @@
 //      from the old offset, then the new log from 0;
 //    - the old inode is gone (compressed straight away): the new log from 0, and
 //      the part HyperProx had not read yet is reported as a gap;
+//    - LiteSpeed rolls a log to <log>.YYYY_MM_DD (or .YYYY_MM_DD.NN) instead:
+//      an uncompressed one of those with the old inode is read like .1;
 //    - same inode but shorter than the offset (copytruncate): from 0.
 // =============================================================================
 
-import { safeLogPath, shq } from './paths'
+import { LOG_RULE, safeLogPath, shq } from './paths'
 
 /** Bytes read per section per run; more waits for the next run (or the next round of the same tick). */
 export const READ_CHUNK = 4 * 1024 * 1024
@@ -29,7 +31,7 @@ export interface ReadCursor { inode: string; offset: number }
 
 export function readLogScript(logPath: string, cur: ReadCursor, chunk = READ_CHUNK): string {
   const p = safeLogPath(logPath)
-  if (!p) throw new Error('Refused: the log path must be absolute, under /var/log, with no "..".')
+  if (!p) throw new Error(`Refused: the log path must be ${LOG_RULE}.`)
   const inode = /^\d{1,20}$/.test(cur.inode) ? cur.inode : '0'
   const off = Number.isSafeInteger(cur.offset) && cur.offset >= 0 ? cur.offset : 0
   const max = Number.isSafeInteger(chunk) && chunk > 0 ? chunk : READ_CHUNK
@@ -48,8 +50,13 @@ export function readLogScript(logPath: string, cur: ReadCursor, chunk = READ_CHU
     'if [ "$OLD" = 0 ]; then',
     '  if [ "$SIZE" -gt "$BACK" ]; then OFF=$(( SIZE - BACK )); echo "HPXM1 skipfirst"; else OFF=0; fi',
     'elif [ "$INODE" != "$OLD" ]; then',
-    '  R="$LOG.1"',
-    '  if [ -f "$R" ] && [ "$(stat -c %i -- "$R")" = "$OLD" ]; then',
+    '  R="$LOG.1"; HIT=0',
+    '  if [ -f "$R" ] && [ "$(stat -c %i -- "$R")" = "$OLD" ]; then HIT=1; else',
+    '    for C in "$LOG".[0-9][0-9][0-9][0-9]_[0-9][0-9]_[0-9][0-9] "$LOG".[0-9][0-9][0-9][0-9]_[0-9][0-9]_[0-9][0-9].[0-9][0-9]; do',
+    '      [ -f "$C" ] && [ "$(stat -c %i -- "$C")" = "$OLD" ] && { R="$C"; HIT=1; break; }',
+    '    done',
+    '  fi',
+    '  if [ "$HIT" = 1 ]; then',
     '    RS=$(stat -c %s -- "$R"); N=$(( RS - OFF )); [ "$N" -lt 0 ] && N=0; [ "$N" -gt "$MAX" ] && N=$MAX',
     '    section rotated "$OLD" "$RS" "$OFF" "$N" "$R"',
     '  else echo "HPXM1 gap"; fi',
