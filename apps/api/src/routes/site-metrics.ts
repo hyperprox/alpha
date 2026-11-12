@@ -11,7 +11,7 @@
 //    POST /adopt/check                    what HyperProx would read from one (read-only, in the guest)
 //    POST /adopt                          record it (master password re-entered)
 //    DELETE /adopt/:id                    forget an adopted site and its numbers (re-entered)
-//    POST /sites/:id/log-format/preview   the exact nginx lines that would change (read-only)
+//    POST /sites/:id/log-format/preview   the exact nginx lines that would change (read-only; never for LiteSpeed)
 //    POST /sites/:id/log-format/apply     make that change (re-entered)
 //    PUT  /sites/:id/alerts               alert settings
 //    POST /sites/:id/wordpress/refresh    read WordPress again now
@@ -29,9 +29,9 @@ import { summary, detail, isRange } from '../lib/site-metrics/view'
 import { containerView, type ContainerView } from '../lib/site-metrics/container'
 import { defaultState, isAdopted, realCollectorDeps, refreshWordPress, type CollectorDeps } from '../lib/site-metrics/collector'
 import { inspectScript, parseInspect, planLogFormat, planId, applyScript, parseApply, type LogFormatPlan } from '../lib/site-metrics/log-format'
-import { safeLogPath, safeWordPressPath, shq, DEFAULT_ACCESS_LOG, DEFAULT_WP_PATH } from '../lib/site-metrics/paths'
+import { isSharedServerLog, SHARED_LOG_NOTE, safeLogPath, safeNginxLogPath, safeWordPressPath, safePhpBin, shq, LOG_RULE, DEFAULT_ACCESS_LOG, DEFAULT_WP_PATH } from '../lib/site-metrics/paths'
 import { parseLogLine, isPrivateAddress } from '../lib/site-metrics/log-parser'
-import { discover, mapLimit, CandidateCache, type DiscoveryDeps, type GuestInfo } from '../lib/site-metrics/discovery'
+import { discover, mapLimit, CandidateCache, LITESPEED_PROXY_NOTE, type DiscoveryDeps, type GuestInfo } from '../lib/site-metrics/discovery'
 import { addressesInConfig } from '../lib/guest-names'
 import { listHostAddresses } from '../lib/terminal-hosts'
 import { liveAddresses } from '../lib/wizard-placement'
@@ -129,7 +129,13 @@ function need(req: FastifyRequest, reply: FastifyReply, role: Role): boolean {
 const KINDS: SiteKind[] = ['static', 'wordpress', 'other']
 const PLAN_TTL_MS = 10 * 60_000
 
-export interface AdoptInput { vmid: number; url: string; logPath: string; kind: SiteKind; wpPath: string | null; name: string }
+export interface AdoptInput {
+  vmid: number; url: string; logPath: string; kind: SiteKind; wpPath: string | null; name: string
+  /** The site's own error log (LiteSpeed's per-site error_log); null keeps nginx's default. */
+  errorLog: string | null
+  /** LiteSpeed's lsphp for WP-CLI (WordPress only); null uses the php on the PATH. */
+  phpBin: string | null
+}
 
 /** Check what an admin typed for an adoption. Returns the clean values or the reasons it is refused. */
 export function checkAdoptInput(raw: any): { input?: AdoptInput; errors: string[] } {
@@ -144,18 +150,28 @@ export function checkAdoptInput(raw: any): { input?: AdoptInput; errors: string[
     url = `${u.protocol}//${u.host}`
   } catch { errors.push('The public address is not a URL.') }
   const logPath = safeLogPath(raw?.logPath === undefined || raw?.logPath === '' ? DEFAULT_ACCESS_LOG : raw.logPath)
-  if (!logPath) errors.push('The log path must be absolute, under /var/log, with no "..".')
+  if (!logPath) errors.push(`The log path must be ${LOG_RULE}.`)
+  let errorLog: string | null = null
+  if (raw?.errorLog !== undefined && raw?.errorLog !== null && raw?.errorLog !== '') {
+    errorLog = safeLogPath(raw.errorLog)
+    if (!errorLog) errors.push(`The error log must be ${LOG_RULE}.`)
+  }
   const kind = KINDS.includes(raw?.kind) ? raw.kind as SiteKind : null
   if (!kind) errors.push('Pick the kind of site: static, WordPress or other.')
   let wpPath: string | null = null
   if (kind === 'wordpress') {
     wpPath = safeWordPressPath(raw?.wpPath === undefined || raw?.wpPath === '' ? DEFAULT_WP_PATH : raw.wpPath)
-    if (!wpPath) errors.push('The WordPress folder must be under /var/www or /srv, with no "..".')
+    if (!wpPath) errors.push('The WordPress folder must be under /var/www, /srv or /home/<site>/public_html, with no "..".')
+  }
+  let phpBin: string | null = null
+  if (kind === 'wordpress' && raw?.phpBin !== undefined && raw?.phpBin !== null && raw?.phpBin !== '') {
+    phpBin = safePhpBin(raw.phpBin)
+    if (!phpBin) errors.push('The PHP for WP-CLI must be one of LiteSpeed\'s, /usr/local/lsws/lsphpNN/bin/php.')
   }
   const name = String(raw?.name ?? '').trim().slice(0, 80)
   if (name && !/^[\p{L}\p{N} ._'()-]+$/u.test(name)) errors.push('The name may hold letters, digits, spaces and . _ \' ( ) - only.')
   if (errors.length) return { errors }
-  return { input: { vmid, url, logPath: logPath!, kind: kind!, wpPath, name }, errors }
+  return { input: { vmid, url, logPath: logPath!, kind: kind!, wpPath, name, errorLog, phpBin }, errors }
 }
 
 /** The read-only look inside a container before it is adopted. Sends back facts and at most 50 log lines, as base64. */
@@ -166,10 +182,12 @@ export function adoptProbeScript(i: AdoptInput): string {
     'if [ -f "$LOG" ]; then echo "HPXA1 log yes"; else echo "HPXA1 log no"; fi',
     'if [ -r "$LOG" ]; then echo "HPXA1 readable yes"; echo "HPXA1 tail $(tail -n 50 -- "$LOG" | base64 -w0)"; fi',
     'if command -v nginx >/dev/null 2>&1; then echo "HPXA1 nginx yes"; fi',
+    'if [ -x /usr/local/lsws/bin/openlitespeed ] || [ -x /usr/local/lsws/bin/lshttpd ] || [ -x /usr/local/lsws/bin/litespeed ]; then echo "HPXA1 litespeed yes"; fi',
   ]
   if (i.wpPath) {
     lines.push(`WPP=${shq(i.wpPath)}`, 'if [ -f "$WPP/wp-load.php" ]; then echo "HPXA1 wordpress yes"; fi',
       'if command -v wp >/dev/null 2>&1 || [ -x /usr/local/bin/wp ]; then echo "HPXA1 wpcli yes"; fi')
+    if (i.phpBin) lines.push(`if [ -x ${shq(i.phpBin)} ]; then echo "HPXA1 php yes"; fi`)
   }
   lines.push('echo "HPXA1 end"')
   return lines.join('\n')
@@ -189,8 +207,8 @@ export function parseAdoptProbe(out: string) {
     if (isPrivateAddress(p.remote) && p.client === p.remote) proxied++
   }
   return {
-    complete: /^HPXA1 end$/m.test(out), logExists: has('log'), logReadable: has('readable'), nginx: has('nginx'),
-    wordpress: has('wordpress'), wpCli: has('wpcli'), sample: { lines, formats, malformed },
+    complete: /^HPXA1 end$/m.test(out), logExists: has('log'), logReadable: has('readable'), nginx: has('nginx'), litespeed: has('litespeed'),
+    wordpress: has('wordpress'), wpCli: has('wpcli'), php: has('php'), sample: { lines, formats, malformed },
     /** Lines from a private address with no X-Forwarded-For: behind a proxy, every visitor looks like the proxy. */
     behindProxyWithoutForwardedFor: proxied > 0 && proxied === lines - malformed,
   }
@@ -330,11 +348,21 @@ export function buildSiteMetricsRoutes(over: Partial<SiteMetricsRouteDeps> = {})
       if (!facts.logExists) errors.push(`${i.logPath} does not exist in container ${i.vmid}.`)
       else if (!facts.logReadable) errors.push(`${i.logPath} cannot be read.`)
       if (facts.sample.lines && !Object.keys(facts.sample.formats).length) errors.push(`The last lines of ${i.logPath} are not in a format HyperProx reads (nginx common, combined or extended).`)
-      if (!facts.nginx) warnings.push('nginx is not installed here; the log is read as nginx format anyway, and the request-time change is not offered.')
-      if (facts.sample.lines && !facts.sample.formats.extended) warnings.push('The log has no request time, so p50/p95 stay empty until the log format includes $request_time (offered after adopting).')
-      if (facts.behindProxyWithoutForwardedFor) warnings.push('Every request comes from the proxy in front and the log has no X-Forwarded-For, so visitors cannot be told apart until the log format includes it (the same change adds it).')
+      const litespeed = facts.litespeed && !facts.nginx
+      if (isSharedServerLog(i.logPath)) warnings.push(SHARED_LOG_NOTE)
+      if (litespeed) warnings.push('LiteSpeed serves this site. HyperProx reads its log as it is and does not change LiteSpeed or CyberPanel, so no logging change is offered.')
+      else if (!facts.nginx) warnings.push('nginx is not installed here; the log is read as nginx format anyway, and the request-time change is not offered.')
+      if (facts.sample.lines && !facts.sample.formats.extended) {
+        warnings.push(litespeed ? 'The log has no request time, so p50/p95 stay empty.'
+          : 'The log has no request time, so p50/p95 stay empty until the log format includes $request_time (offered after adopting).')
+      }
+      if (facts.behindProxyWithoutForwardedFor) {
+        warnings.push(litespeed ? LITESPEED_PROXY_NOTE
+          : 'Every request comes from the proxy in front and the log has no X-Forwarded-For, so visitors cannot be told apart until the log format includes it (the same change adds it).')
+      }
       if (i.kind === 'wordpress' && !facts.wordpress) errors.push(`${i.wpPath} has no wp-load.php, so it is not a WordPress folder.`)
       if (i.kind === 'wordpress' && !facts.wpCli) warnings.push('WP-CLI is not installed, so WordPress versions and updates cannot be read.')
+      if (i.phpBin && !facts.php) errors.push(`${i.phpBin} does not exist in container ${i.vmid}.`)
       return { errors, warnings, input: i, guest: g, facts: { ...facts, complete: undefined } }
     }
 
@@ -360,8 +388,10 @@ export function buildSiteMetricsRoutes(over: Partial<SiteMetricsRouteDeps> = {})
       await d.record(site)
       const st = defaultState(site)
       st.logPath = i.logPath; st.wpPath = i.wpPath; st.kind = i.kind; st.adopted = true
+      if (i.errorLog) st.errorLog = i.errorLog
+      st.phpBin = i.phpBin
       await d.store.putState(st)
-      await d.audit('site.adopt', `site:${site.id}`, { by: who(req), vmid: site.vmid, node: site.node, kind: i.kind, logPath: i.logPath })
+      await d.audit('site.adopt', `site:${site.id}`, { by: who(req), vmid: site.vmid, node: site.node, kind: i.kind, logPath: i.logPath, errorLog: i.errorLog, phpBin: i.phpBin })
       return reply.send({ success: true, data: { id: site.id } })
     })
 
@@ -383,6 +413,9 @@ export function buildSiteMetricsRoutes(over: Partial<SiteMetricsRouteDeps> = {})
       const site = await d.site(req.params.id)
       if (!site) return reply.status(404).send({ success: false, error: 'No such site' })
       const st = await stateFor(site)
+      if (!safeNginxLogPath(st.logPath)) {
+        return reply.send({ success: true, data: { planId: null, plan: planLogFormat({ nginx: false, configOk: false, defined: false, includeFileExists: false, files: [] }, st.logPath), expiresAt: null } })
+      }
       let plan: LogFormatPlan
       try {
         const r = await d.run(site, inspectScript(st.logPath), 512 * 1024)

@@ -52,6 +52,8 @@ export interface SiteState {
   logPath: string
   errorLog: string
   wpPath: string | null
+  /** LiteSpeed's lsphp for WP-CLI, when the container has no php on the PATH. */
+  phpBin?: string | null
   kind: SiteKind
   adopted: boolean
   enabled: boolean
@@ -63,6 +65,8 @@ export interface SiteState {
   /** How many times a rotation lost lines HyperProx had not read. */
   gaps: number
   malformed: number
+  /** The last lines read all came from a private proxy with no visitor address: unique visitors are approximate. */
+  visitorsApproximate?: boolean
   health: HealthState
   alerts: AlertConfig
   alertState: Record<string, { since: number; detail: string }>
@@ -210,8 +214,8 @@ function stateFromRow(r: any): SiteState {
   return {
     siteId: r.siteId, logPath: r.logPath, kind: r.kind, adopted: r.adopted, enabled: r.enabled,
     inode: r.inode, offset: Number(r.offset),
-    errorLog: d.errorLog ?? '/var/log/nginx/error.log', wpPath: d.wpPath ?? null, format: d.format ?? null,
-    lastReadAt: d.lastReadAt ?? null, lastError: d.lastError ?? null, gaps: d.gaps ?? 0, malformed: d.malformed ?? 0,
+    errorLog: d.errorLog ?? '/var/log/nginx/error.log', wpPath: d.wpPath ?? null, phpBin: d.phpBin ?? null, format: d.format ?? null,
+    lastReadAt: d.lastReadAt ?? null, lastError: d.lastError ?? null, gaps: d.gaps ?? 0, malformed: d.malformed ?? 0, visitorsApproximate: d.visitorsApproximate ?? false,
     health: { ...emptyHealthFallback(), ...(d.health ?? {}) }, alerts: { ...DEFAULT_ALERTS, ...(d.alerts ?? {}) },
     alertState: d.alertState ?? {}, scannerBurst: d.scannerBurst ?? null, homeSizes: Array.isArray(d.homeSizes) ? d.homeSizes : [], wordpress: d.wordpress ?? null,
   }

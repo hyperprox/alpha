@@ -114,7 +114,7 @@ export function LogFormatDialog({ siteId, onClose }: { siteId: string; onClose: 
 interface Guest { vmid: number; name: string; node: string; status: string }
 interface CheckResult {
   ok: boolean; errors: string[]; warnings?: string[]
-  facts?: { nginx?: boolean; behindProxyWithoutForwardedFor?: boolean; sample: { lines: number; formats: Record<string, number> } }
+  facts?: { nginx?: boolean; litespeed?: boolean; behindProxyWithoutForwardedFor?: boolean; sample: { lines: number; formats: Record<string, number> } }
 }
 /** One website HyperProx found (GET /api/site-metrics/adopt/candidates). Paths and facts only, never config text. */
 export interface Candidate {
@@ -122,11 +122,15 @@ export interface Candidate {
   proxy: { instances: Array<{ instanceName: string; kind: string }>; tls: boolean; forward: { scheme: string; host: string; port: number } } | null
   guest: { vmid: number; name: string; node: string; type: 'lxc' | 'qemu'; status: string } | null
   notAGuest: string | null
-  server: 'nginx' | 'apache' | 'caddy' | null
+  server: 'nginx' | 'apache' | 'caddy' | 'litespeed' | null
   kind: 'static' | 'wordpress' | 'other' | null
   logPath: string | null
   logFormat: { name: string; requestTime: boolean | null; forwardedFor: boolean | null } | null
   wpPath: string | null
+  /** LiteSpeed: the site's own error log, and the lsphp WP-CLI runs with. */
+  errorLog?: string | null; phpBin?: string | null
+  /** Behind the proxy the log holds only the proxy's address. */
+  visitorsApproximate?: boolean
   alreadyASite: boolean; alreadyAdopted: boolean; siteId: string | null
   up: boolean | null; adoptable: boolean; whyNot: string | null; notes: string[]
 }
@@ -137,11 +141,15 @@ interface Found {
 }
 
 const KIND_LABEL: Record<string, string> = { static: 'Static', wordpress: 'WordPress', other: 'Other' }
-const BLANK = { vmid: '', url: '', logPath: '/var/log/nginx/access.log', kind: 'static', wpPath: '/var/www/wordpress', name: '' }
+const SERVER_LABEL: Record<string, string> = { litespeed: 'LiteSpeed' }
+const serverLabel = (v: string) => SERVER_LABEL[v] ?? v
+/** LiteSpeed's server-wide log: every site on the server writes it. */
+const sharedLog = (p: string | null | undefined) => !!p && p.startsWith('/usr/local/lsws/logs/')
+const BLANK = { vmid: '', url: '', logPath: '/var/log/nginx/access.log', kind: 'static', wpPath: '/var/www/wordpress', name: '', errorLog: '', phpBin: '' }
 
 /** The log lacks what the request-time change adds: the time, or (behind a proxy) the visitor's address. */
 function needsLogChange(c: Candidate | null, check: CheckResult | null): boolean {
-  if (check?.facts && check.facts.nginx === false) return false
+  if (check?.facts && (check.facts.nginx === false || check.facts.litespeed)) return false
   if (c && c.server !== 'nginx') return false
   const f = c?.logFormat
   if (f && (f.requestTime === false || (c?.proxy && f.forwardedFor === false))) return true
@@ -173,10 +181,11 @@ function CandidateTile({ c, onPick }: { c: Candidate; onPick: (c: Candidate) => 
         {c.guest
           ? <span className={s.gchip}>{c.guest.type === 'lxc' ? 'CT' : 'VM'} {c.guest.vmid} · {c.guest.name || 'unnamed'} · {c.guest.node}</span>
           : <span className={s.gchip} data-tone="off">Not a guest: {c.notAGuest}</span>}
-        {c.server && <span className={s.gchip}>{c.server}</span>}
+        {c.server && <span className={s.gchip}>{serverLabel(c.server)}</span>}
+        {c.visitorsApproximate && <span className={s.gchip} data-tone="off" title="The log holds only the proxy's address">visitors approximate</span>}
         {c.source === 'listener' && <span className={s.gchip}>no proxy host</span>}
       </div>
-      {c.logPath && <small className={s.path}>{c.logPath}</small>}
+      {c.logPath && <small className={s.path}>{c.logPath}{sharedLog(c.logPath) ? ' (shared: includes every site on this server)' : ''}</small>}
       {c.alreadyASite
         ? <span className={s.added}><StatusIcon tone="good" />{c.alreadyAdopted ? 'Already added' : 'Already a site'}</span>
         : !c.adoptable && c.whyNot && <small className={s.note}>{c.whyNot}</small>}
@@ -220,7 +229,10 @@ export function AdoptSiteDialog({ onClose, onDone, inline = false }: { onClose: 
     })
   }, [mode, editing, guests])
 
-  const body = (f = form) => ({ ...f, vmid: Number(f.vmid), wpPath: f.kind === 'wordpress' ? f.wpPath : undefined })
+  const body = (f = form) => ({
+    ...f, vmid: Number(f.vmid), wpPath: f.kind === 'wordpress' ? f.wpPath : undefined,
+    errorLog: f.errorLog || undefined, phpBin: f.kind === 'wordpress' && f.phpBin ? f.phpBin : undefined,
+  })
   const runCheck = async (f = form) => {
     setBusy(true); setMsg('')
     const r = await apiJson<{ data: CheckResult }>('/api/site-metrics/adopt/check', 'POST', body(f))
@@ -231,6 +243,7 @@ export function AdoptSiteDialog({ onClose, onDone, inline = false }: { onClose: 
     const f = {
       vmid: String(c.guest?.vmid ?? ''), url: c.url ?? '', logPath: c.logPath ?? found?.defaults.logPath ?? BLANK.logPath,
       kind: c.kind ?? 'other', wpPath: c.wpPath ?? found?.defaults.wpPath ?? BLANK.wpPath, name: '',
+      errorLog: c.errorLog ?? '', phpBin: c.phpBin ?? '',
     }
     setPicked(c); setForm(f); setEditing(false); setCheck(null); setMsg(''); setMode('form')
     void runCheck(f)
@@ -270,7 +283,7 @@ export function AdoptSiteDialog({ onClose, onDone, inline = false }: { onClose: 
     <div {...shell} aria-label="Add an existing site">
       <div>
         <h2>Add an existing site</h2>
-        <p className={s.note}>For a website you built yourself in a container. HyperProx only reads from it: its access log every 5 minutes, its public address, and for WordPress, WP-CLI. Nothing is installed or changed.</p>
+        <p className={s.note}>For a website you built yourself in a container, including one served by LiteSpeed or CyberPanel. HyperProx only reads from it: its access log every 5 minutes, its public address, and for WordPress, WP-CLI. Nothing is installed or changed.</p>
 
         {mode === 'list' && (
           <>
@@ -307,9 +320,11 @@ export function AdoptSiteDialog({ onClose, onDone, inline = false }: { onClose: 
               <dl className={s.sum}>
                 <div><dt>Container</dt><dd>CT {form.vmid}{picked.guest ? ` · ${picked.guest.name} · ${picked.guest.node}` : ''}</dd></div>
                 <div><dt>Public address</dt><dd>{form.url || '—'}</dd></div>
-                <div><dt>Kind</dt><dd>{KIND_LABEL[form.kind] ?? form.kind}{picked.server ? ` · ${picked.server}` : ''}</dd></div>
-                <div><dt>Access log</dt><dd>{form.logPath}{picked.logFormat ? ` (${picked.logFormat.name})` : ''}</dd></div>
+                <div><dt>Kind</dt><dd>{KIND_LABEL[form.kind] ?? form.kind}{picked.server ? ` · ${serverLabel(picked.server)}` : ''}</dd></div>
+                <div><dt>Access log</dt><dd>{form.logPath}{picked.logFormat ? ` (${picked.logFormat.name})` : ''}{sharedLog(form.logPath) ? ' · shared: includes every site on this server' : ''}</dd></div>
                 {form.kind === 'wordpress' && <div><dt>WordPress folder</dt><dd>{form.wpPath}</dd></div>}
+                {form.kind === 'wordpress' && form.phpBin && <div><dt>PHP for WP-CLI</dt><dd>{form.phpBin}</dd></div>}
+                {form.errorLog && <div><dt>Error log</dt><dd>{form.errorLog}</dd></div>}
               </dl>
             )}
             {picked && picked.notes.length > 0 && !editing && <ul className={s.errs}>{picked.notes.map(n => <li key={n}>{n}</li>)}</ul>}
@@ -324,7 +339,7 @@ export function AdoptSiteDialog({ onClose, onDone, inline = false }: { onClose: 
                 <label className={styles.field}><span>Public address</span><input className={styles.input} value={form.url} onChange={set('url')} placeholder="https://www.example.com" inputMode="url" /></label>
                 <label className={styles.field}><span>Kind</span>
                   <select className={styles.input} value={form.kind} onChange={set('kind')}><option value="static">Static site</option><option value="wordpress">WordPress</option><option value="other">Other</option></select></label>
-                <label className={styles.field}><span>Access log</span><input className={styles.input} value={form.logPath} onChange={set('logPath')} /><small className={s.note}>Under /var/log. nginx&apos;s default is /var/log/nginx/access.log.</small></label>
+                <label className={styles.field}><span>Access log</span><input className={styles.input} value={form.logPath} onChange={set('logPath')} /><small className={s.note}>Under /var/log (nginx&apos;s default is /var/log/nginx/access.log), or LiteSpeed&apos;s /usr/local/lsws/logs and CyberPanel&apos;s /home/&lt;site&gt;/logs/&lt;site&gt;.access_log.</small></label>
                 {form.kind === 'wordpress' && <label className={styles.field}><span>WordPress folder</span><input className={styles.input} value={form.wpPath} onChange={set('wpPath')} /></label>}
                 <label className={styles.field}><span>Name (optional)</span><input className={styles.input} value={form.name} onChange={set('name')} maxLength={80} /></label>
               </div>

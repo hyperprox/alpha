@@ -81,8 +81,8 @@ export function SiteMetrics({ d, range }: { d: SiteDetail; range: Range }) {
         <div className={s.hudR}>
           <h2><small>{(KIND_WORD[sum.kind] ?? sum.kind).toUpperCase()}{where} · {healthy}</small>Visitors and health</h2>
           <dl className={s.chips}>
-            <div className={s.chip} title="Visitors whose browser opened a page and loaded its images, styles or scripts">
-              <dt>people today</dt><dd>{fmtCount(sum.visitorsToday)}{trend !== null && <em className={trend >= 0 ? s.up : s.down}>{trend >= 0 ? '+' : ''}{trend}%<span className="sr-only"> against the same hours yesterday</span></em>}</dd>
+            <div className={s.chip} title={d.hud.visitorsApproximate ? 'Approximate: every request comes from the proxy in front, so people using the same browser count as one' : 'Visitors whose browser opened a page and loaded its images, styles or scripts'}>
+              <dt>people today{d.hud.visitorsApproximate ? ' · approx.' : ''}</dt><dd>{fmtCount(sum.visitorsToday)}{trend !== null && <em className={trend >= 0 ? s.up : s.down}>{trend >= 0 ? '+' : ''}{trend}%<span className="sr-only"> against the same hours yesterday</span></em>}</dd>
               <small className={s.chipSub}>{fmtCount(sum.unconfirmedToday ?? 0)} unconfirmed · {fmtCount(sum.botsToday ?? 0)} bots</small>
             </div>
             <div className={s.chip}><dt>page views · {RANGE_SHORT[range]}</dt><dd>{fmtCount(d.hud.pageViews)}</dd></div>
@@ -191,6 +191,16 @@ export function SiteMetrics({ d, range }: { d: SiteDetail; range: Range }) {
         <p className={s.note}>
           {d.collector.lastError ? `Reading ${d.collector.logPath}: ${d.collector.lastError} ` : ''}
           {!d.hud.hasRequestTime ? `The log (${d.collector.format ?? 'not read yet'}) has no request time, so p95 is empty.` : ''}
+        </p>
+      )}
+
+      {d.hud.visitorsApproximate && (
+        <p className={s.note} role="note">
+          Visitors are approximated. Every request in this site&apos;s log comes from the proxy in front, so requests, page views,
+          responses and pages are exact, but people using the same browser cannot be told apart.
+          {d.collector?.litespeed
+            ? ' For exact visitors, turn on "Use Client IP in Header" (useIpInProxyHeader) yourself in LiteSpeed WebAdmin under Server Configuration → General. HyperProx does not change LiteSpeed or CyberPanel.'
+            : ''}
         </p>
       )}
 

@@ -920,12 +920,13 @@ the vault), **Pull now** for a static site, **Health** for the container and the
 
 #### Metrics: privacy-friendly analytics from the site's own log
 
-Every 5 minutes HyperProx reads the new lines of each site's nginx access log and turns them into counts.
+Every 5 minutes HyperProx reads the new lines of each site's access log (nginx's, or LiteSpeed's) and turns them into counts.
 Nothing is added to the site: no JavaScript, no tracking pixel, no cookies, and nothing is sent to anyone
 else. The reading is one fixed, read-only script run in the container through the same `pct exec` path as
-the rest of the Websites section, given only a checked log path (absolute, under `/var/log`, no `..`) and a
-position. It remembers the file's inode and offset, so it carries on where it stopped, follows logrotate
-(the rest of `access.log.1`, then the new file) and starts again when a log is cut in place.
+the rest of the Websites section, given only a checked log path (absolute, under `/var/log`, no `..`; for LiteSpeed also `/usr/local/lsws/logs/<file>`
+and CyberPanel's `/home/<site>/logs/<name>.access_log`) and a position. It remembers the file's inode and offset,
+so it carries on where it stopped, follows logrotate (the rest of `access.log.1`, then the new file) and LiteSpeed's
+dated roll (`<log>.YYYY_MM_DD`), and starts again when a log is cut in place.
 
 **What is counted, per hour:** requests; people, unconfirmed visitors and bots, each apart (see below); page
 views by people (opening a page, not CSS, images or scripts); responses by class (2xx, 3xx, 4xx, 5xx); bytes
@@ -965,7 +966,9 @@ hash. The key is deleted after two days, with the hashes, and nobody, HyperProx 
 whose hash it was; the same person on two days, or on two of your sites, cannot be linked. **Addresses are
 never stored**, and no log line, address or salt is ever sent to the browser. Behind a proxy, the address
 comes from the last public entry of `X-Forwarded-For`, believed only when the request came from a private
-address (the proxy), so a visitor cannot choose it.
+address (the proxy), so a visitor cannot choose it. When every request in the log comes from the proxy and
+there is no visitor address to read, the Metrics tab says so: requests, page views, responses and pages are exact,
+but **visitors are approximated**, because people using the same browser cannot be told apart.
 
 **Kept for:** hourly counts 30 days, daily counts 13 months. Days are UTC days. Counts made before this way
 of telling people apart (when everyone who was not a known bot counted as a person, and HyperProx's own checks
@@ -1005,13 +1008,27 @@ a list of the websites HyperProx found, built without changing anything:
   VM or an address that is not a guest is listed but cannot be added: only a container can;
 - running containers that listen on port 80 or 443 with no proxy host, looked at for up to 25 seconds in
   all (the list says when time ran out; **Refresh** looks again);
-- for each container, one read-only script: the listening ports, which of nginx, Apache or Caddy is
-  installed, the lines of `nginx -T` (or Apache's site files) that place a site and its log, and whether
-  a `wp-config.php` sits in a site's root. From those HyperProx picks the access log of the server block
+- for each container, one read-only script: the listening ports, which of nginx, Apache, LiteSpeed or Caddy is
+  installed, the lines of `nginx -T` (or Apache's site files, or LiteSpeed's configuration) that place a site and
+  its log, and whether a `wp-config.php` (or any `.php` file) sits in a site's root. From those HyperProx picks the access log of the server block
   whose `server_name` matches the site (else the one it inherits, else nginx's default), reads whether its
   format has the request time and `X-Forwarded-For`, and calls the site **WordPress** (a `wp-config.php` in
   its root), **Static** (nginx serving a plain root) or **Other**. Only paths and yes/no facts leave the
   script's answer: no configuration text, header or log line is returned or kept.
+
+**LiteSpeed and CyberPanel** sites are supported read-only, and HyperProx offers no changes for them. Discovery
+reads OpenLiteSpeed's `httpd_config.conf` (the listeners and their domain → virtual host maps, each virtual host's
+`vhRoot`, the server's access log and `useIpInProxyHeader`) and each `conf/vhosts/<vhost>/vhost.conf` (its
+`docRoot`, `vhDomain`/`vhAliases`, `accesslog` with its `logFormat`, `errorlog` and lsphp), filtered in the
+container to the lines that place a site, so keys, passwords and rewrite rules stay there. The proxy's name is
+matched to its virtual host and log (CyberPanel's is `/home/<site>/logs/<site>.access_log`, in the combined format
+wrapped in an extra pair of quotes, which is read as it is), and the site is **WordPress** (a `wp-config.php` in
+its `docRoot`), **Static** (plain files) or **Other**, with the server shown as **LiteSpeed**. For WordPress, WP-CLI
+runs with the site's own lsphp (`/usr/local/lsws/lsphpNN/bin/php`), since the container's `php` is often another
+version. If LiteSpeed logs only the proxy's address ("Use Client IP in Header" is off), the site can still be
+added; the tile, the check and the Metrics tab say that visitors are approximated, and that you can turn that
+setting on yourself in LiteSpeed WebAdmin (Server Configuration → General) for exact visitors. HyperProx never
+changes LiteSpeed, CyberPanel or their log format: the logging change below is nginx-only.
 
 Each tile shows the name, the guest, the kind, whether the public address answers, and **Already added**
 for a site HyperProx knows. Picking one fills in the container, address, log and kind, shown read-only

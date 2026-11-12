@@ -15,6 +15,7 @@ import { PROBE_KINDS, type ProbeKind } from './user-agent'
 import { certDaysLeft } from './health'
 import type { MetricsStore, SiteState } from './store'
 import { ALERT_KINDS } from './alerts'
+import { isLiteSpeedLogPath } from './paths'
 
 const HOUR = 3_600_000, DAY = 86_400_000
 export type Range = '24h' | '7d' | '30d'
@@ -109,6 +110,8 @@ export interface Detail {
     visitors: number; unconfirmed: number; botVisitors: number
     pageViews: number; unconfirmedPageViews: number; requests: number; errorRatePct: number | null; p95Ms: number | null; p50Ms: number | null
     bytes: number; uptimePct: number | null; hasRequestTime: boolean
+    /** Every request came from the proxy in front: who is who is approximated; requests and pages are exact. */
+    visitorsApproximate: boolean
     /** HyperProx's own requests in the range, counted nowhere else. */
     own: number
     /** Rows in the range counted before the accuracy fix: their people include scripts that were not browsers. */
@@ -127,7 +130,13 @@ export interface Detail {
   referrers?: Array<{ key: string; value: number }>
   notFound?: Array<{ key: string; value: number }>
   where?: { vmid: number; node: string }
-  collector?: { logPath: string; format: string | null; lastReadAt: number | null; lastError: string | null; gaps: number; malformed: number }
+  collector?: {
+    logPath: string; format: string | null; lastReadAt: number | null; lastError: string | null; gaps: number; malformed: number
+    /** The log is LiteSpeed's: read as it is, no logging change is offered. */
+    litespeed: boolean
+    /** Every request comes from the proxy: requests and pages are exact, unique visitors approximate. */
+    visitorsApproximate: boolean
+  }
   wordpress?: SiteState['wordpress']
   alertSettings?: SiteState['alerts']
   health: { up: boolean | null; status: number | null; latencyMs: number | null; problem: string | null; certDays: number | null; certIssuer: string | null; certError: string | null }
@@ -163,7 +172,7 @@ export async function detail(site: SiteRecord, st: SiteState | null, store: Metr
       visitors: add('visitors'), unconfirmed: add('unconfirmed'), botVisitors: add('botVisitors'),
       pageViews: sum.pageViews, unconfirmedPageViews: sum.unconfirmedPageViews ?? 0, requests: sum.requests, errorRatePct: pct(sum.s5xx, sum.requests),
       p95Ms: percentileMs(sum.rtHist, 0.95), p50Ms: percentileMs(sum.rtHist, 0.5), bytes: sum.bytes,
-      uptimePct: pct(sum.checksOk, sum.checks), hasRequestTime: sum.timed > 0,
+      uptimePct: pct(sum.checksOk, sum.checks), hasRequestTime: sum.timed > 0, visitorsApproximate: Boolean(st?.visitorsApproximate),
       own: sum.own ?? 0, beforeFix: rows.filter(r => (r.agg.rules ?? 1) < RULES && r.agg.requests > 0).length,
     },
     series, status: { s2xx: sum.s2xx, s3xx: sum.s3xx, s4xx: sum.s4xx, s5xx: sum.s5xx }, security: security(sum, full),
@@ -175,7 +184,8 @@ export async function detail(site: SiteRecord, st: SiteState | null, store: Metr
     d.pages = top(sum.pages); d.referrers = top(sum.referrers); d.notFound = top(sum.notFound)
     d.where = { vmid: site.vmid, node: site.node }
     if (st) {
-      d.collector = { logPath: st.logPath, format: st.format, lastReadAt: st.lastReadAt, lastError: st.lastError, gaps: st.gaps, malformed: st.malformed }
+      d.collector = { logPath: st.logPath, format: st.format, lastReadAt: st.lastReadAt, lastError: st.lastError, gaps: st.gaps, malformed: st.malformed,
+        litespeed: isLiteSpeedLogPath(st.logPath), visitorsApproximate: Boolean(st.visitorsApproximate) }
       d.wordpress = st.kind === 'wordpress' ? st.wordpress : undefined
       d.alertSettings = st.alerts
     }
