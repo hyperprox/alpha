@@ -90,6 +90,8 @@ const POWER = /^\/api\/(infra|proxmox)\/vms\/[^/]+\/[^/]+\/[^/]+\/(start|stop|sh
 // Terminal (Deck) actions that only use a saved login, never change one.
 const TERMINAL_OPERATOR: Array<[string, RegExp]> = [
   ['POST',   /^\/api\/terminal\/hosts\/[^/]+\/tmux-sessions$/],
+  // A changed host key: the check, and trusting a key Proxmox verified (anything else needs admin, checked in the route).
+  ['POST',   /^\/api\/terminal\/hosts\/[^/]+\/hostkey\/(verify|trust)$/],
   ['PUT',    /^\/api\/terminal\/layouts$/],
   ['DELETE', /^\/api\/terminal\/layouts\/[^/]+$/],
 ]

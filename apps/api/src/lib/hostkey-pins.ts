@@ -40,8 +40,10 @@ export type PinEvidence =
   | { kind: 'tailnet'; nodeId: string; owner: string; device: string }
   | { kind: 'wireguard'; iface: string; peer: string }
   | { kind: 'trusted-session'; via: string }
+  // A guest's own key files, read through its node (pct exec, or the VM's guest agent) by lib/terminal-hostkey.ts.
+  | { kind: 'guest-keys'; guest: string; node: string; via: 'pct' | 'guest-agent' }
 
-const EVIDENCE_KINDS = ['setup-local', 'cluster-record', 'tailnet', 'wireguard', 'trusted-session']
+const EVIDENCE_KINDS = ['setup-local', 'cluster-record', 'tailnet', 'wireguard', 'trusted-session', 'guest-keys']
 function parseEvidence(raw: string | null): PinEvidence | null {
   if (!raw) return null
   try { const e = JSON.parse(raw); return e && EVIDENCE_KINDS.includes(e.kind) ? e as PinEvidence : null } catch { return null }
@@ -58,6 +60,7 @@ export function evidenceWords(e: PinEvidence | null): string {
     case 'tailnet': return `verified automatically: reached over your tailnet at this exact address, which is the device ${e.device} owned by ${e.owner}`
     case 'wireguard': return `verified automatically: reached over HyperProx's own WireGuard link ${e.iface} (peer ${e.peer})`
     case 'trusted-session': return `verified automatically: read from the machine itself over a session already proven to be it (${e.via})`
+    case 'guest-keys': return `verified with Proxmox: it is one of ${e.guest}'s own keys, read on node ${e.node} (${e.via === 'pct' ? 'inside the container' : 'through the guest agent'})`
   }
 }
 

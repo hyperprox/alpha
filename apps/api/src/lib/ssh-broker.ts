@@ -16,6 +16,7 @@ import { Client } from 'ssh2'
 import type { ClientChannel, ConnectConfig } from 'ssh2'
 import { createHash } from 'crypto'
 import { getCredential, setCredential, deleteCredential, listCredentialKeys } from './credentials'
+import type { PinEvidence, PinSource } from './hostkey-pins'
 
 export const CREDENTIAL_CATEGORY   = 'deck'
 export const CRED_PROVIDER   = 'ssh'
@@ -128,6 +129,41 @@ export async function listHostKeys(): Promise<Array<{ host: string; updatedAt: D
 export async function forgetHostKey(host: string): Promise<void> {
   await deleteCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, credentialId(host))
   await deleteCredential(CREDENTIAL_CATEGORY, 'hostkey-source', credentialId(host)).catch(() => undefined)
+  await deleteCredential(CREDENTIAL_CATEGORY, 'hostkey-evidence', credentialId(host)).catch(() => undefined)
+}
+
+/**
+ * Replace the pin for host:port with exactly `fingerprint`, recording how (and, for a verified one, with what).
+ * Only lib/terminal-hostkey.ts calls this, after it checked the new key with Proxmox or a person accepted it.
+ */
+export async function repinHostKey(host: string, port: number, fingerprint: string, source: PinSource, evidence: PinEvidence | null): Promise<void> {
+  if (!/^SHA256:[A-Za-z0-9+/]{43}$/.test(fingerprint)) throw new Error('That is not an SSH SHA256 fingerprint.')
+  const id = credentialId(`${host}:${port}`)
+  await setCredential(CREDENTIAL_CATEGORY, HOSTKEY_PROVIDER, id, fingerprint, false)
+  await setCredential(CREDENTIAL_CATEGORY, 'hostkey-source', id, source, false)
+  if (evidence) await setCredential(CREDENTIAL_CATEGORY, 'hostkey-evidence', id, JSON.stringify(evidence), false)
+  else await deleteCredential(CREDENTIAL_CATEGORY, 'hostkey-evidence', id).catch(() => undefined)
+}
+
+/** The key type written inside an SSH public key blob ("ssh-ed25519"), or "unknown". */
+export function keyTypeOf(key: Buffer): string {
+  if (key.length < 4) return 'unknown'
+  const len = key.readUInt32BE(0)
+  if (len <= 0 || len > 64 || 4 + len > key.length) return 'unknown'
+  return key.subarray(4, 4 + len).toString('latin1')
+}
+
+/** A pinned key that differs from the one offered. The Deck turns this into a check with Proxmox. */
+export class HostKeyChangedError extends Error {
+  constructor(readonly host: string, readonly port: number, readonly pinned: string, readonly offered: string, readonly offeredType: string) {
+    super(
+      `Host key for ${host}:${port} has changed.\r\n` +
+      `  pinned:   ${pinned}\r\n` +
+      `  offered:  ${offered}\r\n` +
+      `Refusing to connect.`,
+    )
+    this.name = 'HostKeyChangedError'
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -231,13 +267,7 @@ export function connect(opts: ConnectOptions): Promise<ConnectResult> {
               return verified(true)
             }
             if (pinned !== fingerprint) {
-              fail(new Error(
-                `Host key for ${host}:${port} has changed.\r\n` +
-                `  pinned:   ${pinned}\r\n` +
-                `  offered:  ${fingerprint}\r\n` +
-                `Refusing to connect. If this change was expected — the guest was ` +
-                `rebuilt, say — clear the pinned key for this host and reconnect.`
-              ))
+              fail(new HostKeyChangedError(host, port, pinned, fingerprint, keyTypeOf(key)))
               return verified(false)
             }
             verified(true)

@@ -20,6 +20,9 @@ import {
 import { PLUGINS }    from '../plugins'
 import { getSettings } from '../lib/plugin-host'
 import { ipFromLxcNet, isNodeLoginId, resolveTerminalTarget, terminalIdProblem, terminalTargetDeps } from '../lib/terminal-targets'
+import { verifyForPane, trustVerdict, hostKeyCheckDeps, HostKeyCheckRefusal } from '../lib/terminal-hostkey'
+import { auditOrThrow } from '../lib/audit'
+import { isTokenContext } from '../lib/auth'
 
 
 export interface TerminalHost {
@@ -415,15 +418,58 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
   })
 
   // -- Pinned host keys -------------------------------------------------------
-  // Clearing one is how you accept a genuinely rebuilt guest. Deliberate, and
-  // never automatic.
+  // Clearing one is the old manual way to accept a rebuilt guest: the next connect learns whatever answers. The
+  // Deck now checks a changed key with Proxmox first (below); this stays for admins, deliberate and audited.
   fastify.delete<{ Params: { host: string } }>('/hostkeys/:host', async (req, reply) => {
+    if (isTokenContext()) return reply.status(403).send({ success: false, error: 'An API token cannot change host keys.' })
     try {
+      await auditOrThrow('host_key.clear', `host:${req.params.host}`, { by: req.session?.email ?? null })
       await forgetHostKey(req.params.host)
       fastify.log.warn({ host: req.params.host }, '[terminal] pinned host key cleared')
       return { success: true }
     } catch (e: any) {
       return reply.status(500).send({ success: false, error: e.message })
     }
+  })
+
+  // -- A changed host key, checked with Proxmox (lib/terminal-hostkey.ts) ---------------------------------------
+  // The pane's id decides the host and port, as for every Terminal route; nothing about the key comes from the
+  // browser. Operator, like the Terminal itself; trusting anything but a verified key needs an admin (checked there).
+  const paneTarget = async (id: string) => {
+    let cred = null
+    try { cred = await loadCredential(id) } catch { /* the port then defaults as the target says */ }
+    return resolveTerminalTarget(id, cred?.port, terminalTargetDeps())
+  }
+  const refusal = (reply: any, e: any) => {
+    if (e instanceof HostKeyCheckRefusal) {
+      if (e.retryAfter) reply.header('retry-after', String(e.retryAfter))
+      return reply.status(e.status).send({ success: false, error: e.message })
+    }
+    return reply.status(500).send({ success: false, error: e?.message ?? String(e) })
+  }
+
+  fastify.post<{ Params: { id: string } }>('/hosts/:id/hostkey/verify', { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (req, reply) => {
+    const refused = terminalIdProblem(req.params.id)
+    if (refused) return reply.status(isNodeLoginId(req.params.id) ? 403 : 400).send({ success: false, error: refused })
+    let target
+    try { target = await paneTarget(req.params.id) } catch (e: any) { return reply.status(400).send({ success: false, error: e.message }) }
+    try {
+      const data = await verifyForPane(req.params.id, target.host, target.port, hostKeyCheckDeps())
+      fastify.log.info({ host: target.host, port: target.port, state: data.state, reason: data.reason }, '[terminal] changed host key checked')
+      return { success: true, data }
+    } catch (e: any) { return refusal(reply, e) }
+  })
+
+  fastify.post<{ Params: { id: string }; Body: { verdictId?: string; confirmed?: boolean; phrase?: string } }>('/hosts/:id/hostkey/trust', async (req, reply) => {
+    const refused = terminalIdProblem(req.params.id)
+    if (refused) return reply.status(isNodeLoginId(req.params.id) ? 403 : 400).send({ success: false, error: refused })
+    let target
+    try { target = await paneTarget(req.params.id) } catch (e: any) { return reply.status(400).send({ success: false, error: e.message }) }
+    try {
+      const body = req.body ?? {}
+      const data = await trustVerdict(req.params.id, target, { verdictId: String(body.verdictId ?? ''), confirmed: body.confirmed === true, phrase: typeof body.phrase === 'string' ? body.phrase : undefined }, hostKeyCheckDeps())
+      fastify.log.warn({ host: target.host, port: target.port, state: data.state }, '[terminal] host key re-pinned')
+      return { success: true, data }
+    } catch (e: any) { return refusal(reply, e) }
   })
 }

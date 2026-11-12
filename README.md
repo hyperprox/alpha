@@ -637,7 +637,26 @@ cannot list, replace or remove them (Settings → Setup checklist manages them).
 
 Open hosts from the palette (**+** or **Ctrl+K** on Windows and Linux, **Cmd+K** on macOS). Panes can
 be tabs, columns, rows or a grid, and layouts can be saved by name. Host keys are pinned on first
-connect, and a changed key is refused with both fingerprints shown.
+connect, and a changed key is refused: no login is sent.
+
+When a guest's key has changed, you do not have to compare fingerprints. HyperProx works out which guest
+uses that address (a container from its network settings, a VM from what its guest agent reports) and
+asks Proxmox for that guest's own SSH keys, read on its node, never over the network from the address
+itself. Then it tells you what it found:
+
+- **The key belongs to the guest.** It was most likely rebuilt, restored or renumbered. **Trust the new key
+  and connect** pins exactly that key and reconnects.
+- **The key does not belong to the guest.** Something else is answering at its address. Don't connect.
+  An admin can still trust the key, but only by typing a confirmation.
+- **HyperProx could not check.** No running guest has that address, more than one might, it belongs to a
+  different guest from the one the pane is for, or the VM's guest agent is not running. The panel says why
+  and shows the fingerprints, and an admin can still trust the key by typing a confirmation.
+
+"Belongs to the guest" means the guest itself reports this key through Proxmox; it does not prove the
+guest has not been compromised.
+
+The panel also mentions a stopped guest that is set up with the same address. Every new pin is recorded
+in the audit log with what HyperProx found, and API tokens cannot check or trust keys.
 
 ### Proxy and DNS
 

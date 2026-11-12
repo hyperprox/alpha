@@ -8,7 +8,7 @@
 // =============================================================================
 
 import { FastifyPluginAsync } from 'fastify'
-import { connect, loadCredential } from '../lib/ssh-broker'
+import { connect, loadCredential, HostKeyChangedError } from '../lib/ssh-broker'
 import { resolveTerminalTarget, terminalIdProblem, terminalTargetDeps } from '../lib/terminal-targets'
 import { trackSocket } from '../lib/session-sockets'
 
@@ -29,6 +29,8 @@ type OutFrame =
   | { t: 'status'; state: 'connecting' | 'ready' | 'closed'; detail?: string; persistent?: boolean; session?: string; hostKeyLearned?: boolean; fingerprint?: string }
   | { t: 'data';   d: string }
   | { t: 'error';  m: string }
+  /** The pinned key differs from the one offered: the pane asks the API to check it with Proxmox. */
+  | { t: 'hostkey'; host: string; port: number; pinned: string; offered: string; offeredType: string }
 
 export const terminalWsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get<{ Querystring: TermQuery }>('/term', { websocket: true }, async (socket, req) => {
@@ -76,6 +78,7 @@ export const terminalWsRoutes: FastifyPluginAsync = async (fastify) => {
       result = await connect({ host, port, cred, cols, rows, session: q.session, useTmux: target.tmux && q.tmux !== '0' })
     } catch (e: any) {
       fastify.log.warn({ host, port, user: cred.username, err: e.message }, '[terminal] connect failed')
+      if (e instanceof HostKeyChangedError) send({ t: 'hostkey', host: e.host, port: e.port, pinned: e.pinned, offered: e.offered, offeredType: e.offeredType })
       return bail(e.message)
     }
 

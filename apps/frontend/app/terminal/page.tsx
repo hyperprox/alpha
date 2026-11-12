@@ -13,6 +13,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { TerminalPane, type PaneState } from '@/components/terminal/TerminalPane'
 import { AddHostDialog, ConnectDialog, SaveLayoutDialog, type CredentialDraft } from '@/components/terminal/TerminalDialogs'
 import { HostPalette } from '@/components/terminal/HostPalette'
+import { HostKeyPanel, type HostKeyChange } from '@/components/terminal/HostKeyPanel'
+import { useSession } from '@/lib/session'
+import { atLeast } from '@/lib/api'
 import { alpha } from '@/lib/theme'
 import { styles } from '@/components/visual/kit'
 
@@ -53,6 +56,8 @@ interface Session {
   state:   PaneState
   detail?: string
   attach:  AttachInfo | null
+  /** The host offered a different key from the pinned one; the panel checks it with Proxmox. */
+  hostKey?: HostKeyChange | null
 }
 
 const BORDER = 'var(--border)'
@@ -100,6 +105,8 @@ function ViewIcon({ mode }: { mode: ViewMode }) {
 let tabSeq = 0
 
 export default function TerminalPage() {
+  const { role } = useSession()
+  const admin = atLeast(role, 'admin')
   const [hosts,     setHosts]     = useState<TerminalHost[]>([])
   const [loading,   setLoading]   = useState(true)
   const [notice,    setNotice]    = useState<string | null>(null)
@@ -241,8 +248,11 @@ export default function TerminalPage() {
     await load()
   }
 
+  // The old manual path: clear the pin, so the next connect learns whatever answers. Admins only, behind a
+  // confirm, and audited. A changed key is normally handled by the host key panel instead.
   const forgetHostKey = async (session: Session) => {
     const pin = `${session.address}:${session.port}`
+    if (!window.confirm(`Clear the pinned key for ${pin}? The next connection will accept whatever key answers there, unchecked.`)) return
     const res = await fetch(`/api/terminal/hostkeys/${encodeURIComponent(pin)}`, { method: 'DELETE' })
       .then(r => r.json())
     if (!res.success) return setNotice(res.error)
@@ -549,11 +559,13 @@ export default function TerminalPage() {
                     {enabling ? 'installing tmux…' : 'not persistent — fix'}
                   </button>
                 )}
-                <button onClick={() => forgetHostKey(active)}
-                  title="Clear the pinned host key — do this only when the guest was genuinely rebuilt"
-                  className={styles.btn}>
-                  Clear host key
-                </button>
+                {admin && (
+                  <button onClick={() => forgetHostKey(active)}
+                    title="Clear the pinned host key: the next connect accepts whatever key answers, unchecked"
+                    className={styles.btn}>
+                    Clear host key
+                  </button>
+                )}
                 <button onClick={() => forgetCredential(active.host)}
                   className={styles.btn}>
                   Forget login
@@ -562,7 +574,7 @@ export default function TerminalPage() {
                   className={styles.btn}>
                   Change login
                 </button>
-                <button onClick={() => patch(active.key, { attempt: active.attempt + 1, attach: null })}
+                <button onClick={() => patch(active.key, { attempt: active.attempt + 1, attach: null, hostKey: null })}
                   className={`${styles.btn} ${styles.btnPri}`}>
                   Reconnect
                 </button>
@@ -707,6 +719,15 @@ export default function TerminalPage() {
                 attempt={sess.attempt}
                 onState={(state, detail) => patch(sess.key, { state, detail })}
                 onAttach={attach => patch(sess.key, { attach })}
+                onHostKey={hostKey => patch(sess.key, { hostKey })}
+                overlay={sess.hostKey ? (
+                  <HostKeyPanel
+                    hostId={sess.host.id}
+                    change={sess.hostKey}
+                    onTrusted={message => { setNotice(message); patch(sess.key, { hostKey: null, attempt: sess.attempt + 1, attach: null }) }}
+                    onClose={() => patch(sess.key, { hostKey: null })}
+                  />
+                ) : undefined}
               />
             </div>
           ))}
