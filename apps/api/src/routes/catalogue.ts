@@ -21,6 +21,7 @@ import { nodeCredential, nodeCredentialId, execOnNode } from '../lib/node-exec'
 import { saveCredential, removeCredential } from '../lib/ssh-broker'
 import { getProviderCredentials } from '../lib/credentials'
 import { getSettings } from '../lib/plugin-host'
+import { pickerFacts } from '../lib/arr/catalogue'
 import { ProxmoxClient } from '../lib/proxmox-client'
 import { DetectionCache, type DetectResult, type FingerprintList } from '../lib/catalogue-detect'
 import { sharedCandidateCache } from './site-metrics'
@@ -238,6 +239,11 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
       // A website's public name: zone, name and proxy, checked into the exact DNS record and proxy host by the preview.
       ...(b.publish && typeof b.publish === 'object' && !Array.isArray(b.publish)
         ? { publish: { zone: String(b.publish.zone ?? ''), name: String(b.publish.name ?? ''), instanceId: String(b.publish.instanceId ?? '') } } : {}),
+      // An Arr Stack's VPN login (straight to the vault, never kept in the plan) and its public names.
+      ...(b.arrVpn && typeof b.arrVpn === 'object' && !Array.isArray(b.arrVpn) ? { arrVpn: b.arrVpn } : {}),
+      ...(b.arrNames && typeof b.arrNames === 'object' && !Array.isArray(b.arrNames) && b.arrNames.names && typeof b.arrNames.names === 'object'
+        ? { arrNames: { zone: String(b.arrNames.zone ?? ''), instanceId: String(b.arrNames.instanceId ?? ''),
+            names: Object.fromEntries(Object.entries(b.arrNames.names as Record<string, unknown>).filter(([k, v]) => /^[a-z]{3,16}$/.test(k) && typeof v === 'string').slice(0, 12)) as Record<string, string> } } : {}),
     }
     if (!findRecipe(input.recipeId)) return reply.status(404).send({ success: false, error: 'No such recipe' })
     try {
@@ -267,6 +273,24 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
       const job = await applyPreview(id, owner, deps.wizard)
       return reply.send({ success: true, data: { jobId: job.jobId, steps: job.steps } })
     } catch (e) { return refusal(reply, e) }
+  })
+
+  // GET /wizard/arr — what the Arr Stack's picker shows: its apps, VPN providers, whether a Plex server is known for
+  // Seerr, whether the Arr Stack plug-in already reads a stack, and the NFS storages the cluster already mounts.
+  fastify.get('/wizard/arr', async (_req, reply) => {
+    const [plex, arr, storages] = await Promise.all([
+      getSettings('plex').catch(() => ({} as Record<string, string>)),
+      getSettings('arrstack').catch(() => ({} as Record<string, string>)),
+      pve().fetchStrict<any[]>('/storage').catch(() => [] as any[]),
+    ])
+    const nas = (storages ?? []).filter((x: any) => x?.type === 'nfs' && typeof x.server === 'string' && typeof x.export === 'string')
+      .map((x: any) => ({ storage: String(x.storage), server: String(x.server), export: String(x.export) }))
+    return reply.send({ success: true, data: {
+      ...pickerFacts(),
+      mediaServer: plex.plex_url && plex.plex_token ? { kind: 'plex', url: plex.plex_url } : null,
+      pluginConfigured: Boolean(arr.sonarr_url),
+      nas,
+    } })
   })
 
   // GET /wizard/jobs — the caller's failed or interrupted installs that left a container to clean up

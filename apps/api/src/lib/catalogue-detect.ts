@@ -79,6 +79,13 @@ export const DETECT: Record<string, Fingerprint[]> = {
     path: '/auth/login',
     match: a => (a.status === 200 && /<title>[^<]*Tautulli/i.test(a.body) ? { version: null } : null),
   }],
+  // The Arr Stack shows as installed when a Sonarr, Radarr or Prowlarr answers behind a proxy host: its sign-in page
+  // (or, with sign-in off, its own page) carries the app's name in the title. One reached only on its own port,
+  // with no proxy host, is found by the Arr Stack plug-in's discovery (lib/discovery.ts) instead, not here.
+  'arr-stack': ['Sonarr', 'Radarr', 'Prowlarr'].flatMap(name => ['/login', '/'].map(path => ({
+    path,
+    match: (a: ProbeAnswer) => (a.status === 200 && new RegExp(`<title>[^<]*\\b${name}\\b[^<]*</title>`).test(a.body) ? { version: null } : null),
+  }))),
   'nginx-proxy-manager': [{
     path: '/api/',
     match: a => { const j = json(a); const v = j?.version; return j && j.status === 'OK' && v && typeof v.major === 'number' ? { version: `${v.major}.${v.minor ?? 0}.${v.revision ?? 0}` } : null },

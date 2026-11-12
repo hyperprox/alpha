@@ -39,6 +39,8 @@ interface Job {
   /** This install created its container (so a failed one can be cleaned up), and whether that was done. */
   created?: boolean; removed?: boolean
   adminCredential?: { user: string; password: string; savedInVault: boolean }
+  /** An Arr Stack's apps, each at its own address. */
+  arrApps?: Array<{ id: string; name: string; url: string }>
 }
 
 /** Category names, matching the API's labels; the API's own label wins when it sends one. */
@@ -279,7 +281,17 @@ export default function CataloguePage() {
               {job.error}
             </div>
           )}
-          {job.url && job.status === 'completed' && (
+          {job.arrApps && job.arrApps.length > 0 && job.status === 'completed' && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+              {job.arrApps.map(a => (
+                <a key={a.id} href={a.url} target="_blank" rel="noreferrer" className={`${styles.btn} ${styles.btnGhost}`}
+                  style={{ display: 'inline-flex', alignItems: 'center', textDecoration: 'none' }}>
+                  {a.name} →
+                </a>
+              ))}
+            </div>
+          )}
+          {job.url && job.status === 'completed' && !job.arrApps?.length && (
             <a href={job.url} target="_blank" rel="noreferrer"
               className={`${styles.btn} ${styles.btnPri}`}
               style={{ display: 'inline-flex', alignItems: 'center', textDecoration: 'none', marginBottom: 12 }}>

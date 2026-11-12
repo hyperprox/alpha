@@ -51,7 +51,7 @@ test("every wizard recipe has a health path, an expected status and a first-run 
   for (const id of ["nginx-proxy-manager", "ollama", "tautulli", "grafana", "vaultwarden", "wordpress"]) assert.equal(findRecipe(id)!.wizard, false)
   // The wizard cannot hand a generated admin secret back yet, so no wizard recipe needs one.
   for (const r of w) assert.notEqual(r.firstRun.kind, "env-admin", r.id)
-  assert.equal(CATALOGUE.length, 12)
+  assert.equal(CATALOGUE.length, 13)
 })
 
 test("env values reach the script quoted, in a private .env, and bad names are refused", () => {

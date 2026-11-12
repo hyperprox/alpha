@@ -19,6 +19,7 @@
 // =============================================================================
 
 import { DETECT, type Fingerprint } from './catalogue-detect'
+import { ARR_RECIPE } from './arr/recipe'
 import { LOG_FORMAT_LINE } from './site-metrics/log-format'
 import type { Distro } from './install-script'
 
@@ -98,6 +99,11 @@ export interface CatalogueRecipe {
   firstLogin?: string
   notes?:      string[]
   firstRun:    FirstRun
+  /**
+   * Several apps in one container with their own setup after the install (lib/arr: the Arr Stack's picker, library
+   * mount, chores and read-backs), in place of the generic health check and wiring.
+   */
+  stack?:      'arr'
   /** Offered to the AI wizard, which installs only recipes with this set. */
   wizard:      boolean
   install:
@@ -762,6 +768,10 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=\${GF_SECURITY_ADMIN_PASSWORD:?the installer sets this}` },
   },
+
+  // ── Media downloads ─────────────────────────────────────────────────────
+  // Sonarr, Radarr, Prowlarr, qBittorrent and friends in one container, wired together (lib/arr).
+  ARR_RECIPE,
 
   // ── Web hosting ─────────────────────────────────────────────────────────
   {

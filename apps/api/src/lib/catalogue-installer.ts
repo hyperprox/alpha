@@ -20,6 +20,10 @@ import {
   type PlacementNode, type PlacementStorage, type NodeVerdict, type VmidRule, type IpSighting,
 } from './wizard-placement'
 import { archOfKernel, archOfTemplate } from './ai/facts'
+import {
+  arrPreview, arrPrepare, arrInstallEnv, arrRunSetup, arrJobSteps, arrCleanup, realHttp, localAddressTo,
+  type ArrDeps, type ArrPublishInput, type ArrPublishPlan,
+} from './arr/catalogue'
 import { execOnNode } from './node-exec'
 import type { CreatePVE } from './wizard-executor'
 import type { ExecResult } from './node-exec'
@@ -65,6 +69,14 @@ export interface InstallJob {
    * when the job is fetched. It is never logged and never held in job memory.
    */
   adminCredential?: { user: string; vault: { category: string; provider: string; key: string }; issuedAt: number }
+  /** An Arr Stack's NAS mount on its node, recorded before it is made; clean-up undoes it. */
+  arrHostMount?: { node: string; vmid: number }
+  /** What an Arr Stack's public names made, per app. Clean-up removes only these. */
+  arrLedgers?: Record<string, PublishLedger>
+  /** What was set on an Arr Stack's container over the node login (keyctl, tun, the library), in words. */
+  arrPrepared?: string
+  /** An Arr Stack's apps and their addresses, for the finished page. */
+  arrApps?: Array<{ id: string; name: string; url: string }>
   startedAt: number
   finishedAt?: number
   /** True once Proxmox accepted a create this job asked for: there is a container this job made. */
@@ -100,6 +112,8 @@ export interface InstallDeps {
   saveSecrets: (category: string, provider: string, values: Record<string, string>) => Promise<void>
   /** Read a vault item's keys, or throw if the vault is locked. */
   readSecrets: (category: string, provider: string) => Promise<Record<string, string>>
+  /** The Arr Stack's reach: its apps over HTTP, its node over the login, the plug-in settings (lib/arr). */
+  arr?:        () => ArrDeps
   /** Delete a whole vault item. */
   deleteSecrets: (category: string, provider: string) => Promise<void>
   /** DNS, proxy, certificate and the public check, for a plan that publishes. */
@@ -113,6 +127,7 @@ const realDeps = (): InstallDeps => ({
   probe:      url => fetch(url, { headers: ownHeaders('install-check'), signal: AbortSignal.timeout(4000) })
     .then(async r => ({ status: r.status, body: (await r.text().catch(() => '')).slice(0, 200_000) })).catch(() => null),
   wait:       sleep,
+  arr:        realArrDeps,
   // A read works whenever the vault is unlocked; the save at the install step also needs a session.
   vaultOpen:   async () => vaultWritable(),
   saveSecrets: (c, p, v) => setCredentials(c, p, v),
@@ -366,7 +381,7 @@ async function runJob(
   job: InstallJob, recipe: CatalogueRecipe, deps: InstallDeps,
   container: () => Promise<{ distro: Distro; ip?: string }>,
   onSettled: () => Promise<void> | void = () => {},
-  ctx: { options?: Record<string, string>; publish?: PublishPlan } = {},
+  ctx: { options?: Record<string, string>; publish?: PublishPlan; arrPublish?: ArrPublishPlan[] } = {},
 ): Promise<void> {
   const options = ctx.options ?? {}
   try {
@@ -423,6 +438,8 @@ async function runJob(
       job.vaultItem = { category: 'apps', provider, createdByJob }
       await persistJob(job).catch(() => {})
     }
+    // The Arr Stack's compose file, folders and VPN login (moved from the preview's vault item to the stack's own).
+    if (recipe.stack === 'arr') Object.assign(env, await arrInstallEnv({ owner: job.owner, options, vault: job.vaultItem }, deps))
     const run = await deps.exec({
       host: nodeIp, cred, vmid: job.vmid!, script: installScript(recipe, distro, env),
       timeoutMs: 20 * 60_000,
@@ -433,6 +450,24 @@ async function runJob(
     s3.status = 'done'
 
     // 4. Listening is not the same as serving.
+    // The Arr Stack proves each app itself, then does its setup chores (lib/arr/setup.ts) in place of the wiring.
+    if (recipe.stack === 'arr') {
+      if (!job.ip || !admin || !job.vaultItem) throw new Error('The Arr Stack needs its address and its vault item to be set up.')
+      const s0 = job.steps.find(x => x.id === 'container')
+      if (s0 && job.arrPrepared) s0.detail = `${s0.detail}: ${job.arrPrepared}`
+      const out = await arrRunSetup({
+        ip: job.ip, owner: job.owner, options, admin, vault: { category: job.vaultItem.category, provider: job.vaultItem.provider },
+        publish: ctx.arrPublish, recipe, ledgers: (job.arrLedgers ??= {}), save: () => { void persistJob(job).catch(() => {}) },
+      }, id => step(job, id), {
+        arr: deps.arr, wait: deps.wait, publish: deps.publish, saveSecrets: deps.saveSecrets, readSecrets: deps.readSecrets,
+        sh: (script, timeoutMs) => deps.exec({ host: nodeIp, cred, vmid: job.vmid!, script, timeoutMs, onData: () => {} }),
+      })
+      job.url = out.url
+      job.arrApps = out.apps
+      job.adminCredential = { user: admin.user, vault: { category: job.vaultItem.category, provider: job.vaultItem.provider, key: 'admin_password' }, issuedAt: Date.now() }
+      job.status = 'completed'
+      return
+    }
     const s4 = step(job, 'verify')
     const url = job.ip ? `http://${job.ip}:${recipe.port}` : ''
     if (url) {
@@ -575,11 +610,17 @@ export interface InstallPlan {
   options?: Record<string, string>
   /** The public name, DNS record, proxy host and certificate this install makes, exactly as checked. */
   publish?: PublishPlan
+  /** An Arr Stack's public names, one per app, each checked like a website's. */
+  arrPublish?: ArrPublishPlan[]
   unprivileged: true
 }
 
-export type WizardInput = Omit<InstallPlan, 'template' | 'downloadTemplate' | 'unprivileged' | 'publish' | 'options'> & {
+export type WizardInput = Omit<InstallPlan, 'template' | 'downloadTemplate' | 'unprivileged' | 'publish' | 'options' | 'arrPublish'> & {
   options?: Record<string, unknown>
+  /** An Arr Stack's VPN login. Never kept in the plan: the preview puts it in the vault. */
+  arrVpn?: Record<string, unknown>
+  /** An Arr Stack's public names: one zone, one proxy, a name per app. Checked into `arrPublish` by the preview. */
+  arrNames?: ArrPublishInput
   /** Publish it: the zone, the name in it and the proxy. Checked into a PublishPlan by the preview. */
   publish?: PublishInput
 }
@@ -1100,6 +1141,13 @@ export async function previewInstall(
   }
   const { view, live, pinged } = await freshRead(input, deps)
   const r = checkPlan(input, recipe, view, live, pinged)
+  // The Arr Stack: its apps, its library (looked at from the node), its VPN login (to the vault) and public names.
+  const arr = recipe.stack === 'arr' && !r.errors.length ? await arrPreview({
+    node: input.node, owner, storage: input.storage, diskGb: input.diskGb, values: checkOptions(recipe, input.options).values,
+    vpnSecrets: input.arrVpn, publish: input.arrNames,
+    storageFreeGb: view.storages.find(x => x.node === input.node && x.storage === input.storage)?.freeGb,
+  }, deps, () => randomBytes(6).toString('hex')) : null
+  if (arr) { r.errors.push(...arr.errors); r.warnings.push(...arr.warnings); r.checks.push(...arr.checks); input = { ...input, options: arr.options } }
   let publish: PublishPlan | undefined
   if (input.publish) {
     if (recipe.category !== 'web') r.errors.push(`${recipe.name} is not published by the wizard; only websites are.`)
@@ -1126,6 +1174,7 @@ export async function previewInstall(
       ...(input.ip !== 'dhcp' && input.addressAck?.length ? { addressAck: [...input.addressAck].sort() } : {}),
       ...(recipe.options?.length ? { options: checkOptions(recipe, input.options).values } : {}),
       ...(publish ? { publish } : {}),
+      ...(arr?.publish?.length ? { arrPublish: arr.publish } : {}),
       template: t.template, ...(t.download ? { downloadTemplate: true } : {}), unprivileged: true,
     },
   }
@@ -1179,6 +1228,11 @@ export async function applyPreview(id: string, owner: string, over: Partial<Wiza
       r.errors.push(...again.errors)
       if (again.plan && again.plan.record.data !== plan.publish.record.data) r.errors.push(`The public address changed from ${plan.publish.record.data} to ${again.plan.record.data} since the preview.`)
     }
+    for (const ap of plan.arrPublish ?? []) {
+      const again = await planPublish({ zone: ap.plan.zone, name: ap.plan.name, instanceId: ap.plan.instanceId }, deps.publish)
+      r.errors.push(...again.errors.map(e => `${ap.plan.domain}: ${e}`))
+      if (again.plan && again.plan.record.data !== ap.plan.record.data) r.errors.push(`The public address changed from ${ap.plan.record.data} to ${again.plan.record.data} since the preview.`)
+    }
     if (r.errors.length) {
       throw new WizardRefusal('The cluster changed since the preview, so nothing was created.', 'changed', r.errors)
     }
@@ -1187,6 +1241,7 @@ export async function applyPreview(id: string, owner: string, over: Partial<Wiza
 
     const job = newJob(recipe, owner, `Create CT ${plan.vmid} (${plan.hostname}) on ${plan.node}`, plan.publish)
     job.vmid = plan.vmid; job.node = plan.node
+    if (recipe.stack === 'arr') job.steps = arrJobSteps(job.steps, plan.options ?? {}, plan.arrPublish)
     const markId = `creating:${plan.vmid}`
     // The job row first, then the mark, then the create. After a restart the mark says this job may have
     // made a container, and there is always a job row for it to point at.
@@ -1201,6 +1256,11 @@ export async function applyPreview(id: string, owner: string, over: Partial<Wiza
     void runJob(job, recipe, deps, async () => {
       await createFromPlan(plan, recipe, job.jobId, deps.client, () => { job.created = true; void persistJob(job).catch(() => {}) })
       await waitRunning(deps, plan.node, plan.vmid)
+      if (recipe.stack === 'arr') {
+        // keyctl, the VPN's tun device and the library, which an API token cannot set; then it starts again.
+        job.arrPrepared = await arrPrepare(plan, deps, async () => { job.arrHostMount = { node: plan.node, vmid: plan.vmid }; await persistJob(job).catch(() => {}) })
+        await waitRunning(deps, plan.node, plan.vmid)
+      }
       const distro = distroOf(plan.template)
       if (!distro) throw new Error(`${plan.template} is neither Debian nor Ubuntu.`)
       return { distro, ...(plan.ip !== 'dhcp' ? { ip: parseCidr(plan.ip)!.ip } : {}) }
@@ -1209,7 +1269,7 @@ export async function applyPreview(id: string, owner: string, over: Partial<Wiza
       // container showed up must still be refused.
       CREATING.delete(plan.vmid)
       await store.delete(markId).catch(() => {})
-    }, { options: plan.options ?? {}, publish: plan.publish })
+    }, { options: plan.options ?? {}, publish: plan.publish, arrPublish: plan.arrPublish })
     return job
   } finally {
     APPLYING.delete(id)
@@ -1321,9 +1381,11 @@ export async function removeFailedInstall(jobId: string, owner: string, over: Pa
 
 /** Remove the proxy host and DNS record this job's ledger says it made. Returns sentences to append. */
 async function removePublished(job: InstallJob, deps: WizardDeps): Promise<string> {
-  if (!job.ledger) return ''
+  // An Arr Stack's public names and its NAS mount on the node go the same way, in the same message.
+  const arr = job.arrLedgers || job.arrHostMount ? await arrCleanup(job, deps).catch((e: any) => [`The Arr Stack's clean-up failed: ${e.message}`]) : []
+  if (!job.ledger) return arr.length ? ' ' + arr.join(' ') : ''
   const lines = await cleanupPublish(job.ledger, job.owner, deps.publish).catch((e: any) => [`Publishing clean-up failed: ${e.message}`])
-  return lines.length ? ' ' + lines.join(' ') : ''
+  return [...lines, ...arr].length ? ' ' + [...lines, ...arr].join(' ') : ''
 }
 
 /** Delete the generated-login vault item, only when this job created it. Returns a sentence to append. */
@@ -1382,3 +1444,31 @@ export async function identityView(key: string, wantLive: boolean, over: Partial
 
 /** Tests: forget cached reads. */
 export const clearIdentityCache = () => VIEW_CACHE.clear()
+
+// ── The Arr Stack's reach (lib/arr) ──────────────────────────────────────────
+
+/** Its apps over HTTP, its node over the saved login, HyperProx's plug-in settings and a Plex server it knows. */
+function realArrDeps(): ArrDeps {
+  return {
+    http: realHttp,
+    nodeRun: async (node, script, timeoutMs) => {
+      const cred = await nodeCredential(node).catch(() => null)
+      if (!cred) throw new Error(`No login is stored for ${node}.`)
+      const host = await nodeAddress(pve(), node)
+      const r = await execOnNode({ host, cred, command: 'bash -s', input: script, timeoutMs })
+      return { code: r.code, output: r.output }
+    },
+    pluginSettings: id => getSettings(id),
+    savePluginSettings: async (id, values) => {
+      const plugin = PLUGINS.find(p => p.manifest.id === id)
+      if (!plugin) throw new Error(`No ${id} plug-in is present.`)
+      await saveSettings(plugin.manifest, values)
+    },
+    localAddressTo,
+    // The Plex plug-in's own server and token, when it has them: Seerr signs in with that Plex account.
+    mediaServer: async () => {
+      const p = await getSettings('plex').catch(() => ({} as Record<string, string>))
+      return p.plex_url && p.plex_token ? { kind: 'plex' as const, url: p.plex_url, token: p.plex_token } : null
+    },
+  }
+}

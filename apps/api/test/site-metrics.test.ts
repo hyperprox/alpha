@@ -584,14 +584,15 @@ test('people: HyperProx\'s own requests are counted only as such, never as peopl
   assert.equal(bare.own, 0)
 })
 
-test('own paths: everything HyperProx asks sites for is listed, never a secret, and only two app logins look like admin', () => {
+test('own paths: everything HyperProx asks sites for is listed, never a secret, and only three app logins look like admin', () => {
   const paths = ownRequestPaths()
   for (const p of ['/', '/status.php', '/api/health', '/api/tags', '/auth/login', '/wp-login.php', '/alive']) assert.ok(paths.has(p), p)
   for (const p of paths) {
     for (const kind of ['static', 'wordpress', 'other'] as const) {
       const k = probeKind(p, kind, 404)
       assert.notEqual(k, 'secrets', `${p} on ${kind}`)
-      if (k === 'admin') assert.ok(['/wp-login.php', '/auth/login'].includes(p), `${p} on ${kind} is an admin probe`)
+      // /login: the Arr Stack's detection reads Sonarr's, Radarr's and Prowlarr's sign-in page title (their "/" only redirects).
+      if (k === 'admin') assert.ok(['/wp-login.php', '/auth/login', '/login'].includes(p), `${p} on ${kind} is an admin probe`)
     }
   }
 })

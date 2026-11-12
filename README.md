@@ -859,6 +859,120 @@ guest and its public name (with the version when the app shows one) and offers *
 then asks before it starts the wizard. The answer is kept five minutes (**Look again** asks now). A recipe whose
 integration already has an address (Settings) still counts as **configured**, as before.
 
+#### Arr Stack
+
+Sonarr, Radarr and the apps around them, in one container, set up and connected to each other for you. When the
+install finishes, every app has a sign-in, knows where the library is, and talks to the others. There is no
+checklist of settings to copy between six web pages.
+
+**Pick the apps.** The first step of the wizard shows one card per app, with one line on what it does:
+
+| App | What it does | Ticked to start with |
+|---|---|---|
+| Sonarr | Finds and downloads TV shows | yes |
+| Radarr | Finds and downloads films | yes |
+| Prowlarr | Keeps your list of indexers (the sites that list releases) and shares it with the others | yes |
+| qBittorrent | Downloads torrents | yes |
+| SABnzbd | Downloads from Usenet, if you have a Usenet provider | no |
+| Bazarr | Fetches subtitles for what Sonarr and Radarr download | no |
+| Lidarr | Finds and downloads music | no |
+| Seerr | A page where family and friends ask for films and shows (it follows on from Overseerr and Jellyseerr) | no |
+| FlareSolverr | Gets Prowlarr past the "checking your browser" page some indexers show | no |
+
+Prowlarr stays ticked while Sonarr, Radarr or Lidarr is, because they find releases through it. Bazarr and Seerr
+need Sonarr or Radarr, and FlareSolverr needs Prowlarr. A strip at the top adds up the CPU, RAM and disk the
+picked apps need, and the size step starts from those numbers (you can still change them). The server checks every
+one of these rules again, whatever sends the request.
+
+**A VPN for qBittorrent (optional).** Under qBittorrent you can send it through a VPN, using Gluetun. qBittorrent
+then shares Gluetun's network, so if the tunnel drops it has no network at all. The VPN covers qBittorrent only.
+Pick your provider from the list, then WireGuard (the private key, and the address if your provider gives one) or
+OpenVPN (its user name and password). The login goes into the vault when the plan is checked. It is never kept in
+the plan or written into the compose file. At install it moves to the stack's own vault item and into
+`/opt/arr/.env` inside the container (readable by root only), where Docker Compose reads it. Good torrent speeds need
+port forwarding, so other people can connect to you. For Proton VPN, Private Internet Access, PrivateVPN and Perfect
+Privacy, HyperProx turns it on and tells qBittorrent each new port. Other providers get a warning that many torrents
+will be slow.
+
+**The container.** It is unprivileged and runs Docker Compose in `/opt/arr`, made from the newest Debian template
+the node has (or one it downloads first, as for every recipe). The Proxmox API creates it with nesting, as it does for every recipe. An API token cannot set keyctl, a
+device or a folder from the node, so HyperProx then does that over the node's saved login: it stops the new
+container, gives it keyctl (Docker wants it), the `/dev/net/tun` device when the VPN is on, and the library, then
+starts it again and reads its settings back. Every image is pinned to one release, never `latest`, and every app
+runs as the same user and group (1000:1000), so all the files in the library have one owner. Gluetun is the one
+exception: it runs as root because it changes the network.
+
+**Where the files go.** Everything lives under one `/data` folder, laid out the way the TRaSH guides suggest:
+`/data/torrents`, `/data/usenet` and `/data/media/{tv,movies,music}`. Downloads and the library share one
+filesystem, so a finished download moves into the library instantly, with no second copy. The library can be:
+
+- **A new disk** on the storage you pick for the container. It is left out of Proxmox backups, because media is
+  too big to back up every night.
+- **A NAS, over NFS.** The export is mounted on the container's node only (never on every node) with
+  `rw,vers=3,hard,timeo=600,retrans=2,_netdev,nofail`, then passed into the container. The fstab line is marked
+  `# hyperprox-arr <id>` so it can be removed again. An SMB/Windows share is refused: turn on NFS for that share.
+  NFS storages your cluster already mounts are offered as one-click choices.
+- **A folder that already exists on the node,** such as `/mnt/media`. System folders such as `/etc` are refused.
+
+For a NAS or a folder, the check before anything is made looks at it from the node (a read-only test mount for a
+NAS). The apps write as uid 1000 inside the container, which is uid 101000 on the node and the NAS, so that user
+must be allowed to write there. A container that uses a NAS mount or a node folder cannot be moved to another node.
+You can also keep downloads on the container's own disk (useful when the NAS is slow). The wizard then warns that
+downloads and the library are on different filesystems, so every finished download is copied, not moved, and takes
+twice the space until the torrent is removed.
+
+**What setup does.** Each step makes its change, then reads it back from the app itself. A step only counts as done
+when the read-back agrees. The steps:
+
+1. Waits up to five minutes for every app to answer.
+2. Checks that the downloads and the library are on one filesystem and that the apps can write there.
+3. Reads each app's API key from the file it writes on first start (Sonarr, Radarr, Prowlarr and Lidarr's
+   `config.xml`, Bazarr's `config.yaml`, SABnzbd's `sabnzbd.ini`), proves the key opens the app, and saves it in the
+   vault item `apps/arr-stack-<id>`.
+4. Turns on sign-in everywhere, with one user name for every app (made up as `media-` plus six letters and digits,
+   unless you choose one) and a generated password. Sonarr, Radarr, Prowlarr and Lidarr get forms sign-in, required
+   for every address; Bazarr gets form sign-in. Each app is then asked something with no key and no cookie, and must
+   turn the request away. One restart is allowed for an app that needs it; if it is still open, the install fails.
+5. qBittorrent: reads the one-time password it prints in its log on first start and replaces it, saves downloads to
+   `/data/torrents`, adds the categories `tv`, `movies` and `music`, and binds it to the VPN when there is one.
+   Only HyperProx's own address may read it without the password (so the Arr Stack plug-in can show downloads);
+   a request from anywhere else is checked to be turned away.
+6. SABnzbd: turns on sign-in, saves downloads to `/data/usenet`, adds the same categories, and lets the other apps
+   call it by its name inside Docker.
+7. Adds the library folders: `/data/media/tv` to Sonarr, `/data/media/movies` to Radarr, `/data/media/music` to Lidarr.
+8. Adds qBittorrent and SABnzbd to each of those apps with its category. Each app tests the connection before it
+   saves it, and it is tested again after.
+9. Adds Sonarr, Radarr and Lidarr to Prowlarr, so every indexer you add there reaches them. FlareSolverr, if picked,
+   is added as an indexer proxy for indexers tagged `flaresolverr`.
+10. Connects Bazarr to Sonarr and Radarr.
+11. Seerr: only when the Plex plug-in has a Plex server address and token. Then Seerr starts, signs in with that Plex
+    account (which becomes its owner), turns on the Plex libraries, adds Sonarr and Radarr, and finishes its own
+    setup. Without one, Seerr is installed but not started. A Seerr nobody has signed in to belongs to whoever opens
+    it first. Add your Plex server to the Plex plug-in, then run `docker compose up -d seerr` in `/opt/arr`.
+12. Points HyperProx's Arr Stack plug-in at the new Sonarr, Radarr, Prowlarr and qBittorrent. If the plug-in
+    already reads a stack, it is left as it is. The Plex plug-in has no Arr setting of its own: where it reaches
+    Sonarr or Radarr, it does so through the Arr Stack plug-in, so it follows this step.
+
+The finished page shows the sign-in once and a button for each app. The password, the API keys and the VPN login
+stay in the vault.
+
+**Public names (optional, off to start with).** You can give apps a public name each, under one of your domains and
+through one of your proxies. Each name is checked like a website's (no existing DNS record, a proxy that can get a
+certificate) when the plan is checked and again just before install. Then HyperProx makes the proxy host, the DNS
+record and the certificate, and checks the public address. qBittorrent, SABnzbd and FlareSolverr are never given a
+public name: download clients stay on your own network. Every published app keeps its own sign-in.
+
+**What is left for you,** because only you have it: your indexers (add them once in Prowlarr), your Usenet
+provider's server and login in SABnzbd, and the subtitle languages you want in Bazarr.
+
+**Already running?** A Sonarr, Radarr or Prowlarr behind a proxy host shows the Arr Stack as **Running on** that
+guest. HyperProx reads its sign-in page (`/login`), whose title names the app, or its start page when sign-in is
+off. One reached only on its own port, with no proxy host, is found by the Arr Stack plug-in's own discovery
+instead. Once that plug-in has a Sonarr address, the Arr Stack counts as **configured**.
+
+**Clean-up.** Removing a failed install also removes the public names it made and its NAS mount on the node (the
+mount and its fstab line; the files on the NAS are not touched).
+
 ### Websites
 
 Websites have their own section in the rail (**Web → Websites**, at `/sites`), with four tabs: **Sites**

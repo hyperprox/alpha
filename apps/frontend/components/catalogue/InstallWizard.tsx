@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { apiJson } from '@/lib/api'
 import { alpha } from '@/lib/theme'
+import { ArrPicker, type ArrNames, type ArrVpn } from './ArrPicker'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { GhostButton, INPUT, LABEL, Notice, PrimaryButton } from '@/components/vault/ui'
 
@@ -100,15 +101,29 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
   const [step, setStep] = useState(0)
 
   // Step 1: the recipe's own settings, if it has any (a site title, a git repository).
-  const options = recipe.options ?? []
+  // The Arr Stack picks its apps and library in a panel of its own (ArrPicker), with its options held apart.
+  const options = recipe.id === 'arr-stack' ? [] : recipe.options ?? []
   const [opts, setOpts] = useState<Record<string, string>>(() => Object.fromEntries(options.map(o => [o.key, o.default ?? ''])))
   const missing = options.filter(o => o.required && !String(opts[o.key] ?? '').trim())
+
+  const isArr = recipe.id === 'arr-stack'
+  const [arrOpts, setArrOpts] = useState<Record<string, string>>(() => Object.fromEntries((recipe.options ?? []).map(o => [o.key, o.default ?? ''])))
+  const [arrVpn, setArrVpn] = useState<ArrVpn>({})
+  const [arrNames, setArrNames] = useState<ArrNames | null>(null)
+  const [arrState, setArrState] = useState<{ totals: { cores: number; memoryMb: number; diskGb: number } | null; missing: string[] }>({ totals: null, missing: [] })
+  const onArrState = useCallback((st: typeof arrState) => setArrState(st), [])
 
   // Step 2: size, pre-filled from the recipe's recommended values.
   const [cores, setCores] = useState(recipe.defaults.cores)
   const [memoryMb, setMemoryMb] = useState(recipe.defaults.memoryMb)
   const [swapMb, setSwapMb] = useState(recipe.defaults.swapMb ?? 512)
   const [diskGb, setDiskGb] = useState(recipe.defaults.diskGb)
+  // The Arr Stack's size follows the apps picked; the size step can still change it.
+  useEffect(() => {
+    const t = arrState.totals
+    if (!isArr || !t) return
+    setCores(t.cores); setMemoryMb(t.memoryMb); setDiskGb(t.diskGb)
+  }, [isArr, arrState.totals])
 
   // Step 3: where.
   const [placement, setPlacement] = useState<Placement | null>(null)
@@ -232,7 +247,7 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
   const swapMax = Math.min(Math.max(0, memoryMb) * 2, 8192)
 
   const canNext = (() => {
-    if (step === 0) return missing.length === 0
+    if (step === 0) return missing.length === 0 && (!isArr || (arrState.totals !== null && arrState.missing.length === 0))
     if (step === 1) return cores >= 1 && memoryMb >= 64 && diskGb >= 1 && swapMb >= 0 && swapMb <= swapMax
     if (step === 2) return Boolean(selected?.verdict.eligible && storage)
     if (step === 3) {
@@ -252,6 +267,11 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
       ip: mode === 'dhcp' ? 'dhcp' : ip, ...(mode === 'static' && gateway ? { gateway } : {}), ...(dns ? { dns } : {}),
       ...(mode === 'static' && ackedKeys?.length ? { addressAck: ackedKeys } : {}),
       ...(options.length ? { options: opts } : {}),
+      // The VPN login goes to the vault at the preview, never into the plan; names only when some are given.
+      ...(isArr ? {
+        options: arrOpts, ...(arrOpts.ARR_VPN === '1' ? { arrVpn } : {}),
+        ...(arrNames && Object.values(arrNames.names).some(Boolean) ? { arrNames } : {}),
+      } : {}),
     })
     setBusy(false)
     if (!r.ok) { setError(r.error ?? 'The plan could not be checked.'); setProblems((r.body as any)?.problems ?? []); setWarnings((r.body as any)?.warnings ?? []); return }
@@ -362,6 +382,12 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
                   </div>
                   {missing.length > 0 && <p className="text-[12px]" style={{ color: 'var(--text-dim)' }}>Fill in {missing.map(o => o.label).join(', ')} to go on.</p>}
                 </div>
+              )}
+              {isArr && (
+                <>
+                  <ArrPicker opts={arrOpts} setOpts={setArrOpts} vpn={arrVpn} setVpn={setArrVpn} names={arrNames} setNames={setArrNames} onState={onArrState} />
+                  {arrState.missing.length > 0 && <p className="text-[12px]" style={{ color: 'var(--text-dim)' }}>Fill in {arrState.missing.join(', ')} to go on.</p>}
+                </>
               )}
               {recipe.notes.length > 0 && (
                 <ul className="space-y-1">
@@ -639,7 +665,8 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
                       ['Disk', `${preview.plan.diskGb} GB on ${preview.plan.storage}`], ['Bridge', preview.plan.bridge],
                       ['Address', preview.plan.ip === 'dhcp' ? 'DHCP' : `${preview.plan.ip}${preview.plan.gateway ? `, gateway ${preview.plan.gateway}` : ''}`],
                       ['DNS', preview.plan.dns || 'the node’s'], ['Template', String(preview.plan.template).split('/').pop()],
-                      ['Privileges', 'unprivileged, nesting only'], ['Starts at boot', 'yes'],
+                      ['Privileges', isArr ? 'unprivileged, nesting and keyctl' : 'unprivileged, nesting only'], ['Starts at boot', 'yes'],
+                      ...(isArr ? arrReview(preview.plan.options as unknown as Record<string, string> | undefined, recipe.options ?? []) : []),
                       ...options.map(o => {
                         const v = (preview.plan.options as unknown as Record<string, string> | undefined)?.[o.key] ?? ''
                         return [o.label, o.kind === 'boolean' ? (v === '1' ? 'yes' : 'no') : (v || '—')] as [string, any]
@@ -677,4 +704,18 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
       {reconfirm && <ReconfirmModal onClose={() => setReconfirm(false)} onDone={() => { setReconfirm(false); void apply() }} />}
     </div>
   )
+}
+
+/** The Arr Stack's choices in the review, in words rather than as raw options. */
+function arrReview(o: Record<string, string> | undefined, all: RecipeOption[]): Array<[string, string]> {
+  if (!o) return []
+  const apps = all.filter(x => x.kind === 'boolean' && x.key !== 'ARR_VPN' && o[x.key] === '1').map(x => x.label)
+  const media = o.ARR_MEDIA === 'nfs' ? `NAS ${o.ARR_NFS_HOST}:${o.ARR_NFS_EXPORT} (NFS)` : o.ARR_MEDIA === 'path' ? `${o.ARR_HOST_PATH} on the node` : `new ${o.ARR_MEDIA_GB} GB disk`
+  return [
+    ['Apps', apps.join(', ')],
+    ['VPN', o.ARR_VPN === '1' ? `qBittorrent through ${o.ARR_VPN_PROVIDER} (${o.ARR_VPN_TYPE === 'openvpn' ? 'OpenVPN' : 'WireGuard'})` : 'none'],
+    ['Library', media],
+    ['Downloads', o.ARR_DOWNLOADS === 'local' ? `container's own disk (${o.ARR_DOWNLOAD_GB} GB): no hardlinks` : 'with the library: hardlinks work'],
+    ['Sign-in name', o.ARR_ADMIN_USER || '—'],
+  ]
 }
