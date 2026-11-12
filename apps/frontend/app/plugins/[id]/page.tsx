@@ -19,6 +19,7 @@ import { HudHeader, styles as vs, type StatChip } from '@/components/visual/kit'
 import { DetailsSection, PLUGIN_ICON, PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
 import { PlexClearOut } from '@/components/plugins/plex/ClearOut'
 import { PlexLibrary } from '@/components/plugins/plex/Library'
+import { ArrUpcoming } from '@/components/plugins/arr/Upcoming'
 import { ArrView, MeshView, PlexView, RouterView, UnmanicView, arrChips, plexChips, routerChips, unmanicChips, type Stuck } from '@/components/plugins/visual/views'
 
 interface Column { key: string; label: string; align?: 'left' | 'right' }
@@ -256,6 +257,14 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
   useEffect(() => {
     try { const t = window.localStorage.getItem('hp.plex.tab'); if (t === 'now' || t === 'clearout' || t === 'library') setPlexTabRaw(t) } catch { /* no storage */ }
   }, [])
+  const isArr = params.id === 'arrstack'
+  const [arrTab, setArrTabRaw] = useState<'overview' | 'upcoming'>('overview')
+  useEffect(() => {
+    try { const t = window.localStorage.getItem('hp.arr.tab'); if (t === 'overview' || t === 'upcoming') setArrTabRaw(t) } catch { /* no storage */ }
+  }, [])
+  const setArrTab = (t: 'overview' | 'upcoming') => { setArrTabRaw(t); try { window.localStorage.setItem('hp.arr.tab', t) } catch { /* no storage */ } }
+  // "See the queue" on a downloading item: back to the overview, scrolled to its Downloads panel.
+  const showArrQueue = () => { setArrTab('overview'); setTimeout(() => document.getElementById('arr-downloads')?.scrollIntoView({ block: 'start' }), 50) }
   const setPlexTab = (t: 'now' | 'clearout' | 'library') => { setPlexTabRaw(t); try { window.localStorage.setItem('hp.plex.tab', t) } catch { /* no storage */ } }
   const [liveAt, setLiveAt] = useState<number | null>(null)
   const sessionKeys = useRef<string | null>(null)
@@ -418,11 +427,24 @@ function PluginDetailPage({ params }: { params: { id: string } }) {
                 ))}
               </div>
             )}
+            {isArr && v?.kind === 'arrstack' && (
+              <div role="tablist" aria-label="Arr Stack views" className="flex flex-wrap gap-2">
+                {([['overview', 'Overview'], ['upcoming', 'Upcoming']] as const).map(([k, label]) => (
+                  <button key={k} role="tab" aria-selected={arrTab === k} onClick={() => setArrTab(k)}
+                    className="h-10 rounded-md border px-4 font-display text-sm font-semibold uppercase tracking-[0.1em]"
+                    style={{ borderColor: arrTab === k ? 'color-mix(in srgb, var(--accent) 45%, transparent)' : 'var(--border-strong)',
+                      color: arrTab === k ? 'var(--accent)' : 'var(--text)', background: arrTab === k ? 'color-mix(in srgb, var(--accent) 10%, transparent)' : 'transparent' }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
             {v?.kind === 'plex' && (!isPlex || plexTab === 'now') && <PlexView v={v} />}
             {/* What nobody watches, and the whole library. Read on their own (Plex itself), so they never slow the live view. */}
             {isPlex && plexTab === 'clearout' && <PlexClearOut live={live} />}
             {isPlex && plexTab === 'library' && <PlexLibrary />}
-            {v?.kind === 'arrstack' && <ArrView v={v} stuck={stuck} rescuing={rescuing} onRescue={rescue} rescueNote={rescueNote} />}
+            {v?.kind === 'arrstack' && arrTab === 'overview' && <ArrView v={v} stuck={stuck} rescuing={rescuing} onRescue={rescue} rescueNote={rescueNote} />}
+            {v?.kind === 'arrstack' && arrTab === 'upcoming' && <ArrUpcoming onQueue={showArrQueue} />}
             {v?.kind === 'unmanic' && <UnmanicView v={v} />}
             {v?.kind === 'mikrotik' && <RouterView v={v} />}
             {v?.kind === 'meshcentral' && <MeshView v={v} />}

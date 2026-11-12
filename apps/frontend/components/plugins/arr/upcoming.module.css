@@ -1,0 +1,44 @@
+/* =============================================================================
+   HyperProx — Arr Stack, Upcoming
+   Every colour is a theme variable (light and dark); every row wraps at phone
+   width, so there is no table and no horizontal scroll.
+   ============================================================================= */
+
+.bar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.seg { display: inline-flex; border: 1px solid var(--hx-line-hi); border-radius: 10px; overflow: hidden; }
+.seg button { min-height: 40px; padding: 0 14px; background: transparent; border: 0; color: var(--text-muted);
+  font: 600 .8rem var(--font-display); letter-spacing: .1em; text-transform: uppercase; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--hx-line); }
+.seg button[aria-pressed="true"] { color: var(--hx-accent); background: color-mix(in srgb, var(--hx-accent) var(--glow), transparent); }
+.seg button:focus-visible { outline: 2px solid var(--hx-accent); outline-offset: -2px; }
+
+.err { margin: 10px 0 0; color: var(--warn); font-size: .88rem; line-height: 1.45; }
+
+.rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.row { display: grid; grid-template-columns: 3rem minmax(0, 1fr); gap: 12px; align-items: start;
+  background: var(--hx-deep); border: 1px solid var(--hx-line); border-radius: 12px; padding: 8px 10px; }
+.row[data-status="downloading"] { border-color: color-mix(in srgb, var(--hx-accent) 55%, transparent);
+  box-shadow: 0 0 14px -6px color-mix(in srgb, var(--hx-accent) var(--glow), transparent); }
+.row[data-status="have"] { opacity: .75; }
+.thumb { width: 3rem; padding: 4px; font-size: .45rem; border-radius: 6px; }
+
+.body { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; }
+.title { font: 700 1.05rem/1.15 var(--font-display); letter-spacing: .02em; color: var(--text-bright); overflow-wrap: anywhere; }
+.title small { color: var(--text-muted); font-weight: 500; }
+.when { margin-left: auto; font: 600 .82rem var(--font-mono); color: var(--hx-accent); text-align: right; }
+.meta { font: 500 .72rem/1.4 var(--font-mono); color: var(--text-muted); letter-spacing: .04em; overflow-wrap: anywhere; }
+.state { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.note { color: var(--text-soft); font-size: .82rem; line-height: 1.4; overflow-wrap: anywhere; margin: 0; }
+.link { min-height: 32px; padding: 0 4px; background: transparent; border: 0; color: var(--hx-accent); font-size: .82rem;
+  text-decoration: underline; cursor: pointer; }
+
+.miss { min-width: 0; }
+.missHead { margin: 0 0 8px; font: 700 .95rem var(--font-display); letter-spacing: .1em; text-transform: uppercase; color: var(--text-soft); }
+.missHead small { font: 500 .68rem var(--font-mono); letter-spacing: .08em; color: var(--text-muted); }
+.missList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.missList li { display: flex; flex-direction: column; gap: 2px; border-bottom: 1px solid var(--hx-line); padding: 6px 0; min-width: 0; }
+.missList b { color: var(--text-bright); font-weight: 600; font-size: .9rem; overflow-wrap: anywhere; }
+.missList span { color: var(--text-muted); font: 500 .72rem/1.4 var(--font-mono); overflow-wrap: anywhere; }
+
+@media (max-width: 480px) { .when { margin-left: 0; text-align: left; } }
