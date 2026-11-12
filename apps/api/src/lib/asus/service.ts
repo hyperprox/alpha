@@ -29,7 +29,8 @@ import { hasRole, type Role } from '../roles'
 import { probeCertificate } from '../clusters/tls-pin'
 import { AsusClient, AsusLoginError } from './client'
 import { endpointOf, type AsusInstanceStore, type AsusInput, type AsusMeta, type Prepared } from './instances'
-import { HOOKS, buildReading, firmwareOf, looseJson, sampleOf, type AsusReading, type CounterSample } from './parse'
+import { HOOKS, buildReading, firmwareOf, looseJson, loosePairs, sampleOf, type AsusReading, type CounterSample } from './parse'
+import { DIAGNOSTIC_HOOKS, MAX_TOTAL_CHARS, MacMasker, redactAnswer } from './diagnostics'
 import { DirectTransport, AsusUnreachableError, type AsusTransport } from './transport'
 import { portOf, resolveAsusTarget } from './target'
 import type { NotifyEventInput } from '../notify/types'
@@ -45,7 +46,7 @@ export const confirmPhrase = (name: string) => `Reboot ${name}`
 
 export interface ActionRequest { action?: unknown; confirm?: unknown; typed?: unknown }
 
-export interface Limits { readsPerMinute: number; attemptsPerMinute: number; rebootsPerHour: number; setupsPerMinute: number }
+export interface Limits { readsPerMinute: number; attemptsPerMinute: number; rebootsPerHour: number; setupsPerMinute: number; diagnosticsPerMinute: number }
 
 export type ActionState = { action: 'reboot'; at: string; by: string; state: 'sending' | 'sent' | 'unconfirmed' | 'back' | 'not_back'; detail: string | null }
 
@@ -107,7 +108,7 @@ export class AsusService {
   constructor(deps: ServiceDeps) {
     this.d = {
       now: () => Date.now(), sleep: ms => new Promise(r => setTimeout(r, ms)), readBackAt: [60_000, 120_000, 240_000], ...deps,
-      limits: { readsPerMinute: 30, attemptsPerMinute: 10, rebootsPerHour: 3, setupsPerMinute: 5, ...(deps.limits ?? {}) },
+      limits: { readsPerMinute: 30, attemptsPerMinute: 10, rebootsPerHour: 3, setupsPerMinute: 5, diagnosticsPerMinute: 2, ...(deps.limits ?? {}) },
     }
   }
 
@@ -214,8 +215,9 @@ export class AsusService {
       // A login refusal anywhere stops the whole reading; any other failure costs only that part.
       const part = (h: string) => client.hook(h).catch(e => { if (e instanceof AsusLoginError) throw e; return null })
       const system = await client.hook(HOOKS.system)
-      const sys = looseJson(system)
+      const sys = looseJson(system) ?? loosePairs(system)
       if (!sys) throw new AsusUnreachableError('The router answered, but not with its status. Is this an ASUS router on Asuswrt or Asuswrt-Merlin?')
+      const mode = await part(HOOKS.mode)
       const wan = await part(HOOKS.wan)
       const clients = await part(HOOKS.clients)
       const channels = await part(HOOKS.channels)
@@ -227,7 +229,7 @@ export class AsusService {
         if (again) { prev = cur; cur = sampleOf(looseJson(again), this.d.now()) }
       }
       this.samples.set(id, cur)
-      const reading = buildReading({ system, wan, clients, channels }, { instanceId: id, prev, cur, now: new Date(this.d.now()) })
+      const reading = buildReading({ system, wan, clients, channels, mode }, { instanceId: id, prev, cur, now: new Date(this.d.now()) })
       this.cache.set(id, { at: this.d.now(), reading })
       this.notAsus.delete(id)
       if (reading.model !== meta.model || reading.firmware.version !== meta.firmware) {
@@ -266,7 +268,8 @@ export class AsusService {
     if (!p.password) return { fingerprint, pinnedNow, model: null, firmware: null }
     const client = new AsusClient(this.transport(p.url, { insecureTLS: p.insecureTLS, fingerprint }), { username: p.username, password: p.password }, { now: this.d.now })
     try {
-      const sys = looseJson(await client.hook(HOOKS.system))
+      const text = await client.hook(HOOKS.system)
+      const sys = looseJson(text) ?? loosePairs(text)
       if (!sys) throw new AsusRefusal('not_asus', 'The router signed HyperProx in, but did not answer with its status.', 400)
       const fw = firmwareOf(sys)
       const model = (typeof sys.odmpid === 'string' && sys.odmpid.trim()) || (typeof sys.productid === 'string' && sys.productid.trim()) || null
@@ -299,6 +302,38 @@ export class AsusService {
   }
 
   // ── the action ─────────────────────────────────────────────────────────────
+
+  /**
+   * Every hook the plug-in calls and the candidates in diagnostics.ts, each sent on its own, with secrets and MACs
+   * taken out (diagnostics.ts). Reads only. Refused while a login is held, so it can never be the call that locks
+   * the account; audited, since an admin (or an admin's API token) is reading the router's raw answers.
+   */
+  async diagnostics(id: string, actor: Actor): Promise<{ router: string; at: string; calls: Array<{ name: string; hook: string; status: 'ok' | 'no-answer' | 'error'; json: boolean; chars: number; truncated: boolean; body: string | null }>; truncated: boolean }> {
+    const m = await this.meta(id)
+    this.limitKeys([`sid:${actor.sid}`, `router:${m.id}`], 'diagnosticsPerMinute', 'One diagnostics read at a time; wait a moment.', 60_000)
+    const held = this.blockedReason(m.id)
+    if (held) throw new AsusRefusal('login_held', held, 409)
+    await this.d.audit('asus.diagnostics', `asus:${m.id}`, { by: actor.email, via: actor.token ? `api:${actor.token}` : 'session', router: m.name })
+    const { client } = await this.client(m.id)
+    const masks = new MacMasker()
+    const calls = []
+    let total = 0, truncated = false
+    for (const [name, hook] of DIAGNOSTIC_HOOKS) {
+      if (total >= MAX_TOTAL_CHARS) { truncated = true; break }
+      try {
+        const text = await client.hook(hook)
+        const r = redactAnswer(text, masks)
+        const room = MAX_TOTAL_CHARS - total
+        const body = r.body && r.body.length > room ? r.body.slice(0, room) : r.body
+        total += body?.length ?? 0
+        calls.push({ name, hook, status: (text === null ? 'no-answer' : 'ok') as 'ok' | 'no-answer', json: r.json, chars: r.chars, truncated: r.truncated || body !== r.body, body })
+      } catch (e: any) {
+        if (e instanceof AsusLoginError) return this.hold(m.id, e)
+        calls.push({ name, hook, status: 'error' as const, json: false, chars: 0, truncated: false, body: masks.text(String(e?.message ?? 'failed').slice(0, 200)) })
+      }
+    }
+    return { router: m.name, at: new Date(this.d.now()).toISOString(), calls, truncated }
+  }
 
   /** The certificate an https address presents now, for a person to compare and confirm. Nothing is sent to it. */
   async probeCertificate(url: unknown, actor: Actor): Promise<PresentedCert> {

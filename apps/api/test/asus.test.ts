@@ -591,3 +591,101 @@ test("request time: loopback, and HyperProx's own addresses on any port, are ref
   assert.equal(await asusResolver({ env })(new URL('http://10.9.8.1:8080')), '10.9.8.1')
   assert.equal(checkAsusAddresses('http:', 8080, ['10.9.8.5'], env).ok, false, 'not just the ports HyperProx itself serves')
 })
+
+// ── operation mode and diagnostics ───────────────────────────────────────────
+
+import { modeOf, loosePairs } from '../src/lib/asus/parse'
+import { redactAnswer, MacMasker, DIAGNOSTIC_HOOKS, SECRET_RE } from '../src/lib/asus/diagnostics'
+
+test('mode: router, access point, AiMesh main and node, repeater and media bridge', () => {
+  assert.deepEqual(modeOf({ sw_mode: '1' }), { kind: 'router', label: 'Router', aimesh: null })
+  assert.deepEqual(modeOf({ sw_mode: '1', cfg_master: '1' }), { kind: 'router', label: 'Router · AiMesh main', aimesh: 'main' })
+  assert.deepEqual(modeOf({ sw_mode: '3', cfg_master: '1', re_mode: '0' }), { kind: 'ap', label: 'Access point · AiMesh main', aimesh: 'main' })
+  assert.deepEqual(modeOf({ sw_mode: '3', re_mode: '1' }), { kind: 'node', label: 'AiMesh node', aimesh: 'node' })
+  assert.equal(modeOf({ sw_mode: '2' }).kind, 'repeater')
+  assert.equal(modeOf({ sw_mode: '4' }).kind, 'bridge')
+  assert.deepEqual(modeOf(null), { kind: null, label: null, aimesh: null })
+  assert.deepEqual(modeOf({}), { kind: null, label: null, aimesh: null })
+})
+
+test('an access point leading AiMesh: no WAN panel data, no internet alarm, mode in the reading, upstream for operators', async () => {
+  const { svc, store, url } = await setup({ mode: 'ap-main', wanUp: false })
+  const m = await store.create(await store.prepare(null, { url, username: 'admin', password: 'correct horse' }), 'Mesh main', { model: null, firmware: null })
+  const r = await svc.reading(m.id)
+  assert.deepEqual(r.mode, { kind: 'ap', label: 'Access point · AiMesh main', aimesh: 'main' })
+  assert.equal(r.health.level, 'good', 'an unused WAN reporting "Disconnected" is not a problem')
+  assert.ok(!r.health.reasons.some(x => /internet/i.test(x)))
+  assert.deepEqual({ ...r.wan }, { up: null, status: null, type: null, ip: null, gateway: null, unit: null, downBps: null, upBps: null })
+  assert.deepEqual(r.uplink, { gateway: '10.9.8.1' })
+  assert.deepEqual(viewerReading(r).uplink, { gateway: null })
+  assert.equal(r.bands.length, 2, 'radios still read')
+  assert.ok(!r.missing.includes('wan'))
+  const node = await setup({ mode: 'node', wanUp: false })
+  const n = await node.store.create(await node.store.prepare(null, { url: node.url, username: 'admin', password: 'correct horse' }), 'Node', { model: null, firmware: null })
+  const rn = await node.svc.reading(n.id)
+  assert.equal(rn.mode.kind, 'node'); assert.equal(rn.health.level, 'good')
+  // A router with its WAN down still raises it.
+  const rt = await setup({ mode: 'router', wanUp: false })
+  const t = await rt.store.create(await rt.store.prepare(null, { url: rt.url, username: 'admin', password: 'correct horse' }), 'R', { model: null, firmware: null })
+  assert.ok((await rt.svc.reading(t.id)).health.reasons.some(x => /internet connection is down/.test(x)))
+})
+
+test('a system answer that is not valid JSON as a whole still yields every flat value that parses', () => {
+  const broken = '{"productid":"RT-XX9000","firmver":"3.0.0.4","buildno":"388","extendno":"24198-gabc","wl0_ssid":"Bad "quote" net","wl0_nband":"2","wl1_ssid":"Fine","wl1_nband":"1",'
+  assert.equal(looseJson(broken), null)
+  const pairs = loosePairs(broken)!
+  assert.equal(pairs.productid, 'RT-XX9000')
+  const r = buildReading({ system: broken, wan: null, clients: null, channels: null }, { instanceId: 'a00000001', prev: null, cur: sample(1, null, null) })
+  assert.equal(r.model, 'RT-XX9000')
+  assert.equal(r.firmware.version, '3.0.0.4.388_24198')
+  assert.ok(r.bands.some(b => b.ssid === 'Fine'))
+  assert.ok(r.missing.includes('system'), 'and the page still says that part was malformed')
+})
+
+test('diagnostics redaction: secret keys and nvram names, wanlink fields, every MAC (keys too), consistent placeholders, capped', () => {
+  const masks = new MacMasker()
+  const j = redactAnswer(JSON.stringify({
+    wl0_wpa_psk: 'wifi-password-1', http_passwd: 'admin-password-2', wps_device_pin: '12345670', asus_token: 'tok-3', 'nvram_get(wl1_auth_mode_x)': 'psk2',
+    get_clientlist: { '00:00:5E:00:53:01': { mac: '00:00:5E:00:53:01', name: 'Desk PC', keeparp: 'x' }, maclist: ['00:00:5e:00:53:01', '00-00-5E-00-53-02'] },
+    nested: [{ deep: { secret_thing: 'hidden-4', bare: '00005E005303', dotted: '0000.5e00.5304', counter: '0x00000000005e0053' } }],
+  }), masks)
+  assert.equal(j.json, true)
+  const b = j.body!
+  for (const secret of ['wifi-password-1', 'admin-password-2', '12345670', 'tok-3', 'psk2', 'hidden-4']) assert.ok(!b.includes(secret), secret)
+  assert.ok(!/([0-9A-F]{2}[:-]){5}[0-9A-F]{2}/i.test(b), 'no MAC with separators')
+  assert.ok(!/00005E005303|0000\.5e00\.5304/i.test(b), 'no bare or dotted MAC')
+  assert.ok(b.includes('"MAC-01"') && (b.match(/MAC-01/g) ?? []).length >= 3, 'one MAC, one placeholder, as key and value')
+  assert.ok(b.includes('0x00000000005e0053'), 'a 0x counter is not a MAC')
+  assert.ok(b.includes('Desk PC'))
+  const t = redactAnswer(`function wanlink_status() { return 1;}\nfunction wanlink_xpassword() { return 'pppoe-secret-5';}\nfunction wanlink_ipaddr() { return '198.51.100.7';}\n{"wl0_wpa_psk":"x6", "ok":"00:00:5E:00:53:01"`, masks)
+  assert.equal(t.json, false)
+  assert.ok(!t.body!.includes('pppoe-secret-5') && !t.body!.includes('x6'))
+  assert.ok(t.body!.includes('wanlink_status() { return 1;}') && t.body!.includes('MAC-01'), 'same MAC, same placeholder across answers')
+  const big = redactAnswer(JSON.stringify({ a: 'x'.repeat(100_000) }))
+  assert.ok(big.truncated && big.body!.length <= 24_000)
+  assert.ok(DIAGNOSTIC_HOOKS.every(([, h]) => !SECRET_RE.test(h.replace(/wl[0-3]_|wl_/g, ''))), 'the read never asks for a secret by name')
+})
+
+test('diagnostics end to end: admin read, every hook on its own, nothing secret or MAC-shaped in the answer, refused while held', async () => {
+  assert.equal(requiredRole('GET', '/api/plugins/asus/instances/a12345678/diagnostics'), 'admin')
+  assert.equal(needsReconfirm('GET', '/api/plugins/asus/instances/a12345678/diagnostics'), false, 'an admin API token may call it')
+  const { fake, svc, store, url, audits } = await setup({ mode: 'ap-main' })
+  const m = await store.create(await store.prepare(null, { url, username: 'admin', password: 'correct horse' }), 'Mesh main', { model: null, firmware: null })
+  const d = await svc.diagnostics(m.id, { ...admin, token: 'ops' })
+  assert.equal(d.calls.length, DIAGNOSTIC_HOOKS.length)
+  assert.ok(d.calls.every(c => c.status === 'ok'))
+  const all = JSON.stringify(d)
+  assert.ok(!all.includes('mesh-secret-value') && !all.includes('correct horse') && !/tok\dx/.test(all))
+  assert.ok(!/([0-9A-F]{2}[:-]){5}[0-9A-F]{2}/i.test(all) && !/00005E005321/i.test(all))
+  assert.ok(d.calls.find(c => c.name === 'aimesh.cfg_clientlist')!.body!.includes('XX-NODE'))
+  assert.ok(d.calls.find(c => c.name === 'plugin.mode')!.body!.includes('"sw_mode": "3"'))
+  assert.equal(fake.seen.filter(x => x.path === '/applyapp.cgi').length, 0, 'reads only')
+  assert.deepEqual(audits.at(-1), { action: 'asus.diagnostics', details: { by: 'admin@example.com', via: 'api:ops', router: 'Mesh main' } })
+  await svc.diagnostics(m.id, admin)
+  await assert.rejects(svc.diagnostics(m.id, { ...admin, sid: 's-x' }), (e: any) => e.code === 'rate_limited', 'two a minute per router')
+  const bad = await setup({ pass: 'other' })
+  const b = await bad.store.create(await bad.store.prepare(null, { url: bad.url, username: 'admin', password: 'wrong' }), 'R', { model: null, firmware: null })
+  await assert.rejects(bad.svc.reading(b.id))
+  await assert.rejects(bad.svc.diagnostics(b.id, admin), (e: any) => e.code === 'login_held')
+  assert.equal(bad.fake.logins(), 1)
+})

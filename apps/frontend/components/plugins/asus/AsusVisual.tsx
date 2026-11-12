@@ -19,8 +19,12 @@ export interface Device {
   key: string; name: string; ip: string | null; mac: string | null; vendor: string | null
   connection: 'wired' | 'wifi'; band: string | null; rssi: number | null; bars: number | null; onlineSec: number | null
 }
+export interface Mode { kind: 'router' | 'ap' | 'repeater' | 'bridge' | 'node' | null; label: string | null; aimesh: 'main' | 'node' | null }
 export interface Reading {
   fetchedAt: string
+  /** Absent from an API older than mode detection. */
+  mode?: Mode
+  uplink?: { gateway: string | null } | null
   model: string | null
   firmware: { version: string | null; flavour: 'merlin' | 'stock' | null }
   update: { available: boolean | null; version: string | null }
@@ -41,8 +45,12 @@ export function mbpsText(bps: number | null): string {
   return m >= 100 ? m.toFixed(0) : m >= 10 ? m.toFixed(1) : m.toFixed(2)
 }
 
+/** Only a router has a WAN of its own; everything else gets the internet from upstream. */
+export const routes = (r: Reading) => !r.mode || r.mode.kind === null || r.mode.kind === 'router'
+
 export function hudChips(r: Reading): StatChip[] {
   return [
+    ...(r.mode?.label ? [{ label: 'mode', value: r.mode.label, tone: 'accent' as const }] : []),
     { label: 'health', value: r.health.level === 'good' ? 'healthy' : 'needs attention', tone: r.health.level === 'good' ? 'good' : 'warn' },
     { label: r.firmware.flavour === 'merlin' ? 'Merlin firmware' : 'firmware', value: r.firmware.version ?? '—', tone: r.update.available ? 'warn' : 'dim' },
     { label: 'uptime', value: duration(r.uptimeSec), tone: 'dim' },
@@ -87,6 +95,20 @@ export function WanPanel({ r, trail }: { r: Reading; trail: { down: number[]; up
         <Rate dir="down" bps={w.downBps} trail={trail.down} />
         <Rate dir="up" bps={w.upBps} trail={trail.up} />
       </div>
+    </div>
+  )
+}
+
+/** An access point, repeater, bridge or mesh node: nothing is wrong with a WAN it does not use. */
+export function UplinkPanel({ r }: { r: Reading }) {
+  const what = r.mode?.kind === 'node' ? 'AiMesh node' : r.mode?.kind === 'repeater' ? 'Repeater' : r.mode?.kind === 'bridge' ? 'Media bridge' : 'Access point'
+  return (
+    <div className={a.wanState} data-up="true">
+      <span className={a.wanWord}><i aria-hidden />{what}</span>
+      <p className="text-sm" style={{ color: 'var(--text-soft)', margin: 0 }}>
+        The internet is handled by your main router. This unit passes it on{r.mode?.aimesh === 'main' ? ' and leads the AiMesh network' : ''}, so it has no internet connection of its own to watch.
+      </p>
+      {r.uplink?.gateway && <dl className={a.kv}><dt>Upstream</dt><dd className="font-mono">{r.uplink.gateway}</dd></dl>}
     </div>
   )
 }
