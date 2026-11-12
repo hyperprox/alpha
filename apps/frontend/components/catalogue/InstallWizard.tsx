@@ -16,6 +16,7 @@ import { ArrPicker, type ArrNames, type ArrVpn } from './ArrPicker'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { GhostButton, INPUT, LABEL, Notice, PrimaryButton } from '@/components/vault/ui'
 import { PbsLocation } from './PbsLocation'
+import { NodeHardware, TranscodePicker, isTcRecipe, type TcKind } from './TranscodePicker'
 import { ModalFrame } from '@/components/layout/ModalFrame'
 import { ConfirmOverride, NamingCallout, confirmNeeded, useProposal, type NamingSettingsView, type Proposal } from './NamingProposal'
 
@@ -29,6 +30,8 @@ export interface WizardRecipe {
   categoryLabel?: string
   /** Settings asked for before the install; the server checks each against its kind. */
   options?: RecipeOption[]
+  /** 'transcode' for Unmanic and Tdarr (their own picker, hardware per node, library). */
+  stack?: string | null
 }
 
 export interface RecipeOption {
@@ -98,8 +101,10 @@ function Badge({ children, tone = 'var(--text-muted)' }: { children: React.React
   )
 }
 
-export function InstallWizard({ recipe, onClose, onStarted }: {
+export function InstallWizard({ recipe, onClose, onStarted, initialOptions }: {
   recipe: WizardRecipe
+  /** Settings to start from (an extra worker starts from the main one's address). */
+  initialOptions?: Record<string, string>
   onClose: () => void
   onStarted: (job: { jobId: string; steps: any[] }) => void
 }) {
@@ -107,7 +112,8 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
 
   // Step 1: the recipe's own settings, if it has any (a site title, a git repository).
   // The Arr Stack picks its apps and library in a panel of its own (ArrPicker), with its options held apart.
-  const options = recipe.id === 'arr-stack' ? [] : recipe.options ?? []
+  const isTc = isTcRecipe(recipe)
+  const options = recipe.id === 'arr-stack' || isTc ? [] : recipe.options ?? []
   const [opts, setOpts] = useState<Record<string, string>>(() => Object.fromEntries(options.map(o => [o.key, o.default ?? ''])))
   // Proxmox Backup Server asks where its backups live in a panel of its own (PbsLocation).
   const isPbs = recipe.id === 'proxmox-backup-server'
@@ -122,6 +128,10 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
   const [arrNames, setArrNames] = useState<ArrNames | null>(null)
   const [arrState, setArrState] = useState<{ totals: { cores: number; memoryMb: number; diskGb: number } | null; missing: string[] }>({ totals: null, missing: [] })
   const onArrState = useCallback((st: typeof arrState) => setArrState(st), [])
+  // Unmanic and Tdarr: hardware, library, workers and the main server a worker joins, held apart like the Arr Stack's.
+  const [tcOpts, setTcOpts] = useState<Record<string, string>>(() => ({ ...Object.fromEntries((recipe.options ?? []).map(o => [o.key, o.default ?? ''])), ...(initialOptions ?? {}) }))
+  const [tcState, setTcState] = useState<{ missing: string[] }>({ missing: [] })
+  const onTcState = useCallback((st: { missing: string[] }) => setTcState(st), [])
 
   // Step 2: size, pre-filled from the recipe's recommended values.
   const [cores, setCores] = useState(recipe.defaults.cores)
@@ -277,7 +287,7 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
   const swapMax = Math.min(Math.max(0, memoryMb) * 2, 8192)
 
   const canNext = (() => {
-    if (step === 0) return missing.length === 0 && (!isArr || (arrState.totals !== null && arrState.missing.length === 0))
+    if (step === 0) return missing.length === 0 && (!isArr || (arrState.totals !== null && arrState.missing.length === 0)) && (!isTc || tcState.missing.length === 0)
     if (step === 1) return cores >= 1 && memoryMb >= 64 && diskGb >= 1 && swapMb >= 0 && swapMb <= swapMax
     if (step === 2) return Boolean(selected?.verdict.eligible && storage)
     if (step === 3) {
@@ -301,6 +311,7 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
       ...(overrideNeed ? { namingConfirm } : {}),
       ...(options.length ? { options: opts } : {}),
       // The VPN login goes to the vault at the preview, never into the plan; names only when some are given.
+      ...(isTc ? { options: tcOpts } : {}),
       ...(isArr ? {
         options: arrOpts, ...(arrOpts.ARR_VPN === '1' ? { arrVpn } : {}),
         ...(arrNames && Object.values(arrNames.names).some(Boolean) ? { arrNames } : {}),
@@ -425,6 +436,12 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
                 <>
                   <ArrPicker opts={arrOpts} setOpts={setArrOpts} vpn={arrVpn} setVpn={setArrVpn} names={arrNames} setNames={setArrNames} onState={onArrState} />
                   {arrState.missing.length > 0 && <p className="text-[12px]" style={{ color: 'var(--text-dim)' }}>Fill in {arrState.missing.join(', ')} to go on.</p>}
+                </>
+              )}
+              {isTc && (
+                <>
+                  <TranscodePicker kind={recipe.id as TcKind} opts={tcOpts} setOpts={setTcOpts} onState={onTcState} />
+                  {tcState.missing.length > 0 && <p className="text-[12px]" style={{ color: 'var(--text-dim)' }}>Fill in {tcState.missing.join(', ')} to go on.</p>}
                 </>
               )}
               {recipe.notes.length > 0 && (
@@ -559,6 +576,7 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
                   )
                 })}
               </div>
+              {isTc && selected?.verdict.eligible && <NodeHardware node={selected.node} choice={tcOpts.TC_ACCEL} />}
               {selected?.verdict.eligible && (
                 <Field label={`Storage on ${selected.node}`} hint={<>Shared storage lets HA start it on another node if this one fails. Shared block storage (such as Ceph RBD) is preferred over NFS.
                   {(selected.excludedStorages?.length ?? 0) > 0 && <> Not offered: {selected.excludedStorages!.map(s => s.storage).join(', ')}. {selected.excludedStorages![0].reason}</>}</>}>
@@ -715,8 +733,9 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
                       ...(preview.plan.vlan ? [['VLAN', preview.plan.vlan] as [string, any]] : []),
                       ...(proposal && proposal.ip !== 'dhcp' && proposal.vmid === preview.plan.vmid && proposal.ip === preview.plan.ip ? [['Numbering', proposal.label] as [string, any]] : []),
                       ['DNS', preview.plan.dns || 'the node’s'], ['Template', String(preview.plan.template).split('/').pop()],
-                      ['Privileges', isArr ? 'unprivileged, nesting and keyctl' : 'unprivileged, nesting only'], ['Starts at boot', 'yes'],
+                      ['Privileges', isArr || isTc ? 'unprivileged, nesting and keyctl' : 'unprivileged, nesting only'], ['Starts at boot', 'yes'],
                       ...(isArr ? arrReview(preview.plan.options as unknown as Record<string, string> | undefined, recipe.options ?? []) : []),
+                      ...(isTc ? tcReview(recipe.id as TcKind, preview.plan.options as unknown as Record<string, string> | undefined) : []),
                       ...options.map(o => {
                         const v = (preview.plan.options as unknown as Record<string, string> | undefined)?.[o.key] ?? ''
                         return [o.label, o.kind === 'boolean' ? (v === '1' ? 'yes' : 'no') : (v || '—')] as [string, any]
@@ -755,4 +774,20 @@ function arrReview(o: Record<string, string> | undefined, all: RecipeOption[]): 
     ['Downloads', o.ARR_DOWNLOADS === 'local' ? `container's own disk (${o.ARR_DOWNLOAD_GB} GB): no hardlinks` : 'with the library: hardlinks work'],
     ['Sign-in name', o.ARR_ADMIN_USER || '—'],
   ]
+}
+
+const ACCEL_REVIEW: Record<string, string> = { vaapi: 'Intel / AMD graphics (VAAPI)', nvidia: 'NVIDIA', cpu: 'CPU only' }
+
+/** Unmanic's and Tdarr's choices in the review, in words, from the plan the server holds (the hardware is what the node really has). */
+function tcReview(kind: TcKind, o: Record<string, string> | undefined): Array<[string, string]> {
+  if (!o) return []
+  const out: Array<[string, string]> = [['Hardware', `${ACCEL_REVIEW[o.TC_ACCEL] ?? o.TC_ACCEL}${o.TC_ACCEL === 'nvidia' && o.TC_NVIDIA_VERSION ? `, matching driver ${o.TC_NVIDIA_VERSION}` : ''}`]]
+  if (kind !== 'unmanic-worker') {
+    out.push(['Library', `${o.TC_MEDIA === 'nfs' ? `NAS ${o.TC_NFS_HOST}:${o.TC_NFS_EXPORT} (NFS)` : o.TC_MEDIA === 'path' ? `${o.TC_HOST_PATH} on the node` : `new ${o.TC_MEDIA_GB} GB disk`}, at /data/media`])
+  }
+  if (kind === 'unmanic' || kind === 'unmanic-worker') out.push(['Workers', o.UNMANIC_WORKERS || '1'])
+  if (kind === 'unmanic-worker' || kind === 'tdarr-node') out.push([kind === 'tdarr-node' ? 'Tdarr server' : 'Main Unmanic', o.TC_MAIN_URL || '—'])
+  if (kind === 'tdarr-node') out.push(['Tdarr version', o.TC_VERSION || '—'])
+  out.push(['Reachable from', 'your network only (no public name, no port forward)'])
+  return out
 }

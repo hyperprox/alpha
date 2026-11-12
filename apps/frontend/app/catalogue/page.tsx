@@ -41,6 +41,8 @@ interface Job {
   adminCredential?: { user: string; password: string; savedInVault: boolean }
   /** An Arr Stack's apps, each at its own address. */
   arrApps?: Array<{ id: string; name: string; url: string }>
+  /** What to offer next on a finished Unmanic or Tdarr install: another worker or node. */
+  tcFollowUp?: { recipeId: string; label: string; url: string }
 }
 
 /** Category names, matching the API's labels; the API's own label wins when it sends one. */
@@ -64,6 +66,8 @@ export default function CataloguePage() {
   const [job,     setJob]     = useState<Job | null>(null)
   const [notice,  setNotice]  = useState<string | null>(null)
   const [wizard,  setWizard]  = useState<Recipe | null>(null)
+  // Settings the wizard starts from: an extra Unmanic worker or Tdarr node starts from the main one's address.
+  const [wizardOpts, setWizardOpts] = useState<Record<string, string> | undefined>(undefined)
   const [category, setCategory] = useState<string>('all')
   const [cleaning, setCleaning] = useState(false)
   const [reconfirmCleanup, setReconfirmCleanup] = useState<{ jobId: string; vmid?: number; node?: string } | null>(null)
@@ -122,6 +126,7 @@ export default function CataloguePage() {
   const install = (r: Recipe) => {
     const here = running?.[r.id] ?? []
     if (here.length && !window.confirm(`${r.name} is already running on ${here.map(where).join(', ')}. Install another copy anyway?`)) return
+    setWizardOpts(undefined)
     setWizard(r)
   }
 
@@ -308,6 +313,19 @@ export default function CataloguePage() {
               ))}
             </div>
           )}
+          {job.tcFollowUp && job.status === 'completed' && (() => {
+            const next = recipes.find(r => r.id === job.tcFollowUp!.recipeId)
+            if (!next) return null
+            return (
+              <div style={{ marginBottom: 12 }}>
+                <button className={styles.btn} type="button"
+                  onClick={() => { setWizardOpts({ TC_MAIN_URL: job.tcFollowUp!.url.replace(/^https?:\/\//, '').replace(/\/$/, '') }); setWizard(next) }}>
+                  {job.tcFollowUp.label}
+                </button>
+                <small style={{ display: 'block', marginTop: 4, color: 'var(--text-dim)' }}>Pick another node in step 3; HyperProx looks at its hardware and joins the new one to this one.</small>
+              </div>
+            )
+          })()}
           {job.url && job.status === 'completed' && !job.arrApps?.length && (
             <a href={job.url} target="_blank" rel="noreferrer"
               className={`${styles.btn} ${styles.btnPri}`}
@@ -349,7 +367,7 @@ export default function CataloguePage() {
       )}
 
       {wizard && (
-        <InstallWizard recipe={wizard} onClose={() => setWizard(null)}
+        <InstallWizard recipe={wizard} initialOptions={wizardOpts} onClose={() => setWizard(null)}
           onStarted={j => { setJob({ jobId: j.jobId, recipeId: wizard.id, status: 'running', steps: j.steps, log: '' }); setWizard(null) }} />
       )}
       {reconfirmCleanup && (

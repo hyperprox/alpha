@@ -95,7 +95,7 @@ node screenshots.mjs --all http://127.0.0.1:3100 /tmp/hyperprox-shots
 | Certificates | Inventory of every endpoint's certificate, ACME DNS-01 issuance and renewal, delivery into guests |
 | Updates | Pending packages everywhere, on every cluster, and a gated update run that respects HA and quorum, restarts Ceph one OSD at a time and refuses any restart or reboot that would take data offline; a daily read-only check tells you when something new needs updating |
 | Terminal | Browser SSH with persistent tmux sessions, split panes and saved layouts |
-| Catalogue | Guided installs of NPM, Ollama, Tautulli, Nextcloud, Jellyfin, Gitea, Proxmox Backup Server and more: choose resources, see every node's free capacity with a recommended node, pick the ID and address; an app already running on your cluster shows where. The **Arr Stack** recipe installs Sonarr, Radarr and the apps you pick, wired together, with the logins in the vault |
+| Catalogue | Guided installs of NPM, Ollama, Tautulli, Nextcloud, Jellyfin, Gitea, Proxmox Backup Server and more: choose resources, see every node's free capacity with a recommended node, pick the ID and address; an app already running on your cluster shows where. The **Arr Stack** recipe installs Sonarr, Radarr and the apps you pick, wired together, with the logins in the vault; **Unmanic** and **Tdarr** install the video converters with the GPU found on the node, the same library layout, and extra workers or nodes on other cluster nodes |
 | Websites | Its own section: a New website wizard (static site, WordPress or Ghost) from a domain your DNS provider lists to a live HTTPS site (container, DNS record, proxy host, certificate and a check of the public address), Add existing for the sites HyperProx finds already running, and privacy-friendly metrics from each site's own access log (people counted apart from bots and scanners, with a Security card for probes; LiteSpeed and CyberPanel sites are read-only); then open it, sign in to WordPress with a one-time link or open Ghost's admin, reveal its password, pull it again, check its health |
 | AI assistant | Questions about your cluster, and plain-language deploys run end to end after you confirm |
 | Plug-ins | Arr Stack, Unmanic, MikroTik, ASUS routers, Plex, Proxmox Backup Server, Home Assistant, QNAP and MeshCentral, with no access to credentials; Home Assistant also controls devices, in more than one house |
@@ -984,7 +984,7 @@ reports, are passed on as they were written.
 
 Installs a service you do not run yet into a new unprivileged container, checks that it answers, and
 connects it to HyperProx: Nginx Proxy Manager, Ollama, Tautulli, Nextcloud, Jellyfin, Vaultwarden,
-Gitea, Uptime Kuma, Homepage, Grafana, Proxmox Backup Server and the Arr Stack (below). Websites are not listed here: they have their own section,
+Gitea, Uptime Kuma, Homepage, Grafana, Proxmox Backup Server, the Arr Stack, Unmanic and Tdarr (below). Websites are not listed here: they have their own section,
 [Websites](#websites), and a banner on the Catalogue page links to it.
 
 **Already running?** For admins, the Catalogue page looks for each app on your cluster before offering it.
@@ -993,7 +993,7 @@ running containers listening on port 80 or 443, the same list as [Add an existin
 one read-only question per app: Nextcloud's `/status.php`, Jellyfin's `/System/Info/Public`, Gitea's
 `/api/v1/version`, Vaultwarden's `/api/config` (or `/alive`), Grafana's `/api/health`, Uptime Kuma's
 `/api/entry-page`, Homepage's start page, Ollama's `/api/tags`, Tautulli's sign-in page, Nginx Proxy
-Manager's `/api/` and Proxmox Backup Server's web page. Each is a plain GET with no login, no cookies and no redirects followed, a 3-second
+Manager's `/api/`, Proxmox Backup Server's web page, Unmanic's worker list and Tdarr's start page. Each is a plain GET with no login, no cookies and no redirects followed, a 3-second
 timeout and at most 64 KiB read; a proxy target is asked with the public name as its Host header, as the
 proxy would, and an internal certificate is not checked. A recipe found this way says **Running on** the
 guest and its public name (with the version when the app shows one) and offers **Open**; **Install another…**
@@ -1134,6 +1134,75 @@ instead. Once that plug-in has a Sonarr address, the Arr Stack counts as **confi
 
 **Clean-up.** Removing a failed install also removes the public names it made and its NAS mount on the node (the
 mount and its fstab line; the files on the NAS are not touched).
+
+#### Unmanic and Tdarr from the Catalogue
+
+Two apps that convert your video library to a smaller format (for example HEVC) using a GPU, each with a second
+entry for adding more machines. Both are installed with the same picker, the same library layout as the Arr Stack
+and the same safety rules; they differ in how the work is shared.
+
+| Entry | What it is |
+|---|---|
+| **Unmanic** | One container with Unmanic in it. Your library is mounted in it. |
+| **Unmanic worker** | An extra Unmanic on another node that takes jobs from the first. |
+| **Tdarr** | One container with the Tdarr server and one Tdarr node beside it. |
+| **Tdarr node** | An extra Tdarr node on another node, for a server you already run. |
+
+**Hardware.** HyperProx looks at the node you pick in step 3 (the same read-only look the Infrastructure page
+uses) and shows what it has: Intel or AMD graphics (VAAPI), an NVIDIA card whose driver is already loaded on the
+node, or nothing. The picker offers **Automatic** (Intel or AMD first, then NVIDIA, then the CPU), **Intel / AMD**,
+**NVIDIA** and **CPU only**. A choice the node cannot honour is refused in the preview; it is never swapped for
+another one quietly. Intel and AMD graphics are shared with Proxmox's own `dev` setting, together with the node's
+render group number (read from the node, not assumed), so the app's user may open the device. NVIDIA is shared
+the same way, and the container gets NVIDIA's user-space libraries at exactly the node's driver version (they must
+match); HyperProx never installs or changes a driver on a node. On the CPU the preview warns that it is much
+slower and that more than one worker only makes each one slower.
+
+**The library.** The same three choices as the Arr Stack: a new disk, a NAS over NFS (mounted on the container's
+node only, with the same fstab line that carries the container's id), or a folder that already exists on the node.
+Inside the container the library is `/data/media`, the folder the Arr Stack fills, so both work on the same files at
+the same paths. Unlike the Arr Stack, these apps replace files in place, so the container's user (uid 1000 inside,
+101000 on the node and a NAS) must be able to write there. For a folder the preview writes one empty file there as
+that user and removes it; the install tests a write again and stops with a plain message if it fails. Tdarr's
+server and every node must see the library at exactly the same text path, which is why every Tdarr container
+gets `/data/media`.
+
+**Scratch space.** Unmanic's cache and Tdarr's `/temp` are on the container's own disk, never in your library: a
+conversion writes its whole output there first. Size the disk in step 2 to at least twice your largest file. A
+Tdarr server and its node share one `/temp`.
+
+**Unmanic.** After the install HyperProx waits for Unmanic, points its first library at `/data/media` under the name
+Media (scanned once a day if you leave that on) with **no plug-in enabled**, so nothing about your files changes
+until you choose what to do in Unmanic, sets the worker count (two suits a GPU), and connects HyperProx's own Unmanic
+plug-in: the first empty worker address in the plug-in is filled, a taken one is never replaced. Each change is read
+back from Unmanic. Unmanic's free tier allows two libraries; this uses one.
+
+**More Unmanic workers.** Unmanic calls them remote installations. Your main Unmanic sends a file to the worker, the
+worker converts it on its own hardware and the result comes back, so a worker needs no library of its own but every
+file crosses the network twice. On a 1 Gb network that can be the limit. HyperProx links both sides: the main one
+sends tasks to the worker and the worker accepts them. The main Unmanic is changed once, to add that link; if the
+main one already had it, it is left exactly as it was.
+
+**Tdarr.** The server (web page on port 8265, nodes connect on 8266) does no encoding itself. After the install
+HyperProx waits for the server and for its node to register, and shows the server's address. HyperProx has no Tdarr
+plug-in yet, so it only links to Tdarr: add your library folders (for example `/data/media/tv`) under Libraries
+in Tdarr. When Tdarr's node list cannot be read, the step says so instead of failing.
+
+**More Tdarr nodes.** Add a **Tdarr node** on another cluster node, with that node's own hardware detected. The
+preview asks the server to answer, reads its version and runs the node of the same version (Tdarr refuses a node of
+another version without saying why), and checks from the new node that the server's node port (8266) is reachable.
+The node uses its container's own network so the server can call it back. Give it the same library source as the
+server: the same NAS export, or a folder at the same place on that node.
+
+**Safety.** Neither app has a sign-in here, so each is reachable by anyone on your network. HyperProx gives them no
+public name and no port forward, and nothing is put in the vault because nothing is generated. A clean-up of a failed
+install removes only what that install made: its container, its NAS mount line (matched exactly by the container's
+id at the end of the line, so 101 never matches 1010) and, for an Unmanic worker, the one link it added to the main
+Unmanic. A file or folder that existed before is never removed. Neither entry can be installed into an existing
+container, because only the wizard sets up the node-side devices and mounts.
+
+**Already running?** Unmanic is found by its worker list (`/unmanic/api/v2/workers/status`) and Tdarr by its start
+page; the worker and node entries are not looked for, since they look like the app they join.
 
 #### Proxmox Backup Server from the Catalogue
 

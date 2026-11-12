@@ -129,7 +129,9 @@ test('catalogue: the list leaves out the website recipes (sent apart for the Web
   // The engine is untouched: both web recipes are still recipes, offered to the wizard and the AI.
   assert.equal(findRecipe('wordpress')?.category, 'web'); assert.equal(findRecipe('static-site')?.category, 'web')
   assert.ok(CATALOGUE.filter(r => !isCatalogueListed(r)).every(r => wizardRecipes().includes(r) || !r.wizard))
-  assert.ok(CATALOGUE.filter(r => r.category !== 'web').every(r => r.id === 'static-site' || r.detect?.length), 'every catalogue app can be detected')
+  assert.ok(CATALOGUE.filter(r => r.category !== 'web').every(r => r.id === 'static-site' || r.detect?.length
+    // An extra Unmanic worker or Tdarr node looks like the app it joins: the main entry is what is detected.
+    || (r.stack === 'transcode' && /-(worker|node)$/.test(r.id))), 'every catalogue app can be detected')
 })
 
 test('nav: Websites is its own rail item at /sites; a site page is titled under it and links back', async () => {

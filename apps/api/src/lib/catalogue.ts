@@ -20,6 +20,7 @@
 
 import { DETECT, type Fingerprint } from './catalogue-detect'
 import { ARR_RECIPE } from './arr/recipe'
+import { TRANSCODE_RECIPES } from './transcode/recipes'
 import { LOG_FORMAT_LINE } from './site-metrics/log-format'
 import type { Distro } from './install-script'
 import { PBS_OPTIONS, PBS_SCRIPT, NOT_OFFSITE, checkPbsOptions, RECIPE_ID as PBS_RECIPE_ID } from './pbs/catalogue'
@@ -105,7 +106,7 @@ export interface CatalogueRecipe {
    * Several apps in one container with their own setup after the install (lib/arr: the Arr Stack's picker, library
    * mount, chores and read-backs), in place of the generic health check and wiring.
    */
-  stack?:      'arr'
+  stack?:      'arr' | 'transcode'
   /** Offered to the AI wizard, which installs only recipes with this set. */
   wizard:      boolean
   install:
@@ -812,6 +813,8 @@ echo "Ollama listening on 0.0.0.0:11434. No models pulled yet."` },
   // ── Media downloads ─────────────────────────────────────────────────────
   // Sonarr, Radarr, Prowlarr, qBittorrent and friends in one container, wired together (lib/arr).
   ARR_RECIPE,
+  // Unmanic and Tdarr, each with an extra worker/node entry for another cluster node (lib/transcode).
+  ...TRANSCODE_RECIPES,
 
   // ── Web hosting ─────────────────────────────────────────────────────────
   {

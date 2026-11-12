@@ -86,6 +86,16 @@ export const DETECT: Record<string, Fingerprint[]> = {
     path,
     match: (a: ProbeAnswer) => (a.status === 200 && new RegExp(`<title>[^<]*\\b${name}\\b[^<]*</title>`).test(a.body) ? { version: null } : null),
   }))),
+  // Unmanic's worker list, which no other app serves (the Unmanic plug-in's discovery reads the same path).
+  unmanic: [{
+    path: '/unmanic/api/v2/workers/status',
+    match: a => { const j = json(a); return a.status === 200 && j && Array.isArray(j.workers_status) ? { version: null } : null },
+  }],
+  // Tdarr's own page: its title is the app's name, and its web script is served from its own paths.
+  tdarr: [{
+    path: '/',
+    match: a => (a.status === 200 && /<title>[^<]*Tdarr[^<]*<\/title>/i.test(a.body) ? { version: null } : null),
+  }],
   'nginx-proxy-manager': [{
     path: '/api/',
     match: a => { const j = json(a); const v = j?.version; return j && j.status === 'OK' && v && typeof v.major === 'number' ? { version: `${v.major}.${v.minor ?? 0}.${v.revision ?? 0}` } : null },

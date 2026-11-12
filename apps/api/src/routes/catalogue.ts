@@ -12,7 +12,7 @@ import { CATALOGUE, CATEGORY_LABELS, findRecipe } from '../lib/catalogue'
 import {
   getInstallJob, readAdminCredential, previewInstall, applyPreview, removeFailedInstall, getPreview, cleanupCandidates,
   wizardView, identityView, placementFor, nextIdOf, checkIdentity, readVmidRule, saveVmidRule, WizardRefusal, finishSeerr, seerrWaiting,
-  readNamingSettings, saveNamingSettings, detectFromView, proposeFor, readLiveAddresses, notePartial,
+  transcodeHardware, readNamingSettings, saveNamingSettings, detectFromView, proposeFor, readLiveAddresses, notePartial,
   type InstallJob, type WizardDeps, type WizardInput,
 } from '../lib/catalogue-installer'
 import { parseCidr } from '../lib/wizard-placement'
@@ -126,6 +126,7 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
       firstLogin: r.firstLogin ?? null, notes: r.notes ?? [],
       satisfies: r.satisfies ?? null,
       options: r.options ?? [],
+      stack: r.stack ?? null,
       sizes: r.sizes ?? null,
       // A recipe whose integration already has an address is not offered as a
       // fix for a problem the user does not have.
@@ -374,6 +375,28 @@ export function buildCatalogueRoutes(overrides: Partial<CatalogueRouteDeps> = {}
       pluginConfigured: Boolean(arr.sonarr_url),
       nas,
     } })
+  })
+
+  // GET /wizard/transcode — what the Unmanic and Tdarr pickers show: the NAS exports the cluster already mounts, and
+  // the Unmanic a worker would join (the plug-in's first address, when it has one).
+  fastify.get('/wizard/transcode', async (_req, reply) => {
+    const [unmanic, storages] = await Promise.all([
+      getSettings('unmanic').catch(() => ({} as Record<string, string>)),
+      pve().fetchStrict<any[]>('/storage').catch(() => [] as any[]),
+    ])
+    const nas = (storages ?? []).filter((x: any) => x?.type === 'nfs' && typeof x.server === 'string' && typeof x.export === 'string')
+      .map((x: any) => ({ storage: String(x.storage), server: String(x.server), export: String(x.export) }))
+    return reply.send({ success: true, data: { nas, unmanicUrl: unmanic.url || null } })
+  })
+
+  // GET /wizard/transcode/hardware?node= — what that node can give a transcoder, from a read-only look at it
+  fastify.get<{ Querystring: { node?: string } }>('/wizard/transcode/hardware', async (req, reply) => {
+    const node = String(req.query?.node ?? '')
+    if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/.test(node)) return reply.status(400).send({ success: false, error: 'A node name is required.' })
+    const nodes = await pve().getNodes().catch(() => [] as any[])
+    if (!((nodes as any[]) ?? []).some((n: any) => n?.node === node)) return reply.status(404).send({ success: false, error: 'No such node.' })
+    try { return reply.send({ success: true, data: await transcodeHardware(node, deps.wizard) }) }
+    catch (e: any) { return reply.status(502).send({ success: false, error: e?.message ?? 'Could not look at the node.' }) }
   })
 
   // GET /wizard/arr/seerr — the caller's Arr Stacks whose Seerr waits for a Plex server
