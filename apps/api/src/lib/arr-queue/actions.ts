@@ -8,6 +8,7 @@
 //    prioritise     move a torrent to the top of qBittorrent's queue
 //    swap-pack      remove a season's single-episode downloads (not blocklisted) and search for a season pack
 //    fix-stalled    find-another over every stalled download the person confirmed
+//    clear-done     remove (not blocklisted, no search) every finished download whose items are all already in the library
 //    swap-check     read-only: did a season pack get grabbed after a swap
 //
 //  The browser sends an instance and a download id (or a show and season, or a list of download ids). It never
@@ -19,14 +20,15 @@
 // =============================================================================
 
 import type { CoreEndpointClient } from '../plugin-host'
-import { collapseByDownload, importHint, problemOf, readAllQueue, stripPaths } from './logic'
+import { collapseByDownload, importHint, isDone, problemOf, readAllQueue, stripPaths, type FileInfo } from './logic'
+import { readEpisodeInfo, readMovieInfo } from './lookup'
 export { importHint }
 
 export type Instance = 'sonarr' | 'radarr'
-export type ActionName = 'find-another' | 'remove' | 'retry-import' | 'prioritise' | 'swap-pack' | 'fix-stalled' | 'swap-check'
-export const ACTIONS: ActionName[] = ['find-another', 'remove', 'retry-import', 'prioritise', 'swap-pack', 'fix-stalled', 'swap-check']
+export type ActionName = 'find-another' | 'remove' | 'retry-import' | 'prioritise' | 'swap-pack' | 'fix-stalled' | 'clear-done' | 'swap-check'
+export const ACTIONS: ActionName[] = ['find-another', 'remove', 'retry-import', 'prioritise', 'swap-pack', 'fix-stalled', 'clear-done', 'swap-check']
 /** Actions that remove something from a client: the server wants `confirmed: true` for them. */
-export const DESTRUCTIVE: ActionName[] = ['find-another', 'remove', 'swap-pack', 'fix-stalled']
+export const DESTRUCTIVE: ActionName[] = ['find-another', 'remove', 'swap-pack', 'fix-stalled', 'clear-done']
 
 export interface ActionRequest {
   action: ActionName
@@ -147,7 +149,7 @@ function packsIn(rows: any[], seriesId: number, season: number): string[] {
 }
 
 /** Pure: from a fresh, full queue and a request, exactly what would be done. Throws ActionRefusal when it should not. */
-export function planAction(allRows: any[], req: ActionRequest): Plan {
+export function planAction(allRows: any[], req: ActionRequest, info?: Map<number, FileInfo>): Plan {
   const base = { action: req.action, instance: req.instance, items: [] as PlanItem[], rowIds: [] as number[], blocklist: false, commands: [] as Command[], skipped: [] as Plan['skipped'] }
   const gone = () => new ActionRefusal(404, 'gone', 'That download is no longer in the queue.')
 
@@ -214,6 +216,20 @@ export function planAction(allRows: any[], req: ActionRequest): Plan {
       if (!items.length) throw new ActionRefusal(409, 'nothing_to_do', 'None of those downloads is still stalled, so nothing was changed.')
       return { ...base, items, skipped, rowIds: distinct(rowIds), blocklist: true, commands: mergeCommands(cmds) }
     }
+    case 'clear-done': {
+      const ids = distinct(req.downloadIds ?? [])
+      if (!ids.length || ids.length > 50) throw new ActionRefusal(400, 'bad_request', 'Name between 1 and 50 downloads.')
+      const items: PlanItem[] = [], skipped: Plan['skipped'] = [], rowIds: number[] = []
+      for (const id of ids) {
+        const rows = resolveDownload(allRows, id)
+        if (!rows) { skipped.push({ downloadId: id, name: id, reason: 'no longer in the queue' }); continue }
+        // Re-checked on this fresh read: only a download that is still finished with nothing left to import goes.
+        if (!isDone(rows, info)) { skipped.push({ downloadId: id, name: nameOf(rows), reason: 'no longer done' }); continue }
+        items.push(item(id, rows)); rowIds.push(...rowIdsOf(rows))
+      }
+      if (!items.length) throw new ActionRefusal(409, 'nothing_to_do', 'None of those downloads is still done, so nothing was changed.')
+      return { ...base, items, skipped, rowIds: distinct(rowIds), blocklist: false }
+    }
   }
   throw new ActionRefusal(400, 'bad_request', 'Unknown action.')
 }
@@ -253,7 +269,11 @@ export async function runAction(deps: ActionDeps, req: ActionRequest, who: strin
   if (!client) throw new ActionRefusal(409, 'not_configured', `${label(req.instance)} is not set up in the Arr Stack plug-in.`)
   const rows = await readRows(client, req.instance).catch(e => { throw new ActionRefusal(502, 'queue_failed', `${label(req.instance)}'s queue could not be read: ${String(e?.message ?? e).slice(0, 120)}`) })
   if (!opts.preview && req.action === 'swap-pack' && !req.downloadIds?.length) throw new ActionRefusal(400, 'bad_request', 'Confirm the swap with the downloads you were shown.')
-  const plan = planAction(rows, req)
+  // "Done" also means every episode it covers has a file now: read that fresh, here, never trusting the page.
+  const info = req.action === 'clear-done'
+    ? await (req.instance === 'sonarr' ? readEpisodeInfo((p, t) => client.get(p, t), rows, Date.now()) : readMovieInfo((p, t) => client.get(p, t), rows, Date.now()))
+    : undefined
+  const plan = planAction(rows, req, info)
   if (opts.preview) return { plan }
 
   const named = plan.items.map(i => i.name.slice(0, 120)).slice(0, 20)
@@ -322,6 +342,7 @@ export async function runAction(deps: ActionDeps, req: ActionRequest, who: strin
       case 'remove': res.summary = `Removed ${nm} from the queue and the download client${plan.blocklist ? ', and blocklisted the release' : ''}.`; break
       case 'find-another': res.summary = `Removed ${nm} and blocklisted the release. Searching for another copy of ${res.searched.join(' and ')}.`; break
       case 'fix-stalled': res.summary = `Removed ${nm} and blocklisted them. Searching for another copy of ${res.searched.join(', ')}.${plan.skipped.length ? ` Skipped ${plural(plan.skipped.length, 'download')} that changed meanwhile.` : ''}`; break
+      case 'clear-done': res.summary = `Cleared ${nm} from the queue (not blocklisted). Everything they cover is already in your library.${plan.skipped.length ? ` Skipped ${plural(plan.skipped.length, 'download')} that changed meanwhile.` : ''}`; break
       case 'swap-pack': res.summary = `Removed ${nm} (not blocklisted) and searched for a ${plan.seasonLabel} pack. Checking in about 20 seconds whether one was grabbed.`; break
       case 'retry-import': {
         res.messages = [...new Set(rows.filter(r => `d:${r.downloadId}` === first.downloadId || `i:${r.id}` === first.downloadId).flatMap(r => [r.errorMessage, ...(r.statusMessages ?? []).flatMap((m: any) => m?.messages?.length ? m.messages : [m?.title])]).filter(Boolean).map((t: any) => stripPaths(String(t)).slice(0, 240)))].slice(0, 6)

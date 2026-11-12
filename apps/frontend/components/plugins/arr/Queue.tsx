@@ -15,22 +15,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { apiJson } from '@/lib/api'
 import { Panel, Pill, ProgressBar, RingGauge, Tiles, bytes, duration, styles as s } from '@/components/visual/kit'
-import { ActionResults, ActionsProvider, DownloadActions, FixStalled, SeasonActions, type Instance } from './QueueActions'
+import { badgeOf, problemsOnly, type Badge, type Scoped } from './queue-view'
+import { ActionResults, ActionsProvider, ClearDone, DownloadActions, FixStalled, SeasonActions, type Instance } from './QueueActions'
 import c from './queue.module.css'
 
-export type Problem = 'failed' | 'blocked' | 'stalled' | 'warning'
+export type Problem = 'failed' | 'blocked' | 'incomplete' | 'stalled' | 'warning'
 export interface QDownload {
   id: string; name: string; size: number; sizeLeft: number; progress: number; etaSec: number | null
   status: string; state: string; quality: string | null; protocol: string | null; client: string | null; indexer: string | null
-  episodes: number; episodeRange: string | null; problem: Problem | null; messages: string[]; hint?: string | null
+  episodes: number; episodeRange: string | null; problem: Problem | null; done?: boolean; why?: string | null; messages: string[]; hint?: string | null
 }
-export interface QSeason { key: string; label: string; downloads: QDownload[]; episodes: number; size: number; sizeLeft: number; progress: number; etaSec: number | null; problem: Problem | null }
-export interface QShow { key: string; title: string; seasons: QSeason[]; downloads: number; episodes: number; size: number; sizeLeft: number; progress: number; etaSec: number | null; problem: Problem | null }
+export interface QSeason { key: string; label: string; downloads: QDownload[]; episodes: number; size: number; sizeLeft: number; progress: number; etaSec: number | null; problem: Problem | null; done?: boolean }
+export interface QShow { key: string; title: string; seasons: QSeason[]; downloads: number; episodes: number; size: number; sizeLeft: number; progress: number; etaSec: number | null; problem: Problem | null; done?: boolean }
 export interface QMovie extends QDownload { title: string; year: number | null }
 export interface QueueData {
   at: number
   services: { sonarr: { ok: boolean; configured: boolean; error?: string }; radarr: { ok: boolean; configured: boolean; error?: string } }
-  summary: { downloads: number; shows: number; movies: number; rows: number; sizeLeft: number; attention: number; stalled: number; warnings: number }
+  summary: { downloads: number; shows: number; movies: number; rows: number; sizeLeft: number; attention: number; stalled: number; warnings: number; done?: number }
   shows: QShow[]
   movies: QMovie[]
   capabilities?: { prioritise: boolean }
@@ -78,8 +79,8 @@ export function useArrQueue(enabled: boolean, everyMs = 4000) {
   return { data, error, at, refresh }
 }
 
-const PROBLEM_WORD: Record<Problem, string> = { failed: 'Failed', blocked: 'Import blocked', stalled: 'Stalled', warning: 'Warning' }
-const PROBLEM_TONE: Record<Problem, 'bad' | 'warn'> = { failed: 'bad', blocked: 'bad', stalled: 'warn', warning: 'warn' }
+const PROBLEM_WORD: Record<Problem, string> = { failed: 'Failed', blocked: 'Import blocked', incomplete: 'Incomplete pack', stalled: 'Stalled', warning: 'Warning' }
+const PROBLEM_TONE: Record<Problem, 'bad' | 'warn'> = { failed: 'bad', blocked: 'bad', incomplete: 'bad', stalled: 'warn', warning: 'warn' }
 const variantOf = (p: Problem | null) => (p === 'stalled' ? 'stall' as const : 'normal' as const)
 
 /** "importPending" → "import pending". */
@@ -94,7 +95,7 @@ function DownloadRow({ d, name, instance }: { d: QDownload; name?: string; insta
   const meta = [d.quality, d.protocol, d.client, d.indexer].filter(Boolean).join(' · ')
   const state = d.state && d.state !== 'downloading' ? words(d.state) : words(d.status)
   return (
-    <li className={c.dl} data-problem={d.problem ?? undefined}>
+    <li className={c.dl} data-problem={d.problem ?? undefined} data-done={d.done ? 'true' : undefined}>
       <div className={c.dlHead}>
         <span className={c.dlName} title={d.name}>{name ?? d.name}</span>
         <span className={c.dlNum}>{d.progress}%</span>
@@ -107,11 +108,24 @@ function DownloadRow({ d, name, instance }: { d: QDownload; name?: string; insta
         {d.episodes > 0 && <span>{plural(d.episodes, 'episode')}{d.episodeRange ? ` · ${d.episodeRange}` : ''}</span>}
       </div>
       {meta && <div className={c.dlMeta}><span>{meta}</span></div>}
+      {d.why && <p className={c.why}><b>Why this download:</b> {d.why}</p>}
       {d.problem && (
-        <div className={c.warn} role={d.problem === 'failed' || d.problem === 'blocked' ? 'alert' : 'status'}>
+        <div className={c.warn} role={d.problem === 'failed' || d.problem === 'blocked' || d.problem === 'incomplete' ? 'alert' : 'status'}>
           <Pill tone={PROBLEM_TONE[d.problem]}>{PROBLEM_WORD[d.problem]}</Pill>
           {d.messages.map((m, i) => <p key={i}>{m}</p>)}
           {d.hint && <p className={c.hint}>{d.hint}</p>}
+        </div>
+      )}
+      {d.done && (
+        <div className={c.doneBox} role="status">
+          <Pill tone="good">Done: nothing left to import</Pill>
+          <p>Everything this download covers is already in your library (imported or kept as a better copy).</p>
+          {d.messages.length > 0 && (
+            <details className={c.details}>
+              <summary>Details</summary>
+              {d.messages.map((m, i) => <p key={i}>{m}</p>)}
+            </details>
+          )}
         </div>
       )}
       <DownloadActions instance={instance} d={d} />
@@ -119,17 +133,19 @@ function DownloadRow({ d, name, instance }: { d: QDownload; name?: string; insta
   )
 }
 
-function Totals({ left, eta, progress, problem }: { left: number; eta: number | null; progress: number; problem: Problem | null }) {
+function Totals({ left, eta, progress, badge }: { left: number; eta: number | null; progress: number; badge: Badge }) {
   return (
     <>
       <span>{progress}%</span><span>{bytes(left)} left</span><span>{eta ? `${duration(eta)} left` : 'no ETA'}</span>
-      {problem && <Pill tone={PROBLEM_TONE[problem]}>{PROBLEM_WORD[problem]}</Pill>}
+      {badge?.kind === 'problem' && <Pill tone={PROBLEM_TONE[badge.problem]}>{PROBLEM_WORD[badge.problem]}</Pill>}
+      {badge?.kind === 'done' && <Pill tone="good">Done</Pill>}
+      {(badge?.kind === 'ready' || (badge?.kind === 'problem' && badge.ready > 0)) && <Pill tone="good">{badge.ready} ready to clear</Pill>}
     </>
   )
 }
 
 function ShowCard({ show, open, onToggle, isOpen, toggleKey }: {
-  show: QShow; open: boolean; onToggle: () => void; isOpen: (k: string, dflt: boolean) => boolean; toggleKey: (k: string, current: boolean) => void
+  show: Scoped<QShow>; open: boolean; onToggle: () => void; isOpen: (k: string, dflt: boolean) => boolean; toggleKey: (k: string, current: boolean) => void
 }) {
   const stalledItems = show.seasons.flatMap(se => se.downloads).filter(d => d.problem === 'stalled').map(d => ({ instance: 'sonarr' as const, id: d.id }))
   const stalledIn = stalledItems.length
@@ -141,9 +157,13 @@ function ShowCard({ show, open, onToggle, isOpen, toggleKey }: {
         <RingGauge value={show.progress / 100} size={44} stroke={5} color={tone} text={`${Math.round(show.progress)}%`} label={`${show.title} progress`} compact />
         <span className={c.groupTitle}>
           <b>{show.title}</b>
-          <small>{plural(show.seasons.length, 'season')} · {plural(show.downloads, 'download')} · {plural(show.episodes, 'episode')}</small>
+          <small>
+            {show.scope
+              ? `Showing ${show.scope.seasons} of ${plural(show.scope.totalSeasons, 'season')} and ${show.scope.downloads} of ${plural(show.scope.totalDownloads, 'download')} with problems · totals count the whole show`
+              : `${plural(show.seasons.length, 'season')} · ${plural(show.downloads, 'download')} · ${plural(show.episodes, 'episode')}`}
+          </small>
         </span>
-        <span className={c.groupStats}><Totals left={show.sizeLeft} eta={show.etaSec} progress={show.progress} problem={show.problem} /></span>
+        <span className={c.groupStats}><Totals left={show.sizeLeft} eta={show.etaSec} progress={show.progress} badge={badgeOf(show.problem, show.seasons.flatMap(se => se.downloads))} /></span>
       </button>
       {open && (
         <>
@@ -157,7 +177,7 @@ function ShowCard({ show, open, onToggle, isOpen, toggleKey }: {
                 <button type="button" className={c.seasonHead} aria-expanded={seOpen} onClick={() => toggleKey(k, seOpen)}>
                   <Chevron open={seOpen} />
                   <span className={c.seasonTitle}>{se.label} · {plural(se.episodes, 'episode')}{se.downloads.length === 1 && se.downloads[0].episodeRange ? ` · ${se.downloads[0].episodeRange}` : ''}</span>
-                  <span className={c.groupStats}><Totals left={se.sizeLeft} eta={se.etaSec} progress={se.progress} problem={se.problem} /></span>
+                  <span className={c.groupStats}><Totals left={se.sizeLeft} eta={se.etaSec} progress={se.progress} badge={badgeOf(se.problem, se.downloads)} /></span>
                 </button>
                 {seOpen && (
                   <>
@@ -196,11 +216,15 @@ function ArrQueueView({ q }: { q: QState }) {
   const toggle = (k: string, current: boolean) => setManual(m => ({ ...m, [k]: !current }))
 
   const sm = data?.summary
-  const shows = useMemo(() => (data?.shows ?? []).filter(x => only === 'all' || x.problem), [data, only])
+  const shows = useMemo<Array<Scoped<QShow>>>(() => (only === 'all' ? data?.shows ?? [] : problemsOnly(data?.shows ?? [])), [data, only])
   const movies = useMemo(() => (data?.movies ?? []).filter(x => only === 'all' || x.problem), [data, only])
   const allStalled = useMemo(() => [
     ...(data?.shows ?? []).flatMap(sh => sh.seasons.flatMap(se => se.downloads)).filter(d => d.problem === 'stalled').map(d => ({ instance: 'sonarr' as const, id: d.id })),
     ...(data?.movies ?? []).filter(m => m.problem === 'stalled').map(m => ({ instance: 'radarr' as const, id: m.id })),
+  ], [data])
+  const allDone = useMemo(() => [
+    ...(data?.shows ?? []).flatMap(sh => sh.seasons.flatMap(se => se.downloads)).filter(d => d.done).map(d => ({ instance: 'sonarr' as const, id: d.id })),
+    ...(data?.movies ?? []).filter(m => m.done).map(m => ({ instance: 'radarr' as const, id: m.id })),
   ], [data])
   const few = (data?.shows.length ?? 0) <= 3
   const down = data ? (['sonarr', 'radarr'] as const).filter(k => data.services[k].configured && !data.services[k].ok) : []
@@ -214,8 +238,9 @@ function ArrQueueView({ q }: { q: QState }) {
             { label: 'downloads', value: sm.downloads, tone: 'accent' },
             { label: 'shows', value: sm.shows },
             { label: 'left to fetch', value: bytes(sm.sizeLeft) },
-            { label: 'needs you', value: sm.attention, tone: sm.attention ? 'crit' : 'good', title: 'Failed downloads and blocked imports' },
+            { label: 'needs you', value: sm.attention, tone: sm.attention ? 'crit' : 'good', title: 'Failed downloads, blocked imports and incomplete packs' },
             { label: 'stalled or warning', value: sm.stalled + sm.warnings, tone: sm.stalled + sm.warnings ? 'warn' : undefined },
+            ...(sm.done ? [{ label: 'ready to clear', value: sm.done, tone: 'good' as const, title: 'Finished downloads whose episodes or movies are all already in your library' }] : []),
           ]} />
         )}
         {sm && sm.rows > sm.downloads && (
@@ -232,6 +257,7 @@ function ArrQueueView({ q }: { q: QState }) {
           </div>
         </div>
         <FixStalled keyName="all" label={`Fix all stalled (${allStalled.length})`} items={allStalled} />
+        <ClearDone items={allDone} />
         <ActionResults />
         {error && <p className={c.err} role="alert">{data ? `Showing the last reading. ${error}` : error}</p>}
         {down.map(k => (

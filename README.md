@@ -1511,7 +1511,37 @@ shared while it runs, and given up after 45 seconds), so extra tabs do not cost 
   and for a show the episode count and range, such as "E01–E23". The size is the pack's size, counted once.
 - **Problems come first.** A download is marked Failed, Import blocked, Stalled (Sonarr or Radarr say it is
   stalled) or Warning, and the message Sonarr or Radarr gave is printed under it. Groups and downloads are
-  sorted with problems first, then the soonest to finish. The **Problems** button hides everything else.
+  sorted with problems first, then the soonest to finish. The **Problems** button hides everything else: a show
+  appears only if it has a real problem, and under it you see only its problem seasons and downloads (the show's own
+  totals still count the whole show, and the line under its name says so).
+- **Done is not a problem.** A download that is at 100% and import-blocked (or import-pending) is shown as **Done:
+  nothing left to import**, in a calm colour, when every message Sonarr or Radarr gave is "already imported", "Not an
+  upgrade for existing ..." or the top-line "One or more episodes expected in this release were not imported or
+  missing", **and** every episode (or the film) it covers now has a file in the library. It means everything the
+  download covers is already in your library (imported, or kept as a better copy). If any other message is there (no files eligible, a wrong match, permissions, a sample, a missing file), or the
+  download is not at 100%, it stays a real problem. Done downloads are not counted as needs-you, stalled or warnings;
+  they have their own **ready to clear** count in the summary, they sort after the real problems, and they never turn
+  a season or a show red. The raw messages stay under a collapsed **Details**.
+- **Incomplete pack.** Sometimes a release is named as a whole season, so Sonarr queues every episode of it, but the
+  torrent held only a few files. Every message then says "already imported", yet many of the episodes it claims still
+  have no file, and Sonarr never searches for episodes that sit in the queue. That is a real problem, shown in red as
+  **Incomplete pack** (and counted under needs you), never as done. It says, for example: "This release claims S02
+  (E01–E58) but only contained E01–E10; 40 episodes are still missing and won't be searched while it sits here." The
+  main button is **Find another**: it blocklists the release and searches the season again. If HyperProx cannot look
+  the episodes up, it cannot vouch for a download, so a finished import-blocked download stays an ordinary blocked
+  import rather than being called done.
+- **Why this download.** Each download carries one line saying why it exists and what it will do. For a show,
+  HyperProx looks at each episode the download covers and the file you have for it now: no file means it **fills**
+  the episode, a lower-quality file means it **upgrades** it (a new resolution, such as 720p to 1080p) or **may
+  replace** it (the same resolution from a better source, such as WEB-DL to Bluray; Sonarr makes the final call),
+  and the same or better file means you **already have** it and it will be skipped. Sources rank Remux, Bluray, WEB-DL,
+  WEBRip, HDTV at the same resolution, and a higher resolution beats any source. Consecutive episodes are grouped
+  ("Fills E01 · upgrades E02 (720p → 1080p) · may replace E03–E10 (WEB-DL → Bluray)"). For a film it is one line:
+  missing film, "Upgrades 1080p WEB-DL → 2160p Bluray", or already have it. For a done download the line tells the
+  outcome from the files you have now: "Imported 9 · kept 4 better copies; nothing left to import." (HyperProx cannot
+  tell afterwards whether an imported episode was new or an upgrade, so it says imported.) This costs a few
+  batched requests inside the shared reading, never one per queue row, and the lookups of file qualities are kept
+  for 60 seconds. If Sonarr or Radarr cannot answer them, the line is simply left out.
 - **Collapsible.** Click a show or a season to fold it. Seasons start open. Shows with a problem start open, and so
   does every show when there are three shows or fewer; **Expand all** and **Collapse all** override that.
 - **The summary.** Tiles at the top and chips in the page header show how many downloads and shows are
@@ -1543,6 +1573,12 @@ use them. The result shows right under the buttons, and the queue refreshes itse
   found; singles will be re-grabbed". Finished downloads waiting to import are left alone.
 - **Fix all stalled** (above the list, and per show). Find another over every stalled download. The confirm lists
   each one; any that stopped being stalled before you confirmed are skipped and named.
+- **Clear from queue** (on a done download; it replaces the other buttons, which are hidden for done downloads).
+  Removes it from the queue and the download client without blocklisting it and without searching: the same
+  Remove, with the same confirm, admin-only rule and audit entry.
+- **Clear all done (N)** (next to Fix all stalled). The same, for every done download at once. The confirm lists them.
+  The server reads the queue fresh and checks each one is still done before it removes it; any that is not (or has
+  left the queue) is skipped and named, and if none is still done nothing is changed. Never blocklisted.
 
 The page sends only a download's ID, never a queue row number; the server re-reads the whole queue and picks the
 rows itself, and checks every one belongs to that download before it removes anything (a 23-episode pack is

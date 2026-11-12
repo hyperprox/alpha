@@ -4,8 +4,8 @@
 //  HyperProx — Arr Stack, Queue actions
 //
 //  What a person can do about a problem in the queue: find another copy, remove (optionally blocklisting),
-//  retry a blocked import, move a torrent to the top, swap a season's single episodes for a season pack, and fix
-//  every stalled download at once. Admins only: a viewer or operator sees no buttons at all, and the server refuses
+//  retry a blocked import, move a torrent to the top, swap a season's single episodes for a season pack, fix
+//  every stalled download at once, and clear the finished ones (everything already in the library) from the queue. Admins only: a viewer or operator sees no buttons at all, and the server refuses
 //  them anyway. Queue downloads only; library files are never touched.
 //
 //  Anything that removes something goes through a confirm step first. The page asks the server for a preview (the
@@ -20,7 +20,7 @@ import c from './queue.module.css'
 
 export type Instance = 'sonarr' | 'radarr'
 export interface ActReq {
-  action: 'find-another' | 'remove' | 'retry-import' | 'prioritise' | 'swap-pack' | 'fix-stalled' | 'swap-check'
+  action: 'find-another' | 'remove' | 'retry-import' | 'prioritise' | 'swap-pack' | 'fix-stalled' | 'clear-done' | 'swap-check'
   instance: Instance
   downloadId?: string; downloadIds?: string[]; blocklist?: boolean; showKey?: string; seasonKey?: string; known?: string[]
 }
@@ -29,7 +29,7 @@ interface PlanView {
   items: Array<{ downloadId: string; name: string; rows: number; episodes: number }>
   skipped: Array<{ name: string; reason: string }>
 }
-interface Spec { title: string; reqs: ActReq[]; destructive: boolean; /** Offer the "blocklist this release" box. */ choice?: boolean }
+interface Spec { title: string; reqs: ActReq[]; destructive: boolean; /** Offer the "blocklist this release" box. */ choice?: boolean; /** Clearing finished downloads: calm wording, never blocklisted. */ done?: boolean }
 interface Flow {
   spec: Spec
   phase: 'asking' | 'confirm' | 'running' | 'done' | 'error'
@@ -137,7 +137,7 @@ function Confirm({ k, f }: { k: string; f: Flow }) {
   const swap = f.spec.reqs.some(r => r.action === 'swap-pack')
   const remove = f.spec.reqs.every(r => r.action === 'remove')
   const blocklisted = f.spec.choice ? f.blocklist : f.plans.some(p => p.blocklist)
-  const verb = remove ? 'Remove' : swap ? 'Swap for a pack' : 'Find another'
+  const verb = f.spec.done ? 'Clear from queue' : remove ? 'Remove' : swap ? 'Swap for a pack' : 'Find another'
   return (
     <div className={c.actBox} role="group" aria-label={`Confirm: ${f.spec.title}`}>
       <p className={c.actLead}>{f.spec.title}: this will remove {plural(items.length, 'download')} from the download client and the queue.</p>
@@ -159,6 +159,7 @@ function Confirm({ k, f }: { k: string; f: Flow }) {
         </label>
       )}
       {!f.spec.choice && blocklisted && <p className={c.actNote}>The release will be blocklisted, so it is not grabbed again.</p>}
+      {f.spec.done && <p className={c.actNote}>Everything these cover is already in your library. They are not blocklisted, and nothing is searched for.</p>}
       {swap && <p className={c.actNote}>Not blocklisted: if no season pack exists, the singles can come back.</p>}
       {search.length > 0 && <p className={c.actNote}>Then it searches for another copy of: {search.join(', ')}.</p>}
       <p className={c.actNote}>Nothing in your library is deleted.</p>
@@ -205,7 +206,7 @@ export function ActionResults() {
   )
 }
 
-export interface ActDownload { id: string; name: string; state: string; problem: string | null; protocol: string | null; sizeLeft: number; episodes: number }
+export interface ActDownload { id: string; name: string; state: string; done?: boolean; problem: string | null; protocol: string | null; sizeLeft: number; episodes: number }
 
 const TORRENT_ID = /^d:(?:[A-Fa-f0-9]{40}|[A-Fa-f0-9]{64})$/
 
@@ -214,11 +215,23 @@ export function DownloadActions({ instance, d }: { instance: Instance; d: ActDow
   if (!a?.canAct) return null
   const k = `dl:${instance}:${d.id}`
   const busy = ['asking', 'running', 'confirm'].includes(a.flows[k]?.phase ?? '')
-  const blocked = d.state === 'importBlocked' || d.state === 'importFailed'
+  const incomplete = d.problem === 'incomplete'
+  const blocked = !incomplete && (d.state === 'importBlocked' || d.state === 'importFailed')
+  if (d.done) {
+    // Finished: everything it covers is in the library. The only thing to do is clear it (Remove, never blocklisted).
+    return (
+      <>
+        <div className={c.actRow}>
+          <button type="button" className={c.actGo} disabled={busy} onClick={() => a.start(k, { title: 'Clear from queue', reqs: [{ action: 'remove', instance, downloadId: d.id, blocklist: false }], destructive: true, done: true })}>Clear from queue</button>
+        </div>
+        <ActionBox k={k} />
+      </>
+    )
+  }
   return (
     <>
       <div className={c.actRow}>
-        <button type="button" className={c.actBtn} disabled={busy} onClick={() => a.start(k, { title: 'Find another', reqs: [{ action: 'find-another', instance, downloadId: d.id }], destructive: true })}>Find another</button>
+        <button type="button" className={incomplete ? c.actGo : c.actBtn} disabled={busy} onClick={() => a.start(k, { title: 'Find another', reqs: [{ action: 'find-another', instance, downloadId: d.id }], destructive: true })}>Find another</button>
         <button type="button" className={c.actBtn} disabled={busy} onClick={() => a.start(k, { title: 'Remove', reqs: [{ action: 'remove', instance, downloadId: d.id }], destructive: true, choice: true })}>Remove</button>
         {blocked && <button type="button" className={c.actBtn} disabled={busy} onClick={() => a.start(k, { title: 'Retry import', reqs: [{ action: 'retry-import', instance, downloadId: d.id }], destructive: false })}>Retry import</button>}
         {a.canPrioritise && d.protocol === 'torrent' && TORRENT_ID.test(d.id) && (
@@ -262,6 +275,26 @@ export function FixStalled({ keyName, items, label }: { keyName: string; items: 
     <>
       <div className={c.actRow}>
         <button type="button" className={c.actBtn} disabled={busy} onClick={() => a.start(k, { title: 'Fix stalled', reqs, destructive: true })}>{label}</button>
+      </div>
+      <ActionBox k={k} />
+    </>
+  )
+}
+
+/** Clear every finished download in `items` (the whole queue). Never blocklisted; the server re-checks each one. */
+export function ClearDone({ items }: { items: Array<{ instance: Instance; id: string }> }) {
+  const a = useAct()
+  if (!a?.canAct || !items.length) return null
+  const k = 'done:all'
+  const busy = ['asking', 'running', 'confirm'].includes(a.flows[k]?.phase ?? '')
+  const reqs: ActReq[] = (['sonarr', 'radarr'] as const)
+    .map(i => ({ i, ids: items.filter(x => x.instance === i).map(x => x.id).slice(0, 50) }))
+    .filter(x => x.ids.length)
+    .map(x => ({ action: 'clear-done' as const, instance: x.i, downloadIds: x.ids }))
+  return (
+    <>
+      <div className={c.actRow}>
+        <button type="button" className={c.actBtn} disabled={busy} onClick={() => a.start(k, { title: 'Clear all done', reqs, destructive: true, done: true })}>Clear all done ({items.length})</button>
       </div>
       <ActionBox k={k} />
     </>

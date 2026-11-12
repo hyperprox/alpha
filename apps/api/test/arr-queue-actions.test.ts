@@ -53,10 +53,18 @@ const stalled = (over: any = {}) => row({ statusMessages: [{ title: 'x', message
 const HASH = 'ABCDEF0123456789ABCDEF0123456789ABCDEF01'
 
 /** A fake Sonarr/Radarr. Its queue read ignores every query parameter (as Sonarr ignores `seriesId=`) and returns it all. */
-function fakeArr(rows: any[]) {
+function fakeArr(rows: any[], noFile: Set<number> = new Set()) {
   const log = { gets: [] as string[], deletes: [] as Array<{ p: string; ids: number[] }>, posts: [] as any[] }
   const client: CoreEndpointClient = {
-    async get(p: string) { log.gets.push(p); return { totalRecords: rows.length, records: rows.slice() } },
+    async get(p: string) {
+      log.gets.push(p)
+      const ids = (name: string) => [...p.matchAll(new RegExp(`${name}=(\\d+)`, 'g'))].map(m => Number(m[1]))
+      if (p.startsWith('/api/v3/episode?')) {
+        return rows.filter(r => ids('episodeIds').includes(r.episodeId)).map(r => ({ id: r.episodeId, seasonNumber: r.seasonNumber, episodeNumber: r.episode?.episodeNumber, hasFile: !noFile.has(r.episodeId), episodeFileId: 9000 + r.episodeId }))
+      }
+      if (p.startsWith('/api/v3/episodefile?')) return ids('episodeFileIds').map(id => ({ id, quality: { quality: { name: 'WEBDL-1080p' } } }))
+      return { totalRecords: rows.length, records: rows.slice() }
+    },
     async deleteBody(p: string, body: any) {
       log.deletes.push({ p, ids: body.ids })
       for (const id of body.ids) { const i = rows.findIndex(r => r.id === id); if (i >= 0) rows.splice(i, 1) }
@@ -263,6 +271,62 @@ test('fix stalled: only downloads still stalled, merged into one search, others 
   assert.deepEqual(fa.log.posts[1], { name: 'SeasonSearch', seriesId: 1, seasonNumber: 2 })
   assert.match(r.result!.summary, /Skipped 2 downloads/)
   await refusal(runAction(mkDeps(fa.client), req({ action: 'fix-stalled', downloadIds: ['d:FINE'] }), 'a@example.com'), 'nothing_to_do')
+})
+
+// ── clear done ───────────────────────────────────────────────────────────────
+
+const doneRows = (id: string, over: any = {}) => pack(4, {
+  downloadId: id, sizeleft: 0, status: 'completed', trackedDownloadStatus: 'warning', trackedDownloadState: 'importBlocked',
+  statusMessages: [{ title: 'x', messages: ['One or more episodes expected in this release were not imported or missing from the release', 'Episode file already imported at 2026-05-01', 'Not an upgrade for existing episode file(s). Existing quality: WEBDL-1080p. New Quality HDTV-1080p.'] }],
+  ...over,
+})
+
+test('clear done: removes only downloads still done, re-checked on a fresh read, blocklist=false and skipRedownload=true, no search', async () => {
+  const d1 = doneRows('D1'), d2 = doneRows('D2')
+  const changed = doneRows('D3', { statusMessages: [{ title: 'x', messages: ['Episode file already imported at 2026-05-01', 'No files found are eligible for import'] }] })
+  const notFull = doneRows('D4', { sizeleft: 1 * GB })
+  const fine = row({ downloadId: 'FINE' }), blockedReal = pack(2, { downloadId: 'REAL', trackedDownloadState: 'importBlocked', trackedDownloadStatus: 'warning', statusMessages: [{ title: 'x', messages: ['Sample'] }] })
+  const fa = fakeArr([...d1, ...d2, ...changed, ...notFull, fine, ...blockedReal])
+  const audits: any[] = []
+  const r = await runAction(mkDeps(fa.client, null, null, audits), req({ action: 'clear-done', downloadIds: ['d:D1', 'd:D2', 'd:D3', 'd:D4', 'd:FINE', 'd:REAL', 'd:GONE'] }), 'a@example.com')
+  assert.deepEqual([...fa.log.deletes[0].ids].sort(), [...d1, ...d2].map(x => x.id).sort(), 'only the two done downloads')
+  assert.equal(fa.log.deletes[0].p, '/api/v3/queue/bulk?removeFromClient=true&blocklist=false&skipRedownload=true')
+  assert.equal(fa.log.posts.length, 0, 'clearing never searches')
+  assert.match(r.result!.summary, /Cleared 2 downloads/)
+  assert.match(r.result!.summary, /Skipped 5 downloads/)
+  assert.equal(audits[0].details.blocklist, false)
+  assert.equal(fa.rows.length, changed.length + notFull.length + 1 + blockedReal.length, 'everything else is still queued')
+})
+
+test('clear done: refuses when none of the named downloads is still done; refuses an empty or oversized list', async () => {
+  const fa = fakeArr([...doneRows('D3', { statusMessages: [{ title: 'x', messages: ['Sample'] }] }), row({ downloadId: 'FINE' })])
+  await refusal(runAction(mkDeps(fa.client), req({ action: 'clear-done', downloadIds: ['d:D3', 'd:FINE'] }), 'a@example.com'), 'nothing_to_do')
+  await refusal(runAction(mkDeps(fa.client), req({ action: 'clear-done', downloadIds: [] }), 'a@example.com'), 'bad_request')
+  await refusal(runAction(mkDeps(fa.client), req({ action: 'clear-done', downloadIds: Array.from({ length: 51 }, (_, i) => `d:X${i}`) }), 'a@example.com'), 'bad_request')
+  assert.equal(fa.log.deletes.length, 0)
+})
+
+test('clear done: a preview lists the done downloads and removes nothing; the single Clear from queue is Remove with blocklist=false', async () => {
+  const d1 = doneRows('D1')
+  const fa = fakeArr([...d1])
+  const pv = await runAction(mkDeps(fa.client), req({ action: 'clear-done', downloadIds: ['d:D1'] }), 'a@example.com', { preview: true })
+  assert.equal(pv.plan.items.length, 1)
+  assert.equal(pv.plan.blocklist, false)
+  assert.equal(fa.log.deletes.length, 0)
+  await runAction(mkDeps(fa.client), req({ action: 'remove', downloadId: 'd:D1', blocklist: false }), 'a@example.com')
+  assert.match(fa.log.deletes[0].p, /blocklist=false&skipRedownload=true$/)
+})
+
+test('clear done: an incomplete pack (episodes it covers still have no file) is never cleared, and a failed lookup clears nothing', async () => {
+  const done1 = doneRows('D1'), inc = doneRows('INC')
+  const fa = fakeArr([...done1, ...inc], new Set([inc[0].episodeId, inc[1].episodeId]))
+  const r = await runAction(mkDeps(fa.client), req({ action: 'clear-done', downloadIds: ['d:D1', 'd:INC'] }), 'a@example.com')
+  assert.deepEqual([...fa.log.deletes[0].ids].sort(), done1.map(x => x.id).sort(), 'only the pack whose episodes all have files')
+  assert.match(r.result!.summary, /Skipped 1 download/)
+  const fb = fakeArr([...doneRows('E1')])
+  const failing = { ...fb.client, async get(p: string) { if (p.startsWith('/api/v3/episode')) throw new Error('HTTP 500'); return { totalRecords: fb.rows.length, records: fb.rows.slice() } } } as any
+  await refusal(runAction(mkDeps(failing), req({ action: 'clear-done', downloadIds: ['d:E1'] }), 'a@example.com'), 'nothing_to_do')
+  assert.equal(fb.log.deletes.length, 0)
 })
 
 // ── audit ────────────────────────────────────────────────────────────────────

@@ -4,12 +4,13 @@
 //  Roles (lib/roles.ts): a GET, so viewer, like the Arr Stack page itself.
 //    GET /queue    the Sonarr and Radarr download queues, every page, collapsed server-side: one entry per
 //                  download (a season pack is 23 queue rows but one download), grouped Show → Season, with
-//                  progress, ETA, quality, client and any warning, problems first. Movies are a flat list.
+//                  progress, ETA, quality, client, any warning, and a "why this download" line (what it fills, upgrades or
+//                  skips, read from the episodes and files on disk, batched into the same shared reading), problems first. Movies are a flat list.
 //
 //  POST /queue/actions  admin only (a signed-in person: an API token is refused by name, here and in the gate), no
 //                  master password, rate-limited per person. What to do about a problem in the queue: find another,
 //                  remove, retry an import, move a torrent to the top, swap singles for a season pack, fix all
-//                  stalled (lib/arr-queue/actions.ts). The browser sends an instance and download ids; the server
+//                  stalled, clear all done (lib/arr-queue/actions.ts). The browser sends an instance and download ids; the server
 //                  re-reads the whole queue fresh (never this cache) and resolves the rows itself. `preview: true`
 //                  answers with exactly what would be removed and searched and changes nothing. Queue downloads only,
 //                  never library files. Every run is audited before it starts.
@@ -25,6 +26,7 @@ import { findPlugin } from '../plugins'
 import { pluginEndpointClient, type CoreEndpointClient } from '../lib/plugin-host'
 import { buildQueueData, readAllQueue, type QueueData } from '../lib/arr-queue/logic'
 import { ACTIONS, ActionRefusal, DESTRUCTIVE, runAction, type ActionName, type ActionRequest } from '../lib/arr-queue/actions'
+import { readEpisodeInfo, readMovieInfo } from '../lib/arr-queue/lookup'
 import { auditOrThrow } from '../lib/audit'
 import { hasRole } from '../lib/roles'
 import { MissLimiter } from '../lib/plex-art'
@@ -49,9 +51,15 @@ const msg = (e: any) => {
 
 export async function readQueue(deps: { sonarr: CoreEndpointClient | null; radarr: CoreEndpointClient | null; now: number }): Promise<QueueData> {
   const one = async (c: CoreEndpointClient | null, kind: 'sonarr' | 'radarr') => {
-    if (!c) return { rows: null, configured: false, error: undefined as string | undefined }
-    try { return { rows: await readAllQueue((p, t) => c.get(p, t), kind), configured: true, error: undefined as string | undefined } }
-    catch (e) { return { rows: null, configured: true, error: msg(e) } }
+    if (!c) return { rows: null, info: undefined, configured: false, error: undefined as string | undefined }
+    try {
+      const get = (p: string, t?: number) => c.get(p, t)
+      const rows = await readAllQueue(get, kind)
+      // What is on disk for what was queued, for "Why this download": batched, inside this one shared reading.
+      const info = await (kind === 'sonarr' ? readEpisodeInfo(get, rows, deps.now) : readMovieInfo(get, rows, deps.now))
+      return { rows, info, configured: true, error: undefined as string | undefined }
+    }
+    catch (e) { return { rows: null, info: undefined, configured: true, error: msg(e) } }
   }
   const [sonarr, radarr] = await Promise.all([one(deps.sonarr, 'sonarr'), one(deps.radarr, 'radarr')])
   return buildQueueData({ sonarr, radarr, now: deps.now })

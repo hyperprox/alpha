@@ -22,7 +22,7 @@
 .groups, .seasons, .dls { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 
 .group { background: var(--hx-deep); border: 1px solid var(--hx-line); border-radius: 12px; min-width: 0; }
-.group[data-problem="failed"], .group[data-problem="blocked"] { border-color: color-mix(in srgb, var(--crit) 55%, transparent); }
+.group[data-problem="failed"], .group[data-problem="blocked"], .group[data-problem="incomplete"] { border-color: color-mix(in srgb, var(--crit) 55%, transparent); }
 .group[data-problem="stalled"], .group[data-problem="warning"] { border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
 
 .groupHead, .seasonHead, .moviesHead {
@@ -41,7 +41,7 @@
 
 .seasons { padding: 0 10px 10px 18px; border-top: 1px solid var(--hx-line); padding-top: 8px; }
 .season { border-left: 2px solid var(--hx-line-hi); padding-left: 8px; min-width: 0; }
-.season[data-problem="failed"], .season[data-problem="blocked"] { border-left-color: var(--crit); }
+.season[data-problem="failed"], .season[data-problem="blocked"], .season[data-problem="incomplete"] { border-left-color: var(--crit); }
 .season[data-problem="stalled"], .season[data-problem="warning"] { border-left-color: var(--warn); }
 .seasonHead { padding: 4px 6px; min-height: 40px; }
 .seasonTitle { flex: 1 1 8rem; min-width: 0; font: 700 .95rem var(--font-display); letter-spacing: .06em; text-transform: uppercase; color: var(--text-soft); overflow-wrap: anywhere; }
@@ -49,7 +49,7 @@
 .dls { padding: 4px 0 4px 18px; }
 .dl { background: color-mix(in srgb, var(--hx-panel) 60%, transparent); border: 1px solid var(--hx-line); border-radius: 10px; padding: 8px 10px;
   display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.dl[data-problem="failed"], .dl[data-problem="blocked"] { border-color: color-mix(in srgb, var(--crit) 55%, transparent); }
+.dl[data-problem="failed"], .dl[data-problem="blocked"], .dl[data-problem="incomplete"] { border-color: color-mix(in srgb, var(--crit) 55%, transparent); }
 .dl[data-problem="stalled"], .dl[data-problem="warning"] { border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
 .dlHead { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
 .dlName { flex: 1; min-width: 0; font: 600 .9rem/1.25 var(--font-body); color: var(--text-bright); overflow-wrap: anywhere; }
@@ -59,8 +59,18 @@
 
 .warn { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 6px 8px; border-radius: 8px;
   background: color-mix(in srgb, var(--warn) 9%, transparent); }
-.dl[data-problem="failed"] .warn, .dl[data-problem="blocked"] .warn { background: color-mix(in srgb, var(--crit) 10%, transparent); }
+.dl[data-problem="failed"] .warn, .dl[data-problem="blocked"] .warn, .dl[data-problem="incomplete"] .warn { background: color-mix(in srgb, var(--crit) 10%, transparent); }
 .warn p { margin: 0; font-size: .82rem; line-height: 1.4; color: var(--text-soft); overflow-wrap: anywhere; }
+
+.dl[data-done="true"] { border-color: color-mix(in srgb, var(--good, var(--hx-accent)) 40%, transparent); }
+.doneBox { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 6px 8px; border-radius: 8px;
+  background: color-mix(in srgb, var(--good, var(--hx-accent)) 8%, transparent); }
+.doneBox p { margin: 0; font-size: .82rem; line-height: 1.4; color: var(--text-soft); overflow-wrap: anywhere; }
+.why { margin: 2px 0 0; font-size: .82rem; line-height: 1.4; color: var(--text-soft); overflow-wrap: anywhere; }
+.why b { color: var(--text-muted); font-weight: 600; }
+.details { font-size: .8rem; color: var(--text-muted); max-width: 100%; }
+.details summary { cursor: pointer; min-height: 32px; display: flex; align-items: center; }
+.details p { margin: 2px 0; }
 
 .moviesHead { min-height: 40px; padding: 4px 6px; font: 600 .8rem var(--font-display); letter-spacing: .1em; text-transform: uppercase; color: var(--text-muted); width: auto; }
 
