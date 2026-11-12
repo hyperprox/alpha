@@ -1,0 +1,34 @@
+[
+ {
+  "upid": "UPID:backup-01:00000F00:00002000:00000002:6B4A0000:backup:tank\\x3act\\x2f101:pve-backup@pbs!pve:",
+  "node": "backup-01",
+  "pid": 3840,
+  "pstart": 8192,
+  "starttime": 1799978400,
+  "endtime": 1799978460,
+  "status": "backup failed: connection reset",
+  "user": "pve-backup@pbs!pve",
+  "worker_id": "tank:ct/101",
+  "worker_type": "backup"
+ },
+ {
+  "upid": "UPID:backup-01:00000F01:00002001:00000003:6B4A0100:verify:tank:root@pam:",
+  "node": "backup-01",
+  "pid": 3841,
+  "pstart": 8193,
+  "starttime": 1799974800,
+  "endtime": 1799978400,
+  "status": "WARNINGS: 1",
+  "user": "root@pam",
+  "worker_id": "tank",
+  "worker_type": "verify"
+ },
+ {
+  "upid": "UPID:old",
+  "starttime": 1799892000,
+  "endtime": 1799892005,
+  "status": "some old error",
+  "worker_type": "prune",
+  "worker_id": "tank"
+ }
+]

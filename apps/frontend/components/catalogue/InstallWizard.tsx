@@ -14,6 +14,7 @@ import { apiJson } from '@/lib/api'
 import { alpha } from '@/lib/theme'
 import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { GhostButton, INPUT, LABEL, Notice, PrimaryButton } from '@/components/vault/ui'
+import { PbsLocation } from './PbsLocation'
 
 export interface WizardRecipe {
   id: string; name: string; summary: string; category: string; port: number; needsDocker: boolean
@@ -102,7 +103,12 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
   // Step 1: the recipe's own settings, if it has any (a site title, a git repository).
   const options = recipe.options ?? []
   const [opts, setOpts] = useState<Record<string, string>>(() => Object.fromEntries(options.map(o => [o.key, o.default ?? ''])))
-  const missing = options.filter(o => o.required && !String(opts[o.key] ?? '').trim())
+  // Proxmox Backup Server asks where its backups live in a panel of its own (PbsLocation).
+  const isPbs = recipe.id === 'proxmox-backup-server'
+  const missing = [
+    ...options.filter(o => o.required && !String(opts[o.key] ?? '').trim()),
+    ...(isPbs && opts.PBS_LOCATION !== 'disk' ? options.filter(o => (o.key === 'PBS_NFS_HOST' || o.key === 'PBS_NFS_EXPORT') && !String(opts[o.key] ?? '').trim()) : []),
+  ]
 
   // Step 2: size, pre-filled from the recipe's recommended values.
   const [cores, setCores] = useState(recipe.defaults.cores)
@@ -341,7 +347,8 @@ export function InstallWizard({ recipe, onClose, onStarted }: {
                   </p>
                 </div>
               </div>
-              {options.length > 0 && (
+              {isPbs && <PbsLocation opts={opts} setOpts={setOpts} />}
+              {options.length > 0 && !isPbs && (
                 <div className="rounded-lg border p-4 space-y-3" style={{ borderColor: 'var(--border-soft)', background: 'var(--ground-inset)' }}>
                   <p className="font-display text-[17px] font-semibold" style={{ color: 'var(--text-bright)' }}>Settings</p>
                   <div className="grid gap-4 sm:grid-cols-2">

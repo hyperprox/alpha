@@ -1,0 +1,35 @@
+{
+ "total": 1073741824000,
+ "used": 977105059840,
+ "avail": 96636764160,
+ "backend-type": "filesystem",
+ "gc-status": {
+  "cache-stats": {
+   "hits": 10,
+   "misses": 2
+  },
+  "disk-bytes": 429496729600,
+  "disk-chunks": 1000,
+  "index-data-bytes": 1717986918400,
+  "index-file-count": 40,
+  "pending-bytes": 0,
+  "pending-chunks": 0,
+  "removed-bad": 0,
+  "removed-bytes": 5368709120,
+  "removed-chunks": 10,
+  "still-bad": 0,
+  "upid": "UPID:backup-01:0000ABCD:00001234:00000001:6B49D200:garbage_collection:tank:root@pam:"
+ },
+ "counts": {
+  "ct": {
+   "groups": 2,
+   "snapshots": 5
+  },
+  "vm": {
+   "groups": 1,
+   "snapshots": 3
+  },
+  "host": null,
+  "other": null
+ }
+}
