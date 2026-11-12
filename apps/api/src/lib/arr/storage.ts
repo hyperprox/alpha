@@ -135,7 +135,7 @@ export function hostPathRefusal(p: string, vmid?: number): string | null {
 }
 
 /** The same rule in the node's shell, as `case` patterns, so it is checked again where the path is resolved. */
-function refusalCase(vmid: number): string {
+export function refusalCase(vmid: number): string {
   const own = hostMountPoint(vmid)
   // Literal parts quoted, the glob star left bare: '/etc' | '/etc/'* | '/lib'* ...
   const pats = ["'/'", ...REFUSED_PREFIXES.flatMap(x => [sq(x), `${sq(`${x}/`)}*`]), `${sq('/lib')}*`, `${sq('/mnt/hyperprox-')}*`]
@@ -213,8 +213,8 @@ export function mountpointSpec(l: Layout, vmid: number, storage: string, resolve
 
 // ── Scripts run on the node, as root, over its saved login ─────────────────
 
-const sq = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`
-const safe = (v: string) => { if (!/^[A-Za-z0-9.:/_+@,= -]+$/.test(v)) throw new StorageInputError('Refused: a value would not be safe in a node script.'); return v }
+export const sq = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`
+export const safe = (v: string) => { if (!/^[A-Za-z0-9.:/_+@,= -]+$/.test(v)) throw new StorageInputError('Refused: a value would not be safe in a node script.'); return v }
 
 /**
  * Before anything is created: can the node reach the library? A NAS export is mounted read-only in a fresh temp
@@ -309,7 +309,7 @@ export function judgeProbe(p: Probe, l: Layout, vmid?: number): { errors: string
  * library mountpoint, then start it again. Every change here is undone by removing the container, except the NFS
  * line, which `unmountScript` removes.
  */
-export function prepareScript(o: { vmid: number; layout: Layout; storage: string; tun: boolean }): string {
+export function prepareScript(o: { vmid: number; layout: Layout; storage: string; tun: boolean; extra?: Array<[string, string]> }): string {
   const { vmid, layout } = o
   if (!Number.isInteger(vmid) || vmid < 100) throw new StorageInputError('Bad container id.')
   const lines = ['set -eu', `V=${vmid}`]
@@ -346,6 +346,11 @@ export function prepareScript(o: { vmid: number; layout: Layout; storage: string
   }
   const set = [`--features nesting=1,keyctl=1`, `-mp0 ${mp0}`]
   if (o.tun) set.push('--dev0 /dev/net/tun')
+  // More container settings from a caller (the transcoders' GPU devices), each checked like the rest.
+  for (const [flag, value] of o.extra ?? []) {
+    if (!/^--dev\d{1,2}$/.test(flag)) throw new StorageInputError('Refused: only device settings may be added.')
+    set.push(`${flag} ${sq(safe(value))}`)
+  }
   lines.push(`pct set "$V" ${set.join(' ')}`)
   lines.push('pct start "$V"', 'echo "@@arr prepared"')
   return lines.join('\n') + '\n'
@@ -366,7 +371,7 @@ export function unmountScript(vmid: number, fstab = '/etc/fstab'): string {
 }
 
 /** What the container's config must say after prepareScript, as read back through the API. */
-export function configProblems(cfg: Record<string, unknown> | null, o: { layout: Layout; storage: string; vmid: number; tun: boolean; resolved?: string }): string[] {
+export function configProblems(cfg: Record<string, unknown> | null, o: { layout: Layout; storage: string; vmid: number; tun: boolean; resolved?: string; extra?: Array<[string, string]> }): string[] {
   const out: string[] = []
   const features = String(cfg?.features ?? '')
   if (!/(^|,)nesting=1(,|$)/.test(features) || !/(^|,)keyctl=1(,|$)/.test(features)) out.push(`features read back as "${features || 'none'}", not nesting=1,keyctl=1.`)
@@ -376,5 +381,10 @@ export function configProblems(cfg: Record<string, unknown> | null, o: { layout:
   else if (o.layout.media === 'disk' && !mp0.startsWith(`${o.storage}:`)) out.push(`mp0 is not on ${o.storage}.`)
   else if (o.layout.media !== 'disk' && mp0.split(',')[0] !== (o.layout.media === 'nfs' ? hostMountPoint(o.vmid) : o.resolved ?? o.layout.hostPath)) out.push(`mp0 read back as "${mp0}".`)
   if (o.tun && !Object.entries(cfg ?? {}).some(([k, v]) => /^dev\d+$/.test(k) && String(v).split(',')[0] === '/dev/net/tun')) out.push('The VPN\'s /dev/net/tun device did not read back.')
+  // Device settings a caller added (a GPU's nodes): each must read back with the same device path.
+  for (const [flag, value] of o.extra ?? []) {
+    const key = flag.replace(/^--/, '')
+    if (String(cfg?.[key] ?? '').split(',')[0] !== value.split(',')[0]) out.push(`${key} read back as "${String(cfg?.[key] ?? '') || 'nothing'}", not ${value.split(',')[0]}.`)
+  }
   return out
 }

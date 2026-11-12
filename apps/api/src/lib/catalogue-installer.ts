@@ -24,6 +24,8 @@ import {
   arrPreview, arrPrepare, arrInstallEnv, arrRunSetup, arrJobSteps, arrCleanup, arrFinishSeerr, stopApps, stoppedSentence, realHttp, localAddressTo,
   type ArrDeps, type ArrPublishInput, type ArrPublishPlan,
 } from './arr/catalogue'
+import { isTranscode, kindOf, nodeHardwareFacts, tcPreview, tcPrepare, tcInstallEnv, tcJobSteps, tcRunSetup, tcCleanup } from './transcode/catalogue'
+import type { LinkRecord } from './transcode/setup'
 import { execOnNode } from './node-exec'
 import type { CreatePVE } from './wizard-executor'
 import type { ExecResult } from './node-exec'
@@ -89,8 +91,16 @@ export interface InstallJob {
   arrSeerrWaiting?: boolean
   /** What was set on an Arr Stack's container over the node login (keyctl, tun, the library), in words. */
   arrPrepared?: string
-  /** An Arr Stack's apps and their addresses, for the finished page. */
+  /** An Arr Stack's apps and their addresses, for the finished page. (A transcoder's link to open uses it too.) */
   arrApps?: Array<{ id: string; name: string; url: string }>
+  /** What was set on a transcoder's container over the node login (keyctl, hardware devices, the library), in words. */
+  tcPrepared?: string
+  /** The numeric groups that let a transcoder's app open the GPU's device files. */
+  tcGroups?: number[]
+  /** The one link an Unmanic worker install added to its main Unmanic; clean-up removes only this. */
+  tcLink?: LinkRecord
+  /** What to offer on the finished page next (an extra worker or node). */
+  tcFollowUp?: { recipeId: string; label: string; url: string }
   startedAt: number
   finishedAt?: number
   /** True once Proxmox accepted a create this job asked for: there is a container this job made. */
@@ -374,6 +384,7 @@ export async function startInstall(opts: {
   if (typeof opts.intoVmid !== 'number') {
     throw new Error('A new container is planned in the install wizard first: preview it, then apply that preview.')
   }
+  if (isTranscode(recipe)) throw new Error(`${recipe.name} needs its container's hardware and library set up on the node, which only the install wizard does. Make a new container with the wizard.`)
 
   // Throws before a job exists, so a refusal is an error the caller sees rather
   // than a job that fails asynchronously three minutes later.
@@ -419,6 +430,7 @@ async function runJob(
   ctx: { options?: Record<string, string>; publish?: PublishPlan; arrPublish?: ArrPublishPlan[] } = {},
 ): Promise<void> {
   const options = ctx.options ?? {}
+  const tc = isTranscode(recipe) ? kindOf(recipe.id) : null
   try {
     // 1. A container to put it in.
     const s1 = step(job, 'container')
@@ -481,6 +493,8 @@ async function runJob(
     }
     // The Arr Stack's compose file, folders and VPN login (moved from the preview's vault item to the stack's own).
     if (recipe.stack === 'arr') Object.assign(env, await arrInstallEnv({ owner: job.owner, options, vault: job.vaultItem }, deps))
+    // Unmanic and Tdarr: the compose file, the folders and (NVIDIA) the libraries. No secret is made.
+    if (tc) Object.assign(env, tcInstallEnv(tc, { options, groups: job.tcGroups ?? [], ip: job.ip ?? '', hostname: job.hostname ?? recipe.id }))
     // The Arr Stack's shell in its container, and the stop that every failure after `docker compose up` runs first:
     // an app Compose already started may have no sign-in yet.
     const arrSh = (script: string, timeoutMs: number) => deps.exec({ host: nodeIp, cred, vmid: job.vmid!, script, timeoutMs, onData: () => {} })
@@ -510,6 +524,23 @@ async function runJob(
       }, id => step(job, id), deps.pbsSetup())
       job.url = out.url
       job.adminCredential = { user: admin.user, vault: { category: 'apps', provider: `${recipe.id}-${job.vmid}`, key: 'admin_password' }, issuedAt: Date.now() }
+      job.status = 'completed'
+      return
+    }
+
+    // Unmanic and Tdarr: each proves itself and does its setup chores (lib/transcode/setup.ts) in place of the wiring.
+    if (tc) {
+      if (!job.ip) throw new Error(`${recipe.name} has no address, so its setup cannot reach it.`)
+      const s0 = job.steps.find(x => x.id === 'container')
+      if (s0 && job.tcPrepared) s0.detail = `${s0.detail}: ${job.tcPrepared}`
+      const out = await tcRunSetup({
+        kind: tc, ip: job.ip, hostname: job.hostname ?? recipe.id, options,
+        // Recorded the moment the main Unmanic has the link, so a failure after it can still be undone.
+        onLink: r => { job.tcLink = r; void persistJob(job).catch(() => {}) },
+      }, id => step(job, id), { arr: deps.arr, wait: deps.wait })
+      job.url = out.url
+      job.arrApps = out.apps
+      if (out.followUp) job.tcFollowUp = out.followUp
       job.status = 'completed'
       return
     }
@@ -1263,6 +1294,13 @@ export async function previewInstall(
     storageFreeGb: view.storages.find(x => x.node === input.node && x.storage === input.storage)?.freeGb,
   }, deps, () => randomBytes(6).toString('hex')) : null
   if (arr) { r.errors.push(...arr.errors); r.warnings.push(...arr.warnings); r.checks.push(...arr.checks); input = { ...input, options: arr.options } }
+  // Unmanic and Tdarr: the node's hardware, the library, and (for a worker or node) the main server it joins.
+  const tcp = isTranscode(recipe) && !r.errors.length ? await tcPreview({
+    kind: kindOf(recipe.id), node: input.node, vmid: input.vmid, storage: input.storage, diskGb: input.diskGb, cores: input.cores,
+    values: checkOptions(recipe, input.options).values,
+    storageFreeGb: view.storages.find(x => x.node === input.node && x.storage === input.storage)?.freeGb,
+  }, deps) : null
+  if (tcp) { r.errors.push(...tcp.errors); r.warnings.push(...tcp.warnings); r.checks.push(...tcp.checks); input = { ...input, options: tcp.options } }
   // Ghost: the SMTP password into the vault (only this preview names its item), and what mail will do.
   if (recipe.setup === 'ghost') {
     const o = checkOptions(recipe, input.options)
@@ -1377,6 +1415,7 @@ export async function applyPreview(id: string, owner: string, over: Partial<Wiza
     const job = newJob(recipe, owner, `Create CT ${plan.vmid} (${plan.hostname}) on ${plan.node}`, plan.publish)
     job.vmid = plan.vmid; job.node = plan.node; job.hostname = plan.hostname
     if (recipe.stack === 'arr') job.steps = arrJobSteps(job.steps, plan.options ?? {}, plan.arrPublish)
+    if (isTranscode(recipe)) job.steps = tcJobSteps(job.steps, kindOf(recipe.id))
     const markId = `creating:${plan.vmid}`
     // The job row first, then the mark, then the create. After a restart the mark says this job may have
     // made a container, and there is always a job row for it to point at.
@@ -1395,6 +1434,13 @@ export async function applyPreview(id: string, owner: string, over: Partial<Wiza
       if (recipe.stack === 'arr') {
         // keyctl, the VPN's tun device and the library, which an API token cannot set; then it starts again.
         job.arrPrepared = await arrPrepare(plan, deps, async () => { job.arrHostMount = { node: plan.node, vmid: plan.vmid }; await persistJob(job).catch(() => {}) })
+        await waitRunning(deps, plan.node, plan.vmid)
+      }
+      if (isTranscode(recipe)) {
+        // keyctl, the hardware devices and the library, which an API token cannot set; then it starts again.
+        const prep = await tcPrepare(plan, kindOf(recipe.id), deps, async () => { job.arrHostMount = { node: plan.node, vmid: plan.vmid }; await persistJob(job).catch(() => {}) })
+        job.tcPrepared = prep.detail; job.tcGroups = prep.groups
+        await persistJob(job).catch(() => {})
         await waitRunning(deps, plan.node, plan.vmid)
       }
       const distro = distroOf(plan.template)
@@ -1558,6 +1604,8 @@ async function removeHostMount(job: InstallJob, deps: WizardDeps): Promise<strin
 async function removePublished(job: InstallJob, deps: WizardDeps): Promise<string> {
   // An Arr Stack's public names and its NAS mount on the node go the same way, in the same message.
   const arr = job.arrLedgers || job.arrHostMount ? await arrCleanup(job, deps).catch((e: any) => [`The Arr Stack's clean-up failed: ${e.message}`]) : []
+  // A transcoder's NAS mount goes the same way (above); the one link it added to a main Unmanic goes here.
+  if (job.tcLink) arr.push(...await tcCleanup(job, deps).catch((e: any) => [`The Unmanic link clean-up failed: ${e.message}`]))
   if (!job.ledger) return arr.length ? ' ' + arr.join(' ') : ''
   const lines = await cleanupPublish(job.ledger, job.owner, deps.publish).catch((e: any) => [`Publishing clean-up failed: ${e.message}`])
   return [...lines, ...arr].length ? ' ' + [...lines, ...arr].join(' ') : ''
@@ -1787,4 +1835,9 @@ export async function finishSeerr(jobId: string, owner: string, over: Partial<Wi
   job.arrSeerrWaiting = false
   await persistJob(job).catch(() => {})
   return detail
+}
+
+/** What a node can give a transcoder (Intel/AMD graphics, an NVIDIA card with its driver loaded), for the wizard's picker. */
+export async function transcodeHardware(node: string, over: Partial<WizardDeps> = {}) {
+  return nodeHardwareFacts(node, wizardDeps(over))
 }
