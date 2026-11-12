@@ -64,7 +64,9 @@ export function detailOf(name: string, r: AsusReading): PluginDetail {
       { label: 'Uptime', value: duration(r.uptimeSec) },
       { label: 'CPU', value: r.cpuPct === null ? '—' : `${r.cpuPct}%`, tone: r.cpuPct !== null && r.cpuPct >= 90 ? 'bad' : undefined },
       { label: 'Memory', value: r.mem ? `${r.mem.pct}%` : '—', tone: r.mem && r.mem.pct >= 92 ? 'bad' : undefined },
-      { label: 'Internet', value: r.wan.up === null ? 'unknown' : r.wan.up ? 'connected' : 'down', tone: r.wan.up === false ? 'bad' : r.wan.up ? 'good' : undefined },
+      { label: 'Mode', value: r.mode.label ?? '—' },
+      ...(r.mode.kind && r.mode.kind !== 'router' ? [{ label: 'Internet', value: 'from the main router' }]
+        : [{ label: 'Internet', value: r.wan.up === null ? 'unknown' : r.wan.up ? 'connected' : 'down', tone: (r.wan.up === false ? 'bad' : r.wan.up ? 'good' : undefined) as 'bad' | 'good' | undefined }]),
       { label: 'Download', value: mbps(r.wan.downBps) },
       { label: 'Upload', value: mbps(r.wan.upBps) },
     ],

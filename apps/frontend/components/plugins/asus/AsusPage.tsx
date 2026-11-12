@@ -25,7 +25,7 @@ import { ReconfirmModal } from '@/components/vault/ReconfirmModal'
 import { BusyNote, GhostButton, INPUT, LABEL, Modal, Notice, PrimaryButton } from '@/components/vault/ui'
 import { HudHeader, Panel, Cols, Icon, styles as vs } from '@/components/visual/kit'
 import { DetailsSection, PluginSwitcher } from '@/components/plugins/visual/plugin-kit'
-import { BandTiles, DeviceList, HealthList, WanPanel, hudChips, type Reading } from './AsusVisual'
+import { BandTiles, DeviceList, HealthList, UplinkPanel, WanPanel, hudChips, routes, type Reading } from './AsusVisual'
 import a from './asus.module.css'
 
 const API = '/api/plugins/asus'
@@ -142,10 +142,16 @@ function RouterView({ n }: { n: Router }) {
             <Notice kind="warn">Part of the router did not answer ({r.missing.join(', ')}). Some models and firmware builds leave a call out; the rest of the page is real.</Notice>
           )}
 
-          <Panel title="Internet" sub={r.wan.downBps === null ? 'rates appear on the next reading' : 'live · from the router’s counters'}>
-            <WanPanel r={r} trail={trail} />
-            {!operator && <p className="mt-3 text-sm" style={{ color: 'var(--text-dimmer)' }}>Addresses are shown to operators and admins.</p>}
-          </Panel>
+          {routes(r) ? (
+            <Panel title="Internet" sub={r.wan.downBps === null ? 'rates appear on the next reading' : 'live · from the router’s counters'}>
+              <WanPanel r={r} trail={trail} />
+              {!operator && <p className="mt-3 text-sm" style={{ color: 'var(--text-dimmer)' }}>Addresses are shown to operators and admins.</p>}
+            </Panel>
+          ) : (
+            <Panel title="Internet" sub={r.mode?.label ?? 'access point'}>
+              <UplinkPanel r={r} />
+            </Panel>
+          )}
 
           <Cols>
             <Panel title="Wi-Fi" sub={`${r.bands.filter(b => b.enabled).length} of ${r.bands.length} radios on`}>

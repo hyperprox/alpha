@@ -1614,6 +1614,19 @@ firmware (stock or Merlin), uptime, CPU and RAM. Under it:
 
 The page reads the router every 10 seconds while you have it open.
 
+**Access points and AiMesh.** HyperProx reads how each unit is used (router, access point, repeater,
+media bridge, AiMesh node, and whether it leads an AiMesh network) and shows it in the header. Only a
+router has an internet connection of its own. On any other unit the Internet panel says the internet is
+handled by your main router (with the upstream address, for operators and admins), and HyperProx never
+raises "internet down" for it: such a unit reports its unused WAN as disconnected, which is normal.
+
+**Diagnostics** (admins, API tokens allowed): `GET /api/plugins/asus/instances/<id>/diagnostics` returns
+the router's raw answer to every call the plug-in makes, plus a set of other read-only calls, to work out
+how a firmware answers. Passwords, Wi-Fi keys, tokens, WPS PINs and anything else with a secret-looking
+name are removed, and every MAC address is replaced with a placeholder. The answer has a size cap. It is
+audited, allowed twice a minute per router, and refused while HyperProx is holding back after a refused
+login.
+
 **The login.** HyperProx uses the same web API as the ASUS phone app (`login.cgi`, then `appGet.cgi`
 reads with the session token). ASUS routers allow one admin session at a time, so HyperProx keeps one
 session while it is reading and signs out after two minutes without reads. If you are signed in to the

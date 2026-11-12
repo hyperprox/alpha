@@ -147,6 +147,9 @@ const QNAP_RECONFIRM = /^\/api\/plugins\/qnap\/instances(\/(?!probe-certificate$
 // default for a POST/PUT/DELETE: finding a router on the LAN, every change to a router (it stores an admin login)
 // and rebooting one. All but the search and the certificate read are also re-confirmed, which keeps API tokens off
 // them too.
+// The diagnostics read (raw, redacted router answers): admin even though it is a GET, not re-confirmed, so an admin's
+// API token may call it. It only reads.
+const ASUS_DIAGNOSTICS = /^\/api\/plugins\/asus\/instances\/[^/]+\/diagnostics$/
 const ASUS_RECONFIRM = /^\/api\/plugins\/asus\/instances(\/(?!probe-certificate$)[^/]+(\/actions)?)?$/
 // Plex clear-out and Library (routes/plex-clearout.ts). The lists are a read (viewer). Previewing a removal is
 // operator; removing (through Sonarr, Radarr or Plex itself) deletes files, so it is operator with the master password re-entered, which keeps API
@@ -292,6 +295,7 @@ export function requiredRole(method: string, path: string): Role | null {
   if (SITES.test(p)) return 'admin'
   if (SITE_METRICS_ADMIN_READ.test(p)) return 'admin'
   if (SETUP_CHECKLIST.test(p)) return 'admin'
+  if (ASUS_DIAGNOSTICS.test(p)) return 'admin'
   if (HA.test(p)) return (m === 'GET' || m === 'HEAD') && HA_READ.test(p) ? 'viewer' : 'admin'
   if (CLUSTERS.test(p)) {
     if (m === 'GET' || m === 'HEAD') return CLUSTERS_VIEW.test(p) ? 'viewer' : 'admin'

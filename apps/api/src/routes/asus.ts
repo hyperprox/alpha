@@ -145,6 +145,16 @@ export const asusRoutes: FastifyPluginAsync = async (fastify) => {
     }
   })
 
+  // Admin (lib/roles.ts), API tokens allowed, reads only: every hook's raw answer with secrets and MACs removed.
+  fastify.get<P>('/instances/:iid/diagnostics', async (req, reply) => {
+    try { return { success: true, data: await svc().diagnostics(req.params.iid, actor(req)) } }
+    catch (e: any) {
+      if (e instanceof AsusRefusal || e instanceof AsusInputError) return fail(reply, e)
+      const known = e instanceof AsusUnreachableError || e instanceof AsusLoginError
+      return reply.status(502).send({ success: false, code: 'unreachable', error: known ? e.message : 'The router could not be read.' })
+    }
+  })
+
   fastify.post<P & { Body: Record<string, unknown> }>('/instances/:iid/actions', async (req, reply) => {
     req.asusHandled = true
     try { return { success: true, data: await svc().act(req.params.iid, req.body ?? {}, actor(req)) } }

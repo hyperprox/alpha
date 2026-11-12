@@ -47,8 +47,22 @@ export interface AsusDevice {
   onlineSec:  number | null
 }
 
+/** How the unit is used. Only a router has a WAN of its own; every other mode gets its internet from upstream. */
+export type ModeKind = 'router' | 'ap' | 'repeater' | 'bridge' | 'node'
+
+export interface AsusMode {
+  kind:   ModeKind | null
+  /** "Router", "Access point", "Repeater", "Media bridge", "AiMesh node"; " · AiMesh main" added for a mesh main unit. */
+  label:  string | null
+  /** The unit's AiMesh role, when it is in a mesh. */
+  aimesh: 'main' | 'node' | null
+}
+
 export interface AsusReading {
   fetchedAt: string
+  mode:      AsusMode
+  /** Not a router: where its LAN connects upstream. The gateway address is for operators and up. */
+  uplink:    { gateway: string | null } | null
   model:     string | null
   firmware:  { version: string | null; flavour: 'merlin' | 'stock' | null }
   update:    { available: boolean | null; version: string | null }
@@ -90,7 +104,37 @@ export const HOOKS = {
   clients:  'get_clientlist()',
   channels: 'wl_control_channel()',
   counters: 'cpu_usage(appobj);netdev(appobj)',
+  /** Its own call, so a malformed value elsewhere can never hide which mode the unit is in. */
+  mode:     ['sw_mode', 're_mode', 'cfg_master', 'wlc_psta', 'lan_gateway', 'lan_proto'].map(k => `nvram_get(${k})`).join(';'),
 } as const
+
+/**
+ * The unit's operation mode. sw_mode: 1 router, 2 repeater, 3 access point, 4 media bridge. AiMesh marks a node
+ * with re_mode=1 (whatever its sw_mode says) and the mesh's main unit with cfg_master=1, which may be a router
+ * or, on a network where something else routes, an access point.
+ */
+export function modeOf(n: Record<string, unknown> | null): AsusMode {
+  if (!n) return { kind: null, label: null, aimesh: null }
+  const sw = str(n.sw_mode, 2), re = str(n.re_mode, 2), master = str(n.cfg_master, 2)
+  if (re === '1') return { kind: 'node', label: 'AiMesh node', aimesh: 'node' }
+  const kind: ModeKind | null = sw === '1' ? 'router' : sw === '2' ? (str(n.wlc_psta, 2) === '2' ? 'bridge' : 'repeater') : sw === '3' ? 'ap' : sw === '4' ? 'bridge' : null
+  const base = kind === 'router' ? 'Router' : kind === 'ap' ? 'Access point' : kind === 'repeater' ? 'Repeater' : kind === 'bridge' ? 'Media bridge' : null
+  const main = master === '1'
+  return { kind, label: base ? `${base}${main ? ' · AiMesh main' : ''}` : (main ? 'AiMesh main' : null), aimesh: main ? 'main' : null }
+}
+
+/**
+ * Flat `"key":"value"` pairs, for when an answer is not valid JSON as a whole (one value with an unescaped
+ * quote, say): every pair that does parse is kept, so one bad value costs one value, not the whole answer.
+ */
+export function loosePairs(text: string | null | undefined): Record<string, string> | null {
+  if (!text) return null
+  const out: Record<string, string> = {}
+  const re = /"([A-Za-z0-9_.\-]{1,64})"\s*:\s*"((?:[^"\\\n]|\\.){0,512})"/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text))) { try { out[m[1]] = JSON.parse(`"${m[2]}"`) } catch { out[m[1]] = m[2] } }
+  return Object.keys(out).length ? out : null
+}
 
 // ── tolerant JSON ────────────────────────────────────────────────────────────
 
@@ -317,9 +361,12 @@ export const CPU_HIGH_PCT = 90
 /** Asuswrt keeps most of its memory in use as cache, so "high" sits well above where a PC would worry. */
 export const MEM_HIGH_PCT = 92
 
-export function healthOf(r: Pick<AsusReading, 'wan' | 'cpuPct' | 'mem' | 'update'>): AsusReading['health'] {
+export function healthOf(r: Pick<AsusReading, 'wan' | 'cpuPct' | 'mem' | 'update'> & { mode?: AsusMode }): AsusReading['health'] {
   const reasons: string[] = []
-  if (r.wan.up === false) reasons.push(`The internet connection is down${r.wan.status ? ` (${r.wan.status})` : ''}.`)
+  // Only a router has a WAN of its own. An access point, repeater, bridge or mesh node reports its unused WAN
+  // as "Disconnected", which is normal, never an alarm.
+  const routes = !r.mode || r.mode.kind === null || r.mode.kind === 'router'
+  if (routes && r.wan.up === false) reasons.push(`The internet connection is down${r.wan.status ? ` (${r.wan.status})` : ''}.`)
   if (r.cpuPct !== null && r.cpuPct >= CPU_HIGH_PCT) reasons.push(`CPU is at ${Math.round(r.cpuPct)}%.`)
   if (r.mem && r.mem.pct >= MEM_HIGH_PCT) reasons.push(`Memory is at ${r.mem.pct}%.`)
   if (r.update.available) reasons.push(`A firmware update is available${r.update.version ? ` (${r.update.version})` : ''}.`)
@@ -333,6 +380,8 @@ export interface RawAnswers {
   wan:      string | null
   clients:  string | null
   channels: string | null
+  /** HOOKS.mode. Optional so an answer set from before it existed still builds a reading. */
+  mode?:    string | null
 }
 
 export function uptimeSeconds(v: unknown): number | null {
@@ -343,9 +392,14 @@ export function uptimeSeconds(v: unknown): number | null {
 /** One reading from the answers. `prev` is the last counter sample (from this or an earlier reading), `cur` this one's. */
 export function buildReading(raw: RawAnswers, o: { instanceId: string; prev: CounterSample | null; cur: CounterSample; now?: Date }): AsusReading {
   const missing: string[] = []
-  const sys = looseJson(raw.system)
-  if (!sys) missing.push('system')
+  const sysJson = looseJson(raw.system)
+  // Not valid JSON as a whole: keep every flat value that does parse (firmware, radios), and say so.
+  const sys: Record<string, any> | null = sysJson ?? loosePairs(raw.system)
+  if (!sysJson) missing.push('system')
   const n: Record<string, unknown> = sys ?? {}
+  const modeAnswer = looseJson(raw.mode) ?? loosePairs(raw.mode)
+  const mode = modeOf(modeAnswer ?? (n.sw_mode !== undefined ? n : null))
+  const routes = mode.kind === null || mode.kind === 'router'
 
   const firmware = firmwareOf(n)
   const update = updateOf(n, firmware.flavour)
@@ -361,13 +415,16 @@ export function buildReading(raw: RawAnswers, o: { instanceId: string; prev: Cou
   const link = str(n.link_internet, 2)
   const wanUp = wl?.status !== undefined && wl.status !== '' ? wl.status === '1' : link === '2' ? true : link === '1' || link === '0' ? false : null
   const unit = int(sys?.get_wan_unit)
-  const rates = ratesFrom(o.prev, o.cur)
+  // The INTERNET counters only mean the internet on a router; elsewhere they count an unused port.
+  const rates = routes ? ratesFrom(o.prev, o.cur) : { ...ratesFrom(o.prev, o.cur), downBps: null, upBps: null }
   const ipOk = (v?: string) => (v && v !== '0.0.0.0' && (IPV4_RE.test(v) || v.includes(':')) ? v.slice(0, 45) : null)
-  const wan: AsusReading['wan'] = {
+  const wan: AsusReading['wan'] = routes ? {
     up: wanUp, status: str(wl?.statusstr, 40), type: str(wl?.type, 20),
     ip: ipOk(wl?.ipaddr), gateway: ipOk(wl?.gateway), unit,
     downBps: rates.downBps, upBps: rates.upBps,
-  }
+  } : { up: null, status: null, type: null, ip: null, gateway: null, unit: null, downBps: null, upBps: null }
+  if (!wl && !routes) missing.splice(missing.indexOf('wan'), 1)
+  const uplink = routes ? null : { gateway: ipOk(str(modeAnswer?.lan_gateway, 45) ?? undefined) }
 
   const chJson = looseJson(raw.channels)
   const radio = bandsOf(n, controlChannels(chJson?.wl_control_channel))
@@ -378,9 +435,10 @@ export function buildReading(raw: RawAnswers, o: { instanceId: string; prev: Cou
   const bands: AsusBand[] = radio.map(b => ({ ...b, clients: online.filter(d => d.band === b.label).length }))
 
   const model = str(n.odmpid, 40) ?? str(n.productid, 40)
-  const base = { wan, cpuPct: rates.cpuPct, mem, update }
+  const base = { wan, cpuPct: rates.cpuPct, mem, update, mode }
   return {
     fetchedAt: (o.now ?? new Date()).toISOString(),
+    mode, uplink,
     model, firmware, update,
     uptimeSec: uptimeSeconds(sys?.uptime),
     cpuPct: rates.cpuPct, cpuCores: o.cur.cores,
@@ -400,6 +458,7 @@ export function viewerReading(r: AsusReading): AsusReading {
   return {
     ...r,
     wan: { ...r.wan, ip: null, gateway: null },
+    uplink: r.uplink ? { gateway: null } : null,
     devices: r.devices.map(d => ({ ...d, name: addressLike(d.name) ? 'Unnamed device' : d.name, vendor: d.vendor && addressLike(d.vendor) ? null : d.vendor, ip: null, mac: null })),
   }
 }
