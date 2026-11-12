@@ -83,6 +83,12 @@ export const DETECT: Record<string, Fingerprint[]> = {
     path: '/api/',
     match: a => { const j = json(a); const v = j?.version; return j && j.status === 'OK' && v && typeof v.major === 'number' ? { version: `${v.major}.${v.minor ?? 0}.${v.revision ?? 0}` } : null },
   }],
+  // Its web interface, through whatever forwards to it: the page title and the GUI's own script, which no other
+  // app serves. (A PBS reached only on :8007 with no proxy host is not among the places site discovery looks.)
+  'proxmox-backup-server': [{
+    path: '/',
+    match: a => (a.status === 200 && /<title>[^<]*Proxmox Backup Server<\/title>/i.test(a.body) && a.body.includes('proxmox-backup-gui') ? { version: null } : null),
+  }],
   wordpress: [{
     path: '/wp-login.php',
     match: a => (a.status === 200 && a.body.includes('id="loginform"') && !a.body.includes('<?php')

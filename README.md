@@ -771,6 +771,9 @@ more than one, gets a question back listing your clusters.
   temperatures and fans, firmware and whether an update is available, and the alerts the QNAP plug-in
   raises. A NAS beside a remote cluster is labelled with that cluster. A disk's serial number is given only
   for a disk with a SMART warning; host names, addresses and MACs never.
+- **Proxmox Backup Server**: each backup server's health and its reasons, each datastore's use,
+  deduplication and last GC, the stale backup groups, the prune, GC, verify and sync jobs with their last
+  and next run, and the failed tasks of the last day. Never an address or a token.
 - **Network storage** on every cluster: each NFS or CIFS server the nodes mount, named by its Proxmox storage
   ids (never its address), with shares, volumes and how full it is.
 - **Alerts**: what Prometheus has firing and pending now, in each rule's plain words, including the hardware
@@ -843,7 +846,7 @@ reports, are passed on as they were written.
 
 Installs a service you do not run yet into a new unprivileged container, checks that it answers, and
 connects it to HyperProx: Nginx Proxy Manager, Ollama, Tautulli, Nextcloud, Jellyfin, Vaultwarden,
-Gitea, Uptime Kuma, Homepage and Grafana. Websites are not listed here: they have their own section,
+Gitea, Uptime Kuma, Homepage, Grafana and Proxmox Backup Server. Websites are not listed here: they have their own section,
 [Websites](#websites), and a banner on the Catalogue page links to it.
 
 **Already running?** For admins, the Catalogue page looks for each app on your cluster before offering it.
@@ -851,13 +854,74 @@ It asks the places HyperProx already knows serve the web (every enabled proxy ho
 running containers listening on port 80 or 443, the same list as [Add an existing site](#add-an-existing-site))
 one read-only question per app: Nextcloud's `/status.php`, Jellyfin's `/System/Info/Public`, Gitea's
 `/api/v1/version`, Vaultwarden's `/api/config` (or `/alive`), Grafana's `/api/health`, Uptime Kuma's
-`/api/entry-page`, Homepage's start page, Ollama's `/api/tags`, Tautulli's sign-in page and Nginx Proxy
-Manager's `/api/`. Each is a plain GET with no login, no cookies and no redirects followed, a 3-second
+`/api/entry-page`, Homepage's start page, Ollama's `/api/tags`, Tautulli's sign-in page, Nginx Proxy
+Manager's `/api/` and Proxmox Backup Server's web page. Each is a plain GET with no login, no cookies and no redirects followed, a 3-second
 timeout and at most 64 KiB read; a proxy target is asked with the public name as its Host header, as the
 proxy would, and an internal certificate is not checked. A recipe found this way says **Running on** the
 guest and its public name (with the version when the app shows one) and offers **Open**; **Install another…**
 then asks before it starts the wizard. The answer is kept five minutes (**Look again** asks now). A recipe whose
 integration already has an address (Settings) still counts as **configured**, as before.
+
+#### Proxmox Backup Server from the Catalogue
+
+**Proxmox Backup Server** installs into a new unprivileged Debian 13 container (2 cores, 2 GB of memory
+and a 10 GB root disk suggested). The script fetches the Proxmox archive key over `https`, checks it
+against its published SHA-256 before apt trusts it (it stops if the file differs), and installs
+`proxmox-backup-server` from Proxmox's `pbs-no-subscription` repository for trixie.
+
+A backup server on the same cluster it backs up is not an off-site copy: if the cluster is lost, its
+backups go with it. So the wizard's first step asks where the backups live:
+
+- **On a NAS** (recommended, and the default): an NFS export on a NAS or another machine, the only
+  choice that survives losing the cluster. A NAS HyperProx already knows is listed (each NAS the QNAP
+  plug-in reads, and each NFS server the cluster already uses as storage); pick one and its NFS exports
+  are read from a node with `showmount`, or type the address and export. **NFS only, never SMB/CIFS**: PBS
+  names every snapshot after its time, which contains `:`, and SMB cannot store that, so the datastore
+  breaks. An SMB address or share is refused.
+- **A disk on this cluster**: a new disk of the size you give, on the same storage as the container,
+  mounted at `/mnt/datastore/<name>` and left out of the container's own backups. The review repeats
+  that this is not an off-site copy.
+
+For a NAS, the review (preview) mounts the export read-only on the chosen node for a moment and checks
+that it can be reached, that it has at least the free space you asked for, and whether it already holds
+a PBS datastore. An existing datastore is never wiped or re-initialised: tick **Re-attach the existing
+datastore** to use it as it is, with its backups, or pick an empty export. An export with other files in
+it is refused. On install, the export is mounted on **that node only**, at `/mnt/hyperprox-pbs/<id>`, by
+one line in its `/etc/fstab` (`rw,vers=3,hard,timeo=600,retrans=2,_netdev,nofail`; `nofail` means a NAS
+that is off when the node starts does not hang its boot), marked `# hyperprox-pbs <id>`, and passed into
+the container at `/mnt/datastore/<name>`. The container is unprivileged, and an unprivileged container
+cannot mount NFS itself, so the node mounts it. Removing a failed install takes the line, the mount and
+the folder away again; the NAS's files are never touched. Because the mount is on one node, that
+container cannot be migrated to another node as it is.
+
+**Permissions on the NAS.** PBS writes as the user `backup` (uid 34) inside the container. The container
+is unprivileged, so on the node and on the NAS that user is uid 100034 (34 + 100000), group 100034. The
+export must let uid 100034 create files and folders, or squash every user to one that can. PBS sets
+0755 on the datastore folder and 0750 on `.chunks` itself, so the export must not rewrite modes. The
+install tests a write as `backup` before it creates anything, and stops with this explanation if the
+write fails.
+
+The datastore is created with `proxmox-backup-manager datastore create`, with default jobs you can change
+later in PBS: prune every day (keep the last 3, 7 daily, 4 weekly, 6 monthly), garbage collection every
+Saturday, and a verify every Sunday. Then setup does the chores, each step reported and read back:
+
+1. **Pin the server's certificate**: the fingerprint the server reports from inside the container must be
+   the one port 8007 presents; it is pinned.
+2. **Check :8007 answers and the datastore is readable**: a sign-in as `root@pam` with the generated
+   password, and the datastore's status.
+3. **Make the backup token for Proxmox VE**: a user `pve-backup@pbs` with a token `pve`, given
+   `DatastoreBackup` on that datastore only.
+4. **Make HyperProx's read-only token**: a user `hyperprox@pbs` with a token `readonly`, given `Audit`
+   on `/`.
+5. **Connect the PBS plug-in**: the server is added to the plug-in with the read-only token and the pin,
+   and read through it.
+6. **Add it as storage on the cluster**: only if you ticked it (off by default). Proxmox VE gets a `pbs`
+   storage for the server with the backup token and the certificate fingerprint, so backup jobs can use
+   it. Nothing is backed up to it until you add it to a backup job.
+
+The `root@pam` password is generated, kept in the vault and shown to you once; both tokens are kept in
+the same vault item (`apps/proxmox-backup-server-<id>`) and never shown on the page. A backup server the
+PBS plug-in already reads shows as configured; one behind a proxy host is found by its web page.
 
 ### Websites
 
@@ -1059,6 +1123,7 @@ otherwise every file is put back. Nothing in a site is ever changed without this
 | Plex activity | What is streaming now (progress, direct or transcode), internet and local bandwidth gauges, who watches most, what is watched most, and recent history, read through Tautulli |
 | Home Assistant | Your house as tiles by room, with quick actions, a light dial and a climate dial; plus unavailable entities, low batteries, pending updates and log errors, for each of your Home Assistant instances (see below) |
 | QNAP | Each NAS's drive bays with SMART health and temperature, volume rings, shares, temperature and load gauges, fans and firmware, with a quick SMART test, and restart and shut down behind the confirm step, for each of your NAS, a remote one included (see below) |
+| Proxmox Backup Server | Each backup server's datastores as gauges (used, deduplication, GC), every backup group as a tile that turns red when its newest snapshot is older than you allow, the prune, GC, verify and sync jobs, failed tasks of the last day, and which cluster guests have no backup there, with verify and GC now behind the master password (see below) |
 | MeshCentral | Finds npm installs in guests and adds them to Updates. Its page says what it would need to show your devices; it holds no MeshCentral login, so it shows none |
 
 Each plug-in page opens with a summary header and a bar to jump between plug-ins (each with a health
@@ -1216,6 +1281,72 @@ sizes), `qsmart.cgi?func=all_hd_data` (disks and SMART), `sysRequest.cgi?subfunc
 been checked against a QTS 5 NAS yet. The quick SMART test, restart and shut down calls have not been
 run against either firmware; when a NAS does not accept one, the page says so instead of claiming it
 worked.
+
+#### Proxmox Backup Server
+
+Open **Plug-ins, Proxmox Backup Server** and press **Add a backup server** (admins; the master password
+is asked again, because a token is being stored). Give it a name, its address (`https://`, port 8007 if
+you leave the port out), an API token id and the token's secret. **Check and add** reads the server's
+certificate, pins it, and makes one real read with the token through that pin before anything is saved:
+a token that cannot read the server is never stored. The token is kept in the vault and never shown
+again. Each server you add gets its own tab.
+
+**The token.** Give HyperProx a read-only token of its own. In the backup server's shell:
+
+```
+proxmox-backup-manager user create hyperprox@pbs
+proxmox-backup-manager acl update / Audit --auth-id hyperprox@pbs
+proxmox-backup-manager user generate-token hyperprox@pbs readonly
+proxmox-backup-manager acl update / Audit --auth-id 'hyperprox@pbs!readonly'
+```
+
+The Audit role on `/` gives `Datastore.Audit` and `Sys.Audit`: HyperProx can read everything the page
+shows and change nothing. **Verify now** also needs `Datastore.Verify`, and **GC now** needs
+`Datastore.Modify`, on that datastore; without them the server refuses, and the page says which one is
+missing. The token id to paste is `hyperprox@pbs!readonly`.
+
+**The certificate.** A certificate that checks out against a public certificate authority stays checked
+that way, so a renewal keeps working. Otherwise the server's own certificate is pinned when you add it,
+and any other certificate is refused before the token is sent, with both fingerprints in the message. If
+the server's certificate was replaced on purpose, compare the new fingerprint on its dashboard and use
+**Re-pin the certificate presented now** under **Settings**. A new address or token id needs the secret
+pasted again in the same save, and pins the certificate afresh.
+
+The page opens with a header ring for the fullest datastore and counts of datastores, backup groups,
+stale groups and failed tasks, then a band that says **Active** or **Needs attention** with the reasons.
+Under it:
+
+- **Datastores**: one card per datastore with a gauge of used of total, the free space, the
+  deduplication factor (after the first garbage collection), the last and next GC, and the backup
+  group and snapshot counts. Admins get **Verify now** and **GC now** on each card.
+- **Backup groups**: one tile per group (`vm/100`, `ct/101`, ...), by datastore and namespace, with
+  the age of its newest snapshot, how many snapshots it has, the newest one's size and its verify
+  state. A group with no new snapshot for longer than **Stale after** (26 hours unless you change it
+  under Settings) glows red; one whose newest snapshot failed verification glows amber. **only stale**
+  hides the rest.
+- **Jobs**: every prune, GC, verify and sync job with its result, its last run and its next run.
+- **Failed tasks**: the server's tasks that ended in an error in the last 24 hours (warnings are not
+  counted).
+- **Cluster cross-check** (press **Check**): for every cluster HyperProx manages that has this server as
+  a `pbs` storage (found by the certificate fingerprint Proxmox keeps for it, or by its address and
+  port), the guests with no backup group at all in that storage's datastore and namespace, and the
+  guests the cluster says no backup job includes.
+- **Details**: the same readings as plain tables.
+
+**Health.** A server is **Active** when every datastore is under 85% full, no group is stale, and
+nothing failed in the last 24 hours (no failed task, no failed prune, GC, verify or sync job, and no
+group whose newest snapshot failed verification). Otherwise it **Needs attention**, with a few words
+such as "2 guests not backed up in 26 h", "datastore 91% full" or "verify failed". The dashboard's
+plug-in chip shows the same words.
+
+**Verify now and GC now** are admin only, need the master password re-entered, and API tokens can never
+use them. Each one names a datastore the server reports, starts the task on the server, and reads the
+task's status back, so the page says whether it is running, finished or failed. Every attempt, refused
+or not, is in the audit log. There is no delete, prune or forget: HyperProx never removes a backup.
+
+Viewers see the readings but not the server's address, token id or pin. The page reads the server again
+every two minutes while it is open (a reading is kept 30 seconds), and a server that cannot be read says
+why.
 
 ### Settings
 
@@ -1380,7 +1511,7 @@ upcoming work are in [docs/superpowers/specs/](docs/superpowers/specs/).
   read it).
 - **Next**: the six-point standard for every catalogue install (address, proxy and certificate; login in
   the vault; backed up; monitored; under update policy; plug-in panel), MeshCentral remote desktop,
-  a Proxmox Backup Server plug-in with automatic restore tests, catalogue packs, noVNC and container text
+  automatic restore tests for the Proxmox Backup Server plug-in, catalogue packs, noVNC and container text
   consoles, Ceph operations, versioned releases with `hyperprox update`, demo mode and screenshots, the
   hyperprox.dev website, and more DNS providers, email notifications and LDAP/OIDC sign-in.
 - **Later, as ideas**: live migration between clusters, ESXi import, XCP-ng, bare-metal install, CVE
