@@ -146,6 +146,11 @@ const QNAP_RECONFIRM = /^\/api\/plugins\/qnap\/instances(\/(?!probe-certificate$
 // tokens out too.
 const PLEX_CLEAROUT_ACT = /^\/api\/plugins\/plex\/(clearout|library)\/(preview|remove)$/
 const PLEX_CLEAROUT_RECONFIRM = /^\/api\/plugins\/plex\/(clearout|library)\/remove$/
+// Sign in with Plex (routes/plex-signin.ts): admin for every method, reads included (the status names the account's
+// servers and their addresses). Starting one and saving the chosen server save plug-in settings, so both are
+// re-confirmed like a settings save, which also keeps API tokens out.
+const PLEX_SIGNIN = /^\/api\/plugins\/plex\/signin(\/|$)/
+const PLEX_SIGNIN_RECONFIRM = /^\/api\/plugins\/plex\/signin(\/[^/]+\/connect)?$/
 // A plug-in's settings hold the address its stored credential is sent to: changing them is re-confirmed (which
 // also keeps API tokens out).
 const PLUGIN_SETTINGS = /^\/api\/plugins\/[^/]+\/settings$/
@@ -233,6 +238,7 @@ export function requiredRole(method: string, path: string): Role | null {
   if (PROXY.test(p)) return (m === 'GET' || m === 'HEAD') && PROXY_READ.test(p) ? 'viewer' : 'admin'
   if (CATALOGUE_WIZARD.test(p)) return 'admin'
   if (CATALOGUE_DETECTED.test(p)) return 'admin'
+  if (PLEX_SIGNIN.test(p)) return 'admin'
   if (SITES.test(p)) return 'admin'
   if (SITE_METRICS_ADMIN_READ.test(p)) return 'admin'
   if (SETUP_CHECKLIST.test(p)) return 'admin'
@@ -292,6 +298,7 @@ export function needsReconfirm(method: string, path: string): boolean {
   if (m !== 'GET' && m !== 'HEAD' && HA_CONTROL_RECONFIRM.test(p)) return true
   if (m !== 'GET' && m !== 'HEAD' && QNAP_RECONFIRM.test(p)) return true
   if (m === 'PUT' && PLUGIN_SETTINGS.test(p)) return true
+  if (m === 'POST' && PLEX_SIGNIN_RECONFIRM.test(p)) return true
   if (m === 'POST' && PLEX_CLEAROUT_RECONFIRM.test(p)) return true
   if (m === 'PUT' && SETTINGS_SAVE.test(p)) return true
   if (m === 'POST' && SETTINGS_TEST.test(p)) return true

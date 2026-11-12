@@ -1073,11 +1073,24 @@ the router (DHCP leases, ARP comments) and, where it has none, from HyperProx's 
 guest has which address. On the Arr Stack page, an import blocked because the filenames carry no season
 and episode offers **Map by filename**, the same rescue as before.
 
-**Plex** needs only your Plex server. In the plug-in's settings, enter its address and token. The token
-goes into the vault and is only ever sent to that address. To find the token, open any item in Plex Web,
-choose Get Info, then View XML: it is the `X-Plex-Token` at the end of the address. **Scan for
-services** finds a Plex server on your cluster and fills in the address for you. Use https if Plex is on
-another network.
+**Plex** needs only your Plex server. There are two ways to add it, both in the plug-in's settings.
+
+- **Sign in with Plex** (the easy way). HyperProx shows a 4-character code: go to plex.tv/link on any
+  device signed in to Plex and type it in. On a computer you can instead use **Or sign in to Plex in a
+  new tab**. HyperProx waits for Plex to confirm, then lists the servers your Plex account owns, with
+  their version and addresses. It picks the one on your own network, or the one **Scan for services**
+  already found. Choose **Use this server**: HyperProx checks it answers at that address (and, if not,
+  at the server's other addresses plex.tv lists), then saves the address and the server's own token in
+  the vault. It needs the admin role and your master password again, like any settings change, and an
+  API token cannot do it. Your Plex account sign-in itself is never stored or logged and never reaches
+  your browser: HyperProx uses it only to read your server list, then drops it. The audit log says who
+  signed in to Plex and which server was chosen. If the code runs out, if the account owns no server, or
+  if the server does not answer at any of its addresses (each one tried is listed), the page says so and
+  you can try again.
+- **By hand**: enter the server's address and token. The token goes into the vault and is only ever sent
+  to that address. To find the token, open any item in Plex Web, choose Get Info, then View XML: it is
+  the `X-Plex-Token` at the end of the address. **Scan for services** finds a Plex server on your cluster
+  and fills in the address for you. Use https if Plex is on another network.
 
 - From Plex itself: who is watching what, on which player, whether it plays directly, streams directly
   or transcodes, local and remote bandwidth, and how far through it they are. Also plays from Plex's own
@@ -1086,8 +1099,8 @@ another network.
   (optional)**: with its address and API key, the page shows hours watched instead, and Tautulli's
   wording for stream quality. Everything else still comes from Plex.
 - An install set up before this, with only Tautulli, keeps working and shows everything it showed
-  before. Its card says **Needs attention: add your Plex server for live data** until a Plex address and
-  token are saved. Nothing has to be entered again.
+  before. Its page says **Needs attention: add your Plex server for live data** until a Plex address and
+  token are saved, with a **Sign in with Plex** button. Nothing has to be entered again.
 - **Tell me when something new is added** is a switch in the settings, off by default. When it is on,
   HyperProx checks Plex's recently added list every 5 minutes and sends one message per batch, with each
   title and year, to the notification channels that take **Plex: new in the library** at the
