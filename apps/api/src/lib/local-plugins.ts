@@ -19,8 +19,10 @@
 //    - API tokens are refused on every /api/local route, reads included (lib/api-tokens.ts);
 //    - every request that is not a read is written to the audit log with who made it and the status it
 //      got (the plug-in adds its own, more detailed rows through host.audit);
-//    - the plug-in's secrets go in one vault item of its own, hyperprox:local/<id>; host.credentials
-//      cannot reach any other item.
+//    - the plug-in is handed one vault item of its own, hyperprox:local/<id>, through host.credentials.
+//  These rules govern the routes, not the code: a local plug-in runs in this process as root and could import
+//  anything HyperProx has (the credential store included). The boundary is write access to the install, so only
+//  code its owner has read belongs in these folders.
 //  A plug-in that fails to load is logged and skipped; it never stops the API starting.
 // =============================================================================
 
