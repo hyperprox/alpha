@@ -63,7 +63,9 @@
 
 /* ── main column ── */
 .col { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
-.main { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; }
+/* position: relative keeps any absolutely positioned element in a page (sr-only labels and the like) inside this scroller, so
+   overflow-x clips it. Anchored to the page instead, one off-screen label widens the document and a phone zooms out to fit it. */
+.main { position: relative; flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; }
 .mainFull { overflow: hidden; }
 .content { flex: 1 0 auto; width: 100%; max-width: 92rem; margin: 0 auto; min-width: 0;
   padding: 4px max(18px, env(safe-area-inset-right, 0px)) 60px max(18px, env(safe-area-inset-left, 0px)); }

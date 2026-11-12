@@ -22,7 +22,9 @@
 .srOnly { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
 /* ── plug-in switcher ── */
-.switcher { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; border-bottom: 1px solid var(--hx-line); padding-bottom: 10px; min-width: 0; }
+/* position: relative makes the strip the containing block of the tabs' sr-only labels (position: absolute). Without it they
+   anchor to the page, escape this overflow clip, and on a phone widen the document until Chrome zooms the whole page out. */
+.switcher { position: relative; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; border-bottom: 1px solid var(--hx-line); padding-bottom: 10px; min-width: 0; }
 .switcher::-webkit-scrollbar { display: none; }
 .switcher a { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; text-decoration: none; color: var(--text-muted);
   font: 600 .82rem var(--font-display); letter-spacing: .1em; text-transform: uppercase; padding: 8px 13px; border-radius: 9px; border: 1px solid transparent; min-height: 40px; }
