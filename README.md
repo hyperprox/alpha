@@ -648,8 +648,12 @@ itself. Then it tells you what it found:
   and connect** pins exactly that key and reconnects.
 - **The key does not belong to the guest.** Something else is answering at its address. Don't connect.
   An admin can still trust the key, but only by typing a confirmation.
-- **HyperProx could not check.** No running guest has that address, or the VM's guest agent is not running.
-  The panel says why and shows the fingerprints, and an admin can trust the key after a confirm.
+- **HyperProx could not check.** No running guest has that address, more than one might, it belongs to a
+  different guest from the one the pane is for, or the VM's guest agent is not running. The panel says why
+  and shows the fingerprints, and an admin can still trust the key by typing a confirmation.
+
+"Belongs to the guest" means the guest itself reports this key through Proxmox; it does not prove the
+guest has not been compromised.
 
 The panel also mentions a stopped guest that is set up with the same address. Every new pin is recorded
 in the audit log with what HyperProx found, and API tokens cannot check or trust keys.

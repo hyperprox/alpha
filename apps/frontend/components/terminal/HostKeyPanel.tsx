@@ -8,7 +8,7 @@
 //  says what it found.
 //    verified  amber: the key belongs to the guest; one button re-pins exactly that key and reconnects
 //    mismatch  red: something else answers at the guest's address; an admin can still trust it, by typing a phrase
-//    unknown   neutral: why it could not check, the fingerprints, and (admins) the manual path behind a confirm
+//    unknown   neutral: why it could not check, the fingerprints, and (admins) the manual path behind a typed phrase
 // =============================================================================
 
 import { useCallback, useEffect, useState } from 'react'
@@ -160,7 +160,10 @@ export function HostKeyPanel({ hostId, change, onTrusted, onClose }: {
           {verdict?.state === 'mismatch' && admin && !override && (
             <button onClick={() => setOverride(true)} className={styles.btn}>I understand, trust anyway…</button>
           )}
-          {verdict?.state === 'mismatch' && admin && override && (
+          {verdict?.state === 'unknown' && admin && !override && (
+            <button onClick={() => setOverride(true)} className={styles.btn}>Trust the offered key…</button>
+          )}
+          {(verdict?.state === 'mismatch' || verdict?.state === 'unknown') && admin && override && (
             <div className="w-full">
               <label className="block text-[12.5px]" style={{ color: 'var(--text-dim)' }}>
                 Type <span className="font-mono">{PHRASE}</span> to pin the offered key. This is recorded in the audit log.
@@ -177,12 +180,6 @@ export function HostKeyPanel({ hostId, change, onTrusted, onClose }: {
             </div>
           )}
 
-          {verdict?.state === 'unknown' && admin && (
-            <button disabled={busy} className={styles.btn}
-              onClick={() => { if (window.confirm(`Pin ${verdict.offered.fingerprint} for ${verdict.host}:${verdict.port}? HyperProx could not check it. This is recorded in the audit log.`)) trust({ confirmed: true }) }}>
-              Trust the offered key…
-            </button>
-          )}
           {(verdict?.state === 'unknown' || verdict?.state === 'mismatch') && !admin && (
             <span className="text-[12.5px]" style={{ color: 'var(--text-dim)' }}>Only an admin can trust this key.</span>
           )}

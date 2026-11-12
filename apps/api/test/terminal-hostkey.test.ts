@@ -121,7 +121,7 @@ test('VM verified through a mocked guest agent: address from the agent, keys fro
     interfaces: { 202: { result: [{ name: 'lo', 'ip-addresses': [{ 'ip-address-type': 'ipv4', 'ip-address': '127.0.0.1' }] }, { name: 'eth0', 'ip-addresses': [{ 'ip-address-type': 'ipv4', 'ip-address': VM_ADDR, prefix: 24 }] }] } },
     keys: { 202: keygen([[256, NEW, 'ED25519']]) },
   })
-  const v = await checkHostKey(VM_ADDR, 22, depsFor(w))
+  const v = await checkHostKey(VM_ADDR, 22, depsFor(w), { type: 'qemu', vmid: 202 })
   assert.equal(v.state, 'verified', JSON.stringify(v))
   assert.equal(v.guest?.type, 'qemu')
   assert.equal(v.via, 'guest-agent')
@@ -168,6 +168,81 @@ test('unknown: the read through the node failed (no node login)', async () => {
   assert.equal(v.state, 'unknown')
   assert.equal(v.reason, 'read-failed')
   assert.match(v.why!, /no login for node node-a/)
+})
+
+// --- A guest agent is the guest's own word: it never vouches for an address on its own -------------------------
+
+const spoofVm = (vmid: number, addr: string, fpOut: string) => ({
+  resource: { type: 'qemu', vmid, node: 'node-b', status: 'running', name: 'evil' },
+  config: { agent: '1' },
+  interfaces: { result: [{ name: 'eth0', 'ip-addresses': [{ 'ip-address-type': 'ipv4', 'ip-address': addr }] }] },
+  keys: keygen([[256, fpOut, 'ED25519']]),
+})
+
+test('spoof: a compromised VM whose agent claims a container\'s address cannot get its own key verified', async () => {
+  const evil = spoofVm(202, ADDR, OTHER)
+  const w = world({
+    resources: [{ type: 'lxc', vmid: 101, node: 'node-a', status: 'running', name: 'web' }, evil.resource],
+    configs: { 'lxc/101': { net0: `ip=${ADDR}/24` }, 'qemu/202': evil.config },
+    agentUp: new Set([202]), interfaces: { 202: evil.interfaces }, keys: { 101: keygen([[256, NEW, 'ED25519']]), 202: evil.keys },
+    offered: { fingerprint: OTHER, type: 'ssh-ed25519' },
+  })
+  const v = await checkHostKey(ADDR, 22, depsFor(w), { type: 'lxc', vmid: 101 })
+  assert.equal(v.state, 'unknown', JSON.stringify(v))
+  assert.equal(v.reason, 'several-guests')
+  assert.equal(w.ran.length, 0, 'neither guest was read: there is nothing to decide between them')
+})
+
+test('pane-guest mismatch: a key verified as another guest\'s is never verified for this pane', async () => {
+  // The pane's container is stopped; a running VM claims its address and really holds the offered key.
+  const evil = spoofVm(202, ADDR, NEW)
+  const w = world({
+    resources: [{ type: 'lxc', vmid: 101, node: 'node-a', status: 'stopped', name: 'web' }, evil.resource],
+    configs: { 'lxc/101': { net0: `ip=${ADDR}/24` }, 'qemu/202': evil.config },
+    agentUp: new Set([202]), interfaces: { 202: evil.interfaces }, keys: { 202: evil.keys },
+  })
+  const v = await checkHostKey(ADDR, 22, depsFor(w), { type: 'lxc', vmid: 101 })
+  assert.equal(v.state, 'unknown', JSON.stringify(v))
+  assert.equal(v.reason, 'other-guest')
+  assert.equal(v.guest?.vmid, 202)
+  // And a trust of that verdict needs an admin and the typed phrase, never one tap.
+  const d = depsFor(w)
+  const held = await as('operator', () => verifyForPane('lxc-101', ADDR, 22, d))
+  await assert.rejects(as('operator', () => trustVerdict('lxc-101', { host: ADDR, port: 22 }, { verdictId: held.verdictId! }, d)), (e: any) => e.status === 403)
+})
+
+test('a hand-added host whose address only a VM agent claims is not verified; the VM\'s saved login or cloud-init makes it so', async () => {
+  const vm = spoofVm(202, VM_ADDR, NEW)
+  const mk = (over: Partial<World> = {}) => world({
+    resources: [vm.resource], configs: { 'qemu/202': vm.config }, agentUp: new Set([202]), interfaces: { 202: vm.interfaces }, keys: { 202: vm.keys }, ...over,
+  })
+  const agentOnly = await checkHostKey(VM_ADDR, 22, depsFor(mk()), null)
+  assert.equal(agentOnly.state, 'unknown')
+  assert.equal(agentOnly.reason, 'agent-only')
+  assert.equal((await checkHostKey(VM_ADDR, 22, depsFor(mk({ saved: { 'qemu-202': VM_ADDR } })), null)).state, 'verified')
+  assert.equal((await checkHostKey(VM_ADDR, 22, depsFor(mk({ configs: { 'qemu/202': { agent: '1', ipconfig0: `ip=${VM_ADDR}/24` } } })), null)).state, 'verified')
+  // Another VM's saved address does not back this one.
+  assert.equal((await checkHostKey(VM_ADDR, 22, depsFor(mk({ saved: { 'qemu-999': VM_ADDR } })), null)).reason, 'agent-only')
+})
+
+test('a running VM that may have the address (cloud-init) but whose agent cannot say blocks a verdict', async () => {
+  const w = world({
+    resources: [{ type: 'lxc', vmid: 101, node: 'node-a', status: 'running', name: 'web' }, { type: 'qemu', vmid: 203, node: 'node-b', status: 'running', name: 'quiet' }],
+    configs: { 'lxc/101': { net0: `ip=${ADDR}/24` }, 'qemu/203': { ipconfig0: `ip=${ADDR}/24` } },
+  })
+  const v = await checkHostKey(ADDR, 22, depsFor(w), { type: 'lxc', vmid: 101 })
+  assert.equal(v.state, 'unknown')
+  assert.equal(v.reason, 'several-guests')
+})
+
+test('a failed read through the node is reported without its raw error text', async () => {
+  const w = world()
+  const d = { ...depsFor(w), nodeRun: async () => { throw new Error('ssh: secret node detail /root/x') } }
+  const v = await checkHostKey(ADDR, 22, d, { type: 'lxc', vmid: 101 })
+  assert.equal(v.state, 'unknown')
+  assert.equal(v.reason, 'read-failed')
+  assert.doesNotMatch(v.why!, /secret node detail/)
+  assert.match(v.why!, /API log/)
 })
 
 test('context: a stopped guest configured with the same address is named', async () => {
@@ -257,7 +332,7 @@ test('mismatch: no one-tap trust; an admin can trust it only by typing the phras
   assert.equal(w.audits[0].details.override, true)
 })
 
-test('unknown: admin only, behind a confirm, audited', async () => {
+test('unknown: admin only, behind a typed phrase, audited', async () => {
   const w = world({ resources: [] })
   const d = depsFor(w)
   const v = await as('admin', () => verifyForPane('lxc-101', ADDR, 22, d))
@@ -265,7 +340,9 @@ test('unknown: admin only, behind a confirm, audited', async () => {
   const o = await as('operator', () => verifyForPane('lxc-101', ADDR, 22, d))
   await assert.rejects(as('operator', () => trustVerdict('lxc-101', { host: ADDR, port: 22 }, { verdictId: o.verdictId!, confirmed: true }, d)), (e: any) => e.status === 403)
   await assert.rejects(as('admin', () => trustVerdict('lxc-101', { host: ADDR, port: 22 }, { verdictId: v.verdictId! }, d)), (e: any) => e.status === 400)
-  await as('admin', () => trustVerdict('lxc-101', { host: ADDR, port: 22 }, { verdictId: v.verdictId!, confirmed: true }, d))
+  // A confirm alone is not enough: the phrase is typed, as for a mismatch.
+  await assert.rejects(as('admin', () => trustVerdict('lxc-101', { host: ADDR, port: 22 }, { verdictId: v.verdictId!, confirmed: true }, d)), (e: any) => e.status === 400)
+  await as('admin', () => trustVerdict('lxc-101', { host: ADDR, port: 22 }, { verdictId: v.verdictId!, phrase: OVERRIDE_PHRASE }, d))
   assert.equal(w.repinned[0].fp, NEW)
   assert.equal(w.audits[0].details.verdict, 'unknown')
   assert.equal(w.audits[0].details.reason, 'no-guest')

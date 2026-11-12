@@ -12,7 +12,10 @@
 //       judged is never asked to vouch for itself.
 //    3. A verdict:
 //         verified  the key offered (same type) is one of the guest's own keys: it was rebuilt, restored or
-//                   renumbered. One button re-pins exactly that fingerprint for that host:port.
+//                   renumbered. One button re-pins exactly that fingerprint for that host:port. Only for the guest
+//                   the pane was opened for; for a hand-added host only when the hypervisor's config (or that VM's
+//                   saved login) has the address, never on a guest agent's word alone, and never while another
+//                   running guest may have it. It means the guest reports this key, not that it is uncompromised.
 //         mismatch  the guest's own keys do not include it: something else is answering at its address. No one-tap
 //                   trust; an admin can still trust it behind a typed confirmation.
 //         unknown   no running guest has the address, its agent is down, or the read failed. The fingerprints and
@@ -132,7 +135,7 @@ const agentEnabled = (config: Record<string, unknown> | null) => /^(1|enabled=1)
 export interface GuestRef { type: 'lxc' | 'qemu'; vmid: number; node: string; name: string; status: string }
 
 export type CheckState = 'verified' | 'mismatch' | 'unknown' | 'unchanged'
-export type UnknownReason = 'no-guest' | 'agent-down' | 'several-guests' | 'read-failed'
+export type UnknownReason = 'no-guest' | 'agent-down' | 'several-guests' | 'read-failed' | 'other-guest' | 'agent-only'
 
 export interface HostKeyVerdict {
   state: CheckState
@@ -178,7 +181,12 @@ async function mapLimit<T>(items: T[], n: number, fn: (t: T) => Promise<void>): 
   await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => { while (i < items.length) await fn(items[i++]) }))
 }
 
-interface Sighting { guest: GuestRef; how: 'config' | 'agent' | 'cloud-init' | 'saved'; agentOn: boolean }
+/**
+ * One guest that has the address. `agent`: its guest agent reports it, which the guest itself controls (a compromised
+ * VM can claim any address). `backed`: something the hypervisor or HyperProx holds says so: a container's net config,
+ * a VM's cloud-init config, or the address saved with that same VM's Terminal login.
+ */
+interface Sighting { guest: GuestRef; how: 'config' | 'agent' | 'cloud-init' | 'saved'; agent: boolean; backed: boolean }
 
 /** Every guest that has `host` as an address, and how it is known to. */
 async function sightings(host: string, deps: HostKeyCheckDeps): Promise<Sighting[]> {
@@ -191,19 +199,28 @@ async function sightings(host: string, deps: HostKeyCheckDeps): Promise<Sighting
   await mapLimit(guests, 8, async g => {
     const config = await deps.guestConfig(g.node, g.vmid, g.type).catch(() => null)
     if (g.type === 'lxc') {
-      if (lxcConfigAddresses(config).includes(want)) out.push({ guest: g, how: 'config', agentOn: false })
+      if (lxcConfigAddresses(config).includes(want)) out.push({ guest: g, how: 'config', agent: false, backed: true })
       return
     }
-    const agentOn = agentEnabled(config)
-    if (g.status === 'running' && agentOn) {
+    let agent = false
+    if (g.status === 'running' && agentEnabled(config)) {
       const answer = await deps.agentInterfaces(g.node, g.vmid).catch(() => null)
-      if (answer && agentAddresses(answer).includes(want)) { out.push({ guest: g, how: 'agent', agentOn }); return }
+      agent = !!answer && agentAddresses(answer).includes(want)
     }
-    if (vmConfigAddresses(config).includes(want)) { out.push({ guest: g, how: 'cloud-init', agentOn }); return }
+    const cloudInit = vmConfigAddresses(config).includes(want)
     const s = saved[`qemu-${g.vmid}`]
-    if (s && cleanIp(s) === want) out.push({ guest: g, how: 'saved', agentOn })
+    const savedHere = !!s && cleanIp(s) === want
+    if (agent || cloudInit || savedHere) {
+      out.push({ guest: g, how: agent ? 'agent' : cloudInit ? 'cloud-init' : 'saved', agent, backed: cloudInit || savedHere })
+    }
   })
   return out.sort((a, b) => a.guest.vmid - b.guest.vmid)
+}
+
+/** A failed read through the node: the detail goes to the API log, never to the person (it can name node internals). */
+function readFailed(g: GuestRef, e: any): { code: number; output: string; err: true } {
+  console.warn(`[hostkeys] reading the SSH host keys of ${g.type} ${g.vmid} on node ${g.node} failed: ${e?.message ?? e}`)
+  return { code: -1, output: '', err: true }
 }
 
 /** The guest's own host keys, read on its node. Null (with why) when they could not be read. */
@@ -211,18 +228,18 @@ async function readGuestKeys(g: GuestRef, deps: HostKeyCheckDeps): Promise<{ key
   if (!NODE_RE.test(g.node) || !Number.isInteger(g.vmid)) return { keys: null, why: 'its node or id is not one HyperProx can use' }
   const sq = GUEST_KEYS_SCRIPT.replace(/'/g, `'\\''`)
   if (g.type === 'lxc') {
-    const r = await deps.nodeRun(g.node, `pct exec ${g.vmid} -- sh -c '${sq}'`).catch((e: any) => ({ code: -1, output: '', err: String(e?.message ?? e) }))
+    const r = await deps.nodeRun(g.node, `pct exec ${g.vmid} -- sh -c '${sq}'`).catch((e: any) => readFailed(g, e))
     if (!r) return { keys: null, why: `HyperProx has no login for node ${g.node}, so it could not look inside the container` }
     const keys = parseKeygenFingerprints(r.output)
-    if (!keys.length) return { keys: null, why: (r as any).err ? `reading its keys on node ${g.node} failed: ${(r as any).err}` : 'the container lists no SSH host keys HyperProx could read' }
+    if (!keys.length) return { keys: null, why: (r as any).err ? `reading its keys on node ${g.node} failed (the API log has the detail)` : 'the container lists no SSH host keys HyperProx could read' }
     return { keys, via: 'pct' }
   }
   if (!(await deps.agentPing(g.node, g.vmid).catch(() => false))) return { keys: null, why: 'its guest agent is not running, so HyperProx could not look inside the VM', agentDown: true }
-  const r = await deps.nodeRun(g.node, `qm guest exec ${g.vmid} --timeout 20 -- sh -c '${sq}'`).catch((e: any) => ({ code: -1, output: '', err: String(e?.message ?? e) }))
+  const r = await deps.nodeRun(g.node, `qm guest exec ${g.vmid} --timeout 20 -- sh -c '${sq}'`).catch((e: any) => readFailed(g, e))
   if (!r) return { keys: null, why: `HyperProx has no login for node ${g.node}, so it could not ask the VM's agent` }
   const ans = agentExecOutput(r.output)
   const keys = ans ? parseKeygenFingerprints(ans.out) : []
-  if (!keys.length) return { keys: null, why: (r as any).err ? `asking the VM's agent on node ${g.node} failed: ${(r as any).err}` : 'the VM\'s agent did not list any SSH host keys HyperProx could read' }
+  if (!keys.length) return { keys: null, why: (r as any).err ? `asking the VM's agent on node ${g.node} failed (the API log has the detail)` : 'the VM\'s agent did not list any SSH host keys HyperProx could read' }
   return { keys, via: 'guest-agent' }
 }
 
@@ -260,27 +277,38 @@ export async function checkHostKey(host: string, port: number, deps: HostKeyChec
   }
   const unknown = (reason: UnknownReason, why: string, guest?: GuestRef): HostKeyVerdict => ({ ...base, state: 'unknown', reason, why, guest, context })
 
-  // A VM running without an answering agent cannot say which addresses it has; one known to use this address
-  // (cloud-init, or saved with its login) might be the one answering.
-  const unverifiable = running.filter(s => s.guest.type === 'qemu' && s.how !== 'agent')
-  const candidates = running.filter(s => s.guest.type === 'lxc' || s.how === 'agent')
+  // Which running guest can be checked: a container (by its config), or a VM whose agent reports the address.
+  // A running VM known to use the address only from its cloud-init config or saved login cannot be read through
+  // its agent; it is another possible answerer, so nothing is verified while it is there.
+  const candidates = running.filter(s => s.guest.type === 'lxc' || s.agent)
+  const unverifiable = running.filter(s => !candidates.includes(s))
+  const name = (g: GuestRef) => `${g.name} (${shortType(g)} ${g.vmid})`
 
   if (candidates.length > 1) {
-    return unknown('several-guests', `More than one running guest is configured with this address (${candidates.map(s => `${label(s.guest)} ${s.guest.name}`).join(', ')}), so HyperProx cannot tell which one is answering.`)
+    return unknown('several-guests', `More than one running guest has this address (${candidates.map(s => name(s.guest)).join(', ')}), so HyperProx cannot tell which one is answering.`)
   }
   if (!candidates.length) {
     if (unverifiable.length) {
       const g = unverifiable[0].guest
-      return unknown('agent-down', `This address belongs to ${g.name} (${shortType(g)} ${g.vmid}), but its guest agent is not running, so HyperProx could not check its key with Proxmox.`, g)
+      return unknown('agent-down', `This address belongs to ${name(g)}, but its guest agent is not running, so HyperProx could not check its key with Proxmox.`, g)
     }
     return unknown('no-guest', 'No running guest in this cluster is configured with this address, so there is nothing for HyperProx to check the key against.')
+  }
+  if (unverifiable.length) {
+    return unknown('several-guests', `${name(candidates[0].guest)} has this address, but so may ${unverifiable.map(u => name(u.guest)).join(', ')}, whose guest agent could not say. HyperProx cannot tell which one is answering.`)
   }
 
   const s = candidates[0]
   const g = s.guest
-  if (unverifiable.length) context.push(`${unverifiable.map(u => `${label(u.guest)} (${u.guest.name})`).join(', ')} may also use this address; its agent could not say.`)
+  // A pane opened for a guest is verified only by that guest's own keys: another guest that has (or claims) the
+  // address is never a reason to trust a key for this pane.
   if (paneGuest && (paneGuest.type !== g.type || paneGuest.vmid !== g.vmid)) {
-    context.push(`This pane was opened for ${paneGuest.type === 'lxc' ? 'container' : 'VM'} ${paneGuest.vmid}, but the guest at this address is ${g.name} (${shortType(g)} ${g.vmid}).`)
+    return unknown('other-guest', `This pane is for ${paneGuest.type === 'lxc' ? 'container' : 'VM'} ${paneGuest.vmid}, but the running guest with this address is ${name(g)}. HyperProx will not vouch for one guest with another's keys.`, g)
+  }
+  // A hand-added host or a plug-in's device: a guest agent's word alone does not tie the address to that VM (a
+  // compromised VM can claim any address). The hypervisor's own config, or the VM's saved login, must say so too.
+  if (!paneGuest && !s.backed) {
+    return unknown('agent-only', `Only the guest agent of ${name(g)} reports this address; neither its Proxmox config nor its saved login does, so HyperProx cannot be sure this address is that VM's.`, g)
   }
 
   const read = await readGuestKeys(g, deps)
@@ -341,7 +369,7 @@ export interface TrustRequest { verdictId: string; confirmed?: boolean; phrase?:
 /**
  * Pin the fingerprint a held verdict names, for the host:port it was checked on, and nothing else.
  *   verified  the role the Terminal needs (operator)
- *   unknown   admin, and `confirmed`
+ *   unknown   admin, and `phrase` typed exactly
  *   mismatch  admin, and `phrase` typed exactly
  * The host must still offer that key and the old pin must still be the one the check replaced.
  */
@@ -360,7 +388,7 @@ export async function trustVerdict(terminalId: string, target: { host: string; p
     if (String(req.phrase ?? '').trim().toLowerCase() !== OVERRIDE_PHRASE) throw new HostKeyCheckRefusal(`Type "${OVERRIDE_PHRASE}" to trust this key.`, 400)
   } else if (v.state === 'unknown') {
     if (!admin) throw new HostKeyCheckRefusal('HyperProx could not check this key, so only an admin can trust it.', 403)
-    if (req.confirmed !== true) throw new HostKeyCheckRefusal('Confirm that you want to trust this key.', 400)
+    if (String(req.phrase ?? '').trim().toLowerCase() !== OVERRIDE_PHRASE) throw new HostKeyCheckRefusal(`Type "${OVERRIDE_PHRASE}" to trust this key.`, 400)
   } else if (v.state !== 'verified') {
     throw new HostKeyCheckRefusal('Nothing to trust: the key has not changed.', 409)
   }
